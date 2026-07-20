@@ -99,7 +99,8 @@ fn machine_plan_owns_interrupt_topology_construction() {
         include_str!("../src/arch/x86_64/vm.rs"),
     ] {
         assert!(!source.contains("VmInitRequest::Provided"));
-        assert!(source.contains("InterruptTopology::new(vm.interrupt_delivery())"));
+        assert!(source.contains("InterruptTopology::new()"));
+        assert!(!source.contains("InterruptTopology::new(vm."));
         assert!(source.contains("let (interrupt_topology, interrupt_authority)"));
         assert!(source.contains("interrupt_authority)"));
     }
@@ -177,7 +178,7 @@ fn controller_state_is_harvested_before_vcpu_exit_side_effects() {
 }
 
 #[test]
-fn aarch64_direct_delivery_keeps_the_virtual_cpu_interface_loaded() {
+fn aarch64_hardware_forwarding_keeps_the_virtual_cpu_interface_loaded() {
     let ops = include_str!("../src/architecture/ops.rs");
     let run_loop = ops
         .split_once("fn run_vcpu(")
@@ -195,7 +196,7 @@ fn aarch64_direct_delivery_keeps_the_virtual_cpu_interface_loaded() {
     assert!(setup.contains("Ok(ArmVcpuSetupConfig)"));
     assert!(
         !run_loop.contains("IrqSave"),
-        "direct delivery must not mask all host IRQs while a guest runs"
+        "hardware forwarding must not mask all host IRQs while a guest runs"
     );
 
     let arm_vcpu = include_str!("../../arm_vcpu/src/vcpu.rs");
@@ -575,11 +576,11 @@ fn shared_vcpu_protocol_does_not_expose_interrupt_controller_operations() {
 }
 
 #[test]
-fn aarch64_passthrough_irq_binding_defers_hardware_handoff_until_activation() {
+fn aarch64_physical_irq_binding_defers_hardware_handoff_until_activation() {
     let source = include_str!("../src/arch/aarch64/gic/physical_spi.rs");
     let bind = source
         .split_once("pub(super) fn bind(")
-        .expect("AArch64 passthrough must define physical IRQ binding")
+        .expect("AArch64 must define physical IRQ binding")
         .1
         .split_once("pub(super) fn prepare_enabled(")
         .expect("physical IRQ binding must precede activation")
@@ -595,7 +596,7 @@ fn aarch64_passthrough_irq_binding_defers_hardware_handoff_until_activation() {
 
     let activation = source
         .split_once("pub(super) fn prepare_enabled(")
-        .expect("AArch64 passthrough must define physical IRQ activation")
+        .expect("AArch64 must define physical IRQ activation")
         .1
         .split_once("pub(super) fn unbind(")
         .expect("physical IRQ activation must precede unbinding")
@@ -608,15 +609,15 @@ fn aarch64_passthrough_irq_binding_defers_hardware_handoff_until_activation() {
     );
 
     let forwarding = include_str!("../src/arch/aarch64/gic/forwarding.rs");
-    let direct_state = forwarding
-        .split_once("pub(super) fn set_direct_enabled(")
-        .expect("direct forwarding must expose a checked enable transition")
+    let hardware_backed_state = forwarding
+        .split_once("pub(super) fn set_hardware_backed_enabled(")
+        .expect("hardware-backed forwarding must expose a checked enable transition")
         .1
         .split_once("pub(super) fn retire_guest_interrupt(")
-        .expect("direct enable must precede mediated retirement")
+        .expect("hardware-backed enable must precede mediated retirement")
         .0;
-    assert!(direct_state.contains("host_irq::enable_irq(registration)"));
-    assert!(direct_state.contains("host_irq::disable_irq(registration)"));
+    assert!(hardware_backed_state.contains("host_irq::enable_irq(registration)"));
+    assert!(hardware_backed_state.contains("host_irq::disable_irq(registration)"));
 }
 
 #[test]
@@ -657,7 +658,7 @@ fn aarch64_mediated_host_irq_preserves_level_line_lifetime() {
 }
 
 #[test]
-fn aarch64_direct_host_irq_uses_an_exclusive_hardware_backed_lr() {
+fn aarch64_hardware_forwarded_host_irq_uses_an_exclusive_hardware_backed_lr() {
     let forwarding = include_str!("../src/arch/aarch64/gic/forwarding.rs");
     assert!(forwarding.contains("ShareMode::Exclusive"));
     assert!(forwarding.contains("controller.forward_physical_spi(self.spi)"));
@@ -673,7 +674,7 @@ fn aarch64_direct_host_irq_uses_an_exclusive_hardware_backed_lr() {
 }
 
 #[test]
-fn aarch64_direct_delivery_has_no_physical_private_interrupt_backend() {
+fn aarch64_hardware_forwarding_has_no_physical_private_interrupt_backend() {
     let vgic_backend = include_str!("../../arm_vgic/src/backend.rs");
     for obsolete_operation in [
         "load_physical_private_interrupts",
@@ -684,7 +685,7 @@ fn aarch64_direct_delivery_has_no_physical_private_interrupt_backend() {
     ] {
         assert!(
             !vgic_backend.contains(obsolete_operation),
-            "direct delivery must keep SGIs and PPIs virtual instead of exposing the obsolete \
+            "hardware forwarding must keep SGIs and PPIs virtual instead of exposing the obsolete \
              physical-private backend operation {obsolete_operation}"
         );
     }
@@ -750,7 +751,7 @@ fn aarch64_emulated_timer_progresses_while_the_vcpu_is_not_running() {
 }
 
 #[test]
-fn aarch64_passthrough_routes_separate_mpidr_from_host_cpu_index() {
+fn aarch64_hardware_forwarded_routes_separate_mpidr_from_host_cpu_index() {
     let registration = include_str!("../src/arch/aarch64/gic/registration.rs");
     let placement = include_str!("../src/arch/aarch64/placement.rs");
     let vm = include_str!("../src/arch/aarch64/vm.rs");
@@ -761,7 +762,7 @@ fn aarch64_passthrough_routes_separate_mpidr_from_host_cpu_index() {
     );
     assert!(
         registration.contains("placement.fixed_host_cpu()?"),
-        "passthrough routing must consume the normalized fixed CPU mask"
+        "hardware forwarding must consume the normalized fixed CPU mask"
     );
     assert!(placement.contains("super::capabilities::logical_cpu_id"));
     assert!(placement.contains("config.phys_cpu_ls.set_guest_cpu_sets(cpu_sets)"));
@@ -769,8 +770,8 @@ fn aarch64_passthrough_routes_separate_mpidr_from_host_cpu_index() {
     assert!(placement.contains("mask.count_ones() != 1"));
     assert!(placement.contains("mask.trailing_zeros() as usize"));
     let normalize = vm
-        .find("normalize_direct_vcpu_cpu_sets(&mut config)?")
-        .expect("direct vCPU placement must be normalized during VM resource creation");
+        .find("normalize_hardware_forwarded_vcpu_cpu_sets(&mut config)?")
+        .expect("hardware-forwarded vCPU placement must be normalized during VM creation");
     let consume = vm
         .find("let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids()")
         .expect("VM resource creation must consume normalized vCPU placements");

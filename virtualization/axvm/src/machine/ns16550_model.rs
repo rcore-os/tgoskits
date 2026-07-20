@@ -5,8 +5,8 @@ use alloc::sync::Arc;
 use axdevice::{
     ConsoleRxPolicy, DeviceBackend, DeviceBuildContext, DeviceBundle, DeviceManagerError,
     DeviceManagerResult, DeviceModelId, DeviceRegistration, DeviceRequirements, DeviceTemplate,
-    InterruptSharing, InterruptSourceKind, PollableDeviceOps, ResolvedDeviceResources,
-    ResourceSlot, VirtualDeviceModel, VirtualDeviceModelRegistry,
+    InterruptSharing, PollableDeviceOps, ResolvedDeviceResources, ResourceSlot, VirtualDeviceModel,
+    VirtualDeviceModelRegistry,
 };
 use axvm_types::InterruptTriggerMode;
 use virtual_ns16550::{Ns16550, Ns16550Backend, Ns16550BackendError};
@@ -25,7 +25,6 @@ pub(crate) fn ns16550_device_requirements(
         .with_wired_irq(
             resource_slot(IRQ_SLOT)?,
             InterruptTriggerMode::LevelTriggered,
-            InterruptSourceKind::Software,
             InterruptSharing::Exclusive,
         )
 }

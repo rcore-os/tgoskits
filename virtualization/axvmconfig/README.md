@@ -20,8 +20,11 @@ uses `[machine]`, `[[memory.regions]]`, `[devices]`, and
 `[[devices.virtual]]`; unknown and removed legacy fields are rejected.
 
 `interrupts_passthrough` is an optional passthrough-machine boolean that is
-immediately normalized into typed mediated/direct interrupt delivery. It is not
-accepted for Virtual machines, even when set to `false`.
+immediately normalized into `PhysicalInterruptPolicy`. It applies only to
+assigned physical IRQ sources: `false` selects mediated software inputs and
+`true` selects ownership-checked, hardware-backed forwarding. Virtual-device
+IRQs remain software-backed under either policy. The field is not accepted for
+Virtual machines, even when set to `false`.
 
 ## Quick Start
 

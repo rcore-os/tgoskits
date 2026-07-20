@@ -203,16 +203,6 @@ impl core::fmt::Display for ResourceSlot {
     }
 }
 
-/// Describes whether a wired source is generated in software or backed by a
-/// claimed host interrupt.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InterruptSourceKind {
-    /// The source is asserted by an emulated device.
-    Software,
-    /// The source is asserted by a host IRQ adapter holding ownership.
-    Physical,
-}
-
 /// Host-console receive capability granted to one virtual serial device.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ConsoleRxPolicy {
@@ -296,8 +286,6 @@ pub enum DeviceRequirement {
         slot: ResourceSlot,
         /// Required trigger semantics.
         trigger: InterruptTriggerMode,
-        /// Whether the interrupt is software or physically sourced.
-        source: InterruptSourceKind,
         /// Whether independently owned devices may share the input.
         sharing: InterruptSharing,
     },
@@ -305,8 +293,6 @@ pub enum DeviceRequirement {
     Msi {
         /// Model-defined resource name.
         slot: ResourceSlot,
-        /// Whether the interrupt is software or physically sourced.
-        source: InterruptSourceKind,
     },
 }
 
@@ -387,25 +373,19 @@ impl DeviceRequirements {
         mut self,
         slot: ResourceSlot,
         trigger: InterruptTriggerMode,
-        source: InterruptSourceKind,
         sharing: InterruptSharing,
     ) -> DeviceManagerResult<Self> {
         self.insert(DeviceRequirement::WiredIrq {
             slot,
             trigger,
-            source,
             sharing,
         })?;
         Ok(self)
     }
 
     /// Adds one MSI requirement.
-    pub fn with_msi(
-        mut self,
-        slot: ResourceSlot,
-        source: InterruptSourceKind,
-    ) -> DeviceManagerResult<Self> {
-        self.insert(DeviceRequirement::Msi { slot, source })?;
+    pub fn with_msi(mut self, slot: ResourceSlot) -> DeviceManagerResult<Self> {
+        self.insert(DeviceRequirement::Msi { slot })?;
         Ok(self)
     }
 

@@ -37,7 +37,7 @@ use crate::{
     arch::{ArchNestedPageTable, VmArchState, VmRuntimeArchState},
     ax_err, ax_err_type,
     boot::{GuestAcpiTables, GuestBootDescription, GuestFdtBuilder},
-    config::{AxVMConfig, InterruptDelivery, PhysCpuList, VmMemoryBacking},
+    config::{AxVMConfig, PhysCpuList, PhysicalInterruptPolicy, VmMemoryBacking},
     host::paging::{PagingHandler, virt_to_phys},
     layout::VmAddressLayout,
     lifecycle::{Machine, StopReason, VmStatus},
@@ -458,9 +458,9 @@ impl AxVM {
         self.machine.lock().status()
     }
 
-    /// Returns the normalized external interrupt-delivery policy.
-    pub fn interrupt_delivery(&self) -> InterruptDelivery {
-        self.with_resources(|resources| Ok(resources.config.interrupt_delivery()))
+    /// Returns how assigned physical IRQs are forwarded.
+    pub fn physical_interrupt_policy(&self) -> PhysicalInterruptPolicy {
+        self.with_resources(|resources| Ok(resources.config.physical_interrupt_policy()))
             .unwrap_or_default()
     }
 

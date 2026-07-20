@@ -1,7 +1,6 @@
 //! AArch64 implementations of AxVM platform capability hooks.
 
 use ax_std::os::arceos::modules::ax_hal;
-use axvm_types::InterruptDelivery;
 
 use super::Aarch64Arch;
 use crate::{
@@ -49,11 +48,7 @@ impl GuestBootPlatform for Aarch64Arch {
                 host_timer_intid: host_timer,
                 host_fdt_bytes: super::fdt::try_get_host_fdt(),
                 guest_fdt_bytes: guest_dtb.as_ref().map(|dtb| dtb.as_bytes()),
-                passthrough_intids: if vm_config.interrupt_delivery() == InterruptDelivery::Direct {
-                    &assigned_interrupts
-                } else {
-                    &[]
-                },
+                assigned_device_intids: &assigned_interrupts,
             })?;
         vm_config.arch_mut().set_interrupt_roles(roles);
         Ok(guest_dtb)

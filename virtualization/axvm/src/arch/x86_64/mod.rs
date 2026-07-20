@@ -102,7 +102,7 @@ impl VmArchConfig {
 
     pub(crate) const fn validate_prepared_boot_state(
         &self,
-        _interrupt_delivery: axvm_types::InterruptDelivery,
+        _physical_interrupt_policy: axvm_types::PhysicalInterruptPolicy,
     ) -> AxVmResult {
         Ok(())
     }

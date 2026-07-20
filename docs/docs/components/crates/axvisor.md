@@ -62,9 +62,10 @@ disable_defaults = []
 deny = []
 ```
 
-`interrupts_passthrough = false` 使用 mediated controller，可接 host IRQ adapter 和软件
-IRQ；`true` 只允许取得 host IRQ ownership 的物理 source。Virtual 机型固定 mediated，
-并拒绝该字段。
+`interrupts_passthrough = false` 使已分配 host IRQ 经过 software-backed input
+mediated；`true` 要求它们先取得 host IRQ ownership，再通过 HW-backed virtual
+interrupt 转发。该字段只影响物理 source，两种情况都使用同一 VM-local
+controller，并都允许虚拟设备的软件 IRQ。Virtual 机型拒绝该字段。
 
 默认 console 由架构 profile 创建：AArch64 PL011，RISC-V/LoongArch NS16550，x86
 COM1。可以用 `disable_defaults = ["console"]` 关闭。其他虚拟设备通过

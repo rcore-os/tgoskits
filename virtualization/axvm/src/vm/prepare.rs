@@ -50,17 +50,6 @@ pub(crate) fn complete_vm_init(
         .ok_or_else(|| ax_err_type!(BadState, "VM resources are not available for prepare"))?;
     resources.reset_transient_resources()?;
     resources.require_host_device_claims()?;
-    if interrupt_topology.delivery() != resources.config.interrupt_delivery() {
-        return ax_err!(
-            InvalidInput,
-            format_args!(
-                "interrupt topology delivery {:?} does not match VM delivery {:?}",
-                interrupt_topology.delivery(),
-                resources.config.interrupt_delivery()
-            )
-        );
-    }
-
     let prepared = match initialize(resources, &interrupt_topology) {
         Ok(prepared) => prepared,
         Err(err) => {

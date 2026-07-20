@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use axdevice::{DeviceBackend, DeviceModelId, ResolvedDeviceResources, ResourceSlot};
-use axvm_types::{GuestFirmwareKind, InterruptDelivery, InterruptTriggerMode, VmMachineMode};
+use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolicy, VmMachineMode};
 
 use super::super::{
     AddressRange, DeviceDisposition, DeviceInstanceId, GuestMemoryRegion, HostDeviceDependency,
@@ -241,7 +241,7 @@ pub struct VmMachinePlan {
     host_console: Option<HostDeviceId>,
     mode: VmMachineMode,
     firmware: GuestFirmwareKind,
-    interrupt_delivery: InterruptDelivery,
+    physical_interrupt_policy: PhysicalInterruptPolicy,
     interrupt_controller: Option<InterruptControllerPlan>,
     loongarch_platform: Option<LoongArchPlatformPlan>,
     guest_memory: Vec<GuestMemoryRegion>,
@@ -258,7 +258,7 @@ pub(super) struct VmMachinePlanParts {
     pub(super) host_console: Option<HostDeviceId>,
     pub(super) mode: VmMachineMode,
     pub(super) firmware: GuestFirmwareKind,
-    pub(super) interrupt_delivery: InterruptDelivery,
+    pub(super) physical_interrupt_policy: PhysicalInterruptPolicy,
     pub(super) interrupt_controller: Option<InterruptControllerPlan>,
     pub(super) loongarch_platform: Option<LoongArchPlatformPlan>,
     pub(super) guest_memory: Vec<GuestMemoryRegion>,
@@ -285,7 +285,7 @@ impl Default for VmMachinePlan {
         Self::empty(
             VmMachineMode::Virtual,
             GuestFirmwareKind::Auto,
-            InterruptDelivery::Mediated,
+            PhysicalInterruptPolicy::Mediated,
         )
     }
 }
@@ -297,7 +297,7 @@ impl VmMachinePlan {
             host_console: parts.host_console,
             mode: parts.mode,
             firmware: parts.firmware,
-            interrupt_delivery: parts.interrupt_delivery,
+            physical_interrupt_policy: parts.physical_interrupt_policy,
             interrupt_controller: parts.interrupt_controller,
             loongarch_platform: parts.loongarch_platform,
             guest_memory: parts.guest_memory,
@@ -314,14 +314,14 @@ impl VmMachinePlan {
     pub const fn empty(
         mode: VmMachineMode,
         firmware: GuestFirmwareKind,
-        interrupt_delivery: InterruptDelivery,
+        physical_interrupt_policy: PhysicalInterruptPolicy,
     ) -> Self {
         Self {
             snapshot_generation: 0,
             host_console: None,
             mode,
             firmware,
-            interrupt_delivery,
+            physical_interrupt_policy,
             interrupt_controller: None,
             loongarch_platform: None,
             guest_memory: Vec::new(),
@@ -354,9 +354,9 @@ impl VmMachinePlan {
         self.firmware
     }
 
-    /// Returns normalized interrupt delivery.
-    pub const fn interrupt_delivery(&self) -> InterruptDelivery {
-        self.interrupt_delivery
+    /// Returns how assigned physical IRQs are forwarded.
+    pub const fn physical_interrupt_policy(&self) -> PhysicalInterruptPolicy {
+        self.physical_interrupt_policy
     }
 
     /// Returns the controller topology selected by the architecture profile.

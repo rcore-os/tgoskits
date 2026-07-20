@@ -6,6 +6,7 @@ use axdevice::{
     ControllerInputId, InterruptEndpointRegistration, InterruptPlanAuthority, InterruptSharing,
     InterruptTopology, InterruptTriggerMode, IrqLine, WiredIrqRequest,
 };
+use axvm_types::PhysicalInterruptPolicy;
 
 use crate::{AxVmResult, VmStatus, ax_err, ax_err_type, machine::HostInterruptResource};
 
@@ -26,7 +27,7 @@ enum ExternalIrqDelivery {
         line: IrqLine,
         _registration: InterruptEndpointRegistration,
     },
-    Direct,
+    HardwareForwarded,
 }
 
 impl VmArchState {
@@ -40,6 +41,7 @@ impl VmArchState {
         &mut self,
         topology: &InterruptTopology,
         authority: &InterruptPlanAuthority,
+        policy: PhysicalInterruptPolicy,
         sources: &[HostInterruptResource],
     ) -> AxVmResult {
         for interrupt in sources {
@@ -47,6 +49,7 @@ impl VmArchState {
             self.connect_external_irq_line(
                 topology,
                 authority,
+                policy,
                 source,
                 interrupt.input(),
                 interrupt.trigger(),
@@ -59,6 +62,7 @@ impl VmArchState {
         &mut self,
         topology: &InterruptTopology,
         authority: &InterruptPlanAuthority,
+        policy: PhysicalInterruptPolicy,
         source: usize,
         input: ControllerInputId,
         trigger: InterruptTriggerMode,
@@ -75,7 +79,7 @@ impl VmArchState {
                 )
             );
         }
-        let delivery = if topology.delivery() == axvm_types::InterruptDelivery::Mediated {
+        let delivery = if policy == PhysicalInterruptPolicy::Mediated {
             let claim = authority.claim_wired(
                 topology,
                 WiredIrqRequest::new(input, trigger, InterruptSharing::Exclusive),
@@ -86,7 +90,7 @@ impl VmArchState {
                 _registration: registration,
             }
         } else {
-            ExternalIrqDelivery::Direct
+            ExternalIrqDelivery::HardwareForwarded
         };
         self.external_irq_routes.insert(
             source,
@@ -138,7 +142,8 @@ impl VmArchState {
             return Err(ax_err_type!(
                 Unsupported,
                 alloc::format!(
-                    "direct external interrupt source {source} has no software topology line"
+                    "hardware-forwarded external interrupt source {source} has no software \
+                     topology line"
                 )
             ));
         };

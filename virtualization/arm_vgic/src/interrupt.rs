@@ -140,6 +140,10 @@ impl InterruptRecord {
         self.route = Some(route);
     }
 
+    pub(crate) fn clear_route(&mut self) {
+        self.route = None;
+    }
+
     pub(crate) fn set_level(&mut self, asserted: bool) {
         let rising_edge = asserted && !self.line_asserted;
         self.line_asserted = asserted;

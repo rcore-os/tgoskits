@@ -152,18 +152,9 @@ pub enum MachinePlanError {
         #[source]
         source: axdevice::DeviceManagerError,
     },
-    /// Direct physical interrupt delivery was selected for a software source.
-    #[error(
-        "virtual device '{device}' requires a software interrupt, which direct delivery cannot \
-         provide"
-    )]
-    SoftwareInterruptWithDirectDelivery {
-        /// Virtual device identifier.
-        device: String,
-    },
-    /// Direct delivery was selected for a fully virtual machine.
-    #[error("direct interrupt delivery is valid only for a passthrough machine")]
-    DirectDeliveryInVirtualMachine,
+    /// Hardware forwarding was selected for a fully virtual machine.
+    #[error("physical interrupt hardware forwarding is valid only for a passthrough machine")]
+    HardwareForwardingInVirtualMachine,
     /// The live host platform changed after the plan was produced.
     #[error(
         "host platform snapshot changed while claiming devices: planned generation {planned}, \

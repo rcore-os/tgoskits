@@ -39,9 +39,11 @@ impl VirtualDeviceModel for MyUartModel {
 }
 ```
 
-资源 slot 必须唯一且带语义，例如 `registers`、`irq`、`config`。模型可声明
-`InterruptSourceKind::Software` 或 `Physical`，使 planner 在 direct interrupt delivery
-下拒绝软件 IRQ。
+资源 slot 必须唯一且带语义，例如 `registers`、`irq`、`config`。虚拟设备 requirement
+中的 IRQ/MSI 固定表示软件信号，因此模型只声明 trigger、sharing 与 slot，不得伪装成
+物理源。已取得 host ownership 的物理 IRQ 由 machine plan 交给架构转发 adapter，并
+消费独立的 planner claim。启用物理 IRQ 硬件转发后，PL011 等虚拟设备仍可连接同一
+VM-local controller 的软件输入。
 
 ## 中断拓扑
 
@@ -67,6 +69,12 @@ controller output 可以连接上级 controller input。finalize 失败会断开
 丢弃 binding；VM 创建失败可调用 reset 后重新准备。公共 topology 不提供按 vector 的
 `inject_irq`、裸 `set_level(line)` 或 `pulse(line)`。
 
+连接入口只接受 `InterruptPlanAuthority` 产生的不可伪造 claim。软件源通过
+`connect_irq(claim)` 获得 `IrqLine`；由 controller-specific adapter 完成的物理源通过
+`authorize_wired_endpoint(claim)` 获得 endpoint registration，并在 adapter 整个生命期
+持有它。两条路径共用全 VM 的 `(controller, input)` 唯一键和显式 sharing
+policy；Drop 会释放 claim，因此任何构建失败都不会残留不可审计的运行时连接。
+
 ## `IrqLine` 语义
 
 `IrqLine` 代表一个设备连接，而不是全局 INTID：
@@ -85,12 +93,14 @@ controller output 可以连接上级 controller input。finalize 失败会断开
 
 - `DeviceRegistration::Device`；
 - `DeviceRegistration::Pollable`；
-- `DeviceRegistration::InterruptController`。
+- `DeviceRegistration::InterruptController`；
+- `DeviceRegistration::InterruptEndpoint`，仅保存 planner claim 派生的 endpoint lease。
 
-`AxVmDevices` 在提交时校验 MMIO、PIO 与 sysreg range，不允许地址重叠。任一 capability
-失败会回滚同一 bundle 已注册部分。运行期通过统一 `Device`/`BusRouter` 路由 VM exit，
-旧 `BaseDeviceOps` 设备可由 `MmioDeviceAdapter`、`PortDeviceAdapter` 或
-`SysRegDeviceAdapter` 接入。
+`AxVmDevices` 在提交时校验 MMIO、PIO、sysreg range 和 endpoint resource inventory，
+不允许地址重叠，也不允许设备绕过 sharing policy 重复占用 controller-local input。
+任一 capability 失败会回滚同一 bundle 已注册部分。运行期通过统一
+`Device`/`BusRouter` 路由 VM exit，旧 `BaseDeviceOps` 设备可由
+`MmioDeviceAdapter`、`PortDeviceAdapter` 或 `SysRegDeviceAdapter` 接入。
 
 ## 架构集成
 

@@ -38,11 +38,17 @@ interrupts_passthrough = false
 ```
 
 `interrupts_passthrough` 是透传机型的可选布尔能力，默认 `false`。即使写成 `false`，它
-也不允许出现在 Virtual variant 中。解析结果通过 `MachineConfig::interrupt_delivery()`
+也不允许出现在 Virtual variant 中。解析结果通过
+`MachineConfig::physical_interrupt_policy()`
 立即转成：
 
-- `InterruptDelivery::Mediated`：VM-local 控制器接收 host adapter 或虚拟设备信号；
-- `InterruptDelivery::Direct`：只允许已经取得物理 IRQ ownership 的输入。
+- `PhysicalInterruptPolicy::Mediated`：分配的 host IRQ 经软件 endpoint 进入 VM-local
+  控制器；
+- `PhysicalInterruptPolicy::HardwareForwarded`：分配的 host IRQ 必须先取得 ownership，
+  再通过 HW-backed virtual interrupt 转发。
+
+该字段不限制虚拟设备；PL011 等软件 IRQ endpoint 在两种策略下都连接同一个 VM-local
+控制器。
 
 `firmware` 可为 `auto`、`fdt` 或 `acpi`。架构 adapter 会拒绝不支持的组合。
 

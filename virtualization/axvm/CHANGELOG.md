@@ -12,21 +12,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add immutable host platform snapshots, deterministic machine planning,
   transactional physical-device claims, and FDT/ACPI generation from one
   resolved resource plan.
-- Add Virtual and Passthrough machine profiles, mediated/direct interrupt
-  delivery, AArch64 PL011, RISC-V/LoongArch NS16550, and per-instance console
-  backends.
+- Add Virtual and Passthrough machine profiles, per-source mediated or
+  hardware-backed physical IRQ forwarding, AArch64 PL011, RISC-V/LoongArch
+  NS16550, and per-instance console backends.
 - Add optional `std` support for domain tests while keeping the runtime
   `no_std + alloc` compatible.
+- Add an AArch64 QEMU regression that boots Linux from a hardware-forwarded
+  virtio-blk IRQ while keeping the VM-local PL011 console software-backed.
 
 ### Changed
 
 - Build VMs in RAM, vCPU, controller/binding, device/topology, mapping,
   firmware, and boot-state order with complete rollback on failure.
-- Derive AArch64 private interrupt roles from platform/FDT capabilities and
-  preserve host-owned GIC state across passthrough vCPU load/save.
-- Resolve every direct AArch64 vCPU's hardware affinity to one available host
-  CPU mask before creating the vCPU task and GIC binding, so both consume the
-  same fixed placement without scheduler fallback.
+- Derive AArch64 private interrupt roles from platform/FDT capabilities, keep
+  guest SGI/PPI state VM-local, and never overwrite host GICR state.
+- Resolve every hardware-forwarded AArch64 physical IRQ route to one available
+  host CPU mask before creating the vCPU task and GIC binding, so both consume
+  the same fixed placement without scheduler fallback.
 - Preserve x86 passthrough DMA semantics with VM-owned identity-allocated RAM,
   reserve host PIO before virtual-device allocation, and replace host COM1
   resources through the planned virtual console template.
@@ -53,9 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reject devices with unavailable required providers during planning, and
   remove optional or stale references without exposing host-owned providers;
   retain only assigned-hart entries in mixed RISC-V interrupt context tables.
-- Filter direct-passthrough devices that require a physical ITS when no
-  isolated ITS capability is present, while retaining the dependency for the
-  mediated software ITS plan.
+- Filter assigned devices that require a physical ITS when no isolated ITS
+  capability is present, while allowing an independent VM-local software ITS
+  for virtual MSI endpoints.
 - Deassert a forwarded x86 level source by its in-service IOAPIC identity
   before processing EOI, allowing physical INTx delivery to rearm after the
   guest masks or reroutes the entry.

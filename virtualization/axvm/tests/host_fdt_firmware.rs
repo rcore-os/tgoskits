@@ -1,4 +1,4 @@
-use axdevice::{DeviceModelId, DeviceRequirements, InterruptSourceKind, ResourceSlot};
+use axdevice::{DeviceModelId, DeviceRequirements, ResourceSlot};
 use axvm::machine::{
     Aarch64GicV3Profile, AddressRange, DeviceDisposition, DeviceInstanceId, FdtInterruptEncoding,
     GuestMemoryRegion, HostConsoleEvidence, HostConsoleLocation, HostDeviceId, HostDeviceSelector,
@@ -6,7 +6,7 @@ use axvm::machine::{
     VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner, VmMachineRequest,
     generate_host_fdt,
 };
-use axvm_types::{GuestFirmwareKind, InterruptDelivery, InterruptTriggerMode, VmMachineMode};
+use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolicy, VmMachineMode};
 use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::RegInfo;
 
@@ -112,7 +112,7 @@ fn rockchip_fiq_console_is_normalized_to_an_owned_uart() {
         .unwrap();
 
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
-        .with_interrupt_delivery(InterruptDelivery::Direct);
+        .with_physical_interrupt_policy(PhysicalInterruptPolicy::HardwareForwarded);
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
         .unwrap();
@@ -157,10 +157,11 @@ fn rockchip_fiq_console_is_normalized_to_an_owned_uart() {
 }
 
 #[test]
-fn protected_rockchip_console_is_replaced_by_the_virtual_uart() {
+fn hardware_forwarded_vm_replaces_the_protected_console_with_a_software_irq_uart() {
     let host = host_fdt_with_rockchip_fiq_debugger_console();
     let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_physical_interrupt_policy(PhysicalInterruptPolicy::HardwareForwarded)
         .with_virtual_device(pl011().with_source(VirtualDeviceSource::Allocate));
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
@@ -244,11 +245,11 @@ fn passthrough_retains_a_memory_mapped_interrupt_controller_cascade() {
 }
 
 #[test]
-fn direct_interrupt_passthrough_hides_the_unisolated_physical_its() {
+fn hardware_forwarding_replaces_the_unisolated_physical_its_with_a_software_its() {
     let host = host_fdt_with_physical_its();
     let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
-        .with_interrupt_delivery(InterruptDelivery::Direct);
+        .with_physical_interrupt_policy(PhysicalInterruptPolicy::HardwareForwarded);
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
         .unwrap();
@@ -269,15 +270,19 @@ fn direct_interrupt_passthrough_hides_the_unisolated_physical_its() {
     let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
     let guest = Fdt::from_bytes(&guest).unwrap();
 
-    assert!(guest.get_by_path_id("/soc/gic-its@8080000").is_none());
+    let guest_its = guest.get_by_path_id("/soc/gic-its@8080000").unwrap();
+    assert_eq!(
+        guest.view_typed(guest_its).unwrap().regs()[0].address,
+        0x0808_0000
+    );
 }
 
 #[test]
-fn direct_interrupt_passthrough_filters_devices_requiring_the_physical_its() {
+fn hardware_forwarding_filters_devices_requiring_an_unisolated_physical_its() {
     let host = host_fdt_with_pcie_using_physical_its();
     let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
-        .with_interrupt_delivery(InterruptDelivery::Direct);
+        .with_physical_interrupt_policy(PhysicalInterruptPolicy::HardwareForwarded);
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
         .unwrap();
@@ -292,7 +297,7 @@ fn direct_interrupt_passthrough_filters_devices_requiring_the_physical_its() {
     let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
     let guest = Fdt::from_bytes(&guest).unwrap();
     assert!(guest.get_by_path_id("/soc/pcie@40000000").is_none());
-    assert!(guest.get_by_path_id("/soc/gic-its@8080000").is_none());
+    assert!(guest.get_by_path_id("/soc/gic-its@8080000").is_some());
 }
 
 #[test]
@@ -521,7 +526,6 @@ fn pl011() -> VirtualDeviceDescriptor {
         .with_wired_irq(
             ResourceSlot::new("irq").unwrap(),
             InterruptTriggerMode::LevelTriggered,
-            InterruptSourceKind::Software,
             axdevice::InterruptSharing::Exclusive,
         )
         .unwrap();

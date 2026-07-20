@@ -14,27 +14,29 @@ vPE 和 nested virtualization。
 命令预算，再创建 `GicV3Controller`。设备连接中断源之前，必须用
 `attach_vcpu` 为每个 vCPU 建立 `GicV3VcpuBinding` 和固定 affinity。
 
-Emulated ITS 必须通过 `new_with_guest_memory` 提供 VM 级 `GuestMemory`
+Guest ITS 必须通过 `new_with_guest_memory` 提供 VM 级 `GuestMemory`
 capability。ITS 只按受检 GPA 读取有预算上限的环形命令队列，不假设 GPA=HPA。
 
-## 模式差异
+## SPI 所有权与 backing
 
-- `Emulated`：GICD、GICR、SGI/PPI/SPI/LPI、CPU Interface 和 ITS 状态均按 VM
-  保存；binding 在 guest 运行前后保存全部 LR/APR，并在 LR 耗尽时通过
-  maintenance/refill 继续投递软件 pending。
-- `Passthrough`：guest SPI 和 ITS translation 必须分别通过
-  `bind_physical_spi`、`bind_physical_msi` 显式声明 host 资源和固定 vCPU
-  affinity。SPI 绑定阶段只预留所有权，不修改 host 硬件；固定目标 vCPU 首次
-  load 时，backend 才保存已释放 host 线路的 group、priority、trigger、route、
-  pending、active 和 enable 快照，并只应用该 guest-owned SPI 的状态。binding
-  save 时屏蔽物理线，销毁时恢复 host 快照。guest 对 GICD/GICR 混合寄存器的
-  访问按所有权过滤，host-owned 位为 RAZ/WI；投递不回退到 LR，也不能直接访问
-  共享 host ITS 寄存器。
+`GicV3SpiOwnership` 只描述 guest 可见的 Distributor 资源：
 
-Passthrough 私有中断也使用显式 mask。VMM 根据平台 capability 与 host/guest FDT
-中的中断角色选择 SGI/PPI；binding load 只安装这些 guest-owned 私有状态并屏蔽
-host-owned 线路，save 时恢复 host 快照，同时保留 guest 运行期间新 pending 的
-host timer。VMM 必须在完整的 load/run/save 窗口中保持 host IRQ 屏蔽。
+- `AllGuestOwned` 用于全虚拟机型，全部已实现 SPI 均属于 guest；
+- `Explicit` 在软件 endpoint 或物理 binding 认领 SPI 前保持 RAZ/WI，混合位图写入
+  不会修改未认领的 host SPI。
+
+每个 endpoint 独立选择 backing。`configure_spi_input` 认领软件 SPI；
+`bind_physical_spi` 绑定已取得 ownership 的 host IRQ 和固定 vCPU affinity。两者可在
+同一个控制器与 CPU Interface 中共存：软件事件使用普通虚拟 LR，物理事件使用
+HW-backed LR。硬件转发仍会退出到 EL2，并非静态 CPU/device bypass。物理 binding
+由真实电气线路驱动，不能通过软件 `IrqLine` 拉高。
+
+物理 SPI 绑定阶段只预留所有权，不修改 host 硬件；平台 backend 可在 guest enable
+时保存并交接已释放线路，销毁时必须恢复快照。物理 MSI 同样按
+`(DeviceId, EventId)` 单独选择；连接为软件 endpoint 的事件继续走软件 ITS。
+
+SGI/PPI 始终属于 VM 本地状态。`GicV3VcpuBinding::{load, save, synchronize}` 保存完整
+虚拟 CPU Interface，LR 耗尽时保留软件 pending，并支持软件与 HW-backed LR 混合。
 
 backend 必须校验平台 IRQ identity、affinity、地址、访问宽度和所有权。控制器在
 锁内只生成投递动作，释放锁后才唤醒 vCPU 或调用 backend。

@@ -34,8 +34,7 @@ impl Riscv64Arch {
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
         let models = default_virtual_device_models()?;
-        let (interrupt_topology, interrupt_authority) =
-            axdevice::InterruptTopology::new(vm.interrupt_delivery());
+        let (interrupt_topology, interrupt_authority) = axdevice::InterruptTopology::new();
         init_vm_with(
             vm,
             &models,

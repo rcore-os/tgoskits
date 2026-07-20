@@ -5,7 +5,7 @@ use ax_kspin::SpinRaw as Mutex;
 use crate::{
     AxVmError, AxVmResult, InterruptTriggerMode,
     arch::x86_64::host_irq::{self as irq, IrqSource},
-    config::InterruptDelivery,
+    config::PhysicalInterruptPolicy,
     machine::{HostInterruptSource, VmMachinePlan},
     runtime::{VCpuRef, VMRef},
 };
@@ -94,7 +94,7 @@ pub(crate) fn register_planned_ioapic_forwarding_routes(
     topology: &axdevice::InterruptTopology,
     authority: &axdevice::InterruptPlanAuthority,
 ) -> AxVmResult<IoApicForwardingConnections> {
-    if plan.interrupt_delivery() != InterruptDelivery::Mediated {
+    if plan.physical_interrupt_policy() != PhysicalInterruptPolicy::Mediated {
         return Ok(IoApicForwardingConnections::new());
     }
 
@@ -260,7 +260,7 @@ pub fn inject_pending_serial_irq(vm: &VMRef, _vcpu: &VCpuRef) {
 }
 
 pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
-    if vm.interrupt_delivery() != InterruptDelivery::Mediated {
+    if vm.physical_interrupt_policy() != PhysicalInterruptPolicy::Mediated {
         return;
     }
 
@@ -342,7 +342,7 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_delivery() != InterruptDelivery::Mediated {
+    if vm.physical_interrupt_policy() != PhysicalInterruptPolicy::Mediated {
         return;
     }
 
@@ -410,7 +410,7 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
 }
 
 pub fn activate_ready_ioapic_forwarding_routes(vm: &VMRef) {
-    if vm.interrupt_delivery() != InterruptDelivery::Mediated {
+    if vm.physical_interrupt_policy() != PhysicalInterruptPolicy::Mediated {
         return;
     }
 
@@ -535,7 +535,7 @@ fn forward_passthrough_gsi(
     guest_gsi: usize,
     host_level_triggered: bool,
 ) -> bool {
-    if vm.interrupt_delivery() != InterruptDelivery::Mediated {
+    if vm.physical_interrupt_policy() != PhysicalInterruptPolicy::Mediated {
         return true;
     }
 

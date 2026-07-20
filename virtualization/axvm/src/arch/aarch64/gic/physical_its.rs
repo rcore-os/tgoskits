@@ -1,4 +1,4 @@
-//! Physical ITS resource ownership for passthrough guests.
+//! Physical ITS resource ownership for assigned device translations.
 
 use alloc::collections::BTreeMap;
 

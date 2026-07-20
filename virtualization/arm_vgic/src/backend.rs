@@ -162,7 +162,7 @@ pub trait GicV3Backend: Send + Sync {
 
     /// Notifies the platform after a software LR no longer owns an interrupt.
     ///
-    /// Emulated host-line adapters use this boundary to unmask a physical
+    /// Mediated host-line adapters use this boundary to unmask a physical
     /// level interrupt only after the guest has retired its virtual delivery.
     fn retire_emulated_interrupt(
         &self,
@@ -172,18 +172,18 @@ pub trait GicV3Backend: Send + Sync {
         Ok(())
     }
 
-    /// Claims and configures one physical interrupt for direct delivery.
+    /// Claims one physical interrupt for hardware-backed delivery.
     fn bind_physical_interrupt(
         &self,
         _binding: PhysicalInterruptBinding,
     ) -> Result<(), GicV3BackendError> {
         Err(GicV3BackendError::new(
             "bind physical interrupt",
-            "the backend does not support passthrough interrupts",
+            "the backend does not support physical interrupt ownership",
         ))
     }
 
-    /// Enables or disables one owned interrupt for direct guest delivery.
+    /// Enables or disables one owned hardware-backed interrupt.
     fn set_physical_interrupt_enabled(
         &self,
         _binding: PhysicalInterruptBinding,
@@ -191,30 +191,7 @@ pub trait GicV3Backend: Send + Sync {
     ) -> Result<(), GicV3BackendError> {
         Err(GicV3BackendError::new(
             "set physical interrupt enable state",
-            "the backend does not support passthrough interrupts",
-        ))
-    }
-
-    /// Updates a directly delivered physical level input.
-    fn set_physical_interrupt_level(
-        &self,
-        _binding: PhysicalInterruptBinding,
-        _asserted: bool,
-    ) -> Result<(), GicV3BackendError> {
-        Err(GicV3BackendError::new(
-            "set physical interrupt level",
-            "the backend does not support passthrough interrupts",
-        ))
-    }
-
-    /// Pulses a directly delivered physical input.
-    fn pulse_physical_interrupt(
-        &self,
-        _binding: PhysicalInterruptBinding,
-    ) -> Result<(), GicV3BackendError> {
-        Err(GicV3BackendError::new(
-            "pulse physical interrupt",
-            "the backend does not support passthrough interrupts",
+            "the backend does not support physical interrupt ownership",
         ))
     }
 
@@ -234,7 +211,7 @@ pub trait GicV3Backend: Send + Sync {
         ))
     }
 
-    /// Releases one directly delivered physical interrupt.
+    /// Releases one hardware-backed physical interrupt.
     fn unbind_physical_interrupt(
         &self,
         _binding: PhysicalInterruptBinding,

@@ -22,7 +22,7 @@ VmMachineRequest
 - Guest RAM、共享内存与 identity I/O mappings；
 - host device 的 passthrough/deny/virtual replacement disposition；
 - 虚拟设备 MMIO、PIO、IRQ 与 MSI 分配；
-- 中断控制器布局和 delivery policy；
+- 中断控制器布局和物理 IRQ forwarding policy；
 - 最终 FDT/ACPI 需要描述的资源。
 
 地址和 ID 分配使用 rust-vmm `vm-allocator`，Virtual FDT 使用 `vm-fdt`，ACPI/AML 使用
@@ -45,12 +45,14 @@ host RAM 永不映射。
 由运行时 allocator 选择 host RAM 后令 GPA=HPA。配置中的零 `guest_base` 是占位符，
 不能被当成低地址固定 RAM hole；FDT 在内存分配完成后使用实际范围重建。
 
-中断 delivery 有两种：
+已分配物理 IRQ 的 forwarding policy 有两种：
 
-- `Mediated`：host IRQ adapter 连接 VM-local controller input，也允许软件 `IrqLine`；
-- `Direct`：固定 pCPU affinity 的物理投递，只接受持有 host IRQ ownership 的 source。
+- `Mediated`：host IRQ adapter 连接 VM-local controller 的 software input；
+- `HardwareForwarded`：取得 host IRQ ownership 后，使用固定 pCPU route 和 HW-backed LR。
 
-Direct 不与 LR 软件注入混用，软件 IRQ 设备会在 planning 阶段返回 `Unsupported`。
+该策略只作用于物理 source。PL011 等虚拟设备仍持有软件 `IrqLine`，并可与 HW-backed
+物理 endpoint 共用一个 VM-local controller 和 CPU Interface。真正不经 EL2 的设备/CPU
+bypass 属于独立的静态分区机型，不由该字段表达。
 
 ### Virtual
 
@@ -106,14 +108,14 @@ console 可用 `disable_defaults = ["console"]` 关闭；controller、timer 和 
 
 ## AArch64 ownership
 
-AArch64 direct GIC 路径从平台 capability 与 FDT 自动识别 host IPI/timer、GIC
-maintenance 与 Guest EL1 timer role，不需要 TOML 列表。GICD/GICR 始终 trap 并按
-ownership 过滤；host-owned 位 RAZ/WI。vCPU binding load/save 切换 Guest timer PPI 与
-host private IRQ snapshot。
+AArch64 从平台 capability 与 FDT 自动识别 host IPI/timer、GIC maintenance 与 Guest
+EL1 timer role，不需要 TOML 列表。GICD/GICR 始终 trap；GICD SPI 按 endpoint ownership
+过滤，host-owned 位 RAZ/WI，Guest GICR/SGI/PPI 状态完全保存在 VM 内，不修改 host
+Redistributor。
 
-可交接 SPI 只有在 host-side release 完成后才成为 GuestOwned；失败或 Drop 会恢复
-priority、trigger、route、pending/active 与 ownership。无隔离 ITS capability 时不暴露
-物理 GITS。
+可交接 SPI 只有在 host-side release 完成、planner claim 被消费后才能绑定物理 source；
+失败或 Drop 会恢复 priority、trigger、route、pending/active 与 ownership。无隔离 ITS
+capability 时不暴露物理 GITS，但虚拟 MSI 可使用独立的软件 ITS。
 
 ## 错误与 feature
 

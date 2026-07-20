@@ -112,10 +112,10 @@ pub(crate) fn prepare_guest_boot(
 ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
     vm_config.arch_mut().reset_prepared_boot_state();
     let guest_dtb = CurrentArch::prepare_guest_boot(vm_config, vm_create_config, provider)?;
-    let interrupt_delivery = vm_config.interrupt_delivery();
+    let physical_interrupt_policy = vm_config.physical_interrupt_policy();
     vm_config
         .arch()
-        .validate_prepared_boot_state(interrupt_delivery)?;
+        .validate_prepared_boot_state(physical_interrupt_policy)?;
     Ok(guest_dtb)
 }
 

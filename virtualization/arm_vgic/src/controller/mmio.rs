@@ -6,7 +6,7 @@ use axvm_types::AccessWidth;
 
 use super::{ControllerState, GicV3Controller};
 use crate::{
-    GicV3Mode, GicVcpuId, ItsAction, RegisterRegion, VgicError, VgicResult,
+    GicVcpuId, ItsAction, RegisterRegion, VgicError, VgicResult,
     register::{
         GITS_BASER, GITS_BASER_COUNT, GITS_CBASER, GITS_CREADR, GITS_CTLR, GITS_CWRITER, GITS_IIDR,
         GITS_TYPER, GicComponent, component_id,
@@ -25,28 +25,23 @@ impl GicV3Controller {
 
     /// Writes a Distributor register and schedules newly deliverable SPIs.
     pub fn write_distributor(&self, offset: u64, width: AccessWidth, value: u64) -> VgicResult {
-        let passthrough = self.inner.config.mode() == GicV3Mode::Passthrough;
         let (wakes, physical_state_changes) = {
             let mut state = self.inner.state.lock();
-            let physical_snapshot = passthrough
-                .then(|| state.physical_interrupt_snapshot())
-                .transpose()?;
+            let physical_snapshot = state.physical_interrupt_snapshot()?;
             let write = state
                 .distributor
                 .write(offset, width, value, &self.inner.config)?;
             let candidates = write.into_candidates();
             let mut wakes = Vec::new();
-            if !passthrough {
-                for spi in candidates {
-                    if let Some(wake) = state.queue_spi_if_deliverable(spi)? {
-                        wakes.push(wake);
-                    }
+            for spi in candidates {
+                if state.has_software_backing(spi, &self.inner.config)
+                    && let Some(wake) = state.queue_spi_if_deliverable(spi)?
+                {
+                    wakes.push(wake);
                 }
             }
-            let physical_state_changes = match physical_snapshot {
-                Some(snapshot) => state.active_physical_interrupt_state_changes(&snapshot)?,
-                None => Vec::new(),
-            };
+            let physical_state_changes =
+                state.active_physical_interrupt_state_changes(&physical_snapshot)?;
             (wakes, physical_state_changes)
         };
         self.apply_physical_interrupt_state_changes(physical_state_changes)?;
@@ -254,12 +249,6 @@ fn validate_its_access(
     width: AccessWidth,
     operation: &'static str,
 ) -> VgicResult {
-    if controller.inner.config.mode() == GicV3Mode::Passthrough {
-        return Err(VgicError::Unsupported {
-            operation: "access guest ITS registers",
-            detail: "passthrough guests cannot access the host ITS register frame".into(),
-        });
-    }
     let region = controller
         .inner
         .config

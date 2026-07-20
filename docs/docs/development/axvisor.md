@@ -269,7 +269,7 @@ deny = []
 | `image_location` | 镜像加载方式 | `"fs"` 或 `"memory"` |
 | `kernel_path` | 内核文件路径 | Guest 类型相关 |
 | `machine.mode` | Guest 平台来源 | `"virtual"` 或 `"passthrough"` |
-| `interrupts_passthrough` | 透传 VM 是否直投物理 IRQ | `false`（默认）或 `true` |
+| `interrupts_passthrough` | 透传 VM 的已分配物理 IRQ 是否使用 HW-backed 转发 | `false`（默认）或 `true` |
 | `memory.regions` | 显式 Guest memory 与 backing | `[[memory.regions]]` |
 
 ### 6.3 支持的 Guest 类型

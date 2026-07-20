@@ -18,8 +18,9 @@ vCPU before connecting interrupt sources:
 use std::sync::Arc;
 
 use arm_vgic::{
-    GicAffinity, GicV3Config, GicV3Controller, GicV3MmioRegion, GicV3Mode,
-    GicV3VcpuWake, GicVcpuId, SoftwareGicV3Backend, VgicResult,
+    GicAffinity, GicV3Config, GicV3Controller, GicV3MmioRegion,
+    GicV3SpiOwnership, GicV3VcpuWake, GicVcpuId, SoftwareGicV3Backend,
+    VgicResult,
 };
 
 struct Wake;
@@ -32,7 +33,7 @@ impl GicV3VcpuWake for Wake {
 
 fn build() -> VgicResult<(GicV3Controller, arm_vgic::GicV3VcpuBinding)> {
     let config = GicV3Config::new(
-        GicV3Mode::Emulated,
+        GicV3SpiOwnership::AllGuestOwned,
         GicV3MmioRegion::new(0x0800_0000, 0x1_0000)?,
         GicV3MmioRegion::new(0x080a_0000, 0x2_0000)?,
         0x2_0000,
@@ -52,31 +53,35 @@ Keep each binding alive for as long as its vCPU is attached. Dropping a binding
 releases that Redistributor so failed VM construction and teardown can roll back
 without leaving controller state behind.
 
-An emulated ITS additionally requires `GicV3Controller::new_with_guest_memory`
+An ITS additionally requires `GicV3Controller::new_with_guest_memory`
 and a VM-scoped `GuestMemory` capability. The ITS reads a bounded, checked
 command queue and never assumes guest physical addresses equal host addresses.
 
-## Modes
+## SPI ownership and backing
 
-- `Emulated` keeps GICD, GICR, SGI/PPI/SPI/LPI, CPU-interface, and ITS state per
-  VM. `GicV3VcpuBinding::{load, save, synchronize}` saves all configured list
-  registers and refills software-pending work.
-- `Passthrough` requires explicit guest SPI/ITS ownership through
-  `bind_physical_spi` and `bind_physical_msi`. Delivery goes only through the
-  supplied physical backend; it never falls back to virtual list registers.
-  Binding an SPI only reserves ownership and does not modify host hardware.
-  On the fixed target vCPU's first load, the backend snapshots the released
-  host line and applies only that guest-owned SPI's group, priority, trigger,
-  pending, active, route, and enable state. Saving the binding masks the line;
-  teardown restores the host snapshot. Guest GICD/GICR mixed-register accesses
-  are ownership-filtered, host-owned bits are RAZ/WI, and guest accesses to a
-  shared host ITS frame are rejected.
+`GicV3SpiOwnership` controls only the guest-visible Distributor resource set:
 
-Passthrough private interrupt ownership is also explicit. The VMM selects the
-SGI/PPI mask from platform and guest firmware roles; a binding load installs
-only that mask and disables host-owned private lines, while save restores the
-host snapshot without discarding a host timer pending while the guest ran. The
-VMM must keep host IRQs masked across this complete load/run/save window.
+- `AllGuestOwned` exposes every implemented SPI for a fully virtual machine.
+- `Explicit` keeps an SPI RAZ/WI until a software endpoint or a physical
+  binding claims it. Mixed register writes cannot modify unclaimed host SPIs.
+
+Backing is selected independently for each endpoint. `configure_spi_input`
+claims a software-backed SPI, while `bind_physical_spi` claims an owned host IRQ
+and a fixed vCPU affinity. Both kinds may coexist in one controller and one CPU
+interface: software events use normal virtual LRs and forwarded physical events
+use HW-backed LRs. Hardware forwarding still exits to EL2; it is not a static
+CPU/device bypass. A physical binding is electrically driven and therefore
+cannot be raised through the software line API.
+
+Binding a physical SPI reserves ownership without modifying host hardware. The
+platform backend may snapshot and hand off the released host line when the
+guest enables it, and must restore the snapshot on release. Physical MSI
+bindings are likewise selected per `(DeviceId, EventId)`; events connected as
+software endpoints use the software ITS translation tables.
+
+SGIs and PPIs are always VM-local. `GicV3VcpuBinding::{load, save, synchronize}`
+saves the full virtual CPU interface, preserves software-pending work when LRs
+are full, and supports mixed software and HW-backed entries.
 
 Backends must validate physical IRQ identity, target affinity, address ranges,
 access widths, and resource ownership. Backend callbacks are issued after the

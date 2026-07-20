@@ -25,7 +25,7 @@ pub(crate) struct Aarch64InterruptDiscovery<'a> {
     pub(crate) host_timer_intid: u32,
     pub(crate) host_fdt_bytes: Option<&'a [u8]>,
     pub(crate) guest_fdt_bytes: Option<&'a [u8]>,
-    pub(crate) passthrough_intids: &'a [u32],
+    pub(crate) assigned_device_intids: &'a [u32],
 }
 
 struct DiscoveredInterruptIds<'a> {
@@ -33,7 +33,7 @@ struct DiscoveredInterruptIds<'a> {
     host_timer: u32,
     maintenance: u32,
     guest_timer: PpiId,
-    passthrough: &'a [u32],
+    assigned_devices: &'a [u32],
 }
 
 impl Aarch64InterruptRoles {
@@ -51,7 +51,7 @@ impl Aarch64InterruptRoles {
             host_timer: discovery.host_timer_intid,
             maintenance,
             guest_timer,
-            passthrough: discovery.passthrough_intids,
+            assigned_devices: discovery.assigned_device_intids,
         })
     }
 
@@ -75,7 +75,7 @@ impl Aarch64InterruptRoles {
             host_timer,
             maintenance,
             guest_timer,
-            passthrough,
+            assigned_devices,
         } = discovered;
         let maintenance = checked_ppi("GIC maintenance", maintenance)?;
         let mut host_reserved = BTreeSet::new();
@@ -100,21 +100,21 @@ impl Aarch64InterruptRoles {
             )));
         }
 
-        for raw in passthrough.iter().copied().collect::<BTreeSet<_>>() {
+        for raw in assigned_devices.iter().copied().collect::<BTreeSet<_>>() {
             let intid = IntId::new(raw).map_err(|error| {
                 AxVmError::invalid_config(format!(
-                    "passthrough device INTID {raw} is invalid: {error}"
+                    "assigned device INTID {raw} is invalid: {error}"
                 ))
             })?;
             if host_reserved.contains(&intid) {
                 return Err(AxVmError::invalid_config(format!(
-                    "passthrough device INTID {raw} conflicts with an internally reserved host \
+                    "assigned device INTID {raw} conflicts with an internally reserved host \
                      interrupt"
                 )));
             }
             if u32::from(guest_timer.raw()) == raw {
                 return Err(AxVmError::invalid_config(format!(
-                    "passthrough device INTID {raw} conflicts with a guest timer"
+                    "assigned device INTID {raw} conflicts with a guest timer"
                 )));
             }
         }
@@ -256,7 +256,7 @@ mod tests {
             host_timer: 26,
             maintenance: 25,
             guest_timer: PpiId::new(30).unwrap(),
-            passthrough: &[237],
+            assigned_devices: &[237],
         })
         .unwrap();
 
@@ -273,7 +273,7 @@ mod tests {
             host_timer: 25,
             maintenance: 25,
             guest_timer: default_guest_physical_timer_ppi().unwrap(),
-            passthrough: &[],
+            assigned_devices: &[],
         })
         .unwrap_err();
 
@@ -281,27 +281,27 @@ mod tests {
     }
 
     #[test]
-    fn passthrough_device_cannot_claim_an_internally_reserved_interrupt() {
+    fn assigned_device_cannot_claim_an_internally_reserved_interrupt() {
         let error = Aarch64InterruptRoles::from_discovered_intids(DiscoveredInterruptIds {
             host_ipi: 0,
             host_timer: 26,
             maintenance: 25,
             guest_timer: default_guest_physical_timer_ppi().unwrap(),
-            passthrough: &[26],
+            assigned_devices: &[26],
         })
         .unwrap_err();
 
-        assert!(error.to_string().contains("passthrough device INTID 26"));
+        assert!(error.to_string().contains("assigned device INTID 26"));
     }
 
     #[test]
-    fn passthrough_device_cannot_claim_a_guest_timer_interrupt() {
+    fn assigned_device_cannot_claim_a_guest_timer_interrupt() {
         let error = Aarch64InterruptRoles::from_discovered_intids(DiscoveredInterruptIds {
             host_ipi: 0,
             host_timer: 26,
             maintenance: 25,
             guest_timer: default_guest_physical_timer_ppi().unwrap(),
-            passthrough: &[30],
+            assigned_devices: &[30],
         })
         .unwrap_err();
 

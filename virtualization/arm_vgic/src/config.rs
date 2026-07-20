@@ -2,13 +2,13 @@
 
 use crate::{LPI_INTID_BASE, LPI_INTID_MAX, VgicError, VgicResult};
 
-/// GICv3 implementation mode.
+/// Policy describing which SPIs are visible through the guest Distributor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GicV3Mode {
-    /// Distributor, Redistributors, ITS, and delivery state are modeled in software.
-    Emulated,
-    /// Assigned resources are delivered directly through a checked physical backend.
-    Passthrough,
+pub enum GicV3SpiOwnership {
+    /// Every implemented SPI belongs to a fully virtual machine.
+    AllGuestOwned,
+    /// An SPI is RAZ/WI until an endpoint explicitly claims it for the VM.
+    Explicit,
 }
 
 /// Validated capabilities reported by a physical GICv3 Distributor.
@@ -100,7 +100,7 @@ impl GicV3MmioRegion {
 /// Complete configuration for one VM-local GICv3 controller.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GicV3Config {
-    mode: GicV3Mode,
+    spi_ownership: GicV3SpiOwnership,
     distributor: GicV3MmioRegion,
     redistributors: GicV3MmioRegion,
     redistributor_stride: u64,
@@ -117,14 +117,14 @@ pub struct GicV3Config {
 impl GicV3Config {
     /// Creates a GICv3 configuration with architectural defaults.
     pub fn new(
-        mode: GicV3Mode,
+        spi_ownership: GicV3SpiOwnership,
         distributor: GicV3MmioRegion,
         redistributors: GicV3MmioRegion,
         redistributor_stride: u64,
         vcpu_count: usize,
     ) -> VgicResult<Self> {
         let config = Self {
-            mode,
+            spi_ownership,
             distributor,
             redistributors,
             redistributor_stride,
@@ -188,9 +188,9 @@ impl GicV3Config {
         Ok(self)
     }
 
-    /// Returns the controller mode.
-    pub const fn mode(&self) -> GicV3Mode {
-        self.mode
+    /// Returns the guest-visible SPI ownership policy.
+    pub const fn spi_ownership(&self) -> GicV3SpiOwnership {
+        self.spi_ownership
     }
 
     /// Returns the Distributor frame.
@@ -255,15 +255,15 @@ impl GicV3Config {
 
     /// Returns the guest-visible SGI/PPI mask.
     ///
-    /// Private interrupts are always VM-local. Direct delivery applies only to
-    /// explicitly bound physical SPIs, so no host Redistributor state is ever
-    /// exposed through this mask.
+    /// Private interrupts are always VM-local. Physical backing applies only
+    /// to explicitly bound SPIs, so no host Redistributor state is exposed
+    /// through this mask.
     pub(crate) const fn guest_private_interrupt_mask(&self) -> u32 {
         u32::MAX
     }
 
     pub(crate) const fn exposes_guest_lpis(&self) -> bool {
-        matches!(self.mode, GicV3Mode::Emulated) && self.its.is_some()
+        self.its.is_some()
     }
 
     fn validate(&self) -> VgicResult {

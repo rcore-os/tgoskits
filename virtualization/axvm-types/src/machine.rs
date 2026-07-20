@@ -23,30 +23,32 @@ pub enum GuestFirmwareKind {
     Acpi,
 }
 
-/// Describes how external interrupts reach a guest interrupt controller.
+/// Selects how assigned physical interrupt sources are forwarded to a guest.
+///
+/// This policy does not apply to software interrupt sources. Virtual devices
+/// always connect to VM-local controller inputs.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum InterruptDelivery {
-    /// Mediate physical sources and software sources through a VM-local
-    /// interrupt controller.
+pub enum PhysicalInterruptPolicy {
+    /// Convert an assigned host IRQ into a software-backed controller input.
     #[default]
     Mediated,
-    /// Deliver only assigned physical interrupt sources directly.
-    Direct,
+    /// Forward an owned host IRQ through a hardware-backed virtual interrupt.
+    HardwareForwarded,
 }
 
-impl InterruptDelivery {
+impl PhysicalInterruptPolicy {
     /// Converts the passthrough configuration flag into a validated delivery
     /// policy.
     pub const fn from_passthrough_flag(interrupts_passthrough: bool) -> Self {
         if interrupts_passthrough {
-            Self::Direct
+            Self::HardwareForwarded
         } else {
             Self::Mediated
         }
     }
 
-    /// Returns whether this policy requires physical direct delivery.
-    pub const fn is_direct(self) -> bool {
-        matches!(self, Self::Direct)
+    /// Returns whether assigned physical sources require hardware forwarding.
+    pub const fn uses_hardware_forwarding(self) -> bool {
+        matches!(self, Self::HardwareForwarded)
     }
 }

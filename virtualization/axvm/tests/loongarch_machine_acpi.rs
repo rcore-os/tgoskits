@@ -1,11 +1,11 @@
 use axvm::machine::{
     AddressRange, DeviceInstanceId, DeviceModelId, DeviceRequirements, GuestMemoryRegion,
     HostDeviceDescriptor, HostDeviceId, HostDeviceOwnership, HostInterruptResource,
-    HostPlatformSnapshot, InterruptControllerProfile, InterruptSourceKind,
-    LoongArchAcpiInterruptRouting, LoongArchFirmwareDevicesProfile, LoongArchInterruptProfile,
-    LoongArchInterruptRouting, LoongArchPciProfile, LoongArchPlatformProfile,
-    LoongArchPowerProfile, MachineProfile, ResourceSlot, VirtualDeviceDescriptor, VmMachinePlanner,
-    VmMachineRequest, generate_loongarch_fw_cfg_acpi,
+    HostPlatformSnapshot, InterruptControllerProfile, LoongArchAcpiInterruptRouting,
+    LoongArchFirmwareDevicesProfile, LoongArchInterruptProfile, LoongArchInterruptRouting,
+    LoongArchPciProfile, LoongArchPlatformProfile, LoongArchPowerProfile, MachineProfile,
+    ResourceSlot, VirtualDeviceDescriptor, VmMachinePlanner, VmMachineRequest,
+    generate_loongarch_fw_cfg_acpi,
 };
 use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, VmMachineMode};
 
@@ -170,7 +170,6 @@ fn ns16550() -> VirtualDeviceDescriptor {
             .with_wired_irq(
                 ResourceSlot::new("irq").unwrap(),
                 InterruptTriggerMode::LevelTriggered,
-                InterruptSourceKind::Software,
                 axdevice::InterruptSharing::Exclusive,
             )
             .unwrap(),

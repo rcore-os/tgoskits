@@ -829,7 +829,10 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
             vm.with_config(|cfg| {
                 println!("  BSP Entry:      {:#x}", cfg.bsp_entry().as_usize());
                 println!("  AP Entry:       {:#x}", cfg.ap_entry().as_usize());
-                println!("  Interrupt Delivery: {:?}", cfg.interrupt_delivery());
+                println!(
+                    "  Physical IRQ Policy: {:?}",
+                    cfg.physical_interrupt_policy()
+                );
                 if let Some(dtb_addr) = cfg.image_config().dtb_load_gpa {
                     println!("  DTB Address:    {:#x}", dtb_addr.as_usize());
                 }
@@ -991,7 +994,10 @@ fn show_vm_full_details(vm_id: usize) {
         vm.with_config(|cfg| {
             println!("  BSP Entry:      {:#x}", cfg.bsp_entry().as_usize());
             println!("  AP Entry:       {:#x}", cfg.ap_entry().as_usize());
-            println!("  Interrupt Delivery: {:?}", cfg.interrupt_delivery());
+            println!(
+                "  Physical IRQ Policy: {:?}",
+                cfg.physical_interrupt_policy()
+            );
 
             if let Some(dtb_addr) = cfg.image_config().dtb_load_gpa {
                 println!("  DTB Address:    {:#x}", dtb_addr.as_usize());

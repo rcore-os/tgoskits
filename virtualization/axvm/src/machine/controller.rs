@@ -2,7 +2,7 @@
 
 use alloc::string::String;
 
-use axvm_types::{InterruptDelivery, VmMachineMode};
+use axvm_types::VmMachineMode;
 
 use super::{
     AddressRange, HostPlatformSnapshot, MachinePlanError, MachinePlanResult, VmMachineRequest,
@@ -345,6 +345,20 @@ pub(crate) fn is_planned_guest_firmware_infrastructure(
     super::is_guest_firmware_infrastructure(compatibles)
 }
 
+pub(crate) fn is_planned_host_dependency_substitute(compatibles: &[String]) -> bool {
+    // A VM-local software ITS can describe virtual MSI endpoints, but it does
+    // not make a passthrough device's physical MSI transactions isolatable.
+    // Physical ITS substitution requires a distinct platform capability that
+    // AxVM does not expose yet.
+    if compatibles
+        .iter()
+        .any(|compatible| compatible == "arm,gic-v3-its")
+    {
+        return false;
+    }
+    super::is_guest_firmware_infrastructure(compatibles)
+}
+
 pub(crate) fn resolve_interrupt_controller(
     profile: Option<&InterruptControllerProfile>,
     request: &VmMachineRequest,
@@ -418,18 +432,17 @@ fn resolve_aarch64_gicv3(
                         gic.id()
                     ),
                 })?;
-        let its = (request.interrupt_delivery() == InterruptDelivery::Mediated)
-            .then(|| {
-                snapshot.devices().iter().find_map(|device| {
-                    device
-                        .compatibles()
-                        .iter()
-                        .any(|compatible| compatible == "arm,gic-v3-its")
-                        .then(|| device.mmio().first().copied())
-                        .flatten()
-                })
+        let its = snapshot
+            .devices()
+            .iter()
+            .find_map(|device| {
+                device
+                    .compatibles()
+                    .iter()
+                    .any(|compatible| compatible == "arm,gic-v3-its")
+                    .then(|| device.mmio().first().copied())
+                    .flatten()
             })
-            .flatten()
             .or(profile.its);
         (distributor, redistributors, its)
     } else {
@@ -466,9 +479,7 @@ fn resolve_aarch64_gicv3(
         distributor,
         redistributors: AddressRange::new(redistributor_aperture.base(), redistributor_size)?,
         redistributor_stride: profile.redistributor_stride,
-        its: (request.interrupt_delivery() == InterruptDelivery::Mediated)
-            .then_some(its)
-            .flatten(),
+        its,
         spi_count: profile.spi_count,
     })
 }

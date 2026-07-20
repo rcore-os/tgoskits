@@ -264,7 +264,7 @@ ID    NAME           STATE      VCPU   MEMORY
       "state": "running",
       "vcpu": 2,
       "memory": "512MB",
-      "interrupt_delivery": "Mediated"
+      "physical_interrupt_policy": "Mediated"
     }
   ]
 }

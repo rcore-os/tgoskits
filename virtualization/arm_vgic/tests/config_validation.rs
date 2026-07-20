@@ -1,9 +1,11 @@
-use arm_vgic::{GicV3Config, GicV3HardwareCapabilities, GicV3MmioRegion, GicV3Mode, VgicError};
+use arm_vgic::{
+    GicV3Config, GicV3HardwareCapabilities, GicV3MmioRegion, GicV3SpiOwnership, VgicError,
+};
 
 #[test]
 fn rejects_unaligned_gic_register_frames() {
     let result = GicV3Config::new(
-        GicV3Mode::Emulated,
+        GicV3SpiOwnership::AllGuestOwned,
         GicV3MmioRegion::new(0x0800_1000, 0x1_0000).unwrap(),
         GicV3MmioRegion::new(0x080a_0000, 0x2_0000).unwrap(),
         0x2_0000,
@@ -16,7 +18,7 @@ fn rejects_unaligned_gic_register_frames() {
 #[test]
 fn rejects_overlapping_distributor_redistributor_and_its_frames() {
     let overlapping_redistributor = GicV3Config::new(
-        GicV3Mode::Emulated,
+        GicV3SpiOwnership::AllGuestOwned,
         GicV3MmioRegion::new(0x0800_0000, 0x2_0000).unwrap(),
         GicV3MmioRegion::new(0x0801_0000, 0x2_0000).unwrap(),
         0x2_0000,
@@ -59,7 +61,7 @@ fn physical_typer_with_512_intids_reports_480_spis() {
 
 fn base_config() -> GicV3Config {
     GicV3Config::new(
-        GicV3Mode::Emulated,
+        GicV3SpiOwnership::AllGuestOwned,
         GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
         GicV3MmioRegion::new(0x080a_0000, 0x2_0000).unwrap(),
         0x2_0000,

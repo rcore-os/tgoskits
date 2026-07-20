@@ -27,7 +27,6 @@ use axdevice::{
     WiredIrqRequest, WiredIrqSink,
 };
 use axdevice_base::{BusAccess, BusResponse, DeviceError, InterruptSharing, Resource};
-use axvm_types::InterruptDelivery;
 
 const ROOT: InterruptControllerId = InterruptControllerId::new(1);
 const CHILD: InterruptControllerId = InterruptControllerId::new(2);
@@ -267,7 +266,7 @@ impl Device for StaticMmioDevice {
 
 #[test]
 fn resolves_default_and_explicit_controllers_and_caches_inputs() {
-    let (topology, authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, authority) = InterruptTopology::new();
     let (root, inputs, sink) = wired_registration(ROOT, ControllerRole::Default);
     topology.register_controller(root).unwrap();
 
@@ -316,7 +315,7 @@ fn resolves_default_and_explicit_controllers_and_caches_inputs() {
 
 #[test]
 fn rejects_duplicate_ids_and_default_controllers() {
-    let (topology, _authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, _authority) = InterruptTopology::new();
     let (root, ..) = wired_registration(ROOT, ControllerRole::Default);
     topology.register_controller(root.clone()).unwrap();
     assert!(matches!(
@@ -333,8 +332,8 @@ fn rejects_duplicate_ids_and_default_controllers() {
 
 #[test]
 fn rejects_a_planner_claim_issued_for_another_topology() {
-    let (first, first_authority) = InterruptTopology::new(InterruptDelivery::Mediated);
-    let (second, second_authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (first, first_authority) = InterruptTopology::new();
+    let (second, second_authority) = InterruptTopology::new();
     let (first_controller, ..) = wired_registration(ROOT, ControllerRole::Default);
     let (second_controller, ..) = wired_registration(ROOT, ControllerRole::Default);
     first.register_controller(first_controller).unwrap();
@@ -357,7 +356,7 @@ fn rejects_a_planner_claim_issued_for_another_topology() {
 
 #[test]
 fn equal_input_numbers_on_distinct_controllers_have_distinct_ownership_keys() {
-    let (topology, authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, authority) = InterruptTopology::new();
     let (root, ..) = wired_registration(ROOT, ControllerRole::Default);
     let (child, ..) = wired_registration(CHILD, ControllerRole::Secondary);
     topology.register_controller(root).unwrap();
@@ -394,8 +393,36 @@ fn equal_input_numbers_on_distinct_controllers_have_distinct_ownership_keys() {
 }
 
 #[test]
+fn non_software_source_claim_is_auditable_and_rolls_back_without_opening_an_irq_line() {
+    let (topology, authority) = InterruptTopology::new();
+    let (root, inputs, _) = wired_registration(ROOT, ControllerRole::Default);
+    topology.register_controller(root).unwrap();
+    let request = WiredIrqRequest::for_controller(
+        ROOT,
+        ControllerInputId::new(40),
+        InterruptTriggerMode::LevelTriggered,
+        InterruptSharing::Exclusive,
+    );
+
+    let claim = authority.claim_wired(&topology, request).unwrap();
+    let registration = topology.authorize_wired_endpoint(claim).unwrap();
+    assert!(inputs.opens().is_empty());
+    assert_eq!(topology.active_endpoint_resources().len(), 1);
+    assert!(matches!(
+        authority.claim_wired(&topology, request),
+        Err(DeviceManagerError::ResourceConflict { .. })
+    ));
+
+    drop(registration);
+    assert!(topology.active_endpoint_resources().is_empty());
+    let retry = authority.claim_wired(&topology, request).unwrap();
+    drop(topology.authorize_wired_endpoint(retry).unwrap());
+    assert!(topology.active_endpoint_resources().is_empty());
+}
+
+#[test]
 fn connects_controller_cascade_after_validating_parent_graph() {
-    let (topology, _authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, _authority) = InterruptTopology::new();
     let (root, _, sink) = wired_registration(ROOT, ControllerRole::Default);
     let output = Arc::new(CapturingOutput::default());
     let child = ControllerRegistration::new(CHILD, ControllerRole::Secondary)
@@ -423,7 +450,7 @@ fn connects_controller_cascade_after_validating_parent_graph() {
 
 #[test]
 fn rejects_missing_parents_and_cascade_cycles() {
-    let (missing_parent, _missing_authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (missing_parent, _missing_authority) = InterruptTopology::new();
     let child_output = Arc::new(CapturingOutput::default());
     let (child, ..) = wired_registration(CHILD, ControllerRole::Default);
     missing_parent
@@ -443,7 +470,7 @@ fn rejects_missing_parents_and_cascade_cycles() {
     ));
     assert!(!missing_parent.is_finalized());
 
-    let (cycle, _cycle_authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (cycle, _cycle_authority) = InterruptTopology::new();
     let (root, ..) = wired_registration(ROOT, ControllerRole::Default);
     let (child, ..) = wired_registration(CHILD, ControllerRole::Secondary);
     cycle
@@ -476,7 +503,7 @@ fn rejects_missing_parents_and_cascade_cycles() {
 
 #[test]
 fn attaches_vcpu_bindings_and_synchronizes_their_lifecycle() {
-    let (topology, _authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, _authority) = InterruptTopology::new();
     let controller = Arc::new(RecordingVcpuController::default());
     topology
         .register_controller(
@@ -512,7 +539,7 @@ fn attaches_vcpu_bindings_and_synchronizes_their_lifecycle() {
 
 #[test]
 fn connects_and_signals_msi_endpoints() {
-    let (topology, authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, authority) = InterruptTopology::new();
     let sink = Arc::new(RecordingMessageSink::default());
     topology
         .register_controller(
@@ -541,7 +568,7 @@ fn connects_and_signals_msi_endpoints() {
 
 #[test]
 fn rolls_back_controller_when_a_device_resource_conflicts() {
-    let (topology, _authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, _authority) = InterruptTopology::new();
     let mut devices = AxVmDevices::empty();
     let (controller, ..) = wired_registration(ROOT, ControllerRole::Default);
     let mut bundle = DeviceBundle::new();
@@ -563,7 +590,7 @@ fn rolls_back_controller_when_a_device_resource_conflicts() {
 
 #[test]
 fn resets_finalized_topology_after_vm_preparation_fails() {
-    let (topology, _authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, _authority) = InterruptTopology::new();
     let (root, ..) = wired_registration(ROOT, ControllerRole::Default);
     let output = Arc::new(CapturingOutput::default());
     let (child, ..) = wired_registration(CHILD, ControllerRole::Secondary);
@@ -594,7 +621,7 @@ fn resets_finalized_topology_after_vm_preparation_fails() {
 fn dropping_a_finalized_topology_disconnects_controller_cascades() {
     let output = Arc::new(CapturingOutput::default());
     {
-        let (topology, _authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+        let (topology, _authority) = InterruptTopology::new();
         let (root, ..) = wired_registration(ROOT, ControllerRole::Default);
         let (child, ..) = wired_registration(CHILD, ControllerRole::Secondary);
         topology.register_controller(root).unwrap();

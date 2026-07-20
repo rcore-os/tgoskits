@@ -1,40 +1,40 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex, Weak, mpsc},
+    time::Duration,
+};
 
 use arm_vgic::{
     CpuInterfaceState, EventId, GicAffinity, GicV3Backend, GicV3BackendError, GicV3Config,
-    GicV3Controller, GicV3MmioRegion, GicV3Mode, GicV3VcpuWake, GicVcpuId, IntId, ItsDeviceId,
-    ListRegisterBacking, LpiId, PhysicalInterruptBinding, PhysicalIrqId, PhysicalMsiBinding, PpiId,
-    SgiId, SgiTarget, SpiId, TriggerMode, VgicError, VgicResult,
+    GicV3Controller, GicV3MmioRegion, GicV3SpiOwnership, GicV3VcpuWake, GicVcpuId, GuestMemory,
+    GuestMemoryError, IntId, ItsDeviceId, ListRegisterBacking, LpiId, PhysicalInterruptBinding,
+    PhysicalIrqId, PhysicalMsiBinding, PpiId, SgiId, SgiTarget, SpiId, TriggerMode, VgicError,
+    VgicResult,
 };
 use axvm_types::AccessWidth;
 
 #[test]
-fn passthrough_delivery_uses_only_owned_physical_routes() {
+fn physical_spi_backing_rejects_software_signals_and_releases_ownership() {
     let backend = Arc::new(PhysicalBackend::default());
     let controller = GicV3Controller::new(config(), backend.clone()).unwrap();
     let binding0 = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
     let binding1 = attach(&controller, 1, GicAffinity::new(0, 0, 0, 1));
     let spi = SpiId::new(40).unwrap();
 
-    assert!(matches!(
-        controller.configure_spi_input(spi, TriggerMode::Level),
-        Err(VgicError::Unsupported { .. })
-    ));
     controller
         .bind_physical_spi(spi, PhysicalIrqId::new(1040), GicVcpuId::new(1))
         .unwrap();
-    controller
-        .configure_spi_input(spi, TriggerMode::Level)
-        .unwrap();
-    controller.set_spi_level(spi, true).unwrap();
-    controller.pulse_spi(spi).unwrap();
-
-    let device = ItsDeviceId::new(12);
-    let event = EventId::new(7);
-    controller
-        .bind_physical_msi(device, event, LpiId::new(9000).unwrap(), GicVcpuId::new(1))
-        .unwrap();
-    controller.signal_msi(device, event).unwrap();
+    assert!(matches!(
+        controller.configure_spi_input(spi, TriggerMode::Level),
+        Err(VgicError::ResourceConflict { .. })
+    ));
+    assert!(matches!(
+        controller.set_spi_level(spi, true),
+        Err(VgicError::Unsupported { .. })
+    ));
+    assert!(matches!(
+        controller.pulse_spi(spi),
+        Err(VgicError::Unsupported { .. })
+    ));
     binding1.load().unwrap();
     controller
         .send_sgi(
@@ -58,10 +58,6 @@ fn passthrough_delivery_uses_only_owned_physical_routes() {
     ));
     let records = backend.records.lock().unwrap();
     assert_eq!(records.bound_interrupts.len(), 1);
-    assert_eq!(records.levels, vec![(records.bound_interrupts[0], true)]);
-    assert_eq!(records.pulses, records.bound_interrupts);
-    assert_eq!(records.bound_msi.len(), 1);
-    assert_eq!(records.signaled_msi, records.bound_msi);
     drop(records);
 
     drop(binding0);
@@ -69,11 +65,63 @@ fn passthrough_delivery_uses_only_owned_physical_routes() {
     drop(controller);
     let records = backend.records.lock().unwrap();
     assert_eq!(records.unbound_interrupts, records.bound_interrupts);
-    assert_eq!(records.unbound_msi, records.bound_msi);
+    assert!(records.unbound_msi.is_empty());
 }
 
 #[test]
-fn passthrough_redistributor_is_vm_local_and_never_aliases_host_ppis() {
+fn explicit_ownership_mixes_software_and_physical_spi_backings() {
+    const GICD_CTLR: u64 = 0;
+    const GICD_ISENABLER1: u64 = 0x104;
+
+    let backend = Arc::new(PhysicalBackend::default());
+    let controller = GicV3Controller::new(spi_config(), backend.clone()).unwrap();
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let software_spi = SpiId::new(40).unwrap();
+    let physical_spi = SpiId::new(41).unwrap();
+    let physical_irq = PhysicalIrqId::new(1041);
+
+    controller
+        .configure_spi_input(software_spi, TriggerMode::Level)
+        .unwrap();
+    controller
+        .bind_physical_spi(physical_spi, physical_irq, GicVcpuId::new(0))
+        .unwrap();
+    controller
+        .write_distributor(
+            GICD_ISENABLER1,
+            AccessWidth::Dword,
+            (1 << (software_spi.raw() - 32)) | (1 << (physical_spi.raw() - 32)),
+        )
+        .unwrap();
+    controller
+        .write_distributor(GICD_CTLR, AccessWidth::Dword, 1 << 1)
+        .unwrap();
+
+    controller.set_spi_level(software_spi, true).unwrap();
+    controller.forward_physical_spi(physical_spi).unwrap();
+    binding.load().unwrap();
+
+    let records = backend.records.lock().unwrap();
+    let entries = records
+        .loaded_cpu_interfaces
+        .last()
+        .unwrap()
+        .list_registers()
+        .iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    assert!(entries.iter().any(|entry| {
+        entry.intid() == IntId::Spi(software_spi)
+            && entry.backing() == ListRegisterBacking::Software
+    }));
+    assert!(entries.iter().any(|entry| {
+        entry.intid() == IntId::Spi(physical_spi)
+            && entry.backing() == ListRegisterBacking::Physical(physical_irq)
+    }));
+}
+
+#[test]
+fn explicit_ownership_redistributor_is_vm_local_and_never_aliases_host_ppis() {
     const GICR_SGI_BASE: u64 = 0x1_0000;
     const GICR_ISENABLER0: u64 = GICR_SGI_BASE + 0x100;
 
@@ -102,7 +150,7 @@ fn passthrough_redistributor_is_vm_local_and_never_aliases_host_ppis() {
 }
 
 #[test]
-fn passthrough_distributor_masks_unassigned_spis_in_mixed_writes() {
+fn explicit_ownership_distributor_masks_unassigned_spis_in_mixed_writes() {
     const GICD_ISENABLER1: u64 = 0x104;
 
     let backend = Arc::new(PhysicalBackend::default());
@@ -127,7 +175,7 @@ fn passthrough_distributor_masks_unassigned_spis_in_mixed_writes() {
 }
 
 #[test]
-fn passthrough_sgis_and_ppis_use_virtual_list_registers() {
+fn explicit_ownership_sgis_and_ppis_use_virtual_list_registers() {
     const GICR_SGI_BASE: u64 = 0x1_0000;
     const GICR_ISENABLER0: u64 = GICR_SGI_BASE + 0x100;
     const GICR_ISPENDR0: u64 = GICR_SGI_BASE + 0x200;
@@ -169,7 +217,7 @@ fn passthrough_sgis_and_ppis_use_virtual_list_registers() {
 }
 
 #[test]
-fn passthrough_sgi_is_queued_until_the_target_vcpu_is_loaded() {
+fn explicit_ownership_sgi_is_queued_until_the_target_vcpu_is_loaded() {
     let backend = Arc::new(PhysicalBackend::default());
     let controller = GicV3Controller::new(config(), backend.clone()).unwrap();
     let _binding0 = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
@@ -203,9 +251,14 @@ fn passthrough_sgi_is_queued_until_the_target_vcpu_is_loaded() {
 }
 
 #[test]
-fn passthrough_rejects_missing_affinity_and_duplicate_ownership() {
+fn physical_backing_rejects_missing_affinity_and_duplicate_ownership() {
     let backend = Arc::new(PhysicalBackend::default());
-    let controller = GicV3Controller::new(config(), backend).unwrap();
+    let controller = GicV3Controller::new_with_guest_memory(
+        config_with_its(),
+        backend,
+        Some(Arc::new(ZeroGuestMemory)),
+    )
+    .unwrap();
     let _binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
     let spi = SpiId::new(41).unwrap();
 
@@ -246,14 +299,90 @@ fn passthrough_rejects_missing_affinity_and_duplicate_ownership() {
         ),
         Err(VgicError::ResourceConflict { .. })
     ));
+    controller
+        .signal_msi(ItsDeviceId::new(7), EventId::new(1))
+        .unwrap();
     assert!(matches!(
         controller.signal_msi(ItsDeviceId::new(99), EventId::new(1)),
-        Err(VgicError::Unsupported { .. })
+        Err(VgicError::ResourceNotFound { .. })
     ));
 }
 
 #[test]
-fn passthrough_vcpu_binding_uses_the_virtual_cpu_interface() {
+fn msi_event_cannot_mix_software_and_physical_backings() {
+    let backend = Arc::new(PhysicalBackend::default());
+    let controller = GicV3Controller::new_with_guest_memory(
+        config_with_its(),
+        backend,
+        Some(Arc::new(ZeroGuestMemory)),
+    )
+    .unwrap();
+    let _binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let software_device = ItsDeviceId::new(7);
+    let software_event = EventId::new(1);
+    let physical_device = ItsDeviceId::new(8);
+    let physical_event = EventId::new(2);
+
+    controller
+        .configure_msi_input(software_device, software_event)
+        .unwrap();
+    assert!(matches!(
+        controller.bind_physical_msi(
+            software_device,
+            software_event,
+            LpiId::new(9000).unwrap(),
+            GicVcpuId::new(0),
+        ),
+        Err(VgicError::ResourceConflict { .. })
+    ));
+
+    controller
+        .bind_physical_msi(
+            physical_device,
+            physical_event,
+            LpiId::new(9001).unwrap(),
+            GicVcpuId::new(0),
+        )
+        .unwrap();
+    assert!(matches!(
+        controller.configure_msi_input(physical_device, physical_event),
+        Err(VgicError::ResourceConflict { .. })
+    ));
+}
+
+#[test]
+fn physical_msi_backend_callback_runs_after_releasing_controller_state() {
+    let backend = Arc::new(ReentrantMsiBackend::default());
+    let controller = Arc::new(
+        GicV3Controller::new_with_guest_memory(
+            config_with_its(),
+            backend.clone(),
+            Some(Arc::new(ZeroGuestMemory)),
+        )
+        .unwrap(),
+    );
+    *backend.controller.lock().unwrap() = Some(Arc::downgrade(&controller));
+    let _binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let device = ItsDeviceId::new(9);
+    let event = EventId::new(3);
+    controller
+        .bind_physical_msi(device, event, LpiId::new(9002).unwrap(), GicVcpuId::new(0))
+        .unwrap();
+
+    let (sender, receiver) = mpsc::channel();
+    let signal_controller = controller.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(signal_controller.signal_msi(device, event));
+    });
+
+    receiver
+        .recv_timeout(Duration::from_secs(1))
+        .expect("physical MSI backend re-entry must not deadlock on controller state")
+        .unwrap();
+}
+
+#[test]
+fn physical_backing_uses_the_virtual_cpu_interface() {
     let backend = Arc::new(PhysicalBackend::default());
     let controller = GicV3Controller::new(config(), backend.clone()).unwrap();
     let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
@@ -268,7 +397,7 @@ fn passthrough_vcpu_binding_uses_the_virtual_cpu_interface() {
 }
 
 #[test]
-fn passthrough_physical_spi_is_delivered_by_a_hardware_backed_lr() {
+fn physical_spi_is_delivered_by_a_hardware_backed_lr() {
     const GICD_CTLR: u64 = 0;
     const GICD_ISENABLER1: u64 = 0x104;
 
@@ -309,7 +438,7 @@ fn passthrough_physical_spi_is_delivered_by_a_hardware_backed_lr() {
 }
 
 #[test]
-fn passthrough_spi_enable_tracks_guest_register_writes_not_vcpu_load() {
+fn physical_spi_enable_tracks_guest_register_writes_not_vcpu_load() {
     const GICD_CTLR: u64 = 0;
     const GICD_ISENABLER1: u64 = 0x104;
     const GICD_ICENABLER1: u64 = 0x184;
@@ -345,7 +474,7 @@ fn passthrough_spi_enable_tracks_guest_register_writes_not_vcpu_load() {
 }
 
 #[test]
-fn passthrough_spi_enable_is_gated_by_the_distributor() {
+fn physical_spi_enable_is_gated_by_the_distributor() {
     const GICD_CTLR: u64 = 0;
     const GICD_ISENABLER1: u64 = 0x104;
 
@@ -385,7 +514,7 @@ fn passthrough_spi_enable_is_gated_by_the_distributor() {
 }
 
 #[test]
-fn passthrough_vcpu_reload_does_not_rewrite_distributor_spi_state() {
+fn physical_vcpu_reload_does_not_rewrite_distributor_spi_state() {
     let backend = Arc::new(PhysicalBackend::default());
     let controller = GicV3Controller::new(config(), backend.clone()).unwrap();
     let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
@@ -411,7 +540,7 @@ fn passthrough_vcpu_reload_does_not_rewrite_distributor_spi_state() {
 }
 
 #[test]
-fn passthrough_vcpu_save_keeps_owned_distributor_spi_enabled() {
+fn physical_vcpu_save_keeps_owned_distributor_spi_enabled() {
     const GICD_ISENABLER1: u64 = 0x104;
 
     let backend = Arc::new(PhysicalBackend::default());
@@ -442,7 +571,7 @@ fn passthrough_vcpu_save_keeps_owned_distributor_spi_enabled() {
 }
 
 #[test]
-fn passthrough_spi_enable_failure_restores_disabled_hardware_and_software_state() {
+fn physical_spi_enable_failure_restores_disabled_hardware_and_software_state() {
     const GICD_CTLR: u64 = 0;
     const GICD_ISENABLER1: u64 = 0x104;
 
@@ -485,7 +614,7 @@ fn passthrough_spi_enable_failure_restores_disabled_hardware_and_software_state(
 }
 
 #[test]
-fn passthrough_guest_state_never_reconfigures_an_inflight_physical_spi() {
+fn guest_state_never_reconfigures_an_inflight_physical_spi() {
     const GICD_CTLR: u64 = 0;
     const GICD_ISENABLER1: u64 = 0x104;
     const GICD_ISPENDR1: u64 = 0x204;
@@ -549,7 +678,7 @@ fn passthrough_guest_state_never_reconfigures_an_inflight_physical_spi() {
 }
 
 #[test]
-fn passthrough_repeated_set_pending_writes_stay_vm_local() {
+fn physical_spi_repeated_set_pending_writes_stay_vm_local() {
     const GICD_ISPENDR1: u64 = 0x204;
 
     let backend = Arc::new(PhysicalBackend::default());
@@ -581,8 +710,18 @@ fn passthrough_repeated_set_pending_writes_stay_vm_local() {
 }
 
 fn config() -> GicV3Config {
+    spi_config()
+}
+
+fn config_with_its() -> GicV3Config {
+    spi_config()
+        .with_its(GicV3MmioRegion::new(0x0808_0000, 0x2_0000).unwrap())
+        .unwrap()
+}
+
+fn spi_config() -> GicV3Config {
     GicV3Config::new(
-        GicV3Mode::Passthrough,
+        GicV3SpiOwnership::Explicit,
         GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
         GicV3MmioRegion::new(0x080a_0000, 0x4_0000).unwrap(),
         0x2_0000,
@@ -590,8 +729,6 @@ fn config() -> GicV3Config {
     )
     .unwrap()
     .with_spi_count(32)
-    .unwrap()
-    .with_its(GicV3MmioRegion::new(0x0808_0000, 0x2_0000).unwrap())
     .unwrap()
 }
 
@@ -613,6 +750,56 @@ impl GicV3VcpuWake for NoopWake {
     }
 }
 
+struct ZeroGuestMemory;
+
+impl GuestMemory for ZeroGuestMemory {
+    fn read(&self, _address: u64, destination: &mut [u8]) -> Result<(), GuestMemoryError> {
+        destination.fill(0);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ReentrantMsiBackend {
+    controller: Mutex<Option<Weak<GicV3Controller>>>,
+}
+
+impl GicV3Backend for ReentrantMsiBackend {
+    fn load_cpu_interface(
+        &self,
+        _vcpu: GicVcpuId,
+        _state: &CpuInterfaceState,
+    ) -> Result<(), GicV3BackendError> {
+        Ok(())
+    }
+
+    fn save_cpu_interface(
+        &self,
+        _vcpu: GicVcpuId,
+        _state: &mut CpuInterfaceState,
+    ) -> Result<(), GicV3BackendError> {
+        Ok(())
+    }
+
+    fn bind_physical_msi(&self, _binding: PhysicalMsiBinding) -> Result<(), GicV3BackendError> {
+        Ok(())
+    }
+
+    fn signal_physical_msi(&self, _binding: PhysicalMsiBinding) -> Result<(), GicV3BackendError> {
+        let controller = self
+            .controller
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| GicV3BackendError::new("re-enter controller", "controller dropped"))?;
+        controller
+            .software_pending_count(GicVcpuId::new(0))
+            .map(|_| ())
+            .map_err(|error| GicV3BackendError::new("re-enter controller", format!("{error}")))
+    }
+}
+
 #[derive(Default)]
 struct PhysicalBackend {
     records: Mutex<PhysicalRecords>,
@@ -625,8 +812,6 @@ struct PhysicalRecords {
     loaded_cpu_interfaces: Vec<CpuInterfaceState>,
     bound_interrupts: Vec<PhysicalInterruptBinding>,
     enabled_interrupts: Vec<(PhysicalInterruptBinding, bool)>,
-    levels: Vec<(PhysicalInterruptBinding, bool)>,
-    pulses: Vec<PhysicalInterruptBinding>,
     bound_msi: Vec<PhysicalMsiBinding>,
     signaled_msi: Vec<PhysicalMsiBinding>,
     unbound_interrupts: Vec<PhysicalInterruptBinding>,
@@ -676,27 +861,6 @@ impl GicV3Backend for PhysicalBackend {
                 "injected activation failure",
             ));
         }
-        Ok(())
-    }
-
-    fn set_physical_interrupt_level(
-        &self,
-        binding: PhysicalInterruptBinding,
-        asserted: bool,
-    ) -> Result<(), GicV3BackendError> {
-        self.records
-            .lock()
-            .unwrap()
-            .levels
-            .push((binding, asserted));
-        Ok(())
-    }
-
-    fn pulse_physical_interrupt(
-        &self,
-        binding: PhysicalInterruptBinding,
-    ) -> Result<(), GicV3BackendError> {
-        self.records.lock().unwrap().pulses.push(binding);
         Ok(())
     }
 

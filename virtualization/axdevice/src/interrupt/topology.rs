@@ -5,7 +5,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_kspin::SpinRaw;
 use axdevice_base::{InterruptControllerId, InterruptEndpoint, IrqError, Resource, WiredIrqInput};
-use axvm_types::InterruptDelivery;
 
 use super::{
     ControllerRef, ControllerRegistration, ControllerRole, InterruptClaimDomain,
@@ -18,7 +17,6 @@ use crate::{DeviceManagerError, DeviceManagerResult};
 
 /// One VM's validated interrupt-controller graph.
 pub struct InterruptTopology {
-    delivery: InterruptDelivery,
     controllers: SpinRaw<Vec<ControllerEntry>>,
     bindings: SpinRaw<Vec<RegisteredBinding>>,
     connected_cascades: SpinRaw<Vec<InterruptControllerId>>,
@@ -33,13 +31,12 @@ struct RegisteredBinding {
 }
 
 impl InterruptTopology {
-    /// Creates an empty topology for one normalized delivery policy.
-    pub fn new(delivery: InterruptDelivery) -> (Self, InterruptPlanAuthority) {
+    /// Creates an empty VM-local controller topology.
+    pub fn new() -> (Self, InterruptPlanAuthority) {
         let claim_domain = Arc::new(InterruptClaimDomain::new());
         let authority = InterruptPlanAuthority::new(claim_domain.clone());
         (
             Self {
-                delivery,
                 controllers: SpinRaw::new(Vec::new()),
                 bindings: SpinRaw::new(Vec::new()),
                 connected_cascades: SpinRaw::new(Vec::new()),
@@ -49,11 +46,6 @@ impl InterruptTopology {
             },
             authority,
         )
-    }
-
-    /// Returns the configured external interrupt-delivery policy.
-    pub const fn delivery(&self) -> InterruptDelivery {
-        self.delivery
     }
 
     /// Registers one controller before topology finalization.
@@ -131,6 +123,48 @@ impl InterruptTopology {
         let input = self.open_wired_input(controller_id, request)?;
         let line = input.connect()?;
         Ok(PlannedIrqConnection::new(line, claim.into_registration()))
+    }
+
+    /// Authorizes a planner-owned wired endpoint whose source is connected by
+    /// a checked controller-specific adapter instead of an
+    /// [`IrqLine`](axdevice_base::IrqLine).
+    ///
+    /// This is intended for sources such as an owned physical interrupt that
+    /// is represented by a hardware-backed virtual interrupt. The returned
+    /// registration must be retained for exactly as long as that adapter is
+    /// active. Dropping it releases the VM-global `(controller, input)` claim.
+    ///
+    /// This method does not open a software line. The caller remains
+    /// responsible for validating the controller-local input while installing
+    /// its backend-specific connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the claim belongs to another topology, contains a
+    /// different resource kind, was already consumed, or targets a controller
+    /// without wired-input capability.
+    pub fn authorize_wired_endpoint(
+        &self,
+        claim: WiredIrqClaim,
+    ) -> DeviceManagerResult<InterruptEndpointRegistration> {
+        self.require_claim_domain(claim.domain())?;
+        let Resource::WiredIrq { controller, .. } = *claim.resource() else {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "authorize planned wired interrupt",
+                detail: "wired claim contains a different resource kind".into(),
+            });
+        };
+        let controllers = self.controllers.lock();
+        let entry = find_controller(&controllers, controller)?;
+        if entry.registration.wired_inputs().is_none() {
+            return Err(DeviceManagerError::Unsupported {
+                operation: "authorize planned wired interrupt",
+                detail: format!("controller {controller:?} has no wired input capability"),
+            });
+        }
+        drop(controllers);
+        claim.mark_connected()?;
+        Ok(claim.into_registration())
     }
 
     /// Connects one planner-authorized MSI event to a controller.
@@ -484,7 +518,6 @@ impl core::fmt::Debug for InterruptTopology {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("InterruptTopology")
-            .field("delivery", &self.delivery)
             .field("controller_count", &self.controllers.lock().len())
             .field("binding_count", &self.bindings.lock().len())
             .field("cascade_count", &self.connected_cascades.lock().len())

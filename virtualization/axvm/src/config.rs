@@ -17,7 +17,7 @@
 use alloc::{string::String, vec::Vec};
 
 pub use axvm_types::{
-    GuestFirmwareKind, GuestPhysAddr, HostPhysAddr, InterruptDelivery, MappingFlags,
+    GuestFirmwareKind, GuestPhysAddr, HostPhysAddr, MappingFlags, PhysicalInterruptPolicy,
     VMBootProtocol, VmMachineMode,
 };
 
@@ -271,9 +271,9 @@ impl AxVMConfig {
         &mut self.arch
     }
 
-    /// Returns the interrupt mode of the VM.
-    pub fn interrupt_delivery(&self) -> InterruptDelivery {
-        self.machine_plan.interrupt_delivery()
+    /// Returns how assigned physical IRQs are forwarded.
+    pub fn physical_interrupt_policy(&self) -> PhysicalInterruptPolicy {
+        self.machine_plan.physical_interrupt_policy()
     }
 
     /// Returns the immutable machine plan consumed by VM construction.

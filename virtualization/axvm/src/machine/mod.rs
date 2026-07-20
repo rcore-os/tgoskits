@@ -21,8 +21,8 @@ mod types;
 pub use acpi_firmware::*;
 pub use axdevice::{
     ConsoleRxPolicy, ConsoleTxPolicy, ControllerInputId, DeviceBackend, DeviceModelId,
-    DeviceRequirement, DeviceRequirements, HostConsoleBackend, InterruptSourceKind,
-    ResolvedDeviceResources, ResourceSlot,
+    DeviceRequirement, DeviceRequirements, HostConsoleBackend, ResolvedDeviceResources,
+    ResourceSlot,
 };
 pub use controller::*;
 pub use error::*;

@@ -15,7 +15,7 @@ impl core::fmt::Debug for GicV3VcpuBinding {
         formatter
             .debug_struct("GicV3VcpuBinding")
             .field("vcpu", &self.vcpu)
-            .field("mode", &self.controller.config().mode())
+            .field("spi_ownership", &self.controller.config().spi_ownership())
             .finish_non_exhaustive()
     }
 }

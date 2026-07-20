@@ -4,7 +4,7 @@ use alloc::{string::String, vec::Vec};
 use core::ops::RangeInclusive;
 
 use axdevice::{DeviceBackend, DeviceModelId, DeviceRequirements};
-use axvm_types::{GuestFirmwareKind, InterruptDelivery, VmMachineMode};
+use axvm_types::{GuestFirmwareKind, PhysicalInterruptPolicy, VmMachineMode};
 
 use super::{
     AddressRange, DeviceInstanceId, HostDeviceSelector, IoPortRange, MachinePlanError,
@@ -258,7 +258,7 @@ impl MachineProfile {
 pub struct VmMachineRequest {
     mode: VmMachineMode,
     firmware: GuestFirmwareKind,
-    interrupt_delivery: InterruptDelivery,
+    physical_interrupt_policy: PhysicalInterruptPolicy,
     vcpu_count: usize,
     memory: Vec<GuestMemoryRegion>,
     denied: Vec<HostDeviceSelector>,
@@ -271,7 +271,7 @@ impl VmMachineRequest {
         Self {
             mode,
             firmware,
-            interrupt_delivery: InterruptDelivery::Mediated,
+            physical_interrupt_policy: PhysicalInterruptPolicy::Mediated,
             vcpu_count: 1,
             memory: Vec::new(),
             denied: Vec::new(),
@@ -279,9 +279,9 @@ impl VmMachineRequest {
         }
     }
 
-    /// Selects the normalized interrupt delivery policy.
-    pub fn with_interrupt_delivery(mut self, delivery: InterruptDelivery) -> Self {
-        self.interrupt_delivery = delivery;
+    /// Selects how assigned physical IRQs are forwarded.
+    pub fn with_physical_interrupt_policy(mut self, policy: PhysicalInterruptPolicy) -> Self {
+        self.physical_interrupt_policy = policy;
         self
     }
 
@@ -317,8 +317,8 @@ impl VmMachineRequest {
         self.firmware
     }
 
-    pub(crate) const fn interrupt_delivery(&self) -> InterruptDelivery {
-        self.interrupt_delivery
+    pub(crate) const fn physical_interrupt_policy(&self) -> PhysicalInterruptPolicy {
+        self.physical_interrupt_policy
     }
 
     pub(crate) const fn vcpu_count(&self) -> usize {

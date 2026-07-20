@@ -14,8 +14,8 @@ use ax_kspin::SpinRaw;
 mod cpu_interface;
 mod forwarding;
 mod maintenance;
-mod passthrough;
 mod physical_gic;
+mod physical_its;
 mod physical_spi;
 mod registration;
 mod roles;
@@ -50,7 +50,7 @@ pub(crate) struct AxvmGicV3Backend {
     vm_id: usize,
     routes: BTreeMap<GicVcpuId, VcpuRoute>,
     emulated_spis: SpinRaw<BTreeMap<SpiId, Weak<forwarding::ForwardedSpi>>>,
-    direct_spis: SpinRaw<BTreeMap<SpiId, Weak<forwarding::ForwardedSpi>>>,
+    hardware_backed_spis: SpinRaw<BTreeMap<SpiId, Weak<forwarding::ForwardedSpi>>>,
 }
 
 impl AxvmGicV3Backend {
@@ -62,7 +62,7 @@ impl AxvmGicV3Backend {
                 .map(|route| (route.vcpu, route))
                 .collect(),
             emulated_spis: SpinRaw::new(BTreeMap::new()),
-            direct_spis: SpinRaw::new(BTreeMap::new()),
+            hardware_backed_spis: SpinRaw::new(BTreeMap::new()),
         }
     }
 
@@ -71,6 +71,15 @@ impl AxvmGicV3Backend {
             GicV3BackendError::new(
                 "resolve vCPU route",
                 alloc::format!("vCPU {} has no fixed host route", vcpu.raw()),
+            )
+        })
+    }
+
+    fn boot_vcpu(&self) -> Result<GicVcpuId, GicV3BackendError> {
+        self.routes.keys().next().copied().ok_or_else(|| {
+            GicV3BackendError::new(
+                "resolve boot vCPU route",
+                "the GICv3 backend has no vCPU routes",
             )
         })
     }
@@ -95,15 +104,15 @@ impl AxvmGicV3Backend {
         self.emulated_spis.lock().remove(&spi);
     }
 
-    fn register_direct_spi(
+    fn register_hardware_backed_spi(
         &self,
         spi: SpiId,
         forwarding: Weak<forwarding::ForwardedSpi>,
     ) -> Result<(), GicV3BackendError> {
-        let mut spis = self.direct_spis.lock();
+        let mut spis = self.hardware_backed_spis.lock();
         if spis.get(&spi).and_then(Weak::upgrade).is_some() {
             return Err(GicV3BackendError::new(
-                "register direct SPI forwarding",
+                "register hardware-backed SPI forwarding",
                 alloc::format!("guest SPI {} is already forwarded", spi.raw()),
             ));
         }
@@ -111,12 +120,15 @@ impl AxvmGicV3Backend {
         Ok(())
     }
 
-    fn direct_spi(&self, spi: SpiId) -> Option<Arc<forwarding::ForwardedSpi>> {
-        self.direct_spis.lock().get(&spi).and_then(Weak::upgrade)
+    fn hardware_backed_spi(&self, spi: SpiId) -> Option<Arc<forwarding::ForwardedSpi>> {
+        self.hardware_backed_spis
+            .lock()
+            .get(&spi)
+            .and_then(Weak::upgrade)
     }
 
-    fn unregister_direct_spi(&self, spi: SpiId) {
-        self.direct_spis.lock().remove(&spi);
+    fn unregister_hardware_backed_spi(&self, spi: SpiId) {
+        self.hardware_backed_spis.lock().remove(&spi);
     }
 }
 
@@ -170,40 +182,25 @@ impl GicV3Backend for AxvmGicV3Backend {
         physical_spi::prepare_enabled(self, binding, enabled)?;
         let IntId::Spi(spi) = binding.guest() else {
             return Err(GicV3BackendError::new(
-                "set direct physical interrupt enable state",
+                "set hardware-backed physical interrupt enable state",
                 alloc::format!("guest interrupt {:?} is not an SPI", binding.guest()),
             ));
         };
-        let forwarding = self.direct_spi(spi).ok_or_else(|| {
+        let forwarding = self.hardware_backed_spi(spi).ok_or_else(|| {
             GicV3BackendError::new(
-                "set direct physical interrupt enable state",
+                "set hardware-backed physical interrupt enable state",
                 alloc::format!("guest SPI {} has no host forwarding action", spi.raw()),
             )
         })?;
-        forwarding.set_direct_enabled(enabled)
-    }
-
-    fn set_physical_interrupt_level(
-        &self,
-        binding: PhysicalInterruptBinding,
-        asserted: bool,
-    ) -> Result<(), GicV3BackendError> {
-        physical_spi::set_level(binding, asserted)
-    }
-
-    fn pulse_physical_interrupt(
-        &self,
-        binding: PhysicalInterruptBinding,
-    ) -> Result<(), GicV3BackendError> {
-        physical_spi::pulse(binding)
+        forwarding.set_hardware_backed_enabled(enabled)
     }
 
     fn bind_physical_msi(&self, binding: PhysicalMsiBinding) -> Result<(), GicV3BackendError> {
-        passthrough::bind_msi(self, binding)
+        physical_its::bind_msi(self, binding)
     }
 
     fn signal_physical_msi(&self, binding: PhysicalMsiBinding) -> Result<(), GicV3BackendError> {
-        passthrough::signal_msi(self, binding)
+        physical_its::signal_msi(self, binding)
     }
 
     fn unbind_physical_interrupt(
@@ -214,7 +211,7 @@ impl GicV3Backend for AxvmGicV3Backend {
     }
 
     fn unbind_physical_msi(&self, binding: PhysicalMsiBinding) -> Result<(), GicV3BackendError> {
-        passthrough::unbind_msi(self, binding)
+        physical_its::unbind_msi(self, binding)
     }
 }
 

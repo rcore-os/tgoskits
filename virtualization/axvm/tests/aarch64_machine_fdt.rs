@@ -1,8 +1,8 @@
 use axvm::machine::{
     Aarch64FdtConfig, Aarch64GicV3Profile, AddressRange, DeviceInstanceId, DeviceModelId,
     DeviceRequirements, GuestMemoryRegion, HostPlatformSnapshot, InterruptControllerProfile,
-    InterruptSourceKind, MachineProfile, ResourceSlot, VirtualDeviceDescriptor, VmMachinePlanner,
-    VmMachineRequest, generate_aarch64_fdt,
+    MachineProfile, ResourceSlot, VirtualDeviceDescriptor, VmMachinePlanner, VmMachineRequest,
+    generate_aarch64_fdt,
 };
 use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, VmMachineMode};
 use fdt_edit::Fdt;
@@ -89,7 +89,6 @@ fn pl011() -> VirtualDeviceDescriptor {
             .with_wired_irq(
                 ResourceSlot::new("irq").unwrap(),
                 InterruptTriggerMode::LevelTriggered,
-                InterruptSourceKind::Software,
                 axdevice::InterruptSharing::Exclusive,
             )
             .unwrap(),

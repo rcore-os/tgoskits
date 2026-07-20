@@ -75,7 +75,12 @@ pub(super) fn bind(
             ),
         ));
     }
-    reserve_irq(irq, backend.vm_id)
+    reserve_irq(irq, backend.vm_id)?;
+    if let Err(error) = claim_irq_for_guest(irq, backend.vm_id, "bind physical interrupt") {
+        release_irq(irq, backend.vm_id);
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub(super) fn prepare_enabled(
@@ -87,7 +92,7 @@ pub(super) fn prepare_enabled(
     let target_cpu = enabled
         .then(|| backend.route(binding.target()).map(|route| route.host_cpu))
         .transpose()?;
-    claim_irq_for_guest(irq, backend.vm_id, "set physical interrupt enable state")?;
+    require_guest_owned(irq, backend.vm_id, "set physical interrupt enable state")?;
     if let Some(target_cpu) = target_cpu {
         host_irq::set_affinity(irq, IrqAffinity::Fixed(CpuId(target_cpu)))
             .map_err(|error| platform_error("route physical interrupt", irq, error))?;
@@ -112,23 +117,6 @@ pub(super) fn unbind(
     }
     release_irq(irq, backend.vm_id);
     Ok(())
-}
-
-pub(super) fn set_level(
-    binding: PhysicalInterruptBinding,
-    _asserted: bool,
-) -> Result<(), GicV3BackendError> {
-    Err(electrically_driven_error(
-        "set physical interrupt level",
-        binding,
-    ))
-}
-
-pub(super) fn pulse(binding: PhysicalInterruptBinding) -> Result<(), GicV3BackendError> {
-    Err(electrically_driven_error(
-        "pulse physical interrupt",
-        binding,
-    ))
 }
 
 pub(super) fn resolve(intid: u32) -> Result<PhysicalIrqId, GicV3BackendError> {
@@ -176,7 +164,7 @@ fn claim_irq_for_guest(
     if !requires_snapshot {
         return Ok(());
     }
-    let snapshot = match snapshot_physical_spi(irq) {
+    let snapshot = match take_physical_spi_snapshot(irq) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             restore_reserved_ownership(irq, vm_id);
@@ -238,11 +226,11 @@ fn finish_handoff(
     Ok(())
 }
 
-fn snapshot_physical_spi(irq: IrqId) -> Result<PhysicalSpiSnapshot, GicV3BackendError> {
+fn take_physical_spi_snapshot(irq: IrqId) -> Result<PhysicalSpiSnapshot, GicV3BackendError> {
     with_physical_gic("snapshot physical interrupt", |gic| {
         let intid = checked_physical_spi(gic, irq, "snapshot physical interrupt")?;
         let (group1, group_modifier) = gic.group(intid);
-        Ok(PhysicalSpiSnapshot {
+        let snapshot = PhysicalSpiSnapshot {
             enabled: gic.is_irq_enable(intid),
             pending: gic.is_pending(intid),
             active: gic.is_active(intid),
@@ -251,7 +239,15 @@ fn snapshot_physical_spi(irq: IrqId) -> Result<PhysicalSpiSnapshot, GicV3Backend
             route: gic.get_target_cpu(intid),
             group1,
             group_modifier,
-        })
+        };
+        // The host device has already been quiesced by its machine-plan lease.
+        // Establish a clean ownership boundary before the forwarding action can
+        // change affinity or observe a stale host interrupt.
+        gic.set_irq_enable(intid, false);
+        gic.set_pending(intid, false);
+        gic.set_active(intid, false);
+        instruction_sync_barrier();
+        Ok(snapshot)
     })
 }
 
@@ -309,6 +305,22 @@ fn require_owner(
     }
 }
 
+fn require_guest_owned(
+    irq: IrqId,
+    vm_id: usize,
+    operation: &'static str,
+) -> Result<PhysicalIrqOwner, GicV3BackendError> {
+    let owner = require_owner(irq, vm_id, operation)?;
+    if matches!(owner.state, PhysicalIrqOwnershipState::GuestOwned(_)) {
+        Ok(owner)
+    } else {
+        Err(GicV3BackendError::new(
+            operation,
+            alloc::format!("host IRQ {irq:?} has not completed its guest ownership handoff"),
+        ))
+    }
+}
+
 fn restore_reserved_ownership(irq: IrqId, vm_id: usize) {
     let mut owners = PHYSICAL_IRQ_OWNERS.lock();
     if let Some(owner) = owners.get_mut(&irq)
@@ -342,19 +354,6 @@ fn decode_irq(encoded: PhysicalIrqId) -> Result<IrqId, GicV3BackendError> {
         IrqDomainId((raw >> 32) as u16),
         HwIrq(raw as u32),
     ))
-}
-
-fn electrically_driven_error(
-    operation: &'static str,
-    binding: PhysicalInterruptBinding,
-) -> GicV3BackendError {
-    GicV3BackendError::new(
-        operation,
-        alloc::format!(
-            "host IRQ {:?} is electrically driven by its assigned physical device",
-            binding.host()
-        ),
-    )
 }
 
 fn wrong_owner_error(

@@ -18,9 +18,9 @@ kernel_path = "/guest/linux/orangepi-5-plus"
 dtb_load_addr = 0x240000000
 ramdisk_path = "/guest/linux/initramfs.cpio"
 ramdisk_load_addr = 0xc0000000
-# The hypervisor retains the active FIQ UART. Keep its early console for bring-up,
-# then make tty1 the guest's preferred normal console.
-cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 console=tty1 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M"
+# The hypervisor retains the active FIQ UART. The guest uses the VM-local PL011
+# while assigned physical device IRQs remain hardware-backed.
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyAMA0,115200 earlycon cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M"
 
 [[memory.regions]]
 guest_base = 0xb0000000

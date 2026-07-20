@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 use axvm_types::AccessWidth;
 
 use crate::{
-    GicAffinity, GicV3Config, IntId, InterruptRecord, InterruptState, Priority, RegisterRegion,
-    SpiId, TriggerMode, VgicError, VgicResult,
+    GicAffinity, GicV3Config, GicV3SpiOwnership, IntId, InterruptRecord, InterruptState, Priority,
+    RegisterRegion, SpiId, TriggerMode, VgicError, VgicResult,
     register::{
         GICD_CTLR, GICD_ICACTIVER, GICD_ICENABLER, GICD_ICFGR, GICD_ICPENDR, GICD_IGROUPR,
         GICD_IIDR, GICD_IPRIORITYR, GICD_IROUTER, GICD_ISACTIVER, GICD_ISENABLER, GICD_ISPENDR,
@@ -17,7 +17,8 @@ use crate::{
 pub(crate) struct DistributorState {
     enabled: bool,
     interrupts: Vec<InterruptRecord>,
-    passthrough_owned: Vec<bool>,
+    explicitly_owned: Vec<bool>,
+    fixed_routes: Vec<bool>,
 }
 
 #[derive(Default)]
@@ -48,7 +49,8 @@ impl DistributorState {
         }
         Ok(Self {
             enabled: false,
-            passthrough_owned: alloc::vec![false; interrupts.len()],
+            explicitly_owned: alloc::vec![false; interrupts.len()],
+            fixed_routes: alloc::vec![false; interrupts.len()],
             interrupts,
         })
     }
@@ -83,20 +85,42 @@ impl DistributorState {
         Ok(())
     }
 
-    pub(crate) fn claim_passthrough_spi(&mut self, spi: SpiId, route: GicAffinity) -> VgicResult {
+    pub(crate) fn claim_software_spi(&mut self, spi: SpiId) -> VgicResult {
+        self.claim_spi(spi, None)
+    }
+
+    pub(crate) fn claim_physical_spi(&mut self, spi: SpiId, route: GicAffinity) -> VgicResult {
+        self.claim_spi(spi, Some(route))
+    }
+
+    fn claim_spi(&mut self, spi: SpiId, fixed_route: Option<GicAffinity>) -> VgicResult {
         let index = (spi.raw() - 32) as usize;
         let owned = self
-            .passthrough_owned
+            .explicitly_owned
             .get_mut(index)
             .ok_or(VgicError::InvalidIntId { raw: spi.raw() })?;
         if *owned {
             return Err(VgicError::ResourceConflict {
-                resource: "passthrough SPI ownership",
+                resource: "GICv3 SPI ownership",
                 detail: alloc::format!("SPI {} is already guest-owned", spi.raw()),
             });
         }
         *owned = true;
-        self.interrupt_mut(spi)?.set_route(route);
+        self.fixed_routes[index] = fixed_route.is_some();
+        if let Some(route) = fixed_route {
+            self.interrupt_mut(spi)?.set_route(route);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn release_spi_claim(&mut self, spi: SpiId) -> VgicResult {
+        let index = (spi.raw() - 32) as usize;
+        *self
+            .explicitly_owned
+            .get_mut(index)
+            .ok_or(VgicError::InvalidIntId { raw: spi.raw() })? = false;
+        self.fixed_routes[index] = false;
+        self.interrupt_mut(spi)?.clear_route();
         Ok(())
     }
 
@@ -289,7 +313,7 @@ impl DistributorState {
                     if !self.guest_owns_spi(spi, config)? {
                         return Ok(outcome);
                     }
-                    if config.mode() == crate::GicV3Mode::Emulated {
+                    if !self.fixed_routes[(spi.raw() - 32) as usize] {
                         self.set_route(spi, GicAffinity::from_mpidr(value))?;
                     }
                     if self.interrupt(spi)?.deliverable() {
@@ -441,10 +465,10 @@ impl DistributorState {
     }
 
     fn guest_owns_spi(&self, spi: SpiId, config: &GicV3Config) -> VgicResult<bool> {
-        if config.mode() == crate::GicV3Mode::Emulated {
+        if config.spi_ownership() == GicV3SpiOwnership::AllGuestOwned {
             return Ok(true);
         }
-        self.passthrough_owned
+        self.explicitly_owned
             .get((spi.raw() - 32) as usize)
             .copied()
             .ok_or(VgicError::InvalidIntId { raw: spi.raw() })

@@ -16,17 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Save and restore complete virtual CPU-interface state, retain software
   pending interrupts when LRs are full, and drive maintenance refill without
   panicking.
-- Implement a bounded software ITS command queue and explicit passthrough
+- Implement a bounded software ITS command queue and explicit physical
   SPI/MSI ownership with cleanup on controller drop.
-- Keep passthrough SPIs masked until their guest enables them and the fixed
-  target vCPU binding is loaded, then mask them again before the vCPU is saved.
-- Filter passthrough GICD/GICR accesses by per-VM ownership, context-switch the
-  selected SGI/PPI mask, and synchronize assigned SPI configuration without
-  modifying host-owned bits in mixed registers.
+- Keep physical SPIs masked until their guest enables both Distributor gates,
+  and mask them again when either gate is disabled.
+- Filter explicit-ownership GICD accesses per VM while keeping every GICR,
+  SGI, and PPI entirely VM-local. Mixed Distributor writes never modify
+  host-owned SPI state.
 - Defer physical SPI handoff until activation, then restore the saved host
   group, priority, trigger, route, pending, active, and enable state on release.
 - Report physical `GICD_TYPER` capacity and make LPI registers RAZ/WI unless an
   emulated guest ITS is present.
+- Replace the controller-wide emulated/passthrough mode with an SPI ownership
+  policy and per-endpoint software or physical backing. One GIC can now deliver
+  virtual-device IRQs and owned physical IRQs through the same CPU interface.
 
 ### Removed
 

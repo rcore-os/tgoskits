@@ -9,12 +9,12 @@ use axvm::machine::{
     DeviceInstanceId, DeviceModelId, DeviceRequirements, GuestMemoryPlacement, GuestMemoryRegion,
     HostConsoleBackend, HostDeviceClaimProvider, HostDeviceDescriptor, HostDeviceId,
     HostDeviceLease, HostDeviceOwnership, HostDeviceSelector, HostInterruptResource,
-    HostPlatformSnapshot, InterruptControllerPlan, InterruptControllerProfile, InterruptSourceKind,
-    IoPortRange, MachinePlanError, MachineProfile, RegisteredHostDeviceClaimProvider, ResourceSlot,
+    HostPlatformSnapshot, InterruptControllerPlan, InterruptControllerProfile, IoPortRange,
+    MachinePlanError, MachineProfile, RegisteredHostDeviceClaimProvider, ResourceSlot,
     VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner, VmMachineRequest,
     VmMachineTransaction,
 };
-use axvm_types::{GuestFirmwareKind, InterruptDelivery, InterruptTriggerMode, VmMachineMode};
+use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolicy, VmMachineMode};
 
 #[test]
 fn virtual_machine_allocates_resources_deterministically_without_host_io_mapping() {
@@ -515,19 +515,20 @@ fn host_console_backend_prefers_the_firmware_selected_template() {
 }
 
 #[test]
-fn direct_interrupt_delivery_rejects_software_interrupt_devices() {
+fn physical_interrupt_forwarding_allows_software_interrupt_devices() {
     let profile =
         MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 32..=127).unwrap();
     let snapshot = HostPlatformSnapshot::new(1);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
-        .with_interrupt_delivery(InterruptDelivery::Direct)
+        .with_physical_interrupt_policy(PhysicalInterruptPolicy::HardwareForwarded)
         .with_virtual_device(pl011("console0"));
 
-    let error = VmMachinePlanner::new(profile)
+    let plan = VmMachinePlanner::new(profile)
         .plan(&request, &snapshot)
-        .unwrap_err();
+        .unwrap();
 
-    assert!(error.to_string().contains("software interrupt"));
+    assert_eq!(plan.virtual_devices().len(), 1);
+    assert_eq!(plan.virtual_devices()[0].interrupts().len(), 1);
 }
 
 #[test]
@@ -628,7 +629,6 @@ fn pl011(instance_id: &str) -> VirtualDeviceDescriptor {
             .with_wired_irq(
                 ResourceSlot::new("irq").unwrap(),
                 InterruptTriggerMode::LevelTriggered,
-                InterruptSourceKind::Software,
                 axdevice::InterruptSharing::Exclusive,
             )
             .unwrap(),

@@ -280,7 +280,7 @@ pub(crate) fn build_axvm_config(
 
 fn build_machine_plan(cfg: &AxVMCrateConfig) -> Result<axvm::machine::VmMachinePlan> {
     let mut request = VmMachineRequest::new(cfg.machine.mode(), cfg.machine.firmware())
-        .with_interrupt_delivery(cfg.machine.interrupt_delivery())
+        .with_physical_interrupt_policy(cfg.machine.physical_interrupt_policy())
         .with_vcpu_count(cfg.base.cpu_num);
     for region in &cfg.memory.regions {
         let memory = if matches!(region.backing, MemoryBackingConfig::IdentityAllocate) {
@@ -529,10 +529,7 @@ fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDevice
         .iter()
         .any(|model| model == "console");
     let has_console = configured.iter().any(|device| device.model == "arm-pl011");
-    if cfg.machine.interrupt_delivery() == axvm_types::InterruptDelivery::Mediated
-        && !console_disabled
-        && !has_console
-    {
+    if !console_disabled && !has_console {
         configured.push(axvmconfig::VirtualDeviceConfig {
             id: "console0".into(),
             model: "arm-pl011".into(),
@@ -575,7 +572,7 @@ fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDevice
         .iter()
         .any(|model| model == "console");
     let has_console = configured.iter().any(|device| device.model == "x86-com1");
-    if cfg.machine.interrupt_delivery() == axvm_types::InterruptDelivery::Mediated
+    if cfg.machine.physical_interrupt_policy() == axvm_types::PhysicalInterruptPolicy::Mediated
         && !console_disabled
         && !has_console
     {
@@ -617,7 +614,7 @@ fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDevice
         .iter()
         .any(|model| model == "console");
     let has_console = configured.iter().any(|device| device.model == "ns16550a");
-    if cfg.machine.interrupt_delivery() == axvm_types::InterruptDelivery::Mediated
+    if cfg.machine.physical_interrupt_policy() == axvm_types::PhysicalInterruptPolicy::Mediated
         && !console_disabled
         && !has_console
     {

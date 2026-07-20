@@ -1,0 +1,28 @@
+# AxVM machine policy.
+[machine]
+mode = "passthrough"
+firmware = "auto"
+interrupts_passthrough = true
+
+[base]
+id = 1
+name = "linux-qemu-hardware-forwarded-gicv3"
+cpu_num = 1
+phys_cpu_ids = [0x0]
+
+[kernel]
+entry_point = 0x80200000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x80200000
+dtb_load_addr = 0x80000000
+
+[[memory.regions]]
+guest_base = 0x80000000
+size = 0x10000000
+permissions = "rwx"
+backing = { kind = "host", host_base = 0x80000000 }
+
+[devices]
+disable_defaults = []
+deny = []

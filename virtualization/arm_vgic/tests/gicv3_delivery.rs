@@ -5,7 +5,7 @@ use std::{
 
 use arm_vgic::{
     CpuInterfaceState, GicAffinity, GicV3Backend, GicV3BackendError, GicV3Config, GicV3Controller,
-    GicV3HardwareCapabilities, GicV3MmioRegion, GicV3Mode, GicV3VcpuWake, GicVcpuId, IntId,
+    GicV3HardwareCapabilities, GicV3MmioRegion, GicV3SpiOwnership, GicV3VcpuWake, GicVcpuId, IntId,
     InterruptState, PpiId, SgiId, SgiTarget, SpiId, TriggerMode, VgicError, VgicResult,
 };
 use axvm_types::AccessWidth;
@@ -27,7 +27,7 @@ const ICH_HCR_UIE: u64 = 1 << 1;
 fn physical_distributor_capabilities_are_not_fabricated_for_the_guest() {
     let capabilities = GicV3HardwareCapabilities::from_distributor_typer(0x0f).unwrap();
     let config = GicV3Config::new(
-        GicV3Mode::Passthrough,
+        GicV3SpiOwnership::Explicit,
         GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
         GicV3MmioRegion::new(0x080a_0000, 0x2_0000).unwrap(),
         0x2_0000,
@@ -504,7 +504,7 @@ fn controller(
     list_register_count: usize,
 ) -> (GicV3Controller, Arc<TestBackend>) {
     let config = GicV3Config::new(
-        GicV3Mode::Emulated,
+        GicV3SpiOwnership::AllGuestOwned,
         GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
         GicV3MmioRegion::new(0x080a_0000, 0x2_0000 * vcpu_count as u64).unwrap(),
         0x2_0000,

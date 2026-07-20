@@ -9,21 +9,20 @@ use std::{
 use axdevice::{
     AxVmDevices, ControllerInputId, ControllerRegistration, ControllerRole, DeviceBuildContext,
     DeviceBundle, DeviceManagerError, DeviceManagerResult, DeviceModelId, DeviceRegistration,
-    DeviceRequirements, InterruptControllerId, InterruptSourceKind, InterruptTopology,
-    PlannedIrqConnection, ResolvedDeviceResources, ResourceSlot, VirtualDeviceModel,
-    VirtualDeviceModelRegistry, WiredInterruptInputs, WiredIrqClaim,
+    DeviceRequirements, InterruptControllerId, InterruptTopology, PlannedIrqConnection,
+    ResolvedDeviceResources, ResourceSlot, VirtualDeviceModel, VirtualDeviceModelRegistry,
+    WiredInterruptInputs, WiredIrqClaim,
 };
 use axdevice_base::{
     BusAccess, BusResponse, Device, DeviceError, InterruptSharing, InterruptTriggerMode,
     InvalidResourceReason, IrqLine, IrqResult, RegistryError, Resource, WiredIrqInput,
     WiredIrqSink,
 };
-use axvm_types::InterruptDelivery;
 
 #[test]
 fn model_build_resolves_named_irq_without_exposing_topology_ids() {
     let level = Arc::new(AtomicBool::new(false));
-    let (topology, authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, authority) = InterruptTopology::new();
     topology
         .register_controller(
             ControllerRegistration::new(InterruptControllerId::new(0), ControllerRole::Default)
@@ -106,7 +105,7 @@ fn duplicate_model_registration_preserves_the_original_model() {
 #[test]
 fn exclusive_planned_irq_cannot_be_registered_by_two_devices() {
     let level = Arc::new(AtomicBool::new(false));
-    let (topology, authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, authority) = InterruptTopology::new();
     topology
         .register_controller(
             ControllerRegistration::new(InterruptControllerId::new(0), ControllerRole::Default)
@@ -151,7 +150,7 @@ fn exclusive_planned_irq_cannot_be_registered_by_two_devices() {
 
 #[test]
 fn failed_bundle_registration_releases_its_planned_irq_claim() {
-    let (topology, authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, authority) = InterruptTopology::new();
     topology
         .register_controller(
             ControllerRegistration::new(InterruptControllerId::new(0), ControllerRole::Default)
@@ -252,7 +251,6 @@ impl VirtualDeviceModel for TestModel {
             .with_wired_irq(
                 ResourceSlot::new("irq")?,
                 InterruptTriggerMode::LevelTriggered,
-                InterruptSourceKind::Software,
                 InterruptSharing::Exclusive,
             )
     }

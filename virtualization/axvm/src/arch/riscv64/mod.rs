@@ -2,8 +2,8 @@ use alloc::vec::Vec;
 
 use ax_memory_addr::VirtAddr;
 use axvm_types::{
-    AccessWidth, GuestPhysAddr, InterruptDelivery, MappingFlags, NestedPagingConfig, VCpuId, VMId,
-    VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
+    AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, PhysicalInterruptPolicy, VCpuId,
+    VMId, VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
     VmBackendResult as BackendResult,
 };
 use riscv_vcpu::{
@@ -75,7 +75,7 @@ impl VmArchConfig {
 
     pub(crate) const fn validate_prepared_boot_state(
         &self,
-        _interrupt_delivery: axvm_types::InterruptDelivery,
+        _physical_interrupt_policy: axvm_types::PhysicalInterruptPolicy,
     ) -> AxVmResult {
         Ok(())
     }
@@ -122,7 +122,7 @@ impl ArchOps for Riscv64Arch {
     }
 
     fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
-        if vm.interrupt_delivery() != InterruptDelivery::Direct {
+        if vm.physical_interrupt_policy() != PhysicalInterruptPolicy::HardwareForwarded {
             return;
         }
         let Some(cpu_id) = vcpu.phys_cpu_set().and_then(first_cpu_in_mask) else {

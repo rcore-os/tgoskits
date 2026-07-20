@@ -2,7 +2,7 @@
 
 mod binding;
 mod mmio;
-mod passthrough;
+mod physical;
 mod state;
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
@@ -11,8 +11,8 @@ use ax_kspin::SpinRaw;
 pub use binding::GicV3VcpuBinding;
 
 use crate::{
-    DistributorState, EventId, GicAffinity, GicV3Backend, GicV3Config, GicV3Mode, GicVcpuId,
-    GuestMemory, IntId, InterruptState, ItsDeviceId, ItsState, PhysicalInterruptBinding,
+    DistributorState, EventId, GicAffinity, GicV3Backend, GicV3Config, GicV3SpiOwnership,
+    GicVcpuId, GuestMemory, IntId, InterruptState, ItsDeviceId, ItsState, PhysicalInterruptBinding,
     PhysicalMsiBinding, PpiId, RedistributorState, SgiId, SgiTarget, SpiId, TriggerMode, VgicError,
     VgicResult, backend_result,
 };
@@ -48,10 +48,22 @@ struct ControllerInner {
 struct ControllerState {
     distributor: DistributorState,
     redistributors: BTreeMap<GicVcpuId, RedistributorState>,
-    physical_interrupts: BTreeMap<SpiId, PhysicalInterruptBinding>,
-    physical_msi: BTreeMap<(ItsDeviceId, EventId), PhysicalMsiBinding>,
+    spi_backings: BTreeMap<SpiId, SpiBacking>,
+    msi_backings: BTreeMap<(ItsDeviceId, EventId), MsiBacking>,
     active_vcpus: alloc::collections::BTreeSet<GicVcpuId>,
     its: ItsState,
+}
+
+#[derive(Clone, Copy)]
+enum SpiBacking {
+    Software,
+    Physical(PhysicalInterruptBinding),
+}
+
+#[derive(Clone, Copy)]
+enum MsiBacking {
+    Software,
+    Physical(PhysicalMsiBinding),
 }
 
 impl GicV3Controller {
@@ -66,10 +78,9 @@ impl GicV3Controller {
         backend: Arc<dyn GicV3Backend>,
         guest_memory: Option<Arc<dyn GuestMemory>>,
     ) -> VgicResult<Self> {
-        if config.its().is_some() && config.mode() == GicV3Mode::Emulated && guest_memory.is_none()
-        {
+        if config.its().is_some() && guest_memory.is_none() {
             return Err(VgicError::InvalidConfig {
-                detail: "an emulated ITS requires a guest-memory capability".into(),
+                detail: "a guest-visible ITS requires a guest-memory capability".into(),
             });
         }
         let distributor = DistributorState::new(config.spi_count())?;
@@ -81,8 +92,8 @@ impl GicV3Controller {
                 state: SpinRaw::new(ControllerState {
                     distributor,
                     redistributors: BTreeMap::new(),
-                    physical_interrupts: BTreeMap::new(),
-                    physical_msi: BTreeMap::new(),
+                    spi_backings: BTreeMap::new(),
+                    msi_backings: BTreeMap::new(),
                     active_vcpus: alloc::collections::BTreeSet::new(),
                     its: ItsState::new(),
                 }),
@@ -140,32 +151,31 @@ impl GicV3Controller {
     /// Validates and records the trigger mode of one software SPI input.
     pub fn configure_spi_input(&self, spi: SpiId, trigger: TriggerMode) -> VgicResult {
         let mut state = self.inner.state.lock();
-        if self.inner.config.mode() == GicV3Mode::Passthrough
-            && !state.physical_interrupts.contains_key(&spi)
-        {
-            return Err(VgicError::Unsupported {
-                operation: "connect software SPI input",
-                detail: alloc::format!(
-                    "passthrough SPI {} has no physical interrupt binding",
-                    spi.raw()
-                ),
-            });
+        state.distributor.interrupt(spi)?;
+        match state.spi_backings.get(&spi).copied() {
+            Some(SpiBacking::Software) => {}
+            Some(SpiBacking::Physical(_)) => {
+                return Err(VgicError::ResourceConflict {
+                    resource: "GICv3 SPI backing",
+                    detail: alloc::format!(
+                        "SPI {} is already backed by a physical interrupt",
+                        spi.raw()
+                    ),
+                });
+            }
+            None => {
+                state.distributor.claim_software_spi(spi)?;
+                state.spi_backings.insert(spi, SpiBacking::Software);
+            }
         }
         state.distributor.set_trigger(spi, trigger)
     }
 
     /// Updates the aggregate electrical level of one SPI input.
     pub fn set_spi_level(&self, spi: SpiId, asserted: bool) -> VgicResult {
-        if self.inner.config.mode() == GicV3Mode::Passthrough {
-            let binding = self.physical_binding(spi, "set SPI level")?;
-            return backend_result(
-                self.inner
-                    .backend
-                    .set_physical_interrupt_level(binding, asserted),
-            );
-        }
         let wake = {
             let mut state = self.inner.state.lock();
+            state.require_software_spi(spi, &self.inner.config, "set SPI level")?;
             state.distributor.set_level(spi, asserted)?;
             state.queue_spi_if_deliverable(spi)?
         };
@@ -174,12 +184,9 @@ impl GicV3Controller {
 
     /// Delivers one edge on an SPI input.
     pub fn pulse_spi(&self, spi: SpiId) -> VgicResult {
-        if self.inner.config.mode() == GicV3Mode::Passthrough {
-            let binding = self.physical_binding(spi, "pulse SPI")?;
-            return backend_result(self.inner.backend.pulse_physical_interrupt(binding));
-        }
         let wake = {
             let mut state = self.inner.state.lock();
+            state.require_software_spi(spi, &self.inner.config, "pulse SPI")?;
             state.distributor.pulse(spi)?;
             state.queue_spi_if_deliverable(spi)?
         };
@@ -279,17 +286,43 @@ impl GicV3Controller {
                 detail: "this controller has no ITS capability".into(),
             });
         }
-        if self.inner.config.mode() == GicV3Mode::Passthrough {
-            self.physical_msi_binding(device, event)?;
+        let mut state = self.inner.state.lock();
+        match state.msi_backings.get(&(device, event)).copied() {
+            Some(MsiBacking::Software) => Ok(()),
+            Some(MsiBacking::Physical(_)) => Err(VgicError::ResourceConflict {
+                resource: "GICv3 MSI backing",
+                detail: alloc::format!(
+                    "MSI event ({}, {}) is already backed by a physical translation",
+                    device.raw(),
+                    event.raw()
+                ),
+            }),
+            None => {
+                state
+                    .msi_backings
+                    .insert((device, event), MsiBacking::Software);
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     /// Signals an MSI through the per-VM ITS translation tables.
     pub fn signal_msi(&self, device: ItsDeviceId, event: EventId) -> VgicResult {
-        if self.inner.config.mode() == GicV3Mode::Passthrough {
-            let binding = self.physical_msi_binding(device, event)?;
-            return backend_result(self.inner.backend.signal_physical_msi(binding));
+        let backing = {
+            let state = self.inner.state.lock();
+            state.msi_backings.get(&(device, event)).copied()
+        };
+        match backing {
+            Some(MsiBacking::Physical(binding)) => {
+                return backend_result(self.inner.backend.signal_physical_msi(binding));
+            }
+            Some(MsiBacking::Software) => {}
+            None => {
+                return Err(VgicError::ResourceNotFound {
+                    resource: alloc::format!("MSI input ({}, {})", device.raw(), event.raw()),
+                    operation: "signal MSI",
+                });
+            }
         }
         let wake = {
             let mut state = self.inner.state.lock();
@@ -316,6 +349,38 @@ impl GicV3Controller {
             .lock()
             .redistributor(vcpu, "query pending count")?
             .pending_count())
+    }
+}
+
+impl ControllerState {
+    fn require_software_spi(
+        &self,
+        spi: SpiId,
+        config: &GicV3Config,
+        operation: &'static str,
+    ) -> VgicResult {
+        self.distributor.interrupt(spi)?;
+        match self.spi_backings.get(&spi).copied() {
+            Some(SpiBacking::Software) => Ok(()),
+            Some(SpiBacking::Physical(_)) => Err(VgicError::Unsupported {
+                operation,
+                detail: alloc::format!(
+                    "SPI {} is electrically driven by its physical backing",
+                    spi.raw()
+                ),
+            }),
+            None if config.spi_ownership() == GicV3SpiOwnership::AllGuestOwned => Ok(()),
+            None => Err(VgicError::Unsupported {
+                operation,
+                detail: alloc::format!("SPI {} is not owned by this VM", spi.raw()),
+            }),
+        }
+    }
+
+    fn has_software_backing(&self, spi: SpiId, config: &GicV3Config) -> bool {
+        matches!(self.spi_backings.get(&spi), Some(SpiBacking::Software))
+            || (config.spi_ownership() == GicV3SpiOwnership::AllGuestOwned
+                && !self.spi_backings.contains_key(&spi))
     }
 }
 

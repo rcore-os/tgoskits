@@ -10,8 +10,8 @@ use axvm_types::VmMachineMode;
 use super::PlannedHostDevice;
 use crate::machine::{
     AddressRange, DeviceDisposition, HostDeviceDependencyKind, HostDeviceOwnership,
-    HostDeviceSelector, HostPlatformSnapshot, InterruptControllerPlan, MachinePlanError,
-    MachinePlanResult, MachineProfile, VmMachineRequest, is_planned_guest_firmware_infrastructure,
+    HostDeviceSelector, HostPlatformSnapshot, MachinePlanError, MachinePlanResult, MachineProfile,
+    VmMachineRequest, is_planned_host_dependency_substitute,
 };
 
 pub(super) fn plan_host_devices(
@@ -19,7 +19,6 @@ pub(super) fn plan_host_devices(
     snapshot: &HostPlatformSnapshot,
     denied: &BTreeSet<usize>,
     virtual_templates: &BTreeSet<usize>,
-    interrupt_controller: Option<&InterruptControllerPlan>,
 ) -> MachinePlanResult<Vec<PlannedHostDevice>> {
     if mode == VmMachineMode::Virtual {
         return Ok(Vec::new());
@@ -95,10 +94,7 @@ pub(super) fn plan_host_devices(
                         !matches!(
                             provider.disposition(),
                             DeviceDisposition::Passthrough | DeviceDisposition::Structural
-                        ) && !is_planned_guest_firmware_infrastructure(
-                            interrupt_controller,
-                            provider.compatibles(),
-                        )
+                        ) && !is_planned_host_dependency_substitute(provider.compatibles())
                     })
                     .then_some(index)
             })

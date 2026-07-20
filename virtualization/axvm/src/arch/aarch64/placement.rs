@@ -1,8 +1,8 @@
-//! Fixed host placement for direct-interrupt AArch64 vCPUs.
+//! Fixed host placement for hardware-forwarded AArch64 physical IRQs.
 
 use alloc::vec::Vec;
 
-use axvm_types::InterruptDelivery;
+use axvm_types::PhysicalInterruptPolicy;
 
 use crate::{
     AxVmError, AxVmResult,
@@ -10,13 +10,13 @@ use crate::{
     vm::prepare::vcpus::{VcpuPlacement, vcpu_placements_from_config},
 };
 
-pub(super) fn normalize_direct_vcpu_cpu_sets(config: &mut AxVMConfig) -> AxVmResult {
-    if config.interrupt_delivery() != InterruptDelivery::Direct {
+pub(super) fn normalize_hardware_forwarded_vcpu_cpu_sets(config: &mut AxVMConfig) -> AxVmResult {
+    if config.physical_interrupt_policy() != PhysicalInterruptPolicy::HardwareForwarded {
         return Ok(());
     }
 
     let placements = vcpu_placements_from_config(config);
-    let cpu_sets = resolve_direct_vcpu_cpu_sets(
+    let cpu_sets = resolve_hardware_forwarded_vcpu_cpu_sets(
         &placements,
         crate::percpu::enabled_cpu_mask(),
         super::capabilities::logical_cpu_id,
@@ -44,7 +44,7 @@ impl VcpuPlacement {
     }
 }
 
-fn resolve_direct_vcpu_cpu_sets(
+fn resolve_hardware_forwarded_vcpu_cpu_sets(
     placements: &[VcpuPlacement],
     available_cpu_mask: usize,
     mut logical_cpu_id: impl FnMut(usize) -> Option<usize>,

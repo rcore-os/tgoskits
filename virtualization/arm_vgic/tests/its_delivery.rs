@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use arm_vgic::{
-    EventId, GicAffinity, GicV3Config, GicV3Controller, GicV3MmioRegion, GicV3Mode,
+    EventId, GicAffinity, GicV3Config, GicV3Controller, GicV3MmioRegion, GicV3SpiOwnership,
     GicV3VcpuBinding, GicV3VcpuWake, GicVcpuId, GuestMemory, GuestMemoryError, IntId, ItsDeviceId,
     SoftwareGicV3Backend, VgicError, VgicResult,
 };
@@ -294,7 +294,7 @@ fn controller_with_its(
 ) -> (GicV3Controller, GicV3VcpuBinding, Arc<TestGuestMemory>) {
     let memory = Arc::new(TestGuestMemory::new(0x4000_0000, QUEUE_SIZE));
     let config = GicV3Config::new(
-        GicV3Mode::Emulated,
+        GicV3SpiOwnership::AllGuestOwned,
         GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
         GicV3MmioRegion::new(0x080a_0000, 0x2_0000 * vcpu_count as u64).unwrap(),
         0x2_0000,

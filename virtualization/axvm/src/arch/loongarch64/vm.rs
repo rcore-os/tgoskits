@@ -46,8 +46,7 @@ impl LoongArch64Arch {
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
         let models = default_virtual_device_models()?;
-        let (interrupt_topology, interrupt_authority) =
-            axdevice::InterruptTopology::new(vm.interrupt_delivery());
+        let (interrupt_topology, interrupt_authority) = axdevice::InterruptTopology::new();
         init_vm_with(
             vm,
             &models,
@@ -114,9 +113,11 @@ fn init_vm_with(
             .machine_plan()
             .assigned_host_interrupts()
             .to_vec();
+        let physical_interrupt_policy = resources.config().physical_interrupt_policy();
         resources.arch_state_mut().connect_external_irq_lines(
             interrupt_topology,
             &interrupt_authority,
+            physical_interrupt_policy,
             &external_irq_sources,
         )?;
         validate_guest_dtb(resources)?;
@@ -179,7 +180,8 @@ fn build_vcpu_setup_config(
     config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
 ) -> AxVmResult<<super::AxvmLoongArchVcpu as VmArchVcpuOps>::SetupConfig> {
-    let passthrough = config.interrupt_delivery() == axvm_types::InterruptDelivery::Direct;
+    let passthrough = config.physical_interrupt_policy()
+        == axvm_types::PhysicalInterruptPolicy::HardwareForwarded;
     Ok(LoongArchVCpuSetupConfig {
         passthrough_interrupt: passthrough,
         passthrough_timer: passthrough,

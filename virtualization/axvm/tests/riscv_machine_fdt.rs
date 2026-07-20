@@ -1,8 +1,8 @@
 use axvm::machine::{
     AddressRange, DeviceInstanceId, DeviceModelId, DeviceRequirements, GuestMemoryRegion,
-    HostPlatformSnapshot, InterruptControllerProfile, InterruptSourceKind, MachineProfile,
-    ResourceSlot, RiscvFdtConfig, RiscvPlicProfile, VirtualDeviceDescriptor, VmMachinePlanner,
-    VmMachineRequest, generate_riscv_fdt,
+    HostPlatformSnapshot, InterruptControllerProfile, MachineProfile, ResourceSlot, RiscvFdtConfig,
+    RiscvPlicProfile, VirtualDeviceDescriptor, VmMachinePlanner, VmMachineRequest,
+    generate_riscv_fdt,
 };
 use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, VmMachineMode};
 use fdt_edit::Fdt;
@@ -76,7 +76,6 @@ fn ns16550() -> VirtualDeviceDescriptor {
             .with_wired_irq(
                 ResourceSlot::new("irq").unwrap(),
                 InterruptTriggerMode::LevelTriggered,
-                InterruptSourceKind::Software,
                 axdevice::InterruptSharing::Exclusive,
             )
             .unwrap(),

@@ -88,7 +88,7 @@ impl VmArchConfig {
 
     pub(crate) fn validate_prepared_boot_state(
         &self,
-        _interrupt_delivery: axvm_types::InterruptDelivery,
+        _physical_interrupt_policy: axvm_types::PhysicalInterruptPolicy,
     ) -> AxVmResult {
         if self.interrupt_roles.is_none() {
             return ax_err!(InvalidInput, "AArch64 interrupt roles were not prepared");

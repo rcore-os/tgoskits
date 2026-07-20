@@ -1,12 +1,11 @@
-//! Physical GIC and ITS ownership lifecycle.
+//! Physical GIC and ITS backing lifecycle.
 
 use alloc::vec::Vec;
 
-use super::{ControllerInner, ControllerState, GicV3Controller};
+use super::{ControllerInner, ControllerState, GicV3Controller, MsiBacking, SpiBacking};
 use crate::{
-    EventId, GicV3Mode, GicVcpuId, IntId, ItsDeviceId, LpiId, PhysicalInterruptBinding,
-    PhysicalIrqId, PhysicalMsiBinding, RedistributorState, SpiId, VgicError, VgicResult,
-    backend_result,
+    EventId, GicVcpuId, IntId, ItsDeviceId, LpiId, PhysicalInterruptBinding, PhysicalIrqId,
+    PhysicalMsiBinding, RedistributorState, SpiId, VgicError, VgicResult, backend_result,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,22 +38,17 @@ pub(super) struct PhysicalInterruptStateChange {
 impl GicV3Controller {
     /// Queues an acknowledged assigned SPI for hardware-backed LR delivery.
     pub fn forward_physical_spi(&self, spi: SpiId) -> VgicResult {
-        if self.inner.config.mode() != GicV3Mode::Passthrough {
-            return Err(VgicError::Unsupported {
-                operation: "forward physical SPI",
-                detail: "physical LR backing requires passthrough mode".into(),
-            });
-        }
         let wake = {
             let mut state = self.inner.state.lock();
-            let binding = state
-                .physical_interrupts
-                .get(&spi)
-                .copied()
-                .ok_or_else(|| VgicError::Unsupported {
-                    operation: "forward physical SPI",
-                    detail: alloc::format!("SPI {} has no physical binding", spi.raw()),
-                })?;
+            let binding = match state.spi_backings.get(&spi).copied() {
+                Some(SpiBacking::Physical(binding)) => binding,
+                _ => {
+                    return Err(VgicError::Unsupported {
+                        operation: "forward physical SPI",
+                        detail: alloc::format!("SPI {} has no physical binding", spi.raw()),
+                    });
+                }
+            };
             state.queue_physical_spi(spi, binding)?
         };
         wake.wake()
@@ -67,12 +61,6 @@ impl GicV3Controller {
         host: PhysicalIrqId,
         target: GicVcpuId,
     ) -> VgicResult {
-        if self.inner.config.mode() != GicV3Mode::Passthrough {
-            return Err(VgicError::Unsupported {
-                operation: "bind physical SPI",
-                detail: "physical bindings require passthrough mode".into(),
-            });
-        }
         let affinity = {
             let state = self.inner.state.lock();
             state
@@ -87,40 +75,33 @@ impl GicV3Controller {
         let binding = PhysicalInterruptBinding::new(IntId::Spi(spi), host, target, affinity);
         {
             let mut state = self.inner.state.lock();
-            if state.physical_interrupts.contains_key(&spi) {
+            if state.spi_backings.contains_key(&spi) {
                 return Err(VgicError::ResourceConflict {
-                    resource: "physical SPI",
-                    detail: alloc::format!("guest SPI {} is already bound", spi.raw()),
+                    resource: "GICv3 SPI backing",
+                    detail: alloc::format!("guest SPI {} already has a backing", spi.raw()),
                 });
             }
             if state
-                .physical_interrupts
+                .spi_backings
                 .values()
-                .any(|existing| existing.host() == host)
+                .any(|existing| matches!(existing, SpiBacking::Physical(binding) if binding.host() == host))
             {
                 return Err(VgicError::ResourceConflict {
                     resource: "physical interrupt",
                     detail: alloc::format!("host interrupt {} is already owned", host.raw()),
                 });
             }
-            state.physical_interrupts.insert(spi, binding);
+            state.distributor.claim_physical_spi(spi, affinity)?;
+            state
+                .spi_backings
+                .insert(spi, SpiBacking::Physical(binding));
         }
         if let Err(error) = backend_result(self.inner.backend.bind_physical_interrupt(binding)) {
-            self.inner.state.lock().physical_interrupts.remove(&spi);
-            return Err(error);
-        }
-        if let Err(error) = self
-            .inner
-            .state
-            .lock()
-            .distributor
-            .claim_passthrough_spi(spi, affinity)
-        {
-            self.inner.state.lock().physical_interrupts.remove(&spi);
-            if let Err(release_error) = self.inner.backend.unbind_physical_interrupt(binding) {
+            let mut state = self.inner.state.lock();
+            state.spi_backings.remove(&spi);
+            if let Err(rollback_error) = state.distributor.release_spi_claim(spi) {
                 log::warn!(
-                    "failed to release physical interrupt after ownership setup error: \
-                     {release_error}"
+                    "failed to roll back SPI ownership after backend error: {rollback_error}"
                 );
             }
             return Err(error);
@@ -157,7 +138,7 @@ impl GicV3Controller {
                     .restore_physical_interrupt_state_changes(&changes)
                 {
                     log::warn!(
-                        "failed to restore GICv3 passthrough SPI state after backend error: \
+                        "failed to restore GICv3 physical SPI state after backend error: \
                          {rollback_error}"
                     );
                 }
@@ -196,12 +177,6 @@ impl GicV3Controller {
         lpi: LpiId,
         target: GicVcpuId,
     ) -> VgicResult {
-        if self.inner.config.mode() != GicV3Mode::Passthrough {
-            return Err(VgicError::Unsupported {
-                operation: "bind physical MSI",
-                detail: "physical ITS bindings require passthrough mode".into(),
-            });
-        }
         if self.inner.config.its().is_none() {
             return Err(VgicError::Unsupported {
                 operation: "bind physical MSI",
@@ -225,87 +200,55 @@ impl GicV3Controller {
         let binding = PhysicalMsiBinding::new(device, event, lpi, target, affinity);
         {
             let mut state = self.inner.state.lock();
-            if state.physical_msi.contains_key(&(device, event)) {
+            if state.msi_backings.contains_key(&(device, event)) {
                 return Err(VgicError::ResourceConflict {
-                    resource: "physical MSI",
+                    resource: "GICv3 MSI backing",
                     detail: alloc::format!(
-                        "translation ({}, {}) is already bound",
+                        "MSI event ({}, {}) already has a backing",
                         device.raw(),
                         event.raw()
                     ),
                 });
             }
             if state
-                .physical_msi
+                .msi_backings
                 .values()
-                .any(|existing| existing.lpi() == lpi)
+                .any(|existing| matches!(existing, MsiBacking::Physical(binding) if binding.lpi() == lpi))
             {
                 return Err(VgicError::ResourceConflict {
                     resource: "physical LPI",
                     detail: alloc::format!("LPI {} is already owned", lpi.raw()),
                 });
             }
-            state.physical_msi.insert((device, event), binding);
+            state
+                .msi_backings
+                .insert((device, event), MsiBacking::Physical(binding));
         }
         if let Err(error) = backend_result(self.inner.backend.bind_physical_msi(binding)) {
             self.inner
                 .state
                 .lock()
-                .physical_msi
+                .msi_backings
                 .remove(&(device, event));
             return Err(error);
         }
         Ok(())
     }
-
-    pub(super) fn physical_binding(
-        &self,
-        spi: SpiId,
-        operation: &'static str,
-    ) -> VgicResult<PhysicalInterruptBinding> {
-        self.inner
-            .state
-            .lock()
-            .physical_interrupts
-            .get(&spi)
-            .copied()
-            .ok_or_else(|| VgicError::Unsupported {
-                operation,
-                detail: alloc::format!("SPI {} has no physical binding", spi.raw()),
-            })
-    }
-
-    pub(super) fn physical_msi_binding(
-        &self,
-        device: ItsDeviceId,
-        event: EventId,
-    ) -> VgicResult<PhysicalMsiBinding> {
-        self.inner
-            .state
-            .lock()
-            .physical_msi
-            .get(&(device, event))
-            .copied()
-            .ok_or_else(|| VgicError::Unsupported {
-                operation: "signal physical MSI",
-                detail: alloc::format!(
-                    "translation ({}, {}) has no physical ITS binding",
-                    device.raw(),
-                    event.raw()
-                ),
-            })
-    }
 }
 
 impl ControllerState {
     pub(super) fn physical_interrupt_snapshot(&self) -> VgicResult<Vec<PhysicalInterruptSnapshot>> {
-        self.physical_interrupts
+        self.spi_backings
             .iter()
+            .filter_map(|(spi, backing)| match backing {
+                SpiBacking::Software => None,
+                SpiBacking::Physical(binding) => Some((*spi, *binding)),
+            })
             .map(|(spi, binding)| {
                 Ok(PhysicalInterruptSnapshot {
-                    spi: *spi,
-                    binding: *binding,
-                    state: self.physical_interrupt_state(*spi)?,
+                    spi,
+                    binding,
+                    state: self.physical_interrupt_state(spi)?,
                 })
             })
             .collect()
@@ -364,11 +307,21 @@ impl Drop for ControllerInner {
             let state = self.state.lock();
             (
                 state
-                    .physical_interrupts
+                    .spi_backings
                     .values()
-                    .copied()
+                    .filter_map(|backing| match backing {
+                        SpiBacking::Software => None,
+                        SpiBacking::Physical(binding) => Some(*binding),
+                    })
                     .collect::<Vec<_>>(),
-                state.physical_msi.values().copied().collect::<Vec<_>>(),
+                state
+                    .msi_backings
+                    .values()
+                    .filter_map(|backing| match backing {
+                        MsiBacking::Software => None,
+                        MsiBacking::Physical(binding) => Some(*binding),
+                    })
+                    .collect::<Vec<_>>(),
             )
         };
         for binding in interrupts {

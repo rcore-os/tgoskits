@@ -1,9 +1,9 @@
 use axvm::machine::{
     AddressRange, DeviceInstanceId, DeviceModelId, DeviceRequirements, GuestMemoryRegion,
     HostDeviceDescriptor, HostDeviceId, HostDeviceOwnership, HostInterruptResource,
-    HostPlatformSnapshot, InterruptControllerProfile, InterruptSourceKind, IoPortRange,
-    MachineProfile, ResourceSlot, VirtualDeviceDescriptor, VmMachinePlanner, VmMachineRequest,
-    X86AcpiConfig, X86ApicProfile, generate_x86_acpi,
+    HostPlatformSnapshot, InterruptControllerProfile, IoPortRange, MachineProfile, ResourceSlot,
+    VirtualDeviceDescriptor, VmMachinePlanner, VmMachineRequest, X86AcpiConfig, X86ApicProfile,
+    generate_x86_acpi,
 };
 use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, VmMachineMode};
 
@@ -123,7 +123,6 @@ fn com1() -> VirtualDeviceDescriptor {
             .with_wired_irq(
                 ResourceSlot::new("irq").unwrap(),
                 InterruptTriggerMode::LevelTriggered,
-                InterruptSourceKind::Software,
                 axdevice::InterruptSharing::Exclusive,
             )
             .unwrap(),

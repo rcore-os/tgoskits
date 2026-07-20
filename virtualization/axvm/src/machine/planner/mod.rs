@@ -10,7 +10,7 @@ use alloc::{
     vec::Vec,
 };
 
-use axdevice::{DeviceBackend, DeviceRequirement, InterruptSourceKind, MsiDeviceId};
+use axdevice::{DeviceBackend, MsiDeviceId};
 use axvm_types::VmMachineMode;
 pub use output::*;
 
@@ -78,7 +78,6 @@ impl VmMachinePlanner {
             snapshot,
             &denied_devices,
             &consumed_templates,
-            interrupt_controller.as_ref(),
         )?;
         let assigned_host_interrupts = resolve_assigned_host_interrupts(&host_devices)?;
         let claims = host_devices
@@ -98,7 +97,7 @@ impl VmMachinePlanner {
             host_console: snapshot.console_device().cloned(),
             mode: request.mode(),
             firmware: request.firmware(),
-            interrupt_delivery: request.interrupt_delivery(),
+            physical_interrupt_policy: request.physical_interrupt_policy(),
             interrupt_controller,
             loongarch_platform: self
                 .profile
@@ -154,28 +153,12 @@ fn validate_request(request: &VmMachineRequest) -> MachinePlanResult<()> {
 }
 
 fn validate_delivery(request: &VmMachineRequest) -> MachinePlanResult<()> {
-    if request.mode() == VmMachineMode::Virtual && request.interrupt_delivery().is_direct() {
-        return Err(MachinePlanError::DirectDeliveryInVirtualMachine);
-    }
-    if request.interrupt_delivery().is_direct() {
-        for device in request.virtual_devices() {
-            if device.requirements().entries().iter().any(|requirement| {
-                matches!(
-                    requirement,
-                    DeviceRequirement::WiredIrq {
-                        source: InterruptSourceKind::Software,
-                        ..
-                    } | DeviceRequirement::Msi {
-                        source: InterruptSourceKind::Software,
-                        ..
-                    }
-                )
-            }) {
-                return Err(MachinePlanError::SoftwareInterruptWithDirectDelivery {
-                    device: device.instance_id().to_string(),
-                });
-            }
-        }
+    if request.mode() == VmMachineMode::Virtual
+        && request
+            .physical_interrupt_policy()
+            .uses_hardware_forwarding()
+    {
+        return Err(MachinePlanError::HardwareForwardingInVirtualMachine);
     }
     Ok(())
 }

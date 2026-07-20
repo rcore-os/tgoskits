@@ -25,7 +25,7 @@ extern crate log;
 use alloc::{string::String, vec::Vec};
 
 pub use axvm_types::VMBootProtocol;
-use axvm_types::{GuestFirmwareKind, InterruptDelivery, VmMachineMode};
+use axvm_types::{GuestFirmwareKind, PhysicalInterruptPolicy, VmMachineMode};
 
 mod error;
 mod model;
@@ -109,7 +109,7 @@ pub enum MachineConfig {
         )]
         #[serde(with = "guest_firmware_kind_serde")]
         firmware: GuestFirmwareKind,
-        /// Whether assigned physical interrupts bypass the mediated controller.
+        /// Whether assigned physical IRQs use hardware-backed forwarding.
         #[serde(default)]
         interrupts_passthrough: bool,
     },
@@ -131,14 +131,14 @@ impl MachineConfig {
         }
     }
 
-    /// Returns the normalized interrupt-delivery policy.
-    pub const fn interrupt_delivery(&self) -> InterruptDelivery {
+    /// Returns the normalized assigned-physical-interrupt policy.
+    pub const fn physical_interrupt_policy(&self) -> PhysicalInterruptPolicy {
         match self {
-            Self::Virtual { .. } => InterruptDelivery::Mediated,
+            Self::Virtual { .. } => PhysicalInterruptPolicy::Mediated,
             Self::Passthrough {
                 interrupts_passthrough,
                 ..
-            } => InterruptDelivery::from_passthrough_flag(*interrupts_passthrough),
+            } => PhysicalInterruptPolicy::from_passthrough_flag(*interrupts_passthrough),
         }
     }
 }

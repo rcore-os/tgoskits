@@ -5,8 +5,8 @@ use alloc::sync::Arc;
 use axdevice::{
     ConsoleRxPolicy, DeviceBackend, DeviceBuildContext, DeviceBundle, DeviceManagerError,
     DeviceManagerResult, DeviceModelId, DeviceRegistration, DeviceRequirements, InterruptSharing,
-    InterruptSourceKind, PollableDeviceOps, ResourceSlot, VirtualDeviceModel,
-    VirtualDeviceModelRegistry, X86SerialBackend,
+    PollableDeviceOps, ResourceSlot, VirtualDeviceModel, VirtualDeviceModelRegistry,
+    X86SerialBackend,
 };
 use axdevice_base::Device;
 use axvm_types::InterruptTriggerMode;
@@ -26,7 +26,6 @@ pub fn x86_com1_device_requirements() -> DeviceManagerResult<DeviceRequirements>
         .with_wired_irq(
             ResourceSlot::new(IRQ_SLOT)?,
             InterruptTriggerMode::EdgeTriggered,
-            InterruptSourceKind::Software,
             InterruptSharing::Exclusive,
         )
 }

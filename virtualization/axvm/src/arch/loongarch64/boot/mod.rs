@@ -229,7 +229,9 @@ fn guest_platform_from_plan(
         .map_err(|_| crate::AxVmError::invalid_config("LoongArch poweroff offset exceeds u32"))?;
     let reboot_offset = u32::try_from(power.reset_register() - ged_base)
         .map_err(|_| crate::AxVmError::invalid_config("LoongArch reset offset exceeds u32"))?;
-    let irq_routes = if config.interrupt_delivery() == axvm_types::InterruptDelivery::Direct {
+    let irq_routes = if config.physical_interrupt_policy()
+        == axvm_types::PhysicalInterruptPolicy::HardwareForwarded
+    {
         config
             .machine_plan()
             .assigned_host_interrupts()

@@ -19,9 +19,10 @@
 //! The crate owns only architecture state and validated backend capabilities.
 //! Guest buses, host GIC discovery, timers, and VM scheduling are supplied by
 //! the AxVM integration layer. Only Group 1 Non-secure delivery is modeled.
-//! Direct-delivery backends receive only ownership-checked SPI bindings. SGIs
-//! and PPIs remain VM-local and are delivered through the virtual CPU interface,
-//! so guest Redistributor accesses can never alias host private-interrupt state.
+//! Software-backed and physical-backed SPIs may coexist in one controller.
+//! Physical backends receive only ownership-checked bindings and use HW-backed
+//! list registers; SGIs and PPIs remain VM-local, so guest Redistributor
+//! accesses can never alias host private-interrupt state.
 
 extern crate alloc;
 

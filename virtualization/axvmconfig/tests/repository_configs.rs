@@ -19,35 +19,6 @@ fn every_repository_axvisor_vm_config_uses_the_typed_schema() {
 
 #[cfg(feature = "std")]
 #[test]
-fn direct_interrupt_configs_do_not_request_software_irq_consoles() {
-    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(std::path::Path::parent)
-        .unwrap();
-    let config_root = workspace.join("os/axvisor/configs/vms");
-    let mut configs = Vec::new();
-    collect_toml_files(&config_root, &mut configs);
-
-    for path in configs {
-        let source = std::fs::read_to_string(&path).unwrap();
-        let config = axvmconfig::AxVMCrateConfig::from_toml(&source).unwrap();
-        if config.machine.interrupt_delivery() != axvm_types::InterruptDelivery::Direct {
-            continue;
-        }
-
-        for device in &config.devices.virtual_devices {
-            assert_ne!(
-                device.model,
-                "x86-com1",
-                "{} requests a software-IRQ console with direct interrupt delivery",
-                path.display()
-            );
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-#[test]
 fn every_architecture_template_uses_the_typed_schema() {
     let template_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
     let mut templates = Vec::new();
@@ -126,7 +97,7 @@ fn rk3568_configs_keep_dynamically_placed_identity_ram() {
 
 #[cfg(feature = "std")]
 #[test]
-fn orangepi_linux_guest_hands_earlycon_to_the_fiq_console() {
+fn orangepi_linux_guest_uses_a_virtual_console_with_hardware_backed_device_irqs() {
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
@@ -134,19 +105,24 @@ fn orangepi_linux_guest_hands_earlycon_to_the_fiq_console() {
     let path = workspace.join("os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml");
     let source = std::fs::read_to_string(&path).unwrap();
     let config = axvmconfig::AxVMCrateConfig::from_toml(&source).unwrap();
+    assert_eq!(
+        config.machine.physical_interrupt_policy(),
+        axvm_types::PhysicalInterruptPolicy::HardwareForwarded
+    );
     let cmdline = config
         .kernel
         .cmdline
         .as_deref()
         .expect("OrangePi Linux guest must define its guest console command line");
 
-    assert!(cmdline.contains("console=ttyS2,1500000"));
-    assert!(cmdline.contains("earlycon=uart8250,mmio32,0xfeb50000"));
+    assert!(cmdline.contains("console=ttyAMA0,115200"));
     assert!(
         cmdline
             .split_ascii_whitespace()
-            .any(|arg| arg == "console=tty1")
+            .any(|argument| argument == "earlycon")
     );
+    assert!(!cmdline.contains("ttyS2"));
+    assert!(!cmdline.contains("0xfeb50000"));
 }
 
 #[cfg(feature = "std")]

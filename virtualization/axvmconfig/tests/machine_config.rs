@@ -1,4 +1,4 @@
-use axvm_types::{GuestFirmwareKind, InterruptDelivery, VmMachineMode};
+use axvm_types::{GuestFirmwareKind, PhysicalInterruptPolicy, VmMachineMode};
 use axvmconfig::MachineConfig;
 
 #[test]
@@ -13,7 +13,10 @@ firmware = "auto"
 
     assert_eq!(machine.mode(), VmMachineMode::Passthrough);
     assert_eq!(machine.firmware(), GuestFirmwareKind::Auto);
-    assert_eq!(machine.interrupt_delivery(), InterruptDelivery::Mediated);
+    assert_eq!(
+        machine.physical_interrupt_policy(),
+        PhysicalInterruptPolicy::Mediated
+    );
 }
 
 #[test]
@@ -29,7 +32,10 @@ interrupts_passthrough = true
 
     assert_eq!(machine.mode(), VmMachineMode::Passthrough);
     assert_eq!(machine.firmware(), GuestFirmwareKind::Fdt);
-    assert_eq!(machine.interrupt_delivery(), InterruptDelivery::Direct);
+    assert_eq!(
+        machine.physical_interrupt_policy(),
+        PhysicalInterruptPolicy::HardwareForwarded
+    );
 }
 
 #[test]

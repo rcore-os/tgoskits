@@ -17,13 +17,13 @@ use std::sync::{Arc, Mutex, Weak};
 use axdevice::{
     AxVmDevices, ControllerInputId, ControllerRegistration, ControllerRole, DeviceBuildContext,
     DeviceBundle, DeviceManagerResult, DeviceModelId, DeviceRegistration, DeviceRequirements,
-    InterruptControllerId, InterruptPlanAuthority, InterruptSharing, InterruptSourceKind,
-    InterruptTopology, InterruptTriggerMode, IrqError, IrqLine, IrqResult, MmioDeviceAdapter,
-    ResolvedDeviceResources, ResourceSlot, VirtualDeviceModel, VirtualDeviceModelRegistry,
-    WiredInterruptInputs, WiredIrqInput, WiredIrqRequest, WiredIrqSink,
+    InterruptControllerId, InterruptPlanAuthority, InterruptSharing, InterruptTopology,
+    InterruptTriggerMode, IrqError, IrqLine, IrqResult, MmioDeviceAdapter, ResolvedDeviceResources,
+    ResourceSlot, VirtualDeviceModel, VirtualDeviceModelRegistry, WiredInterruptInputs,
+    WiredIrqInput, WiredIrqRequest, WiredIrqSink,
 };
 use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult};
-use axvm_types::{EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptDelivery};
+use axvm_types::{EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 
 const TEST_CONTROLLER: InterruptControllerId = InterruptControllerId::new(1);
 
@@ -122,7 +122,6 @@ impl VirtualDeviceModel for IrqMmioModel {
             .with_wired_irq(
                 ResourceSlot::new("irq")?,
                 InterruptTriggerMode::EdgeTriggered,
-                InterruptSourceKind::Software,
                 InterruptSharing::Exclusive,
             )
     }
@@ -189,7 +188,7 @@ fn recording_topology() -> (
 ) {
     let sink = Arc::new(RecordingIrqSink::default());
     let weak = Arc::downgrade(&sink);
-    let (topology, authority) = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, authority) = InterruptTopology::new();
     topology
         .register_controller(
             ControllerRegistration::new(TEST_CONTROLLER, ControllerRole::Default)

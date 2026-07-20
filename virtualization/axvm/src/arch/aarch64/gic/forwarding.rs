@@ -38,7 +38,10 @@ impl HostSpiForwarding {
     }
 
     /// Connects assigned SPIs as exclusive physical sources for HW LRs.
-    pub(crate) fn connect_direct(
+    pub(crate) fn connect_hardware_backed(
+        topology: &InterruptTopology,
+        authority: &InterruptPlanAuthority,
+        controller_id: InterruptControllerId,
         controller: Arc<GicV3Controller>,
         target: GicVcpuId,
         interrupts: &[HostInterruptResource],
@@ -46,7 +49,14 @@ impl HostSpiForwarding {
     ) -> AxVmResult<Self> {
         let mut forwarding = Self::new(interrupts.len(), backend);
         for interrupt in interrupts {
-            forwarding.connect_direct_spi(controller.clone(), target, interrupt)?;
+            forwarding.connect_hardware_backed_spi(
+                topology,
+                authority,
+                controller_id,
+                controller.clone(),
+                target,
+                interrupt,
+            )?;
         }
         Ok(forwarding)
     }
@@ -106,21 +116,42 @@ impl HostSpiForwarding {
         })
     }
 
-    fn connect_direct_spi(
+    fn connect_hardware_backed_spi(
         &mut self,
+        topology: &InterruptTopology,
+        authority: &InterruptPlanAuthority,
+        controller_id: InterruptControllerId,
         controller: Arc<GicV3Controller>,
         target: GicVcpuId,
         interrupt: &HostInterruptResource,
     ) -> AxVmResult {
         let intid = interrupt.input_u32();
-        let spi = validate_spi(intid, "validate direct GICv3 SPI")?;
-        let irq = resolve_host_irq(intid)
-            .map_err(|error| AxVmError::interrupt("resolve direct GICv3 host SPI", error))?;
-        let route = self
-            .backend
-            .route(target)
-            .map_err(|error| AxVmError::interrupt("resolve direct GICv3 vCPU route", error))?;
-        let forwarding = Arc::new(ForwardedSpi::direct(spi, irq, controller));
+        let spi = validate_spi(intid, "validate hardware-backed GICv3 SPI")?;
+        let input = usize::try_from(intid).map_err(|_| {
+            AxVmError::invalid_config("hardware-backed GICv3 SPI INTID does not fit usize")
+        })?;
+        let claim = authority.claim_wired(
+            topology,
+            WiredIrqRequest::for_controller(
+                controller_id,
+                ControllerInputId::new(input),
+                interrupt.trigger(),
+                InterruptSharing::Exclusive,
+            ),
+        )?;
+        let endpoint_registration = topology.authorize_wired_endpoint(claim)?;
+        let irq = resolve_host_irq(intid).map_err(|error| {
+            AxVmError::interrupt("resolve hardware-backed GICv3 host SPI", error)
+        })?;
+        let route = self.backend.route(target).map_err(|error| {
+            AxVmError::interrupt("resolve hardware-backed GICv3 vCPU route", error)
+        })?;
+        let forwarding = Arc::new(ForwardedSpi::hardware_backed(
+            spi,
+            irq,
+            controller,
+            endpoint_registration,
+        ));
         let handler = forwarding.clone();
         let request = host_irq::IrqRequest::new(move |_| handler.handle_host_irq())
             .share_mode(host_irq::ShareMode::Exclusive)
@@ -128,20 +159,22 @@ impl HostSpiForwarding {
                 route.host_cpu,
             )))
             .auto_enable(host_irq::AutoEnable::No);
-        let registration = request_host_irq(irq, intid, "direct", request)?;
+        let registration = request_host_irq(irq, intid, "hardware-backed", request)?;
         forwarding.install_registration(registration)?;
-        // `request_irq` preserves pre-existing line state. A direct assignment
+        self.spis.push(forwarding.clone());
+        // `request_irq` preserves pre-existing line state. A hardware-backed assignment
         // must remain masked until the guest enables its owned Distributor bit.
         host_irq::disable_irq(registration).map_err(|error| {
             AxVmError::interrupt(
-                "mask newly assigned direct GICv3 SPI",
+                "mask newly assigned hardware-backed GICv3 SPI",
                 alloc::format!("host IRQ {irq:?}, guest INTID {intid}: {error:?}"),
             )
         })?;
-        self.spis.push(forwarding.clone());
         self.backend
-            .register_direct_spi(spi, Arc::downgrade(&forwarding))
-            .map_err(|error| AxVmError::interrupt("register direct GICv3 forwarding", error))
+            .register_hardware_backed_spi(spi, Arc::downgrade(&forwarding))
+            .map_err(|error| {
+                AxVmError::interrupt("register hardware-backed GICv3 forwarding", error)
+            })
     }
 }
 
@@ -150,7 +183,9 @@ impl Drop for HostSpiForwarding {
         for spi in self.spis.drain(..).rev() {
             match spi.target {
                 ForwardingTarget::Mediated(_) => self.backend.unregister_emulated_spi(spi.spi()),
-                ForwardingTarget::Direct(_) => self.backend.unregister_direct_spi(spi.spi()),
+                ForwardingTarget::HardwareBacked(_) => {
+                    self.backend.unregister_hardware_backed_spi(spi.spi())
+                }
             }
             if let Err(error) = spi.release_registration() {
                 warn!(
@@ -164,7 +199,7 @@ impl Drop for HostSpiForwarding {
 
 enum ForwardingTarget {
     Mediated(IrqLine),
-    Direct(Arc<GicV3Controller>),
+    HardwareBacked(Arc<GicV3Controller>),
 }
 
 pub(super) struct ForwardedSpi {
@@ -193,12 +228,17 @@ impl ForwardedSpi {
         }
     }
 
-    fn direct(spi: SpiId, host_irq: host_irq::IrqId, controller: Arc<GicV3Controller>) -> Self {
+    fn hardware_backed(
+        spi: SpiId,
+        host_irq: host_irq::IrqId,
+        controller: Arc<GicV3Controller>,
+        endpoint_registration: InterruptEndpointRegistration,
+    ) -> Self {
         Self {
             spi,
             host_irq,
-            target: ForwardingTarget::Direct(controller),
-            _endpoint_registration: None,
+            target: ForwardingTarget::HardwareBacked(controller),
+            _endpoint_registration: Some(endpoint_registration),
             registration: SpinRaw::new(None),
             host_masked: AtomicBool::new(false),
         }
@@ -227,12 +267,13 @@ impl ForwardedSpi {
     fn handle_host_irq(&self) -> IrqReturn {
         match &self.target {
             ForwardingTarget::Mediated(line) => self.handle_mediated_irq(line),
-            ForwardingTarget::Direct(controller) => {
+            ForwardingTarget::HardwareBacked(controller) => {
                 match controller.forward_physical_spi(self.spi) {
                     Ok(()) => IrqReturn::Forwarded,
                     Err(error) => {
                         warn!(
-                            "failed to forward direct host IRQ {:?} to guest SPI {}: {error}",
+                            "failed to forward hardware-backed host IRQ {:?} to guest SPI {}: \
+                             {error}",
                             self.host_irq,
                             self.spi.raw()
                         );
@@ -294,16 +335,19 @@ impl ForwardedSpi {
         }
     }
 
-    pub(super) fn set_direct_enabled(&self, enabled: bool) -> Result<(), GicV3BackendError> {
-        if !matches!(self.target, ForwardingTarget::Direct(_)) {
+    pub(super) fn set_hardware_backed_enabled(
+        &self,
+        enabled: bool,
+    ) -> Result<(), GicV3BackendError> {
+        if !matches!(self.target, ForwardingTarget::HardwareBacked(_)) {
             return Err(GicV3BackendError::new(
-                "set direct SPI forwarding state",
+                "set hardware-backed SPI forwarding state",
                 alloc::format!("guest SPI {} is mediated", self.spi.raw()),
             ));
         }
         let registration = (*self.registration.lock()).ok_or_else(|| {
             GicV3BackendError::new(
-                "set direct SPI forwarding state",
+                "set hardware-backed SPI forwarding state",
                 alloc::format!("guest SPI {} has no host IRQ action", self.spi.raw()),
             )
         })?;
@@ -314,7 +358,7 @@ impl ForwardedSpi {
         };
         result.map_err(|error| {
             GicV3BackendError::new(
-                "set direct SPI forwarding state",
+                "set hardware-backed SPI forwarding state",
                 alloc::format!(
                     "host IRQ {:?}, guest SPI {}: {error:?}",
                     self.host_irq,
@@ -328,7 +372,7 @@ impl ForwardedSpi {
         let ForwardingTarget::Mediated(line) = &self.target else {
             return Err(GicV3BackendError::new(
                 "retire mediated SPI",
-                alloc::format!("guest SPI {} is directly forwarded", self.spi.raw()),
+                alloc::format!("guest SPI {} is hardware-backed", self.spi.raw()),
             ));
         };
         if line.trigger() == InterruptTriggerMode::LevelTriggered {

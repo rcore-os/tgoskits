@@ -27,11 +27,12 @@ interrupts_passthrough = false
 
 - `false`：host 捕获物理 IRQ，再通过 VM-local 控制器投递；虚拟设备可以持有软件
   `IrqLine`。
-- `true`：物理 IRQ 直接投递，只能使用已经取得 host ownership 的物理中断源；带
-  软件 IRQ 的虚拟设备会在规划阶段被拒绝。
+- `true`：已分配且取得 host ownership 的物理 IRQ 使用 HW-backed LR 转发；虚拟设备
+  仍使用软件 `IrqLine`，两类 endpoint 可连接同一个 VM-local 控制器。
 
-解析后该字段会立即归一化为 `InterruptDelivery::{Mediated, Direct}`。控制器和设备
-实现不接触配置布尔值。
+解析后该字段会立即归一化为
+`PhysicalInterruptPolicy::{Mediated, HardwareForwarded}`。控制器和设备实现不接触配置
+布尔值，`InterruptTopology` 也不保存该整机策略。
 
 旧 `vm_type`、`interrupt_mode`、`emu_devices`、`passthrough_devices`、
 `passthrough_addresses`、`excluded_devices`、裸 `irq_id` 和 `cfg_list` 已删除，不提供
@@ -116,9 +117,9 @@ NS16550。地址、IRQ 与 phandle 从架构 profile 确定性分配，因此相
 clock。设备构建时只获得具名资源以及 `DeviceBuildContext::irq("irq")` 返回的
 `IrqLine`，不会看到 vCPU、控制器 ID、Guest INTID 或 host IRQ。
 
-在 mediated Passthrough 机型中，`source = auto` 优先复用第一个未消费的 `arm,pl011`
-模板的 Guest 地址、IRQ、clock 和固件属性，同时对真实 MMIO 打洞；没有匹配节点时再从
-profile 资源池分配。Direct interrupt delivery 不允许虚拟 PL011。
+在 Passthrough 机型中，`source = auto` 优先复用第一个未消费的 `arm,pl011` 模板的
+Guest 地址、IRQ、clock 和固件属性，同时对真实 MMIO 打洞；没有匹配节点时再从 profile
+资源池分配。即使物理 IRQ 使用 `HardwareForwarded`，虚拟 PL011 仍使用软件 SPI。
 
 生成的 FDT 包含 PL011、fixed-clock、`serial0` alias 和 `/chosen/stdout-path`。
 
