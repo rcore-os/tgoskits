@@ -39,6 +39,15 @@ pub(crate) trait ArchOps {
     ) {
     }
 
+    fn synchronize_interrupts_after_exit(
+        topology: &axdevice::InterruptTopology,
+        vcpu: axdevice::VcpuInterruptId,
+        _exit: &<Self::VCpu as VmArchVcpuOps>::Exit,
+    ) -> AxVmResult {
+        topology.synchronize_vcpu(vcpu)?;
+        Ok(())
+    }
+
     fn after_external_interrupt(
         _vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -102,9 +111,13 @@ pub(crate) trait ArchOps {
                         let exit = vcpu.run()?;
                         trace!("{exit:#x?}");
                         // Fold hardware LR transitions before a trapped GIC access can observe or
-                        // modify pending/active state. The next loop iteration synchronizes again
-                        // after applying exit side effects and queued controller inputs.
-                        interrupt_topology.synchronize_vcpu(interrupt_vcpu)?;
+                        // modify pending/active state. An architecture may instead make one exit
+                        // handler own an atomic harvest-and-update operation.
+                        Self::synchronize_interrupts_after_exit(
+                            &interrupt_topology,
+                            interrupt_vcpu,
+                            &exit,
+                        )?;
                         let action = Self::handle_vcpu_exit_bound(vm, vcpu, exit)?;
                         match action {
                             BoundVcpuExit::Continue => continue,

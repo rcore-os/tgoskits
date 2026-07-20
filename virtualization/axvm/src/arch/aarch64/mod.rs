@@ -188,6 +188,23 @@ impl ArchOps for Aarch64Arch {
         );
     }
 
+    fn synchronize_interrupts_after_exit(
+        topology: &axdevice::InterruptTopology,
+        vcpu: axdevice::VcpuInterruptId,
+        exit: &ArmVmExit,
+    ) -> AxVmResult {
+        match exit {
+            // The binding must harvest the live LR and apply DIR as one
+            // operation. A generic synchronization here would save and reload
+            // the same CPU interface twice for every trapped deactivation.
+            ArmVmExit::DeactivateInterrupt { .. } => Ok(()),
+            _ => {
+                topology.synchronize_vcpu(vcpu)?;
+                Ok(())
+            }
+        }
+    }
+
     fn with_vcpu_interrupt_context<T>(vm: &crate::AxVMRef, run: impl FnOnce() -> T) -> T {
         let _ = vm;
         // ICH registers are banked per physical CPU, not per Rust task. Keep

@@ -89,11 +89,14 @@ remains outside the LRs.
 
 EOImode 0 overflow is reconciled through `ICH_HCR_EL2.EOIcount`. EOImode 1
 requires `ICC_DIR_EL1` to be trapped and routed to
-`GicV3VcpuBinding::deactivate`; an overflowed HW-backed entry is then
-deactivated through the ownership-checked physical backend rather than being
-converted into a software interrupt. The platform adapter must verify TDIR
-support before constructing the controller, or provide a complete common
-CPU-interface system-register trap implementation.
+`GicV3VcpuBinding::deactivate`. That operation first harvests the live ICH
+state, then applies DIR and refills the interface as one lifecycle transaction;
+it does not depend on an outer run loop having copied a hardware Pending-to-
+Active transition. An overflowed HW-backed entry is then deactivated through
+the ownership-checked physical backend rather than being converted into a
+software interrupt. The platform adapter must verify TDIR support before
+constructing the controller, or provide a complete common CPU-interface
+system-register trap implementation.
 
 Backends must validate physical IRQ identity, target affinity, address ranges,
 access widths, and resource ownership. Backend callbacks are issued after the

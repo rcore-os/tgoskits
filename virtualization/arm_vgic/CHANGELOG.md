@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   physical backing outside LRs, drive NPIE/LRENPIE/UIE/TDIR maintenance, and
   reconcile EOImode 0 EOIcount or trapped EOImode 1 DIR without starving newer
   pending interrupts.
+- Make trapped DIR harvest the live ICH state before deactivation, so a hardware
+  Pending-to-Active LR transition cannot be missed by a stale VM-local snapshot.
 
 ### Removed
 

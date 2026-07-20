@@ -439,6 +439,39 @@ fn physical_spi_is_delivered_by_a_hardware_backed_lr() {
 }
 
 #[test]
+fn trapped_dir_harvests_a_hardware_backed_activation_before_deactivation() {
+    const GICD_CTLR: u64 = 0;
+    const GICD_ISENABLER1: u64 = 0x104;
+
+    let backend = Arc::new(PhysicalBackend::default());
+    let controller = GicV3Controller::new(config(), backend.clone()).unwrap();
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let spi = SpiId::new(40).unwrap();
+    let physical = PhysicalIrqId::new(1040);
+    controller
+        .bind_physical_spi(spi, physical, GicVcpuId::new(0))
+        .unwrap();
+    controller
+        .write_distributor(GICD_ISENABLER1, AccessWidth::Dword, 1 << (spi.raw() - 32))
+        .unwrap();
+    controller
+        .write_distributor(GICD_CTLR, AccessWidth::Dword, 1 << 1)
+        .unwrap();
+    controller.forward_physical_spi(spi).unwrap();
+    binding.load().unwrap();
+
+    // TDIR exits before the normal vCPU save path can copy the hardware LR
+    // transition into the VM-local snapshot.
+    backend.activate_all(GicVcpuId::new(0));
+    binding.deactivate(IntId::Spi(spi)).unwrap();
+
+    assert!(backend.loaded_intids(GicVcpuId::new(0)).is_empty());
+    let records = backend.records.lock().unwrap();
+    assert_eq!(records.deactivated_interrupts.len(), 1);
+    assert_eq!(records.deactivated_interrupts[0].host(), physical);
+}
+
+#[test]
 fn spilled_physical_active_delivery_keeps_its_backing_until_trapped_dir() {
     const GICD_CTLR: u64 = 0;
     const GICD_ISENABLER1: u64 = 0x104;

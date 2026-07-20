@@ -167,13 +167,54 @@ fn controller_state_is_harvested_before_vcpu_exit_side_effects() {
         .find("Self::handle_vcpu_exit_bound")
         .expect("the vCPU run loop must apply architecture exit side effects");
     let synchronize_controller = after_run
-        .find("interrupt_topology.synchronize_vcpu")
-        .expect("the vCPU run loop must synchronize interrupt controllers after exit");
+        .find("Self::synchronize_interrupts_after_exit")
+        .expect("the vCPU run loop must apply its post-exit synchronization policy");
 
     assert!(
         synchronize_controller < handle_exit,
         "hardware LR state must be folded into the controller before a guest MMIO/sysreg exit \
          observes or modifies interrupt state"
+    );
+}
+
+#[test]
+fn aarch64_trapped_dir_owns_one_live_cpu_interface_harvest() {
+    let ops = include_str!("../src/architecture/ops.rs");
+    assert!(
+        ops.contains("Self::synchronize_interrupts_after_exit("),
+        "the common run loop must let an architecture select the synchronization owner"
+    );
+
+    let arch = include_str!("../src/arch/aarch64/mod.rs");
+    let synchronization = arch
+        .split_once("fn synchronize_interrupts_after_exit(")
+        .expect("AArch64 must specialize post-exit interrupt synchronization")
+        .1
+        .split_once("fn with_vcpu_interrupt_context")
+        .expect("the synchronization policy must precede the ICH critical section")
+        .0;
+    assert!(
+        synchronization.contains("ArmVmExit::DeactivateInterrupt { .. } => Ok(())"),
+        "a trapped DIR must not perform a generic harvest before its atomic deactivation"
+    );
+
+    let binding = include_str!("../../arm_vgic/src/controller/binding.rs");
+    let deactivate = binding
+        .split_once("pub fn deactivate(&self, intid: IntId)")
+        .expect("the GICv3 binding must handle trapped DIR")
+        .1
+        .split_once("pub fn cpu_interface_snapshot")
+        .expect("DIR handling must precede snapshot inspection")
+        .0;
+    let save = deactivate
+        .find("save_cpu_interface")
+        .expect("DIR must harvest the live hardware LR state");
+    let deactivate_state = deactivate
+        .find("deactivate_interrupt")
+        .expect("DIR must update the VM-local interrupt state");
+    assert!(
+        save < deactivate_state,
+        "the hardware LR transition must be harvested before applying DIR"
     );
 }
 

@@ -373,6 +373,43 @@ fn active_lr_spills_for_a_higher_priority_pending_interrupt() {
 }
 
 #[test]
+fn trapped_dir_harvests_a_hardware_activation_before_deactivation() {
+    let (controller, backend) = controller(1, 1);
+    let vcpu = GicVcpuId::new(0);
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let timer = PpiId::new(30).unwrap();
+
+    controller
+        .write_redistributor(
+            vcpu,
+            GICR_SGI_BASE + GICD_ISENABLER,
+            AccessWidth::Dword,
+            1 << timer.raw(),
+        )
+        .unwrap();
+    controller.set_ppi_level(vcpu, timer, true).unwrap();
+    binding.load().unwrap();
+
+    // Hardware can activate the LR while the VM-local snapshot still says
+    // Pending. A level timer is normally lowered before the guest writes DIR.
+    backend.activate_all(0);
+    controller.set_ppi_level(vcpu, timer, false).unwrap();
+    binding.deactivate(IntId::Ppi(timer)).unwrap();
+
+    assert!(backend.loaded_intids(0).is_empty());
+    assert_eq!(
+        controller
+            .interrupt_state(Some(vcpu), IntId::Ppi(timer))
+            .unwrap(),
+        InterruptState::Inactive
+    );
+    assert_eq!(
+        backend.retired_interrupts(),
+        vec![(vcpu, IntId::Ppi(timer))]
+    );
+}
+
+#[test]
 fn eoi_count_deactivates_an_active_interrupt_outside_the_lrs() {
     let (controller, backend) = controller(1, 1);
     let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));

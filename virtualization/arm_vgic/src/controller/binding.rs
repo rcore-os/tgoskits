@@ -124,8 +124,8 @@ impl GicV3VcpuBinding {
     /// architectural CPU-interface action and preserves whether the active
     /// delivery is software-owned or backed by an assigned physical IRQ.
     pub fn deactivate(&self, intid: IntId) -> VgicResult {
-        let (retirement, state) = {
-            let mut controller = self.controller.inner.state.lock();
+        let mut saved = {
+            let controller = self.controller.inner.state.lock();
             if !controller.active_vcpus.contains(&self.vcpu) {
                 return Err(VgicError::InvalidStateTransition {
                     intid,
@@ -133,12 +133,30 @@ impl GicV3VcpuBinding {
                     detail: alloc::format!("vCPU {} is not loaded", self.vcpu.raw()),
                 });
             }
-            let retirement = controller.deactivate_interrupt(self.vcpu, intid)?;
-            let Some(retirement) = retirement else {
-                return Ok(());
-            };
+            controller
+                .redistributor(self.vcpu, "deactivate virtual interrupt")?
+                .cpu_interface()
+                .clone()
+        };
+
+        // TDIR can exit immediately after hardware changes an LR from Pending
+        // to Active. Harvest ICH state here so this architectural operation
+        // never depends on an outer run loop having synchronized first.
+        backend_result(
+            self.controller
+                .inner
+                .backend
+                .save_cpu_interface(self.vcpu, &mut saved),
+        )?;
+
+        let (retirements, state) = {
+            let mut controller = self.controller.inner.state.lock();
+            let mut retirements = controller.merge_cpu_interface(self.vcpu, saved, false)?;
+            if let Some(retirement) = controller.deactivate_interrupt(self.vcpu, intid)? {
+                retirements.push(retirement);
+            }
             let state = controller.refill_cpu_interface(self.vcpu)?;
-            (retirement, state)
+            (retirements, state)
         };
         backend_result(
             self.controller
@@ -146,7 +164,7 @@ impl GicV3VcpuBinding {
                 .backend
                 .load_cpu_interface(self.vcpu, &state),
         )?;
-        self.apply_retirements(core::iter::once(retirement))
+        self.apply_retirements(retirements)
     }
 
     /// Returns a snapshot useful to checked architecture adapters and tests.

@@ -25,7 +25,7 @@ success_regex = [
   "(?m)^guest test pass!\\s*$",
 ]
 shell_prefix = "~ #"
-shell_init_cmd = "start=$(date +%s) && sleep 2 && test $(( $(date +%s) - start )) -ge 2 && echo 'guest test pass!'"
+shell_init_cmd = "start=$(date +%s) && for block in 1 2 3 4 5 6 7 8; do dd if=/dev/vda of=/dev/null bs=4096 count=1 skip=$block 2>/dev/null && sleep 1 || exit 1; done && test $(( $(date +%s) - start )) -ge 8 && echo 'guest test pass!'"
 timeout = 120
 to_bin = true
 uefi = false

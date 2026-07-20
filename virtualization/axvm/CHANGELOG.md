@@ -71,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Implement standard 16550 modem/data loopback and retain destructively read
   host-console bytes until the guest UART accepts them, so Linux probing and
   FIFO backpressure no longer emit garbage or truncate input.
+- Route trapped AArch64 DIR through one atomic live-LR harvest and deactivation
+  instead of performing a redundant generic CPU-interface synchronization.
 
 ### Removed
 
