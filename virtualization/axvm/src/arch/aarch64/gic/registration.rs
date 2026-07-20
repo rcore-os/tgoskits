@@ -119,9 +119,16 @@ impl PreparedGicV3 {
             .machine_plan()
             .assigned_host_interrupts()
             .iter()
-            .filter(|interrupt| interrupt.input_u32() >= 32)
-            .cloned()
-            .collect();
+            .map(|interrupt| {
+                let input = interrupt.input_u32();
+                if !layout.accepts_spi_input(input) {
+                    return Err(AxVmError::invalid_config(alloc::format!(
+                        "planned physical interrupt {input} is outside the guest GICv3 SPI range"
+                    )));
+                }
+                Ok(interrupt.clone())
+            })
+            .collect::<AxVmResult<Vec<_>>>()?;
         Ok(Self {
             device_set: GicV3DeviceSet::new(controller.clone(), PRIMARY_GIC),
             controller,

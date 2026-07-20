@@ -245,6 +245,12 @@ impl Aarch64GicV3Plan {
     pub const fn spi_count(&self) -> u32 {
         self.spi_count
     }
+
+    /// Returns whether an INTID names a Distributor-owned SPI implemented by
+    /// this guest GIC.
+    pub const fn accepts_spi_input(&self, input: u32) -> bool {
+        input >= 32 && input - 32 < self.spi_count
+    }
 }
 
 /// Final RISC-V PLIC resources.
@@ -327,6 +333,31 @@ pub enum InterruptControllerPlan {
     X86Apic(X86ApicPlan),
     /// LoongArch interrupt topology.
     LoongArch(LoongArchInterruptPlan),
+}
+
+impl InterruptControllerPlan {
+    pub(crate) const fn device_input_domain(&self) -> &'static str {
+        match self {
+            Self::Aarch64GicV3(_) => "GICv3 SPI",
+            Self::RiscvPlic(_) => "PLIC source",
+            Self::X86Apic(_) => "IOAPIC GSI",
+            Self::LoongArch(_) => "LoongArch interrupt",
+        }
+    }
+
+    pub(crate) const fn accepts_device_input(&self, input: u32) -> bool {
+        match self {
+            Self::Aarch64GicV3(gic) => gic.accepts_spi_input(input),
+            Self::RiscvPlic(plic) => input != 0 && input <= plic.source_count,
+            // The current virtual IOAPIC implements 24 pins. GSI 0 belongs to
+            // the VM-local PIT and is not assignable to a host device.
+            Self::X86Apic(_) => input > 0 && input < 24,
+            // LoongArch firmware uses the complete one-byte GSI/vector domain;
+            // the runtime routing plan decides whether a value enters PCH-PIC
+            // or another EIOINTC producer.
+            Self::LoongArch(_) => input != 0 && input <= u8::MAX as u32,
+        }
+    }
 }
 
 pub(crate) fn is_planned_guest_firmware_infrastructure(

@@ -311,6 +311,7 @@ fn classify_ownership(
         || path.starts_with("/reserved-memory")
         || compatibles.iter().any(|compatible| {
             compatible.contains("armv8-timer")
+                || is_architectural_cpu_private_device(compatible)
                 || is_architectural_interrupt_infrastructure(compatible)
                 || compatible == "rockchip,fiq-debugger"
         })
@@ -327,6 +328,14 @@ fn classify_ownership(
         return HostDeviceOwnership::Transferable;
     }
     HostDeviceOwnership::Assignable
+}
+
+fn is_architectural_cpu_private_device(compatible: &str) -> bool {
+    // PMUv3 is a per-CPU architectural facility. KVM-style virtualization
+    // requires a dedicated virtual PMU state machine and a virtual PPI; a host
+    // PMU node is never an assignable external device merely because firmware
+    // describes its PPI.
+    compatible == "arm,armv8-pmuv3"
 }
 
 fn is_embedded_interrupt_controller(node: &fdt_edit::Node) -> bool {
@@ -646,6 +655,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(its.ownership(), HostDeviceOwnership::HostExclusive);
+    }
+
+    #[test]
+    fn architectural_pmu_ppi_is_not_assignable_as_a_device_interrupt() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let gic = fdt.add_node(root, Node::new("interrupt-controller@8000000"));
+        {
+            let node = fdt.node_mut(gic).unwrap();
+            node.set_property(string_property("compatible", "arm,gic-v3"));
+            node.set_property(Property::new("interrupt-controller", vec![]));
+            node.set_property(u32_property("#interrupt-cells", &[3]));
+            node.set_property(u32_property("phandle", &[1]));
+        }
+        let pmu = fdt.add_node(root, Node::new("pmu"));
+        {
+            let node = fdt.node_mut(pmu).unwrap();
+            node.set_property(string_property("compatible", "arm,armv8-pmuv3"));
+            node.set_property(u32_property("interrupt-parent", &[1]));
+            node.set_property(u32_property("interrupts", &[1, 7, 4]));
+        }
+
+        let mut snapshot =
+            HostPlatformSnapshot::from_fdt(9, fdt.encode().as_ref(), FdtInterruptEncoding::ArmGic)
+                .unwrap();
+        snapshot.grant_whole_machine_assignment().unwrap();
+        let pmu = snapshot
+            .devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/pmu")
+            .unwrap();
+
+        assert_eq!(pmu.ownership(), HostDeviceOwnership::HostExclusive);
+        assert_eq!(pmu.assignment(), None);
+        assert_eq!(pmu.interrupts()[0].input_u32(), 23);
     }
 
     #[test]

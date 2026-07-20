@@ -129,6 +129,17 @@ pub enum MachinePlanError {
         /// Later device whose description conflicted.
         second_device: String,
     },
+    /// A planned device interrupt is outside the receiving controller's
+    /// external-device input domain.
+    #[error("device '{device}' interrupt {input} is not a routable {controller} controller input")]
+    UnroutableDeviceInterrupt {
+        /// Stable host or virtual device identity.
+        device: String,
+        /// Firmware-visible controller input.
+        input: u32,
+        /// Architecture controller input domain.
+        controller: &'static str,
+    },
     /// An architecture profile omitted a pool required by a configured model.
     #[error("machine profile has no {resource} pool required by virtual device '{device}'")]
     MissingResourcePool {

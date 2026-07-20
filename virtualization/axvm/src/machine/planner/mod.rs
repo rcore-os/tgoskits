@@ -20,8 +20,9 @@ use self::{
 };
 use super::{
     DeviceDisposition, HostDeviceId, HostDeviceSelector, HostInterruptResource,
-    HostPlatformSnapshot, MachinePlanError, MachinePlanResult, MachineProfile,
-    VirtualDeviceDescriptor, VirtualDeviceSource, VmMachineRequest, resolve_interrupt_controller,
+    HostPlatformSnapshot, InterruptControllerPlan, MachinePlanError, MachinePlanResult,
+    MachineProfile, VirtualDeviceDescriptor, VirtualDeviceSource, VmMachineRequest,
+    resolve_interrupt_controller,
 };
 
 /// Builds one deterministic machine plan from immutable inputs.
@@ -73,13 +74,15 @@ impl VmMachinePlanner {
 
         let interrupt_controller =
             resolve_interrupt_controller(self.profile.interrupt_controller(), request, snapshot)?;
+        validate_virtual_device_interrupts(&resolved_devices, interrupt_controller.as_ref())?;
         let host_devices = plan_host_devices(
             request.mode(),
             snapshot,
             &denied_devices,
             &consumed_templates,
         )?;
-        let assigned_host_interrupts = resolve_assigned_host_interrupts(&host_devices)?;
+        let assigned_host_interrupts =
+            resolve_assigned_host_interrupts(&host_devices, interrupt_controller.as_ref())?;
         let claims = host_devices
             .iter()
             .filter(|device| device.requires_claim())
@@ -115,6 +118,7 @@ impl VmMachinePlanner {
 
 fn resolve_assigned_host_interrupts(
     host_devices: &[PlannedHostDevice],
+    controller: Option<&InterruptControllerPlan>,
 ) -> MachinePlanResult<Vec<HostInterruptResource>> {
     let mut routes_by_input = BTreeMap::<u32, (HostDeviceId, HostInterruptResource)>::new();
     let mut assigned_host_interrupts = Vec::new();
@@ -125,6 +129,7 @@ fn resolve_assigned_host_interrupts(
     {
         for interrupt in device.interrupts() {
             let input = interrupt.input_u32();
+            validate_device_interrupt(device.id().as_str(), input, controller)?;
             if let Some((first_device, first_interrupt)) = routes_by_input.get(&input) {
                 if first_interrupt != interrupt {
                     return Err(MachinePlanError::ConflictingHostInterrupt {
@@ -142,6 +147,41 @@ fn resolve_assigned_host_interrupts(
     }
 
     Ok(assigned_host_interrupts)
+}
+
+fn validate_virtual_device_interrupts(
+    devices: &[ResolvedVirtualDevice],
+    controller: Option<&InterruptControllerPlan>,
+) -> MachinePlanResult<()> {
+    for device in devices {
+        for interrupt in device.interrupts() {
+            validate_device_interrupt(device.instance_id().as_str(), interrupt.id(), controller)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_device_interrupt(
+    device: &str,
+    input: u32,
+    controller: Option<&InterruptControllerPlan>,
+) -> MachinePlanResult<()> {
+    // The allocation pool constrains newly allocated guest resources, not an
+    // interrupt inherited from a host template. Only a resolved controller
+    // provides the architectural input-domain capability needed to validate
+    // both kinds of resource.
+    let Some(controller) = controller else {
+        return Ok(());
+    };
+    let accepted = controller.accepts_device_input(input);
+    if !accepted {
+        return Err(MachinePlanError::UnroutableDeviceInterrupt {
+            device: device.to_string(),
+            input,
+            controller: controller.device_input_domain(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_request(request: &VmMachineRequest) -> MachinePlanResult<()> {

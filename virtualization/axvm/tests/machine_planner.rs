@@ -437,6 +437,55 @@ fn shared_passthrough_interrupt_rejects_conflicting_trigger_modes() {
 }
 
 #[test]
+fn aarch64_planner_rejects_private_interrupts_as_device_inputs() {
+    let controller = Aarch64GicV3Profile::new(
+        AddressRange::new(0x0800_0000, 0x1_0000).unwrap(),
+        0x080a_0000,
+        0x2_0000,
+        None,
+        480,
+    )
+    .unwrap();
+    let profile = MachineProfile::new(AddressRange::new(0x0900_0000, 0x10_0000).unwrap(), 32..=511)
+        .unwrap()
+        .with_interrupt_controller(InterruptControllerProfile::Aarch64GicV3(controller));
+    let snapshot = HostPlatformSnapshot::new(1)
+        .with_device(
+            HostDeviceDescriptor::new(
+                HostDeviceId::new("/interrupt-controller@8000000").unwrap(),
+                HostDeviceOwnership::HostExclusive,
+            )
+            .with_compatible("arm,gic-v3")
+            .with_mmio(AddressRange::new(0x0800_0000, 0x1_0000).unwrap())
+            .with_mmio(AddressRange::new(0x080a_0000, 0x20_0000).unwrap()),
+        )
+        .with_device(
+            HostDeviceDescriptor::new(
+                HostDeviceId::new("/cpu-private-device").unwrap(),
+                HostDeviceOwnership::Assignable,
+            )
+            .with_interrupt(HostInterruptResource::controller_input(
+                23,
+                InterruptTriggerMode::LevelTriggered,
+            )),
+        );
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+
+    let error = VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        MachinePlanError::UnroutableDeviceInterrupt {
+            device,
+            input: 23,
+            controller: "GICv3 SPI",
+        } if device == "/cpu-private-device"
+    ));
+}
+
+#[test]
 fn passthrough_punches_profile_owned_mmio_windows() {
     let profile = MachineProfile::new(AddressRange::new(0x8000, 0x1000).unwrap(), 64..=95)
         .unwrap()
