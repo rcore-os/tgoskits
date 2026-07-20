@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Support AArch64 GICv3 implementations without `ICH_HCR_EL2.TDIR` by using
+  the common CPU-interface trap and preserving CTLR, PMR, RPR, and DIR
+  semantics instead of rejecting VM creation.
 - Coalesce identical passthrough-device references to a shared physical
   interrupt input before controller registration, and reject inconsistent
   route metadata during machine planning.

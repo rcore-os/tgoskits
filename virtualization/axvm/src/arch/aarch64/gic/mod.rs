@@ -5,6 +5,7 @@ use alloc::{
     sync::{Arc, Weak},
 };
 
+use arm_vcpu::ArmGicCpuInterfaceRegister;
 use arm_vgic::{
     CpuInterfaceState, GicAffinity, GicV3Backend, GicV3BackendError, GicVcpuId, IntId,
     PhysicalInterruptBinding, PhysicalIrqId, PhysicalMsiBinding, SpiId,
@@ -234,8 +235,19 @@ pub(crate) fn list_register_count() -> usize {
     cpu_interface::hardware_list_register_count()
 }
 
-pub(crate) fn require_deactivation_trap() -> Result<(), GicV3BackendError> {
-    cpu_interface::require_deactivation_trap()
+pub(crate) fn read_cpu_interface_register(
+    vcpu: usize,
+    register: ArmGicCpuInterfaceRegister,
+) -> Result<u64, GicV3BackendError> {
+    cpu_interface::read_common_register(GicVcpuId::new(vcpu), register)
+}
+
+pub(crate) fn write_cpu_interface_register(
+    vcpu: usize,
+    register: ArmGicCpuInterfaceRegister,
+    value: u64,
+) -> Result<(), GicV3BackendError> {
+    cpu_interface::write_common_register(GicVcpuId::new(vcpu), register, value)
 }
 
 pub(crate) fn resolve_physical_irq(intid: u32) -> Result<PhysicalIrqId, GicV3BackendError> {

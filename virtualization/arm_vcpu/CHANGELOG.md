@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passthrough controller can keep host IRQs masked until private GIC state is
   restored.
 
+### Added
+
+- Decode trapped GICv3 common CPU-interface registers into typed exits so a
+  VMM can provide the architectural fallback when dedicated `TDIR` trapping is
+  unavailable.
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.15...arm_vcpu-v0.5.16) - 2026-07-07
 
 ### Other

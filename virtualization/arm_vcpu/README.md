@@ -23,6 +23,12 @@ VM-local services. Unregistered SMCCC owners are denied by default and return
 protocol must provide an ownership-checked mediated capability instead of
 forwarding arbitrary guest SMC arguments to host firmware.
 
+Trapped GICv3 common CPU-interface accesses are decoded into
+`ArmGicCpuInterfaceRegister` and typed `ArmVmExit` variants. The VMM therefore
+handles `ICC_CTLR_EL1`, `ICC_PMR_EL1`, and `ICC_RPR_EL1` without depending on
+raw system-register encodings; `ICC_DIR_EL1` remains a distinct deactivation
+exit because it owns an atomic interrupt-state transition.
+
 ## Quick Start
 
 ### Installation

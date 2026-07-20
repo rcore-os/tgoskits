@@ -94,9 +94,11 @@ state, then applies DIR and refills the interface as one lifecycle transaction;
 it does not depend on an outer run loop having copied a hardware Pending-to-
 Active transition. An overflowed HW-backed entry is then deactivated through
 the ownership-checked physical backend rather than being converted into a
-software interrupt. The platform adapter must verify TDIR support before
-constructing the controller, or provide a complete common CPU-interface
-system-register trap implementation.
+software interrupt. The AArch64 adapter uses the dedicated `TDIR` trap when
+`ICH_VTR_EL2.TDS` reports it, and otherwise follows the architectural common
+CPU-interface trap path (`ICH_HCR_EL2.TC`) while emulating `ICC_DIR_EL1`,
+`ICC_CTLR_EL1`, `ICC_PMR_EL1`, and `ICC_RPR_EL1`. This keeps the same overflow
+and EOImode semantics on CPUs that do not implement `TDIR`.
 
 Backends must validate physical IRQ identity, target affinity, address ranges,
 access widths, and resource ownership. Backend callbacks are issued after the

@@ -1,10 +1,11 @@
 //! Checked ICH register save and restore.
 
 use arm_gic_driver::v3::{
-    ICH_AP1R0_EL2, ICH_AP1R1_EL2, ICH_AP1R2_EL2, ICH_AP1R3_EL2, ICH_HCR_EL2, ICH_LR_EL2,
-    ICH_VMCR_EL2, ICH_VTR_EL2, LocalRegisterCopy, Readable, Writeable, ich_lr_el2_get,
-    ich_lr_el2_set, ich_lr_el2_write,
+    ICC_CTLR_EL1, ICC_PMR_EL1, ICC_RPR_EL1, ICH_AP1R0_EL2, ICH_AP1R1_EL2, ICH_AP1R2_EL2,
+    ICH_AP1R3_EL2, ICH_HCR_EL2, ICH_LR_EL2, ICH_VMCR_EL2, ICH_VTR_EL2, LocalRegisterCopy, Readable,
+    Writeable, ich_lr_el2_get, ich_lr_el2_set, ich_lr_el2_write,
 };
+use arm_vcpu::ArmGicCpuInterfaceRegister;
 use arm_vgic::{
     CpuInterfaceState, GicV3BackendError, GicVcpuId, IntId, InterruptState, ListRegisterBacking,
     ListRegisterState, Priority,
@@ -29,7 +30,7 @@ pub(super) fn load(vcpu: GicVcpuId, state: &CpuInterfaceState) -> Result<(), Gic
         }
     }
     data_sync_barrier();
-    ICH_HCR_EL2.set(state.hcr());
+    ICH_HCR_EL2.set(hardware_hcr_for_load(state.hcr()));
     instruction_sync_barrier();
     Ok(())
 }
@@ -48,7 +49,7 @@ pub(super) fn save(
     data_sync_barrier();
     instruction_sync_barrier();
     let save_result = (|| {
-        state.set_hcr(ICH_HCR_EL2.get());
+        state.set_hcr(saved_hcr_from_hardware(ICH_HCR_EL2.get(), state.hcr()));
         state.set_vmcr(ICH_VMCR_EL2.get());
         for (index, value) in read_apr(apr_count).into_iter().enumerate() {
             if !state.set_apr(index, value) {
@@ -83,15 +84,94 @@ pub(super) fn hardware_list_register_count() -> usize {
     (ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1).min(16)
 }
 
-pub(super) fn require_deactivation_trap() -> Result<(), GicV3BackendError> {
-    if ICH_VTR_EL2.read(ICH_VTR_EL2::TDS) != 0 {
-        Ok(())
-    } else {
-        Err(GicV3BackendError::new(
-            "validate CPU interface",
-            "ICH_VTR_EL2 reports no ICH_HCR_EL2.TDIR support; active LR overflow is unsupported",
-        ))
+pub(super) fn read_common_register(
+    vcpu: GicVcpuId,
+    register: ArmGicCpuInterfaceRegister,
+) -> Result<u64, GicV3BackendError> {
+    require_current_vcpu(vcpu, "read GICv3 common CPU-interface register")?;
+    Ok(match register {
+        ArmGicCpuInterfaceRegister::Control => read_icc_ctlr_el1(),
+        ArmGicCpuInterfaceRegister::PriorityMask => ICH_VMCR_EL2.read(ICH_VMCR_EL2::VPMR),
+        ArmGicCpuInterfaceRegister::RunningPriority => read_icc_rpr_el1()?,
+    })
+}
+
+pub(super) fn write_common_register(
+    vcpu: GicVcpuId,
+    register: ArmGicCpuInterfaceRegister,
+    value: u64,
+) -> Result<(), GicV3BackendError> {
+    require_current_vcpu(vcpu, "write GICv3 common CPU-interface register")?;
+    match register {
+        ArmGicCpuInterfaceRegister::Control => write_icc_ctlr_el1(value),
+        ArmGicCpuInterfaceRegister::PriorityMask => write_icc_pmr_el1(value),
+        // ICC_RPR_EL1 is read-only and architecturally ignores trapped writes.
+        ArmGicCpuInterfaceRegister::RunningPriority => {}
     }
+    instruction_sync_barrier();
+    Ok(())
+}
+
+fn hardware_hcr_for_load(saved_hcr: u64) -> u64 {
+    // A pending LR can become active, and EOImode can change, without an EL2
+    // exit. Keep one deactivation trap installed for the entire loaded
+    // interval. CPUs without TDIR must use the common-register trap instead.
+    let trap_bits = ICH_HCR_EL2::TC::SET.value | ICH_HCR_EL2::TDIR::SET.value;
+    let deactivation_trap = if supports_dedicated_deactivation_trap() {
+        ICH_HCR_EL2::TDIR::SET.value
+    } else {
+        ICH_HCR_EL2::TC::SET.value
+    };
+    (saved_hcr & !trap_bits) | deactivation_trap
+}
+
+fn saved_hcr_from_hardware(hardware_hcr: u64, previous_hcr: u64) -> u64 {
+    // TC/TDIR selection is a property of the current pCPU. Preserve the
+    // controller's shadow TDIR state without leaking a host trap choice into
+    // the VM state that may later be loaded on a different pCPU.
+    let adapter_traps = ICH_HCR_EL2::TC::SET.value | ICH_HCR_EL2::TDIR::SET.value;
+    (hardware_hcr & !adapter_traps) | (previous_hcr & ICH_HCR_EL2::TDIR::SET.value)
+}
+
+fn supports_dedicated_deactivation_trap() -> bool {
+    ICH_VTR_EL2.read(ICH_VTR_EL2::TDS) != 0
+}
+
+fn read_icc_ctlr_el1() -> u64 {
+    let vmcr = ICH_VMCR_EL2.get();
+    (ICC_CTLR_EL1::PRIBITS.val(ICH_VTR_EL2.read(ICH_VTR_EL2::PRIBITS))
+        + ICC_CTLR_EL1::IDBITS.val(ICH_VTR_EL2.read(ICH_VTR_EL2::IDBITS))
+        + ICC_CTLR_EL1::A3V.val(ICH_VTR_EL2.read(ICH_VTR_EL2::A3V))
+        + ICC_CTLR_EL1::EOIMODE.val(ICH_VMCR_EL2::VEOIM.read(vmcr))
+        + ICC_CTLR_EL1::CBPR.val(ICH_VMCR_EL2::VCBPR.read(vmcr)))
+    .value
+}
+
+fn write_icc_ctlr_el1(value: u64) {
+    let update = ICH_VMCR_EL2::VCBPR.val(ICC_CTLR_EL1::CBPR.read(value))
+        + ICH_VMCR_EL2::VEOIM.val(ICC_CTLR_EL1::EOIMODE.read(value));
+    ICH_VMCR_EL2.set(update.modify(ICH_VMCR_EL2.get()));
+}
+
+fn write_icc_pmr_el1(value: u64) {
+    let priority = ICC_PMR_EL1::PRIORITY.read(value);
+    let update = ICH_VMCR_EL2::VPMR.val(priority);
+    ICH_VMCR_EL2.set(update.modify(ICH_VMCR_EL2.get()));
+}
+
+fn read_icc_rpr_el1() -> Result<u64, GicV3BackendError> {
+    let apr_count = hardware_apr_count()?;
+    let minimum_priority_shift = 8 - (ICH_VTR_EL2.read(ICH_VTR_EL2::PREBITS) as usize + 1);
+    for (index, register) in read_apr(apr_count).into_iter().enumerate() {
+        let active_priorities = register as u32;
+        if active_priorities != 0 {
+            let priority = index * u32::BITS as usize + active_priorities.trailing_zeros() as usize;
+            return Ok(ICC_RPR_EL1::PRIORITY
+                .val((priority << minimum_priority_shift) as u64)
+                .value);
+        }
+    }
+    Ok(ICC_RPR_EL1::PRIORITY.val(u8::MAX.into()).value)
 }
 
 fn require_current_vcpu(vcpu: GicVcpuId, operation: &'static str) -> Result<(), GicV3BackendError> {

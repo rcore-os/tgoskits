@@ -7,9 +7,9 @@
 use alloc::sync::Arc;
 
 use arm_vcpu::{
-    ArmAccessWidth, ArmDataAbort, ArmDataAccessResult, ArmGuestPhysAddr, ArmHostOps,
-    ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError,
-    ArmVcpuResult, ArmVcpuSetupConfig, ArmVmExit,
+    ArmAccessWidth, ArmDataAbort, ArmDataAccessResult, ArmGicCpuInterfaceRegister,
+    ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu,
+    ArmVcpuCreateConfig, ArmVcpuError, ArmVcpuResult, ArmVcpuSetupConfig, ArmVmExit,
 };
 use ax_kernel_guard::IrqSave;
 use ax_memory_addr::VirtAddr;
@@ -250,6 +250,18 @@ impl ArchOps for Aarch64Arch {
                     value,
                 },
             ),
+            ArmVmExit::GicCpuInterfaceRead {
+                register,
+                destination,
+            } => {
+                let value = read_gic_cpu_interface_register(vcpu.id(), register)?;
+                vcpu.set_gpr(destination, value as usize);
+                Ok(BoundVcpuExit::Continue)
+            }
+            ArmVmExit::GicCpuInterfaceWrite { register, value } => {
+                write_gic_cpu_interface_register(vcpu.id(), register, value)?;
+                Ok(BoundVcpuExit::Continue)
+            }
             ArmVmExit::DeactivateInterrupt { intid } => {
                 vm.prepared_interrupt_topology()?
                     .deactivate_vcpu_interrupt(
@@ -312,6 +324,23 @@ impl ArchOps for Aarch64Arch {
         }
         Ok(VcpuRunAction::resume())
     }
+}
+
+fn read_gic_cpu_interface_register(
+    vcpu: usize,
+    register: ArmGicCpuInterfaceRegister,
+) -> AxVmResult<u64> {
+    gic::read_cpu_interface_register(vcpu, register)
+        .map_err(|error| crate::AxVmError::interrupt("read GICv3 CPU interface", error))
+}
+
+fn write_gic_cpu_interface_register(
+    vcpu: usize,
+    register: ArmGicCpuInterfaceRegister,
+    value: u64,
+) -> AxVmResult {
+    gic::write_cpu_interface_register(vcpu, register, value)
+        .map_err(|error| crate::AxVmError::interrupt("write GICv3 CPU interface", error))
 }
 
 struct AxvmArmHostOps;

@@ -45,8 +45,10 @@ EOImode 0 的溢出通过 `ICH_HCR_EL2.EOIcount` 回收；EOImode 1 必须 trap
 `ICC_DIR_EL1` 并路由到 `GicV3VcpuBinding::deactivate`。该操作会先收割实时 ICH 状态，
 再在同一个生命周期事务中执行 DIR 和 refill，不依赖外层 run loop 预先复制硬件
 Pending-to-Active 转换。溢出的 HW-backed 项仍通过受检物理 backend 完成
-deactivation，不会退化成软件中断。平台适配层在构造控制器前必须确认硬件支持
-TDIR，或者提供完整的 common CPU Interface sysreg trap 实现。
+deactivation，不会退化成软件中断。AArch64 适配层在 `ICH_VTR_EL2.TDS` 表示支持时
+使用专用 `TDIR` trap；不支持时走架构规定的 common CPU Interface trap
+（`ICH_HCR_EL2.TC`），并模拟 `ICC_DIR_EL1`、`ICC_CTLR_EL1`、`ICC_PMR_EL1` 和
+`ICC_RPR_EL1`，因此不同 CPU 上保持相同的溢出和 EOImode 语义。
 
 backend 必须校验平台 IRQ identity、affinity、地址、访问宽度和所有权。控制器在
 锁内只生成投递动作，释放锁后才唤醒 vCPU 或调用 backend。

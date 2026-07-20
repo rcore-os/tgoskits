@@ -18,8 +18,9 @@ use core::mem::size_of;
 
 use arm_vcpu::{
     ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
-    Aarch64PerCpu, Aarch64VCpu, ArmDataAbort, ArmHostOps, ArmNestedPagingConfig, ArmPerCpu,
-    ArmSysRegAddr, ArmVcpu, ArmVcpuError, ArmVcpuResult, ArmVmExit, TrapFrame,
+    Aarch64PerCpu, Aarch64VCpu, ArmDataAbort, ArmGicCpuInterfaceRegister, ArmHostOps,
+    ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu, ArmVcpuError, ArmVcpuResult,
+    ArmVmExit, TrapFrame,
 };
 
 struct DummyHost;
@@ -81,6 +82,16 @@ fn vm_exit_types_are_defined_by_arm_vcpu_core() {
     assert!(matches!(
         ArmVmExit::ExternalInterrupt,
         ArmVmExit::ExternalInterrupt
+    ));
+    assert!(matches!(
+        ArmVmExit::GicCpuInterfaceRead {
+            register: ArmGicCpuInterfaceRegister::RunningPriority,
+            destination: 2,
+        },
+        ArmVmExit::GicCpuInterfaceRead {
+            register: ArmGicCpuInterfaceRegister::RunningPriority,
+            destination: 2,
+        }
     ));
 }
 

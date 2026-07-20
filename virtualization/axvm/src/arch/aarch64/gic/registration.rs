@@ -13,7 +13,7 @@ use axvm_types::{GuestPhysAddr, PhysicalInterruptPolicy, VmMachineMode};
 
 use super::{
     HostSpiForwarding, VcpuRoute, backend, list_register_count, physical_capabilities,
-    require_deactivation_trap, resolve_physical_irq,
+    resolve_physical_irq,
 };
 use crate::{
     AxVmError, AxVmResult,
@@ -42,9 +42,6 @@ impl PreparedGicV3 {
         placements: &[VcpuPlacement],
     ) -> AxVmResult<Self> {
         let layout = aarch64_layout(config)?;
-        require_deactivation_trap().map_err(|error| {
-            AxVmError::interrupt("validate GICv3 CPU-interface capabilities", error)
-        })?;
         let spi_ownership = match config.machine_mode() {
             VmMachineMode::Virtual => GicV3SpiOwnership::AllGuestOwned,
             VmMachineMode::Passthrough => GicV3SpiOwnership::Explicit,

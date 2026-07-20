@@ -233,6 +233,22 @@ impl ArmNestedPagingConfig {
     }
 }
 
+/// A GICv3 common CPU-interface register trapped for VM-local emulation.
+///
+/// These registers share one architectural trap control on implementations
+/// that do not provide the dedicated `ICC_DIR_EL1` trap. Keeping the register
+/// identity typed prevents raw system-register encodings from leaking into the
+/// VMM boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmGicCpuInterfaceRegister {
+    /// `ICC_CTLR_EL1`, the common CPU-interface control register.
+    Control,
+    /// `ICC_PMR_EL1`, the virtual priority-mask register.
+    PriorityMask,
+    /// `ICC_RPR_EL1`, the virtual running-priority register.
+    RunningPriority,
+}
+
 /// VM-exit reason returned by the AArch64 vCPU core.
 #[non_exhaustive]
 #[derive(Debug)]
@@ -260,6 +276,20 @@ pub enum ArmVmExit {
     SysRegWrite {
         /// System-register address.
         addr: ArmSysRegAddr,
+        /// Value written by the guest.
+        value: u64,
+    },
+    /// The guest read a trapped GICv3 common CPU-interface register.
+    GicCpuInterfaceRead {
+        /// Register selected by the trapped MRS instruction.
+        register: ArmGicCpuInterfaceRegister,
+        /// Destination guest general-purpose register.
+        destination: usize,
+    },
+    /// The guest wrote a trapped GICv3 common CPU-interface register.
+    GicCpuInterfaceWrite {
+        /// Register selected by the trapped MSR instruction.
+        register: ArmGicCpuInterfaceRegister,
         /// Value written by the guest.
         value: u64,
     },

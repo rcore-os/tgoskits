@@ -39,8 +39,8 @@ pub use self::{
     host::ArmHostOps,
     pcpu::ArmPerCpu,
     types::{
-        ArmAccessWidth, ArmGuestPhysAddr, ArmGuestVirtAddr, ArmNestedPagingConfig, ArmSysRegAddr,
-        ArmVcpuError, ArmVcpuResult, ArmVmExit,
+        ArmAccessWidth, ArmGicCpuInterfaceRegister, ArmGuestPhysAddr, ArmGuestVirtAddr,
+        ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
     },
     vcpu::{
         ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,

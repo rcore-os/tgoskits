@@ -89,7 +89,7 @@ define_readonly_register! {
         NV4 OFFSET(20) NUMBITS(1) [],
         A3V OFFSET(21) NUMBITS(1) [],
         SEIS OFFSET(22) NUMBITS(1) [],
-        IDBITS OFFSET(23) NUMBITS(4) [],
+        IDBITS OFFSET(23) NUMBITS(3) [],
         PREBITS OFFSET(26) NUMBITS(3) [],
         PRIBITS OFFSET(29) NUMBITS(3) [],
     }

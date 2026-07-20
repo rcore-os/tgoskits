@@ -17,9 +17,9 @@ use core::marker::PhantomData;
 use aarch64_cpu::registers::*;
 
 use crate::{
-    ArmAccessWidth, ArmDataAbort, ArmDataAccess, ArmDataAccessResult, ArmGuestPhysAddr, ArmHostOps,
-    ArmLoadExtension, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
-    TrapFrame,
+    ArmAccessWidth, ArmDataAbort, ArmDataAccess, ArmDataAccessResult, ArmGicCpuInterfaceRegister,
+    ArmGuestPhysAddr, ArmHostOps, ArmLoadExtension, ArmNestedPagingConfig, ArmSysRegAddr,
+    ArmVcpuError, ArmVcpuResult, ArmVmExit, TrapFrame,
     context_frame::GuestSystemRegisters,
     data_abort::access_mask,
     exception::{TrapKind, handle_exception_sync},
@@ -466,8 +466,11 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         value: u64,
         reg: usize,
     ) -> ArmVcpuResult<Option<ArmVmExit>> {
+        const SYSREG_ICC_PMR_EL1: ArmSysRegAddr = ArmSysRegAddr::new(0x30_100c); // ICC_PMR_EL1
         const SYSREG_ICC_SGI1R_EL1: ArmSysRegAddr = ArmSysRegAddr::new(0x3A_3016); // ICC_SGI1R_EL1
         const SYSREG_ICC_DIR_EL1: ArmSysRegAddr = ArmSysRegAddr::new(0x32_3016); // ICC_DIR_EL1
+        const SYSREG_ICC_RPR_EL1: ArmSysRegAddr = ArmSysRegAddr::new(0x36_3016); // ICC_RPR_EL1
+        const SYSREG_ICC_CTLR_EL1: ArmSysRegAddr = ArmSysRegAddr::new(0x38_3018); // ICC_CTLR_EL1
 
         match (addr, write) {
             (SYSREG_ICC_SGI1R_EL1, true) => {
@@ -486,6 +489,30 @@ impl<H: ArmHostOps> ArmVcpu<H> {
                 self.set_gpr(reg, 0);
                 Ok(Some(ArmVmExit::Nothing))
             }
+            (SYSREG_ICC_CTLR_EL1, false) => Ok(Some(ArmVmExit::GicCpuInterfaceRead {
+                register: ArmGicCpuInterfaceRegister::Control,
+                destination: reg,
+            })),
+            (SYSREG_ICC_CTLR_EL1, true) => Ok(Some(ArmVmExit::GicCpuInterfaceWrite {
+                register: ArmGicCpuInterfaceRegister::Control,
+                value,
+            })),
+            (SYSREG_ICC_PMR_EL1, false) => Ok(Some(ArmVmExit::GicCpuInterfaceRead {
+                register: ArmGicCpuInterfaceRegister::PriorityMask,
+                destination: reg,
+            })),
+            (SYSREG_ICC_PMR_EL1, true) => Ok(Some(ArmVmExit::GicCpuInterfaceWrite {
+                register: ArmGicCpuInterfaceRegister::PriorityMask,
+                value,
+            })),
+            (SYSREG_ICC_RPR_EL1, false) => Ok(Some(ArmVmExit::GicCpuInterfaceRead {
+                register: ArmGicCpuInterfaceRegister::RunningPriority,
+                destination: reg,
+            })),
+            (SYSREG_ICC_RPR_EL1, true) => Ok(Some(ArmVmExit::GicCpuInterfaceWrite {
+                register: ArmGicCpuInterfaceRegister::RunningPriority,
+                value,
+            })),
             _ => {
                 // If the system register access is not handled by the VCpu itself,
                 // we return None to let the hypervisor handle it.
@@ -587,6 +614,33 @@ mod tests {
         assert!(matches!(
             asynchronous_vmexit(TrapKind::SError),
             Err(ArmVcpuError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn common_gic_cpu_interface_registers_have_typed_exits() {
+        let mut vcpu = ArmVcpu::<DummyHost>::new(0, 0, ArmVcpuCreateConfig::default()).unwrap();
+
+        assert!(matches!(
+            vcpu.builtin_sysreg_access_handler(ArmSysRegAddr::new(0x38_3018), false, 0, 4),
+            Ok(Some(ArmVmExit::GicCpuInterfaceRead {
+                register: ArmGicCpuInterfaceRegister::Control,
+                destination: 4,
+            }))
+        ));
+        assert!(matches!(
+            vcpu.builtin_sysreg_access_handler(ArmSysRegAddr::new(0x30_100c), true, 0xa0, 0),
+            Ok(Some(ArmVmExit::GicCpuInterfaceWrite {
+                register: ArmGicCpuInterfaceRegister::PriorityMask,
+                value: 0xa0,
+            }))
+        ));
+        assert!(matches!(
+            vcpu.builtin_sysreg_access_handler(ArmSysRegAddr::new(0x36_3016), false, 0, 7),
+            Ok(Some(ArmVmExit::GicCpuInterfaceRead {
+                register: ArmGicCpuInterfaceRegister::RunningPriority,
+                destination: 7,
+            }))
         ));
     }
 

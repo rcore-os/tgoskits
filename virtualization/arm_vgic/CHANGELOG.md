@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pending interrupts.
 - Make trapped DIR harvest the live ICH state before deactivation, so a hardware
   Pending-to-Active LR transition cannot be missed by a stale VM-local snapshot.
+- Fall back from the optional dedicated `TDIR` trap to the architectural common
+  CPU-interface trap, including checked CTLR, PMR, and RPR emulation, on GICv3
+  implementations that report `ICH_VTR_EL2.TDS=0`.
 
 ### Removed
 

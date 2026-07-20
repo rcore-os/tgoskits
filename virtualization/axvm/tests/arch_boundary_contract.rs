@@ -287,8 +287,8 @@ fn aarch64_cpu_interface_switch_is_one_irq_atomic_transaction() {
         .find("write_list_register(index, entry)")
         .expect("ICH load must restore list registers");
     let enable = load
-        .rfind("ICH_HCR_EL2.set(state.hcr())")
-        .expect("ICH load must restore the saved control state last");
+        .rfind("ICH_HCR_EL2.set(hardware_hcr_for_load(state.hcr()))")
+        .expect("ICH load must restore the saved control state and host trap policy last");
     assert!(
         disable < restore_lrs && restore_lrs < enable,
         "ICH load must disable HCR, restore all state, then enable HCR"
@@ -735,6 +735,33 @@ fn aarch64_hardware_forwarded_host_irq_uses_an_exclusive_hardware_backed_lr() {
     let arm_vcpu = include_str!("../../arm_vcpu/src/vcpu.rs");
     assert!(arm_vcpu.contains("HCR_EL2::IMO::EnableVirtualIRQ"));
     assert!(arm_vcpu.contains("HCR_EL2::FMO::EnableVirtualFIQ"));
+}
+
+#[test]
+fn aarch64_falls_back_to_common_cpu_interface_traps_without_tdir() {
+    let registration = include_str!("../src/arch/aarch64/gic/registration.rs");
+    assert!(
+        !registration.contains("require_deactivation_trap()"),
+        "a CPU without ICH_HCR_EL2.TDIR must use the architectural common-register trap fallback"
+    );
+
+    let cpu_interface = include_str!("../src/arch/aarch64/gic/cpu_interface.rs");
+    assert!(cpu_interface.contains("ICH_HCR_EL2::TC"));
+    assert!(cpu_interface.contains("ICH_VTR_EL2::TDS"));
+    for register in ["ICC_CTLR_EL1", "ICC_PMR_EL1", "ICC_RPR_EL1"] {
+        assert!(
+            cpu_interface.contains(register),
+            "the common trap fallback must preserve {register} semantics"
+        );
+    }
+
+    let arm_vcpu = include_str!("../../arm_vcpu/src/vcpu.rs");
+    assert!(arm_vcpu.contains("ArmVmExit::GicCpuInterfaceRead"));
+    assert!(arm_vcpu.contains("ArmVmExit::GicCpuInterfaceWrite"));
+
+    let arch = include_str!("../src/arch/aarch64/mod.rs");
+    assert!(arch.contains("read_gic_cpu_interface_register(vcpu.id(), register)"));
+    assert!(arch.contains("write_gic_cpu_interface_register(vcpu.id(), register, value)"));
 }
 
 #[test]
