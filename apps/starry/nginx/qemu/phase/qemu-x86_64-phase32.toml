@@ -11,8 +11,8 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
-to_bin = false
+uefi = true
+to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/nginx-runner.sh phase phase32"
 success_regex = ["(?m)^NGINX_RUNNER_PASSED\\b"]
