@@ -749,11 +749,20 @@ fn require_syslog_privilege() -> AxResult<()> {
     }
 }
 
+fn validate_syslog_read_args(buf: *mut c_char, len: usize) -> AxResult<()> {
+    if buf.is_null() || len > i32::MAX as usize {
+        Err(AxError::InvalidInput)
+    } else {
+        Ok(())
+    }
+}
+
 pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
     match ty {
         SYSLOG_ACTION_CLOSE | SYSLOG_ACTION_OPEN => Ok(0),
         SYSLOG_ACTION_READ => {
             require_syslog_privilege()?;
+            validate_syslog_read_args(buf, len)?;
             let data = {
                 let mut state = SYSLOG_STATE.lock();
                 state.read(len)
@@ -765,6 +774,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
         }
         SYSLOG_ACTION_READ_ALL => {
             require_syslog_privilege()?;
+            validate_syslog_read_args(buf, len)?;
             let data = {
                 let state = SYSLOG_STATE.lock();
                 state.read_all(len)
@@ -776,6 +786,7 @@ pub fn sys_syslog(ty: i32, buf: *mut c_char, len: usize) -> AxResult<isize> {
         }
         SYSLOG_ACTION_READ_CLEAR => {
             require_syslog_privilege()?;
+            validate_syslog_read_args(buf, len)?;
             let data = {
                 let mut state = SYSLOG_STATE.lock();
                 let data = state.read_all(len);

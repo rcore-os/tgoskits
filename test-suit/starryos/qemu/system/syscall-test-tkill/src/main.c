@@ -129,6 +129,10 @@ static void test_tkill_errors(void)
 
     CHECK(raw_tkill((pid_t)tid, INVALID_SIGNAL_NUMBER) == -1 && errno == EINVAL,
           "tkill invalid signal returns EINVAL");
+    CHECK(raw_tkill(0, SIGUSR1) == -1 && errno == EINVAL,
+          "tkill tid 0 returns EINVAL");
+    CHECK(raw_tkill(-1, SIGUSR1) == -1 && errno == EINVAL,
+          "tkill negative tid returns EINVAL");
     CHECK(raw_tkill(MISSING_TID, SIGUSR1) == -1 && errno == ESRCH,
           "tkill missing tid returns ESRCH");
     CHECK(raw_tkill(MISSING_TID, 0) == -1 && errno == ESRCH,

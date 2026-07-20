@@ -575,6 +575,12 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     }
 
     let process = &thr.proc_data.proc;
+
+    // A thread may own a private fd table after unshare(CLONE_FILES) or
+    // close_range(CLOSE_RANGE_UNSHARE). Release it when that thread exits;
+    // shared tables remain alive until their final sharer exits.
+    crate::file::close_all_fds();
+
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
@@ -588,11 +594,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // final zombie state. Tracees blocked in ptrace-stop must not retain a
         // dead tracer PID or stale stop context once the tracer is gone.
         detach_live_tracees_of(process.pid());
-
-        // Close all file descriptors before marking the process as exited.
-        // This ensures pipe write ends and other resources are properly released,
-        // so parent processes blocking on pipe reads will receive EOF.
-        crate::file::close_all_fds();
 
         // Release all POSIX (fcntl) locks held by this pid. Linux releases
         // them implicitly via fl_release_private when the last fd referring

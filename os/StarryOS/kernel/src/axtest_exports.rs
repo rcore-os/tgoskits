@@ -49,3 +49,7 @@ pub fn fcntl_setpipe_size_returns_capacity() -> bool {
 pub fn private_mmap_rejects_fault_at_file_eof() -> bool {
     super::mm::private_mmap_eof_check_for_test()
 }
+
+pub fn concurrent_epoll_reverse_add_is_serialized() -> bool {
+    super::file::concurrent_reverse_add_is_serialized_for_test()
+}

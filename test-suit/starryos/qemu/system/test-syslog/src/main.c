@@ -55,6 +55,12 @@ static void child_syslog_eperm(void) {
     if (__fail != setup_failures)
         return;
 
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ, NULL, 0),
+              EPERM, "non-root READ checks privilege before null buffer");
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ_ALL, tmp, -1),
+              EPERM, "non-root READ_ALL checks privilege before negative length");
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ_CLEAR, NULL, 0),
+              EPERM, "non-root READ_CLEAR checks privilege before null buffer");
     CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ, tmp, (int)sizeof(tmp)),
               EPERM, "non-root READ returns EPERM");
     CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ_ALL, tmp, (int)sizeof(tmp)),
@@ -97,6 +103,11 @@ int main(void) {
     long size_unread = syscall(SYS_syslog, SYSLOG_ACTION_SIZE_UNREAD, NULL, 0);
     CHECK(size_unread >= 0, "SIZE_UNREAD is non-negative");
     CHECK(size_unread <= size_buffer, "SIZE_UNREAD does not exceed SIZE_BUFFER");
+
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ, NULL, 0), EINVAL,
+              "READ rejects a null buffer with EINVAL");
+    CHECK_ERR(syscall(SYS_syslog, SYSLOG_ACTION_READ_ALL, buf, -1), EINVAL,
+              "READ_ALL rejects a negative length with EINVAL");
 
     long read_all = syscall(SYS_syslog, SYSLOG_ACTION_READ_ALL, buf, (int)sizeof(buf));
     CHECK(read_all >= 0, "READ_ALL returns a non-negative length");
