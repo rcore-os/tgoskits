@@ -1,28 +1,143 @@
 use alloc::{
-    borrow::Cow,
+    borrow::{Cow, ToOwned},
     string::String,
     sync::{Arc, Weak},
     vec,
     vec::Vec,
 };
 use core::{
+    any::Any,
     iter, mem,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::Context,
+    time::Duration,
 };
 
-use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
 use log::warn;
 
 use crate::{
-    DirEntry, DirEntrySink, Filesystem, FilesystemOps, Metadata, MetadataUpdate, Mutex, MutexGuard,
-    NodeFlags, NodePermission, NodeType, OpenOptions, ReferenceKey, TypeMap, VfsError, VfsResult,
-    path::{DOT, DOTDOT, PathBuf},
+    DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, FsIoEvents,
+    FsPollable, Metadata, MetadataUpdate, Mutex, MutexGuard, NodeFlags, NodeOps, NodePermission,
+    NodeType, OpenOptions, Reference, ReferenceKey, TypeMap, VfsError, VfsResult, WeakDirEntry,
+    path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
 static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
+static SYNTHETIC_MOUNT_INODE_COUNTER: AtomicU64 = AtomicU64::new(1_u64 << 63);
+
+struct SyntheticMountDir {
+    parent: DirEntry,
+    this: WeakDirEntry,
+    inode: u64,
+    mode: NodePermission,
+    uid: u32,
+    gid: u32,
+}
+
+impl SyntheticMountDir {
+    fn new(parent: DirEntry, this: WeakDirEntry, mode: NodePermission, uid: u32, gid: u32) -> Self {
+        Self {
+            parent,
+            this,
+            inode: SYNTHETIC_MOUNT_INODE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            mode,
+            uid,
+            gid,
+        }
+    }
+}
+
+impl NodeOps for SyntheticMountDir {
+    fn inode(&self) -> u64 {
+        self.inode
+    }
+
+    fn metadata(&self) -> VfsResult<Metadata> {
+        Ok(Metadata {
+            device: 0,
+            inode: self.inode,
+            nlink: 2,
+            mode: self.mode,
+            node_type: NodeType::Directory,
+            uid: self.uid,
+            gid: self.gid,
+            size: 0,
+            block_size: 0,
+            blocks: 0,
+            rdev: DeviceId::default(),
+            atime: Duration::ZERO,
+            mtime: Duration::ZERO,
+            ctime: Duration::ZERO,
+        })
+    }
+
+    fn update_metadata(&self, _update: MetadataUpdate) -> VfsResult<()> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
+    fn filesystem(&self) -> &dyn FilesystemOps {
+        self.parent.filesystem()
+    }
+
+    fn sync(&self, _data_only: bool) -> VfsResult<()> {
+        Ok(())
+    }
+
+    fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+        self
+    }
+}
+
+impl DirNodeOps for SyntheticMountDir {
+    fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
+        let entries = [
+            (DOT, self.inode, NodeType::Directory),
+            (DOTDOT, self.parent.inode(), NodeType::Directory),
+        ];
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let mut count = 0;
+        for (index, (name, ino, node_type)) in entries.iter().enumerate().skip(start) {
+            if !sink.accept(name, *ino, *node_type, (index + 1) as u64) {
+                break;
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    fn lookup(&self, name: &str) -> VfsResult<DirEntry> {
+        match name {
+            DOT => self.this.upgrade().ok_or(VfsError::NotFound),
+            DOTDOT => Ok(self.parent.clone()),
+            _ => Err(VfsError::NotFound),
+        }
+    }
+
+    fn create(
+        &self,
+        _name: &str,
+        _node_type: NodeType,
+        _permission: NodePermission,
+        _uid: u32,
+        _gid: u32,
+    ) -> VfsResult<DirEntry> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
+    fn link(&self, _name: &str, _node: &DirEntry) -> VfsResult<DirEntry> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
+    fn unlink(&self, _name: &str, _is_dir: bool) -> VfsResult<()> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+
+    fn rename(&self, _src_name: &str, _dst_dir: &DirNode, _dst_name: &str) -> VfsResult<()> {
+        Err(VfsError::ReadOnlyFilesystem)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PropagationType {
@@ -38,8 +153,8 @@ pub struct Mountpoint {
     root: DirEntry,
     /// Location in the parent mountpoint. `None` for the global root mount.
     location: Mutex<Option<Location>>,
-    /// Children of the mountpoint.
-    children: Mutex<HashMap<ReferenceKey, Weak<Self>>>,
+    /// Children of the mountpoint in this namespace-local mount tree.
+    children: Mutex<HashMap<ReferenceKey, Arc<Self>>>,
     /// Device ID
     device: u64,
     /// Read-only flag for this mountpoint.
@@ -77,11 +192,13 @@ impl Mountpoint {
     }
 
     pub fn new(fs: &Filesystem, location_in_parent: Option<Location>) -> Arc<Self> {
-        Self::new_with_root(
+        let result = Self::new_with_root(
             fs.root_dir(),
             location_in_parent,
             DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
-        )
+        );
+        result.readonly.store(fs.is_readonly(), Ordering::Release);
+        result
     }
 
     pub fn new_root(fs: &Filesystem) -> Arc<Self> {
@@ -98,24 +215,63 @@ impl Mountpoint {
             .readonly
             .store(source.mountpoint.is_readonly(), Ordering::Release);
         if recursive {
-            let mut children_to_bind: Vec<_> = source
-                .mountpoint
-                .children
-                .lock()
-                .iter()
-                .map(|(key, child)| (key.clone(), child.clone()))
-                .collect();
-            children_to_bind
-                .retain(|(_, child)| child.upgrade().is_none_or(|child| !child.is_unbindable()));
-            let result_children: HashMap<ReferenceKey, Weak<Self>> =
-                children_to_bind.into_iter().collect();
-            *result.children.lock() = result_children;
+            Self::clone_children_from(&source.mountpoint, &result, true);
         }
+        result
+    }
+
+    fn clone_shallow(source: &Arc<Self>, location_in_parent: Option<Location>) -> Arc<Self> {
+        let result = Self::new_with_root(source.root.clone(), location_in_parent, source.device());
+        result
+            .readonly
+            .store(source.is_readonly(), Ordering::Release);
+        *result.propagation.lock() = source.propagation();
+        result
+            .expired
+            .store(source.expired.load(Ordering::Acquire), Ordering::Release);
+        result
+    }
+
+    fn clone_children_from(source: &Arc<Self>, target: &Arc<Self>, skip_unbindable: bool) {
+        let children: Vec<_> = source
+            .children
+            .lock()
+            .iter()
+            .map(|(key, child)| (key.clone(), child.clone()))
+            .filter(|(_, child)| !(skip_unbindable && child.is_unbindable()))
+            .collect();
+
+        let mut target_children = target.children.lock();
+        for (key, child) in children {
+            let location = child
+                .location
+                .lock()
+                .as_ref()
+                .map(|loc| Location::new(target.clone(), loc.entry.clone()));
+            let cloned = Self::clone_shallow(&child, location);
+            Self::clone_children_from(&child, &cloned, skip_unbindable);
+            target_children.insert(key, cloned);
+        }
+    }
+
+    /// Clone this mount tree into an independent namespace-local topology.
+    ///
+    /// The returned tree shares underlying directory entries and filesystem
+    /// objects, but all `Mountpoint` nodes and parent/child links are private
+    /// to the clone.
+    pub fn clone_tree(self: &Arc<Self>) -> Arc<Self> {
+        let result = Self::clone_shallow(self, None);
+        Self::clone_children_from(self, &result, false);
         result
     }
 
     pub fn root_location(self: &Arc<Self>) -> Location {
         Location::new(self.clone(), self.root.clone())
+    }
+
+    /// Returns live child mountpoints in this namespace-local mount tree.
+    pub fn children(&self) -> Vec<Arc<Self>> {
+        self.children.lock().values().cloned().collect()
     }
 
     /// Returns the location in the parent mountpoint.
@@ -152,7 +308,6 @@ impl Mountpoint {
             let mut new_root_loc = new_root_mp.location.lock();
             if let Some(ref old_loc) = *new_root_loc {
                 self.children.lock().remove(&old_loc.entry.key());
-                *old_loc.entry.as_dir()?.mountpoint.lock() = None;
             }
             // new_root becomes the global root.
             *new_root_loc = None;
@@ -160,11 +315,10 @@ impl Mountpoint {
 
         // 2. Attach old root at put_old under new_root.
         {
-            *put_old.entry.as_dir()?.mountpoint.lock() = Some(self.clone());
             new_root_mp
                 .children
                 .lock()
-                .insert(put_old.entry.key(), Arc::downgrade(self));
+                .insert(put_old.entry.key(), self.clone());
             *self.location.lock() = Some(put_old.clone());
         }
 
@@ -179,7 +333,13 @@ impl Mountpoint {
     /// return `mnt2` for `mnt1.effective_mountpoint()`.
     pub(crate) fn effective_mountpoint(self: &Arc<Self>) -> Arc<Mountpoint> {
         let mut mountpoint = self.clone();
-        while let Some(mount) = mountpoint.root.as_dir().unwrap().mountpoint() {
+        while let Some(mount) = {
+            mountpoint
+                .children
+                .lock()
+                .get(&mountpoint.root.key())
+                .cloned()
+        } {
             mountpoint = mount;
         }
         mountpoint
@@ -297,11 +457,11 @@ impl Mountpoint {
     }
 
     fn attach_child(parent: &Arc<Self>, location: Location, child: &Arc<Self>) -> VfsResult<()> {
-        *location.entry.as_dir()?.mountpoint.lock() = Some(child.clone());
+        location.check_is_dir()?;
         parent
             .children
             .lock()
-            .insert(location.entry.key(), Arc::downgrade(child));
+            .insert(location.entry.key(), child.clone());
         Ok(())
     }
 
@@ -378,19 +538,17 @@ impl Mountpoint {
             return Err(VfsError::InvalidInput);
         };
 
-        *old_location.entry.as_dir()?.mountpoint.lock() = None;
         old_location
             .mountpoint
             .children
             .lock()
             .remove(&old_location.entry.key());
 
-        *new_location.entry.as_dir()?.mountpoint.lock() = Some(self.clone());
         new_location
             .mountpoint
             .children
             .lock()
-            .insert(new_location.entry.key(), Arc::downgrade(self));
+            .insert(new_location.entry.key(), self.clone());
 
         *self.location.lock() = Some(new_location.clone());
         Ok(())
@@ -408,7 +566,6 @@ impl Mountpoint {
             .children
             .lock()
             .remove(&location.entry.key());
-        *location.entry.as_dir()?.mountpoint.lock() = None;
         Ok(())
     }
 }
@@ -435,8 +592,6 @@ impl Location {
     pub fn is_dir(&self) -> bool;
 
     pub fn node_type(&self) -> NodeType;
-
-    pub fn is_root_of_mount(&self) -> bool;
 
     pub fn read_link(&self) -> VfsResult<String>;
 
@@ -466,6 +621,10 @@ impl Location {
 
     pub fn entry(&self) -> &DirEntry {
         &self.entry
+    }
+
+    pub fn is_root_of_mount(&self) -> bool {
+        self.entry.ptr_eq(&self.mountpoint.root)
     }
 
     pub fn update_metadata(&self, update: MetadataUpdate) -> VfsResult<()> {
@@ -501,7 +660,7 @@ impl Location {
     }
 
     pub fn is_root(&self) -> bool {
-        self.mountpoint.is_root() && self.entry.is_root_of_mount()
+        self.mountpoint.is_root() && self.is_root_of_mount()
     }
 
     pub fn check_is_dir(&self) -> VfsResult<()> {
@@ -538,7 +697,12 @@ impl Location {
     }
 
     pub fn is_mountpoint(&self) -> bool {
-        self.entry.as_dir().is_ok_and(|it| it.is_mountpoint())
+        self.entry.as_dir().is_ok()
+            && self
+                .mountpoint
+                .children
+                .lock()
+                .contains_key(&self.entry.key())
     }
 
     /// See [`Mountpoint::effective_mountpoint`].
@@ -548,7 +712,7 @@ impl Location {
             .children
             .lock()
             .get(&self.entry.key())
-            .and_then(Weak::upgrade)
+            .cloned()
         else {
             return self;
         };
@@ -583,6 +747,55 @@ impl Location {
             .as_dir()?
             .create(name, node_type, permission, uid, gid)
             .map(|entry| self.wrap(entry))
+    }
+
+    /// Creates an in-memory directory entry that exists only as a mount target.
+    ///
+    /// This is intended for early boot auto-mount recovery: if the root
+    /// filesystem is forced read-only because its on-disk state is dirty or
+    /// inconsistent, other partitions still need stable mount targets such as
+    /// `/boot` or `/userdata`. The placeholder is inserted only into the parent
+    /// dentry cache and does not mutate the backing filesystem. If the backing
+    /// filesystem has a non-directory entry with the same name, this helper
+    /// deliberately shadows it so the mount can cover the bad root entry.
+    pub fn create_transient_mount_dir(
+        &self,
+        name: &str,
+        permission: NodePermission,
+        uid: u32,
+        gid: u32,
+    ) -> VfsResult<Self> {
+        verify_entry_name(name)?;
+        if !self.is_readonly() {
+            return Err(VfsError::InvalidInput);
+        }
+        let dir = self.entry.as_dir()?;
+        if let Some(entry) = dir.lookup_cache(name)
+            && entry.node_type() == NodeType::Directory
+        {
+            return Ok(self.wrap(entry).resolve_mountpoint());
+        }
+        match dir.lookup(name) {
+            Ok(entry) if entry.node_type() == NodeType::Directory => {
+                return Ok(self.wrap(entry).resolve_mountpoint());
+            }
+            Ok(_) => {}
+            Err(err) if err.canonicalize() == VfsError::NotFound => {}
+            Err(err) => return Err(err),
+        }
+
+        let parent = self.entry.clone();
+        let reference = Reference::new(Some(parent.clone()), name.to_owned());
+        let entry = DirEntry::new_dir(
+            |this| {
+                DirNode::new(Arc::new(SyntheticMountDir::new(
+                    parent, this, permission, uid, gid,
+                )))
+            },
+            reference,
+        );
+        dir.insert_cache(name.to_owned(), entry.clone());
+        Ok(self.wrap(entry))
     }
 
     pub fn link(&self, name: &str, node: &Self) -> VfsResult<Self> {
@@ -644,17 +857,14 @@ impl Location {
     pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
         let result = Mountpoint::new(fs, Some(self.clone()));
         let should_propagate = self.mountpoint.is_shared();
+        self.check_is_dir()?;
         {
-            let mut mountpoint = self.entry.as_dir()?.mountpoint.lock();
-            if mountpoint.is_some() {
+            let mut children = self.mountpoint.children.lock();
+            if children.contains_key(&self.entry.key()) {
                 return Err(VfsError::ResourceBusy);
             }
-            *mountpoint = Some(result.clone());
+            children.insert(self.entry.key(), result.clone());
         }
-        self.mountpoint
-            .children
-            .lock()
-            .insert(self.entry.key(), Arc::downgrade(&result));
         if should_propagate {
             Mountpoint::propagate_new_child(self.mountpoint(), self, &result)?;
         }
@@ -662,30 +872,22 @@ impl Location {
     }
 
     pub fn bind_mount(&self, source: &Self, recursive: bool) -> VfsResult<Arc<Mountpoint>> {
-        let source_mountpoint = source.mountpoint().clone();
-        if source_mountpoint.is_unbindable() {
+        if source.mountpoint().is_unbindable() {
             return Err(VfsError::InvalidInput);
         }
 
-        let target_dir = self.entry.as_dir()?;
+        self.check_is_dir()?;
+        let mut children = self.mountpoint.children.lock();
+        if children.contains_key(&self.entry.key()) {
+            return Err(VfsError::ResourceBusy);
+        }
         let result = Mountpoint::bind(source, self.clone(), recursive);
-        if source_mountpoint.is_shared() {
-            result.join_shared_group(&source_mountpoint);
-        } else if source_mountpoint.is_slave() {
+        if source.mountpoint().is_shared() {
+            result.join_shared_group(source.mountpoint());
+        } else if source.mountpoint().is_slave() {
             result.set_slave();
         }
-        {
-            let mut mountpoint = target_dir.mountpoint.lock();
-            if mountpoint.is_some() {
-                result.set_private();
-                return Err(VfsError::ResourceBusy);
-            }
-            *mountpoint = Some(result.clone());
-        }
-        self.mountpoint
-            .children
-            .lock()
-            .insert(self.entry.key(), Arc::downgrade(&result));
+        children.insert(self.entry.key(), result.clone());
         Ok(result)
     }
 
@@ -720,7 +922,6 @@ impl Location {
                 .children
                 .lock()
                 .remove(&parent_loc.entry.key());
-            *parent_loc.entry.as_dir()?.mountpoint.lock() = None;
         }
         Ok(())
     }
@@ -738,17 +939,15 @@ impl Location {
         }
         let children = mem::take(&mut *self.mountpoint.children.lock());
         for (_, child) in children {
-            if let Some(child) = child.upgrade() {
-                child.root_location().unmount_all()?;
-            }
+            child.root_location().unmount_all()?;
         }
         self.unmount()
     }
 }
 
 #[inherit_methods(from = "self.entry")]
-impl Pollable for Location {
-    fn poll(&self) -> IoEvents;
+impl FsPollable for Location {
+    fn poll(&self) -> FsIoEvents;
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents);
+    fn register(&self, context: &mut Context<'_>, events: FsIoEvents);
 }

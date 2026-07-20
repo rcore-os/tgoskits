@@ -1,0 +1,76 @@
+diff --git a/make/modules/jdk.incubator.vector/Lib.gmk b/make/modules/jdk.incubator.vector/Lib.gmk
+index e6a05019f..2bedf7d0a 100644
+--- a/make/modules/jdk.incubator.vector/Lib.gmk
++++ b/make/modules/jdk.incubator.vector/Lib.gmk
+@@ -46,7 +46,10 @@ ifeq ($(INCLUDE_COMPILER2), true)
+   ## Build libsleef
+   ##############################################################################
+ 
+-  ifeq ($(call isTargetOs, linux macosx)+$(call isTargetCpu, aarch64 riscv64), true+true)
++  # NOTE(musl-cross-build): riscv64 dropped here — libsleef needs -march=rv64gcv,
++  # which the GCC 11.2 riscv64-linux-musl assembler cannot encode ("ISA extension 'v'").
++  # The jdk.incubator.vector module still works via its pure-Java fallback path.
++  ifeq ($(call isTargetOs, linux macosx)+$(call isTargetCpu, aarch64), true+true)
+     ifeq ($(call isTargetCpu, riscv64), true)
+       LIBSLEEF_CFLAGS := -march=rv64gcv
+     endif
+diff --git a/src/hotspot/cpu/riscv/assembler_riscv.hpp b/src/hotspot/cpu/riscv/assembler_riscv.hpp
+index 0712b60fb..469eee319 100644
+--- a/src/hotspot/cpu/riscv/assembler_riscv.hpp
++++ b/src/hotspot/cpu/riscv/assembler_riscv.hpp
+@@ -3706,7 +3706,13 @@ enum Nf {
+ // --------------------------
+   void lui(Register Rd, int32_t imm) {
+     /* lui -> c.lui */
+-    if (do_compress() && (Rd != x0 && Rd != x2 && imm != 0 && is_simm18(imm))) {
++    // c_lui() only encodes imm[17:12] and asserts (imm & 0xfff) == 0; the value it
++    // emits is the reserved C.LUI rd,0 whenever imm[17:12] == 0. The peephole guard
++    // must therefore mirror c_lui's full precondition: without the (imm & 0xfff) == 0
++    // check a lui() whose low 12 bits are set (so imm != 0 but imm[17:12] == 0)
++    // compresses to C.LUI rd,0, which a strict RV64GC decoder faults as an illegal
++    // instruction at run time (asserts are compiled out in product builds).
++    if (do_compress() && (Rd != x0 && Rd != x2 && imm != 0 && (imm & 0xfff) == 0 && is_simm18(imm))) {
+       c_lui(Rd, imm);
+       return;
+     }
+diff --git a/src/hotspot/os/linux/os_linux.cpp b/src/hotspot/os/linux/os_linux.cpp
+index 3ef58971c..0e61daffa 100644
+--- a/src/hotspot/os/linux/os_linux.cpp
++++ b/src/hotspot/os/linux/os_linux.cpp
+@@ -138,14 +138,16 @@
+ #define MAX_PATH    (2 * K)
+ 
+ #ifdef MUSL_LIBC
+-// dlvsym is not a part of POSIX
+-// and musl libc doesn't implement it.
+-static void *dlvsym(void *handle,
+-                    const char *symbol,
+-                    const char *version) {
+-   // load the latest version of symbol
++// musl libc does not implement dlvsym(). A plain `static dlvsym` fallback clashes with
++// GCC's implicit/builtin extern prototype ("declared extern and later static"); define
++// the shim under a distinct name and macro-redirect calls.
++static void *dlvsym_musl_compat(void *handle,
++                                const char *symbol,
++                                const char *version) {
++   // musl has no symbol versioning; load the latest (only) version.
+    return dlsym(handle, symbol);
+ }
++#define dlvsym dlvsym_musl_compat
+ #endif
+ 
+ enum CoredumpFilterBit {
+diff --git a/src/hotspot/os_cpu/linux_riscv/os_linux_riscv.cpp b/src/hotspot/os_cpu/linux_riscv/os_linux_riscv.cpp
+index 8366a7249..d6ff95f74 100644
+--- a/src/hotspot/os_cpu/linux_riscv/os_linux_riscv.cpp
++++ b/src/hotspot/os_cpu/linux_riscv/os_linux_riscv.cpp
+@@ -56,7 +56,8 @@
+ // put OS-includes here
+ # include <dlfcn.h>
+ # include <errno.h>
+-# include <fpu_control.h>
++// <fpu_control.h> is glibc-only (absent on musl) and unused here:
++// get_fpu_control_word()/set_fpu_control_word() are empty stubs on riscv.
+ # include <linux/ptrace.h>
+ # include <pthread.h>
+ # include <signal.h>

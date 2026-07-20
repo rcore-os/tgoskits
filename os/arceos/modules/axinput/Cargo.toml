@@ -1,6 +1,6 @@
 [package]
 name = "ax-input"
-version = "0.5.15"
+version = "0.6.5"
 repository.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -15,3 +15,4 @@ ax-sync = { workspace = true }
 ax-lazyinit = { workspace = true }
 log = { workspace = true }
 rdif-input.workspace = true
+irq-framework.workspace = true

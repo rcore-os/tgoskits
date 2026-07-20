@@ -1,20 +1,37 @@
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use core::cell::OnceCell;
 
-use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
 use axfs_ng_vfs::{
     DirEntry, DirNode, Filesystem, FilesystemOps, Reference, StatFs, VfsResult, path::MAX_NAME_LEN,
 };
-use rsext4::{Jbd2Dev, bmalloc::InodeNumber, superblock::Ext4Superblock};
+use rsext4::{
+    Jbd2Dev, MountOptions, bmalloc::InodeNumber, error::Errno, superblock::Ext4Superblock,
+};
 
 use super::{Ext4Disk, Inode, util::into_vfs_err};
-use crate::block::{BlockRegion, FsBlockDevice};
+use crate::{
+    block::{BlockRegion, FsBlockDevice},
+    os::sync::{SleepMutex as Mutex, SleepMutexGuard as MutexGuard},
+};
 
 const EXT4_ROOT_INO: u32 = 2;
 
 pub(crate) struct Ext4State {
     pub fs: rsext4::Ext4FileSystem,
     pub dev: Jbd2Dev<Ext4Disk>,
+    /// Live `Inode` Arc reference count per inode number.
+    ///
+    /// Every `Inode::new` increments; every `Inode::drop` decrements.
+    /// When the count reaches 0 *and* the inode is zero-link (present in
+    /// `zero_link`), the inode is freed.
+    pub(crate) live_refs: BTreeMap<InodeNumber, usize>,
+    /// Inodes whose on-disk `i_links_count` has been driven to 0.
+    /// They remain allocated until the last live `Inode` Arc is dropped.
+    pub(crate) zero_link: BTreeSet<InodeNumber>,
 }
 
 impl Ext4State {
@@ -23,11 +40,66 @@ impl Ext4State {
         let dev = &mut self.dev as *mut _;
         unsafe { (&mut *fs, &mut *dev) }
     }
+
+    /// Increment the live-reference count for `ino`.
+    ///
+    /// Called from `Inode::new` every time an `Inode` Arc is created.
+    pub(crate) fn inc_ref(&mut self, ino: InodeNumber) {
+        self.live_refs
+            .entry(ino)
+            .and_modify(|c| *c += 1)
+            .or_insert(1);
+    }
+
+    /// Decrement the live-reference count for `ino`.
+    ///
+    /// Returns `true` when the count reaches 0 (the entry is removed).
+    /// The caller must also check `is_zero_link` before freeing the inode.
+    pub(crate) fn dec_ref(&mut self, ino: InodeNumber) -> bool {
+        use alloc::collections::btree_map::Entry;
+        match self.live_refs.entry(ino) {
+            Entry::Occupied(mut e) => {
+                let count = e.get_mut();
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    e.remove();
+                    true
+                } else {
+                    false
+                }
+            }
+            Entry::Vacant(_) => false,
+        }
+    }
+
+    /// Mark an inode as zero-link (its last directory entry was removed).
+    ///
+    /// Returns `true` if there are **no** live `Inode` Arcs for this inode
+    /// right now — the caller should `free_inode` immediately.  When
+    /// returning `false` the ino is inserted into `zero_link` for deferred
+    /// cleanup; when returning `true` it is NOT inserted (nothing to defer).
+    pub(crate) fn mark_zero_link(&mut self, ino: InodeNumber) -> bool {
+        if self.live_refs.contains_key(&ino) {
+            self.zero_link.insert(ino);
+            false
+        } else {
+            true
+        }
+    }
+
+    pub(crate) fn is_zero_link(&self, ino: InodeNumber) -> bool {
+        self.zero_link.contains(&ino)
+    }
+
+    pub(crate) fn clear_zero_link(&mut self, ino: InodeNumber) {
+        self.zero_link.remove(&ino);
+    }
 }
 
 pub struct Ext4Filesystem {
     inner: Mutex<Ext4State>,
     root_dir: OnceCell<DirEntry>,
+    readonly: bool,
 }
 
 impl Ext4Filesystem {
@@ -40,18 +112,53 @@ impl Ext4Filesystem {
         dev: Box<dyn FsBlockDevice>,
         region: BlockRegion,
     ) -> VfsResult<Filesystem> {
-        let mut dev = Jbd2Dev::initial_jbd2dev(0, Ext4Disk::new(dev, region), true);
-        let fs = rsext4::mount(&mut dev).map_err(into_vfs_err)?;
+        let disk = Ext4Disk::new(dev, region);
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, disk, true);
+        let (fs, dev, readonly) = match rsext4::Ext4FileSystem::device_has_error_state(&mut dev) {
+            Ok(true) => {
+                warn!(
+                    "ext4 filesystem is in error state; replaying journal then mounting read-only"
+                );
+                Self::mount_readonly_fallback(dev, true)?
+            }
+            Ok(false) => match rsext4::mount(&mut dev) {
+                Ok(fs) => (fs, dev, false),
+                Err(err) if err.code == Errno::EUCLEAN => {
+                    warn!(
+                        "ext4 journal replay failed with EUCLEAN; retrying read-only without \
+                         journal replay"
+                    );
+                    Self::mount_readonly_fallback(dev, false)?
+                }
+                Err(err) => return Err(into_vfs_err(err)),
+            },
+            Err(err) if err.code == Errno::EUCLEAN => {
+                warn!(
+                    "ext4 superblock check failed with EUCLEAN; retrying read-only without \
+                     journal replay"
+                );
+                Self::mount_readonly_fallback(dev, false)?
+            }
+            Err(err) => return Err(into_vfs_err(err)),
+        };
 
         let fs = Arc::new(Self {
-            inner: Mutex::new(Ext4State { fs, dev }),
+            inner: Mutex::new(Ext4State {
+                fs,
+                dev,
+                live_refs: BTreeMap::new(),
+                zero_link: BTreeSet::new(),
+            }),
             root_dir: OnceCell::new(),
+            readonly,
         });
+        let root_ino = InodeNumber::new(EXT4_ROOT_INO).unwrap();
+        fs.lock().inc_ref(root_ino);
         let _ = fs.root_dir.set(DirEntry::new_dir(
             |this| {
                 DirNode::new(Inode::new(
                     fs.clone(),
-                    InodeNumber::new(EXT4_ROOT_INO).unwrap(),
+                    root_ino,
                     Some(this),
                     Some("/".into()),
                 ))
@@ -61,24 +168,53 @@ impl Ext4Filesystem {
         Ok(Filesystem::new(fs))
     }
 
+    /// Mount read-only as a fallback when journal replay fails or the
+    /// filesystem is in error state.
+    ///
+    /// Linux always replays the journal before mounting read-only when the
+    /// filesystem is in error state, because unreplayed journal transactions
+    /// leave metadata inconsistent.  We mirror that behaviour.
+    ///
+    /// Crucially, we never call `into_inner()` on the `Jbd2Dev` — the block
+    /// cache must be preserved so that reads after mount (e.g. loading a
+    /// guest kernel image) can hit the cache rather than issuing fresh
+    /// hardware I/O that may hang on a controller left in a bad state by the
+    /// failed mount attempt.
+    fn mount_readonly_fallback(
+        mut dev: Jbd2Dev<Ext4Disk>,
+        replay_journal: bool,
+    ) -> VfsResult<(rsext4::Ext4FileSystem, Jbd2Dev<Ext4Disk>, bool)> {
+        let fs = rsext4::mount_with_options(
+            &mut dev,
+            MountOptions {
+                readonly: true,
+                replay_journal,
+            },
+        )
+        .map_err(into_vfs_err)?;
+        Ok((fs, dev, true))
+    }
+
     /// Locks the shared rsext4 state.
     ///
-    /// Uses `SpinNoIrq` rather than a blocking mutex because filesystem
-    /// operations may be called from IRQ context (e.g., DHCP during network
-    /// init), where sleeping is not allowed.  The rsext4 caches (inode,
-    /// data-block, bitmap) provide fine-grained `SpinNoPreempt` for SMP
-    /// concurrency; this global lock protects metadata mutations (allocators,
-    /// superblock, group descriptors, journal commits).
+    /// Uses a blocking mutex because rsext4 operations may issue block I/O while
+    /// this guard is held. Submit/poll block devices without IRQ support can
+    /// yield while waiting for completion, so the outer filesystem state guard
+    /// must not disable interrupts or preemption.
     pub(crate) fn lock(&self) -> MutexGuard<'_, Ext4State> {
         self.inner.lock()
     }
 
     pub(crate) fn sync_to_disk(&self) -> VfsResult<()> {
+        if self.readonly {
+            return Ok(());
+        }
+
         let mut state = self.inner.lock();
         let (fs, dev) = state.split();
         fs.datablock_cache.flush_all(dev).map_err(into_vfs_err)?;
         fs.bitmap_cache.flush_all(dev).map_err(into_vfs_err)?;
-        fs.inodetable_cahce.flush_all(dev).map_err(into_vfs_err)?;
+        fs.inodetable_cache.flush_all(dev).map_err(into_vfs_err)?;
         // Mark the filesystem clean before writing the superblock so the
         // on-disk state reflects a clean sync / unmount.
         fs.superblock.s_state = Ext4Superblock::EXT4_VALID_FS;
@@ -97,6 +233,10 @@ unsafe impl Sync for Ext4Filesystem {}
 impl FilesystemOps for Ext4Filesystem {
     fn name(&self) -> &str {
         "ext4"
+    }
+
+    fn is_readonly(&self) -> bool {
+        self.readonly
     }
 
     fn root_dir(&self) -> DirEntry {

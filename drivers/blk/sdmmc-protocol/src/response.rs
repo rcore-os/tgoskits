@@ -1,31 +1,6 @@
-use crate::error::{CardError, Error, ErrorContext, Phase};
+pub use sdio_host2::{RawResponse, ResponseType};
 
-/// SD/MMC response types
-///
-/// Marked `#[non_exhaustive]`: new transport-level response shapes
-/// (e.g. SDIO IO_RW extension, UHS-II) may be added before 1.0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ResponseType {
-    /// No response
-    None,
-    /// R1: Standard response (48-bit)
-    R1,
-    /// R1b: R1 with busy signal
-    R1b,
-    /// R2: CID/CSD register (136-bit)
-    R2,
-    /// R3: OCR register (48-bit)
-    R3,
-    /// R4: SDIO OCR (48-bit)
-    R4,
-    /// R5: SDIO RW (48-bit)
-    R5,
-    /// R6: Published RCA (48-bit, SD)
-    R6,
-    /// R7: Card interface condition (48-bit)
-    R7,
-}
+use crate::error::{CardError, Error, ErrorContext, Phase};
 
 /// Parsed response from the card
 ///
@@ -47,6 +22,51 @@ pub enum Response {
     R5(SdioRwResponse),
     R6(RcaResponse),
     R7(IfCondResponse),
+}
+
+impl Response {
+    /// Convert a typed protocol response into the normalized physical response
+    /// words used by `sdio-host2`.
+    pub fn to_raw_response(self, expected: ResponseType) -> RawResponse {
+        let mut words = [0; 4];
+        match self {
+            Self::Empty => {}
+            Self::R1(resp) | Self::R1b(resp) => words[0] = resp.raw,
+            Self::R2(bytes) => {
+                for (word, chunk) in words.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                    *word = u32::from_be_bytes(*chunk);
+                }
+            }
+            Self::R3(resp) => words[0] = resp.raw,
+            Self::R4(resp) => words[0] = resp.raw,
+            Self::R5(resp) => words[0] = resp.raw,
+            Self::R6(resp) => words[0] = resp.raw,
+            Self::R7(resp) => words[0] = resp.raw,
+        }
+        RawResponse::new(expected, words)
+    }
+}
+
+/// Parse normalized physical response words into the protocol response type.
+pub fn response_from_raw(raw: RawResponse) -> Result<Response, Error> {
+    Ok(match raw.ty {
+        ResponseType::None => Response::Empty,
+        ResponseType::R1 => Response::R1(R1Response::from_native_raw(raw.words[0])?),
+        ResponseType::R1b => Response::R1b(R1Response::from_native_raw(raw.words[0])?),
+        ResponseType::R2 => {
+            let mut bytes = [0; 16];
+            for (chunk, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(raw.words) {
+                chunk.copy_from_slice(&word.to_be_bytes());
+            }
+            Response::R2(bytes)
+        }
+        ResponseType::R3 => Response::R3(OcrResponse::from_raw(raw.words[0])),
+        ResponseType::R4 => Response::R4(SdioOcrResponse::from_raw(raw.words[0])),
+        ResponseType::R5 => Response::R5(SdioRwResponse::from_raw(raw.words[0])),
+        ResponseType::R6 => Response::R6(RcaResponse::from_raw(raw.words[0])),
+        ResponseType::R7 => Response::R7(IfCondResponse::from_raw(raw.words[0])),
+        _ => return Err(Error::UnsupportedCommand),
+    })
 }
 
 /// R1: Standard response — contains status bits

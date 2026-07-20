@@ -1,7 +1,10 @@
+use alloc::boxed::Box;
 use core::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
 };
+
+use dma_api::{CompletedDma, PreparedDma};
 
 use crate::{BlkError, DeviceInfo, QueueInfo, QueueLimits};
 
@@ -158,8 +161,93 @@ impl Request<'_> {
     }
 }
 
+/// Block I/O request that moves DMA backing ownership into the queue.
+pub struct OwnedRequest {
+    pub op: RequestOp,
+    pub lba: u64,
+    pub block_count: u32,
+    pub data: Option<PreparedDma>,
+    pub flags: RequestFlags,
+}
+
+impl OwnedRequest {
+    pub fn data_len(&self) -> usize {
+        self.data.as_ref().map_or(0, |data| data.len().get())
+    }
+
+    pub fn is_data_op(&self) -> bool {
+        matches!(self.op, RequestOp::Read | RequestOp::Write)
+    }
+}
+
+/// Submit-side failure that returns request ownership to the caller.
+pub struct SubmitError {
+    pub error: BlkError,
+    request: Box<OwnedRequest>,
+}
+
+impl SubmitError {
+    pub fn new(error: BlkError, request: OwnedRequest) -> Self {
+        Self {
+            error,
+            request: Box::new(request),
+        }
+    }
+
+    pub fn into_request(self) -> OwnedRequest {
+        *self.request
+    }
+
+    pub fn request(&self) -> &OwnedRequest {
+        &self.request
+    }
+}
+
+/// One terminal request result with owned DMA backing returned to the runtime.
+pub struct CompletedRequest {
+    pub id: RequestId,
+    pub result: Result<(), BlkError>,
+    pub data: Option<CompletedDma>,
+}
+
+impl CompletedRequest {
+    pub const fn new(
+        id: RequestId,
+        result: Result<(), BlkError>,
+        data: Option<CompletedDma>,
+    ) -> Self {
+        Self { id, result, data }
+    }
+}
+
+/// Result of polling an owned queue request.
+pub enum RequestPoll {
+    Pending,
+    Ready(CompletedRequest),
+}
+
+/// Queue misuse/query failure.
+///
+/// This is intentionally separate from request I/O completion. Returning this
+/// error must not tell the runtime that the DMA backing is safe to recycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollError {
+    UnknownRequest,
+    WrongQueue,
+    DriverPoisoned,
+}
+
+impl From<PollError> for BlkError {
+    fn from(value: PollError) -> Self {
+        match value {
+            PollError::UnknownRequest | PollError::WrongQueue => BlkError::InvalidRequest,
+            PollError::DriverPoisoned => BlkError::Io,
+        }
+    }
+}
+
 pub fn validate_request(info: QueueInfo, request: &Request<'_>) -> Result<(), BlkError> {
-    validate_request_flags(info, request)?;
+    validate_request_flags(info, request.flags)?;
     validate_request_shape(info.device, info.limits, request)
 }
 
@@ -235,18 +323,97 @@ pub fn validate_request_shape(
     Ok(())
 }
 
-fn validate_request_flags(info: QueueInfo, request: &Request<'_>) -> Result<(), BlkError> {
-    let unknown = request.flags.unsupported_by(RequestFlags::ALL_KNOWN);
+pub fn validate_owned_request(info: QueueInfo, request: &OwnedRequest) -> Result<(), BlkError> {
+    validate_request_flags(info, request.flags)?;
+    validate_owned_request_shape(info.device, info.limits, request)
+}
+
+pub fn validate_owned_request_shape(
+    info: DeviceInfo,
+    limits: QueueLimits,
+    request: &OwnedRequest,
+) -> Result<(), BlkError> {
+    if request.block_count == 0 && !matches!(request.op, RequestOp::Flush) {
+        return Err(BlkError::InvalidRequest);
+    }
+
+    if request.lba >= info.num_blocks
+        || request
+            .lba
+            .checked_add(request.block_count as u64)
+            .is_none_or(|end| end > info.num_blocks)
+    {
+        return Err(BlkError::InvalidBlockIndex(request.lba));
+    }
+
+    match request.op {
+        RequestOp::Read | RequestOp::Write => {
+            let expected = request
+                .block_count
+                .checked_mul(info.logical_block_size as u32)
+                .map(|len| len as usize)
+                .ok_or(BlkError::InvalidRequest)?;
+            if request.data_len() != expected {
+                return Err(BlkError::InvalidRequest);
+            }
+            let Some(data) = &request.data else {
+                return Err(BlkError::InvalidRequest);
+            };
+            let segments = data.segments();
+            if segments.is_empty()
+                || segments.len() > limits.max_segments
+                || segments
+                    .iter()
+                    .any(|segment| segment.len.get() > limits.max_segment_size)
+            {
+                return Err(BlkError::InvalidRequest);
+            }
+        }
+        RequestOp::Flush => {
+            if request.data.is_some() || request.block_count != 0 {
+                return Err(BlkError::InvalidRequest);
+            }
+            if !limits.supports_flush {
+                return Err(BlkError::NotSupported);
+            }
+        }
+        RequestOp::Discard => {
+            if request.data.is_some() {
+                return Err(BlkError::InvalidRequest);
+            }
+            if !limits.supports_discard {
+                return Err(BlkError::NotSupported);
+            }
+        }
+        RequestOp::WriteZeroes => {
+            if request.data.is_some() {
+                return Err(BlkError::InvalidRequest);
+            }
+            if !limits.supports_write_zeroes {
+                return Err(BlkError::NotSupported);
+            }
+        }
+    }
+
+    if request.block_count > limits.max_blocks_per_request {
+        return Err(BlkError::InvalidRequest);
+    }
+
+    Ok(())
+}
+
+fn validate_request_flags(info: QueueInfo, flags: RequestFlags) -> Result<(), BlkError> {
+    let unknown = flags.unsupported_by(RequestFlags::ALL_KNOWN);
     if !unknown.is_empty() {
         return Err(BlkError::InvalidRequest);
     }
 
-    let unsupported = request.flags.unsupported_by(info.limits.supported_flags);
+    let unsupported = flags.unsupported_by(info.limits.supported_flags);
     if !unsupported.is_empty() {
         return Err(BlkError::NotSupported);
     }
 
-    if request.flags.intersects(RequestFlags::PREFLUSH) && !info.limits.supports_flush {
+    if flags.intersects(RequestFlags::PREFLUSH) && !info.limits.supports_flush {
         return Err(BlkError::NotSupported);
     }
 
@@ -408,7 +575,9 @@ mod tests {
     fn request_validation_rejects_transfer_larger_than_hard_block_limit() {
         let info = queue_info_with(QueueLimits {
             dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 512,
+            max_inflight: 1,
             max_blocks_per_request: 2,
             max_segments: 1,
             max_segment_size: 4096,

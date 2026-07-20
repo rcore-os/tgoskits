@@ -67,7 +67,7 @@ flowchart TD
 
 ### 使用场景
 - `AxErrorKind` / `AxError`：在 `ax-alloc`、`ax-mm`、`ax-net`、`ax-fs`、`ax-task` 等模块里高频使用。
-- `LinuxError`：在 `ax-libc`、`ax-posix-api`、`ax-net-ng` 的 POSIX 兼容路径中直接使用。
+- `LinuxError`：在 `ax-libc`、`ax-posix-api`、`ax-net` 的 POSIX 兼容路径中直接使用。
 - `ax_err!` / `ax_err_type!`：在 `axvisor`、`ax-net`、`ax-std`、`ax-task` 等代码里广泛出现。
 - `canonicalize()`：适合把兼容层传回来的 Linux 错误重新折叠到内核内部语义。
 
@@ -86,7 +86,7 @@ graph LR
     ax_errno --> ax-allocator["ax-allocator"]
     ax_errno --> axio["ax-io"]
     ax_errno --> ax-mm["ax-mm"]
-    ax_errno --> ax-net["ax-net/ax-net-ng"]
+    ax_errno --> ax-net["ax-net/ax-net"]
     ax_errno --> ax-api["ax-api"]
     ax_errno --> arceos_posix["ax-posix-api"]
     ax_errno --> starry_kernel["starry-kernel"]

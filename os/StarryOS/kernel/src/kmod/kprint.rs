@@ -43,15 +43,20 @@ const LOG_LEVELS: &[&[u8; 2]] = &[
 
 /// `memset` shim. C ABI; some modules call this directly rather than
 /// through the compiler's intrinsic.
+#[cfg(not(target_env = "musl"))]
 #[capi_fn]
-pub unsafe extern "C" fn memset(s: *mut core::ffi::c_void, c: c_int, n: usize) -> *mut c_char {
+pub unsafe extern "C" fn memset(
+    s: *mut core::ffi::c_void,
+    c: c_int,
+    n: usize,
+) -> *mut core::ffi::c_void {
     let xs = s as *mut u8;
     let byte = c as u8;
     for i in 0..n {
         // SAFETY: caller-guaranteed validity of `s` for `n` bytes (C contract).
         unsafe { *xs.add(i) = byte };
     }
-    s as *mut c_char
+    s
 }
 
 /// Per-character writer that `lwprintf_vprintf_ex` calls back into.

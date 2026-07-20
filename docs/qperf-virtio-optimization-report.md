@@ -76,7 +76,7 @@ VSOCK 路径有三层锁嵌套，是所有 VirtIO 设备中锁竞争最严重的
 #### 3.1.1 全局设备锁
 
 ```rust
-// os/arceos/modules/axnet-ng/src/device/vsock.rs:15
+// net/ax-net/src/device/vsock.rs:15
 static VSOCK_DEVICE: Mutex<Option<AxVsockDevice>> = Mutex::new(None);
 static PENDING_EVENTS: Mutex<VecDeque<VsockDriverEvent>> = Mutex::new(VecDeque::new());
 ```
@@ -86,7 +86,7 @@ static PENDING_EVENTS: Mutex<VecDeque<VsockDriverEvent>> = Mutex::new(VecDeque::
 #### 3.1.2 全局连接管理器锁
 
 ```rust
-// os/arceos/modules/axnet-ng/src/vsock/connection_manager.rs:536
+// net/ax-net/src/vsock/connection_manager.rs:536
 pub static VSOCK_CONN_MANAGER: Mutex<VsockConnectionManager> = ...;
 ```
 
@@ -106,7 +106,7 @@ connect:          state → VSOCK_CONN_MANAGER → self.connection → per-conne
 ### 3.2 Net — TX/RX 共享锁
 
 ```rust
-// platform/axplat-dyn/src/drivers/net/mod.rs:51-61
+// platforms/axplat-dyn/src/drivers/net/mod.rs:51-61
 struct NetState {
     tx_queue: rd_net::TxQueue,
     rx_queue: rd_net::RxQueue,
@@ -122,7 +122,7 @@ pub struct Net {
 ### 3.3 Block — 同步阻塞持锁
 
 ```rust
-// platform/axplat-dyn/src/drivers/blk/mod.rs:16-19
+// platforms/axplat-dyn/src/drivers/blk/mod.rs:16-19
 pub struct Block {
     queue: Mutex<CmdQueue>,
 }

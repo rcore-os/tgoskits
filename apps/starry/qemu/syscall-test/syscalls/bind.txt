@@ -1,0 +1,6 @@
+# bind01 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/bind.log
+# bind02 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/bind.log
+# bind03 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/bind.log
+# bind04 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/bind.log
+# bind05 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/bind.log
+# bind06 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/bind.log

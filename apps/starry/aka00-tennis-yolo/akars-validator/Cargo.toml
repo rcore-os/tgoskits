@@ -1,0 +1,16 @@
+[package]
+name = "akars-tennis-validator"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+cvi-vdec-uapi = { path = "../../../../drivers/interface/cvi-vdec-uapi" }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+libc = "0.2"
+zune-core = "0.5"
+zune-jpeg = "0.5"
+
+[profile.release]
+lto = "thin"

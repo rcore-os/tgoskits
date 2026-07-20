@@ -19,6 +19,8 @@
 //! - [`sdio`] *(feature `sdio`)*: a [`sdio::SdioHost`] trait that abstracts
 //!   a host controller and the [`sdio::SdioSdmmc`] driver that drives it
 //!   through card initialization, block I/O and bus-speed selection.
+//! - [`rdif`] *(feature `rdif`)*: a [`rdif::BlockDevice`] bridge that exposes
+//!   an SDIO-backed card through `rdif-block` queues.
 //!
 //! # Cargo features
 //!
@@ -26,6 +28,7 @@
 //! |----------|---------|-------------------------------------------------|
 //! | `spi`    | yes     | Enables [`spi::SpiTransport`] and [`spi::SpiSdmmc`]. |
 //! | `sdio`   | no      | Enables the host trait and submit/poll data-command contract. |
+//! | `rdif`   | no      | Enables the RDIF block-device bridge over `sdio`. |
 //!
 //! Diagnostic output goes through the [`log`] crate; configure a logger in
 //! your application to capture it.
@@ -81,6 +84,9 @@
 
 #![no_std]
 
+#[cfg(any(feature = "sdio", feature = "rdif"))]
+extern crate alloc;
+
 pub mod block;
 pub mod cmd;
 mod common;
@@ -93,6 +99,9 @@ pub mod spi;
 
 #[cfg(feature = "sdio")]
 pub mod sdio;
+
+#[cfg(feature = "rdif")]
+pub mod rdif;
 
 pub use block::{
     BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,

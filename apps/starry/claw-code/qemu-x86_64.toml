@@ -1,9 +1,12 @@
-timeout = 0
+timeout = 120
 shell_prefix = "root@starry:"
 uefi = false
 to_bin = false
-success_regex = []
-fail_regex = []
+success_regex = ["STARRY_CLAW_READY"]
+fail_regex = [
+  "STARRY_CLAW_MISSING",
+  "(?i)panic",
+]
 
 args = [
   "-nographic",
@@ -21,15 +24,9 @@ export USER=root
 export SHELL=/bin/sh
 export TERM=xterm-256color
 export PATH=/usr/local/bin:/usr/bin:/bin:/sbin
-cat <<'STARRY_CLAW_USAGE'
-
-StarryOS Claw interactive shell is ready.
-
-常用命令:
-  claw
-
-退出 QEMU:
-  Ctrl-a x
-
-STARRY_CLAW_USAGE
+if ! test -x /usr/bin/claw; then
+  printf 'STARRY_%s\n' CLAW_MISSING
+  exit 1
+fi
+printf 'STARRY_%s\n' CLAW_READY
 """

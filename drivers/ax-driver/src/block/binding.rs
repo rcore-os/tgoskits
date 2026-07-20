@@ -1,33 +1,56 @@
+#[cfg(feature = "irq")]
+use alloc::sync::Arc;
 use alloc::{
     boxed::Box,
     string::{String, ToString},
     vec::Vec,
 };
 use core::alloc::Layout;
+#[cfg(feature = "irq")]
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
-use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
+#[cfg(not(test))]
+use ax_kspin::SpinNoIrq as BlockQueueLock;
+#[cfg(test)]
+use ax_kspin::SpinRaw as BlockQueueLock;
+use dma_api::{ContiguousArray, CpuDmaBuffer, DeviceDma, DmaDirection};
 use log::{error, warn};
 use rdif_block::{
-    BlkError, Buffer, IQueue, Interface, QueueInfo, Request, RequestFlags, RequestId, RequestOp,
-    RequestStatus, TransferChunk, TransferPlan, TransferPlanner, TransferRuntimeCaps,
+    BlkError, Buffer, CompletedRequest, IQueue, Interface, OwnedRequest, QueueHandle, QueueInfo,
+    Request, RequestFlags, RequestId, RequestOp, RequestPoll, RequestStatus, TransferChunk,
+    TransferPlan, TransferPlanner, TransferRuntimeCaps,
 };
-use rdrive::Device;
+use rdrive::{Device, probe::OnProbeError};
+
+use super::IrqBoundBlock;
+use crate::{
+    BindingInfo, BindingIrq, IrqBindingLease, binding_info_from_acpi, binding_info_from_fdt,
+    registration::{BoundDevice, register_bound_device},
+};
+#[cfg(feature = "pci")]
+use crate::{PciIrqRequirement, binding_info_from_pci};
 
 pub struct Block {
     name: String,
-    irq_num: Option<usize>,
+    info: BindingInfo,
     irq_enabled: bool,
     #[cfg(feature = "irq")]
     irq_handler: Option<BlockIrqHandler>,
     interface: Box<dyn Interface>,
-    queues: SpinNoIrq<BlockQueues>,
+    queues: BlockQueueLock<BlockQueues>,
 }
 
 struct BlockQueues {
-    queue: Box<dyn IQueue>,
+    queue: RuntimeQueue,
     pool: BlockBufferPool,
+    #[cfg(feature = "irq")]
+    irq_events: Arc<BlockIrqEvents>,
+}
+
+enum RuntimeQueue {
+    Legacy(Box<dyn IQueue>),
+    Owned(QueueHandle),
 }
 
 struct BlockBufferPool {
@@ -40,17 +63,27 @@ struct BlockBufferPool {
 pub struct PlatformBlockDevice {
     name: String,
     interface: Option<Box<dyn Interface>>,
-    irq_num: Option<usize>,
+    info: BindingInfo,
+}
+
+/// A probed block device exposed through the portable `rdif-block` interface.
+///
+/// Runtime code should use this form and create/poll `rdif_block::IQueue`
+/// objects directly, installing IRQ handlers according to the OS policy.
+pub struct RdifBlockDevice {
+    name: String,
+    irqs: Vec<crate::BindingIrqBinding>,
+    interface: Box<dyn Interface>,
 }
 
 const MAX_BLOCK_BUFFER_SIZE: usize = 16 * 1024;
 
 impl PlatformBlockDevice {
-    fn new(name: String, interface: Box<dyn Interface>, irq_num: Option<usize>) -> Self {
+    fn new(name: String, interface: Box<dyn Interface>, info: BindingInfo) -> Self {
         Self {
             name,
             interface: Some(interface),
-            irq_num,
+            info,
         }
     }
 }
@@ -61,32 +94,93 @@ impl rdrive::DriverGeneric for PlatformBlockDevice {
     }
 }
 
+impl BoundDevice for PlatformBlockDevice {
+    fn binding_info(&self) -> &BindingInfo {
+        &self.info
+    }
+}
+
 #[cfg(feature = "irq")]
 pub struct BlockIrqHandler {
     handler: Box<dyn rdif_block::IrqHandler>,
+    events: Option<Arc<BlockIrqEvents>>,
 }
 
 #[cfg(feature = "irq")]
 impl BlockIrqHandler {
-    fn new(handler: Box<dyn rdif_block::IrqHandler>) -> Self {
-        Self { handler }
+    fn new(handler: Box<dyn rdif_block::IrqHandler>, events: Arc<BlockIrqEvents>) -> Self {
+        Self {
+            handler,
+            events: Some(events),
+        }
     }
 
-    pub fn handle(&self) -> rdif_block::Event {
-        self.handler.handle_irq()
+    fn new_raw(handler: Box<dyn rdif_block::IrqHandler>) -> Self {
+        Self {
+            handler,
+            events: None,
+        }
+    }
+
+    pub fn handle(&mut self) -> rdif_block::Event {
+        let event = self.handler.handle_irq();
+        if let Some(events) = &self.events {
+            events.record(event);
+        }
+        event
     }
 }
 
 #[cfg(not(feature = "irq"))]
 pub struct BlockIrqHandler;
 
+#[cfg(feature = "irq")]
+#[derive(Default)]
+struct BlockIrqEvents {
+    queues: AtomicU64,
+}
+
+#[cfg(feature = "irq")]
+impl BlockIrqEvents {
+    fn record(&self, event: rdif_block::Event) {
+        let queues = event.queues.bits();
+        if queues != 0 {
+            self.queues.fetch_or(queues, Ordering::Release);
+        }
+    }
+
+    fn take_queue(&self, id: usize) -> bool {
+        if id >= u64::BITS as usize {
+            return false;
+        }
+        let mask = 1_u64 << id;
+        let mut current = self.queues.load(Ordering::Acquire);
+        while current & mask != 0 {
+            match self.queues.compare_exchange_weak(
+                current,
+                current & !mask,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(next) => current = next,
+            }
+        }
+        false
+    }
+}
+
 impl Block {
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    pub const fn irq_num(&self) -> Option<usize> {
-        self.irq_num
+    pub fn irq_num(&self) -> Option<usize> {
+        self.info.irq_num()
+    }
+
+    pub fn binding_info(&self) -> &BindingInfo {
+        &self.info
     }
 
     pub fn enable_irq(&mut self) {
@@ -103,11 +197,15 @@ impl Block {
         self.irq_enabled
     }
 
+    pub fn irq(&self) -> Option<&BindingIrq> {
+        self.info.irq()
+    }
+
     #[cfg(feature = "irq")]
     pub fn take_irq_handler(&mut self) -> Option<(usize, BlockIrqHandler)> {
-        let irq_num = self.irq_num.take()?;
+        let irq = self.info.irq_num()?;
         let handler = self.irq_handler.take()?;
-        Some((irq_num, handler))
+        Some((irq, handler))
     }
 
     #[cfg(not(feature = "irq"))]
@@ -126,6 +224,25 @@ impl Block {
 
     pub fn flush(&mut self) -> AxResult {
         let mut queues = self.queues.lock();
+        if queues.queue.is_owned() {
+            let request_id = match queues
+                .queue
+                .owned_mut()
+                .ok_or(AxError::BadState)?
+                .submit_request(OwnedRequest {
+                    op: RequestOp::Flush,
+                    lba: 0,
+                    block_count: 0,
+                    data: None,
+                    flags: RequestFlags::NONE,
+                }) {
+                Ok(request_id) => request_id,
+                Err(err) if err.error == BlkError::NotSupported => return Ok(()),
+                Err(err) => return Err(map_blk_err_to_ax_err(err.error)),
+            };
+            return queues.poll_owned_until_complete(request_id).map(|_| ());
+        }
+
         let mut segments = [];
         let request = Request {
             op: RequestOp::Flush,
@@ -134,7 +251,12 @@ impl Block {
             segments: &mut segments,
             flags: RequestFlags::NONE,
         };
-        let request_id = match queues.queue.submit_request(request) {
+        let request_id = match queues
+            .queue
+            .legacy_mut()
+            .ok_or(AxError::BadState)?
+            .submit_request(request)
+        {
             Ok(request_id) => request_id,
             Err(BlkError::NotSupported) => return Ok(()),
             Err(err) => return Err(map_blk_err_to_ax_err(err)),
@@ -151,21 +273,34 @@ impl Block {
         for chunk in plan {
             let block_buf =
                 &mut buf[chunk.byte_offset..chunk.byte_offset.saturating_add(chunk.byte_len)];
-            let mut dma_buffer = queues.pool.alloc(DmaDirection::FromDevice)?;
-            dma_buffer.prepare_for_device(0, block_buf.len());
-            let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
-            let request_id = queues
-                .queue
-                .submit_request(Request {
+            if queues.queue.is_owned() {
+                let dma_buffer = queues
+                    .pool
+                    .alloc_owned(DmaDirection::FromDevice, block_buf.len())?;
+                let request_id = queues.submit_owned_request(OwnedRequest {
+                    op: RequestOp::Read,
+                    lba: chunk.lba,
+                    block_count: chunk.block_count,
+                    data: Some(dma_buffer.prepare_for_device()),
+                    flags: RequestFlags::NONE,
+                })?;
+                let completed = queues.poll_owned_until_complete(request_id)?;
+                let completed_dma = completed.data.ok_or(AxError::BadState)?;
+                completed_dma.copy_from_device_to_slice(block_buf);
+            } else {
+                let mut dma_buffer = queues.pool.alloc(DmaDirection::FromDevice)?;
+                dma_buffer.prepare_for_device(0, block_buf.len());
+                let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
+                let request_id = queues.submit_legacy_request(Request {
                     op: RequestOp::Read,
                     lba: chunk.lba,
                     block_count: chunk.block_count,
                     segments: &mut segments,
                     flags: RequestFlags::NONE,
-                })
-                .map_err(map_blk_err_to_ax_err)?;
-            queues.poll_until_complete(request_id)?;
-            dma_buffer.copy_from_device_to_slice(block_buf);
+                })?;
+                queues.poll_until_complete(request_id)?;
+                dma_buffer.copy_from_device_to_slice(block_buf);
+            }
         }
         Ok(())
     }
@@ -179,27 +314,116 @@ impl Block {
         for chunk in plan {
             let block_buf =
                 &buf[chunk.byte_offset..chunk.byte_offset.saturating_add(chunk.byte_len)];
-            let mut dma_buffer = queues.pool.alloc(DmaDirection::ToDevice)?;
-            dma_buffer.copy_to_device_from_slice(block_buf);
-            let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
-            let request_id = queues
-                .queue
-                .submit_request(Request {
+            if queues.queue.is_owned() {
+                let mut dma_buffer = queues
+                    .pool
+                    .alloc_owned(DmaDirection::ToDevice, block_buf.len())?;
+                dma_buffer.copy_to_device_from_slice(block_buf);
+                let request_id = queues.submit_owned_request(OwnedRequest {
+                    op: RequestOp::Write,
+                    lba: chunk.lba,
+                    block_count: chunk.block_count,
+                    data: Some(dma_buffer.prepare_for_device()),
+                    flags: RequestFlags::NONE,
+                })?;
+                let completed = queues.poll_owned_until_complete(request_id)?;
+                drop(completed.data);
+            } else {
+                let mut dma_buffer = queues.pool.alloc(DmaDirection::ToDevice)?;
+                dma_buffer.copy_to_device_from_slice(block_buf);
+                let mut segments = segments_from_dma(&mut dma_buffer, chunk)?;
+                let request_id = queues.submit_legacy_request(Request {
                     op: RequestOp::Write,
                     lba: chunk.lba,
                     block_count: chunk.block_count,
                     segments: &mut segments,
                     flags: RequestFlags::NONE,
-                })
-                .map_err(map_blk_err_to_ax_err)?;
-            queues.poll_until_complete(request_id)?;
+                })?;
+                queues.poll_until_complete(request_id)?;
+            }
         }
         Ok(())
     }
 }
 
+impl RdifBlockDevice {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn irq(&self) -> Option<&BindingIrq> {
+        self.irq_for_source(0)
+            .or_else(|| self.irqs.first().map(|binding| &binding.irq))
+    }
+
+    pub fn irq_cloned(&self) -> Option<BindingIrq> {
+        self.irq().cloned()
+    }
+
+    pub fn irq_for_source(&self, source_id: usize) -> Option<&BindingIrq> {
+        self.irqs
+            .iter()
+            .find(|binding| binding.source_id == source_id)
+            .map(|binding| &binding.irq)
+    }
+
+    pub fn irq_for_source_cloned(&self, source_id: usize) -> Option<BindingIrq> {
+        self.irq_for_source(source_id).cloned()
+    }
+
+    pub fn irq_sources(&self) -> &[crate::BindingIrqBinding] {
+        &self.irqs
+    }
+
+    pub fn irq_num(&self) -> Option<usize> {
+        self.irq().and_then(BindingIrq::legacy_num)
+    }
+
+    pub fn irq_num_for_source(&self, source_id: usize) -> Option<usize> {
+        self.irq_for_source(source_id)
+            .and_then(BindingIrq::legacy_num)
+    }
+
+    pub fn interface(&self) -> &dyn Interface {
+        &*self.interface
+    }
+
+    pub fn interface_mut(&mut self) -> &mut dyn Interface {
+        &mut *self.interface
+    }
+
+    pub fn into_interface(self) -> Box<dyn Interface> {
+        self.interface
+    }
+
+    pub fn enable_irq(&mut self) {
+        self.interface.enable_irq();
+    }
+
+    pub fn disable_irq(&mut self) {
+        self.interface.disable_irq();
+    }
+
+    #[cfg(feature = "irq")]
+    pub fn take_irq_handler(&mut self, source_id: usize) -> Option<(usize, BlockIrqHandler)> {
+        let irq_num = self.irq_num_for_source(source_id)?;
+        self.interface
+            .take_irq_handler(source_id)
+            .map(BlockIrqHandler::new_raw)
+            .map(|handler| (irq_num, handler))
+    }
+
+    #[cfg(not(feature = "irq"))]
+    pub fn take_irq_handler(&mut self, _source_id: usize) -> Option<(usize, BlockIrqHandler)> {
+        None
+    }
+}
+
 impl BlockQueues {
-    fn new(queue: Box<dyn IQueue>) -> AxResult<Self> {
+    fn new(
+        queue: RuntimeQueue,
+        #[cfg(feature = "irq")] irq_events: Arc<BlockIrqEvents>,
+    ) -> AxResult<Self> {
         let info = queue.info();
         let block_size = info.device.logical_block_size;
         if block_size == 0 {
@@ -210,23 +434,83 @@ impl BlockQueues {
         Ok(Self {
             queue,
             pool: BlockBufferPool {
-                dma: DeviceDma::new(info.limits.dma_mask, axklib::dma::op()),
+                dma: DeviceDma::new(
+                    info.limits.dma_domain,
+                    info.limits.dma_mask,
+                    axklib::dma::op(),
+                ),
                 planner,
                 size: layout.size(),
                 align: layout.align(),
             },
+            #[cfg(feature = "irq")]
+            irq_events,
         })
+    }
+
+    fn submit_legacy_request(&mut self, request: Request<'_>) -> AxResult<RequestId> {
+        self.queue
+            .legacy_mut()
+            .ok_or(AxError::BadState)?
+            .submit_request(request)
+            .map_err(map_blk_err_to_ax_err)
+    }
+
+    fn submit_owned_request(&mut self, request: OwnedRequest) -> AxResult<RequestId> {
+        self.queue
+            .owned_mut()
+            .ok_or(AxError::BadState)?
+            .submit_request(request)
+            .map_err(|err| map_blk_err_to_ax_err(err.error))
     }
 
     fn poll_until_complete(&mut self, request: RequestId) -> AxResult {
         loop {
-            match self
+            let status = self
                 .queue
+                .legacy_mut()
+                .ok_or(AxError::BadState)?
                 .poll_request(request)
-                .map_err(map_blk_err_to_ax_err)?
-            {
-                RequestStatus::Complete => return Ok(()),
-                RequestStatus::Pending => core::hint::spin_loop(),
+                .map_err(map_blk_err_to_ax_err)?;
+            match status {
+                RequestStatus::Complete => {
+                    #[cfg(feature = "irq")]
+                    let _ = self.irq_events.take_queue(self.queue.id());
+                    return Ok(());
+                }
+                RequestStatus::Pending => {
+                    #[cfg(feature = "irq")]
+                    if self.irq_events.take_queue(self.queue.id()) {
+                        continue;
+                    }
+                    core::hint::spin_loop();
+                }
+            }
+        }
+    }
+
+    fn poll_owned_until_complete(&mut self, request: RequestId) -> AxResult<CompletedRequest> {
+        loop {
+            let status = self
+                .queue
+                .owned_mut()
+                .ok_or(AxError::BadState)?
+                .poll_request(request)
+                .map_err(|err| map_blk_err_to_ax_err(err.into()))?;
+            match status {
+                RequestPoll::Ready(completed) => {
+                    #[cfg(feature = "irq")]
+                    let _ = self.irq_events.take_queue(self.queue.id());
+                    completed.result.map_err(map_blk_err_to_ax_err)?;
+                    return Ok(completed);
+                }
+                RequestPoll::Pending => {
+                    #[cfg(feature = "irq")]
+                    if self.irq_events.take_queue(self.queue.id()) {
+                        continue;
+                    }
+                    core::hint::spin_loop();
+                }
             }
         }
     }
@@ -239,6 +523,52 @@ impl BlockBufferPool {
             .map_err(BlkError::from)
             .map_err(map_blk_err_to_ax_err)
     }
+
+    fn alloc_owned(&self, direction: DmaDirection, len: usize) -> AxResult<CpuDmaBuffer> {
+        CpuDmaBuffer::new_zero(
+            &self.dma,
+            core::num::NonZeroUsize::new(len).ok_or(AxError::BadState)?,
+            self.align,
+            direction,
+        )
+        .map_err(BlkError::from)
+        .map_err(map_blk_err_to_ax_err)
+    }
+}
+
+impl RuntimeQueue {
+    #[cfg(feature = "irq")]
+    fn id(&self) -> usize {
+        match self {
+            Self::Legacy(queue) => queue.id(),
+            Self::Owned(queue) => queue.id(),
+        }
+    }
+
+    fn info(&self) -> QueueInfo {
+        match self {
+            Self::Legacy(queue) => queue.info(),
+            Self::Owned(queue) => queue.info(),
+        }
+    }
+
+    fn is_owned(&self) -> bool {
+        matches!(self, Self::Owned(_))
+    }
+
+    fn legacy_mut(&mut self) -> Option<&mut dyn IQueue> {
+        match self {
+            Self::Legacy(queue) => Some(&mut **queue),
+            Self::Owned(_) => None,
+        }
+    }
+
+    fn owned_mut(&mut self) -> Option<&mut QueueHandle> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Owned(queue) => Some(queue),
+        }
+    }
 }
 
 impl TryFrom<Device<PlatformBlockDevice>> for Block {
@@ -247,70 +577,165 @@ impl TryFrom<Device<PlatformBlockDevice>> for Block {
     fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
         let name = dev.name.clone();
-        let irq_num = dev.irq_num;
+        let info = dev.info.clone();
+        let irq = info.irq_num();
         let mut interface = dev.interface.take().ok_or(AxError::BadState)?;
-        let queue = interface.create_queue().ok_or(AxError::BadState)?;
-        let queues = BlockQueues::new(queue)?;
+        let queue = interface
+            .create_owned_queue()
+            .map(RuntimeQueue::Owned)
+            .or_else(|| interface.create_queue().map(RuntimeQueue::Legacy))
+            .ok_or(AxError::BadState)?;
+        #[cfg(feature = "irq")]
+        let irq_events = Arc::new(BlockIrqEvents::default());
+        let queues = BlockQueues::new(
+            queue,
+            #[cfg(feature = "irq")]
+            Arc::clone(&irq_events),
+        )?;
 
         #[cfg(feature = "irq")]
-        let irq_handler = irq_num
+        let irq_handler = irq
+            .as_ref()
             .and_then(|_| take_legacy_irq_handler(interface.as_mut()))
-            .map(BlockIrqHandler::new);
+            .map(|handler| BlockIrqHandler::new(handler, irq_events));
         drop(dev);
 
         #[cfg(feature = "irq")]
-        let irq_num = if irq_handler.is_some() { irq_num } else { None };
+        let info = if irq_handler.is_some() {
+            info
+        } else {
+            BindingInfo::empty()
+        };
         #[cfg(feature = "irq")]
         let irq_handler = irq_handler;
         #[cfg(not(feature = "irq"))]
-        let irq_num = {
-            let _ = irq_num;
-            None
+        let info = {
+            let _ = irq;
+            BindingInfo::empty()
         };
 
         Ok(Self {
             name,
-            irq_num,
+            info,
             irq_enabled: interface.is_irq_enabled(),
             #[cfg(feature = "irq")]
             irq_handler,
             interface,
-            queues: SpinNoIrq::new(queues),
+            queues: BlockQueueLock::new(queues),
+        })
+    }
+}
+
+impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
+    type Error = AxError;
+
+    fn try_from(base: Device<PlatformBlockDevice>) -> Result<Self, Self::Error> {
+        let mut dev = base.lock().map_err(|_| AxError::BadState)?;
+        let name = dev.name.clone();
+        let irqs = dev.info.irq_sources().to_vec();
+        let interface = dev.interface.take().ok_or(AxError::BadState)?;
+        Ok(Self {
+            name,
+            irqs,
+            interface,
         })
     }
 }
 
 pub trait PlatformDeviceBlock {
-    fn register_block<T: Interface>(self, dev: T);
-    fn register_block_with_irq<T: Interface>(self, dev: T, irq_num: Option<usize>);
+    fn register_block<T: Interface>(self, dev: T) -> Option<usize>;
+    fn register_block_with_info<T: Interface>(self, dev: T, info: BindingInfo) -> Option<usize>;
+    fn register_irq_bound_block<T, L>(self, dev: T, irq_lease: L) -> Option<usize>
+    where
+        Self: Sized,
+        T: Interface,
+        L: IrqBindingLease;
 }
 
 impl PlatformDeviceBlock for rdrive::PlatformDevice {
-    fn register_block<T: Interface>(self, dev: T) {
-        self.register_block_with_irq(dev, None);
+    fn register_block<T: Interface>(self, dev: T) -> Option<usize> {
+        self.register_block_with_info(dev, BindingInfo::empty())
     }
 
-    fn register_block_with_irq<T: Interface>(self, dev: T, irq_num: Option<usize>) {
-        let name = dev.name().to_string();
-        self.register(PlatformBlockDevice::new(name, Box::new(dev), irq_num));
+    fn register_block_with_info<T: Interface>(self, dev: T, info: BindingInfo) -> Option<usize> {
+        register_block_with_info(self, dev, info)
+    }
+
+    fn register_irq_bound_block<T, L>(self, dev: T, irq_lease: L) -> Option<usize>
+    where
+        T: Interface,
+        L: IrqBindingLease,
+    {
+        let info = irq_lease.binding_info();
+        self.register_block_with_info(IrqBoundBlock::new(dev, irq_lease), info)
     }
 }
 
-pub fn decode_fdt_irq(interrupts: &[rdrive::probe::fdt::InterruptRef]) -> Option<usize> {
-    let interrupt = interrupts.first()?;
-    decode_irq_cells(&interrupt.specifier)
+pub trait ProbeFdtBlock {
+    fn register_block<T: Interface>(self, dev: T) -> Result<Option<usize>, OnProbeError>;
 }
 
-fn decode_irq_cells(specifier: &[u32]) -> Option<usize> {
-    match specifier {
-        [irq] => Some(*irq as usize),
-        [kind, irq, ..] => match *kind {
-            0 => Some(*irq as usize + 32),
-            1 => Some(*irq as usize + 16),
-            _ => Some(*irq as usize),
-        },
-        _ => None,
+impl ProbeFdtBlock for rdrive::probe::fdt::ProbeFdt<'_> {
+    fn register_block<T: Interface>(self, dev: T) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_fdt(self.info())?;
+        Ok(register_block_with_info(
+            self.into_platform_device(),
+            dev,
+            info,
+        ))
     }
+}
+
+pub trait ProbeAcpiBlock {
+    fn register_block<T: Interface>(self, dev: T) -> Result<Option<usize>, OnProbeError>;
+}
+
+impl ProbeAcpiBlock for rdrive::probe::acpi::ProbeAcpi<'_> {
+    fn register_block<T: Interface>(self, dev: T) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_acpi(self.info())?;
+        Ok(register_block_with_info(
+            self.into_platform_device(),
+            dev,
+            info,
+        ))
+    }
+}
+
+#[cfg(feature = "pci")]
+pub trait ProbePciBlock {
+    fn register_block<T: Interface>(
+        self,
+        dev: T,
+        requirement: PciIrqRequirement,
+    ) -> Result<Option<usize>, OnProbeError>;
+}
+
+#[cfg(feature = "pci")]
+impl ProbePciBlock for rdrive::probe::pci::ProbePci<'_> {
+    fn register_block<T: Interface>(
+        self,
+        dev: T,
+        requirement: PciIrqRequirement,
+    ) -> Result<Option<usize>, OnProbeError> {
+        let info = binding_info_from_pci(self.info(), requirement)?;
+        Ok(register_block_with_info(
+            self.into_platform_device(),
+            dev,
+            info,
+        ))
+    }
+}
+
+fn register_block_with_info<T: Interface>(
+    plat_dev: rdrive::PlatformDevice,
+    dev: T,
+    info: BindingInfo,
+) -> Option<usize> {
+    let name = dev.name().to_string();
+    register_bound_device(
+        plat_dev,
+        PlatformBlockDevice::new(name, Box::new(dev), info),
+    )
 }
 
 pub fn take_block_devices() -> Vec<Block> {
@@ -325,6 +750,27 @@ pub fn take_block_devices() -> Vec<Block> {
         })
         .collect()
 }
+
+pub fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
+    rdrive::get_list::<PlatformBlockDevice>()
+        .into_iter()
+        .filter_map(|dev| match RdifBlockDevice::try_from(dev) {
+            Ok(block) => Some(block),
+            Err(err) => {
+                warn!("failed to take rdif block device: {err:?}");
+                None
+            }
+        })
+        .collect()
+}
+
+#[deprecated(note = "use take_rdif_block_devices")]
+pub fn take_raw_block_devices() -> Vec<RdifBlockDevice> {
+    take_rdif_block_devices()
+}
+
+#[deprecated(note = "use RdifBlockDevice")]
+pub type RawBlockDevice = RdifBlockDevice;
 
 #[cfg(feature = "irq")]
 fn take_legacy_irq_handler(
@@ -421,7 +867,10 @@ mod tests {
     use dma_api::{
         DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
     };
-    use rdif_block::{DeviceInfo, DriverGeneric, QueueLimits, validate_request};
+    use rdif_block::{
+        DeviceInfo, DriverGeneric, IQueueOwned, PollError, QueueLimits, SubmitError,
+        validate_request,
+    };
 
     use super::*;
 
@@ -585,6 +1034,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn platform_block_device_exposes_binding_info_irq_num() {
+        let irq = 47;
+        let device = PlatformBlockDevice::new(
+            "test-block".into(),
+            Box::new(TestInterface),
+            BindingInfo::with_irq(Some(irq)).unwrap(),
+        );
+
+        assert_eq!(BoundDevice::binding_info(&device).irq_num(), Some(irq));
+        assert_eq!(BoundDevice::irq_num(&device), Some(irq));
+    }
+
     struct TestQueue {
         dma: &'static TrackingDma,
     }
@@ -643,6 +1105,97 @@ mod tests {
         }
     }
 
+    struct OwnedRecordingQueue {
+        info: QueueInfo,
+        log: &'static RequestLog,
+        pending: Option<CompletedRequest>,
+    }
+
+    impl OwnedRecordingQueue {
+        fn new(log: &'static RequestLog, limits: QueueLimits) -> Self {
+            Self {
+                info: QueueInfo {
+                    id: 0,
+                    device: DeviceInfo {
+                        name: Some("owned-recording-block"),
+                        ..DeviceInfo::new(64, 512)
+                    },
+                    limits,
+                },
+                log,
+                pending: None,
+            }
+        }
+    }
+
+    impl IQueueOwned for OwnedRecordingQueue {
+        fn id(&self) -> usize {
+            self.info.id
+        }
+
+        fn info(&self) -> QueueInfo {
+            self.info
+        }
+
+        fn submit_request(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError> {
+            if let Err(err) = rdif_block::validate_owned_request(self.info, &request) {
+                return Err(SubmitError::new(err, request));
+            }
+            let id = RequestId::new(self.log.snapshot().len());
+            let op = request.op;
+            let lba = request.lba;
+            let block_count = request.block_count;
+            let flags = request.flags;
+            let data_len = request.data_len();
+            let mut completed_data = request.data.map(|data| data.into_cpu_buffer());
+            if op == RequestOp::Read {
+                let Some(buffer) = completed_data.as_mut() else {
+                    return Err(SubmitError::new(
+                        BlkError::InvalidRequest,
+                        OwnedRequest {
+                            op,
+                            lba,
+                            block_count,
+                            data: None,
+                            flags,
+                        },
+                    ));
+                };
+                unsafe {
+                    buffer.as_mut_slice_cpu().fill(block_count as u8);
+                }
+            }
+            self.log.push(SubmittedRequest {
+                op,
+                lba,
+                block_count,
+                data_len,
+                segment_lengths: alloc::vec![data_len],
+            });
+            let completed_data = completed_data.map(|buffer| {
+                let in_flight = unsafe { buffer.prepare_for_device().into_in_flight() };
+                unsafe { in_flight.complete_after_quiesce() }
+            });
+            self.pending = Some(CompletedRequest::new(id, Ok(()), completed_data));
+            Ok(id)
+        }
+
+        fn poll_request(&mut self, _request: RequestId) -> Result<RequestPoll, PollError> {
+            Ok(self
+                .pending
+                .take()
+                .map(RequestPoll::Ready)
+                .unwrap_or(RequestPoll::Pending))
+        }
+
+        fn cancel_request(&mut self, _request: RequestId) -> Result<RequestPoll, PollError> {
+            self.pending
+                .take()
+                .map(RequestPoll::Ready)
+                .ok_or(PollError::UnknownRequest)
+        }
+    }
+
     // SAFETY: The queue records request metadata synchronously and never
     // accesses request segments after `submit_request` returns.
     unsafe impl IQueue for RecordingQueue {
@@ -680,19 +1233,21 @@ mod tests {
         let layout = block_buffer_layout(info, planner.chunk_size()).unwrap();
         Block {
             name: String::from("test-block"),
-            irq_num: None,
+            info: BindingInfo::empty(),
             irq_enabled: false,
             #[cfg(feature = "irq")]
             irq_handler: None,
             interface: Box::new(TestInterface),
-            queues: SpinNoIrq::new(BlockQueues {
-                queue,
+            queues: BlockQueueLock::new(BlockQueues {
+                queue: RuntimeQueue::Legacy(queue),
                 pool: BlockBufferPool {
-                    dma: DeviceDma::new(u64::MAX, dma),
+                    dma: DeviceDma::new_legacy(u64::MAX, dma),
                     planner,
                     size: layout.size(),
                     align: layout.align(),
                 },
+                #[cfg(feature = "irq")]
+                irq_events: Arc::new(BlockIrqEvents::default()),
             }),
         }
     }
@@ -714,7 +1269,9 @@ mod tests {
         let log = Box::leak(Box::<RequestLog>::default());
         let limits = QueueLimits {
             dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 4096,
+            max_inflight: 1,
             max_blocks_per_request: 8,
             max_segments: 1,
             max_segment_size: 4096,
@@ -762,7 +1319,9 @@ mod tests {
         let log = Box::leak(Box::<RequestLog>::default());
         let limits = QueueLimits {
             dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 4096,
+            max_inflight: 1,
             max_blocks_per_request: 8,
             max_segments: 1,
             max_segment_size: 4096,
@@ -813,6 +1372,70 @@ mod tests {
     }
 
     #[test]
+    fn owned_queue_read_returns_completed_dma_to_caller_buffer() {
+        let dma = Box::leak(Box::<TrackingDma>::default());
+        let log = Box::leak(Box::<RequestLog>::default());
+        let limits = QueueLimits {
+            dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
+            dma_alignment: 4096,
+            max_inflight: 1,
+            max_blocks_per_request: 8,
+            max_segments: 1,
+            max_segment_size: 4096,
+            supported_flags: RequestFlags::NONE,
+            supports_flush: false,
+            supports_discard: false,
+            supports_write_zeroes: false,
+        };
+        let queue = QueueHandle::new(Box::new(OwnedRecordingQueue::new(log, limits)));
+        let info = queue.info();
+        let planner = block_transfer_planner(info).unwrap();
+        let layout = block_buffer_layout(info, planner.chunk_size()).unwrap();
+        let mut queues = BlockQueues {
+            queue: RuntimeQueue::Owned(queue),
+            pool: BlockBufferPool {
+                dma: DeviceDma::new_legacy(u64::MAX, dma),
+                planner,
+                size: layout.size(),
+                align: layout.align(),
+            },
+            #[cfg(feature = "irq")]
+            irq_events: Arc::new(BlockIrqEvents::default()),
+        };
+        let mut buf = [0_u8; 4096];
+
+        let dma_buffer = queues
+            .pool
+            .alloc_owned(DmaDirection::FromDevice, buf.len())
+            .unwrap();
+        let request_id = queues
+            .submit_owned_request(OwnedRequest {
+                op: RequestOp::Read,
+                lba: 4,
+                block_count: 8,
+                data: Some(dma_buffer.prepare_for_device()),
+                flags: RequestFlags::NONE,
+            })
+            .unwrap();
+        let completed = queues.poll_owned_until_complete(request_id).unwrap();
+        let completed_dma = completed.data.unwrap();
+        completed_dma.copy_from_device_to_slice(&mut buf);
+
+        assert_eq!(buf, [8; 4096]);
+        assert_eq!(
+            log.snapshot(),
+            [SubmittedRequest {
+                op: RequestOp::Read,
+                lba: 4,
+                block_count: 8,
+                data_len: 4096,
+                segment_lengths: alloc::vec![4096],
+            }]
+        );
+    }
+
+    #[test]
     fn block_transfer_planner_caps_large_finite_segments() {
         let info = QueueInfo {
             id: 0,
@@ -822,7 +1445,9 @@ mod tests {
             },
             limits: QueueLimits {
                 dma_mask: u64::MAX,
+                dma_domain: dma_api::DmaDomainId::legacy_global(),
                 dma_alignment: 4096,
+                max_inflight: 1,
                 max_blocks_per_request: 4096,
                 max_segments: 1,
                 max_segment_size: 2 * 1024 * 1024,
@@ -863,7 +1488,9 @@ mod tests {
             },
             limits: QueueLimits {
                 dma_mask: u64::MAX,
+                dma_domain: dma_api::DmaDomainId::legacy_global(),
                 dma_alignment: 4096,
+                max_inflight: 1,
                 max_blocks_per_request: u32::MAX,
                 max_segments: 1,
                 max_segment_size: usize::MAX,
@@ -886,7 +1513,9 @@ mod tests {
         let log = Box::leak(Box::<RequestLog>::default());
         let limits = QueueLimits {
             dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 4096,
+            max_inflight: 1,
             max_blocks_per_request: 8,
             max_segments: 4,
             max_segment_size: 1024,

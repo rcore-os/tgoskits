@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.10](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.9...starry-signal-v0.8.10) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-cpu
+
+## [0.8.9](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.8...starry-signal-v0.8.9) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin
+
+## [0.8.8](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.7...starry-signal-v0.8.8) - 2026-07-07
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin, ax-cpu
+
+## [0.8.7](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.6...starry-signal-v0.8.7) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin, ax-errno, ax-cpu, starry-vm
+
+## [0.8.6](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.5...starry-signal-v0.8.6) - 2026-06-27
+
+### Fixed
+
+- *(axcpu)* deliver x86_64 #DE (divide error) as SIGFPE/FPE_INTDIV ([#1367](https://github.com/rcore-os/tgoskits/pull/1367))
+
+## [0.8.5](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.4...starry-signal-v0.8.5) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin, ax-cpu
+
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.3...starry-signal-v0.8.4) - 2026-06-22
+
+### Fixed
+
+- *(starry-signal)* populate siginfo.si_addr for synchronous SIGSEGV ([#1331](https://github.com/rcore-os/tgoskits/pull/1331))
+
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.2...starry-signal-v0.8.3) - 2026-06-12
+
+### Other
+
+- updated the following local packages: ax-cpu
+
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.1...starry-signal-v0.8.2) - 2026-06-11
+
+### Other
+
+- updated the following local packages: ax-cpu
+
+## [0.8.1](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.0...starry-signal-v0.8.1) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.7.0...starry-signal-v0.8.0) - 2026-06-03
 
 ### Fixed

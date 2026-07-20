@@ -32,5 +32,5 @@ mod sync;
 pub use fs::{Ext4FileSystem, FileSystemStats};
 pub use lookup::{file_entry_exisr, find_file};
 pub use mkfs::{BlcokGroupLayout, FsLayoutInfo, compute_fs_layout, mkfs};
-pub use mount::mount;
+pub use mount::{MountOptions, mount, mount_with_options};
 pub use sync::umount;

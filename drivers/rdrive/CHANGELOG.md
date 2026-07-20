@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.6](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.5...rdrive-v0.23.6) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
+## [0.23.5](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.4...rdrive-v0.23.5) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin
+
+## [0.23.4](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.3...rdrive-v0.23.4) - 2026-07-07
+
+### Added
+
+- *(rdrive)* apply assigned clocks before FDT probe ([#1527](https://github.com/rcore-os/tgoskits/pull/1527))
+- *(starfive-jh7110-dwmmc)* add IRQ-driven host ([#1524](https://github.com/rcore-os/tgoskits/pull/1524))
+- *(rdrive)* add FDT power-domain probing ([#1515](https://github.com/rcore-os/tgoskits/pull/1515))
+
+### Fixed
+
+- *(rdrive)* use preempt-safe registry locks ([#1510](https://github.com/rcore-os/tgoskits/pull/1510))
+
+### Other
+
+- *(drivers)* split Rockchip reset capability ([#1509](https://github.com/rcore-os/tgoskits/pull/1509))
+
+## [0.23.3](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.2...rdrive-v0.23.3) - 2026-07-02
+
+### Added
+
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Other
+
+- *(rdrive)* apply default FDT pinctrl before probe ([#1458](https://github.com/rcore-os/tgoskits/pull/1458))
+
+## [0.23.2](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.1...rdrive-v0.23.2) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
+### Other
+
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
+## [0.23.1](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.0...rdrive-v0.23.1) - 2026-06-22
+
+### Added
+
+- *(starry)* add Wayland app case ([#1160](https://github.com/rcore-os/tgoskits/pull/1160))
+- *(ax-net)* add multi-interface support with per-interface routing, DNS, and SO_BINDTODEVICE ([#1244](https://github.com/rcore-os/tgoskits/pull/1244))
+
+## [0.23.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.22.0...rdrive-v0.23.0) - 2026-06-12
+
+### Added
+
+- *(ax-driver)* add dynamic platform rtc support ([#1242](https://github.com/rcore-os/tgoskits/pull/1242))
+
+### Fixed
+
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+- *(somehal)* route LoongArch ACPI GSIs through PCH-PIC
+
+### Other
+
+- *(irq)* carry ACPI IRQ routing metadata
+- *(rdrive)* carry probe context and PCI INTx routes
+
+## [0.22.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.21.0...rdrive-v0.22.0) - 2026-06-09
+
+### Added
+
+- *(somehal)* register x86 ACPI IOAPIC through rdrive ([#1155](https://github.com/rcore-os/tgoskits/pull/1155))
+
+### Fixed
+
+- *(ci)* switch x86_64 defaults to dynamic platform ([#1024](https://github.com/rcore-os/tgoskits/pull/1024))
+
 ## [0.21.0](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.20.1...rdrive-v0.21.0) - 2026-06-03
 
 ### Added

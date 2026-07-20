@@ -48,6 +48,8 @@ pub(crate) fn write_defconfig(
     snapshot.arch = Some(arch_for_target_checked(&board.target)?.to_string());
     snapshot.target = Some(board.target);
     snapshot.config = Some(snapshot_path_value(workspace_root, &build_config_path));
+    snapshot.qemu.qemu_config = None;
+    snapshot.uboot.uboot_config = None;
     snapshot.store(workspace_root)?;
 
     Ok(build_config_path)
@@ -77,11 +79,9 @@ mod tests {
             &axvisor_dir,
             "roc-rk3568-pc",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = ["fs", "ax-driver/rockchip-sdhci"]
 log = "Info"
-plat_dyn = true
 vm_configs = []
 "#,
         );
@@ -89,7 +89,6 @@ vm_configs = []
         let existing_snapshot = AxvisorCommandSnapshot {
             arch: Some(DEFAULT_AXVISOR_ARCH.to_string()),
             target: Some(DEFAULT_AXVISOR_TARGET.to_string()),
-            plat_dyn: Some(false),
             smp: None,
             config: Some(PathBuf::from("os/axvisor/.build-aarch64.toml")),
             vmconfigs: vec![PathBuf::from("tmp/vm1.toml")],
@@ -126,9 +125,9 @@ vm_configs = []
             snapshot.target.as_deref(),
             Some("aarch64-unknown-none-softfloat")
         );
-        assert_eq!(snapshot.plat_dyn, existing_snapshot.plat_dyn);
         assert_eq!(snapshot.vmconfigs, existing_snapshot.vmconfigs);
-        assert_eq!(snapshot.qemu.qemu_config, Some(qemu_config));
+        assert_eq!(snapshot.qemu.qemu_config, None);
+        assert_eq!(snapshot.uboot.uboot_config, None);
     }
 
     #[test]
@@ -138,22 +137,18 @@ vm_configs = []
             root.path(),
             "qemu-aarch64",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = []
 log = "Info"
-plat_dyn = true
 "#,
         );
         write_board(
             root.path(),
             "orangepi-5-plus",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = ["ax-driver/rockchip-soc"]
 log = "Info"
-plat_dyn = true
 "#,
         );
 
@@ -170,11 +165,9 @@ plat_dyn = true
             root.path(),
             "qemu-aarch64",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = []
 log = "Info"
-plat_dyn = true
 "#,
         );
 

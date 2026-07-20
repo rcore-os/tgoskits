@@ -1,7 +1,0 @@
-env = {}
-features = [
-  "k230",
-]
-log = "Info"
-plat_dyn = true
-target = "riscv64gc-unknown-none-elf"

@@ -22,7 +22,8 @@ pub use ax_errno::{AxError, AxResult};
 
 /// Platform-specific constants and parameters.
 pub mod config {
-    pub use ax_config::*;
+    /// Stack size used when callers do not provide an explicit task stack.
+    pub const TASK_STACK_SIZE: usize = 0x40000;
 }
 
 /// System operations.
@@ -126,18 +127,21 @@ pub mod task {
     }
 
     define_api! {
-        /// Current task is going to sleep, it will be woken up at the given deadline.
+        /// Current task is going to sleep, it will be woken up at the given monotonic deadline.
         ///
         /// If the feature `multitask` is not enabled, it uses busy-wait instead
+        #[track_caller]
         pub fn ax_sleep_until(deadline: crate::time::AxTimeValue);
 
         /// Current task gives up the CPU time voluntarily, and switches to another
         /// ready task.
         ///
         /// If the feature `multitask` is not enabled, it does nothing.
+        #[track_caller]
         pub fn ax_yield_now();
 
         /// Exits the current task with the given exit code.
+        #[track_caller]
         pub fn ax_exit(exit_code: i32) -> !;
     }
 
@@ -154,18 +158,22 @@ pub mod task {
         ) -> AxTaskHandle;
         /// Waits for the given task to exit, and returns its exit code (the
         /// argument of [`ax_exit`]).
+        #[track_caller]
         pub fn ax_wait_for_exit(task: AxTaskHandle) -> i32;
         /// Sets the priority of the current task.
         pub fn ax_set_current_priority(prio: isize) -> crate::AxResult;
         /// Sets the cpu affinity of the current task.
+        #[track_caller]
         pub fn ax_set_current_affinity(cpumask: AxCpuMask) -> crate::AxResult;
         /// Blocks the current task and put it into the wait queue, until
         /// other tasks notify the wait queue, or the given duration has
         /// elapsed (if specified).
+        #[track_caller]
         pub fn ax_wait_queue_wait(wq: &AxWaitQueueHandle, timeout: Option<core::time::Duration>) -> bool;
         /// Blocks the current task and put it into the wait queue, until the
         /// given condition becomes true, or the given duration has elapsed
         /// (if specified).
+        #[track_caller]
         pub fn ax_wait_queue_wait_until(
             wq: &AxWaitQueueHandle,
             until_condition: impl Fn() -> bool,
@@ -197,7 +205,9 @@ pub mod fs {
         pub type AxOpenOptions;
         pub type AxFileAttr;
         pub type AxFileType;
+        pub type AxFileTypeExt;
         pub type AxFilePerm;
+        pub type AxFilePermExt;
         pub type AxDirEntry;
         pub type AxSeekFrom;
     }
@@ -393,13 +403,12 @@ pub mod io {
 pub mod modules {
     #[cfg(feature = "alloc")]
     pub use ax_alloc;
-    pub use ax_config;
     #[cfg(feature = "display")]
     pub use ax_display;
     #[cfg(feature = "dma")]
     pub use ax_dma;
     #[cfg(feature = "fs")]
-    pub use ax_fs;
+    pub use ax_fs_ng;
     pub use ax_hal;
     #[cfg(feature = "ipi")]
     pub use ax_ipi;

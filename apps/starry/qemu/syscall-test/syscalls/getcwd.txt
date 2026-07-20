@@ -1,0 +1,4 @@
+getcwd01
+getcwd02
+getcwd03
+# getcwd04 # TCONF: requires at least 2 CPUs online; qemu-smp1 has one CPU

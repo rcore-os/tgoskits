@@ -1,3 +1,11 @@
+//! Extended attribute syscalls backed by per-node `user_data`.
+//!
+//! Only the `user.*` namespace is supported here. Attributes are stored in a
+//! VFS node side map rather than in the underlying on-disk filesystem. Overlay
+//! paths need special handling: overlay entries are non-cacheable, so xattrs
+//! must be read from the current real target and written to the copy-up target
+//! instead of the temporary overlay entry.
+
 use alloc::{
     collections::{BTreeMap, btree_map::Entry},
     string::String,
@@ -17,7 +25,8 @@ use starry_vm::{vm_read_slice, vm_write_slice};
 
 use crate::{
     file::{fd_is_path, resolve_at},
-    mm::vm_load_string,
+    mm::{vm_load_path_string, vm_load_string},
+    pseudofs::overlay,
 };
 
 type XattrMap = BTreeMap<String, Vec<u8>>;
@@ -35,10 +44,20 @@ fn existing_store(loc: &Location) -> Option<Arc<XattrStore>> {
     loc.user_data().get::<XattrStore>()
 }
 
+/// Return the existing xattr store or attach a new one to this real node.
 fn store_for_update(loc: &Location) -> Arc<XattrStore> {
     loc.user_data().get_or_insert_with(XattrStore::default)
 }
 
+/// Snapshot existing attrs before copy-up.
+///
+/// Copy-up creates a different upper `Location`, so metadata kept in
+/// `user_data` must be transferred explicitly when the upper store is empty.
+fn existing_attrs(loc: &Location) -> Option<XattrMap> {
+    existing_store(loc).map(|store| store.attrs.lock().clone())
+}
+
+/// Read and validate an xattr name from userspace.
 fn read_name(name: *const c_char) -> AxResult<String> {
     let name = vm_load_string(name)?;
     let bytes = name.as_bytes();
@@ -51,6 +70,7 @@ fn read_name(name: *const c_char) -> AxResult<String> {
     Ok(name)
 }
 
+/// Read an xattr value from userspace with Linux size limits.
 fn read_value(value: *const u8, size: usize) -> AxResult<Vec<u8>> {
     if size > XATTR_SIZE_MAX as usize {
         return Err(AxError::ArgumentListTooLong);
@@ -66,14 +86,16 @@ fn read_value(value: *const u8, size: usize) -> AxResult<Vec<u8>> {
     Ok(value_buf)
 }
 
+/// Resolve a path argument used by path-based xattr syscalls.
 fn resolve_path(path: *const c_char, nofollow: bool) -> AxResult<Location> {
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     let flags = if nofollow { AT_SYMLINK_NOFOLLOW } else { 0 };
     resolve_at(AT_FDCWD, Some(&path), flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)
 }
 
+/// Resolve an fd argument used by fd-based xattr syscalls.
 fn resolve_fd(fd: i32) -> AxResult<Location> {
     if fd_is_path(fd) {
         return Err(AxError::BadFileDescriptor);
@@ -83,6 +105,7 @@ fn resolve_fd(fd: i32) -> AxResult<Location> {
         .ok_or(AxError::BadFileDescriptor)
 }
 
+/// Copy a single xattr value to userspace, or return its required size.
 fn copy_value_to_user(value: &[u8], user_value: *mut u8, size: usize) -> AxResult<isize> {
     if size == 0 {
         return Ok(value.len() as isize);
@@ -96,6 +119,7 @@ fn copy_value_to_user(value: &[u8], user_value: *mut u8, size: usize) -> AxResul
     Ok(value.len() as isize)
 }
 
+/// Serialize xattr names as a nul-separated Linux listxattr buffer.
 fn serialize_names(attrs: Option<&XattrMap>) -> AxResult<Vec<u8>> {
     let mut names = Vec::new();
     if let Some(attrs) = attrs {
@@ -110,6 +134,7 @@ fn serialize_names(attrs: Option<&XattrMap>) -> AxResult<Vec<u8>> {
     Ok(names)
 }
 
+/// Copy a listxattr buffer to userspace, or return its required size.
 fn copy_list_to_user(names: &[u8], list: *mut u8, size: usize) -> AxResult<isize> {
     if size == 0 {
         return Ok(names.len() as isize);
@@ -123,6 +148,7 @@ fn copy_list_to_user(names: &[u8], list: *mut u8, size: usize) -> AxResult<isize
     Ok(names.len() as isize)
 }
 
+/// Get an xattr from the currently visible real node.
 fn get_xattr(
     loc: Location,
     name: *const c_char,
@@ -130,6 +156,7 @@ fn get_xattr(
     size: usize,
 ) -> AxResult<isize> {
     let name = read_name(name)?;
+    let loc = overlay::visible_target(&loc)?;
     let value = {
         let store = existing_store(&loc).ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
         store
@@ -142,7 +169,9 @@ fn get_xattr(
     copy_value_to_user(&value, user_value, size)
 }
 
+/// List xattrs from the currently visible real node.
 fn list_xattr(loc: Location, list: *mut u8, size: usize) -> AxResult<isize> {
+    let loc = overlay::visible_target(&loc)?;
     let names = {
         let Some(store) = existing_store(&loc) else {
             return copy_list_to_user(&[], list, size);
@@ -152,6 +181,7 @@ fn list_xattr(loc: Location, list: *mut u8, size: usize) -> AxResult<isize> {
     copy_list_to_user(&names, list, size)
 }
 
+/// Set an xattr, copying lower-backed overlay files up before writing.
 fn set_xattr(
     loc: Location,
     name: *const c_char,
@@ -168,9 +198,28 @@ fn set_xattr(
 
     let name = read_name(name)?;
     let value = read_value(value, size)?;
+    let old_attrs = existing_attrs(&overlay::visible_target(&loc)?);
 
+    if let Some(attrs) = &old_attrs {
+        let exists = attrs.contains_key(&name);
+        if exists && flags & XATTR_CREATE != 0 {
+            return Err(AxError::AlreadyExists);
+        }
+        if !exists && flags & XATTR_REPLACE != 0 {
+            return Err(linux_errno(LinuxError::ENODATA));
+        }
+    } else if flags & XATTR_REPLACE != 0 {
+        return Err(linux_errno(LinuxError::ENODATA));
+    }
+
+    let loc = overlay::ensure_copy_up_target(&loc)?;
     let store = store_for_update(&loc);
     let mut attrs = store.attrs.lock();
+    if attrs.is_empty()
+        && let Some(old_attrs) = old_attrs
+    {
+        *attrs = old_attrs;
+    }
     match attrs.entry(name) {
         Entry::Occupied(mut entry) => {
             if flags & XATTR_CREATE != 0 {
@@ -188,14 +237,22 @@ fn set_xattr(
     Ok(0)
 }
 
+/// Remove an xattr, copying lower-backed overlay files up before mutation.
 fn remove_xattr(loc: Location, name: *const c_char) -> AxResult<isize> {
     let name = read_name(name)?;
-    let store = existing_store(&loc).ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
-    store
-        .attrs
-        .lock()
-        .remove(&name)
+    let old_attrs = existing_attrs(&overlay::visible_target(&loc)?)
         .ok_or_else(|| linux_errno(LinuxError::ENODATA))?;
+    if !old_attrs.contains_key(&name) {
+        return Err(linux_errno(LinuxError::ENODATA));
+    }
+
+    let loc = overlay::ensure_copy_up_target(&loc)?;
+    let store = store_for_update(&loc);
+    let mut attrs = store.attrs.lock();
+    if attrs.is_empty() {
+        *attrs = old_attrs;
+    }
+    attrs.remove(&name);
     Ok(0)
 }
 

@@ -1,8 +1,0 @@
-cmake_minimum_required(VERSION 3.20)
-project(bug-open-creat-directory-einval C)
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_EXTENSIONS ON)
-add_executable(bug-open-creat-directory-einval src/main.c)
-target_compile_options(bug-open-creat-directory-einval PRIVATE -Wall -Wextra -Werror)
-install(TARGETS bug-open-creat-directory-einval RUNTIME DESTINATION usr/bin)

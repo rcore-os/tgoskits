@@ -1,0 +1,20 @@
+[package]
+name = "cv181x-sdhci"
+version = "0.1.2"
+repository.workspace = true
+edition = "2024"
+license = "Apache-2.0"
+description = "Cvitek CV181x/SG2002 SDHCI host wrapper for sdmmc-protocol"
+keywords = ["sd", "sdhci", "cv181x", "sg2002", "no_std"]
+categories = ["embedded", "no-std", "hardware-support"]
+
+[dependencies]
+sdhci-host = { workspace = true, default-features = false }
+sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio", "rdif"] }
+sdio-host2.workspace = true
+dma-api.workspace = true
+mmio-api.workspace = true
+rdif-block.workspace = true
+
+[features]
+default = []

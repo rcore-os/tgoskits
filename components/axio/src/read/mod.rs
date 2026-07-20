@@ -26,7 +26,7 @@ pub fn default_read_exact<R: Read + ?Sized>(this: &mut R, mut buf: &mut [u8]) ->
 }
 
 /// Default [`Read::read_buf`] implementation.
-pub fn default_read_buf<F>(read: F, mut cursor: BorrowedCursor<'_>) -> Result<()>
+pub fn default_read_buf<F>(read: F, mut cursor: BorrowedCursor<'_, u8>) -> Result<()>
 where
     F: FnOnce(&mut [u8]) -> Result<usize>,
 {
@@ -38,7 +38,7 @@ where
 /// Default [`Read::read_buf_exact`] implementation.
 pub fn default_read_buf_exact<R: Read + ?Sized>(
     this: &mut R,
-    mut cursor: BorrowedCursor<'_>,
+    mut cursor: BorrowedCursor<'_, u8>,
 ) -> Result<()> {
     while cursor.capacity() > 0 {
         let prev_written = cursor.written();
@@ -126,7 +126,7 @@ pub fn default_read_to_end<R: Read + ?Sized>(
         let mut spare = buf.spare_capacity_mut();
         let buf_len = spare.len().min(max_read_size);
         spare = &mut spare[..buf_len];
-        let mut read_buf: BorrowedBuf<'_> = spare.into();
+        let mut read_buf: BorrowedBuf<'_, u8> = spare.into();
 
         // Note that we don't track already initialized bytes here, but this is fine
         // because we explicitly limit the read size
@@ -245,14 +245,14 @@ pub trait Read {
     /// Pull some bytes from this source into the specified buffer.
     ///
     /// This method makes it possible to return both data and an error but it is advised against.
-    fn read_buf(&mut self, buf: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf(&mut self, buf: BorrowedCursor<'_, u8>) -> Result<()> {
         default_read_buf(|b| self.read(b), buf)
     }
 
     /// Reads the exact number of bytes required to fill `cursor`.
     ///
     /// If this function returns an error, all bytes read will be appended to `cursor`.
-    fn read_buf_exact(&mut self, cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf_exact(&mut self, cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         default_read_buf_exact(self, cursor)
     }
 

@@ -12,16 +12,16 @@
 ### 设计定位
 从职责上看，`axvm` 位于三类组件的交汇处：
 
-- 向下依赖 `axvcpu`、`axaddrspace`、`axdevice` 等组件，承接 vCPU、地址空间和设备模型。
+- 向下依赖 `axvm-types`、各架构 vCPU crate、`axaddrspace`、`axdevice` 等组件，承接 vCPU、地址空间和设备模型。
 - 向外通过 `AxVMHal` 把宿主能力注入进来，例如地址翻译、时间、当前 VM/vCPU/pCPU 信息和中断注入。
 - 向上被 Axvisor 的 `vmm` 层直接调用，作为真正的 VM 实例与生命周期实体。
 
 可以把 `axvm` 理解为“可被 Hypervisor 编排的 VM 对象层”，而不是顶层 Hypervisor 程序。
 
 ### 模块结构
-- `src/lib.rs`：crate 入口，导出 `AxVM`、`AxVMRef`、`AxVCpuRef`、`VMMemoryRegion`、`VMStatus`、`config`、`AxVMHal` 与 `has_hardware_support()`。
+- `src/lib.rs`：crate 入口，导出 `AxVM`、`AxVMRef`、`VMMemoryRegion`、`VMStatus`、`config`、`AxVMHal` 与 `has_hardware_support()`。
 - `src/vm.rs`：核心实现文件，定义 `AxVM`、内部可变/不可变状态、内存区管理、状态切换、`init()`、`boot()`、`shutdown()`、`run_vcpu()` 等。
-- `src/vcpu.rs`：架构适配层，按 `x86_64`、`riscv64`、`aarch64` 选择具体的 vCPU 实现与建模配置。
+- `src/vcpu.rs`：AxVM 自有 vCPU wrapper、状态机、current-vCPU 绑定和架构适配层，按 `x86_64`、`riscv64`、`aarch64`、`loongarch64` 选择具体后端。
 - `src/hal.rs`：定义 `AxVMHal` trait，规定宿主必须提供的能力边界。
 - `src/config.rs`：把 `axvmconfig` 的 TOML 侧配置转成运行时 `AxVMConfig`、`AxVCpuConfig`、`VMImageConfig`、`PhysCpuList` 等结构。
 
@@ -31,7 +31,7 @@
 - `AxVMInnerMut<H>`：可变状态，包含 `address_space`、`memory_regions`、`config` 和 `vm_status`。
 - `VMMemoryRegion`：记录客户机物理地址、宿主虚拟地址、布局信息和是否需要回收。
 - `VMStatus`：`Loading`、`Loaded`、`Running`、`Suspended`、`Stopping`、`Stopped`，描述 VM 生命周期。
-- `AxVCpuRef<U>`：统一的 vCPU 引用类型，是上层调度与 VM exit 处理的基本单元。
+- `VcpuSnapshot`：对外暴露的架构无关 vCPU 状态快照。
 - `AxVMConfig` / `AxVMCrateConfig`：前者用于运行时 VM 创建，后者更贴近 TOML 配置源。
 
 ### 1.4 VM 生命周期与主线
@@ -59,7 +59,7 @@ flowchart TD
 1. `AxVM::new(config)` 创建空的客户机地址空间，并把状态初始化为 `Loading`。
 2. `init()` 负责真正完成 VM 组装：创建 vCPU、合并直通地址区间、建立设备、设置页表根与 vCPU 初始入口。
 3. `boot()` 把状态切换到 `Running`，但不直接执行客户机代码。
-4. 真正执行路径在 `run_vcpu(vcpu_id)`，它循环处理 `AxVCpuExitReason`。
+4. 真正执行路径在 `run_vcpu(vcpu_id)`，它循环处理 `VmExit`。
 5. `shutdown()` 把 VM 推入停止状态；`Drop` 中会触发资源清理。
 
 当前源码表明：
@@ -70,11 +70,11 @@ flowchart TD
 ### 1.5 架构相关分层
 `axvm` 自身不把所有架构细节写死，而是通过 `src/vcpu.rs` 做一层统一绑定：
 
-- `x86_64`：主要对接 `x86_vcpu` 与 VMX 路径。
+- `x86_64`：对接 `x86_vcpu`，在运行时选择 VMX 或 SVM 路径。
 - `riscv64`：对接 `riscv_vcpu`。
 - `aarch64`：对接 `arm_vcpu`，并与 `arm_vgic` 协作处理中断控制器与虚拟定时设备。
 
-同时，宿主相关能力全部通过 `AxVMHal` 提供，因此 `axvm` 可以保持“虚拟机对象层”而不是“宿主特定实现层”。
+同时，架构 vCPU crate 只保留贴近硬件的后端能力，统一生命周期和运行循环在 `axvm` 中完成。
 
 ## 核心功能
 ### 功能概览
@@ -111,13 +111,13 @@ vm.boot()?;
 let exit_reason = vm.run_vcpu(0)?;
 ```
 
-在实际仓库中，这套流程由 `os/axvisor/src/vmm/*` 完成，而不是由普通库使用者直接手写。
+在实际仓库中，这套流程由 `virtualization/axvm/src/runtime/*` 完成，而不是由普通库使用者直接手写。
 
 ## 依赖关系
 ```mermaid
 graph LR
     axvmconfig["axvmconfig"] --> axvm["axvm"]
-    axvcpu["axvcpu"] --> axvm
+    axvm_types["axvm-types"] --> axvm
     axaddrspace["axaddrspace"] --> axvm
     axdevice["axdevice"] --> axvm
     axdevice_base["axdevice_base"] --> axvm
@@ -128,7 +128,7 @@ graph LR
 ```
 
 ### 直接依赖
-- `axvcpu`：提供统一的 vCPU 抽象和 VM exit 原因。
+- `axvm-types`：提供 VM/vCPU 共享值类型、架构协议 trait 和 VM exit 原因。
 - `axaddrspace`：提供客户机地址空间管理与 GPA 映射能力。
 - `axdevice`、`axdevice_base`：提供虚拟设备与直通设备建模。
 - `axvmconfig`：提供从配置文件到运行时结构的配置来源。
@@ -150,10 +150,7 @@ graph LR
 axvm = { workspace = true }
 ```
 
-常见 feature：
-
-- `vmx`：x86 VMX 相关默认路径。
-- `4-level-ept`：控制 EPT 层级相关支持。
+`axvm` 不提供 `vmx` 或 `svm` feature。x86 后端在 AxVM 初始化时由 CPU 能力选择，并在所有参与虚拟化的物理 CPU 上验证一致性。Nested page table 层级由运行时硬件能力探测和 VM 配置共同决定。
 
 ### 4.2 初始化顺序
 1. 先从 `axvmconfig` 或其他来源构造 `AxVMConfig`。

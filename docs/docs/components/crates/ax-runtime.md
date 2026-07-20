@@ -35,14 +35,13 @@ graph LR
     current["ax-runtime"]
     current --> ax-alloc["ax-alloc"]
     current --> axbacktrace["axbacktrace"]
-    current --> axconfig["ax-config"]
     current --> ax-display["ax-display"]
     current --> ax-driver["ax-driver"]
     current --> ax-fs["ax-fs"]
     current --> axfs_ng["ax-fs-ng"]
     current --> ax-hal["ax-hal"]
     ax_api["ax-api"] --> current
-    ax_feat["ax-feat"] --> current
+    arceos_feature["ax-runtime"] --> current
     ax_posix_api["ax-posix-api"] --> current
     starry_kernel["starry-kernel"] --> current
 ```
@@ -50,7 +49,6 @@ graph LR
 ### 直接依赖
 - `ax-alloc`
 - `axbacktrace`
-- `axconfig`
 - `ax-display`
 - `ax-driver`
 - `ax-fs`
@@ -66,8 +64,6 @@ graph LR
 - `ax-arm-pl031`
 - `axaddrspace`
 - `ax-allocator`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `ax-dma`
 - `rdrive`
@@ -78,7 +74,7 @@ graph LR
 
 ### 3.3 被依赖情况
 - `ax-api`
-- `ax-feat`
+- `ax-runtime`
 - `ax-posix-api`
 - `starry-kernel`
 

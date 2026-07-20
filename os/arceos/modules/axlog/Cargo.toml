@@ -1,6 +1,6 @@
 [package]
 name = "ax-log"
-version = "0.5.13"
+version = "0.5.18"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]

@@ -1,18 +1,25 @@
 use std::{
-    fs,
-    io::Write,
+    fmt, fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
 
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use reqwest::{StatusCode, header};
+use reqwest::{StatusCode, Url, header};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tokio::{fs as tokio_fs, io::AsyncWriteExt};
 
 const DOWNLOAD_LOCK_STALE_AFTER: Duration = Duration::from_secs(60 * 60 * 2);
 const DOWNLOAD_LOCK_WAIT: Duration = Duration::from_millis(100);
+const DOWNLOAD_MAX_ATTEMPTS: usize = 5;
+#[cfg(not(test))]
+const DOWNLOAD_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const DOWNLOAD_RETRY_BASE_DELAY: Duration = Duration::from_millis(1);
 
 pub(crate) fn http_client() -> anyhow::Result<reqwest::Client> {
     reqwest::Client::builder()
@@ -40,12 +47,224 @@ pub(crate) async fn fetch_text(client: &reqwest::Client, url: &str) -> anyhow::R
         .with_context(|| format!("failed to read response body from {url}"))
 }
 
+#[cfg(test)]
 pub(crate) async fn download_file(
     client: &reqwest::Client,
     url: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
-    download_file_inner(client, url, path, true).await
+    let _lock = acquire_path_lock(path).await?;
+    download_file_with_retries(client, url, path).await
+}
+
+pub(crate) async fn download_file_verified_sha256(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+    expected_sha256: &str,
+) -> anyhow::Result<()> {
+    let _lock = acquire_path_lock(path).await?;
+    if path.exists() {
+        match verify_download_sha256(client, url, path, expected_sha256, true).await {
+            Ok(VerifyOutcome::MatchedRegistry) => {
+                println!("file already exists and passed checksum verification");
+                return Ok(());
+            }
+            Ok(VerifyOutcome::MatchedGitHubAsset) => return Ok(()),
+            Ok(VerifyOutcome::Mismatched { .. }) => {
+                println!("existing file checksum mismatch, re-downloading...");
+            }
+            Err(err) => {
+                println!("failed to verify existing file: {err}, re-downloading...");
+            }
+        }
+        tokio_fs::remove_file(path)
+            .await
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+    }
+
+    download_file_with_retries(client, url, path).await?;
+    match verify_download_sha256(client, url, path, expected_sha256, false).await? {
+        VerifyOutcome::MatchedRegistry | VerifyOutcome::MatchedGitHubAsset => Ok(()),
+        VerifyOutcome::Mismatched { actual_sha256 } => {
+            let _ = tokio_fs::remove_file(path).await;
+            bail!(
+                "downloaded file checksum mismatch for {url}: expected {expected_sha256}, got \
+                 {actual_sha256}"
+            );
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VerifyOutcome {
+    MatchedRegistry,
+    MatchedGitHubAsset,
+    Mismatched { actual_sha256: String },
+}
+
+async fn verify_download_sha256(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+    expected_sha256: &str,
+    ignore_remote_digest_error: bool,
+) -> anyhow::Result<VerifyOutcome> {
+    let actual_sha256 = file_sha256(path)?;
+    if actual_sha256 == expected_sha256 {
+        return Ok(VerifyOutcome::MatchedRegistry);
+    }
+
+    match github_release_asset_sha256(client, url).await {
+        Ok(Some(asset_sha256))
+            if classify_download_sha256(&actual_sha256, expected_sha256, Some(&asset_sha256))
+                == VerifyOutcome::MatchedGitHubAsset =>
+        {
+            eprintln!(
+                "warning: registry checksum for {url} is stale: expected {expected_sha256}, \
+                 GitHub release asset digest is {asset_sha256}; accepting verified asset digest"
+            );
+            Ok(VerifyOutcome::MatchedGitHubAsset)
+        }
+        Ok(_) => Ok(VerifyOutcome::Mismatched { actual_sha256 }),
+        Err(err) if ignore_remote_digest_error => {
+            eprintln!("warning: failed to check GitHub release asset digest for {url}: {err}");
+            Ok(VerifyOutcome::Mismatched { actual_sha256 })
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn classify_download_sha256(
+    actual_sha256: &str,
+    expected_sha256: &str,
+    asset_sha256: Option<&str>,
+) -> VerifyOutcome {
+    if actual_sha256 == expected_sha256 {
+        return VerifyOutcome::MatchedRegistry;
+    }
+    if asset_sha256 == Some(actual_sha256) {
+        return VerifyOutcome::MatchedGitHubAsset;
+    }
+    VerifyOutcome::Mismatched {
+        actual_sha256: actual_sha256.to_string(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitHubReleaseAssetRef {
+    api_url: String,
+    asset_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubRelease {
+    assets: Vec<GitHubReleaseAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubReleaseAsset {
+    name: String,
+    digest: Option<String>,
+}
+
+async fn github_release_asset_sha256(
+    client: &reqwest::Client,
+    download_url: &str,
+) -> anyhow::Result<Option<String>> {
+    let Some(asset_ref) = github_release_asset_ref(download_url) else {
+        return Ok(None);
+    };
+
+    let release: GitHubRelease = client
+        .get(&asset_ref.api_url)
+        .header(header::USER_AGENT, "tgoskits-axbuild")
+        .send()
+        .await
+        .with_context(|| format!("failed to request {}", asset_ref.api_url))?
+        .error_for_status()
+        .with_context(|| format!("failed to fetch {}", asset_ref.api_url))?
+        .json()
+        .await
+        .with_context(|| format!("failed to parse {}", asset_ref.api_url))?;
+
+    let digest = release
+        .assets
+        .into_iter()
+        .find(|asset| asset.name == asset_ref.asset_name)
+        .and_then(|asset| asset.digest)
+        .and_then(|digest| digest.strip_prefix("sha256:").map(str::to_owned));
+    Ok(digest)
+}
+
+fn github_release_asset_ref(download_url: &str) -> Option<GitHubReleaseAssetRef> {
+    let url = Url::parse(download_url).ok()?;
+    if url.host_str()? != "github.com" {
+        return None;
+    }
+
+    let segments: Vec<_> = url.path_segments()?.collect();
+    if segments.len() != 6
+        || segments[0].is_empty()
+        || segments[1].is_empty()
+        || segments[2] != "releases"
+        || segments[3] != "download"
+        || segments[4].is_empty()
+        || segments[5].is_empty()
+    {
+        return None;
+    }
+
+    Some(GitHubReleaseAssetRef {
+        api_url: format!(
+            "https://api.github.com/repos/{}/{}/releases/tags/{}",
+            segments[0], segments[1], segments[4]
+        ),
+        asset_name: segments[5].to_string(),
+    })
+}
+
+async fn download_file_with_retries(
+    client: &reqwest::Client,
+    url: &str,
+    path: &Path,
+) -> anyhow::Result<()> {
+    for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
+        match download_file_inner(client, url, path, true).await {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < DOWNLOAD_MAX_ATTEMPTS && retryable_download_error(&err) => {
+                let delay = download_retry_delay(attempt);
+                eprintln!(
+                    "download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} for {url} failed: {err}; \
+                     retrying in {:.1}s",
+                    delay.as_secs_f32()
+                );
+                tokio::time::sleep(delay).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    unreachable!("download retry loop always returns")
+}
+
+pub(crate) fn file_sha256(path: &Path) -> anyhow::Result<String> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 async fn download_file_inner(
@@ -54,7 +273,6 @@ async fn download_file_inner(
     path: &Path,
     retry_on_invalid_range: bool,
 ) -> anyhow::Result<()> {
-    let _lock = acquire_path_lock(path).await?;
     let part_path = part_path(path);
     let resume_from = tokio_fs::metadata(&part_path)
         .await
@@ -74,7 +292,6 @@ async fn download_file_inner(
         let status = response.status;
         if retry_on_invalid_range && resume_from > 0 && status == StatusCode::RANGE_NOT_SATISFIABLE
         {
-            drop(_lock);
             tokio_fs::remove_file(&part_path).await.with_context(|| {
                 format!("failed to remove invalid partial {}", part_path.display())
             })?;
@@ -90,7 +307,7 @@ async fn download_file_inner(
         }
 
         if !status.is_success() {
-            return Err(anyhow!("failed to download {url}: HTTP {status}"));
+            return Err(download_status_error(url, status));
         }
 
         let initial_size = if resume { resume_from } else { 0 };
@@ -141,7 +358,6 @@ async fn download_file_inner(
 
     let status = response.status();
     if retry_on_invalid_range && resume_from > 0 && status == StatusCode::RANGE_NOT_SATISFIABLE {
-        drop(_lock);
         tokio_fs::remove_file(&part_path)
             .await
             .with_context(|| format!("failed to remove invalid partial {}", part_path.display()))?;
@@ -157,7 +373,7 @@ async fn download_file_inner(
     }
 
     if !status.is_success() {
-        return Err(anyhow!("failed to download {url}: HTTP {status}"));
+        return Err(download_status_error(url, status));
     }
 
     let initial_size = if resume { resume_from } else { 0 };
@@ -201,6 +417,51 @@ async fn download_file_inner(
     })?;
     progress.finish_with_message(format!("downloaded {}", path.display()));
     Ok(())
+}
+
+#[derive(Debug)]
+struct DownloadStatusError {
+    url: String,
+    status: StatusCode,
+}
+
+impl fmt::Display for DownloadStatusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "failed to download {}: HTTP {}", self.url, self.status)
+    }
+}
+
+impl std::error::Error for DownloadStatusError {}
+
+fn download_status_error(url: &str, status: StatusCode) -> anyhow::Error {
+    DownloadStatusError {
+        url: url.to_owned(),
+        status,
+    }
+    .into()
+}
+
+fn retryable_download_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<DownloadStatusError>()
+            .is_some_and(|err| retryable_status(err.status))
+            || cause.downcast_ref::<reqwest::Error>().is_some_and(|err| {
+                err.status().is_some_and(retryable_status)
+                    || err.is_timeout()
+                    || err.is_connect()
+                    || err.is_request()
+                    || err.is_body()
+            })
+    })
+}
+
+fn retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn download_retry_delay(attempt: usize) -> Duration {
+    DOWNLOAD_RETRY_BASE_DELAY * (1 << attempt.saturating_sub(1).min(3))
 }
 
 fn lock_path(path: &Path) -> PathBuf {
@@ -347,7 +608,7 @@ impl Drop for PathLock {
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, VecDeque},
         sync::{
             Arc, Mutex, OnceLock,
             atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -394,6 +655,7 @@ pub(crate) mod test_support {
     struct MockRoute {
         body: Vec<u8>,
         range_mode: MockRangeMode,
+        failing_statuses: Mutex<VecDeque<StatusCode>>,
         requests: AtomicUsize,
         last_range_header: Mutex<Option<String>>,
     }
@@ -414,12 +676,22 @@ pub(crate) mod test_support {
         body: Vec<u8>,
         range_mode: MockRangeMode,
     ) -> MockHandle {
+        register_download_with_failures(path, body, range_mode, Vec::new())
+    }
+
+    pub(crate) fn register_download_with_failures(
+        path: &str,
+        body: Vec<u8>,
+        range_mode: MockRangeMode,
+        failing_statuses: Vec<StatusCode>,
+    ) -> MockHandle {
         let id = NEXT_ROUTE_ID.fetch_add(1, Ordering::SeqCst);
         let path = path.trim_start_matches('/');
         let url = format!("mock://axbuild-test/{id}/{path}");
         let route = Arc::new(MockRoute {
             body,
             range_mode,
+            failing_statuses: Mutex::new(failing_statuses.into()),
             requests: AtomicUsize::new(0),
             last_range_header: Mutex::new(None),
         });
@@ -452,6 +724,15 @@ pub(crate) mod test_support {
             route.requests.fetch_add(1, Ordering::SeqCst);
             let range_header = (resume_from > 0).then(|| format!("bytes={resume_from}-"));
             *route.last_range_header.lock().unwrap() = range_header.clone();
+
+            if let Some(status) = route.failing_statuses.lock().unwrap().pop_front() {
+                return MockResponse {
+                    status,
+                    content_length: Some(0),
+                    body: Vec::new(),
+                };
+            }
+
             let offset = range_header
                 .as_deref()
                 .and_then(|header| header.strip_prefix("bytes="))
@@ -513,135 +794,4 @@ pub(crate) mod test_support {
 }
 
 #[cfg(test)]
-mod tests {
-    use tempfile::tempdir;
-
-    use super::*;
-
-    #[test]
-    fn part_path_uses_dot_part_suffix() {
-        let path = Path::new("/tmp/rootfs-x86_64-alpine.img.tar.gz");
-        assert_eq!(
-            part_path(path),
-            PathBuf::from("/tmp/rootfs-x86_64-alpine.img.tar.gz.part")
-        );
-    }
-
-    #[test]
-    fn lock_path_uses_dot_lock_suffix() {
-        let path = Path::new("/tmp/rootfs-x86_64-alpine.img.tar.gz");
-        assert_eq!(
-            lock_path(path),
-            PathBuf::from("/tmp/rootfs-x86_64-alpine.img.tar.gz.lock")
-        );
-    }
-
-    #[tokio::test]
-    async fn recoverable_lock_accepts_dead_process_pid() {
-        let workspace = tempdir().unwrap();
-        let lock_path = workspace.path().join("download.lock");
-        fs::write(&lock_path, "pid=999999\n").unwrap();
-
-        assert!(recoverable_lock(&lock_path).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn download_file_resumes_partial_download() {
-        let server = TestServer::start_with_range_support(b"abcdef".to_vec(), true).await;
-        let workspace = tempdir().unwrap();
-        let output_path = workspace.path().join("rootfs.img.tar.gz");
-        let part_path = part_path(&output_path);
-        fs::write(&part_path, b"abc").unwrap();
-
-        let client = http_client().unwrap();
-        download_file(&client, &server.url(), &output_path)
-            .await
-            .unwrap();
-
-        assert_eq!(fs::read(&output_path).unwrap(), b"abcdef");
-        assert_eq!(server.last_range_header().as_deref(), Some("bytes=3-"));
-    }
-
-    #[tokio::test]
-    async fn download_file_restarts_when_range_is_ignored() {
-        let server = TestServer::start_with_range_support(b"abcdef".to_vec(), false).await;
-        let workspace = tempdir().unwrap();
-        let output_path = workspace.path().join("rootfs.img.tar.gz");
-        let part_path = part_path(&output_path);
-        fs::write(&part_path, b"abc").unwrap();
-
-        let client = http_client().unwrap();
-        download_file(&client, &server.url(), &output_path)
-            .await
-            .unwrap();
-
-        assert_eq!(fs::read(&output_path).unwrap(), b"abcdef");
-        assert_eq!(server.last_range_header().as_deref(), Some("bytes=3-"));
-    }
-
-    #[tokio::test]
-    async fn download_file_restarts_when_range_is_invalid() {
-        let server = TestServer::start_with_invalid_range(b"abcdef".to_vec()).await;
-        let workspace = tempdir().unwrap();
-        let output_path = workspace.path().join("rootfs.img.tar.gz");
-        let part_path = part_path(&output_path);
-        fs::write(&part_path, b"abcdefghi").unwrap();
-
-        let client = http_client().unwrap();
-        download_file(&client, &server.url(), &output_path)
-            .await
-            .unwrap();
-
-        assert_eq!(fs::read(&output_path).unwrap(), b"abcdef");
-        assert_eq!(server.request_count(), 2);
-    }
-
-    struct TestServer {
-        handle: test_support::MockHandle,
-    }
-
-    impl TestServer {
-        async fn start_with_invalid_range(body: Vec<u8>) -> Self {
-            Self::start_inner(body, RangeMode::RejectInvalid).await
-        }
-
-        async fn start_with_range_support(body: Vec<u8>, support_range: bool) -> Self {
-            let mode = if support_range {
-                RangeMode::Support
-            } else {
-                RangeMode::Ignore
-            };
-            Self::start_inner(body, mode).await
-        }
-
-        async fn start_inner(body: Vec<u8>, range_mode: RangeMode) -> Self {
-            let range_mode = match range_mode {
-                RangeMode::Ignore => test_support::MockRangeMode::Ignore,
-                RangeMode::Support => test_support::MockRangeMode::Support,
-                RangeMode::RejectInvalid => test_support::MockRangeMode::RejectInvalid,
-            };
-            Self {
-                handle: test_support::register_download("rootfs.img.tar.gz", body, range_mode),
-            }
-        }
-
-        fn url(&self) -> String {
-            self.handle.url().to_string()
-        }
-
-        fn request_count(&self) -> usize {
-            self.handle.request_count()
-        }
-
-        fn last_range_header(&self) -> Option<String> {
-            self.handle.last_range_header()
-        }
-    }
-
-    #[derive(Clone, Copy)]
-    enum RangeMode {
-        Ignore,
-        Support,
-        RejectInvalid,
-    }
-}
+mod tests;

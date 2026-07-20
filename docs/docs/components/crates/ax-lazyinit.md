@@ -75,7 +75,7 @@ graph LR
     ax_lazyinit --> ax-mm["ax-mm"]
     ax_lazyinit --> ax-ipi["ax-ipi"]
     ax_lazyinit --> ax-fs["ax-fs / ax-fs-ng"]
-    ax_lazyinit --> ax-net["ax-net / ax-net-ng"]
+    ax_lazyinit --> ax-net["ax-net / ax-net"]
     ax_lazyinit --> ax-display["ax-display"]
     ax_lazyinit --> ax-input["ax-input"]
     ax_lazyinit --> axplat["多个 axplat 平台 crate"]
@@ -88,7 +88,7 @@ graph LR
 
 ### 主要消费者
 - ArceOS 模块：`ax-task`、`ax-mm`、`ax-ipi`、`ax-fs`、`ax-net`、`ax-display`、`ax-input` 等。
-- 平台层：`ax-plat-x86-pc`、`axplat-dyn`、`ax-plat-riscv64-sg2002`、`ax-plat-loongarch64-qemu-virt`。
+- 平台层：`axplat-dyn` 和外部自定义平台 glue。
 - Axvisor：如 `vmm/timer.rs` 的 `TimerList`、DTB 缓存等。
 
 ## 开发指南

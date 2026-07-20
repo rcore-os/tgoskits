@@ -5,10 +5,15 @@ app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 base_rootfs="${STARRY_ROOTFS:-}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
-apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/gdb-smoke-apk-cache"
+arch="${STARRY_ARCH:-}"
+workspace="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}"
+apk_cache="$workspace/target/gdb-smoke-apk-cache/${arch:-unknown}"
+host_artifact_dir="$workspace/target/gdb-smoke-host"
 qemu_runner=""
+linux_target=""
 lld_linker=""
 lld_linker_dir=""
+gcc_install_dir=""
 
 require_env() {
     local name="$1"
@@ -57,12 +62,37 @@ extract_base_rootfs() {
 }
 
 find_qemu_runner() {
-    if command -v qemu-riscv64-static >/dev/null 2>&1; then
-        qemu_runner="$(command -v qemu-riscv64-static)"
-    elif command -v qemu-riscv64 >/dev/null 2>&1; then
-        qemu_runner="$(command -v qemu-riscv64)"
+    local qemu_name
+
+    case "$arch" in
+        riscv64)
+            qemu_name=qemu-riscv64
+            linux_target=riscv64-linux-musl
+            ;;
+        aarch64)
+            qemu_name=qemu-aarch64
+            linux_target=aarch64-linux-musl
+            ;;
+        loongarch64)
+            qemu_name=qemu-loongarch64
+            linux_target=loongarch64-linux-musl
+            ;;
+        x86_64)
+            qemu_name=qemu-x86_64
+            linux_target=x86_64-linux-musl
+            ;;
+        *)
+            echo "error: unsupported gdb-smoke arch: $arch" >&2
+            exit 1
+            ;;
+    esac
+
+    if command -v "${qemu_name}-static" >/dev/null 2>&1; then
+        qemu_runner="$(command -v "${qemu_name}-static")"
+    elif command -v "$qemu_name" >/dev/null 2>&1; then
+        qemu_runner="$(command -v "$qemu_name")"
     else
-        echo "error: qemu-riscv64-static or qemu-riscv64 is required" >&2
+        echo "error: ${qemu_name}-static or ${qemu_name} is required" >&2
         exit 1
     fi
 }
@@ -85,6 +115,14 @@ run_guest_apk_with_retry() {
         echo "apk command failed, retrying ($attempt/$max_attempts)..." >&2
         sleep $((attempt * 3))
     done
+}
+
+find_gcc_install_dir() {
+    gcc_install_dir="$(find "$staging_root/usr/lib/gcc" -name 'crtbeginT.o' -exec dirname {} \; 2>/dev/null | head -1)"
+    if [[ -z "$gcc_install_dir" ]]; then
+        echo "error: could not locate GCC crt objects in staging root" >&2
+        exit 1
+    fi
 }
 
 install_guest_packages() {
@@ -111,7 +149,7 @@ install_guest_packages() {
         --no-interactive \
         --force-no-chroot \
         --scripts=no \
-        add gdb gcc musl-dev
+        add gdb gcc musl-dev ncurses-terminfo-base
 }
 
 compile_target() {
@@ -121,9 +159,11 @@ compile_target() {
 
     install -d "$(dirname "$overlay_dir$output")"
     clang \
-        --target=riscv64-linux-musl \
+        --target="$linux_target" \
         --sysroot="$staging_root" \
         --gcc-toolchain="$staging_root/usr" \
+        -B"$gcc_install_dir" \
+        -L"$gcc_install_dir" \
         --ld-path="$lld_linker" \
         -static \
         "$@" \
@@ -196,10 +236,24 @@ populate_overlay() {
         "$app_dir/native/src/main.c" \
         /usr/bin/gdb-native-smoke-target \
         -Wall -Wextra -Werror -O0 -g
+    install -Dm0644 "$app_dir/native/src/main.c" \
+        "$overlay_dir/workspace/apps/starry/gdb-smoke/native/src/main.c"
+    compile_target \
+        "$app_dir/native-thread/src/main.c" \
+        /usr/bin/gdb-native-thread-target \
+        -Wall -Wextra -Werror -O0 -g -pthread
     compile_target \
         "$app_dir/gdbserver/src/main.c" \
         /usr/bin/gdbserver-smoke-target \
-        -Wall -Wextra -Werror -g0 -s
+        -Wall -Wextra -Werror -O0 -g
+    compile_target \
+        "$app_dir/stress/src/thread-breakpoint-wall.c" \
+        /usr/bin/gdb-ptrace-thread-breakpoint-stress \
+        -Wall -Wextra -Werror -O0 -g -pthread
+    install -Dm0755 "$overlay_dir/usr/bin/gdbserver-smoke-target" \
+        "$host_artifact_dir/gdbserver-smoke-target"
+    install -Dm0755 "$overlay_dir/usr/bin/gdbserver-smoke-target" \
+        "$host_artifact_dir/$arch/gdbserver-smoke-target"
 
     copy_file_to_overlay /usr/bin/gdb 0755
     copy_file_to_overlay /usr/bin/gdbserver 0755
@@ -209,6 +263,10 @@ populate_overlay() {
         mkdir -p "$overlay_dir/usr/share"
         cp -a "$staging_root/usr/share/gdb" "$overlay_dir/usr/share/"
     fi
+    if [[ -d "$staging_root/usr/share/terminfo" ]]; then
+        mkdir -p "$overlay_dir/usr/share"
+        cp -a "$staging_root/usr/share/terminfo" "$overlay_dir/usr/share/"
+    fi
     if [[ -d "$staging_root/usr/lib/python3.12" ]]; then
         mkdir -p "$overlay_dir/usr/lib"
         cp -a "$staging_root/usr/lib/python3.12" "$overlay_dir/usr/lib/"
@@ -216,8 +274,16 @@ populate_overlay() {
 
     install -Dm0755 "$app_dir/native/gdb-native-smoke.gdb" \
         "$overlay_dir/usr/bin/gdb-native-smoke.gdb"
+    install -Dm0755 "$app_dir/native/gdb-native-tui.sh" \
+        "$overlay_dir/usr/bin/gdb-native-tui.sh"
+    install -Dm0644 "$app_dir/native/gdb-native-tui.gdb" \
+        "$overlay_dir/usr/bin/gdb-native-tui.gdb"
+    install -Dm0755 "$app_dir/native-thread/gdb-native-threads.gdb" \
+        "$overlay_dir/usr/bin/gdb-native-threads.gdb"
     install -Dm0644 "$app_dir/gdbserver/gdbserver-smoke.gdb" \
         "$overlay_dir/usr/bin/gdbserver-smoke.gdb"
+    install -Dm0644 "$app_dir/gdbserver/gdbserver-threads.gdb" \
+        "$overlay_dir/usr/bin/gdbserver-threads.gdb"
     install -Dm0755 "$app_dir/gdbserver/gdbserver-smoke.sh" \
         "$overlay_dir/usr/bin/gdbserver-smoke.sh"
 }
@@ -225,9 +291,11 @@ populate_overlay() {
 require_env STARRY_ROOTFS "$base_rootfs"
 require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
+require_env STARRY_ARCH "$arch"
 
 ensure_host_packages
 extract_base_rootfs
 find_qemu_runner
 install_guest_packages
+find_gcc_install_dir
 populate_overlay

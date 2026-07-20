@@ -1,0 +1,3 @@
+symlink02
+# symlink03 # TFAIL: permission and empty-path negative cases return unexpected results
+symlink04

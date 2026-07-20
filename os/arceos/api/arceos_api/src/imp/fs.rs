@@ -1,14 +1,16 @@
 use alloc::string::String;
 use ax_errno::AxResult;
-use ax_fs::fops::{Directory, File};
+use ax_fs_ng::fops::{Directory, File};
 
-pub use ax_fs::fops::DirEntry as AxDirEntry;
-pub use ax_fs::fops::FileAttr as AxFileAttr;
-pub use ax_fs::fops::FilePerm as AxFilePerm;
-pub use ax_fs::fops::FileType as AxFileType;
-pub use ax_fs::fops::OpenOptions as AxOpenOptions;
+pub use ax_fs_ng::fops::DirEntry as AxDirEntry;
+pub use ax_fs_ng::fops::FileAttr as AxFileAttr;
+pub use ax_fs_ng::fops::FileAttrExt as AxFileAttrExt;
+pub use ax_fs_ng::fops::FilePerm as AxFilePerm;
+pub use ax_fs_ng::fops::FilePermExt as AxFilePermExt;
+pub use ax_fs_ng::fops::FileType as AxFileType;
+pub use ax_fs_ng::fops::FileTypeExt as AxFileTypeExt;
+pub use ax_fs_ng::fops::OpenOptions as AxOpenOptions;
 pub use ax_io::SeekFrom as AxSeekFrom;
-
 
 /// A handle to an opened file.
 pub struct AxFileHandle(File);
@@ -61,25 +63,25 @@ pub fn ax_read_dir(dir: &mut AxDirHandle, dirents: &mut [AxDirEntry]) -> AxResul
 }
 
 pub fn ax_create_dir(path: &str) -> AxResult {
-    ax_fs::api::create_dir(path)
+    ax_fs_ng::api::create_dir(path)
 }
 
 pub fn ax_remove_dir(path: &str) -> AxResult {
-    ax_fs::api::remove_dir(path)
+    ax_fs_ng::api::remove_dir(path)
 }
 
 pub fn ax_remove_file(path: &str) -> AxResult {
-    ax_fs::api::remove_file(path)
+    ax_fs_ng::api::remove_file(path)
 }
 
 pub fn ax_rename(old: &str, new: &str) -> AxResult {
-    ax_fs::api::rename(old, new)
+    ax_fs_ng::api::rename(old, new)
 }
 
 pub fn ax_current_dir() -> AxResult<String> {
-    ax_fs::api::current_dir()
+    ax_fs_ng::api::current_dir()
 }
 
 pub fn ax_set_current_dir(path: &str) -> AxResult {
-    ax_fs::api::set_current_dir(path)
+    ax_fs_ng::api::set_current_dir(path)
 }

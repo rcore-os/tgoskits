@@ -1,6 +1,6 @@
 [package]
 name = "pcie"
-version = "0.6.2"
+version = "0.6.7"
 edition.workspace = true
 autotests = false
 authors = ["周睿 <zrufo747@outlook.com>"]
@@ -17,7 +17,9 @@ bit_field = "0.10"
 bitflags = "2"
 pci_types = "0.10"
 mmio-api.workspace = true
+rdif-msi.workspace = true
 thiserror = { version = "2", default-features = false }
+tock-registers.workspace = true
 
 rdif-pcie = { workspace = true }
 
@@ -26,6 +28,10 @@ fdt-edit.workspace = true
 
 [lib]
 test = false
+
+[[test]]
+name = "msix_table"
+path = "tests/msix_table.rs"
 
 # bare-test integration test is temporarily disabled.
 # [[test]]

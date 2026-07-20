@@ -7,9 +7,10 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-block"
 repository.workspace = true
-version = "0.8.0"
+version = "0.11.2"
 
 [dependencies]
+ax-kspin = {workspace = true}
 dma-api = {workspace = true}
 rdif-base = {workspace = true}
 thiserror = {version = "2", default-features = false}

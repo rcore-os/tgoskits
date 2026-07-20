@@ -84,6 +84,12 @@ mod tests {
         assert_eq!(event.code, 30);
         assert_eq!(event.value, -1);
         assert_eq!(input.get_abs_info(0).unwrap().min, -100);
-        assert_eq!(input.handle_irq(), Event { input_ready: false });
+        assert_eq!(
+            input.handle_irq(),
+            Event {
+                handled: false,
+                input_ready: false
+            }
+        );
     }
 }

@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.2.1...rd-net-v0.2.2) - 2026-07-08
+
+### Other
+
+- updated the following local packages: dma-api, rdif-eth
+
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.2.0...rd-net-v0.2.1) - 2026-07-07
+
+### Other
+
+- updated the following local packages: dma-api, rdif-eth
+
+## [0.2.0](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.7...rd-net-v0.2.0) - 2026-07-02
+
+### Other
+
+- *(irq-framework)* require boxed IRQ callbacks ([#1452](https://github.com/rcore-os/tgoskits/pull/1452))
+- *(net)* split IRQ handlers from NIC queues ([#1435](https://github.com/rcore-os/tgoskits/pull/1435))
+
+## [0.1.7](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.6...rd-net-v0.1.7) - 2026-06-27
+
+### Added
+
+- *(rdif-block)* add owned DMA queue primitives
+
+## [0.1.6](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.5...rd-net-v0.1.6) - 2026-06-23
+
+### Other
+
+- *(ax-net)* add locking and concurrency documentation and remove deprecated interfaces ([#1340](https://github.com/rcore-os/tgoskits/pull/1340))
+
+## [0.1.5](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.4...rd-net-v0.1.5) - 2026-06-22
+
+### Added
+
+- *(starry)* add Wayland app case ([#1160](https://github.com/rcore-os/tgoskits/pull/1160))
+- *(poll)* add irq-safe deferred notifications ([#1278](https://github.com/rcore-os/tgoskits/pull/1278))
+- runtime Wi-Fi AP/STA mode switch for AIC8800 on SG2002 (LicheeRV Nano) ([#1266](https://github.com/rcore-os/tgoskits/pull/1266))
+- AIC8800 Wi-Fi SoftAP for SG2002 (LicheeRV Nano) ([#1185](https://github.com/rcore-os/tgoskits/pull/1185))
+
+## [0.1.4](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.3...rd-net-v0.1.4) - 2026-06-12
+
+### Added
+
+- *(axruntime)* add runtime IRQ registration adapters
+
+## [0.1.3](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.2...rd-net-v0.1.3) - 2026-06-09
+
+### Other
+
+- updated the following local packages: dma-api, rdif-eth
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.1.1...rd-net-v0.1.2) - 2026-06-03
 
 ### Added

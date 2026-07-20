@@ -53,6 +53,13 @@ fn handle_debug(tf: &mut TrapFrame) {
     if crate::trap::debug_handler(tf) {
         return;
     }
+    // Kernel-mode #DB was not claimed by any handler.
+    // Unclaimed user-mode #DB is routed through the user-space exception loop
+    // (.Ltrap_user → .Lexit_user in trap.S), so `x86_trap_handler` is only
+    // reached for kernel-mode traps. An unhandled kernel #DB is a fatal
+    // condition: if resumed the CPU re-executes the faulting instruction,
+    // likely looping into a triple fault.
+    warn!("Unhandled kernel #DB @ {:#x}", tf.rip);
     let bt = tf.backtrace();
     panic!(
         "Unhandled #DB @ {:#x}, error_code={:#x}:\n{:#x?}\n{}",
@@ -80,7 +87,7 @@ fn x86_trap_handler(tf: &mut TrapFrame) {
             );
         }
         IRQ_VECTOR_START..=IRQ_VECTOR_END => {
-            crate::trap::irq_handler(tf.vector as _);
+            crate::trap::dispatch_irq(tf.vector as _);
         }
         _ => {
             let bt = tf.backtrace();

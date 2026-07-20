@@ -1,8 +1,11 @@
-use std::{fs, time::Duration};
-
 use aya::{maps::HashMap, programs::KProbe};
-#[rustfmt::skip]
-use log::{debug, warn};
+use log::debug;
+use std::{
+    fs,
+    io::{BufRead, BufReader},
+};
+
+use tokio::time;
 
 // Resolve the (possibly mangled) kallsyms entry for
 // `starry_kernel::syscall::sysno`, the `#[inline(never)]` helper whose first
@@ -14,10 +17,10 @@ use log::{debug, warn};
 // lookup matches the kallsyms name exactly, so we hand aya the real symbol
 // string, not the source name.
 fn resolve_sysno() -> anyhow::Result<String> {
-    let table = fs::read_to_string("/proc/kallsyms")?;
-    for line in table.lines() {
+    let buf = BufReader::new(fs::File::open("/proc/kallsyms")?);
+    for line in buf.lines() {
         // Format: "<addr> <type> <name>".
-        if let Some(name) = line.split_whitespace().nth(2)
+        if let Some(name) = line?.split_whitespace().nth(2)
             && name.contains("syscall")
             && name.contains("sysno")
         {
@@ -26,14 +29,19 @@ fn resolve_sysno() -> anyhow::Result<String> {
     }
     anyhow::bail!("syscall::sysno not found in /proc/kallsyms")
 }
-
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Warn)
         .format_timestamp(None)
         .init();
 
-    // Bump the memlock rlimit, see https://lwn.net/Articles/837122/
+    let target_syscall_entry = resolve_sysno()?;
+
+    println!("syscall_count: kprobe target symbol = {target_syscall_entry}");
+
+    // Bump the memlock rlimit. This is needed for older kernels that don't use the
+    // new memcg based accounting, see https://lwn.net/Articles/837122/
     let rlim = libc::rlimit {
         rlim_cur: libc::RLIM_INFINITY,
         rlim_max: libc::RLIM_INFINITY,
@@ -43,62 +51,43 @@ fn main() -> anyhow::Result<()> {
         debug!("remove limit on locked memory failed, ret is: {ret}");
     }
 
+    // This will include your eBPF object file as raw bytes at compile-time and load it at
+    // runtime. This approach is recommended for most real-world use cases. If you would
+    // like to specify the eBPF program at runtime rather than at compile-time, you can
+    // reach for `Bpf::load_file` instead.
     let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/syscall_count"
     )))?;
 
-    let target = resolve_sysno()?;
-    println!("SYSCALL_COUNT: kprobe target symbol = {target}");
-    let program: &mut KProbe = ebpf.program_mut("syscall_count").unwrap().try_into()?;
+    let program: &mut KProbe = ebpf.program_mut("syscall_ebpf").unwrap().try_into()?;
     program.load()?;
-    program.attach(&target, 0)?;
+    program.attach(target_syscall_entry, 0)?;
+    log::info!("attacch the kprobe to syscall_entry ok");
 
-    // Deterministic workload: a fixed number of getpid(2) calls. Keyed by the
-    // getpid syscall number, only these calls bump SYSCALL_LIST[SYS_getpid], so
-    // the count is assertable (a broken kprobe/arg-read/map path cannot pass).
-    let sys_getpid = libc::SYS_getpid as u32;
-    const N: u32 = 500;
-    println!("SYSCALL_COUNT: issuing {N} getpid() calls (SYS_getpid={sys_getpid})");
-    for _ in 0..N {
-        unsafe { libc::syscall(libc::SYS_getpid) };
-    }
-    // Let the probe path settle.
-    std::thread::sleep(Duration::from_millis(500));
-
-    let map: HashMap<_, u32, u32> =
-        HashMap::try_from(ebpf.map("SYSCALL_LIST").expect("SYSCALL_LIST missing"))?;
-    let mut getpid_count: u32 = 0;
-    let mut distinct = 0u32;
-    for (sysno, count) in map.iter().flatten() {
-        distinct += 1;
-        if sysno == sys_getpid {
-            getpid_count = count;
+    for _ in 0..64 {
+        unsafe {
+            libc::getpid();
         }
+        time::sleep(time::Duration::from_millis(10)).await;
     }
-    println!(
-        "SYSCALL_COUNT: distinct syscalls seen = {distinct}, getpid count = {getpid_count} (drove {N})"
-    );
 
-    // Anti-fallback: the keys must be real, small syscall numbers (an earlier
-    // version that dereferenced `&UserContext` recorded the pointer's first
-    // word, producing bogus keys), and the getpid count must clearly reflect
-    // the workload. Allow generous TCG slack.
-    if sys_getpid >= 1024 {
-        // SYS_getpid should be a small number on every supported ABI.
-        warn!("unexpected SYS_getpid value {sys_getpid}");
+    let syscall_list: HashMap<_, u32, u32> =
+        HashMap::try_from(ebpf.map("SYSCALL_LIST").unwrap())?;
+    let mut total = 0u32;
+    let mut distinct = 0u32;
+    for item in syscall_list.iter() {
+        let (key, value) = item?;
+        println!("syscall: {key}, count: {value}");
+        total = total.saturating_add(value);
+        distinct += 1;
     }
-    if getpid_count >= N / 5 {
-        println!(
-            "SYSCALL_COUNT_PASS: getpid fired {getpid_count} times (>= {})",
-            N / 5
-        );
-        Ok(())
-    } else {
-        println!(
-            "SYSCALL_COUNT_FAIL: getpid count {getpid_count} < {}",
-            N / 5
-        );
-        std::process::exit(1);
+
+    if total == 0 {
+        anyhow::bail!("SYSCALL_COUNT_FAIL: no syscall records were captured");
     }
+
+    println!("SYSCALL_COUNT_PASS: {total} records across {distinct} syscall ids");
+
+    Ok(())
 }

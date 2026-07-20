@@ -24,9 +24,15 @@ extern crate alloc;
 extern crate log;
 
 mod arch;
-mod cache;
+mod architecture;
+pub mod boot;
+mod error;
 mod host;
+pub mod irq;
+pub mod layout;
+pub mod lifecycle;
 mod manager;
+mod npt;
 mod percpu;
 mod runtime;
 mod task;
@@ -34,26 +40,41 @@ mod timer;
 mod vcpu;
 mod vm;
 
+use crate::arch::ArchOps;
+
 pub mod config;
 
+pub use arch::platform::*;
 pub use ax_cpumask::CpuMask;
-pub use ax_page_table_entry::MappingFlags;
-pub use axdevice_base::{AccessWidth, Port, SysRegAddr};
-pub use axvcpu::{AxVCpuExitReason, InterruptTriggerMode, VCpuState};
-pub use axvm_types::{GuestPhysAddr, HostPhysAddr, VMId};
+/// Compatibility export for legacy/common normalized VM events.
+///
+/// Architecture-local raw exits are handled by `arch::CurrentArch` through
+/// `VmArchVcpuOps::Exit`; new code should not treat this as the universal raw
+/// vCPU exit type.
+pub use axvm_types::VmExit;
+pub use axvm_types::{
+    AccessWidth, GuestPhysAddr, HostPhysAddr, InterruptTriggerMode, MappingFlags, Port, SysRegAddr,
+    VMId, VmVcpuState,
+};
+pub use error::{AxVmError, AxVmResult};
+pub(crate) use error::{ax_err, ax_err_type};
 pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
+pub use irq::InterruptFabric;
+pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
     inject_current_vcpu_interrupt, register_vm,
 };
-pub use task::{AsVCpuTask, VCpuTask};
-pub use vm::{AxVCpuRef, AxVM, AxVMRef, VMMemoryRegion, VMStatus};
+pub(crate) use task::{AsVCpuTask, VCpuTask};
+pub use vm::{
+    AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot,
+};
 
 /// The architecture-independent per-CPU type.
-pub type AxVMPerCpu = axvcpu::AxPerCpu<vcpu::AxVMArchPerCpuImpl>;
+pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::ArchPerCpu>;
 
 /// Check and dispatch pending AxVM timer events on the current CPU.
 pub fn check_timer_events() {
@@ -62,31 +83,5 @@ pub fn check_timer_events() {
 
 /// Clean data cache lines covering a host virtual address range.
 pub fn clean_dcache_range(addr: ax_memory_addr::VirtAddr, size: usize) {
-    cache::clean_dcache_range(addr, size);
-}
-
-/// Return the host FDT boot argument physical address.
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "riscv64"
-))]
-pub fn host_fdt_bootarg() -> usize {
-    host::arceos::host_fdt_bootarg()
-}
-
-/// Convert a host physical address into a host virtual address.
-#[cfg(any(
-    target_arch = "aarch64",
-    target_arch = "loongarch64",
-    target_arch = "riscv64"
-))]
-pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::VirtAddr {
-    host::arceos::phys_to_virt(paddr)
-}
-
-/// Shut down ArceOS filesystems so guest passthrough can take ownership.
-#[cfg(all(any(feature = "fs", feature = "host-fs"), target_arch = "x86_64"))]
-pub fn shutdown_host_filesystems() -> ax_errno::AxResult {
-    host::arceos::shutdown_host_filesystems()
+    arch::CurrentArch::clean_dcache_range(addr, size);
 }

@@ -1,0 +1,3 @@
+validation/tennis-ball-close.jpg
+validation/tennis-ball-black-box.jpg
+validation/tennis-ball-plant.jpg

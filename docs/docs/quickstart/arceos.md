@@ -6,104 +6,98 @@ title: "ArceOS 快速上手"
 
 # ArceOS 快速上手
 
-ArceOS 的最短路径通常是选择一个示例包，通过 `cargo xtask arceos qemu` 直接构建并启动。
+ArceOS 的最短路径是直接运行 `cargo xtask arceos qemu`。该 QEMU 子命令会选择对应架构的 board 模板，默认启动 Hello World。
 
 ```mermaid
 flowchart LR
-  A[选择包] --> B[选择架构]
-  B --> C[cargo xtask arceos qemu]
-  C --> D{验证通过?}
-  D -- 是 --> E[测试套件]
-  D -- 否 --> F[检查环境]
-  F --> B
+  A[选择架构] --> B[cargo xtask arceos qemu]
+  B --> C{需要其他应用?}
+  C -- 否 --> D[Hello World]
+  C -- 是 --> E[--package 指定应用]
+  D --> F{验证通过?}
+  E --> F
+  F -- 是 --> G[测试套件]
+  F -- 否 --> H[检查环境]
+  H --> A
 ```
 
-## 1. 快速启动
+## 1. QEMU 快速启动
 
-本节给出 ArceOS 在不同架构上的最短启动命令。推荐优先选择 `ax-helloworld`，因为它依赖最少、输出最直接，适合确认基础构建链路和 QEMU 路径是否正常。
+不带 `--package` 时，QEMU 子命令从 `os/arceos/configs/board/qemu-<arch>.toml` 读取默认应用与 feature；当前模板使用最小的 `arceos-helloworld`。需要运行其他应用时，再通过 `--package` 显式覆盖。
 
 ### 1.1 RISC-V 64
 
-`riscv64` 是当前最适合作为第一条验证路径的架构之一。命令短、反馈明确，也最便于和测试套件中的主流验证路径对应起来。
+`qemu-riscv64` 使用 `riscv64gc-unknown-none-elf` target 和 QEMU virt 平台。
 
 ```bash
-cargo xtask arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf
+cargo xtask arceos qemu --target riscv64gc-unknown-none-elf
 ```
 
 ### 1.2 AArch64
 
-如果后续工作会涉及 StarryOS 或 Axvisor，AArch64 路径会更容易和其他系统对齐。它适合在完成第一条最小运行路径后继续验证。
+`qemu-aarch64` 使用 `aarch64-unknown-none-softfloat` target 和 QEMU virt 平台。
 
 ```bash
-cargo xtask arceos qemu --package ax-helloworld --target aarch64-unknown-none-softfloat
+cargo xtask arceos qemu --target aarch64-unknown-none-softfloat
 ```
 
 ### 1.3 x86_64
 
-`x86_64` 更适合本地 x86 平台适配或与 PC 类平台环境对照时使用。启动方式与其他架构一致，主要差别在目标 triple 和底层平台配置。
+`qemu-x86_64` 使用 `x86_64-unknown-none` target 和 PC 类 QEMU 平台配置。
 
 ```bash
-cargo xtask arceos qemu --package ax-helloworld --target x86_64-unknown-none
+cargo xtask arceos qemu --target x86_64-unknown-none
 ```
 
 ### 1.4 LoongArch64
 
-LoongArch64 路径适合作为补充验证，而不是第一次上手的默认首选。使用前建议先确认本地环境或容器环境中对应 QEMU 已可用。
+`qemu-loongarch64` 使用 `loongarch64-unknown-none-softfloat` target，运行环境需要提供 `qemu-system-loongarch64`。
 
 ```bash
-cargo xtask arceos qemu --package ax-helloworld --target loongarch64-unknown-none-softfloat
+cargo xtask arceos qemu --target loongarch64-unknown-none-softfloat
 ```
+
+完成 `defconfig` 后，后续命令通常不需要重复传入 `--package`、`--target` 或 `--arch`。切换架构时重新执行以上三步即可。
 
 ## 2. 常用包
 
-ArceOS 的快速上手不仅是“把系统跑起来”，还常常需要快速切换到不同类型的示例应用。`--package` 是最常见的切换方式，因此这里列出当前仓库中最适合做入门验证的几个包。
+`--package` 用于覆盖板卡配置中的默认应用。仓库提供网络、文件系统和最小运行环境等不同类型的示例包。
 
 `--package` 用于选择要启动的应用。当前仓库中常见快速上手包包括：
 
 | 包名 | 功能 |
 |------|------|
-| `ax-helloworld` | 最小 Hello World |
-| `ax-httpserver` | HTTP 服务器 |
-| `ax-httpclient` | HTTP 客户端 |
-| `ax-shell` | 交互式 Shell |
+| `arceos-helloworld` | 最小 Hello World |
+| `arceos-httpserver` | HTTP 服务器 |
+| `arceos-httpclient` | HTTP 客户端 |
+| `arceos-shell` | 交互式 Shell |
 
-示例：
+下面的命令分别覆盖网络服务、文件系统交互和仅构建场景。显式传入 `--package` 和 `--target` 会覆盖 `defconfig` 中的默认值，并在不重写默认配置的情况下切换应用。
 
 ```bash
 # HTTP 服务器
-cargo xtask arceos qemu --package ax-httpserver --target riscv64gc-unknown-none-elf
+cargo xtask arceos qemu --package arceos-httpserver --target riscv64gc-unknown-none-elf
 
 # 文件系统 Shell
-cargo xtask arceos qemu --package ax-shell --target aarch64-unknown-none-softfloat
+cargo xtask arceos qemu --package arceos-shell --target aarch64-unknown-none-softfloat
 
 # 仅构建
-cargo xtask arceos build --package ax-helloworld --target riscv64gc-unknown-none-elf
+cargo xtask arceos build --package arceos-helloworld --target riscv64gc-unknown-none-elf
 ```
 
 ## 3. 测试入口
 
-当单个示例已经可以稳定启动后，下一步通常是切到测试套件入口做批量验证。ArceOS 的测试支持 Rust 与 C 两条路径，并允许按类型或包名做筛选。
-
-ArceOS 的测试入口支持 Rust/C 混合测试、单独 Rust 测试、单独 C 测试和包过滤：
+ArceOS 测试入口使用 `--test-group rust` 或 `--test-group c` 选择测试组，并通过 `--test-case` 进一步筛选单个用例。显式指定测试组可以避免当前板卡 `defconfig` 影响 QEMU 测试目录发现。
 
 ```bash
-# 全部测试（Rust + C）
-cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf
+# Rust 测试组
+cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf --test-group rust
 
-# 仅 Rust
-cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf --only-rust
+# C 测试组
+cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf --test-group c
 
-# 仅 C
-cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf --only-c
-
-# 指定单个 Rust 测试包
-cargo xtask arceos test qemu --target aarch64-unknown-none-softfloat -p arceos-affinity
+# 指定单个 Rust 测试用例
+cargo xtask arceos test qemu --target aarch64-unknown-none-softfloat --test-group rust --test-case task-affinity
 ```
 
-详细说明见：[ArceOS 测试套件设计](/docs/build/test/arceos)
-
-若需要继续理解 ArceOS 的模块层、组件关系或测试实现，可以继续阅读：
-
-- [ArceOS 开发指南](/docs/development/arceos)
-- [ArceOS 测试套件设计](/docs/build/test/arceos)
-- [组件开发指南](/docs/development/components)
+详细说明见：[ArceOS 测试套件设计](/docs/build/arceos/test)

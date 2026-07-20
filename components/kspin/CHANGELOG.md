@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.15](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.14...ax-kspin-v0.3.15) - 2026-07-08
+
+### Fixed
+
+- *(starry-kernel)* prevent scope lock poisoning during unshare ([#1538](https://github.com/rcore-os/tgoskits/pull/1538))
+
+## [0.3.14](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.13...ax-kspin-v0.3.14) - 2026-07-07
+
+### Other
+
+- Dev might sleep enhance ([#1480](https://github.com/rcore-os/tgoskits/pull/1480))
+
+## [0.3.13](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.12...ax-kspin-v0.3.13) - 2026-07-02
+
+### Added
+
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+## [0.3.12](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.11...ax-kspin-v0.3.12) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-lockdep
+
+## [0.3.11](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.10...ax-kspin-v0.3.11) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
+### Fixed
+
+- *(lockdep)* resolve Starry lock ordering and log print issues ([#1103](https://github.com/rcore-os/tgoskits/pull/1103))
+
 ## [0.3.10](https://github.com/rcore-os/tgoskits/compare/ax-kspin-v0.3.9...ax-kspin-v0.3.10) - 2026-06-03
 
 ### Other

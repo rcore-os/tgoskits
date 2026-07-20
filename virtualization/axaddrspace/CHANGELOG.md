@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.16](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.15...axaddrspace-v0.5.16) - 2026-07-07
+
+### Other
+
+- *(axvm)* use generic nested page tables ([#1477](https://github.com/rcore-os/tgoskits/pull/1477))
+
+## [0.5.15](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.14...axaddrspace-v0.5.15) - 2026-07-02
+
+### Other
+
+- *(axvm)* redesign guest address layout planning ([#1454](https://github.com/rcore-os/tgoskits/pull/1454))
+
+## [0.5.14](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.13...axaddrspace-v0.5.14) - 2026-06-22
+
+### Other
+
+- updated the following local packages: axvm-types
+
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.12...axaddrspace-v0.5.13) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
+### Other
+
+- Refactor Axvisor to unify ArceOS API and improve modularity ([#1019](https://github.com/rcore-os/tgoskits/pull/1019))
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.11...axaddrspace-v0.5.12) - 2026-06-03
 
 ### Other
@@ -53,7 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## 0.1.1
 
-- Support the new 4-level-ept feature. By default, level 3 ept is used. After enabling this feature, level 4 ept is used.
+- Support the former four-level EPT build option. By default, level 3 EPT is used. After enabling this option, level 4 EPT is used.
 
 ## 0.1.0
 

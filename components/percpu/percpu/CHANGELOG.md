@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.14](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.13...ax-percpu-v0.4.14) - 2026-07-07
+
+### Other
+
+- update Cargo.toml dependencies
+
+## [0.4.13](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.12...ax-percpu-v0.4.13) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
 ## [0.4.12](https://github.com/rcore-os/tgoskits/compare/ax-percpu-v0.4.11...ax-percpu-v0.4.12) - 2026-06-03
 
 ### Other

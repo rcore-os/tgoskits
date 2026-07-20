@@ -37,12 +37,12 @@ impl Read for Empty {
     }
 
     #[inline]
-    fn read_buf(&mut self, _cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf(&mut self, _cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         Ok(())
     }
 
     #[inline]
-    fn read_buf_exact(&mut self, cursor: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf_exact(&mut self, cursor: BorrowedCursor<'_, u8>) -> Result<()> {
         if cursor.capacity() != 0 {
             Err(Error::UnexpectedEof)
         } else {

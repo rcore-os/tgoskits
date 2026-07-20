@@ -3,13 +3,15 @@ use core::{net::Ipv4Addr, time::Duration};
 
 use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
+use ax_net::{
+    CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps,
+};
 use ax_runtime::hal::time::wall_time;
-use axnet::{CMsgData, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps};
 use linux_raw_sys::{
     general::timespec,
     net::{
-        MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, SOL_SOCKET, cmsghdr, mmsghdr, msghdr,
-        sockaddr, socklen_t,
+        IP_TOS, IPPROTO_IPV6, IPV6_TCLASS, MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC, SCM_RIGHTS,
+        SOL_SOCKET, cmsghdr, mmsghdr, msghdr, sockaddr, socklen_t,
     },
 };
 
@@ -19,12 +21,13 @@ use super::addr::{
 use crate::{
     file::{FileLike, PacketSocket, Socket, add_file_like, get_file_like, netlink::NetlinkSocket},
     mm::{IoVec, IoVectorBuf, UserConstPtr, UserPtr, VmBytes, VmBytesMut},
-    syscall::net::{CMsg, CMsgBuilder},
+    syscall::net::{CMsg, CMsgBuilder, cmsg_space},
     time::TimeValueLike,
 };
 
 // Linux ABI for sendmmsg/recvmmsg limits vlen to UIO_MAXIOV (1024).
 const MMSG_MAX_VLEN: u32 = 1024;
+const PROTO_IP: u32 = linux_raw_sys::net::IPPROTO_IP as u32;
 
 fn parse_recvmmsg_timeout(timeout: UserConstPtr<timespec>) -> AxResult<Option<Duration>> {
     if timeout.is_null() {
@@ -54,8 +57,14 @@ fn parse_send_cmsgs(control_ptr: usize, control_len: usize) -> AxResult<Vec<CMsg
             return Err(AxError::InvalidInput);
         }
 
+        let Some(next_ptr) = cmsg_space(hdr.cmsg_len - size_of::<cmsghdr>())
+            .and_then(|space| ptr.checked_add(space))
+        else {
+            return Err(AxError::InvalidInput);
+        };
+
         cmsg.push(Box::new(CMsg::parse(hdr)?) as CMsgData);
-        ptr += hdr.cmsg_len;
+        ptr = next_ptr;
     }
 
     Ok(cmsg)
@@ -144,7 +153,7 @@ fn recv_impl(
     flags: u32,
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
-    cmsg_builder: Option<CMsgBuilder>,
+    mut cmsg_builder: Option<CMsgBuilder>,
     truncated_out: &mut bool,
 ) -> AxResult<isize> {
     debug!("sys_recv <= fd: {fd}, flags: {flags}");
@@ -157,18 +166,37 @@ fn recv_impl(
                 addrlen.get_as_mut()?,
             )?;
         }
+        if let Some(builder) = cmsg_builder.take() {
+            builder.finish();
+        }
         return Ok(recv as isize);
     }
 
     let Ok(socket) = Socket::from_fd(fd) else {
         if let Ok(netlink) = NetlinkSocket::from_fd(fd) {
-            let recv = netlink.read(&mut dst)?;
+            // Netlink is a FileLike, not an ax_net Socket, so the flag-aware recv
+            // path below is unreachable for it. Honor the recv flags here:
+            // MSG_PEEK (do not consume the dump — getifaddrs/dnsmasq peek-then-
+            // read to size their buffer), MSG_TRUNC (full datagram length),
+            // MSG_DONTWAIT (non-blocking).
+            let (recv, truncated) = netlink.recv(
+                &mut dst,
+                flags & MSG_PEEK != 0,
+                flags & MSG_TRUNC != 0,
+                flags & MSG_DONTWAIT != 0,
+            )?;
+            // Surface MSG_TRUNC in the returned `msg_flags` when the datagram
+            // did not fit (Linux sets it; getifaddrs sizes its buffer from it).
+            *truncated_out = truncated;
             if !addr.is_null() {
                 super::addr::write_netlink_addr(
                     &netlink.kernel_addr(),
                     addr,
                     addrlen.get_as_mut()?,
                 )?;
+            }
+            if let Some(builder) = cmsg_builder.take() {
+                builder.finish();
             }
             return Ok(recv as isize);
         }
@@ -208,26 +236,53 @@ fn recv_impl(
 
     if let Some(mut builder) = cmsg_builder {
         for cmsg in cmsg {
-            let Ok(cmsg) = cmsg.downcast::<CMsg>() else {
-                warn!("received unexpected cmsg");
-                continue;
-            };
-
-            let pushed = match *cmsg {
-                CMsg::Rights { fds } => builder.push(SOL_SOCKET, SCM_RIGHTS, |data| {
-                    let mut written = 0;
-                    for (f, chunk) in fds.into_iter().zip(data.chunks_exact_mut(size_of::<i32>())) {
-                        let fd = add_file_like(f, false)?;
-                        chunk.copy_from_slice(&fd.to_ne_bytes());
-                        written += size_of::<i32>();
+            let pushed = match cmsg.downcast::<CMsg>() {
+                Ok(cmsg) => match *cmsg {
+                    CMsg::Rights { fds } => {
+                        let body_len = fds.len() * size_of::<i32>();
+                        builder.push_sized(SOL_SOCKET, SCM_RIGHTS, body_len, |data| {
+                            let mut written = 0;
+                            for (f, chunk) in fds
+                                .into_iter()
+                                .zip(data.as_chunks_mut::<{ size_of::<i32>() }>().0)
+                            {
+                                let fd = add_file_like(f, false)?;
+                                chunk.copy_from_slice(&fd.to_ne_bytes());
+                                written += size_of::<i32>();
+                            }
+                            Ok(written)
+                        })?
                     }
-                    Ok(written)
-                })?,
+                },
+                Err(cmsg) => match cmsg.downcast::<IpCmsg>() {
+                    Ok(cmsg) => match *cmsg {
+                        IpCmsg::Ipv4Tos(tos) => {
+                            builder.push_sized(PROTO_IP, IP_TOS, 1, |data| {
+                                data[0] = tos;
+                                Ok(1)
+                            })?
+                        }
+                        IpCmsg::Ipv6TrafficClass(tclass) => builder.push_sized(
+                            IPPROTO_IPV6 as u32,
+                            IPV6_TCLASS,
+                            size_of::<i32>(),
+                            |data| {
+                                data.copy_from_slice(&i32::from(tclass).to_ne_bytes());
+                                Ok(size_of::<i32>())
+                            },
+                        )?,
+                    },
+                    Err(_) => {
+                        warn!("received unexpected cmsg");
+                        continue;
+                    }
+                },
             };
             if !pushed {
                 break;
             }
         }
+        builder.finish();
     }
 
     debug!("sys_recv => fd: {fd}, recv: {recv}");

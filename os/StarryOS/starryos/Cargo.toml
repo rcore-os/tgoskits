@@ -11,41 +11,33 @@ edition.workspace = true
 license.workspace = true
 name = "starryos"
 repository.workspace = true
-version = "0.5.13"
+version = "0.5.25"
 
 [features]
 default = []
-myplat = ["ax-feat/myplat"]
 qemu = [
-  "ax-feat/defplat",
-  "ax-feat/irq",
-  "ax-feat/rtc",
-  "ax-feat/display",
+  "ax-runtime/irq",
+  "ax-runtime/rtc",
+  "ax-runtime/display",
   "starry-kernel/input",
-  "starry-kernel/vsock", # auxilary features
+  "starry-kernel/vsock", # auxiliary features
 ]
-smp = ["ax-feat/smp", "axplat-dyn?/smp", "ax-hal/smp"]
+# The profiling command selects this package-level preset; axbuild must not assemble the
+# individual driver feature list at runtime.
+qperf = ["ax-driver/virtio-blk", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
+qperf-metrics = []
+smp = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
 
-sg2002 = [
-  "ax-hal/riscv64-sg2002",
-  "starry-kernel/sg2002",
-]
-sg2002-dyn = [
-  "plat-dyn",
-  "axplat-dyn/thead-mae",
-  "starry-kernel/sg2002",
-  "ax-driver/sg2002-placeholder",
-]
 k230 = [
-  "plat-dyn",
   "starry-kernel/k230-kpu",
   "ax-driver/k230-sdhci",
   "ax-driver/serial",
 ]
-plat-dyn = ["dep:axplat-dyn", "starry-kernel/plat-dyn"]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
-vf2 = ["ax-hal/riscv64-visionfive2"]
+jpeg = ["ax-driver/jpeg", "starry-kernel/jpeg"]
+rk3588-pwm = ["starry-kernel/rk3588-pwm"]
+stack-protector = ["ax-std/stack-protector", "starry-kernel/stack-protector"]
 
 [[bin]]
 name = "starryos"
@@ -56,13 +48,16 @@ name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-ax-feat = { workspace = true, features = ["ext-ld", "fs-ng-times", "irq"] }
+# Starry links Rust `std` dynamically on the musl target; keep the libc
+# compatibility surface in the package manifest rather than axbuild.
+ax-std = { workspace = true, features = ["ext-ld", "std-compat", "fs", "multitask", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
-axplat-dyn = { workspace = true, optional = true }
+ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
+axplat-dyn.workspace = true
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
 
-[target.'cfg(any(windows,unix))'.dependencies]
+[target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
 anyhow = "1.0"
 axbuild = { workspace = true }
 clap = { version = "4.6", features = ["derive"] }

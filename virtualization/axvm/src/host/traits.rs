@@ -1,13 +1,10 @@
 //! Internal host capability traits used by the AxVM runtime.
 
-extern crate alloc;
-
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use alloc::boxed::Box;
 use core::time::Duration;
 
-use ax_errno::AxResult;
 use axvm_types::{HostPhysAddr, HostVirtAddr};
+
+use crate::AxVmResult;
 
 /// Host memory allocation and address translation.
 pub trait HostMemory {
@@ -36,30 +33,11 @@ pub trait HostMemory {
 
 /// Host time and timer operations.
 pub trait HostTime {
-    /// Timer cancellation token.
-    type CancelToken: Copy + Send + Sync + 'static;
-
-    /// Convert nanoseconds to hardware ticks.
-    #[cfg(target_arch = "x86_64")]
-    fn nanos_to_ticks(&self, nanos: u64) -> u64;
-
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
 
     /// Program the host one-shot timer.
     fn set_oneshot_timer(&self, deadline_ns: u64);
-
-    /// Register a VM timer callback.
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn register_timer(
-        &self,
-        deadline_ns: u64,
-        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
-    ) -> Self::CancelToken;
-
-    /// Cancel a VM timer callback.
-    #[cfg(target_arch = "x86_64")]
-    fn cancel_timer(&self, token: Self::CancelToken);
 }
 
 /// Host CPU topology and affinity operations.
@@ -72,19 +50,6 @@ pub trait HostCpu {
 
     /// Current host CPU ID.
     fn this_cpu_id(&self) -> usize;
-
-    /// Bind current task to one host CPU.
-    fn bind_current_to_cpu(&self, cpu_id: usize) -> AxResult;
-}
-
-/// Host console operations.
-#[cfg(target_arch = "x86_64")]
-pub trait HostConsole {
-    /// Write raw bytes to host console.
-    fn write_bytes(&self, bytes: &[u8]);
-
-    /// Read raw bytes from host console.
-    fn read_bytes(&self, bytes: &mut [u8]) -> usize;
 }
 
 /// Host platform lifecycle and virtualization controls.
@@ -93,8 +58,8 @@ pub trait HostPlatform {
     fn has_hardware_support(&self) -> bool;
 
     /// Enable virtualization on the current host CPU.
-    fn enable_virtualization_on_current_cpu(&self) -> AxResult;
+    fn enable_virtualization_on_current_cpu(&self) -> AxVmResult;
 
     /// Enable virtualization on every usable host CPU.
-    fn enable_virtualization_on_all_cpus(&self) -> AxResult;
+    fn enable_virtualization_on_all_cpus(&self) -> AxVmResult;
 }

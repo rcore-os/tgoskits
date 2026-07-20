@@ -1,6 +1,6 @@
 [package]
 name = "sg2002-tpu"
-version = "0.1.3"
+version = "0.3.7"
 edition.workspace = true
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 license.workspace = true

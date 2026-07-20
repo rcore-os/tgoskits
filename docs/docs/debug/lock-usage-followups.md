@@ -43,7 +43,7 @@ sidebar_label: "锁使用问题跟踪"
 
 | 区域 | 当前状态 | 风险 | 后续方向 |
 | --- | --- | --- | --- |
-| `os/arceos/modules/axfs-ng/src/fs/fat/fs.rs` | FAT 主文件系统状态使用 `SpinNoIrq`。 | `read_at`、`write_at`、`append`、`set_len`、`sync` 和目录操作会在持锁期间进入 `fatfs`，再到块设备 `read_block` / `write_block` / `flush`。这是粗文件系统锁包住 I/O 的典型问题。 | 继续保持为已知技术债。后续应拆分 FAT 内部状态锁，避免持自旋锁进入块 I/O 和外部 sink callback；或者在 sleepable 任务上下文中使用 sleepable 锁。 |
+| `os/arceos/modules/axfs-ng/src/fs/fat/fs.rs` | FAT 主文件系统状态使用 `SpinNoIrq`。 | `read_at`、`write_at`、`append`、`set_len`、`sync` 和目录操作会在持锁期间进入 `fat`，再到块设备 `read_block` / `write_block` / `flush`。这是粗文件系统锁包住 I/O 的典型问题。 | 继续保持为已知技术债。后续应拆分 FAT 内部状态锁，避免持自旋锁进入块 I/O 和外部 sink callback；或者在 sleepable 任务上下文中使用 sleepable 锁。 |
 | `os/arceos/modules/axfs-ng/src/fs/ext4/rsext4/fs.rs` | rsext4 主状态使用 `SpinNoIrq`。 | `sync_to_disk`、读写、truncate、create、unlink、rename 等路径可能持锁执行 cache、journal、allocation 和 block-device 操作。 | 不应再机械换成其他自旋锁。需要设计 ext4 粗锁拆分、I/O 外移或早期 rootfs 工作上下文调整。 |
 | `os/arceos/modules/axfs-ng/src/fs/ext4/lwext4/fs.rs` | lwext4 文件系统对象使用 `SpinNoIrq`。 | 多个 VFS 操作持锁进入 `lwext4_rust`，`flush()` 也直接在锁内调用后端 flush。 | 与 rsext4 一起复查 ext4 系列锁策略，避免长期在原子上下文包住文件系统实现。 |
 | `components/axfs-ng-vfs/src/node/dir.rs` | dentry cache 使用 `SpinNoIrq`，当前已缩小锁范围。 | 旧问题是 cache guard 下调用 filesystem `lookup`、`create`、`unlink`、`open_file` 等后端操作。当前已调整为 VFS cache 锁内只访问 cache map，后端操作在锁外执行。 | 保持当前边界。新增 dentry cache 路径时禁止在 cache guard 内调用后端 FS、socket、设备或用户态相关回调。 |
@@ -53,11 +53,11 @@ sidebar_label: "锁使用问题跟踪"
 | `os/StarryOS/kernel/src/pseudofs/dev/loop_block.rs` | loop block cache blocks 使用 `SpinNoIrq`。 | 当前临界区主要是 bounded memory copy，风险可控；但它处在 ext4 block-device 回调路径上，不能在锁内做 VFS writeback 或分配。 | 继续保持锁内只做内存拷贝。若以后增加 writeback、动态扩容或 VFS 调用，必须重新设计。 |
 | `os/StarryOS/kernel/src/pseudofs/dev/tty/terminal/mod.rs` | `window_size`、`termios` 使用 `SpinNoIrq`；job-control `session` / `foreground` 已合并为一个短状态锁。 | ioctl 路径先完成用户内存访问，再短暂持锁更新值；job-control 不再存在 `foreground -> session` 和 `session -> foreground` 的相反加锁顺序。 | 保持“copy user 在锁外，锁内只拷贝小对象”的规则。job-control 复合状态继续用单锁保护，`PollSet::wake()` 放在锁外执行。 |
 | `os/StarryOS/kernel/src/pseudofs/dev/tty/pty.rs` | PTY producer 使用 `SpinNoIrq`。 | 当前只在锁内 `push_slice` 到 4 KiB ring buffer，wake 在锁外。风险较低。 | 保持短临界区。若未来 writer 可从 IRQ 直接进入或 buffer 需要扩容，应重新评估。 |
-| `os/arceos/modules/axnet-ng/src/unix/mod.rs` | 已调整为从 VFS `user_data` 中 clone `Arc<BindSlot>` 后释放 guard，再调用 transport。 | 旧问题是持 VFS `SpinNoIrq` guard 调用 socket transport，内部再拿 sleepable socket mutex。 | 保持现有边界。新增 path socket 操作时禁止把 transport callback 放在 VFS user_data guard 内执行。 |
+| `net/ax-net/src/unix/mod.rs` | 已调整为从 VFS `user_data` 中 clone `Arc<BindSlot>` 后释放 guard，再调用 transport。 | 旧问题是持 VFS `SpinNoIrq` guard 调用 socket transport，内部再拿 sleepable socket mutex。 | 保持现有边界。新增 path socket 操作时禁止把 transport callback 放在 VFS user_data guard 内执行。 |
 | `os/StarryOS/kernel/src/file/netlink.rs` 和 `os/StarryOS/kernel/src/file/packet.rs` | 已调整为锁内取出消息或包，锁外 copy 到用户缓冲区。 | 旧问题是持 `SpinNoIrq` 时写用户内存，page fault 路径要求 IRQ enabled。 | 保持“队列状态锁内移动数据，用户内存访问锁外执行”的规则。 |
 | `os/arceos/modules/axfs-ng/src/highlevel/file.rs` | 仍有 `spin::RwLock`，包括 `GLOBAL_CACHED_FILES` 和 `append_lock`。 | `spin::RwLock` 仍不属于 lockdep-aware `ax-kspin` / `ax-sync` 路径。`append_lock` 是历史记录中明确延期的 RwLock 设计问题。 | 近期不引入新 RwLock。先确认是否必须读写分离；不必须的点评估 mutex 化，必须的点保留并记录风险。 |
 | `os/StarryOS/kernel/src/file/mod.rs`、`task/mod.rs`、`task/ops.rs` 等 | 仍有若干 `spin::RwLock`；`file/signalfd.rs` 的 signal mask 已改成 `SpinNoIrq<SignalSet>`。 | 剩余 RwLock 还不在 lockdep 统一可见范围内，且可能参与 FD table、task 状态等运行时路径。signalfd mask 只是单个可拷贝 bitset，当前不需要外部 `spin::RwLock`。 | 按运行时重要性分批审计：能 mutex 化的先 mutex 化；不能 mutex 化的先冻结新增使用，不把 RwLock 作为近期替换目标。后续若实现项目自有、lockdep-aware 的 RwLock，再评估 signalfd mask 是否值得恢复读写分离。 |
-| drivers / portable crates 中的 `spin::Mutex` | 当前代码仍可搜到若干直接使用，例如 `drivers/usb/usb-host`、`drivers/ax-driver`、`drivers/rdrive`、`drivers/firmware/arm-scmi-rs`、`drivers/interface/rdif-serial`、`memory/buddy-slab-allocator`。 | portable crate 不能简单依赖 ArceOS 专用锁；同时这些锁若进入内核运行路径，仍可能是 lockdep 盲区。 | 需要按 crate 边界设计同步抽象，区分纯 portable、test-only、host-only 和内核运行路径。 |
+| drivers / portable crates 中的 `spin::Mutex` | 业务代码中的直接 `spin::Mutex` 已清理，vendored `spin` 也不再暴露 Mutex API。 | 后续若 portable crate 新增锁，仍不能绕回外部 `spin::Mutex`，否则内核运行路径会重新形成 lockdep 盲区。 | 继续依赖 `spin-lint` 和编译期 API 缺失防回退。新增 driver 锁时按 crate 边界选择项目内锁或明确的同步抽象。 |
 
 ## 调整计划
 
@@ -65,7 +65,7 @@ sidebar_label: "锁使用问题跟踪"
 
 | 优先级 | 工作项 | 范围 | 完成标准 |
 | --- | --- | --- | --- |
-| P0 | 建立锁使用分类清单 | `SpinNoIrq`、`SpinNoPreempt`、`spin::Mutex`、`spin::RwLock`、关键 atomic | 每个候选点标出保护对象、是否 IRQ/waker 路径、是否可能 sleep / fault / 分配 / I/O / 回调。 |
+| P0 | 建立锁使用分类清单 | `SpinNoIrq`、`SpinNoPreempt`、剩余 `spin::RwLock`、关键 atomic | 每个候选点标出保护对象、是否 IRQ/waker 路径、是否可能 sleep / fault / 分配 / I/O / 回调。 |
 | P1 | 缩小 VFS dentry / mount 锁范围 | `components/axfs-ng-vfs/src/node/dir.rs`、`components/axfs-ng-vfs/src/mount.rs` | VFS 自旋锁内只做 cache / mount 元数据操作；FS 后端调用在锁外执行。 |
 | P1 | 清理自旋锁内的高风险操作 | 用户内存访问、后端 callback、block I/O、可能分配的 waker 入队 | `might_sleep()` 覆盖路径下不再出现持 spin guard 的 user copy / callback / I/O。 |
 | P1 | 修正 epoll ready queue fast path | `os/StarryOS/kernel/src/file/epoll.rs` | waker 路径不做堆扩容；通过预分配、限长队列或延迟到任务上下文解决。 |
@@ -73,7 +73,7 @@ sidebar_label: "锁使用问题跟踪"
 | P2 | 明确早期启动 sleepability 边界 | rootfs mount、pseudofs init、tmpfs root_dir | 区分早期启动误伤和运行期 atomic sleep bug；减少因为启动阶段限制而长期保留自旋锁的场景。 |
 | P2 | 复查 tmpfs 保守自旋锁 | `os/StarryOS/kernel/src/pseudofs/tmp.rs` | VFS 后端调用移出 spin guard 后，评估 tmpfs entries / metadata 是否能改成 mutex 或进一步缩短自旋锁范围。 |
 | P3 | 处理已有 `spin::RwLock` 盲区 | `axfs-ng` highlevel file、Starry FD/task/signal 等 | 不新增 RwLock 方案；逐点判断能否 mutex 化，不能的记录为 deferred 并冻结新增使用。 |
-| P3 | portable drivers 同步抽象 | `drivers/`、`memory/` 中的 `spin::Mutex` | 区分 portable core 和 OS glue；内核运行路径不继续直接依赖外部 `spin::Mutex` 作为默认锁。 |
+| P3 | portable drivers 同步抽象 | `drivers/`、`memory/` 中后续新增或调整的锁 | 区分 portable core 和 OS glue；内核运行路径不重新直接依赖外部 `spin::Mutex` 作为默认锁。 |
 | P3 | atomic 与锁的合理性审计 | mount flags、epoll membership、cached file reclaim、file flags 等 | 独立标志可保留 atomic；复合不变量、flag+data 发布协议、队列/map 生命周期应回到锁或明确内存序协议。 |
 
 ### Atomic 使用准则
@@ -100,10 +100,12 @@ sidebar_label: "锁使用问题跟踪"
 - VFS cache / user_data guard 内不应执行文件系统、socket、设备等后端回调。应先复制出必要的 `Arc` 或小状态，再释放 guard。
 - 文件系统粗锁包住 block I/O 是当前最大的未完成项。把 `SpinNoPreempt` 改成 `SpinNoIrq` 只是关闭 IRQ 重入风险，不代表 I/O under spin lock 合理。
 - 早期启动阶段的 `might_sleep()` 误伤和真实运行期 atomic sleep bug 需要区分。长期方向是让启动阶段进入更清晰的 sleepability 状态，或把 rootfs / pseudofs 初始化移动到正常任务上下文。
+- `might_sleep()` 已纳入显式 IRQ context，并能在 `lockdep` 构建下输出 held-lock stack；held non-sleep lock 作为直接触发条件仍待后续阶段。锁策略调整仍应先消除 spin guard 内的 fault、alloc、I/O、callback，而不是依赖诊断机制长期兜底；详细计划见 [`might_sleep` 后续增强计划](./might-sleep-followups.md)。
 
 ## 复查命令
 
-外部 `spin::Mutex` / `spin::RwLock` 复查：
+外部 `spin::Mutex` / `spin::RwLock` 复查。`spin::Mutex` 结果应只剩历史文档
+引用；`spin::RwLock` 仍是后续阶段：
 
 ```bash
 rg -n "^use spin::Mutex|^use spin::\{[^}]*Mutex|spin::Mutex|spin::MutexGuard|spin::mutex::" \

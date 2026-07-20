@@ -35,7 +35,7 @@ graph LR
     current --> ax-sync["ax-sync"]
     current --> ax_lazyinit["ax-lazyinit"]
     ax_api["ax-api"] --> current
-    ax_feat["ax-feat"] --> current
+    arceos_feature["ax-runtime"] --> current
     ax_runtime["ax-runtime"] --> current
     starry_kernel["starry-kernel"] --> current
 ```
@@ -51,9 +51,6 @@ graph LR
 - `ax-alloc`
 - `ax-allocator`
 - `axbacktrace`
-- `axconfig`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `ax-dma`
 - `rdif-display`
@@ -61,7 +58,7 @@ graph LR
 
 ### 3.3 被依赖情况
 - `ax-api`
-- `ax-feat`
+- `ax-runtime`
 - `ax-runtime`
 - `starry-kernel`
 

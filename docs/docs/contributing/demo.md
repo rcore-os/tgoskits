@@ -2,7 +2,7 @@
 
 TGOSKits 的顶层 `examples/` 目录用于放置可运行的场景示例，而不是通用
 workspace 组件模板。系统级或组件级示例仍应优先放在对应子系统目录中，例如
-`os/arceos/examples/`、`components/*/examples/` 或 `test-suit/`。
+`apps/arceos/`、`components/*/examples/` 或 `test-suit/`。
 
 ## StarryOS 板端示例
 
@@ -403,14 +403,14 @@ cargo test -p tgmath --test integration
 
 ```bash
 # ArceOS 最小验证
-cargo arceos qemu --package ax-helloworld --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package arceos-helloworld --target riscv64gc-unknown-none-elf
 ```
 
 如果改动涉及特定功能（网络、块设备等），换对应示例：
 
 ```bash
 # 带网络的验证
-cargo arceos qemu --package ax-httpclient --target riscv64gc-unknown-none-elf
+cargo arceos qemu --package arceos-httpclient --target riscv64gc-unknown-none-elf
 ```
 
 ### 4.4 第四步：运行统一测试
@@ -578,7 +578,7 @@ workspace 自动构建。
 
 - 新增通用可复用组件时，放到合适的 `components/`、`drivers/`、`platforms/` 或
   `os/*/modules/` 子目录，并同步 workspace、文档和验证白名单。
-- 新增 ArceOS 应用示例时，优先使用 `os/arceos/examples/`。
+- 新增 ArceOS 应用示例时，优先使用 `apps/arceos/`。
 - 新增 StarryOS 板端场景时，使用 `apps/starry/<case>/`，并确保 case 可以通过
   `cargo starry app board -t <case>` 被发现。
 - 新增 CI 回归用例时，使用 `test-suit/`，不要把 CI-only 行为混入顶层 examples。

@@ -49,4 +49,20 @@ pub(crate) trait BackendOp: Send + Any + 'static {
 
     #[cfg(kmod)]
     fn create_event_handler(&mut self) -> Box<dyn crate::backend::ty::EventHandlerOp>;
+
+    fn enable_irq(&mut self) -> Result<(), USBError> {
+        Err(USBError::NotSupported)
+    }
+
+    fn disable_irq(&mut self) -> Result<(), USBError> {
+        Err(USBError::NotSupported)
+    }
+
+    #[cfg(kmod)]
+    fn dwc2_transfer_stats(&self) -> Option<crate::Dwc2TransferStats> {
+        None
+    }
+
+    #[cfg(kmod)]
+    fn reset_dwc2_transfer_stats(&self) {}
 }

@@ -1,6 +1,9 @@
+use alloc::boxed::Box;
 use core::{num::NonZeroUsize, ptr::NonNull};
 
-use dma_api::{CoherentArray, DeviceDma, DmaDirection, StreamingMap};
+use dma_api::{
+    CoherentArray, CompletedDma, CpuDmaBuffer, DeviceDma, DmaDirection, InFlightDma, PreparedDma,
+};
 use log::warn;
 use sdmmc_protocol::{
     block::{
@@ -32,8 +35,11 @@ const IDSTS_RECEIVE: u32 = crate::MCI_IDSTS_RECEIVE;
 const IDSTS_NORMAL_SUMMARY: u32 = 1 << 8;
 const IDSTS_ABNORMAL_SUMMARY: u32 = 1 << 9;
 const IDSTS_ERROR_MASK: u32 = crate::MCI_IDSTS_ERROR_MASK | IDSTS_ABNORMAL_SUMMARY;
-const IDSTS_INT_ENABLE_MASK: u32 =
-    crate::MCI_IDSTS_ERROR_MASK | IDSTS_NORMAL_SUMMARY | IDSTS_ABNORMAL_SUMMARY;
+const IDSTS_INT_ENABLE_MASK: u32 = IDSTS_TRANSMIT
+    | IDSTS_RECEIVE
+    | crate::MCI_IDSTS_ERROR_MASK
+    | IDSTS_NORMAL_SUMMARY
+    | IDSTS_ABNORMAL_SUMMARY;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -50,7 +56,7 @@ struct IdmacDesc {
 
 struct DmaProgress {
     descriptors: CoherentArray<IdmacDesc>,
-    buffer: StreamingMap<u8>,
+    buffer: DmaRequestBuffer,
     desc_count: usize,
     complete: bool,
     idmac_done: bool,
@@ -62,6 +68,62 @@ impl DmaProgress {
         let _ = self.descriptors.dma_addr();
         let _ = self.desc_count;
     }
+
+    fn is_done(&self) -> bool {
+        self.data_done && self.idmac_done
+    }
+
+    fn complete(self, read: bool) -> Option<CompletedDma> {
+        self.buffer.complete(read)
+    }
+
+    fn abort(self, read: bool, quiesced: bool) -> Option<CompletedDma> {
+        self.buffer.finish(read, quiesced)
+    }
+}
+
+enum DmaRequestBuffer {
+    Bounce {
+        buffer: InFlightDma,
+        readback: Option<(NonNull<u8>, usize)>,
+    },
+    Owned(InFlightDma),
+}
+
+impl DmaRequestBuffer {
+    fn complete(self, read: bool) -> Option<CompletedDma> {
+        self.finish(read, true)
+    }
+
+    fn finish(self, read: bool, quiesced: bool) -> Option<CompletedDma> {
+        match self {
+            Self::Bounce { buffer, readback } => {
+                if !quiesced {
+                    let _quarantined = buffer.quarantine();
+                    return None;
+                }
+                if read {
+                    let completed = unsafe { buffer.complete_after_quiesce() };
+                    if let Some((dst, len)) = readback {
+                        completed.copy_from_device_to_slice(unsafe {
+                            core::slice::from_raw_parts_mut(dst.as_ptr(), len)
+                        });
+                    }
+                    None
+                } else {
+                    drop(unsafe { buffer.complete_after_quiesce() });
+                    None
+                }
+            }
+            Self::Owned(in_flight) => {
+                if !quiesced {
+                    let _quarantined = in_flight.quarantine();
+                    return None;
+                }
+                Some(unsafe { in_flight.complete_after_quiesce() })
+            }
+        }
+    }
 }
 
 pub type RequestId = BlockRequestId;
@@ -70,9 +132,14 @@ pub type RequestId = BlockRequestId;
 pub struct BlockRequestSlot {
     next: usize,
     state: BlockTransferState,
+    completed_dma: Option<CompletedDma>,
 }
 
 impl BlockRequestSlot {
+    pub fn take_completed_dma(&mut self) -> Option<CompletedDma> {
+        self.completed_dma.take()
+    }
+
     pub fn start(
         &mut self,
         mode: BlockTransferMode,
@@ -92,10 +159,19 @@ impl BlockRequestSlot {
     }
 
     pub fn complete(&mut self, id: RequestId) -> Result<(), Error> {
+        self.complete_with_dma(id, None)
+    }
+
+    fn complete_with_dma(
+        &mut self,
+        id: RequestId,
+        completed_dma: Option<CompletedDma>,
+    ) -> Result<(), Error> {
         if self.state.id() != Some(id) {
             return Err(Error::InvalidArgument);
         }
         self.state = BlockTransferState::Idle;
+        self.completed_dma = completed_dma;
         Ok(())
     }
 
@@ -106,6 +182,24 @@ impl BlockRequestSlot {
 
 pub struct BlockRequest {
     inner: BlockRequestKind,
+}
+
+pub struct PreparedDmaSubmitError {
+    pub error: Error,
+    buffer: Box<PreparedDma>,
+}
+
+impl PreparedDmaSubmitError {
+    fn new(error: Error, buffer: PreparedDma) -> Self {
+        Self {
+            error,
+            buffer: Box::new(buffer),
+        }
+    }
+
+    pub fn into_buffer(self) -> PreparedDma {
+        *self.buffer
+    }
 }
 
 unsafe impl Send for BlockRequest {}
@@ -211,6 +305,14 @@ impl BlockRequest {
             | BlockRequestKind::DmaWrite { response, .. } => *response,
         }
     }
+
+    fn dma_progress_done(&self) -> bool {
+        match &self.inner {
+            BlockRequestKind::DmaRead { progress, .. }
+            | BlockRequestKind::DmaWrite { progress, .. } => progress.is_done(),
+            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => true,
+        }
+    }
 }
 
 impl PhytiumMci {
@@ -223,13 +325,14 @@ impl PhytiumMci {
         mode: BlockTransferMode,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
         let id = slot.start(mode, BlockTransferDirection::Read)?;
         let result = match mode {
             BlockTransferMode::Dma => self.build_dma_read_request(
                 start_block,
                 buffer,
                 size,
-                dma.ok_or(Error::InvalidArgument)?,
+                dma.ok_or(Error::UnsupportedCommand)?,
                 id,
             ),
             BlockTransferMode::Fifo => self.build_fifo_read_request(start_block, buffer, size, id),
@@ -254,13 +357,14 @@ impl PhytiumMci {
         mode: BlockTransferMode,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
         let id = slot.start(mode, BlockTransferDirection::Write)?;
         let result = match mode {
             BlockTransferMode::Dma => self.build_dma_write_request(
                 start_block,
                 buffer,
                 size,
-                dma.ok_or(Error::InvalidArgument)?,
+                dma.ok_or(Error::UnsupportedCommand)?,
                 id,
             ),
             BlockTransferMode::Fifo => self.build_fifo_write_request(start_block, buffer, size, id),
@@ -268,6 +372,52 @@ impl PhytiumMci {
             _ => Err(Error::UnsupportedCommand),
         };
         match result {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn submit_prepared_read_blocks(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if let Err(err) = self.check_not_poisoned() {
+            return Err(PreparedDmaSubmitError::new(err, buffer));
+        }
+        let id = match slot.start(BlockTransferMode::Dma, BlockTransferDirection::Read) {
+            Ok(id) => id,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        match self.build_prepared_dma_read_request(start_block, buffer, dma, id) {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
+        }
+    }
+
+    pub fn submit_prepared_write_blocks(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if let Err(err) = self.check_not_poisoned() {
+            return Err(PreparedDmaSubmitError::new(err, buffer));
+        }
+        let id = match slot.start(BlockTransferMode::Dma, BlockTransferDirection::Write) {
+            Ok(id) => id,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        match self.build_prepared_dma_write_request(start_block, buffer, dma, id) {
             Ok(request) => Ok(request),
             Err(err) => {
                 let _ = slot.complete(id);
@@ -303,6 +453,15 @@ impl PhytiumMci {
             return Err(Error::InvalidArgument);
         }
         self.poll_data_request_inner(request, id, slot)
+    }
+
+    pub fn abort_block_request_response(
+        &mut self,
+        request: &mut Option<BlockRequest>,
+        id: RequestId,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<(), Error> {
+        self.abort_block_request(request, id, slot, Phase::DataRead)
     }
 
     fn build_fifo_read_request(
@@ -438,27 +597,35 @@ impl PhytiumMci {
             DataDirection::None => return Err(Error::InvalidArgument),
             _ => return Err(Error::InvalidArgument),
         };
-        let slice = unsafe { core::slice::from_raw_parts_mut(buffer.as_ptr(), len) };
-        let mapped = dma
-            .map_streaming_slice_for_device(slice, BLOCK_SIZE, dma_direction)
-            .map_err(|_| Error::Misaligned)?;
+        let mut backing = CpuDmaBuffer::new_zero(
+            dma,
+            NonZeroUsize::new(len).ok_or(Error::InvalidArgument)?,
+            block_size_usize,
+            dma_direction,
+        )
+        .map_err(|_| Error::Misaligned)?;
+        if direction == DataDirection::Write {
+            backing.copy_to_device_from_slice(unsafe {
+                core::slice::from_raw_parts(buffer.as_ptr(), len)
+            });
+        }
+        let dma_addr = backing.dma_addr().as_u64();
+        let in_flight = unsafe { backing.prepare_for_device().into_in_flight() };
         let desc_count = len.div_ceil(IDMAC_MAX_BUF_SIZE);
         let mut descriptors = dma
             .coherent_array_zero_with_align::<IdmacDesc>(desc_count, IDMAC_DESC_ALIGN)
             .map_err(|_| Error::Misaligned)?;
         let desc_dma = descriptors.dma_addr().as_u64();
-        let desc_values = build_idmac_descriptors(
-            mapped.dma_addr().as_u64(),
-            desc_dma,
-            len,
-            IDMAC_MAX_BUF_SIZE,
-        )?;
+        let desc_values = build_idmac_descriptors(dma_addr, desc_dma, len, IDMAC_MAX_BUF_SIZE)?;
         descriptors.write_with_cpu(desc_values.len(), |dst| dst.copy_from_slice(&desc_values));
         self.start_idmac_transfer(cmd, block_size, block_count, desc_dma)?;
 
         let progress = DmaProgress {
             descriptors,
-            buffer: mapped,
+            buffer: DmaRequestBuffer::Bounce {
+                buffer: in_flight,
+                readback: (direction == DataDirection::Read).then_some((buffer, len)),
+            },
             desc_count,
             complete: false,
             idmac_done: false,
@@ -468,7 +635,7 @@ impl PhytiumMci {
             DataDirection::Read => BlockRequestKind::DmaRead {
                 id,
                 progress,
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
                 phase,
                 stage: BlockRequestStage::Command,
                 stop_after_complete,
@@ -477,7 +644,7 @@ impl PhytiumMci {
             DataDirection::Write => BlockRequestKind::DmaWrite {
                 id,
                 progress,
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
                 phase,
                 stage: BlockRequestStage::Command,
                 stop_after_complete,
@@ -485,6 +652,155 @@ impl PhytiumMci {
             },
             DataDirection::None => return Err(Error::InvalidArgument),
             _ => return Err(Error::InvalidArgument),
+        };
+        Ok(BlockRequest { inner })
+    }
+
+    fn build_prepared_dma_read_request(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        id: RequestId,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if buffer.direction() != DmaDirection::FromDevice || buffer.domain_id() != dma.domain_id() {
+            return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+        }
+        let block_count = match block_count(buffer.len()) {
+            Ok(block_count) => block_count,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        let cmd = if block_count == 1 {
+            cmd17(start_block)
+        } else {
+            cmd18(start_block)
+        };
+        self.build_prepared_dma_data_request(
+            &cmd,
+            buffer,
+            BLOCK_SIZE as u32,
+            block_count,
+            dma,
+            id,
+            DataDirection::Read,
+            block_count > 1,
+        )
+    }
+
+    fn build_prepared_dma_write_request(
+        &mut self,
+        start_block: u32,
+        buffer: PreparedDma,
+        dma: &DeviceDma,
+        id: RequestId,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if buffer.direction() != DmaDirection::ToDevice || buffer.domain_id() != dma.domain_id() {
+            return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+        }
+        let block_count = match block_count(buffer.len()) {
+            Ok(block_count) => block_count,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        let cmd = if block_count == 1 {
+            cmd24(start_block)
+        } else {
+            cmd25(start_block)
+        };
+        self.build_prepared_dma_data_request(
+            &cmd,
+            buffer,
+            BLOCK_SIZE as u32,
+            block_count,
+            dma,
+            id,
+            DataDirection::Write,
+            block_count > 1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_prepared_dma_data_request(
+        &mut self,
+        cmd: &Command,
+        buffer: PreparedDma,
+        block_size: u32,
+        block_count: u32,
+        dma: &DeviceDma,
+        id: RequestId,
+        direction: DataDirection,
+        stop_after_complete: bool,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        let block_size_usize = match usize::try_from(block_size) {
+            Ok(block_size) => block_size,
+            Err(_) => return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer)),
+        };
+        if block_size_usize == 0
+            || buffer.len().get() != block_size_usize.saturating_mul(block_count as usize)
+        {
+            return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+        }
+        let phase = match direction {
+            DataDirection::Read => Phase::DataRead,
+            DataDirection::Write => Phase::DataWrite,
+            DataDirection::None => {
+                return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+            }
+            _ => return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer)),
+        };
+        let len = buffer.len().get();
+        let desc_count = len.div_ceil(IDMAC_MAX_BUF_SIZE);
+        let mut descriptors =
+            match dma.coherent_array_zero_with_align::<IdmacDesc>(desc_count, IDMAC_DESC_ALIGN) {
+                Ok(descriptors) => descriptors,
+                Err(_) => return Err(PreparedDmaSubmitError::new(Error::Misaligned, buffer)),
+            };
+        let desc_dma = descriptors.dma_addr().as_u64();
+        let desc_values = match build_idmac_descriptors(
+            buffer.dma_addr().as_u64(),
+            desc_dma,
+            len,
+            IDMAC_MAX_BUF_SIZE,
+        ) {
+            Ok(desc_values) => desc_values,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        descriptors.write_with_cpu(desc_values.len(), |dst| dst.copy_from_slice(&desc_values));
+        match self.start_idmac_transfer(cmd, block_size, block_count, desc_dma) {
+            Ok(()) => {}
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        }
+
+        let progress = DmaProgress {
+            descriptors,
+            buffer: DmaRequestBuffer::Owned(unsafe { buffer.into_in_flight() }),
+            desc_count,
+            complete: false,
+            idmac_done: false,
+            data_done: false,
+        };
+        let inner = match direction {
+            DataDirection::Read => BlockRequestKind::DmaRead {
+                id,
+                progress,
+                cmd_index: cmd.index,
+                phase,
+                stage: BlockRequestStage::Command,
+                stop_after_complete,
+                response: None,
+            },
+            DataDirection::Write => BlockRequestKind::DmaWrite {
+                id,
+                progress,
+                cmd_index: cmd.index,
+                phase,
+                stage: BlockRequestStage::Command,
+                stop_after_complete,
+                response: None,
+            },
+            DataDirection::None => {
+                unreachable!("DataDirection::None returned before DMA request construction")
+            }
+            _ => unreachable!("unsupported DataDirection returned before DMA request construction"),
         };
         Ok(BlockRequest { inner })
     }
@@ -500,6 +816,7 @@ impl PhytiumMci {
         direction: DataDirection,
         slot: &mut BlockRequestSlot,
     ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
         let transfer_direction = match direction {
             DataDirection::Read => BlockTransferDirection::Read,
             DataDirection::Write => BlockTransferDirection::Write,
@@ -568,7 +885,7 @@ impl PhytiumMci {
                 len,
                 block_size: block_size_usize,
                 progress: FifoProgress::default(),
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
                 phase,
                 stage: BlockRequestStage::Command,
                 stop_after_complete,
@@ -580,7 +897,7 @@ impl PhytiumMci {
                 len,
                 block_size: block_size_usize,
                 progress: FifoProgress::default(),
-                cmd_index: cmd.cmd,
+                cmd_index: cmd.index,
                 phase,
                 stage: BlockRequestStage::Command,
                 stop_after_complete,
@@ -644,7 +961,7 @@ impl PhytiumMci {
                 // Future CommandPoll variants: best-effort, treat as still pending.
                 Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
-                    self.abort_block_request(request, id, slot, phase);
+                    let _ = self.abort_block_request(request, id, slot, phase);
                     return Err(err);
                 }
             }
@@ -661,7 +978,7 @@ impl PhytiumMci {
             // Future BlockPoll variants: best-effort, treat as still pending.
             Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
-                self.abort_block_request(request, id, slot, phase);
+                let _ = self.abort_block_request(request, id, slot, phase);
                 Err(err)
             }
         }
@@ -700,7 +1017,7 @@ impl PhytiumMci {
                 }
                 Ok(_) => return Ok(DataCommandPoll::Pending),
                 Err(err) => {
-                    self.abort_block_request(request, id, slot, phase);
+                    let _ = self.abort_block_request(request, id, slot, phase);
                     return Err(err);
                 }
             }
@@ -716,7 +1033,7 @@ impl PhytiumMci {
             Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot),
             Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
-                self.abort_block_request(request, id, slot, phase);
+                let _ = self.abort_block_request(request, id, slot, phase);
                 Err(err)
             }
         }
@@ -733,9 +1050,9 @@ impl PhytiumMci {
         let Some(active) = request.as_mut() else {
             return Err(Error::InvalidArgument);
         };
-        let (progress, is_read) = match &mut active.inner {
-            BlockRequestKind::DmaRead { progress, .. } => (progress, true),
-            BlockRequestKind::DmaWrite { progress, .. } => (progress, false),
+        let progress = match &mut active.inner {
+            BlockRequestKind::DmaRead { progress, .. } => progress,
+            BlockRequestKind::DmaWrite { progress, .. } => progress,
             _ => return Err(Error::InvalidArgument),
         };
 
@@ -758,13 +1075,10 @@ impl PhytiumMci {
         }
         progress.idmac_done |= raw_idsts & (IDSTS_RECEIVE | IDSTS_TRANSMIT) != 0;
         progress.data_done |= ints.data_transfer_over();
-        if !progress.data_done {
+        if !progress.is_done() {
             return Ok(BlockPoll::Pending);
         }
 
-        if is_read {
-            progress.buffer.complete_for_cpu_all();
-        }
         progress.complete = true;
         Ok(BlockPoll::Complete)
     }
@@ -775,23 +1089,28 @@ impl PhytiumMci {
         id: RequestId,
         slot: &mut BlockRequestSlot,
     ) -> Result<DataCommandPoll, Error> {
-        self.disable_idmac();
         let stop_after_complete = match request.as_mut().map(|r| &mut r.inner) {
             Some(BlockRequestKind::DmaRead {
                 stage,
                 stop_after_complete,
+                progress,
                 ..
             })
             | Some(BlockRequestKind::DmaWrite {
                 stage,
                 stop_after_complete,
+                progress,
                 ..
             }) => {
+                if !progress.is_done() {
+                    return Ok(DataCommandPoll::Pending);
+                }
                 *stage = BlockRequestStage::Stop;
                 *stop_after_complete
             }
             _ => return Err(Error::InvalidArgument),
         };
+        self.disable_idmac();
         if stop_after_complete {
             self.submit_command(&CMD12)?;
             return Ok(DataCommandPoll::Pending);
@@ -799,8 +1118,8 @@ impl PhytiumMci {
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let response = active.response().ok_or(Error::InvalidArgument)?;
-        self.finish_block_request(active);
-        slot.complete(id)?;
+        let completed_dma = self.finish_block_request(active);
+        slot.complete_with_dma(id, completed_dma)?;
         Ok(DataCommandPoll::Complete(response))
     }
 
@@ -861,7 +1180,8 @@ impl PhytiumMci {
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let response = active.response().ok_or(Error::InvalidArgument)?;
-        self.finish_block_request(active);
+        let completed_dma = self.finish_block_request(active);
+        drop(completed_dma);
         slot.complete(id)?;
         Ok(DataCommandPoll::Complete(response))
     }
@@ -877,30 +1197,69 @@ impl PhytiumMci {
             Ok(CommandPoll::Pending) => Ok(DataCommandPoll::Pending),
             Ok(CommandPoll::Complete) => {
                 let _ = self.take_command_response()?;
+                if !request
+                    .as_ref()
+                    .is_some_and(|active| active.dma_progress_done())
+                {
+                    return Ok(DataCommandPoll::Pending);
+                }
                 let active = request.take().ok_or(Error::InvalidArgument)?;
                 let response = active.response().ok_or(Error::InvalidArgument)?;
-                self.finish_block_request(active);
-                slot.complete(id)?;
+                let completed_dma = self.finish_block_request(active);
+                slot.complete_with_dma(id, completed_dma)?;
                 Ok(DataCommandPoll::Complete(response))
             }
             // Future CommandPoll variants: best-effort, treat as still pending.
             Ok(_) => Ok(DataCommandPoll::Pending),
             Err(err) => {
-                self.abort_block_request(request, id, slot, phase);
+                let _ = self.abort_block_request(request, id, slot, phase);
                 Err(err)
             }
         }
     }
 
-    fn finish_block_request(&mut self, request: BlockRequest) {
-        match &request.inner {
-            BlockRequestKind::DmaRead { progress, .. }
-            | BlockRequestKind::DmaWrite { progress, .. } => progress.keep_alive(),
-            _ => {}
+    fn finish_block_request(&mut self, request: BlockRequest) -> Option<CompletedDma> {
+        self.finish_block_request_with_quiesce(request, true)
+    }
+
+    fn finish_block_request_with_quiesce(
+        &mut self,
+        request: BlockRequest,
+        quiesced: bool,
+    ) -> Option<CompletedDma> {
+        if !quiesced {
+            self.poison_dma();
+            core::mem::forget(request);
+            self.pending_data = None;
+            self.data_blocks_remaining = 0;
+            self.data_cmd_index = 0;
+            self.irq.state.end_request();
+            return None;
         }
+        let completed_dma = match request.inner {
+            BlockRequestKind::DmaRead { progress, .. } => {
+                progress.keep_alive();
+                if quiesced {
+                    progress.complete(true)
+                } else {
+                    progress.abort(true, false)
+                }
+            }
+            BlockRequestKind::DmaWrite { progress, .. } => {
+                progress.keep_alive();
+                if quiesced {
+                    progress.complete(false)
+                } else {
+                    progress.abort(false, false)
+                }
+            }
+            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => None,
+        };
         self.pending_data = None;
         self.data_blocks_remaining = 0;
         self.data_cmd_index = 0;
+        self.irq.state.end_request();
+        completed_dma
     }
 
     fn abort_block_request(
@@ -909,13 +1268,34 @@ impl PhytiumMci {
         id: RequestId,
         slot: &mut BlockRequestSlot,
         phase: Phase,
-    ) {
-        if let Some(active) = request.take() {
-            self.finish_block_request(active);
-        }
+    ) -> Result<(), Error> {
+        let active = request.take().ok_or(Error::InvalidArgument)?;
         self.disable_idmac();
-        let _ = self.reset_fifo(phase);
-        let _ = slot.complete(id);
+        let fifo = self.reset_fifo(phase);
+        let dma = self.reset_dma(phase);
+        self.clear_all_int_status();
+        self.command_state = crate::command::CommandState::Idle;
+        let recovery = match (fifo, dma) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), _) | (_, Err(err)) => {
+                let reset = self.reset_and_init_preserving_irq();
+                self.disable_idmac();
+                match reset {
+                    Ok(()) => {
+                        warn!(
+                            "phytium-mci: recovered IDMAC {:?} error by controller reset: {err:?}",
+                            phase
+                        );
+                        Ok(())
+                    }
+                    Err(reset_err) => Err(reset_err),
+                }
+            }
+        };
+        let completed_dma = self.finish_block_request_with_quiesce(active, recovery.is_ok());
+        drop(completed_dma);
+        slot.complete(id)?;
+        recovery
     }
 
     fn start_idmac_transfer(
@@ -927,13 +1307,16 @@ impl PhytiumMci {
     ) -> Result<(), Error> {
         self.clear_all_int_status();
         self.regs.idsts().write(u32::MAX);
-        self.regs.idinten().write(IDSTS_INT_ENABLE_MASK);
+        self.irq.state.clear_all();
+        self.regs.idinten().write(0);
         self.reset_fifo(Phase::Init)?;
         self.reset_dma(Phase::Init)?;
         self.program_data_phase(block_size, block_count);
         self.program_idmac_registers(desc_dma);
+        self.regs.idsts().write(u32::MAX);
+        self.regs.idinten().write(IDSTS_INT_ENABLE_MASK);
         self.pending_data = Some(PendingData {
-            direction: if matches!(cmd.cmd, 24 | 25) {
+            direction: if matches!(cmd.index, 24 | 25) {
                 DataDirection::Write
             } else {
                 DataDirection::Read
@@ -947,14 +1330,17 @@ impl PhytiumMci {
     }
 
     fn program_idmac_registers(&self, desc_dma: u64) {
-        self.regs
-            .ctrl()
-            .update(|r| r.with_use_internal_dmac(true).with_int_enable(true));
+        self.regs.dbaddrl().write(desc_dma as u32);
+        self.regs.dbaddrh().write((desc_dma >> 32) as u32);
+        self.regs.ctrl().update(|r| {
+            r.with_dma_enable(true)
+                .with_use_internal_dmac(true)
+                .with_int_enable(self.completion_irq_enabled())
+        });
         self.regs
             .bmod()
             .write(self.regs.bmod().read() | BMOD_FIXED_BURST | BMOD_IDMAC_ENABLE);
-        self.regs.dbaddrl().write(desc_dma as u32);
-        self.regs.dbaddrh().write((desc_dma >> 32) as u32);
+        self.regs.pldmnd().write(1);
     }
 
     fn disable_idmac(&mut self) {
@@ -966,30 +1352,32 @@ impl PhytiumMci {
     }
 
     fn take_idmac_status(&mut self) -> u32 {
+        let mask = IDSTS_RECEIVE | IDSTS_TRANSMIT | IDSTS_ERROR_MASK;
+        if self.completion_irq_enabled() {
+            return self.irq.state.take_idmac_status(mask);
+        }
         let raw = self.regs.idsts().read();
         if raw != 0 {
             self.regs.idsts().write(raw);
         }
-        let status = self.idmac_pending_status | raw;
-        self.idmac_pending_status &= !(IDSTS_RECEIVE | IDSTS_TRANSMIT | IDSTS_ERROR_MASK);
-        status
+        raw
     }
 
     fn take_data_irq_status(&mut self, cmd_index: u8, phase: Phase) -> Result<RIntSts, Error> {
-        let raw_status = self.regs.rintsts().read().into_bits();
-        let consume = raw_status
-            & (crate::MCI_INT_DATA_TRANSFER_OVER
-                | crate::MCI_INT_RXDR
-                | crate::MCI_INT_TXDR
-                | crate::MCI_INT_ERROR_MASK);
-        if consume != 0 {
-            self.regs.rintsts().write(RIntSts::from_bits(consume));
-        }
-        let status = self.irq_pending_status | raw_status;
-        self.irq_pending_status &= !(crate::MCI_INT_DATA_TRANSFER_OVER
+        let mask = crate::MCI_INT_DATA_TRANSFER_OVER
             | crate::MCI_INT_RXDR
             | crate::MCI_INT_TXDR
-            | crate::MCI_INT_ERROR_MASK);
+            | crate::MCI_INT_ERROR_MASK;
+        let status = if self.completion_irq_enabled() {
+            self.irq.state.take_status(mask)
+        } else {
+            let raw_status = self.regs.rintsts().read().into_bits();
+            let consume = raw_status & mask;
+            if consume != 0 {
+                self.regs.rintsts().write(RIntSts::from_bits(consume));
+            }
+            raw_status
+        };
         let ints = RIntSts::from_bits(status);
         if ints.error() {
             return Err(self.translate_int_error(ints, phase, cmd_index));
@@ -1216,6 +1604,13 @@ mod tests {
         assert_eq!(descriptors[2].desc_lo, 0);
     }
 
+    #[test]
+    fn idmac_interrupt_mask_enables_terminal_status_bits() {
+        assert_ne!(IDSTS_INT_ENABLE_MASK & IDSTS_RECEIVE, 0);
+        assert_ne!(IDSTS_INT_ENABLE_MASK & IDSTS_TRANSMIT, 0);
+        assert_ne!(IDSTS_INT_ENABLE_MASK & IDSTS_NORMAL_SUMMARY, 0);
+    }
+
     use core::ptr::NonNull;
 
     use ::alloc::{alloc, boxed::Box};
@@ -1230,14 +1625,22 @@ mod tests {
 
     impl NoopDmaBuffer {
         fn progress() -> DmaProgress {
-            let dma = DeviceDma::new(u64::MAX, &TEST_DMA);
+            let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
             let descriptors = dma
                 .coherent_array_zero_with_align::<IdmacDesc>(1, IDMAC_DESC_ALIGN)
                 .unwrap();
+            let buffer = CpuDmaBuffer::new_zero(
+                &dma,
+                NonZeroUsize::new(BLOCK_SIZE).unwrap(),
+                BLOCK_SIZE,
+                DmaDirection::FromDevice,
+            )
+            .unwrap()
+            .prepare_for_device();
+            let buffer = unsafe { buffer.into_in_flight() };
             let backing = Box::leak(Box::new(AlignedBlock([0u8; BLOCK_SIZE])));
-            let buffer = dma
-                .map_streaming_slice(&mut backing.0, BLOCK_SIZE, DmaDirection::FromDevice)
-                .unwrap();
+            let readback = Some((NonNull::from(&mut backing.0[0]), BLOCK_SIZE));
+            let buffer = DmaRequestBuffer::Bounce { buffer, readback };
             DmaProgress {
                 descriptors,
                 buffer,
@@ -1307,6 +1710,7 @@ mod tests {
 
     const RINTSTS_WORD: usize = 17;
     const STATUS_WORD: usize = 18;
+    const CTRL_WORD: usize = 0;
     const BMOD_WORD: usize = 32;
     const PLDMND_WORD: usize = 33;
     const DBADDRL_WORD: usize = 34;
@@ -1330,13 +1734,17 @@ mod tests {
             mmio[BMOD_WORD],
             0x200 | BMOD_FIXED_BURST | BMOD_IDMAC_ENABLE
         );
-        assert_eq!(mmio[PLDMND_WORD], 0);
+        let ctrl = crate::regs::Ctrl::from_bits(mmio[CTRL_WORD]);
+        assert!(ctrl.dma_enable());
+        assert!(ctrl.use_internal_dmac());
+        assert!(!ctrl.int_enable());
+        assert_eq!(mmio[PLDMND_WORD], 1);
         assert_eq!(mmio[DBADDRL_WORD], 0x8000_0000);
         assert_eq!(mmio[DBADDRL_WORD + 1], 1);
     }
 
     #[test]
-    fn idmac_read_completes_when_data_done_arrives_without_idmac_done() {
+    fn idmac_read_waits_when_data_done_arrives_without_idmac_done() {
         let mut mmio = [0u32; 256];
         let mut host = host_from_words(&mut mmio);
         let mut request = Some(BlockRequest {
@@ -1360,7 +1768,7 @@ mod tests {
         assert_eq!(
             host.poll_dma_data_step(&mut request, 17, Phase::DataRead)
                 .unwrap(),
-            BlockPoll::Complete
+            BlockPoll::Pending
         );
     }
 
@@ -1401,6 +1809,30 @@ mod tests {
                 .unwrap(),
             BlockPoll::Complete
         );
+    }
+
+    #[test]
+    fn request_slot_returns_completed_owned_dma_once() {
+        let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
+        let buffer = dma_api::CpuDmaBuffer::new_zero(
+            &dma,
+            NonZeroUsize::new(BLOCK_SIZE).unwrap(),
+            BLOCK_SIZE,
+            DmaDirection::FromDevice,
+        )
+        .unwrap()
+        .prepare_for_device();
+        let in_flight = unsafe { buffer.into_in_flight() };
+        let completed = DmaRequestBuffer::Owned(in_flight).complete(true).unwrap();
+        let mut slot = BlockRequestSlot::default();
+        let id = slot
+            .start(BlockTransferMode::Dma, BlockTransferDirection::Read)
+            .unwrap();
+
+        slot.complete_with_dma(id, Some(completed)).unwrap();
+
+        assert!(slot.take_completed_dma().is_some());
+        assert!(slot.take_completed_dma().is_none());
     }
 
     #[test]

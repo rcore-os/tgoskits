@@ -1,0 +1,43 @@
+[package]
+name = "aic8800"
+version = "0.2.4"
+edition = "2024"
+license = "Apache-2.0"
+repository.workspace = true
+readme = "README.md"
+description = "AIC8800 Wi-Fi driver core (SDIO, firmware, WPA2, SoftAP). OS-independent; runtime capabilities are injected via aic8800::WifiRuntime."
+# Vendor firmware blobs are not vendored into git or the package tarball; the
+# build script provisions them into OUT_DIR (from $AIC8800_FIRMWARE_DIR, the
+# optional in-tree `firmware/` cache, or the pinned upstream source) and
+# verifies each against its SHA-256. Only the top-level blob dir is
+# excluded — the leading slash anchors the glob to the package root so it does
+# NOT also match the `src/fw/firmware/` source module (required to build).
+# Without the anchor, `firmware/` matches at any depth and the tarball drops
+# `src/fw/firmware/{mod,data,upload}.rs`, breaking standalone builds.
+exclude = ["/firmware/"]
+
+[features]
+default = []
+
+[build-dependencies]
+ureq = "3"
+sha2 = "0.10"
+
+[dependencies]
+ax-kspin = { workspace = true }
+log = { workspace = true }
+
+sdio-host = { workspace = true }
+sdhci-cv1800 = { workspace = true }
+
+atomic-waker = { workspace = true }
+
+rdif-eth = { workspace = true }
+rd-net = { workspace = true }
+dma-api = { workspace = true }
+
+hmac = { version = "0.12", default-features = false }
+sha1 = { version = "0.10", default-features = false }
+digest = { version = "0.10", default-features = false }
+aes = { version = "0.8", default-features = false }
+pbkdf2 = { version = "0.12", default-features = false }

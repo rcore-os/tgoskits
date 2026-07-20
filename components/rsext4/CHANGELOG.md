@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.4...rsext4-v0.7.5) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin
+
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.3...rsext4-v0.7.4) - 2026-07-07
+
+### Added
+
+- *(starry)* add nix test (no sandbox currently) and kernel regression suite ([#1125](https://github.com/rcore-os/tgoskits/pull/1125))
+
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.2...rsext4-v0.7.3) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-kspin
+
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.1...rsext4-v0.7.2) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-kspin
+
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.0...rsext4-v0.7.1) - 2026-06-22
+
+### Other
+
+- *(ax-runtime)* adapt submit-poll fs block irq registration ([#1228](https://github.com/rcore-os/tgoskits/pull/1228))
+
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.6.0...rsext4-v0.7.0) - 2026-06-11
+
+### Fixed
+
+- fix typos in code and comments across the codebase ([#1206](https://github.com/rcore-os/tgoskits/pull/1206))
+
+## [0.6.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.5.0...rsext4-v0.6.0) - 2026-06-09
+
+### Added
+
+- *(rsext4)* fine-grained locking for SMP scalability ([#1057](https://github.com/rcore-os/tgoskits/pull/1057))
+- *(vfs)* pass uid/gid through creation path to filesystem nodes ([#1097](https://github.com/rcore-os/tgoskits/pull/1097))
+
 ## [0.5.0](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.4.1...rsext4-v0.5.0) - 2026-06-03
 
 ### Added

@@ -1,14 +1,16 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(target_os = "none", no_std)]
+#![cfg_attr(target_os = "none", no_main)]
 #![doc = include_str!("../../README.md")]
 
 extern crate alloc;
 
 use alloc::{borrow::ToOwned, vec::Vec};
 
+use ax_std as _;
+
 pub const CMDLINE: &[&str] = &["/bin/sh", "-c", include_str!("init.sh")];
 
-#[unsafe(no_mangle)]
+#[cfg_attr(target_os = "none", unsafe(no_mangle))]
 fn main() {
     let args = CMDLINE
         .iter()

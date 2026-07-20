@@ -1,0 +1,4 @@
+interface:
+  display_name: "Markdown Doc Writer"
+  short_description: "Write structured Markdown technical docs"
+  default_prompt: "Use $markdown-doc-writer to draft a structured technical Markdown document."

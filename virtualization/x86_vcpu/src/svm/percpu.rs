@@ -1,13 +1,10 @@
-use ax_errno::{AxResult, ax_err};
-use axvcpu::AxArchPerCpu;
+use core::marker::PhantomData;
 
 use crate::{
+    X86HostOps, X86VcpuResult,
     host::PhysFrame,
     msr::Msr,
-    svm::{
-        flags::{VmCr, VmCrFlags},
-        has_hardware_support,
-    },
+    svm::flags::{VmCr, VmCrFlags},
     xstate::enable_xsave,
 };
 
@@ -15,35 +12,34 @@ const EFER_SVME: u64 = 1 << 12;
 
 /// Per-CPU AMD SVM state.
 #[derive(Debug)]
-pub struct SvmPerCpuState {
-    hsave_page: PhysFrame,
+pub struct SvmPerCpuState<H: X86HostOps> {
+    hsave_page: PhysFrame<H>,
+    _host: PhantomData<fn() -> H>,
 }
 
-impl AxArchPerCpu for SvmPerCpuState {
-    fn new(_cpu_id: usize) -> AxResult<Self> {
+impl<H: X86HostOps> SvmPerCpuState<H> {
+    pub fn new(_cpu_id: usize) -> X86VcpuResult<Self> {
         Ok(Self {
-            hsave_page: unsafe { PhysFrame::uninit() },
+            hsave_page: unsafe { PhysFrame::<H>::uninit() },
+            _host: PhantomData,
         })
     }
 
-    fn is_enabled(&self) -> bool {
+    pub fn is_enabled(&self) -> bool {
         Msr::IA32_EFER.read() & EFER_SVME != 0
     }
 
-    fn hardware_enable(&mut self) -> AxResult {
-        if !has_hardware_support() {
-            return ax_err!(Unsupported, "CPU does not support AMD SVM");
-        }
+    pub fn hardware_enable(&mut self) -> X86VcpuResult {
         if VmCr::read().contains(VmCrFlags::SVMDIS) {
-            return ax_err!(Unsupported, "AMD SVM is disabled by VM_CR");
+            return x86_err!(Unsupported, "AMD SVM is disabled by VM_CR");
         }
         if self.is_enabled() {
-            return ax_err!(ResourceBusy, "SVM is already turned on");
+            return x86_err!(ResourceBusy, "SVM is already turned on");
         }
 
         enable_xsave();
 
-        self.hsave_page = PhysFrame::alloc_zero()?;
+        self.hsave_page = PhysFrame::<H>::alloc_zero()?;
         let hsave_pa = self.hsave_page.start_paddr().as_usize() as u64;
         unsafe {
             Msr::VM_HSAVE_PA.write(hsave_pa);
@@ -54,16 +50,16 @@ impl AxArchPerCpu for SvmPerCpuState {
         Ok(())
     }
 
-    fn hardware_disable(&mut self) -> AxResult {
+    pub fn hardware_disable(&mut self) -> X86VcpuResult {
         if !self.is_enabled() {
-            return ax_err!(BadState, "SVM is not enabled");
+            return x86_err!(BadState, "SVM is not enabled");
         }
 
         unsafe {
             Msr::IA32_EFER.write(Msr::IA32_EFER.read() & !EFER_SVME);
             Msr::VM_HSAVE_PA.write(0);
         }
-        self.hsave_page = unsafe { PhysFrame::uninit() };
+        self.hsave_page = unsafe { PhysFrame::<H>::uninit() };
 
         info!("[AxVM] succeeded to turn off SVM.");
         Ok(())

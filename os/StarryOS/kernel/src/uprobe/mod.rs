@@ -32,18 +32,18 @@ pub type KernelUprobe = Uprobe<KernelRawMutex, KernelKprobeOps>;
 pub fn register_uprobe(builder: ProbeBuilder<KernelKprobeOps>) -> Arc<KernelUprobe> {
     let curr = current();
     let thread = curr.as_thread();
-    let mut manager = thread.proc_data.uprobe_manager.lock();
+    let manager = &thread.proc_data.uprobe_manager;
     let mut point_list = thread.proc_data.uprobe_point_list.lock();
-    kprobe::register_uprobe(&mut manager, &mut point_list, builder)
+    kprobe::register_uprobe(manager, &mut point_list, builder).unwrap()
 }
 
 /// Unregister a previously registered uprobe from the current process.
 pub fn unregister_uprobe(uprobe: Arc<KernelUprobe>) {
     let curr = current();
     let thread = curr.as_thread();
-    let mut manager = thread.proc_data.uprobe_manager.lock();
+    let manager = &thread.proc_data.uprobe_manager;
     let mut point_list = thread.proc_data.uprobe_point_list.lock();
-    kprobe::unregister_uprobe(&mut manager, &mut point_list, uprobe);
+    kprobe::unregister_uprobe(manager, &mut point_list, uprobe);
 }
 
 /// Dispatch a breakpoint exception to the current process' uprobe manager.
@@ -56,9 +56,9 @@ pub fn unregister_uprobe(uprobe: Arc<KernelUprobe>) {
 /// so the lock is always acquired; a contended miss just reports "unhandled".
 pub fn break_uprobe_handler(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> Option<()> {
     let curr = current();
-    let mut manager = curr.as_thread().proc_data.uprobe_manager.try_lock()?;
+    let manager = &curr.as_thread().proc_data.uprobe_manager;
     let mut pt_regs = trapframe_to_ptregs(tf);
-    let res = kprobe::uprobe_handler_from_break(&mut manager, &mut pt_regs);
+    let res = kprobe::uprobe_handler_from_break(manager, &mut pt_regs);
     ptregs_write_back(&pt_regs, tf);
     res
 }
@@ -68,11 +68,9 @@ pub fn break_uprobe_handler(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> Option<
 #[cfg(target_arch = "x86_64")]
 pub fn debug_uprobe_handler(tf: &mut ax_runtime::hal::cpu::TrapFrame) -> Option<()> {
     let curr = current();
-    // `try_lock()` for the same reason as `break_uprobe_handler`: exception
-    // context, sleeping mutex.
-    let mut manager = curr.as_thread().proc_data.uprobe_manager.try_lock()?;
+    let manager = &curr.as_thread().proc_data.uprobe_manager;
     let mut pt_regs = trapframe_to_ptregs(tf);
-    let res = kprobe::uprobe_handler_from_debug(&mut manager, &mut pt_regs);
+    let res = kprobe::uprobe_handler_from_debug(manager, &mut pt_regs);
     ptregs_write_back(&pt_regs, tf);
     res
 }

@@ -67,11 +67,19 @@ pub struct ThreadSignalManager {
 
 impl ThreadSignalManager {
     pub fn new(tid: u32, proc: Arc<ProcessSignalManager>) -> Arc<Self> {
+        Self::new_with_blocked(tid, proc, SignalSet::default())
+    }
+
+    pub fn new_with_blocked(
+        tid: u32,
+        proc: Arc<ProcessSignalManager>,
+        blocked: SignalSet,
+    ) -> Arc<Self> {
         let this = Arc::new(Self {
             proc: proc.clone(),
 
             pending: SpinNoIrq::new(PendingSignals::default()),
-            blocked: SpinNoIrq::new(SignalSet::default()),
+            blocked: SpinNoIrq::new(blocked),
             stack: SpinNoIrq::new(SignalStack::default()),
             stack_active_depth: SpinNoIrq::new(0),
 

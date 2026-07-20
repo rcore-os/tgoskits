@@ -1,20 +1,33 @@
 use alloc::{borrow::ToOwned, string::String, sync::Arc, vec::Vec};
-use core::{any::Any, borrow::Borrow, cmp::Ordering, task::Context, time::Duration};
+use core::{
+    any::Any,
+    borrow::Borrow,
+    cmp::Ordering,
+    sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
+    task::Context,
+    time::Duration,
+};
 
 use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
-    FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps, NodePermission, NodeType,
-    Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
+    FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate, NodeFlags, NodeOps,
+    NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
 use axpoll::{IoEvents, Pollable};
 use hashbrown::HashMap;
 use slab::Slab;
 
-use crate::pseudofs::dummy_stat_fs;
-
 const TMPFS_NESTED_DIR_ENTRIES_SUBCLASS: u32 = 1;
+
+fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
+    IoEvents::from_bits_truncate(events.bits())
+}
+
+fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
+    FsIoEvents::from_bits_truncate(events.bits())
+}
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct FileName(Arc<str>);
@@ -129,7 +142,27 @@ impl FilesystemOps for MemoryFs {
     }
 
     fn stat(&self) -> VfsResult<StatFs> {
-        Ok(dummy_stat_fs(0x01021994))
+        // Override dummy_stat_fs (which reports 50 KiB total = 100 blocks * 512 B):
+        // BookKeeper / RocksDB / many Java servers refuse to allocate ledger / SST
+        // / WAL when File.getUsableSpace() < minUsableSizeForEntryLogCreation
+        // (default 1 GiB), throwing NoWritableLedgerDirException from a critical
+        // bookie thread that exits the JVM silently. Pulsar standalone died here.
+        // Linux tmpfs reports total = total_RAM / 2 by default; we lack a proper
+        // accounting layer, so advertise 4 GiB / 4 GiB free with realistic block
+        // size, which is enough to unblock every Java server we've hit and remains
+        // accurate when the guest VM has >= 2 GiB.
+        Ok(StatFs {
+            fs_type: 0x01021994,
+            block_size: 4096,
+            blocks: 1 << 20,
+            blocks_free: 1 << 20,
+            blocks_available: 1 << 20,
+            file_count: 0,
+            free_file_count: 1 << 16,
+            name_length: axfs_ng_vfs::path::MAX_NAME_LEN as _,
+            fragment_size: 4096,
+            mount_flags: 0,
+        })
     }
 }
 
@@ -157,12 +190,14 @@ struct DirContent {
     // SpinNoIrq guards, so this per-directory map must not use a blocking
     // mutex.
     entries: SpinNoIrq<HashMap<FileName, InodeRef>>,
+    next_cookie: AtomicU64,
 }
 
 impl Default for DirContent {
     fn default() -> Self {
         Self {
             entries: SpinNoIrq::new(HashMap::new()),
+            next_cookie: AtomicU64::new(3),
         }
     }
 }
@@ -224,11 +259,11 @@ impl Inode {
             let mut entries = dir.entries.lock_nested(dir_entries_subclass);
             entries.insert(
                 ".".into(),
-                InodeRef::new(fs.clone(), ino, NodeType::Directory),
+                InodeRef::new(fs.clone(), ino, NodeType::Directory, 1),
             );
             entries.insert(
                 "..".into(),
-                InodeRef::new(fs.clone(), parent.unwrap_or(ino), NodeType::Directory),
+                InodeRef::new(fs.clone(), parent.unwrap_or(ino), NodeType::Directory, 2),
             );
         }
         result
@@ -253,12 +288,18 @@ struct InodeRef {
     fs: Arc<MemoryFs>,
     ino: u64,
     node_type: NodeType,
+    cookie: u64,
 }
 
 impl InodeRef {
-    pub fn new(fs: Arc<MemoryFs>, ino: u64, node_type: NodeType) -> Self {
+    pub fn new(fs: Arc<MemoryFs>, ino: u64, node_type: NodeType, cookie: u64) -> Self {
         fs.get(ino).metadata.lock().nlink += 1;
-        Self { fs, ino, node_type }
+        Self {
+            fs,
+            ino,
+            node_type,
+            cookie,
+        }
     }
 
     fn get(&self) -> Arc<Inode> {
@@ -405,21 +446,33 @@ impl FileNodeOps for MemoryNode {
         Ok(())
     }
 }
-impl Pollable for MemoryNode {
-    fn poll(&self) -> IoEvents {
-        IoEvents::IN | IoEvents::OUT
+impl FsPollable for MemoryNode {
+    fn poll(&self) -> FsIoEvents {
+        FsIoEvents::IN | FsIoEvents::OUT
     }
 
-    fn register(&self, _context: &mut Context<'_>, _events: IoEvents) {}
+    fn register(&self, _context: &mut Context<'_>, _events: FsIoEvents) {}
+}
+
+impl Pollable for MemoryNode {
+    fn poll(&self) -> IoEvents {
+        fs_events_to_io(FsPollable::poll(self))
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        FsPollable::register(self, context, io_events_to_fs(events));
+    }
 }
 
 impl DirNodeOps for MemoryNode {
     fn read_dir(&self, offset: u64, sink: &mut dyn DirEntrySink) -> VfsResult<usize> {
         let dir = self.inode.as_dir()?;
-        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
         let entries = loop {
             let entries = dir.entries.lock();
-            let count = entries.len().saturating_sub(offset);
+            let count = entries
+                .values()
+                .filter(|entry| offset == 0 || entry.cookie >= offset)
+                .count();
             drop(entries);
 
             let mut snapshot = Vec::new();
@@ -428,19 +481,27 @@ impl DirNodeOps for MemoryNode {
                 .map_err(|_| VfsError::NoMemory)?;
 
             let entries = dir.entries.lock();
-            if entries.len().saturating_sub(offset) > snapshot.capacity() {
+            let live_count = entries
+                .values()
+                .filter(|entry| offset == 0 || entry.cookie >= offset)
+                .count();
+            if live_count > snapshot.capacity() {
                 continue;
             }
-            for (i, (name, entry)) in entries.iter().enumerate().skip(offset) {
+            for (name, entry) in entries.iter() {
+                if offset != 0 && entry.cookie < offset {
+                    continue;
+                }
                 let (ino, node_type) = entry.metadata_for_readdir();
-                snapshot.push((name.0.clone(), ino, node_type, i as u64 + 1));
+                snapshot.push((entry.cookie, name.0.clone(), ino, node_type));
             }
+            snapshot.sort_by_key(|(cookie, ..)| *cookie);
             break snapshot;
         };
 
         let mut count = 0;
-        for (name, ino, node_type, next_offset) in entries {
-            if !sink.accept(name.as_ref(), ino, node_type, next_offset) {
+        for (cookie, name, ino, node_type) in entries {
+            if !sink.accept(name.as_ref(), ino, node_type, cookie + 1) {
                 return Ok(count);
             }
             count += 1;
@@ -481,9 +542,10 @@ impl DirNodeOps for MemoryNode {
             gid,
             TMPFS_NESTED_DIR_ENTRIES_SUBCLASS,
         );
+        let cookie = dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
         entries.insert(
             name.into(),
-            InodeRef::new(self.fs.clone(), inode.ino, node_type),
+            InodeRef::new(self.fs.clone(), inode.ino, node_type, cookie),
         );
         self.new_entry(name, node_type, inode)
     }
@@ -499,9 +561,10 @@ impl DirNodeOps for MemoryNode {
         }
         let inode = target.inode.clone();
         let node_type = inode.metadata.lock().node_type;
+        let cookie = dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
         entries.insert(
             name.into(),
-            InodeRef::new(self.fs.clone(), inode.ino, node_type),
+            InodeRef::new(self.fs.clone(), inode.ino, node_type, cookie),
         );
         self.new_entry(name, node_type, inode)
     }
@@ -517,7 +580,7 @@ impl DirNodeOps for MemoryNode {
             let inode = entry.get();
             match (&inode.content, is_dir) {
                 (NodeContent::Dir(_), false) => return Err(VfsError::IsADirectory),
-                (NodeContent::Dir(DirContent { entries }), true)
+                (NodeContent::Dir(DirContent { entries, .. }), true)
                     if entries.lock_nested(TMPFS_NESTED_DIR_ENTRIES_SUBCLASS).len() > 2 =>
                 {
                     return Err(VfsError::DirectoryNotEmpty);
@@ -549,10 +612,19 @@ impl DirNodeOps for MemoryNode {
             let mut entries = self.inode.as_dir()?.entries.lock();
             entries.remove(src_name).ok_or(VfsError::NotFound)?
         };
+        let dst_dir = dst_node.inode.as_dir()?;
+        let cookie = dst_dir.next_cookie.fetch_add(1, AtomicOrdering::Relaxed);
+        let moved_entry = InodeRef::new(
+            src_entry.fs.clone(),
+            src_entry.ino,
+            src_entry.node_type,
+            cookie,
+        );
         let overwritten = {
-            let mut entries = dst_node.inode.as_dir()?.entries.lock();
-            entries.insert(dst_name.into(), src_entry)
+            let mut entries = dst_dir.entries.lock();
+            entries.insert(dst_name.into(), moved_entry)
         };
+        drop(src_entry);
         if let Some(entry) = overwritten {
             Self::clear_dir_entries(&entry.get());
             drop(entry);

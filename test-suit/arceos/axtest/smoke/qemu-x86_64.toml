@@ -1,0 +1,17 @@
+args = [
+    "-m",
+    "256M",
+    "-smp",
+    "1",
+    "-display",
+    "none",
+    "-serial",
+    "mon:stdio",
+]
+
+timeout = 60
+# The x86_64 std/PIC axtest image requires the dynamic UEFI handoff.
+uefi = true
+to_bin = true
+success_regex = ["AXTEST_SUITE_OK"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "AXTEST_SUITE_FAIL", "AXTEST_CASE status=fail"]

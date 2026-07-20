@@ -7,7 +7,7 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-pcie"
 repository.workspace = true
-version = "0.2.2"
+version = "0.2.5"
 
 [dependencies]
 pci_types = "0.10"

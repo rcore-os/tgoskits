@@ -1,0 +1,184 @@
+use super::*;
+
+#[test]
+fn std_build_only_propagates_selected_features() {
+    let workspace = temp_workspace("std-app", "").unwrap();
+    let app_manifest = workspace.join("app/Cargo.toml");
+    fs::write(
+        &app_manifest,
+        "[package]\nname = \"std-app\"\nversion = \"0.1.0\"\nedition = \
+         \"2024\"\n\n[package.metadata.axstd]\nfeatures = [\"multitask\", \"net\", \
+         \"log-level-debug\"]\n",
+    )
+    .unwrap();
+
+    let mut info = BuildInfo {
+        features: vec!["dns".to_string()],
+        ..BuildInfo::default()
+    };
+
+    info.resolve_std_features();
+    pass_std_build_nested_features(
+        &mut info.features,
+        &[],
+        &[
+            "dns".to_string(),
+            "multitask".to_string(),
+            "net".to_string(),
+            "std-compat".to_string(),
+        ],
+    );
+
+    assert_eq!(info.features, vec!["ax-std/dns".to_string()]);
+}
+
+#[test]
+fn std_build_does_not_auto_enable_app_arceos_feature() {
+    let metadata = repo_metadata();
+    let cargo = BuildInfo {
+        features: Vec::new(),
+        ..BuildInfo::default()
+    }
+    .into_prepared_base_cargo_config_with_metadata(
+        "arceos-helloworld",
+        "x86_64-unknown-none",
+        &metadata,
+    )
+    .unwrap();
+
+    assert!(!cargo.features.contains(&"arceos".to_string()));
+}
+
+#[test]
+fn arceos_test_suite_declares_its_arceos_baseline() {
+    let metadata = repo_metadata();
+    let package = workspace_package(&metadata, "arceos-test-suit").unwrap();
+    let ax_std = package.features.get("ax-std").unwrap();
+
+    assert!(
+        ax_std.iter().any(|feature| feature == "ax-std/arceos"),
+        "arceos-test-suit must enable the ax-std/arceos baseline itself instead of relying on \
+         axbuild"
+    );
+}
+
+#[test]
+fn std_build_uses_dynamic_platform_features_without_static_hal_platform() {
+    let metadata = repo_metadata();
+    let cargo = BuildInfo {
+        features: vec![
+            "ax-std".to_string(),
+            "ax-driver/virtio-net".to_string(),
+            "net".to_string(),
+        ],
+        ..BuildInfo::default()
+    }
+    .into_prepared_base_cargo_config_with_metadata(
+        "arceos-httpclient",
+        "aarch64-unknown-none-softfloat",
+        &metadata,
+    )
+    .unwrap();
+
+    assert!(
+        cargo
+            .target
+            .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
+    );
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/smp".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/std-compat".to_string()));
+    assert!(cargo.features.contains(&"ax-std/virtio-net".to_string()));
+    assert!(cargo.features.contains(&"ax-std/net".to_string()));
+    assert!(!cargo.to_bin);
+    assert_eq!(
+        cargo.env.get("AX_TARGET"),
+        Some(&"aarch64-unknown-none-softfloat".to_string())
+    );
+    assert!(
+        cargo
+            .features
+            .iter()
+            .all(|feature| !feature.starts_with("ax-std/aarch64-"))
+    );
+}
+
+#[test]
+fn std_build_aarch64_defaults_to_dynamic_platform() {
+    let metadata = repo_metadata();
+    let cargo = BuildInfo {
+        ..BuildInfo::default()
+    }
+    .into_prepared_base_cargo_config_with_metadata(
+        "arceos-helloworld",
+        "aarch64-unknown-none-softfloat",
+        &metadata,
+    )
+    .unwrap();
+
+    assert!(
+        cargo
+            .target
+            .ends_with("scripts/targets/std/pie/aarch64-unknown-linux-musl.json")
+    );
+    assert!(!cargo.env.contains_key("AX_CONFIG_PATH"));
+    assert!(!cargo.features.contains(&"ax-std/plat-dyn".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/smp".to_string()));
+    assert!(!cargo.features.contains(&"ax-std/std-compat".to_string()));
+    assert!(
+        cargo
+            .features
+            .iter()
+            .all(|feature| !feature.starts_with("ax-std/aarch64-"))
+    );
+    let config = std::fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
+    assert!(!config.contains("--cfg"));
+    assert!(!config.contains("--check-cfg"));
+    assert!(!config.contains("relocation-model"));
+    assert!(!config.contains("code-model"));
+}
+
+#[test]
+fn std_build_config_preserves_backtrace_rustflags_from_env() {
+    let metadata = repo_metadata();
+    let mut info = BuildInfo::default();
+    info.env.insert("DWARF".to_string(), "y".to_string());
+
+    let cargo = info
+        .into_prepared_base_cargo_config_with_metadata(
+            "arceos-helloworld",
+            "x86_64-unknown-none",
+            &metadata,
+        )
+        .unwrap();
+
+    let config = std::fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
+    assert!(config.contains(r#""-Cdebuginfo=2""#));
+    assert!(config.contains(r#""-Cstrip=none""#));
+    assert!(config.contains(r#""-Cforce-frame-pointers=yes""#));
+}
+
+#[test]
+fn std_build_config_enables_stack_protector_from_feature() {
+    let metadata = repo_metadata();
+    let info = BuildInfo {
+        features: vec!["stack-protector".to_string()],
+        ..BuildInfo::default()
+    };
+
+    let cargo = info
+        .into_prepared_base_cargo_config_with_metadata(
+            "arceos-helloworld",
+            "x86_64-unknown-none",
+            &metadata,
+        )
+        .unwrap();
+
+    assert!(
+        cargo
+            .features
+            .contains(&"ax-std/stack-protector".to_string())
+    );
+    let config = std::fs::read_to_string(cargo.extra_config.unwrap()).unwrap();
+    assert!(config.contains(r#""-Zstack-protector=strong""#));
+}

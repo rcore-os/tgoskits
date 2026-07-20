@@ -1,6 +1,6 @@
 [package]
 name = "sdmmc-protocol"
-version = "0.1.2"
+version = "0.4.1"
 edition = "2024"
 license = "Apache-2.0"
 description = "no_std SD/MMC protocol building blocks for embedded systems"
@@ -12,9 +12,13 @@ categories = ["embedded", "no-std", "hardware-support"]
 [dependencies]
 bitflags = "2"
 embedded-hal = "1"
+dma-api.workspace = true
 log.workspace = true
+rdif-block = { workspace = true, optional = true }
+sdio-host2.workspace = true
 
 [features]
 default = ["spi"]
 spi = []
 sdio = []
+rdif = ["sdio", "dep:rdif-block"]

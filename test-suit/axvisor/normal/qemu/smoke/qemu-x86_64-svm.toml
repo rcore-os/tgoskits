@@ -1,0 +1,39 @@
+args = [
+  "-no-user-config",
+  "-display",
+  "none",
+  "-serial",
+  "stdio",
+  "-monitor",
+  "none",
+  "-cpu",
+  "host,-la57,+svm,+npt,+nrip-save",
+  "-machine",
+  "q35,smbus=off,usb=off,graphics=off",
+  "-smp",
+  "1",
+  "-accel",
+  "kvm",
+  "-device",
+  "virtio-blk-pci,drive=disk0,addr=03.0",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+  "-m",
+  "512M",
+  "-net",
+  "none",
+  "-vga",
+  "none",
+]
+timeout = 600
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+]
+success_regex = ["(?m)^guest linux test pass!\\s*$"]
+shell_prefix = "~ #"
+shell_init_cmd = "pwd && echo 'guest linux test pass!'"
+to_bin = true
+uefi = true

@@ -7,7 +7,7 @@ keywords.workspace = true
 license.workspace = true
 name = "somehal"
 repository.workspace = true
-version = "0.6.8"
+version = "0.8.0"
 
 [features]
 efi = ["someboot/efi"]
@@ -19,8 +19,11 @@ uspace = ["mmu", "someboot/uspace"]
 
 [dependencies]
 anyhow = {workspace = true}
+ax-kspin = { workspace = true }
+irq-framework = { workspace = true }
 page-table-generic = {workspace = true}
 rdif-intc.workspace = true
+rdif-msi.workspace = true
 rdrive = {workspace = true}
 someboot = {workspace = true}
 somehal-macros = {workspace = true}
@@ -40,6 +43,9 @@ arm-gic-driver = {workspace = true, features = ["rdif"]}
 ax-riscv-plic = { workspace = true }
 riscv.workspace = true
 sbi-rt = { workspace = true, features = ["legacy"] }
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+loongArch64 = "0.2"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x2apic = "0.5"

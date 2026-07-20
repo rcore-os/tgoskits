@@ -12,32 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::AxResult;
-use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
-use axvcpu::HostPhysAddr;
 use bit_field::BitField;
 use bitflags::bitflags;
 
 use crate::{
+    X86HostOps, X86HostPhysAddr, X86VcpuResult,
     host::PhysFrame,
     msr::{Msr, MsrReadWrite},
+    types::X86_PAGE_SIZE_4K as PAGE_SIZE,
 };
 
 /// VMCS/VMXON region in 4K size. (SDM Vol. 3C, Section 24.2)
 #[derive(Debug)]
-pub struct VmxRegion {
-    frame: PhysFrame,
+pub struct VmxRegion<H: X86HostOps> {
+    frame: PhysFrame<H>,
 }
 
-impl VmxRegion {
+impl<H: X86HostOps> VmxRegion<H> {
     pub const unsafe fn uninit() -> Self {
         Self {
-            frame: unsafe { PhysFrame::uninit() },
+            frame: unsafe { PhysFrame::<H>::uninit() },
         }
     }
 
-    pub fn new(revision_id: u32, shadow_indicator: bool) -> AxResult<Self> {
-        let frame = PhysFrame::alloc_zero()?;
+    pub fn new(revision_id: u32, shadow_indicator: bool) -> X86VcpuResult<Self> {
+        let frame = PhysFrame::<H>::alloc_zero()?;
         unsafe {
             (*(frame.as_mut_ptr() as *mut u32))
                 .set_bits(0..=30, revision_id)
@@ -46,7 +45,7 @@ impl VmxRegion {
         Ok(Self { frame })
     }
 
-    pub fn phys_addr(&self) -> HostPhysAddr {
+    pub fn phys_addr(&self) -> X86HostPhysAddr {
         self.frame.start_paddr()
     }
 }
@@ -56,24 +55,24 @@ impl VmxRegion {
 // I/O bitmap A contains one bit for each I/O port in the range 0000H through 7FFFH;
 // I/O bitmap B contains bits for ports in the range 8000H through FFFFH.
 #[derive(Debug)]
-pub struct IOBitmap {
-    io_bitmap_a_frame: PhysFrame,
-    io_bitmap_b_frame: PhysFrame,
+pub struct IOBitmap<H: X86HostOps> {
+    io_bitmap_a_frame: PhysFrame<H>,
+    io_bitmap_b_frame: PhysFrame<H>,
 }
 
-impl IOBitmap {
-    pub fn passthrough_all() -> AxResult<Self> {
+impl<H: X86HostOps> IOBitmap<H> {
+    pub fn passthrough_all() -> X86VcpuResult<Self> {
         Ok(Self {
-            io_bitmap_a_frame: PhysFrame::alloc_zero()?,
-            io_bitmap_b_frame: PhysFrame::alloc_zero()?,
+            io_bitmap_a_frame: PhysFrame::<H>::alloc_zero()?,
+            io_bitmap_b_frame: PhysFrame::<H>::alloc_zero()?,
         })
     }
 
     #[allow(unused)]
-    pub fn intercept_all() -> AxResult<Self> {
-        let mut io_bitmap_a_frame = PhysFrame::alloc()?;
+    pub fn intercept_all() -> X86VcpuResult<Self> {
+        let mut io_bitmap_a_frame = PhysFrame::<H>::alloc()?;
         io_bitmap_a_frame.fill(u8::MAX);
-        let mut io_bitmap_b_frame = PhysFrame::alloc()?;
+        let mut io_bitmap_b_frame = PhysFrame::<H>::alloc()?;
         io_bitmap_b_frame.fill(u8::MAX);
         Ok(Self {
             io_bitmap_a_frame,
@@ -81,7 +80,7 @@ impl IOBitmap {
         })
     }
 
-    pub fn phys_addr(&self) -> (HostPhysAddr, HostPhysAddr) {
+    pub fn phys_addr(&self) -> (X86HostPhysAddr, X86HostPhysAddr) {
         (
             self.io_bitmap_a_frame.start_paddr(),
             self.io_bitmap_b_frame.start_paddr(),
@@ -98,7 +97,7 @@ impl IOBitmap {
             (port - 0x8000, &mut self.io_bitmap_b_frame)
         };
         let bitmap =
-            unsafe { core::slice::from_raw_parts_mut(io_bit_map_frame.as_mut_ptr(), 1024) };
+            unsafe { core::slice::from_raw_parts_mut(io_bit_map_frame.as_mut_ptr(), PAGE_SIZE) };
         let byte = (port / 8) as usize;
         let bits = port % 8;
         if intercept {
@@ -116,25 +115,25 @@ impl IOBitmap {
 }
 
 #[derive(Debug)]
-pub struct MsrBitmap {
-    frame: PhysFrame,
+pub struct MsrBitmap<H: X86HostOps> {
+    frame: PhysFrame<H>,
 }
 
-impl MsrBitmap {
-    pub fn passthrough_all() -> AxResult<Self> {
+impl<H: X86HostOps> MsrBitmap<H> {
+    pub fn passthrough_all() -> X86VcpuResult<Self> {
         Ok(Self {
-            frame: PhysFrame::alloc_zero()?,
+            frame: PhysFrame::<H>::alloc_zero()?,
         })
     }
 
     #[allow(unused)]
-    pub fn intercept_all() -> AxResult<Self> {
-        let mut frame = PhysFrame::alloc()?;
+    pub fn intercept_all() -> X86VcpuResult<Self> {
+        let mut frame = PhysFrame::<H>::alloc()?;
         frame.fill(u8::MAX);
         Ok(Self { frame })
     }
 
-    pub fn phys_addr(&self) -> HostPhysAddr {
+    pub fn phys_addr(&self) -> X86HostPhysAddr {
         self.frame.start_paddr()
     }
 
@@ -277,7 +276,7 @@ bitflags! {
 }
 
 impl EPTPointer {
-    pub fn from_table_phys(pml4_paddr: HostPhysAddr) -> Self {
+    pub fn from_table_phys(pml4_paddr: X86HostPhysAddr) -> Self {
         let aligned_addr = pml4_paddr.as_usize() & !(PAGE_SIZE - 1);
         let flags = Self::from_bits_retain(aligned_addr as u64);
         flags | Self::MEM_TYPE_WB | Self::WALK_LENGTH_4 | Self::ENABLE_ACCESSED_DIRTY
@@ -291,9 +290,13 @@ mod tests {
     use super::*;
     use crate::test_utils::mock::MockMmHal;
 
+    type TestIOBitmap = IOBitmap<MockMmHal>;
+    type TestMsrBitmap = MsrBitmap<MockMmHal>;
+    type TestVmxRegion = VmxRegion<MockMmHal>;
+
     #[test]
     fn test_vmx_region_uninit() {
-        let region = unsafe { VmxRegion::uninit() };
+        let region = unsafe { TestVmxRegion::uninit() };
 
         // Test that we can create an uninitialized region
         // Can't test much more without allocating memory
@@ -307,7 +310,7 @@ mod tests {
         MockMmHal::reset();
 
         // Test VmxRegion::new with valid parameters
-        let region = VmxRegion::new(0x12345, false);
+        let region = TestVmxRegion::new(0x12345, false);
         assert!(region.is_ok());
 
         let region = region.unwrap();
@@ -323,10 +326,10 @@ mod tests {
         MockMmHal::reset();
 
         // Test VmxRegion::new with different shadow indicator values
-        let region_no_shadow = VmxRegion::new(0x12345, false);
+        let region_no_shadow = TestVmxRegion::new(0x12345, false);
         assert!(region_no_shadow.is_ok());
 
-        let region_with_shadow = VmxRegion::new(0x12345, true);
+        let region_with_shadow = TestVmxRegion::new(0x12345, true);
         assert!(region_with_shadow.is_ok());
 
         // Test that both regions have valid physical addresses
@@ -349,11 +352,11 @@ mod tests {
         MockMmHal::reset();
 
         // Test passthrough_all creation
-        let passthrough_bitmap = IOBitmap::passthrough_all();
+        let passthrough_bitmap = TestIOBitmap::passthrough_all();
         assert!(passthrough_bitmap.is_ok());
 
         // Test intercept_all creation
-        let intercept_bitmap = IOBitmap::intercept_all();
+        let intercept_bitmap = TestIOBitmap::intercept_all();
         assert!(intercept_bitmap.is_ok());
 
         // Test that phys_addr returns valid addresses
@@ -365,16 +368,39 @@ mod tests {
     }
 
     #[test]
+    fn io_bitmap_can_intercept_high_port_in_low_half_bitmap() {
+        MockMmHal::run_test(|| {
+            let mut bitmap = TestIOBitmap::passthrough_all().unwrap();
+
+            bitmap.set_intercept(0x6000, true);
+
+            let byte = 0x6000 / 8;
+            let bit = 1 << (0x6000 % 8);
+            let bitmap_a = unsafe {
+                core::slice::from_raw_parts(bitmap.io_bitmap_a_frame.as_mut_ptr(), PAGE_SIZE)
+            };
+            assert_eq!(bitmap_a[byte] & bit, bit);
+
+            bitmap.set_intercept(0x6000, false);
+
+            let bitmap_a = unsafe {
+                core::slice::from_raw_parts(bitmap.io_bitmap_a_frame.as_mut_ptr(), PAGE_SIZE)
+            };
+            assert_eq!(bitmap_a[byte] & bit, 0);
+        });
+    }
+
+    #[test]
     fn test_msr_bitmap_creation() {
         // Test MsrBitmap creation methods
         MockMmHal::reset();
 
         // Test passthrough_all creation
-        let passthrough_bitmap = MsrBitmap::passthrough_all();
+        let passthrough_bitmap = TestMsrBitmap::passthrough_all();
         assert!(passthrough_bitmap.is_ok());
 
         // Test intercept_all creation
-        let intercept_bitmap = MsrBitmap::intercept_all();
+        let intercept_bitmap = TestMsrBitmap::intercept_all();
         assert!(intercept_bitmap.is_ok());
 
         // Test that phys_addr returns valid addresses
@@ -387,8 +413,8 @@ mod tests {
     #[test]
     fn test_ept_pointer_creation() {
         // Test EPTPointer creation with from_table_phys method
-        let ept_ptr1 = EPTPointer::from_table_phys(ax_memory_addr::PhysAddr::from(0x1000));
-        let ept_ptr2 = EPTPointer::from_table_phys(ax_memory_addr::PhysAddr::from(0x2000));
+        let ept_ptr1 = EPTPointer::from_table_phys(X86HostPhysAddr::from_usize(0x1000));
+        let ept_ptr2 = EPTPointer::from_table_phys(X86HostPhysAddr::from_usize(0x2000));
 
         // Verify the EPT pointers were created successfully
         assert_ne!(ept_ptr1.0, ept_ptr2.0);
@@ -396,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_ept_pointer_getters() {
-        let phys_addr = ax_memory_addr::PhysAddr::from(0x3000);
+        let phys_addr = X86HostPhysAddr::from_usize(0x3000);
         let ept_ptr = EPTPointer::from_table_phys(phys_addr);
 
         // Test that we can create EPT pointer and it has expected flags
@@ -441,7 +467,7 @@ mod tests {
 
     #[test]
     fn test_ept_pointer_from_table_phys() {
-        let pml4_addr = HostPhysAddr::from(0x12345000_usize); // Page-aligned address
+        let pml4_addr = X86HostPhysAddr::from(0x12345000_usize); // Page-aligned address
         let ept_ptr = EPTPointer::from_table_phys(pml4_addr);
 
         // Should have the correct flags set
@@ -456,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_ept_pointer_from_unaligned_addr() {
-        let unaligned_addr = HostPhysAddr::from(0x12345678_usize); // Not page-aligned
+        let unaligned_addr = X86HostPhysAddr::from(0x12345678_usize); // Not page-aligned
         let ept_ptr = EPTPointer::from_table_phys(unaligned_addr);
 
         // Address should be aligned down
@@ -468,13 +494,13 @@ mod tests {
     #[test]
     fn test_debug_implementations() {
         // Test that all our structs implement Debug properly
-        let vmx_region = unsafe { VmxRegion::uninit() };
+        let vmx_region = unsafe { TestVmxRegion::uninit() };
         let _debug_str = format!("{:?}", vmx_region);
 
-        let io_bitmap = IOBitmap::passthrough_all().unwrap();
+        let io_bitmap = TestIOBitmap::passthrough_all().unwrap();
         let _debug_str = format!("{:?}", io_bitmap);
 
-        let msr_bitmap = MsrBitmap::passthrough_all().unwrap();
+        let msr_bitmap = TestMsrBitmap::passthrough_all().unwrap();
         let _debug_str = format!("{:?}", msr_bitmap);
 
         let flags = FeatureControlFlags::LOCKED;

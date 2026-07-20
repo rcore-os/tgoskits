@@ -14,10 +14,12 @@
 
 extern crate alloc;
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec};
 
-use ax_errno::AxResult;
-use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, map_device_of_type};
+use axdevice_base::{
+    AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, DeviceResult,
+    EmuDeviceType, MmioDeviceAdapter,
+};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 
 const DEVICE_A_TEST_METHOD_ANSWER: usize = 42;
@@ -33,11 +35,11 @@ impl BaseDeviceOps<GuestPhysAddrRange> for DeviceA {
         (0x1000..0x2000).try_into().unwrap()
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(addr.as_usize())
     }
 
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> AxResult {
+    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
         Ok(())
     }
 }
@@ -60,29 +62,40 @@ impl BaseDeviceOps<GuestPhysAddrRange> for DeviceB {
         (0x2000..0x3000).try_into().unwrap()
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> AxResult<usize> {
+    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(addr.as_usize())
     }
 
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> AxResult {
+    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
         Ok(())
     }
 }
 
 #[test]
 fn test_device_type_test() {
-    let devices: Vec<Arc<dyn BaseDeviceOps<GuestPhysAddrRange>>> =
-        vec![Arc::new(DeviceA), Arc::new(DeviceB)];
+    let devices: Vec<Arc<dyn Device>> = vec![
+        MmioDeviceAdapter::from_arc(Arc::new(DeviceA)),
+        MmioDeviceAdapter::from_arc(Arc::new(DeviceB)),
+    ];
 
     let mut device_a_found = false;
-    for device in devices {
-        assert_eq!(
-            device.handle_read(0x2000.into(), AccessWidth::Byte),
-            Ok(0x2000)
-        );
+    for device in &devices {
+        let resp = device
+            .handle(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: true,
+                addr: 0x2000,
+                width: AccessWidth::Byte,
+                data: 0,
+            })
+            .unwrap();
+        assert!(matches!(
+            resp,
+            BusResponse::Read { value } if value as usize == 0x2000
+        ));
 
-        if let Some(answer) = map_device_of_type(&device, |d: &DeviceA| d.test_method()) {
-            assert_eq!(answer, DEVICE_A_TEST_METHOD_ANSWER);
+        if let Some(a) = device.as_any().downcast_ref::<DeviceA>() {
+            assert_eq!(a.test_method(), DEVICE_A_TEST_METHOD_ANSWER);
             device_a_found = true;
         }
     }

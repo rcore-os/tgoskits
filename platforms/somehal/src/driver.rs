@@ -9,10 +9,14 @@ pub fn rdrive_setup() {
         .unwrap();
     } else if let Some(rsdp) = someboot::rsdp_addr_phys() {
         info!("Initializing rdrive with ACPI RSDP at {:#x}", rsdp);
-        if let Err(err) = rdrive::init(rdrive::Platform::Acpi(rdrive::probe::acpi::AcpiRoot::new(
-            rsdp,
-            someboot::mem::phys_to_virt,
-        ))) {
+        let root = rdrive::probe::acpi::AcpiRoot::new(rsdp, someboot::mem::phys_to_virt);
+        let platform = if option_env!("RDRIVE_ACPI_LOAD_AML") == Some("0") {
+            info!("Initializing rdrive ACPI without AML loading");
+            rdrive::Platform::AcpiWithoutAml(root)
+        } else {
+            rdrive::Platform::Acpi(root)
+        };
+        if let Err(err) = rdrive::init(platform) {
             warn!(
                 "failed to initialize rdrive with ACPI RSDP {:#x}: {:?}",
                 rsdp, err

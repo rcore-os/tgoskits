@@ -3,14 +3,14 @@ set -euo pipefail
 
 app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
-base_rootfs="${STARRY_BASE_ROOTFS:-}"
+base_rootfs="${STARRY_ROOTFS:-}"
 
 if [[ -z "$overlay_dir" ]]; then
     echo "error: STARRY_OVERLAY_DIR is required" >&2
     exit 1
 fi
 if [[ -z "$base_rootfs" ]]; then
-    echo "error: STARRY_BASE_ROOTFS is required" >&2
+    echo "error: STARRY_ROOTFS is required" >&2
     exit 1
 fi
 
@@ -33,19 +33,44 @@ case "$STARRY_ARCH" in
         ;;
 esac
 
-command -v debugfs >/dev/null 2>&1 || { echo "ERROR: debugfs not found" >&2; exit 1; }
+resolve_lld_linker() {
+    if command -v lld >/dev/null 2>&1; then
+        printf "lld\n"
+    elif command -v ld.lld >/dev/null 2>&1; then
+        printf "ld.lld\n"
+    fi
+}
 
-# Resolve the lld driver on PATH. Debian/Ubuntu's llvm-14 package installs the
-# linker as 'ld.lld', while Arch/Alpine symlink the wrapper as 'lld'. Accept
-# either so a system that has clang+ld.lld does not silently fall back to
-# musl-cross GCC, whose default GNU ld cannot consume the .relr.dyn section
+ensure_host_packages() {
+    local missing=()
+
+    command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
+    command -v readelf >/dev/null 2>&1 || missing+=(binutils)
+    if [[ -z "$(resolve_lld_linker)" ]]; then
+        missing+=(lld)
+    fi
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        return
+    fi
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo "ERROR: missing required host packages and apt-get is unavailable: ${missing[*]}" >&2
+        exit 1
+    fi
+
+    echo "installing missing host packages: ${missing[*]}"
+    apt-get update
+    apt-get install -y --no-install-recommends "${missing[@]}"
+}
+
+ensure_host_packages
+
+# Resolve the lld driver on PATH. Debian/Ubuntu installs the linker as
+# ld.lld, while some distributions also provide the lld wrapper. Accept either
+# so we do not fall back to GNU ld, which cannot consume the .relr.dyn section
 # shipped in current Alpine libc.so.
-lld_linker=""
-if command -v lld >/dev/null 2>&1; then
-    lld_linker="lld"
-elif command -v ld.lld >/dev/null 2>&1; then
-    lld_linker="ld.lld"
-fi
+lld_linker="$(resolve_lld_linker)"
 
 # Build into a temp directory so the compiled ELF never lands inside the
 # application source tree. The trap cleans both sysroot and build_dir on exit.

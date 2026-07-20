@@ -1,0 +1,13 @@
+[package]
+authors.workspace = true
+categories = ["embedded", "hardware-support", "no-std"]
+description = "Reusable USB serial probing and chip protocol helpers"
+edition.workspace = true
+keywords = ["usb", "serial", "uart", "driver"]
+license.workspace = true
+name = "usb-serial"
+repository.workspace = true
+version = "0.1.1"
+
+[dependencies]
+usb-if.workspace = true

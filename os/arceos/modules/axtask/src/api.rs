@@ -1,9 +1,11 @@
 //! Task APIs for multi-task configuration.
 
 use alloc::{
+    collections::BTreeMap,
     string::String,
     sync::{Arc, Weak},
 };
+use core::fmt;
 
 #[cfg(feature = "lockdep")]
 use ax_kernel_guard::IrqSave;
@@ -31,8 +33,17 @@ pub type AxTaskRef = Arc<AxTask>;
 /// The weak reference type of a task.
 pub type WeakAxTaskRef = Weak<AxTask>;
 
+#[cfg(feature = "multitask")]
+static TASK_REGISTRY: spin::LazyLock<ax_kspin::SpinRwLock<BTreeMap<u64, WeakAxTaskRef>>> =
+    spin::LazyLock::new(|| ax_kspin::SpinRwLock::new(BTreeMap::new()));
+
 /// The wrapper type for [`ax_cpumask::CpuMask`] with SMP configuration.
-pub type AxCpuMask = ax_cpumask::CpuMask<{ ax_config::plat::MAX_CPU_NUM }>;
+pub type AxCpuMask = ax_cpumask::CpuMask<{ crate::build_info::CPU_CAPACITY }>;
+
+/// Returns the default stack size used by task creation helpers.
+pub fn default_task_stack_size() -> usize {
+    crate::build_info::DEFAULT_TASK_STACK_SIZE
+}
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "sched-rr")] {
@@ -166,16 +177,38 @@ pub fn init_scheduler_secondary(stack_ptr: VirtAddr, stack_size: usize) {
 #[cfg(feature = "irq")]
 #[cfg_attr(doc, doc(cfg(feature = "irq")))]
 pub fn on_timer_tick() {
+    on_timer_irq(true);
+}
+
+/// Handles a hardware timer interrupt.
+#[cfg(feature = "irq")]
+#[cfg_attr(doc, doc(cfg(feature = "irq")))]
+pub fn on_timer_irq(scheduler_tick: bool) {
     use ax_kernel_guard::NoOp;
-    crate::timers::check_events();
-    // Since irq and preemption are both disabled here,
-    // we can get current run queue with the default `ax_kernel_guard::NoOp`.
-    current_run_queue::<NoOp>().scheduler_timer_tick();
+    crate::timers::check_events(scheduler_tick);
+    if scheduler_tick {
+        // Since irq and preemption are both disabled here,
+        // we can get current run queue with the default `ax_kernel_guard::NoOp`.
+        current_run_queue::<NoOp>().scheduler_timer_tick();
+    }
+}
+
+#[cfg(feature = "irq")]
+#[doc(hidden)]
+pub fn next_timer_deadline_nanos() -> Option<u64> {
+    crate::timers::next_deadline_nanos()
+}
+
+#[cfg(feature = "irq")]
+#[doc(hidden)]
+pub fn note_programmed_timer_deadline_nanos(deadline_nanos: u64) {
+    crate::timers::note_programmed_deadline_nanos(deadline_nanos);
 }
 
 /// Adds the given task to the run queue, returns the task reference.
 pub fn spawn_task(task: TaskInner) -> AxTaskRef {
     let task_ref = task.into_arc();
+    register_task(&task_ref);
     select_run_queue::<NoPreemptIrqSave>(&task_ref).add_task(task_ref.clone());
     task_ref
 }
@@ -190,20 +223,20 @@ where
     spawn_task(TaskInner::new(f, name, stack_size))
 }
 
-/// Spawns a new task with the given name and the default stack size ([`ax_config::TASK_STACK_SIZE`]).
+/// Spawns a new task with the given name and the default stack size.
 ///
 /// Returns the task reference.
 pub fn spawn_with_name<F>(f: F, name: String) -> AxTaskRef
 where
     F: FnOnce() + Send + 'static,
 {
-    spawn_raw(f, name, ax_config::TASK_STACK_SIZE)
+    spawn_raw(f, name, default_task_stack_size())
 }
 
 /// Spawns a new task with the default parameters.
 ///
 /// The default task name is an empty string. The default task stack size is
-/// [`ax_config::TASK_STACK_SIZE`].
+/// [`default_task_stack_size`].
 ///
 /// Returns the task reference.
 pub fn spawn<F>(f: F) -> AxTaskRef
@@ -231,6 +264,7 @@ pub fn set_priority(prio: isize) -> bool {
 /// Returns `true` if the affinity is set successfully.
 ///
 /// TODO: support set the affinity for other tasks.
+#[track_caller]
 pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
     might_sleep();
 
@@ -244,22 +278,16 @@ pub fn set_current_affinity(cpumask: AxCpuMask) -> bool {
         // the affinity. If not, we need to migrate the task to the correct CPU.
         #[cfg(feature = "smp")]
         if !cpumask.get(ax_hal::percpu::this_cpu_id()) {
-            const MIGRATION_TASK_STACK_SIZE: usize = ax_config::TASK_STACK_SIZE;
             // Spawn a new migration task for migrating.
             let migration_task = TaskInner::new(
                 move || crate::run_queue::migrate_entry(curr),
                 "migration-task".into(),
-                MIGRATION_TASK_STACK_SIZE,
+                default_task_stack_size(),
             )
             .into_arc();
 
             // Migrate the current task to the correct CPU using the migration task.
             current_run_queue::<NoPreemptIrqSave>().migrate_current(migration_task);
-
-            assert!(
-                cpumask.get(ax_hal::percpu::this_cpu_id()),
-                "Migration failed"
-            );
         }
         true
     }
@@ -287,13 +315,16 @@ pub(crate) fn yield_now_unchecked() {
 /// Current task is going to sleep for the given duration.
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
+#[track_caller]
 pub fn sleep(dur: core::time::Duration) {
-    sleep_until(ax_hal::time::wall_time() + dur);
+    sleep_until(ax_hal::time::monotonic_time() + dur);
 }
 
 /// Current task is going to sleep, it will be woken up at the given deadline.
+/// The deadline is measured against the monotonic clock.
 ///
 /// If the feature `irq` is not enabled, it uses busy-wait instead.
+#[track_caller]
 pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
     #[cfg(feature = "irq")]
     might_sleep();
@@ -304,20 +335,121 @@ pub fn sleep_until(deadline: ax_hal::time::TimeValue) {
 }
 
 /// Exits the current task.
+#[track_caller]
 pub fn exit(exit_code: i32) -> ! {
     might_sleep();
 
     current_run_queue::<NoPreemptIrqSave>().exit_current(exit_code)
 }
 
-fn current_preempt_count() -> usize {
-    #[cfg(feature = "preempt")]
+fn current_irq_context() -> bool {
+    #[cfg(feature = "irq")]
     {
-        current_may_uninit().map_or(0, |curr| curr.preempt_count())
+        ax_hal::irq::in_irq_context()
     }
-    #[cfg(not(feature = "preempt"))]
+    #[cfg(not(feature = "irq"))]
     {
-        0
+        false
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AtomicContextReasons {
+    irq_disabled: bool,
+    irq_context: bool,
+    preempt_disabled: bool,
+}
+
+impl AtomicContextReasons {
+    const fn is_atomic(self) -> bool {
+        self.irq_disabled || self.irq_context || self.preempt_disabled
+    }
+}
+
+impl fmt::Display for AtomicContextReasons {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut wrote_any = false;
+        f.write_str("[")?;
+        if self.irq_disabled {
+            f.write_str("irq_disabled")?;
+            wrote_any = true;
+        }
+        if self.irq_context {
+            if wrote_any {
+                f.write_str(",")?;
+            }
+            f.write_str("irq_context")?;
+            wrote_any = true;
+        }
+        if self.preempt_disabled {
+            if wrote_any {
+                f.write_str(",")?;
+            }
+            f.write_str("preempt_disabled")?;
+            wrote_any = true;
+        }
+        if !wrote_any {
+            f.write_str("none")?;
+        }
+        f.write_str("]")
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AtomicContextSnapshot {
+    irq_enabled: bool,
+    irq_context: bool,
+    preempt_count: usize,
+    cpu_id: usize,
+    task_id: Option<u64>,
+    task_state: Option<TaskState>,
+}
+
+impl AtomicContextSnapshot {
+    fn capture() -> Self {
+        let current = current_may_uninit();
+        let preempt_count = {
+            #[cfg(feature = "preempt")]
+            {
+                current.as_ref().map_or(0, |curr| curr.preempt_count())
+            }
+            #[cfg(not(feature = "preempt"))]
+            {
+                0
+            }
+        };
+
+        Self {
+            irq_enabled: ax_hal::asm::irqs_enabled(),
+            irq_context: current_irq_context(),
+            preempt_count,
+            cpu_id: ax_hal::percpu::this_cpu_id(),
+            task_id: current.as_ref().map(|curr| curr.id().as_u64()),
+            task_state: current.as_ref().map(|curr| curr.state()),
+        }
+    }
+
+    fn reasons(self) -> AtomicContextReasons {
+        let irq_disabled = {
+            #[cfg(feature = "irq")]
+            {
+                !self.irq_enabled
+            }
+            #[cfg(not(feature = "irq"))]
+            {
+                false
+            }
+        };
+
+        AtomicContextReasons {
+            irq_disabled,
+            irq_context: self.irq_context,
+            preempt_disabled: self.preempt_count != 0,
+        }
+    }
+
+    fn is_atomic(self) -> bool {
+        self.reasons().is_atomic()
     }
 }
 
@@ -326,18 +458,8 @@ fn current_preempt_count() -> usize {
 ///
 /// This matches the intent of Linux's `might_sleep()`: catch misuse from
 /// IRQ-disabled or preempt-disabled regions before a sleep-like action happens.
-pub(crate) fn in_atomic_context() -> bool {
-    #[cfg(feature = "irq")]
-    if !ax_hal::asm::irqs_enabled() {
-        return true;
-    }
-
-    #[cfg(feature = "preempt")]
-    if current_preempt_count() != 0 {
-        return true;
-    }
-
-    false
+pub fn in_atomic_context() -> bool {
+    AtomicContextSnapshot::capture().is_atomic()
 }
 
 /// Marks an operation as one that may sleep or reschedule.
@@ -345,14 +467,52 @@ pub(crate) fn in_atomic_context() -> bool {
 /// Panics if it is executed in an atomic context.
 #[track_caller]
 pub fn might_sleep() {
-    if in_atomic_context() {
-        panic!(
-            "sleeping or rescheduling is not allowed in atomic context: irq_enabled={}, \
-             preempt_count={}",
-            ax_hal::asm::irqs_enabled(),
-            current_preempt_count()
-        );
+    let snapshot = AtomicContextSnapshot::capture();
+    if snapshot.is_atomic() {
+        panic_atomic_sleep(snapshot, core::panic::Location::caller());
     }
+}
+
+#[cfg(not(feature = "lockdep"))]
+fn panic_atomic_sleep(
+    snapshot: AtomicContextSnapshot,
+    caller: &'static core::panic::Location<'static>,
+) -> ! {
+    panic!(
+        "sleeping or rescheduling is not allowed in atomic context: caller={}, reasons={}, \
+         irq_enabled={}, irq_context={}, preempt_count={}, cpu_id={}, task_id={:?}, \
+         task_state={:?}",
+        caller,
+        snapshot.reasons(),
+        snapshot.irq_enabled,
+        snapshot.irq_context,
+        snapshot.preempt_count,
+        snapshot.cpu_id,
+        snapshot.task_id,
+        snapshot.task_state
+    );
+}
+
+#[cfg(feature = "lockdep")]
+fn panic_atomic_sleep(
+    snapshot: AtomicContextSnapshot,
+    caller: &'static core::panic::Location<'static>,
+) -> ! {
+    let held_locks = ax_kspin::lockdep::current_task_held_lock_snapshot();
+    panic!(
+        "sleeping or rescheduling is not allowed in atomic context: caller={}, reasons={}, \
+         irq_enabled={}, irq_context={}, preempt_count={}, cpu_id={}, task_id={:?}, \
+         task_state={:?}, held_locks={}",
+        caller,
+        snapshot.reasons(),
+        snapshot.irq_enabled,
+        snapshot.irq_context,
+        snapshot.preempt_count,
+        snapshot.cpu_id,
+        snapshot.task_id,
+        snapshot.task_state,
+        held_locks
+    );
 }
 
 /// Wakes a task that may be sleeping, ensuring it can observe a newly-
@@ -388,6 +548,52 @@ pub fn wake_task(task: &AxTaskRef) {
     }
 }
 
+/// Registers a task for lookup by its scheduler task id.
+///
+/// This keeps a weak reference only; expired entries are ignored by lookup.
+#[cfg(feature = "multitask")]
+pub fn register_task(task: &AxTaskRef) {
+    TASK_REGISTRY
+        .write()
+        .insert(task.id().as_u64(), Arc::downgrade(task));
+}
+
+/// Finds a task by its scheduler task id.
+#[cfg(feature = "multitask")]
+pub fn task_by_id(task_id: u64) -> Option<AxTaskRef> {
+    if task_id == 0 {
+        return current_may_uninit().map(|curr| curr.clone());
+    }
+
+    TASK_REGISTRY
+        .read()
+        .get(&task_id)
+        .and_then(|task| task.upgrade())
+}
+
+/// Wakes a task by its scheduler task id.
+#[cfg(feature = "multitask")]
+pub fn wake_task_by_id(task_id: u64) -> bool {
+    let Some(task) = task_by_id(task_id) else {
+        return false;
+    };
+    wake_task(&task);
+    true
+}
+
+#[cfg(not(feature = "multitask"))]
+pub fn register_task(_task: &AxTaskRef) {}
+
+#[cfg(not(feature = "multitask"))]
+pub fn task_by_id(_task_id: u64) -> Option<AxTaskRef> {
+    None
+}
+
+#[cfg(not(feature = "multitask"))]
+pub fn wake_task_by_id(_task_id: u64) -> bool {
+    false
+}
+
 /// The idle task routine.
 ///
 /// It runs an infinite loop that keeps trying to hand over the CPU before
@@ -396,7 +602,7 @@ pub fn run_idle() -> ! {
     loop {
         yield_now_unchecked();
         trace!("idle task: waiting for IRQs...");
-        #[cfg(feature = "irq")]
+        #[cfg(all(feature = "irq", not(feature = "host-test")))]
         ax_hal::asm::wait_for_irqs();
     }
 }

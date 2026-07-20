@@ -14,7 +14,7 @@
 
 - 它不是运行时本体，不负责初始化系统，也不直接实现调度、内存、网络或文件系统算法。
 - 它是一层 **薄门面**：对外给出稳定、按域划分的 `ax_*` API，对内把实现集中到 `imp/`。
-- 它与 `ax-feat` 配合，通过 feature 控制哪些 API 域进入最终镜像。
+- 它与 `ax-runtime` 配合，通过 feature 控制哪些 API 域进入最终镜像。
 - 它既是 `ax-std` 的重要下层依赖，也是 ArceOS 模块能力暴露给更上层时最推荐的接入边界。
 
 因此，理解 `ax-api` 的关键不在复杂数据结构，而在“API 定义如何生成”“API 可见性如何由 feature 控制”“API 最终映射到哪些模块”。
@@ -124,7 +124,7 @@ graph LR
 ```
 
 ### 直接依赖
-- 核心基础：`axconfig`、`ax-errno`、`ax-feat`、`ax-hal`、`axio`、`ax-log`、`ax-runtime`、`ax-sync`。
+- 核心基础：`ax-errno`、`ax-runtime`、`ax-hal`、`axio`、`ax-log`、`ax-runtime`、`ax-sync`。
 - 可选能力：`ax-alloc`、`ax-dma`、`ax-task`、`ax-fs`、`ax-net`、`ax-display`、`ax-driver`、`ax-ipi`、`ax-mm`。
 
 ### 主要消费者
@@ -175,7 +175,7 @@ ax-api = { workspace = true, features = ["alloc", "multitask", "fs", "net"] }
 
 ## 跨项目定位
 ### ArceOS
-`ax-api` 是 ArceOS 官方的公共 API 门面层。它与 `ax-feat` 协作，把一组离散的底层模块整理成稳定接口，是 `ax-std` 等上层库最重要的下层边界之一。
+`ax-api` 是 ArceOS 官方的公共 API 门面层。它与 `ax-runtime` 协作，把一组离散的底层模块整理成稳定接口，是 `ax-std` 等上层库最重要的下层边界之一。
 
 ### StarryOS
 StarryOS 内核本体通常直接依赖更底层模块，而不是依赖 `ax-api`。因此在 StarryOS 中，它更像“可选的统一上层库接口层”，而不是内核核心依赖。

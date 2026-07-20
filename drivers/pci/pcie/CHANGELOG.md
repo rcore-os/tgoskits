@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7](https://github.com/rcore-os/tgoskits/compare/pcie-v0.6.6...pcie-v0.6.7) - 2026-07-10
+
+### Other
+
+- updated the following local packages: rdif-msi
+
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/pcie-v0.6.5...pcie-v0.6.6) - 2026-07-07
+
+### Added
+
+- *(msi)* add aarch64 MSI-X registration ([#1522](https://github.com/rcore-os/tgoskits/pull/1522))
+
+## [0.6.5](https://github.com/rcore-os/tgoskits/compare/pcie-v0.6.4...pcie-v0.6.5) - 2026-06-22
+
+### Other
+
+- updated the following local packages: rdif-pcie
+
+## [0.6.4](https://github.com/rcore-os/tgoskits/compare/pcie-v0.6.3...pcie-v0.6.4) - 2026-06-12
+
+### Other
+
+- *(rdrive)* carry probe context and PCI INTx routes
+
+## [0.6.3](https://github.com/rcore-os/tgoskits/compare/pcie-v0.6.2...pcie-v0.6.3) - 2026-06-09
+
+### Other
+
+- updated the following local packages: rdif-pcie
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/pcie-v0.6.1...pcie-v0.6.2) - 2026-06-03
 
 ### Fixed

@@ -1,0 +1,2 @@
+# gettimeofday01 # TFAIL: one invalid argument case succeeded instead of returning EFAULT
+gettimeofday02

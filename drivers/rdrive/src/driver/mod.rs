@@ -20,19 +20,25 @@ impl PlatformDevice {
         Self { descriptor }
     }
 
+    pub fn descriptor(&self) -> &Descriptor {
+        &self.descriptor
+    }
+
     /// Register a device to the driver manager.
     ///
     /// # Panics
     /// This method will panic if the device with the same ID is already added
-    pub fn register<T: DriverGeneric>(self, driver: T) {
+    pub fn register<T: DriverGeneric>(&self, driver: T) {
         crate::edit(|manager| {
-            manager.dev_container.insert(self.descriptor, driver);
+            manager
+                .dev_container
+                .insert(self.descriptor.clone(), driver);
         });
     }
 
-    pub fn register_pcie(self, drv: PcieController) {
+    pub fn register_pcie(&self, drv: PcieController) {
         crate::edit(|manager| {
-            manager.dev_container.insert(self.descriptor, drv);
+            manager.dev_container.insert(self.descriptor.clone(), drv);
         });
     }
 }

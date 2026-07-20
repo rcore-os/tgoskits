@@ -4,9 +4,7 @@ args = [
   "-display",
   "none",
   "-serial",
-  "stdio",
-  "-monitor",
-  "none",
+  "mon:stdio",
   "-cpu",
   "host",
   "-machine",
@@ -24,5 +22,5 @@ args = [
 ]
 fail_regex = []
 success_regex = []
-to_bin = false
-uefi = false
+to_bin = true
+uefi = true

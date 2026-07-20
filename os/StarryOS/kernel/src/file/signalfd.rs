@@ -100,7 +100,8 @@ impl Signalfd {
         {
             *self.mask.lock() = mask;
         }
-        self.poll_rx.wake();
+        // The signal mask update is visible before waking readers.
+        unsafe { self.poll_rx.wake(IoEvents::IN) };
     }
 
     fn mask(&self) -> SignalSet {
@@ -142,7 +143,8 @@ impl FileLike for Signalfd {
 
                 // Wake up other waiters if there are more signals pending
                 if self.has_pending_signals() {
-                    self.poll_rx.wake();
+                    // Remaining pending signals are visible before re-wake.
+                    unsafe { self.poll_rx.wake(IoEvents::IN) };
                 }
 
                 Ok(SIGNALFD_SIGINFO_SIZE)
@@ -180,7 +182,8 @@ impl Pollable for Signalfd {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.poll_rx.register(context.waker());
+            // Registration happens from file poll task context.
+            unsafe { self.poll_rx.register(context.waker(), IoEvents::IN) };
         }
     }
 }

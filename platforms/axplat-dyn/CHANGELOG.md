@@ -7,6 +7,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.12](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.11...axplat-dyn-v0.7.12) - 2026-07-10
+
+### Added
+
+- *(msi)* add hierarchical MSI-X irq domains ([#1526](https://github.com/rcore-os/tgoskits/pull/1526))
+
+## [0.7.11](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.10...axplat-dyn-v0.7.11) - 2026-07-08
+
+### Fixed
+
+- *(platforms)* route DMA cache sync through platform cache ops ([#1542](https://github.com/rcore-os/tgoskits/pull/1542))
+
+## [0.7.10](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.9...axplat-dyn-v0.7.10) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-cpu, ax-plat, someboot, axklib, ax-driver, somehal
+
+## [0.7.9](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.8...axplat-dyn-v0.7.9) - 2026-07-08
+
+### Other
+
+- updated the following local packages: rdrive, ax-plat, axklib, ax-driver, somehal
+
+## [0.7.8](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.7...axplat-dyn-v0.7.8) - 2026-07-07
+
+### Fixed
+
+- *(ci)* restore Starry ptrace and Axvisor RISC-V tests ([#1521](https://github.com/rcore-os/tgoskits/pull/1521))
+
+### Other
+
+- remove static platform and axconfig generation, make dynamic platform the only path ([#1478](https://github.com/rcore-os/tgoskits/pull/1478))
+
+## [0.7.7](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.6...axplat-dyn-v0.7.7) - 2026-07-02
+
+### Added
+
+- *(somehal)* allocate interrupt controller domains
+- *(axvisor)* support LoongArch Linux guest on QEMU ([#1207](https://github.com/rcore-os/tgoskits/pull/1207))
+
+### Fixed
+
+- *(ax-hal)* route typed IPI ids through platform irq
+- *(irq)* avoid hard irq controller locks
+- *(irq)* close domain runtime review gaps
+
+### Other
+
+- *(somehal)* modernize x86 qemu irq routing ([#1430](https://github.com/rcore-os/tgoskits/pull/1430))
+
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.5...axplat-dyn-v0.7.6) - 2026-06-27
+
+### Added
+
+- *(ax-runtime)* generate banner build info ([#1373](https://github.com/rcore-os/tgoskits/pull/1373))
+
+### Other
+
+- *(platform)* remove ax-config from dynamic runtime path ([#1387](https://github.com/rcore-os/tgoskits/pull/1387))
+- *(serial)* align IRQ model with dev ([#1265](https://github.com/rcore-os/tgoskits/pull/1265))
+
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.4...axplat-dyn-v0.7.5) - 2026-06-23
+
+### Added
+
+- *(starry)* support reboot syscall ([#1358](https://github.com/rcore-os/tgoskits/pull/1358))
+
+### Fixed
+
+- *(platform)* support AArch64 HVF timer boot ([#1334](https://github.com/rcore-os/tgoskits/pull/1334))
+
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.3...axplat-dyn-v0.7.4) - 2026-06-22
+
+### Added
+
+- *(ax-runtime)* prefer UEFI RTC on dynamic platform ([#1294](https://github.com/rcore-os/tgoskits/pull/1294))
+
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.2...axplat-dyn-v0.7.3) - 2026-06-12
+
+### Fixed
+
+- *(ci)* stabilize x86 Starry QEMU timing ([#1245](https://github.com/rcore-os/tgoskits/pull/1245))
+
+## [0.7.2](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.1...axplat-dyn-v0.7.2) - 2026-06-11
+
+### Added
+
+- *(somehal)* support dynamic CPU and interrupt hooks
+
+## [0.7.1](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.0...axplat-dyn-v0.7.1) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
+### Fixed
+
+- *(ci)* switch x86_64 defaults to dynamic platform ([#1024](https://github.com/rcore-os/tgoskits/pull/1024))
+
 ## [0.7.0](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.6.2...axplat-dyn-v0.7.0) - 2026-06-03
 
 ### Added

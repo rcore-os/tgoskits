@@ -1,6 +1,6 @@
 ---
 name: review-single-pr
-description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, validate Starry or ArceOS app/tool workflows that CI may miss, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or assign reviewers after review.
+description: Review one specified GitHub pull request in this tgoskits repository. Use when the user names a PR number or URL and asks to review, re-review, compare with Linux/POSIX/RFC/VirtIO semantics, check duplicate functionality or related open PRs, verify required tests and their placement/discovery/execution, validate Starry or ArceOS app/tool workflows that CI may miss, repair safe merge conflicts, run focused validation, leave Chinese inline review comments, approve, request changes, or select and assign recommended reviewers from .github/MAINTAINERS.md after review.
 ---
 
 # Review Single PR
@@ -9,15 +9,44 @@ description: Review one specified GitHub pull request in this tgoskits repositor
 
 This skill is a normative review specification, not a suggestion list. When it triggers, read the entire `SKILL.md` before deciding the review outcome, then follow every applicable requirement unless a higher-priority system or developer instruction conflicts.
 
+Before judging code quality, maintainability, or merge readiness, fully read `book/guideline/code-quality.md` and treat it as the mandatory baseline for author-side implementation and reviewer-side assessment. Read additional domain guidelines only when the changed behavior is in their scope. In particular, fully read `book/guideline/starry/syscall.md` whenever the PR changes or claims to change user-visible StarryOS syscall/Linux ABI semantics. This is a semantic trigger: it also applies when the diff is in task, VFS, namespace, signal, socket, credential, memory-management, or another helper rather than the syscall directory. When a domain guideline is inapplicable, record the concrete reason in the review checklist. If context is compacted, resumed from a summary, or an applicable guideline cannot be recalled confidently, re-read that complete guideline before continuing; do not rely on memory or a previous partial read.
+
 Do not submit `APPROVE`, `REQUEST_CHANGES`, a no-submit summary, or any PR-facing comment from only the frontmatter, title, partial sections, memory, or a previous review. If context or time pressure prevents reading the full skill, state that limitation and do not claim a complete `review-single-pr` review.
 
-After reading the full skill, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, duplicate and overlap analysis, validation, blocking findings, submission rules, reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
+After reading the full skill, `book/guideline/code-quality.md`, and every applicable domain guideline, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, baseline code quality, domain-guideline applicability and compliance, required test coverage and test placement/discovery, duplicate and overlap analysis, validation, blocking findings, submission rules, recommended reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
 
 When requirements overlap, apply the stricter rule. If skipping a requirement is necessary because it is inapplicable or impossible, record the concrete reason and evidence in the review body or user summary.
 
+## Offline Benchmark Mode
+
+Use this mode only when the skill is invoked with the exact `offline-benchmark` argument and the
+repository contains `.agent-review-context/reviewer.md`. The context file is the authoritative
+environment and output contract for this mode. If either condition is absent, follow the normal
+online workflow in the rest of this skill.
+
+In offline benchmark mode, treat the committed change from `bench-base` to `HEAD` as the one change
+under review. Read the complete skill, `AGENTS.md`, `book/guideline/code-quality.md`, every domain
+guideline applicable to the changed semantics, the offline contract, and the supplied output schema
+before judging the change. Apply the review-focus,
+test-quality, blocking-finding, hardware/ABI, security/soundness, maintainability, and documentation
+requirements from this skill to the local diff and relevant in-repository context.
+
+The benchmark repository intentionally has no live PR identity. Mark PR metadata and intake, review
+threads, remote CI, related-open-PR searches, worktree creation, merge-conflict repair, network
+semantic-source research, command execution for validation, GitHub review submission, reviewer
+assignment, and remote cleanup as not applicable. Do not infer a PR number, inspect paths outside
+the repository, access the network or GitHub, modify files, create commits or branches, or run
+builds and tests. Use only read-only repository inspection and the Git history/diff commands allowed
+by the harness.
+
+Return only the JSON object required by `.agent-review-context/review.schema.json`. Report findings
+introduced by `bench-base..HEAD`, anchor each finding to a changed line on the `HEAD` side, and use
+an empty `findings` array when no actionable issue exists. Do not submit or draft GitHub-facing
+review text in this mode.
+
 ## Goal
 
-Perform a focused review of exactly one PR, using an isolated worktree and local validation before submitting a GitHub review. The review must also decide whether the PR duplicates existing base-branch functionality or overlaps with other open PRs. After the review decision is submitted, assign suitable human reviewers from the project reviewer direction table when the PR still needs domain follow-up. The normal outcome is either `APPROVE` when no blocking issue remains, or `REQUEST_CHANGES` with Chinese inline comments when the PR has correctness, standards, duplication, test, or CI coverage problems.
+Perform a focused review of exactly one PR, using an isolated worktree and local validation before submitting a GitHub review. The review must also decide whether the PR duplicates existing base-branch functionality or overlaps with other open PRs. After the review decision is submitted, assign suitable human reviewers from `.github/MAINTAINERS.md` when the PR still needs domain follow-up. The normal outcome is either `APPROVE` when no blocking issue remains, or `REQUEST_CHANGES` with Chinese inline comments when the PR has correctness, standards, duplication, test, or CI coverage problems.
 
 This skill is the authoritative single-PR workflow used by `review-open-prs`: do not fully review all open PRs, but always inspect enough related open PR context to classify duplicate, overlapping, superseded, or conflicting work.
 
@@ -213,15 +242,43 @@ Review the PR against its stated intent, the current base branch, existing proje
 - `starry-test-suit` rules when StarryOS test cases or `qemu-*.toml` files change.
 - `cross-kernel-driver` architecture rules when portable driver crates or driver glue change.
 
+For any change that affects or claims to affect user-visible StarryOS syscall/Linux ABI semantics, fully read and apply `book/guideline/starry/syscall.md` before judging correctness. Follow its evidence hierarchy and comparison workflow even when the changed line is outside the syscall directory. The review must trace indirect helper changes back to every affected syscall entry and must record the Linux version or commit used when behavior is version-dependent.
+
+### Review Lenses And Finding Discipline
+
+Review is recall-first: prefer finding every real defect in the changed surface over producing a short or polished review. Do not invent issues, but do not dismiss a plausible in-scope defect with "looks fine"; construct the concrete input, interleaving, device state, guest config, or test-run path that would trigger it, or explain why that scenario is impossible.
+
+Apply these TGOSKits review lenses. A lens runs unless the changed paths and semantics provably contain nothing in its remit:
+
+- **Maintainability:** process and change shape, commit hygiene, focused PR scope, crate/module boundaries, naming, visibility, comments, and whether the next maintainer can understand the code without archaeology.
+- **Correctness:** runtime behavior under normal, error, concurrent, and hot paths; edge cases such as off-by-one errors, reachable `unwrap`/`expect`/panic, integer overflow, wrong predicates, dropped guards, lost wakeups, resource leaks, and tests that prove the behavior.
+- **Security/Soundness:** `unsafe` contracts, pointer provenance, aliasing, user-memory access, trust-boundary validation, privilege checks, TOCTOU, use-after-free, and invariants relied on by untouched `unsafe` blocks or unsafe trait impls.
+- **Hardware/ABI:** assembly, target JSONs, trap/context layout, SMP/boot handoff, MMIO/DMA/IRQ ownership, cache/coherency assumptions, VirtIO/PCI contracts, device-tree/config layout, and architecture-specific calling or alignment rules.
+- **Documentation/User-Facing Compatibility:** user-facing docs, runbooks, app workflows, test-suit guides, compatibility notes, syscall/kernel parameter descriptions, and whether documentation changes stay current with behavior visible to StarryOS, ArceOS, Axvisor, or users.
+
+For each candidate finding, identify the natural owning lens and avoid duplicating the same investigation under every lens. If several symptoms share one root cause or one fix, keep each symptom at its own actionable location but explain the shared fix once and refer the related comments to it.
+
+Every submitted finding, inline comment, or body-only blocker must include:
+
+- **grounding:** the project rule, external standard, observed failure, or plain-language defect class, such as "Off by one", "Use after free", or "wrong errno";
+- **severity:** whether it is blocking, major but non-blocking, minor, or nit-level;
+- **problem:** the concrete behavior or maintainability failure and the scenario that exposes it;
+- **fix direction:** the expected repair, not just a complaint;
+- **evidence:** changed line, code path, validation output, CI log, external reference, or reasoning proof.
+
+Before submitting, verify the load-bearing premises of every finding. Re-read the cited code and, when the finding depends on outside behavior, check an authoritative source such as Linux/POSIX/RFC/VirtIO specs, Rust reference/docs, hardware manuals, or existing TGOSKits runner semantics. Keep uncertain but plausible findings only when the uncertainty is explicit; retract findings whose premise is confidently false instead of posting stale or speculative feedback.
+
 For bug fixes (修复 bug), require a regression or reproduction test that fails on the unfixed behavior and passes only after the fix unless concrete evidence shows the environment makes such a test impossible. The reviewer must verify this from the test code, author-provided red/green evidence, or local red/green validation when practical. If the PR fixes a bug but lacks a post-fix-only regression test and no concrete impossibility is documented, treat that as blocking. For raw syscall fixes, prefer direct `syscall(SYS_...)` coverage when libc wrappers could mask return values or errno.
+
+For any PR that adds behavior, changes semantics, fixes a bug, or claims coverage for a newly exposed path, require tests at the correct project layer unless the PR is clearly documentation-only or the review records a concrete reason tests are impossible. Verify that the tests are not merely present in the diff: they must be in the expected suite or wrapper, discovered by the project runner, built or installed into the runtime image when applicable, selected by the documented command, and capable of failing when the behavior regresses. Treat misplaced tests, orphan assets, tests hidden behind opt-in/manual-only paths, or tests that CI/runner silently skips as missing coverage.
 
 For PRs that add StarryOS app support, separate operator-facing app scenarios from CI-oriented semantic coverage:
 
 - App-level smoke, demo, rootfs preparation, board/QEMU run scripts, and long-running or opt-in workflows belong under `apps/starry/<app-or-scenario>/`, following `apps/starry/README.md`.
-- Kernel ABI, syscall, filesystem, process, networking, or other bugfix coverage exposed while enabling the app belongs under `test-suit/starryos/normal` in the matching existing case group, such as `qemu-smp1/syscall`, `qemu-smp1/bugfix`, `qemu-smp1/c-regression`, networking, DRM, evdev, or another closest semantic group.
-- If the PR adds a syscall or changes syscall semantics for the app, require a minimal normal syscall/regression test that exercises the syscall surface directly; an app smoke passing is not enough.
-- If the PR fixes a bug found through the app, require a normal bugfix/regression test that reproduces the bug without depending on the full app workflow whenever practical; keep the app scenario in `apps/starry` as integration evidence.
-- Do not approve app-support PRs that put app workflows only into `test-suit/starryos/normal`, or that hide syscall/bugfix coverage only inside `apps/starry` demos.
+- Kernel ABI, syscall, filesystem, process, networking, or other bugfix coverage exposed while enabling the app belongs under `test-suit/starryos/<case>` or the closest existing grouped wrapper, such as a `qemu/system/<subcase>` grouped C subcase.
+- If the PR adds a syscall or changes syscall semantics for the app, require a minimal test-suit syscall/regression test that exercises the syscall surface directly; an app smoke passing is not enough.
+- If the PR fixes a bug found through the app, require a test-suit bugfix/regression test that reproduces the bug without depending on the full app workflow whenever practical; keep the app scenario in `apps/starry` as integration evidence.
+- Do not approve app-support PRs that put app workflows only into `test-suit/starryos`, or that hide syscall/bugfix coverage only inside `apps/starry` demos.
 - If the PR adds or changes an app-oriented Starry QEMU case under either `apps/starry` or `test-suit/starryos`, run the actual documented app command or exact `cargo xtask starry test qemu ... -c <case>` path in QEMU for at least the changed/claimed architecture. For multi-arch `qemu-*.toml` additions, run the architecture most likely to fail from CI or PR history; if any newly added required architecture is already failing in CI, reproduce or classify that architecture before approval.
 - Do not approve when the app/test cannot be run as described by the PR, when its success depends on an unavailable or unstable external service without a controlled fallback, or when the command only passes on a narrower target than the PR claims. Report the exact command, architecture, guest-visible failure marker, and whether the failure matches remote CI.
 
@@ -231,7 +288,11 @@ Do not approve changes that are only shaped to satisfy the added tests, such as 
 
 Do not accept "success path" tests that silently skip on unexpected failure, such as returning early when `brk`, `sbrk`, I/O, or socket setup returns `ENOMEM`/`EAGAIN`, unless the test prints an explicit skip marker and the review explains why the environment legitimately cannot require success. Bugfix reproduction tests should fail loudly when the fixed behavior is absent.
 
-Do not accept changes that simplify, skip, or weaken existing CI/test requirements unless the PR clearly justifies an equivalent or stronger replacement and the replacement is validated. Treat as blocking when a PR removes cases from normal groups, narrows architectures, loosens `success_regex`/`fail_regex`, converts failures into skips/timeouts, changes workflow path filters so relevant tests no longer run, or moves coverage from CI into an opt-in/manual path without preserving normal regression coverage.
+Do not accept changes that simplify, skip, or weaken existing CI/test requirements unless the PR clearly justifies an equivalent or stronger replacement and the replacement is validated. Treat as blocking when a PR removes cases from required test-suit coverage, narrows architectures, loosens `success_regex`/`fail_regex`, converts failures into skips/timeouts, changes workflow path filters so relevant tests no longer run, or moves coverage from CI into an opt-in/manual path without preserving regression coverage.
+
+For PRs that add or change Starry QEMU tests, `qemu-*.toml`, grouped wrappers, generated QEMU runners, or QEMU `success_regex`/`fail_regex`, verify failure propagation as a hard gate. A guest test failure must be observable by `cargo xtask starry test qemu ...` as a failed case, not only as a log line. Treat this as blocking when a QEMU test binary fails but the wrapper still prints the grouped success marker, the command exits zero, `fail_regex` cannot match the failure marker, `$?` is overwritten before being captured, or a failing subcase is converted into an unreviewed skip. Board config changes should still be reviewed against the existing board runner semantics, but do not force them into the QEMU grouped/C runner failure-propagation model.
+
+For new or moved Starry grouped/system tests, check the physical layout against the runner and build wrapper, not only the filename. In current `qemu/system` grouped C cases, each subcase must remain buildable through the system root CMake project: `CMakeLists.txt` and `src/` live directly under `system/<subcase>/`, subcase-local `qemu-*.toml` files are not used, and `cargo xtask starry test qemu --arch <arch> -c qemu/<subcase>` should select that subcase. A `system/<subcase>/c/` layout is blocking unless the PR also updates the root CMake, runner discovery, guide, and rule tests to support it and validates the new behavior.
 
 ### Crates.io Patch Policy
 
@@ -342,17 +403,21 @@ Required manual flow:
 4. Verify guest-visible behavior and the tool's real output: success markers, app command output, generated logs, symbolized blocks, packaged artifacts, or other documented postconditions. A command that exits 0 but skips the app behavior is not sufficient.
 5. For multi-architecture support, run the newly added or most failure-prone architecture, prioritizing any architecture skipped or failing in CI. If the PR claims all-arch support and CI covers only part of it, local validation must cover at least one CI-missing or highest-risk architecture.
 6. If the workflow cannot be run because required documentation, rootfs preparation, assets, or tool outputs are missing or wrong, submit `REQUEST_CHANGES`; that is a PR problem, not an environment limitation.
-7. If the workflow genuinely needs unavailable hardware, credentials, network services, or unsupported host capabilities, record the exact limitation and do not treat syntax/build checks as proof. Require a controlled fallback, a normal regression test, or explicit user acceptance before approval.
+7. If the workflow genuinely needs unavailable hardware, credentials, network services, or unsupported host capabilities, record the exact limitation and do not treat syntax/build checks as proof. Require a controlled fallback, a test-suit regression test, or explicit user acceptance before approval.
 
-For StarryOS grouped QEMU cases, verify that new `test_commands` are actually discovered and installed into the guest overlay. A `qemu-*.toml` command such as `/usr/bin/<test>` must correspond to a case/subcase asset path that the runner discovers and builds. Running the containing grouped case is the preferred check, for example `cargo xtask starry test qemu --arch x86_64 -c syscall`. Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, unbuilt asset directories, unreliable `success_regex`/`fail_regex`, or tests that accept both broken and fixed behavior as blocking.
+For StarryOS grouped QEMU cases, verify that new `test_commands` are actually discovered and installed into the guest overlay. A `qemu-*.toml` command such as `/usr/bin/<test>` must correspond to a case/subcase asset path that the runner discovers and builds. For current `qemu/system` grouped C cases, prefer the smallest current-structure command that covers the change, such as `cargo xtask starry test qemu --arch x86_64 -c qemu/<subcase>`, or run the aggregate `-c qemu/system` when wrapper-level behavior is changed. Treat `/usr/bin/<test>: not found`, `status=127`, skipped discovery, unbuilt asset directories, wrong grouped/system subcase layout, unreliable `success_regex`/`fail_regex`, hidden exit status, or tests that accept both broken and fixed behavior as blocking.
+
+For every newly added or relocated test, identify the exact runner command that should execute it and verify at least one of these evidence sources: local execution on the current head, current-head CI logs that show the specific case/subcase/binary running, or a deterministic build/discovery check that proves the runner reaches the test. Do not treat a broad aggregate CI pass as proof when the new test could have been skipped by path layout, command filtering, missing install rules, subcase selection, or feature gating.
+
+When reviewing Starry grouped/system shell wrappers, inspect failure branches as code, not only by looking at a successful run. The wrapper must capture `$?` immediately after the test command, print `STARRY_GROUPED_TEST_FAILED` or the configured failure marker on failure, avoid printing the all-passed marker after any failure, and cause the outer xtask run to fail.
 
 For bugfix tests in grouped cases, inspect the new test's assertions as well as running the case. A grouped case passing is not sufficient when the new test accepts both the fixed behavior and the broken behavior.
 
 For StarryOS app-support PRs, validate both sides when both are present:
 
 - Run the relevant `apps/starry` command or an equivalent documented app workflow when the PR adds or changes app support, unless it needs unavailable hardware, credentials, or long-running services; record any limitation.
-- Run the corresponding `cargo xtask starry test qemu --test-group normal ...` case when the PR adds a syscall, fixes a kernel/runtime bug, or claims normal test coverage. App validation does not replace normal regression validation.
-- If the app scenario and normal regression cover different risks, mention both results in the review body.
+- Run the corresponding `cargo xtask starry test qemu --arch <arch> -c <case>` case when the PR adds a syscall, fixes a kernel/runtime bug, or claims test-suit coverage. For `qemu/system` subcases, use `-c qemu/<subcase>` when possible. App validation does not replace test-suit regression validation.
+- If the app scenario and test-suit regression cover different risks, mention both results in the review body.
 - Do not stop at `--list`, TOML parsing, script inspection, or another reviewer saying an older head passed. Those checks prove discovery only, not that the app works. Run the current head in QEMU whenever the changed app/test is intended to run in QEMU.
 - If `tmp/axbuild/rootfs` is empty, still try the relevant `cargo xtask starry rootfs --arch <arch>` or `cargo xtask starry test qemu ...` path before declaring QEMU unavailable; the xtask flow can download managed rootfs images automatically. Record a blocker only after the xtask download/run path itself fails for an environmental reason.
 - Do not run multiple Starry QEMU cases concurrently in one worktree. Run one architecture/case to completion, then move to the next architecture if needed.
@@ -382,17 +447,20 @@ Treat these as blocking unless clearly non-blocking:
 - behavior differs from POSIX/Linux/RFC/VirtIO semantics;
 - targeted tests, formatting, clippy, or PR-related CI fail;
 - a newly added or changed Starry app/QEMU case fails when run as described by the PR, including one architecture among newly added multi-arch `qemu-*.toml` cases;
+- a Starry QEMU test failure is visible in guest logs but does not make `cargo xtask starry test qemu ...` fail, including hidden `$?`, missing failure marker, overly loose `success_regex`, or missing `fail_regex` coverage;
 - a PR claims app/QEMU support but only discovery, TOML parsing, or an older-head run was validated;
 - a PR adds or changes CI-missing StarryOS user-space support, an ArceOS app, or an app-facing tool/wrapper, but the documented preparation plus QEMU/runtime workflow was not run on the current head;
 - an app/tool workflow's documentation is incomplete or wrong enough that the reviewer cannot prepare the environment, launch QEMU, or verify the documented postcondition;
-- new tests are not discovered by the project test runner or do not exercise the fixed ABI surface;
+- required tests are missing for new behavior, semantic changes, or bug fixes, without a concrete documented impossibility;
+- new or relocated tests are misplaced, not discovered by the project test runner, not built/installed into the runtime image, not selected by the documented command, or do not exercise the fixed ABI surface;
+- CI passes only because new coverage is skipped by layout, path filters, feature gating, grouped subcase selection, missing install rules, or manual-only placement;
 - a PR has no test changes and lacks a reproducible non-board validation method in the PR body or commit messages;
 - a claimed non-board validation method is not actually reproducible or does not match the claimed coverage/result;
 - `success_regex` or `fail_regex` cannot reliably classify the intended StarryOS case result;
 - a bug-fix PR lacks a regression or reproduction test that fails on the unfixed behavior and passes only after the fix, unless concrete evidence shows such a test is impossible;
 - the PR adds, changes, or relies on any `[patch.crates-io]` override, instead of using normal dependency resolution, an upstream fix, a dependency upgrade, or an explicit local boundary adapter;
 - merge conflicts are unresolved, conflict repair resurrects outdated base APIs instead of adapting PR intent to current base, or the repaired head was not revalidated after push;
-- StarryOS app-support PRs place app workflows under `test-suit/starryos/normal` instead of `apps/starry`, or place syscall/bugfix semantic coverage only under `apps/starry` instead of the matching normal test-suit case;
+- StarryOS app-support PRs place app workflows under `test-suit/starryos` instead of `apps/starry`, or place syscall/bugfix semantic coverage only under `apps/starry` instead of the matching test-suit case;
 - the implementation is a test-only or fake fix that does not implement the intended behavior;
 - submitted buffers, DMA memory, queue tokens, or IRQ ownership can leak, be freed too early, or cross the wrong abstraction layer;
 - a change silently makes CI hang, time out, or skip the new coverage;
@@ -400,7 +468,7 @@ Treat these as blocking unless clearly non-blocking:
 - the PR duplicates existing base-branch behavior, weakens an existing implementation, conflicts with a related open PR, or is superseded by a newer base-branch or open-PR fix;
 - the review cannot explain how this PR differs from a plausible related open PR after duplicate and overlap analysis.
 
-All GitHub review text, including inline comments, review body, and replies, must be in Chinese, neutral, and project-focused. Each blocking comment should include the concrete problem, the relevant standard/project rule/observed failure, and a suggested fix.
+All GitHub review text, including inline comments, review body, and replies, must be in Chinese, neutral, and project-focused. Each blocking comment should include the grounding, severity, concrete problem, evidence, and suggested fix direction required by the review-lens discipline above.
 
 Prefer changed lines on the PR diff. Before submitting, verify every inline `line` exists on the current right side of the diff; if GitHub cannot resolve a line, move to the nearest changed line that demonstrates the issue or put the finding in the review body. Context or unchanged lines may be rejected by the review API.
 
@@ -444,6 +512,7 @@ Review body must explain in Chinese:
 - what the PR changed;
 - the implementation logic and why this approach is correct for the project semantics;
 - validation commands and results, including exact failure mode for failing tests;
+- required test coverage status, including why tests were required or not applicable, where new tests were placed, how the runner discovers/selects them, and whether local or current-head CI evidence shows the specific tests executing;
 - for CI-missing app/tool workflows, the documented preparation performed, the exact QEMU/runtime command run, the architecture, and the guest-visible or tool-output postcondition that proved usability;
 - when no tests are added, the PR body/commit-message validation claim that was checked, the command actually run, and whether it matched the claim;
 - CI status, including any unrelated failing checks, the evidence for unrelatedness, the linked tracking issue, and whether that issue was updated or created during review;
@@ -463,47 +532,54 @@ Verify final state:
 gh pr view <pr> --json number,reviewDecision,latestReviews
 ```
 
-## Post-Review Reviewer Assignment
+## Recommended Reviewer Assignment
 
-After review submission, decide whether the PR still needs human reviewer requests. Do this after the technical review so reviewer choice is based on the actual changed surface, duplicate/overlap findings, validation risk, and remaining follow-up.
+After review submission, request reviewers only when the PR still needs domain follow-up. Base the choice on the actual changed surface, review findings, validation risk, and remaining follow-up.
 
-Use discussion 594 as the reviewer source of truth. Read the current table directly before assigning because personnel directions may change:
+Keep this reviewer request step aligned with `reassign-pr-reviewers`. Read `.github/MAINTAINERS.md` before choosing reviewers. Treat it as the local reviewer source of truth and the strict automatic human reviewer allowlist: only `R:` lines are requestable automatic human reviewers. `M:` lines are ownership metadata and are not reviewer targets unless the same login also appears on `R:`. Do not request, retain as an ownership target, or infer a new human reviewer outside the `R:` allowlist.
 
-```bash
-gh api graphql \
-  -f query='query($owner:String!,$repo:String!,$number:Int!){ repository(owner:$owner,name:$repo){ discussion(number:$number){ title body url comments(first:100){nodes{author{login} body createdAt}} } } }' \
-  -F owner=rcore-os -F repo=tgoskits -F number=594
-```
+Match maintainer sections with `F:` path hints and `K:` keyword hints from the PR title, body, changed paths, public APIs, tests, validation commands, review findings, crate/config/feature names, and obvious diff-visible identifiers. If multiple sections match, target all matched `R:` reviewers. Prefer explicit `K:` evidence for ambiguous PRs, but valid `F:` path evidence is sufficient when the changed files clearly fall under a section.
 
-Map PR content to reviewer directions from the "人员方向整理" table:
+If no `K:` or `F:` evidence matches a non-draft PR, default the target reviewer to `ZR233`, after confirming `ZR233` appears on an `R:` line. Report this as a fallback assignment, not as ownership evidence.
 
-- StarryOS tests, `test-suit/starryos`, QEMU cases, rootfs/app tests, `apk`, distro behavior, or `axbuild` test flow: prefer reviewers covering `测试`, `发行版/rootfs`, `axbuild`, and the relevant `starry` area.
-- Syscall, filesystem, network, driver, platform, architecture, CI, documentation, and display changes should be mapped to the matching table columns, then cross-checked against changed files and PR body claims.
-- If a PR matches several domains, request one primary reviewer for the highest-risk domain and one secondary reviewer for integration or test coverage. Avoid over-requesting reviewers.
-- Drop the PR author from targets. Preserve existing bot review requests and unrelated existing human reviewer requests unless the user explicitly asks to rebalance them.
+Skip reviewer request updates for draft PRs unless the user explicitly asks to include drafts. Reviewing a draft is allowed by this skill, but reviewer reassignment for drafts is not.
 
-For StarryOS normal QEMU app tests like PR 795 (`test-suit/starryos/normal/qemu-smp1/git`, `apk add`, app/rootfs behavior), a good mapping is `测试` + `发行版/rootfs` + `starry`: `@ZCShou` for test/rootfs/axbuild ownership and `@luodeb` for Starry/rootfs experience. Use this as a pattern, not as a hard-coded rule; still inspect the current discussion table and PR contents.
+Preserve all existing reviewer requests by default. Existing human reviewers may have been assigned manually by an administrator, including reviewers outside `.github/MAINTAINERS.md`; carry them forward and do not remove them in the default flow. Existing bot reviewer requests must also be preserved unless the user explicitly says to change bot requests. Bot reviewers are not ownership targets and do not need to appear in `.github/MAINTAINERS.md`.
 
-Before writing reviewer requests, check current requested reviewers and permissions:
+The default reviewer request update is add-only: compute ownership targets from `.github/MAINTAINERS.md`, union the existing reviewer requests into the final desired reviewer state, and add only missing target reviewers. `reviewers to remove` must be empty unless the user explicitly asks to remove or rebalance reviewer requests. If the user does request removals, still preserve bot reviewers unless bot removal was explicitly requested.
+
+Drop the PR author from new reviewer requests because GitHub cannot request review from the author. Also drop the current GitHub user from new reviewer requests because this workflow just submitted the review.
+
+Before writing reviewer requests, check current reviewer state and permissions:
 
 ```bash
-gh api repos/rcore-os/tgoskits/pulls/<pr>/requested_reviewers
-gh api repos/rcore-os/tgoskits/collaborators/<login>/permission
+gh api repos/<owner>/<repo>/pulls/<pr>/requested_reviewers
+gh api repos/<owner>/<repo>/collaborators/<login>/permission
 ```
 
-Use the REST requested-reviewers API instead of `gh pr edit`, because `gh pr edit` can fail in this repository while querying deprecated Projects classic fields:
+Before applying reviewer request updates, record a single-PR dry run with current reviewers, target reviewers, preserved existing reviewers, preserved bot reviewers, reviewers to add, reviewers to remove, matched `K:`/`F:` evidence or fallback reason, and skipped reason.
+
+Use the REST requested-reviewers API instead of `gh pr edit`, because `gh pr edit` can fail in this repository while querying deprecated Projects classic fields. In the default add-only flow, do not call the DELETE endpoint:
 
 ```bash
 printf '%s\n' '{"reviewers":["<login1>","<login2>"]}' |
-  gh api -X POST repos/rcore-os/tgoskits/pulls/<pr>/requested_reviewers --input -
+  gh api -X POST repos/<owner>/<repo>/pulls/<pr>/requested_reviewers --input -
 ```
 
-After assigning, re-query `requested_reviewers` and confirm the intended reviewers are present. If GitHub rejects a reviewer, record the exact login and API or permission error; do not silently substitute someone not supported by discussion 594.
+If the user explicitly requested removals or a rebalance, apply allowed removals before additions for each PR, while still preserving bot reviewers unless bot removal was explicitly requested:
+
+```bash
+printf '%s\n' '{"reviewers":["<login>"]}' |
+  gh api -X DELETE repos/<owner>/<repo>/pulls/<pr>/requested_reviewers --input -
+```
+
+After assigning, re-query `requested_reviewers` and confirm the intended reviewers are present. If GitHub rejects a reviewer, record the exact login and API or permission error; do not silently substitute someone outside `.github/MAINTAINERS.md`.
 
 In the final user summary, state:
 
-- which reviewer direction columns matched the PR;
-- which reviewers were requested, already present, skipped, or rejected;
+- which `.github/MAINTAINERS.md` entries matched the PR;
+- which reviewers were requested, already present, preserved, skipped, or rejected;
+- any fallback assignment to `ZR233`;
 - any permission/API limitation;
 - that only GitHub reviewer metadata was changed, when no code files were edited by the assignment step.
 

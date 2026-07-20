@@ -1,8 +1,6 @@
-env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
-axconfig_overrides = ["plat.phys-memory-size=0x4000_0000"]
 features = [
-  "ax-feat/display",
-  "ax-feat/rtc",
+  "ax-runtime/display",
+  "ax-runtime/rtc",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
@@ -12,5 +10,4 @@ features = [
   "starry-kernel/vsock",
 ]
 log = "Warn"
-plat_dyn = true
 target = "aarch64-unknown-none-softfloat"

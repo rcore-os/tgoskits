@@ -1,6 +1,6 @@
 [package]
 name = "ax-alloc"
-version = "0.8.0"
+version = "0.8.12"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
@@ -9,6 +9,7 @@ license.workspace = true
 
 [features]
 default = []
+global-allocator = []
 tlsf = []
 buddy-slab = ["dep:buddy-slab-allocator", "dep:ax-percpu", "dep:ax-plat"]
 tracking = ["dep:ax-percpu", "dep:axbacktrace"]

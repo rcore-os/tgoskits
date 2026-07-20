@@ -7,9 +7,12 @@ extern crate log;
 
 use core::ptr::NonNull;
 
+// The registry is not hard-IRQ safe, but it is also used by runtime discovery
+// paths that must not trigger task preemption hooks on lock release.
+use ax_kspin::SpinRaw as Mutex;
 pub use fdt_edit::{Fdt, Phandle};
-use register::{DriverRegister, ProbeLevel};
-use spin::{Mutex, Once};
+use register::{DriverRegister, ProbeLevel, ProbePriority};
+use spin::Once;
 
 mod descriptor;
 pub mod driver;
@@ -40,6 +43,7 @@ pub enum Platform {
     Static,
     Fdt { addr: NonNull<u8> },
     Acpi(probe::acpi::AcpiRoot),
+    AcpiWithoutAml(probe::acpi::AcpiRoot),
 }
 
 unsafe impl Send for Platform {}
@@ -49,6 +53,7 @@ pub enum PlatformSource {
     Static,
     Fdt(NonNull<u8>),
     Acpi(probe::acpi::AcpiRoot),
+    AcpiWithoutAml(probe::acpi::AcpiRoot),
 }
 
 unsafe impl Send for PlatformSource {}
@@ -66,6 +71,7 @@ pub fn init(platform: Platform) -> Result<(), DriverError> {
         Platform::Static => init_sources(&[PlatformSource::Static])?,
         Platform::Fdt { addr } => init_sources(&[PlatformSource::Fdt(addr)])?,
         Platform::Acpi(root) => init_sources(&[PlatformSource::Acpi(root)])?,
+        Platform::AcpiWithoutAml(root) => init_sources(&[PlatformSource::AcpiWithoutAml(root)])?,
     }
     Ok(())
 }
@@ -75,7 +81,9 @@ pub fn init_sources(sources: &[PlatformSource]) -> Result<(), DriverError> {
         match source {
             PlatformSource::Static => {}
             PlatformSource::Fdt(addr) => probe::fdt::check_addr(*addr)?,
-            PlatformSource::Acpi(root) => probe::acpi::check_root(*root)?,
+            PlatformSource::Acpi(root) | PlatformSource::AcpiWithoutAml(root) => {
+                probe::acpi::check_root(*root)?
+            }
         }
     }
 
@@ -84,6 +92,7 @@ pub fn init_sources(sources: &[PlatformSource]) -> Result<(), DriverError> {
             PlatformSource::Static => probe::static_::init()?,
             PlatformSource::Fdt(addr) => probe::fdt::init(*addr)?,
             PlatformSource::Acpi(root) => probe::acpi::init(*root)?,
+            PlatformSource::AcpiWithoutAml(root) => probe::acpi::init_without_aml(*root)?,
         }
     }
 
@@ -116,25 +125,60 @@ pub fn register_append(registers: &[DriverRegister]) {
     edit(|manager| manager.registers.append(registers))
 }
 
-pub fn probe_pre_kernel() -> Result<(), ProbeError> {
+pub fn probe_pre_kernel_until(
+    max_priority: ProbePriority,
+    stop_if_fail: bool,
+) -> Result<(), ProbeError> {
     let unregistered = edit(|manager| manager.unregistered())?;
-
-    let ls = unregistered
-        .iter()
-        .filter(|one| matches!(one.level, ProbeLevel::PreKernel));
-
-    probe_system(ls, true)?;
+    let registers = unregistered
+        .into_iter()
+        .filter(|one| matches!(one.level, ProbeLevel::PreKernel))
+        .filter(|one| one.priority <= max_priority)
+        .collect::<Vec<_>>();
+    probe_system(&registers, stop_if_fail)?;
 
     Ok(())
 }
 
-fn probe_system<'a>(
-    registers: impl Iterator<Item = &'a DriverRegister>,
+pub fn probe_pre_kernel() -> Result<(), ProbeError> {
+    probe_pre_kernel_until(ProbePriority::LAST, true)
+}
+
+fn probe_system(registers: &[DriverRegister], stop_if_fail: bool) -> Result<(), ProbeError> {
+    let mut start = 0;
+    while start < registers.len() {
+        let level = registers[start].level;
+        let priority = registers[start].priority;
+        let mut end = start + 1;
+        while end < registers.len()
+            && registers[end].level == level
+            && registers[end].priority == priority
+        {
+            end += 1;
+        }
+        probe_priority_group(&registers[start..end], priority, stop_if_fail)?;
+        start = end;
+    }
+
+    Ok(())
+}
+
+fn probe_priority_group(
+    registers: &[DriverRegister],
+    priority: ProbePriority,
     stop_if_fail: bool,
 ) -> Result<(), ProbeError> {
     for one in registers {
         probe_backend(one, probe::static_::try_probe_register(one), stop_if_fail)?;
-        probe_backend(one, probe::fdt::try_probe_register(one), stop_if_fail)?;
+    }
+
+    probe_backend_results(
+        "fdt",
+        probe::fdt::try_probe_registers_by_fdt_order(registers, priority),
+        stop_if_fail,
+    )?;
+
+    for one in registers {
         probe_backend(one, probe::acpi::try_probe_register(one), stop_if_fail)?;
     }
 
@@ -143,6 +187,14 @@ fn probe_system<'a>(
 
 fn probe_backend(
     register: &DriverRegister,
+    results: Option<Result<Vec<Result<(), OnProbeError>>, ProbeError>>,
+    stop_if_fail: bool,
+) -> Result<(), ProbeError> {
+    probe_backend_results(register.name, results, stop_if_fail)
+}
+
+fn probe_backend_results(
+    name: &str,
     results: Option<Result<Vec<Result<(), OnProbeError>>, ProbeError>>,
     stop_if_fail: bool,
 ) -> Result<(), ProbeError> {
@@ -158,7 +210,7 @@ fn probe_backend(
                 if stop_if_fail {
                     return Err(e.into());
                 } else {
-                    warn!("Probe failed for [{}]: {}", register.name, e);
+                    warn!("Probe failed for [{name}]: {e}");
                 }
             }
         }
@@ -169,7 +221,7 @@ fn probe_backend(
 
 pub fn probe_all(stop_if_fail: bool) -> Result<(), ProbeError> {
     let unregistered = edit(|manager| manager.unregistered())?;
-    probe_system(unregistered.iter(), stop_if_fail)?;
+    probe_system(&unregistered, stop_if_fail)?;
 
     debug!("probe pci devices");
     probe::pci::probe_with(&unregistered, stop_if_fail)?;
@@ -177,20 +229,57 @@ pub fn probe_all(stop_if_fail: bool) -> Result<(), ProbeError> {
     Ok(())
 }
 
+/// Returns all registered devices that implement `T`.
+///
+/// Not hard-IRQ safe: this takes the global rdrive registry lock and allocates
+/// the returned `Vec`. Hard IRQ handlers must use pre-published IRQ-side state
+/// instead of looking devices up through rdrive.
 pub fn get_list<T: DriverGeneric>() -> Vec<Device<T>> {
     read(|manager| manager.dev_container.devices())
 }
 
+/// Returns a registered device by id and expected interface type.
+///
+/// Not hard-IRQ safe: this takes the global rdrive registry lock. Hard IRQ
+/// handlers must use pre-published IRQ-side state instead of looking devices up
+/// through rdrive.
 pub fn get<T: DriverGeneric>(id: DeviceId) -> Result<Device<T>, GetDeviceError> {
     read(|manager| manager.dev_container.get_typed(id))
 }
 
+/// Returns one registered device that implements `T`.
+///
+/// Not hard-IRQ safe: this takes the global rdrive registry lock and scans the
+/// registry. Hard IRQ handlers must use pre-published IRQ-side state instead of
+/// looking devices up through rdrive.
 pub fn get_one<T: DriverGeneric>() -> Option<Device<T>> {
     read(|manager| manager.dev_container.get_one())
 }
 
 pub fn fdt_phandle_to_device_id(phandle: Phandle) -> Option<DeviceId> {
     probe::fdt::try_system().and_then(|system| system.phandle_to_device_id(phandle))
+}
+
+pub fn fdt_path_to_device_id(path: &str) -> Option<DeviceId> {
+    probe::fdt::try_system().and_then(|system| system.path_to_device_id(path))
+}
+
+pub fn note_fdt_device_path(path: &str, device_id: DeviceId) -> bool {
+    probe::fdt::try_system().is_some_and(|system| system.note_device_path(path, device_id))
+}
+
+pub fn acpi_path_to_device_id(path: &str) -> Option<DeviceId> {
+    probe::acpi::try_system().and_then(|system| system.path_to_device_id(path))
+}
+
+pub fn acpi_resource_address_to_device_id(
+    address: probe::acpi::AcpiResourceAddress,
+) -> Option<DeviceId> {
+    probe::acpi::try_system().and_then(|system| system.resource_address_to_device_id(address))
+}
+
+pub fn acpi_spcr_console_device_id() -> Option<DeviceId> {
+    probe::acpi::spcr_console_device_id()
 }
 
 pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
@@ -218,35 +307,24 @@ pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// #![feature(used_with_arg)]
 ///
-/// use rdrive::{
-///     PlatformDevice, driver::*, module_driver, probe::OnProbeError, register::FdtInfo,
-/// };
+/// use rdrive::{driver::*, module_driver, probe::OnProbeError, register::ProbeFdt};
 ///
-/// struct ClkDriver {}
+/// struct DemoDriver {}
 ///
-/// impl DriverGeneric for ClkDriver {
+/// impl DriverGeneric for DemoDriver {
 ///     fn name(&self) -> &str {
-///         "ClkDriver"
-///     }
-/// }
-///
-/// impl rdif_clk::Interface for ClkDriver {
-///     fn perper_enable(&mut self) {}
-///     fn get_rate(&self, _id: rdif_clk::ClockId) -> Result<u64, rdrive::KError> {
-///         Ok(1000000)
-///     }
-///     fn set_rate(&mut self, _id: rdif_clk::ClockId, _rate: u64) -> Result<(), rdrive::KError> {
-///         Ok(())
+///         "DemoDriver"
 ///     }
 /// }
 ///
 /// // Define probe function
-/// fn probe_clk(fdt: FdtInfo<'_>, dev: PlatformDevice) -> Result<(), OnProbeError> {
+/// fn probe_clk(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 ///     // Implement specific device probing logic
-///     dev.register(rdif_clk::Clk::new(ClkDriver {}));
+///     let dev = probe.into_platform_device();
+///     dev.register(DemoDriver {});
 ///     Ok(())
 /// }
 ///
@@ -258,7 +336,7 @@ pub fn with_fdt<T>(f: impl FnOnce(&Fdt) -> T) -> Option<T> {
 ///     probe_kinds: &[ProbeKind::Fdt {
 ///         compatibles: &["fixed-clock"],
 ///         // Use `probe_clk` above; this usage is because doctests cannot find the parent module.
-///         on_probe: |fdt, dev|{
+///         on_probe: |_probe|{
 ///             Ok(())
 ///         },
 ///     }],

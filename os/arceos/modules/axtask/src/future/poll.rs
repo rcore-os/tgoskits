@@ -3,6 +3,8 @@ use core::{future::poll_fn, task::Poll};
 use ax_errno::{AxError, AxResult};
 use axpoll::{IoEvents, Pollable};
 
+use crate::current;
+
 /// A helper to wrap a synchronous non-blocking I/O function into an
 /// asynchronous function.
 ///
@@ -20,31 +22,37 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
     non_blocking: bool,
     mut f: F,
 ) -> AxResult<T> {
-    super::interruptible(poll_fn(move |cx| match f() {
-        Ok(value) => Poll::Ready(Ok(value)),
-        Err(AxError::WouldBlock) => {
-            // Register the waker unconditionally before returning WouldBlock.
-            // A non-blocking connect(2) returns EINPROGRESS; the caller then
-            // uses epoll to wait for EPOLLOUT (connection complete).  If we
-            // skip registration for non-blocking callers, the TCP stack has
-            // no waker to call when the handshake finishes, so epoll never
-            // receives the EPOLLOUT notification and the connection stalls.
-            pollable.register(cx, events);
-            if non_blocking {
-                return Poll::Ready(Err(AxError::WouldBlock));
-            }
-            match f() {
-                Ok(value) => Poll::Ready(Ok(value)),
-                Err(AxError::WouldBlock) => Poll::Pending,
-                Err(e) => Poll::Ready(Err(e)),
-            }
+    let curr = current();
+    poll_fn(move |cx| {
+        match f() {
+            Ok(value) => return Poll::Ready(Ok(value)),
+            Err(AxError::WouldBlock) => {}
+            Err(e) => return Poll::Ready(Err(e)),
         }
-        Err(e) => Poll::Ready(Err(e)),
-    }))
-    .await?
+
+        // Register before the post-registration retry. A non-blocking
+        // connect(2) returns EINPROGRESS; the caller then uses epoll to wait
+        // for EPOLLOUT. If we skip registration for non-blocking callers, the
+        // TCP stack has no waker to call when the handshake finishes.
+        pollable.register(cx, events);
+
+        match f() {
+            Ok(value) => Poll::Ready(Ok(value)),
+            Err(AxError::WouldBlock) if non_blocking => Poll::Ready(Err(AxError::WouldBlock)),
+            Err(AxError::WouldBlock) => {
+                if curr.poll_interrupt(cx).is_ready() {
+                    Poll::Ready(Err(AxError::Interrupted))
+                } else {
+                    Poll::Pending
+                }
+            }
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    })
+    .await
 }
 
-/// Registers a waker for the given IRQ number.
+/// Registers a waker for the given domain-scoped IRQ id.
 ///
 /// This is a generic bridge for IRQ-driven async wakeups. Calling
 /// `PollSet::wake` directly from an IRQ hook is unsafe: it takes a
@@ -60,55 +68,37 @@ pub async fn poll_io<P: Pollable, F: FnMut() -> AxResult<T>, T>(
 /// task. The drain task runs in normal task context and is the only
 /// place that ever calls `PollSet::wake`.
 #[cfg(feature = "irq")]
-pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
+pub fn register_irq_waker(irq: ax_hal::irq::IrqId, waker: &core::task::Waker) -> AxResult<()> {
     use alloc::{collections::BTreeMap, sync::Arc};
-    use core::{
-        ptr::NonNull,
-        sync::atomic::{AtomicBool, Ordering},
-    };
+    use core::sync::atomic::{AtomicBool, Ordering};
 
     use ax_kspin::SpinNoIrq;
     use axpoll::PollSet;
 
-    use crate::WaitQueue;
+    use crate::IrqNotify;
 
-    /// Maximum IRQ number we track in the pending-bit array. The drain
-    /// task scans IRQ_PENDING by index, so IRQs outside this range have
-    /// no observable pending bit and the waker would never fire. We
-    /// reject those at registration rather than silently dropping them.
-    const MAX_TRACKED_IRQ: usize = 256;
-
-    static IRQ_PENDING: [AtomicBool; MAX_TRACKED_IRQ] =
-        [const { AtomicBool::new(false) }; MAX_TRACKED_IRQ];
-    static IRQ_ACTION_INSTALLED: [AtomicBool; MAX_TRACKED_IRQ] =
-        [const { AtomicBool::new(false) }; MAX_TRACKED_IRQ];
-    static ANY_PENDING: AtomicBool = AtomicBool::new(false);
-    static DRAIN_WQ: WaitQueue = WaitQueue::new();
+    static IRQ_NOTIFY: IrqNotify = IrqNotify::new();
     static DRAIN_SPAWNED: AtomicBool = AtomicBool::new(false);
-    static POLL_IRQ: SpinNoIrq<BTreeMap<usize, Arc<PollSet>>> = SpinNoIrq::new(BTreeMap::new());
+    static IRQ_STATE: SpinNoIrq<BTreeMap<ax_hal::irq::IrqId, IrqPollState>> =
+        SpinNoIrq::new(BTreeMap::new());
 
-    unsafe fn irq_waker_handler(
-        ctx: ax_hal::irq::IrqContext,
-        _data: NonNull<()>,
-    ) -> ax_hal::irq::IrqReturn {
-        // Runs in IRQ context with interrupts off. Only atomics and a
-        // `WaitQueue::notify_one` — no allocation, no PollSet/Inner
-        // replacement.
-        let irq = ctx.irq.0;
-        if irq < MAX_TRACKED_IRQ {
-            IRQ_PENDING[irq].store(true, Ordering::Release);
-            ANY_PENDING.store(true, Ordering::Release);
-            // `resched = false` because we cannot preempt from an IRQ
-            // hook — let the scheduler run the drain task when the
-            // current task next yields or reschedules.
-            DRAIN_WQ.notify_one(false);
+    struct IrqPollState {
+        pending: bool,
+        installed: bool,
+        poll: Arc<PollSet>,
+    }
+
+    fn irq_waker_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
+        // Runs in IRQ context with interrupts off. Only mark an already
+        // registered slot and notify the drain task. The map entry is created
+        // during task-context registration, so this path does not allocate.
+        if let Some(state) = IRQ_STATE.lock().get_mut(&ctx.irq) {
+            state.pending = true;
+            IRQ_NOTIFY.notify_irq();
+            ax_hal::irq::IrqReturn::Handled
+        } else {
+            ax_hal::irq::IrqReturn::Unhandled
         }
-        // IRQs >= MAX_TRACKED_IRQ are intentionally not tracked here.
-        // register_irq_waker rejects those at registration, so reaching
-        // this path means some other subsystem installed a handler on a
-        // high IRQ — leave it alone instead of setting ANY_PENDING and
-        // making the drain task spin.
-        ax_hal::irq::IrqReturn::Handled
     }
 
     fn ensure_drain_spawned() {
@@ -121,11 +111,7 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         crate::spawn_raw(
             || {
                 loop {
-                    // Block until at least one IRQ pending bit has
-                    // been set. `wait_until` re-checks the condition
-                    // under the wait-queue lock, so spurious wakeups
-                    // do not slip through.
-                    DRAIN_WQ.wait_until(|| ANY_PENDING.swap(false, Ordering::AcqRel));
+                    IRQ_NOTIFY.wait();
 
                     // Snapshot the entries that need waking under the
                     // map lock, then drop the lock before invoking
@@ -133,17 +119,16 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
                     // scheduler).
                     let mut to_wake: alloc::vec::Vec<Arc<PollSet>> = alloc::vec::Vec::new();
                     {
-                        let map = POLL_IRQ.lock();
-                        for (irq, slot) in IRQ_PENDING.iter().enumerate() {
-                            if slot.swap(false, Ordering::AcqRel)
-                                && let Some(set) = map.get(&irq)
-                            {
-                                to_wake.push(set.clone());
+                        let mut map = IRQ_STATE.lock();
+                        for state in map.values_mut() {
+                            if state.pending {
+                                state.pending = false;
+                                to_wake.push(state.poll.clone());
                             }
                         }
                     }
                     for set in to_wake {
-                        set.wake();
+                        unsafe { set.wake(axpoll::IoEvents::all()) };
                     }
                 }
             },
@@ -152,29 +137,35 @@ pub fn register_irq_waker(irq: usize, waker: &core::task::Waker) {
         );
     }
 
-    if irq >= MAX_TRACKED_IRQ {
-        warn!(
-            "register_irq_waker: IRQ {irq} exceeds MAX_TRACKED_IRQ={MAX_TRACKED_IRQ}; ignoring \
-             registration to avoid silently dropping wakeups"
-        );
-        return;
-    }
-
     ensure_drain_spawned();
 
-    if IRQ_ACTION_INSTALLED[irq]
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        ax_hal::irq::request_shared_irq(irq, irq_waker_handler, NonNull::dangling())
-            .expect("axtask IRQ-waker bridge could not install shared IRQ action");
+    let (poll, should_install) = {
+        let mut map = IRQ_STATE.lock();
+        let state = map.entry(irq).or_insert_with(|| IrqPollState {
+            pending: false,
+            installed: false,
+            poll: Arc::new(PollSet::new()),
+        });
+        if state.installed {
+            (state.poll.clone(), false)
+        } else {
+            state.installed = true;
+            (state.poll.clone(), true)
+        }
+    };
+    unsafe { poll.register(waker, axpoll::IoEvents::all()) };
+
+    if should_install {
+        ax_hal::irq::request_shared_irq(irq, irq_waker_handler)
+            .map_err(|_| AxError::Unsupported)?;
     }
 
-    POLL_IRQ
-        .lock()
-        .entry(irq)
-        .or_insert_with(|| Arc::new(PollSet::new()))
-        .register(waker);
+    ax_hal::irq::set_enable(irq, true).map_err(|_| AxError::Unsupported)
+}
 
-    ax_hal::irq::set_enable(irq, true);
+/// Registers a waker for a temporary legacy numeric IRQ.
+#[cfg(feature = "irq")]
+pub fn register_legacy_irq_waker(irq: usize, waker: &core::task::Waker) -> AxResult<()> {
+    let irq = ax_hal::irq::try_legacy_irq(irq).map_err(|_| AxError::InvalidInput)?;
+    register_irq_waker(irq, waker)
 }

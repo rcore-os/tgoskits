@@ -1,16 +1,15 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc};
 use core::{cell::UnsafeCell, time::Duration};
 
 use ::xhci::{
-    ExtendedCapability,
-    extended_capabilities::{List, usb_legacy_support_capability::UsbLegacySupport},
+    extended_capabilities::usb_legacy_support_capability::UsbLegacySupport,
     registers::doorbell,
     ring::trb::{command, event::CommandCompletion},
 };
+use ax_kspin::SpinRwLock as RwLock;
 use dma_api::DmaDirection;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
-use spin::RwLock;
 use usb_if::err::{TransferError, USBError};
 
 use super::{
@@ -19,7 +18,7 @@ use super::{
     context::{DeviceContextList, ScratchpadBufferArray},
     event::{EventRing, EventRingInfo},
     hub::{PortChangeWaker, XhciRootHub},
-    reg::{MemMapper, XhciRegisters},
+    reg::{MemMapper, XhciRegisters, scan_extended_capabilities},
     transfer::TransferResultHandler,
 };
 use crate::{
@@ -74,6 +73,16 @@ impl CoreOp for Xhci {
                 .take()
                 .expect("Event handler can only be created once"),
         )
+    }
+
+    fn enable_irq(&mut self) -> Result<()> {
+        Self::enable_irq(self);
+        Ok(())
+    }
+
+    fn disable_irq(&mut self) -> Result<()> {
+        Self::disable_irq(self);
+        Ok(())
     }
 
     fn kernel(&self) -> &Kernel {
@@ -192,13 +201,15 @@ impl Xhci {
     }
 
     async fn init_ext_caps(&mut self) -> Result {
-        let caps = self.extended_capabilities();
-        debug!("Extended capabilities: {:?}", caps.len());
+        let (mmio_base, hccparams1) = {
+            let reg = self.reg.read();
+            (reg.mmio_base, reg.capability.hccparams1.read_volatile())
+        };
+        let caps = scan_extended_capabilities(mmio_base, hccparams1, MemMapper {});
+        debug!("Extended capabilities: {:?}", caps.count);
 
-        for cap in self.extended_capabilities() {
-            if let ExtendedCapability::UsbLegacySupport(usb_legacy_support) = cap {
-                self.legacy_init(usb_legacy_support).await?;
-            }
+        if let Some(usb_legacy_support) = caps.usb_legacy_support {
+            self.legacy_init(usb_legacy_support).await?;
         }
 
         Ok(())
@@ -262,25 +273,6 @@ impl Xhci {
         debug!("Reset finish");
 
         Ok(())
-    }
-
-    fn extended_capabilities(&self) -> Vec<ExtendedCapability<MemMapper>> {
-        let hccparams1 = self.reg.read().capability.hccparams1.read_volatile();
-        let mapper = MemMapper {};
-        let mut out = Vec::new();
-        let mut l = match unsafe { List::new(self.reg.read().mmio_base, hccparams1, mapper) } {
-            Some(v) => v,
-            None => return out,
-        };
-
-        for one in &mut l {
-            if let Ok(cap) = one {
-                out.push(cap);
-            } else {
-                break;
-            }
-        }
-        out
     }
 
     async fn legacy_init(&mut self, mut usb_legacy_support: UsbLegacySupport<MemMapper>) -> Result {

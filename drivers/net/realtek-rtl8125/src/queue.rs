@@ -1,10 +1,10 @@
 use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 use core::sync::atomic::{Ordering as AtomicOrdering, fence};
 
+use ax_kspin::SpinRaw as Mutex;
 use dma_api::CoherentArray;
 use log::{debug, info, warn};
 use rdif_eth::{DmaBuffer, IRxQueue, ITxQueue, NetError, QueueConfig};
-use spin::Mutex;
 
 use crate::{
     DMA_ALIGN, EARLY_PACKET_LOG_COUNT, LINK_DOWN_DROP_LOG_INTERVAL, MAX_PACKET, QUEUE_ID0,

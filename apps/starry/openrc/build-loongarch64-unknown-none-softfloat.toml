@@ -1,14 +1,10 @@
 target = "loongarch64-unknown-none-softfloat"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 log = "Warn"
 features = [
-  "ax-hal/loongarch64-qemu-virt",
-  "qemu",
-  "ax-driver/plat-static",
+  "axplat-dyn/efi",
   "ax-driver/virtio-blk",
   "ax-driver/virtio-net",
   "ax-driver/virtio-gpu",
   "ax-driver/virtio-input",
   "ax-driver/virtio-socket",
 ]
-plat_dyn = false

@@ -1,0 +1,5 @@
+name: list-posts
+url: http://api.local/posts
+params:
+- name: author
+  value: ada

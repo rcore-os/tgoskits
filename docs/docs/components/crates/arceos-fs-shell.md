@@ -49,14 +49,10 @@ graph LR
 - `ax-allocator`
 - `ax-api`
 - `ax-arm-pl031`
-- `ax-cap-access`
-- `ax-config`
-- `ax-config-gen`
-- `ax-config-macros`
 - `ax-cpu`
 - `ax-cpumask`
 - `ax-ctor-bare`
-- 另外还有 `63` 个同类项未在此展开
+- 另外还有 `62` 个同类项未在此展开
 
 ### 3.3 被依赖情况
 - 当前未发现本仓库内其他 crate 对其存在直接本地依赖。

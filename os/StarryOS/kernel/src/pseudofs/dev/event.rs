@@ -1,7 +1,7 @@
-use alloc::{collections::VecDeque, format, sync::Arc};
+use alloc::{collections::VecDeque, format, string::ToString, sync::Arc, vec, vec::Vec};
 use core::{
     any::Any,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     task::Context,
     time::Duration,
 };
@@ -17,11 +17,17 @@ pub fn input_device_count() -> u32 {
 }
 
 use ax_errno::{AxError, AxResult};
-use ax_input::{ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError};
-use ax_runtime::hal::time::wall_time;
-use ax_sync::Mutex;
+use ax_input::{
+    ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError,
+    input_polling_fallback_should_drain,
+};
+use ax_runtime::hal::{
+    irq::IrqId,
+    time::{monotonic_time_nanos, wall_time},
+};
+use ax_sync::spin::SpinNoIrq as Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
-use axpoll::{IoEvents, Pollable};
+use axpoll::{IoEvents, PollSet, Pollable};
 use bitmaps::Bitmap;
 use linux_raw_sys::{
     general::{__kernel_old_time_t, __kernel_suseconds_t},
@@ -41,6 +47,10 @@ const KEY_CNT: usize = EventType::Key.bits_count();
 /// before userspace drains it. When the queue is full we follow Linux's
 /// behavior and drop the oldest entry rather than blocking the driver.
 const READ_AHEAD_CAP: usize = 256;
+
+/// If no IRQ event has been observed within this window, IRQ delivery is
+/// considered broken and the polling fallback runs actively.
+const IRQ_ALIVE_NS: u64 = 1_000_000_000; // 1 second
 
 struct Inner {
     device: ErasedInputDevice,
@@ -116,11 +126,18 @@ const ABS_MAX: usize = 0x40;
 
 pub struct EventDev {
     inner: Mutex<Inner>,
-    /// IRQ line the underlying driver delivers buffered events on, when
-    /// the driver advertises one. `Pollable::register` wires the caller's
-    /// waker to this IRQ so virtio-input wakes its consumer in
-    /// microseconds rather than waiting for the next safety-net tick.
-    irq: Option<usize>,
+    waiters: PollSet,
+    /// IRQ domain id the runtime resolved for the underlying driver.
+    irq: Option<IrqId>,
+    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
+    /// Monotonic timestamp (ns) of the last successful IRQ drain.
+    /// When this is recent, IRQ delivery is considered healthy and the
+    /// polling fallback stays at low frequency even with active waiters.
+    last_irq_event: AtomicU64,
+    /// Set when userspace is actively waiting for events. The polling fallback
+    /// only drains the hardware queue while this is set, then idles again after
+    /// a short empty window.
+    polling_requested: AtomicBool,
     ev_bits: Bitmap<{ EventType::COUNT as usize }>,
     /// Cached `EVIOCGPROP` bitmap. Computed once at probe from the driver's
     /// raw bits with a synthesized `INPUT_PROP_POINTER` for absolute or
@@ -172,14 +189,18 @@ impl EventDev {
             let _ = device.get_event_bits(EventType::Absolute, &mut abs_bits);
         }
 
-        let irq = device.irq_num();
+        let irq = device.irq_id();
         Self {
             inner: Mutex::new(Inner {
                 device,
                 read_ahead: VecDeque::with_capacity(READ_AHEAD_CAP),
                 key_state: Bitmap::new(),
             }),
+            waiters: PollSet::new(),
             irq,
+            irq_handle: spin::Once::new(),
+            last_irq_event: AtomicU64::new(0),
+            polling_requested: AtomicBool::new(false),
             ev_bits,
             prop_bits,
             abs_bits,
@@ -195,21 +216,134 @@ impl EventDev {
     }
 
     fn get_event_bits(&self, arg: usize, size: usize, ty: u8) -> AxResult<usize> {
-        let bits = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
         if ty == 0 {
+            let bits = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
             Ok(copy_bytes(self.ev_bits.as_bytes(), bits))
         } else {
             let ty = EventType::from_repr(ty).ok_or(AxError::InvalidInput)?;
-            match self.inner.lock().device.get_event_bits(ty, bits) {
-                Ok(true) => {}
-                Ok(false) => {
-                    debug!("No events for {ty:?}");
-                }
-                Err(err) => {
-                    warn!("Failed to get event bits: {err:?}");
+            let mut kernel_bits = vec![0; size];
+            {
+                let mut inner = self.inner.lock();
+                match inner.device.get_event_bits(ty, &mut kernel_bits) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        debug!("No events for {ty:?}");
+                    }
+                    Err(err) => {
+                        warn!("Failed to get event bits: {err:?}");
+                    }
                 }
             }
-            Ok(bits.len().min(ty.bits_count().div_ceil(8)))
+            let bytes = size.min(ty.bits_count().div_ceil(8));
+            let bits = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
+            bits[..bytes].copy_from_slice(&kernel_bits[..bytes]);
+            Ok(bytes)
+        }
+    }
+
+    fn register_irq(self: &Arc<Self>) {
+        self.start_polling();
+
+        let Some(irq) = self.irq else {
+            return;
+        };
+
+        let event_dev = Arc::clone(self);
+        let request = ax_runtime::hal::irq::IrqRequest::new(move |_| event_dev.handle_irq())
+            .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
+            .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
+        match ax_runtime::hal::irq::request_irq(irq, request) {
+            Ok(handle) => {
+                self.irq_handle.call_once(|| handle);
+                self.inner.lock().device.enable_irq();
+                if let Some(handle) = self.irq_handle.get().copied()
+                    && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
+                {
+                    warn!("failed to enable evdev irq handler for irq {irq:?}: {err:?}");
+                    self.inner.lock().device.disable_irq();
+                }
+            }
+            Err(err) => {
+                warn!("failed to register evdev irq handler for irq {irq:?}: {err:?}");
+                self.inner.lock().device.disable_irq();
+            }
+        }
+    }
+
+    fn request_polling(&self) {
+        self.polling_requested.store(true, Ordering::Release);
+    }
+
+    /// Spawn a background polling task that periodically drains input events
+    /// from the device.  Used as a fallback when IRQ delivery is unreliable
+    /// (e.g. MSI-X enabled but only INTx is resolved, or INTx routing fails).
+    ///
+    /// The task is demand-driven: it only actively polls after userspace has
+    /// attempted to read or wait for evdev input.  This keeps non-input system
+    /// tests from continuously touching virtio-input queues while preserving a
+    /// wakeup path for libinput when the platform IRQ path is broken.
+    fn start_polling(self: &Arc<Self>) {
+        let dev = self.clone();
+        ax_task::spawn_with_name(
+            move || {
+                let mut empty_count = 0u32;
+                loop {
+                    let polling_requested = dev.polling_requested.load(Ordering::Acquire);
+                    let now = monotonic_time_nanos();
+                    let irq = dev.last_irq_event.load(Ordering::Acquire);
+
+                    if !input_polling_fallback_should_drain(
+                        polling_requested,
+                        now,
+                        irq,
+                        IRQ_ALIVE_NS,
+                    ) {
+                        empty_count = 0;
+                        ax_task::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+
+                    let mut inner = dev.inner.lock();
+                    let ready = inner.drain_into_queue();
+                    drop(inner);
+                    if ready {
+                        empty_count = 0;
+                        unsafe { dev.waiters.wake(IoEvents::IN) };
+                        ax_task::sleep(Duration::from_millis(10));
+                    } else {
+                        empty_count = empty_count.saturating_add(1);
+                        if empty_count > 20 {
+                            dev.polling_requested.store(false, Ordering::Release);
+                            ax_task::sleep(Duration::from_millis(200));
+                        } else {
+                            ax_task::sleep(Duration::from_millis(10));
+                        }
+                    }
+                }
+            },
+            "evdev-poll".into(),
+        );
+    }
+
+    fn handle_irq(&self) -> ax_runtime::hal::irq::IrqReturn {
+        // Use `lock()` rather than `try_lock()` so the virtio ISR is always
+        // acknowledged. `SpinNoIrq` guarantees the holder has local IRQs
+        // disabled, so this IRQ can only fire on a different CPU. Without the
+        // ack, a level-triggered shared IRQ line stays asserted and can starve
+        // other devices on the same line.
+        let mut inner = self.inner.lock();
+        let event = inner.device.handle_irq();
+        if event.input_ready && inner.drain_into_queue() {
+            self.last_irq_event
+                .store(monotonic_time_nanos(), Ordering::Release);
+            drop(inner);
+            self.waiters.wake_from_irq(IoEvents::IN);
+            return ax_runtime::hal::irq::IrqReturn::Wake;
+        }
+        if event.handled {
+            ax_runtime::hal::irq::IrqReturn::Handled
+        } else {
+            ax_runtime::hal::irq::IrqReturn::Unhandled
         }
     }
 }
@@ -274,12 +408,13 @@ impl DeviceOps for EventDev {
         if buf.len() < size_of::<InputEvent>() {
             return Err(AxError::InvalidInput);
         }
+        self.request_polling();
         let mut read = 0;
         let mut inner = self.inner.lock();
         // Drain the driver queue once up front so a single read() syscall
         // can return as many buffered events as the user buffer holds.
         inner.drain_into_queue();
-        for out in buf.chunks_exact_mut(size_of::<InputEvent>()) {
+        for out in buf.as_chunks_mut::<{ size_of::<InputEvent>() }>().0 {
             let Some((time, event)) = inner.read_ahead.pop_front() else {
                 break;
             };
@@ -325,8 +460,8 @@ impl DeviceOps for EventDev {
                 Ok(0)
             }
             EVIOCGID => {
-                *UserPtr::<InputDeviceId>::from(arg).get_as_mut()? =
-                    self.inner.lock().device.device_id();
+                let device_id = self.inner.lock().device.device_id();
+                *UserPtr::<InputDeviceId>::from(arg).get_as_mut()? = device_id;
                 Ok(0)
             }
             EVIOCGRAB => Ok(0),
@@ -355,19 +490,19 @@ impl DeviceOps for EventDev {
                         match nr {
                             // EVIOCGNAME
                             0x06 => {
-                                return return_str(arg, size, self.inner.lock().device.name());
+                                let name = self.inner.lock().device.name().to_string();
+                                return return_str(arg, size, &name);
                             }
                             // EVIOCGPHYS
                             0x07 => {
-                                return return_str(
-                                    arg,
-                                    size,
-                                    self.inner.lock().device.physical_location(),
-                                );
+                                let location =
+                                    self.inner.lock().device.physical_location().to_string();
+                                return return_str(arg, size, &location);
                             }
                             // EVIOCGUNIQ
                             0x08 => {
-                                return return_str(arg, size, self.inner.lock().device.unique_id());
+                                let unique_id = self.inner.lock().device.unique_id().to_string();
+                                return return_str(arg, size, &unique_id);
                             }
                             // EVIOCGPROP — device property bitmap. libinput
                             // uses INPUT_PROP_POINTER to keep the cursor
@@ -380,11 +515,15 @@ impl DeviceOps for EventDev {
                             }
                             // EVIOCGKEY
                             0x18 => {
+                                let key_state = {
+                                    let inner = self.inner.lock();
+                                    let bytes = inner.key_state.as_bytes();
+                                    let mut key_state = Vec::with_capacity(bytes.len());
+                                    key_state.extend_from_slice(bytes);
+                                    key_state
+                                };
                                 let bits = UserPtr::<u8>::from(arg).get_as_mut_slice(size)?;
-                                return Ok(copy_bytes(
-                                    self.inner.lock().key_state.as_bytes(),
-                                    bits,
-                                ));
+                                return Ok(copy_bytes(&key_state, bits));
                             }
                             // EVIOCGLED
                             0x19 => {
@@ -452,6 +591,7 @@ impl DeviceOps for EventDev {
 
 impl Pollable for EventDev {
     fn poll(&self) -> IoEvents {
+        self.request_polling();
         let mut events = IoEvents::empty();
         events.set(IoEvents::IN, self.inner.lock().has_event());
         events
@@ -461,21 +601,9 @@ impl Pollable for EventDev {
         if !events.contains(IoEvents::IN) {
             return;
         }
-        // If the driver advertises an IRQ, route the caller's waker
-        // through the per-IRQ waker list so the next virtio-input
-        // notification wakes the consumer directly. The unconditional
-        // wake the previous implementation issued here turned epoll
-        // (level-triggered) into a register → wake → consume-empty →
-        // re-register loop spinning at ~500 Hz; that hot loop is what
-        // libinput saw as continuous activity.
-        if let Some(irq) = self.irq {
-            ax_task::future::register_irq_waker(irq, context.waker());
-        }
-        // No IRQ advertised: fall back to an immediate wake so the
-        // caller doesn't sleep forever on devices that never deliver
-        // an IRQ at all (observed for QEMU virtio-keyboard-pci on
-        // aarch64 HVF). For these the consumer effectively polls.
-        else if self.inner.lock().has_event() {
+        self.request_polling();
+        unsafe { self.waiters.register(context.waker(), IoEvents::IN) };
+        if self.inner.lock().has_event() {
             context.waker().wake_by_ref();
         }
     }
@@ -494,6 +622,7 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
         let is_mouse = keys[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8)) != 0;
 
         let event_dev = Arc::new(EventDev::new(device));
+        event_dev.register_irq();
         let dev = Device::new(
             fs.clone(),
             NodeType::CharacterDevice,

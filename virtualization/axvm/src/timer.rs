@@ -3,10 +3,10 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use core::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
@@ -14,25 +14,19 @@ use ax_timer_list::{TimeValue, TimerEvent, TimerList};
 
 use crate::host::{HostTime, default_host};
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
 
 struct VmTimerEvent {
-    #[cfg(target_arch = "x86_64")]
     token: usize,
     callback: Box<dyn FnOnce(TimeValue) + Send + 'static>,
 }
 
 impl VmTimerEvent {
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn new<F>(token: usize, callback: F) -> Self
     where
         F: FnOnce(TimeValue) + Send + 'static,
     {
-        #[cfg(not(target_arch = "x86_64"))]
-        let _ = token;
         Self {
-            #[cfg(target_arch = "x86_64")]
             token,
             callback: Box::new(callback),
         }
@@ -48,7 +42,6 @@ impl TimerEvent for VmTimerEvent {
 #[ax_percpu::def_percpu]
 static TIMER_LIST: LazyInit<SpinNoIrq<TimerList<VmTimerEvent>>> = LazyInit::new();
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub(crate) fn register_timer(
     deadline_ns: u64,
     callback: Box<dyn FnOnce(Duration) + Send + 'static>,
@@ -69,7 +62,6 @@ pub(crate) fn register_timer(
     token
 }
 
-#[cfg(target_arch = "x86_64")]
 pub(crate) fn cancel_timer(token: usize) {
     let next_deadline = {
         // SAFETY: The timer list is initialized for each CPU before VM timer
@@ -111,4 +103,5 @@ pub(crate) fn init_percpu() {
     // CPU can register VM timers.
     let timer_list = unsafe { TIMER_LIST.current_ref_mut_raw() };
     timer_list.init_once(SpinNoIrq::new(TimerList::new()));
+    crate::arch::register_timer_callback();
 }

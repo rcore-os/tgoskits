@@ -34,11 +34,18 @@ pub enum AcpiIrqPolarity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcpiGsiController {
+    IoApic,
+    PchPic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpiGsiRoute {
     pub gsi: u32,
     pub vector: usize,
-    pub controller_id: u8,
-    pub controller_address: u32,
+    pub controller: AcpiGsiController,
+    pub controller_id: u16,
+    pub controller_address: u64,
     pub controller_input: u8,
     pub trigger: AcpiIrqTrigger,
     pub polarity: AcpiIrqPolarity,

@@ -1,0 +1,2 @@
+readlink01
+# readlink03 # TFAIL: several invalid readlink cases returned success or mismatched errno

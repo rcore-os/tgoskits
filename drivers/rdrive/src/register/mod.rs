@@ -3,8 +3,12 @@ use core::ops::Deref;
 
 pub use fdt::NodeType as Node;
 
-pub use crate::probe::fdt::FdtInfo;
 use crate::probe::{acpi, fdt, pci, static_};
+pub use crate::probe::{
+    acpi::{AcpiInfo, ProbeAcpi},
+    fdt::{FdtInfo, ProbeFdt},
+    pci::{PciInfo, ProbePci},
+};
 
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -13,7 +17,11 @@ pub struct ProbePriority(pub usize);
 impl ProbePriority {
     pub const CLK: ProbePriority = ProbePriority(6);
     pub const INTC: ProbePriority = ProbePriority(10);
+    pub const TIMER: ProbePriority = ProbePriority(20);
+    pub const MSI: ProbePriority = ProbePriority(30);
+    pub const EARLY_DEVICE: ProbePriority = ProbePriority(128);
     pub const DEFAULT: ProbePriority = ProbePriority(256);
+    pub const LAST: ProbePriority = ProbePriority(usize::MAX);
 }
 
 impl From<usize> for ProbePriority {

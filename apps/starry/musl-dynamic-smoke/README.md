@@ -43,7 +43,7 @@ No missing syscall or loader blocker observed.
 
 | 依赖 | 版本/说明 |
 |------|----------|
-| Rust toolchain | `nightly-2026-05-28` |
+| Rust toolchain | `nightly-2026-07-15` |
 | lld | clang 链接器，`apt-get install lld-14`（提供 `lld` 或 `ld.lld` 二者之一即可，`prebuild.sh` 自动识别） |
 | clang | 交叉编译器，支持 `--target={aarch64,riscv64,x86_64}-linux-musl` |
 | debugfs | 从 rootfs 提取 sysroot |

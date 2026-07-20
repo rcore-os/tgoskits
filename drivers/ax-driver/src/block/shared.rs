@@ -17,9 +17,9 @@ struct SharedDriverGuard<'a, T> {
     inner: &'a SharedDriverInner<T>,
 }
 
-// SAFETY: `SharedDriver` centralizes the `UnsafeCell` boundary. Access to the
-// inner value is serialized by `borrowed`; IRQ users must use `try_with_mut`,
-// which never spins or blocks on the callback path.
+// SAFETY: `SharedDriver` centralizes the `UnsafeCell` boundary for task-side
+// submit/poll paths. IRQ top halves should use driver-specific sync-safe
+// handles instead of borrowing the mutable device state.
 unsafe impl<T: Send> Send for SharedDriverInner<T> {}
 
 // SAFETY: See the `Send` impl.
@@ -44,7 +44,8 @@ impl<T> SharedDriver<T> {
         feature = "k230-sdhci",
         feature = "phytium-mci",
         feature = "rockchip-dwmmc",
-        feature = "rockchip-sdhci"
+        feature = "rockchip-sdhci",
+        feature = "starfive-jh7110-dwmmc"
     ))]
     pub(crate) fn try_with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         let mut guard = self.inner.try_enter()?;

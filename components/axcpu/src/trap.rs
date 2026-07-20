@@ -75,7 +75,7 @@ pub fn dispatch_page_fault(addr: VirtAddr, flags: PageFaultFlags) -> bool {
 /// IRQ handler.
 #[eii]
 pub fn irq_handler(irq: usize) -> bool {
-    default_irq_handler(irq)
+    dispatch_irq(irq)
 }
 
 /// Page fault handler.
@@ -144,7 +144,15 @@ pub fn breakpoint_handler(_tf: &mut TrapFrame) -> bool {
 /// specific PC semantics into account when deciding how to advance or modify
 /// the PC.
 #[cfg(target_arch = "x86_64")]
-#[eii]
-pub fn debug_handler(_tf: &mut TrapFrame) -> bool {
-    false
+mod x86_debug {
+    use super::TrapFrame;
+
+    /// Handles x86_64 debug-related traps.
+    #[eii]
+    pub fn debug_handler(_tf: &mut TrapFrame) -> bool {
+        false
+    }
 }
+
+#[cfg(target_arch = "x86_64")]
+pub use x86_debug::debug_handler;

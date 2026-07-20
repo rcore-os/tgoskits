@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.4...axbacktrace-v0.4.5) - 2026-07-07
+
+### Other
+
+- *(repo)* remove vendored spin crate ([#1421](https://github.com/rcore-os/tgoskits/pull/1421))
+
+## [0.4.4](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.3...axbacktrace-v0.4.4) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+
+## [0.4.3](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.2...axbacktrace-v0.4.3) - 2026-06-23
+
+### Other
+
+- updated the following local packages: axpanic
+
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.1...axbacktrace-v0.4.2) - 2026-06-09
+
+### Added
+
+- *(backtrace)* add showcase workflow ([#1094](https://github.com/rcore-os/tgoskits/pull/1094))
+
 ## [0.4.1](https://github.com/rcore-os/tgoskits/compare/axbacktrace-v0.4.0...axbacktrace-v0.4.1) - 2026-06-03
 
 ### Fixed

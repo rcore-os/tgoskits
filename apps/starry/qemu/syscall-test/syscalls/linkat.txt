@@ -1,0 +1,2 @@
+# linkat01 # TFAIL: some AT_FDCWD/dirfd cases return ENOTDIR or EBADF unexpectedly
+# linkat02 # TCONF: mkfs.ext2/ext2 support is unavailable in the current environment

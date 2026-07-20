@@ -33,6 +33,20 @@ pub trait CoreOp: Send + 'static {
 
     fn create_event_handler(&mut self) -> Box<dyn EventHandlerOp>;
 
+    fn enable_irq(&mut self) -> Result<(), USBError> {
+        Err(USBError::NotSupported)
+    }
+
+    fn disable_irq(&mut self) -> Result<(), USBError> {
+        Err(USBError::NotSupported)
+    }
+
+    fn dwc2_transfer_stats(&self) -> Option<crate::Dwc2TransferStats> {
+        None
+    }
+
+    fn reset_dwc2_transfer_stats(&self) {}
+
     fn kernel(&self) -> &Kernel;
 }
 
@@ -190,6 +204,22 @@ impl BackendOp for Core {
 
     fn create_event_handler(&mut self) -> Box<dyn EventHandlerOp> {
         self.backend.create_event_handler()
+    }
+
+    fn enable_irq(&mut self) -> Result<(), USBError> {
+        self.backend.enable_irq()
+    }
+
+    fn disable_irq(&mut self) -> Result<(), USBError> {
+        self.backend.disable_irq()
+    }
+
+    fn dwc2_transfer_stats(&self) -> Option<crate::Dwc2TransferStats> {
+        self.backend.dwc2_transfer_stats()
+    }
+
+    fn reset_dwc2_transfer_stats(&self) {
+        self.backend.reset_dwc2_transfer_stats();
     }
 }
 

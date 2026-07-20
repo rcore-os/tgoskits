@@ -22,7 +22,10 @@
 extern crate alloc;
 
 mod devops_impl;
+mod error;
 pub mod host;
+
+pub use error::{VgicError, VgicResult};
 
 /// Virtual GIC implementation module.
 pub mod vgic;

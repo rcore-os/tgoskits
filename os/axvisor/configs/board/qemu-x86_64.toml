@@ -1,9 +1,5 @@
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 features = [
-    "ax-hal/x86-qemu-q35",
     "ax-driver/virtio-blk",
-    "ax-driver/plat-static",
-    "ept-level-4",
     "fs",
 ]
 log = "Info"

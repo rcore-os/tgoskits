@@ -1,0 +1,16 @@
+board_type = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "sleep 5; echo STARRY_USB2_LSUSB_BEGIN; lsusb > /tmp/starry-usb2-lsusb.out; cat /tmp/starry-usb2-lsusb.out; if ! grep -Eq 'ID 1d6b:0002' /tmp/starry-usb2-lsusb.out; then echo STARRY_USB2_ROOT_HUB_MISSING; elif ! grep -Eq 'ID 05e3:06(10|20)' /tmp/starry-usb2-lsusb.out; then echo STARRY_USB2_DEVICE_MISSING; else echo STARRY_USB2_LSUSB_OK; fi"
+success_regex = ["(?m)^STARRY_USB2_LSUSB_OK\\s*$"]
+fail_regex = [
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+  "(?m)^unable to initialize libusb: .*$",
+  "(?i)(lsusb|tee|grep|sh): .*not found",
+  "(?m)^lsusb: .*",
+  "(?m)^STARRY_USB2_ROOT_HUB_MISSING\\s*$",
+  "(?m)^STARRY_USB2_DEVICE_MISSING\\s*$",
+]
+timeout = 300

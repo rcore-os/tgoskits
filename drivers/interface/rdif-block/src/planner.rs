@@ -99,7 +99,30 @@ impl TransferPlanner {
     }
 
     pub fn plan(&self, lba: u64, byte_len: usize) -> Result<TransferPlan, BlkError> {
-        TransferPlan::new(self.device, self.limits, self.max_chunk_size, lba, byte_len)
+        TransferPlan::new_with_offset(
+            self.device,
+            self.limits,
+            self.max_chunk_size,
+            lba,
+            byte_len,
+            0,
+        )
+    }
+
+    pub fn plan_from(
+        &self,
+        lba: u64,
+        byte_len: usize,
+        byte_offset: usize,
+    ) -> Result<TransferPlan, BlkError> {
+        TransferPlan::new_with_offset(
+            self.device,
+            self.limits,
+            self.max_chunk_size,
+            lba,
+            byte_len,
+            byte_offset,
+        )
     }
 }
 
@@ -114,15 +137,20 @@ pub struct TransferPlan {
 }
 
 impl TransferPlan {
-    fn new(
+    fn new_with_offset(
         device: DeviceInfo,
         limits: QueueLimits,
         max_chunk_size: usize,
         lba: u64,
         byte_len: usize,
+        byte_offset: usize,
     ) -> Result<Self, BlkError> {
         let block_size = device.logical_block_size;
-        if block_size == 0 || byte_len == 0 || !byte_len.is_multiple_of(block_size) {
+        if block_size == 0
+            || byte_len == 0
+            || !byte_len.is_multiple_of(block_size)
+            || byte_offset.checked_add(byte_len).is_none()
+        {
             return Err(BlkError::InvalidRequest);
         }
 
@@ -138,7 +166,7 @@ impl TransferPlan {
 
         Ok(Self {
             next_lba: lba,
-            byte_offset: 0,
+            byte_offset,
             remaining_bytes: byte_len,
             block_size,
             max_chunk_size,
@@ -228,7 +256,9 @@ mod tests {
     ) -> QueueLimits {
         QueueLimits {
             dma_mask: u64::MAX,
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 512,
+            max_inflight: 1,
             max_blocks_per_request,
             max_segments,
             max_segment_size,
@@ -260,6 +290,30 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn transfer_plan_from_keeps_absolute_byte_offsets() {
+        let info = queue_info_with(queue_limits(16, 4, 4096));
+        let planner = TransferPlanner::new(
+            info.device,
+            info.limits,
+            TransferRuntimeCaps {
+                max_transfer_bytes: 2048,
+                max_segments: 16,
+            },
+        )
+        .unwrap();
+        let chunks: Vec<_> = planner.plan_from(4, 5120, 8192).unwrap().collect();
+
+        assert_eq!(
+            chunk_summary(&chunks),
+            [
+                (4, 4, 8192, 2048, 1),
+                (8, 4, 10240, 2048, 1),
+                (12, 2, 12288, 1024, 1),
+            ]
+        );
     }
 
     #[test]

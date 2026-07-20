@@ -1,0 +1,6 @@
+# setgid01 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/setgid.log
+# setgid01_16 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/setgid.log
+# setgid02 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/setgid.log
+# setgid02_16 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/setgid.log
+# setgid03 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/setgid.log
+# setgid03_16 # Disabled: grouped validation failed or timed out in the current environment; see /tmp/codex_bulk_migrate_logs3/setgid.log

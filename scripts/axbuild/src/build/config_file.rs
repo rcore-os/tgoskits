@@ -1,0 +1,90 @@
+use super::*;
+
+pub(crate) fn ensure_build_info<T>(path: &Path, default: impl FnOnce() -> T) -> anyhow::Result<()>
+where
+    T: Serialize,
+{
+    println!("Using build config: {}", path.display());
+
+    if path.exists() {
+        info!("Found build config at {}", path.display());
+        return Ok(());
+    }
+
+    info!(
+        "Build config not found at {}, writing default config",
+        path.display()
+    );
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let default = default();
+    std::fs::write(path, toml::to_string_pretty(&default)?)?;
+    Ok(())
+}
+
+pub(crate) fn load_build_info<T>(path: &Path) -> anyhow::Result<T>
+where
+    T: DeserializeOwned,
+{
+    load_toml_with_rejector(path, "build info", reject_removed_std_field)
+}
+
+pub(crate) fn load_toml_with_rejector<T>(
+    path: &Path,
+    description: &str,
+    rejector: impl FnOnce(&Path, &str) -> anyhow::Result<()>,
+) -> anyhow::Result<T>
+where
+    T: DeserializeOwned,
+{
+    let contents = read_toml_with_rejector(path, description, rejector)?;
+    toml::from_str::<T>(&contents)
+        .with_context(|| format!("failed to parse {description} {}", path.display()))
+}
+
+pub(crate) fn read_toml_with_rejector(
+    path: &Path,
+    description: &str,
+    rejector: impl FnOnce(&Path, &str) -> anyhow::Result<()>,
+) -> anyhow::Result<String> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {description} {}", path.display()))?;
+    rejector(path, &contents)?;
+    Ok(contents)
+}
+
+pub(crate) fn reject_removed_std_field(path: &Path, contents: &str) -> anyhow::Result<()> {
+    if let Ok(table) = toml::from_str::<toml::Table>(contents) {
+        if table.contains_key("std") {
+            bail!(
+                "build config {} uses removed `std` field; std-aware Rust builds are now the \
+                 default, remove `std = ...`",
+                path.display()
+            );
+        }
+        if table.contains_key("plat_dyn") {
+            bail!(
+                "build config {} uses removed `plat_dyn` field; dynamic platform builds are now \
+                 the only supported platform mode, remove `plat_dyn = ...`",
+                path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn reject_arceos_app_c_field(path: &Path, contents: &str) -> anyhow::Result<()> {
+    if let Ok(table) = toml::from_str::<toml::Table>(contents)
+        && table.contains_key("app-c")
+    {
+        bail!(
+            "build config {} uses ArceOS-only `app-c` field; remove it or use an ArceOS build \
+             command",
+            path.display()
+        );
+    }
+
+    Ok(())
+}

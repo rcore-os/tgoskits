@@ -11,22 +11,28 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FsContext};
+use ax_fs_ng::vfs::{FS_CONTEXT, FsContext, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
 use linux_raw_sys::{
     general::*,
-    ioctl::{BLKGETSIZE64, BLKRAGET, BLKSSZGET, FIOASYNC, FIONBIO, TCGETS, TIOCGWINSZ},
+    ioctl::{FIOASYNC, FIONBIO},
 };
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
-    file::{Directory, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
-    mm::vm_load_string,
+    file::{Directory, FD_TABLE, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
+    mm::{vm_load_path_string, vm_load_string},
     task::AsThread,
     time::TimeValueLike,
 };
+
+/// `FIOCLEX` / `FIONCLEX`: set / clear the close-on-exec flag on a file descriptor
+/// via `ioctl` (the ioctl spelling of `fcntl(fd, F_SETFD, ...)`). libc/musl and CPython
+/// use these on freshly-opened fds; Linux implements them generically for any fd.
+const FIOCLEX: u32 = 0x5451;
+const FIONCLEX: u32 = 0x5450;
 
 fn path_info_at(dirfd: i32, path: &str) -> AxResult<(String, bool)> {
     with_fs(dirfd, |fs| {
@@ -51,26 +57,34 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
         f.set_async_mode(val != 0)?;
         return Ok(0);
     }
+    // FIOCLEX/FIONCLEX are fd-table operations (close-on-exec), not device commands —
+    // handle them here so any fd (not just ttys) accepts them, as Linux does. Without
+    // this, curses/CPython (glances) hit "Unsupported ioctl command".
+    if cmd == FIOCLEX || cmd == FIONCLEX {
+        FD_TABLE
+            .write()
+            .get_mut(fd as _)
+            .ok_or(AxError::BadFileDescriptor)?
+            .cloexec = cmd == FIOCLEX;
+        return Ok(0);
+    }
     f.ioctl(cmd, arg)
         .map(|result| result as isize)
         .inspect_err(|err| {
             if *err == AxError::NotATty {
-                // Applications commonly probe non-terminal/blobk fds with
-                // these ioctls; suppress noise.
-                if matches!(
-                    cmd,
-                    TIOCGWINSZ | TCGETS | BLKGETSIZE64 | BLKRAGET | BLKSSZGET
-                ) {
-                    return;
-                }
-                warn!("Unsupported ioctl command: {cmd} for fd: {fd}");
+                // `NotATty` is a legitimate negative answer to the isatty/termios/winsize/
+                // console probes (TCGETS, KDGKBTYPE, TIOCGPGRP, ...) that libc, ncurses and
+                // CPython fire at every fd — not an unimplemented command. Log at debug
+                // only: a warn per probe spams the serial console and visibly corrupts
+                // full-screen TUIs (htop/glances) drawing on that same console.
+                debug!("ioctl {cmd} on non-tty fd {fd} -> ENOTTY (probe)");
             }
         })
 }
 
 #[ddebug::named]
 pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     debug_fn!("sys_chdir <= path: {path}");
 
     let mut fs = FS_CONTEXT.lock();
@@ -98,7 +112,7 @@ pub fn sys_mknod(path: *const c_char, mode: u32, dev: u64) -> AxResult<isize> {
 }
 
 pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     debug!("sys_chroot <= path: {path}");
 
     let mut fs = FS_CONTEXT.lock();
@@ -146,7 +160,7 @@ ktracepoint::define_event_trace!(
 pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize> {
     let curr = current();
     let thread = curr.as_thread();
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     debug!("sys_mkdirat <= dirfd: {dirfd}, path: {path}, mode: {mode}");
 
     let mode = mode & !thread.proc_data.umask();
@@ -179,7 +193,7 @@ pub fn sys_mkdirat(dirfd: i32, path: *const c_char, mode: u32) -> AxResult<isize
 pub fn sys_mknodat(dirfd: i32, path: *const c_char, mode: u32, dev: u64) -> Result<isize, AxError> {
     let curr = current();
     let thread = curr.as_thread();
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
     debug!(
         "sys_mknodat <= dirfd: {}, path: {:?}, mode: {}, dev: {}",
         dirfd, path, mode, dev
@@ -323,8 +337,8 @@ pub fn sys_linkat(
         return Err(AxError::InvalidInput);
     }
 
-    let old_path = old_path.nullable().map(vm_load_string).transpose()?;
-    let new_path = vm_load_string(new_path)?;
+    let old_path = old_path.nullable().map(vm_load_path_string).transpose()?;
+    let new_path = vm_load_path_string(new_path)?;
     debug!(
         "sys_linkat <= old_dirfd: {old_dirfd}, old_path: {old_path:?}, new_dirfd: {new_dirfd}, \
          new_path: {new_path}, flags: {flags}"
@@ -362,7 +376,7 @@ pub fn sys_link(old_path: *const c_char, new_path: *const c_char) -> AxResult<is
 /// flags: can be 0 or AT_REMOVEDIR
 /// return 0 when success, else return -1
 pub fn sys_unlinkat(dirfd: i32, path: *const c_char, flags: usize) -> AxResult<isize> {
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
 
     debug!("sys_unlinkat <= dirfd: {dirfd}, path: {path:?}, flags: {flags}");
 
@@ -429,7 +443,7 @@ pub fn sys_symlinkat(
     linkpath: *const c_char,
 ) -> AxResult<isize> {
     let target = vm_load_string(target)?;
-    let linkpath = vm_load_string(linkpath)?;
+    let linkpath = vm_load_path_string(linkpath)?;
     debug!("sys_symlinkat <= target: {target:?}, new_dirfd: {new_dirfd}, linkpath: {linkpath:?}");
 
     let cred = current().as_thread().cred();
@@ -456,7 +470,7 @@ pub fn sys_readlinkat(
         return Err(AxError::InvalidInput);
     }
 
-    let path = vm_load_string(path)?;
+    let path = vm_load_path_string(path)?;
 
     debug!("sys_readlinkat <= dirfd: {dirfd}, path: {path:?}");
 
@@ -496,7 +510,7 @@ pub fn sys_fchownat(
         return Err(AxError::InvalidInput);
     }
 
-    let path = path.nullable().map(vm_load_string).transpose()?;
+    let path = path.nullable().map(vm_load_path_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
@@ -570,7 +584,7 @@ pub fn sys_fchmodat(dirfd: i32, path: *const c_char, mode: u32, flags: u32) -> A
         return Err(AxError::InvalidInput);
     }
 
-    let path = path.nullable().map(vm_load_string).transpose()?;
+    let path = path.nullable().map(vm_load_path_string).transpose()?;
 
     // man 2 open §"O_PATH": "other file operations (e.g., read(2), write(2),
     // fchmod(2), fchown(2), fgetxattr(2), ioctl(2), mmap(2)) fail with the
@@ -719,7 +733,7 @@ pub fn sys_utimensat(
     }
 
     // Resolve file and check permissions.
-    let path = path.nullable().map(vm_load_string).transpose()?;
+    let path = path.nullable().map(vm_load_path_string).transpose()?;
     let loc = resolve_at(dirfd, path.as_deref(), flags)?
         .into_file()
         .ok_or(AxError::BadFileDescriptor)?;
@@ -768,8 +782,8 @@ pub fn sys_renameat2(
         return Err(AxError::InvalidInput);
     }
 
-    let old_path = vm_load_string(old_path)?;
-    let new_path = vm_load_string(new_path)?;
+    let old_path = vm_load_path_string(old_path)?;
+    let new_path = vm_load_path_string(new_path)?;
     debug!(
         "sys_renameat2 <= old_dirfd: {old_dirfd}, old_path: {old_path:?}, new_dirfd: {new_dirfd}, \
          new_path: {new_path}, flags: {flags}"
@@ -795,10 +809,9 @@ pub fn sys_renameat2(
 }
 
 pub fn sys_sync() -> AxResult<isize> {
-    debug!("sys_sync");
     // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
-    // ext4 NodeOps::sync is a no-op (Ok(())); FAT NodeOps::sync calls file.flush()
-    // to write dirty data to disk.
+    // Write back ax-fs-ng page cache first, then flush filesystem metadata.
+    sync_all_cached_files(false)?;
     FS_CONTEXT.lock().root_dir().sync(false)?;
     Ok(0)
 }
@@ -806,6 +819,7 @@ pub fn sys_sync() -> AxResult<isize> {
 pub fn sys_syncfs(fd: c_int) -> AxResult<isize> {
     debug!("sys_syncfs <= fd: {fd}");
     let any = get_file_like(fd)?;
+    sync_all_cached_files(false)?;
     if let Some(f) = any.downcast_ref::<crate::file::File>() {
         f.inner().location().filesystem().flush()?;
     } else if let Some(d) = any.downcast_ref::<Directory>() {

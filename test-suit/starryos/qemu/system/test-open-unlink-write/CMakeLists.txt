@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(test-open-unlink-write C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+add_executable(test-open-unlink-write src/main.c)
+target_compile_options(test-open-unlink-write PRIVATE -Wall -Wextra -Werror)
+install(TARGETS test-open-unlink-write RUNTIME DESTINATION usr/bin/starry-test-suit)

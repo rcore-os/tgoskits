@@ -1,0 +1,7 @@
+AKARS_VALIDATE_EXPECTED version=1 image_count=3 classes=1 conf_q10000=5000 iou_q10000=5000 bbox_tolerance_px=12 score_tolerance_q10000=800
+image index=0 path=validation/tennis-ball-close.jpg count=1
+det image=0 cls=0 score_q10000=9531 left=482 top=704 right=776 bottom=1002
+image index=1 path=validation/tennis-ball-black-box.jpg count=1
+det image=1 cls=0 score_q10000=9531 left=522 top=930 right=736 bottom=1138
+image index=2 path=validation/tennis-ball-plant.jpg count=1
+det image=2 cls=0 score_q10000=9531 left=568 top=805 right=861 bottom=1104

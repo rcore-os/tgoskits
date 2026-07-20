@@ -1,8 +1,8 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
-use ax_errno::{AxError, AxResult};
-use ax_fs::FS_CONTEXT;
+use ax_errno::{AxError, AxResult, LinuxError};
+use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::{
@@ -13,11 +13,11 @@ use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer},
 };
-use starry_vm::{VmMutPtr, vm_read_slice, vm_write_slice};
+use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
 #[cfg(target_arch = "riscv64")]
 use crate::mm::UserPtr;
-use crate::task::{AsThread, processes};
+use crate::task::{AsThread, SockFilter, SockFprog, get_task, processes};
 
 /// Sentinel value meaning "don't change this ID" (userspace passes -1 as signed,
 /// which becomes `u32::MAX` after the `as u32` cast in the dispatch table).
@@ -39,6 +39,33 @@ const SYSLOG_ACTION_SIZE_UNREAD: i32 = 9;
 const SYSLOG_ACTION_SIZE_BUFFER: i32 = 10;
 const SYSLOG_BUFFER_CAPACITY: usize = 4096;
 const SYSLOG_SEED_MESSAGE: &[u8] = b"StarryOS kernel log buffer initialized\n";
+const SECCOMP_SET_MODE_STRICT: u32 = 0;
+const SECCOMP_SET_MODE_FILTER: u32 = 1;
+const SECCOMP_GET_ACTION_AVAIL: u32 = 2;
+const SECCOMP_FILTER_FLAG_TSYNC: u32 = 1 << 0;
+const SECCOMP_FILTER_FLAG_LOG: u32 = 1 << 1;
+const SECCOMP_FILTER_FLAG_SPEC_ALLOW: u32 = 1 << 2;
+const SECCOMP_FILTER_FLAG_TSYNC_ESRCH: u32 = 1 << 4;
+const SECCOMP_ALLOWED_FLAGS: u32 = SECCOMP_FILTER_FLAG_TSYNC
+    | SECCOMP_FILTER_FLAG_LOG
+    | SECCOMP_FILTER_FLAG_SPEC_ALLOW
+    | SECCOMP_FILTER_FLAG_TSYNC_ESRCH;
+const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+const SECCOMP_RET_KILL_THREAD: u32 = 0x0000_0000;
+const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
+const SECCOMP_RET_LOG: u32 = 0x7ffc_0000;
+const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
+const LINUX_REBOOT_MAGIC1: u32 = 0xfee1_dead;
+const LINUX_REBOOT_MAGIC2: u32 = 0x2812_1969;
+const LINUX_REBOOT_MAGIC2A: u32 = 0x0512_1996;
+const LINUX_REBOOT_MAGIC2B: u32 = 0x1604_1998;
+const LINUX_REBOOT_MAGIC2C: u32 = 0x2011_2000;
+const LINUX_REBOOT_CMD_RESTART: u32 = 0x0123_4567;
+const LINUX_REBOOT_CMD_RESTART2: u32 = 0xa1b2_c3d4;
+const LINUX_REBOOT_CMD_CAD_ON: u32 = 0x89ab_cdef;
+const LINUX_REBOOT_CMD_CAD_OFF: u32 = 0x0000_0000;
+const LINUX_REBOOT_CMD_HALT: u32 = 0xcdef_0123;
+const LINUX_REBOOT_CMD_POWER_OFF: u32 = 0x4321_fedc;
 
 struct SyslogState {
     buffer: HeapRb<u8>,
@@ -99,6 +126,37 @@ impl SyslogState {
 static SYSLOG_STATE: spin::LazyLock<Mutex<SyslogState>> =
     spin::LazyLock::new(|| Mutex::new(SyslogState::new()));
 
+pub fn sys_reboot(magic: u32, magic2: u32, cmd: u32, _arg: usize) -> AxResult<isize> {
+    if !current().as_thread().cred().has_cap_sys_boot() {
+        return Err(AxError::from(LinuxError::EPERM));
+    }
+
+    if magic != LINUX_REBOOT_MAGIC1
+        || !matches!(
+            magic2,
+            LINUX_REBOOT_MAGIC2
+                | LINUX_REBOOT_MAGIC2A
+                | LINUX_REBOOT_MAGIC2B
+                | LINUX_REBOOT_MAGIC2C
+        )
+    {
+        return Err(AxError::from(LinuxError::EINVAL));
+    }
+
+    match cmd {
+        LINUX_REBOOT_CMD_CAD_ON | LINUX_REBOOT_CMD_CAD_OFF => Ok(0),
+        LINUX_REBOOT_CMD_RESTART | LINUX_REBOOT_CMD_RESTART2 => {
+            let _ = ax_fs_ng::shutdown_filesystems();
+            ax_runtime::hal::power::system_reset()
+        }
+        LINUX_REBOOT_CMD_HALT | LINUX_REBOOT_CMD_POWER_OFF => {
+            let _ = ax_fs_ng::shutdown_filesystems();
+            ax_runtime::hal::power::system_off()
+        }
+        _ => Err(AxError::from(LinuxError::EINVAL)),
+    }
+}
+
 /// Mirror of Linux kernel `uid_valid()` / `make_kuid()` rejection: any caller-
 /// supplied UID/GID of `(uid_t)-1` (`u32::MAX`) is invalid outside the NOCHG
 /// sentinel slots of multi-arg setters. Single-arg `setuid`/`setgid` have no
@@ -116,6 +174,15 @@ fn uid_valid(id: u32) -> bool {
 #[inline]
 fn dumpable_should_reset(old: &crate::task::Cred, new: &crate::task::Cred) -> bool {
     old.euid != new.euid || old.egid != new.egid || old.fsuid != new.fsuid || old.fsgid != new.fsgid
+}
+
+fn commit_cred_with_id_rules(
+    thread: &crate::task::Thread,
+    old: &crate::task::Cred,
+    mut new: crate::task::Cred,
+) {
+    new.apply_id_change_capability_rules(old);
+    thread.set_cred(new);
 }
 
 fn user_ns_overflow_uid() -> u32 {
@@ -250,7 +317,7 @@ pub fn sys_setresuid(ruid: u32, euid: u32, suid: u32) -> AxResult<isize> {
     // fsuid always tracks euid.
     new.fsuid = new.euid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    thread.set_cred(new);
+    commit_cred_with_id_rules(thread, &old, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -298,7 +365,7 @@ pub fn sys_setresgid(rgid: u32, egid: u32, sgid: u32) -> AxResult<isize> {
 
     new.fsgid = new.egid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    thread.set_cred(new);
+    commit_cred_with_id_rules(thread, &old, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -334,7 +401,7 @@ pub fn sys_setuid(uid: u32) -> AxResult<isize> {
 
     new.fsuid = new.euid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    thread.set_cred(new);
+    commit_cred_with_id_rules(thread, &old, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -365,7 +432,7 @@ pub fn sys_setgid(gid: u32) -> AxResult<isize> {
 
     new.fsgid = new.egid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    thread.set_cred(new);
+    commit_cred_with_id_rules(thread, &old, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -415,7 +482,7 @@ pub fn sys_setreuid(ruid: u32, euid: u32) -> AxResult<isize> {
 
     new.fsuid = new.euid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    thread.set_cred(new);
+    commit_cred_with_id_rules(thread, &old, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -457,7 +524,7 @@ pub fn sys_setregid(rgid: u32, egid: u32) -> AxResult<isize> {
 
     new.fsgid = new.egid;
     let reset_dumpable = dumpable_should_reset(&old, &new);
-    thread.set_cred(new);
+    commit_cred_with_id_rules(thread, &old, new);
     if reset_dumpable {
         thread.proc_data.set_dumpable(0);
     }
@@ -501,7 +568,7 @@ pub fn sys_setfsuid(fsuid: u32) -> AxResult<isize> {
         let mut new = (*old).clone();
         new.fsuid = fsuid;
         let reset_dumpable = dumpable_should_reset(&old, &new);
-        thread.set_cred(new);
+        commit_cred_with_id_rules(thread, &old, new);
         if reset_dumpable {
             thread.proc_data.set_dumpable(0);
         }
@@ -531,7 +598,7 @@ pub fn sys_setfsgid(fsgid: u32) -> AxResult<isize> {
         let mut new = (*old).clone();
         new.fsgid = fsgid;
         let reset_dumpable = dumpable_should_reset(&old, &new);
-        thread.set_cred(new);
+        commit_cred_with_id_rules(thread, &old, new);
         if reset_dumpable {
             thread.proc_data.set_dumpable(0);
         }
@@ -588,7 +655,7 @@ pub fn sys_setgroups(size: usize, list: *const u32) -> AxResult<isize> {
 
     let mut new = (*old).clone();
     new.groups = Arc::from(groups.into_boxed_slice());
-    thread.set_cred(new);
+    commit_cred_with_id_rules(thread, &old, new);
     Ok(0)
 }
 
@@ -796,14 +863,109 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
     Ok(len as _)
 }
 
-pub fn sys_seccomp(_op: u32, _flags: u32, _args: *const ()) -> AxResult<isize> {
-    warn!("dummy sys_seccomp");
+fn check_seccomp_install_permission() -> AxResult<()> {
+    let curr = current();
+    let thread = curr.as_thread();
+    if thread.no_new_privs() || thread.cred().has_cap_sys_admin() {
+        Ok(())
+    } else {
+        Err(AxError::OperationNotPermitted)
+    }
+}
+
+fn read_seccomp_filter(args: *const ()) -> AxResult<Vec<SockFilter>> {
+    if args.is_null() {
+        return Err(AxError::BadAddress);
+    }
+    let prog = unsafe { (args as *const SockFprog).vm_read_uninit()?.assume_init() };
+    if prog.len == 0 || prog.filter.is_null() {
+        return Err(AxError::InvalidInput);
+    }
+    let mut raw = vec![MaybeUninit::<SockFilter>::uninit(); prog.len as usize];
+    vm_read_slice(prog.filter, &mut raw)?;
+    Ok(raw
+        .into_iter()
+        .map(|insn| unsafe { insn.assume_init() })
+        .collect())
+}
+
+fn seccomp_action_available(args: *const ()) -> AxResult<isize> {
+    if args.is_null() {
+        return Err(AxError::BadAddress);
+    }
+    let action = unsafe { (args as *const u32).vm_read_uninit()?.assume_init() };
+    match action {
+        SECCOMP_RET_ALLOW
+        | SECCOMP_RET_LOG
+        | SECCOMP_RET_ERRNO
+        | SECCOMP_RET_KILL_THREAD
+        | SECCOMP_RET_KILL_PROCESS => Ok(0),
+        _ => Err(AxError::OperationNotSupported),
+    }
+}
+
+fn sync_seccomp_to_thread_group() {
+    let curr = current();
+    let thread = curr.as_thread();
+    let state = thread.seccomp_state();
+    for tid in thread.proc_data.proc.threads() {
+        if tid == thread.tid() {
+            continue;
+        }
+        if let Ok(task) = get_task(tid)
+            && let Some(peer) = task.try_as_thread()
+        {
+            peer.set_seccomp_state(state.clone());
+        }
+    }
+}
+
+pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> AxResult<isize> {
+    if flags & !SECCOMP_ALLOWED_FLAGS != 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    match op {
+        SECCOMP_SET_MODE_STRICT => {
+            if flags != 0 || !args.is_null() {
+                return Err(AxError::InvalidInput);
+            }
+            current().as_thread().install_seccomp_strict()?;
+        }
+        SECCOMP_SET_MODE_FILTER => {
+            check_seccomp_install_permission()?;
+            let filter = read_seccomp_filter(args)?;
+            let curr = current();
+            let thread = curr.as_thread();
+            thread.append_seccomp_filter(filter)?;
+            if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
+                sync_seccomp_to_thread_group();
+            }
+        }
+        SECCOMP_GET_ACTION_AVAIL => return seccomp_action_available(args),
+        _ => return Err(AxError::InvalidInput),
+    }
+
     Ok(0)
 }
 
 #[cfg(target_arch = "riscv64")]
-pub fn sys_riscv_flush_icache() -> AxResult<isize> {
-    riscv::asm::fence_i();
+const SYS_RISCV_FLUSH_ICACHE_LOCAL: usize = 1;
+
+#[cfg(target_arch = "riscv64")]
+pub fn sys_riscv_flush_icache(start: usize, end: usize, flags: usize) -> AxResult<isize> {
+    if flags & !SYS_RISCV_FLUSH_ICACHE_LOCAL != 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if end < start {
+        return Err(AxError::InvalidInput);
+    }
+
+    if flags & SYS_RISCV_FLUSH_ICACHE_LOCAL != 0 {
+        ax_runtime::hal::cache::flush_icache_all();
+    } else {
+        ax_runtime::hal::cache::flush_icache_all_cpus();
+    }
     Ok(0)
 }
 
@@ -814,23 +976,6 @@ struct RiscvHwprobe {
     key: i64,
     value: u64,
 }
-
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_BASE_BEHAVIOR: i64 = 3;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_BASE_BEHAVIOR_IMA: u64 = 1 << 0;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_IMA_EXT_0: i64 = 4;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_IMA_FD: u64 = 1 << 0;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_IMA_C: u64 = 1 << 1;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_CPUPERF_0: i64 = 5;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_MISALIGNED_SCALAR_PERF: i64 = 9;
-#[cfg(target_arch = "riscv64")]
-const RISCV_HWPROBE_KEY_MISALIGNED_VECTOR_PERF: i64 = 10;
 
 #[cfg(target_arch = "riscv64")]
 pub fn sys_riscv_hwprobe(
@@ -852,20 +997,11 @@ pub fn sys_riscv_hwprobe(
 
     let pairs = UserPtr::<RiscvHwprobe>::from(pairs.cast()).get_as_mut_slice(pair_count)?;
     for pair in pairs {
-        match pair.key {
-            RISCV_HWPROBE_KEY_BASE_BEHAVIOR => pair.value = RISCV_HWPROBE_BASE_BEHAVIOR_IMA,
-            RISCV_HWPROBE_KEY_IMA_EXT_0 => {
-                pair.value = RISCV_HWPROBE_IMA_FD | RISCV_HWPROBE_IMA_C;
-            }
-            RISCV_HWPROBE_KEY_CPUPERF_0
-            | RISCV_HWPROBE_KEY_MISALIGNED_SCALAR_PERF
-            | RISCV_HWPROBE_KEY_MISALIGNED_VECTOR_PERF => {
-                pair.value = 0;
-            }
-            _ => {
-                pair.key = -1;
-                pair.value = 0;
-            }
+        if let Some(value) = ax_runtime::hal::cpu::cap::riscv_hwprobe(pair.key) {
+            pair.value = value;
+        } else {
+            pair.key = -1;
+            pair.value = 0;
         }
     }
 

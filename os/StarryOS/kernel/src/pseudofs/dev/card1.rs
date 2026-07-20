@@ -1,29 +1,33 @@
-use alloc::borrow::Cow;
+use alloc::{borrow::Cow, sync::Arc};
 use core::{
     any::Any,
     convert::TryFrom,
-    ffi::{CStr, c_char, c_ulong},
+    ffi::CStr,
     mem,
+    sync::atomic::{AtomicUsize, Ordering},
     task::Context,
 };
 
-use ax_driver::rknpu::{self, RknpuAction, RknpuMemCreate, RknpuMemMap, RknpuMemSync, RknpuSubmit};
+use ax_driver::rknpu::{
+    self, GemCachePolicy, RknpuAction, RknpuMemCreate, RknpuMemDestroy, RknpuMemMap, RknpuMemSync,
+    RknpuSubmit,
+};
 use ax_errno::{AxError, AxResult};
-use ax_memory_addr::PhysAddrRange;
-use ax_runtime::hal::mem::virt_to_phys;
+use ax_memory_addr::{PhysAddr, PhysAddrRange};
+use ax_runtime::hal::{cpu::asm::user_copy, time::monotonic_time_nanos};
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::O_CLOEXEC;
 
-use super::{
-    rknpu_card::{RknpuCmd, copy_from_user, copy_to_user},
-    rknpu_drm::DrmVersion,
-};
+use super::drm::{DrmUnique, DrmVersion};
 use crate::{
-    file::FileLike,
+    file::{
+        FileLike,
+        dmabuf::{ContiguousDmaBuf, resolve_contiguous_dmabuf},
+    },
     pseudofs::{
         DeviceOps,
-        dev::rknpu_drm::{io_size, ioctl_nr, is_driver_ioctl},
+        dev::drm::{io_size, ioctl_nr, is_driver_ioctl},
         device::DeviceMmap,
     },
 };
@@ -37,9 +41,6 @@ const DRM1_DESC: &CStr = c"RKNPU driver";
 
 /// Device ID for /dev/dri/card1
 pub const CARD1_SYSTEM_DEVICE_ID: DeviceId = DeviceId::new(0xe2, 1);
-
-/// Device ID for /dev/rknpu (pick an unused major/minor)
-pub const RKNPU_DEVICE_ID: DeviceId = DeviceId::new(251, 0);
 
 /// Page shift constant (4KB pages)
 const PAGE_SHIFT: u32 = 12;
@@ -55,16 +56,53 @@ const DRM_IOCTL_GET_UNIQUE_NR: u32 = 1;
 const DRM_IOCTL_GEM_FLINK_NR: u32 = 10;
 /// DRM ioctl prime handle to fd command number
 const DRM_IOCTL_PRIME_HANDLE_TO_FD_NR: u32 = 0x2d;
+/// DRM ioctl prime fd to handle command number (import an external dma-buf)
+const DRM_IOCTL_PRIME_FD_TO_HANDLE_NR: u32 = 0x2e;
+const RKNPU_ACTION_LOG_LIMIT: usize = 16;
+const RKNPU_MEM_CREATE_LOG_LIMIT: usize = 16;
+const RKNPU_MEM_SYNC_LOG_LIMIT: usize = 32;
+const RKNPU_SUBMIT_LOG_LIMIT: usize = 16;
+static RKNPU_ACTION_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+static RKNPU_MEM_CREATE_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+static RKNPU_MEM_SYNC_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+static RKNPU_SUBMIT_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// DRM_IOCTL_VERSION ioctl argument type
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DrmUnique {
-    /// Length of unique string identifier
-    pub unique_len: c_ulong,
-    /// Pointer to user-space buffer holding unique name for driver
-    /// instantiation
-    pub unique: *mut c_char,
+/// RKNPU command types
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RknpuCmd {
+    /// Action command
+    Action     = 0x00,
+    /// Submit command
+    Submit     = 0x01,
+    /// Memory create command
+    MemCreate  = 0x02,
+    /// Memory map command
+    MemMap     = 0x03,
+    /// Memory destroy command
+    MemDestroy = 0x04,
+    /// Memory sync command
+    MemSync    = 0x05,
+}
+
+impl TryFrom<u32> for RknpuCmd {
+    type Error = ();
+
+    /// Tries to convert a u32 value to an RknpuCmd
+    fn try_from(nr: u32) -> Result<Self, Self::Error> {
+        match nr {
+            0x00 | 0x40 => Ok(RknpuCmd::Action),
+            0x01 | 0x41 => Ok(RknpuCmd::Submit),
+            0x02 | 0x42 => Ok(RknpuCmd::MemCreate),
+            0x03 | 0x43 => Ok(RknpuCmd::MemMap),
+            0x04 | 0x44 => Ok(RknpuCmd::MemDestroy),
+            0x05 | 0x45 => Ok(RknpuCmd::MemSync),
+            _ => {
+                warn!("Unknown ioctl nr: {nr:#x}",);
+                Err(())
+            }
+        }
+    }
 }
 
 /// Represents an RKNPU user action with flags and value
@@ -160,6 +198,9 @@ impl DeviceOps for Card1 {
                 DRM_IOCTL_PRIME_HANDLE_TO_FD_NR => {
                     drm_prime_handle_to_fd_ioctl(&mut stack_data)?;
                 }
+                DRM_IOCTL_PRIME_FD_TO_HANDLE_NR => {
+                    drm_prime_fd_to_handle_ioctl(&mut stack_data)?;
+                }
 
                 _ => {
                     panic!("card1: unsupported ioctl nr {nr:#x}");
@@ -191,17 +232,44 @@ impl DeviceOps for Card1 {
             warn!("card1: mmap could not resolve handle {handle}");
             return DeviceMmap::None;
         };
-        DeviceMmap::Physical(exported.range, None)
+        exported.device_mmap_kind()
     }
 }
 
 struct ExportedGemBuffer {
     range: PhysAddrRange,
+    cache_policy: GemCachePolicy,
+    /// Keeps the backing GEM allocation alive for as long as a mapping derived
+    /// from this buffer exists, so a `MemDestroy` (or a closed source dma-buf fd)
+    /// cannot free pages that are still mapped (use-after-free guard).
+    retainer: Arc<dyn Any + Send + Sync>,
 }
 
 impl ExportedGemBuffer {
-    fn new(range: PhysAddrRange) -> Self {
-        Self { range }
+    fn new(
+        range: PhysAddrRange,
+        cache_policy: GemCachePolicy,
+        retainer: Arc<dyn Any + Send + Sync>,
+    ) -> Self {
+        Self {
+            range,
+            cache_policy,
+            retainer,
+        }
+    }
+
+    fn device_mmap_kind(&self) -> DeviceMmap {
+        // Anchor the mapping to the backing allocation so it cannot be freed while
+        // still mapped.
+        let anchor = Some(self.retainer.clone());
+        match self.cache_policy {
+            GemCachePolicy::Cacheable => DeviceMmap::PhysicalCached(self.range, anchor),
+            // Starry does not expose a write-combine PTE mode yet; keep it
+            // non-cacheable instead of accidentally upgrading it to cached.
+            GemCachePolicy::NonCacheable | GemCachePolicy::WriteCombine => {
+                DeviceMmap::Physical(self.range, anchor)
+            }
+        }
     }
 }
 
@@ -211,7 +279,7 @@ impl FileLike for ExportedGemBuffer {
     }
 
     fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
-        Ok(DeviceMmap::Physical(self.range, None))
+        Ok(self.device_mmap_kind())
     }
 }
 
@@ -236,13 +304,25 @@ fn map_handle_from_offset(offset: u64) -> Option<u32> {
 }
 
 fn exported_gem_buffer(handle: u32) -> AxResult<ExportedGemBuffer> {
-    let (obj_addr, size) = rknpu::obj_addr_and_size(handle)
+    let info = rknpu::buffer_info(handle)
         .map_err(map_rknpu_err)
         .map_err(|_| AxError::NotFound)?;
-    let paddr = virt_to_phys(obj_addr.into());
-    Ok(ExportedGemBuffer::new(PhysAddrRange::from_start_size(
-        paddr, size,
-    )))
+    // The NPU runs IOMMU-bypassed, so the GEM buffer's `dma_addr` is its physical
+    // base. Use it directly instead of `virt_to_phys(obj_addr)` so imported
+    // buffers (whose CPU va is not necessarily in the linear map) map correctly;
+    // for owned coherent buffers `dma_addr == phys(obj_addr)`, so this is
+    // equivalent.
+    // Hold a retainer for the backing allocation so a mapping of this handle
+    // survives a concurrent MemDestroy / source-fd close without dangling.
+    let retainer = rknpu::buffer_retainer(handle)
+        .map_err(map_rknpu_err)
+        .map_err(|_| AxError::NotFound)?;
+    let paddr = PhysAddr::from(info.dma_addr as usize);
+    Ok(ExportedGemBuffer::new(
+        PhysAddrRange::from_start_size(paddr, info.size),
+        info.cache_policy,
+        retainer,
+    ))
 }
 
 fn map_rknpu_err(err: rknpu::Error) -> VfsError {
@@ -251,6 +331,32 @@ fn map_rknpu_err(err: rknpu::Error) -> VfsError {
         rknpu::Error::Busy => VfsError::AlreadyExists,
         rknpu::Error::InvalidData => VfsError::InvalidData,
     }
+}
+
+fn elapsed_us(start_ns: u64, end_ns: u64) -> u64 {
+    end_ns.saturating_sub(start_ns) / 1000
+}
+
+/// Copies data from user space to kernel space
+pub fn copy_from_user(dst: *mut u8, src: *const u8, size: usize) -> Result<(), VfsError> {
+    let ret = unsafe { user_copy(dst, src, size) };
+
+    if ret != 0 {
+        warn!("[rknpu]: copy_from_user failed, ret={}", ret);
+        return Err(VfsError::InvalidData);
+    }
+    Ok(())
+}
+
+/// Copies data from kernel space to user space
+pub fn copy_to_user(dst: *mut u8, src: *const u8, size: usize) -> Result<(), VfsError> {
+    let ret = unsafe { user_copy(dst, src, size) };
+
+    if ret != 0 {
+        warn!("[rknpu]: copy_to_user failed, ret={}", ret);
+        return Err(VfsError::InvalidData);
+    }
+    Ok(())
 }
 
 /// Handles RKNPU action ioctl commands
@@ -264,10 +370,54 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 arg as *const u8,
                 mem::size_of::<RknpuSubmit>(),
             )?;
+            let log_index = RKNPU_SUBMIT_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+            if log_index < RKNPU_SUBMIT_LOG_LIMIT {
+                warn!(
+                    "rknpu submit ioctl[{log_index}]: flags={:#x} timeout={} task_start={} \
+                     task_number={} task_counter={} core_mask={:#x} task_obj_addr={:#x} \
+                     task_base_addr={:#x} subcore_task={:?}",
+                    submit_args.flags,
+                    submit_args.timeout,
+                    submit_args.task_start,
+                    submit_args.task_number,
+                    submit_args.task_counter,
+                    submit_args.core_mask,
+                    submit_args.task_obj_addr,
+                    submit_args.task_base_addr,
+                    submit_args.subcore_task
+                );
+            }
             info!("rknpu submit ioctl {submit_args:#x?}");
 
-            if let Err(e) = rknpu::submit(&mut submit_args).map_err(map_rknpu_err) {
-                warn!("rknpu submit ioctl failed: {:?}", e);
+            let submit_start_ns = monotonic_time_nanos();
+            match rknpu::submit(&mut submit_args).map_err(map_rknpu_err) {
+                Ok(()) => {
+                    let submit_end_ns = monotonic_time_nanos();
+                    if log_index < RKNPU_SUBMIT_LOG_LIMIT {
+                        warn!(
+                            "rknpu submit ioctl[{log_index}] done: task_counter={} \
+                             hw_elapse_time={} core_mask={:#x} elapsed_us={}",
+                            submit_args.task_counter,
+                            submit_args.hw_elapse_time,
+                            submit_args.core_mask,
+                            elapsed_us(submit_start_ns, submit_end_ns)
+                        );
+                    }
+                }
+                Err(e) => {
+                    let submit_end_ns = monotonic_time_nanos();
+                    warn!("rknpu submit ioctl failed: {:?}", e);
+                    if log_index < RKNPU_SUBMIT_LOG_LIMIT {
+                        warn!(
+                            "rknpu submit ioctl[{log_index}] failed: task_counter={} \
+                             hw_elapse_time={} core_mask={:#x} elapsed_us={}",
+                            submit_args.task_counter,
+                            submit_args.hw_elapse_time,
+                            submit_args.core_mask,
+                            elapsed_us(submit_start_ns, submit_end_ns)
+                        );
+                    }
+                }
             }
             debug!("rknpu submit ioctl result: {:#x?}", submit_args);
 
@@ -287,8 +437,49 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 mem::size_of::<RknpuMemCreate>(),
             )?;
 
-            if let Err(e) = rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err) {
-                warn!("rknpu mem_create ioctl failed: {:?}", e);
+            let log_index = RKNPU_MEM_CREATE_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+            if log_index < RKNPU_MEM_CREATE_LOG_LIMIT {
+                warn!(
+                    "rknpu mem_create ioctl[{log_index}]: flags={:#x} size={} core_mask={:#x}",
+                    mem_create_args.flags, mem_create_args.size, mem_create_args.core_mask
+                );
+            }
+
+            let create_start_ns = monotonic_time_nanos();
+            match rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err) {
+                Ok(()) => {
+                    let create_end_ns = monotonic_time_nanos();
+                    if log_index < RKNPU_MEM_CREATE_LOG_LIMIT {
+                        warn!(
+                            "rknpu mem_create ioctl[{log_index}] done: handle={} flags={:#x} \
+                             size={} sram_size={} obj_addr={:#x} dma_addr={:#x} \
+                             iommu_domain_id={} core_mask={:#x} elapsed_us={}",
+                            mem_create_args.handle,
+                            mem_create_args.flags,
+                            mem_create_args.size,
+                            mem_create_args.sram_size,
+                            mem_create_args.obj_addr,
+                            mem_create_args.dma_addr,
+                            mem_create_args.iommu_domain_id,
+                            mem_create_args.core_mask,
+                            elapsed_us(create_start_ns, create_end_ns)
+                        );
+                    }
+                }
+                Err(e) => {
+                    let create_end_ns = monotonic_time_nanos();
+                    warn!("rknpu mem_create ioctl failed: {:?}", e);
+                    if log_index < RKNPU_MEM_CREATE_LOG_LIMIT {
+                        warn!(
+                            "rknpu mem_create ioctl[{log_index}] failed: flags={:#x} size={} \
+                             core_mask={:#x} elapsed_us={}",
+                            mem_create_args.flags,
+                            mem_create_args.size,
+                            mem_create_args.core_mask,
+                            elapsed_us(create_start_ns, create_end_ns)
+                        );
+                    }
+                }
             }
 
             copy_to_user(
@@ -328,7 +519,14 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
             )?;
         }
         RknpuCmd::MemDestroy => {
-            info!("rknpu mem_destroy ioctl");
+            let mut mem_destroy = RknpuMemDestroy::default();
+            copy_from_user(
+                &mut mem_destroy as *mut _ as *mut u8,
+                arg as *const u8,
+                mem::size_of::<RknpuMemDestroy>(),
+            )?;
+            info!("rknpu mem_destroy ioctl: handle={}", mem_destroy.handle);
+            rknpu::mem_destroy(mem_destroy.handle).map_err(map_rknpu_err)?;
         }
         RknpuCmd::MemSync => {
             let mut mem_sync = RknpuMemSync::default();
@@ -337,11 +535,46 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 arg as *const u8,
                 mem::size_of::<RknpuMemSync>(),
             )?;
+            let log_index = RKNPU_MEM_SYNC_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+            if log_index < RKNPU_MEM_SYNC_LOG_LIMIT {
+                warn!(
+                    "rknpu mem_sync ioctl[{log_index}]: flags={:#x} obj_addr={:#x} offset={} \
+                     size={}",
+                    mem_sync.flags, mem_sync.obj_addr, mem_sync.offset, mem_sync.size
+                );
+            }
             info!("rknpu mem_sync ioctl {mem_sync:#x?}");
 
-            if let Err(e) = rknpu::mem_sync(&mut mem_sync).map_err(map_rknpu_err) {
-                warn!("rknpu mem_sync ioctl failed: {:?}", e);
-                return Err(e);
+            let sync_start_ns = monotonic_time_nanos();
+            match rknpu::mem_sync(&mut mem_sync).map_err(map_rknpu_err) {
+                Ok(()) => {
+                    let sync_end_ns = monotonic_time_nanos();
+                    if log_index < RKNPU_MEM_SYNC_LOG_LIMIT {
+                        warn!(
+                            "rknpu mem_sync ioctl[{log_index}] done: flags={:#x} offset={} \
+                             size={} elapsed_us={}",
+                            mem_sync.flags,
+                            mem_sync.offset,
+                            mem_sync.size,
+                            elapsed_us(sync_start_ns, sync_end_ns)
+                        );
+                    }
+                }
+                Err(e) => {
+                    let sync_end_ns = monotonic_time_nanos();
+                    warn!("rknpu mem_sync ioctl failed: {:?}", e);
+                    if log_index < RKNPU_MEM_SYNC_LOG_LIMIT {
+                        warn!(
+                            "rknpu mem_sync ioctl[{log_index}] failed: flags={:#x} offset={} \
+                             size={} elapsed_us={}",
+                            mem_sync.flags,
+                            mem_sync.offset,
+                            mem_sync.size,
+                            elapsed_us(sync_start_ns, sync_end_ns)
+                        );
+                    }
+                    return Err(e);
+                }
             }
 
             copy_to_user(
@@ -350,7 +583,7 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 mem::size_of::<RknpuMemSync>(),
             )?;
         }
-        _ => {
+        RknpuCmd::Action => {
             info!("rknpu action ioctl");
             let mut action = RknpuUserAction::default();
             copy_from_user(
@@ -359,15 +592,33 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
                 mem::size_of::<RknpuUserAction>(),
             )?;
 
+            let log_index = RKNPU_ACTION_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+            let value_in = action.value;
             info!(
                 "rknpu action ioctl: flags = {:?}, value = {}",
                 action.flags, action.value
             );
 
             match rknpu::action(action.flags).map_err(map_rknpu_err) {
-                Ok(val) => action.value = val,
+                Ok(val) => {
+                    action.value = val;
+                    if log_index < RKNPU_ACTION_LOG_LIMIT {
+                        warn!(
+                            "rknpu action ioctl[{log_index}]: flags={:?} value_in={} \
+                             result=Ok({}) value_out={}",
+                            action.flags, value_in, val, action.value
+                        );
+                    }
+                }
                 Err(e) => {
                     warn!("rknpu action ioctl failed: {:?}", e);
+                    if log_index < RKNPU_ACTION_LOG_LIMIT {
+                        warn!(
+                            "rknpu action ioctl[{log_index}]: flags={:?} value_in={} \
+                             result=Err({:?}) value_out={}",
+                            action.flags, value_in, e, action.value
+                        );
+                    }
                 }
             }
 
@@ -378,50 +629,6 @@ pub fn rknpu_driver_ioctl(op: RknpuCmd, arg: usize) -> VfsResult<usize> {
             )?;
         }
     }
-    Ok(0)
-}
-
-/// Handles RKNPU submit ioctl command
-pub fn rknpu_submit_ioctl(arg: usize) -> VfsResult<usize> {
-    let mut submit_args = RknpuSubmit::default();
-
-    copy_from_user(
-        &mut submit_args as *mut _ as *mut u8,
-        arg as *const u8,
-        mem::size_of::<RknpuSubmit>(),
-    )?;
-
-    if let Err(e) = rknpu::submit(&mut submit_args).map_err(map_rknpu_err) {
-        warn!("rknpu submit ioctl failed: {:?}", e);
-    }
-
-    copy_to_user(
-        arg as *mut u8,
-        &submit_args as *const _ as *const u8,
-        mem::size_of::<RknpuSubmit>(),
-    )?;
-    Ok(0)
-}
-
-/// Handles RKNPU memory create ioctl command
-pub fn rknpu_mem_create_ioctl(arg: usize) -> VfsResult<usize> {
-    let mut mem_create_args = RknpuMemCreate::default();
-
-    copy_from_user(
-        &mut mem_create_args as *mut _ as *mut u8,
-        arg as *const u8,
-        mem::size_of::<RknpuMemCreate>(),
-    )?;
-
-    if let Err(e) = rknpu::mem_create(&mut mem_create_args).map_err(map_rknpu_err) {
-        warn!("rknpu mem_create ioctl failed: {:?}", e);
-    }
-
-    copy_to_user(
-        arg as *mut u8,
-        &mem_create_args as *const _ as *const u8,
-        mem::size_of::<RknpuMemCreate>(),
-    )?;
     Ok(0)
 }
 
@@ -474,13 +681,39 @@ fn drm_prime_handle_to_fd_ioctl(data: &mut [u8]) -> VfsResult<usize> {
     Ok(0)
 }
 
+/// Handles DRM prime fd to handle ioctl: imports an external dma-buf fd (e.g. a
+/// `/dev/dma_heap` buffer that a vendor lib decoded into) as a GEM handle, so the
+/// NPU can read it zero-copy. The buffer's allocation is retained for the
+/// handle's lifetime, so closing the source fd does not free it (UAF-safe).
+fn drm_prime_fd_to_handle_ioctl(data: &mut [u8]) -> VfsResult<usize> {
+    let req = unsafe { &mut *(data.as_mut_ptr() as *mut DrmPrimeHande) };
+    info!("drm_prime_fd_to_handle_ioctl {req:#x?}");
+
+    let buf = resolve_contiguous_dmabuf(req.fd).ok_or_else(|| {
+        warn!(
+            "drm_prime_fd_to_handle_ioctl: fd {} is not a contiguous dma-buf",
+            req.fd
+        );
+        VfsError::InvalidInput
+    })?;
+    let dma_addr = buf.dma_phys_base() as u64;
+    let obj_addr = buf.dma_cpu_base().ok_or(VfsError::InvalidInput)?;
+    let size = buf.dma_size();
+    let retainer = buf.dma_retainer();
+
+    // flags = 0 -> NonCacheable mmap, correct for the coherent dma-heap buffer.
+    let handle = rknpu::mem_import(dma_addr, obj_addr, size, 0, retainer).map_err(map_rknpu_err)?;
+    req.handle = handle;
+    Ok(0)
+}
+
 /// Rust implementation of Linux kernel's drm_copy_field function
 ///
 /// This function safely copies a string value to user space buffer,
 /// similar to the Linux kernel implementation with proper error handling.
 unsafe fn drm_copy_field(
     buf: *mut u8,
-    buf_len: &mut c_ulong,
+    buf_len: &mut usize,
     value: *const u8,
 ) -> Result<(), VfsError> {
     // Handle NULL value case - same as kernel's WARN_ONCE check
@@ -544,10 +777,30 @@ mod tests {
     #[test]
     fn exported_buffer_reports_physical_device_mmap() {
         let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
-        let exported = ExportedGemBuffer::new(range);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::Cacheable, Arc::new(()));
 
         assert!(
-            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, None) if actual == range)
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::PhysicalCached(actual, Some(_)) if actual == range)
+        );
+    }
+
+    #[test]
+    fn exported_buffer_defaults_to_uncached_device_mmap() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::NonCacheable, Arc::new(()));
+
+        assert!(
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, Some(_)) if actual == range)
+        );
+    }
+
+    #[test]
+    fn exported_buffer_maps_write_combine_as_uncached_without_wc_pte_support() {
+        let range = PhysAddrRange::from_start_size(0x1234_5000.into(), 0x4000);
+        let exported = ExportedGemBuffer::new(range, GemCachePolicy::WriteCombine, Arc::new(()));
+
+        assert!(
+            matches!(exported.device_mmap(0, 0).unwrap(), DeviceMmap::Physical(actual, Some(_)) if actual == range)
         );
     }
 }
@@ -566,7 +819,7 @@ pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
     unsafe {
         // Copy driver name
         let ret = drm_copy_field(
-            data.name.cast(),
+            data.name as *mut u8,
             &mut data.name_len,
             DRM1_NAME.as_ptr().cast(),
         );
@@ -579,7 +832,7 @@ pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
         let ret = drm_copy_field(
             data.date as *mut u8,
             &mut data.date_len,
-            DRM1_DATE.as_ptr() as *const u8,
+            DRM1_DATE.as_ptr().cast(),
         );
         if let Err(e) = ret {
             warn!("[drm_version] Failed to copy driver date: {:?}", e);
@@ -588,7 +841,7 @@ pub fn drm_version(data: &mut [u8]) -> VfsResult<()> {
 
         // Copy driver description
         let ret = drm_copy_field(
-            data.desc.cast(),
+            data.desc as *mut u8,
             &mut data.desc_len,
             DRM1_DESC.as_ptr().cast(),
         );
@@ -615,22 +868,6 @@ pub fn drm_get_unique(data: &mut [u8]) -> VfsResult<()> {
     info!("drm_get_unique called: {:?}", unique_data);
 
     unique_data.unique_len = 0;
-
-    Ok(())
-}
-
-/// DRM_SET_UNIQUE ioctl handler (stub implementation)
-///
-/// This function handles DRM_IOCTL_SET_UNIQUE requests. For this
-/// implementation, we return success but don't actually set the unique
-/// identifier, as this is typically not used/needed in embedded systems.
-pub fn drm_set_unique(data: &mut [u8]) -> VfsResult<()> {
-    let unique_data = unsafe { &*(data.as_ptr() as *const DrmUnique) };
-    info!("drm_set_unique called: {:?}", unique_data);
-
-    // For this implementation, we just log the attempt and return success
-    // In a real implementation, this would validate and store the unique ID
-    warn!("[drm_set_unique] Setting unique identifier is not supported in this implementation");
 
     Ok(())
 }

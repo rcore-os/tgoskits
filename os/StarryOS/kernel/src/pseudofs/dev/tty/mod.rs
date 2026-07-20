@@ -1,11 +1,22 @@
-mod ntty;
 mod ptm;
 mod pts;
 mod pty;
+mod serial;
 mod terminal;
+mod usb_serial;
 
-use alloc::sync::{Arc, Weak};
-use core::{any::Any, ops::Deref, sync::atomic::Ordering, task::Context};
+use alloc::{
+    format,
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
+use core::{
+    any::Any,
+    ops::Deref,
+    sync::atomic::{AtomicUsize, Ordering},
+    task::Context,
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_sync::Mutex;
@@ -22,10 +33,13 @@ use self::terminal::{
     termios::{Termios, Termios2},
 };
 pub use self::{
-    ntty::{N_TTY, NTtyDriver},
     ptm::Ptmx,
     pts::PtsDir,
     pty::PtyDriver,
+    serial::{
+        SerialTtyDriver, arm_console_irq, bind_console_to, console_device, serial_tty_entries,
+    },
+    usb_serial::{UsbSerialTtyDriver, usb_serial_tty},
 };
 use crate::{
     pseudofs::DeviceOps,
@@ -35,6 +49,17 @@ use crate::{
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
 const ANSI_CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;1R";
 
+pub fn terminal_device_path(term: &(dyn Any + Send + Sync)) -> Option<String> {
+    if let Some(pts) = term.downcast_ref::<PtyDriver>() {
+        Some(format!("/dev/pts/{}", pts.pty_number()))
+    } else if let Some(tty) = term.downcast_ref::<UsbSerialTtyDriver>() {
+        Some(format!("/dev/ttyUSB{}", tty.usb_serial_number()))
+    } else {
+        term.downcast_ref::<SerialTtyDriver>()
+            .map(|tty| format!("/dev/ttyS{}", tty.serial_number()))
+    }
+}
+
 /// Tty device
 pub struct Tty<R, W> {
     this: Weak<Self>,
@@ -42,6 +67,7 @@ pub struct Tty<R, W> {
     ldisc: Mutex<LineDiscipline<R, W>>,
     writer: W,
     is_ptm: bool,
+    open_count: AtomicUsize,
 }
 
 impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
@@ -55,6 +81,7 @@ impl<R: TtyRead, W: TtyWrite + Clone> Tty<R, W> {
             ldisc,
             writer,
             is_ptm,
+            open_count: AtomicUsize::new(0),
         })
     }
 }
@@ -82,6 +109,26 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
 }
 
 impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
+    fn open(&self, _exclusive: bool) -> AxResult<()> {
+        self.open_count.fetch_add(1, Ordering::AcqRel);
+        self.writer.open()
+    }
+
+    fn close(&self, _exclusive: bool) {
+        // On the last fd close, notify the writer side so the peer reader can
+        // observe POLLHUP / EOF. Without this, a PTY master/slave close never
+        // wakes the peer and poll()/read() hang.
+        if self
+            .open_count
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_sub(1)
+            })
+            .is_ok_and(|old| old == 1)
+        {
+            self.writer.close();
+        }
+    }
+
     fn read_at(&self, buf: &mut [u8], _offset: u64) -> AxResult<usize> {
         if self.is_ptm || self.terminal.job_control.current_in_foreground() {
             self.ldisc.lock().read(buf)
@@ -94,12 +141,14 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
         if self.is_ptm {
             self.writer.write(buf);
         } else {
+            let (output, response_count) = filter_cursor_position_requests(buf);
             let term = self.terminal.load_termios();
-            write_output_bytes(&self.writer, term.as_ref(), buf);
-            if contains_bytes(buf, ANSI_CURSOR_POSITION_REQUEST) {
-                self.ldisc
-                    .lock()
-                    .inject_input(ANSI_CURSOR_POSITION_RESPONSE);
+            write_output_bytes(&self.writer, term.as_ref(), &output);
+            if response_count > 0 {
+                let mut ldisc = self.ldisc.lock();
+                for _ in 0..response_count {
+                    ldisc.inject_input(ANSI_CURSOR_POSITION_RESPONSE);
+                }
             }
         }
         Ok(buf.len())
@@ -117,20 +166,36 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 (arg as *mut Termios2).vm_write(termios)?;
             }
             TCSETS | TCSETSF | TCSETSW => {
-                // TODO: drain output?
                 // Note: vm_read() must complete before acquiring the terminal lock.
                 // Faultable user memory access inside an atomic context (preemption
                 // disabled) will call might_sleep() in handle_page_fault and panic.
                 let termios = Arc::new(Termios2::new((arg as *const Termios).vm_read()?));
-                *self.terminal.termios.lock() = termios;
+                if matches!(cmd, TCSETSF | TCSETSW) {
+                    self.writer.drain()?;
+                }
+                let old = {
+                    let mut guard = self.terminal.termios.lock();
+                    let old = guard.clone();
+                    *guard = termios.clone();
+                    old
+                };
+                self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF {
                     self.ldisc.lock().drain_input();
                 }
             }
             TCSETS2 | TCSETSF2 | TCSETSW2 => {
-                // TODO: drain output?
                 let termios = Arc::new((arg as *const Termios2).vm_read()?);
-                *self.terminal.termios.lock() = termios;
+                if matches!(cmd, TCSETSF2 | TCSETSW2) {
+                    self.writer.drain()?;
+                }
+                let old = {
+                    let mut guard = self.terminal.termios.lock();
+                    let old = guard.clone();
+                    *guard = termios.clone();
+                    old
+                };
+                self.writer.termios_changed(old.as_ref(), termios.as_ref());
                 if cmd == TCSETSF2 {
                     self.ldisc.lock().drain_input();
                 }
@@ -170,6 +235,16 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                         Some(SignalInfo::new_kernel(Signo::SIGWINCH)),
                     );
                 }
+            }
+            TCSBRK => {
+                self.writer.drain()?;
+                if arg == 0 {
+                    return Err(AxError::Unsupported);
+                }
+            }
+            TCSBRKP => {
+                self.writer.drain()?;
+                return Err(AxError::Unsupported);
             }
             TIOCSPTLCK => {}
             TIOCGPTN => {
@@ -219,15 +294,27 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
     }
 }
 
-fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty()
-        && haystack
-            .windows(needle.len())
-            .any(|window| window == needle)
+fn filter_cursor_position_requests(bytes: &[u8]) -> (Vec<u8>, usize) {
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut count = 0;
+    let mut rest = bytes;
+
+    while let Some(pos) = rest
+        .windows(ANSI_CURSOR_POSITION_REQUEST.len())
+        .position(|window| window == ANSI_CURSOR_POSITION_REQUEST)
+    {
+        output.extend_from_slice(&rest[..pos]);
+        count += 1;
+        rest = &rest[pos + ANSI_CURSOR_POSITION_REQUEST.len()..];
+    }
+
+    output.extend_from_slice(rest);
+    (output, count)
 }
 
 impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
     fn poll(&self) -> IoEvents {
+        let _ = self.writer.open();
         let mut events = IoEvents::OUT | self.terminal.job_control.poll();
         if self.is_ptm || events.contains(IoEvents::IN) {
             events.set(IoEvents::IN, self.ldisc.lock().poll_read());
@@ -236,6 +323,7 @@ impl<R: TtyRead, W: TtyWrite> Pollable for Tty<R, W> {
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        let _ = self.writer.open();
         if !self.is_ptm {
             self.terminal.job_control.register(context, events);
         }
@@ -261,5 +349,57 @@ impl DeviceOps for CurrentTty {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::filter_cursor_position_requests;
+
+    #[test]
+    fn cursor_position_request_matcher_does_not_buffer_partial_writes() {
+        assert_eq!(
+            filter_cursor_position_requests(b"\x1b["),
+            (b"\x1b[".to_vec(), 0)
+        );
+        assert_eq!(filter_cursor_position_requests(b"6"), (b"6".to_vec(), 0));
+        assert_eq!(filter_cursor_position_requests(b"n"), (b"n".to_vec(), 0));
+    }
+
+    #[test]
+    fn cursor_position_request_matcher_recovers_after_partial_mismatch() {
+        assert_eq!(
+            filter_cursor_position_requests(b"\x1bX"),
+            (b"\x1bX".to_vec(), 0)
+        );
+        assert_eq!(filter_cursor_position_requests(b"\x1b[6n"), (Vec::new(), 1));
+        assert_eq!(
+            filter_cursor_position_requests(b"\x1b[6n\x1b[6n"),
+            (Vec::new(), 2)
+        );
+    }
+
+    #[test]
+    fn cursor_position_request_filter_preserves_other_output() {
+        assert_eq!(
+            filter_cursor_position_requests(b"ab\x1b[6ncd"),
+            (b"abcd".to_vec(), 1)
+        );
+    }
+
+    #[test]
+    fn cursor_position_request_filter_flushes_unmatched_prefix() {
+        assert_eq!(
+            filter_cursor_position_requests(b"\x1b[31mred"),
+            (b"\x1b[31mred".to_vec(), 0)
+        );
+
+        assert_eq!(
+            filter_cursor_position_requests(b"\x1b["),
+            (b"\x1b[".to_vec(), 0)
+        );
+        assert_eq!(filter_cursor_position_requests(b"A"), (b"A".to_vec(), 0));
     }
 }

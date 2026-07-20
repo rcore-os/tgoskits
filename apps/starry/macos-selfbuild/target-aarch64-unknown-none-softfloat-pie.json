@@ -1,0 +1,49 @@
+{
+  "abi": "softfloat",
+  "arch": "aarch64",
+  "crt-objects-fallback": "false",
+  "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
+  "default-uwtable": true,
+  "disable-redzone": true,
+  "eh-frame-header": false,
+  "features": "+v8a,+strict-align,-neon",
+  "has-thread-local": true,
+  "linker": "rust-lld",
+  "linker-flavor": "gnu-lld",
+  "llvm-target": "aarch64-unknown-none",
+  "max-atomic-width": 128,
+  "metadata": {
+    "description": "StarryOS macOS self-build ARM64 bare-metal PIE target",
+    "host_tools": false,
+    "std": false,
+    "tier": 2
+  },
+  "os": "none",
+  "panic-strategy": "abort",
+  "position-independent-executables": true,
+  "pre-link-args": {
+    "gnu-lld": [
+      "-pie",
+      "--gc-sections",
+      "-znorelro",
+      "-znostart-stop-gc",
+      "-Tlinker.x",
+      "-u",
+      "_head"
+    ]
+  },
+  "relocation-model": "pic",
+  "relro-level": "off",
+  "rustc-abi": "softfloat",
+  "stack-probes": {
+    "kind": "inline"
+  },
+  "static-position-independent-executables": true,
+  "supported-sanitizers": [
+    "kcfi",
+    "kernel-address",
+    "kernel-hwaddress"
+  ],
+  "target-pointer-width": 64,
+  "tls-model": "initial-exec"
+}

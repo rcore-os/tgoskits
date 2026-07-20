@@ -104,7 +104,17 @@ enum ConsumeResult {
 }
 
 fn match_ready_events(current: IoEvents, interested: IoEvents) -> IoEvents {
-    (current & interested) | (current & IoEvents::ALWAYS_POLL)
+    let mut matched = (current & interested) | (current & IoEvents::ALWAYS_POLL);
+    // When the fd is hung up, also force IN so that epoll callers who only
+    // inspect EPOLLIN (a common pattern for pipes/sockets) can detect EOF.
+    // This is safe because a hung-up fd is always readable (read() returns 0
+    // immediately).  Linux epoll reports EPOLLHUP regardless of interest, but
+    // applications that mask on EPOLLIN alone still need to see the event.
+    // Calling `poll(2)` directly is unaffected by this epoll-only convention.
+    if matched.contains(IoEvents::HUP) {
+        matched |= IoEvents::IN;
+    }
+    matched
 }
 
 fn register_events(interested: IoEvents) -> IoEvents {
@@ -322,7 +332,8 @@ impl EpollInner {
             interest.mark_not_in_queue();
             self.overflow_ready.store(true, Ordering::Release);
         }
-        self.poll_ready.wake();
+        // Ready queue or overflow state is published before waking epoll waiters.
+        unsafe { self.poll_ready.wake(IoEvents::IN) };
     }
 
     fn remove_ready_entries_for(&self, target: &Weak<EpollInterest>) {
@@ -391,7 +402,8 @@ impl EpollInner {
         })();
         if result.is_err() {
             self.overflow_ready.store(true, Ordering::Release);
-            self.poll_ready.wake();
+            // Overflow state is published before waking epoll waiters.
+            unsafe { self.poll_ready.wake(IoEvents::IN) };
         }
         result
     }
@@ -692,7 +704,12 @@ impl Pollable for Epoll {
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if events.contains(IoEvents::IN) {
-            self.inner.poll_ready.register(context.waker());
+            // Registration happens from epoll wait task context.
+            unsafe {
+                self.inner
+                    .poll_ready
+                    .register(context.waker(), IoEvents::IN)
+            };
         }
     }
 }

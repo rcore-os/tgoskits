@@ -1,0 +1,9 @@
+cmake_minimum_required(VERSION 3.20)
+project(bug-open-eintr-not-implemented C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+add_executable(bug-open-eintr-not-implemented src/main.c)
+target_compile_options(bug-open-eintr-not-implemented PRIVATE -Wall -Wextra -Werror)
+# Keep this known-failing probe available without making the grouped CI runner execute it.
+install(TARGETS bug-open-eintr-not-implemented RUNTIME DESTINATION usr/bin/starry-known-fail)

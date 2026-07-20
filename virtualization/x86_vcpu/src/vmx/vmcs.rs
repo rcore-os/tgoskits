@@ -17,8 +17,6 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::upper_case_acronyms)]
 
-use ax_errno::{AxResult, ax_err};
-use axvcpu::{GuestPhysAddr, HostPhysAddr, MappingFlags, NestedPageFaultInfo};
 use bit_field::BitField;
 use x86::bits64::vmx;
 
@@ -26,14 +24,17 @@ use super::{
     as_axerr,
     definitions::{VmxExitReason, VmxInstructionError, VmxInterruptionType},
 };
-use crate::msr::Msr;
+use crate::{
+    X86AccessFlags, X86GuestPhysAddr, X86HostPhysAddr, X86NestedPageFaultInfo, X86VcpuResult,
+    msr::Msr,
+};
 
 // HYGIENE: These macros are only used in this file, so we can use `as_axerr` directly.
 
 macro_rules! vmcs_read {
     ($field_enum:ident,u64) => {
         impl $field_enum {
-            pub fn read(self) -> AxResult<u64> {
+            pub fn read(self) -> X86VcpuResult<u64> {
                 #[cfg(target_pointer_width = "64")]
                 unsafe {
                     vmx::vmread(self as u32).map_err(as_axerr)
@@ -49,7 +50,7 @@ macro_rules! vmcs_read {
     };
     ($field_enum:ident, $ux:ty) => {
         impl $field_enum {
-            pub fn read(self) -> AxResult<$ux> {
+            pub fn read(self) -> X86VcpuResult<$ux> {
                 unsafe { vmx::vmread(self as u32).map(|v| v as $ux).map_err(as_axerr) }
             }
         }
@@ -59,7 +60,7 @@ macro_rules! vmcs_read {
 macro_rules! vmcs_write {
     ($field_enum:ident,u64) => {
         impl $field_enum {
-            pub fn write(self, value: u64) -> AxResult {
+            pub fn write(self, value: u64) -> X86VcpuResult {
                 #[cfg(target_pointer_width = "64")]
                 unsafe {
                     vmx::vmwrite(self as u32, value).map_err(as_axerr)
@@ -76,7 +77,7 @@ macro_rules! vmcs_write {
     };
     ($field_enum:ident, $ux:ty) => {
         impl $field_enum {
-            pub fn write(self, value: $ux) -> AxResult {
+            pub fn write(self, value: $ux) -> X86VcpuResult {
                 unsafe { vmx::vmwrite(self as u32, value as u64).map_err(as_axerr) }
             }
         }
@@ -558,7 +559,7 @@ pub struct VmxIoExitInfo {
     pub is_string: bool,
     /// REP prefixed (0 = not REP; 1 = REP).
     pub is_repeat: bool,
-    /// Port number. (as specified in DX or in an immediate operand)
+    /// X86Port number. (as specified in DX or in an immediate operand)
     pub port: u16,
 }
 
@@ -657,28 +658,28 @@ pub fn set_control(
     old_value: u32,
     set: u32,
     clear: u32,
-) -> AxResult {
+) -> X86VcpuResult {
     let cap = capability_msr.read();
     let allowed0 = cap as u32;
     let allowed1 = (cap >> 32) as u32;
     assert_eq!(allowed0 & allowed1, allowed0);
     debug!("set {control:?}: {old_value:#x} (+{set:#x}, -{clear:#x})");
     if (set & clear) != 0 {
-        return ax_err!(
+        return x86_err!(
             InvalidInput,
             format_args!("can not set and clear the same bit in {:?}", control)
         );
     }
     if (allowed1 & set) != set {
         // failed if set 0-bits in allowed1
-        return ax_err!(
+        return x86_err!(
             Unsupported,
             format_args!("can not set bits {:#x} in {:?}", set, control)
         );
     }
     if (allowed0 & clear) != 0 {
         // failed if clear 1-bits in allowed0
-        return ax_err!(
+        return x86_err!(
             Unsupported,
             format_args!("can not clear bits {:#x} in {:?}", clear, control)
         );
@@ -692,7 +693,7 @@ pub fn set_control(
     Ok(())
 }
 
-pub fn set_ept_pointer(pml4_paddr: HostPhysAddr) -> AxResult {
+pub fn set_ept_pointer(pml4_paddr: X86HostPhysAddr) -> X86VcpuResult {
     use super::instructions::{InvEptType, invept};
     let eptp = super::structs::EPTPointer::from_table_phys(pml4_paddr).bits();
     VmcsControl64::EPTP.write(eptp)?;
@@ -704,7 +705,7 @@ pub fn instruction_error() -> VmxInstructionError {
     VmcsReadOnly32::VM_INSTRUCTION_ERROR.read().unwrap().into()
 }
 
-pub fn exit_info() -> AxResult<VmxExitInfo> {
+pub fn exit_info() -> X86VcpuResult<VmxExitInfo> {
     let full_reason = VmcsReadOnly32::EXIT_REASON.read()?;
     Ok(VmxExitInfo {
         exit_reason: full_reason
@@ -717,11 +718,11 @@ pub fn exit_info() -> AxResult<VmxExitInfo> {
     })
 }
 
-pub fn raw_interrupt_exit_info() -> AxResult<u32> {
+pub fn raw_interrupt_exit_info() -> X86VcpuResult<u32> {
     VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()
 }
 
-pub fn interrupt_exit_info() -> AxResult<VmxInterruptInfo> {
+pub fn interrupt_exit_info() -> X86VcpuResult<VmxInterruptInfo> {
     // SDM Vol. 3C, Section 24.9.2
     let info = VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()?;
     Ok(VmxInterruptInfo {
@@ -736,7 +737,7 @@ pub fn interrupt_exit_info() -> AxResult<VmxInterruptInfo> {
     })
 }
 
-pub fn inject_event(vector: u8, err_code: Option<u32>) -> AxResult {
+pub fn inject_event(vector: u8, err_code: Option<u32>) -> X86VcpuResult {
     // SDM Vol. 3C, Section 24.8.3
     let err_code = if VmxInterruptionType::vector_has_error_code(vector) {
         err_code.or_else(|| Some(VmcsReadOnly32::VMEXIT_INTERRUPTION_ERR_CODE.read().unwrap()))
@@ -755,7 +756,7 @@ pub fn inject_event(vector: u8, err_code: Option<u32>) -> AxResult {
     Ok(())
 }
 
-pub fn io_exit_info() -> AxResult<VmxIoExitInfo> {
+pub fn io_exit_info() -> X86VcpuResult<VmxIoExitInfo> {
     // SDM Vol. 3C, Section 27.2.1, Table 27-5
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
     Ok(VmxIoExitInfo {
@@ -767,27 +768,27 @@ pub fn io_exit_info() -> AxResult<VmxIoExitInfo> {
     })
 }
 
-pub fn ept_violation_info() -> AxResult<NestedPageFaultInfo> {
+pub fn ept_violation_info() -> X86VcpuResult<X86NestedPageFaultInfo> {
     // SDM Vol. 3C, Section 27.2.1, Table 27-7
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
     let fault_guest_paddr = VmcsReadOnly64::GUEST_PHYSICAL_ADDR.read()? as usize;
-    let mut access_flags = MappingFlags::empty();
+    let mut access_flags = X86AccessFlags::empty();
     if qualification.get_bit(0) {
-        access_flags |= MappingFlags::READ;
+        access_flags |= X86AccessFlags::READ;
     }
     if qualification.get_bit(1) {
-        access_flags |= MappingFlags::WRITE;
+        access_flags |= X86AccessFlags::WRITE;
     }
     if qualification.get_bit(2) {
-        access_flags |= MappingFlags::EXECUTE;
+        access_flags |= X86AccessFlags::EXECUTE;
     }
-    Ok(NestedPageFaultInfo {
+    Ok(X86NestedPageFaultInfo {
         access_flags,
-        fault_guest_paddr: GuestPhysAddr::from(fault_guest_paddr),
+        fault_guest_paddr: X86GuestPhysAddr::from(fault_guest_paddr),
     })
 }
 
-pub fn update_efer() -> AxResult {
+pub fn update_efer() -> X86VcpuResult {
     use x86_64::registers::control::EferFlags;
 
     let efer = VmcsGuest64::IA32_EFER.read()?;
@@ -822,7 +823,7 @@ pub fn update_efer() -> AxResult {
     Ok(())
 }
 
-pub fn cr_access_info() -> AxResult<CrAccessInfo> {
+pub fn cr_access_info() -> X86VcpuResult<CrAccessInfo> {
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
     // debug!("cr_access_info qualification {:#x}", qualification);
 
@@ -835,7 +836,7 @@ pub fn cr_access_info() -> AxResult<CrAccessInfo> {
     })
 }
 
-pub fn apic_access_exit_info() -> AxResult<ApicAccessExitInfo> {
+pub fn apic_access_exit_info() -> X86VcpuResult<ApicAccessExitInfo> {
     let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
     // debug!("apic_access_info qualification {:#x}", qualification);
 

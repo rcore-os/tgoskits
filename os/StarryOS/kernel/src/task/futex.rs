@@ -17,7 +17,7 @@ use core::{
 
 use ax_errno::AxResult;
 use ax_memory_addr::VirtAddr;
-use ax_sync::Mutex;
+use ax_sync::{LockdepMutexExt, Mutex};
 use ax_task::{
     current,
     future::{self, block_on, interruptible},
@@ -28,6 +28,8 @@ use crate::{
     mm::{AddrSpace, Backend, SharedPages},
     task::{AsThread, ProcessData},
 };
+
+const NESTED_WAIT_QUEUE_LOCK_SUBCLASS: u32 = 1;
 
 /// Wait queue used by futex.
 #[derive(Default)]
@@ -195,32 +197,82 @@ impl WaitQueue {
         )))??
     }
 
+    fn wake_locked(queue: &mut VecDeque<Waiter>, count: usize, mask: u32, wakers: &mut Vec<Waker>) {
+        let base = wakers.len();
+        queue.retain(|waiter| {
+            if waiter.state.cancelled.load(AtomicOrdering::SeqCst) {
+                false
+            } else if wakers.len() - base >= count || (waiter.bitset & mask) == 0 {
+                true
+            } else {
+                waiter.state.woken.store(true, AtomicOrdering::SeqCst);
+                wakers.push(waiter.waker.clone());
+                false
+            }
+        });
+    }
+
     /// Wakes up at most `count` tasks whose bitset intersects with the given
     /// bitmask.
     pub fn wake(&self, count: usize, mask: u32) -> usize {
-        let wakers = {
+        let mut wakers = Vec::new();
+        {
             let mut inner = self.inner.lock();
-            let mut wakers = Vec::new();
-
-            inner.queue.retain(|waiter| {
-                if waiter.state.cancelled.load(AtomicOrdering::SeqCst) {
-                    false
-                } else if wakers.len() >= count || (waiter.bitset & mask) == 0 {
-                    true
-                } else {
-                    waiter.state.woken.store(true, AtomicOrdering::SeqCst);
-                    wakers.push(waiter.waker.clone());
-                    false
-                }
-            });
-            wakers
-        };
+            Self::wake_locked(&mut inner.queue, count, mask, &mut wakers);
+        }
 
         let woke = wakers.len();
         for waker in wakers {
             waker.wake();
         }
         woke
+    }
+
+    /// Serializes a FUTEX_WAKE_OP user RMW with both futex wait queues.
+    pub fn wake_op(
+        &self,
+        wake_count: usize,
+        target: &WaitQueue,
+        wake2_count: usize,
+        condition: impl FnOnce() -> AxResult<bool>,
+    ) -> AxResult<usize> {
+        let mut condition = Some(condition);
+        let mut wakers = Vec::new();
+
+        match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
+            Ordering::Less => {
+                let mut src = self.inner.lock();
+                let mut dst = target.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
+                let wake_second = condition.take().expect("condition used once")()?;
+                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
+                if wake_second {
+                    Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakers);
+                }
+            }
+            Ordering::Greater => {
+                let mut dst = target.inner.lock();
+                let mut src = self.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
+                let wake_second = condition.take().expect("condition used once")()?;
+                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
+                if wake_second {
+                    Self::wake_locked(&mut dst.queue, wake2_count, u32::MAX, &mut wakers);
+                }
+            }
+            Ordering::Equal => {
+                let mut src = self.inner.lock();
+                let wake_second = condition.take().expect("condition used once")()?;
+                Self::wake_locked(&mut src.queue, wake_count, u32::MAX, &mut wakers);
+                if wake_second {
+                    Self::wake_locked(&mut src.queue, wake2_count, u32::MAX, &mut wakers);
+                }
+            }
+        }
+
+        let woke = wakers.len();
+        for waker in wakers {
+            waker.wake();
+        }
+        Ok(woke)
     }
 
     fn wake_requeue_locked(
@@ -280,7 +332,7 @@ impl WaitQueue {
         let count = match core::ptr::from_ref(self).cmp(&core::ptr::from_ref(target)) {
             Ordering::Less => {
                 let mut src = self.inner.lock();
-                let mut dst = target.inner.lock();
+                let mut dst = target.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
                 if !condition.take().expect("condition used once")()? {
                     return Ok(None);
                 }
@@ -296,7 +348,7 @@ impl WaitQueue {
             }
             Ordering::Greater => {
                 let mut dst = target.inner.lock();
-                let mut src = self.inner.lock();
+                let mut src = self.inner.lock_nested(NESTED_WAIT_QUEUE_LOCK_SUBCLASS);
                 if !condition.take().expect("condition used once")()? {
                     return Ok(None);
                 }

@@ -187,20 +187,16 @@ Examples are given below and in the [app-helloworld](https://github.com/arceos-o
     # more args: LOG=<log> SMP=<smp> NET=[y|n] ...
     ```
 
-## How to build ArceOS for specific platforms and devices
+## How to build ArceOS for specific devices
 
-AArch64 defaults to the dynamic platform path. For board-specific AArch64
-support, provide an external custom platform package or a platform config
-explicitly instead of relying on the removed in-tree static AArch64 platform
-crates.
+ArceOS now uses the mandatory `axplat-dyn` platform path for supported
+architectures. Board-specific support should extend the runtime discovery path
+through `somehal`, firmware tables, FDT/ACPI data, or device probes instead of
+selecting a platform crate or platform config file in the in-tree build flow.
 
 You may need to select the corresponding device drivers by setting the
-`FEATURES` variable:
-
-```bash
-# Build httpserver for the bare-metal x86_64 platform, and use the ixgbe and ramdisk driver
-make PLAT_CONFIG=$(pwd)/configs/custom/x86_64-pc-oslab.toml A=examples/httpserver FEATURES=page-alloc-4g,ax-driver/plat-static,ax-driver/ixgbe,ax-driver/ramdisk SMP=4
-```
+`FEATURES` variable. For x86_64 QEMU builds, prefer the `cargo xtask`
+`axplat-dyn` flow instead of the removed in-tree static PC platform.
 
 ## How to reuse ArceOS modules in your own project
 

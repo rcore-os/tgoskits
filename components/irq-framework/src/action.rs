@@ -1,36 +1,56 @@
-use core::{
-    cell::UnsafeCell,
-    ptr::{self, NonNull},
-    sync::atomic::AtomicBool,
+use core::{cell::UnsafeCell, ptr, sync::atomic::AtomicBool};
+
+use crate::{
+    AutoEnable, BoxedIrqHandler, ConcurrentBoxedIrqHandler, CpuId, CpuMask, IrqContext,
+    IrqExecution, IrqRequest, IrqReturn, IrqScope, types::IrqHandler,
 };
 
-use crate::{CpuId, CpuMask, IrqRequest, IrqScope, RawIrqHandler};
+pub(crate) enum ActionHandler {
+    NonReentrant(UnsafeCell<BoxedIrqHandler>),
+    Concurrent(ConcurrentBoxedIrqHandler),
+}
+
+unsafe impl Send for ActionHandler {}
+unsafe impl Sync for ActionHandler {}
 
 pub(crate) struct Action {
     pub(crate) id: u64,
-    pub(crate) handler: RawIrqHandler,
-    pub(crate) data: NonNull<()>,
+    pub(crate) handler: ActionHandler,
     pub(crate) scope: IrqScope,
+    pub(crate) execution: IrqExecution,
     pub(crate) enabled: AtomicBool,
     pub(crate) detached: AtomicBool,
+    pub(crate) running: AtomicBool,
     pending_enable: UnsafeCell<CpuMask>,
     pub(crate) next: *mut Action,
 }
 
-// Raw handler context pointers are owned by the OS adapter. The framework only
-// stores and passes them back to the registered handler.
+// Boxed callbacks are owned by the registered action and only called after the
+// NonReentrant run guard succeeds, so the UnsafeCell is not mutably aliased by
+// framework dispatch.
 unsafe impl Send for Action {}
 unsafe impl Sync for Action {}
 
 impl Action {
-    pub(crate) fn new(id: u64, request: &IrqRequest) -> Self {
+    pub(crate) fn new(id: u64, request: &mut IrqRequest) -> Self {
+        let handler = match request
+            .handler
+            .take()
+            .expect("IRQ handler was already consumed")
+        {
+            IrqHandler::NonReentrant(handler) => {
+                ActionHandler::NonReentrant(UnsafeCell::new(handler))
+            }
+            IrqHandler::Concurrent(handler) => ActionHandler::Concurrent(handler),
+        };
         Self {
             id,
-            handler: request.handler,
-            data: request.data,
+            handler,
             scope: request.scope,
-            enabled: AtomicBool::new(false),
+            execution: request.execution,
+            enabled: AtomicBool::new(request.auto_enable == AutoEnable::Yes),
             detached: AtomicBool::new(false),
+            running: AtomicBool::new(false),
             pending_enable: UnsafeCell::new(CpuMask::empty()),
             next: ptr::null_mut(),
         }
@@ -50,5 +70,15 @@ impl Action {
 
     pub(crate) fn clear_pending_enable_all(&self) {
         unsafe { *self.pending_enable.get() = CpuMask::empty() };
+    }
+
+    pub(crate) fn call(&self, ctx: IrqContext) -> IrqReturn {
+        match &self.handler {
+            ActionHandler::NonReentrant(handler) => {
+                let handler = unsafe { &mut *handler.get() };
+                handler(ctx)
+            }
+            ActionHandler::Concurrent(handler) => handler(ctx),
+        }
     }
 }

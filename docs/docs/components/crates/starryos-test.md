@@ -68,10 +68,10 @@ flowchart TD
 ### 1.5 与 `starryos` 的边界
 `starryos-test` 和 `starryos` 当前共享同一内核入口、同一默认 init 脚本逻辑，但边界仍然很明确：
 
-- `starryos`：默认人工运行入口，带本地 `.axconfig.toml` / `.qemu.toml`。
+- `starryos`：默认人工运行入口，带本地 build config / `.qemu.toml`。
 - `starryos-test`：默认自动化回归入口，依赖 xtask 注入 run scope、rootfs 准备和 QEMU 正则判据。
 
-`test-suit/starryos` 目录当前没有自己的 `.axconfig.toml` 或 `.qemu.toml`，这也进一步说明它的测试配置主要来自 xtask，而不是包内静态 dotfile。
+`test-suit/starryos` 目录当前没有自己的 `.qemu.toml`，这也进一步说明它的测试配置主要来自 xtask，而不是包内静态 dotfile。
 
 ## 核心功能
 ### 功能概览
@@ -103,15 +103,13 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 ## 依赖关系
 ```mermaid
 graph LR
-    ax-feat["ax-feat"] --> test["starryos-test"]
+    ax-runtime["ax-runtime"] --> test["starryos-test"]
     kernel["starry-kernel"] --> test
-    vf2["ax-plat-riscv64-visionfive2 (optional)"] --> test
 ```
 
 ### 直接依赖
-- `ax-feat`：提供底层平台、驱动和运行时装配。
+- `ax-runtime`：提供底层平台、驱动和运行时装配。
 - `starry-kernel`：真正执行系统 bring-up。
-- `ax-plat-riscv64-visionfive2`：在 `vf2` feature 下可选引入。
 
 ### 3.2 关键外部驱动者
 - `tg-xtask`：不是 Cargo 依赖，但是真正让这个包进入测试流水线的上层驱动者。
@@ -150,7 +148,7 @@ cargo xtask starry run --arch riscv64 --package starryos-test
 ### 5.2 建议重点验证的场景
 - `cargo starry test qemu` 是否仍能稳定进入成功正则。
 - rootfs 产物目录解析是否仍正确。
-- `qemu` / `smp` / `vf2` 组合下是否仍能完成 bring-up。
+- `smp` 与设备 feature 组合下是否仍能完成 bring-up。
 - 若引入测试专属初始化脚本，是否与普通 `starryos` 入口形成清晰边界。
 
 ### 5.3 覆盖率要求

@@ -1,30 +1,29 @@
-use ax_errno::AxResult;
-use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
-use axvcpu::HostPhysAddr;
-
 use super::frame::ContiguousPhysFrames;
-use crate::{host::PhysFrame, svm::vmcb::VmcbStruct};
+use crate::{
+    X86HostOps, X86HostPhysAddr, X86VcpuResult, host::PhysFrame, svm::vmcb::VmcbStruct,
+    types::X86_PAGE_SIZE_4K as PAGE_SIZE,
+};
 
 /// Virtual-machine control block backing page.
 #[derive(Debug)]
-pub struct VmcbFrame {
-    page: PhysFrame,
+pub struct VmcbFrame<H: X86HostOps> {
+    page: PhysFrame<H>,
 }
 
-impl VmcbFrame {
+impl<H: X86HostOps> VmcbFrame<H> {
     pub const unsafe fn uninit() -> Self {
         Self {
-            page: unsafe { PhysFrame::uninit() },
+            page: unsafe { PhysFrame::<H>::uninit() },
         }
     }
 
-    pub fn new() -> AxResult<Self> {
+    pub fn new() -> X86VcpuResult<Self> {
         Ok(Self {
-            page: PhysFrame::alloc_zero()?,
+            page: PhysFrame::<H>::alloc_zero()?,
         })
     }
 
-    pub fn phys_addr(&self) -> HostPhysAddr {
+    pub fn phys_addr(&self) -> X86HostPhysAddr {
         self.page.start_paddr()
     }
 
@@ -43,13 +42,13 @@ impl VmcbFrame {
 
 /// SVM I/O permissions map. A set bit intercepts the corresponding port.
 #[derive(Debug)]
-pub struct IOPm {
-    frames: ContiguousPhysFrames,
+pub struct IOPm<H: X86HostOps> {
+    frames: ContiguousPhysFrames<H>,
 }
 
-impl IOPm {
-    pub fn passthrough_all() -> AxResult<Self> {
-        let frames = ContiguousPhysFrames::alloc_zero(3)?;
+impl<H: X86HostOps> IOPm<H> {
+    pub fn passthrough_all() -> X86VcpuResult<Self> {
+        let frames = ContiguousPhysFrames::<H>::alloc_zero(3)?;
         let third_frame_start = frames.as_mut_ptr() as usize + 2 * PAGE_SIZE;
         unsafe {
             *(third_frame_start as *mut u8) |= 0x07;
@@ -58,13 +57,13 @@ impl IOPm {
     }
 
     #[allow(unused)]
-    pub fn intercept_all() -> AxResult<Self> {
-        let mut frames = ContiguousPhysFrames::alloc(3)?;
+    pub fn intercept_all() -> X86VcpuResult<Self> {
+        let mut frames = ContiguousPhysFrames::<H>::alloc(3)?;
         frames.fill(0xff);
         Ok(Self { frames })
     }
 
-    pub fn phys_addr(&self) -> HostPhysAddr {
+    pub fn phys_addr(&self) -> X86HostPhysAddr {
         self.frames.start_paddr()
     }
 
@@ -91,25 +90,25 @@ impl IOPm {
 
 /// SVM MSR permissions map. Each MSR has separate read/write intercept bits.
 #[derive(Debug)]
-pub struct MSRPm {
-    frames: ContiguousPhysFrames,
+pub struct MSRPm<H: X86HostOps> {
+    frames: ContiguousPhysFrames<H>,
 }
 
-impl MSRPm {
-    pub fn passthrough_all() -> AxResult<Self> {
+impl<H: X86HostOps> MSRPm<H> {
+    pub fn passthrough_all() -> X86VcpuResult<Self> {
         Ok(Self {
-            frames: ContiguousPhysFrames::alloc_zero(2)?,
+            frames: ContiguousPhysFrames::<H>::alloc_zero(2)?,
         })
     }
 
     #[allow(unused)]
-    pub fn intercept_all() -> AxResult<Self> {
-        let mut frames = ContiguousPhysFrames::alloc(2)?;
+    pub fn intercept_all() -> X86VcpuResult<Self> {
+        let mut frames = ContiguousPhysFrames::<H>::alloc(2)?;
         frames.fill(0xff);
         Ok(Self { frames })
     }
 
-    pub fn phys_addr(&self) -> HostPhysAddr {
+    pub fn phys_addr(&self) -> X86HostPhysAddr {
         self.frames.start_paddr()
     }
 
@@ -155,15 +154,18 @@ mod tests {
     use super::*;
     use crate::test_utils::mock::MockMmHal;
 
+    type TestIOPm = IOPm<MockMmHal>;
+    type TestMSRPm = MSRPm<MockMmHal>;
+
     #[test]
     fn svm_permission_maps_use_contiguous_frames() {
         MockMmHal::run_test(|| {
             {
-                let iopm = IOPm::passthrough_all().unwrap();
+                let iopm = TestIOPm::passthrough_all().unwrap();
                 assert_eq!(iopm.phys_addr().as_usize(), 0x1000);
                 assert_eq!(MockMmHal::allocated_count(), 3);
 
-                let msrpm = MSRPm::passthrough_all().unwrap();
+                let msrpm = TestMSRPm::passthrough_all().unwrap();
                 assert_eq!(msrpm.phys_addr().as_usize(), 0x4000);
                 assert_eq!(MockMmHal::allocated_count(), 5);
             }

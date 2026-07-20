@@ -1,0 +1,34 @@
+#[path = "../../block_runtime/device.rs"]
+pub mod device;
+#[path = "../../block_runtime/dma.rs"]
+pub mod dma;
+#[path = "../../block_runtime/irq.rs"]
+pub mod irq;
+#[path = "../../block_runtime/request.rs"]
+pub mod pending;
+#[path = "../../block_runtime/queue.rs"]
+pub mod queue;
+
+#[cfg(test)]
+pub use device::NoopDrainWake;
+pub use device::{
+    BlockCompletionMode, BlockDeviceHandle, BlockDrainWake, BlockIrqAction, BlockIrqSource,
+    BlockRuntime, BlockRuntimeConfig, QueueRuntime, RdifBlockDevice, block_io_stats,
+    map_blk_err_to_ax_err, release_block_irqs_for_passthrough,
+};
+#[cfg(test)]
+pub use dma::VEC_DMA_OP;
+pub use dma::{DmaBufferGuard, RuntimeDmaBuffer, new_owned_dma_buffer};
+pub use irq::{BlockIrqBridge, DrainEvents, RuntimeEventLatch};
+pub use pending::{
+    PendingRequest, PendingTable, PollClaim, PollProgress, RequestKey, RequestState,
+    RuntimeRequestId,
+};
+pub use queue::{CompletionDrain, CompletionSink, PollOutcome, RequestPoller};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockIoFutureState {
+    New,
+    Submitted(RequestKey),
+    Complete,
+}

@@ -9,8 +9,8 @@ use core::{
 
 use ax_errno::{AxError, AxResult, LinuxError};
 #[cfg(feature = "vsock")]
-use axnet::vsock::VsockAddr;
-use axnet::{SocketAddrEx, unix::UnixSocketAddr};
+use ax_net::vsock::VsockAddr;
+use ax_net::{SocketAddrEx, unix::UnixSocketAddr};
 use linux_raw_sys::{net::*, netlink::sockaddr_nl};
 
 use crate::mm::{UserConstPtr, UserPtr};

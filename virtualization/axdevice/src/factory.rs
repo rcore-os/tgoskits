@@ -12,150 +12,133 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Device factory catalog used during VM device initialization.
+//! Extensible construction of emulated devices from VM configuration.
 
-use alloc::format;
+use alloc::{sync::Arc, vec::Vec};
 
-use ax_errno::ax_err_type;
-use axdevice_base::{
-    DeviceError, DeviceFactory, DeviceFactoryRegister, DeviceResult, EmuDeviceType,
-};
+use axdevice_base::{InterruptTriggerMode, IrqLine};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
-/// Returns device factory registration entries collected from linker sections.
-#[cfg(target_os = "none")]
-pub fn linker_device_factory_registers() -> DeviceResult<&'static [DeviceFactoryRegister]> {
-    unsafe extern "C" {
-        fn __saxdevice_factory();
-        fn __eaxdevice_factory();
-    }
+use crate::{DeviceBundle, DeviceManagerError, DeviceManagerResult};
 
-    let start = __saxdevice_factory as *const () as usize;
-    let end = __eaxdevice_factory as *const () as usize;
-    if start > end {
-        return Err(DeviceError::from(ax_err_type!(
-            BadState,
-            format!("invalid axdevice factory section range: start={start:#x}, end={end:#x}")
-        )));
-    }
-
-    let len = end - start;
-    if len == 0 {
-        return Ok(&[]);
-    }
-
-    let align = core::mem::align_of::<DeviceFactoryRegister>();
-    if !start.is_multiple_of(align) {
-        return Err(DeviceError::from(ax_err_type!(
-            BadState,
-            format!("misaligned axdevice factory section: start={start:#x}, align={align}")
-        )));
-    }
-
-    let entry_size = core::mem::size_of::<DeviceFactoryRegister>();
-    if !len.is_multiple_of(entry_size) {
-        return Err(DeviceError::from(ax_err_type!(
-            BadState,
-            format!(
-                "invalid axdevice factory section length: len={len:#x}, entry_size={entry_size}"
-            )
-        )));
-    }
-
-    let count = len / entry_size;
-    unsafe { Ok(core::slice::from_raw_parts(start as *const _, count)) }
+/// Resolves a VM-local interrupt line for a device under construction.
+pub trait IrqResolver: Send + Sync {
+    /// Resolves `line` with the requested trigger mode.
+    fn resolve_irq(
+        &self,
+        line: usize,
+        trigger: InterruptTriggerMode,
+    ) -> DeviceManagerResult<IrqLine>;
 }
 
-/// Returns an empty linker factory list for non-bare-metal host builds.
-#[cfg(not(target_os = "none"))]
-pub fn linker_device_factory_registers() -> DeviceResult<&'static [DeviceFactoryRegister]> {
-    Ok(&[])
+/// VM-owned services available while a device factory is building a device.
+pub struct DeviceBuildContext<'a> {
+    irq_resolver: &'a dyn IrqResolver,
 }
 
-enum DeviceFactorySource<'a> {
-    Factories(&'a [&'a dyn DeviceFactory]),
-    Registers(&'a [DeviceFactoryRegister]),
+impl<'a> DeviceBuildContext<'a> {
+    /// Creates a device build context backed by `irq_resolver`.
+    pub const fn new(irq_resolver: &'a dyn IrqResolver) -> Self {
+        Self { irq_resolver }
+    }
+
+    /// Resolves a VM-local interrupt line.
+    pub fn resolve_irq(
+        &self,
+        line: usize,
+        trigger: InterruptTriggerMode,
+    ) -> DeviceManagerResult<IrqLine> {
+        self.irq_resolver.resolve_irq(line, trigger)
+    }
 }
 
-/// A platform-provided catalog of device factories.
-pub struct DeviceFactoryCatalog<'a> {
-    source: DeviceFactorySource<'a>,
+/// Builds all capabilities contributed by one emulated device type.
+pub trait DeviceFactory: Send + Sync {
+    /// Returns the configuration type handled by this factory.
+    fn device_type(&self) -> EmulatedDeviceType;
+
+    /// Builds a device without modifying the destination device registry.
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle>;
 }
 
-impl<'a> DeviceFactoryCatalog<'a> {
-    /// Creates a catalog from a platform-provided factory slice.
-    pub const fn new(factories: &'a [&'a dyn DeviceFactory]) -> Self {
+/// A registry containing at most one factory for each emulated device type.
+#[derive(Default)]
+pub struct DeviceFactoryRegistry {
+    factories: Vec<(EmulatedDeviceType, Arc<dyn DeviceFactory>)>,
+}
+
+impl DeviceFactoryRegistry {
+    /// Creates an empty factory registry.
+    pub const fn new() -> Self {
         Self {
-            source: DeviceFactorySource::Factories(factories),
+            factories: Vec::new(),
         }
     }
 
-    /// Creates a catalog from linker-collected factory registration entries.
-    pub const fn from_registers(registers: &'a [DeviceFactoryRegister]) -> Self {
-        Self {
-            source: DeviceFactorySource::Registers(registers),
+    /// Registers a factory, rejecting a duplicate device type.
+    pub fn register(&mut self, factory: Arc<dyn DeviceFactory>) -> DeviceManagerResult {
+        let device_type = factory.device_type();
+        if self.get(device_type).is_some() {
+            return Err(DeviceManagerError::ResourceConflict {
+                operation: "register device factory",
+                detail: alloc::format!(
+                    "factory for device type {device_type} is already registered"
+                ),
+            });
         }
+        self.factories.push((device_type, factory));
+        Ok(())
     }
 
-    /// Creates a catalog from the final image's linker-collected entries.
-    pub fn from_linker() -> DeviceResult<DeviceFactoryCatalog<'static>> {
-        let registers = linker_device_factory_registers()?;
-        Ok(DeviceFactoryCatalog::from_registers(registers))
+    /// Returns the factory registered for `device_type`.
+    pub fn get(&self, device_type: EmulatedDeviceType) -> Option<&dyn DeviceFactory> {
+        self.factories
+            .iter()
+            .find(|(registered_type, _)| *registered_type == device_type)
+            .map(|(_, factory)| factory.as_ref())
     }
 
-    /// Finds the first factory handling the given emulated device type.
-    pub fn find(&self, ty: EmuDeviceType) -> Option<&'a dyn DeviceFactory> {
-        match self.source {
-            DeviceFactorySource::Factories(factories) => {
-                factories.iter().copied().find(|factory| factory.ty() == ty)
-            }
-            DeviceFactorySource::Registers(registers) => registers
-                .iter()
-                .find(|register| register.factory().ty() == ty)
-                .map(DeviceFactoryRegister::factory),
-        }
-    }
-
-    /// Finds a factory handling the type and reports duplicate registrations.
-    pub fn find_unique(&self, ty: EmuDeviceType) -> DeviceResult<Option<&'a dyn DeviceFactory>> {
-        let mut matched: Option<(&'a dyn DeviceFactory, &'static str)> = None;
-
-        match self.source {
-            DeviceFactorySource::Factories(factories) => {
-                for factory in factories.iter().copied() {
-                    if factory.ty() != ty {
-                        continue;
-                    }
-                    if let Some((_, existing_name)) = matched {
-                        return Err(duplicate_factory_error(ty, existing_name, "<anonymous>"));
-                    }
-                    matched = Some((factory, "<anonymous>"));
-                }
-            }
-            DeviceFactorySource::Registers(registers) => {
-                for register in registers {
-                    let factory = register.factory();
-                    if factory.ty() != ty {
-                        continue;
-                    }
-                    if let Some((_, existing_name)) = matched {
-                        return Err(duplicate_factory_error(ty, existing_name, register.name()));
-                    }
-                    matched = Some((factory, register.name()));
-                }
-            }
-        }
-
-        Ok(matched.map(|(factory, _)| factory))
+    /// Builds a bundle for `config`.
+    pub fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        let Some(factory) = self.get(config.emu_type) else {
+            return Err(DeviceManagerError::Unsupported {
+                operation: "build emulated device",
+                detail: alloc::format!(
+                    "no factory is registered for emulated device '{}' of type {}",
+                    config.name,
+                    config.emu_type
+                ),
+            });
+        };
+        factory.build(config, context)
     }
 }
 
-fn duplicate_factory_error(
-    ty: EmuDeviceType,
-    existing_name: &'static str,
-    duplicate_name: &'static str,
-) -> DeviceError {
-    DeviceError::from(ax_err_type!(
-        BadState,
-        format!("duplicate device factories for {ty:?}: {existing_name} and {duplicate_name}")
-    ))
+struct MetaDeviceFactory;
+
+impl DeviceFactory for MetaDeviceFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::Dummy
+    }
+
+    fn build(
+        &self,
+        _config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        Ok(DeviceBundle::new())
+    }
+}
+
+/// Registers device factories that do not depend on an architecture backend.
+pub fn register_builtin_factories(registry: &mut DeviceFactoryRegistry) -> DeviceManagerResult {
+    registry.register(Arc::new(MetaDeviceFactory))
 }

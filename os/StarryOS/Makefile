@@ -15,7 +15,7 @@ export DISK_IMG := rootfs-$(ARCH).img
 # Generated Options
 export A := $(CURDIR)/starryos
 export NO_AXSTD := y
-export AX_LIB := ax-feat
+export AX_LIB := ax-std
 export APP_FEATURES := qemu
 
 ifeq ($(MEMTRACK), y)
@@ -55,10 +55,10 @@ rv:
 la:
 	$(MAKE) ARCH=loongarch64 run
 
-vf2:
-	$(MAKE) ARCH=riscv64 APP_FEATURES=vf2 MYPLAT=ax-plat-riscv64-visionfive2 BUS=mmio build
-
 sg2002:
-	$(MAKE) ARCH=riscv64 APP_FEATURES=sg2002 MYPLAT=ax-plat-riscv64-sg2002 BUS=mmio SMP=1 UIMAGE=y LOG=info build
+	cargo xtask starry build --config $(CURDIR)/configs/board/licheerv-nano-sg2002.toml
 
-.PHONY: build run justrun debug disasm clean
+sg2002-wifi:
+	cargo xtask starry build --config $(CURDIR)/configs/board/licheerv-nano-sg2002-wifi.toml
+
+.PHONY: build run justrun debug disasm clean sg2002 sg2002-wifi

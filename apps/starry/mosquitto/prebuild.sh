@@ -5,6 +5,8 @@ app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 base_rootfs="${STARRY_ROOTFS:-${STARRY_BASE_ROOTFS:-}}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
+arch="${STARRY_ARCH:-}"
+qemu_runner=""
 apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/mosquitto-apk-cache"
 
 require_env() {
@@ -19,7 +21,6 @@ require_env() {
 ensure_host_packages() {
     local missing=()
 
-    command -v apk >/dev/null 2>&1 || missing+=(apk-tools)
     command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v install >/dev/null 2>&1 || missing+=(coreutils)
     command -v readelf >/dev/null 2>&1 || missing+=(binutils)
@@ -28,13 +29,58 @@ ensure_host_packages() {
         return
     fi
 
-    if ! command -v apk >/dev/null 2>&1; then
-        echo "error: missing required host packages and apk is unavailable: ${missing[*]}" >&2
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo "error: missing required host packages and apt-get is unavailable: ${missing[*]}" >&2
         exit 1
     fi
 
     echo "installing missing host packages: ${missing[*]}"
-    apk add --no-cache "${missing[@]}"
+    apt-get update
+    apt-get install -y --no-install-recommends "${missing[@]}"
+}
+
+find_qemu_runner() {
+    local qemu_name
+
+    case "$arch" in
+        riscv64) qemu_name=qemu-riscv64 ;;
+        aarch64) qemu_name=qemu-aarch64 ;;
+        loongarch64) qemu_name=qemu-loongarch64 ;;
+        x86_64) qemu_name=qemu-x86_64 ;;
+        *)
+            echo "error: unsupported Mosquitto prebuild arch: $arch" >&2
+            exit 1
+            ;;
+    esac
+
+    if command -v "${qemu_name}-static" >/dev/null 2>&1; then
+        qemu_runner="$(command -v "${qemu_name}-static")"
+    elif command -v "$qemu_name" >/dev/null 2>&1; then
+        qemu_runner="$(command -v "$qemu_name")"
+    else
+        echo "error: ${qemu_name}-static or ${qemu_name} is required" >&2
+        exit 1
+    fi
+}
+
+run_guest_apk_with_retry() {
+    local attempt
+    local max_attempts=4
+
+    for attempt in $(seq 1 "$max_attempts"); do
+        if env -u LD_LIBRARY_PATH \
+            QEMU_LD_PREFIX="$staging_root" \
+            "$qemu_runner" -L "$staging_root" "$staging_root/sbin/apk" "$@"; then
+            return 0
+        fi
+
+        if [[ "$attempt" -eq "$max_attempts" ]]; then
+            return 1
+        fi
+
+        echo "apk command failed, retrying ($attempt/$max_attempts)..." >&2
+        sleep $((attempt * 3))
+    done
 }
 
 extract_base_rootfs() {
@@ -42,12 +88,28 @@ extract_base_rootfs() {
 }
 
 install_mosquitto_package() {
+    local guest_apk="$staging_root/sbin/apk"
+
     mkdir -p "$apk_cache"
-    apk --root "$staging_root" \
+    if [[ ! -x "$guest_apk" ]]; then
+        echo "error: staging root is missing guest apk: $guest_apk" >&2
+        exit 1
+    fi
+
+    if [[ -f /etc/resolv.conf ]]; then
+        cp /etc/resolv.conf "$staging_root/etc/resolv.conf"
+    fi
+
+    run_guest_apk_with_retry \
+        --root "$staging_root" \
+        --repositories-file "$staging_root/etc/apk/repositories" \
+        --keys-dir "$staging_root/etc/apk/keys" \
         --cache-dir "$apk_cache" \
         --update-cache \
-        --no-progress \
-        --no-scripts \
+        --timeout 60 \
+        --no-interactive \
+        --force-no-chroot \
+        --scripts=no \
         add mosquitto mosquitto-clients
 }
 
@@ -143,8 +205,10 @@ EOF
 require_env STARRY_ROOTFS "$base_rootfs"
 require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
+require_env STARRY_ARCH "$arch"
 
 ensure_host_packages
+find_qemu_runner
 extract_base_rootfs
 install_mosquitto_package
 populate_overlay

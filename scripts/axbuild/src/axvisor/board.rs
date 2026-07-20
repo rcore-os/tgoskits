@@ -96,7 +96,6 @@ mod tests {
             root.path(),
             "z-board",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = ["fs"]
 log = "Info"
@@ -106,9 +105,8 @@ log = "Info"
             root.path(),
             "a-board",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["ept-level-4"]
+features = []
 log = "Info"
 "#,
         );
@@ -126,33 +124,27 @@ log = "Info"
             root.path(),
             "phytiumpi",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = ["fs", "ax-driver/rockchip-sdhci"]
 log = "Info"
-plat_dyn = true
 "#,
         );
         write_board(
             root.path(),
             "qemu-aarch64",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
-features = ["ept-level-4"]
+features = []
 log = "Info"
-plat_dyn = true
 "#,
         );
         write_board(
             root.path(),
             "qemu-riscv64",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "riscv64gc-unknown-none-elf"
-features = ["ept-level-4"]
+features = []
 log = "Info"
-plat_dyn = true
 "#,
         );
 
@@ -168,11 +160,9 @@ plat_dyn = true
             root.path(),
             "orangepi-5-plus",
             r#"
-env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
 target = "aarch64-unknown-none-softfloat"
 features = ["ax-driver/rockchip-soc"]
 log = "Info"
-plat_dyn = true
 "#,
         );
 

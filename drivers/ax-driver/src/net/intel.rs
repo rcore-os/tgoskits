@@ -1,17 +1,12 @@
-use alloc::format;
-
 use eth_intel::E1000;
 use log::debug;
 use pcie::CommandRegister;
-use rdrive::{
-    PlatformDevice,
-    probe::{
-        OnProbeError,
-        pci::{EndpointRc, FnOnProbe},
-    },
+use rdrive::probe::{
+    OnProbeError,
+    pci::{FnOnProbe, ProbePci},
 };
 
-use crate::net::{PlatformDeviceNet, pci_legacy_irq};
+use crate::{PciIrqRequirement, net::ProbePciNet};
 
 const DRIVER_NAME: &str = "eth-intel-e1000";
 
@@ -24,14 +19,13 @@ crate::model_register!(
     }],
 );
 
-fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnProbeError> {
+fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
+    let endpoint = probe.endpoint_mut();
     if !E1000::check_vid_did(endpoint.vendor_id(), endpoint.device_id()) {
         return Err(OnProbeError::NotMatch);
     }
 
     let address = endpoint.address();
-    let irq = pci_legacy_irq(endpoint)
-        .ok_or_else(|| OnProbeError::other(format!("failed to resolve IRQ for E1000 {address}")))?;
     let Some(bar) = endpoint.bar_mmio(0) else {
         return Err(OnProbeError::other("E1000 BAR0 MMIO region missing"));
     };
@@ -50,9 +44,9 @@ fn probe(endpoint: &mut EndpointRc, plat_dev: PlatformDevice) -> Result<(), OnPr
     )
     .map_err(|err| OnProbeError::other(alloc::format!("failed to create e1000: {err:?}")))?;
 
-    plat_dev.register_net(DRIVER_NAME, dev, Some(irq));
+    let irq = probe.register_net(DRIVER_NAME, dev, PciIrqRequirement::Required)?;
     debug!(
-        "intel e1000 PCI device registered successfully at {} with irq {:#x}",
+        "intel e1000 PCI device registered successfully at {} with irq {:?}",
         address, irq
     );
     Ok(())

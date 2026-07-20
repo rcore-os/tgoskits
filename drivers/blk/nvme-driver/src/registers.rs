@@ -200,6 +200,18 @@ impl NvmeReg {
         debug!("Ready!");
     }
 
+    pub fn mask_interrupt_vector(&self, vector: u32) {
+        if vector < u32::BITS {
+            self.interrupt_mask_set.set(1 << vector);
+        }
+    }
+
+    pub fn unmask_interrupt_vector(&self, vector: u32) {
+        if vector < u32::BITS {
+            self.interrupt_mask_clear.set(1 << vector);
+        }
+    }
+
     // write submission queue doorbell to notify nvme device
     pub fn write_sq_y_tail_doolbell(&self, y: usize, tail: u32) {
         let dstrd = self.controller_capabilities.read(CAP::DSTRD) as usize;

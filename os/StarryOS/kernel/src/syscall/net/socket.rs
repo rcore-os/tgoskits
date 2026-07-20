@@ -1,18 +1,18 @@
 use alloc::boxed::Box;
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::FS_CONTEXT;
-use ax_task::current;
-use axfs_ng_vfs::{MetadataUpdate, NodeType};
+use ax_fs_ng::vfs::FS_CONTEXT;
 #[cfg(feature = "vsock")]
-use axnet::vsock::{VsockSocket, VsockStreamTransport};
-use axnet::{
+use ax_net::vsock::VsockSocket;
+use ax_net::{
     Shutdown, Socket as SocketInner, SocketAddrEx, SocketOps,
     raw::{IpProtocol, IpVersion, RawSocket},
     tcp::TcpSocket,
     udp::UdpSocket,
     unix::{DgramTransport, StreamTransport, UnixSocket, UnixSocketAddr},
 };
+use ax_task::current;
+use axfs_ng_vfs::{MetadataUpdate, NodeType};
 use linux_raw_sys::{
     general::{O_CLOEXEC, O_NONBLOCK},
     net::{
@@ -90,7 +90,7 @@ pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
             return add_file_like(socket as _, cloexec).map(|fd| fd as isize);
         }
         #[cfg(feature = "vsock")]
-        (AF_VSOCK, SOCK_STREAM) => VsockSocket::new(VsockStreamTransport::new()).into(),
+        (AF_VSOCK, SOCK_STREAM) => VsockSocket::new().into(),
         (AF_INET, SOCK_RAW) => {
             if proto != IPPROTO_ICMP as u32 {
                 return Err(AxError::from(LinuxError::EPROTONOSUPPORT));

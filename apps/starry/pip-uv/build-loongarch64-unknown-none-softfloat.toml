@@ -1,0 +1,9 @@
+target = "loongarch64-unknown-none-softfloat"
+env = { AX_IP = "10.0.2.15", AX_GW = "10.0.2.2" }
+log = "Warn"
+features = [
+    "axplat-dyn/efi",
+    "ax-driver/serial",
+    "ax-driver/virtio-blk",
+    "ax-driver/virtio-net",
+]

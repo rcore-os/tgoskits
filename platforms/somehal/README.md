@@ -73,16 +73,16 @@ pub fn init_current_cpu() {
 - 支持动态设备注册
 - 统一的探测优先级管理
 
-### 🔌 中断处理统一接口
+### 🔌 中断事务统一接口
 
 ```rust
-// 上层统一接口，底层版本无关
-fn __aarch64_irq_handler() {
-    if v3::is_v3() {
-        v3::handle_irq();
-    } else {
-        v2::handle_irq();
-    }
+// 上层在分发期间持有 ActiveIrq，drop 时完成 EOI/complete。
+fn handle_platform_irq(raw: usize) {
+    let Some(active) = somehal::irq::begin_irq(raw) else {
+        return;
+    };
+    let irq = active.id();
+    dispatch_irq(irq.raw());
 }
 ```
 
@@ -239,8 +239,16 @@ pub trait KernelOp {
 
 ```rust
 pub trait PlatOp {
+    type ActiveIrq;
+
     /// 设置 IRQ 使能状态
     fn irq_set_enable(irq: IrqId, enable: bool);
+
+    /// 开启一次中断事务，claim/ack 后返回 guard
+    fn begin_irq(raw: usize) -> Option<Self::ActiveIrq>;
+
+    /// 获取当前中断事务对应的 IRQ ID
+    fn active_irq_id(active: &Self::ActiveIrq) -> IrqId;
 
     /// 获取系统定时器 IRQ ID
     fn systick_irq() -> IrqId;
@@ -297,7 +305,7 @@ somehal = { version = "0.5", features = ["hv", "uspace"] }
 
 ### 构建依赖
 
-- **`somehal-macros`**: 平台宏（entry、irq_handler 等）
+- **`somehal-macros`**: 平台宏（entry 等）
 
 ## 开发指南
 
@@ -376,9 +384,9 @@ impl Platform for PlatformImpl {
 1. 创建独立的模块文件
 2. 实现统一的接口函数：
    - `init_cpu()`: CPU 接口初始化
-   - `handle_irq()`: 中断处理
+   - `begin_irq()`: claim/ack 并返回 `ActiveIrq`
    - `irq_set_enable()`: IRQ 使能控制
-3. 在上层添加版本检测逻辑
+3. 在 `ActiveIrq::drop()` 中完成 EOI/complete
 4. 使用 `StaticCell` 管理全局状态
 
 ### 宏使用最佳实践
@@ -389,14 +397,11 @@ impl Platform for PlatformImpl {
 - ✅ **函数签名**: `fn main() -> !` 或 `unsafe fn main() -> !`
 - ❌ **不要手动调用**: `somehal::init()` 由宏自动处理
 
-**irq_handler 宏** (`#[somehal::irq_handler]`)：
-```rust
-#[somehal::irq_handler]
-fn my_irq_handler(irq: someboot::irq::IrqId) {
-    // 处理中断
-    sparreal_kernel::os::irq::handle_irq(irq);
-}
-```
+**IRQ 生命周期**：
+- `someboot` 只负责早期 trap/vector 和底层架构能力，不作为运行期 IRQ 分发者。
+- `somehal::irq::begin_irq(raw)` 在 claim/ack 后返回 `ActiveIrq`。
+- 上层分发 IRQ 时必须在同一作用域内持有 `ActiveIrq`。
+- `ActiveIrq::drop()` 执行架构相关的 EOI/complete，随后运行时才允许 IRQ-exit 调度。
 
 ### 代码风格
 
@@ -408,7 +413,7 @@ fn my_irq_handler(irq: someboot::irq::IrqId) {
 ## 相关文档
 
 - [Sparreal OS CLAUDE.md](../../CLAUDE.md) - 项目总览
-- [someboot 文档](../../crates/someboot/README.md) - 底层架构抽象
+- [someboot 源码](../someboot) - 底层架构抽象
 - [sparreal-kernel 文档](../../crates/sparreal-kernel/CLAUDE.md) - 内核核心
 
 ## 许可证

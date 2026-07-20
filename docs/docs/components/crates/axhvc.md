@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / HyperCall ABI 定义组件
 > 版本：`0.2.0`
-> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`os/axvisor/src/vmm/hvc.rs`
+> 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、`virtualization/axvm/src/runtime/hvc.rs`
 
 `axhvc` 的真实定位是 **AxVisor HyperCall ABI 描述层**。它负责把“来宾发起的 hypercall 编号”定义为稳定的 Rust 类型，并给出统一的结果类型；它并不负责 trap 入口、寄存器编组、权限校验、实际功能实现，也不是完整的 hypercall 子系统。
 
@@ -69,7 +69,7 @@
 
 ### 1.5 与 Axvisor 当前实现的真实关系
 
-当前仓库里的真实消费者是 `os/axvisor/src/vmm/hvc.rs`。那里会：
+当前仓库里的真实消费者是 `virtualization/axvm/src/runtime/hvc.rs`。那里会：
 
 1. 从 trap 参数里拿到原始 hypercall 编号
 2. 用 `HyperCallCode::try_from(code as u32)` 做检查
@@ -136,7 +136,7 @@
 
 实际调用链为：
 
-- `axhvc` -> `os/axvisor/src/vmm/hvc.rs`
+- `axhvc` -> `virtualization/axvm/src/runtime/hvc.rs`
 
 ### 3.3 关系解读
 
@@ -212,7 +212,7 @@ crate 目录里没有单独测试。当前主要依赖：
 | --- | --- | --- | --- |
 | ArceOS | 当前仓库未见直接接线 | 共享 ABI 组件 | 本身不属于 ArceOS 运行时主线 |
 | StarryOS | 当前仓库未见直接接线 | 共享 ABI 组件 | 尚未看到直接集成 |
-| Axvisor | HyperCall 入口边界 | HyperCall 编号与返回值定义层 | 被 `os/axvisor/src/vmm/hvc.rs` 直接使用 |
+| Axvisor | HyperCall 入口边界 | HyperCall 编号与返回值定义层 | 被 `virtualization/axvm/src/runtime/hvc.rs` 直接使用 |
 
 ## 总结
 

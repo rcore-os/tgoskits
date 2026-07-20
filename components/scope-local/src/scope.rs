@@ -1,7 +1,7 @@
 use alloc::alloc::{alloc, dealloc, handle_alloc_error};
 use core::{alloc::Layout, iter::zip, mem::MaybeUninit, ptr::NonNull};
 
-use spin::LazyLock;
+use spin::{LazyLock, Once};
 
 use crate::{
     boxed::ItemBox,
@@ -10,16 +10,19 @@ use crate::{
 
 /// A scope is a collection of items.
 pub struct Scope {
-    // Not using [ItemBox<A>] to save a `usize` because we know the length
-    ptr: NonNull<ItemBox>,
+    ptr: NonNull<ItemSlot>,
 }
 
 unsafe impl Send for Scope {}
 unsafe impl Sync for Scope {}
 
 impl Scope {
+    fn len() -> usize {
+        Registry.len()
+    }
+
     fn layout() -> Layout {
-        Layout::array::<ItemBox>(Registry.len()).unwrap()
+        Layout::array::<ItemSlot>(Self::len()).unwrap()
     }
 
     /// Create a new namespace with all resources initialized as their default
@@ -34,7 +37,7 @@ impl Scope {
             core::slice::from_raw_parts_mut(ptr.cast::<MaybeUninit<_>>().as_ptr(), Registry.len())
         };
         for (item, d) in zip(&*Registry, slice) {
-            d.write(ItemBox::new(item));
+            d.write(ItemSlot::new(item));
         }
 
         Self { ptr }
@@ -42,12 +45,12 @@ impl Scope {
 
     pub(crate) fn get(&self, item: &'static Item) -> &ItemBox {
         let index = item.index();
-        unsafe { self.ptr.add(index).as_ref() }
+        unsafe { self.ptr.add(index).as_ref() }.get()
     }
 
     pub(crate) fn get_mut(&mut self, item: &'static Item) -> &mut ItemBox {
         let index = item.index();
-        unsafe { self.ptr.add(index).as_mut() }
+        unsafe { self.ptr.add(index).as_mut() }.get_mut()
     }
 }
 
@@ -59,11 +62,39 @@ impl Default for Scope {
 
 impl Drop for Scope {
     fn drop(&mut self) {
-        let ptr = NonNull::slice_from_raw_parts(self.ptr, Registry.len());
+        let ptr = NonNull::slice_from_raw_parts(self.ptr, Self::len());
         unsafe {
             ptr.drop_in_place();
             dealloc(self.ptr.cast().as_ptr(), Self::layout());
         }
+    }
+}
+
+struct ItemSlot {
+    item: &'static Item,
+    value: Once<ItemBox>,
+}
+
+impl ItemSlot {
+    fn new(item: &'static Item) -> Self {
+        Self {
+            item,
+            value: Once::new(),
+        }
+    }
+
+    fn get(&self) -> &ItemBox {
+        self.value.call_once(|| ItemBox::new(self.item))
+    }
+
+    fn get_mut(&mut self) -> &mut ItemBox {
+        if !self.value.is_completed() {
+            let item = self.item;
+            self.value.call_once(|| ItemBox::new(item));
+        }
+        self.value
+            .get_mut()
+            .expect("scope-local item must be initialized")
     }
 }
 
@@ -101,6 +132,6 @@ impl ActiveScope {
         let ptr = ACTIVE_SCOPE_PTR.read_current();
         let ptr = NonNull::new(ptr as _).unwrap_or(GLOBAL_SCOPE.ptr);
         let index = item.index();
-        unsafe { ptr.add(index).as_ref() }
+        unsafe { ptr.add(index).as_ref() }.get()
     }
 }

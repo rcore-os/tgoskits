@@ -21,8 +21,14 @@ mod file;
 mod linear;
 mod shared;
 
+#[cfg(axtest)]
+pub(crate) use self::cow::private_mmap_eof_check_for_test;
 pub use self::shared::SharedPages;
-use super::AddrSpace;
+pub use super::accounting::RssKind;
+use super::{
+    AddrSpace,
+    accounting::{CloneMapAccounting, MemoryAccounting},
+};
 
 fn divide_page(size: usize, page_size: PageSize) -> usize {
     assert!(page_size.is_aligned(size), "unaligned");
@@ -64,10 +70,21 @@ pub trait BackendOps {
     fn page_size(&self) -> PageSize;
 
     /// Map a memory region.
-    fn map(&self, range: VirtAddrRange, flags: MappingFlags, pt: &mut PageTableCursor) -> AxResult;
+    fn map(
+        &self,
+        range: VirtAddrRange,
+        flags: MappingFlags,
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult;
 
     /// Unmap a memory region.
-    fn unmap(&self, range: VirtAddrRange, pt: &mut PageTableCursor) -> AxResult;
+    fn unmap(
+        &self,
+        range: VirtAddrRange,
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult;
 
     /// Called before a memory region is protected.
     fn on_protect(
@@ -89,6 +106,7 @@ pub trait BackendOps {
         _range: VirtAddrRange,
         _flags: MappingFlags,
         _access_flags: MappingFlags,
+        _acct: Option<&MemoryAccounting>,
         _pt: &mut PageTableCursor,
     ) -> AxResult<(usize, Option<PopulateCallback>)> {
         Ok((0, None))
@@ -107,6 +125,7 @@ pub trait BackendOps {
         old_pt: &mut PageTableCursor,
         new_pt: &mut PageTableCursor,
         new_aspace: &Arc<Mutex<AddrSpace>>,
+        acct: CloneMapAccounting<'_>,
     ) -> AxResult<Backend>;
 
     /// Splits the backend into two at the given position, and returns the backend for the upper part.
@@ -197,7 +216,8 @@ impl MappingBackend for Backend {
 
     fn map(&self, start: VirtAddr, size: usize, flags: MappingFlags, pt: &mut PageTable) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
-        if let Err(err) = BackendOps::map(self, range, flags, &mut pt.cursor()) {
+        let acct = super::accounting::bridge_rss_accounting();
+        if let Err(err) = BackendOps::map(self, range, flags, acct, &mut pt.cursor()) {
             warn!("Failed to map area: {:?}", err);
             false
         } else {
@@ -207,7 +227,8 @@ impl MappingBackend for Backend {
 
     fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
-        if let Err(err) = BackendOps::unmap(self, range, &mut pt.cursor()) {
+        let acct = super::accounting::bridge_rss_accounting();
+        if let Err(err) = BackendOps::unmap(self, range, acct, &mut pt.cursor()) {
             warn!("Failed to unmap area: {:?}", err);
             false
         } else {
@@ -228,7 +249,11 @@ impl MappingBackend for Backend {
             warn!("Failed to protect area: {:?}", err);
             return false;
         }
-        cursor.protect_region(start, size, new_flags).is_ok()
+        let pte_flags = match self {
+            Backend::Cow(c) => c.pte_flags_for_protect(new_flags),
+            _ => new_flags,
+        };
+        cursor.protect_region(start, size, pte_flags).is_ok()
     }
 
     fn split(&mut self, align_diff: usize) -> Option<Self> {

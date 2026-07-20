@@ -19,39 +19,29 @@ mod structs;
 mod vcpu;
 mod vmcs;
 
-use ax_errno::ax_err_type;
-use axvcpu::HostPhysAddr;
 use x86_vlapic::EmulatedLocalApic;
 
 use self::structs::VmxBasic;
 pub use self::{
-    definitions::VmxExitReason,
-    percpu::VmxPerCpuState as VmxArchPerCpuState,
-    vcpu::{VmxVcpu as VmxArchVCpu, X86_APIC_ACCESS_GPA},
-    vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo},
+    percpu::VmxPerCpuState,
+    vcpu::{VmxVcpu, X86_APIC_ACCESS_GPA},
+    vmcs::VmxExitInfo,
 };
-
-/// Return if current platform support virtualization extension.
-pub fn has_hardware_support() -> bool {
-    if let Some(feature) = raw_cpuid::CpuId::new().get_feature_info() {
-        feature.has_vmx()
-    } else {
-        false
-    }
-}
+use crate::{X86HostOps, X86HostPhysAddr, X86VcpuError};
 
 pub fn read_vmcs_revision_id() -> u32 {
     VmxBasic::read().revision_id
 }
 
-pub fn x86_apic_access_page_addr() -> HostPhysAddr {
-    EmulatedLocalApic::virtual_apic_access_addr()
+pub fn x86_apic_access_page_addr<H: X86HostOps>() -> X86HostPhysAddr {
+    let addr = EmulatedLocalApic::<H>::virtual_apic_access_addr();
+    X86HostPhysAddr::from_usize(addr.as_usize())
 }
 
-fn as_axerr(err: x86::vmx::VmFail) -> ax_errno::AxError {
+fn as_axerr(err: x86::vmx::VmFail) -> X86VcpuError {
     use x86::vmx::VmFail;
     match err {
-        VmFail::VmFailValid => ax_err_type!(BadState, vmcs::instruction_error().as_str()),
-        VmFail::VmFailInvalid => ax_err_type!(BadState, "VMCS pointer is not valid"),
+        VmFail::VmFailValid => X86VcpuError::BadState,
+        VmFail::VmFailInvalid => X86VcpuError::BadState,
     }
 }

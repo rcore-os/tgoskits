@@ -3,7 +3,8 @@ use alloc::{
     sync::Arc,
 };
 
-use ax_fs::FS_CONTEXT;
+use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{AxTaskExt, spawn_task};
@@ -12,7 +13,7 @@ use starry_process::{Pid, Process};
 use crate::{
     file::FD_TABLE,
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty},
-    pseudofs::{self, dev::tty::N_TTY},
+    pseudofs::{self, dev::tty},
     task::{ProcessData, ProcessImage, Thread, add_task_to_table, new_user_task, spawn_alarm_task},
     tracepoint::tracepoint_init,
 };
@@ -22,24 +23,15 @@ pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
     tracepoint_init().expect("Failed to initialize tracepoints");
 
-    {
-        // perf kprobe-by-name resolves through the real in-kernel `.kallsyms`
-        // blob (`pseudofs::proc::KALLSYMS`, built from the `ksym` crate), the
-        // same table `/proc/kallsyms` exposes — no separate symbol table.
-        crate::ebpf::init_ebpf();
-        crate::perf::perf_event_init();
-    }
+    crate::ebpf::init_ebpf();
+    crate::perf::perf_event_init();
     crate::kmod::init_kmod();
-
-    // FIXME: loongarch64 selftest hangs on QEMU; the kprobe crate's loongarch64
-    // breakpoint handling needs upstream fixes before selftest can be enabled.
-    #[cfg(not(target_arch = "loongarch64"))]
-    crate::kprobe::run_selftest();
 
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
+    pseudofs::usbfs::start_event_pump();
 
-    ax_alloc::register_page_reclaim_fn(ax_fs::page_cache_reclaim);
+    ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
 
     let loc = FS_CONTEXT
         .lock()
@@ -57,18 +49,29 @@ pub fn init(args: &[String], envs: &[String]) {
         })
         .expect("Failed to create user address space");
 
-    let (entry_vaddr, ustack_top, auxv) = load_user_app(&mut uspace, None, args, envs)
+    let (entry_vaddr, ustack_top, auxv) = load_user_app(&mut uspace, loc, &args[0], args, envs)
         .unwrap_or_else(|e| panic!("Failed to load user app: {}", e));
 
     let uctx = UserContext::new(entry_vaddr.into(), ustack_top, 0);
     let mut task = new_user_task(&name, uctx, 0);
     task.ctx_mut().set_page_table_root(uspace.page_table_root());
 
-    let pid = task.id().as_u64() as Pid;
+    // PID 1 must really be 1: the init process is the root of the process
+    // hierarchy and userspace (e.g. systemd's `getpid() == 1` system-manager
+    // check) relies on it. The scheduler task id is an internal counter that is
+    // already past 1 by the time we spawn the user init (kernel helper tasks
+    // took the low ids), so we pin the user-visible pid/tid to 1 and leave the
+    // scheduler id untouched. `Thread::tid` is already decoupled from the
+    // scheduler id (see its field doc), so this only requires the table keys to
+    // follow the thread tid rather than `task.id()`.
+    const INIT_PID: Pid = 1;
+    let pid = INIT_PID;
     let proc = Process::new_init(pid);
     proc.add_thread(pid);
 
-    N_TTY.bind_to(&proc).expect("Failed to bind ntty");
+    if let Err(err) = tty::bind_console_to(&proc) {
+        warn!("Failed to bind console tty: {err:?}");
+    }
 
     let proc = ProcessData::new(
         proc,
@@ -76,6 +79,7 @@ pub fn init(args: &[String], envs: &[String]) {
         Arc::new(Mutex::new(uspace)),
         Arc::default(),
         None,
+        pid,
         false,
     );
 
@@ -85,11 +89,16 @@ pub fn init(args: &[String], envs: &[String]) {
             .expect("Failed to add stdio");
     }
 
-    let thr = Thread::new(pid, proc, None);
+    let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default());
     *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
-    let task = spawn_task(task);
-    add_task_to_table(&task);
+    let task = {
+        let _guard = NoPreemptIrqSave::new();
+        let task = spawn_task(task);
+        add_task_to_table(&task);
+        tty::arm_console_irq();
+        task
+    };
 
     // TODO: wait for all processes to finish
     let exit_code = task.join();

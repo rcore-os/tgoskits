@@ -182,6 +182,7 @@ impl<T> JoinHandle<T> {
     ///
     /// This function will return immediately if the associated thread has
     /// already finished.
+    #[track_caller]
     pub fn join(mut self) -> io::Result<T> {
         api::ax_wait_for_exit(self.native);
         Arc::get_mut(&mut self.packet)

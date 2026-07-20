@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_errno::{AxResult, ax_err, ax_err_type};
-use ax_memory_addr::PAGE_SIZE_4K as PAGE_SIZE;
-use axvcpu::AxArchPerCpu;
+use core::marker::PhantomData;
+
 use x86::bits64::vmx;
 use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
 
 use crate::{
+    X86HostOps, X86VcpuResult,
     msr::Msr,
-    vmx::{
-        has_hardware_support,
-        structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion},
-    },
+    types::X86_PAGE_SIZE_4K as PAGE_SIZE,
+    vmx::structs::{FeatureControl, FeatureControlFlags, VmxBasic, VmxRegion},
     xstate::enable_xsave,
 };
 
@@ -33,7 +31,7 @@ use crate::{
 /// when operating in VMX mode, including the VMCS revision identifier and
 /// the VMX region.
 #[derive(Debug)]
-pub struct VmxPerCpuState {
+pub struct VmxPerCpuState<H: X86HostOps> {
     /// The VMCS (Virtual Machine Control Structure) revision identifier.
     ///
     /// This identifier is used to ensure compatibility between the software
@@ -44,27 +42,31 @@ pub struct VmxPerCpuState {
     ///
     /// This region typically contains the VMCS and other state information
     /// required for managing virtual machines on this particular CPU.
-    vmx_region: VmxRegion,
+    vmx_region: VmxRegion<H>,
+
+    /// Original host CR0/CR4 values before entering VMX operation.
+    host_cr0_cr4: Option<(u64, u64)>,
+
+    _host: PhantomData<fn() -> H>,
 }
 
-impl AxArchPerCpu for VmxPerCpuState {
-    fn new(_cpu_id: usize) -> AxResult<Self> {
+impl<H: X86HostOps> VmxPerCpuState<H> {
+    pub fn new(_cpu_id: usize) -> X86VcpuResult<Self> {
         Ok(Self {
             vmcs_revision_id: 0,
-            vmx_region: unsafe { VmxRegion::uninit() },
+            vmx_region: unsafe { VmxRegion::<H>::uninit() },
+            host_cr0_cr4: None,
+            _host: PhantomData,
         })
     }
 
-    fn is_enabled(&self) -> bool {
+    pub fn is_enabled(&self) -> bool {
         Cr4::read().contains(Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS)
     }
 
-    fn hardware_enable(&mut self) -> AxResult {
-        if !has_hardware_support() {
-            return ax_err!(Unsupported, "CPU does not support feature VMX");
-        }
+    pub fn hardware_enable(&mut self) -> X86VcpuResult {
         if self.is_enabled() {
-            return ax_err!(ResourceBusy, "VMX is already turned on");
+            return x86_err!(ResourceBusy, "VMX is already turned on");
         }
 
         // Enable XSAVE/XRSTOR.
@@ -79,85 +81,108 @@ impl AxArchPerCpu for VmxPerCpuState {
                 ctrl | FeatureControlFlags::LOCKED | FeatureControlFlags::VMXON_ENABLED_OUTSIDE_SMX,
             )
         } else if !vmxon_outside {
-            return ax_err!(Unsupported, "VMX disabled by BIOS");
+            return x86_err!(Unsupported, "VMX disabled by BIOS");
         }
 
-        // Check control registers are in a VMX-friendly state. (SDM Vol. 3C, Appendix A.7, A.8)
-        macro_rules! cr_is_valid {
-            ($value:expr, $crx:ident) => {{
-                use Msr::*;
-                let value = $value;
-                paste::paste! {
-                    let fixed0 = [<IA32_VMX_ $crx _FIXED0>].read();
-                    let fixed1 = [<IA32_VMX_ $crx _FIXED1>].read();
-                }
-                (!fixed0 | value != 0) && (fixed1 | !value != 0)
-            }};
+        let cr0 = Cr0::read_raw();
+        let cr0_fixed0 = Msr::IA32_VMX_CR0_FIXED0.read();
+        let cr0_fixed1 = Msr::IA32_VMX_CR0_FIXED1.read();
+        let cr0_vmx = vmx_fixed_control_value(cr0, cr0_fixed0, cr0_fixed1);
+        let cr4 = Cr4::read_raw();
+        let cr4_fixed0 = Msr::IA32_VMX_CR4_FIXED0.read();
+        let cr4_fixed1 = Msr::IA32_VMX_CR4_FIXED1.read();
+        let cr4_vmx = vmx_fixed_control_value(cr4, cr4_fixed0, cr4_fixed1);
+
+        if !is_vmx_fixed_control_value_valid(cr0_vmx, cr0_fixed0, cr0_fixed1) {
+            return x86_err!(BadState, "host CR0 is not valid in VMX operation");
         }
-        if !cr_is_valid!(Cr0::read().bits(), CR0) {
-            return ax_err!(BadState, "host CR0 is not valid in VMX operation");
-        }
-        if !cr_is_valid!(Cr4::read().bits(), CR4) {
-            return ax_err!(BadState, "host CR4 is not valid in VMX operation");
+        if !is_vmx_fixed_control_value_valid(cr4_vmx, cr4_fixed0, cr4_fixed1) {
+            return x86_err!(BadState, "host CR4 is not valid in VMX operation");
         }
 
         // Get VMCS revision identifier in IA32_VMX_BASIC MSR.
         let vmx_basic = VmxBasic::read();
-        if vmx_basic.region_size as usize != PAGE_SIZE {
-            return ax_err!(Unsupported);
+        if vmx_basic.region_size as usize > PAGE_SIZE {
+            return x86_err!(
+                Unsupported,
+                format_args!(
+                    "unsupported VMX region size: {} bytes",
+                    vmx_basic.region_size
+                )
+            );
         }
         if vmx_basic.mem_type != VmxBasic::VMX_MEMORY_TYPE_WRITE_BACK {
-            return ax_err!(Unsupported);
+            return x86_err!(
+                Unsupported,
+                format_args!("unsupported VMX memory type: {}", vmx_basic.mem_type)
+            );
         }
         if vmx_basic.is_32bit_address {
-            return ax_err!(Unsupported);
+            return x86_err!(Unsupported, "unsupported 32-bit VMX physical address width");
         }
         if !vmx_basic.io_exit_info {
-            return ax_err!(Unsupported);
+            return x86_err!(Unsupported, "VMX lacks I/O exit instruction info");
         }
         if !vmx_basic.vmx_flex_controls {
-            return ax_err!(Unsupported);
+            return x86_err!(Unsupported, "VMX lacks flexible controls");
         }
         self.vmcs_revision_id = vmx_basic.revision_id;
-        self.vmx_region = VmxRegion::new(self.vmcs_revision_id, false)?;
+        self.vmx_region = VmxRegion::<H>::new(self.vmcs_revision_id, false)?;
 
         unsafe {
-            // Enable VMX using the VMXE bit.
-            Cr4::write(Cr4::read() | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS);
+            Cr0::write_raw(cr0_vmx);
+            Cr4::write_raw(cr4_vmx);
             // Execute VMXON.
-            vmx::vmxon(self.vmx_region.phys_addr().as_usize() as _).map_err(|err| {
-                ax_err_type!(
+            if let Err(err) = vmx::vmxon(self.vmx_region.phys_addr().as_usize() as _) {
+                Cr4::write_raw(cr4);
+                Cr0::write_raw(cr0);
+                return Err(x86_err_type!(
                     BadState,
                     format_args!("VMX instruction vmxon failed: {:?}", err)
-                )
-            })?;
+                ));
+            }
         }
+        self.host_cr0_cr4 = Some((cr0, cr4));
         info!("[AxVM] succeeded to turn on VMX.");
 
         Ok(())
     }
 
-    fn hardware_disable(&mut self) -> AxResult {
+    pub fn hardware_disable(&mut self) -> X86VcpuResult {
         if !self.is_enabled() {
-            return ax_err!(BadState, "VMX is not enabled");
+            return x86_err!(BadState, "VMX is not enabled");
         }
 
         unsafe {
             // Execute VMXOFF.
             vmx::vmxoff().map_err(|err| {
-                ax_err_type!(
+                x86_err_type!(
                     BadState,
                     format_args!("VMX instruction vmxoff failed: {:?}", err)
                 )
             })?;
-            // Remove VMXE bit in CR4.
-            Cr4::update(|cr4| cr4.remove(Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS));
+            if let Some((cr0, cr4)) = self.host_cr0_cr4.take() {
+                Cr4::write_raw(cr4);
+                Cr0::write_raw(cr0);
+            } else {
+                // Fall back to the previous behavior for a partially initialized
+                // state where the original control registers were not recorded.
+                Cr4::update(|cr4| cr4.remove(Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS));
+            }
         };
         info!("[AxVM] succeeded to turn off VMX.");
 
-        self.vmx_region = unsafe { VmxRegion::uninit() };
+        self.vmx_region = unsafe { VmxRegion::<H>::uninit() };
         Ok(())
     }
+}
+
+fn vmx_fixed_control_value(value: u64, fixed0: u64, fixed1: u64) -> u64 {
+    (value | fixed0) & fixed1
+}
+
+fn is_vmx_fixed_control_value_valid(value: u64, fixed0: u64, fixed1: u64) -> bool {
+    (value & fixed0) == fixed0 && (value & !fixed1) == 0
 }
 
 #[cfg(test)]
@@ -167,10 +192,12 @@ mod tests {
     use super::*;
     use crate::test_utils::mock::MockMmHal;
 
+    type TestVmxPerCpuState = VmxPerCpuState<MockMmHal>;
+
     #[test]
     fn test_vmx_per_cpu_state_new() {
         MockMmHal::reset(); // Reset before test
-        let result = VmxPerCpuState::new(0);
+        let result = TestVmxPerCpuState::new(0);
         assert!(result.is_ok());
 
         let state = result.unwrap();
@@ -180,7 +207,7 @@ mod tests {
     #[test]
     fn test_vmx_per_cpu_state_default_values() {
         MockMmHal::reset(); // Reset before test
-        let state = VmxPerCpuState::new(0).unwrap();
+        let state = TestVmxPerCpuState::new(0).unwrap();
 
         // Test that vmcs_revision_id is initialized to 0
         assert_eq!(state.vmcs_revision_id, 0);
@@ -197,7 +224,7 @@ mod tests {
 
         // Create states for multiple CPUs
         for cpu_id in 0..4 {
-            let state = VmxPerCpuState::new(cpu_id).unwrap();
+            let state = TestVmxPerCpuState::new(cpu_id).unwrap();
             states.push(state);
         }
 
@@ -215,7 +242,7 @@ mod tests {
     #[test]
     fn test_vmx_per_cpu_state_debug() {
         MockMmHal::reset(); // Reset before test
-        let state = VmxPerCpuState::new(0).unwrap();
+        let state = TestVmxPerCpuState::new(0).unwrap();
 
         // Test that Debug trait is implemented and doesn't panic
         let debug_str = format!("{:?}", state);
@@ -227,7 +254,7 @@ mod tests {
         use core::mem;
 
         // Test that the struct has a reasonable size
-        let size = mem::size_of::<VmxPerCpuState>();
+        let size = mem::size_of::<TestVmxPerCpuState>();
 
         // Should be larger than just the u32 field due to the VmxRegion
         assert!(size > 4);

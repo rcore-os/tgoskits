@@ -1,49 +1,61 @@
-//! Host callbacks required by the x86 vCPU implementation.
+//! Host callbacks required by the OS-neutral x86 vCPU implementation.
 
-use ax_errno::{AxResult, ax_err_type};
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
+use core::marker::PhantomData;
 
-/// Host memory and time operations required by x86 virtualization backends.
-#[ax_crate_interface::def_interface]
-pub trait X86VcpuHostIf {
+use x86_vlapic::X86VlapicHostOps;
+
+use crate::{
+    X86GuestPhysAddr, X86HostPhysAddr, X86HostVirtAddr, X86VcpuError, X86VcpuResult,
+    types::X86_PAGE_SIZE_4K,
+};
+
+/// Host memory, time, and interrupt operations required by x86 virtualization backends.
+pub trait X86HostOps: X86VlapicHostOps {
     /// Allocate one host frame.
-    fn alloc_frame() -> Option<PhysAddr>;
+    fn alloc_frame() -> Option<X86HostPhysAddr>;
 
     /// Deallocate one host frame.
-    fn dealloc_frame(paddr: PhysAddr);
+    fn dealloc_frame(paddr: X86HostPhysAddr);
 
     /// Allocate contiguous host frames.
-    fn alloc_contiguous_frames(frame_count: usize, frame_align: usize) -> Option<PhysAddr>;
+    fn alloc_contiguous_frames(frame_count: usize, frame_align: usize) -> Option<X86HostPhysAddr>;
 
     /// Deallocate contiguous host frames.
-    fn dealloc_contiguous_frames(start_paddr: PhysAddr, frame_count: usize);
+    fn dealloc_contiguous_frames(start_paddr: X86HostPhysAddr, frame_count: usize);
 
     /// Convert host physical address to host virtual address.
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr;
+    fn phys_to_virt(paddr: X86HostPhysAddr) -> X86HostVirtAddr;
+
+    /// Read one byte from guest physical memory.
+    fn read_guest_u8(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8>;
 
     /// Convert nanoseconds to host ticks.
     fn nanos_to_ticks(nanos: u64) -> u64;
+
+    /// Poll the host interrupt controller for a pending vector.
+    fn poll_host_interrupt() -> Option<u8>;
 }
 
 /// RAII host frame used by x86 VMX/SVM structures.
 #[derive(Debug)]
-pub struct PhysFrame {
-    start_paddr: Option<PhysAddr>,
+pub struct PhysFrame<H: X86HostOps> {
+    start_paddr: Option<X86HostPhysAddr>,
+    _host: PhantomData<fn() -> H>,
 }
 
-impl PhysFrame {
+impl<H: X86HostOps> PhysFrame<H> {
     /// Allocate a host frame.
-    pub fn alloc() -> AxResult<Self> {
-        let start_paddr = ax_crate_interface::call_interface!(X86VcpuHostIf::alloc_frame())
-            .ok_or_else(|| ax_err_type!(NoMemory, "allocate physical frame failed"))?;
+    pub fn alloc() -> X86VcpuResult<Self> {
+        let start_paddr = <H as X86HostOps>::alloc_frame().ok_or(X86VcpuError::NoMemory)?;
         assert_ne!(start_paddr.as_usize(), 0);
         Ok(Self {
             start_paddr: Some(start_paddr),
+            _host: PhantomData,
         })
     }
 
     /// Allocate a host frame and fill it with zeros.
-    pub fn alloc_zero() -> AxResult<Self> {
+    pub fn alloc_zero() -> X86VcpuResult<Self> {
         let mut frame = Self::alloc()?;
         frame.fill(0);
         Ok(frame)
@@ -55,57 +67,55 @@ impl PhysFrame {
     ///
     /// The caller must ensure the placeholder is replaced before being accessed.
     pub const unsafe fn uninit() -> Self {
-        Self { start_paddr: None }
+        Self {
+            start_paddr: None,
+            _host: PhantomData,
+        }
     }
 
     /// Get the starting physical address of the frame.
-    pub fn start_paddr(&self) -> PhysAddr {
+    pub fn start_paddr(&self) -> X86HostPhysAddr {
         self.start_paddr.expect("uninitialized PhysFrame")
     }
 
     /// Get a mutable pointer to the frame.
     pub fn as_mut_ptr(&self) -> *mut u8 {
-        ax_crate_interface::call_interface!(X86VcpuHostIf::phys_to_virt(self.start_paddr()))
-            .as_mut_ptr()
+        <H as X86HostOps>::phys_to_virt(self.start_paddr()).as_mut_ptr()
     }
 
     /// Fill the frame with a byte.
     pub fn fill(&mut self, byte: u8) {
-        unsafe { core::ptr::write_bytes(self.as_mut_ptr(), byte, PAGE_SIZE_4K) };
+        unsafe { core::ptr::write_bytes(self.as_mut_ptr(), byte, X86_PAGE_SIZE_4K) };
     }
 }
 
-impl Drop for PhysFrame {
+impl<H: X86HostOps> Drop for PhysFrame<H> {
     fn drop(&mut self) {
         if let Some(start_paddr) = self.start_paddr {
-            ax_crate_interface::call_interface!(X86VcpuHostIf::dealloc_frame(start_paddr));
+            <H as X86HostOps>::dealloc_frame(start_paddr);
             log::debug!("[x86_vcpu] deallocated PhysFrame({start_paddr:#x})");
         }
     }
 }
 
-#[cfg(feature = "svm")]
-pub(crate) fn alloc_contiguous_frames(frame_count: usize, frame_align: usize) -> Option<PhysAddr> {
-    ax_crate_interface::call_interface!(X86VcpuHostIf::alloc_contiguous_frames(
-        frame_count,
-        frame_align
-    ))
+pub(crate) fn alloc_contiguous_frames<H: X86HostOps>(
+    frame_count: usize,
+    frame_align: usize,
+) -> Option<X86HostPhysAddr> {
+    <H as X86HostOps>::alloc_contiguous_frames(frame_count, frame_align)
 }
 
-#[cfg(feature = "svm")]
-pub(crate) fn dealloc_contiguous_frames(start_paddr: PhysAddr, frame_count: usize) {
-    ax_crate_interface::call_interface!(X86VcpuHostIf::dealloc_contiguous_frames(
-        start_paddr,
-        frame_count
-    ));
+pub(crate) fn dealloc_contiguous_frames<H: X86HostOps>(
+    start_paddr: X86HostPhysAddr,
+    frame_count: usize,
+) {
+    <H as X86HostOps>::dealloc_contiguous_frames(start_paddr, frame_count);
 }
 
-#[cfg(any(feature = "vmx", feature = "svm"))]
-pub(crate) fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-    ax_crate_interface::call_interface!(X86VcpuHostIf::phys_to_virt(paddr))
+pub(crate) fn read_guest_u8<H: X86HostOps>(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8> {
+    H::read_guest_u8(paddr)
 }
 
-#[cfg(any(feature = "vmx", feature = "svm"))]
-pub(crate) fn nanos_to_ticks(nanos: u64) -> u64 {
-    ax_crate_interface::call_interface!(X86VcpuHostIf::nanos_to_ticks(nanos))
+pub(crate) fn nanos_to_ticks<H: X86HostOps>(nanos: u64) -> u64 {
+    H::nanos_to_ticks(nanos)
 }

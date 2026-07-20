@@ -1,8 +1,13 @@
+// Shared contiguous dma-buf primitive + resolver used by every accelerator that
+// exchanges buffers (JPU / NPU; RGA when its node lands).
+#[cfg(any(feature = "jpeg", feature = "rknpu"))]
+pub mod dmabuf;
 pub mod epoll;
 pub mod event;
 mod fs;
 pub mod inotify;
-#[cfg(all(feature = "sg2002", not(feature = "plat-dyn")))]
+pub mod io_uring;
+#[cfg(feature = "sg2002")]
 pub mod ion;
 pub mod memfd;
 mod net;
@@ -13,14 +18,16 @@ mod pidfd;
 mod pipe;
 pub mod signalfd;
 pub mod timerfd;
+mod wext;
 
 use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::prelude::*;
-use ax_task::current;
+use ax_kspin::SpinRwLock as RwLock;
+use ax_task::{TaskState, current};
 use axfs_ng_vfs::DeviceId;
 use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
@@ -29,10 +36,15 @@ use linux_raw_sys::general::{
     O_ACCMODE, O_PATH, O_RDONLY, O_RDWR, O_WRONLY, RLIMIT_NOFILE, STATX_BASIC_STATS, stat, statx,
     statx_timestamp,
 };
-use spin::RwLock;
+use starry_process::Pid;
 
+#[cfg(axtest)]
+pub(crate) use self::pipe::{
+    peer_close_with_multiple_readers_is_visible_for_test, resize_rejects_oversized_pipe_for_test,
+};
 pub use self::{
-    fs::{Directory, File, resolve_at, with_fs},
+    fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
+    io_uring::IoUring,
     net::Socket,
     nsfd::NsFd,
     packet::{PacketSocket, SockAddrLl},
@@ -41,7 +53,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::DeviceMmap,
-    task::{AX_FILE_LIMIT, AsThread},
+    task::{AX_FILE_LIMIT, AsThread, tasks},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -304,7 +316,30 @@ pub fn close_file_like(fd: c_int) -> AxResult {
         release_locks_on_close(f);
         return Ok(());
     }
-    Ok(())
+    Err(AxError::BadFileDescriptor)
+}
+
+pub(crate) fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
+    !fd_table_file_refs(file).is_empty()
+}
+
+pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(Pid, usize)> {
+    let mut refs = alloc::vec::Vec::new();
+    for task in tasks() {
+        if task.state() == TaskState::Exited {
+            continue;
+        }
+        let pid = task.as_thread().proc_data.proc.pid();
+        let scope = task.as_thread().proc_data.scope.read();
+        let scoped_fd_table = FD_TABLE.scope(&scope);
+        let table = scoped_fd_table.read();
+        for id in table.ids() {
+            if table.get(id).is_some_and(|fd| Arc::ptr_eq(&fd.inner, file)) {
+                refs.push((pid, id));
+            }
+        }
+    }
+    refs
 }
 
 fn notify_close_write(fd: &FileDescriptor) {
@@ -336,6 +371,9 @@ pub fn release_locks_on_close(fd: FileDescriptor) {
     if let Some(k) = key {
         let pid = current().as_thread().proc_data.proc.pid();
         crate::syscall::release_inode_posix_locks(pid, k);
+        if !fd_tables_contain_file(&fd.inner) {
+            crate::syscall::release_flock_lock(k, &fd.inner);
+        }
     }
     drop(fd);
     if let Some(k) = key {
@@ -376,26 +414,8 @@ pub fn close_all_fds() {
     }
     drop(table);
 
-    // Snapshot inode keys before drop so we can wake F_SETLKW waiters
-    // afterwards: the Arc drops here may release OFD locks (their owner
-    // weak-refs go dead), and a parked waiter has no other way to learn
-    // about it. POSIX locks owned by this pid are released separately by
-    // `release_pid_locks`, which already wakes; the inode-key dedup
-    // means the per-inode wake is at most O(fds) and harmless when
-    // double-fired.
-    let lock_keys: alloc::vec::Vec<(u64, u64)> = removed
-        .iter()
-        .filter_map(|fd| fd.inner.inode_key())
-        .collect();
-    for fd in &removed {
-        notify_close_write(fd);
-    }
-    // Drop removed descriptors after releasing FD_TABLE lock to avoid
-    // lock re-entry or side effects from destructor paths.
-    drop(removed);
-    for key in lock_keys {
-        crate::syscall::wake_lock_waiters(key);
-        crate::syscall::wake_flock_waiters(key);
+    for fd in removed {
+        release_locks_on_close(fd);
     }
 }
 

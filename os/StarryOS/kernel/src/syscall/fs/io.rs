@@ -5,7 +5,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs::{FS_CONTEXT, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
 use axfs_ng_vfs::{NodePermission, NodeType};
@@ -25,7 +25,7 @@ use crate::{
         Directory, File, FileLike, Pipe, get_file_like,
         memfd::{F_SEAL_GROW, F_SEAL_WRITE, Memfd},
     },
-    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut},
+    mm::{IoVec, IoVectorBuf, UserConstPtr, VmBytesMut, vm_load_path_string},
     task::AsThread,
 };
 
@@ -71,7 +71,7 @@ fn offset_from_hilo(pos_l: __kernel_off_t, _pos_h: usize) -> __kernel_off_t {
 }
 
 // Writes zero-filled chunks into the file over the requested byte range.
-fn write_zero_range(file: &ax_fs::FileBackend, mut offset: u64, len: u64) -> AxResult<()> {
+fn write_zero_range(file: &FileBackend, mut offset: u64, len: u64) -> AxResult<()> {
     const ZERO_CHUNK_SIZE: usize = 64 * 1024;
 
     let zeroes = vec![0; ZERO_CHUNK_SIZE];
@@ -197,8 +197,8 @@ pub fn sys_lseek(fd: c_int, offset: __kernel_off_t, whence: c_int) -> AxResult<i
     Err(AxError::from(LinuxError::ESPIPE))
 }
 
-pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxResult<isize> {
-    let path = path.get_as_str()?;
+pub fn sys_truncate(path: *const c_char, length: __kernel_off_t) -> AxResult<isize> {
+    let path = vm_load_path_string(path)?;
     debug!("sys_truncate <= {path:?} {length}");
     if path.is_empty() {
         return Err(AxError::from(LinuxError::ENOENT));
@@ -208,7 +208,7 @@ pub fn sys_truncate(path: UserConstPtr<c_char>, length: __kernel_off_t) -> AxRes
     }
     let file = OpenOptions::new()
         .write(true)
-        .open(&FS_CONTEXT.lock(), path)?
+        .open(&FS_CONTEXT.lock(), &path)?
         .into_file()?;
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
@@ -727,12 +727,12 @@ fn do_send(mut src: SendFile, mut dst: SendFile, len: usize) -> AxResult<usize> 
             *pos += bytes_written as u64;
             user.vm_write(*pos)?;
         }
+        total_written += bytes_written;
+        remaining -= bytes_written;
+
         if bytes_written < bytes_read {
             break;
         }
-
-        total_written += bytes_written;
-        remaining -= bytes_written;
     }
 
     Ok(total_written)

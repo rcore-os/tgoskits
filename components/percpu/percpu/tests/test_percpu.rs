@@ -1,4 +1,4 @@
-#![cfg(not(target_os = "macos"))]
+#![cfg(all(target_os = "linux", feature = "host-test", feature = "non-zero-vma"))]
 
 use ax_percpu::*;
 
@@ -30,7 +30,6 @@ struct Struct {
 #[def_percpu]
 static STRUCT: Struct = Struct { foo: 0, bar: 0 };
 
-#[cfg(all(target_os = "linux", feature = "non-zero-vma"))]
 #[test]
 fn test_percpu() {
     println!("feature = \"sp-naive\": {}", cfg!(feature = "sp-naive"));
@@ -106,11 +105,7 @@ fn test_percpu() {
     test_remote_access();
 }
 
-#[cfg(all(
-    target_os = "linux",
-    not(feature = "sp-naive"),
-    feature = "non-zero-vma"
-))]
+#[cfg(not(feature = "sp-naive"))]
 fn test_remote_access() {
     // test remote write
     unsafe {

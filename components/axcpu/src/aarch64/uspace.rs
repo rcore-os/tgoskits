@@ -7,7 +7,7 @@ use ax_memory_addr::VirtAddr;
 use tock_registers::LocalRegisterCopy;
 
 use super::trap::{TrapKind, is_valid_page_fault};
-pub use crate::uspace_common::{ExceptionKind, ReturnReason};
+pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
 use crate::{TrapFrame, trap::PageFaultFlags};
 
 /// Context to enter user space.
@@ -134,6 +134,19 @@ impl UserContext {
                 .value;
     }
 
+    /// Clears any architecture single-step state after a debug exception.
+    ///
+    /// AArch64 user single-step is currently emulated by the Starry ptrace layer,
+    /// so there is no saved CPU flag to clear here.
+    pub const fn clear_single_step_after_debug(&mut self) -> bool {
+        false
+    }
+
+    /// Returns the syscall instruction length in bytes.
+    pub const fn syscall_insn_len(&self) -> usize {
+        4
+    }
+
     /// Gets the stack pointer.
     pub const fn sp(&self) -> usize {
         self.sp as _
@@ -170,7 +183,7 @@ impl UserContext {
 
         let ret = match kind {
             TrapKind::Irq => {
-                crate::trap::irq_handler(0);
+                crate::trap::dispatch_irq(0);
                 ReturnReason::Interrupt
             }
             TrapKind::Fiq | TrapKind::SError => ReturnReason::Unknown,
@@ -234,6 +247,20 @@ pub struct ExceptionInfo {
 }
 
 impl ExceptionInfo {
+    /// Returns the faulting virtual address when the CPU records one.
+    pub const fn fault_addr(&self) -> Option<usize> {
+        Some(self.far)
+    }
+
+    /// Returns architecture-neutral syndrome information for this exception.
+    pub fn syndrome(&self) -> ExceptionSyndrome {
+        ExceptionSyndrome {
+            raw: self.esr_value(),
+            class: self.ec_value(),
+            iss: self.iss_value(),
+        }
+    }
+
     /// Returns the raw Exception Syndrome Register value.
     pub fn esr_value(&self) -> u64 {
         self.esr.get()

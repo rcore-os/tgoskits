@@ -1,12 +1,10 @@
 use alloc::sync::Arc;
 use core::ops::Deref;
 
-use axpoll::Pollable;
-
 use super::NodeOps;
-use crate::{VfsError, VfsResult};
+use crate::{FsPollable, VfsError, VfsResult};
 
-pub trait FileNodeOps: NodeOps + Pollable {
+pub trait FileNodeOps: NodeOps + FsPollable {
     /// Reads a number of bytes starting from a given offset.
     fn read_at(&self, buf: &mut [u8], offset: u64) -> VfsResult<usize>;
 
@@ -31,6 +29,7 @@ pub trait FileNodeOps: NodeOps + Pollable {
     }
 }
 
+#[derive(Clone)]
 #[repr(transparent)]
 pub struct FileNode(Arc<dyn FileNodeOps>);
 

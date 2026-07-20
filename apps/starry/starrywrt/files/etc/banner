@@ -1,0 +1,13 @@
+  _____ _                       _    _______ _______
+ / ____| |                     | |  / /  __ \__   __|
+| (___ | |_ __ _ _ __ _ __ _   | | / /| |__) | | |
+ \___ \| __/ _` | '__| '__| | | | |/ / |  _  /  | |
+ ____) | || (_| | |  | |  | |_| |   <| | \ \  | |
+|_____/ \__\__,_|_|  |_|   \__, |_|\_\_|  \_\ |_|
+                            __/ |
+                           |___/   OpenWrt userland on StarryOS
+ -----------------------------------------------------
+ StarryWRT - a single-core StarryOS distribution that
+ speaks OpenWrt: uci config, opkg packages, dropbear,
+ dnsmasq, busybox. Same userland, StarryOS kernel.
+ -----------------------------------------------------

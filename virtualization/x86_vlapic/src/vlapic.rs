@@ -14,19 +14,17 @@
 
 use core::ptr::NonNull;
 
-use ax_errno::{AxError, AxResult, ax_err_type};
-use axdevice_base::AccessWidth;
-use axvm_types::{HostPhysAddr, VCpuId, VMId};
 use bit::BitIndex;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 pub use crate::regs::lvt::LVT_TIMER::TimerMode::Value as TimerMode;
 use crate::{
+    X86AccessWidth, X86HostPhysAddr, X86VcpuId, X86VlapicError, X86VlapicResult, X86VmId,
     consts::{
         APIC_LVT_DS, APIC_LVT_M, APIC_LVT_VECTOR, ApicRegOffset, LAPIC_TRIG_EDGE,
         RESET_SPURIOUS_INTERRUPT_VECTOR, xapic::DEFAULT_APIC_BASE,
     },
-    host::{self, PhysFrame},
+    host::{self, PhysFrame, X86VlapicHostOps},
     regs::{
         APIC_BASE, ApicBaseRegisterMsr,
         DESTINATION_FORMAT::{self, Model::Value as APICDestinationFormat},
@@ -53,7 +51,7 @@ const APIC_VERSION_INTEGRATED: u32 = 0x14;
 const APIC_VERSION_MAX_LVT_ENTRIES: u32 = 6 << 16;
 
 /// Virtual-APIC Registers.
-pub struct VirtualApicRegs {
+pub struct VirtualApicRegs<H: X86VlapicHostOps> {
     /// The virtual-APIC page is a 4-KByte region of memory
     /// that the processor uses to virtualize certain accesses to APIC registers and to manage virtual interrupts.
     /// The physical address of the virtual-APIC page is the virtual-APIC address,
@@ -65,7 +63,7 @@ pub struct VirtualApicRegs {
     esr_pending: ErrorStatusRegisterLocal,
     esr_firing: i32,
 
-    virtual_timer: ApicTimer,
+    virtual_timer: ApicTimer<H>,
 
     /// Vector number for the highest priority bit that is set in the ISR
     isrv: u32,
@@ -78,13 +76,13 @@ pub struct VirtualApicRegs {
     /// Copies of some registers in the virtual APIC page,
     /// to maintain a coherent snapshot of the register (e.g. lvt_last)
     lvt_last: LocalVectorTable,
-    apic_page: PhysFrame,
+    apic_page: PhysFrame<H>,
 }
 
-impl VirtualApicRegs {
+impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
     /// Create new virtual-APIC registers by allocating a 4-KByte page for the virtual-APIC page.
-    pub fn new(vm_id: VMId, vcpu_id: VCpuId) -> Self {
-        let apic_frame = PhysFrame::alloc_zero().expect("allocate virtual-APIC page failed");
+    pub fn new(vm_id: X86VmId, vcpu_id: X86VcpuId) -> Self {
+        let apic_frame = PhysFrame::<H>::alloc_zero().expect("allocate virtual-APIC page failed");
         let regs = Self {
             // virtual-APIC ID is the same as the VCPU ID.
             vapic_id: vcpu_id as _,
@@ -100,7 +98,7 @@ impl VirtualApicRegs {
                     | APIC_BASE_ENABLE
                     | if vcpu_id == 0 { APIC_BASE_BSP } else { 0 },
             ),
-            virtual_timer: ApicTimer::new(vm_id, vcpu_id),
+            virtual_timer: ApicTimer::<H>::new(vm_id, vcpu_id),
         };
         regs.regs().ID.set((vcpu_id as u32) << 24);
         regs.regs()
@@ -117,7 +115,7 @@ impl VirtualApicRegs {
     /// This field contains the physical address of the 4-KByte virtual-APIC page.
     /// The processor uses the virtual-APIC page to virtualize certain accesses to APIC registers and to manage virtual interrupts;
     /// see Chapter 30.
-    pub fn virtual_apic_page_addr(&self) -> HostPhysAddr {
+    pub fn virtual_apic_page_addr(&self) -> X86HostPhysAddr {
         self.apic_page.start_paddr()
     }
 
@@ -128,12 +126,9 @@ impl VirtualApicRegs {
     }
 
     /// Sets the APIC base MSR value.
-    pub fn set_apic_base(&mut self, value: u64) -> AxResult {
+    pub fn set_apic_base(&mut self, value: u64) -> X86VlapicResult {
         if value & APIC_BASE_X2APIC_ENABLE != 0 && value & APIC_BASE_ENABLE == 0 {
-            return Err(ax_err_type!(
-                InvalidInput,
-                "x2APIC cannot be enabled while xAPIC is disabled"
-            ));
+            return Err(X86VlapicError::InvalidInput);
         }
 
         self.apic_base.set(value);
@@ -154,11 +149,11 @@ impl VirtualApicRegs {
     }
 
     /// Returns the current timer mode.
-    pub fn timer_mode(&self) -> AxResult<TimerMode> {
+    pub fn timer_mode(&self) -> X86VlapicResult<TimerMode> {
         self.regs()
             .LVT_TIMER
             .read_as_enum(LVT_TIMER::TimerMode)
-            .ok_or_else(|| ax_err_type!(InvalidData, "Failed to read timer mode from LVT_TIMER"))
+            .ok_or(X86VlapicError::InvalidData)
     }
 
     /// 30.1.4 EOI Virtualization
@@ -257,7 +252,7 @@ impl VirtualApicRegs {
         }
     }
 
-    fn is_dest_field_matched(&self, dest: u32) -> AxResult<bool> {
+    fn is_dest_field_matched(&self, dest: u32) -> X86VlapicResult<bool> {
         let mut ret = false;
 
         let ldr = self.regs().LDR.get();
@@ -269,7 +264,7 @@ impl VirtualApicRegs {
                 .regs()
                 .DFR
                 .read_as_enum::<APICDestinationFormat>(DESTINATION_FORMAT::Model)
-                .ok_or(AxError::InvalidData)?
+                .ok_or(X86VlapicError::InvalidData)?
             {
                 APICDestinationFormat::Flat => {
                     // In the "Flat Model" the MDA is interpreted as an 8-bit wide
@@ -304,12 +299,12 @@ impl VirtualApicRegs {
         dest: u32,
         is_phys: bool,
         lowprio: bool,
-    ) -> AxResult<u64> {
+    ) -> X86VlapicResult<u64> {
         let mut dmask = 0;
 
         if is_broadcast {
             // Broadcast in both logical and physical modes.
-            dmask = host::current_vm_active_vcpus() as u64;
+            dmask = host::current_vm_active_vcpus::<H>() as u64;
         } else if is_phys {
             // Physical mode: "dest" is local APIC ID.
             // Todo: distinguish between APIC ID and vCPU ID.
@@ -322,8 +317,8 @@ impl VirtualApicRegs {
             // Logical mode: "dest" is message destination addr
             // to be compared with the logical APIC ID in LDR.
 
-            let vcpu_mask = host::active_vcpus(host::current_vm_id()).unwrap();
-            for i in 0..host::current_vm_vcpu_num() {
+            let vcpu_mask = host::active_vcpus::<H>(H::current_vm_id()).unwrap();
+            for i in 0..host::current_vm_vcpu_num::<H>() {
                 if vcpu_mask & (1 << i) != 0 {
                     if !self.is_dest_field_matched(dest)? {
                         continue;
@@ -343,7 +338,7 @@ impl VirtualApicRegs {
         dest: u32,
         is_phys: bool,
         lowprio: bool,
-    ) -> AxResult<u64> {
+    ) -> X86VlapicResult<u64> {
         let mut dmask = 0;
         match shorthand {
             APICDestination::NoShorthand => {
@@ -353,10 +348,10 @@ impl VirtualApicRegs {
                 dmask.set_bit(self.vapic_id as usize, true);
             }
             APICDestination::AllIncludingSelf => {
-                dmask = host::current_vm_active_vcpus() as u64;
+                dmask = host::current_vm_active_vcpus::<H>() as u64;
             }
             APICDestination::AllExcludingSelf => {
-                dmask = host::current_vm_active_vcpus() as u64;
+                dmask = host::current_vm_active_vcpus::<H>() as u64;
                 dmask &= !(1 << self.vapic_id);
             }
         }
@@ -381,7 +376,7 @@ impl VirtualApicRegs {
         }
 
         debug!("[VLAPIC] injecting vector {vector:#x} to vcpu {vcpu_id}");
-        let _ = host::inject_interrupt(host::current_vm_id(), vcpu_id as usize, vector as u8);
+        let _ = host::inject_interrupt::<H>(H::current_vm_id(), vcpu_id as usize, vector as u8);
     }
 
     /// Record interrupt acceptance in the virtual APIC page.
@@ -459,7 +454,7 @@ impl VirtualApicRegs {
 
     /// Figure 11-14. Spurious-Interrupt Vector Register (SVR)
     /// Handle writes to the SVR register.
-    fn write_svr(&mut self) -> AxResult {
+    fn write_svr(&mut self) -> X86VlapicResult {
         let new = self.regs().SVR.extract();
         let old = self.svr_last;
 
@@ -497,7 +492,7 @@ impl VirtualApicRegs {
         self.esr_pending.set(0);
     }
 
-    fn write_icr(&mut self) -> AxResult {
+    fn write_icr(&mut self) -> X86VlapicResult {
         self.regs()
             .ICR_LO
             .modify(INTERRUPT_COMMAND_LOW::DeliveryStatus::Idle);
@@ -517,11 +512,11 @@ impl VirtualApicRegs {
         let vec = icr_low.read(INTERRUPT_COMMAND_LOW::Vector);
         let mode = icr_low
             .read_as_enum::<APICDeliveryMode>(INTERRUPT_COMMAND_LOW::DeliveryMode)
-            .ok_or(AxError::InvalidData)?;
+            .ok_or(X86VlapicError::InvalidData)?;
         let is_phys = !icr_low.is_set(INTERRUPT_COMMAND_LOW::DestinationMode);
         let shorthand = icr_low
             .read_as_enum::<APICDestination>(INTERRUPT_COMMAND_LOW::DestinationShorthand)
-            .ok_or(AxError::InvalidData)?;
+            .ok_or(X86VlapicError::InvalidData)?;
 
         if mode == APICDeliveryMode::Fixed && vec < 16 {
             self.set_err(ERROR_STATUS::SendIllegalVector::SET);
@@ -543,7 +538,7 @@ impl VirtualApicRegs {
             let dmask = self.calculate_dest(shorthand, is_broadcast, dest, is_phys, false)?;
 
             // TODO: we need to get the specific vcpu number somehow.
-            for i in 0..host::current_vm_vcpu_num() as u32 {
+            for i in 0..host::current_vm_vcpu_num::<H>() as u32 {
                 if dmask & (1 << i) != 0 {
                     match mode {
                         APICDeliveryMode::Fixed => {
@@ -587,7 +582,7 @@ impl VirtualApicRegs {
         }
     }
 
-    fn write_lvt(&mut self, offset: ApicRegOffset) -> AxResult {
+    fn write_lvt(&mut self, offset: ApicRegOffset) -> X86VlapicResult {
         let mut val = self.extract_lvt_val(offset);
 
         // Mask::Masked, Delivery Status:SendPending, Vector::SET(0xff)
@@ -665,13 +660,13 @@ impl VirtualApicRegs {
             }
             _ => {
                 warn!("[VLAPIC] write unsupported APIC register: {offset:?}");
-                return Err(AxError::InvalidInput);
+                return Err(X86VlapicError::InvalidInput);
             }
         }
         Ok(())
     }
 
-    fn mask_lvts(&mut self) -> AxResult {
+    fn mask_lvts(&mut self) -> X86VlapicResult {
         self.regs().LVT_CMCI.modify(LVT_CMCI::Mask::SET);
         self.write_lvt(ApicRegOffset::LvtCMCI)?;
 
@@ -700,11 +695,11 @@ impl VirtualApicRegs {
         Ok(())
     }
 
-    fn write_icrtmr(&mut self) -> AxResult {
+    fn write_icrtmr(&mut self) -> X86VlapicResult {
         self.virtual_timer.write_icr(self.regs().ICR_TIMER.get())
     }
 
-    fn write_dcr(&mut self) -> AxResult {
+    fn write_dcr(&mut self) -> X86VlapicResult {
         self.virtual_timer.write_dcr(self.regs().DCR_TIMER.get());
         Ok(())
     }
@@ -725,8 +720,12 @@ fn prio(x: u32) -> u32 {
     (x >> 4) & 0xf
 }
 
-impl VirtualApicRegs {
-    pub fn handle_read(&self, offset: ApicRegOffset, width: AccessWidth) -> AxResult<usize> {
+impl<H: X86VlapicHostOps> VirtualApicRegs<H> {
+    pub fn handle_read(
+        &self,
+        offset: ApicRegOffset,
+        width: X86AccessWidth,
+    ) -> X86VlapicResult<usize> {
         let mut value: usize = 0;
         match offset {
             ApicRegOffset::ID => {
@@ -768,11 +767,11 @@ impl VirtualApicRegs {
             }
             ApicRegOffset::ICRLow => {
                 value = self.regs().ICR_LO.get() as _;
-                if self.is_x2apic_enabled() && width == AccessWidth::Qword {
+                if self.is_x2apic_enabled() && width == X86AccessWidth::Qword {
                     let icr_hi = self.regs().ICR_HI.get() as usize;
                     value |= icr_hi << 32;
                     debug!("[VLAPIC] read ICR register: {value:#018X}");
-                } else if self.is_x2apic_enabled() ^ (width == AccessWidth::Qword) {
+                } else if self.is_x2apic_enabled() ^ (width == X86AccessWidth::Qword) {
                     warn!(
                         "[VLAPIC] Illegal read attempt of ICR register at width {:?} with X2APIC \
                          {}",
@@ -783,7 +782,7 @@ impl VirtualApicRegs {
                             "disabled"
                         }
                     );
-                    return Err(AxError::InvalidInput);
+                    return Err(X86VlapicError::InvalidInput);
                 }
             }
             ApicRegOffset::ICRHi => {
@@ -845,8 +844,8 @@ impl VirtualApicRegs {
         &mut self,
         offset: ApicRegOffset,
         val: usize,
-        width: AccessWidth,
-    ) -> AxResult {
+        width: X86AccessWidth,
+    ) -> X86VlapicResult {
         let data32 = val as u32;
 
         match offset {
@@ -877,10 +876,10 @@ impl VirtualApicRegs {
                 self.write_esr();
             }
             ApicRegOffset::ICRLow => {
-                if self.is_x2apic_enabled() && width == AccessWidth::Qword {
+                if self.is_x2apic_enabled() && width == X86AccessWidth::Qword {
                     debug!("[VLAPIC] write ICR register: {val:#018X} in X2APIC mode");
                     self.regs().ICR_HI.set((val >> 32) as u32);
-                } else if self.is_x2apic_enabled() ^ (width == AccessWidth::Qword) {
+                } else if self.is_x2apic_enabled() ^ (width == X86AccessWidth::Qword) {
                     warn!(
                         "[VLAPIC] Illegal read attempt of ICR register at width {:?} with X2APIC \
                          {}",
@@ -891,7 +890,7 @@ impl VirtualApicRegs {
                             "disabled"
                         }
                     );
-                    return Err(AxError::InvalidInput);
+                    return Err(X86VlapicError::InvalidInput);
                 }
                 self.regs().ICR_LO.set(data32);
                 self.write_icr()?;
@@ -899,7 +898,7 @@ impl VirtualApicRegs {
             ApicRegOffset::ICRHi => {
                 if self.is_x2apic_enabled() {
                     warn!("[VLAPIC] write ICRHi register: unsupported in x2APIC mode");
-                    return Err(AxError::InvalidInput);
+                    return Err(X86VlapicError::InvalidInput);
                 }
                 self.regs()
                     .ICR_HI
@@ -957,12 +956,12 @@ impl VirtualApicRegs {
                     self.handle_self_ipi(data32 & 0xff);
                 } else {
                     warn!("[VLAPIC] write SelfIPI register: unsupported in xAPIC mode");
-                    return Err(AxError::InvalidInput);
+                    return Err(X86VlapicError::InvalidInput);
                 }
             }
             _ => {
                 warn!("[VLAPIC] write unsupported APIC register: {offset:?}");
-                return Err(AxError::InvalidInput);
+                return Err(X86VlapicError::InvalidInput);
             }
         }
 

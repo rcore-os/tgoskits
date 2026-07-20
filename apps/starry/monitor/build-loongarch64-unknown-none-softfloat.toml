@@ -1,0 +1,18 @@
+# LoongArch64 MUST use the dynamic platform (axplat-dyn): keep ax-driver/serial + do NOT opt out of
+# dynamic platform mode. The retired static LoongArch path lacked the serial-console binding
+# ("/dev/console has no serial TTY binding" -> early exit). qemu-loongarch64.toml boots the raw
+# binary (uefi=false / to_bin=true).
+target = "loongarch64-unknown-none-softfloat"
+log = "Warn"
+features = [
+  "ax-runtime/display",
+  "ax-runtime/rtc",
+  "ax-driver/serial",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
+]

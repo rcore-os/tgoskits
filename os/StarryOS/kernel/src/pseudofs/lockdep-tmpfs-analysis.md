@@ -283,7 +283,7 @@ stack=[0xffffffc080520000..0xffffffc080524000), expected magic=0x57acce1157acce1
 
 That is no longer a lockdep order report. It points at the 16 KiB primary idle
 task stack in `os/arceos/modules/axtask/src/run_queue.rs`. Further work should
-separate that stack-canary issue from the subclass implementation.
+separate that stack canary issue from the subclass implementation.
 
 ## Instance identity cleanup
 
@@ -325,7 +325,7 @@ The reproduced failure pattern is:
 - the test prints the first seven PASS lines through `clone shmget_thread`;
 - it does not print the final `no deadlock detected` PASS line;
 - it does not print a lockdep report;
-- it does not print a panic or stack-canary diagnostic;
+- it does not print a panic or stack canary diagnostic;
 - the QEMU harness eventually reports `QEMU timed out after 120s`.
 
 The relevant C test code is:
@@ -373,7 +373,8 @@ os/arceos/modules/axfs-ng/src/fs/fat/fs.rs:
 So the FAT filesystem lock is visible to lockdep when `ax-kspin/lockdep` is
 enabled.
 
-However, the VFS layer still imports the third-party `spin` crate directly:
+At the time of this analysis, the VFS layer still imported the third-party
+`spin` crate directly:
 
 ```text
 components/axfs-ng-vfs/src/lib.rs:
@@ -388,16 +389,17 @@ components/axfs-ng-vfs/Cargo.toml:
   spin = { version = "0.10", default-features = false, features = ["mutex"] }
 ```
 
-`ax-kspin` is related but not identical to this external `spin` crate. Its
-`BaseSpinLock` is explicitly based on `spin::Mutex`, but it is a separate
-project-local implementation that adds kernel guard semantics and, with the
-current lockdep work, lockdep acquire/release hooks.
+That `spin::Mutex` use has since been migrated to project-local `ax_kspin`
+locks. `ax-kspin` is related but not identical to the external `spin` crate:
+its `BaseSpinLock` is explicitly based on `spin::Mutex`, but it is a separate
+project-local implementation that adds kernel guard semantics and lockdep
+acquire/release hooks.
 
-This creates a lockdep blind spot:
+Before that migration, this created a lockdep blind spot:
 
 - `ax_kspin::SpinNoPreempt` locks are visible to lockdep;
-- `spin::Mutex` locks in `axfs-ng-vfs` are not visible to lockdep;
-- any dependency edge involving a VFS `spin::Mutex` therefore cannot be
+- `spin::Mutex` locks in `axfs-ng-vfs` were not visible to lockdep;
+- any dependency edge involving a VFS `spin::Mutex` therefore could not be
   recorded.
 
 The suspected FAT32/VFS ordering is:
@@ -431,18 +433,16 @@ parent/child entry lock report. The reason current lockdep may not report it is
 that one side of the pair, `DirNode.cache`, is outside the lockdep-visible lock
 set.
 
-Current implication:
+Historical implication:
 
-- a missing lockdep report does not prove the FAT32/VFS ordering is safe;
-- the current lockdep coverage is incomplete for `axfs-ng-vfs` internals;
+- a missing lockdep report did not prove the FAT32/VFS ordering was safe;
+- lockdep coverage was incomplete for `axfs-ng-vfs` internals before the
+  migration;
 - FAT32-specific testing may also be absent from the normal Starry QEMU path,
   so the code path might not be exercised even if all locks were visible.
 
-Future work should consider migrating suitable `axfs-ng-vfs` internal locks
-from third-party `spin::Mutex` to `ax_kspin`.
-
-That migration should not be treated as a mechanical rename. The lock type must
-match the context:
+The migration was not treated as a mechanical rename. The chosen lock type must
+continue to match the context:
 
 - `SpinNoPreempt` is probably the first candidate for VFS cache locks if they
   are only used in task context;

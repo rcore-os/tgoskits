@@ -1,0 +1,6 @@
+getresuid01
+# getresuid01_16 # TCONF: 16-bit getresuid is not supported on x86_64
+getresuid02
+# getresuid02_16 # TCONF: 16-bit getresuid is not supported on x86_64
+getresuid03
+# getresuid03_16 # TCONF: 16-bit getresuid is not supported on x86_64

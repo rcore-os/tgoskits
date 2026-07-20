@@ -1,6 +1,6 @@
 [package]
 name = "sdhci-host"
-version = "0.1.2"
+version = "0.4.1"
 repository.workspace = true
 edition = "2024"
 license = "Apache-2.0"
@@ -10,11 +10,13 @@ keywords = ["sd", "sdhci", "embedded", "no_std"]
 categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
-sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
+sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio", "rdif"] }
+sdio-host2.workspace = true
 embedded-hal = "1"
 log.workspace = true
 dma-api.workspace = true
 mmio-api.workspace = true
+rdif-block.workspace = true
 
 [features]
 default = []

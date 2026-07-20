@@ -1,7 +1,6 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use ax_errno::AxResult;
 use tock_registers::{
     interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields, register_structs,
@@ -12,6 +11,7 @@ use super::{
     definitions::{SvmExitCode, SvmIntercept},
     structs::VmcbFrame,
 };
+use crate::{X86HostOps, X86VcpuResult};
 
 register_bitfields![u32,
     pub InterceptCrRw [
@@ -189,7 +189,7 @@ register_structs![
     }
 ];
 
-impl VmcbFrame {
+impl<H: X86HostOps> VmcbFrame<H> {
     /// # Safety
     ///
     /// The caller must ensure the VMCB page is mapped and no mutable reference
@@ -212,7 +212,7 @@ impl VmcbStruct {
         unsafe { core::ptr::write_bytes(&mut self.control as *mut _ as *mut u8, 0, 0x400) };
     }
 
-    pub fn exit_info(&self) -> AxResult<SvmExitInfo> {
+    pub fn exit_info(&self) -> X86VcpuResult<SvmExitInfo> {
         Ok(SvmExitInfo {
             exit_code: self.control.exit_code.get().try_into(),
             exit_info_1: self.control.exit_info_1.get(),

@@ -117,7 +117,7 @@ graph LR
     ax-sync --> ax-posix-api["ax-posix-api"]
     ax-sync --> ax-display["ax-display"]
     ax-sync --> ax-input["ax-input"]
-    ax-sync --> ax-net["ax-net / ax-net-ng"]
+    ax-sync --> ax-net["ax-net / ax-net"]
     ax-sync --> starry_kernel["starry-kernel"]
 ```
 
@@ -130,7 +130,7 @@ graph LR
 ### 主要消费者
 - `ax-api`：在 `multitask` 路径下把 `RawMutex` 作为公开类型再导出。
 - `ax-posix-api`：用于 pipe、fs、net、pthread mutex 等路径。
-- `ax-net` / `ax-net-ng`、`ax-input`、`ax-display`、`ax-fs-ng`：用 `Mutex` 保护全局状态或共享对象。
+- `ax-net` / `ax-net`、`ax-input`、`ax-display`、`ax-fs-ng`：用 `Mutex` 保护全局状态或共享对象。
 - `starry-kernel`：大量复用 `ax-sync::Mutex`，同时与 `spin::SpinNoIrq` 并存。
 
 ### 3.3 间接消费者
@@ -179,7 +179,7 @@ ax-sync = { workspace = true, features = ["multitask"] }
 
 ## 跨项目定位
 ### ArceOS
-`ax-sync` 是 ArceOS 内核模块共享的统一同步层。它通过 `multitask` feature 与 `ax-task`、`ax-runtime`、`ax-feat` 联动，确保“调度器语义”和“锁语义”一起切换。
+`ax-sync` 是 ArceOS 内核模块共享的统一同步层。它通过 `multitask` feature 与 `ax-task`、`ax-runtime`、`ax-runtime` 联动，确保“调度器语义”和“锁语义”一起切换。
 
 ### StarryOS
 StarryOS 大量复用 `ax-sync::Mutex` 作为内核内部同步原语之一。因此在 StarryOS 中，`ax-sync` 扮演的是“兼容内核与 ArceOS 模块共享的基础锁层”。

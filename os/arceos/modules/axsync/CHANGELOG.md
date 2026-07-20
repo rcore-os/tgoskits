@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.28](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.27...ax-sync-v0.5.28) - 2026-07-10
+
+### Other
+
+- updated the following local packages: ax-task, ax-task
+
+## [0.5.27](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.26...ax-sync-v0.5.27) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-task, ax-task
+
+## [0.5.26](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.25...ax-sync-v0.5.26) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-task, ax-task
+
+## [0.5.25](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.24...ax-sync-v0.5.25) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-task, ax-task
+
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.23...ax-sync-v0.5.24) - 2026-07-07
+
+### Other
+
+- Dev might sleep enhance ([#1480](https://github.com/rcore-os/tgoskits/pull/1480))
+
+## [0.5.23](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.22...ax-sync-v0.5.23) - 2026-07-02
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-task, ax-task
+
+## [0.5.22](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.21...ax-sync-v0.5.22) - 2026-06-27
+
+### Other
+
+- updated the following local packages: ax-task, ax-task
+
+## [0.5.21](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.20...ax-sync-v0.5.21) - 2026-06-23
+
+### Other
+
+- updated the following local packages: ax-lockdep, ax-kspin, ax-task, ax-task
+
+## [0.5.20](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.19...ax-sync-v0.5.20) - 2026-06-22
+
+### Other
+
+- updated the following local packages: ax-task, ax-task
+
+## [0.5.19](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.18...ax-sync-v0.5.19) - 2026-06-12
+
+### Other
+
+- updated the following local packages: ax-task, ax-task
+
+## [0.5.18](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.17...ax-sync-v0.5.18) - 2026-06-11
+
+### Other
+
+- updated the following local packages: ax-task, ax-task
+
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.16...ax-sync-v0.5.17) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/ax-sync-v0.5.15...ax-sync-v0.5.16) - 2026-06-03
 
 ### Added

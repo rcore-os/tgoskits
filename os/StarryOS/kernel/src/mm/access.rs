@@ -2,14 +2,15 @@ use alloc::string::String;
 use core::{
     alloc::Layout,
     ffi::c_char,
-    hint::unlikely,
+    hint::{spin_loop, unlikely},
     mem::{MaybeUninit, transmute},
-    ptr, slice, str,
+    ptr, slice,
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::{
     cpu::{asm::user_copy, trap::page_fault_handler},
     paging::MappingFlags,
@@ -31,6 +32,7 @@ pub fn access_user_memory<R>(f: impl FnOnce() -> R) -> R {
         ax_runtime::hal::cpu::asm::irqs_enabled(),
         "faultable user memory access requires IRQs enabled"
     );
+    might_sleep();
 
     let curr = current();
     let Some(thr) = curr.try_as_thread() else {
@@ -74,70 +76,6 @@ fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> 
     aspace.populate_area(page_start, page_end - page_start, access_flags)?;
 
     Ok(())
-}
-
-fn check_null_terminated<T: PartialEq + Default>(
-    start: VirtAddr,
-    access_flags: MappingFlags,
-) -> AxResult<usize> {
-    let align = Layout::new::<T>().align();
-    if start.as_usize() & (align - 1) != 0 {
-        return Err(AxError::BadAddress);
-    }
-
-    let zero = T::default();
-
-    let mut page = start.align_down_4k();
-
-    let start = start.as_ptr_of::<T>();
-    let mut len = 0;
-
-    access_user_memory(|| {
-        loop {
-            // SAFETY: This won't overflow the address space since we'll check
-            // it below.
-            let ptr = unsafe { start.add(len) };
-            while ptr as usize >= page.as_ptr() as usize {
-                // We cannot prepare `aspace` outside of the loop, since holding
-                // aspace requires a mutex which would be required on page
-                // fault, and page faults can trigger inside the loop.
-
-                // TODO: this is inefficient, but we have to do this instead of
-                // querying the page table since the page might has not been
-                // allocated yet.
-                let curr = current();
-                let Some(thr) = curr.try_as_thread() else {
-                    warn!(
-                        "reject nul-terminated user check outside thread context: task={}, \
-                         start={:#x}",
-                        curr.id_name(),
-                        start as usize
-                    );
-                    return Err(AxError::BadAddress);
-                };
-                let aspace_arc = thr.proc_data.aspace();
-                if unsafe { aspace_arc.raw() }.is_owned_by_current() {
-                    return Err(AxError::BadAddress);
-                }
-                let aspace = aspace_arc.lock();
-                if !aspace.can_access_range(page, PAGE_SIZE_4K, access_flags) {
-                    return Err(AxError::BadAddress);
-                }
-
-                page += PAGE_SIZE_4K;
-            }
-
-            // This might trigger a page fault
-            // SAFETY: The pointer is valid and points to a valid memory region.
-            if unsafe { ptr.read_volatile() } == zero {
-                break;
-            }
-            len += 1;
-        }
-        Ok(())
-    })?;
-
-    Ok(len)
 }
 
 /// A pointer to user space memory.
@@ -200,6 +138,36 @@ impl<T> UserPtr<T> {
     }
 }
 
+pub fn atomic_update_user_u32(
+    ptr: *mut u32,
+    mut update: impl FnMut(u32) -> AxResult<u32>,
+) -> AxResult<u32> {
+    check_region(
+        VirtAddr::from_ptr_of(ptr),
+        Layout::new::<u32>(),
+        MappingFlags::READ.union(MappingFlags::WRITE),
+    )?;
+
+    let ptr = ptr.cast::<AtomicU32>();
+    access_user_memory(|| {
+        loop {
+            // SAFETY: check_region() validated that the user address is a
+            // writable, properly aligned u32 in the current address space.
+            let old = unsafe { &*ptr }.load(Ordering::SeqCst);
+            let new = update(old)?;
+            match unsafe { &*ptr }.compare_exchange_weak(
+                old,
+                new,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Ok(old),
+                Err(_) => spin_loop(),
+            }
+        }
+    })
+}
+
 /// An immutable pointer to user space memory.
 #[repr(transparent)]
 #[derive(PartialEq, Clone, Copy)]
@@ -254,25 +222,6 @@ impl<T> UserConstPtr<T> {
         )?;
         Ok(unsafe { slice::from_raw_parts(self.0, len) })
     }
-
-    pub fn get_as_null_terminated(self) -> AxResult<&'static [T]>
-    where
-        T: PartialEq + Default,
-    {
-        let len = check_null_terminated::<T>(self.address(), Self::ACCESS_FLAGS)?;
-        Ok(unsafe { slice::from_raw_parts(self.0, len) })
-    }
-}
-
-impl UserConstPtr<c_char> {
-    /// Get the pointer as `&str`, validating the memory region.
-    pub fn get_as_str(self) -> AxResult<&'static str> {
-        let slice = self.get_as_null_terminated()?;
-        // SAFETY: c_char is u8
-        let slice = unsafe { transmute::<&[c_char], &[u8]>(slice) };
-
-        str::from_utf8(slice).map_err(|_| AxError::IllegalBytes)
-    }
 }
 
 macro_rules! nullable {
@@ -286,6 +235,14 @@ macro_rules! nullable {
 }
 
 pub(crate) use nullable;
+
+/// Cumulative count of user page faults dispatched to the demand-paging handler.
+///
+/// Every fault that reaches the address-space `handle_page_fault` call is counted, matching the
+/// Linux `pgfault` event in mm/vmstat.c (all minor + major faults, regardless of resolution).
+/// Exposed through `/proc/vmstat` so node_exporter's vmstat collector can surface
+/// `node_vmstat_pgfault`.
+pub static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[page_fault_handler]
 fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
@@ -333,13 +290,24 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
         );
         return false;
     }
+    PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
     aspace_arc.lock().handle_page_fault(vaddr, access_flags)
 }
+
+pub const PATH_MAX: usize = 4096;
 
 pub fn vm_load_string(ptr: *const c_char) -> AxResult<String> {
     #[allow(clippy::unnecessary_cast)]
     let bytes = vm_load_until_nul(ptr as *const u8)?;
     String::from_utf8(bytes).map_err(|_| AxError::IllegalBytes)
+}
+
+pub fn vm_load_path_string(ptr: *const c_char) -> AxResult<String> {
+    let path = vm_load_string(ptr)?;
+    if path.len() >= PATH_MAX {
+        return Err(AxError::NameTooLong);
+    }
+    Ok(path)
 }
 
 struct Vm;
@@ -368,6 +336,35 @@ fn ensure_thread_context(op: &str, start: usize, len: usize) -> VmResult {
     }
 }
 
+fn prepare_user_memory(op: &str, start: usize, len: usize, access_flags: MappingFlags) -> VmResult {
+    check_access(start, len)?;
+    if len == 0 {
+        return Ok(());
+    }
+    ensure_thread_context(op, start, len)?;
+
+    let start = VirtAddr::from(start);
+    let end = start + len;
+    let page_start = start.align_down_4k();
+    let page_end = end.align_up_4k();
+
+    let curr = current();
+    let thr = curr.try_as_thread().ok_or(VmError::AccessDenied)?;
+    let aspace_arc = thr.proc_data.aspace();
+    if unsafe { aspace_arc.raw() }.is_owned_by_current() {
+        return Err(VmError::AccessDenied);
+    }
+
+    let mut aspace = aspace_arc.lock();
+    if !aspace.can_access_range(start, len, access_flags) {
+        return Err(VmError::AccessDenied);
+    }
+
+    aspace
+        .populate_area(page_start, page_end - page_start, access_flags)
+        .map_err(|_| VmError::AccessDenied)
+}
+
 #[extern_trait]
 unsafe impl VmIo for Vm {
     fn new() -> Self {
@@ -378,8 +375,7 @@ unsafe impl VmIo for Vm {
         if buf.is_empty() {
             return Ok(());
         }
-        check_access(start, buf.len())?;
-        ensure_thread_context("read", start, buf.len())?;
+        prepare_user_memory("read", start, buf.len(), MappingFlags::READ)?;
         let failed_at = access_user_memory(|| unsafe {
             user_copy(buf.as_mut_ptr() as *mut _, start as _, buf.len())
         });
@@ -394,8 +390,7 @@ unsafe impl VmIo for Vm {
         if buf.is_empty() {
             return Ok(());
         }
-        check_access(start, buf.len())?;
-        ensure_thread_context("write", start, buf.len())?;
+        prepare_user_memory("write", start, buf.len(), MappingFlags::WRITE)?;
         let failed_at = access_user_memory(|| unsafe {
             user_copy(start as _, buf.as_ptr() as *const _, buf.len())
         });
@@ -484,14 +479,18 @@ impl IoBufMut for VmBytesMut {
     }
 }
 
-/// Writes data to kernel text, ensuring the page permissions are properly handled.
-pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
-    if data.is_empty() {
+/// Patches kernel text, ensuring page permissions and instruction-cache
+/// synchronization are handled consistently.
+pub fn patch_kernel_text<F>(addr: VirtAddr, len: usize, action: F) -> AxResult<()>
+where
+    F: FnOnce(*mut u8),
+{
+    if len == 0 {
         return Ok(());
     }
 
     let aligned_addr = addr.align_down_4k();
-    let aligned_length = (addr + data.len()).align_up_4k() - aligned_addr;
+    let aligned_length = (addr + len).align_up_4k() - aligned_addr;
 
     // The kernel address-space lock (`SpinNoIrq`) MUST be acquired *inside* the
     // `stop_machine` critical section, not before it. `stop_machine` itself
@@ -506,38 +505,59 @@ pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
     crate::stop_machine::stop_machine(
         move || -> AxResult<()> {
             let mut guard = ax_mm::kernel_aspace().lock();
-            let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
+            if guard.contains_range(aligned_addr, aligned_length) {
+                let (_, original_flags, _) = guard.page_table().query(aligned_addr)?;
 
-            guard.protect(
-                aligned_addr,
-                aligned_length,
-                original_flags | MappingFlags::WRITE,
-            )?;
+                guard.protect(
+                    aligned_addr,
+                    aligned_length,
+                    original_flags | MappingFlags::WRITE,
+                )?;
 
-            flush_tlb_range(aligned_addr, aligned_length);
+                flush_tlb_range(aligned_addr, aligned_length);
+                action(addr.as_mut_ptr());
 
-            unsafe {
-                core::ptr::copy_nonoverlapping(data.as_ptr(), addr.as_mut_ptr(), data.len());
+                ax_runtime::hal::cache::clean_dcache_to_pou(addr, len);
+
+                guard.protect(aligned_addr, aligned_length, original_flags)?;
+                return Ok(());
             }
 
-            #[cfg(target_arch = "aarch64")]
-            ax_runtime::hal::cpu::asm::clean_dcache_range_to_pou(addr, data.len());
+            #[cfg(target_arch = "loongarch64")]
+            {
+                // LoongArch64 kernel text may execute from the 0x9000... DMW
+                // direct-map window. DMW translations do not consult PTEs, so
+                // there are no page permissions to relax here. Patch directly
+                // while all other CPUs are parked, then rely on the per-CPU
+                // sync callback to flush instruction state.
+                action(addr.as_mut_ptr());
+                return Ok(());
+            }
 
-            guard.protect(aligned_addr, aligned_length, original_flags)?;
-            Ok(())
+            #[cfg(not(target_arch = "loongarch64"))]
+            {
+                Err(AxError::BadAddress)
+            }
         },
         move || sync_modified_kernel_text(aligned_addr, aligned_length),
     )
 }
 
+/// Writes data to kernel text, ensuring the page permissions are properly handled.
+pub fn write_kernel_text(addr: VirtAddr, data: &[u8]) -> AxResult<()> {
+    patch_kernel_text(addr, data.len(), |dst| unsafe {
+        core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
+    })
+}
+
 pub fn flush_tlb_range(start: VirtAddr, size: usize) {
-    for offset in (0..size).step_by(PAGE_SIZE_4K) {
-        ax_runtime::hal::cpu::asm::flush_tlb(Some(start + offset));
-    }
+    ax_runtime::hal::cache::flush_tlb_range(start, size);
+}
+
+pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) {
+    ax_runtime::hal::cache::flush_tlb_range_all_cpus(start, size);
 }
 
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
-    flush_tlb_range(start, size);
-
-    ax_runtime::hal::cpu::asm::flush_icache_all();
+    ax_runtime::hal::cache::sync_kernel_text(start, size);
 }

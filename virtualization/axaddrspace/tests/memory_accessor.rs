@@ -14,10 +14,8 @@
 
 mod test_utils;
 
-use ax_errno::AxResult;
 use ax_memory_addr::PhysAddr;
-use axaddrspace::GuestMemoryAccessor;
-use axin::axin;
+use axaddrspace::{AddrSpaceError, AddrSpaceResult, GuestMemoryAccessor};
 use axvm_types::GuestPhysAddr;
 use test_utils::{BASE_PADDR, MEMORY_LEN, MockHal, mock_hal_test};
 
@@ -53,8 +51,8 @@ impl GuestMemoryAccessor for MockTranslator {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_basic_read_write_operations() {
+    let _guard = mock_hal_test();
     let translator = MockTranslator::new(PhysAddr::from_usize(0), MEMORY_LEN);
 
     // Test u32 read/write operations
@@ -98,16 +96,26 @@ fn test_basic_read_write_operations() {
 
     // Test error handling with invalid address
     let invalid_addr = GuestPhysAddr::from_usize(MEMORY_LEN + 0x1000);
-    let result: AxResult<u32> = translator.read_obj(invalid_addr);
-    assert!(result.is_err(), "Reading from invalid address should fail");
+    let result: AddrSpaceResult<u32> = translator.read_obj(invalid_addr);
+    assert!(matches!(result, Err(AddrSpaceError::Unmapped { .. })));
 
     let result = translator.write_obj(invalid_addr, 42u32);
     assert!(result.is_err(), "Writing to invalid address should fail");
+
+    let short = MockTranslator::new(PhysAddr::from_usize(0), 2);
+    assert!(matches!(
+        short.read_obj::<u32>(GuestPhysAddr::from_usize(0)),
+        Err(AddrSpaceError::InsufficientAccess {
+            requested: 4,
+            available: 2,
+            ..
+        })
+    ));
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_two_vm_isolation() {
+    let _guard = mock_hal_test();
     // Create two different translators to simulate two different VMs
     let vm1_translator = MockTranslator::new(PhysAddr::from_usize(0), MEMORY_LEN / 2); // Offset for VM1
     let vm2_translator = MockTranslator::new(PhysAddr::from_usize(MEMORY_LEN / 2), MEMORY_LEN); // Offset for VM2
@@ -182,7 +190,7 @@ fn test_two_vm_isolation() {
 
     // Test that VM1 cannot access VM2's address space (beyond its limit)
     let vm2_only_addr = GuestPhysAddr::from_usize(MEMORY_LEN / 2 + 0x100);
-    let result: AxResult<u32> = vm1_translator.read_obj(vm2_only_addr);
+    let result: AddrSpaceResult<u32> = vm1_translator.read_obj(vm2_only_addr);
     assert!(
         result.is_err(),
         "VM1 should not be able to access VM2's exclusive address space"
@@ -190,8 +198,8 @@ fn test_two_vm_isolation() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_cross_page_access() {
+    let _guard = mock_hal_test();
     let translator = MockTranslator::new(PhysAddr::from_usize(0), MEMORY_LEN);
 
     // Test cross-region buffer operations
@@ -233,8 +241,8 @@ fn test_cross_page_access() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_region_boundary_edge_cases() {
+    let _guard = mock_hal_test();
     let translator = MockTranslator::new(PhysAddr::from_usize(0), MEMORY_LEN);
 
     let boundary_addr = GuestPhysAddr::from_usize(4096);

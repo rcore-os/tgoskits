@@ -63,6 +63,7 @@ pub unsafe fn sys_clock_gettime(clk: ctypes::clockid_t, ts: *mut ctypes::timespe
 /// Sleep some nanoseconds
 ///
 /// TODO: should be woken by signals, and set errno
+#[track_caller]
 pub unsafe fn sys_nanosleep(req: *const ctypes::timespec, rem: *mut ctypes::timespec) -> c_int {
     syscall_body!(sys_nanosleep, {
         unsafe {

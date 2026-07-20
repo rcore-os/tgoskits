@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.10.1...crab-usb-v0.10.2) - 2026-07-10
+
+### Added
+
+- *(crab-usb)* add SG2002 DWC2 host axtest ([#1496](https://github.com/rcore-os/tgoskits/pull/1496))
+
+## [0.10.1](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.10.0...crab-usb-v0.10.1) - 2026-07-08
+
+### Other
+
+- updated the following local packages: ax-kspin, dma-api
+
+## [0.10.0](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.10...crab-usb-v0.10.0) - 2026-07-07
+
+### Added
+
+- *(crab-usb)* add RK3588 EHCI USB2 host ([#1481](https://github.com/rcore-os/tgoskits/pull/1481))
+
+### Other
+
+- Remove `ax-feat` crate and redistribute features across runtime, API, and user library layers ([#1513](https://github.com/rcore-os/tgoskits/pull/1513))
+- *(drivers)* split Rockchip reset capability ([#1509](https://github.com/rcore-os/tgoskits/pull/1509))
+
+## [0.9.10](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.9...crab-usb-v0.9.10) - 2026-07-02
+
+### Added
+
+- *(kspin)* add lockdep-aware spin rwlock ([#1397](https://github.com/rcore-os/tgoskits/pull/1397))
+
+### Fixed
+
+- *(irq)* separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))
+
+### Other
+
+- *(ax-runtime)* resolve device IRQ bindings to IrqId
+- Revert "fix(irq): separate IRQ domains from trap vectors ([#1346](https://github.com/rcore-os/tgoskits/pull/1346))" ([#1424](https://github.com/rcore-os/tgoskits/pull/1424))
+
+## [0.9.9](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.8...crab-usb-v0.9.9) - 2026-06-27
+
+### Fixed
+
+- *(locking)* remove spin mutex usage from kernel paths ([#1380](https://github.com/rcore-os/tgoskits/pull/1380))
+- *(crab-usb)* ignore xhci iso ring xrun events ([#1376](https://github.com/rcore-os/tgoskits/pull/1376))
+
+### Other
+
+- Merge pull request #1336 from sdio-host2-physical-model
+
+## [0.9.8](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.7...crab-usb-v0.9.8) - 2026-06-23
+
+### Other
+
+- updated the following local packages: dma-api
+
+## [0.9.7](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.6...crab-usb-v0.9.7) - 2026-06-22
+
+### Fixed
+
+- *(crab-usb)* correct xHCI EP0 update and TT port selection ([#1264](https://github.com/rcore-os/tgoskits/pull/1264))
+
+## [0.9.6](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.5...crab-usb-v0.9.6) - 2026-06-12
+
+### Added
+
+- *(axruntime)* add runtime IRQ registration adapters
+
+## [0.9.5](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.4...crab-usb-v0.9.5) - 2026-06-09
+
+### Added
+
+- *(std)* unify std-aware ArceOS builds ([#1080](https://github.com/rcore-os/tgoskits/pull/1080))
+
 ## [0.9.4](https://github.com/rcore-os/tgoskits/compare/crab-usb-v0.9.3...crab-usb-v0.9.4) - 2026-06-03
 
 ### Added

@@ -8,7 +8,7 @@ pub struct GrfMmio {
 ///
 /// # 使用方式
 ///
-/// ```
+/// ```ignore
 /// define_grf!(
 ///     // 单个定义：名称, 基地址, 大小
 ///     GRF0, 0xff770000, 0x1000;

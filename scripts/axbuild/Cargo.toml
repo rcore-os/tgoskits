@@ -6,12 +6,11 @@ keywords.workspace = true
 license.workspace = true
 name = "axbuild"
 repository.workspace = true
-version = "0.4.9"
+version = "0.4.20"
 description = "An OS build lib toolkit used by arceos"
 
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow = { workspace = true }
-ax-config-gen = { workspace = true }
 axvmconfig = { workspace = true, features = ["std"] }
 cargo_metadata = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
@@ -34,8 +33,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1" }
 sha2 = { version = "0.10" }
 tar = { version = "0.4" }
+tempfile = "3"
 tokio = { version = "1.0", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "time"] }
-toml.workspace = true
+toml = { workspace = true, features = ["serde", "parse", "display"] }
 tracing = "0.1"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "std", "time"] }
@@ -55,6 +55,3 @@ windows-sys = { version = "0.59", features = [
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[dev-dependencies]
-tempfile = "3"

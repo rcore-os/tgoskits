@@ -1,7 +1,6 @@
 use core::{
     any::Any,
     mem::{MaybeUninit, size_of},
-    ptr::NonNull,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -20,7 +19,10 @@ use k230_kpu::{
     Kpu, KpuInfo,
 };
 
-use crate::pseudofs::{DeviceMmap, DeviceOps};
+use crate::pseudofs::{
+    DeviceMmap, DeviceOps,
+    dev::{IrqRegistration, request_shared_disabled},
+};
 
 pub const KPU_DEVICE_ID: DeviceId = DeviceId::new(240, 1);
 const KPU_IRQ_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
@@ -32,7 +34,7 @@ static KPU_DONE_WQ: WaitQueue = WaitQueue::new();
 pub struct KpuDevice {
     hw: Kpu,
     resource: KpuResource,
-    irq_registered: bool,
+    irq_registration: Option<IrqRegistration>,
 }
 
 impl KpuDevice {
@@ -49,7 +51,7 @@ impl KpuDevice {
                     return None;
                 }
             };
-        let irq_registered = resource.irq.map(register_kpu_irq).unwrap_or(false);
+        let irq_registration = resource.irq.and_then(register_kpu_irq);
         info!(
             "k230-kpu devfs: cfg=[{:#x}, +{:#x}) l2=[{:#x}, +{:#x}) fake_output={:?} \
              runtime_scratch={} irq={:?} irq_wait={} source={}",
@@ -60,13 +62,13 @@ impl KpuDevice {
             resource.fake_output_range(),
             resource.runtime_scratch_available(),
             resource.irq,
-            irq_registered,
+            irq_registration.is_some(),
             if resource.from_fdt { "fdt" } else { "static" }
         );
         Some(Self {
             hw: unsafe { Kpu::new(base_vaddr) },
             resource,
-            irq_registered,
+            irq_registration,
         })
     }
 
@@ -75,14 +77,14 @@ impl KpuDevice {
     }
 
     fn info(&self) -> KpuInfo {
-        self.resource.info(self.irq_registered)
+        self.resource.info(self.irq_registration.is_some())
     }
 
     fn wait_done(&self, poll_limit: usize) -> VfsResult<()> {
         if self.hw.is_done() {
             return Ok(());
         }
-        if self.irq_registered {
+        if self.irq_registration.is_some() {
             let timed_out =
                 KPU_DONE_WQ.wait_timeout_until(KPU_IRQ_WAIT_TIMEOUT, || self.hw.is_done());
             if !timed_out {
@@ -265,23 +267,17 @@ struct KpuResource {
     runtime_direct_io_size: usize,
     runtime_ddr_paddr: usize,
     runtime_ddr_size: usize,
-    irq: Option<usize>,
+    irq: Option<ax_runtime::hal::irq::IrqId>,
     from_fdt: bool,
 }
 
 impl KpuResource {
     fn probe() -> Option<Self> {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "plat-dyn")] {
-                let resource = Self::from_fdt();
-                if resource.is_none() {
-                    warn!("k230-kpu devfs: canaan,k230-kpu node not found in FDT");
-                }
-                resource
-            } else {
-                Some(Self::fallback(false))
-            }
+        let resource = Self::from_fdt();
+        if resource.is_none() {
+            warn!("k230-kpu devfs: canaan,k230-kpu node not found in FDT");
         }
+        resource
     }
 
     fn fallback(from_fdt: bool) -> Self {
@@ -300,12 +296,11 @@ impl KpuResource {
             runtime_direct_io_size: 0,
             runtime_ddr_paddr: 0,
             runtime_ddr_size: 0,
-            irq: Some(k230_kpu::KPU_IRQ),
+            irq: fallback_irq(),
             from_fdt,
         }
     }
 
-    #[cfg(feature = "plat-dyn")]
     fn from_fdt() -> Option<Self> {
         rdrive::with_fdt(|fdt| {
             fdt.find_compatible(&["canaan,k230-kpu"])
@@ -315,7 +310,6 @@ impl KpuResource {
         .flatten()
     }
 
-    #[cfg(feature = "plat-dyn")]
     fn from_fdt_node(node: rdrive::probe::fdt::NodeType<'_>) -> Option<Self> {
         if matches!(
             node.as_node().status(),
@@ -349,6 +343,13 @@ impl KpuResource {
             "canaan,qemu-runtime-ddr",
             "canaan,k230-kpu-qemu-runtime-ddr",
         );
+        let irq = match decode_fdt_irq(&node.interrupts()) {
+            Ok(irq) => irq,
+            Err(err) => {
+                warn!("k230-kpu devfs: failed to resolve KPU IRQ: {err:?}");
+                return None;
+            }
+        };
 
         Some(Self {
             cfg_paddr: cfg_reg.address as usize,
@@ -391,7 +392,7 @@ impl KpuResource {
             runtime_ddr_size: runtime_ddr
                 .map(|(_paddr, size)| size)
                 .unwrap_or(fallback.runtime_ddr_size),
-            irq: decode_fdt_irq(&node.interrupts()).or(fallback.irq),
+            irq,
             from_fdt: true,
         })
     }
@@ -413,10 +414,7 @@ impl KpuResource {
             cfg_size: self.cfg_size as u64,
             l2_paddr: self.l2_paddr as u64,
             l2_size: self.l2_size as u64,
-            irq: self
-                .irq
-                .and_then(|irq| u32::try_from(irq).ok())
-                .unwrap_or(KPU_IRQ_NONE),
+            irq: self.irq.map(|irq| irq.hwirq.0).unwrap_or(KPU_IRQ_NONE),
             flags: (if self.from_fdt { KPU_INFO_F_FDT } else { 0 })
                 | (if irq_wait { KPU_INFO_F_IRQ_WAIT } else { 0 })
                 | (if self.fake_output_size != 0 {
@@ -433,45 +431,50 @@ impl KpuResource {
     }
 }
 
-fn register_kpu_irq(irq: usize) -> bool {
-    if ax_runtime::hal::irq::request_shared_irq(irq, kpu_irq_handler, NonNull::dangling()).is_err()
-    {
-        warn!("k230-kpu devfs: failed to register IRQ handler for irq {irq}");
-        return false;
+fn register_kpu_irq(irq: ax_runtime::hal::irq::IrqId) -> Option<IrqRegistration> {
+    let registration = match request_shared_disabled(irq, kpu_irq_handler) {
+        Ok(registration) => registration,
+        Err(err) => {
+            warn!("k230-kpu devfs: failed to register IRQ handler for irq {irq:?}: {err:?}");
+            return None;
+        }
+    };
+    if let Err(err) = registration.enable() {
+        warn!("k230-kpu devfs: failed to enable IRQ {irq:?}: {err:?}");
+        return None;
     }
-    ax_runtime::hal::irq::set_enable(irq, true);
-    true
+    Some(registration)
 }
 
-unsafe fn kpu_irq_handler(
-    _ctx: ax_runtime::hal::irq::IrqContext,
-    _data: NonNull<()>,
-) -> ax_runtime::hal::irq::IrqReturn {
+fn kpu_irq_handler(_ctx: ax_runtime::hal::irq::IrqContext) -> ax_runtime::hal::irq::IrqReturn {
     KPU_IRQ_COUNT.fetch_add(1, Ordering::AcqRel);
-    KPU_DONE_WQ.notify_all(false);
+    KPU_DONE_WQ.notify_all_from_irq();
     ax_runtime::hal::irq::IrqReturn::Handled
 }
 
-#[cfg(feature = "plat-dyn")]
-fn decode_fdt_irq(interrupts: &[rdrive::probe::fdt::InterruptRef]) -> Option<usize> {
-    let interrupt = interrupts.first()?;
-    match interrupt.specifier.as_slice() {
-        [irq] => Some(*irq as usize),
-        [kind, irq, ..] => match *kind {
-            0 => Some(*irq as usize + 32),
-            1 => Some(*irq as usize + 16),
-            _ => Some(*irq as usize),
-        },
-        _ => None,
-    }
+fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {
+    None
 }
 
-#[cfg(feature = "plat-dyn")]
+fn decode_fdt_irq(
+    interrupts: &[rdrive::probe::fdt::InterruptRef],
+) -> Result<Option<ax_runtime::hal::irq::IrqId>, ax_runtime::hal::irq::IrqError> {
+    let Some(interrupt) = interrupts.first() else {
+        return Ok(None);
+    };
+    let controller = rdrive::fdt_phandle_to_device_id(interrupt.interrupt_parent)
+        .ok_or(ax_runtime::hal::irq::IrqError::Unsupported)?;
+    ax_runtime::irq::resolve_binding_irq(ax_driver::BindingIrq::fdt_interrupt_with_controller(
+        controller,
+        interrupt.specifier.clone(),
+    ))
+    .map(Some)
+}
+
 fn decode_fake_output_region(node: &rdrive::probe::fdt::NodeType<'_>) -> Option<(usize, usize)> {
     decode_named_region(node, "memory-region", "canaan,k230-kpu-qemu-fake-output")
 }
 
-#[cfg(feature = "plat-dyn")]
 fn decode_named_region(
     node: &rdrive::probe::fdt::NodeType<'_>,
     prop_name: &str,

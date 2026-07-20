@@ -12,21 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod hvc;
+pub(crate) mod hvc;
 mod ivc;
-
 pub(crate) mod vcpus;
-#[cfg(target_arch = "x86_64")]
-mod x86_irq;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_errno::{AxResult, ax_err, ax_err_type};
+use crate::{AxVmError, AxVmResult, StopReason, VmStatus, ax_err};
 
 /// The instantiated VM ref type (by `Arc`).
 pub type VMRef = crate::AxVMRef;
 /// The instantiated VCpu ref type (by `Arc`).
-pub type VCpuRef = crate::AxVCpuRef;
+pub type VCpuRef = crate::vm::AxVCpuRef;
 
 static VMM: crate::HostWaitQueueHandle = crate::HostWaitQueueHandle::new();
 
@@ -36,17 +33,13 @@ static RUNNING_VM_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Initialize runtime state for already registered VMs.
 pub fn init() {
     info!("Initializing VMM...");
-    info!("Setting up vcpus...");
-    for vm in crate::get_vm_list() {
-        vcpus::setup_vm_primary_vcpu(vm);
-    }
 }
 
 /// Start the VMM.
 pub fn start() {
     info!("VMM starting, booting VMs...");
     for vm in crate::get_vm_list() {
-        match vm.boot() {
+        match vm.start() {
             Ok(_) => {
                 RUNNING_VM_COUNT.fetch_add(1, Ordering::Release);
                 vcpus::notify_primary_vcpu(vm.id());
@@ -72,31 +65,52 @@ pub fn sub_running_vm_count(count: usize) {
     RUNNING_VM_COUNT.fetch_sub(count, Ordering::Release);
 }
 
-pub fn start_vm(vm_id: usize) -> AxResult {
-    let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
-    let status = vm.vm_status();
-    if !matches!(status, crate::VMStatus::Loaded | crate::VMStatus::Stopped) {
+fn reset_starts_counted_runtime(previous_status: VmStatus) -> bool {
+    matches!(
+        previous_status,
+        VmStatus::Ready
+            | VmStatus::Running
+            | VmStatus::Paused
+            | VmStatus::Stopping
+            | VmStatus::Stopped
+    )
+}
+
+pub fn start_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
+    let status = vm.status();
+    if !matches!(status, VmStatus::Ready | VmStatus::Stopped) {
         return ax_err!(BadState, "VM cannot be started from its current state");
     }
 
-    vcpus::setup_vm_primary_vcpu(vm.clone());
-    vm.boot()?;
+    vm.start()?;
     add_running_vm_count(1);
     vcpus::notify_primary_vcpu(vm_id);
     Ok(())
 }
 
-pub fn stop_vm(vm_id: usize) -> AxResult {
-    let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
-    vm.shutdown()?;
+pub fn stop_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
+    vm.stop(StopReason::Forced)?;
     vcpus::notify_all_vcpus(vm_id);
     Ok(())
 }
 
-pub fn resume_vm(vm_id: usize) -> AxResult {
-    let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
-    vm.set_vm_status(crate::VMStatus::Running);
+pub fn resume_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
+    vm.resume()?;
     vcpus::notify_all_vcpus(vm_id);
+    Ok(())
+}
+
+pub fn reset_vm(vm_id: usize) -> AxVmResult {
+    let vm = vm_by_id(vm_id)?;
+    let previous_status = vm.status();
+    vm.reset()?;
+    if reset_starts_counted_runtime(previous_status) {
+        add_running_vm_count(1);
+    }
+    vcpus::notify_primary_vcpu(vm_id);
     Ok(())
 }
 
@@ -107,4 +121,39 @@ pub fn remove_vm(vm_id: usize) -> Option<VMRef> {
 /// Register a prepared VM in the AxVM runtime.
 pub fn register_vm(vm: VMRef) -> bool {
     crate::manager::push_existing_vm(vm)
+}
+
+fn vm_by_id(vm_id: usize) -> AxVmResult<VMRef> {
+    crate::get_vm_by_id(vm_id).ok_or_else(|| missing_vm_error(vm_id))
+}
+
+const fn missing_vm_error(vm_id: usize) -> AxVmError {
+    AxVmError::VmNotFound { vm_id }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_counts_replacement_runtime_for_every_restartable_state() {
+        for status in [
+            VmStatus::Ready,
+            VmStatus::Running,
+            VmStatus::Paused,
+            VmStatus::Stopping,
+            VmStatus::Stopped,
+        ] {
+            assert!(
+                reset_starts_counted_runtime(status),
+                "reset from {status:?} starts a fresh running runtime"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_vm_is_reported_with_its_id() {
+        let vm_id = usize::MAX;
+        assert_eq!(missing_vm_error(vm_id), AxVmError::VmNotFound { vm_id });
+    }
 }

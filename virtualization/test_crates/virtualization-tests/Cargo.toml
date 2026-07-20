@@ -1,0 +1,17 @@
+[package]
+name = "virtualization-tests"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+ax-plat.workspace = true
+axdevice.workspace = true
+axdevice_base.workspace = true
+axvm.workspace = true
+axvm-types.workspace = true
+irq-framework.workspace = true

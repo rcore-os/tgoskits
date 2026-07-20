@@ -1,6 +1,6 @@
 [package]
 name = "axfs-ng-vfs"
-version = "0.4.3"
+version = "0.5.5"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Virtual filesystem layer for ArceOS"
@@ -8,10 +8,13 @@ keywords = ["vfs", "filesystem", "ax-fs-ng", "arceos"]
 repository = "https://github.com/Starry-OS/axfs-ng-vfs"
 license = "Apache-2.0"
 
+[features]
+default = []
+lockdep = ["ax-kspin/lockdep"]
+
 [dependencies]
 ax-errno = { workspace = true }
 ax-kspin = { workspace = true }
-axpoll = { workspace = true }
 bitflags = "2.10"
 cfg-if = "1"
 hashbrown = "0.16"

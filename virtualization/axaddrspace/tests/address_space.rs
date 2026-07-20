@@ -12,58 +12,44 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[path = "mock_npt/mod.rs"]
+mod mock_npt;
 mod test_utils;
 
 use core::sync::atomic::Ordering;
 
 use ax_memory_addr::PhysAddr;
-use ax_page_table_entry::MappingFlags;
-use axaddrspace::AddrSpace;
-use axin::axin;
+use axaddrspace::{AddrSpace, AddrSpaceError, MappingFlags};
 use axvm_types::GuestPhysAddr;
-use test_utils::{ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, MockHal, mock_hal_test};
-
-fn mock_hal_test_with_dealloc_count<F, R>(expected_dealloc_count: usize) -> impl FnOnce(F) -> R
-where
-    F: FnOnce() -> R,
-{
-    move |test_fn: F| {
-        mock_hal_test(|| {
-            let result = test_fn();
-            let actual_dealloc_count = DEALLOC_COUNT.load(Ordering::SeqCst);
-            assert_eq!(
-                actual_dealloc_count, expected_dealloc_count,
-                "Expected {expected_dealloc_count} deallocations, but found {actual_dealloc_count}"
-            );
-            result
-        })
-    }
-}
+use mock_npt::MockNestedPageTable;
+use test_utils::{ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, mock_hal_test};
 
 /// Generate an address space for the test
-fn setup_test_addr_space() -> (AddrSpace<MockHal>, GuestPhysAddr, usize) {
+fn setup_test_addr_space() -> (AddrSpace<MockNestedPageTable>, GuestPhysAddr, usize) {
     const BASE: GuestPhysAddr = GuestPhysAddr::from_usize(0x10000);
     const SIZE: usize = 0x10000;
-    let addr_space = AddrSpace::<MockHal>::new_empty(4, BASE, SIZE).unwrap();
+    let addr_space = AddrSpace::new_empty(MockNestedPageTable::new(), BASE, SIZE).unwrap();
     (addr_space, BASE, SIZE)
 }
 
 #[test]
-#[axin(decorator(mock_hal_test_with_dealloc_count(1)))]
 /// Check whether an address_space can be created correctly.
 /// When creating a new address_space, a frame will be allocated for the page table,
 /// thus triggering an alloc_frame operation.
 fn test_addrspace_creation() {
+    let _guard = mock_hal_test();
     let (addr_space, base, size) = setup_test_addr_space();
     assert_eq!(addr_space.base(), base);
     assert_eq!(addr_space.size(), size);
     assert_eq!(addr_space.end(), base + size);
     assert_eq!(ALLOC_COUNT.load(Ordering::SeqCst), 1);
+    drop(addr_space);
+    assert_eq!(DEALLOC_COUNT.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_contains_range() {
+    let _guard = mock_hal_test();
     let (addr_space, base, size) = setup_test_addr_space();
 
     // Within range
@@ -81,8 +67,8 @@ fn test_contains_range() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_map_linear() {
+    let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr = GuestPhysAddr::from_usize(0x18000);
     let paddr = PhysAddr::from_usize(0x10000);
@@ -101,8 +87,42 @@ fn test_map_linear() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
+fn test_map_linear_allows_hpa_above_gpa() {
+    let _guard = mock_hal_test();
+    let (mut addr_space, _base, _size) = setup_test_addr_space();
+    let vaddr = GuestPhysAddr::from_usize(0x18000);
+    let paddr = PhysAddr::from_usize(0x1c000);
+    let map_linear_size = 0x4000;
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+
+    addr_space
+        .map_linear(vaddr, paddr, map_linear_size, flags)
+        .unwrap();
+
+    assert_eq!(addr_space.translate(vaddr).unwrap(), paddr);
+    assert_eq!(
+        addr_space.translate(vaddr + 0x3000).unwrap(),
+        paddr + 0x3000
+    );
+}
+
+#[test]
+fn test_map_linear_rejects_physical_range_overflow() {
+    let _guard = mock_hal_test();
+    let (mut addr_space, _base, _size) = setup_test_addr_space();
+    let vaddr = GuestPhysAddr::from_usize(0x18000);
+    let paddr = PhysAddr::from_usize(usize::MAX - 0xfff);
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+
+    assert!(matches!(
+        addr_space.map_linear(vaddr, paddr, 0x2000, flags),
+        Err(AddrSpaceError::AddressOverflow { .. })
+    ));
+}
+
+#[test]
 fn test_map_alloc_populate() {
+    let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr = GuestPhysAddr::from_usize(0x10000);
     let map_alloc_size = 0x2000; // 8KB
@@ -134,8 +154,30 @@ fn test_map_alloc_populate() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
+fn test_mapping_validation_errors_are_matchable() {
+    let _guard = mock_hal_test();
+    let (mut addr_space, base, size) = setup_test_addr_space();
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+
+    assert!(matches!(
+        addr_space.map_alloc(base + size, 0x1000, flags, false),
+        Err(AddrSpaceError::OutOfRange { .. })
+    ));
+    assert!(matches!(
+        addr_space.map_alloc(base + 1, 0x1000, flags, false),
+        Err(AddrSpaceError::Unaligned { .. })
+    ));
+
+    addr_space.map_alloc(base, 0x1000, flags, false).unwrap();
+    assert_eq!(
+        addr_space.map_alloc(base, 0x1000, flags, false),
+        Err(AddrSpaceError::MappingConflict)
+    );
+}
+
+#[test]
 fn test_map_alloc_lazy() {
+    let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr = GuestPhysAddr::from_usize(0x13000);
     let map_alloc_size = 0x1000;
@@ -155,8 +197,8 @@ fn test_map_alloc_lazy() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_page_fault_handling() {
+    let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr = GuestPhysAddr::from_usize(0x14000);
     let map_alloc_size = 0x1000;
@@ -185,8 +227,8 @@ fn test_page_fault_handling() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_unmap() {
+    let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr = GuestPhysAddr::from_usize(0x15000);
     let map_alloc_size = 0x2000;
@@ -216,8 +258,8 @@ fn test_unmap() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_clear() {
+    let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr1 = GuestPhysAddr::from_usize(0x16000);
     let vaddr2 = GuestPhysAddr::from_usize(0x17000);
@@ -251,8 +293,8 @@ fn test_clear() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_translate() {
+    let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr = GuestPhysAddr::from_usize(0x18000);
     let map_alloc_size = 0x1000;
@@ -278,8 +320,8 @@ fn test_translate() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_translated_byte_buffer() {
+    let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr = GuestPhysAddr::from_usize(0x19000);
     let map_alloc_size = 0x2000; // 8KB
@@ -328,8 +370,8 @@ fn test_translated_byte_buffer() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_translate_and_get_limit() {
+    let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
     let vaddr = GuestPhysAddr::from_usize(0x1A000);
     let map_alloc_size = 0x3000; // 12KB

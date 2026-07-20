@@ -1,99 +1,161 @@
-// Copyright 2025 The Axvisor Team
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+//! Architecture-independent interrupt line signaling.
 
-//! Architecture-neutral interrupt signaling traits for emulated devices.
+use alloc::{string::String, sync::Arc};
 
-use crate::DeviceError;
+use axvm_types::{InterruptTriggerMode, IrqLineId};
 
-/// A guest-visible interrupt line used by an emulated device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct IrqLine(usize);
+/// Errors reported while routing or signaling a virtual interrupt line.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum IrqError {
+    /// The requested operation does not match the line's trigger mode.
+    #[error(
+        "IRQ line {line:?} uses {actual:?} triggering, but {operation} requires {expected:?} \
+         triggering"
+    )]
+    InvalidTriggerMode {
+        /// The affected interrupt line.
+        line: IrqLineId,
+        /// The operation that was requested.
+        operation: &'static str,
+        /// The trigger mode required by the operation.
+        expected: InterruptTriggerMode,
+        /// The trigger mode configured for the line.
+        actual: InterruptTriggerMode,
+    },
+    /// The interrupt line identifier is invalid for the sink.
+    #[error("invalid IRQ line {line:?} during {operation}: {detail}")]
+    InvalidLine {
+        /// The rejected interrupt line.
+        line: IrqLineId,
+        /// The operation that rejected the line.
+        operation: &'static str,
+        /// Diagnostic detail describing the valid range or assignment.
+        detail: String,
+    },
+    /// The interrupt sink does not support the requested operation.
+    #[error("unsupported IRQ operation {operation} on line {line:?}: {detail}")]
+    Unsupported {
+        /// The affected interrupt line.
+        line: IrqLineId,
+        /// The unsupported operation.
+        operation: &'static str,
+        /// Diagnostic detail describing the limitation.
+        detail: String,
+    },
+    /// The interrupt controller backend failed.
+    #[error("IRQ backend operation {operation} failed for line {line:?}: {detail}")]
+    Backend {
+        /// The affected interrupt line.
+        line: IrqLineId,
+        /// The backend operation that failed.
+        operation: &'static str,
+        /// Diagnostic detail from the backend.
+        detail: String,
+    },
+}
+
+/// Result type returned by virtual interrupt routing operations.
+pub type IrqResult<T = ()> = Result<T, IrqError>;
+
+/// Receives state changes and pulses from interrupt lines.
+///
+/// Implementations route the line operation to a VM-specific interrupt
+/// controller backend.
+pub trait IrqSink: Send + Sync {
+    /// Sets whether a level-triggered interrupt line is asserted.
+    fn set_level(&self, line: IrqLineId, asserted: bool) -> IrqResult;
+
+    /// Delivers one pulse from an edge-triggered interrupt line.
+    fn pulse(&self, line: IrqLineId) -> IrqResult;
+}
+
+/// A shareable interrupt line connected to an [`IrqSink`].
+///
+/// Clones share the same line identity, trigger mode, and sink.
+#[derive(Clone)]
+pub struct IrqLine(Arc<IrqLineInner>);
+
+struct IrqLineInner {
+    id: IrqLineId,
+    trigger: InterruptTriggerMode,
+    sink: Arc<dyn IrqSink>,
+}
 
 impl IrqLine {
-    /// Creates a new interrupt line identifier.
-    pub const fn new(line: usize) -> Self {
-        Self(line)
+    /// Creates an interrupt line connected to `sink`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    ///
+    /// use axdevice_base::{InterruptTriggerMode, IrqLine, IrqLineId, IrqResult, IrqSink};
+    ///
+    /// struct Sink;
+    ///
+    /// impl IrqSink for Sink {
+    ///     fn set_level(&self, _line: IrqLineId, _asserted: bool) -> IrqResult {
+    ///         Ok(())
+    ///     }
+    ///
+    ///     fn pulse(&self, _line: IrqLineId) -> IrqResult {
+    ///         Ok(())
+    ///     }
+    /// }
+    ///
+    /// let line = IrqLine::new(
+    ///     IrqLineId(4),
+    ///     InterruptTriggerMode::EdgeTriggered,
+    ///     Arc::new(Sink),
+    /// );
+    /// line.pulse().unwrap();
+    /// ```
+    pub fn new(id: IrqLineId, trigger: InterruptTriggerMode, sink: Arc<dyn IrqSink>) -> Self {
+        Self(Arc::new(IrqLineInner { id, trigger, sink }))
     }
 
-    /// Returns the raw interrupt line number.
-    pub const fn number(self) -> usize {
-        self.0
-    }
-}
-
-/// The target of an interrupt operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IrqTarget {
-    /// Route to the architecture-defined default target.
-    Default,
-    /// Broadcast to all active virtual CPUs.
-    Broadcast,
-    /// Route to one virtual CPU.
-    Vcpu(usize),
-    /// Route to a mask of virtual CPUs.
-    VcpuMask(u64),
-}
-
-/// A message-signaled interrupt payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MsiMessage {
-    /// Guest-programmed MSI address.
-    pub address: u64,
-    /// Guest-programmed MSI data.
-    pub data: u32,
-    /// Optional logical target interpreted by the interrupt router.
-    pub target: Option<IrqTarget>,
-}
-
-impl MsiMessage {
-    /// Creates a new MSI message with no explicit target override.
-    pub const fn new(address: u64, data: u32) -> Self {
-        Self {
-            address,
-            data,
-            target: None,
+    /// Asserts a level-triggered interrupt line.
+    ///
+    /// Returns [`IrqError::InvalidTriggerMode`] for an edge-triggered line.
+    pub fn raise(&self) -> IrqResult {
+        if self.0.trigger != InterruptTriggerMode::LevelTriggered {
+            return Err(IrqError::InvalidTriggerMode {
+                line: self.0.id,
+                operation: "raise",
+                expected: InterruptTriggerMode::LevelTriggered,
+                actual: self.0.trigger,
+            });
         }
+        self.0.sink.set_level(self.0.id, true)
     }
 
-    /// Creates a new MSI message with an explicit target.
-    pub const fn with_target(address: u64, data: u32, target: IrqTarget) -> Self {
-        Self {
-            address,
-            data,
-            target: Some(target),
+    /// Deasserts a level-triggered interrupt line.
+    ///
+    /// Returns [`IrqError::InvalidTriggerMode`] for an edge-triggered line.
+    pub fn lower(&self) -> IrqResult {
+        if self.0.trigger != InterruptTriggerMode::LevelTriggered {
+            return Err(IrqError::InvalidTriggerMode {
+                line: self.0.id,
+                operation: "lower",
+                expected: InterruptTriggerMode::LevelTriggered,
+                actual: self.0.trigger,
+            });
         }
+        self.0.sink.set_level(self.0.id, false)
     }
-}
 
-/// Device-facing interrupt sink.
-///
-/// Implementations translate these semantic operations into the architecture-specific
-/// interrupt controller backend, such as vIOAPIC/vLAPIC, VGIC, vPLIC/AIA, or LoongArch
-/// virtual interrupt state.
-pub trait IrqSink {
-    /// Assert a level interrupt line.
-    fn raise(&self, line: IrqLine) -> Result<(), DeviceError>;
-
-    /// Deassert a level interrupt line.
-    fn lower(&self, line: IrqLine) -> Result<(), DeviceError>;
-
-    /// Generate an edge-style interrupt pulse.
-    fn pulse(&self, line: IrqLine) -> Result<(), DeviceError>;
-
-    /// Deliver a message-signaled interrupt.
-    fn msi(&self, message: MsiMessage) -> Result<(), DeviceError>;
-
-    /// Notify end-of-interrupt for a line when the backend needs it.
-    fn eoi(&self, line: IrqLine) -> Result<(), DeviceError>;
+    /// Pulses an edge-triggered interrupt line.
+    ///
+    /// Returns [`IrqError::InvalidTriggerMode`] for a level-triggered line.
+    pub fn pulse(&self) -> IrqResult {
+        if self.0.trigger != InterruptTriggerMode::EdgeTriggered {
+            return Err(IrqError::InvalidTriggerMode {
+                line: self.0.id,
+                operation: "pulse",
+                expected: InterruptTriggerMode::EdgeTriggered,
+                actual: self.0.trigger,
+            });
+        }
+        self.0.sink.pulse(self.0.id)
+    }
 }

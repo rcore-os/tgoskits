@@ -32,7 +32,7 @@ use kbpf_basic::{
 use rbpf::ebpf::Insn;
 
 use crate::{
-    ebpf::map::BpfMap,
+    ebpf::{KernelRawMutex, map::BpfMap},
     file::get_file_like,
     mm::{VmBytes, VmBytesMut, vm_load_string},
 };
@@ -130,31 +130,31 @@ impl<T: Send + Sync + Clone> PerCpuVariants<T> for PerCpuVariantsImpl<T> {
 pub struct EbpfKernelAuxiliary;
 
 impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
+    type MapLock = KernelRawMutex;
     fn get_unified_map_from_ptr<F, R>(ptr: *const u8, func: F) -> kbpf_basic::BpfResult<R>
     where
-        F: FnOnce(&mut UnifiedMap) -> kbpf_basic::BpfResult<R>,
+        F: FnOnce(&UnifiedMap<Self::MapLock>) -> kbpf_basic::BpfResult<R>,
     {
         // SAFETY: ptr was produced by `Arc::into_raw` in
         // `get_unified_map_ptr_from_fd`; the caller passes it back here so
         // we may reconstruct the Arc, run the closure, and re-leak it.
         let map = unsafe { Arc::from_raw(ptr as *const BpfMap) };
-        let mut unified = map.unified_map();
-        let ret = func(&mut unified);
-        drop(unified);
+        let unified = map.unified_map();
+        let ret = func(unified);
         let _ = Arc::into_raw(map);
         ret
     }
 
     fn get_unified_map_from_fd<F, R>(map_fd: u32, func: F) -> kbpf_basic::BpfResult<R>
     where
-        F: FnOnce(&mut UnifiedMap) -> kbpf_basic::BpfResult<R>,
+        F: FnOnce(&UnifiedMap<Self::MapLock>) -> kbpf_basic::BpfResult<R>,
     {
         let file = get_file_like(map_fd as _).map_err(|_| BpfError::ENOENT)?;
         let bpf_map = file
             .into_any_arc()
             .downcast::<BpfMap>()
             .map_err(|_| BpfError::EINVAL)?;
-        let unified = &mut bpf_map.unified_map();
+        let unified = bpf_map.unified_map();
         func(unified)
     }
 
@@ -263,10 +263,15 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         Ok(res_virt)
     }
 
-    fn unmap(virt_addr: usize) {
+    fn vunmap(vaddr: usize, num_pages: usize) {
         let kspace = ax_mm::kernel_aspace();
         let mut guard = kspace.lock();
-        let _ = guard.unmap(VirtAddr::from_usize(virt_addr), PageSize::Size4K as usize);
+        guard
+            .unmap(
+                VirtAddr::from_usize(vaddr),
+                PageSize::Size4K as usize * num_pages,
+            )
+            .expect("vmunmap failed");
     }
 }
 

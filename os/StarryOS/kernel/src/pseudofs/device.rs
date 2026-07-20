@@ -1,16 +1,24 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, task::Context};
 
-use ax_fs::CachedFile;
-use ax_memory_addr::PhysAddrRange;
+use ax_fs_ng::vfs::CachedFile;
+use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use axfs_ng_vfs::{
-    DeviceId, FileNodeOps, FilesystemOps, Metadata, MetadataUpdate, NodeFlags, NodeOps,
-    NodePermission, NodeType, VfsError, VfsResult,
+    DeviceId, FileNodeOps, FilesystemOps, FsIoEvents, FsPollable, Metadata, MetadataUpdate,
+    NodeFlags, NodeOps, NodePermission, NodeType, VfsError, VfsResult,
 };
 use axpoll::{IoEvents, Pollable};
 use inherit_methods_macro::inherit_methods;
 
 use super::{SimpleFs, SimpleFsNode};
+
+fn fs_events_to_io(events: FsIoEvents) -> IoEvents {
+    IoEvents::from_bits_truncate(events.bits())
+}
+
+fn io_events_to_fs(events: IoEvents) -> FsIoEvents {
+    FsIoEvents::from_bits_truncate(events.bits())
+}
 
 /// Mmap behavior for devices.
 #[derive(Clone)]
@@ -23,6 +31,23 @@ pub enum DeviceMmap {
     /// [`LinearBackend`] so userspace can't observe freed memory if
     /// the device drops the buffer before munmap.
     Physical(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps to cacheable physical RAM.
+    ///
+    /// This is for DMA buffers that are normal memory and whose driver/runtime
+    /// performs explicit cache maintenance around device access.
+    #[cfg(feature = "rknpu")]
+    PhysicalCached(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps to an already offset-resolved physical address range.
+    ///
+    /// This is for file descriptors whose mmap offset is a selector rather than
+    /// a byte offset into a linear device, such as io_uring ring offsets.
+    PhysicalResolved(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
+    /// Maps to an explicit physical page list for this exact mmap request.
+    /// The producer has already applied the requested offset and length, so
+    /// mmap callers must map these pages in order without adding the offset
+    /// again. This covers layouts that are not a single contiguous physical
+    /// range, such as BPF ringbuf maps that expose mirrored data pages.
+    PhysicalPages(Vec<PhysAddr>, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to a cached file.
     Cache(CachedFile),
 }
@@ -162,18 +187,28 @@ impl FileNodeOps for Device {
     }
 }
 
-impl Pollable for Device {
-    fn poll(&self) -> IoEvents {
+impl FsPollable for Device {
+    fn poll(&self) -> FsIoEvents {
         if let Some(pollable) = self.ops.as_pollable() {
-            pollable.poll()
+            io_events_to_fs(pollable.poll())
         } else {
-            IoEvents::IN | IoEvents::OUT
+            FsIoEvents::IN | FsIoEvents::OUT
         }
     }
 
-    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+    fn register(&self, context: &mut Context<'_>, events: FsIoEvents) {
         if let Some(pollable) = self.ops.as_pollable() {
-            pollable.register(context, events);
+            pollable.register(context, fs_events_to_io(events));
         }
+    }
+}
+
+impl Pollable for Device {
+    fn poll(&self) -> IoEvents {
+        fs_events_to_io(FsPollable::poll(self))
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        FsPollable::register(self, context, io_events_to_fs(events));
     }
 }
