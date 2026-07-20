@@ -1,0 +1,25 @@
+# sysbench aarch64 SMP-4 functional matrix on StarryOS.
+# Runs cpu (1/2/4-thread scaling), threads, mutex, and memory subtests. Purpose
+# here is FUNCTIONAL coverage under QEMU (do the sync-heavy threads/mutex tests
+# run without hanging the futex path?) before spending board time. The numbers
+# are TCG double-emulation and are NOT representative of hardware performance;
+# real numbers come from the RK3588 board run.
+#   cargo xtask starry app qemu -t sysbench --arch aarch64 \
+#     --qemu-config qemu-aarch64-matrix.toml
+args = [
+    "-nographic",
+    "-cpu", "cortex-a53",
+    "-m", "1024M",
+    "-smp", "4",
+    "-device", "nvme,serial=deadbeef,drive=nvm",
+    "-drive", "id=nvm,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0",
+    "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sed -i -e 's|https://dl-cdn.alpinelinux.org/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' -e 's|http://dl-cdn.alpinelinux.org/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' -e 's|https://mirrors.cernet.edu.cn/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' -e 's|http://mirrors.cernet.edu.cn/alpine|http://mirrors.tuna.tsinghua.edu.cn/alpine|g' /etc/apk/repositories; sed -i 's|^#* *\\(http.*/community.*\\)|\\1|' /etc/apk/repositories; grep -q '^[^#].*/community' /etc/apk/repositories || sed -n 's|/main$|/community|p' /etc/apk/repositories >> /etc/apk/repositories; (apk add sysbench || (apk update && apk add sysbench)) && for t in 1 2 4; do echo CPU_THREADS=$t; sysbench cpu --cpu-max-prime=20000 --threads=$t --time=3 run 2>&1 | grep -iE 'events per second|total number of events'; done; echo THREADS_T4; sysbench threads --threads=4 --time=3 run 2>&1 | grep -iE 'events per second|total number of events'; echo MUTEX_T4; sysbench mutex --threads=4 run 2>&1 | grep -iE 'total time|total number of events'; echo MEMORY_T4; sysbench memory --threads=4 --memory-total-size=512M run 2>&1 | grep -iE 'transferred|per second' && echo SYSBENCH_MATRIX_OK || printf 'SYSBENCH_%s\\n' HAS_FAILURES"
+success_regex = ["(?m)^SYSBENCH_MATRIX_OK\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^SYSBENCH_HAS_FAILURES\s*$']
+timeout = 1200

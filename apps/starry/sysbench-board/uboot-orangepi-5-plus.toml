@@ -1,0 +1,23 @@
+# Server-less U-Boot boot config for the sysbench StarryOS board run.
+# Used with: cargo xtask starry uboot -c build-aarch64-...toml --uboot-config this
+# (no ostool-server needed; drives the local macOS serial + serial FIT loady).
+# NOTE serial is the macOS device, not the template's Linux /dev/ttyUSB0.
+serial = "/dev/cu.usbserial-AQ03MLX2"
+baud_rate = "1500000"
+dtb_file = "os/StarryOS/configs/board/orangepi-5-plus.dtb"
+
+shell_prefix = "root@starry:/root #"
+# StarryOS mounts the same ext4 (mmcblk1p2) where the harness was deployed. Runs
+# the full controlled harness (harness/starry-harness.sh -> /usr/local/bin):
+# per-core cpuprobe (direct core-type/freq/affinity), pinned sysbench, membw, and
+# the sysbench matrix. Emits SYSBENCH_BOARD_DONE at the end.
+shell_init_cmd = "test -x /usr/local/bin/starry-harness.sh || { echo SYSBENCH_MISSING; exit 1; }; sh /usr/local/bin/starry-harness.sh"
+success_regex = ["(?m)^SYSBENCH_BOARD_DONE\\s*$"]
+# fail patterns must be anchored/unique — the runner echoes shell_init_cmd to the
+# console, so an unanchored `.*not found` would false-match the echoed command.
+fail_regex = [
+  "panicked at",
+  '(?m)^SYSBENCH_MISSING\s*$',
+  "(?i)error while loading shared libraries",
+]
+timeout = 1800

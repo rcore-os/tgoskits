@@ -1,0 +1,36 @@
+=== hybrid ladder validation: threads=2 ===
+GH_PC req=0 landed=0 cntfrq=24000000 iters=64000000 sec=0.6564 ips=97498243 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.7
+GH_PC req=1 landed=1 cntfrq=24000000 iters=64000000 sec=0.6530 ips=98015499 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.5
+GH_PC req=2 landed=2 cntfrq=24000000 iters=64000000 sec=0.6531 ips=97992344 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.2
+GH_PC req=3 landed=3 cntfrq=24000000 iters=64000000 sec=0.6529 ips=98018126 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.6
+GH_PC req=4 landed=4 cntfrq=24000000 iters=64000000 sec=0.4222 ips=151585863 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1591.9
+GH_PC req=5 landed=5 cntfrq=24000000 iters=64000000 sec=0.4221 ips=151606601 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1592.2
+GH_PC req=7 landed=7 cntfrq=24000000 iters=64000000 sec=0.4219 ips=151682685 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1592.9
+GH_SB eps=271.03
+GH_PC req=0 landed=0 cntfrq=24000000 iters=64000000 sec=0.6568 ips=97441136 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.6
+GH_PC req=1 landed=1 cntfrq=24000000 iters=64000000 sec=0.6530 ips=98014273 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.6
+GH_PC req=2 landed=2 cntfrq=24000000 iters=64000000 sec=0.6531 ips=97993656 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.1
+GH_PC req=3 landed=3 cntfrq=24000000 iters=64000000 sec=0.6530 ips=98015937 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.7
+GH_PC req=4 landed=4 cntfrq=24000000 iters=64000000 sec=0.4222 ips=151596441 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1592.1
+GH_PC req=5 landed=5 cntfrq=24000000 iters=64000000 sec=0.4221 ips=151608172 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1592.4
+GH_PC req=6 landed=6 cntfrq=24000000 iters=64000000 sec=0.4219 ips=151708379 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1593.2
+GH_PC req=7 landed=7 cntfrq=24000000 iters=64000000 sec=0.4219 ips=151696527 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1593.1
+
+=== threads=8 all-core (no brownout) ===
+GH_PC req=0 landed=0 cntfrq=24000000 iters=64000000 sec=0.6563 ips=97512195 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.7
+GH_PC req=1 landed=1 cntfrq=24000000 iters=64000000 sec=0.6530 ips=98010070 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.5
+GH_PC req=2 landed=2 cntfrq=24000000 iters=64000000 sec=0.6531 ips=97987399 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.2
+GH_PC req=3 landed=3 cntfrq=24000000 iters=64000000 sec=0.6530 ips=98013135 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.6
+GH_PC req=4 landed=4 cntfrq=24000000 iters=64000000 sec=0.4221 ips=151615086 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1592.3
+GH_PC req=5 landed=5 cntfrq=24000000 iters=64000000 sec=0.4221 ips=151617390 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1592.4
+GH_PC req=6 landed=6 cntfrq=24000000 iters=64000000 sec=0.4218 ips=151715406 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1593.2
+GH_PC req=7 landed=7 cntfrq=24000000 iters=64000000 sec=0.4219 ips=151691074 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1592.9
+GH_SB eps=271.10
+GH_PC req=0 landed=0 cntfrq=24000000 iters=64000000 sec=0.6568 ips=97436809 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.5
+GH_PC req=1 landed=1 cntfrq=24000000 iters=64000000 sec=0.6530 ips=98008450 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.5
+GH_PC req=2 landed=2 cntfrq=24000000 iters=64000000 sec=0.6532 ips=97984730 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.2
+GH_PC req=3 landed=3 cntfrq=24000000 iters=64000000 sec=0.6530 ips=98008976 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1372.5
+GH_PC req=4 landed=4 cntfrq=24000000 iters=64000000 sec=0.4221 ips=151608905 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1592.1
+GH_PC req=5 landed=5 cntfrq=24000000 iters=64000000 sec=0.4221 ips=151626086 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1592.3
+GH_PC req=6 landed=6 cntfrq=24000000 iters=64000000 sec=0.4219 ips=151705652 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1593.2
+GH_PC req=7 landed=7 cntfrq=24000000 iters=64000000 sec=0.4219 ips=151683210 midr_ok=0 part=0x0 pmc_ok=1 mhz_pmc=1592.9

@@ -1,0 +1,441 @@
+START Thu 16 Jul 2026 15:59:53 CST
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.88s
+     Running `target/debug/tg-xtask starry uboot -c apps/starry/sysbench-board/build-aarch64-unknown-none-softfloat.toml --uboot-config apps/starry/sysbench-board/uboot-orangepi-5-plus.toml`
+[2026-07-16T07:59:55Z INFO  axbuild::context] Workspace root: /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench
+Using build config: apps/starry/sysbench-board/build-aarch64-unknown-none-softfloat.toml
+[2026-07-16T07:59:56Z INFO  axbuild::build::config_file] Found build config at apps/starry/sysbench-board/build-aarch64-unknown-none-softfloat.toml
+[axbuild] starry build package=starryos target=aarch64-unknown-none-softfloat arch=aarch64 ...
+[axbuild] cargo build package=starryos target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=apps/starry/sysbench-board/build-aarch64-unknown-none-softfloat.toml ...
+sh -c /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/tmp/axbuild/std/prebuild/prebuild-aarch64-unknown-linux-musl-96f2efcf3ea5afab.sh
+AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar
+AX_ARCH=aarch64
+AX_LOG=info
+AX_TARGET=aarch64-unknown-none-softfloat
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_musl=--target=aarch64-linux-musl --sysroot=/opt/homebrew/Cellar/aarch64-unknown-linux-musl/15.2.0/toolchain/bin/../aarch64-unknown-linux-musl/sysroot --gcc-toolchain=/opt/homebrew -mgeneral-regs-only
+CARGO_UNSTABLE_JSON_TARGET_SPEC=true
+CC_aarch64_unknown_linux_musl=aarch64-linux-musl-cc
+CFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+CXXFLAGS_aarch64_unknown_linux_musl=-mgeneral-regs-only -fno-stack-protector
+SMP=8
+cargo build --config /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/tmp/axbuild/std/config-aarch64-unknown-linux-musl-dynamic.toml -p starryos --target scripts/targets/std/pie/aarch64-unknown-linux-musl.json -Z unstable-options --target-dir /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target --features ax-driver/rockchip-dwmmc,ax-driver/rockchip-sdhci,ax-driver/rockchip-soc,ax-std/smp,ax-std/std-compat,smp -Z json-target-spec --bin starryos --release --message-format json-render-diagnostics
+warning: function `set_fdt_addr_phys_if_valid` is never used
+  --> platforms/someboot/src/fdt/mod.rs:32:15
+   |
+32 | pub(crate) fn set_fdt_addr_phys_if_valid(fdt_addr: usize) -> bool {
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `someboot` (lib) generated 1 warning
+warning: constant `BPF_JIT_MEM_PAGES` is never used
+  --> os/StarryOS/kernel/src/perf/bpf.rs:43:7
+   |
+43 | const BPF_JIT_MEM_PAGES: usize = 4;
+   |       ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `starry-kernel` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.69s
+warning: the following packages contain code that will be rejected by a future version of Rust: core v0.0.0 (/Users/jsph273/.rustup/toolchains/nightly-2026-05-28-aarch64-apple-darwin/lib/rustlib/src/rust/library/core), memchr v2.8.2
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+Converting ELF to BIN format...
+  elf: /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos
+  bin: /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos.bin
+/Users/jsph273/.rustup/toolchains/nightly-2026-05-28-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-objcopy --strip-all -O binary /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos.bin
+[axbuild] cargo build package=starryos target=scripts/targets/std/pie/aarch64-unknown-linux-musl.json config=apps/starry/sysbench-board/build-aarch64-unknown-none-softfloat.toml ... done (1.58s)
+[axbuild] cargo build elf=/Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos
+[axbuild] cargo build artifact_dir=/Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release
+[axbuild] starry build package=starryos target=aarch64-unknown-none-softfloat arch=aarch64 ... done (1.58s)
+[axbuild] starry artifact elf=/Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos
+[axbuild] starry kallsyms elf=/Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos ...
+[axbuild] starry kallsyms symbols=12090
+rust-objcopy --update-section .kallsyms=/Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/.starryos.kallsyms.27207.tmp /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos
+[axbuild] starry kallsyms elf=/Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos ... done (568.52ms)
+[axbuild] starry bin refresh /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos.bin ...
+rust-objcopy --strip-all -O binary /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos.bin
+[axbuild] starry bin refresh /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos.bin ... done (42.59ms)
+[axbuild] uboot run prepared artifact ...
+[2026-07-16T07:59:58Z INFO  ostool::run::uboot] Starting U-Boot runner...
+[2026-07-16T07:59:58Z INFO  ostool::run::uboot] kernel from: /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos.bin
+[2026-07-16T07:59:58Z INFO  ostool::run::uboot] Opening serial port: /dev/cu.usbserial-AQ03MLX2 @ 1500000
+Waiting for board on power or reset...
+[2026-07-16T08:07:27Z INFO  uboot_shell] cmd: setenv autoload yes
+[2026-07-16T08:07:27Z INFO  uboot_shell] cmd: echo $fdt_addr_r
+[2026-07-16T08:07:28Z INFO  uboot_shell] cmd: echo $ramdisk_addr_r
+[2026-07-16T08:07:28Z INFO  uboot_shell] cmd: echo $kernel_addr_r
+[2026-07-16T08:07:28Z INFO  ostool::run::uboot] Using $kernel_addr_r as kernel entry: 0x2000000
+[2026-07-16T08:07:28Z INFO  uboot_shell] cmd: echo $kernel_comp_addr_r
+[2026-07-16T08:07:29Z INFO  ostool::run::uboot] image load to kernel_comp_addr_r: 0xa000000
+[2026-07-16T08:07:29Z INFO  uboot_shell] cmd: setenv loadaddr 0xa000000
+[2026-07-16T08:07:29Z INFO  ostool::run::uboot] fitimage loadaddr: 0xa000000
+[2026-07-16T08:07:29Z INFO  ostool::run::uboot] kernel entry: 0x2000000
+[2026-07-16T08:07:29Z INFO  ostool::run::uboot] Using DTB from: os/StarryOS/configs/board/orangepi-5-plus.dtb
+[2026-07-16T08:07:29Z INFO  ostool::boot::fit] Making FIT image...
+[2026-07-16T08:07:29Z INFO  ostool::boot::fit] kernel: /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/starryos.bin (size: 13860896)
+[2026-07-16T08:07:29Z INFO  ostool::boot::fit] 已读取 DTB 文件: os/StarryOS/configs/board/orangepi-5-plus.dtb (大小: 280050)
+[2026-07-16T08:07:29Z INFO  ostool::boot::fit] FIT image ok: /Users/jsph273/Desktop/Code/tgoskits/.claude/worktrees/sysbench/target/aarch64-unknown-linux-musl/release/image.fit
+[2026-07-16T08:07:29Z INFO  ostool::run::uboot] No TFTP config, using loady to upload FIT image...
+
+send file
+loady 0xa000000
+## Ready for binary (ymodem) download to 0x0A000000 at 1500000 bps...
+[2026-07-16T08:07:30Z INFO  uboot_shell::ymodem] Sending file: image.fit
+C## Total Size      = 0x00d7c920 = 14141728 Bytes
+## Start Addr      = 0x0A000000
+=>
+send ok
+[2026-07-16T08:11:11Z INFO  ostool::run::uboot] Booting kernel with command: bootm
+Interacting with U-Boot shell...
+bootm
+## Loading kernel (any) from FIT Image at 0a000000 ...
+   Using 'config-ostool' configuration
+   Verifying Hash Integrity ... OK
+   Trying 'kernel' kernel subimage
+     Description:  This kernel
+     Type:         Kernel Image
+     Compression:  uncompressed
+     Data Start:   0x0a000168
+     Data Size:    13860896 Bytes = 13.2 MiB
+     Architecture: AArch64
+     OS:           Linux
+     Load Address: 0x02000000
+     Entry Point:  0x02000000
+   Verifying Hash Integrity ... OK
+## Loading fdt (any) from FIT Image at 0a000000 ...
+   Using 'config-ostool' configuration
+   Verifying Hash Integrity ... OK
+   Trying 'fdt' fdt subimage
+     Description:  This fdt
+     Type:         Flat Device Tree
+     Compression:  uncompressed
+     Data Start:   0x0ad38208
+     Data Size:    280050 Bytes = 273.5 KiB
+     Architecture: AArch64
+     Load Address: 0x12000000
+   Verifying Hash Integrity ... OK
+   Loading fdt from 0x0ad38208 to 0x12000000
+   Booting using the fdt blob at 0x12000000
+Working FDT set to 12000000
+   Loading Kernel Image to 2000000
+   Loading Device Tree to 00000000ecb95000, end 00000000ecbdc5f1 ... OK
+Working FDT set to ecb95000
+
+Starting kernel ...
+
+root=UUID=3ab40e80-4239-4764-b8ff-c58ee0759ad8 earlycon=uart8250,mmio32,0xfeb50000 rootwait rootfstype=ext4 splash=verbose console=ttyS2,1500000 console=tty1 consoleblank=0 loglevel=1 ubootpart=1af5d396-7e1f-7e40-bb91-af7c495a0115 usb-storage.quirks= cma=128M  cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory swapaccount=1
+VM Load @0x2000000
+VM Load Offset: 0x82000000
+Memory Map:
+  Rsv    0x00000000110000 - 0x00000000200000 (960 KiB)
+  Free   0x00000000200000 - 0x00000002000000 (30 MiB)
+  KImg   0x00000002000000 - 0x00000002e00000 (14 MiB)
+  Free   0x00000002e00000 - 0x0000000a100000 (115 MiB)
+  Rsv    0x0000000a100000 - 0x0000000a145000 (276 KiB)
+  Free   0x0000000a145000 - 0x0000000a200000 (748 KiB)
+  Rsv    0x0000000a200000 - 0x0000000b65f000 (20.37 MiB)
+  Free   0x0000000b65f000 - 0x00000010000000 (73.63 MiB)
+  Rsv    0x00000010000000 - 0x00000020000000 (256 MiB)
+  Free   0x00000020000000 - 0x000000f0000000 (3.25 GiB)
+  Free   0x00000100000000 - 0x00000200000000 (4 GiB)
+  Free   0x000002f0000000 - 0x00000300000000 (256 MiB)
+Initialize RAM allocator: 0x200000..0x2000000
+Initializing per-CPU data
+Per-CPU data one cpu size: 0x41000 bytes
+Total per-CPU data size for secondary CPUs: 0x208000 bytes (8 CPUs)
+Flushed RAM used range to memory map: 0x200000..0x245000, current: 0x245000
+Flushed RAM used range to memory map: 0x245000..0x44d000, current: 0x44d000
+Per-CPU data allocated at 0x245000 - 0x44d000
+Initializing per-CPU RAM for CPU0 - hard id 0x0 @ 0x245000
+Initializing per-CPU RAM for CPU1 - hard id 0x100 @ 0x286000
+Initializing per-CPU RAM for CPU2 - hard id 0x200 @ 0x2c7000
+Initializing per-CPU RAM for CPU3 - hard id 0x300 @ 0x308000
+Initializing per-CPU RAM for CPU4 - hard id 0x400 @ 0x349000
+Initializing per-CPU RAM for CPU5 - hard id 0x500 @ 0x38a000
+Initializing per-CPU RAM for CPU6 - hard id 0x600 @ 0x3cb000
+Initializing per-CPU RAM for CPU7 - hard id 0x700 @ 0x40c000
+CPU0 - hard id 0x0, stack top @0x286000, stack top virt @0xffffff0000286000, entry virt @0xffffffff8035daec
+CPU1 - hard id 0x100, stack top @0x2c7000, stack top virt @0xffffff00002c7000, entry virt @0xffffffff8035daec
+CPU2 - hard id 0x200, stack top @0x308000, stack top virt @0xffffff0000308000, entry virt @0xffffffff8035daec
+CPU3 - hard id 0x300, stack top @0x349000, stack top virt @0xffffff0000349000, entry virt @0xffffffff8035daec
+CPU4 - hard id 0x400, stack top @0x38a000, stack top virt @0xffffff000038a000, entry virt @0xffffffff8035daec
+CPU5 - hard id 0x500, stack top @0x3cb000, stack top virt @0xffffff00003cb000, entry virt @0xffffffff8035daec
+CPU6 - hard id 0x600, stack top @0x40c000, stack top virt @0xffffff000040c000, entry virt @0xffffffff8035daec
+CPU7 - hard id 0x700, stack top @0x44d000, stack top virt @0xffffff000044d000, entry virt @0xffffffff8035daec
+EL: 1
+Mapping early memory regions...
+Ram                 : [0xffff000000200000, 0xffff0000f0000000) -> [0x0000000000200000, 0x00000000f0000000) (3.75 GiB)
+Ram                 : [0xffff000100000000, 0xffff000200000000) -> [0x0000000100000000, 0x0000000200000000) (4 GiB)
+Ram                 : [0xffff0002f0000000, 0xffff000300000000) -> [0x00000002f0000000, 0x0000000300000000) (256 MiB)
+KImage              : [0xffffffff80000000, 0xffffffff80e00000) -> [0x0000000002000000, 0x0000000002e00000) (14 MiB)
+PerCpu              : [0xffffff0000245000, 0xffffff000044d000) -> [0x0000000000245000, 0x000000000044d000) (2.03 MiB)
+Debug serial        : [0xffff0000feb50000, 0xffff0000feb51000) -> [0x00000000feb50000, 0x00000000feb51000) (4 KiB)
+Boot page table at physical address: 0x44d000
+Setting up table registers...
+MMU Entry point at physical address: 0x2362c0c
+Trap vector at 0xffffffff80359800
+Memory Map:
+  Rsv    0x00000000110000 - 0x00000000245000 (1.21 MiB)
+  PerCPU 0x00000000245000 - 0x0000000044d000 (2.03 MiB)
+  Rsv    0x0000000044d000 - 0x00000000459000 (48 KiB)
+  Free   0x00000000459000 - 0x00000002000000 (27.65 MiB)
+  KImg   0x00000002000000 - 0x00000002e00000 (14 MiB)
+  Free   0x00000002e00000 - 0x0000000a100000 (115 MiB)
+  Rsv    0x0000000a100000 - 0x0000000a145000 (276 KiB)
+  Free   0x0000000a145000 - 0x0000000a200000 (748 KiB)
+  Rsv    0x0000000a200000 - 0x0000000b65f000 (20.37 MiB)
+  Free   0x0000000b65f000 - 0x00000010000000 (73.63 MiB)
+  Rsv    0x00000010000000 - 0x00000020000000 (256 MiB)
+  Free   0x00000020000000 - 0x000000f0000000 (3.25 GiB)
+  MMIO   0x000000feb50000 - 0x000000feb51000 (4 KiB)
+  Free   0x00000100000000 - 0x00000200000000 (4 GiB)
+  Free   0x000002f0000000 - 0x00000300000000 (256 MiB)
+Jumping to main entry point at 0xffffffff80348254 with SP 0xffffff0000286000
+
+       d8888                            .d88888b.   .d8888b.
+      d88888                           d88P" "Y88b d88P  Y88b
+     d88P888                           888     888 Y88b.
+    d88P 888 888d888  .d8888b  .d88b.  888     888  "Y888b.
+   d88P  888 888P"   d88P"    d8P  Y8b 888     888     "Y88b.
+  d88P   888 888     888      88888888 888     888       "888
+ d8888888888 888     Y88b.    Y8b.     Y88b. .d88P Y88b  d88P
+d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
+
+arch = aarch64
+platform = RK3588 OPi 5 Plus
+target = aarch64-unknown-none-softfloat
+build_mode = 
+log_level = info
+backtrace = false
+smp = 8
+
+[228.828612 ax_runtime:211] Logging is enabled.
+[228.829097 ax_runtime:212] Primary CPU 0 started, arg = 0x200000.
+[228.829727 ax_runtime:214] Found physcial memory regions:
+[228.830368 ax_runtime:216]   [PA:0x110000, PA:0x245000) reserved (READ | WRITE | EXECUTE | RESERVED)
+[228.831258 ax_runtime:216]   [PA:0x245000, PA:0x44d000) reserved (READ | WRITE | EXECUTE | RESERVED)
+[228.832150 ax_runtime:216]   [PA:0x44d000, PA:0x459000) reserved (READ | WRITE | EXECUTE | RESERVED)
+[228.833042 ax_runtime:216]   [PA:0x459000, PA:0x2000000) free memory (READ | WRITE | FREE)
+[228.833860 ax_runtime:216]   [PA:0x2000000, PA:0x2e00000) reserved (READ | WRITE | EXECUTE | RESERVED)
+[228.834767 ax_runtime:216]   [PA:0x2e00000, PA:0xa100000) free memory (READ | WRITE | FREE)
+[228.835593 ax_runtime:216]   [PA:0xa100000, PA:0xa145000) reserved (READ | WRITE | EXECUTE | RESERVED)
+[228.836500 ax_runtime:216]   [PA:0xa145000, PA:0xa200000) free memory (READ | WRITE | FREE)
+[228.837325 ax_runtime:216]   [PA:0xa200000, PA:0xb65f000) reserved (READ | WRITE | EXECUTE | RESERVED)
+[228.838232 ax_runtime:216]   [PA:0xb65f000, PA:0x10000000) free memory (READ | WRITE | FREE)
+[228.839065 ax_runtime:216]   [PA:0x10000000, PA:0x20000000) reserved (READ | WRITE | EXECUTE | RESERVED)
+[228.839988 ax_runtime:216]   [PA:0x20000000, PA:0xf0000000) free memory (READ | WRITE | FREE)
+[228.840828 ax_runtime:216]   [PA:0xfeb50000, PA:0xfeb51000) mmio (READ | WRITE | DEVICE | RESERVED)
+[228.841713 ax_runtime:216]   [PA:0x100000000, PA:0x200000000) free memory (READ | WRITE | FREE)
+[228.842567 ax_runtime:216]   [PA:0x2f0000000, PA:0x300000000) free memory (READ | WRITE | FREE)
+[228.843423 ax_runtime:358] Initialize global memory allocator...
+[228.844045 ax_runtime:359]   use buddy-slab-allocator allocator.
+[228.844669 ax_alloc::buddy_slab:150] Initialize global memory allocator, start_vaddr: 0xffff000100000000, size: 0x100000000
+[228.849593 ax_alloc::buddy_slab:399] global allocator initialized
+[228.850217 ax_alloc::buddy_slab:160] Add memory region, start_vaddr: 0xffff000000459000, size: 0x1ba7000
+[228.851165 ax_alloc::buddy_slab:160] Add memory region, start_vaddr: 0xffff000002e00000, size: 0x7300000
+[228.852189 ax_alloc::buddy_slab:160] Add memory region, start_vaddr: 0xffff00000a145000, size: 0xbb000
+[228.853090 buddy_slab_allocator::global:143] GlobalAllocator: skip region 0xffff00000a145000+0xbb000, no allocator-visible memory after 2097152 alignment
+[228.854380 ax_alloc::buddy_slab:160] Add memory region, start_vaddr: 0xffff00000b65f000, size: 0x49a1000
+[228.855372 ax_alloc::buddy_slab:160] Add memory region, start_vaddr: 0xffff000020000000, size: 0xd0000000
+[228.859431 ax_alloc::buddy_slab:160] Add memory region, start_vaddr: 0xffff0002f0000000, size: 0x10000000
+[228.860597 ax_runtime:251] kernel aspace: [VA:0xffff000000000000, VA:0xffffffffffffffff)
+[228.861393 ax_mm:92] Initialize virtual memory management...
+[229.403267 ax_runtime:263] Initialize platform devices...
+[229.472595 someboot::arch::power:23] Power management method : SMC
+[229.473236 somehal::driver:5] Initializing rdrive with FDT at 0xffff000000200000
+[229.896873 ax_task::api:146] Initialize scheduling...
+[229.897463 ax_task::api:151]   use Round-robin scheduler.
+[229.898028 ax_runtime:289] Initialize interrupt handlers...
+[229.900414 ax_runtime::devices:2] Probe platform devices...
+[230.035988 ax_driver::serial::ns16550:49] Probing NS16550 serial device: serial@febc0000
+[230.036879 ax_driver::serial::ns16550:85] NS16550 serial@0xffff0000febc0000 registered successfully
+[230.080139 ax_driver::serial::rockchip_fiq:35] Rockchip FIQ debugger takes disabled UART alias serial2 at /serial@feb50000
+[[230.081230 ax_driver::serial::rockchip_fiq:44] Rockchip FIQ debugger UART@0xffff0000feb50000 registered successfully, serial-id=2, baudrate=1500000, irq-mode=true
+[230.115202 ax_driver::soc::scmi:55] [scmi] SCMI shmem phandle 71 cannot be resolved by rdrive; using RK3588 shmem fallback 0x10f000+0x100
+[230.116393 ax_driver::soc::scmi:76] SCMI SMC registered: smc_id=0x82000010, shmem_phandle=71, shmem=0x10f000+0x100
+[230.118326 ax_driver::soc::rockchip::cru::rk3588:60] RK3588 CRU reg: addr=0xfd7c0000, size=0x5c000, rockchip,grf=<0x77>
+[230.119414 rockchip_soc::variants::rk3588::cru:122] CRU@ffff0000fd7c0000: Initializing and verifying clock configuration...
+[230.120480 rockchip_soc::variants::rk3588::cru:173] ⚠ CRU@ffff0000fd7c0000: ACLK_BUS_ROOT div mismatch! u-boot: 3, current: 4
+[230.121577 rockchip_soc::variants::rk3588::cru:247] ✓ CRU@ffff0000fd7c0000: Clock configuration verified
+[230.122520 ax_driver::soc::rockchip::cru::rk3588:79] RK3588 CRU clock/reset registered successfully
+[230.125018 ax_driver::soc::rockchip::pm:61] Rockchip power-domain provider registered successfully
+[230.173778 ax_driver::soc::rockchip::pinctrl:239] Rockchip RK3588 pinctrl registered successfully
+[230.855510 ax_driver::soc::fixed_regulator:70] Fixed regulator vcc5v0_host enabled via pinctrl
+[230.974566 ax_driver::soc::fixed_regulator:70] Fixed regulator vcc3v3_pcie_eth enabled via pinctrl
+[231.045337 ax_driver::soc::fixed_regulator:70] Fixed regulator wifi_disable enabled via pinctrl
+[231.145497 ax_driver::block::rockchip::sd:217] [mmc@fe2c0000] vqmmc-supply phandle Phandle(283) is not a fixed GPIO regulator; skip pinctrl enable
+[231.146803 ax_driver::soc::scmi:124] SCMI clock enabled: clock_id=0x17
+[231.147466 ax_driver::block::rockchip::clock:53] [mmc@fe2c0000] enabled SDMMC SCMI clock Some("biu") (0x17)
+[231.148423 ax_driver::soc::scmi:124] SCMI clock enabled: clock_id=0x9
+[231.149076 ax_driver::block::rockchip::clock:53] [mmc@fe2c0000] enabled SDMMC SCMI clock Some("ciu") (0x9)
+[231.150027 ax_driver::block::rockchip::clock:100] [mmc@fe2c0000] enabled SDMMC clock Some("ciu-drive") (0x2c2)
+[231.151006 ax_driver::block::rockchip::clock:100] [mmc@fe2c0000] enabled SDMMC clock Some("ciu-sample") (0x2c3)
+[231.152004 ax_driver::block::rockchip::sd:129] rockchip-dwmmc probe: node=mmc@fe2c0000, addr=0xfe2c0000, size=0x4000
+[231.153122 ax_driver::soc::scmi:149] SCMI clock rate set: clock_id=0x9, rate=50000000 Hz
+[231.153926 ax_driver::soc::scmi:95] SCMI clock rate get: clock_id=0x9, rate=49500000 Hz
+[231.154715 ax_driver::block::rockchip::sd:141] rockchip-dwmmc: using ciu reference clock 49500000 Hz
+[231.155731 ax_driver::block::rockchip::sd::phase:43] rockchip-dwmmc: RK3588 SDMMC phase configured: drive=90deg sample=0deg parent=49500000Hz
+[231.156929 ax_driver::block::rockchip::sd:159] rockchip-dwmmc: initialize card through native host2 bus ops
+[231.157876 sdmmc_protocol::sdio::init:487] sdio: submit bus op ResetAll
+[231.158566 sdmmc_protocol::sdio::init:487] sdio: submit bus op PowerOn
+[231.169240 sdmmc_protocol::sdio::init:487] sdio: submit bus op SwitchVoltage(V330)
+[231.169997 sdmmc_protocol::sdio::init:449] sdio: submit bus op SetBusWidth(Bit1)
+[231.170742 sdmmc_protocol::sdio::init:449] sdio: submit bus op SetClock(Identification)
+[231.171546 ax_driver::soc::scmi:149] SCMI clock rate set: clock_id=0x9, rate=800000 Hz
+[231.172332 ax_driver::soc::scmi:95] SCMI clock rate get: clock_id=0x9, rate=800000 Hz
+[231.173107 ax_driver::block::rockchip::sd:91] rockchip-dwmmc: ciu clock set target=400000 Hz cclkin=800000 Hz bus=400000 Hz
+[231.195819 sdmmc_protocol::sdio::init:695] sdio: detected Sd ocr=0xc0ff8000
+[231.197878 sdmmc_protocol::sdio::init:849] sdio: CSD capacity_blocks=Some(62410752)
+[231.198948 sdmmc_protocol::sdio::init:863] sdio: switch SD bus width to 4-bit
+[231.200272 sdmmc_protocol::sdio::init:449] sdio: submit bus op SetBusWidth(Bit4)
+[231.201034 sdmmc_protocol::sdio::init:449] sdio: submit bus op SetClock(Default)
+[231.201784 ax_driver::soc::scmi:149] SCMI clock rate set: clock_id=0x9, rate=50000000 Hz
+[231.202585 ax_driver::soc::scmi:95] SCMI clock rate get: clock_id=0x9, rate=49500000 Hz
+[231.203375 ax_driver::block::rockchip::sd:91] rockchip-dwmmc: ciu clock set target=25000000 Hz cclkin=49500000 Hz bus=24750000 Hz
+[231.205177 ax_driver::soc::scmi:149] SCMI clock rate set: clock_id=0x9, rate=100000000 Hz
+[231.205985 ax_driver::soc::scmi:95] SCMI clock rate get: clock_id=0x9, rate=99000000 Hz
+[231.206775 ax_driver::block::rockchip::sd:91] rockchip-dwmmc: ciu clock set target=50000000 Hz cclkin=99000000 Hz bus=49500000 Hz
+[231.207930 sdmmc_protocol::sdio::init:1442] sdio: SD speed selected HighSpeed
+[231.208647 sdmmc_protocol::sdio::init:1463] sdio: init done kind=Sd sd_v2=true high_capacity=true rca=0x1 ocr=0xc0ff8000 host_bus_width=Bit4 ext_csd_bus_width=None ext_csd_timing=None
+[231.210172 ax_driver::block::rockchip::sd:168] rockchip-dwmmc card: kind=Sd high_capacity=true rca=1 ocr=0xc0ff8000 capacity_blocks=Some(62410752) cid=true ext_csd=false
+[231.212401 ax_driver::block::rockchip::sd::phase:67] rockchip-dwmmc: sample phase probe 0deg: block0_ok=true mbr_sig=aa55 block0_head=[00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00] block1_ok=true gpt_head=[45, 46, 49, 20, 50, 41, 52, 54]
+[231.214461 ax_driver::block::rockchip::sd::phase:81] rockchip-dwmmc: selected RK3588 SDMMC sample phase 0deg
+[231.215617 ax_driver::block::rockchip::sd:198] rockchip-sd block device registered irq=None
+[231.217410 ax_driver::block::rockchip::clock:100] [mmc@fe2e0000] enabled SDHCI clock Some("core") (0x13a)
+[231.218347 ax_driver::block::rockchip::clock:100] [mmc@fe2e0000] enabled SDHCI clock Some("bus") (0x138)
+[231.219272 ax_driver::block::rockchip::clock:100] [mmc@fe2e0000] enabled SDHCI clock Some("axi") (0x139)
+[231.220197 ax_driver::block::rockchip::clock:100] [mmc@fe2e0000] enabled SDHCI clock Some("block") (0x13b)
+[231.221142 ax_driver::block::rockchip::clock:100] [mmc@fe2e0000] enabled SDHCI clock Some("timer") (0x13c)
+[231.222096 ax_driver::block::rockchip::sdhci_rk3588:166] rockchip-sdhci probe: node=mmc@fe2e0000, addr=0xfe2e0000, size=0x10000
+[231.223257 ax_driver::block::rockchip::sdhci_rk3588:176] rockchip-sdhci: using external CRU clock
+[231.224123 ax_driver::block::rockchip::sdhci_rk3588:185] rockchip-sdhci: initialize card through native host2 bus ops
+[231.225152 sdmmc_protocol::sdio::init:487] sdio: submit bus op ResetAll
+[231.225841 ax_driver::block::rockchip::sdhci_rk3588:252] rockchip-sdhci: RK3588 DWCMSHC vendor reset area1=0x500
+[231.226822 sdmmc_protocol::sdio::init:487] sdio: submit bus op PowerOn
+[231.237492 sdmmc_protocol::sdio::init:487] sdio: submit bus op SwitchVoltage(V330)
+[231.238266 sdmmc_protocol::sdio::init:449] sdio: submit bus op SetBusWidth(Bit1)
+[231.239007 sdmmc_protocol::sdio::init:449] sdio: submit bus op SetClock(Identification)
+[231.239816 ax_driver::block::rockchip::sdhci_rk3588:118] rockchip-sdhci: core clock set to 375000 Hz
+[231.251257 sdhci_host::command:402] sdhci: command wait failed CMD1 present=0x03f700f1 normal=0x0000 error=0x0000 clock=0x0007 power=0x0f host1=0x00 host2=0x0000 reset=0x00 nisen=0x7fff eisen=0xffff nsigen=0x0000 esigen=0x0000
+[231.253104 sdmmc_protocol::sdio::host2:338] sdio-host2 adapter: command completed with error Timeout
+[231.253990 sdmmc_protocol::sdio::init:522] sdio: init aborted (Timeout(ErrorContext { phase: Unspecified, cmd: None })), resetting host
+[231.255156 ax_driver::block::rockchip::sdhci_rk3588:118] rockchip-sdhci: core clock set to 375000 Hz
+[231.256228 rdrive:213] Probe failed for [fdt]: other error: failed to initialize SDHCI device at [PA:4264427520, SZ:0x10000): Timeout(ErrorContext { phase: Unspecified, cmd: None })
+Boot at 1970-01-01 00:03:51.257741166 UTC
+
+[231.258164 ax_runtime::irq:120] registered rockchip-sd/0 irq IrqId { domain: IrqDomainId(7), hwirq: HwIrq(235) }
+[231.259165 ax_fs_ng::block::runtime::device:1359] rdif filesystem block device rockchip-sd registered with IRQ-driven completion
+[231.260262 ax_fs_ng::block::runtime::device:1361] registered rdif filesystem block device rockchip-sd
+[231.305865 ax_fs_ng::root:256]     partition 1 name=Some("bootfs") fs=None lba 61440..2158592
+[231.307230 ax_fs_ng::root:256]     partition 2 name=None fs=Some(Ext4) lba 2158592..61767680
+[231.308063 ax_fs_ng::root:272]   block device 0 (rockchip-sd) has Gpt partition table with 2 partitions
+[231.308987 ax_fs_ng::root:451]   only one supported filesystem partition is available; using it as root
+[231.309901 ax_fs_ng:75] Initialize filesystem subsystem...
+[231.310476 ax_fs_ng:76]   selected root device: disk0 partition 2 (<unnamed>, fs=ext4, lba 2158592..61767680)
+[231.339596 rsext4::ext4::mount:327] /lost+found exists (superblock hint inode=11)
+[231.341716 rsext4::ext4::mount:462] Ext4 filesystem mounted
+[231.342295 rsext4::ext4::mount:463]   - block size: 4096 bytes
+[231.342903 rsext4::ext4::mount:464]   - total blocks: 7451136
+[231.343503 rsext4::ext4::mount:465]   - free blocks: 6597218
+[231.344095 rsext4::ext4::mount:466]   - total inodes: 1845888
+[231.344695 rsext4::ext4::mount:467]   - free inodes: 1783548
+[231.345288 rsext4::ext4::sync:13] Syncing filesystem...
+[231.362864 rsext4::ext4::mount:546] Ext4 filesystem mounted
+[231.363475 ax_fs_ng:88]   filesystem type: "ext4"
+[231.365754 ax_net:189] Initialize network subsystem...
+[231.366555 ax_net:201]   No network device found!
+[231.367060 ax_net:292] Device: lo
+[231.369741 ax_runtime::mp:79] Secondary CPU 1 started.
+[231.372137 ax_runtime::mp:107] Secondary CPU 1 init OK.
+[231.372389 ax_runtime::mp:79] Secondary CPU 2 started.
+[231.375536 ax_runtime::mp:79] Secondary CPU 3 started.
+[231.376046 ax_runtime::mp:107] Secondary CPU 2 init OK.
+[231.378213 ax_runtime::mp:79] Secondary CPU 4 started.
+[231.379905 ax_runtime::mp:107] Secondary CPU 3 init OK.
+[231.381205 ax_runtime::mp:79] Secondary CPU 5 started.
+[231.381533 ax_runtime::mp:107] Secondary CPU 4 init OK.
+[231.384521 ax_runtime::mp:79] Secondary CPU 6 started.
+[231.385146 ax_runtime::mp:107] Secondary CPU 5 init OK.
+[231.388178 ax_runtime::mp:79] Secondary CPU 7 started.
+[231.388178 ax_runtime:334] Primary CPU 0 init OK.
+[231.389115 ax_runtime::mp:107] Secondary CPU 6 init OK.
+[231.393446 ax_runtime::mp:107] Secondary CPU 7 init OK.
+[231.394097 0:2 ktracepoint:282] tracepoint_data_start: 0xffffffff804e2c98, tracepoint_data_end: 0xffffffff804e2cf8
+[231.395096 0:2 ktracepoint:297] tracepoint_data_len: 6
+[231.395641 0:2 ktracepoint:314] tracepoint registered: sched:sched_process_exit
+[231.396375 0:2 ktracepoint:314] tracepoint registered: sched:sched_process_fork
+[231.397110 0:2 ktracepoint:314] tracepoint registered: sched:sched_switch
+[231.397799 0:2 ktracepoint:314] tracepoint registered: syscalls:sys_clone
+[231.398489 0:2 ktracepoint:314] tracepoint registered: syscalls:sys_enter_openat
+[231.399232 0:2 ktracepoint:314] tracepoint registered: syscalls:sys_mkdirat
+Initialized 6 tracepoints
+kmod subsystem initialized
+[231.400396 0:2 starry_kernel::pseudofs:84] Initialize pseudofs...
+[231.401740 0:2 starry_kernel::pseudofs::dev::tty::serial:343] ttyS9 registered: path=/serial@febc0000, alias=Some(9), paddr=0xfebc0000, mapped=0xffff0000febc0000, irq=IrqId { domain: IrqDomainId(7), hwirq: HwIrq(372) }, mode=interrupt
+[231.404190 0:2 starry_kernel::pseudofs::dev::tty::serial:343] ttyS2 registered: path=/serial@feb50000, alias=Some(2), paddr=0xfeb50000, mapped=0xffff0000feb50000, irq=IrqId { domain: IrqDomainId(7), hwirq: HwIrq(365) }, mode=interrupt
+[231.406125 0:2 starry_kernel::pseudofs::dev::tty::serial:264] /dev/console bound to ttyS2
+[231.407907 0:2 starry_kernel::pseudofs:78] Mounted devfs at /dev
+[231.408527 0:2 starry_kernel::pseudofs::usbfs:51] usbfs: initializing manager
+[231.409259 0:2 starry_kernel::pseudofs::usbfs::manager:1401] usbfs: discovered 0 USB host(s)
+[231.410087 0:2 starry_kernel::pseudofs::usbfs:54] usbfs: no USB host found, skip mounting usbfs
+[231.410994 0:2 starry_kernel::pseudofs:78] Mounted tmpfs at /dev/shm
+[231.412310 0:2 starry_kernel::pseudofs:78] Mounted tmpfs at /tmp
+[231.413113 0:2 starry_kernel::dyn_debug:61] debug_init: initializing dynamic debug sites
+[231.414739 0:2 starry_kernel::dyn_debug:64] debug_init: found 191 dynamic debug sites
+[231.415524 0:2 starry_kernel::pseudofs::proc:73] Read kallsyms, size: 1337KB
+[231.447841 0:2 starry_kernel::pseudofs:78] Mounted proc at /proc
+[231.449164 0:2 starry_kernel::pseudofs:78] Mounted sysfs at /sys
+[231.450065 0:2 starry_kernel::pseudofs:78] Mounted debug at /sys/kernel/debug
+[231.450857 0:2 starry_kernel::task::timer:329] Initialize alarm...
+Welcome to Starry OS!
+USER=root
+HOSTNAME=starry
+HOME=/root
+TERM=xterm-256color
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PWD=/
+
+Use apk to install packages.
+
+root@starry:/root # test -x /usr/local/bin/starry-harness.sh || { echo SYSBENCH_MISSING; exit 1; }; sh /usr/local/bin/starry-harness.sh
+HARNESS_STARRY_BEGIN
+HS_UNAME 10.0.0 aarch64
+== per-core cpuprobe (DIRECT: midr=core-type, mhz_pmc=freq, landed=affinity) ==
+HS_PC req=0 landed=0 cntfrq=24000000 iters=32000000 sec=0.5654 ips=56602013 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=95b5b10f68ae6ae5
+HS_PC req=1 landed=1 cntfrq=24000000 iters=32000000 sec=0.5493 ips=58256528 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=122d3525f3a85b19
+HS_PC req=2 landed=2 cntfrq=24000000 iters=32000000 sec=0.5493 ips=58257023 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=799e276b5fd4f0a4
+HS_PC req=3 landed=3 cntfrq=24000000 iters=32000000 sec=0.5493 ips=58257146 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=51e46f8a64d34a22
+HS_PC req=4 landed=4 cntfrq=24000000 iters=32000000 sec=0.4119 ips=77689781 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=e92f5d4f9b150fda
+HS_PC req=5 landed=5 cntfrq=24000000 iters=32000000 sec=0.4119 ips=77690276 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=458bdfb8403a000a
+HS_PC req=6 landed=6 cntfrq=24000000 iters=32000000 sec=0.4119 ips=77689726 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=5030b1cd84e0d53e
+HS_PC req=7 landed=7 cntfrq=24000000 iters=32000000 sec=0.4119 ips=77689836 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=588e9466b831a12
+== per-core pinned sysbench cpu (does taskset reach faster cores?) ==
+HS_PSB c=0 ev=155.10
+HS_PSB c=1 ev=160.92
+HS_PSB c=2 ev=160.91
+HS_PSB c=3 ev=160.91
+HS_PSB c=4 ev=350.83
+HS_PSB c=5 ev=351.34
+HS_PSB c=6 ev=351.30
+HS_PSB c=7 ev=350.83
+== per-core membw (isolate the 200x memory gap) ==
+HS_PM core=0 landed=0 mb=128 firsttouch_s=1.2950 memcpy_GBps=3.198 read_GBps=1.944 acc=202020202000000
+HS_PM core=4 landed=4 mb=128 firsttouch_s=0.8028 memcpy_GBps=7.304 read_GBps=3.257 acc=202020202000000
+HS_PM core=7 landed=7 mb=128 firsttouch_s=0.8046 memcpy_GBps=7.335 read_GBps=3.257 acc=202020202000000
+== sysbench matrix ==
+HS_MX cpu t=1 ev=159.42
+HS_MX cpu t=2 ev=159.92
+HS_MX cpu t=4 ev=160.45
+HS_MX thr t=4 ev=1076
+HS_MX mutex t=4 7.4362s
+HS_MX mem 413.95 MiB transferred (41.37 MiB/sec)
+== memory param sweep (block size x oper, single thread) ==
+HS_MEMSW bs=1K op=read 428.66 MiB transferred (42.84 MiB/sec)
+HS_MEMSW bs=1K op=write 425.03 MiB transferred (42.47 MiB/sec)
+HS_MEMSW bs=1M op=read 2048.00 MiB transferred (2925.81 MiB/sec)
+HS_MEMSW bs=1M op=write 2048.00 MiB transferred (1933.64 MiB/sec)
+SYSBENCH_BOARD_DONE
+
+=== SUCCESS PATTERN MATCHED: (?m)^SYSBENCH_BOARD_DONE\s*$ ===
+root@starry:/root # [axbuild] uboot run prepared artifact ... done (787.78s)
+EXIT 0 Thu 16 Jul 2026 16:13:06 CST

@@ -1,0 +1,42 @@
+====================================================================
+  StarryOS vs Linux — sysbench decomposition
+====================================================================
+
+[ Linux reference curves ]  ev ~= k * freq
+  A55: 0.199 ev/s per MHz, range 408-1800 MHz, max 359 ev/s (@ 1800 MHz)
+  A76: 0.430 ev/s per MHz, range 408-2256 MHz, max 979 ev/s (@ 2256 MHz)
+
+[ StarryOS per-core: measured -> (type, freq, affinity) ]
+  cpu0: type=A55 (linux-map)  freq~=781MHz (from curve)  sb=155ev/s  affinity=ok
+  cpu1: type=A55 (linux-map)  freq~=810MHz (from curve)  sb=161ev/s  affinity=ok
+  cpu2: type=A55 (linux-map)  freq~=810MHz (from curve)  sb=161ev/s  affinity=ok
+  cpu3: type=A55 (linux-map)  freq~=810MHz (from curve)  sb=161ev/s  affinity=ok
+  cpu4: type=A76 (linux-map)  freq~=815MHz (from curve)  sb=351ev/s  affinity=ok
+  cpu5: type=A76 (linux-map)  freq~=816MHz (from curve)  sb=351ev/s  affinity=ok
+  cpu6: type=A76 (linux-map)  freq~=816MHz (from curve)  sb=351ev/s  affinity=ok
+  cpu7: type=A76 (linux-map)  freq~=815MHz (from curve)  sb=351ev/s  affinity=ok
+
+[ Decomposition of the single-thread gap ]
+  StarryOS 1-thread     = 159 ev/s  (-> A55 @ ~802 MHz)
+  Lever DVFS (A55 -> max clock) = 2.25x  (=> 359 ev/s)
+  Lever placement (A55 -> A76)  = 2.72x  (=> 979 ev/s, ~Linux A76 1-thread)
+  Lever balancing (1 -> 4 cores) = 3.98x  => total 24.4x  (Linux 4-thr 3892 / Starry 159 = 24.4x)
+  Lever balancing (1 -> 8 cores) = 5.44x  => total 33.4x  (Linux 8-thr 5320 / Starry 159 = 33.4x)
+
+[ sysbench matrix: Linux vs StarryOS ]
+  metric                 Linux    StarryOS
+  cpu t=1                   978         159
+  cpu t=2                  1956         160
+  cpu t=4                  3892         160
+  cpu t=8                  5320          NA
+  thr t=4 (ev)           49492        1076
+
+[ Memory (the 200x anomaly) ]
+  StarryOS membw: core=0 landed=0 memcpy=3.198GB/s read=1.944GB/s firsttouch=1.2950s
+  StarryOS membw: core=4 landed=4 memcpy=7.304GB/s read=3.257GB/s firsttouch=0.8028s
+  StarryOS membw: core=7 landed=7 memcpy=7.335GB/s read=3.257GB/s firsttouch=0.8046s
+  HS_MEMSW bs=1K op=read 428.66 MiB transferred (42.84 MiB/sec)
+  HS_MEMSW bs=1K op=write 425.03 MiB transferred (42.47 MiB/sec)
+  HS_MEMSW bs=1M op=read 2048.00 MiB transferred (2925.81 MiB/sec)
+  HS_MEMSW bs=1M op=write 2048.00 MiB transferred (1933.64 MiB/sec)
+

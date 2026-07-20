@@ -1,0 +1,19 @@
+# sysbench StarryOS board build for OrangePi-5-Plus (RK3588).
+# Rockchip SoC + SD/eMMC drivers so StarryOS boots on real hardware and mounts
+# the board's ext4 rootfs (mmcblk1p2) where `apt install sysbench` staged the
+# binary. max_cpu_num=4 auto-enables SMP so sysbench can actually scale.
+#
+# GATING RISK: multi-core StarryOS boot on this board is the open problem in the
+# scheduler effort (smp8 boot hang) and the board browns out (PSU) when all 8
+# cores spin up. If smp4 hangs at boot, drop to max_cpu_num=1 for a functional
+# run and lean on the Linux-side scaling numbers for the comparison. Bringing
+# smp4 up cleanly here IS a useful forcing function for the scheduler work.
+target = "aarch64-unknown-none-softfloat"
+features = [
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
+  "ax-driver/rk3588-cpufreq",
+]
+log = "Info"
+max_cpu_num = 8
