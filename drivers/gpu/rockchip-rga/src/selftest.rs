@@ -64,8 +64,8 @@ pub fn run_rga2_smoke(
     // SAFETY: the mutable slice is not retained across the device submission below.
     {
         let dbytes = unsafe { dst.cpu_bytes_mut() };
-        for px in dbytes.chunks_exact_mut(4) {
-            px.copy_from_slice(&SMOKE_FILL_POISON.to_le_bytes());
+        for px in dbytes.as_chunks_mut::<4>().0 {
+            *px = SMOKE_FILL_POISON.to_le_bytes();
         }
     }
     dst.prepare_for_device();
@@ -78,8 +78,10 @@ pub fn run_rga2_smoke(
     dst.complete_for_cpu();
     let fill_ok = dst
         .cpu_bytes()
-        .chunks_exact(4)
-        .all(|px| u32::from_le_bytes([px[0], px[1], px[2], px[3]]) == color);
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|px| u32::from_le_bytes(*px) == color);
     let fill_px = {
         let b = dst.cpu_bytes();
         let n = b.len() / 4;
@@ -221,8 +223,8 @@ pub fn run_rga2_fill_via_blit(
     // SAFETY: the mutable slice is not retained across the device submission below.
     {
         let sbytes = unsafe { src.cpu_bytes_mut() };
-        for px in sbytes.chunks_exact_mut(4) {
-            px.copy_from_slice(&color.to_le_bytes());
+        for px in sbytes.as_chunks_mut::<4>().0 {
+            *px = color.to_le_bytes();
         }
     }
     src.prepare_for_device();
