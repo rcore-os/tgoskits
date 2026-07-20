@@ -69,11 +69,8 @@ impl QueuedDelivery {
         self.state
     }
 
-    const fn is_pending(self) -> bool {
-        matches!(
-            self.state,
-            InterruptState::Pending | InterruptState::ActivePending
-        )
+    const fn is_pending_non_active(self) -> bool {
+        matches!(self.state, InterruptState::Pending)
     }
 
     const fn is_active(self) -> bool {
@@ -278,7 +275,7 @@ impl RedistributorState {
     pub(crate) fn pending_count(&self) -> usize {
         self.queued_deliveries
             .iter()
-            .filter(|delivery| delivery.is_pending())
+            .filter(|delivery| delivery.is_pending_non_active())
             .count()
     }
 
@@ -341,7 +338,7 @@ impl RedistributorState {
         }
         candidates.sort_by_key(|(delivery, priority, _)| {
             (
-                !delivery.is_pending(),
+                !delivery.is_pending_non_active(),
                 *priority,
                 !matches!(delivery.backing(), ListRegisterBacking::Physical(_)),
             )
@@ -364,7 +361,7 @@ impl RedistributorState {
         let pending_outside_lrs = self
             .queued_deliveries
             .iter()
-            .any(|delivery| delivery.is_pending());
+            .any(|delivery| delivery.is_pending_non_active());
         let active_outside_lrs = self
             .queued_deliveries
             .iter()

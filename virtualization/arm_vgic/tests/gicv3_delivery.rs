@@ -373,6 +373,31 @@ fn active_lr_spills_for_a_higher_priority_pending_interrupt() {
 }
 
 #[test]
+fn pending_non_active_interrupt_preempts_an_active_pending_lr() {
+    let (controller, backend) = controller(1, 1);
+    let binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let repeating = SpiId::new(32).unwrap();
+    let fresh = SpiId::new(33).unwrap();
+
+    for spi in [repeating, fresh] {
+        enable_spi(&controller, spi);
+        controller
+            .configure_spi_input(spi, TriggerMode::Edge)
+            .unwrap();
+    }
+    controller.pulse_spi(repeating).unwrap();
+    binding.load().unwrap();
+    backend.activate_all(0);
+    binding.save().unwrap();
+
+    controller.pulse_spi(repeating).unwrap();
+    controller.pulse_spi(fresh).unwrap();
+    binding.load().unwrap();
+
+    assert_eq!(backend.loaded_intids(0), vec![IntId::Spi(fresh)]);
+}
+
+#[test]
 fn trapped_dir_harvests_a_hardware_activation_before_deactivation() {
     let (controller, backend) = controller(1, 1);
     let vcpu = GicVcpuId::new(0);
