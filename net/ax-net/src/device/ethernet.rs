@@ -787,7 +787,9 @@ impl Device for EthernetDevice {
 }
 
 #[cfg(test)]
-mod arp_counter_tests {
+/// Unit tests for EthernetDevice counters: ARP, frame-length, and
+/// error/drop paths.
+mod ethernet_counter_tests {
     use alloc::collections::VecDeque;
 
     use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
