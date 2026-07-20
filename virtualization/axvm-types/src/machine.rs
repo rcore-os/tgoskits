@@ -33,6 +33,10 @@ pub enum PhysicalInterruptPolicy {
     #[default]
     Mediated,
     /// Forward an owned host IRQ through a hardware-backed virtual interrupt.
+    ///
+    /// The host still acknowledges the physical source at EL2 and installs a
+    /// hardware-backed virtual interrupt. This is not a no-exit CPU/device
+    /// bypass and therefore remains compatible with a hosted VMM scheduler.
     HardwareForwarded,
 }
 

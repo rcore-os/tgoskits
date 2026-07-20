@@ -569,6 +569,36 @@ fn physical_spi_enable_tracks_guest_register_writes_not_vcpu_load() {
 }
 
 #[test]
+fn physical_spi_enable_does_not_depend_on_vcpu_load_state() {
+    const GICD_CTLR: u64 = 0;
+    const GICD_ISENABLER1: u64 = 0x104;
+
+    let backend = Arc::new(PhysicalBackend::default());
+    let controller = GicV3Controller::new(config(), backend.clone()).unwrap();
+    let _binding = attach(&controller, 0, GicAffinity::new(0, 0, 0, 0));
+    let spi = SpiId::new(40).unwrap();
+    controller
+        .bind_physical_spi(spi, PhysicalIrqId::new(1040), GicVcpuId::new(0))
+        .unwrap();
+    let physical_binding = backend.records.lock().unwrap().bound_interrupts[0];
+
+    // Distributor ownership belongs to the VM, not to a particular host
+    // scheduling interval. A physical source must remain armed while its
+    // target vCPU is temporarily not loaded on a pCPU.
+    controller
+        .write_distributor(GICD_CTLR, AccessWidth::Dword, 1 << 1)
+        .unwrap();
+    controller
+        .write_distributor(GICD_ISENABLER1, AccessWidth::Dword, 1 << (spi.raw() - 32))
+        .unwrap();
+
+    assert_eq!(
+        backend.records.lock().unwrap().enabled_interrupts,
+        vec![(physical_binding, true)]
+    );
+}
+
+#[test]
 fn physical_spi_enable_is_gated_by_the_distributor() {
     const GICD_CTLR: u64 = 0;
     const GICD_ISENABLER1: u64 = 0x104;

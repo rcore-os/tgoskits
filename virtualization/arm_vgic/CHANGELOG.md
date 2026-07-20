@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fall back from the optional dedicated `TDIR` trap to the architectural common
   CPU-interface trap, including checked CTLR, PMR, and RPR emulation, on GICv3
   implementations that report `ICH_VTR_EL2.TDS=0`.
+- Keep an owned physical SPI armed from VM-local Distributor state even while
+  its target vCPU is not loaded, so host scheduling cannot disconnect a guest
+  device interrupt source.
 
 ### Removed
 

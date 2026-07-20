@@ -254,16 +254,14 @@ impl ControllerState {
             .collect()
     }
 
-    pub(super) fn active_physical_interrupt_state_changes(
+    pub(super) fn physical_interrupt_state_changes(
         &self,
         snapshots: &[PhysicalInterruptSnapshot],
     ) -> VgicResult<Vec<PhysicalInterruptStateChange>> {
         let mut changes = Vec::new();
         for snapshot in snapshots {
             let current = self.physical_interrupt_state(snapshot.spi)?;
-            if current.delivery_enabled() != snapshot.state.delivery_enabled()
-                && self.active_vcpus.contains(&snapshot.binding.target())
-            {
+            if current.delivery_enabled() != snapshot.state.delivery_enabled() {
                 changes.push(PhysicalInterruptStateChange {
                     spi: snapshot.spi,
                     binding: snapshot.binding,

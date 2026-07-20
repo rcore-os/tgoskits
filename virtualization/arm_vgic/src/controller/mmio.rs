@@ -41,7 +41,7 @@ impl GicV3Controller {
                 }
             }
             let physical_state_changes =
-                state.active_physical_interrupt_state_changes(&physical_snapshot)?;
+                state.physical_interrupt_state_changes(&physical_snapshot)?;
             (wakes, physical_state_changes)
         };
         self.apply_physical_interrupt_state_changes(physical_state_changes)?;
