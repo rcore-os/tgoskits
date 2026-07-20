@@ -74,6 +74,49 @@ impl UpperHex for ArmGuestPhysAddr {
     }
 }
 
+/// Guest virtual address captured from an AArch64 fault register.
+///
+/// This is intentionally distinct from [`ArmGuestPhysAddr`] so exception
+/// injection cannot substitute an IPA for an architecturally invalid FAR.
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+pub struct ArmGuestVirtAddr(u64);
+
+impl ArmGuestVirtAddr {
+    /// Creates a guest virtual address from its architectural value.
+    pub const fn from_u64(address: u64) -> Self {
+        Self(address)
+    }
+
+    /// Returns the architectural address value.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for ArmGuestVirtAddr {
+    fn from(value: u64) -> Self {
+        Self::from_u64(value)
+    }
+}
+
+impl Debug for ArmGuestVirtAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "GVA({:#x})", self.0)
+    }
+}
+
+impl LowerHex for ArmGuestVirtAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:#x}", self.0)
+    }
+}
+
+impl UpperHex for ArmGuestVirtAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:#X}", self.0)
+    }
+}
+
 /// AArch64 system-register address encoding used by trapped MRS/MSR exits.
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ArmSysRegAddr(usize);
@@ -201,27 +244,10 @@ pub enum ArmVmExit {
         /// Hypercall arguments.
         args: [u64; 6],
     },
-    /// The guest performed an MMIO read.
-    MmioRead {
-        /// Guest physical address being read.
-        addr: ArmGuestPhysAddr,
-        /// Access width.
-        width: ArmAccessWidth,
-        /// Destination guest register.
-        reg: usize,
-        /// Destination register width.
-        reg_width: ArmAccessWidth,
-        /// Whether the value should be sign-extended.
-        signed_ext: bool,
-    },
-    /// The guest performed an MMIO write.
-    MmioWrite {
-        /// Guest physical address being written.
-        addr: ArmGuestPhysAddr,
-        /// Access width.
-        width: ArmAccessWidth,
-        /// Value written by the guest.
-        data: u64,
+    /// A guest data abort whose address ownership is intentionally unresolved.
+    DataAbort {
+        /// Architectural fault information captured by the vCPU core.
+        abort: crate::ArmDataAbort,
     },
     /// The guest performed a system-register read.
     SysRegRead {

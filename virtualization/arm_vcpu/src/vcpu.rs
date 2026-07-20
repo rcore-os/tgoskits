@@ -17,9 +17,11 @@ use core::marker::PhantomData;
 use aarch64_cpu::registers::*;
 
 use crate::{
-    ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuResult, ArmVmExit,
+    ArmAccessWidth, ArmDataAbort, ArmDataAccess, ArmDataAccessResult, ArmGuestPhysAddr, ArmHostOps,
+    ArmLoadExtension, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
     TrapFrame,
     context_frame::GuestSystemRegisters,
+    data_abort::access_mask,
     exception::{TrapKind, handle_exception_sync},
     exception_utils::exception_class_value,
 };
@@ -78,14 +80,13 @@ pub struct ArmVcpuCreateConfig {
     pub dtb_addr: usize,
 }
 
-/// Configuration for setting up a new [`ArmVcpu`].
-#[derive(Clone, Debug, Default)]
-pub struct ArmVcpuSetupConfig {
-    /// Should the hypervisor passthrough interrupts to the guest?
-    pub passthrough_interrupt: bool,
-    /// Should the hypervisor passthrough timers to the guest?
-    pub passthrough_timer: bool,
-}
+/// Fixed EL2 setup policy for a new [`ArmVcpu`].
+///
+/// Physical interrupts and timers are always trapped. The embedding VMM may
+/// back a virtual interrupt with a physical source, but it must do so through
+/// the virtual CPU interface rather than bypassing vCPU state ownership.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ArmVcpuSetupConfig;
 
 impl<H: ArmHostOps> ArmVcpu<H> {
     /// Creates a new architecture-specific vCPU.
@@ -103,8 +104,8 @@ impl<H: ArmHostOps> ArmVcpu<H> {
     }
 
     /// Completes architecture-specific setup.
-    pub fn setup(&mut self, config: ArmVcpuSetupConfig) -> ArmVcpuResult {
-        self.init_hv(config);
+    pub fn setup(&mut self, _config: ArmVcpuSetupConfig) -> ArmVcpuResult {
+        self.init_hv();
         Ok(())
     }
 
@@ -146,8 +147,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             self.run_guest()
         };
 
-        let trap_kind = TrapKind::try_from(exit_reason as u8).expect("Invalid TrapKind");
-        let result = self.vmexit_handler(trap_kind);
+        let result = decode_trap_kind(exit_reason).and_then(|kind| self.vmexit_handler(kind));
 
         // SAFETY: `host_daif` was captured on this CPU immediately before the
         // guest entry and restores the caller's complete exception mask.
@@ -178,22 +178,89 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         // Return value is stored in x0.
         self.ctx.set_argument(val);
     }
+
+    /// Completes one successfully emulated data access and advances its guest PC.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArmVcpuError::InvalidInput`] when `result` does not match the
+    /// decoded access direction, and [`ArmVcpuError::BadState`] when the abort
+    /// no longer refers to the current guest instruction.
+    pub fn complete_data_abort(
+        &mut self,
+        abort: ArmDataAbort,
+        result: ArmDataAccessResult,
+    ) -> ArmVcpuResult {
+        self.ensure_current_data_abort(&abort)?;
+        match (abort.access(), result) {
+            (
+                Some(ArmDataAccess::Read {
+                    width,
+                    register,
+                    register_width,
+                    extension,
+                }),
+                ArmDataAccessResult::Read(value),
+            ) => {
+                let value = loaded_register_value(value, width, register_width, extension)?;
+                self.ctx.set_gpr(register.index(), value as usize);
+            }
+            (Some(ArmDataAccess::Write { .. }), ArmDataAccessResult::Write) => {}
+            _ => return Err(ArmVcpuError::InvalidInput),
+        }
+        self.advance_data_abort_pc(abort.instruction_size())
+    }
+
+    /// Injects a synchronous external data abort into guest EL1.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the abort is stale, its exception origin is not a
+    /// supported AArch64 EL0/EL1 mode, or the saved vector state is invalid.
+    pub fn inject_external_data_abort(&mut self, abort: ArmDataAbort) -> ArmVcpuResult {
+        self.ensure_current_data_abort(&abort)?;
+        let fault_address = abort
+            .fault_virtual_address()
+            .map(crate::ArmGuestVirtAddr::as_u64);
+        self.guest_system_regs.inject_external_data_abort(
+            &mut self.ctx,
+            fault_address,
+            abort.instruction_size(),
+        )
+    }
 }
 
 // Private function
 impl<H: ArmHostOps> ArmVcpu<H> {
-    fn init_hv(&mut self, config: ArmVcpuSetupConfig) {
+    fn ensure_current_data_abort(&self, abort: &ArmDataAbort) -> ArmVcpuResult {
+        if self.ctx.exception_pc() as u64 != abort.instruction_address() {
+            return Err(ArmVcpuError::BadState);
+        }
+        Ok(())
+    }
+
+    fn advance_data_abort_pc(&mut self, instruction_size: usize) -> ArmVcpuResult {
+        let next_pc = self
+            .ctx
+            .exception_pc()
+            .checked_add(instruction_size)
+            .ok_or(ArmVcpuError::BadState)?;
+        self.ctx.set_exception_pc(next_pc);
+        Ok(())
+    }
+
+    fn init_hv(&mut self) {
         self.ctx.spsr = (SPSR_EL1::M::EL1h
             + SPSR_EL1::I::Masked
             + SPSR_EL1::F::Masked
             + SPSR_EL1::A::Masked
             + SPSR_EL1::D::Masked)
             .value;
-        self.init_vm_context(config);
+        self.init_vm_context();
     }
 
     /// Init guest context. Also set some el2 register value.
-    fn init_vm_context(&mut self, config: ArmVcpuSetupConfig) {
+    fn init_vm_context(&mut self) {
         // CNTHCTL_EL2.modify(CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET);
         // Set CNTVOFF_EL2 to the current physical counter so the guest's
         // virtual counter (CNTVCT_EL0 = CNTPCT_EL0 - CNTVOFF_EL2) starts near zero.
@@ -201,11 +268,8 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         unsafe { core::arch::asm!("mrs {0}, CNTPCT_EL0", out(reg) cntpct) };
         self.guest_system_regs.cntvoff_el2 = cntpct;
         self.guest_system_regs.cntkctl_el1 = 0;
-        self.guest_system_regs.cnthctl_el2 = if config.passthrough_timer {
-            (CNTHCTL_EL2::EL1PCEN::SET + CNTHCTL_EL2::EL1PCTEN::SET).into()
-        } else {
-            (CNTHCTL_EL2::EL1PCEN::CLEAR + CNTHCTL_EL2::EL1PCTEN::CLEAR).into()
-        };
+        self.guest_system_regs.cnthctl_el2 =
+            (CNTHCTL_EL2::EL1PCEN::CLEAR + CNTHCTL_EL2::EL1PCTEN::CLEAR).into();
 
         self.guest_system_regs.sctlr_el1 = 0x30C50830;
         self.guest_system_regs.pmcr_el0 = 0;
@@ -217,17 +281,11 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             self.guest_system_regs.vtcr_el2 = vtcr_for_config(levels, gpa_bits, pa_bits);
         }
 
-        let mut hcr_el2 =
-            HCR_EL2::VM::Enable + HCR_EL2::TSC::EnableTrapEl1SmcToEl2 + HCR_EL2::RW::EL1IsAarch64;
-
-        if !config.passthrough_interrupt {
-            // Set HCR_EL2.IMO will trap IRQs to EL2 while enabling virtual IRQs.
-            //
-            // We must choose one of the two:
-            // - Enable virtual IRQs and trap physical IRQs to EL2.
-            // - Disable virtual IRQs and pass through physical IRQs to EL1.
-            hcr_el2 += HCR_EL2::IMO::EnableVirtualIRQ + HCR_EL2::FMO::EnableVirtualFIQ;
-        }
+        let hcr_el2 = HCR_EL2::VM::Enable
+            + HCR_EL2::TSC::EnableTrapEl1SmcToEl2
+            + HCR_EL2::RW::EL1IsAarch64
+            + HCR_EL2::IMO::EnableVirtualIRQ
+            + HCR_EL2::FMO::EnableVirtualFIQ;
 
         self.guest_system_regs.hcr_el2 = hcr_el2.into();
 
@@ -248,6 +306,36 @@ impl<H: ArmHostOps> ArmVcpu<H> {
     #[allow(unused)]
     fn get_gpr(&self, idx: usize) {
         self.ctx.gpr(idx);
+    }
+}
+
+fn loaded_register_value(
+    value: u64,
+    access_width: ArmAccessWidth,
+    register_width: ArmAccessWidth,
+    extension: ArmLoadExtension,
+) -> ArmVcpuResult<u64> {
+    if !matches!(
+        register_width,
+        ArmAccessWidth::Dword | ArmAccessWidth::Qword
+    ) {
+        return Err(ArmVcpuError::InvalidInput);
+    }
+    let narrowed = value & access_mask(access_width);
+    let extended = match extension {
+        ArmLoadExtension::Zero => narrowed,
+        ArmLoadExtension::Sign => sign_extend(narrowed, access_width),
+    };
+    Ok(extended & access_mask(register_width))
+}
+
+fn sign_extend(value: u64, width: ArmAccessWidth) -> u64 {
+    let bits = width.size() * 8;
+    if bits == u64::BITS as usize {
+        value
+    } else {
+        let shift = u64::BITS as usize - bits;
+        ((value << shift) as i64 >> shift) as u64
     }
 }
 
@@ -326,7 +414,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
     /// Returns:
     /// - [`ArmVmExit`]: a wrappered VM-Exit reason needed to be handled by the hypervisor.
     ///
-    /// This function may panic for unhandled exceptions.
+    /// Unsupported lower-EL asynchronous exceptions are returned as typed errors.
     fn vmexit_handler(&mut self, exit_reason: TrapKind) -> ArmVcpuResult<ArmVmExit> {
         trace!(
             "ArmVcpu vmexit_handler() esr:{:#x} ctx:{:#x?}",
@@ -342,8 +430,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 
         let result = match exit_reason {
             TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
-            TrapKind::Irq => Ok(ArmVmExit::ExternalInterrupt),
-            _ => panic!("Unhandled exception {:?}", exit_reason),
+            kind => asynchronous_vmexit(kind),
         };
 
         match result {
@@ -400,6 +487,19 @@ impl<H: ArmHostOps> ArmVcpu<H> {
     }
 }
 
+fn decode_trap_kind(exit_reason: usize) -> ArmVcpuResult<TrapKind> {
+    let encoding = u8::try_from(exit_reason).map_err(|_| ArmVcpuError::BadState)?;
+    TrapKind::try_from(encoding).map_err(|_| ArmVcpuError::BadState)
+}
+
+fn asynchronous_vmexit(kind: TrapKind) -> ArmVcpuResult<ArmVmExit> {
+    match kind {
+        TrapKind::Irq => Ok(ArmVmExit::ExternalInterrupt),
+        TrapKind::Fiq | TrapKind::SError => Err(ArmVcpuError::Unsupported),
+        TrapKind::Synchronous => Err(ArmVcpuError::BadState),
+    }
+}
+
 pub(crate) fn pa_bits() -> usize {
     match ID_AA64MMFR0_EL1.read_as_enum(ID_AA64MMFR0_EL1::PARange) {
         Some(ID_AA64MMFR0_EL1::PARange::Value::Bits_32) => 32,
@@ -452,4 +552,99 @@ fn vtcr_for_config(levels: usize, gpa_bits: usize, pa_bits: usize) -> u64 {
         + VTCR_EL2::IRGN0::NormalWBRAWA;
 
     val.value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ArmDataAbortSyndrome, data_abort::decode_data_access};
+
+    struct DummyHost;
+
+    impl ArmHostOps for DummyHost {
+        fn handle_current_host_irq() {}
+    }
+
+    #[test]
+    fn invalid_trap_encoding_returns_a_typed_error() {
+        assert!(matches!(decode_trap_kind(4), Err(ArmVcpuError::BadState)));
+    }
+
+    #[test]
+    fn unexpected_asynchronous_exceptions_do_not_panic() {
+        assert!(matches!(
+            asynchronous_vmexit(TrapKind::Fiq),
+            Err(ArmVcpuError::Unsupported)
+        ));
+        assert!(matches!(
+            asynchronous_vmexit(TrapKind::SError),
+            Err(ArmVcpuError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn completed_data_abort_advances_pc_only_after_successful_emulation() {
+        let mut vcpu = ArmVcpu::<DummyHost>::new(0, 0, ArmVcpuCreateConfig::default()).unwrap();
+        vcpu.ctx.set_exception_pc(0x1000);
+        let abort = read_abort(&vcpu.ctx, 0x1000);
+
+        vcpu.complete_data_abort(abort, ArmDataAccessResult::Read(0xffff_ff80))
+            .unwrap();
+
+        assert_eq!(vcpu.ctx.exception_pc(), 0x1004);
+        assert_eq!(vcpu.ctx.gpr(3), 0xffff_ff80);
+    }
+
+    #[test]
+    fn stale_data_abort_cannot_advance_a_different_instruction() {
+        let mut vcpu = ArmVcpu::<DummyHost>::new(0, 0, ArmVcpuCreateConfig::default()).unwrap();
+        vcpu.ctx.set_exception_pc(0x2000);
+        let abort = read_abort(&vcpu.ctx, 0x1000);
+
+        assert_eq!(
+            vcpu.complete_data_abort(abort, ArmDataAccessResult::Read(0)),
+            Err(ArmVcpuError::BadState)
+        );
+        assert_eq!(vcpu.ctx.exception_pc(), 0x2000);
+    }
+
+    #[test]
+    fn external_abort_does_not_substitute_ipa_for_invalid_far() {
+        const ESR_FNV_BIT: u32 = 1 << 10;
+
+        let mut vcpu = ArmVcpu::<DummyHost>::new(0, 0, ArmVcpuCreateConfig::default()).unwrap();
+        vcpu.ctx.set_exception_pc(0x3000);
+        let syndrome = ArmDataAbortSyndrome::from_esr((0x24 << 26) | (1 << 25) | ESR_FNV_BIT | 0x7);
+        let abort = ArmDataAbort::new(
+            Some(crate::ArmFaultIpa::page(ArmGuestPhysAddr::from_usize(
+                0x1030_00,
+            ))),
+            None,
+            0x3000,
+            syndrome,
+            None,
+        );
+
+        vcpu.inject_external_data_abort(abort).unwrap();
+
+        let (esr_el1, far_el1) = vcpu.guest_system_regs.injected_fault_state();
+        assert_eq!(far_el1, 0);
+        assert_ne!(esr_el1 & ESR_FNV_BIT, 0);
+    }
+
+    fn read_abort(frame: &TrapFrame, instruction_address: u64) -> ArmDataAbort {
+        let esr = (0x24 << 26) | (1 << 25) | (1 << 24) | (2 << 22) | (3 << 16) | (1 << 15) | 7;
+        let syndrome = ArmDataAbortSyndrome::from_esr(esr);
+        let access =
+            decode_data_access(syndrome, |register| frame.gpr(register.index()) as u64).unwrap();
+        ArmDataAbort::new(
+            Some(crate::ArmFaultIpa::exact(ArmGuestPhysAddr::from_usize(
+                0x4000,
+            ))),
+            Some(crate::ArmGuestVirtAddr::from_u64(0xffff_0000_4000)),
+            instruction_address,
+            syndrome,
+            access,
+        )
+    }
 }

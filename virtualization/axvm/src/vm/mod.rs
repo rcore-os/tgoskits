@@ -72,24 +72,6 @@ pub struct VcpuSnapshot {
     pub phys_cpu_set: Option<usize>,
 }
 
-pub(crate) fn width_mask(width: AccessWidth) -> usize {
-    match width {
-        AccessWidth::Byte => 0xff,
-        AccessWidth::Word => 0xffff,
-        AccessWidth::Dword => 0xffff_ffff,
-        AccessWidth::Qword => usize::MAX,
-    }
-}
-
-pub(crate) fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
-    match width {
-        AccessWidth::Byte => (value as i8) as isize as usize,
-        AccessWidth::Word => (value as i16) as isize as usize,
-        AccessWidth::Dword => (value as i32) as isize as usize,
-        AccessWidth::Qword => value,
-    }
-}
-
 fn write_guest_bytes_to_chunks(chunks: &mut [&mut [u8]], data: &[u8]) -> AxVmResult {
     if data.is_empty() {
         return Ok(());
@@ -835,13 +817,13 @@ impl AxVM {
         Ok(())
     }
 
-    pub(crate) fn handle_mmio_write(
+    pub(crate) fn dispatch_mmio_write(
         &self,
+        devices: &AxVmDevices,
         addr: GuestPhysAddr,
         width: AccessWidth,
         data: usize,
-    ) -> AxVmResult {
-        let devices = self.get_devices()?;
+    ) -> axdevice::DeviceManagerResult {
         if let Some(fw_cfg) = devices.fw_cfg_for_dma_addr(addr) {
             if let Some(desc_addr) = fw_cfg.write_dma_address(addr, width, data)? {
                 fw_cfg.process_dma(

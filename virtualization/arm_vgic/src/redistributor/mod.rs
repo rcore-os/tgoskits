@@ -10,16 +10,52 @@ use alloc::{
 
 use crate::{
     CpuInterfaceState, GicAffinity, GicV3VcpuWake, GicVcpuId, IntId, InterruptRecord,
-    InterruptState, LpiId, PpiId, Priority, PrivateInterruptMask, PrivateInterruptState, SgiId,
-    SpiId, TriggerMode, VgicError, VgicResult,
+    InterruptState, ListRegisterBacking, ListRegisterState, LpiId, PhysicalIrqId, PpiId, Priority,
+    SgiId, SpiId, TriggerMode, VgicError, VgicResult,
 };
+
+#[derive(Clone, Copy)]
+struct PendingDelivery {
+    intid: IntId,
+    backing: ListRegisterBacking,
+}
+
+impl PendingDelivery {
+    const fn software(intid: IntId) -> Self {
+        Self {
+            intid,
+            backing: ListRegisterBacking::Software,
+        }
+    }
+
+    const fn physical(intid: IntId, physical: PhysicalIrqId) -> Self {
+        Self {
+            intid,
+            backing: ListRegisterBacking::Physical(physical),
+        }
+    }
+
+    const fn list_register(self, priority: Priority) -> ListRegisterState {
+        match self.backing {
+            ListRegisterBacking::Software => {
+                ListRegisterState::new(self.intid, priority, InterruptState::Pending)
+            }
+            ListRegisterBacking::Physical(physical) => ListRegisterState::new_physical(
+                self.intid,
+                priority,
+                InterruptState::Pending,
+                physical,
+            ),
+        }
+    }
+}
 
 pub(crate) struct RedistributorState {
     vcpu: GicVcpuId,
     affinity: GicAffinity,
     private_interrupts: Vec<InterruptRecord>,
     lpis: BTreeMap<LpiId, InterruptRecord>,
-    software_pending: VecDeque<IntId>,
+    pending_deliveries: VecDeque<PendingDelivery>,
     cpu_interface: CpuInterfaceState,
     wake: Arc<dyn GicV3VcpuWake>,
     lpis_enabled: bool,
@@ -49,7 +85,7 @@ impl RedistributorState {
             affinity,
             private_interrupts,
             lpis: BTreeMap::new(),
-            software_pending: VecDeque::new(),
+            pending_deliveries: VecDeque::new(),
             cpu_interface: CpuInterfaceState::new(list_register_count),
             wake,
             lpis_enabled: false,
@@ -103,20 +139,32 @@ impl RedistributorState {
     }
 
     pub(crate) fn queue(&mut self, intid: IntId) {
-        if !self.software_pending.contains(&intid)
+        self.queue_delivery(PendingDelivery::software(intid));
+    }
+
+    pub(crate) fn queue_physical(&mut self, intid: IntId, physical: PhysicalIrqId) {
+        self.queue_delivery(PendingDelivery::physical(intid, physical));
+    }
+
+    fn queue_delivery(&mut self, delivery: PendingDelivery) {
+        if !self
+            .pending_deliveries
+            .iter()
+            .any(|queued| queued.intid == delivery.intid)
             && !self
                 .cpu_interface
                 .list_registers()
                 .iter()
                 .flatten()
-                .any(|entry| entry.intid() == intid)
+                .any(|entry| entry.intid() == delivery.intid)
         {
-            self.software_pending.push_back(intid);
+            self.pending_deliveries.push_back(delivery);
         }
     }
 
     pub(crate) fn clear_pending_delivery(&mut self, intid: IntId) -> bool {
-        self.software_pending.retain(|queued| *queued != intid);
+        self.pending_deliveries
+            .retain(|queued| queued.intid != intid);
         let mut canceled = false;
         for slot in self.cpu_interface.list_registers_mut() {
             let Some(entry) = slot.as_mut().filter(|entry| entry.intid() == intid) else {
@@ -137,7 +185,8 @@ impl RedistributorState {
     }
 
     pub(crate) fn withdraw_pending_delivery(&mut self, intid: IntId) -> bool {
-        self.software_pending.retain(|queued| *queued != intid);
+        self.pending_deliveries
+            .retain(|queued| queued.intid != intid);
         let mut canceled = false;
         for slot in self.cpu_interface.list_registers_mut() {
             if slot.as_ref().is_some_and(|entry| {
@@ -151,7 +200,7 @@ impl RedistributorState {
     }
 
     pub(crate) fn pending_count(&self) -> usize {
-        self.software_pending.len()
+        self.pending_deliveries.len()
     }
 
     pub(crate) fn cpu_interface(&self) -> &CpuInterfaceState {
@@ -203,16 +252,16 @@ impl RedistributorState {
             .iter()
             .filter(|slot| slot.is_none())
             .count();
-        let mut pending = Vec::with_capacity(self.software_pending.len());
-        for intid in self.software_pending.iter().copied() {
-            let priority = self.delivery_priority(intid, &mut spi_priority)?;
-            pending.push((intid, priority));
+        let mut pending = Vec::with_capacity(self.pending_deliveries.len());
+        for delivery in self.pending_deliveries.iter().copied() {
+            let priority = self.delivery_priority(delivery.intid, &mut spi_priority)?;
+            pending.push((delivery, priority));
         }
         pending.sort_by_key(|(_, priority)| *priority);
         let remaining = pending.split_off(available.min(pending.len()));
-        self.software_pending.clear();
-        self.software_pending
-            .extend(remaining.into_iter().map(|(intid, _)| intid));
+        self.pending_deliveries.clear();
+        self.pending_deliveries
+            .extend(remaining.into_iter().map(|(delivery, _)| delivery));
 
         let mut loaded = Vec::with_capacity(pending.len());
         let mut selected = pending.into_iter();
@@ -222,19 +271,15 @@ impl RedistributorState {
             .iter_mut()
             .filter(|slot| slot.is_none())
         {
-            let Some((intid, priority)) = selected.next() else {
+            let Some((delivery, priority)) = selected.next() else {
                 break;
             };
-            *slot = Some(crate::ListRegisterState::new(
-                intid,
-                priority,
-                crate::InterruptState::Pending,
-            ));
-            loaded.push(intid);
+            *slot = Some(delivery.list_register(priority));
+            loaded.push(delivery.intid);
         }
         let hcr = self.cpu_interface.hcr();
         self.cpu_interface
-            .set_hcr(if self.software_pending.is_empty() {
+            .set_hcr(if self.pending_deliveries.is_empty() {
                 hcr & !ICH_HCR_UIE
             } else {
                 hcr | ICH_HCR_UIE
@@ -273,41 +318,5 @@ impl RedistributorState {
 
     pub(crate) fn pend_sgi(&mut self, sgi: SgiId) {
         self.private_interrupts[sgi.raw() as usize].pulse();
-    }
-
-    pub(crate) fn private_interrupt_state(&self) -> VgicResult<PrivateInterruptState> {
-        let mut state = PrivateInterruptState::new();
-        for interrupt in &self.private_interrupts {
-            let intid = interrupt.intid();
-            state.set_enabled(intid, interrupt.enabled())?;
-            state.set_pending(intid, interrupt.pending())?;
-            state.set_active(intid, interrupt.active())?;
-            state.set_group1(intid, true)?;
-            state.set_trigger(intid, interrupt.trigger())?;
-            state.set_priority(intid, interrupt.priority())?;
-        }
-        Ok(state)
-    }
-
-    pub(crate) fn merge_private_interrupt_state(
-        &mut self,
-        state: &PrivateInterruptState,
-        owned: PrivateInterruptMask,
-    ) {
-        for (raw, interrupt) in self.private_interrupts.iter_mut().enumerate() {
-            let bit = 1u32 << raw;
-            if owned.raw() & bit == 0 {
-                continue;
-            }
-            interrupt.set_enabled(state.enabled_mask() & bit != 0);
-            interrupt.set_pending(state.pending_mask() & bit != 0);
-            interrupt.set_active(state.active_mask() & bit != 0);
-            interrupt.set_trigger(if state.edge_triggered_mask() & bit != 0 {
-                TriggerMode::Edge
-            } else {
-                TriggerMode::Level
-            });
-            interrupt.set_priority(Priority::new(state.priorities()[raw]));
-        }
     }
 }

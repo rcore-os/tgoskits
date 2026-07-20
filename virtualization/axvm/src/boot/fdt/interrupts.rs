@@ -12,20 +12,22 @@ struct InterruptEntries {
     names: Option<Vec<String>>,
 }
 
-/// Retains the EL1 non-secure physical and virtual timer entries on compatible nodes.
+/// Projects compatible nodes to the emulated EL1 physical-timer capability.
 ///
 /// The entry width is read from each node's effective interrupt parent. When
-/// `interrupt-names` is present, entries are selected by their architectural
-/// roles. Otherwise the standard Arm timer binding order is used.
-/// Nodes and properties unrelated to the selected compatibility string are
-/// preserved.
+/// `interrupt-names` is present, the secure and non-secure physical entries are
+/// located by role. Otherwise the standard Arm timer binding order is used.
+/// The resulting property keeps those entries in positions zero and one and
+/// removes `interrupt-names`. This positional pair works with kernels predating
+/// named architected-timer interrupts and does not advertise the unimplemented
+/// virtual or hypervisor timers.
 ///
 /// # Errors
 ///
 /// Returns an error when the DTB cannot be parsed, a selected node has no valid
-/// interrupt parent, its interrupt properties are malformed, or the physical
-/// and virtual entries are absent.
-pub fn retain_guest_timer_interrupt_entries(
+/// interrupt parent, its interrupt properties are malformed, or either physical
+/// timer entry is absent.
+pub fn project_guest_physical_timer_interrupts(
     fdt_bytes: &[u8],
     compatible: &str,
 ) -> AxVmResult<Vec<u8>> {
@@ -38,32 +40,24 @@ pub fn retain_guest_timer_interrupt_entries(
         .collect::<Vec<_>>();
 
     for node_id in matching_nodes {
-        retain_node_timer_interrupt_entries(&mut fdt, node_id)?;
+        project_node_physical_timer_interrupts(&mut fdt, node_id)?;
     }
 
     Ok(fdt.encode().as_ref().to_vec())
 }
 
-fn retain_node_timer_interrupt_entries(fdt: &mut Fdt, node_id: NodeId) -> AxVmResult {
+fn project_node_physical_timer_interrupts(fdt: &mut Fdt, node_id: NodeId) -> AxVmResult {
     let node_path = fdt.path_of(node_id);
     let entries = read_interrupt_entries(fdt, node_id, &node_path)?;
-    let selected_indices = entries.guest_timer_indices(&node_path)?;
-    let retained_cells = entries.selected_cells(selected_indices, &node_path)?;
-    let retained_names = entries.selected_names(selected_indices, &node_path)?;
+    let selected = entries.physical_timer_indices(&node_path)?;
+    let retained_cells = entries.selected_cells(selected, &node_path)?;
     let node = fdt
         .node_mut(node_id)
         .ok_or_else(|| ax_err_type!(InvalidData, "FDT node id is invalid"))?;
-
     let mut interrupts = Property::new("interrupts", Vec::new());
     interrupts.set_u32_ls(&retained_cells);
     node.set_property(interrupts);
-
-    if let Some(names) = retained_names {
-        let name_refs = names.iter().map(String::as_str).collect::<Vec<_>>();
-        let mut interrupt_names = Property::new("interrupt-names", Vec::new());
-        interrupt_names.set_string_ls(&name_refs);
-        node.set_property(interrupt_names);
-    }
+    node.remove_property("interrupt-names");
     Ok(())
 }
 
@@ -137,8 +131,17 @@ fn read_interrupt_entries(
 }
 
 impl InterruptEntries {
-    fn guest_timer_indices(&self, node_path: &str) -> AxVmResult<[usize; 2]> {
+    fn physical_timer_indices(&self, node_path: &str) -> AxVmResult<[usize; 2]> {
         if let Some(names) = &self.names {
+            let secure = names
+                .iter()
+                .position(|name| matches!(name.as_str(), "sec-phys" | "secure-phys"))
+                .ok_or_else(|| {
+                    ax_err_type!(
+                        InvalidData,
+                        format!("FDT node {node_path} has no secure physical timer interrupt")
+                    )
+                })?;
             let physical = names
                 .iter()
                 .position(|name| matches!(name.as_str(), "phys" | "non-secure-phys"))
@@ -148,26 +151,17 @@ impl InterruptEntries {
                         format!("FDT node {node_path} has no non-secure physical timer interrupt")
                     )
                 })?;
-            let virtual_timer = names
-                .iter()
-                .position(|name| matches!(name.as_str(), "virt" | "virtual"))
-                .ok_or_else(|| {
-                    ax_err_type!(
-                        InvalidData,
-                        format!("FDT node {node_path} has no virtual timer interrupt")
-                    )
-                })?;
-            return Ok([physical, virtual_timer]);
+            return Ok([secure, physical]);
         }
 
         let entry_count = self.specifiers.len() / self.cells_per_entry;
-        match entry_count {
-            0 | 1 => Err(ax_err_type!(
+        if entry_count < 2 {
+            Err(ax_err_type!(
                 InvalidData,
                 format!("FDT node {node_path} has fewer than two Arm timer interrupts")
-            )),
-            2 => Ok([0, 1]),
-            _ => Ok([1, 2]),
+            ))
+        } else {
+            Ok([0, 1])
         }
     }
 
@@ -194,29 +188,6 @@ impl InterruptEntries {
             })?);
         }
         Ok(selected)
-    }
-
-    fn selected_names(
-        &self,
-        indices: [usize; 2],
-        node_path: &str,
-    ) -> AxVmResult<Option<Vec<String>>> {
-        self.names
-            .as_ref()
-            .map(|names| {
-                indices
-                    .into_iter()
-                    .map(|index| {
-                        names.get(index).cloned().ok_or_else(|| {
-                            ax_err_type!(
-                                InvalidData,
-                                format!("FDT node {node_path} has no interrupt name {index}")
-                            )
-                        })
-                    })
-                    .collect()
-            })
-            .transpose()
     }
 }
 
@@ -248,48 +219,74 @@ mod tests {
 
     use fdt_edit::{Fdt, Node, Property};
 
-    use super::retain_guest_timer_interrupt_entries;
+    use super::project_guest_physical_timer_interrupts;
 
     #[test]
-    fn retains_physical_and_virtual_timer_entries_by_role() {
-        let dtb = timer_dtb(&[
+    fn projects_named_timer_entries_to_the_supported_physical_pair() {
+        let interrupts = [
             1, 13, 4, // secure physical timer
             1, 14, 4, // non-secure physical timer
             1, 11, 4, // virtual timer
             1, 10, 4, // hypervisor timer
-        ]);
+        ];
+        let dtb = timer_dtb(&interrupts);
 
-        let bytes = retain_guest_timer_interrupt_entries(&dtb, "arm,armv8-timer").unwrap();
+        let bytes = project_guest_physical_timer_interrupts(&dtb, "arm,armv8-timer").unwrap();
 
         let reparsed = Fdt::from_bytes(&bytes).unwrap();
         let timer = reparsed.get_by_path("/timer").unwrap().as_node();
-        let interrupts = timer
+        let retained = timer
             .get_property("interrupts")
             .unwrap()
             .get_u32_iter()
             .collect::<Vec<_>>();
-        let interrupt_names = timer
-            .get_property("interrupt-names")
-            .unwrap()
-            .as_str_iter()
-            .collect::<Vec<_>>();
+        assert_eq!(retained, [1, 13, 4, 1, 14, 4]);
+        assert!(timer.get_property("interrupt-names").is_none());
+    }
 
-        assert_eq!(interrupts, [1, 14, 4, 1, 11, 4]);
-        assert_eq!(interrupt_names, ["phys", "virt"]);
+    #[test]
+    fn projects_physical_timer_without_reindexing_legacy_linux() {
+        let interrupts = [
+            1, 13, 4, // secure physical timer
+            1, 14, 4, // non-secure physical timer
+            1, 11, 4, // virtual timer
+            1, 10, 4, // hypervisor timer
+        ];
+        let dtb = timer_dtb_without_names(&interrupts);
+
+        let bytes = project_guest_physical_timer_interrupts(&dtb, "arm,armv8-timer").unwrap();
+
+        let reparsed = Fdt::from_bytes(&bytes).unwrap();
+        let timer = reparsed.get_by_path("/timer").unwrap().as_node();
+        let retained = timer
+            .get_property("interrupts")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(retained, [1, 13, 4, 1, 14, 4]);
+        assert!(timer.get_property("interrupt-names").is_none());
     }
 
     #[test]
     fn rejects_incomplete_interrupt_entries() {
-        let dtb = timer_dtb(&[
+        let dtb = timer_dtb_without_names(&[
             1, 13, 4, // secure physical timer
             1, 14, 4, // non-secure physical timer
             1, 11, // incomplete virtual timer specifier
         ]);
 
-        assert!(retain_guest_timer_interrupt_entries(&dtb, "arm,armv8-timer").is_err());
+        assert!(project_guest_physical_timer_interrupts(&dtb, "arm,armv8-timer").is_err());
     }
 
     fn timer_dtb(interrupts: &[u32]) -> Vec<u8> {
+        timer_dtb_with_names(interrupts, Some(&["sec-phys", "phys", "virt", "hyp"]))
+    }
+
+    fn timer_dtb_without_names(interrupts: &[u32]) -> Vec<u8> {
+        timer_dtb_with_names(interrupts, None)
+    }
+
+    fn timer_dtb_with_names(interrupts: &[u32], names: Option<&[&str]>) -> Vec<u8> {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
 
@@ -305,9 +302,11 @@ mod tests {
         let mut interrupt_property = Property::new("interrupts", vec![]);
         interrupt_property.set_u32_ls(interrupts);
         timer.set_property(interrupt_property);
-        let mut interrupt_names = Property::new("interrupt-names", vec![]);
-        interrupt_names.set_string_ls(&["sec-phys", "phys", "virt", "hyp"]);
-        timer.set_property(interrupt_names);
+        if let Some(names) = names {
+            let mut interrupt_names = Property::new("interrupt-names", vec![]);
+            interrupt_names.set_string_ls(names);
+            timer.set_property(interrupt_names);
+        }
         fdt.add_node(root, timer);
 
         fdt.encode().as_ref().to_vec()

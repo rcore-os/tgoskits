@@ -20,6 +20,7 @@ pub(crate) fn current_host_platform_snapshot() -> MachinePlanResult<HostPlatform
         }
     })??;
     let mut snapshot = build_snapshot(&inventory)?;
+    snapshot.grant_whole_machine_assignment()?;
     if let Some(console) = snapshot.console_device().cloned() {
         snapshot.grant_console_transfer(
             HostConsoleLocation::Device(console),
@@ -79,7 +80,7 @@ fn add_namespace_device(
 ) -> MachinePlanResult<HostPlatformSnapshot> {
     let ownership = classify_namespace_device(inventory, device);
     let mut descriptor =
-        HostDeviceDescriptor::new(HostDeviceId::new(device.path.clone())?, ownership);
+        HostDeviceDescriptor::described(HostDeviceId::new(device.path.clone())?, ownership);
     if let Some(hid) = &device.hid {
         descriptor = descriptor.with_compatible(hid.clone());
     }
@@ -136,7 +137,7 @@ fn add_io_apic(
     controller: AcpiIoApic,
 ) -> MachinePlanResult<HostPlatformSnapshot> {
     let range = AddressRange::new(u64::from(controller.address), 0x1000)?;
-    let descriptor = HostDeviceDescriptor::new(
+    let descriptor = HostDeviceDescriptor::described(
         HostDeviceId::new(format!("acpi:ioapic:{}", controller.id))?,
         HostDeviceOwnership::HostExclusive,
     )
@@ -150,7 +151,7 @@ fn add_pch_pic(
     controller: AcpiPchPic,
 ) -> MachinePlanResult<HostPlatformSnapshot> {
     let range = AddressRange::new(controller.address, u64::from(controller.mmio_size))?;
-    let descriptor = HostDeviceDescriptor::new(
+    let descriptor = HostDeviceDescriptor::described(
         HostDeviceId::new(format!("acpi:pch-pic:{}", controller.id))?,
         HostDeviceOwnership::HostExclusive,
     )
@@ -167,7 +168,7 @@ fn add_pci_ecam(
         detail: "host PCI ECAM size exceeds u64".into(),
     })?;
     let range = AddressRange::new(ecam.base_address, size)?;
-    let descriptor = HostDeviceDescriptor::new(
+    let descriptor = HostDeviceDescriptor::described(
         HostDeviceId::new(format!(
             "acpi:mcfg:{}:{}-{}",
             ecam.segment_group, ecam.bus_start, ecam.bus_end

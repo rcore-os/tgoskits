@@ -267,11 +267,10 @@ fn write_timer(fdt: &mut FdtWriter) -> vm_fdt::FdtWriterResult<()> {
     fdt.property_array_u32(
         "interrupts",
         &[
+            1, 13, 4, // secure physical timer, PPI 29
             1, 14, 4, // non-secure physical timer, PPI 30
-            1, 11, 4, // virtual timer, PPI 27
         ],
     )?;
-    fdt.property_string_list("interrupt-names", vec!["phys".into(), "virt".into()])?;
     fdt.end_node(timer)
 }
 

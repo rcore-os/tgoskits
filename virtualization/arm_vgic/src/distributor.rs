@@ -23,22 +23,17 @@ pub(crate) struct DistributorState {
 #[derive(Default)]
 pub(crate) struct DistributorWriteOutcome {
     delivery_candidates: Vec<SpiId>,
-    physical_configuration_requests: Vec<SpiId>,
 }
 
 impl DistributorWriteOutcome {
-    pub(crate) fn into_parts(self) -> (Vec<SpiId>, Vec<SpiId>) {
-        (
-            self.delivery_candidates,
-            self.physical_configuration_requests,
-        )
+    pub(crate) fn into_candidates(self) -> Vec<SpiId> {
+        self.delivery_candidates
     }
 }
 
 #[derive(Default)]
 struct FlagWriteOutcome {
     delivery_candidates: Vec<SpiId>,
-    touched: Vec<SpiId>,
 }
 
 impl DistributorState {
@@ -60,6 +55,10 @@ impl DistributorState {
 
     pub(crate) const fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub(crate) fn set_enabled_for_rollback(&mut self, enabled: bool) {
+        self.enabled = enabled;
     }
 
     pub(crate) fn interrupt(&self, spi: SpiId) -> VgicResult<&InterruptRecord> {
@@ -142,8 +141,8 @@ impl DistributorState {
                 Ok((interrupt_lines.saturating_sub(1) as u64)
                     | lpi_support
                     | (u64::from(interrupt_id_bits - 1) << 19)
-                    | (1 << 24)
-                    | (1 << 26))
+                    | (u64::from(config.affinity_level_3()) << 24)
+                    | (u64::from(config.range_selector()) << 26))
             }
             GICD_IIDR => {
                 require_width(offset, width, AccessWidth::Dword, "read")?;
@@ -251,22 +250,18 @@ impl DistributorState {
                     interrupt.set_pending(true)
                 })?;
                 outcome.delivery_candidates = write.delivery_candidates;
-                outcome.physical_configuration_requests = write.touched;
             }
             _ if word_index(offset, GICD_ICPENDR, 32).is_some() => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                let write = self.write_flags(offset, GICD_ICPENDR, value, config, |interrupt| {
+                self.write_flags(offset, GICD_ICPENDR, value, config, |interrupt| {
                     interrupt.set_pending(false)
                 })?;
-                outcome.physical_configuration_requests = write.touched;
             }
             _ if word_index(offset, GICD_ISACTIVER, 32).is_some() => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
-                let write =
-                    self.write_flags(offset, GICD_ISACTIVER, value, config, |interrupt| {
-                        interrupt.set_active(true)
-                    })?;
-                outcome.physical_configuration_requests = write.touched;
+                self.write_flags(offset, GICD_ISACTIVER, value, config, |interrupt| {
+                    interrupt.set_active(true)
+                })?;
             }
             _ if word_index(offset, GICD_ICACTIVER, 32).is_some() => {
                 require_width(offset, width, AccessWidth::Dword, "write")?;
@@ -278,7 +273,6 @@ impl DistributorState {
                     InterruptRecord::complete,
                 )?;
                 outcome.delivery_candidates = write.delivery_candidates;
-                outcome.physical_configuration_requests = write.touched;
             }
             _ if (GICD_IPRIORITYR..GICD_IPRIORITYR + 1020).contains(&offset) => {
                 self.write_priorities(offset, width, value, config)?;
@@ -351,7 +345,6 @@ impl DistributorState {
                 && let Ok(interrupt) = self.interrupt_mut(spi)
             {
                 update(interrupt);
-                outcome.touched.push(spi);
                 if interrupt.deliverable() {
                     outcome.delivery_candidates.push(spi);
                 }

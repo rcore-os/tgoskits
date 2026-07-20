@@ -29,6 +29,7 @@ pub fn current_host_platform_snapshot()
         bytes,
         crate::machine::FdtInterruptEncoding::FirstCell,
     )?;
+    snapshot.grant_whole_machine_assignment()?;
     if let Some(console) = snapshot.console_device().cloned() {
         snapshot.grant_console_transfer(
             crate::machine::HostConsoleLocation::Device(console),

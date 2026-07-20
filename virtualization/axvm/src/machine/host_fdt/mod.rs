@@ -77,7 +77,9 @@ pub fn generate_host_fdt(
     sanitize_path_tables(&mut guest)?;
     rebuild_memory(&mut guest, plan)?;
     patch_chosen(&mut guest, config)?;
+    normalize_rockchip_fiq_console(&source, &mut guest, plan)?;
     materialize_virtual_devices(&mut guest, plan)?;
+    sanitize_virtual_console_bootargs(&mut guest, plan)?;
     guest.boot_cpuid_phys = 0;
     guest.memory_reservations.clear();
     Ok(guest.encode().as_ref().to_vec())
@@ -401,6 +403,207 @@ fn patch_chosen(guest: &mut Fdt, config: &HostFdtConfig) -> MachinePlanResult<()
         chosen.set_property(string_property("bootargs", bootargs));
     }
     Ok(())
+}
+
+fn sanitize_virtual_console_bootargs(
+    guest: &mut Fdt,
+    plan: &VmMachinePlan,
+) -> MachinePlanResult<()> {
+    let Some(model) = plan
+        .virtual_devices()
+        .iter()
+        .map(|device| device.model_id().as_str())
+        .find(|model| matches!(*model, "arm-pl011" | "ns16550a"))
+    else {
+        return Ok(());
+    };
+    let Some(chosen_id) = guest.get_by_path_id("/chosen") else {
+        return Ok(());
+    };
+    let Some(bootargs) = guest
+        .node(chosen_id)
+        .and_then(|chosen| chosen.get_property("bootargs"))
+        .and_then(Property::as_str)
+    else {
+        return Ok(());
+    };
+    let bootargs = virtual_console_bootargs(bootargs, model);
+    guest
+        .node_mut(chosen_id)
+        .ok_or_else(|| MachinePlanError::InvalidFirmware {
+            detail: "guest /chosen node cannot receive virtual-console boot arguments".into(),
+        })?
+        .set_property(string_property("bootargs", &bootargs));
+    Ok(())
+}
+
+fn virtual_console_bootargs(bootargs: &str, model: &str) -> String {
+    let mut arguments = Vec::new();
+    let mut early_console = false;
+    for argument in bootargs.split_ascii_whitespace() {
+        if argument == "keep_bootcon" || argument.starts_with("earlyprintk") {
+            continue;
+        }
+        if argument == "earlycon" || argument.starts_with("earlycon=") {
+            if !early_console {
+                arguments.push(String::from("earlycon"));
+                early_console = true;
+            }
+            continue;
+        }
+        if let Some(console) = argument.strip_prefix("console=") {
+            let serial_console = console.starts_with("ttyAMA")
+                || console.starts_with("ttyS")
+                || console.starts_with("ttyFIQ");
+            let matches_model = match model {
+                "arm-pl011" => console.starts_with("ttyAMA"),
+                "ns16550a" => console.starts_with("ttyS"),
+                _ => false,
+            };
+            if serial_console && !matches_model {
+                continue;
+            }
+        }
+        arguments.push(argument.into());
+    }
+    arguments.join(" ")
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RockchipFiqConsole {
+    alias: String,
+    baud: u32,
+}
+
+fn normalize_rockchip_fiq_console(
+    source: &Fdt,
+    guest: &mut Fdt,
+    plan: &VmMachinePlan,
+) -> MachinePlanResult<()> {
+    let Some(console_path) = plan.host_console().map(|console| console.as_str()) else {
+        return Ok(());
+    };
+    let Some(console) = rockchip_fiq_console(source, console_path)? else {
+        return Ok(());
+    };
+    let Some(uart) = guest.get_by_path_id(console_path) else {
+        // The host console remains available as a mediated backend, but its
+        // physical UART is deliberately absent from the guest device tree.
+        return Ok(());
+    };
+    guest
+        .node_mut(uart)
+        .ok_or_else(|| MachinePlanError::InvalidFirmware {
+            detail: format!("Rockchip console UART '{console_path}' cannot be updated"),
+        })?
+        .set_property(string_property("status", "okay"));
+
+    let chosen =
+        guest
+            .get_by_path_id("/chosen")
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: "guest /chosen node is missing during Rockchip console normalization"
+                    .into(),
+            })?;
+    let chosen = guest
+        .node_mut(chosen)
+        .ok_or_else(|| MachinePlanError::InvalidFirmware {
+            detail: "guest /chosen node cannot be updated during Rockchip console normalization"
+                .into(),
+        })?;
+    if let Some(bootargs) = chosen.get_property("bootargs").and_then(Property::as_str) {
+        chosen.set_property(string_property(
+            "bootargs",
+            &rewrite_rockchip_fiq_console(bootargs, &console),
+        ));
+    }
+    chosen.set_property(string_property(
+        "stdout-path",
+        &format!("{}:{}n8", console.alias, console.baud),
+    ));
+    Ok(())
+}
+
+fn rockchip_fiq_console(
+    source: &Fdt,
+    console_path: &str,
+) -> MachinePlanResult<Option<RockchipFiqConsole>> {
+    let Some(aliases) = source.get_by_path("/aliases") else {
+        return Ok(None);
+    };
+    let aliases = aliases.as_node();
+    let mut matched = None;
+    for node_id in source.iter_node_ids() {
+        let Some(node) = source.node(node_id) else {
+            continue;
+        };
+        if node.get_property("status").and_then(Property::as_str) == Some("disabled")
+            || !node
+                .compatibles()
+                .any(|compatible| compatible == "rockchip,fiq-debugger")
+        {
+            continue;
+        }
+        let serial_id = node
+            .get_property("rockchip,serial-id")
+            .and_then(Property::get_u32)
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!(
+                    "Rockchip FIQ debugger '{}' has no serial-id",
+                    source.path_of(node_id)
+                ),
+            })?;
+        let alias = format!("serial{serial_id}");
+        let alias_path = aliases
+            .get_property(&alias)
+            .and_then(Property::as_str)
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!(
+                    "Rockchip FIQ debugger '{}' refers to missing alias '{alias}'",
+                    source.path_of(node_id)
+                ),
+            })?;
+        if alias_path != console_path {
+            continue;
+        }
+        let baud = node
+            .get_property("rockchip,baudrate")
+            .and_then(Property::get_u32)
+            .filter(|baud| *baud != 0)
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!(
+                    "Rockchip FIQ debugger '{}' has no valid baud rate",
+                    source.path_of(node_id)
+                ),
+            })?;
+        let console = RockchipFiqConsole { alias, baud };
+        if matched.replace(console).is_some() {
+            return Err(MachinePlanError::InvalidFirmware {
+                detail: format!(
+                    "multiple Rockchip FIQ debuggers refer to guest console '{console_path}'"
+                ),
+            });
+        }
+    }
+    Ok(matched)
+}
+
+fn rewrite_rockchip_fiq_console(bootargs: &str, console: &RockchipFiqConsole) -> String {
+    let serial_id = console.alias.trim_start_matches("serial");
+    bootargs
+        .split_ascii_whitespace()
+        .map(|argument| {
+            if argument
+                .strip_prefix("console=")
+                .is_some_and(|value| value.starts_with("ttyFIQ"))
+            {
+                format!("console=ttyS{serial_id},{}", console.baud)
+            } else {
+                argument.into()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
 }
 
 fn copy_properties(source: &Node, destination: &mut Node) {

@@ -3,9 +3,7 @@
 use alloc::collections::BTreeMap;
 
 use arm_gic_driver::v3::{Affinity as PhysicalAffinity, Trigger as PhysicalTrigger};
-use arm_vgic::{
-    GicV3BackendError, PhysicalInterruptBinding, PhysicalInterruptConfiguration, PhysicalIrqId,
-};
+use arm_vgic::{GicV3BackendError, PhysicalInterruptBinding, PhysicalIrqId};
 use ax_kspin::SpinNoIrq;
 use ax_std::os::arceos::modules::ax_hal::irq::{
     self as host_irq, CpuId, HwIrq, IrqAffinity, IrqDomainId, IrqId,
@@ -13,9 +11,7 @@ use ax_std::os::arceos::modules::ax_hal::irq::{
 
 use super::{
     AxvmGicV3Backend,
-    physical_gic::{
-        checked_physical_spi, instruction_sync_barrier, physical_trigger_mode, with_physical_gic,
-    },
+    physical_gic::{checked_physical_spi, instruction_sync_barrier, with_physical_gic},
 };
 
 static PHYSICAL_IRQ_OWNERS: SpinNoIrq<BTreeMap<IrqId, PhysicalIrqOwner>> =
@@ -82,29 +78,7 @@ pub(super) fn bind(
     reserve_irq(irq, backend.vm_id)
 }
 
-pub(super) fn configure(
-    backend: &AxvmGicV3Backend,
-    binding: PhysicalInterruptBinding,
-    configuration: PhysicalInterruptConfiguration,
-) -> Result<(), GicV3BackendError> {
-    let irq = decode_irq(binding.host())?;
-    claim_irq_for_guest(irq, backend.vm_id, "configure physical interrupt")?;
-    with_physical_gic("configure physical interrupt", |gic| {
-        let intid = checked_physical_spi(gic, irq, "configure physical interrupt")?;
-        gic.set_irq_enable(intid, false);
-        gic.set_pending(intid, false);
-        gic.set_active(intid, false);
-        gic.set_group(intid, true, false);
-        gic.set_priority(intid, configuration.priority().raw());
-        gic.set_cfg(intid, physical_trigger_mode(configuration.trigger()));
-        gic.set_pending(intid, configuration.pending());
-        gic.set_active(intid, configuration.active());
-        instruction_sync_barrier();
-        Ok(())
-    })
-}
-
-pub(super) fn set_enabled(
+pub(super) fn prepare_enabled(
     backend: &AxvmGicV3Backend,
     binding: PhysicalInterruptBinding,
     enabled: bool,
@@ -118,8 +92,7 @@ pub(super) fn set_enabled(
         host_irq::set_affinity(irq, IrqAffinity::Fixed(CpuId(target_cpu)))
             .map_err(|error| platform_error("route physical interrupt", irq, error))?;
     }
-    host_irq::set_enable(irq, enabled)
-        .map_err(|error| platform_error("set physical interrupt enable state", irq, error))
+    Ok(())
 }
 
 pub(super) fn unbind(
@@ -160,6 +133,23 @@ pub(super) fn pulse(binding: PhysicalInterruptBinding) -> Result<(), GicV3Backen
 
 pub(super) fn resolve(intid: u32) -> Result<PhysicalIrqId, GicV3BackendError> {
     resolve_host_irq(intid).map(encode_irq)
+}
+
+pub(super) fn list_register_intid(physical: PhysicalIrqId) -> Result<u16, GicV3BackendError> {
+    let irq = decode_irq(physical)?;
+    let raw = irq.hwirq.0;
+    if !(32..1020).contains(&raw) {
+        return Err(GicV3BackendError::new(
+            "encode hardware-backed list register",
+            alloc::format!("host IRQ {irq:?} is not a GIC SPI"),
+        ));
+    }
+    u16::try_from(raw).map_err(|_| {
+        GicV3BackendError::new(
+            "encode hardware-backed list register",
+            alloc::format!("host IRQ {irq:?} does not fit ICH_LR_EL2.PINTID"),
+        )
+    })
 }
 
 pub(super) fn resolve_host_irq(intid: u32) -> Result<IrqId, GicV3BackendError> {

@@ -22,10 +22,7 @@ use x86_vlapic::{
     X86VlapicResult, X86VmId,
 };
 
-use super::{
-    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction,
-    VcpuScheduling,
-};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, VcpuRunAction, VcpuScheduling};
 use crate::{
     AxVmError, AxVmResult, StopReason, VmStatus, ax_err_type,
     host::{HostMemory, default_host},
@@ -34,6 +31,8 @@ use crate::{
 
 pub(crate) mod boot;
 mod capabilities;
+#[path = "../../architecture/decoded_mmio.rs"]
+mod decoded_mmio;
 mod exit;
 pub(crate) mod fdt;
 #[path = "../../machine/host_acpi.rs"]
@@ -52,6 +51,7 @@ mod vm;
 #[path = "../../architecture/timer_scheduler.rs"]
 mod vm_timer_scheduler;
 
+use decoded_mmio::{DecodedMmioOps, MmioReadExit, MmioWriteExit};
 use exit::{DeferredRunWork, IoReadExit, IoWriteExit, NestedPageFaultExit};
 use sysreg::{SysRegReadExit, SysRegWriteExit};
 
@@ -229,7 +229,7 @@ impl ArchOps for X86_64Arch {
                 reg,
                 reg_width,
                 signed_ext,
-            } => super::handle_mmio_read(
+            } => Self::handle_decoded_mmio_read(
                 vm,
                 vcpu,
                 MmioReadExit {
@@ -240,7 +240,7 @@ impl ArchOps for X86_64Arch {
                     signed_ext,
                 },
             ),
-            X86VmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
+            X86VmExit::MmioWrite { addr, width, data } => Self::handle_decoded_mmio_write(
                 vm,
                 MmioWriteExit {
                     addr: x86_guest_phys_addr_to_ax(addr),
@@ -614,7 +614,10 @@ fn handle_x86_nested_page_fault(
         return Ok(BoundVcpuExit::Complete(VcpuRunAction::resume()));
     }
 
-    if nested_page_fault::handle(vm, exit.addr, exit.access_flags) {
+    if matches!(
+        nested_page_fault::resolve(vm, exit.addr, exit.access_flags)?,
+        nested_page_fault::NestedPageFaultResolution::Resolved
+    ) {
         Ok(BoundVcpuExit::Continue)
     } else {
         warn!(

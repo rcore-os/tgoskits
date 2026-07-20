@@ -2,8 +2,6 @@
 
 use alloc::vec::Vec;
 
-use axvm_types::InterruptDelivery;
-
 use crate::{
     AxVmResult,
     boot::{BootImageProvider, fdt::GuestDtbImage},
@@ -33,30 +31,7 @@ pub fn current_host_platform_snapshot()
         bytes,
         crate::machine::FdtInterruptEncoding::ArmGic,
     )?;
-    let live_console_device = ax_std::os::arceos::modules::ax_hal::console::device_id()
-        .ok()
-        .and_then(|console| {
-            snapshot
-                .devices()
-                .iter()
-                .find(|device| rdrive::fdt_path_to_device_id(device.id().as_str()) == Some(console))
-                .map(|device| device.id().clone())
-        });
-    let live_console = live_console_device
-        .map(crate::machine::HostConsoleLocation::Device)
-        .or_else(|| {
-            ax_std::os::arceos::modules::ax_hal::console::physical_mmio_base()
-                .map(|base| crate::machine::HostConsoleLocation::MmioBase(base.as_usize() as u64))
-        });
-    if let Some(console) = live_console {
-        snapshot
-            .grant_console_transfer(console, crate::machine::HostConsoleEvidence::LivePlatform)?;
-    } else if let Some(console) = snapshot.console_device().cloned() {
-        snapshot.grant_console_transfer(
-            crate::machine::HostConsoleLocation::Device(console),
-            crate::machine::HostConsoleEvidence::Firmware,
-        )?;
-    }
+    snapshot.grant_whole_machine_assignment()?;
     Ok(snapshot)
 }
 
@@ -73,15 +48,8 @@ pub(super) fn initrd_start_size_from_image_config(
     Some((ramdisk.load_gpa.as_usize() as u64, ramdisk.size? as u64))
 }
 
-pub(super) fn patch_emulated_timer_interrupts(
-    fdt_bytes: &[u8],
-    interrupt_delivery: InterruptDelivery,
-) -> AxVmResult<Vec<u8>> {
-    if interrupt_delivery != InterruptDelivery::Mediated {
-        return Ok(fdt_bytes.to_vec());
-    }
-
-    crate::boot::fdt::retain_guest_timer_interrupt_entries(fdt_bytes, "arm,armv8-timer")
+pub(super) fn patch_physical_timer_interrupts(fdt_bytes: &[u8]) -> AxVmResult<Vec<u8>> {
+    crate::boot::fdt::project_guest_physical_timer_interrupts(fdt_bytes, "arm,armv8-timer")
 }
 
 pub fn handle_fdt_operations(

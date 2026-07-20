@@ -1,6 +1,6 @@
 use aarch64_cpu::registers::*;
 
-use crate::{ArmGuestPhysAddr, ArmVcpuError, ArmVcpuResult};
+use crate::{ArmDataAbortSyndrome, ArmFaultIpa, ArmVcpuError, ArmVcpuResult};
 
 /// Retrieves the Exception Syndrome Register (ESR) value from EL2.
 ///
@@ -43,13 +43,6 @@ fn exception_hpfar() -> usize {
     }
     hpfar as usize
 }
-
-/// Constant for the shift amount used to identify the S1PTW bit in ESR_ELx.
-#[allow(non_upper_case_globals)]
-const ESR_ELx_S1PTW_SHIFT: usize = 7;
-/// Constant representing the S1PTW (Stage 1 translation fault) bit in ESR_ELx.
-#[allow(non_upper_case_globals)]
-const ESR_ELx_S1PTW: usize = 1 << ESR_ELx_S1PTW_SHIFT;
 
 /// Macro for executing an ARM Address Translation (AT) instruction.
 ///
@@ -108,33 +101,31 @@ fn translate_far_to_hpfar(far: usize) -> ArmVcpuResult<usize> {
     }
 }
 
-/// Retrieves the fault address that caused an exception.
+/// Captures the architecturally valid portion of the IPA for a data abort.
 ///
-/// This function returns the Guest Physical Address (GPA) that caused the
-/// exception. The address is determined based on the `FAR_EL2` and `HPFAR_EL2`
-/// registers. If the exception is not due to a permission fault or if stage 1
-/// translation is involved, the function uses `HPFAR_EL2` to compute the final
-/// address.
-///
-/// - `far` is the Fault Address Register (FAR_EL2) value.
-/// - `hpfar` is the Hypervisor Fault Address Register (HPFAR_EL2) value,
-///   which might be derived from `FAR_EL2` if certain conditions are met.
-///
-/// The final address returned is computed by combining the page offset from
-/// `FAR_EL2` with the page number from `HPFAR_EL2`.
-///
-/// # Returns
-/// * [`ArmVcpuResult<ArmGuestPhysAddr>`] - The guest physical address that caused the exception.
+/// HPFAR validity follows the Arm conditions mirrored by KVM. If HPFAR was not
+/// populated, this attempts an EL1 address translation only when FAR is safe to
+/// use. A stage-1 table walk or invalid FAR deliberately yields only a page IPA
+/// or no IPA instead of inventing a byte offset.
 #[inline(always)]
-pub fn exception_fault_addr() -> ArmVcpuResult<ArmGuestPhysAddr> {
-    let far = FAR_EL2.get() as usize;
-    let hpfar =
-        if (exception_esr() & ESR_ELx_S1PTW) == 0 && exception_data_abort_is_permission_fault() {
-            translate_far_to_hpfar(far)?
-        } else {
-            exception_hpfar()
-        };
-    Ok(ArmGuestPhysAddr::from_usize((far & 0xfff) | (hpfar << 8)))
+pub fn exception_fault_ipa(syndrome: ArmDataAbortSyndrome) -> ArmVcpuResult<Option<ArmFaultIpa>> {
+    let far = FAR_EL2.get();
+    let hpfar = if syndrome.hpfar_is_valid() {
+        exception_hpfar()
+    } else if !syndrome.fault_safe_to_translate() {
+        return Ok(None);
+    } else {
+        match translate_far_to_hpfar(far as usize) {
+            Ok(hpfar) => hpfar,
+            Err(ArmVcpuError::BadState) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+    };
+    Ok(Some(ArmFaultIpa::from_hpfar(
+        hpfar,
+        far,
+        syndrome.has_valid_ipa_offset(),
+    )))
 }
 
 /// Determines the instruction length based on the ESR_EL2 register.
@@ -158,15 +149,6 @@ pub fn exception_next_instruction_step() -> usize {
     2 + 2 * exception_instruction_length()
 }
 
-/// Retrieves the Instruction Specific Syndrome (ISS) field from the ESR_EL2 register.
-///
-/// # Returns
-/// The value of the ISS field in the ESR_EL2 register as a `usize`.
-#[inline(always)]
-pub fn exception_iss() -> usize {
-    ESR_EL2.read(ESR_EL2::ISS) as usize
-}
-
 #[inline(always)]
 pub fn exception_sysreg_direction_write(iss: u64) -> bool {
     const ESR_ISS_SYSREG_DIRECTION: u64 = 0b1;
@@ -188,76 +170,6 @@ pub fn exception_sysreg_gpr(iss: u64) -> u64 {
 pub const fn exception_sysreg_addr(iss: usize) -> usize {
     const ESR_ISS_SYSREG_ADDR: usize = (0xfff << 10) | (0xf << 1);
     iss & ESR_ISS_SYSREG_ADDR
-}
-
-/// Checks if the data abort exception was caused by a permission fault.
-///
-/// # Returns
-/// - `true` if the exception was caused by a permission fault.
-/// - `false` otherwise.
-#[inline(always)]
-pub fn exception_data_abort_is_permission_fault() -> bool {
-    (exception_iss() & 0b111111 & (0xf << 2)) == 12
-}
-
-/// Determines the access width of a data abort exception.
-///
-/// # Returns
-/// The access width in bytes (1, 2, 4, or 8 bytes).
-#[inline(always)]
-pub fn exception_data_abort_access_width() -> usize {
-    1 << ((exception_iss() >> 22) & 0b11)
-}
-
-/// Determines the DA can be handled
-#[inline(always)]
-pub fn exception_data_abort_handleable() -> bool {
-    (!(exception_iss() & (1 << 10)) | (exception_iss() & (1 << 24))) != 0
-}
-
-#[inline(always)]
-pub fn exception_data_abort_is_translate_fault() -> bool {
-    (exception_iss() & 0b111111 & (0xf << 2)) == 4
-}
-
-/// Checks if the data abort exception was caused by a write access.
-///
-/// # Returns
-/// - `true` if the exception was caused by a write access.
-/// - `false` if it was caused by a read access.
-#[inline(always)]
-pub fn exception_data_abort_access_is_write() -> bool {
-    (exception_iss() & (1 << 6)) != 0
-}
-
-/// Retrieves the register index involved in a data abort exception.
-///
-/// # Returns
-/// The index of the register (0-31) involved in the access.
-#[inline(always)]
-pub fn exception_data_abort_access_reg() -> usize {
-    (exception_iss() >> 16) & 0b11111
-}
-
-/// Determines the width of the register involved in a data abort exception.
-///
-/// # Returns
-/// The width of the register in bytes (4 or 8 bytes).
-#[allow(unused)]
-#[inline(always)]
-pub fn exception_data_abort_access_reg_width() -> usize {
-    4 + 4 * ((exception_iss() >> 15) & 1)
-}
-
-/// Checks if the data accessed during a data abort exception is sign-extended.
-///
-/// # Returns
-/// - `true` if the data is sign-extended.
-/// - `false` otherwise.
-#[allow(unused)]
-#[inline(always)]
-pub fn exception_data_abort_access_is_sign_ext() -> bool {
-    ((exception_iss() >> 21) & 1) != 0
 }
 
 /// Macro to save the host function context to the stack.

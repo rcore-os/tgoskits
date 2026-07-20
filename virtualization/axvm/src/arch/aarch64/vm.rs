@@ -3,9 +3,13 @@
 use alloc::sync::Arc;
 
 use arm_vcpu::{ArmVcpuCreateConfig, ArmVcpuSetupConfig};
-use axvm_types::{InterruptDelivery, NestedPagingConfig, VmArchVcpuOps};
+use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 
-use super::{Aarch64Arch, gic::PreparedGicV3, npt, timer};
+use super::{
+    Aarch64Arch,
+    gic::{PreparedGicV3, register_maintenance_interrupt},
+    npt, timer,
+};
 use crate::{
     AxVmResult, ax_err,
     config::AxVMConfig,
@@ -70,15 +74,23 @@ fn init_vm_with(
         prepared_gic.register(&mut devices.devices, interrupt_topology)?;
         let ports = vcpus.interrupt_ports(vm.id(), &placements)?;
         interrupt_topology.finalize(&ports)?;
+        let interrupt_roles = resources.config().arch().interrupt_roles().ok_or_else(|| {
+            crate::AxVmError::invalid_config("AArch64 interrupt roles are not prepared")
+        })?;
+        let maintenance_interrupt = register_maintenance_interrupt(interrupt_roles, &placements)?;
         let host_spi_forwarding = prepared_gic.connect_physical_spis(interrupt_topology)?;
-        if prepared_gic.emulates_interrupts() {
-            timer::register_emulated_timers(
-                &mut devices,
-                prepared_gic.device_set(),
-                &placements,
-                interrupt_topology,
-            )?;
-        }
+        let physical_timer_ppi = resources
+            .config()
+            .arch()
+            .interrupt_roles()
+            .map(super::gic::Aarch64InterruptRoles::guest_physical_timer);
+        timer::register_emulated_timers(
+            &mut devices,
+            prepared_gic.device_set(),
+            &placements,
+            interrupt_topology,
+            physical_timer_ppi,
+        )?;
         devices.register_planned(
             resources.config().machine_plan(),
             models,
@@ -90,23 +102,21 @@ fn init_vm_with(
         let owned_regions = guest_owned_regions(resources);
         map_guest_address_space(vm, resources, devices.devices(), &owned_regions)?;
         vcpus.setup(resources, build_vcpu_setup_config)?;
-        resources
-            .arch_state_mut()
-            .set_gic_controller(prepared_gic.controller(), host_spi_forwarding);
+        resources.arch_state_mut().set_gic_controller(
+            prepared_gic.controller(),
+            host_spi_forwarding,
+            maintenance_interrupt,
+        );
 
         Ok(PreparedVm::new(vcpus, devices))
     })
 }
 
 fn build_vcpu_setup_config(
-    config: &AxVMConfig,
+    _config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
 ) -> AxVmResult<<super::AxvmArmVcpu as VmArchVcpuOps>::SetupConfig> {
-    let passthrough = config.interrupt_delivery() == InterruptDelivery::Direct;
-    Ok(ArmVcpuSetupConfig {
-        passthrough_interrupt: passthrough,
-        passthrough_timer: passthrough,
-    })
+    Ok(ArmVcpuSetupConfig)
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {

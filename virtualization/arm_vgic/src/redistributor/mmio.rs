@@ -138,7 +138,7 @@ impl RedistributorState {
         width: AccessWidth,
         config: &GicV3Config,
     ) -> VgicResult<u64> {
-        let owned = u64::from(config.guest_private_interrupts().raw());
+        let owned = u64::from(config.guest_private_interrupt_mask());
         match offset {
             GICD_IGROUPR => read_dword(offset, width, owned),
             GICD_ISENABLER | GICD_ICENABLER => {
@@ -171,7 +171,7 @@ impl RedistributorState {
         value: u64,
         config: &GicV3Config,
     ) -> VgicResult<Vec<IntId>> {
-        let owned = u64::from(config.guest_private_interrupts().raw());
+        let owned = u64::from(config.guest_private_interrupt_mask());
         let mut candidates = Vec::new();
         match offset {
             GICD_IGROUPR => require_width(offset, width, AccessWidth::Dword, "write")?,
@@ -265,7 +265,7 @@ impl RedistributorState {
         let first = (offset - GICD_IPRIORITYR) as usize;
         Ok((0..width.size()).fold(0, |value, byte| {
             let raw = first + byte;
-            let priority = if config.guest_private_interrupts().raw() & (1 << raw) != 0 {
+            let priority = if config.guest_private_interrupt_mask() & (1 << raw) != 0 {
                 self.private_interrupts[raw].priority().raw()
             } else {
                 0
@@ -285,7 +285,7 @@ impl RedistributorState {
         let first = (offset - GICD_IPRIORITYR) as usize;
         for byte in 0..width.size() {
             let raw = first + byte;
-            if config.guest_private_interrupts().raw() & (1 << raw) != 0 {
+            if config.guest_private_interrupt_mask() & (1 << raw) != 0 {
                 self.private_interrupts[raw]
                     .set_priority(Priority::new((value >> (byte * 8)) as u8));
             }
@@ -297,7 +297,7 @@ impl RedistributorState {
         let first = ((offset - GICD_ICFGR) / 4) as usize * 16;
         (0..16usize).fold(0, |value, entry| {
             let raw = first + entry;
-            let edge = config.guest_private_interrupts().raw() & (1 << raw) != 0
+            let edge = config.guest_private_interrupt_mask() & (1 << raw) != 0
                 && self.private_interrupts[raw].trigger() == TriggerMode::Edge;
             value | (u64::from(edge) << (entry * 2 + 1))
         })
@@ -309,7 +309,7 @@ impl RedistributorState {
         }
         for entry in 0..16usize {
             let raw = 16 + entry;
-            if config.guest_private_interrupts().raw() & (1 << raw) == 0 {
+            if config.guest_private_interrupt_mask() & (1 << raw) == 0 {
                 continue;
             }
             let trigger = if value & (0b10 << (entry * 2)) == 0 {

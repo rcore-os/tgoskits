@@ -2,7 +2,7 @@
 [machine]
 mode = "passthrough"
 firmware = "auto"
-interrupts_passthrough = true
+interrupts_passthrough = false
 
 [base]
 id = 1

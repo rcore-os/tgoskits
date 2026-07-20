@@ -14,7 +14,7 @@ use loongarch_vcpu::{
     LoongArchVcpuResult, LoongArchVmExit,
 };
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, VcpuRunAction};
 use crate::{
     AxVmError, AxVmResult, VmStatus, ax_err_type,
     host::{HostMemory, HostTime, default_host},
@@ -22,6 +22,8 @@ use crate::{
 
 pub(crate) mod boot;
 mod capabilities;
+#[path = "../../architecture/decoded_mmio.rs"]
+mod decoded_mmio;
 pub(crate) mod fdt;
 #[path = "../../machine/host_acpi.rs"]
 mod host_acpi;
@@ -38,6 +40,7 @@ mod vm;
 mod vm_timer_scheduler;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
+use decoded_mmio::{DecodedMmioOps, MmioReadExit, MmioWriteExit};
 pub(crate) use irq::VmArchState;
 
 pub fn current_host_platform_snapshot()
@@ -206,7 +209,7 @@ impl ArchOps for LoongArch64Arch {
                 reg,
                 reg_width,
                 signed_ext,
-            } => super::handle_mmio_read(
+            } => Self::handle_decoded_mmio_read(
                 vm,
                 vcpu,
                 MmioReadExit {
@@ -217,7 +220,7 @@ impl ArchOps for LoongArch64Arch {
                     signed_ext,
                 },
             ),
-            LoongArchVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
+            LoongArchVmExit::MmioWrite { addr, width, data } => Self::handle_decoded_mmio_write(
                 vm,
                 MmioWriteExit {
                     addr: loong_guest_phys_addr_to_ax(addr),
@@ -295,7 +298,10 @@ fn handle_loongarch_nested_page_fault(
     }
 
     let ax_flags = loong_access_flags_to_ax(access_flags);
-    if nested_page_fault::handle(vm, ax_addr, ax_flags) {
+    if matches!(
+        nested_page_fault::resolve(vm, ax_addr, ax_flags)?,
+        nested_page_fault::NestedPageFaultResolution::Resolved
+    ) {
         Ok(BoundVcpuExit::Continue)
     } else {
         warn!(

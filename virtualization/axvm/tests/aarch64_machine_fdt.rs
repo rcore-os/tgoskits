@@ -74,17 +74,9 @@ fn generated_fdt_uses_the_planned_pl011_resources() {
             .unwrap()
             .get_u32_iter()
             .collect::<Vec<_>>(),
-        [1, 14, 4, 1, 11, 4]
+        [1, 13, 4, 1, 14, 4]
     );
-    assert_eq!(
-        timer
-            .as_node()
-            .get_property("interrupt-names")
-            .unwrap()
-            .as_str_iter()
-            .collect::<Vec<_>>(),
-        ["phys", "virt"]
-    );
+    assert!(timer.as_node().get_property("interrupt-names").is_none());
 }
 
 fn pl011() -> VirtualDeviceDescriptor {

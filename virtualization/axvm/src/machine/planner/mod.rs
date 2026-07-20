@@ -83,7 +83,7 @@ impl VmMachinePlanner {
         let assigned_host_interrupts = resolve_assigned_host_interrupts(&host_devices)?;
         let claims = host_devices
             .iter()
-            .filter(|device| device.disposition() == super::DeviceDisposition::Passthrough)
+            .filter(|device| device.requires_claim())
             .map(|device| device.id().clone())
             .collect();
         let identity_mappings = plan_identity_mappings(

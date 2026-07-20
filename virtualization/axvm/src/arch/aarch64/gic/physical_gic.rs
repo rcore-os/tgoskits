@@ -1,16 +1,11 @@
 //! Checked access to the host physical GICv3 implementation.
 
-use arm_gic_driver::{
-    checked_intid,
-    v3::{Gic as PhysicalGicV3, Trigger as PhysicalTrigger},
-};
-use arm_vgic::{GicV3BackendError, GicV3HardwareCapabilities, TriggerMode, VgicError};
+use arm_gic_driver::{checked_intid, v3::Gic as PhysicalGicV3};
+use arm_vgic::{GicV3BackendError, GicV3HardwareCapabilities, VgicError};
 use ax_std::os::arceos::modules::ax_hal::irq::IrqId;
 
-pub(super) fn physical_spi_count() -> Result<usize, GicV3BackendError> {
-    with_physical_gic("inspect physical GIC capabilities", |gic| {
-        capabilities(gic).map(GicV3HardwareCapabilities::spi_count)
-    })
+pub(super) fn physical_capabilities() -> Result<GicV3HardwareCapabilities, GicV3BackendError> {
+    with_physical_gic("inspect physical GIC capabilities", |gic| capabilities(gic))
 }
 
 pub(super) fn with_physical_gic<R>(
@@ -58,20 +53,6 @@ pub(super) fn checked_physical_spi(
             alloc::format!("invalid physical SPI INTID {raw}: {error:?}"),
         )
     })
-}
-
-pub(super) fn physical_trigger(trigger: PhysicalTrigger) -> TriggerMode {
-    match trigger {
-        PhysicalTrigger::Edge => TriggerMode::Edge,
-        PhysicalTrigger::Level => TriggerMode::Level,
-    }
-}
-
-pub(super) fn physical_trigger_mode(trigger: TriggerMode) -> PhysicalTrigger {
-    match trigger {
-        TriggerMode::Edge => PhysicalTrigger::Edge,
-        TriggerMode::Level => PhysicalTrigger::Level,
-    }
 }
 
 pub(super) fn vgic_state_error(error: VgicError) -> GicV3BackendError {

@@ -5,11 +5,7 @@ mod mmio;
 mod passthrough;
 mod state;
 
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_kspin::SpinRaw;
 pub use binding::GicV3VcpuBinding;
@@ -17,8 +13,8 @@ pub use binding::GicV3VcpuBinding;
 use crate::{
     DistributorState, EventId, GicAffinity, GicV3Backend, GicV3Config, GicV3Mode, GicVcpuId,
     GuestMemory, IntId, InterruptState, ItsDeviceId, ItsState, PhysicalInterruptBinding,
-    PhysicalMsiBinding, PpiId, PrivateInterruptState, RedistributorState, SgiId, SgiTarget, SpiId,
-    TriggerMode, VgicError, VgicResult, backend_result,
+    PhysicalMsiBinding, PpiId, RedistributorState, SgiId, SgiTarget, SpiId, TriggerMode, VgicError,
+    VgicResult, backend_result,
 };
 
 /// Runtime wake capability associated with one attached vCPU.
@@ -54,8 +50,7 @@ struct ControllerState {
     redistributors: BTreeMap<GicVcpuId, RedistributorState>,
     physical_interrupts: BTreeMap<SpiId, PhysicalInterruptBinding>,
     physical_msi: BTreeMap<(ItsDeviceId, EventId), PhysicalMsiBinding>,
-    active_vcpus: BTreeSet<GicVcpuId>,
-    private_host_snapshots: BTreeMap<GicVcpuId, PrivateInterruptState>,
+    active_vcpus: alloc::collections::BTreeSet<GicVcpuId>,
     its: ItsState,
 }
 
@@ -88,8 +83,7 @@ impl GicV3Controller {
                     redistributors: BTreeMap::new(),
                     physical_interrupts: BTreeMap::new(),
                     physical_msi: BTreeMap::new(),
-                    active_vcpus: BTreeSet::new(),
-                    private_host_snapshots: BTreeMap::new(),
+                    active_vcpus: alloc::collections::BTreeSet::new(),
                     its: ItsState::new(),
                 }),
             }),
@@ -194,12 +188,6 @@ impl GicV3Controller {
 
     /// Updates one vCPU-private PPI input.
     pub fn set_ppi_level(&self, vcpu: GicVcpuId, ppi: PpiId, asserted: bool) -> VgicResult {
-        if self.inner.config.mode() == GicV3Mode::Passthrough {
-            return Err(VgicError::Unsupported {
-                operation: "set software PPI level",
-                detail: "passthrough PPIs must be routed by the physical backend".into(),
-            });
-        }
         let wake = {
             let mut state = self.inner.state.lock();
             state
@@ -217,12 +205,6 @@ impl GicV3Controller {
         ppi: PpiId,
         trigger: TriggerMode,
     ) -> VgicResult {
-        if self.inner.config.mode() == GicV3Mode::Passthrough {
-            return Err(VgicError::Unsupported {
-                operation: "connect software PPI input",
-                detail: "passthrough PPIs must be routed by the physical backend".into(),
-            });
-        }
         self.inner
             .state
             .lock()
@@ -233,12 +215,6 @@ impl GicV3Controller {
 
     /// Pulses one vCPU-private PPI input.
     pub fn pulse_ppi(&self, vcpu: GicVcpuId, ppi: PpiId) -> VgicResult {
-        if self.inner.config.mode() == GicV3Mode::Passthrough {
-            return Err(VgicError::Unsupported {
-                operation: "pulse software PPI",
-                detail: "passthrough PPIs must be routed by the physical backend".into(),
-            });
-        }
         let wake = {
             let mut state = self.inner.state.lock();
             state.redistributor_mut(vcpu, "pulse PPI")?.pulse_ppi(ppi);
@@ -249,39 +225,10 @@ impl GicV3Controller {
 
     /// Sends an SGI using explicit architectural target semantics.
     pub fn send_sgi(&self, source: GicVcpuId, sgi: SgiId, targets: SgiTarget) -> VgicResult {
-        let (target_ids, target_affinities) = {
+        let target_ids = {
             let state = self.inner.state.lock();
-            state.resolve_sgi_targets(source, &targets)?
+            state.resolve_sgi_targets(source, &targets)?.0
         };
-        if self.inner.config.mode() == GicV3Mode::Passthrough {
-            let (active_affinities, wakes) = {
-                let mut state = self.inner.state.lock();
-                let mut active_affinities = Vec::new();
-                let mut wakes = Vec::new();
-                for (target, affinity) in target_ids.into_iter().zip(target_affinities) {
-                    let active = state.active_vcpus.contains(&target);
-                    let redistributor = state.redistributor_mut(target, "send SGI")?;
-                    redistributor.pend_sgi(sgi);
-                    if active {
-                        active_affinities.push(affinity);
-                    } else {
-                        wakes.push(redistributor.wake());
-                    }
-                }
-                (active_affinities, wakes)
-            };
-            if !active_affinities.is_empty() {
-                backend_result(self.inner.backend.send_physical_sgi(
-                    source,
-                    sgi,
-                    &active_affinities,
-                ))?;
-            }
-            for wake in wakes {
-                wake.wake()?;
-            }
-            return Ok(());
-        }
         let wakes = {
             let mut state = self.inner.state.lock();
             let mut wakes = Vec::with_capacity(target_ids.len());

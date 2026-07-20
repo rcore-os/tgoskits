@@ -48,7 +48,7 @@ impl HostPlatformSnapshot {
             };
             let path = fdt.path_of(node_id);
             let compatibles = node.compatibles().map(String::from).collect::<Vec<_>>();
-            let mut descriptor = HostDeviceDescriptor::new(
+            let mut descriptor = HostDeviceDescriptor::described(
                 HostDeviceId::new(path.clone())?,
                 classify_ownership(&path, node, &compatibles, console_path.as_deref()),
             )
@@ -231,6 +231,7 @@ fn classify_ownership(
         || compatibles.iter().any(|compatible| {
             compatible.contains("armv8-timer")
                 || is_architectural_interrupt_infrastructure(compatible)
+                || compatible == "rockchip,fiq-debugger"
         })
         || console_path == Some(path)
         || (is_pl011(compatibles) && console_path.is_none())
@@ -314,11 +315,15 @@ fn decode_gic_interrupt(cells: &[u32]) -> Result<(u32, InterruptTriggerMode), St
 mod tests {
     use alloc::vec;
 
+    use axvm_types::{GuestFirmwareKind, VmMachineMode};
     use fdt_edit::{Fdt, Node, Property};
     use fdt_raw::RegInfo;
 
     use super::*;
-    use crate::machine::{HostConsoleEvidence, HostConsoleLocation};
+    use crate::machine::{
+        DeviceDisposition, HostConsoleEvidence, HostConsoleLocation, HostDeviceAssignment,
+        MachineProfile, VmMachinePlanner, VmMachineRequest,
+    };
 
     #[test]
     fn host_console_is_protected_but_remains_a_virtual_template() {
@@ -608,6 +613,148 @@ mod tests {
 
         assert_eq!(consumer.ownership(), HostDeviceOwnership::Assignable);
         assert!(consumer.interrupts().is_empty());
+    }
+
+    #[test]
+    fn firmware_description_does_not_authorize_physical_device_assignment() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let device = fdt.add_node(root, Node::new("device@2000"));
+        fdt.node_mut(device)
+            .unwrap()
+            .set_property(string_property("compatible", "vendor,leaf-device"));
+        fdt.view_typed_mut(device)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x2000, Some(0x1000))]);
+
+        let snapshot =
+            HostPlatformSnapshot::from_fdt(9, fdt.encode().as_ref(), FdtInterruptEncoding::ArmGic)
+                .unwrap();
+        let profile =
+            MachineProfile::new(AddressRange::new(0x1_0000, 0x1_0000).unwrap(), 32..=63).unwrap();
+        let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+        let plan = VmMachinePlanner::new(profile)
+            .plan(&request, &snapshot)
+            .unwrap();
+        let device = plan
+            .host_devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/device@2000")
+            .unwrap();
+
+        assert_eq!(device.disposition(), DeviceDisposition::Unrepresentable);
+        assert!(plan.claims().is_empty());
+        assert!(
+            !plan
+                .identity_mappings()
+                .iter()
+                .any(|range| range.contains(0x2000))
+        );
+    }
+
+    #[test]
+    fn structural_mmio_requires_physical_assignment_authority() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let syscon = fdt.add_node(root, Node::new("syscon@3000"));
+        fdt.node_mut(syscon)
+            .unwrap()
+            .set_property(string_list("compatible", &["vendor,syscon", "simple-mfd"]));
+        fdt.view_typed_mut(syscon)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x3000, Some(0x1000))]);
+
+        let snapshot =
+            HostPlatformSnapshot::from_fdt(10, fdt.encode().as_ref(), FdtInterruptEncoding::ArmGic)
+                .unwrap();
+        let profile =
+            MachineProfile::new(AddressRange::new(0x1_0000, 0x1_0000).unwrap(), 32..=63).unwrap();
+        let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+        let plan = VmMachinePlanner::new(profile)
+            .plan(&request, &snapshot)
+            .unwrap();
+        let syscon = plan
+            .host_devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/syscon@3000")
+            .unwrap();
+
+        assert_eq!(syscon.disposition(), DeviceDisposition::Unrepresentable);
+        assert!(plan.claims().is_empty());
+        assert!(
+            !plan
+                .identity_mappings()
+                .iter()
+                .any(|range| range.contains(0x3000))
+        );
+    }
+
+    #[test]
+    fn trusted_assignment_authority_exposes_and_claims_physical_resources() {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        let device = fdt.add_node(root, Node::new("device@2000"));
+        fdt.node_mut(device)
+            .unwrap()
+            .set_property(string_property("compatible", "vendor,leaf-device"));
+        fdt.view_typed_mut(device)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x2000, Some(0x1000))]);
+        let syscon = fdt.add_node(root, Node::new("syscon@3000"));
+        fdt.node_mut(syscon)
+            .unwrap()
+            .set_property(string_list("compatible", &["vendor,syscon", "simple-mfd"]));
+        fdt.view_typed_mut(syscon)
+            .unwrap()
+            .set_regs(&[RegInfo::new(0x3000, Some(0x1000))]);
+
+        let mut snapshot =
+            HostPlatformSnapshot::from_fdt(11, fdt.encode().as_ref(), FdtInterruptEncoding::ArmGic)
+                .unwrap();
+        let device = HostDeviceId::new("/device@2000").unwrap();
+        let syscon = HostDeviceId::new("/syscon@3000").unwrap();
+        snapshot
+            .grant_device_assignment(&device, HostDeviceAssignment::StaticPartition)
+            .unwrap();
+        snapshot
+            .grant_device_assignment(&syscon, HostDeviceAssignment::StaticPartition)
+            .unwrap();
+        let profile =
+            MachineProfile::new(AddressRange::new(0x1_0000, 0x1_0000).unwrap(), 32..=63).unwrap();
+        let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+
+        let plan = VmMachinePlanner::new(profile)
+            .plan(&request, &snapshot)
+            .unwrap();
+
+        assert_eq!(
+            plan.host_devices()
+                .iter()
+                .find(|planned| planned.id() == &device)
+                .unwrap()
+                .disposition(),
+            DeviceDisposition::Passthrough
+        );
+        assert_eq!(
+            plan.host_devices()
+                .iter()
+                .find(|planned| planned.id() == &syscon)
+                .unwrap()
+                .disposition(),
+            DeviceDisposition::Structural
+        );
+        assert!(plan.claims().contains(&device));
+        assert!(plan.claims().contains(&syscon));
+        assert!(
+            plan.identity_mappings()
+                .iter()
+                .any(|range| range.contains(0x2000))
+        );
+        assert!(
+            plan.identity_mappings()
+                .iter()
+                .any(|range| range.contains(0x3000))
+        );
     }
 
     fn string_list(name: &str, values: &[&str]) -> Property {

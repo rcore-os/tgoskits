@@ -12,7 +12,7 @@ use axdevice::{
 use axvm_types::{GuestPhysAddr, InterruptDelivery, VmMachineMode};
 
 use super::{
-    HostSpiForwarding, VcpuRoute, backend, list_register_count, physical_spi_count,
+    HostSpiForwarding, VcpuRoute, backend, list_register_count, physical_capabilities,
     resolve_physical_irq,
 };
 use crate::{
@@ -66,11 +66,13 @@ impl PreparedGicV3 {
         }
 
         if config.machine_mode() == VmMachineMode::Passthrough {
-            let spi_count = physical_spi_count()
+            let capabilities = physical_capabilities()
                 .map_err(|error| AxVmError::interrupt("inspect physical GICv3", error))?;
-            gic_config = gic_config.with_spi_count(spi_count).map_err(|error| {
-                AxVmError::interrupt("apply physical GICv3 SPI capability", error)
-            })?;
+            gic_config = gic_config
+                .with_hardware_capabilities(capabilities)
+                .map_err(|error| {
+                    AxVmError::interrupt("apply physical GICv3 SPI capability", error)
+                })?;
         }
         if mode == GicV3Mode::Passthrough {
             let roles = config.arch().interrupt_roles().ok_or_else(|| {
@@ -78,16 +80,11 @@ impl PreparedGicV3 {
                     "AArch64 passthrough interrupt roles were not prepared before GIC creation",
                 )
             })?;
-            gic_config = gic_config
-                .with_passthrough_private_interrupts(roles.guest_private_interrupts())
-                .map_err(|error| {
-                    AxVmError::interrupt("apply physical GICv3 private IRQ ownership", error)
-                })?;
             debug!(
-                "VM[{vm_id}] GICv3 passthrough roles: host-reserved={:?}, guest-timers={:?}, \
+                "VM[{vm_id}] GICv3 passthrough roles: host-reserved={:?}, guest-timer={:?}, \
                  SPIs={}",
                 roles.host_reserved(),
-                roles.guest_timers(),
+                roles.guest_physical_timer(),
                 gic_config.spi_count()
             );
         }
@@ -157,7 +154,7 @@ impl PreparedGicV3 {
         topology: &InterruptTopology,
     ) -> AxVmResult<Option<HostSpiForwarding>> {
         match self.controller.config().mode() {
-            GicV3Mode::Emulated => HostSpiForwarding::connect(
+            GicV3Mode::Emulated => HostSpiForwarding::connect_mediated(
                 topology,
                 PRIMARY_GIC,
                 &self.assigned_interrupts,
@@ -166,7 +163,13 @@ impl PreparedGicV3 {
             .map(Some),
             GicV3Mode::Passthrough => {
                 self.bind_passthrough_spis()?;
-                Ok(None)
+                HostSpiForwarding::connect_direct(
+                    self.controller.clone(),
+                    GicVcpuId::new(0),
+                    &self.assigned_interrupts,
+                    self.backend.clone(),
+                )
+                .map(Some)
             }
         }
     }
@@ -192,10 +195,6 @@ impl PreparedGicV3 {
 
     pub(crate) const fn device_set(&self) -> &GicV3DeviceSet {
         &self.device_set
-    }
-
-    pub(crate) fn emulates_interrupts(&self) -> bool {
-        self.controller.config().mode() == GicV3Mode::Emulated
     }
 }
 

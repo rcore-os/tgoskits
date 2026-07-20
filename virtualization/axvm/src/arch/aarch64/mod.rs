@@ -7,28 +7,30 @@
 use alloc::sync::Arc;
 
 use arm_vcpu::{
-    ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr,
-    ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError, ArmVcpuResult, ArmVcpuSetupConfig, ArmVmExit,
+    ArmAccessWidth, ArmDataAbort, ArmDataAccessResult, ArmGuestPhysAddr, ArmHostOps,
+    ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError,
+    ArmVcpuResult, ArmVcpuSetupConfig, ArmVmExit,
 };
+use ax_kernel_guard::IrqSave;
 use ax_memory_addr::VirtAddr;
 use axvm_types::{
     AccessWidth, GuestPhysAddr, NestedPagingConfig, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
     VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
 };
 
-use super::{
-    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction,
-    VcpuScheduling,
-};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, VcpuRunAction, VcpuScheduling};
 use crate::{AxVmResult, ax_err};
 
 mod capabilities;
 #[path = "../../architecture/cpu_up.rs"]
 mod cpu_up;
+mod data_abort;
 pub(crate) mod fdt;
 mod gic;
 mod images;
 mod ipi;
+#[path = "../../architecture/nested_page_fault.rs"]
+mod nested_page_fault;
 mod npt;
 mod pl011;
 mod placement;
@@ -86,15 +88,10 @@ impl VmArchConfig {
 
     pub(crate) fn validate_prepared_boot_state(
         &self,
-        interrupt_delivery: axvm_types::InterruptDelivery,
+        _interrupt_delivery: axvm_types::InterruptDelivery,
     ) -> AxVmResult {
-        if interrupt_delivery == axvm_types::InterruptDelivery::Direct
-            && self.interrupt_roles.is_none()
-        {
-            return ax_err!(
-                InvalidInput,
-                "AArch64 passthrough interrupt roles were not prepared"
-            );
+        if self.interrupt_roles.is_none() {
+            return ax_err!(InvalidInput, "AArch64 interrupt roles were not prepared");
         }
         Ok(())
     }
@@ -111,6 +108,7 @@ impl VmArchConfig {
 pub(crate) struct VmArchState {
     gic_controller: Option<Arc<arm_vgic::GicV3Controller>>,
     host_spi_forwarding: Option<gic::HostSpiForwarding>,
+    maintenance_interrupt: Option<gic::HostMaintenanceInterrupt>,
 }
 
 impl VmArchState {
@@ -118,6 +116,7 @@ impl VmArchState {
         Self {
             gic_controller: None,
             host_spi_forwarding: None,
+            maintenance_interrupt: None,
         }
     }
 
@@ -125,9 +124,11 @@ impl VmArchState {
         &mut self,
         controller: Arc<arm_vgic::GicV3Controller>,
         host_spi_forwarding: Option<gic::HostSpiForwarding>,
+        maintenance_interrupt: gic::HostMaintenanceInterrupt,
     ) {
         self.gic_controller = Some(controller);
         self.host_spi_forwarding = host_spi_forwarding;
+        self.maintenance_interrupt = Some(maintenance_interrupt);
     }
 
     pub(crate) fn gic_controller(&self) -> Option<Arc<arm_vgic::GicV3Controller>> {
@@ -171,10 +172,13 @@ impl ArchOps for Aarch64Arch {
     }
 
     fn with_vcpu_interrupt_context<T>(vm: &crate::AxVMRef, run: impl FnOnce() -> T) -> T {
-        if vm.interrupt_delivery() != axvm_types::InterruptDelivery::Direct {
-            return run();
-        }
-        let _host_irq_guard = ax_kernel_guard::IrqSave::new();
+        let _ = vm;
+        // ICH registers are banked per physical CPU, not per Rust task. Keep
+        // the complete load/synchronize/unload transaction atomic with
+        // respect to host IRQ dispatch so an interrupt cannot observe or
+        // mutate a partially switched vCPU interface. Guest IRQs still exit
+        // through HCR_EL2 routing while the guest is running.
+        let _irq_guard = IrqSave::new();
         run()
     }
 
@@ -196,31 +200,7 @@ impl ArchOps for Aarch64Arch {
             ArmVmExit::Hypercall { nr, args } => {
                 super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
             }
-            ArmVmExit::MmioRead {
-                addr,
-                width,
-                reg,
-                reg_width,
-                signed_ext,
-            } => super::handle_mmio_read(
-                vm,
-                vcpu,
-                MmioReadExit {
-                    addr: arm_guest_phys_addr_to_ax(addr),
-                    width: arm_access_width_to_ax(width),
-                    reg,
-                    reg_width: arm_access_width_to_ax(reg_width),
-                    signed_ext,
-                },
-            ),
-            ArmVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
-                vm,
-                MmioWriteExit {
-                    addr: arm_guest_phys_addr_to_ax(addr),
-                    width: arm_access_width_to_ax(width),
-                    data,
-                },
-            ),
+            ArmVmExit::DataAbort { abort } => data_abort::handle(vm, vcpu, abort),
             ArmVmExit::SysRegRead { addr, reg } => sysreg::handle_read(
                 vm,
                 vcpu,
@@ -301,6 +281,20 @@ impl ArmHostOps for AxvmArmHostOps {
 }
 
 pub(crate) struct AxvmArmVcpu(ArmVcpu<AxvmArmHostOps>);
+
+impl AxvmArmVcpu {
+    fn complete_data_abort(
+        &mut self,
+        abort: ArmDataAbort,
+        result: ArmDataAccessResult,
+    ) -> BackendResult {
+        arm_result(self.0.complete_data_abort(abort, result))
+    }
+
+    fn inject_external_data_abort(&mut self, abort: ArmDataAbort) -> BackendResult {
+        arm_result(self.0.inject_external_data_abort(abort))
+    }
+}
 
 impl VmArchVcpuOps for AxvmArmVcpu {
     type CreateConfig = ArmVcpuCreateConfig;

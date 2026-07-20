@@ -6,7 +6,7 @@ use axvm_types::AccessWidth;
 
 use super::{ControllerState, GicV3Controller};
 use crate::{
-    GicV3Mode, GicVcpuId, ItsAction, RegisterRegion, VgicError, VgicResult, backend_result,
+    GicV3Mode, GicVcpuId, ItsAction, RegisterRegion, VgicError, VgicResult,
     register::{
         GITS_BASER, GITS_BASER_COUNT, GITS_CBASER, GITS_CREADR, GITS_CTLR, GITS_CWRITER, GITS_IIDR,
         GITS_TYPER, GicComponent, component_id,
@@ -34,7 +34,7 @@ impl GicV3Controller {
             let write = state
                 .distributor
                 .write(offset, width, value, &self.inner.config)?;
-            let (candidates, physical_configuration_requests) = write.into_parts();
+            let candidates = write.into_candidates();
             let mut wakes = Vec::new();
             if !passthrough {
                 for spi in candidates {
@@ -44,10 +44,7 @@ impl GicV3Controller {
                 }
             }
             let physical_state_changes = match physical_snapshot {
-                Some(snapshot) => state.active_physical_interrupt_state_changes(
-                    &snapshot,
-                    &physical_configuration_requests,
-                )?,
+                Some(snapshot) => state.active_physical_interrupt_state_changes(&snapshot)?,
                 None => Vec::new(),
             };
             (wakes, physical_state_changes)
@@ -66,9 +63,6 @@ impl GicV3Controller {
         offset: u64,
         width: AccessWidth,
     ) -> VgicResult<u64> {
-        if self.inner.config.mode() == GicV3Mode::Passthrough {
-            self.synchronize_physical_private_interrupts(vcpu)?;
-        }
         self.inner
             .state
             .lock()
@@ -84,59 +78,19 @@ impl GicV3Controller {
         width: AccessWidth,
         value: u64,
     ) -> VgicResult {
-        let passthrough = self.inner.config.mode() == GicV3Mode::Passthrough;
-        let (wakes, physical_update) = {
+        let wakes = {
             let mut state = self.inner.state.lock();
-            let previous = passthrough
-                .then(|| {
-                    state
-                        .redistributor(vcpu, "snapshot Redistributor before write")?
-                        .private_interrupt_state()
-                })
-                .transpose()?;
             let candidates = state
                 .redistributor_mut(vcpu, "write Redistributor")?
                 .write(offset, width, value, &self.inner.config)?;
             let mut wakes = Vec::new();
-            if !passthrough {
-                for intid in candidates {
-                    if let Some(wake) = state.queue_local_if_deliverable(vcpu, intid)? {
-                        wakes.push(wake);
-                    }
+            for intid in candidates {
+                if let Some(wake) = state.queue_local_if_deliverable(vcpu, intid)? {
+                    wakes.push(wake);
                 }
             }
-            let physical_update = if passthrough && state.active_vcpus.contains(&vcpu) {
-                let previous = previous.ok_or_else(|| VgicError::InvalidConfig {
-                    detail: "passthrough Redistributor write lost its rollback snapshot".into(),
-                })?;
-                Some((
-                    previous,
-                    state
-                        .redistributor(vcpu, "snapshot Redistributor after write")?
-                        .private_interrupt_state()?,
-                ))
-            } else {
-                None
-            };
-            (wakes, physical_update)
+            wakes
         };
-        if let Some((previous, updated)) = physical_update
-            && let Err(error) = self.inner.backend.update_physical_private_interrupts(
-                vcpu,
-                self.inner.config.guest_private_interrupts(),
-                &updated,
-            )
-        {
-            self.inner
-                .state
-                .lock()
-                .redistributor_mut(vcpu, "roll back Redistributor write")?
-                .merge_private_interrupt_state(
-                    &previous,
-                    self.inner.config.guest_private_interrupts(),
-                );
-            return backend_result(Err(error));
-        }
         for wake in wakes {
             wake.wake()?;
         }

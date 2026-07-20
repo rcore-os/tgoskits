@@ -46,18 +46,5 @@ fn test_vcpu_create_config_fields() {
 fn test_vcpu_setup_config_default() {
     let config = Aarch64VCpuSetupConfig::default();
 
-    assert_eq!(config.passthrough_interrupt, false);
-    assert_eq!(config.passthrough_timer, false);
-}
-
-/// Test setting Aarch64VCpuSetupConfig fields
-#[test]
-fn test_vcpu_setup_config_fields() {
-    let config = Aarch64VCpuSetupConfig {
-        passthrough_interrupt: true,
-        passthrough_timer: true,
-    };
-
-    assert_eq!(config.passthrough_interrupt, true);
-    assert_eq!(config.passthrough_timer, true);
+    assert_eq!(config, Aarch64VCpuSetupConfig);
 }

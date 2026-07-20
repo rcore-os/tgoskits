@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 mod interrupts;
 
-pub use interrupts::retain_guest_timer_interrupt_entries;
+pub use interrupts::project_guest_physical_timer_interrupts;
 
 pub use crate::arch::fdt::*;
 

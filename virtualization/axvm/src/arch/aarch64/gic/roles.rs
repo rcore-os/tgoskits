@@ -1,23 +1,22 @@
 //! Discovery and validation of AArch64 architectural interrupt roles.
 
-use alloc::{collections::BTreeSet, format, vec, vec::Vec};
+use alloc::{collections::BTreeSet, format, vec::Vec};
 
-use arm_vgic::{IntId, PpiId, PrivateInterruptMask};
+use arm_vgic::{IntId, PpiId};
 use fdt_edit::{Fdt, Status};
 
 use crate::{AxVmError, AxVmResult};
 
 const DEFAULT_GIC_MAINTENANCE_INTID: u32 = 25;
 const DEFAULT_GUEST_PHYSICAL_TIMER_INTID: u32 = 30;
-const DEFAULT_GUEST_VIRTUAL_TIMER_INTID: u32 = 27;
 const GIC_INTERRUPT_CELLS: usize = 3;
 
 /// VM-internal classification of host-reserved and guest timer interrupts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Aarch64InterruptRoles {
     host_reserved: BTreeSet<IntId>,
-    guest_timers: Vec<PpiId>,
-    guest_private: PrivateInterruptMask,
+    maintenance: PpiId,
+    guest_timer: PpiId,
 }
 
 /// Platform and firmware capabilities used to derive one VM's interrupt roles.
@@ -33,7 +32,7 @@ struct DiscoveredInterruptIds<'a> {
     host_ipi: u32,
     host_timer: u32,
     maintenance: u32,
-    guest_timers: Vec<PpiId>,
+    guest_timer: PpiId,
     passthrough: &'a [u32],
 }
 
@@ -43,29 +42,31 @@ impl Aarch64InterruptRoles {
             Some(bytes) => discover_maintenance_intid(bytes)?,
             None => DEFAULT_GIC_MAINTENANCE_INTID,
         };
-        let guest_timers = match discovery.guest_fdt_bytes {
-            Some(bytes) => discover_guest_timer_ppis(bytes)?,
-            None => default_guest_timer_ppis()?,
+        let guest_timer = match discovery.guest_fdt_bytes {
+            Some(bytes) => discover_guest_physical_timer_ppi(bytes)?,
+            None => default_guest_physical_timer_ppi()?,
         };
         Self::from_discovered_intids(DiscoveredInterruptIds {
             host_ipi: discovery.host_ipi_intid,
             host_timer: discovery.host_timer_intid,
             maintenance,
-            guest_timers,
+            guest_timer,
             passthrough: discovery.passthrough_intids,
         })
-    }
-
-    pub(crate) const fn guest_private_interrupts(&self) -> PrivateInterruptMask {
-        self.guest_private
     }
 
     pub(crate) fn host_reserved(&self) -> &BTreeSet<IntId> {
         &self.host_reserved
     }
 
-    pub(crate) fn guest_timers(&self) -> &[PpiId] {
-        &self.guest_timers
+    /// Returns the host PPI used by ICH maintenance conditions.
+    pub(crate) const fn maintenance_interrupt(&self) -> PpiId {
+        self.maintenance
+    }
+
+    /// Returns the PPI driven by the emulated EL1 physical timer.
+    pub(crate) const fn guest_physical_timer(&self) -> PpiId {
+        self.guest_timer
     }
 
     fn from_discovered_intids(discovered: DiscoveredInterruptIds<'_>) -> AxVmResult<Self> {
@@ -73,31 +74,30 @@ impl Aarch64InterruptRoles {
             host_ipi,
             host_timer,
             maintenance,
-            guest_timers,
+            guest_timer,
             passthrough,
         } = discovered;
+        let maintenance = checked_ppi("GIC maintenance", maintenance)?;
         let mut host_reserved = BTreeSet::new();
-        for (role, raw) in [
-            ("host IPI", host_ipi),
-            ("host timer", host_timer),
-            ("GIC maintenance", maintenance),
+        for (role, intid) in [
+            ("host IPI", checked_core_intid("host IPI", host_ipi)?),
+            ("host timer", checked_core_intid("host timer", host_timer)?),
+            ("GIC maintenance", IntId::Ppi(maintenance)),
         ] {
-            let intid = checked_core_intid(role, raw)?;
             if !host_reserved.insert(intid) {
                 return Err(AxVmError::invalid_config(format!(
-                    "internally discovered {role} reuses core INTID {raw}"
+                    "internally discovered {role} reuses core INTID {}",
+                    intid.raw()
                 )));
             }
         }
 
-        for timer in &guest_timers {
-            let timer = IntId::Ppi(*timer);
-            if host_reserved.contains(&timer) {
-                return Err(AxVmError::invalid_config(format!(
-                    "guest timer INTID {} conflicts with an internally discovered host interrupt",
-                    timer.raw()
-                )));
-            }
+        let guest_timer_intid = IntId::Ppi(guest_timer);
+        if host_reserved.contains(&guest_timer_intid) {
+            return Err(AxVmError::invalid_config(format!(
+                "guest timer INTID {} conflicts with an internally discovered host interrupt",
+                guest_timer_intid.raw()
+            )));
         }
 
         for raw in passthrough.iter().copied().collect::<BTreeSet<_>>() {
@@ -112,26 +112,17 @@ impl Aarch64InterruptRoles {
                      interrupt"
                 )));
             }
-            if guest_timers
-                .iter()
-                .any(|timer| u32::from(timer.raw()) == raw)
-            {
+            if u32::from(guest_timer.raw()) == raw {
                 return Err(AxVmError::invalid_config(format!(
                     "passthrough device INTID {raw} conflicts with a guest timer"
                 )));
             }
         }
 
-        let mut guest_private = PrivateInterruptMask::SGIS;
-        for timer in &guest_timers {
-            guest_private = guest_private
-                .with(IntId::Ppi(*timer))
-                .map_err(|error| AxVmError::interrupt("classify guest timer PPI", error))?;
-        }
         Ok(Self {
             host_reserved,
-            guest_timers,
-            guest_private,
+            maintenance,
+            guest_timer,
         })
     }
 }
@@ -140,6 +131,13 @@ fn checked_core_intid(role: &'static str, raw: u32) -> AxVmResult<IntId> {
     IntId::new(raw).map_err(|error| {
         AxVmError::invalid_config(format!("{role} reports invalid GIC INTID {raw}: {error}"))
     })
+}
+
+fn checked_ppi(role: &'static str, raw: u32) -> AxVmResult<PpiId> {
+    let raw = u8::try_from(raw)
+        .map_err(|_| AxVmError::invalid_config(format!("{role} INTID {raw} is not a PPI")))?;
+    PpiId::new(raw)
+        .map_err(|error| AxVmError::invalid_config(format!("{role} is invalid: {error}")))
 }
 
 fn discover_maintenance_intid(bytes: &[u8]) -> AxVmResult<u32> {
@@ -161,14 +159,14 @@ fn discover_maintenance_intid(bytes: &[u8]) -> AxVmResult<u32> {
     decode_gic_ppi(first, "host GICv3 maintenance interrupt").map(|ppi| u32::from(ppi.raw()))
 }
 
-fn discover_guest_timer_ppis(bytes: &[u8]) -> AxVmResult<Vec<PpiId>> {
+fn discover_guest_physical_timer_ppi(bytes: &[u8]) -> AxVmResult<PpiId> {
     let fdt = parse_fdt(bytes, "guest")?;
     let Some(timer) = fdt
         .find_compatible(&["arm,armv8-timer"])
         .into_iter()
         .find(|node| node.as_node().status() != Some(Status::Disabled))
     else {
-        return default_guest_timer_ppis();
+        return default_guest_physical_timer_ppi();
     };
     let interrupts = timer
         .as_node()
@@ -186,11 +184,14 @@ fn discover_guest_timer_ppis(bytes: &[u8]) -> AxVmResult<Vec<PpiId>> {
         .as_node()
         .get_property("interrupt-names")
         .map(|property| property.as_str_iter().collect::<Vec<_>>());
-    select_guest_timer_ppis(&entries, names.as_deref())
+    select_guest_physical_timer_ppi(&entries, names.as_deref())
 }
 
-fn select_guest_timer_ppis(entries: &[&[u32]], names: Option<&[&str]>) -> AxVmResult<Vec<PpiId>> {
-    let (physical, virtual_timer) = if let Some(names) = names {
+fn select_guest_physical_timer_ppi(
+    entries: &[&[u32]],
+    names: Option<&[&str]>,
+) -> AxVmResult<PpiId> {
+    let physical = if let Some(names) = names {
         if names.len() != entries.len() {
             return Err(AxVmError::invalid_config(
                 "guest Arm timer interrupt-names count does not match interrupts",
@@ -202,39 +203,18 @@ fn select_guest_timer_ppis(entries: &[&[u32]], names: Option<&[&str]>) -> AxVmRe
             .ok_or_else(|| {
                 AxVmError::invalid_config("guest Arm timer has no non-secure physical timer IRQ")
             })?;
-        let virtual_timer = names
-            .iter()
-            .position(|name| matches!(*name, "virt" | "virtual"))
-            .ok_or_else(|| AxVmError::invalid_config("guest Arm timer has no virtual timer IRQ"))?;
-        (entries[physical], entries[virtual_timer])
+        entries[physical]
     } else {
-        let physical = entries.get(1).copied().ok_or_else(|| {
+        entries.get(1).copied().ok_or_else(|| {
             AxVmError::invalid_config("guest Arm timer has no EL1 physical timer IRQ")
-        })?;
-        let virtual_timer = entries
-            .get(2)
-            .copied()
-            .ok_or_else(|| AxVmError::invalid_config("guest Arm timer has no virtual timer IRQ"))?;
-        (physical, virtual_timer)
+        })?
     };
-    let physical = decode_gic_ppi(physical, "guest EL1 physical timer")?;
-    let virtual_timer = decode_gic_ppi(virtual_timer, "guest virtual timer")?;
-    if physical == virtual_timer {
-        return Err(AxVmError::invalid_config(format!(
-            "guest physical and virtual timers share PPI {}",
-            physical.raw()
-        )));
-    }
-    Ok(vec![physical, virtual_timer])
+    decode_gic_ppi(physical, "guest EL1 physical timer")
 }
 
-fn default_guest_timer_ppis() -> AxVmResult<Vec<PpiId>> {
-    Ok(vec![
-        PpiId::new(DEFAULT_GUEST_PHYSICAL_TIMER_INTID as u8)
-            .map_err(|error| AxVmError::interrupt("classify default physical timer", error))?,
-        PpiId::new(DEFAULT_GUEST_VIRTUAL_TIMER_INTID as u8)
-            .map_err(|error| AxVmError::interrupt("classify default virtual timer", error))?,
-    ])
+fn default_guest_physical_timer_ppi() -> AxVmResult<PpiId> {
+    PpiId::new(DEFAULT_GUEST_PHYSICAL_TIMER_INTID as u8)
+        .map_err(|error| AxVmError::interrupt("classify default physical timer", error))
 }
 
 fn decode_gic_ppi(specifier: &[u32], role: &'static str) -> AxVmResult<PpiId> {
@@ -272,7 +252,7 @@ mod tests {
             host_ipi: 0,
             host_timer: 26,
             maintenance: 25,
-            guest_timers: vec![PpiId::new(30).unwrap(), PpiId::new(27).unwrap()],
+            guest_timer: PpiId::new(30).unwrap(),
             passthrough: &[237],
         })
         .unwrap();
@@ -280,15 +260,7 @@ mod tests {
         assert!(roles.host_reserved().contains(&IntId::new(0).unwrap()));
         assert!(roles.host_reserved().contains(&IntId::new(25).unwrap()));
         assert!(roles.host_reserved().contains(&IntId::new(26).unwrap()));
-        assert_eq!(
-            roles.guest_timers(),
-            &[PpiId::new(30).unwrap(), PpiId::new(27).unwrap()]
-        );
-        assert!(
-            roles
-                .guest_private_interrupts()
-                .contains(IntId::new(27).unwrap())
-        );
+        assert_eq!(roles.guest_physical_timer(), PpiId::new(30).unwrap());
     }
 
     #[test]
@@ -297,7 +269,7 @@ mod tests {
             host_ipi: 0,
             host_timer: 25,
             maintenance: 25,
-            guest_timers: default_guest_timer_ppis().unwrap(),
+            guest_timer: default_guest_physical_timer_ppi().unwrap(),
             passthrough: &[],
         })
         .unwrap_err();
@@ -311,7 +283,7 @@ mod tests {
             host_ipi: 0,
             host_timer: 26,
             maintenance: 25,
-            guest_timers: default_guest_timer_ppis().unwrap(),
+            guest_timer: default_guest_physical_timer_ppi().unwrap(),
             passthrough: &[26],
         })
         .unwrap_err();
@@ -325,8 +297,8 @@ mod tests {
             host_ipi: 0,
             host_timer: 26,
             maintenance: 25,
-            guest_timers: default_guest_timer_ppis().unwrap(),
-            passthrough: &[27],
+            guest_timer: default_guest_physical_timer_ppi().unwrap(),
+            passthrough: &[30],
         })
         .unwrap_err();
 
@@ -334,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn timer_binding_order_selects_nonsecure_physical_and_virtual_ppis() {
+    fn timer_binding_order_selects_nonsecure_physical_ppi() {
         let entries = [
             &[1, 13, 4][..],
             &[1, 14, 4][..],
@@ -343,8 +315,8 @@ mod tests {
         ];
 
         assert_eq!(
-            select_guest_timer_ppis(&entries, None).unwrap(),
-            vec![PpiId::new(30).unwrap(), PpiId::new(27).unwrap()]
+            select_guest_physical_timer_ppi(&entries, None).unwrap(),
+            PpiId::new(30).unwrap()
         );
     }
 }

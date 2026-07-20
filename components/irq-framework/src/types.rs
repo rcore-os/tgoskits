@@ -233,6 +233,9 @@ pub enum IrqReturn {
     Handled,
     /// This action handled the IRQ and asks the OS adapter to wake deferred work.
     Wake,
+    /// The action forwarded a physical interrupt and transfers source
+    /// deactivation to the guest interrupt-controller lifecycle.
+    Forwarded,
 }
 
 /// Aggregated dispatch result.
@@ -244,6 +247,8 @@ pub struct IrqOutcome {
     pub wake: bool,
     /// Number of handlers called by this dispatch.
     pub called: usize,
+    /// Physical source deactivation must be deferred to a forwarded guest IRQ.
+    pub defer_deactivation: bool,
 }
 
 /// IRQ status snapshot.

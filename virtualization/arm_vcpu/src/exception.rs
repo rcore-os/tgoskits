@@ -12,19 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
+use aarch64_cpu::registers::{ESR_EL2, FAR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
 use log::error;
 
 use crate::{
-    ArmAccessWidth, ArmGuestPhysAddr, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
-    TrapFrame,
+    ArmDataAbort, ArmDataAbortSyndrome, ArmGuestPhysAddr, ArmGuestVirtAddr, ArmSysRegAddr,
+    ArmVcpuResult, ArmVmExit, TrapFrame,
+    data_abort::decode_data_access,
     exception_utils::{
-        exception_class, exception_class_value, exception_data_abort_access_is_write,
-        exception_data_abort_access_reg, exception_data_abort_access_reg_width,
-        exception_data_abort_access_width, exception_data_abort_handleable,
-        exception_data_abort_is_permission_fault, exception_data_abort_is_translate_fault,
-        exception_esr, exception_fault_addr, exception_next_instruction_step,
-        exception_sysreg_addr, exception_sysreg_direction_write, exception_sysreg_gpr,
+        exception_class, exception_class_value, exception_esr, exception_fault_ipa,
+        exception_next_instruction_step, exception_sysreg_addr, exception_sysreg_direction_write,
+        exception_sysreg_gpr,
     },
 };
 
@@ -43,6 +41,10 @@ pub enum TrapKind {
 const EXCEPTION_SYNC: usize = TrapKind::Synchronous as usize;
 /// Equals to [`TrapKind::Irq`], used in exception.S.
 const EXCEPTION_IRQ: usize = TrapKind::Irq as usize;
+/// Equals to [`TrapKind::Fiq`], used in exception.S.
+const EXCEPTION_FIQ: usize = TrapKind::Fiq as usize;
+/// Equals to [`TrapKind::SError`], used in exception.S.
+const EXCEPTION_SERROR: usize = TrapKind::SError as usize;
 
 #[repr(u8)]
 #[derive(Debug)]
@@ -58,6 +60,8 @@ core::arch::global_asm!(
     include_str!("exception.S"),
     exception_sync = const EXCEPTION_SYNC,
     exception_irq = const EXCEPTION_IRQ,
+    exception_fiq = const EXCEPTION_FIQ,
+    exception_serror = const EXCEPTION_SERROR,
     trap_frame_size = const crate::ARM_VCPU_TRAP_FRAME_SIZE,
 );
 
@@ -84,12 +88,7 @@ core::arch::global_asm!(
 /// syndrome register (ESR), and system control registers.
 pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     match exception_class() {
-        Some(ESR_EL2::EC::Value::DataAbortLowerEL) => {
-            let elr = ctx.exception_pc();
-            let val = elr + exception_next_instruction_step();
-            ctx.set_exception_pc(val);
-            handle_data_abort(ctx)
-        }
+        Some(ESR_EL2::EC::Value::DataAbortLowerEL) => handle_data_abort(ctx),
         Some(ESR_EL2::EC::Value::HVC64) => {
             // The `#imm`` argument when triggering a hvc call, currently not used.
             let _hvc_arg_imm16 = ESR_EL2.read(ESR_EL2::ISS);
@@ -121,11 +120,10 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
             handle_smc64_exception(ctx)
         }
         _ => {
-            panic!(
-                "handler not presents for EC_{} @ipa 0x{:x}, @pc 0x{:x}, @esr 0x{:x},
-                @sctlr_el1 0x{:x}, @vttbr_el2 0x{:x}, @vtcr_el2: {:#x} hcr: {:#x} ctx:{}",
+            error!(
+                "unsupported synchronous exception EC_{} at PC {:#x}, ESR {:#x}, SCTLR_EL1={:#x}, \
+                 VTTBR_EL2={:#x}, VTCR_EL2={:#x}, HCR_EL2={:#x}; context: {}",
                 exception_class_value(),
-                exception_fault_addr()?,
                 (*ctx).exception_pc(),
                 exception_esr(),
                 SCTLR_EL1.get() as usize,
@@ -134,57 +132,48 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
                 HCR_EL2.get() as usize,
                 ctx
             );
+            Err(crate::ArmVcpuError::Unsupported)
         }
     }
 }
 
 fn handle_data_abort(context_frame: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
-    let addr = exception_fault_addr()?;
-    let access_width = exception_data_abort_access_width();
-    let is_write = exception_data_abort_access_is_write();
-    // let sign_ext = exception_data_abort_access_is_sign_ext();
-    let reg = exception_data_abort_access_reg();
-    let reg_width = exception_data_abort_access_reg_width();
+    let syndrome = ArmDataAbortSyndrome::from_esr(exception_esr() as u32);
+    let fault_ipa = match exception_fault_ipa(syndrome) {
+        Ok(addr) => addr,
+        Err(error) => {
+            warn!(
+                "data abort at ELR {:#x} has no recoverable IPA: ESR={:#x}, error={error:?}",
+                context_frame.exception_pc(),
+                syndrome.raw_esr(),
+            );
+            None
+        }
+    };
+    let fault_virtual_address = syndrome
+        .has_valid_fault_address()
+        .then(|| ArmGuestVirtAddr::from_u64(FAR_EL2.get()));
+    let access = decode_data_access(syndrome, |register| {
+        context_frame.gpr(register.index()) as u64
+    })?;
 
     trace!(
-        "Data fault @{:?}, ELR {:#x}, esr: 0x{:x}",
-        addr,
+        "Data fault @{:?}, FAR {:?}, ELR {:#x}, ESR {:#x}, access {:?}",
+        fault_ipa,
+        fault_virtual_address,
         context_frame.exception_pc(),
-        exception_esr(),
+        syndrome.raw_esr(),
+        access,
     );
 
-    let width = ArmAccessWidth::try_from(access_width)?;
-    let reg_width = ArmAccessWidth::try_from(reg_width)?;
-
-    if !exception_data_abort_handleable() {
-        panic!(
-            "Core data abort not handleable {:#x}, esr {:#x}",
-            addr,
-            exception_esr()
-        );
-    }
-
-    if !exception_data_abort_is_translate_fault() {
-        if exception_data_abort_is_permission_fault() {
-            return Err(ArmVcpuError::Unsupported);
-        } else {
-            panic!("Core data abort is not translate fault {:#x}", addr,);
-        }
-    }
-
-    if is_write {
-        return Ok(ArmVmExit::MmioWrite {
-            addr,
-            width,
-            data: context_frame.gpr(reg) as u64,
-        });
-    }
-    Ok(ArmVmExit::MmioRead {
-        addr,
-        width,
-        reg,
-        reg_width,
-        signed_ext: false,
+    Ok(ArmVmExit::DataAbort {
+        abort: ArmDataAbort::new(
+            fault_ipa,
+            fault_virtual_address,
+            context_frame.exception_pc() as u64,
+            syndrome,
+            access,
+        ),
     })
 }
 

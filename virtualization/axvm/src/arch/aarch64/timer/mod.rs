@@ -1,4 +1,4 @@
-//! Per-vCPU emulated physical timers connected to Redistributor PPI 30.
+//! Per-vCPU emulated EL1 physical timers connected to a Redistributor PPI.
 
 use alloc::sync::Arc;
 
@@ -24,8 +24,11 @@ pub(crate) fn register_emulated_timers(
     gic: &GicV3DeviceSet,
     placements: &[VcpuPlacement],
     topology: &InterruptTopology,
+    discovered_ppi: Option<PpiId>,
 ) -> AxVmResult {
-    let ppi = PpiId::new(PHYSICAL_TIMER_PPI)
+    let ppi = discovered_ppi
+        .map(Ok)
+        .unwrap_or_else(|| PpiId::new(PHYSICAL_TIMER_PPI))
         .map_err(|error| AxVmError::interrupt("validate physical timer PPI", error))?;
     let frequency = counter_frequency();
     if frequency == 0 {

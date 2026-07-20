@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(feature = "fs")]
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use anyhow::{Context, Result, bail};
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 use axvm::InterruptTriggerMode;
@@ -41,9 +38,6 @@ use axvmconfig::{
     AxVMCrateConfig, DeviceSelectorConfig, HostPhysicalMemoryReservation, MemoryBackingConfig,
     MemoryRegionConfig,
 };
-
-#[cfg(feature = "fs")]
-static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum VmConfigOrigin {
@@ -159,6 +153,20 @@ fn init_guest_vm_from_origin(raw_cfg: &str, origin: VmConfigOrigin) -> Result<us
         .load_images(main_mem, vm.clone(), &image_provider)
         .with_context(|| format!("load boot images for VM[{vm_id}]"))?;
 
+    #[cfg(feature = "fs")]
+    if release_host_filesystem {
+        axvm::shutdown_host_filesystems()
+            .context("release host filesystem before claiming passthrough storage")?;
+        #[cfg(target_arch = "x86_64")]
+        {
+            register_x86_host_fs_passthrough_irq_route();
+            prepare_x86_host_fs_passthrough_devices();
+        }
+        info!(
+            "Host filesystem IRQ ownership released before VM[{vm_id}] claims passthrough devices"
+        );
+    }
+
     let (claims_required, host_console) = vm.with_config(|config| {
         let plan = config.machine_plan();
         (!plan.claims().is_empty(), plan.host_console().cloned())
@@ -184,13 +192,6 @@ fn init_guest_vm_from_origin(raw_cfg: &str, origin: VmConfigOrigin) -> Result<us
     }
     #[cfg(target_arch = "loongarch64")]
     crate::manager::register_loongarch_passthrough_irq_routes(vm_id);
-
-    #[cfg(feature = "fs")]
-    if release_host_filesystem {
-        #[cfg(target_arch = "x86_64")]
-        register_x86_host_fs_passthrough_irq_route();
-        HOST_FILESYSTEM_RELEASE_REQUIRED.store(true, Ordering::Release);
-    }
 
     Ok(vm_id)
 }
@@ -727,11 +728,6 @@ fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
         && config.machine.mode() == axvm_types::VmMachineMode::Passthrough
 }
 
-#[cfg(feature = "fs")]
-pub fn host_filesystem_release_required() -> bool {
-    HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)
-}
-
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 fn register_x86_host_fs_passthrough_irq_route() {
     let (_, _, _, guest_gsi) = axvm::boot::x86_qemu_passthrough_block_intx();
@@ -898,6 +894,27 @@ fn boot_file_error(operation: &'static str, file_name: &str, error: anyhow::Erro
 mod tests {
     use super::*;
     use axvmconfig::MemoryPermissions;
+
+    #[cfg(feature = "fs")]
+    #[test]
+    fn passthrough_boot_storage_is_released_after_loading_and_before_claiming() {
+        let source = include_str!("config.rs");
+        let init = source
+            .split_once("fn init_guest_vm_from_origin(")
+            .unwrap()
+            .1
+            .split_once("fn validate_host_memory_reservations(")
+            .unwrap()
+            .0;
+        let load = init.find(".load_images(").unwrap();
+        let release = init.find("shutdown_host_filesystems").unwrap();
+        let claim = init.find(".claim_host_devices(").unwrap();
+        let prepare = init.find("vm.prepare()").unwrap();
+
+        assert!(load < release);
+        assert!(release < claim);
+        assert!(claim < prepare);
+    }
 
     #[test]
     fn runtime_memory_region_preserves_non_identity_host_backing() {

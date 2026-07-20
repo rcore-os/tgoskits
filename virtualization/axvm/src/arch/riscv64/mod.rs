@@ -12,10 +12,7 @@ use riscv_vcpu::{
     RiscvVCpu, RiscvVcpuCreateConfig, RiscvVcpuError, RiscvVcpuResult, RiscvVmExit,
 };
 
-use super::{
-    ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction,
-    VcpuScheduling,
-};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, VcpuRunAction, VcpuScheduling};
 use crate::{
     AxVmResult, StopReason,
     architecture::ops::default_vcpu_affinities,
@@ -25,6 +22,8 @@ use crate::{
 mod capabilities;
 #[path = "../../architecture/cpu_up.rs"]
 mod cpu_up;
+#[path = "../../architecture/decoded_mmio.rs"]
+mod decoded_mmio;
 pub(crate) mod fdt;
 mod images;
 mod irq;
@@ -37,6 +36,7 @@ mod vm;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
+use decoded_mmio::{DecodedMmioOps, MmioReadExit, MmioWriteExit};
 pub use fdt::current_host_platform_snapshot;
 pub use images::ImageLoader;
 pub(crate) use irq::VmArchState;
@@ -187,7 +187,7 @@ impl ArchOps for Riscv64Arch {
                 reg,
                 reg_width,
                 signed_ext,
-            } => super::handle_mmio_read(
+            } => Self::handle_decoded_mmio_read(
                 vm,
                 vcpu,
                 MmioReadExit {
@@ -198,7 +198,7 @@ impl ArchOps for Riscv64Arch {
                     signed_ext,
                 },
             ),
-            RiscvVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
+            RiscvVmExit::MmioWrite { addr, width, data } => Self::handle_decoded_mmio_write(
                 vm,
                 MmioWriteExit {
                     addr: riscv_guest_phys_addr_to_ax(addr),
@@ -288,7 +288,10 @@ fn handle_riscv_nested_page_fault(
     }
 
     let ax_flags = riscv_access_flags_to_ax(access_flags);
-    if nested_page_fault::handle(vm, ax_addr, ax_flags) {
+    if matches!(
+        nested_page_fault::resolve(vm, ax_addr, ax_flags)?,
+        nested_page_fault::NestedPageFaultResolution::Resolved
+    ) {
         Ok(BoundVcpuExit::Continue)
     } else {
         warn!(

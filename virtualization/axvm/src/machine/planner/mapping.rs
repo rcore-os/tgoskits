@@ -38,9 +38,18 @@ pub(super) fn plan_host_devices(
                     _ if virtual_templates.contains(&index) => {
                         DeviceDisposition::VirtualReplacement
                     }
-                    HostDeviceOwnership::Structural => DeviceDisposition::Structural,
+                    HostDeviceOwnership::Structural
+                        if !device.has_physical_resources() || device.assignment().is_some() =>
+                    {
+                        DeviceDisposition::Structural
+                    }
+                    HostDeviceOwnership::Structural => DeviceDisposition::Unrepresentable,
                     HostDeviceOwnership::Assignable | HostDeviceOwnership::Transferable => {
-                        DeviceDisposition::Passthrough
+                        if device.assignment().is_some() {
+                            DeviceDisposition::Passthrough
+                        } else {
+                            DeviceDisposition::Unrepresentable
+                        }
                     }
                 },
             )

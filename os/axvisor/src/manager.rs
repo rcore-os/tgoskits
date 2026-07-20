@@ -33,7 +33,6 @@ impl AxvmManager {
     pub fn init_default_vms(&self) {
         crate::config::init_guest_vms();
         self.runtime.init_vms();
-        self.release_host_filesystem_for_guest_passthrough();
     }
 
     /// Start the default VM set and wait until it exits.
@@ -87,23 +86,6 @@ impl AxvmManager {
     pub fn vm_by_id(vm_id: VMId) -> Option<AxVMRef> {
         axvm::get_vm_by_id(vm_id)
     }
-
-    #[cfg(feature = "fs")]
-    fn release_host_filesystem_for_guest_passthrough(&self) {
-        if !crate::config::host_filesystem_release_required() {
-            return;
-        }
-
-        axvm::shutdown_host_filesystems().expect(
-            "Failed to release host filesystem before guest passthrough devices take ownership",
-        );
-        #[cfg(target_arch = "x86_64")]
-        crate::config::prepare_x86_host_fs_passthrough_devices();
-        info!("Host filesystem cleanly unmounted before guest passthrough devices start");
-    }
-
-    #[cfg(not(feature = "fs"))]
-    fn release_host_filesystem_for_guest_passthrough(&self) {}
 
     /// Read VM config files from an Axvisor-owned directory.
     #[cfg(feature = "fs")]

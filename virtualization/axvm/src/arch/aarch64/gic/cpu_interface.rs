@@ -6,8 +6,8 @@ use arm_gic_driver::v3::{
     ich_lr_el2_set, ich_lr_el2_write,
 };
 use arm_vgic::{
-    CpuInterfaceState, GicV3BackendError, GicVcpuId, IntId, InterruptState, ListRegisterState,
-    Priority,
+    CpuInterfaceState, GicV3BackendError, GicVcpuId, IntId, InterruptState, ListRegisterBacking,
+    ListRegisterState, Priority,
 };
 
 pub(super) fn load(vcpu: GicVcpuId, state: &CpuInterfaceState) -> Result<(), GicV3BackendError> {
@@ -16,15 +16,20 @@ pub(super) fn load(vcpu: GicVcpuId, state: &CpuInterfaceState) -> Result<(), Gic
     let apr_count = hardware_apr_count()?;
     require_supported_apr_state(state.apr(), apr_count)?;
 
-    ICH_HCR_EL2.set(state.hcr());
+    // UIE and the other maintenance conditions must not become observable
+    // until every register belongs to the vCPU being loaded.
+    ICH_HCR_EL2.set(0);
+    instruction_sync_barrier();
     ICH_VMCR_EL2.set(state.vmcr());
     write_apr(state.apr(), apr_count);
     for index in 0..hardware_list_register_count() {
         match state.list_registers().get(index).copied().flatten() {
-            Some(entry) => write_list_register(index, entry),
+            Some(entry) => write_list_register(index, entry)?,
             None => ich_lr_el2_set(index, LocalRegisterCopy::new(0)),
         }
     }
+    data_sync_barrier();
+    ICH_HCR_EL2.set(state.hcr());
     instruction_sync_barrier();
     Ok(())
 }
@@ -37,20 +42,41 @@ pub(super) fn save(
     require_supported_lr_count(state.list_registers().len())?;
     let apr_count = hardware_apr_count()?;
 
-    state.set_hcr(ICH_HCR_EL2.get());
-    state.set_vmcr(ICH_VMCR_EL2.get());
-    for (index, value) in read_apr(apr_count).into_iter().enumerate() {
-        if !state.set_apr(index, value) {
-            return Err(GicV3BackendError::new(
-                "save CPU interface",
-                alloc::format!("APR index {index} is outside the saved state"),
-            ));
+    // Make guest GIC MMIO effects visible to the ICH system-register view
+    // before harvesting LR and VMCR state, as required by the GICv3
+    // context-switch protocol.
+    data_sync_barrier();
+    instruction_sync_barrier();
+    let save_result = (|| {
+        state.set_hcr(ICH_HCR_EL2.get());
+        state.set_vmcr(ICH_VMCR_EL2.get());
+        for (index, value) in read_apr(apr_count).into_iter().enumerate() {
+            if !state.set_apr(index, value) {
+                return Err(GicV3BackendError::new(
+                    "save CPU interface",
+                    alloc::format!("APR index {index} is outside the saved state"),
+                ));
+            }
         }
+        for (index, slot) in state.list_registers_mut().iter_mut().enumerate() {
+            *slot = read_list_register(index, *slot)?;
+        }
+        Ok(())
+    })();
+
+    // The ICH state belongs to this vCPU only while its binding is loaded.
+    // In particular, an HW-backed LR must not retain ownership of a physical
+    // interrupt while the host handles the exit or schedules another task.
+    disable_cpu_interface();
+    save_result
+}
+
+fn disable_cpu_interface() {
+    for index in 0..hardware_list_register_count() {
+        ich_lr_el2_set(index, LocalRegisterCopy::new(0));
     }
-    for (index, slot) in state.list_registers_mut().iter_mut().enumerate() {
-        *slot = read_list_register(index)?;
-    }
-    Ok(())
+    ICH_HCR_EL2.set(0);
+    instruction_sync_barrier();
 }
 
 pub(super) fn hardware_list_register_count() -> usize {
@@ -138,23 +164,29 @@ fn read_apr(count: usize) -> [u64; 4] {
     apr
 }
 
-fn write_list_register(index: usize, entry: ListRegisterState) {
+fn write_list_register(index: usize, entry: ListRegisterState) -> Result<(), GicV3BackendError> {
     let state = match entry.state() {
         InterruptState::Inactive => ICH_LR_EL2::STATE::Invalid,
         InterruptState::Pending => ICH_LR_EL2::STATE::Pending,
         InterruptState::Active => ICH_LR_EL2::STATE::Active,
         InterruptState::ActivePending => ICH_LR_EL2::STATE::PendingAndActive,
     };
-    ich_lr_el2_write(
-        index,
-        ICH_LR_EL2::VINTID.val(entry.intid().raw() as u64)
-            + ICH_LR_EL2::PRIORITY.val(entry.priority().raw() as u64)
-            + ICH_LR_EL2::GROUP::SET
-            + state,
-    );
+    let mut fields = ICH_LR_EL2::VINTID.val(entry.intid().raw() as u64)
+        + ICH_LR_EL2::PRIORITY.val(entry.priority().raw() as u64)
+        + ICH_LR_EL2::GROUP::SET
+        + state;
+    if let ListRegisterBacking::Physical(physical) = entry.backing() {
+        let pintid = super::physical_spi::list_register_intid(physical)?;
+        fields = fields + ICH_LR_EL2::HW::SET + ICH_LR_EL2::PINTID.val(u64::from(pintid));
+    }
+    ich_lr_el2_write(index, fields);
+    Ok(())
 }
 
-fn read_list_register(index: usize) -> Result<Option<ListRegisterState>, GicV3BackendError> {
+fn read_list_register(
+    index: usize,
+    previous: Option<ListRegisterState>,
+) -> Result<Option<ListRegisterState>, GicV3BackendError> {
     let value = ich_lr_el2_get(index);
     let state = match value.read(ICH_LR_EL2::STATE) {
         0 => return Ok(None),
@@ -168,12 +200,6 @@ fn read_list_register(index: usize) -> Result<Option<ListRegisterState>, GicV3Ba
             ));
         }
     };
-    if value.is_set(ICH_LR_EL2::HW) {
-        return Err(GicV3BackendError::new(
-            "decode CPU interface list register",
-            alloc::format!("LR{index} unexpectedly contains a hardware-backed interrupt"),
-        ));
-    }
     let raw = value.read(ICH_LR_EL2::VINTID) as u32;
     let intid = IntId::new(raw).map_err(|error| {
         GicV3BackendError::new(
@@ -181,10 +207,43 @@ fn read_list_register(index: usize) -> Result<Option<ListRegisterState>, GicV3Ba
             alloc::format!("LR{index} contains invalid INTID {raw}: {error}"),
         )
     })?;
-    Ok(Some(ListRegisterState::new(
-        intid,
-        Priority::new(value.read(ICH_LR_EL2::PRIORITY) as u8),
-        state,
+    let priority = Priority::new(value.read(ICH_LR_EL2::PRIORITY) as u8);
+    if !value.is_set(ICH_LR_EL2::HW) {
+        if previous.is_some_and(|entry| matches!(entry.backing(), ListRegisterBacking::Physical(_)))
+        {
+            return Err(GicV3BackendError::new(
+                "decode CPU interface list register",
+                alloc::format!("LR{index} lost its physical backing while still valid"),
+            ));
+        }
+        return Ok(Some(ListRegisterState::new(intid, priority, state)));
+    }
+    let previous = previous.ok_or_else(|| {
+        GicV3BackendError::new(
+            "decode CPU interface list register",
+            alloc::format!("LR{index} acquired unexpected physical backing"),
+        )
+    })?;
+    let ListRegisterBacking::Physical(physical) = previous.backing() else {
+        return Err(GicV3BackendError::new(
+            "decode CPU interface list register",
+            alloc::format!("LR{index} acquired unexpected physical backing"),
+        ));
+    };
+    let expected_pintid = super::physical_spi::list_register_intid(physical)?;
+    let actual_pintid = value.read(ICH_LR_EL2::PINTID) as u16;
+    if previous.intid() != intid || expected_pintid != actual_pintid {
+        return Err(GicV3BackendError::new(
+            "decode CPU interface list register",
+            alloc::format!(
+                "LR{index} physical identity changed from guest {:?}/host {expected_pintid} to \
+                 guest {intid:?}/host {actual_pintid}",
+                previous.intid()
+            ),
+        ));
+    }
+    Ok(Some(ListRegisterState::new_physical(
+        intid, priority, state, physical,
     )))
 }
 
@@ -192,4 +251,10 @@ fn instruction_sync_barrier() {
     // SAFETY: `isb` only synchronizes architectural register effects on the
     // current CPU and neither dereferences memory nor changes Rust-visible state.
     unsafe { core::arch::asm!("isb", options(nostack, preserves_flags)) };
+}
+
+fn data_sync_barrier() {
+    // SAFETY: `dsb sy` only orders architectural register and memory effects
+    // on the current CPU and does not access any Rust object.
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
 }

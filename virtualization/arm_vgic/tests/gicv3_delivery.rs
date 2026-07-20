@@ -5,8 +5,8 @@ use std::{
 
 use arm_vgic::{
     CpuInterfaceState, GicAffinity, GicV3Backend, GicV3BackendError, GicV3Config, GicV3Controller,
-    GicV3MmioRegion, GicV3Mode, GicV3VcpuWake, GicVcpuId, IntId, InterruptState, PpiId, SgiId,
-    SgiTarget, SpiId, TriggerMode, VgicError, VgicResult,
+    GicV3HardwareCapabilities, GicV3MmioRegion, GicV3Mode, GicV3VcpuWake, GicVcpuId, IntId,
+    InterruptState, PpiId, SgiId, SgiTarget, SpiId, TriggerMode, VgicError, VgicResult,
 };
 use axvm_types::AccessWidth;
 
@@ -22,6 +22,29 @@ const GICR_PROPBASER: u64 = 0x0070;
 const GICR_PENDBASER: u64 = 0x0078;
 const GICR_SGI_BASE: u64 = 0x1_0000;
 const ICH_HCR_UIE: u64 = 1 << 1;
+
+#[test]
+fn physical_distributor_capabilities_are_not_fabricated_for_the_guest() {
+    let capabilities = GicV3HardwareCapabilities::from_distributor_typer(0x0f).unwrap();
+    let config = GicV3Config::new(
+        GicV3Mode::Passthrough,
+        GicV3MmioRegion::new(0x0800_0000, 0x1_0000).unwrap(),
+        GicV3MmioRegion::new(0x080a_0000, 0x2_0000).unwrap(),
+        0x2_0000,
+        1,
+    )
+    .unwrap()
+    .with_hardware_capabilities(capabilities)
+    .unwrap();
+    let controller = GicV3Controller::new(config, Arc::new(TestBackend::default())).unwrap();
+
+    let typer = controller
+        .read_distributor(GICD_TYPER, AccessWidth::Dword)
+        .unwrap();
+    assert_eq!(typer & (1 << 24), 0, "A3V must follow the physical GIC");
+    assert_eq!(typer & (1 << 26), 0, "RSS must follow the physical GIC");
+    assert_eq!((typer & 0x1f) + 1, 16, "RK3568 exposes 480 SPIs");
+}
 
 #[test]
 fn checked_mmio_rejects_bad_accesses_and_preserves_raz_wi() {

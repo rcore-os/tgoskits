@@ -4,8 +4,8 @@ use alloc::{sync::Arc, vec::Vec};
 
 use super::{ControllerState, GicV3VcpuWake};
 use crate::{
-    CpuInterfaceState, GicAffinity, GicVcpuId, IntId, InterruptState, LpiId, RedistributorState,
-    SgiTarget, SpiId, VgicError, VgicResult,
+    CpuInterfaceState, GicAffinity, GicVcpuId, IntId, InterruptState, LpiId,
+    PhysicalInterruptBinding, RedistributorState, SgiTarget, SpiId, VgicError, VgicResult,
 };
 
 impl ControllerState {
@@ -70,6 +70,35 @@ impl ControllerState {
         let redistributor = self.redistributor_mut(target, "queue SPI")?;
         redistributor.queue(IntId::Spi(spi));
         Ok(Some(redistributor.wake()))
+    }
+
+    pub(super) fn queue_physical_spi(
+        &mut self,
+        spi: SpiId,
+        binding: PhysicalInterruptBinding,
+    ) -> VgicResult<Arc<dyn GicV3VcpuWake>> {
+        if binding.guest() != IntId::Spi(spi) {
+            return Err(VgicError::InvalidConfig {
+                detail: alloc::format!(
+                    "physical binding for {:?} cannot deliver guest SPI {}",
+                    binding.guest(),
+                    spi.raw()
+                ),
+            });
+        }
+        let distributor_enabled = self.distributor.enabled();
+        let interrupt = self.distributor.interrupt_mut(spi)?;
+        if !distributor_enabled || !interrupt.enabled() {
+            return Err(VgicError::InvalidStateTransition {
+                intid: IntId::Spi(spi),
+                operation: "forward physical SPI",
+                detail: "the guest Distributor or SPI input is disabled".into(),
+            });
+        }
+        interrupt.set_pending(true);
+        let redistributor = self.redistributor_mut(binding.target(), "forward physical SPI")?;
+        redistributor.queue_physical(IntId::Spi(spi), binding.host());
+        Ok(redistributor.wake())
     }
 
     pub(super) fn queue_local_if_deliverable(

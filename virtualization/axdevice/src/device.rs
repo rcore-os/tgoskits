@@ -980,6 +980,14 @@ impl AxVmDevices {
 
     // ─── Find helpers ───────────────────────────────────────────────
 
+    /// Returns whether a registered device owns the MMIO address.
+    ///
+    /// Address ownership is independent of access width and direction. Device
+    /// register validation happens only after this routing decision.
+    pub fn owns_mmio_address(&self, address: GuestPhysAddr) -> bool {
+        self.lookup_mmio(address.as_usize() as u64).is_some()
+    }
+
     /// Find specific MMIO device by ipa.
     /// Returns a reference to the underlying adapter which can be downcast
     /// via `as_any()`.

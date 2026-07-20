@@ -223,6 +223,12 @@ impl PlannedHostDevice {
         self.descriptor.compatibles()
     }
 
+    pub(super) fn requires_claim(&self) -> bool {
+        self.disposition == DeviceDisposition::Passthrough
+            || (self.disposition == DeviceDisposition::Structural
+                && self.descriptor.has_physical_resources())
+    }
+
     pub(super) const fn set_disposition(&mut self, disposition: DeviceDisposition) {
         self.disposition = disposition;
     }

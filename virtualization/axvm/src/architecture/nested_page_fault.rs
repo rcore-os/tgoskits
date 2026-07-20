@@ -5,15 +5,36 @@ use axvm_types::{GuestPhysAddr, MappingFlags};
 
 use crate::vm::AxVMResources;
 
-pub(crate) fn handle(vm: &crate::AxVM, addr: GuestPhysAddr, access_flags: MappingFlags) -> bool {
+/// Result of resolving a nested page fault against the VM address space.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NestedPageFaultResolution {
+    /// A lazy mapping was installed and the guest instruction can be retried.
+    Resolved,
+    /// The VM owns the address, but the fault could not be resolved.
+    OwnedButUnresolved { mapping_flags: MappingFlags },
+    /// No stage-2 mapping area owns the fault address.
+    Unassigned,
+}
+
+pub(crate) fn resolve(
+    vm: &crate::AxVM,
+    addr: GuestPhysAddr,
+    access_flags: MappingFlags,
+) -> crate::AxVmResult<NestedPageFaultResolution> {
     vm.with_resources_mut(|resources| {
+        let mapping_flags = resources.address_space.mapping_flags_at(addr);
         let handled = resources
             .address_space
             .handle_page_fault(addr, access_flags);
         log_fault(vm.id(), resources, addr, access_flags, handled);
-        Ok(handled)
+        Ok(if handled {
+            NestedPageFaultResolution::Resolved
+        } else if let Some(mapping_flags) = mapping_flags {
+            NestedPageFaultResolution::OwnedButUnresolved { mapping_flags }
+        } else {
+            NestedPageFaultResolution::Unassigned
+        })
     })
-    .unwrap_or(false)
 }
 
 fn log_fault(
@@ -36,7 +57,7 @@ fn log_page_table_query(
     handled: bool,
 ) {
     let root = resources.address_space.page_table_root();
-    match resources.address_space.page_table().query(addr) {
+    match NestedPageTableOps::query(resources.address_space.page_table(), addr) {
         Ok((hpa, flags, size)) if handled => debug!(
             "VM[{}] stage2 query hit: gpa={:#x} -> hpa={:#x}, access={:?}, pte_flags={:?}, \
              page_size={:?}, root={:#x}",

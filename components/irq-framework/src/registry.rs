@@ -238,6 +238,10 @@ impl<O: IrqOps> Registry<O> {
                     outcome.handled = true;
                     outcome.wake = true;
                 }
+                IrqReturn::Forwarded => {
+                    outcome.handled = true;
+                    outcome.defer_deactivation = true;
+                }
             }
         }
 

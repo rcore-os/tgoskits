@@ -1,6 +1,6 @@
 //! Validated per-VM GICv3 configuration.
 
-use crate::{LPI_INTID_BASE, LPI_INTID_MAX, PrivateInterruptMask, VgicError, VgicResult};
+use crate::{LPI_INTID_BASE, LPI_INTID_MAX, VgicError, VgicResult};
 
 /// GICv3 implementation mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -15,6 +15,8 @@ pub enum GicV3Mode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GicV3HardwareCapabilities {
     spi_count: usize,
+    affinity_level_3: bool,
+    range_selector: bool,
 }
 
 impl GicV3HardwareCapabilities {
@@ -28,12 +30,26 @@ impl GicV3HardwareCapabilities {
             .ok_or_else(|| VgicError::InvalidConfig {
                 detail: alloc::format!("GICD_TYPER {typer:#x} exposes no SPIs"),
             })?;
-        Ok(Self { spi_count })
+        Ok(Self {
+            spi_count,
+            affinity_level_3: typer & (1 << 24) != 0,
+            range_selector: typer & (1 << 26) != 0,
+        })
     }
 
     /// Returns the number of implemented SPIs.
     pub const fn spi_count(self) -> usize {
         self.spi_count
+    }
+
+    /// Returns whether affinity level 3 is implemented for SPI routing.
+    pub const fn affinity_level_3(self) -> bool {
+        self.affinity_level_3
+    }
+
+    /// Returns whether SGI range selection is implemented.
+    pub const fn range_selector(self) -> bool {
+        self.range_selector
     }
 }
 
@@ -91,10 +107,11 @@ pub struct GicV3Config {
     vcpu_count: usize,
     its: Option<GicV3MmioRegion>,
     spi_count: usize,
+    affinity_level_3: bool,
+    range_selector: bool,
     lpi_limit: u32,
     list_register_count: usize,
     its_command_budget: usize,
-    passthrough_private_interrupts: PrivateInterruptMask,
 }
 
 impl GicV3Config {
@@ -114,10 +131,11 @@ impl GicV3Config {
             vcpu_count,
             its: None,
             spi_count: 988,
+            affinity_level_3: true,
+            range_selector: true,
             lpi_limit: LPI_INTID_MAX,
             list_register_count: 16,
             its_command_budget: 256,
-            passthrough_private_interrupts: PrivateInterruptMask::SGIS,
         };
         config.validate()?;
         Ok(config)
@@ -133,6 +151,18 @@ impl GicV3Config {
     /// Sets the implemented SPI count.
     pub fn with_spi_count(mut self, spi_count: usize) -> VgicResult<Self> {
         self.spi_count = spi_count;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Applies guest-visible capabilities obtained from an assigned physical GIC.
+    pub fn with_hardware_capabilities(
+        mut self,
+        capabilities: GicV3HardwareCapabilities,
+    ) -> VgicResult<Self> {
+        self.spi_count = capabilities.spi_count();
+        self.affinity_level_3 = capabilities.affinity_level_3();
+        self.range_selector = capabilities.range_selector();
         self.validate()?;
         Ok(self)
     }
@@ -154,24 +184,6 @@ impl GicV3Config {
     /// Sets the maximum ITS commands processed by one CWRITER update.
     pub fn with_its_command_budget(mut self, budget: usize) -> VgicResult<Self> {
         self.its_command_budget = budget;
-        self.validate()?;
-        Ok(self)
-    }
-
-    /// Selects private interrupts that are context-switched for a passthrough guest.
-    ///
-    /// SGIs are always included because guest SGI delivery is trapped and
-    /// multiplexed independently of the host's use of the same INTIDs.
-    pub fn with_passthrough_private_interrupts(
-        mut self,
-        interrupts: PrivateInterruptMask,
-    ) -> VgicResult<Self> {
-        if self.mode != GicV3Mode::Passthrough {
-            return Err(VgicError::InvalidConfig {
-                detail: "private physical interrupt ownership requires passthrough mode".into(),
-            });
-        }
-        self.passthrough_private_interrupts = interrupts.union(PrivateInterruptMask::SGIS);
         self.validate()?;
         Ok(self)
     }
@@ -211,6 +223,16 @@ impl GicV3Config {
         self.spi_count
     }
 
+    /// Returns whether affinity level 3 is exposed to the guest.
+    pub const fn affinity_level_3(&self) -> bool {
+        self.affinity_level_3
+    }
+
+    /// Returns whether SGI range selection is exposed to the guest.
+    pub const fn range_selector(&self) -> bool {
+        self.range_selector
+    }
+
     /// Returns the exclusive upper bound of implemented SPI INTIDs.
     pub const fn spi_limit(&self) -> u32 {
         32 + self.spi_count as u32
@@ -231,12 +253,13 @@ impl GicV3Config {
         self.its_command_budget
     }
 
-    /// Returns the guest-visible private interrupt set.
-    pub const fn guest_private_interrupts(&self) -> PrivateInterruptMask {
-        match self.mode {
-            GicV3Mode::Emulated => PrivateInterruptMask::ALL,
-            GicV3Mode::Passthrough => self.passthrough_private_interrupts,
-        }
+    /// Returns the guest-visible SGI/PPI mask.
+    ///
+    /// Private interrupts are always VM-local. Direct delivery applies only to
+    /// explicitly bound physical SPIs, so no host Redistributor state is ever
+    /// exposed through this mask.
+    pub(crate) const fn guest_private_interrupt_mask(&self) -> u32 {
+        u32::MAX
     }
 
     pub(crate) const fn exposes_guest_lpis(&self) -> bool {

@@ -55,6 +55,19 @@ pub enum MachinePlanError {
         /// Parser or representability detail.
         detail: String,
     },
+    /// Trusted assignment authority contradicted firmware ownership policy.
+    #[error(
+        "host device '{device}' with ownership {ownership:?} cannot use assignment authority \
+         {assignment:?}"
+    )]
+    InvalidHostDeviceAssignment {
+        /// Stable host device identity.
+        device: String,
+        /// Ownership classification derived from normalized platform data.
+        ownership: super::HostDeviceOwnership,
+        /// Trusted authority requested by the platform adapter.
+        assignment: super::HostDeviceAssignment,
+    },
     /// A finalized guest firmware description could not be encoded.
     #[error("failed to encode guest firmware: {detail}")]
     FirmwareEncoding {

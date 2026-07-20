@@ -1,7 +1,7 @@
 //! vCPU CPU-interface lifecycle binding.
 
 use super::GicV3Controller;
-use crate::{CpuInterfaceState, GicV3Mode, GicVcpuId, VgicResult, backend_result};
+use crate::{CpuInterfaceState, GicVcpuId, VgicError, VgicResult, backend_result};
 
 /// Per-vCPU lifecycle handle returned by [`GicV3Controller::attach_vcpu`].
 #[must_use = "dropping the binding detaches the vCPU from its Redistributor"]
@@ -22,20 +22,9 @@ impl core::fmt::Debug for GicV3VcpuBinding {
 
 impl Drop for GicV3VcpuBinding {
     fn drop(&mut self) {
-        if self.uses_direct_physical_delivery()
-            && let Err(error) = self.controller.deactivate_physical_interrupts(self.vcpu)
-        {
-            log::warn!(
-                "failed to deactivate physical interrupts while detaching vCPU {}: {error}",
-                self.vcpu.raw()
-            );
-        }
-        self.controller
-            .inner
-            .state
-            .lock()
-            .redistributors
-            .remove(&self.vcpu);
+        let mut state = self.controller.inner.state.lock();
+        state.active_vcpus.remove(&self.vcpu);
+        state.redistributors.remove(&self.vcpu);
     }
 }
 
@@ -51,43 +40,64 @@ impl GicV3VcpuBinding {
 
     /// Restores ICH state and refills empty LRs.
     pub fn load(&self) -> VgicResult {
-        if self.uses_direct_physical_delivery() {
-            return self.controller.activate_physical_interrupts(self.vcpu);
-        }
         let state = {
             let mut controller = self.controller.inner.state.lock();
-            controller.refill_cpu_interface(self.vcpu)?
+            controller.redistributor(self.vcpu, "load CPU interface")?;
+            if !controller.active_vcpus.insert(self.vcpu) {
+                return Err(VgicError::ResourceConflict {
+                    resource: "vCPU interrupt binding",
+                    detail: alloc::format!("vCPU {} is already loaded", self.vcpu.raw()),
+                });
+            }
+            match controller.refill_cpu_interface(self.vcpu) {
+                Ok(state) => state,
+                Err(error) => {
+                    controller.active_vcpus.remove(&self.vcpu);
+                    return Err(error);
+                }
+            }
         };
-        backend_result(
+        if let Err(error) = backend_result(
             self.controller
                 .inner
                 .backend
                 .load_cpu_interface(self.vcpu, &state),
-        )
+        ) {
+            self.controller
+                .inner
+                .state
+                .lock()
+                .active_vcpus
+                .remove(&self.vcpu);
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Saves ICH state after guest execution.
     pub fn save(&self) -> VgicResult {
-        if self.uses_direct_physical_delivery() {
-            return self.controller.deactivate_physical_interrupts(self.vcpu);
-        }
         let mut saved = self.cpu_interface_snapshot()?;
-        backend_result(
+        let save_result = backend_result(
             self.controller
                 .inner
                 .backend
                 .save_cpu_interface(self.vcpu, &mut saved),
-        )?;
-        self.merge_saved_state(saved, false)
+        );
+        let merge_result = match save_result {
+            Ok(()) => self.merge_saved_state(saved, false),
+            Err(error) => Err(error),
+        };
+        self.controller
+            .inner
+            .state
+            .lock()
+            .active_vcpus
+            .remove(&self.vcpu);
+        merge_result
     }
 
     /// Harvests completed LRs, refills software pending work, and reloads ICH state.
     pub fn synchronize(&self) -> VgicResult {
-        if self.uses_direct_physical_delivery() {
-            return self
-                .controller
-                .synchronize_physical_private_interrupts(self.vcpu);
-        }
         let mut saved = self.cpu_interface_snapshot()?;
         backend_result(
             self.controller
@@ -140,9 +150,5 @@ impl GicV3VcpuBinding {
             Some(error) => backend_result(Err(error)),
             None => Ok(()),
         }
-    }
-
-    fn uses_direct_physical_delivery(&self) -> bool {
-        self.controller.inner.config.mode() == GicV3Mode::Passthrough
     }
 }

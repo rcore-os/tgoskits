@@ -18,9 +18,8 @@ use core::mem::size_of;
 
 use arm_vcpu::{
     ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
-    Aarch64PerCpu, Aarch64VCpu, ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps,
-    ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu, ArmVcpuError, ArmVcpuResult,
-    ArmVmExit, TrapFrame,
+    Aarch64PerCpu, Aarch64VCpu, ArmDataAbort, ArmHostOps, ArmNestedPagingConfig, ArmPerCpu,
+    ArmSysRegAddr, ArmVcpu, ArmVcpuError, ArmVcpuResult, ArmVmExit, TrapFrame,
 };
 
 struct DummyHost;
@@ -57,24 +56,10 @@ fn nested_paging_config_uses_os_neutral_integer_values() {
 
 #[test]
 fn vm_exit_types_are_defined_by_arm_vcpu_core() {
-    let exit = ArmVmExit::MmioRead {
-        addr: ArmGuestPhysAddr::from_usize(0x2000),
-        width: ArmAccessWidth::Dword,
-        reg: 3,
-        reg_width: ArmAccessWidth::Qword,
-        signed_ext: false,
+    let _extract_data_abort: fn(ArmVmExit) -> Option<ArmDataAbort> = |exit| match exit {
+        ArmVmExit::DataAbort { abort } => Some(abort),
+        _ => None,
     };
-
-    match exit {
-        ArmVmExit::MmioRead {
-            addr, width, reg, ..
-        } => {
-            assert_eq!(addr.as_usize(), 0x2000);
-            assert_eq!(width.size(), 4);
-            assert_eq!(reg, 3);
-        }
-        other => panic!("unexpected exit: {other:?}"),
-    }
 
     let exit = ArmVmExit::SysRegRead {
         addr: ArmSysRegAddr::new(0x3a_3016),

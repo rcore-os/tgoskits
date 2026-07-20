@@ -101,10 +101,11 @@ pub(crate) trait ArchOps {
 
                         let exit = vcpu.run()?;
                         trace!("{exit:#x?}");
-                        // Port/MMIO writes and EOIs can change controller state. Apply those exit
-                        // side effects before making queued controller inputs deliverable.
-                        let action = Self::handle_vcpu_exit_bound(vm, vcpu, exit)?;
+                        // Fold hardware LR transitions before a trapped GIC access can observe or
+                        // modify pending/active state. The next loop iteration synchronizes again
+                        // after applying exit side effects and queued controller inputs.
                         interrupt_topology.synchronize_vcpu(interrupt_vcpu)?;
+                        let action = Self::handle_vcpu_exit_bound(vm, vcpu, exit)?;
                         match action {
                             BoundVcpuExit::Continue => continue,
                             action => break Ok(action),

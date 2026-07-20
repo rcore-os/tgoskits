@@ -20,6 +20,7 @@
 extern crate log;
 
 mod context_frame;
+mod data_abort;
 #[macro_use]
 mod exception_utils;
 mod exception;
@@ -31,11 +32,15 @@ mod types;
 mod vcpu;
 
 pub use self::{
+    data_abort::{
+        ArmDataAbort, ArmDataAbortSyndrome, ArmDataAccess, ArmDataAccessResult, ArmDataFault,
+        ArmFaultIpa, ArmGpr, ArmLoadExtension,
+    },
     host::ArmHostOps,
     pcpu::ArmPerCpu,
     types::{
-        ArmAccessWidth, ArmGuestPhysAddr, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError,
-        ArmVcpuResult, ArmVmExit,
+        ArmAccessWidth, ArmGuestPhysAddr, ArmGuestVirtAddr, ArmNestedPagingConfig, ArmSysRegAddr,
+        ArmVcpuError, ArmVcpuResult, ArmVmExit,
     },
     vcpu::{
         ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,

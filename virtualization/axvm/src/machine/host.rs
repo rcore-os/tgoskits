@@ -1,6 +1,9 @@
 //! Normalized host-platform devices and ownership.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use axdevice_base::ControllerInputId;
 use axvm_types::InterruptTriggerMode;
@@ -20,6 +23,34 @@ pub enum HostDeviceOwnership {
     Structural,
     /// The device cannot be represented or isolated safely.
     Unrepresentable,
+}
+
+/// Trusted authority that permits physical resources to enter a VM plan.
+///
+/// Firmware describes hardware, but does not prove that the host has stopped
+/// using it. Assignment authority therefore comes from a live platform
+/// capability or from a static partition description, never from FDT/ACPI
+/// classification alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostDeviceAssignment {
+    /// The device belongs to a static partition and has no live host state to
+    /// suspend before assignment.
+    StaticPartition,
+    /// A live host capability can suspend the device and restore its complete
+    /// state when the VM lease is dropped.
+    ReversibleTransfer,
+}
+
+impl HostDeviceAssignment {
+    const fn accepts(self, ownership: HostDeviceOwnership) -> bool {
+        matches!(
+            (self, ownership),
+            (
+                Self::StaticPartition,
+                HostDeviceOwnership::Assignable | HostDeviceOwnership::Structural
+            ) | (Self::ReversibleTransfer, HostDeviceOwnership::Transferable)
+        )
+    }
 }
 
 /// How assigning a host device affects its source firmware activation state.
@@ -290,6 +321,7 @@ impl HostDeviceSelector {
 pub struct HostDeviceDescriptor {
     id: HostDeviceId,
     ownership: HostDeviceOwnership,
+    assignment: Option<HostDeviceAssignment>,
     firmware_activation: HostFirmwareActivation,
     compatibles: Vec<String>,
     mmio: Vec<AddressRange>,
@@ -299,11 +331,22 @@ pub struct HostDeviceDescriptor {
 }
 
 impl HostDeviceDescriptor {
-    /// Creates a host device descriptor with no resources.
+    /// Creates a descriptor supplied by trusted programmatic platform data.
+    ///
+    /// `Assignable` devices receive static-partition authority and
+    /// `Transferable` devices receive reversible-transfer authority. Firmware
+    /// parsers use a private descriptive constructor so parsing a node never
+    /// grants assignment implicitly.
     pub fn new(id: HostDeviceId, ownership: HostDeviceOwnership) -> Self {
+        let assignment = match ownership {
+            HostDeviceOwnership::Assignable => Some(HostDeviceAssignment::StaticPartition),
+            HostDeviceOwnership::Transferable => Some(HostDeviceAssignment::ReversibleTransfer),
+            _ => None,
+        };
         Self {
             id,
             ownership,
+            assignment,
             firmware_activation: HostFirmwareActivation::Enable,
             compatibles: Vec::new(),
             mmio: Vec::new(),
@@ -311,6 +354,23 @@ impl HostDeviceDescriptor {
             interrupts: Vec::new(),
             dependencies: Vec::new(),
         }
+    }
+
+    pub(crate) fn described(id: HostDeviceId, ownership: HostDeviceOwnership) -> Self {
+        let mut descriptor = Self::new(id, ownership);
+        descriptor.assignment = None;
+        descriptor
+    }
+
+    /// Attaches trusted assignment authority to a descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the authority contradicts the descriptor's
+    /// ownership classification.
+    pub fn with_assignment(mut self, assignment: HostDeviceAssignment) -> MachinePlanResult<Self> {
+        self.set_assignment(assignment)?;
+        Ok(self)
     }
 
     /// Selects how guest firmware materialization treats the source status.
@@ -359,6 +419,17 @@ impl HostDeviceDescriptor {
         self.ownership
     }
 
+    /// Returns the trusted authority permitting physical assignment.
+    pub const fn assignment(&self) -> Option<HostDeviceAssignment> {
+        self.assignment
+    }
+
+    /// Returns whether this descriptor owns a physical resource that must be
+    /// mapped, routed, or leased before guest use.
+    pub fn has_physical_resources(&self) -> bool {
+        !self.mmio.is_empty() || !self.pio.is_empty() || !self.interrupts.is_empty()
+    }
+
     /// Returns how guest firmware materialization treats the source status.
     pub const fn firmware_activation(&self) -> HostFirmwareActivation {
         self.firmware_activation
@@ -391,6 +462,18 @@ impl HostDeviceDescriptor {
 
     pub(crate) fn set_ownership(&mut self, ownership: HostDeviceOwnership) {
         self.ownership = ownership;
+    }
+
+    fn set_assignment(&mut self, assignment: HostDeviceAssignment) -> MachinePlanResult<()> {
+        if !assignment.accepts(self.ownership) {
+            return Err(super::MachinePlanError::InvalidHostDeviceAssignment {
+                device: self.id.to_string(),
+                ownership: self.ownership,
+                assignment,
+            });
+        }
+        self.assignment = Some(assignment);
+        Ok(())
     }
 }
 
@@ -529,7 +612,53 @@ impl HostPlatformSnapshot {
             });
         }
         descriptor.set_ownership(HostDeviceOwnership::Transferable);
+        descriptor.set_assignment(HostDeviceAssignment::ReversibleTransfer)?;
         self.console_device = Some(device);
+        Ok(())
+    }
+
+    /// Grants one firmware-described device trusted physical-assignment
+    /// authority.
+    ///
+    /// This method is intended for architecture adapters after they have
+    /// matched the descriptor to a live ownership capability or a static
+    /// partition manifest.
+    pub fn grant_device_assignment(
+        &mut self,
+        device: &HostDeviceId,
+        assignment: HostDeviceAssignment,
+    ) -> MachinePlanResult<()> {
+        let descriptor = self
+            .devices
+            .iter_mut()
+            .find(|candidate| candidate.id() == device)
+            .ok_or_else(|| super::MachinePlanError::InvalidFirmware {
+                detail: alloc::format!(
+                    "host assignment authority refers to absent device '{device}'"
+                ),
+            })?;
+        descriptor.set_assignment(assignment)
+    }
+
+    /// Grants all otherwise assignable resources to a trusted whole-machine
+    /// partition.
+    ///
+    /// Architecture adapters use this only when their platform contract gives
+    /// the VM the board's remaining hardware wholesale. Host-exclusive and
+    /// unrepresentable resources stay protected. Transferable devices still
+    /// require a reversible lease at VM construction time.
+    pub fn grant_whole_machine_assignment(&mut self) -> MachinePlanResult<()> {
+        for descriptor in &mut self.devices {
+            let assignment = match descriptor.ownership() {
+                HostDeviceOwnership::Assignable => HostDeviceAssignment::StaticPartition,
+                HostDeviceOwnership::Transferable => HostDeviceAssignment::ReversibleTransfer,
+                HostDeviceOwnership::Structural if descriptor.has_physical_resources() => {
+                    HostDeviceAssignment::StaticPartition
+                }
+                _ => continue,
+            };
+            descriptor.set_assignment(assignment)?;
+        }
         Ok(())
     }
 

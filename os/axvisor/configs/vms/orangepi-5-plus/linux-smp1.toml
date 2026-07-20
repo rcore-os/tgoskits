@@ -18,7 +18,7 @@ kernel_path = "/guest/linux/orangepi-5-plus"
 dtb_load_addr = 0x240000000
 ramdisk_path = "/guest/linux/initramfs.cpio"
 ramdisk_load_addr = 0xc0000000
-cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 console=tty1 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M"
+cmdline = "root=/dev/mmcblk0p2 rw console=ttyS2,1500000 earlycon=uart8250,mmio32,0xfeb50000 cpuidle.off=1 rodata=off rootwait rootfstype=ext4 ignore_loglevel loglevel=8 cma=128M"
 
 [[memory.regions]]
 guest_base = 0xb0000000

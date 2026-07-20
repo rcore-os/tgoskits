@@ -1,7 +1,5 @@
 //! Architecture-neutral vCPU contexts and normalized runtime actions.
 
-use axvm_types::{AccessWidth, GuestPhysAddr};
-
 use crate::StopReason;
 
 /// Scheduler effects selected after an architecture-local vCPU exit.
@@ -64,22 +62,6 @@ pub(crate) enum BoundVcpuExit<D> {
     Complete(VcpuRunAction),
     /// Finish architecture-local work after unbinding the vCPU.
     Defer(D),
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct MmioReadExit {
-    pub(crate) addr: GuestPhysAddr,
-    pub(crate) width: AccessWidth,
-    pub(crate) reg: usize,
-    pub(crate) reg_width: AccessWidth,
-    pub(crate) signed_ext: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct MmioWriteExit {
-    pub(crate) addr: GuestPhysAddr,
-    pub(crate) width: AccessWidth,
-    pub(crate) data: u64,
 }
 
 #[derive(Clone, Copy, Debug)]

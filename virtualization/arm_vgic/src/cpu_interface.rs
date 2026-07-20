@@ -2,7 +2,16 @@
 
 use alloc::vec;
 
-use crate::{IntId, InterruptState, Priority};
+use crate::{IntId, InterruptState, PhysicalIrqId, Priority};
+
+/// Source backing used for one virtual list-register delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ListRegisterBacking {
+    /// The hypervisor owns the complete virtual interrupt lifecycle.
+    Software,
+    /// The physical GIC owns pending/active state and the LR names its source.
+    Physical(PhysicalIrqId),
+}
 
 /// One virtual interrupt represented in an ICH list register.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -10,6 +19,7 @@ pub struct ListRegisterState {
     intid: IntId,
     priority: Priority,
     state: InterruptState,
+    backing: ListRegisterBacking,
 }
 
 impl ListRegisterState {
@@ -19,6 +29,22 @@ impl ListRegisterState {
             intid,
             priority,
             state,
+            backing: ListRegisterBacking::Software,
+        }
+    }
+
+    /// Creates an entry backed by one ownership-checked physical interrupt.
+    pub const fn new_physical(
+        intid: IntId,
+        priority: Priority,
+        state: InterruptState,
+        physical: PhysicalIrqId,
+    ) -> Self {
+        Self {
+            intid,
+            priority,
+            state,
+            backing: ListRegisterBacking::Physical(physical),
         }
     }
 
@@ -35,6 +61,11 @@ impl ListRegisterState {
     /// Returns the saved delivery state.
     pub const fn state(self) -> InterruptState {
         self.state
+    }
+
+    /// Returns whether delivery state is software-owned or physical-GIC-backed.
+    pub const fn backing(self) -> ListRegisterBacking {
+        self.backing
     }
 
     /// Updates the saved delivery state.

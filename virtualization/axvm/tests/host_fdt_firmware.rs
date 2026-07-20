@@ -13,7 +13,7 @@ use fdt_raw::RegInfo;
 #[test]
 fn host_fdt_is_filtered_and_rebuilt_from_the_machine_plan() {
     let host = host_fdt();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
         .with_memory(GuestMemoryRegion::new(
             AddressRange::new(0x8000_0000, 0x2000_0000).unwrap(),
@@ -25,7 +25,6 @@ fn host_fdt_is_filtered_and_rebuilt_from_the_machine_plan() {
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
         .unwrap();
-
     let guest = generate_host_fdt(
         &plan,
         &snapshot,
@@ -70,8 +69,7 @@ fn live_authorized_passthrough_console_preserves_source_fdt_activation() {
         .set_property(string_property("status", "disabled"));
     let host = host.encode().as_ref().to_vec();
 
-    let mut snapshot =
-        HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let mut snapshot = whole_machine_snapshot(&host);
     snapshot
         .grant_console_transfer(
             HostConsoleLocation::MmioBase(0x0900_0000),
@@ -102,9 +100,101 @@ fn live_authorized_passthrough_console_preserves_source_fdt_activation() {
 }
 
 #[test]
+fn rockchip_fiq_console_is_normalized_to_an_owned_uart() {
+    let host = host_fdt_with_rockchip_fiq_debugger_console();
+    let mut snapshot = whole_machine_snapshot(&host);
+    let uart = HostDeviceId::new("/soc/serial@9000000").unwrap();
+    snapshot
+        .grant_console_transfer(
+            HostConsoleLocation::Device(uart.clone()),
+            HostConsoleEvidence::LivePlatform,
+        )
+        .unwrap();
+
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_interrupt_delivery(InterruptDelivery::Direct);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    assert_eq!(
+        plan.host_devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/fiq-debugger")
+            .unwrap()
+            .disposition(),
+        DeviceDisposition::HostExclusive
+    );
+    assert_eq!(
+        plan.assigned_host_interrupts()
+            .iter()
+            .map(|interrupt| interrupt.input_u32())
+            .collect::<Vec<_>>(),
+        vec![33]
+    );
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    assert!(guest.get_by_path_id("/fiq-debugger").is_none());
+    let uart = guest.get_by_path("/soc/serial@9000000").unwrap().as_node();
+    assert_eq!(
+        uart.get_property("status").and_then(Property::as_str),
+        Some("okay")
+    );
+    let chosen = guest.get_by_path("/chosen").unwrap().as_node();
+    let bootargs = chosen
+        .get_property("bootargs")
+        .and_then(Property::as_str)
+        .unwrap();
+    assert!(bootargs.contains("console=ttyS2,1500000"));
+    assert!(!bootargs.contains("ttyFIQ"));
+    assert_eq!(
+        chosen
+            .get_property("stdout-path")
+            .and_then(Property::as_str),
+        Some("serial2:1500000n8")
+    );
+}
+
+#[test]
+fn protected_rockchip_console_is_replaced_by_the_virtual_uart() {
+    let host = host_fdt_with_rockchip_fiq_debugger_console();
+    let snapshot = whole_machine_snapshot(&host);
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_virtual_device(pl011().with_source(VirtualDeviceSource::Allocate));
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+    let console_base = plan.virtual_devices()[0].mmio()[0].range().base();
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    assert!(guest.get_by_path_id("/fiq-debugger").is_none());
+    assert!(guest.get_by_path_id("/soc/serial@9000000").is_none());
+    assert!(
+        guest
+            .get_by_path_id(&format!("/serial@{console_base:x}"))
+            .is_some()
+    );
+
+    let chosen = guest.get_by_path("/chosen").unwrap().as_node();
+    let bootargs = chosen
+        .get_property("bootargs")
+        .and_then(Property::as_str)
+        .unwrap();
+    assert_eq!(bootargs, "earlycon rootwait");
+    assert_eq!(
+        chosen
+            .get_property("stdout-path")
+            .and_then(Property::as_str),
+        Some("serial0:115200n8")
+    );
+}
+
+#[test]
 fn passthrough_pcie_retains_its_embedded_legacy_interrupt_controller() {
     let host = host_fdt_with_pcie_legacy_interrupt_controller();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
@@ -124,7 +214,7 @@ fn passthrough_pcie_retains_its_embedded_legacy_interrupt_controller() {
 #[test]
 fn passthrough_retains_a_memory_mapped_interrupt_controller_cascade() {
     let host = host_fdt_with_gpio_interrupt_controller();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
@@ -156,7 +246,7 @@ fn passthrough_retains_a_memory_mapped_interrupt_controller_cascade() {
 #[test]
 fn direct_interrupt_passthrough_hides_the_unisolated_physical_its() {
     let host = host_fdt_with_physical_its();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
         .with_interrupt_delivery(InterruptDelivery::Direct);
     let plan = VmMachinePlanner::new(aarch64_profile())
@@ -185,7 +275,7 @@ fn direct_interrupt_passthrough_hides_the_unisolated_physical_its() {
 #[test]
 fn direct_interrupt_passthrough_filters_devices_requiring_the_physical_its() {
     let host = host_fdt_with_pcie_using_physical_its();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
         .with_interrupt_delivery(InterruptDelivery::Direct);
     let plan = VmMachinePlanner::new(aarch64_profile())
@@ -208,7 +298,7 @@ fn direct_interrupt_passthrough_filters_devices_requiring_the_physical_its() {
 #[test]
 fn host_cpu_selection_uses_the_hardware_affinity_from_reg() {
     let host = host_fdt_with_non_identity_cpu_unit_addresses();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
@@ -225,8 +315,7 @@ fn host_cpu_selection_uses_the_hardware_affinity_from_reg() {
 fn host_psci_conduit_is_preserved_for_platform_compatibility() {
     for method in ["smc", "hvc"] {
         let host = host_fdt_with_psci(method);
-        let snapshot =
-            HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+        let snapshot = whole_machine_snapshot(&host);
         let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
         let plan = VmMachinePlanner::new(aarch64_profile())
             .plan(&request, &snapshot)
@@ -243,7 +332,7 @@ fn host_psci_conduit_is_preserved_for_platform_compatibility() {
 #[test]
 fn mixed_interrupt_contexts_keep_only_assigned_cpu_providers() {
     let host = host_fdt_with_mixed_cpu_interrupt_contexts();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
@@ -270,7 +359,7 @@ fn mixed_interrupt_contexts_keep_only_assigned_cpu_providers() {
 #[test]
 fn dynamic_pl011_uses_gic_cells_fixed_clock_and_console_alias() {
     let host = host_fdt();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
         .with_memory(GuestMemoryRegion::new(
             AddressRange::new(0x8000_0000, 0x2000_0000).unwrap(),
@@ -327,7 +416,7 @@ fn dynamic_pl011_uses_gic_cells_fixed_clock_and_console_alias() {
 #[test]
 fn host_template_rejects_an_irq_trigger_incompatible_with_the_model() {
     let host = host_fdt_with_uart_interrupt_flags(1);
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
         .with_virtual_device(pl011());
 
@@ -341,7 +430,7 @@ fn host_template_rejects_an_irq_trigger_incompatible_with_the_model() {
 #[test]
 fn virtual_uart_template_does_not_expose_host_dma_iommu_or_msi_capabilities() {
     let host = host_fdt_with_virtual_uart_host_capabilities();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
         .with_virtual_device(pl011());
     let plan = VmMachinePlanner::new(aarch64_profile())
@@ -369,7 +458,7 @@ fn virtual_uart_template_does_not_expose_host_dma_iommu_or_msi_capabilities() {
 #[test]
 fn required_host_dependency_is_rejected_during_machine_planning() {
     let host = host_fdt_with_host_exclusive_dependency();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
         .with_memory(GuestMemoryRegion::new(
             AddressRange::new(0x8000_0000, 0x2000_0000).unwrap(),
@@ -408,7 +497,7 @@ fn required_host_dependency_is_rejected_during_machine_planning() {
 #[test]
 fn optional_host_dependency_is_removed_without_exposing_its_provider() {
     let host = host_fdt_with_optional_host_exclusive_dependency();
-    let snapshot = HostPlatformSnapshot::from_fdt(7, &host, FdtInterruptEncoding::ArmGic).unwrap();
+    let snapshot = whole_machine_snapshot(&host);
     let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
     let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &snapshot)
@@ -441,6 +530,13 @@ fn pl011() -> VirtualDeviceDescriptor {
         requirements,
     )
     .with_compatible("arm,pl011")
+}
+
+fn whole_machine_snapshot(host: &[u8]) -> HostPlatformSnapshot {
+    let mut snapshot =
+        HostPlatformSnapshot::from_fdt(7, host, FdtInterruptEncoding::ArmGic).unwrap();
+    snapshot.grant_whole_machine_assignment().unwrap();
+    snapshot
 }
 
 fn aarch64_profile() -> MachineProfile {
@@ -556,6 +652,38 @@ fn host_fdt_with_uart_interrupt_flags(interrupt_flags: u32) -> Vec<u8> {
     fdt.view_typed_mut(denied)
         .unwrap()
         .set_regs(&[RegInfo::new(0x0a00_0000, Some(0x1000))]);
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_rockchip_fiq_debugger_console() -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let root = fdt.root_id();
+    let aliases = fdt.add_node(root, Node::new("aliases"));
+    fdt.node_mut(aliases)
+        .unwrap()
+        .set_property(string_property("serial2", "/soc/serial@9000000"));
+    let chosen = fdt.get_by_path_id("/chosen").unwrap();
+    fdt.node_mut(chosen).unwrap().set_property(string_property(
+        "bootargs",
+        "earlycon=uart8250,mmio32,0x9000000 console=ttyFIQ0 rootwait",
+    ));
+    let uart = fdt.get_by_path_id("/soc/serial@9000000").unwrap();
+    let uart = fdt.node_mut(uart).unwrap();
+    uart.set_property(string_property(
+        "compatible",
+        "rockchip,rk3568-uart\0snps,dw-apb-uart",
+    ));
+    uart.set_property(string_property("status", "disabled"));
+
+    let fiq = fdt.add_node(root, Node::new("fiq-debugger"));
+    let fiq = fdt.node_mut(fiq).unwrap();
+    fiq.set_property(string_property("compatible", "rockchip,fiq-debugger"));
+    fiq.set_property(u32_property("rockchip,serial-id", &[2]));
+    fiq.set_property(u32_property("rockchip,baudrate", &[1_500_000]));
+    fiq.set_property(u32_property("interrupts", &[0, 252, 8]));
+    fiq.set_property(string_property("status", "okay"));
+
     fdt.encode().as_ref().to_vec()
 }
 

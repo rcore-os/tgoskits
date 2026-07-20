@@ -68,7 +68,7 @@ impl IrqIf for IrqIfImpl {
     /// Handles the IRQ.
     fn handle(vector: TrapVector) -> Option<IrqId> {
         let irq = {
-            let active = somehal::irq::begin_irq(vector.0)?;
+            let mut active = somehal::irq::begin_irq(vector.0)?;
             let irq = active.id();
 
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
@@ -80,6 +80,11 @@ impl IrqIf for IrqIfImpl {
 
             let cpu = current_irq_cpu();
             let outcome = dispatch_irq_on(irq, cpu);
+            if outcome.defer_deactivation
+                && let Err(error) = active.defer_deactivation()
+            {
+                warn!("Failed to defer physical IRQ {irq:?} deactivation: {error:?}");
+            }
             if !outcome.handled {
                 #[cfg(all(target_arch = "loongarch64", feature = "hv"))]
                 if is_loongarch_guest_forwardable(irq)
@@ -250,6 +255,7 @@ mod tests {
             handled: true,
             wake: false,
             called: 1,
+            defer_deactivation: false,
         };
 
         assert!(super::should_forward_riscv_guest_irq(irq, host_outcome));

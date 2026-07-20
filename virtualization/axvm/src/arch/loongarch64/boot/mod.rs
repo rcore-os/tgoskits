@@ -1,7 +1,9 @@
 mod fdt;
 mod resources;
 
-use alloc::{boxed::Box, format, vec::Vec};
+#[cfg(any(feature = "fs", feature = "host-fs"))]
+use alloc::boxed::Box;
+use alloc::{format, vec::Vec};
 
 use axdevice::{FwCfgMemoryConfig, FwCfgRamRegion};
 use axvmconfig::{AxVMCrateConfig, VMBootProtocol};

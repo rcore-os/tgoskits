@@ -5,29 +5,19 @@ use alloc::vec::Vec;
 use super::{ControllerInner, ControllerState, GicV3Controller};
 use crate::{
     EventId, GicV3Mode, GicVcpuId, IntId, ItsDeviceId, LpiId, PhysicalInterruptBinding,
-    PhysicalInterruptConfiguration, PhysicalIrqId, PhysicalMsiBinding, RedistributorState, SpiId,
-    VgicError, VgicResult, backend_result,
+    PhysicalIrqId, PhysicalMsiBinding, RedistributorState, SpiId, VgicError, VgicResult,
+    backend_result,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PhysicalInterruptState {
-    enabled: bool,
-    configuration: PhysicalInterruptConfiguration,
+    distributor_enabled: bool,
+    interrupt_enabled: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PhysicalConfigurationWrite {
-    IfChanged,
-    Required,
-}
-
-impl PhysicalConfigurationWrite {
-    fn is_required(
-        self,
-        previous: PhysicalInterruptConfiguration,
-        current: PhysicalInterruptConfiguration,
-    ) -> bool {
-        self == Self::Required || previous != current
+impl PhysicalInterruptState {
+    const fn delivery_enabled(self) -> bool {
+        self.distributor_enabled && self.interrupt_enabled
     }
 }
 
@@ -44,10 +34,32 @@ pub(super) struct PhysicalInterruptStateChange {
     binding: PhysicalInterruptBinding,
     previous: PhysicalInterruptState,
     current: PhysicalInterruptState,
-    configuration_write: PhysicalConfigurationWrite,
 }
 
 impl GicV3Controller {
+    /// Queues an acknowledged assigned SPI for hardware-backed LR delivery.
+    pub fn forward_physical_spi(&self, spi: SpiId) -> VgicResult {
+        if self.inner.config.mode() != GicV3Mode::Passthrough {
+            return Err(VgicError::Unsupported {
+                operation: "forward physical SPI",
+                detail: "physical LR backing requires passthrough mode".into(),
+            });
+        }
+        let wake = {
+            let mut state = self.inner.state.lock();
+            let binding = state
+                .physical_interrupts
+                .get(&spi)
+                .copied()
+                .ok_or_else(|| VgicError::Unsupported {
+                    operation: "forward physical SPI",
+                    detail: alloc::format!("SPI {} has no physical binding", spi.raw()),
+                })?;
+            state.queue_physical_spi(spi, binding)?
+        };
+        wake.wake()
+    }
+
     /// Binds a guest SPI to an owned physical interrupt and fixed vCPU affinity.
     pub fn bind_physical_spi(
         &self,
@@ -116,110 +128,6 @@ impl GicV3Controller {
         Ok(())
     }
 
-    pub(super) fn activate_physical_interrupts(&self, vcpu: GicVcpuId) -> VgicResult {
-        let guest_private = {
-            let state = self.inner.state.lock();
-            state.redistributor(vcpu, "activate physical interrupts")?;
-            if state.active_vcpus.contains(&vcpu) {
-                return Err(VgicError::ResourceConflict {
-                    resource: "physical interrupt delivery",
-                    detail: alloc::format!("vCPU {} is already loaded", vcpu.raw()),
-                });
-            }
-            state
-                .redistributor(vcpu, "snapshot private interrupts before load")?
-                .private_interrupt_state()?
-        };
-        let owned = self.inner.config.guest_private_interrupts();
-        let host_private = backend_result(self.inner.backend.load_physical_private_interrupts(
-            vcpu,
-            owned,
-            &guest_private,
-        ))?;
-        let mut state = self.inner.state.lock();
-        if !state.active_vcpus.insert(vcpu) {
-            drop(state);
-            let mut discarded_guest = guest_private;
-            let _ = self.inner.backend.save_physical_private_interrupts(
-                vcpu,
-                owned,
-                &mut discarded_guest,
-                &host_private,
-            );
-            return Err(VgicError::ResourceConflict {
-                resource: "physical interrupt delivery",
-                detail: alloc::format!("vCPU {} became loaded concurrently", vcpu.raw()),
-            });
-        }
-        state.private_host_snapshots.insert(vcpu, host_private);
-        Ok(())
-    }
-
-    pub(super) fn deactivate_physical_interrupts(&self, vcpu: GicVcpuId) -> VgicResult {
-        let (mut guest_private, host_private) = {
-            let state = self.inner.state.lock();
-            if !state.active_vcpus.contains(&vcpu) {
-                return Ok(());
-            }
-            let host_private = state
-                .private_host_snapshots
-                .get(&vcpu)
-                .cloned()
-                .ok_or_else(|| VgicError::InvalidConfig {
-                    detail: alloc::format!(
-                        "vCPU {} is loaded without a saved host private interrupt context",
-                        vcpu.raw()
-                    ),
-                })?;
-            (
-                state
-                    .redistributor(vcpu, "snapshot private interrupts before save")?
-                    .private_interrupt_state()?,
-                host_private,
-            )
-        };
-        let owned = self.inner.config.guest_private_interrupts();
-        let save_result = self.inner.backend.save_physical_private_interrupts(
-            vcpu,
-            owned,
-            &mut guest_private,
-            &host_private,
-        );
-        {
-            let mut state = self.inner.state.lock();
-            state
-                .redistributor_mut(vcpu, "merge saved private interrupts")?
-                .merge_private_interrupt_state(&guest_private, owned);
-            state.private_host_snapshots.remove(&vcpu);
-            state.active_vcpus.remove(&vcpu);
-        }
-        backend_result(save_result)
-    }
-
-    pub(super) fn synchronize_physical_private_interrupts(&self, vcpu: GicVcpuId) -> VgicResult {
-        let mut guest_private = {
-            let state = self.inner.state.lock();
-            if !state.active_vcpus.contains(&vcpu) {
-                return Ok(());
-            }
-            state
-                .redistributor(vcpu, "snapshot private interrupts before synchronization")?
-                .private_interrupt_state()?
-        };
-        let owned = self.inner.config.guest_private_interrupts();
-        backend_result(self.inner.backend.synchronize_physical_private_interrupts(
-            vcpu,
-            owned,
-            &mut guest_private,
-        ))?;
-        self.inner
-            .state
-            .lock()
-            .redistributor_mut(vcpu, "merge synchronized private interrupts")?
-            .merge_private_interrupt_state(&guest_private, owned);
-        Ok(())
-    }
-
     pub(super) fn apply_physical_interrupt_state_changes(
         &self,
         changes: Vec<PhysicalInterruptStateChange>,
@@ -233,7 +141,6 @@ impl GicV3Controller {
                             binding: completed.binding,
                             previous: completed.current,
                             current: completed.previous,
-                            configuration_write: PhysicalConfigurationWrite::IfChanged,
                         })
                     {
                         log::warn!(
@@ -264,45 +171,18 @@ impl GicV3Controller {
         &self,
         change: &PhysicalInterruptStateChange,
     ) -> Result<(), crate::GicV3BackendError> {
-        let configuration_write = change
-            .configuration_write
-            .is_required(change.previous.configuration, change.current.configuration);
-        if configuration_write && change.previous.enabled {
-            self.inner
-                .backend
-                .set_physical_interrupt_enabled(change.binding, false)?;
-        }
-        if configuration_write
+        let previous = change.previous.delivery_enabled();
+        let current = change.current.delivery_enabled();
+        if previous != current
             && let Err(error) = self
                 .inner
                 .backend
-                .configure_physical_interrupt(change.binding, change.current.configuration)
+                .set_physical_interrupt_enabled(change.binding, current)
         {
-            if change.previous.enabled {
-                let _ = self
-                    .inner
-                    .backend
-                    .set_physical_interrupt_enabled(change.binding, true);
-            }
-            return Err(error);
-        }
-        let physical_enabled = change.previous.enabled && !configuration_write;
-        if physical_enabled != change.current.enabled
-            && let Err(error) = self
-                .inner
-                .backend
-                .set_physical_interrupt_enabled(change.binding, change.current.enabled)
-        {
-            if configuration_write {
-                let _ = self
-                    .inner
-                    .backend
-                    .configure_physical_interrupt(change.binding, change.previous.configuration);
-            }
             let _ = self
                 .inner
                 .backend
-                .set_physical_interrupt_enabled(change.binding, change.previous.enabled);
+                .set_physical_interrupt_enabled(change.binding, previous);
             return Err(error);
         }
         Ok(())
@@ -434,18 +314,11 @@ impl ControllerState {
     pub(super) fn active_physical_interrupt_state_changes(
         &self,
         snapshots: &[PhysicalInterruptSnapshot],
-        physical_configuration_requests: &[SpiId],
     ) -> VgicResult<Vec<PhysicalInterruptStateChange>> {
         let mut changes = Vec::new();
         for snapshot in snapshots {
             let current = self.physical_interrupt_state(snapshot.spi)?;
-            let configuration_write = if physical_configuration_requests.contains(&snapshot.spi) {
-                PhysicalConfigurationWrite::Required
-            } else {
-                PhysicalConfigurationWrite::IfChanged
-            };
-            if (current != snapshot.state
-                || configuration_write == PhysicalConfigurationWrite::Required)
+            if current.delivery_enabled() != snapshot.state.delivery_enabled()
                 && self.active_vcpus.contains(&snapshot.binding.target())
             {
                 changes.push(PhysicalInterruptStateChange {
@@ -453,7 +326,6 @@ impl ControllerState {
                     binding: snapshot.binding,
                     previous: snapshot.state,
                     current,
-                    configuration_write,
                 });
             }
         }
@@ -463,13 +335,12 @@ impl ControllerState {
     fn physical_interrupt_state(&self, spi: SpiId) -> VgicResult<PhysicalInterruptState> {
         let interrupt = self.distributor.interrupt(spi)?;
         Ok(PhysicalInterruptState {
-            enabled: interrupt.enabled(),
-            configuration: PhysicalInterruptConfiguration::new(
-                interrupt.pending(),
-                interrupt.active(),
-                interrupt.priority(),
-                interrupt.trigger(),
-            ),
+            // The host source must stay masked unless both architectural
+            // gates exposed to the guest are open. Otherwise a level SPI can
+            // enter the host while GICD_CTLR disables guest delivery, fail to
+            // acquire a hardware-backed LR, and immediately retrigger.
+            distributor_enabled: self.distributor.enabled(),
+            interrupt_enabled: interrupt.enabled(),
         })
     }
 
@@ -478,12 +349,10 @@ impl ControllerState {
         changes: &[PhysicalInterruptStateChange],
     ) -> VgicResult {
         for change in changes {
+            self.distributor
+                .set_enabled_for_rollback(change.previous.distributor_enabled);
             let interrupt = self.distributor.interrupt_mut(change.spi)?;
-            interrupt.set_enabled(change.previous.enabled);
-            interrupt.set_pending(change.previous.configuration.pending());
-            interrupt.set_active(change.previous.configuration.active());
-            interrupt.set_priority(change.previous.configuration.priority());
-            interrupt.set_trigger(change.previous.configuration.trigger());
+            interrupt.set_enabled(change.previous.interrupt_enabled);
         }
         Ok(())
     }
