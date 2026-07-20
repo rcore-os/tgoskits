@@ -16,7 +16,12 @@ use ax_errno::AxResult;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
-use rockchip_rga::{RgaVersion, RockchipRga, backend::RgaStatus, librga_abi};
+use rockchip_rga::{
+    RgaVersion, RockchipRga,
+    backend::RgaStatus,
+    librga_abi,
+    operation::{ImageDesc, RgaOperation},
+};
 use starry_vm::{VmMutPtr, VmPtr};
 
 use crate::{
@@ -35,10 +40,14 @@ const RGA_BUFFER_POOL_SIZE_MAX: u32 = 40;
 /// (`RGA_TASK_NUM_MAX` in the RGA3 UAPI).
 const RGA_TASK_NUM_MAX: u32 = 256;
 
-/// A buffer imported via `RGA_IOC_IMPORT_BUFFER`. Stores the physical address and, when
-/// imported from a dma-buf fd, keeps the backing allocation alive until release.
+/// A buffer imported via `RGA_IOC_IMPORT_BUFFER`. Stores the physical address, the byte
+/// length (for bounds-checking planes before an MMU-off DMA), and, when imported from a
+/// dma-buf fd, keeps the backing allocation alive until release.
 struct ImportedBuf {
     phys_addr: u64,
+    /// Byte length of the imported buffer. `u64::MAX` for a raw `RGA_PHYSICAL_ADDRESS` import
+    /// (CAP_SYS_RAWIO): unbounded, the privileged caller owns the range.
+    len: u64,
     /// `Some` when imported from a dma-buf fd (RGA_DMA_BUFFER); `None` when imported as a
     /// raw physical address (RGA_PHYSICAL_ADDRESS — caller guarantees lifetime).
     obj: Option<Arc<DmaBufFile>>,
@@ -144,16 +153,17 @@ impl RgaFile {
         Err(VfsError::NoMemory)
     }
 
-    /// Resolve a buffer address, returning the phys addr and (for dma-buf-backed buffers) the
-    /// `Arc<DmaBufFile>` that must stay alive for the operation's duration. The shared
-    /// `/dev/dma_heap` allocator is DMA-coherent, so no cache maintenance is required.
+    /// Resolve a buffer address, returning the phys addr, its byte length (for bounds checks),
+    /// and (for dma-buf-backed buffers) the `Arc<DmaBufFile>` that must stay alive for the
+    /// operation's duration. The shared `/dev/dma_heap` allocator is DMA-coherent, so no cache
+    /// maintenance is required.
     fn resolve_buf(
         &self,
         raw: u64,
         handle_flag: bool,
-    ) -> VfsResult<(u64, Option<Arc<DmaBufFile>>)> {
+    ) -> VfsResult<(u64, u64, Option<Arc<DmaBufFile>>)> {
         if raw == 0 {
-            return Ok((0, None));
+            return Ok((0, 0, None));
         }
         if handle_flag {
             let handle = raw as u32;
@@ -162,12 +172,13 @@ impl RgaFile {
             // Clone the Arc so the dma-buf stays alive across submit+poll even if a concurrent
             // RELEASE_BUFFER removes the table entry mid-op. RGA_PHYSICAL_ADDRESS entries carry
             // None — the caller owns coherency for raw phys imports.
-            Ok((entry.phys_addr, entry.obj.clone()))
+            Ok((entry.phys_addr, entry.len, entry.obj.clone()))
         } else {
             // Legacy path: raw value is a dma-buf fd.
             let obj = resolve_contiguous_dmabuf(raw as c_int).ok_or(VfsError::BadFileDescriptor)?;
             let phys = obj.phys_base() as u64;
-            Ok((phys, Some(obj)))
+            let len = obj.size() as u64;
+            Ok((phys, len, Some(obj)))
         }
     }
 
@@ -192,25 +203,26 @@ impl RgaFile {
 
         let handle_flag = req.handle_flag != 0;
 
-        // Resolve source / destination buffers, keeping the backing Arcs alive.
+        // Resolve source / destination buffers, keeping the backing Arcs alive and recording
+        // each buffer's byte length for the bounds check below.
         let is_fill = matches!(parsed.kind, librga_abi::ParsedKind::Fill);
-        let (src_phys, src_keep) = if is_fill {
-            (0, None)
+        let (src_phys, src_len, src_keep) = if is_fill {
+            (0, 0, None)
         } else {
             self.resolve_buf(parsed.src.addr, handle_flag)?
         };
-        let (src_uv_phys, src_uv_keep) = if !is_fill && parsed.src.uv_addr != 0 {
-            let (p, k) = self.resolve_buf(parsed.src.uv_addr, handle_flag)?;
-            (Some(p), k)
+        let (src_uv_phys, src_uv_len, src_uv_keep) = if !is_fill && parsed.src.uv_addr != 0 {
+            let (p, l, k) = self.resolve_buf(parsed.src.uv_addr, handle_flag)?;
+            (Some(p), Some(l), k)
         } else {
-            (None, None)
+            (None, None, None)
         };
-        let (dst_phys, dst_keep) = self.resolve_buf(parsed.dst.addr, handle_flag)?;
-        let (dst_uv_phys, dst_uv_keep) = if parsed.dst.uv_addr != 0 {
-            let (p, k) = self.resolve_buf(parsed.dst.uv_addr, handle_flag)?;
-            (Some(p), k)
+        let (dst_phys, dst_len, dst_keep) = self.resolve_buf(parsed.dst.addr, handle_flag)?;
+        let (dst_uv_phys, dst_uv_len, dst_uv_keep) = if parsed.dst.uv_addr != 0 {
+            let (p, l, k) = self.resolve_buf(parsed.dst.uv_addr, handle_flag)?;
+            (Some(p), Some(l), k)
         } else {
-            (None, None)
+            (None, None, None)
         };
 
         let op = match parsed.into_operation(src_phys, src_uv_phys, dst_phys, dst_uv_phys) {
@@ -220,6 +232,17 @@ impl RgaFile {
                 return Err(VfsError::InvalidInput);
             }
         };
+
+        // RGA2 runs MMU-off, so every plane the engine addresses must stay inside the buffer it
+        // was imported from — otherwise a small buffer with a large geometry would let the DMA
+        // read/write adjacent physical memory. Reject before touching hardware.
+        Self::check_bounds(
+            &op,
+            (src_phys, src_len),
+            src_uv_len,
+            (dst_phys, dst_len),
+            dst_uv_len,
+        )?;
 
         // QEMU path: no RGA2 device → ENODEV.
         let devs = rdrive::get_list::<RockchipRga>();
@@ -290,6 +313,68 @@ impl RgaFile {
         Err(VfsError::TimedOut)
     }
 
+    /// Bound-check every plane an operation will touch against the imported buffer it was
+    /// resolved from. `src`/`dst` are `(base, len)` of the luma/RGB buffers; `*_uv_len` is the
+    /// length of a *separately* imported chroma buffer (`None` when the chroma plane is derived
+    /// inside the luma buffer, or absent).
+    fn check_bounds(
+        op: &RgaOperation,
+        src: (u64, u64),
+        src_uv_len: Option<u64>,
+        dst: (u64, u64),
+        dst_uv_len: Option<u64>,
+    ) -> VfsResult<()> {
+        match op {
+            RgaOperation::Fill { dst: d, .. } => Self::check_desc(d, dst, dst_uv_len),
+            RgaOperation::Copy { src: s, dst: d } => {
+                Self::check_desc(s, src, src_uv_len)?;
+                Self::check_desc(d, dst, dst_uv_len)
+            }
+            RgaOperation::Blit(b) => {
+                Self::check_desc(&b.src, src, src_uv_len)?;
+                Self::check_desc(&b.dst, dst, dst_uv_len)
+            }
+        }
+    }
+
+    /// Verify each plane of `desc` stays within its imported buffer. `buf` is the luma/RGB
+    /// buffer `(base, len)`; `uv_sep_len` is the length of a separately imported chroma buffer.
+    fn check_desc(desc: &ImageDesc, buf: (u64, u64), uv_sep_len: Option<u64>) -> VfsResult<()> {
+        let ext = desc.plane_extents().map_err(|_| VfsError::InvalidInput)?;
+        let (base, len) = buf;
+        // The luma/RGB plane starts at the imported buffer base.
+        if !Self::within(desc.phys_addr, ext.y, base, len) {
+            warn!("RGA_BLIT: luma/RGB plane addresses past its imported buffer");
+            return Err(VfsError::InvalidInput);
+        }
+        if let Some(uv_ext) = ext.uv {
+            let uv_base = desc.uv_phys_addr.ok_or(VfsError::InvalidInput)?;
+            // A derived chroma plane sits right after luma in the SAME buffer
+            // (uv_base == base + y_extent); a separately imported one has its own length.
+            let ok = if base.checked_add(ext.y) == Some(uv_base) {
+                Self::within(uv_base, uv_ext, base, len)
+            } else if let Some(uv_len) = uv_sep_len {
+                Self::within(uv_base, uv_ext, uv_base, uv_len)
+            } else {
+                false
+            };
+            if !ok {
+                warn!("RGA_BLIT: chroma plane addresses past its imported buffer");
+                return Err(VfsError::InvalidInput);
+            }
+        }
+        Ok(())
+    }
+
+    /// `[start, start + ext)` fully inside `[base, base + len)`, overflow-safe.
+    fn within(start: u64, ext: u64, base: u64, len: u64) -> bool {
+        start >= base
+            && start
+                .checked_sub(base)
+                .and_then(|off| off.checked_add(ext))
+                .is_some_and(|end| end <= len)
+    }
+
     /// Handle `RGA_IOC_IMPORT_BUFFER`: resolve dma-buf fds → physical addresses and assign
     /// handles. Processes all `pool.size` entries; writes the assigned handle back to each.
     fn handle_import_buffer(&self, arg: usize) -> VfsResult<usize> {
@@ -323,6 +408,7 @@ impl RgaFile {
                         .ok_or(VfsError::BadFileDescriptor)?;
                     ImportedBuf {
                         phys_addr: obj.phys_base() as u64,
+                        len: obj.size() as u64,
                         obj: Some(obj),
                     }
                 }
@@ -344,6 +430,7 @@ impl RgaFile {
                     }
                     ImportedBuf {
                         phys_addr: ext.memory,
+                        len: u64::MAX,
                         obj: None,
                     }
                 }

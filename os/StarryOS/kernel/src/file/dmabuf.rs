@@ -81,9 +81,10 @@ impl DmaBufFile {
 
     /// Size of the allocation in bytes (page-rounded up from the request).
     ///
-    /// Only the NPU import seam ([`ContiguousDmaBuf`]) needs this; the jpeg-only
-    /// build resolves buffers through [`Self::phys_base`].
-    #[cfg(feature = "rknpu")]
+    /// The NPU import seam ([`ContiguousDmaBuf`]) needs it, and the RGA path uses it to
+    /// bound-check every imported buffer before an MMU-off DMA (a plane must not address
+    /// past its buffer). The jpeg-only build resolves buffers through [`Self::phys_base`].
+    #[cfg(any(feature = "rknpu", feature = "rga"))]
     pub fn size(&self) -> usize {
         self.alloc.size
     }

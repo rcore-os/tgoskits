@@ -86,6 +86,16 @@ pub struct ImageDesc {
     pub uv_phys_addr: Option<u64>,
 }
 
+/// Byte extents an image addresses from each plane's base, derived from stride and height.
+/// Used to bound-check every plane against its imported buffer before an MMU-off submit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaneExtents {
+    /// Bytes addressed from the luma/RGB plane base ([`ImageDesc::phys_addr`]).
+    pub y: u64,
+    /// Bytes addressed from the chroma plane base ([`ImageDesc::uv_phys_addr`]); semiplanar only.
+    pub uv: Option<u64>,
+}
+
 impl ImageDesc {
     /// Packed single-plane (RGB/RGBA) surface.
     pub fn rgb(
@@ -171,6 +181,31 @@ impl ImageDesc {
         }
 
         Ok(())
+    }
+
+    /// Byte extents the engine may address from each plane base — the full virtual plane
+    /// (`stride_bytes * height` for luma/RGB, `stride_bytes * chroma_rows` for semiplanar
+    /// chroma). The caller checks these against the imported buffer length so a plane cannot
+    /// DMA past its buffer. Uses the same formulas as [`Self::validate`].
+    pub fn plane_extents(&self) -> Result<PlaneExtents> {
+        let y = (self.stride_bytes as u64)
+            .checked_mul(self.height as u64)
+            .ok_or(RgaError::Overflow)?;
+        let uv = if self.format.is_semiplanar() {
+            let uv_rows = if matches!(self.format, PixelFormat::Nv16) {
+                self.height
+            } else {
+                self.height / 2
+            };
+            Some(
+                (self.stride_bytes as u64)
+                    .checked_mul(uv_rows as u64)
+                    .ok_or(RgaError::Overflow)?,
+            )
+        } else {
+            None
+        };
+        Ok(PlaneExtents { y, uv })
     }
 }
 
@@ -390,6 +425,30 @@ mod tests {
             uv_phys_addr: None,
         };
         assert_eq!(d.validate(), Err(RgaError::Invalid));
+    }
+
+    #[test]
+    fn plane_extents_match_geometry() {
+        // Packed RGBA: one plane, extent = stride * height, no chroma.
+        let rgba = ImageDesc::rgb(64, 64, 64 * 4, PixelFormat::Rgba8888, 0x1000);
+        let e = rgba.plane_extents().unwrap();
+        assert_eq!((e.y, e.uv), (64 * 4 * 64, None));
+
+        // NV12: chroma is half-height (4:2:0).
+        let nv12 = ImageDesc::nv12(64, 64, 64, 0x1000);
+        let e = nv12.plane_extents().unwrap();
+        assert_eq!((e.y, e.uv), (64 * 64, Some(64 * 32)));
+
+        // NV16: chroma is full-height (4:2:2).
+        let nv16 = ImageDesc {
+            width: 64,
+            height: 64,
+            stride_bytes: 64,
+            format: PixelFormat::Nv16,
+            phys_addr: 0x1000,
+            uv_phys_addr: Some(0x1000 + 64 * 64),
+        };
+        assert_eq!(nv16.plane_extents().unwrap().uv, Some(64 * 64));
     }
 
     #[test]
