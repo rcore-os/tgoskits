@@ -91,6 +91,7 @@ static void test_pidfd_open_bad_flags(void)
 
 struct thread_tid_sync {
     volatile pid_t tid;
+    volatile int release;
 };
 
 static void *thread_publish_tid(void *arg)
@@ -98,6 +99,12 @@ static void *thread_publish_tid(void *arg)
     struct thread_tid_sync *sync = arg;
 
     sync->tid = (pid_t)syscall(SYS_gettid);
+    // Stay alive until the parent has inspected this tid. Otherwise the thread
+    // may exit and be reaped (Linux auto-reaps NPTL threads) before the parent's
+    // pidfd_open() runs, racing the tid lookup to ESRCH under concurrent SMP.
+    while (!sync->release) {
+        sched_yield();
+    }
     return NULL;
 }
 
@@ -105,7 +112,7 @@ static void test_pidfd_open_thread_tid(void)
 {
     printf("--- pidfd_open 线程 TID ---\n");
 
-    struct thread_tid_sync sync = { .tid = -1 };
+    struct thread_tid_sync sync = { .tid = -1, .release = 0 };
     pthread_t thread;
 
     CHECK(pthread_create(&thread, NULL, thread_publish_tid, &sync) == 0,
@@ -125,6 +132,8 @@ static void test_pidfd_open_thread_tid(void)
         close(pfd);
     }
 
+    // Release the child now that its tid has been inspected, then join.
+    sync.release = 1;
     pthread_join(thread, NULL);
 }
 
