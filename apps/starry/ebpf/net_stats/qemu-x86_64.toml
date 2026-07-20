@@ -11,7 +11,7 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
+uefi = true
 to_bin = false
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/net_stats --test"

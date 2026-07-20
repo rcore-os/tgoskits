@@ -4,21 +4,26 @@
 
 // net_stats-ebpf: kprobe-based network statistics collector for ax-net.
 //
-// Probes the smoltcp phy layer in ax_net::router where all IP frames converge:
-//   TxToken::consume  → TX packets/bytes
-//   RxToken::consume  → RX packets/bytes
+// Probes the exact functions where ax-net maintains the `/proc/net/dev`
+// counters (DeviceHandle::count_rx / DeviceHandle::count_tx), so the
+// eBPF counters stay consistent with the kernel's own accounting.
 //
-// TX byte length is read from the `len` scalar argument at entry.
-// RX byte length is read from the `packet: &[u8]` slice field inside RxToken.
+//   count_tx(&self, len: usize)  → TX_PKTS +1, TX_BYTES +len
+//   count_rx(&self, len: usize)  → RX_PKTS +1, RX_BYTES +len
 //
-// Map layout (global array, index = NetKey enum value):
+// Both functions must carry #[inline(never)] in router.rs so that they
+// survive LLVM inlining and remain attachable by kprobe.
+//
+// Map layout (per-CPU array, index = counter slot):
 //   0  TX_PKTS    1  TX_BYTES
 //   2  RX_PKTS    3  RX_BYTES
+//
+// Per-CPU slots avoid cache-line contention: each CPU writes its own
+// slot, and the userspace loader sums across CPUs when reading.
 
 use aya_ebpf::{
-    helpers::bpf_probe_read_kernel,
     macros::{kprobe, map},
-    maps::Array,
+    maps::PerCpuArray,
     programs::ProbeContext,
 };
 
@@ -29,8 +34,12 @@ const RX_BYTES: u32 = 3;
 const MAP_SIZE: u32 = 4;
 
 #[map]
-static NETSTATS: Array<u64> = Array::<u64>::with_max_entries(MAP_SIZE, 0);
+static NETSTATS: PerCpuArray<u64> = PerCpuArray::<u64>::with_max_entries(MAP_SIZE, 0);
 
+/// Increment the counter at `idx` by `delta`.
+///
+/// With `PerCpuArray`, `get_ptr_mut(idx)` returns a pointer into the
+/// *current CPU's* private slot, so the increment is naturally race-free.
 #[inline(always)]
 fn add_to(idx: u32, delta: u64) {
     if let Some(slot) = NETSTATS.get_ptr_mut(idx) {
@@ -38,9 +47,10 @@ fn add_to(idx: u32, delta: u64) {
     }
 }
 
-// TxToken::consume(self, len: usize, f: F) → on x86_64, len is in rsi (arg 1).
+// count_tx(&self, len: usize)
+//   x86_64: &self in rdi (arg 0), len in rsi (arg 1)
 #[kprobe]
-pub fn phy_tx(ctx: ProbeContext) -> u32 {
+pub fn count_tx(ctx: ProbeContext) -> u32 {
     if let Some(len) = ctx.arg::<usize>(1) {
         add_to(TX_PKTS, 1);
         add_to(TX_BYTES, len as u64);
@@ -48,35 +58,14 @@ pub fn phy_tx(ctx: ProbeContext) -> u32 {
     0
 }
 
-// RxToken::consume(self, f: F) → self is RxToken at rdi (arg 0).
-//
-// struct RxToken {
-//     interface_id: InterfaceId,
-//     packet_meta: PacketMeta,
-//     packet: &'a [u8],
-// }
-//
-// RxToken::consume is heavily inlined into Interface::socket_ingress, making
-// the actual memory layout at probe time differ from the source definition.
-// The packet slice's length field offset within the inlined structure needs
-// to be determined through runtime debugging or by tracing the actual packet
-// access within the inlined code.
-//
-// For now, RX packet counts work correctly. RX byte counting is disabled
-// until the correct offset is confirmed.
+// count_rx(&self, len: usize)
+//   x86_64: &self in rdi (arg 0), len in rsi (arg 1)
 #[kprobe]
-pub fn phy_rx(ctx: ProbeContext) -> u32 {
-    add_to(RX_PKTS, 1);
-
-    // TODO: Determine correct offset for packet.len within inlined RxToken.
-    // Candidates tried: offset 48 (calculated), offset 16 (disasm hint).
-    // Both produced unreasonable values or zeros with sanity check.
-    //
-    // Possible next steps:
-    // 1. Use bpftrace to dump memory at self pointer
-    // 2. Instrument the actual f(self.packet) call site
-    // 3. Count RX bytes from an alternative probe point (e.g., driver layer)
-
+pub fn count_rx(ctx: ProbeContext) -> u32 {
+    if let Some(len) = ctx.arg::<usize>(1) {
+        add_to(RX_PKTS, 1);
+        add_to(RX_BYTES, len as u64);
+    }
     0
 }
 

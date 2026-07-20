@@ -1,5 +1,9 @@
 // net_stats: userspace loader for the ax-net kprobe statistics collector.
 //
+// Attaches eBPF kprobes to DeviceHandle::count_tx / DeviceHandle::count_rx,
+// which are the exact points where ax-net updates the four /proc/net/dev
+// counters (rx_packets, rx_bytes, tx_packets, tx_bytes).
+//
 // Output format (parseable by summarize.py):
 //
 //   NET_STATS_BEGIN
@@ -7,7 +11,7 @@
 //   rx_pkts=<N>  rx_bytes=<N>
 //   NET_STATS_END
 
-use aya::{maps::Array, programs::KProbe};
+use aya::{maps::PerCpuArray, programs::KProbe};
 use clap::Parser;
 #[rustfmt::skip]
 use log::warn;
@@ -59,18 +63,26 @@ fn resolve_symbols(fragments: &[&str]) -> anyhow::Result<Vec<String>> {
     Ok(syms)
 }
 
-fn print_stats(netstats: &Array<&aya::maps::MapData, u64>) {
-    let get = |i: u32| netstats.get(&i, 0).unwrap_or(0);
+/// Read per-CPU counter values and sum across all CPUs.
+fn per_cpu_sum(netstats: &PerCpuArray<&aya::maps::MapData, u64>, idx: u32) -> u64 {
+    netstats
+        .get(&idx, 0)
+        .ok()
+        .map(|vals| vals.iter().sum())
+        .unwrap_or(0)
+}
+
+fn print_stats(netstats: &PerCpuArray<&aya::maps::MapData, u64>) {
     println!("NET_STATS_BEGIN");
     println!(
         "tx_pkts={}  tx_bytes={}",
-        get(TX_PKTS),
-        get(TX_BYTES)
+        per_cpu_sum(netstats, TX_PKTS),
+        per_cpu_sum(netstats, TX_BYTES),
     );
     println!(
         "rx_pkts={}  rx_bytes={}",
-        get(RX_PKTS),
-        get(RX_BYTES)
+        per_cpu_sum(netstats, RX_PKTS),
+        per_cpu_sum(netstats, RX_BYTES),
     );
     println!("NET_STATS_END");
 }
@@ -84,9 +96,12 @@ async fn main() -> anyhow::Result<()> {
         .format_timestamp(None)
         .init();
 
-    // Rust v0 mangled fragments for ax_net::router TxToken/RxToken::consume
-    let syms_tx = resolve_symbols(&["6ax_net6router", "7TxToken", "7consume"])?;
-    let syms_rx = resolve_symbols(&["6ax_net6router", "7RxToken", "7consume"])?;
+    // Rust v0 mangled fragments for ax_net::router::DeviceHandle::count_tx /
+    // count_rx. These are concrete methods (no generics), so each resolves
+    // to exactly one symbol. #[inline(never)] on the functions guarantees
+    // they survive release-mode inlining.
+    let syms_tx = resolve_symbols(&["6ax_net", "6router", "12DeviceHandle", "8count_tx"])?;
+    let syms_rx = resolve_symbols(&["6ax_net", "6router", "12DeviceHandle", "8count_rx"])?;
 
     warn!("resolved tx={}, rx={}", syms_tx.len(), syms_rx.len());
 
@@ -108,9 +123,6 @@ async fn main() -> anyhow::Result<()> {
         warn!("failed to initialize eBPF logger: {e}");
     }
 
-    // A single kprobe program can be loaded once and attached to multiple
-    // symbols. Each TxToken/RxToken::consume has several monomorphized
-    // variants, so we attach the same probe to every matching symbol.
     macro_rules! attach_all {
         ($ebpf:expr, $prog:literal, $syms:expr) => {{
             let p: &mut KProbe = $ebpf.program_mut($prog).unwrap().try_into()?;
@@ -121,10 +133,10 @@ async fn main() -> anyhow::Result<()> {
         }};
     }
 
-    attach_all!(ebpf, "phy_tx", syms_tx);
-    attach_all!(ebpf, "phy_rx", syms_rx);
+    attach_all!(ebpf, "count_tx", syms_tx);
+    attach_all!(ebpf, "count_rx", syms_rx);
 
-    let netstats: Array<_, u64> = Array::try_from(ebpf.map("NETSTATS").unwrap())?;
+    let netstats: PerCpuArray<_, u64> = PerCpuArray::try_from(ebpf.map("NETSTATS").unwrap())?;
 
     if opt.once {
         print_stats(&netstats);
@@ -171,31 +183,26 @@ async fn main() -> anyhow::Result<()> {
         time::sleep(time::Duration::from_millis(300)).await;
         print_stats(&netstats);
 
-        // Validate that counters are non-zero when traffic was generated.
-        // The phy layer sees all frames, so loopback TCP/UDP should produce
-        // non-zero tx_pkts, tx_bytes, rx_pkts.
-        let get = |i: u32| netstats.get(&i, 0).unwrap_or(0);
-        let tx_pkts = get(TX_PKTS);
-        let tx_bytes = get(TX_BYTES);
-        let rx_pkts = get(RX_PKTS);
-        let rx_bytes = get(RX_BYTES);
+        // Validate all four counters: the phy layer sees every frame
+        // regardless of protocol, so loopback TCP + UDP must produce
+        // non-zero tx_pkts, tx_bytes, rx_pkts, rx_bytes.
+        let tx_pkts = per_cpu_sum(&netstats, TX_PKTS);
+        let tx_bytes = per_cpu_sum(&netstats, TX_BYTES);
+        let rx_pkts = per_cpu_sum(&netstats, RX_PKTS);
+        let rx_bytes = per_cpu_sum(&netstats, RX_BYTES);
 
-        if tx_pkts == 0 || tx_bytes == 0 || rx_pkts == 0 {
+        if tx_pkts == 0 || tx_bytes == 0 || rx_pkts == 0 || rx_bytes == 0 {
             anyhow::bail!(
-                "TEST FAILED: core counters are zero (tx_pkts={}, tx_bytes={}, rx_pkts={}) despite loopback traffic",
+                "TEST FAILED: counter(s) are zero despite loopback traffic \
+                 (tx_pkts={}, tx_bytes={}, rx_pkts={}, rx_bytes={})",
                 tx_pkts,
                 tx_bytes,
-                rx_pkts
+                rx_pkts,
+                rx_bytes,
             );
         }
 
-        if rx_bytes == 0 {
-            warn!("RX bytes is zero; RxToken.packet offset needs determination");
-        } else {
-            println!("RX byte counting is working (rx_bytes={})", rx_bytes);
-        }
-
-        println!("TEST PASSED: core counters non-zero");
+        println!("TEST PASSED: all counters non-zero");
         return Ok(());
     }
 

@@ -315,6 +315,11 @@ impl DeviceHandle {
     /// `rx_packets` is incremented for every call regardless of `len`. Callers
     /// must ensure `len > 0` when counting a real reception; a zero `len` only
     /// makes sense for testing or diagnostic paths.
+    ///
+    /// Kept out-of-line (`#[inline(never)]`) so that eBPF kprobe-based
+    /// observers (e.g. `net_stats`) can attach to this function and see every
+    /// increment of the RX byte/packet counters at a stable symbol.
+    #[inline(never)]
     fn count_rx(&self, len: usize) {
         // Relaxed ordering is sufficient: only the owning device worker writes
         // each counter, and /proc/net/dev readers tolerate slight staleness.
@@ -326,6 +331,11 @@ impl DeviceHandle {
     ///
     /// `tx_packets` is incremented for every call regardless of `len`. Callers
     /// must ensure `len > 0` when counting a real transmission.
+    ///
+    /// Kept out-of-line (`#[inline(never)]`) so that eBPF kprobe-based
+    /// observers (e.g. `net_stats`) can attach to this function and see every
+    /// increment of the TX byte/packet counters at a stable symbol.
+    #[inline(never)]
     fn count_tx(&self, len: usize) {
         self.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);
         self.tx_packets.fetch_add(1, Ordering::Relaxed);

@@ -4,10 +4,13 @@ Real-time network statistics monitoring for StarryOS using eBPF kprobes.
 
 ## Features
 
-- **TX/RX packet and byte counters**: Accurate counts for all IP traffic
-- **Low overhead**: eBPF-based probing with minimal performance impact
-- **Cross-architecture**: Supports x86_64, aarch64, riscv64, loongarch64
-- **Protocol-agnostic**: Counts all IP frames at the physical layer (TCP, UDP, ICMP, etc.)
+- **TX/RX packet and byte counters**: accurate counts for all IP traffic
+- **Consistent with `/proc/net/dev`**: probes the exact same counting points
+  (`DeviceHandle::count_tx` / `DeviceHandle::count_rx`) that maintain the
+  kernel's own rx_packets/rx_bytes/tx_packets/tx_bytes counters
+- **Low overhead**: eBPF-based probing with per-CPU maps, no lock contention
+- **Cross-architecture**: supports x86_64, aarch64, riscv64, loongarch64
+- **Protocol-agnostic**: counts all IP frames at the physical layer (TCP, UDP, ICMP, etc.)
 
 ## Usage
 
@@ -46,134 +49,73 @@ rx_pkts=12  rx_bytes=768
 NET_STATS_END
 ```
 
-- `tx_pkts`: Number of IP frames transmitted
-- `tx_bytes`: Total bytes transmitted (including IP/TCP/UDP headers)
-- `rx_pkts`: Number of IP frames received
-- `rx_bytes`: Total bytes received (including IP/TCP/UDP headers)
+- `tx_pkts`: number of frames transmitted
+- `tx_bytes`: total bytes transmitted (L2 frame length)
+- `rx_pkts`: number of frames received
+- `rx_bytes`: total bytes received (L2 frame length)
 
-**Note**: Byte counts represent link-layer frame sizes (including protocol headers),
-which is appropriate for throughput measurement. This differs from application-layer
-payload sizes that socket APIs report.
+**Note**: Byte counts represent L2 frame sizes (including protocol headers and
+per-device L2 framing overhead, excluding trailing FCS), aligned with Linux
+`/proc/net/dev` semantics.
 
 ## Implementation Details
 
 ### Probe Points
 
-The eBPF program attaches kprobes at the smoltcp physical layer in `ax_net::router`,
-where all IP frames converge regardless of protocol or application layer API:
+The eBPF program attaches kprobes at the exact functions where ax-net updates
+its `/proc/net/dev` counters:
 
-- `TxToken::consume` (entry only) → TX packets/bytes
-- `RxToken::consume` (entry only) → RX packets/bytes
+- `DeviceHandle::count_tx(&self, len: usize)` → TX_PKTS +1, TX_BYTES +len
+- `DeviceHandle::count_rx(&self, len: usize)` → RX_PKTS +1, RX_BYTES +len
 
-### Why the Physical Layer?
+Both functions carry `#[inline(never)]` in `net/ax-net/src/router.rs` so they
+survive release-mode inlining and remain attachable by kprobe.
 
-Earlier implementations probed socket-layer `send`/`recv` methods and attempted to
-read byte counts from return values. This had several problems:
+On x86_64, `&self` is in `rdi` (arg 0) and `len` is in `rsi` (arg 1). The
+eBPF probe reads `len` from arg 1 for both TX and RX — simple, symmetric, and
+ABI-stable.
 
-1. **ABI complexity**: Reading `AxResult<usize>` via sret pointer required
-   per-architecture handling and was fragile across compiler versions.
-2. **Async path split**: Socket layer has both sync canonical methods and async
-   wrappers (`block_on`, `poll_fn`, `Future::poll`) that return different types.
-   Probing only canonical methods missed async code paths; probing all variants
-   inflated packet counts.
-3. **Incomplete coverage**: Loopback TCP recv and UDP operations used async paths
-   that bypassed the probed canonical methods, producing zero byte counts.
+### Why This Approach
 
-The physical layer solves all of these:
+Earlier implementations probed socket-layer methods and read byte counts from
+return values (`AxResult<usize>` via sret), then switched to probing
+`TxToken::consume` / `RxToken::consume` at the smoltcp phy layer. Both had
+fundamental issues:
 
-- **Simple entry-point counting**: TX byte length is a scalar `len` argument (no
-  return-value reading). RX byte length is a struct field offset.
-- **Complete coverage**: All network traffic—sync, async, TCP, UDP, any future
-  protocol—flows through `TxToken::consume` and `RxToken::consume`.
-- **Stable ABI**: Arguments and struct layouts are simpler and more stable than
-  socket-layer return values.
+1. **Re-implements counting**: the eBPF independently counted packets/bytes
+   instead of observing the kernel's own authoritative counters, leading to
+   divergence.
+2. **RX bytes not available at `RxToken::consume`**: the function signature
+   `RxToken::consume(self, f: F)` has no `len` argument, and reading the
+   slice length from the inlined struct required guessing memory offsets.
+
+By probing `count_rx` / `count_tx` directly:
+
+- **Observes the authoritative counters**: every call to these functions
+  corresponds to a `fetch_add` on the `AtomicU64` fields that back
+  `/proc/net/dev`. The eBPF counters stay naturally consistent.
+- **RX and TX are symmetric**: both take `(&self, len: usize)`, so byte
+  counting works the same way for both directions.
+- **Simple, non-generic signatures**: no monomorphized variants — each
+  function resolves to exactly one symbol.
 
 ### Symbol Resolution
 
 Symbols are resolved dynamically from `/proc/kallsyms` using Rust v0 name
 mangling fragments:
 
-- TX: `["6ax_net6router", "7TxToken", "7consume"]`
-- RX: `["6ax_net6router", "7RxToken", "7consume"]`
+- TX: `["6ax_net", "6router", "12DeviceHandle", "8count_tx"]`
+- RX: `["6ax_net", "6router", "12DeviceHandle", "8count_rx"]`
 
-TX matches approximately 4 monomorphized instances (dispatch_ethernet, dispatch_ip
-variants). RX typically matches 1 instance (inlined into `Interface::socket_ingress`).
+Each resolves to exactly one symbol (no monomorphized variants — the methods
+are concrete, not generic).
 
-### Byte Counter Implementation
+### Per-CPU Maps
 
-**TX bytes**: Read directly from the `len: usize` argument at `TxToken::consume`
-entry. On x86_64, this is in `rsi` (arg 1). Simple and fully reliable.
-
-**RX bytes**: Read from the `packet: &[u8]` field inside `RxToken` at
-`RxToken::consume` entry. The struct layout is:
-
-```rust
-pub struct RxToken<'a> {
-    interface_id: InterfaceId,  // u32, offset 0
-    // padding 4 bytes
-    packet_meta: PacketMeta,    // 32 bytes, offset 8
-    packet: &'a [u8],           // fat pointer at offset 40 (ptr) + 48 (len)
-}
-```
-
-The eBPF probe reads the slice length from offset 48 relative to the `self` pointer
-(arg 0 in `rdi` on x86_64). This offset was calculated from field sizes and verified
-against the compiled kernel.
-
-## Known Limitations
-
-### Test Coverage
-
-**Current Status**: The implementation has been verified through automated testing
-on x86_64. TX packet/byte counting and RX packet counting work correctly at the
-physical layer.
-
-**What Works**:
-- TX packet counting: ✅ Accurate
-- TX byte counting: ✅ Accurate (reads `len` argument directly)
-- RX packet counting: ✅ Accurate
-
-**Known Issue**:
-- RX byte counting: ⚠️ Disabled (offset determination needed)
-
-The `RxToken::consume` function is heavily inlined into `Interface::socket_ingress`,
-which causes the actual memory layout at probe time to differ from the source struct
-definition. Multiple offset candidates (16, 48) have been tried but produce either
-unreasonable values or fail sanity checks. The correct offset for `RxToken.packet.len`
-needs to be determined through:
-
-1. Runtime memory dumps using bpftrace at the probe point
-2. Tracing the actual `f(self.packet)` call site within the inlined code
-3. Alternative: counting RX bytes from driver layer (`RdNetDriver::receive`)
-
-For most use cases (throughput testing with net-bench), TX bytes + packet counts
-provide sufficient observability. RX byte counting can be added once the offset
-is confirmed.
-
-**Architecture Validation**: The probes use standard argument-passing conventions
-and should work across all architectures. Full runtime validation on aarch64,
-riscv64, and loongarch64 is pending.
-
-### Protocol Breakdown
-
-The physical layer sees IP frames without distinguishing TCP from UDP from ICMP.
-For most use cases (throughput testing with net-bench, general monitoring), total
-TX/RX statistics are sufficient. If per-protocol breakdown is needed, the eBPF
-probes can be enhanced to parse the IP header's protocol field.
-
-### Architecture Support
-
-- ✅ **x86_64**: Code-verified, offset calculations confirmed against compiled kernel
-- ⚠️ **aarch64**: Should work (same ABI principles), pending runtime validation
-- ⚠️ **riscv64**: Should work (same ABI principles), pending runtime validation
-- ⚠️ **loongarch64**: Should work, but QEMU virtio has known unrelated issues
-
-### Concurrent Access
-
-The eBPF map uses non-atomic increments for performance. In SMP systems with
-high network load, there may be rare race conditions causing slight
-undercounting. This is acceptable for monitoring use cases where approximate
-trending is sufficient.
+Counters use `BPF_MAP_TYPE_PERCPU_ARRAY`: each CPU writes to its own private
+slot, eliminating cache-line contention and the need for atomic operations.
+The userspace loader aggregates by summing across all CPU slots when printing
+or testing.
 
 ## Building
 
@@ -199,21 +141,23 @@ Run automated validation:
 cargo xtask starry app qemu --test-case ebpf/net_stats --arch x86_64
 ```
 
-The test performs TCP and UDP loopback operations and verifies that:
-- All packet counters are non-zero
-- TX bytes are non-zero
-- RX bytes are non-zero (if offset calculation is correct)
+The test performs TCP and UDP loopback operations and verifies that all four
+counters (tx_pkts, tx_bytes, rx_pkts, rx_bytes) are non-zero.
 
 ## Troubleshooting
 
 ### "no symbols found in /proc/kallsyms"
 
-The StarryOS kernel may not have the probed functions. Verify symbols exist:
+Verify the `#[inline(never)]`-annotated functions exist:
 
 ```bash
-grep "6ax_net6router" /proc/kallsyms | grep "7TxToken"
-grep "6ax_net6router" /proc/kallsyms | grep "7RxToken"
+grep "12DeviceHandle" /proc/kallsyms | grep "8count_tx"
+grep "12DeviceHandle" /proc/kallsyms | grep "8count_rx"
 ```
+
+If symbols are missing, check that the running kernel was built with the
+`#[inline(never)]` annotation on `DeviceHandle::count_tx` and
+`DeviceHandle::count_rx` in `net/ax-net/src/router.rs`.
 
 ### All counters are zero
 
@@ -221,25 +165,13 @@ grep "6ax_net6router" /proc/kallsyms | grep "7RxToken"
 2. Verify eBPF programs loaded: check dmesg for load errors
 3. Check for eBPF verifier errors in dmesg
 
-### RX bytes are zero but others work
-
-The `RxToken.packet` field offset (48) may be incorrect for your architecture or
-kernel configuration. This can be debugged by:
-
-1. Disassembling `RxToken::consume` in the compiled kernel
-2. Tracing the `self` pointer access pattern at function entry
-3. Adjusting the offset constant in `net_stats-ebpf/src/main.rs`
-
-TX bytes, TX packets, and RX packets should work regardless since they don't
-depend on struct offset calculations.
-
 ### eBPF logger warning
 
 ```
 [WARN] failed to initialize eBPF logger: AYA_LOGS not found
 ```
 
-This is expected - the aya logging map is optional and does not affect
+This is expected — the aya logging map is optional and does not affect
 functionality.
 
 ## License
