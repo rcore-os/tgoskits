@@ -78,11 +78,14 @@ an inactive-only range remains unmapped while common alternative bindings for
 one physical device do not punch a hole in an authorized passthrough mapping.
 
 `HostPlatformSnapshot` records the firmware-selected console independently
-from its UART model. This identity lets mediated guests replace the correct
-host node even when several compatible UARTs exist. It is not authorization by
-itself: a live platform adapter must classify the device as transferable, and
-the VM host must retain a reversible console-output lease while a direct guest
-owns the physical UART.
+from its UART model. This identity lets a guest replace the correct host node
+even when several compatible UARTs exist. AArch64 replacements keep PL011,
+packed NS16550, and Synopsys DW-APB as distinct virtual models; DW-APB uses
+checked 32-bit accesses, a four-byte register stride, and matching FDT
+properties. Firmware wrappers such as a Rockchip FIQ debugger select the
+underlying UART but are not exposed to the guest. Console identity is not
+physical-device authorization by itself: a live platform adapter must grant
+any requested physical transfer and retain its reversible output lease.
 
 ### Documentation
 

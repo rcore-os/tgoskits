@@ -448,7 +448,7 @@ fn sanitize_virtual_console_bootargs(
         .virtual_devices()
         .iter()
         .map(|device| device.model_id().as_str())
-        .find(|model| matches!(*model, "arm-pl011" | "ns16550a"))
+        .find(|model| matches!(*model, "arm-pl011" | "ns16550a" | "snps-dw-apb-uart"))
     else {
         return Ok(());
     };
@@ -492,7 +492,7 @@ fn virtual_console_bootargs(bootargs: &str, model: &str) -> String {
                 || console.starts_with("ttyFIQ");
             let matches_model = match model {
                 "arm-pl011" => console.starts_with("ttyAMA"),
-                "ns16550a" => console.starts_with("ttyS"),
+                "ns16550a" | "snps-dw-apb-uart" => console.starts_with("ttyS"),
                 _ => false,
             };
             if serial_console && !matches_model {

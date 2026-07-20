@@ -293,9 +293,6 @@ fn build_machine_plan(cfg: &AxVMCrateConfig) -> Result<axvm::machine::VmMachineP
     for selector in &cfg.devices.deny {
         request = request.deny(machine_selector(selector)?);
     }
-    for device in configured_virtual_devices(cfg)? {
-        request = request.with_virtual_device(device);
-    }
 
     let snapshot = if cfg.machine.mode() == axvm_types::VmMachineMode::Virtual {
         HostPlatformSnapshot::new(0)
@@ -304,6 +301,9 @@ fn build_machine_plan(cfg: &AxVMCrateConfig) -> Result<axvm::machine::VmMachineP
     };
     #[cfg(all(feature = "fs", target_arch = "x86_64"))]
     let snapshot = add_x86_host_filesystem_endpoint(cfg, snapshot)?;
+    for device in configured_virtual_devices(cfg, &snapshot)? {
+        request = request.with_virtual_device(device);
+    }
     let plan = VmMachinePlanner::new(axvm::standard_machine_profile()?)
         .plan(&request, &snapshot)
         .map_err(anyhow::Error::from)?;
@@ -521,18 +521,27 @@ fn machine_selector(selector: &DeviceSelectorConfig) -> Result<HostDeviceSelecto
 }
 
 #[cfg(target_arch = "aarch64")]
-fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDeviceDescriptor>> {
+fn configured_virtual_devices(
+    cfg: &AxVMCrateConfig,
+    snapshot: &HostPlatformSnapshot,
+) -> Result<Vec<VirtualDeviceDescriptor>> {
     let mut configured = cfg.devices.virtual_devices.clone();
     let console_disabled = cfg
         .devices
         .disable_defaults
         .iter()
         .any(|model| model == "console");
-    let has_console = configured.iter().any(|device| device.model == "arm-pl011");
+    let has_console = configured.iter().any(|device| {
+        matches!(
+            device.model.as_str(),
+            "arm-pl011" | "ns16550a" | axvm::DW_APB_UART_MODEL_ID
+        )
+    });
     if !console_disabled && !has_console {
+        let model = default_aarch64_console_model(snapshot)?;
         configured.push(axvmconfig::VirtualDeviceConfig {
             id: "console0".into(),
-            model: "arm-pl011".into(),
+            model: model.into(),
             source: axvmconfig::VirtualDeviceSourceConfig::Auto,
             backend: axvmconfig::VirtualDeviceBackendConfig::HostConsole {
                 rx: axvmconfig::ConsoleRxMode::Exclusive,
@@ -544,27 +553,81 @@ fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDevice
     configured
         .into_iter()
         .map(|device| {
-            if device.model != "arm-pl011" {
-                bail!(
-                    "unsupported AArch64 virtual device model '{}'",
-                    device.model
-                );
-            }
+            let (requirements, compatibles): (_, &[&str]) = match device.model.as_str() {
+                "arm-pl011" => (axvm::pl011_device_requirements()?, &["arm,pl011"]),
+                "ns16550a" => (
+                    axvm::ns16550_device_requirements()?,
+                    &["ns16550a", "ns16550"],
+                ),
+                axvm::DW_APB_UART_MODEL_ID => (
+                    axvm::dw_apb_uart_device_requirements()?,
+                    &["snps,dw-apb-uart"],
+                ),
+                model => bail!("unsupported AArch64 virtual device model '{model}'"),
+            };
             let descriptor = VirtualDeviceDescriptor::new(
                 DeviceInstanceId::new(device.id)?,
                 DeviceModelId::new(device.model)?,
-                axvm::pl011_device_requirements()?,
-            )
-            .with_compatible("arm,pl011")
-            .with_source(machine_device_source(device.source)?)
-            .with_backend(machine_device_backend(device.backend));
+                requirements,
+            );
+            let descriptor = compatibles
+                .iter()
+                .fold(descriptor, |descriptor, compatible| {
+                    descriptor.with_compatible(*compatible)
+                })
+                .with_source(machine_device_source(device.source)?)
+                .with_backend(machine_device_backend(device.backend));
             Ok(descriptor)
         })
         .collect()
 }
 
+#[cfg(target_arch = "aarch64")]
+fn default_aarch64_console_model(snapshot: &HostPlatformSnapshot) -> Result<&'static str> {
+    let Some(console) = snapshot.console_device() else {
+        return Ok("arm-pl011");
+    };
+    let descriptor = snapshot
+        .devices()
+        .iter()
+        .find(|candidate| candidate.id() == console)
+        .with_context(|| {
+            format!("host console '{console}' is absent from its platform snapshot")
+        })?;
+    if descriptor
+        .compatibles()
+        .iter()
+        .any(|compatible| compatible == "snps,dw-apb-uart")
+    {
+        return Ok(axvm::DW_APB_UART_MODEL_ID);
+    }
+    if descriptor
+        .compatibles()
+        .iter()
+        .any(|compatible| matches!(compatible.as_str(), "ns16550a" | "ns16550"))
+    {
+        return Ok("ns16550a");
+    }
+    if descriptor
+        .compatibles()
+        .iter()
+        .any(|compatible| compatible == "arm,pl011")
+    {
+        return Ok("arm-pl011");
+    }
+    bail!(
+        "firmware-selected host console '{}' has unsupported UART compatibles {:?}; disable the \
+         default console or configure a supported virtual replacement",
+        console,
+        descriptor.compatibles()
+    )
+}
+
 #[cfg(target_arch = "x86_64")]
-fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDeviceDescriptor>> {
+fn configured_virtual_devices(
+    cfg: &AxVMCrateConfig,
+    _snapshot: &HostPlatformSnapshot,
+) -> Result<Vec<VirtualDeviceDescriptor>> {
     let mut configured = cfg.devices.virtual_devices.clone();
     let console_disabled = cfg
         .devices
@@ -606,7 +669,10 @@ fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDevice
 }
 
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
-fn configured_virtual_devices(cfg: &AxVMCrateConfig) -> Result<Vec<VirtualDeviceDescriptor>> {
+fn configured_virtual_devices(
+    cfg: &AxVMCrateConfig,
+    _snapshot: &HostPlatformSnapshot,
+) -> Result<Vec<VirtualDeviceDescriptor>> {
     let mut configured = cfg.devices.virtual_devices.clone();
     let console_disabled = cfg
         .devices
@@ -982,7 +1048,7 @@ deny = []
         );
         let mut request =
             VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Acpi);
-        for device in configured_virtual_devices(&config).unwrap() {
+        for device in configured_virtual_devices(&config, &snapshot).unwrap() {
             request = request.with_virtual_device(device);
         }
 

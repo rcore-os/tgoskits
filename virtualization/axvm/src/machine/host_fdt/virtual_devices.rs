@@ -4,6 +4,7 @@ use alloc::{format, string::String, vec, vec::Vec};
 
 use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::RegInfo;
+use virtual_ns16550::Ns16550RegisterLayout;
 
 use crate::machine::{
     InterruptControllerPlan, MachinePlanError, MachinePlanResult, ResolvedVirtualDevice,
@@ -55,6 +56,7 @@ pub(super) fn materialize_virtual_devices(
 enum UartKind {
     Pl011,
     Ns16550,
+    DwApb,
 }
 
 impl UartKind {
@@ -62,6 +64,7 @@ impl UartKind {
         match model {
             "arm-pl011" => Ok(Self::Pl011),
             "ns16550a" => Ok(Self::Ns16550),
+            "snps-dw-apb-uart" => Ok(Self::DwApb),
             _ => Err(MachinePlanError::InvalidFirmware {
                 detail: format!("host-derived FDT cannot describe virtual model '{model}'"),
             }),
@@ -72,15 +75,39 @@ impl UartKind {
         match self {
             Self::Pl011 => &["arm,pl011", "arm,primecell"],
             Self::Ns16550 => &["ns16550a"],
+            Self::DwApb => &["snps,dw-apb-uart", "ns16550a"],
         }
     }
 
     const fn clock_hz(self) -> u32 {
         match self {
             Self::Pl011 => 24_000_000,
-            Self::Ns16550 => 100_000_000,
+            Self::Ns16550 | Self::DwApb => 100_000_000,
         }
     }
+
+    fn write_register_layout(self, uart: &mut Node) {
+        match self {
+            Self::Pl011 => {
+                uart.remove_property("reg-shift");
+                uart.remove_property("reg-io-width");
+            }
+            Self::Ns16550 => {
+                write_ns16550_register_layout(uart, Ns16550RegisterLayout::Packed);
+            }
+            Self::DwApb => {
+                write_ns16550_register_layout(uart, Ns16550RegisterLayout::DwApb);
+            }
+        }
+    }
+}
+
+fn write_ns16550_register_layout(uart: &mut Node, layout: Ns16550RegisterLayout) {
+    uart.set_property(u32_list_property("reg-shift", &[layout.register_shift()]));
+    uart.set_property(u32_list_property(
+        "reg-io-width",
+        &[layout.register_io_width()],
+    ));
 }
 
 fn patch_template_uart(
@@ -115,6 +142,7 @@ fn patch_template_uart(
     uart.set_property(u32_list_property("interrupt-parent", &[interrupt_parent]));
     uart.set_property(u32_list_property("interrupts", &interrupt_cells));
     uart.set_property(string_property("status", "okay"));
+    kind.write_register_layout(uart);
     if let Some(clock) = clock {
         uart.set_property(u32_list_property("clocks", &[clock, clock]));
         uart.set_property(string_list_property(
@@ -149,6 +177,7 @@ fn is_physical_capability_property(name: &str) -> bool {
         "assigned-clock-parents"
             | "assigned-clock-rates"
             | "assigned-clocks"
+            | "clock-names"
             | "clocks"
             | "dma-coherent"
             | "dma-names"
@@ -209,6 +238,7 @@ fn add_dynamic_uart(
     uart.set_property(u32_list_property("clock-frequency", &[kind.clock_hz()]));
     uart.set_property(u32_list_property("interrupt-parent", &[interrupt_parent]));
     uart.set_property(u32_list_property("interrupts", &interrupt_cells));
+    kind.write_register_layout(uart);
     if let Some(clock) = clock {
         uart.set_property(u32_list_property("clocks", &[clock, clock]));
         uart.set_property(string_list_property(
@@ -347,6 +377,9 @@ fn register_console_alias(
     node_path: &str,
     console_index: usize,
 ) -> MachinePlanResult<()> {
+    if console_index == 0 && selected_console_targets_node(guest, node_path) {
+        return Ok(());
+    }
     let aliases = guest
         .get_by_path_id("/aliases")
         .unwrap_or_else(|| guest.add_node(guest.root_id(), Node::new("aliases")));
@@ -370,6 +403,25 @@ fn register_console_alias(
             .set_property(string_property("stdout-path", "serial0:115200n8"));
     }
     Ok(())
+}
+
+fn selected_console_targets_node(guest: &Fdt, node_path: &str) -> bool {
+    let Some(reference) = guest
+        .get_by_path("/chosen")
+        .and_then(|chosen| chosen.as_node().get_property("stdout-path"))
+        .and_then(Property::as_str)
+        .and_then(|value| value.split(':').next())
+    else {
+        return false;
+    };
+    if reference.starts_with('/') {
+        return reference == node_path;
+    }
+    guest
+        .get_by_path("/aliases")
+        .and_then(|aliases| aliases.as_node().get_property(reference))
+        .and_then(Property::as_str)
+        == Some(node_path)
 }
 
 fn string_property(name: &str, value: &str) -> Property {

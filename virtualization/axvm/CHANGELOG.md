@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `no_std + alloc` compatible.
 - Add an AArch64 QEMU regression that boots Linux from a hardware-forwarded
   virtio-blk IRQ while keeping the VM-local PL011 console software-backed.
+- Add a distinct Synopsys DW-APB virtual UART model with checked 32-bit,
+  four-byte-stride register access for host-derived AArch64 consoles.
 
 ### Changed
 
@@ -38,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Track the firmware-selected host console separately from other compatible
   UARTs, prefer it for virtual-console replacement, and require a reversible
   host capability lease before assigning it as a physical device.
+- Select the default AArch64 virtual console from the firmware-selected UART
+  model; PL011, packed NS16550, and DW-APB register layouts are not conflated.
 
 ### Fixed
 
@@ -61,6 +65,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deassert a forwarded x86 level source by its in-service IOAPIC identity
   before processing EOI, allowing physical INTx delivery to rearm after the
   guest masks or reroutes the entry.
+- Resolve an active Rockchip FIQ debugger's UART alias, replace the underlying
+  physical UART with a software-backed DW-APB model, and rewrite the guest
+  console description without exposing the host debugger.
+- Implement standard 16550 modem/data loopback and retain destructively read
+  host-console bytes until the guest UART accepts them, so Linux probing and
+  FIFO backpressure no longer emit garbage or truncate input.
 
 ### Removed
 

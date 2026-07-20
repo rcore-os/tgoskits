@@ -39,7 +39,7 @@ impl HostPlatformSnapshot {
         })?;
         let mut snapshot = Self::new(generation);
         snapshot.set_source_fdt(bytes);
-        let console_path = selected_console_path(&fdt);
+        let console_path = selected_console_path(&fdt)?;
         let dependencies = FdtDependencyIndex::new(&fdt);
 
         for node_id in fdt.iter_node_ids() {
@@ -202,17 +202,22 @@ fn controller_supports_encoding(
     }
 }
 
-fn selected_console_path(fdt: &Fdt) -> Option<String> {
-    let chosen = fdt.get_by_path("/chosen")?;
-    ["stdout-path", "linux,stdout-path"]
-        .into_iter()
-        .find_map(|name| {
-            chosen
-                .as_node()
-                .get_property(name)?
-                .as_str()
-                .and_then(|value| resolve_console_path(fdt, value))
-        })
+fn selected_console_path(fdt: &Fdt) -> MachinePlanResult<Option<String>> {
+    let selected = fdt.get_by_path("/chosen").and_then(|chosen| {
+        ["stdout-path", "linux,stdout-path"]
+            .into_iter()
+            .find_map(|name| {
+                chosen
+                    .as_node()
+                    .get_property(name)?
+                    .as_str()
+                    .and_then(|value| resolve_console_path(fdt, value))
+            })
+    });
+    match selected {
+        Some(path) => Ok(Some(path)),
+        None => rockchip_fiq_console_path(fdt),
+    }
 }
 
 fn resolve_console_path(fdt: &Fdt, value: &str) -> Option<String> {
@@ -226,6 +231,54 @@ fn resolve_console_path(fdt: &Fdt, value: &str) -> Option<String> {
             .as_str()?
     };
     fdt.get_by_path(path).map(|_| String::from(path))
+}
+
+fn rockchip_fiq_console_path(fdt: &Fdt) -> MachinePlanResult<Option<String>> {
+    let mut selected = None;
+    for node_id in fdt.iter_node_ids() {
+        let Some(node) = fdt.node(node_id) else {
+            continue;
+        };
+        if node
+            .get_property("status")
+            .and_then(|property| property.as_str())
+            == Some("disabled")
+            || !node
+                .compatibles()
+                .any(|compatible| compatible == "rockchip,fiq-debugger")
+        {
+            continue;
+        }
+        let serial_id = node
+            .get_property("rockchip,serial-id")
+            .and_then(|property| property.get_u32())
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!(
+                    "Rockchip FIQ debugger '{}' has no serial-id",
+                    fdt.path_of(node_id)
+                ),
+            })?;
+        let alias = format!("serial{serial_id}");
+        let path = fdt
+            .get_by_path("/aliases")
+            .and_then(|aliases| aliases.as_node().get_property(&alias))
+            .and_then(|property| property.as_str())
+            .filter(|path| fdt.get_by_path(path).is_some())
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!(
+                    "Rockchip FIQ debugger '{}' refers to missing alias '{alias}'",
+                    fdt.path_of(node_id)
+                ),
+            })?;
+        if let Some(first) = selected.replace(String::from(path)) {
+            return Err(MachinePlanError::InvalidFirmware {
+                detail: format!(
+                    "multiple active Rockchip FIQ debuggers select '{first}' and '{path}'"
+                ),
+            });
+        }
+    }
+    Ok(selected)
 }
 
 fn classify_ownership(

@@ -1,6 +1,7 @@
 //! AArch64 PL011 virtual-device model adapter.
 
 use alloc::sync::Arc;
+use core::ops::ControlFlow;
 
 use arm_vpl011::{Pl011, Pl011Backend, Pl011BackendError};
 use axdevice::{
@@ -140,62 +141,50 @@ struct Pl011ConsolePoller {
 }
 
 struct BufferedConsoleInput {
-    bytes: [u8; 32],
-    next: usize,
-    end: usize,
     last_receive_ns: Option<u64>,
 }
 
 impl BufferedConsoleInput {
     const fn new() -> Self {
         Self {
-            bytes: [0; 32],
-            next: 0,
-            end: 0,
             last_receive_ns: None,
         }
-    }
-
-    const fn has_pending(&self) -> bool {
-        self.next != self.end
-    }
-
-    fn refill(&mut self, rx_lease: &HostConsoleRxLease) {
-        if self.has_pending() {
-            return;
-        }
-        self.next = 0;
-        self.end = rx_lease.read(&mut self.bytes).min(self.bytes.len());
     }
 }
 
 impl PollableDeviceOps for Pl011ConsolePoller {
     fn poll(&self, now_ns: u64) -> DeviceManagerResult {
         let mut input = self.input.lock();
-        input.refill(&self.rx_lease);
 
         let mut accepted = false;
-        while input.has_pending() && self.device.receive_ready() {
-            let byte = input.bytes[input.next];
-            match self
-                .device
-                .receive(byte, arm_vpl011::RxErrors::empty())
-                .map_err(pl011_poll_error)?
-            {
-                arm_vpl011::RxResult::Accepted => {
-                    input.next += 1;
-                    accepted = true;
-                }
-                arm_vpl011::RxResult::DroppedOverrun | arm_vpl011::RxResult::ReceiverDisabled => {
-                    break;
-                }
+        let mut retained = false;
+        while self.device.receive_ready() {
+            let available = self.rx_lease.with_next_byte(|byte| {
+                let result = self
+                    .device
+                    .receive(byte, arm_vpl011::RxErrors::empty())
+                    .map_err(pl011_poll_error)?;
+                Ok::<_, DeviceManagerError>(match result {
+                    arm_vpl011::RxResult::Accepted => {
+                        accepted = true;
+                        ControlFlow::Continue(())
+                    }
+                    arm_vpl011::RxResult::DroppedOverrun
+                    | arm_vpl011::RxResult::ReceiverDisabled => {
+                        retained = true;
+                        ControlFlow::Break(())
+                    }
+                })
+            })?;
+            if !available || retained {
+                break;
             }
         }
         if accepted {
             input.last_receive_ns = Some(now_ns);
             return Ok(());
         }
-        if input.has_pending() {
+        if retained {
             return Ok(());
         }
 

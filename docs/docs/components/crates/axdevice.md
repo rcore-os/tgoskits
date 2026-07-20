@@ -104,7 +104,7 @@ policy；Drop 会释放 claim，因此任何构建失败都不会残留不可审
 
 ## 架构集成
 
-- AArch64：GICv3 controller，PL011 与 timer 持有 `IrqLine`；
+- AArch64：GICv3 controller，PL011、DW-APB UART 与 timer 持有 `IrqLine`；
 - RISC-V：PLIC source input 与 hart/vCPU context binding；
 - x86_64：IOAPIC 到 LAPIC 的 message topology，COM1 使用每实例 backend；
 - LoongArch64：PCH-PIC 到 EIOINTC 再到 vCPU。

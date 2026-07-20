@@ -1,0 +1,35 @@
+# AxVM machine policy.
+[machine]
+mode = "virtual"
+firmware = "auto"
+
+[base]
+id = 1
+name = "linux-qemu-dw-apb-uart"
+cpu_num = 1
+phys_cpu_sets = [0x1]
+
+[kernel]
+entry_point = 0x80200000
+image_location = "fs"
+kernel_path = "/guest/linux/linux-qemu"
+kernel_load_addr = 0x80200000
+dtb_load_addr = 0x80000000
+ramdisk_path = "/guest/linux/axvm-virtual-initramfs.cpio"
+ramdisk_load_addr = 0x88000000
+
+[[memory.regions]]
+guest_base = 0x80000000
+size = 0x10000000
+permissions = "rwx"
+backing = { kind = "host", host_base = 0x80000000 }
+
+[devices]
+disable_defaults = ["console"]
+deny = []
+
+[[devices.virtual]]
+id = "console0"
+model = "snps-dw-apb-uart"
+source = { kind = "allocate" }
+backend = { kind = "host-console", rx = "exclusive", tx = "shared" }

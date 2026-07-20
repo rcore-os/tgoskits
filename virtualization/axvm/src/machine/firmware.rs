@@ -2,6 +2,7 @@
 
 use alloc::{format, string::String, vec, vec::Vec};
 
+use virtual_ns16550::Ns16550RegisterLayout;
 use vm_fdt::FdtWriter;
 
 use super::{
@@ -12,6 +13,7 @@ use super::{
 const AARCH64_GIC_PHANDLE: u32 = 1;
 const AARCH64_PL011_CLOCK_PHANDLE: u32 = 2;
 const AARCH64_PL011_CLOCK_HZ: u32 = 24_000_000;
+const AARCH64_16550_CLOCK_HZ: u32 = 100_000_000;
 
 /// Guest-specific properties needed in addition to a finalized AArch64 plan.
 #[derive(Clone, Debug)]
@@ -66,11 +68,9 @@ pub fn generate_aarch64_fdt(
     plan: &VmMachinePlan,
     config: &Aarch64FdtConfig,
 ) -> MachinePlanResult<Vec<u8>> {
-    let pl011_devices = planned_pl011_devices(plan)?;
+    let serial_devices = planned_aarch64_serial_devices(plan)?;
     let gic = planned_aarch64_gic(plan)?;
-    let serial_path = pl011_devices
-        .first()
-        .map(|serial| format!("/pl011@{:x}", serial.mmio.base()));
+    let serial_path = serial_devices.first().map(PlannedAarch64Serial::path);
 
     let mut fdt = FdtWriter::new()?;
     fdt.set_boot_cpuid_phys(0);
@@ -84,18 +84,26 @@ pub fn generate_aarch64_fdt(
     fdt.property_u32("#size-cells", 2)?;
     fdt.property_u32("interrupt-parent", AARCH64_GIC_PHANDLE)?;
 
-    write_chosen(&mut fdt, config, serial_path.as_deref())?;
+    write_chosen(
+        &mut fdt,
+        config,
+        serial_path.as_deref(),
+        serial_devices.first().map(|serial| serial.kind),
+    )?;
     write_aliases(&mut fdt, serial_path.as_deref())?;
     write_memory(&mut fdt, plan.fixed_guest_memory())?;
     write_cpus(&mut fdt, config.cpu_count)?;
     write_psci(&mut fdt)?;
     write_gicv3(&mut fdt, gic)?;
     write_timer(&mut fdt)?;
-    if !pl011_devices.is_empty() {
+    if serial_devices
+        .iter()
+        .any(|serial| serial.kind == Aarch64SerialKind::Pl011)
+    {
         write_pl011_clock(&mut fdt)?;
-        for serial in pl011_devices {
-            write_pl011(&mut fdt, serial)?;
-        }
+    }
+    for serial in serial_devices {
+        write_aarch64_serial(&mut fdt, serial)?;
     }
 
     fdt.end_node(root)?;
@@ -116,59 +124,98 @@ fn planned_aarch64_gic(plan: &VmMachinePlan) -> MachinePlanResult<&Aarch64GicV3P
 }
 
 #[derive(Clone, Copy)]
-struct PlannedPl011 {
+struct PlannedAarch64Serial {
+    kind: Aarch64SerialKind,
     mmio: AddressRange,
     intid: u32,
 }
 
-fn planned_pl011_devices(plan: &VmMachinePlan) -> MachinePlanResult<Vec<PlannedPl011>> {
-    plan.virtual_devices()
-        .iter()
-        .filter(|device| device.model_id().as_str() == "arm-pl011")
-        .map(|device| {
-            let mmio = device
-                .mmio()
-                .iter()
-                .find(|resource| resource.slot().as_str() == "registers")
-                .ok_or_else(|| MachinePlanError::InvalidFirmware {
-                    detail: format!(
-                        "PL011 instance '{}' has no 'registers' resource",
-                        device.instance_id()
-                    ),
-                })?
-                .range();
-            let intid = device
-                .interrupts()
-                .iter()
-                .find(|resource| resource.slot().as_str() == "irq")
-                .ok_or_else(|| MachinePlanError::InvalidFirmware {
-                    detail: format!(
-                        "PL011 instance '{}' has no 'irq' resource",
-                        device.instance_id()
-                    ),
-                })?
-                .id();
-            if intid < 32 {
-                return Err(MachinePlanError::InvalidFirmware {
-                    detail: format!(
-                        "PL011 instance '{}' uses private INTID {intid}; an SPI is required",
-                        device.instance_id()
-                    ),
-                });
-            }
-            Ok(PlannedPl011 { mmio, intid })
-        })
-        .collect()
+impl PlannedAarch64Serial {
+    fn path(&self) -> String {
+        format!("/{}@{:x}", self.kind.node_name(), self.mmio.base())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Aarch64SerialKind {
+    Pl011,
+    Ns16550,
+    DwApb,
+}
+
+impl Aarch64SerialKind {
+    fn from_model_id(model: &str) -> Option<Self> {
+        match model {
+            "arm-pl011" => Some(Self::Pl011),
+            "ns16550a" => Some(Self::Ns16550),
+            "snps-dw-apb-uart" => Some(Self::DwApb),
+            _ => None,
+        }
+    }
+
+    const fn node_name(self) -> &'static str {
+        match self {
+            Self::Pl011 => "pl011",
+            Self::Ns16550 | Self::DwApb => "serial",
+        }
+    }
+}
+
+fn planned_aarch64_serial_devices(
+    plan: &VmMachinePlan,
+) -> MachinePlanResult<Vec<PlannedAarch64Serial>> {
+    let mut serial_devices = Vec::new();
+    for device in plan.virtual_devices() {
+        let Some(kind) = Aarch64SerialKind::from_model_id(device.model_id().as_str()) else {
+            continue;
+        };
+        let mmio = device
+            .mmio()
+            .iter()
+            .find(|resource| resource.slot().as_str() == "registers")
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!(
+                    "serial instance '{}' has no 'registers' resource",
+                    device.instance_id()
+                ),
+            })?
+            .range();
+        let intid = device
+            .interrupts()
+            .iter()
+            .find(|resource| resource.slot().as_str() == "irq")
+            .ok_or_else(|| MachinePlanError::InvalidFirmware {
+                detail: format!(
+                    "serial instance '{}' has no 'irq' resource",
+                    device.instance_id()
+                ),
+            })?
+            .id();
+        if intid < 32 {
+            return Err(MachinePlanError::InvalidFirmware {
+                detail: format!(
+                    "serial instance '{}' uses private INTID {intid}; an SPI is required",
+                    device.instance_id()
+                ),
+            });
+        }
+        serial_devices.push(PlannedAarch64Serial { kind, mmio, intid });
+    }
+    Ok(serial_devices)
 }
 
 fn write_chosen(
     fdt: &mut FdtWriter,
     config: &Aarch64FdtConfig,
     serial_path: Option<&str>,
+    serial_kind: Option<Aarch64SerialKind>,
 ) -> vm_fdt::FdtWriterResult<()> {
     let chosen = fdt.begin_node("chosen")?;
     if let Some(bootargs) = config.bootargs.as_deref() {
-        fdt.property_string("bootargs", bootargs)?;
+        let bootargs = serial_kind
+            .map(|kind| normalize_aarch64_console_bootargs(bootargs, kind))
+            .unwrap_or_else(|| String::from(bootargs));
+        fdt.property_string("bootargs", &bootargs)?;
     }
     if let Some(path) = serial_path {
         fdt.property_string("stdout-path", &format!("{path}:115200n8"))?;
@@ -178,6 +225,42 @@ fn write_chosen(
         fdt.property_u64("linux,initrd-end", initrd.end())?;
     }
     fdt.end_node(chosen)
+}
+
+fn normalize_aarch64_console_bootargs(bootargs: &str, kind: Aarch64SerialKind) -> String {
+    let console = match kind {
+        Aarch64SerialKind::Pl011 => "console=ttyAMA0,115200",
+        Aarch64SerialKind::Ns16550 | Aarch64SerialKind::DwApb => "console=ttyS0,115200",
+    };
+    let mut normalized = Vec::new();
+    let mut serial_console = false;
+    let mut early_console = false;
+    for argument in bootargs.split_ascii_whitespace() {
+        if argument == "keep_bootcon" || argument.starts_with("earlyprintk") {
+            continue;
+        }
+        if argument == "earlycon" || argument.starts_with("earlycon=") {
+            if !early_console {
+                normalized.push(String::from("earlycon"));
+                early_console = true;
+            }
+            continue;
+        }
+        if argument.strip_prefix("console=").is_some_and(|value| {
+            value.starts_with("ttyAMA") || value.starts_with("ttyS") || value.starts_with("ttyFIQ")
+        }) {
+            if !serial_console {
+                normalized.push(String::from(console));
+                serial_console = true;
+            }
+            continue;
+        }
+        normalized.push(String::from(argument));
+    }
+    if !serial_console {
+        normalized.push(String::from(console));
+    }
+    normalized.join(" ")
 }
 
 fn write_aliases(fdt: &mut FdtWriter, serial_path: Option<&str>) -> vm_fdt::FdtWriterResult<()> {
@@ -284,7 +367,18 @@ fn write_pl011_clock(fdt: &mut FdtWriter) -> vm_fdt::FdtWriterResult<()> {
     fdt.end_node(clock)
 }
 
-fn write_pl011(fdt: &mut FdtWriter, serial: PlannedPl011) -> vm_fdt::FdtWriterResult<()> {
+fn write_aarch64_serial(
+    fdt: &mut FdtWriter,
+    serial: PlannedAarch64Serial,
+) -> vm_fdt::FdtWriterResult<()> {
+    match serial.kind {
+        Aarch64SerialKind::Pl011 => write_pl011(fdt, serial),
+        Aarch64SerialKind::Ns16550 => write_ns16550(fdt, serial, Ns16550RegisterLayout::Packed),
+        Aarch64SerialKind::DwApb => write_ns16550(fdt, serial, Ns16550RegisterLayout::DwApb),
+    }
+}
+
+fn write_pl011(fdt: &mut FdtWriter, serial: PlannedAarch64Serial) -> vm_fdt::FdtWriterResult<()> {
     let node = fdt.begin_node(&format!("pl011@{:x}", serial.mmio.base()))?;
     fdt.property_string_list(
         "compatible",
@@ -298,6 +392,34 @@ fn write_pl011(fdt: &mut FdtWriter, serial: PlannedPl011) -> vm_fdt::FdtWriterRe
         &[AARCH64_PL011_CLOCK_PHANDLE, AARCH64_PL011_CLOCK_PHANDLE],
     )?;
     fdt.property_string_list("clock-names", vec!["uartclk".into(), "apb_pclk".into()])?;
+    fdt.property_u32("current-speed", 115_200)?;
+    fdt.property_string("status", "okay")?;
+    fdt.end_node(node)
+}
+
+fn write_ns16550(
+    fdt: &mut FdtWriter,
+    serial: PlannedAarch64Serial,
+    layout: Ns16550RegisterLayout,
+) -> vm_fdt::FdtWriterResult<()> {
+    let node = fdt.begin_node(&format!("serial@{:x}", serial.mmio.base()))?;
+    match layout {
+        Ns16550RegisterLayout::Packed => {
+            fdt.property_string("compatible", "ns16550a")?;
+        }
+        Ns16550RegisterLayout::DwApb => {
+            fdt.property_string_list(
+                "compatible",
+                vec!["snps,dw-apb-uart".into(), "ns16550a".into()],
+            )?;
+        }
+    }
+    fdt.property_array_u64("reg", &[serial.mmio.base(), serial.mmio.size()])?;
+    fdt.property_u32("interrupt-parent", AARCH64_GIC_PHANDLE)?;
+    fdt.property_array_u32("interrupts", &[0, serial.intid - 32, 4])?;
+    fdt.property_u32("clock-frequency", AARCH64_16550_CLOCK_HZ)?;
+    fdt.property_u32("reg-shift", layout.register_shift())?;
+    fdt.property_u32("reg-io-width", layout.register_io_width())?;
     fdt.property_u32("current-speed", 115_200)?;
     fdt.property_string("status", "okay")?;
     fdt.end_node(node)

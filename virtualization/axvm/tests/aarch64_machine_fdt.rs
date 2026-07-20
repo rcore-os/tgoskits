@@ -9,27 +9,13 @@ use fdt_edit::Fdt;
 
 #[test]
 fn generated_fdt_uses_the_planned_pl011_resources() {
-    let controller = Aarch64GicV3Profile::new(
-        AddressRange::new(0x0800_0000, 0x1_0000).unwrap(),
-        0x080a_0000,
-        0x2_0000,
-        Some(AddressRange::new(0x0808_0000, 0x2_0000).unwrap()),
-        480,
-    )
-    .unwrap();
-    let profile = MachineProfile::new(
-        AddressRange::new(0x0900_0000, 0x0100_0000).unwrap(),
-        32..=511,
-    )
-    .unwrap()
-    .with_interrupt_controller(InterruptControllerProfile::Aarch64GicV3(controller));
     let request = VmMachineRequest::new(VmMachineMode::Virtual, GuestFirmwareKind::Fdt)
         .with_vcpu_count(2)
         .with_memory(GuestMemoryRegion::new(
             AddressRange::new(0x4000_0000, 0x1000_0000).unwrap(),
         ))
         .with_virtual_device(pl011());
-    let plan = VmMachinePlanner::new(profile)
+    let plan = VmMachinePlanner::new(aarch64_profile())
         .plan(&request, &HostPlatformSnapshot::new(0))
         .unwrap();
     let config = Aarch64FdtConfig::new(2)
@@ -79,6 +65,78 @@ fn generated_fdt_uses_the_planned_pl011_resources() {
     assert!(timer.as_node().get_property("interrupt-names").is_none());
 }
 
+#[test]
+fn generated_fdt_describes_the_dw_apb_runtime_layout() {
+    let request = VmMachineRequest::new(VmMachineMode::Virtual, GuestFirmwareKind::Fdt)
+        .with_memory(GuestMemoryRegion::new(
+            AddressRange::new(0x4000_0000, 0x1000_0000).unwrap(),
+        ))
+        .with_virtual_device(dw_apb_uart());
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &HostPlatformSnapshot::new(0))
+        .unwrap();
+
+    let bytes = generate_aarch64_fdt(
+        &plan,
+        &Aarch64FdtConfig::new(1)
+            .unwrap()
+            .with_bootargs("console=ttyAMA0 rdinit=/init"),
+    )
+    .unwrap();
+
+    let fdt = Fdt::from_bytes(&bytes).unwrap();
+    let serial = fdt.get_by_path("/serial@9000000").unwrap();
+    let serial = serial.as_node();
+    assert_eq!(serial.compatibles().next(), Some("snps,dw-apb-uart"));
+    assert_eq!(
+        serial
+            .get_property("reg-shift")
+            .and_then(|property| property.get_u32()),
+        Some(2)
+    );
+    assert_eq!(
+        serial
+            .get_property("reg-io-width")
+            .and_then(|property| property.get_u32()),
+        Some(4)
+    );
+    assert_eq!(
+        fdt.get_by_path("/chosen")
+            .unwrap()
+            .as_node()
+            .get_property("stdout-path")
+            .and_then(|property| property.as_str()),
+        Some("/serial@9000000:115200n8")
+    );
+    let bootargs = fdt
+        .get_by_path("/chosen")
+        .unwrap()
+        .as_node()
+        .get_property("bootargs")
+        .and_then(|property| property.as_str())
+        .unwrap();
+    assert!(bootargs.contains("console=ttyS0,115200"));
+    assert!(!bootargs.contains("ttyAMA"));
+    assert!(fdt.get_by_path_id("/pl011-clock").is_none());
+}
+
+fn aarch64_profile() -> MachineProfile {
+    let controller = Aarch64GicV3Profile::new(
+        AddressRange::new(0x0800_0000, 0x1_0000).unwrap(),
+        0x080a_0000,
+        0x2_0000,
+        Some(AddressRange::new(0x0808_0000, 0x2_0000).unwrap()),
+        480,
+    )
+    .unwrap();
+    MachineProfile::new(
+        AddressRange::new(0x0900_0000, 0x0100_0000).unwrap(),
+        32..=511,
+    )
+    .unwrap()
+    .with_interrupt_controller(InterruptControllerProfile::Aarch64GicV3(controller))
+}
+
 fn pl011() -> VirtualDeviceDescriptor {
     VirtualDeviceDescriptor::new(
         DeviceInstanceId::new("console0").unwrap(),
@@ -94,4 +152,21 @@ fn pl011() -> VirtualDeviceDescriptor {
             .unwrap(),
     )
     .with_compatible("arm,pl011")
+}
+
+fn dw_apb_uart() -> VirtualDeviceDescriptor {
+    VirtualDeviceDescriptor::new(
+        DeviceInstanceId::new("console0").unwrap(),
+        DeviceModelId::new("snps-dw-apb-uart").unwrap(),
+        DeviceRequirements::new()
+            .with_mmio(ResourceSlot::new("registers").unwrap(), 0x100, 0x100)
+            .unwrap()
+            .with_wired_irq(
+                ResourceSlot::new("irq").unwrap(),
+                InterruptTriggerMode::LevelTriggered,
+                axdevice::InterruptSharing::Exclusive,
+            )
+            .unwrap(),
+    )
+    .with_compatible("snps,dw-apb-uart")
 }

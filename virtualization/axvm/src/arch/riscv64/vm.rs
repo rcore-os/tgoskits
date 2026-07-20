@@ -47,6 +47,7 @@ impl Riscv64Arch {
 fn default_virtual_device_models() -> AxVmResult<axdevice::VirtualDeviceModelRegistry> {
     let mut registry = axdevice::VirtualDeviceModelRegistry::new();
     super::ns16550_model::register_ns16550_model(&mut registry, 0x1000)?;
+    super::ns16550_model::register_dw_apb_uart_model(&mut registry, 0x1000)?;
     Ok(registry)
 }
 

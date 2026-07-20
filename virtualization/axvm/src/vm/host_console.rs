@@ -1,6 +1,9 @@
 //! Host-console ownership capabilities used by virtual UART adapters.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    ops::ControlFlow,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ax_kspin::SpinNoIrq;
 use axdevice::{ConsoleTxPolicy, DeviceManagerError, DeviceManagerResult};
@@ -23,7 +26,9 @@ impl HostConsoleTxOwnership {
     }
 }
 
-pub(crate) struct HostConsoleRxLease;
+pub(crate) struct HostConsoleRxLease {
+    input: SpinNoIrq<HostConsoleInputBuffer<32>>,
+}
 
 impl HostConsoleRxLease {
     pub(crate) fn claim() -> DeviceManagerResult<Self> {
@@ -33,11 +38,79 @@ impl HostConsoleRxLease {
                 operation: "claim host-console receive backend",
                 detail: "another virtual console already owns exclusive host input".into(),
             })?;
-        Ok(Self)
+        Ok(Self {
+            input: SpinNoIrq::new(HostConsoleInputBuffer::new()),
+        })
     }
 
-    pub(crate) fn read(&self, bytes: &mut [u8]) -> usize {
-        ax_std::os::arceos::modules::ax_hal::console::read_bytes(bytes)
+    /// Presents the oldest buffered byte and consumes it only when requested.
+    ///
+    /// Returning [`ControlFlow::Continue`] consumes the byte; returning
+    /// [`ControlFlow::Break`] keeps it for the next attempt.
+    ///
+    /// Keeping the byte until the emulated UART accepts it closes the race
+    /// between a readiness check and the UART state transition itself.
+    pub(crate) fn with_next_byte<E>(
+        &self,
+        process: impl FnOnce(u8) -> Result<ControlFlow<(), ()>, E>,
+    ) -> Result<bool, E> {
+        let mut input = self.input.lock();
+        input.refill_from(ax_std::os::arceos::modules::ax_hal::console::read_bytes);
+        let Some(byte) = input.front() else {
+            return Ok(false);
+        };
+        if process(byte)?.is_continue() {
+            let consumed = input.consume_front();
+            debug_assert_eq!(consumed, Some(byte));
+        }
+        Ok(true)
+    }
+}
+
+/// Bytes already removed from the host console but not yet accepted by a
+/// guest UART.
+///
+/// Host console reads are destructive, while hardware UART FIFOs may apply
+/// backpressure. Keeping this queue in the adapter prevents a polling batch
+/// from turning normal host input into a synthetic guest FIFO overrun.
+struct HostConsoleInputBuffer<const CAPACITY: usize> {
+    bytes: [u8; CAPACITY],
+    next: usize,
+    end: usize,
+}
+
+impl<const CAPACITY: usize> HostConsoleInputBuffer<CAPACITY> {
+    const fn new() -> Self {
+        Self {
+            bytes: [0; CAPACITY],
+            next: 0,
+            end: 0,
+        }
+    }
+
+    const fn has_pending(&self) -> bool {
+        self.next != self.end
+    }
+
+    fn front(&self) -> Option<u8> {
+        self.bytes
+            .get(self.next)
+            .copied()
+            .filter(|_| self.has_pending())
+    }
+
+    fn consume_front(&mut self) -> Option<u8> {
+        let byte = self.front()?;
+        self.next += 1;
+        Some(byte)
+    }
+
+    fn refill_from(&mut self, read: impl FnOnce(&mut [u8]) -> usize) {
+        if self.has_pending() {
+            return;
+        }
+        self.next = 0;
+        self.end = read(&mut self.bytes).min(self.bytes.len());
     }
 }
 
@@ -120,5 +193,21 @@ mod tests {
             .unwrap();
         assert!(HostConsoleTxLease::claim(ConsoleTxPolicy::Shared).is_err());
         drop(exclusive);
+    }
+
+    #[test]
+    fn buffered_input_retains_unaccepted_host_bytes() {
+        let mut input = HostConsoleInputBuffer::<4>::new();
+        input.refill_from(|buffer| {
+            buffer.copy_from_slice(b"abcd");
+            buffer.len()
+        });
+
+        assert_eq!(input.consume_front(), Some(b'a'));
+        input.refill_from(|_| panic!("pending input must not be overwritten"));
+        assert_eq!(input.consume_front(), Some(b'b'));
+        assert_eq!(input.consume_front(), Some(b'c'));
+        assert_eq!(input.consume_front(), Some(b'd'));
+        assert!(!input.has_pending());
     }
 }

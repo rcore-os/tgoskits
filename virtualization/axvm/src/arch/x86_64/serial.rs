@@ -1,6 +1,7 @@
 //! x86 COM1 model and AxVM runtime adapter.
 
 use alloc::sync::Arc;
+use core::{convert::Infallible, ops::ControlFlow};
 
 use axdevice::{
     ConsoleRxPolicy, DeviceBackend, DeviceBuildContext, DeviceBundle, DeviceManagerError,
@@ -132,6 +133,21 @@ impl X86SerialBackend for AxvmSerialBackend {
     }
 
     fn receive(&self, bytes: &mut [u8]) -> usize {
-        self.rx.as_ref().map_or(0, |rx| rx.read(bytes))
+        let Some(rx) = &self.rx else {
+            return 0;
+        };
+        let mut count = 0;
+        while count < bytes.len() {
+            let result = rx.with_next_byte(|byte| {
+                bytes[count] = byte;
+                Ok::<_, Infallible>(ControlFlow::Continue(()))
+            });
+            match result {
+                Ok(true) => count += 1,
+                Ok(false) => break,
+                Err(never) => match never {},
+            }
+        }
+        count
     }
 }

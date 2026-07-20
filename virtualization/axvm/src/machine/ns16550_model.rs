@@ -1,6 +1,7 @@
 //! Architecture-neutral 16550 model backed by the host console.
 
 use alloc::sync::Arc;
+use core::ops::ControlFlow;
 
 use axdevice::{
     ConsoleRxPolicy, DeviceBackend, DeviceBuildContext, DeviceBundle, DeviceManagerError,
@@ -9,11 +10,12 @@ use axdevice::{
     VirtualDeviceModelRegistry,
 };
 use axvm_types::InterruptTriggerMode;
-use virtual_ns16550::{Ns16550, Ns16550Backend, Ns16550BackendError};
+use virtual_ns16550::{Ns16550, Ns16550Backend, Ns16550BackendError, Ns16550RegisterLayout};
 
 use crate::vm::host_console::{HostConsoleRxLease, HostConsoleTxLease};
 
-const MODEL_ID: &str = "ns16550a";
+const NS16550_MODEL_ID: &str = "ns16550a";
+pub(crate) const DW_APB_UART_MODEL_ID: &str = "snps-dw-apb-uart";
 const REGISTERS_SLOT: &str = "registers";
 const IRQ_SLOT: &str = "irq";
 
@@ -33,21 +35,69 @@ pub(crate) fn register_ns16550_model(
     registry: &mut VirtualDeviceModelRegistry,
     mmio_size: u64,
 ) -> DeviceManagerResult {
-    registry.register(Arc::new(Ns16550Model::new(mmio_size)?))
+    register_model(registry, Ns16550ModelKind::Packed, mmio_size)
+}
+
+pub(crate) fn register_dw_apb_uart_model(
+    registry: &mut VirtualDeviceModelRegistry,
+    mmio_size: u64,
+) -> DeviceManagerResult {
+    register_model(registry, Ns16550ModelKind::DwApb, mmio_size)
+}
+
+fn register_model(
+    registry: &mut VirtualDeviceModelRegistry,
+    kind: Ns16550ModelKind,
+    mmio_size: u64,
+) -> DeviceManagerResult {
+    registry.register(Arc::new(Ns16550Model::new(kind, mmio_size)?))
 }
 
 struct Ns16550Model {
     id: DeviceModelId,
+    kind: Ns16550ModelKind,
     mmio_size: u64,
 }
 
 impl Ns16550Model {
-    fn new(mmio_size: u64) -> DeviceManagerResult<Self> {
+    fn new(kind: Ns16550ModelKind, mmio_size: u64) -> DeviceManagerResult<Self> {
         ns16550_device_requirements(mmio_size)?;
         Ok(Self {
-            id: DeviceModelId::new(MODEL_ID)?,
+            id: DeviceModelId::new(kind.model_id())?,
+            kind,
             mmio_size,
         })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Ns16550ModelKind {
+    Packed,
+    DwApb,
+}
+
+impl Ns16550ModelKind {
+    const fn model_id(self) -> &'static str {
+        match self {
+            Self::Packed => NS16550_MODEL_ID,
+            Self::DwApb => DW_APB_UART_MODEL_ID,
+        }
+    }
+
+    const fn register_layout(self) -> Ns16550RegisterLayout {
+        match self {
+            Self::Packed => Ns16550RegisterLayout::Packed,
+            Self::DwApb => Ns16550RegisterLayout::DwApb,
+        }
+    }
+
+    fn matches_template(self, template: &DeviceTemplate) -> bool {
+        match self {
+            Self::Packed => {
+                template.has_compatible("ns16550a") || template.has_compatible("ns16550")
+            }
+            Self::DwApb => template.has_compatible("snps,dw-apb-uart"),
+        }
     }
 }
 
@@ -57,7 +107,7 @@ impl VirtualDeviceModel for Ns16550Model {
     }
 
     fn matches_template(&self, template: &DeviceTemplate) -> bool {
-        template.has_compatible("ns16550a") || template.has_compatible("ns16550")
+        self.kind.matches_template(template)
     }
 
     fn requirements(
@@ -73,20 +123,20 @@ impl VirtualDeviceModel for Ns16550Model {
         context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         let (base, size) = resources.mmio(&resource_slot(REGISTERS_SLOT)?)?;
-        if size < 8 {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "build virtual 16550",
-                detail: alloc::format!("register window has size {size:#x}, expected at least 8"),
-            });
-        }
         let irq = context.irq(&resource_slot(IRQ_SLOT)?)?;
         let (backend, rx_lease) = serial_backend(context.backend())?;
         let uart = Arc::new(
-            Ns16550::new_mmio("ns16550a", base, size, irq, backend).map_err(|error| {
-                DeviceManagerError::InvalidConfig {
-                    operation: "build virtual 16550",
-                    detail: alloc::format!("{error}"),
-                }
+            Ns16550::new_mmio_with_layout(
+                self.kind.model_id(),
+                base,
+                size,
+                irq,
+                backend,
+                self.kind.register_layout(),
+            )
+            .map_err(|error| DeviceManagerError::InvalidConfig {
+                operation: "build virtual 16550",
+                detail: alloc::format!("{error}"),
             })?,
         );
         let mut bundle =
@@ -141,15 +191,19 @@ struct Ns16550Poller {
 
 impl PollableDeviceOps for Ns16550Poller {
     fn poll(&self, _now_ns: u64) -> DeviceManagerResult {
-        let mut bytes = [0; 32];
-        let count = self.rx_lease.read(&mut bytes).min(bytes.len());
-        for byte in &bytes[..count] {
-            self.uart
-                .receive(*byte)
-                .map_err(|error| DeviceManagerError::Backend {
-                    operation: "poll virtual 16550 input",
-                    detail: alloc::format!("{error}"),
-                })?;
+        while self.uart.receive_ready() {
+            let available = self.rx_lease.with_next_byte(|byte| {
+                self.uart
+                    .receive(byte)
+                    .map(|_| ControlFlow::Continue(()))
+                    .map_err(|error| DeviceManagerError::Backend {
+                        operation: "poll virtual 16550 input",
+                        detail: alloc::format!("{error}"),
+                    })
+            })?;
+            if !available {
+                break;
+            }
         }
         Ok(())
     }

@@ -52,6 +52,8 @@ impl Aarch64Arch {
 fn default_virtual_device_models() -> AxVmResult<axdevice::VirtualDeviceModelRegistry> {
     let mut registry = axdevice::VirtualDeviceModelRegistry::new();
     super::pl011::register_standard_model(&mut registry)?;
+    super::ns16550_model::register_ns16550_model(&mut registry, 0x100)?;
+    super::ns16550_model::register_dw_apb_uart_model(&mut registry, 0x100)?;
     Ok(registry)
 }
 

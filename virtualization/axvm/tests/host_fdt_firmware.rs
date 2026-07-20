@@ -193,6 +193,64 @@ fn hardware_forwarded_vm_replaces_the_protected_console_with_a_software_irq_uart
 }
 
 #[test]
+fn hardware_forwarded_vm_reuses_the_fiq_selected_dw_uart_template() {
+    let host = host_fdt_with_rockchip_fiq_debugger_console();
+    let snapshot = whole_machine_snapshot(&host);
+    assert_eq!(
+        snapshot.console_device().map(HostDeviceId::as_str),
+        Some("/soc/serial@9000000")
+    );
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_physical_interrupt_policy(PhysicalInterruptPolicy::HardwareForwarded)
+        .with_virtual_device(dw_apb_uart());
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    assert_eq!(
+        plan.virtual_devices()[0]
+            .host_template()
+            .map(HostDeviceId::as_str),
+        Some("/soc/serial@9000000")
+    );
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    let uart = guest.get_by_path("/soc/serial@9000000").unwrap();
+    let uart = uart.as_node();
+    assert_eq!(uart.compatibles().next(), Some("snps,dw-apb-uart"));
+    assert_eq!(
+        uart.get_property("reg-shift").and_then(Property::get_u32),
+        Some(2)
+    );
+    assert_eq!(
+        uart.get_property("reg-io-width")
+            .and_then(Property::get_u32),
+        Some(4)
+    );
+    assert!(uart.get_property("clock-names").is_none());
+    assert!(guest.get_by_path_id("/fiq-debugger").is_none());
+    let chosen = guest.get_by_path("/chosen").unwrap().as_node();
+    assert_eq!(
+        chosen
+            .get_property("stdout-path")
+            .and_then(Property::as_str),
+        Some("serial2:1500000n8")
+    );
+    let bootargs = chosen
+        .get_property("bootargs")
+        .and_then(Property::as_str)
+        .unwrap();
+    assert!(bootargs.contains("console=ttyS2,1500000"));
+    assert!(!bootargs.contains("ttyFIQ"));
+    let aliases = guest.get_by_path("/aliases").unwrap().as_node();
+    assert_eq!(
+        aliases.get_property("serial2").and_then(Property::as_str),
+        Some("/soc/serial@9000000")
+    );
+    assert!(aliases.get_property("serial0").is_none());
+}
+
+#[test]
 fn host_secure_firmware_channel_is_not_exposed_without_a_vm_capability() {
     let host = host_fdt_with_host_scmi_channel();
     let snapshot = whole_machine_snapshot(&host);
@@ -591,6 +649,24 @@ fn pl011() -> VirtualDeviceDescriptor {
     .with_compatible("arm,pl011")
 }
 
+fn dw_apb_uart() -> VirtualDeviceDescriptor {
+    let requirements = DeviceRequirements::new()
+        .with_mmio(ResourceSlot::new("registers").unwrap(), 0x100, 0x100)
+        .unwrap()
+        .with_wired_irq(
+            ResourceSlot::new("irq").unwrap(),
+            InterruptTriggerMode::LevelTriggered,
+            axdevice::InterruptSharing::Exclusive,
+        )
+        .unwrap();
+    VirtualDeviceDescriptor::new(
+        DeviceInstanceId::new("console0").unwrap(),
+        DeviceModelId::new("snps-dw-apb-uart").unwrap(),
+        requirements,
+    )
+    .with_compatible("snps,dw-apb-uart")
+}
+
 fn whole_machine_snapshot(host: &[u8]) -> HostPlatformSnapshot {
     let mut snapshot =
         HostPlatformSnapshot::from_fdt(7, host, FdtInterruptEncoding::ArmGic).unwrap();
@@ -807,6 +883,12 @@ fn host_fdt_with_rockchip_fiq_debugger_console() -> Vec<u8> {
         "rockchip,rk3568-uart\0snps,dw-apb-uart",
     ));
     uart.set_property(string_property("status", "disabled"));
+    uart.set_property(u32_property("reg-shift", &[2]));
+    uart.set_property(u32_property("reg-io-width", &[4]));
+    uart.set_property(string_property("clock-names", "baudclk"));
+    fdt.view_typed_mut(fdt.get_by_path_id("/soc/serial@9000000").unwrap())
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0900_0000, Some(0x100))]);
 
     let fiq = fdt.add_node(root, Node::new("fiq-debugger"));
     let fiq = fdt.node_mut(fiq).unwrap();

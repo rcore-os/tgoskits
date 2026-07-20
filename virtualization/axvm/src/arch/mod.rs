@@ -57,8 +57,9 @@ pub(crate) use x86_64::{VmArchConfig, VmArchState, VmRuntimeArchState, X86_64Arc
 pub mod platform {
     #[cfg(target_arch = "aarch64")]
     pub use super::aarch64::{
-        Aarch64Pl011Model, current_host_platform_snapshot, host_fdt_bootarg, host_phys_to_virt,
-        pl011_device_requirements, standard_machine_profile,
+        Aarch64Pl011Model, DW_APB_UART_MODEL_ID, current_host_platform_snapshot,
+        dw_apb_uart_device_requirements, host_fdt_bootarg, host_phys_to_virt,
+        ns16550_device_requirements, pl011_device_requirements, standard_machine_profile,
     };
     #[cfg(target_arch = "loongarch64")]
     pub use super::loongarch64::irq::{

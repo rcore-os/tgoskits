@@ -88,9 +88,10 @@ controller、MMIO view 和设备 endpoint 作为同一 bundle/事务注册，避
 vCPU、controller ID、Guest INTID 或 host IRQ；设备到 controller input、controller 到
 vCPU/上级 controller 的关系全部由 machine plan 与 topology 完成。
 
-AArch64 PL011 是完整示例：模型 core 位于 `arm_vpl011`，只持有 level `IrqLine`；AxVM
-adapter 提供 per-instance host-console backend、polling 和 FDT 节点。CNTP timer 同样每
-vCPU 持有 PPI line，并用 generation token 取消过期回调。
+AArch64 PL011 与 Synopsys DW-APB UART 是完整示例：模型 core 只持有 level
+`IrqLine`，AxVM adapter 提供 per-instance host-console backend、polling 和 FDT 节点。
+DW-APB 与 packed NS16550 使用不同 model ID，运行时访问宽度、寄存器步长和固件属性
+保持一致。CNTP timer 同样每 vCPU 持有 PPI line，并用 generation token 取消过期回调。
 
 ## 架构 profile
 
@@ -104,7 +105,9 @@ Virtual 标准 profile 的基础设施：
 | LoongArch64 | EIOINTC/PCH-PIC | timer/IPI | NS16550 | ACPI/fw_cfg |
 
 console 可用 `disable_defaults = ["console"]` 关闭；controller、timer 和 reset 是强制
-基础设施。block、net、RNG 不会隐式创建。
+基础设施。Virtual AArch64 默认使用 PL011；host 派生的 Passthrough VM 会按固件选中
+的 UART 使用 PL011、packed NS16550 或 DW-APB 虚拟替换。block、net、RNG 不会隐式
+创建。
 
 ## AArch64 ownership
 

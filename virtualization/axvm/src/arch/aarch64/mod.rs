@@ -32,6 +32,8 @@ mod ipi;
 #[path = "../../architecture/nested_page_fault.rs"]
 mod nested_page_fault;
 mod npt;
+#[path = "../../machine/ns16550_model.rs"]
+mod ns16550_model;
 mod pl011;
 mod placement;
 #[path = "../../architecture/sysreg.rs"]
@@ -48,6 +50,21 @@ pub use images::ImageLoader;
 use ipi::SendIpiExit;
 pub use pl011::{Aarch64Pl011Model, pl011_device_requirements};
 use sysreg::{SysRegReadExit, SysRegWriteExit};
+
+/// Stable model identifier for an AArch64 Synopsys DesignWare APB UART.
+pub const DW_APB_UART_MODEL_ID: &str = ns16550_model::DW_APB_UART_MODEL_ID;
+
+/// Returns named resources for a DesignWare APB virtual console.
+pub fn dw_apb_uart_device_requirements()
+-> axdevice::DeviceManagerResult<axdevice::DeviceRequirements> {
+    ns16550_model::ns16550_device_requirements(0x100)
+}
+
+/// Returns named resources for a packed AArch64 NS16550 console.
+pub fn ns16550_device_requirements() -> axdevice::DeviceManagerResult<axdevice::DeviceRequirements>
+{
+    ns16550_model::ns16550_device_requirements(0x100)
+}
 
 /// Returns the deterministic resource pools for an AArch64 virtual machine.
 pub fn standard_machine_profile()
