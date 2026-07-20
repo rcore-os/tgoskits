@@ -33,8 +33,20 @@ pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxR
     Ok(0)
 }
 
-pub fn sys_gettimeofday(ts: *mut timeval) -> AxResult<isize> {
-    ts.vm_write(timeval::from_time_value(wall_time()))?;
+#[derive(Default)]
+#[repr(C)]
+pub struct Timezone {
+    tz_minuteswest: i32,
+    tz_dsttime: i32,
+}
+
+pub fn sys_gettimeofday(ts: *mut timeval, tz: *mut Timezone) -> AxResult<isize> {
+    if let Some(ts) = ts.nullable() {
+        ts.vm_write(timeval::from_time_value(wall_time()))?;
+    }
+    if let Some(tz) = tz.nullable() {
+        tz.vm_write(Timezone::default())?;
+    }
     Ok(0)
 }
 

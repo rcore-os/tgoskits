@@ -1,0 +1,10 @@
+# LoongArch uses the dynamic (axplat-dyn) platform: ax-driver/serial is required and the
+# build does NOT opt out of dynamic mode, because the retired static LoongArch platform has
+# no /dev/console serial TTY binding (the app would exit early with no console output).
+target = "loongarch64-unknown-none-softfloat"
+log = "Warn"
+features = [
+  "ax-driver/serial",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+]

@@ -38,6 +38,42 @@ static int xsetns(int fd, int nstype) {
     return (int)syscall(__NR_setns, fd, nstype);
 }
 
+static void test_unprivileged_mount_operations(void) {
+    const char *missing = "/tmp/starry-unprivileged-umount-missing";
+    unlink(missing);
+    rmdir(missing);
+
+    pid_t pid = fork();
+    if (pid < 0)
+        FAIL("fork unprivileged mount checks");
+    if (pid == 0) {
+        if (setresuid(1000, 1000, 1000) < 0)
+            _exit(1);
+        errno = 0;
+        if (unshare(CLONE_NEWNS) != -1 || errno != EPERM)
+            _exit(2);
+        errno = 0;
+        if (umount2(missing, 0) != -1 || errno != ENOENT)
+            _exit(3);
+        errno = 0;
+        if (umount2("", 0) != -1 || errno != ENOENT)
+            _exit(4);
+        errno = 0;
+        if (umount2("/", MNT_DETACH) != -1 || errno != EPERM)
+            _exit(5);
+        _exit(0);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid)
+        FAIL("waitpid unprivileged mount checks");
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        errno = EPERM;
+        FAIL("unprivileged mount-operation errno priority mismatch");
+    }
+    PASS("unprivileged umount2 preserves path errors before EPERM");
+}
+
 static void write_all(int fd, const char *buf, size_t len, const char *what) {
     size_t done = 0;
     while (done < len) {
@@ -180,6 +216,8 @@ int main(void) {
     printf("================================================\n");
     printf("  TEST: unshare/setns(CLONE_NEWNS) mount view\n");
     printf("================================================\n");
+
+    test_unprivileged_mount_operations();
 
     /* Scenario 1: clone(CLONE_FS) + child unshare(CLONE_NEWNS) → parent
        must NOT see child's namespace-local bind mount. */
