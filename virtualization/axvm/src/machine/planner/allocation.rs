@@ -250,12 +250,12 @@ fn reserve_occupied_mmio(
     let mut reservations = profile.reserved_mmio().to_vec();
     reservations.extend(request.fixed_memory());
     if request.mode() == VmMachineMode::Passthrough {
-        reservations.extend(
-            snapshot
-                .devices()
-                .iter()
-                .flat_map(|device| device.mmio().iter().copied()),
-        );
+        // The allocator assigns guest addresses. Host RAM is not part of the
+        // passthrough I/O aperture and remains unavailable unless the request
+        // explicitly maps it as guest memory, so it must not consume a
+        // guest-only virtual MMIO pool. Firmware-derived I/O apertures are the
+        // authoritative ranges that dynamic virtual devices must avoid.
+        reservations.extend(snapshot.io_apertures().iter().copied());
     }
     for reservation in super::mapping::merge_ranges(reservations) {
         reserve_mmio(allocator, pool, reservation)?;

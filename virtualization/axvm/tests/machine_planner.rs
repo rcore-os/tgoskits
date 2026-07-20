@@ -532,6 +532,31 @@ fn physical_interrupt_forwarding_allows_software_interrupt_devices() {
 }
 
 #[test]
+fn passthrough_guest_virtual_mmio_pool_is_independent_from_unmapped_host_ram() {
+    let virtual_mmio = AddressRange::new(0x0900_0000, 0x0100_0000).unwrap();
+    let profile = MachineProfile::new(virtual_mmio, 32..=127).unwrap();
+    let snapshot = HostPlatformSnapshot::new(1).with_device(
+        HostDeviceDescriptor::new(
+            HostDeviceId::new("/memory").unwrap(),
+            HostDeviceOwnership::HostExclusive,
+        )
+        .with_mmio(AddressRange::new(0x0020_0000, 0x0efe_0000).unwrap()),
+    );
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_virtual_device(pl011("console0"));
+
+    let plan = VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    assert_eq!(
+        plan.virtual_devices()[0].mmio()[0].range(),
+        AddressRange::new(0x0900_0000, 0x1000).unwrap()
+    );
+    assert!(plan.identity_mappings().is_empty());
+}
+
+#[test]
 fn failed_claim_transaction_releases_every_acquired_device() {
     let profile =
         MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 32..=127).unwrap();
