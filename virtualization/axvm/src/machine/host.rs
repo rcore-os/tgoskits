@@ -8,7 +8,10 @@ use alloc::{
 use axdevice_base::ControllerInputId;
 use axvm_types::InterruptTriggerMode;
 
-use super::{AddressRange, HostDeviceId, IoPortRange, MachinePlanResult, selector_label};
+use super::{
+    AddressRange, HostDeviceDependency, HostDeviceId, HostProviderResourceGrant, IoPortRange,
+    MachinePlanResult, selector_label,
+};
 
 /// Host ownership state relevant to VM assignment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,59 +97,6 @@ impl HostConsoleEvidence {
             ),
             Self::LivePlatform => ownership != HostDeviceOwnership::Structural,
         }
-    }
-}
-
-/// Whether a firmware dependency is necessary to expose a physical device.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HostDeviceDependencyKind {
-    /// The consumer cannot be represented when the provider is unavailable.
-    Required,
-    /// The capability may be omitted while preserving a safe device model.
-    Optional,
-}
-
-/// One firmware dependency from a host device to a provider node.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HostDeviceDependency {
-    provider: HostDeviceId,
-    property: String,
-    kind: HostDeviceDependencyKind,
-}
-
-impl HostDeviceDependency {
-    /// Creates a checked firmware dependency.
-    pub fn new(
-        provider: HostDeviceId,
-        property: impl Into<String>,
-        kind: HostDeviceDependencyKind,
-    ) -> MachinePlanResult<Self> {
-        let property = property.into();
-        if property.trim().is_empty() {
-            return Err(super::MachinePlanError::EmptyIdentifier {
-                kind: "host device dependency property",
-            });
-        }
-        Ok(Self {
-            provider,
-            property,
-            kind,
-        })
-    }
-
-    /// Returns the stable identity of the provider node.
-    pub const fn provider(&self) -> &HostDeviceId {
-        &self.provider
-    }
-
-    /// Returns the firmware property containing the reference.
-    pub fn property(&self) -> &str {
-        &self.property
-    }
-
-    /// Returns whether the provider is required or optional.
-    pub const fn kind(&self) -> HostDeviceDependencyKind {
-        self.kind
     }
 }
 
@@ -335,6 +285,7 @@ pub struct HostDeviceDescriptor {
     pio: Vec<IoPortRange>,
     interrupts: Vec<HostInterruptResource>,
     dependencies: Vec<HostDeviceDependency>,
+    provider_resources: Vec<HostProviderResourceGrant>,
 }
 
 impl HostDeviceDescriptor {
@@ -360,6 +311,7 @@ impl HostDeviceDescriptor {
             pio: Vec::new(),
             interrupts: Vec::new(),
             dependencies: Vec::new(),
+            provider_resources: Vec::new(),
         }
     }
 
@@ -467,6 +419,35 @@ impl HostDeviceDescriptor {
         &self.dependencies
     }
 
+    /// Returns static provider-local resources granted by the platform.
+    pub fn provider_resources(&self) -> &[HostProviderResourceGrant] {
+        &self.provider_resources
+    }
+
+    fn grant_provider_resource(
+        &mut self,
+        grant: HostProviderResourceGrant,
+    ) -> MachinePlanResult<bool> {
+        if let Some(existing) = self.provider_resources.iter().find(|existing| {
+            existing.reference().kind() == grant.reference().kind()
+                && existing.reference().specifier() == grant.reference().specifier()
+        }) {
+            if existing == &grant {
+                return Ok(false);
+            }
+            return Err(super::MachinePlanError::InvalidFirmware {
+                detail: alloc::format!(
+                    "host provider '{}' has conflicting grants for {:?} selector {:?}",
+                    self.id,
+                    grant.reference().kind(),
+                    grant.reference().specifier(),
+                ),
+            });
+        }
+        self.provider_resources.push(grant);
+        Ok(true)
+    }
+
     pub(crate) fn set_ownership(&mut self, ownership: HostDeviceOwnership) {
         self.ownership = ownership;
     }
@@ -539,6 +520,9 @@ impl HostPlatformSnapshot {
     }
 
     /// Returns the generation used to revalidate a later claim transaction.
+    ///
+    /// Adding a provider-resource grant folds its pinned state into this token,
+    /// so a changed clock rate, gate, or reset state rejects the later claim.
     pub const fn generation(&self) -> u64 {
         self.generation
     }
@@ -645,6 +629,37 @@ impl HostPlatformSnapshot {
                 ),
             })?;
         descriptor.set_assignment(assignment)
+    }
+
+    /// Grants static state for one resource owned by a host provider.
+    ///
+    /// The caller is a trusted platform adapter and must keep the resource in
+    /// the granted state until every VM plan derived from this snapshot has
+    /// either been discarded or its device leases have been released.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider is absent or a conflicting grant was
+    /// already recorded for the same provider-local selector.
+    pub fn grant_provider_resource(
+        &mut self,
+        provider: &HostDeviceId,
+        grant: HostProviderResourceGrant,
+    ) -> MachinePlanResult<()> {
+        let next_generation = grant.fold_generation(self.generation, provider.as_str());
+        let descriptor = self
+            .devices
+            .iter_mut()
+            .find(|candidate| candidate.id() == provider)
+            .ok_or_else(|| super::MachinePlanError::InvalidFirmware {
+                detail: alloc::format!(
+                    "host provider resource grant refers to absent device '{provider}'"
+                ),
+            })?;
+        if descriptor.grant_provider_resource(grant)? {
+            self.generation = next_generation;
+        }
+        Ok(())
     }
 
     /// Grants all otherwise assignable resources to a trusted whole-machine

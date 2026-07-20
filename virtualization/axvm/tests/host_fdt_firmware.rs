@@ -1,10 +1,12 @@
+use core::num::NonZeroU32;
+
 use axdevice::{DeviceModelId, DeviceRequirements, ResourceSlot};
 use axvm::machine::{
     Aarch64GicV3Profile, AddressRange, DeviceDisposition, DeviceInstanceId, FdtInterruptEncoding,
     GuestMemoryRegion, HostConsoleEvidence, HostConsoleLocation, HostDeviceId, HostDeviceSelector,
-    HostFdtConfig, HostPlatformSnapshot, InterruptControllerProfile, MachineProfile,
-    VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner, VmMachineRequest,
-    generate_host_fdt,
+    HostFdtConfig, HostPlatformSnapshot, HostProviderResourceGrant, InterruptControllerProfile,
+    MachineProfile, VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner,
+    VmMachineRequest, generate_host_fdt,
 };
 use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolicy, VmMachineMode};
 use fdt_edit::{Fdt, Node, Property};
@@ -638,6 +640,418 @@ fn required_host_dependency_is_rejected_during_machine_planning() {
 }
 
 #[test]
+fn shared_mutable_provider_requires_mediation_before_passthrough() {
+    let host = host_fdt_with_shared_clock_controller();
+    let snapshot = whole_machine_snapshot(&host);
+    let clock_selector = |device: &str| {
+        snapshot
+            .devices()
+            .iter()
+            .find(|candidate| candidate.id().as_str() == device)
+            .unwrap()
+            .dependencies()
+            .iter()
+            .find(|dependency| dependency.property() == "clocks")
+            .unwrap()
+            .reference()
+            .specifier()
+    };
+    assert_eq!(clock_selector("/soc/serial@9000000"), &[7]);
+    assert_eq!(clock_selector("/soc/storage@a100000"), &[8]);
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_virtual_device(pl011());
+
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+    let storage = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/soc/storage@a100000")
+        .unwrap();
+    let provider = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/soc/clock-controller@b000000")
+        .unwrap();
+    assert_eq!(storage.disposition(), DeviceDisposition::Unrepresentable);
+    assert_eq!(provider.disposition(), DeviceDisposition::Unrepresentable);
+    assert!(plan.preconfigured_host_devices().is_empty());
+    assert!(!plan.claims().contains(storage.id()));
+}
+
+#[test]
+fn inactive_provider_consumer_does_not_claim_shared_resources() {
+    let host = host_fdt();
+    let mut host = Fdt::from_bytes(&host).unwrap();
+    let soc = host.get_by_path_id("/soc").unwrap();
+    let provider = host.add_node(soc, Node::new("clock-controller@b100000"));
+    host.node_mut(provider)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,clock-controller"));
+    host.node_mut(provider)
+        .unwrap()
+        .set_property(u32_property("phandle", &[56]));
+    host.node_mut(provider)
+        .unwrap()
+        .set_property(u32_property("#clock-cells", &[1]));
+    host.view_typed_mut(provider)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0b10_0000, Some(0x1000))]);
+    let active = host.add_node(soc, Node::new("device@a400000"));
+    host.node_mut(active)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,active"));
+    host.node_mut(active)
+        .unwrap()
+        .set_property(u32_property("clocks", &[56, 1]));
+    host.view_typed_mut(active)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0a40_0000, Some(0x1000))]);
+    let inactive = host.add_node(soc, Node::new("device@a500000"));
+    host.node_mut(inactive)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,inactive"));
+    host.node_mut(inactive)
+        .unwrap()
+        .set_property(string_property("status", "disabled"));
+    host.node_mut(inactive)
+        .unwrap()
+        .set_property(u32_property("clocks", &[56, 2]));
+    host.view_typed_mut(inactive)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0a50_0000, Some(0x1000))]);
+    let host = host.encode().as_ref().to_vec();
+    let snapshot = whole_machine_snapshot(&host);
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    for path in ["/soc/clock-controller@b100000", "/soc/device@a400000"] {
+        let device = plan
+            .host_devices()
+            .iter()
+            .find(|device| device.id().as_str() == path)
+            .unwrap();
+        assert!(
+            matches!(
+                device.disposition(),
+                DeviceDisposition::Passthrough | DeviceDisposition::Structural
+            ),
+            "unexpected disposition for {path}: {:?}",
+            device.disposition()
+        );
+    }
+    assert!(plan.preconfigured_host_devices().is_empty());
+}
+
+#[test]
+fn assigned_clock_configuration_requires_a_pinned_provider_grant() {
+    let host = host_fdt_with_shared_clock_controller();
+    let mut host = Fdt::from_bytes(&host).unwrap();
+    let storage = host.get_by_path_id("/soc/storage@a100000").unwrap();
+    let storage = host.node_mut(storage).unwrap();
+    storage.remove_property("clocks");
+    storage.remove_property("clock-names");
+    storage.remove_property("resets");
+    storage.remove_property("reset-names");
+    let host = host.encode().as_ref().to_vec();
+    let snapshot = whole_machine_snapshot(&host);
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_virtual_device(pl011());
+
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+    let storage = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/soc/storage@a100000")
+        .unwrap();
+
+    assert_eq!(storage.disposition(), DeviceDisposition::Unrepresentable);
+    assert!(plan.preconfigured_host_devices().is_empty());
+}
+
+#[test]
+fn pinned_provider_resources_replace_raw_shared_controller_access() {
+    let host = host_fdt_with_shared_clock_controller();
+    let mut snapshot = whole_machine_snapshot(&host);
+    let provider = HostDeviceId::new("/soc/clock-controller@b000000").unwrap();
+    let firmware_generation = snapshot.generation();
+    let fixed_clock =
+        HostProviderResourceGrant::fixed_clock(vec![8], NonZeroU32::new(200_000_000).unwrap());
+    snapshot
+        .grant_provider_resource(&provider, fixed_clock.clone())
+        .unwrap();
+    let clock_generation = snapshot.generation();
+    assert_ne!(clock_generation, firmware_generation);
+    snapshot
+        .grant_provider_resource(&provider, fixed_clock)
+        .unwrap();
+    assert_eq!(snapshot.generation(), clock_generation);
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::deasserted_reset(vec![18]),
+        )
+        .unwrap();
+    assert_ne!(snapshot.generation(), clock_generation);
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_virtual_device(pl011());
+
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+    let provider_plan = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id() == &provider)
+        .unwrap();
+    assert_eq!(
+        provider_plan.disposition(),
+        DeviceDisposition::Unrepresentable
+    );
+    assert_eq!(plan.preconfigured_host_devices().len(), 1);
+    assert_eq!(plan.preconfigured_host_devices()[0].clocks().len(), 1);
+    assert_eq!(
+        plan.preconfigured_host_devices()[0]
+            .clock_configurations()
+            .len(),
+        1
+    );
+    assert_eq!(plan.preconfigured_host_devices()[0].resets().len(), 1);
+    assert_eq!(plan.provider_resource_claims().len(), 2);
+    assert_eq!(
+        plan.host_devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/soc/other@a200000")
+            .unwrap()
+            .disposition(),
+        DeviceDisposition::Unrepresentable
+    );
+    assert!(
+        !plan
+            .identity_mappings()
+            .iter()
+            .any(|mapping| mapping.contains(0x0b00_0000))
+    );
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    assert!(
+        guest
+            .get_by_path_id("/soc/clock-controller@b000000")
+            .is_none()
+    );
+    let storage = guest.get_by_path("/soc/storage@a100000").unwrap().as_node();
+    let clock_phandle = storage
+        .get_property("clocks")
+        .and_then(Property::get_u32)
+        .unwrap();
+    assert!(storage.get_property("resets").is_none());
+    assert!(storage.get_property("reset-names").is_none());
+    assert!(storage.get_property("assigned-clocks").is_none());
+    assert!(storage.get_property("assigned-clock-rates").is_none());
+    let clock = guest
+        .get_by_phandle(clock_phandle.into())
+        .unwrap()
+        .as_node();
+    assert!(
+        clock
+            .compatibles()
+            .any(|compatible| compatible == "fixed-clock")
+    );
+    assert_eq!(
+        clock
+            .get_property("clock-frequency")
+            .and_then(Property::get_u32),
+        Some(200_000_000)
+    );
+}
+
+#[test]
+fn pinned_provider_resource_cannot_overlap_a_host_owned_consumer() {
+    let host = host_fdt_with_shared_clock_controller();
+    let mut host = Fdt::from_bytes(&host).unwrap();
+    let other = host.get_by_path_id("/soc/other@a200000").unwrap();
+    host.node_mut(other)
+        .unwrap()
+        .set_property(u32_property("clocks", &[55, 8]));
+    let host = host.encode().as_ref().to_vec();
+    let mut snapshot = whole_machine_snapshot(&host);
+    let provider = HostDeviceId::new("/soc/clock-controller@b000000").unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::fixed_clock(vec![8], NonZeroU32::new(200_000_000).unwrap()),
+        )
+        .unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::deasserted_reset(vec![18]),
+        )
+        .unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .deny(HostDeviceSelector::Id(
+            HostDeviceId::new("/soc/other@a200000").unwrap(),
+        ))
+        .with_virtual_device(pl011());
+
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+    let storage = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/soc/storage@a100000")
+        .unwrap();
+
+    assert_eq!(storage.disposition(), DeviceDisposition::Unrepresentable);
+    assert!(plan.preconfigured_host_devices().is_empty());
+}
+
+#[test]
+fn shared_provider_substitution_preserves_an_independent_fixed_clock() {
+    let host = host_fdt_with_shared_clock_controller();
+    let mut host = Fdt::from_bytes(&host).unwrap();
+    let soc = host.get_by_path_id("/soc").unwrap();
+    let oscillator = host.add_node(soc, Node::new("clock-24000000"));
+    host.node_mut(oscillator)
+        .unwrap()
+        .set_property(string_property("compatible", "fixed-clock"));
+    host.node_mut(oscillator)
+        .unwrap()
+        .set_property(u32_property("#clock-cells", &[0]));
+    host.node_mut(oscillator)
+        .unwrap()
+        .set_property(u32_property("clock-frequency", &[24_000_000]));
+    host.node_mut(oscillator)
+        .unwrap()
+        .set_property(u32_property("phandle", &[56]));
+    let reset_provider = host.add_node(soc, Node::new("reset-controller"));
+    host.node_mut(reset_provider)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,fixed-reset"));
+    host.node_mut(reset_provider)
+        .unwrap()
+        .set_property(u32_property("#reset-cells", &[0]));
+    host.node_mut(reset_provider)
+        .unwrap()
+        .set_property(u32_property("phandle", &[57]));
+    let storage = host.get_by_path_id("/soc/storage@a100000").unwrap();
+    host.node_mut(storage)
+        .unwrap()
+        .set_property(u32_property("clocks", &[55, 8, 56]));
+    let mut clock_names = Property::new("clock-names", Vec::new());
+    clock_names.set_string_ls(&["core", "bus"]);
+    host.node_mut(storage).unwrap().set_property(clock_names);
+    host.node_mut(storage)
+        .unwrap()
+        .set_property(u32_property("resets", &[55, 18, 57]));
+    let mut reset_names = Property::new("reset-names", Vec::new());
+    reset_names.set_string_ls(&["core", "bus"]);
+    host.node_mut(storage).unwrap().set_property(reset_names);
+    let host = host.encode().as_ref().to_vec();
+    let mut snapshot = whole_machine_snapshot(&host);
+    let provider = HostDeviceId::new("/soc/clock-controller@b000000").unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::fixed_clock(vec![8], NonZeroU32::new(200_000_000).unwrap()),
+        )
+        .unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::deasserted_reset(vec![18]),
+        )
+        .unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_virtual_device(pl011());
+
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+    let storage = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/soc/storage@a100000")
+        .unwrap();
+    assert_eq!(storage.disposition(), DeviceDisposition::Passthrough);
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    let storage = guest.get_by_path("/soc/storage@a100000").unwrap().as_node();
+    let clocks = storage
+        .get_property("clocks")
+        .unwrap()
+        .get_u32_iter()
+        .collect::<Vec<_>>();
+    assert_eq!(clocks.len(), 2);
+    let rates = clocks
+        .iter()
+        .map(|phandle| {
+            guest
+                .get_by_phandle((*phandle).into())
+                .unwrap()
+                .as_node()
+                .get_property("clock-frequency")
+                .and_then(Property::get_u32)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rates, [200_000_000, 24_000_000]);
+    assert_eq!(
+        storage
+            .get_property("resets")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        [57]
+    );
+    assert_eq!(
+        storage
+            .get_property("reset-names")
+            .unwrap()
+            .as_str_iter()
+            .collect::<Vec<_>>(),
+        ["bus"]
+    );
+}
+
+#[test]
+fn host_only_managed_provider_is_removed_from_guest_access() {
+    let host = host_fdt_with_shared_clock_controller();
+    let snapshot = whole_machine_snapshot(&host);
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .deny(HostDeviceSelector::Id(
+            HostDeviceId::new("/soc/storage@a100000").unwrap(),
+        ))
+        .with_virtual_device(pl011());
+
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+    let provider = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/soc/clock-controller@b000000")
+        .unwrap();
+
+    assert_eq!(provider.disposition(), DeviceDisposition::Unrepresentable);
+    assert!(
+        !plan
+            .identity_mappings()
+            .iter()
+            .any(|mapping| mapping.contains(0x0b00_0000))
+    );
+}
+
+#[test]
 fn optional_host_dependency_is_removed_without_exposing_its_provider() {
     let host = host_fdt_with_optional_host_exclusive_dependency();
     let snapshot = whole_machine_snapshot(&host);
@@ -1229,6 +1643,87 @@ fn host_fdt_with_optional_host_exclusive_dependency() -> Vec<u8> {
     fdt.view_typed_mut(consumer)
         .unwrap()
         .set_regs(&[RegInfo::new(0x0a10_0000, Some(0x1000))]);
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_shared_clock_controller() -> Vec<u8> {
+    let bytes = host_fdt();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let soc = fdt.get_by_path_id("/soc").unwrap();
+
+    let clock = fdt.add_node(soc, Node::new("clock-controller@b000000"));
+    fdt.node_mut(clock)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,clock-controller"));
+    fdt.node_mut(clock)
+        .unwrap()
+        .set_property(u32_property("phandle", &[55]));
+    fdt.node_mut(clock)
+        .unwrap()
+        .set_property(u32_property("#clock-cells", &[1]));
+    fdt.node_mut(clock)
+        .unwrap()
+        .set_property(u32_property("#reset-cells", &[1]));
+    fdt.view_typed_mut(clock)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0b00_0000, Some(0x1000))]);
+
+    let console = fdt.get_by_path_id("/soc/serial@9000000").unwrap();
+    fdt.node_mut(console)
+        .unwrap()
+        .set_property(u32_property("clocks", &[55, 7]));
+
+    let storage = fdt.add_node(soc, Node::new("storage@a100000"));
+    fdt.node_mut(storage)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,storage"));
+    fdt.node_mut(storage)
+        .unwrap()
+        .set_property(u32_property("clocks", &[55, 8]));
+    fdt.node_mut(storage)
+        .unwrap()
+        .set_property(string_property("clock-names", "core"));
+    fdt.node_mut(storage)
+        .unwrap()
+        .set_property(u32_property("assigned-clocks", &[55, 8]));
+    fdt.node_mut(storage)
+        .unwrap()
+        .set_property(u32_property("assigned-clock-rates", &[200_000_000]));
+    fdt.node_mut(storage)
+        .unwrap()
+        .set_property(u32_property("resets", &[55, 18]));
+    fdt.node_mut(storage)
+        .unwrap()
+        .set_property(string_property("reset-names", "core"));
+    fdt.view_typed_mut(storage)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0a10_0000, Some(0x1000))]);
+
+    let other = fdt.add_node(soc, Node::new("other@a200000"));
+    fdt.node_mut(other)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,other"));
+    fdt.node_mut(other)
+        .unwrap()
+        .set_property(u32_property("clocks", &[55, 9]));
+    fdt.view_typed_mut(other)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0a20_0000, Some(0x1000))]);
+
+    let inactive = fdt.add_node(soc, Node::new("inactive@a300000"));
+    fdt.node_mut(inactive)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,inactive"));
+    fdt.node_mut(inactive)
+        .unwrap()
+        .set_property(string_property("status", "disabled"));
+    fdt.node_mut(inactive)
+        .unwrap()
+        .set_property(u32_property("clocks", &[55, 10]));
+    fdt.view_typed_mut(inactive)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0a30_0000, Some(0x1000))]);
+
     fdt.encode().as_ref().to_vec()
 }
 

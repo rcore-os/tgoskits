@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host capability lease before assigning it as a physical device.
 - Select the default AArch64 virtual console from the firmware-selected UART
   model; PL011, packed NS16550, and DW-APB register layouts are not conflated.
+- Replace raw shared clock/reset-controller passthrough with selector-level
+  platform grants, transactional resource claims, and guest-local fixed
+  clocks or preconfigured resets while keeping provider MMIO unmapped.
 
 ### Fixed
 
@@ -76,6 +79,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   FIFO backpressure no longer emit garbage or truncate input.
 - Route trapped AArch64 DIR through one atomic live-LR harvest and deactivation
   instead of performing a redundant generic CPU-interface synchronization.
+- Prevent guest clock cleanup from disabling host-owned consumers that share a
+  physical provider with an assigned device.
 
 ### Removed
 

@@ -20,6 +20,8 @@ pub enum KError {
     BadAddr(usize),
     #[error("Invalid Argument `{name}`")]
     InvalidArg { name: &'static str },
+    #[error("Unsupported operation `{operation}`")]
+    Unsupported { operation: &'static str },
     #[error("Unknown: {0}")]
     Unknown(&'static str),
 }

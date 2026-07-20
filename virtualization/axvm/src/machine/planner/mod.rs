@@ -20,9 +20,9 @@ use self::{
 };
 use super::{
     DeviceDisposition, HostDeviceId, HostDeviceSelector, HostInterruptResource,
-    HostPlatformSnapshot, InterruptControllerPlan, MachinePlanError, MachinePlanResult,
-    MachineProfile, VirtualDeviceDescriptor, VirtualDeviceSource, VmMachineRequest,
-    resolve_interrupt_controller,
+    HostPlatformSnapshot, HostProviderResourceClaim, HostProviderResourceGrant,
+    InterruptControllerPlan, MachinePlanError, MachinePlanResult, MachineProfile,
+    VirtualDeviceDescriptor, VirtualDeviceSource, VmMachineRequest, resolve_interrupt_controller,
 };
 
 /// Builds one deterministic machine plan from immutable inputs.
@@ -75,7 +75,7 @@ impl VmMachinePlanner {
         let interrupt_controller =
             resolve_interrupt_controller(self.profile.interrupt_controller(), request, snapshot)?;
         validate_virtual_device_interrupts(&resolved_devices, interrupt_controller.as_ref())?;
-        let host_devices = plan_host_devices(
+        let (host_devices, preconfigured_host_devices) = plan_host_devices(
             request.mode(),
             snapshot,
             &denied_devices,
@@ -83,6 +83,8 @@ impl VmMachinePlanner {
         )?;
         let assigned_host_interrupts =
             resolve_assigned_host_interrupts(&host_devices, interrupt_controller.as_ref())?;
+        let provider_resource_claims =
+            resolve_provider_resource_claims(&preconfigured_host_devices);
         let claims = host_devices
             .iter()
             .filter(|device| device.requires_claim())
@@ -110,10 +112,37 @@ impl VmMachinePlanner {
             identity_mappings,
             virtual_devices: resolved_devices,
             host_devices,
+            preconfigured_host_devices,
+            provider_resource_claims,
             assigned_host_interrupts,
             claims,
         }))
     }
+}
+
+fn resolve_provider_resource_claims(
+    resources: &[PreconfiguredHostDeviceResources],
+) -> Vec<HostProviderResourceClaim> {
+    let mut claims = BTreeSet::new();
+    for resources in resources {
+        for clock in resources
+            .clocks()
+            .iter()
+            .chain(resources.clock_configurations())
+        {
+            claims.insert(HostProviderResourceClaim::new(
+                clock.provider().clone(),
+                HostProviderResourceGrant::fixed_clock(clock.specifier().to_vec(), clock.rate_hz()),
+            ));
+        }
+        for reset in resources.resets() {
+            claims.insert(HostProviderResourceClaim::new(
+                reset.provider().clone(),
+                HostProviderResourceGrant::deasserted_reset(reset.specifier().to_vec()),
+            ));
+        }
+    }
+    claims.into_iter().collect()
 }
 
 fn resolve_assigned_host_interrupts(

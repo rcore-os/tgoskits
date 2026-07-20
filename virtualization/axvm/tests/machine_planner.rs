@@ -1,18 +1,22 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    num::NonZeroU32,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use axdevice::ControllerInputId;
 use axvm::machine::{
     Aarch64GicV3Profile, AddressRange, ConsoleRxPolicy, ConsoleTxPolicy, DeviceBackend,
     DeviceInstanceId, DeviceModelId, DeviceRequirements, GuestMemoryPlacement, GuestMemoryRegion,
-    HostConsoleBackend, HostDeviceClaimProvider, HostDeviceDescriptor, HostDeviceId,
-    HostDeviceLease, HostDeviceOwnership, HostDeviceSelector, HostInterruptResource,
-    HostPlatformSnapshot, InterruptControllerPlan, InterruptControllerProfile, IoPortRange,
-    MachinePlanError, MachineProfile, RegisteredHostDeviceClaimProvider, ResourceSlot,
-    VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner, VmMachineRequest,
-    VmMachineTransaction,
+    HostConsoleBackend, HostDeviceClaimProvider, HostDeviceDependency, HostDeviceDependencyKind,
+    HostDeviceDescriptor, HostDeviceId, HostDeviceLease, HostDeviceOwnership, HostDeviceSelector,
+    HostInterruptResource, HostPlatformSnapshot, HostProviderReference, HostProviderResourceClaim,
+    HostProviderResourceGrant, HostProviderResourceLease, InterruptControllerPlan,
+    InterruptControllerProfile, IoPortRange, MachinePlanError, MachineProfile,
+    RegisteredHostDeviceClaimProvider, ResourceSlot, VirtualDeviceDescriptor, VirtualDeviceSource,
+    VmMachinePlanner, VmMachineRequest, VmMachineTransaction,
 };
 use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolicy, VmMachineMode};
 
@@ -635,6 +639,52 @@ fn failed_claim_transaction_releases_every_acquired_device() {
 }
 
 #[test]
+fn failed_device_claim_releases_acquired_provider_resource() {
+    let profile =
+        MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 32..=127).unwrap();
+    let provider_id = HostDeviceId::new("/clock-controller").unwrap();
+    let consumer_id = HostDeviceId::new("/device-b").unwrap();
+    let dependency = HostDeviceDependency::new(
+        provider_id.clone(),
+        "clocks",
+        HostDeviceDependencyKind::Required,
+        HostProviderReference::clock(vec![3]),
+    )
+    .unwrap();
+    let mut snapshot = HostPlatformSnapshot::new(19)
+        .with_device(
+            HostDeviceDescriptor::new(provider_id.clone(), HostDeviceOwnership::HostExclusive)
+                .with_mmio(AddressRange::new(0x2000_0000, 0x1000).unwrap()),
+        )
+        .with_device(
+            HostDeviceDescriptor::new(consumer_id, HostDeviceOwnership::Assignable)
+                .with_mmio(AddressRange::new(0x2000_1000, 0x1000).unwrap())
+                .with_dependency(dependency),
+        );
+    snapshot
+        .grant_provider_resource(
+            &provider_id,
+            HostProviderResourceGrant::fixed_clock(vec![3], NonZeroU32::new(24_000_000).unwrap()),
+        )
+        .unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap();
+    assert_eq!(plan.provider_resource_claims().len(), 1);
+    let releases = Arc::new(AtomicUsize::new(0));
+    let claim_provider = FailingClaimProvider {
+        generation: snapshot.generation(),
+        releases: releases.clone(),
+    };
+
+    let error = VmMachineTransaction::claim(&plan, &claim_provider).unwrap_err();
+
+    assert!(error.to_string().contains("/device-b"));
+    assert_eq!(releases.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn registered_claims_reject_competing_vm_and_release_on_drop() {
     let profile =
         MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 32..=127).unwrap();
@@ -658,6 +708,57 @@ fn registered_claims_reject_competing_vm_and_release_on_drop() {
     assert_eq!(second.len(), 1);
 }
 
+#[test]
+fn registered_provider_resource_claims_reject_competing_vm() {
+    let profile =
+        MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 32..=127).unwrap();
+    let provider_id = HostDeviceId::new("/transaction-test-clock-controller").unwrap();
+    let dependency = HostDeviceDependency::new(
+        provider_id.clone(),
+        "clocks",
+        HostDeviceDependencyKind::Required,
+        HostProviderReference::clock(vec![5]),
+    )
+    .unwrap();
+    let mut snapshot = HostPlatformSnapshot::new(81)
+        .with_device(
+            HostDeviceDescriptor::new(provider_id.clone(), HostDeviceOwnership::HostExclusive)
+                .with_mmio(AddressRange::new(0x2100_0000, 0x1000).unwrap()),
+        )
+        .with_device(
+            HostDeviceDescriptor::new(
+                HostDeviceId::new("/transaction-test-clock-consumer").unwrap(),
+                HostDeviceOwnership::Assignable,
+            )
+            .with_mmio(AddressRange::new(0x2100_1000, 0x1000).unwrap())
+            .with_dependency(dependency),
+        );
+    snapshot
+        .grant_provider_resource(
+            &provider_id,
+            HostProviderResourceGrant::fixed_clock(vec![5], NonZeroU32::new(100_000_000).unwrap()),
+        )
+        .unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap();
+    let first_provider = RegisteredHostDeviceClaimProvider::new(snapshot.generation(), 1101);
+    let second_provider = RegisteredHostDeviceClaimProvider::new(snapshot.generation(), 1102);
+
+    let first = VmMachineTransaction::claim(&plan, &first_provider).unwrap();
+    let error = VmMachineTransaction::claim(&plan, &second_provider).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("provider resource Clock selector [5]")
+    );
+
+    drop(first);
+    let second = VmMachineTransaction::claim(&plan, &second_provider).unwrap();
+    assert_eq!(second.len(), 2);
+}
+
 struct FailingClaimProvider {
     generation: u64,
     releases: Arc<AtomicUsize>,
@@ -679,6 +780,15 @@ impl HostDeviceClaimProvider for FailingClaimProvider {
             releases: self.releases.clone(),
         }))
     }
+
+    fn claim_provider_resource(
+        &self,
+        _resource: &HostProviderResourceClaim,
+    ) -> Result<Box<dyn HostProviderResourceLease>, MachinePlanError> {
+        Ok(Box::new(CountingLease {
+            releases: self.releases.clone(),
+        }))
+    }
 }
 
 struct CountingLease {
@@ -686,6 +796,7 @@ struct CountingLease {
 }
 
 impl HostDeviceLease for CountingLease {}
+impl HostProviderResourceLease for CountingLease {}
 
 impl Drop for CountingLease {
     fn drop(&mut self) {

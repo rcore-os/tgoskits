@@ -280,7 +280,7 @@ impl AxVMResources {
     }
 
     fn require_host_device_claims(&self) -> AxVmResult {
-        if self.config.machine_plan().claims().is_empty()
+        if !self.config.machine_plan().requires_host_claims()
             || matches!(
                 self.host_device_claims,
                 HostDeviceClaimState::Pending(_) | HostDeviceClaimState::Committed(_)
@@ -304,7 +304,9 @@ impl AxVMResources {
                 HostDeviceClaimState::Committed(transaction.commit())
             }
             HostDeviceClaimState::Committed(leases) => HostDeviceClaimState::Committed(leases),
-            HostDeviceClaimState::Unclaimed if self.config.machine_plan().claims().is_empty() => {
+            HostDeviceClaimState::Unclaimed
+                if !self.config.machine_plan().requires_host_claims() =>
+            {
                 HostDeviceClaimState::Unclaimed
             }
             HostDeviceClaimState::Unclaimed => {

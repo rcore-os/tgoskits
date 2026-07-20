@@ -6,6 +6,7 @@ use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::RegInfo;
 use virtual_ns16550::Ns16550RegisterLayout;
 
+use super::fixed_clock::{add_fixed_clock, next_phandle};
 use crate::machine::{
     InterruptControllerPlan, MachinePlanError, MachinePlanResult, ResolvedVirtualDevice,
     VmMachinePlan,
@@ -337,39 +338,6 @@ fn interrupt_specifier(plan: &VmMachinePlan, intid: u32) -> MachinePlanResult<Ve
             detail: "host-derived FDT has no interrupt controller plan".into(),
         }),
     }
-}
-
-fn add_fixed_clock(guest: &mut Fdt, frequency: u32) -> MachinePlanResult<u32> {
-    let phandle = next_phandle(guest);
-    let root = guest.root_id();
-    let clock = guest.add_node(root, Node::new(&format!("clock-{phandle:x}")));
-    let clock = guest
-        .node_mut(clock)
-        .ok_or_else(|| MachinePlanError::InvalidFirmware {
-            detail: format!("new fixed-clock node for phandle {phandle} cannot be updated"),
-        })?;
-    clock.set_property(string_property("compatible", "fixed-clock"));
-    clock.set_property(u32_list_property("#clock-cells", &[0]));
-    clock.set_property(u32_list_property("clock-frequency", &[frequency]));
-    clock.set_property(u32_list_property("phandle", &[phandle]));
-    Ok(phandle)
-}
-
-fn next_phandle(fdt: &Fdt) -> u32 {
-    fdt.iter_node_ids()
-        .filter_map(|node| fdt.node(node))
-        .flat_map(|node| {
-            [
-                node.get_property("phandle"),
-                node.get_property("linux,phandle"),
-            ]
-        })
-        .flatten()
-        .filter_map(Property::get_u32)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1)
-        .max(1)
 }
 
 fn register_console_alias(

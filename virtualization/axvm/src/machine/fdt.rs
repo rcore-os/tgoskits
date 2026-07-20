@@ -7,8 +7,8 @@ use fdt_edit::{Fdt, NodeType, PciSpace};
 
 use super::{
     AddressRange, HostDeviceDependency, HostDeviceDescriptor, HostDeviceId, HostDeviceOwnership,
-    HostFirmwareActivation, HostInterruptResource, HostPlatformSnapshot, MachinePlanError,
-    MachinePlanResult, host_fdt::dependencies::FdtDependencyIndex,
+    HostFirmwareActivation, HostInterruptResource, HostPlatformSnapshot, HostProviderReference,
+    MachinePlanError, MachinePlanResult, host_fdt::dependencies::FdtDependencyIndex,
 };
 
 /// Interrupt-cell encoding used by a host device tree.
@@ -64,6 +64,7 @@ impl HostPlatformSnapshot {
                     HostDeviceId::new(dependency.provider())?,
                     dependency.property(),
                     dependency.kind(),
+                    dependency.reference().clone(),
                 )?);
             }
             if let Some(parent) = parent_path(&path) {
@@ -71,6 +72,7 @@ impl HostPlatformSnapshot {
                     HostDeviceId::new(parent)?,
                     "fdt-parent",
                     super::HostDeviceDependencyKind::Required,
+                    HostProviderReference::hierarchy(),
                 )?);
             }
 

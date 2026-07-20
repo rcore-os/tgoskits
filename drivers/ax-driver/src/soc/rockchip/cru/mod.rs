@@ -56,6 +56,13 @@ impl rdif_clk::Interface for ClkDrv {
             .map_err(|_| KError::InvalidArg { name: "clock_id" })
     }
 
+    fn is_enabled(&self, id: rdif_clk::ClockId) -> Result<bool, KError> {
+        self.inner
+            .lock()
+            .clk_is_enabled(clock_id(id))
+            .map_err(|_| KError::InvalidArg { name: "clock_id" })
+    }
+
     fn get_rate(&self, id: rdif_clk::ClockId) -> Result<u64, KError> {
         self.inner
             .lock()
@@ -81,6 +88,13 @@ impl rdif_reset::Interface for ResetDrv {
     fn deassert(&mut self, id: rdif_reset::ResetId) -> Result<(), rdif_reset::ResetError> {
         self.inner.lock().reset_deassert(reset_id(id));
         Ok(())
+    }
+
+    fn is_asserted(&self, id: rdif_reset::ResetId) -> Result<bool, rdif_reset::ResetError> {
+        self.inner
+            .lock()
+            .reset_is_asserted(reset_id(id))
+            .ok_or(rdif_reset::ResetError::InvalidId)
     }
 }
 

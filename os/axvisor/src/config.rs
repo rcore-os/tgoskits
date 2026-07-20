@@ -169,7 +169,7 @@ fn init_guest_vm_from_origin(raw_cfg: &str, origin: VmConfigOrigin) -> Result<us
 
     let (claims_required, host_console) = vm.with_config(|config| {
         let plan = config.machine_plan();
-        (!plan.claims().is_empty(), plan.host_console().cloned())
+        (plan.requires_host_claims(), plan.host_console().cloned())
     });
     if claims_required {
         let live_generation = axvm::current_host_platform_snapshot()

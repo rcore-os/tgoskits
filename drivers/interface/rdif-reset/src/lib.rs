@@ -44,6 +44,11 @@ pub trait Interface: DriverGeneric {
 
     fn deassert(&mut self, id: ResetId) -> Result<(), ResetError>;
 
+    /// Returns whether the selected reset line is currently asserted.
+    fn is_asserted(&self, _id: ResetId) -> Result<bool, ResetError> {
+        Err(ResetError::Unsupported)
+    }
+
     fn reset(&mut self, id: ResetId) -> Result<(), ResetError> {
         self.assert(id)?;
         self.deassert(id)
@@ -108,5 +113,17 @@ mod tests {
 
         assert!(reset.typed_ref::<RecordingReset>().is_some());
         assert!(reset.typed_mut::<RecordingReset>().is_some());
+    }
+
+    #[test]
+    fn reset_state_query_is_explicitly_unsupported_by_default() {
+        let reset = RecordingReset {
+            calls: alloc::vec::Vec::new(),
+        };
+
+        assert_eq!(
+            reset.is_asserted(ResetId::new(3)),
+            Err(ResetError::Unsupported)
+        );
     }
 }

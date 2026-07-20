@@ -1,6 +1,7 @@
 //! Final resource assignments consumed by VM construction.
 
 use alloc::vec::Vec;
+use core::num::NonZeroU32;
 
 use axdevice::{DeviceBackend, DeviceModelId, ResolvedDeviceResources, ResourceSlot};
 use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolicy, VmMachineMode};
@@ -8,7 +9,7 @@ use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolic
 use super::super::{
     AddressRange, DeviceDisposition, DeviceInstanceId, GuestMemoryRegion, HostDeviceDependency,
     HostDeviceDescriptor, HostDeviceId, HostFirmwareActivation, HostInterruptResource,
-    InterruptControllerPlan, IoPortRange, LoongArchPlatformPlan,
+    HostProviderResourceClaim, InterruptControllerPlan, IoPortRange, LoongArchPlatformPlan,
 };
 
 /// A guest interrupt assigned to one named virtual-device resource slot.
@@ -218,6 +219,10 @@ impl PlannedHostDevice {
         self.descriptor.dependencies()
     }
 
+    pub(super) const fn descriptor(&self) -> &HostDeviceDescriptor {
+        &self.descriptor
+    }
+
     /// Returns firmware-compatible identifiers in source order.
     pub fn compatibles(&self) -> &[alloc::string::String] {
         self.descriptor.compatibles()
@@ -231,6 +236,116 @@ impl PlannedHostDevice {
 
     pub(super) const fn set_disposition(&mut self, disposition: DeviceDisposition) {
         self.disposition = disposition;
+    }
+}
+
+/// One fixed clock substituted for a shared physical clock-controller input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreconfiguredHostClock {
+    provider: HostDeviceId,
+    specifier: Vec<u32>,
+    rate_hz: NonZeroU32,
+}
+
+impl PreconfiguredHostClock {
+    pub(super) const fn new(
+        provider: HostDeviceId,
+        specifier: Vec<u32>,
+        rate_hz: NonZeroU32,
+    ) -> Self {
+        Self {
+            provider,
+            specifier,
+            rate_hz,
+        }
+    }
+
+    /// Returns the physical provider that owns the clock.
+    pub const fn provider(&self) -> &HostDeviceId {
+        &self.provider
+    }
+
+    /// Returns the provider-local clock selector cells.
+    pub fn specifier(&self) -> &[u32] {
+        &self.specifier
+    }
+
+    /// Returns the rate pinned by the host platform capability.
+    pub const fn rate_hz(&self) -> NonZeroU32 {
+        self.rate_hz
+    }
+}
+
+/// One physical reset line pinned deasserted for a guest-device lease.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreconfiguredHostReset {
+    provider: HostDeviceId,
+    specifier: Vec<u32>,
+}
+
+impl PreconfiguredHostReset {
+    pub(super) const fn new(provider: HostDeviceId, specifier: Vec<u32>) -> Self {
+        Self {
+            provider,
+            specifier,
+        }
+    }
+
+    /// Returns the physical provider that owns the reset line.
+    pub const fn provider(&self) -> &HostDeviceId {
+        &self.provider
+    }
+
+    /// Returns the provider-local reset selector cells.
+    pub fn specifier(&self) -> &[u32] {
+        &self.specifier
+    }
+}
+
+/// Static provider resources substituted into one passthrough device's guest
+/// firmware description.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreconfiguredHostDeviceResources {
+    device: HostDeviceId,
+    clocks: Vec<PreconfiguredHostClock>,
+    clock_configurations: Vec<PreconfiguredHostClock>,
+    resets: Vec<PreconfiguredHostReset>,
+}
+
+impl PreconfiguredHostDeviceResources {
+    pub(super) const fn new(
+        device: HostDeviceId,
+        clocks: Vec<PreconfiguredHostClock>,
+        clock_configurations: Vec<PreconfiguredHostClock>,
+        resets: Vec<PreconfiguredHostReset>,
+    ) -> Self {
+        Self {
+            device,
+            clocks,
+            clock_configurations,
+            resets,
+        }
+    }
+
+    /// Returns the passthrough device whose provider references are replaced.
+    pub const fn device(&self) -> &HostDeviceId {
+        &self.device
+    }
+
+    /// Returns fixed clocks in the source `clocks` property order.
+    pub fn clocks(&self) -> &[PreconfiguredHostClock] {
+        &self.clocks
+    }
+
+    /// Returns clock selectors whose boot-time configuration is pinned by the
+    /// host and therefore must not be replayed by the guest.
+    pub fn clock_configurations(&self) -> &[PreconfiguredHostClock] {
+        &self.clock_configurations
+    }
+
+    /// Returns reset lines pinned deasserted in source `resets` order.
+    pub fn resets(&self) -> &[PreconfiguredHostReset] {
+        &self.resets
     }
 }
 
@@ -248,6 +363,8 @@ pub struct VmMachinePlan {
     identity_mappings: Vec<AddressRange>,
     virtual_devices: Vec<ResolvedVirtualDevice>,
     host_devices: Vec<PlannedHostDevice>,
+    preconfigured_host_devices: Vec<PreconfiguredHostDeviceResources>,
+    provider_resource_claims: Vec<HostProviderResourceClaim>,
     assigned_host_interrupts: Vec<HostInterruptResource>,
     claims: Vec<HostDeviceId>,
     generated_firmware: Option<GeneratedFirmware>,
@@ -265,6 +382,8 @@ pub(super) struct VmMachinePlanParts {
     pub(super) identity_mappings: Vec<AddressRange>,
     pub(super) virtual_devices: Vec<ResolvedVirtualDevice>,
     pub(super) host_devices: Vec<PlannedHostDevice>,
+    pub(super) preconfigured_host_devices: Vec<PreconfiguredHostDeviceResources>,
+    pub(super) provider_resource_claims: Vec<HostProviderResourceClaim>,
     pub(super) assigned_host_interrupts: Vec<HostInterruptResource>,
     pub(super) claims: Vec<HostDeviceId>,
 }
@@ -304,6 +423,8 @@ impl VmMachinePlan {
             identity_mappings: parts.identity_mappings,
             virtual_devices: parts.virtual_devices,
             host_devices: parts.host_devices,
+            preconfigured_host_devices: parts.preconfigured_host_devices,
+            provider_resource_claims: parts.provider_resource_claims,
             assigned_host_interrupts: parts.assigned_host_interrupts,
             claims: parts.claims,
             generated_firmware: None,
@@ -328,6 +449,8 @@ impl VmMachinePlan {
             identity_mappings: Vec::new(),
             virtual_devices: Vec::new(),
             host_devices: Vec::new(),
+            preconfigured_host_devices: Vec::new(),
+            provider_resource_claims: Vec::new(),
             assigned_host_interrupts: Vec::new(),
             claims: Vec::new(),
             generated_firmware: None,
@@ -396,6 +519,18 @@ impl VmMachinePlan {
         &self.host_devices
     }
 
+    /// Returns physical devices whose shared provider resources are exposed as
+    /// pinned guest-local firmware resources instead of raw provider MMIO.
+    pub fn preconfigured_host_devices(&self) -> &[PreconfiguredHostDeviceResources] {
+        &self.preconfigured_host_devices
+    }
+
+    /// Returns provider-local resources retained for the complete physical
+    /// device lease lifetime.
+    pub fn provider_resource_claims(&self) -> &[HostProviderResourceClaim] {
+        &self.provider_resource_claims
+    }
+
     /// Returns unique physical interrupt routes owned by passthrough devices.
     pub fn assigned_host_interrupts(&self) -> &[HostInterruptResource] {
         &self.assigned_host_interrupts
@@ -412,6 +547,12 @@ impl VmMachinePlan {
     /// Returns devices that must be claimed transactionally before commit.
     pub fn claims(&self) -> &[HostDeviceId] {
         &self.claims
+    }
+
+    /// Returns whether VM construction must run the host ownership
+    /// transaction before preparing devices.
+    pub fn requires_host_claims(&self) -> bool {
+        !self.claims.is_empty() || !self.provider_resource_claims.is_empty()
     }
 
     /// Attaches a final generated device tree.

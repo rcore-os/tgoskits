@@ -3,7 +3,8 @@
 use alloc::{boxed::Box, format, string::ToString};
 
 use axvm::machine::{
-    HostDeviceClaimProvider, HostDeviceId, HostDeviceLease, MachinePlanError, MachinePlanResult,
+    HostDeviceClaimProvider, HostDeviceId, HostDeviceLease, HostProviderResourceClaim,
+    HostProviderResourceLease, MachinePlanError, MachinePlanResult,
     RegisteredHostDeviceClaimProvider,
 };
 
@@ -48,6 +49,13 @@ impl HostDeviceClaimProvider for AxvisorHostDeviceClaimProvider {
             _console: console,
             _registry: registry,
         }))
+    }
+
+    fn claim_provider_resource(
+        &self,
+        resource: &HostProviderResourceClaim,
+    ) -> MachinePlanResult<Box<dyn HostProviderResourceLease>> {
+        self.registry.claim_provider_resource(resource)
     }
 }
 

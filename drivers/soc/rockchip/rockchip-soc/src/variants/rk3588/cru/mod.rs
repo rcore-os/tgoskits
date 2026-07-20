@@ -66,6 +66,10 @@ impl ResetOp for Cru {
     fn reset_deassert(&mut self, id: RstId) {
         self.reset.reset_deassert(id);
     }
+
+    fn reset_is_asserted(&self, id: RstId) -> Option<bool> {
+        self.reset.reset_is_asserted(id)
+    }
 }
 
 impl ClockOp for Cru {
@@ -92,13 +96,20 @@ impl ClockOp for Cru {
 
 impl Cru {
     pub fn new(base: Mmio, sys_grf: Mmio) -> Self {
+        const MAIN_CRU_RESET_COUNT: usize = 78 * 16;
+
         let mut c = Cru {
             base: base.as_ptr() as usize,
             _grf: sys_grf.as_ptr() as usize,
             cpll_hz: 0,
             gpll_hz: 0,
             ppll_hz: 0,
-            reset: ResetRockchip::new(base.as_ptr() as usize + SOFTRST_CON_OFFSET as usize, 49158),
+            // Vendor RK3588 bindings identify main-CRU resets by the
+            // SOFTRST_CON bank and bit, through bank 77.
+            reset: ResetRockchip::new(
+                base.as_ptr() as usize + SOFTRST_CON_OFFSET as usize,
+                MAIN_CRU_RESET_COUNT,
+            ),
         };
         c.init();
         c

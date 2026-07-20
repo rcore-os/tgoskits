@@ -253,6 +253,10 @@ impl ResetOp for Cru {
     fn reset_deassert(&mut self, id: RstId) {
         self.reset.reset_deassert(id);
     }
+
+    fn reset_is_asserted(&self, id: RstId) -> Option<bool> {
+        self.reset.reset_is_asserted(id)
+    }
 }
 
 impl ClockOp for Cru {

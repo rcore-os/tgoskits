@@ -85,6 +85,8 @@ arm_vgic.workspace = true
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 rdif-intc.workspace = true
 rdif-msi.workspace = true
+rdif-clk.workspace = true
+rdif-reset.workspace = true
 rdrive.workspace = true
 
 [dev-dependencies]

@@ -131,6 +131,11 @@ impl rdif_clk::Interface for Jh7110SysClock {
         Ok(())
     }
 
+    fn is_enabled(&self, id: rdif_clk::ClockId) -> Result<bool, KError> {
+        let id = clock_id(id)?;
+        Ok(self.control(id)?.read(ClockControl::ENABLE) != 0)
+    }
+
     fn get_rate(&self, id: rdif_clk::ClockId) -> Result<u64, KError> {
         let id = clock_id(id)?;
         if !matches!(id, JH7110_SYSCLK_SDIO0_SDCARD | JH7110_SYSCLK_SDIO1_SDCARD) {
@@ -217,6 +222,11 @@ impl rdif_reset::Interface for Jh7110SysReset {
 
     fn deassert(&mut self, id: rdif_reset::ResetId) -> Result<(), rdif_reset::ResetError> {
         self.update(id, false)
+    }
+
+    fn is_asserted(&self, id: rdif_reset::ResetId) -> Result<bool, rdif_reset::ResetError> {
+        let (word, mask) = Self::reset_word_bit(id)?;
+        Ok(self.regs().status[word].get() & mask == 0)
     }
 }
 

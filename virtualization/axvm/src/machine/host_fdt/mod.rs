@@ -1,6 +1,8 @@
 //! Host-derived guest FDT generation from a finalized machine plan.
 
 pub(super) mod dependencies;
+mod fixed_clock;
+mod preconfigured_providers;
 mod virtual_devices;
 
 use alloc::{
@@ -15,6 +17,7 @@ use fdt_raw::RegInfo;
 
 use self::{
     dependencies::resolve_dependencies,
+    preconfigured_providers::materialize_preconfigured_provider_resources,
     virtual_devices::{materialize_virtual_devices, sanitize_virtual_device_templates},
 };
 use super::{
@@ -74,6 +77,7 @@ pub fn generate_host_fdt(
     })?;
     sanitize_host_managed_cpu_properties(&mut source)?;
     sanitize_virtual_device_templates(&mut source, plan)?;
+    materialize_preconfigured_provider_resources(&mut source, plan)?;
     let selected = selected_paths(plan, &mut source, config)?;
     let mut guest = clone_selected_tree(&source, &selected, config)?;
     mark_passthrough_devices_available(&mut guest, plan)?;

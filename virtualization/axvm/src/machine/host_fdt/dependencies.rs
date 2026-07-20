@@ -8,7 +8,9 @@ use alloc::{
 
 use fdt_edit::{Fdt, Node, NodeId};
 
-use crate::machine::{HostDeviceDependencyKind, MachinePlanError, MachinePlanResult};
+use crate::machine::{
+    HostDeviceDependencyKind, HostProviderReference, MachinePlanError, MachinePlanResult,
+};
 
 type PhandleMap = BTreeMap<u32, PhandleProvider>;
 
@@ -22,6 +24,7 @@ pub(crate) struct FdtNodeDependency {
     provider: String,
     property: String,
     kind: HostDeviceDependencyKind,
+    reference: HostProviderReference,
 }
 
 impl FdtNodeDependency {
@@ -35,6 +38,10 @@ impl FdtNodeDependency {
 
     pub(crate) const fn kind(&self) -> HostDeviceDependencyKind {
         self.kind
+    }
+
+    pub(crate) const fn reference(&self) -> &HostProviderReference {
+        &self.reference
     }
 }
 
@@ -57,10 +64,11 @@ impl FdtDependencyIndex {
             .flat_map(|property| {
                 property_dependencies(property.name(), &property.data, &self.providers)
                     .into_iter()
-                    .map(|provider| FdtNodeDependency {
-                        provider,
+                    .map(|reference| FdtNodeDependency {
+                        provider: reference.provider,
                         property: property.name().to_string(),
                         kind: dependency_kind(property.name()),
+                        reference: provider_reference(property.name(), reference.specifier),
                     })
             })
             .collect()
@@ -300,7 +308,16 @@ fn phandle_providers(fdt: &Fdt) -> PhandleMap {
     providers
 }
 
-fn property_dependencies(name: &str, bytes: &[u8], providers: &PhandleMap) -> Vec<String> {
+struct DecodedProviderReference {
+    provider: String,
+    specifier: Vec<u32>,
+}
+
+fn property_dependencies(
+    name: &str,
+    bytes: &[u8],
+    providers: &PhandleMap,
+) -> Vec<DecodedProviderReference> {
     if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
         return Vec::new();
     }
@@ -317,11 +334,33 @@ fn property_dependencies(name: &str, bytes: &[u8], providers: &PhandleMap) -> Ve
             index += 1;
             continue;
         };
-        dependencies.push(provider.path.clone());
         let arguments = argument_cell_count(name, &provider.cells);
-        index = index.saturating_add(arguments + 1);
+        let argument_start = index.saturating_add(1);
+        let end = argument_start.saturating_add(arguments);
+        if end > cells.len() {
+            break;
+        }
+        dependencies.push(DecodedProviderReference {
+            provider: provider.path.clone(),
+            specifier: cells[argument_start..end].to_vec(),
+        });
+        index = end;
     }
     dependencies
+}
+
+fn provider_reference(name: &str, specifier: Vec<u32>) -> HostProviderReference {
+    match name {
+        "interrupt-parent" | "interrupts-extended" | "msi-parent" => {
+            HostProviderReference::interrupt_route(specifier)
+        }
+        "clocks" => HostProviderReference::clock(specifier),
+        "resets" => HostProviderReference::reset(specifier),
+        "assigned-clocks" | "assigned-clock-parents" => {
+            HostProviderReference::clock_configuration(specifier)
+        }
+        _ => HostProviderReference::managed_subresource(specifier),
+    }
 }
 
 fn argument_cell_count(name: &str, cells: &BTreeMap<String, u32>) -> usize {
