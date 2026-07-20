@@ -239,7 +239,7 @@ fn classify_ownership(
         .and_then(|property| property.as_str())
         == Some("disabled")
     {
-        return HostDeviceOwnership::Unrepresentable;
+        return HostDeviceOwnership::Inactive;
     }
     if path == "/"
         || matches!(path, "/aliases" | "/chosen" | "/cpus")
@@ -295,7 +295,10 @@ fn is_pl011(compatibles: &[String]) -> bool {
 }
 
 fn is_io_aperture(path: &str, node: &fdt_edit::Node) -> bool {
-    !path.starts_with("/memory")
+    node.get_property("status")
+        .and_then(|property| property.as_str())
+        != Some("disabled")
+        && !path.starts_with("/memory")
         && !path.starts_with("/reserved-memory")
         && !node.name().starts_with("memory@")
 }
@@ -481,7 +484,7 @@ mod tests {
                 .find(|device| device.id() == &console)
                 .unwrap()
                 .ownership(),
-            HostDeviceOwnership::Unrepresentable
+            HostDeviceOwnership::Inactive
         );
 
         assert!(

@@ -21,6 +21,8 @@ pub enum HostDeviceOwnership {
     Assignable,
     /// The node carries firmware structure but owns no guest-accessible device.
     Structural,
+    /// Firmware describes an inactive alternative that owns no live resource.
+    Inactive,
     /// The device cannot be represented or isolated safely.
     Unrepresentable,
 }
@@ -86,7 +88,9 @@ impl HostConsoleEvidence {
         match self {
             Self::Firmware => !matches!(
                 ownership,
-                HostDeviceOwnership::Structural | HostDeviceOwnership::Unrepresentable
+                HostDeviceOwnership::Structural
+                    | HostDeviceOwnership::Inactive
+                    | HostDeviceOwnership::Unrepresentable
             ),
             Self::LivePlatform => ownership != HostDeviceOwnership::Structural,
         }
@@ -257,6 +261,9 @@ pub enum DeviceDisposition {
     Passthrough,
     /// The node is retained only as firmware structure.
     Structural,
+    /// The inactive firmware alternative is omitted without claiming or
+    /// protecting its physical resource aliases.
+    Inactive,
     /// The device cannot be represented safely.
     Unrepresentable,
 }
@@ -645,8 +652,8 @@ impl HostPlatformSnapshot {
     ///
     /// Architecture adapters use this only when their platform contract gives
     /// the VM the board's remaining hardware wholesale. Host-exclusive and
-    /// unrepresentable resources stay protected. Transferable devices still
-    /// require a reversible lease at VM construction time.
+    /// unrepresentable resources stay protected; inactive alternatives receive
+    /// no assignment. Transferable devices still require a reversible lease.
     pub fn grant_whole_machine_assignment(&mut self) -> MachinePlanResult<()> {
         for descriptor in &mut self.devices {
             let assignment = match descriptor.ownership() {

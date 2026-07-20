@@ -37,6 +37,7 @@ pub(super) fn plan_host_devices(
                     _ if virtual_templates.contains(&index) => {
                         DeviceDisposition::VirtualReplacement
                     }
+                    HostDeviceOwnership::Inactive => DeviceDisposition::Inactive,
                     HostDeviceOwnership::Structural
                         if !device.has_physical_resources() || device.assignment().is_some() =>
                     {

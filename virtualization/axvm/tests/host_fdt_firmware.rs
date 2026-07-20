@@ -598,6 +598,79 @@ fn whole_machine_snapshot(host: &[u8]) -> HostPlatformSnapshot {
     snapshot
 }
 
+#[test]
+fn disabled_fdt_alias_does_not_hide_an_assigned_device_resource() {
+    let host = host_fdt();
+    let mut host = Fdt::from_bytes(&host).unwrap();
+    let soc = host.get_by_path_id("/soc").unwrap();
+    let active = host.add_node(soc, Node::new("ethernet@fe010000"));
+    host.node_mut(active)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,active-device"));
+    host.view_typed_mut(active)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0xfe01_0000, Some(0x1_0000))]);
+    let inactive = host.add_node(soc, Node::new("uio@fe010000"));
+    host.node_mut(inactive)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,inactive-alias"));
+    host.node_mut(inactive)
+        .unwrap()
+        .set_property(string_property("status", "disabled"));
+    host.view_typed_mut(inactive)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0xfe01_0000, Some(0x1_0000))]);
+    let inactive_only = host.add_node(soc, Node::new("uio@fe020000"));
+    host.node_mut(inactive_only)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,inactive-device"));
+    host.node_mut(inactive_only)
+        .unwrap()
+        .set_property(string_property("status", "disabled"));
+    host.view_typed_mut(inactive_only)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0xfe02_0000, Some(0x1_0000))]);
+    let host = host.encode().as_ref().to_vec();
+    let snapshot = whole_machine_snapshot(&host);
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+
+    assert_eq!(
+        plan.host_devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/soc/ethernet@fe010000")
+            .unwrap()
+            .disposition(),
+        DeviceDisposition::Passthrough
+    );
+    assert_eq!(
+        plan.host_devices()
+            .iter()
+            .find(|device| device.id().as_str() == "/soc/uio@fe010000")
+            .unwrap()
+            .disposition(),
+        DeviceDisposition::Inactive
+    );
+    assert!(
+        plan.identity_mappings()
+            .iter()
+            .any(|range| range.contains(0xfe01_0000))
+    );
+    assert!(
+        !plan
+            .identity_mappings()
+            .iter()
+            .any(|range| range.contains(0xfe02_0000))
+    );
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    assert!(guest.get_by_path_id("/soc/ethernet@fe010000").is_some());
+    assert!(guest.get_by_path_id("/soc/uio@fe010000").is_none());
+    assert!(guest.get_by_path_id("/soc/uio@fe020000").is_none());
+}
+
 fn aarch64_profile() -> MachineProfile {
     MachineProfile::new(
         AddressRange::new(0x0900_0000, 0x0100_0000).unwrap(),

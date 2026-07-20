@@ -59,6 +59,10 @@ fn main() {
 }
 ```
 
+固件中 `status = "disabled"` 的节点会归一化为 inactive alias：它既不申请设备，
+也不授权 I/O aperture；若 active 且已授权的节点与它描述同一物理资源，它也不会
+反向给该资源打洞。只有 inactive 描述的地址仍保持未映射。
+
 ### 文档
 
 生成并查看 API 文档：

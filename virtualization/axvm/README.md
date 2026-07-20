@@ -71,6 +71,12 @@ The build order is RAM, vCPUs, interrupt controllers and bindings, devices and
 topology, bus mappings, firmware, boot state, and commit. Physical-device
 leases restore ownership on every failure path.
 
+Firmware nodes with `status = "disabled"` are recorded as inactive aliases.
+They neither claim a device nor authorize an I/O aperture, and they do not
+hide an overlapping resource that an active assigned node owns. Consequently,
+an inactive-only range remains unmapped while common alternative bindings for
+one physical device do not punch a hole in an authorized passthrough mapping.
+
 `HostPlatformSnapshot` records the firmware-selected console independently
 from its UART model. This identity lets mediated guests replace the correct
 host node even when several compatible UARTs exist. It is not authorization by

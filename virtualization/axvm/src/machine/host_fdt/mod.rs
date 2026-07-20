@@ -128,6 +128,7 @@ fn selected_paths(
             let classification = match device.disposition() {
                 DeviceDisposition::HostExclusive => "host-exclusive",
                 DeviceDisposition::Denied => "denied",
+                DeviceDisposition::Inactive => "inactive",
                 DeviceDisposition::Unrepresentable => "unrepresentable",
                 DeviceDisposition::VirtualReplacement
                 | DeviceDisposition::Passthrough
