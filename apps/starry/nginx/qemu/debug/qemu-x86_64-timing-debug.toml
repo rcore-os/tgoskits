@@ -11,8 +11,8 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
-to_bin = false
+uefi = true
+to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "NGINX_RUNNER_PHASE_TIMEOUT=1800 /usr/bin/nginx-runner.sh debug x86-timing-debug"
 success_regex = ["(?m)^NGINX_RUNNER_PASSED\\b"]

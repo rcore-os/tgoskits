@@ -379,20 +379,39 @@ fn encode_command(cmd: &ProtoCmd, data_dir: Option<DataDirection>) -> Cmd {
 }
 
 fn decode_response(host: &DwMmc, resp_type: ResponseType) -> Result<Response, Error> {
-    let resp = host.regs.resp().read();
     Ok(match resp_type {
         ResponseType::None => Response::Empty,
-        ResponseType::R1 => Response::R1(R1Response { raw: resp[0] }),
-        ResponseType::R1b => Response::R1b(R1Response { raw: resp[0] }),
-        ResponseType::R2 => Response::R2(read_r2(resp)),
-        ResponseType::R3 => Response::R3(OcrResponse::from_raw(resp[0])),
-        ResponseType::R4 => Response::R4(SdioOcrResponse::from_raw(resp[0])),
-        ResponseType::R5 => Response::R5(SdioRwResponse::from_raw(resp[0])),
-        ResponseType::R6 => Response::R6(RcaResponse::from_raw(resp[0])),
-        ResponseType::R7 => Response::R7(IfCondResponse::from_raw(resp[0])),
+        ResponseType::R1 => Response::R1(R1Response {
+            raw: read_short_response(host),
+        }),
+        ResponseType::R1b => Response::R1b(R1Response {
+            raw: read_short_response(host),
+        }),
+        ResponseType::R2 => Response::R2(read_r2(read_long_response(host))),
+        ResponseType::R3 => Response::R3(OcrResponse::from_raw(read_short_response(host))),
+        ResponseType::R4 => Response::R4(SdioOcrResponse::from_raw(read_short_response(host))),
+        ResponseType::R5 => Response::R5(SdioRwResponse::from_raw(read_short_response(host))),
+        ResponseType::R6 => Response::R6(RcaResponse::from_raw(read_short_response(host))),
+        ResponseType::R7 => Response::R7(IfCondResponse::from_raw(read_short_response(host))),
         // Future ResponseType variants are not decoded by this controller.
         _ => return Err(Error::UnsupportedCommand),
     })
+}
+
+fn read_short_response(host: &DwMmc) -> u32 {
+    host.regs.resp0().read()
+}
+
+fn read_long_response(host: &DwMmc) -> [u32; 4] {
+    // Keep each response slot as a separate 32-bit volatile access. Some
+    // DW_mshc integrations reject the 64-bit MMIO loads that an aggregate
+    // volatile read may generate.
+    [
+        host.regs.resp0().read(),
+        host.regs.resp1().read(),
+        host.regs.resp2().read(),
+        host.regs.resp3().read(),
+    ]
 }
 
 /// Reorder the four 32-bit response slots into the 16-byte buffer the
