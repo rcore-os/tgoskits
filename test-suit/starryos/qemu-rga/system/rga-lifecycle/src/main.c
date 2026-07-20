@@ -27,10 +27,13 @@
  *      the parent's handle stays valid after the child exits (freed only at last close).
  *      This is the case the process-id (tgid) model got wrong: the child's tgid differs, so
  *      it could not see the parent's handle.
+ *   D. bounds: a small imported buffer with a large geometry must be rejected before the
+ *      engine runs. RGA2 is MMU-off, so an out-of-range plane would DMA over adjacent memory.
  *
  * With no RGA2 core on QEMU virt, a resolved handle makes RGA_BLIT_SYNC reach the device
- * check and fail with ENODEV; an unresolved handle short-circuits to EBADF at lookup. So
- * "ENODEV, not EBADF" is the signal that the handle was found.
+ * check and fail with ENODEV; an unresolved handle short-circuits to EBADF at lookup; and an
+ * out-of-range geometry is rejected with EINVAL before the device check. So the errno tells
+ * handle-found (ENODEV) from lookup-miss (EBADF) from out-of-bounds (EINVAL).
  */
 
 /* --- /dev/rga ioctls (MultiRGA v1.3.1 ABI). --- */
@@ -109,32 +112,43 @@ static int release_handle(int rga_fd, uint32_t handle)
     return ioctl(rga_fd, RGA_IOC_RELEASE_BUFFER, &pool);
 }
 
-/* Same-size 64x64 RGBA copy referencing `handle` for src+dst. Returns the errno the
-   BLIT_SYNC failed with (0 if it unexpectedly succeeded). */
-static int blit_with_handle(int rga_fd, uint32_t handle)
+/* Build a same-size w×h RGBA copy req using `handle` for src+dst. */
+static void fill_copy_req(unsigned char *req, uint32_t handle, uint16_t w, uint16_t h)
 {
-    unsigned char req[512];
-    memset(req, 0, sizeof(req));
+    memset(req, 0, 512);
     req[0] = 0;                /* render_mode = BITBLT */
     put_u64(req, 8, handle);   /* src.yrgb_addr = handle */
     put_u32(req, 8 + 24, 0);   /* src.format = RGBA_8888 */
-    put_u16(req, 8 + 28, 64);  /* src.act_w */
-    put_u16(req, 8 + 30, 64);  /* src.act_h */
-    put_u16(req, 8 + 36, 64);  /* src.vir_w */
-    put_u16(req, 8 + 38, 64);  /* src.vir_h */
+    put_u16(req, 8 + 28, w);   /* src.act_w */
+    put_u16(req, 8 + 30, h);   /* src.act_h */
+    put_u16(req, 8 + 36, w);   /* src.vir_w */
+    put_u16(req, 8 + 38, h);   /* src.vir_h */
     put_u64(req, 64, handle);  /* dst.yrgb_addr = handle */
     put_u32(req, 64 + 24, 0);  /* dst.format = RGBA_8888 */
-    put_u16(req, 64 + 28, 64); /* dst.act_w */
-    put_u16(req, 64 + 30, 64); /* dst.act_h */
-    put_u16(req, 64 + 36, 64); /* dst.vir_w */
-    put_u16(req, 64 + 38, 64); /* dst.vir_h */
+    put_u16(req, 64 + 28, w);  /* dst.act_w */
+    put_u16(req, 64 + 30, h);  /* dst.act_h */
+    put_u16(req, 64 + 36, w);  /* dst.vir_w */
+    put_u16(req, 64 + 38, h);  /* dst.vir_h */
     req[360] = 1;              /* handle_flag = 1 (addrs are handles) */
+}
 
+/* w×h RGBA copy BLIT_SYNC on rga_fd using `handle`. Returns the errno the ioctl failed with
+   (0 if it unexpectedly succeeded). */
+static int blit_geom(int rga_fd, uint32_t handle, uint16_t w, uint16_t h)
+{
+    unsigned char req[512];
+    fill_copy_req(req, handle, w, h);
     errno = 0;
     if (ioctl(rga_fd, RGA_BLIT_SYNC, req) == 0) {
         return 0;
     }
     return errno;
+}
+
+/* Same-size 64×64 RGBA copy (fits the 64 KiB buffers the lifetime cases import). */
+static int blit_with_handle(int rga_fd, uint32_t handle)
+{
+    return blit_geom(rga_fd, handle, 64, 64);
 }
 
 /* Regression A: a sibling thread blits + releases a handle imported by the main thread on
@@ -237,6 +251,22 @@ int main(void)
           "C: parent handle still valid after child exit (session freed only at last close)");
     CHECK(release_handle(fd, hc) == 0, "C: parent released the handle");
     close(dc);
+
+    /* ---- Regression D: small buffer + large geometry rejected before the hardware. ---- */
+    int dd = alloc_dmabuf(heap, 4096); /* one page */
+    CHECK(dd >= 0, "D: small (4 KiB) dma_heap alloc");
+    uint32_t hd = import_dmabuf(fd, dd);
+    CHECK(hd != 0, "D: imported the small buffer");
+    /* A 512x512 RGBA copy needs 1 MiB but the buffer is 4 KiB: the bounds check must reject
+       it with EINVAL, before the ENODEV device check. */
+    CHECK(blit_geom(fd, hd, 512, 512) == EINVAL,
+          "D: small buffer + large geometry rejected with EINVAL (before hardware)");
+    /* A geometry that fits the same buffer still reaches the device check (ENODEV), so only
+       the out-of-range case is rejected. */
+    CHECK(blit_geom(fd, hd, 16, 16) == ENODEV,
+          "D: a fitting geometry on the same buffer still reaches the device (ENODEV)");
+    CHECK(release_handle(fd, hd) == 0, "D: released the small buffer");
+    close(dd);
 
     close(heap);
     close(fd);
