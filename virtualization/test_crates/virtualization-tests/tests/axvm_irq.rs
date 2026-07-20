@@ -17,10 +17,10 @@ use std::sync::{Arc, Mutex, Weak};
 use axdevice::{
     AxVmDevices, ControllerInputId, ControllerRegistration, ControllerRole, DeviceBuildContext,
     DeviceBundle, DeviceManagerResult, DeviceModelId, DeviceRegistration, DeviceRequirements,
-    InterruptControllerId, InterruptSourceKind, InterruptTopology, InterruptTriggerMode, IrqError,
-    IrqLine, IrqResult, MmioDeviceAdapter, ResolvedDeviceResources, ResourceSlot,
-    VirtualDeviceModel, VirtualDeviceModelRegistry, WiredInterruptInputs, WiredIrqInput,
-    WiredIrqRequest, WiredIrqSink,
+    InterruptControllerId, InterruptPlanAuthority, InterruptSharing, InterruptSourceKind,
+    InterruptTopology, InterruptTriggerMode, IrqError, IrqLine, IrqResult, MmioDeviceAdapter,
+    ResolvedDeviceResources, ResourceSlot, VirtualDeviceModel, VirtualDeviceModelRegistry,
+    WiredInterruptInputs, WiredIrqInput, WiredIrqRequest, WiredIrqSink,
 };
 use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult};
 use axvm_types::{EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptDelivery};
@@ -123,6 +123,7 @@ impl VirtualDeviceModel for IrqMmioModel {
                 ResourceSlot::new("irq")?,
                 InterruptTriggerMode::EdgeTriggered,
                 InterruptSourceKind::Software,
+                InterruptSharing::Exclusive,
             )
     }
 
@@ -144,7 +145,12 @@ impl VirtualDeviceModel for IrqMmioModel {
     }
 }
 
-fn build_irq_device(topology: &InterruptTopology, base_gpa: usize, irq_id: usize) -> AxVmDevices {
+fn build_irq_device(
+    topology: &InterruptTopology,
+    authority: &InterruptPlanAuthority,
+    base_gpa: usize,
+    irq_id: usize,
+) -> AxVmDevices {
     let resources = ResolvedDeviceResources::new()
         .with_mmio(
             ResourceSlot::new("registers").unwrap(),
@@ -156,51 +162,68 @@ fn build_irq_device(topology: &InterruptTopology, base_gpa: usize, irq_id: usize
             ResourceSlot::new("irq").unwrap(),
             ControllerInputId::new(irq_id),
             InterruptTriggerMode::EdgeTriggered,
+            InterruptSharing::Exclusive,
         )
         .unwrap();
-    let context = DeviceBuildContext::new(topology, &resources);
+    let context = DeviceBuildContext::new(topology, authority, &resources);
     let mut models = VirtualDeviceModelRegistry::new();
     models.register(Arc::new(IrqMmioModel)).unwrap();
     let bundle = models
         .build(
             &DeviceModelId::new("test-irq-mmio").unwrap(),
             &resources,
-            &context,
+            context,
         )
         .unwrap();
     let mut devices = AxVmDevices::empty();
-    devices.register_bundle(bundle).unwrap();
+    devices
+        .register_bundle_with_topology(bundle, topology)
+        .unwrap();
     devices
 }
 
-fn recording_topology() -> (InterruptTopology, Weak<RecordingIrqSink>) {
+fn recording_topology() -> (
+    InterruptTopology,
+    InterruptPlanAuthority,
+    Weak<RecordingIrqSink>,
+) {
     let sink = Arc::new(RecordingIrqSink::default());
     let weak = Arc::downgrade(&sink);
-    let topology = InterruptTopology::new(InterruptDelivery::Mediated);
+    let (topology, authority) = InterruptTopology::new(InterruptDelivery::Mediated);
     topology
         .register_controller(
             ControllerRegistration::new(TEST_CONTROLLER, ControllerRole::Default)
                 .with_wired_inputs(Arc::new(RecordingControllerInputs { sink })),
         )
         .unwrap();
-    (topology, weak)
+    (topology, authority, weak)
 }
 
 #[test]
 fn test_interrupt_topology_preserves_event_order() {
-    let (topology, sink) = recording_topology();
-    let level = topology
-        .connect_irq(WiredIrqRequest::new(
-            ControllerInputId::new(13),
-            InterruptTriggerMode::LevelTriggered,
-        ))
+    let (topology, authority, sink) = recording_topology();
+    let level_claim = authority
+        .claim_wired(
+            &topology,
+            WiredIrqRequest::new(
+                ControllerInputId::new(13),
+                InterruptTriggerMode::LevelTriggered,
+                InterruptSharing::Exclusive,
+            ),
+        )
         .unwrap();
-    let edge = topology
-        .connect_irq(WiredIrqRequest::new(
-            ControllerInputId::new(14),
-            InterruptTriggerMode::EdgeTriggered,
-        ))
+    let (level, _level_registration) = topology.connect_irq(level_claim).unwrap().into_parts();
+    let edge_claim = authority
+        .claim_wired(
+            &topology,
+            WiredIrqRequest::new(
+                ControllerInputId::new(14),
+                InterruptTriggerMode::EdgeTriggered,
+                InterruptSharing::Exclusive,
+            ),
+        )
         .unwrap();
+    let (edge, _edge_registration) = topology.connect_irq(edge_claim).unwrap().into_parts();
 
     assert!(matches!(
         level.pulse(),
@@ -226,8 +249,8 @@ fn test_interrupt_topology_preserves_event_order() {
 
 #[test]
 fn test_planned_device_emits_irq_through_connected_input() {
-    let (topology, sink) = recording_topology();
-    let devices = build_irq_device(&topology, 0x7_0000, 15);
+    let (topology, authority, sink) = recording_topology();
+    let devices = build_irq_device(&topology, &authority, 0x7_0000, 15);
 
     devices
         .handle_mmio_write(GuestPhysAddr::from(0x7_0000), AccessWidth::Dword, 1)
@@ -241,8 +264,8 @@ fn test_planned_device_emits_irq_through_connected_input() {
 
 #[test]
 fn test_dropping_devices_and_topology_releases_irq_backend() {
-    let (topology, sink) = recording_topology();
-    let devices = build_irq_device(&topology, 0x8_0000, 16);
+    let (topology, authority, sink) = recording_topology();
+    let devices = build_irq_device(&topology, &authority, 0x8_0000, 16);
 
     drop(topology);
     assert!(sink.upgrade().is_some());
@@ -252,10 +275,10 @@ fn test_dropping_devices_and_topology_releases_irq_backend() {
 
 #[test]
 fn test_equal_input_numbers_are_isolated_between_topologies() {
-    let (topology_a, sink_a) = recording_topology();
-    let (topology_b, sink_b) = recording_topology();
-    let devices_a = build_irq_device(&topology_a, 0x9_0000, 17);
-    let devices_b = build_irq_device(&topology_b, 0xa_0000, 17);
+    let (topology_a, authority_a, sink_a) = recording_topology();
+    let (topology_b, authority_b, sink_b) = recording_topology();
+    let devices_a = build_irq_device(&topology_a, &authority_a, 0x9_0000, 17);
+    let devices_b = build_irq_device(&topology_b, &authority_b, 0xa_0000, 17);
 
     devices_a
         .handle_mmio_write(GuestPhysAddr::from(0x9_0000), AccessWidth::Dword, 1)

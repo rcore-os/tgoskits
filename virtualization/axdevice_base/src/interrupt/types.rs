@@ -34,6 +34,16 @@ impl ControllerInputId {
     }
 }
 
+/// Declares whether multiple independently owned sources may use one wired
+/// controller input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterruptSharing {
+    /// Exactly one planned source may own the controller input.
+    Exclusive,
+    /// Multiple planned sources may share the input using wired-OR semantics.
+    Shared,
+}
+
 /// Identifies one device connection to a controller input.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]

@@ -4,8 +4,8 @@ use alloc::sync::Arc;
 
 use arm_vgic::PpiId;
 use axdevice::{
-    DeviceBundle, DeviceRegistration, GicV3DeviceSet, InterruptTopology, InterruptTriggerMode,
-    VcpuInterruptId,
+    DeviceBundle, DeviceRegistration, GicV3DeviceSet, InterruptPlanAuthority, InterruptTopology,
+    InterruptTriggerMode, VcpuInterruptId,
 };
 
 use self::{device::VirtualTimerBank, state::counter_frequency};
@@ -24,6 +24,7 @@ pub(crate) fn register_emulated_timers(
     gic: &GicV3DeviceSet,
     placements: &[VcpuPlacement],
     topology: &InterruptTopology,
+    authority: &InterruptPlanAuthority,
     discovered_ppi: Option<PpiId>,
 ) -> AxVmResult {
     let ppi = discovered_ppi
@@ -38,19 +39,25 @@ pub(crate) fn register_emulated_timers(
         ));
     }
     let mut lines = alloc::vec::Vec::with_capacity(placements.len());
+    let mut endpoint_registrations = alloc::vec::Vec::with_capacity(placements.len());
     for placement in placements {
-        lines.push(gic.connect_ppi(
+        let request = gic.ppi_request(
             VcpuInterruptId::new(placement.id),
             ppi,
             InterruptTriggerMode::LevelTriggered,
-        )?);
+        )?;
+        let claim = authority.claim_wired(topology, request)?;
+        let (line, registration) = topology.connect_irq(claim)?.into_parts();
+        lines.push(line);
+        endpoint_registrations.push(registration);
     }
     let timer_bank = Arc::new(VirtualTimerBank::new(lines, frequency));
+    let mut bundle = DeviceBundle::from_registration(DeviceRegistration::Device(timer_bank));
+    for registration in endpoint_registrations {
+        bundle.push(DeviceRegistration::InterruptEndpoint(registration));
+    }
     devices
         .devices
-        .register_bundle_with_topology(
-            DeviceBundle::from_registration(DeviceRegistration::Device(timer_bank)),
-            topology,
-        )
+        .register_bundle_with_topology(bundle, topology)
         .map_err(Into::into)
 }

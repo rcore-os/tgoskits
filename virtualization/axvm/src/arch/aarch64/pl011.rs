@@ -6,8 +6,8 @@ use arm_vpl011::{Pl011, Pl011Backend, Pl011BackendError};
 use axdevice::{
     ConsoleRxPolicy, DeviceBackend, DeviceBuildContext, DeviceBundle, DeviceManagerError,
     DeviceManagerResult, DeviceModelId, DeviceRegistration, DeviceRequirements, DeviceTemplate,
-    InterruptSourceKind, PollableDeviceOps, ResolvedDeviceResources, ResourceSlot,
-    VirtualDeviceModel,
+    InterruptSharing, InterruptSourceKind, PollableDeviceOps, ResolvedDeviceResources,
+    ResourceSlot, VirtualDeviceModel,
 };
 use axvm_types::InterruptTriggerMode;
 
@@ -27,6 +27,7 @@ pub fn pl011_device_requirements() -> DeviceManagerResult<DeviceRequirements> {
             resource_slot(IRQ_SLOT)?,
             InterruptTriggerMode::LevelTriggered,
             InterruptSourceKind::Software,
+            InterruptSharing::Exclusive,
         )
 }
 

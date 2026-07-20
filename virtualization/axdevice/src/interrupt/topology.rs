@@ -4,14 +4,14 @@ use alloc::{format, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_kspin::SpinRaw;
-use axdevice_base::{
-    InterruptControllerId, InterruptEndpoint, IrqError, IrqLine, MsiEndpoint, WiredIrqInput,
-};
+use axdevice_base::{InterruptControllerId, InterruptEndpoint, IrqError, Resource, WiredIrqInput};
 use axvm_types::InterruptDelivery;
 
 use super::{
-    ControllerRef, ControllerRegistration, ControllerRole, MsiRequest, VcpuInterruptBinding,
-    VcpuInterruptId, VcpuInterruptPort, WiredIrqRequest,
+    ControllerRef, ControllerRegistration, ControllerRole, InterruptClaimDomain,
+    InterruptEndpointRegistration, InterruptPlanAuthority, MsiClaim, PlannedIrqConnection,
+    PlannedMsiConnection, VcpuInterruptBinding, VcpuInterruptId, VcpuInterruptPort, WiredIrqClaim,
+    WiredIrqRequest,
     registry::{ControllerEntry, find_controller, find_controller_mut, registration_order},
 };
 use crate::{DeviceManagerError, DeviceManagerResult};
@@ -22,6 +22,8 @@ pub struct InterruptTopology {
     controllers: SpinRaw<Vec<ControllerEntry>>,
     bindings: SpinRaw<Vec<RegisteredBinding>>,
     connected_cascades: SpinRaw<Vec<InterruptControllerId>>,
+    connected_cascade_claims: SpinRaw<Vec<InterruptEndpointRegistration>>,
+    claim_domain: Arc<InterruptClaimDomain>,
     finalized: AtomicBool,
 }
 
@@ -32,14 +34,21 @@ struct RegisteredBinding {
 
 impl InterruptTopology {
     /// Creates an empty topology for one normalized delivery policy.
-    pub const fn new(delivery: InterruptDelivery) -> Self {
-        Self {
-            delivery,
-            controllers: SpinRaw::new(Vec::new()),
-            bindings: SpinRaw::new(Vec::new()),
-            connected_cascades: SpinRaw::new(Vec::new()),
-            finalized: AtomicBool::new(false),
-        }
+    pub fn new(delivery: InterruptDelivery) -> (Self, InterruptPlanAuthority) {
+        let claim_domain = Arc::new(InterruptClaimDomain::new());
+        let authority = InterruptPlanAuthority::new(claim_domain.clone());
+        (
+            Self {
+                delivery,
+                controllers: SpinRaw::new(Vec::new()),
+                bindings: SpinRaw::new(Vec::new()),
+                connected_cascades: SpinRaw::new(Vec::new()),
+                connected_cascade_claims: SpinRaw::new(Vec::new()),
+                claim_domain,
+                finalized: AtomicBool::new(false),
+            },
+            authority,
+        )
     }
 
     /// Returns the configured external interrupt-delivery policy.
@@ -97,16 +106,53 @@ impl InterruptTopology {
         Ok(())
     }
 
-    /// Connects one device source to a wired controller input.
-    pub fn connect_irq(&self, request: WiredIrqRequest) -> DeviceManagerResult<IrqLine> {
-        let controller_id = self.resolve_controller(request.controller())?;
+    /// Connects one planner-authorized source to a wired controller input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the claim belongs to another topology, was already
+    /// consumed, or the controller rejects the requested input or trigger.
+    pub fn connect_irq(&self, claim: WiredIrqClaim) -> DeviceManagerResult<PlannedIrqConnection> {
+        self.require_claim_domain(claim.domain())?;
+        let Resource::WiredIrq {
+            controller: controller_id,
+            input,
+            trigger,
+            sharing,
+        } = *claim.resource()
+        else {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "connect planned wired interrupt",
+                detail: "wired claim contains a different resource kind".into(),
+            });
+        };
+        claim.mark_connected()?;
+        let request = WiredIrqRequest::for_controller(controller_id, input, trigger, sharing);
         let input = self.open_wired_input(controller_id, request)?;
-        input.connect().map_err(Into::into)
+        let line = input.connect()?;
+        Ok(PlannedIrqConnection::new(line, claim.into_registration()))
     }
 
-    /// Connects one MSI-producing device event to a controller.
-    pub fn connect_msi(&self, request: MsiRequest) -> DeviceManagerResult<MsiEndpoint> {
-        let controller_id = self.resolve_controller(request.controller())?;
+    /// Connects one planner-authorized MSI event to a controller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the claim belongs to another topology, was already
+    /// consumed, or the controller rejects the requested event.
+    pub fn connect_msi(&self, claim: MsiClaim) -> DeviceManagerResult<PlannedMsiConnection> {
+        self.require_claim_domain(claim.domain())?;
+        let Resource::MessageInterrupt {
+            controller: controller_id,
+            device,
+            event,
+        } = *claim.resource()
+        else {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "connect planned message interrupt",
+                detail: "MSI claim contains a different resource kind".into(),
+            });
+        };
+        claim.mark_connected()?;
         let capability = {
             let controllers = self.controllers.lock();
             let entry = find_controller(&controllers, controller_id)?;
@@ -119,17 +165,20 @@ impl InterruptTopology {
                     detail: format!("controller {controller_id:?} has no MSI input capability"),
                 })?
         };
-        let endpoint = capability.connect(request.device(), request.event())?;
+        let endpoint = capability.connect(device, event)?;
         if endpoint.controller() != controller_id
-            || endpoint.message().device() != request.device()
-            || endpoint.message().event() != request.event()
+            || endpoint.message().device() != device
+            || endpoint.message().event() != event
         {
             return Err(DeviceManagerError::InvalidInput {
                 operation: "connect message interrupt",
                 detail: "controller returned an endpoint for a different MSI request".into(),
             });
         }
-        Ok(endpoint)
+        Ok(PlannedMsiConnection::new(
+            endpoint,
+            claim.into_registration(),
+        ))
     }
 
     /// Validates cascades, connects controller outputs, and attaches vCPUs.
@@ -201,6 +250,13 @@ impl InterruptTopology {
         self.finalized.load(Ordering::Acquire)
     }
 
+    /// Returns a snapshot of all endpoint reservations currently held in this
+    /// topology, including device, controller-cascade, and architecture
+    /// infrastructure leases.
+    pub fn active_endpoint_resources(&self) -> Vec<Resource> {
+        self.claim_domain.resources()
+    }
+
     pub(crate) fn unregister_controller(
         &self,
         controller: InterruptControllerId,
@@ -242,9 +298,11 @@ impl InterruptTopology {
                     .cloned()
             };
             if let Some(cascade) = cascade {
-                let line = self.connect_irq(cascade.parent())?;
+                let claim = self.claim_internal_wired(cascade.parent())?;
+                let (line, registration) = self.connect_irq(claim)?.into_parts();
                 cascade.connect_output(line)?;
                 self.connected_cascades.lock().push(*controller_id);
+                self.connected_cascade_claims.lock().push(registration);
             }
         }
         Ok(())
@@ -336,12 +394,40 @@ impl InterruptTopology {
         Ok(opened)
     }
 
-    fn resolve_controller(
+    pub(super) fn resolve_controller(
         &self,
         reference: ControllerRef,
     ) -> DeviceManagerResult<InterruptControllerId> {
         let controllers = self.controllers.lock();
         super::registry::resolve_controller(&controllers, reference)
+    }
+
+    pub(super) fn claim_domain(&self) -> &Arc<InterruptClaimDomain> {
+        &self.claim_domain
+    }
+
+    pub(super) fn require_claim_domain(
+        &self,
+        domain: &Arc<InterruptClaimDomain>,
+    ) -> DeviceManagerResult {
+        if Arc::ptr_eq(&self.claim_domain, domain) {
+            Ok(())
+        } else {
+            Err(DeviceManagerError::InvalidInput {
+                operation: "connect planned interrupt endpoint",
+                detail: "interrupt claim belongs to a different VM topology".into(),
+            })
+        }
+    }
+
+    fn claim_internal_wired(&self, request: WiredIrqRequest) -> DeviceManagerResult<WiredIrqClaim> {
+        let controller = self.resolve_controller(request.controller())?;
+        self.claim_domain.claim_wired(Resource::WiredIrq {
+            controller,
+            input: request.input(),
+            trigger: request.trigger(),
+            sharing: request.sharing(),
+        })
     }
 
     fn bindings_for(&self, vcpu: VcpuInterruptId) -> Vec<Arc<dyn VcpuInterruptBinding>> {
@@ -363,6 +449,7 @@ impl InterruptTopology {
 
     fn disconnect_cascades(&self) -> DeviceManagerResult {
         let connected = core::mem::take(&mut *self.connected_cascades.lock());
+        let claims = core::mem::take(&mut *self.connected_cascade_claims.lock());
         let cascades = {
             let controllers = self.controllers.lock();
             let mut cascades = Vec::with_capacity(connected.len());
@@ -388,6 +475,7 @@ impl InterruptTopology {
                 first_error = Some(DeviceManagerError::from(error));
             }
         }
+        drop(claims);
         first_error.map_or(Ok(()), Err)
     }
 }

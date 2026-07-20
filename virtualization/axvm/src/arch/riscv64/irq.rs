@@ -21,9 +21,10 @@ use alloc::{
 
 use axdevice::{
     AxVmDevices, ControllerInputId, ControllerRegistration, ControllerRole, DeviceBundle,
-    DeviceRegistration, InterruptControllerId, InterruptEndpoint, InterruptTopology,
-    InterruptTriggerMode, IrqError, IrqLine, IrqResult, MmioDeviceAdapter, WiredInterruptInputs,
-    WiredIrqInput, WiredIrqRequest, WiredIrqSink,
+    DeviceRegistration, InterruptControllerId, InterruptEndpoint, InterruptEndpointRegistration,
+    InterruptPlanAuthority, InterruptSharing, InterruptTopology, InterruptTriggerMode, IrqError,
+    IrqLine, IrqResult, MmioDeviceAdapter, WiredInterruptInputs, WiredIrqInput, WiredIrqRequest,
+    WiredIrqSink,
 };
 use riscv_vplic::{PLIC_NUM_SOURCES, VPlicGlobal};
 
@@ -35,24 +36,30 @@ use crate::{
 const PLIC_CONTROLLER_ID: InterruptControllerId = InterruptControllerId::new(0);
 
 pub(crate) struct VmArchState {
-    external_irq_lines: BTreeMap<usize, IrqLine>,
+    external_irq_routes: BTreeMap<usize, ExternalIrqRoute>,
+}
+
+struct ExternalIrqRoute {
+    line: IrqLine,
+    _registration: InterruptEndpointRegistration,
 }
 
 impl VmArchState {
     pub(crate) fn new() -> Self {
         Self {
-            external_irq_lines: BTreeMap::new(),
+            external_irq_routes: BTreeMap::new(),
         }
     }
 
     pub(crate) fn connect_external_irq_lines(
         &mut self,
         topology: &InterruptTopology,
+        authority: &InterruptPlanAuthority,
         sources: &[HostInterruptResource],
     ) -> AxVmResult {
         for interrupt in sources {
             let source = interrupt.input().value();
-            self.connect_external_irq_line(topology, source, interrupt.input())?;
+            self.connect_external_irq_line(topology, authority, source, interrupt.input())?;
         }
         Ok(())
     }
@@ -60,29 +67,40 @@ impl VmArchState {
     fn connect_external_irq_line(
         &mut self,
         topology: &InterruptTopology,
+        authority: &InterruptPlanAuthority,
         source: usize,
         input: ControllerInputId,
     ) -> AxVmResult {
         let trigger = InterruptTriggerMode::EdgeTriggered;
-        if let Some(existing) = self.external_irq_lines.get(&source) {
-            if existing.input() == input && existing.trigger() == trigger {
+        if let Some(existing) = self.external_irq_routes.get(&source) {
+            if existing.line.input() == input && existing.line.trigger() == trigger {
                 return Ok(());
             }
             return ax_err!(
                 AlreadyExists,
                 format_args!(
                     "external interrupt source {source} is already connected to input {:?}",
-                    existing.input()
+                    existing.line.input()
                 )
             );
         }
-        let line = topology.connect_irq(WiredIrqRequest::new(input, trigger))?;
-        self.external_irq_lines.insert(source, line);
+        let claim = authority.claim_wired(
+            topology,
+            WiredIrqRequest::new(input, trigger, InterruptSharing::Exclusive),
+        )?;
+        let (line, registration) = topology.connect_irq(claim)?.into_parts();
+        self.external_irq_routes.insert(
+            source,
+            ExternalIrqRoute {
+                line,
+                _registration: registration,
+            },
+        );
         Ok(())
     }
 
     fn signal_external_interrupt(&self, source: usize) -> AxVmResult {
-        self.external_irq_lines
+        self.external_irq_routes
             .get(&source)
             .ok_or_else(|| {
                 ax_err_type!(
@@ -90,6 +108,7 @@ impl VmArchState {
                     alloc::format!("external interrupt source {source} is not connected")
                 )
             })?
+            .line
             .pulse()?;
         Ok(())
     }

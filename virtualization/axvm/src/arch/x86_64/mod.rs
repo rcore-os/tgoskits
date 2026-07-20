@@ -24,7 +24,7 @@ use x86_vlapic::{
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, VcpuRunAction, VcpuScheduling};
 use crate::{
-    AxVmError, AxVmResult, StopReason, VmStatus, ax_err_type,
+    AxVmError, AxVmResult, StopReason, VmStatus, ax_err, ax_err_type,
     host::{HostMemory, default_host},
     vcpu::get_current_vcpu,
 };
@@ -108,11 +108,26 @@ impl VmArchConfig {
     }
 }
 
-pub(crate) struct VmArchState;
+pub(crate) struct VmArchState {
+    ioapic_forwarding: Option<irq::IoApicForwardingConnections>,
+}
 
 impl VmArchState {
     pub(crate) const fn new() -> Self {
-        Self
+        Self {
+            ioapic_forwarding: None,
+        }
+    }
+
+    pub(crate) fn set_ioapic_forwarding(
+        &mut self,
+        forwarding: irq::IoApicForwardingConnections,
+    ) -> AxVmResult {
+        if self.ioapic_forwarding.is_some() {
+            return ax_err!(AlreadyExists, "x86 IOAPIC forwarding is already prepared");
+        }
+        self.ioapic_forwarding = Some(forwarding);
+        Ok(())
     }
 }
 

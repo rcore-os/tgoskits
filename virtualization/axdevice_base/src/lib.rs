@@ -328,6 +328,102 @@ pub enum Resource {
         /// Number of registers in the range.
         count: u32,
     },
+    /// A planner-authorized wired interrupt-controller endpoint.
+    ///
+    /// Runtime devices cannot register this resource directly. The device
+    /// build transaction derives it from an opaque interrupt claim and adds
+    /// it to the bundle-level endpoint inventory.
+    WiredIrq {
+        /// Controller owning the input.
+        controller: InterruptControllerId,
+        /// Controller-local input number.
+        input: ControllerInputId,
+        /// Electrical trigger semantics.
+        trigger: InterruptTriggerMode,
+        /// Whether independently owned sources may share this input.
+        sharing: InterruptSharing,
+    },
+    /// A planner-authorized message-signaled interrupt endpoint.
+    MessageInterrupt {
+        /// Controller receiving the message.
+        controller: InterruptControllerId,
+        /// Controller-local MSI device identity.
+        device: MsiDeviceId,
+        /// Device-local event identity.
+        event: MsiEventId,
+    },
+}
+
+/// VM-global identity of an interrupt endpoint.
+///
+/// Wired input numbers are controller-local, so the controller identifier is
+/// part of the key. Message-signaled events are identified by the controller,
+/// device, and event tuple.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum InterruptEndpointKey {
+    /// One wired input on an interrupt controller.
+    Wired {
+        /// Controller that owns the input namespace.
+        controller: InterruptControllerId,
+        /// Input number within `controller`.
+        input: ControllerInputId,
+    },
+    /// One message-signaled event accepted by an interrupt controller.
+    Message {
+        /// Controller that accepts the message.
+        controller: InterruptControllerId,
+        /// Controller-local message device identifier.
+        device: MsiDeviceId,
+        /// Event identifier within `device`.
+        event: MsiEventId,
+    },
+}
+
+impl Resource {
+    /// Returns the VM-global endpoint key for an interrupt resource.
+    pub const fn interrupt_endpoint_key(&self) -> Option<InterruptEndpointKey> {
+        match *self {
+            Self::WiredIrq {
+                controller, input, ..
+            } => Some(InterruptEndpointKey::Wired { controller, input }),
+            Self::MessageInterrupt {
+                controller,
+                device,
+                event,
+            } => Some(InterruptEndpointKey::Message {
+                controller,
+                device,
+                event,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Returns whether two interrupt resources make incompatible ownership
+    /// claims on the same VM-global endpoint.
+    pub fn interrupt_endpoint_conflicts_with(&self, other: &Self) -> bool {
+        let Some(key) = self.interrupt_endpoint_key() else {
+            return false;
+        };
+        if other.interrupt_endpoint_key() != Some(key) {
+            return false;
+        }
+        !matches!(
+            (self, other),
+            (
+                Self::WiredIrq {
+                    trigger,
+                    sharing: InterruptSharing::Shared,
+                    ..
+                },
+                Self::WiredIrq {
+                    trigger: other_trigger,
+                    sharing: InterruptSharing::Shared,
+                    ..
+                },
+            ) if trigger == other_trigger
+        )
+    }
 }
 
 /// The reason a resource was rejected as structurally invalid during
@@ -352,6 +448,10 @@ pub enum InvalidResourceReason {
     /// dispatch index.
     #[error("device resources overlap")]
     OverlappingResources,
+    /// An interrupt endpoint was declared directly by a device instead of
+    /// being backed by a planner-issued claim.
+    #[error("interrupt endpoint is not backed by a planner claim")]
+    UnbackedInterruptEndpoint,
 }
 
 /// Errors that can be returned when registering a device.
@@ -376,6 +476,20 @@ pub enum RegistryError {
         /// The resource already held by an existing device.
         existing: Resource,
         /// The device that already owns the conflicting resource.
+        existing_device: DeviceId,
+    },
+    /// Two registered bundles claim incompatible ownership of one interrupt
+    /// controller input.
+    #[error(
+        "interrupt resource {resource:?} conflicts with {existing:?} owned by device \
+         {existing_device:?}"
+    )]
+    InterruptEndpointConflict {
+        /// The endpoint requested by the new bundle.
+        resource: Resource,
+        /// The endpoint ownership already registered.
+        existing: Resource,
+        /// First device in the bundle that owns the existing endpoint.
         existing_device: DeviceId,
     },
     /// The device requested a bus type that the current architecture does

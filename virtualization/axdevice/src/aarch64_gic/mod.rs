@@ -2,12 +2,12 @@
 
 use alloc::sync::Arc;
 
-use arm_vgic::{GicV3Controller, PpiId};
-use axdevice_base::{InterruptControllerId, InterruptTriggerMode, IrqLine};
+use arm_vgic::{GicV3Controller, GicVcpuId, PpiId};
+use axdevice_base::{InterruptControllerId, InterruptSharing, InterruptTriggerMode};
 
 use crate::{
     ControllerRegistration, ControllerRole, DeviceBundle, DeviceManagerResult, DeviceRegistration,
-    VcpuInterruptId,
+    VcpuInterruptId, WiredIrqRequest,
 };
 
 mod error;
@@ -46,15 +46,20 @@ impl GicV3DeviceSet {
         bundle
     }
 
-    /// Creates a device-owned line connected to one vCPU's Redistributor PPI input.
-    ///
-    /// The topology must have attached the target vCPU before this method is called.
-    pub fn connect_ppi(
+    /// Describes one exclusive planner-owned vCPU Redistributor PPI input.
+    pub fn ppi_request(
         &self,
         vcpu: VcpuInterruptId,
         ppi: PpiId,
         trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine> {
-        self.topology.connect_ppi(vcpu, ppi, trigger)
+    ) -> DeviceManagerResult<WiredIrqRequest> {
+        let input =
+            topology::private_input_id(self.topology.id(), GicVcpuId::new(vcpu.value()), ppi)?;
+        Ok(WiredIrqRequest::for_controller(
+            self.topology.id(),
+            input,
+            trigger,
+            InterruptSharing::Exclusive,
+        ))
     }
 }

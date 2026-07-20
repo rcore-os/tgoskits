@@ -7,7 +7,8 @@ use arm_vgic::{GicV3BackendError, GicV3Controller, GicVcpuId, SpiId};
 use ax_kspin::SpinRaw;
 use ax_std::os::arceos::modules::ax_hal::irq::{self as host_irq, IrqHandle, IrqReturn};
 use axdevice::{
-    ControllerInputId, InterruptControllerId, InterruptTopology, IrqLine, WiredIrqRequest,
+    ControllerInputId, InterruptControllerId, InterruptEndpointRegistration,
+    InterruptPlanAuthority, InterruptSharing, InterruptTopology, IrqLine, WiredIrqRequest,
 };
 use axvm_types::InterruptTriggerMode;
 
@@ -24,13 +25,14 @@ impl HostSpiForwarding {
     /// Connects assigned SPIs through VM-local topology lines.
     pub(crate) fn connect_mediated(
         topology: &InterruptTopology,
+        authority: &InterruptPlanAuthority,
         controller: InterruptControllerId,
         interrupts: &[HostInterruptResource],
         backend: Arc<AxvmGicV3Backend>,
     ) -> AxVmResult<Self> {
         let mut forwarding = Self::new(interrupts.len(), backend);
         for interrupt in interrupts {
-            forwarding.connect_mediated_spi(topology, controller, interrupt)?;
+            forwarding.connect_mediated_spi(topology, authority, controller, interrupt)?;
         }
         Ok(forwarding)
     }
@@ -59,6 +61,7 @@ impl HostSpiForwarding {
     fn connect_mediated_spi(
         &mut self,
         topology: &InterruptTopology,
+        authority: &InterruptPlanAuthority,
         controller: InterruptControllerId,
         interrupt: &HostInterruptResource,
     ) -> AxVmResult {
@@ -67,14 +70,24 @@ impl HostSpiForwarding {
         let input = usize::try_from(intid).map_err(|_| {
             AxVmError::invalid_config("mediated GICv3 SPI INTID does not fit usize")
         })?;
-        let line = topology.connect_irq(WiredIrqRequest::for_controller(
-            controller,
-            ControllerInputId::new(input),
-            interrupt.trigger(),
-        ))?;
+        let claim = authority.claim_wired(
+            topology,
+            WiredIrqRequest::for_controller(
+                controller,
+                ControllerInputId::new(input),
+                interrupt.trigger(),
+                InterruptSharing::Exclusive,
+            ),
+        )?;
+        let (line, endpoint_registration) = topology.connect_irq(claim)?.into_parts();
         let irq = resolve_host_irq(intid)
             .map_err(|error| AxVmError::interrupt("resolve mediated GICv3 host SPI", error))?;
-        let forwarding = Arc::new(ForwardedSpi::mediated(spi, irq, line));
+        let forwarding = Arc::new(ForwardedSpi::mediated(
+            spi,
+            irq,
+            line,
+            endpoint_registration,
+        ));
         let handler = forwarding.clone();
         let request = host_irq::IrqRequest::new(move |_| handler.handle_host_irq())
             .share_mode(host_irq::ShareMode::Shared)
@@ -158,16 +171,23 @@ pub(super) struct ForwardedSpi {
     spi: SpiId,
     host_irq: host_irq::IrqId,
     target: ForwardingTarget,
+    _endpoint_registration: Option<InterruptEndpointRegistration>,
     registration: SpinRaw<Option<IrqHandle>>,
     host_masked: AtomicBool,
 }
 
 impl ForwardedSpi {
-    fn mediated(spi: SpiId, host_irq: host_irq::IrqId, line: IrqLine) -> Self {
+    fn mediated(
+        spi: SpiId,
+        host_irq: host_irq::IrqId,
+        line: IrqLine,
+        endpoint_registration: InterruptEndpointRegistration,
+    ) -> Self {
         Self {
             spi,
             host_irq,
             target: ForwardingTarget::Mediated(line),
+            _endpoint_registration: Some(endpoint_registration),
             registration: SpinRaw::new(None),
             host_masked: AtomicBool::new(false),
         }
@@ -178,6 +198,7 @@ impl ForwardedSpi {
             spi,
             host_irq,
             target: ForwardingTarget::Direct(controller),
+            _endpoint_registration: None,
             registration: SpinRaw::new(None),
             host_masked: AtomicBool::new(false),
         }

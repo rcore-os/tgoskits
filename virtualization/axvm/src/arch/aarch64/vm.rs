@@ -39,9 +39,14 @@ impl Aarch64Arch {
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
         let models = default_virtual_device_models()?;
-        let interrupt_topology =
-            Arc::new(axdevice::InterruptTopology::new(vm.interrupt_delivery()));
-        init_vm_with(vm, &models, interrupt_topology)
+        let (interrupt_topology, interrupt_authority) =
+            axdevice::InterruptTopology::new(vm.interrupt_delivery());
+        init_vm_with(
+            vm,
+            &models,
+            Arc::new(interrupt_topology),
+            interrupt_authority,
+        )
     }
 }
 
@@ -55,6 +60,7 @@ fn init_vm_with(
     vm: &AxVM,
     models: &axdevice::VirtualDeviceModelRegistry,
     interrupt_topology: Arc<axdevice::InterruptTopology>,
+    interrupt_authority: axdevice::InterruptPlanAuthority,
 ) -> AxVmResult {
     complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
         let placements = vcpu_placements(resources);
@@ -78,7 +84,8 @@ fn init_vm_with(
             crate::AxVmError::invalid_config("AArch64 interrupt roles are not prepared")
         })?;
         let maintenance_interrupt = register_maintenance_interrupt(interrupt_roles, &placements)?;
-        let host_spi_forwarding = prepared_gic.connect_physical_spis(interrupt_topology)?;
+        let host_spi_forwarding =
+            prepared_gic.connect_physical_spis(interrupt_topology, &interrupt_authority)?;
         let physical_timer_ppi = resources
             .config()
             .arch()
@@ -89,12 +96,14 @@ fn init_vm_with(
             prepared_gic.device_set(),
             &placements,
             interrupt_topology,
+            &interrupt_authority,
             physical_timer_ppi,
         )?;
         devices.register_planned(
             resources.config().machine_plan(),
             models,
             interrupt_topology,
+            &interrupt_authority,
         )?;
         devices.register_special_devices(vm)?;
         validate_guest_dtb(resources)?;

@@ -45,10 +45,10 @@ mod x86;
 pub use aarch64_gic::GicV3DeviceSet;
 pub use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
-    ControllerInputId, Device, InterruptControllerId, InterruptEndpoint, InterruptSourceId,
-    InterruptTriggerMode, IrqError, IrqLine, IrqResult, MessageInterruptSink, MmioDeviceAdapter,
-    MsiDeviceId, MsiEndpoint, MsiEventId, MsiMessage, Port, PortDeviceAdapter, SysRegAddr,
-    SysRegDeviceAdapter, WiredIrqInput, WiredIrqSink,
+    ControllerInputId, Device, InterruptControllerId, InterruptEndpoint, InterruptSharing,
+    InterruptSourceId, InterruptTriggerMode, IrqError, IrqLine, IrqResult, MessageInterruptSink,
+    MmioDeviceAdapter, MsiDeviceId, MsiEndpoint, MsiEventId, MsiMessage, Port, PortDeviceAdapter,
+    SysRegAddr, SysRegDeviceAdapter, WiredIrqInput, WiredIrqSink,
 };
 pub use axvm_types::GuestPhysAddr;
 pub use device::AxVmDevices;

@@ -4,12 +4,14 @@
 //! parent controller, and CPU-facing controllers attach to explicit vCPU
 //! ports. The topology never exposes raw vector injection.
 
+mod claim;
 mod controller;
 mod registry;
 mod request;
 mod topology;
 mod vcpu;
 
+pub use claim::*;
 pub use controller::*;
 pub use request::*;
 pub use topology::*;

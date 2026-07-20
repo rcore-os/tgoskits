@@ -294,6 +294,11 @@ impl IrqLine {
         self.0.source
     }
 
+    /// Returns whether both handles refer to the same connected source.
+    pub fn same_connection(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// Returns the configured trigger mode.
     pub fn trigger(&self) -> InterruptTriggerMode {
         self.0.input.trigger()

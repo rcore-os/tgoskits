@@ -173,22 +173,22 @@ fn discover_guest_physical_timer_ppi(bytes: &[u8]) -> AxVmResult<PpiId> {
         .get_property("interrupts")
         .ok_or_else(|| AxVmError::invalid_config("guest Arm timer has no interrupts property"))?;
     let cells = interrupts.get_u32_iter().collect::<Vec<_>>();
-    if !cells.len().is_multiple_of(GIC_INTERRUPT_CELLS) {
+    let (entries, remainder) = cells.as_chunks::<GIC_INTERRUPT_CELLS>();
+    if !remainder.is_empty() {
         return Err(AxVmError::invalid_config(format!(
             "guest Arm timer interrupt property has {} cells, not complete GIC specifiers",
             cells.len()
         )));
     }
-    let entries = cells.chunks_exact(GIC_INTERRUPT_CELLS).collect::<Vec<_>>();
     let names = timer
         .as_node()
         .get_property("interrupt-names")
         .map(|property| property.as_str_iter().collect::<Vec<_>>());
-    select_guest_physical_timer_ppi(&entries, names.as_deref())
+    select_guest_physical_timer_ppi(entries, names.as_deref())
 }
 
 fn select_guest_physical_timer_ppi(
-    entries: &[&[u32]],
+    entries: &[[u32; GIC_INTERRUPT_CELLS]],
     names: Option<&[&str]>,
 ) -> AxVmResult<PpiId> {
     let physical = if let Some(names) = names {
@@ -203,11 +203,14 @@ fn select_guest_physical_timer_ppi(
             .ok_or_else(|| {
                 AxVmError::invalid_config("guest Arm timer has no non-secure physical timer IRQ")
             })?;
-        entries[physical]
+        entries[physical].as_slice()
     } else {
-        entries.get(1).copied().ok_or_else(|| {
-            AxVmError::invalid_config("guest Arm timer has no EL1 physical timer IRQ")
-        })?
+        entries
+            .get(1)
+            .map(|entry| entry.as_slice())
+            .ok_or_else(|| {
+                AxVmError::invalid_config("guest Arm timer has no EL1 physical timer IRQ")
+            })?
     };
     decode_gic_ppi(physical, "guest EL1 physical timer")
 }

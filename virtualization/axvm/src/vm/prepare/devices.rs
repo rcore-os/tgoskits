@@ -1,6 +1,9 @@
 //! Device construction for VM preparation.
 
-use axdevice::{AxVmDevices, DeviceBuildContext, InterruptTopology, VirtualDeviceModelRegistry};
+use axdevice::{
+    AxVmDevices, DeviceBuildContext, InterruptPlanAuthority, InterruptTopology,
+    VirtualDeviceModelRegistry,
+};
 
 use super::super::AxVM;
 use crate::AxVmResult;
@@ -21,14 +24,16 @@ impl PreparedDevices {
         plan: &crate::machine::VmMachinePlan,
         models: &VirtualDeviceModelRegistry,
         interrupt_topology: &InterruptTopology,
+        interrupt_authority: &InterruptPlanAuthority,
     ) -> AxVmResult {
         for device in plan.virtual_devices() {
             let context = DeviceBuildContext::with_backend(
                 interrupt_topology,
+                interrupt_authority,
                 device.resources(),
                 device.backend(),
             );
-            let bundle = models.build(device.model_id(), device.resources(), &context)?;
+            let bundle = models.build(device.model_id(), device.resources(), context)?;
             self.devices
                 .register_bundle_with_topology(bundle, interrupt_topology)?;
         }

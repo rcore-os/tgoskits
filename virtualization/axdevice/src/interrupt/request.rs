@@ -1,7 +1,8 @@
 //! Typed device-to-controller connection requests.
 
 use axdevice_base::{
-    ControllerInputId, InterruptControllerId, InterruptTriggerMode, MsiDeviceId, MsiEventId,
+    ControllerInputId, InterruptControllerId, InterruptSharing, InterruptTriggerMode, MsiDeviceId,
+    MsiEventId,
 };
 
 /// Selects an interrupt controller in one VM topology.
@@ -19,15 +20,21 @@ pub struct WiredIrqRequest {
     controller: ControllerRef,
     input: ControllerInputId,
     trigger: InterruptTriggerMode,
+    sharing: InterruptSharing,
 }
 
 impl WiredIrqRequest {
     /// Creates a request for the default controller.
-    pub const fn new(input: ControllerInputId, trigger: InterruptTriggerMode) -> Self {
+    pub const fn new(
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+        sharing: InterruptSharing,
+    ) -> Self {
         Self {
             controller: ControllerRef::Default,
             input,
             trigger,
+            sharing,
         }
     }
 
@@ -36,11 +43,13 @@ impl WiredIrqRequest {
         controller: InterruptControllerId,
         input: ControllerInputId,
         trigger: InterruptTriggerMode,
+        sharing: InterruptSharing,
     ) -> Self {
         Self {
             controller: ControllerRef::Id(controller),
             input,
             trigger,
+            sharing,
         }
     }
 
@@ -57,6 +66,11 @@ impl WiredIrqRequest {
     /// Returns the requested trigger mode.
     pub const fn trigger(self) -> InterruptTriggerMode {
         self.trigger
+    }
+
+    /// Returns the planned sharing policy.
+    pub const fn sharing(self) -> InterruptSharing {
+        self.sharing
     }
 }
 

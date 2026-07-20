@@ -9,14 +9,14 @@ use arm_vgic::{
 use ax_kspin::SpinRaw;
 use axdevice_base::{
     ControllerInputId, InterruptControllerId, InterruptEndpoint, InterruptTriggerMode, IrqError,
-    IrqLine, IrqResult, MessageInterruptSink, MsiDeviceId, MsiEndpoint, MsiEventId, MsiMessage,
+    IrqResult, MessageInterruptSink, MsiDeviceId, MsiEndpoint, MsiEventId, MsiMessage,
     WiredIrqInput, WiredIrqSink,
 };
 
 use super::error::{device_manager_error, irq_error};
 use crate::{
     DeviceManagerResult, MessageInterruptInputs, VcpuInterruptBinding, VcpuInterruptController,
-    VcpuInterruptId, VcpuInterruptPort, WiredInterruptInputs,
+    VcpuInterruptPort, WiredInterruptInputs,
 };
 
 pub(super) struct GicV3TopologyAdapter {
@@ -40,22 +40,19 @@ impl GicV3TopologyAdapter {
         self.id
     }
 
-    pub(super) fn connect_ppi(
+    fn private_input(
         &self,
-        vcpu: VcpuInterruptId,
+        vcpu: GicVcpuId,
         ppi: PpiId,
+        input_id: ControllerInputId,
         trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine> {
-        let vcpu = GicVcpuId::new(vcpu.value());
+    ) -> IrqResult<WiredIrqInput> {
         if let Some(existing) = self.private_inputs.lock().get(&(vcpu, ppi)).cloned() {
-            return require_matching_trigger(existing, trigger)?
-                .connect()
-                .map_err(Into::into);
+            return require_matching_trigger(existing, trigger);
         }
         self.controller
             .configure_ppi_input(vcpu, ppi, trigger_mode(trigger))
-            .map_err(device_manager_error)?;
-        let input_id = private_input_id(self.id, vcpu, ppi)?;
+            .map_err(|error| irq_error(self.id, Some(input_id), "configure PPI input", error))?;
         let created = WiredIrqInput::new(
             self.id,
             input_id,
@@ -75,7 +72,7 @@ impl GicV3TopologyAdapter {
             inputs.insert((vcpu, ppi), created.clone());
             created
         };
-        input.connect().map_err(Into::into)
+        Ok(input)
     }
 }
 
@@ -85,6 +82,9 @@ impl WiredInterruptInputs for GicV3TopologyAdapter {
         input: ControllerInputId,
         trigger: InterruptTriggerMode,
     ) -> IrqResult<WiredIrqInput> {
+        if let Some((vcpu, ppi)) = private_input_parts(self.id, input)? {
+            return self.private_input(vcpu, ppi, input, trigger);
+        }
         if let Some(existing) = self.wired_inputs.lock().get(&input).cloned() {
             return require_matching_trigger(existing, trigger);
         }
@@ -291,7 +291,7 @@ fn trigger_mode(mode: InterruptTriggerMode) -> TriggerMode {
     }
 }
 
-fn private_input_id(
+pub(super) fn private_input_id(
     controller: InterruptControllerId,
     vcpu: GicVcpuId,
     ppi: PpiId,
@@ -309,4 +309,25 @@ fn private_input_id(
             detail: "vCPU and PPI identifiers cannot be represented as a private input".into(),
         })?;
     Ok(ControllerInputId::new(PRIVATE_INPUT_TAG | encoded))
+}
+
+fn private_input_parts(
+    controller: InterruptControllerId,
+    input: ControllerInputId,
+) -> IrqResult<Option<(GicVcpuId, PpiId)>> {
+    const PRIVATE_INPUT_TAG: usize = 1usize << (usize::BITS - 1);
+
+    if input.value() & PRIVATE_INPUT_TAG == 0 {
+        return Ok(None);
+    }
+    let encoded = input.value() & !PRIVATE_INPUT_TAG;
+    let vcpu = GicVcpuId::new(encoded / 32);
+    let raw_ppi = u8::try_from(encoded % 32).map_err(|_| IrqError::InvalidInput {
+        endpoint: InterruptEndpoint::Wired { controller, input },
+        operation: "decode GICv3 private input",
+        detail: "encoded PPI does not fit u8".into(),
+    })?;
+    let ppi = PpiId::new(raw_ppi)
+        .map_err(|error| irq_error(controller, Some(input), "decode GICv3 private input", error))?;
+    Ok(Some((vcpu, ppi)))
 }

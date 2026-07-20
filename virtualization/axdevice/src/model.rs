@@ -20,46 +20,68 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
+use core::cell::RefCell;
 
 use axdevice_base::{
-    ControllerInputId, InterruptTriggerMode, IrqLine, MsiDeviceId, MsiEndpoint, MsiEventId,
+    ControllerInputId, InterruptSharing, InterruptTriggerMode, IrqLine, MsiDeviceId, MsiEndpoint,
+    MsiEventId,
 };
 
 use crate::{
-    DeviceBundle, DeviceManagerError, DeviceManagerResult, InterruptTopology, MsiRequest,
+    DeviceBundle, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
+    InterruptEndpointRegistration, InterruptPlanAuthority, InterruptTopology, MsiRequest,
     WiredIrqRequest,
 };
 
 /// VM-owned capabilities available while one planned device is constructed.
 pub struct DeviceBuildContext<'a> {
     interrupt_topology: &'a InterruptTopology,
+    interrupt_authority: &'a InterruptPlanAuthority,
     resources: &'a ResolvedDeviceResources,
     backend: DeviceBackend,
+    opened_interrupts: RefCell<BTreeMap<ResourceSlot, OpenedInterrupt>>,
+}
+
+enum OpenedInterrupt {
+    Wired {
+        line: IrqLine,
+        registration: InterruptEndpointRegistration,
+    },
+    Msi {
+        endpoint: MsiEndpoint,
+        registration: InterruptEndpointRegistration,
+    },
 }
 
 impl<'a> DeviceBuildContext<'a> {
     /// Creates a context scoped to one device's resolved resources.
-    pub const fn new(
+    pub fn new(
         interrupt_topology: &'a InterruptTopology,
+        interrupt_authority: &'a InterruptPlanAuthority,
         resources: &'a ResolvedDeviceResources,
     ) -> Self {
         Self {
             interrupt_topology,
+            interrupt_authority,
             resources,
             backend: DeviceBackend::None,
+            opened_interrupts: RefCell::new(BTreeMap::new()),
         }
     }
 
     /// Creates a context with one planner-selected external backend policy.
-    pub const fn with_backend(
+    pub fn with_backend(
         interrupt_topology: &'a InterruptTopology,
+        interrupt_authority: &'a InterruptPlanAuthority,
         resources: &'a ResolvedDeviceResources,
         backend: DeviceBackend,
     ) -> Self {
         Self {
             interrupt_topology,
+            interrupt_authority,
             resources,
             backend,
+            opened_interrupts: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -70,14 +92,70 @@ impl<'a> DeviceBuildContext<'a> {
 
     /// Opens the named wired interrupt allocated to this device.
     pub fn irq(&self, slot: &ResourceSlot) -> DeviceManagerResult<IrqLine> {
-        self.interrupt_topology
-            .connect_irq(self.resources.wired_irq(slot)?)
+        if let Some(opened) = self.opened_interrupts.borrow().get(slot) {
+            return match opened {
+                OpenedInterrupt::Wired { line, .. } => Ok(line.clone()),
+                OpenedInterrupt::Msi { .. } => Err(resource_kind_error(slot, "wired IRQ")),
+            };
+        }
+        let claim = self
+            .interrupt_authority
+            .claim_wired(self.interrupt_topology, self.resources.wired_irq(slot)?)?;
+        let (line, registration) = self.interrupt_topology.connect_irq(claim)?.into_parts();
+        self.opened_interrupts.borrow_mut().insert(
+            slot.clone(),
+            OpenedInterrupt::Wired {
+                line: line.clone(),
+                registration,
+            },
+        );
+        Ok(line)
     }
 
     /// Opens the named message-signaled endpoint allocated to this device.
     pub fn msi(&self, slot: &ResourceSlot) -> DeviceManagerResult<MsiEndpoint> {
-        self.interrupt_topology
-            .connect_msi(self.resources.msi(slot)?)
+        if let Some(opened) = self.opened_interrupts.borrow().get(slot) {
+            return match opened {
+                OpenedInterrupt::Msi { endpoint, .. } => Ok(endpoint.clone()),
+                OpenedInterrupt::Wired { .. } => Err(resource_kind_error(slot, "MSI")),
+            };
+        }
+        let claim = self
+            .interrupt_authority
+            .claim_msi(self.interrupt_topology, self.resources.msi(slot)?)?;
+        let (endpoint, registration) = self.interrupt_topology.connect_msi(claim)?.into_parts();
+        self.opened_interrupts.borrow_mut().insert(
+            slot.clone(),
+            OpenedInterrupt::Msi {
+                endpoint: endpoint.clone(),
+                registration,
+            },
+        );
+        Ok(endpoint)
+    }
+
+    fn finish(self, mut bundle: DeviceBundle) -> DeviceManagerResult<DeviceBundle> {
+        let opened = self.opened_interrupts.into_inner();
+        for (slot, resource) in &self.resources.entries {
+            if matches!(
+                resource,
+                ResolvedResource::WiredIrq(_) | ResolvedResource::Msi(_)
+            ) && !opened.contains_key(slot)
+            {
+                return Err(DeviceManagerError::ResourceNotFound {
+                    operation: "finish planned device build",
+                    resource: alloc::format!("unconsumed interrupt slot {slot}"),
+                });
+            }
+        }
+        for endpoint in opened.into_values() {
+            let registration = match endpoint {
+                OpenedInterrupt::Wired { registration, .. }
+                | OpenedInterrupt::Msi { registration, .. } => registration,
+            };
+            bundle.push(DeviceRegistration::InterruptEndpoint(registration));
+        }
+        Ok(bundle)
     }
 }
 
@@ -220,6 +298,8 @@ pub enum DeviceRequirement {
         trigger: InterruptTriggerMode,
         /// Whether the interrupt is software or physically sourced.
         source: InterruptSourceKind,
+        /// Whether independently owned devices may share the input.
+        sharing: InterruptSharing,
     },
     /// One message-signaled interrupt event.
     Msi {
@@ -308,11 +388,13 @@ impl DeviceRequirements {
         slot: ResourceSlot,
         trigger: InterruptTriggerMode,
         source: InterruptSourceKind,
+        sharing: InterruptSharing,
     ) -> DeviceManagerResult<Self> {
         self.insert(DeviceRequirement::WiredIrq {
             slot,
             trigger,
             source,
+            sharing,
         })?;
         Ok(self)
     }
@@ -441,8 +523,9 @@ impl ResolvedDeviceResources {
         slot: ResourceSlot,
         input: ControllerInputId,
         trigger: InterruptTriggerMode,
+        sharing: InterruptSharing,
     ) -> DeviceManagerResult<Self> {
-        self.with_wired_irq_request(slot, WiredIrqRequest::new(input, trigger))
+        self.with_wired_irq_request(slot, WiredIrqRequest::new(input, trigger, sharing))
     }
 
     /// Adds one planner-selected wired-controller connection.
@@ -604,10 +687,12 @@ impl VirtualDeviceModelRegistry {
         &self,
         id: &DeviceModelId,
         resources: &ResolvedDeviceResources,
-        context: &DeviceBuildContext<'_>,
+        context: DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
-        self.model(id, "build virtual device")?
-            .build(resources, context)
+        let bundle = self
+            .model(id, "build virtual device")?
+            .build(resources, &context)?;
+        context.finish(bundle)
     }
 
     fn model(

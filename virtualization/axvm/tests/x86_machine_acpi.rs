@@ -124,6 +124,7 @@ fn com1() -> VirtualDeviceDescriptor {
                 ResourceSlot::new("irq").unwrap(),
                 InterruptTriggerMode::LevelTriggered,
                 InterruptSourceKind::Software,
+                axdevice::InterruptSharing::Exclusive,
             )
             .unwrap(),
     )

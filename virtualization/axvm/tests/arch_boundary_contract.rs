@@ -100,7 +100,8 @@ fn machine_plan_owns_interrupt_topology_construction() {
     ] {
         assert!(!source.contains("VmInitRequest::Provided"));
         assert!(source.contains("InterruptTopology::new(vm.interrupt_delivery())"));
-        assert!(source.contains("init_vm_with(vm, &models, interrupt_topology)"));
+        assert!(source.contains("let (interrupt_topology, interrupt_authority)"));
+        assert!(source.contains("interrupt_authority)"));
     }
 }
 

@@ -51,9 +51,14 @@ impl X86_64Arch {
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
         let models = default_virtual_device_models()?;
-        let interrupt_topology =
-            Arc::new(axdevice::InterruptTopology::new(vm.interrupt_delivery()));
-        init_vm_with(vm, &models, interrupt_topology)
+        let (interrupt_topology, interrupt_authority) =
+            axdevice::InterruptTopology::new(vm.interrupt_delivery());
+        init_vm_with(
+            vm,
+            &models,
+            Arc::new(interrupt_topology),
+            interrupt_authority,
+        )
     }
 }
 
@@ -67,6 +72,7 @@ fn init_vm_with(
     vm: &AxVM,
     models: &axdevice::VirtualDeviceModelRegistry,
     interrupt_topology: Arc<axdevice::InterruptTopology>,
+    interrupt_authority: axdevice::InterruptPlanAuthority,
 ) -> AxVmResult {
     complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
         let placements = vcpu_placements(resources);
@@ -79,11 +85,16 @@ fn init_vm_with(
         )?;
         register_protected_platform_mmio(&mut devices.devices)?;
         interrupt_topology.finalize(&vcpus.interrupt_ports(vm.id(), &placements)?)?;
-        register_pit(&mut devices.devices, interrupt_topology)?;
+        register_pit(
+            &mut devices.devices,
+            interrupt_topology,
+            &interrupt_authority,
+        )?;
         devices.register_planned(
             resources.config().machine_plan(),
             models,
             interrupt_topology,
+            &interrupt_authority,
         )?;
         register_planned_host_ports(resources.config().machine_plan(), &mut devices.devices)?;
         devices.register_special_devices(vm)?;
@@ -99,7 +110,14 @@ fn init_vm_with(
             devices.devices(),
         )?;
         vcpus.setup(resources, |_, _| Ok(setup_config.clone()))?;
-        super::irq::register_planned_ioapic_forwarding_routes(resources.config().machine_plan())?;
+        let ioapic_forwarding = super::irq::register_planned_ioapic_forwarding_routes(
+            resources.config().machine_plan(),
+            interrupt_topology,
+            &interrupt_authority,
+        )?;
+        resources
+            .arch_state_mut()
+            .set_ioapic_forwarding(ioapic_forwarding)?;
 
         Ok(PreparedVm::new(vcpus, devices))
     })
@@ -212,16 +230,25 @@ fn register_interrupt_controller(
 fn register_pit(
     devices: &mut axdevice::AxVmDevices,
     interrupt_topology: &axdevice::InterruptTopology,
+    interrupt_authority: &axdevice::InterruptPlanAuthority,
 ) -> AxVmResult {
-    let irq = interrupt_topology
-        .connect_irq(axdevice::WiredIrqRequest::new(
-            axdevice::ControllerInputId::new(super::irq::PIT_TIMER_GSI),
-            axvm_types::InterruptTriggerMode::EdgeTriggered,
-        ))
+    let claim = interrupt_authority
+        .claim_wired(
+            interrupt_topology,
+            axdevice::WiredIrqRequest::new(
+                axdevice::ControllerInputId::new(super::irq::PIT_TIMER_GSI),
+                axvm_types::InterruptTriggerMode::EdgeTriggered,
+                axdevice::InterruptSharing::Exclusive,
+            ),
+        )
+        .map_err(|error| AxVmError::device("claim x86 PIT IRQ0", error))?;
+    let (irq, registration) = interrupt_topology
+        .connect_irq(claim)
+        .map(axdevice::PlannedIrqConnection::into_parts)
         .map_err(|error| AxVmError::device("connect x86 PIT IRQ0", error))?;
     let pit = Arc::new(axdevice::X86PitDevice::<super::AxvmX86HostOps>::new_with_irq(irq));
     devices
-        .add_x86_pit_dev(pit)
+        .add_x86_pit_dev(pit, registration, interrupt_topology)
         .map_err(|error| AxVmError::device("register x86 PIT", error))?;
     info!("x86 PIT initialized for ports 0x40..=0x43 and 0x61");
     Ok(())

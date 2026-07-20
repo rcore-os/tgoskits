@@ -34,9 +34,14 @@ impl Riscv64Arch {
 
     pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
         let models = default_virtual_device_models()?;
-        let interrupt_topology =
-            Arc::new(axdevice::InterruptTopology::new(vm.interrupt_delivery()));
-        init_vm_with(vm, &models, interrupt_topology)
+        let (interrupt_topology, interrupt_authority) =
+            axdevice::InterruptTopology::new(vm.interrupt_delivery());
+        init_vm_with(
+            vm,
+            &models,
+            Arc::new(interrupt_topology),
+            interrupt_authority,
+        )
     }
 }
 
@@ -50,6 +55,7 @@ fn init_vm_with(
     vm: &AxVM,
     models: &axdevice::VirtualDeviceModelRegistry,
     interrupt_topology: Arc<axdevice::InterruptTopology>,
+    interrupt_authority: axdevice::InterruptPlanAuthority,
 ) -> AxVmResult {
     complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
         let placements = vcpu_placements(resources);
@@ -72,6 +78,7 @@ fn init_vm_with(
             resources.config().machine_plan(),
             models,
             interrupt_topology,
+            &interrupt_authority,
         )?;
         devices.register_special_devices(vm)?;
         let external_irq_sources = resources
@@ -79,9 +86,11 @@ fn init_vm_with(
             .machine_plan()
             .assigned_host_interrupts()
             .to_vec();
-        resources
-            .arch_state_mut()
-            .connect_external_irq_lines(interrupt_topology, &external_irq_sources)?;
+        resources.arch_state_mut().connect_external_irq_lines(
+            interrupt_topology,
+            &interrupt_authority,
+            &external_irq_sources,
+        )?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);

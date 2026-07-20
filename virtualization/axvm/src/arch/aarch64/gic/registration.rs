@@ -152,10 +152,12 @@ impl PreparedGicV3 {
     pub(crate) fn connect_physical_spis(
         &self,
         topology: &InterruptTopology,
+        authority: &axdevice::InterruptPlanAuthority,
     ) -> AxVmResult<Option<HostSpiForwarding>> {
         match self.controller.config().mode() {
             GicV3Mode::Emulated => HostSpiForwarding::connect_mediated(
                 topology,
+                authority,
                 PRIMARY_GIC,
                 &self.assigned_interrupts,
                 self.backend.clone(),

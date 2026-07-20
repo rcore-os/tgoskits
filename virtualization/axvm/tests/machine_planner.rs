@@ -629,6 +629,7 @@ fn pl011(instance_id: &str) -> VirtualDeviceDescriptor {
                 ResourceSlot::new("irq").unwrap(),
                 InterruptTriggerMode::LevelTriggered,
                 InterruptSourceKind::Software,
+                axdevice::InterruptSharing::Exclusive,
             )
             .unwrap(),
     )

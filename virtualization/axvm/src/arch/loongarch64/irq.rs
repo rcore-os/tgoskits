@@ -3,58 +3,146 @@
 use alloc::collections::BTreeMap;
 
 use axdevice::{
-    ControllerInputId, InterruptTopology, InterruptTriggerMode, IrqLine, WiredIrqRequest,
+    ControllerInputId, InterruptEndpointRegistration, InterruptPlanAuthority, InterruptSharing,
+    InterruptTopology, InterruptTriggerMode, IrqLine, WiredIrqRequest,
 };
 
-use crate::{AxVmResult, VmStatus, ax_err, ax_err_type};
+use crate::{AxVmResult, VmStatus, ax_err, ax_err_type, machine::HostInterruptResource};
 
 const EIOINTC_IRQ: usize = 3;
 
 pub(crate) struct VmArchState {
-    external_irq_lines: BTreeMap<usize, IrqLine>,
+    external_irq_routes: BTreeMap<usize, ExternalIrqRoute>,
+}
+
+struct ExternalIrqRoute {
+    input: ControllerInputId,
+    trigger: InterruptTriggerMode,
+    delivery: ExternalIrqDelivery,
+}
+
+enum ExternalIrqDelivery {
+    Mediated {
+        line: IrqLine,
+        _registration: InterruptEndpointRegistration,
+    },
+    Direct,
 }
 
 impl VmArchState {
     pub(crate) fn new() -> Self {
         Self {
-            external_irq_lines: BTreeMap::new(),
+            external_irq_routes: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn connect_external_irq_lines(
+        &mut self,
+        topology: &InterruptTopology,
+        authority: &InterruptPlanAuthority,
+        sources: &[HostInterruptResource],
+    ) -> AxVmResult {
+        for interrupt in sources {
+            let source = interrupt.input().value();
+            self.connect_external_irq_line(
+                topology,
+                authority,
+                source,
+                interrupt.input(),
+                interrupt.trigger(),
+            )?;
+        }
+        Ok(())
     }
 
     fn connect_external_irq_line(
         &mut self,
         topology: &InterruptTopology,
+        authority: &InterruptPlanAuthority,
         source: usize,
         input: ControllerInputId,
         trigger: InterruptTriggerMode,
     ) -> AxVmResult {
-        if let Some(existing) = self.external_irq_lines.get(&source) {
-            if existing.input() == input && existing.trigger() == trigger {
+        if let Some(existing) = self.external_irq_routes.get(&source) {
+            if existing.input == input && existing.trigger == trigger {
                 return Ok(());
             }
             return ax_err!(
                 AlreadyExists,
                 alloc::format!(
                     "external interrupt source {source} is already connected to input {:?}",
-                    existing.input()
+                    existing.input
                 )
             );
         }
-        let line = topology.connect_irq(WiredIrqRequest::new(input, trigger))?;
-        self.external_irq_lines.insert(source, line);
+        let delivery = if topology.delivery() == axvm_types::InterruptDelivery::Mediated {
+            let claim = authority.claim_wired(
+                topology,
+                WiredIrqRequest::new(input, trigger, InterruptSharing::Exclusive),
+            )?;
+            let (line, registration) = topology.connect_irq(claim)?.into_parts();
+            ExternalIrqDelivery::Mediated {
+                line,
+                _registration: registration,
+            }
+        } else {
+            ExternalIrqDelivery::Direct
+        };
+        self.external_irq_routes.insert(
+            source,
+            ExternalIrqRoute {
+                input,
+                trigger,
+                delivery,
+            },
+        );
+        Ok(())
+    }
+
+    fn require_external_irq_line(
+        &self,
+        source: usize,
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+    ) -> AxVmResult {
+        let route = self.external_irq_routes.get(&source).ok_or_else(|| {
+            ax_err_type!(
+                NotFound,
+                alloc::format!(
+                    "external interrupt source {source} was not authorized by the VM plan"
+                )
+            )
+        })?;
+        if route.input != input || route.trigger != trigger {
+            return ax_err!(
+                InvalidInput,
+                alloc::format!(
+                    "external interrupt source {source} was planned for input {:?} with {:?}, not \
+                     input {input:?} with {trigger:?}",
+                    route.input,
+                    route.trigger,
+                )
+            );
+        }
         Ok(())
     }
 
     fn signal_external_interrupt(&self, source: usize) -> AxVmResult {
-        self.external_irq_lines
-            .get(&source)
-            .ok_or_else(|| {
-                ax_err_type!(
-                    NotFound,
-                    alloc::format!("external interrupt source {source} is not connected")
+        let route = self.external_irq_routes.get(&source).ok_or_else(|| {
+            ax_err_type!(
+                NotFound,
+                alloc::format!("external interrupt source {source} is not connected")
+            )
+        })?;
+        let ExternalIrqDelivery::Mediated { line, .. } = &route.delivery else {
+            return Err(ax_err_type!(
+                Unsupported,
+                alloc::format!(
+                    "direct external interrupt source {source} has no software topology line"
                 )
-            })?
-            .pulse()?;
+            ));
+        };
+        line.pulse()?;
         Ok(())
     }
 }
@@ -80,10 +168,8 @@ pub fn register_guest_irq_route(
     }
     let vm = crate::get_vm_by_id(vm_id)
         .ok_or_else(|| crate::ax_err_type!(NotFound, alloc::format!("VM[{vm_id}] not found")))?;
-    let topology = vm.prepared_interrupt_topology()?;
     vm.with_resources_mut(|resources| {
-        resources.arch_state_mut().connect_external_irq_line(
-            &topology,
+        resources.arch_state_mut().require_external_irq_line(
             physical_irq,
             ControllerInputId::new(guest_vector),
             InterruptTriggerMode::EdgeTriggered,

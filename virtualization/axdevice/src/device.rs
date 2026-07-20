@@ -19,8 +19,8 @@ use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::is_aligned_4k;
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError, DeviceId,
-    DeviceRegistry, InvalidResourceReason, MmioDeviceAdapter, Port, RegistryError, Resource,
-    SysRegAddr,
+    DeviceRegistry, InterruptEndpointKey, InvalidResourceReason, MmioDeviceAdapter, Port,
+    RegistryError, Resource, SysRegAddr,
 };
 use axvm_types::GuestPhysAddr;
 #[cfg(target_arch = "x86_64")]
@@ -31,8 +31,8 @@ use crate::DeviceRegistration;
 #[cfg(target_arch = "loongarch64")]
 use crate::LoongArchPchPicRuntimeOps;
 use crate::{
-    DeviceBundle, DeviceManagerError, DeviceManagerResult, FwCfg, InterruptTopology,
-    PollableDeviceOps, range_alloc::RangeAllocator,
+    DeviceBundle, DeviceManagerError, DeviceManagerResult, FwCfg, InterruptEndpointRegistration,
+    InterruptTopology, PollableDeviceOps, range_alloc::RangeAllocator,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{X86IoApicRuntimeOps, X86PitDeviceOps, X86SerialDeviceOps};
@@ -56,6 +56,16 @@ struct RangeEntry {
     size: u64,
 }
 
+struct InterruptEndpointEntry {
+    resource: Resource,
+    first_device: DeviceId,
+}
+
+struct RegisteredInterruptEndpoint {
+    owner: DeviceId,
+    registration: InterruptEndpointRegistration,
+}
+
 fn ranges_overlap(start: u64, end: u64, other_start: u64, other_end: u64) -> bool {
     start < other_end && other_start < end
 }
@@ -64,6 +74,10 @@ fn ranges_overlap(start: u64, end: u64, other_start: u64, other_end: u64) -> boo
 pub struct AxVmDevices {
     /// Registered devices (append-only; index is the DeviceId).
     devices: Vec<Arc<dyn Device>>,
+    /// Planner-backed endpoint leases retained for the registered devices.
+    interrupt_endpoints: Vec<RegisteredInterruptEndpoint>,
+    /// Global `(controller, input)` / message-event ownership index.
+    interrupt_endpoint_index: BTreeMap<InterruptEndpointKey, InterruptEndpointEntry>,
     /// MMIO base address → range entry (slot, size).
     mmio_index: BTreeMap<u64, RangeEntry>,
     /// Port I/O base address → range entry (slot, size).
@@ -96,6 +110,8 @@ impl AxVmDevices {
     pub fn empty() -> Self {
         Self {
             devices: Vec::new(),
+            interrupt_endpoints: Vec::new(),
+            interrupt_endpoint_index: BTreeMap::new(),
             mmio_index: BTreeMap::new(),
             port_index: BTreeMap::new(),
             sysreg_index: BTreeMap::new(),
@@ -220,10 +236,10 @@ impl AxVmDevices {
     /// Use [`Self::register_bundle_with_topology`] when the bundle contains an
     /// interrupt-controller registration.
     pub fn register_bundle(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
-        if !bundle.interrupt_controllers.is_empty() {
+        if !bundle.interrupt_controllers.is_empty() || !bundle.interrupt_endpoints.is_empty() {
             return Err(DeviceManagerError::InvalidInput {
                 operation: "register device bundle",
-                detail: "interrupt controllers require an interrupt topology".into(),
+                detail: "interrupt controllers and endpoints require an interrupt topology".into(),
             });
         }
         self.register_bundle_inner(bundle, None)
@@ -243,12 +259,19 @@ impl AxVmDevices {
         bundle: DeviceBundle,
         interrupt_topology: Option<&InterruptTopology>,
     ) -> DeviceManagerResult {
-        for (index, pollable) in bundle.pollable.iter().enumerate() {
+        let DeviceBundle {
+            devices,
+            pollable,
+            interrupt_controllers,
+            interrupt_endpoints,
+        } = bundle;
+
+        for (index, pollable_device) in pollable.iter().enumerate() {
             if self
                 .pollable_devices
                 .iter()
-                .chain(bundle.pollable[..index].iter())
-                .any(|existing| Arc::ptr_eq(existing, pollable))
+                .chain(pollable[..index].iter())
+                .any(|existing| Arc::ptr_eq(existing, pollable_device))
             {
                 return Err(DeviceManagerError::ResourceConflict {
                     operation: "register pollable device",
@@ -257,16 +280,37 @@ impl AxVmDevices {
             }
         }
 
-        if !bundle.interrupt_controllers.is_empty() && interrupt_topology.is_none() {
+        if (!interrupt_controllers.is_empty() || !interrupt_endpoints.is_empty())
+            && interrupt_topology.is_none()
+        {
             return Err(DeviceManagerError::InvalidInput {
                 operation: "register device bundle",
-                detail: "interrupt controllers require an interrupt topology".into(),
+                detail: "interrupt controllers and endpoints require an interrupt topology".into(),
             });
         }
+        if !interrupt_endpoints.is_empty() && devices.len() != 1 {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "register device bundle",
+                detail: "interrupt endpoint claims require exactly one device owner in the same \
+                         bundle"
+                    .into(),
+            });
+        }
+        if let Some(topology) = interrupt_topology
+            && interrupt_endpoints
+                .iter()
+                .any(|endpoint| !endpoint.belongs_to(topology))
+        {
+            return Err(DeviceManagerError::InvalidInput {
+                operation: "register device interrupt endpoints",
+                detail: "an endpoint claim belongs to a different VM topology".into(),
+            });
+        }
+        self.validate_interrupt_endpoints(&interrupt_endpoints)?;
 
         let mut registered_controllers = Vec::new();
         if let Some(topology) = interrupt_topology {
-            for controller in bundle.interrupt_controllers {
+            for controller in interrupt_controllers {
                 let id = controller.id();
                 if let Err(error) = topology.register_controller(controller) {
                     Self::rollback_controllers(topology, &registered_controllers);
@@ -277,7 +321,7 @@ impl AxVmDevices {
         }
 
         let saved_len = self.devices.len();
-        for device in &bundle.devices {
+        for device in &devices {
             if let Err(error) = self.register(device.clone()) {
                 self.truncate_devices(saved_len);
                 if let Some(topology) = interrupt_topology {
@@ -286,7 +330,10 @@ impl AxVmDevices {
                 return Err(error.into());
             }
         }
-        self.pollable_devices.extend(bundle.pollable);
+        if !interrupt_endpoints.is_empty() {
+            self.insert_interrupt_endpoints(DeviceId::new(saved_len as u32), interrupt_endpoints);
+        }
+        self.pollable_devices.extend(pollable);
         Ok(())
     }
 
@@ -312,6 +359,7 @@ impl AxVmDevices {
                 Resource::SysReg { addr, .. } => {
                     self.sysreg_index.remove(&addr);
                 }
+                Resource::WiredIrq { .. } | Resource::MessageInterrupt { .. } => {}
             }
         }
     }
@@ -324,6 +372,57 @@ impl AxVmDevices {
             if let Err(error) = topology.unregister_controller(*controller) {
                 error!("failed to roll back interrupt controller {controller:?}: {error}");
             }
+        }
+    }
+
+    fn validate_interrupt_endpoints(
+        &self,
+        endpoints: &[InterruptEndpointRegistration],
+    ) -> Result<(), RegistryError> {
+        let pending_owner = DeviceId::new(self.devices.len() as u32);
+        for (index, endpoint) in endpoints.iter().enumerate() {
+            let resource = endpoint.resource();
+            let key = endpoint.key();
+            for earlier in &endpoints[..index] {
+                if resource.interrupt_endpoint_conflicts_with(earlier.resource()) {
+                    return Err(RegistryError::InterruptEndpointConflict {
+                        resource: resource.clone(),
+                        existing: earlier.resource().clone(),
+                        existing_device: pending_owner,
+                    });
+                }
+            }
+            if let Some(existing) = self.interrupt_endpoint_index.get(&key)
+                && resource.interrupt_endpoint_conflicts_with(&existing.resource)
+            {
+                return Err(RegistryError::InterruptEndpointConflict {
+                    resource: resource.clone(),
+                    existing: existing.resource.clone(),
+                    existing_device: existing.first_device,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn insert_interrupt_endpoints(
+        &mut self,
+        owner: DeviceId,
+        endpoints: Vec<InterruptEndpointRegistration>,
+    ) {
+        for registration in endpoints {
+            let resource = registration.resource().clone();
+            let key = registration.key();
+            self.interrupt_endpoint_index
+                .entry(key)
+                .or_insert_with(|| InterruptEndpointEntry {
+                    resource,
+                    first_device: owner,
+                });
+            self.interrupt_endpoints.push(RegisteredInterruptEndpoint {
+                owner,
+                registration,
+            });
         }
     }
 
@@ -340,6 +439,12 @@ impl AxVmDevices {
                 }
                 Resource::SysReg { addr, count } => {
                     self.validate_sysreg_range(addr, count, earlier_resources)?;
+                }
+                Resource::WiredIrq { .. } | Resource::MessageInterrupt { .. } => {
+                    return Err(RegistryError::InvalidResource {
+                        resource: resource.clone(),
+                        reason: InvalidResourceReason::UnbackedInterruptEndpoint,
+                    });
                 }
             }
         }
@@ -785,6 +890,13 @@ impl AxVmDevices {
                         });
                     }
                 }
+                Resource::WiredIrq { .. } | Resource::MessageInterrupt { .. } => {
+                    self.remove_resources(&resources[..i]);
+                    return Err(RegistryError::InvalidResource {
+                        resource: r.clone(),
+                        reason: InvalidResourceReason::UnbackedInterruptEndpoint,
+                    });
+                }
             }
         }
         Ok(())
@@ -818,6 +930,13 @@ impl AxVmDevices {
     /// Returns the number of currently registered devices.
     pub fn device_count(&self) -> usize {
         self.devices.len()
+    }
+
+    /// Iterates over planner-backed interrupt resources and their device owners.
+    pub fn interrupt_endpoint_resources(&self) -> impl Iterator<Item = (DeviceId, &Resource)> {
+        self.interrupt_endpoints
+            .iter()
+            .map(|endpoint| (endpoint.owner, endpoint.registration.resource()))
     }
 
     // ─── Iterator helpers ───────────────────────────────────────────
@@ -933,11 +1052,19 @@ impl AxVmDevices {
 
     /// Add an x86 PIT device to the generic registry and x86 runtime handle.
     #[cfg(target_arch = "x86_64")]
-    pub fn add_x86_pit_dev<D>(&mut self, dev: Arc<D>) -> DeviceManagerResult
+    pub fn add_x86_pit_dev<D>(
+        &mut self,
+        dev: Arc<D>,
+        interrupt_endpoint: InterruptEndpointRegistration,
+        topology: &InterruptTopology,
+    ) -> DeviceManagerResult
     where
         D: Device + X86PitDeviceOps + 'static,
     {
-        self.register(dev.clone() as Arc<dyn Device>)?;
+        let bundle = DeviceBundle::new()
+            .with_registration(DeviceRegistration::Device(dev.clone() as Arc<dyn Device>))
+            .with_registration(DeviceRegistration::InterruptEndpoint(interrupt_endpoint));
+        self.register_bundle_with_topology(bundle, topology)?;
         self.x86_pit = Some(dev);
         Ok(())
     }

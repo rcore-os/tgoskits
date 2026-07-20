@@ -187,7 +187,12 @@ pub(super) fn resolve_virtual_device(
                     })?;
                 pio.push(ResolvedPio::new(slot.clone(), range));
             }
-            DeviceRequirement::WiredIrq { slot, trigger, .. } => {
+            DeviceRequirement::WiredIrq {
+                slot,
+                trigger,
+                sharing,
+                ..
+            } => {
                 let id = match template {
                     Some(template) => {
                         let index = interrupt_index;
@@ -197,7 +202,12 @@ pub(super) fn resolve_virtual_device(
                     None => allocators.allocate_interrupt(device.instance_id())?,
                 };
                 resources = resources
-                    .with_wired_irq(slot.clone(), ControllerInputId::new(id as usize), *trigger)
+                    .with_wired_irq(
+                        slot.clone(),
+                        ControllerInputId::new(id as usize),
+                        *trigger,
+                        *sharing,
+                    )
                     .map_err(|source| MachinePlanError::DeviceResource {
                         device: device.instance_id().to_string(),
                         source,
