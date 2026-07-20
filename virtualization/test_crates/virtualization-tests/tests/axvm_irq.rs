@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex, Weak};
 use ax_plat::{console::ConsoleIf, time::TimeIf};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    IrqResolver, MmioDeviceAdapter,
+    DeviceFactoryContext, DeviceFactoryError, DeviceFactoryRegistry, DeviceFactoryResult,
+    DeviceManagerError, DeviceRegistration, IrqResolver, MmioDeviceAdapter,
 };
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, DeviceResult, InterruptTriggerMode, IrqError, IrqLine, IrqLineId,
@@ -153,10 +153,10 @@ impl DeviceFactory for IrqMmioFactory {
     fn build(
         &self,
         config: &EmulatedDeviceConfig,
-        context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
+        context: &dyn DeviceFactoryContext,
+    ) -> DeviceFactoryResult<DeviceBundle> {
         let Some(end) = config.base_gpa.checked_add(config.length) else {
-            return Err(DeviceManagerError::InvalidConfig {
+            return Err(DeviceFactoryError::InvalidConfig {
                 operation: "build IRQ MMIO test device",
                 detail: "device address range overflows".into(),
             });

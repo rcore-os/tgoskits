@@ -50,8 +50,9 @@ pub use config::AxVmDeviceConfig;
 pub use device::AxVmDevices;
 pub use error::{DeviceManagerError, DeviceManagerResult};
 pub use factory::{
-    DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,
-    register_builtin_factories,
+    DeviceBuildContext, DeviceFactory, DeviceFactoryContext, DeviceFactoryError,
+    DeviceFactoryRegister, DeviceFactoryRegistry, DeviceFactoryResult, IrqResolver,
+    linker_device_factory_registers, register_builtin_factories, register_linker_factories,
 };
 pub use fw_cfg::{
     FwCfg, FwCfgInterruptConfig, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion,

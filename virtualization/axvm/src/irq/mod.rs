@@ -16,7 +16,7 @@
 
 use alloc::sync::Arc;
 
-use axdevice::{DeviceManagerResult, IrqResolver};
+use axdevice::IrqResolver;
 use axdevice_base::{InterruptTriggerMode, IrqError, IrqLine, IrqLineId, IrqResult, IrqSink};
 use axvm_types::VMInterruptMode;
 
@@ -145,11 +145,7 @@ impl Default for InterruptFabric {
 }
 
 impl IrqResolver for InterruptFabric {
-    fn resolve_irq(
-        &self,
-        line: usize,
-        trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine> {
+    fn resolve_irq(&self, line: usize, trigger: InterruptTriggerMode) -> IrqResult<IrqLine> {
         Ok(IrqLine::new(
             IrqLineId(line),
             trigger,

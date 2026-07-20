@@ -169,7 +169,6 @@ impl AxVmDevices {
             EmulatedDeviceType::InterruptController
                 | EmulatedDeviceType::Console
                 | EmulatedDeviceType::IVCChannel
-                | EmulatedDeviceType::GPPTRedistributor
                 | EmulatedDeviceType::GPPTDistributor
                 | EmulatedDeviceType::GPPTITS
                 | EmulatedDeviceType::FwCfg
@@ -510,11 +509,12 @@ impl AxVmDevices {
     /// already-registered devices in this bundle are rolled back via
     /// `pop()` + index-key removal.
     pub fn register_bundle(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
-        for (index, pollable) in bundle.pollable.iter().enumerate() {
+        let bundle = bundle.into_parts();
+        for (index, pollable) in bundle.pollable_devices.iter().enumerate() {
             if self
                 .pollable_devices
                 .iter()
-                .chain(bundle.pollable[..index].iter())
+                .chain(bundle.pollable_devices[..index].iter())
                 .any(|existing| Arc::ptr_eq(existing, pollable))
             {
                 return Err(DeviceManagerError::ResourceConflict {
@@ -531,7 +531,7 @@ impl AxVmDevices {
                 return Err(error.into());
             }
         }
-        self.pollable_devices.extend(bundle.pollable);
+        self.pollable_devices.extend(bundle.pollable_devices);
         Ok(())
     }
 

@@ -2,7 +2,9 @@
 
 use alloc::string::String;
 
-use axdevice_base::{AccessWidth, BusKind, DeviceError, IrqError, RegistryError};
+use axdevice_base::{
+    AccessWidth, BusKind, DeviceError, DeviceFactoryError, IrqError, RegistryError,
+};
 
 /// Result type returned by device manager operations.
 pub type DeviceManagerResult<T = ()> = Result<T, DeviceManagerError>;
@@ -88,6 +90,18 @@ pub enum DeviceManagerError {
     /// IRQ resolution or signaling failed.
     #[error(transparent)]
     Irq(#[from] IrqError),
+}
+
+impl From<DeviceFactoryError> for DeviceManagerError {
+    fn from(error: DeviceFactoryError) -> Self {
+        match error {
+            DeviceFactoryError::InvalidConfig { operation, detail } => {
+                Self::InvalidConfig { operation, detail }
+            }
+            DeviceFactoryError::Device(error) => Self::Device(error),
+            DeviceFactoryError::Irq(error) => Self::Irq(error),
+        }
+    }
 }
 
 impl From<DeviceManagerError> for DeviceError {

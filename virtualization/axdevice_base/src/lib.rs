@@ -596,7 +596,12 @@ pub trait BusRouter {
 // ---------------------------------------------------------------------------
 
 mod adapter;
+mod factory_contract;
 mod irq;
 
 pub use adapter::{MmioDeviceAdapter, PortDeviceAdapter, SysRegDeviceAdapter};
+pub use factory_contract::{
+    DeviceBundle, DeviceBundleParts, DeviceFactory, DeviceFactoryContext, DeviceFactoryError,
+    DeviceFactoryRegister, DeviceFactoryResult, DeviceRegistration, PollableDeviceOps,
+};
 pub use irq::{IrqError, IrqLine, IrqResult, IrqSink};

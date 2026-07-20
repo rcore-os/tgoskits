@@ -12,13 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use alloc::sync::Arc;
 use core::ptr;
 
 use ax_kspin::SpinNoIrq;
 use ax_memory_addr::PhysAddr;
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
-use log::{debug, trace};
+use axdevice_base::{
+    AccessWidth, BaseDeviceOps, DeviceBundle, DeviceFactory, DeviceFactoryContext,
+    DeviceFactoryError, DeviceFactoryResult, DeviceRegistration, DeviceResult, MmioDeviceAdapter,
+};
+use axvm_types::{
+    EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr,
+};
+use log::{debug, info, trace};
 use spin::Once;
 
 use super::{
@@ -219,6 +225,81 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
             }
         };
         Ok(result?)
+    }
+}
+
+/// Builds partial-passthrough redistributors declared by a VM configuration.
+pub struct GpptRedistributorFactory;
+
+static GPPT_REDISTRIBUTOR_FACTORY: GpptRedistributorFactory = GpptRedistributorFactory;
+
+axdevice_base::register_device_factory!("gppt-redistributor", GPPT_REDISTRIBUTOR_FACTORY);
+
+impl DeviceFactory for GpptRedistributorFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::GPPTRedistributor
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &dyn DeviceFactoryContext,
+    ) -> DeviceFactoryResult<DeviceBundle> {
+        const EXPECTED_ARGS: &str =
+            "three arguments (cpu count, redistributor stride, physical CPU base)";
+
+        let cpu_count = config_argument(config, 0, EXPECTED_ARGS)?;
+        let stride = config_argument(config, 1, EXPECTED_ARGS)?;
+        let physical_cpu_base = config_argument(config, 2, EXPECTED_ARGS)?;
+        let mut bundle = DeviceBundle::new();
+
+        for vcpu_id in 0..cpu_count {
+            let offset = vcpu_id
+                .checked_mul(stride)
+                .ok_or_else(|| invalid_factory_config(config, "redistributor offset overflows"))?;
+            let base_gpa = config
+                .base_gpa
+                .checked_add(offset)
+                .ok_or_else(|| invalid_factory_config(config, "redistributor address overflows"))?;
+            let physical_cpu_id = physical_cpu_base
+                .checked_add(vcpu_id)
+                .ok_or_else(|| invalid_factory_config(config, "physical CPU ID overflows"))?;
+            let redistributor = Arc::new(VGicR::new(
+                base_gpa.into(),
+                Some(config.length),
+                physical_cpu_id,
+            ));
+            bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
+                redistributor,
+            )));
+
+            info!(
+                "GPPT redistributor factory built vCPU {vcpu_id} device at {base_gpa:#x} with \
+                 length {:#x}",
+                config.length
+            );
+        }
+
+        Ok(bundle)
+    }
+}
+
+fn config_argument(
+    config: &EmulatedDeviceConfig,
+    index: usize,
+    expected: &'static str,
+) -> DeviceFactoryResult<usize> {
+    config
+        .cfg_list
+        .get(index)
+        .copied()
+        .ok_or_else(|| invalid_factory_config(config, expected))
+}
+
+fn invalid_factory_config(config: &EmulatedDeviceConfig, detail: &str) -> DeviceFactoryError {
+    DeviceFactoryError::InvalidConfig {
+        operation: "build GPPT redistributor",
+        detail: alloc::format!("device '{}': {detail}", config.name),
     }
 }
 
