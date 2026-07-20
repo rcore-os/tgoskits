@@ -1092,9 +1092,23 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
 
 /// Detects passive TCP opens before smoltcp consumes the incoming packet.
 fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
-    let (src_addr, dst_addr, payload) = match IpVersion::of_packet(buf).unwrap() {
+    // This runs on every received packet *before* smoltcp validates it, on bytes
+    // that are attacker-controlled: the Ethernet layer only checks the L2 header
+    // and forwards any `0x0800`/`0x86DD` frame's payload verbatim. Parse with
+    // checked constructors (as `rx_meta`/`raw`/`dhcp_server` already do) so a
+    // malformed or truncated frame is dropped here instead of panicking the
+    // kernel. `of_packet` indexes `buf[0]`, so guard the empty case first.
+    if buf.is_empty() {
+        return;
+    }
+    let Ok(version) = IpVersion::of_packet(buf) else {
+        return;
+    };
+    let (src_addr, dst_addr, payload) = match version {
         IpVersion::Ipv4 => {
-            let packet = Ipv4Packet::new_unchecked(buf);
+            let Ok(packet) = Ipv4Packet::new_checked(buf) else {
+                return;
+            };
             if packet.next_header() != IpProtocol::Tcp {
                 return;
             }
@@ -1105,7 +1119,9 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
             )
         }
         IpVersion::Ipv6 => {
-            let packet = Ipv6Packet::new_unchecked(buf);
+            let Ok(packet) = Ipv6Packet::new_checked(buf) else {
+                return;
+            };
             if packet.next_header() != IpProtocol::Tcp {
                 return;
             }
@@ -1116,7 +1132,9 @@ fn snoop_tcp_packet(buf: &[u8], sockets: &mut SocketSet<'_>) {
             )
         }
     };
-    let tcp_packet = TcpPacket::new_unchecked(payload);
+    let Ok(tcp_packet) = TcpPacket::new_checked(payload) else {
+        return;
+    };
     let src_addr = (src_addr, tcp_packet.src_port()).into();
     let dst_addr = (dst_addr, tcp_packet.dst_port()).into();
     let is_first = tcp_packet.syn() && !tcp_packet.ack();
@@ -1400,6 +1418,40 @@ mod tests {
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), None);
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn snoop_tcp_packet_tolerates_malformed_frames() {
+        // The Ethernet layer forwards any IPv4/IPv6 frame's payload verbatim, so
+        // `snoop_tcp_packet` must not panic on attacker-controlled garbage. Each
+        // input below reaches a parse step that previously used
+        // `unwrap`/`new_unchecked` and would panic; now it is dropped silently.
+        let mut sockets = SocketSet::new(vec![]);
+
+        // Well-formed IPv4 header (IHL=5, proto=TCP, total_len=22) whose TCP
+        // payload is far too short for a 20-byte TCP header.
+        let ipv4_tcp_short: &[u8] = &[
+            0x45, 0x00, 0x00, 0x16, // ver/ihl, tos, total_len = 22
+            0x00, 0x00, 0x00, 0x00, // id, flags/frag
+            0x40, 0x06, 0x00, 0x00, // ttl, proto = TCP(6), checksum
+            10, 0, 0, 1, // src addr
+            10, 0, 0, 2, // dst addr
+            0x00, 0x00, // 2 bytes, not a TCP header
+        ];
+
+        let cases: &[&[u8]] = &[
+            &[],              // empty: `of_packet` would index buf[0]
+            &[0x00],          // version nibble 0 -> `of_packet` Err
+            &[0xf0],          // version nibble 15
+            &[0x45],          // IPv4 claimed, truncated below header
+            &[0x4f, 0, 0, 0], // IPv4 IHL=15 (60 bytes) but 4-byte buffer
+            &[0x60],          // IPv6 claimed, truncated
+            ipv4_tcp_short,   // valid IPv4 + TCP header too short
+        ];
+        for buf in cases {
+            // The assertion is simply that this returns without panicking.
+            snoop_tcp_packet(buf, &mut sockets);
+        }
     }
 }
 
