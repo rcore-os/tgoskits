@@ -1,0 +1,28 @@
+[232.033239 ax_driver::soc::rockchip::cpufreq:315] cpufreq: ondemand governor armed (both PMIC buses up)
+GOV_HARNESS_BEGIN
+GH_UNAME 10.0.0 aarch64 threads=2
+GH_PHASE 1 idle_settle 4s (expect gov step-DOWN)
+GH_PHASE 2 cpuprobe_sweep (expect gov step-UP; ips = scaled freq)
+GH_PC req=0 landed=0 cntfrq=24000000 iters=32000000 sec=0.4421 ips=72376630 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=e3e440d7379df2c3
+GH_PC req=1 landed=1 cntfrq=24000000 iters=32000000 sec=0.4388 ips=72929272 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=af8b1432863c9f4e
+GH_PC req=2 landed=2 cntfrq=24000000 iters=32000000 sec=0.4389 ips=72915604 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=c97adccf46e731ea
+GH_PC req=3 landed=3 cntfrq=24000000 iters=32000000 sec=0.4388 ips=72928787 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=468874163d7b1db7
+GH_PC req=4 landed=4 cntfrq=24000000 iters=64000000 sec=0.5656 ips=113145654 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=c765ec60d93538ba
+GH_PC req=5 landed=5 cntfrq=24000000 iters=64000000 sec=0.5655 ips=113166428 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=d6252d92b8a83e1e
+GH_PC req=6 landed=6 cntfrq=24000000 iters=64000000 sec=0.5685 ips=112579028 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=8fe6c744db42aedb
+GH_PC req=7 landed=7 cntfrq=24000000 iters=64000000 sec=0.5685 ips=112578508 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=c19fa00d81918f6c
+GH_PHASE 3 idle_gap 3s (expect gov step-DOWN)
+GH_PHASE 4 sysbench cpu threads=2 time=12 (expect gov step-UP; PSU stress)
+GH_SB eps=201.04
+GH_PHASE 5 idle_return 4s (expect gov step-DOWN)
+GH_FINAL_PROBE
+GH_PC req=0 landed=0 cntfrq=24000000 iters=32000000 sec=0.4420 ips=72392007 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=60c74b1f1a53ebba
+GH_PC req=1 landed=1 cntfrq=24000000 iters=32000000 sec=0.4388 ips=72926654 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=f495fb2b57f17c21
+GH_PC req=2 landed=2 cntfrq=24000000 iters=32000000 sec=0.4389 ips=72911727 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=301b2f30ce2e34ad
+GH_PC req=3 landed=3 cntfrq=24000000 iters=32000000 sec=0.4388 ips=72921516 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=56bb0f52b0531157
+GH_PC req=4 landed=4 cntfrq=24000000 iters=64000000 sec=0.5656 ips=113159599 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=1cbdb9f39be01942
+GH_PC req=5 landed=5 cntfrq=24000000 iters=64000000 sec=0.5655 ips=113167128 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=52785db2fb6d56d2
+GH_PC req=6 landed=6 cntfrq=24000000 iters=64000000 sec=0.5684 ips=112596301 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=5d75d6b55a164639
+GH_PC req=7 landed=7 cntfrq=24000000 iters=64000000 sec=0.5685 ips=112586191 midr_ok=0 part=0x0 pmc_ok=0 mhz_pmc=0.0 sink=490963fa22c12a3f
+GOV_HARNESS_DONE
+=== SUCCESS PATTERN MATCHED: (?m)^GOV_HARNESS_DONE\s*$ ===

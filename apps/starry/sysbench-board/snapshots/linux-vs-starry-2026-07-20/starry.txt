@@ -1,0 +1,10 @@
+CMP_BEGIN Linux 10.0.0 aarch64
+CMP cpu t=1 ev=270.65
+CMP cpu t=2 ev=937.94
+CMP cpu t=4 ev=2696.62
+CMP cpu t=8 ev=3668.17
+CMP threads t=8 events=11339
+CMP mutex t=8 total_time=1.1424s
+CMP mem write 8192.00 MiB transferred (11573.17 MiB/sec)
+CMP mem read 8192.00 MiB transferred (14161.06 MiB/sec)
+CMP_DONE

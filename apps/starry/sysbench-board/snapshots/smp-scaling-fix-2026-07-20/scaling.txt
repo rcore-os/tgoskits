@@ -1,0 +1,23 @@
+StarryOS SMP sysbench scaling: before vs after the axtask spawn+wake distribution fix
+(RK3588 OrangePi-5-Plus, hybrid-governor kernel; sysbench cpu --cpu-max-prime=20000 --time=5)
+
+sysbench cpu, unpinned, events/sec:
+  threads   BEFORE (flat)   AFTER (fixed)   scaling
+    1          270             270            1.0x
+    2          270             939            3.5x
+    4          270            2705           10.0x
+    8          270            3668           13.6x   (~96% of 4xA76@684 + 4xA55@270 = 3816 ceiling)
+
+  mask -c 0-7, t=8:  3664   (matches unpinned: full-machine distribution)
+
+Root cause: select_run_queue pinned every new thread to the clone-caller's CPU
+(the boot A55), and select_wake_run_queue re-piled woken threads onto the waker's
+CPU (barrier/broadcast wake). No load balancer redistributes at runtime.
+
+Fix (os/arceos/modules/axtask/src/run_queue.rs):
+  - select_run_queue (spawn): round-robin across the affinity-allowed CPUs.
+  - select_wake_run_queue (wake): prefer the task's LAST cpu over the waker's.
+  - RUN_QUEUE_ONLINE bitmask gates round-robin to initialized run queues
+    (fixes an early-boot DataAbort onto a not-yet-online secondary's queue).
+Initial-placement half only; a runtime load balancer (work-stealing / idle-pull)
+is the complementary general fix (separate scheduler effort).
