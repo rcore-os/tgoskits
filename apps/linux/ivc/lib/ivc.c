@@ -79,7 +79,7 @@ ivc_subscriber_p ivc_subscribe(ivc_manager_p manager, uint64_t publisher_id, uin
     }
 
     // Open the subscriber device
-    subscriber->fd = open(subscriber->subscribe_arg.device_name, O_RDONLY);
+    subscriber->fd = open(subscriber->subscribe_arg.device_name, O_RDWR);
     if (subscriber->fd < 0) {
         perror("Failed to open subscriber device");
         free(subscriber);
