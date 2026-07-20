@@ -576,7 +576,7 @@ fn shared_vcpu_protocol_does_not_expose_interrupt_controller_operations() {
 }
 
 #[test]
-fn aarch64_physical_irq_binding_defers_hardware_handoff_until_activation() {
+fn aarch64_physical_irq_binding_completes_handoff_before_forwarding_registration() {
     let source = include_str!("../src/arch/aarch64/gic/physical_spi.rs");
     let bind = source
         .split_once("pub(super) fn bind(")
@@ -587,12 +587,34 @@ fn aarch64_physical_irq_binding_defers_hardware_handoff_until_activation() {
         .0;
 
     assert!(bind.contains("reserve_irq("));
+    assert!(bind.contains("claim_irq_for_guest("));
     for premature_handoff in ["host_irq::set_enable", "host_irq::set_affinity"] {
         assert!(
             !bind.contains(premature_handoff),
-            "binding must preserve host IRQ delivery until guest activation: {premature_handoff}"
+            "binding must acquire ownership without configuring the forwarding action: \
+             {premature_handoff}"
         );
     }
+
+    let handoff = source
+        .split_once("fn take_physical_spi_snapshot(")
+        .expect("physical IRQ handoff must snapshot the host GIC state")
+        .1
+        .split_once("fn restore_physical_spi(")
+        .expect("physical IRQ snapshot must precede restoration")
+        .0;
+    let snapshot = handoff
+        .find("let snapshot = PhysicalSpiSnapshot")
+        .expect("physical IRQ handoff must capture a complete host snapshot");
+    let mask = handoff
+        .find("gic.set_irq_enable(intid, false)")
+        .expect("physical IRQ handoff must mask the host line");
+    assert!(
+        snapshot < mask,
+        "the host snapshot must precede handoff mutation"
+    );
+    assert!(handoff.contains("gic.set_pending(intid, false)"));
+    assert!(handoff.contains("gic.set_active(intid, false)"));
 
     let activation = source
         .split_once("pub(super) fn prepare_enabled(")
@@ -601,7 +623,8 @@ fn aarch64_physical_irq_binding_defers_hardware_handoff_until_activation() {
         .split_once("pub(super) fn unbind(")
         .expect("physical IRQ activation must precede unbinding")
         .0;
-    assert!(activation.contains("claim_irq_for_guest("));
+    assert!(activation.contains("require_guest_owned("));
+    assert!(!activation.contains("claim_irq_for_guest("));
     assert!(activation.contains("host_irq::set_affinity"));
     assert!(
         !activation.contains("host_irq::set_enable"),
