@@ -5,8 +5,8 @@
 //!
 //! 异步模型（复刻原 Linux 驱动 `cvi_tpu_interface.c`）：`submit` 只把任务
 //! 入队并唤醒常驻 worker 线程后立即返回；worker 线程串行调用
-//! [`Sg2002Tpu::run_one`] 跑硬件，等待 TDMA 完成时通过单 waiter IRQ cell 睡眠让出
-//! CPU；`wait` 按 `(tid, seq_no)` 睡 `DONE_WQ`，被 worker 完成时唤醒。
+//! [`Sg2002Tpu::run_one`] 跑硬件，并按 IRQ evidence generation 阻塞等待 TDMA
+//! 完成；`wait` 按 `(tid, seq_no)` 睡 `DONE_WQ`，被 worker 完成时唤醒。
 //!
 //! SG2002 默认单核，worker 等硬件时必须真正睡眠让出 CPU，相机前处理才能
 //! 与 TPU 推理重叠。
@@ -27,22 +27,25 @@
 
 use alloc::{boxed::Box, collections::VecDeque, string::String, sync::Arc};
 use core::{
-    pin::Pin,
-    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering},
     time::Duration,
 };
 
 use ax_kspin::SpinNoIrq;
-use ax_lazyinit::LazyInit;
 use ax_memory_addr::PhysAddr;
-use ax_std::os::arceos::task::{
-    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle,
-    ThreadId, ThreadWakeHandle, WaitQueue,
+use ax_runtime::{
+    hal::irq::IrqReturn,
+    maintenance::{
+        DeviceMaintenanceHandle, LocalIrqWake, MaintenanceCauses, MaintenanceClosed,
+        MaintenanceError, MaintenanceIrqAction, MaintenancePublishResult, MaintenanceRegistrar,
+        MaintenanceSession, MaintenanceState, MaintenanceThread, spawn_maintenance_domain,
+    },
 };
+use ax_std::os::arceos::task::WaitQueue;
 use sg2002_tpu::{
     ion::IonBuffer,
     tpu::{
-        Sg2002Tpu,
+        Sg2002Tpu, TdmaIrqEvent,
         error::TpuError,
         types::{
             CVITPU_DMABUF_FLUSH, CVITPU_DMABUF_FLUSH_FD, CVITPU_DMABUF_INVLD,
@@ -56,10 +59,7 @@ use sg2002_tpu::{
 use crate::{
     file::{get_file_like, ion::IonBufferFile},
     mm::{UserConstPtr, UserPtr},
-    pseudofs::{
-        DeviceOps,
-        dev::{IrqRegistration, request_shared_disabled},
-    },
+    pseudofs::DeviceOps,
 };
 
 /// 一个 TPU 推理任务（OS glue 侧）。
@@ -88,29 +88,89 @@ static DONE_LIST: SpinNoIrq<VecDeque<TpuTask>> = SpinNoIrq::new(VecDeque::new())
 /// 的线程会令其无限累积；超限丢弃最旧项以释放 buffer（对应原驱动
 /// `DONE_LIST_MAX`）。
 const DONE_LIST_MAX: usize = 64;
-/// 唤醒 worker 取任务（对应 Linux `task_wait_queue`）。
-static TASK_WQ: WaitQueue = WaitQueue::new();
 /// 唤醒等待结果的提交者（对应 Linux `done_wait_queue`）。
 static DONE_WQ: WaitQueue = WaitQueue::new();
-/// Worker 在普通任务上下文完成 park；IRQ 只直接唤醒这个固定 waiter。
-static TPU_IRQ_PARK: WaitQueue = WaitQueue::new();
-static TPU_IRQ_NOTIFY: IrqWaitCell = IrqWaitCell::new();
-static TPU_IRQ_WAITER: LazyInit<TpuIrqWaiter> = LazyInit::new();
 /// worker 线程是否已启动（保证只 spawn 一次）。
 static WORKER_SPAWNED: AtomicBool = AtomicBool::new(false);
-/// 指向唯一 TPU 硬件实例，供注入的 [`tpu_wait_irq`] 读取中断标志。
-///
-/// SG2002 只有一个 TPU；`Sg2002Tpu` 由 worker 持有的 `Arc` 保活，实际生命
-/// 周期与内核同长，这里的裸指针始终有效。
-static HW_PTR: AtomicPtr<Sg2002Tpu> = AtomicPtr::new(core::ptr::null_mut());
+/// The driver wait hook has no context parameter, so the single pinned owner
+/// publishes its pinned runtime here for the duration of hardware service.
+static TPU_OWNER_PTR: AtomicPtr<TpuOwnerRuntime> = AtomicPtr::new(core::ptr::null_mut());
+
+const TPU_MAINTENANCE_CPU: usize = 0;
+const TPU_EVENT_BATCH_LIMIT: usize = 64;
+const TPU_START_PENDING: u8 = 0;
+const TPU_START_READY: u8 = 1;
+const TPU_START_FAILED: u8 = 2;
+
+#[derive(Clone, Copy, Debug)]
+enum TpuMaintenanceEvent {
+    Tdma(TdmaIrqEvent),
+}
+
+struct TpuMaintenanceStartup {
+    state: AtomicU8,
+    line_quenched: AtomicBool,
+    uncontained: AtomicBool,
+    wait: WaitQueue,
+    remote: SpinNoIrq<Option<DeviceMaintenanceHandle<TpuMaintenanceEvent>>>,
+}
+
+impl TpuMaintenanceStartup {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(TPU_START_PENDING),
+            line_quenched: AtomicBool::new(false),
+            uncontained: AtomicBool::new(false),
+            wait: WaitQueue::new(),
+            remote: SpinNoIrq::new(None),
+        }
+    }
+
+    fn publish_ready(&self, remote: DeviceMaintenanceHandle<TpuMaintenanceEvent>) {
+        *self.remote.lock() = Some(remote);
+        self.state.store(TPU_START_READY, Ordering::Release);
+        self.wait.notify_all();
+    }
+
+    fn publish_failed(&self) {
+        self.state.store(TPU_START_FAILED, Ordering::Release);
+        self.wait.notify_all();
+    }
+
+    fn take_remote(&self) -> Option<DeviceMaintenanceHandle<TpuMaintenanceEvent>> {
+        self.wait
+            .wait_until(|| self.state.load(Ordering::Acquire) != TPU_START_PENDING);
+        if self.state.load(Ordering::Acquire) != TPU_START_READY {
+            return None;
+        }
+        self.remote.lock().take()
+    }
+}
+
+struct TpuMaintenanceRuntime {
+    remote: DeviceMaintenanceHandle<TpuMaintenanceEvent>,
+    _thread: MaintenanceThread,
+}
+
+impl TpuMaintenanceRuntime {
+    fn is_live(&self) -> bool {
+        self.remote.state() == MaintenanceState::Live
+    }
+}
+
+impl Drop for TpuMaintenanceRuntime {
+    fn drop(&mut self) {
+        let _ = self.remote.request_shutdown();
+    }
+}
 
 /// TPU 字符设备
 pub struct TpuDevice {
     /// 硬件层
     hw: Arc<Sg2002Tpu>,
     resource: TpuResource,
-    /// TDMA IRQ action registration.
-    irq_registration: Option<IrqRegistration>,
+    /// Fixed-CPU owner for TDMA IRQ and all hardware execution.
+    maintenance: Option<TpuMaintenanceRuntime>,
 }
 
 const TPU_COMPATIBLES: &[&str] = &["cvitek,tpu"];
@@ -212,116 +272,137 @@ fn map_tpu_mmio(resource: TpuResource) -> Option<(*mut u8, *mut u8)> {
     Some((tdma, tiu))
 }
 
-fn register_tpu_irq(
-    irq: Option<ax_runtime::hal::irq::IrqId>,
-    hw: &Arc<Sg2002Tpu>,
-) -> Option<IrqRegistration> {
-    let Some(irq) = irq else {
-        warn!("[TPU] TDMA IRQ not available; execution will use MMIO poll fallback");
-        return None;
-    };
-    let hw = Arc::clone(hw);
-    let registration = match request_shared_disabled(irq, move |_| {
-        if hw.handle_irq() {
-            warn!("[TPU] TDMA IRQ {irq:?} reports error status");
-        }
-        // Hard IRQ performs one bounded direct wake. Wait-queue fan-out and
-        // parking remain in the fixed worker's ordinary task context.
-        let _result = TPU_IRQ_NOTIFY.notify();
-        ax_runtime::hal::irq::IrqReturn::Handled
-    }) {
-        Ok(registration) => registration,
-        Err(err) => {
-            warn!("[TPU] failed to register TDMA IRQ {irq:?}: {err:?}");
-            return None;
-        }
-    };
-    if let Err(err) = registration.enable() {
-        warn!("[TPU] failed to enable TDMA IRQ {irq:?}: {err:?}");
-        return None;
-    }
-    info!("[TPU] TDMA IRQ {irq:?} registered and enabled");
-    Some(registration)
-}
-
 /// 注入给 driver core 的阻塞等待函数：在超时内睡眠等待 TDMA 中断到达。
 ///
 /// 由 worker 线程上下文调用（普通可调度任务），睡眠让出 CPU。TDMA IRQ 仅
 /// 直接唤醒固定 worker registration；返回 `true` 表示观察到硬件完成，`false`
 /// 表示本轮超时或 registration 不变量被破坏。
-fn tpu_wait_irq(timeout_us: u64) -> bool {
-    let hw = HW_PTR.load(Ordering::Acquire);
-    if hw.is_null() {
+fn tpu_wait_irq(observed_generation: u64, timeout_us: u64) -> bool {
+    let owner = TPU_OWNER_PTR.load(Ordering::Acquire);
+    if owner.is_null() {
         return false;
     }
-    // SAFETY: HW_PTR 指向 worker 持有的 Arc 内的实例，生命周期与内核同长。
-    let hw = unsafe { &*hw };
-    // IrqWaitCell 的 pending/register handshake 覆盖 IRQ-before-register；
-    // WaitQueue 的 park generation 再覆盖 wake-before-park。
-    let current = scheduler::current_thread_handle()
-        .unwrap_or_else(|error| panic!("TPU worker has no scheduler thread: {error}"));
-    let waiter = TPU_IRQ_WAITER.get_or_init(|| create_tpu_irq_waiter(&current));
-    assert_eq!(
-        waiter.owner,
-        current.id(),
-        "TPU IRQ notifications must target the fixed worker thread"
-    );
-    match TPU_IRQ_NOTIFY.register(waiter.registration.as_ref()) {
-        IrqRegisterResult::Registered | IrqRegisterResult::ConsumedPending => {
-            let timed_out = TPU_IRQ_PARK
-                .wait_timeout_until(Duration::from_micros(timeout_us), || hw.irq_pending());
-            if timed_out {
-                let _removed = TPU_IRQ_NOTIFY.unregister(waiter.registration.as_ref());
+    // SAFETY: only the fixed owner publishes this pointer, after boxing the
+    // runtime, and clears it before beginning IRQ teardown or freeing the box.
+    // The injected wait hook is called only by that same owner thread.
+    unsafe { (&*owner).wait_for_tdma_irq(observed_generation, timeout_us) }
+}
+
+struct TpuOwnerRuntime {
+    hw: Arc<Sg2002Tpu>,
+    startup: Arc<TpuMaintenanceStartup>,
+    session: MaintenanceSession<TpuMaintenanceEvent>,
+    registration: Option<MaintenanceIrqAction>,
+    shutdown_requested: AtomicBool,
+    mailbox_fault: AtomicBool,
+}
+
+impl TpuOwnerRuntime {
+    fn wait_for_tdma_irq(&self, observed_generation: u64, timeout_us: u64) -> bool {
+        let deadline = ax_runtime::hal::time::monotonic_time_nanos()
+            .saturating_add(timeout_us.saturating_mul(1_000));
+        loop {
+            if self.drain_pending().is_err() || self.mailbox_fault.swap(false, Ordering::AcqRel) {
+                return false;
             }
-            hw.irq_pending()
+            if self.hw.irq_generation() != observed_generation {
+                return true;
+            }
+            if ax_runtime::hal::time::monotonic_time_nanos() >= deadline
+                || self.session.wait_for_pending_until(deadline).is_err()
+            {
+                return false;
+            }
         }
-        IrqRegisterResult::Occupied => false,
+    }
+
+    fn drain_pending(&self) -> Result<bool, MaintenanceError> {
+        let drain = self
+            .session
+            .drain_owner(TPU_EVENT_BATCH_LIMIT, |event| match event {
+                TpuMaintenanceEvent::Tdma(_event) => {}
+            })?;
+        if drain.causes().contains(MaintenanceCauses::OVERFLOW) {
+            self.mailbox_fault.store(true, Ordering::Release);
+        }
+        if drain.causes().contains(MaintenanceCauses::SHUTDOWN) {
+            self.shutdown_requested.store(true, Ordering::Release);
+        }
+        if self.startup.uncontained.load(Ordering::Acquire) {
+            return Err(MaintenanceError::Irq(
+                ax_runtime::hal::irq::IrqError::Unsupported,
+            ));
+        }
+        if self.startup.line_quenched.load(Ordering::Acquire) {
+            self.registration()?.release_quench()?;
+            self.startup.line_quenched.store(false, Ordering::Release);
+        }
+        Ok(drain.pending())
+    }
+
+    fn registration(&self) -> Result<&MaintenanceIrqAction, MaintenanceError> {
+        self.registration.as_ref().ok_or(MaintenanceError::Irq(
+            ax_runtime::hal::irq::IrqError::NotFound,
+        ))
     }
 }
 
-struct TpuIrqWaiter {
-    owner: ThreadId,
-    registration: Pin<Box<IrqWaitRegistration>>,
-    _wake: &'static ThreadWakeHandle,
-}
-
-fn create_tpu_irq_waiter(current: &scheduler::ThreadHandle) -> TpuIrqWaiter {
-    let wake = Box::leak(Box::new(current.wake_handle()));
-    // SAFETY: the fixed worker and its wake handle live until shutdown. The
-    // direct wake is allocation-free, non-blocking, and hard-IRQ-safe.
-    let irq_wake = unsafe { IrqWakeHandle::from_raw(wake as *const _ as usize, wake_tpu_worker) };
-    TpuIrqWaiter {
-        owner: current.id(),
-        registration: Box::pin(IrqWaitRegistration::new(irq_wake)),
-        _wake: wake,
+fn tpu_irq_action(
+    actual_cpu: usize,
+    owner_cpu: usize,
+    hw: &Sg2002Tpu,
+    wake: &LocalIrqWake<TpuMaintenanceEvent>,
+    startup: &TpuMaintenanceStartup,
+) -> IrqReturn {
+    if actual_cpu != owner_cpu {
+        startup.uncontained.store(true, Ordering::Release);
+        startup.line_quenched.store(true, Ordering::Release);
+        return IrqReturn::MaskLineAndWake;
     }
-}
-
-unsafe fn wake_tpu_worker(data: usize) {
-    // SAFETY: `create_tpu_irq_waiter` publishes only the leaked wake handle
-    // retained by the shutdown-lifetime waiter.
-    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
-    let _result = wake.wake();
+    let Some(event) = hw.capture_irq() else {
+        return IrqReturn::Unhandled;
+    };
+    match wake.publish_from_irq(MaintenanceCauses::IRQ, TpuMaintenanceEvent::Tdma(event)) {
+        Ok(MaintenancePublishResult::Published) => IrqReturn::Wake,
+        Ok(MaintenancePublishResult::Overflowed) | Err(_) => {
+            startup.line_quenched.store(true, Ordering::Release);
+            IrqReturn::MaskLineAndWake
+        }
+    }
 }
 
 /// 常驻 worker 线程主循环（对应 Linux `work_thread_main`）。
 ///
 /// 串行取任务、调用 `run_one` 跑硬件、回填结果到 `DONE_LIST` 并唤醒等待者。
 /// 单 worker 保证硬件串行访问，无需额外 run 锁。
-fn tpu_worker(hw: Arc<Sg2002Tpu>) {
+fn tpu_worker(owner: &TpuOwnerRuntime) -> Result<(), MaintenanceError> {
     info!("[TPU] worker thread started");
     loop {
-        // 取一个任务；队列空则睡在 TASK_WQ 上让出 CPU。
-        // 注意：拿到 guard 后立即在表达式内释放，绝不持锁调用 wait*。
+        let mut pending = owner.drain_pending()?;
+        if owner.shutdown_requested.load(Ordering::Acquire) && TASK_LIST.lock().is_empty() {
+            return Ok(());
+        }
+
+        // Take one request. Remote submitters never enter the hardware driver;
+        // they transfer ownership into TASK_LIST and wake this pinned domain.
         let mut task = loop {
             if let Some(task) = TASK_LIST.lock().pop_front() {
                 break task;
             }
-            TASK_WQ.wait_until(|| !TASK_LIST.lock().is_empty());
+            if pending {
+                crate::task::yield_now();
+            } else {
+                owner.session.wait_for_pending()?;
+            }
+            pending = owner.drain_pending()?;
+            if owner.shutdown_requested.load(Ordering::Acquire) && TASK_LIST.lock().is_empty() {
+                return Ok(());
+            }
         };
 
         // 跑硬件：内部等待 TDMA 完成时经注入的 tpu_wait_irq 睡眠让出 CPU。
-        task.ret = hw
+        task.ret = owner
+            .hw
             .run_one(task.seq_no, task.vaddr, task.paddr)
             .map_or(-1, |_| 0);
 
@@ -346,6 +427,176 @@ fn tpu_worker(hw: Arc<Sg2002Tpu>) {
     }
 }
 
+fn spawn_tpu_maintenance(
+    hw: Arc<Sg2002Tpu>,
+    irq: ax_runtime::hal::irq::IrqId,
+) -> Option<TpuMaintenanceRuntime> {
+    let startup = Arc::new(TpuMaintenanceStartup::new());
+    let owner_startup = Arc::clone(&startup);
+    let thread = match spawn_maintenance_domain::<TpuMaintenanceEvent, _>(
+        TPU_MAINTENANCE_CPU,
+        String::from("tpu-maintenance"),
+        move |registrar| run_tpu_maintenance(hw, irq, owner_startup, registrar),
+    ) {
+        Ok(thread) => thread,
+        Err(error) => {
+            warn!("[TPU] failed to spawn maintenance owner: {error}");
+            return None;
+        }
+    };
+    let remote = startup.take_remote()?;
+    Some(TpuMaintenanceRuntime {
+        remote,
+        _thread: thread,
+    })
+}
+
+fn run_tpu_maintenance(
+    hw: Arc<Sg2002Tpu>,
+    irq: ax_runtime::hal::irq::IrqId,
+    startup: Arc<TpuMaintenanceStartup>,
+    registrar: MaintenanceRegistrar<TpuMaintenanceEvent>,
+) -> Result<MaintenanceClosed, MaintenanceError> {
+    let irq_wake = registrar
+        .local_irq_wake()
+        .inspect_err(|_| startup.publish_failed())?;
+    let remote = registrar.remote_handle();
+    let owner_cpu = registrar.owner_cpu();
+    let callback_hw = Arc::clone(&hw);
+    let callback_startup = Arc::clone(&startup);
+    let registration = registrar.register_shared_disabled("sg2002-tdma", irq, move |context| {
+        tpu_irq_action(
+            context.cpu.0,
+            owner_cpu,
+            &callback_hw,
+            &irq_wake,
+            &callback_startup,
+        )
+    });
+    let registration = match registration {
+        Ok(registration) => registration,
+        Err(error) => {
+            warn!("[TPU] failed to register TDMA IRQ {irq:?}: {error:?}");
+            startup.publish_failed();
+            let session = registrar.activate()?;
+            return close_tpu_session(session);
+        }
+    };
+    let session = registrar
+        .activate()
+        .inspect_err(|_| startup.publish_failed())?;
+    let mut owner = Box::new(TpuOwnerRuntime {
+        hw,
+        startup: Arc::clone(&startup),
+        session,
+        registration: Some(registration),
+        shutdown_requested: AtomicBool::new(false),
+        mailbox_fault: AtomicBool::new(false),
+    });
+    let owner_ptr = core::ptr::from_mut(owner.as_mut());
+    if TPU_OWNER_PTR
+        .compare_exchange(
+            core::ptr::null_mut(),
+            owner_ptr,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        startup.publish_failed();
+        return close_tpu_owner(*owner);
+    }
+    owner.hw.set_wait_irq_fn(tpu_wait_irq);
+    if let Err(error) = owner.hw.init() {
+        warn!("[TPU] initialization failed: {error:?}");
+        startup.publish_failed();
+        TPU_OWNER_PTR.store(core::ptr::null_mut(), Ordering::Release);
+        return close_tpu_owner(*owner);
+    }
+    if let Err(error) = owner.registration()?.enable() {
+        warn!("[TPU] failed to enable TDMA IRQ {irq:?}: {error:?}");
+        startup.publish_failed();
+        TPU_OWNER_PTR.store(core::ptr::null_mut(), Ordering::Release);
+        return close_tpu_owner(*owner);
+    }
+    startup.publish_ready(remote);
+    info!("[TPU] TDMA IRQ {irq:?} owned by maintenance CPU {owner_cpu}");
+
+    let worker_result = tpu_worker(&owner);
+    TPU_OWNER_PTR.store(core::ptr::null_mut(), Ordering::Release);
+    let close_result = close_tpu_owner(*owner);
+    match close_result {
+        Ok(closed) => {
+            worker_result?;
+            Ok(closed)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn close_tpu_owner(mut owner: TpuOwnerRuntime) -> Result<MaintenanceClosed, MaintenanceError> {
+    let begin_close = owner.session.begin_close();
+    let registration = owner
+        .registration
+        .take()
+        .expect("live TPU owner retains one IRQ registration");
+    let TpuOwnerRuntime {
+        hw,
+        startup,
+        session,
+        registration: _,
+        shutdown_requested: _,
+        mailbox_fault: _,
+    } = owner;
+    if startup.uncontained.load(Ordering::Acquire) {
+        let _retained_owner = (hw, startup, registration);
+        session.quarantine_and_park();
+    }
+    if let Err(error) = registration.disable() {
+        warn!("[TPU] failed to disable TDMA IRQ action: {error:?}");
+        let _retained_owner = (hw, startup, registration);
+        session.quarantine_and_park();
+    }
+    if startup.line_quenched.load(Ordering::Acquire) {
+        if let Err(error) = registration.release_quench() {
+            warn!("[TPU] failed to release TDMA line quench: {error:?}");
+            let _retained_owner = (hw, startup, registration);
+            session.quarantine_and_park();
+        }
+        startup.line_quenched.store(false, Ordering::Release);
+    }
+    if let Err(error) = registration.synchronize() {
+        warn!("[TPU] failed to synchronize TDMA IRQ action: {error:?}");
+        let _retained_owner = (hw, startup, registration);
+        session.quarantine_and_park();
+    }
+    if let Err(failure) = registration.close() {
+        let (reason, registration) = failure.into_parts();
+        warn!("[TPU] failed to destroy TDMA IRQ action: {reason:?}");
+        let _retained_owner = (hw, startup, registration);
+        session.quarantine_and_park();
+    }
+    begin_close?;
+    close_tpu_session(session)
+}
+
+fn close_tpu_session(
+    session: MaintenanceSession<TpuMaintenanceEvent>,
+) -> Result<MaintenanceClosed, MaintenanceError> {
+    if session.state() == MaintenanceState::Live {
+        session.begin_close()?;
+    }
+    while session.state() == MaintenanceState::Closing {
+        let drain = session.drain_owner(TPU_EVENT_BATCH_LIMIT, |_| {})?;
+        if !drain.pending() {
+            break;
+        }
+    }
+    session.try_begin_draining()?;
+    session.finish_close()?;
+    session.try_into_closed().map_err(|failure| failure.error())
+}
+
 impl TpuDevice {
     pub fn probe() -> Option<Self> {
         let resource = TpuResource::probe()?;
@@ -353,16 +604,30 @@ impl TpuDevice {
             let (tdma, tiu) = map_tpu_mmio(resource)?;
             Arc::new(unsafe { Sg2002Tpu::from_vaddr(tdma, tiu) })
         };
-        Some(Self::setup(hw, resource))
+        Self::setup(hw, resource)
     }
 
-    /// 公共初始化：注入等待函数、注册中断、启动 worker 线程。
-    fn setup(hw: Arc<Sg2002Tpu>, resource: TpuResource) -> Self {
-        hw.set_wait_irq_fn(tpu_wait_irq);
-        if let Err(err) = hw.init() {
-            warn!("[TPU] init failed: {:?}", err);
+    /// Starts the fixed-CPU hardware owner. The device is published only after
+    /// that thread has registered and enabled its own IRQ action.
+    fn setup(hw: Arc<Sg2002Tpu>, resource: TpuResource) -> Option<Self> {
+        let Some(irq) = resource.irq else {
+            warn!("[TPU] TDMA IRQ not available; refusing polling-only activation");
+            return None;
+        };
+        if WORKER_SPAWNED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            warn!("[TPU] duplicate hardware-owner activation rejected");
+            return None;
         }
-        let irq_registration = register_tpu_irq(resource.irq, &hw);
+        let maintenance = match spawn_tpu_maintenance(Arc::clone(&hw), irq) {
+            Some(maintenance) => maintenance,
+            None => {
+                WORKER_SPAWNED.store(false, Ordering::Release);
+                return None;
+            }
+        };
         info!(
             "[TPU] resource tdma=[{:#x}, +{:#x}) tiu=[{:#x}, +{:#x}) irq={:?} irq_wait={} \
              source=fdt",
@@ -371,27 +636,13 @@ impl TpuDevice {
             resource.tiu_paddr,
             resource.tiu_size,
             resource.irq,
-            irq_registration.is_some(),
+            maintenance.is_live(),
         );
-
-        // 发布硬件指针供 tpu_wait_irq 读取中断标志，并启动唯一 worker 线程。
-        if WORKER_SPAWNED
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            HW_PTR.store(Arc::as_ptr(&hw) as *mut Sg2002Tpu, Ordering::Release);
-            let worker_hw = hw.clone();
-            crate::task::spawn_kernel_thread(
-                move || tpu_worker(worker_hw),
-                String::from("tpu-worker"),
-            );
-        }
-
-        Self {
+        Some(Self {
             hw,
             resource,
-            irq_registration,
-        }
+            maintenance: Some(maintenance),
+        })
     }
 
     /// 提交 DMA buffer 任务：解析 fd → 入队 → 唤醒 worker → 立即返回。
@@ -405,8 +656,13 @@ impl TpuDevice {
             "[TPU] submit dmabuf: fd={}, seq_no={}",
             submit_arg.fd, submit_arg.seq_no
         );
-        if self.irq_registration.is_none() {
+        if !self
+            .maintenance
+            .as_ref()
+            .is_some_and(TpuMaintenanceRuntime::is_live)
+        {
             warn!("[TPU] TDMA IRQ {:?} not registered", self.resource.irq);
+            return Err(TpuError::NotInitialized);
         }
 
         // 从文件描述符获取 IonBufferFile
@@ -442,8 +698,19 @@ impl TpuDevice {
         };
 
         // 入队并唤醒 worker，随后立即返回（submit 不等推理）。
-        TASK_LIST.lock().push_back(task);
-        TASK_WQ.notify_one();
+        let mut tasks = TASK_LIST.lock();
+        tasks.push_back(task);
+        let published = self
+            .maintenance
+            .as_ref()
+            .expect("live TPU device retains its maintenance owner")
+            .remote
+            .publish_cause(MaintenanceCauses::SUBMIT);
+        if published.is_err() {
+            let _rejected = tasks.pop_back();
+            return Err(TpuError::NotInitialized);
+        }
+        drop(tasks);
 
         Ok(0)
     }

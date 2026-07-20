@@ -250,20 +250,8 @@ enum DmaRequestBuffer {
 
 impl DmaRequestBuffer {
     fn complete(self, read: bool) -> Option<CompletedDma> {
-        self.finish(read, true)
-    }
-
-    fn abort(self, read: bool, quiesced: bool) -> Option<CompletedDma> {
-        self.finish(read, quiesced)
-    }
-
-    fn finish(self, read: bool, quiesced: bool) -> Option<CompletedDma> {
         match self {
             Self::Bounce { buffer, readback } => {
-                if !quiesced {
-                    let _quarantined = buffer.quarantine();
-                    return None;
-                }
                 if read {
                     let completed = unsafe { buffer.complete_after_quiesce() };
                     if let Some((dst, len)) = readback {
@@ -277,13 +265,7 @@ impl DmaRequestBuffer {
                     None
                 }
             }
-            Self::Owned(in_flight) => {
-                if !quiesced {
-                    let _quarantined = in_flight.quarantine();
-                    return None;
-                }
-                Some(unsafe { in_flight.complete_after_quiesce() })
-            }
+            Self::Owned(in_flight) => Some(unsafe { in_flight.complete_after_quiesce() }),
         }
     }
 }

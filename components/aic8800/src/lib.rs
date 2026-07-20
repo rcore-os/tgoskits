@@ -1,20 +1,17 @@
 #![no_std]
-// Hardware driver conventions: keep register/helper routines and protocol
-// scratch fields even when currently unused, index fixed channel tables
-// directly, and allow the wide argument lists the firmware command protocol
-// requires.
-#![allow(dead_code)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::redundant_pattern_matching)]
-
 extern crate alloc;
 
 pub mod common;
-pub mod fdrv;
-pub mod fw;
-pub mod runtime;
-pub mod wireless;
+pub mod crypto;
+mod data;
+mod firmware;
+mod owner;
+mod softap;
+mod transport;
+mod wire;
 
-pub use runtime::{PollFn, SendPollFn, TimedOut, WifiRuntime, set_runtime};
-pub use wireless::probe;
+pub use firmware::FirmwareError;
+pub use owner::{AicDiscoveryConfig, AicError, AicOwnerPhase, AicWifiNetDev};
+pub use softap::{SoftApPolicy, SoftApPolicyError};
+pub use transport::TransactionError;
+pub use wire::WireError;

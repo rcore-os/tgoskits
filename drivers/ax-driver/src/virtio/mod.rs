@@ -101,6 +101,28 @@ pub fn register_static_mmio(
         return Err(rdrive::probe::OnProbeError::NotMatch);
     }
 
+    #[cfg(feature = "virtio-net")]
+    {
+        // VirtIO net keeps the exact mapping that backs its transport under
+        // RAII. Probe reads only the transport header/device type; feature
+        // negotiation and queue construction remain owner-thread work.
+        let mapping = axklib::mmio::ioremap(base.into(), size).map_err(|err| {
+            rdrive::probe::OnProbeError::other(alloc::format!(
+                "failed to map virtio-mmio network candidate {base:#x}: {err:?}",
+            ))
+        })?;
+        const DEVICE_ID_OFFSET: usize = 0x008;
+        const DEVICE_ID_END: usize = DEVICE_ID_OFFSET + core::mem::size_of::<u32>();
+        if mapping.size() >= DEVICE_ID_END
+            && mapping.read::<u32>(DEVICE_ID_OFFSET) == DeviceType::Network as u32
+        {
+            let Some((_, transport)) = probe_mmio_device(mapping.as_ptr(), size) else {
+                return Err(rdrive::probe::OnProbeError::NotMatch);
+            };
+            return net::register_owned_mmio(plat_dev, transport, mapping);
+        }
+    }
+
     let mmio = axklib::mmio::ioremap_raw(base.into(), size).map_err(|err| {
         rdrive::probe::OnProbeError::other(alloc::format!(
             "failed to map virtio-mmio {base:#x}: {err:?}",
@@ -109,6 +131,37 @@ pub fn register_static_mmio(
     let Some((ty, transport)) = probe_mmio_device(mmio.as_ptr(), size) else {
         return Err(rdrive::probe::OnProbeError::NotMatch);
     };
+    #[cfg(feature = "virtio-blk")]
+    if ty == DeviceType::Block {
+        // The generic transport retains the original shutdown-lifetime raw
+        // mapping. Give the independent IRQ endpoint its own RAII mapping so
+        // failed registration and explicit controller close release that
+        // capability without changing non-block transport ownership.
+        let interrupt_mapping = axklib::mmio::ioremap(base.into(), size).map_err(|err| {
+            rdrive::probe::OnProbeError::other(alloc::format!(
+                "failed to map virtio-mmio interrupt port {base:#x}: {err:?}",
+            ))
+        })?;
+        return block::register_mmio_transport(plat_dev, transport, interrupt_mapping);
+    }
+    #[cfg(feature = "virtio-gpu")]
+    if ty == DeviceType::GPU {
+        let interrupt_mapping = axklib::mmio::ioremap(base.into(), size).map_err(|err| {
+            rdrive::probe::OnProbeError::other(alloc::format!(
+                "failed to map virtio-mmio display interrupt port {base:#x}: {err:?}",
+            ))
+        })?;
+        return display::register_mmio_transport(plat_dev, transport, interrupt_mapping);
+    }
+    #[cfg(feature = "virtio-input")]
+    if ty == DeviceType::Input {
+        let interrupt_mapping = axklib::mmio::ioremap(base.into(), size).map_err(|err| {
+            rdrive::probe::OnProbeError::other(alloc::format!(
+                "failed to map virtio-mmio input interrupt port {base:#x}: {err:?}",
+            ))
+        })?;
+        return input::register_mmio_transport(plat_dev, transport, interrupt_mapping);
+    }
     register_static_transport(plat_dev, ty, transport)
 }
 

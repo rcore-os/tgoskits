@@ -19,7 +19,7 @@ use alloc::{boxed::Box, sync::Arc};
 use ax_errno::LinuxResult;
 use ax_fs_ng::vfs::{FsContext, current_fs_context};
 use ax_lazyinit::LazyInit;
-use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
+use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, VfsError, WeakDirEntry};
 pub use tmp::MemoryFs;
 
 pub use self::{device::*, dir::*, file::*, fs::*};
@@ -69,17 +69,49 @@ pub fn tmp_tmpfs() -> Option<Arc<tmp::MemoryFs>> {
 }
 
 fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()> {
-    fs.with_namespace_operation(|namespace| {
+    let result = fs.with_namespace_operation(|namespace| {
         let loc = match namespace.resolve_path(path) {
             Ok(location) => location,
-            Err(_) => {
-                let (parent, name) = namespace.parent_for_create(path.as_ref())?;
-                parent.create(name, axfs_ng_vfs::NodeType::Directory, DIR_PERMISSION, 0, 0)?
+            Err(VfsError::NotFound) => {
+                let (parent, name) = match namespace.parent_for_create(path.as_ref()) {
+                    Ok(parent) => parent,
+                    Err(error) => {
+                        warn!("pseudofs mount failed while resolving parent: path={path} error={error:?}");
+                        return Err(error);
+                    }
+                };
+                match parent.create(
+                    name,
+                    axfs_ng_vfs::NodeType::Directory,
+                    DIR_PERMISSION,
+                    0,
+                    0,
+                ) {
+                    Ok(location) => location,
+                    Err(error) => {
+                        warn!("pseudofs mount failed while creating target: path={path} error={error:?}");
+                        return Err(error);
+                    }
+                }
+            }
+            Err(error) => {
+                warn!("pseudofs mount failed while resolving target: path={path} error={error:?}");
+                return Err(error);
             }
         };
-        loc.mount_filesystem(&mount_fs, false)?;
+        if let Err(error) = loc.mount_filesystem(&mount_fs, false) {
+            warn!("pseudofs mount failed while attaching filesystem: path={path} error={error:?}");
+            return Err(error);
+        }
         Ok(())
-    })?;
+    });
+    if let Err(error) = result {
+        warn!(
+            "pseudofs mount transaction failed: fs={} path={path} error={error:?}",
+            mount_fs.name()
+        );
+        return Err(error.into());
+    }
     info!("Mounted {} at {}", mount_fs.name(), path);
     Ok(())
 }
@@ -91,7 +123,9 @@ pub fn mount_all() -> LinuxResult<()> {
     let fs_context = current_fs_context();
     let fs = fs_context.lock();
     mount_at(&fs, "/dev", dev::new_devfs())?;
-    let usbfs = usbfs::new_usbfs()?;
+    let usbfs = usbfs::new_usbfs().inspect_err(|error| {
+        warn!("USB filesystem construction failed before mount: {error:?}");
+    })?;
     if let Some(dev_usbfs) = usbfs {
         mount_at(&fs, "/dev/bus/usb", dev_usbfs)?;
     }

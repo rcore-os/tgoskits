@@ -147,6 +147,11 @@ pub(crate) type ArceOsCpuMask = api::task::AxCpuMask;
 pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) type ArceOsTaskError = modules::ax_task::TaskError;
+pub(crate) type ArceOsCurrentCpuLease = modules::ax_task::CurrentCpuLease;
+
+pub(crate) fn pin_current_cpu() -> Result<ArceOsCurrentCpuLease, ArceOsTaskError> {
+    modules::ax_task::pin_current_cpu()
+}
 
 pub(crate) fn try_current_task() -> Result<Option<ArceOsCurrentTask>, ArceOsTaskError> {
     match modules::ax_task::current_thread_handle() {

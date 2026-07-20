@@ -223,13 +223,14 @@ ramdisk = { version = "0.1.10", path = "drivers/blk/ramdisk" }
 rd-net = { version = "0.2.2", path = "drivers/net/rd-net" }
 rdif-base = { version = "0.8.3", path = "drivers/interface/rdif-base" }
 rdif-block = { version = "0.12.0", path = "drivers/interface/rdif-block" }
+rdif-irq = { version = "0.1.0", path = "drivers/interface/rdif-irq" }
 rdif-clk = { version = "0.5.4", path = "drivers/interface/rdif-clk" }
 rdif-def = { version = "0.3.0", path = "drivers/interface/rdif-def" }
 rdif-display = { version = "0.2.0", path = "drivers/interface/rdif-display" }
 rdif-eth = { version = "0.3.8", path = "drivers/interface/rdif-eth" }
 rdif-input = { version = "0.2.0", path = "drivers/interface/rdif-input" }
 rdif-intc = { version = "0.15.0", path = "drivers/interface/rdif-intc" }
-rdif-msi = { version = "0.2.0", path = "drivers/interface/rdif-msi" }
+rdif-msi = { version = "0.3.0", path = "drivers/interface/rdif-msi" }
 rdif-pcie = { version = "0.2.5", path = "drivers/interface/rdif-pcie" }
 rdif-pinctrl = { version = "0.1.2", path = "drivers/interface/rdif-pinctrl" }
 rdif-pwm = { version = "0.1.0", path = "drivers/interface/rdif-pwm" }
@@ -249,7 +250,7 @@ realtek-rtl8125 = { version = "0.2.9", path = "drivers/net/realtek-rtl8125" }
 rockchip-pm = { version = "0.4.6", path = "drivers/soc/rockchip/rockchip-pm" }
 rockchip-soc = { version = "0.4.1", path = "drivers/soc/rockchip/rockchip-soc" }
 sg2002-tpu = { version = "0.3.7", path = "drivers/tpu/sg2002-tpu" }
-rdrive = { version = "0.23.6", path = "drivers/rdrive" }
+rdrive = { version = "0.24.0", path = "drivers/rdrive" }
 rdrive-macros = { version = "0.4.2", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.7.5", path = "components/rsext4" }
 scope-local = { version = "0.4.2", path = "components/scope-local" }

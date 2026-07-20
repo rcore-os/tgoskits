@@ -591,12 +591,9 @@ impl PerfEventOps for HwPerfEvent {
             };
             let notify_ptr = Arc::as_ptr(&sampling.notify) as *const ();
 
-            // 1. Make sure the PMU overflow IRQ handler is registered AND the
-            //    PMU PPI is enabled on this core.
-            sampling::ensure_pmu_irq_registered();
-            // 2. Preload the counter so it overflows after `period` events.
+            // 1. Preload the counter so it overflows after `period` events.
             ax_cpu::pmu::counter::preload(n, period);
-            // 3. Publish the slot so the handler can find this event's ring.
+            // 2. Publish the slot so the handler can find this event's ring.
             sampling::register(
                 n,
                 SampleSlot {
@@ -611,7 +608,7 @@ impl PerfEventOps for HwPerfEvent {
                     last_time: 0,
                 },
             );
-            // 4. Arm the per-counter overflow interrupt, then start counting.
+            // 3. Arm the per-counter overflow interrupt, then start counting.
             ax_cpu::pmu::overflow::enable_irq(n);
             ax_cpu::pmu::counter::enable(n);
             return Ok(());
@@ -842,6 +839,28 @@ fn resolve_sampling(raw: u64, is_freq: bool) -> (u32, u32) {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+fn initialize_sampling_irq() -> AxResult<()> {
+    sampling::ensure_pmu_irq_registered().map_err(|error| {
+        warn!("perf sampling: failed to register PMU overflow IRQ: {error:?}");
+        match error {
+            ax_hal::irq::IrqError::InvalidIrq | ax_hal::irq::IrqError::InvalidCpu => {
+                AxError::InvalidInput
+            }
+            ax_hal::irq::IrqError::CpuOffline | ax_hal::irq::IrqError::Unsupported => {
+                AxError::Unsupported
+            }
+            ax_hal::irq::IrqError::Timeout => AxError::TimedOut,
+            ax_hal::irq::IrqError::Busy | ax_hal::irq::IrqError::InIrqContext => {
+                AxError::ResourceBusy
+            }
+            ax_hal::irq::IrqError::NoMemory => AxError::NoMemory,
+            ax_hal::irq::IrqError::NotFound => AxError::NotFound,
+            ax_hal::irq::IrqError::Controller => AxError::Io,
+        }
+    })
+}
+
 /// Open a hardware-PMU perf event from a user `perf_event_attr`.
 ///
 /// Supports `PERF_TYPE_HARDWARE` (cycles via the dedicated counter, every
@@ -904,6 +923,11 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
             warn!("perf_event_open: sample_period {raw} exceeds 32-bit counter");
             return Err(AxError::InvalidInput);
         }
+        // Registration can allocate and perform controller routing, so finish
+        // it in syscall context before this event can reach an IRQ-off
+        // scheduler hook. The retained framework action enables every selected
+        // CPU line; per-counter PMU bits remain the device-side source gate.
+        initialize_sampling_irq()?;
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
@@ -1045,6 +1069,9 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             warn!("perf_event_open: per-task sample_period {raw} exceeds 32-bit");
             return Err(AxError::InvalidInput);
         }
+        // The future scheduler switch hook is IRQ-off and allocation-free. It
+        // may only use this already-published IRQ action, never create it.
+        initialize_sampling_irq()?;
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 

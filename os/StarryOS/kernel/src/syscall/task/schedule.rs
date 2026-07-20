@@ -477,7 +477,8 @@ fn map_task_error(error: scheduler::TaskError) -> AxError {
         TaskError::DeadlineAdmission
         | TaskError::DeadlineAffinity
         | TaskError::ActiveTimerAffinity
-        | TaskError::ThreadBusy => AxError::ResourceBusy,
+        | TaskError::ThreadBusy
+        | TaskError::ThreadPinned => AxError::ResourceBusy,
         TaskError::StaleThreadId => AxError::NoSuchProcess,
         TaskError::NotInitialized
         | TaskError::InvalidRuntimeHandle

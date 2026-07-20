@@ -6,7 +6,7 @@ use core::{
     cell::Cell,
     num::NonZeroUsize,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
 };
 use std::alloc::{alloc_zeroed, dealloc};
 
@@ -15,8 +15,8 @@ use dma_api::{
     DmaOp,
 };
 use rdif_block::{
-    BlkError, CompletedRequest, CompletionSink, ControllerInitEndpoint, DispatchMode, Interface,
-    OwnedRequest, QueueKind, RequestFlags, RequestOp,
+    BlkError, CompletedRequest, CompletionSink, ControllerInitEndpoint, Interface, IrqCapture,
+    IrqControlError, OwnedRequest, QueueExecution, QueueKind, RequestFlags, RequestOp,
 };
 use virtio_drivers::{
     PhysAddr,
@@ -28,15 +28,13 @@ use super::{
     controller::BlockDevice,
     device::{VirtIoBlkDevice, mask_and_publish_irq_disabled},
     initialization::{VIRTIO_BLK_F_RO, VirtioBlockInitPhase},
-    irq::{
-        VirtioBlkAccessGuard, initialization_irq_outcome, service_deferred_initialization_irq,
-        take_deferred_virtio_queue_irq, virtio_blk_event_from_irq_status, virtio_blk_irq_outcome,
-    },
+    irq::{VirtioIrqOwnership, test_interrupt_port, virtio_blk_event_from_irq_status},
     lifecycle::{VirtioBlockLifecycle, VirtioLifecycleHardware},
     queue::{
         BlockQueue, DmaDropFacts, InflightOp, InflightRequest, InflightStorage,
-        ReclaimProofTracker, VIRTIO_BLK_DMA_BUFFER_SIZE, prepare_virtio_dma,
-        take_inflight_after_used_descriptor, virtio_queue_ids, virtio_queue_info,
+        ReclaimProofTracker, VIRTIO_BLK_DMA_BUFFER_SIZE, VirtioDmaQuarantineReason,
+        prepare_virtio_dma, take_inflight_after_used_descriptor, virtio_queue_ids,
+        virtio_queue_info,
     },
 };
 
@@ -282,7 +280,8 @@ fn controller_cannot_enable_initialization_before_taking_its_irq_endpoint() {
     let device = Arc::new(VirtIoBlkDevice::discovered(RecordingTransport::new(
         Arc::clone(&commands),
     )));
-    let mut controller = BlockDevice::discovered(device);
+    let mut controller =
+        BlockDevice::discovered(device, test_interrupt_port(Arc::new(AtomicU8::new(0))));
 
     assert_eq!(
         controller.enable_irq(),
@@ -306,11 +305,9 @@ fn controller_cannot_enable_initialization_before_taking_its_irq_endpoint() {
     let ControllerInitEndpoint::Pending(initializer) = controller.controller_init() else {
         panic!("a discovered VirtIO controller must expose staged initialization")
     };
-    assert!(
-        initializer
-            .take_irq_handler(VIRTIO_BLK_IRQ_SOURCE_ID)
-            .is_some()
-    );
+    let _initialization_source = initializer
+        .take_irq_source(VIRTIO_BLK_IRQ_SOURCE_ID)
+        .expect("initialization must transfer its split IRQ source");
     assert_eq!(controller.enable_irq(), Ok(()));
 
     let ControllerInitEndpoint::Pending(initializer) = controller.controller_init() else {
@@ -329,26 +326,26 @@ fn ready_controller_requires_the_normal_io_irq_endpoint() {
     let device = Arc::new(VirtIoBlkDevice::discovered(RecordingTransport::new(
         commands,
     )));
-    let mut controller = BlockDevice::discovered(Arc::clone(&device));
+    let mut controller = BlockDevice::discovered(
+        Arc::clone(&device),
+        test_interrupt_port(Arc::new(AtomicU8::new(0))),
+    );
     let ControllerInitEndpoint::Pending(initializer) = controller.controller_init() else {
         panic!("a discovered VirtIO controller must expose staged initialization")
     };
-    assert!(
-        initializer
-            .take_irq_handler(VIRTIO_BLK_IRQ_SOURCE_ID)
-            .is_some()
-    );
+    let initialization_source = initializer
+        .take_irq_source(VIRTIO_BLK_IRQ_SOURCE_ID)
+        .expect("initialization must transfer its split IRQ source");
     device.with_task(|inner| inner.init_phase = VirtioBlockInitPhase::Ready);
+    drop(initialization_source);
 
     assert_eq!(
         controller.enable_irq(),
         Err(BlkError::Other("virtio block IRQ endpoint is not bound"))
     );
-    assert!(
-        controller
-            .take_irq_handler(VIRTIO_BLK_IRQ_SOURCE_ID)
-            .is_some()
-    );
+    let _normal_source = controller
+        .take_irq_source(VIRTIO_BLK_IRQ_SOURCE_ID)
+        .expect("ready controller must transfer its normal-I/O IRQ source");
     assert_eq!(controller.enable_irq(), Ok(()));
 }
 
@@ -467,30 +464,6 @@ fn device_irq_source_is_masked_before_disabled_state_is_published() {
 }
 
 #[test]
-fn contended_initialization_irq_uses_the_runtime_deferred_contract() {
-    let active = AtomicBool::new(false);
-    let pending = AtomicBool::new(false);
-    let owner = VirtioBlkAccessGuard::enter_task(&active);
-
-    let outcome = initialization_irq_outcome(&active, &pending, true, || {
-        panic!("contended init IRQ must not access transport state")
-    });
-
-    assert!(outcome.is_handled());
-    assert!(outcome.is_deferred());
-    assert!(pending.load(Ordering::Acquire));
-
-    drop(owner);
-    assert_eq!(
-        service_deferred_initialization_irq(&active, &pending, true, || {
-            InterruptStatus::QUEUE_INTERRUPT
-        }),
-        rdif_block::InitIrqProgress::Acknowledged
-    );
-    assert!(!pending.load(Ordering::Acquire));
-}
-
-#[test]
 fn request_wire_header_uses_little_endian_sector_and_operation() {
     let mut storage = InflightStorage::default();
     storage.prepare(InflightOp::Write, 0x0102_0304_0506_0708);
@@ -504,156 +477,139 @@ fn request_wire_header_uses_little_endian_sector_and_operation() {
 #[test]
 fn queue_interrupt_is_required_for_irq_event() {
     assert!(
-        virtio_blk_event_from_irq_status(true, InterruptStatus::empty()).is_empty(),
+        virtio_blk_event_from_irq_status(InterruptStatus::empty()).is_empty(),
         "shared IRQ callbacks without a virtio queue interrupt must not wake block queues"
     );
     assert!(
-        virtio_blk_event_from_irq_status(true, InterruptStatus::DEVICE_CONFIGURATION_INTERRUPT)
+        virtio_blk_event_from_irq_status(InterruptStatus::DEVICE_CONFIGURATION_INTERRUPT)
             .is_empty(),
         "config-only interrupts must not be reported as block completions"
     );
-    assert!(
-        virtio_blk_event_from_irq_status(false, InterruptStatus::QUEUE_INTERRUPT).is_empty(),
-        "disabled completion IRQs must not report queue readiness"
-    );
 
-    let event = virtio_blk_event_from_irq_status(true, InterruptStatus::QUEUE_INTERRUPT);
-    assert!(event.queues.contains(0));
+    let event = virtio_blk_event_from_irq_status(InterruptStatus::QUEUE_INTERRUPT);
+    assert!(event.queues().contains(0));
     assert!(!event.is_empty());
 }
 
 #[test]
-fn empty_shared_irq_is_unhandled_without_queue_activation() {
-    let access_active = AtomicBool::new(false);
-    let irq_ack_pending = AtomicBool::new(false);
+fn split_interrupt_port_captures_without_borrowing_transport_state() {
+    let commands = Arc::new(AtomicUsize::new(0));
+    let device = VirtIoBlkDevice::discovered(RecordingTransport::new(Arc::clone(&commands)));
+    let status = Arc::new(AtomicU8::new(InterruptStatus::QUEUE_INTERRUPT.bits() as u8));
+    let mut ownership = VirtioIrqOwnership::new(test_interrupt_port(Arc::clone(&status)));
+    let source = ownership
+        .take_initialization_source()
+        .expect("initialization source must be unique");
+    ownership.enable();
+    let (mut endpoint, _control) = source.into_parts();
 
-    let outcome = virtio_blk_irq_outcome(&access_active, &irq_ack_pending, true, || {
-        InterruptStatus::empty()
-    });
+    let (capture, activity) = crate::test_klib::audit_allocations(|| endpoint.capture());
+    let IrqCapture::Captured { event, masked } = capture else {
+        panic!("queue status must become a captured stable event")
+    };
 
-    assert!(!outcome.is_handled());
-    assert!(!outcome.is_deferred());
-    assert!(outcome.event().is_empty());
-    assert!(!irq_ack_pending.load(Ordering::Acquire));
-}
-
-#[test]
-fn config_only_shared_irq_is_acknowledged_without_queue_activation() {
-    let access_active = AtomicBool::new(false);
-    let irq_ack_pending = AtomicBool::new(false);
-
-    let outcome = virtio_blk_irq_outcome(&access_active, &irq_ack_pending, true, || {
-        InterruptStatus::DEVICE_CONFIGURATION_INTERRUPT
-    });
-
-    assert!(outcome.is_handled());
-    assert!(!outcome.is_deferred());
-    assert!(outcome.event().is_empty());
-    assert!(!irq_ack_pending.load(Ordering::Acquire));
-}
-
-#[test]
-fn busy_task_access_defers_irq_ack_without_faking_acknowledgement() {
-    let access_active = AtomicBool::new(false);
-    let irq_ack_pending = AtomicBool::new(false);
-    let _task_guard = VirtioBlkAccessGuard::enter_task(&access_active);
-
-    let outcome = virtio_blk_irq_outcome(&access_active, &irq_ack_pending, true, || {
-        InterruptStatus::QUEUE_INTERRUPT
-    });
-
-    assert!(outcome.is_handled());
-    let event = outcome.event();
-    let queue = event
-        .for_queue(VIRTIO_BLK_QUEUE_ID)
-        .expect("deferred virtio IRQ must activate queue service");
-    assert!(queue.requires_irq_ack());
-    assert!(irq_ack_pending.load(Ordering::Acquire));
-}
-
-#[test]
-fn repeated_contended_irqs_coalesce_behind_one_deferred_activation() {
-    let access_active = AtomicBool::new(false);
-    let irq_ack_pending = AtomicBool::new(false);
-    let _task_guard = VirtioBlkAccessGuard::enter_task(&access_active);
-
-    let first = virtio_blk_irq_outcome(&access_active, &irq_ack_pending, true, || {
-        panic!("contended IRQ must not access the transport")
-    });
-    let repeated = virtio_blk_irq_outcome(&access_active, &irq_ack_pending, true, || {
-        panic!("coalesced IRQ must not access the transport")
-    });
-
-    assert!(first.is_deferred());
-    assert!(
-        first
-            .event()
-            .for_queue(VIRTIO_BLK_QUEUE_ID)
-            .is_some_and(|event| event.requires_irq_ack())
+    assert!(event.queues().contains(VIRTIO_BLK_QUEUE_ID));
+    assert_eq!(masked, None);
+    assert_eq!(status.load(Ordering::Acquire), 0);
+    assert_eq!(commands.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        activity,
+        crate::test_klib::AllocationActivity {
+            allocations: 0,
+            deallocations: 0,
+        },
+        "hard-IRQ capture must not allocate or free"
     );
-    assert!(repeated.is_deferred());
-    assert!(repeated.event().is_empty());
-    assert!(irq_ack_pending.load(Ordering::Acquire));
+    drop(device);
 }
 
 #[test]
-fn deferred_ack_survives_failed_worker_claim_and_reactivates_after_release() {
-    let access_active = AtomicBool::new(false);
-    let irq_ack_pending = AtomicBool::new(false);
-    let task_owner = VirtioBlkAccessGuard::enter_task(&access_active);
-    let outcome = virtio_blk_irq_outcome(&access_active, &irq_ack_pending, true, || {
-        panic!("contended hard IRQ must not access the transport")
-    });
-    let irq_event = outcome.event();
-    let event = irq_event
-        .for_queue(VIRTIO_BLK_QUEUE_ID)
-        .expect("contention must activate the queue continuation");
+fn empty_shared_irq_is_unhandled_and_config_irq_is_a_control_event() {
+    let status = Arc::new(AtomicU8::new(0));
+    let mut ownership = VirtioIrqOwnership::new(test_interrupt_port(Arc::clone(&status)));
+    let source = ownership
+        .take_initialization_source()
+        .expect("initialization source must be unique");
+    ownership.enable();
+    let (mut endpoint, _control) = source.into_parts();
 
-    assert!(event.requires_irq_ack());
-    assert!(VirtioBlkAccessGuard::try_enter_task(&access_active).is_none());
-    assert!(
-        irq_ack_pending.load(Ordering::Acquire),
-        "a failed worker claim must leave the destructive acknowledgement pending"
+    assert!(matches!(endpoint.capture(), IrqCapture::Unhandled));
+
+    status.store(
+        InterruptStatus::DEVICE_CONFIGURATION_INTERRUPT.bits() as u8,
+        Ordering::Release,
+    );
+    let IrqCapture::Captured { event, masked } = endpoint.capture() else {
+        panic!("config status was acknowledged and must remain a stable event")
+    };
+    assert!(event.is_empty());
+    assert_eq!(masked, None);
+}
+
+#[test]
+fn acknowledged_unknown_status_is_captured_as_a_control_event() {
+    const UNKNOWN_STATUS: u8 = 1 << 7;
+
+    let status = Arc::new(AtomicU8::new(UNKNOWN_STATUS));
+    let mut ownership = VirtioIrqOwnership::new(test_interrupt_port(Arc::clone(&status)));
+    let source = ownership
+        .take_initialization_source()
+        .expect("initialization source must be unique");
+    ownership.enable();
+    let (mut endpoint, _control) = source.into_parts();
+
+    let IrqCapture::Captured { event, masked } = endpoint.capture() else {
+        panic!("destructively acknowledged status must never be reported as unhandled")
+    };
+    assert!(event.is_empty());
+    assert_eq!(masked, None);
+    assert_eq!(status.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn unmaskable_virtio_source_fails_closed_instead_of_faking_containment() {
+    let status = Arc::new(AtomicU8::new(0));
+    let mut ownership = VirtioIrqOwnership::new(test_interrupt_port(status));
+    let source = ownership
+        .take_initialization_source()
+        .expect("initialization source must be unique");
+    ownership.enable();
+    let (mut endpoint, mut control) = source.into_parts();
+
+    assert_eq!(
+        endpoint.contain(rdif_block::ContainmentCause::PublicationFull),
+        Err(BlkError::Other(
+            "virtio interrupt source cannot be contained from hard IRQ"
+        ))
+    );
+    let current =
+        rdif_block::MaskedSource::try_new(2, 1).expect("test source identity must be valid");
+    assert_eq!(
+        control.rearm(current),
+        Err(IrqControlError::SourceNotMasked { bitmap: 1 })
     );
 
-    drop(task_owner);
-    let _worker_owner = VirtioBlkAccessGuard::try_enter_task(&access_active)
-        .expect("the requeued worker must acquire transport ownership after release");
-    assert!(take_deferred_virtio_queue_irq(&irq_ack_pending, || {
-        InterruptStatus::QUEUE_INTERRUPT
-    }));
-    assert!(!irq_ack_pending.load(Ordering::Acquire));
-}
-
-#[test]
-fn deferred_irq_ack_classifies_source_before_queue_service() {
-    let pending = AtomicBool::new(true);
-    assert!(!take_deferred_virtio_queue_irq(&pending, || {
-        InterruptStatus::DEVICE_CONFIGURATION_INTERRUPT
-    }));
-    assert!(!pending.load(Ordering::Acquire));
-
-    pending.store(true, Ordering::Release);
-    assert!(take_deferred_virtio_queue_irq(&pending, || {
-        InterruptStatus::QUEUE_INTERRUPT
-    }));
-    assert!(!pending.load(Ordering::Acquire));
-
-    assert!(!take_deferred_virtio_queue_irq(&pending, || {
-        panic!("a coalesced deferred IRQ must not acknowledge twice")
-    }));
-}
-
-#[test]
-fn task_side_irq_continuation_never_spins_on_transport_ownership() {
-    let active = AtomicBool::new(false);
-    let _owner = VirtioBlkAccessGuard::enter_task(&active);
-
-    assert!(VirtioBlkAccessGuard::try_enter_task(&active).is_none());
-    assert!(
-        active.load(Ordering::Acquire),
-        "failed try-enter must not release the current transport owner"
+    ownership.disable();
+    ownership.enable();
+    assert_eq!(
+        control.rearm(current),
+        Err(IrqControlError::StaleGeneration {
+            expected: 3,
+            actual: 2,
+        })
     );
+}
+
+#[test]
+fn initialization_endpoint_must_close_before_normal_io_takes_the_port() {
+    let mut ownership = VirtioIrqOwnership::new(test_interrupt_port(Arc::new(AtomicU8::new(0))));
+    let initialization = ownership
+        .take_initialization_source()
+        .expect("initialization endpoint must be available once");
+
+    assert!(ownership.take_normal_io_source().is_none());
+    drop(initialization);
+    assert!(ownership.take_normal_io_source().is_some());
 }
 
 #[test]
@@ -663,7 +619,7 @@ fn queue_metadata_uses_the_declared_logical_irq_source() {
         panic!("virtio block must be interrupt-backed");
     };
 
-    assert_eq!(info.dispatch_mode, DispatchMode::Direct);
+    assert_eq!(info.execution, QueueExecution::Tagged);
     assert_eq!(sources.bits(), 1 << VIRTIO_BLK_IRQ_SOURCE_ID);
     assert_eq!(virtio_queue_ids().bits(), 1 << VIRTIO_BLK_QUEUE_ID);
 }
@@ -710,7 +666,7 @@ fn request_submission_does_not_allocate_or_free_in_worker_context() {
         inner.init_phase = VirtioBlockInitPhase::Ready;
         inner.capacity = 1;
     });
-    let mut queue = BlockQueue::new(Arc::clone(&device));
+    let mut queue = BlockQueue::for_test(Arc::clone(&device));
     let request = owned_request(
         RequestOp::Read,
         dma_buffer_with_alignment(DmaDirection::FromDevice, 0x1000),
@@ -748,7 +704,7 @@ fn dropping_an_idle_live_queue_requires_dma_quarantine() {
 }
 
 #[test]
-fn dropping_live_device_quarantines_descriptor_storage() {
+fn named_dma_quarantine_retains_descriptor_storage_without_releasing_it() {
     let id = rdif_block::RequestId::new(41);
     let (op, request, prepared) = prepare_virtio_dma(
         id,
@@ -770,6 +726,24 @@ fn dropping_live_device_quarantines_descriptor_storage() {
         inner.init_phase = VirtioBlockInitPhase::Ready;
         inner.descriptor_storage = Some(storage);
         inner.inflight = Some(inflight);
+        inner.quarantine_unproven_dma(VirtioDmaQuarantineReason::DroppedWithoutQuiescence);
+
+        let quarantine = inner
+            .dma_quarantine
+            .as_ref()
+            .expect("unproven request DMA must have a named quarantine owner");
+        assert_eq!(
+            quarantine.reason(),
+            VirtioDmaQuarantineReason::DroppedWithoutQuiescence
+        );
+        assert!(!quarantine.retains_queue());
+        assert!(quarantine.retains_request());
+        assert!(quarantine.retains_descriptor_storage());
+        assert_eq!(
+            inner.prepare_reinitialize(),
+            Err(rdif_block::InitError::InvalidState),
+            "an unreleased quarantine must prevent device reuse"
+        );
     });
 
     drop(device);
@@ -777,8 +751,68 @@ fn dropping_live_device_quarantines_descriptor_storage() {
     assert_eq!(
         drop_counter.load(Ordering::Relaxed),
         0,
-        "live descriptor storage must be leaked with its DMA quarantine"
+        "quarantined descriptor storage must remain isolated without running Drop"
     );
+}
+
+#[test]
+fn dma_quiescence_proof_releases_named_quarantine_and_rebuilds_storage() {
+    let id = rdif_block::RequestId::new(42);
+    let (op, request, prepared) = prepare_virtio_dma(
+        id,
+        owned_request(RequestOp::Read, dma_buffer(DmaDirection::FromDevice)),
+    )
+    .expect("test read request must prepare DMA");
+    let drop_counter = Arc::new(AtomicUsize::new(0));
+    let storage = Box::new(InflightStorage::with_drop_counter(Arc::clone(
+        &drop_counter,
+    )));
+    // SAFETY: no hardware exists in this unit test. The request is retained in
+    // quarantine until the synthetic controller-bound proof is presented.
+    let dma = unsafe { prepared.into_in_flight() };
+    let inflight = InflightRequest::for_test(id, 8, op, request, dma);
+    let device = Arc::new(VirtIoBlkDevice::discovered(RecordingTransport::new(
+        Arc::new(AtomicUsize::new(0)),
+    )));
+    device.with_task(|inner| {
+        inner.descriptor_storage = Some(storage);
+        inner.inflight = Some(inflight);
+        inner.quarantine_unproven_dma(VirtioDmaQuarantineReason::ResetAcknowledgementTimedOut);
+    });
+    let mut queue = BlockQueue::for_test(Arc::clone(&device));
+    // SAFETY: this model has no bus master and binds the proof to this exact
+    // controller identity and a fresh generation.
+    let proof = unsafe {
+        rdif_block::DmaQuiesced::new(
+            rdif_block::ControllerEpoch::new(4),
+            core::ptr::from_ref(&*device).expose_provenance(),
+        )
+    };
+    let mut completions = CompletionRecorder::default();
+
+    rdif_block::IQueue::reclaim_after_quiesce(&mut queue, &proof, &mut completions)
+        .expect("DmaQuiesced must convert quarantine back to ordinary ownership");
+
+    assert_eq!(completions.calls, 1);
+    assert_eq!(
+        completions
+            .completion
+            .as_ref()
+            .expect("quarantined request must receive a terminal completion")
+            .id,
+        id
+    );
+    assert_eq!(drop_counter.load(Ordering::Relaxed), 1);
+    device.with_task(|inner| {
+        assert!(inner.dma_quarantine.is_none());
+        inner
+            .prepare_reinitialize()
+            .expect("released quarantine must permit controller reconstruction");
+        assert!(
+            inner.descriptor_storage.is_some(),
+            "reinitialization must allocate fresh stable descriptor storage"
+        );
+    });
 }
 
 #[test]
@@ -833,14 +867,19 @@ fn quiesced_recovery_completes_an_accepted_request_exactly_once() {
     // synthetic accepted request cannot be accessed by a bus master.
     let dma = unsafe { prepared.into_in_flight() };
     let inflight = InflightRequest::for_test(id, 11, op, request, dma);
+    let drop_counter = Arc::new(AtomicUsize::new(0));
+    let descriptor_storage = Box::new(InflightStorage::with_drop_counter(Arc::clone(
+        &drop_counter,
+    )));
     let device = Arc::new(VirtIoBlkDevice::discovered(RecordingTransport::new(
         Arc::new(AtomicUsize::new(0)),
     )));
     device.with_task(|inner| {
         inner.init_phase = VirtioBlockInitPhase::Ready;
+        inner.descriptor_storage = Some(descriptor_storage);
         inner.inflight = Some(inflight);
     });
-    let mut queue = BlockQueue::new(Arc::clone(&device));
+    let mut queue = BlockQueue::for_test(Arc::clone(&device));
     // SAFETY: no queue was configured and no hardware exists in this test, so
     // DMA is already quiesced for the synthetic controller epoch.
     let proof = unsafe {
@@ -874,6 +913,14 @@ fn quiesced_recovery_completes_an_accepted_request_exactly_once() {
             .expect("terminal completion must return DMA ownership")
             .cpu_ptr(),
         original_ptr
+    );
+
+    drop(queue);
+    drop(device);
+    assert_eq!(
+        drop_counter.load(Ordering::Relaxed),
+        1,
+        "acknowledged reset plus DmaQuiesced must release descriptor storage normally"
     );
 }
 

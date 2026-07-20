@@ -6,9 +6,6 @@ pub enum Event {
     /// No status bit requiring runtime action is currently pending.
     #[default]
     None,
-    /// Task context is publishing a request epoch, so IRQ status remains
-    /// pending for a safe retry after the register owner is released.
-    Deferred,
     /// A command response has completed.
     CommandComplete,
     /// A data transfer has completed.
@@ -34,7 +31,6 @@ impl HostEvent for Event {
     fn kind(&self) -> HostEventKind {
         match self {
             Event::None => HostEventKind::None,
-            Event::Deferred => HostEventKind::Other,
             Event::CommandComplete => HostEventKind::CommandComplete,
             Event::TransferComplete => HostEventKind::TransferComplete,
             Event::DmaComplete => HostEventKind::Other,
@@ -45,10 +41,6 @@ impl HostEvent for Event {
         }
     }
 
-    fn ack_deferred(&self) -> bool {
-        matches!(self, Event::Deferred)
-    }
-
     fn source(&self) -> HostEventSource {
         match self {
             Event::CommandComplete => HostEventSource::Command,
@@ -57,9 +49,7 @@ impl HostEvent for Event {
             | Event::DmaError { .. }
             | Event::ReceiveReady
             | Event::TransmitReady => HostEventSource::Data,
-            Event::None | Event::Deferred | Event::Error { .. } | Event::Other { .. } => {
-                HostEventSource::Controller
-            }
+            Event::None | Event::Error { .. } | Event::Other { .. } => HostEventSource::Controller,
         }
     }
 }
@@ -100,6 +90,20 @@ pub(crate) const MCI_IDSTS_ERROR_MASK: u32 = MCI_IDSTS_FATAL_BUS_ERROR
     | MCI_IDSTS_CARD_ERROR_SUMMARY
     | MCI_IDSTS_ABNORMAL_SUMMARY;
 
-pub struct PhytiumMciIrqHandle {
+/// Hard-IRQ-owned destructive status capture endpoint.
+///
+/// OS glue moves this endpoint into the IRQ action registered by the same
+/// CPU-pinned maintenance owner that retains [`crate::PhytiumMci`] and the
+/// matching control endpoint.
+pub struct PhytiumMciIrqEndpoint {
     pub(crate) irq: Arc<host::IrqCore>,
 }
+
+/// Maintenance-owner capability for generation-checked source rearming.
+pub struct PhytiumMciIrqControl {
+    pub(crate) irq: Arc<host::IrqCore>,
+}
+
+/// Unique split ownership of one Phytium MCI interrupt source.
+pub type PhytiumMciIrqSource =
+    sdmmc_protocol::sdio::host::SdioIrqSource<PhytiumMciIrqEndpoint, PhytiumMciIrqControl>;

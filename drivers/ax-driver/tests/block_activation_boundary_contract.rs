@@ -8,13 +8,35 @@ fn source(relative: &str) -> String {
 #[test]
 fn registration_rejects_unresolved_declared_irq_sources() {
     let binding = source("src/block/binding.rs");
+    let staged = source("src/block/staged.rs");
     let virtio = source("src/virtio/block/discovery.rs");
 
     assert!(binding.contains("validate_controller_irq_bindings(&mut bundle, &binding)"));
     assert!(binding.contains("BlockRegistrationError::MissingIrqBinding"));
+    assert!(binding.contains("BlockRegistrationError::InterruptControllerWithoutIrqSource"));
+    assert!(binding.contains("LifecycleKind::Interrupt"));
     assert!(binding.contains("initializer.irq_sources()"));
     assert!(binding.contains("bundle.irq_sources()"));
     assert!(virtio.contains("validate_block_interface_irq_bindings(&mut block, &info)"));
+
+    for required in ["BlockIrqSource", "take_irq_source"] {
+        assert!(
+            staged.contains(required),
+            "staged controller wrapper does not transfer split IRQ capability `{required}`"
+        );
+    }
+    for forbidden in [
+        "BIrqHandler",
+        "IrqHandler",
+        "take_irq_handler",
+        "service_deferred_irq",
+        "InitIrqProgress",
+    ] {
+        assert!(
+            !binding.contains(forbidden) && !staged.contains(forbidden),
+            "generic block binding retained obsolete IRQ ABI `{forbidden}`"
+        );
+    }
 }
 
 #[test]

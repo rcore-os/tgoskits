@@ -20,10 +20,11 @@
 //! ## Quick Start
 //!
 //! To use this driver, you need to implement the [`KernelFunc`] trait to provide the necessary
-//! kernel functions for address translation and DMA memory allocation.
+//! kernel functions for DMA address translation and coherent allocation. The
+//! OS maps the controller once and passes that mapping to `discover_xmac`.
 //!
 //! ```ignore
-//! use fxmac_rs::{KernelFunc, xmac_init, FXmacLwipPortTx, FXmacRecvHandler};
+//! use fxmac_rs::{KernelFunc, begin_xmac_init, poll_xmac_init, FXmacLwipPortTx, FXmacRecvHandler};
 //!
 //! // Implement the KernelFunc trait for your platform
 //! pub struct FXmacDriver;
@@ -31,11 +32,6 @@
 //! #[ax_crate_interface::impl_interface]
 //! impl KernelFunc for FXmacDriver {
 //!     fn virt_to_phys(addr: usize) -> usize {
-//!         // Your implementation
-//!         addr
-//!     }
-//!
-//!     fn phys_to_virt(addr: usize) -> usize {
 //!         // Your implementation
 //!         addr
 //!     }
@@ -53,7 +49,16 @@
 //!
 //! // Initialize the driver
 //! let hwaddr: [u8; 6] = [0x55, 0x44, 0x33, 0x22, 0x11, 0x00];
-//! let fxmac = xmac_init(&hwaddr);
+//! let discovery = unsafe { discover_xmac(mapped_base, mapped_size)? };
+//! let (pending, irq_port) = discovery.into_parts();
+//! let mut initialization = begin_xmac_init(pending);
+//! let fxmac = loop {
+//!     match poll_xmac_init(&mut initialization, monotonic_now_ns()) {
+//!         FXmacInitPoll::Ready => break initialization.take_ready()?,
+//!         FXmacInitPoll::Pending(schedule) => schedule_next(schedule),
+//!         FXmacInitPoll::Failed(error) => return Err(error),
+//!     }
+//! };
 //!
 //! // Send packets
 //! let mut tx_vec = Vec::new();
@@ -88,7 +93,6 @@
 //!   macros become no-ops.
 
 #![no_std]
-#![feature(linkage)]
 #![allow(unused)]
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
@@ -134,7 +138,6 @@ pub use fxmac::*;
 // Re-exports for DMA operations
 pub use fxmac_dma::*;
 // Re-exports for interrupt handling
-pub use fxmac_intr::FXmacIntrHandler;
 // Re-exports for PHY interface
 pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 
@@ -142,7 +145,7 @@ pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 ///
 /// This trait defines the platform-specific functions that must be implemented
 /// by the host system to support the FXMAC driver. These functions handle
-/// address translation and DMA memory management.
+/// DMA address translation and coherent memory management.
 ///
 /// # Implementation Requirements
 ///
@@ -159,11 +162,6 @@ pub use fxmac_phy::{FXmacPhyInit, FXmacPhyRead, FXmacPhyWrite};
 ///     fn virt_to_phys(addr: usize) -> usize {
 ///         // Platform-specific virtual to physical address translation
 ///         addr - KERNEL_OFFSET
-///     }
-///
-///     fn phys_to_virt(addr: usize) -> usize {
-///         // Platform-specific physical to virtual address translation
-///         addr + KERNEL_OFFSET
 ///     }
 ///
 ///     fn dma_alloc_coherent(pages: usize) -> (usize, usize) {
@@ -196,20 +194,6 @@ pub trait KernelFunc {
     /// The corresponding physical address.
     fn virt_to_phys(addr: usize) -> usize;
 
-    /// Converts a physical address to its corresponding virtual address.
-    ///
-    /// This function is used by the driver to access hardware registers
-    /// and DMA buffers through virtual addresses.
-    ///
-    /// # Arguments
-    ///
-    /// * `addr` - The physical address to convert.
-    ///
-    /// # Returns
-    ///
-    /// The corresponding virtual address.
-    fn phys_to_virt(addr: usize) -> usize;
-
     /// Allocates DMA-coherent memory pages.
     ///
     /// Allocates physically contiguous memory that is suitable for DMA
@@ -237,6 +221,29 @@ pub trait KernelFunc {
 
 #[cfg(test)]
 mod tests {
+    use core::alloc::Layout;
+
+    struct TestKernelFunc;
+
+    #[ax_crate_interface::impl_interface]
+    impl super::KernelFunc for TestKernelFunc {
+        fn virt_to_phys(addr: usize) -> usize {
+            addr
+        }
+
+        fn dma_alloc_coherent(pages: usize) -> (usize, usize) {
+            let layout = Layout::from_size_align(pages * 4096, 4096).unwrap();
+            let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) } as usize;
+            assert_ne!(ptr, 0);
+            (ptr, ptr)
+        }
+
+        fn dma_free_coherent(vaddr: usize, pages: usize) {
+            let layout = Layout::from_size_align(pages * 4096, 4096).unwrap();
+            unsafe { alloc::alloc::dealloc(vaddr as *mut u8, layout) };
+        }
+    }
+
     #[test]
     fn it_works() {}
 }

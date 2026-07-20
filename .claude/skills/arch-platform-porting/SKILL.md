@@ -372,6 +372,20 @@ out of architecture and platform crates. The OS runtime owns one pinned global
   host token disabled before controller reinitialization; detach or reattach
   failure keeps the device quarantined without relaxing share or affinity
   compatibility.
+- A guest IRQ action registered by a vCPU is owned by that exact thread for its
+  complete lifetime. Acquire `CurrentCpuLease` before registration, retain a
+  stable direct `ThreadWakeHandle`, and keep the vCPU task alive after guest
+  stop. Manager code may publish a generation-bearing release cause and wait
+  for typed completion, but only the registering owner may rearm, disable,
+  synchronize, or free the action. Join the vCPU task only after owner-local
+  close succeeds; a close failure retains both the action and CPU lease in a
+  named fail-closed state.
+- LoongArch guest passthrough must not use a platform `Unhandled` fallback or a
+  raw virtual-injector table. Register an exclusive fixed-affinity
+  `irq-framework` action from the vCPU owner. The hard callback publishes a
+  stable physical-source/generation fact, quenches the level line, and performs
+  only a same-CPU direct wake. Guest PCH-PIC deassert/EOI publishes a rearm fact;
+  the owner thread performs synchronize/unquench before the next guest run.
 - On RISC-V, represent a guest exit as `VmArchVcpuOps::Exit<'cpu>` and keep the
   host IRQ-save token private in that RAII value. The bound architecture
   handler must capture physical exit state before dropping the exit; its drop

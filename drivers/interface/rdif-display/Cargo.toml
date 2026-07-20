@@ -11,4 +11,5 @@ version = "0.2.0"
 
 [dependencies]
 rdif-base = { workspace = true }
+rdif-irq = { workspace = true }
 thiserror = { version = "2", default-features = false }

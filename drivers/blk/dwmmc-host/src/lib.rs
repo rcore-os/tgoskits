@@ -34,6 +34,11 @@
 //! host.set_reference_clock(50_000_000);
 //! // Optional DMA capability can be installed here before the protocol layer
 //! // owns the host.
+//! let irq_source = host.take_irq_source().expect("unique DWMMC IRQ source");
+//! let (_capture_endpoint, _owner_control) = irq_source.into_parts();
+//! // OS glue registers `_capture_endpoint` disabled on this maintenance
+//! // thread's CPU before enabling controller delivery through `SdioHost`.
+//! sdmmc_protocol::sdio::host::SdioHost::enable_completion_irq(&mut host)?;
 //!
 //! let mut card = SdioSdmmc::new_host2(host);
 //! let mut scratch = SdioInitScratch::new();
@@ -42,9 +47,10 @@
 //! # Ok::<(), sdmmc_protocol::Error>(())
 //! ```
 //!
-//! The shared worker, IRQ registration, and blocking policy belong in
-//! OS/platform glue. The reusable driver exposes the RDIF owned queue through
-//! [`rdif`] and does not provide a task-side completion-poll fallback:
+//! The CPU-pinned maintenance owner, IRQ registration, and blocking policy
+//! belong in OS/platform glue. The reusable driver exposes the RDIF owned
+//! queue through [`rdif`] and does not provide a task-side completion-poll
+//! fallback:
 //!
 //! ```compile_fail
 //! use dwmmc_host::BlockQueue;
@@ -88,7 +94,7 @@ use sdmmc_protocol::{
     sdio::{
         host::{
             BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
-            SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHandle, SdioIrqHost, SignalVoltage,
+            SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHost, SdioIrqSource, SignalVoltage,
             poll_ready_bus_op,
         },
         host2::SdioHost2Lifecycle,
@@ -101,7 +107,7 @@ pub use crate::{
         BlockRequest, BlockRequestSlot, IDMAC_DESC_ALIGN, IDMAC_DESC_SIZE, PreparedDmaSubmitError,
         RequestId,
     },
-    event::{DwMmcIrq, Event},
+    event::{DwMmcIrqControl, DwMmcIrqEndpoint, DwMmcIrqSource, Event},
     host::{CardDetect, DEFAULT_FIFO_OFFSET, DwMmc, HostClock},
     host2::{BusRequest, DataRequest, TransactionRequest},
     lifecycle::DwMmcRecoveryState,

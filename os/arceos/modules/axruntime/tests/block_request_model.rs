@@ -1,6 +1,6 @@
 extern crate alloc;
 
-use core::pin::Pin;
+use alloc::sync::Arc;
 
 use ax_runtime::block::{HardwareQueue, HardwareQueueError, RuntimeSubmitError, SubmittedRequest};
 use rdif_block::{CompletedRequest, OwnedRequest};
@@ -19,7 +19,7 @@ fn inline_identity_never_enters_the_hardware_tag_namespace() {
 #[test]
 fn interrupt_queue_submit_always_returns_a_waitable_request() {
     let submit: fn(
-        Pin<&'static HardwareQueue>,
+        &Arc<HardwareQueue>,
         OwnedRequest,
     ) -> Result<SubmittedRequest, RuntimeSubmitError> = HardwareQueue::submit_owned;
     let _ = submit;

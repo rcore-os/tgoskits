@@ -1,16 +1,5 @@
 use ramdisk::RamDisk;
-use rdif_block::{
-    CompletedRequest, CompletionSink, Interface, OwnedRequest, RequestFlags, RequestId, RequestOp,
-    SubmitOutcome,
-};
-
-struct NoopSink;
-
-impl CompletionSink for NoopSink {
-    fn complete(&mut self, _completion: CompletedRequest) {
-        unreachable!("ramdisk cannot retain inline requests")
-    }
-}
+use rdif_block::{Interface, OwnedRequest, RequestFlags, RequestId, RequestOp, SubmitOutcome};
 
 fn main() {
     let mut block = RamDisk::new(16, 1024);
@@ -36,7 +25,5 @@ fn main() {
         }
         SubmitOutcome::Queued => unreachable!("ramdisk requests complete inline"),
     }
-    queue
-        .shutdown(&mut NoopSink)
-        .expect("shutdown should succeed");
+    queue.close().expect("shutdown should succeed");
 }

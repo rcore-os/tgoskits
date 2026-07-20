@@ -15,27 +15,26 @@ mod request;
 pub use bundle::{
     BControllerBundle, BundleError, ControllerBundle, LogicalDevice, LogicalDeviceId,
     LogicalDeviceIds, LogicalDeviceParts, MAX_CONTROLLER_QUEUES, MAX_LOGICAL_DEVICES,
-    SingleDeviceBundle, validate_controller_devices,
+    SingleDeviceBundle, UnpublishedQueueQuarantine, validate_controller_devices,
 };
 pub use dma_api;
-pub use error::{BlkError, QueueContractError};
+pub use error::{BlkError, IrqControlError, QueueContractError};
 pub use info::{
-    DEFAULT_REQUEST_TIMEOUT_NS, DeviceInfo, DispatchMode, QueueInfo, QueueKind, QueueLimits,
+    DEFAULT_REQUEST_TIMEOUT_NS, DeviceInfo, QueueExecution, QueueInfo, QueueKind, QueueLimits,
 };
 pub use init::{
-    ControllerInit, ControllerInitEndpoint, InitError, InitInput, InitIrqProgress, InitPoll,
-    InitSchedule, InitialController,
+    ControllerInit, ControllerInitEndpoint, InitError, InitInput, InitPoll, InitSchedule,
+    InitialController,
 };
 pub use interface::{
-    BInterface, BIrqHandler, BQueue, CompletionSink, IQueue, Interface, QueueHandle,
-    ServiceContinuation, ServiceContinuationReason, ServiceProgress, validate_lifecycle_activation,
-    validate_queue_activation, validate_queue_info, validate_request_identity,
-    validate_submit_contract,
+    BInterface, BIrqControl, BIrqEndpoint, BQueue, BlockIrqSource, CompletionSink, IQueue,
+    Interface, QuarantinedQueue, QueueCloseFailure, QueueHandle, ServiceProgress, ServiceRerun,
+    ServiceRerunReason, validate_lifecycle_activation, validate_queue_activation,
+    validate_queue_info, validate_request_identity, validate_submit_contract,
 };
 pub use irq::{
-    AcknowledgedEvent, CompletionHint, CompletionIds, CompletionList, DeferredIrqProgress, Event,
-    IdList, IrqEventEpoch, IrqHandler, IrqOutcome, IrqSourceInfo, IrqSourceList,
-    MAX_BATCH_COMPLETION_IDS, MAX_COMPLETION_HINTS, QueueEventBatch,
+    AcknowledgedEvent, BlockIrqCapture, Event, IdList, IrqEventEpoch, IrqSourceInfo, IrqSourceList,
+    QueueEventBatch,
 };
 pub use lifecycle::{
     ControllerEpoch, ControllerReady, DmaQuiesced, InterruptLifecycle, LifecycleEndpoint,
@@ -46,6 +45,10 @@ pub use planner::{
     TransferSegments,
 };
 pub use rdif_base::{DriverGeneric, KError, io};
+pub use rdif_irq::{
+    ContainmentCause, FaultContainment, IrqCapture, IrqEndpoint, IrqSourceControl,
+    IrqSourceMaskState, IrqSourceState, MaskedSource, MaskedSourceError,
+};
 pub use request::{
     CompletedRequest, OwnedRequest, RequestFlags, RequestId, RequestOp, SubmitError, SubmitOutcome,
     validate_owned_request, validate_owned_request_shape,

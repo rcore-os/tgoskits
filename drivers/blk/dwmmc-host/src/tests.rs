@@ -1,5 +1,6 @@
 use core::num::{NonZeroU16, NonZeroU32};
 
+use rdif_irq::{ContainmentCause, IrqCapture, IrqEndpoint, IrqSourceControl};
 use sdio_host2::ResponseType;
 
 use super::*;
@@ -119,14 +120,20 @@ fn owned_irq_endpoint_acks_and_caches_status() {
         mmio.as_mut_ptr().add(MINTSTS_WORD).write_volatile(raw);
     }
 
-    let mut irq = host.irq_endpoint();
+    let (mut endpoint, _control) = host.take_irq_source().unwrap().into_parts();
 
-    assert_eq!(irq.handle_irq(), Event::TransferComplete);
+    assert_eq!(
+        endpoint.capture(),
+        IrqCapture::Captured {
+            event: Event::TransferComplete,
+            masked: None,
+        }
+    );
     assert_eq!(host.irq.state.pending(), raw);
     unsafe {
         mmio.as_mut_ptr().add(MINTSTS_WORD).write_volatile(0);
     }
-    assert_eq!(host.handle_irq(), Event::None);
+    assert_eq!(endpoint.capture(), IrqCapture::Unhandled);
 
     host.irq.state.end_request();
     host.irq.state.begin_request();
@@ -138,48 +145,40 @@ fn owned_irq_endpoint_acks_and_caches_status() {
 }
 
 #[test]
-fn irq_defers_destructive_status_snapshot_while_task_programs_request() {
+fn protocol_cannot_enable_delivery_before_unique_source_transfer() {
     let mut mmio = [0u32; 256];
     let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
     let mut host = unsafe { DwMmc::new(base) };
-    host.irq.state.begin_request();
-    let irq_core = host.irq.clone();
-    let task_owner = irq_core
-        .state
-        .try_begin_task_update()
-        .expect("idle register gate must admit task setup");
-    let raw = crate::regs::RIntSts::new()
-        .with_data_transfer_over(true)
-        .into_bits();
-    const MINTSTS_WORD: usize = 16;
-    unsafe {
-        mmio.as_mut_ptr().add(MINTSTS_WORD).write_volatile(raw);
-    }
-
-    let mut irq = host.irq_endpoint();
-    assert_eq!(irq.handle_irq(), Event::Deferred);
-    assert_eq!(host.irq.state.pending(), 0);
     assert_eq!(
-        unsafe { mmio.as_ptr().add(MINTSTS_WORD).read_volatile() },
-        raw
+        ProtocolSdioHost::enable_completion_irq(&mut host),
+        Err(Error::InvalidArgument)
     );
 
-    drop(task_owner);
-    assert_eq!(irq.handle_irq(), Event::TransferComplete);
-    assert_eq!(host.irq.state.pending(), raw);
+    let source = host.take_irq_source().expect("first transfer must succeed");
+    assert!(host.take_irq_source().is_none());
+    let (_endpoint, _control) = source.into_parts();
+    assert_eq!(ProtocolSdioHost::enable_completion_irq(&mut host), Ok(()));
 }
 
 #[test]
-fn task_register_update_defers_instead_of_spinning_behind_irq_snapshot() {
-    let state = crate::host::IrqState::new();
-    let irq_owner = state
-        .try_begin_irq_snapshot()
-        .expect("idle register gate must admit the IRQ snapshot");
+fn irq_source_can_be_reacquired_only_after_both_capabilities_are_released() {
+    let mut mmio = [0u32; 256];
+    let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+    let mut host = unsafe { DwMmc::new(base) };
+    let (endpoint, control) = host.take_irq_source().unwrap().into_parts();
 
-    assert!(state.try_begin_task_update().is_none());
+    drop(endpoint);
+    assert!(host.take_irq_source().is_none());
+    drop(control);
 
-    drop(irq_owner);
-    assert!(state.try_begin_task_update().is_some());
+    let (endpoint, control) = host
+        .take_irq_source()
+        .expect("the source lease must return after both halves retire")
+        .into_parts();
+    drop(control);
+    assert!(host.take_irq_source().is_none());
+    drop(endpoint);
+    assert!(host.take_irq_source().is_some());
 }
 
 #[test]
@@ -195,9 +194,15 @@ fn idmac_completion_does_not_fabricate_controller_data_over() {
             .write_volatile(DWMMC_IDMAC_INT_TI);
     }
 
-    let mut irq = host.irq_endpoint();
+    let (mut endpoint, _control) = host.take_irq_source().unwrap().into_parts();
 
-    assert_eq!(irq.handle_irq(), Event::DmaComplete);
+    assert_eq!(
+        endpoint.capture(),
+        IrqCapture::Captured {
+            event: Event::DmaComplete,
+            masked: None,
+        }
+    );
     assert_eq!(
         host.irq.state.pending() & DWMMC_INT_DATA_TRANSFER_OVER,
         0,
@@ -238,9 +243,15 @@ fn idmac_error_wins_over_a_combined_completion_snapshot() {
             .write_volatile(idmac_status);
     }
 
-    let mut irq = host.irq_endpoint();
+    let (mut endpoint, _control) = host.take_irq_source().unwrap().into_parts();
 
-    let event = irq.handle_irq();
+    let IrqCapture::Captured {
+        event,
+        masked: None,
+    } = endpoint.capture()
+    else {
+        panic!("IDMAC error must produce one stable unmasked event")
+    };
     assert_eq!(
         event,
         Event::DmaError {
@@ -298,6 +309,7 @@ fn fifo_ready_irq_is_masked_until_task_side_drain() {
         | crate::DWMMC_INT_ERROR_MASK
         | fifo_ready;
 
+    let (mut endpoint, mut control) = host.take_irq_source().unwrap().into_parts();
     host.enable_completion_irq();
     host.program_fifo_interrupt_mask();
     host.irq.state.begin_request();
@@ -307,17 +319,91 @@ fn fifo_ready_irq_is_masked_until_task_side_drain() {
             .write_volatile(fifo_ready);
     }
 
-    let mut irq = host.irq_endpoint();
-
-    assert_eq!(irq.handle_irq(), Event::ReceiveReady);
+    let IrqCapture::Captured {
+        event,
+        masked: Some(masked),
+    } = endpoint.capture()
+    else {
+        panic!("FIFO-ready capture must return its masked source token")
+    };
+    assert_eq!(event, Event::ReceiveReady);
     assert_eq!(host.irq.state.pending(), fifo_ready);
     let intmask = unsafe { mmio.as_ptr().add(INTMASK_WORD).read_volatile() };
     assert_eq!(intmask, fifo_mask & !fifo_ready);
 
-    host.program_fifo_interrupt_mask();
+    control.rearm(masked).unwrap();
 
     let intmask = unsafe { mmio.as_ptr().add(INTMASK_WORD).read_volatile() };
     assert_eq!(intmask, fifo_mask);
+}
+
+#[test]
+fn stale_fifo_rearm_cannot_cross_activation_generation() {
+    let mut mmio = [0u32; 256];
+    let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+    let mut host = unsafe { DwMmc::new(base) };
+    const MINTSTS_WORD: usize = 16;
+    let (mut endpoint, control) = host.take_irq_source().unwrap().into_parts();
+    host.enable_completion_irq();
+    host.program_fifo_interrupt_mask();
+    host.irq.state.begin_request();
+    unsafe {
+        mmio.as_mut_ptr()
+            .add(MINTSTS_WORD)
+            .write_volatile(crate::DWMMC_INT_RXDR);
+    }
+    let IrqCapture::Captured {
+        masked: Some(stale),
+        ..
+    } = endpoint.capture()
+    else {
+        panic!("FIFO-ready capture must return a token")
+    };
+    let first_generation = stale.generation();
+
+    host.disable_completion_irq();
+    drop(endpoint);
+    drop(control);
+    let (endpoint, mut control) = host
+        .take_irq_source()
+        .expect("a synchronized source must be reusable for runtime")
+        .into_parts();
+    host.enable_completion_irq();
+    let second_generation = host.irq.state.source_generation().unwrap();
+
+    assert!(second_generation.get() > first_generation.get());
+    assert!(matches!(
+        control.rearm(stale),
+        Err(sdmmc_protocol::sdio::host::SdioIrqControlError::StaleGeneration { .. })
+    ));
+    drop(endpoint);
+}
+
+#[test]
+fn containment_masks_exact_configured_sources_and_token_is_single_use() {
+    let mut mmio = [0u32; 256];
+    let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+    let mut host = unsafe { DwMmc::new(base) };
+    const CTRL_WORD: usize = 0;
+    const INTMASK_WORD: usize = 9;
+    let expected = crate::DWMMC_INT_DATA_TRANSFER_OVER
+        | crate::DWMMC_INT_COMMAND_DONE
+        | crate::DWMMC_INT_ERROR_MASK;
+    let (mut endpoint, mut control) = host.take_irq_source().unwrap().into_parts();
+    host.enable_completion_irq();
+
+    let masked = endpoint.contain(ContainmentCause::PublicationFull).unwrap();
+    assert_eq!(masked.bitmap().get(), u64::from(expected));
+    assert_eq!(mmio[INTMASK_WORD], 0);
+    assert!(!crate::regs::Ctrl::from_bits(mmio[CTRL_WORD]).int_enable());
+
+    control.rearm(masked).unwrap();
+    assert_eq!(mmio[INTMASK_WORD], expected);
+    assert!(crate::regs::Ctrl::from_bits(mmio[CTRL_WORD]).int_enable());
+    assert!(matches!(
+        control.rearm(masked),
+        Err(sdmmc_protocol::sdio::host::SdioIrqControlError::SourceNotMasked { .. })
+    ));
 }
 
 #[test]

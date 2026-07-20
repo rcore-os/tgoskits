@@ -43,6 +43,11 @@ pub enum OnProbeError {
     Fdt(String),
     #[error("unsupported probe backend: {0}")]
     Unsupported(&'static str),
+    /// The driver took exclusive ownership of the probed device but could not
+    /// publish it. The probe framework must not offer that device to another
+    /// driver because hardware-visible resources may remain quarantined.
+    #[error("claimed device failed terminally: {0}")]
+    Claimed(Box<dyn Error>),
 }
 
 impl From<FdtError> for OnProbeError {
@@ -54,5 +59,15 @@ impl From<FdtError> for OnProbeError {
 impl OnProbeError {
     pub fn other(msg: impl AsRef<str>) -> Self {
         Self::Other(msg.as_ref().to_string().into())
+    }
+
+    /// Creates a terminal failure for a device whose owner was consumed.
+    pub fn claimed(msg: impl AsRef<str>) -> Self {
+        Self::Claimed(msg.as_ref().to_string().into())
+    }
+
+    /// Returns whether probing must stop because the device is already owned.
+    pub const fn is_claimed(&self) -> bool {
+        matches!(self, Self::Claimed(_))
     }
 }

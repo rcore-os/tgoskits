@@ -6,17 +6,13 @@ use ax_kspin::{IrqGuard, PreemptGuard};
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
     CpuId, CpuIpiTarget, CpuMask, DetachedIrqAction, HwIrq, IpiSendStatus, IrqAffinity, IrqContext,
-    IrqContinuationSlot, IrqContinuationToken, IrqContinuationWake, IrqDomainId, IrqDrainToken,
-    IrqDrainWake, IrqError, IrqExecution, IrqHandle, IrqId, IrqOps, IrqOutcome, IrqRequest,
-    IrqReturn, IrqScope, IrqSource, IrqStatus, ReattachIrqActionError, Registry, ShareMode,
+    IrqDomainId, IrqDrainToken, IrqDrainWake, IrqError, IrqExecution, IrqHandle, IrqId,
+    IrqLineBinding, IrqLineControl, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource,
+    IrqStatus, PreparedIrqLine, ReattachIrqActionError, Registry, ReleasedIrqLineProof, ShareMode,
     TrapVector,
 };
 use spin::Once;
 
-#[cfg(target_arch = "loongarch64")]
-pub mod loongarch64_hv;
-#[cfg(target_arch = "loongarch64")]
-pub use loongarch64_hv::LoongArchHvIrqIf;
 #[cfg(target_arch = "riscv64")]
 pub mod riscv64_hv;
 #[cfg(target_arch = "riscv64")]
@@ -87,9 +83,9 @@ static RUN_ON_CPU_SYNC: AtomicUsize = AtomicUsize::new(0);
 /// # Safety
 ///
 /// The installed function must execute `f(arg)` synchronously on exactly the
-/// requested logical CPU with local IRQs disabled. On every return path,
-/// including timeout and error paths, it must guarantee that `f` cannot begin
-/// or continue later and that neither `f` nor `arg` is retained. The
+/// requested logical CPU with local IRQs disabled. `Ok(())` means the callback
+/// completed exactly once. Every error means the callback never began and can
+/// never begin later; neither `f` nor `arg` may be retained. The
 /// implementation and all state it uses must remain valid until shutdown.
 /// Installation must complete before IRQ consumers become reachable.
 ///
@@ -185,24 +181,21 @@ unsafe impl IrqOps for PlatIrqOps {
         result
     }
 
-    fn set_enabled(&self, irq: IrqId, _cpu: Option<CpuId>, enabled: bool) -> Result<(), IrqError> {
-        set_enable(irq, enabled)
+    fn prepare_line(
+        &self,
+        irq: IrqId,
+        scope: IrqScope,
+        affinity: IrqAffinity,
+    ) -> Result<PreparedIrqLine, IrqError> {
+        ax_crate_interface::call_interface!(IrqIf::prepare_line, irq, scope, affinity)
     }
 
-    fn set_affinity(&self, irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError> {
-        set_affinity(irq, affinity)
+    fn set_line_enabled(&self, binding: IrqLineBinding, cpu: Option<CpuId>, enabled: bool) {
+        ax_crate_interface::call_interface!(IrqIf::set_line_enabled, binding, cpu, enabled)
     }
 
-    fn is_enabled(&self, _irq: IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-        Err(IrqError::Unsupported)
-    }
-
-    fn is_pending(&self, _irq: IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-        Err(IrqError::Unsupported)
-    }
-
-    fn is_in_service(&self, _irq: IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-        Err(IrqError::Unsupported)
+    fn release_line(&self, binding: IrqLineBinding) -> Result<(), IrqError> {
+        ax_crate_interface::call_interface!(IrqIf::release_line, binding)
     }
 
     fn relax(&self) {
@@ -288,6 +281,18 @@ pub fn detach_irq_action(handle: IrqHandle) -> Result<DetachedIrqAction, IrqErro
     registry().detach_action(handle)
 }
 
+/// Detaches the sole disabled action and releases its controller line.
+///
+/// # Errors
+///
+/// Returns an IRQ lifecycle or platform release error. Every failure leaves
+/// the original handle, action, and prepared binding usable.
+pub fn detach_irq_action_and_release_line(
+    handle: IrqHandle,
+) -> Result<(DetachedIrqAction, ReleasedIrqLineProof), IrqError> {
+    registry().detach_action_and_release_line(handle)
+}
+
 /// Re-registers a detached action under a fresh, disabled handle.
 ///
 /// # Errors
@@ -308,17 +313,21 @@ pub fn disable_irq(handle: IrqHandle) -> Result<(), IrqError> {
     registry().disable(handle)
 }
 
-/// Releases an action-owned emergency line quench after its device source is masked.
+/// Acquires fail-closed backing-line containment for an action.
 ///
-/// The action remains disabled. On a shared descriptor, enabled peer actions
-/// regain the backing line only after every quench owner has released it.
-pub fn release_irq_quench(handle: IrqHandle) -> Result<(), IrqError> {
-    registry().release_quench(handle)
+/// This task-context operation is used when device activation cannot prove
+/// that its exact interrupt source is masked. Recovery must establish that
+/// proof before calling [`release_irq_quench`].
+pub fn quench_irq(handle: IrqHandle) -> Result<(), IrqError> {
+    registry().quench(handle)
 }
 
-/// Completes one generation-bearing ordinary IRQ continuation.
-pub fn finish_irq_continuation(token: IrqContinuationToken) -> Result<(), IrqError> {
-    registry().finish_continuation(token)
+/// Releases an action-owned emergency line quench after its device source is masked.
+///
+/// The action remains enabled. On a shared descriptor, every action regains the
+/// backing line only after every quench owner has released it.
+pub fn release_irq_quench(handle: IrqHandle) -> Result<(), IrqError> {
+    registry().release_quench(handle)
 }
 
 /// Disables one action and wakes a fixed target after only that action drains.
@@ -358,24 +367,27 @@ pub fn prepare_irq_context(vector: TrapVector) {
     ax_crate_interface::call_interface!(IrqIf::prepare, vector)
 }
 
-/// Dispatches actions registered in the dynamic IRQ framework on `cpu`.
-pub fn dispatch_irq_on(irq: IrqId, cpu: CpuId) -> IrqOutcome {
+/// Dispatches a claimed IRQ and completes the platform controller claim.
+///
+/// `complete_claim` is executed after every shared action returns and before
+/// the framework may reopen a fail-closed line. It must perform the matching EOI
+/// without allocation, blocking, arbitrary callbacks, or panic.
+pub fn dispatch_claimed_irq_on(
+    irq: IrqId,
+    cpu: CpuId,
+    complete_claim: impl FnOnce(),
+) -> IrqOutcome {
     let context_bit = irq_context_bit(cpu);
     let was_in_irq = context_bit
         .map(|bit| IRQ_CONTEXT_CPUS.fetch_or(bit, Ordering::AcqRel) & bit != 0)
         .unwrap_or(false);
-    let outcome = registry().dispatch(irq, cpu);
+    let outcome = registry().dispatch(irq, cpu, complete_claim);
     if let Some(bit) = context_bit
         && !was_in_irq
     {
         IRQ_CONTEXT_CPUS.fetch_and(!bit, Ordering::AcqRel);
     }
     outcome
-}
-
-/// Dispatches actions registered in the dynamic IRQ framework.
-pub fn dispatch_irq(irq: IrqId) -> IrqOutcome {
-    dispatch_irq_on(irq, PlatIrqOps.current_cpu())
 }
 
 fn in_irq_context_on(cpu: CpuId) -> bool {
@@ -414,17 +426,26 @@ pub trait IrqIf {
     #[cfg(feature = "smp")]
     fn init_secondary_boot_irqs(cpu_id: usize) -> Result<(), IrqError>;
 
-    /// Enables or disables the given IRQ.
-    fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError>;
+    /// Resolves and validates a stable IRQ-chip line capability.
+    fn prepare_line(
+        irq: IrqId,
+        scope: IrqScope,
+        affinity: IrqAffinity,
+    ) -> Result<PreparedIrqLine, IrqError>;
 
-    /// Routes a global IRQ to a fixed CPU when supported.
-    fn set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError>;
+    /// Applies an infallible live transition to a prepared IRQ-chip line.
+    fn set_line_enabled(binding: IrqLineBinding, cpu: Option<CpuId>, enabled: bool);
+
+    /// Releases one exact prepared IRQ-chip line generation.
+    fn release_line(binding: IrqLineBinding) -> Result<(), IrqError>;
 
     /// Handles the IRQ.
     ///
     /// It is called by the common interrupt handler. Platform implementations
-    /// should claim/ack the controller interrupt, dispatch the real IRQ through
-    /// [`dispatch_irq`], and perform the matching EOI/complete operation.
+    /// should claim/ack the controller interrupt, then move the active claim
+    /// into [`dispatch_claimed_irq_on`]'s completion closure. This makes EOI a
+    /// framework-owned boundary: a masked line cannot reopen between shared
+    /// handler return and controller completion.
     ///
     /// Returns the "real" IRQ number. On some platforms, this may differ from
     /// the input `irq` number, for example on AArch64 the input `irq` is
@@ -456,6 +477,7 @@ pub trait IrqIf {
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     use super::*;
     use crate::impl_plat_interface;
@@ -465,9 +487,10 @@ mod tests {
 
     static ENABLE_CALLS: [AtomicUsize; TEST_IRQ_COUNT] =
         [const { AtomicUsize::new(0) }; TEST_IRQ_COUNT];
-    static FAIL_ENABLE_IRQ: AtomicUsize = AtomicUsize::new(NO_FAILING_IRQ);
+    static FAIL_PREPARE_IRQ: AtomicUsize = AtomicUsize::new(NO_FAILING_IRQ);
     static TIMER_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static IPI_HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_CPU_ZERO: Mutex<()> = Mutex::new(());
 
     fn enable_calls(irq: IrqId) -> usize {
         ENABLE_CALLS[irq.hwirq.0 as usize].load(Ordering::Relaxed)
@@ -492,18 +515,26 @@ mod tests {
             Ok(())
         }
 
-        fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
-            if !enabled {
-                return Ok(());
-            }
-            ENABLE_CALLS[irq.hwirq.0 as usize].fetch_add(1, Ordering::Relaxed);
-            if FAIL_ENABLE_IRQ.load(Ordering::Relaxed) == irq.hwirq.0 as usize {
+        fn prepare_line(
+            irq: IrqId,
+            _scope: IrqScope,
+            _affinity: IrqAffinity,
+        ) -> Result<PreparedIrqLine, IrqError> {
+            if FAIL_PREPARE_IRQ.load(Ordering::Relaxed) == irq.hwirq.0 as usize {
                 return Err(IrqError::Controller);
             }
-            Ok(())
+            IrqLineBinding::new(irq.hwirq.0, 1)
+                .map(|binding| PreparedIrqLine::new(binding, IrqLineControl::Maskable))
+                .ok_or(IrqError::InvalidIrq)
         }
 
-        fn set_affinity(_irq: IrqId, _affinity: IrqAffinity) -> Result<(), IrqError> {
+        fn set_line_enabled(binding: IrqLineBinding, _cpu: Option<CpuId>, enabled: bool) {
+            if enabled {
+                ENABLE_CALLS[binding.slot() as usize].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        fn release_line(_binding: IrqLineBinding) -> Result<(), IrqError> {
             Err(IrqError::Unsupported)
         }
 
@@ -534,6 +565,7 @@ mod tests {
 
     #[test]
     fn request_irq_auto_enable_no_does_not_enable_line() {
+        let _cpu = TEST_CPU_ZERO.lock().unwrap();
         let irq = IrqId::new(IrqDomainId(0xff), HwIrq(1));
         let request = IrqRequest::new(|_| IrqReturn::Handled).auto_enable(AutoEnable::No);
 
@@ -547,18 +579,19 @@ mod tests {
     }
 
     #[test]
-    fn request_irq_rolls_back_action_when_auto_enable_fails() {
+    fn request_irq_rolls_back_action_when_line_preparation_fails() {
+        let _cpu = TEST_CPU_ZERO.lock().unwrap();
         let irq = IrqId::new(IrqDomainId(0xff), HwIrq(2));
         let request = || IrqRequest::new(|_| IrqReturn::Handled).auto_enable(AutoEnable::Yes);
 
         reset_enable_calls(irq);
-        FAIL_ENABLE_IRQ.store(irq.hwirq.0 as usize, Ordering::Relaxed);
+        FAIL_PREPARE_IRQ.store(irq.hwirq.0 as usize, Ordering::Relaxed);
         let err = request_irq(irq, request()).unwrap_err();
 
         assert_eq!(err, IrqError::Controller);
-        assert_eq!(enable_calls(irq), 1);
+        assert_eq!(enable_calls(irq), 0);
 
-        FAIL_ENABLE_IRQ.store(NO_FAILING_IRQ, Ordering::Relaxed);
+        FAIL_PREPARE_IRQ.store(NO_FAILING_IRQ, Ordering::Relaxed);
         let handle = request_irq(irq, request()).unwrap();
         assert!(irq_status(handle).unwrap().action_enabled);
 
@@ -567,10 +600,11 @@ mod tests {
 
     #[test]
     fn detached_action_round_trips_through_the_platform_facade() {
+        let _cpu = TEST_CPU_ZERO.lock().unwrap();
         let irq = IrqId::new(IrqDomainId(0xff), HwIrq(3));
         let request = IrqRequest::new(|_| IrqReturn::Handled).auto_enable(AutoEnable::No);
 
-        FAIL_ENABLE_IRQ.store(NO_FAILING_IRQ, Ordering::Relaxed);
+        FAIL_PREPARE_IRQ.store(NO_FAILING_IRQ, Ordering::Relaxed);
         let handle = request_irq(irq, request).unwrap();
         let detached = detach_irq_action(handle).unwrap();
         assert_eq!(detached.irq(), irq);
@@ -582,6 +616,7 @@ mod tests {
 
     #[test]
     fn shared_convenience_request_enables_timer_action_once_before_dispatch() {
+        let _cpu = TEST_CPU_ZERO.lock().unwrap();
         let irq = IrqId::new(IrqDomainId(0xff), HwIrq(4));
         reset_enable_calls(irq);
         TIMER_HANDLER_CALLS.store(0, Ordering::Relaxed);
@@ -593,7 +628,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(enable_calls(irq), 1);
-        let outcome = dispatch_irq_on(irq, CpuId(0));
+        let outcome = dispatch_claimed_irq_on(irq, CpuId(0), || {});
         assert_eq!(outcome.called, 1);
         assert!(outcome.handled);
         assert_eq!(TIMER_HANDLER_CALLS.load(Ordering::Relaxed), 1);
@@ -603,6 +638,7 @@ mod tests {
 
     #[test]
     fn percpu_convenience_request_enables_ipi_action_once_before_dispatch() {
+        let _cpu = TEST_CPU_ZERO.lock().unwrap();
         let irq = IrqId::new(IrqDomainId(0xff), HwIrq(5));
         reset_enable_calls(irq);
         IPI_HANDLER_CALLS.store(0, Ordering::Relaxed);
@@ -615,11 +651,26 @@ mod tests {
         .unwrap();
 
         assert_eq!(enable_calls(irq), 1);
-        let outcome = dispatch_irq_on(irq, CpuId(0));
+        let outcome = dispatch_claimed_irq_on(irq, CpuId(0), || {});
         assert_eq!(outcome.called, 1);
         assert!(outcome.handled);
         assert_eq!(IPI_HANDLER_CALLS.load(Ordering::Relaxed), 1);
 
         free_irq(handle).unwrap();
+    }
+
+    #[test]
+    fn claimed_dispatch_completes_an_unhandled_controller_claim_once() {
+        let _cpu = TEST_CPU_ZERO.lock().unwrap();
+        let irq = IrqId::new(IrqDomainId(0xff), HwIrq(6));
+        let completions = AtomicUsize::new(0);
+
+        let outcome = dispatch_claimed_irq_on(irq, CpuId(0), || {
+            completions.fetch_add(1, Ordering::Relaxed);
+        });
+
+        assert_eq!(outcome.called, 0);
+        assert!(!outcome.handled);
+        assert_eq!(completions.load(Ordering::Relaxed), 1);
     }
 }

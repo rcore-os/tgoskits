@@ -24,6 +24,9 @@
   request between publication and hardware submission.
 - Bind DMA reclaim to the controller cookie and a proof epoch newer than the
   queue publication epoch, rejecting stale or repeated lifecycle proofs.
+- Keep fallible queue shutdown separate from request ownership publication;
+  accepted AHCI buffers return only through IRQ completion or proof-gated DMA
+  reclaim.
 - Track initialization and normal-I/O IRQ endpoint liveness separately, reject
   controller unmasking after an endpoint is dropped, and keep the first hardware
   command behind a live initialization endpoint rather than a historical

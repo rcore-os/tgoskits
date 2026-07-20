@@ -122,6 +122,26 @@ impl LocalExecutor {
         F: Future,
         P: FnMut(&ExecutorParkCondition<'_>),
     {
+        match self.try_run(future, |condition| {
+            park(condition);
+            Ok::<(), core::convert::Infallible>(())
+        }) {
+            Ok(output) => output,
+            Err(never) => match never {},
+        }
+    }
+
+    /// Runs one borrowing future until completion or a fallible OS park aborts.
+    ///
+    /// An error returned by `park` cancels and drops the root future on this
+    /// owner thread, removes any queued self-wake, and reclaims the root header
+    /// before returning. Device maintenance owners use this to stop a future
+    /// when IRQ service or source rearm can no longer make safe progress.
+    pub fn try_run<F, P, E>(&self, future: F, mut park: P) -> Result<F::Output, E>
+    where
+        F: Future,
+        P: FnMut(&ExecutorParkCondition<'_>) -> Result<(), E>,
+    {
         self.assert_owner_context();
         let output = RefCell::new(None);
         let root = async {
@@ -150,7 +170,12 @@ impl LocalExecutor {
                 continue;
             };
             let condition = ExecutorParkCondition { executor: self };
-            park(&condition);
+            if let Err(error) = park(&condition) {
+                drop(token);
+                drop(guard);
+                let _reclaimed = self.reclaim_completed(DEFAULT_RECLAIM_BATCH);
+                return Err(error);
+            }
             let _owner_work = token.finish();
             unsafe {
                 // Returning from the OS park path is also a reason to recheck a
@@ -165,7 +190,7 @@ impl LocalExecutor {
             .unwrap_or_else(|| unreachable!("completed root future must publish output"));
         drop(guard);
         let _reclaimed = self.reclaim_completed(DEFAULT_RECLAIM_BATCH);
-        result
+        Ok(result)
     }
 
     /// Polls at most 64 ready coroutines from one queue snapshot.

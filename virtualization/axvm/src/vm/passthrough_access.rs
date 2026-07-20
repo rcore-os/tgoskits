@@ -8,13 +8,9 @@ use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use super::AxVM;
-use crate::{AxVmResult, ax_err};
 #[cfg(any(feature = "fs", feature = "host-fs"))]
-use crate::{
-    VmStatus,
-    config::VMInterruptMode,
-    layout::{VmRegionKind, VmStage2Mapping},
-};
+use crate::layout::{VmRegionKind, VmStage2Mapping};
+use crate::{AxVmResult, VmStatus, ax_err, config::VMInterruptMode};
 
 /// Final host-physical interval reachable through one VM's stage-2 mappings.
 #[cfg(any(feature = "fs", feature = "host-fs"))]
@@ -136,7 +132,6 @@ impl AxVM {
     /// This is deliberately broader than stage-2 memory access: x86 port
     /// forwarding and AArch64 SPI routing also need an explicit teardown owner
     /// even when no host block-controller range was selected.
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     pub(crate) fn uses_passthrough_resources(&self) -> AxVmResult<bool> {
         self.with_resources(|resources| {
             let config = resources.config();
@@ -147,7 +142,6 @@ impl AxVM {
         })
     }
 
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     pub(crate) fn passthrough_interrupt_mode(&self) -> AxVmResult<VMInterruptMode> {
         self.with_resources(|resources| Ok(resources.config().interrupt_mode()))
     }
@@ -166,9 +160,28 @@ impl AxVM {
         })
     }
 
-    /// Joins every stopped vCPU task before route state can be revoked.
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
+    /// Verifies that guest execution stopped before route revocation begins.
+    ///
+    /// A vCPU that registered passthrough IRQ actions deliberately remains
+    /// alive in its owner-maintenance phase at this point. The manager must
+    /// first request architecture route close, then call
+    /// [`Self::join_after_passthrough_irq_revocation`].
     pub(crate) fn quiesce_for_passthrough_revocation(&self) -> AxVmResult {
+        match self.status() {
+            VmStatus::Ready => Ok(()),
+            VmStatus::Stopped => Ok(()),
+            status => ax_err!(
+                BadState,
+                format!(
+                    "VM[{}] cannot revoke passthrough access while {status:?}",
+                    self.id()
+                )
+            ),
+        }
+    }
+
+    /// Joins vCPU tasks after their architecture IRQ actions are closed.
+    pub(crate) fn join_after_passthrough_irq_revocation(&self) -> AxVmResult {
         match self.status() {
             VmStatus::Ready => Ok(()),
             VmStatus::Stopped => {
@@ -180,7 +193,7 @@ impl AxVM {
             status => ax_err!(
                 BadState,
                 format!(
-                    "VM[{}] cannot revoke passthrough access while {status:?}",
+                    "VM[{}] cannot join its IRQ owner while {status:?}",
                     self.id()
                 )
             ),

@@ -279,6 +279,41 @@ fn run_supports_a_borrowing_non_send_future_without_leaking_its_header() {
 }
 
 #[test]
+fn try_run_park_error_cancels_self_woken_future_and_keeps_executor_reusable() {
+    let fixture = executor();
+    let executor = fixture.local();
+    let polls = Rc::new(Cell::new(0));
+    let drops = Rc::new(Cell::new(0));
+
+    let result = executor.try_run(
+        SelfWakeThenPending {
+            polls: Rc::clone(&polls),
+            drops: Rc::clone(&drops),
+        },
+        |_| Err("device owner stopped"),
+    );
+
+    assert_eq!(result, Err("device owner stopped"));
+    assert_eq!(polls.get(), 2, "the queued self-wake must be consumed once");
+    assert_eq!(
+        drops.get(),
+        1,
+        "park failure must drop the future exactly once"
+    );
+    assert!(!executor.has_ready(), "cancel must remove queued root work");
+    assert_eq!(
+        executor.reclaim_completed(1),
+        0,
+        "try_run reclaims its root"
+    );
+
+    let next = executor.try_run(async { 17 }, |_| -> Result<(), &str> {
+        panic!("a ready replacement future must not park")
+    });
+    assert_eq!(next, Ok(17), "an aborted root must not poison the executor");
+}
+
+#[test]
 fn borrowing_root_late_waker_is_safe_after_run_returns() {
     let fixture = executor();
     let executor = fixture.local();
@@ -484,6 +519,30 @@ impl Drop for StoreWakerThenReady {
 
 struct PendingDrop {
     drop_count: Rc<Cell<usize>>,
+}
+
+struct SelfWakeThenPending {
+    polls: Rc<Cell<usize>>,
+    drops: Rc<Cell<usize>>,
+}
+
+impl Future for SelfWakeThenPending {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let polls = self.polls.get() + 1;
+        self.polls.set(polls);
+        if polls == 1 {
+            context.waker().wake_by_ref();
+        }
+        Poll::Pending
+    }
+}
+
+impl Drop for SelfWakeThenPending {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
 }
 
 struct PanickingPendingDrop {

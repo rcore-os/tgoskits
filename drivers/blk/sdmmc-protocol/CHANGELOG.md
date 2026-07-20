@@ -13,11 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and publish the proven bus width and clock mode with the initialized card.
 - Replace the RDIF shared-card core's unbounded atomic spin with one-shot
   mutable borrowing. Contended submits now return `Retry` with exact request
-  ownership, while IRQ/lifecycle workers retain their event and return typed
-  deferred progress for a later bounded pass.
+  ownership, while maintenance-owner re-entrancy is a typed failure instead of
+  an event retry.
 
 ### Changed
 
+- Expose a callback-free `HostEventSummary` containing acknowledged status,
+  queue-service, and SDIO card-function facts for nested portable drivers.
 - Remove the unused synchronous SPI block backend. Hardware block I/O is now
   exposed only through the native host/RDIF path, where acknowledged IRQ events
   advance normal requests and absolute deadlines are limited to initialization
@@ -29,18 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so recovery and guest-return reconstruction keep their hardware resources.
 - Add a typed, non-blocking interrupt-controller lifecycle and defer active
   request/DMA reclamation until the host proves controller quiescence.
-- Route deferred controller IRQs during recovery and reinitialization through
-  the host's destructive-ack endpoint before exposing them to lifecycle state,
-  and fail recovery immediately if that owned-source acknowledgement fails.
-- Distinguish a contended retry, a non-empty acknowledged hardware snapshot,
-  and a retry that finds no device source; an empty retry no longer advances
-  initialization, recovery, or request completion.
-- Resolve a deferred level source before checking queue request state. A
-  non-empty snapshot that cannot be bound to the active request now enters
-  typed recovery instead of leaving the device source asserted or silently
-  discarding generation-ambiguous state.
+- Split each controller IRQ source into a hard-IRQ-owned capture endpoint and
+  a maintenance-owner rearm endpoint. Destructive status is read/W1C only by
+  capture; generation-checked masked sources are reopened only after their
+  stable event has been consumed.
+- Acquire the ready-device IRQ source lazily from `Interface::take_irq_source`
+  after the initialization action has been closed, rather than permanently
+  caching a failed acquisition while the initialization lease is still live.
+- Remove task-context IRQ acknowledgement retries. Capture contention is now a
+  controller ownership defect that must precisely contain the device source or
+  fail closed at the OS IRQ action/line.
 - Preallocate optional Host2 recovery storage during activation so runtime
   recovery does not allocate.
+- Remove the completion sink from fallible queue shutdown. Accepted request
+  ownership now returns only through acknowledged IRQ service or proof-gated
+  controller reclaim.
 - Replace poll-count card initialization with explicit controller-IRQ and
   absolute monotonic schedules, and add pinned `OwnedSdioInit` plus the RDIF
   `StagedBlockDevice` discovery-to-ready adapter.

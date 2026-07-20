@@ -1,20 +1,19 @@
 //! Logical block-device views retained by one controller owner.
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
-use core::{
-    mem::ManuallyDrop,
-    pin::Pin,
-    sync::atomic::{AtomicBool, AtomicUsize},
-};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ax_kspin::SpinNoPreempt;
 use rdif_block::{
-    CompletedRequest, CompletionSink, DeviceInfo, LogicalDeviceId, LogicalDeviceParts,
-    OwnedRequest, QueueHandle, QueueInfo, QueueLimits,
+    DeviceInfo, LogicalDeviceId, LogicalDeviceParts, QueueHandle, QueueInfo, QueueLimits,
 };
 
 use super::BlockController;
-use crate::block::{BlockIoStats, BlockServiceError, HardwareQueue, statistics::BlockIoCounters};
+use crate::block::{
+    BlockIoStats, BlockServiceError, HardwareQueue,
+    quarantine::{QueueQuarantineReservation, quarantine_live_queue},
+    statistics::BlockIoCounters,
+};
 
 /// Filesystem-facing identity and I/O capability for exactly one logical disk.
 #[derive(Clone)]
@@ -106,7 +105,7 @@ impl RuntimeBlockDevice {
 
 pub(in crate::block) enum RuntimeQueue {
     Inline(Box<InlineQueue>),
-    Interrupt(Pin<&'static HardwareQueue>),
+    Interrupt(Arc<HardwareQueue>),
 }
 
 impl RuntimeQueue {
@@ -117,10 +116,10 @@ impl RuntimeQueue {
         }
     }
 
-    pub(super) fn interrupt_queue(&self) -> Option<Pin<&'static HardwareQueue>> {
+    pub(super) fn interrupt_queue(&self) -> Option<&Arc<HardwareQueue>> {
         match self {
             Self::Inline(_) => None,
-            Self::Interrupt(queue) => Some(*queue),
+            Self::Interrupt(queue) => Some(queue),
         }
     }
 }
@@ -129,55 +128,75 @@ pub(in crate::block) struct InlineQueue {
     pub(in crate::block) info: QueueInfo,
     // Preemption exclusion prevents CPU migration while serializing submit
     // versus teardown without masking IRQs across an inline memory copy.
-    pub(in crate::block) queue: SpinNoPreempt<QueueHandle>,
+    pub(in crate::block) queue: SpinNoPreempt<Option<QueueHandle>>,
+    quarantine_reservation: SpinNoPreempt<Option<QueueQuarantineReservation>>,
     pub(in crate::block) available: AtomicBool,
-    rejected_owners: SpinNoPreempt<RejectedOwnerQuarantine>,
 }
 
 impl InlineQueue {
-    pub(super) fn new(queue: QueueHandle) -> Self {
+    pub(super) fn new(
+        queue: QueueHandle,
+        quarantine_reservation: QueueQuarantineReservation,
+    ) -> Self {
         Self {
             info: queue.info(),
-            queue: SpinNoPreempt::new(queue),
+            queue: SpinNoPreempt::new(Some(queue)),
+            quarantine_reservation: SpinNoPreempt::new(Some(quarantine_reservation)),
             available: AtomicBool::new(true),
-            rejected_owners: SpinNoPreempt::new(RejectedOwnerQuarantine::new()),
         }
-    }
-
-    pub(in crate::block) fn retain_rejected_completion(&self, completion: CompletedRequest) {
-        self.rejected_owners
-            .lock()
-            .retain(RejectedInlineOwner::Completion(completion));
-    }
-
-    pub(in crate::block) fn retain_rejected_request(&self, request: OwnedRequest) {
-        self.rejected_owners
-            .lock()
-            .retain(RejectedInlineOwner::Request(request));
     }
 
     pub(in crate::block) fn shutdown_after_contract_violation(
         &self,
     ) -> Result<(), rdif_block::BlkError> {
-        // Lock order is queue -> rejected_owners. Submission never holds the
-        // quarantine while entering the driver, so teardown cannot deadlock a
-        // producer that observed availability before the poison publication.
-        let mut queue = self.queue.lock();
-        let mut rejected_owners = self.rejected_owners.lock();
-        queue.shutdown(&mut *rejected_owners)
+        let queue = self.queue.lock().take();
+        let Some(queue) = queue else {
+            return Ok(());
+        };
+        let reservation = self
+            .quarantine_reservation
+            .lock()
+            .take()
+            .expect("live inline queue must retain its quarantine reservation");
+        crate::block::quarantine::close_or_quarantine(queue, reservation)
     }
 
     pub(super) fn shutdown_unpublished(&self) -> Result<(), rdif_block::BlkError> {
         self.shutdown_after_contract_violation()
     }
+
+    pub(super) fn close_on_owner(&self) -> Result<(), rdif_block::BlkError> {
+        self.available.store(false, Ordering::Release);
+        self.shutdown_after_contract_violation()
+    }
+
+    pub(super) fn quarantine_on_owner(&self, reason: rdif_block::BlkError) {
+        self.available.store(false, Ordering::Release);
+        if let Some(queue) = self.queue.lock().take() {
+            let reservation = self
+                .quarantine_reservation
+                .lock()
+                .take()
+                .expect("live inline queue must retain its quarantine reservation");
+            crate::block::quarantine::quarantine_live_queue(queue, reason, reservation);
+        }
+    }
 }
 
 impl Drop for InlineQueue {
     fn drop(&mut self) {
-        let _ = self
-            .queue
-            .get_mut()
-            .shutdown(self.rejected_owners.get_mut());
+        if let Some(queue) = self.queue.get_mut().take() {
+            error!(
+                "inline block queue {} dropped before explicit owner close",
+                self.info.id
+            );
+            let reservation = self
+                .quarantine_reservation
+                .get_mut()
+                .take()
+                .expect("a live inline queue must retain its quarantine reservation");
+            quarantine_live_queue(queue, rdif_block::BlkError::Quarantined, reservation);
+        }
     }
 }
 
@@ -206,59 +225,5 @@ impl BlockController {
 
     pub(super) fn runtime_queues(&self) -> impl Iterator<Item = &RuntimeQueue> {
         self.devices.iter().flat_map(|device| device.queues.iter())
-    }
-}
-
-const INLINE_REJECTED_OWNER_CAPACITY: usize = 2;
-
-enum RejectedInlineOwner {
-    Request(OwnedRequest),
-    Completion(CompletedRequest),
-}
-
-pub(super) struct RejectedOwnerQuarantine {
-    owners: [Option<ManuallyDrop<RejectedInlineOwner>>; INLINE_REJECTED_OWNER_CAPACITY],
-    len: usize,
-}
-
-impl RejectedOwnerQuarantine {
-    pub(super) const fn new() -> Self {
-        Self {
-            owners: [const { None }; INLINE_REJECTED_OWNER_CAPACITY],
-            len: 0,
-        }
-    }
-
-    fn retain(&mut self, owner: RejectedInlineOwner) {
-        if self.len == self.owners.len() {
-            let _unrepresentable_owner = ManuallyDrop::new(owner);
-            panic!("inline block queue fabricated more than one poison request owner");
-        }
-        self.owners[self.len] = Some(ManuallyDrop::new(owner));
-        self.len += 1;
-    }
-}
-
-impl Drop for RejectedOwnerQuarantine {
-    fn drop(&mut self) {
-        for slot in &mut self.owners[..self.len] {
-            let Some(owner) = slot.take() else {
-                continue;
-            };
-            match ManuallyDrop::into_inner(owner) {
-                RejectedInlineOwner::Request(request) => {
-                    let _shutdown_lifetime_owner = ManuallyDrop::new(request);
-                }
-                RejectedInlineOwner::Completion(completion) => {
-                    let _shutdown_lifetime_owner = ManuallyDrop::new(completion);
-                }
-            }
-        }
-    }
-}
-
-impl CompletionSink for RejectedOwnerQuarantine {
-    fn complete(&mut self, completion: CompletedRequest) {
-        self.retain(RejectedInlineOwner::Completion(completion));
     }
 }

@@ -53,7 +53,16 @@ path.
 
 The IRQ endpoint is the sole owner of runtime interrupt-status reads and W1C
 acknowledgements. It publishes a stable event snapshot; task context advances
-the serialized request only from the corresponding acknowledged event. IDMAC
+the serialized request only from the corresponding acknowledged event. The
+controller exposes one live source lease as `DwMmcIrqEndpoint` plus
+`DwMmcIrqControl`: OS glue registers the endpoint from its CPU-pinned
+maintenance thread and retains the control capability on that same thread.
+After explicit masking and action synchronization, retiring both halves makes
+the source available to the next initialization, recovery, or runtime epoch.
+FIFO-ready capture masks the exact RXDR/TXDR bits before publication; only the
+generation-checked control endpoint may rearm them after service. The portable
+driver never returns a deferred acknowledgement or asks a shared worker to
+retry destructive status capture. IDMAC
 `RI`/`TI` and controller `DATA_OVER` are generation-tagged independently, and a
 DMA request succeeds only after both have been observed. Either arrival order
 is valid, while any IDMAC or controller error wins over a combined completion
@@ -89,6 +98,10 @@ let mut host = unsafe { DwMmc::new(mmio) };
 host.set_reference_clock(50_000_000);
 // Optional DMA capability can be installed here before the protocol layer owns
 // the host.
+let source = host.take_irq_source().expect("unique DWMMC IRQ source");
+let (_capture_endpoint, _owner_control) = source.into_parts();
+// OS glue registers `_capture_endpoint` disabled on this maintenance thread's
+// fixed CPU and retains `_owner_control` before polling initialization.
 
 let card = SdioSdmmc::new_host2_timed(host);
 let mut init = OwnedSdioInit::new(card, CardInitPreference::SdFirst);
@@ -117,8 +130,10 @@ initialization and enabling runtime interrupts.
    to 400 kHz for ID mode.
 3. Pass that rate to `DwMmc::set_reference_clock` so the divider
    programmed by `set_clock` lands on the right frequency.
-4. Install optional capabilities such as `DwMmc::set_dma` before handing the
-   host to the protocol layer.
+4. Install optional capabilities such as `DwMmc::set_dma`, take the unique IRQ
+   source, and register its capture endpoint disabled from the CPU-pinned
+   maintenance thread. Retain the source-control endpoint on that thread;
+   initialization must not issue its first command before registration.
 5. Build `SdioSdmmc::new_host2_timed(host)`, retain it in `OwnedSdioInit`, and drive
    its `InitSchedule` directly or through RDIF `StagedBlockDevice`. The protocol layer
    starts with native `sdio-host2` bus operations for `ResetAll`, `PowerOn`,

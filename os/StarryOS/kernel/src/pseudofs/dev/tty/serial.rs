@@ -1,13 +1,14 @@
 use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
 use core::{
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     time::Duration,
 };
 
 use ax_driver::serial::{
     self as ax_serial, Config, ConfigError, DataBits, EmergencyFlushResult, EmergencyWriteResult,
-    OwnerId, Parity, RxFlag, RxItem, RxQueue, SerialDevice, SerialIrqHandler, SerialIrqOutcome,
-    SerialPort, SerialSoftWork, StopBits, TxQueue,
+    FaultContainment, InterruptMask, IrqCapture, IrqEndpoint, IrqSourceControl, MaskedSource,
+    Parity, RxFlag, RxItem, RxQueue, SerialCore, SerialDevice, SerialIrqEvent, SerialIrqEvents,
+    SerialIrqFault, SerialMaskedService, SerialSoftWork, StopBits, TxQueue,
 };
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
@@ -15,12 +16,18 @@ use ax_runtime::{
     console::{RuntimeOutputFlushResultV1, RuntimeOutputResultV1, RuntimeOutputSinkV1},
     hal::{
         console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
-        irq::{AutoEnable, CpuId, IrqAffinity, IrqHandle, IrqId, IrqRequest, ShareMode},
+        irq::{IrqId, IrqReturn},
     },
+    maintenance::{
+        DeviceMaintenanceHandle, LocalIrqWake, LocalIrqWakeError, LocalOwnerCell,
+        LocalOwnerControl, LocalOwnerIrq, MaintenanceCauses, MaintenanceClosed, MaintenanceError,
+        MaintenanceIrqAction, MaintenancePublishResult, MaintenanceRegistrar, MaintenanceSession,
+        MaintenanceState, MaintenanceThread, spawn_maintenance_domain,
+    },
+    task::WaitQueue,
 };
 use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
-use bitflags::bitflags;
 use rdrive::DeviceId as RDriveDeviceId;
 use spin::LazyLock;
 use starry_process::Process;
@@ -34,23 +41,21 @@ use super::{
         termios::{Termios2, TermiosParity},
     },
 };
-use crate::{pseudofs::DeviceOps, task::future::IrqNotify};
+use crate::pseudofs::DeviceOps;
 
 pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 
 const SERIAL_RX_DRAIN_CHUNK: usize = 256;
 const SERIAL_SYNC_ECHO_LIMIT: usize = 256;
 const SERIAL_EVENT_BATCH_LIMIT: usize = 64;
-
-bitflags! {
-    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-    struct SerialEventBits: u32 {
-        const RX_READY = 1 << 0;
-        const TX_SPACE = 1 << 1;
-        const HANGUP   = 1 << 2;
-        const RESERVICE = 1 << 3;
-    }
-}
+const MAINTENANCE_REGISTERING: u8 = 0;
+const MAINTENANCE_READY: u8 = 1;
+const MAINTENANCE_FAILED: u8 = 2;
+const START_IDLE: u8 = 0;
+const START_REQUESTED: u8 = 1;
+const START_SUCCEEDED: u8 = 2;
+const START_FAILED: u8 = 3;
+const START_RECOVERY_FAILED: u8 = 4;
 
 pub struct SerialTtyEntry {
     number: usize,
@@ -168,26 +173,57 @@ struct SerialBackend {
     tty_name: String,
     rdrive_device_id: RDriveDeviceId,
     number: usize,
-    owner: OwnerId,
-    port: Arc<SerialPort>,
     tx: SpinNoIrq<TxQueue>,
     rx: SpinNoIrq<RxQueue>,
     irq: IrqId,
-    irq_handle: SpinNoIrq<Option<IrqHandle>>,
+    maintenance: SpinNoIrq<Option<DeviceMaintenanceHandle<SerialMaintenanceEvent>>>,
+    maintenance_thread: SpinNoIrq<Option<MaintenanceThread>>,
+    maintenance_state: AtomicU8,
+    maintenance_wait: WaitQueue,
+    irq_state: Arc<SerialIrqState>,
     start_policy: SerialStartPolicy,
     console_handover_prepared: AtomicBool,
     started: AtomicBool,
+    start_state: AtomicU8,
+    start_wait: WaitQueue,
     start_lock: PiMutex<()>,
-    events: SerialEvents,
+    pending_config: SpinNoIrq<Option<Config>>,
+    pending_rearm: SpinNoIrq<Option<MaskedSource>>,
     input_source: Arc<PollSet>,
     output_source: Arc<PollSet>,
-    tx_notify: IrqNotify,
+    tx_progress: AtomicU64,
+    tx_wait: WaitQueue,
+    drain_requested: AtomicBool,
+    drain_complete: AtomicBool,
     output_lock: PiMutex<()>,
 }
 
-struct SerialEvents {
-    pending: AtomicU32,
-    notify: IrqNotify,
+#[derive(Clone, Copy, Debug)]
+enum SerialMaintenanceEvent {
+    Irq {
+        event: SerialIrqEvent,
+        masked: Option<MaskedSource>,
+    },
+    Fault {
+        reason: SerialIrqFault,
+        containment: FaultContainment,
+    },
+}
+
+struct SerialIrqState {
+    publication_failed: AtomicBool,
+    action_disabled: AtomicBool,
+    line_quenched: AtomicBool,
+}
+
+impl SerialIrqState {
+    const fn new() -> Self {
+        Self {
+            publication_failed: AtomicBool::new(false),
+            action_disabled: AtomicBool::new(false),
+            line_quenched: AtomicBool::new(false),
+        }
+    }
 }
 
 unsafe extern "C" fn runtime_normal_output(
@@ -217,16 +253,7 @@ unsafe extern "C" fn runtime_emergency_output(
     let backend = unsafe { &*(context as *const SerialBackend) };
     let bytes = unsafe { core::slice::from_raw_parts(bytes, len) };
 
-    // The portable owner gate accepts any CPU only while the UART is idle and
-    // rejects concurrent or recursive access. Excluding local IRQ delivery
-    // closes the same-CPU normal-owner reentry window without entering
-    // LockRuntime, the scheduler, or the normal TX queue.
-    let restore_irqs = ax_runtime::hal::asm::irqs_enabled();
-    ax_runtime::hal::asm::disable_irqs();
-    let result = backend.port.try_write_emergency(bytes);
-    if restore_irqs {
-        ax_runtime::hal::asm::enable_irqs();
-    }
+    let result = backend.emergency_write_without_owner(bytes);
 
     match result {
         EmergencyWriteResult::Written { count } if count > 0 => {
@@ -242,88 +269,12 @@ unsafe extern "C" fn runtime_emergency_output(
 unsafe extern "C" fn runtime_emergency_flush(context: usize) -> RuntimeOutputFlushResultV1 {
     // SAFETY: descriptor publication guarantees a live SerialBackend.
     let backend = unsafe { &*(context as *const SerialBackend) };
-    let restore_irqs = ax_runtime::hal::asm::irqs_enabled();
-    ax_runtime::hal::asm::disable_irqs();
-    let result = backend.port.try_flush_emergency();
-    if restore_irqs {
-        ax_runtime::hal::asm::enable_irqs();
-    }
+    let result = backend.emergency_flush_without_owner();
 
     match result {
         EmergencyFlushResult::Flushed => RuntimeOutputFlushResultV1::flushed(),
         EmergencyFlushResult::Busy => RuntimeOutputFlushResultV1::busy(),
         EmergencyFlushResult::Fault => RuntimeOutputFlushResultV1::failed(),
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SerialEventBatch {
-    Drained,
-    Deferred,
-}
-
-fn serial_soft_work_for_events(pending: SerialEventBits) -> SerialSoftWork {
-    let mut work = SerialSoftWork::empty();
-    if pending.contains(SerialEventBits::TX_SPACE) {
-        work |= SerialSoftWork::TX_KICK;
-    }
-    if pending.contains(SerialEventBits::RESERVICE) {
-        work |= SerialSoftWork::RESERVICE;
-    }
-    work
-}
-
-fn process_serial_event_batch(
-    mut take_pending: impl FnMut() -> SerialEventBits,
-    mut publish_pending: impl FnMut(SerialEventBits),
-    mut observe_ready: impl FnMut(SerialEventBits),
-    mut service: impl FnMut(SerialSoftWork) -> SerialIrqOutcome,
-) -> SerialEventBatch {
-    for _ in 0..SERIAL_EVENT_BATCH_LIMIT {
-        let pending = take_pending();
-        if pending.is_empty() {
-            return SerialEventBatch::Drained;
-        }
-        observe_ready(pending);
-
-        let work = serial_soft_work_for_events(pending);
-        if !work.is_empty() {
-            publish_pending(serial_event_bits_for_outcome(service(work)));
-        }
-    }
-    SerialEventBatch::Deferred
-}
-
-impl SerialEvents {
-    const fn new() -> Self {
-        Self {
-            pending: AtomicU32::new(0),
-            notify: IrqNotify::new(),
-        }
-    }
-
-    fn publish_irq(&self, events: SerialEventBits) {
-        if events.is_empty() {
-            return;
-        }
-        self.pending.fetch_or(events.bits(), Ordering::Release);
-        self.notify.notify_irq();
-    }
-
-    fn publish(&self, events: SerialEventBits) {
-        if events.is_empty() {
-            return;
-        }
-        self.pending.fetch_or(events.bits(), Ordering::Release);
-        self.notify.notify();
-    }
-
-    fn wait(&self) {
-        self.notify.wait();
-    }
-
-    fn take(&self) -> SerialEventBits {
-        SerialEventBits::from_bits_retain(self.pending.swap(0, Ordering::AcqRel))
     }
 }
 
@@ -501,35 +452,43 @@ fn new_serial_tty(number: usize, serial: SerialDevice) -> AxResult<SerialTtyEntr
         );
         AxError::Unsupported
     })?;
-    let port = runtime.port;
-    let tx = runtime.tx;
-    let rx = runtime.rx;
-    let irq = runtime.irq;
-    let owner = port.owner();
+    let ax_serial::SerialRuntime { core, tx, rx } = runtime;
+    let creator_cpu = ax_runtime::task::pin_current_cpu().map_err(|_| AxError::BadState)?;
+    let owner_cpu = creator_cpu.cpu().as_u32() as usize;
+    let irq_state = Arc::new(SerialIrqState::new());
     let backend = Arc::new(SerialBackend {
         name,
         tty_name: tty_name.clone(),
         rdrive_device_id,
         number,
-        owner,
-        port,
         tx: SpinNoIrq::new(tx),
         rx: SpinNoIrq::new(rx),
         irq: irq_id,
-        irq_handle: SpinNoIrq::new(None),
+        maintenance: SpinNoIrq::new(None),
+        maintenance_thread: SpinNoIrq::new(None),
+        maintenance_state: AtomicU8::new(MAINTENANCE_REGISTERING),
+        maintenance_wait: WaitQueue::new(),
+        irq_state,
         start_policy: SerialStartPolicy::new(),
         console_handover_prepared: AtomicBool::new(false),
         started: AtomicBool::new(false),
+        start_state: AtomicU8::new(START_IDLE),
+        start_wait: WaitQueue::new(),
         start_lock: PiMutex::new(()),
-        events: SerialEvents::new(),
+        pending_config: SpinNoIrq::new(None),
+        pending_rearm: SpinNoIrq::new(None),
         input_source: Arc::new(PollSet::new()),
         output_source: Arc::new(PollSet::new()),
-        tx_notify: IrqNotify::new(),
+        tx_progress: AtomicU64::new(0),
+        tx_wait: WaitQueue::new(),
+        drain_requested: AtomicBool::new(false),
+        drain_complete: AtomicBool::new(false),
         output_lock: PiMutex::new(()),
     });
 
-    backend.register_irq(irq)?;
-    spawn_serial_event_worker(backend.clone());
+    spawn_serial_maintenance(Arc::clone(&backend), core, owner_cpu)?;
+    drop(creator_cpu);
+    backend.wait_for_maintenance_registration()?;
 
     let terminal = Arc::new(Terminal::default());
     let entry_backend = backend.clone();
@@ -571,6 +530,9 @@ impl SerialBackend {
         if bytes.is_empty() || !self.started.load(Ordering::Acquire) {
             return 0;
         }
+        let Some(maintenance) = self.try_maintenance_handle() else {
+            return 0;
+        };
         let Some(mut tx) = self.tx.try_lock() else {
             return 0;
         };
@@ -578,41 +540,71 @@ impl SerialBackend {
         drop(tx);
 
         if submitted.accepted > 0 {
-            self.events.publish_irq(SerialEventBits::RESERVICE);
+            let _ = maintenance.publish_cause(MaintenanceCauses::SUBMIT);
         }
         submitted.accepted
     }
 
-    fn register_irq(self: &Arc<Self>, mut irq: SerialIrqHandler) -> AxResult<()> {
-        let backend = self.clone();
-        let request = IrqRequest::new(move |ctx| {
-            let outcome = backend.handle_irq_on_owner(ctx.cpu, &mut irq);
-            if !outcome.claimed {
-                return ax_runtime::hal::irq::IrqReturn::Unhandled;
-            }
-            let events = publish_serial_outcome(&backend, outcome, true);
-            if events.is_empty() {
-                ax_runtime::hal::irq::IrqReturn::Handled
-            } else {
-                ax_runtime::hal::irq::IrqReturn::Wake
-            }
-        })
-        .share_mode(ShareMode::Shared)
-        .affinity(IrqAffinity::Fixed(CpuId(self.owner.0)))
-        .auto_enable(AutoEnable::No);
-        match ax_runtime::hal::irq::request_irq(self.irq, request) {
-            Ok(handle) => {
-                *self.irq_handle.lock() = Some(handle);
-                Ok(())
-            }
-            Err(err) => {
-                warn!(
-                    "Failed to register {} IRQ handler for irq {:?}: {err:?}",
-                    self.tty_name, self.irq
-                );
-                Err(AxError::Unsupported)
-            }
+    fn emergency_write_without_owner(&self, bytes: &[u8]) -> EmergencyWriteResult {
+        // The runtime callback has no owner-thread capability and must never
+        // wait for another CPU or touch UART MMIO.
+        // TODO(platform-emergency-console): provide a separate panic-console
+        // capability whose ownership is explicitly transferred away from this
+        // normal runtime port before it may access the UART.
+        emergency_write_outcome(self.started.load(Ordering::Acquire), bytes.is_empty())
+    }
+
+    fn emergency_flush_without_owner(&self) -> EmergencyFlushResult {
+        emergency_flush_outcome(self.started.load(Ordering::Acquire))
+    }
+
+    fn install_maintenance(&self, maintenance: DeviceMaintenanceHandle<SerialMaintenanceEvent>) {
+        *self.maintenance.lock() = Some(maintenance);
+        self.maintenance_state
+            .store(MAINTENANCE_READY, Ordering::Release);
+        self.maintenance_wait.notify_all();
+    }
+
+    fn install_maintenance_thread(&self, maintenance_thread: MaintenanceThread) {
+        let previous = self.maintenance_thread.lock().replace(maintenance_thread);
+        assert!(
+            previous.is_none(),
+            "serial maintenance thread must be installed exactly once"
+        );
+    }
+
+    fn fail_maintenance_registration(&self) {
+        self.maintenance_state
+            .store(MAINTENANCE_FAILED, Ordering::Release);
+        self.maintenance_wait.notify_all();
+    }
+
+    fn wait_for_maintenance_registration(&self) -> AxResult<()> {
+        self.maintenance_wait.wait_until(|| {
+            self.maintenance_state.load(Ordering::Acquire) != MAINTENANCE_REGISTERING
+        });
+        if self.maintenance_state.load(Ordering::Acquire) == MAINTENANCE_READY {
+            Ok(())
+        } else {
+            Err(AxError::Unsupported)
         }
+    }
+
+    fn maintenance_handle(&self) -> AxResult<DeviceMaintenanceHandle<SerialMaintenanceEvent>> {
+        self.maintenance
+            .lock()
+            .as_ref()
+            .ok_or(AxError::BadState)?
+            .try_clone_task_context()
+            .map_err(|_| AxError::BadState)
+    }
+
+    fn try_maintenance_handle(&self) -> Option<DeviceMaintenanceHandle<SerialMaintenanceEvent>> {
+        self.maintenance
+            .try_lock()?
+            .as_ref()?
+            .try_clone_task_context()
+            .ok()
     }
 
     fn start_port(&self) -> Result<(), PortStartError> {
@@ -634,74 +626,41 @@ impl SerialBackend {
         if self.started.load(Ordering::Acquire) {
             return Ok(());
         }
-
-        let Some(handle) = *self.irq_handle.lock() else {
+        if self.start_policy.mode().is_err() {
             return Err(PortStartError::Failed);
+        }
+        self.start_state.store(START_REQUESTED, Ordering::Release);
+        let maintenance = match self.maintenance_handle() {
+            Ok(maintenance) => maintenance,
+            Err(_) => {
+                self.start_state.store(START_FAILED, Ordering::Release);
+                return Err(PortStartError::Failed);
+            }
         };
-
-        let Ok(mode) = self.start_policy.mode() else {
+        if maintenance
+            .publish_cause(MaintenanceCauses::SUBMIT)
+            .is_err()
+        {
+            self.start_state.store(START_FAILED, Ordering::Release);
             return Err(PortStartError::Failed);
-        };
-        let config = match mode.startup_baudrate(|| self.baudrate()) {
-            Some(baudrate) => Config::new().baudrate(baudrate),
-            None => Config::new(),
-        };
-        if let Err(err) = self.startup_port(&config) {
-            let recovered = self.abort_failed_start(mode);
-            if mode == SerialStartMode::ConfigurePort {
-                warn!(
-                    "{} failed to start serial port {}: {:?}",
-                    self.tty_name, self.name, err
-                );
-            }
-            return Err(if recovered {
-                PortStartError::Failed
-            } else {
-                PortStartError::RecoveryFailed
-            });
         }
-
-        if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
-            let recovered = self.abort_failed_start(mode);
-            let _ = ax_runtime::hal::irq::disable_irq(handle);
-            let _ = ax_runtime::hal::irq::synchronize_irq(handle);
-            if mode == SerialStartMode::ConfigurePort {
-                warn!(
-                    "Failed to enable {} IRQ handler for irq {:?}: {err:?}",
-                    self.tty_name, self.irq
-                );
-            }
-            return Err(if recovered {
-                PortStartError::Failed
-            } else {
-                PortStartError::RecoveryFailed
-            });
-        }
-
-        self.started.store(true, Ordering::Release);
-        if mode == SerialStartMode::ConfigurePort {
-            self.publish_started_events();
-        }
-        Ok(())
-    }
-
-    fn abort_failed_start(&self, mode: SerialStartMode) -> bool {
-        match mode.failed_start_recovery() {
-            FailedStartRecovery::RestoreBootPolling => {
-                ax_serial::run_on_owner(self.owner, |lease| self.port.quiesce_to_polling(lease))
-                    .is_ok()
-            }
-            FailedStartRecovery::ShutdownPort => self.shutdown_port(),
+        self.start_wait
+            .wait_until(|| self.start_state.load(Ordering::Acquire) != START_REQUESTED);
+        match self.start_state.load(Ordering::Acquire) {
+            START_SUCCEEDED => Ok(()),
+            START_RECOVERY_FAILED => Err(PortStartError::RecoveryFailed),
+            _ => Err(PortStartError::Failed),
         }
     }
 
     fn publish_started_events(&self) {
-        publish_serial_outcome(
-            self,
-            self.service_on_owner(SerialSoftWork::RESERVICE),
-            false,
-        );
-        self.events.publish(SerialEventBits::RX_READY);
+        if let Ok(maintenance) = self.maintenance_handle() {
+            let _ = maintenance.publish_cause(MaintenanceCauses::SUBMIT);
+        }
+        unsafe {
+            self.input_source.wake(IoEvents::IN);
+            self.output_source.wake(IoEvents::OUT);
+        }
     }
 
     fn ensure_started(&self) -> AxResult<()> {
@@ -773,65 +732,114 @@ impl SerialBackend {
         }
     }
 
-    fn startup_port(&self, config: &Config) -> Result<SerialIrqOutcome, ConfigError> {
-        ax_serial::run_on_owner(self.owner, |lease| self.port.startup(lease, config))
-            .map_err(|_| ConfigError::RegisterError)?
-    }
-
-    fn shutdown_port(&self) -> bool {
-        ax_serial::run_on_owner(self.owner, |lease| self.port.shutdown(lease)).is_ok()
-    }
-
     fn set_port_config(&self, config: &Config) -> Result<(), ConfigError> {
-        ax_serial::run_on_owner(self.owner, |lease| self.port.set_config(lease, config))
-            .map_err(|_| ConfigError::RegisterError)?
+        let maintenance = self
+            .maintenance_handle()
+            .map_err(|_| ConfigError::RegisterError)?;
+        *self.pending_config.lock() = Some(config.clone());
+        maintenance
+            .publish_cause(MaintenanceCauses::SUBMIT)
+            .map_err(|_| AxError::BadState)
+            .map_err(|_| ConfigError::RegisterError)
     }
 
-    fn baudrate(&self) -> u32 {
-        ax_serial::run_on_owner(self.owner, |lease| self.port.baudrate(lease)).unwrap_or(0)
-    }
-
-    fn service_on_owner(&self, work: SerialSoftWork) -> SerialIrqOutcome {
-        ax_serial::run_on_owner(self.owner, |lease| self.port.service(lease, work))
-            .unwrap_or_default()
-    }
-
-    fn handle_irq_on_owner(&self, cpu: CpuId, irq: &mut SerialIrqHandler) -> SerialIrqOutcome {
-        let Some(lease) = ax_serial::owner_lease_for_cpu(self.owner, cpu) else {
-            return SerialIrqOutcome::default();
+    fn submit_tx(&self, bytes: &[u8]) -> usize {
+        let Ok(maintenance) = self.maintenance_handle() else {
+            return 0;
         };
-        irq.handle(lease)
-    }
-
-    fn submit_tx(&self, bytes: &[u8]) -> (usize, SerialIrqOutcome) {
         let submit = self.tx.lock().submit(bytes);
-        let outcome = if submit.needs_kick {
-            self.service_on_owner(SerialSoftWork::TX_KICK)
-        } else {
-            SerialIrqOutcome::default()
-        };
-        (submit.accepted, outcome)
-    }
-
-    fn tx_idle(&self) -> bool {
-        ax_serial::run_on_owner(self.owner, |lease| self.port.tx_idle(lease)).unwrap_or(false)
+        if submit.needs_kick {
+            let _ = maintenance.publish_cause(MaintenanceCauses::SUBMIT);
+        }
+        submit.accepted
     }
 
     fn drain_tx(&self) -> AxResult<()> {
         self.ensure_started()?;
         let _guard = self.output_lock.lock();
         loop {
-            let outcome = self.service_on_owner(SerialSoftWork::TX_KICK);
-            publish_serial_outcome(self, outcome, false);
-            if self.tx_idle() {
+            self.drain_complete.store(false, Ordering::Release);
+            self.drain_requested.store(true, Ordering::Release);
+            let observed = self.tx_progress.load(Ordering::Acquire);
+            self.maintenance_handle()?
+                .publish_cause(MaintenanceCauses::SUBMIT)
+                .map_err(|_| AxError::BadState)?;
+            if self.drain_complete.load(Ordering::Acquire) {
                 return Ok(());
             }
-            crate::task::sleep(Duration::from_millis(1));
+            self.tx_wait
+                .wait_timeout_until(Duration::from_millis(1), || {
+                    self.drain_complete.load(Ordering::Acquire)
+                        || !self.started.load(Ordering::Acquire)
+                        || self.tx_progress.load(Ordering::Acquire) != observed
+                });
+            if !self.started.load(Ordering::Acquire) {
+                return Err(AxError::BadState);
+            }
         }
     }
 
     fn drain_rx(&self, out: &mut [RxItem]) -> usize {
-        self.rx.lock().drain(out)
+        let drain = self.rx.lock().drain(out);
+        if let Some(rearm) = drain.rearm {
+            if !self.merge_pending_rearm(rearm) {
+                self.irq_state
+                    .publication_failed
+                    .store(true, Ordering::Release);
+            }
+            if let Ok(maintenance) = self.maintenance_handle() {
+                let _ = maintenance.publish_cause(MaintenanceCauses::SUBMIT);
+            }
+        }
+        drain.count
+    }
+
+    fn merge_pending_rearm(&self, source: MaskedSource) -> bool {
+        merge_masked_source(&mut self.pending_rearm.lock(), source)
+    }
+
+    fn take_pending_rearm(&self) -> Option<MaskedSource> {
+        self.pending_rearm.lock().take()
+    }
+
+    fn close_serial_admission(&self) {
+        self.started.store(false, Ordering::Release);
+        self.maintenance_state
+            .store(MAINTENANCE_FAILED, Ordering::Release);
+        let _ = self.maintenance.lock().take();
+        let _ = self.pending_config.lock().take();
+        let _ = self.pending_rearm.lock().take();
+        if self.start_state.load(Ordering::Acquire) == START_REQUESTED {
+            self.start_state.store(START_FAILED, Ordering::Release);
+        }
+        self.maintenance_wait.notify_all();
+        self.start_wait.notify_all();
+        self.tx_progress.fetch_add(1, Ordering::AcqRel);
+        self.tx_wait.notify_all();
+        unsafe {
+            self.input_source
+                .wake(IoEvents::IN | IoEvents::ERR | IoEvents::HUP);
+            self.output_source
+                .wake(IoEvents::OUT | IoEvents::ERR | IoEvents::HUP);
+        }
+    }
+}
+
+fn emergency_write_outcome(started: bool, empty: bool) -> EmergencyWriteResult {
+    if empty {
+        EmergencyWriteResult::Written { count: 0 }
+    } else if started {
+        EmergencyWriteResult::Busy
+    } else {
+        EmergencyWriteResult::Fault
+    }
+}
+
+fn emergency_flush_outcome(started: bool) -> EmergencyFlushResult {
+    if started {
+        EmergencyFlushResult::Busy
+    } else {
+        EmergencyFlushResult::Fault
     }
 }
 
@@ -861,60 +869,574 @@ fn serial_config_from_termios(termios: &Termios2) -> Config {
     config
 }
 
-fn spawn_serial_event_worker(backend: Arc<SerialBackend>) {
-    let task_name = format!("{}-event", backend.tty_name);
-    crate::task::spawn_kernel_thread(
-        move || loop {
-            backend.events.wait();
-            let disposition = process_serial_event_batch(
-                || backend.events.take(),
-                |events| backend.events.publish(events),
-                |pending| {
-                    if pending.contains(SerialEventBits::RX_READY) {
-                        unsafe { backend.input_source.wake(IoEvents::IN) };
-                    }
-                    if pending.contains(SerialEventBits::TX_SPACE) {
-                        backend.tx_notify.notify();
-                        unsafe { backend.output_source.wake(IoEvents::OUT) };
-                    }
-                },
-                |work| backend.service_on_owner(work),
+fn spawn_serial_maintenance(
+    backend: Arc<SerialBackend>,
+    core: SerialCore,
+    owner_cpu: usize,
+) -> AxResult<()> {
+    let name = format!("{}-maintenance", backend.tty_name);
+    let owner_backend = Arc::clone(&backend);
+    let maintenance_thread =
+        spawn_maintenance_domain::<SerialMaintenanceEvent, _>(owner_cpu, name, move |registrar| {
+            run_serial_maintenance(owner_backend, core, registrar)
+        })
+        .map_err(|error| {
+            warn!("failed to spawn serial maintenance owner: {error}");
+            AxError::Unsupported
+        })?;
+    backend.install_maintenance_thread(maintenance_thread);
+    Ok(())
+}
+
+fn run_serial_maintenance(
+    backend: Arc<SerialBackend>,
+    core: SerialCore,
+    registrar: MaintenanceRegistrar<SerialMaintenanceEvent>,
+) -> Result<MaintenanceClosed, MaintenanceError> {
+    let owner_cell = LocalOwnerCell::pin(core);
+    let (owner, owner_irq) = registrar
+        .local_owner_cell(owner_cell.as_ref())
+        .unwrap_or_else(|error| {
+            backend.fail_maintenance_registration();
+            panic!("serial owner cell failed to bind: {error}")
+        });
+    let irq_wake = registrar
+        .local_irq_wake()
+        .inspect_err(|_| backend.fail_maintenance_registration())?;
+    let maintenance = registrar.remote_handle();
+    let irq_state = Arc::clone(&backend.irq_state);
+    let owner_cpu = registrar.owner_cpu();
+    let irq_name = format!("{}/serial", backend.tty_name);
+    let mut owner_irq = owner_irq;
+    let registration = registrar.register_shared_disabled(irq_name, backend.irq, move |context| {
+        serial_irq_action(
+            context.cpu.0,
+            owner_cpu,
+            &irq_state,
+            &irq_wake,
+            &mut owner_irq,
+        )
+    });
+    let registration = match registration {
+        Ok(registration) => registration,
+        Err(error) => {
+            warn!(
+                "failed to register {} IRQ {:?} on CPU {}: {error:?}",
+                backend.tty_name, backend.irq, owner_cpu
             );
-            if disposition == SerialEventBatch::Deferred {
-                crate::task::yield_now();
+            backend.fail_maintenance_registration();
+            let session = registrar.activate()?;
+            return close_serial_maintenance(&backend, session, owner_cell, owner, None);
+        }
+    };
+    let session = match registrar.activate() {
+        Ok(session) => session,
+        Err(error) => {
+            backend.fail_maintenance_registration();
+            if let Err(close) = registration.close() {
+                warn!(
+                    "failed to close {} IRQ action after maintenance activation failed: {:?}",
+                    backend.tty_name,
+                    close.reason()
+                );
             }
-        },
-        task_name,
-    );
+            return Err(error);
+        }
+    };
+    backend.install_maintenance(maintenance);
+    let owner_result = serial_owner_loop(&backend, &session, &owner, &registration);
+    let close_result =
+        close_serial_maintenance(&backend, session, owner_cell, owner, Some(registration));
+    match close_result {
+        Ok(closed) => {
+            if let Err(error) = owner_result {
+                warn!(
+                    "{} maintenance owner stopped after a contained failure: {error}",
+                    backend.tty_name
+                );
+            }
+            Ok(closed)
+        }
+        Err(close_error) => Err(close_error),
+    }
 }
 
-fn publish_serial_outcome(
+fn serial_irq_action(
+    actual_cpu: usize,
+    owner_cpu: usize,
+    irq_state: &SerialIrqState,
+    wake: &LocalIrqWake<SerialMaintenanceEvent>,
+    core_irq: &mut LocalOwnerIrq<SerialCore>,
+) -> IrqReturn {
+    if actual_cpu != owner_cpu {
+        irq_state.publication_failed.store(true, Ordering::Release);
+        return contain_serial_irq(
+            core_irq,
+            ax_serial::ContainmentCause::OwnerUnavailable,
+            irq_state,
+        );
+    }
+    let capture = match core_irq.with_irq(|core| core.capture_irq()) {
+        Ok(capture) => capture,
+        Err(_) => {
+            irq_state.publication_failed.store(true, Ordering::Release);
+            irq_state.line_quenched.store(true, Ordering::Release);
+            return IrqReturn::MaskLineAndWake;
+        }
+    };
+    match capture {
+        IrqCapture::Unhandled => IrqReturn::Unhandled,
+        IrqCapture::Captured { event, masked } => {
+            let publication = wake.publish_from_irq(
+                MaintenanceCauses::IRQ,
+                SerialMaintenanceEvent::Irq { event, masked },
+            );
+            match publication {
+                Ok(MaintenancePublishResult::Published) => IrqReturn::Wake,
+                Ok(MaintenancePublishResult::Overflowed) => {
+                    irq_state.publication_failed.store(true, Ordering::Release);
+                    contain_serial_irq(
+                        core_irq,
+                        ax_serial::ContainmentCause::PublicationFull,
+                        irq_state,
+                    )
+                }
+                Err(error) => {
+                    irq_state.publication_failed.store(true, Ordering::Release);
+                    contain_serial_irq(core_irq, containment_cause_for_irq_wake(error), irq_state)
+                }
+            }
+        }
+        IrqCapture::Fault {
+            reason,
+            containment,
+        } => {
+            let publication = wake.publish_from_irq(
+                MaintenanceCauses::IRQ,
+                SerialMaintenanceEvent::Fault {
+                    reason,
+                    containment,
+                },
+            );
+            match containment {
+                FaultContainment::DeviceSourceMasked(_) => {
+                    irq_state.action_disabled.store(true, Ordering::Release);
+                    if !matches!(publication, Ok(MaintenancePublishResult::Published)) {
+                        irq_state.publication_failed.store(true, Ordering::Release);
+                    }
+                    IrqReturn::DisableActionAndWake
+                }
+                FaultContainment::Uncontained => {
+                    irq_state.publication_failed.store(true, Ordering::Release);
+                    irq_state.line_quenched.store(true, Ordering::Release);
+                    IrqReturn::MaskLineAndWake
+                }
+            }
+        }
+    }
+}
+
+fn containment_cause_for_irq_wake(error: LocalIrqWakeError) -> ax_serial::ContainmentCause {
+    match error {
+        LocalIrqWakeError::Closed => ax_serial::ContainmentCause::PublicationClosed,
+        LocalIrqWakeError::NotHardIrq
+        | LocalIrqWakeError::WrongCpu { .. }
+        | LocalIrqWakeError::OwnerIdentityMismatch
+        | LocalIrqWakeError::OwnerPlacementMismatch { .. }
+        | LocalIrqWakeError::OwnerUnavailable { .. } => {
+            ax_serial::ContainmentCause::OwnerUnavailable
+        }
+    }
+}
+
+fn contain_serial_irq(
+    core_irq: &mut LocalOwnerIrq<SerialCore>,
+    cause: ax_serial::ContainmentCause,
+    irq_state: &SerialIrqState,
+) -> IrqReturn {
+    match core_irq.with_irq(|core| IrqEndpoint::contain(core, cause)) {
+        Ok(Ok(_)) => {
+            irq_state.action_disabled.store(true, Ordering::Release);
+            IrqReturn::DisableActionAndWake
+        }
+        Ok(Err(_)) | Err(_) => {
+            irq_state.line_quenched.store(true, Ordering::Release);
+            IrqReturn::MaskLineAndWake
+        }
+    }
+}
+
+fn serial_owner_loop(
     backend: &SerialBackend,
-    outcome: SerialIrqOutcome,
-    from_irq: bool,
-) -> SerialEventBits {
-    let events = serial_event_bits_for_outcome(outcome);
+    session: &MaintenanceSession<SerialMaintenanceEvent>,
+    owner: &LocalOwnerControl<SerialCore>,
+    registration: &MaintenanceIrqAction,
+) -> Result<(), MaintenanceError> {
+    let mut pending_masked = None;
+    loop {
+        if pending_masked.is_none() {
+            session.wait_for_pending()?;
+        }
+        let mut events = [None; SERIAL_EVENT_BATCH_LIMIT];
+        let mut event_count = 0;
+        let drain = session.drain_owner(SERIAL_EVENT_BATCH_LIMIT, |event| {
+            events[event_count] = Some(event);
+            event_count += 1;
+        })?;
+        let causes = drain.causes();
+        if causes.contains(MaintenanceCauses::SHUTDOWN) {
+            return Ok(());
+        }
 
-    if from_irq {
-        backend.events.publish_irq(events);
-    } else {
-        backend.events.publish(events);
+        let mut facts = SerialIrqEvents::default();
+        let mut rearm = backend.take_pending_rearm();
+        let mut fault = backend
+            .irq_state
+            .publication_failed
+            .swap(false, Ordering::AcqRel)
+            || causes.contains(MaintenanceCauses::OVERFLOW);
+        for event in events.into_iter().flatten() {
+            match event {
+                SerialMaintenanceEvent::Irq { event, masked } => {
+                    fault |= event.requires_owner_service() != masked.is_some();
+                    if let Some(masked) = masked {
+                        fault |= !merge_masked_source(&mut pending_masked, masked);
+                    }
+                }
+                SerialMaintenanceEvent::Fault {
+                    reason,
+                    containment,
+                } => {
+                    warn!(
+                        "{} IRQ capture fault: {reason}; containment={containment:?}",
+                        backend.tty_name
+                    );
+                    fault = true;
+                }
+            }
+        }
+
+        if fault {
+            recover_serial_owner(backend, owner, registration)?;
+            pending_masked = None;
+            continue;
+        }
+
+        if backend.start_state.load(Ordering::Acquire) == START_REQUESTED {
+            start_serial_owner(backend, owner, registration)?;
+        }
+        if !backend.started.load(Ordering::Acquire) {
+            continue;
+        }
+
+        if causes.contains(MaintenanceCauses::SUBMIT) {
+            match owner.with_owner(|core| core.service(SerialSoftWork::TX_KICK)) {
+                Ok(Ok(service_facts)) => merge_serial_facts(&mut facts, service_facts),
+                Ok(Err(reason)) => {
+                    warn!("{} TX service fault: {reason}", backend.tty_name);
+                    recover_serial_owner(backend, owner, registration)?;
+                    pending_masked = None;
+                    continue;
+                }
+                Err(error) => panic!("serial owner capability failed: {error}"),
+            }
+        }
+
+        if let Some(source) = pending_masked.take() {
+            match owner
+                .with_owner(|core| core.service_masked(source))
+                .expect("serial masked service must run in its owner domain")
+            {
+                SerialMaskedService::Complete(service_facts) => {
+                    merge_serial_facts(&mut facts, service_facts);
+                    fault |= !merge_masked_source(&mut rearm, source);
+                }
+                SerialMaskedService::Pending(service_facts) => {
+                    merge_serial_facts(&mut facts, service_facts);
+                    pending_masked = Some(source);
+                }
+                SerialMaskedService::Backpressured(service_facts) => {
+                    merge_serial_facts(&mut facts, service_facts);
+                    if source.bitmap().get() & u64::from(InterruptMask::TX_SPACE.bits()) != 0 {
+                        pending_masked = MaskedSource::try_new(
+                            source.generation().get(),
+                            u64::from(InterruptMask::TX_SPACE.bits()),
+                        )
+                        .ok();
+                    }
+                }
+                SerialMaskedService::Fault(reason) => {
+                    warn!("{} masked serial service fault: {reason}", backend.tty_name);
+                    fault = true;
+                }
+                SerialMaskedService::Stale => {}
+            }
+        }
+
+        publish_serial_facts(backend, facts);
+        if fault {
+            recover_serial_owner(backend, owner, registration)?;
+            pending_masked = None;
+            continue;
+        }
+        if let Some(source) = rearm
+            && let Err(error) = owner
+                .with_owner(|core| IrqSourceControl::rearm(core, source))
+                .expect("serial rearm must run in its owner domain")
+        {
+            warn!(
+                "{} failed to rearm serial source: {error}",
+                backend.tty_name
+            );
+            recover_serial_owner(backend, owner, registration)?;
+            pending_masked = None;
+            continue;
+        }
+
+        apply_pending_serial_config(backend, owner);
+        service_serial_drain_request(backend, owner);
+        if drain.pending() || pending_masked.is_some() {
+            crate::task::yield_now();
+        }
     }
-    events
 }
 
-fn serial_event_bits_for_outcome(outcome: SerialIrqOutcome) -> SerialEventBits {
-    let mut events = SerialEventBits::empty();
-    if outcome.rx_pushed > 0 {
-        events |= SerialEventBits::RX_READY;
+fn start_serial_owner(
+    backend: &SerialBackend,
+    owner: &LocalOwnerControl<SerialCore>,
+    registration: &MaintenanceIrqAction,
+) -> Result<(), MaintenanceError> {
+    let mode = match backend.start_policy.mode() {
+        Ok(mode) => mode,
+        Err(_) => {
+            complete_start(backend, START_FAILED);
+            return Ok(());
+        }
+    };
+    let startup = owner.with_owner(|core| {
+        let config = match mode.startup_baudrate(|| core.baudrate()) {
+            Some(baudrate) => Config::new().baudrate(baudrate),
+            None => Config::new(),
+        };
+        core.startup(&config)
+    });
+    if !matches!(startup, Ok(Ok(()))) {
+        let recovered = recover_failed_start(mode, owner);
+        complete_start(
+            backend,
+            if recovered {
+                START_FAILED
+            } else {
+                START_RECOVERY_FAILED
+            },
+        );
+        return Ok(());
     }
-    if outcome.tx_wakeup {
-        events |= SerialEventBits::TX_SPACE;
+    if registration.enable().is_err() {
+        let _ = registration.disable();
+        let _ = registration.synchronize();
+        let recovered = recover_failed_start(mode, owner);
+        complete_start(
+            backend,
+            if recovered {
+                START_FAILED
+            } else {
+                START_RECOVERY_FAILED
+            },
+        );
+        return Ok(());
     }
-    if outcome.budget_exhausted {
-        events |= SerialEventBits::RESERVICE;
+    if backend.irq_state.line_quenched.load(Ordering::Acquire) {
+        if registration.release_quench().is_err() {
+            recover_serial_owner(backend, owner, registration)?;
+            complete_start(backend, START_RECOVERY_FAILED);
+            return Ok(());
+        }
+        backend
+            .irq_state
+            .line_quenched
+            .store(false, Ordering::Release);
     }
-    events
+    let activated = owner.with_owner(SerialCore::activate_interrupts);
+    if !matches!(activated, Ok(Ok(()))) {
+        recover_serial_owner(backend, owner, registration)?;
+        complete_start(backend, START_RECOVERY_FAILED);
+        return Ok(());
+    }
+    let _ = backend
+        .irq_state
+        .action_disabled
+        .swap(false, Ordering::AcqRel);
+    backend.started.store(true, Ordering::Release);
+    complete_start(backend, START_SUCCEEDED);
+    Ok(())
+}
+
+fn recover_failed_start(mode: SerialStartMode, owner: &LocalOwnerControl<SerialCore>) -> bool {
+    match mode.failed_start_recovery() {
+        FailedStartRecovery::RestoreBootPolling => {
+            owner.with_owner(SerialCore::quiesce_to_polling).is_ok()
+        }
+        FailedStartRecovery::ShutdownPort => owner.with_owner(SerialCore::shutdown).is_ok(),
+    }
+}
+
+fn complete_start(backend: &SerialBackend, state: u8) {
+    backend.start_state.store(state, Ordering::Release);
+    backend.start_wait.notify_all();
+    if state == START_SUCCEEDED && backend.start_policy.mode() == Ok(SerialStartMode::ConfigurePort)
+    {
+        backend.publish_started_events();
+    }
+}
+
+fn recover_serial_owner(
+    backend: &SerialBackend,
+    owner: &LocalOwnerControl<SerialCore>,
+    registration: &MaintenanceIrqAction,
+) -> Result<(), MaintenanceError> {
+    let _ = backend.take_pending_rearm();
+    quiesce_serial_irq(backend, owner, registration)?;
+    backend.started.store(false, Ordering::Release);
+    if backend.start_state.load(Ordering::Acquire) == START_REQUESTED {
+        complete_start(backend, START_FAILED);
+    }
+    backend.tx_progress.fetch_add(1, Ordering::AcqRel);
+    backend.tx_wait.notify_all();
+    unsafe {
+        backend
+            .input_source
+            .wake(IoEvents::IN | IoEvents::ERR | IoEvents::HUP);
+        backend
+            .output_source
+            .wake(IoEvents::OUT | IoEvents::ERR | IoEvents::HUP);
+    }
+    Ok(())
+}
+
+fn quiesce_serial_irq(
+    backend: &SerialBackend,
+    owner: &LocalOwnerControl<SerialCore>,
+    registration: &MaintenanceIrqAction,
+) -> Result<(), MaintenanceError> {
+    owner
+        .with_owner(SerialCore::shutdown)
+        .expect("serial quiesce must run in its owner domain");
+    registration.disable()?;
+    if backend.irq_state.line_quenched.load(Ordering::Acquire) {
+        registration.release_quench()?;
+        backend
+            .irq_state
+            .line_quenched
+            .store(false, Ordering::Release);
+    }
+    registration.synchronize()?;
+    Ok(())
+}
+
+fn apply_pending_serial_config(backend: &SerialBackend, owner: &LocalOwnerControl<SerialCore>) {
+    let Some(config) = backend.pending_config.lock().take() else {
+        return;
+    };
+    match owner.with_owner(|core| core.set_config(&config)) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => warn!(
+            "{} failed to apply serial configuration: {error}",
+            backend.tty_name
+        ),
+        Err(error) => panic!("serial configuration escaped its owner domain: {error}"),
+    }
+}
+
+fn service_serial_drain_request(backend: &SerialBackend, owner: &LocalOwnerControl<SerialCore>) {
+    if !backend.drain_requested.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let idle = owner
+        .with_owner(SerialCore::tx_idle)
+        .expect("serial drain check must run in its owner domain");
+    backend.drain_complete.store(idle, Ordering::Release);
+    backend.tx_progress.fetch_add(1, Ordering::AcqRel);
+    backend.tx_wait.notify_all();
+}
+
+fn publish_serial_facts(backend: &SerialBackend, facts: SerialIrqEvents) {
+    if facts.rx_pushed > 0 {
+        unsafe { backend.input_source.wake(IoEvents::IN) };
+    }
+    if facts.tx_sent > 0 || facts.tx_wakeup {
+        backend.tx_progress.fetch_add(1, Ordering::AcqRel);
+        backend.tx_wait.notify_all();
+        unsafe { backend.output_source.wake(IoEvents::OUT) };
+    }
+}
+
+fn merge_serial_facts(target: &mut SerialIrqEvents, facts: SerialIrqEvents) {
+    target.rx_pushed = target.rx_pushed.saturating_add(facts.rx_pushed);
+    target.tx_sent = target.tx_sent.saturating_add(facts.tx_sent);
+    target.tx_wakeup |= facts.tx_wakeup;
+}
+
+fn merge_masked_source(target: &mut Option<MaskedSource>, source: MaskedSource) -> bool {
+    let Some(current) = *target else {
+        *target = Some(source);
+        return true;
+    };
+    if current.generation() != source.generation() {
+        return false;
+    }
+    let bitmap = current.bitmap().get() | source.bitmap().get();
+    *target = MaskedSource::try_new(current.generation().get(), bitmap).ok();
+    target.is_some()
+}
+
+fn close_serial_maintenance(
+    backend: &SerialBackend,
+    session: MaintenanceSession<SerialMaintenanceEvent>,
+    owner_cell: core::pin::Pin<alloc::boxed::Box<LocalOwnerCell<SerialCore>>>,
+    owner: LocalOwnerControl<SerialCore>,
+    registration: Option<MaintenanceIrqAction>,
+) -> Result<MaintenanceClosed, MaintenanceError> {
+    backend.close_serial_admission();
+    let begin_close = session.begin_close();
+    if let Some(registration) = registration {
+        if let Err(error) = quiesce_serial_irq(backend, &owner, &registration) {
+            warn!("{} failed to quiesce serial IRQ: {error}", backend.tty_name);
+            let _retained_owner = (owner_cell, owner, registration);
+            session.quarantine_and_park();
+        }
+        if let Err(failure) = registration.close() {
+            let (reason, registration) = failure.into_parts();
+            warn!(
+                "{} failed to destroy serial IRQ action: {reason:?}",
+                backend.tty_name
+            );
+            let _retained_owner = (owner_cell, owner, registration);
+            session.quarantine_and_park();
+        }
+    } else {
+        owner
+            .with_owner(SerialCore::shutdown)
+            .expect("serial close must retain owner access");
+    }
+    begin_close?;
+    while session.state() == MaintenanceState::Closing {
+        let drain = session.drain_owner(SERIAL_EVENT_BATCH_LIMIT, |_| {})?;
+        if !drain.pending() {
+            break;
+        }
+    }
+    session.try_begin_draining()?;
+    session.finish_close()?;
+    let closed = session
+        .try_into_closed()
+        .map_err(|failure| failure.error())?;
+    owner_cell
+        .reclaim(owner, &closed)
+        .unwrap_or_else(|failure| {
+            panic!("failed to reclaim closed serial owner: {}", failure.error())
+        });
+    Ok(closed)
 }
 
 impl TtyRead for SerialReader {
@@ -975,10 +1497,16 @@ impl TtyWrite for SerialWriter {
         let _guard = self.backend.output_lock.lock();
         let mut written = 0;
         while written < buf.len() {
-            let (count, outcome) = self.backend.submit_tx(&buf[written..]);
-            publish_serial_outcome(&self.backend, outcome, false);
+            let observed = self.backend.tx_progress.load(Ordering::Acquire);
+            let count = self.backend.submit_tx(&buf[written..]);
             if count == 0 {
-                self.backend.tx_notify.wait();
+                self.backend.tx_wait.wait_until(|| {
+                    self.backend.tx_progress.load(Ordering::Acquire) != observed
+                        || !self.backend.started.load(Ordering::Acquire)
+                });
+                if !self.backend.started.load(Ordering::Acquire) {
+                    return;
+                }
                 continue;
             }
             written += count;
@@ -995,9 +1523,7 @@ impl TtyWrite for SerialWriter {
         let Some(_guard) = self.backend.output_lock.try_lock() else {
             return 0;
         };
-        let (count, outcome) = self.backend.submit_tx(buf);
-        publish_serial_outcome(&self.backend, outcome, false);
-        count
+        self.backend.submit_tx(buf)
     }
 
     fn flush_echo_before_input(&self) -> bool {
@@ -1099,80 +1625,27 @@ mod tests {
     use rdrive::DeviceId as RDriveDeviceId;
 
     use super::{
-        ConsoleCandidate, ConsoleDeviceIdError, ConsoleSelection, SERIAL_EVENT_BATCH_LIMIT,
-        SerialEventBatch, SerialEventBits, SerialIrqOutcome, SerialSoftWork, assign_tty_numbers,
-        process_serial_event_batch, select_console_candidate, serial_event_bits_for_outcome,
-        serial_soft_work_for_events,
+        ConsoleCandidate, ConsoleDeviceIdError, ConsoleSelection, EmergencyFlushResult,
+        EmergencyWriteResult, assign_tty_numbers, emergency_flush_outcome, emergency_write_outcome,
+        select_console_candidate,
     };
 
     #[test]
-    fn event_worker_defers_and_republishes_multi_budget_reservice() {
-        use core::cell::Cell;
-
-        let pending_bits = Cell::new(SerialEventBits::RESERVICE.bits());
-        let service_calls = Cell::new(0usize);
-        let take_pending = || SerialEventBits::from_bits_retain(pending_bits.replace(0));
-        let publish_pending = |events: SerialEventBits| {
-            pending_bits.set(pending_bits.get() | events.bits());
-        };
-        let service = |work: SerialSoftWork| {
-            assert!(work.contains(SerialSoftWork::RESERVICE));
-            let call = service_calls.get() + 1;
-            service_calls.set(call);
-            SerialIrqOutcome {
-                claimed: true,
-                rx_pushed: 0,
-                tx_sent: 64,
-                tx_wakeup: false,
-                budget_exhausted: call < SERIAL_EVENT_BATCH_LIMIT + 2,
-            }
-        };
-
+    fn emergency_output_without_owner_fails_fast_without_claiming_progress() {
         assert_eq!(
-            process_serial_event_batch(take_pending, publish_pending, |_| {}, service),
-            SerialEventBatch::Deferred
-        );
-        assert_eq!(service_calls.get(), SERIAL_EVENT_BATCH_LIMIT);
-        assert_ne!(pending_bits.get() & SerialEventBits::RESERVICE.bits(), 0);
-
-        assert_eq!(
-            process_serial_event_batch(take_pending, publish_pending, |_| {}, service),
-            SerialEventBatch::Drained
-        );
-        assert_eq!(service_calls.get(), SERIAL_EVENT_BATCH_LIMIT + 2);
-        assert_eq!(pending_bits.get(), 0);
-    }
-
-    #[test]
-    fn event_worker_maps_tx_and_reservice_work_independently() {
-        assert_eq!(
-            serial_soft_work_for_events(SerialEventBits::TX_SPACE),
-            SerialSoftWork::TX_KICK
+            emergency_write_outcome(true, false),
+            EmergencyWriteResult::Busy
         );
         assert_eq!(
-            serial_soft_work_for_events(SerialEventBits::RESERVICE),
-            SerialSoftWork::RESERVICE
+            emergency_write_outcome(false, false),
+            EmergencyWriteResult::Fault
         );
         assert_eq!(
-            serial_soft_work_for_events(SerialEventBits::TX_SPACE | SerialEventBits::RESERVICE),
-            SerialSoftWork::TX_KICK | SerialSoftWork::RESERVICE
+            emergency_write_outcome(true, true),
+            EmergencyWriteResult::Written { count: 0 }
         );
-    }
-
-    #[test]
-    fn exhausted_irq_budget_requests_task_context_reservice() {
-        let outcome = SerialIrqOutcome {
-            claimed: true,
-            rx_pushed: 3,
-            tx_sent: 5,
-            tx_wakeup: true,
-            budget_exhausted: true,
-        };
-
-        assert_eq!(
-            serial_event_bits_for_outcome(outcome),
-            SerialEventBits::RX_READY | SerialEventBits::TX_SPACE | SerialEventBits::RESERVICE
-        );
+        assert_eq!(emergency_flush_outcome(true), EmergencyFlushResult::Busy);
+        assert_eq!(emergency_flush_outcome(false), EmergencyFlushResult::Fault);
     }
 
     #[test]

@@ -1,15 +1,14 @@
 use alloc::{string::String, vec::Vec};
-use core::cell::UnsafeCell;
 
 use ax_errno::AxError;
-use ax_kspin::IrqGuard;
-use axklib::irq::{CpuId, IrqError, run_on_cpu_sync};
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
 pub use rdif_serial::{
-    Config, ConfigError, DataBits, EmergencyFlushResult, EmergencyWriteResult, OwnerId, OwnerLease,
-    Parity, RawUart, RxFlag, RxItem, RxQueue, SerialCounters, SerialIrqHandler, SerialIrqOutcome,
-    SerialParts, SerialPort, SerialSoftWork, StopBits, TxQueue,
+    Config, ConfigError, ContainmentCause, DataBits, EmergencyFlushResult, EmergencyWriteResult,
+    FaultContainment, InterruptMask, IrqCapture, IrqEndpoint, IrqSourceControl, MaskedSource,
+    Parity, RawUart, RxDrain, RxFlag, RxItem, RxQueue, SerialActivationError, SerialCore,
+    SerialCounters, SerialIrqCapture, SerialIrqEvent, SerialIrqEvents, SerialIrqFault,
+    SerialMaskedService, SerialRearmError, SerialSoftWork, StopBits, TxQueue,
 };
 use rdrive::{Device, DeviceId, DriverGeneric, probe::acpi::AcpiInfo, register::FdtInfo};
 
@@ -19,7 +18,14 @@ mod rockchip_fiq;
 
 use crate::{BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt};
 
-pub type SerialRuntime = SerialParts;
+pub struct SerialRuntime {
+    /// Unique UART register owner transferred to the consuming runtime.
+    pub core: SerialCore,
+    /// Single-producer remote submission queue; it never accesses registers.
+    pub tx: TxQueue,
+    /// Single-consumer remote receive queue; it never accesses registers.
+    pub rx: RxQueue,
+}
 
 struct SerialProbeRuntime {
     name: &'static str,
@@ -72,7 +78,12 @@ fn serial_runtime(raw: impl RawUart) -> SerialProbeRuntime {
     let name = raw.name();
     let base_addr = raw.base_addr();
     let baudrate = raw.baudrate();
-    let runtime = SerialPort::split(raw, OwnerId(0));
+    let parts = SerialCore::split(raw);
+    let runtime = SerialRuntime {
+        core: parts.core,
+        tx: parts.tx,
+        rx: parts.rx,
+    };
     SerialProbeRuntime {
         name,
         base_addr,
@@ -97,51 +108,6 @@ impl TryFrom<Device<PlatformSerialDevice>> for SerialDevice {
             runtime,
         })
     }
-}
-
-pub fn run_on_owner<F, R>(owner: OwnerId, op: F) -> Result<R, IrqError>
-where
-    F: FnOnce(OwnerLease<'_>) -> R,
-{
-    struct OwnerCall<F, R> {
-        owner: OwnerId,
-        op: UnsafeCell<Option<F>>,
-        result: UnsafeCell<Option<R>>,
-    }
-
-    unsafe fn thunk<F, R>(arg: *mut ())
-    where
-        F: FnOnce(OwnerLease<'_>) -> R,
-    {
-        let call = unsafe { &*(arg as *const OwnerCall<F, R>) };
-        let op = unsafe { &mut *call.op.get() }
-            .take()
-            .expect("serial owner call entered twice");
-        let _irq_guard = IrqGuard::new();
-        let lease = unsafe { OwnerLease::new_unchecked(call.owner) };
-        let result = op(lease);
-        unsafe { *call.result.get() = Some(result) };
-    }
-
-    let call = OwnerCall {
-        owner,
-        op: UnsafeCell::new(Some(op)),
-        result: UnsafeCell::new(None),
-    };
-    unsafe {
-        run_on_cpu_sync(
-            CpuId(owner.0),
-            thunk::<F, R>,
-            (&call as *const OwnerCall<F, R> as *mut ()).cast(),
-        )?;
-    }
-    Ok(unsafe { &mut *call.result.get() }
-        .take()
-        .expect("serial owner call did not complete"))
-}
-
-pub fn owner_lease_for_cpu(owner: OwnerId, cpu: CpuId) -> Option<OwnerLease<'static>> {
-    (cpu.0 == owner.0).then(|| unsafe { OwnerLease::new_unchecked(owner) })
 }
 
 pub fn take_serial_devices() -> Vec<SerialDevice> {

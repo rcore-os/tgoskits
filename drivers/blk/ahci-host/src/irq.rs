@@ -3,10 +3,14 @@ use core::{
     array,
     cell::UnsafeCell,
     mem::MaybeUninit,
+    num::NonZeroU64,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence},
 };
 
-use rdif_block::{Event, IrqHandler, IrqOutcome};
+use rdif_block::{
+    BlkError, BlockIrqCapture, BlockIrqSource, ContainmentCause, Event, FaultContainment,
+    IrqCapture, IrqControlError, IrqEndpoint, IrqSourceControl, MaskedSource,
+};
 
 use crate::registers::{
     DEFAULT_PORT_IRQ_MASK, HOST_IS, IRQ_COMPLETION, IRQ_ERROR, MAX_PORTS, PX_CI, PX_IE, PX_IS,
@@ -156,6 +160,8 @@ pub(crate) struct HostShared {
     ports: [PortShared; MAX_PORTS],
     implemented_ports: AtomicU32,
     ready_ports: AtomicU32,
+    masked_ports: AtomicU32,
+    source_generation: AtomicU64,
     irq_delivery_enabled: AtomicBool,
     capture_active: AtomicBool,
     init_handler_taken: AtomicBool,
@@ -171,6 +177,8 @@ impl HostShared {
             ports: array::from_fn(|_| PortShared::new()),
             implemented_ports: AtomicU32::new(0),
             ready_ports: AtomicU32::new(0),
+            masked_ports: AtomicU32::new(0),
+            source_generation: AtomicU64::new(1),
             irq_delivery_enabled: AtomicBool::new(false),
             capture_active: AtomicBool::new(false),
             init_handler_taken: AtomicBool::new(false),
@@ -206,29 +214,37 @@ impl HostShared {
     }
 
     pub(crate) fn set_irq_delivery_enabled(&self, enabled: bool) {
-        self.irq_delivery_enabled.store(enabled, Ordering::Release);
+        let previous = self.irq_delivery_enabled.swap(enabled, Ordering::AcqRel);
+        if enabled && !previous {
+            let mut generation = self
+                .source_generation
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1);
+            if generation == 0 {
+                self.source_generation.store(1, Ordering::Release);
+                generation = 1;
+            }
+            debug_assert_ne!(generation, 0);
+        }
     }
 
     pub(crate) fn irq_delivery_enabled(&self) -> bool {
         self.irq_delivery_enabled.load(Ordering::Acquire)
     }
 
-    pub(crate) fn take_initial_handler(self: &Arc<Self>) -> Option<Box<dyn IrqHandler>> {
+    pub(crate) fn take_initial_source(self: &Arc<Self>) -> Option<BlockIrqSource> {
         self.init_handler_taken
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
         self.init_handler_live.store(true, Ordering::Release);
-        Some(Box::new(AhciIrqHandler::new(
-            Arc::clone(self),
-            IrqEndpointRole::Initialization,
-        )))
+        Some(self.new_irq_source(IrqEndpointRole::Initialization))
     }
 
     pub(crate) fn initial_handler_live(&self) -> bool {
         self.init_handler_live.load(Ordering::Acquire)
     }
 
-    pub(crate) fn take_io_handler(self: &Arc<Self>) -> Option<Box<dyn IrqHandler>> {
+    pub(crate) fn take_io_source(self: &Arc<Self>) -> Option<BlockIrqSource> {
         if self.initial_handler_live() {
             return None;
         }
@@ -236,10 +252,7 @@ impl HostShared {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
         self.io_handler_live.store(true, Ordering::Release);
-        Some(Box::new(AhciIrqHandler::new(
-            Arc::clone(self),
-            IrqEndpointRole::NormalIo,
-        )))
+        Some(self.new_irq_source(IrqEndpointRole::NormalIo))
     }
 
     pub(crate) fn io_handler_live(&self) -> bool {
@@ -250,46 +263,59 @@ impl HostShared {
         CaptureGuard::try_acquire(&self.capture_active)
     }
 
-    fn capture_irq(&self) -> IrqOutcome {
+    fn new_irq_source(self: &Arc<Self>, role: IrqEndpointRole) -> BlockIrqSource {
+        BlockIrqSource::new(
+            Box::new(AhciIrqHandler::new(Arc::clone(self), role)),
+            Box::new(AhciIrqControl {
+                shared: Arc::clone(self),
+            }),
+        )
+    }
+
+    fn capture_irq(&self) -> BlockIrqCapture {
         if !self.irq_delivery_enabled() {
-            return IrqOutcome::unhandled();
+            return IrqCapture::Unhandled;
         }
         let Some(_capture) = CaptureGuard::try_acquire(&self.capture_active) else {
-            // A second retained handler endpoint may race during route handoff.
-            // Leave the level source asserted; the OS action will retry after
-            // the unique destructive owner releases the register window.
-            return IrqOutcome::unhandled();
+            return IrqCapture::Fault {
+                reason: BlkError::Busy,
+                containment: FaultContainment::Uncontained,
+            };
         };
         let host_status = self.registers.read32(HOST_IS);
         if host_status == 0 {
-            return IrqOutcome::unhandled();
+            return IrqCapture::Unhandled;
         }
 
         let pending_ports = host_status & self.implemented_ports();
         let mut event = Event::none();
+        let mut masked_ports = 0_u32;
         for port in 0..MAX_PORTS {
             if pending_ports & (1 << port) == 0 {
                 continue;
             }
-            if self.capture_port_irq(port) {
-                event.push_queue(port);
+            let Some(masked) = self.capture_port_irq(port) else {
+                continue;
+            };
+            event.push_queue(port);
+            if masked {
+                masked_ports |= 1 << port;
             }
         }
 
         // AHCI host status is a level-triggered latch. Every port status must
         // be acknowledged before the unmasked host value is cleared.
         self.registers.write32(HOST_IS, host_status);
-        if event.is_empty() {
-            IrqOutcome::handled_control()
-        } else {
-            IrqOutcome::handled(event)
+        IrqCapture::Captured {
+            event,
+            masked: (masked_ports != 0).then(|| self.masked_source(masked_ports)),
         }
     }
 
-    fn capture_port_irq(&self, port: usize) -> bool {
+    fn capture_port_irq(&self, port: usize) -> Option<bool> {
         let status = read_port(self.registers(), port, PX_IS);
         if status == 0 {
-            return false;
+            return None;
         }
 
         let sata_error = if status & IRQ_ERROR != 0 {
@@ -312,33 +338,90 @@ impl HostShared {
         }
         write_port(self.registers(), port, PX_IS, status);
 
-        if !self.port(port).snapshots.push(snapshot) {
+        let masked = if !self.port(port).snapshots.push(snapshot) {
             self.port(port).overflow.store(true, Ordering::Release);
             // Overflow loses stable device facts, so freeze this port and let
-            // the bounded worker enter controller recovery.
-            write_port(self.registers(), port, PX_IE, 0);
-        }
-        true
+            // the bounded owner enter controller recovery.
+            self.mask_port(port);
+            true
+        } else {
+            false
+        };
+        Some(masked)
     }
 
     pub(crate) fn mask_all_ports(&self) {
+        let implemented = self.implemented_ports();
         for port in 0..MAX_PORTS {
-            if self.implemented_ports() & (1 << port) != 0 {
+            if implemented & (1 << port) != 0 {
                 write_port(self.registers(), port, PX_IE, 0);
             }
         }
+        self.masked_ports.fetch_or(implemented, Ordering::Release);
     }
 
     pub(crate) fn mask_port(&self, port: usize) {
         write_port(self.registers(), port, PX_IE, 0);
+        self.masked_ports.fetch_or(1 << port, Ordering::Release);
     }
 
     pub(crate) fn unmask_ready_ports(&self) {
+        let ready = self.ready_ports();
         for port in 0..MAX_PORTS {
-            if self.ready_ports() & (1 << port) != 0 {
+            if ready & (1 << port) != 0 {
                 write_port(self.registers(), port, PX_IE, DEFAULT_PORT_IRQ_MASK);
             }
         }
+        self.masked_ports.fetch_and(!ready, Ordering::Release);
+    }
+
+    fn masked_source(&self, ports: u32) -> MaskedSource {
+        let generation = NonZeroU64::new(self.source_generation.load(Ordering::Acquire))
+            .expect("AHCI IRQ source generation is always nonzero");
+        let bitmap = NonZeroU64::new(u64::from(ports))
+            .expect("AHCI masked source always owns at least one port");
+        MaskedSource::new(generation, bitmap)
+    }
+
+    fn contain_source(&self, _cause: ContainmentCause) -> Result<MaskedSource, BlkError> {
+        let _capture = self.try_claim_register_window().ok_or(BlkError::Busy)?;
+        let ports = self.implemented_ports();
+        if ports == 0 {
+            return Err(BlkError::Other("AHCI has no maskable implemented port"));
+        }
+        self.mask_all_ports();
+        Ok(self.masked_source(ports))
+    }
+
+    fn rearm_source(&self, source: MaskedSource) -> Result<(), IrqControlError> {
+        let generation = source.generation().get();
+        let active = self.source_generation.load(Ordering::Acquire);
+        if generation != active {
+            return Err(IrqControlError::StaleGeneration {
+                expected: active,
+                actual: generation,
+            });
+        }
+        let bitmap = source.bitmap().get();
+        let ports =
+            u32::try_from(bitmap).map_err(|_| IrqControlError::SourceNotMasked { bitmap })?;
+        let masked = self.masked_ports.load(Ordering::Acquire);
+        if ports == 0 || ports & !masked != 0 {
+            return Err(IrqControlError::SourceNotMasked { bitmap });
+        }
+        if ports & !self.ready_ports() != 0 {
+            return Err(IrqControlError::Offline);
+        }
+        let _capture = self
+            .try_claim_register_window()
+            .ok_or(IrqControlError::Hardware(BlkError::Busy))?;
+        for port in 0..MAX_PORTS {
+            if ports & (1 << port) != 0 {
+                write_port(self.registers(), port, PX_IE, DEFAULT_PORT_IRQ_MASK);
+            }
+        }
+        self.masked_ports.fetch_and(!ports, Ordering::Release);
+        Ok(())
     }
 }
 
@@ -372,9 +455,28 @@ impl AhciIrqHandler {
     }
 }
 
-impl IrqHandler for AhciIrqHandler {
-    fn handle_irq(&mut self) -> IrqOutcome {
+impl IrqEndpoint for AhciIrqHandler {
+    type Event = Event;
+    type Fault = BlkError;
+
+    fn capture(&mut self) -> BlockIrqCapture {
         self.shared.capture_irq()
+    }
+
+    fn contain(&mut self, cause: ContainmentCause) -> Result<MaskedSource, Self::Fault> {
+        self.shared.contain_source(cause)
+    }
+}
+
+struct AhciIrqControl {
+    shared: Arc<HostShared>,
+}
+
+impl IrqSourceControl for AhciIrqControl {
+    type Error = IrqControlError;
+
+    fn rearm(&mut self, source: MaskedSource) -> Result<(), Self::Error> {
+        self.shared.rearm_source(source)
     }
 }
 
@@ -489,7 +591,7 @@ mod tests {
         let outcome = shared.capture_irq();
         let snapshot = shared.port(0).pop_snapshot().unwrap();
 
-        assert!(outcome.is_handled());
+        assert!(outcome.is_captured());
         assert!(snapshot.has_error());
         assert!(snapshot.completes(0, generation));
         assert_eq!(snapshot.sata_error, 0x40);
@@ -504,7 +606,7 @@ mod tests {
         registers.set(HOST_IS, 1);
         registers.set(port_offset(0, PX_IS), IRQ_D2H_REG_FIS);
 
-        assert!(shared.capture_irq().is_handled());
+        assert!(shared.capture_irq().is_captured());
 
         let writes = registers.writes();
         let port_ack = writes
@@ -526,14 +628,12 @@ mod tests {
 
         let capture = CaptureGuard::try_acquire(&shared.capture_active).unwrap();
         let contended = shared.capture_irq();
-        assert!(!contended.is_handled());
-        assert!(!contended.is_deferred());
+        assert!(contended.is_fault());
         assert!(registers.writes().is_empty());
 
         drop(capture);
         let retried = shared.capture_irq();
-        assert!(retried.is_handled());
-        assert!(!retried.is_deferred());
+        assert!(retried.is_captured());
     }
 
     #[test]
@@ -558,8 +658,9 @@ mod tests {
         }
 
         let outcome = shared.capture_irq();
-        assert!(outcome.is_handled());
-        let event = outcome.acknowledged_event().unwrap();
+        let (event, _masked) = outcome
+            .captured()
+            .expect("programmed AHCI status must be captured");
         assert!(event.for_queue(0).is_some());
         assert!(event.for_queue(1).is_some());
 
@@ -605,10 +706,10 @@ mod tests {
         registers.set(HOST_IS, 1);
         registers.set(port_offset(0, PX_IS), IRQ_D2H_REG_FIS);
         registers.set(port_offset(0, PX_CI), 0);
-        assert!(!shared.capture_irq().is_handled());
+        assert!(shared.capture_irq().is_unhandled());
 
         shared.set_irq_delivery_enabled(true);
-        assert!(shared.capture_irq().is_handled());
+        assert!(shared.capture_irq().is_captured());
         let snapshot = shared.port(0).pop_snapshot().unwrap();
         assert!(snapshot.completes(0, generation));
 
@@ -616,5 +717,36 @@ mod tests {
         let next_generation = shared.port(0).next_request_generation();
         assert!(shared.port(0).publish_active_request(next_generation));
         assert!(!snapshot.completes(0, next_generation));
+    }
+
+    #[test]
+    fn containment_token_rearms_only_the_matching_controller_generation() {
+        let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
+        let shared = HostShared::new(registers.shared());
+        shared.publish_implemented_ports(1);
+        shared.publish_ready_port(0);
+        shared.set_irq_delivery_enabled(true);
+        let (mut endpoint, mut control) = shared.take_initial_source().unwrap().into_parts();
+
+        let masked = endpoint
+            .contain(ContainmentCause::PublicationFull)
+            .expect("AHCI port source must be precisely containable");
+        assert_eq!(masked.bitmap().get(), 1);
+        control
+            .rearm(masked)
+            .expect("matching generation must reopen the masked port");
+        assert!(registers.writes().iter().any(|write| {
+            write.offset == port_offset(0, PX_IE) && write.value == DEFAULT_PORT_IRQ_MASK
+        }));
+
+        let stale = endpoint
+            .contain(ContainmentCause::OwnerUnavailable)
+            .expect("the same live epoch remains containable");
+        shared.set_irq_delivery_enabled(false);
+        shared.set_irq_delivery_enabled(true);
+        assert!(matches!(
+            control.rearm(stale),
+            Err(IrqControlError::StaleGeneration { .. })
+        ));
     }
 }

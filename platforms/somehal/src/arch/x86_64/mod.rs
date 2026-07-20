@@ -1,7 +1,8 @@
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use alloc::{boxed::Box, vec::Vec};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use ax_kspin::SpinIrqSave;
+use irq_framework::{CpuId, IrqScope};
 use rdif_intc::{AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 use rdrive::{
     DriverGeneric, module_driver,
@@ -18,6 +19,7 @@ use crate::{
         CPU_LOCAL_IRQ_DOMAIN, CpuIpiTarget, HwIrq, IpiSendStatus, IrqDomainId, IrqError, IrqId,
         IrqSource, X86_LAPIC_DOMAIN,
     },
+    irq_line::{BoundIrqStatus, IrqChipLine, PreparedIrqChipLine},
 };
 
 mod lapic;
@@ -38,6 +40,10 @@ const LAST_EXTERNAL_VECTOR: usize = 0xfe;
 const EXTERNAL_VECTOR_CAPACITY: usize = LAST_EXTERNAL_VECTOR - FIRST_EXTERNAL_VECTOR + 1 - 2;
 const IRQ_ROUTE_VALID: u64 = 1 << 63;
 const UNPUBLISHED_IOAPIC_GSI_ROUTE: u64 = 0;
+const UNPUBLISHED_IOAPIC_GSI_CONFIG: u8 = 0;
+const IOAPIC_GSI_CONFIG_VALID: u8 = 1 << 7;
+const IOAPIC_GSI_CONFIG_LEVEL: u8 = 1 << 0;
+const IOAPIC_GSI_CONFIG_ACTIVE_LOW: u8 = 1 << 1;
 
 static IOAPIC_CPU_IF: X86IoApicCpuInterface = X86IoApicCpuInterface::new();
 
@@ -61,6 +67,12 @@ struct X86IoApicCpuInterface {
     vector_routes: [AtomicU64; 256],
     endpoint_slots: [IoApicEndpointSlot; EXTERNAL_VECTOR_CAPACITY],
     mmio_lock: SpinIrqSave<()>,
+}
+
+#[derive(Clone, Copy)]
+struct IoApicLineEndpoint {
+    physical_base: u64,
+    input: u8,
 }
 
 impl X86IoApicCpuInterface {
@@ -91,19 +103,49 @@ impl X86IoApicCpuInterface {
     }
 
     fn set_gsi_enabled(&self, gsi: u32, enabled: bool) -> Result<(), IrqError> {
-        let (physical_base, input) = self.endpoint_for_gsi(gsi).ok_or(IrqError::NotFound)?;
+        let endpoint = self.line_endpoint(gsi)?;
+        self.set_endpoint_enabled(endpoint, enabled);
+        Ok(())
+    }
 
+    fn line_endpoint(&self, gsi: u32) -> Result<IoApicLineEndpoint, IrqError> {
+        let (physical_base, input) = self.endpoint_for_gsi(gsi).ok_or(IrqError::NotFound)?;
+        Ok(IoApicLineEndpoint {
+            physical_base,
+            input,
+        })
+    }
+
+    fn set_endpoint_enabled(&self, endpoint: IoApicLineEndpoint, enabled: bool) {
         let _guard = self.mmio_lock.lock();
-        let virtual_base = someboot::mem::phys_to_virt(physical_base as usize) as u64;
+        let virtual_base = someboot::mem::phys_to_virt(endpoint.physical_base as usize) as u64;
         let mut ioapic = unsafe { IoApic::new(virtual_base) };
         unsafe {
             if enabled {
-                ioapic.enable_irq(input);
+                ioapic.enable_irq(endpoint.input);
             } else {
-                ioapic.disable_irq(input);
+                ioapic.disable_irq(endpoint.input);
             }
         }
-        Ok(())
+    }
+
+    fn set_endpoint_destination(&self, endpoint: IoApicLineEndpoint, dest: u8) {
+        let _guard = self.mmio_lock.lock();
+        let virtual_base = someboot::mem::phys_to_virt(endpoint.physical_base as usize) as u64;
+        let mut ioapic = unsafe { IoApic::new(virtual_base) };
+        unsafe {
+            let mut entry = ioapic.table_entry(endpoint.input);
+            entry.set_dest(dest);
+            ioapic.set_table_entry(endpoint.input, entry);
+        }
+    }
+
+    fn endpoint_enabled(&self, endpoint: IoApicLineEndpoint) -> bool {
+        let _guard = self.mmio_lock.lock();
+        let virtual_base = someboot::mem::phys_to_virt(endpoint.physical_base as usize) as u64;
+        let mut ioapic = unsafe { IoApic::new(virtual_base) };
+        let entry = unsafe { ioapic.table_entry(endpoint.input) };
+        !entry.flags().contains(IrqFlags::MASKED)
     }
 
     fn reserve_gsi_endpoint(
@@ -113,6 +155,7 @@ impl X86IoApicCpuInterface {
         let key = encode_gsi_key(route.gsi);
         let encoded_route =
             encode_ioapic_gsi_route(route.controller_address, route.controller_input)?;
+        let encoded_config = encode_ioapic_gsi_config(route.trigger, route.polarity);
         let start = endpoint_slot_start(route.gsi);
         let mut first_empty = None;
 
@@ -122,11 +165,13 @@ impl X86IoApicCpuInterface {
             let existing_key = slot.gsi_key.load(Ordering::Acquire);
             if existing_key == key {
                 let existing_route = slot.route.load(Ordering::Acquire);
-                return if existing_route == encoded_route {
+                let existing_config = slot.config.load(Ordering::Acquire);
+                return if existing_route == encoded_route && existing_config == encoded_config {
                     Ok(IoApicEndpointReservation::existing(
                         slot,
                         key,
                         encoded_route,
+                        encoded_config,
                     ))
                 } else {
                     Err(IrqError::Busy)
@@ -141,7 +186,12 @@ impl X86IoApicCpuInterface {
         slot.gsi_key
             .compare_exchange(0, key, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| IrqError::Busy)?;
-        Ok(IoApicEndpointReservation::new(slot, key, encoded_route))
+        Ok(IoApicEndpointReservation::new(
+            slot,
+            key,
+            encoded_route,
+            encoded_config,
+        ))
     }
 
     fn reserve_external_vector(
@@ -200,6 +250,7 @@ impl X86IoApicCpuInterface {
 struct IoApicEndpointSlot {
     gsi_key: AtomicU64,
     route: AtomicU64,
+    config: AtomicU8,
 }
 
 impl IoApicEndpointSlot {
@@ -207,6 +258,7 @@ impl IoApicEndpointSlot {
         Self {
             gsi_key: AtomicU64::new(0),
             route: AtomicU64::new(UNPUBLISHED_IOAPIC_GSI_ROUTE),
+            config: AtomicU8::new(UNPUBLISHED_IOAPIC_GSI_CONFIG),
         }
     }
 }
@@ -215,33 +267,41 @@ struct IoApicEndpointReservation<'a> {
     slot: &'a IoApicEndpointSlot,
     key: u64,
     route: u64,
+    config: u8,
     newly_reserved: bool,
     published: bool,
 }
 
 impl<'a> IoApicEndpointReservation<'a> {
-    const fn new(slot: &'a IoApicEndpointSlot, key: u64, route: u64) -> Self {
+    const fn new(slot: &'a IoApicEndpointSlot, key: u64, route: u64, config: u8) -> Self {
         Self {
             slot,
             key,
             route,
+            config,
             newly_reserved: true,
             published: false,
         }
     }
 
-    const fn existing(slot: &'a IoApicEndpointSlot, key: u64, route: u64) -> Self {
+    const fn existing(slot: &'a IoApicEndpointSlot, key: u64, route: u64, config: u8) -> Self {
         Self {
             slot,
             key,
             route,
+            config,
             newly_reserved: false,
             published: true,
         }
     }
 
+    const fn is_new(&self) -> bool {
+        self.newly_reserved
+    }
+
     fn publish(mut self) {
         if self.newly_reserved {
+            self.slot.config.store(self.config, Ordering::Relaxed);
             self.slot.route.store(self.route, Ordering::Release);
             self.published = true;
         }
@@ -261,6 +321,9 @@ impl Drop for IoApicEndpointReservation<'_> {
             );
             return;
         }
+        self.slot
+            .config
+            .store(UNPUBLISHED_IOAPIC_GSI_CONFIG, Ordering::Relaxed);
         let _ =
             self.slot
                 .gsi_key
@@ -299,6 +362,10 @@ impl<'a> ExternalVectorReservation<'a> {
 
     const fn vector(&self) -> u8 {
         self.vector
+    }
+
+    const fn is_new(&self) -> bool {
+        self.newly_reserved
     }
 
     fn publish(mut self) {
@@ -374,10 +441,42 @@ fn decode_ioapic_gsi_route(encoded: u64) -> Option<(u64, u8)> {
     (encoded != UNPUBLISHED_IOAPIC_GSI_ROUTE).then_some(((encoded >> 8) << 12, encoded as u8))
 }
 
+const fn encode_ioapic_gsi_config(
+    trigger: AcpiIrqTrigger,
+    polarity: AcpiIrqPolarity,
+) -> u8 {
+    let mut config = IOAPIC_GSI_CONFIG_VALID;
+    if matches!(trigger, AcpiIrqTrigger::Level) {
+        config |= IOAPIC_GSI_CONFIG_LEVEL;
+    }
+    if matches!(polarity, AcpiIrqPolarity::ActiveLow) {
+        config |= IOAPIC_GSI_CONFIG_ACTIVE_LOW;
+    }
+    config
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IoApicRouteReservation {
+    ProgramMasked,
+    ReuseLive,
+}
+
+fn classify_ioapic_route_reservation(
+    endpoint_is_new: bool,
+    vector_is_new: bool,
+) -> Result<IoApicRouteReservation, IrqError> {
+    match (endpoint_is_new, vector_is_new) {
+        (true, true) => Ok(IoApicRouteReservation::ProgramMasked),
+        (false, false) => Ok(IoApicRouteReservation::ReuseLive),
+        // One half of a route without the other cannot be repaired by
+        // rewriting live IOAPIC state. Retain the published half and make the
+        // inconsistent discovery fail closed.
+        _ => Err(IrqError::Busy),
+    }
+}
+
 struct X86IoApicIntc {
     ioapics: Vec<X86IoApic>,
-    routes: Vec<ProgrammedIoApicRoute>,
-    destinations: Vec<(usize, u8)>,
 }
 
 #[derive(Clone, Copy)]
@@ -390,79 +489,16 @@ impl X86IoApicIntc {
     fn new(ioapics: &[AcpiIoApic]) -> Self {
         Self {
             ioapics: ioapics.iter().copied().map(X86IoApic::new).collect(),
-            routes: Vec::with_capacity(EXTERNAL_VECTOR_CAPACITY),
-            destinations: Vec::with_capacity(EXTERNAL_VECTOR_CAPACITY),
         }
-    }
-
-    fn remember_route(&mut self, route: ProgrammedIoApicRoute) {
-        if let Some(existing) = self.routes.iter_mut().find(|r| {
-            r.acpi.controller_id == route.acpi.controller_id
-                && r.acpi.controller_address == route.acpi.controller_address
-                && r.acpi.gsi == route.acpi.gsi
-        }) {
-            *existing = route;
-        } else {
-            self.routes.push(route);
-        }
-    }
-
-    fn route_for_gsi(&self, gsi: u32) -> Option<ProgrammedIoApicRoute> {
-        self.routes
-            .iter()
-            .copied()
-            .find(|route| route.acpi.gsi == gsi)
-    }
-
-    fn set_gsi_enable(&mut self, gsi: u32, enable: bool) -> bool {
-        let Some(route) = self.route_for_gsi(gsi) else {
-            return false;
-        };
-        self.set_route_enable(&route, enable)
     }
 
     fn set_route_enable(&mut self, route: &ProgrammedIoApicRoute, enable: bool) -> bool {
-        let dest = self.destination_for_vector(usize::from(route.vector));
         for ioapic in &mut self.ioapics {
             if ioapic.contains_route(&route.acpi) {
-                return ioapic.set_route_enable(route, enable, dest).is_ok();
+                return ioapic.set_route_enable(route, enable, 0).is_ok();
             }
         }
         false
-    }
-
-    fn remember_destination(&mut self, vector: usize, dest: u8) {
-        if let Some((_, existing)) = self
-            .destinations
-            .iter_mut()
-            .find(|(known_vector, _)| *known_vector == vector)
-        {
-            *existing = dest;
-        } else {
-            self.destinations.push((vector, dest));
-        }
-    }
-
-    fn set_gsi_destination(&mut self, gsi: u32, dest: u8) -> bool {
-        let Some(route) = self.route_for_gsi(gsi) else {
-            return false;
-        };
-
-        for ioapic in &mut self.ioapics {
-            if ioapic.contains_route(&route.acpi) {
-                ioapic.set_route_destination(&route, dest);
-                self.remember_destination(usize::from(route.vector), dest);
-                return true;
-            }
-        }
-        false
-    }
-
-    fn destination_for_vector(&self, vector: usize) -> u8 {
-        self.destinations
-            .iter()
-            .find_map(|(known_vector, dest)| (*known_vector == vector).then_some(*dest))
-            .unwrap_or(0)
     }
 }
 
@@ -547,20 +583,6 @@ impl X86IoApic {
         }
         Ok(())
     }
-
-    fn set_route_destination(&mut self, route: &ProgrammedIoApicRoute, dest: u8) {
-        if !self.contains_route(&route.acpi) {
-            return;
-        }
-
-        let _guard = IOAPIC_CPU_IF.mmio_lock.lock();
-        unsafe {
-            let input = route.acpi.controller_input;
-            let mut entry = self.ioapic.table_entry(input);
-            entry.set_dest(dest);
-            self.ioapic.set_table_entry(input, entry);
-        }
-    }
 }
 
 impl DriverGeneric for X86IoApicIntc {
@@ -600,31 +622,33 @@ impl rdif_intc::Interface for X86IoApicIntc {
             return Err(IrqError::Unsupported);
         }
 
-        // Reserve every software resource before touching IOREGSEL/IOWIN. The
-        // tokens roll back automatically on any validation or programming
-        // failure. Once masked MMIO programming succeeds, publication is a
-        // pair of infallible Release stores: vector first, endpoint last.
+        // Reserve every software resource before touching IOREGSEL/IOWIN. A
+        // GSI route is immutable after its first masked publication: another
+        // PCI function sharing the same ACPI GSI may validate and reuse it,
+        // but must never rewrite the live IOAPIC mask bit behind the IRQ
+        // framework's desired/applied state.
         let endpoint = IOAPIC_CPU_IF.reserve_gsi_endpoint(route)?;
         let vector = IOAPIC_CPU_IF.reserve_external_vector(translation.id, route.gsi)?;
+        let reservation =
+            classify_ioapic_route_reservation(endpoint.is_new(), vector.is_new())?;
         let programmed = ProgrammedIoApicRoute {
             acpi: *route,
             vector: vector.vector(),
         };
-        if !self.set_route_enable(&programmed, false) {
+        if reservation == IoApicRouteReservation::ProgramMasked
+            && !self.set_route_enable(&programmed, false)
+        {
             return Err(IrqError::Unsupported);
         }
         vector.publish();
         endpoint.publish();
-        self.remember_route(programmed);
         Ok(())
     }
 
     fn set_enabled(&mut self, hwirq: HwIrq, enabled: bool) -> Result<(), IrqError> {
-        if self.set_gsi_enable(hwirq.0, enabled) {
-            Ok(())
-        } else {
-            Err(IrqError::InvalidIrq)
-        }
+        IOAPIC_CPU_IF
+            .set_gsi_enabled(hwirq.0, enabled)
+            .map_err(|_| IrqError::InvalidIrq)
     }
 }
 
@@ -647,48 +671,40 @@ fn probe_ioapic(probe: ProbeAcpi<'_>) -> Result<(), OnProbeError> {
 impl PlatOp for Plat {
     type ActiveIrq = ActiveIrq;
 
-    fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError> {
-        if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
-            return Ok(());
-        }
-
-        if irq.domain == X86_LAPIC_DOMAIN {
-            if irq.hwirq.0 == 0 {
-                someboot::irq::irq_set_enable(someboot::irq::systimer_irq(), enable);
-                return Ok(());
+    fn prepare_irq_line(
+        irq: IrqId,
+        scope: IrqScope,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Result<PreparedIrqChipLine, IrqError> {
+        let kind = if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
+            // A fixed-delivery LAPIC IPI vector has no per-vector receive-side
+            // mask bit. It remains physically live while the framework gates
+            // delivery through the action state.
+            lapic::ipi_vector(irq)?;
+            if !matches!(scope, IrqScope::PerCpu { .. }) {
+                return Err(IrqError::InvalidIrq);
             }
-            return Err(IrqError::InvalidIrq);
-        }
-
-        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86IoApic) {
-            return IOAPIC_CPU_IF.set_gsi_enabled(irq.hwirq.0, enable);
-        }
-
-        Err(IrqError::InvalidIrq)
-    }
-
-    fn irq_set_affinity(irq: IrqId, affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
-        if irq.domain == X86_LAPIC_DOMAIN || irq.domain == CPU_LOCAL_IRQ_DOMAIN {
-            return Err(IrqError::Unsupported);
-        }
-        if !crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86IoApic) {
-            return Err(IrqError::InvalidIrq);
-        }
-
-        let dest = match affinity {
-            crate::irq::IrqAffinity::Any => 0,
-            crate::irq::IrqAffinity::Fixed { cpu_id } => {
-                let Some(apic_id) = someboot::smp::cpu_idx_to_id(cpu_id) else {
-                    return Err(IrqError::InvalidCpu);
-                };
-                u8::try_from(apic_id).map_err(|_| IrqError::InvalidCpu)?
+            return Ok(PreparedIrqChipLine::action_gate_only());
+        } else if irq.domain == X86_LAPIC_DOMAIN {
+            if irq.hwirq.0 != 0 || !matches!(scope, IrqScope::PerCpu { .. }) {
+                return Err(IrqError::InvalidIrq);
             }
-        };
-        if set_ioapic_gsi_destination(irq.domain, irq.hwirq.0, dest)? {
-            Ok(())
+            X86LineKind::LapicTimer
+        } else if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::X86IoApic) {
+            if scope != IrqScope::Global {
+                return Err(IrqError::InvalidIrq);
+            }
+            let endpoint = IOAPIC_CPU_IF.line_endpoint(irq.hwirq.0)?;
+            let destination = ioapic_destination(affinity)?;
+            IOAPIC_CPU_IF.set_endpoint_enabled(endpoint, false);
+            IOAPIC_CPU_IF.set_endpoint_destination(endpoint, destination);
+            X86LineKind::IoApic { endpoint }
         } else {
-            Err(IrqError::NotFound)
-        }
+            return Err(IrqError::InvalidIrq);
+        };
+        Ok(PreparedIrqChipLine::maskable(Box::new(X86IrqChipLine {
+            kind,
+        })))
     }
 
     fn send_ipi(
@@ -880,17 +896,61 @@ fn route_to_rdif(route: irq_framework::AcpiGsiRoute) -> AcpiGsiRoute {
     }
 }
 
-fn set_ioapic_gsi_destination(
-    domain: crate::irq::IrqDomainId,
-    gsi: u32,
-    dest: u8,
-) -> Result<bool, IrqError> {
-    let intc = crate::irq::intc_by_domain(domain)?;
-    let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
-    let ioapic = intc
-        .typed_mut::<X86IoApicIntc>()
-        .ok_or(IrqError::Unsupported)?;
-    Ok(ioapic.set_gsi_destination(gsi, dest))
+fn ioapic_destination(affinity: crate::irq::IrqAffinity) -> Result<u8, IrqError> {
+    let dest = match affinity {
+        crate::irq::IrqAffinity::Any => 0,
+        crate::irq::IrqAffinity::Fixed { cpu_id } => {
+            let Some(apic_id) = someboot::smp::cpu_idx_to_id(cpu_id) else {
+                return Err(IrqError::InvalidCpu);
+            };
+            u8::try_from(apic_id).map_err(|_| IrqError::InvalidCpu)?
+        }
+    };
+    Ok(dest)
+}
+
+struct X86IrqChipLine {
+    kind: X86LineKind,
+}
+
+#[derive(Clone, Copy)]
+enum X86LineKind {
+    LapicTimer,
+    IoApic { endpoint: IoApicLineEndpoint },
+}
+
+// SAFETY: the endpoint retains only shutdown-lifetime LAPIC/IOAPIC
+// capabilities. Every live operation uses an IRQ-safe bounded MMIO critical
+// section and cannot allocate, block, or re-enter the driver registry.
+unsafe impl IrqChipLine for X86IrqChipLine {
+    fn set_enabled(&self, cpu: Option<CpuId>, enabled: bool) {
+        match self.kind {
+            X86LineKind::LapicTimer => {
+                let cpu = cpu.expect("LAPIC timer line requires a target CPU");
+                assert_eq!(
+                    crate::cpu::runtime_current_cpu(),
+                    Some(cpu),
+                    "prepared LAPIC timer line executed on the wrong CPU"
+                );
+                someboot::irq::irq_set_enable(someboot::irq::systimer_irq(), enabled);
+            }
+            X86LineKind::IoApic { endpoint } => {
+                assert!(cpu.is_none(), "IOAPIC line cannot use a per-CPU target");
+                IOAPIC_CPU_IF.set_endpoint_enabled(endpoint, enabled);
+            }
+        }
+    }
+
+    fn status(&self, _cpu: Option<CpuId>) -> BoundIrqStatus {
+        let enabled = match self.kind {
+            X86LineKind::IoApic { endpoint } => Some(IOAPIC_CPU_IF.endpoint_enabled(endpoint)),
+            X86LineKind::LapicTimer => None,
+        };
+        BoundIrqStatus {
+            enabled,
+            ..BoundIrqStatus::default()
+        }
+    }
 }
 
 fn ioapic_irq_for_vector(vector: usize) -> Option<IrqId> {
@@ -1067,6 +1127,62 @@ mod tests {
         };
 
         assert_eq!(route_to_rdif(route_to_irq_framework(route)), route);
+    }
+
+    #[test]
+    fn repeated_identical_ioapic_route_reuses_live_hardware_state() {
+        let cpu_if = X86IoApicCpuInterface::new();
+        let route = ioapic_route(10, 0, 0xfec0_0000);
+        let irq = ioapic_gsi_irq_id(route.gsi);
+
+        let endpoint = cpu_if.reserve_gsi_endpoint(&route).unwrap();
+        let vector = cpu_if.reserve_external_vector(irq, route.gsi).unwrap();
+        assert_eq!(
+            classify_ioapic_route_reservation(endpoint.is_new(), vector.is_new()),
+            Ok(IoApicRouteReservation::ProgramMasked)
+        );
+        vector.publish();
+        endpoint.publish();
+
+        let endpoint = cpu_if.reserve_gsi_endpoint(&route).unwrap();
+        let vector = cpu_if.reserve_external_vector(irq, route.gsi).unwrap();
+        assert_eq!(
+            classify_ioapic_route_reservation(endpoint.is_new(), vector.is_new()),
+            Ok(IoApicRouteReservation::ReuseLive)
+        );
+    }
+
+    #[test]
+    fn repeated_ioapic_route_rejects_changed_electrical_configuration() {
+        let cpu_if = X86IoApicCpuInterface::new();
+        let route = ioapic_route(10, 0, 0xfec0_0000);
+        cpu_if.reserve_gsi_endpoint(&route).unwrap().publish();
+
+        let mut changed = route;
+        changed.polarity = AcpiIrqPolarity::ActiveHigh;
+        assert!(matches!(
+            cpu_if.reserve_gsi_endpoint(&changed),
+            Err(IrqError::Busy)
+        ));
+
+        changed = route;
+        changed.trigger = AcpiIrqTrigger::Edge;
+        assert!(matches!(
+            cpu_if.reserve_gsi_endpoint(&changed),
+            Err(IrqError::Busy)
+        ));
+    }
+
+    #[test]
+    fn half_published_ioapic_route_fails_closed() {
+        assert_eq!(
+            classify_ioapic_route_reservation(true, false),
+            Err(IrqError::Busy)
+        );
+        assert_eq!(
+            classify_ioapic_route_reservation(false, true),
+            Err(IrqError::Busy)
+        );
     }
 
     fn ioapic_route(gsi: u32, controller_id: u16, controller_address: u64) -> AcpiGsiRoute {

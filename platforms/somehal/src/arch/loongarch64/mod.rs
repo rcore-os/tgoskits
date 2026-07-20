@@ -1,9 +1,13 @@
+use alloc::boxed::Box;
+
+use irq_framework::{CpuId, IrqScope};
 use loongArch64::iocsr::{iocsr_read_w, iocsr_write_w};
 use rdif_intc::{AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger};
 
 use crate::{
     common::PlatOp,
     irq::{CPU_LOCAL_IRQ_DOMAIN, CpuIpiTarget, HwIrq, IpiSendStatus, IrqError, IrqId, IrqSource},
+    irq_line::{IrqChipLine, PreparedIrqChipLine},
 };
 
 mod eiointc;
@@ -147,39 +151,44 @@ fn route_to_rdif(route: irq_framework::AcpiGsiRoute) -> AcpiGsiRoute {
 impl PlatOp for Plat {
     type ActiveIrq = ActiveIrq;
 
-    fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError> {
+    fn prepare_irq_line(
+        irq: IrqId,
+        scope: IrqScope,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Result<PreparedIrqChipLine, IrqError> {
         if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
-            let raw = irq.hwirq.0 as usize;
-            if raw == someboot::irq::systimer_irq().raw() {
-                someboot::irq::irq_set_enable(someboot::irq::IrqId::new(raw), enable);
-                return Ok(());
+            let irq = checked_cpu_local_irq(irq.hwirq)?;
+            if !matches!(scope, IrqScope::PerCpu { .. }) {
+                return Err(IrqError::InvalidIrq);
             }
-            if raw == IPI_IRQ {
-                let value = if enable { u32::MAX } else { 0 };
-                iocsr_write_w(IOCSR_IPI_ENABLE, value);
-                someboot::irq::irq_set_enable(someboot::irq::IrqId::new(raw), enable);
-                return Ok(());
-            }
-            return Err(IrqError::InvalidIrq);
+            return Ok(PreparedIrqChipLine::maskable(Box::new(
+                LoongArchCpuLocalLine {
+                    irq,
+                    raw: irq.hwirq.0 as usize,
+                },
+            )));
         }
-
-        if is_loongarch_external_domain(irq.domain) {
-            crate::irq::set_controller_irq_enabled(irq, enable)
-        } else {
-            Err(IrqError::InvalidIrq)
-        }
-    }
-
-    fn irq_set_affinity(irq: IrqId, affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
-        if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
-            return Err(IrqError::Unsupported);
-        }
-        if !is_loongarch_external_domain(irq.domain) {
+        if scope != IrqScope::Global {
             return Err(IrqError::InvalidIrq);
         }
         match affinity {
-            crate::irq::IrqAffinity::Any | crate::irq::IrqAffinity::Fixed { cpu_id: 0 } => Ok(()),
-            crate::irq::IrqAffinity::Fixed { .. } => Err(IrqError::Unsupported),
+            crate::irq::IrqAffinity::Any | crate::irq::IrqAffinity::Fixed { cpu_id: 0 } => {}
+            crate::irq::IrqAffinity::Fixed { .. } => return Err(IrqError::Unsupported),
+        }
+        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::LoongArchPchPic) {
+            pch_pic::prepare_irq_line(irq, scope)
+        } else if crate::irq::domain_is_kind(
+            irq.domain,
+            crate::irq::IrqDomainKind::LoongArchEioIntc,
+        ) {
+            eiointc::prepare_irq_line(irq, scope)
+        } else if crate::irq::domain_is_kind(
+            irq.domain,
+            crate::irq::IrqDomainKind::LoongArchLioIntc,
+        ) {
+            liointc::prepare_irq_line(irq, scope)
+        } else {
+            Err(IrqError::InvalidIrq)
         }
     }
 
@@ -306,6 +315,46 @@ impl PlatOp for Plat {
 
     fn init_boot_irq_cpu(_cpu_idx: usize, _role: crate::irq::CpuBootRole) -> Result<(), IrqError> {
         Ok(())
+    }
+}
+
+fn set_cpu_local_irq_enabled(raw: usize, enabled: bool) -> Result<(), IrqError> {
+    if raw == someboot::irq::systimer_irq().raw() {
+        someboot::irq::irq_set_enable(someboot::irq::IrqId::new(raw), enabled);
+        return Ok(());
+    }
+    if raw == IPI_IRQ {
+        iocsr_write_w(IOCSR_IPI_ENABLE, if enabled { u32::MAX } else { 0 });
+        someboot::irq::irq_set_enable(someboot::irq::IrqId::new(raw), enabled);
+        return Ok(());
+    }
+    Err(IrqError::InvalidIrq)
+}
+
+struct LoongArchCpuLocalLine {
+    irq: IrqId,
+    raw: usize,
+}
+
+// SAFETY: preparation accepts only the architectural timer and IPI causes.
+// The framework executes the endpoint on the validated target CPU and the
+// live leaf performs only bounded IOCSR/CSR updates.
+unsafe impl IrqChipLine for LoongArchCpuLocalLine {
+    fn set_enabled(&self, cpu: Option<CpuId>, enabled: bool) {
+        let cpu = cpu.expect("prepared LoongArch CPU-local line requires a target CPU");
+        assert_eq!(
+            crate::cpu::runtime_current_cpu(),
+            Some(cpu),
+            "prepared LoongArch CPU-local line {:?} executed on the wrong CPU",
+            self.irq
+        );
+        set_cpu_local_irq_enabled(self.raw, enabled).unwrap_or_else(|error| {
+            panic!(
+                "fatal platform invariant: prepared LoongArch CPU-local line {:?} failed: \
+                 {error:?}",
+                self.irq
+            )
+        });
     }
 }
 

@@ -3,8 +3,9 @@ use alloc::boxed::Box;
 extern crate alloc;
 
 use rdif_block::{
-    ControllerInitEndpoint, IdList, InitError, InitInput, InitIrqProgress, InitPoll, InitSchedule,
-    InitialController, IrqHandler, IrqOutcome,
+    BlkError, BlockIrqSource, ContainmentCause, ControllerInitEndpoint, Event, IdList, InitError,
+    InitInput, InitPoll, InitSchedule, InitialController, IrqCapture, IrqControlError, IrqEndpoint,
+    IrqSourceControl, MaskedSource,
 };
 
 struct FakeInitialController {
@@ -19,18 +20,16 @@ impl InitialController for FakeInitialController {
         self.declared_sources
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
         assert_eq!(source_id, 0);
         if !self.handler_available {
             return None;
         }
         self.bound = true;
-        Some(Box::new(FakeInitIrq))
-    }
-
-    fn service_deferred_irq(&mut self, source_id: usize) -> InitIrqProgress {
-        assert_eq!(source_id, 0);
-        InitIrqProgress::Acknowledged
+        Some(BlockIrqSource::new(
+            Box::new(FakeInitIrq),
+            Box::new(FakeInitControl),
+        ))
     }
 
     fn poll_init(&mut self, input: InitInput) -> InitPoll<()> {
@@ -49,15 +48,35 @@ impl InitialController for FakeInitialController {
 
 struct FakeInitIrq;
 
-impl IrqHandler for FakeInitIrq {
-    fn handle_irq(&mut self) -> IrqOutcome {
-        IrqOutcome::handled_control()
+impl IrqEndpoint for FakeInitIrq {
+    type Event = Event;
+    type Fault = BlkError;
+
+    fn capture(&mut self) -> rdif_block::BlockIrqCapture {
+        IrqCapture::Captured {
+            event: Event::none(),
+            masked: None,
+        }
+    }
+
+    fn contain(&mut self, _cause: ContainmentCause) -> Result<MaskedSource, Self::Fault> {
+        Ok(MaskedSource::try_new(1, 1).unwrap())
+    }
+}
+
+struct FakeInitControl;
+
+impl IrqSourceControl for FakeInitControl {
+    type Error = IrqControlError;
+
+    fn rearm(&mut self, _source: MaskedSource) -> Result<(), Self::Error> {
+        Err(IrqControlError::SourceNotMasked { bitmap: 1 })
     }
 }
 
 fn take_required_handlers(
     controller: &mut dyn InitialController,
-) -> Result<Vec<Box<dyn IrqHandler>>, InitError> {
+) -> Result<Vec<BlockIrqSource>, InitError> {
     let sources = controller.irq_sources();
     if sources.is_empty() {
         return Err(InitError::MissingInterrupt);
@@ -66,7 +85,7 @@ fn take_required_handlers(
         .iter()
         .map(|source_id| {
             controller
-                .take_irq_handler(source_id)
+                .take_irq_source(source_id)
                 .ok_or(InitError::MissingInterrupt)
         })
         .collect()

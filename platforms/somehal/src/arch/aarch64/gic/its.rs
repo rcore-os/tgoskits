@@ -10,8 +10,8 @@ use arm_gic_driver::v3::{GITS_TRANSLATER_OFFSET, Its, ItsCommand, ItsTableType};
 use ax_kspin::SpinRaw as Mutex;
 use irq_framework::{HwIrq, IrqError, IrqId};
 use rdif_msi::{
-    Interface, Msi, MsiAllocation, MsiDeviceId, MsiEventId, MsiMessage, MsiProviderId, MsiRequest,
-    MsiVector, MsiVectorIndex,
+    Interface, Msi, MsiAllocation, MsiDeviceId, MsiEventId, MsiFreeFailure, MsiMessage,
+    MsiProviderId, MsiRequest, MsiVector, MsiVectorIndex,
 };
 use rdrive::{DeviceId, module_driver, probe::OnProbeError, register::ProbeFdt};
 use someboot::DCacheOp;
@@ -56,7 +56,7 @@ fn probe_its(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         .into_iter()
         .next()
         .ok_or_else(|| OnProbeError::other(format!("[{}] has no reg", info.node.name())))?;
-    let size = reg.size.unwrap_or((GITS_TRANSLATER_OFFSET + 8) as u64) as usize;
+    let size = reg.size.unwrap_or(GITS_TRANSLATER_OFFSET + 8) as usize;
     let mmio = ioremap(reg.address, size)
         .map_err(|err| OnProbeError::other(format!("failed to map ITS: {err:?}")))?;
     let its = unsafe { Its::new(mmio.as_ptr().into(), reg.address) };
@@ -400,17 +400,26 @@ impl Interface for GicItsProvider {
         }
     }
 
-    fn free_vectors(&mut self, allocation: MsiAllocation) -> Result<(), IrqError> {
-        for vector in allocation.vectors() {
+    fn free_vectors(&mut self, allocation: MsiAllocation) -> Result<(), MsiFreeFailure> {
+        let mut index = 0;
+        while index < allocation.vectors().len() {
+            let vector = allocation.vectors()[index];
             let intid = vector.parent_irq.hwirq.0;
-            let route = *self.lpis.get(&intid).ok_or(IrqError::InvalidIrq)?;
+            let Some(route) = self.lpis.get(&intid).copied() else {
+                return Err(MsiFreeFailure::new(allocation, IrqError::InvalidIrq));
+            };
             if route.leaf_irq != vector.irq {
-                return Err(IrqError::InvalidIrq);
+                return Err(MsiFreeFailure::new(allocation, IrqError::InvalidIrq));
             }
-            self.set_lpi_enabled_by_intid(intid, false)?;
-            crate::irq::unmap_irq_route(vector.parent_irq, vector.irq)?;
+            if let Err(error) = self.set_lpi_enabled_by_intid(intid, false) {
+                return Err(MsiFreeFailure::new(allocation, error));
+            }
+            if let Err(error) = crate::irq::unmap_irq_route(vector.parent_irq, vector.irq) {
+                return Err(MsiFreeFailure::new(allocation, error));
+            }
             self.lpis.remove(&intid);
             LPI_BINDINGS.lock().remove(&vector.parent_irq);
+            index += 1;
         }
         Ok(())
     }

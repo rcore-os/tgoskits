@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Make PCI endpoint ownership-taking probe failures terminal and support explicit
+  endpoint restoration after a fully rolled-back transaction.
+
 ## [0.23.6](https://github.com/rcore-os/tgoskits/compare/rdrive-v0.23.5...rdrive-v0.23.6) - 2026-07-10
 
 ### Added

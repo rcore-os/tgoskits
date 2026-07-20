@@ -30,6 +30,7 @@ mod error;
 mod initialization;
 mod irq;
 mod lifecycle;
+mod quarantine;
 mod queue;
 mod registers;
 

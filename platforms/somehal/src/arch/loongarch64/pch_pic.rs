@@ -1,3 +1,8 @@
+use alloc::boxed::Box;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+use ax_kspin::SpinIrqSave;
+use irq_framework::{CpuId, IrqId, IrqScope};
 use kernutil::StaticCell;
 use rdif_intc::{AcpiGsiController, AcpiIrqPolarity, AcpiIrqTrigger, Interface};
 use rdrive::{
@@ -9,6 +14,7 @@ use rdrive::{
 use super::irq_common::{PCH_PIC_VECTOR_COUNT, fdt_first_cell_vector, pch_pic_reg_bit};
 use crate::{
     common::ioremap,
+    irq_line::{BoundIrqStatus, IrqChipLine, PreparedIrqChipLine},
     irq_routing::{
         AcpiControllerRoutes, PchPicCpuInterface, acknowledge_pch_pic_child, pch_pic_ack_registers,
         valid_pch_pic_vector_window,
@@ -63,6 +69,28 @@ pub(super) fn acknowledge_external_vector(vector: usize) -> Option<rdif_intc::Ir
     FAST_PATH
         .get_initialized()?
         .acknowledge_external_vector(vector)
+}
+
+pub(super) fn prepare_irq_line(
+    irq: IrqId,
+    scope: IrqScope,
+) -> Result<PreparedIrqChipLine, crate::irq::IrqError> {
+    if scope != IrqScope::Global {
+        return Err(crate::irq::IrqError::InvalidIrq);
+    }
+    let fast_path = FAST_PATH
+        .get_initialized()
+        .ok_or(crate::irq::IrqError::Unsupported)?;
+    let vector = fast_path.control.validate_irq(irq)?;
+    // Reserve the parent EIOINTC source before exposing this hierarchical
+    // child. A direct EIOINTC registration for the same physical vector must
+    // fail rather than create two independently enabled descriptors.
+    super::eiointc::reserve_pch_pic_vector(vector)?;
+    fast_path.control.set_enabled(irq.hwirq.0 as usize, false);
+    Ok(PreparedIrqChipLine::maskable(Box::new(PchPicIrqChipLine {
+        irq,
+        fast_path,
+    })))
 }
 
 fn cpu_interface() -> Option<&'static PchPicCpuInterface> {
@@ -178,6 +206,7 @@ fn register_pch_pic(
     let pic = PchPic::new(mmio, base_vector, vector_count);
     pic.init();
     FAST_PATH.init(PchPicFastPath {
+        domain,
         cpu_interface: PchPicCpuInterface::new(
             domain,
             AcpiGsiController::PchPic,
@@ -186,6 +215,7 @@ fn register_pch_pic(
             vector_count,
         ),
         completion: PchPicCompletionEndpoint::new(pic.mmio.clone(), vector_count),
+        control: PchPicControlEndpoint::new(pic.mmio.clone(), base_vector, vector_count),
     });
     dev.register(rdif_intc::Intc::new(domain, pic));
     Ok(())
@@ -236,8 +266,10 @@ struct PchPicCompletionEndpoint {
 }
 
 struct PchPicFastPath {
+    domain: crate::irq::IrqDomainId,
     cpu_interface: PchPicCpuInterface,
     completion: PchPicCompletionEndpoint,
+    control: PchPicControlEndpoint,
 }
 
 impl PchPicFastPath {
@@ -245,6 +277,100 @@ impl PchPicFastPath {
         let (input, irq) = self.cpu_interface.resolve_external_vector(vector)?;
         self.completion.ack_input(PchPicInput(input));
         Some(irq)
+    }
+}
+
+struct PchPicControlEndpoint {
+    mmio: MmioRaw,
+    base_vector: usize,
+    vector_count: usize,
+    enabled: AtomicU64,
+    lock: SpinIrqSave<()>,
+}
+
+impl PchPicControlEndpoint {
+    fn new(mmio: MmioRaw, base_vector: usize, vector_count: usize) -> Self {
+        Self {
+            mmio,
+            base_vector,
+            vector_count,
+            enabled: AtomicU64::new(0),
+            lock: SpinIrqSave::new(()),
+        }
+    }
+
+    fn validate_irq(&self, irq: IrqId) -> Result<usize, crate::irq::IrqError> {
+        let fast_path = FAST_PATH
+            .get_initialized()
+            .ok_or(crate::irq::IrqError::Unsupported)?;
+        if irq.domain != fast_path.domain {
+            return Err(crate::irq::IrqError::InvalidIrq);
+        }
+        self.vector_for_input(irq.hwirq.0 as usize)
+            .ok_or(crate::irq::IrqError::InvalidIrq)
+    }
+
+    fn vector_for_input(&self, input: usize) -> Option<usize> {
+        (input < self.vector_count).then(|| self.base_vector + input)
+    }
+
+    fn set_enabled(&self, input: usize, enabled: bool) {
+        let vector = self
+            .vector_for_input(input)
+            .expect("prepared PCH-PIC input left the frozen vector window");
+        let _guard = self.lock.lock();
+        let (offset, bit) = pch_pic_reg_bit(input);
+        let mask_addr = PCH_PIC_MASK + offset;
+        if enabled {
+            self.mmio.write(
+                PCH_INT_HTVEC + input,
+                u8::try_from(vector).expect("validated PCH-PIC vector must fit in a byte"),
+            );
+            self.mmio.write(PCH_PIC_CLEAR + offset, bit);
+            super::eiointc::set_prepared_irq_enabled(vector, true);
+            let mask: u32 = self.mmio.read(mask_addr);
+            self.mmio.write(mask_addr, mask & !bit);
+            self.enabled.fetch_or(1u64 << input, Ordering::Release);
+        } else {
+            let mask: u32 = self.mmio.read(mask_addr);
+            self.mmio.write(mask_addr, mask | bit);
+            super::eiointc::set_prepared_irq_enabled(vector, false);
+            self.enabled.fetch_and(!(1u64 << input), Ordering::Release);
+        }
+    }
+
+    fn status(&self, input: usize) -> BoundIrqStatus {
+        BoundIrqStatus {
+            enabled: Some(self.enabled.load(Ordering::Acquire) & (1u64 << input) != 0),
+            pending: None,
+            in_service: None,
+        }
+    }
+}
+
+struct PchPicIrqChipLine {
+    irq: IrqId,
+    fast_path: &'static PchPicFastPath,
+}
+
+// SAFETY: preparation reserves the hierarchical EIOINTC parent and retains a
+// shutdown-lifetime MMIO endpoint. Live child/parent transitions follow one
+// fixed lock order and contain no allocation, blocking, or generic lookup.
+unsafe impl IrqChipLine for PchPicIrqChipLine {
+    fn set_enabled(&self, cpu: Option<CpuId>, enabled: bool) {
+        assert!(
+            cpu.is_none(),
+            "prepared PCH-PIC line {:?} cannot use a per-CPU target",
+            self.irq
+        );
+        self.fast_path
+            .control
+            .set_enabled(self.irq.hwirq.0 as usize, enabled);
+    }
+
+    fn status(&self, cpu: Option<CpuId>) -> BoundIrqStatus {
+        assert!(cpu.is_none(), "PCH-PIC status cannot use a per-CPU target");
+        self.fast_path.control.status(self.irq.hwirq.0 as usize)
     }
 }
 
@@ -304,58 +430,6 @@ impl PchPic {
             self.write_w(PCH_PIC_EDGE + offset, 0);
             self.write_w(PCH_PIC_POL + offset, 0);
         }
-    }
-
-    fn prepare_enable_irq(&mut self, irq: usize) -> bool {
-        let Some(input) = self.input_for_vector(irq, "enable") else {
-            return false;
-        };
-        self.write_b(
-            PCH_INT_HTVEC + input,
-            u8::try_from(irq).expect("validated PCH-PIC vector must fit in a byte"),
-        );
-        self.clear_input(input);
-        true
-    }
-
-    fn unmask_irq(&mut self, irq: usize) {
-        let Some(input) = self.input_for_vector(irq, "unmask") else {
-            return;
-        };
-        let (offset, bit) = pch_pic_reg_bit(input);
-        let addr = PCH_PIC_MASK + offset;
-        self.write_w(addr, self.read_w(addr) & !bit);
-    }
-
-    fn disable_irq(&mut self, irq: usize) {
-        let Some(input) = self.input_for_vector(irq, "disable") else {
-            return;
-        };
-        let (offset, bit) = pch_pic_reg_bit(input);
-        let addr = PCH_PIC_MASK + offset;
-        self.write_w(addr, self.read_w(addr) | bit);
-    }
-
-    fn clear_input(&self, input: usize) {
-        let Some(registers) = pch_pic_ack_registers(input, self.routes.vector_count()) else {
-            return;
-        };
-        self.write_w(registers.clear, registers.bit);
-    }
-
-    fn vector_for_input(&self, input: usize) -> Option<usize> {
-        self.routes.vector_for_input(input)
-    }
-
-    fn input_for_vector(&self, vector: usize, op: &str) -> Option<usize> {
-        let input = self.routes.input_for_vector(vector);
-        if input.is_none() {
-            warn!(
-                "skip {op} for out-of-range PCH-PIC vector {vector}, vector count {}",
-                self.routes.vector_count()
-            );
-        }
-        input
     }
 
     fn configure_input(&mut self, input: usize, route: &rdif_intc::AcpiGsiRoute) {
@@ -464,20 +538,13 @@ impl Interface for PchPic {
         enabled: bool,
     ) -> Result<(), rdif_intc::IrqError> {
         let input = hwirq.0 as usize;
-        let Some(vector) = self.vector_for_input(input) else {
-            warn!("skip {enabled} for out-of-range PCH-PIC input {input}");
-            return Err(rdif_intc::IrqError::InvalidIrq);
-        };
-        if enabled {
-            if !self.prepare_enable_irq(vector) {
-                return Err(rdif_intc::IrqError::InvalidIrq);
-            }
-            super::eiointc::set_irq_enable(vector, true)?;
-            self.unmask_irq(vector);
-        } else {
-            self.disable_irq(vector);
-            super::eiointc::set_irq_enable(vector, false)?;
-        }
+        FAST_PATH
+            .get_initialized()
+            .ok_or(rdif_intc::IrqError::Controller)?
+            .control
+            .vector_for_input(input)
+            .ok_or(rdif_intc::IrqError::InvalidIrq)?;
+        FAST_PATH.control.set_enabled(input, enabled);
         Ok(())
     }
 }

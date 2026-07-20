@@ -6,6 +6,8 @@ mod dma;
 mod prp;
 mod request;
 
+#[cfg(test)]
+pub(in crate::block) use core::NVME_QUEUE_EXECUTION;
 pub(in crate::block) use core::{NvmeQueueCore, NvmeQueueReinitializeInfo};
 
 pub(in crate::block) use adapter::NvmeBlockQueue;

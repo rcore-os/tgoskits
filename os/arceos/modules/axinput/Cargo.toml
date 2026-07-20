@@ -11,8 +11,7 @@ license.workspace = true
 
 [dependencies]
 ax-sync = { workspace = true }
-
 ax-lazyinit = { workspace = true }
+axpoll = { workspace = true }
 log = { workspace = true }
-rdif-input.workspace = true
-irq-framework.workspace = true
+thiserror.workspace = true

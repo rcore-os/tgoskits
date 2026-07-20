@@ -8,8 +8,8 @@ use alloc::{
 use core::{any::Any, fmt, num::NonZeroUsize};
 
 use crate::{
-    BInterface, BIrqHandler, BlkError, CompletedRequest, CompletionSink, ControllerInitEndpoint,
-    DeviceInfo, DriverGeneric, IrqSourceList, LifecycleEndpoint, QueueContractError, QueueHandle,
+    BInterface, BlkError, BlockIrqSource, ControllerInitEndpoint, DeviceInfo, DriverGeneric,
+    IrqSourceList, LifecycleEndpoint, QuarantinedQueue, QueueContractError, QueueHandle,
     QueueLimits, validate_queue_info,
 };
 
@@ -171,8 +171,78 @@ pub struct LogicalDeviceParts {
     pub queues: Vec<QueueHandle>,
 }
 
+/// Explicit owner for unpublished queues whose rollback could not close them.
+///
+/// Materialization already removed these queues from their driver interface,
+/// while failed close means their endpoints cannot safely be destroyed. The
+/// caller must move this owner into a named quarantine registry so the device,
+/// contract, close failure, and queue metadata remain diagnosable.
+#[derive(Debug)]
+#[must_use = "retain unpublished queues in a named quarantine registry"]
+pub struct UnpublishedQueueQuarantine {
+    device_id: LogicalDeviceId,
+    device_name: String,
+    contract_error: QueueContractError,
+    close_error: BlkError,
+    queues: Vec<QuarantinedQueue>,
+}
+
+impl UnpublishedQueueQuarantine {
+    pub const fn device_id(&self) -> LogicalDeviceId {
+        self.device_id
+    }
+
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    /// Returns the contract failure that triggered unpublished rollback.
+    pub const fn contract_error(&self) -> QueueContractError {
+        self.contract_error
+    }
+
+    /// Returns the first close failure retained by this quarantine group.
+    pub const fn reason(&self) -> BlkError {
+        self.close_error
+    }
+
+    pub fn queue_count(&self) -> usize {
+        self.queues.len()
+    }
+
+    pub fn queues(&self) -> impl ExactSizeIterator<Item = &QuarantinedQueue> {
+        self.queues.iter()
+    }
+
+    /// Transfers every queue owner into the caller's quarantine registry.
+    pub fn into_queues(self) -> Vec<QuarantinedQueue> {
+        self.queues
+    }
+}
+
+impl fmt::Display for UnpublishedQueueQuarantine {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "logical block device {:?} ({}) failed contract validation ({}); rollback failed ({}) \
+             and retained {} queue(s) in quarantine",
+            self.device_id,
+            self.device_name,
+            self.contract_error,
+            self.close_error,
+            self.queues.len(),
+        )
+    }
+}
+
+impl core::error::Error for UnpublishedQueueQuarantine {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&self.close_error)
+    }
+}
+
 /// Controller-bundle discovery or materialization failure.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum BundleError {
     #[error("logical block device ID {value} is outside 0..64")]
     InvalidDeviceId { value: usize },
@@ -205,6 +275,8 @@ pub enum BundleError {
     },
     #[error("logical block device queue contract is invalid: {0}")]
     QueueContract(#[from] QueueContractError),
+    #[error(transparent)]
+    UnpublishedQueuesQuarantined(UnpublishedQueueQuarantine),
     #[error("logical block device materialization failed: {0}")]
     Driver(#[from] BlkError),
 }
@@ -241,7 +313,7 @@ pub trait ControllerBundle: DriverGeneric {
 
     fn irq_sources(&self) -> IrqSourceList;
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<BIrqHandler>;
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource>;
 }
 
 pub type BControllerBundle = Box<dyn ControllerBundle>;
@@ -333,9 +405,9 @@ impl ControllerBundle for SingleDeviceBundle {
         }
         let logical_device = LogicalDevice::new(device_id, name, device_info, queue_limits, queues);
         if let Err(error) = validate_controller_devices(core::slice::from_ref(&logical_device)) {
-            if let Err(shutdown_error) = shutdown_unpublished_logical_device(logical_device) {
+            if let Err(quarantine) = shutdown_unpublished_logical_device(logical_device, error) {
                 self.available = false;
-                return Err(shutdown_error.into());
+                return Err(BundleError::UnpublishedQueuesQuarantined(quarantine));
             }
             return Err(error.into());
         }
@@ -360,32 +432,35 @@ impl ControllerBundle for SingleDeviceBundle {
         self.interface.irq_sources()
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<BIrqHandler> {
-        self.interface.take_irq_handler(source_id)
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
+        self.interface.take_irq_source(source_id)
     }
 }
 
-fn shutdown_unpublished_logical_device(device: LogicalDevice) -> Result<(), BlkError> {
+fn shutdown_unpublished_logical_device(
+    device: LogicalDevice,
+    contract_error: QueueContractError,
+) -> Result<(), UnpublishedQueueQuarantine> {
+    let parts = device.into_parts();
     let mut first_error = None;
-    let mut sink = UnpublishedCompletionSink;
-    for mut queue in device.into_parts().queues {
-        if let Err(error) = queue.shutdown(&mut sink)
-            && first_error.is_none()
-        {
-            first_error = Some(error);
+    let mut quarantined_queues = Vec::new();
+    for queue in parts.queues {
+        if let Err(failure) = queue.close() {
+            if first_error.is_none() {
+                first_error = Some(failure.error());
+            }
+            quarantined_queues.push(failure.into_quarantine());
         }
     }
-    first_error.map_or(Ok(()), Err)
-}
-
-struct UnpublishedCompletionSink;
-
-impl CompletionSink for UnpublishedCompletionSink {
-    fn complete(&mut self, completion: CompletedRequest) {
-        // No request can be accepted before materialization. A driver that
-        // returns ownership here has violated that boundary, so keep it
-        // fail-closed instead of freeing potentially device-visible storage.
-        core::mem::forget(completion);
+    match first_error {
+        None => Ok(()),
+        Some(close_error) => Err(UnpublishedQueueQuarantine {
+            device_id: parts.id,
+            device_name: parts.name,
+            contract_error,
+            close_error,
+            queues: quarantined_queues,
+        }),
     }
 }
 

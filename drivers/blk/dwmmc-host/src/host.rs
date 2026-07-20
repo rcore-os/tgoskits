@@ -11,6 +11,7 @@
 
 use alloc::{boxed::Box, sync::Arc};
 use core::{
+    num::NonZeroU64,
     ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
@@ -68,26 +69,20 @@ pub(crate) struct PendingData {
 /// multiple `DwMmc` instances is undefined.
 const IRQ_GENERATION_SHIFT: u64 = 32;
 const IRQ_STATUS_MASK: u64 = u32::MAX as u64;
+const CAPTURE_ENDPOINT_HOLDER: u8 = 1 << 0;
+const SOURCE_CONTROL_HOLDER: u8 = 1 << 1;
+const ALL_SOURCE_HOLDERS: u8 = CAPTURE_ENDPOINT_HOLDER | SOURCE_CONTROL_HOLDER;
 
 pub(crate) struct IrqState {
     mailbox: AtomicU64,
     idmac_mailbox: AtomicU64,
     next_generation: AtomicU32,
-    register_owner: AtomicU8,
-}
-
-const REGISTER_OWNER_IDLE: u8 = 0;
-const REGISTER_OWNER_TASK: u8 = 1;
-const REGISTER_OWNER_IRQ: u8 = 2;
-
-pub(crate) struct RegisterOwner<'a> {
-    owner: &'a AtomicU8,
-}
-
-impl Drop for RegisterOwner<'_> {
-    fn drop(&mut self) {
-        self.owner.store(REGISTER_OWNER_IDLE, Ordering::Release);
-    }
+    source_taken: AtomicBool,
+    source_holders: AtomicU8,
+    source_online: AtomicBool,
+    source_generation: AtomicU64,
+    desired_sources: AtomicU32,
+    masked_sources: AtomicU64,
 }
 
 impl IrqState {
@@ -96,36 +91,108 @@ impl IrqState {
             mailbox: AtomicU64::new(0),
             idmac_mailbox: AtomicU64::new(0),
             next_generation: AtomicU32::new(0),
-            register_owner: AtomicU8::new(REGISTER_OWNER_IDLE),
+            source_taken: AtomicBool::new(false),
+            source_holders: AtomicU8::new(0),
+            source_online: AtomicBool::new(false),
+            source_generation: AtomicU64::new(0),
+            desired_sources: AtomicU32::new(0),
+            masked_sources: AtomicU64::new(0),
         }
     }
 
-    pub(crate) fn try_begin_task_update(&self) -> Option<RegisterOwner<'_>> {
-        self.register_owner
-            .compare_exchange(
-                REGISTER_OWNER_IDLE,
-                REGISTER_OWNER_TASK,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            )
-            .ok()
-            .map(|_| RegisterOwner {
-                owner: &self.register_owner,
-            })
+    pub(crate) fn take_source(&self) -> bool {
+        let taken = self
+            .source_taken
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+        if taken {
+            self.source_holders
+                .store(ALL_SOURCE_HOLDERS, Ordering::Release);
+        }
+        taken
     }
 
-    pub(crate) fn try_begin_irq_snapshot(&self) -> Option<RegisterOwner<'_>> {
-        self.register_owner
-            .compare_exchange(
-                REGISTER_OWNER_IDLE,
-                REGISTER_OWNER_IRQ,
+    pub(crate) fn source_ready(&self) -> bool {
+        self.source_taken.load(Ordering::Acquire)
+            && self.source_holders.load(Ordering::Acquire) == ALL_SOURCE_HOLDERS
+    }
+
+    pub(crate) fn release_capture_endpoint(&self) {
+        self.release_source_holder(CAPTURE_ENDPOINT_HOLDER);
+    }
+
+    pub(crate) fn release_source_control(&self) {
+        self.release_source_holder(SOURCE_CONTROL_HOLDER);
+    }
+
+    pub(crate) fn activate_source(&self, desired_sources: u32) -> NonZeroU64 {
+        debug_assert_ne!(desired_sources, 0);
+        let mut current = self.source_generation.load(Ordering::Acquire);
+        let generation = loop {
+            let mut next = current.wrapping_add(1);
+            if next == 0 {
+                next = 1;
+            }
+            match self.source_generation.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
                 Ordering::Acquire,
-                Ordering::Relaxed,
-            )
-            .ok()
-            .map(|_| RegisterOwner {
-                owner: &self.register_owner,
-            })
+            ) {
+                Ok(_) => break NonZeroU64::new(next).expect("DWMMC source epoch is nonzero"),
+                Err(observed) => current = observed,
+            }
+        };
+        self.desired_sources
+            .store(desired_sources, Ordering::Release);
+        self.masked_sources.store(0, Ordering::Release);
+        self.source_online.store(true, Ordering::Release);
+        generation
+    }
+
+    pub(crate) fn deactivate_source(&self) {
+        self.source_online.store(false, Ordering::Release);
+        self.desired_sources.store(0, Ordering::Release);
+        self.masked_sources.store(0, Ordering::Release);
+    }
+
+    pub(crate) fn source_generation(&self) -> Option<NonZeroU64> {
+        NonZeroU64::new(self.source_generation.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn source_online(&self) -> bool {
+        self.source_online.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn desired_sources(&self) -> u32 {
+        self.desired_sources.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_desired_sources(&self, sources: u32) {
+        self.desired_sources.store(sources, Ordering::Release);
+    }
+
+    pub(crate) fn mark_sources_masked(&self, bitmap: u64) {
+        debug_assert_ne!(bitmap, 0);
+        self.masked_sources.fetch_or(bitmap, Ordering::Release);
+    }
+
+    pub(crate) fn claim_masked_sources(&self, bitmap: u64) -> bool {
+        let mut current = self.masked_sources.load(Ordering::Acquire);
+        loop {
+            if bitmap == 0 || bitmap & !current != 0 {
+                return false;
+            }
+            match self.masked_sources.compare_exchange_weak(
+                current,
+                current & !bitmap,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(observed) => current = observed,
+            }
+        }
     }
 
     pub(crate) fn begin_request(&self) {
@@ -200,6 +267,20 @@ impl IrqState {
             }
         }
     }
+
+    fn release_source_holder(&self, holder: u8) {
+        let previous = self.source_holders.fetch_and(!holder, Ordering::AcqRel);
+        debug_assert_ne!(
+            previous & holder,
+            0,
+            "DWMMC IRQ source capability released more than once"
+        );
+        if previous == holder {
+            // Drop retires only a synchronized software capability. It never
+            // masks, rearms, acknowledges, or otherwise advances hardware.
+            self.source_taken.store(false, Ordering::Release);
+        }
+    }
 }
 
 fn cache_mailbox_if_current(mailbox: &AtomicU64, generation: u32, status: u32) {
@@ -263,9 +344,11 @@ pub(crate) struct IrqCore {
     pub(crate) state: IrqState,
 }
 
-// SAFETY: `IrqCore` is shared only between the task-side host and the IRQ
-// top-half. Both access the register block with volatile operations and share
-// interrupt status through atomics.
+// SAFETY: OS glue moves the endpoint into the local IRQ action and retains the
+// host/control endpoint in the same CPU-pinned maintenance domain. Task-side
+// register transitions and source rearm exclude that local action; destructive
+// status is published through the atomic mailboxes. The MMIO mapping outlives
+// the host and both split IRQ capabilities.
 unsafe impl Send for IrqCore {}
 // SAFETY: See the `Send` impl.
 unsafe impl Sync for IrqCore {}
@@ -508,32 +591,40 @@ impl DwMmc {
         self.regs.clksrc().write(0);
     }
 
-    pub fn enable_completion_irq(&mut self) {
+    /// Unmasks runtime command/data delivery after OS glue has registered the
+    /// unique capture endpoint on this maintenance owner's CPU.
+    pub(crate) fn enable_completion_irq(&mut self) {
+        let sources = crate::DWMMC_INT_DATA_TRANSFER_OVER
+            | crate::DWMMC_INT_COMMAND_DONE
+            | crate::DWMMC_INT_ERROR_MASK;
+        let _ = self.irq.state.activate_source(sources);
         self.completion_irq_enabled.store(true, Ordering::Release);
-        self.regs.intmask().write(
-            crate::DWMMC_INT_DATA_TRANSFER_OVER
-                | crate::DWMMC_INT_COMMAND_DONE
-                | crate::DWMMC_INT_ERROR_MASK,
-        );
+        self.regs.intmask().write(sources);
         self.regs.ctrl().update(|r| r.with_int_enable(true));
     }
 
+    /// Programs the FIFO-ready sources before an owner-thread FIFO request.
+    ///
+    /// The maintenance runtime must exclude this controller's local IRQ
+    /// action while invoking task-side register transitions. Once capture
+    /// masks RXDR/TXDR, only [`crate::DwMmcIrqControl`] may rearm the token.
     pub(crate) fn program_fifo_interrupt_mask(&self) {
         if self.completion_irq_enabled() {
-            self.regs.intmask().write(
-                crate::DWMMC_INT_DATA_TRANSFER_OVER
-                    | crate::DWMMC_INT_COMMAND_DONE
-                    | crate::DWMMC_INT_RXDR
-                    | crate::DWMMC_INT_TXDR
-                    | crate::DWMMC_INT_ERROR_MASK,
-            );
+            let sources = crate::DWMMC_INT_DATA_TRANSFER_OVER
+                | crate::DWMMC_INT_COMMAND_DONE
+                | crate::DWMMC_INT_RXDR
+                | crate::DWMMC_INT_TXDR
+                | crate::DWMMC_INT_ERROR_MASK;
+            self.irq.state.set_desired_sources(sources);
+            self.regs.intmask().write(sources);
         }
     }
 
-    pub fn disable_completion_irq(&mut self) {
+    pub(crate) fn disable_completion_irq(&mut self) {
         self.completion_irq_enabled.store(false, Ordering::Release);
         self.regs.intmask().write(0);
         self.regs.ctrl().update(|r| r.with_int_enable(false));
+        self.irq.state.deactivate_source();
     }
 
     pub fn completion_irq_enabled(&self) -> bool {

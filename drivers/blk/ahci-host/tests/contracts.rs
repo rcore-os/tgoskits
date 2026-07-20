@@ -56,7 +56,7 @@ fn discovered_hardware_requires_an_irq_bound_initialization_endpoint() {
     };
 
     assert!(initializer.irq_sources().contains(0));
-    assert!(initializer.take_irq_handler(0).is_some());
+    assert!(initializer.take_irq_source(0).is_some());
 }
 
 #[test]
@@ -66,6 +66,7 @@ fn portable_driver_has_no_completion_polling_or_os_scheduler_dependency() {
         include_str!("../src/initialization.rs"),
         include_str!("../src/irq.rs"),
         include_str!("../src/lifecycle.rs"),
+        include_str!("../src/quarantine.rs"),
         include_str!("../src/queue.rs"),
     );
     for forbidden in [
@@ -81,6 +82,39 @@ fn portable_driver_has_no_completion_polling_or_os_scheduler_dependency() {
             "portable AHCI source contains forbidden completion/runtime path: {forbidden}",
         );
     }
+}
+
+#[test]
+fn live_dma_retention_has_one_named_quarantine_owner() {
+    let source = concat!(
+        include_str!("../src/controller.rs"),
+        include_str!("../src/initialization.rs"),
+        include_str!("../src/quarantine.rs"),
+        include_str!("../src/queue.rs"),
+    );
+
+    for forbidden in ["mem::forget", "core::mem::forget", "Box::leak"] {
+        assert!(
+            !source.contains(forbidden),
+            "AHCI production ownership must not disappear through `{forbidden}`",
+        );
+    }
+    assert!(
+        source.contains("AhciDmaQuarantine"),
+        "unproven DMA shutdown must move resources into one diagnosable quarantine type",
+    );
+    assert!(
+        source.contains("ManuallyDrop<PortCommandMemory>"),
+        "quarantined command memory must retain explicit Rust ownership",
+    );
+}
+
+#[test]
+fn queue_shutdown_cannot_publish_request_ownership() {
+    let queue = include_str!("../src/queue.rs");
+
+    assert!(queue.contains("fn shutdown(&mut self) -> Result<(), BlkError>"));
+    assert!(!queue.contains("fn shutdown(&mut self,"));
 }
 
 struct Fixture {

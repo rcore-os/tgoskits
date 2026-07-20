@@ -243,16 +243,15 @@ pub struct NvmeQueue {
     reg: NonNull<NvmeReg>,
 }
 
-// SAFETY: An `NvmeQueue` is owned by exactly one RDIF queue after creation.
-// Moving that owner between threads does not create aliasing; register access
-// still happens through `&mut self` queue methods.
+// SAFETY: An `NvmeQueue` is advanced by exactly one CPU-pinned maintenance
+// owner after creation. Moving the not-yet-published queue does not create an
+// alias; every live operation remains serialized by that owner.
 unsafe impl Send for NvmeQueue {}
 
-// SAFETY: SQ and CQ storage live in disjoint `UnsafeCell`s. Every published
-// queue has one task-side SQ owner, while its CQ is consumed behind the
-// queue-local claim in the block adapter. The retained admin queue is likewise
-// submitted by one lifecycle worker and consumed by its claimed IRQ endpoint.
-// No method exposes either mutable cell or permits an uncoordinated consumer.
+// SAFETY: SQ and CQ storage live in disjoint `UnsafeCell`s. The maintenance
+// owner is the sole submitter and completion consumer; lifecycle reset is only
+// allowed after the same owner has drained IRQ actions and proved DMA quiesced.
+// Hard IRQ owns only the separate interrupt-source capability.
 unsafe impl Sync for NvmeQueue {}
 
 impl NvmeQueue {
@@ -303,8 +302,11 @@ impl NvmeQueue {
         self.submit_admin_data(data);
     }
 
-    /// Consumes one completion while an acknowledged IRQ continuation owns CQ service.
-    pub(crate) fn take_irq_completion(&self) -> Option<NvmeCompletion> {
+    /// Consumes one completion in the CPU-pinned maintenance owner.
+    ///
+    /// The caller may invoke this only while servicing an acknowledged source
+    /// event whose exact device vector remains masked.
+    pub(crate) fn take_owner_completion(&self) -> Option<NvmeCompletion> {
         let (complete, head) = self.with_cq(|cq| {
             let complete = cq.take_complete()?;
             Some((complete, cq.head))
@@ -325,7 +327,7 @@ impl NvmeQueue {
     /// # Safety
     ///
     /// The caller must have stopped controller DMA and excluded every IRQ and
-    /// task-side queue consumer before invoking this method.
+    /// maintenance-owner queue consumer before invoking this method.
     pub(crate) unsafe fn reset_after_controller_disable(&self) {
         self.with_sq(SubmitQueue::reset);
         self.with_cq(CompleteQueue::reset);

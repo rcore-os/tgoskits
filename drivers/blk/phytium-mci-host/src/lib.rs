@@ -47,7 +47,8 @@ use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
     sdio::host::{
         BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
-        SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHost, SignalVoltage, poll_ready_bus_op,
+        SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHost, SdioIrqSource, SignalVoltage,
+        poll_ready_bus_op,
     },
 };
 
@@ -57,7 +58,7 @@ mod protocol;
 
 #[cfg(test)]
 pub(crate) use event::MCI_INT_DATA_CRC_ERROR;
-pub use event::{Event, PhytiumMciIrqHandle};
+pub use event::{Event, PhytiumMciIrqControl, PhytiumMciIrqEndpoint, PhytiumMciIrqSource};
 pub(crate) use event::{
     MCI_IDSTS_ERROR_MASK, MCI_IDSTS_RECEIVE, MCI_IDSTS_TRANSMIT, MCI_INT_COMMAND_DONE,
     MCI_INT_DATA_TRANSFER_OVER, MCI_INT_ERROR_MASK, MCI_INT_RXDR, MCI_INT_TXDR,

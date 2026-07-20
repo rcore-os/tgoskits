@@ -36,38 +36,6 @@ pub(super) fn rollback_msix_setup_steps<E>(
     complete
 }
 
-pub(super) fn retain_failed_lease_resources<A, M, E>(
-    allocation: &mut Option<A>,
-    mapping: &mut Option<M>,
-    endpoint: &mut Option<E>,
-) {
-    // Drop cannot report the failed hardware transition. Leaking these bounded
-    // resources keeps the PCI function, provider allocation, and MSI-X table
-    // mapping under one owner instead of releasing them underneath a possibly
-    // live source.
-    if let Some(allocation) = allocation.take() {
-        core::mem::forget(allocation);
-    }
-    if let Some(mapping) = mapping.take() {
-        core::mem::forget(mapping);
-    }
-    if let Some(endpoint) = endpoint.take() {
-        core::mem::forget(endpoint);
-    }
-}
-
-pub(super) fn retain_failed_setup_resources<A, M>(
-    allocation: &mut Option<A>,
-    mapping: &mut Option<M>,
-) {
-    if let Some(allocation) = allocation.take() {
-        core::mem::forget(allocation);
-    }
-    if let Some(mapping) = mapping.take() {
-        core::mem::forget(mapping);
-    }
-}
-
 pub(super) fn enable_vector_bindings<P, T>(
     vectors: &[rdif_msi::MsiVector],
     provider: &mut P,

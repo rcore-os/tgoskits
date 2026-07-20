@@ -1,7 +1,8 @@
 //! SDIO host-controller capability boundary.
 
-use core::{num::NonZeroU16, task::Waker};
+use core::{fmt, num::NonZeroU16};
 
+use rdif_irq::{IrqEndpoint, IrqSourceControl};
 pub use sdio_host2::{BusWidth, ClockSpeed, SignalVoltage};
 
 use crate::{
@@ -50,44 +51,25 @@ pub enum HostEventSource {
     Data,
 }
 
-/// Result of retrying one IRQ snapshot from the bounded task-context
-/// continuation selected by [`HostEvent::ack_deferred`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DeferredIrqAck {
-    /// The retry acquired the register block but found no pending device
-    /// source. No initialization or request state may advance from the old
-    /// deferred notification.
-    Unhandled,
-    /// The IRQ endpoint acquired the register block and acknowledged any
-    /// pending source into queue-local cached state. This variant requires a
-    /// non-empty host event produced by the destructive snapshot.
-    Acknowledged,
-    /// Another short register update still owns the block; the fixed work item
-    /// must be requeued without inspecting request completion state.
-    Contended,
-}
-
-impl DeferredIrqAck {
-    pub fn from_event(event: &impl HostEvent) -> Self {
-        if event.ack_deferred() {
-            Self::Contended
-        } else if event.kind() == HostEventKind::None {
-            Self::Unhandled
-        } else {
-            Self::Acknowledged
-        }
-    }
+/// Plain acknowledged facts exported by an SD/MMC host IRQ endpoint.
+///
+/// This value contains no callback, allocation, or resource ownership. A
+/// higher-level portable driver may therefore translate it into its own event
+/// type directly in the hard-IRQ capture path without calling OS glue.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostEventSummary {
+    /// Complete host-specific status retained for bounded owner-side service
+    /// and diagnostics.
+    pub stable_status: u32,
+    /// A command, data, or error fact can advance the serialized host queue.
+    pub queue_service: bool,
+    /// An SDIO function asserted the card interrupt source.
+    pub card_function_interrupt: bool,
 }
 
 /// Stable event summary extracted by a host controller IRQ handler.
 pub trait HostEvent {
     fn kind(&self) -> HostEventKind;
-
-    /// Reports that destructive IRQ acknowledgement was deliberately deferred
-    /// because task context currently owns the controller register block.
-    fn ack_deferred(&self) -> bool {
-        false
-    }
 
     fn source(&self) -> HostEventSource {
         HostEventSource::Controller
@@ -106,6 +88,20 @@ pub trait HostEvent {
     fn requests_block_queue_service(&self) -> bool {
         self.kind() != HostEventKind::None
     }
+
+    /// Returns the callback-free facts needed by a nested SDIO function
+    /// driver.
+    ///
+    /// Hosts that expose raw acknowledged status or a card-function interrupt
+    /// override this method. The default keeps existing host event types
+    /// source-compatible while preserving their queue-service semantics.
+    fn stable_summary(&self) -> HostEventSummary {
+        HostEventSummary {
+            stable_status: 0,
+            queue_service: self.requests_block_queue_service(),
+            card_function_interrupt: false,
+        }
+    }
 }
 
 impl HostEvent for () {
@@ -114,29 +110,92 @@ impl HostEvent for () {
     }
 }
 
-/// IRQ fast-path handle for a host controller.
+/// Split ownership of one SD/MMC controller interrupt source.
 ///
-/// Implementations are intended to be moved into OS IRQ registration code.
-/// `handle_irq()` must acknowledge or clear the hardware interrupt source and
-/// cache any status that task-side `poll_*` paths need to observe later.
-/// It must not complete block requests, copy DMA buffers, or call OS wake/task
-/// APIs.
-pub trait SdioIrqHandle: Send + 'static {
-    type Event: HostEvent + Default;
+/// `endpoint` is moved into the OS hard-IRQ action. `control` remains with the
+/// CPU-pinned maintenance owner and may only rearm generation-checked source
+/// bits after the captured event has been consumed. Neither capability grants
+/// access to the task-side command/data endpoint.
+pub struct SdioIrqSource<E, C> {
+    endpoint: E,
+    control: C,
+}
 
-    fn handle_irq(&mut self) -> Self::Event;
+/// Failure while the maintenance owner rearms a device-masked source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SdioIrqControlError {
+    /// The token belongs to an older controller activation.
+    StaleGeneration { expected: u64, actual: u64 },
+    /// The token names source bits that this capture did not leave masked.
+    SourceNotMasked { bitmap: u64 },
+    /// Recovery or shutdown removed the source owner.
+    Offline,
+    /// Controller-specific register programming failed.
+    Hardware(Error),
+}
+
+impl fmt::Display for SdioIrqControlError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StaleGeneration { expected, actual } => {
+                write!(
+                    formatter,
+                    "stale SD/MMC IRQ generation: expected {expected}, got {actual}"
+                )
+            }
+            Self::SourceNotMasked { bitmap } => {
+                write!(formatter, "SD/MMC IRQ source {bitmap:#x} is not masked")
+            }
+            Self::Offline => formatter.write_str("SD/MMC IRQ source owner is offline"),
+            Self::Hardware(error) => write!(formatter, "SD/MMC IRQ control failed: {error}"),
+        }
+    }
+}
+
+impl core::error::Error for SdioIrqControlError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Hardware(error) => Some(error),
+            Self::StaleGeneration { .. } | Self::SourceNotMasked { .. } | Self::Offline => None,
+        }
+    }
+}
+
+impl<E, C> SdioIrqSource<E, C> {
+    /// Constructs a source from independently owned capture and rearm parts.
+    pub const fn new(endpoint: E, control: C) -> Self {
+        Self { endpoint, control }
+    }
+
+    /// Transfers both capabilities to the OS integration layer.
+    pub fn into_parts(self) -> (E, C) {
+        (self.endpoint, self.control)
+    }
 }
 
 /// IRQ-endpoint extension of [`SdioHost`].
 ///
-/// Hardware runtime queues require this endpoint. The top half clears the
-/// device-side source and records a stable snapshot; bounded task context then
-/// advances the request from that snapshot without re-reading destructive
-/// interrupt status.
+/// Hardware runtime queues require this endpoint. The endpoint is the only
+/// runtime owner allowed to read or W1C command, data, DMA, and error interrupt
+/// status. It must acknowledge a bounded snapshot without allocation or lock
+/// acquisition, then return ordinary-memory facts. A register-ownership
+/// conflict is an activation bug: the endpoint must contain its exact source
+/// or report an uncontained fault, never ask task context to retry capture.
+///
+/// The maintenance thread owns the host and control endpoint on the same CPU.
+/// It programs registers with the device source or local IRQ excluded, consumes
+/// only the endpoint's cached facts, and rearms a masked source with the exact
+/// generation token. Implementations must not construct another source while a
+/// previous source generation remains registered.
 pub trait SdioIrqHost: SdioHost {
-    type IrqHandle: SdioIrqHandle<Event = Self::Event>;
+    /// Hard-IRQ-owned destructive status capture endpoint.
+    type IrqEndpoint: IrqEndpoint<Event = Self::Event, Fault = Error>;
+    /// Maintenance-owner capability for generation-checked source rearming.
+    type IrqControl: IrqSourceControl<Error = SdioIrqControlError>;
 
-    fn irq_handle(&mut self) -> Self::IrqHandle;
+    /// Transfers the controller's unique IRQ source exactly once per active
+    /// source generation.
+    fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>>;
 }
 
 /// Queue identifier used by SD/MMC block adapters.
@@ -171,7 +230,12 @@ pub trait SdioHost {
     /// Submit a command without waiting for its response.
     fn submit_command(&mut self, cmd: &Command) -> Result<(), Error>;
 
-    /// Advance a submitted command and harvest the response when complete.
+    /// Advance a submitted command from status cached by its IRQ endpoint and
+    /// harvest the response when complete.
+    ///
+    /// Runtime implementations must not read or clear destructive interrupt
+    /// status here. A missing completion IRQ is handled by the caller's
+    /// watchdog and controller recovery, not by status polling.
     fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error>;
 
     /// Advance a command using the caller's absolute monotonic time.
@@ -213,7 +277,8 @@ pub trait SdioHost {
         block_count: u32,
     ) -> Result<Self::DataRequest<'a>, Error>;
 
-    /// Advance a previously submitted data command without blocking.
+    /// Advance a previously submitted data command from cached IRQ facts
+    /// without blocking or re-reading destructive interrupt status.
     fn poll_data_request<'a>(
         &mut self,
         request: &mut Self::DataRequest<'a>,
@@ -308,10 +373,6 @@ pub trait SdioHost {
     fn disable_completion_irq(&mut self) -> Result<(), Error>;
 
     fn completion_irq_enabled(&self) -> bool;
-
-    /// Register the task that should be woken when command or data progress is
-    /// possible. Runtime block queues use their owned IRQ endpoint instead.
-    fn register_waker(&mut self, _waker: &Waker) {}
 
     /// Legacy host-local millisecond clock.
     ///

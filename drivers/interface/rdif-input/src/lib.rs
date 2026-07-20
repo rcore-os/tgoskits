@@ -26,6 +26,18 @@ mod tests {
     }
 
     impl Interface for TestInput {
+        fn enable_irq(&mut self) -> Result<(), InputError> {
+            Ok(())
+        }
+
+        fn disable_irq(&mut self) -> Result<(), InputError> {
+            Ok(())
+        }
+
+        fn is_irq_enabled(&self) -> bool {
+            false
+        }
+
         fn device_id(&self) -> InputDeviceId {
             InputDeviceId {
                 bus_type: 3,
@@ -84,12 +96,7 @@ mod tests {
         assert_eq!(event.code, 30);
         assert_eq!(event.value, -1);
         assert_eq!(input.get_abs_info(0).unwrap().min, -100);
-        assert_eq!(
-            input.handle_irq(),
-            Event {
-                handled: false,
-                input_ready: false
-            }
-        );
+        assert_eq!(input.execution(), InputExecution::Inline);
+        assert!(input.take_irq_endpoint().is_none());
     }
 }

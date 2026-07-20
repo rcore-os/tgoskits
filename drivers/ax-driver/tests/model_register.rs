@@ -58,10 +58,6 @@ impl_trait! {
             false
         }
 
-        fn irq_set_enable(_irq: IrqId, _enabled: bool) -> axklib::AxResult {
-            Ok(())
-        }
-
         fn irq_request_shared(
             _irq: IrqId,
             _handler: BoxedIrqHandler,

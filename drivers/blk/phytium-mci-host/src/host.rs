@@ -1,19 +1,23 @@
 use alloc::sync::Arc;
 use core::{
+    num::NonZeroU64,
     ptr::NonNull,
     sync::atomic::{self, AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
 
 use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
+use rdif_irq::{
+    ContainmentCause, FaultContainment, IrqCapture, IrqEndpoint, IrqSourceControl, MaskedSource,
+};
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
-    sdio::host::{BusWidth, SdioIrqHandle, SignalVoltage},
+    sdio::host::{BusWidth, SdioIrqControlError, SdioIrqSource, SignalVoltage},
 };
 use volatile::VolatilePtr;
 
 use crate::{
-    Event, PhytiumMciIrqHandle,
+    Event, PhytiumMciIrqControl, PhytiumMciIrqEndpoint, PhytiumMciIrqSource,
     command::CommandState,
     regs::{
         CLK_SRC_OFFSET, CType, ClockSource, RIntSts, RegisterBlock,
@@ -39,11 +43,23 @@ pub(crate) struct IrqState {
     idmac_mailbox: AtomicU64,
     next_generation: AtomicU32,
     register_owner: AtomicU8,
+    delivery_enabled: AtomicBool,
+    source_taken: AtomicBool,
+    source_holders: AtomicU8,
+    source_online: AtomicBool,
+    source_generation: AtomicU64,
+    masked_sources: AtomicU64,
+    masked_intmask: AtomicU32,
+    masked_idinten: AtomicU32,
 }
 
 const REGISTER_OWNER_IDLE: u8 = 0;
 const REGISTER_OWNER_TASK: u8 = 1;
 const REGISTER_OWNER_IRQ: u8 = 2;
+const PHYTIUM_MCI_IRQ_SOURCE_BITMAP: u64 = 1;
+const CAPTURE_ENDPOINT_HOLDER: u8 = 1 << 0;
+const SOURCE_CONTROL_HOLDER: u8 = 1 << 1;
+const ALL_SOURCE_HOLDERS: u8 = CAPTURE_ENDPOINT_HOLDER | SOURCE_CONTROL_HOLDER;
 
 pub(crate) struct RegisterOwner<'a> {
     owner: &'a AtomicU8,
@@ -65,7 +81,115 @@ impl IrqState {
             idmac_mailbox: AtomicU64::new(0),
             next_generation: AtomicU32::new(0),
             register_owner: AtomicU8::new(REGISTER_OWNER_IDLE),
+            delivery_enabled: AtomicBool::new(false),
+            source_taken: AtomicBool::new(false),
+            source_holders: AtomicU8::new(0),
+            source_online: AtomicBool::new(false),
+            source_generation: AtomicU64::new(0),
+            masked_sources: AtomicU64::new(0),
+            masked_intmask: AtomicU32::new(0),
+            masked_idinten: AtomicU32::new(0),
         }
+    }
+
+    pub(crate) fn take_source(&self) -> bool {
+        let taken = self
+            .source_taken
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+        if taken {
+            self.source_holders
+                .store(ALL_SOURCE_HOLDERS, Ordering::Release);
+        }
+        taken
+    }
+
+    pub(crate) fn source_ready(&self) -> bool {
+        self.source_taken.load(Ordering::Acquire)
+            && self.source_holders.load(Ordering::Acquire) == ALL_SOURCE_HOLDERS
+    }
+
+    pub(crate) fn release_capture_endpoint(&self) {
+        self.release_source_holder(CAPTURE_ENDPOINT_HOLDER);
+    }
+
+    pub(crate) fn release_source_control(&self) {
+        self.release_source_holder(SOURCE_CONTROL_HOLDER);
+    }
+
+    pub(crate) fn activate_source(&self) -> NonZeroU64 {
+        let mut current = self.source_generation.load(Ordering::Acquire);
+        let generation = loop {
+            let mut next = current.wrapping_add(1);
+            if next == 0 {
+                next = 1;
+            }
+            match self.source_generation.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break NonZeroU64::new(next).expect("IRQ source epoch is nonzero"),
+                Err(observed) => current = observed,
+            }
+        };
+        self.masked_sources.store(0, Ordering::Release);
+        self.source_online.store(true, Ordering::Release);
+        generation
+    }
+
+    pub(crate) fn deactivate_source(&self) {
+        self.source_online.store(false, Ordering::Release);
+        self.masked_sources.store(0, Ordering::Release);
+    }
+
+    pub(crate) fn source_generation(&self) -> Option<NonZeroU64> {
+        NonZeroU64::new(self.source_generation.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn source_online(&self) -> bool {
+        self.source_online.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_source_masked(&self, intmask: u32, idinten: u32) {
+        if self.masked_sources.load(Ordering::Acquire) & PHYTIUM_MCI_IRQ_SOURCE_BITMAP == 0 {
+            self.masked_intmask.store(intmask, Ordering::Relaxed);
+            self.masked_idinten.store(idinten, Ordering::Relaxed);
+            self.masked_sources
+                .fetch_or(PHYTIUM_MCI_IRQ_SOURCE_BITMAP, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn claim_masked_source(&self, bitmap: u64) -> Option<(u32, u32)> {
+        let mut current = self.masked_sources.load(Ordering::Acquire);
+        loop {
+            if bitmap == 0 || bitmap & !current != 0 {
+                return None;
+            }
+            match self.masked_sources.compare_exchange_weak(
+                current,
+                current & !bitmap,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some((
+                        self.masked_intmask.load(Ordering::Acquire),
+                        self.masked_idinten.load(Ordering::Acquire),
+                    ));
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub(crate) fn set_delivery_enabled(&self, enabled: bool) {
+        self.delivery_enabled.store(enabled, Ordering::Release);
+    }
+
+    pub(crate) fn delivery_enabled(&self) -> bool {
+        self.delivery_enabled.load(Ordering::Acquire)
     }
 
     pub(crate) fn try_begin_task_update(&self) -> Option<RegisterOwner<'_>> {
@@ -169,6 +293,20 @@ impl IrqState {
             }
         }
     }
+
+    fn release_source_holder(&self, holder: u8) {
+        let previous = self.source_holders.fetch_and(!holder, Ordering::AcqRel);
+        debug_assert_ne!(
+            previous & holder,
+            0,
+            "Phytium MCI IRQ source capability released more than once"
+        );
+        if previous == holder {
+            // Drop retires only a synchronized software capability. Hardware
+            // containment and IRQ-action synchronization are explicit steps.
+            self.source_taken.store(false, Ordering::Release);
+        }
+    }
 }
 
 fn pack_mailbox(generation: u32, status: u32) -> u64 {
@@ -260,7 +398,6 @@ pub struct PhytiumMci {
     pub(crate) recovery_quiesced: bool,
     pub(crate) use_hold_reg: bool,
     pub(crate) irq: Arc<IrqCore>,
-    completion_irq_enabled: AtomicBool,
     pub(crate) host2_next_id: u64,
     pub(crate) host2_active_id: Option<u64>,
 }
@@ -286,7 +423,6 @@ impl PhytiumMci {
             recovery_quiesced: false,
             use_hold_reg: true,
             irq: Arc::new(IrqCore::new(regs)),
-            completion_irq_enabled: AtomicBool::new(false),
             host2_next_id: 0,
             host2_active_id: None,
         }
@@ -328,8 +464,8 @@ impl PhytiumMci {
         self.regs.rintsts().write(cur);
     }
 
-    pub fn enable_completion_irq(&mut self) {
-        self.completion_irq_enabled.store(true, Ordering::Release);
+    pub(crate) fn enable_completion_irq(&mut self) {
+        let _ = self.irq.state.activate_source();
         self.regs.intmask().write(
             crate::MCI_INT_COMMAND_DONE
                 | crate::MCI_INT_DATA_TRANSFER_OVER
@@ -338,31 +474,43 @@ impl PhytiumMci {
                 | crate::MCI_INT_ERROR_MASK,
         );
         self.regs.ctrl().update(|r| r.with_int_enable(true));
+        self.irq.state.set_delivery_enabled(true);
     }
 
-    pub fn disable_completion_irq(&mut self) {
-        self.completion_irq_enabled.store(false, Ordering::Release);
+    pub(crate) fn disable_completion_irq(&mut self) {
         self.regs.intmask().write(0);
         self.regs.idinten().write(0);
         self.regs.ctrl().update(|r| r.with_int_enable(false));
+        self.irq.state.set_delivery_enabled(false);
+        self.irq.state.deactivate_source();
     }
 
     pub(crate) fn clear_completion_irq_enabled(&self) {
-        self.completion_irq_enabled.store(false, Ordering::Release);
+        self.irq.state.set_delivery_enabled(false);
+        self.irq.state.deactivate_source();
     }
 
     pub fn completion_irq_enabled(&self) -> bool {
-        self.completion_irq_enabled.load(Ordering::Acquire)
+        self.irq.state.delivery_enabled()
     }
 
-    pub fn irq_endpoint(&mut self) -> PhytiumMciIrqHandle {
-        PhytiumMciIrqHandle {
-            irq: self.irq.clone(),
-        }
-    }
-
-    pub fn handle_irq(&mut self) -> Event {
-        handle_irq_core(&self.irq)
+    /// Acquires the controller's unique live capture/control source lease.
+    ///
+    /// The maintenance owner must register `endpoint` on its pinned CPU while
+    /// controller delivery is disabled. It retains `control` and may enable
+    /// completion delivery only after registration succeeds. A later
+    /// activation may acquire a new lease after both synchronized halves retire.
+    pub fn take_irq_source(&mut self) -> Option<PhytiumMciIrqSource> {
+        self.irq.state.take_source().then(|| {
+            SdioIrqSource::new(
+                PhytiumMciIrqEndpoint {
+                    irq: Arc::clone(&self.irq),
+                },
+                PhytiumMciIrqControl {
+                    irq: Arc::clone(&self.irq),
+                },
+            )
+        })
     }
 
     pub(crate) fn event_from_raw_irq(raw: u32, idsts: u32) -> Event {
@@ -449,17 +597,90 @@ impl PhytiumMci {
     }
 }
 
-impl SdioIrqHandle for PhytiumMciIrqHandle {
+impl IrqEndpoint for PhytiumMciIrqEndpoint {
     type Event = Event;
+    type Fault = Error;
 
-    fn handle_irq(&mut self) -> Self::Event {
-        handle_irq_core(&self.irq)
+    fn capture(&mut self) -> IrqCapture<Self::Event, Self::Fault> {
+        capture_irq_core(&self.irq)
+    }
+
+    fn contain(&mut self, _cause: ContainmentCause) -> Result<MaskedSource, Self::Fault> {
+        mask_irq_delivery(&self.irq);
+        let generation = self
+            .irq
+            .state
+            .source_generation()
+            .ok_or(Error::InvalidArgument)?;
+        Ok(MaskedSource::new(
+            generation,
+            NonZeroU64::new(PHYTIUM_MCI_IRQ_SOURCE_BITMAP)
+                .expect("Phytium MCI source bitmap is nonzero"),
+        ))
     }
 }
 
-fn handle_irq_core(irq: &IrqCore) -> Event {
+impl Drop for PhytiumMciIrqEndpoint {
+    fn drop(&mut self) {
+        self.irq.state.release_capture_endpoint();
+    }
+}
+
+impl IrqSourceControl for PhytiumMciIrqControl {
+    type Error = SdioIrqControlError;
+
+    fn rearm(&mut self, source: MaskedSource) -> Result<(), Self::Error> {
+        let expected = self
+            .irq
+            .state
+            .source_generation()
+            .ok_or(SdioIrqControlError::Offline)?;
+        let actual = source.generation();
+        if actual != expected {
+            return Err(SdioIrqControlError::StaleGeneration {
+                expected: expected.get(),
+                actual: actual.get(),
+            });
+        }
+        let bitmap = source.bitmap().get();
+        if bitmap != PHYTIUM_MCI_IRQ_SOURCE_BITMAP {
+            return Err(SdioIrqControlError::SourceNotMasked { bitmap });
+        }
+        if !self.irq.state.source_online() {
+            return Err(SdioIrqControlError::Offline);
+        }
+        let Some((intmask, idinten)) = self.irq.state.claim_masked_source(bitmap) else {
+            return Err(SdioIrqControlError::SourceNotMasked { bitmap });
+        };
+        self.irq.regs.intmask().write(intmask);
+        self.irq.regs.idinten().write(idinten);
+        self.irq
+            .regs
+            .ctrl()
+            .update(|control| control.with_int_enable(true));
+        self.irq.state.set_delivery_enabled(true);
+        Ok(())
+    }
+}
+
+impl Drop for PhytiumMciIrqControl {
+    fn drop(&mut self) {
+        self.irq.state.release_source_control();
+    }
+}
+
+fn capture_irq_core(irq: &IrqCore) -> IrqCapture<Event, Error> {
     let Some(_register_owner) = irq.state.try_begin_irq_snapshot() else {
-        return Event::Deferred;
+        // The source must be bound to the same CPU as the maintenance owner,
+        // which excludes local delivery while task-side registers are being
+        // published. A conflict is therefore a binding invariant violation,
+        // not a retryable device event. The runtime must mask the parent IRQ
+        // action before recovery because touching device masks here could race
+        // the interrupted register update.
+        return IrqCapture::Fault {
+            reason: Error::Busy,
+            containment: FaultContainment::Uncontained,
+        };
     };
     let generation = irq.state.generation();
     let raw = irq.regs.rintsts().read().into_bits();
@@ -472,7 +693,27 @@ fn handle_irq_core(irq: &IrqCore) -> Event {
     }
     irq.state.cache_if_current(generation, raw, idsts);
 
-    PhytiumMci::event_from_raw_irq(raw, idsts)
+    let event = PhytiumMci::event_from_raw_irq(raw, idsts);
+    if matches!(event, Event::None) {
+        IrqCapture::Unhandled
+    } else {
+        IrqCapture::Captured {
+            event,
+            masked: None,
+        }
+    }
+}
+
+fn mask_irq_delivery(irq: &IrqCore) {
+    let intmask = irq.regs.intmask().read();
+    let idinten = irq.regs.idinten().read();
+    irq.regs.intmask().write(0);
+    irq.regs.idinten().write(0);
+    irq.regs
+        .ctrl()
+        .update(|control| control.with_int_enable(false));
+    irq.state.mark_source_masked(intmask, idinten);
+    irq.state.set_delivery_enabled(false);
 }
 
 pub(crate) fn uhs_bits_after_voltage(bits: Uhs, voltage: SignalVoltage) -> Result<Uhs, Error> {
@@ -486,7 +727,6 @@ pub(crate) fn uhs_bits_after_voltage(bits: Uhs, voltage: SignalVoltage) -> Resul
 }
 
 unsafe impl Send for PhytiumMci {}
-unsafe impl Sync for PhytiumMci {}
 
 #[cfg(test)]
 mod tests {
@@ -533,6 +773,7 @@ mod tests {
         let mut mmio = [0u32; 256];
         let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
         let mut host = unsafe { PhytiumMci::new(base) };
+        let (mut endpoint, _control) = host.take_irq_source().unwrap().into_parts();
         host.irq.state.begin_request();
         let old_generation = host.irq.state.generation();
         const IDSTS_WORD: usize = 36;
@@ -544,7 +785,10 @@ mod tests {
                 .write_volatile(IDSTS_RECEIVE)
         };
 
-        let event = host.handle_irq();
+        let IrqCapture::Captured { event, masked } = endpoint.capture() else {
+            panic!("asserted IDMAC status must be captured");
+        };
+        assert!(masked.is_none());
         assert_eq!(event, crate::Event::DmaComplete);
         assert_eq!(event.kind(), HostEventKind::Other);
         assert_eq!(host.irq.state.pending_idmac_status(), IDSTS_RECEIVE);
@@ -574,10 +818,11 @@ mod tests {
     }
 
     #[test]
-    fn irq_defers_destructive_status_snapshot_while_task_programs_request() {
+    fn register_ownership_conflict_is_a_fail_closed_fault_not_deferred_work() {
         let mut mmio = [0u32; 256];
         let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
         let mut host = unsafe { PhytiumMci::new(base) };
+        let (mut endpoint, _control) = host.take_irq_source().unwrap().into_parts();
         host.irq.state.begin_request();
         let irq_core = host.irq.clone();
         let task_owner = irq_core
@@ -592,8 +837,13 @@ mod tests {
                 .write_volatile(IDSTS_RECEIVE);
         }
 
-        let mut irq = host.irq_endpoint();
-        assert_eq!(irq.handle_irq(), crate::Event::Deferred);
+        assert!(matches!(
+            endpoint.capture(),
+            IrqCapture::Fault {
+                reason: Error::Busy,
+                containment: FaultContainment::Uncontained,
+            }
+        ));
         assert_eq!(host.irq.state.pending_idmac_status(), 0);
         assert_eq!(
             unsafe { mmio.as_ptr().add(IDSTS_WORD).read_volatile() },
@@ -601,12 +851,18 @@ mod tests {
         );
 
         drop(task_owner);
-        assert_eq!(irq.handle_irq(), crate::Event::DmaComplete);
+        assert!(matches!(
+            endpoint.capture(),
+            IrqCapture::Captured {
+                event: crate::Event::DmaComplete,
+                masked: None,
+            }
+        ));
         assert_eq!(host.irq.state.pending_idmac_status(), IDSTS_RECEIVE);
     }
 
     #[test]
-    fn task_register_update_defers_instead_of_spinning_behind_irq_snapshot() {
+    fn task_register_update_never_spins_behind_irq_snapshot() {
         let state = IrqState::new();
         let irq_owner = state
             .try_begin_irq_snapshot()
@@ -631,5 +887,101 @@ mod tests {
         assert_eq!(host.regs.intmask().read(), 0);
         assert_eq!(host.regs.idinten().read(), 0);
         assert!(!host.regs.ctrl().read().int_enable());
+    }
+
+    #[test]
+    fn protocol_irq_enable_requires_source_transfer() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+
+        assert_eq!(
+            sdmmc_protocol::sdio::host::SdioHost::enable_completion_irq(&mut host),
+            Err(Error::InvalidArgument)
+        );
+        let _source = host.take_irq_source().unwrap();
+        assert!(host.take_irq_source().is_none());
+        sdmmc_protocol::sdio::host::SdioHost::enable_completion_irq(&mut host).unwrap();
+    }
+
+    #[test]
+    fn irq_source_can_be_reacquired_only_after_both_capabilities_are_released() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        let (endpoint, control) = host.take_irq_source().unwrap().into_parts();
+
+        drop(endpoint);
+        assert!(host.take_irq_source().is_none());
+        drop(control);
+
+        let (endpoint, control) = host
+            .take_irq_source()
+            .expect("the source lease must return after both halves retire")
+            .into_parts();
+        drop(control);
+        assert!(host.take_irq_source().is_none());
+        drop(endpoint);
+        assert!(host.take_irq_source().is_some());
+    }
+
+    #[test]
+    fn reacquired_source_advances_generation_and_rejects_stale_tokens() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        let (mut endpoint, control) = host.take_irq_source().unwrap().into_parts();
+        sdmmc_protocol::sdio::host::SdioHost::enable_completion_irq(&mut host).unwrap();
+        let stale = endpoint
+            .contain(ContainmentCause::PublicationClosed)
+            .unwrap();
+        let first_generation = stale.generation();
+
+        sdmmc_protocol::sdio::host::SdioHost::disable_completion_irq(&mut host).unwrap();
+        drop(endpoint);
+        drop(control);
+        let (endpoint, mut control) = host
+            .take_irq_source()
+            .expect("a synchronized source must be reusable for runtime")
+            .into_parts();
+        sdmmc_protocol::sdio::host::SdioHost::enable_completion_irq(&mut host).unwrap();
+        let second_generation = host.irq.state.source_generation().unwrap();
+
+        assert!(second_generation.get() > first_generation.get());
+        assert!(matches!(
+            control.rearm(stale),
+            Err(SdioIrqControlError::StaleGeneration { actual, expected })
+                if actual == stale.generation().get() && expected != actual
+        ));
+        drop(endpoint);
+    }
+
+    #[test]
+    fn containment_preserves_exact_masks_until_generation_checked_rearm() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        let (mut endpoint, mut control) = host.take_irq_source().unwrap().into_parts();
+        sdmmc_protocol::sdio::host::SdioHost::enable_completion_irq(&mut host).unwrap();
+        host.regs.idinten().write(0x35);
+        let intmask = host.regs.intmask().read();
+
+        let token = endpoint.contain(ContainmentCause::PublicationFull).unwrap();
+        let duplicate = endpoint
+            .contain(ContainmentCause::PublicationClosed)
+            .unwrap();
+        assert_eq!(duplicate, token);
+        assert_eq!(host.regs.intmask().read(), 0);
+        assert_eq!(host.regs.idinten().read(), 0);
+        assert!(!host.completion_irq_enabled());
+
+        control.rearm(token).unwrap();
+        assert_eq!(host.regs.intmask().read(), intmask);
+        assert_eq!(host.regs.idinten().read(), 0x35);
+        assert!(host.completion_irq_enabled());
+        assert!(matches!(
+            control.rearm(token),
+            Err(SdioIrqControlError::SourceNotMasked { bitmap: 1 })
+        ));
     }
 }

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace split TX/RX wrappers and their shared spin mutex with one move-only
+  `NetDeviceOwner`; the OS maintenance thread now owns all controller and queue
+  mutation.
+- Remove the OS-injected hard-IRQ event mapper. AIC now derives its stable
+  network event directly from the SDIO host's callback-free event summary.
+
 ## [0.2.4](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.3...aic8800-v0.2.4) - 2026-07-08
 
 ### Other

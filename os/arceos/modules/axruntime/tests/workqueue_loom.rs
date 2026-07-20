@@ -268,6 +268,57 @@ fn delayed_cancel_retry_supersedes_one_concurrent_modification() {
 }
 
 #[test]
+fn delayed_retire_closes_publishers_before_returning_its_proof() {
+    model(|| {
+        const CLOSED: usize = 1 << (usize::BITS - 1);
+        const COUNT_MASK: usize = !CLOSED;
+        let publication_state = Arc::new(AtomicUsize::new(0));
+        let published = Arc::new(AtomicBool::new(false));
+
+        let producer = {
+            let publication_state = Arc::clone(&publication_state);
+            let published = Arc::clone(&published);
+            thread::spawn(move || {
+                let mut observed = publication_state.load(Ordering::Acquire);
+                loop {
+                    if observed & CLOSED != 0 {
+                        return false;
+                    }
+                    match publication_state.compare_exchange_weak(
+                        observed,
+                        observed + 1,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => break,
+                        Err(current) => observed = current,
+                    }
+                }
+                published.store(true, Ordering::Release);
+                publication_state.fetch_sub(1, Ordering::Release);
+                true
+            })
+        };
+        let retire = {
+            let publication_state = Arc::clone(&publication_state);
+            let published = Arc::clone(&published);
+            thread::spawn(move || {
+                let previous = publication_state.fetch_or(CLOSED, Ordering::AcqRel);
+                assert_eq!(previous & CLOSED, 0);
+                while publication_state.load(Ordering::Acquire) & COUNT_MASK != 0 {
+                    thread::yield_now();
+                }
+                published.load(Ordering::Acquire)
+            })
+        };
+
+        let accepted = producer.join().unwrap();
+        let proof_observed_publication = retire.join().unwrap();
+        assert!(!accepted || proof_observed_publication);
+    });
+}
+
+#[test]
 fn delayed_modification_admission_keeps_domain_drain_open_until_publication() {
     model(|| {
         // The first active item is the already-armed delayed work. The second
@@ -396,6 +447,45 @@ fn hard_irq_last_reservation_uses_a_deferred_drain_notification() {
             DOMAIN_DRAINED
         );
         assert!(!waiter.load(Ordering::Acquire) || worker_woke_waiter);
+    });
+}
+
+#[test]
+fn drain_preserves_a_callback_owned_continuation_reservation() {
+    model(|| {
+        let lifecycle = Arc::new(AtomicUsize::new(DOMAIN_ACTIVE_ONE));
+        let work_state = Arc::new(AtomicU8::new(RUNNING));
+
+        let drainer = {
+            let lifecycle = Arc::clone(&lifecycle);
+            thread::spawn(move || begin_domain_drain(&lifecycle))
+        };
+        let callback = {
+            let work_state = Arc::clone(&work_state);
+            thread::spawn(move || {
+                work_state
+                    .compare_exchange(RUNNING, QUEUED, Ordering::AcqRel, Ordering::Acquire)
+                    .expect("a callback-owned continuation remains accepted during drain");
+            })
+        };
+
+        drainer.join().unwrap();
+        callback.join().unwrap();
+        assert_eq!(work_state.load(Ordering::Acquire), QUEUED);
+        assert_eq!(
+            lifecycle.load(Ordering::Acquire),
+            DOMAIN_ACTIVE_ONE | DOMAIN_DRAINING,
+            "a chained continuation must keep the original domain reservation"
+        );
+
+        work_state
+            .compare_exchange(QUEUED, RUNNING, Ordering::AcqRel, Ordering::Acquire)
+            .unwrap();
+        work_state
+            .compare_exchange(RUNNING, IDLE, Ordering::AcqRel, Ordering::Acquire)
+            .unwrap();
+        release_domain_item(&lifecycle);
+        assert_eq!(lifecycle.load(Ordering::Acquire), DOMAIN_DRAINED);
     });
 }
 

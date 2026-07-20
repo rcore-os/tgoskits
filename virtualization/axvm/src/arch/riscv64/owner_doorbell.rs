@@ -30,7 +30,6 @@ impl FixedOwnerContext {
         (context_id != NO_OWNER).then_some(context_id)
     }
 
-    #[cfg(any(test, feature = "fs", feature = "host-fs"))]
     pub(crate) fn clear(&self, context_id: usize) -> bool {
         // Revocation may retry after the owner was already cleared. A
         // different live owner is never treated as completion.
@@ -51,7 +50,6 @@ impl OwnerDoorbell {
         Self(AtomicBool::new(false))
     }
 
-    #[cfg(all(target_arch = "riscv64", any(feature = "fs", feature = "host-fs")))]
     pub(crate) fn clear(&self) {
         self.0.store(false, Ordering::Release);
     }
@@ -174,6 +172,18 @@ mod tests {
 
         assert!(published);
         assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn route_release_clears_the_completion_doorbell_for_reuse() {
+        let doorbell = OwnerDoorbell::new();
+        let wakes = Cell::new(0);
+
+        assert!(doorbell.publish_if(|| true, || count_wake(&wakes)));
+        doorbell.clear();
+        assert!(doorbell.publish_if(|| true, || count_wake(&wakes)));
+
+        assert_eq!(wakes.get(), 2);
     }
 
     fn count_wake(wakes: &Cell<usize>) -> bool {

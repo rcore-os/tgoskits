@@ -1,8 +1,6 @@
 //! Core vCPU and nested-paging contract implemented by every target architecture.
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
-use alloc::format;
-use alloc::vec::Vec;
+use alloc::{format, vec::Vec};
 
 use ax_kspin::PreemptGuard;
 use ax_memory_addr::VirtAddr;
@@ -10,12 +8,72 @@ use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps};
 
 use super::{BoundVcpuExit, CommonDeferredRunWork, VcpuRunAction};
-#[cfg(any(feature = "fs", feature = "host-fs"))]
-use crate::ax_err;
 use crate::{
-    AxVmResult,
+    AxVmError, AxVmResult, ax_err,
     vcpu::{BoundVcpu, PinnedCpuContext},
 };
+
+/// Owner-thread session retained while architecture passthrough IRQ actions live.
+///
+/// The session is created on the vCPU thread before its first-run hook can
+/// register an action. Its current-CPU lease permits blocking but prevents the
+/// scheduler from migrating the owner. Manager threads may only publish the
+/// architecture-specific release request; the registering vCPU invokes
+/// `close` and retains this object until that fallible protocol succeeds.
+#[must_use = "a vCPU IRQ owner must explicitly close its registered actions"]
+pub(crate) struct VcpuIrqOwnerSession {
+    vm_id: usize,
+    vcpu_id: usize,
+    owner_cpu: usize,
+    _owner_thread: crate::host::task::CurrentCpuLease,
+    release_requested: fn(usize, usize) -> bool,
+    close: fn(usize, usize) -> AxVmResult,
+    closed: bool,
+}
+
+impl VcpuIrqOwnerSession {
+    /// Pins the calling vCPU thread and binds architecture release operations.
+    pub(crate) fn acquire(
+        vm_id: usize,
+        vcpu_id: usize,
+        release_requested: fn(usize, usize) -> bool,
+        close: fn(usize, usize) -> AxVmResult,
+    ) -> AxVmResult<Self> {
+        let owner_thread = crate::host::task::pin_current_cpu().map_err(|error| {
+            AxVmError::resource_unavailable("vCPU IRQ owner placement lease", error)
+        })?;
+        let owner_cpu = owner_thread.cpu().as_u32() as usize;
+        Ok(Self {
+            vm_id,
+            vcpu_id,
+            owner_cpu,
+            _owner_thread: owner_thread,
+            release_requested,
+            close,
+            closed: false,
+        })
+    }
+
+    /// Returns the CPU protected for the complete action lifetime.
+    pub(crate) const fn owner_cpu(&self) -> usize {
+        self.owner_cpu
+    }
+
+    /// Observes the preallocated manager-to-owner release cause.
+    pub(crate) fn release_requested(&self) -> bool {
+        (self.release_requested)(self.vm_id, self.vcpu_id)
+    }
+
+    /// Runs the architecture close protocol on the registering vCPU thread.
+    pub(crate) fn close(&mut self) -> AxVmResult {
+        if self.closed {
+            return Ok(());
+        }
+        (self.close)(self.vm_id, self.vcpu_id)?;
+        self.closed = true;
+        Ok(())
+    }
+}
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
@@ -48,7 +106,43 @@ pub(crate) trait ArchOps {
         Ok(())
     }
 
+    /// Acquires a long-lived owner session before [`Self::before_first_run`].
+    ///
+    /// Only architectures that register passthrough IRQ actions from a vCPU
+    /// thread opt in. The returned session stays on that thread's stack until
+    /// its manager publishes a release request and owner-local close succeeds.
+    fn prepare_vcpu_irq_owner(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult<Option<VcpuIrqOwnerSession>> {
+        Ok(None)
+    }
+
+    /// Services owner-local task-context IRQ control before the next guest run.
+    ///
+    /// This hook is the only place for fallible rearm or controller operations
+    /// requested by another vCPU. It runs with normal host preemption enabled;
+    /// the bound-vCPU hooks must remain non-blocking.
+    fn service_vcpu_irq_owner(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        Ok(())
+    }
+
     fn before_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &BoundVcpu<'_, '_, Self::VCpu>) {}
+
+    /// Drains architecture-owned IRQ facts through the currently bound vCPU.
+    ///
+    /// Hard handlers may publish only into preallocated architecture ingress.
+    /// This owner-only hook performs guest-controller state transitions and
+    /// backend injection before generic runtime interrupt delivery.
+    fn drain_arch_irq_publications(
+        _vm: &crate::AxVMRef,
+        _vcpu: &BoundVcpu<'_, '_, Self::VCpu>,
+    ) -> AxVmResult {
+        Ok(())
+    }
 
     fn inject_pending_interrupt(
         _vm: &crate::AxVMRef,
@@ -89,13 +183,12 @@ pub(crate) trait ArchOps {
 
     fn on_last_vcpu_exit(_vm_id: usize) {}
 
-    /// Activates architecture IRQ routes after host storage selection commits.
+    /// Activates architecture IRQ routes after host-device selection commits.
     ///
     /// Architectures whose passthrough routes are activated by another
     /// fallible post-commit stage may keep the default no-op. This hook must
     /// never run from VM construction because image loading can still depend
     /// on the host block controller at that point.
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn activate_guest_irq_routes(_vm: &crate::AxVMRef) -> AxVmResult {
         Ok(())
     }
@@ -106,7 +199,6 @@ pub(crate) trait ArchOps {
     /// can reach the guest before returning success. The default deliberately
     /// fails closed so a newly added architecture cannot fabricate storage
     /// return safety.
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn revoke_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
         ax_err!(
             Unsupported,
@@ -186,6 +278,9 @@ fn run_vcpu_pinned<A: ArchOps>(
         A::before_vcpu_run(vm, &bound_vcpu);
 
         loop {
+            if let Err(error) = A::drain_arch_irq_publications(vm, &bound_vcpu) {
+                break Err(error);
+            }
             if let Err(error) =
                 crate::runtime::vcpus::inject_pending_interrupts::<A>(vm, &bound_vcpu)
             {

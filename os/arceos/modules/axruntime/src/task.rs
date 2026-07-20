@@ -11,6 +11,11 @@ use core::{
     ptr::{self, NonNull},
     sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering},
 };
+#[cfg(feature = "paging")]
+use core::{
+    mem::MaybeUninit,
+    sync::atomic::{AtomicU8, AtomicUsize},
+};
 
 use ax_cpu_local::{
     ContextIdentity, CpuAreaPrefixV2, CpuBindingEpoch, CpuPin, CurrentThreadHeader, ThreadIdentity,
@@ -18,14 +23,15 @@ use ax_cpu_local::{
 use ax_kspin::{IrqGuard, SpinNoIrq};
 use ax_lazyinit::LazyInit;
 pub use ax_task::{
-    CpuId, CpuSet, DeadlineFlags, DeadlinePolicy, FairMode, IrqRegisterResult, IrqWaitCell,
-    IrqWaitRegistration, IrqWakeHandle, Nice, RtPriority, SchedulePolicy, SwitchReason, TaskError,
-    ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId, ThreadPolicyApplied, ThreadState,
-    ThreadWakeHandle, WaitQueue, WakeResult, current_cpu_needs_resched, current_thread_extension,
-    current_thread_handle, current_thread_id, executor::LocalExecutor, exit_current_thread,
-    runtime::SchedSwitchRecord, schedule_current_cpu, set_current_thread_affinity,
-    set_thread_affinity, set_thread_policy, sleep, sleep_until, thread_affinity, thread_handle,
-    thread_policy, thread_round_robin_interval_ns, thread_runtime, yield_current_cpu,
+    CpuId, CpuSet, CurrentCpuLease, DeadlineFlags, DeadlinePolicy, FairMode, IrqRegisterResult,
+    IrqWaitCell, IrqWaitRegistration, IrqWakeHandle, Nice, RtPriority, SchedulePolicy,
+    SwitchReason, TaskError, ThreadExtension, ThreadExtensionOps, ThreadHandle, ThreadId,
+    ThreadPolicyApplied, ThreadState, ThreadWakeHandle, WaitQueue, WakeResult,
+    current_cpu_needs_resched, current_thread_extension, current_thread_handle, current_thread_id,
+    executor::LocalExecutor, exit_current_thread, pin_current_cpu, runtime::SchedSwitchRecord,
+    schedule_current_cpu, set_current_thread_affinity, set_thread_affinity, set_thread_policy,
+    sleep, sleep_until, thread_affinity, thread_handle, thread_policy,
+    thread_round_robin_interval_ns, thread_runtime, yield_current_cpu,
 };
 use ax_task::{
     CpuLocal, CpuLocalOwnerBorrow, CpuRemote, TaskSystem, TaskSystemConfig, ThreadResources,
@@ -447,6 +453,8 @@ struct RuntimeStack {
     base: usize,
     usable_top: usize,
     backing: StackBacking,
+    #[cfg(feature = "paging")]
+    quarantine: Option<RuntimeStackQuarantineReservation>,
 }
 
 impl RuntimeStack {
@@ -467,6 +475,153 @@ enum StackBacking {
     },
     #[cfg(feature = "paging")]
     GuardedPages { pages: usize, guard_size: usize },
+}
+
+#[cfg(feature = "paging")]
+const RUNTIME_STACK_QUARANTINE_CAPACITY: usize = 4096;
+#[cfg(feature = "paging")]
+const STACK_QUARANTINE_FREE: u8 = 0;
+#[cfg(feature = "paging")]
+const STACK_QUARANTINE_RESERVED: u8 = 1;
+#[cfg(feature = "paging")]
+const STACK_QUARANTINE_OCCUPIED: u8 = 2;
+
+/// Metadata retaining one guarded-page allocation that cannot safely be
+/// returned to the page allocator.
+///
+/// The `RuntimeStack` box itself owns no page-allocation destructor. Retaining
+/// these coordinates therefore names the allocation without leaking the box
+/// or pretending that pages whose guard mapping could not be restored are
+/// reusable.
+#[cfg(feature = "paging")]
+#[derive(Clone, Copy)]
+struct QuarantinedRuntimeStack {
+    _base: usize,
+    _pages: usize,
+    _guard_size: usize,
+    _reason: RuntimeStackQuarantineReason,
+}
+
+#[cfg(feature = "paging")]
+#[derive(Clone, Copy)]
+enum RuntimeStackQuarantineReason {
+    GuardRestoreFailed,
+}
+
+#[cfg(feature = "paging")]
+struct RuntimeStackQuarantineSlot {
+    state: AtomicU8,
+    record: UnsafeCell<MaybeUninit<QuarantinedRuntimeStack>>,
+}
+
+#[cfg(feature = "paging")]
+impl RuntimeStackQuarantineSlot {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(STACK_QUARANTINE_FREE),
+            record: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+}
+
+// SAFETY: FREE -> RESERVED grants one reservation exclusive write access to
+// `record`. An OCCUPIED record is immutable and intentionally retained for the
+// remaining image lifetime; no reference to it is ever exposed.
+#[cfg(feature = "paging")]
+unsafe impl Sync for RuntimeStackQuarantineSlot {}
+
+#[cfg(feature = "paging")]
+struct RuntimeStackQuarantineRegistry<const CAPACITY: usize> {
+    slots: [RuntimeStackQuarantineSlot; CAPACITY],
+    occupied: AtomicUsize,
+}
+
+#[cfg(feature = "paging")]
+impl<const CAPACITY: usize> RuntimeStackQuarantineRegistry<CAPACITY> {
+    const fn new() -> Self {
+        Self {
+            slots: [const { RuntimeStackQuarantineSlot::new() }; CAPACITY],
+            occupied: AtomicUsize::new(0),
+        }
+    }
+
+    fn reserve(&self) -> Option<usize> {
+        self.slots.iter().position(|slot| {
+            slot.state
+                .compare_exchange(
+                    STACK_QUARANTINE_FREE,
+                    STACK_QUARANTINE_RESERVED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        })
+    }
+
+    fn release(&self, index: usize) {
+        let slot = &self.slots[index];
+        assert_eq!(
+            slot.state.compare_exchange(
+                STACK_QUARANTINE_RESERVED,
+                STACK_QUARANTINE_FREE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ),
+            Ok(STACK_QUARANTINE_RESERVED),
+            "runtime-stack quarantine released an invalid reservation"
+        );
+    }
+
+    fn retain(&self, index: usize, record: QuarantinedRuntimeStack) -> usize {
+        let slot = &self.slots[index];
+        assert_eq!(
+            slot.state.load(Ordering::Acquire),
+            STACK_QUARANTINE_RESERVED,
+            "runtime-stack quarantine lost its reserved slot"
+        );
+        // SAFETY: this reservation uniquely owns the slot until OCCUPIED is
+        // published. Occupied records are never subsequently accessed.
+        unsafe { (*slot.record.get()).write(record) };
+        slot.state
+            .store(STACK_QUARANTINE_OCCUPIED, Ordering::Release);
+        self.occupied.fetch_add(1, Ordering::AcqRel) + 1
+    }
+}
+
+#[cfg(feature = "paging")]
+static RUNTIME_STACK_QUARANTINE: RuntimeStackQuarantineRegistry<RUNTIME_STACK_QUARANTINE_CAPACITY> =
+    RuntimeStackQuarantineRegistry::new();
+
+#[cfg(feature = "paging")]
+struct RuntimeStackQuarantineReservation {
+    slot: Option<usize>,
+}
+
+#[cfg(feature = "paging")]
+impl RuntimeStackQuarantineReservation {
+    fn reserve() -> Result<Self, RuntimeStatus> {
+        let slot = RUNTIME_STACK_QUARANTINE
+            .reserve()
+            .ok_or(RuntimeStatus::NoMemory)?;
+        Ok(Self { slot: Some(slot) })
+    }
+
+    fn retain(mut self, stack: QuarantinedRuntimeStack) -> usize {
+        let slot = self
+            .slot
+            .take()
+            .expect("a live runtime-stack reservation owns one slot");
+        RUNTIME_STACK_QUARANTINE.retain(slot, stack)
+    }
+}
+
+#[cfg(feature = "paging")]
+impl Drop for RuntimeStackQuarantineReservation {
+    fn drop(&mut self) {
+        if let Some(slot) = self.slot.take() {
+            RUNTIME_STACK_QUARANTINE.release(slot);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1048,7 +1203,7 @@ where
 /// This narrow runtime-only entry prevents per-CPU services from racing a
 /// post-spawn affinity or policy update. The caller remains responsible for
 /// retaining a direct wake capability and for making the entry non-returning.
-#[cfg(feature = "workqueue")]
+#[cfg(any(feature = "workqueue", feature = "maintenance"))]
 pub(crate) fn spawn_kernel_worker<F>(
     entry: F,
     name: String,
@@ -1995,6 +2150,8 @@ fn allocate_heap_stack(request: StackRequest) -> Result<StackHandle, RuntimeStat
         base,
         usable_top,
         backing: StackBacking::Heap { pointer, layout },
+        #[cfg(feature = "paging")]
+        quarantine: None,
     });
     // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeStack that
     // stays live until deallocate_runtime_stack consumes this exact handle.
@@ -2006,6 +2163,10 @@ fn allocate_guarded_stack(request: StackRequest) -> Result<StackHandle, RuntimeS
     if !request.guard_size.is_multiple_of(PAGE_SIZE) {
         return Err(RuntimeStatus::InvalidArgument);
     }
+    // Reserve fail-closed metadata before the page allocation becomes visible
+    // to ax-task. Teardown can therefore retain a failed guard restoration
+    // without allocating or falling back to an anonymous leak.
+    let quarantine = RuntimeStackQuarantineReservation::reserve()?;
     let usable_size = request
         .usable_size
         .checked_add(PAGE_SIZE - 1)
@@ -2045,6 +2206,7 @@ fn allocate_guarded_stack(request: StackRequest) -> Result<StackHandle, RuntimeS
             pages,
             guard_size: request.guard_size,
         },
+        quarantine: Some(quarantine),
     });
     // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeStack that
     // stays live until deallocate_runtime_stack consumes this exact handle.
@@ -2057,14 +2219,14 @@ fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
     }
     // SAFETY: ax-task passes only a live handle returned by
     // `allocate_runtime_stack`, and consumes it exactly once during reaping.
-    let stack = unsafe {
+    let mut stack = unsafe {
         Box::from_raw(ptr::with_exposed_provenance_mut::<RuntimeStack>(
             handle.into_raw(),
         ))
     };
-    match stack.backing {
+    match &stack.backing {
         StackBacking::Heap { pointer, layout } => {
-            ax_alloc::global_allocator().dealloc(pointer, layout);
+            ax_alloc::global_allocator().dealloc(*pointer, *layout);
         }
         #[cfg(feature = "paging")]
         StackBacking::GuardedPages { pages, guard_size } => {
@@ -2072,16 +2234,30 @@ fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
             let restore = ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE;
             if ax_mm::kernel_aspace()
                 .lock()
-                .protect(guard, guard_size, restore)
+                .protect(guard, *guard_size, restore)
                 .is_err()
             {
-                core::mem::forget(stack);
+                let quarantine = stack
+                    .quarantine
+                    .take()
+                    .expect("every guarded stack reserves quarantine storage");
+                let occupied = quarantine.retain(QuarantinedRuntimeStack {
+                    _base: stack.base,
+                    _pages: *pages,
+                    _guard_size: *guard_size,
+                    _reason: RuntimeStackQuarantineReason::GuardRestoreFailed,
+                });
+                error!(
+                    "runtime stack quarantined after guard restoration failure: base={:#x}, \
+                     pages={}, occupied={occupied}",
+                    stack.base, pages,
+                );
                 return RuntimeStatus::Platform;
             }
             ax_hal::asm::flush_tlb(None);
             ax_alloc::global_allocator().dealloc_pages(
                 stack.base,
-                pages,
+                *pages,
                 ax_alloc::UsageKind::Global,
             );
         }
@@ -2634,6 +2810,38 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
+
+    #[cfg(feature = "paging")]
+    #[test]
+    fn runtime_stack_quarantine_reservation_is_released_before_publication() {
+        static REGISTRY: RuntimeStackQuarantineRegistry<1> = RuntimeStackQuarantineRegistry::new();
+
+        let slot = REGISTRY.reserve().expect("first reservation must succeed");
+        assert!(REGISTRY.reserve().is_none());
+        REGISTRY.release(slot);
+        assert!(REGISTRY.reserve().is_some());
+    }
+
+    #[cfg(feature = "paging")]
+    #[test]
+    fn retained_runtime_stack_quarantine_slot_is_never_reused() {
+        static REGISTRY: RuntimeStackQuarantineRegistry<1> = RuntimeStackQuarantineRegistry::new();
+
+        let slot = REGISTRY.reserve().expect("first reservation must succeed");
+        assert_eq!(
+            REGISTRY.retain(
+                slot,
+                QuarantinedRuntimeStack {
+                    _base: 0x1000,
+                    _pages: 2,
+                    _guard_size: PAGE_SIZE,
+                    _reason: RuntimeStackQuarantineReason::GuardRestoreFailed,
+                },
+            ),
+            1
+        );
+        assert!(REGISTRY.reserve().is_none());
+    }
 
     #[cfg(feature = "uspace")]
     #[test]

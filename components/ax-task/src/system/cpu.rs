@@ -5,7 +5,7 @@ use core::{
     marker::{PhantomData, PhantomPinned},
     ops::Deref,
     pin::Pin,
-    ptr::NonNull,
+    ptr::{self, NonNull},
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
@@ -15,7 +15,10 @@ use crate::{
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult, SchedulerInbox},
     runtime::{RuntimeCpuId, RuntimeStatus, task_runtime},
     thread::ThreadCore,
-    timer::{ExpireBatch, ExpireRequest, ExpiredTimer, TimerQueue},
+    timer::{
+        ExpireBatch, ExpireRequest, ExpiredTimer, TimerNode, TimerQueue, TimerRetireProof,
+        TimerToken,
+    },
 };
 
 /// Scheduler class carried by a remotely observed CPU load summary.
@@ -1718,6 +1721,46 @@ impl CpuLocal {
             copied += 1;
         }
         copied
+    }
+
+    /// Detaches one runtime timer generation from every ax-task owner-CPU store.
+    ///
+    /// The caller must serialize this operation on the CPU that owns the timer
+    /// heap. Removing both representations in one pinned mutable transaction is
+    /// what permits the runtime to later release the enclosing owner object.
+    pub(crate) fn retire_runtime_timer(
+        self: Pin<&mut Self>,
+        node: Pin<&TimerNode>,
+        token: TimerToken,
+    ) -> TimerRetireProof {
+        let fields = self.fields_mut();
+        let removed_heap_entry = fields.timer_queue.retire_generation(node, token);
+        let node_address = ptr::from_ref(node.get_ref()).expose_provenance();
+        let mut removed_buffered_expiration = false;
+        let mut index = 0;
+        while index < fields.timer_expired_count {
+            let event = fields.timer_expired_buffer[index];
+            if event.node() == node_address && event.token() == token {
+                let count = fields.timer_expired_count;
+                fields
+                    .timer_expired_buffer
+                    .copy_within(index + 1..count, index);
+                fields.timer_expired_count = count - 1;
+                fields.timer_expired_buffer[count - 1] = ExpiredTimer::EMPTY;
+                removed_buffered_expiration = true;
+            } else {
+                index += 1;
+            }
+        }
+        if fields.timer_expired_count == 0 {
+            fields.timer_delivery_claimed = false;
+        }
+        TimerRetireProof::new(
+            node_address,
+            token,
+            removed_heap_entry,
+            removed_buffered_expiration,
+        )
     }
 
     pub(crate) fn take_dispatchable_expired_timer(self: Pin<&mut Self>) -> Option<ExpiredTimer> {

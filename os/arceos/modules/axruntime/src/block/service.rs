@@ -189,7 +189,10 @@ fn submit_inline(
     if !queue.available.load(Ordering::Acquire) {
         return Err(BlockServiceError::ControllerUnavailable);
     }
-    let outcome = driver.submit_owned(id, request);
+    let outcome = driver
+        .as_mut()
+        .ok_or(BlockServiceError::ControllerUnavailable)?
+        .submit_owned(id, request);
     let violates_inline_contract = match &outcome {
         Ok(SubmitOutcome::Completed(completion)) => completion.id != id,
         Ok(SubmitOutcome::Queued) => true,
@@ -206,14 +209,19 @@ fn submit_inline(
         Ok(SubmitOutcome::Completed(completion)) if completion.id == id => Ok(completion),
         Ok(SubmitOutcome::Completed(mut completion)) => {
             completion.result = Err(BlkError::Io);
-            queue.retain_rejected_completion(completion);
+            // Inline completion means the call already returned all hardware
+            // ownership synchronously. A wrong identity poisons the endpoint,
+            // but ordinary Rust Drop is correct for the returned CPU buffer.
+            drop(completion);
             Err(contain_inline_contract_violation(queue))
         }
         Ok(SubmitOutcome::Queued) => Err(contain_inline_contract_violation(queue)),
         Err(error) => {
             let (returned_id, driver_error, request) = error.into_parts();
             if returned_id != id {
-                queue.retain_rejected_request(request);
+                // SubmitError explicitly means the driver did not accept the
+                // request, so no device can still observe its backing memory.
+                drop(request);
                 return Err(contain_inline_contract_violation(queue));
             }
             drop(request);
@@ -297,7 +305,7 @@ fn queue_supports(info: QueueInfo, operation: RequestOp) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use rdif_block::{DeviceInfo, DispatchMode, IdList, QueueKind, QueueLimits};
+    use rdif_block::{DeviceInfo, IdList, QueueExecution, QueueKind, QueueLimits};
 
     use super::*;
 
@@ -313,7 +321,7 @@ mod tests {
             device: DeviceInfo::new(64, 512),
             limits,
             kind: QueueKind::Interrupt { sources },
-            dispatch_mode: DispatchMode::Direct,
+            execution: QueueExecution::Tagged,
         };
 
         assert_eq!(transfer_chunk_len(info, 9 * 512).unwrap(), 3 * 512);

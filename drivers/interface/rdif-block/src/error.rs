@@ -71,6 +71,8 @@ pub enum QueueContractError {
     InvalidDeviceGeometry { queue_id: usize },
     #[error("queue {queue_id} exposes unusable request or DMA limits")]
     InvalidQueueLimits { queue_id: usize },
+    #[error("queue {queue_id} completion kind and execution contract are inconsistent")]
+    QueueExecutionMismatch { queue_id: usize },
     #[error(
         "queue {queue_id} metadata does not match logical block device {device_id} geometry and \
          limits"
@@ -96,6 +98,19 @@ pub enum QueueContractError {
     UndeclaredInterruptSource { queue_id: usize, source_id: usize },
     #[error("queue {queue_id} requires unbound logical interrupt source {source_id}")]
     UnboundInterruptSource { queue_id: usize, source_id: usize },
+}
+
+/// Owner-side failure while reopening one device-masked interrupt source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum IrqControlError {
+    #[error("stale IRQ source generation: expected {expected}, got {actual}")]
+    StaleGeneration { expected: u64, actual: u64 },
+    #[error("IRQ source bitmap {bitmap:#x} is not owned by the masked capture")]
+    SourceNotMasked { bitmap: u64 },
+    #[error("IRQ source owner is offline")]
+    Offline,
+    #[error("device IRQ control failed: {0}")]
+    Hardware(#[from] BlkError),
 }
 
 impl From<BlkError> for io::ErrorKind {

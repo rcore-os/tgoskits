@@ -1,11 +1,9 @@
-use alloc::boxed::Box;
 use core::num::NonZeroUsize;
 
 use log::{error, warn};
 use rdif_block::{
-    BIrqHandler, BlkError, BundleError, ControllerBundle, DeviceInfo, Interface, IrqHandler,
-    IrqSourceList, LifecycleEndpoint, LogicalDevice, LogicalDeviceId, LogicalDeviceIds,
-    QueueHandle, QueueLimits,
+    BlkError, BlockIrqSource, BundleError, ControllerBundle, DeviceInfo, Interface, IrqSourceList,
+    LifecycleEndpoint, LogicalDevice, LogicalDeviceId, LogicalDeviceIds, QueueHandle, QueueLimits,
 };
 
 use crate::IrqBindingLease;
@@ -71,42 +69,46 @@ fn enable_irq_transaction<L: IrqBindingLease>(
     enable_device_source: impl FnOnce() -> Result<(), BlkError>,
     disable_device_source: impl FnOnce() -> Result<(), BlkError>,
 ) -> Result<(), BlkError> {
-    if let Err(binding_error) = irq_lease.enable_binding_irq() {
-        let binding_rollback = irq_lease.disable_binding_irq();
-        if let Err(binding_rollback_error) = binding_rollback {
-            error!(
-                "platform IRQ binding enable failed ({binding_error}); binding rollback also \
-                 failed ({binding_rollback_error})"
-            );
-        }
-        return if binding_rollback.is_err() {
-            Err(ACTIVATION_ROLLBACK_FAILED)
-        } else {
-            warn!("platform IRQ binding enable failed: {binding_error}");
-            Err(BINDING_ENABLE_FAILED)
-        };
-    }
-
     if let Err(enable_error) = enable_device_source() {
         let device_rollback = disable_device_source();
-        let binding_rollback = irq_lease.disable_binding_irq();
-
         if let Err(rollback_error) = device_rollback {
             error!(
                 "block IRQ source enable failed ({enable_error}); source rollback also failed \
                  ({rollback_error})"
             );
         }
+        return if device_rollback.is_err() {
+            Err(ACTIVATION_ROLLBACK_FAILED)
+        } else {
+            Err(enable_error)
+        };
+    }
+
+    // The registered OS action is already enabled by the runtime. Publish the
+    // device endpoint/source before opening the outer PCI or platform gate so
+    // a pending level interrupt cannot enter an endpoint that still reports
+    // itself offline.
+    if let Err(binding_error) = irq_lease.enable_binding_irq() {
+        let device_rollback = disable_device_source();
+        let binding_rollback = irq_lease.disable_binding_irq();
+
+        if let Err(rollback_error) = device_rollback {
+            error!(
+                "platform IRQ binding enable failed ({binding_error}); source rollback also \
+                 failed ({rollback_error})"
+            );
+        }
         if let Err(rollback_error) = binding_rollback {
             error!(
-                "block IRQ source enable failed ({enable_error}); binding rollback also failed \
-                 ({rollback_error})"
+                "platform IRQ binding enable failed ({binding_error}); binding rollback also \
+                 failed ({rollback_error})"
             );
         }
         return if device_rollback.is_err() || binding_rollback.is_err() {
             Err(ACTIVATION_ROLLBACK_FAILED)
         } else {
-            Err(enable_error)
+            warn!("platform IRQ binding enable failed: {binding_error}");
+            Err(BINDING_ENABLE_FAILED)
         };
     }
 
@@ -194,8 +196,8 @@ impl<T: Interface, L: IrqBindingLease> Interface for IrqBoundBlock<T, L> {
         self.inner.irq_sources()
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
-        self.inner.take_irq_handler(source_id)
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
+        self.inner.take_irq_source(source_id)
     }
 }
 
@@ -252,8 +254,8 @@ impl<T: ControllerBundle, L: IrqBindingLease> ControllerBundle for IrqBoundContr
         self.inner.irq_sources()
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<BIrqHandler> {
-        self.inner.take_irq_handler(source_id)
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
+        self.inner.take_irq_source(source_id)
     }
 }
 
@@ -324,15 +326,8 @@ mod tests {
             IdList::from_bits(1)
         }
 
-        fn take_irq_handler(
-            &mut self,
-            _source_id: usize,
-        ) -> Option<alloc::boxed::Box<dyn rdif_block::IrqHandler>> {
+        fn take_irq_source(&mut self, _source_id: usize) -> Option<rdif_block::BlockIrqSource> {
             None
-        }
-
-        fn service_deferred_irq(&mut self, _source_id: usize) -> rdif_block::InitIrqProgress {
-            rdif_block::InitIrqProgress::Unhandled
         }
 
         fn poll_init(&mut self, _input: InitInput) -> InitPoll<()> {
@@ -393,10 +388,7 @@ mod tests {
             vec![IrqSourceInfo::legacy(IdList::from_bits(1))]
         }
 
-        fn take_irq_handler(
-            &mut self,
-            _source_id: usize,
-        ) -> Option<alloc::boxed::Box<dyn rdif_block::IrqHandler>> {
+        fn take_irq_source(&mut self, _source_id: usize) -> Option<rdif_block::BlockIrqSource> {
             None
         }
     }
@@ -439,8 +431,8 @@ mod tests {
         assert_eq!(
             *log.lock().unwrap(),
             vec![
-                "lease-enable",
                 "block-enable",
+                "lease-enable",
                 "block-disable",
                 "lease-disable"
             ]
@@ -466,19 +458,11 @@ mod tests {
         let wrapper = IrqBoundBlock::new(block, lease);
 
         assert_eq!(wrapper.enable_irq(), Err(rdif_block::BlkError::Io));
-        assert_eq!(
-            *log.lock().unwrap(),
-            vec![
-                "lease-enable",
-                "block-enable",
-                "block-disable",
-                "lease-disable"
-            ]
-        );
+        assert_eq!(*log.lock().unwrap(), vec!["block-enable", "block-disable"]);
     }
 
     #[test]
-    fn failed_binding_enable_never_unmasks_the_device_source() {
+    fn failed_binding_enable_rolls_back_the_device_before_the_outer_gate() {
         let log = Arc::new(Mutex::new(alloc::vec::Vec::new()));
         let irq = IrqId::new(IrqDomainId(8), HwIrq(0));
         let block = TestBlock {
@@ -496,7 +480,15 @@ mod tests {
         let wrapper = IrqBoundBlock::new(block, lease);
 
         assert_eq!(wrapper.enable_irq(), Err(BINDING_ENABLE_FAILED));
-        assert_eq!(*log.lock().unwrap(), vec!["lease-enable", "lease-disable"]);
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                "block-enable",
+                "lease-enable",
+                "block-disable",
+                "lease-disable"
+            ]
+        );
     }
 
     #[test]
@@ -566,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_source_enable_reports_incomplete_two_layer_rollback() {
+    fn failed_source_enable_never_opens_outer_gate_and_reports_failed_rollback() {
         let log = Arc::new(Mutex::new(alloc::vec::Vec::new()));
         let irq = IrqId::new(IrqDomainId(8), HwIrq(0));
         let block = TestBlock {
@@ -584,15 +576,7 @@ mod tests {
         let wrapper = IrqBoundBlock::new(block, lease);
 
         assert_eq!(wrapper.enable_irq(), Err(ACTIVATION_ROLLBACK_FAILED));
-        assert_eq!(
-            *log.lock().unwrap(),
-            vec![
-                "lease-enable",
-                "block-enable",
-                "block-disable",
-                "lease-disable"
-            ]
-        );
+        assert_eq!(*log.lock().unwrap(), vec!["block-enable", "block-disable"]);
     }
 
     fn test_binding_error(operation: IrqBindingOperation) -> IrqBindingError {

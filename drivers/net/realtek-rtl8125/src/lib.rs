@@ -2,16 +2,24 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
+use alloc::{boxed::Box, sync::Arc};
+use core::{
+    mem::size_of,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
-use ax_kspin::SpinRaw as Mutex;
 use descriptor::{RING_END, RxDesc, TxDesc};
-use dma_api::{DeviceDma, DmaOp};
+use dma_api::{CoherentArray, DeviceDma, DmaOp};
 use log::info;
 use mmio_api::{Mmio, MmioAddr, MmioOp};
-use queue::{QueueStart, QueueStartState, Rtl8125RxQueue, Rtl8125TxQueue};
-use rdif_eth::{Event, IRxQueue, ITxQueue, Interface};
+use queue::{Rtl8125RxQueue, Rtl8125TxQueue};
+use rdif_eth::{
+    ContainmentCause, EthernetIrqFault, Event, IRxQueue, ITxQueue, Interface, IrqCapture,
+    MaskedSource, NetError, OwnerInitInput, OwnerInitPoll,
+};
 use registers::*;
+
+use crate::hw::{Rtl8125InitMachine, Rtl8125InitProgress};
 
 mod descriptor;
 mod hw;
@@ -26,18 +34,12 @@ const RX_START_THRESHOLD: usize = QUEUE_SIZE;
 const MAX_PACKET: usize = 2048;
 const RX_BUF_SIZE: usize = 2048;
 const DMA_ALIGN: usize = 256;
-const DMA_CACHE_LINE_SIZE: usize = 64;
-const RX_DESC_PER_CACHE_LINE: usize = DMA_CACHE_LINE_SIZE / core::mem::size_of::<RxDesc>();
-const RX_DEFERRED_REFILL_CAPACITY: usize = QUEUE_SIZE;
 const LINK_DOWN_DROP_LOG_INTERVAL: u64 = 64;
 const EARLY_PACKET_LOG_COUNT: u64 = 8;
 const TX_SUBMIT_LOG_INTERVAL: u64 = 16;
 const TX_RECLAIM_LOG_INTERVAL: u64 = 64;
 const RX_RECLAIM_LOG_INTERVAL: u64 = 64;
-const RX_IDLE_LOG_INTERVAL: u64 = 262_144;
-const RX_OVERFLOW_REARM_IDLE_POLLS: u64 = 2048;
 const TX_LINK_SAMPLE_INTERVAL: u64 = 64;
-const OCP_STD_PHY_BASE: u32 = 0xa400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipVersion {
@@ -51,8 +53,6 @@ pub struct Rtl8125Status {
     pub phy_status: u8,
     pub chip_cmd: u8,
     pub mcu: u8,
-    pub intr_status: u32,
-    pub intr_mask: u32,
     pub rx_config: u32,
     pub tx_config: u32,
     pub cplus_cmd: u16,
@@ -71,6 +71,8 @@ pub enum Error {
     UnsupportedPciId { vendor: u16, device: u16 },
     #[error("MMIO map failed")]
     MmioMap(#[from] mmio_api::MapError),
+    #[error("MMIO mapping is too small: {size:#x} < {required:#x}")]
+    MmioTooSmall { size: usize, required: usize },
     #[error("DMA allocation failed")]
     Dma(#[from] dma_api::DmaError),
     #[error("invalid MAC address")]
@@ -81,20 +83,32 @@ pub enum Error {
     HardwareTimeout { operation: &'static str },
     #[error("invalid OCP register address {reg:#x}")]
     InvalidOcpAddress { reg: u32 },
+    #[error("invalid RTL8125 lifecycle state: {0}")]
+    InvalidState(&'static str),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
 
+enum Rtl8125RegisterState {
+    Initializing(Rtl8125OwnerInitRegs),
+    Runtime(Rtl8125OwnerRegs),
+    Failed,
+}
+
 pub struct Rtl8125 {
-    regs: Regs,
-    _mmio: Mmio,
-    dma: DeviceDma,
+    registers: Rtl8125RegisterState,
+    irq_port: Option<Rtl8125IrqPort>,
+    irq_epoch: Arc<Rtl8125IrqEpoch>,
+    init_machine: Rtl8125InitMachine,
+    tx_regs: Option<Rtl8125TxRegs>,
+    rx_regs: Option<Rtl8125RxRegs>,
+    tx_desc: Option<CoherentArray<TxDesc>>,
+    rx_desc: Option<CoherentArray<RxDesc>>,
+    dma_mask: u64,
     mac: [u8; 6],
     chip: ChipVersion,
-    tx_created: bool,
-    rx_created: bool,
-    phy_ocp_base: u32,
-    queue_start: QueueStart,
+    irq_enabled: bool,
+    _mapping: Arc<Mmio>,
 }
 
 impl Rtl8125 {
@@ -102,6 +116,8 @@ impl Rtl8125 {
         vendor == VENDOR_ID && device == DEVICE_ID_RTL8125
     }
 
+    /// Constructs a pending controller without reading or programming it.
+    /// Hardware initialization starts only on the final maintenance owner.
     pub fn new(
         bar_addr: impl Into<MmioAddr>,
         bar_size: usize,
@@ -110,56 +126,43 @@ impl Rtl8125 {
         mmio_op: &'static dyn MmioOp,
     ) -> Result<Self> {
         mmio_api::init(mmio_op);
-        let mmio = mmio_api::ioremap(bar_addr.into(), bar_size.max(RTL8125_REGS_SIZE))?;
-        let regs = Regs::new(mmio.as_nonnull_ptr());
+        let mapping = Arc::new(mmio_api::ioremap(bar_addr.into(), bar_size)?);
+        if mapping.size() < RTL8125_REGS_SIZE {
+            return Err(Error::MmioTooSmall {
+                size: mapping.size(),
+                required: RTL8125_REGS_SIZE,
+            });
+        }
+
+        let discovery = Rtl8125DiscoveryRegs::new(mapping.as_nonnull_ptr());
+        let (owner_regs, irq_port) = discovery.split_for_irq();
         let dma = DeviceDma::new_legacy(dma_mask, dma_op);
-        let xid = rtl8125_xid(regs);
-        let chip = chip_version(xid);
-
-        let mut dev = Self {
-            regs,
-            _mmio: mmio,
-            dma,
-            mac: [0; 6],
-            chip,
-            tx_created: false,
-            rx_created: false,
-            phy_ocp_base: OCP_STD_PHY_BASE,
-            queue_start: Arc::new(Mutex::new(QueueStartState::default())),
-        };
-        dev.init()?;
-        info!(
-            "RTL8125 device initialized: chip={:?}, xid={:#x}, \
-             mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}, status={:?}",
-            dev.chip,
-            xid,
-            dev.mac[0],
-            dev.mac[1],
-            dev.mac[2],
-            dev.mac[3],
-            dev.mac[4],
-            dev.mac[5],
-            dev.status(),
+        let mut tx_desc = dma.coherent_array_zero_with_align::<TxDesc>(QUEUE_SIZE, DMA_ALIGN)?;
+        tx_desc.set_cpu(
+            QUEUE_SIZE - 1,
+            TxDesc {
+                opts1: RING_END,
+                opts2: 0,
+                addr: 0,
+            },
         );
-        Ok(dev)
-    }
+        let rx_desc = dma.coherent_array_zero_with_align::<RxDesc>(QUEUE_SIZE, DMA_ALIGN)?;
 
-    pub fn init(&mut self) -> Result<()> {
-        self.disable_irq();
-        self.ack_events(u32::MAX);
-        self.reset()?;
-        self.hw_init_8125()?;
-
-        self.mac = self.read_mac_address()?;
-        self.set_mac_address(self.mac);
-        self.regs.configure_cplus(self.dma.dma_mask());
-        self.regs.write_default_rx_config();
-        self.regs.write_default_tx_config();
-        self.regs.write_rx_max_size(RX_BUF_SIZE as u16 + 1);
-        self.regs.disable_interrupt_mitigation();
-        self.hw_start_8125()?;
-        self.hw_phy_config()?;
-        Ok(())
+        Ok(Self {
+            registers: Rtl8125RegisterState::Initializing(owner_regs),
+            irq_port: Some(irq_port),
+            irq_epoch: Arc::new(Rtl8125IrqEpoch::new()),
+            init_machine: Rtl8125InitMachine::new(),
+            tx_regs: None,
+            rx_regs: None,
+            tx_desc: Some(tx_desc),
+            rx_desc: Some(rx_desc),
+            dma_mask,
+            mac: [0; 6],
+            chip: ChipVersion::Unknown(0),
+            irq_enabled: false,
+            _mapping: mapping,
+        })
     }
 
     pub fn mac_address(&self) -> [u8; 6] {
@@ -171,42 +174,48 @@ impl Rtl8125 {
     }
 
     pub fn poll_link(&self) -> bool {
-        self.status().link_up()
+        self.status().is_some_and(|status| status.link_up())
     }
 
-    pub fn status(&self) -> Rtl8125Status {
-        read_status(self.regs)
+    pub fn status(&self) -> Option<Rtl8125Status> {
+        let regs = self.runtime_regs()?;
+        Some(Rtl8125Status {
+            phy_status: regs.read_phy_status(),
+            chip_cmd: regs.read_chip_cmd(),
+            mcu: regs.read_mcu(),
+            rx_config: regs.read_rx_config(),
+            tx_config: regs.read_tx_config(),
+            cplus_cmd: regs.read_cplus_cmd(),
+            rx_desc_base: regs.read_rx_desc_base(),
+        })
     }
 
-    fn read_mac_address(&self) -> Result<[u8; 6]> {
-        let mac = self.regs.read_backup_mac();
-        if is_valid_mac(mac) {
-            return Ok(mac);
+    fn runtime_regs(&self) -> Option<&Rtl8125OwnerRegs> {
+        match &self.registers {
+            Rtl8125RegisterState::Runtime(regs) => Some(regs),
+            _ => None,
         }
-
-        let mac = self.regs.read_mac();
-        if is_valid_mac(mac) {
-            return Ok(mac);
-        }
-
-        Err(Error::InvalidMacAddress)
     }
 
-    fn set_mac_address(&self, mac: [u8; 6]) {
-        self.regs.unlock_config();
-        self.regs.write_mac(mac);
-        self.regs.lock_config();
+    fn finish_initialization(&mut self, mac: [u8; 6], chip: ChipVersion) -> Result<()> {
+        let registers = core::mem::replace(&mut self.registers, Rtl8125RegisterState::Failed);
+        let Rtl8125RegisterState::Initializing(registers) = registers else {
+            return Err(Error::InvalidState(
+                "owner initialization transition repeated",
+            ));
+        };
+        let (owner, tx, rx) = registers.into_runtime_ports();
+        self.registers = Rtl8125RegisterState::Runtime(owner);
+        self.tx_regs = Some(tx);
+        self.rx_regs = Some(rx);
+        self.mac = mac;
+        self.chip = chip;
+        Ok(())
     }
 
-    fn reset(&self) -> Result<()> {
-        self.regs.request_reset();
-        for _ in 0..100_000 {
-            if !self.regs.reset_pending() {
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-        Err(Error::ResetTimeout)
+    fn fail_initialization(&mut self, error: Error) -> OwnerInitPoll {
+        self.registers = Rtl8125RegisterState::Failed;
+        OwnerInitPoll::Failed(NetError::Other(Box::new(error)))
     }
 }
 
@@ -217,39 +226,55 @@ impl rdif_eth::DriverGeneric for Rtl8125 {
 }
 
 impl Interface for Rtl8125 {
+    fn poll_owner_init(&mut self, input: OwnerInitInput) -> OwnerInitPoll {
+        let (tx_base, rx_base) = match (&self.tx_desc, &self.rx_desc) {
+            (Some(tx), Some(rx)) => (tx.dma_addr().as_u64(), rx.dma_addr().as_u64()),
+            _ => {
+                return self
+                    .fail_initialization(Error::InvalidState("pending queue descriptors missing"));
+            }
+        };
+        let progress = match &self.registers {
+            Rtl8125RegisterState::Initializing(regs) => {
+                self.init_machine
+                    .poll(regs, input, self.dma_mask, tx_base, rx_base)
+            }
+            Rtl8125RegisterState::Runtime(_) => return OwnerInitPoll::Ready,
+            Rtl8125RegisterState::Failed => {
+                return OwnerInitPoll::Failed(NetError::Other(Box::new(Error::InvalidState(
+                    "initialization previously failed",
+                ))));
+            }
+        };
+        match progress {
+            Rtl8125InitProgress::Pending(schedule) => OwnerInitPoll::Pending(schedule),
+            Rtl8125InitProgress::Failed(error) => self.fail_initialization(error),
+            Rtl8125InitProgress::Ready(ready) => {
+                match self.finish_initialization(ready.mac, ready.chip) {
+                    Ok(()) => {
+                        info!(
+                            "RTL8125 owner initialization complete: chip={:?}, mac={:02x?}",
+                            self.chip, self.mac,
+                        );
+                        OwnerInitPoll::Ready
+                    }
+                    Err(error) => self.fail_initialization(error),
+                }
+            }
+        }
+    }
+
     fn mac_address(&self) -> [u8; 6] {
         self.mac
     }
 
     fn create_tx_queue(&mut self) -> Option<Box<dyn ITxQueue>> {
-        if self.tx_created {
-            return None;
-        }
-
-        let mut desc = self
-            .dma
-            .coherent_array_zero_with_align::<TxDesc>(QUEUE_SIZE, DMA_ALIGN)
-            .ok()?;
-        desc.set_cpu(
-            QUEUE_SIZE - 1,
-            TxDesc {
-                opts1: RING_END,
-                opts2: 0,
-                addr: 0,
-            },
-        );
-
-        {
-            let mut start = self.queue_start.lock();
-            start.tx_base = Some(desc.dma_addr().as_u64());
-        }
-        self.tx_created = true;
-        self.maybe_start_queues();
-
+        let regs = self.tx_regs.take()?;
+        let desc = self.tx_desc.take()?;
         Some(queue::boxed_tx(Rtl8125TxQueue {
-            regs: self.regs,
+            regs,
             desc,
-            dma_mask: self.dma.dma_mask(),
+            dma_mask: self.dma_mask,
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,
             next_reclaim: 0,
@@ -257,131 +282,183 @@ impl Interface for Rtl8125 {
             link_down_drops: 0,
             submitted: 0,
             reclaimed: 0,
+            _mapping: Arc::clone(&self._mapping),
         }))
     }
 
     fn create_rx_queue(&mut self) -> Option<Box<dyn IRxQueue>> {
-        if self.rx_created {
-            return None;
-        }
-
-        let desc = self
-            .dma
-            .coherent_array_zero_with_align::<RxDesc>(QUEUE_SIZE, DMA_ALIGN)
-            .ok()?;
-
-        {
-            let mut start = self.queue_start.lock();
-            start.rx_base = Some(desc.dma_addr().as_u64());
-        }
-        self.rx_created = true;
-        self.maybe_start_queues();
-
+        let regs = self.rx_regs.take()?;
+        let desc = self.rx_desc.take()?;
         Some(queue::boxed_rx(Rtl8125RxQueue {
-            regs: self.regs,
+            regs,
             desc,
-            dma_mask: self.dma.dma_mask(),
-            start: self.queue_start.clone(),
+            dma_mask: self.dma_mask,
             bus_addrs: [None; QUEUE_SIZE],
             next_submit: 0,
             next_reclaim: 0,
-            idle_polls: 0,
-            last_rx_rearm_idle: 0,
-            submitted: 0,
+            primed: 0,
+            started: false,
             reclaimed: 0,
             rx_errors: 0,
-            deferred_refill: VecDeque::with_capacity(RX_DEFERRED_REFILL_CAPACITY),
+            _mapping: Arc::clone(&self._mapping),
         }))
     }
 
-    fn enable_irq(&mut self) {
-        self.ack_events(u32::MAX);
-        self.regs.write_interrupt_mask(DEFAULT_IRQ_MASK);
+    fn enable_irq(&mut self) -> core::result::Result<(), NetError> {
+        let regs = self.runtime_regs().ok_or_else(rtl8125_not_ready)?;
+        regs.enable_interrupts();
+        if self.irq_epoch.is_masked() {
+            regs.mask_interrupts();
+            self.irq_enabled = false;
+            return Err(NetError::Other(Box::new(Error::InvalidState(
+                "contained IRQ source cannot be enabled",
+            ))));
+        }
+        self.irq_enabled = true;
+        Ok(())
     }
 
-    fn disable_irq(&mut self) {
-        self.regs.write_interrupt_mask(0);
+    fn disable_irq(&mut self) -> core::result::Result<(), NetError> {
+        match &self.registers {
+            Rtl8125RegisterState::Initializing(regs) => regs.mask_interrupts(),
+            Rtl8125RegisterState::Runtime(regs) => regs.mask_interrupts(),
+            Rtl8125RegisterState::Failed => return Err(rtl8125_not_ready()),
+        }
+        self.irq_enabled = false;
+        Ok(())
     }
 
     fn is_irq_enabled(&self) -> bool {
-        self.regs.read_interrupt_mask() != 0
+        self.irq_enabled && !self.irq_epoch.is_masked()
     }
 
-    fn handle_irq(&mut self) -> Event {
-        rtl8125_irq_event(self.regs)
+    fn take_irq_endpoint(&mut self) -> Option<rdif_eth::BIrqEndpoint> {
+        let port = self.irq_port.take()?;
+        Some(Box::new(Rtl8125IrqEndpoint {
+            port,
+            epoch: Arc::clone(&self.irq_epoch),
+            _mapping: Arc::clone(&self._mapping),
+        }))
     }
 
-    fn take_irq_handler(&mut self) -> Option<rdif_eth::BIrqHandler> {
-        Some(Box::new(Rtl8125IrqHandler { regs: self.regs }))
+    fn service_irq_event(&mut self, event: Event) -> core::result::Result<(), NetError> {
+        if irq_has_link_change(event.device_status as u32) {
+            let status = self.status().ok_or_else(rtl8125_not_ready)?;
+            info!("RTL8125 link change: status={status:?}");
+        }
+        Ok(())
+    }
+
+    fn rearm_irq_source(&mut self, source: MaskedSource) -> core::result::Result<(), NetError> {
+        self.irq_epoch.finish_masked_source(source)?;
+        let regs = self.runtime_regs().ok_or_else(rtl8125_not_ready)?;
+        regs.enable_interrupts();
+        self.irq_enabled = true;
+        Ok(())
     }
 }
 
-struct Rtl8125IrqHandler {
-    regs: Regs,
+struct Rtl8125IrqEndpoint {
+    port: Rtl8125IrqPort,
+    epoch: Arc<Rtl8125IrqEpoch>,
+    _mapping: Arc<Mmio>,
 }
 
-impl rdif_eth::IrqHandler for Rtl8125IrqHandler {
-    fn handle_irq(&mut self) -> Event {
-        rtl8125_irq_event(self.regs)
+impl rdif_eth::IrqEndpoint for Rtl8125IrqEndpoint {
+    type Event = Event;
+    type Fault = EthernetIrqFault;
+
+    fn capture(&mut self) -> IrqCapture<Event, EthernetIrqFault> {
+        if self.epoch.is_masked() {
+            return IrqCapture::Unhandled;
+        }
+        let Some(status) = self.port.capture_status() else {
+            return IrqCapture::Unhandled;
+        };
+        IrqCapture::Captured {
+            event: rtl8125_irq_event(status),
+            masked: None,
+        }
+    }
+
+    fn contain(
+        &mut self,
+        _cause: ContainmentCause,
+    ) -> core::result::Result<MaskedSource, EthernetIrqFault> {
+        self.port.mask_interrupts();
+        self.epoch.begin_masked_source()
     }
 }
 
-fn rtl8125_irq_event(regs: Regs) -> Event {
-    let status = regs.read_interrupt_status();
-    if status == 0 || status == u32::MAX {
-        return Event::none();
+struct Rtl8125IrqEpoch {
+    next_generation: AtomicU64,
+    active_generation: AtomicU64,
+}
+
+impl Rtl8125IrqEpoch {
+    const fn new() -> Self {
+        Self {
+            next_generation: AtomicU64::new(1),
+            active_generation: AtomicU64::new(0),
+        }
     }
 
-    regs.write_interrupt_status(status);
+    fn is_masked(&self) -> bool {
+        self.active_generation.load(Ordering::Acquire) != 0
+    }
 
+    fn begin_masked_source(&self) -> core::result::Result<MaskedSource, EthernetIrqFault> {
+        let active = self.active_generation.load(Ordering::Acquire);
+        if active != 0 {
+            return MaskedSource::try_new(active, u64::from(DEFAULT_IRQ_MASK))
+                .map_err(|_| EthernetIrqFault::Containment);
+        }
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed).max(1);
+        let generation = match self.active_generation.compare_exchange(
+            0,
+            generation,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => generation,
+            Err(existing) => existing,
+        };
+        MaskedSource::try_new(generation, u64::from(DEFAULT_IRQ_MASK))
+            .map_err(|_| EthernetIrqFault::Containment)
+    }
+
+    fn finish_masked_source(&self, source: MaskedSource) -> core::result::Result<(), NetError> {
+        let generation = source.generation().get();
+        if source.bitmap().get() != u64::from(DEFAULT_IRQ_MASK)
+            || self
+                .active_generation
+                .compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return Err(NetError::Other(Box::new(Error::InvalidState(
+                "stale RTL8125 IRQ source",
+            ))));
+        }
+        Ok(())
+    }
+}
+
+fn rtl8125_not_ready() -> NetError {
+    NetError::Other(Box::new(Error::InvalidState(
+        "RTL8125 owner is not initialized",
+    )))
+}
+
+fn rtl8125_irq_event(status: u32) -> Event {
     let mut event = Event::none();
+    event.device_status = u64::from(status);
     if irq_has_tx_event(status) {
         event.tx_queue.insert(QUEUE_ID0);
     }
     if irq_has_rx_event(status) {
         event.rx_queue.insert(QUEUE_ID0);
     }
-    if irq_has_link_change(status) {
-        info!("RTL8125 irq link change: status={:?}", read_status(regs));
-    }
     event
-}
-
-fn rtl8125_xid(regs: Regs) -> u16 {
-    ((regs.read_tx_config() >> 20) & 0x0fcf) as u16
-}
-
-fn read_status(regs: Regs) -> Rtl8125Status {
-    Rtl8125Status {
-        phy_status: regs.read_phy_status(),
-        chip_cmd: regs.read_chip_cmd(),
-        mcu: regs.read_mcu(),
-        intr_status: regs.read_interrupt_status(),
-        intr_mask: regs.read_interrupt_mask(),
-        rx_config: regs.read_rx_config(),
-        tx_config: regs.read_tx_config(),
-        cplus_cmd: regs.read_cplus_cmd(),
-        rx_desc_base: regs.read_rx_desc_base(),
-    }
-}
-
-pub(crate) fn set_rx_mode(regs: Regs) {
-    regs.set_multicast_filter_all();
-    regs.set_rx_accept_mode();
-}
-
-fn chip_version(xid: u16) -> ChipVersion {
-    if xid & 0x07cf == 0x0641 {
-        ChipVersion::Rtl8125B
-    } else if xid & 0x07cf == 0x0609 {
-        ChipVersion::Rtl8125A
-    } else {
-        ChipVersion::Unknown(xid)
-    }
-}
-
-fn is_valid_mac(mac: [u8; 6]) -> bool {
-    mac != [0; 6] && mac != [0xff; 6] && mac[0] & 1 == 0
 }
 
 const _: () = {

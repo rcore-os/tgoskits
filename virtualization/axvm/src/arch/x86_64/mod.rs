@@ -82,6 +82,13 @@ impl ArchOps for X86_64Arch {
         Ok(())
     }
 
+    fn prepare_vcpu_irq_owner(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult<Option<crate::architecture::ops::VcpuIrqOwnerSession>> {
+        irq::prepare_ioapic_irq_owner_session(vm, vcpu)
+    }
+
     fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vcpu::BoundVcpu<'_, '_, Self::VCpu>) {
         irq::drain_bound_pending_ioapic_irqs(vm, vcpu);
     }
@@ -93,13 +100,8 @@ impl ArchOps for X86_64Arch {
         irq::activate_ready_ioapic_forwarding_routes(vm)
     }
 
-    fn on_last_vcpu_exit(vm_id: usize) {
-        irq::disable_ioapic_irq_forwarding_for_vm(vm_id);
-    }
-
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn revoke_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
-        irq::revoke_ioapic_irq_forwarding_for_vm(vm.id())
+        irq::revoke_ioapic_irq_forwarding_for_vm(vm)
     }
 
     fn handle_vcpu_exit_bound<'cpu>(

@@ -32,8 +32,11 @@
 //! let mut host = unsafe { Sdhci::new(mmio) };
 //! // OS glue moves this endpoint into its registered IRQ action before the
 //! // initialization FSM is allowed to issue its first card command.
-//! let _registered_irq = host.irq_endpoint();
-//! host.enable_completion_irq();
+//! let irq_source = host.take_irq_source().expect("unique SDHCI IRQ source");
+//! let (_capture_endpoint, _owner_control) = irq_source.into_parts();
+//! // OS glue registers `_capture_endpoint` disabled on this maintenance
+//! // thread's CPU before enabling controller delivery through `SdioHost`.
+//! sdmmc_protocol::sdio::host::SdioHost::enable_completion_irq(&mut host)?;
 //! let mut card = SdioSdmmc::new_host2_timed(host);
 //! let mut scratch = SdioInitScratch::new();
 //! let mut request = card.submit_init(&mut scratch)?;
@@ -86,15 +89,21 @@ pub use sdmmc_protocol::block::{
     BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,
     BlockTransferState,
 };
+
+/// Source bitmap used by the generic command/data SDHCI IRQ capability.
+///
+/// Platform wrappers that add independently maskable sideband sources reserve
+/// disjoint bits and dispatch rearm tokens by this value.
+pub const SDHCI_IRQ_SOURCE_BITMAP: u64 = 1;
 use sdmmc_protocol::{
     DataCommandPoll, OperationPoll,
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
     sdio::{
         host::{
-            BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
-            SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHandle, SdioIrqHost, SignalVoltage,
-            poll_ready_bus_op,
+            BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, HostEventSummary,
+            ReadyBusRequest, SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHost, SdioIrqSource,
+            SignalVoltage, poll_ready_bus_op,
         },
         host2::{SdioHost2Lifecycle, SdioHost2Timed},
     },
@@ -102,24 +111,38 @@ use sdmmc_protocol::{
 
 use crate::regs::*;
 
-/// Stable controller event extracted from SDHCI interrupt-status registers.
+/// Complete stable snapshot extracted from both SDHCI interrupt-status banks.
+///
+/// Keeping the raw combination is required for sideband users such as SDIO:
+/// one assertion may contain both command completion and CARD_INTERRUPT, and
+/// neither fact may be discarded merely because one has higher classification
+/// priority.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Event {
-    /// No status bit requiring runtime action is currently pending.
-    #[default]
-    None,
-    /// A command response is ready to harvest.
-    CommandComplete,
-    /// A data transfer has completed.
-    TransferComplete,
-    /// Receive-side FIFO data is ready.
-    ReceiveReady,
-    /// Transmit-side FIFO space is ready.
-    TransmitReady,
-    /// One or more error bits are pending.
-    Error { normal: u16, error: u16 },
-    /// Status bits are pending but do not map to a high-level event yet.
-    Other { normal: u16, error: u16 },
+pub struct Event {
+    normal: u16,
+    error: u16,
+}
+
+impl Event {
+    /// Builds one acknowledged status snapshot.
+    pub const fn from_status(normal: u16, error: u16) -> Self {
+        Self { normal, error }
+    }
+
+    /// Returns the complete normal-status bank captured by the endpoint.
+    pub const fn normal_status(self) -> u16 {
+        self.normal
+    }
+
+    /// Returns the complete error-status bank captured by the endpoint.
+    pub const fn error_status(self) -> u16 {
+        self.error
+    }
+
+    /// Reports whether this snapshot contains no acknowledged device fact.
+    pub const fn is_empty(self) -> bool {
+        self.normal == 0 && self.error == 0
+    }
 }
 
 pub struct DataRequest<'a> {
@@ -319,10 +342,26 @@ fn next_host2_check(now_ns: u64, deadline_ns: u64) -> u64 {
         .min(deadline_ns)
 }
 
-/// Owned SDHCI IRQ top-half endpoint.
-pub struct SdhciIrqHandle {
+/// Owned SDHCI hard-IRQ capture endpoint.
+///
+/// OS glue moves this value into the IRQ action registered by the controller's
+/// fixed maintenance thread. It is the only runtime owner allowed to read and
+/// W1C the destructive SDHCI interrupt-status banks.
+pub struct SdhciIrqEndpoint {
     irq: Arc<host::IrqCore>,
 }
+
+/// Owner-side capability for generation-checked SDHCI source rearming.
+///
+/// This value remains with the same CPU-pinned maintenance thread that owns
+/// [`Sdhci`]. It does not grant capture access and must never be moved into the
+/// hard-IRQ action.
+pub struct SdhciIrqControl {
+    irq: Arc<host::IrqCore>,
+}
+
+/// Unique split ownership of this controller's interrupt source.
+pub type SdhciIrqSource = SdioIrqSource<SdhciIrqEndpoint, SdhciIrqControl>;
 
 mod bus;
 mod irq;

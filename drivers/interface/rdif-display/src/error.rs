@@ -11,7 +11,7 @@ pub enum DisplayError {
     #[error("invalid framebuffer")]
     InvalidFramebuffer,
     #[error("other error: {0}")]
-    Other(Box<dyn core::error::Error>),
+    Other(Box<dyn core::error::Error + Send + Sync>),
 }
 
 impl From<DisplayError> for io::ErrorKind {

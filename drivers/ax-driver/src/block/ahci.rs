@@ -14,7 +14,7 @@ use ahci_host::{AhciConfig, AhciHost};
 #[cfg(feature = "ahci")]
 use pcie::CommandRegister;
 use rdif_block::{
-    BIrqHandler, BlkError, BundleError, ControllerBundle, ControllerInitEndpoint, DriverGeneric,
+    BlkError, BlockIrqSource, BundleError, ControllerBundle, ControllerInitEndpoint, DriverGeneric,
     IrqSourceList, LifecycleEndpoint, LogicalDevice, LogicalDeviceId, LogicalDeviceIds,
 };
 use rdrive::probe::OnProbeError;
@@ -145,8 +145,8 @@ impl ControllerBundle for AhciControllerBundle {
         self.host.irq_sources()
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<BIrqHandler> {
-        self.host.take_irq_handler(source_id)
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
+        self.host.take_irq_source(source_id)
     }
 }
 

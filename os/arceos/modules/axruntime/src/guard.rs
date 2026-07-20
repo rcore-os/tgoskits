@@ -134,6 +134,75 @@ enum SchedulerBatonState {
     Finished,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreemptExitOrigin {
+    Task,
+    IrqReturn,
+}
+
+/// Continuation-local ownership of the raw IRQ state around preemption exit.
+///
+/// The CPU-local scheduler baton may move between contexts and CPUs, while the
+/// saved IRQ state belongs to the suspended guard destructor. Keeping the two
+/// owners separate mirrors an IRQ-lock key across a context switch: the
+/// scheduler must finish its baton with IRQs masked before this token can
+/// restore the calling continuation's state.
+#[must_use = "saved preemption-exit IRQ state must be restored by its continuation"]
+#[derive(Debug, Eq, PartialEq)]
+struct PreemptExitIrqOwner {
+    origin: PreemptExitOrigin,
+    restore_irqs: bool,
+}
+
+impl PreemptExitIrqOwner {
+    const fn from_observed(origin: PreemptExitOrigin, irqs_enabled: bool) -> Option<Self> {
+        if matches!(origin, PreemptExitOrigin::IrqReturn) && irqs_enabled {
+            return None;
+        }
+        Some(Self {
+            origin,
+            restore_irqs: matches!(origin, PreemptExitOrigin::Task) && irqs_enabled,
+        })
+    }
+
+    #[cfg(not(test))]
+    fn capture(origin: PreemptExitOrigin) -> Self {
+        let irqs_enabled = ax_hal::asm::irqs_enabled();
+        // Fail closed if an IRQ-return caller violates its trap-frame contract.
+        ax_hal::asm::disable_irqs();
+        Self::from_observed(origin, irqs_enabled)
+            .expect("IRQ-return preemption exit requires hardware IRQs disabled")
+    }
+
+    #[cfg(any(feature = "multitask", test))]
+    const fn permits_scheduler_entry(&self) -> bool {
+        matches!(self.origin, PreemptExitOrigin::IrqReturn) || self.restore_irqs
+    }
+
+    #[cfg(all(not(test), feature = "multitask"))]
+    const fn scheduler_entry(&self) -> ax_task::runtime::RuntimeSchedulerEntry {
+        match self.origin {
+            PreemptExitOrigin::Task => ax_task::runtime::RuntimeSchedulerEntry::PreemptExit,
+            PreemptExitOrigin::IrqReturn => ax_task::runtime::RuntimeSchedulerEntry::IrqReturn,
+        }
+    }
+
+    #[cfg(not(test))]
+    fn restore_saved_irq_state(self) {
+        debug_assert!(
+            !matches!(self.origin, PreemptExitOrigin::IrqReturn) || !self.restore_irqs,
+            "an IRQ-return continuation must not restore task-context IRQ state"
+        );
+        assert!(
+            !ax_hal::asm::irqs_enabled(),
+            "preemption-exit continuation lost ownership of its masked IRQ state"
+        );
+        if self.restore_irqs {
+            ax_hal::asm::enable_irqs();
+        }
+    }
+}
+
 #[cfg(feature = "multitask")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ScheduleContextSnapshot {
@@ -581,35 +650,23 @@ fn update_preempt_state(operation: impl FnOnce(&mut RuntimeGuardState)) {
 }
 
 #[cfg(not(test))]
-fn exit_lock_preempt(irq_return: bool) {
-    let irqs_were_enabled = ax_hal::asm::irqs_enabled();
-    assert!(
-        !irq_return || !irqs_were_enabled,
-        "IRQ-return preemption exit requires hardware IRQs disabled"
-    );
-
+fn exit_lock_preempt(origin: PreemptExitOrigin) {
     // Serialize the eligibility decision against hard IRQ entry. When the last
     // guard must schedule, keep that exact depth published until TaskRuntime
     // atomically converts it into the CPU-local scheduler baton.
-    ax_hal::asm::disable_irqs();
+    let irq_owner = PreemptExitIrqOwner::capture(origin);
     let mut state = read_state();
     #[cfg(feature = "multitask")]
     {
-        use ax_task::runtime::RuntimeSchedulerEntry;
-
         let must_schedule = state.irq.is_clear()
             && state.preempt.lock_depth == 1
             && matches!(state.preempt.scheduler_baton, SchedulerBatonState::Finished)
-            && (irq_return || irqs_were_enabled)
+            && irq_owner.permits_scheduler_entry()
             && !in_hard_irq()
             && ax_task::current_cpu_needs_resched().unwrap_or(false);
         if must_schedule {
             write_state(state);
-            let entry = if irq_return {
-                RuntimeSchedulerEntry::IrqReturn
-            } else {
-                RuntimeSchedulerEntry::PreemptExit
-            };
+            let entry = irq_owner.scheduler_entry();
             // SAFETY: this path retains exactly one lock-preemption depth and
             // keeps raw IRQs disabled while the runtime atomically transforms
             // that depth into the typed scheduler baton.
@@ -617,18 +674,14 @@ fn exit_lock_preempt(irq_return: bool) {
                 panic!("preemption-exit scheduler entry failed: {error}");
             }
             assert_preempt_exit_completed();
-            if !irq_return && irqs_were_enabled {
-                ax_hal::asm::enable_irqs();
-            }
+            irq_owner.restore_saved_irq_state();
             return;
         }
     }
 
     state.exit_lock_preempt();
     write_state(state);
-    if !irq_return && irqs_were_enabled {
-        ax_hal::asm::enable_irqs();
-    }
+    irq_owner.restore_saved_irq_state();
 }
 
 #[cfg(all(not(test), feature = "multitask"))]
@@ -845,13 +898,13 @@ impl_lock_runtime! {
         }
 
         fn preempt_exit() {
-            exit_lock_preempt(false);
+            exit_lock_preempt(PreemptExitOrigin::Task);
         }
 
         unsafe fn preempt_exit_irq_return() {
             #[cfg(feature = "ipi")]
             ax_ipi::drain_deferred_callbacks();
-            exit_lock_preempt(true);
+            exit_lock_preempt(PreemptExitOrigin::IrqReturn);
         }
 
         fn current_thread_id() -> u64 {
@@ -1048,6 +1101,27 @@ mod tests {
         state.enter_irq(false);
 
         assert!(!state.exit_irq("test"));
+    }
+
+    #[test]
+    fn preempt_exit_irq_state_is_owned_by_the_suspended_continuation() {
+        let task = PreemptExitIrqOwner::from_observed(PreemptExitOrigin::Task, true).unwrap();
+        assert!(task.restore_irqs);
+        assert!(task.permits_scheduler_entry());
+
+        let masked_task =
+            PreemptExitIrqOwner::from_observed(PreemptExitOrigin::Task, false).unwrap();
+        assert!(!masked_task.restore_irqs);
+        assert!(!masked_task.permits_scheduler_entry());
+
+        let irq_return =
+            PreemptExitIrqOwner::from_observed(PreemptExitOrigin::IrqReturn, false).unwrap();
+        assert!(!irq_return.restore_irqs);
+        assert!(irq_return.permits_scheduler_entry());
+        assert!(
+            PreemptExitIrqOwner::from_observed(PreemptExitOrigin::IrqReturn, true).is_none(),
+            "a trap-frame continuation must arrive with raw IRQs already disabled",
+        );
     }
 
     #[test]

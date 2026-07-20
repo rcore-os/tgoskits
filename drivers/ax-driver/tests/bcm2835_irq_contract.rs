@@ -23,6 +23,8 @@ fn bcm_discovery_uses_common_timed_irq_only_sdhci_path() {
         "ClockPreparedBlock::new",
         "ensure_completion_irq(info)?",
         "probe.register_block(staged)?",
+        "BlockIrqSource",
+        "fn take_irq_source(",
     ] {
         assert!(
             source.contains(required),
@@ -35,6 +37,9 @@ fn bcm_discovery_uses_common_timed_irq_only_sdhci_path() {
         "poll_completions",
         "core::hint::spin_loop",
         "thread::sleep",
+        "IrqHandler",
+        "take_irq_handler",
+        "service_deferred_irq",
         "BCM2835 SDHCI requires the interrupt-driven",
     ] {
         assert!(

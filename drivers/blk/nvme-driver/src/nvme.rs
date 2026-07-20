@@ -38,6 +38,15 @@ pub struct Nvme {
     namespace: Option<Namespace>,
 }
 
+/// Independent capability for the NVMe INTMS/INTMC register pair.
+///
+/// The block owner retains the BAR mapping while this value is reachable.
+/// Keeping this capability separate prevents hard-IRQ source masking from
+/// borrowing the mutable controller/configuration object.
+pub(crate) struct NvmeInterruptPort {
+    bar: NonNull<NvmeReg>,
+}
+
 const ADMIN_QUEUE_DEPTH: usize = 64;
 const IO_SUBMISSION_QUEUE_DEPTH: usize = 64;
 const IO_COMPLETION_QUEUE_DEPTH: usize = 16;
@@ -164,8 +173,12 @@ impl Nvme {
             initial_namespace_id: None,
             namespace: None,
         };
+        let interrupt_port = unsafe {
+            // SAFETY: `controller` owns the BAR mapping for this whole loop.
+            controller.interrupt_port()
+        };
         for vector in &controller.interrupt_vectors {
-            controller.mask_interrupt_vector(u32::from(*vector));
+            interrupt_port.mask(u32::from(*vector));
         }
         Ok(controller)
     }
@@ -194,8 +207,8 @@ impl Nvme {
     ///
     /// # Safety
     ///
-    /// CC.RDY must be zero and the registered IRQ action must be drained so
-    /// neither hardware nor the IRQ endpoint can access admin queue memory.
+    /// CC.RDY must be zero and the maintenance owner must have drained the
+    /// registered IRQ action and every queue access.
     pub(crate) unsafe fn prepare_controller_reinitialize(&self) {
         unsafe { self.admin_queue.reset_after_controller_disable() };
         self.nvme_configure_admin_queue();
@@ -211,9 +224,8 @@ impl Nvme {
     ///
     /// # Safety
     ///
-    /// The controller must have acknowledged `CC.RDY=0`. No initialization
-    /// admin command may be pending, and the IRQ endpoint may only inspect the
-    /// admin CQ while that pending bit is set.
+    /// The controller must have acknowledged `CC.RDY=0`, and no initialization
+    /// admin command may be pending. Hard IRQ has no admin-CQ capability.
     pub(crate) unsafe fn prepare_initial_enable(&self) {
         unsafe { self.admin_queue.reset_after_controller_disable() };
         self.nvme_configure_admin_queue();
@@ -500,12 +512,14 @@ impl Nvme {
         &self.interrupt_vectors
     }
 
-    pub(crate) fn mask_interrupt_vector(&self, vector: u32) {
-        self.reg().mask_interrupt_vector(vector);
-    }
-
-    pub(crate) fn unmask_interrupt_vector(&self, vector: u32) {
-        self.reg().unmask_interrupt_vector(vector);
+    /// Creates an independent INTMS/INTMC capability.
+    ///
+    /// # Safety
+    ///
+    /// The returned capability must not outlive this controller's BAR mapping.
+    /// It may be stored beside the controller in one pinned owner object.
+    pub(crate) const unsafe fn interrupt_port(&self) -> NvmeInterruptPort {
+        NvmeInterruptPort { bar: self.bar }
     }
 
     pub(crate) fn take_io_queue(&mut self, index: usize) -> Option<NvmeQueue> {
@@ -526,6 +540,34 @@ impl Nvme {
     }
 }
 
+impl NvmeInterruptPort {
+    pub(crate) fn mask(&self, vector: u32) {
+        self.reg().mask_interrupt_vector(vector);
+    }
+
+    pub(crate) fn unmask(&self, vector: u32) {
+        self.reg().unmask_interrupt_vector(vector);
+    }
+
+    fn reg(&self) -> &NvmeReg {
+        unsafe {
+            // SAFETY: the containing `NvmeBlockOwner` retains the MMIO mapping
+            // for every endpoint/control reference, and discovery validated
+            // that the mapping covers INTMS and INTMC.
+            self.bar.as_ref()
+        }
+    }
+}
+
+// SAFETY: the capability accesses only the atomic device-side INTMS/INTMC
+// write-one register pair. The owner retains the mapping and serializes
+// lifecycle activation with owner-thread rearm; hard IRQ may only mask.
+unsafe impl Send for NvmeInterruptPort {}
+
+// SAFETY: concurrent writes to INTMS/INTMC are independent write-one bit
+// operations defined by the NVMe register interface; no Rust memory is aliased.
+unsafe impl Sync for NvmeInterruptPort {}
+
 unsafe impl Send for Nvme {}
 
 fn validate_discovery_config(config: &Config) -> Result<()> {
@@ -542,10 +584,11 @@ fn validate_discovery_config(config: &Config) -> Result<()> {
             "NVMe IRQ-only runtime requires an interrupt source",
         ));
     }
-    if config
-        .interrupt_vectors
-        .iter()
-        .any(|vector| u32::from(*vector) >= u32::BITS)
+    if !config.msix_interrupts
+        && config
+            .interrupt_vectors
+            .iter()
+            .any(|vector| u32::from(*vector) >= u32::BITS)
     {
         return Err(Error::Unknown(
             "NVMe interrupt vector cannot be masked by INTMS",
@@ -674,12 +717,12 @@ mod tests {
     }
 
     #[test]
-    fn config_rejects_msix_vectors_that_controller_intms_cannot_mask() {
+    fn config_accepts_msix_vectors_outside_controller_intms() {
         let config = Config::new(4096, 2).with_msix_vectors([0, u32::BITS as u16]);
 
         assert!(
-            validate_discovery_config(&config).is_err(),
-            "disable_irq must be able to mask every configured device vector"
+            validate_discovery_config(&config).is_ok(),
+            "MSI-X vectors are masked in the PCI MSI-X table, not NVMe INTMS"
         );
     }
 

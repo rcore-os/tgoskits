@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Route queue activation, submission, completion, IRQ control, and Wi-Fi
+  control through one aggregate `ActiveNetQueues` owner. Legacy split-queue
+  devices are contained behind a compatibility adapter.
+
 ## [0.2.2](https://github.com/rcore-os/tgoskits/compare/rd-net-v0.2.1...rd-net-v0.2.2) - 2026-07-08
 
 ### Other

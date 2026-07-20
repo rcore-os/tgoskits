@@ -97,6 +97,9 @@ pub enum TaskError {
     /// An affinity update would move a thread away from its owner-CPU sleep timer.
     #[error("thread affinity excludes the CPU owning an active sleep timer")]
     ActiveTimerAffinity,
+    /// A live current-CPU lease prevents changing this thread's placement.
+    #[error("thread placement is pinned to its current CPU")]
+    ThreadPinned,
     /// The runtime-backed facade has not been initialized.
     #[error("task runtime is not initialized")]
     NotInitialized,

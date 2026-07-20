@@ -31,9 +31,13 @@ log = "0.4"
 mbarrier = "0.1"
 nb = "1.1"
 num_enum = {version = "0.7", default-features = false}
+rdif-irq.workspace = true
 thiserror = {workspace = true}
 tock-registers.workspace = true
 trait-ffi = "0.2.4"
 usb-if = {workspace = true}
 xhci = "0.9"
 libusb1-sys = {version = "0.7", optional = true}
+
+[dev-dependencies]
+ax-kspin-test-runtime = { path = "../../../components/kspin/test-runtime" }

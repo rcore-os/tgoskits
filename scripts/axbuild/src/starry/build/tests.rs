@@ -138,6 +138,27 @@ fn default_x86_starry_build_info_uses_dynamic_platform() {
 }
 
 #[test]
+fn starry_kernel_always_enables_the_display_runtime_owner() {
+    let metadata = crate::build::workspace_metadata().unwrap();
+    let kernel = metadata
+        .packages
+        .iter()
+        .find(|package| package.name == "starry-kernel")
+        .expect("starry-kernel must be a workspace package");
+    let runtime = kernel
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.name == "ax-runtime")
+        .expect("starry-kernel must depend on ax-runtime");
+
+    assert!(
+        runtime.features.iter().any(|feature| feature == "display"),
+        "Starry always publishes display consumers, so its ax-runtime dependency must always own \
+         display activation"
+    );
+}
+
+#[test]
 fn load_build_info_reads_existing_file() {
     let root = tempdir().unwrap();
     let path = root.path().join(".build-target.toml");

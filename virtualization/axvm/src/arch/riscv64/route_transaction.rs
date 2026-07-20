@@ -76,7 +76,6 @@ enum RevocationReservation {
 }
 
 impl<Key: Copy + Eq> RouteTransactionState<Key> {
-    #[cfg(all(target_arch = "riscv64", any(feature = "fs", feature = "host-fs")))]
     fn identity(&self) -> Option<(Key, u64)> {
         match self.phase {
             RoutePhase::Vacant => None,
@@ -359,7 +358,6 @@ pub(crate) fn revoke_active_route<Key: Copy + Eq>(
 }
 
 /// Returns the canonical identity currently protected by the control lock.
-#[cfg(all(target_arch = "riscv64", any(feature = "fs", feature = "host-fs")))]
 pub(crate) fn current_route_identity<Key: Copy + Eq>(
     control: &'static RouteControl<RouteTransactionState<Key>>,
 ) -> Option<(Key, u64)> {
@@ -494,6 +492,8 @@ mod tests {
         RouteControl::new(RouteTransactionState::new());
     static REVOCATION_RETRY_CONTROL: RouteControl<RouteTransactionState<u64>> =
         RouteControl::new(RouteTransactionState::new());
+    static IDENTITY_CONTROL: RouteControl<RouteTransactionState<u64>> =
+        RouteControl::new(RouteTransactionState::new());
 
     #[test]
     fn failed_preparation_rolls_back_only_its_reserved_generation() {
@@ -622,5 +622,38 @@ mod tests {
             panic!("completed revocation must reopen ownership");
         };
         assert_ne!(next.generation(), generation);
+    }
+
+    #[test]
+    fn route_identity_remains_visible_without_filesystem_features() {
+        assert_eq!(current_route_identity(&IDENTITY_CONTROL), None);
+        let RoutePreparation::Reserved(preparation) =
+            prepare_route_if_available(&IDENTITY_CONTROL, 41).unwrap()
+        else {
+            panic!("vacant route must be reserved");
+        };
+        let generation = preparation.generation();
+        assert_eq!(
+            current_route_identity(&IDENTITY_CONTROL),
+            Some((41, generation))
+        );
+        preparation.publish();
+        let RouteActivation::Reserved(activation) =
+            activate_published_route(&IDENTITY_CONTROL, 41).unwrap()
+        else {
+            panic!("published route must be activatable");
+        };
+        activation.finish();
+        let RouteRevocation::Reserved(revocation) =
+            revoke_active_route(&IDENTITY_CONTROL, 41).unwrap()
+        else {
+            panic!("active route must be revocable");
+        };
+        assert_eq!(
+            current_route_identity(&IDENTITY_CONTROL),
+            Some((41, generation))
+        );
+        revocation.finish();
+        assert_eq!(current_route_identity(&IDENTITY_CONTROL), None);
     }
 }

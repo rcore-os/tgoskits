@@ -4,7 +4,9 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering as AtomicOrdering},
 };
 
+use rdif_irq::{ContainmentCause, IrqCapture, IrqEndpoint, IrqSourceControl};
 use sdio_host2::ResponseType;
+use sdmmc_protocol::sdio::host::SdioIrqControlError;
 
 use super::*;
 use crate::irq::event_from_status;
@@ -13,7 +15,7 @@ use crate::irq::event_from_status;
 fn event_reports_command_completion_without_os_wakeup_policy() {
     assert_eq!(
         event_from_status(NORMAL_INT_CMD_COMPLETE, 0),
-        Event::CommandComplete
+        Event::from_status(NORMAL_INT_CMD_COMPLETE, 0)
     );
 }
 
@@ -21,7 +23,7 @@ fn event_reports_command_completion_without_os_wakeup_policy() {
 fn event_reports_data_completion_without_os_wakeup_policy() {
     assert_eq!(
         event_from_status(NORMAL_INT_XFER_COMPLETE, 0),
-        Event::TransferComplete
+        Event::from_status(NORMAL_INT_XFER_COMPLETE, 0)
     );
 }
 
@@ -29,22 +31,169 @@ fn event_reports_data_completion_without_os_wakeup_policy() {
 fn event_reports_error_status_without_translating_to_os_action() {
     assert_eq!(
         event_from_status(NORMAL_INT_ERROR, ERROR_INT_DATA_TIMEOUT),
-        Event::Error {
-            normal: NORMAL_INT_ERROR,
-            error: ERROR_INT_DATA_TIMEOUT,
-        }
+        Event::from_status(NORMAL_INT_ERROR, ERROR_INT_DATA_TIMEOUT)
     );
+}
+
+#[test]
+fn public_irq_enable_requires_unique_source_transfer() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+
+    assert_eq!(
+        ProtocolSdioHost::enable_completion_irq(&mut host),
+        Err(Error::InvalidArgument)
+    );
+    assert_eq!(host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
+    assert_eq!(host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE), 0);
+
+    let _source = host.take_irq_source().expect("first transfer must succeed");
+    assert!(host.take_irq_source().is_none());
+    ProtocolSdioHost::enable_completion_irq(&mut host).unwrap();
+}
+
+#[test]
+fn irq_source_can_be_reacquired_only_after_both_capabilities_are_released() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    let (endpoint, control) = host.take_irq_source().unwrap().into_parts();
+    drop(endpoint);
+    assert!(host.take_irq_source().is_none());
+    drop(control);
+
+    let (endpoint, control) = host
+        .take_irq_source()
+        .expect("the source lease must return after both halves retire")
+        .into_parts();
+    drop(control);
+    assert!(host.take_irq_source().is_none());
+    drop(endpoint);
+    assert!(host.take_irq_source().is_some());
+}
+
+#[test]
+fn containment_masks_exact_source_until_owner_rearms_generation() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    let (mut endpoint, mut control) = host.take_irq_source().unwrap().into_parts();
+    ProtocolSdioHost::enable_completion_irq(&mut host).unwrap();
+
+    let source = endpoint.contain(ContainmentCause::PublicationFull).unwrap();
+    assert_eq!(source.bitmap().get(), host::SDHCI_IRQ_SOURCE_BITMAP);
+    assert_eq!(host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
+    assert_eq!(host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE), 0);
+    assert!(!host.completion_irq_enabled());
+
+    control.rearm(source).unwrap();
+    assert_eq!(
+        host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE),
+        NORMAL_INT_COMPLETION_SIGNAL_MASK
+    );
+    assert_eq!(
+        host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE),
+        ERROR_INT_COMPLETION_SIGNAL_MASK
+    );
+    assert!(host.completion_irq_enabled());
+    assert!(matches!(
+        control.rearm(source),
+        Err(SdioIrqControlError::SourceNotMasked { bitmap: 1 })
+    ));
+}
+
+#[test]
+fn recovery_activation_rejects_stale_rearm_token() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    let (mut endpoint, control) = host.take_irq_source().unwrap().into_parts();
+    ProtocolSdioHost::enable_completion_irq(&mut host).unwrap();
+    let stale = endpoint
+        .contain(ContainmentCause::OwnerUnavailable)
+        .unwrap();
+    let first_generation = stale.generation();
+
+    ProtocolSdioHost::disable_completion_irq(&mut host).unwrap();
+    drop(endpoint);
+    drop(control);
+    let (endpoint, mut control) = host
+        .take_irq_source()
+        .expect("a synchronized source must be reusable for runtime")
+        .into_parts();
+    ProtocolSdioHost::enable_completion_irq(&mut host).unwrap();
+    let second_generation = host.irq.state.source_generation().unwrap();
+
+    assert!(second_generation.get() > first_generation.get());
+    assert!(matches!(
+        control.rearm(stale),
+        Err(SdioIrqControlError::StaleGeneration { actual, expected })
+            if actual == stale.generation().get() && expected != actual
+    ));
+    drop(endpoint);
+}
+
+#[test]
+fn aligned32_irq_pair_is_contained_and_rearmed_as_one_word() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new_broadcom(base, BroadcomController::Bcm2835) };
+    let (mut endpoint, mut control) = host.take_irq_source().unwrap().into_parts();
+    ProtocolSdioHost::enable_completion_irq(&mut host).unwrap();
+    let expected = u32::from(NORMAL_INT_COMPLETION_SIGNAL_MASK)
+        | (u32::from(ERROR_INT_COMPLETION_SIGNAL_MASK) << 16);
+    assert_eq!(host.read_u32(REG_NORMAL_INT_SIGNAL_ENABLE), expected);
+
+    let source = endpoint
+        .contain(ContainmentCause::PublicationClosed)
+        .unwrap();
+    assert_eq!(host.read_u32(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
+
+    control.rearm(source).unwrap();
+    assert_eq!(host.read_u32(REG_NORMAL_INT_SIGNAL_ENABLE), expected);
 }
 
 #[test]
 fn event_classification_is_error_first_for_coalesced_status() {
     assert_eq!(
         event_from_status(NORMAL_INT_XFER_COMPLETE, ERROR_INT_DATA_CRC),
-        Event::Error {
-            normal: NORMAL_INT_XFER_COMPLETE,
-            error: ERROR_INT_DATA_CRC,
-        }
+        Event::from_status(NORMAL_INT_XFER_COMPLETE, ERROR_INT_DATA_CRC)
     );
+}
+
+#[test]
+fn event_preserves_command_and_card_sideband_in_one_snapshot() {
+    let event = event_from_status(NORMAL_INT_CMD_COMPLETE | NORMAL_INT_CARD_INTERRUPT, 0);
+
+    assert_eq!(
+        event.normal_status(),
+        NORMAL_INT_CMD_COMPLETE | NORMAL_INT_CARD_INTERRUPT
+    );
+    assert_eq!(event.error_status(), 0);
+    assert_eq!(event.kind(), HostEventKind::CommandComplete);
+    let summary = event.stable_summary();
+    assert_eq!(
+        summary.stable_status,
+        u32::from(NORMAL_INT_CMD_COMPLETE | NORMAL_INT_CARD_INTERRUPT)
+    );
+    assert!(summary.queue_service);
+    assert!(summary.card_function_interrupt);
 }
 
 #[test]
@@ -77,11 +226,15 @@ fn card_sideband_irq_is_acknowledged_without_entering_request_epoch() {
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
+    let (mut endpoint, _control) = host.take_irq_source().unwrap().into_parts();
     host.enable_completion_irq();
     assert!(host.irq.state.begin_request());
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CARD_INTERRUPT);
 
-    let event = host.irq_endpoint().handle_irq();
+    let IrqCapture::Captured { event, masked } = endpoint.capture() else {
+        panic!("card sideband status must be captured");
+    };
+    assert!(masked.is_none());
 
     assert_eq!(
         host.irq.state.pending_normal(),
@@ -630,24 +783,23 @@ fn owned_irq_endpoint_acks_and_caches_status() {
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
+    let (mut endpoint, _control) = host.take_irq_source().unwrap().into_parts();
     host.irq.state.begin_request();
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_ERROR);
     host.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_DATA_TIMEOUT);
 
-    let mut handle = host.irq_endpoint();
-
-    assert_eq!(
-        handle.handle_irq(),
-        Event::Error {
-            normal: NORMAL_INT_ERROR,
-            error: ERROR_INT_DATA_TIMEOUT,
-        }
-    );
+    assert!(matches!(
+        endpoint.capture(),
+        IrqCapture::Captured {
+            event,
+            masked: None,
+        } if event == Event::from_status(NORMAL_INT_ERROR, ERROR_INT_DATA_TIMEOUT)
+    ));
     assert_eq!(host.irq.state.pending_normal(), NORMAL_INT_ERROR);
     assert_eq!(host.irq.state.pending_error(), ERROR_INT_DATA_TIMEOUT);
     host.write_u16(REG_NORMAL_INT_STATUS, 0);
     host.write_u16(REG_ERROR_INT_STATUS, 0);
-    assert_eq!(handle.handle_irq(), Event::None);
+    assert!(matches!(endpoint.capture(), IrqCapture::Unhandled));
 }
 
 #[test]

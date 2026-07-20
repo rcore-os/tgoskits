@@ -26,9 +26,10 @@ irq = [
   "ax-driver/irq",
 ]
 multitask = ["irq", "dep:ax-task"]
+maintenance = ["multitask"]
 workqueue = ["multitask"]
 block = [
-  "workqueue",
+  "maintenance",
   "paging",
   "dep:dma-api",
   "dep:rdif-block",
@@ -44,7 +45,14 @@ stack-guard-page = ["ipi", "multitask", "paging"]
 stack-protector = []
 tls = ["ax-hal/tls"]
 
-display = ["paging", "dep:ax-display", "ax-driver/display"]
+display = [
+  "maintenance",
+  "paging",
+  "dep:ax-display",
+  "dep:rdif-display",
+  "dep:rdif-irq",
+  "ax-driver/display",
+]
 fs = [
   "block",
   "dep:ax-errno",
@@ -55,29 +63,33 @@ fs = [
 ]
 ext4fs = ["fs", "ax-fs-ng/ext4"]
 fatfs = ["fs", "ax-fs-ng/fat"]
-input = ["paging", "dep:ax-input", "ax-driver/input"]
+input = [
+  "maintenance",
+  "paging",
+  "dep:ax-input",
+  "dep:rdif-input",
+  "dep:rdif-irq",
+  "ax-driver/input",
+]
 net = [
-  "irq",
-  "multitask",
+  "maintenance",
   "paging",
   "dep:ax-net",
+  "dep:axpoll",
   "dep:rd-net",
+  "dep:rdif-irq",
   "dep:spin",
   "ax-driver/net",
 ]
-# SG2002 AIC8800 SoftAP Wi-Fi. Pulls the FDT probe into ax-driver and installs
-# the ArceOS runtime glue (the driver cores are OS-independent) before probing.
+# SG2002 AIC8800 SoftAP Wi-Fi. The generic network maintenance domain owns its
+# IRQ and all controller/protocol progress; portable drivers inject no runtime.
 aic8800-wifi = [
   "net",
   "ax-driver/aic8800-wifi",
-  "dep:aic8800",
-  "dep:sdhci-cv1800",
 ]
 vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
 
 [dependencies]
-aic8800 = {workspace = true, optional = true}
-sdhci-cv1800 = {workspace = true, optional = true}
 ax-alloc = {workspace = true}
 ax-crate-interface = {workspace = true}
 ax-ctor-bare = {workspace = true}
@@ -96,6 +108,7 @@ ax-log = {workspace = true}
 ax-memory-addr = {workspace = true}
 ax-mm = {workspace = true, optional = true}
 ax-net = {workspace = true, optional = true}
+axpoll = {workspace = true, optional = true}
 ax-percpu.workspace = true
 ax-plat = {workspace = true}
 ax-task = {workspace = true, optional = true}
@@ -108,7 +121,10 @@ dma-api = { workspace = true, optional = true }
 indoc = "2"
 irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
+rdif-display = { workspace = true, optional = true }
+rdif-input = { workspace = true, optional = true }
 rdif-intc = { workspace = true, optional = true }
+rdif-irq = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 spin = {workspace = true, optional = true}
@@ -135,6 +151,30 @@ required-features = ["workqueue"]
 [[test]]
 name = "workqueue_loom"
 required-features = ["workqueue"]
+
+[[test]]
+name = "maintenance_allocation"
+required-features = ["maintenance"]
+
+[[test]]
+name = "maintenance_model"
+required-features = ["maintenance"]
+
+[[test]]
+name = "maintenance_loom"
+required-features = ["maintenance"]
+
+[[test]]
+name = "maintenance_runtime_contract"
+required-features = ["maintenance"]
+
+[[test]]
+name = "display_irq_owner_contract"
+required-features = ["display"]
+
+[[test]]
+name = "input_irq_owner_contract"
+required-features = ["input"]
 
 [[test]]
 name = "user_entry_notification_loom"

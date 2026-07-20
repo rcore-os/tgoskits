@@ -14,12 +14,18 @@ name = "ax_driver"
 default = []
 
 irq = []
-pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-msi", "dep:rdif-pcie"]
+pci = [
+    "dep:ax-kspin",
+    "dep:pcie",
+    "dep:rdif-irq",
+    "dep:rdif-msi",
+    "dep:rdif-pcie",
+]
 
 block = ["dep:ax-errno", "dep:ax-kspin", "dep:rdif-block"]
 net = ["dep:ax-kspin", "dep:rd-net"]
-display = ["dep:ax-errno", "dep:rdif-display"]
-input = ["dep:ax-errno", "dep:rdif-input"]
+display = ["dep:ax-errno", "dep:rdif-display", "dep:rdif-irq"]
+input = ["dep:ax-errno", "dep:rdif-input", "dep:rdif-irq"]
 vsock = ["dep:ax-errno", "dep:rdif-vsock"]
 rtc = []
 pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
@@ -56,10 +62,9 @@ aic8800-wifi = [
     "net",
     "dep:aic8800",
     "dep:sdhci-cv1800",
-    "dep:sdio-host",
 ]
 
-usb = ["dep:crab-usb"]
+usb = ["dep:crab-usb", "dep:rdif-irq"]
 rockchip-dwc-xhci = ["usb", "rockchip-soc", "rockchip-pm"]
 rockchip-ehci = ["usb", "rockchip-soc", "rockchip-pm"]
 sg2002-dwc2 = ["usb", "dep:sg200x-bsp"]
@@ -67,7 +72,6 @@ xhci-mmio = ["usb"]
 xhci-pci = ["usb", "pci"]
 serial = [
     "dep:ax-errno",
-    "dep:ax-kspin",
     "dep:rdif-serial",
     "dep:some-serial",
 ]
@@ -174,6 +178,7 @@ rdif-block = { workspace = true, optional = true }
 rdif-clk = { workspace = true, optional = true }
 rdif-display = { workspace = true, optional = true }
 rdif-input = { workspace = true, optional = true }
+rdif-irq = { workspace = true, optional = true }
 rdif-serial = { workspace = true, optional = true }
 rdif-intc.workspace = true
 rdif-msi = { workspace = true, optional = true }
@@ -196,7 +201,6 @@ rockchip-soc = { workspace = true, optional = true }
 phytium-mci-host = { workspace = true, optional = true }
 sdhci-host = { workspace = true, optional = true }
 sdhci-cv1800 = { workspace = true, optional = true }
-sdio-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
@@ -216,4 +220,5 @@ ax-arm-pl031.workspace = true
 x86.workspace = true
 
 [dev-dependencies]
+ax-kspin.workspace = true
 ax-kspin-test-runtime = { path = "../../components/kspin/test-runtime" }

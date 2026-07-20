@@ -1,12 +1,19 @@
 //! IRQ generation handoff and acknowledged status mailbox.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use core::{
+    num::NonZeroU64,
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
+};
 
 use crate::regs::NORMAL_INT_ERROR;
 
 const IRQ_GENERATION_SHIFT: u64 = 32;
 const IRQ_NORMAL_MASK: u64 = 0xffff;
 const IRQ_ERROR_SHIFT: u64 = 16;
+use crate::SDHCI_IRQ_SOURCE_BITMAP;
+const CAPTURE_ENDPOINT_HOLDER: u8 = 1 << 0;
+const SOURCE_CONTROL_HOLDER: u8 = 1 << 1;
+const ALL_SOURCE_HOLDERS: u8 = CAPTURE_ENDPOINT_HOLDER | SOURCE_CONTROL_HOLDER;
 
 /// One indivisible observation of the SDHCI normal and error status banks.
 ///
@@ -90,6 +97,11 @@ pub(crate) struct IrqState {
     next_generation: AtomicU32,
     status_owner: AtomicU8,
     delivery_enabled: AtomicBool,
+    source_taken: AtomicBool,
+    source_holders: AtomicU8,
+    source_online: AtomicBool,
+    source_generation: AtomicU64,
+    masked_sources: AtomicU64,
 }
 
 impl IrqState {
@@ -99,6 +111,97 @@ impl IrqState {
             next_generation: AtomicU32::new(0),
             status_owner: AtomicU8::new(IoStatusOwner::Initialization as u8),
             delivery_enabled: AtomicBool::new(false),
+            source_taken: AtomicBool::new(false),
+            source_holders: AtomicU8::new(0),
+            source_online: AtomicBool::new(false),
+            source_generation: AtomicU64::new(0),
+            masked_sources: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn take_source(&self) -> bool {
+        let taken = self
+            .source_taken
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok();
+        if taken {
+            self.source_holders
+                .store(ALL_SOURCE_HOLDERS, Ordering::Release);
+        }
+        taken
+    }
+
+    pub(crate) fn source_ready(&self) -> bool {
+        self.source_taken.load(Ordering::Acquire)
+            && self.source_holders.load(Ordering::Acquire) == ALL_SOURCE_HOLDERS
+    }
+
+    pub(crate) fn release_capture_endpoint(&self) {
+        self.release_source_holder(CAPTURE_ENDPOINT_HOLDER);
+    }
+
+    pub(crate) fn release_source_control(&self) {
+        self.release_source_holder(SOURCE_CONTROL_HOLDER);
+    }
+
+    /// Starts a new device-source activation epoch before hardware delivery
+    /// is unmasked. This invalidates every containment token retained across
+    /// reset, recovery, or a disable/enable cycle.
+    pub(crate) fn activate_source(&self) -> NonZeroU64 {
+        let mut current = self.source_generation.load(Ordering::Acquire);
+        let generation = loop {
+            let mut next = current.wrapping_add(1);
+            if next == 0 {
+                next = 1;
+            }
+            match self.source_generation.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break NonZeroU64::new(next).expect("SDHCI source epoch is nonzero"),
+                Err(observed) => current = observed,
+            }
+        };
+        self.masked_sources.store(0, Ordering::Release);
+        self.source_online.store(true, Ordering::Release);
+        generation
+    }
+
+    pub(crate) fn deactivate_source(&self) {
+        self.source_online.store(false, Ordering::Release);
+        self.masked_sources.store(0, Ordering::Release);
+    }
+
+    pub(crate) fn source_generation(&self) -> Option<NonZeroU64> {
+        NonZeroU64::new(self.source_generation.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn source_online(&self) -> bool {
+        self.source_online.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_source_masked(&self) {
+        self.masked_sources
+            .fetch_or(SDHCI_IRQ_SOURCE_BITMAP, Ordering::Release);
+    }
+
+    pub(crate) fn claim_masked_source(&self, bitmap: u64) -> bool {
+        let mut current = self.masked_sources.load(Ordering::Acquire);
+        loop {
+            if bitmap == 0 || bitmap & !current != 0 {
+                return false;
+            }
+            match self.masked_sources.compare_exchange_weak(
+                current,
+                current & !bitmap,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(observed) => current = observed,
+            }
         }
     }
 
@@ -244,6 +347,21 @@ impl IrqState {
                 Ok(_) => return next,
                 Err(observed) => cur = observed,
             }
+        }
+    }
+
+    fn release_source_holder(&self, holder: u8) {
+        let previous = self.source_holders.fetch_and(!holder, Ordering::AcqRel);
+        debug_assert_ne!(
+            previous & holder,
+            0,
+            "SDHCI IRQ source capability released more than once"
+        );
+        if previous == holder {
+            // This is only a synchronized software-capability release. Device
+            // masking, action synchronization, and hardware shutdown must have
+            // completed before the endpoint/control value reaches Drop.
+            self.source_taken.store(false, Ordering::Release);
         }
     }
 }

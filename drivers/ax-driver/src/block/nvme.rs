@@ -13,7 +13,7 @@ use rdrive::probe::{
 use crate::{
     PciIrqRequirement, binding_info_from_pci_endpoint,
     block::PlatformDeviceBlock,
-    pci::{PciIntxIrqLease, PciIrqLease},
+    pci::{PciIntxIrqLease, PciIrqLease, PciMsixActivationFailure},
 };
 
 pub const DEVICE_NAME: &str = "nvme";
@@ -47,37 +47,50 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         probe.endpoint().interrupt_line()
     );
 
-    let msix_result = {
-        let info = probe.info();
-        let endpoint = probe.endpoint_mut();
-        PciIrqLease::allocate(endpoint, info, DEFAULT_IO_QUEUE_PAIRS as u16)
-    };
-    match msix_result {
-        Ok(msix) => {
-            let irq = register_msix_block(probe, bar, msix)?;
-            info!("NVMe block device registered at {address} with MSI-X irqs={irq:?}");
-            return Ok(());
-        }
+    let preflight = match PciIrqLease::preflight(
+        probe.endpoint(),
+        probe.info(),
+        DEFAULT_IO_QUEUE_PAIRS as u16,
+    ) {
+        Ok(preflight) => preflight,
         Err(OnProbeError::Unsupported(reason)) => {
-            info!("NVMe PCI endpoint {address} MSI-X unavailable ({reason}); using legacy INTx")
+            info!("NVMe PCI endpoint {address} MSI-X unavailable ({reason}); using legacy INTx");
+            return register_intx_block(probe, bar, address);
         }
         Err(err) => return Err(err),
-    }
+    };
 
+    probe.endpoint_mut().update_command(enable_nvme_command);
+    let endpoint = probe.take_endpoint();
+    let msix = match preflight.activate(endpoint) {
+        Ok(msix) => msix,
+        Err(PciMsixActivationFailure::Returned { endpoint, error }) => {
+            probe.restore_endpoint(endpoint);
+            return Err(error);
+        }
+        Err(PciMsixActivationFailure::Claimed { error }) => {
+            return Err(OnProbeError::claimed(format!(
+                "NVMe MSI-X activation retained endpoint {address}: {error}"
+            )));
+        }
+    };
+    let irq = register_msix_block(probe, bar, msix)?;
+    info!("NVMe block device registered at {address} with MSI-X irqs={irq:?}");
+    Ok(())
+}
+
+fn register_intx_block(
+    mut probe: ProbePci<'_>,
+    bar: core::ops::Range<usize>,
+    address: rdrive::probe::pci::PciAddress,
+) -> Result<(), OnProbeError> {
     let binding = binding_info_from_pci_endpoint(
         probe.info(),
         probe.endpoint(),
         PciIrqRequirement::Required,
     )?;
     PciIntxIrqLease::mask_for_discovery(probe.endpoint_mut());
-    probe.endpoint_mut().update_command(|mut cmd| {
-        cmd.insert(
-            CommandRegister::MEMORY_ENABLE
-                | CommandRegister::BUS_MASTER_ENABLE
-                | CommandRegister::INTERRUPT_DISABLE,
-        );
-        cmd
-    });
+    probe.endpoint_mut().update_command(enable_nvme_command);
 
     let driver = NvmeBlockDriver::discover(
         DEVICE_NAME,
@@ -99,26 +112,11 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
 }
 
 fn register_msix_block(
-    mut probe: ProbePci<'_>,
+    probe: ProbePci<'_>,
     bar: core::ops::Range<usize>,
     irq_lease: PciIrqLease,
 ) -> Result<Option<usize>, OnProbeError> {
     let vectors = irq_lease.vector_indices();
-
-    probe.endpoint_mut().update_command(|mut cmd| {
-        cmd.insert(
-            CommandRegister::MEMORY_ENABLE
-                | CommandRegister::BUS_MASTER_ENABLE
-                | CommandRegister::INTERRUPT_DISABLE,
-        );
-        cmd
-    });
-
-    // The MSI-X lease must own the endpoint across every later fallible step.
-    // Its Drop path can then mask and disable the capability before releasing
-    // the table mapping or provider vectors when staged discovery fails.
-    let endpoint = probe.take_endpoint();
-    let irq_lease = irq_lease.retain_endpoint(endpoint);
 
     let driver = NvmeBlockDriver::discover(
         DEVICE_NAME,
@@ -133,4 +131,13 @@ fn register_msix_block(
 
     let plat_dev = probe.into_platform_device();
     Ok(plat_dev.register_irq_bound_block(driver, irq_lease))
+}
+
+fn enable_nvme_command(mut command: CommandRegister) -> CommandRegister {
+    command.insert(
+        CommandRegister::MEMORY_ENABLE
+            | CommandRegister::BUS_MASTER_ENABLE
+            | CommandRegister::INTERRUPT_DISABLE,
+    );
+    command
 }

@@ -11,6 +11,7 @@ use ax_kspin::SpinRwLock as RwLock;
 use dma_api::DmaDirection;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
+use rdif_irq::{ContainmentCause, FaultContainment, IrqCapture, MaskedSource};
 use usb_if::err::{TransferError, USBError};
 
 use super::{
@@ -26,7 +27,7 @@ use crate::{
     DeviceAddressInfo, KernelOp, Mmio,
     backend::{
         kmod::{hub::HubOp, kcore::CoreOp, xhci::reg::SlotBell},
-        ty::{DeviceOp, Event, EventHandlerOp},
+        ty::{DeviceOp, Event, EventHandlerOp, IrqEpoch, UsbIrqEvent, UsbIrqFault},
     },
     err::Result,
     osal::{Kernel, SpinWhile},
@@ -535,6 +536,7 @@ pub struct EventHandler {
     event_ring: UnsafeCell<EventRing>,
     transfer_result_handler: TransferResultHandler,
     ports: PortChangeWaker,
+    irq_epoch: IrqEpoch,
 }
 
 unsafe impl Send for EventHandler {}
@@ -554,6 +556,7 @@ impl EventHandler {
             event_ring: UnsafeCell::new(event_ring),
             transfer_result_handler,
             ports,
+            irq_epoch: IrqEpoch::new(),
         }
     }
 
@@ -670,41 +673,19 @@ impl EventHandler {
 }
 
 impl EventHandlerOp for EventHandler {
-    fn handle_event(&self) -> Event {
-        let mut res = Event::Nothing;
+    fn capture_irq(&self) -> IrqCapture<UsbIrqEvent, UsbIrqFault> {
         let sts = self.reg().operational.usbsts.read_volatile();
         let has_event_interrupt = sts.event_interrupt();
         let has_pending_event = self.event_ring().has_pending_event();
+        let iman = self
+            .reg()
+            .interrupter_register_set
+            .interrupter_mut(0)
+            .iman
+            .read_volatile();
 
-        if !has_event_interrupt && !has_pending_event {
-            return res;
-        }
-
-        {
-            let irq = self.reg().interrupter_register_set.interrupter_mut(0);
-            let iman = irq.iman.read_volatile();
-            let erdp = irq.erdp.read_volatile();
-            if has_event_interrupt {
-                trace!(
-                    "xhci: handle_event USBSTS.EINT=1 IMAN.IP={} IMAN.IE={} EHB={} ERDP={:#x} \
-                     sw_erdp={:#x}",
-                    iman.interrupt_pending(),
-                    iman.interrupt_enable(),
-                    erdp.event_handler_busy(),
-                    erdp.event_ring_dequeue_pointer(),
-                    self.event_ring().erst_dequeue_pointer()
-                );
-            } else {
-                trace!(
-                    "xhci: handle_event draining pending event with USBSTS.EINT=0 IMAN.IP={} \
-                     IMAN.IE={} EHB={} ERDP={:#x} sw_erdp={:#x}",
-                    iman.interrupt_pending(),
-                    iman.interrupt_enable(),
-                    erdp.event_handler_busy(),
-                    erdp.event_ring_dequeue_pointer(),
-                    self.event_ring().erst_dequeue_pointer()
-                );
-            }
+        if !has_event_interrupt && !has_pending_event && !iman.interrupt_pending() {
+            return IrqCapture::Unhandled;
         }
 
         if has_event_interrupt {
@@ -717,12 +698,56 @@ impl EventHandlerOp for EventHandler {
         // 参考: Linux xhci_irq() in xhci-ring.c:3054-3059
         let mut irq = self.reg().interrupter_register_set.interrupter_mut(0);
         irq.iman.update_volatile(|r| {
+            r.clear_interrupt_enable();
             r.clear_interrupt_pending();
         });
 
-        res = self.clean_event_ring();
-        self.update_erdp(true);
+        match self.irq_epoch.capture(1) {
+            Ok((event, masked)) => IrqCapture::Captured {
+                event,
+                masked: Some(masked),
+            },
+            Err(reason) => match self.irq_epoch.contained_or_capture(1) {
+                Ok(masked) => IrqCapture::Fault {
+                    reason,
+                    containment: FaultContainment::DeviceSourceMasked(masked),
+                },
+                Err(_) => IrqCapture::Fault {
+                    reason,
+                    containment: FaultContainment::Uncontained,
+                },
+            },
+        }
+    }
 
-        res
+    fn service_host_events(&self, event: UsbIrqEvent) -> core::result::Result<Event, UsbIrqFault> {
+        self.irq_epoch.validate_event(event)?;
+        let result = self.clean_event_ring();
+        self.update_erdp(true);
+        Ok(result)
+    }
+
+    fn contain(&self, _cause: ContainmentCause) -> core::result::Result<MaskedSource, UsbIrqFault> {
+        self.reg()
+            .interrupter_register_set
+            .interrupter_mut(0)
+            .iman
+            .update_volatile(|r| {
+                r.clear_interrupt_enable();
+            });
+        self.irq_epoch.contained_or_capture(1)
+    }
+
+    fn rearm_sources(&self, source: MaskedSource) -> core::result::Result<(), UsbIrqFault> {
+        self.irq_epoch.finish_rearm(source)?;
+        self.reg()
+            .interrupter_register_set
+            .interrupter_mut(0)
+            .iman
+            .update_volatile(|r| {
+                r.set_interrupt_enable();
+                r.clear_interrupt_pending();
+            });
+        Ok(())
     }
 }

@@ -1,12 +1,20 @@
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use alloc::boxed::Box;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
+use ax_kspin::SpinIrqSave;
+use irq_framework::{CpuId, IrqId, IrqScope};
+use kernutil::StaticCell;
 use rdif_intc::Interface;
 use rdrive::{
     DriverGeneric, PlatformDevice, module_driver, probe::OnProbeError, register::ProbeFdt,
 };
 
 use super::irq_common::{LIOINTC_VECTOR_COUNT, fdt_first_cell_vector};
-use crate::{common::ioremap, setup::MmioRaw};
+use crate::{
+    common::ioremap,
+    irq_line::{BoundIrqStatus, IrqChipLine, PreparedIrqChipLine},
+    setup::MmioRaw,
+};
 
 const DEFAULT_LIOINTC_PADDR: usize = 0x1fe0_1400;
 const DEFAULT_LIOINTC_SIZE: usize = 0x40;
@@ -28,6 +36,7 @@ const ROUTE_INT_COUNT: usize = 4;
 
 static REGISTERED: AtomicBool = AtomicBool::new(false);
 static CASCADE_IRQ_MASK: AtomicUsize = AtomicUsize::new(0);
+static FAST_PATH: StaticCell<LioIntcFastPath> = StaticCell::uninit();
 
 module_driver!(
     name: "Loongson LS2K1000 LIOINTC",
@@ -50,24 +59,31 @@ pub fn is_cascade_irq(irq: usize) -> bool {
 }
 
 pub fn claim_irq(raw: usize) -> Option<crate::irq::IrqId> {
-    with_liointc("claiming LIOINTC IRQ", |domain, intc| {
-        if !intc.handles_cascade_irq(raw) {
-            return None;
-        }
-        intc.claim_irq()
-            .map(|input| crate::irq::IrqId::new(domain, crate::irq::HwIrq(input as u32)))
-    })
+    FAST_PATH.get_initialized()?.claim_irq(raw)
 }
 
 pub fn complete_irq(irq: crate::irq::IrqId) {
-    with_liointc("completing LIOINTC IRQ", |domain, intc| {
-        if domain == irq.domain {
-            intc.complete_irq(irq.hwirq.0 as usize);
-            Some(())
-        } else {
-            None
-        }
-    });
+    if let Some(fast_path) = FAST_PATH.get_initialized() {
+        fast_path.complete_irq(irq);
+    }
+}
+
+pub(super) fn prepare_irq_line(
+    irq: IrqId,
+    scope: IrqScope,
+) -> Result<PreparedIrqChipLine, crate::irq::IrqError> {
+    if scope != IrqScope::Global {
+        return Err(crate::irq::IrqError::InvalidIrq);
+    }
+    let fast_path = FAST_PATH
+        .get_initialized()
+        .ok_or(crate::irq::IrqError::Unsupported)?;
+    fast_path.validate_irq(irq)?;
+    fast_path.set_enabled(irq.hwirq.0 as usize, false);
+    Ok(PreparedIrqChipLine::maskable(Box::new(LioIrqChipLine {
+        irq,
+        fast_path,
+    })))
 }
 
 fn probe_liointc_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
@@ -154,6 +170,12 @@ fn register_liointc(
     for cascade_irq in intc.parent_irqs.into_iter().flatten() {
         someboot::irq::irq_set_enable(someboot::irq::IrqId::new(cascade_irq), true);
     }
+    FAST_PATH.init(LioIntcFastPath::new(
+        domain,
+        intc.regs.clone(),
+        intc.isr.clone(),
+        intc.parent_irqs,
+    ));
     dev.register(rdif_intc::Intc::new(domain, intc));
     CASCADE_IRQ_MASK.fetch_or(cascade_mask, Ordering::AcqRel);
     REGISTERED.store(true, Ordering::Release);
@@ -233,36 +255,9 @@ fn route_int_bit(parent_index: usize) -> u8 {
     1 << (ROUTE_INT_SHIFT + parent_index)
 }
 
-fn with_liointc<R>(
-    op: &str,
-    mut f: impl FnMut(crate::irq::IrqDomainId, &mut LioIntc) -> Option<R>,
-) -> Option<R> {
-    if !REGISTERED.load(Ordering::Acquire) || !rdrive::is_initialized() {
-        return None;
-    }
-
-    for intc in rdrive::get_list::<rdif_intc::Intc>() {
-        let Ok(mut intc) = intc.try_lock() else {
-            warn!("failed to lock LS2K1000 LIOINTC when {op}");
-            return None;
-        };
-        let domain = intc.domain();
-        let Some(liointc) = intc.typed_mut::<LioIntc>() else {
-            continue;
-        };
-        if let Some(result) = f(domain, liointc) {
-            return Some(result);
-        }
-    }
-
-    debug!("LS2K1000 LIOINTC has no matching controller when {op}");
-    None
-}
-
 struct LioIntc {
     regs: MmioRaw,
     isr: MmioRaw,
-    enabled: u32,
     parent_irqs: [Option<usize>; PARENT_INT_COUNT],
     parent_int_map: [u32; PARENT_INT_COUNT],
 }
@@ -277,7 +272,6 @@ impl LioIntc {
         Self {
             regs,
             isr,
-            enabled: 0,
             parent_irqs,
             parent_int_map,
         }
@@ -320,46 +314,6 @@ impl LioIntc {
             .fold(0usize, |mask, irq| mask | (1usize << irq))
     }
 
-    fn handles_cascade_irq(&self, irq: usize) -> bool {
-        self.parent_irqs
-            .into_iter()
-            .flatten()
-            .any(|parent| parent == irq)
-    }
-
-    fn enable_irq(&mut self, input: usize) -> bool {
-        if !self.contains_input(input, "enable") {
-            return false;
-        }
-
-        let mask = 1u32 << input;
-        self.enabled |= mask;
-        self.write_reg_u32(REG_ENABLE, mask);
-        true
-    }
-
-    fn disable_irq(&mut self, input: usize) -> bool {
-        if !self.contains_input(input, "disable") {
-            return false;
-        }
-
-        let mask = 1u32 << input;
-        self.enabled &= !mask;
-        self.write_reg_u32(REG_DISABLE, mask);
-        true
-    }
-
-    fn claim_irq(&mut self) -> Option<usize> {
-        let pending = self.read_isr_u32(0) & self.enabled;
-        (pending != 0).then(|| pending.trailing_zeros() as usize)
-    }
-
-    fn complete_irq(&mut self, input: usize) {
-        let _ = self.contains_input(input, "complete");
-        // LIOINTC inputs are level-triggered here; the device-side handler
-        // clears the source. There is no controller EOI register to write.
-    }
-
     fn contains_input(&self, input: usize, op: &str) -> bool {
         if input < LIOINTC_VECTOR_COUNT {
             true
@@ -372,11 +326,6 @@ impl LioIntc {
     fn write_reg_u32(&self, offset: usize, value: u32) {
         debug_assert!(offset + core::mem::size_of::<u32>() <= self.regs.size());
         self.regs.write(offset, value);
-    }
-
-    fn read_isr_u32(&self, offset: usize) -> u32 {
-        debug_assert!(offset + core::mem::size_of::<u32>() <= self.isr.size());
-        self.isr.read(offset)
     }
 
     fn write_route(&self, irq: usize, value: u8) {
@@ -421,11 +370,113 @@ impl Interface for LioIntc {
         if !self.contains_input(input, if enabled { "enable" } else { "disable" }) {
             return Err(rdif_intc::IrqError::InvalidIrq);
         }
-        if enabled {
-            self.enable_irq(input);
-        } else {
-            self.disable_irq(input);
-        }
+        FAST_PATH
+            .get_initialized()
+            .ok_or(rdif_intc::IrqError::Controller)?
+            .set_enabled(input, enabled);
         Ok(())
+    }
+}
+
+struct LioIntcFastPath {
+    domain: crate::irq::IrqDomainId,
+    regs: MmioRaw,
+    isr: MmioRaw,
+    parent_irqs: [Option<usize>; PARENT_INT_COUNT],
+    enabled: AtomicU32,
+    control: SpinIrqSave<()>,
+}
+
+impl LioIntcFastPath {
+    fn new(
+        domain: crate::irq::IrqDomainId,
+        regs: MmioRaw,
+        isr: MmioRaw,
+        parent_irqs: [Option<usize>; PARENT_INT_COUNT],
+    ) -> Self {
+        Self {
+            domain,
+            regs,
+            isr,
+            parent_irqs,
+            enabled: AtomicU32::new(0),
+            control: SpinIrqSave::new(()),
+        }
+    }
+
+    fn validate_irq(&self, irq: IrqId) -> Result<(), crate::irq::IrqError> {
+        if irq.domain != self.domain || irq.hwirq.0 as usize >= LIOINTC_VECTOR_COUNT {
+            Err(crate::irq::IrqError::InvalidIrq)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn set_enabled(&self, input: usize, enabled: bool) {
+        assert!(
+            input < LIOINTC_VECTOR_COUNT,
+            "prepared LIOINTC input left the frozen controller range"
+        );
+        let _guard = self.control.lock();
+        let mask = 1u32 << input;
+        if enabled {
+            self.regs.write(REG_ENABLE, mask);
+            self.enabled.fetch_or(mask, Ordering::Release);
+        } else {
+            self.regs.write(REG_DISABLE, mask);
+            self.enabled.fetch_and(!mask, Ordering::Release);
+        }
+    }
+
+    fn claim_irq(&self, raw: usize) -> Option<IrqId> {
+        if !self.parent_irqs.into_iter().flatten().any(|irq| irq == raw) {
+            return None;
+        }
+        let pending: u32 = self.isr.read(0);
+        let pending = pending & self.enabled.load(Ordering::Acquire);
+        (pending != 0).then(|| IrqId::new(self.domain, crate::irq::HwIrq(pending.trailing_zeros())))
+    }
+
+    fn complete_irq(&self, irq: IrqId) {
+        assert_eq!(irq.domain, self.domain, "LIOINTC completion domain changed");
+        assert!(
+            (irq.hwirq.0 as usize) < LIOINTC_VECTOR_COUNT,
+            "LIOINTC completion input is outside the frozen range"
+        );
+        // Inputs are level-triggered; the device-side handler deasserts them.
+    }
+
+    fn status(&self, input: usize) -> BoundIrqStatus {
+        let bit = 1u32 << input;
+        BoundIrqStatus {
+            enabled: Some(self.enabled.load(Ordering::Acquire) & bit != 0),
+            pending: Some(self.isr.read::<u32>(0) & bit != 0),
+            in_service: None,
+        }
+    }
+}
+
+struct LioIrqChipLine {
+    irq: IrqId,
+    fast_path: &'static LioIntcFastPath,
+}
+
+// SAFETY: the fixed fast path owns cloned shutdown-lifetime MMIO mappings and
+// is published only after controller initialization. Live writes use W1
+// registers under a bounded IRQ-safe lock and cannot allocate or block.
+unsafe impl IrqChipLine for LioIrqChipLine {
+    fn set_enabled(&self, cpu: Option<CpuId>, enabled: bool) {
+        assert!(
+            cpu.is_none(),
+            "prepared LIOINTC line {:?} cannot use a per-CPU target",
+            self.irq
+        );
+        self.fast_path
+            .set_enabled(self.irq.hwirq.0 as usize, enabled);
+    }
+
+    fn status(&self, cpu: Option<CpuId>) -> BoundIrqStatus {
+        assert!(cpu.is_none(), "LIOINTC status cannot use a per-CPU target");
+        self.fast_path.status(self.irq.hwirq.0 as usize)
     }
 }

@@ -10,7 +10,6 @@ license = "MIT"
 repository.workspace = true
 
 [dependencies]
-ax-kspin.workspace = true
 dma-api.workspace = true
 log.workspace = true
 mmio-api.workspace = true

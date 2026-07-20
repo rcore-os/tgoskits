@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use rdif_block::{
     BlkError, CompletionSink, IQueue, OwnedRequest, QueueEventBatch, QueueInfo, RequestId,
-    ServiceContinuationReason, ServiceProgress, SubmitError, SubmitOutcome, validate_owned_request,
+    ServiceProgress, ServiceRerunReason, SubmitError, SubmitOutcome, validate_owned_request,
 };
 
 use super::{
@@ -78,13 +78,13 @@ impl NvmeBlockQueue {
         let dma = prepared
             .take()
             // SAFETY: accepted ownership is installed before the SQ doorbell.
-            // Completion or shutdown returns it only after CQ observation or
-            // full controller quiescence.
+            // Owner-side completion or proof-gated reclaim returns it only
+            // after CQ observation or full controller quiescence.
             .map(|prepared| unsafe { prepared.into_in_flight() });
         state.accept(cid, AcceptedRequest { id, request, dma }, prp_list);
 
         // Runtime identity and request ownership are visible before hardware
-        // can make a completion visible to the IRQ endpoint.
+        // can assert the source consumed by the maintenance owner.
         self.core.submit_command(command);
         Ok(SubmitOutcome::Queued)
     }
@@ -94,12 +94,7 @@ impl NvmeBlockQueue {
         budget: usize,
         sink: &mut dyn CompletionSink,
     ) -> Result<Option<usize>, BlkError> {
-        let Some(mut state) = self.core.try_claim_state() else {
-            return Ok(None);
-        };
-        state
-            .emit_cached_completions(self.core.id(), self.core.completion_cache(), budget, sink)
-            .map(Some)
+        self.core.emit_owner_cached_completions(budget, sink)
     }
 }
 
@@ -136,31 +131,25 @@ impl IQueue for NvmeBlockQueue {
         }
 
         let Some(emitted) = self.emit_cached_completions(SERVICE_COMPLETION_BUDGET, sink)? else {
-            return Ok(events.continue_service(ServiceContinuationReason::CachedCompletions));
+            return Ok(events.requeue_service(ServiceRerunReason::CachedCompletions));
         };
         let remaining = SERVICE_COMPLETION_BUDGET.saturating_sub(emitted);
         if remaining == 0 {
-            return Ok(events.continue_service(ServiceContinuationReason::CompletionBudget));
+            return Ok(events.requeue_service(ServiceRerunReason::CompletionBudget));
         }
 
-        let Some(drain) = self.core.drain_service_completions(remaining) else {
-            return Ok(if self.core.service_pending() {
-                events.continue_service(ServiceContinuationReason::RetainedFacts)
-            } else {
-                ServiceProgress::Idle
-            });
-        };
+        let drain = self.core.drain_owner_completions(remaining);
         if self.core.completion_failed() {
             return Err(BlkError::Io);
         }
         let Some(emitted_after_drain) = self.emit_cached_completions(remaining, sink)? else {
-            return Ok(events.continue_service(ServiceContinuationReason::CachedCompletions));
+            return Ok(events.requeue_service(ServiceRerunReason::CachedCompletions));
         };
 
-        if drain.continuation || emitted + emitted_after_drain == SERVICE_COMPLETION_BUDGET {
-            Ok(events.continue_service(ServiceContinuationReason::CompletionBudget))
+        if drain.may_have_more || emitted + emitted_after_drain == SERVICE_COMPLETION_BUDGET {
+            Ok(events.requeue_service(ServiceRerunReason::CompletionBudget))
         } else if self.core.service_pending() {
-            Ok(events.continue_service(ServiceContinuationReason::RetainedFacts))
+            Ok(events.requeue_service(ServiceRerunReason::RetainedFacts))
         } else {
             Ok(ServiceProgress::Idle)
         }
@@ -177,12 +166,12 @@ impl IQueue for NvmeBlockQueue {
         };
         state.cancel_all(sink);
         drop(state);
-        self.core.clear_service_pending();
+        self.core.clear_service_state_after_quiesce();
         self.reclaim_proof.commit(proof);
         Ok(())
     }
 
-    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+    fn shutdown(&mut self) -> Result<(), BlkError> {
         let Some(state) = self.core.try_claim_state() else {
             return Err(BlkError::Busy);
         };
@@ -190,7 +179,12 @@ impl IQueue for NvmeBlockQueue {
             return Err(BlkError::Busy);
         }
         drop(state);
-        self.core.clear_service_pending();
+        if self.core.completion_failed() {
+            return Err(BlkError::Io);
+        }
+        if self.core.service_pending() {
+            return Err(BlkError::Busy);
+        }
         Ok(())
     }
 }

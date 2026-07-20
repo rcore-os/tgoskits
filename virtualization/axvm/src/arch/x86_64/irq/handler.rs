@@ -2,6 +2,8 @@
 
 use core::sync::atomic::Ordering;
 
+use ax_std::os::arceos::task::{ThreadWakeHandle, WakeResult};
+
 use super::state::*;
 use crate::{
     AxVmResult, InterruptTriggerMode,
@@ -73,7 +75,7 @@ pub fn queue_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8
     };
     let pending = eoi.pending;
     if should_rearm_forwarded_host_gsi_after_eoi(pending) {
-        unmask_forwarded_host_gsi(eoi.gsi);
+        rearm_forwarding_action(eoi.gsi);
     }
 
     let Some(irq) = pending else {
@@ -141,7 +143,7 @@ pub fn drain_bound_pending_ioapic_irqs(vm: &VMRef, vcpu: &BoundVcpu<'_, '_, Axvm
         let level_triggered = pending_level & bit != 0;
         if inject_bound_passthrough_gsi(vm, vcpu, gsi, level_triggered) {
             if !level_triggered {
-                unmask_forwarded_host_gsi(gsi);
+                rearm_forwarding_action(gsi);
             }
         } else {
             retry_pending |= bit;
@@ -174,7 +176,7 @@ fn inject_bound_passthrough_gsi(
                 "x86 passthrough IRQ for guest GSI {guest_gsi} is deferred by guest vIOAPIC state"
             );
             if !host_level_triggered {
-                unmask_forwarded_host_gsi(guest_gsi);
+                rearm_forwarding_action(guest_gsi);
             }
             return true;
         }
@@ -195,24 +197,60 @@ fn inject_bound_passthrough_gsi(
     true
 }
 
-pub(super) fn ioapic_irq_forwarding_handler(ctx: irq::IrqContext) -> irq::IrqReturn {
-    let Some(gsi) = guest_gsi_for_host_irq(ctx.irq) else {
-        return irq::IrqReturn::Unhandled;
-    };
+pub(super) fn capture_forwarded_ioapic_irq(
+    guest_gsi: usize,
+    expected_host_irq: irq::IrqId,
+    owner_cpu: usize,
+    wake: &ThreadWakeHandle,
+    ctx: irq::IrqContext,
+) -> irq::IrqReturn {
+    if wake.target_cpu().map(|cpu| cpu.as_u32() as usize) != Some(owner_cpu)
+        || !publish_forwarded_ioapic_irq_fact(guest_gsi, expected_host_irq, owner_cpu, ctx)
+    {
+        return irq::IrqReturn::MaskLineAndWake;
+    }
 
-    if IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) == usize::MAX
+    forwarded_irq_return_after_wake(wake.wake())
+}
+
+pub(super) fn publish_forwarded_ioapic_irq_fact(
+    guest_gsi: usize,
+    expected_host_irq: irq::IrqId,
+    owner_cpu: usize,
+    ctx: irq::IrqContext,
+) -> bool {
+    if guest_gsi >= IOAPIC_GSI_COUNT
+        || ctx.irq != expected_host_irq
+        || ctx.cpu.0 != owner_cpu
+        || IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) == usize::MAX
         || IOAPIC_IRQ_FORWARD_VCPU_ID.load(Ordering::Acquire) == usize::MAX
     {
-        return irq::IrqReturn::Unhandled;
+        return false;
     }
 
-    let bit = gsi_bit(gsi);
-    if !mask_forwarded_host_gsi(gsi) {
-        return irq::IrqReturn::Unhandled;
-    }
-    if is_level_triggered_forwarded_host_gsi(gsi) {
+    let bit = gsi_bit(guest_gsi);
+    // Publish the action-gate request before the IRQ fact. Task-side rearm
+    // synchronizes this exact action before enabling it, so a remote vCPU
+    // cannot overtake irq-framework's `DisableActionAndWake` transition.
+    IOAPIC_IRQ_ACTION_DISABLED.fetch_or(bit, Ordering::AcqRel);
+    if is_level_triggered_forwarded_host_gsi(guest_gsi) {
         IOAPIC_IRQ_PENDING_LEVEL.fetch_or(bit, Ordering::AcqRel);
     }
     IOAPIC_IRQ_PENDING.fetch_or(bit, Ordering::AcqRel);
-    irq::IrqReturn::Handled
+    true
+}
+
+pub(super) fn forwarded_irq_return_after_wake(wake: WakeResult) -> irq::IrqReturn {
+    match wake {
+        WakeResult::Notified | WakeResult::AlreadyPending => irq::IrqReturn::DisableActionAndWake,
+        WakeResult::Exited | WakeResult::Unavailable => irq::IrqReturn::MaskLineAndWake,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn reserved_ioapic_irq_action(_ctx: irq::IrqContext) -> irq::IrqReturn {
+    // A reservation is never enabled. If that invariant is violated, quench
+    // the exclusively owned line rather than acknowledging work without an
+    // installed owner wake capability.
+    irq::IrqReturn::MaskLineAndWake
 }

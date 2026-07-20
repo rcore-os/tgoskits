@@ -15,6 +15,7 @@ pub(crate) mod common;
 pub mod cpu;
 mod driver;
 pub mod irq;
+mod irq_line;
 mod irq_routing;
 pub mod platform;
 pub mod rtc;

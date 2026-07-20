@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a move-only `NetDeviceOwner` and typed queue-owner tokens so portable
+  devices can keep controller and all hardware queue state under one
+  maintenance owner without sharing them through runtime locks.
+
 ## [0.3.8](https://github.com/rcore-os/tgoskits/compare/rdif-eth-v0.3.7...rdif-eth-v0.3.8) - 2026-07-08
 
 ### Other

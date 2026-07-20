@@ -37,23 +37,34 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 
 #[test]
 fn ioapic_masking_uses_a_prepublished_irq_endpoint() {
-    let set_enable = section(X86_IRQ, "fn irq_set_enable", "fn irq_set_affinity");
+    let set_enable = section(
+        X86_IRQ,
+        "unsafe impl IrqChipLine for X86IrqChipLine",
+        "fn ioapic_irq_for_vector",
+    );
 
     assert!(
-        set_enable.contains("IOAPIC_CPU_IF.set_gsi_enabled"),
-        "IOAPIC masking must use the pre-published CPU/IRQ-side endpoint"
+        set_enable.contains("IOAPIC_CPU_IF.set_endpoint_enabled(endpoint, enabled)"),
+        "IOAPIC masking must use the endpoint retained by the prepared line"
     );
-    for forbidden in ["intc_by_domain", "rdrive::get", ".try_lock()"] {
+    for forbidden in [
+        "set_gsi_enabled",
+        "endpoint_for_gsi",
+        "line_endpoint",
+        "intc_by_domain",
+        "rdrive::get",
+        ".try_lock()",
+    ] {
         assert!(
             !set_enable.contains(forbidden),
             "hard-IRQ-capable masking must not contain `{forbidden}`"
         );
     }
 
-    let endpoint = section(X86_IRQ, "fn set_gsi_enabled", "fn reserve_gsi_endpoint");
-    assert!(
-        endpoint.contains("endpoint_for_gsi"),
-        "hard-IRQ masking must resolve a fixed pre-published endpoint"
+    let endpoint = section(
+        X86_IRQ,
+        "fn set_endpoint_enabled",
+        "fn set_endpoint_destination",
     );
     assert!(
         endpoint.contains("mmio_lock.lock()"),
@@ -66,6 +77,8 @@ fn ioapic_masking_uses_a_prepublished_irq_endpoint() {
         "Vec<",
         "Box<",
         "alloc::",
+        "endpoint_for_gsi",
+        "line_endpoint",
         ".try_lock()",
     ] {
         assert!(
@@ -91,7 +104,7 @@ fn ioapic_masking_uses_a_prepublished_irq_endpoint() {
     ] {
         assert!(
             !lookup.contains(forbidden),
-            "the endpoint lookup helper must not contain `{forbidden}`"
+            "the registration-time endpoint lookup helper must not contain `{forbidden}`"
         );
     }
 

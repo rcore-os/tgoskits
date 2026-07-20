@@ -153,7 +153,7 @@ impl PhytiumMci {
             return Err(Error::InvalidArgument);
         }
         let active = request.take().ok_or(Error::InvalidArgument)?;
-        let completed_dma = self.finish_block_request_with_quiesce(active, true);
+        let completed_dma = self.finish_block_request(active);
         slot.complete_with_dma(id, completed_dma)
     }
 

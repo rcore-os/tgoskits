@@ -14,11 +14,7 @@ use ax_std::os::arceos::modules::ax_runtime::block::{
     QuarantinedBlockControllers, StorageGuestKey,
 };
 
-use crate::{
-    AxVMRef,
-    arch::{ArchOps, CurrentArch},
-    config::VMInterruptMode,
-};
+use crate::{AxVMRef, host::irq_routes::GuestIrqRoutesRevoked};
 
 /// Observable phase of one host-storage ownership transfer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,9 +70,6 @@ pub enum HostStorageHandoffError {
     /// A stopped VM still retained an IRQ, MMIO, or vCPU access path.
     #[error("guest storage route revocation failed closed: {detail}")]
     GuestRouteRevocationFailedClosed { detail: String },
-    /// Architecture IRQ routing could not activate after storage selection.
-    #[error("guest storage route activation failed closed: {detail}")]
-    GuestRouteActivationFailedClosed { detail: String },
     /// VM mappings could not be converted into an exact controller selection.
     #[error("could not derive guest storage ownership: {detail}")]
     GuestSelection { detail: String },
@@ -106,61 +99,6 @@ pub struct HostStoragePciEndpoint {
 #[must_use = "host controller recovery requires this route-revocation proof"]
 pub struct GuestStorageRoutesRevoked {
     runtime: GuestAccessRevoked,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GuestIrqRouteLeaseState {
-    Prepared,
-    Active,
-    Revoked,
-}
-
-/// Retained owner of architecture IRQ routes activated after storage selection.
-///
-/// The lease is independent from [`HostStorageHandoff`]: a passthrough VM can
-/// own an architecture IRQ route even when none of its mappings select a host
-/// block controller. Axvisor must therefore retain this object until every
-/// default guest has stopped and explicit route revocation succeeds.
-#[must_use = "active guest IRQ routes must remain owned until explicit revocation"]
-pub struct GuestIrqRouteLease {
-    guests: Vec<AxVMRef>,
-    state: GuestIrqRouteLeaseState,
-}
-
-/// Proof that every passthrough guest retained by one route lease has stopped
-/// and released its architecture-owned IRQ path.
-///
-/// The proof keeps the exact VM objects alive, rather than only their numeric
-/// IDs, so a later registry generation cannot satisfy an earlier storage
-/// handoff accidentally. Controller return borrows this proof before removing
-/// the selected guests' stage-2 mappings.
-#[must_use = "guest storage return requires the route-revocation proof"]
-pub struct GuestIrqRoutesRevoked {
-    guests: Box<[AxVMRef]>,
-}
-
-impl GuestIrqRoutesRevoked {
-    fn covers(&self, guest: &AxVMRef) -> bool {
-        self.guests
-            .iter()
-            .any(|revoked| core::ptr::eq(revoked.as_ref(), guest.as_ref()))
-    }
-}
-
-impl GuestIrqRouteLease {
-    /// Creates an empty lease for one post-selection activation transaction.
-    pub const fn new() -> Self {
-        Self {
-            guests: Vec::new(),
-            state: GuestIrqRouteLeaseState::Prepared,
-        }
-    }
-}
-
-impl Default for GuestIrqRouteLease {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 pub(crate) struct StorageGuestSelection {
@@ -236,99 +174,6 @@ fn guest_selection_error(vm_id: usize, error: impl core::fmt::Display) -> HostSt
     }
 }
 
-/// Activates fallible architecture IRQ routes after host storage selection.
-///
-/// `Some(handoff)` proves that selected block controllers already crossed to
-/// guest ownership. `None` is reserved for the completed-selection case where
-/// no runtime block controller matched any guest mapping. Every architecture
-/// therefore observes the same post-selection activation stage.
-///
-/// # Errors
-///
-/// Returns [`HostStorageHandoffError::InvalidState`] if a supplied handoff has
-/// not committed, or [`HostStorageHandoffError::GuestRouteActivationFailedClosed`]
-/// if an architecture route cannot be activated.
-pub fn activate_guest_storage_routes(
-    handoff: Option<&HostStorageHandoff>,
-    route_lease: &mut GuestIrqRouteLease,
-) -> Result<(), HostStorageHandoffError> {
-    if let Some(handoff) = handoff {
-        handoff.require_state(HostStorageHandoffState::GuestOwned)?;
-    }
-    if route_lease.state != GuestIrqRouteLeaseState::Prepared {
-        return Err(route_activation_error(format!(
-            "guest IRQ route lease is in state {:?}, expected Prepared",
-            route_lease.state
-        )));
-    }
-    route_lease.state = GuestIrqRouteLeaseState::Active;
-
-    for vm in crate::get_vm_list() {
-        if !vm
-            .uses_passthrough_resources()
-            .map_err(|error| route_activation_error(format!("VM[{}]: {error}", vm.id())))?
-        {
-            continue;
-        }
-        // Retain every passthrough VM before its architecture hook. x86 and
-        // RISC-V finish route activation from their first-vCPU path, whereas
-        // AArch64 and LoongArch can activate here. Lifetime ownership must not
-        // depend on that timing distinction.
-        route_lease.guests.push(vm.clone());
-        let interrupt_mode = vm
-            .passthrough_interrupt_mode()
-            .map_err(|error| route_activation_error(format!("VM[{}] mode: {error}", vm.id())))?;
-        if interrupt_mode == VMInterruptMode::Passthrough {
-            CurrentArch::activate_guest_irq_routes(&vm)
-                .map_err(|error| route_activation_error(format!("VM[{}]: {error}", vm.id())))?;
-        }
-    }
-    Ok(())
-}
-
-/// Revokes every architecture IRQ route retained by an activation lease.
-///
-/// The lease remains active when any quiesce or architecture operation fails,
-/// allowing its owner to retain the exact VM objects and retry or diagnose the
-/// fail-closed state.
-///
-/// # Errors
-///
-/// Returns [`HostStorageHandoffError::GuestRouteRevocationFailedClosed`] if a
-/// guest is still active or an architecture route cannot be drained.
-pub fn revoke_guest_irq_route_lease(
-    route_lease: &mut GuestIrqRouteLease,
-) -> Result<GuestIrqRoutesRevoked, HostStorageHandoffError> {
-    if route_lease.state != GuestIrqRouteLeaseState::Active {
-        return Err(route_revocation_error(format!(
-            "guest IRQ route lease is in state {:?}, expected Active",
-            route_lease.state
-        )));
-    }
-
-    for vm in route_lease.guests.iter().rev() {
-        vm.quiesce_for_passthrough_revocation()
-            .map_err(|error| route_revocation_error(format!("VM[{}]: {error}", vm.id())))?;
-        let interrupt_mode = vm
-            .passthrough_interrupt_mode()
-            .map_err(|error| route_revocation_error(format!("VM[{}]: {error}", vm.id())))?;
-        if interrupt_mode == VMInterruptMode::Passthrough {
-            CurrentArch::revoke_guest_irq_routes(vm)
-                .map_err(|error| route_revocation_error(format!("VM[{}]: {error}", vm.id())))?;
-        }
-    }
-    route_lease.state = GuestIrqRouteLeaseState::Revoked;
-    Ok(GuestIrqRoutesRevoked {
-        guests: core::mem::take(&mut route_lease.guests).into_boxed_slice(),
-    })
-}
-
-fn route_activation_error(detail: impl Into<String>) -> HostStorageHandoffError {
-    HostStorageHandoffError::GuestRouteActivationFailedClosed {
-        detail: detail.into(),
-    }
-}
-
 impl GuestStorageRoutesRevoked {
     fn from_revoked_vms() -> Self {
         Self {
@@ -372,7 +217,7 @@ pub fn revoke_guest_storage_routes(
     }
 
     for vm in guests {
-        if !routes_revoked.covers(vm) {
+        if !routes_revoked.covers_guest(vm) {
             return Err(route_revocation_error(format!(
                 "VM[{}] was not covered by the retained IRQ-route lease",
                 vm.id()

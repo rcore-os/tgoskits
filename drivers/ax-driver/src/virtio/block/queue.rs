@@ -1,20 +1,22 @@
 //! Owned-request RDIF queue and VirtIO descriptor lifecycle.
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
+use core::mem::ManuallyDrop;
 #[cfg(test)]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use dma_api::{DmaDirection, InFlightDma, PreparedDma};
 use rdif_block::{
-    BlkError, CompletedRequest, CompletionSink, DispatchMode, IdList, OwnedRequest,
-    QueueEventBatch, QueueInfo, QueueKind, RequestId, RequestOp, ServiceContinuationReason,
-    ServiceProgress, SubmitError, SubmitOutcome,
+    BlkError, CompletedRequest, CompletionSink, IdList, OwnedRequest, QueueEventBatch,
+    QueueExecution, QueueInfo, QueueKind, RequestId, RequestOp, ServiceProgress,
+    ServiceRerunReason, SubmitError, SubmitOutcome,
 };
-use virtio_drivers::{Error as VirtIoError, device::blk::SECTOR_SIZE};
+use virtio_drivers::{Error as VirtIoError, device::blk::SECTOR_SIZE, queue::VirtQueue};
 
 use super::{
     VIRTIO_BLK_IRQ_SOURCE_ID, VIRTIO_BLK_QUEUE_ID,
     device::{VirtIoBlkDevice, VirtIoBlkInner},
+    irq::VirtioRegisterMappingLease,
 };
 use crate::virtio::VirtIoTransport;
 
@@ -30,6 +32,10 @@ pub(super) struct BlockQueue<T: VirtIoTransport> {
     // MSI-X/INTx leases live outside this Arc and must remain owned by the OS
     // Interface holder until IRQ synchronization and queue shutdown complete.
     raw: Arc<VirtIoBlkDevice<T>>,
+    // Keep the register lease alive independently of controller/IRQ-action
+    // drop ordering. For MMIO discovery this also anchors the transport's raw
+    // register pointers.
+    _register_mapping: VirtioRegisterMappingLease,
     reclaim_proof: ReclaimProofTracker,
 }
 
@@ -39,16 +45,25 @@ pub(super) struct ReclaimProofTracker {
 }
 
 impl<T: VirtIoTransport> BlockQueue<T> {
-    pub(super) fn new(raw: Arc<VirtIoBlkDevice<T>>) -> Self {
+    pub(super) fn new(
+        raw: Arc<VirtIoBlkDevice<T>>,
+        register_mapping: VirtioRegisterMappingLease,
+    ) -> Self {
         let controller_cookie = core::ptr::from_ref(raw.as_ref()).expose_provenance();
         Self {
             id: VIRTIO_BLK_QUEUE_ID,
             raw,
+            _register_mapping: register_mapping,
             reclaim_proof: ReclaimProofTracker {
                 controller_cookie,
                 last_epoch: None,
             },
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test(raw: Arc<VirtIoBlkDevice<T>>) -> Self {
+        Self::new(raw, super::irq::test_register_mapping_lease())
     }
 }
 
@@ -82,11 +97,10 @@ pub(super) fn virtio_queue_info(blocks: u64) -> QueueInfo {
             supports_write_zeroes: false,
         },
         kind: QueueKind::Interrupt { sources },
-        // The hctx queue lock and the adapter's short task/IRQ gate serialize
-        // transport state. Submit can therefore use the direct fast path; an
-        // hctx lock conflict falls back to its software staging queue, while
-        // IRQ acknowledgement contention remains a typed worker continuation.
-        dispatch_mode: DispatchMode::Direct,
+        // The CPU-pinned maintenance owner is the only caller of queue
+        // methods. Tagged describes retained RequestId ownership; it does not
+        // authorize a submitting task to touch the transport directly.
+        execution: QueueExecution::Tagged,
     }
 }
 
@@ -121,11 +135,7 @@ impl<T: VirtIoTransport> rdif_block::IQueue for BlockQueue<T> {
         if events.queue_id() != self.id {
             return Err(BlkError::InvalidRequest);
         }
-        self.raw
-            .try_with_task(|inner| inner.service_used(events, sink))
-            .unwrap_or_else(|| {
-                Ok(events.continue_service(ServiceContinuationReason::RetainedFacts))
-            })
+        self.raw.with_task(|inner| inner.service_used(events, sink))
     }
 
     fn reclaim_after_quiesce(
@@ -135,13 +145,13 @@ impl<T: VirtIoTransport> rdif_block::IQueue for BlockQueue<T> {
     ) -> Result<(), BlkError> {
         self.reclaim_proof.validate(proof)?;
         self.raw
-            .with_task(|inner| inner.reclaim_after_quiesce(sink));
+            .with_task(|inner| inner.reclaim_after_quiesce(proof, sink));
         self.reclaim_proof.commit(proof);
         Ok(())
     }
 
-    fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        self.raw.with_task(|inner| inner.shutdown(sink))
+    fn shutdown(&mut self) -> Result<(), BlkError> {
+        self.raw.with_task(VirtIoBlkInner::shutdown)
     }
 }
 
@@ -237,7 +247,7 @@ impl<T: VirtIoTransport> VirtIoBlkInner<T> {
 
         // SAFETY: the non-blocking VirtIO submission above accepted `token`
         // while the same task-side exclusion still prevents the IRQ path from
-        // observing the descriptor. IRQ continuation or recovery returns
+        // observing the descriptor. IRQ-event service or recovery returns
         // ownership only after the matching descriptor/device is quiesced.
         let dma = unsafe { prepared.into_in_flight() };
         self.inflight = Some(InflightRequest {
@@ -277,7 +287,7 @@ impl<T: VirtIoTransport> VirtIoBlkInner<T> {
                 .map_err(map_virtio_completion_err_to_blk_err);
             sink.complete(complete_consumed_inflight(inflight, result));
         }
-        Ok(events.continue_service(ServiceContinuationReason::CompletionBudget))
+        Ok(events.requeue_service(ServiceRerunReason::CompletionBudget))
     }
 
     fn peek_used(&self) -> Option<u16> {
@@ -286,7 +296,15 @@ impl<T: VirtIoTransport> VirtIoBlkInner<T> {
             .and_then(virtio_drivers::queue::VirtQueue::peek_used)
     }
 
-    fn reclaim_after_quiesce(&mut self, sink: &mut dyn CompletionSink) {
+    fn reclaim_after_quiesce(
+        &mut self,
+        proof: &rdif_block::DmaQuiesced,
+        sink: &mut dyn CompletionSink,
+    ) {
+        if let Some(quarantine) = self.dma_quarantine.take() {
+            quarantine.release_after_quiesce(proof, sink);
+            return;
+        }
         let Some(mut inflight) = self.inflight.take() else {
             return;
         };
@@ -302,7 +320,7 @@ impl<T: VirtIoTransport> VirtIoBlkInner<T> {
         ));
     }
 
-    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+    fn shutdown(&mut self) -> Result<(), BlkError> {
         if self.inflight.is_some() {
             return Err(BlkError::Busy);
         }
@@ -428,6 +446,97 @@ pub(super) struct DmaDropFacts {
     pub(super) reset_acknowledged: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum VirtioDmaQuarantineReason {
+    ResetAcknowledgementTimedOut,
+    DroppedWithoutQuiescence,
+}
+
+/// Named owner for allocations that may still be reachable by the device.
+///
+/// These fields deliberately suppress ordinary Rust destruction because no
+/// hardware stop proof exists. The retained controller owns this value and
+/// exposes its reason and retained-resource facts to diagnostics. A normal
+/// acknowledged-reset path never constructs this type: it drops the old
+/// virtqueue and reclaims request DMA only while consuming `DmaQuiesced`.
+pub(super) struct VirtioDmaQuarantine {
+    reason: VirtioDmaQuarantineReason,
+    queue: Option<ManuallyDrop<VirtQueue<crate::virtio::VirtIoHalImpl, VIRTIO_BLK_QUEUE_SIZE>>>,
+    inflight: Option<ManuallyDrop<InflightRequest>>,
+    descriptor_storage: Option<ManuallyDrop<Box<InflightStorage>>>,
+}
+
+impl VirtioDmaQuarantine {
+    pub(super) fn retain(
+        reason: VirtioDmaQuarantineReason,
+        queue: Option<VirtQueue<crate::virtio::VirtIoHalImpl, VIRTIO_BLK_QUEUE_SIZE>>,
+        inflight: Option<InflightRequest>,
+        descriptor_storage: Option<Box<InflightStorage>>,
+    ) -> Option<Self> {
+        let quarantine = Self {
+            reason,
+            queue: queue.map(ManuallyDrop::new),
+            inflight: inflight.map(ManuallyDrop::new),
+            descriptor_storage: descriptor_storage.map(ManuallyDrop::new),
+        };
+        quarantine.blocks_reinitialization().then_some(quarantine)
+    }
+
+    pub(super) const fn reason(&self) -> VirtioDmaQuarantineReason {
+        self.reason
+    }
+
+    pub(super) fn retains_queue(&self) -> bool {
+        self.queue.is_some()
+    }
+
+    pub(super) fn retains_request(&self) -> bool {
+        self.inflight.is_some()
+    }
+
+    pub(super) fn retains_descriptor_storage(&self) -> bool {
+        self.descriptor_storage.is_some()
+    }
+
+    pub(super) fn blocks_reinitialization(&self) -> bool {
+        // Reading the reason here makes the containment cause part of the
+        // auditable state rather than decoration on an anonymous retention.
+        match self.reason() {
+            VirtioDmaQuarantineReason::ResetAcknowledgementTimedOut
+            | VirtioDmaQuarantineReason::DroppedWithoutQuiescence => {
+                self.retains_queue() || self.retains_request() || self.retains_descriptor_storage()
+            }
+        }
+    }
+
+    fn release_after_quiesce(
+        mut self,
+        _proof: &rdif_block::DmaQuiesced,
+        sink: &mut dyn CompletionSink,
+    ) {
+        let queue = self.queue.take().map(ManuallyDrop::into_inner);
+        let inflight = self.inflight.take().map(ManuallyDrop::into_inner);
+        let descriptor_storage = self.descriptor_storage.take().map(ManuallyDrop::into_inner);
+
+        // The proof establishes that no descriptor or ring allocation remains
+        // reachable by the device. Restore ordinary Rust ownership before
+        // releasing memory or returning a request to the runtime.
+        drop(queue);
+        if let Some(mut inflight) = inflight {
+            // SAFETY: the controller-bound proof was validated by the queue's
+            // monotonic `ReclaimProofTracker` before this quarantine was moved.
+            let completed = unsafe { inflight.dma.complete_after_quiesce() };
+            inflight.request.data = Some(completed.into_cpu_buffer());
+            sink.complete(CompletedRequest::new(
+                inflight.id,
+                Err(BlkError::Cancelled),
+                inflight.request,
+            ));
+        }
+        drop(descriptor_storage);
+    }
+}
+
 impl DmaDropFacts {
     pub(super) const fn requires_quarantine(self) -> bool {
         self.failure_reset_in_progress
@@ -453,7 +562,7 @@ impl<T: VirtIoTransport> Drop for VirtIoBlkInner<T> {
             // A safe Drop cannot assume that the runtime honored shutdown and
             // produced DmaQuiesced. Retain the virtqueue plus every descriptor
             // backing so a late device access cannot target freed Rust memory.
-            self.quarantine_unproven_dma();
+            self.quarantine_unproven_dma(VirtioDmaQuarantineReason::DroppedWithoutQuiescence);
             return;
         }
         if self.queue.is_some() {

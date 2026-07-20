@@ -9,6 +9,7 @@ use core::ops::{Deref, DerefMut};
 use dma_api::{ContiguousArray, DmaDirection};
 use event::EventBuffer;
 use futures::{FutureExt, future::BoxFuture};
+use rdif_irq::{ContainmentCause, IrqCapture, MaskedSource};
 use reg::{GCTL, GEVNTSIZ, GHWPARAMS0, GHWPARAMS1, GHWPARAMS3, GHWPARAMS4, GUCTL1, GUSB2PHYCFG};
 use tock_registers::interfaces::*;
 use udphy::Udphy;
@@ -21,7 +22,7 @@ use crate::{
     DeviceAddressInfo, KernelOp, Mmio,
     backend::{
         kmod::{hub::HubOp, kcore::CoreOp, xhci::Xhci},
-        ty::{DeviceOp, Event, EventHandlerOp},
+        ty::{DeviceOp, Event, EventHandlerOp, UsbIrqEvent, UsbIrqFault},
     },
     err::{Result, USBError},
     osal::Kernel,
@@ -761,11 +762,19 @@ pub struct DwcEventHandler {
     _dwc: Dwc3Regs,
 }
 impl EventHandlerOp for DwcEventHandler {
-    fn handle_event(&self) -> Event {
-        // let cnt = self.dwc.globals().gevnt[0].count.get();
-        // debug!("DWC3 Event Handler: GEVNT[0] COUNT = {}", cnt);
-        // self.dwc.globals().gevnt[0].count.set(0);
+    fn capture_irq(&self) -> IrqCapture<UsbIrqEvent, UsbIrqFault> {
+        self.xhci.capture_irq()
+    }
 
-        self.xhci.handle_event()
+    fn service_host_events(&self, event: UsbIrqEvent) -> core::result::Result<Event, UsbIrqFault> {
+        self.xhci.service_host_events(event)
+    }
+
+    fn contain(&self, cause: ContainmentCause) -> core::result::Result<MaskedSource, UsbIrqFault> {
+        self.xhci.contain(cause)
+    }
+
+    fn rearm_sources(&self, source: MaskedSource) -> core::result::Result<(), UsbIrqFault> {
+        self.xhci.rearm_sources(source)
     }
 }

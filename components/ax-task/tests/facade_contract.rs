@@ -3,8 +3,8 @@ use core::pin::Pin;
 use ax_task::{
     CpuId, FairMode, Nice, SchedulePolicy, TaskError, TaskSystem, TaskSystemConfig,
     ThreadExtension, ThreadExtensionOps, ThreadId, ThreadSpec, ThreadState, WakeResult,
-    current_cpu_needs_resched, current_thread_extension, current_thread_id, schedule_current_cpu,
-    take_current_expired_timers,
+    current_cpu_needs_resched, current_thread_extension, current_thread_id, pin_current_cpu,
+    schedule_current_cpu, take_current_expired_timers,
     timer::{ExpiredTimer, TimerNode},
     timer_interrupt_current_cpu,
 };
@@ -60,6 +60,10 @@ fn facade_reports_uninitialized_then_uses_runtime_owned_objects() {
     );
 
     assert_eq!(current_thread_id().unwrap(), bootstrap.id());
+    let lease = pin_current_cpu().unwrap();
+    assert_eq!(lease.thread_id(), bootstrap.id());
+    assert_eq!(lease.cpu(), CpuId::new(0));
+    drop(lease);
     assert_eq!(
         std::thread::spawn(current_thread_id).join().unwrap(),
         Err(TaskError::NotInitialized),

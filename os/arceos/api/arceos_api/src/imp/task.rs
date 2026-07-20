@@ -238,7 +238,8 @@ cfg_task! {
             TaskError::DeadlineAdmission
             | TaskError::DeadlineAffinity
             | TaskError::ActiveTimerAffinity
-            | TaskError::ThreadBusy => crate::AxError::ResourceBusy,
+            | TaskError::ThreadBusy
+            | TaskError::ThreadPinned => crate::AxError::ResourceBusy,
             TaskError::TimerCapacity => crate::AxError::NoMemory,
             TaskError::UnsafeContext => crate::AxError::OperationNotPermitted,
             TaskError::StaleThreadId => crate::AxError::NotFound,

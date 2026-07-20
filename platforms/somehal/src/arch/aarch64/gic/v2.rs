@@ -6,7 +6,7 @@ use irq_framework::IrqId;
 use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
-use crate::common::ioremap;
+use crate::{common::ioremap, irq_line::BoundIrqStatus};
 
 static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
 static TRAP: StaticCell<TrapOp> = StaticCell::uninit();
@@ -74,6 +74,7 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let cpu = gic.cpu_interface();
     let boot_target = discover_cpu_target(&cpu).map_err(OnProbeError::other)?;
     gic.init(boot_target);
+    super::publish_v2_line_backend(&gic);
     let trap = cpu.trap_operations();
     CPU_IF.init(cpu);
     TRAP.init(trap);
@@ -166,6 +167,38 @@ pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqErr
         gic.set_irq_enable(intid, enable);
         Ok(())
     })?
+}
+
+pub(super) fn private_line_cpu_ready(cpu: irq_framework::CpuId) -> bool {
+    cpu_target(cpu).is_some()
+}
+
+pub(super) fn set_private_line_enabled(cpu: irq_framework::CpuId, intid: IntId, enabled: bool) {
+    assert!(intid.is_private(), "GICv2 private endpoint received an SPI");
+    assert_eq!(
+        crate::cpu::runtime_current_cpu(),
+        Some(cpu),
+        "GICv2 banked private line accessed from the wrong CPU"
+    );
+    assert!(
+        private_line_cpu_ready(cpu),
+        "GICv2 private line target was not published"
+    );
+    CPU_IF.set_irq_enable(intid, enabled);
+}
+
+pub(super) fn private_line_status(cpu: irq_framework::CpuId, intid: IntId) -> BoundIrqStatus {
+    assert!(intid.is_private(), "GICv2 private endpoint received an SPI");
+    assert_eq!(
+        crate::cpu::runtime_current_cpu(),
+        Some(cpu),
+        "GICv2 banked private status read from the wrong CPU"
+    );
+    BoundIrqStatus {
+        enabled: Some(CPU_IF.is_irq_enable(intid)),
+        pending: Some(CPU_IF.is_pending(intid)),
+        in_service: Some(CPU_IF.is_active(intid)),
+    }
 }
 
 pub fn irq_set_affinity(

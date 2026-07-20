@@ -13,10 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remove a disabled host action, install an exclusive guest route, and later
   re-register the original handler without retaining a dormant descriptor
   entry.
-- Add a fail-closed `QuenchAndWake` handler result that disables the returning
-  global action, or locally quenches a per-CPU action, before waking deferred
-  recovery. Shared peers remain logically enabled and regain each affected
-  line only after every action-owned quench is explicitly released.
+- Split hard-IRQ isolation into `DisableActionAndWake`, for sources already
+  masked precisely at the device, and fail-closed `MaskLineAndWake`, which
+  quenches the affected controller line without disabling the action. Shared
+  lines reopen only after every action-owned quench is explicitly released and
+  the matching controller claim has completed.
 - Treat failure to apply that emergency backing-line mask as a fatal irqchip
   invariant instead of silently returning to a potentially storming source.
 - Add generation-bearing, action-specific asynchronous drain tokens with a
@@ -24,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Remove the generic deferred-continuation token/slot protocol. Controller claim
+  completion now belongs to the dispatch RAII boundary, and task-side recovery
+  chooses explicit action isolation or fail-closed line masking.
 - Make new IRQ requests disabled by default, requiring callers to publish all
   device-side handler state before an explicit `Registry::enable` operation.
 - Commit a successful registration to the descriptor's desired line state, so
@@ -46,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can permit premature reclamation.
 - Invoke drain wake callbacks outside registry metadata critical sections and
   pin the descriptor until immediate notification returns.
-- Preserve a racing `QuenchAndWake` action during `free` and failed-request
+- Preserve a racing `MaskLineAndWake` action during `free` and failed-request
   rollback until its in-flight invocation has drained.
 
 ## [0.3.0](https://github.com/rcore-os/tgoskits/compare/irq-framework-v0.2.0...irq-framework-v0.3.0) - 2026-07-02

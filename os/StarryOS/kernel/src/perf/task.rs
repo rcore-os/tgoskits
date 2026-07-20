@@ -570,8 +570,8 @@ pub fn perf_sched_in(thr: &Thread) {
             if !ptc.ring_mapped() {
                 continue;
             }
-            // Make sure the PMU overflow handler is installed + the PPI enabled.
-            sampling::ensure_pmu_irq_registered();
+            // Event creation has already published the generation-bearing PMU
+            // action. This IRQ-off hook only programs device-local counter state.
             // configure() programs event + EL filter AND resets the counter to 0.
             ax_cpu::pmu::counter::configure(ptc.n, ptc.event, ptc.exclude_user, ptc.exclude_kernel);
             // Overflow after `sample_period` events.

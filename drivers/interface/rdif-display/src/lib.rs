@@ -26,14 +26,14 @@ mod tests {
     }
 
     impl Interface for TestDisplay {
-        fn info(&self) -> DisplayInfo {
-            DisplayInfo {
+        fn info(&self) -> Result<DisplayInfo, DisplayError> {
+            Ok(DisplayInfo {
                 width: 2,
                 height: 2,
                 stride: 8,
                 format: PixelFormat::Xrgb8888,
                 fb_size: self.fb.len(),
-            }
+            })
         }
 
         fn framebuffer(&mut self) -> Result<FrameBuffer<'_>, DisplayError> {
@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn display_interface_exposes_layout_and_framebuffer() {
         let mut display = TestDisplay { fb: [0; 16] };
-        let info = display.info();
+        let info = display.info().unwrap();
         assert_eq!(info.stride, 8);
         assert_eq!(info.format, PixelFormat::Xrgb8888);
         assert_eq!(info.fb_size, 16);
@@ -52,6 +52,7 @@ mod tests {
         let mut fb = display.framebuffer().unwrap();
         fb.as_mut_slice()[0] = 0xaa;
         assert_eq!(fb.as_slice()[0], 0xaa);
-        assert_eq!(display.handle_irq(), Event::none());
+        assert_eq!(display.execution(), DisplayExecution::Inline);
+        assert!(display.take_irq_endpoint().is_none());
     }
 }

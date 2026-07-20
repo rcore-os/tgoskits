@@ -7,7 +7,7 @@ use irq_framework::IrqId;
 use kernutil::StaticCell;
 use rdrive::{module_driver, probe::OnProbeError, register::ProbeFdt};
 
-use crate::common::ioremap;
+use crate::{common::ioremap, irq_line::BoundIrqStatus};
 
 static CPU_IF_INIT: StaticCell<CpuInterfaceInit> = StaticCell::uninit();
 static CPU_IF: StaticCell<Box<[CpuInterfaceSlot]>> = StaticCell::uninit();
@@ -78,6 +78,7 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
     let mut gic = unsafe { Gic::new(gicd.as_ptr().into(), gicr.as_ptr().into()) };
     gic.init();
+    super::publish_v3_line_backend(&gic);
     super::set_backend(super::GicBackend::V3);
 
     CPU_IF_INIT.init(gic.cpu_interface_init());
@@ -151,6 +152,37 @@ pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqErr
         gic.set_irq_enable(intid, enable);
         Ok(())
     })?
+}
+
+pub(super) fn private_line_cpu_ready(cpu: irq_framework::CpuId) -> bool {
+    cpu_interface_for(cpu).is_some()
+}
+
+pub(super) fn set_private_line_enabled(cpu: irq_framework::CpuId, intid: IntId, enabled: bool) {
+    assert!(intid.is_private(), "GICv3 private endpoint received an SPI");
+    assert_eq!(
+        crate::cpu::runtime_current_cpu(),
+        Some(cpu),
+        "GICv3 private line accessed from the wrong CPU"
+    );
+    cpu_interface_for(cpu)
+        .expect("prepared GICv3 CPU-interface slot disappeared")
+        .set_irq_enable(intid, enabled);
+}
+
+pub(super) fn private_line_status(cpu: irq_framework::CpuId, intid: IntId) -> BoundIrqStatus {
+    assert!(intid.is_private(), "GICv3 private endpoint received an SPI");
+    assert_eq!(
+        crate::cpu::runtime_current_cpu(),
+        Some(cpu),
+        "GICv3 private status read from the wrong CPU"
+    );
+    let cpu_if = cpu_interface_for(cpu).expect("prepared GICv3 CPU-interface slot disappeared");
+    BoundIrqStatus {
+        enabled: Some(cpu_if.is_irq_enable(intid)),
+        pending: Some(cpu_if.is_pending(intid)),
+        in_service: Some(cpu_if.is_active(intid)),
+    }
 }
 
 pub fn irq_set_affinity(
@@ -284,8 +316,11 @@ fn init_cpu_interface(cpu_idx: usize) -> Result<(), &'static str> {
 
 fn current_cpu_interface() -> Result<&'static CpuInterface, crate::irq::IrqError> {
     let cpu = crate::cpu::runtime_current_cpu().ok_or(crate::irq::IrqError::InvalidCpu)?;
-    let slot = cpu_interface_slot(cpu.0).ok_or(crate::irq::IrqError::InvalidCpu)?;
-    slot.get().ok_or(crate::irq::IrqError::InvalidCpu)
+    cpu_interface_for(cpu).ok_or(crate::irq::IrqError::InvalidCpu)
+}
+
+fn cpu_interface_for(cpu: irq_framework::CpuId) -> Option<&'static CpuInterface> {
+    cpu_interface_slot(cpu.0)?.get()
 }
 
 fn cpu_interface_slot(cpu_idx: usize) -> Option<&'static CpuInterfaceSlot> {

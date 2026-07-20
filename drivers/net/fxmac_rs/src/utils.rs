@@ -167,8 +167,6 @@ mod arch {
     }
 }
 
-use alloc::boxed::Box;
-
 pub use arch::*;
 
 // 纳秒(ns)
@@ -199,56 +197,6 @@ pub(crate) fn usdelay(us: u64) {
 // 毫秒(ms)
 pub(crate) fn msdelay(ms: u64) {
     usdelay(ms * 1000);
-}
-
-/// 虚拟地址转换成物理地址
-#[linkage = "weak"]
-#[unsafe(export_name = "virt_to_phys_fxmac")]
-pub(crate) fn virt_to_phys(addr: usize) -> usize {
-    debug!("fxmac: virt_to_phys_fxmac {:#x}", addr);
-    addr
-}
-
-/// 物理地址转换成虚拟地址
-#[linkage = "weak"]
-#[unsafe(export_name = "phys_to_virt_fxmac")]
-pub(crate) fn phys_to_virt(addr: usize) -> usize {
-    debug!("fxmac: phys_to_virt_fxmac {:#x}", addr);
-    addr
-}
-
-/// 申请DMA连续内存页
-#[linkage = "weak"]
-#[unsafe(export_name = "dma_alloc_coherent_fxmac")]
-pub(crate) fn dma_alloc_coherent(pages: usize) -> (usize, usize) {
-    let paddr: Box<[u32]> = if pages == 1 {
-        Box::new([0; 1024]) // 4096
-    } else if pages == 8 {
-        Box::new([0; 1024 * 8]) // 4096
-    } else {
-        warn!("Alloc {} pages failed", pages);
-        Box::new([0; 1024])
-    };
-
-    let len = paddr.len();
-
-    let paddr = Box::into_raw(paddr) as *const u32 as usize;
-    // let vaddr = phys_to_virt(paddr);
-    let vaddr = paddr;
-    debug!("fxmac: dma alloc paddr: {:#x}, len={}", paddr, len);
-
-    (vaddr, paddr)
-}
-
-/// 释放DMA内存页
-#[linkage = "weak"]
-#[unsafe(export_name = "dma_free_coherent_fxmac")]
-pub(crate) fn dma_free_coherent(vaddr: usize, pages: usize) {
-    debug!("fxmac: dma free vaddr: {:#x}, pages={}", vaddr, pages);
-    let palloc = vaddr as *mut [u32; 1024];
-    unsafe {
-        drop(Box::from_raw(palloc));
-    }
 }
 
 // 路由中断到指定的cpu，或所有的cpu

@@ -88,8 +88,8 @@ fn x86_irq_route_is_not_registered_while_parsing_vm_configuration() {
         .find("register_x86_qemu_block_irq_route")
         .expect("the guest IRQ route must be registered in the same transaction");
     let reserve_action = prepare
-        .find("reserve_x86_qemu_block_irq_action")
-        .expect("the post-commit transaction must reserve the guest IRQ action");
+        .find("validate_x86_qemu_block_irq_source")
+        .expect("the post-commit transaction must validate the guest IRQ source");
     assert!(
         validate < pci_prepare && pci_prepare < register && register < reserve_action,
         "host ownership must be detached and masked before the guest action claims the IRQ"
@@ -112,7 +112,8 @@ fn x86_irq_activation_failure_stays_in_the_vm_run_transaction() {
     );
     assert!(
         activation.contains("request required x86 IOAPIC forwarding IRQ action")
-            && activation.contains("Err(error) if required"),
+            && activation.contains("fn register_ioapic_forwarding_actions")
+            && activation.contains("Err(error) =>"),
         "a required host IRQ action failure must fail first-run preparation"
     );
     let exclusive_request = host_irq
@@ -126,7 +127,7 @@ fn x86_irq_activation_failure_stays_in_the_vm_run_transaction() {
         activation.contains("request_exclusive_irq_disabled")
             && exclusive_request.contains("AutoEnable::No")
             && !exclusive_request.contains("ShareMode::Shared"),
-        "post-commit reservation must own an exclusive disabled action until route activation"
+        "the fixed vCPU owner must install one exclusive disabled action before route activation"
     );
     assert!(
         activation.contains("restore_ioapic_forwarding_enable_publication"),

@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject initialization before completion IRQ delivery is bound, serialize
   reset cleanup against the IRQ endpoint, and mask both controller and IDMAC
   sources before recovery.
+- Model the split IRQ endpoint/control pair as one exclusive live lease. Drop
+  releases only synchronized software ownership, and the source becomes
+  reusable only after both halves have retired; activation generations remain
+  monotonic so stale rearm tokens continue to fail closed.
 
 ## [0.3.2](https://github.com/rcore-os/tgoskits/compare/phytium-mci-host-v0.3.1...phytium-mci-host-v0.3.2) - 2026-07-08
 

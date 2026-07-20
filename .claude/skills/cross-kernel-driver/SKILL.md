@@ -7,7 +7,7 @@ description: Create, refactor, review, and optimize portable Rust driver crates 
 
 ## Overview
 
-Use this skill to keep reusable driver crates portable across Rust kernels by separating stable hardware logic from OS API coupling. The target shape is: Driver Core owns registers, descriptors, bounded state machines, queues, and events; Capability Boundary owns MMIO, DMA, IRQ, queue, and typed ownership contracts; OS Glue owns probe, iomap/remap, IRQ registration, and task scheduling; Runtime owns shared workqueues, blocking facades, request tables, and recovery orchestration. For IRQ-driven devices, prefer an explicit runtime split into control, IRQ handler, and queue endpoints so each endpoint has one clear owner and synchronization contract.
+Use this skill to keep reusable driver crates portable across Rust kernels by separating stable hardware logic from OS API coupling. The target shape is: Driver Core owns registers, descriptors, bounded state machines, queues, and events; Capability Boundary owns MMIO, DMA, IRQ, queue, and typed ownership contracts; OS Glue owns probe, iomap/remap, IRQ registration, and task scheduling; Runtime owns CPU-pinned maintenance domains, blocking facades, request tables, and recovery orchestration. Generic shared workqueues remain available for unrelated short work, but one stateful IRQ device is advanced by exactly one non-migratable maintenance thread. For IRQ-driven devices, prefer an explicit runtime split into control, IRQ handler, and queue endpoints so each endpoint has one clear owner and synchronization contract.
 
 For nontrivial driver design or refactoring, read `references/architecture.md` before editing.
 
@@ -19,12 +19,12 @@ For nontrivial driver design or refactoring, read `references/architecture.md` b
 4. Add new driver crates to workspace `members` and `[workspace.dependencies]` when they are meant to be consumed by this repo.
 5. For ArceOS/dynamic-platform integration, keep adapters in the existing platform module names such as `platforms/axplat-dyn/src/drivers/blk`, even if the reusable crate lives under `drivers/block`.
 6. Use small capability traits or API objects instead of a monolithic `KernelHal`. Split MMIO, DMA, IRQ event, queue contract, and wake/poll boundaries.
-7. Model queues as independent running units. For block I/O, transfer an owned request with `submit_owned`, consume only IRQ-produced event batches with `service_events`, and return retained ownership only after a typed DMA-quiescence proof.
-8. For IRQ-driven devices, keep control, IRQ handler, and queue endpoints separate. The control endpoint owns startup/config/service operations; the IRQ endpoint synchronizes hardware events; queue endpoints submit/reclaim work using queue-local state.
-9. Move lifetime-sensitive IRQ handler endpoints into the registered IRQ callback when possible. Prefer `FnMut`/boxed callback ownership or an equivalent OS registration token over sharing the IRQ handler through `Arc<Mutex<_>>`.
-10. IRQ handlers should acknowledge and snapshot hardware events into preallocated queue-local state; bounded workers advance requests without locking the IRQ handler or re-reading shared/destructive IRQ status. Completion timers are watchdogs, never polling fallbacks.
-11. Make IRQ paths return a typed outcome, normally `handle_irq(&mut self) -> IrqOutcome`. Distinguish an unhandled shared line, an acknowledged event, and an explicitly deferred destructive acknowledgement. OS Glue schedules the affected queue's fixed work item; hard IRQ code does not call arbitrary wakers or callbacks.
-12. When IRQ and task paths share mutable driver state, look for an explicit exclusion protocol: task-side mutation masks the exact interrupt source before taking the lock, while IRQ only touches pre-registered stable state. Document the lifetime/safety contract; otherwise prefer atomics/pending bits plus a deferred worker.
+7. Model queues as independent running units. For block I/O, transfer an owned request with `submit_owned`, consume only IRQ-produced event batches with `service_events`, and return retained ownership only after a typed DMA-quiescence proof. Hardware queue methods are called only by their maintenance owner; remote submitters publish owned requests to its ingress mailbox.
+8. For IRQ-driven devices, keep control, IRQ handler, and queue endpoints separate. The maintenance thread owns startup/config/service and queue operations; the registered IRQ callback owns the IRQ endpoint; non-owner callers see only request/completion facades.
+9. Move lifetime-sensitive IRQ handler endpoints into the registered IRQ callback. The maintenance thread must register its own callback after pinning itself and the IRQ affinity to the same CPU. Do not create an action on one CPU for a worker on another CPU, and do not share the handler through a remotely callable `Arc<Mutex<_>>`.
+10. IRQ handlers acknowledge and snapshot hardware events into a preallocated maintenance mailbox, then use a saved local IRQ wake for their owner thread. IRQ event and fault values must be plain `Copy` data with no destructor or hidden allocation ownership. The owner advances requests without re-reading shared/destructive IRQ status. Completion timers are watchdogs, never polling fallbacks.
+11. Make IRQ paths implement `IrqEndpoint::capture` and `contain`. Distinguish an unhandled shared line, an acknowledged stable event, and a contained or uncontained fault. Lock contention is an ownership bug, not an event and not a deferred acknowledgement request.
+12. When IRQ and owner-task paths share mutable register state, keep both on one CPU. Owner-task mutation briefly disables local IRQs; the hard handler touches only the pre-registered stable object. Document this exclusion contract. Other CPUs communicate by mailbox and ordinary scheduler wake/IPI, never by synchronous register-owner calls.
 13. Validate the changed crate with formatting and targeted clippy before finishing.
 
 For exclusive passthrough, disabling an OS IRQ action is not ownership
@@ -60,13 +60,20 @@ action or relax share/affinity compatibility to make the guest registration fit.
 
 Use `&mut self` APIs where exclusive access is the natural contract. Do not require callers to provide an OS lock as part of the portable abstraction. If only the IRQ callback should call a handler, make that visible in the type shape: move the handler into the callback and expose `handle(&mut self, ...)` instead of making the handler a clonable shared object.
 
-For block-device integration in ArceOS, expose portable block drivers through `rdif_block::Interface` and `rdif_block::IQueue`. Keep queue creation, tags, DMA wait policy, shared workers, watchdogs, and IRQ registration in `ax-runtime`; the portable boundary transfers `OwnedRequest` values and exposes an IRQ-owned endpoint with `handle_irq(&mut self) -> IrqOutcome`. Hardware discovery must not issue reset/identify commands: expose `ControllerInitEndpoint::Pending` and let the runtime bind IRQ actions before polling the bounded initialization FSM. Capacity and queues are published only after `Ready`.
+For block-device integration in ArceOS, expose portable block drivers through `rdif_block::Interface` and its owned queue API. Keep queue creation, tags, DMA wait policy, maintenance threads, watchdogs, and IRQ registration in `ax-runtime`; the portable boundary transfers `OwnedRequest` values and exposes an IRQ-owned `rdif_irq::IrqEndpoint`. Hardware discovery must not issue reset/identify commands: expose a pending controller initialization endpoint and let the final maintenance owner bind IRQ actions before advancing the bounded initialization FSM. Capacity and queues are published only after `Ready`.
 
 Prefer small interfaces:
 
 ```rust
-pub trait IrqHandle {
-    fn handle_irq(&mut self) -> IrqOutcome;
+pub trait IrqEndpoint {
+    type Event;
+    type Fault;
+
+    fn capture(&mut self) -> IrqCapture<Self::Event, Self::Fault>;
+    fn contain(
+        &mut self,
+        cause: ContainmentCause,
+    ) -> Result<MaskedSource, Self::Fault>;
 }
 
 pub trait IQueue {
@@ -84,23 +91,27 @@ pub trait IQueue {
 }
 ```
 
-IRQ handlers should identify/clear the interrupt source and extract a stable event. They should not allocate, block, run slow paths, or hold broad locks. If a destructive acknowledgement cannot be taken without waiting, return the explicit deferred outcome; the affinity worker must acknowledge and classify it before inspecting completion state. Keep the principle visible during reviews: "interrupts capture state; bounded workers advance flow" (`中断只捕获状态，有界 worker 推进流程`).
+IRQ handlers should identify/clear the interrupt source and extract a stable event. They should not allocate, block, run slow paths, or hold broad locks. If the endpoint cannot capture safely, it must mask the precise device source or report an uncontained fault so OS glue can fail closed. Keep the principle visible during reviews: "interrupts capture state; one bounded owner thread advances flow" (`中断只捕获状态，单一有界维护线程推进流程`).
 
 For runtime designs with richer state, prefer returning split parts:
 
 ```rust
 pub struct DeviceParts {
-    pub control: Arc<ControlPort>,
+    pub control: ControlPort,
     pub irq: IrqHandler,
     pub queues: QueueSet,
 }
 ```
 
-Register `irq` by moving it into the OS IRQ callback. Let task/worker code hold `control` and queue endpoints, not the IRQ handler itself.
+Move the complete parts into the selected maintenance thread. That thread registers `irq` into the callback on its own CPU, then exclusively owns `control` and queue endpoints until explicit close.
+
+For a composite network device such as AIC-over-SDIO, do not create a firmware, RX, TX, or "AIC maintenance" thread inside the portable driver crate. The portable aggregate owner retains the bus transport, firmware/device state machines, queue endpoints, and IRQ capture endpoint as one physical-controller bundle. OS glue moves that bundle into one generic network maintenance domain whose fixed owner registers the host/controller IRQ. Firmware initialization and queue service run as bounded transitions in that same owner; they do not embed an OS waker, task API, or workqueue in the driver.
+
+The runtime's move-only IRQ action token must participate in maintenance close accounting even when its callback captures no wake capability. Detach and reattach transfer the same live count; only successful explicit close releases it. Dropping an active or detached token without close is fail-closed quarantine, not an implicit teardown or permission to release the owner's CPU lease.
 
 When a driver intentionally shares registries or queue maps between task setup and IRQ completion paths, prefer an xHCI-style exclusion protocol over taking the same spinlock in IRQ: task context masks the same device interrupter/MSI source before mutation; IRQ context does not take that lock and only touches entries whose lifetime was established before interrupts were enabled. This avoids same-lock IRQ reentry deadlocks, but it does not make allocation, blocking, arbitrary wakers, or unrelated OS callbacks safe in hard IRQ.
 
-For split queue designs, do not make an IRQ handler lock a queue mutex that task context can hold. If IRQ and queues share one hardware register block, put exclusive register access behind one short, non-blocking core/gate, let the IRQ endpoint be the sole reader/clearer of shared or destructive IRQ status, and fan out results into independent per-queue completion state. `service_events` consumes the stable snapshot; it must never become a hidden completion poll.
+For split queue designs, do not make an IRQ handler lock a queue mutex that task context can hold. If IRQ and queues share one hardware register block, put exclusive register access behind one same-CPU, non-blocking owner/gate and let the IRQ endpoint be the sole reader/clearer of shared or destructive IRQ status. The callback publishes only a stable event; the maintenance thread alone fans it into per-queue completion state. `service_events` consumes that snapshot and must never become a hidden completion poll.
 
 ## Validation
 

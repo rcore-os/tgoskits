@@ -1,12 +1,18 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use ax_std::os::arceos::task::WakeResult;
+
 use super::{
     activation::{
         IoApicForwardingEnablePublication, activate_ready_ioapic_forwarding_batch_for_test,
         activate_ready_ioapic_forwarding_route_for_test, publish_ioapic_forwarding_owner,
-        restore_ioapic_forwarding_enable_publication, revoke_ioapic_forwarding_routes,
+        register_test_ioapic_forwarding_action, restore_ioapic_forwarding_enable_publication,
+        revoke_ioapic_forwarding_routes,
     },
-    handler::should_rearm_forwarded_host_gsi_after_eoi,
+    handler::{
+        forwarded_irq_return_after_wake, publish_forwarded_ioapic_irq_fact,
+        should_rearm_forwarded_host_gsi_after_eoi,
+    },
     state::*,
 };
 use crate::InterruptTriggerMode;
@@ -87,6 +93,24 @@ fn fallback_registration_skips_host_irq_owned_by_explicit_route() {
 }
 
 #[test]
+fn exclusive_forwarding_action_rejects_an_aliased_guest_route() {
+    with_clean_forwarding_routes(|| {
+        let first_guest_gsi = 17;
+        let second_guest_gsi = 18;
+        let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 10);
+        register_ioapic_irq_forwarding_route(first_guest_gsi, host_irq).unwrap();
+        super::validate_ioapic_irq_forwarding_source(first_guest_gsi).unwrap();
+        register_ioapic_irq_forwarding_route(second_guest_gsi, host_irq).unwrap();
+
+        let error = super::validate_ioapic_irq_forwarding_source(second_guest_gsi)
+            .expect_err("one host action cannot be shared by two guest routes");
+
+        assert!(matches!(error, crate::AxVmError::ResourceConflict { .. }));
+        assert!(IOAPIC_IRQ_HANDLES[second_guest_gsi].lock().is_none());
+    });
+}
+
+#[test]
 fn forwarding_trigger_mode_comes_from_registered_route_not_gsi_number() {
     with_clean_forwarding_routes(|| {
         let low_level_gsi = COM1_GSI;
@@ -119,6 +143,7 @@ fn forwarding_activation_waits_for_guest_route_and_runs_once() {
         let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 10);
         ACTIVATION_COUNT.store(0, Ordering::Release);
         register_ioapic_irq_forwarding_route(guest_gsi, host_irq).unwrap();
+        register_test_ioapic_forwarding_action(guest_gsi).unwrap();
         super::register_ioapic_irq_forwarding_activation(
             guest_gsi,
             test_operations(count_activation),
@@ -140,12 +165,40 @@ fn forwarding_activation_waits_for_guest_route_and_runs_once() {
 }
 
 #[test]
+fn forwarding_activation_requires_a_retained_action_handle() {
+    with_clean_forwarding_routes(|| {
+        let guest_gsi = 18;
+        let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 10);
+        register_ioapic_irq_forwarding_route(guest_gsi, host_irq).unwrap();
+        super::register_ioapic_irq_forwarding_activation(
+            guest_gsi,
+            test_operations(count_activation),
+        )
+        .unwrap();
+
+        let error = activate_ready_ioapic_forwarding_route_for_test(guest_gsi, true)
+            .expect_err("activation without the generation-owned action must fail closed");
+
+        assert!(matches!(error, crate::AxVmError::Interrupt { .. }));
+        assert!(matches!(
+            *IOAPIC_FORWARDING_ROUTES[guest_gsi].lock(),
+            IoApicForwardingRouteState::Prepared(_)
+        ));
+        assert_eq!(
+            IOAPIC_IRQ_ACTIVATED.load(Ordering::Acquire) & gsi_bit(guest_gsi),
+            0
+        );
+    });
+}
+
+#[test]
 fn forwarding_activation_drops_pre_activation_pending_state() {
     with_clean_forwarding_routes(|| {
         let guest_gsi = 18;
         let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 10);
         ACTIVATION_COUNT.store(0, Ordering::Release);
         register_ioapic_irq_forwarding_route(guest_gsi, host_irq).unwrap();
+        register_test_ioapic_forwarding_action(guest_gsi).unwrap();
         super::register_ioapic_irq_forwarding_activation(
             guest_gsi,
             test_operations(count_activation),
@@ -168,6 +221,7 @@ fn failed_forwarding_activation_remains_prepared_and_masked() {
         let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 10);
         ACTIVATION_COUNT.store(0, Ordering::Release);
         register_ioapic_irq_forwarding_route(guest_gsi, host_irq).unwrap();
+        register_test_ioapic_forwarding_action(guest_gsi).unwrap();
         super::register_ioapic_irq_forwarding_activation(
             guest_gsi,
             test_operations(fail_activation),
@@ -201,12 +255,13 @@ fn failed_forwarding_activation_remains_prepared_and_masked() {
 }
 
 #[test]
-fn host_irq_enable_failure_remasks_the_activated_device_endpoint() {
+fn action_enable_failure_remasks_the_activated_device_endpoint() {
     with_clean_forwarding_routes(|| {
         let guest_gsi = 18;
         let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 10);
         TEST_DEVICE_ENDPOINT_UNMASKED.store(false, Ordering::Release);
         register_ioapic_irq_forwarding_route(guest_gsi, host_irq).unwrap();
+        register_test_ioapic_forwarding_action(guest_gsi).unwrap();
         super::register_ioapic_irq_forwarding_activation(
             guest_gsi,
             IoApicForwardingActivationOps::new(
@@ -215,7 +270,7 @@ fn host_irq_enable_failure_remasks_the_activated_device_endpoint() {
             ),
         )
         .unwrap();
-        fail_next_host_irq_enable_for_test();
+        fail_next_forwarding_action_enable_for_test();
 
         activate_ready_ioapic_forwarding_route_for_test(guest_gsi, true)
             .expect_err("host IRQ enable failure must abort route activation");
@@ -234,12 +289,13 @@ fn failed_device_revoke_quarantines_route_without_repeating_activation() {
         let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 10);
         ACTIVATION_COUNT.store(0, Ordering::Release);
         register_ioapic_irq_forwarding_route(guest_gsi, host_irq).unwrap();
+        register_test_ioapic_forwarding_action(guest_gsi).unwrap();
         super::register_ioapic_irq_forwarding_activation(
             guest_gsi,
             IoApicForwardingActivationOps::new(count_activation, fail_device_revoke),
         )
         .unwrap();
-        fail_next_host_irq_enable_for_test();
+        fail_next_forwarding_action_enable_for_test();
 
         activate_ready_ioapic_forwarding_route_for_test(guest_gsi, true)
             .expect_err("failed device revoke must fail route activation");
@@ -273,6 +329,7 @@ fn failed_activation_batch_rolls_back_only_routes_activated_by_that_batch() {
         TEST_REVOKED_GSIS.store(0, Ordering::Release);
 
         register_ioapic_irq_forwarding_route(existing_gsi, existing_irq).unwrap();
+        register_test_ioapic_forwarding_action(existing_gsi).unwrap();
         super::register_ioapic_irq_forwarding_activation(
             existing_gsi,
             IoApicForwardingActivationOps::new(count_activation, revoke_existing_test_route),
@@ -282,12 +339,14 @@ fn failed_activation_batch_rolls_back_only_routes_activated_by_that_batch() {
         let existing_bit = gsi_bit(existing_gsi);
 
         register_ioapic_irq_forwarding_route(first_gsi, first_irq).unwrap();
+        register_test_ioapic_forwarding_action(first_gsi).unwrap();
         super::register_ioapic_irq_forwarding_activation(
             first_gsi,
             IoApicForwardingActivationOps::new(count_activation, revoke_first_test_route),
         )
         .unwrap();
         register_ioapic_irq_forwarding_route(failing_gsi, failing_irq).unwrap();
+        register_test_ioapic_forwarding_action(failing_gsi).unwrap();
         super::register_ioapic_irq_forwarding_activation(
             failing_gsi,
             IoApicForwardingActivationOps::new(fail_activation, revoke_failing_test_route),
@@ -468,6 +527,49 @@ fn forwarded_intx_rearms_host_line_when_guest_eoi_has_no_deferred_level() {
     assert!(should_rearm_forwarded_host_gsi_after_eoi(Some(pending)));
 }
 
+#[test]
+fn hard_irq_publication_requests_exact_action_disable() {
+    with_clean_forwarding_routes(|| {
+        let guest_gsi = 18;
+        let host_irq = crate::arch::x86_64::host_irq::make_irq_id(2, 10);
+        register_ioapic_irq_forwarding_route_with_trigger(
+            guest_gsi,
+            host_irq,
+            InterruptTriggerMode::LevelTriggered,
+        )
+        .unwrap();
+        register_test_ioapic_forwarding_action(guest_gsi).unwrap();
+        publish_ioapic_forwarding_owner(7, 0);
+
+        let published = publish_forwarded_ioapic_irq_fact(
+            guest_gsi,
+            host_irq,
+            0,
+            crate::arch::x86_64::host_irq::IrqContext {
+                irq: host_irq,
+                cpu: irq_framework::CpuId(0),
+            },
+        );
+        let result = forwarded_irq_return_after_wake(WakeResult::Notified);
+
+        assert!(published);
+        assert_eq!(
+            result,
+            crate::arch::x86_64::host_irq::IrqReturn::DisableActionAndWake
+        );
+        assert_eq!(
+            forwarded_ioapic_gsi_state(guest_gsi),
+            (true, true, true),
+            "the IRQ fact and action-disabled publication must commit before returning"
+        );
+        assert_eq!(
+            forwarded_irq_return_after_wake(WakeResult::Unavailable),
+            crate::arch::x86_64::host_irq::IrqReturn::MaskLineAndWake,
+            "an unavailable owner must leave the full physical line quenched"
+        );
+    });
+}
+
 fn count_activation() -> crate::AxVmResult {
     ACTIVATION_COUNT.fetch_add(1, Ordering::AcqRel);
     Ok(())
@@ -526,7 +628,7 @@ fn mark_forwarded_ioapic_gsi_state(guest_gsi: usize) {
         let bit = gsi_bit(guest_gsi);
         IOAPIC_IRQ_PENDING.fetch_or(bit, Ordering::AcqRel);
         IOAPIC_IRQ_PENDING_LEVEL.fetch_or(bit, Ordering::AcqRel);
-        IOAPIC_IRQ_MASKED.fetch_or(bit, Ordering::AcqRel);
+        IOAPIC_IRQ_ACTION_DISABLED.fetch_or(bit, Ordering::AcqRel);
     }
 }
 
@@ -539,7 +641,7 @@ fn forwarded_ioapic_gsi_state(guest_gsi: usize) -> (bool, bool, bool) {
     (
         IOAPIC_IRQ_PENDING.load(Ordering::Acquire) & bit != 0,
         IOAPIC_IRQ_PENDING_LEVEL.load(Ordering::Acquire) & bit != 0,
-        IOAPIC_IRQ_MASKED.load(Ordering::Acquire) & bit != 0,
+        IOAPIC_IRQ_ACTION_DISABLED.load(Ordering::Acquire) & bit != 0,
     )
 }
 
@@ -550,6 +652,14 @@ fn with_clean_forwarding_routes(test: impl FnOnce()) {
 }
 
 fn reset_forwarding_routes() {
+    for slot in &IOAPIC_IRQ_HANDLES {
+        let handle = slot.lock().take();
+        if let Some(handle) = handle {
+            crate::arch::x86_64::host_irq::free_irq(handle)
+                .expect("test forwarding action must retain its generation-owned handle");
+        }
+    }
+    crate::arch::x86_64::host_irq::reset_test_irq_enable_state();
     for host_irq in &IOAPIC_HOST_IRQS {
         host_irq.store(INVALID_RAW_IRQ, Ordering::Release);
     }
@@ -557,13 +667,17 @@ fn reset_forwarding_routes() {
     IOAPIC_HOST_IRQ_LEVEL_TRIGGERED.store(0, Ordering::Release);
     IOAPIC_IRQ_PENDING.store(0, Ordering::Release);
     IOAPIC_IRQ_PENDING_LEVEL.store(0, Ordering::Release);
-    IOAPIC_IRQ_MASKED.store(0, Ordering::Release);
+    IOAPIC_IRQ_ACTION_DISABLED.store(0, Ordering::Release);
+    IOAPIC_IRQ_OWNER_BOUND.store(0, Ordering::Release);
+    IOAPIC_IRQ_OWNER_CPU.store(usize::MAX, Ordering::Release);
+    IOAPIC_IRQ_OWNER_THREAD_ID.store(u64::MAX, Ordering::Release);
     IOAPIC_IRQ_ACTIVATED.store(0, Ordering::Release);
+    reset_forwarding_action_enable_failure_for_test();
     IOAPIC_IRQ_FORWARDING_ENABLED.store(false, Ordering::Release);
+    IOAPIC_IRQ_HOOK_REGISTERED.store(false, Ordering::Release);
     IOAPIC_IRQ_FORWARD_VM_ID.store(usize::MAX, Ordering::Release);
     IOAPIC_IRQ_FORWARD_VCPU_ID.store(usize::MAX, Ordering::Release);
     IOAPIC_ROUTE_TRANSACTION_ACTIVE.store(false, Ordering::Release);
-    crate::arch::x86_64::host_irq::reset_test_irq_enable_state();
     for route in &IOAPIC_FORWARDING_ROUTES {
         *route.lock() = IoApicForwardingRouteState::Vacant;
     }

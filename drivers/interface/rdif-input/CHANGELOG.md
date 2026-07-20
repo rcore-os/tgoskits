@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace the driver-side `handle_irq` hook with capture-only IRQ events and
+  explicit fail-closed source containment for CPU-pinned OS maintenance owners.
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/rdif-input-v0.1.2...rdif-input-v0.2.0) - 2026-06-22
 
 ### Added

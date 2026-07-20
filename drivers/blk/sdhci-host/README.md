@@ -53,8 +53,9 @@ let mut host = unsafe { Sdhci::new(mmio) };
 // 1.8 V support are installed here before the protocol layer owns the host.
 // OS glue moves this endpoint into its registered IRQ action before the
 // initialization FSM is allowed to issue its first card command.
-let _registered_irq = host.irq_endpoint();
-host.enable_completion_irq();
+let irq_source = host.take_irq_source().expect("unique SDHCI IRQ source");
+let (_capture_endpoint, _owner_control) = irq_source.into_parts();
+sdmmc_protocol::sdio::host::SdioHost::enable_completion_irq(&mut host)?;
 
 let card = SdioSdmmc::new_host2_timed(host);
 let mut init = OwnedSdioInit::new(card, CardInitPreference::SdFirst);
@@ -63,7 +64,7 @@ let InitPoll::Pending(schedule) = init.poll_init(InitInput::at(0)) else {
 };
 // Re-enter only for `schedule.run_again`, an acknowledged controller IRQ, or
 // at `schedule.wake_at_ns`. An OS normally drives this through
-// `sdmmc_protocol::rdif::StagedBlockDevice` and its shared worker pool.
+// `sdmmc_protocol::rdif::StagedBlockDevice` from the fixed maintenance owner.
 # let _ = schedule;
 # Ok::<(), sdmmc_protocol::Error>(())
 ```
@@ -94,12 +95,12 @@ state machine.
 IRQ-owned submission checks the command/data inhibit bits once as an admission
 condition. A busy engine rejects the request before ADMA registers are changed;
 the accepted request is never parked for timer-driven re-submission. Subsequent
-worker service consumes only the snapshot published by the IRQ endpoint, while
+maintenance-thread service consumes only the snapshot published by the IRQ endpoint, while
 the watchdog can only fail the request and enter recovery.
 
 Low-level raw-pointer FIFO/ADMA primitives are `unsafe`: the caller must retain
-the allocation and prevent conflicting accesses even if the request moves to
-another worker. Safe protocol calls retain the Rust buffer borrow, while
+the allocation and prevent conflicting accesses while ownership is handed to
+the controller maintenance thread. Safe protocol calls retain the Rust buffer borrow, while
 `sdhci_host::rdif::fifo_config` publishes an owned, IRQ-only PIO queue for
 controllers such as BCM2835 that do not expose a usable ADMA2 path. Every
 accepted RDIF request retains its `CpuDmaBuffer` until terminal completion or

@@ -47,9 +47,13 @@ pub use ax_plat_macros::secondary_main;
 | `TimeIf` | `time.rs` | `current_ticks`、`ticks_to_nanos`、`nanos_to_ticks`、`epochoffset_nanos`，`irq` 下还有 `irq_num`/`set_oneshot_timer` |
 | `PowerIf` | `power.rs` | `system_off`、`system_reset`、`cpu_num`，`smp` 下 `cpu_boot(cpu_id, stack_top_paddr)` |
 | `IrqIf` | `irq.rs` | `set_enable`、`set_affinity`、`handle`、`send_ipi`、`ipi_irq`、`resolve_source`、`resolve_percpu` |
-| `LoongArchHvIrqIf` | `irq/loongarch64_hv.rs` | 虚拟中断注入 / guest IRQ 路由（仅 LoongArch hypervisor） |
 
 `IrqIf` 是体量最大的模块（`irq.rs` 约 470 行），它把 `irq_framework` 的整套 API 都 re-export，并维护一个静态的 `Registry<PlatIrqOps>`（`spin::Once` 包裹）。`PlatIrqOps` 是 `IrqOps` 的实现，桥接到平台层 `current_cpu`、`cpu_online`、`in_irq_context`、`local_irq_save`/`restore`、`run_on_cpu_sync`、`set_enabled`、`set_affinity` 等运行时事实。
+
+Guest IRQ 路由不属于平台 trait。平台只解析和完成 host controller
+transaction；AxVM 使用 `irq-framework` 的 generation-bearing `IrqHandle`
+注册独占 action，并在固定 vCPU owner 线程中完成注入、rearm 与撤销。平台层
+不得在 host action 返回 `Unhandled` 后旁路注入 guest。
 
 ### IRQ domain 常量
 

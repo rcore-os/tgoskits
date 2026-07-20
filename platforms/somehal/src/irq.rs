@@ -17,6 +17,9 @@ use rdrive::{Device, DeviceId};
 
 #[cfg(target_arch = "riscv64")]
 pub use crate::arch::{RiscvPlicIrqEndpoint, RiscvPlicLeaseId};
+pub use crate::irq_line::{
+    BoundIrqStatus, bound_irq_status, prepare_irq_line, release_irq_line, set_bound_irq_enabled,
+};
 use crate::{arch::Plat, common::PlatOp};
 
 /// CPU-local interrupt domain for architecture trap causes such as timers/IPIs.
@@ -253,12 +256,6 @@ pub fn intc_by_domain(domain: IrqDomainId) -> Result<Device<Intc>, IrqError> {
     rdrive::get::<Intc>(domain.owner).map_err(|_| IrqError::Unsupported)
 }
 
-pub fn set_controller_irq_enabled(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
-    let intc = intc_by_domain(irq.domain)?;
-    let mut intc = intc.try_lock().map_err(|_| IrqError::Busy)?;
-    intc.set_enabled(irq.hwirq, enabled)
-}
-
 #[must_use = "dropping ActiveIrq completes the interrupt in the interrupt controller"]
 pub struct ActiveIrq {
     inner: <Plat as PlatOp>::ActiveIrq,
@@ -402,15 +399,6 @@ pub fn irq_setup_by_fdt(irq_parent: DeviceId, irq_cell: &[u32]) -> Result<IrqId,
 )))]
 pub fn irq_setup_by_fdt(irq_parent: DeviceId, irq_cell: &[u32]) -> Result<IrqId, IrqError> {
     setup_irq_by_fdt(irq_parent, irq_cell)
-}
-
-pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError> {
-    debug!("Setting IRQ {:?} enable to {}", irq, enable);
-    Plat::irq_set_enable(parent_irq_for_leaf(irq).unwrap_or(irq), enable)
-}
-
-pub fn irq_set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError> {
-    Plat::irq_set_affinity(parent_irq_for_leaf(irq).unwrap_or(irq), affinity)
 }
 
 /// Resolves and permanently leases one RISC-V PLIC source for a fixed IRQ-side

@@ -17,8 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   absolute wake deadlines and proof-gated DMA reclamation.
 - Fail closed the direct `SdioHost` bus-operation compatibility path so card
   initialization cannot enter legacy synchronous reset/clock helpers.
-- Replace the task-side register spin gate with a non-blocking `Busy` result
-  and cap each FIFO IRQ continuation at 64 words.
+- Transfer one exclusive live controller IRQ lease as split capture/control
+  capabilities, release it only after both synchronized halves retire, remove
+  the register-lock/deferred-acknowledgement path, and require a CPU-pinned
+  maintenance owner to rearm generation-checked FIFO sources after each
+  bounded 64-word service pass.
 - Use caller-supplied absolute monotonic deadlines for reset/clock bus states;
   runtime aborts now retain request and DMA ownership until typed lifecycle
   quiescence instead of entering a synchronous controller reset.

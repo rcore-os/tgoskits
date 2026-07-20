@@ -41,22 +41,6 @@ impl DetachedIrqAction {
         self.action.prepare_for_reattach(id);
         Box::into_raw(self.action)
     }
-
-    /// Reclaims an action that a failed reattach transaction unlinked.
-    ///
-    /// # Safety
-    ///
-    /// `action` must come from [`DetachedIrqAction::into_registered_raw`], be
-    /// disabled and drained, and no registry descriptor or dispatch reader may
-    /// retain the pointer.
-    pub(crate) unsafe fn from_registered_raw(
-        config: DetachedActionConfig,
-        action: *mut Action,
-    ) -> Self {
-        let mut action = unsafe { Box::from_raw(action) };
-        action.prepare_for_detached_storage();
-        Self::new(config, action)
-    }
 }
 
 impl fmt::Debug for DetachedIrqAction {

@@ -1,47 +1,85 @@
 extern crate alloc;
 
-use alloc::{format, vec::Vec};
+#[cfg(feature = "nvme")]
+use alloc::format;
+use alloc::vec::Vec;
+#[cfg(feature = "nvme")]
+use core::ops::Range;
 
 use log::warn;
+#[cfg(feature = "nvme")]
+use pcie::MsixTableInfo;
 use pcie::{Endpoint, MsixTableRegion};
-use rdif_msi::{Msi, MsiAllocation, MsiRequest};
-use rdrive::{
-    DeviceId,
-    probe::{OnProbeError, pci::PciInfo},
-};
+use rdif_msi::{Msi, MsiAllocation};
+use rdrive::DeviceId;
+#[cfg(feature = "nvme")]
+use rdrive::probe::{OnProbeError, pci::PciInfo};
 
+#[cfg(feature = "nvme")]
+use super::routing::{
+    PciMsiTarget, msi_provider_lookup_error, msi_target_for_endpoint, msix_probe_error,
+};
 use super::{
-    routing::{msi_provider_lookup_error, msi_target_for_endpoint, msix_probe_error},
+    quarantine::{PciMsiQuarantineReason, PciMsiQuarantineReservation},
     transaction::{
-        MsixSetupRollbackStep, binding_error, binding_info_from_msi_vectors_with_host_resources,
-        disable_provider_vectors, enable_vector_bindings, mask_vector_table_entries,
-        provider_access_error, provider_access_fault, provider_vector_fault,
-        retain_failed_lease_resources, retain_failed_setup_resources, rollback_msix_setup_steps,
-        set_table_masked, table_vector_fault,
+        binding_error, disable_provider_vectors, enable_vector_bindings, mask_vector_table_entries,
+        provider_access_error, provider_access_fault, provider_vector_fault, set_table_masked,
+        table_vector_fault,
     },
 };
+#[cfg(feature = "nvme")]
+use crate::binding_resolver::binding_info_from_pci_endpoint_resources;
 use crate::{
     BindingInfo, BindingIrqBinding, IrqBindingError, IrqBindingFailure, IrqBindingOperation,
-    IrqBindingStage, binding_resolver::binding_info_from_pci_endpoint_resources,
+    IrqBindingStage,
 };
 
 pub struct PciIrqLease {
-    provider: DeviceId,
-    allocation: Option<MsiAllocation>,
-    binding: BindingInfo,
-    table: MsixTableRegion,
-    table_mmio: Option<mmio_api::Mmio>,
-    endpoint: Option<Endpoint>,
+    pub(super) provider: DeviceId,
+    pub(super) allocation: Option<MsiAllocation>,
+    pub(super) binding: BindingInfo,
+    pub(super) table: MsixTableRegion,
+    pub(super) table_mmio: Option<mmio_api::Mmio>,
+    pub(super) endpoint: Option<Endpoint>,
+    pub(super) quarantine: Option<PciMsiQuarantineReservation>,
 }
 
 pub type PciMsixAllocation = PciIrqLease;
 
+/// Read-only MSI-X facts collected while the PCI probe still owns the endpoint.
+#[cfg(feature = "nvme")]
+pub(crate) struct PciMsixPreflight {
+    pub(super) info: PciInfo,
+    pub(super) target: PciMsiTarget,
+    pub(super) vector_count: u16,
+    pub(super) table_info: MsixTableInfo,
+    pub(super) table_range: Range<usize>,
+    pub(super) host_resources: BindingInfo,
+}
+
+/// Ownership result of a failed MSI-X activation transaction.
+#[cfg(feature = "nvme")]
+pub(crate) enum PciMsixActivationFailure {
+    /// Hardware-visible changes were fully rolled back, so probing may restore
+    /// the endpoint and report the ordinary activation error.
+    Returned {
+        endpoint: Endpoint,
+        error: OnProbeError,
+    },
+    /// Some hardware owner remains retained in the named quarantine registry.
+    /// The probe framework must treat the endpoint as permanently claimed.
+    Claimed { error: OnProbeError },
+}
+
 impl PciIrqLease {
-    pub fn allocate(
-        endpoint: &mut Endpoint,
+    /// Validates every read-only MSI-X prerequisite before endpoint ownership
+    /// leaves the PCI probe slot.
+    #[cfg(feature = "nvme")]
+    pub(crate) fn preflight(
+        endpoint: &Endpoint,
         info: PciInfo,
         vector_count: u16,
-    ) -> Result<Self, OnProbeError> {
+    ) -> Result<PciMsixPreflight, OnProbeError> {
         let host_resources = binding_info_from_pci_endpoint_resources(info, endpoint)?;
         let target = msi_target_for_endpoint(info)?;
         let table_info = endpoint.msix_table_info().map_err(msix_probe_error)?;
@@ -56,146 +94,19 @@ impl PciIrqLease {
 
         let provider = rdrive::get::<Msi>(target.provider)
             .map_err(|err| msi_provider_lookup_error(info.address, target.provider, err))?;
-        let mut provider = provider
-            .lock()
-            .map_err(|_| OnProbeError::other("failed to lock MSI provider"))?;
-        let mut allocation = Some(
+        drop(
             provider
-                .allocate(MsiRequest::new(target.device, vector_count))
-                .map_err(|err| {
-                    OnProbeError::other(format!(
-                        "failed to allocate {vector_count} MSI-X vectors for {}: {err:?}",
-                        info.address
-                    ))
-                })?,
-        );
-        let binding = binding_info_from_msi_vectors_with_host_resources(
-            allocation
-                .as_ref()
-                .ok_or_else(|| OnProbeError::other("MSI-X allocation was not retained"))?
-                .vectors(),
-            &host_resources,
+                .lock()
+                .map_err(|_| OnProbeError::other("failed to lock MSI provider"))?,
         );
 
-        let mut table_mmio =
-            match axklib::mmio::ioremap(table_range.start.into(), table_range.len()) {
-                Ok(mapping) => Some(mapping),
-                Err(error) => {
-                    if let Some(allocation) = allocation.take()
-                        && let Err(free_error) = provider.free(allocation)
-                    {
-                        warn!(
-                            "failed to free MSI-X allocation for {} after table-map failure: \
-                             {free_error:?}",
-                            info.address
-                        );
-                    }
-                    return Err(OnProbeError::other(format!(
-                        "failed to map MSI-X table: {error}"
-                    )));
-                }
-            };
-        let table = unsafe {
-            MsixTableRegion::new(
-                table_mmio
-                    .as_ref()
-                    .expect("MSI-X table mapping was just installed")
-                    .as_nonnull_ptr(),
-                table_info.entries,
-            )
-        };
-
-        let setup = (|| -> Result<(), OnProbeError> {
-            endpoint
-                .set_msix_function_mask(true)
-                .map_err(msix_probe_error)?;
-            {
-                let allocation_ref = allocation
-                    .as_ref()
-                    .ok_or_else(|| OnProbeError::other("MSI-X allocation was already consumed"))?;
-                for vector in allocation_ref.vectors() {
-                    let message = provider.compose_message(vector).map_err(|err| {
-                        OnProbeError::other(format!(
-                            "failed to compose MSI-X message for {} vector {:?}: {err:?}",
-                            info.address, vector.index
-                        ))
-                    })?;
-                    table
-                        .program_masked(vector.index.0, message)
-                        .map_err(msix_probe_error)?;
-                    provider.set_vector_enabled(vector, false).map_err(|err| {
-                        OnProbeError::other(format!("failed to disable MSI vector: {err:?}"))
-                    })?;
-                }
-            }
-            endpoint.set_msix_enabled(true).map_err(msix_probe_error)?;
-            // Every entry is still masked and every provider vector disabled.
-            // Clear the temporary function-wide setup barrier so the lease can
-            // later publish vectors solely through its transactional path.
-            endpoint
-                .set_msix_function_mask(false)
-                .map_err(msix_probe_error)?;
-            Ok(())
-        })();
-
-        if let Err(setup_error) = setup {
-            let rollback_complete = {
-                let vectors = allocation
-                    .as_ref()
-                    .expect("MSI-X allocation remains owned during setup rollback")
-                    .vectors();
-                rollback_msix_setup_steps(vectors, |step| {
-                    let result = match step {
-                        MsixSetupRollbackStep::FunctionMask => endpoint
-                            .set_msix_function_mask(true)
-                            .map_err(|_| "function mask"),
-                        MsixSetupRollbackStep::TableEntry(vector) => {
-                            table.mask(vector.index.0).map_err(|_| "table entry mask")
-                        }
-                        MsixSetupRollbackStep::ProviderVector(vector) => provider
-                            .set_vector_enabled(vector, false)
-                            .map_err(|_| "provider vector disable"),
-                        MsixSetupRollbackStep::DisableCapability => endpoint
-                            .set_msix_enabled(false)
-                            .map_err(|_| "capability disable"),
-                    };
-                    if let Err(stage) = result {
-                        warn!(
-                            "MSI-X setup rollback for {} failed at {stage}",
-                            info.address
-                        );
-                    }
-                    result
-                })
-            };
-
-            if rollback_complete {
-                if let Some(allocation) = allocation.take()
-                    && let Err(error) = provider.free(allocation)
-                {
-                    warn!(
-                        "failed to free MSI-X allocation for {} after setup rollback: {error:?}",
-                        info.address
-                    );
-                }
-            } else {
-                retain_failed_setup_resources(&mut allocation, &mut table_mmio);
-                warn!(
-                    "MSI-X setup rollback for {} was incomplete; retaining vector allocation and \
-                     table mapping",
-                    info.address
-                );
-            }
-            return Err(setup_error);
-        }
-
-        Ok(Self {
-            provider: target.provider,
-            allocation,
-            binding,
-            table,
-            table_mmio,
-            endpoint: None,
+        Ok(PciMsixPreflight {
+            info,
+            target,
+            vector_count,
+            table_info,
+            table_range,
+            host_resources,
         })
     }
 
@@ -209,17 +120,6 @@ impl PciIrqLease {
 
     pub fn vector_indices(&self) -> Vec<u16> {
         self.vectors().iter().map(|vector| vector.index.0).collect()
-    }
-
-    /// Binds the successfully discovered PCI function to this IRQ lease.
-    ///
-    /// The endpoint remains exclusively owned until IRQ shutdown succeeds. A
-    /// failed shutdown quarantines it with the vector and table resources.
-    #[cfg(feature = "nvme")]
-    pub(crate) fn retain_endpoint(mut self, endpoint: Endpoint) -> Self {
-        debug_assert!(self.endpoint.is_none());
-        self.endpoint = Some(endpoint);
-        self
     }
 
     /// Enables every allocated MSI-X vector as one transaction.
@@ -328,6 +228,24 @@ impl PciIrqLease {
             .map(MsiAllocation::vectors)
             .unwrap_or(&[])
     }
+
+    fn retain_quarantined_resources(
+        &mut self,
+        allocation: MsiAllocation,
+        reason: PciMsiQuarantineReason,
+    ) {
+        self.quarantine
+            .take()
+            .expect("live MSI-X lease retains one quarantine reservation")
+            .retain(
+                allocation,
+                self.table_mmio.take(),
+                self.endpoint
+                    .take()
+                    .expect("live MSI-X lease retains its PCI endpoint"),
+                reason,
+            );
+    }
 }
 
 impl crate::IrqBindingLease for PciIrqLease {
@@ -359,11 +277,11 @@ impl Drop for PciIrqLease {
             }
         }
         if vector_disable_error.is_some() || capability_disable_failed {
-            retain_failed_lease_resources(
-                &mut self.allocation,
-                &mut self.table_mmio,
-                &mut self.endpoint,
-            );
+            let allocation = self
+                .allocation
+                .take()
+                .expect("live MSI-X lease retains its vector allocation");
+            self.retain_quarantined_resources(allocation, PciMsiQuarantineReason::LeaseContainment);
             if let Some(error) = vector_disable_error {
                 warn!(
                     "failed to disable MSI-X vectors before release; endpoint-wide containment \
@@ -380,13 +298,48 @@ impl Drop for PciIrqLease {
         }
 
         let Some(allocation) = self.allocation.take() else {
+            self.quarantine
+                .take()
+                .expect("live MSI-X lease retains one quarantine reservation")
+                .release();
             return;
         };
-        if let Ok(provider) = rdrive::get::<Msi>(self.provider)
-            && let Ok(mut provider) = provider.lock()
-            && let Err(err) = provider.free(allocation)
-        {
-            warn!("failed to free MSI-X allocation: {err:?}");
+        let provider = match rdrive::get::<Msi>(self.provider) {
+            Ok(provider) => provider,
+            Err(error) => {
+                warn!("failed to find MSI provider during lease release: {error:?}");
+                self.retain_quarantined_resources(
+                    allocation,
+                    PciMsiQuarantineReason::ProviderRelease,
+                );
+                return;
+            }
+        };
+        let mut provider = match provider.lock() {
+            Ok(provider) => provider,
+            Err(error) => {
+                warn!("failed to lock MSI provider during lease release: {error:?}");
+                self.retain_quarantined_resources(
+                    allocation,
+                    PciMsiQuarantineReason::ProviderRelease,
+                );
+                return;
+            }
+        };
+        match provider.free(allocation) {
+            Ok(()) => self
+                .quarantine
+                .take()
+                .expect("live MSI-X lease retains one quarantine reservation")
+                .release(),
+            Err(failure) => {
+                let (allocation, error) = failure.into_parts();
+                warn!("failed to free MSI-X allocation: {error:?}");
+                self.retain_quarantined_resources(
+                    allocation,
+                    PciMsiQuarantineReason::ProviderRelease,
+                );
+            }
         }
     }
 }

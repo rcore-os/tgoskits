@@ -11,7 +11,7 @@ Keep this mapping:
 - Driver Core: registers, register access order, state machine, descriptor format, queue logic, request completion, event extraction.
 - Capability Boundary: OS Trait / Driver Trait seam for MMIO, DMA, IRQ event, queue contract, wake boundary.
 - OS Glue: probe, remap/iomap, IRQ registration, FDT/ACPI/PCI discovery, thread or worker spawn, OS wakeup APIs.
-- Runtime: shared workers, request tables, blocking facades, watchdogs, and recovery orchestration.
+- Runtime: CPU-pinned maintenance domains, request tables, blocking facades, watchdogs, and recovery orchestration. Generic shared workers do not advance stateful device queues.
 
 Do not pursue one big `KernelHal` in production code. Split by lifetime and semantics: MMIO, DMA, IRQ, task progression, and queues usually have different owners and hot paths.
 
@@ -53,7 +53,7 @@ For block devices on the dynamic platform path, the integration path is:
 - expose queues as `rdif_block::IQueue` with owned submission and IRQ-event service
 - expose discovery-to-ready hardware work as a bounded `ControllerInitEndpoint`
 - register boxed `rdif_block::Interface` devices through the ArceOS driver glue and `rdrive`
-- keep tags, waiters, shared workqueues, watchdogs, recovery, and IRQ registration in `ax-runtime`
+- keep tags, waiters, CPU-pinned maintenance threads, watchdogs, recovery, and IRQ registration in `ax-runtime`
 
 Keep `rdrive` coupling in this adapter layer or behind an explicit adapter feature. Portable driver core should not need to know how `rdrive` probes or registers devices.
 
@@ -129,15 +129,22 @@ Check every DMA path for:
 
 Portable IRQ handling should answer "what happened?" OS Glue answers "how should execution continue?"
 
-Use an IRQ endpoint that extracts a stable event. When the endpoint has mutable runtime state, prefer `&mut self` and let the OS IRQ registration own the endpoint:
+Use an IRQ endpoint that extracts a stable event and can fail closed at its exact device source. When the endpoint has mutable runtime state, prefer `&mut self` and let the OS IRQ registration own the endpoint:
 
 ```rust
-pub trait IrqHandle {
-    fn handle_irq(&mut self) -> IrqOutcome;
+pub trait IrqEndpoint {
+    type Event;
+    type Fault;
+
+    fn capture(&mut self) -> IrqCapture<Self::Event, Self::Fault>;
+    fn contain(
+        &mut self,
+        cause: ContainmentCause,
+    ) -> Result<MaskedSource, Self::Fault>;
 }
 ```
 
-For stateless raw event extractors, `handle_irq(&self)` or a free function can still be appropriate. Do not make a stateful IRQ endpoint clonable merely so registration code can keep a pointer to it.
+For stateless raw event extractors, a free function can still be appropriate. Do not make a stateful IRQ endpoint clonable merely so registration code can keep a pointer to it.
 
 `Event` should identify:
 
@@ -153,29 +160,32 @@ The IRQ fast path should:
 - return a stable event object
 - avoid blocking, long work, and broad locks
 
-OS Glue publishes events into a fixed ring and coalesces the queue's fixed work item. Completion timers report timeout and enter recovery; they never inspect device completion state.
+OS Glue publishes events into a fixed mailbox and wakes the same-CPU maintenance owner through a pre-saved local IRQ wake. Completion timers report timeout and wake that owner; they never inspect device completion state.
 
 ### IRQ Callback Ownership Pattern
 
 If an IRQ handler endpoint is only meaningful inside the registered interrupt callback, encode that in ownership:
 
 ```rust
+let owner = pin_current_cpu()?;
 let mut irq = parts.irq;
-request_irq(irq_number, Box::new(move |ctx| {
-    let event = irq.handle_irq(ctx);
-    publish_event(event)
-}));
+let registration = registrar.register(irq_number, move |ctx| {
+    let capture = irq.capture();
+    publish_and_wake_local(ctx, capture)
+})?;
 ```
 
 Use the target kernel's equivalent of a boxed `FnMut` callback, registration token, or owned closure. The important property is not the allocation mechanism; it is that the IRQ framework owns the handler for the registration lifetime and calls it non-reentrantly. This gives the handler a single mutation site without `Arc<Mutex<_>>`, raw pointer lifetime tricks, or public APIs that unrelated task code can call.
 
 When applying this pattern:
 
+- Register from the maintenance thread after its CPU lease is live, with IRQ affinity fixed to that same CPU.
 - Register with a non-reentrant IRQ execution contract if the callback mutates captured state.
+- Count the move-only IRQ action itself as a live maintenance capability, independently of any wake or endpoint captured by its closure. Active-to-detached-to-reattached transitions transfer that one capability; only a successful explicit action close releases it. An implicit drop must quarantine the domain without releasing the CPU lease.
 - Drop the captured handler when the IRQ action is freed, after in-flight callbacks are synchronized.
-- Keep hard-IRQ work small: read/ack status, update queue-local state, and publish a minimal event or pending bit.
-- Do not capture OS objects that require allocation, sleeping locks, broad poll-set locks, or file/device-manager callbacks in hard IRQ. Use an IRQ-safe notify or deferred worker bridge instead.
-- Keep task-side service/config methods on a separate control endpoint. If they also touch registers, protect them with the same owner CPU, local IRQ exclusion, device interrupt mask, or documented borrow gate that prevents IRQ reentry.
+- Keep hard-IRQ work small: read/ack status, update only endpoint-local capture/mask generation, and publish a minimal stable event into the fixed mailbox. Queue state belongs to the maintenance thread.
+- Do not capture OS objects that require allocation, sleeping locks, broad poll-set locks, or file/device-manager callbacks in hard IRQ. Publish into the fixed maintenance mailbox and use only its saved local-owner wake.
+- Keep task-side service/config methods on a separate control endpoint owned only by the maintenance thread. If they also touch registers, protect them with same-owner CPU local IRQ exclusion or a documented borrow gate that prevents IRQ reentry. Remote callers submit messages; they never call the endpoint directly.
 
 This ownership model is useful beyond serial ports: block completion queues, network RX/TX interrupt endpoints, input devices, accelerators, and mailbox controllers all benefit when "the IRQ handler" is not a shared runtime object.
 
@@ -195,30 +205,30 @@ never solve the conflict by weakening descriptor compatibility.
 For IRQ-driven runtime drivers, split runtime ownership into three endpoint families:
 
 ```text
-Control endpoint  -> startup, shutdown, config, service/deferred drain
-IRQ endpoint      -> hard-IRQ event extraction and queue-local state publication
+Control endpoint  -> startup, shutdown, config, bounded service and rearm
+IRQ endpoint      -> hard-IRQ event extraction, acknowledgement, and containment
 Queue endpoints   -> submit and consume only synchronized IRQ/event state
 ```
 
 The split keeps each synchronization question local:
 
-- Control endpoint: owned by task/worker context; may call slow OS services through OS Glue. It can perform deferred drain/service after an IRQ-safe notify.
-- IRQ endpoint: owned by IRQ registration; reads and clears shared/destructive IRQ status and writes only pre-allocated completion state.
-- Queue endpoint: owned by the runtime user or protected by the OS runtime's queue lock; consumes queue-local permits/completions/errors without borrowing the IRQ endpoint.
+- Control endpoint: owned by exactly one CPU-pinned maintenance thread; may call slow OS services through OS Glue outside IRQ context.
+- IRQ endpoint: owned by IRQ registration; reads and clears shared/destructive IRQ status, maintains only its capture/mask generation, and emits stable Copy events. It does not complete requests or mutate queue state.
+- Queue endpoint: owned only by the CPU-pinned maintenance thread; consumes mailbox events and advances permits, completions, errors, submission, and recovery without borrowing the IRQ endpoint. Remote runtime users submit owned requests to the domain ingress instead of calling it.
 
 Return these parts explicitly from constructors:
 
 ```rust
 pub struct DeviceParts<Q> {
-    pub control: Arc<ControlPort>,
+    pub control: ControlPort,
     pub irq: IrqHandler,
     pub queues: Q,
 }
 ```
 
-Prefer putting OS-side locks around queue endpoints in OS Glue or the consumer runtime, not in the portable driver core. The portable crate should express what needs exclusive access; the OS chooses `SpinNoIrq`, mutexes, futures, per-CPU routing, or worker serialization.
+Move all parts into the selected maintenance thread before registration. The callback takes ownership of `irq`; the thread retains `control` and queues. If task and IRQ paths overlap one register block, OS glue may use a same-CPU local-IRQ exclusion cell, but it must not expose that cell as a remotely callable driver object.
 
-Review smell: if task code calls `irq.handle_irq()` directly, if IRQ code locks the same queue mutex as task context, or if queues call a raw `poll_status()` that can clear another queue's event, the endpoint split is not yet enforcing the intended model.
+Review smell: if task code calls `irq.capture()` directly, if IRQ code locks a remotely accessible queue mutex, or if queues call a raw `poll_status()` that can clear another queue's event, the endpoint split is not yet enforcing the intended model.
 
 ### IRQ/Task Exclusion Pattern
 
@@ -243,8 +253,9 @@ This protocol prevents the classic deadlock where task context holds a spinlock,
 gets interrupted by the same device, and the IRQ handler tries to acquire the
 same lock. It is narrower than "IRQ-safe" in general: it does not make arbitrary
 wakers, heap allocation, sleeping locks, or unrelated subsystem locks safe in a
-hard IRQ. If the driver cannot prove this protocol, use atomics/pending bits and
-an OS Glue deferred worker instead.
+hard IRQ. If the driver cannot prove this protocol, fail activation and redesign
+the endpoint split. Lock contention is not a valid IRQ event and must not create
+a deferred acknowledgement path.
 
 ### IRQ/Queue Isolation Pattern
 
@@ -252,9 +263,9 @@ For devices with split runtime endpoints, treat the IRQ handle as a state synchr
 
 - Give the IRQ handle its own endpoint object, separate from TX/RX queues, completion queues, block queues, network rings, or accelerator engines.
 - Let the IRQ handle be the only runtime path that reads and clears shared or destructive interrupt/status registers. Queue-side code should not rediscover readiness by peeking the same global register, because that can clear or consume another queue's event.
-- Fan out IRQ results into queue-local completion state, for example per-queue atomics, bitmaps, counters, or pending lists. The state should name the affected queue or engine and preserve errors separately from readiness.
+- Encode the affected queue or engine and errors in the stable IRQ event. Only the maintenance thread fans those facts into queue-local completion state; the callback must not race the queue owner by doing that fan-out itself.
 - Keep TX/RX, submit/completion, or per-queue completion states independent even when hardware reports them in one combined status register. Split combined status immediately in the IRQ endpoint before queue code observes it.
-- If an IRQ arrives while another context owns the raw register block, return an explicit deferred-ack outcome and coalesce a fixed queue work item. That worker acknowledges and classifies the source before inspecting completion state; never label it as an already acknowledged completion.
+- An IRQ must never arrive while a remote or sleepable context owns the raw register block. Same-CPU owner access disables the precise local/device source before mutation. Violation is a containment fault, not a retry request.
 - Keep raw driver event snapshots close to hardware semantics. Put OS wakeups, task scheduling, and per-queue completion ownership in the adapter/runtime layer above the raw register code.
 
 ## Queue/Runtime Pattern
@@ -264,17 +275,17 @@ Model queues as independent running units. This matches network TX/RX queues, NV
 Common block actions:
 
 - `submit_owned`
-- `service_events` from an acknowledged or explicitly deferred IRQ snapshot
+- `service_events` from an acknowledged IRQ snapshot
 - `reclaim_after_quiesce` with a typed generation/controller proof
 - `shutdown` only after ownership has already returned
 
-The runtime first tries direct dispatch where the driver permits it, otherwise stages on a per-CPU software context. Each hardware queue owns one coalescing work item, but shared per-CPU normal/high-priority worker pools execute those items; a queue does not permanently consume a thread.
+Every hardware request first transfers into the owning maintenance domain. A tagged queue may keep several requests in flight and a serialized queue may keep one, but only that domain's pinned thread calls the driver. Independent hctx/vector domains may use separate threads; queues that share one IRQ/control state remain in one domain.
 
 Avoid a single global `Driver::poll` if the hardware naturally exposes multiple queues or engines. Avoid a "big object + big lock + callbacks" shape unless the device is truly that simple.
 
 In an IRQ-driven split design, queue operations consume synchronized queue-local state:
 
-- `service_events` may consume only the event snapshot routed to that queue. It must not read or clear global hardware IRQ status except for an event explicitly marked as deferred acknowledgement.
+- `service_events` may consume only the event snapshot routed to that queue. It must not read or clear global hardware IRQ status or retry a destructive acknowledgement.
 - Queue `submit`/`try_write` should consume that queue's own permits or descriptor budget and then program only the register path needed to advance that queue.
 - Queue `reclaim`/`try_read` should consume that queue's own completion or error state. Do not let one queue consume another queue's event because a shared register reported combined status.
 - If a hardware status register reports multiple queues or directions in one destructive read, split that status immediately in the IRQ/event layer and store independent queue-local state before any queue code runs.
@@ -283,7 +294,7 @@ In an IRQ-driven split design, queue operations consume synchronized queue-local
 
 For a block queue adapter, align portable queue state with `rdif_block::IQueue`:
 
-- `QueueInfo` exposes block size, alignment, DMA mask, watchdog, completion kind, and dispatch mode.
+- `QueueInfo` exposes block size, alignment, DMA mask, watchdog, completion kind, and `QueueExecution::{Inline, Serialized, Tagged}`.
 - `submit_owned(id, request)` either returns the complete request inline or transfers ownership exactly once.
 - `service_events(events, sink)` consumes bounded IRQ evidence and emits terminal `CompletedRequest` values.
 - timeout/cancel does not return DMA ownership; recovery must first produce `DmaQuiesced` for the matching controller epoch.
@@ -299,8 +310,8 @@ For a block queue adapter, align portable queue state with `rdif_block::IQueue`:
 
 - Prefer `&mut self` for externally visible operations that require exclusive access.
 - Do not make OS locks part of the portable Driver Trait.
-- Do not take a blocking mutex from an IRQ handler when task context can hold the same mutex. Use a non-blocking borrow gate, try-lock with explicit pending state, or a small atomic/interrupt-safe state handoff.
-- Use internal locks only for short non-IRQ critical sections such as pending flags or small status updates. In IRQ context, prefer atomics, per-queue pending bits, or an explicit deferred drain path.
+- Do not take a blocking mutex from an IRQ handler when task context can hold the same mutex. Use the same-CPU owner and local-IRQ exclusion contract or split the endpoint state.
+- Use internal locks only for short non-IRQ critical sections such as pending flags or small status updates. In IRQ context, prefer atomics, fixed mailboxes, and local owner wakeups.
 - Do not hide IRQ endpoint sharing behind `Arc<Mutex<_>>` or `Arc<SpinLock<_>>` when the endpoint can instead be moved into the IRQ callback. Shared locks make it too easy for task context to call or hold the same state the hard IRQ needs.
 - If task and IRQ contexts share a lock-protected registry, require the IRQ/task
   exclusion protocol above: mask the same interrupt source before task-side
@@ -308,8 +319,9 @@ For a block queue adapter, align portable queue state with `rdif_block::IQueue`:
   cannot race lifetime or structure changes.
 - When one raw register block is shared by several queues or endpoints, centralize mutable register access in one core object. Wrap it in `UnsafeCell` or another narrow unsafe primitive only in the adapter/runtime layer, document the exclusion rule, and avoid exposing unsynchronized raw access to queues.
 - Separate synchronization ownership from hardware logic. The raw driver should expose register-level primitives and stable event snapshots; the runtime/adapter should decide how IRQ, queues, pending state, and wakeups are synchronized.
+- Treat a composite device and its transport as one physical ownership bundle when they share control state or IRQ affinity. For example, AIC Wi-Fi over SDIO exposes firmware/device FSM, RX/TX queues, and an IRQ event endpoint, while OS glue supplies one generic network maintenance domain. The portable crate must not spawn device-specific threads or retain OS wakers/workqueue handles.
 - Keep `unsafe` in callback bridges, MMIO construction, and DMA glue boundaries where possible.
-- Do slow work in bounded task/worker context, not in IRQ context. Do not introduce a normal-I/O polling context as a fallback.
+- Do slow work in the bounded maintenance-thread loop, not in IRQ context. Do not introduce a normal-I/O polling context as a fallback.
 
 ## Review Checklist
 
@@ -322,5 +334,5 @@ For a block queue adapter, align portable queue state with `rdif_block::IQueue`:
 - Are control, IRQ handler, and queue endpoints separated with clear owners?
 - Do queues consume queue-local synchronized state rather than re-reading shared/destructive IRQ registers?
 - Does each accepted request reach exactly one terminal completion, with DMA ownership returned only through the declared inline/IRQ and quiescence contracts?
-- Does discovery defer the first hardware command until worker and IRQ actions are bound, and does every pending initialization state name `run_again`, IRQ sources, or an absolute deadline?
+- Does discovery defer the first hardware command until the maintenance owner and IRQ actions are bound, and does every pending initialization state name `run_again`, IRQ sources, or an absolute deadline?
 - Did validation include `cargo fmt` and targeted `cargo xtask clippy --package <crate>`?

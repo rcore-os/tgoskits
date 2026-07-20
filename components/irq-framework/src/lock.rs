@@ -1,4 +1,7 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    marker::PhantomData,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use crate::IrqOps;
 
@@ -29,6 +32,37 @@ impl MetadataLock {
         self.locked.store(false, Ordering::Release);
         ops.local_irq_restore(state);
     }
+
+    pub(crate) fn guard<'a, O: IrqOps>(&'a self, ops: &'a O) -> MetadataGuard<'a, O> {
+        MetadataGuard {
+            lock: self,
+            ops,
+            state: Some(self.lock(ops)),
+            _not_send: PhantomData,
+        }
+    }
+}
+
+/// RAII ownership of an IRQ-disabled metadata or controller transition lock.
+///
+/// The marker prevents a saved local IRQ state from being restored on another
+/// CPU. Drop is intentionally the only unlock path so an early `?` cannot
+/// strand the lock or leave local interrupts disabled.
+pub(crate) struct MetadataGuard<'a, O: IrqOps> {
+    lock: &'a MetadataLock,
+    ops: &'a O,
+    state: Option<O::LocalIrqState>,
+    _not_send: PhantomData<*mut ()>,
+}
+
+impl<O: IrqOps> Drop for MetadataGuard<'_, O> {
+    fn drop(&mut self) {
+        let state = self
+            .state
+            .take()
+            .expect("metadata lock guard released twice");
+        self.lock.unlock(self.ops, state);
+    }
 }
 
 #[cfg(test)]
@@ -36,7 +70,9 @@ mod tests {
     use core::cell::Cell;
 
     use super::*;
-    use crate::{CpuId, IrqError};
+    use crate::{
+        CpuId, IrqAffinity, IrqError, IrqLineBinding, IrqLineControl, IrqScope, PreparedIrqLine,
+    };
 
     struct NonCopyIrqState;
 
@@ -78,26 +114,19 @@ mod tests {
             Ok(())
         }
 
-        fn set_enabled(
+        fn prepare_line(
             &self,
-            _irq: crate::IrqId,
-            _cpu: Option<CpuId>,
-            _enabled: bool,
-        ) -> Result<(), IrqError> {
-            Ok(())
+            irq: crate::IrqId,
+            _scope: IrqScope,
+            _affinity: IrqAffinity,
+        ) -> Result<PreparedIrqLine, IrqError> {
+            Ok(PreparedIrqLine::new(
+                IrqLineBinding::new(irq.hwirq.0, 1).unwrap(),
+                IrqLineControl::Maskable,
+            ))
         }
 
-        fn is_enabled(&self, _irq: crate::IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-            Ok(true)
-        }
-
-        fn is_pending(&self, _irq: crate::IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-            Ok(false)
-        }
-
-        fn is_in_service(&self, _irq: crate::IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-            Ok(false)
-        }
+        fn set_line_enabled(&self, _binding: IrqLineBinding, _cpu: Option<CpuId>, _enabled: bool) {}
 
         fn relax(&self) {
             core::hint::spin_loop();

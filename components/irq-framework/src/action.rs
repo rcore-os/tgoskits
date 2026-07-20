@@ -5,23 +5,21 @@ use core::{
 };
 
 use crate::{
-    BoxedIrqHandler, ConcurrentBoxedIrqHandler, CpuId, CpuMask, IrqContext, IrqDrainWake, IrqError,
+    BoxedIrqHandler, ConcurrentBoxedIrqHandler, CpuId, IrqContext, IrqDrainWake, IrqError,
     IrqExecution, IrqRequest, IrqReturn, IrqScope, types::IrqHandler,
 };
 
 const ENABLED_BIT: usize = 1 << (usize::BITS - 1);
 const ACTIVE_MASK: usize = !ENABLED_BIT;
 
-struct QuenchState {
-    global: AtomicBool,
+struct AtomicCpuMask {
     cpu_low: AtomicU64,
     cpu_high: AtomicU64,
 }
 
-impl QuenchState {
+impl AtomicCpuMask {
     const fn new() -> Self {
         Self {
-            global: AtomicBool::new(false),
             cpu_low: AtomicU64::new(0),
             cpu_high: AtomicU64::new(0),
         }
@@ -57,15 +55,30 @@ impl QuenchState {
     }
 
     fn clear(&self) {
-        self.global.store(false, Ordering::Release);
         self.cpu_low.store(0, Ordering::Release);
         self.cpu_high.store(0, Ordering::Release);
     }
 
     fn is_empty(&self) -> bool {
-        !self.global.load(Ordering::Acquire)
-            && self.cpu_low.load(Ordering::Acquire) == 0
-            && self.cpu_high.load(Ordering::Acquire) == 0
+        self.cpu_low.load(Ordering::Acquire) == 0 && self.cpu_high.load(Ordering::Acquire) == 0
+    }
+}
+
+struct QuenchState {
+    global: AtomicBool,
+    cpus: AtomicCpuMask,
+}
+
+impl QuenchState {
+    const fn new() -> Self {
+        Self {
+            global: AtomicBool::new(false),
+            cpus: AtomicCpuMask::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.global.load(Ordering::Acquire) && self.cpus.is_empty()
     }
 }
 
@@ -86,22 +99,17 @@ pub(crate) struct Action {
     drain_epoch: AtomicU64,
     drain_wake: AtomicPtr<IrqDrainWake>,
     drain_notifying: AtomicBool,
-    continuation_epoch: AtomicU64,
-    continuation_active: AtomicU64,
     pub(crate) detached: AtomicBool,
     pub(crate) running: AtomicBool,
-    pending_enable: UnsafeCell<CpuMask>,
     quench: QuenchState,
+    locally_disabled: AtomicCpuMask,
     pub(crate) next: *mut Action,
 }
 
 // Boxed callbacks are owned by the registered action and only called after the
 // NonReentrant run guard succeeds, so the handler UnsafeCell is not mutably
-// aliased by framework dispatch. `pending_enable` is read or mutated only
-// while the registry metadata lock is held, except after the action has been
-// detached and the caller has unique `Box<Action>` ownership. `quench` is
-// atomic because dispatch must observe CPU-local quench ownership without
-// taking the metadata lock.
+// aliased by framework dispatch. `quench` is atomic because dispatch must
+// observe CPU-local quench ownership without taking the metadata lock.
 unsafe impl Send for Action {}
 unsafe impl Sync for Action {}
 
@@ -128,45 +136,23 @@ impl Action {
             drain_epoch: AtomicU64::new(0),
             drain_wake: AtomicPtr::new(ptr::null_mut()),
             drain_notifying: AtomicBool::new(false),
-            continuation_epoch: AtomicU64::new(0),
-            continuation_active: AtomicU64::new(0),
             detached: AtomicBool::new(false),
             running: AtomicBool::new(false),
-            pending_enable: UnsafeCell::new(CpuMask::empty()),
             quench: QuenchState::new(),
+            locally_disabled: AtomicCpuMask::new(),
             next: ptr::null_mut(),
         }
     }
 
-    pub(crate) fn pending_enable_contains(&self, cpu: CpuId) -> bool {
-        unsafe { (&*self.pending_enable.get()).contains(cpu) }
-    }
-
-    pub(crate) fn insert_pending_enable(&self, cpu: CpuId) {
-        unsafe { (&mut *self.pending_enable.get()).insert(cpu) };
-    }
-
-    pub(crate) fn remove_pending_enable(&self, cpu: CpuId) {
-        unsafe { (&mut *self.pending_enable.get()).remove(cpu) };
-    }
-
-    pub(crate) fn clear_pending_enable_all(&self) {
-        unsafe { *self.pending_enable.get() = CpuMask::empty() };
-    }
-
-    pub(crate) fn record_quench(&self, cpu: CpuId) -> Result<(), IrqError> {
-        match self.scope {
-            IrqScope::Global => self.quench.global.store(true, Ordering::Release),
-            IrqScope::PerCpu { cpus } if cpus.contains(cpu) => {
-                self.quench.insert_cpu(cpu)?;
+    pub(crate) fn record_quench(&self, cpu: Option<CpuId>) -> Result<(), IrqError> {
+        match (self.scope, cpu) {
+            (IrqScope::Global, _) => self.quench.global.store(true, Ordering::Release),
+            (IrqScope::PerCpu { cpus }, Some(cpu)) if cpus.contains(cpu) => {
+                self.quench.cpus.insert_cpu(cpu)?;
             }
-            IrqScope::PerCpu { .. } => return Err(IrqError::InvalidCpu),
+            (IrqScope::PerCpu { .. }, _) => return Err(IrqError::InvalidCpu),
         }
         Ok(())
-    }
-
-    pub(crate) fn release_quench_all(&self) {
-        self.quench.clear();
     }
 
     pub(crate) fn release_global_quench(&self) {
@@ -174,49 +160,19 @@ impl Action {
     }
 
     pub(crate) fn release_cpu_quench(&self, cpu: CpuId) -> Result<(), IrqError> {
-        self.quench.remove_cpu(cpu)
+        self.quench.cpus.remove_cpu(cpu)
     }
 
     pub(crate) fn quench_applies(&self, cpu: Option<CpuId>) -> bool {
         match (self.scope, cpu) {
-            (IrqScope::Global, None) => self.quench.global.load(Ordering::Acquire),
-            (IrqScope::PerCpu { .. }, Some(cpu)) => self.quench.contains_cpu(cpu),
+            (IrqScope::Global, _) => self.quench.global.load(Ordering::Acquire),
+            (IrqScope::PerCpu { .. }, Some(cpu)) => self.quench.cpus.contains_cpu(cpu),
             _ => false,
         }
     }
 
     pub(crate) fn has_quench(&self) -> bool {
         !self.quench.is_empty()
-    }
-
-    pub(crate) fn begin_continuation(&self) -> Result<u64, IrqError> {
-        if !matches!(self.scope, IrqScope::Global)
-            || self.continuation_active.load(Ordering::Acquire) != 0
-        {
-            return Err(IrqError::Busy);
-        }
-        let epoch = self
-            .continuation_epoch
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
-                epoch.checked_add(1)
-            })
-            .map_err(|_| IrqError::Busy)?
-            + 1;
-        self.continuation_active
-            .compare_exchange(0, epoch, Ordering::Release, Ordering::Acquire)
-            .map_err(|_| IrqError::Busy)?;
-        Ok(epoch)
-    }
-
-    pub(crate) fn finish_continuation(&self, epoch: u64) -> Result<(), IrqError> {
-        self.continuation_active
-            .compare_exchange(epoch, 0, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| ())
-            .map_err(|_| IrqError::NotFound)
-    }
-
-    pub(crate) fn has_continuation(&self) -> bool {
-        self.continuation_active.load(Ordering::Acquire) != 0
     }
 
     pub(crate) fn call(&self, ctx: IrqContext) -> IrqReturn {
@@ -233,13 +189,34 @@ impl Action {
         self.gate.load(Ordering::Acquire) & ENABLED_BIT != 0
     }
 
+    pub(crate) fn enabled_on(&self, cpu: Option<CpuId>) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        match (self.scope, cpu) {
+            (IrqScope::Global, _) => true,
+            (IrqScope::PerCpu { cpus }, Some(cpu)) => {
+                cpus.contains(cpu) && !self.locally_disabled.contains_cpu(cpu)
+            }
+            (IrqScope::PerCpu { .. }, None) => false,
+        }
+    }
+
+    pub(crate) fn disable_on_cpu(&self, cpu: CpuId) -> Result<(), IrqError> {
+        match self.scope {
+            IrqScope::PerCpu { cpus } if cpus.contains(cpu) => {
+                self.locally_disabled.insert_cpu(cpu)
+            }
+            _ => Err(IrqError::InvalidCpu),
+        }
+    }
+
     pub(crate) fn is_detachable(&self) -> bool {
         self.gate.load(Ordering::Acquire) == 0
             && self.drain_wake.load(Ordering::Acquire).is_null()
             && !self.drain_notifying.load(Ordering::Acquire)
             && !self.running.load(Ordering::Acquire)
             && !self.has_quench()
-            && !self.has_continuation()
     }
 
     pub(crate) fn prepare_for_reattach(&mut self, id: u64) {
@@ -249,9 +226,7 @@ impl Action {
         self.detached.store(false, Ordering::Release);
         self.running.store(false, Ordering::Release);
         self.drain_notifying.store(false, Ordering::Release);
-        self.continuation_epoch.store(0, Ordering::Release);
-        self.continuation_active.store(0, Ordering::Release);
-        self.clear_pending_enable_all();
+        self.locally_disabled.clear();
         self.next = ptr::null_mut();
     }
 
@@ -261,9 +236,7 @@ impl Action {
         self.detached.store(true, Ordering::Release);
         self.running.store(false, Ordering::Release);
         self.drain_notifying.store(false, Ordering::Release);
-        self.continuation_epoch.store(0, Ordering::Release);
-        self.continuation_active.store(0, Ordering::Release);
-        self.clear_pending_enable_all();
+        self.locally_disabled.clear();
         self.next = ptr::null_mut();
     }
 
@@ -273,13 +246,14 @@ impl Action {
                 || !self.drain_wake.load(Ordering::Acquire).is_null()
                 || self.drain_notifying.load(Ordering::Acquire)
                 || self.has_quench()
-                || self.has_continuation()
             {
                 return Err(IrqError::Busy);
             }
+            self.locally_disabled.clear();
             self.gate.fetch_or(ENABLED_BIT, Ordering::Release);
         } else {
             self.gate.fetch_and(ACTIVE_MASK, Ordering::AcqRel);
+            self.locally_disabled.clear();
         }
         Ok(())
     }
@@ -292,7 +266,7 @@ impl Action {
         {
             return Err(IrqError::Busy);
         }
-        if self.has_quench() || self.has_continuation() {
+        if self.has_quench() {
             self.drain_notifying.store(false, Ordering::Release);
             return Err(IrqError::Busy);
         }
@@ -332,7 +306,10 @@ impl Action {
             && !self.drain_notifying.load(Ordering::Acquire)
     }
 
-    pub(crate) fn try_enter(&self) -> bool {
+    pub(crate) fn try_enter(&self, cpu: CpuId) -> bool {
+        if !self.enabled_on(Some(cpu)) {
+            return false;
+        }
         let mut observed = self.gate.load(Ordering::Acquire);
         loop {
             if observed & ENABLED_BIT == 0 {
@@ -412,7 +389,7 @@ mod tests {
     unsafe fn try_enable_during_notification(data: usize) {
         let action = unsafe { &*(data as *const Action) };
         let result = match action.set_enabled(true) {
-            Ok(()) => 1,
+            Ok(_) => 1,
             Err(IrqError::Busy) => 2,
             Err(_) => 3,
         };

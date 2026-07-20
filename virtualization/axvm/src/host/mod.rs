@@ -1,6 +1,7 @@
 //! Internal host boundary used by the AxVM runtime.
 
 pub(crate) mod arceos;
+pub(crate) mod irq_routes;
 pub(crate) mod paging;
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 pub(crate) mod storage;

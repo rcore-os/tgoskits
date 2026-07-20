@@ -371,13 +371,11 @@ pub struct Card0 {
     /// Serializes the lazy initialization of `in_formats_blob` so
     /// only one allocation lands in `system_blobs`.
     system_blobs_init: PiMutex<()>,
-    /// Registered virtio-gpu IRQ action, when the display backend advertises one.
-    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
 }
 
 impl Card0 {
     pub fn new() -> Arc<Self> {
-        let card = Arc::new(Self {
+        Arc::new(Self {
             events: PiMutex::new(VecDeque::with_capacity(MAX_EVENTS)),
             poll_rx: PollSet::new(),
             sequence: AtomicU32::new(0),
@@ -397,45 +395,7 @@ impl Card0 {
             system_blobs: PiMutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
             system_blobs_init: PiMutex::new(()),
-            irq_handle: spin::Once::new(),
-        });
-        card.register_irq();
-        card
-    }
-
-    fn register_irq(self: &Arc<Self>) {
-        if !ax_display::has_display() {
-            return;
-        }
-        let Some(irq) = ax_display::framebuffer_irq_id() else {
-            return;
-        };
-
-        let request = ax_runtime::hal::irq::IrqRequest::new(|_| {
-            if ax_display::framebuffer_handle_irq() {
-                ax_runtime::hal::irq::IrqReturn::Handled
-            } else {
-                ax_runtime::hal::irq::IrqReturn::Unhandled
-            }
         })
-        .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
-        .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
-        match ax_runtime::hal::irq::request_irq(irq, request) {
-            Ok(handle) => {
-                self.irq_handle.call_once(|| handle);
-                ax_display::framebuffer_enable_irq();
-                if let Some(handle) = self.irq_handle.get().copied()
-                    && let Err(err) = ax_runtime::hal::irq::enable_irq(handle)
-                {
-                    warn!("failed to enable display irq handler for irq {irq:?}: {err:?}");
-                    ax_display::framebuffer_disable_irq();
-                }
-            }
-            Err(err) => {
-                warn!("failed to register display irq handler for irq {irq:?}: {err:?}");
-                ax_display::framebuffer_disable_irq();
-            }
-        }
     }
 
     /// Lazily construct the `IN_FORMATS` blob the first time a caller

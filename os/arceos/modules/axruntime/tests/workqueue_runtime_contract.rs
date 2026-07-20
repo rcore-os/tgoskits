@@ -62,8 +62,8 @@ fn hard_irq_submission_uses_a_shutdown_lifetime_direct_wake_and_condition_park()
         .find("lane.worker_wake_handle()?")
         .expect("submission must acquire the permanent direct wake first");
     let reservation = submission
-        .find("queue.reserve_item()?")
-        .expect("submission must reserve logical queue admission");
+        .find("RUNTIME_WORKQUEUE.queue_work_in_domain(self, work)?")
+        .expect("submission must enter the logical domain model");
     assert!(wake_handle < reservation);
     assert!(submission.contains("worker_wake.wake()"));
     assert!(submission.contains("enforce_published_worker_progress"));
@@ -79,6 +79,19 @@ fn hard_irq_submission_uses_a_shutdown_lifetime_direct_wake_and_condition_park()
         worker_loop.contains("lane.worker_park.try_wait_until(|| lane.has_pending())?"),
         "the park handshake must recheck the same pending predicate"
     );
+}
+
+#[test]
+fn domain_model_separates_external_admission_from_callback_continuation() {
+    let types = fs::read_to_string(crate_root().join("src/workqueue/types.rs")).unwrap();
+    let model = fs::read_to_string(crate_root().join("src/workqueue/model.rs")).unwrap();
+
+    assert!(types.contains("WorkQueueState::Accepting | WorkQueueState::Draining"));
+    assert!(model.contains("queue_work_in_domain"));
+    assert!(model.contains("domain.reserve_item()?"));
+    assert!(model.contains("domain_allows_callback_continuation"));
+    assert!(model.contains("return Err(WorkQueueError::CancelInProgress)"));
+    assert!(!types.contains("QueueWorkResult::CancelInProgress"));
 }
 
 #[test]
@@ -174,6 +187,59 @@ fn synchronous_delayed_cancel_rechecks_the_expiry_publication_baton() {
 }
 
 #[test]
+fn delayed_shutdown_requires_a_three_stage_retirement_proof() {
+    let delayed = fs::read_to_string(crate_root().join("src/workqueue/delayed.rs")).unwrap();
+    let facade =
+        fs::read_to_string(crate_root().join("../../../../components/ax-task/src/facade.rs"))
+            .unwrap();
+
+    assert!(facade.contains("pub fn retire_current_runtime_timer"));
+    assert!(delayed.contains("pub fn shutdown_sync"));
+    assert!(delayed.contains("DelayedWorkRetireProof"));
+    assert!(delayed.contains("retire_current_runtime_timer"));
+    assert!(delayed.contains("control_work.is_idle()"));
+    assert!(delayed.contains("work.is_idle()"));
+    assert!(delayed.contains("DELAYED_RETIRED"));
+}
+
+#[test]
+fn timer_and_delayed_work_production_paths_do_not_create_anonymous_leaks() {
+    let delayed = fs::read_to_string(crate_root().join("src/workqueue/delayed.rs")).unwrap();
+    let facade =
+        fs::read_to_string(crate_root().join("../../../../components/ax-task/src/facade.rs"))
+            .unwrap();
+    let facade_production = facade
+        .split_once("#[cfg(test)]")
+        .map_or(facade.as_str(), |(production, _)| production);
+    let delayed_production = delayed
+        .split_once("#[cfg(test)]")
+        .map_or(delayed.as_str(), |(production, _)| production);
+
+    for source in [facade_production, delayed_production] {
+        assert!(!source.contains("Box::leak"));
+        assert!(!source.contains("mem::forget"));
+    }
+
+    assert!(delayed.contains("pub struct DelayedWorkRegistration"));
+    assert!(delayed.contains("pub fn release(mut self)"));
+    assert!(delayed.contains("DELAYED_WORK_QUARANTINE"));
+    let registration_drop = delayed
+        .split_once("impl Drop for DelayedWorkRegistration")
+        .expect("owned delayed work must define fail-closed Drop")
+        .1
+        .split_once("#[cfg(feature = \"workqueue\")]\nimpl core::fmt::Debug for DelayedWork")
+        .expect("registration Drop must precede the delayed item implementation")
+        .0;
+    assert!(registration_drop.contains("reservation.retain("));
+    assert!(registration_drop.contains("DelayedWorkQuarantineReason::DropWithoutRetire"));
+    assert!(!registration_drop.contains("shutdown_sync"));
+    assert!(!registration_drop.contains("cancel_delayed_work_sync"));
+    assert!(!registration_drop.contains("in_irq_context"));
+    assert!(!registration_drop.contains(".lock()"));
+    assert!(registration_drop.contains("DelayedWorkQuarantineReason::RetiredWithoutRelease"));
+}
+
+#[test]
 fn synchronous_delayed_flush_rechecks_the_expiry_publication_baton() {
     let delayed = fs::read_to_string(crate_root().join("src/workqueue/delayed.rs")).unwrap();
 
@@ -247,5 +313,9 @@ fn asynchronous_timer_failure_activates_the_delayed_callback() {
     let hctx = fs::read_to_string(crate_root().join("src/block/hctx/mod.rs")).unwrap();
 
     assert!(workqueue.contains("publish_failure_activation"));
-    assert!(hctx.contains("watchdog_work.take_failure()"));
+    assert!(workqueue.contains("pub fn take_failure(&self) -> Option<DelayedWorkFailure>"));
+    assert!(
+        !hctx.contains("DelayedWork") && !hctx.contains("watchdog_work"),
+        "stateful block queues belong to their CPU-pinned maintenance owner, not workqueue"
+    );
 }

@@ -3,12 +3,8 @@
 //! This module provides interrupt handlers and ISR setup functions for
 //! handling TX/RX completion, errors, and link status changes.
 
-use alloc::boxed::Box;
-use core::sync::atomic::{AtomicPtr, Ordering};
-
 use crate::{FXmacIrqStatus, fxmac::*, fxmac_const::*, fxmac_dma::*};
 
-// XMAC
 pub const FXMAC_NUM: u32 = 4;
 pub const FXMAC0_ID: u32 = 0;
 pub const FXMAC1_ID: u32 = 1;
@@ -58,35 +54,6 @@ pub const FXMAC3_QUEUE3_IRQ_NUM: u32 = (73 + 30);
 // pub const FXMAC_PHY_MAX_NUM:u32 = 32;
 // #define FXMAC_CLK_TYPE_0
 
-/// Global pointer to the active FXMAC instance.
-///
-/// This atomic pointer is set during initialization and used by the interrupt
-/// handler to access the controller instance.
-pub static XMAC: AtomicPtr<FXmac> = AtomicPtr::new(core::ptr::null_mut());
-
-/// Main interrupt handler for FXMAC controller.
-///
-/// Processes all pending interrupts for the specified FXMAC instance. This
-/// handler supports the following interrupt types:
-///
-/// - **FXMAC_HANDLER_DMARECV**: RX completion - calls `FXmacRecvIsrHandler`
-/// - **FXMAC_HANDLER_DMASEND**: TX completion - calls `FXmacSendHandler`
-/// - **FXMAC_HANDLER_ERROR**: Error conditions - calls `FXmacErrorHandler`
-/// - **FXMAC_HANDLER_LINKCHANGE**: Link status change - calls `FXmacLinkChange`
-///
-/// # Arguments
-///
-/// * `vector` - The IRQ vector number that triggered the interrupt.
-/// * `instance_p` - Mutable reference to the FXMAC instance.
-///
-/// # Note
-///
-/// Currently only single-queue operation is fully supported.
-pub fn FXmacIntrHandler(vector: i32, instance_p: &mut FXmac) {
-    let reg_isr: u32 = read_reg((instance_p.config.base_address + FXMAC_ISR_OFFSET) as *const u32);
-    FXmacIntrHandlerWithStatus(vector, instance_p, FXmacIrqStatus::from_raw(reg_isr));
-}
-
 pub(crate) fn FXmacIntrHandlerWithStatus(
     vector: i32,
     instance_p: &mut FXmac,
@@ -122,14 +89,6 @@ pub(crate) fn FXmacIntrHandlerWithStatus(
                 );
 
                 FXmacSendHandler(instance_p);
-
-                // add
-                if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_TXCOMPL_MASK,
-                    );
-                }
             }
 
             // Transmit error conditions interrupt
@@ -145,26 +104,10 @@ pub(crate) fn FXmacIntrHandlerWithStatus(
                 );
 
                 FXmacErrorHandler(instance_p, FXMAC_SEND as u8, reg_txsr);
-
-                // add
-                if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_TX_ERR_MASK,
-                    );
-                }
             }
 
             // add restart
             if (reg_isr & FXMAC_IXR_TXUSED_MASK) != 0 {
-                // add
-                if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_TXUSED_MASK,
-                    );
-                }
-
                 // if (instance_p->restart_handler)
                 // {
                 // instance_p->restart_handler(instance_p->restart_args);
@@ -174,13 +117,6 @@ pub(crate) fn FXmacIntrHandlerWithStatus(
             // link changed
             if (reg_isr & FXMAC_IXR_LINKCHANGE_MASK) != 0 {
                 FXmacLinkChange(instance_p);
-
-                if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_LINKCHANGE_MASK,
-                    );
-                }
             }
         } else
         // use queue number more than 0
@@ -237,14 +173,6 @@ pub(crate) fn FXmacIntrHandlerWithStatus(
                     FXMAC_RXSR_FRAMERX_MASK | FXMAC_RXSR_BUFFNA_MASK,
                 );
                 FXmacRecvIsrHandler(instance_p);
-
-                // add
-                if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_RXCOMPL_MASK,
-                    );
-                }
             }
 
             // Receive error conditions interrupt
@@ -274,33 +202,6 @@ pub(crate) fn FXmacIntrHandlerWithStatus(
                     write_reg(
                         (instance_p.config.base_address + FXMAC_NWCTRL_OFFSET) as *mut u32,
                         reg_temp,
-                    );
-
-                    if (instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0 {
-                        write_reg(
-                            (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                            FXMAC_IXR_RXUSED_MASK,
-                        );
-                    }
-                }
-
-                // add
-                if ((reg_isr & FXMAC_IXR_RXOVR_MASK) != 0)
-                    && ((instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0)
-                {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_RXOVR_MASK,
-                    );
-                }
-
-                // add
-                if ((reg_isr & FXMAC_IXR_HRESPNOK_MASK) != 0)
-                    && ((instance_p.caps & FXMAC_CAPS_ISR_CLEAR_ON_WRITE) != 0)
-                {
-                    write_reg(
-                        (instance_p.config.base_address + FXMAC_ISR_OFFSET) as *mut u32,
-                        FXMAC_IXR_HRESPNOK_MASK,
                     );
                 }
 
@@ -472,13 +373,7 @@ pub fn FXmacErrorHandler(instance_p: &mut FXmac, direction: u8, error_word: u32)
 
 pub fn FXmacRecvIsrHandler(instance: &mut FXmac) {
     debug!("-> FXmacRecvIsrHandler");
-    // 关中断
-    write_reg(
-        (instance.config.base_address + FXMAC_IDR_OFFSET) as *mut u32,
-        FXMAC_IXR_RXCOMPL_MASK,
-    );
     instance.lwipport.recv_flg += 1;
 
     ethernetif_input_to_recv_packets(instance);
-    // 处理后会开中断
 }

@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::cell::{Cell, RefCell};
+use core::cell::RefCell;
 
 use irq_framework::{HwIrq, IrqDomainId, IrqId};
 use rdif_msi::{MsiEventId, MsiVector, MsiVectorIndex};
@@ -250,25 +250,6 @@ fn setup_rollback_attempts_every_containment_step_after_one_failure() {
     );
 }
 
-#[test]
-fn failed_drop_retains_endpoint_allocation_and_table_mapping() {
-    let allocation_dropped = Cell::new(false);
-    let mapping_dropped = Cell::new(false);
-    let endpoint_dropped = Cell::new(false);
-    let mut allocation = Some(DropProbe(&allocation_dropped));
-    let mut mapping = Some(DropProbe(&mapping_dropped));
-    let mut endpoint = Some(DropProbe(&endpoint_dropped));
-
-    retain_failed_lease_resources(&mut allocation, &mut mapping, &mut endpoint);
-
-    assert!(allocation.is_none());
-    assert!(mapping.is_none());
-    assert!(endpoint.is_none());
-    assert!(!allocation_dropped.get());
-    assert!(!mapping_dropped.get());
-    assert!(!endpoint_dropped.get());
-}
-
 fn prop_u32s(name: &str, values: &[u32]) -> fdt_edit::Property {
     let mut data = Vec::new();
     for value in values {
@@ -289,14 +270,6 @@ enum SetupRollbackTransition {
     Table(u16),
     Provider(u16),
     DisableCapability,
-}
-
-struct DropProbe<'a>(&'a Cell<bool>);
-
-impl Drop for DropProbe<'_> {
-    fn drop(&mut self) {
-        self.0.set(true);
-    }
 }
 
 struct MockVectorTransitions {

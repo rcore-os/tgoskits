@@ -43,7 +43,7 @@
 
 use core::sync::atomic::Ordering;
 
-use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
+use ax_hal::irq::{IrqContext, IrqHandle, IrqId, IrqReturn};
 use ax_kspin::{IrqGuard, PreemptIrqGuard};
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
@@ -205,11 +205,13 @@ unsafe impl Send for SampleSlot {}
 #[ax_percpu::def_percpu]
 static REGISTRY: [Option<SampleSlot>; 32] = [None; 32];
 
-/// Whether [`pmu_overflow_handler`] has been registered with the IRQ framework.
+/// Shutdown-lifetime ownership of the PMU's per-CPU IRQ action.
 ///
-/// Registration is process-global and idempotent: the handler walks the per-CPU
-/// registry, so a single action installed on all CPUs suffices.
-static REGISTERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// [`IrqHandle`] carries the framework action generation. Retaining it makes
+/// the registered callback an explicit owned capability instead of reducing
+/// registration to a boolean fact. The action remains enabled for the kernel
+/// lifetime; individual PMU counters provide the device-side source gate.
+static PMU_IRQ_ACTION: spin::Once<IrqHandle> = spin::Once::new();
 
 /// Registers `slot` for programmable counter `n` on the current CPU.
 ///
@@ -250,43 +252,21 @@ pub fn unregister(n: usize) {
     }
 }
 
-/// Ensures [`pmu_overflow_handler`] is registered with the IRQ framework and the
-/// PMU overflow line is enabled on the current core.
+/// Registers and enables [`pmu_overflow_handler`] through the IRQ framework.
 ///
-/// Idempotent: the first caller installs the per-CPU action for the PMU IRQ
-/// across all online CPUs. Every caller (re-)enables INTID 23 on the *current*
-/// core. The explicit `set_enable` is required: the framework's per-core line
-/// enable runs at `cpu_online`/boot, before this handler is ever registered, so
-/// under smp1 the PMU PPI would otherwise stay masked and the overflow IRQ would
-/// never fire on cpu0.
-pub fn ensure_pmu_irq_registered() {
-    let pmu_irq = match pmu_irq() {
-        Ok(irq) => irq,
-        Err(err) => {
-            warn!("perf sampling: failed to resolve PMU overflow IRQ: {err:?}");
-            return;
-        }
-    };
-
-    if REGISTERED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
+/// Callers must invoke this from ordinary task context before publishing a
+/// sampling event to scheduler hooks. [`ax_hal::irq::request_percpu_irq`]
+/// performs the one framework action-enable transaction for every selected
+/// CPU; this module never bypasses that action with raw line control. A failed
+/// first attempt leaves [`PMU_IRQ_ACTION`] uninitialized so a later event may
+/// retry.
+pub(super) fn ensure_pmu_irq_registered() -> Result<(), ax_hal::irq::IrqError> {
+    PMU_IRQ_ACTION.try_call_once(|| {
+        let pmu_irq = pmu_irq()?;
         let cpus = ax_hal::irq::CpuMask::first_n(ax_hal::cpu_num());
-        // Mirror the timer's unit-data pattern: the handler does not use `data`.
-        if let Err(err) = ax_hal::irq::request_percpu_irq(pmu_irq, cpus, pmu_overflow_handler) {
-            // Roll back so a later open can retry registration.
-            REGISTERED.store(false, Ordering::Release);
-            warn!("perf sampling: failed to register PMU overflow IRQ: {err:?}");
-            return;
-        }
-    }
-    // Enable the PMU PPI on the core this sampling event runs on. Required even
-    // when the action was registered by an earlier event: the per-core line is
-    // not auto-enabled for runtime-registered PPIs.
-    if let Err(err) = ax_hal::irq::set_enable(pmu_irq, true) {
-        warn!("perf sampling: failed to enable PMU overflow IRQ {pmu_irq:?}: {err:?}");
-    }
+        ax_hal::irq::request_percpu_irq(pmu_irq, cpus, pmu_overflow_handler)
+    })?;
+    Ok(())
 }
 
 fn service_overflowed_slots(

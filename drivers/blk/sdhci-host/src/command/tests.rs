@@ -1,6 +1,7 @@
 use core::ptr::NonNull;
 
-use sdmmc_protocol::{DataDirection, cmd::cmd17, sdio::host::SdioIrqHandle};
+use rdif_irq::{IrqCapture, IrqEndpoint};
+use sdmmc_protocol::{DataDirection, cmd::cmd17};
 
 use super::*;
 
@@ -236,6 +237,7 @@ fn issued_command_keeps_irq_generation_active_for_completion_cache() {
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
+    let (mut irq, _control) = host.take_irq_source().unwrap().into_parts();
     host.enable_completion_irq();
     host.pending_data = Some(crate::host::PendingData {
         direction: DataDirection::Read,
@@ -248,8 +250,13 @@ fn issued_command_keeps_irq_generation_active_for_completion_cache() {
     assert_ne!(host.irq.state.generation(), 0);
 
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
-    let mut irq = host.irq_endpoint();
-    assert_eq!(irq.handle_irq(), crate::Event::CommandComplete);
+    assert!(matches!(
+        irq.capture(),
+        IrqCapture::Captured {
+            event,
+            masked: None,
+        } if event == crate::Event::from_status(NORMAL_INT_CMD_COMPLETE, 0)
+    ));
     assert_ne!(
         host.irq.state.pending_normal() & NORMAL_INT_CMD_COMPLETE,
         0,

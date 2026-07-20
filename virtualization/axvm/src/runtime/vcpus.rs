@@ -17,6 +17,7 @@ use alloc::format;
 use crate::{
     AsVCpuTask, AxVmResult, GuestPhysAddr, StopReason, VCpuTask, VmVcpuState,
     arch::{ArchOps, CurrentArch, VcpuRunAction},
+    architecture::ops::VcpuIrqOwnerSession,
     ax_err_type,
     runtime::{VCpuRef, VMRef, sub_running_vm_count},
     vm::VmRuntimeHandle,
@@ -275,28 +276,30 @@ fn vcpu_run() {
     wait_for(&runtime, || vm.running());
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
+    let mut irq_owner = match CurrentArch::prepare_vcpu_irq_owner(&vm, &vcpu) {
+        Ok(owner) => owner,
+        Err(error) => {
+            fail_vcpu_startup(&vm, &runtime, vm_id, vcpu_id, error);
+            return;
+        }
+    };
     if let Err(error) = CurrentArch::before_first_run(&vm, &vcpu) {
-        error!("VM[{vm_id}] VCpu[{vcpu_id}] first-run preparation failed: {error:?}");
-        vm.record_startup_failure(error.clone());
-        if let Err(stop_error) = vm.stop(StopReason::Fault(format!("{error:?}"))) {
-            warn!("VM[{vm_id}] shutdown failed after first-run preparation: {stop_error:?}");
-        }
-        let no_running_vcpu = runtime.mark_vcpu_startup_failed();
-        notify_all_vcpus(vm_id);
-        if no_running_vcpu {
-            complete_vm_stop(&vm, vm_id, vcpu_id);
-        }
+        fail_vcpu_startup(&vm, &runtime, vm_id, vcpu_id, error);
+        close_failed_start_irq_owner(&runtime, irq_owner.take(), vm_id, vcpu_id);
         return;
     }
     if !runtime.try_mark_vcpu_running() {
         // A peer failed first-run preparation after this vCPU's hook
         // succeeded. The shared startup-failed bit prevents this task from
         // publishing Running after the VM entered Stopping.
+        close_failed_start_irq_owner(&runtime, irq_owner.take(), vm_id, vcpu_id);
         return;
     }
 
     loop {
-        match CurrentArch::run_vcpu(&vm, &vcpu) {
+        let run_result = CurrentArch::service_vcpu_irq_owner(&vm, &vcpu)
+            .and_then(|()| CurrentArch::run_vcpu(&vm, &vcpu));
+        match run_result {
             Ok(VcpuRunAction {
                 stop_reason: Some(reason),
                 ..
@@ -345,7 +348,73 @@ fn vcpu_run() {
         }
     }
 
+    if let Some(owner) = irq_owner {
+        finish_vcpu_irq_owner(&runtime, owner, vm_id, vcpu_id);
+    }
     info!("VM[{}] VCpu[{}] exiting...", vm_id, vcpu_id);
+}
+
+fn fail_vcpu_startup(
+    vm: &VMRef,
+    runtime: &VmRuntimeHandle,
+    vm_id: usize,
+    vcpu_id: usize,
+    error: crate::AxVmError,
+) {
+    error!("VM[{vm_id}] VCpu[{vcpu_id}] first-run preparation failed: {error:?}");
+    vm.record_startup_failure(error.clone());
+    if let Err(stop_error) = vm.stop(StopReason::Fault(format!("{error:?}"))) {
+        warn!("VM[{vm_id}] shutdown failed after first-run preparation: {stop_error:?}");
+    }
+    let no_running_vcpu = runtime.mark_vcpu_startup_failed();
+    notify_all_vcpus(vm_id);
+    if no_running_vcpu {
+        complete_vm_stop(vm, vm_id, vcpu_id);
+    }
+}
+
+fn close_failed_start_irq_owner(
+    runtime: &VmRuntimeHandle,
+    owner: Option<VcpuIrqOwnerSession>,
+    vm_id: usize,
+    vcpu_id: usize,
+) {
+    let Some(mut owner) = owner else {
+        return;
+    };
+    if let Err(error) = owner.close() {
+        quarantine_vcpu_irq_owner(runtime, owner, vm_id, vcpu_id, error);
+    }
+}
+
+fn finish_vcpu_irq_owner(
+    runtime: &VmRuntimeHandle,
+    mut owner: VcpuIrqOwnerSession,
+    vm_id: usize,
+    vcpu_id: usize,
+) {
+    wait_for(runtime, || owner.release_requested());
+    if let Err(error) = owner.close() {
+        quarantine_vcpu_irq_owner(runtime, owner, vm_id, vcpu_id, error);
+    }
+}
+
+fn quarantine_vcpu_irq_owner(
+    runtime: &VmRuntimeHandle,
+    _owner: VcpuIrqOwnerSession,
+    vm_id: usize,
+    vcpu_id: usize,
+    error: crate::AxVmError,
+) -> ! {
+    error!(
+        "VM[{vm_id}] VCpu[{vcpu_id}] retained its IRQ owner lease after close failure: {error:?}"
+    );
+    loop {
+        // The session and its CurrentCpuLease remain on this stack forever.
+        // Manager-side typed completion reports the architecture failure; a
+        // wake cannot authorize migration or implicit action destruction.
+        wait(runtime);
+    }
 }
 
 fn finish_stopping_vcpu(vm: &VMRef, runtime: &VmRuntimeHandle, vm_id: usize, vcpu_id: usize) {

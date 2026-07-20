@@ -1,22 +1,26 @@
 //! Runtime controller registry, queue construction, and normal IRQ route binding.
 
-use alloc::{boxed::Box, format, string::String, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::num::NonZeroUsize;
 
 use ax_driver::{BindingLocator, block::RdifBlockDevice};
 use ax_kspin::SpinNoPreempt;
 use rdif_block::{
     BundleError, ControllerBundle, IdList, IrqSourceInfo, LogicalDevice, LogicalDeviceParts,
-    QueueHandle, QueueKind, validate_controller_devices, validate_queue_activation,
+    QueueHandle, QueueKind, UnpublishedQueueQuarantine, validate_controller_devices,
+    validate_queue_activation,
 };
 
 use super::{
     BlockController, BlockControllerError, ControllerOwnerLink, InlineQueue, MAX_HARDWARE_QUEUES,
-    RuntimeBlockDevice, RuntimeIrqSource, RuntimeQueue, device::RejectedOwnerQuarantine,
+    RuntimeBlockDevice, RuntimeQueue,
 };
 use crate::{
-    block::{HardwareQueue, HostPciEndpoint, HostPhysicalRange, statistics::BlockIoStats},
-    irq::Registration,
+    block::{
+        HardwareQueue, HostPciEndpoint, HostPhysicalRange, quarantine::QueueQuarantineReservations,
+        statistics::BlockIoStats,
+    },
+    maintenance::DeviceMaintenanceHandle,
 };
 
 pub(super) fn capture_host_physical_ranges(
@@ -91,20 +95,29 @@ pub fn block_io_stats() -> BlockIoStats {
 
 pub(super) fn materialize_logical_devices(
     device: &mut RdifBlockDevice,
+    quarantine_reservations: &mut QueueQuarantineReservations,
 ) -> Result<Vec<LogicalDevice>, BlockControllerError> {
     let cpu_queue_limit = crate::runtime_cpu_count().clamp(1, MAX_HARDWARE_QUEUES);
-    materialize_bundle_logical_devices(device.bundle_mut(), cpu_queue_limit)
+    materialize_bundle_logical_devices(
+        device.bundle_mut(),
+        cpu_queue_limit,
+        quarantine_reservations,
+    )
 }
 
 fn materialize_bundle_logical_devices(
     bundle: &mut dyn ControllerBundle,
     cpu_queue_limit: usize,
+    quarantine_reservations: &mut QueueQuarantineReservations,
 ) -> Result<Vec<LogicalDevice>, BlockControllerError> {
     let mut logical_devices = Vec::new();
-    if let Err(error) =
-        try_materialize_bundle_logical_devices(bundle, cpu_queue_limit, &mut logical_devices)
-    {
-        shutdown_logical_device_iter(logical_devices.into_iter());
+    if let Err(error) = try_materialize_bundle_logical_devices(
+        bundle,
+        cpu_queue_limit,
+        &mut logical_devices,
+        quarantine_reservations,
+    ) {
+        shutdown_logical_device_iter(logical_devices.into_iter(), quarantine_reservations);
         return Err(error);
     }
     Ok(logical_devices)
@@ -114,6 +127,7 @@ fn try_materialize_bundle_logical_devices(
     bundle: &mut dyn ControllerBundle,
     cpu_queue_limit: usize,
     logical_devices: &mut Vec<LogicalDevice>,
+    quarantine_reservations: &mut QueueQuarantineReservations,
 ) -> Result<(), BlockControllerError> {
     let mut expected_ids = bundle.logical_device_ids();
     let device_ids = expected_ids.iter().collect::<Vec<_>>();
@@ -129,7 +143,16 @@ fn try_materialize_bundle_logical_devices(
         let queue_budget = cpu_queue_limit.min(fair_capacity).max(1);
         let queue_budget = NonZeroUsize::new(queue_budget)
             .expect("a remaining logical device always retains one queue slot");
-        let logical_device = bundle.take_logical_device(device_id, queue_budget)?;
+        let logical_device = match bundle.take_logical_device(device_id, queue_budget) {
+            Ok(device) => device,
+            Err(BundleError::UnpublishedQueuesQuarantined(quarantine)) => {
+                return Err(retain_unpublished_quarantine(
+                    quarantine,
+                    quarantine_reservations,
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        };
         logical_devices.push(logical_device);
         let logical_device = logical_devices
             .last()
@@ -165,16 +188,34 @@ fn try_materialize_bundle_logical_devices(
     Ok(())
 }
 
+fn retain_unpublished_quarantine(
+    quarantine: UnpublishedQueueQuarantine,
+    reservations: &mut QueueQuarantineReservations,
+) -> BlockControllerError {
+    let error = BlockControllerError::UnpublishedQueuesQuarantined {
+        device_id: quarantine.device_id(),
+        device_name: String::from(quarantine.device_name()),
+        contract: quarantine.contract_error(),
+        close_error: quarantine.reason(),
+        queue_count: quarantine.queue_count(),
+    };
+    for queue in quarantine.into_queues() {
+        let reservation = reservations.bind(queue.info());
+        crate::block::quarantine::retain_unpublished_quarantine(queue, reservation);
+    }
+    error
+}
+
 pub(super) fn create_runtime_devices(
     logical_devices: Vec<LogicalDevice>,
-    owner_link: &'static ControllerOwnerLink,
+    maintenance: Arc<DeviceMaintenanceHandle<super::source::BlockMaintenanceEvent>>,
+    owner_link: Arc<ControllerOwnerLink>,
     lifecycle_cookie: usize,
+    quarantine_reservations: &mut QueueQuarantineReservations,
 ) -> Result<Vec<RuntimeBlockDevice>, BlockControllerError> {
     validate_controller_devices(&logical_devices)?;
     let mut pending_devices = logical_devices.into_iter();
     let mut runtime_devices = Vec::new();
-    let mut affinity_slot = 0;
-
     while let Some(logical_device) = pending_devices.next() {
         let LogicalDeviceParts {
             id,
@@ -187,34 +228,41 @@ pub(super) fn create_runtime_devices(
         let mut runtime_queues = Vec::new();
         while let Some(mut queue) = pending_queues.next() {
             let info = queue.info();
+            let quarantine_reservation = quarantine_reservations.bind(info);
             let runtime_queue = match info.kind {
-                QueueKind::Inline => RuntimeQueue::Inline(Box::new(InlineQueue::new(queue))),
+                QueueKind::Inline => {
+                    RuntimeQueue::Inline(Box::new(InlineQueue::new(queue, quarantine_reservation)))
+                }
                 QueueKind::Interrupt { .. } => {
                     if let Err(error) = queue.bind_interrupt_controller(
                         lifecycle_cookie,
                         rdif_block::ControllerEpoch::INITIAL,
                     ) {
-                        shutdown_unpublished_queue(queue);
+                        shutdown_unpublished_queue(queue, quarantine_reservation);
                         rollback_unpublished_runtime_queues(&runtime_queues);
-                        shutdown_queue_iter(pending_queues);
-                        shutdown_logical_device_iter(pending_devices);
+                        shutdown_queue_iter(pending_queues, quarantine_reservations);
+                        shutdown_logical_device_iter(pending_devices, quarantine_reservations);
                         rollback_unpublished_runtime_devices(&runtime_devices);
                         return Err(error.into());
                     }
-                    let cpu = affinity_slot % crate::runtime_cpu_count().max(1);
-                    match HardwareQueue::activate(queue, cpu, owner_link, lifecycle_cookie) {
+                    match HardwareQueue::activate(
+                        queue,
+                        quarantine_reservation,
+                        Arc::clone(&maintenance),
+                        Arc::clone(&owner_link),
+                        lifecycle_cookie,
+                    ) {
                         Ok(queue) => RuntimeQueue::Interrupt(queue),
                         Err(error) => {
                             rollback_unpublished_runtime_queues(&runtime_queues);
-                            shutdown_queue_iter(pending_queues);
-                            shutdown_logical_device_iter(pending_devices);
+                            shutdown_queue_iter(pending_queues, quarantine_reservations);
+                            shutdown_logical_device_iter(pending_devices, quarantine_reservations);
                             rollback_unpublished_runtime_devices(&runtime_devices);
                             return Err(error.into());
                         }
                     }
                 }
             };
-            affinity_slot += 1;
             runtime_queues.push(runtime_queue);
         }
         runtime_devices.push(RuntimeBlockDevice::new(
@@ -252,70 +300,26 @@ fn rollback_unpublished_runtime_queue(queue: &RuntimeQueue) {
     }
 }
 
-fn shutdown_queue_iter(queues: impl Iterator<Item = QueueHandle>) {
+fn shutdown_queue_iter(
+    queues: impl Iterator<Item = QueueHandle>,
+    quarantine_reservations: &mut QueueQuarantineReservations,
+) {
     for queue in queues {
-        shutdown_unpublished_queue(queue);
+        let reservation = quarantine_reservations.bind(queue.info());
+        shutdown_unpublished_queue(queue, reservation);
     }
 }
 
-pub(super) fn shutdown_logical_device_iter(devices: impl Iterator<Item = LogicalDevice>) {
+pub(super) fn shutdown_logical_device_iter(
+    devices: impl Iterator<Item = LogicalDevice>,
+    quarantine_reservations: &mut QueueQuarantineReservations,
+) {
     for device in devices {
-        shutdown_queue_iter(device.into_parts().queues.into_iter());
+        shutdown_queue_iter(
+            device.into_parts().queues.into_iter(),
+            quarantine_reservations,
+        );
     }
-}
-
-pub(super) fn register_irq_routes_disabled(
-    controller_name: &str,
-    device: &mut RdifBlockDevice,
-    devices: &[RuntimeBlockDevice],
-    declared_sources: &[IrqSourceInfo],
-    owner_link: &'static ControllerOwnerLink,
-) -> Result<
-    (
-        Vec<Registration>,
-        Vec<&'static RuntimeIrqSource>,
-        IdList,
-    ),
-    BlockControllerError,
-> {
-    let mut registrations = Vec::new();
-    let mut runtime_sources = Vec::new();
-    let mut bound_sources = IdList::none();
-
-    for source in declared_sources {
-        let routes = devices
-            .iter()
-            .flat_map(|device| device.queues.iter())
-            .filter(|queue| source.queues.contains(queue.info().id))
-            .filter_map(RuntimeQueue::interrupt_queue)
-            .collect::<Vec<_>>();
-        if routes.is_empty() {
-            continue;
-        }
-        let binding = device
-            .irq_for_source(source.id)
-            .cloned()
-            .ok_or(BlockControllerError::MissingIrqBinding(source.id))?;
-        let irq = crate::irq::resolve_binding_irq(binding)?;
-        let handler = device
-            .bundle_mut()
-            .take_irq_handler(source.id)
-            .ok_or(BlockControllerError::MissingIrqHandler(source.id))?;
-        let source_id = source.id;
-        let action_name = format!("{controller_name}/blk-source-{source_id}");
-        let affinity_cpu = routes[0].affinity_cpu();
-        let source = RuntimeIrqSource::allocate(source_id, routes, handler, owner_link);
-        let registration = Registration::register_shared_disabled_on(
-            action_name,
-            irq,
-            affinity_cpu,
-            move |_ctx| source.handle_irq(),
-        )?;
-        bound_sources.insert(source_id);
-        registrations.push(registration);
-        runtime_sources.push(source);
-    }
-    Ok((registrations, runtime_sources, bound_sources))
 }
 
 pub(super) fn validate_runtime_devices(
@@ -329,9 +333,11 @@ pub(super) fn validate_runtime_devices(
     Ok(())
 }
 
-fn shutdown_unpublished_queue(mut queue: QueueHandle) {
-    let mut sink = RejectedOwnerQuarantine::new();
-    let _ = queue.shutdown(&mut sink);
+fn shutdown_unpublished_queue(
+    queue: QueueHandle,
+    reservation: crate::block::quarantine::QueueQuarantineReservation,
+) {
+    let _ = crate::block::quarantine::close_or_quarantine(queue, reservation);
 }
 
 #[cfg(test)]
@@ -344,33 +350,151 @@ mod tests {
     };
 
     use rdif_block::{
-        BIrqHandler, BlkError, BundleError, CompletedRequest, CompletionSink, ControllerBundle,
-        ControllerInitEndpoint, DeviceInfo, DispatchMode, DriverGeneric, IQueue, IrqSourceList,
-        LifecycleEndpoint, LogicalDevice, LogicalDeviceId, LogicalDeviceIds, OwnedRequest,
-        QueueEventBatch, QueueHandle, QueueInfo, QueueKind, QueueLimits, RequestId,
-        ServiceProgress, SubmitError, SubmitOutcome,
+        BlkError, BundleError, CompletedRequest, CompletionSink, ControllerBundle,
+        ControllerInitEndpoint, DeviceInfo, DriverGeneric, IQueue, IdList, IrqSourceInfo,
+        IrqSourceList, LifecycleEndpoint, LogicalDevice, LogicalDeviceId, LogicalDeviceIds,
+        OwnedRequest, QueueEventBatch, QueueExecution, QueueHandle, QueueInfo, QueueKind,
+        QueueLimits, RequestId, ServiceProgress, SubmitError, SubmitOutcome,
     };
 
     use super::{BlockControllerError, materialize_bundle_logical_devices};
+    use crate::block::quarantine::QueueQuarantineReservations;
 
     #[test]
     fn second_device_failure_explicitly_shuts_down_the_first_device_queues() {
-        let shutdowns = Box::leak(Box::new(AtomicUsize::new(0)));
-        let mut bundle = FailingSecondDeviceBundle::new(shutdowns);
+        static SHUTDOWNS: AtomicUsize = AtomicUsize::new(0);
+        SHUTDOWNS.store(0, Ordering::Release);
+        let mut bundle = FailingSecondDeviceBundle::new(&SHUTDOWNS);
+        let mut quarantine_reservations = QueueQuarantineReservations::reserve(64).unwrap();
 
-        let error = materialize_bundle_logical_devices(&mut bundle, 1).unwrap_err();
+        let error =
+            materialize_bundle_logical_devices(&mut bundle, 1, &mut quarantine_reservations)
+                .unwrap_err();
 
         assert!(matches!(
             error,
             BlockControllerError::Bundle(BundleError::DeviceUnavailable { device_id })
                 if device_id == LogicalDeviceId::new(1).unwrap()
         ));
-        assert_eq!(shutdowns.load(Ordering::Acquire), 1);
+        assert_eq!(SHUTDOWNS.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn normal_irq_topology_is_frozen_after_queue_materialization() {
+        static SHUTDOWNS: AtomicUsize = AtomicUsize::new(0);
+        SHUTDOWNS.store(0, Ordering::Release);
+        let mut bundle = QueueDefinedIrqBundle {
+            remaining: LogicalDeviceIds::from_bits(1),
+            queue_materialized: false,
+            shutdowns: &SHUTDOWNS,
+        };
+        let mut quarantine_reservations = QueueQuarantineReservations::reserve(64).unwrap();
+
+        assert!(bundle.irq_sources().is_empty());
+        let devices =
+            materialize_bundle_logical_devices(&mut bundle, 1, &mut quarantine_reservations)
+                .unwrap();
+        let declared = bundle.irq_sources();
+
+        assert_eq!(declared, vec![IrqSourceInfo::legacy(IdList::from_bits(1))]);
+        assert_eq!(
+            devices[0]
+                .queues()
+                .next()
+                .expect("the materialized disk must own one queue")
+                .info()
+                .kind,
+            QueueKind::Interrupt {
+                sources: IdList::from_bits(1),
+            }
+        );
+        super::shutdown_logical_device_iter(devices.into_iter(), &mut quarantine_reservations);
     }
 
     struct FailingSecondDeviceBundle {
         remaining: LogicalDeviceIds,
         shutdowns: &'static AtomicUsize,
+    }
+
+    struct QueueDefinedIrqBundle {
+        remaining: LogicalDeviceIds,
+        queue_materialized: bool,
+        shutdowns: &'static AtomicUsize,
+    }
+
+    impl DriverGeneric for QueueDefinedIrqBundle {
+        fn name(&self) -> &str {
+            "queue-defined-irq-controller"
+        }
+    }
+
+    impl ControllerBundle for QueueDefinedIrqBundle {
+        fn controller_init(&mut self) -> ControllerInitEndpoint<'_> {
+            ControllerInitEndpoint::Ready
+        }
+
+        fn lifecycle(&mut self) -> LifecycleEndpoint<'_> {
+            LifecycleEndpoint::Inline
+        }
+
+        fn logical_device_ids(&self) -> LogicalDeviceIds {
+            self.remaining
+        }
+
+        fn take_logical_device(
+            &mut self,
+            device_id: LogicalDeviceId,
+            _max_queues: NonZeroUsize,
+        ) -> Result<LogicalDevice, BundleError> {
+            if !self.remaining.contains(device_id) {
+                return Err(BundleError::DeviceUnavailable { device_id });
+            }
+            self.remaining.remove(device_id);
+            self.queue_materialized = true;
+            let device = DeviceInfo::new(128, 512);
+            let limits = QueueLimits::simple(512, u64::MAX);
+            let queue = QueueHandle::new(Box::new(ShutdownTrackingQueue {
+                info: QueueInfo {
+                    id: 0,
+                    device,
+                    limits,
+                    kind: QueueKind::Interrupt {
+                        sources: IdList::from_bits(1),
+                    },
+                    execution: QueueExecution::Tagged,
+                },
+                shutdowns: self.shutdowns,
+            }));
+            Ok(LogicalDevice::new(
+                device_id,
+                "queue-defined-disk".into(),
+                device,
+                limits,
+                vec![queue],
+            ))
+        }
+
+        fn enable_irq(&self) -> Result<(), BlkError> {
+            Ok(())
+        }
+
+        fn disable_irq(&self) -> Result<(), BlkError> {
+            Ok(())
+        }
+
+        fn is_irq_enabled(&self) -> bool {
+            false
+        }
+
+        fn irq_sources(&self) -> IrqSourceList {
+            self.queue_materialized
+                .then(|| vec![IrqSourceInfo::legacy(IdList::from_bits(1))])
+                .unwrap_or_default()
+        }
+
+        fn take_irq_source(&mut self, _source_id: usize) -> Option<rdif_block::BlockIrqSource> {
+            None
+        }
     }
 
     impl FailingSecondDeviceBundle {
@@ -426,7 +550,7 @@ mod tests {
                     device,
                     limits,
                     kind: QueueKind::Inline,
-                    dispatch_mode: DispatchMode::Direct,
+                    execution: QueueExecution::Inline,
                 },
                 shutdowns: self.shutdowns,
             }));
@@ -455,7 +579,7 @@ mod tests {
             Vec::new()
         }
 
-        fn take_irq_handler(&mut self, _source_id: usize) -> Option<BIrqHandler> {
+        fn take_irq_source(&mut self, _source_id: usize) -> Option<rdif_block::BlockIrqSource> {
             None
         }
     }
@@ -502,7 +626,7 @@ mod tests {
             Err(BlkError::NotSupported)
         }
 
-        fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        fn shutdown(&mut self) -> Result<(), BlkError> {
             self.shutdowns.fetch_add(1, Ordering::AcqRel);
             Ok(())
         }

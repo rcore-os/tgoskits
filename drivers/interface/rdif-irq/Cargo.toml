@@ -1,0 +1,13 @@
+[package]
+name = "rdif-irq"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portable IRQ event-capture boundary for cross-kernel drivers"
+categories = ["embedded", "no-std"]
+keywords = ["driver", "interrupt", "no-std"]
+
+[dependencies]
+thiserror = { workspace = true }

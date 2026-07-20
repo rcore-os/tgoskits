@@ -1,12 +1,12 @@
 //! Accepted-request ownership from CPU staging through driver dispatch.
 
-use core::{pin::Pin, sync::atomic::Ordering};
+use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
 
-use rdif_block::{BlkError, CompletedRequest, DispatchMode, QueueHandle, SubmitOutcome};
+use rdif_block::{BlkError, CompletedRequest, QueueHandle, SubmitOutcome};
 
 use super::{
-    DispatchDisposition, DispatchResult, HardwareQueue, HardwareQueueError, RuntimeSubmitError,
-    SubmittedRequest,
+    DispatchResult, HardwareQueue, HardwareQueueError, RuntimeSubmitError, SubmittedRequest,
 };
 use crate::block::{HctxCause, RequestTag};
 
@@ -36,10 +36,10 @@ impl SubmittedRequest {
 impl HardwareQueue {
     /// Publishes a request before any driver submission can observe its ID.
     pub fn submit_owned(
-        self: Pin<&'static Self>,
+        self: &Arc<Self>,
         request: rdif_block::OwnedRequest,
     ) -> Result<SubmittedRequest, RuntimeSubmitError> {
-        let queue = self.get_ref();
+        let queue = self.as_ref();
         if ax_hal::irq::in_irq_context() {
             return Err(RuntimeSubmitError::new(
                 HardwareQueueError::UnsafeContext,
@@ -57,18 +57,10 @@ impl HardwareQueue {
         };
         let tag = queue.reserve_submission(request)?;
 
-        let outcome = match queue.info.dispatch_mode {
-            DispatchMode::Serialized => queue.stage_on_current_cpu(tag),
-            DispatchMode::Direct => {
-                if let Some(mut driver) = queue.queue.try_lock() {
-                    let result = queue.dispatch_one_locked(tag, &mut driver);
-                    drop(driver);
-                    result.and_then(|result| queue.finish_submit_dispatch(tag, result))
-                } else {
-                    queue.stage_on_current_cpu(tag)
-                }
-            }
-        };
+        // Hardware queues are single-owner objects. A submitting task only
+        // publishes request ownership into its software context; the pinned
+        // maintenance owner performs every driver call and doorbell write.
+        let outcome = self.stage_on_current_cpu(tag);
 
         match outcome {
             Ok(outcome) => Ok(outcome),
@@ -85,7 +77,7 @@ impl HardwareQueue {
     }
 
     fn stage_on_current_cpu(
-        &'static self,
+        self: &Arc<Self>,
         tag: RequestTag,
     ) -> Result<SubmittedRequest, HardwareQueueError> {
         let cpu = ax_hal::percpu::this_cpu_id();
@@ -99,49 +91,10 @@ impl HardwareQueue {
             assert!(removed, "failed work activation lost staged request tag");
             return Err(error);
         }
-        Ok(SubmittedRequest { queue: self, tag })
-    }
-
-    fn finish_submit_dispatch(
-        &'static self,
-        tag: RequestTag,
-        mut result: DispatchResult,
-    ) -> Result<SubmittedRequest, HardwareQueueError> {
-        match result.disposition {
-            DispatchDisposition::Queued => {
-                if let Some(error) = result.take_recovery_error() {
-                    self.record_service_error(&error);
-                }
-                if let Err(error) = self.queue_service(HctxCause::Watchdog) {
-                    // Driver ownership has already committed, so returning an
-                    // admission error would make the outer submit path try to
-                    // reclaim a request that can still be DMA-visible.
-                    self.record_service_error(&error);
-                }
-                Ok(SubmittedRequest { queue: self, tag })
-            }
-            DispatchDisposition::Terminal => {
-                let (completion, recovery_error) = result.take_terminal()?;
-                self.publish_one_completion(tag, completion)?;
-                if let Some(error) = recovery_error {
-                    self.record_service_error(&error);
-                }
-                Ok(SubmittedRequest { queue: self, tag })
-            }
-            DispatchDisposition::Deferred => {
-                self.requests.ensure_staged(tag)?;
-                self.dispatch_list.lock().push(tag)?;
-                if let Err(error) = self.queue_service(HctxCause::Submit) {
-                    let removed = self.dispatch_list.lock().remove(tag);
-                    assert!(
-                        removed,
-                        "failed work activation lost dispatch-list request tag"
-                    );
-                    return Err(error);
-                }
-                Ok(SubmittedRequest { queue: self, tag })
-            }
-        }
+        Ok(SubmittedRequest {
+            queue: Arc::clone(self),
+            tag,
+        })
     }
 
     pub(super) fn dispatch_one_locked(

@@ -20,6 +20,7 @@ mbarrier = "0.1"
 dma-api.workspace = true
 mmio-api.workspace = true
 rdif-block.workspace = true
+rdif-irq.workspace = true
 
 [features]
 default = []

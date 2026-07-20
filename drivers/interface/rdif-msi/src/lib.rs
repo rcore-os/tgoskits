@@ -71,11 +71,45 @@ impl MsiVector {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct MsiAllocation {
     provider: MsiProviderId,
     device: MsiDeviceId,
     vectors: Box<[MsiVector]>,
+}
+
+/// Failed MSI vector release that preserves the allocation owner.
+///
+/// A provider may fail after partially changing hardware state. Returning the
+/// allocation lets the caller keep the complete token quarantined until the
+/// provider can prove that every vector is detached.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to free MSI vectors: {error:?}")]
+pub struct MsiFreeFailure {
+    allocation: MsiAllocation,
+    error: IrqError,
+}
+
+impl MsiFreeFailure {
+    /// Creates an ownership-preserving vector-release failure.
+    pub const fn new(allocation: MsiAllocation, error: IrqError) -> Self {
+        Self { allocation, error }
+    }
+
+    /// Returns the provider failure.
+    pub const fn error(&self) -> IrqError {
+        self.error
+    }
+
+    /// Returns the allocation that remains owned by this failure.
+    pub const fn allocation(&self) -> &MsiAllocation {
+        &self.allocation
+    }
+
+    /// Separates the retained allocation from the provider failure.
+    pub fn into_parts(self) -> (MsiAllocation, IrqError) {
+        (self.allocation, self.error)
+    }
 }
 
 impl MsiAllocation {
@@ -143,7 +177,7 @@ pub trait Interface: DriverGeneric {
         Err(IrqError::Unsupported)
     }
 
-    fn free_vectors(&mut self, allocation: MsiAllocation) -> Result<(), IrqError>;
+    fn free_vectors(&mut self, allocation: MsiAllocation) -> Result<(), MsiFreeFailure>;
 }
 
 pub struct Msi {
@@ -198,9 +232,9 @@ impl Msi {
         self.inner.set_vector_affinity(vector, affinity)
     }
 
-    pub fn free(&mut self, allocation: MsiAllocation) -> Result<(), IrqError> {
+    pub fn free(&mut self, allocation: MsiAllocation) -> Result<(), MsiFreeFailure> {
         if allocation.provider != self.provider {
-            return Err(IrqError::InvalidIrq);
+            return Err(MsiFreeFailure::new(allocation, IrqError::InvalidIrq));
         }
         self.inner.free_vectors(allocation)
     }
@@ -253,12 +287,13 @@ mod tests {
     use rdif_base::DriverGeneric;
 
     use crate::{
-        Interface, Msi, MsiAllocation, MsiDeviceId, MsiEventId, MsiMessage, MsiProviderId,
-        MsiRequest, MsiVector, MsiVectorIndex,
+        Interface, Msi, MsiAllocation, MsiDeviceId, MsiEventId, MsiFreeFailure, MsiMessage,
+        MsiProviderId, MsiRequest, MsiVector, MsiVectorIndex,
     };
 
     struct MockProvider {
         freed: RefCell<Vec<MsiAllocation>>,
+        free_error: Option<IrqError>,
     }
 
     impl DriverGeneric for MockProvider {
@@ -284,7 +319,10 @@ mod tests {
             Ok(MsiMessage::new(0x0808_0000, vector.event.0))
         }
 
-        fn free_vectors(&mut self, allocation: MsiAllocation) -> Result<(), IrqError> {
+        fn free_vectors(&mut self, allocation: MsiAllocation) -> Result<(), MsiFreeFailure> {
+            if let Some(error) = self.free_error {
+                return Err(MsiFreeFailure::new(allocation, error));
+            }
             self.freed.borrow_mut().push(allocation);
             Ok(())
         }
@@ -297,6 +335,7 @@ mod tests {
             provider,
             MockProvider {
                 freed: RefCell::new(Vec::new()),
+                free_error: None,
             },
         );
 
@@ -335,6 +374,7 @@ mod tests {
             MsiProviderId(7),
             MockProvider {
                 freed: RefCell::new(Vec::new()),
+                free_error: None,
             },
         );
         let wrong = MsiAllocation::new(
@@ -347,6 +387,36 @@ mod tests {
             )]),
         );
 
-        assert_eq!(msi.free(wrong), Err(IrqError::InvalidIrq));
+        let failure = msi.free(wrong).unwrap_err();
+        assert_eq!(failure.error(), IrqError::InvalidIrq);
+        assert_eq!(failure.allocation().provider(), MsiProviderId(8));
+    }
+
+    #[test]
+    fn provider_release_failure_returns_the_original_allocation() {
+        let provider = MsiProviderId(7);
+        let mut msi = Msi::new(
+            provider,
+            MockProvider {
+                freed: RefCell::new(Vec::new()),
+                free_error: Some(IrqError::Controller),
+            },
+        );
+        let allocation = MsiAllocation::new(
+            provider,
+            MsiDeviceId(9),
+            Box::new([MsiVector::new(
+                MsiVectorIndex(3),
+                MsiEventId(11),
+                IrqId::new(IrqDomainId(7), HwIrq(8195)),
+            )]),
+        );
+
+        let failure = msi.free(allocation).unwrap_err();
+
+        assert_eq!(failure.error(), IrqError::Controller);
+        assert_eq!(failure.allocation().provider(), provider);
+        assert_eq!(failure.allocation().device(), MsiDeviceId(9));
+        assert_eq!(failure.allocation().vectors()[0].index, MsiVectorIndex(3));
     }
 }

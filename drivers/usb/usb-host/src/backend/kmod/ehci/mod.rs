@@ -1,4 +1,10 @@
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    sync::{Arc, Weak},
+    vec,
+    vec::Vec,
+};
 use core::{
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
@@ -10,6 +16,7 @@ use ax_kspin::SpinRaw as Mutex;
 use dma_api::CoherentBox;
 use futures::{FutureExt, future::BoxFuture, task::AtomicWaker};
 use mbarrier::{mb, wmb};
+use rdif_irq::{ContainmentCause, FaultContainment, IrqCapture, MaskedSource};
 use usb_if::{
     descriptor::{
         ConfigurationDescriptor, DescriptorType, DeviceDescriptor, DeviceDescriptorBase,
@@ -28,7 +35,10 @@ use super::{
 };
 use crate::{
     DeviceAddressInfo, Mmio,
-    backend::ty::{DeviceOp, Event, EventHandlerOp, HubParams, ep::Endpoint, transfer::Transfer},
+    backend::ty::{
+        DeviceOp, Event, EventHandlerOp, HubParams, IrqEpoch, UsbIrqEvent, UsbIrqFault,
+        ep::Endpoint, transfer::Transfer,
+    },
     err::{HostError, Result},
 };
 
@@ -64,6 +74,8 @@ const USBINTR_USBINT: u32 = 1 << 0;
 const USBINTR_USBERRINT: u32 = 1 << 1;
 const USBINTR_PORT_CHANGE: u32 = 1 << 2;
 const USBINTR_ASYNC_ADVANCE: u32 = 1 << 5;
+const EHCI_RUNTIME_IRQS: u32 =
+    USBINTR_USBINT | USBINTR_USBERRINT | USBINTR_PORT_CHANGE | USBINTR_ASYNC_ADVANCE;
 
 const PORT_CONNECT_CHANGE: u32 = 1 << 1;
 const PORT_ENABLE_CHANGE: u32 = 1 << 3;
@@ -513,22 +525,43 @@ impl QueueTransferDescriptor {
 
 #[derive(Clone)]
 struct TransferWakeups {
-    count: Arc<AtomicUsize>,
+    inner: Arc<TransferWakeupRegistry>,
+}
+
+struct TransferWakeupRegistry {
+    count: AtomicUsize,
+    waiters: Mutex<Vec<Weak<AtomicWaker>>>,
 }
 
 impl TransferWakeups {
     fn new() -> Self {
         Self {
-            count: Arc::new(AtomicUsize::new(0)),
+            inner: Arc::new(TransferWakeupRegistry {
+                count: AtomicUsize::new(0),
+                waiters: Mutex::new(Vec::new()),
+            }),
         }
     }
 
     fn notify(&self) {
-        self.count.fetch_add(1, Ordering::AcqRel);
+        self.inner.count.fetch_add(1, Ordering::AcqRel);
+        self.inner.waiters.lock().retain(|waiter| {
+            let Some(waiter) = waiter.upgrade() else {
+                return false;
+            };
+            waiter.wake();
+            true
+        });
     }
 
     fn take(&self) -> usize {
-        self.count.swap(0, Ordering::AcqRel)
+        self.inner.count.swap(0, Ordering::AcqRel)
+    }
+
+    fn register_endpoint(&self) -> Arc<AtomicWaker> {
+        let waiter = Arc::new(AtomicWaker::new());
+        self.inner.waiters.lock().push(Arc::downgrade(&waiter));
+        waiter
     }
 }
 
@@ -538,6 +571,7 @@ pub struct Ehci {
     schedule: AsyncSchedule,
     root_hub: Option<EhciRootHub>,
     event_handler: Option<EhciEventHandler>,
+    wakeups: TransferWakeups,
     next_addr: u8,
 }
 
@@ -559,6 +593,7 @@ impl Ehci {
             schedule,
             root_hub: Some(root_hub),
             event_handler: Some(event_handler),
+            wakeups,
             next_addr: 1,
         })
     }
@@ -626,6 +661,7 @@ impl Ehci {
             self.regs,
             self.schedule.clone(),
             self.kernel.clone(),
+            self.wakeups.clone(),
             info.port_speed,
         )?;
         device.init().await?;
@@ -778,6 +814,7 @@ impl HubOp for EhciRootHub {
 struct EhciEventHandler {
     regs: EhciRegisters,
     wakeups: TransferWakeups,
+    irq_epoch: IrqEpoch,
 }
 
 unsafe impl Send for EhciEventHandler {}
@@ -785,33 +822,83 @@ unsafe impl Sync for EhciEventHandler {}
 
 impl EhciEventHandler {
     fn new(regs: EhciRegisters, wakeups: TransferWakeups) -> Self {
-        Self { regs, wakeups }
+        Self {
+            regs,
+            wakeups,
+            irq_epoch: IrqEpoch::new(),
+        }
     }
 }
 
 impl EventHandlerOp for EhciEventHandler {
-    fn handle_event(&self) -> Event {
+    fn capture_irq(&self) -> IrqCapture<UsbIrqEvent, UsbIrqFault> {
         let sts = self.regs.op_read32(USBSTS);
+        let enabled = self.regs.op_read32(USBINTR);
         let pending = sts
+            & enabled
             & (USBSTS_USBINT
                 | USBSTS_USBERRINT
                 | USBSTS_PORT_CHANGE
                 | USBSTS_HOST_SYSTEM_ERROR
                 | USBSTS_INTERRUPT_ASYNC_ADVANCE);
         if pending == 0 {
-            return Event::Nothing;
+            return IrqCapture::Unhandled;
         }
 
+        self.regs.op_write32(USBINTR, 0);
         self.regs.op_write32(USBSTS, pending);
-        if pending & USBSTS_PORT_CHANGE != 0 {
-            return Event::PortChange { port: 0 };
+        match self.irq_epoch.capture(u64::from(pending)) {
+            Ok((event, masked)) => IrqCapture::Captured {
+                event,
+                masked: Some(masked),
+            },
+            Err(reason) => match self.irq_epoch.contained_or_capture(u64::from(pending)) {
+                Ok(masked) => IrqCapture::Fault {
+                    reason,
+                    containment: FaultContainment::DeviceSourceMasked(masked),
+                },
+                Err(_) => IrqCapture::Fault {
+                    reason,
+                    containment: FaultContainment::Uncontained,
+                },
+            },
         }
-        if pending & (USBSTS_USBINT | USBSTS_USBERRINT | USBSTS_INTERRUPT_ASYNC_ADVANCE) != 0 {
-            self.wakeups.notify();
-            return Event::TransferActivity {
-                count: self.wakeups.take().max(1),
-            };
+    }
+
+    fn service_host_events(&self, event: UsbIrqEvent) -> core::result::Result<Event, UsbIrqFault> {
+        self.irq_epoch.validate_event(event)?;
+        Ok(service_ehci_event(event.sources() as u32, &self.wakeups))
+    }
+
+    fn contain(&self, _cause: ContainmentCause) -> core::result::Result<MaskedSource, UsbIrqFault> {
+        self.regs.op_write32(USBINTR, 0);
+        self.irq_epoch
+            .contained_or_capture(u64::from(EHCI_RUNTIME_IRQS))
+    }
+
+    fn rearm_sources(&self, source: MaskedSource) -> core::result::Result<(), UsbIrqFault> {
+        self.irq_epoch.finish_rearm(source)?;
+        self.regs.op_write32(USBINTR, EHCI_RUNTIME_IRQS);
+        Ok(())
+    }
+}
+
+fn service_ehci_event(pending: u32, wakeups: &TransferWakeups) -> Event {
+    let transfer_pending =
+        pending & (USBSTS_USBINT | USBSTS_USBERRINT | USBSTS_INTERRUPT_ASYNC_ADVANCE) != 0;
+    let transfer_count = if transfer_pending {
+        wakeups.notify();
+        wakeups.take().max(1)
+    } else {
+        0
+    };
+    if pending & USBSTS_PORT_CHANGE != 0 {
+        Event::PortChange { port: 0 }
+    } else if transfer_count != 0 {
+        Event::TransferActivity {
+            count: transfer_count,
         }
+    } else {
         Event::Stopped
     }
 }
@@ -821,6 +908,7 @@ struct EhciDevice {
     regs: EhciRegisters,
     schedule: AsyncSchedule,
     kernel: Kernel,
+    wakeups: TransferWakeups,
     _port_speed: Speed,
     desc: DeviceDescriptor,
     ctrl_ep: Endpoint,
@@ -838,12 +926,14 @@ impl EhciDevice {
         regs: EhciRegisters,
         schedule: AsyncSchedule,
         kernel: Kernel,
+        wakeups: TransferWakeups,
         port_speed: Speed,
     ) -> Result<Self> {
         let raw = EhciEndpoint::new(
             regs,
             schedule.clone(),
             kernel.clone(),
+            wakeups.register_endpoint(),
             0,
             EndpointInfo::control(),
         )?;
@@ -852,6 +942,7 @@ impl EhciDevice {
             regs,
             schedule,
             kernel,
+            wakeups,
             _port_speed: port_speed,
             desc: unsafe { core::mem::zeroed() },
             ctrl_ep: Endpoint::new(EndpointInfo::control(), raw),
@@ -950,6 +1041,7 @@ impl EhciDevice {
                 self.regs,
                 self.schedule.clone(),
                 self.kernel.clone(),
+                self.wakeups.register_endpoint(),
                 self.address,
                 info,
             )?;
@@ -1033,7 +1125,7 @@ struct EhciEndpoint {
     qh: CoherentBox<QueueHead>,
     next_request_id: u64,
     inflight: Option<SubmittedTransfer>,
-    waker: AtomicWaker,
+    waker: Arc<AtomicWaker>,
 }
 
 unsafe impl Send for EhciEndpoint {}
@@ -1043,6 +1135,7 @@ impl EhciEndpoint {
         regs: EhciRegisters,
         schedule: AsyncSchedule,
         kernel: Kernel,
+        waker: Arc<AtomicWaker>,
         device_address: u8,
         info: EndpointInfo,
     ) -> Result<Self> {
@@ -1063,7 +1156,7 @@ impl EhciEndpoint {
             qh,
             next_request_id: 1,
             inflight: None,
-            waker: AtomicWaker::new(),
+            waker,
         })
     }
 
@@ -1283,7 +1376,6 @@ impl crate::backend::ty::ep::EndpointOp for EhciEndpoint {
 
     fn register_waker(&self, _id: RequestId, cx: &mut Context<'_>) {
         self.waker.register(cx.waker());
-        cx.waker().wake_by_ref();
     }
 
     fn cancel_request(&mut self, id: RequestId) -> core::result::Result<(), TransferError> {
@@ -1366,6 +1458,13 @@ fn usb_to_transfer_error(err: USBError) -> TransferError {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{sync::Arc, task::Wake};
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        task::Waker,
+    };
+
+    use ax_kspin_test_runtime as _;
     use usb_if::{
         endpoint::TransferRequest,
         host::{ControlSetup, hub::Speed},
@@ -1373,8 +1472,35 @@ mod tests {
     };
 
     use super::{
-        ControlTdPlan, EhciPortStatus, QtdPid, QtdToken, build_control_td_plan, split_bulk_lengths,
+        ControlTdPlan, EhciPortStatus, QtdPid, QtdToken, TransferWakeups, USBSTS_PORT_CHANGE,
+        USBSTS_USBINT, build_control_td_plan, service_ehci_event, split_bulk_lengths,
     };
+    use crate::backend::ty::Event;
+
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn combined_port_and_transfer_irq_keeps_transfer_progress_visible() {
+        let wakeups = TransferWakeups::new();
+        let endpoint = wakeups.register_endpoint();
+        let wake_count = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        endpoint.register(&Waker::from(wake_count.clone()));
+
+        let event = service_ehci_event(USBSTS_PORT_CHANGE | USBSTS_USBINT, &wakeups);
+
+        assert!(matches!(event, Event::PortChange { .. }));
+        assert_eq!(wake_count.0.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn port_status_reports_high_speed_only_when_enabled_and_line_status_is_k_state() {

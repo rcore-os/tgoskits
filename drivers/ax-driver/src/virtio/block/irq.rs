@@ -1,187 +1,337 @@
-//! Hard-IRQ acknowledgement and deferred transport ownership handoff.
+//! Independent VirtIO interrupt-status ownership.
+//!
+//! The registered hard-IRQ action owns [`VirtioInterruptPort`]. It reads and
+//! acknowledges only the transport's dedicated interrupt-status registers;
+//! it never borrows the queue/configuration transport used by the maintenance
+//! owner. The matching control endpoint validates source generations. VirtIO
+//! MMIO and PCI do not expose a portable hard-IRQ-safe device-source mask, so
+//! failed publication is reported as uncontained and the OS masks the action
+//! or line.
 
-use alloc::sync::Arc;
-use core::{
-    hint::spin_loop,
-    sync::atomic::{AtomicBool, Ordering},
+use alloc::{boxed::Box, sync::Arc};
+#[cfg(test)]
+use core::sync::atomic::AtomicU8;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use rdif_block::{
+    BlkError, BlockIrqSource, ContainmentCause, Event, IrqCapture, IrqControlError, IrqEndpoint,
+    IrqSourceControl, MaskedSource,
 };
-
-use ax_kspin::PreemptIrqGuard;
 use virtio_drivers::transport::InterruptStatus;
 
-use super::{VIRTIO_BLK_QUEUE_ID, device::VirtIoBlkDevice};
-use crate::virtio::VirtIoTransport;
+use super::VIRTIO_BLK_QUEUE_ID;
 
-pub(super) struct VirtioBlkIrqHandler<T: VirtIoTransport> {
-    pub(super) inner: Arc<VirtIoBlkDevice<T>>,
+const MMIO_INTERRUPT_STATUS_OFFSET: usize = 0x60;
+const MMIO_INTERRUPT_ACK_OFFSET: usize = 0x64;
+const MMIO_INTERRUPT_REGISTERS_END: usize = MMIO_INTERRUPT_ACK_OFFSET + size_of::<u32>();
+const VIRTIO_QUEUE_SOURCE_BITMAP: u64 = 1;
+
+/// Destructive VirtIO interrupt-status capability separated from `Transport`.
+pub struct VirtioInterruptPort {
+    registers: VirtioInterruptRegisters,
 }
 
-pub(super) struct VirtioBlkInitIrqHandler<T: VirtIoTransport> {
-    pub(super) inner: Arc<VirtIoBlkDevice<T>>,
-}
+impl VirtioInterruptPort {
+    /// Builds a VirtIO MMIO interrupt port and retains its complete mapping.
+    ///
+    /// The mapping must describe the same controller from which the paired
+    /// queue/config transport was created. Registration helpers construct both
+    /// parts before erasing the platform transport type.
+    pub fn from_mmio(mapping: mmio_api::Mmio) -> Result<Self, BlkError> {
+        if mapping.size() < MMIO_INTERRUPT_REGISTERS_END {
+            return Err(BlkError::Other(
+                "virtio MMIO mapping does not contain interrupt registers",
+            ));
+        }
+        Ok(Self {
+            registers: VirtioInterruptRegisters::Mmio {
+                mapping: Arc::new(mapping),
+            },
+        })
+    }
 
-impl<T: VirtIoTransport> rdif_block::IrqHandler for VirtioBlkInitIrqHandler<T> {
-    fn handle_irq(&mut self) -> rdif_block::IrqOutcome {
-        self.inner.handle_initialization_irq()
+    /// Builds a VirtIO PCI interrupt port and retains its ISR mapping.
+    ///
+    /// The mapping must come from the paired controller's vendor ISR
+    /// capability; PCI discovery validates its BAR and bounds before calling
+    /// this constructor.
+    pub fn from_pci_isr(mapping: mmio_api::Mmio) -> Result<Self, BlkError> {
+        if mapping.size() < size_of::<u8>() {
+            return Err(BlkError::Other("virtio PCI ISR mapping is empty"));
+        }
+        Ok(Self {
+            registers: VirtioInterruptRegisters::Pci {
+                mapping: Arc::new(mapping),
+            },
+        })
+    }
+
+    #[cfg(test)]
+    fn for_test(status: Arc<AtomicU8>) -> Self {
+        Self {
+            registers: VirtioInterruptRegisters::Test { status },
+        }
     }
 }
 
-impl<T: VirtIoTransport> rdif_block::IrqHandler for VirtioBlkIrqHandler<T> {
-    fn handle_irq(&mut self) -> rdif_block::IrqOutcome {
-        self.inner.handle_irq()
-    }
+#[derive(Clone)]
+enum VirtioInterruptRegisters {
+    Mmio {
+        mapping: Arc<mmio_api::Mmio>,
+    },
+    Pci {
+        mapping: Arc<mmio_api::Mmio>,
+    },
+    #[cfg(test)]
+    Test {
+        status: Arc<AtomicU8>,
+    },
+}
 
-    fn continue_deferred_irq(&mut self) -> rdif_block::DeferredIrqProgress {
-        self.inner.continue_deferred_irq()
+impl VirtioInterruptRegisters {
+    fn capture_status(&mut self) -> CapturedInterruptStatus {
+        let raw = match self {
+            Self::Mmio { mapping } => {
+                let raw = mapping.read::<u32>(MMIO_INTERRUPT_STATUS_OFFSET);
+                if raw != 0 {
+                    mapping.write(MMIO_INTERRUPT_ACK_OFFSET, raw);
+                }
+                raw
+            }
+            // The VirtIO PCI specification defines this read itself as the
+            // destructive acknowledgement.
+            Self::Pci { mapping } => u32::from(mapping.read::<u8>(0)),
+            #[cfg(test)]
+            Self::Test { status } => u32::from(status.swap(0, Ordering::AcqRel)),
+        };
+        CapturedInterruptStatus {
+            raw,
+            known: InterruptStatus::from_bits_truncate(raw),
+        }
     }
 }
 
-pub(super) struct VirtioBlkAccessGuard<'a>(&'a AtomicBool);
+struct CapturedInterruptStatus {
+    raw: u32,
+    known: InterruptStatus,
+}
 
-impl<'a> VirtioBlkAccessGuard<'a> {
-    pub(super) fn enter_task(active: &'a AtomicBool) -> Self {
-        Self::enter(active)
+/// One-controller factory for initialization and normal-I/O IRQ endpoints.
+pub(super) struct VirtioIrqOwnership {
+    registers: VirtioInterruptRegisters,
+    state: Arc<VirtioIrqState>,
+    initialization_taken: bool,
+    normal_io_taken: bool,
+}
+
+/// Keeps a controller register mapping alive across split queue and IRQ
+/// objects. MMIO transports retain raw register pointers, while PCI uses this
+/// lease only for its ISR capability. The lease exposes no register operations:
+/// destructive status ownership remains exclusively in the IRQ endpoint.
+#[derive(Clone)]
+pub(super) struct VirtioRegisterMappingLease {
+    _registers: VirtioInterruptRegisters,
+}
+
+impl VirtioIrqOwnership {
+    pub(super) fn new(port: VirtioInterruptPort) -> Self {
+        Self {
+            registers: port.registers,
+            state: Arc::new(VirtioIrqState::new()),
+            initialization_taken: false,
+            normal_io_taken: false,
+        }
     }
 
-    fn try_enter_irq(active: &'a AtomicBool) -> Option<Self> {
-        Self::try_enter(active)
+    pub(super) fn enable(&self) {
+        self.state.enable();
     }
 
-    pub(super) fn try_enter_task(active: &'a AtomicBool) -> Option<Self> {
-        Self::try_enter(active)
+    pub(super) fn disable(&self) {
+        self.state.enabled.store(false, Ordering::Release);
     }
 
-    fn try_enter(active: &'a AtomicBool) -> Option<Self> {
-        if active
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
+    pub(super) fn is_enabled(&self) -> bool {
+        self.state.enabled.load(Ordering::Acquire)
+    }
+
+    pub(super) fn register_mapping_lease(&self) -> VirtioRegisterMappingLease {
+        VirtioRegisterMappingLease {
+            _registers: self.registers.clone(),
+        }
+    }
+
+    pub(super) fn initialization_is_live(&self) -> bool {
+        self.state.initialization_live.load(Ordering::Acquire)
+    }
+
+    pub(super) fn normal_io_is_live(&self) -> bool {
+        self.state.normal_io_live.load(Ordering::Acquire)
+    }
+
+    pub(super) fn take_initialization_source(&mut self) -> Option<BlockIrqSource> {
+        if self.initialization_taken {
             return None;
         }
-        Some(Self(active))
+        self.initialization_taken = true;
+        self.state
+            .initialization_live
+            .store(true, Ordering::Release);
+        Some(self.new_source(IrqEndpointRole::Initialization))
     }
 
-    fn enter(active: &'a AtomicBool) -> Self {
-        while active
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            spin_loop();
+    pub(super) fn take_normal_io_source(&mut self) -> Option<BlockIrqSource> {
+        if self.normal_io_taken || self.initialization_is_live() {
+            return None;
         }
-        Self(active)
+        self.normal_io_taken = true;
+        self.state.normal_io_live.store(true, Ordering::Release);
+        Some(self.new_source(IrqEndpointRole::NormalIo))
+    }
+
+    fn new_source(&self, role: IrqEndpointRole) -> BlockIrqSource {
+        BlockIrqSource::new(
+            Box::new(VirtioBlkIrqEndpoint {
+                registers: self.registers.clone(),
+                state: Arc::clone(&self.state),
+                role,
+            }),
+            Box::new(VirtioBlkIrqControl {
+                state: Arc::clone(&self.state),
+            }),
+        )
     }
 }
 
-impl Drop for VirtioBlkAccessGuard<'_> {
+struct VirtioIrqState {
+    enabled: AtomicBool,
+    generation: AtomicU64,
+    initialization_live: AtomicBool,
+    normal_io_live: AtomicBool,
+}
+
+impl VirtioIrqState {
+    const fn new() -> Self {
+        Self {
+            enabled: AtomicBool::new(false),
+            generation: AtomicU64::new(1),
+            initialization_live: AtomicBool::new(false),
+            normal_io_live: AtomicBool::new(false),
+        }
+    }
+
+    fn enable(&self) {
+        let previous = self.enabled.swap(true, Ordering::AcqRel);
+        if previous {
+            return;
+        }
+        let next = self
+            .generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        if next == 0 {
+            self.generation.store(1, Ordering::Release);
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum IrqEndpointRole {
+    Initialization,
+    NormalIo,
+}
+
+struct VirtioBlkIrqEndpoint {
+    registers: VirtioInterruptRegisters,
+    state: Arc<VirtioIrqState>,
+    role: IrqEndpointRole,
+}
+
+impl IrqEndpoint for VirtioBlkIrqEndpoint {
+    type Event = Event;
+    type Fault = BlkError;
+
+    fn capture(&mut self) -> IrqCapture<Self::Event, Self::Fault> {
+        if !self.state.enabled.load(Ordering::Acquire) {
+            return IrqCapture::Unhandled;
+        }
+        let status = self.registers.capture_status();
+        if status.raw == 0 {
+            return IrqCapture::Unhandled;
+        }
+        IrqCapture::Captured {
+            // A non-zero raw value was destructively acknowledged even when a
+            // newer device used only reserved bits. Preserve IRQ ownership as
+            // a control event instead of misreporting the shared line as
+            // unhandled; only known queue bits activate completion service.
+            event: virtio_blk_event_from_irq_status(status.known),
+            masked: None,
+        }
+    }
+
+    fn contain(&mut self, _cause: ContainmentCause) -> Result<MaskedSource, Self::Fault> {
+        // Neither VirtIO MMIO nor the portable PCI ISR capability contains a
+        // device-side interrupt mask. Pretending that a software flag masks
+        // hardware would permit an IRQ storm, so the OS must mask the action
+        // or parent line and enter controller recovery.
+        Err(BlkError::Other(
+            "virtio interrupt source cannot be contained from hard IRQ",
+        ))
+    }
+}
+
+impl Drop for VirtioBlkIrqEndpoint {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        match self.role {
+            IrqEndpointRole::Initialization => self
+                .state
+                .initialization_live
+                .store(false, Ordering::Release),
+            IrqEndpointRole::NormalIo => self.state.normal_io_live.store(false, Ordering::Release),
+        }
     }
 }
 
-pub(super) fn virtio_blk_irq_outcome(
-    access_active: &AtomicBool,
-    irq_ack_pending: &AtomicBool,
-    irq_enabled: bool,
-    ack_status: impl FnOnce() -> InterruptStatus,
-) -> rdif_block::IrqOutcome {
-    if !irq_enabled {
-        return rdif_block::IrqOutcome::unhandled();
-    }
-    let Some(_active) = VirtioBlkAccessGuard::try_enter_irq(access_active) else {
-        let first = !irq_ack_pending.swap(true, Ordering::AcqRel);
-        let queues = if first {
-            rdif_block::IdList::from_bits(1 << VIRTIO_BLK_QUEUE_ID)
-        } else {
-            rdif_block::IdList::none()
-        };
-        return rdif_block::IrqOutcome::deferred(queues);
-    };
-    irq_ack_pending.store(false, Ordering::Release);
-    let status = ack_status();
-    let event = virtio_blk_event_from_irq_status(true, status);
-    if !event.is_empty() {
-        rdif_block::IrqOutcome::handled(event)
-    } else if status.is_empty() {
-        rdif_block::IrqOutcome::unhandled()
-    } else {
-        rdif_block::IrqOutcome::handled_control()
+struct VirtioBlkIrqControl {
+    state: Arc<VirtioIrqState>,
+}
+
+impl IrqSourceControl for VirtioBlkIrqControl {
+    type Error = IrqControlError;
+
+    fn rearm(&mut self, source: MaskedSource) -> Result<(), Self::Error> {
+        let expected = self.state.generation();
+        let actual = source.generation().get();
+        if actual != expected {
+            return Err(IrqControlError::StaleGeneration { expected, actual });
+        }
+        Err(IrqControlError::SourceNotMasked {
+            bitmap: source.bitmap().get(),
+        })
     }
 }
 
-pub(super) fn initialization_irq_outcome(
-    access_active: &AtomicBool,
-    irq_ack_pending: &AtomicBool,
-    irq_enabled: bool,
-    ack_status: impl FnOnce() -> InterruptStatus,
-) -> rdif_block::IrqOutcome {
-    if !irq_enabled {
-        return rdif_block::IrqOutcome::unhandled();
+pub(super) fn virtio_blk_event_from_irq_status(status: InterruptStatus) -> Event {
+    if !status.contains(InterruptStatus::QUEUE_INTERRUPT) {
+        return Event::none();
     }
-    let Some(_active) = VirtioBlkAccessGuard::try_enter_irq(access_active) else {
-        irq_ack_pending.store(true, Ordering::Release);
-        return rdif_block::IrqOutcome::deferred(rdif_block::IdList::from_bits(
-            1 << VIRTIO_BLK_QUEUE_ID,
-        ));
-    };
-    irq_ack_pending.store(false, Ordering::Release);
-    let status = ack_status();
-    if status.is_empty() {
-        rdif_block::IrqOutcome::unhandled()
-    } else {
-        rdif_block::IrqOutcome::handled_control()
-    }
+    Event::from_queue_bits(VIRTIO_QUEUE_SOURCE_BITMAP << VIRTIO_BLK_QUEUE_ID)
 }
 
-pub(super) fn service_deferred_initialization_irq(
-    access_active: &AtomicBool,
-    irq_ack_pending: &AtomicBool,
-    irq_enabled: bool,
-    ack_status: impl FnOnce() -> InterruptStatus,
-) -> rdif_block::InitIrqProgress {
-    if !irq_enabled {
-        return rdif_block::InitIrqProgress::Unhandled;
-    }
-    let _context = PreemptIrqGuard::new();
-    let Some(_active) = VirtioBlkAccessGuard::try_enter_task(access_active) else {
-        return rdif_block::InitIrqProgress::Deferred;
-    };
-    if !irq_ack_pending.swap(false, Ordering::AcqRel) {
-        return rdif_block::InitIrqProgress::Unhandled;
-    }
-    if ack_status().is_empty() {
-        rdif_block::InitIrqProgress::Unhandled
-    } else {
-        rdif_block::InitIrqProgress::Acknowledged
-    }
+#[cfg(test)]
+pub(super) fn test_interrupt_port(status: Arc<AtomicU8>) -> VirtioInterruptPort {
+    VirtioInterruptPort::for_test(status)
 }
 
-pub(super) fn virtio_blk_event_from_irq_status(
-    irq_enabled: bool,
-    status: InterruptStatus,
-) -> rdif_block::Event {
-    if !irq_enabled || !status.contains(InterruptStatus::QUEUE_INTERRUPT) {
-        return rdif_block::Event::none();
+#[cfg(test)]
+pub(super) fn test_register_mapping_lease() -> VirtioRegisterMappingLease {
+    VirtioRegisterMappingLease {
+        _registers: VirtioInterruptRegisters::Test {
+            status: Arc::new(AtomicU8::new(0)),
+        },
     }
-    rdif_block::Event::from_queue_bits(1 << VIRTIO_BLK_QUEUE_ID)
-}
-
-pub(super) fn continue_deferred_virtio_queue_irq(
-    access_active: &AtomicBool,
-    irq_ack_pending: &AtomicBool,
-    irq_enabled: bool,
-    ack_status: impl FnOnce() -> InterruptStatus,
-) -> rdif_block::DeferredIrqProgress {
-    if !irq_enabled {
-        return rdif_block::DeferredIrqProgress::Unhandled;
-    }
-    let _context = PreemptIrqGuard::new();
-    let Some(_active) = VirtioBlkAccessGuard::try_enter_task(access_active) else {
-        return rdif_block::DeferredIrqProgress::Deferred;
-    };
-    if !irq_ack_pending.swap(false, Ordering::AcqRel) {
-        return rdif_block::DeferredIrqProgress::Unhandled;
-    }
-    let status = ack_status();
-    let facts = virtio_blk_event_from_irq_status(true, status);
-    rdif_block::DeferredIrqProgress::Acknowledged(facts)
 }

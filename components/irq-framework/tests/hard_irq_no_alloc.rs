@@ -2,18 +2,34 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    cell::Cell,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use irq_framework::{
-    CpuId, HwIrq, IrqContinuationSlot, IrqContinuationToken, IrqContinuationWake, IrqDomainId,
-    IrqError, IrqId, IrqOps, IrqRequest, IrqReturn, Registry,
+    AutoEnable, CpuId, HwIrq, IrqAffinity, IrqDomainId, IrqError, IrqId, IrqLineBinding,
+    IrqLineControl, IrqOps, IrqRequest, IrqReturn, IrqScope, PreparedIrqLine, Registry,
 };
 
-static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-static DEALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static HANDLER_CALLS: AtomicUsize = AtomicUsize::new(0);
+static EOI_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+std::thread_local! {
+    static TRACK_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    static DEALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn begin_allocation_audit() {
+    ALLOCATIONS.set(0);
+    DEALLOCATIONS.set(0);
+    TRACK_ALLOCATIONS.set(true);
+}
+
+fn finish_allocation_audit() -> (usize, usize) {
+    TRACK_ALLOCATIONS.set(false);
+    (ALLOCATIONS.get(), DEALLOCATIONS.get())
+}
 
 struct AuditAllocator;
 
@@ -22,15 +38,16 @@ struct AuditAllocator;
 // audit window and do not affect allocation ownership.
 unsafe impl GlobalAlloc for AuditAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        if TRACK_ALLOCATIONS.try_with(Cell::get).unwrap_or(false) {
+            let _ = ALLOCATIONS.try_with(|allocations| allocations.set(allocations.get() + 1));
         }
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if TRACK_ALLOCATIONS.load(Ordering::Relaxed) {
-            DEALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        if TRACK_ALLOCATIONS.try_with(Cell::get).unwrap_or(false) {
+            let _ =
+                DEALLOCATIONS.try_with(|deallocations| deallocations.set(deallocations.get() + 1));
         }
         unsafe { System.dealloc(ptr, layout) };
     }
@@ -41,21 +58,7 @@ static ALLOCATOR: AuditAllocator = AuditAllocator;
 
 struct AuditOps {
     line_enabled: AtomicBool,
-}
-
-struct ContinuationAudit {
-    slot: IrqContinuationSlot,
-    wakes: AtomicUsize,
-}
-
-unsafe fn publish_continuation(data: usize, token: IrqContinuationToken) {
-    let audit = unsafe {
-        // SAFETY: the test leaks this callback target before registration and
-        // retains it until the action is freed.
-        &*core::ptr::with_exposed_provenance::<ContinuationAudit>(data)
-    };
-    assert!(audit.slot.publish(token).is_ok());
-    audit.wakes.fetch_add(1, Ordering::Release);
+    audit_after_prepare: bool,
 }
 
 // SAFETY: CPU thunks run synchronously before return, the adapter never keeps
@@ -89,21 +92,23 @@ unsafe impl IrqOps for AuditOps {
         Ok(())
     }
 
-    fn set_enabled(&self, _irq: IrqId, _cpu: Option<CpuId>, enabled: bool) -> Result<(), IrqError> {
+    fn prepare_line(
+        &self,
+        irq: IrqId,
+        _scope: IrqScope,
+        _affinity: IrqAffinity,
+    ) -> Result<PreparedIrqLine, IrqError> {
+        if self.audit_after_prepare {
+            begin_allocation_audit();
+        }
+        Ok(PreparedIrqLine::new(
+            IrqLineBinding::new(irq.hwirq.0, 1).unwrap(),
+            IrqLineControl::Maskable,
+        ))
+    }
+
+    fn set_line_enabled(&self, _binding: IrqLineBinding, _cpu: Option<CpuId>, enabled: bool) {
         self.line_enabled.store(enabled, Ordering::Release);
-        Ok(())
-    }
-
-    fn is_enabled(&self, _irq: IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-        Ok(self.line_enabled.load(Ordering::Acquire))
-    }
-
-    fn is_pending(&self, _irq: IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-        Ok(false)
-    }
-
-    fn is_in_service(&self, _irq: IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-        Ok(false)
     }
 
     fn relax(&self) {
@@ -112,12 +117,16 @@ unsafe impl IrqOps for AuditOps {
 }
 
 #[test]
-fn dispatch_and_fail_closed_quench_allocate_and_free_nothing() {
+fn dispatch_action_disable_line_mask_and_eoi_allocate_and_free_nothing() {
+    HANDLER_CALLS.store(0, Ordering::Relaxed);
+    EOI_CALLS.store(0, Ordering::Relaxed);
     let registry = Registry::new(AuditOps {
         line_enabled: AtomicBool::new(false),
+        audit_after_prepare: false,
     });
     let irq = IrqId::new(IrqDomainId(1), HwIrq(1));
-    let quench_irq = IrqId::new(IrqDomainId(1), HwIrq(2));
+    let action_disable_irq = IrqId::new(IrqDomainId(1), HwIrq(2));
+    let line_mask_irq = IrqId::new(IrqDomainId(1), HwIrq(3));
     let action = registry
         .request(
             irq,
@@ -128,71 +137,74 @@ fn dispatch_and_fail_closed_quench_allocate_and_free_nothing() {
         )
         .unwrap();
     registry.enable(action).unwrap();
-    let quench_action = registry
+    let disabled_action = registry
         .request(
-            quench_irq,
+            action_disable_irq,
             IrqRequest::new(|_| {
                 HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
-                IrqReturn::QuenchAndWake
+                IrqReturn::DisableActionAndWake
             }),
         )
         .unwrap();
-    registry.enable(quench_action).unwrap();
+    registry.enable(disabled_action).unwrap();
+    let masked_action = registry
+        .request(
+            line_mask_irq,
+            IrqRequest::new(|_| {
+                HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+                IrqReturn::MaskLineAndWake
+            }),
+        )
+        .unwrap();
+    registry.enable(masked_action).unwrap();
 
-    ALLOCATIONS.store(0, Ordering::Relaxed);
-    DEALLOCATIONS.store(0, Ordering::Relaxed);
-    TRACK_ALLOCATIONS.store(true, Ordering::Release);
-    let outcome = registry.dispatch(irq, CpuId(0));
-    let quench_outcome = registry.dispatch(quench_irq, CpuId(0));
-    TRACK_ALLOCATIONS.store(false, Ordering::Release);
+    begin_allocation_audit();
+    let outcome = registry.dispatch(irq, CpuId(0), || {
+        EOI_CALLS.fetch_add(1, Ordering::Relaxed);
+    });
+    let disable_outcome = registry.dispatch(action_disable_irq, CpuId(0), || {
+        EOI_CALLS.fetch_add(1, Ordering::Relaxed);
+    });
+    let mask_outcome = registry.dispatch(line_mask_irq, CpuId(0), || {
+        EOI_CALLS.fetch_add(1, Ordering::Relaxed);
+    });
+    let (allocations, deallocations) = finish_allocation_audit();
 
     assert!(outcome.handled);
     assert_eq!(outcome.called, 1);
-    assert!(quench_outcome.handled);
-    assert!(quench_outcome.wake);
-    assert_eq!(quench_outcome.called, 1);
-    assert_eq!(HANDLER_CALLS.load(Ordering::Relaxed), 2);
-    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0);
-    assert_eq!(DEALLOCATIONS.load(Ordering::Relaxed), 0);
+    assert!(disable_outcome.handled);
+    assert!(disable_outcome.wake);
+    assert_eq!(disable_outcome.called, 1);
+    assert!(mask_outcome.handled);
+    assert!(mask_outcome.wake);
+    assert_eq!(mask_outcome.called, 1);
+    assert_eq!(HANDLER_CALLS.load(Ordering::Relaxed), 3);
+    assert_eq!(EOI_CALLS.load(Ordering::Relaxed), 3);
+    assert_eq!(allocations, 0);
+    assert_eq!(deallocations, 0);
 
-    registry.release_quench(quench_action).unwrap();
-    audit_deferred_continuation_path();
+    registry.release_quench(masked_action).unwrap();
 }
 
-fn audit_deferred_continuation_path() {
+#[test]
+fn registration_allocates_everything_before_preparing_the_irqchip_line() {
+    TRACK_ALLOCATIONS.set(false);
     let registry = Registry::new(AuditOps {
         line_enabled: AtomicBool::new(false),
+        audit_after_prepare: true,
     });
-    let irq = IrqId::new(IrqDomainId(1), HwIrq(3));
-    let audit = Box::leak(Box::new(ContinuationAudit {
-        slot: IrqContinuationSlot::new(),
-        wakes: AtomicUsize::new(0),
-    }));
-    let data = core::ptr::from_ref(audit).expose_provenance();
-    let wake: &'static IrqContinuationWake = Box::leak(Box::new(unsafe {
-        // SAFETY: `audit` is leaked and the callback is allocation-free,
-        // non-blocking, and stores only the linear token in its fixed slot.
-        IrqContinuationWake::new(data, publish_continuation)
-    }));
+    let irq = IrqId::new(IrqDomainId(1), HwIrq(4));
+
     let action = registry
-        .request(irq, IrqRequest::new(move |_| IrqReturn::Defer(wake)))
+        .request(
+            irq,
+            IrqRequest::new(|_| IrqReturn::Handled).auto_enable(AutoEnable::Yes),
+        )
         .unwrap();
-    registry.enable(action).unwrap();
+    let (allocations, deallocations) = finish_allocation_audit();
 
-    ALLOCATIONS.store(0, Ordering::Relaxed);
-    DEALLOCATIONS.store(0, Ordering::Relaxed);
-    TRACK_ALLOCATIONS.store(true, Ordering::Release);
-    let outcome = registry.dispatch(irq, CpuId(0));
-    TRACK_ALLOCATIONS.store(false, Ordering::Release);
-
-    assert!(outcome.handled && outcome.wake);
-    assert_eq!(audit.wakes.load(Ordering::Acquire), 1);
-    assert!(audit.slot.is_ready());
-    assert!(!registry.status(action).unwrap().line_enabled);
-    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0);
-    assert_eq!(DEALLOCATIONS.load(Ordering::Relaxed), 0);
-
-    let token = audit.slot.take().unwrap();
-    registry.finish_continuation(token).unwrap();
-    assert!(registry.status(action).unwrap().line_enabled);
+    assert_eq!(allocations, 0);
+    assert_eq!(deallocations, 0);
+    assert!(registry.status(action).unwrap().action_enabled);
+    registry.free(action).unwrap();
 }

@@ -6,14 +6,17 @@ extern crate std;
 use core::ptr::NonNull;
 
 use dma_api::{CompletedDma, DeviceDma};
-use dwmmc_host::{DwMmc, DwMmcIrq, Event};
+use dwmmc_host::{DwMmc, DwMmcIrqControl, DwMmcIrqEndpoint, Event};
 use sdio_host2::{
     BusOp, BusWidth, Error as Host2Error, PollRequestError, RawResponse, RequestPoll, SdioHost,
     SignalVoltage, SubmitTransactionError, Transaction,
 };
 use sdmmc_protocol::{
     Error,
-    sdio::host2::{SdioHost2Irq, SdioHost2Lifecycle, SdioHost2Timed},
+    sdio::{
+        host::SdioIrqSource,
+        host2::{SdioHost2Irq, SdioHost2Lifecycle, SdioHost2Timed},
+    },
 };
 
 pub const JH7110_DWMMC_FIFO_OFFSET: usize = 0x200;
@@ -219,24 +222,23 @@ impl SdioHost for Jh7110DwMmc {
 
 impl SdioHost2Irq for Jh7110DwMmc {
     type Event = Event;
-    type IrqHandle = DwMmcIrq;
+    type IrqEndpoint = DwMmcIrqEndpoint;
+    type IrqControl = DwMmcIrqControl;
 
     fn completion_irq_enabled(&self) -> bool {
         self.inner.completion_irq_enabled()
     }
 
     fn enable_completion_irq(&mut self) -> Result<(), Error> {
-        self.inner.enable_completion_irq();
-        Ok(())
+        sdmmc_protocol::sdio::host::SdioHost::enable_completion_irq(&mut self.inner)
     }
 
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
-        self.inner.disable_completion_irq();
-        Ok(())
+        sdmmc_protocol::sdio::host::SdioHost::disable_completion_irq(&mut self.inner)
     }
 
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        self.inner.irq_endpoint()
+    fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        self.inner.take_irq_source()
     }
 }
 
@@ -306,8 +308,8 @@ impl SdioHost2Lifecycle for Jh7110DwMmc {
 pub mod rdif {
     use dma_api::DeviceDma;
     pub use rdif_block::{
-        BInterface, BIrqHandler, BQueue, BlkError, CompletedRequest, CompletionHint,
-        CompletionSink, DispatchMode, IQueue, Interface, OwnedRequest, QueueEventBatch,
+        BInterface, BIrqControl, BIrqEndpoint, BQueue, BlkError, BlockIrqSource, CompletedRequest,
+        CompletionSink, IQueue, Interface, OwnedRequest, QueueEventBatch, QueueExecution,
         QueueHandle, QueueKind, RequestId as RdifRequestId, ServiceProgress, SubmitError,
         SubmitOutcome,
     };
@@ -399,6 +401,11 @@ mod tests {
         let mut host = unsafe { Jh7110DwMmc::new(mmio, Jh7110DwMmcConfig::default()) };
 
         assert!(!host.completion_irq_enabled());
+        assert_eq!(host.enable_completion_irq(), Err(Error::InvalidArgument));
+        let _source = host
+            .take_irq_source()
+            .expect("first IRQ source transfer must succeed");
+        assert!(host.take_irq_source().is_none());
         host.enable_completion_irq().unwrap();
         assert!(host.completion_irq_enabled());
         host.disable_completion_irq().unwrap();

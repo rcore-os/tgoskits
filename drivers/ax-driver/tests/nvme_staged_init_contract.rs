@@ -153,7 +153,7 @@ fn nvme_msix_lease_retains_the_pci_endpoint_until_shutdown() {
     );
     for required in [
         "let endpoint = probe.take_endpoint()",
-        "retain_endpoint(endpoint)",
+        "preflight.activate(endpoint)",
     ] {
         assert!(
             adapter.contains(required),
@@ -165,21 +165,21 @@ fn nvme_msix_lease_retains_the_pci_endpoint_until_shutdown() {
 #[test]
 fn nvme_msix_setup_and_probe_failure_keep_one_fail_closed_lease() {
     let adapter = read_workspace_source("drivers/ax-driver/src/block/nvme.rs");
+    let activation = read_workspace_source("drivers/ax-driver/src/pci/msi/activation.rs");
     let lease = read_workspace_source("drivers/ax-driver/src/pci/msi/lease.rs");
     let transaction = read_workspace_source("drivers/ax-driver/src/pci/msi/transaction.rs");
 
-    let msix_registration = adapter
-        .find("fn register_msix_block")
-        .map(|offset| &adapter[offset..])
+    let activate = adapter
+        .find("preflight.activate(endpoint)")
+        .expect("NVMe must transfer the endpoint into MSI-X activation");
+    let register = adapter
+        .find("register_msix_block(probe, bar, msix)")
         .expect("NVMe must keep a distinct MSI-X registration transaction");
-    let retain = msix_registration
-        .find("retain_endpoint(endpoint)")
-        .expect("NVMe must transfer the endpoint into the MSI-X lease");
-    let discover = msix_registration
+    let discover = adapter
         .find("NvmeBlockDriver::discover")
         .expect("NVMe staged discovery must remain present");
     assert!(
-        retain < discover,
+        activate < register && register < discover,
         "the endpoint must enter the MSI-X lease before fallible NVMe discovery"
     );
 
@@ -200,7 +200,7 @@ fn nvme_msix_setup_and_probe_failure_keep_one_fail_closed_lease() {
         "MSI-X lease release must disable the endpoint capability before freeing vectors"
     );
     assert!(
-        lease.contains("retain_failed_setup_resources"),
+        activation.contains("PciMsiQuarantineReason::SetupContainment"),
         "an incomplete setup rollback must retain vector and table ownership"
     );
 
@@ -212,7 +212,7 @@ fn nvme_msix_setup_and_probe_failure_keep_one_fail_closed_lease() {
         .find("set_msix_enabled(false)")
         .expect("lease shutdown must disable the MSI-X capability");
     let quarantine = lease_drop
-        .find("retain_failed_lease_resources")
+        .find("retain_quarantined_resources")
         .expect("lease shutdown must quarantine incomplete cleanup");
     assert!(
         capability_disable < quarantine,

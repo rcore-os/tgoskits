@@ -9,33 +9,34 @@ mod service_loop;
 mod staging;
 mod submission;
 
-use alloc::boxed::Box;
-use core::{
-    pin::Pin,
-    ptr,
-    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
-};
+use alloc::{boxed::Box, sync::Arc};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize};
 
 use ax_kspin::SpinNoPreempt;
 use completion_quarantine::{
-    CompletionPublicationError, QuarantineRetention, RejectedCompletionQuarantine,
+    CompletionPublicationError, CompletionQuarantineReservation, QuarantineRetention,
+    RejectedCompletionQuarantine,
 };
 use irq_publication::{EpochEvent, MAX_EVENTS};
 use lifecycle::shutdown_unpublished_queue;
-use ownership::{DriverAccessGuard, WorkOwnerLink};
+use ownership::{DriverAccessGuard, DriverEndpointLease};
 use rdif_block::{BlkError, OwnedRequest, QueueHandle, QueueInfo, QueueKind};
 use request_table::RequestTable;
-use staging::{CompletionBatch, DispatchDisposition, DispatchResult, FixedTagQueue};
+use staging::{
+    DeferredCompletionSink, DispatchDisposition, DispatchResult, FixedTagQueue,
+    QuarantineCompletionSink,
+};
 use thiserror::Error;
 
 use super::{
     DispatchArbiter, DispatchSource, EventRing, HctxAccessGate, HctxAccessPermit, HctxCause,
     HctxControl, HctxTerminalGate, HctxTransition, HctxTransitionError, RequestTag, TagError,
-    controller::ControllerOwnerLink,
+    controller::{ControllerOwnerLink, source::BlockMaintenanceEvent},
 };
 use crate::{
+    block::quarantine::QueueQuarantineReservation,
+    maintenance::{DeviceMaintenanceHandle, MaintenanceCauses, MaintenanceSubmitError},
     task::{TaskError, WaitQueue},
-    workqueue::{DelayedWork, WorkItem, WorkOutcome, WorkPriority, WorkQueue, WorkQueueError},
 };
 
 const MAX_REQUESTS: usize = 64;
@@ -55,9 +56,9 @@ pub enum HardwareQueueError {
     /// Request identity or state transition failed.
     #[error("block request identity or state transition is invalid")]
     RequestState,
-    /// Shared worker admission or ownership failed.
+    /// The fixed maintenance owner could not be activated.
     #[error(transparent)]
-    WorkQueue(#[from] WorkQueueError),
+    Maintenance(#[from] MaintenanceSubmitError),
     /// The scheduler rejected a request-local wait.
     #[error(transparent)]
     Task(#[from] TaskError),
@@ -85,6 +86,9 @@ pub enum HardwareQueueError {
     /// A task-only queue operation was attempted from hard IRQ context.
     #[error("block hardware queue operation requires task context")]
     UnsafeContext,
+    /// Driver service was attempted outside the fixed maintenance owner.
+    #[error("block hardware queue service requires its maintenance owner")]
+    WrongOwner,
     /// The requested lifecycle transition did not own the current generation.
     #[error(transparent)]
     Lifecycle(#[from] HctxTransitionError),
@@ -124,7 +128,7 @@ impl RuntimeSubmitError {
 /// A request-local completion token; no global completion waitqueue is used.
 #[must_use = "an accepted block request must be waited or cancelled"]
 pub struct SubmittedRequest {
-    queue: &'static HardwareQueue,
+    queue: Arc<HardwareQueue>,
     tag: RequestTag,
 }
 
@@ -135,24 +139,37 @@ pub struct SubmittedRequest {
 /// quiescence before reclaiming host requests or transferring ownership. The
 /// driver queue remains retained for guest-return reinitialization.
 pub struct QuiescedHardwareQueue {
-    queue: &'static HardwareQueue,
+    queue: Arc<HardwareQueue>,
+    transition: HctxTransition,
+}
+
+/// Owner-local proof that admission is closed while accepted requests are
+/// still allowed to reach terminal completion through IRQ service.
+///
+/// This permit is deliberately distinct from [`QuiescedHardwareQueue`]: the
+/// sole maintenance owner must keep servicing the queue between these two
+/// states and therefore must never block waiting for its own progress.
+pub(in crate::block) struct DrainingHardwareQueue {
+    queue: Arc<HardwareQueue>,
     transition: HctxTransition,
 }
 
 /// Proof that IRQ admission is detached and every earlier queue callback has
 /// exited before controller-wide DMA quiescence begins.
 pub(super) struct ServiceDrainedHardwareQueue {
-    queue: &'static HardwareQueue,
+    queue: Arc<HardwareQueue>,
     transition: HctxTransition,
 }
 
-/// One serial driver queue and one coalescing work item, executed by a shared
-/// per-CPU high-priority worker rather than a dedicated thread.
+/// One driver queue whose hardware state is advanced only by its controller's
+/// fixed maintenance owner.
 pub struct HardwareQueue {
     info: QueueInfo,
-    queue: SpinNoPreempt<QueueHandle>,
+    queue: SpinNoPreempt<Option<QueueHandle>>,
+    quarantine_reservation: SpinNoPreempt<Option<QueueQuarantineReservation>>,
     requests: RequestTable,
-    rejected_completions: SpinNoPreempt<RejectedCompletionQuarantine>,
+    rejected_completions: SpinNoPreempt<Option<Box<RejectedCompletionQuarantine>>>,
+    completion_quarantine_reservation: SpinNoPreempt<Option<CompletionQuarantineReservation>>,
     software_contexts: [SpinNoPreempt<FixedTagQueue>; crate::CPU_CAPACITY],
     dispatch_list: SpinNoPreempt<FixedTagQueue>,
     dispatch_arbiter: SpinNoPreempt<DispatchArbiter<{ crate::CPU_CAPACITY }>>,
@@ -165,56 +182,63 @@ pub struct HardwareQueue {
     inflight: AtomicUsize,
     drain_wait: WaitQueue,
     service_error: AtomicU8,
-    work_domain: Pin<&'static WorkQueue>,
-    service_work: WorkItem,
-    watchdog_work: DelayedWork,
-    controller_link: &'static ControllerOwnerLink,
-    _work_link: &'static WorkOwnerLink,
+    maintenance: alloc::sync::Arc<DeviceMaintenanceHandle<BlockMaintenanceEvent>>,
+    controller_link: Arc<ControllerOwnerLink>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::block) enum OwnerServiceProgress {
+    Complete,
+    More,
 }
 
 impl HardwareQueue {
-    /// Constructs a shutdown-lifetime hctx after its shared worker is live.
+    /// Constructs a shutdown-lifetime hctx after its maintenance owner is live.
     pub(super) fn activate(
         queue: QueueHandle,
-        cpu: usize,
-        controller_link: &'static ControllerOwnerLink,
+        quarantine_reservation: QueueQuarantineReservation,
+        maintenance: Arc<DeviceMaintenanceHandle<BlockMaintenanceEvent>>,
+        controller_link: Arc<ControllerOwnerLink>,
         controller_cookie: usize,
-    ) -> Result<Pin<&'static Self>, HardwareQueueError> {
+    ) -> Result<Arc<Self>, HardwareQueueError> {
+        let cpu = maintenance.owner_cpu();
         if cpu >= crate::CPU_CAPACITY {
-            shutdown_unpublished_queue(queue);
+            shutdown_unpublished_queue(queue, quarantine_reservation);
             return Err(HardwareQueueError::InvalidCpu(cpu));
         }
         let info = queue.info();
         let QueueKind::Interrupt { sources } = info.kind else {
-            shutdown_unpublished_queue(queue);
+            shutdown_unpublished_queue(queue, quarantine_reservation);
             return Err(HardwareQueueError::NotInterruptQueue { queue_id: info.id });
         };
         if sources.is_empty() {
-            shutdown_unpublished_queue(queue);
+            shutdown_unpublished_queue(queue, quarantine_reservation);
             return Err(HardwareQueueError::MissingInterruptSource { queue_id: info.id });
         }
         let requests = match RequestTable::new() {
             Ok(requests) => requests,
             Err(error) => {
-                shutdown_unpublished_queue(queue);
+                shutdown_unpublished_queue(queue, quarantine_reservation);
                 return Err(error.into());
             }
         };
-
-        let work_domain = Box::leak(Box::new(WorkQueue::new(cpu, WorkPriority::High)));
-        let work_domain = unsafe {
-            // SAFETY: the logical domain is deliberately retained for the
-            // shutdown lifetime and can never move after publication.
-            Pin::new_unchecked(&*work_domain)
+        let Some(completion_quarantine_reservation) =
+            CompletionQuarantineReservation::reserve(info.id, controller_cookie)
+        else {
+            shutdown_unpublished_queue(queue, quarantine_reservation);
+            return Err(HardwareQueueError::Capacity);
         };
-        let work_link = Box::leak(Box::new(WorkOwnerLink::new()));
-        let link_address = ptr::from_ref(work_link).expose_provenance();
-        let queue = Box::leak(Box::new(Self {
+
+        Ok(Arc::new(Self {
             info,
-            queue: SpinNoPreempt::new(queue),
+            queue: SpinNoPreempt::new(Some(queue)),
+            quarantine_reservation: SpinNoPreempt::new(Some(quarantine_reservation)),
             requests,
-            rejected_completions: SpinNoPreempt::new(RejectedCompletionQuarantine::new(
-                controller_cookie,
+            rejected_completions: SpinNoPreempt::new(Some(Box::new(
+                RejectedCompletionQuarantine::new(controller_cookie),
+            ))),
+            completion_quarantine_reservation: SpinNoPreempt::new(Some(
+                completion_quarantine_reservation,
             )),
             software_contexts: core::array::from_fn(|_| SpinNoPreempt::new(FixedTagQueue::new())),
             dispatch_list: SpinNoPreempt::new(FixedTagQueue::new()),
@@ -228,20 +252,9 @@ impl HardwareQueue {
             inflight: AtomicUsize::new(0),
             drain_wait: WaitQueue::new(),
             service_error: AtomicU8::new(0),
-            work_domain,
-            service_work: WorkItem::new(service_work_entry, link_address),
-            watchdog_work: DelayedWork::new(watchdog_work_entry, link_address),
+            maintenance,
             controller_link,
-            _work_link: work_link,
-        }));
-        work_link
-            .owner
-            .store(ptr::from_mut(queue), Ordering::Release);
-        Ok(unsafe {
-            // SAFETY: HardwareQueue contains an intrusive WorkItem and is
-            // intentionally retained at this stable address until shutdown.
-            Pin::new_unchecked(&*queue)
-        })
+        }))
     }
 
     /// Returns the driver-declared queue metadata.
@@ -249,12 +262,12 @@ impl HardwareQueue {
         self.info
     }
 
-    /// CPU whose shared high-priority worker services this queue.
+    /// CPU whose fixed controller maintenance owner services this queue.
     pub fn affinity_cpu(&self) -> usize {
-        self.work_domain.cpu()
+        self.maintenance.owner_cpu()
     }
 
-    fn claim_timeout(&'static self, tag: RequestTag) -> Result<bool, HardwareQueueError> {
+    fn claim_timeout(&self, tag: RequestTag) -> Result<bool, HardwareQueueError> {
         let claim = match self.requests.tags.claim_timeout(tag) {
             Ok(claim) => claim,
             Err(TagError::InvalidTransition | TagError::Stale) => return Ok(false),
@@ -271,11 +284,10 @@ impl HardwareQueue {
         Ok(true)
     }
 
-    fn request_cancel(&'static self, tag: RequestTag) -> Result<bool, HardwareQueueError> {
+    fn request_cancel(&self, tag: RequestTag) -> Result<bool, HardwareQueueError> {
         if ax_hal::irq::in_irq_context() {
             return Err(HardwareQueueError::UnsafeContext);
         }
-        let driver = self.queue.lock();
         let claim = match self.requests.tags.claim_cancel(tag) {
             Ok(claim) => claim,
             Err(TagError::InvalidTransition | TagError::Stale) => return Ok(false),
@@ -283,7 +295,6 @@ impl HardwareQueue {
         };
         let _requires_dma_quiesce = claim.requires_dma_quiesce();
         drop(claim);
-        drop(driver);
 
         if let Err(error) = self.queue_service(HctxCause::Cancel) {
             // Cancellation already owns the request-state race. Converge on
@@ -294,33 +305,25 @@ impl HardwareQueue {
         Ok(true)
     }
 
-    fn queue_service(&'static self, cause: HctxCause) -> Result<(), HardwareQueueError> {
+    fn queue_service(&self, cause: HctxCause) -> Result<(), HardwareQueueError> {
         self.control.raise(cause);
-        self.queue_service_work()
+        self.wake_owner()
     }
 
-    fn queue_service_work(&'static self) -> Result<(), HardwareQueueError> {
-        let _queue_result = self.work_domain.queue_work_on(self.service_work())?;
+    fn wake_owner(&self) -> Result<(), HardwareQueueError> {
+        self.maintenance.publish_cause(MaintenanceCauses::SUBMIT)?;
         Ok(())
     }
 
-    fn service_work(&'static self) -> Pin<&'static WorkItem> {
-        unsafe {
-            // SAFETY: the containing HardwareQueue is leaked and pinned for the
-            // shutdown lifetime, so its intrusive WorkItem cannot move.
-            Pin::new_unchecked(&self.service_work)
-        }
+    pub(in crate::block) fn next_deadline_ns(&self) -> Option<u64> {
+        self.requests.earliest_deadline()
     }
 
-    fn watchdog_work(&'static self) -> Pin<&'static DelayedWork> {
-        unsafe {
-            // SAFETY: the containing HardwareQueue is retained at a stable
-            // address for the complete timer and worker shutdown lifetime.
-            Pin::new_unchecked(&self.watchdog_work)
-        }
+    pub(in crate::block) fn raise_owner_watchdog(&self) {
+        self.control.raise(HctxCause::Watchdog);
     }
 
-    fn try_driver_access(&'static self) -> Option<DriverAccessGuard> {
+    fn try_driver_access(&self) -> Option<DriverAccessGuard<'_>> {
         self.access_gate
             .try_enter()
             .map(|permit| DriverAccessGuard {
@@ -328,59 +331,8 @@ impl HardwareQueue {
                 permit: Some(permit),
             })
     }
-}
 
-fn service_work_entry(data: usize) -> WorkOutcome {
-    let link = unsafe {
-        // SAFETY: activation leaks WorkOwnerLink before publishing this callback
-        // data and retains it for the work item's shutdown lifetime.
-        &*ptr::with_exposed_provenance::<WorkOwnerLink>(data)
-    };
-    let owner = link.owner.load(Ordering::Acquire);
-    assert!(
-        !owner.is_null(),
-        "block service work ran before owner publication"
-    );
-    let queue = unsafe {
-        // SAFETY: owner publication occurs only after the leaked HardwareQueue
-        // is fully initialized; it is never moved or freed afterwards.
-        &*owner
-    };
-    let Some(_access) = queue.try_driver_access() else {
-        return WorkOutcome::Complete;
-    };
-    match queue.service_bounded() {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            queue.record_service_error(&error);
-            WorkOutcome::Complete
-        }
+    fn take_driver_on_owner(&self) -> Result<DriverEndpointLease<'_>, HardwareQueueError> {
+        DriverEndpointLease::take(self).ok_or(HardwareQueueError::Offline)
     }
-}
-
-fn watchdog_work_entry(data: usize) -> WorkOutcome {
-    let link = unsafe {
-        // SAFETY: activation retains this link until every timer and work
-        // reference has been cancelled and drained.
-        &*ptr::with_exposed_provenance::<WorkOwnerLink>(data)
-    };
-    let owner = link.owner.load(Ordering::Acquire);
-    assert!(
-        !owner.is_null(),
-        "block watchdog ran before owner publication"
-    );
-    let queue = unsafe {
-        // SAFETY: the owner is a leaked, fully initialized HardwareQueue and
-        // is never replaced after Release publication.
-        &*owner
-    };
-    let cause = if queue.watchdog_work.take_failure().is_some() {
-        HctxCause::Timeout
-    } else {
-        HctxCause::Watchdog
-    };
-    if let Err(error) = queue.queue_service(cause) {
-        queue.record_service_error(&error);
-    }
-    WorkOutcome::Complete
 }

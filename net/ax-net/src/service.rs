@@ -81,7 +81,7 @@ use crate::{
         InterfaceKind, Ipv4InterfaceConfig, RouteInfo,
     },
     consts::STANDARD_MTU,
-    device::{ArpEntry, EthernetDevice},
+    device::{ArpEntry, EthernetDevice, WifiControl, WifiControlGeneration},
     dhcp_server::{DhcpServer, parse_dhcp_packet},
     router::{NetDevStats, PreparedDeviceWorkers, RouteDecision, Router, SharedRouteTable},
 };
@@ -309,6 +309,18 @@ pub struct Service {
     dhcp_server: Option<DhcpServer>,
     dhcp_events: Vec<DhcpEvent>,
     dhcp_server_replies: Vec<(usize, Vec<u8>)>,
+}
+
+/// Protocol-stack role installed after a wireless link command succeeds.
+pub(crate) enum WifiNetworkConfig {
+    /// Clear the old static role and start a DHCP client.
+    Station,
+    /// Install a static access-point address and optional DHCP server lease.
+    AccessPoint {
+        ip: Ipv4Address,
+        prefix_len: u8,
+        dhcp_client_ip: Option<Ipv4Address>,
+    },
 }
 
 struct TimeoutRegistration {
@@ -631,9 +643,115 @@ impl Service {
         info!("dev {dev}: DHCP server enabled (lease {client_ip})");
     }
 
-    /// Finds the router device index for an interface name such as `wlan0`.
-    pub fn device_index(&self, name: &str) -> Option<usize> {
-        self.router.device_index(name)
+    /// Clones a wireless runtime facade without retaining a protocol/device lock.
+    pub(crate) fn wifi_control_by_name(&self, name: &str) -> Option<Arc<dyn WifiControl>> {
+        let interface_id = self
+            .control
+            .state
+            .read()
+            .interfaces
+            .iter()
+            .find(|interface| interface.name == name && interface.kind == InterfaceKind::Ethernet)
+            .map(|interface| interface.id)?;
+        self.router.wifi_control_for_interface(interface_id)
+    }
+
+    /// Commits the IP/DHCP half of a completed wireless mode switch.
+    pub(crate) fn reconfigure_wifi_network(
+        &mut self,
+        name: &str,
+        generation: WifiControlGeneration,
+        config: WifiNetworkConfig,
+    ) -> AxResult<()> {
+        if matches!(
+            &config,
+            WifiNetworkConfig::AccessPoint { prefix_len, .. } if *prefix_len > 32
+        ) {
+            return Err(AxError::InvalidInput);
+        }
+        let interface = self
+            .control
+            .state
+            .read()
+            .interfaces
+            .iter()
+            .find(|interface| interface.name == name)
+            .cloned()
+            .ok_or(AxError::NoSuchDevice)?;
+        if interface.kind != InterfaceKind::Ethernet {
+            return Err(AxError::OperationNotSupported);
+        }
+        let dev = self
+            .router
+            .device_index_for_interface_id(interface.id)
+            .ok_or(AxError::NoSuchDevice)?;
+
+        // Validate every fallible precondition before consuming the generation
+        // or mutating the old protocol role. Once accepted, the commit below
+        // is intentionally infallible and cannot leave a half-transition.
+        let station_mac = match &config {
+            WifiNetworkConfig::Station => Some(interface.mac.ok_or(AxError::BadState)?),
+            WifiNetworkConfig::AccessPoint { .. } => None,
+        };
+        if !self.router.accept_wifi_generation(dev, generation) {
+            return Err(AxError::Interrupted);
+        }
+
+        self.clear_wifi_network_role(dev);
+        match config {
+            WifiNetworkConfig::Station => {
+                let mac = station_mac.expect("station MAC was validated before generation commit");
+                self.commit_network_state(NetworkStateUpdate {
+                    interface_id: interface.id,
+                    dev,
+                    metric: interface.metric,
+                    old_ipv4: interface.ipv4,
+                    ipv4: None,
+                    gateway: None,
+                    dns_source: DnsSource::Dhcp,
+                    dns_servers: Vec::new(),
+                });
+                self.enable_dhcp(interface.id, dev, interface.name, mac, interface.metric);
+            }
+            WifiNetworkConfig::AccessPoint {
+                ip,
+                prefix_len,
+                dhcp_client_ip,
+            } => {
+                let cidr = Ipv4Cidr::new(ip, prefix_len);
+                self.commit_network_state(NetworkStateUpdate {
+                    interface_id: interface.id,
+                    dev,
+                    metric: interface.metric,
+                    old_ipv4: interface.ipv4,
+                    ipv4: Some(cidr),
+                    gateway: None,
+                    dns_source: DnsSource::Dhcp,
+                    dns_servers: Vec::new(),
+                });
+                if let Some(client_ip) = dhcp_client_ip {
+                    self.enable_dhcp_server(dev, ip, client_ip, mask_from_prefix(prefix_len));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_wifi_network_role(&mut self, dev: usize) {
+        self.dhcp.retain(|state| state.dev != dev);
+        if self
+            .dhcp_server
+            .as_ref()
+            .is_some_and(|server| server.dev == dev)
+        {
+            self.dhcp_server = None;
+        }
+        self.dhcp_events.retain(|event| match event {
+            DhcpEvent::Configured { dev: event_dev, .. }
+            | DhcpEvent::Deconfigured { dev: event_dev, .. } => *event_dev != dev,
+        });
+        self.dhcp_server_replies
+            .retain(|(event_dev, _)| *event_dev != dev);
     }
 
     /// Assigns a static IPv4 address to an interface at runtime.
@@ -713,82 +831,6 @@ impl Service {
             dns_servers: Vec::new(),
         });
         Ok(())
-    }
-
-    /// Reconfigures one wireless device as SoftAP: static IPv4 plus optional DHCP server.
-    pub fn reconfigure_as_ap(
-        &mut self,
-        dev: usize,
-        server_ip: Ipv4Address,
-        prefix_len: u8,
-        client_ip: Option<Ipv4Address>,
-    ) {
-        let Some(interface) = self.interface_for_dev(dev) else {
-            warn!("dev {dev}: cannot reconfigure AP for unknown device");
-            return;
-        };
-        let old_ipv4 = self
-            .dhcp
-            .iter()
-            .find(|state| state.dev == dev)
-            .and_then(|state| state.address)
-            .or(interface.ipv4);
-        self.dhcp.retain(|state| state.dev != dev);
-
-        let cidr = Ipv4Cidr::new(server_ip, prefix_len);
-        self.commit_network_state(NetworkStateUpdate {
-            interface_id: interface.id,
-            dev,
-            metric: interface.metric,
-            old_ipv4,
-            ipv4: Some(cidr),
-            gateway: None,
-            dns_source: DnsSource::Static,
-            dns_servers: Vec::new(),
-        });
-
-        match client_ip {
-            Some(client_ip) => {
-                let subnet_mask = mask_from_prefix(prefix_len);
-                self.dhcp_server = Some(DhcpServer::new(
-                    dev,
-                    interface.id,
-                    server_ip,
-                    client_ip,
-                    subnet_mask,
-                ));
-                info!("dev {dev}: reconfigured as AP {cidr}, DHCP server lease {client_ip}");
-            }
-            None => {
-                self.dhcp_server = None;
-                info!("dev {dev}: reconfigured as AP {cidr} (no DHCP server)");
-            }
-        }
-    }
-
-    /// Reconfigures one wireless device as STA and restarts DHCP on it.
-    pub fn reconfigure_as_sta(&mut self, dev: usize, mac: EthernetAddress) {
-        let Some(interface) = self.interface_for_dev(dev) else {
-            warn!("dev {dev}: cannot reconfigure STA for unknown device");
-            return;
-        };
-        if self.dhcp_server.as_ref().is_some_and(|s| s.dev == dev) {
-            self.dhcp_server = None;
-        }
-        self.dhcp.retain(|state| state.dev != dev);
-        self.commit_network_state(NetworkStateUpdate {
-            interface_id: interface.id,
-            dev,
-            metric: interface.metric,
-            old_ipv4: interface.ipv4,
-            ipv4: None,
-            gateway: None,
-            dns_source: DnsSource::Static,
-            dns_servers: Vec::new(),
-        });
-
-        self.enable_dhcp(interface.id, dev, interface.name, mac, interface.metric);
-        info!("dev {dev}: reconfigured as STA, DHCP client enabled");
     }
 
     /// Returns true once DHCP has produced at least one usable interface.
@@ -1022,10 +1064,6 @@ impl Service {
 
     pub fn net_dev_stats(&self) -> Vec<NetDevStats> {
         self.router.net_dev_stats()
-    }
-
-    pub fn wake_all_devices(&self) {
-        self.router.wake_all_devices();
     }
 
     pub fn register_waker(&mut self, binding: DeviceBinding, waker: &Waker) {

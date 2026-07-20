@@ -21,6 +21,57 @@ pub enum TimerError {
     InvalidOwner,
 }
 
+/// Proof that one timer generation is no longer retained by ax-task.
+///
+/// The proof covers both the owner CPU's timer heap and its fixed expired-event
+/// buffer. It deliberately says nothing about an event already accepted by the
+/// runtime callback: the runtime must retire its own publication before freeing
+/// the enclosing owner object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use = "the runtime must combine this proof with its own publication retirement"]
+pub struct TimerRetireProof {
+    node: usize,
+    token: TimerToken,
+    removed_heap_entry: bool,
+    removed_buffered_expiration: bool,
+}
+
+impl TimerRetireProof {
+    pub(crate) const fn new(
+        node: usize,
+        token: TimerToken,
+        removed_heap_entry: bool,
+        removed_buffered_expiration: bool,
+    ) -> Self {
+        Self {
+            node,
+            token,
+            removed_heap_entry,
+            removed_buffered_expiration,
+        }
+    }
+
+    /// Returns the retired pinned node address.
+    pub const fn node(self) -> usize {
+        self.node
+    }
+
+    /// Returns the retired arm generation.
+    pub const fn token(self) -> TimerToken {
+        self.token
+    }
+
+    /// Reports that the matching generation was physically removed from the heap.
+    pub const fn removed_heap_entry(self) -> bool {
+        self.removed_heap_entry
+    }
+
+    /// Reports that a matching CPU-local expiration was discarded.
+    pub const fn removed_buffered_expiration(self) -> bool {
+        self.removed_buffered_expiration
+    }
+}
+
 /// Bounded timer-IRQ expiration request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExpireRequest {
@@ -176,10 +227,27 @@ impl TimerQueue {
     /// Unlike lazy tombstoning, physical removal lets an owner finish and release
     /// its embedded timer node as soon as this method returns.
     pub fn cancel(&mut self, node: core::pin::Pin<&TimerNode>, token: TimerToken) -> bool {
+        let (was_active, removed_heap_entry) = self.detach_generation(node, token);
+        was_active || removed_heap_entry
+    }
+
+    pub(crate) fn retire_generation(
+        &mut self,
+        node: core::pin::Pin<&TimerNode>,
+        token: TimerToken,
+    ) -> bool {
+        self.detach_generation(node, token).1
+    }
+
+    fn detach_generation(
+        &mut self,
+        node: core::pin::Pin<&TimerNode>,
+        token: TimerToken,
+    ) -> (bool, bool) {
         let node_ptr = node.get_ref() as *const TimerNode;
         let was_active = node.cancel(token);
         let was_queued = self.heap.remove(node_ptr, token).is_some();
-        was_active || was_queued
+        (was_active, was_queued)
     }
 
     /// Returns the earliest representable one-shot deadline without mutating the queue.

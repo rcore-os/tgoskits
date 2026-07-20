@@ -239,7 +239,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
-    use crate::{DispatchMode, QueueInfo, QueueKind, RequestFlags};
+    use crate::{QueueExecution, QueueInfo, QueueKind, RequestFlags};
 
     fn queue_info_with(limits: QueueLimits) -> QueueInfo {
         QueueInfo {
@@ -247,7 +247,7 @@ mod tests {
             device: DeviceInfo::new(64, 512),
             limits,
             kind: QueueKind::Inline,
-            dispatch_mode: DispatchMode::Direct,
+            execution: QueueExecution::Inline,
         }
     }
 

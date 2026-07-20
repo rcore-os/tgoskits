@@ -1,6 +1,6 @@
-use alloc::{boxed::Box, string::String};
+//! Immutable display publication and remote flush capability.
 
-use irq_framework::IrqId;
+use alloc::{string::String, sync::Arc};
 
 use crate::DisplayInfo;
 
@@ -14,80 +14,45 @@ pub enum DisplayError {
     BadState,
 }
 
-/// Domain boundary consumed by graphics modules and device files.
-pub trait DisplayDevice: Send {
-    fn name(&self) -> &str;
-
-    fn info(&self) -> DisplayInfo;
-
-    fn flush(&mut self) -> DisplayResult;
-
-    fn irq_id(&self) -> Option<IrqId> {
-        None
-    }
-
-    fn enable_irq(&mut self) {}
-
-    fn disable_irq(&mut self) {}
-
-    fn is_irq_enabled(&self) -> bool {
-        false
-    }
-
-    fn handle_irq(&mut self) -> bool {
-        false
-    }
+/// Runtime service that submits one flush to the display maintenance owner.
+pub trait DisplayFlushService: Send + Sync {
+    /// Completes after the owner has accepted and executed this flush.
+    fn flush(&self) -> DisplayResult;
 }
 
-pub struct ErasedDisplayDevice {
+/// Read-only framebuffer publication plus its owner-thread command facade.
+pub struct DisplayFacade {
     name: String,
-    inner: Box<dyn DisplayDevice>,
+    info: DisplayInfo,
+    flush: Arc<dyn DisplayFlushService>,
 }
 
-impl ErasedDisplayDevice {
-    pub fn new(device: impl DisplayDevice + 'static) -> Self {
-        let name = device.name().into();
+impl DisplayFacade {
+    /// Creates one fully activated display publication.
+    pub fn new(
+        name: impl Into<String>,
+        info: DisplayInfo,
+        flush: Arc<dyn DisplayFlushService>,
+    ) -> Self {
         Self {
-            name,
-            inner: Box::new(device),
+            name: name.into(),
+            info,
+            flush,
         }
     }
 
+    /// Returns the stable device name captured at activation.
     pub fn name(&self) -> &str {
         &self.name
     }
-}
 
-impl DisplayDevice for ErasedDisplayDevice {
-    fn name(&self) -> &str {
-        &self.name
+    /// Returns the immutable framebuffer layout captured at activation.
+    pub const fn info(&self) -> DisplayInfo {
+        self.info
     }
 
-    fn info(&self) -> DisplayInfo {
-        self.inner.info()
-    }
-
-    fn flush(&mut self) -> DisplayResult {
-        self.inner.flush()
-    }
-
-    fn irq_id(&self) -> Option<IrqId> {
-        self.inner.irq_id()
-    }
-
-    fn enable_irq(&mut self) {
-        self.inner.enable_irq();
-    }
-
-    fn disable_irq(&mut self) {
-        self.inner.disable_irq();
-    }
-
-    fn is_irq_enabled(&self) -> bool {
-        self.inner.is_irq_enabled()
-    }
-
-    fn handle_irq(&mut self) -> bool {
-        self.inner.handle_irq()
+    /// Routes one flush to the device's fixed maintenance owner.
+    pub fn flush(&self) -> DisplayResult {
+        self.flush.flush()
     }
 }

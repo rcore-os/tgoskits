@@ -3,7 +3,8 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use sdmmc_protocol::{response::Response, sdio::host::SdioIrqHandle};
+use rdif_irq::{IrqCapture, IrqEndpoint};
+use sdmmc_protocol::response::Response;
 
 use super::*;
 use crate::command::CommandState;
@@ -813,6 +814,7 @@ fn masked_runtime_fifo_progress_still_requires_the_irq_endpoint() {
     let mut buffer = [0x5au8; BLOCK_SIZE];
     let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
     let mut offset = 0;
+    let (mut irq, _control) = host.take_irq_source().unwrap().into_parts();
     host.enable_completion_irq();
     host.irq.state.begin_request();
     host.disable_completion_irq();
@@ -833,8 +835,13 @@ fn masked_runtime_fifo_progress_still_requires_the_irq_endpoint() {
     );
     assert_eq!(offset, 0);
 
-    let mut irq = host.irq_endpoint();
-    assert_eq!(irq.handle_irq(), crate::Event::TransmitReady);
+    assert!(matches!(
+        irq.capture(),
+        IrqCapture::Captured {
+            event,
+            masked: None,
+        } if event == crate::Event::from_status(NORMAL_INT_BUFFER_WRITE_READY, 0)
+    ));
     assert_eq!(
         poll_fifo_write_step(
             &mut host,

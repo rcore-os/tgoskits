@@ -1,13 +1,9 @@
-use alloc::{
-    boxed::Box, collections::VecDeque, format, string::ToString, sync::Arc, vec, vec::Vec,
-};
+use alloc::{format, sync::Arc, vec, vec::Vec};
 use core::{
     any::Any,
     mem::offset_of,
-    pin::Pin,
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, Ordering},
     task::Context,
-    time::Duration,
 };
 
 /// Number of registered `/dev/input/event*` nodes. Populated by
@@ -21,21 +17,11 @@ pub fn input_device_count() -> u32 {
 }
 
 use ax_errno::{AxError, AxResult};
-use ax_input::{
-    ErasedInputDevice, Event, EventType, InputDevice, InputDeviceId, InputError,
-    input_polling_fallback_should_drain,
-};
-use ax_runtime::hal::{
-    irq::IrqId,
-    time::{monotonic_time_nanos, wall_time},
-};
-use ax_std::os::arceos::task::{
-    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle,
-    ThreadWakeHandle, WaitQueue,
-};
+use ax_input::{EventType, InputDeviceFacade, InputDeviceId, InputError};
+use ax_runtime::hal::time::wall_time;
 use ax_sync::spin::SpinNoIrq as Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
-use axpoll::{IoEvents, PollSet, Pollable};
+use axpoll::{IoEvents, Pollable};
 use bitmaps::Bitmap;
 use linux_raw_sys::{
     general::{__kernel_old_time_t, __kernel_suseconds_t},
@@ -48,91 +34,6 @@ use crate::{
     pseudofs::{Device, DeviceOps, DirMapping, SimpleFs},
 };
 const KEY_CNT: usize = EventType::Key.bits_count();
-
-/// Bound on the in-kernel evdev buffer. Linux uses a per-client ring of
-/// 64 entries by default; we hold a bit more headroom so a 20-key burst
-/// (key down + key up + EV_SYN per key = 60 entries) never drops events
-/// before userspace drains it. When the queue is full we follow Linux's
-/// behavior and drop the oldest entry rather than blocking the driver.
-const READ_AHEAD_CAP: usize = 256;
-
-/// If no IRQ event has been observed within this window, IRQ delivery is
-/// considered broken and the polling fallback runs actively.
-const IRQ_ALIVE_NS: u64 = 1_000_000_000; // 1 second
-const IRQ_SERVICE_STOPPED: u8 = 0;
-const IRQ_SERVICE_STARTING: u8 = 1;
-const IRQ_SERVICE_STARTED: u8 = 2;
-
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum IrqActivationState {
-    Unbound     = 0,
-    Binding     = 1,
-    Active      = 2,
-    Fallback    = 3,
-    Quarantined = 4,
-}
-
-struct Inner {
-    /// Absent only while IRQ activation owns the device exclusively. The OS
-    /// action is disabled and polling has not started during that phase.
-    device: Option<ErasedInputDevice>,
-    read_ahead: VecDeque<(Duration, Event)>,
-    key_state: Bitmap<KEY_CNT>,
-}
-impl Inner {
-    fn device(&self) -> &ErasedInputDevice {
-        self.device
-            .as_ref()
-            .expect("evdev device escaped its exclusive activation phase")
-    }
-
-    fn device_mut(&mut self) -> &mut ErasedInputDevice {
-        self.device
-            .as_mut()
-            .expect("evdev device escaped its exclusive activation phase")
-    }
-
-    /// Drain everything the driver currently has buffered into `read_ahead`,
-    /// updating cached key state along the way. Stops at the first
-    /// `InputError::Again` (driver queue empty) or after a hard ceiling of
-    /// `READ_AHEAD_CAP` pulls per call to bound a single pass.
-    ///
-    /// Returns `true` if at least one event is now queued for userspace.
-    fn drain_into_queue(&mut self) -> bool {
-        for _ in 0..READ_AHEAD_CAP {
-            match self.device_mut().read_event() {
-                Ok(event) => {
-                    if event.event_type == EventType::Key as u16 {
-                        if event.value == 0 {
-                            self.key_state.set(event.code as usize, false);
-                        } else if event.value == 1 {
-                            self.key_state.set(event.code as usize, true);
-                        }
-                    }
-                    if self.read_ahead.len() >= READ_AHEAD_CAP {
-                        // Mirror Linux evdev: drop oldest on overflow so
-                        // the most recent input wins. Keeps the driver
-                        // ring from stalling under a burst we cannot
-                        // forward to a slow reader.
-                        self.read_ahead.pop_front();
-                    }
-                    self.read_ahead.push_back((wall_time(), event));
-                }
-                Err(InputError::Again) => break,
-                Err(err) => {
-                    warn!("Failed to read event: {err:?}");
-                    break;
-                }
-            }
-        }
-        !self.read_ahead.is_empty()
-    }
-
-    fn has_event(&mut self) -> bool {
-        self.drain_into_queue()
-    }
-}
 
 /// Linux `INPUT_PROP_CNT` — the property bitmap is 4 bytes (32 properties).
 const INPUT_PROP_CNT: usize = 0x20;
@@ -160,421 +61,66 @@ struct InputAbsInfo {
 const ABS_MAX: usize = 0x40;
 
 pub struct EventDev {
-    inner: Mutex<Inner>,
-    waiters: PollSet,
-    /// IRQ domain id the runtime resolved for the underlying driver.
-    irq: Option<IrqId>,
-    /// Retains the committed action, or a disabled action whose rollback
-    /// could not release handler ownership, for the shutdown lifetime.
-    irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
-    irq_activation: AtomicU8,
-    irq_notify: IrqWaitCell,
-    irq_service_park: WaitQueue,
-    irq_service_state: AtomicU8,
-    /// Monotonic timestamp (ns) of the last successful IRQ drain.
-    /// When this is recent, IRQ delivery is considered healthy and the
-    /// polling fallback stays at low frequency even with active waiters.
-    last_irq_event: AtomicU64,
-    /// Set when userspace is actively waiting for events. The polling fallback
-    /// only drains the hardware queue while this is set, then idles again after
-    /// a short empty window.
-    polling_requested: AtomicBool,
-    ev_bits: Bitmap<{ EventType::COUNT as usize }>,
-    /// Cached `EVIOCGPROP` bitmap. Computed once at probe from the driver's
-    /// raw bits with a synthesized `INPUT_PROP_POINTER` for absolute or
-    /// relative pointing devices that aren't touchscreens. QEMU's
-    /// virtio-mouse / virtio-tablet do not set the bit themselves, so
-    /// libinput would otherwise classify the tablet as a graphics tablet
-    /// and suppress the cursor pending a never-firing `BTN_TOOL_PEN`.
+    device: InputDeviceFacade,
+    key_state: Mutex<Bitmap<KEY_CNT>>,
     prop_bits: [u8; INPUT_PROP_CNT.div_ceil(8)],
-    /// Cached `EV_ABS` bitmap. Used by `EVIOCGABS` to refuse axes the
-    /// device doesn't advertise with `EINVAL`, matching Linux's
-    /// `evdev_handle_get_val` behavior. virtio-drivers reports the
-    /// underlying `Error::IoError` when the AbsInfo selector has size 0,
-    /// which would otherwise surface as EIO and confuse libinput.
-    abs_bits: [u8; ABS_MAX.div_ceil(8)],
 }
 
 impl EventDev {
-    pub fn new(mut device: ErasedInputDevice) -> Self {
-        let mut ev_bits = Bitmap::new();
-        for i in 0..EventType::COUNT {
-            let Some(ty) = EventType::from_repr(i) else {
-                continue;
-            };
-            if device
-                .get_event_bits(ty, &mut [])
-                .is_ok_and(|success| success)
-            {
-                ev_bits.set(i as usize, true);
-            }
-        }
-
-        let mut prop_bits = [0u8; INPUT_PROP_CNT.div_ceil(8)];
-        let prop_bits_reliable = match device.get_prop_bits(&mut prop_bits) {
-            Ok(_) => true,
-            Err(err) => {
-                warn!("Failed to get input property bits: {err:?}");
-                false
-            }
-        };
+    fn new(device: InputDeviceFacade) -> Self {
+        let snapshot = device.snapshot();
+        let mut prop_bits = [0; INPUT_PROP_CNT.div_ceil(8)];
+        let source = snapshot.property_bits();
+        let len = source.len().min(prop_bits.len());
+        prop_bits[..len].copy_from_slice(&source[..len]);
         let is_touchscreen = prop_bits[INPUT_PROP_DIRECT / 8] & (1 << (INPUT_PROP_DIRECT % 8)) != 0;
-        let has_axes =
-            ev_bits.get(EventType::Relative as usize) || ev_bits.get(EventType::Absolute as usize);
-        if prop_bits_reliable && has_axes && !is_touchscreen {
+        let has_axes = snapshot.supports_event(EventType::Relative)
+            || snapshot.supports_event(EventType::Absolute);
+        if has_axes && !is_touchscreen {
             prop_bits[INPUT_PROP_POINTER / 8] |= 1 << (INPUT_PROP_POINTER % 8);
         }
-
-        let mut abs_bits = [0u8; ABS_MAX.div_ceil(8)];
-        if ev_bits.get(EventType::Absolute as usize) {
-            let _ = device.get_event_bits(EventType::Absolute, &mut abs_bits);
-        }
-
-        let irq = device.irq_id();
         Self {
-            inner: Mutex::new(Inner {
-                device: Some(device),
-                read_ahead: VecDeque::with_capacity(READ_AHEAD_CAP),
-                key_state: Bitmap::new(),
-            }),
-            waiters: PollSet::new(),
-            irq,
-            irq_handle: spin::Once::new(),
-            irq_activation: AtomicU8::new(IrqActivationState::Unbound as u8),
-            irq_notify: IrqWaitCell::new(),
-            irq_service_park: WaitQueue::new(),
-            irq_service_state: AtomicU8::new(IRQ_SERVICE_STOPPED),
-            last_irq_event: AtomicU64::new(0),
-            polling_requested: AtomicBool::new(false),
-            ev_bits,
+            device,
+            key_state: Mutex::new(Bitmap::new()),
             prop_bits,
-            abs_bits,
         }
     }
 
+    /// Requests the linear maintenance close transaction.
+    pub fn shutdown(&self) -> AxResult<()> {
+        self.device
+            .request_shutdown()
+            .map_err(|_| AxError::BadState)
+    }
+
     fn axis_supported(&self, axis: u8) -> bool {
-        let bit = axis as usize;
-        if bit >= ABS_MAX {
-            return false;
-        }
-        self.abs_bits[bit / 8] & (1 << (bit % 8)) != 0
+        (axis as usize) < ABS_MAX && self.device.snapshot().absolute_info(axis).is_some()
     }
 
     fn get_event_bits(&self, arg: usize, size: usize, ty: u8) -> AxResult<usize> {
         if ty == 0 {
-            write_user_bytes(arg, size, self.ev_bits.as_bytes())
-        } else {
-            let ty = EventType::from_repr(ty).ok_or(AxError::InvalidInput)?;
-            let mut kernel_bits = vec![0; size];
-            {
-                let mut inner = self.inner.lock();
-                match inner.device_mut().get_event_bits(ty, &mut kernel_bits) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        debug!("No events for {ty:?}");
-                    }
-                    Err(err) => {
-                        warn!("Failed to get event bits: {err:?}");
-                    }
+            let mut event_types = [0; (EventType::COUNT as usize).div_ceil(8)];
+            for index in 0..EventType::COUNT {
+                let Some(event_type) = EventType::from_repr(index) else {
+                    continue;
+                };
+                if self.device.snapshot().supports_event(event_type) {
+                    event_types[index as usize / 8] |= 1 << (index % 8);
                 }
             }
-            let bytes = size.min(ty.bits_count().div_ceil(8));
-            UserPtr::<u8>::from(arg).write_slice(&kernel_bits[..bytes])?;
-            Ok(bytes)
+            return write_user_bytes(arg, size, &event_types);
         }
-    }
-
-    fn register_irq(self: &Arc<Self>) {
-        self.irq_activation
-            .compare_exchange(
-                IrqActivationState::Unbound as u8,
-                IrqActivationState::Binding as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .expect("evdev IRQ activation may only run once");
-
-        let activation = if let Some(irq) = self.irq {
-            let event_dev = Arc::clone(self);
-            let request = ax_runtime::hal::irq::IrqRequest::new(move |_| event_dev.handle_irq())
-                .share_mode(ax_runtime::hal::irq::ShareMode::Shared)
-                .auto_enable(ax_runtime::hal::irq::AutoEnable::No);
-            match ax_runtime::hal::irq::request_irq(irq, request) {
-                Ok(handle) => self.activate_requested_irq(irq, handle),
-                Err(err) => {
-                    warn!("failed to register evdev irq handler for irq {irq:?}: {err:?}");
-                    self.with_activation_device(|device| device.disable_irq());
-                    IrqActivationState::Fallback
-                }
-            }
-        } else {
-            IrqActivationState::Fallback
-        };
-
-        self.irq_activation
-            .store(activation as u8, Ordering::Release);
-        // Polling may access the device immediately, so start it only after
-        // activation has either committed or restored device ownership.
-        self.start_polling();
-    }
-
-    fn activate_requested_irq(
-        self: &Arc<Self>,
-        irq: IrqId,
-        handle: ax_runtime::hal::irq::IrqHandle,
-    ) -> IrqActivationState {
-        self.with_activation_device(|device| device.enable_irq());
-
-        if let Err(err) = ax_runtime::hal::irq::enable_irq(handle) {
-            warn!("failed to enable evdev irq handler for irq {irq:?}: {err:?}");
-            return self.rollback_requested_irq(irq, handle, false);
-        }
-        if !self.start_irq_service() {
-            warn!("failed to start evdev IRQ service for irq {irq:?}");
-            return self.rollback_requested_irq(irq, handle, true);
-        }
-
-        self.irq_handle.call_once(|| handle);
-        IrqActivationState::Active
-    }
-
-    fn rollback_requested_irq(
-        &self,
-        irq: IrqId,
-        handle: ax_runtime::hal::irq::IrqHandle,
-        action_enabled: bool,
-    ) -> IrqActivationState {
-        if action_enabled && let Err(err) = ax_runtime::hal::irq::disable_irq(handle) {
-            warn!("failed to disable evdev irq handler for irq {irq:?}: {err:?}");
-        }
-        if let Err(err) = ax_runtime::hal::irq::synchronize_irq(handle) {
-            warn!("failed to synchronize evdev irq handler for irq {irq:?}: {err:?}");
-        }
-        self.with_activation_device(|device| device.disable_irq());
-        match ax_runtime::hal::irq::free_irq(handle) {
-            Ok(()) => IrqActivationState::Fallback,
-            Err(err) => {
-                // The registry still owns the handler. Retain its lifecycle
-                // token instead of orphaning an action that may need explicit
-                // shutdown recovery.
-                self.irq_handle.call_once(|| handle);
-                warn!("quarantined evdev irq handler for irq {irq:?}: {err:?}");
-                IrqActivationState::Quarantined
-            }
-        }
-    }
-
-    /// Runs a driver activation callback without holding the evdev state lock.
-    ///
-    /// This is valid only while the requested OS action is disabled and before
-    /// polling starts, so no task or IRQ path can observe the absent device.
-    fn with_activation_device<R>(&self, callback: impl FnOnce(&mut ErasedInputDevice) -> R) -> R {
-        assert_eq!(
-            self.irq_activation.load(Ordering::Acquire),
-            IrqActivationState::Binding as u8,
-            "evdev device exclusivity is restricted to IRQ activation"
-        );
-        let mut device = self
-            .inner
-            .lock()
-            .device
-            .take()
-            .expect("evdev activation already owns the device");
-        let result = callback(&mut device);
-        let replaced = self.inner.lock().device.replace(device);
-        assert!(replaced.is_none(), "evdev device restored more than once");
-        result
-    }
-
-    fn request_polling(&self) {
-        self.polling_requested.store(true, Ordering::Release);
-    }
-
-    fn start_irq_service(self: &Arc<Self>) -> bool {
-        if self
-            .irq_service_state
-            .compare_exchange(
-                IRQ_SERVICE_STOPPED,
-                IRQ_SERVICE_STARTING,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return self.irq_service_state.load(Ordering::Acquire) == IRQ_SERVICE_STARTED;
-        }
-
-        let event_dev = Arc::clone(self);
-        match crate::task::try_spawn_kernel_thread_with_stack(
-            move || event_dev.run_irq_service(),
-            "evdev-irq-service".into(),
-            crate::task::default_task_stack_size(),
-        ) {
-            Ok(_service) => {
-                self.irq_service_state
-                    .store(IRQ_SERVICE_STARTED, Ordering::Release);
-                true
-            }
-            Err(error) => {
-                self.irq_service_state
-                    .store(IRQ_SERVICE_STOPPED, Ordering::Release);
-                warn!("failed to spawn evdev IRQ service: {error}");
-                false
-            }
-        }
-    }
-
-    fn run_irq_service(self: Arc<Self>) {
-        let current = scheduler::current_thread_handle()
-            .unwrap_or_else(|error| panic!("evdev IRQ service has no scheduler thread: {error}"));
-        let waiter = EventIrqWaiter::new(&current);
-
-        loop {
-            let registration = self.irq_notify.register(waiter.registration);
-            if !complete_event_irq_service_cycle(
-                registration,
-                || self.irq_service_park.wait(),
-                || {
-                    let _removed = self.irq_notify.unregister(waiter.registration);
-                },
-                || self.drain_irq_events(),
-            ) {
-                panic!("evdev IRQ service registration was occupied concurrently");
-            }
-        }
-    }
-
-    fn drain_irq_events(&self) {
-        let ready = self.inner.lock().drain_into_queue();
-        if ready {
-            self.last_irq_event
-                .store(monotonic_time_nanos(), Ordering::Release);
-            unsafe { self.waiters.wake(IoEvents::IN) };
-        }
-    }
-
-    /// Spawn a background polling task that periodically drains input events
-    /// from the device.  Used as a fallback when IRQ delivery is unreliable
-    /// (e.g. MSI-X enabled but only INTx is resolved, or INTx routing fails).
-    ///
-    /// The task is demand-driven: it only actively polls after userspace has
-    /// attempted to read or wait for evdev input.  This keeps non-input system
-    /// tests from continuously touching virtio-input queues while preserving a
-    /// wakeup path for libinput when the platform IRQ path is broken.
-    fn start_polling(self: &Arc<Self>) {
-        let dev = self.clone();
-        crate::task::spawn_kernel_thread(
-            move || {
-                let mut empty_count = 0u32;
-                loop {
-                    let polling_requested = dev.polling_requested.load(Ordering::Acquire);
-                    let now = monotonic_time_nanos();
-                    let irq = dev.last_irq_event.load(Ordering::Acquire);
-
-                    if !input_polling_fallback_should_drain(
-                        polling_requested,
-                        now,
-                        irq,
-                        IRQ_ALIVE_NS,
-                    ) {
-                        empty_count = 0;
-                        crate::task::sleep(Duration::from_millis(200));
-                        continue;
-                    }
-
-                    let mut inner = dev.inner.lock();
-                    let ready = inner.drain_into_queue();
-                    drop(inner);
-                    if ready {
-                        empty_count = 0;
-                        unsafe { dev.waiters.wake(IoEvents::IN) };
-                        crate::task::sleep(Duration::from_millis(10));
-                    } else {
-                        empty_count = empty_count.saturating_add(1);
-                        if empty_count > 20 {
-                            dev.polling_requested.store(false, Ordering::Release);
-                            crate::task::sleep(Duration::from_millis(200));
-                        } else {
-                            crate::task::sleep(Duration::from_millis(10));
-                        }
-                    }
-                }
-            },
-            "evdev-poll".into(),
-        );
-    }
-
-    fn handle_irq(&self) -> ax_runtime::hal::irq::IrqReturn {
-        // Use `lock()` rather than `try_lock()` so the virtio ISR is always
-        // acknowledged. `SpinNoIrq` guarantees the holder has local IRQs
-        // disabled, so this IRQ can only fire on a different CPU. Without the
-        // ack, a level-triggered shared IRQ line stays asserted and can starve
-        // other devices on the same line.
-        let mut inner = self.inner.lock();
-        let event = inner.device_mut().handle_irq();
-        drop(inner);
-        if event.input_ready {
-            let _result = self.irq_notify.notify();
-            return ax_runtime::hal::irq::IrqReturn::Wake;
-        }
-        if event.handled {
-            ax_runtime::hal::irq::IrqReturn::Handled
-        } else {
-            ax_runtime::hal::irq::IrqReturn::Unhandled
-        }
+        let ty = EventType::from_repr(ty).ok_or(AxError::InvalidInput)?;
+        write_user_bytes(arg, size, self.device.snapshot().event_bits(ty))
     }
 }
 
-struct EventIrqWaiter {
-    registration: Pin<&'static IrqWaitRegistration>,
-    _wake: &'static ThreadWakeHandle,
-}
-
-impl EventIrqWaiter {
-    fn new(current: &scheduler::ThreadHandle) -> Self {
-        let wake = Box::leak(Box::new(current.wake_handle()));
-        // SAFETY: the wake handle is retained for the shutdown lifetime. Its
-        // direct wake path is allocation-free, non-blocking, and hard-IRQ-safe.
-        let irq_wake =
-            unsafe { IrqWakeHandle::from_raw(wake as *const _ as usize, wake_irq_service) };
-        let registration = Box::leak(Box::new(IrqWaitRegistration::new(irq_wake)));
-        // SAFETY: the leaked registration has a stable address for the shutdown
-        // lifetime and is never mutably accessed after publication.
-        let registration = unsafe { Pin::new_unchecked(&*registration) };
-        Self {
-            registration,
-            _wake: wake,
-        }
+impl Drop for EventDev {
+    fn drop(&mut self) {
+        // Drop only asks the fixed owner to run its explicit close protocol;
+        // it never tears down an IRQ action or device source on this thread.
+        let _ = self.shutdown();
     }
-}
-
-fn complete_event_irq_service_cycle<P, C, F>(
-    registration: IrqRegisterResult,
-    park: P,
-    cleanup: C,
-    fanout: F,
-) -> bool
-where
-    P: FnOnce(),
-    C: FnOnce(),
-    F: FnOnce(),
-{
-    match registration {
-        IrqRegisterResult::Registered | IrqRegisterResult::ConsumedPending => {
-            park();
-            cleanup();
-            fanout();
-            true
-        }
-        IrqRegisterResult::Occupied => false,
-    }
-}
-
-unsafe fn wake_irq_service(data: usize) {
-    // SAFETY: `EventIrqWaiter::new` publishes only its leaked
-    // `ThreadWakeHandle`, retained for the shutdown lifetime.
-    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
-    let _result = wake.wake();
 }
 
 fn write_user_bytes(arg: usize, capacity: usize, source: &[u8]) -> AxResult<usize> {
@@ -585,18 +131,6 @@ fn write_user_bytes(arg: usize, capacity: usize, source: &[u8]) -> AxResult<usiz
 
 fn return_str(arg: usize, size: usize, s: &str) -> AxResult<usize> {
     write_user_bytes(arg, size, s.as_bytes())
-}
-
-fn input_error_to_ax_error(err: InputError) -> AxError {
-    match err {
-        InputError::AlreadyExists => AxError::AlreadyExists,
-        InputError::Again => AxError::WouldBlock,
-        InputError::BadState => AxError::BadState,
-        InputError::InvalidInput | InputError::Unsupported => AxError::InvalidInput,
-        InputError::Io => AxError::Io,
-        InputError::NoMemory => AxError::NoMemory,
-        InputError::ResourceBusy => AxError::ResourceBusy,
-    }
 }
 
 fn return_zero_bits(arg: usize, size: usize, bits: usize) -> AxResult<usize> {
@@ -635,16 +169,26 @@ impl DeviceOps for EventDev {
         if buf.len() < size_of::<InputEvent>() {
             return Err(AxError::InvalidInput);
         }
-        self.request_polling();
         let mut read = 0;
-        let mut inner = self.inner.lock();
-        // Drain the driver queue once up front so a single read() syscall
-        // can return as many buffered events as the user buffer holds.
-        inner.drain_into_queue();
         for out in buf.chunks_exact_mut(size_of::<InputEvent>()) {
-            let Some((time, event)) = inner.read_ahead.pop_front() else {
-                break;
+            let event = match self.device.read_event() {
+                Ok(event) => event,
+                Err(InputError::Again) => break,
+                Err(error) => {
+                    warn!("input facade read failed: {error}");
+                    return if read == 0 {
+                        Err(AxError::Io)
+                    } else {
+                        Ok(read)
+                    };
+                }
             };
+            if event.event_type == EventType::Key as u16 && (event.code as usize) < KEY_CNT {
+                self.key_state
+                    .lock()
+                    .set(event.code as usize, event.value != 0);
+            }
+            let time = wall_time();
             let input_event = InputEvent {
                 time: KernelTimeval {
                     tv_sec: time.as_secs() as _,
@@ -687,7 +231,7 @@ impl DeviceOps for EventDev {
                 Ok(0)
             }
             EVIOCGID => {
-                let device_id = self.inner.lock().device().device_id();
+                let device_id = self.device.snapshot().device_id();
                 let user = UserPtr::<InputDeviceId>::from(arg);
                 user.write_field(offset_of!(InputDeviceId, bus_type), device_id.bus_type)?;
                 user.write_field(offset_of!(InputDeviceId, vendor), device_id.vendor)?;
@@ -721,19 +265,19 @@ impl DeviceOps for EventDev {
                         match nr {
                             // EVIOCGNAME
                             0x06 => {
-                                let name = self.inner.lock().device().name().to_string();
-                                return return_str(arg, size, &name);
+                                return return_str(arg, size, self.device.snapshot().name());
                             }
                             // EVIOCGPHYS
                             0x07 => {
-                                let location =
-                                    self.inner.lock().device().physical_location().to_string();
-                                return return_str(arg, size, &location);
+                                return return_str(
+                                    arg,
+                                    size,
+                                    self.device.snapshot().physical_location(),
+                                );
                             }
                             // EVIOCGUNIQ
                             0x08 => {
-                                let unique_id = self.inner.lock().device().unique_id().to_string();
-                                return return_str(arg, size, &unique_id);
+                                return return_str(arg, size, self.device.snapshot().unique_id());
                             }
                             // EVIOCGPROP — device property bitmap. libinput
                             // uses INPUT_PROP_POINTER to keep the cursor
@@ -746,8 +290,8 @@ impl DeviceOps for EventDev {
                             // EVIOCGKEY
                             0x18 => {
                                 let key_state = {
-                                    let inner = self.inner.lock();
-                                    let bytes = inner.key_state.as_bytes();
+                                    let key_state = self.key_state.lock();
+                                    let bytes = key_state.as_bytes();
                                     let mut key_state = Vec::with_capacity(bytes.len());
                                     key_state.extend_from_slice(bytes);
                                     key_state
@@ -790,10 +334,11 @@ impl DeviceOps for EventDev {
                             if !self.axis_supported(axis) {
                                 return Err(AxError::InvalidInput);
                             }
-                            let info = match self.inner.lock().device_mut().get_abs_info(axis) {
-                                Ok(info) => info,
-                                Err(err) => return Err(input_error_to_ax_error(err)),
-                            };
+                            let info = self
+                                .device
+                                .snapshot()
+                                .absolute_info(axis)
+                                .ok_or(AxError::InvalidInput)?;
                             let abs = InputAbsInfo {
                                 value: 0,
                                 minimum: info.min,
@@ -819,9 +364,8 @@ impl DeviceOps for EventDev {
 
 impl Pollable for EventDev {
     fn poll(&self) -> IoEvents {
-        self.request_polling();
         let mut events = IoEvents::empty();
-        events.set(IoEvents::IN, self.inner.lock().has_event());
+        events.set(IoEvents::IN, self.device.has_events());
         events
     }
 
@@ -829,11 +373,7 @@ impl Pollable for EventDev {
         if !events.contains(IoEvents::IN) {
             return;
         }
-        self.request_polling();
-        unsafe { self.waiters.register(context.waker(), IoEvents::IN) };
-        if self.inner.lock().has_event() {
-            context.waker().wake_by_ref();
-        }
+        self.device.register_read_waker(context.waker());
     }
 }
 
@@ -842,15 +382,15 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
     let mut mice_alias: Option<Arc<EventDev>> = None;
     let mut input_id: u32 = 0;
     let input_devices = ax_input::take_inputs();
-    for mut device in input_devices.into_iter() {
-        let mut keys = [0; 0x300usize.div_ceil(8)];
-        assert!(device.get_event_bits(EventType::Key, &mut keys).unwrap());
+    for device in input_devices {
+        let keys = device.snapshot().event_bits(EventType::Key);
 
         const BTN_MOUSE: usize = 0x110;
-        let is_mouse = keys[BTN_MOUSE / 8] & (1 << (BTN_MOUSE % 8)) != 0;
+        let is_mouse = keys
+            .get(BTN_MOUSE / 8)
+            .is_some_and(|byte| byte & (1 << (BTN_MOUSE % 8)) != 0);
 
         let event_dev = Arc::new(EventDev::new(device));
-        event_dev.register_irq();
         let dev = Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
@@ -879,55 +419,4 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
 
     EVENT_DEVICE_COUNT.store(input_id, Ordering::Release);
     inputs
-}
-
-#[cfg(test)]
-mod tests {
-    use core::cell::Cell;
-
-    use super::*;
-
-    #[test]
-    fn pending_before_register_runs_deferred_event_fanout() {
-        assert_irq_service_cycle_order(IrqRegisterResult::ConsumedPending);
-    }
-
-    #[test]
-    fn register_before_irq_runs_deferred_event_fanout() {
-        assert_irq_service_cycle_order(IrqRegisterResult::Registered);
-    }
-
-    #[test]
-    fn occupied_event_service_registration_does_not_run_callbacks() {
-        let step = Cell::new(0);
-        let completed = complete_event_irq_service_cycle(
-            IrqRegisterResult::Occupied,
-            || step.set(1),
-            || step.set(2),
-            || step.set(3),
-        );
-        assert!(!completed);
-        assert_eq!(step.get(), 0);
-    }
-
-    fn assert_irq_service_cycle_order(registration: IrqRegisterResult) {
-        let step = Cell::new(0);
-        let completed = complete_event_irq_service_cycle(
-            registration,
-            || {
-                assert_eq!(step.get(), 0);
-                step.set(1);
-            },
-            || {
-                assert_eq!(step.get(), 1);
-                step.set(2);
-            },
-            || {
-                assert_eq!(step.get(), 2);
-                step.set(3);
-            },
-        );
-        assert!(completed);
-        assert_eq!(step.get(), 3);
-    }
 }

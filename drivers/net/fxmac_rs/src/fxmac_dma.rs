@@ -149,6 +149,10 @@ pub struct FXmacNetifBuffer {
     // 作为FXmacBdRing的基地址，并设置成一串多个BD
     pub rx_bdspace: usize, // [u8; FXMAX_RX_BDSPACE_LENGTH], aligned(256); 接收bd 缓冲区
     pub tx_bdspace: usize, // FXMAX_TX_BDSPACE_LENGTH, aligned(256); 发送bd 缓冲区
+    /// Device-visible base of the RX descriptor ring.
+    pub rx_bdspace_dma: usize,
+    /// Device-visible base of the TX descriptor ring.
+    pub tx_bdspace_dma: usize,
 
     // 保存收发数据包的内存基地址，收发数据包内存需要申请alloc
     pub rx_pbufs_storage: [uintptr; FXMAX_RX_PBUFS_LENGTH],
@@ -158,11 +162,11 @@ pub struct FXmacNetifBuffer {
 impl Default for FXmacNetifBuffer {
     fn default() -> Self {
         let alloc_pages = FXMAX_RX_BDSPACE_LENGTH.div_ceil(PAGE_SIZE);
-        let (mut rx_vaddr, mut rx_dma) =
+        let (rx_vaddr, rx_dma) =
             ax_crate_interface::call_interface!(crate::KernelFunc::dma_alloc_coherent(alloc_pages));
 
         let alloc_pages = FXMAX_TX_BDSPACE_LENGTH.div_ceil(PAGE_SIZE);
-        let (mut tx_vaddr, mut tx_dma) =
+        let (tx_vaddr, tx_dma) =
             ax_crate_interface::call_interface!(crate::KernelFunc::dma_alloc_coherent(alloc_pages));
 
         // let rx_buf = unsafe { from_raw_parts_mut(vaddr as *mut u8, FXMAX_RX_BDSPACE_LENGTH) };
@@ -170,6 +174,8 @@ impl Default for FXmacNetifBuffer {
         Self {
             rx_bdspace: rx_vaddr,
             tx_bdspace: tx_vaddr,
+            rx_bdspace_dma: rx_dma,
+            tx_bdspace_dma: tx_dma,
             rx_pbufs_storage: [0; FXMAX_RX_PBUFS_LENGTH],
             tx_pbufs_storage: [0; FXMAX_TX_PBUFS_LENGTH],
         }
@@ -187,10 +193,7 @@ pub struct FXmacLwipPort {
 
 pub fn fxmac_bd_read(bd_ptr: u64, offset: u32) -> u32 {
     trace!("fxmac_bd_read at {:#x}", bd_ptr + offset as u64);
-    read_reg(
-        (ax_crate_interface::call_interface!(crate::KernelFunc::virt_to_phys(bd_ptr as usize))
-            + offset as usize) as *const u32,
-    )
+    read_reg((bd_ptr as usize + offset as usize) as *const u32)
 }
 pub fn fxmac_bd_write(bd_ptr: u64, offset: u32, data: u32) {
     debug!(
@@ -199,11 +202,7 @@ pub fn fxmac_bd_write(bd_ptr: u64, offset: u32, data: u32) {
         bd_ptr + offset as u64
     );
     // uintptr: u64
-    write_reg(
-        (ax_crate_interface::call_interface!(crate::KernelFunc::virt_to_phys(bd_ptr as usize))
-            + offset as usize) as *mut u32,
-        data,
-    );
+    write_reg((bd_ptr as usize + offset as usize) as *mut u32, data);
 }
 
 /// FXmacBdSetRxWrap
@@ -331,12 +330,6 @@ pub fn FXmacAllocDmaPbufs(instance_p: &mut FXmac) -> u32 {
 
         let rxringptr: &mut FXmacBdRing = &mut instance_p.rx_bd_queue.bdring;
         let mut rxbd: *mut FXmacBd = null_mut();
-        // let my_speed: Box<i32> = Box::new(88);
-        // rxbd = Box::into_raw(my_speed);
-        // OR
-        // let mut my_speed: i32 = 88;
-        // rxbd = &mut my_speed;
-
         // 在BD list中预留待设置的BD
         status = FXmacBdRingAlloc(rxringptr, 1, &mut rxbd);
         assert!(!rxbd.is_null());
@@ -435,7 +428,7 @@ pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
     // 创建收包的环形缓冲区
     let mut status: u32 = FXmacBdRingCreate(
         rxringptr,
-        instance_p.lwipport.buffer.rx_bdspace as u64,
+        instance_p.lwipport.buffer.rx_bdspace_dma as u64,
         instance_p.lwipport.buffer.rx_bdspace as u64,
         BD_ALIGNMENT,
         FXMAX_RX_PBUFS_LENGTH as u32,
@@ -463,7 +456,7 @@ pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
     // Create the TxBD ring
     status = FXmacBdRingCreate(
         txringptr,
-        instance_p.lwipport.buffer.tx_bdspace as u64,
+        instance_p.lwipport.buffer.tx_bdspace_dma as u64,
         instance_p.lwipport.buffer.tx_bdspace as u64,
         BD_ALIGNMENT,
         FXMAX_TX_PBUFS_LENGTH as u32,
@@ -475,8 +468,18 @@ pub fn FXmacInitDma(instance_p: &mut FXmac) -> u32 {
     // 创建收发网络包的DMA内存
     FXmacAllocDmaPbufs(instance_p);
 
-    FXmacSetQueuePtr(instance_p.rx_bd_queue.bdring.phys_base_addr, 0, FXMAC_RECV);
-    FXmacSetQueuePtr(instance_p.tx_bd_queue.bdring.phys_base_addr, 0, FXMAC_SEND);
+    FXmacSetQueuePtr(
+        instance_p,
+        instance_p.rx_bd_queue.bdring.phys_base_addr,
+        0,
+        FXMAC_RECV,
+    );
+    FXmacSetQueuePtr(
+        instance_p,
+        instance_p.tx_bd_queue.bdring.phys_base_addr,
+        0,
+        FXMAC_SEND,
+    );
 
     let FXMAC_TAIL_QUEUE = |queue: u64| 0x0e80 + (queue << 2);
     if (instance_p.config.caps & FXMAC_CAPS_TAILPTR) != 0 {
@@ -1193,8 +1196,18 @@ pub fn ResetDma(instance_p: &mut FXmac) {
         instance_p.lwipport.buffer.rx_bdspace as *mut FXmacBd,
     );
 
-    FXmacSetQueuePtr(instance_p.tx_bd_queue.bdring.phys_base_addr, 0, FXMAC_SEND);
-    FXmacSetQueuePtr(instance_p.rx_bd_queue.bdring.phys_base_addr, 0, FXMAC_RECV);
+    FXmacSetQueuePtr(
+        instance_p,
+        instance_p.tx_bd_queue.bdring.phys_base_addr,
+        0,
+        FXMAC_SEND,
+    );
+    FXmacSetQueuePtr(
+        instance_p,
+        instance_p.rx_bd_queue.bdring.phys_base_addr,
+        0,
+        FXMAC_RECV,
+    );
 }
 
 /// Handle DMA interrupt error
@@ -1474,12 +1487,6 @@ pub fn ethernetif_input_to_recv_packets(instance_p: &mut FXmac) {
 
         // 也许需要屏蔽中断的临界区来保护
         instance_p.lwipport.recv_flg -= 1;
-
-        // 开中断
-        write_reg(
-            (instance_p.config.base_address + FXMAC_IER_OFFSET) as *mut u32,
-            instance_p.mask,
-        );
 
         // 若需要中断处理函数中来接收包，可以这里解注释
         // FXmacRecvHandler(instance_p);

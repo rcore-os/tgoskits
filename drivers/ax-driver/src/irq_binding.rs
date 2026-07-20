@@ -98,7 +98,7 @@ impl IrqBindingError {
         }
     }
 
-    #[cfg(feature = "pci")]
+    #[cfg(feature = "nvme")]
     pub(crate) const fn with_rollback_fault(
         mut self,
         rollback_fault: Option<IrqBindingFault>,

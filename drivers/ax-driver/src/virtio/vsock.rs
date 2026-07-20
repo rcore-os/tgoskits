@@ -36,6 +36,7 @@ crate::model_register!(
 
 #[cfg(feature = "pci")]
 fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeError> {
+    crate::pci::ensure_virtio_pci_endpoint(probe.endpoint(), DeviceType::Socket)?;
     let transport =
         crate::pci::take_virtio_transport_masked(probe.endpoint_mut(), DeviceType::Socket)?;
     let info = binding_info_from_pci(probe.info(), PciIrqRequirement::Optional)?;

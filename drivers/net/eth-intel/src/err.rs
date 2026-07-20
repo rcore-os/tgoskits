@@ -6,6 +6,9 @@ pub enum Error {
     #[error("MMIO map error: {0}")]
     Mmio(#[from] mmio_api::MapError),
 
+    #[error("MMIO mapping is too small: {size:#x} < {required:#x}")]
+    MmioTooSmall { size: usize, required: usize },
+
     #[error("unsupported device")]
     Unsupported,
 
@@ -14,6 +17,9 @@ pub enum Error {
 
     #[error("invalid argument: {0}")]
     InvalidArgument(&'static str),
+
+    #[error("invalid hardware MAC address {0:02x?}")]
+    InvalidMacAddress([u8; 6]),
 
     #[error("operation timeout")]
     Timeout,

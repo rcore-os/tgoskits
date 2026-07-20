@@ -198,7 +198,7 @@ pub(crate) fn prepare_x86_host_storage_passthrough(
         anyhow::anyhow!("prepare selected x86 host storage PCI INTx endpoint {info:?}: {error:?}")
     })?;
     register_x86_qemu_block_irq_route(host_irq, trigger)?;
-    reserve_x86_qemu_block_irq_action()?;
+    validate_x86_qemu_block_irq_source()?;
     info!("Prepared selected x86 host storage PCI INTx endpoint {info:?}");
     Ok(())
 }
@@ -256,10 +256,10 @@ fn register_x86_qemu_block_irq_route(
 }
 
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
-fn reserve_x86_qemu_block_irq_action() -> AxVmResult {
+fn validate_x86_qemu_block_irq_source() -> AxVmResult {
     let (_, _, _, guest_gsi) = axvm::boot::x86_qemu_passthrough_block_intx();
-    axvm::reserve_x86_ioapic_irq_forwarding_action(guest_gsi)?;
-    info!("Reserved selected x86 host storage forwarding action for guest GSI {guest_gsi}");
+    axvm::validate_x86_ioapic_irq_forwarding_source(guest_gsi)?;
+    info!("Validated selected x86 host storage forwarding source for guest GSI {guest_gsi}");
     Ok(())
 }
 

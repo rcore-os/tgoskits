@@ -1,5 +1,8 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
+use alloc::{boxed::Box, format};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
+use ax_kspin::SpinIrqSave;
+use irq_framework::{CpuId, IrqId, IrqScope};
 use loongArch64::iocsr::{iocsr_read_d, iocsr_write_d, iocsr_write_w};
 use rdif_intc::Interface;
 use rdrive::{
@@ -9,6 +12,7 @@ use rdrive::{
 };
 
 use super::irq_common::{EIOINTC_VECTOR_COUNT, eiointc_reg_bit, fdt_first_cell_vector};
+use crate::irq_line::{BoundIrqStatus, IrqChipLine, PreparedIrqChipLine};
 
 const EIOINTC_IRQ: usize = 3;
 
@@ -25,6 +29,12 @@ const EIOINTC_REG_ROUTE: usize = 0x1c00;
 const VEC_COUNT_PER_REG: usize = 64;
 
 static EIOINTC_RUNTIME_VECTOR_COUNT: AtomicUsize = AtomicUsize::new(0);
+static EIOINTC_CONTROL: SpinIrqSave<()> = SpinIrqSave::new(());
+static EIOINTC_LINE_OWNERS: [AtomicU8; EIOINTC_VECTOR_COUNT] =
+    [const { AtomicU8::new(0) }; EIOINTC_VECTOR_COUNT];
+
+const LINE_OWNER_DIRECT: u8 = 1;
+const LINE_OWNER_PCH_PIC: u8 = 2;
 
 module_driver!(
     name: "Loongson EIOINTC",
@@ -46,11 +56,100 @@ module_driver!(
     ],
 );
 
-pub fn set_irq_enable(irq: usize, enable: bool) -> Result<(), rdif_intc::IrqError> {
-    with_eiointc("setting EIOINTC IRQ enable", |intc| {
-        intc.set_enabled(rdif_intc::HwIrq(irq as u32), enable)
-    })
-    .ok_or(rdif_intc::IrqError::Controller)?
+pub(super) fn prepare_irq_line(
+    irq: IrqId,
+    scope: IrqScope,
+) -> Result<PreparedIrqChipLine, crate::irq::IrqError> {
+    if scope != IrqScope::Global {
+        return Err(crate::irq::IrqError::InvalidIrq);
+    }
+    let vector = checked_vector(irq.hwirq.0 as usize)?;
+    reserve_line(vector, LINE_OWNER_DIRECT)?;
+    set_prepared_irq_enabled(vector, false);
+    Ok(PreparedIrqChipLine::maskable(Box::new(EioIrqChipLine {
+        irq,
+        vector,
+    })))
+}
+
+pub(super) fn reserve_pch_pic_vector(vector: usize) -> Result<(), crate::irq::IrqError> {
+    let vector = checked_vector(vector)?;
+    reserve_line(vector, LINE_OWNER_PCH_PIC)
+}
+
+pub(super) fn set_prepared_irq_enabled(vector: usize, enabled: bool) {
+    assert!(
+        vector < EIOINTC_RUNTIME_VECTOR_COUNT.load(Ordering::Acquire),
+        "prepared EIOINTC vector left the frozen controller range"
+    );
+    let _guard = EIOINTC_CONTROL.lock();
+    let (offset, bit) = eiointc_reg_bit(vector);
+    let enable_addr = EIOINTC_REG_ENABLE + offset;
+    let current = iocsr_read_d(enable_addr);
+    iocsr_write_d(
+        enable_addr,
+        if enabled {
+            current | bit
+        } else {
+            current & !bit
+        },
+    );
+    if enabled {
+        let bounce_addr = EIOINTC_REG_BOUNCE + offset;
+        iocsr_write_d(bounce_addr, iocsr_read_d(bounce_addr) | bit);
+    }
+}
+
+fn checked_vector(vector: usize) -> Result<usize, crate::irq::IrqError> {
+    let count = EIOINTC_RUNTIME_VECTOR_COUNT.load(Ordering::Acquire);
+    if count == 0 {
+        return Err(crate::irq::IrqError::Unsupported);
+    }
+    (vector < count)
+        .then_some(vector)
+        .ok_or(crate::irq::IrqError::InvalidIrq)
+}
+
+fn reserve_line(vector: usize, owner: u8) -> Result<(), crate::irq::IrqError> {
+    EIOINTC_LINE_OWNERS[vector]
+        .compare_exchange(0, owner, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ())
+        .map_err(|_| crate::irq::IrqError::Busy)
+}
+
+struct EioIrqChipLine {
+    irq: IrqId,
+    vector: usize,
+}
+
+// SAFETY: registration permanently reserves the physical vector and the IOCSR
+// register block is architectural shutdown-lifetime state. Live RMW sequences
+// use one IRQ-safe bounded lock and never allocate or enter rdrive.
+unsafe impl IrqChipLine for EioIrqChipLine {
+    fn set_enabled(&self, cpu: Option<CpuId>, enabled: bool) {
+        assert!(
+            cpu.is_none(),
+            "prepared EIOINTC line {:?} cannot use a per-CPU target",
+            self.irq
+        );
+        assert_eq!(
+            EIOINTC_LINE_OWNERS[self.vector].load(Ordering::Acquire),
+            LINE_OWNER_DIRECT,
+            "prepared EIOINTC line lost its physical source lease"
+        );
+        set_prepared_irq_enabled(self.vector, enabled);
+    }
+
+    fn status(&self, cpu: Option<CpuId>) -> BoundIrqStatus {
+        assert!(cpu.is_none(), "EIOINTC status cannot use a per-CPU target");
+        let _guard = EIOINTC_CONTROL.lock();
+        let (offset, bit) = eiointc_reg_bit(self.vector);
+        BoundIrqStatus {
+            enabled: Some(iocsr_read_d(EIOINTC_REG_ENABLE + offset) & bit != 0),
+            pending: Some(iocsr_read_d(EIOINTC_REG_ISR + offset) & bit != 0),
+            in_service: None,
+        }
+    }
 }
 
 pub fn claim_irq() -> Option<usize> {
@@ -106,26 +205,6 @@ fn register_eiointc(dev: PlatformDevice) -> Result<(), OnProbeError> {
     Ok(())
 }
 
-fn with_eiointc<R>(op: &str, f: impl FnOnce(&mut EioIntc) -> R) -> Option<R> {
-    if !rdrive::is_initialized() {
-        return None;
-    }
-
-    for intc in rdrive::get_list::<rdif_intc::Intc>() {
-        let Ok(intc) = intc.downcast::<EioIntc>() else {
-            continue;
-        };
-        let Ok(mut intc) = intc.try_lock() else {
-            warn!("failed to lock Loongson EIOINTC when {op}");
-            return None;
-        };
-        return Some(f(&mut intc));
-    }
-
-    warn!("Loongson EIOINTC is not registered when {op}");
-    None
-}
-
 struct EioIntc {
     vectors: usize,
 }
@@ -165,11 +244,7 @@ impl EioIntc {
             return;
         }
 
-        let (offset, bit) = eiointc_reg_bit(irq);
-        for base in [EIOINTC_REG_ENABLE, EIOINTC_REG_BOUNCE] {
-            let addr = base + offset;
-            iocsr_write_d(addr, iocsr_read_d(addr) | bit);
-        }
+        set_prepared_irq_enabled(irq, true);
     }
 
     fn disable_irq(&mut self, irq: usize) {
@@ -177,9 +252,7 @@ impl EioIntc {
             return;
         }
 
-        let (offset, bit) = eiointc_reg_bit(irq);
-        let addr = EIOINTC_REG_ENABLE + offset;
-        iocsr_write_d(addr, iocsr_read_d(addr) & !bit);
+        set_prepared_irq_enabled(irq, false);
     }
 
     fn contains_irq(&self, irq: usize, op: &str) -> bool {

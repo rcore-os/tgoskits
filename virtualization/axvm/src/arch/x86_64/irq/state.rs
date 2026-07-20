@@ -1,6 +1,6 @@
 //! Process-global x86 IOAPIC forwarding state and host IRQ mapping.
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 #[cfg(not(test))]
 use ax_kspin::SpinRaw as Mutex;
@@ -65,7 +65,17 @@ pub(super) static IOAPIC_IRQ_FORWARD_VM_ID: AtomicUsize = AtomicUsize::new(usize
 pub(super) static IOAPIC_IRQ_FORWARD_VCPU_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 pub(super) static IOAPIC_IRQ_PENDING: AtomicUsize = AtomicUsize::new(0);
 pub(super) static IOAPIC_IRQ_PENDING_LEVEL: AtomicUsize = AtomicUsize::new(0);
-pub(super) static IOAPIC_IRQ_MASKED: AtomicUsize = AtomicUsize::new(0);
+/// Actions whose hard handler requested an action gate or whose task-side
+/// owner explicitly disabled the action.
+///
+/// A set bit is published before the corresponding IRQ fact. Task-side rearm
+/// synchronizes the action before enabling it, so it cannot overtake the
+/// framework's `DisableActionAndWake` commit.
+pub(super) static IOAPIC_IRQ_ACTION_DISABLED: AtomicUsize = AtomicUsize::new(0);
+/// Actions whose callback owns a stable wake for the fixed vCPU thread.
+pub(super) static IOAPIC_IRQ_OWNER_BOUND: AtomicUsize = AtomicUsize::new(0);
+pub(super) static IOAPIC_IRQ_OWNER_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
+pub(super) static IOAPIC_IRQ_OWNER_THREAD_ID: AtomicU64 = AtomicU64::new(u64::MAX);
 pub(super) static IOAPIC_IRQ_ACTIVATED: AtomicUsize = AtomicUsize::new(0);
 pub(super) static IOAPIC_HOST_IRQ_EXPLICIT: AtomicUsize = AtomicUsize::new(0);
 pub(super) static IOAPIC_HOST_IRQ_LEVEL_TRIGGERED: AtomicUsize = AtomicUsize::new(0);
@@ -76,7 +86,7 @@ pub(super) static IOAPIC_HOST_IRQS: [AtomicUsize; IOAPIC_GSI_COUNT] =
 pub(super) static IOAPIC_FORWARDING_ROUTES: [IoApicForwardingRouteSlot; IOAPIC_GSI_COUNT] =
     [const { Mutex::new(IoApicForwardingRouteState::Vacant) }; IOAPIC_GSI_COUNT];
 #[cfg(test)]
-static TEST_FAIL_NEXT_HOST_IRQ_ENABLE: AtomicBool = AtomicBool::new(false);
+static TEST_FAIL_NEXT_ACTION_ENABLE: AtomicBool = AtomicBool::new(false);
 
 pub fn register_ioapic_irq_forwarding_route(
     guest_gsi: usize,
@@ -197,11 +207,12 @@ pub(super) fn ioapic_forwarding_route_requires_host_irq(gsi: usize) -> bool {
 pub(super) fn ensure_required_ioapic_forwarding_handles() -> AxVmResult {
     for gsi in ioapic_irq_hook_gsis() {
         if ioapic_forwarding_route_requires_host_irq(gsi)
-            && IOAPIC_IRQ_HANDLES[gsi].lock().is_none()
+            && (IOAPIC_IRQ_HANDLES[gsi].lock().is_none()
+                || IOAPIC_IRQ_OWNER_BOUND.load(Ordering::Acquire) & gsi_bit(gsi) == 0)
         {
             return Err(AxVmError::resource_unavailable(
                 "x86 IOAPIC forwarding IRQ action",
-                format_args!("guest GSI {gsi} has no registered host IRQ action"),
+                format_args!("guest GSI {gsi} has no fixed-owner host IRQ action and direct wake"),
             ));
         }
     }
@@ -249,88 +260,53 @@ pub(super) fn host_irq_has_explicit_route_for_other_gsi(
         .any(|gsi| IOAPIC_HOST_IRQS[gsi].load(Ordering::Acquire) == raw)
 }
 
-pub(super) fn set_forwarded_host_gsi_enabled(
+pub(super) fn set_forwarding_action_enabled(
     gsi: usize,
     enabled: bool,
 ) -> Result<(), irq::IrqError> {
-    let raw = IOAPIC_HOST_IRQS
+    let handle = IOAPIC_IRQ_HANDLES
         .get(gsi)
-        .map(|irq| irq.load(Ordering::Acquire))
-        .unwrap_or(INVALID_RAW_IRQ);
-    if raw == INVALID_RAW_IRQ {
-        return Err(irq::IrqError::NotFound);
-    }
+        .and_then(|slot| *slot.lock())
+        .ok_or(irq::IrqError::NotFound)?;
     #[cfg(test)]
-    if enabled && TEST_FAIL_NEXT_HOST_IRQ_ENABLE.swap(false, Ordering::AcqRel) {
+    if enabled && TEST_FAIL_NEXT_ACTION_ENABLE.swap(false, Ordering::AcqRel) {
         return Err(irq::IrqError::Busy);
     }
-    if let Some(handle) = *IOAPIC_IRQ_HANDLES[gsi].lock() {
-        return if enabled {
-            irq::enable_irq(handle)
-        } else {
-            irq::disable_irq(handle)
-        };
+    if enabled {
+        // The hard callback publishes its event before irq-framework consumes
+        // `DisableActionAndWake`. Drain the exact action first so this enable
+        // cannot race ahead of that gate transition on another CPU.
+        irq::synchronize_irq(handle)?;
+        irq::enable_irq(handle)
+    } else {
+        irq::disable_irq(handle)
     }
-
-    #[cfg(test)]
-    return irq::set_host_irq_enable(raw_to_host_irq(raw), enabled);
-
-    #[cfg(not(test))]
-    Err(irq::IrqError::NotFound)
 }
 
 #[cfg(test)]
-pub(super) fn fail_next_host_irq_enable_for_test() {
-    TEST_FAIL_NEXT_HOST_IRQ_ENABLE.store(true, Ordering::Release);
+pub(super) fn fail_next_forwarding_action_enable_for_test() {
+    TEST_FAIL_NEXT_ACTION_ENABLE.store(true, Ordering::Release);
 }
 
-pub(super) fn mask_forwarded_host_gsi(gsi: usize) -> bool {
-    let bit = gsi_bit(gsi);
-    if IOAPIC_IRQ_MASKED.fetch_or(bit, Ordering::AcqRel) & bit != 0 {
-        return true;
-    }
-
-    let raw = IOAPIC_HOST_IRQS
-        .get(gsi)
-        .map(|irq| irq.load(Ordering::Acquire))
-        .unwrap_or(INVALID_RAW_IRQ);
-    if raw == INVALID_RAW_IRQ {
-        IOAPIC_IRQ_MASKED.fetch_and(!bit, Ordering::AcqRel);
-        return false;
-    }
-
-    let irq = raw_to_host_irq(raw);
-    if let Err(error) = irq::set_host_irq_enable(irq, false) {
-        IOAPIC_IRQ_MASKED.fetch_and(!bit, Ordering::AcqRel);
-        warn!("failed to mask forwarded IOAPIC GSI {gsi} host IRQ {irq:?}: {error:?}");
-        return false;
-    }
-    true
+#[cfg(test)]
+pub(super) fn reset_forwarding_action_enable_failure_for_test() {
+    TEST_FAIL_NEXT_ACTION_ENABLE.store(false, Ordering::Release);
 }
 
-pub(super) fn unmask_forwarded_host_gsi(gsi: usize) {
+pub(super) fn rearm_forwarding_action(gsi: usize) {
     if gsi >= IOAPIC_GSI_COUNT {
         return;
     }
     let bit = gsi_bit(gsi);
-    if IOAPIC_IRQ_MASKED.load(Ordering::Acquire) & bit == 0 {
+    if IOAPIC_IRQ_ACTION_DISABLED.load(Ordering::Acquire) & bit == 0 {
         return;
     }
 
-    let raw = IOAPIC_HOST_IRQS
-        .get(gsi)
-        .map(|irq| irq.load(Ordering::Acquire))
-        .unwrap_or(INVALID_RAW_IRQ);
-    if raw == INVALID_RAW_IRQ {
+    if let Err(error) = set_forwarding_action_enabled(gsi, true) {
+        warn!("failed to rearm forwarded IOAPIC GSI {gsi} action: {error:?}");
         return;
     }
-
-    let irq = raw_to_host_irq(raw);
-    if let Err(error) = irq::set_host_irq_enable(irq, true) {
-        warn!("failed to unmask forwarded IOAPIC GSI {gsi} host IRQ {irq:?}: {error:?}");
-        return;
-    }
-    IOAPIC_IRQ_MASKED.fetch_and(!bit, Ordering::AcqRel);
+    IOAPIC_IRQ_ACTION_DISABLED.fetch_and(!bit, Ordering::AcqRel);
 }
 
 pub(super) fn is_level_triggered_forwarded_host_gsi(gsi: usize) -> bool {
@@ -338,6 +314,7 @@ pub(super) fn is_level_triggered_forwarded_host_gsi(gsi: usize) -> bool {
         && IOAPIC_HOST_IRQ_LEVEL_TRIGGERED.load(Ordering::Acquire) & gsi_bit(gsi) != 0
 }
 
+#[cfg(test)]
 pub(super) fn guest_gsi_for_host_irq(host_irq: irq::IrqId) -> Option<usize> {
     let raw = host_irq_to_raw(host_irq);
     let explicit = IOAPIC_HOST_IRQ_EXPLICIT.load(Ordering::Acquire);

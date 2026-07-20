@@ -510,7 +510,9 @@ pub fn run_on_cpu<T: Into<Callback>>(
 ///
 /// Returns an IRQ error for invalid/offline destinations, hard-IRQ callers, or
 /// a destination that does not acknowledge the call before the bounded wait
-/// expires.
+/// expires. `Ok(())` means the thunk completed exactly once. Every error is
+/// returned only after cancellation wins before execution begins, so the thunk
+/// cannot run after an error is observed.
 ///
 /// # Safety
 ///

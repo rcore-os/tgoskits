@@ -1,6 +1,4 @@
-use alloc::boxed::Box;
-
-use crate::{IdList, IrqHandler};
+use crate::{BlockIrqSource, IdList};
 
 /// One invocation input for a portable controller initialization state machine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,30 +146,6 @@ pub enum InitPoll<T> {
     Failed(InitError),
 }
 
-/// Progress made by a bounded controller worker for one deferred IRQ source.
-///
-/// A hard-IRQ endpoint returns [`crate::IrqOutcome::deferred`] only after it
-/// identifies the interrupt as belonging to this controller but cannot safely
-/// perform the destructive status read. The bounded worker then calls
-/// [`InitialController::service_deferred_irq`] or
-/// [`crate::InterruptLifecycle::service_deferred_irq`] before presenting that
-/// source to an initialization or recovery poll.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InitIrqProgress {
-    /// The deferred source no longer belongs to this controller.
-    Unhandled,
-    /// The source was acknowledged and its stable state is ready for polling.
-    Acknowledged,
-    /// Register exclusion is still contended; retain and requeue the source.
-    Deferred,
-    /// The owned source could not be acknowledged into stable driver state.
-    ///
-    /// The runtime must stop lifecycle progress and enter its terminal
-    /// initialization or recovery failure path. It must not relabel this as an
-    /// unhandled shared interrupt or retry it as register contention.
-    Failed(InitError),
-}
-
 /// Portable controller initialization or recovery failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum InitError {
@@ -220,23 +194,9 @@ pub trait InitialController: Send {
     /// Transfers the hard-IRQ endpoint for one declared logical source.
     ///
     /// The runtime calls this exactly once per source before the first
-    /// [`Self::poll_init`] invocation. A handler may return
-    /// [`crate::IrqOutcome::deferred`] after identifying an owned source when a
-    /// destructive status read is temporarily excluded by task-side register
-    /// access. The runtime then invokes [`Self::service_deferred_irq`] from the
-    /// bounded initialization worker.
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>>;
-
-    /// Acknowledges one source whose hard-IRQ endpoint deferred its destructive
-    /// status read.
-    ///
-    /// This method must perform bounded, non-blocking work. It must cache a
-    /// stable initialization event before returning
-    /// [`InitIrqProgress::Acknowledged`]. Returning
-    /// [`InitIrqProgress::Deferred`] retains the source for a later worker
-    /// pass. [`InitIrqProgress::Failed`] reports a terminal acknowledgement
-    /// failure after the top half already established source ownership.
-    fn service_deferred_irq(&mut self, source_id: usize) -> InitIrqProgress;
+    /// [`Self::poll_init`] invocation. The endpoint must acknowledge the
+    /// device source and publish stable facts in the hard-IRQ capture call.
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource>;
 
     /// Advances at most one bounded initialization pass.
     fn poll_init(&mut self, input: InitInput) -> InitPoll<()>;

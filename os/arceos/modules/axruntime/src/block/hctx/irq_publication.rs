@@ -1,6 +1,6 @@
 //! Hard-IRQ publication into one hardware queue's bounded event domain.
 
-use core::{pin::Pin, sync::atomic::Ordering};
+use core::sync::atomic::Ordering;
 
 use rdif_block::AcknowledgedEvent;
 
@@ -16,23 +16,13 @@ pub(super) struct EpochEvent {
 }
 
 impl HardwareQueue {
-    /// Records one hard-IRQ event and activates bounded service.
-    ///
-    /// Most events are already acknowledged. A typed deferred event transfers
-    /// only the destructive acknowledgement to this queue's affinity worker.
-    /// The accepted path performs only fixed-ring publication, atomics, and
-    /// the workqueue's direct scheduler wake. It does not allocate or call
-    /// driver task-side code.
-    pub(in crate::block) fn irq_publication_epoch(&self) -> Option<u64> {
-        self.control.accepted_event_epoch()
-    }
-
-    pub fn record_irq_event(
-        self: Pin<&'static Self>,
+    /// Records one captured IRQ event from the fixed maintenance owner.
+    pub(in crate::block) fn record_owner_irq_event(
+        &self,
         expected_controller_epoch: u64,
         event: AcknowledgedEvent,
     ) -> Result<bool, HardwareQueueError> {
-        let queue = self.get_ref();
+        let queue = self;
         if queue.fatal_completion_quarantine.load(Ordering::Acquire) {
             // The first unrepresentable completion closes this publisher before
             // controller recovery drains the IRQ action. Returning a typed
@@ -61,10 +51,6 @@ impl HardwareQueue {
             Ok(()) => {
                 queue.control.raise(HctxCause::Irq);
                 drop(publication);
-                if let Err(error) = queue.queue_service_work() {
-                    queue.record_irq_service_error(&error);
-                    return Err(error);
-                }
                 Ok(true)
             }
             Err(RingFull) => {
@@ -74,10 +60,6 @@ impl HardwareQueue {
                 // controller reset boundary.
                 queue.control.raise(HctxCause::EventOverflow);
                 drop(publication);
-                if let Err(error) = queue.queue_service_work() {
-                    queue.record_irq_service_error(&error);
-                    return Err(error);
-                }
                 Err(HardwareQueueError::EventOverflow {
                     queue_id: queue.info.id,
                 })

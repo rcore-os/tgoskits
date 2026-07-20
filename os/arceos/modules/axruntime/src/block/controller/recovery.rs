@@ -1,76 +1,42 @@
-//! Bounded controller recovery, IRQ draining, and guest-return reinitialization.
+//! Recovery and guest-return transitions executed only by the maintenance owner.
 
 use alloc::sync::Arc;
-use core::{pin::Pin, ptr, sync::atomic::Ordering};
+use core::sync::atomic::Ordering;
 
 use rdif_block::{
-    ControllerEpoch, ControllerReady, DmaQuiesced, InitError, InitPoll, LifecycleEndpoint,
-    RecoveryCause,
+    ControllerEpoch, ControllerReady, DmaQuiesced, IdList, InitError, InitInput, InitPoll,
+    LifecycleEndpoint, MaskedSource, RecoveryCause,
 };
 
 use super::{
-    BlockController, BlockHandoffError, ControllerOwnerLink, ControllerPhase, MAX_HARDWARE_QUEUES,
-    RuntimeQueue, recovery_irq::release_registration_quenches,
-    rollback_unpublished_runtime_devices,
-};
-use crate::{
-    block::HardwareQueueError,
-    workqueue::{DelayedWork, WorkItem, WorkOutcome},
+    BlockController, BlockHandoffError, ControllerPhase, OwnerCommand, RuntimeQueue,
+    irq_routes::reattach_host_actions, source::RuntimeIrqSource,
 };
 
-pub(super) fn controller_recovery_work_entry(data: usize) -> WorkOutcome {
-    let link = unsafe {
-        // SAFETY: callback data names the shutdown-lifetime owner link that
-        // embeds this work item's only controller publication slot.
-        &*ptr::with_exposed_provenance::<ControllerOwnerLink>(data)
-    };
-    let owner = link.owner.load(Ordering::Acquire);
-    if owner.is_null() {
-        return WorkOutcome::Complete;
-    }
-    let controller = unsafe {
-        // SAFETY: owner publication and clearing follow the contract described
-        // by ControllerOwnerLink; callback drain precedes pointer clearing.
-        &*owner
-    };
-    if let Some(cause) = controller.take_irq_recovery() {
-        controller.schedule_recovery(cause);
-    }
-    controller.recover_bounded()
-}
-
-pub(super) fn controller_recovery_timer_entry(data: usize) -> WorkOutcome {
-    let link = unsafe {
-        // SAFETY: callback data names the shutdown-lifetime controller owner
-        // link shared with the ordinary recovery work item.
-        &*ptr::with_exposed_provenance::<ControllerOwnerLink>(data)
-    };
-    link.wake_recovery();
-    WorkOutcome::Complete
-}
+const RECOVERY_TRANSITION_BUDGET: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub(super) enum RecoveryStep {
-    Idle             = 0,
-    DisableActions   = 1,
-    DrainActions     = 2,
-    BeginQuiesce     = 3,
-    PollQuiesce      = 4,
-    PollReinitialize = 5,
-    EnableActions    = 6,
-    Finished         = 7,
+    Idle                = 0,
+    DisableActions      = 1,
+    BeginQuiesce        = 2,
+    PollQuiesce         = 3,
+    EnableReinitActions = 4,
+    PollReinitialize    = 5,
+    PublishRunning      = 6,
+    Finished            = 7,
 }
 
 impl RecoveryStep {
     fn decode(value: u8) -> Self {
         match value {
             1 => Self::DisableActions,
-            2 => Self::DrainActions,
-            3 => Self::BeginQuiesce,
-            4 => Self::PollQuiesce,
+            2 => Self::BeginQuiesce,
+            3 => Self::PollQuiesce,
+            4 => Self::EnableReinitActions,
             5 => Self::PollReinitialize,
-            6 => Self::EnableActions,
+            6 => Self::PublishRunning,
             7 => Self::Finished,
             _ => Self::Idle,
         }
@@ -78,26 +44,313 @@ impl RecoveryStep {
 }
 
 impl BlockController {
-    /// Latches one queue fault and activates only fixed recovery work from
-    /// hard IRQ. Lifecycle transitions, waiter notification, and driver calls
-    /// remain in [`controller_recovery_work_entry`].
-    pub(super) fn publish_irq_recovery(&'static self, queue_id: usize) -> bool {
+    /// Publishes a recovery request; the fixed owner performs every device step.
+    pub(super) fn schedule_recovery(&self, cause: RecoveryCause) {
+        let transitioned = loop {
+            let observed = self.phase();
+            if observed == ControllerPhase::Recovering {
+                return;
+            }
+            if !matches!(
+                observed,
+                ControllerPhase::Running | ControllerPhase::Quiescing
+            ) {
+                return;
+            }
+            if self
+                .phase
+                .compare_exchange_weak(
+                    observed as u8,
+                    ControllerPhase::Recovering as u8,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                break true;
+            }
+        };
+        if !transitioned {
+            return;
+        }
+        if self.advance_recovery_epoch().is_err() {
+            self.mark_offline();
+            return;
+        }
+        *self.recovery_cause.lock() = Some(cause);
+        self.reset_recovery_inputs();
+        self.recovery_step
+            .store(RecoveryStep::DisableActions as u8, Ordering::Release);
+        for queue in self.runtime_queues() {
+            if let RuntimeQueue::Interrupt(queue) = queue {
+                queue.close_access_for_recovery();
+            }
+        }
+    }
+
+    pub(super) fn publish_irq_recovery(&self, queue_id: usize) -> bool {
         if queue_id >= u64::BITS as usize {
             return false;
         }
         self.irq_recovery_queues
             .fetch_or(1_u64 << queue_id, Ordering::Release);
-        self.queue_recovery_work().is_ok()
+        true
     }
 
-    fn take_irq_recovery(&self) -> Option<RecoveryCause> {
-        let queues = self.irq_recovery_queues.swap(0, Ordering::AcqRel);
-        (queues != 0).then(|| RecoveryCause::QueueFault {
-            queue_id: queues.trailing_zeros() as usize,
-        })
+    pub(super) fn record_recovery_irq(&self, source_id: usize) -> bool {
+        if source_id >= u64::BITS as usize || self.phase() != ControllerPhase::Recovering {
+            return false;
+        }
+        self.recovery_pending_sources
+            .fetch_or(1_u64 << source_id, Ordering::Release);
+        true
     }
 
-    pub(super) fn return_from_guest(self: &Arc<Self>) -> Result<(), BlockHandoffError> {
+    /// Starts or completes the asynchronous guest-return command.
+    pub(in crate::block) fn service_owner_return(&self, sources: &mut [RuntimeIrqSource]) -> bool {
+        match self.current_owner_command() {
+            OwnerCommand::ReturnHost => match self.begin_return_from_guest(sources) {
+                Ok(()) => {
+                    self.mark_owner_return_waiting();
+                    true
+                }
+                Err(error) => {
+                    self.mark_offline();
+                    self.finish_owner_command(Err(error));
+                    false
+                }
+            },
+            OwnerCommand::ReturnWaiting => match self.phase() {
+                ControllerPhase::Running => {
+                    self.finish_owner_command(Ok(()));
+                    false
+                }
+                ControllerPhase::Offline => {
+                    self.finish_owner_command(Err(BlockHandoffError::GuestReturn(
+                        self.name.clone(),
+                    )));
+                    false
+                }
+                _ => false,
+            },
+            OwnerCommand::None | OwnerCommand::Handoff | OwnerCommand::Preparing => false,
+        }
+    }
+
+    /// Performs a bounded recovery pass and reports immediately runnable work.
+    pub(in crate::block) fn service_owner_recovery(
+        &self,
+        sources: &mut [RuntimeIrqSource],
+        masked: &mut [Option<MaskedSource>; 64],
+    ) -> Result<bool, InitError> {
+        let pending_irq_queues = self.irq_recovery_queues.swap(0, Ordering::AcqRel);
+        if pending_irq_queues != 0 && self.phase() == ControllerPhase::Running {
+            self.schedule_recovery(RecoveryCause::QueueFault {
+                queue_id: pending_irq_queues.trailing_zeros() as usize,
+            });
+        }
+        if self.phase() != ControllerPhase::Recovering {
+            return Ok(false);
+        }
+
+        for _ in 0..RECOVERY_TRANSITION_BUDGET {
+            match RecoveryStep::decode(self.recovery_step.load(Ordering::Acquire)) {
+                RecoveryStep::Idle | RecoveryStep::Finished => return Ok(false),
+                RecoveryStep::DisableActions => {
+                    self.with_driver_endpoint_on_owner(|device| device.disable_irq())
+                        .map_err(|_| {
+                            InitError::Hardware("recovery could not mask device IRQ sources")
+                        })?;
+                    super::source::quiesce_after_device_masked(sources).map_err(|_| {
+                        InitError::Hardware(
+                            "recovery could not quiesce IRQ actions after masking the device",
+                        )
+                    })?;
+                    // Reset/reinitialization supersedes generation-bearing masks
+                    // captured before the destructive recovery boundary.
+                    masked.fill(None);
+                    self.recovery_irqs_enabled.store(false, Ordering::Release);
+                    self.recovery_step
+                        .store(RecoveryStep::BeginQuiesce as u8, Ordering::Release);
+                }
+                RecoveryStep::BeginQuiesce => {
+                    let epoch = self.expected_recovery_epoch();
+                    let cause = (*self.recovery_cause.lock()).ok_or(InitError::InvalidState)?;
+                    self.with_driver_endpoint_on_owner(|device| {
+                        match device.bundle_mut().lifecycle() {
+                            LifecycleEndpoint::Inline => Err(InitError::InvalidState),
+                            LifecycleEndpoint::Interrupt(lifecycle) => {
+                                lifecycle.begin_dma_quiesce(epoch, cause)
+                            }
+                        }
+                    })?;
+                    self.recovery_step
+                        .store(RecoveryStep::PollQuiesce as u8, Ordering::Release);
+                }
+                RecoveryStep::PollQuiesce => {
+                    let (input, consumed) = self.take_recovery_input();
+                    let progress = self.with_driver_endpoint_on_owner(|device| {
+                        match device.bundle_mut().lifecycle() {
+                            LifecycleEndpoint::Inline => InitPoll::Failed(InitError::InvalidState),
+                            LifecycleEndpoint::Interrupt(lifecycle) => {
+                                lifecycle.poll_dma_quiesce(input)
+                            }
+                        }
+                    });
+                    self.discard_consumed_masks(consumed, masked);
+                    match progress {
+                        InitPoll::Ready(proof) => self.begin_owner_reinitialize(proof)?,
+                        InitPoll::Failed(error) => return Err(error),
+                        InitPoll::Pending(schedule) => {
+                            let schedule = schedule.validate()?;
+                            if !schedule.irq_sources().is_empty() {
+                                return Err(InitError::MissingInterrupt);
+                            }
+                            return self.arm_recovery_schedule(schedule);
+                        }
+                    }
+                }
+                RecoveryStep::EnableReinitActions => {
+                    for source in sources.iter() {
+                        source.enable().map_err(|_| {
+                            InitError::Hardware("recovery could not enable an IRQ action")
+                        })?;
+                    }
+                    self.with_driver_endpoint_on_owner(|device| device.enable_irq())
+                        .map_err(|_| {
+                            InitError::Hardware("recovery could not unmask reinitialization IRQs")
+                        })?;
+                    self.recovery_irqs_enabled.store(true, Ordering::Release);
+                    self.recovery_step
+                        .store(RecoveryStep::PollReinitialize as u8, Ordering::Release);
+                }
+                RecoveryStep::PollReinitialize => {
+                    let (input, consumed) = self.take_recovery_input();
+                    let progress = self.with_driver_endpoint_on_owner(|device| {
+                        match device.bundle_mut().lifecycle() {
+                            LifecycleEndpoint::Inline => InitPoll::Failed(InitError::InvalidState),
+                            LifecycleEndpoint::Interrupt(lifecycle) => {
+                                lifecycle.poll_reinitialize(input)
+                            }
+                        }
+                    });
+                    self.rearm_consumed_sources(sources, consumed, masked)?;
+                    match progress {
+                        InitPoll::Ready(proof) => {
+                            self.validate_ready_proof(&proof)?;
+                            for queue in self.runtime_queues() {
+                                if let RuntimeQueue::Interrupt(queue) = queue {
+                                    queue
+                                        .finish_reinitialization()
+                                        .map_err(|_| InitError::InvalidState)?;
+                                }
+                            }
+                            self.recovery_step
+                                .store(RecoveryStep::PublishRunning as u8, Ordering::Release);
+                        }
+                        InitPoll::Failed(error) => return Err(error),
+                        InitPoll::Pending(schedule) => {
+                            return self.arm_recovery_schedule(schedule);
+                        }
+                    }
+                }
+                RecoveryStep::PublishRunning => {
+                    self.phase
+                        .compare_exchange(
+                            ControllerPhase::Recovering as u8,
+                            ControllerPhase::Running as u8,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .map_err(|_| InitError::InvalidState)?;
+                    self.reset_recovery_inputs();
+                    *self.recovery_cause.lock() = None;
+                    self.recovery_step
+                        .store(RecoveryStep::Finished as u8, Ordering::Release);
+                    self.operation_wait.notify_all();
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    fn begin_owner_reinitialize(&self, proof: DmaQuiesced) -> Result<(), InitError> {
+        self.validate_dma_proof(&proof)?;
+        for queue in self.runtime_queues() {
+            if let RuntimeQueue::Interrupt(queue) = queue {
+                queue
+                    .reclaim_after_quiesce(&proof)
+                    .map_err(|_| InitError::InvalidState)?;
+                queue
+                    .begin_reinitialization()
+                    .map_err(|_| InitError::InvalidState)?;
+            }
+        }
+        self.with_driver_endpoint_on_owner(|device| match device.bundle_mut().lifecycle() {
+            LifecycleEndpoint::Inline => Err(InitError::InvalidState),
+            LifecycleEndpoint::Interrupt(lifecycle) => lifecycle.begin_reinitialize(proof),
+        })?;
+        self.recovery_step
+            .store(RecoveryStep::EnableReinitActions as u8, Ordering::Release);
+        Ok(())
+    }
+
+    fn take_recovery_input(&self) -> (InitInput, IdList) {
+        self.recovery_wait_sources.store(0, Ordering::Release);
+        self.recovery_deadline_ns.store(0, Ordering::Release);
+        let consumed = IdList::from_bits(self.recovery_pending_sources.swap(0, Ordering::AcqRel));
+        (
+            InitInput::new(ax_hal::time::monotonic_time_nanos(), consumed),
+            consumed,
+        )
+    }
+
+    fn arm_recovery_schedule(&self, schedule: rdif_block::InitSchedule) -> Result<bool, InitError> {
+        let schedule = schedule.validate()?;
+        self.recovery_wait_sources
+            .store(schedule.irq_sources().bits(), Ordering::Release);
+        self.recovery_deadline_ns
+            .store(schedule.wake_at_ns().unwrap_or(0), Ordering::Release);
+        let pending = self.recovery_pending_sources.load(Ordering::Acquire)
+            & schedule.irq_sources().bits()
+            != 0;
+        Ok(schedule.run_again() || pending)
+    }
+
+    fn rearm_consumed_sources(
+        &self,
+        sources: &mut [RuntimeIrqSource],
+        consumed: IdList,
+        masked: &mut [Option<MaskedSource>; 64],
+    ) -> Result<(), InitError> {
+        for source_id in consumed.iter() {
+            let Some(token) = masked.get_mut(source_id).and_then(Option::take) else {
+                continue;
+            };
+            let source = sources
+                .iter_mut()
+                .find(|source| source.source_id() == source_id)
+                .ok_or(InitError::MissingInterrupt)?;
+            source
+                .rearm(token)
+                .map_err(|_| InitError::Hardware("recovery IRQ source rearm failed"))?;
+        }
+        Ok(())
+    }
+
+    fn discard_consumed_masks(&self, consumed: IdList, masked: &mut [Option<MaskedSource>; 64]) {
+        for source_id in consumed.iter() {
+            if let Some(slot) = masked.get_mut(source_id) {
+                *slot = None;
+            }
+        }
+    }
+
+    fn begin_return_from_guest(
+        &self,
+        sources: &mut [RuntimeIrqSource],
+    ) -> Result<(), BlockHandoffError> {
         self.phase
             .compare_exchange(
                 ControllerPhase::GuestOwned as u8,
@@ -106,59 +359,35 @@ impl BlockController {
                 Ordering::Acquire,
             )
             .map_err(|_| BlockHandoffError::InvalidState(self.name.clone()))?;
-
-        if let Err(error) = self.reattach_host_actions() {
-            self.mark_offline();
-            return Err(error);
-        }
+        reattach_host_actions(sources)?;
         for queue in self.runtime_queues() {
-            if let RuntimeQueue::Interrupt(queue) = queue
-                && let Err(error) = queue.begin_guest_return_recovery()
-            {
-                self.mark_offline();
-                return Err(error.into());
+            if let RuntimeQueue::Interrupt(queue) = queue {
+                queue.begin_guest_return_recovery()?;
             }
         }
-        if self.advance_recovery_epoch().is_err() {
-            self.mark_offline();
-            return Err(BlockHandoffError::GuestReturn(self.name.clone()));
-        }
-
+        self.advance_recovery_epoch()?;
         *self.recovery_cause.lock() = Some(RecoveryCause::Handoff);
-        self.recovery_failed.store(false, Ordering::Release);
-        self.irq_recovery_queues.store(0, Ordering::Release);
-        self.recovery_wait_sources.store(0, Ordering::Release);
-        self.recovery_pending_sources.store(0, Ordering::Release);
-        self.recovery_polling_irqs.store(false, Ordering::Release);
-        self.recovery_irq_drains.lock().fill(None);
+        self.reset_recovery_inputs();
         self.recovery_step
             .store(RecoveryStep::DisableActions as u8, Ordering::Release);
-
-        let controller: &'static Self = unsafe {
-            // SAFETY: handoff tokens are created only from controllers in the
-            // shutdown-lifetime runtime registry. The Arc in this token also
-            // remains live until this recovery work reaches a terminal phase.
-            &*Arc::as_ptr(self)
-        };
-        if controller.queue_recovery_work().is_err() {
-            controller.mark_offline();
-            return Err(BlockHandoffError::GuestReturn(controller.name.clone()));
-        }
-        controller.operation_wait.try_wait_until(|| {
-            matches!(
-                controller.phase(),
-                ControllerPhase::Running | ControllerPhase::Offline
-            )
-        })?;
-        match controller.phase() {
-            ControllerPhase::Running => Ok(()),
-            _ => Err(BlockHandoffError::GuestReturn(controller.name.clone())),
-        }
+        Ok(())
     }
 
-    pub(super) fn mark_offline(&self) {
-        self.phase
-            .swap(ControllerPhase::Offline as u8, Ordering::AcqRel);
+    pub(super) fn return_from_guest(self: &Arc<Self>) -> Result<(), BlockHandoffError> {
+        self.request_owner_command(OwnerCommand::ReturnHost)
+    }
+
+    pub(in crate::block) fn mark_offline(&self) {
+        let previous = ControllerPhase::decode(
+            self.phase
+                .swap(ControllerPhase::Offline as u8, Ordering::AcqRel),
+        );
+        if previous == ControllerPhase::Offline {
+            return;
+        }
+        self.reset_recovery_inputs();
+        self.recovery_step
+            .store(RecoveryStep::Finished as u8, Ordering::Release);
         for queue in self.runtime_queues() {
             if let RuntimeQueue::Interrupt(queue) = queue {
                 queue.mark_offline();
@@ -167,97 +396,10 @@ impl BlockController {
         self.operation_wait.notify_all();
     }
 
-    pub(super) fn schedule_recovery(&'static self, cause: RecoveryCause) {
-        let mut recovery_cause = self.recovery_cause.lock();
-        let mut observed = self.phase.load(Ordering::Acquire);
-        loop {
-            let phase = ControllerPhase::decode(observed);
-            if matches!(
-                phase,
-                ControllerPhase::Recovering | ControllerPhase::Offline
-            ) {
-                return;
-            }
-            if !matches!(phase, ControllerPhase::Running | ControllerPhase::Quiescing) {
-                return;
-            }
-
-            // Clear evidence from the previous controller epoch while IRQ
-            // callbacks still observe a non-recovery phase. Once Recovering is
-            // published, every newly accepted source survives until a bounded
-            // worker consumes or explicitly discards it.
-            self.recovery_failed.store(false, Ordering::Release);
-            self.recovery_wait_sources.store(0, Ordering::Release);
-            self.recovery_pending_sources.store(0, Ordering::Release);
-            self.recovery_polling_irqs.store(false, Ordering::Release);
-            match self.phase.compare_exchange_weak(
-                observed,
-                ControllerPhase::Recovering as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(actual) => observed = actual,
-            }
-        }
-
-        if self.advance_recovery_epoch().is_err() {
-            drop(recovery_cause);
-            self.mark_offline();
-            error!("block controller {} exhausted recovery epochs", self.name);
-            return;
-        }
-        *recovery_cause = Some(cause);
-        self.recovery_step
-            .store(RecoveryStep::DisableActions as u8, Ordering::Release);
-        drop(recovery_cause);
-        for queue in self.runtime_queues() {
-            if let RuntimeQueue::Interrupt(queue) = queue {
-                queue.close_access_for_recovery();
-            }
-        }
-
-        if let Err(error) = self.queue_recovery_work() {
-            // Work admission is a runtime invariant. Mask the device and
-            // retain every IRQ/DMA owner rather than leaving a live source or
-            // fabricating request completion.
-            if !self.mask_recovery_sources() {
-                error!(
-                    "block controller {} retained live IRQ actions after recovery work admission \
-                     failed",
-                    self.name
-                );
-            }
-            self.mark_offline();
-            error!(
-                "block controller {} could not queue recovery for {cause:?}: {error}",
-                self.name,
-            );
-        }
-    }
-
-    fn recovery_work(&'static self) -> Pin<&'static WorkItem> {
-        unsafe {
-            // SAFETY: successful controllers are retained by the runtime
-            // registry until shutdown. Failed activation drains this work
-            // before clearing the owner link and releasing its Arc.
-            Pin::new_unchecked(&self.recovery_work)
-        }
-    }
-
-    pub(super) fn recovery_timer(&'static self) -> Pin<&'static DelayedWork> {
-        unsafe {
-            // SAFETY: the timer is embedded in the same shutdown-lifetime,
-            // pinned controller as the ordinary recovery work item.
-            Pin::new_unchecked(&self.recovery_timer)
-        }
-    }
-
-    pub(super) fn queue_recovery_work(
-        &'static self,
-    ) -> Result<(), crate::workqueue::WorkQueueError> {
-        let _ = self.recovery_domain.queue_work_on(self.recovery_work())?;
-        Ok(())
+    fn reset_recovery_inputs(&self) {
+        self.recovery_pending_sources.store(0, Ordering::Release);
+        self.recovery_wait_sources.store(0, Ordering::Release);
+        self.recovery_deadline_ns.store(0, Ordering::Release);
     }
 
     fn expected_recovery_epoch(&self) -> ControllerEpoch {
@@ -289,393 +431,5 @@ impl BlockController {
             return Err(InitError::InvalidState);
         }
         Ok(())
-    }
-
-    fn recover_bounded(&'static self) -> WorkOutcome {
-        if self.recovery_timer.take_failure().is_some() {
-            self.finish_failed_recovery_init(
-                "could not deliver a recovery deadline",
-                InitError::TimedOut,
-            );
-            return WorkOutcome::Complete;
-        }
-        for _ in 0..64 {
-            match RecoveryStep::decode(self.recovery_step.load(Ordering::Acquire)) {
-                RecoveryStep::DisableActions => {
-                    if self.runtime_queues().any(|queue| {
-                        matches!(queue, RuntimeQueue::Interrupt(queue) if !queue.access_is_drained())
-                    }) {
-                        // The final hctx accessor queues the recovery work.
-                        return WorkOutcome::Complete;
-                    }
-                    if let Err(error) = self.device.lock().disable_irq() {
-                        // Actions remain live because an unmasked level source
-                        // still needs an acknowledgement owner.
-                        error!(
-                            "block controller {} could not mask device IRQ delivery: {error}",
-                            self.name
-                        );
-                        self.mark_offline();
-                        self.recovery_step
-                            .store(RecoveryStep::Finished as u8, Ordering::Release);
-                        return WorkOutcome::Complete;
-                    }
-                    self.recovery_irqs_enabled.store(false, Ordering::Release);
-                    if !self.finish_masked_source_continuations() {
-                        // A source worker still owns its linear token. It wakes
-                        // recovery after finishing or restoring that token.
-                        return WorkOutcome::Complete;
-                    }
-                    let registration_guard = self.registrations.lock();
-                    let Some(registrations) = registration_guard.as_ref() else {
-                        self.recovery_step
-                            .store(RecoveryStep::BeginQuiesce as u8, Ordering::Release);
-                        continue;
-                    };
-                    if let Err(error) = release_registration_quenches(registrations) {
-                        drop(registration_guard);
-                        self.mark_offline();
-                        self.recovery_step
-                            .store(RecoveryStep::Finished as u8, Ordering::Release);
-                        error!(
-                            "block controller {} could not release its quenched IRQ line: \
-                             {error:?}",
-                            self.name
-                        );
-                        return WorkOutcome::Complete;
-                    }
-                    if registrations.len() > MAX_HARDWARE_QUEUES {
-                        self.mark_offline();
-                        self.recovery_step
-                            .store(RecoveryStep::Finished as u8, Ordering::Release);
-                        error!(
-                            "block controller {} exposed too many IRQ actions",
-                            self.name
-                        );
-                        return WorkOutcome::Complete;
-                    }
-
-                    let mut drains = self.recovery_irq_drains.lock();
-                    for (index, registration) in registrations.iter().enumerate() {
-                        if drains[index].is_none() {
-                            match registration.disable_async(self.irq_drain_wake()) {
-                                Ok(token) => drains[index] = Some(token),
-                                Err(error) => {
-                                    drop(drains);
-                                    drop(registration_guard);
-                                    self.mark_offline();
-                                    self.recovery_step
-                                        .store(RecoveryStep::Finished as u8, Ordering::Release);
-                                    error!(
-                                        "block controller {} could not disable IRQ action: \
-                                         {error:?}",
-                                        self.name
-                                    );
-                                    return WorkOutcome::Complete;
-                                }
-                            }
-                        }
-                    }
-                    self.recovery_step
-                        .store(RecoveryStep::DrainActions as u8, Ordering::Release);
-                }
-                RecoveryStep::DrainActions => {
-                    let registration_guard = self.registrations.lock();
-                    let Some(registrations) = registration_guard.as_ref() else {
-                        self.recovery_step
-                            .store(RecoveryStep::BeginQuiesce as u8, Ordering::Release);
-                        continue;
-                    };
-                    let drains = self.recovery_irq_drains.lock();
-                    let mut complete = true;
-                    for (index, registration) in registrations.iter().enumerate() {
-                        let Some(token) = drains[index] else {
-                            complete = false;
-                            break;
-                        };
-                        match registration.action_drain_complete(token) {
-                            Ok(drained) => complete &= drained,
-                            Err(error) => {
-                                drop(drains);
-                                drop(registration_guard);
-                                self.mark_offline();
-                                self.recovery_step
-                                    .store(RecoveryStep::Finished as u8, Ordering::Release);
-                                error!(
-                                    "block controller {} lost IRQ drain ownership: {error:?}",
-                                    self.name
-                                );
-                                return WorkOutcome::Complete;
-                            }
-                        }
-                    }
-                    if !complete {
-                        // The last target-action guard queues this work item.
-                        // Unrelated actions on the shared descriptor are not
-                        // part of the wait and cannot force a polling loop.
-                        return WorkOutcome::Complete;
-                    }
-                    self.recovery_step
-                        .store(RecoveryStep::BeginQuiesce as u8, Ordering::Release);
-                }
-                RecoveryStep::BeginQuiesce => {
-                    if self.recovery_failed.load(Ordering::Acquire) {
-                        self.mark_offline();
-                        self.recovery_step
-                            .store(RecoveryStep::Finished as u8, Ordering::Release);
-                        return WorkOutcome::Complete;
-                    }
-                    let epoch = self.expected_recovery_epoch();
-                    let Some(cause) = *self.recovery_cause.lock() else {
-                        self.finish_failed_recovery_init(
-                            "lost the first recovery cause",
-                            InitError::InvalidState,
-                        );
-                        return WorkOutcome::Complete;
-                    };
-                    let result = match self.device.lock().bundle_mut().lifecycle() {
-                        LifecycleEndpoint::Inline => Err(InitError::InvalidState),
-                        LifecycleEndpoint::Interrupt(lifecycle) => {
-                            if lifecycle.controller_cookie() != self.lifecycle_cookie {
-                                Err(InitError::InvalidState)
-                            } else {
-                                lifecycle.begin_dma_quiesce(epoch, cause)
-                            }
-                        }
-                    };
-                    if let Err(error) = result {
-                        self.finish_failed_recovery_init("could not begin DMA quiescence", error);
-                        return WorkOutcome::Complete;
-                    }
-                    self.recovery_step
-                        .store(RecoveryStep::PollQuiesce as u8, Ordering::Release);
-                }
-                RecoveryStep::PollQuiesce => {
-                    let input = self.recovery_input(false);
-                    let progress = match self.device.lock().bundle_mut().lifecycle() {
-                        LifecycleEndpoint::Inline => InitPoll::Failed(InitError::InvalidState),
-                        LifecycleEndpoint::Interrupt(lifecycle) => {
-                            lifecycle.poll_dma_quiesce(input)
-                        }
-                    };
-                    match progress {
-                        InitPoll::Ready(proof) => {
-                            self.finish_recovery_poll();
-                            if let Err(error) = self.validate_dma_proof(&proof) {
-                                self.finish_failed_recovery_init(
-                                    "returned an invalid DMA proof",
-                                    error,
-                                );
-                                return WorkOutcome::Complete;
-                            }
-                            for queue in self.runtime_queues() {
-                                if let RuntimeQueue::Interrupt(queue) = queue
-                                    && let Err(error) = queue.reclaim_after_quiesce(&proof)
-                                {
-                                    if queue.is_fatal_completion_quarantined() {
-                                        error!(
-                                            "block controller {} isolated a fatal completion \
-                                             quarantine after IRQ/DMA drain: {error}",
-                                            self.name
-                                        );
-                                        self.mark_offline();
-                                        self.recovery_step
-                                            .store(RecoveryStep::Finished as u8, Ordering::Release);
-                                        return WorkOutcome::Complete;
-                                    }
-                                    self.finish_failed_recovery_hctx(
-                                        "could not reclaim accepted requests",
-                                        error,
-                                    );
-                                    return WorkOutcome::Complete;
-                                }
-                            }
-                            for queue in self.runtime_queues() {
-                                if let RuntimeQueue::Interrupt(queue) = queue
-                                    && let Err(error) = queue.begin_reinitialization()
-                                {
-                                    self.finish_failed_recovery_hctx(
-                                        "could not enter queue reinitialization",
-                                        error,
-                                    );
-                                    return WorkOutcome::Complete;
-                                }
-                            }
-                            let result = match self.device.lock().bundle_mut().lifecycle() {
-                                LifecycleEndpoint::Inline => Err(InitError::InvalidState),
-                                LifecycleEndpoint::Interrupt(lifecycle) => {
-                                    lifecycle.begin_reinitialize(proof)
-                                }
-                            };
-                            if let Err(error) = result {
-                                self.finish_failed_recovery_init(
-                                    "could not begin controller reinitialization",
-                                    error,
-                                );
-                                return WorkOutcome::Complete;
-                            }
-                            self.recovery_step
-                                .store(RecoveryStep::PollReinitialize as u8, Ordering::Release);
-                        }
-                        InitPoll::Pending(schedule) => {
-                            if let Err(error) = self.arm_recovery_schedule(schedule, false) {
-                                self.finish_failed_recovery_init(
-                                    "published an invalid DMA-quiesce schedule",
-                                    error,
-                                );
-                            }
-                            return WorkOutcome::Complete;
-                        }
-                        InitPoll::Failed(error) => {
-                            self.finish_recovery_poll();
-                            self.finish_failed_recovery_init(
-                                "could not prove DMA quiescence",
-                                error,
-                            );
-                            return WorkOutcome::Complete;
-                        }
-                    }
-                }
-                RecoveryStep::PollReinitialize => {
-                    let input = self.recovery_input(true);
-                    let progress = match self.device.lock().bundle_mut().lifecycle() {
-                        LifecycleEndpoint::Inline => InitPoll::Failed(InitError::InvalidState),
-                        LifecycleEndpoint::Interrupt(lifecycle) => {
-                            lifecycle.poll_reinitialize(input)
-                        }
-                    };
-                    match progress {
-                        InitPoll::Ready(proof) => {
-                            self.finish_recovery_poll();
-                            if let Err(error) = self.validate_ready_proof(&proof) {
-                                self.finish_failed_recovery_init(
-                                    "returned an invalid ready proof",
-                                    error,
-                                );
-                                return WorkOutcome::Complete;
-                            }
-                            self.recovery_step
-                                .store(RecoveryStep::EnableActions as u8, Ordering::Release);
-                        }
-                        InitPoll::Pending(schedule) => {
-                            if let Err(error) = self.arm_recovery_schedule(schedule, true) {
-                                self.finish_failed_recovery_init(
-                                    "published an invalid reinitialization schedule",
-                                    error,
-                                );
-                            }
-                            return WorkOutcome::Complete;
-                        }
-                        InitPoll::Failed(error) => {
-                            self.finish_recovery_poll();
-                            self.finish_failed_recovery_init(
-                                "controller reinitialization failed",
-                                error,
-                            );
-                            return WorkOutcome::Complete;
-                        }
-                    }
-                }
-                RecoveryStep::EnableActions => {
-                    if let Err(error) = self.enable_recovery_irqs() {
-                        self.finish_failed_recovery_init("could not restore IRQ delivery", error);
-                        return WorkOutcome::Complete;
-                    }
-                    for queue in self.runtime_queues() {
-                        if let RuntimeQueue::Interrupt(queue) = queue
-                            && let Err(error) = queue.finish_reinitialization()
-                        {
-                            self.finish_failed_recovery_hctx(
-                                "could not publish a reinitialized queue",
-                                error,
-                            );
-                            return WorkOutcome::Complete;
-                        }
-                    }
-                    self.recovery_wait_sources.store(0, Ordering::Release);
-                    self.recovery_pending_sources.store(0, Ordering::Release);
-                    self.recovery_polling_irqs.store(false, Ordering::Release);
-                    self.recovery_irq_drains.lock().fill(None);
-                    *self.recovery_cause.lock() = None;
-                    if self
-                        .phase
-                        .compare_exchange(
-                            ControllerPhase::Recovering as u8,
-                            ControllerPhase::Running as u8,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        )
-                        .is_err()
-                    {
-                        // A synchronous return waiter can quarantine this
-                        // controller while the recovery callback is finishing.
-                        // A late callback must not reopen the controller or
-                        // leave its just-enabled routes live.
-                        if !self.mask_recovery_sources() {
-                            error!(
-                                "block controller {} retained live IRQ actions after a late \
-                                 recovery callback",
-                                self.name
-                            );
-                        }
-                        self.mark_offline();
-                    }
-                    self.recovery_step
-                        .store(RecoveryStep::Finished as u8, Ordering::Release);
-                    self.operation_wait.notify_all();
-                    return WorkOutcome::Complete;
-                }
-                RecoveryStep::Idle | RecoveryStep::Finished => return WorkOutcome::Complete,
-            }
-        }
-
-        let _ = self.queue_recovery_work();
-        WorkOutcome::Complete
-    }
-
-    fn finish_failed_recovery_init(&'static self, operation: &str, error: InitError) {
-        error!("block controller {} {operation}: {error}", self.name);
-        self.defer_failed_recovery();
-    }
-
-    fn finish_failed_recovery_hctx(&'static self, operation: &str, error: HardwareQueueError) {
-        error!("block controller {} {operation}: {error}", self.name);
-        self.defer_failed_recovery();
-    }
-
-    fn defer_failed_recovery(&'static self) {
-        self.recovery_failed.store(true, Ordering::Release);
-        self.recovery_step
-            .store(RecoveryStep::DisableActions as u8, Ordering::Release);
-        let _ = self.queue_recovery_work();
-    }
-
-    pub(super) fn abort_failed_activation(self: &Arc<Self>) {
-        self.phase
-            .store(ControllerPhase::Offline as u8, Ordering::Release);
-        if !self.mask_recovery_sources() {
-            // No owner outside this activation retains the unpublished
-            // controller. Leak one Arc intentionally so its live IRQ actions,
-            // handler targets, mappings, and DMA storage survive an unproven
-            // device mask for shutdown lifetime.
-            core::mem::forget(Arc::clone(self));
-            return;
-        }
-        if let Some(registrations) = self.registrations.lock().as_ref() {
-            for registration in registrations {
-                let _ = registration.synchronize();
-            }
-        }
-
-        let controller: &'static Self = unsafe {
-            // SAFETY: this Arc keeps the allocation alive until recovery work
-            // and every hctx work item have been synchronously drained below.
-            &*Arc::as_ptr(self)
-        };
-        let _ = controller
-            .recovery_domain
-            .cancel_work_sync(controller.recovery_work());
-        rollback_unpublished_runtime_devices(&self.devices);
-        self.owner_link.clear_after_drain(self);
     }
 }

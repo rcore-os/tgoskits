@@ -89,12 +89,10 @@ impl ArchOps for Aarch64Arch {
         );
     }
 
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn activate_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
         vm::activate_guest_irq_routes(vm)
     }
 
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn revoke_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
         vm::revoke_guest_irq_routes(vm)
     }

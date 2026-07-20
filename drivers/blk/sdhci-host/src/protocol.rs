@@ -135,6 +135,9 @@ impl ProtocolSdioHost for Sdhci {
     }
 
     fn enable_completion_irq(&mut self) -> Result<(), Error> {
+        if !self.irq.state.source_ready() {
+            return Err(Error::InvalidArgument);
+        }
         Sdhci::enable_completion_irq(self);
         Ok(())
     }
@@ -160,10 +163,11 @@ impl ProtocolSdioHost for Sdhci {
 }
 
 impl SdioIrqHost for Sdhci {
-    type IrqHandle = SdhciIrqHandle;
+    type IrqEndpoint = SdhciIrqEndpoint;
+    type IrqControl = SdhciIrqControl;
 
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        Sdhci::irq_endpoint(self)
+    fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        Sdhci::take_irq_source(self)
     }
 }
 

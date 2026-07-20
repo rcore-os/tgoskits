@@ -214,6 +214,18 @@ mod tests {
     }
 
     impl Interface for TestInput {
+        fn enable_irq(&mut self) -> Result<(), InputError> {
+            Ok(())
+        }
+
+        fn disable_irq(&mut self) -> Result<(), InputError> {
+            Ok(())
+        }
+
+        fn is_irq_enabled(&self) -> bool {
+            false
+        }
+
         fn device_id(&self) -> InputDeviceId {
             InputDeviceId {
                 bus_type: 3,

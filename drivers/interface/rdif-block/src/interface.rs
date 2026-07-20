@@ -1,15 +1,38 @@
 use alloc::boxed::Box;
+use core::{fmt, mem::ManuallyDrop};
 
 use crate::{
     BlkError, CompletedRequest, ControllerEpoch, ControllerInitEndpoint, DmaQuiesced,
-    DriverGeneric, IdList, IrqHandler, IrqSourceInfo, IrqSourceList, LifecycleEndpoint,
-    LifecycleKind, MAX_CONTROLLER_QUEUES, OwnedRequest, QueueContractError, QueueEventBatch,
-    QueueInfo, QueueKind, RequestId, SubmitError, SubmitOutcome, validate_lifecycle_identity,
+    DriverGeneric, IdList, IrqControlError, IrqEndpoint, IrqSourceControl, IrqSourceInfo,
+    IrqSourceList, LifecycleEndpoint, LifecycleKind, MAX_CONTROLLER_QUEUES, OwnedRequest,
+    QueueContractError, QueueEventBatch, QueueExecution, QueueInfo, QueueKind, RequestId,
+    SubmitError, SubmitOutcome, validate_lifecycle_identity,
 };
 
 pub type BInterface = Box<dyn Interface>;
 pub type BQueue = Box<dyn IQueue>;
-pub type BIrqHandler = Box<dyn IrqHandler>;
+pub type BIrqEndpoint = Box<dyn IrqEndpoint<Event = crate::Event, Fault = BlkError>>;
+pub type BIrqControl = Box<dyn IrqSourceControl<Error = IrqControlError>>;
+
+/// Split ownership of one logical device interrupt source.
+///
+/// The endpoint is installed into hard-IRQ context. The control endpoint stays
+/// with the bounded owner-side worker and is the only capability allowed to
+/// rearm a [`crate::MaskedSource`] after its captured event has been consumed.
+pub struct BlockIrqSource {
+    endpoint: BIrqEndpoint,
+    control: BIrqControl,
+}
+
+impl BlockIrqSource {
+    pub fn new(endpoint: BIrqEndpoint, control: BIrqControl) -> Self {
+        Self { endpoint, control }
+    }
+
+    pub fn into_parts(self) -> (BIrqEndpoint, BIrqControl) {
+        (self.endpoint, self.control)
+    }
+}
 
 /// Portable control endpoint for one block device.
 ///
@@ -17,7 +40,7 @@ pub type BIrqHandler = Box<dyn IrqHandler>;
 ///
 /// ```compile_fail
 /// use rdif_block::{
-///     BIrqHandler, BlkError, DeviceInfo, DriverGeneric, Interface, IrqSourceList,
+///     BlkError, BlockIrqSource, DeviceInfo, DriverGeneric, Interface, IrqSourceList,
 ///     LifecycleEndpoint, QueueHandle, QueueLimits,
 /// };
 ///
@@ -36,7 +59,7 @@ pub type BIrqHandler = Box<dyn IrqHandler>;
 ///     fn disable_irq(&self) -> Result<(), BlkError> { Err(BlkError::NotSupported) }
 ///     fn is_irq_enabled(&self) -> bool { false }
 ///     fn irq_sources(&self) -> IrqSourceList { IrqSourceList::new() }
-///     fn take_irq_handler(&mut self, _source_id: usize) -> Option<BIrqHandler> { None }
+///     fn take_irq_source(&mut self, _source_id: usize) -> Option<BlockIrqSource> { None }
 /// }
 /// ```
 pub trait Interface: DriverGeneric {
@@ -76,7 +99,7 @@ pub trait Interface: DriverGeneric {
 
     fn irq_sources(&self) -> IrqSourceList;
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<BIrqHandler>;
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource>;
 }
 
 /// Preallocated task-side target for terminal request ownership.
@@ -90,9 +113,9 @@ pub trait CompletionSink {
     fn complete(&mut self, completion: CompletedRequest);
 }
 
-/// Evidence retained by a bounded queue-service pass.
+/// Why one bounded queue-service pass must be queued again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServiceContinuationReason {
+pub enum ServiceRerunReason {
     /// The driver has not yet consumed all immutable IRQ facts.
     RetainedFacts,
     /// A fixed completion cache still contains entries from this IRQ.
@@ -101,19 +124,19 @@ pub enum ServiceContinuationReason {
     CompletionBudget,
 }
 
-/// Non-forgeable request to continue servicing one acknowledged source epoch.
+/// Non-forgeable request to queue another bounded pass for one captured epoch.
 #[derive(Debug, PartialEq, Eq)]
-pub struct ServiceContinuation {
+pub struct ServiceRerun {
     source_id: usize,
     source_epoch: crate::IrqEventEpoch,
-    reason: ServiceContinuationReason,
+    reason: ServiceRerunReason,
 }
 
-impl ServiceContinuation {
+impl ServiceRerun {
     pub(crate) const fn new(
         source_id: usize,
         source_epoch: crate::IrqEventEpoch,
-        reason: ServiceContinuationReason,
+        reason: ServiceRerunReason,
     ) -> Self {
         Self {
             source_id,
@@ -130,7 +153,7 @@ impl ServiceContinuation {
         self.source_epoch
     }
 
-    pub const fn reason(&self) -> ServiceContinuationReason {
+    pub const fn reason(&self) -> ServiceRerunReason {
         self.reason
     }
 }
@@ -139,7 +162,7 @@ impl ServiceContinuation {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ServiceProgress {
     Idle,
-    Continue(ServiceContinuation),
+    Requeue(ServiceRerun),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,10 +172,79 @@ enum QueueShutdownState {
     Closed,
 }
 
+struct AcceptedRequests {
+    ids: [Option<RequestId>; MAX_CONTROLLER_QUEUES],
+    len: usize,
+}
+
+impl AcceptedRequests {
+    const fn new() -> Self {
+        Self {
+            ids: [const { None }; MAX_CONTROLLER_QUEUES],
+            len: 0,
+        }
+    }
+
+    fn insert(&mut self, id: RequestId) -> bool {
+        if self.ids[..self.len].contains(&Some(id)) || self.len == self.ids.len() {
+            return false;
+        }
+        self.ids[self.len] = Some(id);
+        self.len += 1;
+        true
+    }
+
+    fn remove(&mut self, id: RequestId) -> bool {
+        let Some(index) = self.ids[..self.len]
+            .iter()
+            .position(|candidate| *candidate == Some(id))
+        else {
+            return false;
+        };
+        self.len -= 1;
+        self.ids[index] = self.ids[self.len].take();
+        true
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+struct QueueState {
+    queue: Option<ManuallyDrop<BQueue>>,
+    driver_id: usize,
+    info: QueueInfo,
+    controller_cookie: Option<usize>,
+    proof_epoch: Option<ControllerEpoch>,
+    destroyable_epoch: Option<ControllerEpoch>,
+    accepted: AcceptedRequests,
+    static_contract: Result<(), QueueContractError>,
+    submit_contract_violated: bool,
+    shutdown_state: QueueShutdownState,
+}
+
+struct TrackingCompletionSink<'owner> {
+    accepted: &'owner mut AcceptedRequests,
+    contract_violated: &'owner mut bool,
+    sink: &'owner mut dyn CompletionSink,
+}
+
+impl CompletionSink for TrackingCompletionSink<'_> {
+    fn complete(&mut self, completion: CompletedRequest) {
+        if !self.accepted.remove(completion.id) {
+            *self.contract_violated = true;
+        }
+        self.sink.complete(completion);
+    }
+}
+
 /// One owned-request queue for a block device.
 ///
 /// Interrupt request IDs are assigned by the runtime and remain stable across
-/// direct and serialized dispatch; inline requests use [`RequestId::INLINE`].
+/// tagged and serialized owner-side execution; inline requests use
+/// [`RequestId::INLINE`]. Hardware queue methods are invoked only by the
+/// queue's owner service context, never directly by an arbitrary submitter.
 /// On `Ok(SubmitOutcome::Queued)`, the queue owns the full request until exactly
 /// one terminal [`CompletedRequest`] is emitted. Both
 /// `SubmitOutcome::Completed` and [`SubmitError`] return the ID and complete
@@ -165,7 +257,7 @@ enum QueueShutdownState {
 ///
 /// ```compile_fail
 /// use rdif_block::{
-///     BlkError, CompletionSink, DispatchMode, IQueue, OwnedRequest, QueueEventBatch,
+///     BlkError, CompletionSink, IQueue, OwnedRequest, QueueEventBatch,
 ///     QueueInfo, QueueKind, RequestId, ServiceProgress, SubmitError, SubmitOutcome,
 /// };
 ///
@@ -206,7 +298,7 @@ pub trait IQueue: Send + 'static {
     /// The source endpoint has already acknowledged the relevant device source.
     /// Queue service may consume only the immutable facts in `events`; it must
     /// never read or clear controller-global IRQ status. Each call is bounded.
-    /// Immediate requeue requires a [`ServiceContinuation`] minted from this
+    /// Immediate requeue requires a [`ServiceRerun`] minted from this
     /// exact acknowledged source epoch, so ordinary `Busy` cannot silently
     /// turn into completion polling.
     fn service_events(
@@ -235,28 +327,25 @@ pub trait IQueue: Send + 'static {
     /// The generic [`QueueHandle`] invokes this endpoint at most once: a failed
     /// attempt permanently quarantines it instead of retrying an untrusted
     /// driver teardown transition.
-    fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError>;
+    fn shutdown(&mut self) -> Result<(), BlkError>;
 }
 
-/// Runtime-owned handle that requires explicit, one-shot ownership shutdown.
+/// Runtime-owned handle that requires an explicit, one-shot close transaction.
 ///
-/// Dropping a live handle deliberately leaks its driver endpoint. A live
-/// endpoint may still own DMA mappings or descriptors, so destroying it would
-/// turn a control-plane error into use-after-free. The leak is the bounded,
-/// fail-closed fallback; normal teardown must call [`Self::shutdown`] and
-/// handle its error while retaining this value. Once shutdown starts, no
-/// queue operation can re-enter the endpoint; a failed attempt leaves it in a
-/// permanent quarantine and later attempts return [`BlkError::Offline`].
+/// [`Self::close`] consumes this value. A failed driver shutdown returns a
+/// [`QueueCloseFailure`] that still owns the complete endpoint and can be
+/// converted into a named [`QuarantinedQueue`]. This prevents an error path
+/// from accidentally freeing descriptors or DMA mappings that hardware may
+/// still reference.
+///
+/// Dropping a live handle is only the final fail-closed safety net. Portable
+/// code cannot select an OS quarantine registry, so the endpoint storage is
+/// retained without running its destructor. Runtime integrations must use
+/// [`Self::close`] or [`Self::into_quarantine`] and keep the resulting owner in
+/// their named, bounded quarantine registry.
 #[must_use = "a block queue must be explicitly shut down or retained in quarantine"]
 pub struct QueueHandle {
-    queue: Option<BQueue>,
-    driver_id: usize,
-    info: QueueInfo,
-    controller_cookie: Option<usize>,
-    reclaimed_epoch: Option<ControllerEpoch>,
-    static_contract: Result<(), QueueContractError>,
-    submit_contract_violated: bool,
-    shutdown_state: QueueShutdownState,
+    state: Option<Box<QueueState>>,
 }
 
 impl QueueHandle {
@@ -272,14 +361,18 @@ impl QueueHandle {
             })
         };
         Self {
-            queue: Some(queue),
-            driver_id,
-            info,
-            controller_cookie: None,
-            reclaimed_epoch: None,
-            static_contract,
-            submit_contract_violated: false,
-            shutdown_state: QueueShutdownState::Live,
+            state: Some(Box::new(QueueState {
+                queue: Some(ManuallyDrop::new(queue)),
+                driver_id,
+                info,
+                controller_cookie: None,
+                proof_epoch: None,
+                destroyable_epoch: None,
+                accepted: AcceptedRequests::new(),
+                static_contract,
+                submit_contract_violated: false,
+                shutdown_state: QueueShutdownState::Live,
+            })),
         }
     }
 
@@ -295,30 +388,31 @@ impl QueueHandle {
         controller_cookie: usize,
         publication_epoch: ControllerEpoch,
     ) -> Result<(), QueueContractError> {
-        self.static_contract?;
-        if !matches!(self.info.kind, QueueKind::Interrupt { .. }) {
+        let state = self.state_mut();
+        state.static_contract?;
+        if !matches!(state.info.kind, QueueKind::Interrupt { .. }) {
             return Err(QueueContractError::LifecycleMismatch {
                 expected: LifecycleKind::Interrupt,
                 actual: LifecycleKind::Inline,
             });
         }
         validate_lifecycle_identity(LifecycleKind::Interrupt, controller_cookie)?;
-        if self.controller_cookie.is_some() {
+        if state.controller_cookie.is_some() {
             return Err(QueueContractError::LifecycleIdentityAlreadyBound {
-                queue_id: self.info.id,
+                queue_id: state.info.id,
             });
         }
-        self.controller_cookie = Some(controller_cookie);
-        self.reclaimed_epoch = Some(publication_epoch);
+        state.controller_cookie = Some(controller_cookie);
+        state.proof_epoch = Some(publication_epoch);
         Ok(())
     }
 
     pub fn id(&self) -> usize {
-        self.driver_id
+        self.state().driver_id
     }
 
     pub fn info(&self) -> QueueInfo {
-        self.info
+        self.state().info
     }
 
     pub fn submit_owned(
@@ -326,27 +420,31 @@ impl QueueHandle {
         id: RequestId,
         request: OwnedRequest,
     ) -> Result<SubmitOutcome, SubmitError> {
-        if self.shutdown_state != QueueShutdownState::Live
-            || self.static_contract.is_err()
-            || self.submit_contract_violated
-            || (matches!(self.info.kind, QueueKind::Interrupt { .. })
-                && self.controller_cookie.is_none())
+        let state = self.state_mut();
+        if state.shutdown_state != QueueShutdownState::Live
+            || state.static_contract.is_err()
+            || state.submit_contract_violated
+            || (matches!(state.info.kind, QueueKind::Interrupt { .. })
+                && state.controller_cookie.is_none())
         {
             return Err(SubmitError::new(id, BlkError::Offline, request));
         }
-        if validate_request_identity(self.info, id).is_err() {
+        if validate_request_identity(state.info, id).is_err() {
             return Err(SubmitError::new(id, BlkError::InvalidRequest, request));
         }
-        let Some(queue) = self.queue.as_mut() else {
+        let Some(queue) = state.queue.as_mut() else {
             return Err(SubmitError::new(id, BlkError::Offline, request));
         };
         let outcome = queue.submit_owned(id, request);
-        if validate_submit_contract(self.info, id, &outcome).is_err() {
+        if validate_submit_contract(state.info, id, &outcome).is_err() {
             // The exact returned ownership remains in `outcome`, but this
             // endpoint can no longer be trusted with another request. The
             // runtime consumes or quarantines that ownership and explicitly
             // shuts down or recovers the retained queue.
-            self.submit_contract_violated = true;
+            state.submit_contract_violated = true;
+        }
+        if matches!(outcome, Ok(SubmitOutcome::Queued)) && !state.accepted.insert(id) {
+            state.submit_contract_violated = true;
         }
         outcome
     }
@@ -356,21 +454,28 @@ impl QueueHandle {
         events: &QueueEventBatch<'_>,
         sink: &mut dyn CompletionSink,
     ) -> Result<ServiceProgress, BlkError> {
-        if events.queue_id() != self.info.id {
+        let state = self.state_mut();
+        if events.queue_id() != state.info.id {
             return Err(BlkError::InvalidRequest);
         }
-        if self.shutdown_state != QueueShutdownState::Live
-            || self.static_contract.is_err()
-            || self.submit_contract_violated
-            || (matches!(self.info.kind, QueueKind::Interrupt { .. })
-                && self.controller_cookie.is_none())
+        if state.shutdown_state != QueueShutdownState::Live
+            || state.static_contract.is_err()
+            || state.submit_contract_violated
+            || (matches!(state.info.kind, QueueKind::Interrupt { .. })
+                && state.controller_cookie.is_none())
         {
             return Err(BlkError::Offline);
         }
-        self.queue
+        let mut tracking = TrackingCompletionSink {
+            accepted: &mut state.accepted,
+            contract_violated: &mut state.submit_contract_violated,
+            sink,
+        };
+        state
+            .queue
             .as_mut()
             .ok_or(BlkError::Offline)?
-            .service_events(events, sink)
+            .service_events(events, &mut tracking)
     }
 
     pub fn reclaim_after_quiesce(
@@ -378,60 +483,192 @@ impl QueueHandle {
         proof: &DmaQuiesced,
         sink: &mut dyn CompletionSink,
     ) -> Result<(), BlkError> {
-        if self.shutdown_state != QueueShutdownState::Live {
+        let state = self.state_mut();
+        if state.shutdown_state != QueueShutdownState::Live {
             return Err(BlkError::Offline);
         }
-        if matches!(self.info.kind, QueueKind::Interrupt { .. }) {
-            let Some(controller_cookie) = self.controller_cookie else {
+        if matches!(state.info.kind, QueueKind::Interrupt { .. }) {
+            let Some(controller_cookie) = state.controller_cookie else {
                 return Err(BlkError::InvalidDmaProof);
             };
             if proof.controller_cookie() != controller_cookie
-                || self
-                    .reclaimed_epoch
+                || state
+                    .proof_epoch
                     .is_some_and(|epoch| proof.epoch() <= epoch)
             {
                 return Err(BlkError::InvalidDmaProof);
             }
         }
-        self.queue
+        let mut tracking = TrackingCompletionSink {
+            accepted: &mut state.accepted,
+            contract_violated: &mut state.submit_contract_violated,
+            sink,
+        };
+        state
+            .queue
             .as_mut()
             .ok_or(BlkError::Offline)?
-            .reclaim_after_quiesce(proof, sink)?;
-        if matches!(self.info.kind, QueueKind::Interrupt { .. }) {
-            self.reclaimed_epoch = Some(proof.epoch());
+            .reclaim_after_quiesce(proof, &mut tracking)?;
+        if matches!(state.info.kind, QueueKind::Interrupt { .. }) {
+            state.proof_epoch = Some(proof.epoch());
+            if !state.accepted.is_empty() {
+                return Err(BlkError::Busy);
+            }
+            state.destroyable_epoch = Some(proof.epoch());
         }
         Ok(())
     }
 
-    pub fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
-        match self.shutdown_state {
+    /// Closes this queue exactly once and destroys its endpoint only on proof
+    /// of successful driver shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueueCloseFailure`] with the complete queue owner when the
+    /// driver cannot prove that its endpoint is safe to destroy.
+    pub fn close(mut self) -> Result<(), QueueCloseFailure> {
+        let state = self.state_mut();
+        match state.shutdown_state {
             QueueShutdownState::Closed => return Ok(()),
-            QueueShutdownState::Attempted => return Err(BlkError::Offline),
-            QueueShutdownState::Live => self.shutdown_state = QueueShutdownState::Attempted,
+            QueueShutdownState::Attempted => {
+                return Err(QueueCloseFailure::new(BlkError::Offline, self));
+            }
+            QueueShutdownState::Live => {}
         }
-        let Some(queue) = self.queue.as_mut() else {
-            self.shutdown_state = QueueShutdownState::Closed;
+        if !state.accepted.is_empty() {
+            return Err(QueueCloseFailure::new(BlkError::Busy, self));
+        }
+        if matches!(state.info.kind, QueueKind::Interrupt { .. })
+            && state.destroyable_epoch.is_none()
+        {
+            return Err(QueueCloseFailure::new(BlkError::InvalidDmaProof, self));
+        }
+        state.shutdown_state = QueueShutdownState::Attempted;
+        let Some(queue) = state.queue.as_mut() else {
+            state.shutdown_state = QueueShutdownState::Closed;
             return Ok(());
         };
-        queue.shutdown(sink)?;
-        drop(
-            self.queue
-                .take()
-                .expect("successful queue shutdown must retain its driver endpoint"),
-        );
-        self.shutdown_state = QueueShutdownState::Closed;
+        if let Err(error) = queue.shutdown() {
+            return Err(QueueCloseFailure::new(error, self));
+        }
+        let mut state = self
+            .state
+            .take()
+            .expect("successful queue close must retain its state owner");
+        let mut queue = state
+            .queue
+            .take()
+            .expect("successful queue shutdown must retain its driver endpoint");
+        // SAFETY: the driver's one-shot shutdown transaction succeeded after
+        // the generic ledger proved every accepted owner had returned. An
+        // interrupt queue additionally consumed a matching DMA-quiescence
+        // proof before becoming destroyable. This is the only path that
+        // destroys the portable endpoint.
+        unsafe { ManuallyDrop::drop(&mut queue) };
+        state.shutdown_state = QueueShutdownState::Closed;
         Ok(())
+    }
+
+    /// Converts a live or failed-close endpoint into an explicit quarantine
+    /// owner without executing any hardware protocol from `Drop`.
+    pub fn into_quarantine(self, reason: BlkError) -> QuarantinedQueue {
+        QuarantinedQueue {
+            reason,
+            queue: self,
+        }
+    }
+
+    fn state(&self) -> &QueueState {
+        self.state
+            .as_deref()
+            .expect("queue handle state missing before successful close")
+    }
+
+    fn state_mut(&mut self) -> &mut QueueState {
+        self.state
+            .as_deref_mut()
+            .expect("queue handle state missing before successful close")
     }
 }
 
 impl Drop for QueueHandle {
     fn drop(&mut self) {
-        if let Some(queue) = self.queue.take() {
-            // A queue that did not acknowledge shutdown may still be accessed
-            // by its controller or DMA engine. Retain that ownership forever
-            // instead of running the driver's destructor on live hardware.
-            core::mem::forget(queue);
+        // `queue` is ManuallyDrop so an unexpected live-handle drop remains
+        // fail-closed. Normal runtime paths move it into QuarantinedQueue and
+        // a named bounded registry, preserving diagnosable ownership.
+    }
+}
+
+/// Failed one-shot queue close that retains the complete portable endpoint.
+#[derive(thiserror::Error)]
+#[error("block queue {queue_id} close failed: {error}")]
+#[must_use = "retain or quarantine a queue whose close transaction failed"]
+pub struct QueueCloseFailure {
+    error: BlkError,
+    queue_id: usize,
+    queue: QueueHandle,
+}
+
+impl QueueCloseFailure {
+    fn new(error: BlkError, queue: QueueHandle) -> Self {
+        Self {
+            error,
+            queue_id: queue.id(),
+            queue,
         }
+    }
+
+    /// Returns the driver's terminal close error.
+    pub const fn error(&self) -> BlkError {
+        self.error
+    }
+
+    /// Converts this failure into a stable quarantine owner.
+    pub fn into_quarantine(self) -> QuarantinedQueue {
+        self.queue.into_quarantine(self.error)
+    }
+}
+
+impl fmt::Debug for QueueCloseFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("QueueCloseFailure")
+            .field("error", &self.error)
+            .field("queue_id", &self.queue_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Named owner for a queue endpoint that cannot safely be destroyed.
+///
+/// The runtime keeps this object in a bounded quarantine registry until
+/// shutdown. Dropping the registry remains fail-closed because the embedded
+/// [`QueueHandle`] never destroys a live endpoint from `Drop`.
+#[must_use = "a quarantined hardware endpoint must be retained and diagnosed"]
+pub struct QuarantinedQueue {
+    reason: BlkError,
+    queue: QueueHandle,
+}
+
+impl QuarantinedQueue {
+    /// Returns the reason this endpoint could not be reclaimed.
+    pub const fn reason(&self) -> BlkError {
+        self.reason
+    }
+
+    /// Returns immutable queue metadata for diagnostics.
+    pub fn info(&self) -> QueueInfo {
+        self.queue.info()
+    }
+}
+
+impl fmt::Debug for QuarantinedQueue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("QuarantinedQueue")
+            .field("reason", &self.reason)
+            .field("queue", &self.queue.info())
+            .finish_non_exhaustive()
     }
 }
 
@@ -493,6 +730,13 @@ pub fn validate_queue_info(info: QueueInfo) -> Result<(), QueueContractError> {
             < info.device.logical_block_size
     {
         return Err(QueueContractError::InvalidQueueLimits { queue_id: info.id });
+    }
+    match (info.kind, info.execution) {
+        (QueueKind::Inline, QueueExecution::Inline)
+        | (QueueKind::Interrupt { .. }, QueueExecution::Tagged | QueueExecution::Serialized) => {}
+        _ => {
+            return Err(QueueContractError::QueueExecutionMismatch { queue_id: info.id });
+        }
     }
     let QueueKind::Interrupt { sources } = info.kind else {
         return Ok(());
@@ -593,9 +837,7 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{
-        CompletionHint, DeviceInfo, DispatchMode, Event, QueueLimits, RequestFlags, RequestOp,
-    };
+    use crate::{DeviceInfo, Event, QueueLimits, RequestFlags, RequestOp};
 
     fn source_list(source_id: usize) -> IdList {
         let mut sources = IdList::none();
@@ -611,7 +853,7 @@ mod tests {
             kind: QueueKind::Interrupt {
                 sources: source_list(3),
             },
-            dispatch_mode: DispatchMode::Serialized,
+            execution: QueueExecution::Serialized,
         }
     }
 
@@ -629,10 +871,23 @@ mod tests {
         calls: usize,
     }
 
-    impl IrqHandler for NoopIrq {
-        fn handle_irq(&mut self) -> crate::IrqOutcome {
+    impl IrqEndpoint for NoopIrq {
+        type Event = Event;
+        type Fault = BlkError;
+
+        fn capture(&mut self) -> crate::BlockIrqCapture {
             self.calls += 1;
-            crate::IrqOutcome::handled(Event::from_hint(CompletionHint::Queue { queue_id: 2 }))
+            crate::IrqCapture::Captured {
+                event: Event::from_queue_bits(1 << 2),
+                masked: None,
+            }
+        }
+
+        fn contain(
+            &mut self,
+            _cause: crate::ContainmentCause,
+        ) -> Result<crate::MaskedSource, Self::Fault> {
+            Ok(crate::MaskedSource::try_new(1, 1).unwrap())
         }
     }
 
@@ -653,7 +908,7 @@ mod tests {
             Self {
                 info: QueueInfo {
                     kind: QueueKind::Inline,
-                    dispatch_mode: DispatchMode::Direct,
+                    execution: QueueExecution::Inline,
                     ..interrupt_info()
                 },
                 pending: None,
@@ -712,7 +967,7 @@ mod tests {
             Ok(())
         }
 
-        fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        fn shutdown(&mut self) -> Result<(), BlkError> {
             Ok(())
         }
     }
@@ -725,7 +980,7 @@ mod tests {
         fn info(&self) -> QueueInfo {
             QueueInfo {
                 kind: QueueKind::Inline,
-                dispatch_mode: DispatchMode::Direct,
+                execution: QueueExecution::Inline,
                 ..interrupt_info()
             }
         }
@@ -759,7 +1014,7 @@ mod tests {
             Ok(())
         }
 
-        fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        fn shutdown(&mut self) -> Result<(), BlkError> {
             Ok(())
         }
     }
@@ -772,7 +1027,7 @@ mod tests {
         fn info(&self) -> QueueInfo {
             QueueInfo {
                 kind: QueueKind::Inline,
-                dispatch_mode: DispatchMode::Direct,
+                execution: QueueExecution::Inline,
                 ..interrupt_info()
             }
         }
@@ -808,7 +1063,7 @@ mod tests {
             Ok(())
         }
 
-        fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        fn shutdown(&mut self) -> Result<(), BlkError> {
             self.calls.fetch_add(1, Ordering::AcqRel);
             Err(BlkError::Io)
         }
@@ -855,11 +1110,10 @@ mod tests {
             Ok(())
         }
 
-        fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        fn shutdown(&mut self) -> Result<(), BlkError> {
             if self.pending.is_some() {
                 return Err(BlkError::Busy);
             }
-            let _ = sink;
             Ok(())
         }
     }
@@ -876,21 +1130,16 @@ mod tests {
     }
 
     #[test]
-    fn boxed_irq_handler_is_move_only_and_mutable() {
-        let mut handler: BIrqHandler = Box::new(NoopIrq { calls: 0 });
+    fn boxed_irq_endpoint_is_move_only_and_mutable() {
+        let mut endpoint: BIrqEndpoint = Box::new(NoopIrq { calls: 0 });
 
-        assert!(
-            handler
-                .handle_irq()
-                .acknowledged_event()
-                .is_some_and(|event| event.for_queue(2).is_some())
-        );
-        assert!(
-            handler
-                .handle_irq()
-                .acknowledged_event()
-                .is_some_and(|event| event.for_queue(2).is_some())
-        );
+        for _ in 0..2 {
+            let crate::IrqCapture::Captured { event, masked } = endpoint.capture() else {
+                panic!("fake endpoint must capture queue facts")
+            };
+            assert!(masked.is_none());
+            assert!(event.for_queue(2).is_some());
+        }
     }
 
     #[test]
@@ -906,7 +1155,7 @@ mod tests {
             Some(request_id)
         );
 
-        let event = Event::from_hint(CompletionHint::Queue { queue_id: 2 });
+        let event = Event::from_queue_bits(1 << 2);
         let events = event
             .for_queue(2)
             .expect("IRQ event must contain the target queue");
@@ -1042,9 +1291,7 @@ mod tests {
         assert_eq!(second.error(), BlkError::Offline);
         assert_eq!(calls.load(Ordering::Acquire), 1);
 
-        handle
-            .shutdown(&mut OwnedCompletionSink::default())
-            .unwrap();
+        handle.close().unwrap();
     }
 
     #[test]
@@ -1062,9 +1309,7 @@ mod tests {
         assert_eq!(rejection.id(), generated_id);
         assert_eq!(rejection.error(), BlkError::InvalidRequest);
         assert_eq!(calls.load(Ordering::Acquire), 0);
-        handle
-            .shutdown(&mut OwnedCompletionSink::default())
-            .unwrap();
+        handle.close().unwrap();
     }
 
     #[test]
@@ -1080,9 +1325,14 @@ mod tests {
 
         assert_eq!(rejection.id(), RequestId::INLINE);
         assert_eq!(rejection.error(), BlkError::InvalidRequest);
+        let proof = unsafe {
+            // SAFETY: the contract queue owns no hardware or DMA.
+            DmaQuiesced::new(ControllerEpoch::new(2), 1)
+        };
         handle
-            .shutdown(&mut OwnedCompletionSink::default())
+            .reclaim_after_quiesce(&proof, &mut OwnedCompletionSink::default())
             .unwrap();
+        handle.close().unwrap();
     }
 
     #[test]
@@ -1158,9 +1408,11 @@ mod tests {
             handle.bind_interrupt_controller(0x51a7, ControllerEpoch::INITIAL),
             Err(QueueContractError::MissingInterruptSources { queue_id: 2 })
         );
-        handle
-            .shutdown(&mut OwnedCompletionSink::default())
-            .unwrap();
+        let failure = handle
+            .close()
+            .expect_err("an invalid interrupt queue has no DMA destroy proof");
+        assert_eq!(failure.error(), BlkError::InvalidDmaProof);
+        drop(failure.into_quarantine());
     }
 
     #[test]
@@ -1253,13 +1505,11 @@ mod tests {
             })
         );
 
-        handle
-            .shutdown(&mut OwnedCompletionSink::default())
-            .unwrap();
+        handle.close().unwrap();
     }
 
     #[test]
-    fn explicit_shutdown_returns_every_accepted_request() {
+    fn dma_proof_reclaim_returns_every_owner_before_close() {
         let mut handle = QueueHandle::new(Box::new(ContractQueue::interrupt()));
         handle
             .bind_interrupt_controller(1, ControllerEpoch::INITIAL)
@@ -1277,16 +1527,16 @@ mod tests {
         };
         handle.reclaim_after_quiesce(&proof, &mut sink).unwrap();
 
-        handle.shutdown(&mut sink).unwrap();
+        handle.close().unwrap();
 
-        let completion = sink.completion.expect("shutdown must return ownership");
+        let completion = sink.completion.expect("DMA reclaim must return ownership");
         assert_eq!(completion.id, request_id);
         assert_eq!(completion.result, Err(BlkError::Cancelled));
         assert_eq!(completion.request.op, RequestOp::Flush);
     }
 
     #[test]
-    fn dropping_an_unquiesced_queue_leaks_it_fail_closed_without_panicking() {
+    fn dropping_an_unquiesced_queue_retains_it_fail_closed_without_panicking() {
         UNQUIESCED_QUEUE_DROPS.store(0, Ordering::Release);
 
         drop(QueueHandle::new(Box::new(DropObservedQueue)));
@@ -1299,39 +1549,18 @@ mod tests {
     }
 
     #[test]
-    fn failed_shutdown_is_a_one_shot_driver_transaction() {
+    fn failed_close_is_a_one_shot_driver_transaction_with_a_named_owner() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let mut handle = QueueHandle::new(Box::new(FailingShutdownQueue {
+        let handle = QueueHandle::new(Box::new(FailingShutdownQueue {
             calls: Arc::clone(&calls),
         }));
-        let mut sink = OwnedCompletionSink::default();
-
-        assert_eq!(handle.shutdown(&mut sink), Err(BlkError::Io));
-        assert_eq!(handle.shutdown(&mut sink), Err(BlkError::Offline));
-
-        let rejection = handle
-            .submit_owned(RequestId::INLINE, flush_request())
-            .expect_err("shutdown attempt must permanently close admission");
-        assert_eq!(rejection.error(), BlkError::Offline);
-
-        let event = Event::from_hint(CompletionHint::Queue { queue_id: 2 });
-        let batch = event
-            .for_queue(2)
-            .expect("test event must address the retained queue");
-        assert_eq!(
-            handle.service_events(&batch, &mut sink),
-            Err(BlkError::Offline)
-        );
-
-        let proof = unsafe {
-            // SAFETY: the inline fixture owns no hardware or DMA.
-            DmaQuiesced::new(ControllerEpoch::new(2), 1)
-        };
-        assert_eq!(
-            handle.reclaim_after_quiesce(&proof, &mut sink),
-            Err(BlkError::Offline)
-        );
+        let failure = handle
+            .close()
+            .expect_err("the fake driver intentionally rejects close");
+        assert_eq!(failure.error(), BlkError::Io);
         assert_eq!(calls.load(Ordering::Acquire), 1);
+        let quarantine = failure.into_quarantine();
+        assert_eq!(quarantine.reason(), BlkError::Io);
     }
 
     #[test]
@@ -1345,7 +1574,7 @@ mod tests {
             handle.submit_owned(request_id, flush_request()),
             Ok(SubmitOutcome::Queued)
         ));
-        let sibling_event = Event::from_hint(CompletionHint::Queue { queue_id: 7 });
+        let sibling_event = Event::from_queue_bits(1 << 7);
         let sibling_batch = sibling_event
             .for_queue(7)
             .expect("sibling event must carry its own queue evidence");
@@ -1362,6 +1591,6 @@ mod tests {
             DmaQuiesced::new(crate::ControllerEpoch::new(2), 1)
         };
         handle.reclaim_after_quiesce(&proof, &mut sink).unwrap();
-        handle.shutdown(&mut sink).unwrap();
+        handle.close().unwrap();
     }
 }

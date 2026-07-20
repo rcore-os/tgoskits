@@ -2,7 +2,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 
-use rd_net::{Interface, NetError};
+use rd_net::{Interface, NetDeviceOwner, NetError};
 use rdrive::{Device, DriverGeneric, probe::OnProbeError};
 
 use crate::{
@@ -75,6 +75,17 @@ pub trait PlatformDeviceNet {
     ) -> Option<usize>
     where
         T: Interface + 'static;
+
+    /// Registers one aggregate network-device owner without splitting queues
+    /// into shared endpoint objects.
+    fn register_owned_net_with_info<T>(
+        self,
+        name: &'static str,
+        dev: T,
+        info: BindingInfo,
+    ) -> Option<usize>
+    where
+        T: NetDeviceOwner + 'static;
 }
 
 impl PlatformDeviceNet for rdrive::PlatformDevice {
@@ -95,6 +106,18 @@ impl PlatformDeviceNet for rdrive::PlatformDevice {
         T: Interface + 'static,
     {
         register_net_with_info(self, name, dev, info)
+    }
+
+    fn register_owned_net_with_info<T>(
+        self,
+        name: &'static str,
+        dev: T,
+        info: BindingInfo,
+    ) -> Option<usize>
+    where
+        T: NetDeviceOwner + 'static,
+    {
+        register_owned_net_with_info(self, name, dev, info)
     }
 }
 
@@ -183,5 +206,18 @@ where
     T: Interface + 'static,
 {
     let net = rd_net::Net::new(dev, axklib::dma::op());
+    register_bound_device(plat_dev, PlatformNetDevice::new(name, net, info))
+}
+
+fn register_owned_net_with_info<T>(
+    plat_dev: rdrive::PlatformDevice,
+    name: &'static str,
+    dev: T,
+    info: BindingInfo,
+) -> Option<usize>
+where
+    T: NetDeviceOwner + 'static,
+{
+    let net = rd_net::Net::new_owned(dev, axklib::dma::op());
     register_bound_device(plat_dev, PlatformNetDevice::new(name, net, info))
 }

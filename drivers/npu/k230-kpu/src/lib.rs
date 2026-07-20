@@ -1,6 +1,6 @@
 #![no_std]
 
-use core::{hint::spin_loop, ptr};
+use core::ptr;
 
 pub const KPU_CFG_PADDR: usize = 0x8040_0000;
 pub const KPU_CFG_SIZE: usize = 0x800;
@@ -62,7 +62,6 @@ pub const KPU_INFO_F_RUNTIME_SCRATCH: u32 = 0x8;
 pub enum Error {
     CommandRangeCrosses4G,
     CommandRangeEmpty,
-    TimedOut,
 }
 
 #[repr(C)]
@@ -127,16 +126,6 @@ impl Kpu {
 
     pub fn is_done(&self) -> bool {
         self.status() & DONE_STATUS == DONE_STATUS
-    }
-
-    pub fn wait_done(&self, poll_limit: usize) -> Result<(), Error> {
-        for _ in 0..poll_limit {
-            if self.is_done() {
-                return Ok(());
-            }
-            spin_loop();
-        }
-        Err(Error::TimedOut)
     }
 
     pub fn read_reg(&self, offset: usize) -> u32 {

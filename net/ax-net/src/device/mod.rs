@@ -28,7 +28,6 @@ use smoltcp::{
 };
 
 use crate::config::InterfaceId;
-
 mod driver;
 mod ethernet;
 mod loopback;
@@ -127,6 +126,11 @@ pub trait Device: Send + Sync {
     /// devices should return `None`, or their wakers would sit on a poll set
     /// that is never woken.
     fn readiness_poll(&self) -> Option<Arc<PollSet>> {
+        None
+    }
+
+    /// Returns an immutable wireless runtime facade when this device has one.
+    fn wifi_control(&self) -> Option<Arc<dyn driver::WifiControl>> {
         None
     }
 }

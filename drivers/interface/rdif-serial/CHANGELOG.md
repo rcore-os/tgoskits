@@ -11,12 +11,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add bounded, non-blocking emergency UART write and transmitter-drain
   capabilities that share the runtime register owner without entering the
-  normal TX queue or worker path.
+  normal TX queue.
+- Implement the portable IRQ capture/contain and generation-checked rearm
+  contracts with exact device-source mask tokens.
+- Split startup from IRQ activation so device sources remain masked until the
+  same-CPU OS action is registered and enabled.
+
+### Changed
+
+- Transfer one uniquely owned `SerialCore` plus independent SPSC Tx/Rx remote
+  queues to the consuming runtime. OS execution, wake, and locking policy no
+  longer appears in the driver boundary.
+- Keep notification facts in `SerialIrqEvent` and mask ownership exclusively
+  in `MaskedSource`, eliminating duplicate generation/source truth.
+- Restrict hard-IRQ capture to acknowledgement, stable source snapshot, and
+  exact source masking; FIFO service now belongs only to the maintenance owner.
+- Rename `irq_budget_exhausted` accounting to `service_budget_exhausted` now
+  that all FIFO budgets belong to task-context owner service.
 
 ### Fixed
 
-- Enforce serial register-owner exclusion in release builds before creating a
-  mutable owner access, preventing reentrant aliasing.
+- Reject stale or replayed rearm tokens after shutdown, recovery, or an earlier
+  successful rearm.
 
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/rdif-serial-v0.8.2...rdif-serial-v0.9.0) - 2026-06-27
 

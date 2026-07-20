@@ -5,9 +5,14 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use rdif_irq::{
+    ContainmentCause, FaultContainment, IrqCapture, IrqEndpoint, IrqSourceControl, MaskedSource,
+};
+
 use crate::{
-    Config, ConfigError, InterruptMask, IrqSource, RawUart, RxFlag, RxItem, SerialCounters,
-    SerialIrqFault, SerialIrqOutcome, SpscRing,
+    Config, ConfigError, InterruptMask, IrqSource, RawUart, RxFlag, RxItem, SerialActivationError,
+    SerialCounters, SerialIrqCapture, SerialIrqEvent, SerialIrqEvents, SerialIrqFault,
+    SerialMaskedService, SerialRearmError, SpscRing,
 };
 
 pub const DEFAULT_TX_CAP: usize = 4097;
@@ -15,7 +20,6 @@ pub const DEFAULT_RX_CAP: usize = 4097;
 
 pub const RX_IRQ_BUDGET: usize = 256;
 pub const TX_IRQ_BUDGET: usize = 64;
-pub const IRQ_PASS_BUDGET: usize = 32;
 pub const TX_KICK_BUDGET: usize = 32;
 /// Maximum bytes written by one emergency ownership attempt.
 pub const EMERGENCY_TX_BUDGET: usize = 64;
@@ -160,7 +164,7 @@ pub struct RxQueue<const N: usize = DEFAULT_RX_CAP> {
 unsafe impl<const N: usize> Send for RxQueue<N> {}
 
 impl<const N: usize> RxQueue<N> {
-    pub fn drain(&mut self, out: &mut [RxItem]) -> usize {
+    pub fn drain(&mut self, out: &mut [RxItem]) -> RxDrain {
         let mut count = 0;
         for slot in out {
             let Some(item) = self.state.ring.pop() else {
@@ -169,13 +173,13 @@ impl<const N: usize> RxQueue<N> {
             *slot = item;
             count += 1;
         }
-        count
-    }
-
-    /// Takes the generation whose RX source was masked for queue backpressure.
-    pub fn take_rearm_request(&mut self) -> Option<RxRearmRequest> {
-        let generation = self.state.rearm_generation.swap(0, Ordering::AcqRel);
-        (generation != 0).then_some(RxRearmRequest { generation })
+        let rearm = if count == 0 {
+            None
+        } else {
+            let generation = self.state.rearm_generation.swap(0, Ordering::AcqRel);
+            (generation != 0).then(|| masked_source(generation, InterruptMask::RX))
+        };
+        RxDrain { count, rearm }
     }
 
     pub fn rx_pending(&self) -> bool {
@@ -183,10 +187,18 @@ impl<const N: usize> RxQueue<N> {
     }
 }
 
+/// RX drain result that can mint a rearm request only after releasing space.
+#[derive(Debug, Eq, PartialEq)]
+pub struct RxDrain {
+    pub count: usize,
+    pub rearm: Option<MaskedSource>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PortState {
     Down,
     Polling,
+    Prepared,
     Running,
     Faulted,
 }
@@ -198,6 +210,8 @@ struct CoreInner<T: RawUart> {
     tx_irq_enabled: bool,
     generation: usize,
     rx_backpressured: bool,
+    masked_generation: usize,
+    masked_sources: InterruptMask,
 }
 
 impl<T: RawUart> CoreInner<T> {
@@ -209,6 +223,8 @@ impl<T: RawUart> CoreInner<T> {
             tx_irq_enabled: false,
             generation: 0,
             rx_backpressured: false,
+            masked_generation: 0,
+            masked_sources: InterruptMask::empty(),
         }
     }
 }
@@ -234,33 +250,6 @@ pub struct SerialCore<const TX: usize = DEFAULT_TX_CAP, const RX: usize = DEFAUL
     tx: Arc<TxState<TX>>,
     rx: Arc<RxState<RX>>,
     counters: Arc<SerialCountersAtomic>,
-}
-
-/// Linear device-local continuation produced after exact UART source masking.
-#[derive(Debug, Eq, PartialEq)]
-#[must_use = "a serial continuation retains masked device interrupt sources"]
-pub struct SerialContinuation {
-    generation: usize,
-    sources: InterruptMask,
-}
-
-/// Generation-bearing request to rearm RX after the consumer released space.
-#[derive(Debug, Eq, PartialEq)]
-#[must_use]
-pub struct RxRearmRequest {
-    generation: usize,
-}
-
-/// Result of one bounded device-local continuation pass.
-#[derive(Debug, Eq, PartialEq)]
-pub enum SerialContinuationProgress {
-    Drained(SerialIrqOutcome),
-    Pending {
-        continuation: SerialContinuation,
-        outcome: SerialIrqOutcome,
-    },
-    Backpressured(SerialIrqOutcome),
-    Stale,
 }
 
 impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
@@ -291,7 +280,7 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
         }
     }
 
-    /// Attempts a bounded emergency write while OS glue holds the port lock.
+    /// Attempts a bounded emergency write in the unique owner domain.
     pub fn try_write_emergency(&mut self, bytes: &[u8]) -> EmergencyWriteResult {
         if bytes.is_empty() {
             return EmergencyWriteResult::Written { count: 0 };
@@ -312,7 +301,7 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
         EmergencyWriteResult::Written { count }
     }
 
-    /// Makes one bounded transmitter-drain attempt while holding the port lock.
+    /// Makes one bounded transmitter-drain attempt in the unique owner domain.
     pub fn try_flush_emergency(&mut self) -> EmergencyFlushResult {
         if self.inner.state != PortState::Running {
             return EmergencyFlushResult::Fault;
@@ -325,9 +314,13 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
         EmergencyFlushResult::Busy
     }
 
-    pub fn startup(&mut self, config: &Config) -> Result<SerialIrqOutcome, ConfigError> {
-        if self.inner.state == PortState::Running {
-            return Ok(SerialIrqOutcome::default());
+    /// Prepares the port while keeping every device IRQ source masked.
+    ///
+    /// The OS must first enable the registered same-CPU IRQ action and then
+    /// call [`Self::activate_interrupts`] from the maintenance owner.
+    pub fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
+        if matches!(self.inner.state, PortState::Prepared | PortState::Running) {
+            return Ok(());
         }
 
         self.bump_generation();
@@ -337,17 +330,38 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
         }
 
         self.inner.raw.startup(config)?;
-        self.inner.irq_mask = InterruptMask::RX;
+        self.inner.irq_mask = InterruptMask::empty();
         self.inner.raw.set_irq_mask(self.inner.irq_mask);
         self.inner.tx_irq_enabled = false;
         self.inner.rx_backpressured = false;
+        self.clear_masked();
         self.rx.rearm_generation.store(0, Ordering::Release);
+        self.inner.state = PortState::Prepared;
+        Ok(())
+    }
+
+    /// Enables runtime device sources after the OS IRQ action is live.
+    ///
+    /// The maintenance owner must call this only after registering and
+    /// enabling its same-CPU action. This ordering prevents a device IRQ from
+    /// becoming observable before a handler owns the endpoint.
+    pub fn activate_interrupts(&mut self) -> Result<(), SerialActivationError> {
+        if self.inner.state == PortState::Running {
+            return Ok(());
+        }
+        if self.inner.state != PortState::Prepared {
+            return Err(SerialActivationError::NotPrepared);
+        }
+        self.inner.irq_mask = InterruptMask::RX;
+        self.inner.raw.set_irq_mask(self.inner.irq_mask);
         self.inner.state = PortState::Running;
-        Ok(SerialIrqOutcome::default())
+        Ok(())
     }
 
     pub fn shutdown(&mut self) {
         self.bump_generation();
+        self.clear_masked();
+        self.rx.rearm_generation.store(0, Ordering::Release);
         if self.inner.state == PortState::Down {
             return;
         }
@@ -358,7 +372,6 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
         self.inner.tx_irq_enabled = false;
         self.inner.rx_backpressured = false;
         self.inner.state = PortState::Down;
-        self.rx.rearm_generation.store(0, Ordering::Release);
         self.tx.clear_from_owner();
         self.rx.clear_from_owner();
     }
@@ -378,6 +391,7 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
         self.inner.irq_mask = InterruptMask::empty();
         self.inner.tx_irq_enabled = false;
         self.inner.rx_backpressured = false;
+        self.clear_masked();
         self.inner.state = PortState::Polling;
         self.rx.rearm_generation.store(0, Ordering::Release);
         self.tx.clear_from_owner();
@@ -404,142 +418,129 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
         self.counters.snapshot()
     }
 
-    /// Captures and services a bounded hard-IRQ batch.
-    pub fn handle_irq(&mut self) -> SerialIrqOutcome {
-        let mut out = SerialIrqOutcome::default();
+    /// Acknowledges one hardware IRQ snapshot and masks serviceable sources.
+    ///
+    /// This hard-IRQ endpoint never drains RX, fills TX, completes requests, or
+    /// rearms a source. The unique maintenance owner consumes the returned
+    /// masked-source token through [`Self::service_masked`]. Losing the event
+    /// therefore leaves the precise device source safely masked.
+    pub fn capture_irq(&mut self) -> SerialIrqCapture {
         if self.inner.state != PortState::Running {
-            return out;
+            return SerialIrqCapture::Unhandled;
         }
 
-        let mut rx_budget = RX_IRQ_BUDGET;
-        let mut tx_budget = TX_IRQ_BUDGET;
-        let mut source_drained = false;
-        let mut observed_sources = IrqSource::empty();
-        for _ in 0..IRQ_PASS_BUDGET {
-            let snapshot = self.inner.raw.take_irq_snapshot();
-            if !snapshot.claimed {
-                if !out.claimed {
-                    self.counters.irq_spurious.fetch_add(1, Ordering::Relaxed);
-                }
-                source_drained = true;
-                break;
-            }
-            if !out.claimed {
-                self.counters.irq_total.fetch_add(1, Ordering::Relaxed);
-            }
-            out.claimed = true;
-            observed_sources |= snapshot.sources;
-
-            if snapshot.sources.is_empty() || snapshot.sources.contains(IrqSource::OTHER_ACK) {
-                self.quarantine(&mut out, SerialIrqFault::UnknownSource);
-                break;
-            }
-
-            if snapshot
-                .sources
-                .intersects(IrqSource::RX_DATA | IrqSource::RX_TIMEOUT | IrqSource::RX_STATUS)
-            {
-                let service = self.service_rx(rx_budget);
-                rx_budget = rx_budget.saturating_sub(service.consumed);
-                out.rx_pushed += service.published;
-                if service.backpressured {
-                    out.rx_backpressured = true;
-                    break;
-                }
-            }
-
-            if snapshot.sources.contains(IrqSource::TX_SPACE) {
-                let sent = self.service_tx(tx_budget, &mut out);
-                tx_budget = tx_budget.saturating_sub(sent);
-            }
-
-            if snapshot.sources.contains(IrqSource::MODEM_STATUS) {
-                self.inner.raw.ack_modem_status();
-            }
-
-            if snapshot.sources.contains(IrqSource::BUSY_DETECT) {
-                self.inner.raw.ack_busy_detect();
-            }
-
-            if rx_budget == 0 || tx_budget == 0 {
-                break;
-            }
+        let snapshot = self.inner.raw.take_irq_snapshot();
+        if !snapshot.claimed {
+            self.counters.irq_spurious.fetch_add(1, Ordering::Relaxed);
+            return SerialIrqCapture::Unhandled;
         }
-        if out.claimed
-            && out.fault.is_none()
-            && !out.rx_backpressured
-            && !source_drained
-        {
-            out.budget_exhausted = true;
-            self.counters
-                .irq_budget_exhausted
-                .fetch_add(1, Ordering::Relaxed);
-            self.defer_sources(observed_sources, &mut out);
+        self.counters.irq_total.fetch_add(1, Ordering::Relaxed);
+        let sources = snapshot.sources;
+        if sources.is_empty() || sources.contains(IrqSource::OTHER_ACK) {
+            return self.fault_capture(SerialIrqFault::UnknownSource);
         }
-        out
+        if sources.contains(IrqSource::BUSY_DETECT) {
+            self.inner.raw.ack_busy_detect();
+            return self.fault_capture(SerialIrqFault::UnmaskableSource);
+        }
+        if sources.contains(IrqSource::MODEM_STATUS) {
+            self.inner.raw.ack_modem_status();
+        }
+
+        let Some(source_mask) = interrupt_mask_for_sources(sources) else {
+            return SerialIrqCapture::Captured {
+                event: SerialIrqEvent::new(sources),
+                masked: None,
+            };
+        };
+
+        self.mask_observed_sources(sources, source_mask)
     }
 
-    /// Continues one exact-source masked IRQ generation in worker context.
-    pub fn continue_irq(
-        &mut self,
-        continuation: SerialContinuation,
-    ) -> SerialContinuationProgress {
-        if continuation.generation != self.inner.generation
+    /// Performs one bounded owner-side pass for a captured masked source set.
+    pub fn service_masked(&mut self, source: MaskedSource) -> SerialMaskedService {
+        let Ok(source_mask) = self.validate_masked_source(source) else {
+            return SerialMaskedService::Stale;
+        };
+        if !self.inner.masked_sources.contains(source_mask)
             || self.inner.state != PortState::Running
         {
-            return SerialContinuationProgress::Stale;
+            return SerialMaskedService::Stale;
         }
 
-        let mut outcome = SerialIrqOutcome {
-            claimed: true,
-            ..SerialIrqOutcome::default()
-        };
+        let mut events = SerialIrqEvents::default();
         let mut pending = false;
-        if continuation.sources.intersects(InterruptMask::RX) {
+        if source_mask.intersects(InterruptMask::RX) {
+            if self.inner.rx_backpressured {
+                return SerialMaskedService::Backpressured(events);
+            }
             let service = self.service_rx(RX_IRQ_BUDGET);
-            outcome.rx_pushed = service.published;
+            events.rx_pushed = service.published;
             if service.backpressured {
-                outcome.rx_backpressured = true;
-                return SerialContinuationProgress::Backpressured(outcome);
+                return SerialMaskedService::Backpressured(events);
             }
             pending |= service.consumed == RX_IRQ_BUDGET;
         }
-        if continuation.sources.contains(InterruptMask::TX_SPACE) {
-            self.service_tx(TX_IRQ_BUDGET, &mut outcome);
+        if source_mask.contains(InterruptMask::TX_SPACE) {
+            let sent = match self.service_tx(TX_IRQ_BUDGET, &mut events, TxMaskUpdate::Masked) {
+                Ok(sent) => sent,
+                Err(reason) => return self.fault_masked_service(events, reason),
+            };
+            pending |= sent == TX_IRQ_BUDGET && !self.tx.ring.is_empty();
         }
         if pending {
-            outcome.budget_exhausted = true;
-            return SerialContinuationProgress::Pending {
-                continuation,
-                outcome,
-            };
+            self.counters
+                .service_budget_exhausted
+                .fetch_add(1, Ordering::Relaxed);
+            SerialMaskedService::Pending(events)
+        } else {
+            SerialMaskedService::Complete(events)
         }
-
-        self.rearm_continuation_sources(&continuation);
-        SerialContinuationProgress::Drained(outcome)
     }
 
-    /// Rearms RX after the sole consumer released software-ring capacity.
-    pub fn rearm_rx(&mut self, request: RxRearmRequest) -> bool {
-        if request.generation != self.inner.generation
-            || self.inner.state != PortState::Running
-            || !self.inner.rx_backpressured
-        {
-            return false;
+    /// Explicitly rearms a source set completed by owner-side service.
+    pub fn rearm_masked(
+        &mut self,
+        source: MaskedSource,
+    ) -> Result<InterruptMask, SerialRearmError> {
+        let sources = self.validate_masked_source(source)?;
+        if sources.intersects(InterruptMask::RX) && self.inner.rx_backpressured {
+            if self.rx.ring.remaining_snapshot() < 2 {
+                return Err(SerialRearmError::RxBackpressured);
+            }
+            self.inner.rx_backpressured = false;
+            self.rx.rearm_generation.store(0, Ordering::Release);
         }
-        self.inner.rx_backpressured = false;
-        self.inner.irq_mask.insert(InterruptMask::RX);
+
+        let mut enabled = sources;
+        if sources.contains(InterruptMask::TX_SPACE) {
+            if self.tx.ring.is_empty() {
+                enabled.remove(InterruptMask::TX_SPACE);
+                self.inner.tx_irq_enabled = false;
+            } else {
+                self.inner.tx_irq_enabled = true;
+            }
+        }
+        self.inner.masked_sources.remove(sources);
+        if self.inner.masked_sources.is_empty() {
+            self.inner.masked_generation = 0;
+        }
+        self.inner.irq_mask.insert(enabled);
         self.inner.raw.set_irq_mask(self.inner.irq_mask);
-        true
+        Ok(enabled)
     }
 
     /// Performs bounded software-originated work without probing IRQ status.
-    pub fn service(&mut self, work: SerialSoftWork) -> SerialIrqOutcome {
-        let mut out = SerialIrqOutcome::default();
-        if self.inner.state == PortState::Running && work.contains(SerialSoftWork::TX_KICK) {
-            self.service_tx(TX_KICK_BUDGET, &mut out);
+    pub fn service(&mut self, work: SerialSoftWork) -> Result<SerialIrqEvents, SerialIrqFault> {
+        let mut events = SerialIrqEvents::default();
+        if self.inner.state == PortState::Running
+            && work.contains(SerialSoftWork::TX_KICK)
+            && let Err(reason) = self.service_tx(TX_KICK_BUDGET, &mut events, TxMaskUpdate::Manage)
+        {
+            self.quarantine(reason);
+            return Err(reason);
         }
-        out
+        Ok(events)
     }
 
     fn bump_generation(&mut self) {
@@ -550,36 +551,67 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
             .expect("serial generation exhausted");
     }
 
-    fn defer_sources(&mut self, sources: IrqSource, outcome: &mut SerialIrqOutcome) {
-        let source_mask = interrupt_mask_for_sources(sources);
+    fn mask_observed_sources(
+        &mut self,
+        sources: IrqSource,
+        source_mask: InterruptMask,
+    ) -> SerialIrqCapture {
+        let source_mask = source_mask & self.inner.irq_mask;
         if source_mask.is_empty() {
-            self.quarantine(outcome, SerialIrqFault::UnmaskableSource);
-            return;
+            return self.fault_capture(SerialIrqFault::UnmaskableSource);
         }
         self.inner.irq_mask.remove(source_mask);
         self.inner.raw.set_irq_mask(self.inner.irq_mask);
-        outcome.continuation = Some(SerialContinuation {
-            generation: self.inner.generation,
-            sources: source_mask,
-        });
+        self.record_masked_sources(source_mask);
+        SerialIrqCapture::Captured {
+            event: SerialIrqEvent::new(sources),
+            masked: Some(masked_source(self.inner.generation, source_mask)),
+        }
     }
 
-    fn rearm_continuation_sources(&mut self, continuation: &SerialContinuation) {
-        let mut sources = continuation.sources;
-        if self.tx.ring.is_empty() {
-            sources.remove(InterruptMask::TX_SPACE);
-            self.inner.tx_irq_enabled = false;
+    fn record_masked_sources(&mut self, sources: InterruptMask) {
+        self.inner.masked_generation = self.inner.generation;
+        self.inner.masked_sources.insert(sources);
+    }
+
+    fn clear_masked_sources(&mut self, sources: InterruptMask) {
+        self.inner.masked_sources.remove(sources);
+        if self.inner.masked_sources.is_empty() {
+            self.inner.masked_generation = 0;
         }
-        self.inner.irq_mask.insert(sources);
-        self.inner.raw.set_irq_mask(self.inner.irq_mask);
+    }
+
+    fn clear_masked(&mut self) {
+        self.inner.masked_generation = 0;
+        self.inner.masked_sources = InterruptMask::empty();
+    }
+
+    fn validate_masked_source(
+        &self,
+        source: MaskedSource,
+    ) -> Result<InterruptMask, SerialRearmError> {
+        let generation =
+            usize::try_from(source.generation().get()).map_err(|_| SerialRearmError::Stale)?;
+        if generation != self.inner.generation
+            || generation != self.inner.masked_generation
+            || self.inner.state != PortState::Running
+        {
+            return Err(SerialRearmError::Stale);
+        }
+        let bitmap =
+            u32::try_from(source.bitmap().get()).map_err(|_| SerialRearmError::NotCaptured)?;
+        let sources = InterruptMask::from_bits(bitmap).ok_or(SerialRearmError::NotCaptured)?;
+        if sources.is_empty() || !self.inner.masked_sources.contains(sources) {
+            return Err(SerialRearmError::NotCaptured);
+        }
+        Ok(sources)
     }
 
     fn service_rx(&mut self, budget: usize) -> RxService {
         let mut result = RxService::default();
         for _ in 0..budget {
             if self.rx.ring.remaining_snapshot() < 2 {
-                self.mask_rx_for_backpressure();
-                result.backpressured = true;
+                result.backpressured = self.mask_rx_for_backpressure();
                 break;
             }
             let Some(sample) = self.inner.raw.read_rx() else {
@@ -610,10 +642,10 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
         }
         if let Some(byte) = sample.byte {
             self.counters.rx_bytes.fetch_add(1, Ordering::Relaxed);
-            if self
-                .rx
-                .push_from_owner(RxItem::Byte { byte, flag: sample.flag })
-            {
+            if self.rx.push_from_owner(RxItem::Byte {
+                byte,
+                flag: sample.flag,
+            }) {
                 result.published += 1;
             }
         }
@@ -628,21 +660,41 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
         }
     }
 
-    fn mask_rx_for_backpressure(&mut self) {
-        self.inner.irq_mask.remove(InterruptMask::RX);
-        self.inner.raw.set_irq_mask(self.inner.irq_mask);
+    fn mask_rx_for_backpressure(&mut self) -> bool {
         self.inner.rx_backpressured = true;
+        let generation = self.inner.generation;
+        self.record_masked_sources(InterruptMask::RX);
         self.rx
             .rearm_generation
-            .store(self.inner.generation, Ordering::Release);
+            .store(generation, Ordering::Release);
+        self.inner.irq_mask.remove(InterruptMask::RX);
+        self.inner.raw.set_irq_mask(self.inner.irq_mask);
+        if self.rx.ring.remaining_snapshot() >= 2
+            && self
+                .rx
+                .rearm_generation
+                .compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            self.inner.rx_backpressured = false;
+            self.clear_masked_sources(InterruptMask::RX);
+            self.inner.irq_mask.insert(InterruptMask::RX);
+            self.inner.raw.set_irq_mask(self.inner.irq_mask);
+            return false;
+        }
+        true
     }
 
     fn service_tx(
         &mut self,
         budget: usize,
-        out: &mut SerialIrqOutcome,
-    ) -> usize {
-        let load_size = self.inner.raw.tx_load_size().max(1);
+        events: &mut SerialIrqEvents,
+        mask_update: TxMaskUpdate,
+    ) -> Result<usize, SerialIrqFault> {
+        let load_size = self.inner.raw.tx_load_size();
+        if load_size == 0 {
+            return Err(SerialIrqFault::InvalidTransmitLoad);
+        }
         let limit = budget.min(load_size);
         let mut sent = 0;
         while sent < limit && self.inner.raw.tx_ready() {
@@ -657,13 +709,13 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
             sent += 1;
         }
 
-        if self.tx.ring.is_empty() {
+        if mask_update == TxMaskUpdate::Manage && self.tx.ring.is_empty() {
             if self.inner.tx_irq_enabled {
                 self.inner.irq_mask.remove(InterruptMask::TX_SPACE);
                 self.inner.raw.set_irq_mask(self.inner.irq_mask);
                 self.inner.tx_irq_enabled = false;
             }
-        } else if !self.inner.tx_irq_enabled {
+        } else if mask_update == TxMaskUpdate::Manage && !self.inner.tx_irq_enabled {
             self.inner.irq_mask.insert(InterruptMask::TX_SPACE);
             self.inner.raw.set_irq_mask(self.inner.irq_mask);
             self.inner.tx_irq_enabled = true;
@@ -671,23 +723,88 @@ impl<const TX: usize, const RX: usize> SerialCore<TX, RX> {
 
         if sent > 0 {
             self.tx.blocked.store(false, Ordering::Release);
-            out.tx_wakeup = true;
+            events.tx_wakeup = true;
         }
-        out.tx_sent += sent;
-        sent
+        events.tx_sent += sent;
+        Ok(sent)
     }
 
-    fn quarantine(&mut self, outcome: &mut SerialIrqOutcome, fault: SerialIrqFault) {
-        self.inner.raw.set_irq_mask(InterruptMask::empty());
-        self.inner.irq_mask = InterruptMask::empty();
+    fn fault_capture(&mut self, reason: SerialIrqFault) -> SerialIrqCapture {
+        // Mask every known source as a best-effort containment step, but do not
+        // claim that an unknown or unmaskable source was precisely isolated.
+        let _ = self.contain_sources();
+        self.enter_faulted();
+        SerialIrqCapture::Fault {
+            reason,
+            containment: FaultContainment::Uncontained,
+        }
+    }
+
+    fn fault_masked_service(
+        &mut self,
+        events: SerialIrqEvents,
+        reason: SerialIrqFault,
+    ) -> SerialMaskedService {
+        self.quarantine(reason);
+        let _ = events;
+        SerialMaskedService::Fault(reason)
+    }
+
+    fn quarantine(&mut self, _fault: SerialIrqFault) {
+        let _ = self.contain_sources();
+        self.enter_faulted();
+    }
+
+    fn contain_sources(&mut self) -> Result<MaskedSource, SerialIrqFault> {
+        if !matches!(self.inner.state, PortState::Running | PortState::Faulted) {
+            return Err(SerialIrqFault::UnmaskableSource);
+        }
+        let sources = self.inner.irq_mask | self.inner.masked_sources;
+        if sources.is_empty() {
+            return Err(SerialIrqFault::UnmaskableSource);
+        }
+        self.inner.irq_mask.remove(sources);
+        self.inner.raw.set_irq_mask(self.inner.irq_mask);
+        self.record_masked_sources(sources);
+        Ok(masked_source(self.inner.generation, sources))
+    }
+
+    fn enter_faulted(&mut self) {
         self.inner.tx_irq_enabled = false;
         self.inner.rx_backpressured = false;
         self.inner.state = PortState::Faulted;
-        outcome.fault = Some(fault);
+        self.rx.rearm_generation.store(0, Ordering::Release);
     }
 }
 
-fn interrupt_mask_for_sources(sources: IrqSource) -> InterruptMask {
+impl<const TX: usize, const RX: usize> IrqEndpoint for SerialCore<TX, RX> {
+    type Event = SerialIrqEvent;
+    type Fault = SerialIrqFault;
+
+    fn capture(&mut self) -> IrqCapture<Self::Event, Self::Fault> {
+        self.capture_irq()
+    }
+
+    fn contain(&mut self, _cause: ContainmentCause) -> Result<MaskedSource, Self::Fault> {
+        self.contain_sources()
+    }
+}
+
+impl<const TX: usize, const RX: usize> IrqSourceControl for SerialCore<TX, RX> {
+    type Error = SerialRearmError;
+
+    fn rearm(&mut self, source: MaskedSource) -> Result<(), Self::Error> {
+        self.rearm_masked(source).map(|_| ())
+    }
+}
+
+fn masked_source(generation: usize, sources: InterruptMask) -> MaskedSource {
+    let generation = u64::try_from(generation).expect("serial generation exceeds u64");
+    MaskedSource::try_new(generation, u64::from(sources.bits()))
+        .expect("running serial generations and masked source sets are nonzero")
+}
+
+fn interrupt_mask_for_sources(sources: IrqSource) -> Option<InterruptMask> {
     let mut mask = InterruptMask::empty();
     if sources.intersects(IrqSource::RX_DATA | IrqSource::RX_TIMEOUT | IrqSource::RX_STATUS) {
         mask |= InterruptMask::RX;
@@ -695,10 +812,13 @@ fn interrupt_mask_for_sources(sources: IrqSource) -> InterruptMask {
     if sources.contains(IrqSource::TX_SPACE) {
         mask |= InterruptMask::TX_SPACE;
     }
-    if sources.contains(IrqSource::MODEM_STATUS) {
-        mask |= InterruptMask::MODEM_STATUS;
-    }
-    mask
+    (!mask.is_empty()).then_some(mask)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TxMaskUpdate {
+    Manage,
+    Masked,
 }
 
 #[derive(Default)]
@@ -711,7 +831,7 @@ struct RxService {
 struct SerialCountersAtomic {
     irq_total: AtomicUsize,
     irq_spurious: AtomicUsize,
-    irq_budget_exhausted: AtomicUsize,
+    service_budget_exhausted: AtomicUsize,
     rx_bytes: AtomicUsize,
     rx_fifo_overruns: AtomicUsize,
     rx_queue_dropped: AtomicUsize,
@@ -726,7 +846,7 @@ impl SerialCountersAtomic {
         Self {
             irq_total: AtomicUsize::new(0),
             irq_spurious: AtomicUsize::new(0),
-            irq_budget_exhausted: AtomicUsize::new(0),
+            service_budget_exhausted: AtomicUsize::new(0),
             rx_bytes: AtomicUsize::new(0),
             rx_fifo_overruns: AtomicUsize::new(0),
             rx_queue_dropped: AtomicUsize::new(0),
@@ -741,7 +861,7 @@ impl SerialCountersAtomic {
         SerialCounters {
             irq_total: self.irq_total.load(Ordering::Relaxed) as u64,
             irq_spurious: self.irq_spurious.load(Ordering::Relaxed) as u64,
-            irq_budget_exhausted: self.irq_budget_exhausted.load(Ordering::Relaxed) as u64,
+            service_budget_exhausted: self.service_budget_exhausted.load(Ordering::Relaxed) as u64,
             rx_bytes: self.rx_bytes.load(Ordering::Relaxed) as u64,
             rx_fifo_overruns: self.rx_fifo_overruns.load(Ordering::Relaxed) as u64,
             rx_queue_dropped: self.rx_queue_dropped.load(Ordering::Relaxed) as u64,
@@ -766,6 +886,7 @@ mod tests {
 
     struct MockProbe {
         enabled: AtomicBool,
+        rx_reads_enabled: AtomicBool,
         irq_mask: AtomicU32,
         shutdowns: AtomicUsize,
         tx_writes: AtomicUsize,
@@ -777,6 +898,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 enabled: AtomicBool::new(true),
+                rx_reads_enabled: AtomicBool::new(true),
                 irq_mask: AtomicU32::new(0),
                 shutdowns: AtomicUsize::new(0),
                 tx_writes: AtomicUsize::new(0),
@@ -894,7 +1016,11 @@ mod tests {
         }
 
         fn read_rx(&mut self) -> Option<RxSample> {
-            self.rx.pop_front()
+            self.probe
+                .rx_reads_enabled
+                .load(Ordering::Acquire)
+                .then(|| self.rx.pop_front())
+                .flatten()
         }
 
         fn tx_ready(&mut self) -> bool {
@@ -925,9 +1051,26 @@ mod tests {
         }
     }
 
+    fn start<const TX: usize, const RX: usize>(core: &mut SerialCore<TX, RX>) {
+        core.startup(&Config::new()).unwrap();
+        core.activate_interrupts().unwrap();
+    }
+
+    fn masked_capture<const TX: usize, const RX: usize>(
+        core: &mut SerialCore<TX, RX>,
+    ) -> (SerialIrqEvent, MaskedSource) {
+        match core.capture_irq() {
+            SerialIrqCapture::Captured {
+                event,
+                masked: Some(source),
+            } => (event, source),
+            other => panic!("expected masked IRQ capture, got {other:?}"),
+        }
+    }
+
     #[test]
     fn tx_queue_only_submits_software_work() {
-        let mut parts = SerialCore::<8, 8>::split(MockUart::new());
+        let parts = SerialCore::<8, 8>::split(MockUart::new());
         let mut tx = parts.tx;
 
         let submit = tx.submit(b"abc");
@@ -942,7 +1085,7 @@ mod tests {
         let (mut uart, probe) = MockUart::with_probe();
         uart.tx_ready_budget = EMERGENCY_TX_BUDGET + 8;
         let mut parts = SerialCore::<128, 8>::split(uart);
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
         let bytes = [b'x'; EMERGENCY_TX_BUDGET + 8];
 
         let result = parts.core.try_write_emergency(&bytes);
@@ -975,7 +1118,7 @@ mod tests {
         let (mut uart, probe) = MockUart::with_probe();
         uart.tx_idle_after = 3;
         let mut parts = SerialCore::<8, 8>::split(uart);
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
 
         assert_eq!(
             parts.core.try_flush_emergency(),
@@ -989,7 +1132,7 @@ mod tests {
         let (mut uart, probe) = MockUart::with_probe();
         uart.tx_idle_after = usize::MAX;
         let mut parts = SerialCore::<8, 8>::split(uart);
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
 
         assert_eq!(parts.core.try_flush_emergency(), EmergencyFlushResult::Busy);
         assert_eq!(
@@ -1007,28 +1150,47 @@ mod tests {
     }
 
     #[test]
-    fn quiesce_restores_polling_without_shutting_down_uart() {
+    fn startup_keeps_device_sources_masked_until_the_os_action_is_enabled() {
         let (uart, probe) = MockUart::with_probe();
-        let uart = uart.irq(IrqSource::RX_DATA).rx_byte(b'x');
         let mut parts = SerialCore::<8, 8>::split(uart);
+
+        assert_eq!(
+            parts.core.activate_interrupts(),
+            Err(SerialActivationError::NotPrepared)
+        );
         parts.core.startup(&Config::new()).unwrap();
-        let mut tx = parts.tx;
-        tx.submit(b"pending");
-        let mut irq = parts.core;
-        assert_eq!(irq.handle_irq().rx_pushed, 1);
-        let rx = parts.rx;
-        assert!(rx.rx_pending());
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
+
+        assert_eq!(parts.core.activate_interrupts(), Ok(()));
         assert_eq!(
             probe.irq_mask.load(Ordering::Acquire),
             InterruptMask::RX.bits()
         );
+    }
+
+    #[test]
+    fn quiesce_restores_polling_without_shutting_down_uart() {
+        let (uart, probe) = MockUart::with_probe();
+        let uart = uart.irq(IrqSource::RX_DATA).rx_byte(b'x');
+        let mut parts = SerialCore::<8, 8>::split(uart);
+        start(&mut parts.core);
+        let mut tx = parts.tx;
+        tx.submit(b"pending");
+        let (_, source) = masked_capture(&mut parts.core);
+        assert!(matches!(
+            parts.core.service_masked(source),
+            SerialMaskedService::Complete(SerialIrqEvents { rx_pushed: 1, .. })
+        ));
+        let rx = parts.rx;
+        assert!(rx.rx_pending());
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
 
         parts.core.quiesce_to_polling();
 
         assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
         assert!(probe.enabled.load(Ordering::Acquire));
         assert_eq!(probe.shutdowns.load(Ordering::Relaxed), 0);
-        assert_eq!(irq.handle_irq(), SerialIrqOutcome::default());
+        assert_eq!(parts.core.capture_irq(), SerialIrqCapture::Unhandled);
         assert_eq!(tx.chars_in_buffer(), 0);
         assert!(!rx.rx_pending());
 
@@ -1038,18 +1200,18 @@ mod tests {
     }
 
     #[test]
-    fn owner_service_flushes_tx_queue() {
+    fn bounded_service_flushes_tx_queue() {
         let mut uart = MockUart::new();
         uart.tx_ready_budget = 3;
         let mut parts = SerialCore::<8, 8>::split(uart);
         let mut tx = parts.tx;
         tx.submit(b"abc");
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
 
-        let outcome = parts.core.service(SerialSoftWork::TX_KICK);
+        let events = parts.core.service(SerialSoftWork::TX_KICK).unwrap();
 
-        assert_eq!(outcome.tx_sent, 3);
-        assert!(outcome.tx_wakeup);
+        assert_eq!(events.tx_sent, 3);
+        assert!(events.tx_wakeup);
         assert_eq!(tx.chars_in_buffer(), 0);
     }
 
@@ -1060,12 +1222,12 @@ mod tests {
         let mut parts = SerialCore::<8, 8>::split(uart);
         let mut tx = parts.tx;
         tx.submit(b"abc");
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
 
-        let outcome = parts.core.service(SerialSoftWork::TX_KICK);
+        let events = parts.core.service(SerialSoftWork::TX_KICK).unwrap();
 
-        assert_eq!(outcome.tx_sent, 1);
-        assert!(outcome.tx_wakeup);
+        assert_eq!(events.tx_sent, 1);
+        assert!(events.tx_wakeup);
         assert_eq!(tx.chars_in_buffer(), 2);
     }
 
@@ -1078,32 +1240,56 @@ mod tests {
         let mut tx = parts.tx;
         let data = [b'x'; TX_KICK_BUDGET + 8];
         tx.submit(&data);
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
 
-        let outcome = parts.core.service(SerialSoftWork::TX_KICK);
+        let events = parts.core.service(SerialSoftWork::TX_KICK).unwrap();
 
-        assert_eq!(outcome.tx_sent, 1);
-        assert!(outcome.tx_wakeup);
+        assert_eq!(events.tx_sent, 1);
+        assert!(events.tx_wakeup);
         assert_eq!(tx.chars_in_buffer(), TX_KICK_BUDGET + 7);
     }
 
     #[test]
-    fn irq_services_rx_and_preserves_items_for_rx_queue() {
+    fn zero_transmit_load_faults_and_masks_the_device() {
+        let (mut uart, probe) = MockUart::with_probe();
+        uart.tx_ready_budget = 1;
+        uart.tx_load_size = 0;
+        let mut parts = SerialCore::<8, 8>::split(uart);
+        parts.tx.submit(b"x");
+        start(&mut parts.core);
+
+        let result = parts.core.service(SerialSoftWork::TX_KICK);
+
+        assert_eq!(result, Err(SerialIrqFault::InvalidTransmitLoad));
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
+        assert_eq!(parts.core.capture_irq(), SerialIrqCapture::Unhandled);
+    }
+
+    #[test]
+    fn irq_capture_masks_rx_without_servicing_the_fifo() {
         let uart = MockUart::new()
             .irq(IrqSource::RX_DATA)
             .rx_byte(b'A')
             .rx_byte(b'B');
         let mut parts = SerialCore::<8, 8>::split(uart);
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
 
-        let mut irq = parts.core;
-        let outcome = irq.handle_irq();
+        let (event, source) = masked_capture(&mut parts.core);
 
-        assert!(outcome.claimed);
-        assert_eq!(outcome.rx_pushed, 2);
+        assert_eq!(event.sources(), IrqSource::RX_DATA);
+        assert!(!parts.rx.rx_pending());
+
+        let service = parts.core.service_masked(source);
+        assert_eq!(
+            service,
+            SerialMaskedService::Complete(SerialIrqEvents {
+                rx_pushed: 2,
+                ..SerialIrqEvents::default()
+            })
+        );
         let mut rx = parts.rx;
         let mut buf = [RxItem::default(); 2];
-        assert_eq!(rx.drain(&mut buf), 2);
+        assert_eq!(rx.drain(&mut buf).count, 2);
         assert_eq!(
             buf,
             [
@@ -1127,16 +1313,18 @@ mod tests {
             uart = uart.rx_byte(byte);
         }
         let mut parts = SerialCore::<8, 128>::split(uart);
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
 
-        let mut irq = parts.core;
-        let outcome = irq.handle_irq();
+        let (_, source) = masked_capture(&mut parts.core);
+        let events = match parts.core.service_masked(source) {
+            SerialMaskedService::Complete(events) => events,
+            other => panic!("expected completed owner service, got {other:?}"),
+        };
 
-        assert!(outcome.claimed);
-        assert_eq!(outcome.rx_pushed, burst.len());
+        assert_eq!(events.rx_pushed, burst.len());
         let mut rx = parts.rx;
         let mut items = [RxItem::default(); 64];
-        assert_eq!(rx.drain(&mut items[..burst.len()]), burst.len());
+        assert_eq!(rx.drain(&mut items[..burst.len()]).count, burst.len());
         for (item, byte) in items.iter().zip(burst.iter()).take(burst.len()) {
             assert_eq!(
                 *item,
@@ -1157,48 +1345,212 @@ mod tests {
             overrun: true,
         });
         let mut parts = SerialCore::<8, 8>::split(uart);
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
 
-        let mut irq = parts.core;
-        let outcome = irq.handle_irq();
+        let (_, source) = masked_capture(&mut parts.core);
+        let events = match parts.core.service_masked(source) {
+            SerialMaskedService::Complete(events) => events,
+            other => panic!("expected completed owner service, got {other:?}"),
+        };
 
-        assert!(outcome.claimed);
-        assert_eq!(outcome.rx_pushed, 2);
-        assert!(!outcome.budget_exhausted);
+        assert_eq!(events.rx_pushed, 2);
     }
 
     #[test]
-    fn pass_budget_requires_a_deferred_continuation_even_with_small_snapshots() {
-        let mut uart = MockUart::new();
-        for _ in 0..IRQ_PASS_BUDGET {
-            uart = uart.irq(IrqSource::MODEM_STATUS);
-        }
+    fn capture_masks_exact_source_and_returns_stable_event() {
+        let uart = MockUart::new().irq(IrqSource::RX_DATA);
+        let probe = Arc::clone(&uart.probe);
         let mut parts = SerialCore::<8, 8>::split(uart);
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
 
-        let mut irq = parts.core;
-        let outcome = irq.handle_irq();
+        let (event, source) = masked_capture(&mut parts.core);
 
-        assert!(outcome.claimed);
-        assert!(outcome.budget_exhausted);
+        assert_eq!(event.sources(), IrqSource::RX_DATA);
+        assert_eq!(source.bitmap().get(), u64::from(InterruptMask::RX.bits()));
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
     }
 
     #[test]
-    fn continuation_rechecks_the_source_until_no_snapshot_is_pending() {
-        let mut uart = MockUart::new();
-        for _ in 0..=IRQ_PASS_BUDGET {
-            uart = uart.irq(IrqSource::MODEM_STATUS);
-        }
+    fn owner_service_requires_explicit_source_rearm() {
+        let uart = MockUart::new().irq(IrqSource::RX_DATA);
+        let probe = Arc::clone(&uart.probe);
         let mut parts = SerialCore::<8, 8>::split(uart);
-        parts.core.startup(&Config::new()).unwrap();
-        let mut irq = parts.core;
+        start(&mut parts.core);
 
-        let first = irq.handle_irq();
-        let second = irq.handle_irq();
+        let (_event, source) = masked_capture(&mut parts.core);
+        let progress = parts.core.service_masked(source);
 
-        assert!(first.budget_exhausted);
-        assert!(second.claimed);
-        assert!(!second.budget_exhausted);
+        assert_eq!(
+            progress,
+            SerialMaskedService::Complete(SerialIrqEvents::default())
+        );
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
+        assert_eq!(parts.core.rearm_masked(source), Ok(InterruptMask::RX));
+        assert_eq!(
+            probe.irq_mask.load(Ordering::Acquire),
+            InterruptMask::RX.bits()
+        );
+    }
+
+    #[test]
+    fn publication_containment_returns_one_generation_checked_rearm_token() {
+        let (uart, probe) = MockUart::with_probe();
+        let mut parts = SerialCore::<8, 8>::split(uart);
+        start(&mut parts.core);
+
+        let source = IrqEndpoint::contain(&mut parts.core, ContainmentCause::PublicationFull)
+            .expect("the active RX source can be device-masked");
+
+        assert_eq!(source.bitmap().get(), u64::from(InterruptMask::RX.bits()));
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
+        assert_eq!(IrqSourceControl::rearm(&mut parts.core, source), Ok(()));
+        assert_eq!(
+            IrqSourceControl::rearm(&mut parts.core, source),
+            Err(SerialRearmError::Stale)
+        );
+        assert_eq!(
+            probe.irq_mask.load(Ordering::Acquire),
+            InterruptMask::RX.bits()
+        );
+    }
+
+    #[test]
+    fn dropped_capture_leaves_source_safely_masked() {
+        let uart = MockUart::new().irq(IrqSource::RX_DATA);
+        let probe = Arc::clone(&uart.probe);
+        let mut parts = SerialCore::<8, 8>::split(uart);
+        start(&mut parts.core);
+
+        let capture = masked_capture(&mut parts.core);
+        let _ = capture;
+
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
+        assert!(parts.core.service(SerialSoftWork::empty()).is_ok());
+    }
+
+    #[test]
+    fn pending_owner_pass_keeps_source_masked() {
+        let mut uart = MockUart::new().irq(IrqSource::RX_DATA);
+        for _ in 0..(RX_IRQ_BUDGET * 3) {
+            uart = uart.rx_byte(b'x');
+        }
+        let probe = Arc::clone(&uart.probe);
+        let mut parts = SerialCore::<8, 1024>::split(uart);
+        start(&mut parts.core);
+        let (_event, source) = masked_capture(&mut parts.core);
+
+        let progress = parts.core.service_masked(source);
+
+        assert!(matches!(progress, SerialMaskedService::Pending(_)));
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn stale_capture_cannot_rearm_a_restarted_port() {
+        let uart = MockUart::new().irq(IrqSource::RX_DATA);
+        let mut parts = SerialCore::<8, 8>::split(uart);
+        start(&mut parts.core);
+        let (_event, source) = masked_capture(&mut parts.core);
+
+        parts.core.shutdown();
+
+        assert_eq!(
+            parts.core.rearm_masked(source),
+            Err(SerialRearmError::Stale)
+        );
+    }
+
+    #[test]
+    fn rx_backpressure_stays_masked_until_the_consumer_rearms_it() {
+        let uart = MockUart::new()
+            .irq(IrqSource::RX_DATA)
+            .rx_byte(b'a')
+            .rx_byte(b'b');
+        let probe = Arc::clone(&uart.probe);
+        let mut parts = SerialCore::<8, 3>::split(uart);
+        start(&mut parts.core);
+
+        let (_, source) = masked_capture(&mut parts.core);
+        let service = parts.core.service_masked(source);
+
+        assert_eq!(
+            service,
+            SerialMaskedService::Backpressured(SerialIrqEvents {
+                rx_pushed: 1,
+                ..SerialIrqEvents::default()
+            })
+        );
+        assert_eq!(source.bitmap().get(), u64::from(InterruptMask::RX.bits()));
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
+        let mut items = [RxItem::default(); 2];
+        let drain = parts.rx.drain(&mut items);
+        assert_eq!(drain.count, 1);
+        let rearm = drain.rearm.unwrap();
+        assert_eq!(rearm, source);
+        assert_eq!(IrqSourceControl::rearm(&mut parts.core, rearm), Ok(()));
+        assert_eq!(
+            probe.irq_mask.load(Ordering::Acquire),
+            InterruptMask::RX.bits()
+        );
+        assert!(parts.rx.drain(&mut items).rearm.is_none());
+    }
+
+    #[test]
+    fn combined_masked_sources_progress_and_rearm_independently() {
+        let mut uart = MockUart::new();
+        uart.tx_ready_budget = TX_IRQ_BUDGET + 8;
+        uart.tx_load_size = 1;
+        uart.probe.rx_reads_enabled.store(false, Ordering::Release);
+        uart = uart.irq(IrqSource::RX_DATA | IrqSource::TX_SPACE);
+        uart = uart.rx_byte(b'a').rx_byte(b'b');
+        let probe = Arc::clone(&uart.probe);
+        let mut parts = SerialCore::<128, 3>::split(uart);
+        let mut tx = parts.tx;
+        tx.submit(&[b'x'; TX_IRQ_BUDGET + 4]);
+        start(&mut parts.core);
+        let _ = parts.core.service(SerialSoftWork::TX_KICK).unwrap();
+        let (_event, source) = masked_capture(&mut parts.core);
+        assert_eq!(
+            source.bitmap().get(),
+            u64::from((InterruptMask::RX | InterruptMask::TX_SPACE).bits())
+        );
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
+        probe.rx_reads_enabled.store(true, Ordering::Release);
+
+        let generation = usize::try_from(source.generation().get()).unwrap();
+        let rx_source = masked_source(generation, InterruptMask::RX);
+        let tx_source = masked_source(generation, InterruptMask::TX_SPACE);
+        let rx_progress = parts.core.service_masked(rx_source);
+        let tx_progress = parts.core.service_masked(tx_source);
+        let tx_rearmed = parts.core.rearm_masked(tx_source);
+
+        assert!(matches!(rx_progress, SerialMaskedService::Backpressured(_)));
+        assert!(matches!(tx_progress, SerialMaskedService::Complete(_)));
+        assert_eq!(tx_rearmed, Ok(InterruptMask::TX_SPACE));
+        assert_eq!(
+            probe.irq_mask.load(Ordering::Acquire),
+            InterruptMask::TX_SPACE.bits()
+        );
+        assert_eq!(tx.chars_in_buffer(), TX_IRQ_BUDGET + 2);
+    }
+
+    #[test]
+    fn busy_detect_irq_faults_instead_of_claiming_unmaskable_progress() {
+        let (uart, probe) = MockUart::with_probe();
+        let uart = uart.irq(IrqSource::BUSY_DETECT);
+        let mut parts = SerialCore::<8, 8>::split(uart);
+        start(&mut parts.core);
+
+        let reason = match parts.core.capture_irq() {
+            SerialIrqCapture::Fault {
+                reason,
+                containment: FaultContainment::Uncontained,
+            } => reason,
+            other => panic!("expected BUSY fail-closed service, got {other:?}"),
+        };
+
+        assert_eq!(reason, SerialIrqFault::UnmaskableSource);
+        assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
     }
 
     #[test]
@@ -1206,13 +1558,18 @@ mod tests {
         let (uart, probe) = MockUart::with_probe();
         let uart = uart.irq(IrqSource::OTHER_ACK);
         let mut parts = SerialCore::<8, 8>::split(uart);
-        parts.core.startup(&Config::new()).unwrap();
+        start(&mut parts.core);
 
         let mut irq = parts.core;
-        let outcome = irq.handle_irq();
+        let reason = match irq.capture_irq() {
+            SerialIrqCapture::Fault {
+                reason,
+                containment: FaultContainment::Uncontained,
+            } => reason,
+            other => panic!("expected fail-closed IRQ service, got {other:?}"),
+        };
 
-        assert!(outcome.claimed);
-        assert_eq!(outcome.fault, Some(SerialIrqFault::UnknownSource));
+        assert_eq!(reason, SerialIrqFault::UnknownSource);
         assert_eq!(probe.irq_mask.load(Ordering::Acquire), 0);
     }
 }

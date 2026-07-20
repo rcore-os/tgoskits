@@ -3,6 +3,9 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 #[cfg(kmod)]
+use rdif_irq::{ContainmentCause, IrqCapture, MaskedSource};
+
+#[cfg(kmod)]
 pub use super::backend::kmod::*;
 #[cfg(umod)]
 pub use super::backend::umod::*;
@@ -75,14 +78,37 @@ impl USBHost {
     }
 }
 
+#[cfg(kmod)]
 pub struct EventHandler {
     handler: Box<dyn EventHandlerOp>,
 }
 
+#[cfg(kmod)]
 impl EventHandler {
-    /// 处理事件
-    pub fn handle_event(&self) -> Event {
-        self.handler.handle_event()
+    /// Captures and contains one hardware IRQ without advancing USB queues.
+    pub fn capture_irq(&self) -> IrqCapture<UsbIrqEvent, UsbIrqFault> {
+        self.handler.capture_irq()
+    }
+
+    /// Advances host events from one previously acknowledged IRQ snapshot.
+    pub fn service_host_events(
+        &self,
+        event: UsbIrqEvent,
+    ) -> core::result::Result<Event, UsbIrqFault> {
+        self.handler.service_host_events(event)
+    }
+
+    /// Masks the exact USB interrupt source after publication cannot progress.
+    pub fn contain_irq(
+        &self,
+        cause: ContainmentCause,
+    ) -> core::result::Result<MaskedSource, UsbIrqFault> {
+        self.handler.contain(cause)
+    }
+
+    /// Rearms a source after its matching event was consumed by the host owner.
+    pub fn rearm_sources(&self, source: MaskedSource) -> core::result::Result<(), UsbIrqFault> {
+        self.handler.rearm_sources(source)
     }
 }
 
@@ -158,8 +184,33 @@ mod tests {
 
     #[cfg(kmod)]
     impl crate::backend::ty::EventHandlerOp for TestEventHandler {
-        fn handle_event(&self) -> crate::backend::ty::Event {
-            crate::backend::ty::Event::Nothing
+        fn capture_irq(
+            &self,
+        ) -> rdif_irq::IrqCapture<crate::backend::ty::UsbIrqEvent, crate::backend::ty::UsbIrqFault>
+        {
+            rdif_irq::IrqCapture::Unhandled
+        }
+
+        fn service_host_events(
+            &self,
+            _event: crate::backend::ty::UsbIrqEvent,
+        ) -> core::result::Result<crate::backend::ty::Event, crate::backend::ty::UsbIrqFault>
+        {
+            Ok(crate::backend::ty::Event::Nothing)
+        }
+
+        fn contain(
+            &self,
+            _cause: rdif_irq::ContainmentCause,
+        ) -> core::result::Result<rdif_irq::MaskedSource, crate::backend::ty::UsbIrqFault> {
+            Err(crate::backend::ty::UsbIrqFault::StaleRearm)
+        }
+
+        fn rearm_sources(
+            &self,
+            _source: rdif_irq::MaskedSource,
+        ) -> core::result::Result<(), crate::backend::ty::UsbIrqFault> {
+            Err(crate::backend::ty::UsbIrqFault::StaleRearm)
         }
     }
 

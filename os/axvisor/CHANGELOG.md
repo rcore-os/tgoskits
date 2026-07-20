@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Run architecture IRQ activation only after host storage selection/commit and
-  return controllers before surfacing any default-VM startup failure.
-- Retain and revoke the post-selection guest IRQ-route lease even when storage
-  selection finds no matching host block controller.
+- Run architecture IRQ activation only after optional host-device
+  selection/commit and return controllers before surfacing any default-VM
+  startup failure.
+- Retain and revoke the post-selection guest IRQ-route lease in both
+  filesystem and filesystem-free builds, including when no host block
+  controller matches the guest.
 - Reject interactive passthrough start, reset, and removal until a
   process-lifetime dynamic ownership coordinator can retain the guest-route,
   controller, and filesystem transaction.

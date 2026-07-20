@@ -89,6 +89,9 @@ impl ProtocolSdioHost for PhytiumMci {
     }
 
     fn enable_completion_irq(&mut self) -> Result<(), Error> {
+        if !self.irq.state.source_ready() {
+            return Err(Error::InvalidArgument);
+        }
         PhytiumMci::enable_completion_irq(self);
         Ok(())
     }
@@ -112,10 +115,11 @@ impl ProtocolSdioHost for PhytiumMci {
 }
 
 impl SdioIrqHost for PhytiumMci {
-    type IrqHandle = PhytiumMciIrqHandle;
+    type IrqEndpoint = PhytiumMciIrqEndpoint;
+    type IrqControl = PhytiumMciIrqControl;
 
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        PhytiumMci::irq_endpoint(self)
+    fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        PhytiumMci::take_irq_source(self)
     }
 }
 

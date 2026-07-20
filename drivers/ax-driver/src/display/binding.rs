@@ -213,14 +213,14 @@ mod tests {
     }
 
     impl Interface for TestDisplay {
-        fn info(&self) -> DisplayInfo {
-            DisplayInfo {
+        fn info(&self) -> Result<DisplayInfo, DisplayError> {
+            Ok(DisplayInfo {
                 width: 2,
                 height: 2,
                 stride: 8,
                 format: PixelFormat::Xrgb8888,
                 fb_size: self.fb.len(),
-            }
+            })
         }
 
         fn framebuffer(&mut self) -> Result<FrameBuffer<'_>, DisplayError> {

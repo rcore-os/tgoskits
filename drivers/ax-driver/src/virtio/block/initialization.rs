@@ -6,7 +6,11 @@ use virtio_drivers::{
     transport::{DeviceStatus, DeviceType},
 };
 
-use super::{VIRTIO_BLK_QUEUE_ID, device::VirtIoBlkInner, queue::VIRTIO_BLK_QUEUE_SIZE};
+use super::{
+    VIRTIO_BLK_QUEUE_ID,
+    device::VirtIoBlkInner,
+    queue::{VIRTIO_BLK_QUEUE_SIZE, VirtioDmaQuarantine, VirtioDmaQuarantineReason},
+};
 use crate::virtio::{VirtIoHalImpl, VirtIoTransport};
 
 const VIRTIO_BLK_CONFIG_CAPACITY_LOW: usize = 0;
@@ -213,7 +217,7 @@ impl<T: VirtIoTransport> VirtIoBlkInner<T> {
             );
         }
         if now_ns >= self.init_deadline_ns {
-            self.quarantine_unproven_dma();
+            self.quarantine_unproven_dma(VirtioDmaQuarantineReason::ResetAcknowledgementTimedOut);
             self.init_error = Some(rdif_block::InitError::TimedOut);
             self.init_phase = VirtioBlockInitPhase::Failed;
             return rdif_block::InitPoll::Failed(rdif_block::InitError::TimedOut);
@@ -224,20 +228,23 @@ impl<T: VirtIoTransport> VirtIoBlkInner<T> {
         )))
     }
 
-    pub(super) fn quarantine_unproven_dma(&mut self) {
+    pub(super) fn quarantine_unproven_dma(&mut self, reason: VirtioDmaQuarantineReason) {
         // A reset timeout cannot justify dropping DMA-visible queue/request
-        // storage. The runtime also retains the failed controller; leaking
-        // these bounded allocations keeps any late device write memory-safe.
+        // storage. Keep a named linear owner on the retained failed controller
+        // so diagnostics can distinguish isolation from an accidental leak.
+        if self.dma_quarantine.is_some() {
+            return;
+        }
         let descriptor_may_be_live = self.inflight.is_some();
-        if let Some(queue) = self.queue.take() {
-            core::mem::forget(queue);
-        }
-        if let Some(inflight) = self.inflight.take() {
-            core::mem::forget(inflight);
-        }
-        if descriptor_may_be_live && let Some(storage) = self.descriptor_storage.take() {
-            core::mem::forget(storage);
-        }
+        let descriptor_storage = descriptor_may_be_live
+            .then(|| self.descriptor_storage.take())
+            .flatten();
+        self.dma_quarantine = VirtioDmaQuarantine::retain(
+            reason,
+            self.queue.take(),
+            self.inflight.take(),
+            descriptor_storage,
+        );
     }
 
     pub(super) fn set_interrupts(&mut self, enabled: bool) {
@@ -262,6 +269,10 @@ impl<T: VirtIoTransport> VirtIoBlkInner<T> {
     pub(super) fn prepare_reinitialize(&mut self) -> Result<(), rdif_block::InitError> {
         if self.queue.is_some()
             || self.inflight.is_some()
+            || self
+                .dma_quarantine
+                .as_ref()
+                .is_some_and(VirtioDmaQuarantine::blocks_reinitialization)
             || !self.transport.get_status().is_empty()
         {
             return Err(rdif_block::InitError::InvalidState);
@@ -274,6 +285,9 @@ impl<T: VirtIoTransport> VirtIoBlkInner<T> {
         self.capacity = 0;
         self.init_deadline_ns = 0;
         self.init_error = None;
+        if self.descriptor_storage.is_none() {
+            self.descriptor_storage = Some(alloc::boxed::Box::default());
+        }
         Ok(())
     }
 

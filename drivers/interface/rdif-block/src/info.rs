@@ -18,11 +18,14 @@ pub enum QueueKind {
     },
 }
 
-/// Which task-side execution context may advance a queue.
+/// How accepted requests enter and advance one queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DispatchMode {
-    /// The runtime may dispatch directly from the submitting task.
-    Direct,
+pub enum QueueExecution {
+    /// A software device completes ownership before submission returns.
+    Inline,
+    /// One owner-side service context may maintain multiple generation-tagged
+    /// requests in flight on the hardware queue.
+    Tagged,
     /// A single task-side service context must serialize queue progression.
     Serialized,
 }
@@ -93,7 +96,7 @@ pub struct QueueInfo {
     pub device: DeviceInfo,
     pub limits: QueueLimits,
     pub kind: QueueKind,
-    pub dispatch_mode: DispatchMode,
+    pub execution: QueueExecution,
 }
 
 #[cfg(test)]
@@ -107,29 +110,30 @@ mod tests {
     }
 
     #[test]
-    fn completion_kind_and_dispatch_mode_are_orthogonal() {
-        let direct_interrupt = QueueInfo {
+    fn completion_kind_and_execution_contract_are_consistent() {
+        let tagged_interrupt = QueueInfo {
             id: 0,
             device: DeviceInfo::new(8, 512),
             limits: QueueLimits::simple(512, u64::MAX),
             kind: interrupt_kind(1),
-            dispatch_mode: DispatchMode::Direct,
+            execution: QueueExecution::Tagged,
         };
         let serialized_interrupt = QueueInfo {
-            dispatch_mode: DispatchMode::Serialized,
-            ..direct_interrupt
+            execution: QueueExecution::Serialized,
+            ..tagged_interrupt
         };
         let inline = QueueInfo {
             kind: QueueKind::Inline,
-            dispatch_mode: DispatchMode::Direct,
-            ..direct_interrupt
+            execution: QueueExecution::Inline,
+            ..tagged_interrupt
         };
 
-        assert_eq!(direct_interrupt.kind, interrupt_kind(1));
-        assert_eq!(direct_interrupt.dispatch_mode, DispatchMode::Direct);
+        assert_eq!(tagged_interrupt.kind, interrupt_kind(1));
+        assert_eq!(tagged_interrupt.execution, QueueExecution::Tagged);
         assert_eq!(serialized_interrupt.kind, interrupt_kind(1));
-        assert_eq!(serialized_interrupt.dispatch_mode, DispatchMode::Serialized);
+        assert_eq!(serialized_interrupt.execution, QueueExecution::Serialized);
         assert_eq!(inline.kind, QueueKind::Inline);
+        assert_eq!(inline.execution, QueueExecution::Inline);
     }
 
     #[test]

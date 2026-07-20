@@ -34,10 +34,14 @@ mod intx;
 pub mod msi;
 pub(crate) use acpi::acpi_irq_for_endpoint;
 pub(crate) use fdt::fdt_irq_for_endpoint;
-pub use intx::PciIntxIrqLease;
 #[cfg(virtio_dev)]
 use intx::SharedPciEndpoint;
-pub use msi::{PciIrqLease, PciMsiTarget, PciMsixAllocation};
+pub use intx::{PciIntxIrqLease, PciIntxSourceMask};
+pub use msi::PciMsiTarget;
+#[cfg(feature = "nvme")]
+pub(crate) use msi::PciMsixActivationFailure;
+#[cfg(feature = "nvme")]
+pub use msi::{PciIrqLease, PciMsixAllocation};
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
 #[cfg(virtio_dev)]
@@ -561,6 +565,28 @@ pub fn take_virtio_transport(
     take_virtio_transport_with_intx_policy(endpoint, expected, false)
 }
 
+/// Verifies that a PCI endpoint belongs to the requested VirtIO device class.
+///
+/// Probe adapters call this before resolving IRQ routes, mapping ISR
+/// capabilities, or mutating endpoint command state. The transport takeover
+/// repeats the check so its ownership transition remains self-contained.
+#[cfg(virtio_dev)]
+pub(crate) fn ensure_virtio_pci_endpoint(
+    endpoint: &Endpoint,
+    expected: DeviceType,
+) -> Result<(), OnProbeError> {
+    match (endpoint.vendor_id(), endpoint.device_id()) {
+        (0x1af4, 0x1000..=0x107f) => {}
+        _ => return Err(OnProbeError::NotMatch),
+    }
+
+    let device = as_device_function_info(endpoint);
+    match virtio_device_type(&device) {
+        Some(actual) if actual == expected => Ok(()),
+        _ => Err(OnProbeError::NotMatch),
+    }
+}
+
 #[cfg(virtio_dev)]
 pub fn take_virtio_transport_masked(
     endpoint: &mut EndpointRc,
@@ -575,6 +601,38 @@ pub fn take_virtio_transport_masked(
 /// has installed every IRQ action and enables the returned binding lease.
 #[cfg(virtio_dev)]
 pub fn take_virtio_block_transport(
+    endpoint: &mut EndpointRc,
+    expected: DeviceType,
+    binding: crate::BindingInfo,
+) -> Result<(impl VirtIoTransport, PciIntxIrqLease), OnProbeError> {
+    let (bdf, endpoint) = take_matched_virtio_endpoint(endpoint, expected, true)?;
+    let irq_lease = PciIntxIrqLease::from_shared(endpoint.clone(), binding);
+    let transport = virtio_transport_from_endpoint(bdf, endpoint)?;
+    Ok((transport, irq_lease))
+}
+
+/// Takes a VirtIO display transport together with its move-only INTx gate.
+///
+/// The endpoint remains masked until the display maintenance owner has
+/// registered its fixed-affinity hard-IRQ action and completed initialization.
+#[cfg(virtio_dev)]
+pub fn take_virtio_display_transport(
+    endpoint: &mut EndpointRc,
+    expected: DeviceType,
+    binding: crate::BindingInfo,
+) -> Result<(impl VirtIoTransport, PciIntxIrqLease), OnProbeError> {
+    let (bdf, endpoint) = take_matched_virtio_endpoint(endpoint, expected, true)?;
+    let irq_lease = PciIntxIrqLease::from_shared(endpoint.clone(), binding);
+    let transport = virtio_transport_from_endpoint(bdf, endpoint)?;
+    Ok((transport, irq_lease))
+}
+
+/// Takes a VirtIO input transport together with its move-only INTx gate.
+///
+/// The endpoint remains masked until the input maintenance owner has
+/// registered its detached ISR endpoint and published a live session.
+#[cfg(virtio_dev)]
+pub fn take_virtio_input_transport(
     endpoint: &mut EndpointRc,
     expected: DeviceType,
     binding: crate::BindingInfo,
@@ -601,17 +659,9 @@ fn take_matched_virtio_endpoint(
     expected: DeviceType,
     mask_intx_after_match: bool,
 ) -> Result<(DeviceFunction, SharedPciEndpoint), OnProbeError> {
-    match (endpoint.vendor_id(), endpoint.device_id()) {
-        (0x1af4, 0x1000..=0x107f) => {}
-        _ => return Err(OnProbeError::NotMatch),
-    }
+    ensure_virtio_pci_endpoint(endpoint, expected)?;
 
     let bdf = as_device_function(endpoint.address());
-    let dev_info = as_device_function_info(endpoint);
-    let ty = virtio_device_type(&dev_info).ok_or(OnProbeError::NotMatch)?;
-    if ty != expected {
-        return Err(OnProbeError::NotMatch);
-    }
 
     if mask_intx_after_match {
         mask_intx(endpoint);

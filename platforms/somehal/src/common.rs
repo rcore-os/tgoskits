@@ -1,4 +1,4 @@
-use irq_framework::{CpuId, CpuIpiTarget, IpiSendStatus, IrqError, IrqId, IrqSource};
+use irq_framework::{CpuId, CpuIpiTarget, IpiSendStatus, IrqError, IrqId, IrqScope, IrqSource};
 use rdrive::probe::OnProbeError;
 use someboot::{ArchTrait, PagingError};
 
@@ -7,11 +7,11 @@ use crate::setup::MmioRaw;
 pub trait PlatOp {
     type ActiveIrq;
 
-    fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError>;
-
-    fn irq_set_affinity(_irq: IrqId, _affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
-        Err(IrqError::Unsupported)
-    }
+    fn prepare_irq_line(
+        irq: IrqId,
+        scope: IrqScope,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Result<crate::irq_line::PreparedIrqChipLine, IrqError>;
 
     fn send_ipi(_irq: IrqId, _target: CpuIpiTarget, _current_cpu: CpuId) -> IpiSendStatus {
         IpiSendStatus::Invalid

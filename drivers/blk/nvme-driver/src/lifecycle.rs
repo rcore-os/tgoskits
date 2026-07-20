@@ -6,7 +6,7 @@ use rdif_block::{
 const CONTROLLER_STATUS_CHECK_INTERVAL_NS: u64 = 1_000_000;
 const ADMIN_COMMAND_TIMEOUT_NS: u64 = 30_000_000_000;
 
-/// Stable completion copied out of the IRQ-owned admin CQ consumer.
+/// Stable completion copied by the CPU-pinned maintenance owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AdminCompletion {
     pub command_id: u16,
@@ -337,7 +337,7 @@ impl NvmeLifecycle {
                 // SAFETY: the retained admin and I/O queues were reset only
                 // after consuming the matching DmaQuiesced proof. CC.RDY is
                 // set, and every Set Features/Create CQ/Create SQ command was
-                // observed as successful by the IRQ-owned admin CQ endpoint.
+                // observed as successful by the owner after IRQ evidence.
                 InitPoll::Ready(unsafe {
                     ControllerReady::new(epoch, hardware.controller_cookie())
                 })
@@ -649,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn reinitialize_rebuilds_each_queue_only_from_irq_cached_admin_completions() {
+    fn reinitialize_rebuilds_each_queue_only_from_irq_evidenced_admin_completions() {
         let hardware = FakeHardware::new(2);
         let mut lifecycle = NvmeLifecycle::new();
         let epoch = ControllerEpoch::new(3);

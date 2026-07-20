@@ -1,6 +1,11 @@
+use alloc::boxed::Box;
+
+use irq_framework::{CpuId, IrqScope};
+
 use crate::{
     common::PlatOp,
     irq::{CPU_LOCAL_IRQ_DOMAIN, CpuIpiTarget, HwIrq, IpiSendStatus, IrqError, IrqId, IrqSource},
+    irq_line::{IrqChipLine, PreparedIrqChipLine},
 };
 
 mod plic;
@@ -63,24 +68,32 @@ pub fn release_riscv_plic_irq_endpoints(leases: &[RiscvPlicLeaseId]) -> Result<(
 impl PlatOp for Plat {
     type ActiveIrq = plic::ActiveIrq;
 
-    fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError> {
+    fn prepare_irq_line(
+        irq: IrqId,
+        scope: IrqScope,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Result<PreparedIrqChipLine, IrqError> {
         if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
-            return plic::local_irq_set_enable(riscv_local_irq_raw(irq)?.into(), enable);
+            let raw = riscv_local_irq_raw(irq)?;
+            if !matches!(scope, IrqScope::PerCpu { .. }) {
+                return Err(IrqError::InvalidIrq);
+            }
+            return Ok(PreparedIrqChipLine::maskable(Box::new(
+                RiscvIrqChipLine::CpuLocal { irq, raw },
+            )));
         }
-        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic) {
-            return crate::irq::set_controller_irq_enabled(irq, enable);
+        if !crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic)
+            || scope != IrqScope::Global
+        {
+            return Err(IrqError::InvalidIrq);
         }
-        Err(IrqError::InvalidIrq)
-    }
 
-    fn irq_set_affinity(irq: IrqId, affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
-        if irq.domain == CPU_LOCAL_IRQ_DOMAIN {
-            return Err(IrqError::Unsupported);
-        }
-        if crate::irq::domain_is_kind(irq.domain, crate::irq::IrqDomainKind::RiscvPlic) {
-            return plic::irq_set_affinity(irq.hwirq, affinity);
-        }
-        Err(IrqError::InvalidIrq)
+        // The lease resolves the generic controller only in task context,
+        // fixes its routing, and leaves the physical source priority at zero.
+        let endpoint = plic::lease_irq_endpoint(irq.hwirq, affinity)?;
+        Ok(PreparedIrqChipLine::maskable(Box::new(
+            RiscvIrqChipLine::Plic { irq, endpoint },
+        )))
     }
 
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq> {
@@ -176,5 +189,61 @@ impl PlatOp for Plat {
 
     fn ipi_irq() -> IrqId {
         IrqId::new(CPU_LOCAL_IRQ_DOMAIN, HwIrq(RISCV_S_SOFT_CAUSE as u32))
+    }
+}
+
+enum RiscvIrqChipLine {
+    CpuLocal {
+        irq: IrqId,
+        raw: usize,
+    },
+    Plic {
+        irq: IrqId,
+        endpoint: RiscvPlicIrqEndpoint,
+    },
+}
+
+// SAFETY: preparation validates CPU-local causes or acquires a shutdown-safe
+// PLIC source lease. Live operations touch only the local CSR/SBI leaf or the
+// leased priority register and never allocate, block, or resolve a driver.
+unsafe impl IrqChipLine for RiscvIrqChipLine {
+    fn set_enabled(&self, cpu: Option<CpuId>, enabled: bool) {
+        match self {
+            Self::CpuLocal { irq, raw } => {
+                let cpu = cpu.expect("prepared RISC-V CPU-local line requires a target CPU");
+                assert_eq!(
+                    crate::cpu::runtime_current_cpu(),
+                    Some(cpu),
+                    "prepared RISC-V CPU-local line {irq:?} executed on the wrong CPU"
+                );
+                plic::local_irq_set_enable((*raw).into(), enabled).unwrap_or_else(|error| {
+                    panic!(
+                        "fatal platform invariant: prepared RISC-V CPU-local line {irq:?} failed: \
+                         {error:?}"
+                    )
+                });
+            }
+            Self::Plic { irq, endpoint } => {
+                assert!(
+                    cpu.is_none(),
+                    "prepared RISC-V PLIC line {irq:?} cannot use a per-CPU target"
+                );
+                if enabled {
+                    endpoint.unmask();
+                } else {
+                    endpoint.mask();
+                }
+            }
+        }
+    }
+
+    fn release(&self) -> Result<(), IrqError> {
+        match self {
+            Self::CpuLocal { .. } => Err(IrqError::Unsupported),
+            Self::Plic { endpoint, .. } => {
+                let lease = endpoint.lease_id();
+                plic::release_irq_endpoints(core::slice::from_ref(&lease))
+            }
+        }
     }
 }

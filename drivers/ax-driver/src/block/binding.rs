@@ -8,7 +8,7 @@ use ax_errno::AxError;
 use log::warn;
 use rdif_block::{
     BControllerBundle, BlkError, ControllerBundle, ControllerInitEndpoint, Interface,
-    SingleDeviceBundle,
+    LifecycleKind, SingleDeviceBundle,
 };
 use rdrive::{Device, DeviceId, probe::OnProbeError};
 
@@ -30,6 +30,8 @@ pub struct PlatformBlockDevice {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum BlockRegistrationError {
+    #[error("interrupt-backed controller declares no IRQ source")]
+    InterruptControllerWithoutIrqSource,
     #[error("controller declares IRQ source {source_id}, but the platform did not bind it")]
     MissingIrqBinding { source_id: usize },
 }
@@ -425,6 +427,7 @@ fn validate_controller_irq_bindings(
     bundle: &mut dyn ControllerBundle,
     binding: &BindingInfo,
 ) -> Result<(), BlockRegistrationError> {
+    let lifecycle = bundle.lifecycle().kind();
     let mut required_sources = Vec::new();
     for source in bundle.irq_sources() {
         if !required_sources.contains(&source.id) {
@@ -438,7 +441,18 @@ fn validate_controller_irq_bindings(
             }
         }
     }
-    for source_id in required_sources {
+    validate_required_irq_bindings(lifecycle, &required_sources, binding)
+}
+
+fn validate_required_irq_bindings(
+    lifecycle: LifecycleKind,
+    required_sources: &[usize],
+    binding: &BindingInfo,
+) -> Result<(), BlockRegistrationError> {
+    if lifecycle == LifecycleKind::Interrupt && required_sources.is_empty() {
+        return Err(BlockRegistrationError::InterruptControllerWithoutIrqSource);
+    }
+    for &source_id in required_sources {
         if binding.irq_for_source(source_id).is_none() {
             return Err(BlockRegistrationError::MissingIrqBinding { source_id });
         }
@@ -450,6 +464,7 @@ pub(crate) fn validate_block_interface_irq_bindings(
     interface: &mut dyn Interface,
     binding: &BindingInfo,
 ) -> Result<(), BlockRegistrationError> {
+    let lifecycle = interface.lifecycle().kind();
     let mut required_sources = Vec::new();
     for source in interface.irq_sources() {
         if !required_sources.contains(&source.id) {
@@ -463,12 +478,7 @@ pub(crate) fn validate_block_interface_irq_bindings(
             }
         }
     }
-    for source_id in required_sources {
-        if binding.irq_for_source(source_id).is_none() {
-            return Err(BlockRegistrationError::MissingIrqBinding { source_id });
-        }
-    }
-    Ok(())
+    validate_required_irq_bindings(lifecycle, &required_sources, binding)
 }
 
 fn block_registration_probe_error(error: BlockRegistrationError) -> OnProbeError {
@@ -494,9 +504,9 @@ mod tests {
     use alloc::{string::String, vec};
 
     use rdif_block::{
-        BIrqHandler, BlkError, ControllerInitEndpoint, DeviceInfo, DriverGeneric, IdList,
-        InitInput, InitIrqProgress, InitPoll, InitialController, Interface, IrqSourceInfo,
-        IrqSourceList, LifecycleEndpoint, QueueHandle, QueueLimits,
+        BlkError, BlockIrqSource, ControllerInitEndpoint, DeviceInfo, DriverGeneric, IdList,
+        InitInput, InitPoll, InitialController, Interface, IrqSourceInfo, IrqSourceList,
+        LifecycleEndpoint, QueueHandle, QueueLimits,
     };
 
     use super::*;
@@ -510,12 +520,8 @@ mod tests {
             self.sources
         }
 
-        fn take_irq_handler(&mut self, _source_id: usize) -> Option<BIrqHandler> {
+        fn take_irq_source(&mut self, _source_id: usize) -> Option<BlockIrqSource> {
             None
-        }
-
-        fn service_deferred_irq(&mut self, _source_id: usize) -> InitIrqProgress {
-            InitIrqProgress::Unhandled
         }
 
         fn poll_init(&mut self, _input: InitInput) -> InitPoll<()> {
@@ -571,7 +577,7 @@ mod tests {
             self.declared.clone()
         }
 
-        fn take_irq_handler(&mut self, _source_id: usize) -> Option<BIrqHandler> {
+        fn take_irq_source(&mut self, _source_id: usize) -> Option<BlockIrqSource> {
             None
         }
     }
@@ -627,6 +633,18 @@ mod tests {
         ]);
         assert_eq!(
             validate_block_interface_irq_bindings(&mut block, &all_sources),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn interrupt_backed_controller_without_any_irq_source_fails_closed() {
+        assert_eq!(
+            validate_required_irq_bindings(LifecycleKind::Interrupt, &[], &BindingInfo::empty()),
+            Err(BlockRegistrationError::InterruptControllerWithoutIrqSource)
+        );
+        assert_eq!(
+            validate_required_irq_bindings(LifecycleKind::Inline, &[], &BindingInfo::empty()),
             Ok(())
         );
     }

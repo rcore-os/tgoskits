@@ -17,14 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compatibility adapter for legacy interfaces.
 - Add an object-safe discovery-to-ready controller endpoint whose IRQ sources
   are bound before the first bounded initialization command is submitted.
-- Add an explicit task-side initialization IRQ continuation so a driver can
-  defer a destructive acknowledgement without losing or fabricating an event.
-- Extend the same typed deferred-IRQ continuation to controller recovery and
-  reinitialization; only a source acknowledged into stable driver state may be
-  presented to a lifecycle poll, while acknowledgement errors remain terminal
-  typed failures instead of shared-line misses.
+- Split every logical IRQ source into a bounded hard-IRQ capture endpoint and
+  an owner-side rearm control. Captured masked sources carry a nonzero
+  generation and bitmap so stale work cannot reopen a recovered device epoch.
+- Require explicit fail-closed containment when captured facts cannot be
+  published. The endpoint receives a typed publication/ownership cause and
+  returns the exact masked-source token; an uncontained failure must instead
+  close the OS action or parent interrupt line.
 - Replace submit/poll queues with owned requests, explicit inline/interrupt
   completion kinds, runtime-assigned request IDs, and IRQ-event service batches.
+- Replace permissive direct dispatch metadata with `QueueExecution`:
+  `Inline`, owner-side multi-tag `Tagged`, or owner-side `Serialized`.
 - Return complete request ownership on submit failure, terminal completion, and
   explicit queue shutdown.
 - Require interrupt controllers to expose a nonblocking recovery lifecycle,
@@ -47,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Make queue shutdown a one-shot `Live → Attempted → Closed` transaction;
   failed driver teardown now retains the endpoint in quarantine and all later
   operations fail offline without re-entering driver code.
+- Return an explicit quarantine owner when unpublished-device rollback cannot
+  close every queue, retaining both the original contract failure and the
+  close diagnostics instead of dropping them with a temporary collection.
 
 ### Fixed
 
@@ -56,9 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the owned-request boundary, and reject writes to read-only devices.
 - Validate owned DMA length against the complete scatter/gather segment budget
   instead of one segment's limit.
-- Keep the IRQ outcome disposition and its queue-visible destructive-
-  acknowledgement marker consistent, so lifecycle routing and queue service
-  cannot classify the same event differently.
+- Keep captured IRQ facts, device-source masking ownership, and the source
+  generation in one typed result so lifecycle routing cannot lose rearm state.
 - Make initialization-schedule wake conditions private, add an explicit
   validation boundary and read-only accessors, and provide a constructor for
   the common IRQ-or-absolute-deadline wait.

@@ -92,7 +92,7 @@ pub mod platform {
         register_ioapic_irq_forwarding_activation as register_x86_ioapic_irq_forwarding_activation,
         register_ioapic_irq_forwarding_route as register_x86_ioapic_irq_forwarding_route,
         register_ioapic_irq_forwarding_route_with_trigger as register_x86_ioapic_irq_forwarding_route_with_trigger,
-        reserve_ioapic_irq_forwarding_action as reserve_x86_ioapic_irq_forwarding_action,
+        validate_ioapic_irq_forwarding_source as validate_x86_ioapic_irq_forwarding_source,
     };
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     pub use crate::host::arceos::{
@@ -100,9 +100,7 @@ pub mod platform {
         commit_host_storage_handoff_to_guest, return_host_storage_from_guest,
     };
     #[cfg(any(feature = "fs", feature = "host-fs"))]
-    pub use crate::host::storage::{
-        activate_guest_storage_routes, revoke_guest_irq_route_lease, revoke_guest_storage_routes,
-    };
+    pub use crate::host::storage::revoke_guest_storage_routes;
 }
 
 pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;

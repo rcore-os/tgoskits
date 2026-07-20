@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Replace the repeatable IRQ handle with an exclusive live `SdhciIrqSource` lease:
+  the hard-IRQ endpoint exclusively captures and W1C-acknowledges status, while
+  the fixed maintenance owner retains a separate generation-checked rearm
+  capability. Controller delivery cannot be enabled through the public
+  protocol boundary before the source transfers to OS glue; after explicit
+  mask/synchronize teardown, dropping both lease halves permits a later
+  initialization or runtime generation to acquire the source again.
 - Make every low-level raw-pointer block submission API `unsafe` and document
   the cross-worker lifetime/exclusive-access contract. Safe protocol and RDIF
   paths continue to retain either the Rust borrow or the owned DMA/CPU buffer.

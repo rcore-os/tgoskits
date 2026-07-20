@@ -1,8 +1,6 @@
 //! Generation-bearing request ownership and request-local completion waits.
 
 use core::array;
-#[cfg(test)]
-use core::mem::ManuallyDrop;
 
 use ax_kspin::SpinNoPreempt;
 use rdif_block::{BlkError, CompletedRequest, CompletionSink, OwnedRequest, RequestId};
@@ -24,8 +22,8 @@ struct RequestRecord {
 /// The atomic [`RequestState`] arbitrates completion, timeout, and cancel
 /// claimants. This enum independently guarantees that exactly one context owns
 /// the request value while that arbitration runs: runtime staging, the
-/// driver/dispatch boundary, a bounded completion batch, or the waiter-visible
-/// terminal slot.
+/// driver/dispatch boundary, the waiter-visible terminal slot, or the hctx's
+/// DMA-proof-gated rejected-owner quarantine.
 enum RequestOwnership {
     Runtime(OwnedRequest),
     Driver,
@@ -214,7 +212,7 @@ impl RequestTable {
         Ok(())
     }
 
-    pub(super) fn publish_completion(
+    pub(super) fn install_completion(
         &self,
         tag: RequestTag,
         mut completion: CompletedRequest,
@@ -234,8 +232,11 @@ impl RequestTable {
             };
             install_completion(&self.tags, record, tag, completion)?
         };
-        slot.completion_wait.notify_all();
         Ok(was_inflight)
+    }
+
+    pub(super) fn notify_completion(&self, tag: RequestTag) {
+        self.slots[tag.slot()].completion_wait.notify_all();
     }
 
     fn take_completed(&self, tag: RequestTag) -> Result<CompletedRequest, HardwareQueueError> {
@@ -572,7 +573,7 @@ mod tests {
             .expect_err("a second completion must retain ownership for quarantine");
         let (error, completion) = rejected.into_parts();
         assert!(matches!(error, HardwareQueueError::StaleCompletion));
-        let _retained_for_test_shutdown = ManuallyDrop::new(completion);
+        drop(completion);
     }
 
     #[test]

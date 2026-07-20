@@ -21,7 +21,11 @@ fn ahci_registers_one_controller_bundle_with_independent_port_devices() {
     assert!(source.contains("LogicalDevice::new("));
     assert!(source.contains("register_controller_bundle"));
     assert!(source.contains("format!(\"{}-port{port}\", self.host.name())"));
+    assert!(source.contains("BlockIrqSource"));
+    assert!(source.contains("fn take_irq_source("));
     assert!(!source.contains("Box::leak"));
+    assert!(!source.contains("BIrqHandler"));
+    assert!(!source.contains("take_irq_handler"));
     assert!(!source.contains("requires the interrupt-driven ahci-host backend"));
     assert!(!source.contains("impl Interface for AhciControllerBundle"));
 }

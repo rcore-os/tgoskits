@@ -7,15 +7,13 @@ use dma_api::{
     CpuDmaBuffer, DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle,
     DmaOp,
 };
-use rdif_block::{
-    DispatchMode, OwnedRequest, QueueKind, RequestFlags, RequestId, RequestOp,
-};
+use rdif_block::{OwnedRequest, QueueExecution, QueueKind, RequestFlags, RequestId, RequestOp};
 
 use super::{
-    AcceptedRequest, CachedCompletion, CompletionCache, CompletionStatus, PrpPageAccumulator,
-    RequestSlot, SlotState, controller::effective_queue_depth, drain_completion_source,
-    irq_sources_from_queue_bits, limits, prepare_request_dma, queue_interrupt_sources,
-    source_queue_bits,
+    AcceptedRequest, CachedCompletion, CompletionCache, CompletionStatus, NVME_QUEUE_EXECUTION,
+    PrpPageAccumulator, RequestSlot, SlotState, controller::effective_queue_depth,
+    drain_completion_source, irq_sources_from_queue_bits, limits, prepare_request_dma,
+    queue_interrupt_sources, source_queue_bits,
 };
 use crate::Namespace;
 
@@ -169,12 +167,12 @@ fn queue_interrupt_mask_matches_declared_logical_source() {
 
     let kind = QueueKind::Interrupt { sources: msix };
     assert_eq!(kind, QueueKind::Interrupt { sources: msix });
-    assert_eq!(DispatchMode::Direct, DispatchMode::Direct);
+    assert_eq!(NVME_QUEUE_EXECUTION, QueueExecution::Tagged);
 }
 
 #[test]
-fn completion_source_stops_at_budget_and_requests_continuation() {
-    let cache = CompletionCache::new(4);
+fn completion_source_stops_at_budget_and_retains_the_captured_batch() {
+    let mut cache = CompletionCache::new(4);
     let mut completions = [
         Some(CachedCompletion::success(1)),
         Some(CachedCompletion::success(2)),
@@ -182,10 +180,10 @@ fn completion_source_stops_at_budget_and_requests_continuation() {
     ]
     .into_iter();
 
-    let progress = drain_completion_source(|| completions.next().flatten(), &cache, 2);
+    let progress = drain_completion_source(|| completions.next().flatten(), &mut cache, 2);
 
     assert_eq!(progress.completed, 2);
-    assert!(progress.continuation);
+    assert!(progress.may_have_more);
 }
 
 #[test]
@@ -292,7 +290,7 @@ fn prp_pages_reject_unaligned_non_contiguous_segment() {
 
 #[test]
 fn cached_completion_does_not_complete_slot_until_task_consumes_it() {
-    let cache = CompletionCache::new(4);
+    let mut cache = CompletionCache::new(4);
     let slot = RequestSlot::pending_for_test(RequestId::new(9));
 
     assert!(cache.record(CachedCompletion::success(2)));
@@ -304,7 +302,7 @@ fn cached_completion_does_not_complete_slot_until_task_consumes_it() {
 
 #[test]
 fn cached_failed_completion_preserves_error_for_task_context() {
-    let cache = CompletionCache::new(4);
+    let mut cache = CompletionCache::new(4);
 
     assert!(cache.record(CachedCompletion::failed(3, 0x4002)));
     let status = cache.take(3).expect("cached completion must be present");
@@ -315,7 +313,7 @@ fn cached_failed_completion_preserves_error_for_task_context() {
 
 #[test]
 fn cached_completion_is_consumed_once() {
-    let cache = CompletionCache::new(2);
+    let mut cache = CompletionCache::new(2);
 
     assert!(cache.record(CachedCompletion::success(1)));
 
@@ -325,7 +323,7 @@ fn cached_completion_is_consumed_once() {
 
 #[test]
 fn completion_cache_rejects_reserved_and_duplicate_cids() {
-    let cache = CompletionCache::new(2);
+    let mut cache = CompletionCache::new(2);
 
     assert!(!cache.record(CachedCompletion::success(0)));
     assert!(cache.record(CachedCompletion::failed(1, 0x4002)));
@@ -341,7 +339,7 @@ fn completion_cache_rejects_reserved_and_duplicate_cids() {
 
 #[test]
 fn quiesced_reset_discards_stale_completion_before_cid_reuse() {
-    let cache = CompletionCache::new(2);
+    let mut cache = CompletionCache::new(2);
     assert!(cache.record(CachedCompletion::failed(1, 0x4002)));
 
     cache.clear_after_quiesce();
@@ -354,6 +352,48 @@ fn quiesced_reset_discards_stale_completion_before_cid_reuse() {
             .expect("fresh post-reset CQE must use the reused CID")
             .success
     );
+}
+
+#[test]
+fn hard_irq_capture_never_consumes_admin_or_io_completion_queues() {
+    let irq = include_str!("irq.rs");
+    let controller = include_str!("controller.rs");
+    let completion = include_str!("completion.rs");
+    let queue_core = include_str!("queue_runtime/core.rs");
+
+    for forbidden in [
+        "drain_admin_irq_completion",
+        "drain_irq_completions",
+        "IrqCompletionBudget",
+        "capture_queue_irq(",
+        "NvmeBlockOwner",
+    ] {
+        assert!(
+            !irq.contains(forbidden),
+            "hard IRQ capture must not consume CQ state through {forbidden}"
+        );
+    }
+    assert!(
+        irq.contains("NvmeIrqState"),
+        "the IRQ action must own only the narrow source-mask capability"
+    );
+    assert!(
+        !controller.contains("admin_cq_claimed"),
+        "the fixed maintenance owner must be the only admin CQ consumer"
+    );
+    for forbidden in ["cq_claimed", "try_with_cq_claim"] {
+        assert!(
+            !queue_core.contains(forbidden),
+            "the fixed maintenance owner must not contend for I/O CQ ownership through {forbidden}"
+        );
+    }
+    for forbidden in ["AtomicBool", "AtomicU16", "AtomicU64"] {
+        assert!(
+            !completion.contains(forbidden),
+            "the owner-local completion cache must not retain the old IRQ/task publication \
+             primitive {forbidden}"
+        );
+    }
 }
 
 impl CachedCompletion {

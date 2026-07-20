@@ -187,15 +187,13 @@ pub trait KernelOp {
 ```rust
 use somehal::irq::*;
 
-// 使能中断
-irq_set_enable(irq_id, true);
-
-// 禁用中断
-irq_set_enable(irq_id, false);
-
 // 获取系统定时器 IRQ
 let timer_irq = systick_irq();
 ```
+
+设备 IRQ 必须先在任务上下文中解析为带 generation 的稳定 line binding，之后由
+IRQ framework 随 action handle 控制启停。SomeHAL 不对上层暴露按裸 `IrqId`
+启停或迁移中断的接口，避免绕过注册所有权与关闭同步。
 
 ### 平台操作
 
@@ -241,8 +239,8 @@ pub trait KernelOp {
 pub trait PlatOp {
     type ActiveIrq;
 
-    /// 设置 IRQ 使能状态
-    fn irq_set_enable(irq: IrqId, enable: bool);
+    /// 注册期解析 IRQ，并返回持有具体控制器能力的 prepared endpoint
+    fn prepare_irq_line(/* ... */) -> Result<PreparedIrqChipLine, IrqError>;
 
     /// 开启一次中断事务，claim/ack 后返回 guard
     fn begin_irq(raw: usize) -> Option<Self::ActiveIrq>;
@@ -385,7 +383,8 @@ impl Platform for PlatformImpl {
 2. 实现统一的接口函数：
    - `init_cpu()`: CPU 接口初始化
    - `begin_irq()`: claim/ack 并返回 `ActiveIrq`
-   - `irq_set_enable()`: IRQ 使能控制
+   - `prepare_irq_line()`: 在注册期解析并持有稳定的控制器 endpoint
+   - `IrqChipLine::set_enabled()`: endpoint 的私有、无失败 live 操作
 3. 在 `ActiveIrq::drop()` 中完成 EOI/complete
 4. 使用 `StaticCell` 管理全局状态
 

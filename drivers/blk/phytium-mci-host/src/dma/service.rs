@@ -291,39 +291,14 @@ impl PhytiumMci {
     }
 
     fn finish_block_request(&mut self, request: BlockRequest) -> Option<CompletedDma> {
-        self.finish_block_request_with_quiesce(request, true)
-    }
-
-    fn finish_block_request_with_quiesce(
-        &mut self,
-        request: BlockRequest,
-        quiesced: bool,
-    ) -> Option<CompletedDma> {
-        if !quiesced {
-            self.poison_dma();
-            core::mem::forget(request);
-            self.pending_data = None;
-            self.data_blocks_remaining = 0;
-            self.data_cmd_index = 0;
-            self.irq.state.end_request();
-            return None;
-        }
         let completed_dma = match request.inner {
             BlockRequestKind::DmaRead { progress, .. } => {
                 progress.keep_alive();
-                if quiesced {
-                    progress.complete(true)
-                } else {
-                    progress.abort(true, false)
-                }
+                progress.complete(true)
             }
             BlockRequestKind::DmaWrite { progress, .. } => {
                 progress.keep_alive();
-                if quiesced {
-                    progress.complete(false)
-                } else {
-                    progress.abort(false, false)
-                }
+                progress.complete(false)
             }
             BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => None,
         };
@@ -347,7 +322,7 @@ impl PhytiumMci {
         let active = request.take().ok_or(Error::InvalidArgument)?;
         self.disable_idmac();
         self.command_state = crate::command::CommandState::Idle;
-        let completed_dma = self.finish_block_request_with_quiesce(active, true);
+        let completed_dma = self.finish_block_request(active);
         drop(completed_dma);
         slot.complete(id)?;
         Ok(())

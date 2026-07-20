@@ -22,11 +22,9 @@
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
 
-use ax_kspin::PreemptOnce;
 use ax_sync::spin::SpinNoIrq;
 use axpoll::PollSet;
 use hashbrown::HashMap;
-use irq_framework::IrqId;
 use smoltcp::{
     storage::{PacketBuffer, PacketMetadata},
     time::{Duration, Instant},
@@ -39,69 +37,10 @@ use smoltcp::{
 use crate::{
     config::InterfaceId,
     consts::{ETHERNET_MAX_PENDING_PACKETS, STANDARD_MTU},
-    device::{
-        ArpEntry, Device, ETH_ZLEN, EthernetDriver, EthernetIrqHandler, NetDeviceError,
-        NetIrqEvents,
-    },
+    device::{ArpEntry, Device, ETH_ZLEN, EthernetDriver, NetDeviceError, WifiControl},
 };
 
 const EMPTY_MAC: EthernetAddress = EthernetAddress([0; 6]);
-
-pub trait EthernetIrqRegistration: Send + Sync {}
-
-/// Opaque action installed into a platform IRQ registrar.
-pub struct EthernetIrqAction {
-    handler: Box<dyn FnMut() -> EthernetIrqOutcome + Send>,
-}
-
-impl EthernetIrqAction {
-    pub fn new(handler: impl FnMut() -> EthernetIrqOutcome + Send + 'static) -> Self {
-        Self {
-            handler: Box::new(handler),
-        }
-    }
-
-    /// Runs the IRQ action.
-    pub fn run(&mut self) -> EthernetIrqOutcome {
-        (self.handler)()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EthernetIrqOutcome {
-    /// IRQ was handled and no network worker wakeup is needed.
-    Handled,
-    /// IRQ indicates network progress; wake the poll path.
-    Wake,
-}
-
-/// Platform hook used by Ethernet devices that expose a shared IRQ line.
-pub trait EthernetIrqRegistrar: Send + Sync {
-    fn register_shared(
-        &self,
-        name: &str,
-        irq: IrqId,
-        action: EthernetIrqAction,
-    ) -> Result<Box<dyn EthernetIrqRegistration>, EthernetIrqRegistrationError>;
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EthernetIrqRegistrationError {
-    /// The IRQ number is invalid for this platform.
-    InvalidIrq,
-    /// The IRQ line cannot be shared or is already occupied.
-    Busy,
-    /// IRQ registration is not supported on this platform.
-    Unsupported,
-    /// Other platform-specific registration failure.
-    Other,
-}
-
-static ETHERNET_IRQ_REGISTRAR: PreemptOnce<&'static dyn EthernetIrqRegistrar> = PreemptOnce::new();
-
-pub fn set_ethernet_irq_registrar(registrar: &'static dyn EthernetIrqRegistrar) {
-    ETHERNET_IRQ_REGISTRAR.call_once(|| registrar);
-}
 
 struct Neighbor {
     hardware_address: EthernetAddress,
@@ -112,21 +51,15 @@ struct PendingNeighbor {
     requested_at: Instant,
 }
 
-struct EthernetIrqState {
-    irq: Option<IrqId>,
-    irq_registration: PreemptOnce<Box<dyn EthernetIrqRegistration>>,
-    /// RX readiness is delivered out-of-band (outside the ethernet IRQ
-    /// framework) via the device readiness poll set, e.g. an SDIO Wi-Fi chip
-    /// that owns its own card interrupt and pokes the stack through
-    /// `wake_net_task_irq`.
-    oob_rx: bool,
+struct EthernetRuntimeState {
     driver: SpinNoIrq<Box<dyn EthernetDriver>>,
-    poll_ready: Arc<PollSet>,
+    readiness: Option<Arc<PollSet>>,
+    wifi_control: Option<Arc<dyn WifiControl>>,
 }
 
 pub struct EthernetDevice {
     name: String,
-    inner: Arc<EthernetIrqState>,
+    inner: Arc<EthernetRuntimeState>,
     neighbors: HashMap<IpAddress, Neighbor>,
     pending_neighbors: HashMap<IpAddress, PendingNeighbor>,
     ip: Option<Ipv4Cidr>,
@@ -143,18 +76,6 @@ pub struct EthernetDevice {
     deferred_rx_frame_lens: Vec<usize>,
 }
 
-fn handle_owned_ethernet_irq(handler: &mut dyn EthernetIrqHandler) -> EthernetIrqOutcome {
-    ethernet_irq_outcome(handler.handle_irq())
-}
-
-fn ethernet_irq_outcome(events: NetIrqEvents) -> EthernetIrqOutcome {
-    if events.intersects(NetIrqEvents::RX_READY | NetIrqEvents::RX_ERROR | NetIrqEvents::TX_DONE) {
-        crate::wake_net_task_irq();
-        return EthernetIrqOutcome::Wake;
-    }
-    EthernetIrqOutcome::Handled
-}
-
 impl EthernetDevice {
     /// Lifetime of a resolved unicast neighbour entry.  Linux uses 5 minutes
     /// for unicast neighbours; sticking to that value keeps long-running
@@ -167,32 +88,16 @@ impl EthernetDevice {
 
     /// Creates an Ethernet adapter driven by the shared IRQ/poll path.
     pub fn new(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
-        Self::new_inner(name, inner, ip, false)
+        Self::new_inner(name, inner, ip)
     }
 
-    /// Like [`new`](Self::new) but for a device whose RX readiness arrives
-    /// out-of-band (via [`Device::wake_rx`]) rather than through the ethernet
-    /// IRQ framework. Such a device has no IRQ registration, so `register_waker`
-    /// must still arm `poll_ready` for it.
-    pub fn new_oob_rx(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
-        Self::new_inner(name, inner, ip, true)
-    }
-
-    fn new_inner(
-        name: String,
-        mut inner: Box<dyn EthernetDriver>,
-        ip: Option<Ipv4Cidr>,
-        oob_rx: bool,
-    ) -> Self {
-        let irq = inner.irq_id();
-        let registrar = irq.and_then(|_| ETHERNET_IRQ_REGISTRAR.get().copied());
-        let irq_handler = registrar.and_then(|_| inner.take_irq_handler());
-        let inner = Arc::new(EthernetIrqState {
-            irq,
-            irq_registration: PreemptOnce::new(),
-            oob_rx,
+    fn new_inner(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
+        let readiness = inner.readiness_poll();
+        let wifi_control = inner.wifi_control();
+        let inner = Arc::new(EthernetRuntimeState {
             driver: SpinNoIrq::new(inner),
-            poll_ready: Arc::new(PollSet::new()),
+            readiness,
+            wifi_control,
         });
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
@@ -202,37 +107,6 @@ impl EthernetDevice {
                     * ETHERNET_MAX_PENDING_PACKETS
             ],
         );
-        if let Some(irq) = inner.irq {
-            if let Some(registrar) = registrar {
-                if let Some(mut irq_handler) = irq_handler {
-                    let action = EthernetIrqAction::new(move || {
-                        handle_owned_ethernet_irq(&mut *irq_handler)
-                    });
-                    match registrar.register_shared(&name, irq, action) {
-                        Ok(registration) => {
-                            inner.irq_registration.call_once(|| registration);
-                            inner.driver.lock().enable_irq();
-                        }
-                        Err(err) => {
-                            warn!(
-                                "failed to register ethernet irq handler for {name} irq {irq:?}: \
-                                 {err:?}"
-                            );
-                        }
-                    }
-                } else {
-                    warn!(
-                        "skip ethernet irq registration for {name} irq {irq:?}: driver did not \
-                         provide an owned IRQ handler"
-                    );
-                }
-            } else {
-                warn!(
-                    "ethernet irq registrar is not installed for {name} irq {irq:?}; use polling"
-                );
-            }
-        }
-
         Self {
             name,
             inner,
@@ -712,14 +586,11 @@ impl Device for EthernetDevice {
     }
 
     fn readiness_poll(&self) -> Option<Arc<PollSet>> {
-        // Only expose the poll set when there is a wake source: either an IRQ
-        // registration or out-of-band RX. A pure-polling device with neither
-        // must not register here, or its waker would never be woken.
-        if self.inner.irq_registration.get().is_some() || self.inner.oob_rx {
-            Some(self.inner.poll_ready.clone())
-        } else {
-            None
-        }
+        self.inner.readiness.clone()
+    }
+
+    fn wifi_control(&self) -> Option<Arc<dyn WifiControl>> {
+        self.inner.wifi_control.clone()
     }
 }
 
@@ -790,14 +661,6 @@ mod arp_counter_tests {
             "mock"
         }
 
-        fn irq_id(&self) -> Option<IrqId> {
-            None
-        }
-
-        fn enable_irq(&mut self) {}
-
-        fn disable_irq(&mut self) {}
-
         fn mac_address(&self) -> [u8; 6] {
             self.mac
         }
@@ -826,10 +689,6 @@ mod arp_counter_tests {
 
         fn recycle_rx_buffer(&mut self, _rx_buf: &mut dyn NetRxBuffer) -> NetDeviceResult {
             Ok(())
-        }
-
-        fn handle_irq(&mut self) -> NetIrqEvents {
-            NetIrqEvents::empty()
         }
     }
 

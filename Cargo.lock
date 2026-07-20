@@ -160,19 +160,16 @@ name = "aic8800"
 version = "0.2.4"
 dependencies = [
  "aes",
- "atomic-waker",
- "ax-kspin",
- "digest 0.10.7",
  "dma-api",
  "hmac",
  "log",
- "pbkdf2",
- "rd-net",
  "rdif-eth",
- "sdhci-cv1800",
- "sdio-host-cv1800",
+ "rdif-irq",
+ "sdio-host2",
+ "sdmmc-protocol",
  "sha1 0.10.6",
  "sha2 0.10.9",
+ "thiserror 2.0.18",
  "ureq",
 ]
 
@@ -658,10 +655,7 @@ name = "ax-display"
 version = "0.6.5"
 dependencies = [
  "ax-lazyinit",
- "ax-sync",
- "irq-framework",
  "log",
- "rdif-display",
 ]
 
 [[package]]
@@ -713,6 +707,7 @@ dependencies = [
  "rdif-display",
  "rdif-input",
  "rdif-intc",
+ "rdif-irq",
  "rdif-msi",
  "rdif-pcie",
  "rdif-pinctrl",
@@ -734,7 +729,6 @@ dependencies = [
  "rockchip-soc",
  "sdhci-cv1800",
  "sdhci-host",
- "sdio-host-cv1800",
  "sdmmc-protocol",
  "sg200x-bsp",
  "some-serial",
@@ -816,9 +810,9 @@ version = "0.6.5"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
- "irq-framework",
+ "axpoll",
  "log",
- "rdif-input",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -948,9 +942,7 @@ dependencies = [
  "enum_dispatch",
  "event-listener",
  "hashbrown 0.16.1",
- "irq-framework",
  "log",
- "rd-net",
  "rdif-vsock",
  "ringbuf",
  "smoltcp",
@@ -1059,7 +1051,6 @@ dependencies = [
 name = "ax-runtime"
 version = "0.10.4"
 dependencies = [
- "aic8800",
  "ax-alloc",
  "ax-cpu-local",
  "ax-crate-interface",
@@ -1084,6 +1075,7 @@ dependencies = [
  "axfs-ng-vfs",
  "axklib",
  "axpanic",
+ "axpoll",
  "cfg-if",
  "chrono",
  "dma-api",
@@ -1093,9 +1085,11 @@ dependencies = [
  "quote",
  "rd-net",
  "rdif-block",
+ "rdif-display",
+ "rdif-input",
  "rdif-intc",
+ "rdif-irq",
  "rdrive",
- "sdhci-cv1800",
  "spin",
  "thiserror 2.0.18",
 ]
@@ -2270,6 +2264,7 @@ version = "0.10.2"
 dependencies = [
  "anyhow",
  "ax-kspin",
+ "ax-kspin-test-runtime",
  "bitflags 2.13.0",
  "crossbeam",
  "crossbeam-skiplist",
@@ -2282,6 +2277,7 @@ dependencies = [
  "mbarrier",
  "nb",
  "num_enum",
+ "rdif-irq",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
  "trait-ffi",
@@ -2990,6 +2986,7 @@ dependencies = [
  "mbarrier",
  "mmio-api",
  "rdif-block",
+ "rdif-irq",
  "sdio-host2",
  "sdmmc-protocol",
  "volatile 0.6.1",
@@ -5515,15 +5512,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
-name = "pbkdf2"
-version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
-dependencies = [
- "digest 0.10.7",
-]
-
-[[package]]
 name = "pci_types"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5659,6 +5647,7 @@ dependencies = [
  "log",
  "mmio-api",
  "rdif-block",
+ "rdif-irq",
  "sdio-host2",
  "sdmmc-protocol",
  "volatile 0.6.1",
@@ -6271,9 +6260,10 @@ dependencies = [
 name = "rd-net"
 version = "0.2.2"
 dependencies = [
+ "ax-kspin-test-runtime",
  "dma-api",
- "futures",
  "rdif-eth",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -6294,6 +6284,7 @@ version = "0.12.0"
 dependencies = [
  "dma-api",
  "rdif-base",
+ "rdif-irq",
  "thiserror 2.0.18",
 ]
 
@@ -6316,6 +6307,7 @@ name = "rdif-display"
 version = "0.2.0"
 dependencies = [
  "rdif-base",
+ "rdif-irq",
  "thiserror 2.0.18",
 ]
 
@@ -6325,6 +6317,7 @@ version = "0.3.8"
 dependencies = [
  "dma-api",
  "rdif-base",
+ "rdif-irq",
  "thiserror 2.0.18",
 ]
 
@@ -6333,6 +6326,7 @@ name = "rdif-input"
 version = "0.2.0"
 dependencies = [
  "rdif-base",
+ "rdif-irq",
  "thiserror 2.0.18",
 ]
 
@@ -6346,11 +6340,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdif-irq"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rdif-msi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "irq-framework",
  "rdif-base",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -6401,9 +6403,8 @@ name = "rdif-serial"
 version = "0.9.0"
 dependencies = [
  "bitflags 2.13.0",
- "futures",
- "heapless",
  "rdif-base",
+ "rdif-irq",
  "thiserror 2.0.18",
 ]
 
@@ -6431,7 +6432,7 @@ dependencies = [
 
 [[package]]
 name = "rdrive"
-version = "0.23.6"
+version = "0.24.0"
 dependencies = [
  "acpi",
  "ax-kspin",
@@ -6467,7 +6468,6 @@ dependencies = [
 name = "realtek-rtl8125"
 version = "0.2.9"
 dependencies = [
- "ax-kspin",
  "dma-api",
  "log",
  "mmio-api",
@@ -7136,8 +7136,12 @@ dependencies = [
 name = "sdhci-cv1800"
 version = "0.1.1"
 dependencies = [
- "log",
- "sdio-host-cv1800",
+ "dma-api",
+ "mmio-api",
+ "rdif-irq",
+ "sdhci-host",
+ "sdio-host2",
+ "sdmmc-protocol",
 ]
 
 [[package]]
@@ -7149,6 +7153,7 @@ dependencies = [
  "log",
  "mmio-api",
  "rdif-block",
+ "rdif-irq",
  "sdio-host2",
  "sdmmc-protocol",
 ]
@@ -7172,6 +7177,7 @@ dependencies = [
  "dma-api",
  "log",
  "rdif-block",
+ "rdif-irq",
  "sdio-host2",
 ]
 
@@ -7753,6 +7759,7 @@ dependencies = [
  "ouroboros",
  "rand 0.10.1",
  "rbpf",
+ "rdif-irq",
  "rdif-pinctrl",
  "rdif-pwm",
  "rdrive",

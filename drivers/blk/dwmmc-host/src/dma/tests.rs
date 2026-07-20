@@ -392,18 +392,13 @@ mod tests {
             block_count: 1,
         });
         host.ensure_runtime_data_command_can_issue().unwrap();
-        let irq = host.irq.clone();
-        let register_owner = irq
-            .state
-            .try_begin_task_update()
-            .expect("admitted submit must own the register gate");
 
         // Removal after final admission is handled by the IRQ/watchdog path;
         // it must not return the buffer after IDMAC activation.
         unsafe {
             mmio.as_mut_ptr().add(CDETECT_WORD).write_volatile(1);
         }
-        host.activate_admitted_data_command(&cmd17(0), &register_owner);
+        host.activate_admitted_data_command(&cmd17(0));
 
         assert!(matches!(
             host.command_state,

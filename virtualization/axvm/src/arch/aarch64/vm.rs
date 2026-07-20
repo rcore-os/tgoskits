@@ -95,16 +95,12 @@ fn register_arch_devices(
     config: &AxVMConfig,
     devices: &mut axdevice::AxVmDevices,
 ) -> AxVmResult {
-    if config.interrupt_mode() == VMInterruptMode::Passthrough {
-        #[cfg(not(any(feature = "fs", feature = "host-fs")))]
-        assign_passthrough_spis(config, devices)?;
-    } else {
+    if config.interrupt_mode() != VMInterruptMode::Passthrough {
         register_virtual_timers(devices)?;
     }
     Ok(())
 }
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
 pub(crate) fn activate_guest_irq_routes(vm: &AxVMRef) -> AxVmResult {
     if !matches!(vm.status(), VmStatus::Ready | VmStatus::Stopped) {
         return ax_err!(
@@ -186,7 +182,6 @@ fn assign_passthrough_spis(config: &AxVMConfig, devices: &axdevice::AxVmDevices)
     Ok(())
 }
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
 pub(crate) fn revoke_guest_irq_routes(vm: &AxVMRef) -> AxVmResult {
     const MAX_GICD_RWP_POLLS: usize = 10_000;
 

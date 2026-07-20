@@ -1,13 +1,13 @@
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
-use core::{any::Any, mem};
+use core::any::Any;
 
 use dma_api::{DeviceDma, DmaOp};
 use mmio_api::{MmioAddr, MmioOp};
 use rdif_block::{
-    BlkError, ControllerEpoch, ControllerInitEndpoint, ControllerReady, DeviceInfo, DmaQuiesced,
-    DriverGeneric, IdList, InitError, InitInput, InitIrqProgress, InitPoll, InitialController,
-    InterruptLifecycle, IrqHandler, IrqSourceInfo, IrqSourceList, LifecycleEndpoint, QueueHandle,
-    QueueLimits, RecoveryCause,
+    BlkError, BlockIrqSource, ControllerEpoch, ControllerInitEndpoint, ControllerReady, DeviceInfo,
+    DmaQuiesced, DriverGeneric, IdList, InitError, InitInput, InitPoll, InitialController,
+    InterruptLifecycle, IrqSourceInfo, IrqSourceList, LifecycleEndpoint, QueueHandle, QueueLimits,
+    RecoveryCause,
 };
 
 use crate::{
@@ -15,6 +15,7 @@ use crate::{
     initialization::{AhciInitialization, ControllerInitState},
     irq::HostShared,
     lifecycle::AhciLifecycle,
+    quarantine::{AhciDmaQuarantine, AhciDmaQuarantineReason},
     queue::{AhciPortQueue, QueueBinding, ReadyPort},
     registers::{
         CAP_S64A, GHC_AE, GHC_HR, GHC_IE, HOST_CAP, HOST_GHC, HOST_PI, MAX_PORTS, MappedRegisters,
@@ -41,6 +42,7 @@ pub struct AhciHost {
     initialization: AhciInitialization,
     lifecycle: AhciLifecycle,
     ready_ports: Vec<Option<ReadyPort>>,
+    quarantined_dma: Vec<AhciDmaQuarantine>,
 }
 
 /// One independently addressed ATA disk attached to an AHCI host port.
@@ -54,6 +56,7 @@ pub struct AhciPortDevice {
     ready: Option<ReadyPort>,
     shared: Arc<HostShared>,
     binding: QueueBinding,
+    quarantined_dma: Option<AhciDmaQuarantine>,
 }
 
 impl AhciHost {
@@ -148,6 +151,7 @@ impl AhciHost {
             ready: Some(ready),
             shared: Arc::clone(&self.shared),
             binding,
+            quarantined_dma: None,
         })
     }
 
@@ -211,13 +215,13 @@ impl AhciHost {
     }
 
     /// Moves the normal-I/O destructive IRQ endpoint to its runtime owner.
-    pub fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
+    pub fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
         if source_id != self.config.irq_source_id
             || !matches!(self.initialization.state(), ControllerInitState::Ready)
         {
             return None;
         }
-        self.shared.take_io_handler()
+        self.shared.take_io_source()
     }
 
     fn from_parts(
@@ -234,6 +238,9 @@ impl AhciHost {
             initialization: AhciInitialization::discovered(),
             lifecycle: AhciLifecycle::running(),
             ready_ports: Vec::new(),
+            // AHCI exposes at most 32 ports. Reserving the complete quarantine
+            // ledger here keeps unexpected destruction allocation-free.
+            quarantined_dma: Vec::with_capacity(MAX_PORTS),
         }
     }
 
@@ -333,13 +340,11 @@ impl Drop for AhciPortDevice {
             return;
         };
         self.shared.port(self.port).set_online(false);
-        self.shared.mask_port(self.port);
-        ready.quarantine();
-        // A disk view may be abandoned while its FIS receive engine still
-        // references the shared BAR and command memory. Retain the HBA anchor
-        // fail-closed; normal teardown goes through controller lifecycle and
-        // queue shutdown before dropping this view.
-        mem::forget(Arc::clone(&self.shared));
+        self.quarantined_dma = Some(ready.into_quarantine(
+            &self.shared,
+            self.binding.controller_cookie,
+            AhciDmaQuarantineReason::PortDeviceAbandoned,
+        ));
     }
 }
 
@@ -350,19 +355,13 @@ impl InitialController for AhciHost {
         sources
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
         if source_id != self.config.irq_source_id
             || !matches!(self.initialization.state(), ControllerInitState::Discovered)
         {
             return None;
         }
-        self.shared.take_initial_handler()
-    }
-
-    fn service_deferred_irq(&mut self, _source_id: usize) -> InitIrqProgress {
-        // AHCI owns ordinary W1C status entirely in the hard-IRQ endpoint and
-        // therefore never requests task-side destructive acknowledgement.
-        InitIrqProgress::Unhandled
+        self.shared.take_initial_source()
     }
 
     fn poll_init(&mut self, input: InitInput) -> InitPoll<()> {
@@ -379,13 +378,6 @@ impl InitialController for AhciHost {
 impl InterruptLifecycle for AhciHost {
     fn controller_cookie(&self) -> usize {
         self.controller_cookie()
-    }
-
-    fn service_deferred_irq(&mut self, _source_id: usize) -> InitIrqProgress {
-        // The AHCI endpoint either owns and clears the port/host W1C latches
-        // in hard IRQ or leaves the level source asserted for a later IRQ.
-        // It never publishes a deferred lifecycle activation.
-        InitIrqProgress::Unhandled
     }
 
     fn begin_dma_quiesce(
@@ -422,32 +414,23 @@ impl InterruptLifecycle for AhciHost {
 
 impl Drop for AhciHost {
     fn drop(&mut self) {
-        let mut quarantined_dma = self.initialization.quarantine_owned_dma();
+        self.initialization.quarantine_owned_dma(&self.shared);
+        let controller_cookie = self.controller_cookie();
         for ready in &mut self.ready_ports {
             if let Some(ready) = ready.take() {
-                ready.quarantine();
-                quarantined_dma = true;
+                self.quarantined_dma.push(ready.into_quarantine(
+                    &self.shared,
+                    controller_cookie,
+                    AhciDmaQuarantineReason::HostAbandoned,
+                ));
             }
-        }
-        if quarantined_dma {
-            // Destruction is not a DMA-stop operation. Prevent further IRQ
-            // assertions, but retain the mapping and shared anchors because a
-            // command/FIS engine may still hold their addresses.
-            self.shared.mask_all_ports();
-            let ghc = self.shared.registers().read32(HOST_GHC);
-            self.shared.registers().write32(HOST_GHC, ghc & !GHC_IE);
-            self.shared.set_irq_delivery_enabled(false);
-            // The interface disappeared before queue ownership and lifecycle
-            // shutdown were established. Keep MMIO and shared state alive so
-            // an active FIS engine cannot race mapping destruction.
-            mem::forget(Arc::clone(&self.shared));
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use rdif_block::{CompletedRequest, CompletionSink};
+    use rdif_block::{CompletedRequest, CompletionSink, ControllerEpoch, DmaQuiesced};
 
     use super::*;
     use crate::{
@@ -488,7 +471,7 @@ mod tests {
             DeviceDma::new_legacy(u64::MAX, &TEST_DMA),
             AhciConfig::legacy_irq(0),
         );
-        let _handler = host.shared.take_initial_handler().unwrap();
+        let _source = host.shared.take_initial_source().unwrap();
 
         host.enable_irq().unwrap();
 
@@ -513,7 +496,7 @@ mod tests {
         host.shared.publish_implemented_ports(1);
         host.shared.publish_ready_port(0);
         host.initialization.mark_ready_for_test();
-        let _handler = host.take_irq_handler(0).unwrap();
+        let _source = host.take_irq_source(0).unwrap();
 
         host.enable_irq().unwrap();
 
@@ -543,8 +526,8 @@ mod tests {
         host.shared.publish_implemented_ports(1);
         host.shared.publish_ready_port(0);
         host.initialization.mark_ready_for_test();
-        let handler = host.take_irq_handler(0).unwrap();
-        drop(handler);
+        let source = host.take_irq_source(0).unwrap();
+        drop(source);
 
         assert_eq!(
             host.enable_irq(),
@@ -563,14 +546,14 @@ mod tests {
             DeviceDma::new_legacy(u64::MAX, &TEST_DMA),
             AhciConfig::legacy_irq(0),
         );
-        let initial_handler = InitialController::take_irq_handler(&mut host, 0)
+        let initial_source = InitialController::take_irq_source(&mut host, 0)
             .expect("initialization must own the first destructive endpoint");
         host.initialization.mark_ready_for_test();
 
-        assert!(host.take_irq_handler(0).is_none());
+        assert!(host.take_irq_source(0).is_none());
 
-        drop(initial_handler);
-        assert!(host.take_irq_handler(0).is_some());
+        drop(initial_source);
+        assert!(host.take_irq_source(0).is_some());
     }
 
     #[test]
@@ -612,6 +595,15 @@ mod tests {
         let mut queue1 = disk1
             .create_queue()
             .expect("the second disk must own one serialized queue");
+        let cookie = disk0.binding.controller_cookie;
+        let port0_epoch = disk0.shared.port(0).epoch();
+        let port1_epoch = disk1.shared.port(1).epoch();
+        queue0
+            .bind_interrupt_controller(cookie, ControllerEpoch::new(port0_epoch))
+            .unwrap();
+        queue1
+            .bind_interrupt_controller(cookie, ControllerEpoch::new(port1_epoch))
+            .unwrap();
         assert_eq!(queue0.id(), 0);
         assert_eq!(queue1.id(), 1);
         assert_eq!(queue0.info().device.num_blocks, 4_096);
@@ -625,13 +617,23 @@ mod tests {
 
         disk0.shared.port(0).set_online(false);
         disk1.shared.port(1).set_online(false);
+        let proof = unsafe {
+            // SAFETY: this synthetic fixture has no running HBA engine or
+            // accepted requests, and both fake ports are offline.
+            DmaQuiesced::new(
+                ControllerEpoch::new(port0_epoch.max(port1_epoch).saturating_add(1)),
+                cookie,
+            )
+        };
         let mut sink = RejectCompletion;
-        queue0.shutdown(&mut sink).unwrap();
-        queue1.shutdown(&mut sink).unwrap();
+        queue0.reclaim_after_quiesce(&proof, &mut sink).unwrap();
+        queue1.reclaim_after_quiesce(&proof, &mut sink).unwrap();
+        queue0.close().unwrap();
+        queue1.close().unwrap();
     }
 
     #[test]
-    fn abandoned_port_device_masks_irq_and_quarantines_live_command_memory() {
+    fn abandoned_port_device_quarantines_without_hardware_teardown() {
         let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
         let mut host = AhciHost::from_test_parts(
             "test-ahci-host",
@@ -645,11 +647,40 @@ mod tests {
         let disk = host
             .take_port_device(3, "test-ahci-disk3")
             .expect("the test port must be extractable");
+        registers.clear_access_log();
 
         drop(disk);
 
-        assert_eq!(read_port(registers.as_ref(), 3, PX_IE), 0);
+        assert!(
+            registers.writes().is_empty(),
+            "Drop must not run an AHCI stop or IRQ-mask protocol"
+        );
+        assert_eq!(
+            read_port(registers.as_ref(), 3, PX_IE),
+            DEFAULT_PORT_IRQ_MASK
+        );
         assert!(!host.shared.port(3).is_online());
+    }
+
+    #[test]
+    fn abandoned_host_quarantines_without_hardware_teardown() {
+        let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
+        let mut host = AhciHost::from_test_parts(
+            "test-ahci-host",
+            registers.shared(),
+            DeviceDma::new_legacy(u64::MAX, &TEST_DMA),
+            AhciConfig::legacy_irq(0),
+        );
+        install_test_disk(&mut host, 1, 4_096);
+        host.initialization.mark_ready_for_test();
+        registers.clear_access_log();
+
+        drop(host);
+
+        assert!(
+            registers.writes().is_empty(),
+            "host Drop must retain owners without issuing MMIO commands"
+        );
     }
 
     fn install_test_disk(host: &mut AhciHost, port: usize, num_blocks: u64) {

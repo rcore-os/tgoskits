@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Migrate the RDIF adapter to the 0.12 owned interrupt contract, delegate IDMAC
   queue constraints and typed recovery to DWMMC, and expose timed
   initialization without a synchronous reset wrapper.
+- Transparently forward DWMMC's one-shot split IRQ source, require endpoint
+  transfer before enabling delivery, and remove the copyable/deferred IRQ
+  handle surface from the board wrapper.
 
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.1...starfive-jh7110-dwmmc-v0.1.2) - 2026-07-08
 

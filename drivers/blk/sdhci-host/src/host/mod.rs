@@ -26,6 +26,8 @@ mod register_io;
 pub(crate) use irq::{IrqCore, IrqSnapshot};
 use register_io::{Aligned32RegisterFile, MmioWords, WordIo};
 
+pub(crate) use crate::SDHCI_IRQ_SOURCE_BITMAP;
+
 /// Broadcom SDHCI integration selected by firmware compatibility.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BroadcomController {
@@ -51,8 +53,11 @@ enum RegisterAccess {
 /// # Safety
 ///
 /// `new` is `unsafe` because the caller must provide a valid, exclusive
-/// MMIO base address for an SDHCI v3.x compatible controller. Concurrent
-/// use of the same controller from multiple `Sdhci` instances is undefined.
+/// MMIO base address for an SDHCI v3.x compatible controller. The mapping
+/// must remain valid until this object and both capabilities transferred by
+/// [`Sdhci::take_irq_source`] have been retired after IRQ synchronization.
+/// Concurrent use of the same controller from multiple `Sdhci` instances is
+/// undefined.
 pub struct Sdhci {
     pub(crate) base_addr: usize,
     register_access: RegisterAccess,
@@ -110,8 +115,9 @@ impl Sdhci {
     ///
     /// # Safety
     ///
-    /// `base` must point to a memory-mapped SDHCI v3.x register file
-    /// that the caller has exclusive access to.
+    /// `base` must point to a memory-mapped SDHCI v3.x register file that the
+    /// caller has exclusive access to. The mapping must outlive the host and
+    /// any split IRQ capabilities transferred from it.
     pub unsafe fn new(base: NonNull<u8>) -> Self {
         unsafe { Self::new_with_access(base, RegisterAccess::Native, None) }
     }
@@ -421,23 +427,24 @@ impl Sdhci {
     }
 
     /// Route command/data-completion and error status to the host CPU IRQ line.
-    pub fn enable_completion_irq(&mut self) {
+    ///
+    /// The public protocol boundary verifies that the unique split IRQ source
+    /// has already transferred to OS glue. This register operation remains
+    /// crate-private so callers cannot enable delivery before registration.
+    pub(crate) fn enable_completion_irq(&mut self) {
         // Publish ownership before unmasking delivery. From this point task
         // context must consume only snapshots acknowledged by the IRQ endpoint.
         self.write_u16(REG_NORMAL_INT_STATUS_ENABLE, NORMAL_INT_CLEAR_ALL);
         self.write_u16(REG_ERROR_INT_STATUS_ENABLE, ERROR_INT_CLEAR_ALL);
         self.irq.state.enter_runtime_irq_status_mode();
+        let _ = self.irq.state.activate_source();
         self.write_u16(
             REG_NORMAL_INT_SIGNAL_ENABLE,
-            NORMAL_INT_CMD_COMPLETE
-                | NORMAL_INT_XFER_COMPLETE
-                | NORMAL_INT_BUFFER_WRITE_READY
-                | NORMAL_INT_BUFFER_READ_READY
-                | NORMAL_INT_ERROR,
+            NORMAL_INT_COMPLETION_SIGNAL_MASK,
         );
         self.write_u16(
             REG_ERROR_INT_SIGNAL_ENABLE,
-            ERROR_INT_CMD_LINE_MASK | ERROR_INT_DATA_OR_ADMA_MASK,
+            ERROR_INT_COMPLETION_SIGNAL_MASK,
         );
         self.irq.state.set_delivery_enabled(true);
     }
@@ -449,10 +456,11 @@ impl Sdhci {
     /// [`Self::take_recovery_status_ownership`] only after the OS has
     /// synchronized the IRQ endpoint when deliberately transferring ownership
     /// to an initialization or recovery state machine.
-    pub fn disable_completion_irq(&mut self) {
+    pub(crate) fn disable_completion_irq(&mut self) {
         self.write_u16(REG_NORMAL_INT_SIGNAL_ENABLE, 0);
         self.write_u16(REG_ERROR_INT_SIGNAL_ENABLE, 0);
         self.irq.state.set_delivery_enabled(false);
+        self.irq.state.deactivate_source();
     }
 
     pub fn completion_irq_enabled(&self) -> bool {

@@ -2,7 +2,9 @@
 
 use core::sync::atomic::Ordering;
 
-use super::{handler::ioapic_irq_forwarding_handler, state::*};
+use ax_std::os::arceos::task::{ThreadWakeHandle, current_thread_handle};
+
+use super::{handler::capture_forwarded_ioapic_irq, state::*};
 use crate::{
     AxVmError, AxVmResult,
     config::VMInterruptMode,
@@ -41,23 +43,26 @@ pub fn register_ioapic_irq_forwarding_activation(
     }
 }
 
-/// Reserves the host IRQ action for one required forwarding route.
+/// Validates one required forwarding source before its owner vCPU starts.
 ///
 /// This operation belongs to the host-to-guest ownership transaction. The
 /// selected device endpoint must already be masked and the previous host
-/// action must already be unregistered. Reserving here makes an ownership
-/// conflict fail before any vCPU can start.
+/// action must already be unregistered. It deliberately does not install a
+/// temporary callback: only the fixed vCPU maintenance thread may register or
+/// release the live action.
 ///
 /// # Errors
 ///
-/// Returns an error when the route is incomplete, another transaction is in
-/// progress, or the host IRQ descriptor cannot grant the guest action.
-pub fn reserve_ioapic_irq_forwarding_action(guest_gsi: usize) -> AxVmResult {
+/// Returns an error when the route is incomplete, aliases another explicit
+/// guest route, or another route transaction is in progress. The definitive
+/// descriptor ownership check happens when the vCPU owner registers its
+/// exclusive fixed-affinity action.
+pub fn validate_ioapic_irq_forwarding_source(guest_gsi: usize) -> AxVmResult {
     if !should_register_ioapic_gsi_hook(guest_gsi)
         || !ioapic_forwarding_route_requires_host_irq(guest_gsi)
     {
         return Err(AxVmError::invalid_input(
-            "reserve x86 IOAPIC forwarding IRQ action",
+            "validate x86 IOAPIC forwarding source",
             format_args!("guest GSI {guest_gsi} has no required forwarding route"),
         ));
     }
@@ -65,63 +70,35 @@ pub fn reserve_ioapic_irq_forwarding_action(guest_gsi: usize) -> AxVmResult {
     let _transaction = acquire_ioapic_route_activation_transaction()?;
     let host_irq = forwarded_host_irq_for_guest_gsi(guest_gsi).map_err(|error| {
         forwarding_irq_error(
-            "resolve reserved x86 IOAPIC forwarding IRQ",
+            "resolve validated x86 IOAPIC forwarding source",
             guest_gsi,
             error,
         )
     })?;
-    if let Some(handle) = *IOAPIC_IRQ_HANDLES[guest_gsi].lock() {
-        return if handle.irq() == host_irq {
-            Ok(())
-        } else {
-            Err(AxVmError::resource_conflict(
-                "reserve x86 IOAPIC forwarding IRQ action",
-                format_args!(
-                    "guest GSI {guest_gsi} retains host IRQ {:?}, not {host_irq:?}",
-                    handle.irq()
-                ),
-            ))
-        };
+    if IOAPIC_IRQ_HANDLES[guest_gsi].lock().is_some() {
+        return Err(AxVmError::resource_conflict(
+            "validate x86 IOAPIC forwarding source",
+            format_args!("guest GSI {guest_gsi} already has a live owner action"),
+        ));
+    }
+    if host_irq_has_explicit_route_for_other_gsi(host_irq, guest_gsi) {
+        return Err(AxVmError::resource_conflict(
+            "validate x86 IOAPIC forwarding source",
+            format_args!(
+                "guest GSI {guest_gsi} aliases host IRQ {host_irq:?} already assigned to another \
+                 guest route"
+            ),
+        ));
     }
 
-    let handle = crate::arch::x86_64::host_irq::request_exclusive_irq_disabled(
-        host_irq,
-        ioapic_irq_forwarding_handler,
-    )
-    .map_err(|error| {
-        forwarding_irq_error(
-            "reserve required x86 IOAPIC forwarding IRQ action",
-            guest_gsi,
-            error,
-        )
-    })?;
-
-    let mut slot = IOAPIC_IRQ_HANDLES[guest_gsi].lock();
-    if let Some(existing) = *slot {
-        drop(slot);
-        crate::arch::x86_64::host_irq::free_irq(handle).map_err(|error| {
-            forwarding_irq_error(
-                "rollback duplicate x86 IOAPIC forwarding IRQ reservation",
-                guest_gsi,
-                error,
-            )
-        })?;
-        return if existing.irq() == host_irq {
-            Ok(())
-        } else {
-            Err(AxVmError::resource_conflict(
-                "reserve x86 IOAPIC forwarding IRQ action",
-                format_args!("guest GSI {guest_gsi} acquired a concurrent action"),
-            ))
-        };
-    }
-    *slot = Some(handle);
-    IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
     Ok(())
 }
 
 pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) -> AxVmResult {
     if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+        return Ok(());
+    }
+    if !ioapic_irq_hook_gsis().any(ioapic_forwarding_route_requires_host_irq) {
         return Ok(());
     }
 
@@ -130,8 +107,15 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) -> AxVmResult {
     if vcpu.id() != 0 {
         return Ok(());
     }
+    if vm.vcpu_num() != 1 {
+        return Err(AxVmError::invalid_config(format_args!(
+            "x86 passthrough IRQ ownership requires exactly one vCPU, got {}",
+            vm.vcpu_num()
+        )));
+    }
 
     ensure_no_quarantined_ioapic_routes()?;
+    let owner = prepare_ioapic_forwarding_owner(vcpu)?;
 
     let publication = IoApicForwardingEnablePublication::capture();
     if publication.owner_vm != usize::MAX && publication.owner_vm != vm.id() {
@@ -144,12 +128,13 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) -> AxVmResult {
         ));
     }
 
+    let transaction = acquire_ioapic_route_activation_transaction()?;
     if IOAPIC_IRQ_FORWARDING_ENABLED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
+        ensure_ioapic_forwarding_owner(&owner)?;
         ensure_required_ioapic_forwarding_handles()?;
-        let transaction = acquire_ioapic_route_activation_transaction()?;
         publish_ioapic_forwarding_owner(vm.id(), vcpu.id());
         return activate_ready_ioapic_forwarding_routes_in_transaction(vm, &transaction).or_else(
             |error| {
@@ -160,18 +145,11 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) -> AxVmResult {
         );
     }
 
-    if let Err(error) = register_ioapic_forwarding_actions() {
+    if let Err(error) = register_ioapic_forwarding_actions(&owner) {
         IOAPIC_IRQ_FORWARDING_ENABLED.store(publication.enabled, Ordering::Release);
         return Err(error);
     }
 
-    let transaction = match acquire_ioapic_route_activation_transaction() {
-        Ok(transaction) => transaction,
-        Err(error) => {
-            IOAPIC_IRQ_FORWARDING_ENABLED.store(publication.enabled, Ordering::Release);
-            return Err(error);
-        }
-    };
     publish_ioapic_forwarding_owner(vm.id(), vcpu.id());
     activate_ready_ioapic_forwarding_routes_in_transaction(vm, &transaction).or_else(|error| {
         restore_ioapic_forwarding_enable_publication(publication)
@@ -180,63 +158,124 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) -> AxVmResult {
     })
 }
 
-fn register_ioapic_forwarding_actions() -> AxVmResult {
+struct IoApicForwardingOwner {
+    thread_id: u64,
+    cpu: usize,
+    wake: ThreadWakeHandle,
+}
+
+fn prepare_ioapic_forwarding_owner(vcpu: &VCpuRef) -> AxVmResult<IoApicForwardingOwner> {
+    let thread = current_thread_handle().map_err(|error| {
+        AxVmError::resource_unavailable("x86 IOAPIC forwarding owner thread", error)
+    })?;
+    let wake = thread.wake_handle();
+    let thread_id = wake.thread_id().as_u64();
+    let cpu = wake
+        .target_cpu()
+        .map(|cpu| cpu.as_u32() as usize)
+        .ok_or_else(|| {
+            AxVmError::resource_unavailable(
+                "x86 IOAPIC forwarding owner CPU",
+                "the current vCPU thread has no scheduler target",
+            )
+        })?;
+    drop(thread);
+
+    let owner_mask = 1usize.checked_shl(cpu as u32).ok_or_else(|| {
+        AxVmError::invalid_config(format_args!(
+            "x86 IOAPIC forwarding owner CPU {cpu} exceeds the host CPU mask"
+        ))
+    })?;
+    if vcpu.phys_cpu_set() != Some(owner_mask) {
+        return Err(AxVmError::invalid_config(format_args!(
+            "x86 passthrough VM[{}] VCpu[{}] must remain fixed to current host CPU {cpu}",
+            vcpu.vm_id(),
+            vcpu.id()
+        )));
+    }
+
+    Ok(IoApicForwardingOwner {
+        thread_id,
+        cpu,
+        wake,
+    })
+}
+
+fn ensure_ioapic_forwarding_owner(owner: &IoApicForwardingOwner) -> AxVmResult {
+    let installed_thread = IOAPIC_IRQ_OWNER_THREAD_ID.load(Ordering::Acquire);
+    let installed_cpu = IOAPIC_IRQ_OWNER_CPU.load(Ordering::Acquire);
+    if installed_thread == owner.thread_id && installed_cpu == owner.cpu {
+        return Ok(());
+    }
+    Err(AxVmError::resource_conflict(
+        "x86 IOAPIC forwarding owner",
+        format_args!(
+            "thread {installed_thread:#x} on CPU {installed_cpu} owns the forwarding actions, not \
+             thread {:#x} on CPU {}",
+            owner.thread_id, owner.cpu
+        ),
+    ))
+}
+
+fn register_ioapic_forwarding_actions(owner: &IoApicForwardingOwner) -> AxVmResult {
+    let installed_thread = IOAPIC_IRQ_OWNER_THREAD_ID.load(Ordering::Acquire);
+    let installed_cpu = IOAPIC_IRQ_OWNER_CPU.load(Ordering::Acquire);
+    if installed_thread != u64::MAX || installed_cpu != usize::MAX {
+        ensure_ioapic_forwarding_owner(owner)?;
+    } else {
+        IOAPIC_IRQ_OWNER_CPU.store(owner.cpu, Ordering::Release);
+        IOAPIC_IRQ_OWNER_THREAD_ID.store(owner.thread_id, Ordering::Release);
+    }
+
     let mut registered = 0;
     for gsi in ioapic_irq_hook_gsis() {
-        if IOAPIC_IRQ_HANDLES[gsi].lock().is_some() {
+        let bit = gsi_bit(gsi);
+        if IOAPIC_IRQ_OWNER_BOUND.load(Ordering::Acquire) & bit != 0 {
             continue;
         }
 
-        let required = ioapic_forwarding_route_requires_host_irq(gsi);
-        let host_irq = match forwarded_host_irq_for_guest_gsi(gsi) {
-            Ok(host_irq) => host_irq,
-            Err(error) if required => {
-                return Err(forwarding_irq_error(
-                    "resolve required x86 IOAPIC forwarding IRQ",
-                    gsi,
-                    error,
-                ));
-            }
-            Err(error) => {
-                trace!("skip x86 IOAPIC forwarding hook for guest GSI {gsi}: {error:?}");
-                continue;
-            }
-        };
+        if !ioapic_forwarding_route_requires_host_irq(gsi) {
+            continue;
+        }
+        let host_irq = forwarded_host_irq_for_guest_gsi(gsi).map_err(|error| {
+            forwarding_irq_error("resolve required x86 IOAPIC forwarding IRQ", gsi, error)
+        })?;
         if host_irq_has_explicit_route_for_other_gsi(host_irq, gsi) {
-            trace!(
-                "skip x86 IOAPIC forwarding fallback for guest GSI {gsi}: host IRQ {host_irq:?} \
-                 already has an explicit guest route"
-            );
-            continue;
+            return Err(AxVmError::resource_conflict(
+                "register x86 IOAPIC forwarding IRQ action",
+                format_args!(
+                    "guest GSI {gsi} aliases host IRQ {host_irq:?} already assigned to another \
+                     guest route"
+                ),
+            ));
         }
 
-        let request = if required {
-            crate::arch::x86_64::host_irq::request_exclusive_irq_disabled(
-                host_irq,
-                ioapic_irq_forwarding_handler,
-            )
-        } else {
-            crate::arch::x86_64::host_irq::request_shared_irq(
-                host_irq,
-                ioapic_irq_forwarding_handler,
-            )
-        };
-        match request {
+        if IOAPIC_IRQ_HANDLES[gsi].lock().is_some() {
+            return Err(AxVmError::resource_conflict(
+                "register x86 IOAPIC forwarding IRQ action",
+                format_args!("guest GSI {gsi} already retains an action"),
+            ));
+        }
+        let wake = owner.wake.clone();
+        let owner_cpu = owner.cpu;
+        let handler =
+            move |context| capture_forwarded_ioapic_irq(gsi, host_irq, owner_cpu, &wake, context);
+        match crate::arch::x86_64::host_irq::request_exclusive_irq_disabled(
+            host_irq,
+            crate::arch::x86_64::host_irq::IrqAffinity::Fixed(irq_framework::CpuId(owner.cpu)),
+            handler,
+        ) {
             Ok(handle) => {
                 *IOAPIC_IRQ_HANDLES[gsi].lock() = Some(handle);
+                IOAPIC_IRQ_OWNER_BOUND.fetch_or(bit, Ordering::AcqRel);
                 registered += 1;
             }
-            Err(error) if required => {
+            Err(error) => {
                 return Err(forwarding_irq_error(
                     "request required x86 IOAPIC forwarding IRQ action",
                     gsi,
                     error,
                 ));
-            }
-            Err(error) => {
-                trace!(
-                    "skip optional x86 IOAPIC forwarding IRQ action for guest GSI {gsi}: {error:?}"
-                );
             }
         }
     }
@@ -246,13 +285,45 @@ fn register_ioapic_forwarding_actions() -> AxVmResult {
     {
         IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
     }
-    info!(
-        "Registered x86 IOAPIC IRQ forwarding for host GSIs 0..{} excluding PIT GSI {} ({} newly \
-         registered)",
-        IOAPIC_GSI_COUNT - 1,
-        PIT_TIMER_GSI,
-        registered
-    );
+    info!("Registered {registered} required exclusive x86 IOAPIC forwarding IRQ actions");
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn register_test_ioapic_forwarding_action(guest_gsi: usize) -> AxVmResult {
+    let host_irq = forwarded_host_irq_for_guest_gsi(guest_gsi).map_err(|error| {
+        forwarding_irq_error("resolve test x86 IOAPIC forwarding IRQ", guest_gsi, error)
+    })?;
+    let handle = crate::arch::x86_64::host_irq::request_exclusive_irq_disabled(
+        host_irq,
+        crate::arch::x86_64::host_irq::IrqAffinity::Fixed(irq_framework::CpuId(0)),
+        super::handler::reserved_ioapic_irq_action,
+    )
+    .map_err(|error| {
+        forwarding_irq_error(
+            "request test x86 IOAPIC forwarding IRQ action",
+            guest_gsi,
+            error,
+        )
+    })?;
+    let mut slot = IOAPIC_IRQ_HANDLES[guest_gsi].lock();
+    if slot.is_some() {
+        drop(slot);
+        crate::arch::x86_64::host_irq::free_irq(handle).map_err(|error| {
+            forwarding_irq_error(
+                "release duplicate test x86 IOAPIC forwarding IRQ action",
+                guest_gsi,
+                error,
+            )
+        })?;
+        return Err(AxVmError::resource_conflict(
+            "register test x86 IOAPIC forwarding IRQ action",
+            format_args!("guest GSI {guest_gsi} already retains an action"),
+        ));
+    }
+    *slot = Some(handle);
+    IOAPIC_IRQ_OWNER_BOUND.fetch_or(gsi_bit(guest_gsi), Ordering::AcqRel);
+    IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
     Ok(())
 }
 
@@ -349,23 +420,23 @@ enum ActivationDisposition {
 impl PreparedIoApicForwardingActivation {
     fn activate(mut self) -> AxVmResult {
         let gsi = self.guest_gsi;
-        set_forwarded_host_gsi_enabled(gsi, false).map_err(|error| {
-            forwarding_irq_error("mask x86 IOAPIC route before activation", gsi, error)
+        set_forwarding_action_enabled(gsi, false).map_err(|error| {
+            forwarding_irq_error("disable x86 IOAPIC action before activation", gsi, error)
         })?;
-        IOAPIC_IRQ_MASKED.fetch_or(gsi_bit(gsi), Ordering::AcqRel);
+        IOAPIC_IRQ_ACTION_DISABLED.fetch_or(gsi_bit(gsi), Ordering::AcqRel);
         clear_forwarded_ioapic_pending_state(gsi);
 
         if let Err(error) = self.operations.activate() {
             return Err(self.revoke_after_failed_activation(error));
         }
 
-        // Clear the software mask before enabling the controller. An IRQ that
-        // arrives immediately after enable can then set the mask again without
+        // Clear the software gate before enabling the action. An IRQ that
+        // arrives immediately after enable can then set the gate again without
         // this task racing it with a trailing clear.
-        IOAPIC_IRQ_MASKED.fetch_and(!gsi_bit(gsi), Ordering::AcqRel);
-        if let Err(error) = set_forwarded_host_gsi_enabled(gsi, true) {
-            IOAPIC_IRQ_MASKED.fetch_or(gsi_bit(gsi), Ordering::AcqRel);
-            let error = forwarding_irq_error("unmask activated x86 IOAPIC route", gsi, error);
+        IOAPIC_IRQ_ACTION_DISABLED.fetch_and(!gsi_bit(gsi), Ordering::AcqRel);
+        if let Err(error) = set_forwarding_action_enabled(gsi, true) {
+            IOAPIC_IRQ_ACTION_DISABLED.fetch_or(gsi_bit(gsi), Ordering::AcqRel);
+            let error = forwarding_irq_error("enable activated x86 IOAPIC action", gsi, error);
             return Err(self.revoke_after_failed_activation(error));
         }
 
@@ -472,13 +543,15 @@ impl IoApicForwardingActivationBatch {
 
         for gsi in ioapic_irq_hook_gsis() {
             let bit = gsi_bit(gsi);
-            if self.activated & bit == 0 || IOAPIC_IRQ_MASKED.load(Ordering::Acquire) & bit != 0 {
+            if self.activated & bit == 0
+                || IOAPIC_IRQ_ACTION_DISABLED.load(Ordering::Acquire) & bit != 0
+            {
                 continue;
             }
-            set_forwarded_host_gsi_enabled(gsi, false).map_err(|error| {
-                forwarding_irq_error("mask x86 IOAPIC activation during rollback", gsi, error)
+            set_forwarding_action_enabled(gsi, false).map_err(|error| {
+                forwarding_irq_error("disable x86 IOAPIC activation during rollback", gsi, error)
             })?;
-            IOAPIC_IRQ_MASKED.fetch_or(bit, Ordering::AcqRel);
+            IOAPIC_IRQ_ACTION_DISABLED.fetch_or(bit, Ordering::AcqRel);
         }
 
         for gsi in ioapic_irq_hook_gsis() {

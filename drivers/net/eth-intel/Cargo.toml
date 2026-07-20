@@ -20,6 +20,10 @@ thiserror = { version = "2", default-features = false }
 [lib]
 test = false
 
+[[test]]
+name = "owner_boundary"
+path = "tests/owner_boundary.rs"
+
 # bare-test integration test is temporarily disabled.
 # [[test]]
 # name = "test_e1000"

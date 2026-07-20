@@ -6,8 +6,8 @@ use std::sync::{
 
 use rdif_block::{
     BlkError, CompletedRequest, CompletionSink, ControllerBundle, ControllerInitEndpoint,
-    DeviceInfo, DispatchMode, DriverGeneric, IQueue, LifecycleEndpoint, LogicalDeviceId,
-    OwnedRequest, QueueContractError, QueueEventBatch, QueueHandle, QueueInfo, QueueKind,
+    DeviceInfo, DriverGeneric, IQueue, LifecycleEndpoint, LogicalDeviceId, OwnedRequest,
+    QueueContractError, QueueEventBatch, QueueExecution, QueueHandle, QueueInfo, QueueKind,
     QueueLimits, RequestId, ServiceProgress, SingleDeviceBundle, SubmitError, SubmitOutcome,
     validate_controller_devices,
 };
@@ -53,7 +53,7 @@ impl IQueue for InlineQueue {
         Err(BlkError::NotSupported)
     }
 
-    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+    fn shutdown(&mut self) -> Result<(), BlkError> {
         Ok(())
     }
 }
@@ -100,7 +100,7 @@ impl IQueue for MismatchedIdentityQueue {
         Err(BlkError::NotSupported)
     }
 
-    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+    fn shutdown(&mut self) -> Result<(), BlkError> {
         Ok(())
     }
 }
@@ -118,7 +118,7 @@ impl LegacySingleDevice {
             device,
             limits,
             kind: QueueKind::Inline,
-            dispatch_mode: DispatchMode::Direct,
+            execution: QueueExecution::Inline,
         };
         Self {
             queue: Some(QueueHandle::new(Box::new(InlineQueue { info }))),
@@ -169,17 +169,8 @@ impl rdif_block::Interface for LegacySingleDevice {
         Vec::new()
     }
 
-    fn take_irq_handler(&mut self, _source_id: usize) -> Option<rdif_block::BIrqHandler> {
+    fn take_irq_source(&mut self, _source_id: usize) -> Option<rdif_block::BlockIrqSource> {
         None
-    }
-}
-
-#[derive(Default)]
-struct ShutdownSink;
-
-impl CompletionSink for ShutdownSink {
-    fn complete(&mut self, completion: CompletedRequest) {
-        panic!("unpublished inline queue returned unexpected completion {completion:?}");
     }
 }
 
@@ -203,8 +194,10 @@ fn legacy_interface_is_an_explicit_single_device_bundle() {
 
     let mut parts = device.into_parts();
     assert_eq!(parts.queues[0].id(), 7);
-    parts.queues[0]
-        .shutdown(&mut ShutdownSink)
+    parts
+        .queues
+        .remove(0)
+        .close()
         .expect("an unpublished inline queue must shut down");
 }
 
@@ -226,7 +219,7 @@ fn a_logical_device_cannot_be_extracted_twice() {
     ));
 
     let mut parts = device.into_parts();
-    parts.queues[0].shutdown(&mut ShutdownSink).unwrap();
+    parts.queues.remove(0).close().unwrap();
 }
 
 #[test]
@@ -282,10 +275,27 @@ fn failed_rollback_quarantines_the_single_device_bundle() {
     let mut bundle = SingleDeviceBundle::new(Box::new(interface));
     let device_id = LogicalDeviceId::new(0).unwrap();
 
-    assert!(matches!(
-        bundle.take_logical_device(device_id, NonZeroUsize::MIN),
-        Err(rdif_block::BundleError::Driver(BlkError::Io))
-    ));
+    let error = bundle
+        .take_logical_device(device_id, NonZeroUsize::MIN)
+        .expect_err("failed rollback must return its quarantine owner");
+    let rdif_block::BundleError::UnpublishedQueuesQuarantined(quarantine) = error else {
+        panic!("failed rollback lost explicit quarantine ownership: {error:?}")
+    };
+    assert_eq!(quarantine.device_id(), device_id);
+    assert_eq!(quarantine.device_name(), "scripted-legacy");
+    assert_eq!(
+        quarantine.contract_error(),
+        QueueContractError::QueueDeviceMetadataMismatch {
+            device_id: 0,
+            queue_id: 9,
+        }
+    );
+    assert_eq!(quarantine.reason(), BlkError::Io);
+    assert_eq!(quarantine.queue_count(), 1);
+    assert_eq!(quarantine.queues().next().unwrap().info().id, 9);
+    let diagnostic = quarantine.to_string();
+    assert!(diagnostic.contains("scripted-legacy"));
+    assert!(diagnostic.contains("retained 1 queue(s) in quarantine"));
     assert_eq!(shutdowns.load(Ordering::Acquire), 1);
     assert!(
         bundle.logical_device_ids().is_empty(),
@@ -295,6 +305,10 @@ fn failed_rollback_quarantines_the_single_device_bundle() {
         bundle.take_logical_device(device_id, NonZeroUsize::MIN),
         Err(rdif_block::BundleError::DeviceUnavailable { .. })
     ));
+    let quarantined_queues = quarantine.into_queues();
+    assert_eq!(quarantined_queues.len(), 1);
+    assert_eq!(quarantined_queues[0].info().id, 9);
+    drop(quarantined_queues);
 }
 
 #[test]
@@ -347,7 +361,7 @@ fn controller_validation_rejects_an_interrupt_queue_without_irq_sources() {
         kind: QueueKind::Interrupt {
             sources: rdif_block::IdList::none(),
         },
-        dispatch_mode: DispatchMode::Direct,
+        execution: QueueExecution::Tagged,
     };
     let devices = vec![rdif_block::LogicalDevice::new(
         LogicalDeviceId::new(0).unwrap(),
@@ -373,7 +387,7 @@ fn controller_validation_rejects_conflicting_queue_identity_sources() {
         device,
         limits,
         kind: QueueKind::Inline,
-        dispatch_mode: DispatchMode::Direct,
+        execution: QueueExecution::Inline,
     };
     let devices = vec![rdif_block::LogicalDevice::new(
         LogicalDeviceId::new(0).unwrap(),
@@ -478,7 +492,7 @@ impl ScriptedLegacyDevice {
                 device: queue_device,
                 limits,
                 kind: QueueKind::Inline,
-                dispatch_mode: DispatchMode::Direct,
+                execution: QueueExecution::Inline,
             },
             shutdowns: Arc::clone(&self.shutdowns),
             shutdown_error: self.shutdown_error,
@@ -530,7 +544,7 @@ impl rdif_block::Interface for ScriptedLegacyDevice {
         Vec::new()
     }
 
-    fn take_irq_handler(&mut self, _source_id: usize) -> Option<rdif_block::BIrqHandler> {
+    fn take_irq_source(&mut self, _source_id: usize) -> Option<rdif_block::BlockIrqSource> {
         None
     }
 }
@@ -578,7 +592,7 @@ impl IQueue for ShutdownTrackingQueue {
         Err(BlkError::NotSupported)
     }
 
-    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+    fn shutdown(&mut self) -> Result<(), BlkError> {
         self.shutdowns.fetch_add(1, Ordering::AcqRel);
         if self.shutdown_error {
             Err(BlkError::Io)
@@ -601,7 +615,7 @@ fn logical_device(
         device: DeviceInfo::new(queue_blocks, 512),
         limits,
         kind: QueueKind::Inline,
-        dispatch_mode: DispatchMode::Direct,
+        execution: QueueExecution::Inline,
     };
     rdif_block::LogicalDevice::new(
         LogicalDeviceId::new(device_id).unwrap(),
@@ -614,8 +628,10 @@ fn logical_device(
 
 fn shutdown_devices(devices: Vec<rdif_block::LogicalDevice>) {
     for device in devices {
-        for mut queue in device.into_parts().queues {
-            queue.shutdown(&mut ShutdownSink).unwrap();
+        for queue in device.into_parts().queues {
+            if let Err(failure) = queue.close() {
+                drop(failure.into_quarantine());
+            }
         }
     }
 }

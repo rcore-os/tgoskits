@@ -43,7 +43,6 @@ the published RCA itself, so hosts no longer need to snoop R6 responses:
 
 ```rust
 use sdmmc_protocol::{Command, CommandResponsePoll, DataCommandPoll, Error, OperationPoll, Response};
-use core::task::Waker;
 use sdmmc_protocol::sdio::{
     card::SdioSdmmc,
     host::{BusWidth, ClockSpeed, SdioHost},
@@ -107,11 +106,6 @@ impl SdioHost for MySdioHost {
         todo!()
     }
 
-    fn register_waker(&mut self, waker: &Waker) {
-        let _ = waker;
-        // Optional: IRQ-driven hosts store this waker and wake it from
-        // their OS glue after handle_irq() reports command/data progress.
-    }
 }
 
 fn example(host: MySdioHost) -> Result<(), Error> {
@@ -134,13 +128,20 @@ and timing where the host supports those modes.
 `SdioHost` follows a submit/event model. Protocol operations such as card
 initialization, command status, EXT_CSD reads, MMC switches, switch-function
 reads, and block I/O expose request objects that
-callers advance from an IRQ worker or an explicitly scheduled initialization
+callers advance from the fixed maintenance owner or an explicitly scheduled initialization
 deadline. Card initialization consumes `InitInput { now_ns, irq }`; repeated
 calls before its returned activation neither consume retries nor inspect
 completion state. Command/data deadlines fail closed when their IRQ is lost.
 Hosts with eventless platform sequencing implement `poll_bus_op_at` and return
 the current operation's absolute activation from `bus_op_wake_at`; a physical
 host2 adapter opts into that contract with `SdioSdmmc::new_host2_timed`.
+
+IRQ-capable hosts additionally implement `SdioIrqHost` and transfer one
+`SdioIrqSource` into OS glue. Its capture endpoint is the sole reader/W1C owner
+of destructive completion status; its separate control endpoint remains with
+the same-CPU maintenance thread for generation-checked rearm. The endpoint
+never stores an OS waker and never asks task context to repeat acknowledgement.
+OS glue publishes the stable event and performs the local owner wake.
 
 Long-lived OS discovery code should use `OwnedSdioInit`, which pins scratch
 storage and centralizes the host-request lifetime contract. With the `rdif`
@@ -197,9 +198,10 @@ match the ownership boundary:
   never enters the shared card core.
 - `rdif::shared_core`: the task-context borrow gate shared by device control
   and queues. Acquisition is one-shot and non-blocking: submission contention
-  returns the owned request with `Retry`, event service returns `More` while
-  retaining the same IRQ snapshot, and lifecycle polling schedules another
-  bounded pass. The gate never sleeps or spins.
+  returns the owned request with `Retry`; event-service contention is a typed
+  owner/re-entrancy violation and enters recovery. Lifecycle polling may
+  schedule another bounded initialization or recovery pass. The gate never
+  sleeps or spins and is never entered by the hard-IRQ endpoint.
 
 The `sdmmc_protocol::rdif::*` re-exports contain the same owned/event-driven
 contract; borrowed queues and completion polling are intentionally absent.

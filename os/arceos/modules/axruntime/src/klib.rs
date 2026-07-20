@@ -176,23 +176,6 @@ impl_trait! {
             ax_hal::time::try_init_epoch_offset(epoch_time_nanos)
         }
 
-        /// Enable or disable the specified IRQ line.
-        ///
-        /// When the `irq` feature is enabled this forwards to
-        /// `ax_hal::irq::set_enable`. Platforms built without IRQ support
-        /// ignore this request because there is no interrupt controller
-        /// service to program.
-        fn irq_set_enable(_irq: IrqId, _enabled: bool) -> AxResult {
-            #[cfg(feature = "irq")]
-            {
-                ax_hal::irq::set_enable(_irq, _enabled).map_err(map_irq_error)
-            }
-            #[cfg(not(feature = "irq"))]
-            {
-                Err(AxError::Unsupported)
-            }
-        }
-
         fn irq_request_shared(
             _irq: IrqId,
             _handler: BoxedIrqHandler,

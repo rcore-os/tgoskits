@@ -7,22 +7,6 @@ impl Sdhci {
         &mut self,
         request: BlockRequest,
     ) -> Result<CompletedBlockBacking, Error> {
-        self.finish_block_request_with_quiesce(request, true)
-    }
-
-    fn finish_block_request_with_quiesce(
-        &mut self,
-        request: BlockRequest,
-        quiesced: bool,
-    ) -> Result<CompletedBlockBacking, Error> {
-        if !quiesced {
-            self.poison_dma();
-            core::mem::forget(request);
-            self.pending_data = None;
-            self.active_data_cmd = 0;
-            self.clear_cached_irq_status();
-            return Ok(CompletedBlockBacking::default());
-        }
         let completed = match request.inner {
             BlockRequestKind::FifoRead { owned_cpu, .. }
             | BlockRequestKind::FifoWrite { owned_cpu, .. } => CompletedBlockBacking {
@@ -38,11 +22,7 @@ impl Sdhci {
                 if stage == BlockRequestStage::Command {
                     let _ = self.take_command_response();
                 }
-                let dma = if quiesced {
-                    buffer.complete(true)
-                } else {
-                    buffer.abort(true, false)
-                };
+                let dma = buffer.complete(true);
                 // SAFETY: this path is reachable only after terminal transfer
                 // completion or a controller-wide quiescence proof.
                 unsafe { descriptors.release_after_quiesce() };
@@ -57,11 +37,7 @@ impl Sdhci {
                 if stage == BlockRequestStage::Command {
                     let _ = self.take_command_response();
                 }
-                let dma = if quiesced {
-                    buffer.complete(false)
-                } else {
-                    buffer.abort(false, false)
-                };
+                let dma = buffer.complete(false);
                 // SAFETY: this path is reachable only after terminal transfer
                 // completion or a controller-wide quiescence proof.
                 unsafe { descriptors.release_after_quiesce() };
@@ -86,7 +62,7 @@ impl Sdhci {
             return Err(Error::Busy);
         }
         let active = request.take().ok_or(Error::InvalidArgument)?;
-        let completed = self.finish_block_request_with_quiesce(active, true)?;
+        let completed = self.finish_block_request(active)?;
         slot.complete_with_backing(id, completed)
     }
 
@@ -305,7 +281,7 @@ impl Sdhci {
             return Err(Error::Busy);
         }
         let active = request.take().ok_or(Error::InvalidArgument)?;
-        let completed = self.finish_block_request_with_quiesce(active, true)?;
+        let completed = self.finish_block_request(active)?;
         slot.complete_with_backing(id, completed)?;
         Ok(())
     }

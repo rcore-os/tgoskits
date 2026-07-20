@@ -17,8 +17,8 @@ use log::{debug, warn};
 use super::{
     card::SdioSdmmc,
     host::{
-        BusWidth, ClockSpeed, HostEvent, SdioBusOp, SdioHost, SdioIrqHandle, SdioIrqHost,
-        SignalVoltage,
+        BusWidth, ClockSpeed, HostEvent, SdioBusOp, SdioHost, SdioIrqControlError, SdioIrqHost,
+        SdioIrqSource, SignalVoltage,
     },
 };
 use crate::{
@@ -116,7 +116,8 @@ struct TimedBusOps<H: SdioHost2Irq + 'static> {
 /// a physical host is wrapped for the legacy `SdioHost` card state machine.
 pub trait SdioHost2Irq: sdio_host2::SdioHost {
     type Event: HostEvent + Default;
-    type IrqHandle: SdioIrqHandle<Event = Self::Event>;
+    type IrqEndpoint: rdif_irq::IrqEndpoint<Event = Self::Event, Fault = Error>;
+    type IrqControl: rdif_irq::IrqSourceControl<Error = SdioIrqControlError>;
 
     /// Return whether the controller can currently deliver completion IRQs.
     fn completion_irq_enabled(&self) -> bool;
@@ -127,7 +128,7 @@ pub trait SdioHost2Irq: sdio_host2::SdioHost {
     /// Mask completion delivery before the OS drains the IRQ action.
     fn disable_completion_irq(&mut self) -> Result<(), Error>;
 
-    fn irq_handle(&mut self) -> Self::IrqHandle;
+    fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>>;
 }
 
 /// Absolute-time extension for eventless physical-host bus transitions.
@@ -164,7 +165,8 @@ where
     T: sdio_host2::SdioHost + SdioIrqHost,
 {
     type Event = <T as SdioHost>::Event;
-    type IrqHandle = <T as SdioIrqHost>::IrqHandle;
+    type IrqEndpoint = <T as SdioIrqHost>::IrqEndpoint;
+    type IrqControl = <T as SdioIrqHost>::IrqControl;
 
     fn completion_irq_enabled(&self) -> bool {
         SdioHost::completion_irq_enabled(self)
@@ -178,8 +180,8 @@ where
         SdioHost::disable_completion_irq(self)
     }
 
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        SdioIrqHost::irq_handle(self)
+    fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        SdioIrqHost::take_irq_source(self)
     }
 }
 
@@ -725,10 +727,11 @@ fn finish_adapter_bus_poll<H: SdioHost2Irq + 'static>(
 }
 
 impl<H: SdioHost2Irq + 'static> SdioIrqHost for SdioHost2Adapter<H> {
-    type IrqHandle = H::IrqHandle;
+    type IrqEndpoint = H::IrqEndpoint;
+    type IrqControl = H::IrqControl;
 
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        self.core.with_mut(|host| host.irq_handle())
+    fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        self.core.with_mut(SdioHost2Irq::take_irq_source)
     }
 }
 

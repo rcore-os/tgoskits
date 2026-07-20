@@ -13,7 +13,10 @@ use sdhci_host::Sdhci;
 use sdio_host2::{BusWidth, ClockHz, ClockSpeed, RequestPoll, SignalVoltage};
 use sdmmc_protocol::{
     Error as ProtocolError,
-    sdio::host2::{SdioHost2Irq, SdioHost2Lifecycle, SdioHost2Timed},
+    sdio::{
+        host::SdioIrqSource,
+        host2::{SdioHost2Irq, SdioHost2Lifecycle, SdioHost2Timed},
+    },
 };
 
 pub mod rdif;
@@ -97,8 +100,10 @@ impl Cv181xMmio {
     /// `core` must point to a naturally aligned, exclusively owned CV181x
     /// SDHCI register block. `syscon` must be naturally aligned and cover
     /// TOP_BASE including the pinmux block. Both mappings must remain valid and
-    /// accessible from every CPU to which the resulting host may move, until
-    /// the host and its registered IRQ endpoint have been destroyed. The
+    /// accessible from the CPU selected as the controller's maintenance owner,
+    /// until the host and both split IRQ capabilities have been retired after
+    /// IRQ synchronization. The host may be transferred to that owner before
+    /// registration, but must not migrate while the IRQ source is live. The
     /// caller must not access either mapping through another pointer while the
     /// capability is alive.
     pub const unsafe fn new(core: NonNull<u8>, syscon: NonNull<u8>) -> Self {
@@ -190,10 +195,10 @@ pub struct Cv181xSdhci {
     config: Cv181xConfig,
 }
 
-// SAFETY: `Cv181xMmio::new` requires both mappings to remain valid and
-// accessible after a move to another CPU. The wrapper does not expose its
-// mutable register endpoints; IRQ extraction uses the pre-registered SDHCI IRQ
-// core.
+// SAFETY: `Cv181xMmio::new` requires both mappings to remain valid on the
+// selected maintenance CPU. Moving this discovery object transfers exclusive
+// ownership; OS glue must pin it before registering its one-shot IRQ source.
+// The wrapper does not expose mutable register endpoints.
 unsafe impl Send for Cv181xSdhci {}
 
 impl Cv181xSdhci {
@@ -387,24 +392,23 @@ impl Cv181xSdhci {
 
 impl SdioHost2Irq for Cv181xSdhci {
     type Event = sdhci_host::Event;
-    type IrqHandle = sdhci_host::SdhciIrqHandle;
+    type IrqEndpoint = sdhci_host::SdhciIrqEndpoint;
+    type IrqControl = sdhci_host::SdhciIrqControl;
 
     fn completion_irq_enabled(&self) -> bool {
         self.inner.completion_irq_enabled()
     }
 
     fn enable_completion_irq(&mut self) -> Result<(), ProtocolError> {
-        self.inner.enable_completion_irq();
-        Ok(())
+        sdmmc_protocol::sdio::host::SdioHost::enable_completion_irq(&mut self.inner)
     }
 
     fn disable_completion_irq(&mut self) -> Result<(), ProtocolError> {
-        self.inner.disable_completion_irq();
-        Ok(())
+        sdmmc_protocol::sdio::host::SdioHost::disable_completion_irq(&mut self.inner)
     }
 
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        self.inner.irq_endpoint()
+    fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        self.inner.take_irq_source()
     }
 }
 

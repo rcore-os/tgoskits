@@ -23,6 +23,8 @@ pub use host::*;
 #[cfg(kmod)]
 pub use crate::backend::kmod::*;
 pub use crate::backend::ty::{Event, ep::Endpoint};
+#[cfg(kmod)]
+pub use crate::backend::ty::{UsbIrqEvent, UsbIrqFault};
 
 define_int_type!(BusAddr, u64);
 

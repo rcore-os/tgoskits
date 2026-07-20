@@ -101,6 +101,21 @@ fn rejected_3v3_transition_does_not_modify_board_registers() {
 }
 
 #[test]
+fn completion_delivery_requires_one_shot_irq_source_transfer() {
+    let mut core = FakeMmio::new();
+    let mut syscon = FakeMmio::new();
+    let mut host = new_host(&mut core, &mut syscon, Cv181xConfig::default());
+
+    assert_eq!(
+        host.enable_completion_irq(),
+        Err(ProtocolError::InvalidArgument)
+    );
+    let _source = host.take_irq_source().expect("first transfer must succeed");
+    assert!(host.take_irq_source().is_none());
+    host.enable_completion_irq().unwrap();
+}
+
+#[test]
 fn combined_transfer_and_error_irq_is_classified_error_first() {
     const NORMAL_INT_STATUS: usize = 0x30;
     const ERROR_INT_STATUS: usize = 0x32;
@@ -111,6 +126,7 @@ fn combined_transfer_and_error_irq_is_classified_error_first() {
     let mut core = FakeMmio::new();
     let mut syscon = FakeMmio::new();
     let mut host = new_host(&mut core, &mut syscon, Cv181xConfig::default());
+    let (mut endpoint, _control) = host.take_irq_source().unwrap().into_parts();
     host.enable_completion_irq().unwrap();
     write_u16(
         core.base(),
@@ -118,16 +134,16 @@ fn combined_transfer_and_error_irq_is_classified_error_first() {
         TRANSFER_COMPLETE | ERROR_SUMMARY,
     );
     write_u16(core.base(), ERROR_INT_STATUS, DATA_TIMEOUT);
-    let mut irq = host.irq_handle();
-
-    let event = sdmmc_protocol::sdio::SdioIrqHandle::handle_irq(&mut irq);
+    let rdif_block::IrqCapture::Captured { event, masked } =
+        rdif_block::IrqEndpoint::capture(&mut endpoint)
+    else {
+        panic!("combined SDHCI status must be captured");
+    };
+    assert!(masked.is_none());
 
     assert_eq!(
         event,
-        sdhci_host::Event::Error {
-            normal: TRANSFER_COMPLETE | ERROR_SUMMARY,
-            error: DATA_TIMEOUT,
-        }
+        sdhci_host::Event::from_status(TRANSFER_COMPLETE | ERROR_SUMMARY, DATA_TIMEOUT)
     );
 }
 
@@ -138,6 +154,7 @@ fn recovery_rebuilds_board_power_pads_and_phy_before_ready() {
     let mut core = FakeMmio::new();
     let mut syscon = FakeMmio::new();
     let mut host = new_host(&mut core, &mut syscon, Cv181xConfig::default());
+    let _source = host.take_irq_source().unwrap();
     host.enable_completion_irq().unwrap();
     host.disable_completion_irq().unwrap();
     let mut recovery = SdioHost2Lifecycle::begin_recovery(

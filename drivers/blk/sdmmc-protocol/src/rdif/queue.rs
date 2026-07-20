@@ -2,9 +2,9 @@ use alloc::sync::Arc;
 
 use log::warn;
 use rdif_block::{
-    BlkError, CompletedRequest, CompletionHint, CompletionSink, DispatchMode, IQueue, IdList,
-    OwnedRequest, QueueEventBatch, QueueInfo, QueueKind, RequestFlags, RequestId, RequestOp,
-    ServiceContinuationReason, ServiceProgress, SubmitError, SubmitOutcome,
+    BlkError, CompletedRequest, CompletionSink, IQueue, IdList, OwnedRequest, QueueEventBatch,
+    QueueExecution, QueueInfo, QueueKind, RequestFlags, RequestId, RequestOp, ServiceProgress,
+    SubmitError, SubmitOutcome,
     dma_api::{CpuDmaBuffer, DmaDirection},
 };
 
@@ -91,7 +91,7 @@ where
             kind: QueueKind::Interrupt {
                 sources: IdList::from_bits(1 << SDMMC_COMPLETION_SOURCE_ID),
             },
-            dispatch_mode: DispatchMode::Serialized,
+            execution: QueueExecution::Serialized,
         }
     }
 
@@ -239,20 +239,6 @@ where
         }
     }
 
-    fn event_targets_active(&self, events: &QueueEventBatch<'_>) -> bool {
-        if events.has_queue_signal() {
-            return true;
-        }
-        let Some(active) = self.active.as_ref() else {
-            return false;
-        };
-        events.hints().any(|hint| match hint {
-            CompletionHint::Queue { .. } => true,
-            CompletionHint::Request { request_id, .. } => request_id == active.runtime_id,
-            CompletionHint::Batch { ids, .. } => ids.iter().any(|id| id == active.runtime_id),
-        })
-    }
-
     fn emit_completion(&mut self, result: Result<(), BlkError>, sink: &mut dyn CompletionSink) {
         let active = self
             .active
@@ -272,7 +258,6 @@ where
 
     fn service_active(
         &mut self,
-        events: &QueueEventBatch<'_>,
         sink: &mut dyn CompletionSink,
     ) -> Result<ServiceProgress, BlkError> {
         let host_id = self
@@ -283,11 +268,11 @@ where
         let raw = self.control.raw.clone();
         let mut raw = match raw.try_borrow_mut() {
             Ok(raw) => raw,
-            // The typed continuation retains this same acknowledged source
-            // epoch; no status read is used to rediscover completion.
-            Err(_) => {
-                return Ok(events.continue_service(ServiceContinuationReason::RetainedFacts));
-            }
+            // Queue and lifecycle entry points belong to one maintenance
+            // owner. Contention therefore indicates re-entrancy or a broken
+            // ownership boundary and must enter recovery instead of turning
+            // into an unbounded retry path.
+            Err(_) => return Err(BlkError::Busy),
         };
         let serviced =
             H::service_request(raw.host_mut(), &mut self.pending, host_id, &mut self.slot);
@@ -310,6 +295,12 @@ where
                 Err(terminal)
             }
         }
+    }
+
+    fn event_targets_active(&self, events: &QueueEventBatch<'_>) -> bool {
+        self.active.is_some()
+            && events.queue_id() == self.id
+            && events.affected_queues().contains(self.id)
     }
 }
 
@@ -349,10 +340,10 @@ where
         if events.queue_id() != self.id {
             return Err(BlkError::InvalidRequest);
         }
-        if self.active.is_none() || !self.event_targets_active(events) {
+        if !self.event_targets_active(events) {
             return Ok(ServiceProgress::Idle);
         }
-        self.service_active(events, sink)
+        self.service_active(sink)
     }
 
     fn reclaim_after_quiesce(
@@ -386,7 +377,7 @@ where
         Ok(())
     }
 
-    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+    fn shutdown(&mut self) -> Result<(), BlkError> {
         if self.shutdown {
             return Ok(());
         }
@@ -394,32 +385,7 @@ where
             return Err(BlkError::Busy);
         }
         self.shutdown = true;
-        Ok(())
-    }
-}
-
-impl<H> Drop for BlockQueue<H>
-where
-    H: BlockHost,
-{
-    fn drop(&mut self) {
-        if self.active.is_some() || self.pending.is_some() {
-            warn!(
-                "sdmmc rdif: active queue dropped without proof-gated reclaim; quarantining \
-                 request"
-            );
-            // Drop has neither the runtime's masked/drained IRQ state nor a
-            // controller-wide DMA-quiescence proof. Calling the host abort
-            // path here could busy-wait and returning the backing allocation
-            // could cause DMA-after-free. Leaking the typestate is the only
-            // safe fail-closed response to this teardown invariant violation.
-            if let Some(pending) = self.pending.take() {
-                core::mem::forget(pending);
-            }
-            let slot = core::mem::take(&mut self.slot);
-            core::mem::forget(slot);
-            self.active = None;
-        }
         self.control.release_queue();
+        Ok(())
     }
 }

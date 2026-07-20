@@ -1,685 +1,811 @@
-//! Discovery-to-ready controller activation on shared runtime workers.
+//! Controller initialization driven by its final CPU-pinned maintenance owner.
 
-use alloc::{boxed::Box, format, vec::Vec};
-use core::{
-    mem,
-    pin::Pin,
-    ptr,
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering, fence},
-};
+mod initialization;
+
+use alloc::{string::String, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_driver::block::RdifBlockDevice;
-use ax_kspin::SpinNoPreempt;
-use rdif_block::{
-    ControllerInitEndpoint, IdList, InitError, InitInput, InitIrqProgress, InitPoll, InitSchedule,
+use initialization::{
+    close_failed_registration, close_failed_session, close_owner_resources, drive_init_fsm,
+    enable_irq_delivery, register_initial_sources,
 };
+use rdif_block::{ControllerInitEndpoint, IdList, InitError, MaskedSource};
 
-use super::BlockControllerError;
+use super::controller::{
+    BlockController, BlockControllerError, OwnerHandoff, OwnerShutdown, OwnerShutdownProgress,
+    source::{
+        BlockIrqFaultSet, BlockMaintenanceEvent, RuntimeIrqRegistration, RuntimeIrqSource,
+        quiesce_after_device_masked,
+    },
+};
 use crate::{
-    irq::Registration,
-    task::{ThreadWakeHandle, WaitQueue},
-    workqueue::{DelayedWork, WorkItem, WorkOutcome, WorkPriority, WorkQueue},
+    maintenance::{
+        DeviceMaintenanceHandle, MaintenanceCauses, MaintenanceClosed, MaintenanceError,
+        MaintenanceRegistrar, MaintenanceSession, spawn_maintenance_domain,
+    },
+    task::{WaitQueue, yield_current_cpu},
 };
 
-const ACTIVATION_RUNNING: u8 = 0;
-const ACTIVATION_READY: u8 = 1;
-const ACTIVATION_FAILED: u8 = 2;
+const DEFAULT_BLOCK_OWNER_CPU: usize = 0;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ActivationIrqAction {
-    Handled,
-    Wake,
-    QuenchAndWake,
+/// Runs one pre-publication portable driver transaction without same-CPU IRQ
+/// reentry. Published controllers encode the same rule in their endpoint
+/// leases; initialization still owns the device directly and uses this gate.
+pub(super) fn with_owner_irq_excluded<R>(operation: impl FnOnce() -> R) -> R {
+    let irq_guard = ax_kspin::IrqGuard::new();
+    let result = operation();
+    drop(irq_guard);
+    result
 }
 
-impl ActivationIrqAction {
-    const fn into_irq_return(self) -> ax_hal::irq::IrqReturn {
-        match self {
-            Self::Handled => ax_hal::irq::IrqReturn::Handled,
-            Self::Wake => ax_hal::irq::IrqReturn::Wake,
-            Self::QuenchAndWake => ax_hal::irq::IrqReturn::QuenchAndWake,
-        }
-    }
+struct ControllerActivationSlot {
+    published: AtomicBool,
+    result: ax_kspin::SpinNoPreempt<Option<Result<Arc<BlockController>, BlockControllerError>>>,
+    wait: WaitQueue,
 }
 
-/// Linux-style publish/barrier/recheck handshake for initialization events.
-///
-/// IRQ always latches a declared source. It activates work only when that
-/// source belongs to the currently published schedule. The symmetric full
-/// barriers ensure that an IRQ racing command submission cannot miss both the
-/// wait mask and the worker's pending recheck.
-struct InitializationWake {
-    declared_sources: u64,
-    waiting_sources: AtomicU64,
-    pending_sources: AtomicU64,
-}
-
-/// Fixed, allocation-free handoff for destructive IRQ acknowledgements.
-///
-/// A source remains in this latch until the worker either acknowledges it or
-/// determines that it no longer belongs to the controller. Contention restores
-/// the exact bit before the current worker pass yields.
-struct DeferredInitializationIrqs {
-    sources: AtomicU64,
-}
-
-impl DeferredInitializationIrqs {
+impl ControllerActivationSlot {
     const fn new() -> Self {
         Self {
-            sources: AtomicU64::new(0),
+            published: AtomicBool::new(false),
+            result: ax_kspin::SpinNoPreempt::new(None),
+            wait: WaitQueue::new(),
         }
     }
 
-    fn record(&self, source_id: usize) {
-        self.sources.fetch_or(1_u64 << source_id, Ordering::Release);
+    fn publish(&self, result: Result<Arc<BlockController>, BlockControllerError>) {
+        assert!(
+            !self.published.swap(true, Ordering::AcqRel),
+            "block controller activation published twice"
+        );
+        let mut slot = self.result.lock();
+        assert!(
+            slot.is_none(),
+            "block controller activation slot is occupied"
+        );
+        *slot = Some(result);
+        drop(slot);
+        self.wait.notify_all();
     }
 
-    fn take(&self) -> IdList {
-        IdList::from_bits(self.sources.swap(0, Ordering::AcqRel))
-    }
-
-    fn restore(&self, sources: IdList) {
-        self.sources.fetch_or(sources.bits(), Ordering::Release);
-    }
-}
-
-impl InitializationWake {
-    const fn new(declared_sources: IdList) -> Self {
-        Self {
-            declared_sources: declared_sources.bits(),
-            waiting_sources: AtomicU64::new(0),
-            pending_sources: AtomicU64::new(0),
-        }
-    }
-
-    fn begin_poll(&self) -> IdList {
-        self.waiting_sources.store(0, Ordering::Release);
-        IdList::from_bits(self.pending_sources.swap(0, Ordering::AcqRel))
-    }
-
-    fn declares(&self, source_id: usize) -> bool {
-        source_id < u64::BITS as usize && self.declared_sources & (1_u64 << source_id) != 0
-    }
-
-    fn record_irq(&self, source_id: usize) -> bool {
-        if !self.declares(source_id) {
-            return false;
-        }
-        let source = 1_u64 << source_id;
-        self.pending_sources.fetch_or(source, Ordering::Release);
-        fence(Ordering::SeqCst);
-        self.waiting_sources.load(Ordering::Acquire) & source != 0
-    }
-
-    fn publish_schedule(&self, sources: IdList) -> Result<bool, InitError> {
-        let sources = sources.bits();
-        if sources & !self.declared_sources != 0 {
-            return Err(InitError::MissingInterrupt);
-        }
-        self.waiting_sources.store(sources, Ordering::Release);
-        fence(Ordering::SeqCst);
-        Ok(self.pending_sources.load(Ordering::Acquire) & sources != 0)
-    }
-
-    fn clear(&self) {
-        self.waiting_sources.store(0, Ordering::Release);
-    }
-}
-
-/// Pinned bridge retained after activation so a timer event already copied to
-/// CPU-local expiration storage can never observe reclaimed callback data.
-struct ControllerActivation {
-    device: SpinNoPreempt<Option<RdifBlockDevice>>,
-    domain: Pin<&'static WorkQueue>,
-    work: WorkItem,
-    timer: DelayedWork,
-    wake: InitializationWake,
-    deferred_irqs: DeferredInitializationIrqs,
-    status: AtomicU8,
-    irq_work_failed: AtomicBool,
-    error: SpinNoPreempt<Option<InitError>>,
-    completion: WaitQueue,
-    completion_wake: ThreadWakeHandle,
-}
-
-impl ControllerActivation {
-    fn allocate(
-        device: RdifBlockDevice,
-        declared_sources: IdList,
-        cpu: usize,
-        completion_wake: ThreadWakeHandle,
-    ) -> &'static Self {
-        let domain = Box::leak(Box::new(WorkQueue::new(cpu, WorkPriority::High)));
-        let domain = unsafe {
-            // SAFETY: the logical activation domain is leaked for shutdown
-            // lifetime and is never moved after an intrusive item binds to it.
-            Pin::new_unchecked(&*domain)
-        };
-        let mut activation = Box::new(Self {
-            device: SpinNoPreempt::new(Some(device)),
-            domain,
-            work: WorkItem::new(controller_init_work_entry, 0),
-            timer: DelayedWork::new(controller_init_timer_entry, 0),
-            wake: InitializationWake::new(declared_sources),
-            deferred_irqs: DeferredInitializationIrqs::new(),
-            status: AtomicU8::new(ACTIVATION_RUNNING),
-            irq_work_failed: AtomicBool::new(false),
-            error: SpinNoPreempt::new(None),
-            completion: WaitQueue::new(),
-            completion_wake,
-        });
-        let address = ptr::from_ref(activation.as_ref()).expose_provenance();
-        activation.work = WorkItem::new(controller_init_work_entry, address);
-        activation.timer = DelayedWork::new(controller_init_timer_entry, address);
-        Box::leak(activation)
-    }
-
-    fn work(&'static self) -> Pin<&'static WorkItem> {
-        unsafe {
-            // SAFETY: the activation object is leaked before either intrusive
-            // work node can be published and therefore has a stable address.
-            Pin::new_unchecked(&self.work)
-        }
-    }
-
-    fn timer(&'static self) -> Pin<&'static DelayedWork> {
-        unsafe {
-            // SAFETY: identical shutdown-lifetime pinning contract to `work`.
-            Pin::new_unchecked(&self.timer)
-        }
-    }
-
-    fn queue_work(&'static self) -> Result<(), InitError> {
-        self.domain
-            .queue_work_on(self.work())
-            .map(|_| ())
-            .map_err(|_| InitError::Hardware("could not queue controller initialization work"))
-    }
-
-    fn fail_from_irq_work_admission(&self) {
-        self.irq_work_failed.store(true, Ordering::Release);
-        // A terminal IRQ-side failure may race the ordinary worker's Ready
-        // publication. Failed overrides Ready because a deferred device source
-        // can remain asserted until task-context teardown masks the device.
-        self.status.store(ACTIVATION_FAILED, Ordering::Release);
-        let _ = self.completion_wake.wake();
-    }
-
-    fn record_irq(&'static self, source_id: usize) -> ActivationIrqAction {
-        if self.status.load(Ordering::Acquire) != ACTIVATION_RUNNING {
-            return ActivationIrqAction::Handled;
-        }
-        if !self.wake.record_irq(source_id) {
-            return ActivationIrqAction::Handled;
-        }
-        match self.queue_work() {
-            Ok(()) => ActivationIrqAction::Wake,
-            Err(_) => {
-                self.fail_from_irq_work_admission();
-                ActivationIrqAction::Handled
-            }
-        }
-    }
-
-    fn record_deferred_irq(&'static self, source_id: usize) -> ActivationIrqAction {
-        if self.status.load(Ordering::Acquire) != ACTIVATION_RUNNING
-            || !self.wake.declares(source_id)
+    fn publish_owner_failure(&self, error: MaintenanceError) {
+        if self
+            .published
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
         {
-            return ActivationIrqAction::QuenchAndWake;
+            return;
         }
-        self.deferred_irqs.record(source_id);
-        match self.queue_work() {
-            Ok(()) => ActivationIrqAction::Wake,
-            Err(_) => {
-                self.fail_from_irq_work_admission();
-                ActivationIrqAction::QuenchAndWake
-            }
-        }
+        let mut slot = self.result.lock();
+        assert!(
+            slot.is_none(),
+            "unpublished block controller activation slot is occupied"
+        );
+        *slot = Some(Err(BlockControllerError::Maintenance(error)));
+        drop(slot);
+        self.wait.notify_all();
     }
 
-    fn service_deferred_irqs(&self) -> Result<bool, InitError> {
-        let sources = self.deferred_irqs.take();
-        if sources.is_empty() {
-            return Ok(false);
-        }
-
-        let mut deferred = IdList::none();
-        {
-            let mut device = self.device.lock();
-            let device = device.as_mut().ok_or(InitError::InvalidState)?;
-            let ControllerInitEndpoint::Pending(initializer) =
-                device.bundle_mut().controller_init()
-            else {
-                return Err(InitError::InvalidState);
-            };
-            for source_id in sources.iter() {
-                match initializer.service_deferred_irq(source_id) {
-                    InitIrqProgress::Unhandled => {}
-                    InitIrqProgress::Acknowledged => {
-                        let _waiting = self.wake.record_irq(source_id);
-                    }
-                    InitIrqProgress::Deferred => deferred.insert(source_id),
-                    InitIrqProgress::Failed(error) => return Err(error),
-                }
-            }
-        }
-        if !deferred.is_empty() {
-            self.deferred_irqs.restore(deferred);
-        }
-        Ok(!deferred.is_empty())
-    }
-
-    fn arm_schedule(&'static self, schedule: InitSchedule) -> Result<WorkOutcome, InitError> {
-        let schedule = schedule.validate()?;
-        let irq_ready = self.wake.publish_schedule(schedule.irq_sources())?;
-        if let Some(deadline_ns) = schedule.wake_at_ns() {
-            let delay_ns = deadline_ns.saturating_sub(ax_hal::time::monotonic_time_nanos());
-            self.domain
-                .mod_delayed_work_on(self.domain.cpu(), self.timer(), delay_ns)
-                .map_err(|_| {
-                    InitError::Hardware("could not arm controller initialization deadline")
-                })?;
-        }
-        Ok(if schedule.run_again() || irq_ready {
-            WorkOutcome::Requeue
-        } else {
-            WorkOutcome::Complete
-        })
-    }
-
-    fn finish(&self, result: Result<(), InitError>) {
-        let requested_status = match result {
-            Ok(()) => ACTIVATION_READY,
-            Err(error) => {
-                *self.error.lock() = Some(error);
-                ACTIVATION_FAILED
-            }
-        };
-        let status = if self.irq_work_failed.load(Ordering::Acquire) {
-            ACTIVATION_FAILED
-        } else {
-            requested_status
-        };
-        self.wake.clear();
-        if publish_terminal_status(&self.status, status) {
-            self.completion.notify_all();
-        }
-    }
-
-    fn take_device(&self) -> RdifBlockDevice {
-        self.device
+    fn wait_result(&self) -> Result<Arc<BlockController>, BlockControllerError> {
+        self.wait
+            .try_wait_until(|| self.result.lock().is_some())
+            .map_err(BlockControllerError::Task)?;
+        self.result
             .lock()
             .take()
-            .expect("activation retains its discovered device until teardown")
+            .expect("activation result was observed before take")
     }
 }
 
-fn controller_init_work_entry(data: usize) -> WorkOutcome {
-    let activation = unsafe {
-        // SAFETY: callback data points to a leaked ControllerActivation. Work
-        // and delayed-work cancellation complete before its device is moved.
-        &*ptr::with_exposed_provenance::<ControllerActivation>(data)
-    };
-    if activation.status.load(Ordering::Acquire) != ACTIVATION_RUNNING {
-        return WorkOutcome::Complete;
-    }
-    if activation.timer.take_failure().is_some() {
-        activation.finish(Err(InitError::Hardware(
-            "controller initialization deadline delivery failed",
-        )));
-        return WorkOutcome::Complete;
-    }
-    match activation.service_deferred_irqs() {
-        Ok(true) => return WorkOutcome::Requeue,
-        Ok(false) => {}
-        Err(error) => {
-            activation.finish(Err(error));
-            return WorkOutcome::Complete;
-        }
-    }
-
-    let input = InitInput::new(
-        ax_hal::time::monotonic_time_nanos(),
-        activation.wake.begin_poll(),
-    );
-    let progress = {
-        let mut device = activation.device.lock();
-        let Some(device) = device.as_mut() else {
-            activation.finish(Err(InitError::InvalidState));
-            return WorkOutcome::Complete;
-        };
-        match device.bundle_mut().controller_init() {
-            ControllerInitEndpoint::Ready => InitPoll::Ready(()),
-            ControllerInitEndpoint::Pending(initializer) => initializer.poll_init(input),
-        }
-    };
-
-    match progress {
-        InitPoll::Ready(()) => {
-            activation.finish(Ok(()));
-            WorkOutcome::Complete
-        }
-        InitPoll::Failed(error) => {
-            activation.finish(Err(error));
-            WorkOutcome::Complete
-        }
-        InitPoll::Pending(schedule) => match activation.arm_schedule(schedule) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                activation.finish(Err(error));
-                WorkOutcome::Complete
+pub(super) fn activate_controller(
+    device: RdifBlockDevice,
+) -> Result<Arc<BlockController>, BlockControllerError> {
+    let name = String::from(device.name());
+    let slot = Arc::new(ControllerActivationSlot::new());
+    let owner_slot = Arc::clone(&slot);
+    let failure_slot = Arc::clone(&slot);
+    let thread = spawn_maintenance_domain::<BlockMaintenanceEvent, _>(
+        DEFAULT_BLOCK_OWNER_CPU,
+        alloc::format!("blk-maint/{name}"),
+        move |registrar| {
+            let result = run_controller_owner(device, registrar, owner_slot);
+            if let Err(error) = result.as_ref() {
+                failure_slot.publish_owner_failure(*error);
             }
+            result
         },
-    }
+    )?;
+    let controller = slot.wait_result()?;
+    controller.install_maintenance_thread(thread);
+    Ok(controller)
 }
 
-fn controller_init_timer_entry(data: usize) -> WorkOutcome {
-    let activation = unsafe {
-        // SAFETY: callback data follows the same leaked activation contract as
-        // the ordinary initialization work callback.
-        &*ptr::with_exposed_provenance::<ControllerActivation>(data)
+fn run_controller_owner(
+    device: RdifBlockDevice,
+    registrar: MaintenanceRegistrar<BlockMaintenanceEvent>,
+    activation: Arc<ControllerActivationSlot>,
+) -> Result<MaintenanceClosed, MaintenanceError> {
+    let initialized = match initialize_controller_on_owner(device, registrar)? {
+        ControllerInitialization::Ready(owner) => owner,
+        ControllerInitialization::Failed { error, closed } => {
+            activation.publish(Err(error));
+            return Ok(closed);
+        }
     };
-    if activation.status.load(Ordering::Acquire) != ACTIVATION_RUNNING {
-        return WorkOutcome::Complete;
+    let mut initialized = initialized;
+    match retire_initial_sources(&mut initialized) {
+        Ok(()) => {}
+        Err(BindNormalSourcesError::Configuration(error)) => {
+            let InitializedControllerOwner {
+                device,
+                session,
+                sources,
+                ..
+            } = initialized;
+            let closed = close_owner_resources(&device, session, sources)?;
+            activation.publish(Err(error));
+            return Ok(closed);
+        }
+        Err(BindNormalSourcesError::Close(failure)) => {
+            let InitializedControllerOwner {
+                device,
+                session,
+                sources,
+                ..
+            } = initialized;
+            quarantine_unpublished_owner_after_close_failure(device, session, sources, failure);
+        }
     }
-    if let Err(error) = activation.queue_work() {
-        activation.finish(Err(error));
-    }
-    WorkOutcome::Complete
-}
-
-fn publish_terminal_status(status: &AtomicU8, terminal: u8) -> bool {
-    debug_assert!(terminal == ACTIVATION_READY || terminal == ACTIVATION_FAILED);
-    status
-        .compare_exchange(
-            ACTIVATION_RUNNING,
-            terminal,
-            Ordering::Release,
-            Ordering::Acquire,
-        )
-        .is_ok()
-}
-
-/// Drives a staged hardware controller to Ready before queue publication.
-pub(super) fn drive_controller_initialization(
-    mut device: RdifBlockDevice,
-) -> Result<RdifBlockDevice, BlockControllerError> {
-    let declared_sources = match device.bundle_mut().controller_init() {
-        ControllerInitEndpoint::Ready => return Ok(device),
-        ControllerInitEndpoint::Pending(initializer) => initializer.irq_sources(),
-    };
-    if declared_sources.is_empty() {
-        return Err(BlockControllerError::Initialization(
-            InitError::MissingInterrupt,
-        ));
-    }
-
-    let cpu = ax_hal::percpu::this_cpu_id();
-    let completion_wake = crate::task::current_thread_handle()
-        .map_err(BlockControllerError::Task)?
-        .wake_handle();
-    let activation = ControllerActivation::allocate(device, declared_sources, cpu, completion_wake);
-    let name = {
-        let device = activation.device.lock();
-        alloc::string::String::from(
-            device
-                .as_ref()
-                .expect("activation owns its discovered device")
-                .name(),
-        )
-    };
-    let mut registrations = Vec::new();
-
-    for source_id in declared_sources.iter() {
-        let (binding, mut handler) = {
-            let mut device = activation.device.lock();
+    let InitializedControllerOwner {
+        device,
+        session,
+        mut sources,
+        faults,
+        remote,
+    } = initialized;
+    let mut device = Some(device);
+    let prepared = match BlockController::prepare_on_owner(&mut device, remote) {
+        Ok(prepared) => prepared,
+        Err(error) => {
             let device = device
-                .as_mut()
-                .expect("activation owns its discovered device");
-            let binding = device
-                .irq_for_source(source_id)
-                .cloned()
-                .ok_or(BlockControllerError::MissingIrqBinding(source_id))?;
-            let handler = match device.bundle_mut().controller_init() {
-                ControllerInitEndpoint::Ready => {
-                    return Err(BlockControllerError::Initialization(
-                        InitError::InvalidState,
-                    ));
-                }
-                ControllerInitEndpoint::Pending(initializer) => initializer
-                    .take_irq_handler(source_id)
-                    .ok_or(BlockControllerError::MissingIrqHandler(source_id))?,
-            };
-            (binding, handler)
-        };
-        let irq = crate::irq::resolve_binding_irq(binding)?;
-        let action_name = format!("{name}/blk-init-source-{source_id}");
-        let registration =
-            Registration::register_shared_disabled_on(action_name, irq, cpu, move |_ctx| {
-                let outcome = handler.handle_irq();
-                if !outcome.is_handled() {
-                    return ax_hal::irq::IrqReturn::Unhandled;
-                }
-                if outcome.is_deferred() {
-                    return activation.record_deferred_irq(source_id).into_irq_return();
-                }
-                activation.record_irq(source_id).into_irq_return()
-            })?;
-        registrations.push(registration);
+                .take()
+                .expect("failed controller preparation retains its unpublished device owner");
+            let closed = close_owner_resources(&device, session, sources)?;
+            activation.publish(Err(error));
+            return Ok(closed);
+        }
+    };
+    let bound_sources = match bind_normal_sources(
+        device
+            .as_mut()
+            .expect("normal source binding requires its unpublished device owner"),
+        &session,
+        &mut sources,
+        &faults,
+        prepared.declared_sources(),
+    ) {
+        Ok(bound) => bound,
+        Err(error) => {
+            prepared.abort();
+            let device = device
+                .take()
+                .expect("failed normal source binding retains its unpublished device owner");
+            let closed = close_owner_resources(&device, session, sources)?;
+            activation.publish(Err(error));
+            return Ok(closed);
+        }
+    };
+    let controller = match prepared.commit_on_owner(&mut device, bound_sources) {
+        Ok(controller) => controller,
+        Err(error) => {
+            let device = device
+                .take()
+                .expect("failed controller build retains its unpublished device owner");
+            let closed = close_owner_resources(&device, session, sources)?;
+            activation.publish(Err(error));
+            return Ok(closed);
+        }
+    };
+    if let Err(error) = enable_runtime_sources(&controller, &sources) {
+        let closed = close_controller_resources(&controller, session, sources)?;
+        activation.publish(Err(error));
+        return Ok(closed);
     }
 
-    for registration in &registrations {
-        if let Err(error) = registration.enable() {
-            if let Some(close_error) = close_unstarted_routes(&registrations) {
-                mem::forget(registrations);
-                return Err(close_error);
+    activation.publish(Ok(Arc::clone(&controller)));
+    run_owner_loop(controller, session, sources, faults)
+}
+
+fn retire_initial_sources(
+    owner: &mut InitializedControllerOwner,
+) -> Result<(), BindNormalSourcesError> {
+    if !owner.sources.is_empty() {
+        with_owner_irq_excluded(|| owner.device.disable_irq())?;
+        quiesce_after_device_masked(&owner.sources)?;
+        let initial_sources = core::mem::take(&mut owner.sources);
+        close_irq_sources(initial_sources).map_err(BindNormalSourcesError::Close)?;
+        drain_retired_initial_events(owner)?;
+    }
+    Ok(())
+}
+
+/// Discards facts captured by the initialization action only after that
+/// action is disabled, synchronized, and closed.
+///
+/// This is the linearization boundary between two action incarnations for the
+/// same logical source. Without it, a late initialization event whose local
+/// epoch starts at one could be mistaken for the first normal-I/O event after
+/// replacement.
+fn drain_retired_initial_events(
+    owner: &mut InitializedControllerOwner,
+) -> Result<(), BindNormalSourcesError> {
+    loop {
+        let drain = owner
+            .session
+            .drain_owner(crate::maintenance::MAINTENANCE_BATCH_LIMIT, |_| {})?;
+        if drain.causes().contains(MaintenanceCauses::OVERFLOW) {
+            return Err(BlockControllerError::Initialization(InitError::Hardware(
+                "initialization IRQ mailbox overflowed at the phase boundary",
+            ))
+            .into());
+        }
+        if !drain.pending() {
+            break;
+        }
+    }
+    if !owner.faults.take().is_empty() {
+        return Err(BlockControllerError::Initialization(InitError::Hardware(
+            "initialization IRQ capture failed at the phase boundary",
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn bind_normal_sources(
+    device: &mut RdifBlockDevice,
+    session: &MaintenanceSession<BlockMaintenanceEvent>,
+    sources: &mut Vec<RuntimeIrqSource>,
+    faults: &Arc<BlockIrqFaultSet>,
+    declared: &[rdif_block::IrqSourceInfo],
+) -> Result<IdList, BlockControllerError> {
+    let mut bound = IdList::none();
+    for source_info in declared {
+        let source_id = source_info.id;
+        let binding = device
+            .irq_for_source(source_id)
+            .cloned()
+            .ok_or(BlockControllerError::MissingIrqBinding(source_id))?;
+        let irq = crate::irq::resolve_binding_irq(binding)?;
+        let source = device
+            .bundle_mut()
+            .take_irq_source(source_id)
+            .ok_or(BlockControllerError::MissingIrqHandler(source_id))?;
+        let wake = session.local_irq_wake()?;
+        sources.push(RuntimeIrqSource::register_replacement_disabled(
+            session,
+            RuntimeIrqRegistration {
+                controller_name: device.name().into(),
+                source_id,
+                irq,
+                source,
+                wake,
+                faults: Arc::clone(faults),
+            },
+        )?);
+        bound.insert(source_id);
+    }
+    Ok(bound)
+}
+
+enum BindNormalSourcesError {
+    Configuration(BlockControllerError),
+    Close(CloseIrqSourcesFailure),
+}
+
+impl From<BlockControllerError> for BindNormalSourcesError {
+    fn from(error: BlockControllerError) -> Self {
+        Self::Configuration(error)
+    }
+}
+
+impl From<rdif_block::BlkError> for BindNormalSourcesError {
+    fn from(error: rdif_block::BlkError) -> Self {
+        Self::Configuration(error.into())
+    }
+}
+
+impl From<ax_hal::irq::IrqError> for BindNormalSourcesError {
+    fn from(error: ax_hal::irq::IrqError) -> Self {
+        Self::Configuration(error.into())
+    }
+}
+
+impl From<MaintenanceError> for BindNormalSourcesError {
+    fn from(error: MaintenanceError) -> Self {
+        Self::Configuration(error.into())
+    }
+}
+
+fn enable_runtime_sources(
+    controller: &BlockController,
+    sources: &[RuntimeIrqSource],
+) -> Result<(), BlockControllerError> {
+    let mut enabled = 0;
+    for source in sources {
+        if let Err(error) = source.enable() {
+            for rollback in &sources[..enabled] {
+                let _ = rollback.disable();
             }
             return Err(error.into());
         }
+        enabled += 1;
     }
-    if let Err(error) = activation
-        .device
-        .lock()
-        .as_ref()
-        .expect("activation owns its discovered device")
-        .enable_irq()
+    if !sources.is_empty()
+        && let Err(error) = controller.enable_device_irq_on_owner()
     {
-        if let Some(close_error) = close_started_routes(activation, &registrations) {
-            mem::forget(registrations);
-            return Err(close_error);
+        for source in &sources[..enabled] {
+            let _ = source.disable();
         }
-        return Err(error.into());
-    }
-
-    let drive_result = activation
-        .domain
-        .queue_work_on(activation.work())
-        .map(|_| ())
-        .map_err(BlockControllerError::WorkQueue)
-        .and_then(|()| {
-            activation
-                .completion
-                .try_wait_until(|| activation.status.load(Ordering::Acquire) != ACTIVATION_RUNNING)
-                .map_err(BlockControllerError::Task)
-        });
-
-    let route_error = close_started_routes(activation, &registrations);
-    if let Some(error) = route_error {
-        // A live device with an unproven IRQ mask must retain the disabled OS
-        // action objects and its discovery owner for shutdown lifetime.
-        mem::forget(registrations);
         return Err(error);
     }
-    activation
-        .domain
-        .cancel_delayed_work_sync(activation.timer())
-        .map_err(BlockControllerError::WorkQueue)?;
-    activation
-        .domain
-        .cancel_work_sync(activation.work())
-        .map_err(BlockControllerError::WorkQueue)?;
-    drop(registrations);
+    Ok(())
+}
 
-    drive_result?;
+fn run_owner_loop(
+    controller: Arc<BlockController>,
+    session: MaintenanceSession<BlockMaintenanceEvent>,
+    mut sources: Vec<RuntimeIrqSource>,
+    faults: Arc<BlockIrqFaultSet>,
+) -> Result<MaintenanceClosed, MaintenanceError> {
+    let mut masked = [None; 64];
+    let mut handoff = OwnerHandoff::new();
+    let mut shutdown = OwnerShutdown::new();
+    let mut shutdown_requested = false;
+    loop {
+        let mut service_error = None;
+        let drain =
+            match session.drain_owner(crate::maintenance::MAINTENANCE_BATCH_LIMIT, |event| {
+                match event {
+                    BlockMaintenanceEvent::Irq {
+                        source_id,
+                        source_epoch,
+                        facts,
+                        masked: token,
+                    } => {
+                        if let Err(error) =
+                            controller.route_owner_irq(source_id, source_epoch, facts)
+                        {
+                            service_error = Some(error);
+                        }
+                        if source_id < masked.len() && token.is_some() {
+                            masked[source_id] = token;
+                        }
+                    }
+                    BlockMaintenanceEvent::Fault {
+                        source_id,
+                        containment,
+                        ..
+                    } => {
+                        if let rdif_block::FaultContainment::DeviceSourceMasked(token) = containment
+                            && source_id < masked.len()
+                        {
+                            masked[source_id] = Some(token);
+                        }
+                        service_error = Some(super::HardwareQueueError::Offline);
+                    }
+                }
+            }) {
+                Ok(drain) => drain,
+                Err(error) => quarantine_controller_owner(controller, session, sources, error),
+            };
+        if !faults.take().is_empty() || drain.causes().contains(MaintenanceCauses::OVERFLOW) {
+            service_error = Some(super::HardwareQueueError::Capacity);
+        }
+        shutdown_requested |= drain.causes().contains(MaintenanceCauses::SHUTDOWN);
+        if shutdown_requested {
+            match controller.service_owner_shutdown(&sources, &mut shutdown) {
+                Ok(OwnerShutdownProgress::Pending { .. }) => {}
+                Ok(OwnerShutdownProgress::Complete) => {
+                    return close_controller_resources(&controller, session, sources);
+                }
+                Err(error) => {
+                    error!(
+                        "block controller {} shutdown failed: {error}",
+                        controller.name()
+                    );
+                    controller.quarantine_queue_endpoints(rdif_block::BlkError::Quarantined);
+                    controller.mark_offline();
+                    return close_controller_resources(&controller, session, sources);
+                }
+            }
+            if controller.owner_shutdown_is_offline() {
+                controller.quarantine_queue_endpoints(rdif_block::BlkError::Quarantined);
+                return close_controller_resources(&controller, session, sources);
+            }
+        }
+        let mut irq_ingress_pending = false;
+        let mut watchdog_cutoff = None;
+        if controller.normal_irq_service_active() {
+            let now_ns = ax_hal::time::monotonic_time_nanos();
+            if controller
+                .next_owner_deadline_ns()
+                .is_some_and(|deadline_ns| deadline_ns <= now_ns)
+            {
+                match faults.try_begin_watchdog_cutoff() {
+                    Some(cutoff) => match session.has_irq_pending() {
+                        Ok(true) => irq_ingress_pending = true,
+                        Ok(false) => {
+                            for source in &sources {
+                                match source.status() {
+                                    Ok(status) => warn!(
+                                        "block watchdog reached controller={} source={} \
+                                         irq_status={status:?} device_source={:?}",
+                                        controller.name(),
+                                        source.source_id(),
+                                        source.device_state()
+                                    ),
+                                    Err(error) => warn!(
+                                        "block watchdog reached controller={} source={} \
+                                         irq_status_error={error} device_source={:?}",
+                                        controller.name(),
+                                        source.source_id(),
+                                        source.device_state()
+                                    ),
+                                }
+                            }
+                            controller.raise_due_watchdogs(now_ns);
+                            watchdog_cutoff = Some(cutoff);
+                        }
+                        Err(error) => {
+                            drop(cutoff);
+                            quarantine_controller_owner(controller, session, sources, error);
+                        }
+                    }
+                    None => irq_ingress_pending = true,
+                }
+            }
+        }
+        let mut more = match service_error {
+            Some(error) => {
+                controller.record_owner_service_failure(&error);
+                false
+            }
+            None => match controller.service_owner_queues() {
+                Ok(more) => more,
+                Err(error) => {
+                    controller.record_owner_service_failure(&error);
+                    false
+                }
+            },
+        };
+        // `service_owner_queues` either claimed every due timeout under this
+        // cutoff or deferred it behind queue-local IRQ evidence. IRQ callbacks
+        // remained non-blocking and any event ordered after the cutoff is
+        // consumed by the next owner pass as late recovery evidence.
+        drop(watchdog_cutoff);
+        more |= irq_ingress_pending;
+        if controller.normal_irq_service_active() {
+            rearm_runtime_sources(&mut sources, &mut masked, &controller);
+        }
+        more |= controller.service_owner_return(&mut sources);
+        match controller.service_owner_recovery(&mut sources, &mut masked) {
+            Ok(recovery_more) => more |= recovery_more,
+            Err(error) => {
+                error!(
+                    "block controller {} recovery failed: {error}",
+                    controller.name()
+                );
+                controller.mark_offline();
+            }
+        }
+        more |= controller.service_owner_return(&mut sources);
+        more |= controller.service_owner_handoff(&mut sources, &mut handoff);
 
-    let status = activation.status.load(Ordering::Acquire);
-    let error = if activation.irq_work_failed.load(Ordering::Acquire) {
-        Some(InitError::Hardware(
-            "could not queue controller initialization work from IRQ",
-        ))
-    } else {
-        activation.error.lock().take()
-    };
-    match status {
-        ACTIVATION_READY => Ok(activation.take_device()),
-        // A failed initializer may still have an admin command or DMA engine
-        // owned by hardware. With no typed quiescence proof, retain the masked
-        // controller in this shutdown-lifetime quarantine instead of dropping
-        // mappings or DMA buffers on an assumption.
-        ACTIVATION_FAILED => Err(BlockControllerError::Initialization(
-            error.unwrap_or(InitError::InvalidState),
-        )),
-        _ => Err(BlockControllerError::Initialization(
-            InitError::InvalidState,
-        )),
+        if shutdown_requested {
+            match controller.service_owner_shutdown(&sources, &mut shutdown) {
+                Ok(OwnerShutdownProgress::Pending { run_again }) => more |= run_again,
+                Ok(OwnerShutdownProgress::Complete) => {
+                    return close_controller_resources(&controller, session, sources);
+                }
+                Err(error) => {
+                    error!(
+                        "block controller {} shutdown failed: {error}",
+                        controller.name()
+                    );
+                    controller.quarantine_queue_endpoints(rdif_block::BlkError::Quarantined);
+                    controller.mark_offline();
+                    return close_controller_resources(&controller, session, sources);
+                }
+            }
+            if controller.owner_shutdown_is_offline() {
+                controller.quarantine_queue_endpoints(rdif_block::BlkError::Quarantined);
+                return close_controller_resources(&controller, session, sources);
+            }
+        }
+        if more || drain.pending() {
+            if let Err(error) = yield_current_cpu() {
+                quarantine_controller_owner(controller, session, sources, error.into());
+            }
+            continue;
+        }
+        if let Some(deadline) = controller.next_owner_deadline_ns() {
+            if let Err(error) = session.wait_for_pending_until(deadline) {
+                quarantine_controller_owner(controller, session, sources, error);
+            }
+        } else if let Err(error) = session.wait_for_pending() {
+            quarantine_controller_owner(controller, session, sources, error);
+        }
     }
 }
 
-fn close_unstarted_routes(registrations: &[Registration]) -> Option<BlockControllerError> {
-    let mut first_error = None;
-    for registration in registrations {
-        if let Err(error) = registration.disable()
-            && first_error.is_none()
-        {
-            first_error = Some(error.into());
+fn rearm_runtime_sources(
+    sources: &mut [RuntimeIrqSource],
+    masked: &mut [Option<MaskedSource>; 64],
+    controller: &BlockController,
+) {
+    for source in sources {
+        let source_id = source.source_id();
+        let Some(token) = masked.get_mut(source_id).and_then(Option::take) else {
+            continue;
+        };
+        if source.rearm(token).is_err() {
+            controller.record_owner_service_failure(&super::HardwareQueueError::Offline);
         }
     }
-    for registration in registrations {
-        if let Err(error) = registration.synchronize()
-            && first_error.is_none()
-        {
-            first_error = Some(error.into());
-        }
-    }
-    first_error
 }
 
-fn close_started_routes(
-    activation: &ControllerActivation,
-    registrations: &[Registration],
-) -> Option<BlockControllerError> {
-    if let Err(error) = activation
-        .device
-        .lock()
-        .as_ref()
-        .expect("activation owns its discovered device")
-        .disable_irq()
-    {
-        // Keep every acknowledgement action live when the device cannot prove
-        // its interrupt source is masked. The caller retains both the action
-        // objects and the controller for shutdown lifetime, preventing an
-        // asserted level from becoming an unhandled interrupt storm.
-        return Some(error.into());
-    }
-
-    let mut first_error = None;
-    for registration in registrations {
-        if let Err(error) = registration.disable()
-            && first_error.is_none()
-        {
-            first_error = Some(error.into());
+fn quarantine_controller_owner(
+    controller: Arc<BlockController>,
+    session: MaintenanceSession<BlockMaintenanceEvent>,
+    sources: Vec<RuntimeIrqSource>,
+    error: MaintenanceError,
+) -> ! {
+    error!(
+        "block controller {} owner failed and will remain CPU-pinned in quarantine: {error}",
+        controller.name()
+    );
+    controller.mark_offline();
+    controller.quarantine_queue_endpoints(rdif_block::BlkError::Quarantined);
+    let retained_sources = sources;
+    match controller.disable_device_irq_on_owner() {
+        Ok(()) => {
+            if let Err(quiesce_error) = quiesce_after_device_masked(&retained_sources) {
+                error!(
+                    "block controller {} could not quiesce IRQ actions before owner quarantine: \
+                     {quiesce_error:?}",
+                    controller.name()
+                );
+            }
+        }
+        Err(mask_error) => {
+            error!(
+                "block controller {} could not mask device IRQs before owner quarantine: \
+                 {mask_error}",
+                controller.name()
+            );
+            // Without a device-side mask proof the line quench must remain in
+            // force. Disable and drain only the owner action; never reopen a
+            // shared backing line around an uncontained source.
+            for source in &retained_sources {
+                let _ = source.disable();
+            }
+            for source in &retained_sources {
+                let _ = source.synchronize();
+            }
         }
     }
-    for registration in registrations {
-        if let Err(error) = registration.synchronize()
-            && first_error.is_none()
-        {
-            first_error = Some(error.into());
-        }
-    }
-    first_error
+    // `retained_sources` remains in this non-returning stack frame. Any action
+    // that could not be disabled is still paired with the pinned owner lease;
+    // late dispatch observes the closed lifecycle and contains its source.
+    session.quarantine_and_park()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fast_irq_between_poll_and_schedule_publish_forces_a_rerun() {
-        let wake = InitializationWake::new(IdList::from_bits(1 << 3));
-
-        assert!(wake.begin_poll().is_empty());
-        assert!(!wake.record_irq(3), "the wait mask is not published yet");
-        assert!(
-            wake.publish_schedule(IdList::from_bits(1 << 3)).unwrap(),
-            "the worker-side pending recheck must close the fast-IRQ window"
+fn close_controller_resources(
+    controller: &BlockController,
+    session: MaintenanceSession<BlockMaintenanceEvent>,
+    sources: Vec<RuntimeIrqSource>,
+) -> Result<MaintenanceClosed, MaintenanceError> {
+    if let Err(error) = session.begin_close() {
+        error!("block controller close could not cut off publication: {error}");
+        session.quarantine_and_park();
+    }
+    controller.mark_offline();
+    if let Err(error) = controller.disable_device_irq_on_owner() {
+        error!(
+            "block controller {} could not mask device IRQs during close: {error}",
+            controller.name()
         );
+        controller.quarantine_queue_endpoints(rdif_block::BlkError::Quarantined);
+        session.quarantine_and_park();
     }
-
-    #[test]
-    fn unrelated_declared_irq_is_latched_without_reactivating_this_wait() {
-        let wake = InitializationWake::new(IdList::from_bits((1 << 1) | (1 << 2)));
-        assert!(!wake.publish_schedule(IdList::from_bits(1 << 1)).unwrap());
-
-        assert!(!wake.record_irq(2));
-        assert!(wake.begin_poll().contains(2));
+    if let Err(error) = quiesce_after_device_masked(&sources) {
+        error!(
+            "block controller {} could not drain IRQ source during close: {error:?}",
+            controller.name()
+        );
+        session.quarantine_and_park();
     }
-
-    #[test]
-    fn deferred_irq_is_not_pollable_before_worker_acknowledgement() {
-        let wake = InitializationWake::new(IdList::from_bits(1 << 3));
-        let deferred = DeferredInitializationIrqs::new();
-
-        deferred.record(3);
-        assert!(wake.begin_poll().is_empty());
-
-        let sources = deferred.take();
-        assert!(sources.contains(3));
-        assert!(!wake.record_irq(3));
-        assert!(wake.begin_poll().contains(3));
+    if let Err(failure) = close_irq_sources(sources) {
+        error!(
+            "block controller {} could not close an IRQ action: {:?}",
+            controller.name(),
+            failure.reason()
+        );
+        quarantine_source_close_failure(session, failure);
     }
+    controller.clear_owner_link_after_drain();
+    finish_maintenance_close(session)
+}
 
-    #[test]
-    fn contended_deferred_irq_is_restored_for_the_next_worker_pass() {
-        let deferred = DeferredInitializationIrqs::new();
-        deferred.record(5);
+struct CloseIrqSourcesFailure {
+    reason: MaintenanceError,
+    _retained: Vec<RuntimeIrqSource>,
+}
 
-        let sources = deferred.take();
-        assert!(sources.contains(5));
-        deferred.restore(sources);
-
-        assert!(deferred.take().contains(5));
-        assert!(deferred.take().is_empty());
+impl CloseIrqSourcesFailure {
+    const fn reason(&self) -> MaintenanceError {
+        self.reason
     }
+}
 
-    #[test]
-    fn repeated_deferred_ack_contention_preserves_the_source_across_worker_yields() {
-        let wake = InitializationWake::new(IdList::from_bits(1 << 5));
-        let deferred = DeferredInitializationIrqs::new();
-        deferred.record(5);
-
-        for _ in 0..64 {
-            let sources = deferred.take();
-            assert!(sources.contains(5));
-            deferred.restore(sources);
-            // Production returns WorkOutcome::Requeue after this restoration,
-            // so one contended acknowledgement consumes at most one bounded
-            // worker pass instead of spinning inside the callback.
+fn close_irq_sources(sources: Vec<RuntimeIrqSource>) -> Result<(), CloseIrqSourcesFailure> {
+    let mut first_error = None;
+    let mut retained = Vec::new();
+    for source in sources {
+        if let Err(failure) = source.close() {
+            let (reason, source) = failure.into_parts();
+            first_error.get_or_insert(reason);
+            retained.push(source);
         }
+    }
+    match first_error {
+        None => Ok(()),
+        Some(reason) => Err(CloseIrqSourcesFailure {
+            reason,
+            _retained: retained,
+        }),
+    }
+}
 
-        let acknowledged = deferred.take();
-        assert!(acknowledged.contains(5));
-        assert!(!wake.record_irq(5));
-        assert!(wake.begin_poll().contains(5));
-        assert!(deferred.take().is_empty());
+fn quarantine_source_close_failure(
+    session: MaintenanceSession<BlockMaintenanceEvent>,
+    _failure: CloseIrqSourcesFailure,
+) -> ! {
+    session.quarantine_and_park()
+}
+
+fn quarantine_unpublished_owner_after_close_failure(
+    _device: RdifBlockDevice,
+    session: MaintenanceSession<BlockMaintenanceEvent>,
+    _sources: Vec<RuntimeIrqSource>,
+    _failure: CloseIrqSourcesFailure,
+) -> ! {
+    error!("unpublished block owner retained an IRQ action after close failure");
+    session.quarantine_and_park()
+}
+
+fn finish_maintenance_close(
+    session: MaintenanceSession<BlockMaintenanceEvent>,
+) -> Result<MaintenanceClosed, MaintenanceError> {
+    if let Err(error) = session.try_begin_draining() {
+        error!("block maintenance domain could not begin final drain: {error}");
+        session.quarantine_and_park();
+    }
+    loop {
+        match session.drain_owner(crate::maintenance::MAINTENANCE_BATCH_LIMIT, |_| {}) {
+            Ok(drain) if drain.pending() => {}
+            Ok(_) => break,
+            Err(error) => {
+                error!("block maintenance domain could not drain accepted events: {error}");
+                session.quarantine_and_park();
+            }
+        }
+    }
+    if let Err(error) = session.finish_close() {
+        error!("block maintenance domain could not commit close: {error}");
+        session.quarantine_and_park();
+    }
+    match session.try_into_closed() {
+        Ok(closed) => Ok(closed),
+        Err(failure) => {
+            let error = failure.error();
+            error!("block maintenance domain lost its close proof: {error}");
+            failure.into_session().quarantine_and_park();
+        }
+    }
+}
+
+/// Live owner state after the portable initialization FSM reaches Ready.
+pub(super) struct InitializedControllerOwner {
+    pub(super) device: RdifBlockDevice,
+    pub(super) session: MaintenanceSession<BlockMaintenanceEvent>,
+    pub(super) sources: Vec<RuntimeIrqSource>,
+    pub(super) faults: Arc<BlockIrqFaultSet>,
+    pub(super) remote: Arc<DeviceMaintenanceHandle<BlockMaintenanceEvent>>,
+}
+
+/// Terminal result of owner-thread initialization.
+pub(super) enum ControllerInitialization {
+    Ready(InitializedControllerOwner),
+    Failed {
+        error: BlockControllerError,
+        closed: MaintenanceClosed,
+    },
+}
+
+/// Runs discovery-to-ready only after the final owner holds its CPU lease and
+/// every declared action has been registered disabled on that same CPU.
+pub(super) fn initialize_controller_on_owner(
+    mut device: RdifBlockDevice,
+    registrar: MaintenanceRegistrar<BlockMaintenanceEvent>,
+) -> Result<ControllerInitialization, MaintenanceError> {
+    let declared = match device.bundle_mut().controller_init() {
+        ControllerInitEndpoint::Ready => IdList::none(),
+        ControllerInitEndpoint::Pending(initializer) => initializer.irq_sources(),
+    };
+    if !matches!(
+        device.bundle_mut().controller_init(),
+        ControllerInitEndpoint::Ready
+    ) && declared.is_empty()
+    {
+        let error = BlockControllerError::Initialization(InitError::MissingInterrupt);
+        return close_failed_registration(device, registrar, Vec::new(), error);
     }
 
-    #[test]
-    fn ready_terminal_state_cannot_be_overwritten_by_a_queued_rerun() {
-        let status = AtomicU8::new(ACTIVATION_RUNNING);
+    let faults = Arc::new(BlockIrqFaultSet::new());
+    let mut sources =
+        match register_initial_sources(&mut device, &registrar, declared, Arc::clone(&faults)) {
+            Ok(sources) => sources,
+            Err(failure) => {
+                let (error, sources) = failure.into_parts();
+                return close_failed_registration(device, registrar, sources, error);
+            }
+        };
+    let remote = Arc::new(registrar.remote_handle());
+    let session = registrar.activate()?;
 
-        assert!(publish_terminal_status(&status, ACTIVATION_READY));
-        assert!(!publish_terminal_status(&status, ACTIVATION_FAILED));
-        assert_eq!(status.load(Ordering::Acquire), ACTIVATION_READY);
+    if let Err(error) = enable_irq_delivery(&device, &sources) {
+        return close_failed_session(device, session, sources, error);
+    }
+    if declared.is_empty() {
+        return Ok(ControllerInitialization::Ready(
+            InitializedControllerOwner {
+                device,
+                session,
+                sources,
+                faults,
+                remote,
+            },
+        ));
+    }
+
+    let mut pending = IdList::none();
+    let mut masked = [None; 64];
+    let init_result = drive_init_fsm(
+        &mut device,
+        &session,
+        &mut sources,
+        &faults,
+        &mut pending,
+        &mut masked,
+    );
+    match init_result {
+        Ok(()) => Ok(ControllerInitialization::Ready(
+            InitializedControllerOwner {
+                device,
+                session,
+                sources,
+                faults,
+                remote,
+            },
+        )),
+        Err(error) => close_failed_session(
+            device,
+            session,
+            sources,
+            BlockControllerError::Initialization(error),
+        ),
     }
 }

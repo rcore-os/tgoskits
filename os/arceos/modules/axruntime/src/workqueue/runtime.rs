@@ -46,26 +46,12 @@ impl WorkQueue {
         let lane = RUNTIME_WORKQUEUE.lane(route)?;
         let worker_wake = lane.worker_wake_handle()?;
 
-        queue.reserve_item()?;
-        if let Err(error) = work.get_ref().bind_domain(queue) {
-            queue.release_item_reservation();
-            return Err(error);
-        }
-        let result = match RUNTIME_WORKQUEUE.queue_work_on(queue.cpu, queue.priority, work) {
-            Ok(result) => result,
-            Err(error) => {
-                queue.release_item_reservation();
-                return Err(error);
-            }
-        };
+        queue.enable_runtime_notifications();
+        let result = RUNTIME_WORKQUEUE.queue_work_in_domain(self, work)?;
 
         if result == QueueWorkResult::Queued {
             let wake_result = worker_wake.wake();
             enforce_published_worker_progress(lane, wake_result);
-        } else {
-            // The item was already active, so the provisional idle-item
-            // reservation is not part of this domain's drain boundary.
-            queue.release_item_reservation();
         }
         Ok(result)
     }
@@ -172,6 +158,17 @@ fn ensure_runtime_domain_wait_context() -> Result<u64, WorkQueueError> {
         return Err(WorkQueueError::WouldDeadlock);
     }
     Ok(current)
+}
+
+#[cfg(feature = "workqueue")]
+fn ensure_runtime_release_context() -> Result<(), WorkQueueError> {
+    if ax_hal::irq::in_irq_context()
+        || crate::guard::validate_schedule_context(ax_task::runtime::RuntimeScheduleOrigin::Block)
+            != ax_task::runtime::RuntimeStatus::Success
+    {
+        return Err(WorkQueueError::UnsafeContext);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "workqueue")]

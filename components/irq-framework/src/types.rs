@@ -1,5 +1,4 @@
 use alloc::boxed::Box;
-use core::{cell::UnsafeCell, mem::MaybeUninit, sync::atomic::{AtomicU8, Ordering}};
 
 /// An IRQ controller domain id.
 #[repr(transparent)]
@@ -25,6 +24,118 @@ impl IrqId {
     /// Creates an IRQ id from a domain and hardware line.
     pub const fn new(domain: IrqDomainId, hwirq: HwIrq) -> Self {
         Self { domain, hwirq }
+    }
+}
+
+/// Generation-checked handle to one prepared IRQ-chip line endpoint.
+///
+/// The platform owns the backing endpoint in shutdown-lifetime storage. The
+/// framework stores only this value-only key, so no pointer provenance or
+/// controller driver object crosses the runtime boundary.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct IrqLineBinding {
+    slot: u32,
+    reserved: u32,
+    generation: u64,
+}
+
+impl IrqLineBinding {
+    /// Creates a validated binding key. Generation zero is permanently
+    /// reserved for uninitialized storage.
+    pub const fn new(slot: u32, generation: u64) -> Option<Self> {
+        if generation == 0 {
+            None
+        } else {
+            Some(Self {
+                slot,
+                reserved: 0,
+                generation,
+            })
+        }
+    }
+
+    /// Returns the platform arena slot.
+    pub const fn slot(self) -> u32 {
+        self.slot
+    }
+
+    /// Returns the exact slot generation.
+    pub const fn generation(self) -> u64 {
+        self.generation
+    }
+}
+
+/// Live control available for a prepared IRQ line.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IrqLineControl {
+    /// The prepared irq-chip endpoint can physically mask and unmask the line.
+    Maskable       = 0,
+    /// The architecture vector is always live; only the framework action gate
+    /// can suppress callback delivery.
+    ActionGateOnly = 1,
+}
+
+/// Result of the sole fallible IRQ-chip preparation transaction.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreparedIrqLine {
+    binding: IrqLineBinding,
+    control: IrqLineControl,
+    reserved: [u8; 7],
+}
+
+/// Linear proof that a prepared IRQ-chip line generation was released.
+///
+/// The proof is created only after the platform release transaction succeeds
+/// and the framework commits the descriptor back to its unbound state. It is
+/// intentionally neither cloneable nor copyable: upper layers can retain it as
+/// evidence that the former host action no longer owns a controller endpoint.
+#[must_use = "released IRQ line ownership should be transferred or explicitly discarded"]
+#[derive(Debug, Eq, PartialEq)]
+pub struct ReleasedIrqLineProof {
+    irq: IrqId,
+    released_binding: IrqLineBinding,
+}
+
+impl ReleasedIrqLineProof {
+    pub(crate) const fn new(irq: IrqId, released_binding: IrqLineBinding) -> Self {
+        Self {
+            irq,
+            released_binding,
+        }
+    }
+
+    /// Returns the framework IRQ whose old platform endpoint was released.
+    pub const fn irq(&self) -> IrqId {
+        self.irq
+    }
+
+    /// Returns the exact retired platform binding generation.
+    pub const fn released_binding(&self) -> IrqLineBinding {
+        self.released_binding
+    }
+}
+
+impl PreparedIrqLine {
+    /// Creates a prepared line capability.
+    pub const fn new(binding: IrqLineBinding, control: IrqLineControl) -> Self {
+        Self {
+            binding,
+            control,
+            reserved: [0; 7],
+        }
+    }
+
+    /// Returns the generation-checked platform binding.
+    pub const fn binding(self) -> IrqLineBinding {
+        self.binding
+    }
+
+    /// Returns the line's live control mode.
+    pub const fn control(self) -> IrqLineControl {
+        self.control
     }
 }
 
@@ -276,29 +387,36 @@ pub enum IrqReturn {
     Unhandled,
     /// This action handled the IRQ.
     Handled,
-    /// This action handled the IRQ and asks the OS adapter to wake deferred work.
+    /// This action handled the IRQ after explicitly publishing its target wake.
+    ///
+    /// The framework does not choose or invoke a worker for the action. This
+    /// result only records that IRQ return must observe scheduler work already
+    /// published by the endpoint's OS glue, for example through a stable
+    /// thread wake handle.
     Wake,
-    /// This action needs one ordinary task-side acknowledgement continuation.
+    /// This action handled the IRQ, disabled its device-local source, and must
+    /// stop receiving callbacks until task-side recovery explicitly enables it.
     ///
-    /// The framework masks the shared backing line before invoking `wake` and
-    /// keeps it masked until the exact generation-bearing token is consumed by
-    /// [`crate::Registry::finish_continuation`]. The action remains enabled;
-    /// this is separate from the fail-closed [`Self::QuenchAndWake`] path.
+    /// The framework disables only this action. It deliberately keeps the
+    /// backing line available to unrelated actions sharing that line. Before
+    /// returning this value, the endpoint must have precisely masked or
+    /// otherwise deasserted its own device source. The only exception is an
+    /// exclusive action whose disable transition necessarily closes the sole
+    /// backing line. Failing either proof can cause an interrupt storm because
+    /// a shared controller line stays open.
+    /// For a per-CPU action, the framework suppresses only the observing CPU's
+    /// action instance and closes that CPU's unowned line. Healthy CPU
+    /// instances remain enabled; task-side recovery may call [`Registry::enable`](crate::Registry::enable)
+    /// to clear all local suppression after repairing the source.
+    DisableActionAndWake,
+    /// This action hit a condition that cannot be isolated at the device source.
     ///
-    /// The endpoint may return this only when its device remains level-asserted
-    /// or its interrupt controller retains and replays arrivals observed while
-    /// masked (for example an MSI-X PBA). Edge sources without such a latch
-    /// must fail closed instead; the framework never invents a lost edge.
-    Defer(&'static IrqContinuationWake),
-    /// This action hit a fail-closed condition and must stop receiving IRQs.
-    ///
-    /// For a global action, the registry disables the returning action and
-    /// masks the complete backing line before dispatch ends. For a per-CPU
-    /// action, it masks only the CPU that observed the failure; the same action
-    /// remains eligible on unaffected CPUs. The OS adapter must wake recovery,
-    /// mask the device source, and explicitly release this action's quench
-    /// ownership before the affected line can reopen.
-    QuenchAndWake,
+    /// The framework records quench ownership and masks the entire affected
+    /// controller line before dispatch ends. For a global action this closes the
+    /// shared backing line; for a per-CPU action it closes only the observing
+    /// CPU's line instance. Recovery must mask or reset the device source and
+    /// explicitly release quench ownership. The action itself remains enabled.
+    MaskLineAndWake,
 }
 
 /// Aggregated dispatch result.
@@ -306,7 +424,7 @@ pub enum IrqReturn {
 pub struct IrqOutcome {
     /// At least one action handled the IRQ.
     pub handled: bool,
-    /// At least one action requested a wakeup.
+    /// At least one action reported a wake already published by its OS glue.
     pub wake: bool,
     /// Number of handlers called by this dispatch.
     pub called: usize,
@@ -322,14 +440,8 @@ pub struct IrqStatus {
     pub action_enabled: bool,
     /// Whether this action owns an emergency backing-line quench.
     pub quench_owned: bool,
-    /// Whether an ordinary acknowledgement continuation owns the line.
-    pub continuation_pending: bool,
-    /// Whether the platform line is enabled.
+    /// Whether the prepared line's framework-applied state is enabled.
     pub line_enabled: bool,
-    /// Whether the platform reports the IRQ pending.
-    pub pending: bool,
-    /// Whether the platform reports the IRQ in service.
-    pub in_service: bool,
     /// Number of in-flight dispatches for this descriptor.
     pub in_flight: usize,
     /// Whether this action is currently running.
@@ -346,55 +458,6 @@ pub struct IrqStatus {
 pub struct IrqDrainWake {
     data: usize,
     wake: unsafe fn(usize),
-}
-
-/// Preallocated token handoff invoked after a deferred IRQ action is masked.
-pub struct IrqContinuationWake {
-    data: usize,
-    wake: unsafe fn(usize, IrqContinuationToken),
-}
-
-impl core::fmt::Debug for IrqContinuationWake {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("IrqContinuationWake")
-            .field("data", &self.data)
-            .finish_non_exhaustive()
-    }
-}
-
-impl PartialEq for IrqContinuationWake {
-    fn eq(&self, other: &Self) -> bool {
-        self.data == other.data && core::ptr::fn_addr_eq(self.wake, other.wake)
-    }
-}
-
-impl Eq for IrqContinuationWake {}
-
-impl IrqContinuationWake {
-    /// Creates a shutdown-lifetime deferred IRQ notification target.
-    ///
-    /// # Safety
-    ///
-    /// `data` and the callback must remain valid for shutdown lifetime. The
-    /// callback runs in hard IRQ context after the backing line is masked. It
-    /// must publish the token into preallocated storage without allocation,
-    /// blocking, freeing, arbitrary callbacks, or IRQ-registry reentry.
-    pub const unsafe fn new(
-        data: usize,
-        wake: unsafe fn(usize, IrqContinuationToken),
-    ) -> Self {
-        Self { data, wake }
-    }
-
-    pub(crate) fn notify(&self, token: IrqContinuationToken) {
-        unsafe {
-            // SAFETY: construction binds this callback to shutdown-lifetime
-            // data and the registry invokes it only after recording the exact
-            // action generation and masking its backing line.
-            (self.wake)(self.data, token);
-        }
-    }
 }
 
 impl IrqDrainWake {
@@ -432,116 +495,6 @@ impl IrqDrainWake {
 pub struct IrqDrainToken {
     pub(crate) handle: IrqHandle,
     pub(crate) epoch: u64,
-}
-
-/// Linear completion capability for one deferred IRQ action generation.
-///
-/// This type is deliberately neither `Copy` nor `Clone`. Losing it leaves the
-/// action masked; it can never accidentally complete a later generation.
-#[derive(Debug, Eq, PartialEq)]
-#[must_use = "a deferred IRQ continuation token keeps its backing line masked"]
-pub struct IrqContinuationToken {
-    pub(crate) handle: IrqHandle,
-    pub(crate) epoch: u64,
-}
-
-impl IrqContinuationToken {
-    /// Returns the registered action identity without exposing its generation.
-    pub const fn action(&self) -> IrqHandle {
-        self.handle
-    }
-}
-
-const CONTINUATION_SLOT_EMPTY: u8 = 0;
-const CONTINUATION_SLOT_WRITING: u8 = 1;
-const CONTINUATION_SLOT_READY: u8 = 2;
-const CONTINUATION_SLOT_READING: u8 = 3;
-
-/// Fixed single-token handoff from hard IRQ to one continuation worker.
-///
-/// The framework masks the action's backing line before the sole producer
-/// publishes. The sole consumer must either finish the token or restore it
-/// before another generation can be delivered.
-pub struct IrqContinuationSlot {
-    state: AtomicU8,
-    token: UnsafeCell<MaybeUninit<IrqContinuationToken>>,
-}
-
-// Access is serialized by the explicit four-state SPSC protocol. A live
-// token's IRQ action keeps the producer line masked until the consumer either
-// restores or finishes that token.
-unsafe impl Sync for IrqContinuationSlot {}
-
-impl IrqContinuationSlot {
-    pub const fn new() -> Self {
-        Self {
-            state: AtomicU8::new(CONTINUATION_SLOT_EMPTY),
-            token: UnsafeCell::new(MaybeUninit::uninit()),
-        }
-    }
-
-    /// Publishes the framework-minted token without allocation or blocking.
-    pub fn publish(
-        &self,
-        token: IrqContinuationToken,
-    ) -> Result<(), IrqContinuationToken> {
-        if self
-            .state
-            .compare_exchange(
-                CONTINUATION_SLOT_EMPTY,
-                CONTINUATION_SLOT_WRITING,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            )
-            .is_err()
-        {
-            return Err(token);
-        }
-        unsafe {
-            // SAFETY: WRITING grants this sole producer exclusive slot access.
-            (*self.token.get()).write(token);
-        }
-        self.state.store(CONTINUATION_SLOT_READY, Ordering::Release);
-        Ok(())
-    }
-
-    /// Takes the currently published token for bounded task-side service.
-    pub fn take(&self) -> Option<IrqContinuationToken> {
-        if self
-            .state
-            .compare_exchange(
-                CONTINUATION_SLOT_READY,
-                CONTINUATION_SLOT_READING,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            )
-            .is_err()
-        {
-            return None;
-        }
-        let token = unsafe {
-            // SAFETY: READY publication initialized the slot and READING gives
-            // this sole consumer exclusive ownership of that value.
-            (*self.token.get()).assume_init_read()
-        };
-        self.state.store(CONTINUATION_SLOT_EMPTY, Ordering::Release);
-        Some(token)
-    }
-
-    /// Restores a contended continuation without minting a new generation.
-    pub fn restore(&self, token: IrqContinuationToken) -> Result<(), IrqContinuationToken> {
-        self.publish(token)
-    }
-
-    pub fn is_ready(&self) -> bool {
-        self.state.load(Ordering::Acquire) == CONTINUATION_SLOT_READY
-    }
-}
-
-impl Default for IrqContinuationSlot {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// IRQ framework errors.
@@ -607,7 +560,12 @@ pub(crate) enum IrqHandler {
 /// [`IrqOps::run_on_cpu_sync`]. In particular, a returned call must never leave
 /// a deferred invocation that can retain or use its raw argument. When an
 /// implementation is [`Sync`], every operation must additionally be safe to
-/// invoke concurrently from different CPUs.
+/// invoke concurrently from different CPUs. A binding returned by
+/// [`IrqOps::prepare_line`] must identify shutdown-lifetime storage whose live
+/// operation satisfies the bounded, allocation-free, non-blocking and
+/// infallible contract of [`IrqOps::set_line_enabled`]. Generation, scope and
+/// CPU-owner mismatches are fatal implementation invariants; they must never be
+/// accepted as operations on another hardware line.
 pub unsafe trait IrqOps {
     /// Saved local IRQ state.
     type LocalIrqState;
@@ -637,8 +595,9 @@ pub unsafe trait IrqOps {
     /// caller is pinned. A local thunk must run under that same pin. A remote
     /// request from IRQ context must return [`IrqError::InIrqContext`] rather
     /// than attempting a cross-CPU rendezvous. On success, `f(arg)` must have
-    /// completed exactly once on `cpu`. On failure it may have completed or not,
-    /// but the implementation must not invoke `f` after this method returns.
+    /// completed exactly once on `cpu`. On failure `f` must not have begun and
+    /// must never be invoked later. This strict cancellation boundary lets the
+    /// framework keep controller state transactional without retaining `arg`.
     fn run_on_cpu_sync(
         &self,
         cpu: CpuId,
@@ -646,28 +605,49 @@ pub unsafe trait IrqOps {
         arg: *mut (),
     ) -> Result<(), IrqError>;
 
-    /// Routes a global IRQ line to the requested CPU affinity.
-    fn set_affinity(&self, _irq: IrqId, _affinity: IrqAffinity) -> Result<(), IrqError> {
+    /// Resolves, validates, routes, and leases one IRQ-chip line endpoint.
+    ///
+    /// This task-context-only preparation is the sole fallible controller
+    /// ownership transition. It completes lookup, routing, capability
+    /// validation and endpoint publication. A global line must be physically
+    /// masked before success. A per-CPU binding is validated here and then
+    /// masked on each online target CPU as a must-succeed commit phase before
+    /// the descriptor publishes an action. Failure must leave the device source
+    /// fail-closed and must not publish a binding that can later alias a retry.
+    fn prepare_line(
+        &self,
+        irq: IrqId,
+        scope: IrqScope,
+        affinity: IrqAffinity,
+    ) -> Result<PreparedIrqLine, IrqError>;
+
+    /// Enables or disables an already prepared IRQ-chip line.
+    ///
+    /// The primitive must be bounded, allocation-free, and non-blocking while
+    /// local IRQs are disabled. It is infallible after preparation: invalid
+    /// generations, unavailable controller ownership, or hardware access
+    /// failure are fatal platform invariants and must be contained below this
+    /// capability. A remote per-CPU update is reached only through
+    /// [`IrqOps::run_on_cpu_sync`]. `cpu` is `None` for a global binding and
+    /// `Some(target)` for a per-CPU binding; the latter must execute on exactly
+    /// `target`.
+    fn set_line_enabled(&self, binding: IrqLineBinding, cpu: Option<CpuId>, enabled: bool);
+
+    /// Releases a globally masked prepared IRQ-chip line generation.
+    ///
+    /// The framework calls this task-context operation only after reserving the
+    /// descriptor against registration and proving that its sole action is
+    /// disabled and drained, the line is masked, and no framework controller
+    /// claim is active. Implementations must independently synchronize any
+    /// controller claim that can race after that reservation. Success retires
+    /// exactly `binding`; failure must leave that same binding usable for a
+    /// retry or action re-enable.
+    ///
+    /// The default rejects release for platforms that retain irqchip endpoints
+    /// until shutdown.
+    fn release_line(&self, _binding: IrqLineBinding) -> Result<(), IrqError> {
         Err(IrqError::Unsupported)
     }
-
-    /// Enables or disables an IRQ line.
-    ///
-    /// Disabling the current global or per-CPU line is part of the emergency
-    /// [`IrqReturn::QuenchAndWake`] path. That operation must therefore be
-    /// bounded, allocation-free, non-blocking, and callable from hard-IRQ
-    /// context. A remote per-CPU update is reached only through
-    /// [`IrqOps::run_on_cpu_sync`].
-    fn set_enabled(&self, irq: IrqId, cpu: Option<CpuId>, enabled: bool) -> Result<(), IrqError>;
-
-    /// Returns whether the IRQ line is enabled.
-    fn is_enabled(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError>;
-
-    /// Returns whether the IRQ line is pending.
-    fn is_pending(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError>;
-
-    /// Returns whether the IRQ line is in service.
-    fn is_in_service(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError>;
 
     /// Relaxes a spin wait.
     fn relax(&self);

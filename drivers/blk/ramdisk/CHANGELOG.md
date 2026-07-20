@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Move the RAM backing into one exclusive inline queue instead of manufacturing
   several locked views of the same storage, removing the runtime lock and OS
   lock dependency from the portable driver.
+- Make queue shutdown a pure idle-state transition without a completion sink;
+  inline request ownership is returned only by the accepting submit call.
 
 ### Fixed
 

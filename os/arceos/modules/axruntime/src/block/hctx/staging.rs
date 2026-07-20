@@ -1,10 +1,8 @@
-//! Fixed-capacity staging and completion batches for one hardware queue.
-
-use core::mem::ManuallyDrop;
+//! Fixed-capacity staging and deferred completion notifications for one hctx.
 
 use rdif_block::{CompletedRequest, CompletionSink};
 
-use super::{HardwareQueueError, MAX_REQUESTS, RequestTag};
+use super::{HardwareQueue, HardwareQueueError, MAX_REQUESTS, RequestTag};
 
 pub(super) struct FixedTagQueue {
     tags: [Option<RequestTag>; MAX_REQUESTS],
@@ -76,77 +74,140 @@ impl FixedTagQueue {
     }
 }
 
-pub(super) struct CompletionBatch {
-    entries: [Option<CompletedRequest>; MAX_REQUESTS],
-    pub(super) len: usize,
-    overflow: Option<CompletedRequest>,
+#[derive(Clone, Copy)]
+struct CompletionNotification {
+    tag: RequestTag,
+    was_inflight: bool,
 }
 
-impl CompletionBatch {
-    pub(super) fn new() -> Self {
+pub(super) struct CompletionDelivery {
+    pub(super) completed: usize,
+    pub(super) error: Option<HardwareQueueError>,
+}
+
+/// Driver-facing sink that transfers ownership immediately but defers wakeups.
+///
+/// Every completion is installed in the request table or moved into the
+/// DMA-proof-gated hctx quarantine before `complete` returns. Only copyable
+/// notification facts stay in this object while the portable driver callback
+/// owns its mutable queue borrow. [`Drop`] publishes any installed terminal
+/// notifications if the callback unwinds, so accepted request ownership cannot
+/// become unreachable behind an omitted explicit finish call.
+pub(super) struct DeferredCompletionSink<'queue> {
+    queue: &'queue HardwareQueue,
+    notifications: [Option<CompletionNotification>; MAX_REQUESTS],
+    notification_count: usize,
+    completed: usize,
+    first_error: Option<HardwareQueueError>,
+    finished: bool,
+}
+
+impl<'queue> DeferredCompletionSink<'queue> {
+    pub(super) fn new(queue: &'queue HardwareQueue) -> Self {
         Self {
-            entries: [const { None }; MAX_REQUESTS],
-            len: 0,
-            overflow: None,
+            queue,
+            notifications: [None; MAX_REQUESTS],
+            notification_count: 0,
+            completed: 0,
+            first_error: None,
+            finished: false,
         }
     }
 
-    pub(super) fn drain_with<E>(
-        &mut self,
-        mut publish: impl FnMut(CompletedRequest) -> Result<(), E>,
-    ) -> Result<(), E> {
-        let initialized = core::mem::replace(&mut self.len, 0);
-        let mut first_error = None;
-        for index in 0..initialized {
-            let completion = self.entries[index]
+    pub(super) fn finish(mut self) -> CompletionDelivery {
+        self.finish_notifications();
+        self.finished = true;
+        CompletionDelivery {
+            completed: self.completed,
+            error: self.first_error.take(),
+        }
+    }
+
+    fn remember_error(&mut self, error: HardwareQueueError) {
+        if self.first_error.is_none() {
+            self.first_error = Some(error);
+        }
+    }
+
+    fn finish_notifications(&mut self) {
+        let initialized = core::mem::replace(&mut self.notification_count, 0);
+        for notification in &mut self.notifications[..initialized] {
+            let notification = notification
                 .take()
-                .expect("completion batch length covers initialized entries");
-            if let Err(error) = publish(completion)
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
+                .expect("completion notification count covers initialized entries");
+            self.queue
+                .finish_installed_completion(notification.tag, notification.was_inflight);
         }
-        first_error.map_or(Ok(()), Err)
-    }
-
-    pub(super) const fn overflowed(&self) -> bool {
-        self.overflow.is_some()
-    }
-
-    /// Returns the single ownership-bearing completion that violated the
-    /// queue's fixed request-capacity contract.
-    ///
-    /// The caller must transfer this value into the hctx completion quarantine;
-    /// it must not be dropped merely because the driver exceeded its batch.
-    pub(super) fn take_overflow(&mut self) -> Option<CompletedRequest> {
-        self.overflow.take()
-    }
-
-    #[cfg(test)]
-    pub(super) const fn has_capacity(&self) -> bool {
-        self.len < self.entries.len()
     }
 }
 
-impl CompletionSink for CompletionBatch {
+impl CompletionSink for DeferredCompletionSink<'_> {
     fn complete(&mut self, completion: CompletedRequest) {
-        if self.len == self.entries.len() {
-            if self.overflow.is_none() {
-                self.overflow = Some(completion);
+        self.completed = self.completed.saturating_add(1);
+        if self.completed > MAX_REQUESTS && self.first_error.is_none() {
+            self.first_error = Some(HardwareQueueError::Capacity);
+        }
+
+        let tag = match RequestTag::from_request_id(completion.id) {
+            Ok(tag) => tag,
+            Err(error) => {
+                let error = self
+                    .queue
+                    .retain_failed_completion(error.into(), completion);
+                self.remember_error(error);
                 return;
             }
-
-            // The portable queue contract limits one callback to the hctx's 64
-            // accepted requests. The first excess owner is retained for the
-            // controller poison lane. A second excess value proves the driver
-            // fabricated more ownership than the runtime can represent; keep it
-            // alive through the fatal invariant instead of running its Drop.
-            let _unrepresentable_owner = ManuallyDrop::new(completion);
-            panic!("block driver emitted more than one completion beyond hctx capacity");
+        };
+        match self.queue.install_completion_for_delivery(tag, completion) {
+            Ok(was_inflight) => {
+                assert!(
+                    self.notification_count < self.notifications.len(),
+                    "request table installed more terminal owners than it has slots"
+                );
+                self.notifications[self.notification_count] =
+                    Some(CompletionNotification { tag, was_inflight });
+                self.notification_count += 1;
+            }
+            Err(error) => self.remember_error(error),
         }
-        self.entries[self.len] = Some(completion);
-        self.len += 1;
+    }
+}
+
+impl Drop for DeferredCompletionSink<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.finish_notifications();
+        }
+    }
+}
+
+/// Sink for completions that are invalid in a service-drained queue.
+pub(super) struct QuarantineCompletionSink<'queue> {
+    queue: &'queue HardwareQueue,
+    first_error: Option<HardwareQueueError>,
+}
+
+impl<'queue> QuarantineCompletionSink<'queue> {
+    pub(super) const fn new(queue: &'queue HardwareQueue) -> Self {
+        Self {
+            queue,
+            first_error: None,
+        }
+    }
+
+    pub(super) fn finish(mut self) -> Result<(), HardwareQueueError> {
+        self.first_error.take().map_or(Ok(()), Err)
+    }
+}
+
+impl CompletionSink for QuarantineCompletionSink<'_> {
+    fn complete(&mut self, completion: CompletedRequest) {
+        let error = self
+            .queue
+            .retain_failed_completion(HardwareQueueError::StaleCompletion, completion);
+        if self.first_error.is_none() {
+            self.first_error = Some(error);
+        }
     }
 }
 
@@ -212,7 +273,7 @@ impl DispatchResult {
 
 #[cfg(test)]
 mod tests {
-    use rdif_block::{BlkError, OwnedRequest, RequestFlags, RequestId, RequestOp};
+    use rdif_block::RequestId;
 
     use super::*;
 
@@ -235,70 +296,5 @@ mod tests {
         assert_eq!(queue.pop(), Some(first));
         assert_eq!(queue.pop(), Some(third));
         assert_eq!(queue.pop(), None);
-    }
-
-    #[test]
-    fn completion_batch_never_allocates_or_grows() {
-        let batch = CompletionBatch::new();
-        assert_eq!(batch.entries.len(), MAX_REQUESTS);
-        assert_eq!(batch.len, 0);
-        assert!(batch.has_capacity());
-    }
-
-    #[test]
-    fn completion_batch_returns_one_typed_overflow_owner_without_dropping_it() {
-        let mut batch = CompletionBatch::new();
-        for request in 0..=MAX_REQUESTS {
-            batch.complete(CompletedRequest::new(
-                RequestId::new(request),
-                Err(BlkError::Io),
-                OwnedRequest {
-                    op: RequestOp::Flush,
-                    lba: 0,
-                    block_count: 0,
-                    data: None,
-                    flags: RequestFlags::NONE,
-                },
-            ));
-        }
-
-        assert_eq!(batch.len, MAX_REQUESTS);
-        assert!(batch.overflowed());
-        assert!(!batch.has_capacity());
-        assert_eq!(
-            batch.take_overflow().map(|completion| completion.id),
-            Some(RequestId::new(MAX_REQUESTS))
-        );
-    }
-
-    #[test]
-    fn completion_batch_drains_later_entries_after_one_publish_error() {
-        let mut batch = CompletionBatch::new();
-        for request in 0..3 {
-            batch.complete(CompletedRequest::new(
-                RequestId::new(request),
-                Err(BlkError::Io),
-                OwnedRequest {
-                    op: RequestOp::Flush,
-                    lba: 0,
-                    block_count: 0,
-                    data: None,
-                    flags: RequestFlags::NONE,
-                },
-            ));
-        }
-
-        let mut observed = 0;
-        let result = batch.drain_with(|completion| {
-            observed += 1;
-            if usize::from(completion.id) == 1 {
-                Err("stale")
-            } else {
-                Ok(())
-            }
-        });
-
-        assert_eq!(result, Err("stale"));
-        assert_eq!(observed, 3);
     }
 }

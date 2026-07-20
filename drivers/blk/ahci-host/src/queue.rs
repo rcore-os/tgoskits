@@ -1,11 +1,14 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{Ordering, fence};
+use core::{
+    mem,
+    sync::atomic::{Ordering, fence},
+};
 
 use dma_api::{DmaDirection, InFlightDma};
 use rdif_block::{
-    BlkError, CompletedRequest, CompletionSink, DispatchMode, DmaQuiesced, IQueue, IdList,
-    OwnedRequest, QueueEventBatch, QueueInfo, QueueKind, QueueLimits, RequestFlags, RequestId,
-    RequestOp, ServiceContinuationReason, ServiceProgress, SubmitError, SubmitOutcome,
+    BlkError, CompletedRequest, CompletionSink, DmaQuiesced, IQueue, IdList, OwnedRequest,
+    QueueEventBatch, QueueExecution, QueueInfo, QueueKind, QueueLimits, RequestFlags, RequestId,
+    RequestOp, ServiceProgress, ServiceRerunReason, SubmitError, SubmitOutcome,
     validate_owned_request,
 };
 
@@ -13,6 +16,7 @@ use crate::{
     ata::AtaDevice,
     command::{PortCommandMemory, max_prdt_bytes},
     irq::{HostShared, IRQ_SNAPSHOT_CAPACITY},
+    quarantine::{AhciDmaQuarantine, AhciDmaQuarantineReason},
     registers::{PX_CI, PX_IE, write_port},
 };
 
@@ -44,21 +48,57 @@ impl ReadyPort {
         )
     }
 
-    pub(crate) fn quarantine(self) {
-        core::mem::forget(self.command_memory);
+    pub(crate) fn into_quarantine(
+        self,
+        shared: &Arc<HostShared>,
+        controller_cookie: usize,
+        reason: AhciDmaQuarantineReason,
+    ) -> AhciDmaQuarantine {
+        AhciDmaQuarantine::new(
+            self.port,
+            reason,
+            controller_cookie,
+            self.command_memory,
+            None,
+            shared,
+        )
     }
 }
 
 pub(crate) struct AhciPortQueue {
     info: QueueInfo,
     ata: AtaDevice,
-    command_memory: PortCommandMemory,
+    command_memory: QueueDmaOwner,
     shared: Arc<HostShared>,
     controller_cookie: usize,
     epoch: u64,
     last_reclaim_epoch: Option<u64>,
+    destroyable_epoch: Option<u64>,
     inflight: Option<InflightRequest>,
     pending_completion_generation: Option<u64>,
+}
+
+enum QueueDmaOwner {
+    Live(PortCommandMemory),
+    Quarantined(AhciDmaQuarantine),
+    Released,
+}
+
+impl QueueDmaOwner {
+    fn live_mut(&mut self) -> Option<&mut PortCommandMemory> {
+        match self {
+            Self::Live(command_memory) => Some(command_memory),
+            Self::Quarantined(quarantine) => {
+                let _retained_owner = quarantine;
+                None
+            }
+            Self::Released => None,
+        }
+    }
+
+    const fn is_live(&self) -> bool {
+        matches!(self, Self::Live(_))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -98,7 +138,7 @@ impl AhciPortQueue {
         Self {
             info,
             ata: ready.ata,
-            command_memory: ready.command_memory,
+            command_memory: QueueDmaOwner::Live(ready.command_memory),
             shared,
             controller_cookie: binding.controller_cookie,
             epoch,
@@ -106,6 +146,7 @@ impl AhciPortQueue {
             // its command memory were published. Accepting that same epoch
             // would let a stale lifecycle token reclaim a live request.
             last_reclaim_epoch: Some(epoch),
+            destroyable_epoch: None,
             inflight: None,
             pending_completion_generation: None,
         }
@@ -147,7 +188,11 @@ impl AhciPortQueue {
         let data = prepared_dma
             .as_ref()
             .map(|dma| (dma.dma_addr(), dma.len().get()));
-        if let Err(error) = self.command_memory.build_io(
+        let command_memory = self
+            .command_memory
+            .live_mut()
+            .expect("an admitted AHCI request retains live command memory");
+        if let Err(error) = command_memory.build_io(
             request.op,
             request.lba,
             request.block_count,
@@ -250,6 +295,9 @@ impl IQueue for AhciPortQueue {
         id: RequestId,
         request: OwnedRequest,
     ) -> Result<SubmitOutcome, SubmitError> {
+        if !self.command_memory.is_live() {
+            return Err(SubmitError::new(id, BlkError::Offline, request));
+        }
         if self.inflight.is_some() {
             return Err(SubmitError::new(id, BlkError::Retry, request));
         }
@@ -344,7 +392,7 @@ impl IQueue for AhciPortQueue {
             // been classified. A later error in the bounded continuation must
             // win over an earlier command-complete snapshot.
             self.pending_completion_generation = completion_generation;
-            return Ok(events.continue_service(ServiceContinuationReason::RetainedFacts));
+            return Ok(events.requeue_service(ServiceRerunReason::RetainedFacts));
         }
         if let Some(generation) = completion_generation {
             self.complete_from_snapshot(generation, sink)?;
@@ -370,18 +418,52 @@ impl IQueue for AhciPortQueue {
         self.pending_completion_generation = None;
         self.epoch = proof.epoch().get();
         self.last_reclaim_epoch = Some(self.epoch);
+        self.destroyable_epoch = Some(self.epoch);
         let port = self.shared.port(self.id());
         port.clear_any_active_request();
         port.discard_stale_snapshots();
         Ok(())
     }
 
-    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+    fn shutdown(&mut self) -> Result<(), BlkError> {
         if self.inflight.is_some() || self.shared.port(self.id()).is_online() {
             return Err(BlkError::Busy);
         }
-        self.shared.port(self.id()).set_online(false);
+        if self.destroyable_epoch != self.last_reclaim_epoch || self.destroyable_epoch.is_none() {
+            return Err(BlkError::InvalidDmaProof);
+        }
+        let owner = mem::replace(&mut self.command_memory, QueueDmaOwner::Released);
+        let QueueDmaOwner::Live(command_memory) = owner else {
+            self.command_memory = owner;
+            return Err(BlkError::Offline);
+        };
+        // The matching controller proof was consumed by
+        // `reclaim_after_quiesce`, so ordinary Rust destruction is safe here.
+        drop(command_memory);
         Ok(())
+    }
+}
+
+impl Drop for AhciPortQueue {
+    fn drop(&mut self) {
+        let owner = mem::replace(&mut self.command_memory, QueueDmaOwner::Released);
+        let QueueDmaOwner::Live(command_memory) = owner else {
+            self.command_memory = owner;
+            return;
+        };
+        self.shared.port(self.info.id).set_online(false);
+        let data_dma = self
+            .inflight
+            .as_mut()
+            .and_then(|inflight| inflight.dma.take());
+        self.command_memory = QueueDmaOwner::Quarantined(AhciDmaQuarantine::new(
+            self.info.id,
+            AhciDmaQuarantineReason::QueueAbandoned,
+            self.controller_cookie,
+            command_memory,
+            data_dma,
+            &self.shared,
+        ));
     }
 }
 
@@ -422,7 +504,7 @@ fn queue_info(
         device: ata.device_info(name),
         limits,
         kind: QueueKind::Interrupt { sources },
-        dispatch_mode: DispatchMode::Serialized,
+        execution: QueueExecution::Serialized,
     }
 }
 
@@ -447,11 +529,11 @@ pub(crate) fn freeze_port(shared: &HostShared, port: usize) {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{boxed::Box, sync::Arc, vec::Vec};
+    use alloc::{sync::Arc, vec::Vec};
     use core::num::NonZeroUsize;
 
     use dma_api::{CpuDmaBuffer, DmaDirection};
-    use rdif_block::{ControllerEpoch, Event, IrqHandler, RequestFlags};
+    use rdif_block::{BIrqEndpoint, ControllerEpoch, Event, IrqCapture, RequestFlags};
 
     use super::*;
     use crate::{
@@ -480,7 +562,7 @@ mod tests {
             1_000,
         );
 
-        assert_eq!(info.dispatch_mode, DispatchMode::Serialized);
+        assert_eq!(info.execution, QueueExecution::Serialized);
         let QueueKind::Interrupt { sources } = info.kind else {
             panic!("AHCI queue cannot be inline");
         };
@@ -658,14 +740,29 @@ mod tests {
         assert_eq!(completion.id, RequestId::new(17));
         assert_eq!(completion.result, Err(BlkError::Cancelled));
         assert!(completion.request.data.is_some());
-        queue.shutdown(&mut completions).unwrap();
+        queue.shutdown().unwrap();
+        assert!(matches!(queue.command_memory, QueueDmaOwner::Released));
+    }
+
+    #[test]
+    fn abandoned_queue_quarantines_without_hardware_teardown() {
+        let (queue, shared, registers, _irq) = test_queue();
+        registers.clear_access_log();
+
+        drop(queue);
+
+        assert!(
+            registers.writes().is_empty(),
+            "queue Drop must not infer or execute an AHCI stop protocol"
+        );
+        assert!(!shared.port(0).is_online());
     }
 
     fn test_queue() -> (
         AhciPortQueue,
         Arc<HostShared>,
         Arc<FakeRegisters>,
-        Box<dyn IrqHandler>,
+        BIrqEndpoint,
     ) {
         let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
         let shared = HostShared::new(registers.shared());
@@ -695,7 +792,7 @@ mod tests {
                 controller_cookie: Arc::as_ptr(&shared).expose_provenance(),
             },
         );
-        let irq = shared.take_io_handler().unwrap();
+        let (irq, _control) = shared.take_io_source().unwrap().into_parts();
         (queue, shared, registers, irq)
     }
 
@@ -711,7 +808,7 @@ mod tests {
 
     fn complete_slot(
         registers: &FakeRegisters,
-        irq: &mut dyn IrqHandler,
+        irq: &mut dyn rdif_block::IrqEndpoint<Event = Event, Fault = BlkError>,
         status: u32,
         task_file: u32,
     ) -> Event {
@@ -719,9 +816,10 @@ mod tests {
         registers.set(port_offset(0, PX_TFD), task_file);
         registers.set(port_offset(0, PX_IS), status);
         registers.set(HOST_IS, 1);
-        let outcome = irq.handle_irq();
-        assert!(outcome.is_handled());
-        outcome.acknowledged_event().unwrap()
+        let IrqCapture::Captured { event, .. } = irq.capture() else {
+            panic!("test IRQ endpoint must capture the programmed status")
+        };
+        event
     }
 
     #[derive(Default)]

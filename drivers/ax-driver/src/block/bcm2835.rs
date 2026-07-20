@@ -7,7 +7,7 @@ use core::{
 
 use log::info;
 use rdif_block::{
-    BlkError, ControllerInitEndpoint, DeviceInfo, Interface, IrqHandler, IrqSourceList,
+    BlkError, BlockIrqSource, ControllerInitEndpoint, DeviceInfo, Interface, IrqSourceList,
     LifecycleEndpoint, QueueHandle, QueueLimits,
 };
 use rdrive::{
@@ -260,8 +260,8 @@ impl<T: Interface> Interface for ClockPreparedBlock<T> {
         self.inner.irq_sources()
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<alloc::boxed::Box<dyn IrqHandler>> {
-        self.inner.take_irq_handler(source_id)
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
+        self.inner.take_irq_source(source_id)
     }
 }
 

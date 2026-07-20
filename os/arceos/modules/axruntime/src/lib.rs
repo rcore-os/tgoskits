@@ -58,9 +58,17 @@ pub mod console;
 #[cfg(feature = "block")]
 pub mod block;
 mod devices;
+#[cfg(feature = "display")]
+mod display;
 mod fs;
+#[cfg(feature = "input")]
+mod input;
 #[cfg(feature = "irq")]
 pub mod irq;
+#[cfg(feature = "maintenance")]
+pub mod maintenance;
+#[cfg(feature = "net")]
+mod net;
 mod registers;
 
 pub mod workqueue;
@@ -70,9 +78,6 @@ pub mod task;
 
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
-
-#[cfg(feature = "aic8800-wifi")]
-mod wifi_glue;
 
 pub use ax_hal as hal;
 
@@ -192,7 +197,7 @@ static ONLINE_RUNTIME_CPUS: AtomicUsize = AtomicUsize::new(0);
 /// Global device/filesystem initialization boundary observed by applications.
 static SYSTEM_READY: AtomicBool = AtomicBool::new(false);
 
-#[cfg(any(feature = "smp", feature = "workqueue", test))]
+#[cfg(any(feature = "smp", feature = "workqueue", feature = "block", test))]
 const fn configured_runtime_cpu_count(
     discovered_cpus: usize,
     cpu_capacity: usize,
@@ -211,7 +216,7 @@ const fn configured_runtime_cpu_count(
     }
 }
 
-#[cfg(any(feature = "smp", feature = "workqueue"))]
+#[cfg(any(feature = "smp", feature = "workqueue", feature = "block"))]
 pub(crate) fn runtime_cpu_count() -> usize {
     configured_runtime_cpu_count(ax_hal::cpu_num(), CPU_CAPACITY, cfg!(feature = "smp"))
 }
@@ -396,14 +401,6 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
 
     #[cfg(feature = "workqueue")]
     workqueue::initialize().expect("failed to initialize shared per-CPU worker pools");
-
-    // Install the ArceOS runtime glue into the OS-independent Wi-Fi driver
-    // cores (aic8800 / sdhci-cv1800) *before* probing, since the FDT probe
-    // brings the chip up and that needs timing/task capabilities. The cores
-    // declare no ArceOS dependency themselves; this is the adapter layer (see
-    // `wifi_glue`).
-    #[cfg(feature = "aic8800-wifi")]
-    wifi_glue::install_runtime();
 
     devices::probe_all_devices();
 
@@ -748,14 +745,23 @@ fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
 }
 
 #[cfg(all(feature = "tls", not(feature = "multitask")))]
+#[ax_percpu::def_percpu]
+static MAIN_TLS: ax_lazyinit::LazyInit<ax_hal::tls::TlsArea> = ax_lazyinit::LazyInit::new();
+
+#[cfg(all(feature = "tls", not(feature = "multitask")))]
 fn init_tls() {
-    let main_tls = ax_hal::tls::TlsArea::alloc();
+    let main_tls = unsafe {
+        // SAFETY: someboot has bound this CPU's final per-CPU area before
+        // entering either the primary or secondary runtime path. Each CPU
+        // initializes only its own shutdown-lifetime TLS cell.
+        MAIN_TLS.current_ref_raw()
+    };
+    let main_tls = main_tls.init_once(ax_hal::tls::TlsArea::alloc());
     unsafe {
         ax_hal::asm::write_thread_pointer(ax_hal::context::KernelTlsBase::new(
             main_tls.tls_ptr() as usize
         ))
     };
-    core::mem::forget(main_tls);
 }
 
 #[cfg(test)]

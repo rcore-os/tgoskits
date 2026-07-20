@@ -125,7 +125,7 @@ impl<const CPU_COUNT: usize> WorkQueueSystem<CPU_COUNT> {
             let observed = work.state.load(Ordering::Acquire);
             let flags = state_flags(observed);
             if flags & CANCELLING != 0 {
-                return Ok(QueueWorkResult::CancelInProgress);
+                return Err(WorkQueueError::CancelInProgress);
             }
 
             let (updated, result, publish) = match flags {
@@ -166,6 +166,39 @@ impl<const CPU_COUNT: usize> WorkQueueSystem<CPU_COUNT> {
                 return Ok(result);
             }
         }
+    }
+
+    /// Queues one activation through a logical admission and drain domain.
+    ///
+    /// This is the scheduler-independent domain model used by host tests and
+    /// by the runtime facade after it has established a worker progress
+    /// guarantee. A provisional reservation closes the race with
+    /// [`WorkQueue::begin_drain`]; only the first idle-to-queued activation
+    /// retains that reservation because an already-active item already owns
+    /// one domain slot.
+    #[cfg(feature = "workqueue")]
+    pub fn queue_work_in_domain(
+        &'static self,
+        domain: Pin<&'static WorkQueue>,
+        work: Pin<&'static WorkItem>,
+    ) -> Result<QueueWorkResult, WorkQueueError> {
+        let domain = domain.get_ref();
+        domain.reserve_item()?;
+        if let Err(error) = work.get_ref().bind_domain(domain) {
+            domain.release_item_reservation();
+            return Err(error);
+        }
+        let result = match self.queue_work_on(domain.cpu, domain.priority, work) {
+            Ok(result) => result,
+            Err(error) => {
+                domain.release_item_reservation();
+                return Err(error);
+            }
+        };
+        if result != QueueWorkResult::Queued {
+            domain.release_item_reservation();
+        }
+        Ok(result)
     }
 
     /// Marks queued or running work for cancellation without blocking.
@@ -429,7 +462,7 @@ impl<const CPU_COUNT: usize> WorkQueueSystem<CPU_COUNT> {
                 return Err(WorkQueueError::InvalidState);
             }
 
-            if outcome == WorkOutcome::Requeue && work.domain_accepts_callback_requeue() {
+            if outcome == WorkOutcome::Requeue && work.domain_allows_callback_continuation() {
                 let Some(route) = state_route(observed) else {
                     return Err(WorkQueueError::InvalidState);
                 };

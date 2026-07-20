@@ -12,10 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report synchronous and first-vCPU preparation failures only after all
   successfully started default guests have stopped, so exclusive host-device
   cleanup can finish without losing the original VM identity and error.
-- Move AArch64 physical SPI assignment out of host-filesystem VM construction
-  into the common post-storage-selection activation stage.
-- Return an explicit IRQ-route lease from that stage so routes for passthrough
-  guests without a selected block controller still have a retained owner.
+- Move AArch64 physical SPI assignment out of VM construction into the common
+  post-device-selection activation stage.
+- Make the explicit IRQ-route lease available independently of filesystem
+  features, so every passthrough guest has the same retained activation and
+  owner-thread revocation protocol. Dropping an active lease now preserves its
+  VM generations in a named shutdown quarantine instead of losing ownership.
 - Require an explicit guest IRQ/MMIO/DMA route-revocation proof before block
   controllers can reinitialize and the retained host filesystem can remount.
 - Split x86 IOAPIC passthrough forwarding into explicit route-state,

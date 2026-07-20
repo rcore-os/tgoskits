@@ -1,5 +1,8 @@
-use arm_gic_driver::fdt_parse_irq_config;
-use irq_framework::{IrqDomainId, IrqId};
+use alloc::boxed::Box;
+
+use arm_gic_driver::{IntId, VirtAddr, checked_intid, fdt_parse_irq_config};
+use irq_framework::{CpuId, IrqDomainId, IrqId, IrqScope};
+use kernutil::StaticCell;
 use rdif_intc::{Intc, Interface};
 use rdrive::Device;
 
@@ -9,6 +12,8 @@ mod v3;
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
+use crate::irq_line::{BoundIrqStatus, IrqChipLine, PreparedIrqChipLine};
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum GicBackend {
     None = 0,
@@ -17,6 +22,21 @@ enum GicBackend {
 }
 
 static GIC_BACKEND: AtomicU8 = AtomicU8::new(GicBackend::None as u8);
+static GIC_LINE_BACKEND: StaticCell<GicLineBackend> = StaticCell::uninit();
+
+#[derive(Clone, Copy)]
+enum GicLineBackend {
+    V2 {
+        gicd: VirtAddr,
+        gicc: VirtAddr,
+        max_intid: u32,
+    },
+    V3 {
+        gicd: VirtAddr,
+        gicr: VirtAddr,
+        max_intid: u32,
+    },
+}
 
 fn set_backend(backend: GicBackend) {
     GIC_BACKEND.store(backend as u8, Ordering::Release);
@@ -27,6 +47,172 @@ fn backend() -> GicBackend {
         2 => GicBackend::V2,
         3 => GicBackend::V3,
         _ => GicBackend::None,
+    }
+}
+
+pub(super) fn publish_v2_line_backend(gic: &arm_gic_driver::v2::Gic) {
+    GIC_LINE_BACKEND.init(GicLineBackend::V2 {
+        gicd: gic.gicd_addr(),
+        gicc: gic.gicc_addr(),
+        max_intid: gic.max_intid(),
+    });
+}
+
+pub(super) fn publish_v3_line_backend(gic: &arm_gic_driver::v3::Gic) {
+    GIC_LINE_BACKEND.init(GicLineBackend::V3 {
+        gicd: gic.gicd_addr(),
+        gicr: gic.gicr_addr(),
+        max_intid: gic.max_intid(),
+    });
+}
+
+pub(super) fn prepare_irq_line(
+    irq: IrqId,
+    scope: IrqScope,
+    affinity: crate::irq::IrqAffinity,
+) -> Result<PreparedIrqChipLine, crate::irq::IrqError> {
+    let line_backend = *GIC_LINE_BACKEND
+        .get_initialized()
+        .ok_or(crate::irq::IrqError::Unsupported)?;
+    if irq.hwirq.0 >= its::LPI_INTID_BASE {
+        // An LPI enable transition is not just a distributor bit update: it
+        // also requires property-table cache maintenance and invalidation on
+        // the exact redistributor collection. Until ITS registration can
+        // publish that complete fixed-bound capability, fail during the
+        // fallible preparation phase instead of pretending the live path is
+        // infallible.
+        return Err(crate::irq::IrqError::Unsupported);
+    }
+    let max_intid = match line_backend {
+        GicLineBackend::V2 { max_intid, .. } | GicLineBackend::V3 { max_intid, .. } => max_intid,
+    };
+    let intid =
+        checked_intid(irq.hwirq.0, max_intid).map_err(|_| crate::irq::IrqError::InvalidIrq)?;
+    let kind = if intid.is_private() {
+        let IrqScope::PerCpu { cpus } = scope else {
+            return Err(crate::irq::IrqError::InvalidIrq);
+        };
+        if cpus.is_empty() {
+            return Err(crate::irq::IrqError::InvalidCpu);
+        }
+        let all_targets_ready = match line_backend {
+            GicLineBackend::V2 { .. } => cpus.iter().all(v2::private_line_cpu_ready),
+            GicLineBackend::V3 { .. } => cpus.iter().all(v3::private_line_cpu_ready),
+        };
+        if !all_targets_ready {
+            return Err(crate::irq::IrqError::InvalidCpu);
+        }
+        match line_backend {
+            GicLineBackend::V2 { .. } => GicLineKind::V2Private,
+            GicLineBackend::V3 { .. } => GicLineKind::V3Private,
+        }
+    } else {
+        if scope != IrqScope::Global {
+            return Err(crate::irq::IrqError::InvalidIrq);
+        }
+        // Global lines are physically masked before the endpoint is published.
+        set_shared_line_enabled(line_backend, intid, false);
+        irq_set_affinity(irq, affinity)?;
+        GicLineKind::Shared(line_backend)
+    };
+    Ok(PreparedIrqChipLine::maskable(Box::new(GicIrqChipLine {
+        irq,
+        intid,
+        kind,
+    })))
+}
+
+fn set_shared_line_enabled(backend: GicLineBackend, intid: IntId, enabled: bool) {
+    debug_assert!(!intid.is_private());
+    match backend {
+        GicLineBackend::V2 { gicd, gicc, .. } => {
+            let gic = unsafe { arm_gic_driver::v2::Gic::new(gicd, gicc, None) };
+            gic.set_irq_enable(intid, enabled);
+        }
+        GicLineBackend::V3 { gicd, gicr, .. } => {
+            let mut gic = unsafe { arm_gic_driver::v3::Gic::new(gicd, gicr) };
+            gic.set_irq_enable(intid, enabled);
+        }
+    }
+}
+
+fn shared_line_status(backend: GicLineBackend, intid: IntId) -> BoundIrqStatus {
+    debug_assert!(!intid.is_private());
+    match backend {
+        GicLineBackend::V2 { gicd, gicc, .. } => {
+            let gic = unsafe { arm_gic_driver::v2::Gic::new(gicd, gicc, None) };
+            BoundIrqStatus {
+                enabled: Some(gic.is_irq_enable(intid)),
+                pending: Some(gic.is_pending(intid)),
+                in_service: Some(gic.is_active(intid)),
+            }
+        }
+        GicLineBackend::V3 { gicd, gicr, .. } => {
+            let gic = unsafe { arm_gic_driver::v3::Gic::new(gicd, gicr) };
+            BoundIrqStatus {
+                enabled: Some(gic.is_irq_enable(intid)),
+                pending: Some(gic.is_pending(intid)),
+                in_service: Some(gic.is_active(intid)),
+            }
+        }
+    }
+}
+
+struct GicIrqChipLine {
+    irq: IrqId,
+    intid: IntId,
+    kind: GicLineKind,
+}
+
+#[derive(Clone, Copy)]
+enum GicLineKind {
+    V2Private,
+    V3Private,
+    Shared(GicLineBackend),
+}
+
+// SAFETY: private endpoints are accepted only after every target CPU has
+// published its banked CPU-interface slot, and the framework invokes them on
+// that target CPU. Shared endpoints retain immutable distributor addresses.
+// All live accesses are bounded MMIO operations with no allocation or driver
+// registry lookup.
+unsafe impl IrqChipLine for GicIrqChipLine {
+    fn set_enabled(&self, cpu: Option<CpuId>, enabled: bool) {
+        match self.kind {
+            GicLineKind::V2Private => {
+                let cpu = cpu.expect("prepared GICv2 private line requires a target CPU");
+                v2::set_private_line_enabled(cpu, self.intid, enabled);
+            }
+            GicLineKind::V3Private => {
+                let cpu = cpu.expect("prepared GICv3 private line requires a target CPU");
+                v3::set_private_line_enabled(cpu, self.intid, enabled);
+            }
+            GicLineKind::Shared(backend) => {
+                assert!(
+                    cpu.is_none(),
+                    "prepared GIC shared line {:?} cannot use a per-CPU target",
+                    self.irq
+                );
+                set_shared_line_enabled(backend, self.intid, enabled);
+            }
+        }
+    }
+
+    fn status(&self, cpu: Option<CpuId>) -> BoundIrqStatus {
+        match self.kind {
+            GicLineKind::V2Private => v2::private_line_status(
+                cpu.expect("prepared GICv2 private line requires a target CPU"),
+                self.intid,
+            ),
+            GicLineKind::V3Private => v3::private_line_status(
+                cpu.expect("prepared GICv3 private line requires a target CPU"),
+                self.intid,
+            ),
+            GicLineKind::Shared(backend) => {
+                assert!(cpu.is_none(), "GIC shared line cannot use a per-CPU target");
+                shared_line_status(backend, self.intid)
+            }
+        }
     }
 }
 

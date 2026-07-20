@@ -93,6 +93,9 @@ impl ProtocolSdioHost for DwMmc {
     }
 
     fn enable_completion_irq(&mut self) -> Result<(), Error> {
+        if !self.irq.state.source_ready() {
+            return Err(Error::InvalidArgument);
+        }
         DwMmc::enable_completion_irq(self);
         Ok(())
     }
@@ -118,10 +121,11 @@ impl ProtocolSdioHost for DwMmc {
 }
 
 impl SdioIrqHost for DwMmc {
-    type IrqHandle = DwMmcIrq;
+    type IrqEndpoint = DwMmcIrqEndpoint;
+    type IrqControl = DwMmcIrqControl;
 
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        DwMmc::irq_endpoint(self)
+    fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        DwMmc::take_irq_source(self)
     }
 }
 

@@ -10,7 +10,7 @@ use crate::{
     BlockPoll, BlockRequestId, DataCommandPoll, Error,
     rdif::config::{BLOCK_SIZE, map_dev_err_to_blk_err},
     sdio::{
-        host::{DeferredIrqAck, SdioHost, SdioIrqHandle, SdioIrqHost},
+        host::{SdioHost, SdioIrqHost},
         host2::{
             SdioHost2Adapter, SdioHost2DataRequest, SdioHost2Irq, SdioHost2Lifecycle,
             SdioHost2Recovery,
@@ -52,14 +52,6 @@ pub trait BlockHost: SdioIrqHost + Send + 'static {
         state: &mut Self::RecoveryState,
         input: InitInput,
     ) -> InitPoll<()>;
-
-    /// Retry one destructive IRQ snapshot from the hctx's fixed worker.
-    ///
-    /// [`DeferredIrqAck::Acknowledged`] requires a non-empty hardware event
-    /// cached by this call. A retry that acquires the register block but finds
-    /// no pending source must return [`DeferredIrqAck::Unhandled`], while
-    /// register exclusion remains [`DeferredIrqAck::Contended`].
-    fn acknowledge_deferred_irq(&mut self) -> Result<DeferredIrqAck, Error>;
 
     /// Advance one request from status cached by an acknowledged IRQ.
     ///
@@ -233,11 +225,6 @@ where
         input: InitInput,
     ) -> InitPoll<()> {
         self.poll_block_reinitialize(state, input)
-    }
-
-    fn acknowledge_deferred_irq(&mut self) -> Result<DeferredIrqAck, Error> {
-        let event = self.irq_handle().handle_irq();
-        Ok(DeferredIrqAck::from_event(&event))
     }
 
     fn service_request(

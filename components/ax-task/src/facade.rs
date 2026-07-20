@@ -4,11 +4,11 @@ use alloc::{boxed::Box, string::String};
 use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 
 use crate::{
-    CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, IrqRegisterResult, IrqWaitCell,
-    IrqWaitRegistration, Nice, ParkCommit, ParkPrepare, PiLockId, PiWaitToken, RtPriority,
-    ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder,
-    ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
-    ThreadWakeHandle, WakeResult,
+    CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, CurrentCpuLease, IrqRegisterResult,
+    IrqWaitCell, IrqWaitRegistration, Nice, ParkCommit, ParkPrepare, PiLockId, PiWaitToken,
+    RtPriority, ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem,
+    ThreadBuilder, ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot,
+    ThreadState, ThreadWakeHandle, WakeResult,
     inbox::PublishResult,
     reclaim::DeferredReclaimNode,
     runtime::{
@@ -16,7 +16,7 @@ use crate::{
         RuntimeSchedulerEntry, RuntimeSchedulerReturn, RuntimeStatus, SchedSwitchRecord,
         task_runtime,
     },
-    timer::{ExpiredTimer, RuntimeTimerOwner, TimerError, TimerNode, TimerToken},
+    timer::{ExpiredTimer, RuntimeTimerOwner, TimerError, TimerNode, TimerRetireProof, TimerToken},
 };
 
 /// Returns a strong handle for the calling scheduler thread.
@@ -33,6 +33,16 @@ pub fn current_thread_handle() -> Result<ThreadHandle, TaskError> {
 /// Returns the generation-bearing identity of the calling scheduler thread.
 pub fn current_thread_id() -> Result<ThreadId, TaskError> {
     current_thread_id_from_cpu()
+}
+
+/// Pins the calling scheduler thread to its current CPU.
+///
+/// Unlike a preemption guard, this lease permits scheduling and blocking. The
+/// scheduler preserves owner placement until the final nested lease drops.
+pub fn pin_current_cpu() -> Result<CurrentCpuLease, TaskError> {
+    let system = runtime_task_system()?;
+    let mut cpu = runtime_current_cpu()?;
+    system.pin_current_cpu(cpu.cpu.as_pin_mut())
 }
 
 fn current_thread_id_from_cpu() -> Result<ThreadId, TaskError> {
@@ -302,7 +312,7 @@ pub fn take_current_expired_timers(output: &mut [ExpiredTimer]) -> Result<usize,
     Ok(copied)
 }
 
-/// Arms one shutdown-lifetime runtime timer on the calling CPU.
+/// Arms one retirement-gated runtime timer on the calling CPU.
 ///
 /// This operation is intended for owner-CPU deferred-work control callbacks,
 /// not hard IRQ producers. Remote and IRQ callers must publish a command to a
@@ -312,6 +322,8 @@ pub fn take_current_expired_timers(output: &mut [ExpiredTimer]) -> Result<usize,
 /// published the returned token in the runtime-owned object. A preemption
 /// guard around this call and that publication is sufficient; timer IRQ may
 /// fill fixed storage meanwhile, but IRQ-return scheduling remains deferred.
+/// The first call permanently binds `node` to this CPU, including when a later
+/// capacity or one-shot programming step fails.
 ///
 /// # Errors
 ///
@@ -335,8 +347,11 @@ pub fn arm_current_runtime_timer(
     let now_ns = task_runtime::monotonic_ns();
     let resolution_ns = task_runtime::timer_resolution_ns();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    if !node.bind_runtime_cpu(cpu.owner().as_u32()) {
+        return Err(TaskError::InvalidConfiguration);
+    }
     let token = unsafe {
-        // SAFETY: the API requires a shutdown-lifetime pinned node and the
+        // SAFETY: the API requires pinning through explicit retirement and the
         // RuntimeTimerOwner constructor carries the runtime-owner contract.
         cpu.as_mut()
             .timer_queue()
@@ -381,7 +396,36 @@ pub fn cancel_current_runtime_timer(
     }
     let mut irq = RuntimeIrqGuard::enter();
     let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    if !node.belongs_to_runtime_cpu(cpu.owner().as_u32()) {
+        return Err(TaskError::InvalidConfiguration);
+    }
     Ok(cpu.as_mut().timer_queue().cancel(node, token))
+}
+
+/// Retires one runtime timer generation from ax-task's owner-CPU stores.
+///
+/// Unlike [`cancel_current_runtime_timer`], this operation also removes an
+/// expiration already copied out of the timer heap into the CPU-local
+/// safe-point buffer. The returned proof covers ax-task only; the runtime must
+/// separately wait for any work publication it already accepted.
+///
+/// # Errors
+///
+/// Returns [`TaskError::UnsafeContext`] from hard IRQ context and runtime
+/// object-handle errors when the current CPU has not been initialized.
+pub fn retire_current_runtime_timer(
+    node: Pin<&TimerNode>,
+    token: TimerToken,
+) -> Result<TimerRetireProof, TaskError> {
+    if task_runtime::in_hard_irq() {
+        return Err(TaskError::UnsafeContext);
+    }
+    let mut irq = RuntimeIrqGuard::enter();
+    let mut cpu = runtime_current_cpu_mut(&mut irq)?;
+    if !node.belongs_to_runtime_cpu(cpu.owner().as_u32()) {
+        return Err(TaskError::InvalidConfiguration);
+    }
+    Ok(cpu.as_mut().retire_runtime_timer(node, token))
 }
 
 pub(crate) fn prepare_current_park(_permit: &BlockingPermit) -> Result<ParkPrepare, TaskError> {
@@ -630,38 +674,49 @@ fn task_work_service_loop() -> Result<(), TaskError> {
     let doorbell = system.task_work_doorbell();
     let wake_owner = current_thread_handle()?.wake_handle();
     let irq_wake = unsafe {
-        // SAFETY: `waiter` below is leaked for the shutdown lifetime and owns
-        // this wake handle's strong ThreadCore reference.
+        // SAFETY: `waiter_owner` below remains pinned on this shutdown-lifetime
+        // service stack and owns this wake handle's strong ThreadCore reference.
         wake_owner.irq_wake_handle()
     };
-    let waiter = Box::leak(Box::new(TaskWorkWaiter {
+    let waiter_owner = Box::pin(TaskWorkWaiter {
         _wake_owner: wake_owner,
         registration: IrqWaitRegistration::new(irq_wake),
-    }));
+    });
+    let registration_ptr = ptr::from_ref(&waiter_owner.as_ref().get_ref().registration);
     let registration = unsafe {
-        // SAFETY: the leaked allocation never moves or expires, and the sole
-        // service thread serializes every register/unregister operation.
-        Pin::new_unchecked(&waiter.registration)
+        // SAFETY: the pinned Box remains owned by this function's infinite
+        // service loop. Every error path from `wait_for_task_work` unregisters
+        // before this stack can unwind into the fatal-invariant handler.
+        Pin::new_unchecked(&*registration_ptr)
     };
     system.finish_task_work_worker_install();
 
     loop {
         let _published = doorbell.take_pending();
-        let Some(batch) = service_task_work_pass(system, &doorbell, BATCH_LIMIT)? else {
-            let _decision = yield_current_cpu()?;
+        let Some(batch) = service_task_work_pass(system, &doorbell, BATCH_LIMIT)
+            .unwrap_or_else(|error| fatal_task_work_service(error))
+        else {
+            let _decision =
+                yield_current_cpu().unwrap_or_else(|error| fatal_task_work_service(error));
             continue;
         };
         if batch.made_progress() {
             if batch.saturated(BATCH_LIMIT) {
-                let _decision = yield_current_cpu()?;
+                let _decision =
+                    yield_current_cpu().unwrap_or_else(|error| fatal_task_work_service(error));
             }
             continue;
         }
         if doorbell.take_pending() {
             continue;
         }
-        wait_for_task_work(doorbell.event(), registration)?;
+        wait_for_task_work(doorbell.event(), registration)
+            .unwrap_or_else(|error| fatal_task_work_service(error));
     }
+}
+
+fn fatal_task_work_service(_error: TaskError) -> ! {
+    task_runtime::fatal_invariant(0x4558_0030, 0)
 }
 
 fn service_task_work_pass(
@@ -1380,6 +1435,92 @@ mod tests {
                 token_generation: token.generation(),
                 deadline_ns: 0,
             }]
+        );
+    }
+
+    #[test]
+    fn runtime_timer_retire_detaches_a_buffered_expiration_before_owner_drop() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let timer_owner = Box::new(TimerNode::new(0));
+        let timer_owner = Box::into_raw(timer_owner);
+        let timer = unsafe {
+            // SAFETY: ownership stays in `timer_owner` until the explicit
+            // retirement proof below detaches every ax-task reference.
+            Pin::new_unchecked(&*timer_owner)
+        };
+        let owner = unsafe {
+            // SAFETY: the fake runtime records this opaque identity only.
+            RuntimeTimerOwner::new(0x1234, 0x5678)
+        };
+        test_runtime::clear_runtime_timer_events();
+
+        let token = arm_current_runtime_timer(timer, 0, owner).unwrap();
+        assert_eq!(timer_interrupt_current_cpu(false, 0).unwrap().expired(), 1);
+        let retired = retire_current_runtime_timer(timer, token).unwrap();
+
+        assert_eq!(retired.node(), timer_owner.expose_provenance());
+        assert_eq!(retired.token(), token);
+        assert!(retired.removed_buffered_expiration());
+        unsafe {
+            // SAFETY: `retired` proves the heap and CPU-local expiration buffer
+            // no longer contain this pinned address and generation.
+            drop(Box::from_raw(timer_owner));
+        }
+        assert!(schedule_current_cpu().unwrap().is_quiescent());
+        assert!(test_runtime::runtime_timer_events().is_empty());
+    }
+
+    #[test]
+    fn runtime_timer_retire_physically_detaches_a_live_heap_entry() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let timer_owner = Box::into_raw(Box::new(TimerNode::new(0)));
+        let timer = unsafe {
+            // SAFETY: the raw Box owner remains live through retirement.
+            Pin::new_unchecked(&*timer_owner)
+        };
+        let owner = unsafe {
+            // SAFETY: the fake runtime records this opaque identity only.
+            RuntimeTimerOwner::new(0x1234, 0x5678)
+        };
+        let token = arm_current_runtime_timer(timer, u64::MAX / 2, owner).unwrap();
+
+        let retired = retire_current_runtime_timer(timer, token).unwrap();
+
+        assert!(retired.removed_heap_entry());
+        assert!(!retired.removed_buffered_expiration());
+        unsafe {
+            // SAFETY: the proof above physically detached the only heap entry.
+            drop(Box::from_raw(timer_owner));
+        }
+    }
+
+    #[test]
+    fn runtime_timer_retire_rejects_a_foreign_cpu_binding() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let timer = Box::pin(TimerNode::new(0));
+        assert!(timer.bind_runtime_cpu(1));
+
+        assert_eq!(
+            retire_current_runtime_timer(timer.as_ref(), TimerToken::from_generation(1).unwrap()),
+            Err(TaskError::InvalidConfiguration)
         );
     }
 

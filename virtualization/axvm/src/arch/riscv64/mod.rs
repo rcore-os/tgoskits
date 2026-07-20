@@ -5,9 +5,8 @@ use ax_cpu_local::CpuPin;
 use ax_kspin::{IrqGuard, PreemptGuard};
 use ax_memory_addr::VirtAddr;
 use axvm_types::{
-    AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VMInterruptMode,
-    VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
-    VmBackendResult as BackendResult,
+    AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
+    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
 };
 use riscv_h::register::hvip;
 use riscv_vcpu::{
@@ -94,9 +93,15 @@ impl ArchOps for Riscv64Arch {
         );
     }
 
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn revoke_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
         irq::revoke_guest_irq_routes(vm.id())
+    }
+
+    fn prepare_vcpu_irq_owner(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult<Option<crate::architecture::ops::VcpuIrqOwnerSession>> {
+        irq::prepare_guest_irq_owner_session(vm, vcpu)
     }
 
     fn before_first_run(
@@ -121,7 +126,7 @@ impl ArchOps for Riscv64Arch {
         // Physical IRQ affinity is VM-wide. vCPU0 is the deterministic owner;
         // allowing every first-run hook to write it would make the last vCPU
         // scheduled decide the route for the whole VM.
-        if vm.interrupt_mode() != VMInterruptMode::Passthrough || vcpu.id() != 0 {
+        if !irq::guest_irq_owner_session_required(vm, vcpu.id()) {
             return Ok(());
         }
         if !wake_installed {

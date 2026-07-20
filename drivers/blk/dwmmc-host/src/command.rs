@@ -16,7 +16,7 @@ use sdmmc_protocol::{
 };
 
 use crate::{
-    host::{DwMmc, RegisterOwner},
+    host::DwMmc,
     regs::{Cmd, RegisterBlockVolatileFieldAccess},
 };
 
@@ -59,9 +59,7 @@ impl DwMmc {
     }
 
     pub fn submit_command(&mut self, cmd: &ProtoCmd) -> Result<(), Error> {
-        let irq = self.irq.clone();
-        let register_owner = irq.state.try_begin_task_update().ok_or(Error::Busy)?;
-        self.submit_command_while_registers_owned(cmd, &register_owner)
+        self.submit_command_owned(cmd)
     }
 
     pub(crate) fn ensure_runtime_data_command_can_issue(&self) -> Result<(), Error> {
@@ -80,13 +78,12 @@ impl DwMmc {
         Ok(())
     }
 
-    /// Stage and activate a command while the caller owns the controller's
-    /// task-side register gate.
-    pub(crate) fn submit_command_while_registers_owned(
-        &mut self,
-        cmd: &ProtoCmd,
-        _register_owner: &RegisterOwner<'_>,
-    ) -> Result<(), Error> {
+    /// Stage and activate a command from the CPU-pinned maintenance owner.
+    ///
+    /// OS glue must exclude this controller's local IRQ action around the
+    /// register transition. The portable driver never waits for or defers the
+    /// hard-IRQ endpoint on a shared register lock.
+    pub(crate) fn submit_command_owned(&mut self, cmd: &ProtoCmd) -> Result<(), Error> {
         if !matches!(self.command_state, CommandState::Idle) {
             return Err(Error::UnsupportedCommand);
         }
@@ -115,11 +112,7 @@ impl DwMmc {
     /// Card removal after admission is reported by the IRQ/watchdog recovery
     /// path. Rechecking it here would make a post-IDMAC error look like an
     /// unaccepted request and allow the caller to release live DMA memory.
-    pub(crate) fn activate_admitted_data_command(
-        &mut self,
-        cmd: &ProtoCmd,
-        _register_owner: &RegisterOwner<'_>,
-    ) {
+    pub(crate) fn activate_admitted_data_command(&mut self, cmd: &ProtoCmd) {
         debug_assert!(matches!(self.command_state, CommandState::Idle));
         debug_assert!(self.pending_data.is_some());
         let data = self.pending_data.take();

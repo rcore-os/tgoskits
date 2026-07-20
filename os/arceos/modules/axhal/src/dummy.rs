@@ -2,7 +2,8 @@
 
 #[cfg(feature = "irq")]
 use ax_plat::irq::{
-    CpuIpiTarget, HwIrq, IpiSendStatus, IrqError, IrqId, IrqIf, IrqNumber, IrqSource, TrapVector,
+    CpuId, CpuIpiTarget, HwIrq, IpiSendStatus, IrqAffinity, IrqError, IrqId, IrqIf, IrqLineBinding,
+    IrqLineControl, IrqNumber, IrqScope, IrqSource, PreparedIrqLine, TrapVector,
 };
 use ax_plat::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
@@ -180,15 +181,20 @@ impl IrqIf for DummyIrq {
         Ok(())
     }
 
-    fn set_enable(_irq: IrqId, _enabled: bool) -> Result<(), IrqError> {
-        Ok(())
+    fn prepare_line(
+        irq: IrqId,
+        _scope: IrqScope,
+        _affinity: IrqAffinity,
+    ) -> Result<PreparedIrqLine, IrqError> {
+        IrqLineBinding::new(irq.hwirq.0, 1)
+            .map(|binding| PreparedIrqLine::new(binding, IrqLineControl::Maskable))
+            .ok_or(IrqError::InvalidIrq)
     }
 
-    fn set_affinity(
-        _irq: IrqId,
-        _affinity: ax_plat::irq::IrqAffinity,
-    ) -> Result<(), ax_plat::irq::IrqError> {
-        Err(ax_plat::irq::IrqError::Unsupported)
+    fn set_line_enabled(_binding: IrqLineBinding, _cpu: Option<CpuId>, _enabled: bool) {}
+
+    fn release_line(_binding: IrqLineBinding) -> Result<(), IrqError> {
+        Err(IrqError::Unsupported)
     }
 
     fn handle(_irq: TrapVector) -> Option<IrqId> {

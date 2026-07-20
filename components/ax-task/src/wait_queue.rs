@@ -131,18 +131,38 @@ impl WaitQueue {
     where
         F: Fn() -> bool,
     {
+        self.try_wait_until_deadline(deadline, condition)
+            .unwrap_or_else(|error| {
+                panic!("timed conditional wait must satisfy scheduler invariants: {error:?}")
+            })
+    }
+
+    /// Fallible form of [`Self::wait_until_deadline`] for runtime and OS glue.
+    ///
+    /// The predicate follows the same bounded, non-blocking, non-reentrant
+    /// contract as [`Self::try_wait_until`]. The absolute deadline is never
+    /// rebased after an unrelated wake.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskError::UnsafeContext`] in hard IRQ context and propagates
+    /// scheduler, timer-capacity, and runtime one-shot programming failures.
+    pub fn try_wait_until_deadline<F>(
+        &self,
+        deadline: Duration,
+        condition: F,
+    ) -> Result<bool, TaskError>
+    where
+        F: Fn() -> bool,
+    {
         let deadline_ns = deadline.as_nanos().min(u64::MAX as u128) as u64;
         loop {
             if task_runtime::monotonic_ns() >= deadline_ns {
-                return !condition();
+                return Ok(!condition());
             }
-            let condition_met = self
-                .wait_once_if(Some(deadline_ns), &condition)
-                .unwrap_or_else(|error| {
-                    panic!("timed conditional wait must satisfy scheduler invariants: {error:?}")
-                });
+            let condition_met = self.wait_once_if(Some(deadline_ns), &condition)?;
             if condition_met {
-                return false;
+                return Ok(false);
             }
         }
     }
@@ -333,8 +353,13 @@ fn sleep_until_ns(deadline_ns: u64) {
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+
     use super::*;
-    use crate::{SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
+    use crate::{
+        CpuId, CpuLocal, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec,
+        runtime::RuntimeStatus,
+    };
 
     #[test]
     fn notification_removal_wins_the_timeout_cleanup_race() {
@@ -370,5 +395,83 @@ mod tests {
         crate::test_runtime::set_hard_irq(false);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn fallible_absolute_wait_propagates_timer_programming_failure() {
+        let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let current = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        crate::test_runtime::set_program_oneshot_timer_status(RuntimeStatus::Busy);
+
+        let result = WaitQueue::new().try_wait_until_deadline(Duration::from_nanos(10), || false);
+
+        assert_eq!(
+            result,
+            Err(TaskError::RuntimeFailure(RuntimeStatus::Busy as u32))
+        );
+        assert_eq!(
+            system.thread_state(current.id()),
+            Ok(crate::ThreadState::Running),
+            "a failed timer arm must roll the prepared park back"
+        );
+    }
+
+    #[test]
+    fn condition_visible_before_park_wins_without_arming_a_timer() {
+        let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let current = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let programmed_before = crate::test_runtime::programmed_oneshot_timer_count();
+
+        let result = WaitQueue::new().try_wait_until_deadline(Duration::from_nanos(10), || true);
+
+        assert_eq!(result, Ok(false));
+        assert_eq!(
+            system.thread_state(current.id()),
+            Ok(crate::ThreadState::Running)
+        );
+        assert_eq!(
+            crate::test_runtime::programmed_oneshot_timer_count(),
+            programmed_before,
+            "wake-before-park evidence must not arm a timeout"
+        );
+    }
+
+    #[test]
+    fn elapsed_absolute_deadline_returns_without_parking() {
+        let result = WaitQueue::new().try_wait_until_deadline(Duration::ZERO, || false);
+
+        assert_eq!(result, Ok(true));
+    }
+
+    struct InstalledTaskHandles;
+
+    impl InstalledTaskHandles {
+        fn new(system: core::pin::Pin<&TaskSystem>, cpu: core::pin::Pin<&mut CpuLocal>) -> Self {
+            crate::test_runtime::install_task_handles(
+                (system.get_ref() as *const TaskSystem).expose_provenance(),
+                // SAFETY: the fixture publishes this pointer only while both
+                // pinned scheduler objects remain alive in this test scope.
+                (unsafe { core::pin::Pin::get_unchecked_mut(cpu) } as *mut CpuLocal)
+                    .expose_provenance(),
+            );
+            Self
+        }
+    }
+
+    impl Drop for InstalledTaskHandles {
+        fn drop(&mut self) {
+            crate::test_runtime::set_program_oneshot_timer_status(RuntimeStatus::Success);
+            crate::test_runtime::clear_task_handles();
+        }
     }
 }

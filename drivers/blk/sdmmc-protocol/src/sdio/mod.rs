@@ -18,9 +18,10 @@ pub use card::{
     SdioStatusRequest, SwitchFunctionRequest,
 };
 pub use host::{
-    BusWidth, ClockSpeed, DeferredIrqAck, HostEvent, HostEventKind, HostEventSource,
-    ReadyBusRequest, SDMMC_BLOCK_QUEUE_ID, SdioBusOp, SdioHost, SdioIrqHandle, SdioIrqHost,
-    SignalVoltage, block_queue_ready_from_host_event, poll_ready_bus_op, submit_ready_bus_op,
+    BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, HostEventSummary,
+    ReadyBusRequest, SDMMC_BLOCK_QUEUE_ID, SdioBusOp, SdioHost, SdioIrqControlError, SdioIrqHost,
+    SdioIrqSource, SignalVoltage, block_queue_ready_from_host_event, poll_ready_bus_op,
+    submit_ready_bus_op,
 };
 pub use host2::{
     SdioHost2Adapter, SdioHost2BusRequest, SdioHost2DataRequest, SdioHost2Irq, SdioHost2Timed,

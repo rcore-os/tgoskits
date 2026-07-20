@@ -298,8 +298,8 @@ fn cancellation_during_callback_suppresses_its_requeue_outcome() {
     let cancellation = queue.begin_cancel(work);
     assert!(cancellation.was_pending());
     assert_eq!(
-        queue.queue_work_on(0, WorkPriority::Normal, work).unwrap(),
-        QueueWorkResult::CancelInProgress
+        queue.queue_work_on(0, WorkPriority::Normal, work),
+        Err(WorkQueueError::CancelInProgress)
     );
     gate.release.store(true, Ordering::Release);
     let batch = worker.join().unwrap();
@@ -464,8 +464,8 @@ fn cancel_tombstones_queued_work_until_the_worker_consumes_it() {
     assert!(cancellation.was_pending());
     assert!(!cancellation.is_complete());
     assert_eq!(
-        queue.queue_work_on(0, WorkPriority::Normal, work).unwrap(),
-        QueueWorkResult::CancelInProgress
+        queue.queue_work_on(0, WorkPriority::Normal, work),
+        Err(WorkQueueError::CancelInProgress)
     );
 
     let batch = queue.service_batch(0, WorkPriority::Normal).unwrap();
@@ -588,6 +588,49 @@ fn logical_domain_owns_policy_and_drain_state_but_no_worker() {
         queue.begin_drain(),
         Err(WorkQueueError::DomainNotAccepting)
     ));
+}
+
+#[test]
+fn draining_rejects_external_submit_but_finishes_callback_owned_requeue() {
+    let system = queue_system::<1>();
+    let domain = Box::leak(Box::new(WorkQueue::new(0, WorkPriority::Normal)));
+    // SAFETY: the leaked domain has a stable address for every intrusive
+    // activation and drain observation in this test.
+    let domain = unsafe { Pin::new_unchecked(&*domain) };
+    let gate: &'static RunningGate = Box::leak(Box::new(RunningGate {
+        entered: AtomicBool::new(false),
+        release: AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+        callback_requeue: true,
+    }));
+    let work = pinned(Box::leak(Box::new(WorkItem::new(
+        gated_callback,
+        ptr::from_ref(gate).expose_provenance(),
+    ))));
+
+    assert_eq!(
+        system.queue_work_in_domain(domain, work).unwrap(),
+        QueueWorkResult::Queued
+    );
+    let worker = std::thread::spawn(move || system.service_batch(0, WorkPriority::Normal).unwrap());
+    while !gate.entered.load(Ordering::Acquire) {
+        std::thread::yield_now();
+    }
+
+    let drain = domain.begin_drain().unwrap();
+    assert!(!drain.is_complete());
+    assert_eq!(
+        system.queue_work_in_domain(domain, work),
+        Err(WorkQueueError::DomainNotAccepting),
+        "drain closes only the external producer gate"
+    );
+    gate.release.store(true, Ordering::Release);
+    let batch = worker.join().unwrap();
+
+    assert_eq!(gate.calls.load(Ordering::Relaxed), 2);
+    assert_eq!(batch.executed(), 2);
+    assert!(drain.is_complete());
+    assert_eq!(domain.state(), WorkQueueState::Drained);
 }
 
 #[cfg(feature = "workqueue")]

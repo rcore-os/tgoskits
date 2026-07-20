@@ -1,14 +1,134 @@
-//! Controller line state and per-CPU enable coordination.
+//! Prepared IRQ-chip line state and per-CPU enable coordination.
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
 use super::Registry;
 use crate::{
-    CpuId, IrqAffinity, IrqError, IrqHandle, IrqId, IrqOps, IrqScope,
-    descriptor::action_matches_cpu,
+    CpuId, IrqError, IrqHandle, IrqId, IrqLineBinding, IrqLineControl, IrqOps, IrqRequest,
+    IrqScope, PreparedIrqLine, descriptor::Descriptor, detached::DetachedActionConfig,
 };
 
 impl<O: IrqOps> Registry<O> {
+    pub(super) fn begin_line_registration(
+        &self,
+        irq: IrqId,
+        request: &IrqRequest,
+    ) -> Result<bool, IrqError> {
+        if self.descriptor_ptr(irq).is_some() {
+            return self.with_descriptor(irq, |descriptor| descriptor.begin_registration(request));
+        }
+
+        // Allocate before taking the writer-only catalog lock. A concurrent
+        // registrar may publish the same descriptor first; in that case this
+        // unused candidate is dropped in task context after the lock releases.
+        let mut candidate = Box::pin(Descriptor::new(irq, request));
+        let irq_state = self.catalog_lock.lock(&self.ops);
+        let result = (|| {
+            if self.descriptor_ptr(irq).is_some() {
+                return Ok(None);
+            }
+            let state = unsafe { &mut *self.state.get() };
+            if state.retained.len() == state.retained.capacity() {
+                return Err(IrqError::NoMemory);
+            }
+            let slot = self.vacant_descriptor_slot(irq).ok_or(IrqError::NoMemory)?;
+            let needs_prepare = candidate.as_mut().get_mut().begin_registration(request)?;
+            debug_assert!(needs_prepare);
+            let descriptor = candidate.as_mut().get_mut() as *mut Descriptor;
+            state.retained.push(candidate);
+            self.descriptor_catalog[slot].store(descriptor, core::sync::atomic::Ordering::Release);
+            Ok(Some(needs_prepare))
+        })();
+        self.catalog_lock.unlock(&self.ops, irq_state);
+        match result? {
+            Some(needs_prepare) => Ok(needs_prepare),
+            None => self.with_descriptor(irq, |descriptor| descriptor.begin_registration(request)),
+        }
+    }
+
+    /// Resolves and physically masks a descriptor before its first action is
+    /// published. All fallible platform work happens before the binding is
+    /// committed; a failure leaves the descriptor unbound and retryable.
+    pub(super) fn prepare_registration_line(
+        &self,
+        irq: IrqId,
+        request: &IrqRequest,
+        needs_prepare: bool,
+    ) -> Result<(), IrqError> {
+        self.prepare_line_for_registration(irq, request.scope, request.affinity, needs_prepare)
+    }
+
+    pub(super) fn begin_detached_line_registration(
+        &self,
+        config: DetachedActionConfig,
+    ) -> Result<bool, IrqError> {
+        self.with_descriptor(config.irq, |descriptor| {
+            descriptor.begin_detached_registration(config)
+        })
+    }
+
+    pub(super) fn prepare_detached_registration_line(
+        &self,
+        config: DetachedActionConfig,
+        needs_prepare: bool,
+    ) -> Result<(), IrqError> {
+        self.prepare_line_for_registration(config.irq, config.scope, config.affinity, needs_prepare)
+    }
+
+    fn prepare_line_for_registration(
+        &self,
+        irq: IrqId,
+        scope: IrqScope,
+        affinity: crate::IrqAffinity,
+        needs_prepare: bool,
+    ) -> Result<(), IrqError> {
+        if !needs_prepare {
+            return Ok(());
+        }
+
+        let prepared = self.ops.prepare_line(irq, scope, affinity)?;
+        let binding = prepared.binding();
+        self.install_line_binding(irq, prepared)?;
+
+        match scope {
+            IrqScope::Global => {
+                // `prepare_line` returns a globally masked endpoint.
+                self.set_line_applied(irq, None, false)?;
+            }
+            IrqScope::PerCpu { cpus } => match prepared.control() {
+                IrqLineControl::Maskable => {
+                    for cpu in cpus.iter() {
+                        if self.ops.cpu_online(cpu)
+                            && let Err(error) = self.mask_prepared_percpu_line(irq, binding, cpu)
+                        {
+                            panic!(
+                                "prepared per-CPU IRQ line {irq:?} could not be masked on online \
+                                 CPU {}: {error:?}",
+                                cpu.0
+                            );
+                        }
+                    }
+                }
+                IrqLineControl::ActionGateOnly => {
+                    for cpu in cpus.iter() {
+                        self.set_line_applied(irq, Some(cpu), false)?;
+                    }
+                }
+            },
+        }
+        self.mark_line_prepared(irq, prepared)
+    }
+
+    pub(super) fn finish_line_registration(&self, irq: IrqId) -> Result<(), IrqError> {
+        self.with_descriptor(irq, |descriptor| {
+            if !descriptor.registration_held() {
+                return Err(IrqError::Busy);
+            }
+            descriptor.finish_registration();
+            Ok(())
+        })
+    }
+
     pub(super) fn apply_enabled(
         &self,
         handle: IrqHandle,
@@ -26,213 +146,158 @@ impl<O: IrqOps> Registry<O> {
         }
     }
 
-    pub(super) fn apply_affinity(&self, irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError> {
-        match affinity {
-            IrqAffinity::Any => Ok(()),
-            IrqAffinity::Fixed(cpu) if self.ops.cpu_online(cpu) => {
-                self.ops.set_affinity(irq, affinity)
-            }
-            IrqAffinity::Fixed(_) => Err(IrqError::CpuOffline),
-        }
-    }
-
-    pub(super) fn snapshot_and_disable_scope_line(
-        &self,
-        irq: IrqId,
-        scope: IrqScope,
-    ) -> Result<LineStateSnapshot, IrqError> {
-        let mut snapshot = LineStateSnapshot::new(scope);
-        match scope {
-            IrqScope::Global => {
-                snapshot.global = self.snapshot_and_disable_line(irq, None)?;
-            }
-            IrqScope::PerCpu { cpus } => {
-                for cpu in cpus.iter() {
-                    if !self.ops.cpu_online(cpu) {
-                        continue;
-                    }
-                    match self.snapshot_and_disable_line(irq, Some(cpu)) {
-                        Ok(was_enabled) => snapshot.percpu.push((cpu, was_enabled)),
-                        Err(err) => {
-                            let _ = self.restore_scope_line_snapshot(irq, scope, &snapshot);
-                            return Err(err);
-                        }
-                    }
-                }
-            }
-        }
-        Ok(snapshot)
-    }
-
-    pub(super) fn restore_scope_line_snapshot(
-        &self,
-        irq: IrqId,
-        scope: IrqScope,
-        snapshot: &LineStateSnapshot,
-    ) -> Result<(), IrqError> {
-        match scope {
-            IrqScope::Global => self.restore_line_snapshot(irq, None, snapshot.global),
-            IrqScope::PerCpu { cpus } => {
-                for cpu in cpus.iter() {
-                    if let Some((_, was_enabled)) = snapshot
-                        .percpu
-                        .iter()
-                        .find(|(snapshot_cpu, _)| *snapshot_cpu == cpu)
-                    {
-                        self.restore_line_snapshot(irq, Some(cpu), *was_enabled)?;
-                    }
-                }
-                Ok(())
-            }
-        }
-    }
-
     pub(super) fn apply_line_state(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<(), IrqError> {
-        loop {
-            if let Some(cpu) = cpu
-                && !self.ops.cpu_online(cpu)
+        match cpu {
+            None => match self.line_affinity(irq)? {
+                crate::IrqAffinity::Any => self.reconcile_line_local(irq, None),
+                crate::IrqAffinity::Fixed(owner_cpu) => {
+                    if !self.line_update_required(irq, None)? {
+                        return Ok(());
+                    }
+                    self.run_line_update_on(owner_cpu, irq, None)
+                }
+            },
+            Some(cpu) => {
+                if !self.line_update_required(irq, Some(cpu))? {
+                    return Ok(());
+                }
+                self.run_line_update_on(cpu, irq, Some(cpu))
+            }
+        }
+    }
+
+    fn run_line_update_on(
+        &self,
+        owner_cpu: CpuId,
+        irq: IrqId,
+        line_cpu: Option<CpuId>,
+    ) -> Result<(), IrqError> {
+        let mut request = CpuOwnedLineUpdate {
+            registry: self as *const Self as *mut (),
+            irq,
+            line_cpu,
+            result: Ok(()),
+        };
+        if let Err(error) = self.ops.run_on_cpu_sync(
+            owner_cpu,
+            cpu_owned_line_update_thunk::<O>,
+            (&mut request as *mut CpuOwnedLineUpdate).cast(),
+        ) {
+            panic!(
+                "prepared IRQ line {irq:?} could not execute on owner CPU {}: {error:?}",
+                owner_cpu.0
+            );
+        }
+        request.result
+    }
+
+    fn reconcile_line_local(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<(), IrqError> {
+        if let Some(cpu) = cpu
+            && !self.ops.cpu_online(cpu)
+        {
+            return Ok(());
+        }
+
+        self.with_descriptor(irq, |descriptor| {
+            assert!(
+                descriptor.line_initialized(cpu),
+                "live IRQ line transition reached an uninitialized CPU instance"
+            );
+            let desired = descriptor.line_desired(cpu);
+            if desired == descriptor.line_applied(cpu)
+                || (desired && descriptor.line_claims(cpu) != 0)
             {
                 return Ok(());
             }
-
-            let Some((desired, applied)) = self.line_state(irq, cpu) else {
-                return Err(IrqError::NotFound);
-            };
-            if desired == applied {
-                return Ok(());
-            }
-
-            self.set_controller_enabled(irq, cpu, desired)?;
-            self.set_line_applied(irq, cpu, desired)?;
-        }
-    }
-
-    pub(super) fn pending_enables_for_cpu(&self, cpu: CpuId) -> Vec<IrqId> {
-        let irq_state = self.lock.lock(&self.ops);
-        let mut pending = Vec::new();
-        for descriptor in &self.state_ref().descriptors {
-            if descriptor.actions().any(|action| {
-                let action = unsafe { &*action };
-                !action.detached.load(core::sync::atomic::Ordering::Acquire)
-                    && action.pending_enable_contains(cpu)
-                    && action_matches_cpu(action.scope, cpu)
-            }) {
-                pending.push(descriptor.irq);
-            }
-        }
-        self.lock.unlock(&self.ops, irq_state);
-        pending
-    }
-
-    pub(super) fn clear_pending_enable_for_cpu(&self, irq: IrqId, cpu: CpuId) {
-        let irq_state = self.lock.lock(&self.ops);
-        if let Some(descriptor) = self.descriptor(irq) {
-            for action in descriptor.actions() {
-                let action = unsafe { &*action };
-                if action_matches_cpu(action.scope, cpu) {
-                    action.remove_pending_enable(cpu);
+            match descriptor
+                .line_control()
+                .expect("live IRQ transition lost its control mode")
+            {
+                IrqLineControl::Maskable => {
+                    let binding = descriptor
+                        .line_binding()
+                        .expect("live IRQ transition lost its prepared binding");
+                    self.ops.set_line_enabled(binding, cpu, desired);
                 }
+                IrqLineControl::ActionGateOnly => {}
             }
-        }
-        self.lock.unlock(&self.ops, irq_state);
+            descriptor.set_line_applied(cpu, desired);
+            Ok(())
+        })
     }
 
-    pub(super) fn framework_line_enabled(
+    fn line_update_required(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError> {
+        if let Some(cpu) = cpu
+            && !self.ops.cpu_online(cpu)
+        {
+            return Ok(false);
+        }
+        self.with_descriptor(irq, |descriptor| {
+            assert!(
+                descriptor.line_initialized(cpu),
+                "live IRQ line preflight reached an uninitialized CPU instance"
+            );
+            let desired = descriptor.line_desired(cpu);
+            Ok(desired != descriptor.line_applied(cpu)
+                && (!desired || descriptor.line_claims(cpu) == 0))
+        })
+    }
+
+    pub(super) fn mask_prepared_percpu_line(
         &self,
         irq: IrqId,
-        cpu: Option<CpuId>,
-    ) -> Result<bool, IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let descriptor = self.descriptor(irq).ok_or(IrqError::NotFound)?;
-            Ok(descriptor.line_applied(cpu))
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-        result
-    }
-
-    fn apply_percpu_enabled(
-        &self,
-        handle: IrqHandle,
+        binding: IrqLineBinding,
         cpu: CpuId,
-        enabled: bool,
     ) -> Result<(), IrqError> {
-        if self.ops.cpu_online(cpu) {
-            self.apply_line_state(handle.irq, Some(cpu))?;
-        } else if enabled {
-            self.with_action(handle, |action| {
-                action.insert_pending_enable(cpu);
-            })?;
-        } else {
-            self.with_action(handle, |action| {
-                action.remove_pending_enable(cpu);
-            })?;
-        }
-        Ok(())
+        let mut request = CpuOwnedPreparedMask {
+            registry: self as *const Self as *mut (),
+            irq,
+            binding,
+            cpu,
+            result: Ok(()),
+        };
+        self.ops.run_on_cpu_sync(
+            cpu,
+            cpu_owned_prepared_mask_thunk::<O>,
+            (&mut request as *mut CpuOwnedPreparedMask).cast(),
+        )?;
+        request.result
     }
 
-    fn snapshot_and_disable_line(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError> {
-        let was_enabled = self.controller_line_enabled(irq, cpu)?;
-        self.set_controller_enabled(irq, cpu, false)?;
-        self.set_line_applied_if_present(irq, cpu, false)?;
-        Ok(was_enabled)
-    }
-
-    fn restore_line_snapshot(
+    fn mask_prepared_line_local(
         &self,
         irq: IrqId,
-        cpu: Option<CpuId>,
-        was_enabled: bool,
+        binding: IrqLineBinding,
+        cpu: CpuId,
     ) -> Result<(), IrqError> {
-        if was_enabled {
-            self.set_controller_enabled(irq, cpu, true)?;
-        }
-        self.set_line_applied_if_present(irq, cpu, was_enabled)
+        self.with_descriptor(irq, |descriptor| {
+            assert_eq!(
+                descriptor.preparing_binding(),
+                Some(binding),
+                "per-CPU preparation used another binding generation"
+            );
+            self.ops.set_line_enabled(binding, Some(cpu), false);
+            descriptor.set_line_applied(Some(cpu), false);
+            Ok(())
+        })
     }
 
-    fn controller_line_enabled(&self, irq: IrqId, cpu: Option<CpuId>) -> Result<bool, IrqError> {
-        match self.ops.is_enabled(irq, cpu) {
-            Ok(enabled) => Ok(enabled),
-            Err(IrqError::Unsupported) => {
-                Ok(self.framework_line_enabled(irq, cpu).unwrap_or(false))
-            }
-            Err(err) => Err(err),
-        }
+    fn line_affinity(&self, irq: IrqId) -> Result<crate::IrqAffinity, IrqError> {
+        self.with_descriptor(irq, |descriptor| Ok(descriptor.affinity()))
     }
 
-    fn set_controller_enabled(
-        &self,
-        irq: IrqId,
-        cpu: Option<CpuId>,
-        enabled: bool,
-    ) -> Result<(), IrqError> {
-        match cpu {
-            None => self.ops.set_enabled(irq, None, enabled),
-            Some(cpu) => {
-                let mut request = CpuOwnedLineUpdate {
-                    registry: self as *const Self as *mut (),
-                    irq,
-                    cpu,
-                    enabled,
-                    result: Ok(()),
-                };
-                self.ops.run_on_cpu_sync(
-                    cpu,
-                    cpu_owned_line_update_thunk::<O>,
-                    (&mut request as *mut CpuOwnedLineUpdate).cast(),
-                )?;
-                request.result
-            }
-        }
+    fn install_line_binding(&self, irq: IrqId, prepared: PreparedIrqLine) -> Result<(), IrqError> {
+        self.with_descriptor(irq, |descriptor| {
+            descriptor.install_line_binding(prepared);
+            Ok(())
+        })
     }
 
-    fn line_state(&self, irq: IrqId, cpu: Option<CpuId>) -> Option<(bool, bool)> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = self
-            .descriptor(irq)
-            .map(|descriptor| (descriptor.line_desired(cpu), descriptor.line_applied(cpu)));
-        self.lock.unlock(&self.ops, irq_state);
-        result
+    fn mark_line_prepared(&self, irq: IrqId, prepared: PreparedIrqLine) -> Result<(), IrqError> {
+        self.with_descriptor(irq, |descriptor| {
+            descriptor.mark_line_prepared(prepared);
+            Ok(())
+        })
     }
 
     fn set_line_applied(
@@ -241,70 +306,71 @@ impl<O: IrqOps> Registry<O> {
         cpu: Option<CpuId>,
         enabled: bool,
     ) -> Result<(), IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let state = unsafe { &mut *self.state.get() };
-            let descriptor = state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == irq)
-                .ok_or(IrqError::NotFound)?;
+        self.with_descriptor(irq, |descriptor| {
             descriptor.set_line_applied(cpu, enabled);
             Ok(())
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-        result
+        })
     }
 
-    fn set_line_applied_if_present(
+    pub(super) fn percpu_lines_for_cpu_online(
         &self,
-        irq: IrqId,
-        cpu: Option<CpuId>,
-        enabled: bool,
-    ) -> Result<(), IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let state = unsafe { &mut *self.state.get() };
-        if let Some(descriptor) = state
-            .descriptors
-            .iter_mut()
-            .find(|descriptor| descriptor.irq == irq)
-        {
-            descriptor.set_line_applied(cpu, enabled);
+        cpu: CpuId,
+    ) -> Vec<(IrqId, IrqLineBinding, bool)> {
+        let irq_state = self.catalog_lock.lock(&self.ops);
+        let irqs = unsafe { &*self.state.get() }
+            .retained
+            .iter()
+            .map(|descriptor| descriptor.irq)
+            .collect::<Vec<_>>();
+        self.catalog_lock.unlock(&self.ops, irq_state);
+
+        let mut pending = Vec::new();
+        for irq in irqs {
+            if let Ok(Some((binding, needs_initialization))) =
+                self.with_descriptor(irq, |descriptor| Ok(descriptor.cpu_online_work(cpu)))
+            {
+                pending.push((irq, binding, needs_initialization));
+            }
         }
-        self.lock.unlock(&self.ops, irq_state);
-        Ok(())
+        pending
     }
-}
 
-pub(super) struct LineStateSnapshot {
-    global: bool,
-    percpu: Vec<(CpuId, bool)>,
-}
-
-impl LineStateSnapshot {
-    fn new(scope: IrqScope) -> Self {
-        Self {
-            global: false,
-            percpu: match scope {
-                IrqScope::Global => Vec::new(),
-                IrqScope::PerCpu { cpus } => Vec::with_capacity(cpus.iter().count()),
-            },
+    fn apply_percpu_enabled(
+        &self,
+        handle: IrqHandle,
+        cpu: CpuId,
+        _enabled: bool,
+    ) -> Result<(), IrqError> {
+        if self.ops.cpu_online(cpu) {
+            self.apply_line_state(handle.irq, Some(cpu))?;
         }
+        Ok(())
     }
 }
 
 struct CpuOwnedLineUpdate {
     registry: *mut (),
     irq: IrqId,
+    line_cpu: Option<CpuId>,
+    result: Result<(), IrqError>,
+}
+
+struct CpuOwnedPreparedMask {
+    registry: *mut (),
+    irq: IrqId,
+    binding: IrqLineBinding,
     cpu: CpuId,
-    enabled: bool,
     result: Result<(), IrqError>,
 }
 
 unsafe fn cpu_owned_line_update_thunk<O: IrqOps>(arg: *mut ()) {
     let request = unsafe { &mut *arg.cast::<CpuOwnedLineUpdate>() };
     let registry = unsafe { &*(request.registry as *const Registry<O>) };
-    request.result = registry
-        .ops
-        .set_enabled(request.irq, Some(request.cpu), request.enabled);
+    request.result = registry.reconcile_line_local(request.irq, request.line_cpu);
+}
+
+unsafe fn cpu_owned_prepared_mask_thunk<O: IrqOps>(arg: *mut ()) {
+    let request = unsafe { &mut *arg.cast::<CpuOwnedPreparedMask>() };
+    let registry = unsafe { &*(request.registry as *const Registry<O>) };
+    request.result = registry.mask_prepared_line_local(request.irq, request.binding, request.cpu);
 }

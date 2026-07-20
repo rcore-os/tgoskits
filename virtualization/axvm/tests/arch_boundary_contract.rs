@@ -104,20 +104,53 @@ fn every_architecture_owns_a_fail_closed_guest_irq_revocation_path() {
 }
 
 #[test]
-fn loongarch_route_revocation_masks_then_drains_the_old_publication() {
-    let platform = include_str!("../../../platforms/axplat-dyn/src/irq/loongarch64_hv.rs");
-    let adapter = include_str!("../src/arch/loongarch64/irq.rs");
+fn loongarch_passthrough_irq_is_owned_by_one_generation_bearing_action() {
+    let platform = include_str!("../../../platforms/axplat-dyn/src/irq.rs");
+    let platform_api = include_str!("../../../platforms/ax-plat/src/irq.rs");
+    let adapter = include_str!("../src/arch/loongarch64/irq/mod.rs");
+    let loongarch = include_str!("../src/arch/loongarch64/mod.rs");
+    let pch_pic = include_str!("../../axdevice/src/loongarch_pch_pic.rs");
 
-    assert!(platform.contains("GUEST_IRQ_IN_FLIGHT"));
-    assert!(platform.contains("begin_guest_irq_route_revocation"));
-    assert!(platform.contains("poll_guest_irq_route_revocation"));
-    assert!(platform.contains("set_physical_irq_enabled(physical_irq, false)?"));
-    assert!(platform.contains("GUEST_IRQ_ROUTES[physical_irq].store(IRQ_ROUTE_NONE"));
+    for forbidden in [
+        "loongarch64_hv::inject_virtual_irq",
+        "register_virtual_irq_injector",
+        "inject_virtual_irq(physical_irq",
+    ] {
+        assert!(
+            !platform.contains(forbidden) && !platform_api.contains(forbidden),
+            "platform dispatch must not bypass irq-framework through {forbidden}"
+        );
+    }
+    for required in [
+        "IrqHandle",
+        "IrqRequest::new",
+        "IrqReturn::MaskLineAndWake",
+        "release_irq_quench",
+        "disable_irq(route.handle)",
+        "synchronize_irq(route.handle)",
+        "free_irq(route.handle)",
+    ] {
+        assert!(
+            adapter.contains(required),
+            "LoongArch passthrough route must retain the typed action operation {required}"
+        );
+    }
+    for forbidden in [
+        "irq_set_enable",
+        "set_irq_enabled",
+        "publish_pending_interrupt_by_id",
+        "request_shared_irq",
+    ] {
+        assert!(
+            !adapter.contains(forbidden),
+            "LoongArch passthrough must not use the raw/shared/hard-callback path {forbidden}"
+        );
+    }
     assert!(
-        platform.contains("A target without a route is in the mask-and-drain phase"),
-        "a revoking guest route must consume stale claims instead of falling through to host I/O"
+        pch_pic.contains("pub source: usize")
+            && loongarch.contains("complete_guest_irq_route(vm.id(), event.source)"),
+        "guest PCH-PIC deassertion must be the typed task-context line-rearm boundary"
     );
-    assert!(adapter.contains("crate::host::task::yield_now()"));
 }
 
 #[test]
@@ -129,9 +162,9 @@ fn x86_route_revocation_keeps_host_lines_masked_until_controller_return() {
         .expect("x86 must expose checked forwarding revocation")
         .1;
 
-    let mask = revoke
-        .find("mask_active_ioapic_forwarding_routes")
-        .expect("x86 revocation must mask active host lines");
+    let disable = revoke
+        .find("disable_active_ioapic_forwarding_actions")
+        .expect("x86 revocation must disable active generation-owned actions");
     let unpublish = revoke
         .find("IOAPIC_IRQ_FORWARD_VM_ID.store(usize::MAX")
         .expect("x86 revocation must unpublish the guest owner");
@@ -144,14 +177,14 @@ fn x86_route_revocation_keeps_host_lines_masked_until_controller_return() {
     let release_action = revoke
         .find("release_ioapic_forwarding_actions")
         .expect("x86 revocation must unregister every guest IRQ action");
-    assert!(mask < unpublish && unpublish < synchronize);
+    assert!(disable < unpublish && unpublish < synchronize);
     assert!(
         synchronize < revoke_endpoint && revoke_endpoint < release_action,
         "the device endpoint and guest IRQ action must be revoked before host storage can return"
     );
     assert!(
-        !revoke.contains("set_forwarded_host_gsi_enabled(gsi, true)"),
-        "controller return, not route revocation, owns reopening the host IRQ"
+        !revoke.contains("set_forwarding_action_enabled(gsi, true)"),
+        "controller return, not route revocation, owns rearming the host action"
     );
     assert!(
         host_irq.contains("pub(crate) fn free_irq")
@@ -159,6 +192,176 @@ fn x86_route_revocation_keeps_host_lines_masked_until_controller_return() {
             && revocation.contains("irq::synchronize_irq(handle)"),
         "guest forwarding teardown must release descriptor ownership, not merely disable it"
     );
+}
+
+#[test]
+fn x86_forwarded_irq_uses_only_generation_owned_actions() {
+    let host_irq = include_str!("../src/arch/x86_64/host_irq.rs");
+    let activation = include_str!("../src/arch/x86_64/irq/activation.rs");
+    let handler = include_str!("../src/arch/x86_64/irq/handler.rs");
+    let state = include_str!("../src/arch/x86_64/irq/state.rs");
+
+    for (name, source) in [
+        ("host facade", host_irq),
+        ("activation", activation),
+        ("hard handler", handler),
+        ("forwarding state", state),
+    ] {
+        for forbidden in ["set_host_irq_enable", "host_irq::set_enable"] {
+            assert!(
+                !source.contains(forbidden),
+                "x86 {name} must not bypass the generation-bearing IRQ action with {forbidden}"
+            );
+        }
+    }
+
+    assert!(
+        handler.contains("IrqReturn::DisableActionAndWake"),
+        "the hard handler must let irq-framework close its exact action after publication"
+    );
+    assert!(
+        !handler.contains("mask_forwarded_host_gsi"),
+        "the hard handler must not mask a complete host line by raw IRQ identity"
+    );
+    assert!(
+        !activation.contains("request_shared_irq"),
+        "a passthrough route without exclusive action ownership must fail closed"
+    );
+    assert!(
+        host_irq.contains("ShareMode::Exclusive"),
+        "the host action facade must make exclusive passthrough ownership explicit"
+    );
+    assert!(
+        state.contains("irq::enable_irq(handle)") && state.contains("irq::disable_irq(handle)"),
+        "task-side activation and guest EOI must operate through the retained IrqHandle"
+    );
+    let action_enable = state
+        .split_once("if enabled {")
+        .expect("x86 forwarding state must have an explicit action-enable branch")
+        .1
+        .split_once("} else {")
+        .expect("x86 forwarding state must separate action enable and disable")
+        .0;
+    let synchronize = action_enable
+        .find("irq::synchronize_irq(handle)?")
+        .expect("task-side action rearm must drain the hard callback first");
+    let enable = action_enable
+        .find("irq::enable_irq(handle)")
+        .expect("task-side action rearm must enable the retained action");
+    assert!(
+        synchronize < enable,
+        "remote guest EOI must not overtake DisableActionAndWake publication"
+    );
+}
+
+#[test]
+fn x86_forwarded_irq_directly_wakes_its_preinstalled_owner() {
+    let activation = include_str!("../src/arch/x86_64/irq/activation.rs");
+    let handler = include_str!("../src/arch/x86_64/irq/handler.rs");
+
+    assert!(
+        handler.contains("ThreadWakeHandle") && handler.contains("WakeResult"),
+        "x86 forwarding must retain a stable task wake capability before the hard callback runs"
+    );
+    let capture = handler
+        .split_once("fn capture_forwarded_ioapic_irq")
+        .expect("x86 forwarding needs one focused hard-IRQ capture function")
+        .1
+        .split_once("\n}")
+        .expect("the hard-IRQ capture function must remain focused")
+        .0;
+    assert!(
+        capture.contains("wake.wake()"),
+        "publishing an atomic pending bit does not wake a sleeping vCPU owner"
+    );
+    assert!(
+        handler.contains("WakeResult::Notified | WakeResult::AlreadyPending")
+            && handler.contains("WakeResult::Exited | WakeResult::Unavailable")
+            && handler.contains("IrqReturn::MaskLineAndWake"),
+        "a dead or unavailable owner must leave the physical line fail-closed"
+    );
+    assert!(
+        activation.contains("current_thread_handle()")
+            && activation.contains("wake_handle()")
+            && activation.contains("IrqAffinity::Fixed"),
+        "the fixed owner thread must install both its direct wake and IRQ affinity"
+    );
+    for forbidden in ["get_vm_by_id", "with_runtime", "send_ipi"] {
+        assert!(
+            !capture.contains(forbidden),
+            "hard IRQ capture must not discover or indirectly wake the owner through {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn x86_forwarding_action_is_registered_and_closed_only_by_its_vcpu_owner() {
+    let adapter = include_str!("../src/arch/x86_64/mod.rs");
+    let activation = include_str!("../src/arch/x86_64/irq/activation.rs");
+    let revocation = include_str!("../src/arch/x86_64/irq/revocation.rs");
+
+    assert!(
+        adapter.contains("fn prepare_vcpu_irq_owner")
+            && adapter.contains("prepare_ioapic_irq_owner_session(vm, vcpu)")
+            && !adapter.contains("fn on_last_vcpu_exit"),
+        "x86 must retain its CPU lease before registration and must not close from an arbitrary \
+         last-vCPU hook"
+    );
+
+    let preparation = activation
+        .split_once("pub fn validate_ioapic_irq_forwarding_source")
+        .expect("x86 forwarding must retain a pre-start route validation phase")
+        .1
+        .split_once("pub fn enable_ioapic_irq_forwarding")
+        .expect("route validation and owner activation must stay separate")
+        .0;
+    assert!(
+        !preparation.contains("request_exclusive_irq_disabled")
+            && !preparation.contains("free_irq"),
+        "the manager must not register a temporary callback that the vCPU owner later frees"
+    );
+
+    let owner_activation = activation
+        .split_once("fn register_ioapic_forwarding_actions")
+        .expect("the vCPU owner must install forwarding actions")
+        .1;
+    assert!(
+        owner_activation.contains("IrqAffinity::Fixed")
+            && owner_activation.contains("request_exclusive_irq_disabled"),
+        "the running owner must install the one fixed-affinity action"
+    );
+
+    let manager_verification = revocation
+        .split_once("pub fn revoke_ioapic_irq_forwarding_for_vm")
+        .expect("manager-side route revocation verification must exist")
+        .1
+        .split_once("fn close_ioapic_irq_forwarding_on_owner")
+        .expect("manager verification and owner close must be distinct")
+        .0;
+    for forbidden in ["disable_irq", "synchronize_irq", "free_irq"] {
+        assert!(
+            !manager_verification.contains(forbidden),
+            "manager teardown must not perform owner-only action operation {forbidden}"
+        );
+    }
+    assert!(
+        manager_verification.contains("OWNER_RELEASE_REQUESTED")
+            && manager_verification.contains("wake.wake()")
+            && manager_verification.contains("OWNER_RELEASE_COMPLETION")
+            && manager_verification.contains("OWNER_RELEASE_FAILED"),
+        "manager revocation must publish, directly wake, and await a typed owner completion"
+    );
+
+    let owner_close = revocation
+        .split_once("fn close_ioapic_irq_forwarding_actions_on_owner")
+        .expect("the fixed owner needs an explicit fallible close protocol")
+        .1;
+    for required in ["disable_irq", "synchronize_irq", "free_irq"] {
+        assert!(
+            owner_close.contains(required),
+            "the owner close protocol must retain typed action operation {required}"
+        );
+    }
 }
 
 #[test]
@@ -719,8 +922,8 @@ fn riscv_passthrough_irq_affinity_has_one_deterministic_vm_owner() {
         .expect("RISC-V first-run hook must remain focused")
         .0;
     let owner_check = first_run
-        .find("vcpu.id() != 0")
-        .expect("only vCPU0 may install VM-wide physical IRQ affinity");
+        .find("guest_irq_owner_session_required(vm, vcpu.id())")
+        .expect("first run must use the canonical physical-route owner predicate");
     let pin = first_run
         .find("let route_guard = PreemptGuard::new()")
         .expect("one CPU pin must cover the complete passthrough route transaction");
@@ -733,6 +936,17 @@ fn riscv_passthrough_irq_affinity_has_one_deterministic_vm_owner() {
     assert!(owner_check < pin && pin < live_cpu && live_cpu < configure);
 
     let route = include_str!("../src/arch/riscv64/irq.rs");
+    let owner_predicate = route
+        .split_once("fn guest_irq_owner_session_required")
+        .expect("RISC-V must define one physical-route owner predicate")
+        .1
+        .split_once("fn arm_guest_irq_route_release")
+        .expect("the owner predicate must remain a focused policy boundary")
+        .0;
+    assert!(
+        owner_predicate.contains("vcpu_id != 0"),
+        "only vCPU0 may own the VM-wide physical IRQ route"
+    );
     let route_transaction = include_str!("../src/arch/riscv64/route_transaction.rs");
     assert!(
         route

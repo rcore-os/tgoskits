@@ -20,63 +20,12 @@ use sha2::{Digest, Sha256};
 
 use crate::support::download::{download_file_verified_sha256, http_client};
 
-/// Upstream firmware source: the repo referenced by the LicheeRV Nano
-/// buildroot package `aic8800-sdio-firmware`, pinned to a fixed commit.
-const FIRMWARE_REPO: &str = "lxowalle/aic8800-sdio-firmware";
-const FIRMWARE_COMMIT: &str = "c56f910044cc854d6c553bcb9a644f3bca5a4c38";
+#[path = "../../../components/aic8800/src/firmware_manifest.rs"]
+mod firmware_manifest;
 
-/// One firmware blob: the local file name under `components/aic8800/firmware/`,
-/// its path within the upstream repo, and the expected SHA-256 of its contents.
-struct FirmwareFile {
-    name: &'static str,
-    remote_path: &'static str,
-    sha256: &'static str,
-}
-
-/// The exact set of blobs referenced by `aic8800`'s `include_bytes!` calls.
-/// Digests verified byte-for-byte against the pinned upstream commit.
-const FIRMWARE_FILES: &[FirmwareFile] = &[
-    FirmwareFile {
-        name: "fmacfw.bin",
-        remote_path: "aic8800_and_aic8800D80/fmacfw.bin",
-        sha256: "2c6e70726df10ef74d9b1a657c74fdcfaeb88855b96b2c9bc8e0e603ac7c4cc3",
-    },
-    FirmwareFile {
-        name: "fmacfw_patch.bin",
-        remote_path: "aic8800_and_aic8800D80/fmacfw_patch.bin",
-        sha256: "6c8126ad655e9971f05ca03dc60fa82cb6d48c3b02cf3ba960137566ce2e28d5",
-    },
-    FirmwareFile {
-        name: "fmacfw_patch_8800dc_u02.bin",
-        remote_path: "aic8800DC/fmacfw_patch_8800dc_u02.bin",
-        sha256: "69d3ac2038da3b8e652ed1ec5079598ceb6df51db7b87b1d33f6d3c820c86a6f",
-    },
-    FirmwareFile {
-        name: "fw_patch_8800dc_u02.bin",
-        remote_path: "aic8800DC/fw_patch_8800dc_u02.bin",
-        sha256: "c4087b95e788785df0fc55aa92152d214323ee028c70ba0ebb23944d4070340b",
-    },
-    FirmwareFile {
-        name: "fw_patch_table_8800dc_u02.bin",
-        remote_path: "aic8800DC/fw_patch_table_8800dc_u02.bin",
-        sha256: "e7eea12cc85fca5d8667182b4520b6a0929044c70c6d9e9a3d7ece8b16169688",
-    },
-    FirmwareFile {
-        name: "fmacfw_8800d80_u02.bin",
-        remote_path: "aic8800_and_aic8800D80/fmacfw_8800d80_u02.bin",
-        sha256: "ffb49ede6004e58453f01489edf28b888b509529c3173554c98aa94fbb33507d",
-    },
-    FirmwareFile {
-        name: "fw_patch_8800d80_u02.bin",
-        remote_path: "aic8800_and_aic8800D80/fw_patch_8800d80_u02.bin",
-        sha256: "f0e2f5bbc17bc327ca7f1574ff55370dfd863d931514347bb4abc18a74f6218f",
-    },
-    FirmwareFile {
-        name: "fw_patch_table_8800d80_u02.bin",
-        remote_path: "aic8800_and_aic8800D80/fw_patch_table_8800d80_u02.bin",
-        sha256: "9decb77435b7e9713e33e32da483d683b7329ed93b672b2d1b134031d7da5f67",
-    },
-];
+use firmware_manifest::{
+    COMMIT as FIRMWARE_COMMIT, FILES as FIRMWARE_FILES, FirmwareFile, REPOSITORY as FIRMWARE_REPO,
+};
 
 fn firmware_dir(workspace_root: &Path) -> PathBuf {
     workspace_root.join("components/aic8800/firmware")

@@ -1,4 +1,4 @@
-use crate::{InitError, InitInput, InitIrqProgress, InitPoll, QueueContractError, RequestId};
+use crate::{InitError, InitInput, InitPoll, QueueContractError, RequestId};
 
 /// Monotonic identity of one controller activation or recovery attempt.
 ///
@@ -54,6 +54,8 @@ pub enum RecoveryCause {
     },
     /// Host ownership is being quiesced for an exclusive device handoff.
     Handoff,
+    /// The final maintenance owner is closing the host controller.
+    Shutdown,
 }
 
 /// Linear proof that the named controller epoch can no longer access DMA.
@@ -217,20 +219,6 @@ pub trait InterruptLifecycle: Send {
     /// proofs to the controller instance that created them and must remain
     /// unchanged until the interface and all of its queues are destroyed.
     fn controller_cookie(&self) -> usize;
-
-    /// Retries one lifecycle IRQ whose hard-IRQ endpoint could not perform its
-    /// destructive status read.
-    ///
-    /// The runtime calls this only from its bounded worker. An implementation
-    /// may return [`InitIrqProgress::Acknowledged`] only after it has read and
-    /// cleared the device source and cached all state required by the next
-    /// [`Self::poll_dma_quiesce`] or [`Self::poll_reinitialize`] call. A
-    /// deferred or unhandled source must not be inserted into
-    /// [`InitInput::irq_sources`]. [`InitIrqProgress::Failed`] must preserve an
-    /// owned-source acknowledgement failure for immediate recovery isolation.
-    /// This method must not inspect normal request completion as a polling
-    /// fallback.
-    fn service_deferred_irq(&mut self, source_id: usize) -> InitIrqProgress;
 
     /// Starts controller-wide DMA quiescence after queue admission, driver
     /// access, device IRQ generation, and OS IRQ actions have been closed.

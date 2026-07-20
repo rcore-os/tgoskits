@@ -74,6 +74,8 @@ axklib = { workspace = true, optional = true }
 axplat-dyn.workspace = true
 ax-runtime = { workspace = true, features = [
     "irq",
+    "maintenance",
+    "display",
     "uspace",
     "multitask",
     "fp-simd",
@@ -101,6 +103,7 @@ axnsproxy = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 rdif-pinctrl = { workspace = true, optional = true }
 rdif-pwm = { workspace = true, optional = true }
+rdif-irq.workspace = true
 ax-io = { workspace = true }
 axpoll = { workspace = true }
 bitflags = "2.10"

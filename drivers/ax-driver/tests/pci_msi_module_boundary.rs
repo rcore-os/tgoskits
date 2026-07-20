@@ -12,6 +12,7 @@ fn pci_msi_domain_is_split_by_lease_transaction_and_routing_responsibility() {
     );
     for (leaf, limit) in [
         ("mod.rs", 500),
+        ("activation.rs", 500),
         ("lease.rs", 500),
         ("routing.rs", 300),
         ("transaction.rs", 300),
@@ -27,7 +28,12 @@ fn pci_msi_domain_is_split_by_lease_transaction_and_routing_responsibility() {
     }
 
     let entry = fs::read_to_string(domain.join("mod.rs")).expect("MSI domain entry must exist");
-    for declaration in ["mod lease;", "mod routing;", "mod transaction;"] {
+    for declaration in [
+        "mod activation;",
+        "mod lease;",
+        "mod routing;",
+        "mod transaction;",
+    ] {
         assert!(entry.contains(declaration), "missing {declaration}");
     }
 

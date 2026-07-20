@@ -5,24 +5,30 @@ mod line;
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     cell::UnsafeCell,
+    pin::Pin,
     ptr,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
 use crate::{
-    AutoEnable, CpuId, DetachedIrqAction, IrqAffinity, IrqContext, IrqContinuationToken,
-    IrqContinuationWake, IrqDrainToken, IrqDrainWake, IrqError, IrqExecution, IrqHandle, IrqId,
-    IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqStatus, ReattachIrqActionError,
+    AutoEnable, CpuId, DetachedIrqAction, IrqAffinity, IrqContext, IrqDrainToken, IrqDrainWake,
+    IrqError, IrqExecution, IrqHandle, IrqId, IrqLineControl, IrqOps, IrqOutcome, IrqRequest,
+    IrqReturn, IrqScope, IrqStatus, ReattachIrqActionError, ReleasedIrqLineProof,
     action::Action,
     descriptor::{Descriptor, action_matches_cpu, recompute_scope_line_desired},
     detached::DetachedActionConfig,
     lock::MetadataLock,
 };
 
+const DESCRIPTOR_CATALOG_CAPACITY: usize = 4096;
+
 /// Dynamic IRQ registry.
 pub struct Registry<O: IrqOps> {
     ops: O,
-    lock: MetadataLock,
+    /// Protects only descriptor lookup and insertion. Mutable line state is
+    /// protected by the stable descriptor's own lock.
+    catalog_lock: MetadataLock,
+    descriptor_catalog: [AtomicPtr<Descriptor>; DESCRIPTOR_CATALOG_CAPACITY],
     next_id: AtomicU64,
     state: UnsafeCell<RegistryState>,
 }
@@ -31,13 +37,17 @@ unsafe impl<O: IrqOps + Send> Send for Registry<O> {}
 unsafe impl<O: IrqOps + Sync> Sync for Registry<O> {}
 
 struct RegistryState {
-    descriptors: Vec<Descriptor>,
+    /// Boxed descriptors retain a stable address for their per-line irqchip
+    /// transition lock. Empty descriptors deliberately remain until registry
+    /// teardown. Once a descriptor owns a prepared line binding, its scope and
+    /// route remain canonical even while the action list is empty.
+    retained: Vec<Pin<Box<Descriptor>>>,
 }
 
 impl RegistryState {
     fn new() -> Self {
         Self {
-            descriptors: Vec::new(),
+            retained: Vec::with_capacity(DESCRIPTOR_CATALOG_CAPACITY),
         }
     }
 }
@@ -47,7 +57,9 @@ impl<O: IrqOps> Registry<O> {
     pub fn new(ops: O) -> Self {
         Self {
             ops,
-            lock: MetadataLock::new(),
+            catalog_lock: MetadataLock::new(),
+            descriptor_catalog: [const { AtomicPtr::new(ptr::null_mut()) };
+                DESCRIPTOR_CATALOG_CAPACITY],
             next_id: AtomicU64::new(1),
             state: UnsafeCell::new(RegistryState::new()),
         }
@@ -65,39 +77,24 @@ impl<O: IrqOps> Registry<O> {
         }
         self.validate_request(&request)?;
 
+        // Complete every allocation before the first fallible irqchip
+        // ownership transition. Once `prepare_registration_line` succeeds,
+        // publication contains only metadata writes and an infallible live
+        // mask/unmask operation on the prepared endpoint.
         let id = self.allocate_action_id()?;
-        let snapshot = self.snapshot_and_disable_scope_line(irq, request.scope)?;
         let action = Box::new(Action::new(id, &mut request));
+        let needs_prepare = self.begin_line_registration(irq, &request)?;
+        if let Err(error) = self.prepare_registration_line(irq, &request, needs_prepare) {
+            self.finish_line_registration(irq)
+                .expect("failed IRQ preparation lost its registration reservation");
+            return Err(error);
+        }
         let action = Box::into_raw(action);
-        let irq_state = self.lock.lock(&self.ops);
-        let result = self.insert_action_locked(irq, &request, action);
-        self.lock.unlock(&self.ops, irq_state);
-
-        if let Err(err) = result {
-            unsafe {
-                drop(Box::from_raw(action));
-            }
-            let _ = self.restore_scope_line_snapshot(irq, request.scope, &snapshot);
-            return Err(err);
-        }
-
         let handle = IrqHandle { irq, id };
-        if let Err(err) = self.apply_affinity(irq, request.affinity) {
-            self.rollback_new_action(handle);
-            let _ = self.restore_scope_line_snapshot(irq, request.scope, &snapshot);
-            return Err(err);
-        }
         let enabled = request.auto_enable == AutoEnable::Yes;
-        if let Err(error) = self.publish_new_action(handle, enabled) {
-            self.rollback_new_action(handle);
-            let _ = self.restore_scope_line_snapshot(irq, request.scope, &snapshot);
-            return Err(error);
-        }
-        if let Err(error) = self.apply_enabled(handle, request.scope, enabled) {
-            self.rollback_new_action(handle);
-            let _ = self.restore_scope_line_snapshot(irq, request.scope, &snapshot);
-            return Err(error);
-        }
+        self.commit_new_action_registration(irq, &request, action, enabled);
+        self.apply_enabled(handle, request.scope, enabled)
+            .expect("published IRQ action lost its prepared line binding");
         Ok(handle)
     }
 
@@ -129,9 +126,9 @@ impl<O: IrqOps> Registry<O> {
             return Err(IrqError::InIrqContext);
         }
 
-        let irq_state = self.lock.lock(&self.ops);
-        let result = self.detach_action_locked(handle);
-        self.lock.unlock(&self.ops, irq_state);
+        let result = self.with_descriptor(handle.irq, |descriptor| {
+            Self::detach_action_locked(descriptor, handle)
+        });
 
         let (config, action) = result?;
         let action = unsafe {
@@ -141,6 +138,69 @@ impl<O: IrqOps> Registry<O> {
             Box::from_raw(action)
         };
         Ok(DetachedIrqAction::new(config, action))
+    }
+
+    /// Detaches the sole action and releases its prepared controller line.
+    ///
+    /// The selected action may use shared registration policy, but it must be
+    /// the descriptor's only action. It must already be disabled and drained,
+    /// and its global maskable line must have no desired/applied enable state or
+    /// active controller claim. The descriptor reserves the line before calling
+    /// the platform without framework locks. A failed platform release rolls
+    /// the reservation back and leaves `handle`, its action, and the old binding
+    /// usable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IrqError::Busy`] if the action, a peer, registration, dispatch,
+    /// controller claim, or line state still owns the descriptor. Platform
+    /// release failures are returned after transactional rollback. Hard-IRQ
+    /// callers receive [`IrqError::InIrqContext`].
+    pub fn detach_action_and_release_line(
+        &self,
+        handle: IrqHandle,
+    ) -> Result<(DetachedIrqAction, ReleasedIrqLineProof), IrqError> {
+        if self.ops.in_irq_context() {
+            return Err(IrqError::InIrqContext);
+        }
+
+        let (prepared, config, action) = self.with_descriptor(handle.irq, |descriptor| {
+            descriptor.begin_line_release(handle.id)
+        })?;
+        if let Err(error) = self.ops.release_line(prepared.binding()) {
+            self.with_descriptor(handle.irq, |descriptor| {
+                descriptor.rollback_line_release(prepared);
+                Ok(())
+            })
+            .expect("failed IRQ line release lost its descriptor reservation");
+            return Err(error);
+        }
+
+        self.with_descriptor(handle.irq, |descriptor| {
+            assert!(
+                unlink_action(descriptor, action),
+                "released IRQ line lost its sole action before metadata commit"
+            );
+            unsafe {
+                // SAFETY: the release reservation excludes registration and
+                // dispatch, and successful platform release makes this the sole
+                // remaining owner of the unlinked action allocation.
+                (*action).prepare_for_detached_storage();
+            }
+            descriptor.finish_line_release(prepared);
+            Ok(())
+        })
+        .expect("released IRQ line descriptor disappeared before metadata commit");
+
+        let action = unsafe {
+            // SAFETY: the infallible metadata commit above unlinked the sole
+            // action and transferred unique allocation ownership to this call.
+            Box::from_raw(action)
+        };
+        Ok((
+            DetachedIrqAction::new(config, action),
+            ReleasedIrqLineProof::new(handle.irq, prepared.binding()),
+        ))
     }
 
     /// Registers a detached action under a fresh handle while keeping it disabled.
@@ -178,23 +238,18 @@ impl<O: IrqOps> Registry<O> {
             Err(reason) => return Err(ReattachIrqActionError::new(reason, action)),
         };
 
-        let irq_state = self.lock.lock(&self.ops);
-        let descriptor_index = match self.prepare_reattach_descriptor_locked(config) {
-            Ok(index) => index,
-            Err(reason) => {
-                self.lock.unlock(&self.ops, irq_state);
-                return Err(ReattachIrqActionError::new(reason, action));
-            }
+        let needs_prepare = match self.begin_detached_line_registration(config) {
+            Ok(needs_prepare) => needs_prepare,
+            Err(reason) => return Err(ReattachIrqActionError::new(reason, action)),
         };
-
-        let action = action.into_registered_raw(id);
-        self.insert_reattached_action_locked(descriptor_index, config, action);
-        self.lock.unlock(&self.ops, irq_state);
-
-        if let Err(reason) = self.apply_affinity(config.irq, config.affinity) {
-            let action = self.recover_failed_reattach(config, action);
+        if let Err(reason) = self.prepare_detached_registration_line(config, needs_prepare) {
+            self.finish_line_registration(config.irq)
+                .expect("failed detached IRQ preparation lost its registration reservation");
             return Err(ReattachIrqActionError::new(reason, action));
         }
+
+        let action = action.into_registered_raw(id);
+        self.commit_reattached_action_registration(config, action);
 
         Ok(IrqHandle {
             irq: config.irq,
@@ -204,28 +259,63 @@ impl<O: IrqOps> Registry<O> {
 
     /// Enables an IRQ action and its backing line.
     pub fn enable(&self, handle: IrqHandle) -> Result<(), IrqError> {
-        let scope = self.set_action_enabled(handle, true)?;
-
-        if let Err(err) = self.apply_enabled(handle, scope, true) {
-            let _ = self.disable(handle);
-            return Err(err);
+        if self.ops.in_irq_context() {
+            return Err(IrqError::InIrqContext);
         }
-        Ok(())
+        let scope = self.set_action_enabled(handle, true)?;
+        self.apply_enabled(handle, scope, true)
     }
 
     /// Disables an IRQ action and its backing line.
     pub fn disable(&self, handle: IrqHandle) -> Result<(), IrqError> {
+        if self.ops.in_irq_context() {
+            return Err(IrqError::InIrqContext);
+        }
         let scope = self.set_action_enabled(handle, false)?;
         self.apply_enabled(handle, scope, false)
     }
 
+    /// Acquires fail-closed backing-line containment for an action from task
+    /// context.
+    ///
+    /// Device activation uses this when it cannot prove that its exact source
+    /// was masked before enabling the action. The action may still be
+    /// disabled; its quench ownership nevertheless keeps a shared backing line
+    /// masked until recovery establishes device-side containment and calls
+    /// [`Self::release_quench`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IrqError::InIrqContext`] from hard IRQ context, a scope or
+    /// stale-handle error from the registry, or a controller error while
+    /// applying the fail-closed line state.
+    pub fn quench(&self, handle: IrqHandle) -> Result<(), IrqError> {
+        if self.ops.in_irq_context() {
+            return Err(IrqError::InIrqContext);
+        }
+        self.record_action_quench(handle, None)?;
+        self.apply_line_state(handle.irq, None)
+    }
+
+    /// Acquires fail-closed containment for one instance of a per-CPU action.
+    ///
+    /// The caller supplies the exact CPU identity; this operation never uses a
+    /// migratable current-CPU snapshot to select controller ownership.
+    pub fn quench_per_cpu(&self, handle: IrqHandle, cpu: CpuId) -> Result<(), IrqError> {
+        if self.ops.in_irq_context() {
+            return Err(IrqError::InIrqContext);
+        }
+        self.record_action_quench(handle, Some(cpu))?;
+        self.apply_line_state(handle.irq, Some(cpu))
+    }
+
     /// Releases a fail-closed global-line quench owned by this action.
     ///
-    /// A global handler returning [`IrqReturn::QuenchAndWake`] disables its
-    /// action and masks the complete backing line. Recovery must first mask the
-    /// device's own interrupt source, then call this method so unrelated
-    /// actions sharing the line can run again. The global action itself
-    /// remains disabled. Per-CPU actions must use
+    /// A global handler returning [`IrqReturn::MaskLineAndWake`] masks the
+    /// complete backing line without disabling the action. Recovery must first
+    /// mask or reset the device's own interrupt source, then call this method
+    /// so the action and unrelated peers sharing the line can run again.
+    /// Per-CPU actions must use
     /// [`Registry::release_per_cpu_quench`] instead.
     ///
     /// Calling this method again after a controller update failed is safe: the
@@ -243,46 +333,6 @@ impl<O: IrqOps> Registry<O> {
         }
 
         self.clear_action_quench(handle, None)?;
-        self.apply_line_state(handle.irq, None)
-    }
-
-    /// Completes one ordinary deferred IRQ acknowledgement generation.
-    ///
-    /// The caller must have acknowledged the device-side source represented
-    /// by `token`, or have masked that source as part of controller teardown.
-    /// A stale or already-consumed token returns [`IrqError::NotFound`] and can
-    /// never clear a newer continuation generation.
-    pub fn finish_continuation(
-        &self,
-        token: IrqContinuationToken,
-    ) -> Result<(), IrqError> {
-        if self.ops.in_irq_context() {
-            return Err(IrqError::InIrqContext);
-        }
-        let handle = token.handle;
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let state = unsafe { &mut *self.state.get() };
-            let descriptor = state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == handle.irq)
-                .ok_or(IrqError::NotFound)?;
-            let action = descriptor
-                .actions()
-                .find(|action| unsafe { (**action).id == handle.id })
-                .ok_or(IrqError::NotFound)?;
-            unsafe {
-                if (*action).detached.load(Ordering::Acquire) {
-                    return Err(IrqError::NotFound);
-                }
-                (*action).finish_continuation(token.epoch)?;
-                recompute_scope_line_desired(descriptor, (*action).scope);
-            }
-            Ok(())
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-        result?;
         self.apply_line_state(handle.irq, None)
     }
 
@@ -319,22 +369,25 @@ impl<O: IrqOps> Registry<O> {
         handle: IrqHandle,
         wake: &'static IrqDrainWake,
     ) -> Result<IrqDrainToken, IrqError> {
+        if self.ops.in_irq_context() {
+            return Err(IrqError::InIrqContext);
+        }
         let (scope, epoch, action) = self.begin_action_drain(handle, wake)?;
-        let apply_result = self.apply_enabled(handle, scope, false);
+        self.apply_enabled(handle, scope, false)
+            .expect("draining IRQ action lost its prepared line binding");
         unsafe {
             // SAFETY: `begin_action_drain` pins the descriptor until the
             // matching `end_dispatch` below, so the action cannot be unlinked
             // while an immediate notification reads it.
             (*action).signal_drain_if_ready();
         }
-        self.end_dispatch(handle.irq);
-        apply_result?;
+        self.end_reader_pin(handle.irq);
         Ok(IrqDrainToken { handle, epoch })
     }
 
     /// Returns whether the selected action and drain generation are complete.
     pub fn action_drain_complete(&self, token: IrqDrainToken) -> Result<bool, IrqError> {
-        self.with_action(token.handle, |action| action.drain_complete(token.epoch))
+        self.with_action(token.handle, |_, action| action.drain_complete(token.epoch))
     }
 
     /// Waits until no handler is in flight for this IRQ descriptor.
@@ -343,10 +396,8 @@ impl<O: IrqOps> Registry<O> {
             return Err(IrqError::InIrqContext);
         }
         loop {
-            let in_flight = self.with_action(handle, |_| {
-                self.descriptor(handle.irq)
-                    .map(|desc| desc.in_flight.load(Ordering::Acquire))
-                    .unwrap_or(0)
+            let in_flight = self.with_action(handle, |descriptor, _| {
+                descriptor.in_flight.load(Ordering::Acquire)
             })?;
             if in_flight == 0 {
                 return Ok(());
@@ -356,14 +407,10 @@ impl<O: IrqOps> Registry<O> {
     }
 
     fn set_action_enabled(&self, handle: IrqHandle, enabled: bool) -> Result<IrqScope, IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let state = unsafe { &mut *self.state.get() };
-            let descriptor = state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == handle.irq)
-                .ok_or(IrqError::NotFound)?;
+        self.with_descriptor(handle.irq, |descriptor| {
+            if !descriptor.line_accepts_action_transition() {
+                return Err(IrqError::Busy);
+            }
             let action = descriptor
                 .actions()
                 .find(|action| unsafe { (**action).id == handle.id })
@@ -373,14 +420,11 @@ impl<O: IrqOps> Registry<O> {
                     return Err(IrqError::NotFound);
                 }
                 (*action).set_enabled(enabled)?;
-                (*action).clear_pending_enable_all();
                 let scope = (*action).scope;
                 recompute_scope_line_desired(descriptor, scope);
                 Ok(scope)
             }
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-        result
+        })
     }
 
     fn begin_action_drain(
@@ -388,14 +432,10 @@ impl<O: IrqOps> Registry<O> {
         handle: IrqHandle,
         wake: &'static IrqDrainWake,
     ) -> Result<(IrqScope, u64, *mut Action), IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let state = unsafe { &mut *self.state.get() };
-            let descriptor = state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == handle.irq)
-                .ok_or(IrqError::NotFound)?;
+        self.with_descriptor(handle.irq, |descriptor| {
+            if !descriptor.line_accepts_action_transition() {
+                return Err(IrqError::Busy);
+            }
             let action = descriptor
                 .actions()
                 .find(|action| unsafe { (**action).id == handle.id })
@@ -410,32 +450,22 @@ impl<O: IrqOps> Registry<O> {
                         count.checked_add(1)
                     })
                     .map_err(|_| IrqError::Busy)?;
-                let epoch = match (*action).begin_drain(wake) {
+                let drain_epoch = match (*action).begin_drain(wake) {
                     Ok(epoch) => epoch,
                     Err(error) => {
                         descriptor.in_flight.fetch_sub(1, Ordering::AcqRel);
                         return Err(error);
                     }
                 };
-                (*action).clear_pending_enable_all();
                 let scope = (*action).scope;
                 recompute_scope_line_desired(descriptor, scope);
-                Ok((scope, epoch, action))
+                Ok((scope, drain_epoch, action))
             }
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-        result
+        })
     }
 
-    fn quench_action(&self, handle: IrqHandle, cpu: CpuId) -> Result<(), IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let state = unsafe { &mut *self.state.get() };
-            let descriptor = state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == handle.irq)
-                .ok_or(IrqError::NotFound)?;
+    fn disable_action_from_irq(&self, handle: IrqHandle, cpu: CpuId) -> Result<(), IrqError> {
+        let result = self.with_descriptor(handle.irq, |descriptor| {
             let action = descriptor
                 .actions()
                 .find(|action| unsafe { (**action).id == handle.id })
@@ -444,37 +474,49 @@ impl<O: IrqOps> Registry<O> {
                 if (*action).detached.load(Ordering::Acquire) {
                     return Err(IrqError::NotFound);
                 }
-                (*action).record_quench(cpu)?;
                 let scope = (*action).scope;
-                if scope == IrqScope::Global {
-                    (*action).set_enabled(false)?;
-                    (*action).clear_pending_enable_all();
+                match scope {
+                    IrqScope::Global => {
+                        (*action).set_enabled(false)?;
+                        recompute_scope_line_desired(descriptor, scope);
+                    }
+                    IrqScope::PerCpu { .. } => {
+                        (*action).disable_on_cpu(cpu)?;
+                        descriptor.recompute_line_desired(Some(cpu));
+                    }
                 }
-                recompute_scope_line_desired(descriptor, scope);
                 Ok(scope)
             }
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-
+        });
         match result? {
+            IrqScope::Global => self.apply_line_state(handle.irq, None),
+            IrqScope::PerCpu { cpus } if cpus.contains(cpu) => {
+                // A hard handler must never synchronously rendezvous with a
+                // remote CPU. Local suppression prevents another callback on
+                // the observing CPU while healthy CPU instances remain live.
+                self.apply_line_state(handle.irq, Some(cpu))
+            }
+            IrqScope::PerCpu { .. } => Err(IrqError::InvalidCpu),
+        }
+    }
+
+    fn mask_line_from_irq(&self, handle: IrqHandle, cpu: CpuId) -> Result<(), IrqError> {
+        let scope = self.record_action_quench(handle, Some(cpu))?;
+        match scope {
             IrqScope::Global => self.apply_line_state(handle.irq, None),
             IrqScope::PerCpu { .. } => self.apply_line_state(handle.irq, Some(cpu)),
         }
     }
 
-    fn defer_action(
+    fn record_action_quench(
         &self,
         handle: IrqHandle,
-        wake: &'static IrqContinuationWake,
-    ) -> Result<(), IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let state = unsafe { &mut *self.state.get() };
-            let descriptor = state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == handle.irq)
-                .ok_or(IrqError::NotFound)?;
+        cpu: Option<CpuId>,
+    ) -> Result<IrqScope, IrqError> {
+        self.with_descriptor(handle.irq, |descriptor| {
+            if !descriptor.line_accepts_action_transition() {
+                return Err(IrqError::Busy);
+            }
             let action = descriptor
                 .actions()
                 .find(|action| unsafe { (**action).id == handle.id })
@@ -483,32 +525,22 @@ impl<O: IrqOps> Registry<O> {
                 if (*action).detached.load(Ordering::Acquire) {
                     return Err(IrqError::NotFound);
                 }
-                let epoch = (*action).begin_continuation()?;
-                recompute_scope_line_desired(descriptor, (*action).scope);
-                Ok(IrqContinuationToken { handle, epoch })
+                if descriptor.line_control() != Some(IrqLineControl::Maskable) {
+                    return Err(IrqError::Unsupported);
+                }
+                (*action).record_quench(cpu)?;
+                let scope = (*action).scope;
+                recompute_scope_line_desired(descriptor, scope);
+                Ok(scope)
             }
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-
-        let token = result?;
-        // The line must be masked before task-side work can observe the token.
-        // A controller failure here is fatal to IRQ return, just like the
-        // emergency quench path: publishing a token first could otherwise let
-        // task context reopen a level source that was never excluded.
-        self.apply_line_state(handle.irq, None)?;
-        wake.notify(token);
-        Ok(())
+        })
     }
 
     fn clear_action_quench(&self, handle: IrqHandle, cpu: Option<CpuId>) -> Result<(), IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let state = unsafe { &mut *self.state.get() };
-            let descriptor = state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == handle.irq)
-                .ok_or(IrqError::NotFound)?;
+        self.with_descriptor(handle.irq, |descriptor| {
+            if !descriptor.line_accepts_action_transition() {
+                return Err(IrqError::Busy);
+            }
             let action = descriptor
                 .actions()
                 .find(|action| unsafe { (**action).id == handle.id })
@@ -527,96 +559,60 @@ impl<O: IrqOps> Registry<O> {
                 descriptor.recompute_line_desired(cpu);
                 Ok(())
             }
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-        result
-    }
-
-    fn clear_action_quench_all(&self, handle: IrqHandle) -> Result<(), IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let state = unsafe { &mut *self.state.get() };
-            let descriptor = state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == handle.irq)
-                .ok_or(IrqError::NotFound)?;
-            let action = descriptor
-                .actions()
-                .find(|action| unsafe { (**action).id == handle.id })
-                .ok_or(IrqError::NotFound)?;
-            unsafe {
-                if (*action).detached.load(Ordering::Acquire) {
-                    return Err(IrqError::NotFound);
-                }
-                (*action).release_quench_all();
-                recompute_scope_line_desired(descriptor, (*action).scope);
-            }
-            Ok(())
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-        result
+        })
     }
 
     /// Returns a status snapshot for an IRQ action.
     pub fn status(&self, handle: IrqHandle) -> Result<IrqStatus, IrqError> {
-        let (scope, action_enabled, quench_owned, continuation_pending, in_flight) =
-            self.with_action(handle, |action| {
-                let in_flight = self
-                    .descriptor(handle.irq)
-                    .map(|desc| desc.in_flight.load(Ordering::Acquire))
-                    .unwrap_or(0);
+        if self.ops.in_irq_context() {
+            return Err(IrqError::InIrqContext);
+        }
+        let current_cpu = self.ops.current_cpu();
+        let (action_enabled, quench_owned, line_enabled, in_flight, action_running) = self
+            .with_action(handle, |descriptor, action| {
+                let cpu = status_cpu(action.scope, current_cpu);
                 (
-                    action.scope,
-                    action.enabled(),
+                    action.enabled_on(cpu),
                     action.has_quench(),
-                    action.has_continuation(),
-                    in_flight,
+                    descriptor.line_applied(cpu),
+                    descriptor.in_flight.load(Ordering::Acquire),
+                    action.running.load(Ordering::Acquire),
                 )
             })?;
-        let action_running =
-            self.with_action(handle, |action| action.running.load(Ordering::Acquire))?;
-        let cpu = status_cpu(scope, self.ops.current_cpu());
-        let line_enabled = match self.ops.is_enabled(handle.irq, cpu) {
-            Ok(enabled) => enabled,
-            Err(IrqError::Unsupported) => self.framework_line_enabled(handle.irq, cpu)?,
-            Err(err) => return Err(err),
-        };
-        let pending = match self.ops.is_pending(handle.irq, cpu) {
-            Ok(pending) => pending,
-            Err(IrqError::Unsupported) => false,
-            Err(err) => return Err(err),
-        };
-        let in_service = match self.ops.is_in_service(handle.irq, cpu) {
-            Ok(in_service) => in_service,
-            Err(IrqError::Unsupported) => false,
-            Err(err) => return Err(err),
-        };
         Ok(IrqStatus {
             action_enabled,
             quench_owned,
-            continuation_pending,
             line_enabled,
-            pending,
-            in_service,
             in_flight,
             action_running,
         })
     }
 
-    /// Dispatches an IRQ on the given CPU from hard-IRQ context.
+    /// Dispatches one claimed IRQ and completes its controller claim.
     ///
     /// This path performs no allocation or reclamation. It invokes only the
     /// endpoints already owned by enabled actions; endpoint providers must
     /// uphold the bounded hard-IRQ callback contract documented by
-    /// [`crate::BoxedIrqHandler`].
-    pub fn dispatch(&self, irq: IrqId, cpu: CpuId) -> IrqOutcome {
-        let Some(head) = self.begin_dispatch(irq) else {
-            return IrqOutcome::default();
-        };
+    /// [`crate::BoxedIrqHandler`]. A task-side quench release racing this
+    /// dispatch cannot reopen a global line until every shared action has
+    /// returned. `complete_claim` performs the controller EOI before the
+    /// descriptor tail may reopen the line. The closure also runs
+    /// when no action is registered, because a claimed controller interrupt
+    /// must always be completed.
+    ///
+    /// `complete_claim` executes in hard-IRQ context and must not allocate,
+    /// block, invoke arbitrary callbacks, or panic.
+    pub fn dispatch(&self, irq: IrqId, cpu: CpuId, complete_claim: impl FnOnce()) -> IrqOutcome {
+        let head = self.begin_dispatch(irq, cpu);
         let _guard = DispatchGuard {
             registry: self,
             irq,
+            cpu,
+            complete_claim: Some(complete_claim),
+            descriptor_pinned: head.is_some(),
+        };
+        let Some(head) = head else {
+            return IrqOutcome::default();
         };
 
         let mut outcome = IrqOutcome::default();
@@ -628,11 +624,11 @@ impl<O: IrqOps> Registry<O> {
             if action.detached.load(Ordering::Acquire) || !action_matches_cpu(action.scope, cpu) {
                 continue;
             }
-            if action.quench_applies(Some(cpu)) || action.has_continuation() {
+            if action.quench_applies(Some(cpu)) {
                 continue;
             }
 
-            let Some(_guard) = ActionRunGuard::enter(action) else {
+            let Some(_guard) = ActionRunGuard::enter(action, cpu) else {
                 continue;
             };
 
@@ -644,27 +640,25 @@ impl<O: IrqOps> Registry<O> {
                     outcome.handled = true;
                     outcome.wake = true;
                 }
-                IrqReturn::Defer(wake) => {
+                IrqReturn::DisableActionAndWake => {
                     outcome.handled = true;
                     outcome.wake = true;
                     if let Err(error) =
-                        self.defer_action(IrqHandle { irq, id: action.id }, wake)
+                        self.disable_action_from_irq(IrqHandle { irq, id: action.id }, cpu)
                     {
                         panic!(
-                            "IRQ controller failed the deferred continuation invariant for \
-                             {irq:?} on CPU {}: {error:?}",
+                            "IRQ framework failed to disable an isolated action for {irq:?} on \
+                             CPU {}: {error:?}",
                             cpu.0,
                         );
                     }
                 }
-                IrqReturn::QuenchAndWake => {
+                IrqReturn::MaskLineAndWake => {
                     outcome.handled = true;
                     outcome.wake = true;
-                    // The callback still owns its active gate reference. The
-                    // metadata transition may clear the enabled bit while that
-                    // reference is live, and line masking completes before the
-                    // dispatch returns to the platform EOI path.
-                    if let Err(error) = self.quench_action(IrqHandle { irq, id: action.id }, cpu) {
+                    if let Err(error) =
+                        self.mask_line_from_irq(IrqHandle { irq, id: action.id }, cpu)
+                    {
                         panic!(
                             "IRQ controller failed the emergency line quench invariant for \
                              {irq:?} on CPU {}: {error:?}",
@@ -689,10 +683,17 @@ impl<O: IrqOps> Registry<O> {
         if !self.ops.cpu_online(cpu) {
             return Err(IrqError::CpuOffline);
         }
-        let pending = self.pending_enables_for_cpu(cpu);
-        for irq in pending {
+        let pending = self.percpu_lines_for_cpu_online(cpu);
+        for (irq, binding, needs_initialization) in pending {
+            if needs_initialization
+                && let Err(error) = self.mask_prepared_percpu_line(irq, binding, cpu)
+            {
+                panic!(
+                    "prepared per-CPU IRQ line {irq:?} could not initialize on CPU {}: {error:?}",
+                    cpu.0
+                );
+            }
             self.apply_line_state(irq, Some(cpu))?;
-            self.clear_pending_enable_for_cpu(irq, cpu);
         }
         Ok(())
     }
@@ -714,6 +715,10 @@ impl<O: IrqOps> Registry<O> {
         {
             return Err(IrqError::InvalidCpu);
         }
+        if matches!(request.scope, IrqScope::PerCpu { .. }) && request.affinity != IrqAffinity::Any
+        {
+            return Err(IrqError::InvalidCpu);
+        }
         if let IrqAffinity::Fixed(cpu) = request.affinity
             && !self.ops.cpu_online(cpu)
         {
@@ -728,43 +733,66 @@ impl<O: IrqOps> Registry<O> {
             .map_err(|_| IrqError::Busy)
     }
 
-    fn insert_action_locked(
+    fn commit_new_action_registration(
         &self,
         irq: IrqId,
         request: &IrqRequest,
         action: *mut Action,
-    ) -> Result<(), IrqError> {
-        let state = unsafe { &mut *self.state.get() };
-        let descriptor = match state
-            .descriptors
-            .iter_mut()
-            .find(|descriptor| descriptor.irq == irq)
-        {
-            Some(descriptor) => descriptor,
-            None => {
-                state.descriptors.push(Descriptor::new(irq, request));
-                state.descriptors.last_mut().ok_or(IrqError::NoMemory)?
+        enabled: bool,
+    ) {
+        self.with_descriptor(irq, |descriptor| {
+            assert!(
+                descriptor.registration_held() && descriptor.line_binding().is_some(),
+                "IRQ action publication requires an owned prepared line binding"
+            );
+            unsafe {
+                // SAFETY: `action` is the unique allocation prepared by request,
+                // and the registration reservation excludes another list commit.
+                (*action).next = descriptor.head;
+                (*action)
+                    .set_enabled(enabled)
+                    .expect("a newly constructed IRQ action cannot be busy");
             }
-        };
-        descriptor.compatible_with(request)?;
-        unsafe {
-            (*action).next = descriptor.head;
-        }
-        descriptor.head = action;
-        recompute_scope_line_desired(descriptor, request.scope);
-        Ok(())
+            descriptor.head = action;
+            recompute_scope_line_desired(descriptor, request.scope);
+            descriptor.finish_registration();
+            Ok(())
+        })
+        .expect("prepared IRQ descriptor disappeared before publication");
+    }
+
+    fn commit_reattached_action_registration(
+        &self,
+        config: DetachedActionConfig,
+        action: *mut Action,
+    ) {
+        self.with_descriptor(config.irq, |descriptor| {
+            assert!(
+                descriptor.registration_held() && descriptor.line_binding().is_some(),
+                "reattached IRQ action publication requires a prepared line binding"
+            );
+            debug_assert_eq!(descriptor.irq, config.irq);
+            unsafe {
+                // SAFETY: `action` is uniquely owned by the consumed detached
+                // token, and the registration reservation excludes list peers.
+                (*action).next = descriptor.head;
+            }
+            descriptor.head = action;
+            recompute_scope_line_desired(descriptor, config.scope);
+            descriptor.finish_registration();
+            Ok(())
+        })
+        .expect("prepared IRQ descriptor disappeared before reattach publication");
     }
 
     fn detach_action_locked(
-        &self,
+        descriptor: &mut Descriptor,
         handle: IrqHandle,
     ) -> Result<(DetachedActionConfig, *mut Action), IrqError> {
-        let state = unsafe { &mut *self.state.get() };
-        let descriptor = state
-            .descriptors
-            .iter_mut()
-            .find(|descriptor| descriptor.irq == handle.irq)
-            .ok_or(IrqError::NotFound)?;
+        debug_assert_eq!(descriptor.irq, handle.irq);
+        if descriptor.line_release_reserved() {
+            return Err(IrqError::Busy);
+        }
         let action = descriptor
             .actions()
             .find(|action| unsafe { (**action).id == handle.id })
@@ -790,216 +818,159 @@ impl<O: IrqOps> Registry<O> {
         }
     }
 
-    fn prepare_reattach_descriptor_locked(
-        &self,
-        config: DetachedActionConfig,
-    ) -> Result<usize, IrqError> {
-        let state = unsafe { &mut *self.state.get() };
-        let index = match state
-            .descriptors
-            .iter()
-            .position(|descriptor| descriptor.irq == config.irq)
-        {
-            Some(index) => index,
-            None => {
-                state.descriptors.push(Descriptor::new_with_config(
-                    config.irq,
-                    config.share_mode,
-                    config.affinity,
-                ));
-                state.descriptors.len() - 1
-            }
-        };
-        state.descriptors[index].compatible_with_detached(config)?;
-        Ok(index)
-    }
-
-    fn insert_reattached_action_locked(
-        &self,
-        descriptor_index: usize,
-        config: DetachedActionConfig,
-        action: *mut Action,
-    ) {
-        let state = unsafe { &mut *self.state.get() };
-        let descriptor = &mut state.descriptors[descriptor_index];
-        debug_assert_eq!(descriptor.irq, config.irq);
-        unsafe {
-            // SAFETY: `action` is uniquely owned by the consumed detached
-            // token, and the metadata lock exclusively owns this list update.
-            (*action).next = descriptor.head;
-        }
-        descriptor.head = action;
-        recompute_scope_line_desired(descriptor, config.scope);
-    }
-
-    fn recover_failed_reattach(
-        &self,
-        config: DetachedActionConfig,
-        action: *mut Action,
-    ) -> DetachedIrqAction {
-        unsafe {
-            // SAFETY: the failed reattach has not returned its new handle, so
-            // no caller can concurrently mutate this disabled action.
-            (*action).detached.store(true, Ordering::Release);
-        }
-        loop {
-            match self.try_remove_action(config.irq, action) {
-                Ok(()) | Err(IrqError::NotFound) => break,
-                Err(IrqError::Busy) => self.ops.relax(),
-                Err(_) => unreachable!("IRQ action removal returned an undocumented error"),
-            }
-        }
-        unsafe {
-            // SAFETY: the action was never exposed through a returned handle,
-            // has been removed from the descriptor, and is disabled/drained.
-            DetachedIrqAction::from_registered_raw(config, action)
-        }
-    }
-
-    fn try_remove_action(&self, irq: IrqId, action: *mut Action) -> Result<(), IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let state = unsafe { &mut *self.state.get() };
-            let descriptor = state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == irq)
-                .ok_or(IrqError::NotFound)?;
-            if descriptor.in_flight.load(Ordering::Acquire) != 0 {
-                return Err(IrqError::Busy);
-            }
-            unlink_action(descriptor, action)
-                .then_some(())
-                .ok_or(IrqError::NotFound)
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-        result
-    }
-
-    fn rollback_new_action(&self, handle: IrqHandle) {
-        let result: Result<(), IrqError> = (|| {
-            self.set_action_enabled(handle, false)?;
-            self.synchronize(handle)?;
-            self.clear_action_quench_all(handle)?;
-            drop(self.detach_action(handle)?);
-            Ok(())
-        })();
-        if let Err(error) = result {
-            panic!("failed to roll back unpublished IRQ action {handle:?}: {error:?}");
-        }
-    }
-
-    fn publish_new_action(&self, handle: IrqHandle, enabled: bool) -> Result<(), IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let state = unsafe { &mut *self.state.get() };
-            let descriptor = state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == handle.irq)
-                .ok_or(IrqError::NotFound)?;
-            let action = descriptor
-                .actions()
-                .find(|action| unsafe { (**action).id == handle.id })
-                .ok_or(IrqError::NotFound)?;
-            unsafe {
-                if (*action).detached.load(Ordering::Acquire) {
-                    return Err(IrqError::NotFound);
-                }
-                (*action).set_enabled(enabled)?;
-                recompute_scope_line_desired(descriptor, (*action).scope);
-            }
-            Ok(())
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-        result
-    }
-
     fn with_action<T>(
         &self,
         handle: IrqHandle,
-        f: impl FnOnce(&Action) -> T,
+        f: impl FnOnce(&Descriptor, &Action) -> T,
     ) -> Result<T, IrqError> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = (|| {
-            let action = self.find_action(handle).ok_or(IrqError::NotFound)?;
-            Ok(f(action))
-        })();
-        self.lock.unlock(&self.ops, irq_state);
-        result
+        self.with_descriptor(handle.irq, |descriptor| {
+            let action = descriptor
+                .actions()
+                .map(|action| unsafe { &*action })
+                .find(|action| action.id == handle.id && !action.detached.load(Ordering::Acquire))
+                .ok_or(IrqError::NotFound)?;
+            Ok(f(descriptor, action))
+        })
     }
 
-    fn begin_dispatch(&self, irq: IrqId) -> Option<*mut Action> {
-        let irq_state = self.lock.lock(&self.ops);
-        let result = {
-            let state = unsafe { &mut *self.state.get() };
-            state
-                .descriptors
-                .iter_mut()
-                .find(|descriptor| descriptor.irq == irq)
-                .and_then(|descriptor| {
-                    if descriptor.head.is_null() {
-                        None
-                    } else {
-                        assert!(
-                            descriptor
-                                .in_flight
-                                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count
-                                    .checked_add(1),)
-                                .is_ok(),
-                            "IRQ descriptor in-flight count overflowed"
-                        );
-                        Some(descriptor.head)
-                    }
-                })
-        };
-        self.lock.unlock(&self.ops, irq_state);
-        result
-    }
-
-    fn end_dispatch(&self, irq: IrqId) {
-        let irq_state = self.lock.lock(&self.ops);
-        let state = unsafe { &mut *self.state.get() };
-        if let Some(descriptor) = state
-            .descriptors
-            .iter_mut()
-            .find(|descriptor| descriptor.irq == irq)
-        {
+    fn begin_dispatch(&self, irq: IrqId, cpu: CpuId) -> Option<*mut Action> {
+        self.with_descriptor(irq, |descriptor| {
+            if descriptor.head.is_null() || !descriptor.dispatchable() {
+                return Ok(None);
+            }
+            descriptor.begin_irq_claim(cpu);
             assert!(
                 descriptor
+                    .in_flight
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count
+                        .checked_add(1))
+                    .is_ok(),
+                "IRQ descriptor in-flight count overflowed"
+            );
+            Ok(Some(descriptor.head))
+        })
+        .ok()
+        .flatten()
+    }
+
+    fn end_dispatch(&self, irq: IrqId, cpu: CpuId) {
+        let apply_target = self
+            .with_descriptor(irq, |descriptor| {
+                let target = descriptor.end_irq_claim(cpu);
+                let previous = descriptor
                     .in_flight
                     .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                         count.checked_sub(1)
                     })
-                    .is_ok(),
-                "IRQ descriptor in-flight count underflowed"
-            );
+                    .expect("IRQ descriptor in-flight count underflowed");
+                debug_assert_ne!(previous, 0);
+                if descriptor.line_claims(target) == 0
+                    && descriptor.line_desired(target)
+                    && !descriptor.line_applied(target)
+                {
+                    return Ok(Some(target));
+                }
+                Ok(None)
+            })
+            .expect("claimed IRQ descriptor disappeared before dispatch tail");
+        if let Some(target) = apply_target
+            && let Err(error) = self.apply_line_state(irq, target)
+        {
+            panic!("IRQ controller failed to reopen {irq:?} at dispatch tail: {error:?}");
         }
-        self.lock.unlock(&self.ops, irq_state);
     }
 
-    fn find_action(&self, handle: IrqHandle) -> Option<&Action> {
-        self.descriptor(handle.irq)?
-            .actions()
-            .map(|action| unsafe { &*action })
-            .find(|action| action.id == handle.id && !action.detached.load(Ordering::Acquire))
+    fn end_reader_pin(&self, irq: IrqId) {
+        self.with_descriptor(irq, |descriptor| {
+            descriptor
+                .in_flight
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    count.checked_sub(1)
+                })
+                .expect("IRQ descriptor in-flight count underflowed");
+            Ok(())
+        })
+        .expect("pinned IRQ descriptor disappeared");
     }
 
+    /// Returns the shutdown-stable descriptor address after a short catalog lookup.
+    fn descriptor_ptr(&self, irq: IrqId) -> Option<*mut Descriptor> {
+        let start = descriptor_hash(irq) % DESCRIPTOR_CATALOG_CAPACITY;
+        for distance in 0..DESCRIPTOR_CATALOG_CAPACITY {
+            let slot = (start + distance) % DESCRIPTOR_CATALOG_CAPACITY;
+            let descriptor = self.descriptor_catalog[slot].load(Ordering::Acquire);
+            if descriptor.is_null() {
+                return None;
+            }
+            let matches = unsafe {
+                // SAFETY: catalog entries are published only after their
+                // pinned allocation enters the shutdown-lifetime owner arena.
+                // Entries are never cleared, replaced, or reclaimed.
+                (*descriptor).irq == irq
+            };
+            if matches {
+                return Some(descriptor);
+            }
+        }
+        None
+    }
+
+    fn vacant_descriptor_slot(&self, irq: IrqId) -> Option<usize> {
+        let start = descriptor_hash(irq) % DESCRIPTOR_CATALOG_CAPACITY;
+        (0..DESCRIPTOR_CATALOG_CAPACITY)
+            .map(|distance| (start + distance) % DESCRIPTOR_CATALOG_CAPACITY)
+            .find(|slot| {
+                self.descriptor_catalog[*slot]
+                    .load(Ordering::Acquire)
+                    .is_null()
+            })
+    }
+
+    /// Executes one descriptor-local transaction without retaining the catalog lock.
+    fn with_descriptor<R>(
+        &self,
+        irq: IrqId,
+        operation: impl FnOnce(&mut Descriptor) -> Result<R, IrqError>,
+    ) -> Result<R, IrqError> {
+        let descriptor = self.descriptor_ptr(irq).ok_or(IrqError::NotFound)?;
+        let line_lock = unsafe {
+            // SAFETY: descriptors are individually pinned and never removed;
+            // the registry borrow outlives this complete local transaction.
+            (&*descriptor).controller_lock()
+        };
+        let _line_guard = line_lock.guard(&self.ops);
+        let descriptor = unsafe {
+            // SAFETY: the descriptor-local lock uniquely owns all mutable
+            // fields. The stable allocation cannot be removed or relocated.
+            &mut *descriptor
+        };
+        operation(descriptor)
+    }
+
+    #[cfg(test)]
     fn descriptor(&self, irq: IrqId) -> Option<&Descriptor> {
-        self.state_ref()
-            .descriptors
-            .iter()
-            .find(|descriptor| descriptor.irq == irq)
-    }
-
-    fn state_ref(&self) -> &RegistryState {
-        unsafe { &*self.state.get() }
+        let descriptor = self.descriptor_ptr(irq)?;
+        Some(unsafe {
+            // SAFETY: unit tests use this escape hatch only for atomic
+            // invariant injection. Descriptors remain pinned until registry
+            // teardown and the returned borrow cannot outlive `self`.
+            &*descriptor
+        })
     }
 }
 
-struct DispatchGuard<'a, O: IrqOps> {
+fn descriptor_hash(irq: IrqId) -> usize {
+    let key = (u64::from(irq.domain.0) << 32) | u64::from(irq.hwirq.0);
+    let mixed = key.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    (mixed ^ (mixed >> 32)) as usize
+}
+
+struct DispatchGuard<'a, O: IrqOps, C: FnOnce()> {
     registry: &'a Registry<O>,
     irq: IrqId,
+    cpu: CpuId,
+    complete_claim: Option<C>,
+    descriptor_pinned: bool,
 }
 
 struct ActionRunGuard<'a> {
@@ -1007,8 +978,8 @@ struct ActionRunGuard<'a> {
 }
 
 impl<'a> ActionRunGuard<'a> {
-    fn enter(action: &'a Action) -> Option<Self> {
-        if !action.try_enter() {
+    fn enter(action: &'a Action, cpu: CpuId) -> Option<Self> {
+        if !action.try_enter(cpu) {
             return None;
         }
         match action.execution {
@@ -1038,9 +1009,14 @@ impl Drop for ActionRunGuard<'_> {
     }
 }
 
-impl<O: IrqOps> Drop for DispatchGuard<'_, O> {
+impl<O: IrqOps, C: FnOnce()> Drop for DispatchGuard<'_, O, C> {
     fn drop(&mut self) {
-        self.registry.end_dispatch(self.irq);
+        self.complete_claim
+            .take()
+            .expect("IRQ claim completion closure was consumed twice")();
+        if self.descriptor_pinned {
+            self.registry.end_dispatch(self.irq, self.cpu);
+        }
     }
 }
 
@@ -1073,7 +1049,7 @@ fn unlink_action(descriptor: &mut Descriptor, action: *mut Action) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AutoEnable, HwIrq, IrqDomainId};
+    use crate::{AutoEnable, HwIrq, IrqDomainId, IrqLineBinding, IrqLineControl, PreparedIrqLine};
 
     struct TestOps;
 
@@ -1108,26 +1084,19 @@ mod tests {
             Ok(())
         }
 
-        fn set_enabled(
+        fn prepare_line(
             &self,
-            _irq: IrqId,
-            _cpu: Option<CpuId>,
-            _enabled: bool,
-        ) -> Result<(), IrqError> {
-            Ok(())
+            irq: IrqId,
+            _scope: IrqScope,
+            _affinity: IrqAffinity,
+        ) -> Result<PreparedIrqLine, IrqError> {
+            Ok(PreparedIrqLine::new(
+                IrqLineBinding::new(irq.hwirq.0, 1).unwrap(),
+                IrqLineControl::Maskable,
+            ))
         }
 
-        fn is_enabled(&self, _irq: IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-            Ok(false)
-        }
-
-        fn is_pending(&self, _irq: IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-            Ok(false)
-        }
-
-        fn is_in_service(&self, _irq: IrqId, _cpu: Option<CpuId>) -> Result<bool, IrqError> {
-            Ok(false)
-        }
+        fn set_line_enabled(&self, _binding: IrqLineBinding, _cpu: Option<CpuId>, _enabled: bool) {}
 
         fn relax(&self) {
             core::hint::spin_loop();
@@ -1164,7 +1133,7 @@ mod tests {
             .in_flight
             .store(usize::MAX, Ordering::Release);
 
-        let _ = registry.begin_dispatch(irq);
+        let _ = registry.begin_dispatch(irq, CpuId(0));
     }
 
     #[test]
@@ -1176,6 +1145,6 @@ mod tests {
             .request(irq, IrqRequest::new(|_| IrqReturn::Handled))
             .unwrap();
 
-        registry.end_dispatch(irq);
+        registry.end_reader_pin(irq);
     }
 }

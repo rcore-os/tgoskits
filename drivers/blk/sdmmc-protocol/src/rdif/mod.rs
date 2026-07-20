@@ -28,9 +28,9 @@ pub use host::{
 };
 pub use queue::BlockQueue;
 pub use rdif_block::{
-    BInterface, BIrqHandler, BQueue, BlkError, CompletedRequest, CompletionHint, CompletionSink,
-    DispatchMode, IQueue, Interface, OwnedRequest, QueueEventBatch, QueueHandle, QueueKind,
-    RequestId, ServiceProgress, SubmitError, SubmitOutcome, dma_api,
+    BInterface, BIrqControl, BIrqEndpoint, BQueue, BlkError, BlockIrqSource, CompletedRequest,
+    CompletionSink, IQueue, Interface, OwnedRequest, QueueEventBatch, QueueExecution, QueueHandle,
+    QueueKind, RequestId, ServiceProgress, SubmitError, SubmitOutcome, dma_api,
 };
 #[cfg(test)]
 use shared_core::SharedCore;

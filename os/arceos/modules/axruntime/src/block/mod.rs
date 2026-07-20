@@ -6,6 +6,7 @@ mod event_ring;
 mod handoff;
 mod hctx;
 pub mod hctx_model;
+mod quarantine;
 mod request;
 mod service;
 mod statistics;

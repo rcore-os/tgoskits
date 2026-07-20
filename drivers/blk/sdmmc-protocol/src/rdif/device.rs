@@ -2,22 +2,22 @@ use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use rdif_block::{
-    BIrqHandler, BlkError, InitError, InitInput, InitIrqProgress, InitPoll, InitSchedule,
-    Interface, InterruptLifecycle, LifecycleEndpoint, QueueHandle, RecoveryCause,
+    BlkError, BlockIrqSource, InitError, InitInput, InitPoll, InitSchedule, Interface,
+    InterruptLifecycle, LifecycleEndpoint, QueueHandle, RecoveryCause,
 };
 
 use crate::{
     rdif::{
         config::{BlockConfig, device_info, map_dev_err_to_blk_err, queue_limits},
         host::BlockHost,
-        irq::BlockIrqHandler,
+        irq::into_block_irq_source,
         queue::BlockQueue,
         shared_core::SharedCore,
     },
     sdio::{
         InitializedSdioCard,
         card::SdioSdmmc,
-        host::{DeferredIrqAck, SDMMC_BLOCK_QUEUE_ID, SdioHost, SdioIrqHost},
+        host::{SDMMC_BLOCK_QUEUE_ID, SdioHost, SdioIrqHost},
     },
 };
 
@@ -26,7 +26,6 @@ where
     H: BlockHost,
 {
     pub(super) control: Arc<BlockControl<H>>,
-    irq_handler: Option<BIrqHandler>,
     recovery: ControllerRecovery<H::RecoveryState>,
 }
 
@@ -67,7 +66,10 @@ where
     /// A raw [`SdioSdmmc`] cannot enter this path. The capability is produced
     /// only by the bounded initialization state machine and is consumed once.
     /// Controller platform capabilities remain owned by the resulting device
-    /// so recovery and guest-return reconstruction can reuse them.
+    /// so recovery and guest-return reconstruction can reuse them. This
+    /// constructor deliberately does not acquire the runtime IRQ source: the
+    /// runtime first closes the initialization action, then acquires the next
+    /// exclusive source lease through [`Interface::take_irq_source`].
     ///
     /// ```compile_fail
     /// use sdmmc_protocol::{
@@ -85,10 +87,7 @@ where
         Self::from_card(card, config)
     }
 
-    fn from_card(mut card: SdioSdmmc<H>, config: BlockConfig) -> Self {
-        let irq = config
-            .supports_runtime_queue()
-            .then(|| SdioIrqHost::irq_handle(card.host_mut()));
+    fn from_card(card: SdioSdmmc<H>, config: BlockConfig) -> Self {
         let raw = SharedCore::new(card);
         let control = Arc::new(BlockControl {
             raw,
@@ -96,15 +95,8 @@ where
             irq_enabled: AtomicBool::new(false),
             queue_taken: AtomicBool::new(false),
         });
-        let irq_handler = irq.map(|irq| {
-            Box::new(BlockIrqHandler::<H> {
-                irq,
-                control: Some(Arc::clone(&control)),
-            }) as BIrqHandler
-        });
         Self {
             control,
-            irq_handler,
             recovery: ControllerRecovery::Idle,
         }
     }
@@ -243,11 +235,12 @@ where
         )]
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn rdif_block::IrqHandler>> {
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
         if !self.control.config.supports_runtime_queue() || source_id != 0 {
             return None;
         }
-        self.irq_handler.take()
+        let mut card = self.control.raw.try_borrow_mut().ok()?;
+        SdioIrqHost::take_irq_source(card.host_mut()).map(into_block_irq_source)
     }
 }
 
@@ -257,28 +250,6 @@ where
 {
     fn controller_cookie(&self) -> usize {
         self.control.controller_cookie()
-    }
-
-    fn service_deferred_irq(&mut self, source_id: usize) -> InitIrqProgress {
-        if source_id != 0 {
-            return InitIrqProgress::Unhandled;
-        }
-        let mut card = match self.control.raw.try_borrow_mut() {
-            Ok(card) => card,
-            Err(_) => return InitIrqProgress::Deferred,
-        };
-        match H::acknowledge_deferred_irq(card.host_mut()) {
-            Ok(DeferredIrqAck::Unhandled) => InitIrqProgress::Unhandled,
-            Ok(DeferredIrqAck::Acknowledged) => InitIrqProgress::Acknowledged,
-            Ok(DeferredIrqAck::Contended) => InitIrqProgress::Deferred,
-            // The top half already identified this as an owned source. Keep
-            // that fact typed so the runtime isolates recovery immediately;
-            // relabeling it as a shared-line miss could leave an asserted
-            // device source active until an unrelated watchdog fires.
-            Err(_) => InitIrqProgress::Failed(InitError::Hardware(
-                "SD/MMC controller IRQ acknowledgement failed",
-            )),
-        }
     }
 
     fn begin_dma_quiesce(

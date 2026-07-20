@@ -62,6 +62,18 @@ impl EndpointRc {
     pub fn take(&mut self) -> Endpoint {
         self.0.take().unwrap()
     }
+
+    fn restore(&mut self, endpoint: Endpoint) {
+        assert!(
+            self.0.is_none(),
+            "only an empty PCI probe slot can restore its endpoint"
+        );
+        self.0 = Some(endpoint);
+    }
+
+    fn is_available(&self) -> bool {
+        self.0.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +128,17 @@ impl<'a> ProbePci<'a> {
 
     pub fn take_endpoint(&mut self) -> Endpoint {
         self.endpoint.take()
+    }
+
+    /// Restores an endpoint after a fallible ownership-taking transaction
+    /// proved that all device-visible state was rolled back.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the slot is not empty. A caller may restore only the endpoint
+    /// obtained from the immediately preceding [`Self::take_endpoint`] call.
+    pub fn restore_endpoint(&mut self, endpoint: Endpoint) {
+        self.endpoint.restore(endpoint);
     }
 
     pub fn into_platform_device(self) -> PlatformDevice {
@@ -207,18 +230,99 @@ impl PcieEnumterator {
                     self.probed.insert(address);
                     return Ok(());
                 }
-                Err(e) => match e {
-                    OnProbeError::NotMatch => continue,
-                    e => {
+                Err(error) => match classify_failed_pci_probe(
+                    error,
+                    endpoint.is_available(),
+                    register.name,
+                    address,
+                ) {
+                    FailedPciProbe::Continue => continue,
+                    FailedPciProbe::Recoverable(error) => {
                         if stop_if_fail {
-                            return Err(ProbeError::from(e));
+                            return Err(ProbeError::from(error));
                         }
-                        warn!("Probe failed: {e}");
+                        warn!("Probe failed: {error}");
+                    }
+                    FailedPciProbe::Claimed(error) => {
+                        self.probed.insert(address);
+                        if stop_if_fail {
+                            return Err(ProbeError::from(error));
+                        }
+                        warn!("Probe claimed the PCI endpoint and failed terminally: {error}");
+                        return Ok(());
                     }
                 },
             }
         }
 
         Ok(())
+    }
+}
+
+enum FailedPciProbe {
+    Continue,
+    Recoverable(OnProbeError),
+    Claimed(OnProbeError),
+}
+
+fn classify_failed_pci_probe(
+    error: OnProbeError,
+    endpoint_available: bool,
+    driver_name: &str,
+    address: PciAddress,
+) -> FailedPciProbe {
+    if error.is_claimed() {
+        return FailedPciProbe::Claimed(error);
+    }
+    if !endpoint_available {
+        return FailedPciProbe::Claimed(OnProbeError::claimed(alloc::format!(
+            "driver {driver_name} consumed PCI endpoint {address} before returning {error}"
+        )));
+    }
+    if matches!(error, OnProbeError::NotMatch) {
+        FailedPciProbe::Continue
+    } else {
+        FailedPciProbe::Recoverable(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claimed_failure_is_terminal_even_when_endpoint_slot_is_available() {
+        let outcome = classify_failed_pci_probe(
+            OnProbeError::claimed("quarantined"),
+            true,
+            "test-driver",
+            test_address(),
+        );
+
+        assert!(matches!(outcome, FailedPciProbe::Claimed(_)));
+    }
+
+    #[test]
+    fn consumed_endpoint_converts_an_ordinary_error_to_claimed() {
+        let outcome = classify_failed_pci_probe(
+            OnProbeError::other("activation failed"),
+            false,
+            "test-driver",
+            test_address(),
+        );
+
+        assert!(matches!(outcome, FailedPciProbe::Claimed(_)));
+    }
+
+    #[test]
+    fn unmatched_driver_can_continue_only_while_endpoint_is_available() {
+        let outcome =
+            classify_failed_pci_probe(OnProbeError::NotMatch, true, "test-driver", test_address());
+
+        assert!(matches!(outcome, FailedPciProbe::Continue));
+    }
+
+    fn test_address() -> PciAddress {
+        PciAddress::new(0, 0, 1, 0)
     }
 }

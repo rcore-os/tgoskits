@@ -6,21 +6,21 @@ use core::{
     cell::UnsafeCell,
     num::NonZeroUsize,
     ptr,
-    sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use dma_api::DmaOp;
 use mmio_api::{MmioAddr, MmioOp};
 use rdif_block::{
-    BlkError, ControllerInitEndpoint, DeviceInfo, DriverGeneric, IdList, InitError, InitInput,
-    InitPoll, InitialController, Interface, InterruptLifecycle, IrqHandler, IrqSourceList,
+    BlkError, BlockIrqSource, ControllerInitEndpoint, DeviceInfo, DriverGeneric, IdList, InitError,
+    InitInput, InitPoll, InitialController, Interface, InterruptLifecycle, IrqSourceList,
     LifecycleEndpoint, QueueHandle, QueueLimits, RecoveryCause,
 };
 
 use super::{
-    NvmeBlockQueue, NvmeQueueCore, NvmeQueueReinitializeInfo, alloc_prp_lists, device_info,
-    irq_sources_from_queue_bits, limits, new_initial_irq_handler, new_queue_irq_handler,
-    queue_interrupt_sources, source_queue_bits, unique_interrupt_vectors, vector_for_queue,
+    NvmeBlockQueue, NvmeIrqState, NvmeQueueCore, NvmeQueueReinitializeInfo, alloc_prp_lists,
+    device_info, irq_sources_from_queue_bits, limits, new_initial_irq_source, new_queue_irq_source,
+    queue_interrupt_sources, source_queue_bits, vector_for_queue,
 };
 use crate::{
     Config, Namespace,
@@ -60,22 +60,15 @@ pub struct NvmeBlockDriver {
 
 pub(super) struct NvmeBlockOwner {
     inner: UnsafeCell<NvmeBlockInner>,
+    irq: Arc<NvmeIrqState>,
     queues: UnsafeCell<Vec<Arc<NvmeQueueCore>>>,
     next_queue_id: AtomicUsize,
     created_queue_bits: AtomicU64,
-    irq_enabled: AtomicBool,
-    irq_handler_taken_bits: AtomicU64,
     irq_supported: bool,
     msix_interrupts: bool,
     interrupt_vectors: Vec<u16>,
     admin_queue: Arc<HardwareQueue>,
-    initial_irq_handler_taken: AtomicBool,
-    admin_cq_claimed: AtomicBool,
     admin_command_pending: AtomicBool,
-    admin_completion_ready: AtomicBool,
-    admin_completed_cid: AtomicU16,
-    admin_completed_success: AtomicBool,
-    admin_completed_result: AtomicU64,
 }
 
 impl NvmeBlockDriver {
@@ -126,27 +119,31 @@ impl NvmeBlockDriver {
         let msix_interrupts = nvme.msix_interrupts_enabled();
         let interrupt_vectors = nvme.interrupt_vectors().to_vec();
         let admin_queue = nvme.admin_queue();
+        let interrupt_port = unsafe {
+            // SAFETY: the port and `nvme` move into the same Arc owner. Every
+            // endpoint/control reference retains that owner and therefore the
+            // BAR mapping for the complete port lifetime.
+            nvme.interrupt_port()
+        };
+        let irq = Arc::new(NvmeIrqState::new(
+            interrupt_port,
+            &interrupt_vectors,
+            msix_interrupts,
+        ));
         let inner = Arc::new(NvmeBlockOwner {
             inner: UnsafeCell::new(NvmeBlockInner {
                 nvme,
                 namespace: None,
             }),
+            irq,
             queues: UnsafeCell::new(Vec::new()),
             next_queue_id: AtomicUsize::new(0),
             created_queue_bits: AtomicU64::new(0),
-            irq_enabled: AtomicBool::new(false),
-            irq_handler_taken_bits: AtomicU64::new(0),
             irq_supported,
             msix_interrupts,
             interrupt_vectors,
             admin_queue,
-            initial_irq_handler_taken: AtomicBool::new(false),
-            admin_cq_claimed: AtomicBool::new(false),
             admin_command_pending: AtomicBool::new(false),
-            admin_completion_ready: AtomicBool::new(false),
-            admin_completed_cid: AtomicU16::new(0),
-            admin_completed_success: AtomicBool::new(false),
-            admin_completed_result: AtomicU64::new(0),
         });
         Ok(Self {
             name,
@@ -188,43 +185,43 @@ impl NvmeBlockDriver {
     }
 }
 
-// SAFETY: RDIF queue ownership removes task-side sharing of an IO queue. IRQ
-// sharing is mediated by per-queue `NvmeQueueCore` claim guards, and the owner
-// keeps the controller and MMIO mapping alive until all queues are dropped.
+// SAFETY: RDIF queue ownership gives every I/O queue to one CPU-pinned
+// maintenance domain. Hard IRQ holds only the disjoint `NvmeIrqState`, and the
+// owner keeps the controller and MMIO mapping alive until all queues close.
 unsafe impl Send for NvmeBlockOwner {}
 
-// SAFETY: Mutable controller access is scoped through `with_mut` during queue
-// creation and namespace queries. The queue registry is populated before the
-// IRQ handler is taken and then read-only for the handler lifetime.
+// SAFETY: mutable controller access is serialized by the maintenance owner.
+// The queue registry freezes before source registration, and IRQ masking uses
+// the disjoint `NvmeIrqState` without borrowing controller or queue state.
 unsafe impl Sync for NvmeBlockOwner {}
 
 impl NvmeBlockOwner {
     fn with_ref<R>(&self, f: impl FnOnce(&NvmeBlockInner) -> R) -> R {
-        // SAFETY: mutable controller setup is complete before IRQ endpoints
-        // are published. Runtime lifecycle and IRQ paths subsequently use
-        // shared methods whose queue internals have disjoint exclusion gates.
+        // SAFETY: the owner-side initialization/lifecycle state machines
+        // serialize these controller borrows. IRQ endpoints use only the
+        // disjoint source-mask capability and frozen routing bitmap.
         let inner = unsafe { &*self.inner.get() };
         f(inner)
     }
 
     fn with_mut<R>(&self, f: impl FnOnce(&mut NvmeBlockInner) -> R) -> R {
         // SAFETY: Interface control operations are serialized by the owning
-        // runtime. After IRQ handlers are published they access only the
-        // frozen queue registry and never borrow the controller inner state.
+        // runtime. Published IRQ endpoints cannot borrow controller or queue
+        // state because their type owns only `NvmeIrqState`.
         let inner = unsafe { &mut *self.inner.get() };
         f(inner)
     }
 
     fn register_queue(&self, queue: Arc<NvmeQueueCore>) {
         // SAFETY: `create_queue` requires exclusive Interface access and is
-        // rejected after any IRQ handler is taken, so the registry cannot be
+        // rejected after any IRQ source is taken, so the registry cannot be
         // read concurrently while it is being extended.
         let queues = unsafe { &mut *self.queues.get() };
         queues.push(queue);
     }
 
     pub(super) fn queues(&self) -> &[Arc<NvmeQueueCore>] {
-        // SAFETY: taking the first IRQ handler freezes queue creation. Handler
+        // SAFETY: taking the first IRQ source freezes queue creation. Endpoint
         // lifetime therefore observes an immutable, owner-retained registry.
         unsafe { &*self.queues.get() }
     }
@@ -242,8 +239,20 @@ impl NvmeBlockOwner {
         irq_sources_from_queue_bits(self.msix_interrupts, &self.interrupt_vectors, queue_bits)
     }
 
-    fn unique_interrupt_vectors(&self) -> Vec<u16> {
-        unique_interrupt_vectors(&self.interrupt_vectors)
+    fn required_io_irq_source_bits(&self) -> u64 {
+        let queue_bits = self.created_queue_bits();
+        let mut source_bits = 0_u64;
+        for queue_id in 0..u64::BITS as usize {
+            if queue_bits & (1_u64 << queue_id) == 0 {
+                continue;
+            }
+            if let Some(vector) =
+                vector_for_queue(self.msix_interrupts, &self.interrupt_vectors, queue_id)
+            {
+                source_bits |= 1_u64 << usize::from(vector);
+            }
+        }
+        source_bits
     }
 
     pub(super) fn controller_cookie(&self) -> usize {
@@ -262,25 +271,15 @@ impl NvmeBlockOwner {
     }
 
     fn clear_admin_completion_after_quiesce(&self) -> Result<(), InitError> {
-        if self.admin_cq_claimed.load(Ordering::Acquire) {
-            return Err(InitError::Hardware(
-                "NVMe admin completion queue remained claimed after IRQ drain",
-            ));
-        }
         self.admin_command_pending.store(false, Ordering::Release);
-        self.admin_completion_ready.store(false, Ordering::Release);
-        self.admin_completed_cid.store(0, Ordering::Relaxed);
-        self.admin_completed_success.store(false, Ordering::Relaxed);
-        self.admin_completed_result.store(0, Ordering::Relaxed);
         Ok(())
     }
 
     fn submit_lifecycle_admin(&self, command: CommandSet) -> Result<u16, InitError> {
-        if self.admin_completion_ready.load(Ordering::Acquire)
-            || self
-                .admin_command_pending
-                .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
-                .is_err()
+        if self
+            .admin_command_pending
+            .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
+            .is_err()
         {
             return Err(InitError::InvalidState);
         }
@@ -289,41 +288,15 @@ impl NvmeBlockOwner {
         Ok(command_id)
     }
 
-    pub(super) fn drain_admin_irq_completion(&self) -> bool {
-        if !self.admin_command_pending.load(Ordering::Acquire)
-            || self.admin_completion_ready.load(Ordering::Acquire)
-            || self
-                .admin_cq_claimed
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-        {
-            return false;
-        }
-
-        let completion = self.admin_queue.take_irq_completion();
-        self.admin_cq_claimed.store(false, Ordering::Release);
-        let Some(completion) = completion else {
-            return false;
-        };
-
-        self.admin_completed_cid
-            .store(completion.command_id, Ordering::Relaxed);
-        self.admin_completed_success
-            .store(completion.status.is_success(), Ordering::Relaxed);
-        self.admin_completed_result
-            .store(completion.result, Ordering::Relaxed);
-        self.admin_completion_ready.store(true, Ordering::Release);
-        true
-    }
-
     fn take_admin_completion(&self) -> Option<AdminCompletion> {
-        if !self.admin_completion_ready.swap(false, Ordering::AcqRel) {
+        if !self.admin_command_pending.load(Ordering::Acquire) {
             return None;
         }
+        let completion = self.admin_queue.take_owner_completion()?;
         let completion = AdminCompletion {
-            command_id: self.admin_completed_cid.load(Ordering::Relaxed),
-            success: self.admin_completed_success.load(Ordering::Relaxed),
-            result: self.admin_completed_result.load(Ordering::Relaxed),
+            command_id: completion.command_id,
+            success: completion.status.is_success(),
+            result: completion.result,
         };
         self.admin_command_pending.store(false, Ordering::Release);
         Some(completion)
@@ -444,10 +417,6 @@ impl NvmeBlockOwner {
         })
     }
 
-    pub(super) fn irq_delivery_enabled(&self) -> bool {
-        self.irq_enabled.load(Ordering::Acquire)
-    }
-
     pub(super) fn created_queue_bits(&self) -> u64 {
         self.created_queue_bits.load(Ordering::Acquire)
     }
@@ -471,7 +440,7 @@ impl InitialHardware for NvmeBlockOwner {
     }
 
     fn live_admin_irq_source(&self) -> Option<usize> {
-        (self.initial_irq_handler_taken.load(Ordering::Acquire) && self.irq_delivery_enabled())
+        (self.irq.initial_source_live() && self.irq.delivery_enabled())
             .then(|| self.admin_irq_source_id())
             .flatten()
     }
@@ -485,11 +454,11 @@ impl InitialHardware for NvmeBlockOwner {
             // SAFETY: InitialHardware requires RDY=0 and a live, drained init
             // IRQ action before this transition programs retained queue DMA.
             unsafe { inner.nvme.prepare_initial_enable() };
-            // The OS action is already live, but discovery kept the device
-            // source masked. Unmask only after stale admin CQ state was reset
-            // and before any admin command can be submitted.
-            inner.nvme.unmask_interrupt_vector(source_id as u32);
         });
+        // The OS action is already live, but discovery kept the device source
+        // masked. Unmask only after stale admin CQ state was reset and before
+        // any admin command can be submitted.
+        self.irq.unmask_for_activation(source_id)?;
         Ok(())
     }
 
@@ -602,22 +571,16 @@ impl InitialController for NvmeBlockDriver {
             })
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
         if self.inner.admin_irq_source_id() != Some(source_id)
-            || self
-                .inner
-                .initial_irq_handler_taken
-                .swap(true, Ordering::AcqRel)
+            || !self.inner.irq.take_initial_source(source_id)
         {
             return None;
         }
-        Some(new_initial_irq_handler(Arc::clone(&self.inner)))
-    }
-
-    fn service_deferred_irq(&mut self, _source_id: usize) -> rdif_block::InitIrqProgress {
-        // NVMe owns immutable admin/CQ endpoints that acknowledge directly in
-        // hard IRQ; it never publishes a deferred initialization source.
-        rdif_block::InitIrqProgress::Unhandled
+        Some(new_initial_irq_source(
+            Arc::clone(&self.inner.irq),
+            source_id,
+        ))
     }
 
     fn poll_init(&mut self, input: InitInput) -> InitPoll<()> {
@@ -651,7 +614,7 @@ impl Interface for NvmeBlockDriver {
             || self.namespace_if_ready().is_none()
             || !self.inner.irq_supported
             || self.inner.admin_irq_source_id().is_none()
-            || self.inner.irq_handler_taken_bits.load(Ordering::Acquire) != 0
+            || self.inner.irq.any_queue_source_taken()
         {
             return None;
         }
@@ -700,17 +663,26 @@ impl Interface for NvmeBlockDriver {
         if !self.inner.irq_supported {
             return Err(BlkError::NotSupported);
         }
-        // Publish handler readiness before unmasking either INTx or MSI-X.
-        // A completion already resident in the CQ may raise an edge as soon as
-        // the first vector is unmasked.
-        self.inner.irq_enabled.store(true, Ordering::Release);
-        if self.initialization.is_ready() {
-            self.inner.with_ref(|inner| {
-                for vector in self.inner.unique_interrupt_vectors() {
-                    inner.nvme.unmask_interrupt_vector(u32::from(vector));
-                }
-            });
+        if !self.initialization.is_ready() {
+            if !self.inner.irq.initial_source_live() {
+                return Err(BlkError::Other(
+                    "NVMe initialization IRQ source is not live",
+                ));
+            }
+            // The initialization FSM performs the first source unmask only
+            // after retained admin CQ state has been reset.
+            self.inner.irq.enable_delivery();
+            return Ok(());
         }
+
+        let required_sources = self.inner.required_io_irq_source_bits();
+        if !self.inner.irq.all_queue_sources_live(required_sources) {
+            return Err(BlkError::Other("NVMe I/O IRQ sources are not all live"));
+        }
+
+        // Publish endpoint readiness before unmasking either INTx or MSI-X. A
+        // completion already resident in a CQ may assert immediately.
+        self.inner.irq.arm_io_sources(required_sources);
         Ok(())
     }
 
@@ -718,17 +690,12 @@ impl Interface for NvmeBlockDriver {
         if !self.inner.irq_supported {
             return Err(BlkError::NotSupported);
         }
-        self.inner.with_ref(|inner| {
-            for vector in self.inner.unique_interrupt_vectors() {
-                inner.nvme.mask_interrupt_vector(u32::from(vector));
-            }
-        });
-        self.inner.irq_enabled.store(false, Ordering::Release);
+        self.inner.irq.disable_all();
         Ok(())
     }
 
     fn is_irq_enabled(&self) -> bool {
-        self.inner.irq_supported && self.inner.irq_enabled.load(Ordering::Acquire)
+        self.inner.irq_supported && self.inner.irq.delivery_enabled()
     }
 
     fn irq_sources(&self) -> IrqSourceList {
@@ -739,8 +706,8 @@ impl Interface for NvmeBlockDriver {
         self.inner.irq_sources_from_queue_bits(queue_bits)
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
-        if !self.inner.irq_supported || source_id >= u64::BITS as usize {
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
+        if !self.inner.irq_supported || self.inner.irq.initial_source_live() {
             return None;
         }
         let queue_bits = self.inner.source_queue_bits(
@@ -750,30 +717,20 @@ impl Interface for NvmeBlockDriver {
         if queue_bits == 0 {
             return None;
         }
-        let bit = 1_u64 << source_id;
-        if self
-            .inner
-            .irq_handler_taken_bits
-            .fetch_or(bit, Ordering::AcqRel)
-            & bit
-            != 0
-        {
+        if !self.inner.irq.take_queue_source(source_id) {
             return None;
         }
-        Some(new_queue_irq_handler(Arc::clone(&self.inner), source_id))
+        Some(new_queue_irq_source(
+            Arc::clone(&self.inner.irq),
+            source_id,
+            IdList::from_bits(queue_bits),
+        ))
     }
 }
 
 impl InterruptLifecycle for NvmeBlockDriver {
     fn controller_cookie(&self) -> usize {
         self.inner.controller_cookie()
-    }
-
-    fn service_deferred_irq(&mut self, _source_id: usize) -> rdif_block::InitIrqProgress {
-        // NVMe acknowledges its immutable admin/CQ endpoint in hard IRQ. CQ
-        // continuation may be bounded, but no unacknowledged source is ever
-        // published as a deferred lifecycle activation.
-        rdif_block::InitIrqProgress::Unhandled
     }
 
     fn begin_dma_quiesce(

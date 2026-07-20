@@ -1,15 +1,23 @@
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, format, sync::Arc, vec, vec::Vec};
 use core::{
     alloc::Layout,
     cmp,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
-use ax_kspin::SpinRaw as Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 use dma_api::{DmaAddr, DmaAllocHandle, DmaConstraints, DmaOp};
-use fxmac_rs::{FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler, xmac_init};
-use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
-use rdrive::{DriverGeneric, PlatformDevice};
+use fxmac_rs::{
+    FXMAC_MMIO_PHYS_BASE, FXMAC_MMIO_SIZE, FXMAC_RUNTIME_IRQ_MASK, FXmac, FXmacInitPoll,
+    FXmacInitSchedule, FXmacInitialization, FXmacIrqPort, FXmacIrqStatus, FXmacLwipPortTx,
+    FXmacPending, FXmacRecvHandler, begin_xmac_init, discover_xmac, poll_xmac_init,
+};
+use rd_net::{
+    ContainmentCause, DmaBuffer, EthernetIrqFault, Event, IRxQueue, ITxQueue, InterfaceIrqEndpoint,
+    IrqCapture, MaskedSource, NetError, OwnerInitInput, OwnerInitPoll, OwnerInitSchedule,
+    QueueConfig, QueueMemoryMode,
+};
+use rdrive::{DriverGeneric, PlatformDevice, probe::OnProbeError};
 
 use crate::{binding_info_from_fdt, net::PlatformDeviceNet};
 
@@ -35,7 +43,16 @@ crate::model_register!(
 
 fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe::OnProbeError> {
     let info = binding_info_from_fdt(probe.info())?;
-    let dev = FxmacNet::new();
+    let register = probe
+        .info()
+        .node
+        .regs()
+        .into_iter()
+        .next()
+        .ok_or_else(|| OnProbeError::other("FXMAC FDT node has no register aperture"))?;
+    let mapped_size = usize::try_from(register.size.unwrap_or(FXMAC_MMIO_SIZE as u64))
+        .map_err(|_| OnProbeError::other("FXMAC register aperture does not fit usize"))?;
+    let dev = FxmacNet::new(register.address as usize, mapped_size)?;
     probe
         .into_platform_device()
         .register_net_with_info(DRIVER_NAME, dev, info);
@@ -44,16 +61,21 @@ fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), rdrive::probe:
 }
 
 pub fn register(plat_dev: PlatformDevice) {
-    let dev = FxmacNet::new();
-    plat_dev.register_net(DRIVER_NAME, dev);
-    log::info!("registered FXmac network device");
+    match FxmacNet::new(FXMAC_MMIO_PHYS_BASE, FXMAC_MMIO_SIZE) {
+        Ok(dev) => {
+            plat_dev.register_net(DRIVER_NAME, dev);
+            log::info!("registered FXmac network device");
+        }
+        Err(error) => log::error!("failed to discover FXmac network device: {error}"),
+    }
 }
 
 struct FxmacNet {
     hw: Arc<Mutex<FxmacHw>>,
+    irq_port: Option<FXmacIrqPort>,
     tx_state: Arc<Mutex<FxmacTxState>>,
     rx_state: Arc<Mutex<FxmacRxState>>,
-    irq_state: Arc<FxmacIrqState>,
+    irq_epoch: Arc<FxmacIrqEpoch>,
     hwaddr: [u8; 6],
     tx_created: bool,
     rx_created: bool,
@@ -61,13 +83,26 @@ struct FxmacNet {
 }
 
 impl FxmacNet {
-    fn new() -> Self {
-        let mut hwaddr = [0; 6];
-        FXmacGetMacAddress(&mut hwaddr, 0);
-        let device = xmac_init(&hwaddr);
-        device.disable_irq();
-        Self {
-            hw: Arc::new(Mutex::new(FxmacHw { device })),
+    fn new(physical_base: usize, mapped_size: usize) -> Result<Self, OnProbeError> {
+        let registers = Arc::new(
+            axklib::mmio::ioremap(physical_base.into(), mapped_size).map_err(|error| {
+                OnProbeError::other(format!("failed to map FXMAC registers: {error}"))
+            })?,
+        );
+        let discovery = unsafe {
+            // SAFETY: `registers` is the unique owning mapping lease and is
+            // retained by both the owner state and IRQ endpoint adapter until
+            // runtime teardown/quarantine has stopped all device access.
+            discover_xmac(registers.as_nonnull_ptr(), registers.size())
+        }
+        .map_err(|error| OnProbeError::other(format!("invalid FXMAC mapping: {error}")))?;
+        let (pending, irq_port) = discovery.into_parts();
+        Ok(Self {
+            hw: Arc::new(Mutex::new(FxmacHw {
+                _registers: Arc::clone(&registers),
+                state: FxmacHwState::Pending(pending),
+            })),
+            irq_port: Some(irq_port),
             tx_state: Arc::new(Mutex::new(FxmacTxState {
                 tx_done: VecDeque::with_capacity(QUEUE_SIZE),
             })),
@@ -75,11 +110,35 @@ impl FxmacNet {
                 rx_buffers: VecDeque::with_capacity(QUEUE_SIZE),
                 rx_packets: VecDeque::with_capacity(QUEUE_SIZE),
             })),
-            irq_state: Arc::new(FxmacIrqState::new()),
-            hwaddr,
+            irq_epoch: Arc::new(FxmacIrqEpoch::new()),
+            hwaddr: [0; 6],
             tx_created: false,
             rx_created: false,
             irq_enabled: false,
+        })
+    }
+
+    fn poll_initialization(&mut self, now_ns: u64) -> OwnerInitPoll {
+        let progress = self.hw.lock().poll_initialization(now_ns);
+        match progress {
+            FxmacOwnerInitProgress::Ready(hwaddr) => {
+                self.hwaddr = hwaddr;
+                OwnerInitPoll::Ready
+            }
+            FxmacOwnerInitProgress::Pending(schedule) if schedule.run_again => {
+                OwnerInitPoll::Pending(OwnerInitSchedule::run_again())
+            }
+            FxmacOwnerInitProgress::Pending(schedule) => {
+                let Some(wake_at_ns) = schedule.wake_at_ns else {
+                    return OwnerInitPoll::Failed(NetError::Other(Box::new(
+                        rd_net::KError::Unknown("FXMAC init returned no activation source"),
+                    )));
+                };
+                OwnerInitPoll::Pending(OwnerInitSchedule::wait_until(wake_at_ns))
+            }
+            FxmacOwnerInitProgress::Failed(error) => {
+                OwnerInitPoll::Failed(NetError::Other(Box::new(error)))
+            }
         }
     }
 }
@@ -91,69 +150,167 @@ impl DriverGeneric for FxmacNet {
 }
 
 impl rd_net::Interface for FxmacNet {
+    fn poll_owner_init(&mut self, input: OwnerInitInput) -> OwnerInitPoll {
+        self.poll_initialization(input.now_ns)
+    }
+
     fn mac_address(&self) -> [u8; 6] {
         self.hwaddr
     }
 
     fn create_tx_queue(&mut self) -> Option<Box<dyn ITxQueue>> {
-        if self.tx_created {
+        if self.tx_created || !self.hw.lock().is_ready() {
             return None;
         }
         self.tx_created = true;
         Some(Box::new(FxmacTxQueue {
             hw: Arc::clone(&self.hw),
             tx_state: Arc::clone(&self.tx_state),
-            irq_state: Arc::clone(&self.irq_state),
         }))
     }
 
     fn create_rx_queue(&mut self) -> Option<Box<dyn IRxQueue>> {
-        if self.rx_created {
+        if self.rx_created || !self.hw.lock().is_ready() {
             return None;
         }
         self.rx_created = true;
         Some(Box::new(FxmacRxQueue {
             hw: Arc::clone(&self.hw),
             rx_state: Arc::clone(&self.rx_state),
-            irq_state: Arc::clone(&self.irq_state),
         }))
     }
 
-    fn enable_irq(&mut self) {
-        self.hw.lock().device.enable_irq();
+    fn enable_irq(&mut self) -> Result<(), NetError> {
+        let mut hw = self.hw.lock();
+        let device = hw.device_mut().ok_or_else(fxmac_not_ready)?;
+        device.enable_irq();
         self.irq_enabled = true;
+        Ok(())
     }
 
-    fn disable_irq(&mut self) {
-        self.hw.lock().device.disable_irq();
+    fn disable_irq(&mut self) -> Result<(), NetError> {
+        self.hw.lock().disable_irq()?;
         self.irq_enabled = false;
+        Ok(())
     }
 
     fn is_irq_enabled(&self) -> bool {
         self.irq_enabled
     }
 
-    fn handle_irq(&mut self) -> Event {
-        let mut handler = FxmacIrqHandler {
-            hw: Arc::clone(&self.hw),
-            irq_state: Arc::clone(&self.irq_state),
-        };
-        rd_net::InterfaceIrqHandler::handle_irq(&mut handler)
+    fn take_irq_endpoint(&mut self) -> Option<rd_net::BIrqEndpoint> {
+        let irq_port = self.irq_port.take()?;
+        Some(Box::new(FxmacIrqHandler {
+            _registers: Arc::clone(&self.hw.lock()._registers),
+            irq_port,
+            irq_epoch: Arc::clone(&self.irq_epoch),
+        }))
     }
 
-    fn take_irq_handler(&mut self) -> Option<rd_net::BIrqHandler> {
-        Some(Box::new(FxmacIrqHandler {
-            hw: Arc::clone(&self.hw),
-            irq_state: Arc::clone(&self.irq_state),
-        }))
+    fn service_irq_event(&mut self, event: Event) -> Result<(), NetError> {
+        let mut hw = self.hw.lock();
+        let device = hw.device_mut().ok_or_else(fxmac_not_ready)?;
+        device.service_irq_status(FXmacIrqStatus::from_raw(event.device_status as u32));
+        Ok(())
+    }
+
+    fn rearm_irq_source(&mut self, source: MaskedSource) -> Result<(), NetError> {
+        let mut hw = self.hw.lock();
+        self.irq_epoch.finish_masked_source(source)?;
+        hw.device_mut().ok_or_else(fxmac_not_ready)?.enable_irq();
+        Ok(())
     }
 }
 
 struct FxmacHw {
-    device: &'static mut FXmac,
+    _registers: Arc<mmio_api::Mmio>,
+    state: FxmacHwState,
 }
 
 unsafe impl Send for FxmacHw {}
+
+enum FxmacHwState {
+    Pending(FXmacPending),
+    Initializing(FXmacInitialization),
+    Transitioning,
+    Ready(FXmac),
+}
+
+enum FxmacOwnerInitProgress {
+    Ready([u8; 6]),
+    Pending(FXmacInitSchedule),
+    Failed(fxmac_rs::FXmacInitError),
+}
+
+impl FxmacHw {
+    fn is_ready(&self) -> bool {
+        matches!(self.state, FxmacHwState::Ready(_))
+    }
+
+    fn device_mut(&mut self) -> Option<&mut FXmac> {
+        match &mut self.state {
+            FxmacHwState::Ready(device) => Some(device),
+            FxmacHwState::Pending(_)
+            | FxmacHwState::Initializing(_)
+            | FxmacHwState::Transitioning => None,
+        }
+    }
+
+    fn disable_irq(&mut self) -> Result<(), NetError> {
+        match &mut self.state {
+            FxmacHwState::Pending(pending) => pending.disable_irq(),
+            FxmacHwState::Ready(device) => device.disable_irq(),
+            FxmacHwState::Initializing(_) | FxmacHwState::Transitioning => {
+                return Err(fxmac_not_ready());
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_initialization(&mut self, now_ns: u64) -> FxmacOwnerInitProgress {
+        let state = core::mem::replace(&mut self.state, FxmacHwState::Transitioning);
+        let mut initialization = match state {
+            FxmacHwState::Pending(pending) => begin_xmac_init(pending),
+            FxmacHwState::Initializing(initialization) => initialization,
+            FxmacHwState::Ready(device) => {
+                let hwaddr = device.config.mac;
+                self.state = FxmacHwState::Ready(device);
+                return FxmacOwnerInitProgress::Ready(hwaddr);
+            }
+            FxmacHwState::Transitioning => {
+                return FxmacOwnerInitProgress::Failed(fxmac_rs::FXmacInitError::AlreadyFinished);
+            }
+        };
+
+        match poll_xmac_init(&mut initialization, now_ns) {
+            FXmacInitPoll::Ready => {
+                let device = initialization
+                    .take_ready()
+                    .expect("ready FXMAC initialization retained its controller");
+                let hwaddr = device.config.mac;
+                self.state = FxmacHwState::Ready(device);
+                FxmacOwnerInitProgress::Ready(hwaddr)
+            }
+            FXmacInitPoll::Pending(schedule) => {
+                self.state = FxmacHwState::Initializing(initialization);
+                FxmacOwnerInitProgress::Pending(schedule)
+            }
+            FXmacInitPoll::Failed(error) => {
+                // The runtime quarantines a failed owner session. Retain the
+                // complete initialization object so DMA/MMIO ownership cannot
+                // be dropped while hardware quiescence is unproven.
+                self.state = FxmacHwState::Initializing(initialization);
+                FxmacOwnerInitProgress::Failed(error)
+            }
+        }
+    }
+}
+
+fn fxmac_not_ready() -> NetError {
+    NetError::Other(Box::new(rd_net::KError::Unknown(
+        "FXMAC controller is not ready",
+    )))
+}
 
 struct FxmacTxState {
     tx_done: VecDeque<u64>,
@@ -164,68 +321,120 @@ struct FxmacRxState {
     rx_packets: VecDeque<Vec<u8>>,
 }
 
-struct FxmacIrqState {
-    rx_pending: AtomicBool,
-    tx_pending: AtomicBool,
-    irq_ack_pending: AtomicBool,
+struct FxmacIrqEpoch {
+    next_generation: AtomicU64,
+    masked_generation: AtomicU64,
 }
 
-impl FxmacIrqState {
+impl FxmacIrqEpoch {
     fn new() -> Self {
         Self {
-            rx_pending: AtomicBool::new(false),
-            tx_pending: AtomicBool::new(false),
-            irq_ack_pending: AtomicBool::new(false),
+            next_generation: AtomicU64::new(1),
+            masked_generation: AtomicU64::new(0),
         }
     }
 
-    fn mark_irq_ack_pending(&self) {
-        self.irq_ack_pending.store(true, Ordering::Release);
+    fn is_masked(&self) -> bool {
+        self.masked_generation.load(Ordering::Acquire) != 0
     }
 
-    fn drain_pending_irq_ack(&self, hw: &mut FxmacHw) {
-        if self.irq_ack_pending.swap(false, Ordering::AcqRel) {
-            let status = hw.device.handle_irq();
-            let _ = self.publish(status.tx_ready(), status.rx_ready());
+    fn begin_capture_epoch(&self) -> Result<MaskedSource, EthernetIrqFault> {
+        // This endpoint is non-reentrant on one fixed CPU. The zero value can
+        // only be observed after a full u64 wrap; skip it because zero is the
+        // explicit "no masked source" state.
+        let mut generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        if generation == 0 {
+            generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         }
+        self.masked_generation
+            .compare_exchange(0, generation, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| EthernetIrqFault::Containment)?;
+        MaskedSource::try_new(generation, u64::from(FXMAC_RUNTIME_IRQ_MASK))
+            .map_err(|_| EthernetIrqFault::Containment)
     }
 
-    fn publish(&self, tx_ready: bool, rx_ready: bool) -> Event {
-        let mut event = Event::none();
-        if tx_ready {
-            self.tx_pending.store(true, Ordering::Release);
-            event.tx_queue.insert(QUEUE_ID);
+    fn containment_source(&self) -> Result<MaskedSource, EthernetIrqFault> {
+        let active = self.masked_generation.load(Ordering::Acquire);
+        if active != 0 {
+            return MaskedSource::try_new(active, u64::from(FXMAC_RUNTIME_IRQ_MASK))
+                .map_err(|_| EthernetIrqFault::Containment);
         }
-        if rx_ready {
-            self.rx_pending.store(true, Ordering::Release);
-            event.rx_queue.insert(QUEUE_ID);
+        self.begin_capture_epoch()
+    }
+
+    fn finish_masked_source(&self, source: MaskedSource) -> Result<(), NetError> {
+        let generation = source.generation().get();
+        if source.bitmap().get() != u64::from(FXMAC_RUNTIME_IRQ_MASK)
+            || self
+                .masked_generation
+                .compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return Err(NetError::Other(Box::new(rd_net::KError::Unknown(
+                "stale FXMAC IRQ source",
+            ))));
         }
-        event
-    }
-
-    fn take_rx_pending(&self) -> bool {
-        self.rx_pending.swap(false, Ordering::AcqRel)
-    }
-
-    fn take_tx_pending(&self) -> bool {
-        self.tx_pending.swap(false, Ordering::AcqRel)
+        Ok(())
     }
 }
 
 struct FxmacIrqHandler {
-    hw: Arc<Mutex<FxmacHw>>,
-    irq_state: Arc<FxmacIrqState>,
+    _registers: Arc<mmio_api::Mmio>,
+    irq_port: FXmacIrqPort,
+    irq_epoch: Arc<FxmacIrqEpoch>,
 }
 
-impl rd_net::InterfaceIrqHandler for FxmacIrqHandler {
-    fn handle_irq(&mut self) -> Event {
-        if let Some(mut hw) = self.hw.try_lock() {
-            let status = hw.device.handle_irq();
-            return self.irq_state.publish(status.tx_ready(), status.rx_ready());
+impl InterfaceIrqEndpoint for FxmacIrqHandler {
+    type Event = Event;
+    type Fault = EthernetIrqFault;
+
+    fn capture(&mut self) -> IrqCapture<Event, EthernetIrqFault> {
+        // An active epoch already owns the masked source. Its captured facts
+        // are in the owner mailbox, so another callback must not read/W1C the
+        // same hardware state or publish the linear token again.
+        if self.irq_epoch.is_masked() {
+            return IrqCapture::Unhandled;
         }
-        self.irq_state.mark_irq_ack_pending();
-        Event::none()
+        let status = self.irq_port.capture_and_mask();
+        if status.is_empty() {
+            return IrqCapture::Unhandled;
+        }
+        let event = event_from_status(status);
+        match self.irq_epoch.begin_capture_epoch() {
+            Ok(masked) => IrqCapture::Captured {
+                event,
+                masked: Some(masked),
+            },
+            Err(reason) => {
+                let containment = self
+                    .irq_epoch
+                    .containment_source()
+                    .map(rd_net::FaultContainment::DeviceSourceMasked)
+                    .unwrap_or(rd_net::FaultContainment::Uncontained);
+                IrqCapture::Fault {
+                    reason,
+                    containment,
+                }
+            }
+        }
     }
+
+    fn contain(&mut self, _cause: ContainmentCause) -> Result<MaskedSource, EthernetIrqFault> {
+        self.irq_port.mask();
+        self.irq_epoch.containment_source()
+    }
+}
+
+fn event_from_status(status: FXmacIrqStatus) -> Event {
+    let mut event = Event::none();
+    if status.tx_ready() {
+        event.tx_queue.insert(QUEUE_ID);
+    }
+    if status.rx_ready() {
+        event.rx_queue.insert(QUEUE_ID);
+    }
+    event.device_status = u64::from(status.raw());
+    event
 }
 
 #[derive(Clone, Copy)]
@@ -248,7 +457,6 @@ impl From<DmaBuffer> for RuntimeNetBuffer {
 struct FxmacTxQueue {
     hw: Arc<Mutex<FxmacHw>>,
     tx_state: Arc<Mutex<FxmacTxState>>,
-    irq_state: Arc<FxmacIrqState>,
 }
 
 impl ITxQueue for FxmacTxQueue {
@@ -263,9 +471,10 @@ impl ITxQueue for FxmacTxQueue {
     fn submit(&mut self, buffer: DmaBuffer) -> Result<(), NetError> {
         let packet = unsafe { core::slice::from_raw_parts(buffer.virt.as_ptr(), buffer.len) };
         let mut hw = self.hw.lock();
-        self.irq_state.drain_pending_irq_ack(&mut hw);
-        let ret = FXmacLwipPortTx(hw.device, vec![packet.to_vec()]);
-        self.irq_state.drain_pending_irq_ack(&mut hw);
+        let ret = FXmacLwipPortTx(
+            hw.device_mut().ok_or_else(fxmac_not_ready)?,
+            vec![packet.to_vec()],
+        );
         if ret < 0 {
             return Err(NetError::Retry);
         }
@@ -275,7 +484,6 @@ impl ITxQueue for FxmacTxQueue {
     }
 
     fn reclaim(&mut self) -> Option<u64> {
-        let _ = self.irq_state.take_tx_pending();
         self.tx_state.lock().tx_done.pop_front()
     }
 }
@@ -283,7 +491,6 @@ impl ITxQueue for FxmacTxQueue {
 struct FxmacRxQueue {
     hw: Arc<Mutex<FxmacHw>>,
     rx_state: Arc<Mutex<FxmacRxState>>,
-    irq_state: Arc<FxmacIrqState>,
 }
 
 impl IRxQueue for FxmacRxQueue {
@@ -307,14 +514,11 @@ impl IRxQueue for FxmacRxQueue {
         }
 
         let mut hw = self.hw.lock();
-        self.irq_state.drain_pending_irq_ack(&mut hw);
-        let rx_pending = self.irq_state.take_rx_pending();
-        if (rx_pending || rx_state.rx_packets.is_empty())
-            && let Some(packets) = FXmacRecvHandler(hw.device)
+        if rx_state.rx_packets.is_empty()
+            && let Some(packets) = FXmacRecvHandler(hw.device_mut()?)
         {
             rx_state.rx_packets.extend(packets);
         }
-        self.irq_state.drain_pending_irq_ack(&mut hw);
         drop(hw);
 
         let packet = rx_state.rx_packets.pop_front()?;
@@ -333,6 +537,7 @@ fn fxmac_queue_config() -> QueueConfig {
         align: DMA_ALIGN,
         buf_size: BUFFER_SIZE,
         ring_size: QUEUE_SIZE,
+        memory_mode: QueueMemoryMode::OwnerCopy,
     }
 }
 
@@ -344,14 +549,6 @@ const _: FxmacKernelFunc = FxmacKernelFunc;
 impl fxmac_rs::KernelFunc for FxmacKernelFunc {
     fn virt_to_phys(addr: usize) -> usize {
         axklib::mem::virt_to_phys(addr.into()).as_usize()
-    }
-
-    fn phys_to_virt(addr: usize) -> usize {
-        let base = addr & !(PAGE_SIZE - 1);
-        let offset = addr - base;
-        axklib::mem::iomap(base.into(), PAGE_SIZE)
-            .map(|virt| virt.as_usize() + offset)
-            .unwrap_or(addr)
     }
 
     fn dma_alloc_coherent(pages: usize) -> (usize, usize) {
@@ -398,30 +595,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn irq_state_does_not_publish_empty_snapshot() {
-        let state = FxmacIrqState::new();
-        let event = state.publish(false, false);
+    fn empty_irq_status_does_not_publish_queue_work() {
+        let event = event_from_status(FXmacIrqStatus::from_raw(0));
 
         assert!(!event.tx_queue.contains(QUEUE_ID));
         assert!(!event.rx_queue.contains(QUEUE_ID));
-        assert!(!state.take_tx_pending());
-        assert!(!state.take_rx_pending());
     }
 
     #[test]
-    fn irq_state_publishes_only_reported_queues() {
-        let state = FxmacIrqState::new();
-
-        let tx_event = state.publish(true, false);
+    fn irq_status_publishes_only_reported_queues() {
+        let tx_event = event_from_status(FXmacIrqStatus::from_raw(1 << 7));
         assert!(tx_event.tx_queue.contains(QUEUE_ID));
         assert!(!tx_event.rx_queue.contains(QUEUE_ID));
-        assert!(state.take_tx_pending());
-        assert!(!state.take_rx_pending());
 
-        let rx_event = state.publish(false, true);
+        let rx_event = event_from_status(FXmacIrqStatus::from_raw(1 << 1));
         assert!(!rx_event.tx_queue.contains(QUEUE_ID));
         assert!(rx_event.rx_queue.contains(QUEUE_ID));
-        assert!(!state.take_tx_pending());
-        assert!(state.take_rx_pending());
+    }
+
+    #[test]
+    fn masked_source_rearm_rejects_stale_generation() {
+        let state = FxmacIrqEpoch::new();
+        let source = state.begin_capture_epoch().unwrap();
+
+        state.finish_masked_source(source).unwrap();
+        assert!(state.finish_masked_source(source).is_err());
+    }
+
+    #[test]
+    fn active_capture_epoch_is_linear_but_containment_is_idempotent() {
+        let state = FxmacIrqEpoch::new();
+        let source = state.begin_capture_epoch().unwrap();
+
+        assert!(state.is_masked());
+        assert!(state.begin_capture_epoch().is_err());
+        assert_eq!(state.containment_source().unwrap(), source);
     }
 }

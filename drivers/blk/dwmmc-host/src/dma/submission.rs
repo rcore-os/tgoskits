@@ -623,9 +623,6 @@ impl DwMmc {
         });
 
         self.ensure_runtime_data_command_can_issue()?;
-        let irq = self.irq.clone();
-        let register_owner = irq.state.try_begin_task_update().ok_or(Error::Busy)?;
-        self.ensure_runtime_data_command_can_issue()?;
 
         // Coherent descriptor storage still needs an ordering barrier before
         // the IDMAC is allowed to fetch it on weakly ordered architectures.
@@ -652,7 +649,7 @@ impl DwMmc {
             block_count,
         });
         self.data_blocks_remaining = block_count;
-        self.activate_admitted_data_command(cmd, &register_owner);
+        self.activate_admitted_data_command(cmd);
         Ok(())
     }
 

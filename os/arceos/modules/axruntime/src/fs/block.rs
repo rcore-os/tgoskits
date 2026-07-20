@@ -133,12 +133,14 @@ fn map_hctx_error(error: HardwareQueueError) -> AxError {
         HardwareQueueError::InvalidCpu(_)
         | HardwareQueueError::RequestState
         | HardwareQueueError::StaleCompletion
+        | HardwareQueueError::StaleIrqEvent
         | HardwareQueueError::SynchronousCompletion
         | HardwareQueueError::UnsafeContext
+        | HardwareQueueError::WrongOwner
         | HardwareQueueError::Lifecycle(_) => AxError::BadState,
         HardwareQueueError::NotInterruptQueue { .. }
         | HardwareQueueError::MissingInterruptSource { .. } => AxError::OperationNotSupported,
-        HardwareQueueError::WorkQueue(_) | HardwareQueueError::Task(_) => AxError::BadState,
+        HardwareQueueError::Maintenance(_) | HardwareQueueError::Task(_) => AxError::BadState,
         HardwareQueueError::Driver(error) => map_driver_error(error),
         HardwareQueueError::EventOverflow { .. } => AxError::Io,
         HardwareQueueError::Capacity => AxError::NoMemory,

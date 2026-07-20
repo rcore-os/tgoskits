@@ -14,6 +14,7 @@ bitflags = "2"
 dma-api.workspace = true
 log.workspace = true
 rdif-block = { workspace = true, optional = true }
+rdif-irq.workspace = true
 sdio-host2.workspace = true
 
 [features]

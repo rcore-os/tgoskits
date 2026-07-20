@@ -13,7 +13,7 @@ pub enum InputError {
     #[error("invalid event")]
     InvalidEvent,
     #[error("other error: {0}")]
-    Other(Box<dyn core::error::Error>),
+    Other(Box<dyn core::error::Error + Send + Sync>),
 }
 
 impl From<InputError> for io::ErrorKind {

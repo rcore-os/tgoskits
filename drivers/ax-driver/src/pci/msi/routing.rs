@@ -3,6 +3,7 @@
 use alloc::{format, vec::Vec};
 
 use fdt_edit::{Fdt, NodeType, Phandle};
+#[cfg(feature = "nvme")]
 use pcie::MsixError;
 use rdif_msi::MsiDeviceId;
 use rdrive::{
@@ -194,6 +195,7 @@ pub(super) fn provider_for_phandle(phandle: Phandle) -> Result<DeviceId, OnProbe
     ))
 }
 
+#[cfg(feature = "nvme")]
 pub(super) fn msi_provider_lookup_error(
     address: PciAddress,
     provider: DeviceId,
@@ -220,6 +222,7 @@ pub(super) fn pci_requester_id(address: PciAddress) -> u32 {
         | u32::from(address.function())
 }
 
+#[cfg(feature = "nvme")]
 pub(super) fn msix_probe_error(err: MsixError) -> OnProbeError {
     OnProbeError::other(format!("{err}"))
 }

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Transparently transfer SDHCI's one-shot capture/control IRQ source instead
+  of exposing a repeatable handler. Completion delivery now fails closed until
+  OS glue retains both capabilities on the fixed maintenance owner.
 - Require the protocol's initialized-card capability before the RDIF adapter
   can construct its interrupt-backed runtime device.
 - Migrate the RDIF adapter to the 0.12 owned interrupt contract, delegate ADMA

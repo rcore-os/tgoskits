@@ -74,7 +74,7 @@ fn cpu_owned_thunk_uses_one_pinned_local_decision() {
         .expect("failed to locate the platform CPU-owned execution adapter");
     let method = &source[method_start..];
     let method_end = method
-        .find("\n    fn set_enabled(")
+        .find("\n    fn prepare_line(")
         .expect("failed to locate the end of the CPU-owned execution adapter");
     let method = &method[..method_end];
 

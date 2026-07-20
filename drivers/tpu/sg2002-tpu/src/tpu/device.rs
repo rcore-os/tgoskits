@@ -5,7 +5,7 @@
 
 use core::{
     cell::Cell,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use ax_kspin::SpinNoPreempt as Mutex;
@@ -38,6 +38,29 @@ pub enum TpuSubmitPath {
     DesNormal = 0,
 }
 
+/// Stable TDMA interrupt evidence captured and acknowledged by the IRQ endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TdmaIrqEvent {
+    /// The submitted operation reached a supported terminal interrupt.
+    Completed { status: u32 },
+    /// TDMA reported a terminal interrupt other than a supported completion.
+    Fault { status: u32 },
+}
+
+impl TdmaIrqEvent {
+    /// Returns the raw status captured before acknowledgement.
+    pub const fn status(self) -> u32 {
+        match self {
+            Self::Completed { status } | Self::Fault { status } => status,
+        }
+    }
+
+    /// Returns whether this event represents a hardware failure.
+    pub const fn is_fault(self) -> bool {
+        matches!(self, Self::Fault { .. })
+    }
+}
+
 /// TPU 设备内部状态
 struct TpuDeviceInner {
     /// TDMA 寄存器
@@ -62,26 +85,18 @@ pub struct Sg2002Tpu {
     inner: Mutex<TpuDeviceInner>,
     /// 序列号计数器
     seq_counter: AtomicU32,
-    /// TDMA 中断到达标志
-    irq_pending: AtomicBool,
+    /// Monotonic publication generation of captured TDMA IRQ evidence.
+    irq_generation: AtomicU64,
+    /// Raw status associated with `irq_generation`.
+    irq_status: AtomicU32,
     /// 外部 IRQ handler 命中次数
     irq_handler_hits: AtomicU64,
-    /// MMIO 轮询兜底命中次数
-    poll_fallback_hits: AtomicU64,
-    /// 是否已经提示过兜底路径
-    fallback_warned: AtomicBool,
-    /// 注入的阻塞等待函数指针（0 表示未注入，退化为忙等自旋）。
+    /// Injected blocking wait capability; zero means activation is incomplete.
     wait_fn: AtomicUsize,
 }
 
-/// 等待 TDMA 完成时每轮睡眠让出的时长（微秒）。
-///
-/// `run_one` 每隔该间隔被唤醒检查一次中断标志/硬件状态；注入了阻塞等待
-/// 函数后这段时间睡眠让出 CPU，而非空转自旋。
-const WAIT_POLL_INTERVAL_US: u64 = 100;
-
-/// 等待 TDMA 完成的总超时（约 10 秒），以轮询间隔为步长。
-const WAIT_TOTAL_STEPS: u64 = 10_000_000 / WAIT_POLL_INTERVAL_US;
+/// Absolute watchdog budget for one expected TDMA interrupt.
+const IRQ_WATCHDOG_US: u64 = 10_000_000;
 
 impl Sg2002Tpu {
     /// 创建未初始化的 TPU 设备
@@ -114,10 +129,9 @@ impl Sg2002Tpu {
                 tiu_irq_callback: None,
             }),
             seq_counter: AtomicU32::new(0),
-            irq_pending: AtomicBool::new(false),
+            irq_generation: AtomicU64::new(0),
+            irq_status: AtomicU32::new(0),
             irq_handler_hits: AtomicU64::new(0),
-            poll_fallback_hits: AtomicU64::new(0),
-            fallback_warned: AtomicBool::new(false),
             wait_fn: AtomicUsize::new(0),
         }
     }
@@ -138,34 +152,25 @@ impl Sg2002Tpu {
 
     /// 注册阻塞等待函数（由 OS glue 注入，见 [`WaitIrqFn`]）。
     ///
-    /// 注入后 `run_one` 等待 TDMA 完成时会调用它睡眠让出 CPU，而非忙等自旋；
-    /// 未注入时退化为 `spin_loop`。
+    /// `run_one` refuses to start until OS glue installs this capability. The
+    /// waiter must keep one absolute deadline while ignoring unrelated wakes.
     pub fn set_wait_irq_fn(&self, wait_fn: WaitIrqFn) {
         self.wait_fn.store(wait_fn as usize, Ordering::Release);
     }
 
-    /// 阻塞等待 TDMA 中断到达，最多等待 `timeout_us` 微秒。
-    ///
-    /// 注入了等待函数则睡眠让出 CPU 等待，否则忙等自旋一轮。
-    /// 返回 `true` 表示中断已到达，`false` 表示超时（或自旋兜底一轮后未到）。
-    fn wait_irq_blocking(&self, timeout_us: u64) -> bool {
+    fn require_irq_waiter(&self) -> Result<WaitIrqFn, TpuError> {
         let raw = self.wait_fn.load(Ordering::Acquire);
-        if raw != 0 {
-            // SAFETY: `wait_fn` 仅由 `set_wait_irq_fn` 写入一个合法的 `WaitIrqFn`
-            // 函数指针，非零即有效。
-            let wait: WaitIrqFn = unsafe { core::mem::transmute::<usize, WaitIrqFn>(raw) };
-            wait(timeout_us)
-        } else {
-            core::hint::spin_loop();
-            self.irq_pending.load(Ordering::Acquire)
+        if raw == 0 {
+            return Err(TpuError::NotInitialized);
         }
+        // SAFETY: `set_wait_irq_fn` is the only writer and stores a valid
+        // `WaitIrqFn`. A non-zero value therefore reconstructs that function.
+        Ok(unsafe { core::mem::transmute::<usize, WaitIrqFn>(raw) })
     }
 
-    /// 查询中断标志是否已置位（只读，不清除）。
-    ///
-    /// 供 OS glue 注入的等待函数用作 `WaitQueue` 谓词。
-    pub fn irq_pending(&self) -> bool {
-        self.irq_pending.load(Ordering::Acquire)
+    /// Returns the generation of the latest captured and acknowledged IRQ.
+    pub fn irq_generation(&self) -> u64 {
+        self.irq_generation.load(Ordering::Acquire)
     }
 
     /// 初始化 TPU 设备 (probe)
@@ -192,32 +197,41 @@ impl Sg2002Tpu {
         self.inner.lock().state == TpuState::Idle
     }
 
-    /// 处理 TDMA 中断
+    /// Captures and acknowledges one TDMA interrupt in hard-IRQ context.
     ///
-    /// 应该在你的 OS 中断处理程序中调用此函数
-    ///
-    /// 返回是否有错误发生
-    pub fn handle_irq(&self) -> bool {
+    /// This is the only normal-I/O path that destructively reads the TDMA
+    /// interrupt status. The returned value is stable ordinary-memory evidence
+    /// suitable for publication by OS glue.
+    pub fn capture_irq(&self) -> Option<TdmaIrqEvent> {
         let tdma = unsafe { TdmaRegs::new(self.tdma_vaddr) };
         let reg_value = tdma.read(super::tdma::TDMA_INT_MASK);
         let int_status = (reg_value >> 16) & !super::tdma::TDMA_MASK_INIT;
         if int_status == 0 {
-            return false;
+            return None;
         }
-        let has_error =
-            int_status != super::tdma::TDMA_INT_EOD && int_status != super::tdma::TDMA_INT_EOPMU;
         tdma.clear_interrupt();
+        let event = if int_status == super::tdma::TDMA_INT_EOD
+            || int_status == super::tdma::TDMA_INT_EOPMU
+        {
+            TdmaIrqEvent::Completed { status: int_status }
+        } else {
+            TdmaIrqEvent::Fault { status: int_status }
+        };
+
+        // The endpoint is single-owner, so status is published before the
+        // monotonically increasing generation. Acquire readers that observe
+        // the generation also observe its matching status.
+        self.irq_status.store(int_status, Ordering::Relaxed);
+        let next_generation = self.irq_generation.load(Ordering::Relaxed).wrapping_add(1);
+        self.irq_generation
+            .store(next_generation, Ordering::Release);
         self.irq_handler_hits.fetch_add(1, Ordering::AcqRel);
-        self.irq_pending.store(true, Ordering::Release);
-        has_error
+        Some(event)
     }
 
-    /// 返回中断统计：(外部 IRQ 命中次数, MMIO 轮询兜底次数)。
-    pub fn irq_stats(&self) -> (u64, u64) {
-        (
-            self.irq_handler_hits.load(Ordering::Acquire),
-            self.poll_fallback_hits.load(Ordering::Acquire),
-        )
+    /// Returns the number of interrupts captured by the external IRQ endpoint.
+    pub fn irq_handler_hits(&self) -> u64 {
+        self.irq_handler_hits.load(Ordering::Acquire)
     }
 
     /// 获取下一个序列号
@@ -232,7 +246,7 @@ impl Sg2002Tpu {
     /// 时通过注入的 [`WaitIrqFn`] 睡眠让出 CPU。
     ///
     /// 不在等待硬件期间持有 `inner` 自旋锁：依赖单 worker 串行访问硬件这一
-    /// 前提，寄存器从 `tdma_vaddr`/`tiu_vaddr` 局部重建（同 `handle_irq`），
+    /// 前提，寄存器从 `tdma_vaddr`/`tiu_vaddr` 局部重建（同 `capture_irq`），
     /// 运行时状态放栈上，仅在状态翻转/读回调时短暂持锁。
     pub fn run_one(
         &self,
@@ -244,6 +258,7 @@ impl Sg2002Tpu {
             "[TPU] run_one: seq_no={}, vaddr=0x{:x}, paddr=0x{:x}",
             seq_no, dmabuf_vaddr, dmabuf_paddr
         );
+        let wait_irq_capability = self.require_irq_waiter()?;
 
         // 仅短暂持锁：校验/翻转状态并取出 TIU 回调，随后立即释放，
         // 不在等待硬件期间持锁（否则 worker 无法睡眠让出 CPU）。
@@ -270,41 +285,28 @@ impl Sg2002Tpu {
         // 简化版超时检查 (使用 Cell 实现内部可变性)
         let timeout_counter = Cell::new(0u64);
         let timeout_limit = 10_000_000_000u64; // 大约 10 秒
-        self.irq_pending.store(false, Ordering::Release);
-        let tdma_irq_poll = unsafe { TdmaRegs::new(self.tdma_vaddr) };
+        let observed_irq_generation = Cell::new(self.irq_generation());
 
         let wait_irq = || -> Result<(), TpuError> {
-            // 优先等待外部 IRQ：每轮睡眠 `WAIT_POLL_INTERVAL_US` 让出 CPU，
-            // 醒来后检查中断标志；并保留直接读 TDMA 状态寄存器的 MMIO 兜底。
-            let mut steps = 0u64;
-            while steps < WAIT_TOTAL_STEPS {
-                if self.irq_pending.swap(false, Ordering::AcqRel) {
-                    return Ok(());
+            let observed = observed_irq_generation.get();
+            let mut captured = self.irq_generation();
+            if captured == observed {
+                if !wait_irq_capability(observed, IRQ_WATCHDOG_US) {
+                    return Err(TpuError::Timeout);
                 }
-
-                // 兜底：若外部 IRQ 未投递到内核，直接读取 TDMA 中断状态寄存器。
-                let int_status = tdma_irq_poll.get_int_status();
-                if int_status == super::tdma::TDMA_INT_EOD
-                    || int_status == super::tdma::TDMA_INT_EOPMU
-                {
-                    tdma_irq_poll.clear_interrupt();
-                    self.poll_fallback_hits.fetch_add(1, Ordering::AcqRel);
-                    if self
-                        .fallback_warned
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                    {
-                        warn!("[TPU] external IRQ path not observed yet, using MMIO poll fallback");
-                    }
-                    return Ok(());
-                }
-
-                // 睡眠让出 CPU 一轮；若注入的等待函数报告 IRQ 已到达则下一轮
-                // 立即被 swap 命中返回。
-                self.wait_irq_blocking(WAIT_POLL_INTERVAL_US);
-                steps += 1;
+                captured = self.irq_generation();
             }
-            Err(TpuError::Timeout)
+            if captured == observed {
+                return Err(TpuError::Timeout);
+            }
+
+            let status = self.irq_status.load(Ordering::Acquire);
+            observed_irq_generation.set(captured);
+            if status == super::tdma::TDMA_INT_EOD || status == super::tdma::TDMA_INT_EOPMU {
+                Ok(())
+            } else {
+                Err(TpuError::TdmaError(status))
+            }
         };
 
         let timeout_checker = || -> bool {

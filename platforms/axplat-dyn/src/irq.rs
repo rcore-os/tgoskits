@@ -14,11 +14,9 @@ use ax_kspin::SpinNoPreempt;
 #[cfg(test)]
 use ax_plat::irq::IrqOutcome;
 use ax_plat::irq::{
-    CpuId, IrqAffinity, IrqError, IrqId, IrqIf, IrqSource, TrapVector, dispatch_irq_on,
+    CpuId, IrqAffinity, IrqError, IrqId, IrqIf, IrqLineBinding, IrqScope, IrqSource,
+    PreparedIrqLine, TrapVector, dispatch_claimed_irq_on,
 };
-
-#[cfg(all(target_arch = "loongarch64", feature = "hv"))]
-mod loongarch64_hv;
 
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 // Hard IRQs use only immutable endpoint capabilities and never acquire this
@@ -1098,35 +1096,35 @@ impl IrqIf for IrqIfImpl {
         somehal::irq::init_secondary_boot_irqs(cpu_id)
     }
 
-    /// Enables or disables the given IRQ.
-    fn set_enable(irq: IrqId, enabled: bool) -> Result<(), IrqError> {
-        somehal::irq::irq_set_enable(irq, enabled)
+    fn prepare_line(
+        irq: IrqId,
+        scope: IrqScope,
+        affinity: IrqAffinity,
+    ) -> Result<PreparedIrqLine, IrqError> {
+        somehal::irq::prepare_irq_line(irq, scope, affinity)
     }
 
-    fn set_affinity(irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError> {
-        let affinity = match affinity {
-            IrqAffinity::Any => somehal::irq::IrqAffinity::Any,
-            IrqAffinity::Fixed(cpu) => somehal::irq::IrqAffinity::Fixed { cpu_id: cpu.0 },
-        };
-        somehal::irq::irq_set_affinity(irq, affinity)
+    fn set_line_enabled(binding: IrqLineBinding, cpu: Option<CpuId>, enabled: bool) {
+        somehal::irq::set_bound_irq_enabled(binding, cpu, enabled);
+    }
+
+    fn release_line(binding: IrqLineBinding) -> Result<(), IrqError> {
+        somehal::irq::release_irq_line(binding)
     }
 
     /// Handles the IRQ.
     fn handle(vector: TrapVector) -> Option<IrqId> {
-        let irq = {
-            let active = somehal::irq::begin_irq(vector.0)?;
-            #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-            let controller_irq = active.controller_id();
+        let active = somehal::irq::begin_irq(vector.0)?;
+        #[cfg(all(target_arch = "riscv64", feature = "hv"))]
+        let controller_irq = active.controller_id();
 
-            #[cfg(all(target_arch = "riscv64", feature = "hv"))]
-            if forward_claimed_virtual_irq(controller_irq) {
-                return Some(controller_irq);
-            }
+        #[cfg(all(target_arch = "riscv64", feature = "hv"))]
+        if forward_claimed_virtual_irq(controller_irq) {
+            return Some(controller_irq);
+        }
 
-            let irq = active.id();
-            dispatch_claimed_host_irq(irq);
-            irq
-        };
+        let irq = active.id();
+        dispatch_claimed_host_irq(irq, || drop(active));
         Some(irq)
     }
 
@@ -1166,17 +1164,10 @@ fn current_irq_cpu() -> CpuId {
     CpuId(ax_plat::percpu::this_cpu_id())
 }
 
-fn dispatch_claimed_host_irq(irq: IrqId) {
+fn dispatch_claimed_host_irq(irq: IrqId, complete_claim: impl FnOnce()) {
     let cpu = current_irq_cpu();
-    let outcome = dispatch_irq_on(irq, cpu);
+    let outcome = dispatch_claimed_irq_on(irq, cpu, complete_claim);
     if outcome.handled {
-        return;
-    }
-
-    #[cfg(all(target_arch = "loongarch64", feature = "hv"))]
-    if is_loongarch_guest_forwardable(irq)
-        && loongarch64_hv::inject_virtual_irq(irq.hwirq.0 as usize)
-    {
         return;
     }
 
@@ -1224,12 +1215,6 @@ fn riscv_plic_source_index(irq: IrqId) -> Option<usize> {
     RiscvPlicSource::from_irq(irq).map(RiscvPlicSource::index)
 }
 
-#[cfg(all(target_arch = "loongarch64", feature = "hv"))]
-fn is_loongarch_guest_forwardable(irq: IrqId) -> bool {
-    somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::LoongArchEioIntc)
-        || somehal::irq::domain_is_kind(irq.domain, somehal::irq::IrqDomainKind::LoongArchPchPic)
-}
-
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 pub fn claim_and_mask_virtual_irq(vector: usize) -> Option<RiscvForwardedIrq> {
     let active = somehal::irq::begin_irq(vector)?;
@@ -1237,7 +1222,7 @@ pub fn claim_and_mask_virtual_irq(vector: usize) -> Option<RiscvForwardedIrq> {
     match mask_forwarded_virtual_irq(controller_irq) {
         ForwardedMaskOutcome::NotForwarded => {
             let host_irq = active.id();
-            dispatch_claimed_host_irq(host_irq);
+            dispatch_claimed_host_irq(host_irq, || drop(active));
             None
         }
         ForwardedMaskOutcome::Forwarded(claim) => {

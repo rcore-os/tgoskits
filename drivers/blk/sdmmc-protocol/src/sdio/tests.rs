@@ -1551,11 +1551,36 @@ struct MockIrqHandle {
     event: IrqTestEvent,
 }
 
-impl SdioIrqHandle for MockIrqHandle {
+impl rdif_irq::IrqEndpoint for MockIrqHandle {
     type Event = IrqTestEvent;
+    type Fault = Error;
 
-    fn handle_irq(&mut self) -> Self::Event {
-        self.event
+    fn capture(&mut self) -> rdif_irq::IrqCapture<Self::Event, Self::Fault> {
+        if self.event.kind() == HostEventKind::None {
+            rdif_irq::IrqCapture::Unhandled
+        } else {
+            rdif_irq::IrqCapture::Captured {
+                event: self.event,
+                masked: None,
+            }
+        }
+    }
+
+    fn contain(
+        &mut self,
+        _cause: rdif_irq::ContainmentCause,
+    ) -> Result<rdif_irq::MaskedSource, Self::Fault> {
+        rdif_irq::MaskedSource::try_new(1, 1).map_err(|_| Error::InvalidArgument)
+    }
+}
+
+struct MockIrqControl;
+
+impl rdif_irq::IrqSourceControl for MockIrqControl {
+    type Error = SdioIrqControlError;
+
+    fn rearm(&mut self, _source: rdif_irq::MaskedSource) -> Result<(), Self::Error> {
+        Ok(())
     }
 }
 
@@ -1590,20 +1615,18 @@ fn host_irq_events_map_to_single_sdmmc_block_queue() {
 }
 
 #[test]
-fn deferred_ack_retry_without_a_device_event_is_not_acknowledged() {
-    assert_eq!(
-        DeferredIrqAck::from_event(&IrqTestEvent(HostEventKind::None)),
-        DeferredIrqAck::Unhandled
-    );
-}
-
-#[test]
-fn irq_handle_is_move_only_and_handles_with_mutable_endpoint() {
+fn irq_endpoint_is_move_only_and_captures_with_mutable_endpoint() {
     let mut handle = MockIrqHandle {
         event: IrqTestEvent(HostEventKind::TransferComplete),
     };
 
-    assert_eq!(handle.handle_irq().kind(), HostEventKind::TransferComplete);
+    let rdif_irq::IrqCapture::Captured { event, masked } =
+        rdif_irq::IrqEndpoint::capture(&mut handle)
+    else {
+        panic!("non-empty controller status must be captured");
+    };
+    assert_eq!(event.kind(), HostEventKind::TransferComplete);
+    assert!(masked.is_none());
 }
 
 type Host2DataShape = (sdio_host2::DataDirection, usize, u32, u32);
@@ -1623,6 +1646,7 @@ struct Host2Mock {
     transaction_aborts: usize,
     bus_aborts: usize,
     completion_irq_enabled: bool,
+    irq_source_taken: bool,
 }
 
 struct Host2TransactionRequest {
@@ -1747,7 +1771,8 @@ impl sdio_host2::SdioHost for Host2Mock {
 
 impl SdioHost2Irq for Host2Mock {
     type Event = ();
-    type IrqHandle = Host2MockIrq;
+    type IrqEndpoint = Host2MockIrq;
+    type IrqControl = MockIrqControl;
 
     fn completion_irq_enabled(&self) -> bool {
         self.completion_irq_enabled
@@ -1763,8 +1788,12 @@ impl SdioHost2Irq for Host2Mock {
         Ok(())
     }
 
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        Host2MockIrq
+    fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        if self.irq_source_taken {
+            return None;
+        }
+        self.irq_source_taken = true;
+        Some(SdioIrqSource::new(Host2MockIrq, MockIrqControl))
     }
 }
 
@@ -1830,10 +1859,20 @@ impl SdioHost2Timed for Host2Mock {
 
 struct Host2MockIrq;
 
-impl SdioIrqHandle for Host2MockIrq {
+impl rdif_irq::IrqEndpoint for Host2MockIrq {
     type Event = ();
+    type Fault = Error;
 
-    fn handle_irq(&mut self) -> Self::Event {}
+    fn capture(&mut self) -> rdif_irq::IrqCapture<Self::Event, Self::Fault> {
+        rdif_irq::IrqCapture::Unhandled
+    }
+
+    fn contain(
+        &mut self,
+        _cause: rdif_irq::ContainmentCause,
+    ) -> Result<rdif_irq::MaskedSource, Self::Fault> {
+        rdif_irq::MaskedSource::try_new(1, 1).map_err(|_| Error::InvalidArgument)
+    }
 }
 
 impl Host2Mock {
@@ -1852,8 +1891,17 @@ impl Host2Mock {
             transaction_aborts: 0,
             bus_aborts: 0,
             completion_irq_enabled: false,
+            irq_source_taken: false,
         }
     }
+}
+
+#[test]
+fn host2_irq_source_ownership_transfers_once() {
+    let mut host = Host2Mock::new(ok_r1().to_raw_response(ResponseType::R1));
+
+    assert!(SdioHost2Irq::take_irq_source(&mut host).is_some());
+    assert!(SdioHost2Irq::take_irq_source(&mut host).is_none());
 }
 
 #[test]

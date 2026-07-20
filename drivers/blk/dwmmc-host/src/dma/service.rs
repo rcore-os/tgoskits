@@ -3,23 +3,6 @@ impl DwMmc {
         &mut self,
         request: BlockRequest,
     ) -> Result<Option<CompletedDma>, Error> {
-        self.finish_block_request_with_quiesce(request, true)
-    }
-
-    fn finish_block_request_with_quiesce(
-        &mut self,
-        request: BlockRequest,
-        quiesced: bool,
-    ) -> Result<Option<CompletedDma>, Error> {
-        if !quiesced {
-            self.poison_dma();
-            core::mem::forget(request);
-            self.pending_data = None;
-            self.data_blocks_remaining = 0;
-            self.data_cmd_index = 0;
-            self.irq.state.end_request();
-            return Ok(None);
-        }
         let completed_dma = match request.inner {
             BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => {
                 self.pending_data = None;
@@ -40,11 +23,7 @@ impl DwMmc {
                 self.pending_data = None;
                 self.data_blocks_remaining = 0;
                 self.data_cmd_index = 0;
-                let completed = if quiesced {
-                    buffer.complete(true)
-                } else {
-                    buffer.abort(true, false)
-                };
+                let completed = buffer.complete(true);
                 // SAFETY: this path is reachable only after terminal IDMAC and
                 // controller completion or controller-wide reset quiescence.
                 unsafe { descriptors.release_after_quiesce() };
@@ -63,11 +42,7 @@ impl DwMmc {
                 self.pending_data = None;
                 self.data_blocks_remaining = 0;
                 self.data_cmd_index = 0;
-                let completed = if quiesced {
-                    buffer.complete(false)
-                } else {
-                    buffer.abort(false, false)
-                };
+                let completed = buffer.complete(false);
                 // SAFETY: see the read path above; both engines are terminal
                 // or a reset-derived quiescence proof is held.
                 unsafe { descriptors.release_after_quiesce() };
@@ -90,7 +65,7 @@ impl DwMmc {
             return Err(Error::Busy);
         }
         let active = request.take().ok_or(Error::InvalidArgument)?;
-        let completed_dma = self.finish_block_request_with_quiesce(active, true)?;
+        let completed_dma = self.finish_block_request(active)?;
         slot.complete_with_dma(id, completed_dma)
     }
 
@@ -307,7 +282,7 @@ impl DwMmc {
         }
         let active = request.take().ok_or(Error::InvalidArgument)?;
         self.disable_idmac();
-        let completed_dma = self.finish_block_request_with_quiesce(active, true)?;
+        let completed_dma = self.finish_block_request(active)?;
         drop(completed_dma);
         self.pending_data = None;
         self.data_blocks_remaining = 0;
@@ -410,7 +385,6 @@ fn service_fifo_read_event(
     // snapshot. Re-entering the worker without RXDR/DTO must not turn STATUS
     // into a task-context completion poll.
     if !rintsts.receive_fifo_data_request() && !rintsts.data_transfer_over() {
-        host.program_fifo_interrupt_mask();
         return Ok(BlockPoll::Pending);
     }
 
@@ -434,7 +408,6 @@ fn service_fifo_read_event(
     if *offset >= len && *transfer_done {
         return Ok(BlockPoll::Complete);
     }
-    host.program_fifo_interrupt_mask();
     Ok(BlockPoll::Pending)
 }
 
@@ -460,7 +433,6 @@ fn service_fifo_write_event(
     // TX FIFO capacity is meaningful only after the IRQ endpoint published a
     // TXDR snapshot. An empty snapshot must leave the request pending.
     if !rintsts.transmit_fifo_data_request() {
-        host.program_fifo_interrupt_mask();
         return Ok(BlockPoll::Pending);
     }
 
@@ -483,7 +455,6 @@ fn service_fifo_write_event(
     if *offset >= len && *transfer_done {
         return Ok(BlockPoll::Complete);
     }
-    host.program_fifo_interrupt_mask();
     Ok(BlockPoll::Pending)
 }
 

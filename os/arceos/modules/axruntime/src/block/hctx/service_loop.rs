@@ -3,20 +3,16 @@
 use core::sync::atomic::Ordering;
 
 use rdif_block::{
-    BlkError, CompletedRequest, CompletionSink, DispatchMode, DmaQuiesced, RecoveryCause,
-    ServiceProgress,
+    BlkError, CompletedRequest, DmaQuiesced, QueueExecution, RecoveryCause, ServiceProgress,
 };
 
 use super::{
-    CompletionBatch, DispatchDisposition, DispatchSource, HardwareQueue, HardwareQueueError,
-    QuarantineRetention, RequestTag, RuntimeSubmitError,
+    DeferredCompletionSink, DispatchDisposition, DispatchSource, HardwareQueue, HardwareQueueError,
+    OwnerServiceProgress, QuarantineRetention, RequestTag, RuntimeSubmitError,
 };
-use crate::{
-    block::{
-        HctxCause, HctxPhase, ServiceBatch, ServiceBudget, ServiceContinuation,
-        hctx_model::HCTX_SERVICE_BUDGET,
-    },
-    workqueue::{WorkOutcome, WorkQueueError},
+use crate::block::{
+    HctxCause, HctxPhase, ServiceBatch, ServiceBudget, ServiceContinuation,
+    hctx_model::HCTX_SERVICE_BUDGET,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,27 +32,38 @@ fn consume_service_budget(
 }
 
 impl HardwareQueue {
-    pub(super) fn service_bounded(&'static self) -> Result<WorkOutcome, HardwareQueueError> {
+    pub(in crate::block) fn service_bounded(
+        &self,
+    ) -> Result<OwnerServiceProgress, HardwareQueueError> {
+        if ax_hal::irq::in_irq_context()
+            || crate::task::current_thread_id()? != self.maintenance.owner_thread()
+            || ax_hal::percpu::this_cpu_id() != self.maintenance.owner_cpu()
+        {
+            return Err(HardwareQueueError::WrongOwner);
+        }
+        let Some(_access) = self.try_driver_access() else {
+            return Ok(OwnerServiceProgress::Complete);
+        };
         let causes = self.control.take_service_batch();
         let services_accepted_work = self.control.services_accepted_work();
         let mut budget = ServiceBudget::new(HCTX_SERVICE_BUDGET)
             .expect("the fixed hctx service budget is valid");
         if services_accepted_work && (causes.contains(HctxCause::Irq) || !self.events.is_empty()) {
             // Consume acknowledged evidence, or run its explicitly deferred
-            // acknowledgement continuation, before a concurrent watchdog can
+            // acknowledged-event continuation, before a concurrent watchdog can
             // claim the same request as timed out.
             self.service_irq_events(&mut budget)?;
         }
         if budget.is_exhausted() {
             self.defer_after_irq_budget(causes);
-            return Ok(WorkOutcome::Requeue);
+            return Ok(OwnerServiceProgress::More);
         }
         if causes.contains(HctxCause::EventOverflow) {
             consume_service_budget(&mut budget, 1)?;
             self.begin_recovery(RecoveryCause::EventOverflow {
                 queue_id: self.info.id,
             });
-            return Ok(WorkOutcome::Complete);
+            return Ok(OwnerServiceProgress::Complete);
         }
         if causes.contains(HctxCause::Timeout) {
             consume_service_budget(&mut budget, 1)?;
@@ -70,22 +77,24 @@ impl HardwareQueue {
                 },
             );
             self.begin_recovery(cause);
-            return Ok(WorkOutcome::Complete);
+            return Ok(OwnerServiceProgress::Complete);
         }
         if self.control.has_irq_or_error_pending() || !self.events.is_empty() {
             // One service call may return all 64 hctx requests, so a second
             // IRQ snapshot belongs to a fresh callback budget. Preserve every
             // lower-priority cause until that acknowledged evidence is drained.
             self.defer_after_irq_budget(causes);
-            return Ok(WorkOutcome::Requeue);
+            return Ok(OwnerServiceProgress::More);
         }
         if causes.contains(HctxCause::Watchdog) {
             match self.service_watchdog(&mut budget)? {
                 WatchdogProgress::Idle => {}
-                WatchdogProgress::TimeoutClaimed => return Ok(WorkOutcome::Complete),
+                WatchdogProgress::TimeoutClaimed => {
+                    return Ok(OwnerServiceProgress::Complete);
+                }
                 WatchdogProgress::DeferredForIrq => {
                     self.defer_after_terminal_budget(causes);
-                    return Ok(WorkOutcome::Requeue);
+                    return Ok(OwnerServiceProgress::More);
                 }
             }
         }
@@ -95,21 +104,21 @@ impl HardwareQueue {
             if budget.consume(1).is_err() {
                 self.control.raise(HctxCause::Cancel);
                 self.defer_after_terminal_budget(causes);
-                return Ok(WorkOutcome::Requeue);
+                return Ok(OwnerServiceProgress::More);
             }
             self.begin_recovery(RecoveryCause::Cancelled {
                 queue_id: self.info.id,
                 request_id,
             });
-            return Ok(WorkOutcome::Complete);
+            return Ok(OwnerServiceProgress::Complete);
         }
         if !services_accepted_work {
-            return Ok(WorkOutcome::Complete);
+            return Ok(OwnerServiceProgress::Complete);
         }
 
         if budget.is_exhausted() {
             self.defer_dispatch_causes(causes);
-            return Ok(WorkOutcome::Requeue);
+            return Ok(OwnerServiceProgress::More);
         }
         let mut dispatch_budget_exhausted = false;
         if causes.contains(HctxCause::Submit)
@@ -121,7 +130,6 @@ impl HardwareQueue {
         if self.is_drained() {
             self.drain_wait.notify_all();
         }
-        self.refresh_watchdog()?;
         let continuation = ServiceContinuation {
             cause_pending: self.control.has_pending(),
             dispatch_budget_exhausted,
@@ -129,9 +137,9 @@ impl HardwareQueue {
             inflight_request: self.inflight.load(Ordering::Acquire) != 0,
         };
         Ok(if continuation.requires_immediate_requeue() {
-            WorkOutcome::Requeue
+            OwnerServiceProgress::More
         } else {
-            WorkOutcome::Complete
+            OwnerServiceProgress::Complete
         })
     }
 
@@ -169,7 +177,6 @@ impl HardwareQueue {
     }
 
     fn service_irq_events(&self, budget: &mut ServiceBudget) -> Result<(), HardwareQueueError> {
-        let mut completions = CompletionBatch::new();
         let Some(snapshot) = self.events.pop() else {
             return Ok(());
         };
@@ -193,12 +200,17 @@ impl HardwareQueue {
         // per callback makes that worst case fit the callback-wide budget;
         // A typed continuation retains this exact source epoch for the next
         // pass; ordinary driver Busy cannot synthesize completion polling.
-        let progress = self.queue.lock().service_events(&events, &mut completions);
-        let completed = completions.len;
-        let budget_result = consume_service_budget(budget, completed.max(1));
-        let has_continuation = matches!(progress, Ok(ServiceProgress::Continue(_)));
+        // Construct the sink before the driver lease so unwinding restores the
+        // endpoint first, then lets the sink's Drop publish waiter wakeups.
+        let mut completions = DeferredCompletionSink::new(self);
+        let mut driver = self.take_driver_on_owner()?;
+        let progress = driver.service_events(&events, &mut completions);
+        drop(driver);
+        let delivery = completions.finish();
+        let budget_result = consume_service_budget(budget, delivery.completed.max(1));
+        let has_continuation = matches!(progress, Ok(ServiceProgress::Requeue(_)));
         let continuation_result = match &progress {
-            Ok(ServiceProgress::Continue(continuation))
+            Ok(ServiceProgress::Requeue(continuation))
                 if continuation.source_id() == snapshot.event.source_id()
                     && continuation.source_epoch() == snapshot.event.epoch() =>
             {
@@ -207,31 +219,14 @@ impl HardwareQueue {
                     HardwareQueueError::Capacity
                 })
             }
-            Ok(ServiceProgress::Continue(_)) => Err(HardwareQueueError::StaleIrqEvent),
+            Ok(ServiceProgress::Requeue(_)) => Err(HardwareQueueError::StaleIrqEvent),
             Ok(ServiceProgress::Idle) | Err(_) => Ok(()),
         };
         if has_continuation || !self.events.is_empty() {
             self.control.raise(HctxCause::Irq);
         }
 
-        // After `service_events` returns, every value in `completions` is an
-        // ownership transfer from the driver. No later accounting or
-        // continuation error may return before those owners are published or
-        // moved into the DMA-proof-gated quarantine.
-        let completion_result = completions.drain_with(|completion| {
-            let tag = match RequestTag::from_request_id(completion.id) {
-                Ok(tag) => tag,
-                Err(error) => {
-                    return Err(self.retain_failed_completion(error.into(), completion));
-                }
-            };
-            self.publish_one_completion(tag, completion)
-        });
-        let overflow_result = completions.take_overflow().map(|completion| {
-            self.retain_failed_completion(HardwareQueueError::Capacity, completion)
-        });
-        completion_result?;
-        if let Some(error) = overflow_result {
+        if let Some(error) = delivery.error {
             return Err(error);
         }
         budget_result?;
@@ -244,23 +239,42 @@ impl HardwareQueue {
         tag: RequestTag,
         completion: rdif_block::CompletedRequest,
     ) -> Result<(), HardwareQueueError> {
-        let was_inflight = match self.requests.publish_completion(tag, completion) {
+        let was_inflight = self.install_completion_for_delivery(tag, completion)?;
+        self.finish_installed_completion(tag, was_inflight);
+        Ok(())
+    }
+
+    pub(super) fn install_completion_for_delivery(
+        &self,
+        tag: RequestTag,
+        completion: rdif_block::CompletedRequest,
+    ) -> Result<bool, HardwareQueueError> {
+        let was_inflight = match self.requests.install_completion(tag, completion) {
             Ok(was_inflight) => was_inflight,
             Err(rejected) => return Err(self.retain_failed_publication(rejected)),
         };
+        Ok(was_inflight)
+    }
+
+    pub(super) fn finish_installed_completion(&self, tag: RequestTag, was_inflight: bool) {
         if was_inflight {
             let previous = self.inflight.fetch_sub(1, Ordering::AcqRel);
             assert!(previous != 0, "block hctx inflight count underflowed");
         }
         self.finish_accepted_request();
-        Ok(())
+        self.requests.notify_completion(tag);
     }
 
     fn retain_failed_publication(
         &self,
         rejected: super::CompletionPublicationError,
     ) -> HardwareQueueError {
-        let retention = self.rejected_completions.lock().retain(rejected);
+        let retention = self
+            .rejected_completions
+            .lock()
+            .as_mut()
+            .expect("live hctx retains its rejected completion quarantine")
+            .retain(rejected);
         self.finish_failed_completion_retention(retention)
     }
 
@@ -272,6 +286,8 @@ impl HardwareQueue {
         let retention = self
             .rejected_completions
             .lock()
+            .as_mut()
+            .expect("live hctx retains its rejected completion quarantine")
             .retain_completion(error, completion);
         self.finish_failed_completion_retention(retention)
     }
@@ -280,19 +296,24 @@ impl HardwareQueue {
         &self,
         retention: QuarantineRetention,
     ) -> HardwareQueueError {
-        let (error, poisoned) = match retention {
-            QuarantineRetention::Retained(error) => (error, false),
-            QuarantineRetention::Poisoned(error) => (error, true),
-        };
-        self.enter_fatal_completion_quarantine();
-        if poisoned {
-            error!(
-                "block hctx {} retained its shutdown-lifetime poison completion after: {error}",
-                self.info.id
-            );
-            HardwareQueueError::Capacity
-        } else {
-            error
+        match retention {
+            QuarantineRetention::Retained(error) => {
+                self.enter_fatal_completion_quarantine();
+                error
+            }
+            QuarantineRetention::Excess { error, completion } => {
+                // All 64 possible accepted owners are already retained. This
+                // additional rejected value cannot be a distinct accepted
+                // owner, so after publishing the fatal recovery transition its
+                // ordinary Rust Drop is the only valid ownership operation.
+                self.enter_fatal_completion_quarantine();
+                error!(
+                    "block hctx {} dropped a driver-fabricated excess completion after: {error}",
+                    self.info.id
+                );
+                drop(completion);
+                HardwareQueueError::Capacity
+            }
         }
     }
 
@@ -304,11 +325,11 @@ impl HardwareQueue {
             return;
         }
 
-        // Stop submission and IRQ publication first. The controller recovery
-        // worker then masks the device, drains every OS IRQ action, proves DMA
-        // quiescence, releases ordinary quarantine entries, and only afterwards
-        // commits Offline. This ordering prevents another completion batch from
-        // creating an unbounded retention path.
+        // Stop submission and IRQ publication first. The fixed controller
+        // maintenance owner then masks the device, drains every OS IRQ action,
+        // proves DMA quiescence, releases ordinary quarantine entries, and only
+        // afterwards commits Offline. This ordering prevents another driver
+        // callback from creating an unbounded retention path.
         self.access_gate.close();
         let _transition = self.control.begin_recovery();
         self.drain_wait.notify_all();
@@ -323,7 +344,7 @@ impl HardwareQueue {
     }
 
     fn service_watchdog(
-        &'static self,
+        &self,
         budget: &mut ServiceBudget,
     ) -> Result<WatchdogProgress, HardwareQueueError> {
         let Some(cutoff) = self.terminal_gate.try_begin_terminal() else {
@@ -345,7 +366,6 @@ impl HardwareQueue {
             return Ok(WatchdogProgress::TimeoutClaimed);
         }
         drop(cutoff);
-        self.refresh_watchdog()?;
         Ok(WatchdogProgress::Idle)
     }
 
@@ -353,37 +373,14 @@ impl HardwareQueue {
         &self,
         budget: &mut ServiceBudget,
     ) -> Result<Option<rdif_block::RequestId>, HardwareQueueError> {
-        let mut completions = CompletionBatch::new();
-        {
-            // The driver gate serializes cancellation claims with the exact
-            // submit boundary. Once a staged tag is removed here, no driver
-            // call can observe it.
-            let _driver = self.queue.lock();
-            while !budget.is_exhausted() {
-                let Some(tag) = self.requests.first_canceling_staged() else {
-                    break;
-                };
-                self.remove_staged_tag(tag)?;
-                completions.complete(self.requests.complete_canceling_staged(tag)?);
-                consume_service_budget(budget, 1)?;
-            }
-        }
-
-        let completion_result = completions.drain_with(|completion| {
-            let tag = match RequestTag::from_request_id(completion.id) {
-                Ok(tag) => tag,
-                Err(error) => {
-                    return Err(self.retain_failed_completion(error.into(), completion));
-                }
+        while !budget.is_exhausted() {
+            let Some(tag) = self.requests.first_canceling_staged() else {
+                break;
             };
-            self.publish_one_completion(tag, completion)
-        });
-        let overflow_result = completions.take_overflow().map(|completion| {
-            self.retain_failed_completion(HardwareQueueError::Capacity, completion)
-        });
-        completion_result?;
-        if let Some(error) = overflow_result {
-            return Err(error);
+            self.remove_staged_tag(tag)?;
+            let completion = self.requests.complete_canceling_staged(tag)?;
+            self.publish_one_completion(tag, completion)?;
+            consume_service_budget(budget, 1)?;
         }
 
         if self.requests.first_canceling_staged().is_some() {
@@ -404,30 +401,8 @@ impl HardwareQueue {
         }
     }
 
-    fn refresh_watchdog(&'static self) -> Result<(), HardwareQueueError> {
-        if !self.control.services_accepted_work() {
-            return Ok(());
-        }
-        let Some(deadline_ns) = self.requests.earliest_deadline() else {
-            return Ok(());
-        };
-        let now_ns = ax_hal::time::monotonic_time_nanos();
-        let delay_ns = deadline_ns.saturating_sub(now_ns);
-        match self.work_domain.mod_delayed_work_on(
-            self.affinity_cpu(),
-            self.watchdog_work(),
-            delay_ns,
-        ) {
-            Ok(_) | Err(WorkQueueError::DelayedWorkBusy) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    fn dispatch_staged(
-        &'static self,
-        budget: &mut ServiceBudget,
-    ) -> Result<bool, HardwareQueueError> {
-        let mut driver = self.queue.lock();
+    fn dispatch_staged(&self, budget: &mut ServiceBudget) -> Result<bool, HardwareQueueError> {
+        let mut driver = self.take_driver_on_owner()?;
         while !budget.is_exhausted() {
             let Some(tag) = self.next_dispatch_tag() else {
                 break;
@@ -440,7 +415,7 @@ impl HardwareQueue {
                         self.record_service_error(&error);
                         return Ok(false);
                     }
-                    if self.info.dispatch_mode == DispatchMode::Serialized {
+                    if self.info.execution == QueueExecution::Serialized {
                         break;
                     }
                 }
@@ -453,7 +428,7 @@ impl HardwareQueue {
                         return Ok(false);
                     }
                     consume_service_budget(budget, 1)?;
-                    driver = self.queue.lock();
+                    driver = self.take_driver_on_owner()?;
                 }
                 DispatchDisposition::Deferred => {
                     self.dispatch_list.lock().push(tag)?;
@@ -535,7 +510,7 @@ impl HardwareQueue {
             && !self.control.has_pending()
     }
 
-    fn begin_recovery(&'static self, cause: RecoveryCause) {
+    fn begin_recovery(&self, cause: RecoveryCause) {
         if matches!(
             self.control.phase(),
             HctxPhase::Running | HctxPhase::Quiescing
@@ -549,7 +524,7 @@ impl HardwareQueue {
         }
     }
 
-    pub(super) fn record_irq_service_error(&'static self, error: &HardwareQueueError) {
+    pub(super) fn record_irq_service_error(&self, error: &HardwareQueueError) {
         let code = match error {
             HardwareQueueError::Capacity | HardwareQueueError::EventOverflow { .. } => 1,
             HardwareQueueError::StaleCompletion
@@ -572,7 +547,7 @@ impl HardwareQueue {
         );
     }
 
-    pub(super) fn record_service_error(&'static self, error: &HardwareQueueError) {
+    pub(super) fn record_service_error(&self, error: &HardwareQueueError) {
         self.record_irq_service_error(error);
         error!("block hctx {} entered recovery: {error}", self.info.id);
     }
@@ -583,12 +558,16 @@ impl HardwareQueue {
     ) -> Result<(), HardwareQueueError> {
         self.rejected_completions
             .lock()
+            .as_mut()
+            .expect("live hctx retains its rejected completion quarantine")
             .release_after_dma_quiesce(proof)?;
-        let mut completions = CompletionBatch::new();
+        // Construct the sink first so a driver panic restores its endpoint
+        // lease before Drop publishes terminal notifications.
+        let mut completions = DeferredCompletionSink::new(self);
         let driver_result = self
-            .queue
-            .lock()
-            .reclaim_after_quiesce(proof, &mut completions);
+            .take_driver_on_owner()
+            .map_err(|_| BlkError::Offline)
+            .and_then(|mut driver| driver.reclaim_after_quiesce(proof, &mut completions));
 
         self.dispatch_list.lock().clear();
         for context in &self.software_contexts {
@@ -597,21 +576,8 @@ impl HardwareQueue {
         let runtime_result = self.requests.reclaim_runtime_owned(&mut completions);
         while self.events.pop().is_some() {}
         let _stale_causes = self.control.take_service_batch();
-
-        let completion_result = completions.drain_with(|completion| {
-            let tag = match RequestTag::from_request_id(completion.id) {
-                Ok(tag) => tag,
-                Err(error) => {
-                    return Err(self.retain_failed_completion(error.into(), completion));
-                }
-            };
-            self.publish_one_completion(tag, completion)
-        });
-        let overflow_result = completions.take_overflow().map(|completion| {
-            self.retain_failed_completion(HardwareQueueError::Capacity, completion)
-        });
-        completion_result?;
-        if let Some(error) = overflow_result {
+        let delivery = completions.finish();
+        if let Some(error) = delivery.error {
             return Err(error);
         }
         runtime_result?;

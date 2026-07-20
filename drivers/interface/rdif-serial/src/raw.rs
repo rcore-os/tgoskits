@@ -5,28 +5,30 @@ use crate::{
     Config, ConfigError, InterruptMask, IrqSnapshot, RxFlag, RxSample, SerialEvent, TransferError,
 };
 
-/// 无锁 UART 寄存器接口。
+/// Lock-free UART register interface.
 ///
-/// # 并发契约
+/// # Concurrency
 ///
-/// 所有方法都必须由外层端口锁串行化。实现不得自行引入 Mutex、
-/// SpinNoIrq、Arc、WaitQueue 或任务唤醒逻辑。
+/// Every method must be serialized by the unique outer port owner. An
+/// implementation must not introduce OS locks, shared task state, or task
+/// wakeup policy.
 pub trait RawUart: Send + Any + 'static {
     fn name(&self) -> &'static str;
     fn base_addr(&self) -> usize;
     fn clock_freq(&self) -> Option<NonZeroU32>;
 
-    /// 初始化 FIFO、控制寄存器和线路参数。
+    /// Initializes FIFO, control registers, and line parameters.
     ///
-    /// 返回时所有设备 IRQ 应保持关闭。
+    /// Every device IRQ source must remain disabled on return.
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError>;
 
-    /// 关闭所有设备 IRQ 并停止端口。
+    /// Disables every device IRQ source and stops the port.
     fn shutdown(&mut self);
 
-    /// 调整 baud/data bits/parity/stop bits。
+    /// Updates baud rate, data width, parity, and stop bits.
     ///
-    /// 调用方已经持有端口锁，并已临时屏蔽设备 IRQ。
+    /// The unique owner has excluded its local IRQ endpoint and temporarily
+    /// masked the device sources before this call.
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError>;
 
     fn baudrate(&self) -> u32;
@@ -38,21 +40,21 @@ pub trait RawUart: Send + Any + 'static {
     fn disable_loopback(&mut self);
     fn is_loopback_enabled(&self) -> bool;
 
-    /// 写设备侧 IRQ mask。它只管理设备中断，不是同步原语。
+    /// Writes the device-side IRQ mask; this is not a synchronization primitive.
     fn set_irq_mask(&mut self, mask: InterruptMask);
 
-    /// 读取并按硬件要求确认当前 IRQ source。
+    /// Reads and acknowledges the current IRQ source as required by hardware.
     fn take_irq_snapshot(&mut self) -> IrqSnapshot;
 
-    /// 从 RX FIFO 读取一个 sample；FIFO 空时返回 None。
+    /// Reads one RX FIFO sample, or `None` when the FIFO is empty.
     fn read_rx(&mut self) -> Option<RxSample>;
 
-    /// 硬件 TX FIFO 是否仍可接收一个字符。
+    /// Whether the TX FIFO can accept another byte.
     fn tx_ready(&mut self) -> bool;
 
-    /// 将一个字节写入硬件 TX FIFO。
+    /// Writes one byte into the hardware TX FIFO.
     ///
-    /// 调用前必须确认 tx_ready()。
+    /// The caller must first observe `tx_ready()`.
     fn write_tx(&mut self, byte: u8);
 
     /// Read a raw hardware status snapshot.
@@ -92,7 +94,7 @@ pub trait RawUart: Send + Any + 'static {
         1
     }
 
-    /// FIFO 和 shift register 是否都已空。
+    /// Whether both the FIFO and shift register are empty.
     fn tx_idle(&mut self) -> bool;
 
     fn ack_modem_status(&mut self) {}

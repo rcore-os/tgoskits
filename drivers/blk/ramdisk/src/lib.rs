@@ -5,10 +5,10 @@ extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 
 use rdif_block::{
-    BlkError, CompletedRequest, CompletionSink, DeviceInfo, DispatchMode, DmaQuiesced,
-    DriverGeneric, IQueue, Interface, LifecycleEndpoint, OwnedRequest, QueueEventBatch,
-    QueueHandle, QueueInfo, QueueKind, QueueLimits, RequestId, RequestOp, ServiceProgress,
-    SubmitError, SubmitOutcome, validate_owned_request,
+    BlkError, CompletedRequest, CompletionSink, DeviceInfo, DmaQuiesced, DriverGeneric, IQueue,
+    Interface, LifecycleEndpoint, OwnedRequest, QueueEventBatch, QueueExecution, QueueHandle,
+    QueueInfo, QueueKind, QueueLimits, RequestId, RequestOp, ServiceProgress, SubmitError,
+    SubmitOutcome, validate_owned_request,
 };
 
 const PREFERRED_TRANSFER_SIZE: usize = 16 * 1024;
@@ -118,7 +118,7 @@ impl Interface for RamDisk {
                 device: self.device_info_for(),
                 limits: self.limits_for(),
                 kind: QueueKind::Inline,
-                dispatch_mode: DispatchMode::Direct,
+                execution: QueueExecution::Inline,
             },
             storage,
         })))
@@ -140,7 +140,7 @@ impl Interface for RamDisk {
         Vec::new()
     }
 
-    fn take_irq_handler(&mut self, _source_id: usize) -> Option<rdif_block::BIrqHandler> {
+    fn take_irq_source(&mut self, _source_id: usize) -> Option<rdif_block::BlockIrqSource> {
         None
     }
 }
@@ -190,7 +190,7 @@ impl IQueue for RamQueue {
         Ok(())
     }
 
-    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+    fn shutdown(&mut self) -> Result<(), BlkError> {
         Ok(())
     }
 }
@@ -333,25 +333,17 @@ mod tests {
         }
     }
 
-    struct NoopSink;
-
-    impl CompletionSink for NoopSink {
-        fn complete(&mut self, _completion: CompletedRequest) {
-            panic!("inline ramdisk must have no queued completion at shutdown");
-        }
-    }
-
     #[test]
-    fn queue_declares_inline_direct_without_interrupt_sources() {
+    fn queue_declares_inline_execution_without_interrupt_sources() {
         let mut disk = RamDisk::new(16, 8);
-        let mut queue = disk.create_queue().expect("ramdisk queue must be created");
+        let queue = disk.create_queue().expect("ramdisk queue must be created");
         let sources: IrqSourceList = disk.irq_sources();
 
         assert_eq!(queue.info().kind, QueueKind::Inline);
-        assert_eq!(queue.info().dispatch_mode, DispatchMode::Direct);
+        assert_eq!(queue.info().execution, QueueExecution::Inline);
         assert!(sources.is_empty());
         assert!(!disk.is_irq_enabled());
-        queue.shutdown(&mut NoopSink).unwrap();
+        queue.close().unwrap();
     }
 
     #[test]
@@ -401,7 +393,7 @@ mod tests {
                 .as_slice_cpu(),
             &[0xa5; 16]
         );
-        queue.shutdown(&mut NoopSink).unwrap();
+        queue.close().unwrap();
     }
 
     #[test]
@@ -429,13 +421,13 @@ mod tests {
             .submit_owned(RequestId::INLINE, request(RequestOp::Flush, 0, None))
             .expect("a pre-admission rejection must not poison the inline queue");
         assert_eq!(completed(flush).result, Ok(()));
-        queue.shutdown(&mut NoopSink).unwrap();
+        queue.close().unwrap();
     }
 
     #[test]
     fn ramdisk_materializes_one_exclusive_inline_queue() {
         let mut disk = RamDisk::new(16, 8);
-        let mut queue = disk
+        let queue = disk
             .create_queue()
             .expect("the ramdisk storage must move into its only queue");
 
@@ -443,6 +435,6 @@ mod tests {
             disk.create_queue().is_none(),
             "an inline ramdisk must not manufacture several locked views of one storage object"
         );
-        queue.shutdown(&mut NoopSink).unwrap();
+        queue.close().unwrap();
     }
 }

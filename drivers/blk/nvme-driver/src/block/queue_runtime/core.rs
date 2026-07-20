@@ -8,16 +8,19 @@ use core::{
 };
 
 use dma_api::CoherentArray;
-use rdif_block::{DispatchMode, IdList, InitError, QueueInfo, QueueKind};
+use rdif_block::{
+    BlkError, CompletionSink, IdList, InitError, QueueExecution, QueueInfo, QueueKind,
+};
 
 use super::{
     super::{
-        CompletionCache, CompletionDrain, IrqCompletionContinuation, device_info,
-        drain_hardware_completions_to_cache, limits,
+        CompletionCache, CompletionDrain, device_info, drain_owner_completions_to_cache, limits,
     },
     request::NvmeQueueState,
 };
 use crate::{Namespace, queue::NvmeQueue as HardwareQueue};
+
+pub(in crate::block) const NVME_QUEUE_EXECUTION: QueueExecution = QueueExecution::Tagged;
 
 pub(in crate::block) struct NvmeQueueCore {
     id: usize,
@@ -31,10 +34,8 @@ pub(in crate::block) struct NvmeQueueCore {
     pub(in crate::block) reinitialize_info: NvmeQueueReinitializeInfo,
     queue: UnsafeCell<HardwareQueue>,
     state: UnsafeCell<NvmeQueueState>,
-    completion_cache: CompletionCache,
+    completion_cache: UnsafeCell<CompletionCache>,
     state_claimed: AtomicBool,
-    cq_claimed: AtomicBool,
-    cq_continuation: IrqCompletionContinuation,
     completion_fault: AtomicBool,
 }
 
@@ -90,10 +91,8 @@ impl NvmeQueueCore {
             reinitialize_info,
             queue: UnsafeCell::new(queue),
             state: UnsafeCell::new(NvmeQueueState::new(depth, prp_lists)),
-            completion_cache: CompletionCache::new(depth + 1),
+            completion_cache: UnsafeCell::new(CompletionCache::new(depth + 1)),
             state_claimed: AtomicBool::new(false),
-            cq_claimed: AtomicBool::new(false),
-            cq_continuation: IrqCompletionContinuation::new(),
             completion_fault: AtomicBool::new(false),
         })
     }
@@ -116,7 +115,7 @@ impl NvmeQueueCore {
             kind: QueueKind::Interrupt {
                 sources: self.interrupt_sources,
             },
-            dispatch_mode: DispatchMode::Direct,
+            execution: NVME_QUEUE_EXECUTION,
         }
     }
 
@@ -135,80 +134,66 @@ impl NvmeQueueCore {
         })
     }
 
-    pub(super) const fn completion_cache(&self) -> &CompletionCache {
-        &self.completion_cache
-    }
-
     pub(super) fn completion_failed(&self) -> bool {
         self.completion_fault.load(Ordering::Acquire)
     }
 
     pub(super) fn submit_command(&self, command: crate::queue::CommandSet) {
-        // SAFETY: RDIF gives one task owner to this queue, so SQ mutation is
-        // serialized. IRQ/task CQ consumers touch a disjoint queue cell.
+        // SAFETY: RDIF gives one CPU-pinned maintenance owner to this queue,
+        // so SQ and CQ mutation are serialized in the same domain.
         let queue = unsafe { &*self.queue.get() };
         queue.submit_io_data(command);
     }
 
-    pub(in crate::block) fn drain_irq_completions(&self, budget: usize) -> CompletionDrain {
-        let Some(drain) = self.try_with_cq_claim(|queue| {
-            drain_hardware_completions_to_cache(queue, &self.completion_cache, budget)
-        }) else {
-            self.cq_continuation.request();
-            return CompletionDrain::deferred();
-        };
+    pub(super) fn drain_owner_completions(&self, budget: usize) -> CompletionDrain {
+        // SAFETY: `IQueue::service_events` is called only by the queue's
+        // CPU-pinned maintenance owner. The acknowledged source remains
+        // device-masked, and lifecycle reset cannot run until that owner has
+        // closed queue access and drained the IRQ action.
+        let queue = unsafe { &*self.queue.get() };
+        // SAFETY: the maintenance owner is the only live queue accessor. A
+        // lifecycle reset can touch this cache only after that owner and its
+        // IRQ action have been drained.
+        let cache = unsafe { &mut *self.completion_cache.get() };
+        let drain = drain_owner_completions_to_cache(queue, cache, budget);
         self.publish_completion_drain(drain);
         drain
     }
 
-    pub(in crate::block) fn request_irq_completion_continuation(&self) {
-        self.cq_continuation.request();
-    }
-
-    pub(super) fn drain_service_completions(&self, budget: usize) -> Option<CompletionDrain> {
-        if !self.cq_continuation.take_for_service() {
-            return None;
-        }
-        let Some(drain) = self.try_with_cq_claim(|queue| {
-            drain_hardware_completions_to_cache(queue, &self.completion_cache, budget)
-        }) else {
-            self.cq_continuation.request();
-            return Some(CompletionDrain::deferred());
+    pub(super) fn emit_owner_cached_completions(
+        &self,
+        budget: usize,
+        sink: &mut dyn CompletionSink,
+    ) -> Result<Option<usize>, BlkError> {
+        let Some(mut state) = self.try_claim_state() else {
+            return Ok(None);
         };
-        self.publish_completion_drain(drain);
-        Some(drain)
+        // SAFETY: only the CPU-pinned maintenance owner emits retained
+        // completions. The state claim excludes proof-gated lifecycle reset
+        // while request ownership is transferred to the sink.
+        let cache = unsafe { &mut *self.completion_cache.get() };
+        state
+            .emit_cached_completions(self.id, cache, budget, sink)
+            .map(Some)
     }
 
     pub(super) fn service_pending(&self) -> bool {
-        self.cq_continuation.is_pending()
-            || self.completion_cache.has_ready()
-            || self.completion_fault.load(Ordering::Acquire)
+        // SAFETY: this query runs in the same maintenance-owner scope as
+        // completion drain and publication. Lifecycle reset is allowed only
+        // after that scope and its IRQ action have been drained.
+        let cache = unsafe { &*self.completion_cache.get() };
+        cache.has_ready() || self.completion_fault.load(Ordering::Acquire)
     }
 
-    pub(super) fn clear_service_pending(&self) {
-        self.cq_continuation.clear_after_quiesce();
-    }
-
-    fn try_with_cq_claim<R>(&self, f: impl FnOnce(&HardwareQueue) -> R) -> Option<R> {
-        if self
-            .cq_claimed
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            return None;
-        }
-        // SAFETY: `cq_claimed` serializes every IRQ/task consumer of the CQ.
-        // SQ submission uses a disjoint `UnsafeCell` inside `HardwareQueue`.
-        let queue = unsafe { &*self.queue.get() };
-        let result = f(queue);
-        self.cq_claimed.store(false, Ordering::Release);
-        Some(result)
+    pub(super) fn clear_service_state_after_quiesce(&self) {
+        // SAFETY: the caller presents the controller's DMA-quiesced proof and
+        // has already reclaimed every accepted request from the owner scope.
+        let cache = unsafe { &mut *self.completion_cache.get() };
+        cache.clear_after_quiesce();
+        self.completion_fault.store(false, Ordering::Release);
     }
 
     fn publish_completion_drain(&self, drain: CompletionDrain) {
-        if drain.continuation {
-            self.cq_continuation.request();
-        }
         if drain.invalid {
             self.completion_fault.store(true, Ordering::Release);
         }
@@ -239,40 +224,31 @@ impl NvmeQueueCore {
                 "NVMe request ownership was not reclaimed before reset",
             ));
         }
-        if self
-            .cq_claimed
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            self.state_claimed.store(false, Ordering::Release);
-            return Err(InitError::Hardware(
-                "NVMe completion queue remained claimed after IRQ drain",
-            ));
-        }
-
-        // SAFETY: controller RDY is zero and both task and CQ claims are held,
-        // so retained queue memory has no concurrent accessor.
+        // SAFETY: controller RDY is zero, the request-state claim is held, and
+        // the maintenance owner has already drained its IRQ action and queue
+        // access, so retained queue memory has no concurrent accessor.
         let queue = unsafe { &*self.queue.get() };
-        // SAFETY: the method contract and both local claims exclude every
-        // device, task, and IRQ access to retained queue memory.
+        // SAFETY: the method contract and owner claim exclude every device,
+        // task, and IRQ access to retained queue memory.
         unsafe { queue.reset_after_controller_disable() };
-        self.completion_cache.clear_after_quiesce();
-        self.cq_continuation.clear_after_quiesce();
+        // SAFETY: the method contract excludes device, task, and IRQ access.
+        let cache = unsafe { &mut *self.completion_cache.get() };
+        cache.clear_after_quiesce();
         self.completion_fault.store(false, Ordering::Release);
-        self.cq_claimed.store(false, Ordering::Release);
         self.state_claimed.store(false, Ordering::Release);
         Ok(())
     }
 }
 
-// SAFETY: Slot, CID, and completion-cache access is serialized through
-// `state_claimed`; hardware CQ access is serialized through `cq_claimed`. SQ
-// submission is only driven by the single RDIF queue owner. MMIO and DMA
-// storage outlive the core through the owner/interface lifetime.
+// SAFETY: Slot, CID, SQ, CQ, and completion-cache access is driven only by the
+// single CPU-pinned maintenance owner. `state_claimed` additionally excludes
+// proof-gated lifecycle reset. MMIO and DMA storage outlive the core through
+// the owner/interface lifetime.
 unsafe impl Send for NvmeQueueCore {}
 
-// SAFETY: shared references cross task and hard-IRQ contexts only through the
-// exclusion gates documented above.
+// SAFETY: hard IRQ has no reference to this type. Shared references exist only
+// for the maintenance owner and a lifecycle reset that requires IRQ drain and
+// matching DMA-quiescence proof before touching retained queue storage.
 unsafe impl Sync for NvmeQueueCore {}
 
 impl Deref for NvmeQueueStateGuard<'_> {

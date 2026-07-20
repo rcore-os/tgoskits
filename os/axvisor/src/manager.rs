@@ -18,9 +18,7 @@ pub struct AxvmManager {
     runtime: AxvmRuntime,
     #[cfg(feature = "fs")]
     host_storage_handoff: Option<axvm::HostStorageHandoff>,
-    #[cfg(feature = "fs")]
     guest_irq_route_lease: Option<axvm::GuestIrqRouteLease>,
-    #[cfg(feature = "fs")]
     guest_irq_routes_revoked: Option<axvm::GuestIrqRoutesRevoked>,
 }
 
@@ -31,9 +29,7 @@ impl AxvmManager {
             runtime: AxvmRuntime::new().context("initialize AxVM runtime")?,
             #[cfg(feature = "fs")]
             host_storage_handoff: None,
-            #[cfg(feature = "fs")]
             guest_irq_route_lease: None,
-            #[cfg(feature = "fs")]
             guest_irq_routes_revoked: None,
         })
     }
@@ -65,7 +61,6 @@ impl AxvmManager {
     }
 
     fn finish_default_guest_storage(&mut self) -> Result<()> {
-        #[cfg(feature = "fs")]
         self.ensure_default_guest_irq_routes_revoked()
             .context("revoke stopped default-guest passthrough IRQ routes")?;
         self.return_host_storage_after_guest_exit()
@@ -155,7 +150,7 @@ impl AxvmManager {
             .context("select and detach host storage for guest passthrough")?;
         let Some(mut handoff) = prepared_handoff else {
             let mut route_lease = axvm::GuestIrqRouteLease::new();
-            let activation = axvm::activate_guest_storage_routes(None, &mut route_lease);
+            let activation = axvm::activate_guest_irq_routes(&mut route_lease);
             self.guest_irq_route_lease = Some(route_lease);
             if let Err(activation_error) = activation {
                 return self
@@ -171,7 +166,7 @@ impl AxvmManager {
             );
         }
         let mut route_lease = axvm::GuestIrqRouteLease::new();
-        let activation = axvm::activate_guest_storage_routes(Some(&handoff), &mut route_lease);
+        let activation = axvm::activate_guest_irq_routes(&mut route_lease);
         self.guest_irq_route_lease = Some(route_lease);
         if let Err(activation_error) = activation {
             return self.rollback_failed_guest_storage_activation(handoff, activation_error.into());
@@ -187,7 +182,6 @@ impl AxvmManager {
         Ok(())
     }
 
-    #[cfg(feature = "fs")]
     fn rollback_failed_guest_irq_activation_without_storage(
         &mut self,
         activation_error: anyhow::Error,
@@ -251,7 +245,6 @@ impl AxvmManager {
         }
     }
 
-    #[cfg(feature = "fs")]
     fn ensure_default_guest_irq_routes_revoked(&mut self) -> Result<()> {
         if self.guest_irq_routes_revoked.is_some() {
             return Ok(());
@@ -270,6 +263,17 @@ impl AxvmManager {
 
     #[cfg(not(feature = "fs"))]
     fn release_host_storage_for_guest_passthrough(&mut self) -> Result<()> {
+        if self.guest_irq_route_lease.is_some() || self.guest_irq_routes_revoked.is_some() {
+            return Err(anyhow::anyhow!(
+                "default-guest IRQ ownership transaction is already active"
+            ));
+        }
+        let mut route_lease = axvm::GuestIrqRouteLease::new();
+        let activation = axvm::activate_guest_irq_routes(&mut route_lease);
+        self.guest_irq_route_lease = Some(route_lease);
+        if let Err(error) = activation {
+            return self.rollback_failed_guest_irq_activation_without_storage(error.into());
+        }
         Ok(())
     }
 
@@ -295,6 +299,7 @@ impl AxvmManager {
 
     #[cfg(not(feature = "fs"))]
     fn return_host_storage_after_guest_exit(&mut self) -> Result<()> {
+        self.guest_irq_routes_revoked = None;
         Ok(())
     }
 

@@ -2,9 +2,9 @@
 
 use dma_api::DeviceDma;
 pub use rdif_block::{
-    BInterface, BIrqHandler, BQueue, BlkError, CompletedRequest, CompletionHint, CompletionSink,
-    DispatchMode, IQueue, Interface, OwnedRequest, QueueEventBatch, QueueHandle, QueueKind,
-    RequestId as RdifRequestId, ServiceProgress, SubmitError, SubmitOutcome,
+    BInterface, BIrqControl, BIrqEndpoint, BQueue, BlkError, BlockIrqSource, CompletedRequest,
+    CompletionSink, IQueue, Interface, OwnedRequest, QueueEventBatch, QueueExecution, QueueHandle,
+    QueueKind, RequestId as RdifRequestId, ServiceProgress, SubmitError, SubmitOutcome,
 };
 pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
 use sdmmc_protocol::{

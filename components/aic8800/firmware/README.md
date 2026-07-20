@@ -21,8 +21,10 @@ buildroot recipe `aic8800-sdio-firmware`:
 - Repository: <https://github.com/lxowalle/aic8800-sdio-firmware>
 - Pinned commit: `c56f910044cc854d6c553bcb9a644f3bca5a4c38`
 
-The `aic8800` crate embeds the following blobs via `include_bytes!`
-(`src/fw/firmware/data.rs`):
+The shared [`firmware_manifest.rs`](../src/firmware_manifest.rs) is consumed by both `axbuild` and the
+crate build script, so clean/offline builds cannot silently diverge in their
+required blob set. The `aic8800` crate embeds the following blobs via
+`include_bytes!` (`src/firmware.rs`):
 
 | File | Upstream path |
 |------|---------------|
@@ -31,6 +33,7 @@ The `aic8800` crate embeds the following blobs via `include_bytes!`
 | `fmacfw_patch_8800dc_u02.bin` | `aic8800DC/fmacfw_patch_8800dc_u02.bin` |
 | `fw_patch_8800dc_u02.bin` | `aic8800DC/fw_patch_8800dc_u02.bin` |
 | `fw_patch_table_8800dc_u02.bin` | `aic8800DC/fw_patch_table_8800dc_u02.bin` |
+| `fmacfw_patch_tbl_8800dc_u02.bin` | `aic8800DC/fmacfw_patch_tbl_8800dc_u02.bin` |
 | `fmacfw_patch_8800dc_h_u02.bin` | `aic8800DC/fmacfw_patch_8800dc_h_u02.bin` |
 | `fmacfw_patch_tbl_8800dc_h_u02.bin` | `aic8800DC/fmacfw_patch_tbl_8800dc_h_u02.bin` |
 | `fmacfw_calib_8800dc_h_u02.bin` | `aic8800DC/fmacfw_calib_8800dc_h_u02.bin` |
@@ -44,4 +47,4 @@ The AIC8800DC LDPC / AGC / TX-gain tables (`FW_DC_LDPC_CFG`, `FW_DC_AGC_CFG`,
 `FW_DC_TXGAIN_MAP`, `FW_DC_TXGAIN_MAP_H`) are **not** firmware images and have no
 upstream firmware mirror — they are little-endian `u32` arrays from the vendor
 BSP source `aic8800dc_compat.c`, inlined as Rust byte arrays in
-`src/fw/firmware/dc_rf_cfg.rs`, so no `.bin` blob is kept here for them.
+`src/firmware/dc_rf_cfg.rs`, so no `.bin` blob is kept here for them.

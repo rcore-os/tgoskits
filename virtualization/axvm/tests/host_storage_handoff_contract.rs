@@ -67,15 +67,25 @@ fn x86_guest_storage_irq_action_is_an_exclusive_disabled_owner() {
     let host_irq = include_str!("../src/arch/x86_64/host_irq.rs");
 
     let reserve = activation
-        .split_once("pub fn reserve_ioapic_irq_forwarding_action")
-        .expect("x86 storage passthrough must reserve its host IRQ action")
+        .split_once("pub fn validate_ioapic_irq_forwarding_source")
+        .expect("x86 storage passthrough must validate its host IRQ source")
         .1
         .split_once("pub fn enable_ioapic_irq_forwarding")
-        .expect("x86 IRQ reservation must remain separate from route activation")
+        .expect("x86 IRQ source validation must remain separate from owner activation")
         .0;
     assert!(
-        reserve.contains("request_exclusive_irq_disabled"),
-        "the guest action must fail if any host IRQ action survived controller handoff"
+        !reserve.contains("request_exclusive_irq_disabled") && !reserve.contains("free_irq"),
+        "the manager must not install a temporary action that another thread later releases"
+    );
+
+    let owner_registration = activation
+        .split_once("fn register_ioapic_forwarding_actions")
+        .expect("the fixed vCPU owner must install the guest action")
+        .1;
+    assert!(
+        owner_registration.contains("request_exclusive_irq_disabled")
+            && owner_registration.contains("IrqAffinity::Fixed"),
+        "the owner thread must fail first-run if exclusive fixed action registration fails"
     );
 
     let request = host_irq
@@ -161,7 +171,25 @@ fn default_guest_runtime_is_counted_before_its_vcpu_task_can_exit() {
         .split_once("if !runtime.try_mark_vcpu_running()")
         .expect("startup failure handling must finish before Running publication")
         .0;
-    assert!(first_run_failure.contains("vm.record_startup_failure(error.clone())"));
+    assert!(first_run_failure.contains("fail_vcpu_startup("));
+
+    let fail_vcpu_startup = vcpus
+        .split_once("fn fail_vcpu_startup(")
+        .expect("first-run failures must use one common state transition")
+        .1
+        .split_once("fn close_failed_start_irq_owner(")
+        .expect("startup failure publication must precede owner cleanup")
+        .0;
+    let record = fail_vcpu_startup
+        .find("vm.record_startup_failure(error.clone())")
+        .expect("the startup error must survive until resource cleanup reports it");
+    let stop = fail_vcpu_startup
+        .find("vm.stop(StopReason::Fault")
+        .expect("a failed architecture hook must stop the VM");
+    let release_count = fail_vcpu_startup
+        .find("runtime.mark_vcpu_startup_failed()")
+        .expect("startup failure must release the pre-published running count");
+    assert!(record < stop && stop < release_count);
 }
 
 #[test]
@@ -375,7 +403,7 @@ fn storage_handoff_is_bound_to_selected_guests_and_final_hpa_ranges() {
 fn loongarch_passthrough_irq_routes_activate_after_storage_commit_not_vm_construction() {
     let config = include_str!("../../../os/axvisor/src/config.rs");
     let loongarch = include_str!("../src/arch/loongarch64/mod.rs");
-    let storage = include_str!("../src/host/storage.rs");
+    let irq_routes = include_str!("../src/host/irq_routes.rs");
     let manager = include_str!("../../../os/axvisor/src/manager.rs");
 
     assert!(
@@ -385,7 +413,7 @@ fn loongarch_passthrough_irq_routes_activate_after_storage_commit_not_vm_constru
     assert!(
         loongarch.contains("fn activate_guest_irq_routes")
             && loongarch.contains("irq::register_guest_irq_route")
-            && storage.contains("CurrentArch::activate_guest_irq_routes"),
+            && irq_routes.contains("CurrentArch::activate_guest_irq_routes"),
         "LoongArch routes must activate through the common retained route lease"
     );
     assert!(
@@ -399,7 +427,7 @@ fn loongarch_passthrough_irq_routes_activate_after_storage_commit_not_vm_constru
 fn aarch64_passthrough_irq_routes_activate_after_storage_commit_not_vm_construction() {
     let aarch64_vm = include_str!("../src/arch/aarch64/vm.rs");
     let architecture = include_str!("../src/architecture/ops.rs");
-    let storage = include_str!("../src/host/storage.rs");
+    let irq_routes = include_str!("../src/host/irq_routes.rs");
     let manager = include_str!("../../../os/axvisor/src/manager.rs");
 
     let initialization = aarch64_vm
@@ -415,8 +443,8 @@ fn aarch64_passthrough_irq_routes_activate_after_storage_commit_not_vm_construct
     );
     assert!(
         architecture.contains("fn activate_guest_irq_routes")
-            && storage.contains("pub fn activate_guest_storage_routes")
-            && storage.contains("CurrentArch::activate_guest_irq_routes"),
+            && irq_routes.contains("pub fn activate_guest_irq_routes")
+            && irq_routes.contains("CurrentArch::activate_guest_irq_routes"),
         "post-commit AArch64 route activation must cross the common typed ownership boundary"
     );
     let route_registration = aarch64_vm
@@ -427,8 +455,8 @@ fn aarch64_passthrough_irq_routes_activate_after_storage_commit_not_vm_construct
         .expect("post-selection activation must be a separate operation")
         .0;
     assert!(
-        route_registration.contains("cfg(not(any(feature = \"fs\", feature = \"host-fs\")))"),
-        "a host-filesystem build must not assign physical SPIs while constructing a VM"
+        !route_registration.contains("assign_passthrough_spis"),
+        "VM construction must not assign physical SPIs in either feature mode"
     );
 
     let release = manager
@@ -441,21 +469,22 @@ fn aarch64_passthrough_irq_routes_activate_after_storage_commit_not_vm_construct
     let commit = release
         .find("commit_host_storage_handoff_to_guest")
         .expect("controller ownership must commit first");
-    let activate = release
-        .find("activate_guest_storage_routes(Some(&handoff), &mut route_lease)")
-        .expect("the common transaction must activate architecture IRQ routes");
+    let activate = commit
+        + release[commit..]
+            .find("activate_guest_irq_routes(&mut route_lease)")
+            .expect("the committed-controller branch must activate architecture IRQ routes");
     assert!(commit < activate);
 }
 
 #[test]
 fn post_selection_irq_routes_have_a_retained_lifecycle_lease() {
     let architecture = include_str!("../src/architecture/ops.rs");
-    let storage = include_str!("../src/host/storage.rs");
+    let irq_routes = include_str!("../src/host/irq_routes.rs");
     let manager = include_str!("../../../os/axvisor/src/manager.rs");
 
     assert!(
-        storage.contains("pub struct GuestIrqRouteLease")
-            && storage.contains("pub fn revoke_guest_irq_route_lease"),
+        irq_routes.contains("pub struct GuestIrqRouteLease")
+            && irq_routes.contains("pub fn revoke_guest_irq_route_lease"),
         "post-selection IRQ routes need an explicit owner even when no block controller matched"
     );
     assert!(
@@ -476,7 +505,7 @@ fn post_selection_irq_routes_have_a_retained_lifecycle_lease() {
         .expect("route activation must retain a focused rollback path")
         .0;
     assert!(
-        release.contains("activate_guest_storage_routes(None, &mut route_lease)"),
+        release.contains("activate_guest_irq_routes(&mut route_lease)"),
         "the no-controller case must still publish route ownership into a retained lease"
     );
 
@@ -499,18 +528,19 @@ fn post_selection_irq_routes_have_a_retained_lifecycle_lease() {
 #[test]
 fn irq_route_revocation_proof_is_consumed_by_storage_return_without_double_revoke() {
     let architecture = include_str!("../src/architecture/ops.rs");
+    let irq_routes = include_str!("../src/host/irq_routes.rs");
     let storage = include_str!("../src/host/storage.rs");
     let manager = include_str!("../../../os/axvisor/src/manager.rs");
 
     assert!(
-        storage.contains("pub struct GuestIrqRoutesRevoked"),
+        irq_routes.contains("pub struct GuestIrqRoutesRevoked"),
         "successful route teardown must produce a typed proof"
     );
-    let route_revoke = storage
+    let route_revoke = irq_routes
         .split_once("pub fn revoke_guest_irq_route_lease")
         .expect("the retained route lease must expose explicit revocation")
         .1
-        .split_once("fn route_activation_error")
+        .split_once("fn activation_error")
         .expect("route revocation must remain a focused operation")
         .0;
     assert!(
@@ -534,15 +564,15 @@ fn irq_route_revocation_proof_is_consumed_by_storage_return_without_double_revok
         "storage return must not revoke an architecture route a second time"
     );
 
-    let activation = storage
-        .split_once("pub fn activate_guest_storage_routes")
+    let activation = irq_routes
+        .split_once("pub fn activate_guest_irq_routes")
         .expect("route lifecycle activation must be explicit")
         .1
         .split_once("pub fn revoke_guest_irq_route_lease")
         .expect("activation and revocation must remain adjacent")
         .0;
     assert!(
-        activation.contains("route_lease.guests.push(vm.clone())"),
+        activation.contains("route_lease.inner_mut().guests.push(vm.clone())"),
         "the lease must retain every passthrough guest even when its architecture activates later"
     );
     assert!(

@@ -4,18 +4,15 @@ use alloc::boxed::Box;
 use core::{cell::RefCell, mem};
 
 use rdif_block::{
-    BlkError, ControllerInitEndpoint, DeviceInfo, IdList, InitError, InitIrqProgress,
-    InitialController, Interface, IrqHandler, IrqSourceList, LifecycleEndpoint, QueueHandle,
-    QueueLimits,
+    BlkError, BlockIrqSource, ControllerInitEndpoint, DeviceInfo, IdList, InitError,
+    InitialController, Interface, IrqSourceList, LifecycleEndpoint, QueueHandle, QueueLimits,
 };
 
 use super::{
-    BlockConfig, BlockDevice, host::BlockHost, irq::BlockIrqHandler, map_dev_err_to_blk_err,
+    BlockConfig, BlockDevice, host::BlockHost, irq::into_block_irq_source, map_dev_err_to_blk_err,
     queue_limits,
 };
-use crate::sdio::{
-    DeferredIrqAck, InitInput, InitPoll, InitializedSdioCard, OwnedSdioInit, OwnedSdioInitHost,
-};
+use crate::sdio::{InitInput, InitPoll, InitializedSdioCard, OwnedSdioInit, OwnedSdioInitHost};
 
 const CONTROLLER_SOURCE_ID: usize = 0;
 
@@ -50,7 +47,7 @@ where
 {
     name: &'static str,
     state: RefCell<StagedState<H>>,
-    init_irq_handler: Option<Box<dyn IrqHandler>>,
+    init_irq_source: Option<BlockIrqSource>,
     ready_builder: ReadyBlockBuilder<H>,
 }
 
@@ -67,17 +64,14 @@ where
         ready_builder: ReadyBlockBuilder<H>,
     ) -> Self {
         let name = config.name;
-        let init_irq_handler = Some(Box::new(BlockIrqHandler::<H> {
-            irq: init.irq_handle(),
-            control: None,
-        }) as Box<dyn IrqHandler>);
+        let init_irq_source = init.take_irq_source().map(into_block_irq_source);
         Self {
             name,
             state: RefCell::new(StagedState::Initial {
                 init: Box::new(init),
                 config,
             }),
-            init_irq_handler,
+            init_irq_source,
             ready_builder,
         }
     }
@@ -208,9 +202,9 @@ where
         }
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
         match self.state.get_mut() {
-            StagedState::Ready(device) => device.take_irq_handler(source_id),
+            StagedState::Ready(device) => device.take_irq_source(source_id),
             StagedState::Initial { .. } | StagedState::Failed(_) | StagedState::Transitioning => {
                 None
             }
@@ -228,31 +222,17 @@ where
         IdList::from_bits(1u64 << CONTROLLER_SOURCE_ID)
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
         (source_id == CONTROLLER_SOURCE_ID)
-            .then(|| self.init_irq_handler.take())
+            .then(|| self.init_irq_source.take())
             .flatten()
-    }
-
-    fn service_deferred_irq(&mut self, source_id: usize) -> InitIrqProgress {
-        if source_id != CONTROLLER_SOURCE_ID {
-            return InitIrqProgress::Unhandled;
-        }
-        let StagedState::Initial { init, .. } = self.state.get_mut() else {
-            return InitIrqProgress::Unhandled;
-        };
-        match init.acknowledge_deferred_irq() {
-            DeferredIrqAck::Unhandled => InitIrqProgress::Unhandled,
-            DeferredIrqAck::Acknowledged => InitIrqProgress::Acknowledged,
-            DeferredIrqAck::Contended => InitIrqProgress::Deferred,
-        }
     }
 
     fn poll_init(&mut self, input: rdif_block::InitInput) -> rdif_block::InitPoll<()> {
         // Taking the endpoint proves that OS glue owns a registered IRQ
         // action. Enabling delivery proves that commands cannot enter the
         // controller before their only completion path exists.
-        if self.init_irq_handler.is_some() {
+        if self.init_irq_source.is_some() {
             return rdif_block::InitPoll::Failed(InitError::InvalidState);
         }
         if matches!(

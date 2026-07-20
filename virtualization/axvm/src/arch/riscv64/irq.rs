@@ -22,7 +22,8 @@ use core::{
 };
 
 use ax_cpu_local::CpuPin;
-use ax_std::os::arceos::task::{ThreadWakeHandle, WakeResult};
+use ax_kspin::SpinRaw as Mutex;
+use ax_std::os::arceos::task::{ThreadWakeHandle, WaitQueue, WakeResult, current_thread_handle};
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
     DeviceManagerResult, DeviceRegistration, MmioDeviceAdapter,
@@ -35,20 +36,20 @@ use riscv_vplic::{
 };
 use spin::Once;
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
-use super::route_transaction::{RouteRevocation, current_route_identity, revoke_active_route};
 use super::{
     completion_restore::{restore_all, restore_present_suffix},
     forwarded_ingress::{FORWARDED_IRQ_DRAIN_BATCH, ForwardedIrqIngress, ForwardedIrqPublish},
     owner_doorbell::{FixedOwnerContext, OwnerDoorbell},
     route_transaction::{
         ROUTE_GENERATION_MAX, RouteActivation, RouteControl, RoutePreparation,
-        RouteReservationError, RouteTransactionState, activate_published_route,
-        prepare_route_if_available,
+        RouteReservationError, RouteRevocation, RouteTransactionState, activate_published_route,
+        current_route_identity, prepare_route_if_available, revoke_active_route,
     },
 };
 use crate::{
-    AxVmError, AxVmResult, ax_err, ax_err_type,
+    AxVmError, AxVmResult,
+    architecture::ops::VcpuIrqOwnerSession,
+    ax_err, ax_err_type,
     irq::{
         InterruptFabric, RiscvPhysicalIrqClaim, RiscvPlatformIrq, RiscvPlatformIrqRouteResult,
         RiscvPlatformIrqRouteStatus,
@@ -70,6 +71,19 @@ const ROUTE_PHASE_MASK: u64 = 0b11;
 const ROUTE_VACANT: u64 = 0;
 const ROUTE_ACTIVE: u64 = 1;
 const ROUTE_REVOKING: u64 = 2;
+
+const ROUTE_RELEASE_INACTIVE: usize = 0;
+const ROUTE_RELEASE_ARMED: usize = 1;
+const ROUTE_RELEASE_REQUESTED: usize = 2;
+const ROUTE_RELEASE_RUNNING: usize = 3;
+const ROUTE_RELEASE_CLOSED: usize = 4;
+const ROUTE_RELEASE_FAILED: usize = 5;
+
+static ROUTE_RELEASE_STATE: AtomicUsize = AtomicUsize::new(ROUTE_RELEASE_INACTIVE);
+static ROUTE_RELEASE_VM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+static ROUTE_RELEASE_VCPU_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+static ROUTE_RELEASE_WAKE: Mutex<Option<ThreadWakeHandle>> = Mutex::new(None);
+static ROUTE_RELEASE_COMPLETION: WaitQueue = WaitQueue::new();
 
 struct PlatformVplicRouteSlot {
     state: AtomicU64,
@@ -300,7 +314,6 @@ impl PlatformVplicRouteKey {
     }
 }
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
 struct PlatformRouteRevocationSnapshot {
     binding: VplicVcpuBinding,
     target_cpu: usize,
@@ -308,7 +321,6 @@ struct PlatformRouteRevocationSnapshot {
     source_count: usize,
 }
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
 impl PlatformRouteRevocationSnapshot {
     fn from_publisher(publisher: &PlatformRoutePublisher<'_>) -> Self {
         let route = publisher.route;
@@ -363,6 +375,104 @@ pub(crate) struct VplicVcpuBinding {
     vplic: Arc<VPlicGlobal>,
     notifications: Arc<VplicNotifications>,
     context_id: usize,
+}
+
+/// Acquires the fixed vCPU placement lease before installing a physical route.
+pub(super) fn prepare_guest_irq_owner_session(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<super::AxvmRiscvVcpu>,
+) -> AxVmResult<Option<VcpuIrqOwnerSession>> {
+    if !guest_irq_owner_session_required(vm, vcpu.id()) {
+        return Ok(None);
+    }
+    let Some(configured_cpu) = vcpu.phys_cpu_set().and_then(super::single_cpu_in_mask) else {
+        return Err(AxVmError::invalid_config(format_args!(
+            "RISC-V passthrough VM[{}] VCpu[{}] requires exactly one fixed host CPU",
+            vm.id(),
+            vcpu.id()
+        )));
+    };
+    let binding = vcpu
+        .with_arch_vcpu("prepare RISC-V vPLIC IRQ owner", |arch_vcpu| {
+            arch_vcpu.vplic_platform_binding()
+        })?
+        .ok_or_else(|| {
+            AxVmError::resource_unavailable(
+                "RISC-V passthrough vPLIC",
+                "the owner vCPU has no vPLIC binding",
+            )
+        })?;
+
+    let session = VcpuIrqOwnerSession::acquire(
+        vm.id(),
+        vcpu.id(),
+        guest_irq_owner_release_requested,
+        owner_release_guest_irq_route,
+    )?;
+    if session.owner_cpu() != configured_cpu {
+        return Err(AxVmError::resource_conflict(
+            "RISC-V passthrough CPU pin",
+            format_args!(
+                "VM[{}] VCpu[{}] acquired host CPU {}, but physical PLIC ownership requires CPU \
+                 {configured_cpu}",
+                vm.id(),
+                vcpu.id(),
+                session.owner_cpu()
+            ),
+        ));
+    }
+
+    let thread = current_thread_handle()
+        .map_err(|error| AxVmError::resource_unavailable("RISC-V vPLIC owner thread", error))?;
+    let wake = thread.wake_handle();
+    drop(thread);
+    let wake_cpu = wake.target_cpu().map(|cpu| cpu.as_u32() as usize);
+    if wake_cpu != Some(session.owner_cpu()) {
+        return Err(AxVmError::resource_conflict(
+            "RISC-V vPLIC owner wake",
+            format_args!(
+                "wake targets {wake_cpu:?}, owner lease pins CPU {}",
+                session.owner_cpu()
+            ),
+        ));
+    }
+
+    binding.install_wake_target(wake.clone());
+    arm_guest_irq_route_release(vm.id(), vcpu.id(), wake)?;
+    Ok(Some(session))
+}
+
+pub(super) fn guest_irq_owner_session_required(vm: &crate::AxVMRef, vcpu_id: usize) -> bool {
+    if vm.interrupt_mode() != VMInterruptMode::Passthrough || vcpu_id != 0 {
+        return false;
+    }
+    vm.with_config(|config| {
+        let irq_sources = config.pass_through_irqs();
+        !irq_sources.is_empty()
+    })
+}
+
+fn arm_guest_irq_route_release(vm_id: VMId, vcpu_id: usize, wake: ThreadWakeHandle) -> AxVmResult {
+    if current_route_identity(&PLATFORM_VPLIC_ROUTE_CONTROL).is_some() {
+        return Err(AxVmError::resource_conflict(
+            "arm RISC-V PLIC route owner",
+            "a previous monitor-wide route remains installed",
+        ));
+    }
+
+    let mut retained_wake = ROUTE_RELEASE_WAKE.lock();
+    let state = ROUTE_RELEASE_STATE.load(Ordering::Acquire);
+    if !matches!(state, ROUTE_RELEASE_INACTIVE | ROUTE_RELEASE_CLOSED) || retained_wake.is_some() {
+        return Err(AxVmError::resource_conflict(
+            "arm RISC-V PLIC route owner",
+            format_args!("a previous owner release remains in state {state}"),
+        ));
+    }
+    *retained_wake = Some(wake);
+    ROUTE_RELEASE_VM_ID.store(vm_id, Ordering::Relaxed);
+    ROUTE_RELEASE_VCPU_ID.store(vcpu_id, Ordering::Relaxed);
+    ROUTE_RELEASE_STATE.store(ROUTE_RELEASE_ARMED, Ordering::Release);
+    Ok(())
 }
 
 impl VplicVcpuBinding {
@@ -711,14 +821,250 @@ impl VplicVcpuBinding {
     }
 }
 
-/// Masks, drains, and releases the generation-scoped PLIC route for one VM.
-#[cfg(any(feature = "fs", feature = "host-fs"))]
+/// Requests owner-thread route release and waits for typed completion.
 pub(crate) fn revoke_guest_irq_routes(vm_id: VMId) -> AxVmResult {
+    let wake = request_guest_irq_route_revocation(vm_id)?;
+    if let Some(wake) = wake {
+        wake_guest_irq_route_owner(&wake, vm_id)?;
+    }
+    if guest_irq_route_release_owned_by(vm_id, 0) {
+        ROUTE_RELEASE_COMPLETION
+            .try_wait_until(|| guest_irq_route_release_terminal(vm_id, 0))
+            .map_err(|error| {
+                AxVmError::resource_unavailable("wait for RISC-V PLIC route owner close", error)
+            })?;
+    }
+    guest_irq_route_release_result(vm_id)
+}
+
+fn request_guest_irq_route_revocation(vm_id: VMId) -> AxVmResult<Option<ThreadWakeHandle>> {
+    loop {
+        let state = ROUTE_RELEASE_STATE.load(Ordering::Acquire);
+        if state == ROUTE_RELEASE_INACTIVE || !guest_irq_route_release_owned_by(vm_id, 0) {
+            return Ok(None);
+        }
+        match state {
+            ROUTE_RELEASE_ARMED => {
+                if ROUTE_RELEASE_STATE
+                    .compare_exchange(
+                        ROUTE_RELEASE_ARMED,
+                        ROUTE_RELEASE_REQUESTED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+                return retained_guest_irq_owner_wake(vm_id, 0).map(Some);
+            }
+            ROUTE_RELEASE_REQUESTED => {
+                return retained_guest_irq_owner_wake(vm_id, 0).map(Some);
+            }
+            ROUTE_RELEASE_RUNNING | ROUTE_RELEASE_CLOSED => return Ok(None),
+            ROUTE_RELEASE_FAILED => return guest_irq_route_release_result(vm_id).map(|()| None),
+            _ => {
+                return Err(AxVmError::invalid_state(
+                    "request RISC-V PLIC route owner close",
+                    format_args!("unknown release state {state}"),
+                ));
+            }
+        }
+    }
+}
+
+fn wake_guest_irq_route_owner(wake: &ThreadWakeHandle, vm_id: VMId) -> AxVmResult {
+    match wake.wake() {
+        WakeResult::Notified | WakeResult::AlreadyPending => Ok(()),
+        WakeResult::Exited | WakeResult::Unavailable
+            if ROUTE_RELEASE_STATE.load(Ordering::Acquire) == ROUTE_RELEASE_CLOSED =>
+        {
+            Ok(())
+        }
+        WakeResult::Exited => Err(AxVmError::resource_unavailable(
+            "wake RISC-V PLIC route owner",
+            format_args!("VM[{vm_id}] owner thread has exited"),
+        )),
+        WakeResult::Unavailable => Err(AxVmError::resource_unavailable(
+            "wake RISC-V PLIC route owner",
+            format_args!("VM[{vm_id}] owner CPU is unavailable"),
+        )),
+    }
+}
+
+fn retained_guest_irq_owner_wake(vm_id: VMId, vcpu_id: usize) -> AxVmResult<ThreadWakeHandle> {
+    ensure_guest_irq_release_identity(vm_id, vcpu_id)?;
+    ROUTE_RELEASE_WAKE.lock().clone().ok_or_else(|| {
+        AxVmError::resource_unavailable(
+            "RISC-V PLIC route owner wake",
+            format_args!("VM[{vm_id}] VCpu[{vcpu_id}] has no retained wake capability"),
+        )
+    })
+}
+
+fn guest_irq_route_release_owned_by(vm_id: VMId, vcpu_id: usize) -> bool {
+    ROUTE_RELEASE_VM_ID.load(Ordering::Relaxed) == vm_id
+        && ROUTE_RELEASE_VCPU_ID.load(Ordering::Relaxed) == vcpu_id
+}
+
+fn guest_irq_route_release_terminal(vm_id: VMId, vcpu_id: usize) -> bool {
+    if !guest_irq_route_release_owned_by(vm_id, vcpu_id) {
+        return true;
+    }
+    matches!(
+        ROUTE_RELEASE_STATE.load(Ordering::Acquire),
+        ROUTE_RELEASE_CLOSED | ROUTE_RELEASE_FAILED
+    )
+}
+
+fn guest_irq_route_release_result(vm_id: VMId) -> AxVmResult {
+    if !guest_irq_route_release_owned_by(vm_id, 0) {
+        return ensure_guest_irq_route_absent(vm_id);
+    }
+    match ROUTE_RELEASE_STATE.load(Ordering::Acquire) {
+        ROUTE_RELEASE_INACTIVE | ROUTE_RELEASE_CLOSED => ensure_guest_irq_route_absent(vm_id),
+        ROUTE_RELEASE_FAILED => Err(AxVmError::invalid_state(
+            "close RISC-V PLIC route on its fixed owner",
+            format_args!("VM[{vm_id}] retained a failed route teardown"),
+        )),
+        state => Err(AxVmError::invalid_state(
+            "complete RISC-V PLIC route owner close",
+            format_args!("release completion observed nonterminal state {state}"),
+        )),
+    }
+}
+
+fn ensure_guest_irq_route_absent(vm_id: VMId) -> AxVmResult {
+    if current_route_identity(&PLATFORM_VPLIC_ROUTE_CONTROL)
+        .is_some_and(|(route, _)| route.vm_id == vm_id)
+    {
+        return Err(AxVmError::invalid_state(
+            "verify RISC-V PLIC route owner close",
+            format_args!("VM[{vm_id}] still owns the monitor-wide physical route"),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_guest_irq_release_identity(vm_id: VMId, vcpu_id: usize) -> AxVmResult {
+    if guest_irq_route_release_owned_by(vm_id, vcpu_id) {
+        return Ok(());
+    }
+    let owner_vm = ROUTE_RELEASE_VM_ID.load(Ordering::Relaxed);
+    let owner_vcpu = ROUTE_RELEASE_VCPU_ID.load(Ordering::Relaxed);
+    Err(AxVmError::resource_conflict(
+        "RISC-V PLIC route owner",
+        format_args!(
+            "VM[{owner_vm}] VCpu[{owner_vcpu}] owns the session, not VM[{vm_id}] VCpu[{vcpu_id}]"
+        ),
+    ))
+}
+
+fn guest_irq_owner_release_requested(vm_id: VMId, vcpu_id: usize) -> bool {
+    ROUTE_RELEASE_STATE.load(Ordering::Acquire) == ROUTE_RELEASE_REQUESTED
+        && guest_irq_route_release_owned_by(vm_id, vcpu_id)
+}
+
+fn owner_release_guest_irq_route(vm_id: VMId, vcpu_id: usize) -> AxVmResult {
+    if let Err(error) = ensure_current_guest_irq_route_owner(vm_id, vcpu_id) {
+        return publish_guest_irq_route_release_failure(error);
+    }
+    loop {
+        let state = ROUTE_RELEASE_STATE.load(Ordering::Acquire);
+        match state {
+            ROUTE_RELEASE_ARMED | ROUTE_RELEASE_REQUESTED => {
+                if ROUTE_RELEASE_STATE
+                    .compare_exchange(
+                        state,
+                        ROUTE_RELEASE_RUNNING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    break;
+                }
+            }
+            ROUTE_RELEASE_CLOSED => return Ok(()),
+            ROUTE_RELEASE_FAILED => return guest_irq_route_release_result(vm_id),
+            ROUTE_RELEASE_RUNNING => {
+                return publish_guest_irq_route_release_failure(AxVmError::invalid_state(
+                    "close RISC-V PLIC route on its fixed owner",
+                    "the owner is already running the release protocol",
+                ));
+            }
+            _ => {
+                return publish_guest_irq_route_release_failure(AxVmError::invalid_state(
+                    "close RISC-V PLIC route on its fixed owner",
+                    format_args!("release protocol is not armed (state {state})"),
+                ));
+            }
+        }
+    }
+
+    let result = owner_release_guest_irq_route_inner(vm_id);
+    match result {
+        Ok(()) => {
+            let retained_wake = ROUTE_RELEASE_WAKE.lock().take();
+            ROUTE_RELEASE_STATE.store(ROUTE_RELEASE_CLOSED, Ordering::Release);
+            ROUTE_RELEASE_COMPLETION.notify_all();
+            // The static capability is released only after controller and
+            // ingress ownership are gone, and never while holding its lock.
+            drop(retained_wake);
+            Ok(())
+        }
+        Err(error) => publish_guest_irq_route_release_failure(error),
+    }
+}
+
+fn publish_guest_irq_route_release_failure(error: AxVmError) -> AxVmResult {
+    ROUTE_RELEASE_STATE.store(ROUTE_RELEASE_FAILED, Ordering::Release);
+    ROUTE_RELEASE_COMPLETION.notify_all();
+    Err(error)
+}
+
+fn ensure_current_guest_irq_route_owner(vm_id: VMId, vcpu_id: usize) -> AxVmResult {
+    ensure_guest_irq_release_identity(vm_id, vcpu_id)?;
+    let expected = retained_guest_irq_owner_wake(vm_id, vcpu_id)?;
+    let current = current_thread_handle().map_err(|error| {
+        AxVmError::resource_unavailable("RISC-V PLIC route owner thread", error)
+    })?;
+    let current_wake = current.wake_handle();
+    drop(current);
+
+    let expected_cpu = expected.target_cpu().map(|cpu| cpu.as_u32() as usize);
+    let current_target = current_wake.target_cpu().map(|cpu| cpu.as_u32() as usize);
+    let current_cpu = ax_std::os::arceos::modules::ax_hal::percpu::this_cpu_id();
+    if current_wake.thread_id() == expected.thread_id()
+        && current_target == expected_cpu
+        && expected_cpu == Some(current_cpu)
+    {
+        return Ok(());
+    }
+    Err(AxVmError::resource_conflict(
+        "close RISC-V PLIC route on its fixed owner",
+        format_args!(
+            "expected thread {:?} on CPU {expected_cpu:?}, current thread is {:?} with target \
+             {current_target:?} on CPU {current_cpu}",
+            expected.thread_id(),
+            current_wake.thread_id()
+        ),
+    ))
+}
+
+/// Masks, drains, and releases the generation-scoped PLIC route on its owner.
+fn owner_release_guest_irq_route_inner(vm_id: VMId) -> AxVmResult {
     let Some((route_key, _)) = current_route_identity(&PLATFORM_VPLIC_ROUTE_CONTROL) else {
         return Ok(());
     };
     if route_key.vm_id != vm_id {
-        return Ok(());
+        return Err(AxVmError::resource_conflict(
+            "close RISC-V PLIC route on its fixed owner",
+            format_args!(
+                "monitor route belongs to VM[{}], not requesting VM[{vm_id}]",
+                route_key.vm_id
+            ),
+        ));
     }
     let revocation = revoke_active_route(&PLATFORM_VPLIC_ROUTE_CONTROL, route_key)
         .map_err(map_route_reservation_error)?;
@@ -850,6 +1196,13 @@ pub(crate) unsafe extern "C" fn forward_unbound_physical_irq(source: u32, genera
         return true;
     };
     if !route.route.contains_source(source) {
+        route.route.binding.notifications.ingress.record_fault();
+        return true;
+    }
+    let current_cpu = ax_std::os::arceos::modules::ax_hal::percpu::this_cpu_id();
+    if current_cpu != route.route.target_cpu {
+        // The platform already claimed and masked this source. Retain that
+        // fail-closed state instead of allowing a hard-IRQ wake to cross CPUs.
         route.route.binding.notifications.ingress.record_fault();
         return true;
     }

@@ -57,18 +57,11 @@ fn probe(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     )
     .map_err(|err| OnProbeError::other(alloc::format!("failed to create RTL8125: {err:?}")))?;
 
-    let status = dev.status();
-    if status.link_up() {
-        info!("RTL8125 at {address}: link is up after init, status={status:?}");
-    } else {
-        warn!(
-            "RTL8125 at {address}: link is down after init; registering and checking link again \
-             on tx, status={status:?}"
-        );
-    }
-
     let irq = probe.register_net(DRIVER_NAME, dev, PciIrqRequirement::Required)?;
-    debug!("RTL8125 PCI network device registered at {address} with irq {irq:?}");
+    debug!(
+        "RTL8125 PCI network device registered pending owner initialization at {address} with irq \
+         {irq:?}"
+    );
     Ok(())
 }
 

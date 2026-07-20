@@ -214,29 +214,29 @@ fn set_oneshot_timer(ns)          {
 fn handle(vector) {
     let active = somehal::irq::begin_irq(vector.0)?;
     let irq    = active.id();
-    // riscv64 + hv：若属于 PLIC domain，尝试虚拟注入
-    let outcome = ax_plat::irq::dispatch_irq(irq);
-    // loongarch64 + hv：若 dispatch 未处理，回退到 guest 路由
-    drop(active); // 触发 EOI/complete
+    // RISC-V + hv 的已租赁 PLIC source 由不可变 endpoint 捕获；
+    // 其它路径一律进入 irq-framework action dispatch。
+    dispatch_claimed_host_irq(irq, || drop(active));
 }
 ```
 
 - `set_enable`、`set_affinity`：在 `ax_plat::irq::IrqAffinity` / `IpiTarget` 与 `somehal::irq` 对应枚举之间转换。
 - `resolve_percpu(hwirq)`：aarch64 走 `somehal::irq::aarch64_gic_irq_id_checked`；其它架构用 `CPU_LOCAL_IRQ_DOMAIN` 包装。
 - `send_ipi` / `ipi_irq`：转发 `IpiTarget` 到 `somehal::irq::send_ipi`。
-- `feature = "hv"` 时（RISC-V）：通过 `AtomicPtr<fn(usize) -> bool>` 暴露 `register_virtual_irq_injector`，让 hypervisor 注入 guest 中断。
+- `feature = "hv"` 时（RISC-V）：平台只暴露 generation-owned PLIC source
+  lease、不可变 hard-IRQ endpoint 和 sink publication；guest 注入由 AxVM
+  的固定 vCPU owner 消费稳定事件后执行。
 
-### irq/loongarch64_hv.rs — guest IRQ 路由表
+### LoongArch guest IRQ 所有权
 
-`platforms/axplat-dyn/src/irq/loongarch64_hv.rs` 实现 `LoongArchHvIrqIf`，用 256 槽静态表把物理 IRQ ↔ `(vm_id, vcpu_id, guest_vector)` 关联起来：
-
-```rust
-static GUEST_IRQ_ROUTES:   [AtomicUsize; 256] = ...;
-static GUEST_IRQ_TARGETS:  [AtomicUsize; 256] = ...;
-const LOONGARCH_IRQ_TRACE_LIMIT: usize = 80;
-```
-
-`register_guest_irq_route` 显式检测冲突；`inject_virtual_irq(physical_irq)` 调用注册过的 injector 把中断送进对应 vCPU。
+LoongArch 不在 `axplat-dyn` 保存 guest route 或 injector。AxVM 在固定 CPU
+的 vCPU owner 线程中注册独占、初始禁用的 `irq-framework` action；hard IRQ
+只发布 generation-bearing pending fact 并通过预保存的 `ThreadWakeHandle`
+本地唤醒 owner。guest PCH-PIC deassert/EOI 只发布 rearm fact，注册线程在普通
+任务上下文执行 `synchronize_irq` 与 `release_irq_quench`。管理线程撤销时也只
+发布 release cause 并直接唤醒 owner；只有注册线程可以 disable、drain、free
+action，随后管理线程才 join vCPU。不存在 `Unhandled` 后回退到 raw platform
+injector 的路径。
 
 ## drivers/mod.rs — 设备 probe
 

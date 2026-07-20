@@ -1,5 +1,10 @@
 //! IRQ-owned destructive status acknowledgement and stable event snapshots.
 
+use core::num::NonZeroU64;
+
+use rdif_irq::{ContainmentCause, IrqCapture, IrqEndpoint, IrqSourceControl, MaskedSource};
+use sdmmc_protocol::sdio::host::SdioIrqControlError;
+
 use super::*;
 
 /// Stable controller event extracted from DW_mshc raw interrupt status.
@@ -8,9 +13,6 @@ pub enum Event {
     /// No status bit requiring runtime action is currently pending.
     #[default]
     None,
-    /// Task context is publishing a new request epoch; hardware status was
-    /// deliberately left untouched so a level IRQ can be retried safely.
-    Deferred,
     /// A command response has completed.
     CommandComplete,
     /// A data transfer has completed.
@@ -33,10 +35,18 @@ pub enum Event {
     Other { raw_status: u32 },
 }
 
-/// Owned DWMMC IRQ top-half endpoint.
-pub struct DwMmcIrq {
+/// Hard-IRQ-owned destructive status capture endpoint.
+pub struct DwMmcIrqEndpoint {
     irq: Arc<host::IrqCore>,
 }
+
+/// Maintenance-owner capability for generation-checked source rearming.
+pub struct DwMmcIrqControl {
+    irq: Arc<host::IrqCore>,
+}
+
+/// Split ownership of this controller's unique runtime interrupt source.
+pub type DwMmcIrqSource = SdioIrqSource<DwMmcIrqEndpoint, DwMmcIrqControl>;
 
 pub(crate) const DWMMC_INT_RESPONSE_ERROR: u32 = 1 << 1;
 pub(crate) const DWMMC_INT_COMMAND_DONE: u32 = 1 << 2;
@@ -101,7 +111,6 @@ impl HostEvent for Event {
     fn kind(&self) -> HostEventKind {
         match self {
             Event::None => HostEventKind::None,
-            Event::Deferred => HostEventKind::Other,
             Event::CommandComplete => HostEventKind::CommandComplete,
             Event::TransferComplete => HostEventKind::TransferComplete,
             Event::DmaComplete => HostEventKind::Other,
@@ -112,10 +121,6 @@ impl HostEvent for Event {
         }
     }
 
-    fn ack_deferred(&self) -> bool {
-        matches!(self, Event::Deferred)
-    }
-
     fn source(&self) -> HostEventSource {
         match self {
             Event::CommandComplete => HostEventSource::Command,
@@ -124,9 +129,7 @@ impl HostEvent for Event {
             | Event::DmaError { .. }
             | Event::ReceiveReady
             | Event::TransmitReady => HostEventSource::Data,
-            Event::None | Event::Deferred | Event::Error { .. } | Event::Other { .. } => {
-                HostEventSource::Controller
-            }
+            Event::None | Event::Error { .. } | Event::Other { .. } => HostEventSource::Controller,
         }
     }
 
@@ -137,41 +140,114 @@ impl HostEvent for Event {
             | Event::DmaError { .. }
             | Event::ReceiveReady
             | Event::TransmitReady => Some(BlockRequestId::new(0)),
-            Event::None
-            | Event::Deferred
-            | Event::CommandComplete
-            | Event::Error { .. }
-            | Event::Other { .. } => None,
+            Event::None | Event::CommandComplete | Event::Error { .. } | Event::Other { .. } => {
+                None
+            }
         }
     }
 }
 
 impl DwMmc {
-    pub fn irq_endpoint(&mut self) -> DwMmcIrq {
-        DwMmcIrq {
-            irq: self.irq.clone(),
-        }
-    }
-
-    /// Read and acknowledge pending controller status, returning a stable
-    /// event for OS glue to translate into wakeups or worker scheduling.
-    pub fn handle_irq(&mut self) -> Event {
-        handle_irq_core(&self.irq)
+    /// Acquires this controller's unique live split IRQ-source lease.
+    ///
+    /// The caller must move the capture endpoint into an IRQ action registered
+    /// by the same CPU-pinned maintenance thread that retains this host and
+    /// the control endpoint. Delivery must remain disabled until registration
+    /// succeeds. A later activation may acquire a new lease only after both
+    /// halves of the synchronized old lease have retired.
+    pub fn take_irq_source(&mut self) -> Option<DwMmcIrqSource> {
+        self.irq.state.take_source().then(|| {
+            SdioIrqSource::new(
+                DwMmcIrqEndpoint {
+                    irq: Arc::clone(&self.irq),
+                },
+                DwMmcIrqControl {
+                    irq: Arc::clone(&self.irq),
+                },
+            )
+        })
     }
 }
 
-impl SdioIrqHandle for DwMmcIrq {
+impl IrqEndpoint for DwMmcIrqEndpoint {
     type Event = Event;
+    type Fault = Error;
 
-    fn handle_irq(&mut self) -> Self::Event {
-        handle_irq_core(&self.irq)
+    fn capture(&mut self) -> IrqCapture<Self::Event, Self::Fault> {
+        capture_irq_core(&self.irq)
+    }
+
+    fn contain(&mut self, _cause: ContainmentCause) -> Result<MaskedSource, Self::Fault> {
+        mask_irq_delivery(&self.irq);
+        let generation = self
+            .irq
+            .state
+            .source_generation()
+            .ok_or(Error::InvalidArgument)?;
+        let bitmap = u64::from(self.irq.state.desired_sources());
+        let bitmap = NonZeroU64::new(bitmap).ok_or(Error::InvalidArgument)?;
+        self.irq.state.mark_sources_masked(bitmap.get());
+        Ok(MaskedSource::new(generation, bitmap))
     }
 }
 
-fn handle_irq_core(irq: &host::IrqCore) -> Event {
-    let Some(_register_owner) = irq.state.try_begin_irq_snapshot() else {
-        return Event::Deferred;
-    };
+impl Drop for DwMmcIrqEndpoint {
+    fn drop(&mut self) {
+        // Registration teardown must already have masked and synchronized the
+        // action. Drop only retires the capability; it never fabricates that
+        // hardware protocol or implicitly rearms the source.
+        self.irq.state.release_capture_endpoint();
+    }
+}
+
+impl IrqSourceControl for DwMmcIrqControl {
+    type Error = SdioIrqControlError;
+
+    fn rearm(&mut self, source: MaskedSource) -> Result<(), Self::Error> {
+        let expected = self
+            .irq
+            .state
+            .source_generation()
+            .ok_or(SdioIrqControlError::Offline)?;
+        let actual = source.generation();
+        if actual != expected {
+            return Err(SdioIrqControlError::StaleGeneration {
+                expected: expected.get(),
+                actual: actual.get(),
+            });
+        }
+        if !self.irq.state.source_online() {
+            return Err(SdioIrqControlError::Offline);
+        }
+        let bitmap = source.bitmap().get();
+        let Ok(controller_sources) = u32::try_from(bitmap) else {
+            return Err(SdioIrqControlError::SourceNotMasked { bitmap });
+        };
+        if controller_sources & !self.irq.state.desired_sources() != 0
+            || !self.irq.state.claim_masked_sources(bitmap)
+        {
+            return Err(SdioIrqControlError::SourceNotMasked { bitmap });
+        }
+
+        // The maintenance owner invokes rearm with this local action excluded,
+        // so no endpoint RMW can race this register transition.
+        let current = self.irq.regs.intmask().read();
+        self.irq.regs.intmask().write(current | controller_sources);
+        self.irq
+            .regs
+            .ctrl()
+            .update(|control| control.with_int_enable(true));
+        Ok(())
+    }
+}
+
+impl Drop for DwMmcIrqControl {
+    fn drop(&mut self) {
+        self.irq.state.release_source_control();
+    }
+}
+
+fn capture_irq_core(irq: &host::IrqCore) -> IrqCapture<Event, Error> {
     let generation = irq.state.generation();
     let raw_status = irq.regs.mintsts().read();
     if raw_status != 0 {
@@ -183,6 +259,7 @@ fn handle_irq_core(irq: &host::IrqCore) -> Event {
     if fifo_ready != 0 {
         let mask = irq.regs.intmask().read();
         irq.regs.intmask().write(mask & !fifo_ready);
+        irq.state.mark_sources_masked(u64::from(fifo_ready));
     }
     let idmac_status = irq.regs.idsts().read();
     let observed_idmac = idmac_status & DWMMC_IDMAC_INT_ACK_MASK;
@@ -198,21 +275,39 @@ fn handle_irq_core(irq: &host::IrqCore) -> Event {
     irq.state.cache_if_current(generation, raw_status);
     irq.state.cache_idmac_if_current(generation, observed_idmac);
 
-    if observed_idmac & DWMMC_IDMAC_INT_ERROR_MASK != 0 {
-        return Event::DmaError {
-            raw_status: observed_idmac,
-        };
-    }
-    let controller_event = event_from_raw_status(raw_status);
-    if !matches!(controller_event, Event::None) {
-        controller_event
-    } else if observed_idmac & DWMMC_IDMAC_INT_TRANSFER_MASK != 0 {
-        Event::DmaComplete
-    } else if observed_idmac != 0 {
-        Event::Other {
+    let event = if observed_idmac & DWMMC_IDMAC_INT_ERROR_MASK != 0 {
+        Event::DmaError {
             raw_status: observed_idmac,
         }
     } else {
-        Event::None
+        let controller_event = event_from_raw_status(raw_status);
+        if !matches!(controller_event, Event::None) {
+            controller_event
+        } else if observed_idmac & DWMMC_IDMAC_INT_TRANSFER_MASK != 0 {
+            Event::DmaComplete
+        } else if observed_idmac != 0 {
+            Event::Other {
+                raw_status: observed_idmac,
+            }
+        } else {
+            Event::None
+        }
+    };
+    if matches!(event, Event::None) {
+        return IrqCapture::Unhandled;
     }
+
+    let masked = NonZeroU64::new(u64::from(fifo_ready)).and_then(|bitmap| {
+        irq.state
+            .source_generation()
+            .map(|generation| MaskedSource::new(generation, bitmap))
+    });
+    IrqCapture::Captured { event, masked }
+}
+
+fn mask_irq_delivery(irq: &host::IrqCore) {
+    irq.regs.intmask().write(0);
+    irq.regs
+        .ctrl()
+        .update(|control| control.with_int_enable(false));
 }

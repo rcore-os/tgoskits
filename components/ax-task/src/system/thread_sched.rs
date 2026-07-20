@@ -35,6 +35,69 @@ enum ExecutionOwner {
     OnCpu(CpuId),
 }
 
+/// Nesting state for Linux-style migration disable on one scheduler thread.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CurrentCpuPinState {
+    cpu: Option<CpuId>,
+    generation: u64,
+    count: usize,
+}
+
+impl CurrentCpuPinState {
+    pub(super) const UNPINNED: Self = Self {
+        cpu: None,
+        generation: 0,
+        count: 0,
+    };
+
+    fn acquire(&mut self, cpu: CpuId) -> Result<u64, TaskError> {
+        if self.count == 0 {
+            debug_assert!(self.cpu.is_none());
+            self.generation = next_nonzero_generation(self.generation);
+            self.cpu = Some(cpu);
+        } else if self.cpu != Some(cpu) {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or(TaskError::InvalidConfiguration)?;
+        Ok(self.generation)
+    }
+
+    fn release(&mut self, cpu: CpuId, generation: u64) {
+        assert!(
+            self.is_active() && self.cpu == Some(cpu) && self.generation == generation,
+            "current-CPU lease generation must be released exactly once"
+        );
+        self.count -= 1;
+        if self.count == 0 {
+            self.cpu = None;
+        }
+    }
+
+    const fn is_active(self) -> bool {
+        self.count != 0
+    }
+
+    const fn cpu(self) -> Option<CpuId> {
+        if self.is_active() { self.cpu } else { None }
+    }
+
+    fn ensure_target(self, target: CpuId) -> Result<(), TaskError> {
+        if self.cpu().is_some_and(|cpu| cpu != target) {
+            Err(TaskError::ThreadPinned)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+const fn next_nonzero_generation(generation: u64) -> u64 {
+    let next = generation.wrapping_add(1);
+    if next == 0 { 1 } else { next }
+}
+
 /// Orthogonal scheduler and architecture ownership for one thread.
 ///
 /// `Queued + OnCpu` is intentionally representable: an outgoing thread may be
@@ -222,6 +285,7 @@ impl ThreadSchedCell {
                 deadline_zero_lag_ns: 0,
                 placement: ThreadPlacement::DETACHED,
                 migration_target: None,
+                current_cpu_pin: CurrentCpuPinState::UNPINNED,
                 blocked_pi_waiters: 0,
                 pi_donor: None,
                 deadline_donor: None,
@@ -261,6 +325,7 @@ pub(super) struct ThreadSchedState {
     pub(super) deadline_zero_lag_ns: u64,
     pub(super) placement: ThreadPlacement,
     pub(super) migration_target: Option<CpuId>,
+    pub(super) current_cpu_pin: CurrentCpuPinState,
     pub(super) blocked_pi_waiters: usize,
     pub(super) pi_donor: Option<ThreadId>,
     pub(super) deadline_donor: Option<ThreadId>,
@@ -326,6 +391,43 @@ impl ThreadSchedState {
 
     pub(super) fn clear_on_cpu(&mut self, cpu: CpuId) -> Result<(), TaskError> {
         self.placement.clear_on_cpu(cpu)
+    }
+
+    pub(super) fn acquire_current_cpu_pin(&mut self, cpu: CpuId) -> Result<u64, TaskError> {
+        if self.migration_target.is_some() || !self.affinity.contains(cpu) {
+            return Err(TaskError::ThreadBusy);
+        }
+        self.current_cpu_pin.acquire(cpu)
+    }
+
+    pub(super) fn release_current_cpu_pin(&mut self, cpu: CpuId, generation: u64) {
+        self.current_cpu_pin.release(cpu, generation);
+    }
+
+    pub(super) const fn is_migration_pinned(&self) -> bool {
+        self.current_cpu_pin.is_active()
+    }
+
+    pub(super) const fn pinned_cpu(&self) -> Option<CpuId> {
+        self.current_cpu_pin.cpu()
+    }
+
+    pub(super) fn ensure_affinity_change_allowed(&self) -> Result<(), TaskError> {
+        if self.is_migration_pinned() {
+            Err(TaskError::ThreadPinned)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn ensure_placement_cpu(&self, cpu: CpuId) -> Result<(), TaskError> {
+        self.current_cpu_pin.ensure_target(cpu)
+    }
+
+    pub(super) fn request_migration(&mut self, target: CpuId) -> Result<(), TaskError> {
+        self.ensure_placement_cpu(target)?;
+        self.migration_target = Some(target);
+        Ok(())
     }
 
     #[cfg(test)]

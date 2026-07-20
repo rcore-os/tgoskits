@@ -101,17 +101,6 @@ pub fn local_irq_set_enable(irq: rdrive::IrqId, enable: bool) -> Result<(), crat
     }
 }
 
-pub fn irq_set_affinity(
-    hwirq: rdif_intc::HwIrq,
-    affinity: crate::irq::IrqAffinity,
-) -> Result<(), crate::irq::IrqError> {
-    let source = NonZeroU32::new(hwirq.0).ok_or(crate::irq::IrqError::InvalidIrq)?;
-    with_plic("setting PLIC IRQ affinity", |plic| {
-        plic.set_source_affinity(source, affinity)
-    })
-    .ok_or(crate::irq::IrqError::Controller)?
-}
-
 /// Immutable IRQ-side capability for one leased physical PLIC source.
 ///
 /// The control plane validates and enables the source before constructing this
@@ -669,43 +658,6 @@ impl RiscvPlic {
         for context in self.context_by_cpu.iter().filter_map(|context| *context) {
             self.inner.disable(source, context);
         }
-    }
-
-    fn set_source_affinity(
-        &mut self,
-        source: NonZeroU32,
-        affinity: crate::irq::IrqAffinity,
-    ) -> Result<(), crate::irq::IrqError> {
-        if source.get() as usize > self.sources {
-            warn!(
-                "skip setting affinity for out-of-range PLIC source {}",
-                source.get()
-            );
-            return Err(crate::irq::IrqError::InvalidIrq);
-        }
-        if self.leased_by_source[source.get() as usize] {
-            return Err(crate::irq::IrqError::Busy);
-        }
-        if let crate::irq::IrqAffinity::Fixed { cpu_id } = affinity
-            && self
-                .context_by_cpu
-                .get(cpu_id)
-                .and_then(|ctx| *ctx)
-                .is_none()
-        {
-            warn!("PLIC supervisor context for affinity CPU {cpu_id} is not found");
-            return Err(crate::irq::IrqError::InvalidIrq);
-        }
-
-        let was_enabled = self.enabled_by_source[source.get() as usize];
-        self.disable_source_contexts(source);
-        self.affinity_by_source[source.get() as usize] = affinity;
-        if was_enabled {
-            for context in self.contexts_for_source(source) {
-                self.inner.enable(source, context);
-            }
-        }
-        Ok(())
     }
 
     fn lease_irq_endpoints(

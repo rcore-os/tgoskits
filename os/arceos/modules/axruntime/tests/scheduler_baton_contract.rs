@@ -3,6 +3,15 @@
 const GUARD: &str = include_str!("../src/guard.rs");
 const TASK_RUNTIME: &str = include_str!("../src/task.rs");
 
+fn source_section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    let (_, tail) = source
+        .split_once(start)
+        .unwrap_or_else(|| panic!("missing source section start: {start}"));
+    tail.split_once(end)
+        .unwrap_or_else(|| panic!("missing source section end: {end}"))
+        .0
+}
+
 #[test]
 fn raw_context_switch_transfers_an_active_baton_before_leaving_the_stack() {
     for state in ["Active", "Transferred", "Finished"] {
@@ -18,15 +27,24 @@ fn raw_context_switch_transfers_an_active_baton_before_leaving_the_stack() {
 }
 
 #[test]
-fn final_preempt_exit_transfers_the_baton_before_irqs_can_be_reenabled() {
-    let branch = GUARD
-        .split("if must_schedule {")
-        .nth(1)
-        .and_then(|tail| tail.split("return;").next())
-        .expect("preempt-exit scheduling branch must remain explicit");
+fn final_preempt_exit_finishes_the_baton_before_restoring_saved_irqs() {
+    let branch = source_section(GUARD, "if must_schedule {", "state.exit_lock_preempt();");
+    let schedule = branch
+        .find("schedule_current_cpu_from_preempt_exit")
+        .expect("the final preempt depth must transfer directly to the scheduler");
+    let completed = branch
+        .find("assert_preempt_exit_completed();")
+        .expect("the resumed continuation must verify that its baton is finished");
+    let restore = branch
+        .find("irq_owner.restore_saved_irq_state();")
+        .expect("the original guard continuation must restore its saved IRQ state");
     assert!(
-        !branch.contains("enable_irqs"),
-        "the final preempt depth must become the scheduler baton while raw IRQs stay disabled",
+        schedule < completed && completed < restore,
+        "IRQ restoration must remain continuation-local and happen only after baton completion",
+    );
+    assert!(
+        !branch[..restore].contains("enable_irqs"),
+        "raw IRQs must stay disabled through scheduler entry and baton completion",
     );
     assert!(
         GUARD.contains(
@@ -34,6 +52,10 @@ fn final_preempt_exit_transfers_the_baton_before_irqs_can_be_reenabled() {
              !irqs_enabled"
         ),
         "both guard-exit entries must arrive with raw IRQs disabled",
+    );
+    assert!(
+        GUARD.contains("struct PreemptExitIrqOwner"),
+        "saved IRQ state must have an owner distinct from the CPU-local scheduler baton",
     );
 }
 

@@ -163,9 +163,6 @@ pub trait Klib {
     /// Initializes the wall-clock epoch offset from an absolute epoch time.
     fn time_try_init_epoch_offset(epoch_time_nanos: u64) -> bool;
 
-    /// Enable or disable a domain-scoped platform IRQ.
-    fn irq_set_enable(irq: IrqId, enabled: bool) -> AxResult;
-
     /// Request a shared IRQ action and return its handle on success.
     fn irq_request_shared(irq: IrqId, handler: BoxedIrqHandler) -> AxResult<IrqHandle>;
 
@@ -237,7 +234,7 @@ pub mod irq {
         IrqStatus,
         klib::{
             irq_disable as disable, irq_enable as enable, irq_free as free,
-            irq_run_on_cpu_sync as run_on_cpu_sync, irq_set_enable as set_enable,
+            irq_run_on_cpu_sync as run_on_cpu_sync,
         },
         legacy_irq, legacy_irq_raw, try_legacy_irq,
     };

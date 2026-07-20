@@ -4,6 +4,7 @@ use super::arceos;
 
 pub(crate) type AxTaskRef = arceos::ArceOsAxTaskRef;
 pub(crate) type CurrentTask = arceos::ArceOsCurrentTask;
+pub(crate) type CurrentCpuLease = arceos::ArceOsCurrentCpuLease;
 pub(crate) type TaskError = arceos::ArceOsTaskError;
 pub(crate) type TaskInner = arceos::ArceOsTaskInner;
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
@@ -23,6 +24,10 @@ pub(crate) fn current_task() -> CurrentTask {
 
 pub(crate) fn try_current_task() -> Result<Option<CurrentTask>, TaskError> {
     arceos::try_current_task()
+}
+
+pub(crate) fn pin_current_cpu() -> Result<CurrentCpuLease, TaskError> {
+    arceos::pin_current_cpu()
 }
 
 pub(crate) fn in_hard_irq() -> bool {

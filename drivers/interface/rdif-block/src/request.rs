@@ -370,7 +370,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        DispatchMode, QueueKind,
+        QueueExecution, QueueKind,
         dma_api::{
             DeviceDma, DmaAllocHandle, DmaConstraints, DmaDirection, DmaError, DmaMapHandle, DmaOp,
         },
@@ -447,7 +447,7 @@ mod tests {
             device: DeviceInfo::new(64, 512),
             limits,
             kind: QueueKind::Interrupt { sources },
-            dispatch_mode: DispatchMode::Direct,
+            execution: QueueExecution::Tagged,
         }
     }
 

@@ -130,7 +130,7 @@ impl NvmeQueueState {
     pub(super) fn emit_cached_completions(
         &mut self,
         queue_id: usize,
-        cache: &CompletionCache,
+        cache: &mut CompletionCache,
         budget: usize,
         sink: &mut dyn CompletionSink,
     ) -> Result<usize, BlkError> {
@@ -202,8 +202,8 @@ impl NvmeQueueState {
             }
             slot.state = SlotState::Free;
             self.free_cids.push(cid);
-            // SAFETY: QueueHandle shutdown requires IRQ synchronization and
-            // DMA quiescence before entering this path.
+            // SAFETY: proof-gated reclaim requires IRQ synchronization and DMA
+            // quiescence before entering this path.
             let completion = unsafe { accepted.complete_after_quiesce(Err(BlkError::Cancelled)) };
             sink.complete(completion);
         }
@@ -286,7 +286,7 @@ mod tests {
         let mut state = NvmeQueueState::new(1, Vec::new());
         let cid = state.alloc_cid().expect("one CID must be available");
         state.accept(cid, accepted_flush(runtime_id), None);
-        let cache = CompletionCache::new(2);
+        let mut cache = CompletionCache::new(2);
         assert!(cache.record(CachedCompletion {
             cid,
             status: CompletionStatus {
@@ -299,7 +299,7 @@ mod tests {
 
         assert_eq!(
             state
-                .emit_cached_completions(0, &cache, 64, &mut sink)
+                .emit_cached_completions(0, &mut cache, 64, &mut sink)
                 .expect("valid CQE must complete its accepted request"),
             1
         );
@@ -335,7 +335,7 @@ mod tests {
         let cid = state.alloc_cid().expect("one CID must be available");
         assert_eq!(cid, 1);
         state.accept(cid, accepted_flush(runtime_id), None);
-        let cache = CompletionCache::new(3);
+        let mut cache = CompletionCache::new(3);
         assert!(cache.record(CachedCompletion {
             cid,
             status: CompletionStatus {
@@ -355,7 +355,7 @@ mod tests {
         let mut sink = CountingSink::default();
 
         assert_eq!(
-            state.emit_cached_completions(0, &cache, 64, &mut sink),
+            state.emit_cached_completions(0, &mut cache, 64, &mut sink),
             Err(BlkError::Io)
         );
         assert!(

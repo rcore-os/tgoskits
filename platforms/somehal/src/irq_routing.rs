@@ -389,6 +389,7 @@ impl AcpiControllerRoutes {
         (input < self.vector_count).then_some(self.base_vector + input)
     }
 
+    #[cfg(test)]
     pub(super) fn input_for_vector(&self, vector: usize) -> Option<usize> {
         let input = vector.checked_sub(self.base_vector)?;
         (input < self.vector_count).then_some(input)

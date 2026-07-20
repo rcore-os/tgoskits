@@ -43,5 +43,5 @@ fn irq_return_safe_point_owns_bounded_callback_execution() {
         "fn current_thread_id()",
     );
     assert!(irq_return.contains("ax_ipi::drain_deferred_callbacks()"));
-    assert!(irq_return.contains("exit_lock_preempt(true)"));
+    assert!(irq_return.contains("exit_lock_preempt(PreemptExitOrigin::IrqReturn)"));
 }

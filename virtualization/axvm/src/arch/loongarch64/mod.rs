@@ -64,11 +64,6 @@ impl ArchOps for LoongArch64Arch {
         loongarch_vcpu::has_hardware_support()
     }
 
-    fn register_platform_irq_injector() {
-        irq::register_platform_irq_injector();
-    }
-
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn activate_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
         let routes = boot::get_guest_irq_routes(vm.id());
         if routes.is_empty() {
@@ -80,15 +75,49 @@ impl ArchOps for LoongArch64Arch {
             routes.len(),
             vm.id()
         );
+        let devices = vm.get_devices()?;
+        if !devices.has_loongarch_pch_pic() {
+            return Err(AxVmError::unsupported(
+                "activate LoongArch passthrough IRQ routes",
+                "level IRQ passthrough requires the guest PCH-PIC deassertion boundary",
+            ));
+        }
         for route in routes {
             irq::register_guest_irq_route(route.physical_irq, vm.id(), 0, route.guest_vector)?;
         }
         Ok(())
     }
 
-    #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn revoke_guest_irq_routes(vm: &crate::AxVMRef) -> AxVmResult {
         irq::revoke_guest_irq_routes(vm.id())
+    }
+
+    fn prepare_vcpu_irq_owner(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult<Option<crate::architecture::ops::VcpuIrqOwnerSession>> {
+        irq::prepare_guest_irq_owner_session(vm, vcpu)
+    }
+
+    fn before_first_run(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        irq::activate_guest_irq_owner(vm, vcpu)
+    }
+
+    fn service_vcpu_irq_owner(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) -> AxVmResult {
+        irq::service_guest_irq_owner(vm, vcpu)
+    }
+
+    fn drain_arch_irq_publications(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vcpu::BoundVcpu<'_, '_, Self::VCpu>,
+    ) -> AxVmResult {
+        irq::drain_guest_irq_publications(vm, vcpu)
     }
 
     fn inject_pending_interrupt(
@@ -337,10 +366,18 @@ fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
     devices.drain_loongarch_pch_pic_events(|event| {
         if !event.asserted {
             trace!(
-                "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
+                "LoongArch VM[{}] PCH-PIC input {} deasserted EIOINTC vector {}",
                 vm.id(),
+                event.source,
                 event.vector
             );
+            if let Err(error) = irq::complete_guest_irq_route(vm.id(), event.source) {
+                warn!(
+                    "failed to rearm LoongArch VM[{}] physical IRQ for PCH-PIC input {}: {error:?}",
+                    vm.id(),
+                    event.source
+                );
+            }
             return;
         }
         if let Err(err) = crate::manager::inject_vm_vcpu_interrupt(vm.id(), 0, event.vector) {

@@ -16,7 +16,7 @@
 //!
 //! # Data Paths
 //!
-//! - RX workers poll real devices and enqueue `RxPacket`s into a bounded shared
+//! - Per-device workers consume runtime readiness and enqueue `RxPacket`s into a bounded shared
 //!   RX queue. `Router::poll()` drains that queue into the smoltcp-facing packet
 //!   buffer.
 //! - smoltcp TX writes into `tx_buffer`. `Router::dispatch()` parses the IP
@@ -45,7 +45,6 @@ use alloc::{
 use core::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     task::Waker,
-    time::Duration,
 };
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
@@ -68,13 +67,12 @@ use crate::{
     LISTEN_TABLE,
     config::{DeviceBinding, InterfaceId, RouteInfo},
     consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
-    device::{ArpEntry, Device},
+    device::{ArpEntry, Device, WifiControl, WifiControlGeneration},
     ip_tos::apply_egress_ip_tos,
     rx_meta::packet_meta_for_rx_packet,
 };
 
 const DEVICE_RX_WORKER_BATCH: usize = 16;
-const DEVICE_RX_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Per-interface cumulative RX/TX byte and packet counters.
 ///
@@ -253,6 +251,25 @@ struct RouterQueues {
     rx: Arc<BoundedPacketQueue<RxPacket>>,
 }
 
+struct WifiGenerationGate {
+    committed: AtomicU64,
+}
+
+impl WifiGenerationGate {
+    const fn new() -> Self {
+        Self {
+            committed: AtomicU64::new(0),
+        }
+    }
+
+    fn accept(&self, generation: WifiControlGeneration) -> bool {
+        // The Service lock already serializes the following protocol mutation.
+        // `fetch_max` additionally makes the generation invariant local to the
+        // device if that surrounding implementation changes later.
+        self.committed.fetch_max(generation.get(), Ordering::AcqRel) < generation.get()
+    }
+}
+
 /// Runtime handle for one physical or virtual device.
 struct DeviceHandle {
     /// Stable interface id exposed to the control plane.
@@ -261,14 +278,17 @@ struct DeviceHandle {
     name: String,
     /// Concrete device implementation.
     inner: Arc<SpinMutex<Box<dyn Device>>>,
+    /// Immutable wireless owner facade captured before the concrete device is
+    /// placed behind its protocol-path lock.
+    wifi_control: Option<Arc<dyn WifiControl>>,
+    /// Highest link transaction already committed into protocol state.
+    wifi_generation: WifiGenerationGate,
     /// Shared router RX queue.
     rx_queue: Arc<BoundedPacketQueue<RxPacket>>,
     /// Per-device TX queue.
     tx_queue: Arc<BoundedPacketQueue<TxPacket>>,
-    /// Wait queue used by the RX worker.
-    rx_wake: Arc<WaitQueue>,
-    /// Wait queue used by the TX worker.
-    tx_wake: Arc<WaitQueue>,
+    /// Wait queue used by the device's single protocol-side worker.
+    work_wake: Arc<WaitQueue>,
     /// Waker registered into the concrete device.
     rx_waker: Waker,
     /// Sticky readiness bit for RX wakeups. `WaitQueue` notifications are not
@@ -303,28 +323,18 @@ impl PreparedDeviceWorkers {
         }
     }
 
-    /// Starts RX workers first, then TX workers, after Service publication.
+    /// Starts one serialized protocol worker per device after publication.
     pub(crate) fn start(self) {
-        for device in &self.devices {
-            spawn_device_rx_worker(device.clone());
-        }
         for device in self.devices {
-            spawn_device_tx_worker(device);
+            spawn_device_worker(device);
         }
     }
 }
 
-fn spawn_device_tx_worker(device: Arc<DeviceHandle>) {
-    let name = format!("{}-tx", device.name);
-    if let Err(error) = crate::spawn_permanent_worker(name, move || device_tx_worker(device)) {
-        error!("failed to start network TX worker: {error}");
-    }
-}
-
-fn spawn_device_rx_worker(device: Arc<DeviceHandle>) {
-    let name = format!("{}-rx", device.name);
-    if let Err(error) = crate::spawn_permanent_worker(name, move || device_rx_worker(device)) {
-        error!("failed to start network RX worker: {error}");
+fn spawn_device_worker(device: Arc<DeviceHandle>) {
+    let name = format!("{}-protocol", device.name);
+    if let Err(error) = crate::spawn_permanent_worker(name, move || device_worker(device)) {
+        error!("failed to start network device worker: {error}");
     }
 }
 
@@ -335,14 +345,16 @@ impl DeviceHandle {
         queues: &Arc<RouterQueues>,
     ) -> Arc<Self> {
         let name = device.name().to_string();
+        let wifi_control = device.wifi_control();
         Arc::new_cyclic(|weak| Self {
             interface_id,
             name,
             inner: Arc::new(SpinMutex::new(device)),
+            wifi_control,
+            wifi_generation: WifiGenerationGate::new(),
             rx_queue: queues.rx.clone(),
             tx_queue: Arc::new(BoundedPacketQueue::new(DEVICE_TX_QUEUE_SIZE)),
-            rx_wake: Arc::new(WaitQueue::new()),
-            tx_wake: Arc::new(WaitQueue::new()),
+            work_wake: Arc::new(WaitQueue::new()),
             rx_waker: Waker::from(Arc::new(DeviceRxWake {
                 device: weak.clone(),
             })),
@@ -352,6 +364,10 @@ impl DeviceHandle {
             tx_bytes: AtomicU64::new(0),
             tx_packets: AtomicU64::new(0),
         })
+    }
+
+    fn accept_wifi_generation(&self, generation: WifiControlGeneration) -> bool {
+        self.wifi_generation.accept(generation)
     }
 
     /// Records `len` bytes received on this interface.
@@ -417,7 +433,7 @@ impl DeviceHandle {
 
     fn wake_rx(&self) {
         self.rx_ready.store(true, Ordering::Release);
-        self.rx_wake.notify_one();
+        self.work_wake.notify_one();
     }
 
     fn take_rx_ready(&self) -> bool {
@@ -442,7 +458,7 @@ impl DeviceHandle {
             );
             return false;
         }
-        self.tx_wake.notify_one();
+        self.work_wake.notify_one();
         true
     }
 }
@@ -453,15 +469,6 @@ fn register_device_poll(device: &DeviceHandle, waker: &core::task::Waker) {
         // Device poll set is cloned while holding the device lock; registration
         // runs after releasing it.
         unsafe { poll.register(waker, IoEvents::IN | IoEvents::OUT | IoEvents::ERR) };
-    }
-}
-
-fn wake_device_poll(device: &DeviceHandle) {
-    let poll = { device.inner.lock().readiness_poll() };
-    if let Some(poll) = poll {
-        // Device readiness has been published by the net poll task, and the
-        // device lock has been released before running wakers.
-        unsafe { poll.wake(IoEvents::IN | IoEvents::OUT | IoEvents::ERR) };
     }
 }
 
@@ -664,6 +671,28 @@ impl Router {
             .position(|device| device.interface_id == interface_id)
     }
 
+    /// Clones the immutable wireless owner facade for one public interface.
+    pub(crate) fn wifi_control_for_interface(
+        &self,
+        interface_id: InterfaceId,
+    ) -> Option<Arc<dyn WifiControl>> {
+        self.devices
+            .iter()
+            .find(|device| device.interface_id == interface_id)
+            .and_then(|device| device.wifi_control.clone())
+    }
+
+    /// Commits one completed link generation into the protocol-plane order.
+    pub(crate) fn accept_wifi_generation(
+        &self,
+        dev: usize,
+        generation: WifiControlGeneration,
+    ) -> bool {
+        self.devices
+            .get(dev)
+            .is_some_and(|device| device.accept_wifi_generation(generation))
+    }
+
     /// Returns names of all registered devices.
     pub fn device_names(&self) -> Vec<String> {
         self.devices
@@ -694,11 +723,6 @@ impl Router {
             .into_iter()
             .collect();
         PreparedDeviceWorkers { devices }
-    }
-
-    /// Finds the index of a device by its interface name (e.g. `"wlan0"`).
-    pub fn device_index(&self, name: &str) -> Option<usize> {
-        self.devices.iter().position(|device| device.name == name)
     }
 
     /// Applies an IPv4 address/gateway update to one device and its routes.
@@ -814,14 +838,6 @@ impl Router {
     /// Returns a per-interface snapshot of RX/TX byte and packet counters.
     pub fn net_dev_stats(&self) -> Vec<NetDevStats> {
         self.devices.iter().map(|device| device.stats()).collect()
-    }
-
-    /// Forces all device RX workers to re-check their devices.
-    pub fn wake_all_devices(&self) {
-        for device in &self.devices {
-            wake_device_poll(device);
-            device.wake_rx();
-        }
     }
 
     /// Registers a waker for devices allowed by a socket's binding.
@@ -983,26 +999,12 @@ fn inject_loopback_rx(
     true
 }
 
-/// Dedicated worker that drains one device's TX queue.
-fn device_tx_worker(device: Arc<DeviceHandle>) {
-    loop {
-        if let Some(packet) = device.tx_queue.pop() {
-            let frame_len =
-                device
-                    .inner
-                    .lock()
-                    .send(packet.next_hop, packet.bytes.as_slice(), now());
-            if frame_len > 0 {
-                device.count_tx(frame_len);
-            }
-        } else {
-            device.tx_wake.wait_until(|| !device.tx_queue.is_empty());
-        }
-    }
-}
-
-/// Dedicated worker that polls one device and forwards packets to router RX.
-fn device_rx_worker(device: Arc<DeviceHandle>) {
+/// Single protocol-side worker for one runtime-owned device facade.
+///
+/// RX and TX calls are serialized here. For hardware devices these calls only
+/// exchange packets with the CPU-pinned runtime maintenance owner; they never
+/// access the real driver, descriptor rings, or MMIO directly.
+fn device_worker(device: Arc<DeviceHandle>) {
     let mut rx_buffer = DevicePacketBuffer::new(
         vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
         vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
@@ -1015,7 +1017,7 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         VecDeque::with_capacity(DEVICE_RX_WORKER_BATCH);
 
     loop {
-        let mut received = false;
+        let mut made_progress = false;
         {
             let mut device_inner = device.inner.lock();
             let mut snoop = |_packet: &[u8]| {};
@@ -1046,17 +1048,19 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
                     },
                     frame_len,
                 ));
-                received = true;
+                made_progress = true;
             }
             // Count TX bytes from packets sent asynchronously during recv()
             // (e.g. pending ARP sends and ARP replies inside process_arp()).
             for frame_len in device_inner.drain_deferred_tx() {
                 device.count_tx(frame_len);
+                made_progress = true;
             }
             // Count RX bytes from non-IP frames received during recv()
             // (e.g. ARP requests processed in handle_frame()).
             for frame_len in device_inner.drain_deferred_rx() {
                 device.count_rx(frame_len);
+                made_progress = true;
             }
         }
 
@@ -1069,7 +1073,8 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
             warn!("{}: RX queue is full, delaying packet", device.name);
             crate::request_poll();
             let _result = ax_task::yield_current_cpu();
-        } else {
+            continue;
+        } else if made_progress {
             // All entries were successfully pushed — notify the main poll loop
             // that new packets are available for processing.
             if !local_batch.is_empty() {
@@ -1078,12 +1083,37 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
             crate::request_poll();
         }
 
-        if !received && local_batch.is_empty() {
-            register_device_poll(&device, &device.rx_waker);
-            device
-                .rx_wake
-                .wait_timeout_until(DEVICE_RX_IDLE_POLL_INTERVAL, || device.take_rx_ready());
+        let mut tx_processed = 0;
+        while tx_processed < DEVICE_RX_WORKER_BATCH {
+            let Some(packet) = device.tx_queue.pop() else {
+                break;
+            };
+            let frame_len =
+                device
+                    .inner
+                    .lock()
+                    .send(packet.next_hop, packet.bytes.as_slice(), now());
+            if frame_len > 0 {
+                device.count_tx(frame_len);
+            }
+            tx_processed += 1;
+            made_progress = true;
         }
+
+        if !local_batch.is_empty() || !device.tx_queue.is_empty() {
+            let _result = ax_task::yield_current_cpu();
+            continue;
+        }
+        if made_progress {
+            // Recheck the mailbox facade once before parking. Runtime
+            // readiness can coalesce multiple packets behind one wake.
+            continue;
+        }
+
+        register_device_poll(&device, &device.rx_waker);
+        device
+            .work_wake
+            .wait_until(|| device.take_rx_ready() || !device.tx_queue.is_empty());
     }
 }
 
@@ -1201,6 +1231,8 @@ impl smoltcp::phy::Device for Router {
 
 #[cfg(test)]
 mod tests {
+    use core::num::NonZeroU64;
+
     use smoltcp::storage::PacketBuffer;
 
     use super::*;
@@ -1244,6 +1276,20 @@ mod tests {
     }
 
     #[test]
+    fn wifi_generation_gate_rejects_late_protocol_commits() {
+        let gate = WifiGenerationGate::new();
+        let generation = |value| {
+            WifiControlGeneration::new(NonZeroU64::new(value).expect("test generation is non-zero"))
+        };
+
+        assert!(gate.accept(generation(1)));
+        assert!(gate.accept(generation(3)));
+        assert!(!gate.accept(generation(2)));
+        assert!(!gate.accept(generation(3)));
+        assert!(gate.accept(generation(4)));
+    }
+
+    #[test]
     fn rx_worker_wake_is_sticky_until_observed() {
         let device = test_device_handle(Box::new(EmptyDevice));
 
@@ -1251,12 +1297,6 @@ mod tests {
         device.rx_waker.wake_by_ref();
         assert!(device.take_rx_ready());
         assert!(!device.take_rx_ready());
-    }
-
-    #[test]
-    fn rx_worker_idle_poll_interval_keeps_polling_devices_active() {
-        assert!(DEVICE_RX_IDLE_POLL_INTERVAL > core::time::Duration::ZERO);
-        assert!(DEVICE_RX_IDLE_POLL_INTERVAL <= core::time::Duration::from_millis(10));
     }
 
     #[test]
@@ -1577,7 +1617,7 @@ mod l2_counter_tests {
             recv_returns: 0,
         }));
 
-        // Simulate what device_tx_worker does
+        // Simulate the TX half of the serialized device worker.
         let frame_len = device
             .inner
             .lock()
@@ -1804,7 +1844,7 @@ mod l2_counter_tests {
             recv_returns: 1514,             // 1 IP RX frame
         }));
 
-        // Simulate one iteration of device_rx_worker's inner loop:
+        // Simulate the RX half of one serialized device-worker iteration:
         //   1. recv IP frame → count_rx(frame_len)
         //   2. drain deferred TX → count_tx(each)
         //   3. drain deferred RX → count_rx(each)

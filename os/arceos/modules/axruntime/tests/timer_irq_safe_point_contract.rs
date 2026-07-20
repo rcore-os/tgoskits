@@ -82,7 +82,7 @@ fn controller_eoi_and_hard_irq_exit_precede_scheduler_entry() {
         .find("ax_ipi::drain_deferred_callbacks();")
         .expect("bounded deferred callbacks belong to IRQ return");
     let scheduler = runtime_return
-        .find("exit_lock_preempt(true);")
+        .find("exit_lock_preempt(PreemptExitOrigin::IrqReturn);")
         .expect("the final preempt depth must transfer directly to the scheduler");
     assert!(callbacks < scheduler);
 }

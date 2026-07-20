@@ -10,6 +10,7 @@ use ax_kspin::SpinRaw as Mutex;
 use dma_api::CoherentArray;
 use futures::{FutureExt, future::BoxFuture, task::AtomicWaker};
 use mbarrier::mb;
+use rdif_irq::{ContainmentCause, FaultContainment, IrqCapture, MaskedSource};
 use usb_if::{
     descriptor::{
         ConfigurationDescriptor, DescriptorType, DeviceDescriptor, DeviceDescriptorBase,
@@ -28,7 +29,10 @@ use super::{
 };
 use crate::{
     DeviceAddressInfo, Mmio,
-    backend::ty::{DeviceOp, Event, EventHandlerOp, HubParams, ep::Endpoint},
+    backend::ty::{
+        DeviceOp, Event, EventHandlerOp, HubParams, IrqEpoch, UsbIrqEvent, UsbIrqFault,
+        ep::Endpoint,
+    },
     err::Result,
 };
 
@@ -83,7 +87,7 @@ const GINTSTS_CURMODE_HOST: u32 = 1 << 0;
 const GINTSTS_PRTINT: u32 = 1 << 24;
 const GINTSTS_HCHINT: u32 = 1 << 25;
 const GINTSTS_DISCONNINT: u32 = 1 << 29;
-const DWC2_RUNTIME_GINTMSK: u32 = GINTSTS_HCHINT;
+const DWC2_RUNTIME_GINTMSK: u32 = GINTSTS_PRTINT | GINTSTS_HCHINT | GINTSTS_DISCONNINT;
 
 const GOTGCTL_VBVALOEN: u32 = 1 << 2;
 const GOTGCTL_VBVALOVAL: u32 = 1 << 3;
@@ -915,6 +919,7 @@ struct Dwc2EventHandler {
     regs: Dwc2Registers,
     channel_completions: Dwc2ChannelCompletions,
     stats: Dwc2Stats,
+    irq_epoch: IrqEpoch,
 }
 
 // SAFETY: The event handler may be registered on an IRQ path and moved between
@@ -922,10 +927,9 @@ struct Dwc2EventHandler {
 // statistics are atomic, and register access is volatile through
 // `Dwc2Registers`.
 unsafe impl Send for Dwc2EventHandler {}
-// SAFETY: `handle_event` only uses `&self`. It acknowledges hardware IRQ bits
-// and publishes completions through atomics/wakers; channel programming races
-// with the task path are bounded by per-channel gates and DWC2 channel-halt
-// completion ordering.
+// SAFETY: IRQ capture and owner-side event service use `&self`, acknowledge
+// hardware bits, and publish completions through atomics/wakers. Channel
+// programming races are bounded by per-channel gates and channel-halt ordering.
 unsafe impl Sync for Dwc2EventHandler {}
 
 impl Dwc2EventHandler {
@@ -938,33 +942,80 @@ impl Dwc2EventHandler {
             regs,
             channel_completions,
             stats,
+            irq_epoch: IrqEpoch::new(),
         }
     }
 }
 
 impl EventHandlerOp for Dwc2EventHandler {
-    fn handle_event(&self) -> Event {
+    fn capture_irq(&self) -> IrqCapture<UsbIrqEvent, UsbIrqFault> {
         let pending = self.regs.read32(GINTSTS)
             & self.regs.read32(GINTMSK)
             & (GINTSTS_PRTINT | GINTSTS_HCHINT | GINTSTS_DISCONNINT);
         if pending == 0 {
-            return Event::Nothing;
+            return IrqCapture::Unhandled;
         }
 
+        // Mask the controller source before returning to the generic IRQ flow.
+        // Destructive channel-status reads are deferred to the fixed owner.
+        self.regs.write32(GINTMSK, 0);
+        match self.irq_epoch.capture(u64::from(pending)) {
+            Ok((event, masked)) => IrqCapture::Captured {
+                event,
+                masked: Some(masked),
+            },
+            Err(reason) => match self.irq_epoch.contained_or_capture(u64::from(pending)) {
+                Ok(masked) => IrqCapture::Fault {
+                    reason,
+                    containment: FaultContainment::DeviceSourceMasked(masked),
+                },
+                Err(_) => IrqCapture::Fault {
+                    reason,
+                    containment: FaultContainment::Uncontained,
+                },
+            },
+        }
+    }
+
+    fn service_host_events(&self, event: UsbIrqEvent) -> core::result::Result<Event, UsbIrqFault> {
+        self.irq_epoch.validate_event(event)?;
+        let pending = event.sources() as u32;
+        let mut topology_changed = false;
+        let mut transfer_count = 0usize;
         if pending & GINTSTS_PRTINT != 0 {
             self.regs.write32(GINTSTS, GINTSTS_PRTINT);
-            return Event::PortChange { port: 1 };
+            topology_changed = true;
         }
         if pending & GINTSTS_HCHINT != 0 {
             self.stats.record_irq_event();
-            let count = self.handle_channel_interrupts();
+            transfer_count = self.handle_channel_interrupts().max(1);
             self.regs.write32(GINTSTS, GINTSTS_HCHINT);
-            return Event::TransferActivity {
-                count: count.max(1),
-            };
         }
-        self.regs.write32(GINTSTS, pending);
-        Event::Stopped
+        if pending & GINTSTS_DISCONNINT != 0 {
+            self.regs.write32(GINTSTS, GINTSTS_DISCONNINT);
+            topology_changed = true;
+        }
+        if topology_changed {
+            Ok(Event::PortChange { port: 1 })
+        } else if transfer_count != 0 {
+            Ok(Event::TransferActivity {
+                count: transfer_count,
+            })
+        } else {
+            Ok(Event::Stopped)
+        }
+    }
+
+    fn contain(&self, _cause: ContainmentCause) -> core::result::Result<MaskedSource, UsbIrqFault> {
+        self.regs.write32(GINTMSK, 0);
+        self.irq_epoch
+            .contained_or_capture(u64::from(DWC2_RUNTIME_GINTMSK))
+    }
+
+    fn rearm_sources(&self, source: MaskedSource) -> core::result::Result<(), UsbIrqFault> {
+        self.irq_epoch.finish_rearm(source)?;
+        self.regs.write32(GINTMSK, DWC2_RUNTIME_GINTMSK);
+        Ok(())
     }
 }
 
@@ -2331,16 +2382,16 @@ mod tests {
     };
 
     use super::{
-        DataStageRetryPolicy, DataToggle, Dwc2ChannelCompletions, Dwc2DmaBuffer, Dwc2DmaBufferPool,
-        Dwc2Endpoint, Dwc2EndpointParams, Dwc2EpType, Dwc2EventHandler, Dwc2FifoSizes,
-        Dwc2HostParams, Dwc2NewParams, Dwc2Pid, Dwc2PortStatus, Dwc2Stats, Dwc2TransferFault,
-        Dwc2TransferStage, GINTMSK, GINTSTS, GINTSTS_HCHINT, HAINT, HAINTMSK, HCCHAR, HCCHAR_CHDIS,
-        HCCHAR_CHENA, HCINT, HCINT_AHBERR, HCINT_BBLERR, HCINT_CHHLTD, HCINT_DMA_IRQ_MASK,
-        HCINT_NAK, HCINT_STALL, HCINT_XACTERR, HCINT_XFERCOMPL, HCINTMSK, HPRT_CONN_DET,
-        HPRT_CONN_STS, HPRT_ENA, HPRT_ENA_CHG, HPRT_OVRCUR_CHG, build_channel_gates,
-        build_control_plan, build_gahbcfg_internal_dma, data_stage_retry_policy,
-        fifo_register_plan, hcchar, hcint_fault, hctsiz, packet_count, split_dma_lengths,
-        stage_actual_length, successful_packet_count,
+        DWC2_RUNTIME_GINTMSK, DataStageRetryPolicy, DataToggle, Dwc2ChannelCompletions,
+        Dwc2DmaBuffer, Dwc2DmaBufferPool, Dwc2Endpoint, Dwc2EndpointParams, Dwc2EpType,
+        Dwc2EventHandler, Dwc2FifoSizes, Dwc2HostParams, Dwc2NewParams, Dwc2Pid, Dwc2PortStatus,
+        Dwc2Stats, Dwc2TransferFault, Dwc2TransferStage, GINTMSK, GINTSTS, GINTSTS_HCHINT, HAINT,
+        HAINTMSK, HCCHAR, HCCHAR_CHDIS, HCCHAR_CHENA, HCINT, HCINT_AHBERR, HCINT_BBLERR,
+        HCINT_CHHLTD, HCINT_DMA_IRQ_MASK, HCINT_NAK, HCINT_STALL, HCINT_XACTERR, HCINT_XFERCOMPL,
+        HCINTMSK, HPRT_CONN_DET, HPRT_CONN_STS, HPRT_ENA, HPRT_ENA_CHG, HPRT_OVRCUR_CHG,
+        build_channel_gates, build_control_plan, build_gahbcfg_internal_dma,
+        data_stage_retry_policy, fifo_register_plan, hcchar, hcint_fault, hctsiz, packet_count,
+        split_dma_lengths, stage_actual_length, successful_packet_count,
     };
     use crate::backend::{
         kmod::osal::Kernel,
@@ -2433,6 +2484,20 @@ mod tests {
         (regs, super::Dwc2Registers { base })
     }
 
+    fn capture_and_service(handler: &Dwc2EventHandler) -> Event {
+        let (event, masked) = match handler.capture_irq() {
+            rdif_irq::IrqCapture::Captured { event, masked } => (event, masked),
+            capture => panic!("expected captured DWC2 event, got {capture:?}"),
+        };
+        let activity = handler
+            .service_host_events(event)
+            .expect("captured DWC2 event must service");
+        handler
+            .rearm_sources(masked.expect("DWC2 capture masks its source"))
+            .expect("serviced DWC2 source must rearm");
+        activity
+    }
+
     #[test]
     fn gahbcfg_requires_internal_dma_and_enables_incr16() {
         let value = build_gahbcfg_internal_dma(2).expect("internal DMA architecture is supported");
@@ -2454,7 +2519,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_irq_mask_only_enables_host_channel_completion() {
+    fn runtime_irq_mask_enables_topology_and_host_channel_events() {
         let (_backing, regs) = test_regs();
         let mut host = super::Dwc2::new(Dwc2NewParams {
             mmio: regs.base,
@@ -2465,7 +2530,7 @@ mod tests {
 
         crate::backend::kmod::kcore::CoreOp::enable_irq(&mut host).unwrap();
 
-        assert_eq!(regs.read32(GINTMSK), GINTSTS_HCHINT);
+        assert_eq!(regs.read32(GINTMSK), DWC2_RUNTIME_GINTMSK);
     }
 
     #[test]
@@ -2628,7 +2693,7 @@ mod tests {
         regs.channel_write32(0, HCINTMSK, hcint);
         regs.channel_write32(0, HCINT, hcint);
 
-        match handler.handle_event() {
+        match capture_and_service(&handler) {
             Event::TransferActivity { count } => assert_eq!(count, 1),
             event => panic!("expected transfer activity, got {event:?}"),
         }
@@ -2653,7 +2718,7 @@ mod tests {
         regs.channel_write32(0, HCINTMSK, HCINT_CHHLTD);
         regs.channel_write32(0, HCINT, HCINT_CHHLTD | HCINT_XFERCOMPL);
 
-        match handler.handle_event() {
+        match capture_and_service(&handler) {
             Event::TransferActivity { count } => assert_eq!(count, 1),
             event => panic!("expected transfer activity, got {event:?}"),
         }
@@ -2675,7 +2740,7 @@ mod tests {
         regs.channel_write32(0, HCINTMSK, HCINT_CHHLTD | HCINT_XFERCOMPL);
         regs.channel_write32(0, HCINT, HCINT_XFERCOMPL);
 
-        match handler.handle_event() {
+        match capture_and_service(&handler) {
             Event::TransferActivity { .. } => {}
             event => panic!("expected transfer activity, got {event:?}"),
         }
@@ -2689,7 +2754,7 @@ mod tests {
         regs.channel_write32(0, HCCHAR, 0);
         regs.channel_write32(0, HCINT, HCINT_CHHLTD);
 
-        match handler.handle_event() {
+        match capture_and_service(&handler) {
             Event::TransferActivity { count } => assert_eq!(count, 1),
             event => panic!("expected transfer activity, got {event:?}"),
         }

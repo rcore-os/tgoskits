@@ -9,8 +9,6 @@ use super::{
     CardInfo, CardInitPreference, InitInput, InitPoll, InitSchedule, SdioHost, SdioHost2Adapter,
     SdioHost2Irq, SdioInitRequest, SdioInitScratch, SdioSdmmc,
 };
-#[cfg(feature = "rdif")]
-use super::{DeferredIrqAck, SdioIrqHandle};
 use crate::Error;
 
 /// Host contract required by [`OwnedSdioInit`]'s internal lifetime extension.
@@ -170,11 +168,13 @@ impl<H: OwnedSdioInitHost> OwnedSdioInit<H> {
     }
 
     #[cfg(feature = "rdif")]
-    pub(crate) fn irq_handle(&mut self) -> H::IrqHandle
+    pub(crate) fn take_irq_source(
+        &mut self,
+    ) -> Option<super::SdioIrqSource<H::IrqEndpoint, H::IrqControl>>
     where
         H: SdioIrqHost,
     {
-        self.card.host_mut().irq_handle()
+        self.card.host_mut().take_irq_source()
     }
 
     #[cfg(feature = "rdif")]
@@ -190,17 +190,6 @@ impl<H: OwnedSdioInitHost> OwnedSdioInit<H> {
     #[cfg(feature = "rdif")]
     pub(crate) fn completion_irq_enabled(&self) -> bool {
         self.card.host().completion_irq_enabled()
-    }
-
-    /// Retry a top-half snapshot that could not acquire the controller's
-    /// destructive-register gate.
-    #[cfg(feature = "rdif")]
-    pub fn acknowledge_deferred_irq(&mut self) -> DeferredIrqAck
-    where
-        H: SdioIrqHost,
-    {
-        let event = self.card.host_mut().irq_handle().handle_irq();
-        DeferredIrqAck::from_event(&event)
     }
 
     /// Consume a successful transaction and return the initialized card.

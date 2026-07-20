@@ -1,3 +1,5 @@
+use irq_framework::IrqScope;
+
 use crate::{
     common::PlatOp,
     irq::{CpuIpiTarget, HwIrq, IpiSendStatus, IrqError, IrqId, IrqSource},
@@ -30,18 +32,15 @@ pub(crate) fn gic_irq_id_checked(hwirq: HwIrq) -> Result<IrqId, IrqError> {
 impl PlatOp for Plat {
     type ActiveIrq = gic::ActiveIrq;
 
-    fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), IrqError> {
+    fn prepare_irq_line(
+        irq: IrqId,
+        scope: IrqScope,
+        affinity: crate::irq::IrqAffinity,
+    ) -> Result<crate::irq_line::PreparedIrqChipLine, IrqError> {
         if !is_gic_domain(irq.domain) {
             return Err(IrqError::InvalidIrq);
         }
-        gic::irq_set_enable(irq, enable)
-    }
-
-    fn irq_set_affinity(irq: IrqId, affinity: crate::irq::IrqAffinity) -> Result<(), IrqError> {
-        if !is_gic_domain(irq.domain) {
-            return Err(IrqError::InvalidIrq);
-        }
-        gic::irq_set_affinity(irq, affinity)
+        gic::prepare_irq_line(irq, scope, affinity)
     }
 
     fn send_ipi(

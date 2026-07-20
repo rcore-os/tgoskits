@@ -3,11 +3,13 @@
 use core::{
     marker::PhantomPinned,
     pin::Pin,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
 };
 
 use super::TimerError;
 use crate::ThreadId;
+
+const UNBOUND_RUNTIME_CPU: u32 = u32::MAX;
 
 /// Runtime interpretation attached to one general-purpose timer arm.
 ///
@@ -70,11 +72,16 @@ impl TimerToken {
     }
 }
 
-/// Timer node embedded in a thread, coroutine, or other shutdown-lived owner.
+/// Timer node embedded in a thread, coroutine, or retirement-gated owner.
+///
+/// The runtime facade permanently binds a general-purpose node to the first
+/// CPU that arms it. This makes a later retirement proof reject the wrong CPU
+/// instead of silently inspecting an unrelated timer heap.
 #[derive(Debug)]
 pub struct TimerNode {
     owner: usize,
     owner_thread: u64,
+    runtime_cpu: AtomicU32,
     sequence: AtomicU64,
     active_generation: AtomicU64,
     _pin: PhantomPinned,
@@ -86,6 +93,7 @@ impl TimerNode {
         Self {
             owner,
             owner_thread: 0,
+            runtime_cpu: AtomicU32::new(UNBOUND_RUNTIME_CPU),
             sequence: AtomicU64::new(0),
             active_generation: AtomicU64::new(0),
             _pin: PhantomPinned,
@@ -97,6 +105,7 @@ impl TimerNode {
         Self {
             owner: thread.slot() as usize,
             owner_thread: thread.as_u64(),
+            runtime_cpu: AtomicU32::new(UNBOUND_RUNTIME_CPU),
             sequence: AtomicU64::new(0),
             active_generation: AtomicU64::new(0),
             _pin: PhantomPinned,
@@ -142,6 +151,22 @@ impl TimerNode {
 
     pub(super) const fn is_thread_owned(&self) -> bool {
         self.owner_thread != 0
+    }
+
+    pub(crate) fn bind_runtime_cpu(&self, cpu: u32) -> bool {
+        match self.runtime_cpu.compare_exchange(
+            UNBOUND_RUNTIME_CPU,
+            cpu,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => true,
+            Err(owner) => owner == cpu,
+        }
+    }
+
+    pub(crate) fn belongs_to_runtime_cpu(&self, cpu: u32) -> bool {
+        self.runtime_cpu.load(Ordering::Acquire) == cpu
     }
 
     pub(super) fn try_expire(

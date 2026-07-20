@@ -1,17 +1,16 @@
 //! Portable interrupt-driven serial runtime primitives.
 //!
-//! The reusable stack is intentionally split by synchronization ownership:
-//! raw UART drivers expose only register-level operations, `TxQueue` and
-//! `RxQueue` own independent lock-free software queues, `SerialPort` owns the
-//! task/worker control path, and `SerialIrqHandler` is the IRQ-only endpoint.
+//! Raw UART drivers expose register-level operations, while `TxQueue` and
+//! `RxQueue` own independent lock-free software queues. The consuming OS
+//! retains the unique mutable [`SerialCore`] in one owner execution domain.
 //!
-//! OS glue must route hardware IRQs and control/service calls to the configured
-//! owner CPU and pass an `OwnerLease`. Task context drains `RxItem`s and
-//! enqueues TX bytes through the queues, while worker context uses `SerialPort`
-//! for bounded soft service. Neither TX nor RX queues poll the shared UART
-//! IRQ/status register to rediscover readiness. This keeps the fast path bounded
-//! and leaves wakeups, wait queues, poll sets, and line discipline processing to
-//! OS-specific layers above this crate.
+//! [`SerialCore::capture_irq`] acknowledges one stable source snapshot and
+//! masks the exact UART RX/TX enable bits before returning a generation-bearing
+//! [`MaskedSource`]. It never drains or fills a FIFO. Only the same owner domain
+//! may service and rearm that token. RX backpressure can be rearmed only by a
+//! token returned after the sole consumer released ring capacity. No portable
+//! path polls IRQ status to rediscover completion or embeds OS scheduling
+//! policy.
 
 #![no_std]
 
@@ -21,6 +20,9 @@ use core::fmt::Display;
 
 use bitflags::bitflags;
 pub use rdif_base::{DriverGeneric, KError};
+pub use rdif_irq::{
+    ContainmentCause, FaultContainment, IrqCapture, IrqEndpoint, IrqSourceControl, MaskedSource,
+};
 
 mod queue;
 mod raw;
@@ -30,13 +32,19 @@ mod types;
 
 pub use self::{queue::*, raw::*, serial_core::*, types::*};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigError {
+    #[error("invalid serial baud rate")]
     InvalidBaudrate,
+    #[error("unsupported serial data width")]
     UnsupportedDataBits,
+    #[error("unsupported serial stop-bit configuration")]
     UnsupportedStopBits,
+    #[error("unsupported serial parity configuration")]
     UnsupportedParity,
+    #[error("serial register access failed")]
     RegisterError,
+    #[error("serial operation timed out")]
     Timeout,
 }
 
@@ -98,7 +106,7 @@ pub enum Parity {
 bitflags! {
     /// Polling-only serial events for direct raw users such as someboot.
     ///
-    /// Runtime `SerialIrqHandler` does not use this high-level snapshot type;
+    /// The interrupt-driven runtime does not use this high-level polling type;
     /// it uses `IrqSnapshot`, `RxSample`, and TX/RX software FIFOs instead.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct SerialEvent: u32 {

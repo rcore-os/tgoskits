@@ -25,9 +25,7 @@ cfg-if = { workspace = true }
 enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
 hashbrown = "0.16"
-irq-framework = { workspace = true }
 log = { workspace = true }
-rd-net = { workspace = true }
 rdif-vsock = { workspace = true, optional = true }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 

@@ -1,9 +1,14 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 use rdif_block::{
-    BlkError, CompletedRequest, CompletionSink, ControllerEpoch, ControllerReady, DispatchMode,
-    DmaQuiesced, IQueue, InitInput, InitIrqProgress, InitPoll, InterruptLifecycle, IrqOutcome,
-    LifecycleEndpoint, LifecycleKind, OwnedRequest, QueueContractError, QueueEventBatch,
-    QueueHandle, QueueInfo, QueueKind, RecoveryCause, RequestId, ServiceProgress, SubmitError,
-    SubmitOutcome, validate_lifecycle_activation, validate_lifecycle_identity,
+    BlkError, CompletedRequest, CompletionSink, ControllerEpoch, ControllerReady, DmaQuiesced,
+    IQueue, InitInput, InitPoll, InterruptLifecycle, LifecycleEndpoint, LifecycleKind,
+    OwnedRequest, QueueContractError, QueueEventBatch, QueueExecution, QueueHandle, QueueInfo,
+    QueueKind, RecoveryCause, RequestId, ServiceProgress, SubmitError, SubmitOutcome,
+    validate_lifecycle_activation, validate_lifecycle_identity,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,15 +30,6 @@ struct FakeLifecycle {
 impl InterruptLifecycle for FakeLifecycle {
     fn controller_cookie(&self) -> usize {
         self.cookie
-    }
-
-    fn service_deferred_irq(&mut self, source_id: usize) -> InitIrqProgress {
-        match source_id {
-            0 => InitIrqProgress::Deferred,
-            1 => InitIrqProgress::Acknowledged,
-            2 => InitIrqProgress::Unhandled,
-            _ => InitIrqProgress::Failed(rdif_block::InitError::InvalidState),
-        }
     }
 
     fn begin_dma_quiesce(
@@ -137,30 +133,6 @@ fn guest_ownership_consumes_the_old_proof_before_return_quiescence_starts() {
 }
 
 #[test]
-fn lifecycle_deferred_irq_requires_destructive_acknowledgement() {
-    let epoch = ControllerEpoch::new(7);
-    let mut lifecycle = FakeLifecycle {
-        state: State::Running,
-        epoch,
-        cookie: 0x51a7,
-    };
-
-    assert_eq!(lifecycle.service_deferred_irq(0), InitIrqProgress::Deferred);
-    assert_eq!(
-        lifecycle.service_deferred_irq(1),
-        InitIrqProgress::Acknowledged
-    );
-    assert_eq!(
-        lifecycle.service_deferred_irq(2),
-        InitIrqProgress::Unhandled
-    );
-    assert_eq!(
-        lifecycle.service_deferred_irq(3),
-        InitIrqProgress::Failed(rdif_block::InitError::InvalidState)
-    );
-}
-
-#[test]
 fn inline_endpoint_cannot_be_misread_as_interrupt_lifecycle() {
     assert_eq!(LifecycleEndpoint::Inline.kind(), LifecycleKind::Inline);
 }
@@ -225,7 +197,7 @@ impl IQueue for ReclaimQueue {
             kind: QueueKind::Interrupt {
                 sources: rdif_block::IdList::from_bits(1),
             },
-            dispatch_mode: DispatchMode::Serialized,
+            execution: QueueExecution::Serialized,
         }
     }
 
@@ -257,7 +229,7 @@ impl IQueue for ReclaimQueue {
         Ok(())
     }
 
-    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+    fn shutdown(&mut self) -> Result<(), BlkError> {
         self.pending.is_none().then_some(()).ok_or(BlkError::Busy)
     }
 }
@@ -294,7 +266,7 @@ fn accepted_ownership_is_reclaimed_only_with_dma_proof() {
     let mut sink = ReclaimSink::default();
 
     queue.reclaim_after_quiesce(&proof, &mut sink).unwrap();
-    queue.shutdown(&mut sink).unwrap();
+    queue.close().unwrap();
 
     assert!(sink.completion.is_some());
 }
@@ -324,7 +296,14 @@ fn interrupt_queue_cannot_publish_before_its_controller_identity_is_bound() {
         queue.bind_interrupt_controller(0x51a7, ControllerEpoch::INITIAL),
         Err(QueueContractError::LifecycleIdentityAlreadyBound { queue_id: 0 })
     );
-    queue.shutdown(&mut ReclaimSink::default()).unwrap();
+    let proof = unsafe {
+        // SAFETY: this fake queue owns no hardware or DMA.
+        DmaQuiesced::new(ControllerEpoch::new(2), 0x51a7)
+    };
+    queue
+        .reclaim_after_quiesce(&proof, &mut ReclaimSink::default())
+        .unwrap();
+    queue.close().unwrap();
 }
 
 #[test]
@@ -380,16 +359,164 @@ fn queue_handle_rejects_foreign_and_replayed_dma_proofs_before_driver_code() {
         Err(BlkError::InvalidDmaProof),
         "one queue may consume a controller epoch at most once"
     );
-    queue.shutdown(&mut ReclaimSink::default()).unwrap();
+    queue.close().unwrap();
+}
+
+struct FailingCloseQueue {
+    drops: Arc<AtomicUsize>,
+}
+
+struct IncompleteReclaimQueue {
+    pending: Option<(RequestId, OwnedRequest)>,
+    shutdown_calls: Arc<AtomicUsize>,
+}
+
+impl Drop for FailingCloseQueue {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+impl IQueue for FailingCloseQueue {
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn info(&self) -> QueueInfo {
+        QueueInfo {
+            kind: QueueKind::Inline,
+            execution: QueueExecution::Inline,
+            ..ReclaimQueue { pending: None }.info()
+        }
+    }
+
+    fn submit_owned(
+        &mut self,
+        id: RequestId,
+        request: OwnedRequest,
+    ) -> Result<SubmitOutcome, SubmitError> {
+        Err(SubmitError::new(id, BlkError::Offline, request))
+    }
+
+    fn service_events(
+        &mut self,
+        _events: &QueueEventBatch<'_>,
+        _sink: &mut dyn CompletionSink,
+    ) -> Result<ServiceProgress, BlkError> {
+        Err(BlkError::Offline)
+    }
+
+    fn reclaim_after_quiesce(
+        &mut self,
+        _proof: &DmaQuiesced,
+        _sink: &mut dyn CompletionSink,
+    ) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn shutdown(&mut self) -> Result<(), BlkError> {
+        Err(BlkError::Io)
+    }
+}
+
+impl IQueue for IncompleteReclaimQueue {
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn info(&self) -> QueueInfo {
+        ReclaimQueue { pending: None }.info()
+    }
+
+    fn submit_owned(
+        &mut self,
+        id: RequestId,
+        request: OwnedRequest,
+    ) -> Result<SubmitOutcome, SubmitError> {
+        self.pending = Some((id, request));
+        Ok(SubmitOutcome::Queued)
+    }
+
+    fn service_events(
+        &mut self,
+        _events: &QueueEventBatch<'_>,
+        _sink: &mut dyn CompletionSink,
+    ) -> Result<ServiceProgress, BlkError> {
+        Ok(ServiceProgress::Idle)
+    }
+
+    fn reclaim_after_quiesce(
+        &mut self,
+        _proof: &DmaQuiesced,
+        _sink: &mut dyn CompletionSink,
+    ) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn shutdown(&mut self) -> Result<(), BlkError> {
+        self.shutdown_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
 }
 
 #[test]
-fn handled_control_irq_is_distinct_from_an_unhandled_shared_line() {
-    let control = IrqOutcome::handled_control();
-    assert!(control.is_handled());
-    assert!(control.acknowledged_event().unwrap().is_empty());
+fn failed_close_returns_a_named_quarantine_owner_without_dropping_the_endpoint() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let queue = QueueHandle::new(Box::new(FailingCloseQueue {
+        drops: Arc::clone(&drops),
+    }));
 
-    let unhandled = IrqOutcome::unhandled();
-    assert!(!unhandled.is_handled());
-    assert!(unhandled.acknowledged_event().is_none());
+    let failure = queue
+        .close()
+        .expect_err("the fixture must fail its one-shot close transaction");
+    assert_eq!(failure.error(), BlkError::Io);
+    assert_eq!(drops.load(Ordering::Acquire), 0);
+
+    let quarantine = failure.into_quarantine();
+    assert_eq!(quarantine.reason(), BlkError::Io);
+    drop(quarantine);
+    assert_eq!(
+        drops.load(Ordering::Acquire),
+        0,
+        "dropping a named quarantine must retain a possibly DMA-visible endpoint"
+    );
+}
+
+#[test]
+fn accepted_ledger_blocks_destroy_when_dma_reclaim_omits_an_owner() {
+    let shutdown_calls = Arc::new(AtomicUsize::new(0));
+    let mut queue = QueueHandle::new(Box::new(IncompleteReclaimQueue {
+        pending: None,
+        shutdown_calls: Arc::clone(&shutdown_calls),
+    }));
+    queue
+        .bind_interrupt_controller(0x51a7, ControllerEpoch::INITIAL)
+        .unwrap();
+    queue
+        .submit_owned(
+            RequestId::new(9),
+            OwnedRequest {
+                op: rdif_block::RequestOp::Flush,
+                lba: 0,
+                block_count: 0,
+                data: None,
+                flags: rdif_block::RequestFlags::NONE,
+            },
+        )
+        .unwrap();
+    let proof = unsafe {
+        // SAFETY: the fake queue owns no hardware or DMA.
+        DmaQuiesced::new(ControllerEpoch::new(2), 0x51a7)
+    };
+
+    assert_eq!(
+        queue.reclaim_after_quiesce(&proof, &mut ReclaimSink::default()),
+        Err(BlkError::Busy)
+    );
+    let failure = queue
+        .close()
+        .expect_err("an accepted owner missing after reclaim must prevent destruction");
+    assert_eq!(failure.error(), BlkError::Busy);
+    assert_eq!(shutdown_calls.load(Ordering::Acquire), 0);
+    drop(failure.into_quarantine());
 }

@@ -22,17 +22,23 @@ fn virtio_block_source() -> String {
     .join("\n")
 }
 
+fn virtio_common_source() -> String {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(manifest.join("src/virtio/mod.rs"))
+        .expect("virtio common source must be readable")
+}
+
 #[test]
 fn virtio_block_uses_interrupt_owned_request_contract() {
     let source = virtio_block_source();
 
     for required in [
         "QueueKind::Interrupt",
-        "DispatchMode::Direct",
+        "QueueExecution::Tagged",
         "submit_owned",
         "service_events",
         "QueueEventBatch",
-        "fn shutdown",
+        "fn shutdown(&mut self) -> Result<(), BlkError>",
         "CompletedRequest",
     ] {
         assert!(
@@ -41,7 +47,13 @@ fn virtio_block_uses_interrupt_owned_request_contract() {
         );
     }
 
-    for forbidden in ["poll_request", "RequestStatus", "next_request_id"] {
+    for forbidden in [
+        "poll_request",
+        "RequestStatus",
+        "next_request_id",
+        "shutdown(&mut self, sink",
+        "shutdown(&mut self, _sink",
+    ] {
         assert!(
             !source.contains(forbidden),
             "legacy polling/driver-ID contract remains: {forbidden}"
@@ -50,27 +62,44 @@ fn virtio_block_uses_interrupt_owned_request_contract() {
 }
 
 #[test]
-fn irq_lock_contention_uses_a_typed_deferred_ack_continuation() {
+fn irq_status_is_owned_by_a_split_capture_and_control_port() {
     let source = virtio_block_source();
-    let contention = source
-        .find("irq_ack_pending.swap(true, Ordering::AcqRel)")
-        .expect("IRQ contention must retain pending acknowledgement state");
-    let reset = source[contention..]
-        .find("irq_ack_pending.store(false, Ordering::Release)")
-        .map(|offset| contention + offset)
-        .expect("successful IRQ ownership must clear deferred acknowledgement state");
-    let contention_path = &source[contention..reset];
 
-    assert!(
-        contention_path.contains("Event::deferred_from_queue_bits")
-            && contention_path.contains("IrqOutcome::deferred"),
-        "IRQ contention must explicitly defer acknowledgement instead of fabricating an +         \
-         acknowledged completion event"
-    );
-    assert!(source.contains("take_deferred_virtio_queue_irq"));
-    assert!(source.contains("events.requires_irq_ack()"));
-    assert!(source.contains("try_with_task"));
-    assert!(source.contains("unwrap_or(Ok(ServiceProgress::More))"));
+    for required in [
+        "VirtioInterruptPort",
+        "BlockIrqSource::new",
+        "impl IrqEndpoint",
+        "fn capture(&mut self)",
+        "fn contain(",
+        "impl IrqSourceControl",
+        "fn rearm(&mut self, source: MaskedSource)",
+        "IrqCapture::Captured",
+        "Arc<mmio_api::Mmio>",
+    ] {
+        assert!(
+            source.contains(required),
+            "missing split VirtIO IRQ ownership contract: {required}"
+        );
+    }
+
+    for forbidden in [
+        "take_irq_handler",
+        "IrqOutcome",
+        "DeferredIrqProgress",
+        "continue_deferred",
+        "InitIrqProgress",
+        "service_deferred_irq",
+        "irq_ack_pending",
+        "transport.ack_interrupt",
+        "MmioRaw",
+        "ioremap_raw",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "VirtIO IRQ still borrows the controller or exposes deferred acknowledgement: \
+             {forbidden}"
+        );
+    }
 }
 
 #[test]
@@ -82,7 +111,7 @@ fn discovery_defers_all_virtio_initialization_until_irq_binding() {
         "impl<T: VirtIoTransport> rdif_block::InitialController",
         "VirtioBlockInitPhase",
         "InitSchedule::immediate()",
-        "initialization_irq_outcome",
+        "take_initialization_source",
     ] {
         assert!(
             source.contains(required),
@@ -130,6 +159,45 @@ fn pci_discovery_captures_memory_bars_before_transport_takeover() {
     assert!(
         !probe_source.contains("binding_info_from_pci(probe.info()"),
         "IRQ-only PCI binding loses the MMIO identity required for exact passthrough selection"
+    );
+}
+
+#[test]
+fn mmio_and_pci_preserve_interrupt_capability_before_transport_erasure() {
+    let block = virtio_block_source();
+    let common = virtio_common_source();
+
+    let pci_port = block
+        .find("let interrupt_port = pci_interrupt_port(probe.endpoint())")
+        .expect("PCI probe must extract the dedicated ISR capability");
+    let pci_transport = block
+        .find("crate::pci::take_virtio_block_transport")
+        .expect("PCI probe must still construct the queue/config transport");
+    assert!(
+        pci_port < pci_transport,
+        "PCI ISR ownership must be retained before endpoint takeover"
+    );
+
+    for required in [
+        "VirtioInterruptPort::from_pci_isr",
+        "VirtioInterruptPort::from_mmio",
+        "register_transport_with_interrupt_port",
+        "block::register_mmio_transport",
+        "VirtioRegisterMappingLease",
+        "if bar >= 6",
+        "capability_length < PCI_VIRTIO_ISR_CAP_MIN_LENGTH",
+    ] {
+        assert!(
+            block.contains(required) || common.contains(required),
+            "block registration erased its interrupt capability: {required}"
+        );
+    }
+    assert!(
+        common.find("block::register_mmio_transport").unwrap()
+            < common
+                .find("register_static_transport(plat_dev, ty, transport)")
+                .unwrap(),
+        "static MMIO block registration must split IRQ status before generic dispatch"
     );
 }
 
@@ -184,14 +252,22 @@ fn initialization_failure_quiesces_or_quarantines_dma_before_terminal_failure() 
         "self.transport.set_status(DeviceStatus::empty())",
         "drop(self.queue.take())",
         "fn quarantine_unproven_dma",
-        "descriptor_storage",
-        "core::mem::forget(queue)",
-        "core::mem::forget(inflight)",
-        "core::mem::forget(storage)",
+        "struct VirtioDmaQuarantine",
+        "VirtioDmaQuarantineReason",
+        "ManuallyDrop<VirtQueue",
+        "dma_quarantine",
     ] {
         assert!(
             source.contains(required),
             "VirtIO init failure can release live DMA without {required}"
+        );
+    }
+
+    for forbidden in ["mem::forget", "Box::leak"] {
+        assert!(
+            !source.contains(forbidden),
+            "VirtIO DMA quarantine must retain named ownership instead of anonymously leaking: \
+             {forbidden}"
         );
     }
 }

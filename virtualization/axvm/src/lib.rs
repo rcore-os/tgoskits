@@ -59,10 +59,14 @@ pub use axvm_types::{
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
+pub use host::irq_routes::{
+    GuestIrqRouteError, GuestIrqRouteLease, GuestIrqRouteLeaseState, GuestIrqRoutesRevoked,
+    activate_guest_irq_routes, revoke_guest_irq_route_lease,
+};
 #[cfg(any(feature = "fs", feature = "host-fs"))]
 pub use host::storage::{
-    GuestIrqRouteLease, GuestIrqRoutesRevoked, GuestStorageRoutesRevoked, HostStorageHandoff,
-    HostStorageHandoffError, HostStorageHandoffState, HostStoragePciEndpoint,
+    GuestStorageRoutesRevoked, HostStorageHandoff, HostStorageHandoffError,
+    HostStorageHandoffState, HostStoragePciEndpoint,
 };
 pub(crate) use host::{
     paging::HostPagingHandler,

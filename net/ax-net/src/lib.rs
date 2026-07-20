@@ -74,8 +74,7 @@ use alloc::{
 };
 use core::{
     net::{IpAddr, Ipv4Addr},
-    pin::Pin,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
     task::Waker,
     time::Duration,
 };
@@ -83,7 +82,7 @@ use core::{
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_kspin::{PreemptLazy as LazyLock, PreemptOnce as Once};
 use ax_sync::SpinMutex;
-use ax_task::{IrqWaitCell, IrqWaitRegistration, IrqWakeHandle, ThreadWakeHandle, WaitQueue};
+use ax_task::WaitQueue;
 use axpoll::{IoEvents, PollSet};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
@@ -97,7 +96,7 @@ use self::{
     device::{EthernetDevice, LoopbackDevice},
     listen_table::ListenTable,
     router::{RouteTable, Router, Rule, SharedRouteTable},
-    service::{NetControl, NetInterface, Service},
+    service::{NetControl, NetInterface, Service, WifiNetworkConfig},
     wrapper::SocketSetWrapper,
 };
 pub use self::{
@@ -106,10 +105,9 @@ pub use self::{
         InterfaceMatcher, Ipv4InterfaceConfig, NetworkConfig, RouteInfo, StaticIpConfig,
     },
     device::{
-        ArpEntry, EthernetDeviceList, EthernetDriver, EthernetIrqAction, EthernetIrqOutcome,
-        EthernetIrqRegistrar, EthernetIrqRegistration, EthernetIrqRegistrationError,
-        NetDeviceError, NetDeviceResult, NetIrqEvents, NetRxBuffer, NetTxBuffer, RdNetDriver,
-        set_ethernet_irq_registrar,
+        ArpEntry, EthernetDeviceList, EthernetDriver, NetDeviceError, NetDeviceResult, NetRxBuffer,
+        NetTxBuffer, WifiControl, WifiControlCommand, WifiControlCompletion, WifiControlGeneration,
+        WifiControlResult,
     },
     router::NetDevStats,
     socket::{
@@ -123,14 +121,14 @@ static SOCKET_SET: LazyLock<SocketSetWrapper> = LazyLock::new(SocketSetWrapper::
 
 static SERVICE: Once<SpinMutex<Service>> = Once::new();
 static NET_CONTROL: Once<Arc<NetControl>> = Once::new();
-static POLLING_INTERFACES: AtomicBool = AtomicBool::new(false);
-static POLL_AGAIN: AtomicBool = AtomicBool::new(false);
-static NET_POLL_REQUESTED: AtomicBool = AtomicBool::new(false);
+// Monotonic evidence for the single protocol owner. An event racing the
+// service/park boundary cannot be erased by an older pass as it could with a
+// shared boolean. Device readiness itself comes from runtime-owned PollSets.
+static NET_PROTOCOL_EPOCH: AtomicU64 = AtomicU64::new(0);
 static NET_POLL_WAKE: WaitQueue = WaitQueue::new();
 static NET_POLL_DEVICE_WAKER: LazyLock<Waker> =
     LazyLock::new(|| Waker::from(Arc::new(NetPollWake)));
 type DeferredPollEntry = (Arc<PollSet>, IoEvents);
-static DEFERRED_POLL_WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 static DEFERRED_POLL_WAKES: LazyLock<SpinMutex<Vec<DeferredPollEntry>>> =
     LazyLock::new(|| SpinMutex::new(Vec::new()));
 
@@ -151,19 +149,6 @@ impl Wake for DeferPollWake {
         defer_poll_wake(self.poll.clone(), self.ready);
     }
 }
-
-/// Registry of wireless control-plane handles, keyed by interface name.
-///
-/// Populated when a wireless device is registered (the runtime captures a
-/// [`rd_net::WifiControlHandle`] before the `Net` is consumed into the data-plane
-/// driver). Lets runtime mode switching (e.g. a StarryOS wireless-extensions
-/// `ioctl`) reach the device's [`WifiControl`] by name.
-static WIFI_CONTROLS: LazyLock<SpinMutex<Vec<(alloc::string::String, rd_net::WifiControlHandle)>>> =
-    LazyLock::new(|| SpinMutex::new(Vec::new()));
-
-static NET_IRQ_EVENT: AtomicBool = AtomicBool::new(false);
-static NET_IRQ_WAIT: IrqWaitCell = IrqWaitCell::new();
-static NET_IRQ_REGISTRATION: Once<&'static IrqWaitRegistration> = Once::new();
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -468,28 +453,12 @@ pub fn init_vsock(mut vsock_devs: device::VsockDeviceList) {
 }
 
 fn poll_until_idle() {
-    POLL_AGAIN.store(true, Ordering::Release);
     loop {
-        if POLLING_INTERFACES
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
-            .is_err()
-        {
-            return;
+        let outcome = get_service().poll(&mut SOCKET_SET.inner.lock());
+        for waker in outcome.expired_wakers {
+            waker.wake();
         }
-
-        while POLL_AGAIN.swap(false, Ordering::AcqRel) {
-            loop {
-                let outcome = get_service().poll(&mut SOCKET_SET.inner.lock());
-                for waker in outcome.expired_wakers {
-                    waker.wake();
-                }
-                if !outcome.progressed {
-                    break;
-                }
-            }
-        }
-        POLLING_INTERFACES.store(false, Ordering::Release);
-        if !POLL_AGAIN.load(Ordering::Acquire) {
+        if !outcome.progressed {
             return;
         }
     }
@@ -499,22 +468,13 @@ fn poll_until_idle() {
 ///
 /// This is the lightweight entry used by socket and device paths.
 pub fn request_poll() {
-    publish_poll_request(&NET_POLL_REQUESTED, || {
-        NET_POLL_WAKE.notify_one();
-    });
-}
-
-fn publish_poll_request(requested: &AtomicBool, wake: impl FnOnce()) {
-    if !requested.swap(true, Ordering::AcqRel) {
-        wake();
-    }
+    NET_PROTOCOL_EPOCH.fetch_add(1, Ordering::Release);
+    NET_POLL_WAKE.notify_one();
 }
 
 pub(crate) fn defer_poll_wake(poll: Arc<PollSet>, ready: IoEvents) {
     DEFERRED_POLL_WAKES.lock().push((poll, ready));
-    if !DEFERRED_POLL_WAKE_PENDING.swap(true, Ordering::AcqRel) {
-        NET_POLL_WAKE.notify_one();
-    }
+    request_poll();
 }
 
 fn drain_deferred_poll_wakes() {
@@ -522,7 +482,6 @@ fn drain_deferred_poll_wakes() {
         let wakes = {
             let mut wakes = DEFERRED_POLL_WAKES.lock();
             if wakes.is_empty() {
-                DEFERRED_POLL_WAKE_PENDING.store(false, Ordering::Release);
                 return;
             }
             core::mem::take(&mut *wakes)
@@ -603,26 +562,14 @@ pub struct NetConfig {
     pub prefix_len: u8,
     /// If set, enables the built-in one-client DHCP server with this client IP.
     pub dhcp_server_client_ip: Option<[u8; 4]>,
-    /// Whether this device is woken through the out-of-band poll task.
-    pub dedicated_poll: bool,
 }
 
 /// Registers an extra Ethernet device with a static IPv4 address.
-///
-/// If `dedicated_poll` is set, RX readiness is driven by [`wake_net_task_irq`]
-/// instead of the shared Ethernet IRQ framework.
 pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConfig) {
     let mac = EthernetAddress(dev.mac_address());
     let server_ip = Ipv4Address::from(config.ip);
     let cidr = Ipv4Cidr::new(server_ip, config.prefix_len);
-    // A dedicated-poll device gets RX out-of-band (via `wake_net_task_irq` and the
-    // shared net poll task), so its socket wakers must be armed even though it
-    // has no ethernet IRQ registration.
-    let eth_dev = if config.dedicated_poll {
-        EthernetDevice::new_oob_rx(config.name.clone(), dev, Some(cidr))
-    } else {
-        EthernetDevice::new(config.name.clone(), dev, Some(cidr))
-    };
+    let eth_dev = EthernetDevice::new(config.name.clone(), dev, Some(cidr));
     let workers = {
         let mut service = get_service();
         let dev_idx = service.register_static_device(config.name.clone(), eth_dev, mac, cidr);
@@ -638,20 +585,6 @@ pub fn register_device_with_config(dev: Box<dyn EthernetDriver>, config: NetConf
 
     info!("{}: up, mac {mac}, ip {cidr}", config.name);
     request_poll();
-}
-
-/// Registers a wireless control-plane handle under an interface name.
-///
-/// Called by the runtime when adapting a wireless net device, *before* the
-/// `Net` is consumed into the data-plane driver, so the control plane stays
-/// reachable by name for runtime mode switching.
-pub fn register_wifi_control(name: &str, handle: rd_net::WifiControlHandle) {
-    let mut controls = WIFI_CONTROLS.lock();
-    if let Some(entry) = controls.iter_mut().find(|(n, _)| n == name) {
-        entry.1 = handle;
-    } else {
-        controls.push((name.into(), handle));
-    }
 }
 
 /// Target role for a runtime Wi-Fi mode switch.
@@ -686,81 +619,104 @@ pub enum WifiMode<'a> {
 /// Returns [`AxError::NoSuchDevice`] if `name` has no registered wireless
 /// control plane, or [`AxError::Unsupported`] if the link-layer switch fails.
 pub fn reconfigure_wifi(name: &str, mode: WifiMode<'_>) -> AxResult<()> {
-    // 1. Link-layer switch through the device control plane, plus the device's
-    //    (possibly new) MAC. The registry lock is released before touching the
-    //    stack service to avoid holding two locks across the blocking path.
-    let mac = {
-        let handle = {
-            let controls = WIFI_CONTROLS.lock();
-            controls
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, handle)| handle.clone())
-                .ok_or(AxError::NoSuchDevice)?
-        };
-        let ctrl = handle.wifi_control().ok_or(AxError::NoSuchDevice)?;
-        match &mode {
-            WifiMode::Station { ssid, password } => ctrl
-                .connect(ssid, password)
-                .map_err(|_| ax_err_type!(Unsupported, "wifi STA connect failed"))?,
-            WifiMode::AccessPoint { ssid, channel, .. } => ctrl
-                .start_ap_open(ssid, *channel)
-                .map_err(|_| ax_err_type!(Unsupported, "wifi SoftAP start failed"))?,
-        }
-        EthernetAddress(handle.mac_address())
+    let (command, network, expected) = prepare_wifi_reconfiguration(mode)?;
+    let control = {
+        let service = get_service();
+        service
+            .wifi_control_by_name(name)
+            .ok_or(AxError::NoSuchDevice)?
     };
-
-    // 2. Reconfigure the stack's IPv4 / DHCP role for this interface.
+    let completion = control
+        .reconfigure(command)
+        .map_err(map_wifi_control_error)?;
+    if completion.result != expected {
+        return Err(AxError::BadState);
+    }
     {
         let mut service = get_service();
-        let dev = service.device_index(name).ok_or(AxError::NoSuchDevice)?;
-        match mode {
-            WifiMode::Station { .. } => service.reconfigure_as_sta(dev, mac),
-            WifiMode::AccessPoint {
-                ip,
-                prefix_len,
-                dhcp_client_ip,
-                ..
-            } => {
-                let server_ip = Ipv4Address::from(ip);
-                let client_ip = dhcp_client_ip.map(Ipv4Address::from);
-                service.reconfigure_as_ap(dev, server_ip, prefix_len, client_ip);
-            }
-        }
+        service.reconfigure_wifi_network(name, completion.generation, network)?;
     }
-
-    // Kick a poll so the new addressing takes effect immediately.
     request_poll();
-    info!("{name}: wifi mode switch complete");
     Ok(())
 }
 
-/// Wakes the net poll task from a hard IRQ callback.
-///
-/// The IRQ path must only publish small pending state and call this wrapper.
-/// The deferred net task requests polling and wakes socket waiters from ordinary
-/// task context.
-pub fn wake_net_task_irq() {
-    NET_IRQ_EVENT.store(true, Ordering::Release);
-    let _result = NET_IRQ_WAIT.notify();
+fn prepare_wifi_reconfiguration(
+    mode: WifiMode<'_>,
+) -> AxResult<(WifiControlCommand, WifiNetworkConfig, WifiControlResult)> {
+    match mode {
+        WifiMode::Station { ssid, password } => {
+            validate_wifi_ssid(ssid.as_bytes())?;
+            if !password.is_empty() && !(8..=63).contains(&password.len()) {
+                return Err(AxError::InvalidInput);
+            }
+            Ok((
+                WifiControlCommand::JoinStation {
+                    ssid: ssid.as_bytes().to_vec(),
+                    passphrase: password.as_bytes().to_vec(),
+                },
+                WifiNetworkConfig::Station,
+                WifiControlResult::StationConnected,
+            ))
+        }
+        WifiMode::AccessPoint {
+            ssid,
+            channel,
+            ip,
+            prefix_len,
+            dhcp_client_ip,
+        } => {
+            validate_wifi_ssid(ssid)?;
+            if channel == 0 || prefix_len > 32 {
+                return Err(AxError::InvalidInput);
+            }
+            Ok((
+                WifiControlCommand::StartAccessPoint {
+                    ssid: ssid.to_vec(),
+                    channel,
+                },
+                WifiNetworkConfig::AccessPoint {
+                    ip: Ipv4Address::from(ip),
+                    prefix_len,
+                    dhcp_client_ip: dhcp_client_ip.map(Ipv4Address::from),
+                },
+                WifiControlResult::AccessPointStarted,
+            ))
+        }
+    }
 }
 
-fn next_poll_delay() -> Duration {
-    const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+fn validate_wifi_ssid(ssid: &[u8]) -> AxResult<()> {
+    if ssid.is_empty() || ssid.len() > 32 {
+        Err(AxError::InvalidInput)
+    } else {
+        Ok(())
+    }
+}
+
+fn map_wifi_control_error(error: NetDeviceError) -> AxError {
+    match error {
+        NetDeviceError::Again => AxError::WouldBlock,
+        NetDeviceError::BadState => AxError::BadState,
+        NetDeviceError::InvalidParam => AxError::InvalidInput,
+        NetDeviceError::Io => AxError::Io,
+        NetDeviceError::NoMemory => AxError::NoMemory,
+        NetDeviceError::Unsupported => AxError::Unsupported,
+    }
+}
+
+fn next_protocol_delay() -> Option<Duration> {
     let next = {
         let mut service = get_service();
         let sockets = SOCKET_SET.inner.lock();
         service.next_poll_at(&sockets)
     };
-    let Some(next) = next else {
-        return IDLE_POLL_INTERVAL;
-    };
+    let next = next?;
     let now_micros = ax_hal::time::monotonic_time_nanos() / 1_000;
     let next_micros = next.total_micros().max(0) as u64;
     if next_micros <= now_micros {
-        Duration::ZERO
+        Some(Duration::ZERO)
     } else {
-        Duration::from_micros(next_micros - now_micros)
+        Some(Duration::from_micros(next_micros - now_micros))
     }
 }
 
@@ -777,110 +733,31 @@ impl Wake for NetPollWake {
 }
 
 fn net_poll_worker() {
-    initialize_net_irq_registration();
     loop {
-        let _result = NET_IRQ_WAIT.register(net_irq_registration());
-        let delay = next_poll_delay();
-        let timed_out = NET_POLL_WAKE.wait_timeout_until(delay, || {
-            NET_POLL_REQUESTED.load(Ordering::Acquire)
-                || NET_IRQ_EVENT.load(Ordering::Acquire)
-                || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
-        });
-        let _removed = NET_IRQ_WAIT.unregister(net_irq_registration());
-        if !timed_out {
-            take_poll_request(&NET_POLL_REQUESTED, || {});
-        }
-        let irq_pending = NET_IRQ_EVENT.swap(false, Ordering::AcqRel);
-        if device_poll_fallback_due(timed_out, irq_pending, delay) {
-            get_service().wake_all_devices();
-        }
+        // Producers publish data before incrementing this epoch. An event
+        // included in `observed` is therefore visible to this service pass;
+        // anything later makes the park predicate true and forces another.
+        let observed = NET_PROTOCOL_EPOCH.load(Ordering::Acquire);
         drain_deferred_poll_wakes();
         poll_until_idle();
         drain_deferred_poll_wakes();
-    }
-}
+        if NET_PROTOCOL_EPOCH.load(Ordering::Acquire) != observed {
+            continue;
+        }
 
-fn initialize_net_irq_registration() {
-    NET_IRQ_REGISTRATION.call_once(|| {
-        let thread = ax_task::current_thread_handle()
-            .unwrap_or_else(|error| panic!("net poll worker has no scheduler thread: {error}"));
-        let wake = Box::leak(Box::new(thread.wake_handle()));
-        // SAFETY: both the leaked direct wake and its scheduler thread remain
-        // valid for the permanent net worker's lifetime. The callback only
-        // performs bounded ax-task direct-wake publication.
-        let irq_wake = unsafe {
-            IrqWakeHandle::from_raw(
-                wake as *const ThreadWakeHandle as usize,
-                wake_net_poll_thread,
-            )
-        };
-        Box::leak(Box::new(IrqWaitRegistration::new(irq_wake)))
-    });
-}
-
-fn net_irq_registration() -> Pin<&'static IrqWaitRegistration> {
-    let registration = *NET_IRQ_REGISTRATION
-        .get()
-        .expect("net IRQ registration must be initialized by its worker");
-    // SAFETY: the registration is leaked, never moves, and is detached or
-    // owned by NET_IRQ_WAIT across each one-shot wait iteration.
-    unsafe { Pin::new_unchecked(registration) }
-}
-
-unsafe fn wake_net_poll_thread(data: usize) {
-    // SAFETY: initialization stores a leaked ThreadWakeHandle at this address.
-    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
-    let _result = wake.wake();
-}
-
-fn device_poll_fallback_due(timed_out: bool, irq_pending: bool, delay: Duration) -> bool {
-    irq_pending || (timed_out && delay > Duration::ZERO)
-}
-
-fn take_poll_request(requested: &AtomicBool, after_observe: impl FnOnce()) -> bool {
-    if requested.swap(false, Ordering::AcqRel) {
-        after_observe();
-        true
-    } else {
-        false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use core::{
-        sync::atomic::{AtomicBool, Ordering},
-        time::Duration,
-    };
-
-    use super::{device_poll_fallback_due, publish_poll_request, take_poll_request};
-
-    #[test]
-    fn poll_request_after_worker_drain_stays_pending() {
-        let requested = AtomicBool::new(true);
-        let mut wakes = 0;
-
-        assert!(take_poll_request(&requested, || {
-            publish_poll_request(&requested, || wakes += 1);
-        }));
-
-        assert!(requested.load(Ordering::Acquire));
-        assert_eq!(wakes, 1);
-    }
-
-    #[test]
-    fn poll_timeout_wakes_devices_as_polling_fallback() {
-        assert!(device_poll_fallback_due(
-            true,
-            false,
-            Duration::from_millis(100)
-        ));
-    }
-
-    #[test]
-    fn immediate_socket_poll_does_not_force_device_fallback() {
-        assert!(!device_poll_fallback_due(true, false, Duration::ZERO));
-        assert!(device_poll_fallback_due(false, true, Duration::ZERO));
+        match next_protocol_delay() {
+            Some(Duration::ZERO) => {
+                let _result = ax_task::yield_current_cpu();
+            }
+            Some(delay) => {
+                NET_POLL_WAKE.wait_timeout_until(delay, || {
+                    NET_PROTOCOL_EPOCH.load(Ordering::Acquire) != observed
+                });
+            }
+            None => {
+                NET_POLL_WAKE.wait_until(|| NET_PROTOCOL_EPOCH.load(Ordering::Acquire) != observed)
+            }
+        }
     }
 }
 

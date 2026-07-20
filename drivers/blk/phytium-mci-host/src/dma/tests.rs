@@ -479,7 +479,8 @@ mod tests {
             Err(Error::BusError(_))
         ));
         assert!(request.is_some(), "recovery must retain DMA ownership");
-        core::mem::forget(request.take());
+        host.recovery_quiesced = true;
+        drop(host.finish_block_request(request.take().unwrap()));
     }
 
     #[test]
@@ -518,7 +519,9 @@ mod tests {
         );
         assert_eq!(slot.state().id(), Some(id));
 
-        core::mem::forget(request.take());
+        host.recovery_quiesced = true;
+        host.reclaim_block_request_after_quiesce(&mut request, id, &mut slot)
+            .unwrap();
     }
 
     #[test]

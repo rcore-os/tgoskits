@@ -19,6 +19,14 @@ use error::SdioError;
 pub trait SdioCardIrq: Send + Sync {
     fn mask_card_irq(&self);
     fn unmask_card_irq(&self);
+
+    /// Consumes one card-interrupt fact captured by the registered endpoint.
+    ///
+    /// Implementations return `false` when no acknowledged event is pending;
+    /// this method must never read or clear a destructive controller register.
+    fn take_card_irq(&self) -> bool {
+        false
+    }
 }
 
 /// SDIO 主机控制器抽象

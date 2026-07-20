@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::{mem, num::NonZeroUsize};
 
 use dma_api::{CpuDmaBuffer, DeviceDma, DmaDirection, InFlightDma};
@@ -9,6 +9,7 @@ use crate::{
     ata::AtaDevice,
     command::PortCommandMemory,
     irq::HostShared,
+    quarantine::{AhciDmaQuarantine, AhciDmaQuarantineReason},
     queue::{ReadyPort, freeze_port},
     registers::{
         BOHC_BB, BOHC_BOS, BOHC_OOS, CAP_S64A, CAP2_BOH, CMD_CR, CMD_FR, CMD_FRE, CMD_ICC_ACTIVE,
@@ -35,12 +36,14 @@ pub enum ControllerInitState {
 
 pub(crate) struct AhciInitialization {
     state: InitState,
+    quarantined_dma: Option<AhciDmaQuarantine>,
 }
 
 impl AhciInitialization {
     pub(crate) const fn discovered() -> Self {
         Self {
             state: InitState::Discovered,
+            quarantined_dma: None,
         }
     }
 
@@ -74,53 +77,45 @@ impl AhciInitialization {
     /// This is the fail-closed destructor path for a caller that abandons an
     /// in-progress controller. It returns whether live DMA backing had to be
     /// quarantined so the controller owner can retain its MMIO/shared state.
-    pub(crate) fn quarantine_owned_dma(&mut self) -> bool {
+    pub(crate) fn quarantine_owned_dma(&mut self, shared: &Arc<HostShared>) -> bool {
         let state = mem::replace(&mut self.state, InitState::Failed);
-        match state {
-            InitState::StartingFis { command_memory, .. }
-            | InitState::StartingEngine { command_memory, .. } => {
-                mem::forget(command_memory);
-                true
+        let retained = match state {
+            InitState::StartingFis {
+                cursor,
+                command_memory,
             }
-            InitState::WaitingIdentify(IdentifyCommand {
+            | InitState::StartingEngine {
+                cursor,
                 command_memory,
-                dma,
-                ..
-            })
-            | InitState::AbortCommand(AbortingPort {
-                command_memory,
-                dma: Some(dma),
-                ..
-            })
-            | InitState::AbortFis(AbortingPort {
-                command_memory,
-                dma: Some(dma),
-                ..
-            }) => {
-                let _quarantined = dma.quarantine();
-                mem::forget(command_memory);
-                true
+            } => Some((cursor.port, command_memory, None)),
+            InitState::WaitingIdentify(command) => Some((
+                command.cursor.port,
+                command.command_memory,
+                Some(command.dma),
+            )),
+            InitState::AbortCommand(abort) | InitState::AbortFis(abort) => {
+                Some((abort.cursor.port, abort.command_memory, abort.dma))
             }
-            InitState::AbortCommand(AbortingPort {
-                command_memory,
-                dma: None,
-                ..
-            })
-            | InitState::AbortFis(AbortingPort {
-                command_memory,
-                dma: None,
-                ..
-            }) => {
-                mem::forget(command_memory);
-                true
-            }
-            _ => false,
-        }
+            _ => None,
+        };
+        let Some((port, command_memory, data_dma)) = retained else {
+            return false;
+        };
+        debug_assert!(self.quarantined_dma.is_none());
+        self.quarantined_dma = Some(AhciDmaQuarantine::new(
+            port,
+            AhciDmaQuarantineReason::InitializationAbandoned,
+            Arc::as_ptr(shared).expose_provenance(),
+            command_memory,
+            data_dma,
+            shared,
+        ));
+        true
     }
 
     pub(crate) fn poll(
         &mut self,
-        shared: &HostShared,
+        shared: &Arc<HostShared>,
         dma: &DeviceDma,
         config: AhciConfig,
         ready_ports: &mut Vec<Option<ReadyPort>>,
@@ -723,7 +718,7 @@ impl AhciInitialization {
 
     fn poll_abort_command(
         &mut self,
-        shared: &HostShared,
+        shared: &Arc<HostShared>,
         config: AhciConfig,
         input: InitInput,
         abort: AbortingPort,
@@ -731,7 +726,12 @@ impl AhciInitialization {
         let command = read_port(shared.registers(), abort.cursor.port, PX_CMD);
         if command & CMD_CR != 0 {
             if input.now_ns >= abort.cursor.deadline_ns {
-                return self.quarantine_failed_port(abort.command_memory, abort.dma);
+                return self.quarantine_failed_port(
+                    shared,
+                    abort.cursor.port,
+                    abort.command_memory,
+                    abort.dma,
+                );
             }
             let deadline_ns = abort.cursor.deadline_ns;
             self.state = InitState::AbortCommand(abort);
@@ -750,14 +750,19 @@ impl AhciInitialization {
 
     fn poll_abort_fis(
         &mut self,
-        shared: &HostShared,
+        shared: &Arc<HostShared>,
         config: AhciConfig,
         input: InitInput,
         abort: AbortingPort,
     ) -> InitPoll<()> {
         if read_port(shared.registers(), abort.cursor.port, PX_CMD) & CMD_FR != 0 {
             if input.now_ns >= abort.cursor.deadline_ns {
-                return self.quarantine_failed_port(abort.command_memory, abort.dma);
+                return self.quarantine_failed_port(
+                    shared,
+                    abort.cursor.port,
+                    abort.command_memory,
+                    abort.dma,
+                );
             }
             let deadline_ns = abort.cursor.deadline_ns;
             self.state = InitState::AbortFis(abort);
@@ -777,13 +782,20 @@ impl AhciInitialization {
 
     fn quarantine_failed_port(
         &mut self,
+        shared: &Arc<HostShared>,
+        port: usize,
         command_memory: PortCommandMemory,
         dma: Option<InFlightDma>,
     ) -> InitPoll<()> {
-        if let Some(dma) = dma {
-            let _ = dma.quarantine();
-        }
-        mem::forget(command_memory);
+        debug_assert!(self.quarantined_dma.is_none());
+        self.quarantined_dma = Some(AhciDmaQuarantine::new(
+            port,
+            AhciDmaQuarantineReason::InitializationStopTimedOut,
+            Arc::as_ptr(shared).expose_provenance(),
+            command_memory,
+            dma,
+            shared,
+        ));
         self.fail(InitError::Hardware(
             "AHCI port could not prove DMA quiescence",
         ))
@@ -936,7 +948,7 @@ mod tests {
 
         let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
         let shared = HostShared::new(registers.shared());
-        let _handler = shared.take_initial_handler().unwrap();
+        let _source = shared.take_initial_source().unwrap();
         let mut initialization = AhciInitialization::discovered();
         assert!(matches!(
             initialization.poll(
@@ -955,8 +967,8 @@ mod tests {
     fn dropped_initial_irq_endpoint_prevents_the_first_hardware_command() {
         let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
         let shared = HostShared::new(registers.shared());
-        let handler = shared.take_initial_handler().unwrap();
-        drop(handler);
+        let source = shared.take_initial_source().unwrap();
+        drop(source);
         shared.set_irq_delivery_enabled(true);
         let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
         let mut initialization = AhciInitialization::discovered();
@@ -978,7 +990,7 @@ mod tests {
     fn reset_timeout_is_absolute_and_independent_of_poll_frequency() {
         let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
         let shared = HostShared::new(registers.shared());
-        let _handler = shared.take_initial_handler().unwrap();
+        let _source = shared.take_initial_source().unwrap();
         shared.set_irq_delivery_enabled(true);
         let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
         let mut initialization = AhciInitialization::discovered();
@@ -1013,7 +1025,7 @@ mod tests {
     fn reset_masks_published_ports_before_global_irq_enable() {
         let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
         let shared = HostShared::new(registers.shared());
-        let _handler = shared.take_initial_handler().unwrap();
+        let _source = shared.take_initial_source().unwrap();
         shared.set_irq_delivery_enabled(true);
         let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
         let mut initialization = AhciInitialization::discovered();
@@ -1057,7 +1069,7 @@ mod tests {
         registers.set(HOST_CAP2, CAP2_BOH);
         registers.set(HOST_BOHC, BOHC_BOS | BOHC_BB);
         let shared = HostShared::new(registers.shared());
-        let _handler = shared.take_initial_handler().unwrap();
+        let _source = shared.take_initial_source().unwrap();
         shared.set_irq_delivery_enabled(true);
         let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
         let mut initialization = AhciInitialization::discovered();
@@ -1120,6 +1132,7 @@ mod tests {
         };
         let mut initialization = AhciInitialization {
             state: InitState::AssertingComreset(cursor),
+            quarantined_dma: None,
         };
         let mut ready = Vec::new();
 
@@ -1170,6 +1183,7 @@ mod tests {
                 cursor,
                 command_memory,
             },
+            quarantined_dma: None,
         };
         let register_window = shared
             .try_claim_register_window()
@@ -1237,7 +1251,7 @@ mod tests {
     fn identify_watchdog_never_reads_completion_state() {
         let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
         let shared = HostShared::new(registers.shared());
-        let _handler = shared.take_initial_handler().unwrap();
+        let _source = shared.take_initial_source().unwrap();
         shared.set_irq_delivery_enabled(true);
         let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
         let mut initialization = AhciInitialization::discovered();
@@ -1324,7 +1338,7 @@ mod tests {
                 .all(|read| read.offset != port_offset(0, PX_CI))
         );
         assert!(matches!(initialization.state, InitState::AbortCommand(_)));
-        assert!(initialization.quarantine_owned_dma());
+        assert!(initialization.quarantine_owned_dma(&shared));
     }
 
     #[test]
@@ -1333,7 +1347,7 @@ mod tests {
         let shared = HostShared::new(registers.shared());
         shared.publish_implemented_ports(1);
         shared.set_irq_delivery_enabled(true);
-        let mut handler = shared.take_initial_handler().unwrap();
+        let (mut handler, _control) = shared.take_initial_source().unwrap().into_parts();
         let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
         let command_memory = PortCommandMemory::allocate(&dma).unwrap();
         let mut identify = CpuDmaBuffer::new_zero(
@@ -1374,18 +1388,19 @@ mod tests {
                 dma: identify,
                 completion_seen: false,
             }),
+            quarantined_dma: None,
         };
         let mut ready = Vec::new();
 
         registers.set(HOST_IS, 1);
         registers.set(port_offset(0, PX_IS), IRQ_D2H_REG_FIS);
         registers.set(port_offset(0, PX_CI), 0);
-        assert!(handler.handle_irq().is_handled());
+        assert!(handler.capture().is_captured());
         registers.set(HOST_IS, 1);
         registers.set(port_offset(0, PX_IS), crate::registers::IRQ_TASK_FILE_ERROR);
         registers.set(port_offset(0, PX_TFD), crate::registers::TFD_ERR);
         registers.set(port_offset(0, PX_SERR), 0x20);
-        assert!(handler.handle_irq().is_handled());
+        assert!(handler.capture().is_captured());
 
         assert!(matches!(
             initialization.poll(&shared, &dma, test_config(), &mut ready, InitInput::at(10),),
@@ -1393,7 +1408,7 @@ mod tests {
         ));
         assert!(ready.is_empty());
         assert!(matches!(initialization.state, InitState::AbortCommand(_)));
-        assert!(initialization.quarantine_owned_dma());
+        assert!(initialization.quarantine_owned_dma(&shared));
     }
 
     fn set_identify_word(bytes: &mut [u8], index: usize, value: u16) {

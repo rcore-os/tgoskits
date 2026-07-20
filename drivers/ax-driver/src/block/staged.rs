@@ -1,12 +1,11 @@
 //! Platform-resource prelude for staged block controllers.
 
-use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use log::warn;
 use rdif_block::{
-    BlkError, ControllerInitEndpoint, DeviceInfo, IdList, InitError, InitInput, InitPoll,
-    InitSchedule, InitialController, Interface, IrqHandler, IrqSourceList, LifecycleEndpoint,
+    BlkError, BlockIrqSource, ControllerInitEndpoint, DeviceInfo, IdList, InitError, InitInput,
+    InitPoll, InitSchedule, InitialController, Interface, IrqSourceList, LifecycleEndpoint,
     QueueHandle, QueueLimits,
 };
 
@@ -45,7 +44,7 @@ pub(super) struct StagedPlatformBlock<T, P> {
     platform: P,
     prelude: PreludeState,
     init_sources: IdList,
-    taken_init_handlers: IdList,
+    taken_init_sources: IdList,
     irq_requested: AtomicBool,
     device_irq_enabled: AtomicBool,
 }
@@ -99,7 +98,7 @@ where
             platform,
             prelude: PreludeState::Prepare,
             init_sources,
-            taken_init_handlers: IdList::none(),
+            taken_init_sources: IdList::none(),
             irq_requested: AtomicBool::new(false),
             device_irq_enabled: AtomicBool::new(false),
         }
@@ -209,8 +208,8 @@ where
         Interface::irq_sources(&self.inner)
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
-        Interface::take_irq_handler(&mut self.inner, source_id)
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
+        Interface::take_irq_source(&mut self.inner, source_id)
     }
 }
 
@@ -223,29 +222,20 @@ where
         self.init_sources
     }
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
-        let handler = match self.inner.controller_init() {
-            ControllerInitEndpoint::Pending(initializer) => initializer.take_irq_handler(source_id),
+    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
+        let source = match self.inner.controller_init() {
+            ControllerInitEndpoint::Pending(initializer) => initializer.take_irq_source(source_id),
             ControllerInitEndpoint::Ready => None,
         };
-        if handler.is_some() && self.init_sources.contains(source_id) {
-            self.taken_init_handlers.insert(source_id);
+        if source.is_some() && self.init_sources.contains(source_id) {
+            self.taken_init_sources.insert(source_id);
         }
-        handler
-    }
-
-    fn service_deferred_irq(&mut self, source_id: usize) -> rdif_block::InitIrqProgress {
-        match self.inner.controller_init() {
-            ControllerInitEndpoint::Pending(initializer) => {
-                initializer.service_deferred_irq(source_id)
-            }
-            ControllerInitEndpoint::Ready => rdif_block::InitIrqProgress::Unhandled,
-        }
+        source
     }
 
     fn poll_init(&mut self, input: InitInput) -> InitPoll<()> {
         if !self.irq_requested.load(Ordering::Acquire)
-            || self.taken_init_handlers.bits() != self.init_sources.bits()
+            || self.taken_init_sources.bits() != self.init_sources.bits()
         {
             return self.fail_initialization(InitError::MissingInterrupt);
         }
@@ -278,7 +268,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
+    use alloc::{boxed::Box, sync::Arc};
     use core::sync::atomic::{AtomicBool, AtomicUsize};
 
     use super::*;
@@ -303,22 +293,45 @@ mod tests {
     }
 
     struct FailingInitializer {
-        handler: Option<Box<dyn IrqHandler>>,
+        source: Option<BlockIrqSource>,
     }
 
     impl FailingInitializer {
         fn new() -> Self {
             Self {
-                handler: Some(Box::new(TestIrq)),
+                source: Some(BlockIrqSource::new(
+                    Box::new(TestIrq),
+                    Box::new(TestIrqControl),
+                )),
             }
         }
     }
 
     struct TestIrq;
 
-    impl IrqHandler for TestIrq {
-        fn handle_irq(&mut self) -> rdif_block::IrqOutcome {
-            rdif_block::IrqOutcome::unhandled()
+    impl rdif_block::IrqEndpoint for TestIrq {
+        type Event = rdif_block::Event;
+        type Fault = BlkError;
+
+        fn capture(&mut self) -> rdif_block::BlockIrqCapture {
+            rdif_block::IrqCapture::Unhandled
+        }
+
+        fn contain(
+            &mut self,
+            _cause: rdif_block::ContainmentCause,
+        ) -> Result<rdif_block::MaskedSource, Self::Fault> {
+            rdif_block::MaskedSource::try_new(1, 1).map_err(|_| BlkError::Io)
+        }
+    }
+
+    struct TestIrqControl;
+
+    impl rdif_block::IrqSourceControl for TestIrqControl {
+        type Error = rdif_block::IrqControlError;
+
+        fn rearm(&mut self, _source: rdif_block::MaskedSource) -> Result<(), Self::Error> {
+            Ok(())
         }
     }
 
@@ -327,12 +340,8 @@ mod tests {
             IdList::from_bits(1)
         }
 
-        fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
-            (source_id == 0).then(|| self.handler.take()).flatten()
-        }
-
-        fn service_deferred_irq(&mut self, _source_id: usize) -> rdif_block::InitIrqProgress {
-            rdif_block::InitIrqProgress::Unhandled
+        fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
+            (source_id == 0).then(|| self.source.take()).flatten()
         }
 
         fn poll_init(&mut self, _input: InitInput) -> InitPoll<()> {
@@ -399,7 +408,7 @@ mod tests {
             alloc::vec![rdif_block::IrqSourceInfo::legacy(IdList::from_bits(1))]
         }
 
-        fn take_irq_handler(&mut self, _source_id: usize) -> Option<Box<dyn IrqHandler>> {
+        fn take_irq_source(&mut self, _source_id: usize) -> Option<BlockIrqSource> {
             None
         }
     }
@@ -484,8 +493,8 @@ mod tests {
             ImmediatePrelude,
         );
 
-        let _handler = InitialController::take_irq_handler(&mut block, 0)
-            .expect("test initialization IRQ handler must be available");
+        let _source = InitialController::take_irq_source(&mut block, 0)
+            .expect("test initialization IRQ source must be available");
         assert_eq!(Interface::enable_irq(&block), Ok(()));
         let InitPoll::Pending(schedule) =
             InitialController::poll_init(&mut block, InitInput::at(0))
@@ -505,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_prelude_cannot_run_before_the_initialization_irq_handler_is_taken() {
+    fn platform_prelude_cannot_run_before_the_initialization_irq_source_is_taken() {
         struct CountingPrelude(Arc<AtomicUsize>);
 
         impl PlatformPrelude for CountingPrelude {
@@ -557,8 +566,8 @@ mod tests {
             },
             CountingPrelude(Arc::clone(&prepare_calls)),
         );
-        let _handler = InitialController::take_irq_handler(&mut block, 0)
-            .expect("test initialization IRQ handler must be available");
+        let _source = InitialController::take_irq_source(&mut block, 0)
+            .expect("test initialization IRQ source must be available");
         Interface::enable_irq(&block).unwrap();
         Interface::disable_irq(&block).unwrap();
 

@@ -183,11 +183,20 @@ fn production_irq_return_uses_the_same_two_typed_transitions() {
 
     let preempt_exit = source_section(
         RUNTIME_GUARD,
-        "fn exit_lock_preempt(irq_return: bool)",
+        "fn exit_lock_preempt(origin: PreemptExitOrigin)",
         "pub(crate) fn enter_scheduler_frame_guard",
     );
-    assert!(preempt_exit.contains("RuntimeSchedulerEntry::IrqReturn"));
+    assert!(preempt_exit.contains("irq_owner.scheduler_entry()"));
     assert!(preempt_exit.contains("state.exit_lock_preempt();"));
+
+    let irq_owner = source_section(
+        RUNTIME_GUARD,
+        "impl PreemptExitIrqOwner",
+        "struct ScheduleContextSnapshot",
+    );
+    assert!(irq_owner.contains("PreemptExitOrigin::IrqReturn"));
+    assert!(irq_owner.contains("RuntimeSchedulerEntry::IrqReturn"));
+    assert!(irq_owner.contains("restore_saved_irq_state(self)"));
 
     let claim = source_section(
         RUNTIME_GUARD,

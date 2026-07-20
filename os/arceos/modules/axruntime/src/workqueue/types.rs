@@ -1,7 +1,5 @@
 #[cfg(feature = "workqueue")]
 use alloc::{boxed::Box, format};
-#[cfg(feature = "workqueue")]
-use core::sync::atomic::AtomicU8;
 use core::{
     cell::UnsafeCell,
     marker::PhantomPinned,
@@ -9,14 +7,16 @@ use core::{
     ptr,
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
 };
+#[cfg(feature = "workqueue")]
+use core::{mem::MaybeUninit, sync::atomic::AtomicU8};
 
 #[cfg(feature = "workqueue")]
 use ax_kspin::PreemptGuard;
 #[cfg(feature = "workqueue")]
 use ax_task::{
-    arm_current_runtime_timer, cancel_current_runtime_timer,
+    arm_current_runtime_timer, retire_current_runtime_timer,
     runtime::{RuntimeStatus, RuntimeTimerEventV1},
-    timer::{RuntimeTimerOwner, TimerNode, TimerToken},
+    timer::{RuntimeTimerOwner, TimerNode, TimerRetireProof, TimerToken},
 };
 use thiserror::Error;
 
@@ -77,8 +77,6 @@ pub enum QueueWorkResult {
     AlreadyPending,
     /// The callback was running and exactly one later activation was requested.
     RerunRequested,
-    /// Cancellation owns the item until its queued tombstone or callback exits.
-    CancelInProgress,
 }
 
 /// Workqueue configuration or ownership error.
@@ -118,6 +116,9 @@ pub enum WorkQueueError {
     /// An operation used a work item owned by another logical queue.
     #[error("work item is permanently bound to another logical workqueue")]
     ForeignDomain,
+    /// Cancellation owns the item until its queued tombstone or callback exits.
+    #[error("work item cancellation is in progress")]
+    CancelInProgress,
     /// Intrusive state did not match the lane that owned the node.
     #[error("workqueue intrusive state invariant was violated")]
     InvalidState,
@@ -165,6 +166,10 @@ pub enum WorkQueueError {
     #[cfg(feature = "workqueue")]
     #[error("delayed work is already queued or running")]
     DelayedWorkBusy,
+    /// No pre-reserved slot remains for retaining an unretired delayed owner.
+    #[cfg(feature = "workqueue")]
+    #[error("delayed-work quarantine capacity is exhausted")]
+    DelayedWorkQuarantineCapacity,
 }
 
 /// One fixed-address callback node shared by IRQ producers and worker threads.
@@ -315,7 +320,7 @@ impl WorkItem {
         self.owner_system.load(Ordering::Acquire) == ptr::from_ref(system).cast::<()>().cast_mut()
     }
 
-    pub(super) fn domain_accepts_callback_requeue(&self) -> bool {
+    pub(super) fn domain_allows_callback_continuation(&self) -> bool {
         let domain = self.owner_domain.load(Ordering::Acquire);
         if domain.is_null() {
             return true;
@@ -323,7 +328,10 @@ impl WorkItem {
         unsafe {
             // SAFETY: binding requires a pinned shutdown-lifetime WorkQueue,
             // and its state remains atomic for the complete WorkItem lifetime.
-            (*domain).state() == WorkQueueState::Accepting
+            matches!(
+                (*domain).state(),
+                WorkQueueState::Accepting | WorkQueueState::Draining
+            )
         }
     }
 
@@ -351,9 +359,9 @@ impl WorkItem {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum WorkQueueState {
-    /// New submissions and callback-owned requeues are accepted.
+    /// New submissions and callback-owned continuations are accepted.
     Accepting = DOMAIN_ACCEPTING,
-    /// New submissions are rejected while already accepted items finish.
+    /// New submissions are rejected while accepted callback continuations finish.
     Draining  = DOMAIN_DRAINING,
     /// Every accepted item reached idle after the drain transition.
     Drained   = DOMAIN_DRAINED,
@@ -370,6 +378,8 @@ pub struct WorkQueue {
     priority: WorkPriority,
     lifecycle: AtomicUsize,
     #[cfg(feature = "workqueue")]
+    runtime_notifications: AtomicBool,
+    #[cfg(feature = "workqueue")]
     drain_wait: WaitQueue,
     #[cfg(feature = "workqueue")]
     drain_notify_work: WorkItem,
@@ -383,6 +393,8 @@ impl WorkQueue {
             cpu,
             priority,
             lifecycle: AtomicUsize::new(DOMAIN_ACCEPTING as usize),
+            #[cfg(feature = "workqueue")]
+            runtime_notifications: AtomicBool::new(false),
             #[cfg(feature = "workqueue")]
             drain_wait: WaitQueue::new(),
             #[cfg(feature = "workqueue")]
@@ -461,6 +473,11 @@ impl WorkQueue {
         }
     }
 
+    #[cfg(feature = "workqueue")]
+    pub(super) fn enable_runtime_notifications(&self) {
+        self.runtime_notifications.store(true, Ordering::Release);
+    }
+
     pub(super) fn release_item_reservation(&'static self) {
         loop {
             let observed = self.lifecycle.load(Ordering::Acquire);
@@ -480,7 +497,10 @@ impl WorkQueue {
                 .is_ok()
             {
                 #[cfg(feature = "workqueue")]
-                if previous_state == DOMAIN_DRAINING && next_state == DOMAIN_DRAINED {
+                if previous_state == DOMAIN_DRAINING
+                    && next_state == DOMAIN_DRAINED
+                    && self.runtime_notifications.load(Ordering::Acquire)
+                {
                     self.queue_drain_notification();
                 }
                 return;
