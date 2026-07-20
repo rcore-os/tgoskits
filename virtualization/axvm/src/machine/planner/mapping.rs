@@ -166,26 +166,27 @@ pub(super) fn plan_host_devices(
 fn protect_host_managed_providers(
     planned: &mut [PlannedHostDevice],
 ) -> MachinePlanResult<Vec<PreconfiguredHostDeviceResources>> {
-    let mut protected_providers = BTreeSet::new();
-    let mut protected_provider_ids = BTreeSet::new();
+    let protected_providers = protected_provider_indices(planned);
+    let protected_provider_ids = protected_providers
+        .iter()
+        .map(|index| planned[*index].id().clone())
+        .collect::<BTreeSet<_>>();
+    for provider_index in &protected_providers {
+        if provider_has_raw_guest_access(&planned[*provider_index]) {
+            planned[*provider_index].set_disposition(DeviceDisposition::Unrepresentable);
+        }
+    }
+
     let mut affected_consumers = BTreeSet::new();
     let mut blocked_consumers = BTreeMap::new();
-    for provider_index in 0..planned.len() {
+    for provider_index in protected_providers {
         let provider = &planned[provider_index];
-        if !provider_has_register_aperture(provider) {
-            continue;
-        }
-
         let protected_use = planned.iter().find_map(|consumer| {
             is_host_protected(consumer.disposition())
                 .then(|| managed_reference_to(consumer, provider.id()))
                 .flatten()
                 .map(|dependency| (consumer, dependency))
         });
-        if protected_use.is_none() && !is_host_protected(provider.disposition()) {
-            continue;
-        }
-
         for (consumer_index, consumer) in planned
             .iter()
             .enumerate()
@@ -212,14 +213,6 @@ fn protect_host_managed_providers(
                 }
             }
         }
-        protected_providers.insert(provider_index);
-        protected_provider_ids.insert(provider.id().clone());
-    }
-
-    for provider_index in protected_providers {
-        if provider_has_raw_guest_access(&planned[provider_index]) {
-            planned[provider_index].set_disposition(DeviceDisposition::Unrepresentable);
-        }
     }
 
     let mut preconfigured = Vec::new();
@@ -240,6 +233,55 @@ fn protect_host_managed_providers(
         }
     }
     Ok(preconfigured)
+}
+
+fn protected_provider_indices(planned: &[PlannedHostDevice]) -> BTreeSet<usize> {
+    let mut protected = planned
+        .iter()
+        .enumerate()
+        .filter(|(_, provider)| provider_has_register_aperture(provider))
+        .filter(|(_, provider)| {
+            is_host_protected(provider.disposition())
+                || planned.iter().any(|consumer| {
+                    is_host_protected(consumer.disposition())
+                        && managed_reference_to(consumer, provider.id()).is_some()
+                })
+        })
+        .map(|(index, _)| index)
+        .collect::<BTreeSet<_>>();
+
+    // Firmware node identity is not a physical ownership boundary. Provider
+    // helper nodes may describe a subrange of the same register bank, so
+    // exposing one of those aliases would bypass the hole around its owner.
+    loop {
+        let aliases = planned
+            .iter()
+            .enumerate()
+            .filter(|(index, candidate)| {
+                !protected.contains(index)
+                    && provider_has_register_aperture(candidate)
+                    && protected.iter().any(|protected_index| {
+                        devices_share_register_aperture(candidate, &planned[*protected_index])
+                    })
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if aliases.is_empty() {
+            return protected;
+        }
+        protected.extend(aliases);
+    }
+}
+
+fn devices_share_register_aperture(left: &PlannedHostDevice, right: &PlannedHostDevice) -> bool {
+    left.mmio()
+        .iter()
+        .any(|left| right.mmio().iter().any(|right| left.overlaps(*right)))
+        || left.pio().iter().any(|left| {
+            right.pio().iter().any(|right| {
+                u32::from(left.base()) < right.end() && u32::from(right.base()) < left.end()
+            })
+        })
 }
 
 fn provider_has_raw_guest_access(provider: &PlannedHostDevice) -> bool {

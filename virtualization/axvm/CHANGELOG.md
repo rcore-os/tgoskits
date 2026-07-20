@@ -81,6 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of performing a redundant generic CPU-interface synchronization.
 - Prevent guest clock cleanup from disabling host-owned consumers that share a
   physical provider with an assigned device.
+- Remove firmware aliases whose register ranges overlap a protected provider
+  aperture, so a guest driver cannot bypass the provider's stage-2 hole.
 
 ### Removed
 

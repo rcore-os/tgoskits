@@ -873,6 +873,44 @@ fn pinned_provider_resources_replace_raw_shared_controller_access() {
 }
 
 #[test]
+fn holed_shared_provider_aperture_has_no_guest_visible_alias_nodes() {
+    let host = host_fdt_with_overlapping_shared_provider_alias();
+    let mut snapshot = whole_machine_snapshot(&host);
+    let provider = HostDeviceId::new("/soc/clock-controller@b000000").unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::fixed_clock(vec![11], NonZeroU32::new(24_000_000).unwrap()),
+        )
+        .unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_virtual_device(pl011());
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+    let alias = plan
+        .host_devices()
+        .iter()
+        .find(|device| device.id().as_str() == "/soc/clock-link@b000100")
+        .unwrap();
+    assert_eq!(alias.disposition(), DeviceDisposition::Unrepresentable);
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+
+    assert!(
+        guest
+            .get_by_path_id("/soc/clock-controller@b000000")
+            .is_none(),
+        "the guest must not probe a physical provider whose MMIO aperture is holed"
+    );
+    assert!(
+        guest.get_by_path_id("/soc/clock-link@b000100").is_none(),
+        "a guest-visible alias must not re-open a holed provider aperture"
+    );
+}
+
+#[test]
 fn pinned_provider_resource_cannot_overlap_a_host_owned_consumer() {
     let host = host_fdt_with_shared_clock_controller();
     let mut host = Fdt::from_bytes(&host).unwrap();
@@ -1724,6 +1762,29 @@ fn host_fdt_with_shared_clock_controller() -> Vec<u8> {
         .unwrap()
         .set_regs(&[RegInfo::new(0x0a30_0000, Some(0x1000))]);
 
+    fdt.encode().as_ref().to_vec()
+}
+
+fn host_fdt_with_overlapping_shared_provider_alias() -> Vec<u8> {
+    let bytes = host_fdt_with_shared_clock_controller();
+    let mut fdt = Fdt::from_bytes(&bytes).unwrap();
+    let soc = fdt.get_by_path_id("/soc").unwrap();
+    let alias = fdt.add_node(soc, Node::new("clock-link@b000100"));
+    fdt.node_mut(alias)
+        .unwrap()
+        .set_property(string_property("compatible", "vendor,clock-gate-link"));
+    fdt.node_mut(alias)
+        .unwrap()
+        .set_property(u32_property("clocks", &[55, 11]));
+    fdt.node_mut(alias)
+        .unwrap()
+        .set_property(u32_property("#clock-cells", &[0]));
+    fdt.node_mut(alias)
+        .unwrap()
+        .set_property(u32_property("phandle", &[58]));
+    fdt.view_typed_mut(alias)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x0b00_0100, Some(0x10))]);
     fdt.encode().as_ref().to_vec()
 }
 
