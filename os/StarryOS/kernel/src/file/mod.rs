@@ -1,6 +1,6 @@
 // Shared contiguous dma-buf primitive + resolver used by every accelerator that
-// exchanges buffers (JPU / NPU; RGA when its node lands).
-#[cfg(any(feature = "jpeg", feature = "rknpu"))]
+// exchanges buffers (JPU / NPU / RGA).
+#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 pub mod dmabuf;
 pub mod epoll;
 #[cfg(axtest)]

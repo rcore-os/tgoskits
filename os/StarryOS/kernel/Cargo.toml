@@ -23,6 +23,7 @@ loongarch64-low-va = []
 memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
 rknpu = ["ax-driver/rknpu", "dep:ax-dma"]
 jpeg = ["ax-driver/jpeg", "dep:ax-dma"]
+rga = ["ax-driver/rga", "dep:rockchip-rga", "dep:ax-dma"]
 rk3588-pwm = [
     "ax-driver/rk3588-pwm",
     "dep:rdif-pwm",
@@ -89,6 +90,7 @@ ax-task = { workspace = true, features = [
     "sched-rr",
 ] }
 ax-dma = { workspace = true, optional = true }
+rockchip-rga = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
 crab-usb.workspace = true

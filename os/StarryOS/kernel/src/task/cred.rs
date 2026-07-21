@@ -9,7 +9,8 @@ use alloc::sync::Arc;
 
 use linux_raw_sys::general::{
     CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID, CAP_SETPCAP,
-    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RESOURCE,
+    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RAWIO,
+    CAP_SYS_RESOURCE,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -188,6 +189,15 @@ impl Cred {
     /// (equivalent to `CAP_SYS_BOOT`).
     pub fn has_cap_sys_boot(&self) -> bool {
         self.has_cap(CAP_SYS_BOOT)
+    }
+
+    /// Check whether this credential may perform raw I/O — direct access to
+    /// physical memory / device addresses (equivalent to `CAP_SYS_RAWIO`, the
+    /// capability Linux requires for `/dev/mem`-class access). Gates handing a
+    /// raw physical address to a DMA engine, which can otherwise reach arbitrary
+    /// system memory.
+    pub fn has_cap_sys_rawio(&self) -> bool {
+        self.has_cap(CAP_SYS_RAWIO)
     }
 
     /// Check whether this credential may load or unload kernel modules
