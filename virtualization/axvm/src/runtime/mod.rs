@@ -16,7 +16,13 @@ pub(crate) mod hvc;
 mod ivc;
 pub(crate) mod vcpus;
 
+mod dispatcher;
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+// Re-exported for [`VmRuntimeHandle`](crate::vm::VmRuntimeHandle) which will
+// embed the dispatcher as a field and expose it to the vCPU run loop.
+#[allow(unused_imports)]
+pub(crate) use dispatcher::VcpuIrqDispatcher;
 
 use crate::{AxVmError, AxVmResult, StopReason, VmStatus, ax_err};
 
