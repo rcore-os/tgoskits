@@ -4,26 +4,27 @@
     }
 
     ${post_tdata_sections}
-    .tdata : ${tdata_align} {
-        _stdata = .;
-        *(.tdata .tdata.* .gnu.linkonce.td.*)
-        _etdata = .;
-    } ${tdata_output}
+    /* Preserve the common symbol ABI without creating TLS output sections. */
+    _stdata = .;
+    _etdata = .;
     ${edata_align}
     _edata = .;
     __kernel_load_end = .;
     ${bss_start_before_tbss}
-
-    .tbss : ${tbss_align} {
-        _stbss = .;
-        *(.tbss .tbss.* .gnu.linkonce.tb.*)
-        *(.init.bss)
-        *(.tcommon)
-        _etbss = .;
-    } ${tbss_output}
-
+    _stbss = .;
+    _etbss = .;
     ${bss_start_after_tbss}
     ${pre_sbss_align}
+
+    /* Fail the link if a no-TLS final image pulls in any TLS storage. */
+    .forbidden_kernel_tls (NOLOAD) : {
+        *(.tdata .tdata.* .gnu.linkonce.td.*)
+        *(.tbss .tbss.* .gnu.linkonce.tb.*)
+        *(.tcommon)
+    }
+    ASSERT(SIZEOF(.forbidden_kernel_tls) == 0,
+           "kernel TLS input requires the someboot/tls feature")
+
     .sbss : {
         *(.dynsbss)
         *(.sbss)
@@ -32,6 +33,7 @@
     } ${bss_output}
     .bss : {
         *(.dynbss)
+        *(.init.bss)
         *(.bss .bss.*)
         *(COMMON)
 

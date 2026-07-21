@@ -97,6 +97,40 @@ pub(crate) const ARCEOS_LINKER_SCRIPT: &str = "linker.x";
 pub(super) const STD_TARGET_DIR: &str = "std";
 pub(super) const AXSTD_STD_PACKAGE: &str = "ax-std";
 
+/// Link contract for freestanding kernels built without Rust `std`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BareKernelLinkMode {
+    /// Use the target's default relocation and linker policy.
+    Default,
+    /// Produce a position-independent executable with the kernel linker script.
+    Pie,
+}
+
+impl BareKernelLinkMode {
+    fn rustflags(self, target: &str) -> Vec<String> {
+        match self {
+            Self::Default => Vec::new(),
+            Self::Pie => {
+                let mut flags = vec![
+                    "-Crelocation-model=pic".to_string(),
+                    "-Clink-args=-pie".to_string(),
+                ];
+                if target.starts_with("riscv64") {
+                    flags.push("-Clink-args=--no-relax".to_string());
+                }
+                flags.extend([
+                    "-Clink-args=--gc-sections".to_string(),
+                    "-Clink-args=-znorelro".to_string(),
+                    "-Clink-args=-znostart-stop-gc".to_string(),
+                    "-Clink-args=-Tlinker.x".to_string(),
+                    "-Clink-args=-u _head".to_string(),
+                ]);
+                flags
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, JsonSchema, Deserialize, Serialize, PartialEq)]
 pub struct BuildInfo {
     /// Environment variables to set during the build.
@@ -229,6 +263,68 @@ impl BuildInfo {
         Ok(cargo)
     }
 
+    /// Builds a Rust-`std` kernel through the musl PIE target and linker wrapper.
+    pub(crate) fn into_prepared_std_cargo_config_with_metadata(
+        self,
+        package: &str,
+        target: &str,
+        metadata: &Metadata,
+    ) -> anyhow::Result<Cargo> {
+        self.into_prepared_base_cargo_config_with_metadata(package, target, metadata)
+    }
+
+    /// Builds a freestanding kernel against only `core` and `alloc`.
+    pub(crate) fn into_prepared_no_std_cargo_config_with_metadata(
+        mut self,
+        package: &str,
+        target: &str,
+        metadata: &Metadata,
+        link_mode: BareKernelLinkMode,
+    ) -> anyhow::Result<Cargo> {
+        self.validated_max_cpu_num()?;
+        self.validate_features()?;
+        self.reject_freestanding_std_compat()?;
+        self.enable_package_smp_feature(package, metadata)?;
+
+        let mut rustflags = toolchain_rustflags_for_features(&self.env, &self.features);
+        rustflags.extend(link_mode.rustflags(target));
+        let args = Self::build_cargo_args(target, &rustflags);
+        let mut cargo =
+            self.into_base_cargo_config_with_log(package.to_string(), target.to_string(), args);
+        cargo.to_bin = bare_target_requires_bin(target);
+        Ok(cargo)
+    }
+
+    fn reject_freestanding_std_compat(&self) -> anyhow::Result<()> {
+        if let Some(feature) = self
+            .features
+            .iter()
+            .find(|feature| feature.rsplit('/').next() == Some("std-compat"))
+        {
+            bail!("freestanding no_std build cannot enable `{feature}`");
+        }
+        Ok(())
+    }
+
+    fn enable_package_smp_feature(
+        &mut self,
+        package: &str,
+        metadata: &Metadata,
+    ) -> anyhow::Result<()> {
+        if !self.max_cpu_num.is_some_and(|max_cpu_num| max_cpu_num > 1) {
+            return Ok(());
+        }
+        if package_feature_names(package, metadata)?
+            .iter()
+            .any(|feature| feature == "smp")
+        {
+            self.features.push("smp".to_string());
+            self.features.sort();
+            self.features.dedup();
+        }
+        Ok(())
+    }
+
     pub(super) fn resolve_std_features(&mut self) {
         self.features = self
             .features
@@ -254,6 +350,17 @@ impl BuildInfo {
     /// Reject compatibility aliases and removed platform controls instead of silently changing
     /// the build contract selected by the caller.
     pub(crate) fn validate_features(&self) -> anyhow::Result<()> {
+        let selects_mode = |mode: &str| {
+            self.features
+                .iter()
+                .any(|feature| feature.rsplit('/').next() == Some(mode))
+        };
+        if selects_mode("uspace") && selects_mode("tls") {
+            bail!(
+                "features `uspace` and `tls` select incompatible CPU-local register ownership \
+                 modes"
+            );
+        }
         for feature in &self.features {
             self.validate_feature(feature)?;
         }
@@ -305,6 +412,10 @@ impl BuildInfo {
         }
         args
     }
+}
+
+fn bare_target_requires_bin(target: &str) -> bool {
+    target.starts_with("aarch64-") || target.starts_with("riscv64")
 }
 
 impl Default for BuildInfo {

@@ -35,7 +35,9 @@ ax-memory-addr = { workspace = true }
 ax-memory-set = { workspace = true }
 ax-percpu.workspace = true
 page-table-generic = { workspace = true }
-ax-std = { workspace = true, features = [
+ax-std = { workspace = true, default-features = false, features = [
+    "alloc",
+    "fd",
     "paging",
     "irq",
     "multitask",

@@ -9,12 +9,51 @@ This reference captures project-specific lessons from enabling LoongArch dynamic
 | Target spec | `scripts/targets/**/<triple>.json` | ABI, soft-float, relocation model, linker, panic, std/musl support |
 | Build orchestration | `scripts/axbuild/src/{build.rs,context,test/qemu.rs,*}` | arch to target mapping, features, UEFI mode, QEMU command, rootfs image |
 | Test data | `test-suit/{arceos,starryos,axvisor}/**` | runtime TOML, build TOML, regexes, SMP count, firmware mode |
-| Bootloader | `components/someboot/src/**` | entry ABI, relocation, memory map, paging, trap, SMP, power |
+| Bootloader | `platforms/someboot/src/**` | entry ABI, relocation, memory map, paging, trap, SMP, power |
 | CPU runtime | `components/axcpu/src/<arch>/**` | trap frame layout, context switch, FP/SIMD, user return |
 | Dynamic platform | `platforms/{axplat-dyn,somehal}/**` | runtime memory/IRQ/timer/power facts from firmware |
 | Drivers | `drivers/**`, `patches/virtio-drivers/**` | MMIO/iomap, DMA, PCI command bits, virtio transport |
 
 When a boot failure appears in a high layer, still audit lower-layer contracts. For example, a Starry rootfs failure can be caused by PCI command bits, and an Axvisor hang can be caused by a someboot post-UEFI handoff.
+
+## CPU-local Register Ownership
+
+`cpu-local` is the single owner of host CPU-area, current-thread, and kernel-TLS register
+semantics. `ax-percpu` supplies the typed template/layout/area implementation but must not choose
+an architecture register independently. The two image modes are mutually exclusive at a final
+image boundary:
+
+| Architecture | CPU area | Linux-current image | Unikernel-TLS image |
+| --- | --- | --- | --- |
+| x86_64 | GS base | current header in `CpuRuntimeAnchor` | FS base is task TLS |
+| AArch64 | TPIDR_EL1 at EL1, TPIDR_EL2 at EL2 | SP_EL0 is current | TPIDR_EL0 is task TLS |
+| RISC-V | recover from current header, or sscratch | tp is current and sscratch is zero in kernel Rust | tp is task TLS and sscratch is CPU base |
+| LoongArch | r21, mirrored in KS3 | tp is current | tp is task TLS |
+
+Context-switch publication follows one ordering: validate the outgoing binding, bind the next
+stable task header, prepare every fallible state transition, commit the architecture register,
+perform the naked switch, and unbind the previous header in the incoming tail. The interrupt-off
+`CpuPin` spans that sequence. vCPU exits must restore the host register contract before returning
+to host Rust; LoongArch KS4/KS5 remain vCPU scratch and AArch64 must restore host TPIDR_EL0 before
+calling Rust exception handlers.
+
+For boot debugging, verify the typed per-CPU layout is finalized and frozen before CPU binding.
+Check both the architectural register and its defined mirror (RISC-V sscratch or LoongArch KS3)
+on secondaries. A separate current-task per-CPU variable can mask a stale register during normal
+execution and then fail only on traps or vCPU exits, so it is not a valid fallback.
+
+## Final Image Runtime Modes
+
+- Starry uses its original bare target as a `no_std`/`no_main` PIE with
+  `build-std=core,alloc`; SMP remains a compile-time capability, while the runtime CPU limit is
+  configured separately. Its ELF must be `ET_DYN` without `PT_TLS`, `.tdata`, or `.tbss`.
+- Axvisor remains a std/musl PIE and explicitly selects the complete TLS chain down through
+  axruntime, axhal, `cpu-local`, axplat-dyn, somehal, and someboot.
+- ArceOS retains TLS by default. A userspace build owns the same architecture register for
+  Linux-current semantics, so `uspace + tls` is a configuration error.
+- someboot renders TLS and no-TLS linker layouts separately. For relocatable direct images,
+  audit the final ELF at multiple load biases and accept only the architecture's supported
+  relative relocation types.
 
 ## Dynamic UEFI Platform Notes
 
@@ -36,8 +75,10 @@ Use this order when auditing an early boot port:
 6. Trap vectors are installed using the address form required by the architecture at that moment.
 7. MMU enable is followed by the required barrier, TLB flush, and an address-basis-safe jump.
 8. Post-MMU console and panic paths are usable.
-9. Per-CPU data and secondary boot stacks are allocated and initialized.
-10. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
+9. The typed per-CPU layout is finalized, final high-address areas are initialized once, frozen,
+   and bound through the architecture CPU-local register contract.
+10. Per-CPU data and secondary boot stacks are allocated and initialized.
+11. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
 
 ## RISC-V FDT SMP Notes
 

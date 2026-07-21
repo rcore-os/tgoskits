@@ -179,7 +179,7 @@ ax-posix-api = { version = "0.5.29", path = "os/arceos/api/arceos_posix_api" }
 ax-riscv-plic = { version = "0.4.9", path = "drivers/intc/riscv_plic" }
 ax-runtime = { version = "0.10.4", path = "os/arceos/modules/axruntime" }
 ax-sched = { version = "0.5.8", path = "components/axsched" }
-ax-std = { version = "0.5.28", path = "os/arceos/ulib/axstd" }
+ax-std = { version = "0.5.28", path = "os/arceos/ulib/axstd", default-features = false }
 ax-sync = { version = "0.5.28", path = "os/arceos/modules/axsync" }
 ax-task = { version = "0.6.4", path = "os/arceos/modules/axtask" }
 axtest = { version = "0.5.12", path = "components/axtest/axtest" }

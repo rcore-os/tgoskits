@@ -22,7 +22,25 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 ## Porting Checklist
 
 - **Target and toolchain**: add or verify `scripts/targets` specs, target triple, panic strategy, relocation model, code model, ABI, soft-float setting, musl/std support, linker, objcopy, and `rust-src` availability.
-- **RISC-V per-CPU register contract**: `ax-percpu` reserves `x3`/`gp` as the per-CPU base, so every RISC-V kernel target spec must pass `--no-relax` to the linker. Do not enable global-pointer relaxation or define `__global_pointer$` unless the per-CPU register design changes at the same time.
+- **Kernel runtime mode**: keep the final image contract explicit. Starry is a freestanding
+  `no_std`/`no_main` PIE built with `build-std=core,alloc`, always retains its SMP capability,
+  and must not contain kernel TLS. Axvisor remains a std/musl PIE and explicitly enables TLS.
+  ArceOS enables TLS by default, but configuration must reject `uspace + tls` rather than
+  constructing an image with overlapping register ownership.
+- **CPU-local register ABI**: `cpu-local` owns the register contract and `ax-percpu` owns only
+  typed layout/storage. Do not create a second current-task per-CPU pointer. The active image
+  mode determines the register assignment:
+
+  | Architecture | CPU area | `LinuxCurrent` | `UnikernelTls` |
+  | --- | --- | --- | --- |
+  | x86_64 | GS base | current header in the GS runtime anchor | FS base |
+  | AArch64 | TPIDR_EL1/EL2 | SP_EL0 | TPIDR_EL0 |
+  | RISC-V | current-header backtrace or sscratch | `tp = current`, `sscratch = 0` | `tp = TLS`, `sscratch = CPU base` |
+  | LoongArch | r21 with KS3 mirror | `tp = current` | `tp = TLS` |
+
+  Keep LoongArch KS4/KS5 reserved for vCPU scratch. On RISC-V, `gp` is the ordinary global
+  pointer again; target specs still need `--no-relax` where the PIE relocation model requires
+  it, but must not describe `gp` as CPU-local storage.
 - **Build system**: wire arch/target mapping in `scripts/axbuild`, dynamic platform defaults, feature propagation, kernel format conversion, UEFI/to-bin behavior, rootfs handling, and per-OS test discovery.
 - **QEMU and firmware**: verify QEMU binary, machine type, CPU, SMP count, pflash/OVMF files, serial console, disk/rootfs device, `-snapshot`, debug flags, timeout, and success/fail regexes.
   QEMU `uefi`, `to_bin`, acceleration, CPU feature, and device choices are part of each
@@ -34,6 +52,11 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   Cargo `vmx` or `svm` feature. Both cases must use the same backend-neutral guest baseline so
   their result isolates the runtime CPUID-selected virtualization path.
 - **someboot arch layer**: implement or audit entry, relocation, BSS clearing, stack setup, memory map parsing, paging, trap vectors, timer, IRQ, power, SMP, and address translation.
+- **CPU-local startup**: build the typed `ax-percpu` layout, allocate and copy the final CPU
+  areas, freeze the layout, then bind each CPU with a `CpuPin`. Register publication must happen
+  only after all fallible preparation succeeds. AArch64 final aliases need cache maintenance
+  consistent with their shareability attributes; RISC-V secondary boot must initialize
+  `sscratch`; LoongArch must keep r21 and KS3 coherent.
 - **CPU runtime**: update `components/axcpu/src/<arch>` for trap entry, context switch, user/kernel context, syscall return path, FP/SIMD state, and per-CPU assumptions.
 - **Platform bridge**: update `platforms/axplat-dyn`, `platforms/somehal`, platform config, memory regions, IRQ routing, timer source, power operations, and CPU boot operations.
 - **Runtime platform identity**: dynamic platform names should be discovered in `someboot`/`somehal` from firmware data, then exposed through `axplat-dyn` and `ax_plat::platform::platform_name()`. Keep `ax-hal` as a forwarding layer for platform identity, and keep static platforms returning `config::PLATFORM`.
@@ -61,8 +84,14 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - Establish an early console before risky transitions, then ensure a post-UEFI/post-MMU console path exists without Boot Services.
 - Capture the memory map and kernel image physical range before address translation helpers depend on them.
 - Treat relocated symbols carefully. After relocation or high-half switch, use runtime-safe symbol address helpers instead of raw compile-time addresses.
+- For x86_64 direct PIE boot, apply supported `R_X86_64_RELATIVE` relocations in a naked,
+  RIP-relative entry before executing Rust. The UEFI header may share the head section, but the
+  raw entry symbol is the direct-loader entry and its physical address must remain valid after a
+  load bias.
 - On AArch64, pass EL transition state into the post-relocation entry path when it must be kept in Rust globals; do not write relocatable statics before relocation has been applied.
 - Clear BSS exactly once and after preserving any entry data that lives there.
+- Render separate TLS and no-TLS linker layouts. A no-TLS kernel must reject `.tdata`/`.tbss`
+  inputs and omit `PT_TLS`; a TLS kernel must retain the TLS program header and bootstrap data.
 - On LoongArch OVMF, capture the EFI FDT configuration table as well as ACPI RSDP for firmware-described devices, but do not rediscover RTC in someboot/somehal through those tables. The dynamic UEFI RTC path should first use the UEFI Runtime Service `GetTime`; LS7A RTC nodes such as `loongson,ls7a-rtc` and ACPI `LOON0001` belong to the `ax-driver` fallback path when firmware RTC is unavailable.
 - Allocate and align boot stack, per-CPU areas, secondary stacks, boot arguments, and page tables before enabling SMP.
 - Install trap vectors before enabling interrupts, timer interrupts, MMU faults, or secondary CPU execution.
@@ -81,9 +110,12 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 
 1. Discover enabled CPUs from firmware data and keep firmware IDs separate from logical CPU IDs.
 2. Bound-check CPU indices and avoid assuming hart/apic/mpidr/cpuid values are dense.
-3. Prepare one boot argument block per secondary CPU with stack, page table, kernel entry, per-CPU base, and logical ID.
+3. Prepare one boot argument block per secondary CPU with stack, page table, kernel entry, typed per-CPU area, and logical ID.
 4. Flush boot arguments and page tables before `cpu_on`.
-5. In the secondary path, initialize arch address windows, stack, per-CPU register, page table state, trap vectors, timer, and interrupt state before entering generic secondary code.
+5. In the secondary path, initialize arch address windows, stack, page table state, the
+   architecture CPU-local register contract, trap vectors, timer, and interrupt state before
+   entering generic secondary code. Bind the final area through `CpuPin`; do not publish a raw
+   base and initialize fallible state afterward.
 6. Before the OS per-CPU register is initialized on a secondary CPU, use cached controller fast paths for interrupt and timer setup through `somehal::irq::init_secondary_boot_irqs(cpu_id)`; do not take `rdrive`, IRQ-domain, or generic route locks from that window.
 7. Debug secondary failure with physical-address markers first; serial logging may not work until the secondary has its own mapping and trap state.
 
