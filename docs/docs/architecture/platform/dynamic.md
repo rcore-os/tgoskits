@@ -29,7 +29,7 @@ dynamic  = true
 | `efi` | ✗ | `somehal/efi` → UEFI 启动路径 |
 | `fp-simd` | ✗ | `ax-cpu/fp-simd`，aarch64/loongarch64 启用 FP/SIMD |
 | `uspace` | ✗ | `somehal/uspace` + 用户态地址空间 |
-| `hv` | ✗ | `somehal/hv` + `ax-cpu/arm-el2`，hypervisor 模式 |
+| `hv` | ✗ | `somehal/hv`；AArch64 目标再选择 `ax-cpu/arm-el2`，hypervisor 模式 |
 | `thead-mae` | ✗ | T-Head 扩展；`somehal/thead-mae` + `ax-cpu/xuantie-c9xx` |
 
 依赖：`anyhow`、`ax-cpu`、`ax-driver`、`ax-errno`、`axklib`（`buddy-slab`）、`ax-plat`、`heapless`、`log`、`ax-memory-addr`、`ax-percpu`（`custom-base`）、`rdrive`、`somehal`、`spin`。

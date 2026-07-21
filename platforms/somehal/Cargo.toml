@@ -11,7 +11,7 @@ version = "0.8.0"
 
 [features]
 efi = ["someboot/efi"]
-hv = ["mmu", "someboot/hv"]
+hv = ["mmu", "someboot/hv", "dep:ax-cpu"]
 mmu = ["someboot/mmu"]
 percpu-prealloc = ["someboot/percpu-prealloc"]
 thead-mae = ["someboot/thead-mae"]
@@ -40,6 +40,7 @@ spin = { workspace = true }
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu = "11"
 arm-gic-driver = {workspace = true, features = ["rdif"]}
+ax-cpu = { workspace = true, features = ["arm-el2"], optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 ax-riscv-plic = { workspace = true }

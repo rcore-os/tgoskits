@@ -176,7 +176,7 @@ flowchart TD
 | `smp` | 透传到 `ax-plat/smp`，启用次核入口、次核初始化和 `cpu_boot()` 路径 |
 | `irq` | 透传到 `ax-plat/irq`，编译 `irq.rs` 并启用 timer IRQ 相关接口 |
 | `uspace` | 透传到 `somehal/uspace`，说明该路径允许 `somehal` 切换到含用户态支持的构建 |
-| `hv` | 透传到 `somehal/hv` 与 `ax-cpu/arm-el2`，为 hypervisor 场景准备 CPU 模式支持 |
+| `hv` | 透传到 `somehal/hv`；AArch64 目标由 `somehal` 选择 `ax-cpu/arm-el2`，为 hypervisor 场景准备 CPU 模式支持 |
 
 需要注意，默认 feature 就是 `["smp", "irq"]`，这意味着该 crate 被设计成优先服务多核且可中断的平台路径，而不是最小单核裸机包。
 

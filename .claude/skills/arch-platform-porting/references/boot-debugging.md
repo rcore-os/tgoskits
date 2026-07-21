@@ -55,6 +55,25 @@ execution and then fail only on traps or vCPU exits, so it is not a valid fallba
   audit the final ELF at multiple load biases and accept only the architecture's supported
   relative relocation types.
 
+## AArch64 Axvisor EL2 Checks
+
+- The Axvisor `hv` feature chain must select `ax-cpu/arm-el2` only for AArch64. Keep the chain
+  `ax-hal/hv` -> `axplat-dyn/hv` -> `somehal/hv`; `somehal`'s AArch64-only optional `ax-cpu`
+  dependency owns the `arm-el2` edge. A successful AArch64 compile does not prove that the EL2
+  register implementation was selected, while an unconditional edge would incorrectly enable it
+  for other architectures.
+- If an EL2 image compiles the EL1 page-table path, `ax-mm` can appear to initialize normally while
+  the new root is written to `TTBR1_EL1`. The active `TTBR0_EL2` then remains the someboot table,
+  so the first access to a dynamically mapped device can fault or look like a hang. On PhytiumPi,
+  the characteristic stop is the first GIC distributor read immediately after the rdrive FDT
+  initialization message.
+- Confirm the runtime reports `EL: 2`, inspect the resolved `ax-cpu` feature set for `arm-el2`, and
+  verify that a post-`ioremap` MMIO access succeeds before instrumenting the device driver itself.
+- Axvisor QEMU and board test cases own their CPU-count contract. Test requests must discard an
+  interactive snapshot's `smp` value; otherwise a stale `tmp/axbuild/.axvisor.toml` can silently
+  shrink the host. A Phytium guest assigned to logical CPU 2 will then fall back to CPU 0 and may
+  stop at its first virtual timer interrupt even though the vCPU world switch is correct.
+
 ## Dynamic UEFI Platform Notes
 
 - Dynamic platform means the platform facts come from firmware/runtime discovery through `someboot`, `somehal`, and `axplat-dyn`. It does not remove the need for arch-specific page table, trap, timer, IRQ, and power code.
@@ -153,6 +172,8 @@ Important details:
 | Secondary CPU silent | `cpu_on` argument, cache flush, stack, per-CPU base, trap setup, logical CPU ID mapping |
 | ArceOS works but Starry fails | rootfs staging, std/musl ABI, console/input feature, tty assumptions, CPR sizing |
 | Starry shell works but grouped tests fail | generated runner path, copied assets, success regex, `shell_init_cmd` versus `test_commands` |
+| AArch64 Axvisor stops at first dynamic MMIO read | missing `ax-cpu/arm-el2`, inactive EL1 page-table root, stale `TTBR0_EL2` boot table |
+| Phytium guest stops after `arch_timer` | inherited board-test SMP limit, vCPU CPU-mask fallback, virtual timer routing |
 | Axvisor build works but QEMU hangs | firmware/OVMF path, LVZ QEMU, guest image/rootfs, dynamic platform memory map, post-UEFI transition |
 | Virtio block missing | PCI command enable, virtio transport, MMIO map, DMA translation, rootfs disk args |
 
