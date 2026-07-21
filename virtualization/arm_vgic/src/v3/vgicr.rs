@@ -251,8 +251,20 @@ impl DeviceFactory for GpptRedistributorFactory {
         let cpu_count = config_argument(config, 0, EXPECTED_ARGS)?;
         let stride = config_argument(config, 1, EXPECTED_ARGS)?;
         let physical_cpu_base = config_argument(config, 2, EXPECTED_ARGS)?;
-        let mut bundle = DeviceBundle::new();
+        if config.length == 0 {
+            return Err(invalid_factory_config(
+                config,
+                "redistributor length must be non-zero",
+            ));
+        }
+        if stride < config.length {
+            return Err(invalid_factory_config(
+                config,
+                "redistributor stride is smaller than its length",
+            ));
+        }
 
+        let mut bundle = DeviceBundle::new();
         for vcpu_id in 0..cpu_count {
             let offset = vcpu_id
                 .checked_mul(stride)
@@ -261,6 +273,9 @@ impl DeviceFactory for GpptRedistributorFactory {
                 .base_gpa
                 .checked_add(offset)
                 .ok_or_else(|| invalid_factory_config(config, "redistributor address overflows"))?;
+            base_gpa.checked_add(config.length).ok_or_else(|| {
+                invalid_factory_config(config, "redistributor address range overflows")
+            })?;
             let physical_cpu_id = physical_cpu_base
                 .checked_add(vcpu_id)
                 .ok_or_else(|| invalid_factory_config(config, "physical CPU ID overflows"))?;
