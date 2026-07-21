@@ -449,9 +449,8 @@ pub fn sys_openat2(
     if how_value.resolve & !OPENAT2_VALID_RESOLVE != 0 {
         return Err(AxError::InvalidInput);
     }
-    // This minimal openat2 implementation does not enforce Linux RESOLVE_*
-    // path-walk constraints yet, so reject known resolve bits explicitly.
-    if how_value.resolve != 0 {
+    const NIX_RESTORE_RESOLVE: u64 = (RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS) as u64;
+    if how_value.resolve != 0 && how_value.resolve != NIX_RESTORE_RESOLVE {
         return Err(AxError::OperationNotSupported);
     }
 
@@ -463,8 +462,45 @@ pub fn sys_openat2(
         .mode
         .try_into()
         .map_err(|_| AxError::InvalidInput)?;
+    let uflags = flags as u32;
 
-    sys_openat(dirfd, path, flags, mode)
+    if uflags & O_CREAT != 0 && uflags & O_DIRECTORY != 0 && uflags & O_PATH == 0 {
+        return Err(AxError::InvalidInput);
+    }
+    if uflags & O_TMPFILE == O_TMPFILE && uflags & 0b11 == O_RDONLY && uflags & O_PATH == 0 {
+        return Err(AxError::InvalidInput);
+    }
+
+    if how_value.resolve == 0 {
+        return sys_openat(dirfd, path, flags, mode);
+    }
+
+    let path = vm_load_path_string(path)?;
+    if path.is_empty() {
+        return Err(AxError::NotFound);
+    }
+    if path.starts_with('/') {
+        return Err(AxError::CrossesDevices);
+    }
+
+    let curr = current();
+    let thread = curr.as_thread();
+    let mode = mode & !thread.proc_data.umask();
+    let cred = thread.cred();
+    let mut options = flags_to_options(flags, mode, (cred.fsuid, cred.fsgid));
+    let result = with_fs(dirfd, |fs| {
+        let (parent, name) = fs.resolve_parent_beneath_no_symlinks(path.as_ref())?;
+        match parent.lookup_no_follow(name.as_ref()) {
+            Ok(location) if location.node_type() == NodeType::Symlink => {
+                return Err(AxError::FilesystemLoop);
+            }
+            Err(AxError::NotFound) | Ok(_) => {}
+            Err(error) => return Err(error),
+        }
+        options.no_follow(true);
+        options.open(&fs.with_current_dir(parent)?, name.as_ref())
+    })?;
+    add_to_fd(result, flags as u32).map(|fd| fd as isize)
 }
 
 /// Open a file by `filename` and insert it into the file descriptor table.
