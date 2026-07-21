@@ -15,11 +15,13 @@ hv = ["mmu", "someboot/hv"]
 mmu = ["someboot/mmu"]
 percpu-prealloc = ["someboot/percpu-prealloc"]
 thead-mae = ["someboot/thead-mae"]
+tls = ["someboot/tls"]
 uspace = ["mmu", "someboot/uspace"]
 
 [dependencies]
 anyhow = {workspace = true}
 ax-kspin = { workspace = true }
+cpu-local.workspace = true
 irq-framework = { workspace = true }
 page-table-generic = {workspace = true}
 rdif-intc.workspace = true

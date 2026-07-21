@@ -15,8 +15,11 @@ pub fn enable_mmu() -> ! {
     }
 
     let mmu_entry_phys = super::entry::mmu_entry as *const () as usize;
-    let meta = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx()).unwrap();
-    let v_sp = meta.stack_top_virt;
+    // The primary record remains on the dedicated linker boot stack. The
+    // runtime stack is a distinct allocation, so its existing top-of-stack ABI
+    // does not need a boot-record reservation.
+    let v_sp = crate::smp::primary_stack_top_virtual(crate::smp::early_current_cpu_idx())
+        .expect("primary reserved stack must be addressable before final per-CPU initialization");
     let v_entry = __kimage_va(mmu_entry_phys) as usize;
 
     println!("MMU Entry point at physical address: {:#x}", mmu_entry_phys);
@@ -37,21 +40,31 @@ pub fn enable_mmu() -> ! {
     }
 }
 
-pub fn enable_mmu_secondary(cpu_meta_paddr: usize) -> ! {
+pub fn enable_mmu_secondary(cpu_boot_info_paddr: usize) -> ! {
+    // SAFETY: `_secondary_entry` constructs this record in its reserved stack
+    // slot before entering Rust, and the early identity mapping keeps the
+    // physical address readable across the SATP transition.
+    let boot_info = unsafe { super::boot::read_at(cpu_boot_info_paddr) };
+    let cpu_meta_paddr = boot_info.cpu_meta_paddr();
     let meta = unsafe { &*(cpu_meta_paddr as *const PerCpuMeta) };
-    let v_sp = meta.stack_top_virt;
+    let v_sp = meta.stack_top_virt - super::boot::STACK_SIZE;
     let v_entry = meta.entry_virt;
+    let trampoline_phys = super::entry::secondary_mmu_entry as *const () as usize;
+    let secondary_entry_phys = crate::entry::secondary_entry as *const () as usize;
+    let v_trampoline = v_entry.wrapping_add(trampoline_phys.wrapping_sub(secondary_entry_phys));
 
     super::write_satp(meta.boot_table_paddr);
 
+    // SAFETY: the boot page table maps both the virtual stack and trampoline;
+    // the explicit a0/a1 operands establish the trampoline's register ABI.
     unsafe {
         asm!(
-            "mv a0, {meta}",
             "mv sp, {sp}",
-            "jr {entry}",
-            meta = in(reg) cpu_meta_paddr,
+            "jr {trampoline}",
+            in("a0") cpu_boot_info_paddr,
+            in("a1") v_entry,
             sp = in(reg) v_sp,
-            entry = in(reg) v_entry,
+            trampoline = in(reg) v_trampoline,
             options(noreturn)
         );
     }

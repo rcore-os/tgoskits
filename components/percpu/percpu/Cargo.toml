@@ -13,31 +13,32 @@ license = "Apache-2.0"
 default = []
 
 # Enable Linux user-space fallback used by ax-percpu's own host tests.
-host-test = ["dep:spin"]
+host-test = ["cpu-local/host-test"]
 
 # For single CPU use, just make the per-CPU data a global variable.
 sp-naive = ["ax-percpu-macros/sp-naive"]
 
-# Whether the system enables preemption.
-preempt = ["ax-percpu-macros/preempt", "dep:ax-kernel-guard"]
-
-# ARM specific, whether to run at the EL2 privilege level.
-arm-el2 = ["ax-percpu-macros/arm-el2"]
+# Select the final-image unikernel TLS/current-register ownership mode.
+tls = ["cpu-local/tls"]
 
 # Allow using non-zero VMA addresses for `.percpu` section. Required for testing
 # on Linux user-space. May reduce performance slightly.
-non-zero-vma = ["ax-percpu-macros/non-zero-vma"]
+non-zero-vma = []
 
-# Enable custom per-CPU base mode: per-CPU statics are generated as `PerCpuData<T>`
-# and the caller is responsible for setting the CPU-local base register (e.g. via
-# `init_percpu_reg`) before current-CPU access.
-custom-base = ["ax-percpu-macros/custom-base"]
+# Enable externally allocated CPU-area storage. The public variable API remains
+# identical; the caller installs the immutable layout and binds each CPU area.
+custom-base = []
+
+# Obtain the exact linked template bounds from cpu-local's retained Rust
+# sentinels. Kernel platforms select this explicitly; host fixtures select
+# `host-test` instead, so no target-triple heuristic is required.
+linked-template = []
 
 [dependencies]
-cfg-if = "1.0"
-ax-kernel-guard = { workspace = true, optional = true }
+cpu-local.workspace = true
 ax-percpu-macros = { workspace = true }
-spin = { workspace = true, optional = true }
+spin.workspace = true
+thiserror.workspace = true
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-x86 = "0.52"
+[dev-dependencies]
+ax-lazyinit.workspace = true

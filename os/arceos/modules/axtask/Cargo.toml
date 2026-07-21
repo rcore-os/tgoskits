@@ -25,7 +25,7 @@ multitask = [
   "dep:ax-percpu",
   "dep:spin",
 ]
-preempt = ["irq", "ax-percpu?/preempt", "ax-kernel-guard/preempt"]
+preempt = ["irq", "ax-kernel-guard/preempt"]
 smp = ["ax-kspin/smp"]
 stack-guard-page = ["multitask", "dep:ax-alloc", "dep:ax-mm", "ax-hal/paging"]
 lockdep = [

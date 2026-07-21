@@ -33,7 +33,7 @@ ax-kspin.workspace = true
 ax-lazyinit = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-memory-set = { workspace = true }
-ax-percpu = { workspace = true, features = ["arm-el2"] }
+ax-percpu.workspace = true
 page-table-generic = { workspace = true }
 ax-std = { workspace = true, features = [
     "paging",

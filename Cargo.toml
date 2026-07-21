@@ -20,6 +20,7 @@ members = [
     "components/aic8800",
     "components/axtest/axtest",
     "components/axtest/axtest_macros",
+    "components/cpu-local",
     "components/ax-lazyinit",
     "components/axbacktrace",
     "components/axcpu",
@@ -138,6 +139,7 @@ ax-alloc = { version = "0.8.12", path = "os/arceos/modules/axalloc", default-fea
 ax-allocator = { version = "0.5.5", path = "memory/axallocator" }
 ax-api = { version = "0.7.4", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }
+cpu-local = { version = "0.1.0", path = "components/cpu-local" }
 ax-cpu = { version = "0.8.3", path = "components/axcpu" }
 ax-cpumask = { version = "0.3.5", path = "components/cpumask" }
 ax-crate-interface = { version = "0.5.7", path = "components/crate_interface" }
@@ -321,6 +323,7 @@ uefi = "0.37.0"
 fdt-edit = "0.2.3"
 fdt-raw = "0.3"
 thiserror = { version = "2", default-features = false }
+trait-ffi = "0.2.11"
 tock-registers = "0.10"
 sg200x-bsp = { version = "0.7.1", default-features = false }
 sg200x-jpu = { version = "0.1.0", path = "drivers/vpu/sg200x-jpu" }
