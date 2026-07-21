@@ -186,10 +186,11 @@ ax-std = { workspace = true, default-features = false, features = [
     "multitask",
     "irq",
 ] }
+rsext4.workspace = true
 
 [[test]]
-name = "axtest_kernel"
-path = "tests/axtest_kernel.rs"
+name = "coverage"
+path = "tests/coverage.rs"
 harness = false
 required-features = ["axtest"]
 

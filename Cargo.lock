@@ -7740,6 +7740,7 @@ dependencies = [
  "ringbuf",
  "riscv",
  "rockchip-rga",
+ "rsext4",
  "scope-local",
  "sg2002-tpu",
  "sg200x-bsp",
