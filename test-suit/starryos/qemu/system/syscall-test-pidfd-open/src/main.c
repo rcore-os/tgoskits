@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -90,19 +91,20 @@ static void test_pidfd_open_bad_flags(void)
 }
 
 struct thread_tid_sync {
-    volatile pid_t tid;
-    volatile int release;
+    _Atomic pid_t tid;
+    atomic_int release;
 };
 
 static void *thread_publish_tid(void *arg)
 {
     struct thread_tid_sync *sync = arg;
 
-    sync->tid = (pid_t)syscall(SYS_gettid);
+    atomic_store_explicit(&sync->tid, (pid_t)syscall(SYS_gettid),
+                          memory_order_release);
     // Stay alive until the parent has inspected this tid. Otherwise the thread
     // may exit and be reaped (Linux auto-reaps NPTL threads) before the parent's
     // pidfd_open() runs, racing the tid lookup to ESRCH under concurrent SMP.
-    while (!sync->release) {
+    while (!atomic_load_explicit(&sync->release, memory_order_acquire)) {
         sched_yield();
     }
     return NULL;
@@ -118,22 +120,27 @@ static void test_pidfd_open_thread_tid(void)
     CHECK(pthread_create(&thread, NULL, thread_publish_tid, &sync) == 0,
           "pthread_create 成功");
 
-    for (int i = 0; i < 1000000 && sync.tid <= 0; i++) {
+    pid_t child_tid;
+    for (int i = 0; i < 1000000; i++) {
+        child_tid = atomic_load_explicit(&sync.tid, memory_order_acquire);
+        if (child_tid > 0) {
+            break;
+        }
         sched_yield();
     }
-    CHECK(sync.tid > 0 && sync.tid != getpid(), "子线程 tid 与 getpid 不同");
+    CHECK(child_tid > 0 && child_tid != getpid(), "子线程 tid 与 getpid 不同");
 
-    CHECK_ERR(x_pidfd_open(sync.tid, 0), ENOENT,
+    CHECK_ERR(x_pidfd_open(child_tid, 0), ENOENT,
               "非 leader 线程 tid 无 PIDFD_THREAD -> ENOENT");
 
-    int pfd = x_pidfd_open(sync.tid, PIDFD_THREAD);
+    int pfd = x_pidfd_open(child_tid, PIDFD_THREAD);
     CHECK(pfd >= 0, "PIDFD_THREAD 打开子线程 tid 成功");
     if (pfd >= 0) {
         close(pfd);
     }
 
     // Release the child now that its tid has been inspected, then join.
-    sync.release = 1;
+    atomic_store_explicit(&sync.release, 1, memory_order_release);
     pthread_join(thread, NULL);
 }
 
