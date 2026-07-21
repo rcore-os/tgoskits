@@ -170,10 +170,18 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
             return index;
         }
     }
-    // No allowed-and-online CPU found in a full sweep (e.g. very early boot, or a
-    // task pinned to a not-yet-online CPU): fall back to the current CPU, whose
-    // run queue is necessarily initialized. If that violates affinity, the task
-    // migrates itself off on first run (see `migrate_current_to_affinity`).
+    // No allowed-and-online CPU in a full sweep: either very early boot, or a task
+    // pinned to a not-yet-online CPU. Fall back to the current CPU, whose run queue
+    // is necessarily initialized. This is availability-over-affinity, matching
+    // Linux's `select_fallback_rq`: the scheduler runs the task on an available CPU
+    // rather than block when its affinity target is offline, which avoids a
+    // boot-time deadlock (a permanently-blocked task on the only CPU that could
+    // later bring its affinity target online). Affinity is then restored by
+    // `migrate_current_to_affinity` — the pending-migration equivalent — which
+    // re-homes the task to an allowed CPU on the next reschedule once one is
+    // online. `AxCpuMask` is bounded to `CPU_CAPACITY`, so a non-empty mask always
+    // names a configured CPU that comes online during boot; the fallback never
+    // permanently strands a task off its affinity.
     this_cpu_id()
 }
 
@@ -480,6 +488,35 @@ mod online_bitmap_tests {
                 "CPU 64 must not alias CPU 0's bit in a sharded bitmap",
             );
         }
+
+        reset_online_bitmap();
+    }
+
+    // Boot-time affinity/migration interleave (the reviewer's requested case): a
+    // task whose only allowed CPU is still offline must fall back to an online CPU
+    // (availability over affinity, like Linux `select_fallback_rq`) — never a hang
+    // and never an offline/uninitialized queue — and must honor the affinity once
+    // that CPU comes online.
+    #[test]
+    fn offline_affinity_target_falls_back_then_honors_when_online() {
+        reset_online_bitmap();
+        let this = super::this_cpu_id();
+        super::mark_cpu_online(this);
+
+        // An allowed CPU distinct from `this`, kept offline for now.
+        let other = if this == 1 { 2 } else { 1 };
+        if other >= crate::build_info::CPU_CAPACITY {
+            reset_online_bitmap();
+            return; // too few configured CPUs in this test build to exercise it
+        }
+        let only_other = super::AxCpuMask::one_shot(other);
+
+        // Allowed CPU offline -> availability fallback to the current (online) CPU.
+        assert_eq!(super::select_run_queue_index(only_other), this);
+
+        // Allowed CPU online -> affinity is honored.
+        super::mark_cpu_online(other);
+        assert_eq!(super::select_run_queue_index(only_other), other);
 
         reset_online_bitmap();
     }
