@@ -807,11 +807,26 @@ impl UsbFsManager {
     fn live_clear_halt(&self, stable_id: UsbStableId, endpoint: u8) -> AxResult<()> {
         self.live_ensure_configured(stable_id)?;
         let live_device = self.live_device_by_id(stable_id)?;
-        wait_control(
-            live_device,
-            TransferRequest::control_out(clear_halt_setup(endpoint), &[]),
-        )?;
-        Ok(())
+        let endpoint_handle = live_device
+            .endpoints
+            .read()
+            .get(&endpoint)
+            .cloned()
+            .ok_or(AxError::NotFound)?;
+
+        clear_halt_then_reset(
+            || {
+                wait_control(
+                    live_device,
+                    TransferRequest::control_out(clear_halt_setup(endpoint), &[]),
+                )
+                .map(|_| ())
+            },
+            || {
+                let reset = endpoint_handle.lock().reset();
+                ax_task::future::block_on(reset).map_err(map_transfer_error)
+            },
+        )
     }
 
     fn live_claim_interface(
@@ -1365,19 +1380,12 @@ fn clear_halt_setup(endpoint: u8) -> ControlSetup {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clear_halt_uses_standard_endpoint_clear_feature_request() {
-        let setup = clear_halt_setup(0x82);
-        assert_eq!(setup.request_type as u8, RequestType::Standard as u8);
-        assert_eq!(setup.recipient as u8, Recipient::Endpoint as u8);
-        assert_eq!(u8::from(setup.request), u8::from(Request::ClearFeature));
-        assert_eq!(setup.value, 0);
-        assert_eq!(setup.index, 0x82);
-    }
+fn clear_halt_then_reset<E>(
+    clear_device_halt: impl FnOnce() -> Result<(), E>,
+    reset_host_endpoint: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    clear_device_halt()?;
+    reset_host_endpoint()
 }
 
 pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
@@ -1439,4 +1447,37 @@ pub(super) fn discover_hosts() -> (Vec<UsbHostState>, Vec<PendingUsbIrqSlot>) {
 
     info!("usbfs: discovered {} USB host(s)", initialized_hosts.len());
     (initialized_hosts, irq_slots)
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn clear_halt_uses_standard_endpoint_clear_feature_request() {
+        let setup = clear_halt_setup(0x82);
+        assert_eq!(setup.request_type as u8, RequestType::Standard as u8);
+        assert_eq!(setup.recipient as u8, Recipient::Endpoint as u8);
+        assert_eq!(u8::from(setup.request), u8::from(Request::ClearFeature));
+        assert_eq!(setup.value, 0);
+        assert_eq!(setup.index, 0x82);
+    }
+
+    #[test]
+    fn clear_halt_does_not_reset_host_endpoint_when_control_request_fails() {
+        let reset_called = Cell::new(false);
+
+        let result = clear_halt_then_reset(
+            || Err("control request failed"),
+            || {
+                reset_called.set(true);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, Err("control request failed"));
+        assert!(!reset_called.get());
+    }
 }
