@@ -127,3 +127,23 @@ impl Default for ProcessVmStat {
         Self::new()
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn process_vm_stat_watermarks_hold_for_test() -> bool {
+    let parent = ProcessVmStat::new();
+    parent.on_map(3);
+    parent.on_map(2);
+    parent.on_unmap(4);
+
+    let child = ProcessVmStat::new();
+    child.seed_from(&parent);
+
+    let inherited =
+        child.vss_pages() == 1 && child.peak_vss_pages() == 5 && child.peak_rss_pages() == 5;
+    parent.on_clear();
+
+    inherited
+        && parent.vss_pages() == 0
+        && parent.peak_vss_pages() == 0
+        && parent.peak_rss_pages() == 0
+}

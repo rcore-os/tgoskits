@@ -1007,3 +1007,13 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         uctx.set_retval(new_retval);
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn task_clone_validation_rules_hold_for_test() -> bool {
+    task::clone_validation_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn membarrier_validation_rules_hold_for_test() -> bool {
+    sync::membarrier_validation_rules_hold_for_test()
+}

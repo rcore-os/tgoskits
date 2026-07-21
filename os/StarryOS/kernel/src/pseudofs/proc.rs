@@ -2076,6 +2076,132 @@ impl<W: core::fmt::Write> core::fmt::Write for SeqWriter<W> {
         self.write_str(s).map_err(|_| core::fmt::Error)
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn formatting_contracts_hold_for_test() -> bool {
+    let cpu_presence = collect_cpu_presence([0usize, 1, 32, 63], 64);
+    format_cpu_presence_hex(&cpu_presence) == "80000001,00000003"
+        && format_cpu_presence_list(&collect_cpu_presence([0usize, 2, 3, 4, 7, 9, 10, 11], 12))
+            == "0,2-4,7,9-11"
+        && proc_net_snmp_field_counts_match()
+        && proc_net_dev_header_matches_linux_layout()
+        && task_status_fields_match_linux_layout()
+}
+
+#[cfg(axtest)]
+fn proc_net_snmp_field_counts_match() -> bool {
+    let text = render_proc_net_snmp();
+    let mut tcp_header_count = None;
+    let mut tcp_data_count = None;
+    let mut udp_header_count = None;
+    let mut udp_data_count = None;
+
+    for line in text.lines() {
+        if line.starts_with("Tcp:") && line.contains("RtoAlgorithm") {
+            tcp_header_count = Some(line.split_whitespace().count() - 1);
+        } else if line.starts_with("Tcp:") {
+            tcp_data_count = Some(line.split_whitespace().count() - 1);
+        } else if line.starts_with("Udp:") && line.contains("InDatagrams") {
+            udp_header_count = Some(line.split_whitespace().count() - 1);
+        } else if line.starts_with("Udp:") {
+            udp_data_count = Some(line.split_whitespace().count() - 1);
+        }
+    }
+
+    tcp_header_count.is_some()
+        && udp_header_count.is_some()
+        && tcp_header_count == tcp_data_count
+        && udp_header_count == udp_data_count
+}
+
+#[cfg(axtest)]
+fn proc_net_dev_header_matches_linux_layout() -> bool {
+    let text = render_proc_net_dev();
+    let mut lines = text.lines();
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    let Some(second) = lines.next() else {
+        return false;
+    };
+
+    first.starts_with("Inter-|")
+        && first.contains("Receive")
+        && first.contains("Transmit")
+        && second.contains("face |bytes")
+        && second.contains("compressed")
+}
+
+#[cfg(axtest)]
+fn task_status_fields_match_linux_layout() -> bool {
+    let cpu_presence = collect_cpu_presence([1usize, 3], 4);
+    let cpus_allowed = format_cpu_presence_hex(&cpu_presence);
+    let cpus_allowed_list = format_cpu_presence_list(&cpu_presence);
+    let mem = ProcessMemStats {
+        vss_pages: 128,
+        resident_pages: 96,
+        rss_anon_pages: 80,
+        rss_file_pages: 8,
+        rss_shmem_pages: 8,
+        peak_pages: 256,
+        hiwater_rss_pages: 128,
+        ..Default::default()
+    };
+    let status = render_task_status_fields(&TaskStatusFields {
+        base: TaskStatusBase {
+            name: "axtest-proc",
+            state: "S (sleeping)",
+            tgid: 42,
+            pid: 43,
+            ppid: 41,
+            tracer_pid: 7,
+            cred: &Cred::root(),
+            num_threads: 3,
+        },
+        cpus_allowed: &cpus_allowed,
+        cpus_allowed_list: &cpus_allowed_list,
+        mem: &mem,
+    });
+
+    status.contains("Name:\taxtest-proc\n")
+        && status.contains("State:\tS (sleeping)\n")
+        && status.contains("Tgid:\t42\n")
+        && status.contains("Pid:\t43\n")
+        && status.contains("PPid:\t41\n")
+        && status.contains("TracerPid:\t7\n")
+        && status.contains("Threads:\t3\n")
+        && status.contains("VmPeak:\t1024 kB\n")
+        && status.contains("VmRSS:\t384 kB\n")
+        && status.contains("Cpus_allowed:\t0000000a\n")
+        && status.contains("Cpus_allowed_list:\t1,3\n")
+}
+
+#[cfg(axtest)]
+pub(crate) fn proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout_for_test() -> bool {
+    let text =
+        render_proc_bus_usb_devices_from_snapshots(&[high_speed_root_hub_snapshot_for_test()]);
+
+    text.contains("T:  Bus=01")
+        && text.contains("Dev#=  1")
+        && text.contains("P:  Vendor=1d6b ProdID=0002 Rev= 6.00")
+        && text.contains("I:* If#= 0")
+        && text.contains("Driver=hub")
+        && text.contains("E:  Ad=81(I)")
+}
+
+#[cfg(axtest)]
+fn high_speed_root_hub_snapshot_for_test() -> crate::pseudofs::usbfs::UsbDeviceSnapshotInfo {
+    crate::pseudofs::usbfs::UsbDeviceSnapshotInfo {
+        bus_num: 1,
+        device_num: 1,
+        descriptor_blob: vec![
+            18, 0x01, 0x00, 0x02, 0x09, 0x00, 0x01, 64, 0x6b, 0x1d, 0x02, 0x00, 0x00, 0x06, 0, 0,
+            0, 1, 9, 0x02, 25, 0, 1, 1, 0, 0xe0, 0, 9, 0x04, 0, 0, 1, 0x09, 0, 0, 0, 7, 0x05, 0x81,
+            0x03, 4, 0, 12,
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::{format, string::String};

@@ -248,3 +248,45 @@ impl Default for Cred {
         Self::root()
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
+    let root = Cred::root();
+    let mut unprivileged = Cred::unprivileged(1000, 100);
+    let old_root = root.clone();
+    let mut dropped = root.clone();
+    dropped.uid = 1000;
+    dropped.euid = 1000;
+    dropped.suid = 1000;
+    dropped.cap_inheritable = Cred::cap_mask();
+    dropped.cap_ambient = Cred::cap_mask();
+    dropped.apply_id_change_capability_rules(&old_root);
+
+    let old_user = Cred::unprivileged(1000, 100);
+    let mut regained_effective = old_user.clone();
+    regained_effective.euid = 0;
+    regained_effective.cap_permitted = cap_bit(CAP_SETUID) | cap_bit(CAP_SETPCAP);
+    regained_effective.apply_id_change_capability_rules(&old_user);
+
+    unprivileged.fsgid = 200;
+    unprivileged.groups = Arc::from([10, 20].as_slice());
+    unprivileged.cap_permitted = cap_bit(CAP_SETUID);
+    unprivileged.cap_effective = cap_bit(CAP_SETUID) | cap_bit(CAP_SETPCAP);
+    unprivileged.cap_inheritable = !0;
+    unprivileged.cap_ambient = !0;
+    unprivileged.sanitize_capabilities();
+
+    root.has_cap_setuid()
+        && root.has_cap_sys_admin()
+        && root.has_cap_sys_module()
+        && !Cred::unprivileged(1000, 100).has_cap_setuid()
+        && dropped.cap_permitted == 0
+        && dropped.cap_effective == 0
+        && dropped.cap_ambient == 0
+        && regained_effective.cap_effective == regained_effective.cap_permitted
+        && unprivileged.cap_effective == cap_bit(CAP_SETUID)
+        && unprivileged.cap_ambient == unprivileged.cap_permitted & unprivileged.cap_inheritable
+        && unprivileged.in_group(200)
+        && unprivileged.in_group(10)
+        && !unprivileged.in_group(30)
+}

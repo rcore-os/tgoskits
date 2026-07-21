@@ -14,3 +14,8 @@ pub use self::{
     clone::*, clone3::*, ctl::*, execve::*, exit::*, job::*, namespace::*, ptrace::*, schedule::*,
     thread::*, wait::*,
 };
+
+#[cfg(axtest)]
+pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
+    clone::clone_validation_rules_hold_for_test() && clone3::clone3_validation_rules_hold_for_test()
+}

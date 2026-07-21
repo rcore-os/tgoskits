@@ -559,3 +559,26 @@ pub fn sys_prctl(
 
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
+    parse_mempolicy_mode(MPOL_DEFAULT) == Ok(MPOL_DEFAULT)
+        && parse_mempolicy_mode(MPOL_BIND | MPOL_F_STATIC_NODES) == Ok(MPOL_BIND)
+        && parse_mempolicy_mode(MPOL_INTERLEAVE | MPOL_F_RELATIVE_NODES) == Ok(MPOL_INTERLEAVE)
+        && parse_mempolicy_mode(-1).is_err()
+        && parse_mempolicy_mode(99).is_err()
+        && sys_set_mempolicy(MPOL_DEFAULT, core::ptr::null(), 0) == Ok(0)
+        && sys_set_mempolicy(-1, core::ptr::null(), 0).is_err()
+        && sys_mbind(0x1000, 4096, MPOL_DEFAULT, core::ptr::null(), 0, 0) == Ok(0)
+        && sys_mbind(0x1001, 4096, MPOL_DEFAULT, core::ptr::null(), 0, 0).is_err()
+        && sys_mbind(0x1000, 0, MPOL_DEFAULT, core::ptr::null(), 0, 0).is_err()
+        && sys_mbind(
+            0x1000,
+            4096,
+            MPOL_DEFAULT,
+            core::ptr::null(),
+            0,
+            !MPOL_MF_VALID,
+        )
+        .is_err()
+}

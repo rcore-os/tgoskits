@@ -90,6 +90,17 @@ pub fn sys_rseq(addr: *mut u8, len: usize, flags: u32, sig: u32) -> Result<isize
     Ok(0)
 }
 
+#[cfg(axtest)]
+pub(crate) fn rseq_validation_rejects_invalid_arguments_for_test() -> bool {
+    validate_rseq_args(core::ptr::null_mut(), RSEQ_AREA_SIZE, 0) == Err(AxError::InvalidInput)
+        && validate_rseq_args(0x1000 as *mut u8, RSEQ_AREA_SIZE - 1, 0)
+            == Err(AxError::InvalidInput)
+        && validate_rseq_args(0x1000 as *mut u8, RSEQ_AREA_SIZE, RSEQ_FLAG_UNREGISTER << 1)
+            == Err(AxError::InvalidInput)
+        && validate_rseq_args(0x1001 as *mut u8, RSEQ_AREA_SIZE, 0) == Err(AxError::InvalidInput)
+        && validate_rseq_args(0x1000 as *mut u8, RSEQ_AREA_SIZE, 0) == Ok(0x1000)
+}
+
 #[cfg(test)]
 mod tests {
     use ax_errno::AxError;

@@ -441,3 +441,135 @@ pub fn seccomp_errno(errno: u16) -> usize {
         -(errno as i32) as usize
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn seccomp_filter_rules_hold_for_test() -> bool {
+    let allow = SockFilter {
+        code: BPF_RET,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ALLOW,
+    };
+    let errno = SockFilter {
+        code: BPF_RET,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ERRNO | 13,
+    };
+    let data = SeccompData {
+        nr: Sysno::read as i32,
+        arch: AUDIT_ARCH,
+        instruction_pointer: 0x1234_5678_9abc_def0,
+        args: [0x1122_3344_5566_7788, 1, 2, 3, 4, 5],
+    };
+    let syscall_errno_filter = SeccompFilter::new(alloc::vec![
+        SockFilter {
+            code: BPF_LD | BPF_W | BPF_ABS,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        SockFilter {
+            code: BPF_JMP | BPF_JEQ,
+            jt: 0,
+            jf: 1,
+            k: Sysno::read as u32,
+        },
+        errno,
+        allow,
+    ]);
+    let alu_filter = SeccompFilter::new(alloc::vec![
+        SockFilter {
+            code: BPF_LD | BPF_W | BPF_IMM,
+            jt: 0,
+            jf: 0,
+            k: 7,
+        },
+        SockFilter {
+            code: BPF_ST,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        SockFilter {
+            code: BPF_LDX | BPF_W | BPF_MEM,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        SockFilter {
+            code: BPF_ALU | BPF_ADD | BPF_X,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        SockFilter {
+            code: BPF_ALU | BPF_MOD,
+            jt: 0,
+            jf: 0,
+            k: 5,
+        },
+        SockFilter {
+            code: BPF_MISC | BPF_TAX,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        SockFilter {
+            code: BPF_RET | BPF_X,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+    ]);
+    let invalid_div_filter = SeccompFilter::new(alloc::vec![
+        SockFilter {
+            code: BPF_LD | BPF_W | BPF_IMM,
+            jt: 0,
+            jf: 0,
+            k: 1,
+        },
+        SockFilter {
+            code: BPF_ALU | BPF_DIV,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+    ]);
+
+    SeccompFilter::new(alloc::vec![]).is_err()
+        && strict_decision(Sysno::read as usize) == SeccompDecision::Allow
+        && strict_decision(Sysno::openat as usize) == SeccompDecision::KillProcess
+        && action_to_decision(SECCOMP_RET_LOG) == SeccompDecision::Allow
+        && action_to_decision(SECCOMP_RET_ERRNO | 9) == SeccompDecision::Errno(9)
+        && action_precedence(SECCOMP_RET_KILL_PROCESS) > action_precedence(SECCOMP_RET_ERRNO)
+        && jump_target(
+            3,
+            SockFilter {
+                jt: 2,
+                jf: 4,
+                ..allow
+            },
+            true,
+        ) == Some(5)
+        && load_seccomp_data(&data, 0, BPF_W) == Some(Sysno::read as u32)
+        && load_seccomp_data(&data, 4, BPF_W) == Some(AUDIT_ARCH)
+        && load_seccomp_data(&data, 8, BPF_W) == Some(0x9abc_def0)
+        && load_seccomp_data(&data, 12, BPF_W) == Some(0x1234_5678)
+        && load_seccomp_data(&data, 16, BPF_W) == Some(0x5566_7788)
+        && load_seccomp_data(&data, 20, BPF_W) == Some(0x1122_3344)
+        && load_seccomp_data(&data, 16, BPF_H) == Some(0x7788)
+        && load_seccomp_data(&data, 16, BPF_B) == Some(0x88)
+        && load_seccomp_data(&data, 64, BPF_W).is_none()
+        && syscall_errno_filter
+            .as_ref()
+            .is_ok_and(|filter| filter.execute(&data) == (SECCOMP_RET_ERRNO | 13))
+        && alu_filter
+            .as_ref()
+            .is_ok_and(|filter| filter.execute(&data) == 4)
+        && invalid_div_filter
+            .as_ref()
+            .is_ok_and(|filter| filter.execute(&data) == SECCOMP_RET_KILL_THREAD)
+        && seccomp_errno(0) == 0
+        && seccomp_errno(13) == (-13i32 as usize)
+}

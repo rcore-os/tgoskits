@@ -561,3 +561,28 @@ pub fn flush_tlb_range_sync(start: VirtAddr, size: usize) {
 fn sync_modified_kernel_text(start: VirtAddr, size: usize) {
     ax_runtime::hal::cache::sync_kernel_text(start, size);
 }
+
+#[cfg(axtest)]
+pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
+    let user_base = USER_SPACE_BASE;
+    let user_end = USER_SPACE_BASE + USER_SPACE_SIZE;
+    let ptr = UserPtr::<u32>::from(user_base);
+    let const_ptr = UserConstPtr::<u64>::from(user_base + 8);
+    let default_ptr = UserPtr::<u8>::default();
+    let cast_ptr = ptr.cast::<u8>();
+    let cast_const_ptr = const_ptr.cast::<u8>();
+
+    default_ptr.is_null()
+        && !ptr.is_null()
+        && ptr.address().as_usize() == user_base
+        && ptr.as_ptr() as usize == user_base
+        && cast_ptr.address().as_usize() == user_base
+        && const_ptr.address().as_usize() == user_base + 8
+        && cast_const_ptr.address().as_usize() == user_base + 8
+        && check_access(user_base, 0).is_ok()
+        && check_access(user_base, 4096).is_ok()
+        && check_access(user_end - 1, 1).is_ok()
+        && check_access(user_base - 1, 1).is_err()
+        && check_access(user_end, 0).is_err()
+        && check_access(user_end - 1, 2).is_err()
+}

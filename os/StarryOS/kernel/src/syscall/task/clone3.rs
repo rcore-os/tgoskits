@@ -94,6 +94,40 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> AxResult<
     clone_args.do_clone(uctx)
 }
 
+#[cfg(axtest)]
+pub(crate) fn clone3_validation_rules_hold_for_test() -> bool {
+    use linux_raw_sys::general::{CLONE_DETACHED, CLONE_PARENT, CLONE_THREAD, SIGCHLD};
+
+    let parent_signal_rejected = CloneArgs::try_from(Clone3Args {
+        flags: CLONE_PARENT as u64,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    })
+    .is_err();
+    let thread_signal_rejected = CloneArgs::try_from(Clone3Args {
+        flags: CLONE_THREAD as u64,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    })
+    .is_err();
+    let detached_rejected = CloneArgs::try_from(Clone3Args {
+        flags: CLONE_DETACHED as u64,
+        ..Default::default()
+    })
+    .is_err();
+    let stack_top_is_derived_from_base_and_size = CloneArgs::try_from(Clone3Args {
+        stack: 0x4000,
+        stack_size: 0x2000,
+        ..Default::default()
+    })
+    .is_ok_and(|args| args.stack == 0x6000);
+
+    parent_signal_rejected
+        && thread_signal_rejected
+        && detached_rejected
+        && stack_top_is_derived_from_base_and_size
+}
+
 #[cfg(test)]
 mod tests {
     use linux_raw_sys::general::{CLONE_PARENT, CLONE_THREAD, SIGCHLD};

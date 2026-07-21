@@ -539,6 +539,41 @@ pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
     sys_clone(uctx, flags, 0, 0, 0, 0)
 }
 
+#[cfg(axtest)]
+pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
+    let parent_signal_allowed = CloneArgs {
+        flags: CloneFlags::PARENT,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok();
+    let thread_signal_rejected = CloneArgs {
+        flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let sighand_without_vm_rejected = CloneArgs {
+        flags: CloneFlags::SIGHAND,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let newns_with_fs_rejected = CloneArgs {
+        flags: CloneFlags::NEWNS | CloneFlags::FS,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+
+    parent_signal_allowed
+        && thread_signal_rejected
+        && sighand_without_vm_rejected
+        && newns_with_fs_rejected
+}
+
 #[cfg(test)]
 mod tests {
     use linux_raw_sys::general::SIGCHLD;
