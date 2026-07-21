@@ -3,7 +3,9 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use ax_driver::block::RdifBlockDevice;
-use rdif_block::{ControllerInitEndpoint, IdList, InitError, InitInput, InitPoll, MaskedSource};
+use rdif_block::{
+    ControllerInitEndpoint, FaultContainment, IdList, InitError, InitInput, InitPoll,
+};
 
 use super::{
     BlockControllerError, ControllerInitialization, close_irq_sources, finish_maintenance_close,
@@ -12,7 +14,7 @@ use super::{
 use crate::{
     block::controller::source::{
         BlockIrqFaultSet, BlockMaintenanceEvent, RuntimeIrqRegistration, RuntimeIrqSource,
-        quiesce_after_device_masked,
+        RuntimeIrqSourceError, quiesce_after_device_masked, runtime_irq_source_mut,
     },
     maintenance::{
         MaintenanceCauses, MaintenanceClosed, MaintenanceError, MaintenanceRegistrar,
@@ -118,11 +120,10 @@ pub(super) fn drive_init_fsm(
     sources: &mut [RuntimeIrqSource],
     faults: &BlockIrqFaultSet,
     pending: &mut IdList,
-    masked: &mut [Option<MaskedSource>; 64],
 ) -> Result<(), InitError> {
     let mut transitions = 0;
     loop {
-        drain_init_events(session, faults, pending, masked)?;
+        drain_init_events(session, faults, sources, pending)?;
         let input_sources = *pending;
         *pending = IdList::none();
         let progress = with_owner_irq_excluded(|| match device.bundle_mut().controller_init() {
@@ -132,13 +133,18 @@ pub(super) fn drive_init_fsm(
                 input_sources,
             )),
         });
-        rearm_consumed_sources(sources, input_sources, masked)?;
-
         match progress {
-            InitPoll::Ready(()) => return Ok(()),
+            InitPoll::Ready(()) => {
+                // The IRQ that completed the final initialization command is
+                // still a live linear evidence owner. Retire it before the
+                // controller becomes visible to normal-I/O submission.
+                rearm_consumed_sources(sources, input_sources)?;
+                return Ok(());
+            }
             InitPoll::Failed(error) => return Err(error),
             InitPoll::Pending(schedule) => {
                 let schedule = schedule.validate()?;
+                rearm_consumed_sources(sources, input_sources)?;
                 transitions += 1;
                 if schedule.run_again() {
                     if transitions == INIT_TRANSITION_BUDGET {
@@ -169,13 +175,14 @@ pub(super) fn drive_init_fsm(
 fn drain_init_events(
     session: &MaintenanceSession<BlockMaintenanceEvent>,
     faults: &BlockIrqFaultSet,
+    sources: &mut [RuntimeIrqSource],
     pending: &mut IdList,
-    masked: &mut [Option<MaskedSource>; 64],
 ) -> Result<(), InitError> {
     if !faults.take().is_empty() {
         return Err(InitError::Hardware("initialization IRQ publication failed"));
     }
     let mut fault = None;
+    let mut source_error = None;
     let drain = session
         .drain_owner(
             crate::maintenance::MAINTENANCE_BATCH_LIMIT,
@@ -186,15 +193,32 @@ fn drain_init_events(
                     facts: _,
                     masked: token,
                 } => {
-                    pending.insert(source_id);
-                    if source_id < masked.len() && token.is_some() {
-                        masked[source_id] = token;
+                    match runtime_irq_source_mut(sources, source_id)
+                        .and_then(|source| source.record_service_fact(token))
+                    {
+                        Ok(()) => pending.insert(source_id),
+                        Err(error) => {
+                            source_error.get_or_insert(error);
+                        }
                     }
                 }
                 BlockMaintenanceEvent::Fault {
-                    source_id, reason, ..
+                    source_id,
+                    reason,
+                    containment,
                 } => {
-                    pending.insert(source_id);
+                    let token = match containment {
+                        FaultContainment::DeviceSourceMasked(token) => Some(token),
+                        FaultContainment::Uncontained => None,
+                    };
+                    match runtime_irq_source_mut(sources, source_id)
+                        .and_then(|source| source.record_service_fact(token))
+                    {
+                        Ok(()) => pending.insert(source_id),
+                        Err(error) => {
+                            source_error.get_or_insert(error);
+                        }
+                    }
                     fault = Some(match reason {
                         rdif_block::BlkError::TimedOut => InitError::TimedOut,
                         _ => InitError::Hardware("initialization IRQ capture failed"),
@@ -206,6 +230,12 @@ fn drain_init_events(
     if drain.causes().contains(MaintenanceCauses::OVERFLOW) {
         return Err(InitError::Hardware("initialization IRQ mailbox overflowed"));
     }
+    if let Some(error) = source_error {
+        return Err(init_source_error(
+            "initialization IRQ source ledger rejected an event",
+            error,
+        ));
+    }
     if let Some(error) = fault {
         return Err(error);
     }
@@ -215,21 +245,27 @@ fn drain_init_events(
 fn rearm_consumed_sources(
     sources: &mut [RuntimeIrqSource],
     consumed: IdList,
-    masked: &mut [Option<MaskedSource>; 64],
 ) -> Result<(), InitError> {
     for source_id in consumed.iter() {
-        let Some(token) = masked.get_mut(source_id).and_then(Option::take) else {
-            continue;
-        };
-        let source = sources
-            .iter_mut()
-            .find(|source| source.source_id() == source_id)
-            .ok_or(InitError::MissingInterrupt)?;
+        let source = runtime_irq_source_mut(sources, source_id)
+            .map_err(|error| init_source_error("initialization IRQ source lookup failed", error))?;
+        source.finish_service();
         source
-            .rearm(token)
-            .map_err(|_| InitError::Hardware("initialization IRQ source rearm failed"))?;
+            .rearm_retained()
+            .map_err(|error| init_source_error("initialization IRQ source rearm failed", error))?;
     }
     Ok(())
+}
+
+fn init_source_error(context: &'static str, error: RuntimeIrqSourceError) -> InitError {
+    error!("{context}: {error}");
+    match error {
+        RuntimeIrqSourceError::UnknownSource { .. } => InitError::MissingInterrupt,
+        RuntimeIrqSourceError::ConflictingGeneration { .. }
+        | RuntimeIrqSourceError::ConflictingMaskEpoch { .. }
+        | RuntimeIrqSourceError::ServicePending { .. }
+        | RuntimeIrqSourceError::Rearm { .. } => InitError::Hardware(context),
+    }
 }
 
 pub(super) fn close_failed_registration(

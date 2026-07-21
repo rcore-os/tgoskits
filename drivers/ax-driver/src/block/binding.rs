@@ -34,6 +34,10 @@ pub(crate) enum BlockRegistrationError {
     InterruptControllerWithoutIrqSource,
     #[error("controller declares IRQ source {source_id}, but the platform did not bind it")]
     MissingIrqBinding { source_id: usize },
+    #[error("PCI block activation requires a retained move-only IRQ lease")]
+    PciIrqLeaseRequired,
+    #[error("deferred platform IRQ discovery facts must not contain realized IRQ sources")]
+    DeferredBindingContainsIrqSource,
 }
 
 impl PlatformBlockDevice {
@@ -75,7 +79,7 @@ pub struct BlockDeviceBinding {
 }
 
 impl BlockDeviceBinding {
-    fn new(device_id: DeviceId, platform: BindingInfo) -> Self {
+    pub(super) fn new(device_id: DeviceId, platform: BindingInfo) -> Self {
         Self {
             device_id,
             platform,
@@ -102,7 +106,17 @@ impl BlockDeviceBinding {
         self.platform.irq_sources()
     }
 
-    fn irq_for_source(&self, source_id: usize) -> Option<&BindingIrq> {
+    pub(super) const fn platform_binding(&self) -> &BindingInfo {
+        &self.platform
+    }
+
+    /// Resolves one portable-driver IRQ source identity to its platform IRQ.
+    ///
+    /// `source_id` is the opaque source number declared by rdif-block, not an
+    /// IRQ vector or an index into [`Self::irq_sources`]. This remains
+    /// available after activation consumes the discovery owner because init
+    /// may publish the final queue/source topology only at `Ready`.
+    pub fn irq_for_source(&self, source_id: usize) -> Option<&BindingIrq> {
         self.platform.irq_for_source(source_id)
     }
 }
@@ -192,6 +206,11 @@ impl TryFrom<Device<PlatformBlockDevice>> for RdifBlockDevice {
     }
 }
 
+/// Transitional registration surface for legacy controller bundles.
+///
+/// New interrupt-backed controllers should implement
+/// [`super::PlatformDeviceBlockActivation`] so queue topology and IRQ
+/// ownership are selected through the v0.13 two-phase activation boundary.
 pub trait PlatformDeviceBlock {
     fn register_block<T: Interface>(self, device: T) -> Option<usize>;
 
@@ -485,7 +504,10 @@ fn block_registration_probe_error(error: BlockRegistrationError) -> OnProbeError
     OnProbeError::other(error.to_string())
 }
 
-/// Transfers every discovered block controller to the OS block runtime.
+/// Transfers every discovered legacy block controller to the OS block runtime.
+///
+/// This transitional collector cannot observe or consume v0.13 controller
+/// activators. Use [`super::take_rdif_block_activators`] for that boundary.
 pub fn take_rdif_block_devices() -> Vec<RdifBlockDevice> {
     rdrive::get_list::<PlatformBlockDevice>()
         .into_iter()

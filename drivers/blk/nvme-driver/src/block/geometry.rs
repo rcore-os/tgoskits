@@ -1,6 +1,6 @@
 //! Namespace geometry and queue-limit publication after Ready.
 
-use rdif_block::{DeviceInfo, QueueLimits, RequestFlags};
+use rdif_block::{DeviceInfo, HardwareQueueLimits, QueueLimits, RequestFlags};
 
 use crate::Namespace;
 
@@ -19,6 +19,36 @@ pub(super) fn limits(
     namespace: Namespace,
     max_inflight: usize,
 ) -> QueueLimits {
+    let hardware = hardware_limits(
+        dma_mask,
+        page_size,
+        controller_max_transfer_bytes,
+        namespace,
+    );
+    QueueLimits {
+        dma_mask: hardware.dma_mask,
+        dma_domain: hardware.dma_domain,
+        dma_alignment: hardware.dma_alignment,
+        max_inflight: max_inflight.max(1),
+        max_blocks_per_request: hardware.max_blocks_per_request,
+        max_segments: hardware.max_segments,
+        max_segment_size: hardware.max_segment_size,
+        request_timeout_ns: rdif_block::DEFAULT_REQUEST_TIMEOUT_NS,
+        supported_flags: hardware.supported_flags,
+        supports_flush: hardware.supports_flush,
+        supports_discard: hardware.supports_discard,
+        supports_write_zeroes: hardware.supports_write_zeroes,
+    }
+}
+
+/// Publishes protocol and DMA limits without leaking runtime credit or
+/// watchdog policy into the portable v0.13 driver contract.
+pub(super) fn hardware_limits(
+    dma_mask: u64,
+    page_size: usize,
+    controller_max_transfer_bytes: Option<usize>,
+    namespace: Namespace,
+) -> HardwareQueueLimits {
     let lba_size = namespace.lba_size.max(1);
     let dma_alignment = page_size.max(lba_size);
     let prp_entries = page_size / core::mem::size_of::<u64>();
@@ -34,17 +64,15 @@ pub(super) fn limits(
         .max(1)
         .min(u16::MAX as usize + 1) as u32;
     let max_bytes = (max_blocks as usize).saturating_mul(lba_size);
-    QueueLimits {
+    HardwareQueueLimits {
         dma_mask,
         dma_domain: dma_api::DmaDomainId::legacy_global(),
         dma_alignment,
-        max_inflight: max_inflight.max(1),
         max_blocks_per_request: max_blocks,
         // RDIF 0.12 submits one contiguous owned DMA buffer. NVMe may encode
         // that single segment through multiple PRP entries internally.
         max_segments: 1,
         max_segment_size: max_bytes,
-        request_timeout_ns: rdif_block::DEFAULT_REQUEST_TIMEOUT_NS,
         supported_flags: RequestFlags::NONE,
         // Do not advertise flush until the driver plumbs a reliable capability
         // check from Identify/Feature data. Some QEMU NVMe backends reject the

@@ -222,7 +222,7 @@ pcie = { version = "0.6.7", path = "drivers/pci/pcie" }
 ramdisk = { version = "0.1.10", path = "drivers/blk/ramdisk" }
 rd-net = { version = "0.2.2", path = "drivers/net/rd-net" }
 rdif-base = { version = "0.8.3", path = "drivers/interface/rdif-base" }
-rdif-block = { version = "0.12.0", path = "drivers/interface/rdif-block" }
+rdif-block = { version = "0.13.0", path = "drivers/interface/rdif-block" }
 rdif-irq = { version = "0.1.0", path = "drivers/interface/rdif-irq" }
 rdif-clk = { version = "0.5.4", path = "drivers/interface/rdif-clk" }
 rdif-def = { version = "0.3.0", path = "drivers/interface/rdif-def" }

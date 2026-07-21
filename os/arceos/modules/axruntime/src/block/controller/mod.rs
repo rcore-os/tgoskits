@@ -10,6 +10,7 @@ mod recovery;
 mod registry;
 mod shutdown_owner;
 pub(in crate::block) mod source;
+mod topology;
 
 use alloc::{boxed::Box, string::String, sync::Arc};
 use core::{
@@ -20,15 +21,21 @@ use core::{
 use ax_driver::block::RdifBlockDevice;
 use ax_kspin::{IrqGuard, SpinNoPreempt};
 pub use device::BlockDeviceView;
-pub(in crate::block) use device::{InlineQueue, RuntimeBlockDevice, RuntimeQueue};
+pub(in crate::block) use device::{
+    DeviceSoftwareContexts, InlineQueue, RuntimeBlockDevice, RuntimeQueue,
+};
 pub use error::{BlockControllerError, BlockHandoffError};
 pub(super) use handoff_owner::OwnerHandoff;
 pub(in crate::block) use owner::ControllerOwnerLink;
+pub(in crate::block) use prepared::PreparedBlockController;
 use rdif_block::RecoveryCause;
 pub(in crate::block) use registry::runtime_handoff_controllers;
-pub use registry::{activate_discovered_controllers, block_io_stats};
+pub use registry::{
+    activate_discovered_controllers, activate_discovered_controllers_with_config, block_io_stats,
+};
 pub(in crate::block) use shutdown_owner::{OwnerShutdown, OwnerShutdownProgress};
 use source::BlockMaintenanceEvent;
+pub(in crate::block) use topology::{IrqLineOwnershipReservation, OwnershipDomainTopology};
 
 use super::{
     HardwareQueueError,
@@ -195,6 +202,7 @@ pub struct BlockController {
     recovery_pending_sources: AtomicU64,
     recovery_irqs_enabled: AtomicBool,
     owner_link: Arc<ControllerOwnerLink>,
+    ownership_topology: OwnershipDomainTopology,
 }
 
 pub(super) struct ControllerOperation<'controller> {
@@ -340,7 +348,15 @@ impl BlockController {
     /// Returns a typed error and leaves the device unpublished if queue, IRQ,
     /// or driver activation cannot satisfy the IRQ-only contract.
     pub fn activate(device: RdifBlockDevice) -> Result<Arc<Self>, BlockControllerError> {
-        activate_controller(device)
+        Self::activate_with_config(device, crate::block::BlockRuntimeConfig::default())
+    }
+
+    /// Activates one discovered controller with explicit OS watchdog policy.
+    pub fn activate_with_config(
+        device: RdifBlockDevice,
+        config: crate::block::BlockRuntimeConfig,
+    ) -> Result<Arc<Self>, BlockControllerError> {
+        activate_controller(device, config)
     }
 
     /// Returns the stable driver diagnostic name.
@@ -395,10 +411,15 @@ impl BlockController {
             self.maintenance.owner_thread(),
             "portable block driver control callback entered from a non-owner thread"
         );
+        let owner_cpu = self.ownership_topology.owner_cpu();
+        assert_eq!(
+            owner_cpu,
+            self.maintenance.owner_cpu(),
+            "block IRQ ownership and maintenance owner CPU diverged"
+        );
         let cpu = ax_hal::percpu::this_cpu_id();
         assert_eq!(
-            cpu,
-            self.maintenance.owner_cpu(),
+            cpu, owner_cpu,
             "portable block driver control callback entered from a non-owner CPU"
         );
     }

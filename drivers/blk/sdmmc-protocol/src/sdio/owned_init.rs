@@ -178,6 +178,16 @@ impl<H: OwnedSdioInitHost> OwnedSdioInit<H> {
     }
 
     #[cfg(feature = "rdif")]
+    pub(crate) fn take_evidence_irq_source(
+        &mut self,
+    ) -> Option<super::SdioIrqSource<H::IrqEndpoint, H::IrqControl>>
+    where
+        H: SdioIrqHost,
+    {
+        self.card.host_mut().take_evidence_irq_source()
+    }
+
+    #[cfg(feature = "rdif")]
     pub(crate) fn enable_completion_irq(&mut self) -> Result<(), Error> {
         self.card.host_mut().enable_completion_irq()
     }

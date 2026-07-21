@@ -10,7 +10,7 @@ use crate::{
     BlockPoll, BlockRequestId, DataCommandPoll, Error,
     rdif::config::{BLOCK_SIZE, map_dev_err_to_blk_err},
     sdio::{
-        host::{SdioHost, SdioIrqHost},
+        host::{HostIrqSnapshot, SdioHost, SdioIrqHost},
         host2::{
             SdioHost2Adapter, SdioHost2DataRequest, SdioHost2Irq, SdioHost2Lifecycle,
             SdioHost2Recovery,
@@ -63,6 +63,20 @@ pub trait BlockHost: SdioIrqHost + Send + 'static {
         pending: &mut Option<Self::Request>,
         request: BlockRequestId,
         slot: &mut Self::Slot,
+    ) -> Result<BlockPoll, Error>;
+
+    /// Advances one request from the exact typed snapshot claimed by the
+    /// v0.13 evidence owner.
+    ///
+    /// This path must not read a destructive status register or consume a
+    /// second IRQ mailbox. Legacy queues retain [`Self::service_request`]
+    /// only until their activation boundary is migrated.
+    fn service_request_with_snapshot(
+        &mut self,
+        pending: &mut Option<Self::Request>,
+        request: BlockRequestId,
+        slot: &mut Self::Slot,
+        snapshot: HostIrqSnapshot,
     ) -> Result<BlockPoll, Error>;
 
     fn abort_request(
@@ -244,6 +258,31 @@ where
             // The runtime closes admission, drains IRQ delivery, and obtains a
             // controller-wide `DmaQuiesced` proof before calling
             // `abort_request` through `reclaim_after_quiesce`.
+            Err(err) => Err(err),
+            Ok(DataCommandPoll::Pending) => Ok(BlockPoll::Pending),
+            Ok(DataCommandPoll::Complete(_)) => {
+                slot.completed = take_protocol_completed_buffer(&mut active.inner);
+                *pending = None;
+                slot.active_id = None;
+                Ok(BlockPoll::Complete)
+            }
+        }
+    }
+
+    fn service_request_with_snapshot(
+        &mut self,
+        pending: &mut Option<Self::Request>,
+        request: BlockRequestId,
+        slot: &mut Self::Slot,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<BlockPoll, Error> {
+        let Some(active) = pending.as_mut() else {
+            return Err(Error::InvalidArgument);
+        };
+        if active.id != request {
+            return Ok(BlockPoll::Pending);
+        }
+        match self.poll_data_request_with_snapshot(&mut active.inner, snapshot) {
             Err(err) => Err(err),
             Ok(DataCommandPoll::Pending) => Ok(BlockPoll::Pending),
             Ok(DataCommandPoll::Complete(_)) => {

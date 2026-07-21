@@ -30,14 +30,16 @@ use super::{
 #[cfg(feature = "nvme")]
 use crate::binding_resolver::binding_info_from_pci_endpoint_resources;
 use crate::{
-    BindingInfo, BindingIrqBinding, IrqBindingError, IrqBindingFailure, IrqBindingOperation,
-    IrqBindingStage,
+    BindingInfo, BindingIrqBinding, ExactIrqSourceBinding, ExactIrqSourceBindingError,
+    IrqBindingError, IrqBindingFailure, IrqBindingOperation, IrqBindingStage,
+    irq_binding::ExactIrqSourceSet,
 };
 
 pub struct PciIrqLease {
     pub(super) provider: DeviceId,
     pub(super) allocation: Option<MsiAllocation>,
     pub(super) binding: BindingInfo,
+    pub(super) exact_sources: ExactIrqSourceSet,
     pub(super) table: MsixTableRegion,
     pub(super) table_mmio: Option<mmio_api::Mmio>,
     pub(super) endpoint: Option<Endpoint>,
@@ -51,7 +53,7 @@ pub type PciMsixAllocation = PciIrqLease;
 pub(crate) struct PciMsixPreflight {
     pub(super) info: PciInfo,
     pub(super) target: PciMsiTarget,
-    pub(super) vector_count: u16,
+    pub(super) max_vector_count: u16,
     pub(super) table_info: MsixTableInfo,
     pub(super) table_range: Range<usize>,
     pub(super) host_resources: BindingInfo,
@@ -78,19 +80,20 @@ impl PciIrqLease {
     pub(crate) fn preflight(
         endpoint: &Endpoint,
         info: PciInfo,
-        vector_count: u16,
+        requested_max_vectors: u16,
     ) -> Result<PciMsixPreflight, OnProbeError> {
         let host_resources = binding_info_from_pci_endpoint_resources(info, endpoint)?;
         let target = msi_target_for_endpoint(info)?;
         let table_info = endpoint.msix_table_info().map_err(msix_probe_error)?;
         let table_range = endpoint.msix_table_range().map_err(msix_probe_error)?;
 
-        if vector_count == 0 || vector_count > table_info.entries {
+        if requested_max_vectors == 0 || table_info.entries == 0 {
             return Err(OnProbeError::other(format!(
-                "PCI endpoint {} requested {vector_count} MSI-X vectors, table has {}",
-                info.address, table_info.entries
+                "PCI endpoint {} has no usable MSI-X vectors (requested ceiling {}, table {})",
+                info.address, requested_max_vectors, table_info.entries
             )));
         }
+        let max_vector_count = requested_max_vectors.min(table_info.entries);
 
         let provider = rdrive::get::<Msi>(target.provider)
             .map_err(|err| msi_provider_lookup_error(info.address, target.provider, err))?;
@@ -103,7 +106,7 @@ impl PciIrqLease {
         Ok(PciMsixPreflight {
             info,
             target,
-            vector_count,
+            max_vector_count,
             table_info,
             table_range,
             host_resources,
@@ -120,6 +123,19 @@ impl PciIrqLease {
 
     pub fn vector_indices(&self) -> Vec<u16> {
         self.vectors().iter().map(|vector| vector.index.0).collect()
+    }
+
+    /// Transfers the one-shot platform capability for an MSI-X source.
+    ///
+    /// The returned token must remain attached to the IRQ action registered
+    /// for that source. The parent lease will retain its PCI endpoint and
+    /// vector allocation in quarantine if it is dropped while any token is
+    /// still live.
+    pub fn take_exact_irq_source(
+        &self,
+        source_id: usize,
+    ) -> Result<ExactIrqSourceBinding, ExactIrqSourceBindingError> {
+        self.exact_sources.take(source_id)
     }
 
     /// Enables every allocated MSI-X vector as one transaction.
@@ -248,9 +264,30 @@ impl PciIrqLease {
     }
 }
 
+#[cfg(feature = "nvme")]
+impl PciMsixPreflight {
+    /// Returns the maximum vector count supported by both policy-independent
+    /// ABI bounds and the endpoint table.
+    pub(crate) const fn max_vector_count(&self) -> u16 {
+        self.max_vector_count
+    }
+
+    /// Returns immutable PCI and MMIO facts without claiming IRQ vectors.
+    pub(crate) const fn discovery_binding(&self) -> &BindingInfo {
+        &self.host_resources
+    }
+}
+
 impl crate::IrqBindingLease for PciIrqLease {
     fn binding_info(&self) -> BindingInfo {
         PciIrqLease::binding_info(self)
+    }
+
+    fn take_exact_irq_source(
+        &self,
+        source_id: usize,
+    ) -> Result<ExactIrqSourceBinding, ExactIrqSourceBindingError> {
+        PciIrqLease::take_exact_irq_source(self, source_id)
     }
 
     fn enable_binding_irq(&self) -> Result<(), IrqBindingError> {
@@ -264,6 +301,7 @@ impl crate::IrqBindingLease for PciIrqLease {
 
 impl Drop for PciIrqLease {
     fn drop(&mut self) {
+        let live_source_bits = self.exact_sources.live_source_bits();
         let vector_disable_error = self.disable().err();
         let mut capability_disable_failed = false;
         if let Some(endpoint) = self.endpoint.as_mut() {
@@ -276,13 +314,19 @@ impl Drop for PciIrqLease {
                 warn!("failed to disable MSI-X capability before release: {error}");
             }
         }
-        if vector_disable_error.is_some() || capability_disable_failed {
+        if live_source_bits != 0 || vector_disable_error.is_some() || capability_disable_failed {
             let allocation = self
                 .allocation
                 .take()
                 .expect("live MSI-X lease retains its vector allocation");
             self.retain_quarantined_resources(allocation, PciMsiQuarantineReason::LeaseContainment);
-            if let Some(error) = vector_disable_error {
+            if live_source_bits != 0 {
+                warn!(
+                    "MSI-X lease dropped with exact source capabilities still live \
+                     ({live_source_bits:#x}); retaining its PCI endpoint, vector token, and table \
+                     mapping"
+                );
+            } else if let Some(error) = vector_disable_error {
                 warn!(
                     "failed to disable MSI-X vectors before release; endpoint-wide containment \
                      was still attempted and the PCI endpoint, vector token, and table mapping \

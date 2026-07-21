@@ -11,12 +11,12 @@ use rdif_block::{
 };
 
 use crate::{
-    AhciConfig, AhciError,
+    AhciConfig, AhciControllerActivator, AhciError,
     initialization::{AhciInitialization, ControllerInitState},
     irq::HostShared,
     lifecycle::AhciLifecycle,
     quarantine::{AhciDmaQuarantine, AhciDmaQuarantineReason},
-    queue::{AhciPortQueue, QueueBinding, ReadyPort},
+    queue::{AhciPortQueue, QueueBinding, ReadyPort, V13QueueBinding},
     registers::{
         CAP_S64A, GHC_AE, GHC_HR, GHC_IE, HOST_CAP, HOST_GHC, HOST_PI, MAX_PORTS, MappedRegisters,
         PX_IE, SharedRegisters, write_port,
@@ -82,6 +82,14 @@ impl AhciHost {
             DeviceDma::new_legacy(dma_mask, dma_op),
             config,
         ))
+    }
+
+    /// Converts the masked discovery owner into the rdif-block v0.13
+    /// capability/activation transaction without issuing a hardware command.
+    pub fn into_v13_activator(
+        self,
+    ) -> Result<AhciControllerActivator, rdif_block::ActivationError> {
+        AhciControllerActivator::new(self)
     }
 
     /// Returns the current discovery-to-ready phase without touching MMIO.
@@ -163,9 +171,9 @@ impl AhciHost {
     /// current initialization or normal-I/O phase is not alive.
     pub fn enable_irq(&self) -> Result<(), BlkError> {
         let handler_live = if matches!(self.initialization.state(), ControllerInitState::Ready) {
-            self.shared.io_handler_live()
+            self.shared.io_handler_live() || self.shared.v13_handler_live()
         } else {
-            self.shared.initial_handler_live()
+            self.shared.control_handler_live()
         };
         if !handler_live {
             return Err(BlkError::Other("AHCI IRQ handler is not live"));
@@ -230,9 +238,12 @@ impl AhciHost {
         dma: DeviceDma,
         config: AhciConfig,
     ) -> Self {
+        let implemented_ports = registers.read32(HOST_PI);
+        let shared = HostShared::new(registers);
+        shared.publish_implemented_ports(implemented_ports);
         Self {
             name,
-            shared: HostShared::new(registers),
+            shared,
             dma,
             config,
             initialization: AhciInitialization::discovered(),
@@ -256,6 +267,96 @@ impl AhciHost {
         }
     }
 
+    pub(crate) fn v13_name(&self) -> &'static str {
+        self.name
+    }
+
+    pub(crate) fn v13_controller_identity(&self) -> core::num::NonZeroUsize {
+        core::num::NonZeroUsize::new(self.controller_cookie())
+            .unwrap_or_else(|| unreachable!("an Arc allocation has a nonzero address"))
+    }
+
+    pub(crate) fn v13_irq_source_id(&self) -> usize {
+        self.config.irq_source_id
+    }
+
+    pub(crate) fn v13_dma_domain(&self) -> dma_api::DmaDomainId {
+        self.dma.domain_id()
+    }
+
+    pub(crate) fn v13_dma_mask(&self) -> u64 {
+        self.active_dma_mask()
+    }
+
+    pub(crate) fn v13_implemented_ports(&self) -> u32 {
+        self.shared.implemented_ports()
+    }
+
+    pub(crate) fn v13_poll_init(&mut self, now_ns: u64, irq_evidence: bool) -> InitPoll<()> {
+        self.initialization.poll_v13(
+            &self.shared,
+            &self.dma,
+            self.config,
+            &mut self.ready_ports,
+            now_ns,
+            irq_evidence,
+        )
+    }
+
+    pub(crate) fn v13_take_ready_ports(&mut self) -> Vec<ReadyPort> {
+        core::mem::take(&mut self.ready_ports)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    pub(crate) fn v13_queue_binding(&self) -> V13QueueBinding {
+        V13QueueBinding {
+            name: self.name,
+            dma_mask: self.active_dma_mask(),
+            dma_domain: self.dma.domain_id(),
+            irq_source_id: self.config.irq_source_id,
+            controller_cookie: self.controller_cookie(),
+        }
+    }
+
+    pub(crate) fn v13_shared(&self) -> &Arc<HostShared> {
+        &self.shared
+    }
+
+    pub(crate) fn v13_begin_dma_quiesce(
+        &mut self,
+        epoch: ControllerEpoch,
+    ) -> Result<(), InitError> {
+        self.lifecycle.begin_dma_quiesce_epoch(&self.shared, epoch)
+    }
+
+    pub(crate) fn v13_poll_dma_quiesce(&mut self, input: InitInput) -> InitPoll<DmaQuiesced> {
+        let cookie = self.controller_cookie();
+        self.lifecycle
+            .poll_dma_quiesce(&self.shared, self.config, cookie, input)
+    }
+
+    pub(crate) fn v13_begin_reinitialize(
+        &mut self,
+        quiesced: DmaQuiesced,
+    ) -> Result<(), InitError> {
+        let cookie = self.controller_cookie();
+        self.lifecycle
+            .begin_reinitialize(&self.shared, cookie, quiesced)
+    }
+
+    pub(crate) fn v13_enter_guest_owned(&mut self, quiesced: DmaQuiesced) -> Result<(), InitError> {
+        let cookie = self.controller_cookie();
+        self.lifecycle.enter_guest_owned(cookie, quiesced)
+    }
+
+    pub(crate) fn v13_poll_reinitialize(&mut self, input: InitInput) -> InitPoll<ControllerReady> {
+        let cookie = self.controller_cookie();
+        self.lifecycle
+            .poll_reinitialize(&self.shared, self.config, cookie, input)
+    }
+
     #[cfg(test)]
     pub(crate) fn from_test_parts(
         name: &'static str,
@@ -264,6 +365,27 @@ impl AhciHost {
         config: AhciConfig,
     ) -> Self {
         Self::from_parts(name, registers, dma, config)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_v13_test_disk(&mut self, port: usize, num_blocks: u64) {
+        let command_memory = crate::command::PortCommandMemory::allocate(&self.dma).unwrap();
+        self.shared.publish_ready_port(port);
+        self.ready_ports.push(Some(ReadyPort {
+            port,
+            ata: crate::ata::AtaDevice {
+                num_blocks,
+                logical_block_size: 512,
+                lba48: true,
+                flush: true,
+            },
+            command_memory,
+        }));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_v13_ready_for_test(&mut self) {
+        self.initialization.mark_ready_for_test();
     }
 }
 
@@ -430,7 +552,10 @@ impl Drop for AhciHost {
 
 #[cfg(test)]
 mod tests {
-    use rdif_block::{CompletedRequest, CompletionSink, ControllerEpoch, DmaQuiesced};
+    use rdif_block::{
+        CompletedRequest, CompletionSink, ControllerActivator, ControllerEpoch, DmaQuiesced,
+        QueueExecution,
+    };
 
     use super::*;
     use crate::{
@@ -458,6 +583,35 @@ mod tests {
             host.controller_init_state(),
             ControllerInitState::Discovered
         );
+        assert!(registers.writes().is_empty());
+    }
+
+    #[test]
+    fn v13_discovery_exposes_one_serialized_shared_irq_ownership_domain() {
+        let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
+        registers.set(HOST_PI, 0b1011);
+        let host = AhciHost::from_test_parts(
+            "test-ahci",
+            registers.shared(),
+            DeviceDma::new_legacy(u64::MAX, &TEST_DMA),
+            AhciConfig::legacy_irq(3),
+        );
+
+        let activator = host
+            .into_v13_activator()
+            .expect("a discovered AHCI host must become one linear activator");
+        let capabilities = activator.capabilities();
+
+        assert_eq!(capabilities.domains().len(), 1);
+        let domain = &capabilities.domains()[0];
+        assert_eq!(domain.execution(), QueueExecution::Serialized);
+        assert_eq!(domain.min_queues().get(), 3);
+        assert_eq!(domain.max_queues().get(), 3);
+        assert_eq!(domain.min_queues(), domain.max_queues());
+        assert_eq!(domain.queue_depth().min().get(), 1);
+        assert_eq!(domain.queue_depth().max().get(), 1);
+        assert_eq!(domain.irq_sources().bits(), 1 << 3);
+        assert_eq!(capabilities.control_domain(), domain.id());
         assert!(registers.writes().is_empty());
     }
 

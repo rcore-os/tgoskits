@@ -8,22 +8,28 @@
 //! failed publication is reported as uncontained and the OS masks the action
 //! or line.
 
-use alloc::{boxed::Box, sync::Arc};
 #[cfg(test)]
-use core::sync::atomic::AtomicU8;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+#[cfg(test)]
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
+use rdif_block::BlkError;
+#[cfg(test)]
 use rdif_block::{
-    BlkError, BlockIrqSource, ContainmentCause, Event, IrqCapture, IrqControlError, IrqEndpoint,
+    BlockIrqSource, ContainmentCause, Event, IrqCapture, IrqControlError, IrqEndpoint,
     IrqSourceControl, MaskedSource,
 };
+#[cfg(test)]
 use virtio_drivers::transport::InterruptStatus;
 
+#[cfg(test)]
 use super::VIRTIO_BLK_QUEUE_ID;
 
 const MMIO_INTERRUPT_STATUS_OFFSET: usize = 0x60;
 const MMIO_INTERRUPT_ACK_OFFSET: usize = 0x64;
 const MMIO_INTERRUPT_REGISTERS_END: usize = MMIO_INTERRUPT_ACK_OFFSET + size_of::<u32>();
+#[cfg(test)]
 const VIRTIO_QUEUE_SOURCE_BITMAP: u64 = 1;
 
 /// Destructive VirtIO interrupt-status capability separated from `Transport`.
@@ -72,6 +78,25 @@ impl VirtioInterruptPort {
             registers: VirtioInterruptRegisters::Test { status },
         }
     }
+
+    /// Reads and acknowledges one raw transport ISR snapshot.
+    ///
+    /// The v0.13 evidence endpoint consumes this port and stores the complete
+    /// snapshot in its private ledger before returning an opaque identity.
+    pub(super) fn capture_raw_status(&mut self) -> u32 {
+        self.registers.capture_status().raw
+    }
+
+    /// Clones only the retained MMIO mapping needed to build a queue-notify
+    /// port. PCI transports use a distinct vendor notify capability instead.
+    pub(super) fn mmio_mapping(&self) -> Option<Arc<mmio_api::Mmio>> {
+        match &self.registers {
+            VirtioInterruptRegisters::Mmio { mapping } => Some(Arc::clone(mapping)),
+            VirtioInterruptRegisters::Pci { .. } => None,
+            #[cfg(test)]
+            VirtioInterruptRegisters::Test { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -106,6 +131,7 @@ impl VirtioInterruptRegisters {
         };
         CapturedInterruptStatus {
             raw,
+            #[cfg(test)]
             known: InterruptStatus::from_bits_truncate(raw),
         }
     }
@@ -113,10 +139,12 @@ impl VirtioInterruptRegisters {
 
 struct CapturedInterruptStatus {
     raw: u32,
+    #[cfg(test)]
     known: InterruptStatus,
 }
 
 /// One-controller factory for initialization and normal-I/O IRQ endpoints.
+#[cfg(test)]
 pub(super) struct VirtioIrqOwnership {
     registers: VirtioInterruptRegisters,
     state: Arc<VirtioIrqState>,
@@ -129,10 +157,12 @@ pub(super) struct VirtioIrqOwnership {
 /// lease only for its ISR capability. The lease exposes no register operations:
 /// destructive status ownership remains exclusively in the IRQ endpoint.
 #[derive(Clone)]
+#[cfg(test)]
 pub(super) struct VirtioRegisterMappingLease {
     _registers: VirtioInterruptRegisters,
 }
 
+#[cfg(test)]
 impl VirtioIrqOwnership {
     pub(super) fn new(port: VirtioInterruptPort) -> Self {
         Self {
@@ -203,6 +233,7 @@ impl VirtioIrqOwnership {
     }
 }
 
+#[cfg(test)]
 struct VirtioIrqState {
     enabled: AtomicBool,
     generation: AtomicU64,
@@ -210,6 +241,7 @@ struct VirtioIrqState {
     normal_io_live: AtomicBool,
 }
 
+#[cfg(test)]
 impl VirtioIrqState {
     const fn new() -> Self {
         Self {
@@ -240,17 +272,20 @@ impl VirtioIrqState {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(test)]
 enum IrqEndpointRole {
     Initialization,
     NormalIo,
 }
 
+#[cfg(test)]
 struct VirtioBlkIrqEndpoint {
     registers: VirtioInterruptRegisters,
     state: Arc<VirtioIrqState>,
     role: IrqEndpointRole,
 }
 
+#[cfg(test)]
 impl IrqEndpoint for VirtioBlkIrqEndpoint {
     type Event = Event;
     type Fault = BlkError;
@@ -284,6 +319,7 @@ impl IrqEndpoint for VirtioBlkIrqEndpoint {
     }
 }
 
+#[cfg(test)]
 impl Drop for VirtioBlkIrqEndpoint {
     fn drop(&mut self) {
         match self.role {
@@ -296,10 +332,12 @@ impl Drop for VirtioBlkIrqEndpoint {
     }
 }
 
+#[cfg(test)]
 struct VirtioBlkIrqControl {
     state: Arc<VirtioIrqState>,
 }
 
+#[cfg(test)]
 impl IrqSourceControl for VirtioBlkIrqControl {
     type Error = IrqControlError;
 
@@ -315,6 +353,7 @@ impl IrqSourceControl for VirtioBlkIrqControl {
     }
 }
 
+#[cfg(test)]
 pub(super) fn virtio_blk_event_from_irq_status(status: InterruptStatus) -> Event {
     if !status.contains(InterruptStatus::QUEUE_INTERRUPT) {
         return Event::none();

@@ -1,76 +1,39 @@
-//! Owned-request RDIF queue and VirtIO descriptor lifecycle.
+//! VirtIO block request DMA, descriptor, and quiescence invariants.
 
-use alloc::{boxed::Box, sync::Arc};
+#[cfg(test)]
+mod legacy;
+mod owned;
+
+use alloc::boxed::Box;
+#[cfg(test)]
+use alloc::sync::Arc;
 use core::mem::ManuallyDrop;
 #[cfg(test)]
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use dma_api::{DmaDirection, InFlightDma, PreparedDma};
+#[cfg(test)]
+pub(super) use legacy::{BlockQueue, virtio_queue_ids};
+pub(super) use owned::VirtioOwnedQueue;
+#[cfg(test)]
+use rdif_block::CompletionSink;
 use rdif_block::{
-    BlkError, CompletedRequest, CompletionSink, IdList, OwnedRequest, QueueEventBatch,
-    QueueExecution, QueueInfo, QueueKind, RequestId, RequestOp, ServiceProgress,
-    ServiceRerunReason, SubmitError, SubmitOutcome,
+    BlkError, CompletedRequest, IdList, OwnedRequest, QueueExecution, QueueInfo, QueueKind,
+    RequestId, RequestOp, SubmitError,
 };
 use virtio_drivers::{Error as VirtIoError, device::blk::SECTOR_SIZE, queue::VirtQueue};
 
-use super::{
-    VIRTIO_BLK_IRQ_SOURCE_ID, VIRTIO_BLK_QUEUE_ID,
-    device::{VirtIoBlkDevice, VirtIoBlkInner},
-    irq::VirtioRegisterMappingLease,
-};
+use super::{VIRTIO_BLK_IRQ_SOURCE_ID, VIRTIO_BLK_QUEUE_ID, device::VirtIoBlkInner};
 use crate::virtio::VirtIoTransport;
 
 // Keep one IRQ-driven completion large enough to amortize the interrupt/drain
 // wake cost while preserving the intentionally conservative max_inflight=1.
 pub(super) const VIRTIO_BLK_DMA_BUFFER_SIZE: usize = 4 * 1024 * 1024;
-const VIRTIO_BLK_SERVICE_BUDGET: usize = 64;
 pub(super) const VIRTIO_BLK_QUEUE_SIZE: usize = 16;
-
-pub(super) struct BlockQueue<T: VirtIoTransport> {
-    id: usize,
-    // Keeps the transport and in-flight descriptor state alive. Platform PCI
-    // MSI-X/INTx leases live outside this Arc and must remain owned by the OS
-    // Interface holder until IRQ synchronization and queue shutdown complete.
-    raw: Arc<VirtIoBlkDevice<T>>,
-    // Keep the register lease alive independently of controller/IRQ-action
-    // drop ordering. For MMIO discovery this also anchors the transport's raw
-    // register pointers.
-    _register_mapping: VirtioRegisterMappingLease,
-    reclaim_proof: ReclaimProofTracker,
-}
 
 pub(super) struct ReclaimProofTracker {
     controller_cookie: usize,
     last_epoch: Option<u64>,
-}
-
-impl<T: VirtIoTransport> BlockQueue<T> {
-    pub(super) fn new(
-        raw: Arc<VirtIoBlkDevice<T>>,
-        register_mapping: VirtioRegisterMappingLease,
-    ) -> Self {
-        let controller_cookie = core::ptr::from_ref(raw.as_ref()).expose_provenance();
-        Self {
-            id: VIRTIO_BLK_QUEUE_ID,
-            raw,
-            _register_mapping: register_mapping,
-            reclaim_proof: ReclaimProofTracker {
-                controller_cookie,
-                last_epoch: None,
-            },
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn for_test(raw: Arc<VirtIoBlkDevice<T>>) -> Self {
-        Self::new(raw, super::irq::test_register_mapping_lease())
-    }
-}
-
-pub(super) fn virtio_queue_ids() -> IdList {
-    let mut queues = IdList::none();
-    queues.insert(VIRTIO_BLK_QUEUE_ID);
-    queues
 }
 
 pub(super) fn virtio_queue_info(blocks: u64) -> QueueInfo {
@@ -104,57 +67,6 @@ pub(super) fn virtio_queue_info(blocks: u64) -> QueueInfo {
     }
 }
 
-impl<T: VirtIoTransport> rdif_block::IQueue for BlockQueue<T> {
-    fn id(&self) -> usize {
-        self.id
-    }
-
-    fn info(&self) -> QueueInfo {
-        let blocks = self.raw.capacity_if_ready().unwrap_or(0);
-        let mut info = virtio_queue_info(blocks);
-        info.device.read_only = self.raw.read_only_if_ready().unwrap_or(false);
-        info
-    }
-
-    fn submit_owned(
-        &mut self,
-        id: RequestId,
-        request: OwnedRequest,
-    ) -> Result<SubmitOutcome, SubmitError> {
-        if let Err(error) = rdif_block::validate_owned_request(self.info(), &request) {
-            return Err(SubmitError::new(id, error, request));
-        }
-        self.raw.with_task(|inner| inner.submit_owned(id, request))
-    }
-
-    fn service_events(
-        &mut self,
-        events: &QueueEventBatch<'_>,
-        sink: &mut dyn CompletionSink,
-    ) -> Result<ServiceProgress, BlkError> {
-        if events.queue_id() != self.id {
-            return Err(BlkError::InvalidRequest);
-        }
-        self.raw.with_task(|inner| inner.service_used(events, sink))
-    }
-
-    fn reclaim_after_quiesce(
-        &mut self,
-        proof: &rdif_block::DmaQuiesced,
-        sink: &mut dyn CompletionSink,
-    ) -> Result<(), BlkError> {
-        self.reclaim_proof.validate(proof)?;
-        self.raw
-            .with_task(|inner| inner.reclaim_after_quiesce(proof, sink));
-        self.reclaim_proof.commit(proof);
-        Ok(())
-    }
-
-    fn shutdown(&mut self) -> Result<(), BlkError> {
-        self.raw.with_task(VirtIoBlkInner::shutdown)
-    }
-}
-
 impl ReclaimProofTracker {
     #[cfg(test)]
     pub(super) const fn for_test(controller_cookie: usize) -> Self {
@@ -180,194 +92,30 @@ impl ReclaimProofTracker {
     }
 }
 
-impl<T: VirtIoTransport> VirtIoBlkInner<T> {
-    fn submit_owned(
-        &mut self,
-        id: RequestId,
-        request: OwnedRequest,
-    ) -> Result<SubmitOutcome, SubmitError> {
-        if self.inflight.is_some() {
-            return Err(SubmitError::new(id, BlkError::Retry, request));
-        }
-
-        let (op, mut request, prepared) = prepare_virtio_dma(id, request)?;
-        let Some(storage) = self.descriptor_storage.as_deref_mut() else {
-            request.data = Some(prepared.into_cpu_buffer());
-            return Err(SubmitError::new(id, BlkError::Offline, request));
-        };
-        storage.prepare(op, request.lba);
-        let ptr = prepared.cpu_ptr();
-        let len = prepared.len().get();
-        let Some(queue) = self.queue.as_mut() else {
-            request.data = Some(prepared.into_cpu_buffer());
-            return Err(SubmitError::new(id, BlkError::Retry, request));
-        };
-        let token = match op {
-            InflightOp::Read => {
-                // SAFETY: `prepared` exclusively owns this stable allocation.
-                // The exact pointer and length are retained in `InFlightDma`
-                // until IRQ continuation consumes the matching descriptor.
-                let buffer = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), len) };
-                unsafe {
-                    submit_read(
-                        &mut self.transport,
-                        queue,
-                        &storage.req,
-                        buffer,
-                        &mut storage.resp,
-                    )
-                }
-            }
-            InflightOp::Write => {
-                // SAFETY: The same prepared allocation remains exclusively
-                // device-owned until the matching used descriptor is consumed.
-                let buffer = unsafe { core::slice::from_raw_parts(ptr.as_ptr().cast_const(), len) };
-                unsafe {
-                    submit_write(
-                        &mut self.transport,
-                        queue,
-                        &storage.req,
-                        buffer,
-                        &mut storage.resp,
-                    )
-                }
-            }
-        };
-        let token = match token {
-            Ok(token) => token,
-            Err(error) => {
-                request.data = Some(prepared.into_cpu_buffer());
-                return Err(SubmitError::new(
-                    id,
-                    map_virtio_err_to_blk_err(error),
-                    request,
-                ));
-            }
-        };
-
-        // SAFETY: the non-blocking VirtIO submission above accepted `token`
-        // while the same task-side exclusion still prevents the IRQ path from
-        // observing the descriptor. IRQ-event service or recovery returns
-        // ownership only after the matching descriptor/device is quiesced.
-        let dma = unsafe { prepared.into_in_flight() };
-        self.inflight = Some(InflightRequest {
-            id,
-            token,
-            op,
-            request,
-            dma,
-        });
-        Ok(SubmitOutcome::Queued)
-    }
-
-    fn service_used(
-        &mut self,
-        events: &QueueEventBatch<'_>,
-        sink: &mut dyn CompletionSink,
-    ) -> Result<ServiceProgress, BlkError> {
-        for _ in 0..VIRTIO_BLK_SERVICE_BUDGET {
-            let Some(inflight) = self.inflight.as_ref() else {
-                return Ok(ServiceProgress::Idle);
-            };
-            let Some(used_token) = self.peek_used() else {
-                return Ok(ServiceProgress::Idle);
-            };
-            if used_token != inflight.token {
-                return Err(BlkError::Io);
-            }
-            let queue = self.queue.as_mut().ok_or(BlkError::Offline)?;
-            let storage = self
-                .descriptor_storage
-                .as_deref_mut()
-                .ok_or(BlkError::Offline)?;
-            let inflight = take_inflight_after_used_descriptor(&mut self.inflight, |inflight| {
-                pop_used_descriptor(queue, storage, inflight)
-            })?;
-            let result = virtio_response_result(storage.resp[0])
-                .map_err(map_virtio_completion_err_to_blk_err);
-            sink.complete(complete_consumed_inflight(inflight, result));
-        }
-        Ok(events.requeue_service(ServiceRerunReason::CompletionBudget))
-    }
-
-    fn peek_used(&self) -> Option<u16> {
-        self.queue
-            .as_ref()
-            .and_then(virtio_drivers::queue::VirtQueue::peek_used)
-    }
-
-    fn reclaim_after_quiesce(
-        &mut self,
-        proof: &rdif_block::DmaQuiesced,
-        sink: &mut dyn CompletionSink,
-    ) {
-        if let Some(quarantine) = self.dma_quarantine.take() {
-            quarantine.release_after_quiesce(proof, sink);
-            return;
-        }
-        let Some(mut inflight) = self.inflight.take() else {
-            return;
-        };
-        // SAFETY: the caller can invoke this method only while holding the
-        // controller-bound `DmaQuiesced` proof. Therefore the accepted
-        // descriptor can no longer access this exact DMA buffer.
-        let completed = unsafe { inflight.dma.complete_after_quiesce() };
-        inflight.request.data = Some(completed.into_cpu_buffer());
-        sink.complete(CompletedRequest::new(
-            inflight.id,
-            Err(BlkError::Cancelled),
-            inflight.request,
-        ));
-    }
-
-    fn shutdown(&mut self) -> Result<(), BlkError> {
-        if self.inflight.is_some() {
-            return Err(BlkError::Busy);
-        }
-        Ok(())
-    }
-}
-
-unsafe fn submit_read<T: VirtIoTransport>(
-    transport: &mut T,
-    queue: &mut virtio_drivers::queue::VirtQueue<
-        crate::virtio::VirtIoHalImpl,
-        VIRTIO_BLK_QUEUE_SIZE,
-    >,
+unsafe fn add_read_descriptor(
+    queue: &mut VirtQueue<crate::virtio::VirtIoHalImpl, VIRTIO_BLK_QUEUE_SIZE>,
     request: &[u8; 16],
     data: &mut [u8],
     response: &mut [u8; 1],
 ) -> Result<u16, VirtIoError> {
-    let token = unsafe {
+    unsafe {
         // SAFETY: the caller retains all three buffers in stable in-flight
-        // storage until IRQ continuation consumes this exact descriptor.
-        queue.add(&[request], &mut [data, response])?
-    };
-    if queue.should_notify() {
-        transport.notify(VIRTIO_BLK_QUEUE_ID as u16);
+        // storage until matching IRQ evidence consumes the descriptor.
+        queue.add(&[request], &mut [data, response])
     }
-    Ok(token)
 }
 
-unsafe fn submit_write<T: VirtIoTransport>(
-    transport: &mut T,
-    queue: &mut virtio_drivers::queue::VirtQueue<
-        crate::virtio::VirtIoHalImpl,
-        VIRTIO_BLK_QUEUE_SIZE,
-    >,
+unsafe fn add_write_descriptor(
+    queue: &mut VirtQueue<crate::virtio::VirtIoHalImpl, VIRTIO_BLK_QUEUE_SIZE>,
     request: &[u8; 16],
     data: &[u8],
     response: &mut [u8; 1],
 ) -> Result<u16, VirtIoError> {
-    let token = unsafe {
+    unsafe {
         // SAFETY: the caller retains all three buffers in stable in-flight
-        // storage until IRQ continuation consumes this exact descriptor.
-        queue.add(&[request, data], &mut [response])?
-    };
-    if queue.should_notify() {
-        transport.notify(VIRTIO_BLK_QUEUE_ID as u16);
+        // storage until matching IRQ evidence consumes the descriptor.
+        queue.add(&[request, data], &mut [response])
     }
-    Ok(token)
 }
 
 pub(super) fn take_inflight_after_used_descriptor(
@@ -509,6 +257,7 @@ impl VirtioDmaQuarantine {
         }
     }
 
+    #[cfg(test)]
     fn release_after_quiesce(
         mut self,
         _proof: &rdif_block::DmaQuiesced,

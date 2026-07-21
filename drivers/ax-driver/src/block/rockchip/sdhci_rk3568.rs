@@ -23,11 +23,11 @@ use sdhci_host::{HostClock, HostResetHook, ResetHookRecoveryMode, Sdhci, rdif as
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
-    rdif::StagedBlockDevice,
+    rdif::v13::SdmmcControllerActivator,
     sdio::{CardInitPreference, OwnedSdioInit, SdioSdmmc},
 };
 
-use crate::{block::ProbeFdtBlock, mmio::iomap};
+use crate::{block::ProbeFdtBlockActivation, mmio::iomap};
 
 // RK3568 DWCMSHC uses the same SDHCI completion interrupt path as RK3588:
 // the hard IRQ exclusively acknowledges controller status, then bounded
@@ -150,14 +150,20 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     host.set_dma(dma.clone());
 
-    let card = SdioSdmmc::new_host2_timed(host);
-    let staged = StagedBlockDevice::new(
+    let card = SdioSdmmc::new_host2_timed_evidence(host);
+    let activator = SdmmcControllerActivator::new(
         OwnedSdioInit::new(card, CardInitPreference::MmcFirst),
         sdhci_rdif::dma_config("rockchip-rk3568-sdhci", 0, dma),
-        sdhci_rdif::device,
-    );
-    let irq = probe.register_block(staged)?;
-    info!("rockchip-rk3568-sdhci controller staged irq={irq:?}");
+    )
+    .map_err(|error| {
+        OnProbeError::other(alloc::format!(
+            "failed to prepare rockchip-rk3568-sdhci activation owner: {error}"
+        ))
+    })?;
+    let slot = probe
+        .register_block_activator(activator)?
+        .ok_or_else(|| OnProbeError::other("failed to register RK3568 SDHCI activation owner"))?;
+    info!("rockchip-rk3568-sdhci activation owner registered slot={slot}");
     Ok(())
 }
 

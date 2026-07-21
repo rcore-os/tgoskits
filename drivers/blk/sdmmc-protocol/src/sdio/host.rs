@@ -57,15 +57,41 @@ pub enum HostEventSource {
 /// higher-level portable driver may therefore translate it into its own event
 /// type directly in the hard-IRQ capture path without calling OS glue.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct HostEventSummary {
+pub struct HostIrqSnapshot {
     /// Complete host-specific status retained for bounded owner-side service
     /// and diagnostics.
     pub stable_status: u32,
+    /// Host-specific DMA-engine status acknowledged by the same IRQ capture.
+    /// Hosts without a distinct DMA status register leave this zero.
+    pub dma_status: u32,
     /// A command, data, or error fact can advance the serialized host queue.
     pub queue_service: bool,
     /// An SDIO function asserted the card interrupt source.
     pub card_function_interrupt: bool,
 }
+
+impl HostIrqSnapshot {
+    /// Merges coalesced snapshots from one serialized controller source.
+    pub const fn merge(self, other: Self) -> Self {
+        Self {
+            stable_status: self.stable_status | other.stable_status,
+            dma_status: self.dma_status | other.dma_status,
+            queue_service: self.queue_service || other.queue_service,
+            card_function_interrupt: self.card_function_interrupt || other.card_function_interrupt,
+        }
+    }
+
+    /// Whether this snapshot contains no acknowledged hardware fact.
+    pub const fn is_empty(self) -> bool {
+        self.stable_status == 0
+            && self.dma_status == 0
+            && !self.queue_service
+            && !self.card_function_interrupt
+    }
+}
+
+/// Compatibility name for callers that only classify an event.
+pub type HostEventSummary = HostIrqSnapshot;
 
 /// Stable event summary extracted by a host controller IRQ handler.
 pub trait HostEvent {
@@ -98,6 +124,7 @@ pub trait HostEvent {
     fn stable_summary(&self) -> HostEventSummary {
         HostEventSummary {
             stable_status: 0,
+            dma_status: 0,
             queue_service: self.requests_block_queue_service(),
             card_function_interrupt: false,
         }
@@ -196,6 +223,18 @@ pub trait SdioIrqHost: SdioHost {
     /// Transfers the controller's unique IRQ source exactly once per active
     /// source generation.
     fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>>;
+
+    /// Transfers a source whose endpoint publishes facts only through the
+    /// caller-owned evidence ledger.
+    ///
+    /// Legacy hosts may return their normal source while they are being
+    /// migrated. A v0.13 activation must use a host implementation that
+    /// overrides this method and disables its legacy task-side IRQ mailbox.
+    fn take_evidence_irq_source(
+        &mut self,
+    ) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        self.take_irq_source()
+    }
 }
 
 /// Queue identifier used by SD/MMC block adapters.
@@ -237,6 +276,18 @@ pub trait SdioHost {
     /// status here. A missing completion IRQ is handled by the caller's
     /// watchdog and controller recovery, not by status polling.
     fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error>;
+
+    /// Advances a command using exactly one snapshot claimed from the driver
+    /// evidence ledger.
+    ///
+    /// Implementations must not consult a destructive register or a second
+    /// IRQ mailbox while servicing this call.
+    fn poll_command_response_with_snapshot(
+        &mut self,
+        _snapshot: HostIrqSnapshot,
+    ) -> Result<CommandResponsePoll, Error> {
+        Err(Error::UnsupportedCommand)
+    }
 
     /// Advance a command using the caller's absolute monotonic time.
     ///
@@ -283,6 +334,16 @@ pub trait SdioHost {
         &mut self,
         request: &mut Self::DataRequest<'a>,
     ) -> Result<DataCommandPoll, Error>;
+
+    /// Advances a data request using exactly one snapshot claimed from the
+    /// driver evidence ledger.
+    fn poll_data_request_with_snapshot<'a>(
+        &mut self,
+        _request: &mut Self::DataRequest<'a>,
+        _snapshot: HostIrqSnapshot,
+    ) -> Result<DataCommandPoll, Error> {
+        Err(Error::UnsupportedCommand)
+    }
 
     /// Advance a data command using the caller's absolute monotonic time.
     fn poll_data_request_at<'a>(

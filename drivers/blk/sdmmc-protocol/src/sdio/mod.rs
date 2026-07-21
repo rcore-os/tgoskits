@@ -19,12 +19,13 @@ pub use card::{
 };
 pub use host::{
     BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, HostEventSummary,
-    ReadyBusRequest, SDMMC_BLOCK_QUEUE_ID, SdioBusOp, SdioHost, SdioIrqControlError, SdioIrqHost,
-    SdioIrqSource, SignalVoltage, block_queue_ready_from_host_event, poll_ready_bus_op,
-    submit_ready_bus_op,
+    HostIrqSnapshot, ReadyBusRequest, SDMMC_BLOCK_QUEUE_ID, SdioBusOp, SdioHost,
+    SdioIrqControlError, SdioIrqHost, SdioIrqSource, SignalVoltage,
+    block_queue_ready_from_host_event, poll_ready_bus_op, submit_ready_bus_op,
 };
 pub use host2::{
-    SdioHost2Adapter, SdioHost2BusRequest, SdioHost2DataRequest, SdioHost2Irq, SdioHost2Timed,
+    SdioHost2Adapter, SdioHost2BusRequest, SdioHost2DataRequest, SdioHost2Evidence, SdioHost2Irq,
+    SdioHost2Timed,
 };
 #[cfg(feature = "rdif")]
 pub use host2::{SdioHost2Lifecycle, SdioHost2Recovery};

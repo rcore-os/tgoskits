@@ -34,9 +34,17 @@ The public lifecycle has four strict boundaries:
    engine is quarantined fail-closed.
 
 Each port uses one fixed-capacity IRQ snapshot ring (64 entries) and admits one
-active command. Runtime integration should retain one HBA controller domain for
-shared IRQ and lifecycle ownership, publish each `AhciPortDevice` as a distinct
-logical block device, and map its serialized queue to a coalescing work item on
-a shared worker pool. The current one-device `rdif_block::Interface` cannot by
-itself represent this controller-to-many-devices relationship; an adapter must
-not implement it for `AhciHost` or combine the port queues into one device.
+active command. The rdif-block v0.13 activation path publishes exactly one
+controller/shared-IRQ ownership domain containing every implemented physical
+port. Identified disks use an exact logical-device selector; implemented but
+empty ports remain explicit `Unrouted` queues so sparse PI topology does not
+change after activation.
+
+The consuming runtime must move that domain into one CPU-pinned maintenance
+session. Only its owner thread may initialize the controller, submit commands,
+consume evidence, recover, or quiesce DMA. The hard-IRQ endpoint acknowledges
+stable controller/port facts into a fixed evidence ledger and returns one opaque
+`IrqEvidenceId`; it never services queues or chooses OS retry policy. Repeated
+captures coalesce under the same linear identity until every affected port is
+drained. A retained identity cannot yield a rearm permit, and stale evidence or
+mask generations fail closed.

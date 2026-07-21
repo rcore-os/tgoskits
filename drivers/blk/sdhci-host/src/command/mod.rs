@@ -12,6 +12,7 @@ use sdmmc_protocol::{
     cmd::Command,
     error::{Error, ErrorContext, Phase},
     response::{IfCondResponse, OcrResponse, R1Response, RcaResponse, Response, ResponseType},
+    sdio::HostIrqSnapshot,
 };
 
 use crate::{
@@ -272,8 +273,25 @@ impl Sdhci {
     }
 
     fn take_irq_snapshot(&mut self, normal_mask: u16) -> IrqSnapshot {
-        self.collect_irq_snapshot();
+        if !self.evidence_irq {
+            self.collect_irq_snapshot();
+        }
         self.pending_irq.take(normal_mask)
+    }
+
+    pub(crate) fn install_evidence_snapshot(
+        &mut self,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<(), Error> {
+        if !self.evidence_irq || snapshot.dma_status != 0 {
+            return Err(Error::InvalidArgument);
+        }
+        self.pending_irq.merge(IrqSnapshot {
+            generation: self.irq.state.generation(),
+            normal: snapshot.stable_status as u16,
+            error: (snapshot.stable_status >> 16) as u16,
+        });
+        Ok(())
     }
 
     fn collect_irq_snapshot(&mut self) {

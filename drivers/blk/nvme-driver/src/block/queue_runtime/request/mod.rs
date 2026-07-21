@@ -1,6 +1,7 @@
 //! Accepted-request ownership, CID slots, and terminal completion.
 
 use alloc::vec::Vec;
+use core::num::NonZeroU16;
 
 use dma_api::{CoherentArray, InFlightDma, PreparedDma};
 use log::warn;
@@ -19,12 +20,30 @@ pub(super) struct NvmeQueueState {
     slots: Vec<RequestSlot>,
     free_cids: Vec<usize>,
     free_prp_lists: Vec<CoherentArray<u64>>,
+    cid_epoch: u64,
 }
 
 pub(in crate::block) struct RequestSlot {
     pub(in crate::block) state: SlotState,
+    active_identity: Option<CommandIdentity>,
+    cid_generation: u16,
     accepted: Option<AcceptedRequest>,
     prp_list: Option<CoherentArray<u64>>,
+}
+
+/// Hardware-visible command identity within one DMA-quiesced queue epoch.
+///
+/// The low bits select the bounded request slot. The remaining bits carry a
+/// generation fragment, so a late CQE cannot claim a request that reused the
+/// same slot. Generation wrap is forbidden until the queue has completed a
+/// proof-gated epoch transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::block) struct CommandIdentity(NonZeroU16);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CidAllocationError {
+    NoFreeSlot,
+    GenerationExhausted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +63,8 @@ impl NvmeQueueState {
         let mut slots = Vec::with_capacity(depth + 1);
         slots.resize_with(depth + 1, || RequestSlot {
             state: SlotState::Free,
+            active_identity: None,
+            cid_generation: 0,
             accepted: None,
             prp_list: None,
         });
@@ -51,6 +72,7 @@ impl NvmeQueueState {
             slots,
             free_cids: (1..=depth).rev().collect(),
             free_prp_lists: prp_lists,
+            cid_epoch: 1,
         }
     }
 
@@ -58,15 +80,37 @@ impl NvmeQueueState {
         self.slots.iter().any(|slot| slot.accepted.is_some())
     }
 
-    pub(super) fn alloc_cid(&mut self) -> Result<usize, BlkError> {
-        self.free_cids.pop().ok_or(BlkError::Retry)
+    pub(super) fn alloc_identity(&mut self) -> Result<CommandIdentity, CidAllocationError> {
+        if self.free_cids.is_empty() {
+            return Err(CidAllocationError::NoFreeSlot);
+        }
+        let Some(free_index) = self
+            .free_cids
+            .iter()
+            .rposition(|slot| self.slots[*slot].cid_generation < CommandIdentity::MAX_GENERATION)
+        else {
+            return Err(CidAllocationError::GenerationExhausted);
+        };
+        let slot = self.free_cids[free_index];
+        let Some(generation) = self.slots[slot].cid_generation.checked_add(1) else {
+            return Err(CidAllocationError::GenerationExhausted);
+        };
+        let Some(identity) = CommandIdentity::new(slot, generation) else {
+            return Err(CidAllocationError::GenerationExhausted);
+        };
+        self.free_cids.swap_remove(free_index);
+        self.slots[slot].cid_generation = generation;
+        Ok(identity)
     }
 
-    pub(super) fn release_cid(&mut self, cid: usize) {
+    pub(super) fn release_unaccepted(&mut self, identity: CommandIdentity) {
+        let cid = identity.slot();
         let Some(slot) = self.slots.get_mut(cid) else {
             return;
         };
         debug_assert!(slot.accepted.is_none());
+        debug_assert_eq!(slot.cid_generation, identity.generation());
+        debug_assert!(slot.active_identity.is_none());
         if let Some(prp_list) = slot.prp_list.take() {
             self.free_prp_lists.push(prp_list);
         }
@@ -76,14 +120,17 @@ impl NvmeQueueState {
 
     pub(super) fn accept(
         &mut self,
-        cid: usize,
+        identity: CommandIdentity,
         request: AcceptedRequest,
         prp_list: Option<CoherentArray<u64>>,
     ) {
+        let cid = identity.slot();
         let slot = &mut self.slots[cid];
         debug_assert_eq!(slot.state, SlotState::Free);
         debug_assert!(slot.accepted.is_none());
+        debug_assert_eq!(slot.cid_generation, identity.generation());
         slot.state = SlotState::Pending;
+        slot.active_identity = Some(identity);
         slot.accepted = Some(request);
         slot.prp_list = prp_list;
     }
@@ -92,11 +139,11 @@ impl NvmeQueueState {
         &mut self,
         namespace: Namespace,
         page_size: usize,
-        cid: usize,
+        identity: CommandIdentity,
         request: &OwnedRequest,
         dma: Option<&PreparedDma>,
     ) -> Result<(CommandSet, Option<CoherentArray<u64>>), BlkError> {
-        let cid = u16::try_from(cid).map_err(|_| BlkError::InvalidRequest)?;
+        let cid = identity.raw();
         match request.op {
             RequestOp::Read | RequestOp::Write => {
                 let dma = dma.ok_or(BlkError::InvalidRequest)?;
@@ -118,7 +165,9 @@ impl NvmeQueueState {
                         request.block_count,
                         cid,
                     ),
-                    _ => unreachable!(),
+                    RequestOp::Flush | RequestOp::Discard | RequestOp::WriteZeroes => {
+                        return Err(BlkError::InvalidRequest);
+                    }
                 };
                 Ok((command, prp.prp_list))
             }
@@ -135,7 +184,7 @@ impl NvmeQueueState {
         sink: &mut dyn CompletionSink,
     ) -> Result<usize, BlkError> {
         let ready = cache.ready_snapshot();
-        self.validate_ready_completions(ready)?;
+        self.validate_ready_completions(cache, ready)?;
 
         let mut emitted = 0;
         for cid in 1..self.slots.len() {
@@ -145,7 +194,7 @@ impl NvmeQueueState {
             if !ready.contains(cid) {
                 continue;
             }
-            let Some(status) = cache.take(cid) else {
+            let Some(completion) = cache.take(cid) else {
                 continue;
             };
             let slot = &mut self.slots[cid];
@@ -153,12 +202,15 @@ impl NvmeQueueState {
                 return Err(BlkError::Io);
             }
             let accepted = slot.accepted.take().ok_or(BlkError::Io)?;
-            let result = if status.success {
+            let result = if completion.status.success {
                 Ok(())
             } else {
                 warn!(
-                    "nvme queue {} command {} failed: status={:#x}, result={:#x}",
-                    queue_id, cid, status.raw_status, status.result
+                    "nvme queue {} command {:#x} failed: status={:#x}, result={:#x}",
+                    queue_id,
+                    completion.identity.raw(),
+                    completion.status.raw_status,
+                    completion.status.result
                 );
                 Err(BlkError::Io)
             };
@@ -166,6 +218,7 @@ impl NvmeQueueState {
                 self.free_prp_lists.push(prp_list);
             }
             slot.state = SlotState::Free;
+            slot.active_identity = None;
             self.free_cids.push(cid);
             // SAFETY: the matching CQ entry was consumed above, so the NVMe
             // controller has relinquished this command's DMA backing.
@@ -176,7 +229,11 @@ impl NvmeQueueState {
         Ok(emitted)
     }
 
-    fn validate_ready_completions(&self, ready: ReadyCompletionSnapshot) -> Result<(), BlkError> {
+    fn validate_ready_completions(
+        &self,
+        cache: &CompletionCache,
+        ready: ReadyCompletionSnapshot,
+    ) -> Result<(), BlkError> {
         for cid in 1..=ReadyCompletionSnapshot::MAX_CID {
             if !ready.contains(cid) {
                 continue;
@@ -185,6 +242,12 @@ impl NvmeQueueState {
                 return Err(BlkError::Io);
             };
             if slot.state != SlotState::Pending || slot.accepted.is_none() {
+                return Err(BlkError::Io);
+            }
+            let Some(completion) = cache.get(cid) else {
+                return Err(BlkError::Io);
+            };
+            if slot.active_identity != Some(completion.identity) {
                 return Err(BlkError::Io);
             }
         }
@@ -201,11 +264,89 @@ impl NvmeQueueState {
                 self.free_prp_lists.push(prp_list);
             }
             slot.state = SlotState::Free;
+            slot.active_identity = None;
             self.free_cids.push(cid);
             // SAFETY: proof-gated reclaim requires IRQ synchronization and DMA
             // quiescence before entering this path.
             let completion = unsafe { accepted.complete_after_quiesce(Err(BlkError::Cancelled)) };
             sink.complete(completion);
+        }
+    }
+
+    /// Begins a fresh hardware-CID namespace after the controller, CQ, IRQ
+    /// action, and DMA engine have all been proved quiescent.
+    pub(super) fn advance_cid_epoch_after_quiesce(&mut self) -> bool {
+        let Some(next_epoch) = self.cid_epoch.checked_add(1) else {
+            return false;
+        };
+        debug_assert!(!self.has_accepted());
+        self.cid_epoch = next_epoch;
+        self.free_cids.clear();
+        for cid in (1..self.slots.len()).rev() {
+            let slot = &mut self.slots[cid];
+            debug_assert!(slot.prp_list.is_none());
+            slot.state = SlotState::Free;
+            slot.active_identity = None;
+            slot.cid_generation = 0;
+            self.free_cids.push(cid);
+        }
+        true
+    }
+}
+
+impl CommandIdentity {
+    const SLOT_BITS: u32 = 7;
+    const SLOT_MASK: u16 = (1_u16 << Self::SLOT_BITS) - 1;
+    const MAX_SLOT: usize = ReadyCompletionSnapshot::MAX_CID;
+    pub(in crate::block) const MAX_GENERATION: u16 = (1_u16 << (u16::BITS - Self::SLOT_BITS)) - 1;
+
+    pub(in crate::block) const fn new(slot: usize, generation: u16) -> Option<Self> {
+        if slot == 0
+            || slot > Self::MAX_SLOT
+            || generation == 0
+            || generation > Self::MAX_GENERATION
+        {
+            return None;
+        }
+        let raw = (generation << Self::SLOT_BITS) | slot as u16;
+        match NonZeroU16::new(raw) {
+            Some(raw) => Some(Self(raw)),
+            None => None,
+        }
+    }
+
+    pub(in crate::block) fn from_raw(raw: u16) -> Option<Self> {
+        let generation = raw >> Self::SLOT_BITS;
+        let slot = usize::from(raw & Self::SLOT_MASK);
+        Self::new(slot, generation)
+    }
+
+    pub(in crate::block) const fn raw(self) -> u16 {
+        self.0.get()
+    }
+
+    pub(in crate::block) const fn slot(self) -> usize {
+        (self.raw() & Self::SLOT_MASK) as usize
+    }
+
+    pub(in crate::block) const fn generation(self) -> u16 {
+        self.raw() >> Self::SLOT_BITS
+    }
+
+    #[cfg(test)]
+    pub(in crate::block) const fn new_for_test(slot: usize, generation: u16) -> Self {
+        match Self::new(slot, generation) {
+            Some(identity) => identity,
+            None => panic!("invalid test command identity"),
+        }
+    }
+}
+
+impl CidAllocationError {
+    pub(super) const fn into_block_error(self) -> BlkError {
+        match self {
+            Self::NoFreeSlot => BlkError::Retry,
+            Self::GenerationExhausted => BlkError::QueueEpochExhausted,
         }
     }
 }
@@ -236,146 +377,4 @@ impl AcceptedRequest {
 }
 
 #[cfg(test)]
-impl RequestSlot {
-    pub(in crate::block) fn pending_for_test(id: RequestId) -> Self {
-        Self {
-            state: SlotState::Pending,
-            accepted: Some(AcceptedRequest {
-                id,
-                request: OwnedRequest {
-                    op: RequestOp::Flush,
-                    lba: 0,
-                    block_count: 0,
-                    data: None,
-                    flags: RequestFlags::NONE,
-                },
-                dma: None,
-            }),
-            prp_list: None,
-        }
-    }
-
-    pub(in crate::block) fn runtime_id(&self) -> Option<RequestId> {
-        self.accepted.as_ref().map(|request| request.id)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use alloc::vec::Vec;
-
-    use rdif_block::{CompletedRequest, CompletionSink};
-
-    use super::*;
-    use crate::block::{CachedCompletion, CompletionStatus};
-
-    #[derive(Default)]
-    struct CountingSink {
-        completions: Vec<CompletedRequest>,
-    }
-
-    impl CompletionSink for CountingSink {
-        fn complete(&mut self, completion: CompletedRequest) {
-            self.completions.push(completion);
-        }
-    }
-
-    #[test]
-    fn irq_completion_then_recovery_reclaim_emits_one_terminal_result() {
-        let runtime_id = RequestId::new(0x55aa);
-        let mut state = NvmeQueueState::new(1, Vec::new());
-        let cid = state.alloc_cid().expect("one CID must be available");
-        state.accept(cid, accepted_flush(runtime_id), None);
-        let mut cache = CompletionCache::new(2);
-        assert!(cache.record(CachedCompletion {
-            cid,
-            status: CompletionStatus {
-                success: true,
-                raw_status: 0,
-                result: 0,
-            },
-        }));
-        let mut sink = CountingSink::default();
-
-        assert_eq!(
-            state
-                .emit_cached_completions(0, &mut cache, 64, &mut sink)
-                .expect("valid CQE must complete its accepted request"),
-            1
-        );
-        state.cancel_all(&mut sink);
-
-        assert_eq!(sink.completions.len(), 1);
-        assert_eq!(sink.completions[0].id, runtime_id);
-        assert_eq!(sink.completions[0].result, Ok(()));
-        assert!(!state.has_accepted());
-    }
-
-    #[test]
-    fn repeated_quiesced_reclaim_cancels_each_accepted_request_once() {
-        let runtime_id = RequestId::new(7);
-        let mut state = NvmeQueueState::new(1, Vec::new());
-        let cid = state.alloc_cid().expect("one CID must be available");
-        state.accept(cid, accepted_flush(runtime_id), None);
-        let mut sink = CountingSink::default();
-
-        state.cancel_all(&mut sink);
-        state.cancel_all(&mut sink);
-
-        assert_eq!(sink.completions.len(), 1);
-        assert_eq!(sink.completions[0].id, runtime_id);
-        assert_eq!(sink.completions[0].result, Err(BlkError::Cancelled));
-        assert!(!state.has_accepted());
-    }
-
-    #[test]
-    fn invalid_cached_cid_prevents_all_terminal_publication_in_the_batch() {
-        let runtime_id = RequestId::new(9);
-        let mut state = NvmeQueueState::new(2, Vec::new());
-        let cid = state.alloc_cid().expect("one CID must be available");
-        assert_eq!(cid, 1);
-        state.accept(cid, accepted_flush(runtime_id), None);
-        let mut cache = CompletionCache::new(3);
-        assert!(cache.record(CachedCompletion {
-            cid,
-            status: CompletionStatus {
-                success: true,
-                raw_status: 0,
-                result: 0,
-            },
-        }));
-        assert!(cache.record(CachedCompletion {
-            cid: 2,
-            status: CompletionStatus {
-                success: false,
-                raw_status: 0xdead,
-                result: 0,
-            },
-        }));
-        let mut sink = CountingSink::default();
-
-        assert_eq!(
-            state.emit_cached_completions(0, &mut cache, 64, &mut sink),
-            Err(BlkError::Io)
-        );
-        assert!(
-            sink.completions.is_empty(),
-            "queue corruption must be diagnosed before any completion callback"
-        );
-        assert!(state.has_accepted());
-    }
-
-    fn accepted_flush(id: RequestId) -> AcceptedRequest {
-        AcceptedRequest {
-            id,
-            request: OwnedRequest {
-                op: RequestOp::Flush,
-                lba: 0,
-                block_count: 0,
-                data: None,
-                flags: RequestFlags::NONE,
-            },
-            dma: None,
-        }
-    }
-}
+mod tests;

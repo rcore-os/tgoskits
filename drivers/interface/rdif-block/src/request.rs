@@ -2,7 +2,7 @@ use core::fmt;
 
 use dma_api::{CpuDmaBuffer, DmaDirection};
 
-use crate::{BlkError, DeviceInfo, QueueInfo, QueueLimits};
+use crate::{BlkError, DeviceInfo, HardwareQueueLimits, QueueInfo, QueueLimits};
 
 /// Identity carried by one queue request.
 ///
@@ -174,11 +174,17 @@ pub struct SubmitError {
     id: RequestId,
     error: BlkError,
     request: OwnedRequest,
+    hardware_not_visible: HardwareNotVisible,
 }
 
 impl SubmitError {
     pub fn new(id: RequestId, error: BlkError, request: OwnedRequest) -> Self {
-        Self { id, error, request }
+        Self {
+            id,
+            error,
+            request,
+            hardware_not_visible: HardwareNotVisible::driver_rejected(),
+        }
     }
 
     pub const fn id(&self) -> RequestId {
@@ -196,6 +202,143 @@ impl SubmitError {
     pub fn into_parts(self) -> (RequestId, BlkError, OwnedRequest) {
         (self.id, self.error, self.request)
     }
+
+    /// Converts the legacy submit error into the v0.13 linear rejection type.
+    pub fn into_unaccepted(self) -> UnacceptedRequest {
+        UnacceptedRequest {
+            id: self.id,
+            error: self.error,
+            request: self.request,
+            hardware_not_visible: self.hardware_not_visible,
+        }
+    }
+
+    /// Returns ownership together with proof that hardware never observed it.
+    pub fn into_not_visible_parts(self) -> (RequestId, BlkError, OwnedRequest, HardwareNotVisible) {
+        (self.id, self.error, self.request, self.hardware_not_visible)
+    }
+}
+
+/// Linear proof that a rejected request was never made visible to hardware.
+///
+/// The proof is not `Copy` or `Clone`. A runtime may use it exactly once to
+/// return a request to staging and release its hardware credit. Drivers mint
+/// it only through [`SubmitError::new`] or [`UnacceptedRequest::new`], and only
+/// before publishing a descriptor or ringing a doorbell.
+///
+/// ```compile_fail
+/// use rdif_block::HardwareNotVisible;
+///
+/// fn consume(_proof: HardwareNotVisible) {}
+///
+/// fn reuse(proof: HardwareNotVisible) {
+///     consume(proof);
+///     consume(proof);
+/// }
+/// ```
+#[derive(Debug, Eq, PartialEq)]
+#[must_use = "hardware credit may be rolled back only with this proof"]
+pub struct HardwareNotVisible(());
+
+impl HardwareNotVisible {
+    const fn driver_rejected() -> Self {
+        Self(())
+    }
+}
+
+/// A request rejected before any descriptor or doorbell became visible.
+///
+/// This is the only error surface of [`InterruptSubmitQueue`]. The complete
+/// request and its linear [`HardwareNotVisible`] proof remain owned by the
+/// caller, so the runtime can roll back its published request state without
+/// guessing whether DMA may already be active.
+#[derive(Debug, thiserror::Error)]
+#[error("block request was not accepted: {error}")]
+pub struct UnacceptedRequest {
+    id: RequestId,
+    error: BlkError,
+    request: OwnedRequest,
+    hardware_not_visible: HardwareNotVisible,
+}
+
+impl UnacceptedRequest {
+    /// Records a driver rejection that occurred before hardware visibility.
+    ///
+    /// Once a descriptor or doorbell may be visible, the driver must return
+    /// [`AcceptedRequest`] and report every later error through IRQ evidence
+    /// or controller recovery instead of constructing this value.
+    pub fn new(id: RequestId, error: BlkError, request: OwnedRequest) -> Self {
+        Self {
+            id,
+            error,
+            request,
+            hardware_not_visible: HardwareNotVisible::driver_rejected(),
+        }
+    }
+
+    pub const fn id(&self) -> RequestId {
+        self.id
+    }
+
+    pub const fn error(&self) -> BlkError {
+        self.error
+    }
+
+    pub const fn request(&self) -> &OwnedRequest {
+        &self.request
+    }
+
+    pub fn into_parts(self) -> (RequestId, BlkError, OwnedRequest, HardwareNotVisible) {
+        (self.id, self.error, self.request, self.hardware_not_visible)
+    }
+}
+
+impl From<SubmitError> for UnacceptedRequest {
+    fn from(error: SubmitError) -> Self {
+        error.into_unaccepted()
+    }
+}
+
+/// Proof that an interrupt-backed queue accepted one published request.
+///
+/// The request itself remains owned by the queue until IRQ evidence or a
+/// DMA-quiesced recovery path returns one terminal [`CompletedRequest`].
+#[derive(Debug, Eq, PartialEq)]
+#[must_use = "accepted requests require one terminal completion"]
+pub struct AcceptedRequest {
+    id: RequestId,
+}
+
+impl AcceptedRequest {
+    /// Records that `id` is now hardware-visible and owned by the queue.
+    pub const fn new(id: RequestId) -> Self {
+        Self { id }
+    }
+
+    pub const fn id(&self) -> RequestId {
+        self.id
+    }
+}
+
+/// Submission-only surface for an interrupt-backed hardware queue or domain.
+///
+/// Synchronous completion is intentionally unrepresentable. Before hardware
+/// visibility the full request is returned in [`UnacceptedRequest`]; after
+/// visibility only [`AcceptedRequest`] can be returned.
+pub trait InterruptSubmitQueue {
+    fn submit_owned(
+        &mut self,
+        id: RequestId,
+        request: OwnedRequest,
+    ) -> Result<AcceptedRequest, UnacceptedRequest>;
+}
+
+/// Call-stack-only execution surface for a pure software block queue.
+///
+/// Inline queues never allocate a tag, register an IRQ, or retain the request
+/// beyond this call. I/O failure is carried in [`CompletedRequest::result`].
+pub trait InlineExecuteQueue: Send + 'static {
+    fn execute_owned(&mut self, request: OwnedRequest) -> CompletedRequest;
 }
 
 /// One terminal result with complete request ownership returned to the runtime.
@@ -226,13 +369,84 @@ pub enum SubmitOutcome {
 }
 
 pub fn validate_owned_request(info: QueueInfo, request: &OwnedRequest) -> Result<(), BlkError> {
-    validate_request_flags(info, request.flags)?;
-    validate_owned_request_shape(info.device, info.limits, request)
+    validate_request_flags(RequestValidationLimits::from(info.limits), request.flags)?;
+    validate_owned_request_with_limits(
+        info.device,
+        RequestValidationLimits::from(info.limits),
+        request,
+    )
 }
 
 pub fn validate_owned_request_shape(
     info: DeviceInfo,
     limits: QueueLimits,
+    request: &OwnedRequest,
+) -> Result<(), BlkError> {
+    validate_owned_request_with_limits(info, RequestValidationLimits::from(limits), request)
+}
+
+/// Validates a v0.13 request without reconstructing the legacy queue ABI.
+pub fn validate_owned_request_v13(
+    info: DeviceInfo,
+    limits: HardwareQueueLimits,
+    request: &OwnedRequest,
+) -> Result<(), BlkError> {
+    let limits = RequestValidationLimits::from(limits);
+    validate_request_flags(limits, request.flags)?;
+    validate_owned_request_with_limits(info, limits, request)
+}
+
+#[derive(Clone, Copy)]
+struct RequestValidationLimits {
+    dma_mask: u64,
+    dma_domain: dma_api::DmaDomainId,
+    dma_alignment: usize,
+    max_blocks_per_request: u32,
+    max_segments: usize,
+    max_segment_size: usize,
+    supported_flags: RequestFlags,
+    supports_flush: bool,
+    supports_discard: bool,
+    supports_write_zeroes: bool,
+}
+
+impl From<QueueLimits> for RequestValidationLimits {
+    fn from(limits: QueueLimits) -> Self {
+        Self {
+            dma_mask: limits.dma_mask,
+            dma_domain: limits.dma_domain,
+            dma_alignment: limits.dma_alignment,
+            max_blocks_per_request: limits.max_blocks_per_request,
+            max_segments: limits.max_segments,
+            max_segment_size: limits.max_segment_size,
+            supported_flags: limits.supported_flags,
+            supports_flush: limits.supports_flush,
+            supports_discard: limits.supports_discard,
+            supports_write_zeroes: limits.supports_write_zeroes,
+        }
+    }
+}
+
+impl From<HardwareQueueLimits> for RequestValidationLimits {
+    fn from(limits: HardwareQueueLimits) -> Self {
+        Self {
+            dma_mask: limits.dma_mask,
+            dma_domain: limits.dma_domain,
+            dma_alignment: limits.dma_alignment,
+            max_blocks_per_request: limits.max_blocks_per_request,
+            max_segments: limits.max_segments,
+            max_segment_size: limits.max_segment_size,
+            supported_flags: limits.supported_flags,
+            supports_flush: limits.supports_flush,
+            supports_discard: limits.supports_discard,
+            supports_write_zeroes: limits.supports_write_zeroes,
+        }
+    }
+}
+
+fn validate_owned_request_with_limits(
+    info: DeviceInfo,
+    limits: RequestValidationLimits,
     request: &OwnedRequest,
 ) -> Result<(), BlkError> {
     if request.block_count == 0 && !matches!(request.op, RequestOp::Flush) {
@@ -296,7 +510,7 @@ pub fn validate_owned_request_shape(
 
 fn validate_data_request(
     info: DeviceInfo,
-    limits: QueueLimits,
+    limits: RequestValidationLimits,
     request: &OwnedRequest,
 ) -> Result<(), BlkError> {
     let expected = usize::try_from(request.block_count)
@@ -343,18 +557,21 @@ fn validate_data_request(
     Ok(())
 }
 
-fn validate_request_flags(info: QueueInfo, flags: RequestFlags) -> Result<(), BlkError> {
+fn validate_request_flags(
+    limits: RequestValidationLimits,
+    flags: RequestFlags,
+) -> Result<(), BlkError> {
     let unknown = flags.unsupported_by(RequestFlags::ALL_KNOWN);
     if !unknown.is_empty() {
         return Err(BlkError::InvalidRequest);
     }
 
-    let unsupported = flags.unsupported_by(info.limits.supported_flags);
+    let unsupported = flags.unsupported_by(limits.supported_flags);
     if !unsupported.is_empty() {
         return Err(BlkError::NotSupported);
     }
 
-    if flags.intersects(RequestFlags::PREFLUSH) && !info.limits.supports_flush {
+    if flags.intersects(RequestFlags::PREFLUSH) && !limits.supports_flush {
         return Err(BlkError::NotSupported);
     }
 

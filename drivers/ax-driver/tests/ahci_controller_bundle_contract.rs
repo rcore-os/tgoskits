@@ -11,21 +11,27 @@ fn workspace_root() -> PathBuf {
 }
 
 #[test]
-fn ahci_registers_one_controller_bundle_with_independent_port_devices() {
+fn ahci_registers_one_linear_v13_activation_owner() {
     let source = fs::read_to_string(workspace_root().join("drivers/ax-driver/src/block/ahci.rs"))
         .expect("AHCI binding source must be readable");
 
-    assert!(source.contains("impl ControllerBundle for AhciControllerBundle"));
-    assert!(source.contains("available_port_ids()"));
-    assert!(source.contains("take_port_device("));
-    assert!(source.contains("LogicalDevice::new("));
-    assert!(source.contains("register_controller_bundle"));
-    assert!(source.contains("format!(\"{}-port{port}\", self.host.name())"));
-    assert!(source.contains("BlockIrqSource"));
-    assert!(source.contains("fn take_irq_source("));
+    assert!(source.contains("into_v13_activator()"));
+    assert!(source.contains("register_irq_bound_block_activator"));
+    assert!(source.contains("register_block_activator_with_info"));
+    assert!(source.contains("PciIntxIrqLease"));
+    for forbidden in [
+        "ControllerBundle",
+        "AhciControllerBundle",
+        "take_logical_device",
+        "take_port_device",
+        "register_controller_bundle",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "AHCI production discovery retained legacy bundle boundary `{forbidden}`",
+        );
+    }
     assert!(!source.contains("Box::leak"));
     assert!(!source.contains("BIrqHandler"));
     assert!(!source.contains("take_irq_handler"));
-    assert!(!source.contains("requires the interrupt-driven ahci-host backend"));
-    assert!(!source.contains("impl Interface for AhciControllerBundle"));
 }

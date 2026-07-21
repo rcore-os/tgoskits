@@ -33,11 +33,21 @@ pub enum Event {
     DmaError { raw_status: u32 },
     /// Status bits are pending but do not map to a high-level event yet.
     Other { raw_status: u32 },
+    /// Complete controller and IDMAC banks acknowledged by one hard-IRQ
+    /// capture. Evidence-mode users consume this exact pair linearly.
+    Snapshot { raw_status: u32, idmac_status: u32 },
 }
 
 /// Hard-IRQ-owned destructive status capture endpoint.
 pub struct DwMmcIrqEndpoint {
     irq: Arc<host::IrqCore>,
+    publication: IrqPublication,
+}
+
+#[derive(Clone, Copy)]
+enum IrqPublication {
+    LegacyMailbox,
+    EvidenceLedger,
 }
 
 /// Maintenance-owner capability for generation-checked source rearming.
@@ -118,6 +128,10 @@ impl HostEvent for Event {
             Event::TransmitReady => HostEventKind::TransmitReady,
             Event::Error { .. } | Event::DmaError { .. } => HostEventKind::Error,
             Event::Other { .. } => HostEventKind::Other,
+            Event::Snapshot {
+                raw_status,
+                idmac_status,
+            } => classify_captured(*raw_status, *idmac_status),
         }
     }
 
@@ -129,7 +143,22 @@ impl HostEvent for Event {
             | Event::DmaError { .. }
             | Event::ReceiveReady
             | Event::TransmitReady => HostEventSource::Data,
-            Event::None | Event::Error { .. } | Event::Other { .. } => HostEventSource::Controller,
+            Event::Snapshot { .. } if matches!(self.kind(), HostEventKind::CommandComplete) => {
+                HostEventSource::Command
+            }
+            Event::Snapshot { .. }
+                if matches!(
+                    self.kind(),
+                    HostEventKind::TransferComplete
+                        | HostEventKind::ReceiveReady
+                        | HostEventKind::TransmitReady
+                ) =>
+            {
+                HostEventSource::Data
+            }
+            Event::None | Event::Error { .. } | Event::Other { .. } | Event::Snapshot { .. } => {
+                HostEventSource::Controller
+            }
         }
     }
 
@@ -140,11 +169,88 @@ impl HostEvent for Event {
             | Event::DmaError { .. }
             | Event::ReceiveReady
             | Event::TransmitReady => Some(BlockRequestId::new(0)),
-            Event::None | Event::CommandComplete | Event::Error { .. } | Event::Other { .. } => {
-                None
+            Event::Snapshot { .. }
+                if matches!(
+                    self.kind(),
+                    HostEventKind::TransferComplete
+                        | HostEventKind::ReceiveReady
+                        | HostEventKind::TransmitReady
+                ) =>
+            {
+                Some(BlockRequestId::new(0))
             }
+            Event::None
+            | Event::CommandComplete
+            | Event::Error { .. }
+            | Event::Other { .. }
+            | Event::Snapshot { .. } => None,
         }
     }
+
+    fn requests_block_queue_service(&self) -> bool {
+        match self {
+            Event::Snapshot {
+                raw_status,
+                idmac_status,
+            } => request_status(*raw_status, *idmac_status) != 0,
+            Event::None => false,
+            _ => true,
+        }
+    }
+
+    fn stable_summary(&self) -> HostEventSummary {
+        let (stable_status, dma_status) = match self {
+            Event::Snapshot {
+                raw_status,
+                idmac_status,
+            } => (*raw_status, *idmac_status),
+            Event::Error { raw_status } | Event::Other { raw_status } => (*raw_status, 0),
+            Event::DmaError { raw_status } => (0, *raw_status),
+            Event::CommandComplete => (DWMMC_INT_COMMAND_DONE, 0),
+            Event::TransferComplete => (DWMMC_INT_DATA_TRANSFER_OVER, 0),
+            Event::DmaComplete => (0, DWMMC_IDMAC_INT_TRANSFER_MASK),
+            Event::ReceiveReady => (DWMMC_INT_RXDR, 0),
+            Event::TransmitReady => (DWMMC_INT_TXDR, 0),
+            Event::None => (0, 0),
+        };
+        HostEventSummary {
+            stable_status,
+            dma_status,
+            queue_service: self.requests_block_queue_service(),
+            card_function_interrupt: false,
+        }
+    }
+}
+
+fn classify_captured(raw_status: u32, idmac_status: u32) -> HostEventKind {
+    let controller = event_from_raw_status(raw_status);
+    if matches!(controller, Event::Error { .. }) || idmac_status & DWMMC_IDMAC_INT_ERROR_MASK != 0 {
+        HostEventKind::Error
+    } else if matches!(controller, Event::TransferComplete)
+        || idmac_status & DWMMC_IDMAC_INT_TRANSFER_MASK != 0
+    {
+        HostEventKind::TransferComplete
+    } else if matches!(controller, Event::ReceiveReady) {
+        HostEventKind::ReceiveReady
+    } else if matches!(controller, Event::TransmitReady) {
+        HostEventKind::TransmitReady
+    } else if matches!(controller, Event::CommandComplete) {
+        HostEventKind::CommandComplete
+    } else if raw_status != 0 || idmac_status != 0 {
+        HostEventKind::Other
+    } else {
+        HostEventKind::None
+    }
+}
+
+fn request_status(raw_status: u32, idmac_status: u32) -> u32 {
+    raw_status
+        & (DWMMC_INT_COMMAND_DONE
+            | DWMMC_INT_DATA_TRANSFER_OVER
+            | DWMMC_INT_TXDR
+            | DWMMC_INT_RXDR
+            | DWMMC_INT_ERROR_MASK)
+        | idmac_status & (DWMMC_IDMAC_INT_TRANSFER_MASK | DWMMC_IDMAC_INT_ERROR_MASK)
 }
 
 impl DwMmc {
@@ -156,10 +262,29 @@ impl DwMmc {
     /// succeeds. A later activation may acquire a new lease only after both
     /// halves of the synchronized old lease have retired.
     pub fn take_irq_source(&mut self) -> Option<DwMmcIrqSource> {
+        let source = self.take_irq_source_for(IrqPublication::LegacyMailbox);
+        if source.is_some() {
+            self.evidence_irq = false;
+        }
+        source
+    }
+
+    /// Acquires the source whose endpoint publishes only complete v0.13
+    /// ledger snapshots.
+    pub fn take_evidence_irq_source(&mut self) -> Option<DwMmcIrqSource> {
+        let source = self.take_irq_source_for(IrqPublication::EvidenceLedger);
+        if source.is_some() {
+            self.evidence_irq = true;
+        }
+        source
+    }
+
+    fn take_irq_source_for(&mut self, publication: IrqPublication) -> Option<DwMmcIrqSource> {
         self.irq.state.take_source().then(|| {
             SdioIrqSource::new(
                 DwMmcIrqEndpoint {
                     irq: Arc::clone(&self.irq),
+                    publication,
                 },
                 DwMmcIrqControl {
                     irq: Arc::clone(&self.irq),
@@ -174,7 +299,7 @@ impl IrqEndpoint for DwMmcIrqEndpoint {
     type Fault = Error;
 
     fn capture(&mut self) -> IrqCapture<Self::Event, Self::Fault> {
-        capture_irq_core(&self.irq)
+        capture_irq_core(&self.irq, self.publication)
     }
 
     fn contain(&mut self, _cause: ContainmentCause) -> Result<MaskedSource, Self::Fault> {
@@ -247,7 +372,7 @@ impl Drop for DwMmcIrqControl {
     }
 }
 
-fn capture_irq_core(irq: &host::IrqCore) -> IrqCapture<Event, Error> {
+fn capture_irq_core(irq: &host::IrqCore, publication: IrqPublication) -> IrqCapture<Event, Error> {
     let generation = irq.state.generation();
     let raw_status = irq.regs.mintsts().read();
     if raw_status != 0 {
@@ -272,10 +397,19 @@ fn capture_irq_core(irq: &host::IrqCore) -> IrqCapture<Event, Error> {
     // mailbox. Publish only after all device-side acknowledgement and masking
     // writes are globally ordered before the normal-memory event snapshot.
     mbarrier::mb();
-    irq.state.cache_if_current(generation, raw_status);
-    irq.state.cache_idmac_if_current(generation, observed_idmac);
+    if matches!(publication, IrqPublication::LegacyMailbox) {
+        irq.state.cache_if_current(generation, raw_status);
+        irq.state.cache_idmac_if_current(generation, observed_idmac);
+    }
 
-    let event = if observed_idmac & DWMMC_IDMAC_INT_ERROR_MASK != 0 {
+    let event = if matches!(publication, IrqPublication::EvidenceLedger)
+        && (raw_status != 0 || observed_idmac != 0)
+    {
+        Event::Snapshot {
+            raw_status,
+            idmac_status: observed_idmac,
+        }
+    } else if observed_idmac & DWMMC_IDMAC_INT_ERROR_MASK != 0 {
         Event::DmaError {
             raw_status: observed_idmac,
         }

@@ -295,9 +295,12 @@ impl MaintenanceIrqAction {
     }
 
     /// Returns the owner-local action and backing-line state.
+    #[cfg(feature = "block")]
     pub(crate) fn status(&self) -> Result<ax_hal::irq::IrqStatus, MaintenanceError> {
         self.validate_owner()?;
-        self.registration()?.status().map_err(MaintenanceError::from)
+        self.registration()?
+            .status()
+            .map_err(MaintenanceError::from)
     }
 
     /// Consumes the action after disabling, draining, and removing it.

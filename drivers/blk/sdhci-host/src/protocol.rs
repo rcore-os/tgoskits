@@ -169,6 +169,12 @@ impl SdioIrqHost for Sdhci {
     fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
         Sdhci::take_irq_source(self)
     }
+
+    fn take_evidence_irq_source(
+        &mut self,
+    ) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        Sdhci::take_evidence_irq_source(self)
+    }
 }
 
 impl sdio_host2::SdioHost for Sdhci {
@@ -588,5 +594,23 @@ impl SdioHost2Timed for Sdhci {
             }) => Some(*wake_at_ns),
             _ => None,
         }
+    }
+}
+
+impl SdioHost2Evidence for Sdhci {
+    fn poll_transaction_with_snapshot<'a>(
+        &mut self,
+        request: &mut Self::TransactionRequest<'a>,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<sdio_host2::RequestPoll<sdio_host2::RawResponse>, sdio_host2::PollRequestError>
+    where
+        Self: 'a,
+    {
+        if let Err(error) = self.install_evidence_snapshot(snapshot) {
+            return Ok(sdio_host2::RequestPoll::Ready(Err(map_protocol_error(
+                error,
+            ))));
+        }
+        <Self as sdio_host2::SdioHost>::poll_transaction(self, request)
     }
 }

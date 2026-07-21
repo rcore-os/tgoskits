@@ -177,6 +177,18 @@ impl MaintenanceLifecycle {
     }
 
     pub(super) fn quarantine(&self) {
+        self.quarantine_atomic();
+    }
+
+    /// Atomically closes publication and rejects future IRQ endpoint access.
+    ///
+    /// This transition performs no allocation, blocking operation, or callback
+    /// and is therefore safe in the hard-IRQ fail-closed path.
+    pub(super) fn quarantine_from_irq(&self) {
+        self.quarantine_atomic();
+    }
+
+    fn quarantine_atomic(&self) {
         self.publish_gate.fetch_or(PUBLISH_CLOSED, Ordering::AcqRel);
         let mut observed = self.state.load(Ordering::Acquire);
         loop {

@@ -1,14 +1,13 @@
 //! PCI/MMIO discovery and unresolved controller registration.
 
-use alloc::{format, string::ToString, sync::Arc};
+use alloc::{format, string::ToString};
 
 use rdrive::{PlatformDevice, probe::OnProbeError};
 use virtio_drivers::transport::DeviceType;
 
-use super::{controller::BlockDevice, device::VirtIoBlkDevice, irq::VirtioInterruptPort};
+use super::{irq::VirtioInterruptPort, notify::VirtioQueueNotifyPort, v13::VirtioBlockActivator};
 use crate::{
-    BindingInfo, binding_info_from_fdt,
-    block::{PlatformDeviceBlock, validate_block_interface_irq_bindings},
+    BindingInfo, binding_info_from_fdt, block::PlatformDeviceBlockActivation,
     virtio::VirtIoTransport,
 };
 #[cfg(feature = "pci")]
@@ -17,6 +16,10 @@ use crate::{PciIrqRequirement, binding_info_from_pci_endpoint};
 #[cfg(feature = "pci")]
 const PCI_VIRTIO_ISR_CONFIG_TYPE: u8 = 3;
 #[cfg(feature = "pci")]
+const PCI_VIRTIO_COMMON_CONFIG_TYPE: u8 = 1;
+#[cfg(feature = "pci")]
+const PCI_VIRTIO_NOTIFY_CONFIG_TYPE: u8 = 2;
+#[cfg(feature = "pci")]
 const PCI_VIRTIO_ISR_CAP_MIN_LENGTH: u8 = 16;
 #[cfg(feature = "pci")]
 const PCI_CAP_BAR_OFFSET: u16 = 4;
@@ -24,6 +27,8 @@ const PCI_CAP_BAR_OFFSET: u16 = 4;
 const PCI_CAP_REGION_OFFSET: u16 = 8;
 #[cfg(feature = "pci")]
 const PCI_CAP_REGION_LENGTH: u16 = 12;
+#[cfg(feature = "pci")]
+const PCI_CAP_NOTIFY_MULTIPLIER: u16 = 16;
 
 #[cfg(feature = "pci")]
 crate::model_register!(
@@ -44,14 +49,23 @@ fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeE
         PciIrqRequirement::Required,
     )?;
     let interrupt_port = pci_interrupt_port(probe.endpoint())?;
+    let notify_port = pci_notify_port(probe.endpoint())?;
     let (transport, irq_lease) =
         crate::pci::take_virtio_block_transport(probe.endpoint_mut(), DeviceType::Block, info)?;
-    register_transport_with_irq_lease(
-        probe.into_platform_device(),
-        transport,
-        interrupt_port,
-        irq_lease,
-    )
+    let activator =
+        VirtioBlockActivator::discovered("virtio-blk", transport, interrupt_port, notify_port)
+            .map_err(|error| OnProbeError::other(error.to_string()))?;
+    if probe
+        .into_platform_device()
+        .register_irq_bound_block_activator(activator, irq_lease)
+        .is_none()
+    {
+        return Err(OnProbeError::other(
+            "failed to register VirtIO block activation owner",
+        ));
+    }
+    log::info!("discovered PCI virtio block activation owner");
+    Ok(())
 }
 
 crate::model_register!(
@@ -83,7 +97,20 @@ fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), OnProbeError> 
     }
     let interrupt_port = VirtioInterruptPort::from_mmio(mapping)
         .map_err(|error| OnProbeError::other(error.to_string()))?;
-    register_transport_with_info(plat_dev, transport, interrupt_port, binding_info)
+    let notify_port = interrupt_port
+        .mmio_mapping()
+        .ok_or_else(|| OnProbeError::other("VirtIO MMIO notify mapping is unavailable"))
+        .and_then(|mapping| {
+            VirtioQueueNotifyPort::from_mmio(mapping)
+                .map_err(|error| OnProbeError::other(error.to_string()))
+        })?;
+    register_transport_with_info(
+        plat_dev,
+        transport,
+        interrupt_port,
+        notify_port,
+        binding_info,
+    )
 }
 
 /// Rejects a transport whose destructive IRQ capability was already erased.
@@ -106,34 +133,45 @@ pub fn register_transport_with_interrupt_port<T: VirtIoTransport>(
     transport: T,
     interrupt_port: VirtioInterruptPort,
 ) -> Result<(), OnProbeError> {
-    register_transport_with_info(plat_dev, transport, interrupt_port, BindingInfo::empty())
+    let notify_port = interrupt_port
+        .mmio_mapping()
+        .ok_or_else(|| {
+            OnProbeError::other(
+                "virtio PCI block registration requires an independent notify capability",
+            )
+        })
+        .and_then(|mapping| {
+            VirtioQueueNotifyPort::from_mmio(mapping)
+                .map_err(|error| OnProbeError::other(error.to_string()))
+        })?;
+    register_transport_with_info(
+        plat_dev,
+        transport,
+        interrupt_port,
+        notify_port,
+        BindingInfo::empty(),
+    )
 }
 
 fn register_transport_with_info<T: VirtIoTransport>(
     plat_dev: PlatformDevice,
     transport: T,
     interrupt_port: VirtioInterruptPort,
+    notify_port: VirtioQueueNotifyPort,
     info: BindingInfo,
 ) -> Result<(), OnProbeError> {
-    let dev = Arc::new(VirtIoBlkDevice::discovered(transport));
-    let mut block = BlockDevice::discovered(dev, interrupt_port);
-    validate_block_interface_irq_bindings(&mut block, &info)
-        .map_err(|error| OnProbeError::other(error.to_string()))?;
-    plat_dev.register_block_with_info(block, info);
-    log::info!("discovered virtio block controller");
-    Ok(())
-}
-
-#[cfg(feature = "pci")]
-fn register_transport_with_irq_lease<T: VirtIoTransport>(
-    plat_dev: PlatformDevice,
-    transport: T,
-    interrupt_port: VirtioInterruptPort,
-    irq_lease: crate::pci::PciIntxIrqLease,
-) -> Result<(), OnProbeError> {
-    let dev = Arc::new(VirtIoBlkDevice::discovered(transport));
-    plat_dev.register_irq_bound_block(BlockDevice::discovered(dev, interrupt_port), irq_lease);
-    log::info!("discovered PCI virtio block controller with retained INTx lease");
+    let activator =
+        VirtioBlockActivator::discovered("virtio-blk", transport, interrupt_port, notify_port)
+            .map_err(|error| OnProbeError::other(error.to_string()))?;
+    if plat_dev
+        .register_block_activator_with_info(activator, info)
+        .is_none()
+    {
+        return Err(OnProbeError::other(
+            "failed to register VirtIO block activation owner",
+        ));
+    }
+    log::info!("discovered virtio block activation owner");
     Ok(())
 }
 
@@ -190,6 +228,99 @@ fn pci_interrupt_port(
     Err(OnProbeError::other(
         "virtio PCI transport has no ISR capability",
     ))
+}
+
+#[cfg(feature = "pci")]
+fn pci_notify_port(
+    endpoint: &rdrive::probe::pci::Endpoint,
+) -> Result<VirtioQueueNotifyPort, OnProbeError> {
+    use rdrive::probe::pci::PciCapability;
+
+    let mut common = None;
+    let mut notify = None;
+    for capability in endpoint.capabilities() {
+        let PciCapability::Vendor(address) = capability else {
+            continue;
+        };
+        let header = endpoint.read(address.offset);
+        let capability_type = (header >> 24) as u8;
+        match capability_type {
+            PCI_VIRTIO_COMMON_CONFIG_TYPE if common.is_none() => {
+                common = Some(map_pci_vendor_region(
+                    endpoint,
+                    address.offset,
+                    PCI_VIRTIO_ISR_CAP_MIN_LENGTH,
+                    "common",
+                )?);
+            }
+            PCI_VIRTIO_NOTIFY_CONFIG_TYPE if notify.is_none() => {
+                let capability_length = (header >> 16) as u8;
+                if capability_length < 20 {
+                    return Err(OnProbeError::other(
+                        "virtio PCI notify capability has no multiplier",
+                    ));
+                }
+                let multiplier = endpoint.read(address.offset + PCI_CAP_NOTIFY_MULTIPLIER);
+                let mapping = map_pci_vendor_region(endpoint, address.offset, 20, "notify")?;
+                notify = Some((mapping, multiplier));
+            }
+            _ => {}
+        }
+    }
+    let common = common.ok_or_else(|| {
+        OnProbeError::other("virtio PCI transport has no common configuration capability")
+    })?;
+    let (notify, multiplier) = notify.ok_or_else(|| {
+        OnProbeError::other("virtio PCI transport has no notification capability")
+    })?;
+    VirtioQueueNotifyPort::from_pci(common, notify, multiplier)
+        .map_err(|error| OnProbeError::other(error.to_string()))
+}
+
+#[cfg(feature = "pci")]
+fn map_pci_vendor_region(
+    endpoint: &rdrive::probe::pci::Endpoint,
+    capability: u16,
+    minimum_length: u8,
+    name: &'static str,
+) -> Result<mmio_api::Mmio, OnProbeError> {
+    let header = endpoint.read(capability);
+    if ((header >> 16) as u8) < minimum_length {
+        return Err(OnProbeError::other(format!(
+            "virtio PCI {name} capability is too short"
+        )));
+    }
+    let bar = endpoint.read(capability + PCI_CAP_BAR_OFFSET) as u8;
+    if bar >= 6 {
+        return Err(OnProbeError::other(format!(
+            "virtio PCI {name} capability names invalid BAR {bar}"
+        )));
+    }
+    let region_offset = endpoint.read(capability + PCI_CAP_REGION_OFFSET) as usize;
+    let region_length = endpoint.read(capability + PCI_CAP_REGION_LENGTH) as usize;
+    if region_length == 0 {
+        return Err(OnProbeError::other(format!(
+            "virtio PCI {name} capability has zero length"
+        )));
+    }
+    let bar_range = endpoint.bar_mmio(bar).ok_or_else(|| {
+        OnProbeError::other(format!(
+            "virtio PCI {name} capability names invalid BAR {bar}"
+        ))
+    })?;
+    let region_phys = bar_range
+        .start
+        .checked_add(region_offset)
+        .filter(|start| {
+            start
+                .checked_add(region_length)
+                .is_some_and(|end| end <= bar_range.end)
+        })
+        .ok_or_else(|| {
+            OnProbeError::other(format!("virtio PCI {name} capability exceeds its BAR"))
+        })?;
+    axklib::mmio::ioremap(region_phys.into(), region_length)
+        .map_err(|error| OnProbeError::other(format!("{error:?}")))
 }
 
 /// Builds an interrupt port for a statically mapped VirtIO MMIO transport.

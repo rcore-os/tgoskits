@@ -39,8 +39,8 @@ flowchart TB
     end
 
     subgraph OsRuntime["OS Runtime"]
-        BlockRuntime["ax-runtime::block<br/>ctx / hctx / tag / watchdog / recovery"]
-        SharedWorkers["per-CPU shared workqueue"]
+        BlockRuntime["ax-runtime::block<br/>ctx / hctx / tag / maintenance domain / recovery"]
+        SharedWorkers["generic per-CPU workqueue<br/>non-device short work"]
         OtherRuntime["rd-net / rd-display / rd-input / rd-vsock"]
     end
 
@@ -67,7 +67,6 @@ flowchart TB
     Capability --> Manager
     Runtime --> Backends
     Manager --> OsRuntime
-    SharedWorkers --> BlockRuntime
     OsRuntime --> Services
     Services --> Fs
     Services --> Net
@@ -86,9 +85,9 @@ flowchart TB
 - OS Glue 不引入上层 FS/NET 策略。
 - Runtime（`rd-*` 或 `ax-runtime::block`）不参与 probe、设备树解析或平台选择。
 
-块设备在 capability 与 service 之间必须经过 `ax-runtime::block`。它在调用驱动前发布 tag，将 hardware queue 映射为独立 hctx，并把每个 hctx 的固定串行 work item 交给共享 per-CPU worker pool；IRQ top-half 只产生稳定事件，watchdog 只判定失败并进入 recovery。文件系统不拥有 IRQ handler、completion table 或周期 drain worker。
+块设备在 capability 与 service 之间必须经过 `ax-runtime::block`。它为每个 CPU 建立 software ctx 和不可变 hctx map，在驱动可见请求前发布 tag/deadline/inflight/credit，并为每个硬件 ownership domain 建立一个不迁移的维护线程。IRQ top-half 只把真实硬件事实写入 driver ledger、发布 opaque evidence ID 并本地唤醒 owner；watchdog 只判定失败并进入 recovery。文件系统不拥有 IRQ handler、completion table 或周期 drain worker。
 
-逻辑 `WorkQueue` 只定义 CPU、优先级、admission 与 flush/drain 边界，不拥有专属线程。`drain_workqueue()` 先关闭该逻辑域的新提交，再等待此前接受的 intrusive item 全部回到 idle；per-CPU normal/highpri worker 始终保留，其他逻辑域仍可继续执行。设备 teardown 仍须按“停止 submit → mask/synchronize IRQ → cancel delayed work → flush/drain”的顺序完成，不能把停止共享 worker 当作设备隔离手段。
+通用逻辑 `WorkQueue` 仍可服务与设备状态无关的短任务；它只定义 CPU、优先级、admission 与 flush/drain 边界，不参与块 queue、IRQ evidence 或 controller recovery。状态化设备由固定 maintenance owner 推进，teardown 不能以停止共享 worker 代替“freeze admission → quiesce dispatch → mask/synchronize IRQ → quiesce DMA → close/quarantine”的设备所有权协议。
 
 `cancel_delayed_work_sync()` 在返回前还必须等待 timer expiry 的 publication baton 离开 `PUBLISHING`：旧 generation 要么回到 `ARMED` 并被 control work 取消，要么先把 activation 发布成 `QUEUED` 再由 `cancel_work_sync()` 消费。不允许在取消已返回后再由晚到 expiry 发布工作。
 

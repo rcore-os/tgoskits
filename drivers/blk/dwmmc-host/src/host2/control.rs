@@ -150,7 +150,7 @@ impl DwMmc {
                     self.regs.intmask().write(0);
                     self.clear_all_int_status();
                     self.clear_all_idmac_status();
-                    self.irq.state.clear_all();
+                    self.clear_task_irq_evidence();
                     self.regs.ctype().write(crate::regs::CType::new());
                     self.regs.uhs().write(crate::regs::UHS::new());
                     self.program_linux_init_baseline();

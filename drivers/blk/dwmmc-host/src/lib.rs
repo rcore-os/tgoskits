@@ -93,11 +93,11 @@ use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
     sdio::{
         host::{
-            BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
-            SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHost, SdioIrqSource, SignalVoltage,
-            poll_ready_bus_op,
+            BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, HostEventSummary,
+            HostIrqSnapshot, ReadyBusRequest, SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHost,
+            SdioIrqSource, SignalVoltage, poll_ready_bus_op,
         },
-        host2::SdioHost2Lifecycle,
+        host2::{SdioHost2Evidence, SdioHost2Lifecycle},
     },
 };
 

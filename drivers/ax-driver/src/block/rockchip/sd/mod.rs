@@ -26,21 +26,14 @@ use rdrive::{
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
-    rdif::StagedBlockDevice,
+    rdif::v13::{SdmmcActivationPrelude, SdmmcControllerActivator},
     sdio::{CardInitPreference, OwnedSdioInit, SdioSdmmc},
 };
 
 use super::clock::{
     ScmiClockOps, StagedClockEnable, rdrive_named_clock, scmi_named_clock, staged_node_clocks,
 };
-use crate::{
-    block::{
-        ProbeFdtBlock,
-        staged::{PlatformPrelude, StagedPlatformBlock},
-    },
-    mmio::iomap,
-    soc::RockchipFdtPinctrlParser,
-};
+use crate::{block::ProbeFdtBlockActivation, mmio::iomap, soc::RockchipFdtPinctrlParser};
 
 const DWMMC_STABLE_REFERENCE_CLOCK: u32 = 50_000_000;
 const ROCKCHIP_DWMMC_CLKGEN_DIV: u32 = 2;
@@ -144,7 +137,7 @@ impl RockchipSdResources {
     }
 }
 
-impl PlatformPrelude for RockchipSdResources {
+impl SdmmcActivationPrelude for RockchipSdResources {
     fn prepare(&mut self) -> Result<u64, InitError> {
         let settle_ns = enable_staged_regulators(&self.regulators).map_err(|error| {
             warn!("rockchip-dwmmc: staged regulator enable failed: {error}");
@@ -230,16 +223,22 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     host.set_dma(dma.clone());
 
-    let mut sd = SdioSdmmc::new_host2_timed(host);
+    let mut sd = SdioSdmmc::new_host2_timed_evidence(host);
     sd.set_sd_speed_selection_enabled(ENABLE_SD_SPEED_SELECTION);
-    let staged = StagedBlockDevice::new(
+    let activator = SdmmcControllerActivator::new_with_prelude(
         OwnedSdioInit::new(sd, CardInitPreference::SdFirst),
         dwmmc_rdif::dma_config("rockchip-sd", 0, dma),
-        dwmmc_rdif::device,
-    );
-    let staged = StagedPlatformBlock::new(staged, resources);
-    let irq = probe.register_block(staged)?;
-    info!("rockchip-sd controller staged irq={irq:?}");
+        resources,
+    )
+    .map_err(|error| {
+        OnProbeError::other(alloc::format!(
+            "failed to prepare Rockchip DWMMC activation owner: {error}"
+        ))
+    })?;
+    let slot = probe
+        .register_block_activator(activator)?
+        .ok_or_else(|| OnProbeError::other("failed to register Rockchip DWMMC activation owner"))?;
+    info!("rockchip-sd activation owner registered slot={slot}");
     Ok(())
 }
 

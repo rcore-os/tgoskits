@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::ptr::NonNull;
+use core::{num::NonZeroUsize, ptr::NonNull};
 
 use dma_api::{CoherentArray, ContiguousArray, DeviceDma, DmaDirection, DmaOp};
 use mmio_api::{Mmio, MmioAddr, MmioOp};
@@ -13,22 +13,24 @@ use crate::{
     err::*,
     initialization::InitialAdminCommand,
     lifecycle::{AdminCommand, AdminCompletion, queue_count_supported},
-    queue::{CommandSet, NvmeQueue},
+    queue::{CommandSet, NvmeCompletion, NvmeCompletionProbe, NvmeQueue},
     registers::NvmeReg,
 };
 
 pub struct Nvme {
     bar: NonNull<NvmeReg>,
-    _mmio: Option<Mmio>,
+    mmio_lease: NvmeMmioLease,
     dma: DeviceDma,
     admin_queue: Arc<NvmeQueue>,
-    io_queues: Vec<Option<NvmeQueue>>,
+    io_queues: Vec<Arc<NvmeQueue>>,
+    io_queue_init: Vec<NvmeIoQueueInit>,
     num_ns: usize,
     sqes: u32,
     cqes: u32,
     page_size: usize,
     max_transfer_bytes: Option<usize>,
     io_queue_entries: usize,
+    io_queue_pair_capacity: usize,
     io_queue_interrupts: bool,
     msix_interrupts: bool,
     interrupt_vectors: Vec<u16>,
@@ -45,6 +47,36 @@ pub struct Nvme {
 /// borrowing the mutable controller/configuration object.
 pub(crate) struct NvmeInterruptPort {
     bar: NonNull<NvmeReg>,
+    _mmio_lease: NvmeMmioLease,
+}
+
+/// Shared proof that an NVMe BAR remains mapped for one MMIO capability.
+///
+/// Controller control, IRQ mask ports, and every queue doorbell clone this
+/// lease so the v0.13 move-only parts can be torn down in any order without
+/// leaving a live raw BAR pointer behind.
+#[derive(Clone)]
+pub(crate) struct NvmeMmioLease {
+    _mapping: Option<Arc<Mmio>>,
+}
+
+/// Immutable queue geometry retained by controller initialization.
+///
+/// It is not a queue owner: SQ/CQ cursors and DMA allocations remain in the
+/// move-only queue returned to the v0.13 I/O domain.
+#[derive(Clone, Copy)]
+struct NvmeIoQueueInit {
+    qid: u32,
+    sq_len: usize,
+    cq_len: usize,
+    sq_bus_addr: u64,
+    cq_bus_addr: u64,
+}
+
+/// Hardware-invisible queue resources awaiting one activation commit.
+pub(crate) struct PreparedNvmeIoQueues {
+    queues: Vec<NvmeQueue>,
+    init: Vec<NvmeIoQueueInit>,
 }
 
 const ADMIN_QUEUE_DEPTH: usize = 64;
@@ -58,17 +90,22 @@ const MAX_IO_QUEUE_PAIRS: usize = u64::BITS as usize;
 #[derive(Debug, Clone)]
 pub struct Config {
     page_size: usize,
-    io_queue_pair_count: usize,
+    max_io_queue_pairs: usize,
     io_queue_interrupts: bool,
     msix_interrupts: bool,
     interrupt_vectors: Vec<u16>,
 }
 
 impl Config {
-    pub const fn new(page_size: usize, io_queue_pair_count: usize) -> Self {
+    /// Defines a discovery resource ceiling, not the final runtime topology.
+    ///
+    /// The legacy interface realizes the full ceiling for compatibility. The
+    /// v0.13 activator defers all I/O queue DMA allocation until its immutable
+    /// [`rdif_block::ActivationPlan`] selects an exact count and depth.
+    pub const fn new(page_size: usize, max_io_queue_pairs: usize) -> Self {
         Self {
             page_size,
-            io_queue_pair_count,
+            max_io_queue_pairs,
             io_queue_interrupts: false,
             msix_interrupts: false,
             interrupt_vectors: Vec::new(),
@@ -104,10 +141,38 @@ impl Nvme {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size)?;
         let dma = DeviceDma::new_legacy(dma_mask, dma_op);
-        Self::discover_mmio(mmio, dma, config)
+        Self::discover_mmio(mmio, dma, config, true)
     }
 
-    fn discover_mmio(mmio: Mmio, dma: DeviceDma, config: Config) -> Result<Self> {
+    /// Discovers only controller-wide resources for a two-phase activation.
+    ///
+    /// No I/O SQ/CQ DMA storage is allocated until the runtime supplies its
+    /// exact activation plan.
+    pub(crate) fn discover_for_activation(
+        bar_addr: impl Into<MmioAddr>,
+        bar_size: usize,
+        dma_mask: u64,
+        dma_op: &'static dyn DmaOp,
+        mmio_op: &'static dyn MmioOp,
+        config: Config,
+    ) -> Result<Self> {
+        validate_discovery_config(&config)?;
+        mmio_api::init(mmio_op);
+        let mmio = mmio_api::ioremap(bar_addr.into(), bar_size)?;
+        let dma = DeviceDma::new_legacy(dma_mask, dma_op);
+        Self::discover_mmio(mmio, dma, config, false)
+    }
+
+    fn discover_mmio(
+        mmio: Mmio,
+        dma: DeviceDma,
+        config: Config,
+        allocate_legacy_io_queues: bool,
+    ) -> Result<Self> {
+        let mmio = Arc::new(mmio);
+        let mmio_lease = NvmeMmioLease {
+            _mapping: Some(Arc::clone(&mmio)),
+        };
         let bar = NonNull::new(mmio.as_ptr())
             .expect("a successful MMIO mapping must have a non-null base")
             .cast::<NvmeReg>();
@@ -130,23 +195,30 @@ impl Nvme {
             config.page_size,
             ADMIN_QUEUE_DEPTH.min(controller_queue_depth),
             ADMIN_QUEUE_DEPTH.min(controller_queue_depth),
+            mmio_lease.clone(),
         )?);
         let io_submission_entries = IO_SUBMISSION_QUEUE_DEPTH.min(controller_queue_depth);
         let io_completion_entries = IO_COMPLETION_QUEUE_DEPTH.min(controller_queue_depth);
         let io_queue_entries = io_submission_entries.min(io_completion_entries);
-        let mut io_queues = Vec::with_capacity(config.io_queue_pair_count);
-        for queue_index in 0..config.io_queue_pair_count {
-            let queue_id = u32::try_from(queue_index + 1)
-                .map_err(|_| Error::Unknown("NVMe I/O queue ID exceeds u32"))?;
-            io_queues.push(Some(NvmeQueue::new(
-                queue_id,
+        let io_queues = if allocate_legacy_io_queues {
+            allocate_owned_io_queues(
                 bar,
                 &dma,
+                &mmio_lease,
                 config.page_size,
-                io_submission_entries,
-                io_completion_entries,
-            )?));
-        }
+                config.max_io_queue_pairs,
+                io_queue_entries,
+            )?
+            .into_iter()
+            .map(Arc::new)
+            .collect()
+        } else {
+            Vec::new()
+        };
+        let io_queue_init = io_queues
+            .iter()
+            .map(|queue| NvmeIoQueueInit::from_queue(queue))
+            .collect();
         let identify_buffer = dma.contiguous_array_zero_with_align::<u8>(
             config.page_size,
             config.page_size,
@@ -155,28 +227,31 @@ impl Nvme {
 
         let controller = Self {
             bar,
-            _mmio: Some(mmio),
+            mmio_lease,
             dma,
             admin_queue,
             io_queues,
+            io_queue_init,
             num_ns: 0,
             sqes: NVM_SQ_ENTRY_SIZE,
             cqes: NVM_CQ_ENTRY_SIZE,
             page_size: config.page_size,
             max_transfer_bytes: None,
             io_queue_entries,
+            io_queue_pair_capacity: config.max_io_queue_pairs,
             io_queue_interrupts: config.io_queue_interrupts,
             msix_interrupts: config.msix_interrupts,
             interrupt_vectors: config.interrupt_vectors,
-            requested_io_queue_count: config.io_queue_pair_count,
+            requested_io_queue_count: if allocate_legacy_io_queues {
+                config.max_io_queue_pairs
+            } else {
+                0
+            },
             identify_buffer,
             initial_namespace_id: None,
             namespace: None,
         };
-        let interrupt_port = unsafe {
-            // SAFETY: `controller` owns the BAR mapping for this whole loop.
-            controller.interrupt_port()
-        };
+        let interrupt_port = controller.interrupt_port();
         for vector in &controller.interrupt_vectors {
             interrupt_port.mask(u32::from(*vector));
         }
@@ -185,6 +260,11 @@ impl Nvme {
 
     pub fn dma_mask(&self) -> u64 {
         self.dma.dma_mask()
+    }
+
+    pub(crate) fn controller_identity(&self) -> NonZeroUsize {
+        NonZeroUsize::new(self.bar.as_ptr().expose_provenance())
+            .expect("a mapped NVMe BAR has a nonzero identity")
     }
 
     pub(crate) fn controller_timeout_ns(&self) -> u64 {
@@ -218,6 +298,22 @@ impl Nvme {
 
     pub(crate) fn admin_queue(&self) -> Arc<NvmeQueue> {
         Arc::clone(&self.admin_queue)
+    }
+
+    /// Creates the read-only hard-IRQ CQ phase capability without sharing the
+    /// mutable admin queue owner.
+    pub(crate) fn admin_completion_probe(&self) -> NvmeCompletionProbe {
+        self.admin_queue.completion_probe()
+    }
+
+    /// Submits one command from the controller maintenance owner.
+    pub(crate) fn submit_admin_command(&mut self, command: CommandSet) {
+        self.admin_queue.submit_admin_command(command);
+    }
+
+    /// Consumes one admin completion from the controller maintenance owner.
+    pub(crate) fn take_admin_completion(&mut self) -> Option<NvmeCompletion> {
+        self.admin_queue.take_owner_completion()
     }
 
     /// Programs the first admin queue and enables a disabled controller.
@@ -261,9 +357,9 @@ impl Nvme {
                     .ok_or(InitError::MissingInterrupt)?;
                 Ok(CommandSet::create_io_completion_queue_with_cid(
                     queue.qid,
-                    u32::try_from(queue.cq_len())
+                    u32::try_from(queue.cq_len)
                         .map_err(|_| InitError::Hardware("NVMe completion queue is too large"))?,
-                    queue.cq_bus_addr(),
+                    queue.cq_bus_addr,
                     true,
                     true,
                     u32::from(vector),
@@ -274,9 +370,9 @@ impl Nvme {
                 let queue = self.initial_io_queue(queue_index)?;
                 Ok(CommandSet::create_io_submission_queue_with_cid(
                     queue.qid,
-                    u32::try_from(queue.sq_len())
+                    u32::try_from(queue.sq_len)
                         .map_err(|_| InitError::Hardware("NVMe submission queue is too large"))?,
-                    queue.sq_bus_addr(),
+                    queue.sq_bus_addr,
                     true,
                     0,
                     queue.qid,
@@ -343,6 +439,26 @@ impl Nvme {
             ))
     }
 
+    /// Validates the v0.13 logical-device catalog, including an intentionally
+    /// empty namespace set discovered during the initial activation.
+    pub(crate) fn validate_reidentified_namespace_list_discovering(
+        &self,
+    ) -> core::result::Result<Option<u32>, InitError> {
+        let namespaces = self.parse_identify(IdentifyActiveNamespaceList::new());
+        match self.namespace {
+            Some(retained) => namespaces
+                .contains(&retained.id)
+                .then_some(Some(retained.id))
+                .ok_or(InitError::Hardware(
+                    "NVMe active namespace changed during recovery",
+                )),
+            None if namespaces.iter().all(|namespace| *namespace == 0) => Ok(None),
+            None => Err(InitError::Hardware(
+                "NVMe namespace appeared without a new logical-device publication",
+            )),
+        }
+    }
+
     pub(crate) fn validate_reidentified_namespace(
         &self,
         namespace_id: u32,
@@ -364,12 +480,34 @@ impl Nvme {
         command: InitialAdminCommand,
         completion: AdminCompletion,
     ) -> core::result::Result<Option<InitialAdminCommand>, InitError> {
+        self.complete_initial_admin_with_policy(command, completion, false)
+    }
+
+    /// Completes one discovery command while allowing an empty namespace set.
+    ///
+    /// The v0.13 activation boundary can publish a ready controller with no
+    /// logical devices. The legacy single-device interface retains its
+    /// historical fail-closed behavior through [`Self::complete_initial_admin`].
+    pub(crate) fn complete_initial_admin_discovering(
+        &mut self,
+        command: InitialAdminCommand,
+        completion: AdminCompletion,
+    ) -> core::result::Result<Option<InitialAdminCommand>, InitError> {
+        self.complete_initial_admin_with_policy(command, completion, true)
+    }
+
+    fn complete_initial_admin_with_policy(
+        &mut self,
+        command: InitialAdminCommand,
+        completion: AdminCompletion,
+        allow_empty_namespaces: bool,
+    ) -> core::result::Result<Option<InitialAdminCommand>, InitError> {
         match command {
             InitialAdminCommand::IdentifyController => {
                 let controller = self.parse_identify(IdentifyController::new());
                 validate_controller_entry_sizes(&controller)?;
                 self.num_ns = controller.number_of_namespaces as usize;
-                if self.num_ns == 0 {
+                if self.num_ns == 0 && !allow_empty_namespaces {
                     return Err(InitError::Hardware("NVMe controller has no namespace"));
                 }
                 self.sqes = NVM_SQ_ENTRY_SIZE;
@@ -405,9 +543,16 @@ impl Nvme {
             }
             InitialAdminCommand::IdentifyNamespaceList => {
                 let namespaces = self.parse_identify(IdentifyActiveNamespaceList::new());
-                let namespace_id = namespaces.first().copied().ok_or(InitError::Hardware(
-                    "NVMe controller has no active namespace",
-                ))?;
+                let Some(namespace_id) = namespaces.first().copied() else {
+                    if allow_empty_namespaces {
+                        self.initial_namespace_id = None;
+                        self.namespace = None;
+                        return Ok(None);
+                    }
+                    return Err(InitError::Hardware(
+                        "NVMe controller has no active namespace",
+                    ));
+                };
                 self.initial_namespace_id = Some(namespace_id);
                 Ok(Some(InitialAdminCommand::IdentifyNamespace {
                     namespace_id,
@@ -455,10 +600,9 @@ impl Nvme {
             .read_from_device(self.identify_buffer.len(), |data| identify.parse(data))
     }
 
-    fn initial_io_queue(&self, index: usize) -> core::result::Result<&NvmeQueue, InitError> {
-        self.io_queues
+    fn initial_io_queue(&self, index: usize) -> core::result::Result<&NvmeIoQueueInit, InitError> {
+        self.io_queue_init
             .get(index)
-            .and_then(Option::as_ref)
             .ok_or(InitError::Hardware("missing preallocated NVMe I/O queue"))
     }
 
@@ -500,6 +644,49 @@ impl Nvme {
         self.io_queue_entries
     }
 
+    /// Discovery-time resource ceiling used by the v0.13 plan validator.
+    pub(crate) const fn io_queue_pair_capacity(&self) -> usize {
+        self.io_queue_pair_capacity
+    }
+
+    /// Allocates exactly the queue count and descriptor depth selected by the
+    /// immutable activation plan.
+    pub(crate) fn prepare_selected_io_queues(
+        &self,
+        count: usize,
+        depth: usize,
+    ) -> Result<PreparedNvmeIoQueues> {
+        if !self.io_queues.is_empty()
+            || !self.io_queue_init.is_empty()
+            || self.requested_io_queue_count != 0
+        {
+            return Err(Error::Unknown(
+                "NVMe I/O queues were already allocated before activation",
+            ));
+        }
+        if count == 0 || count > self.io_queue_pair_capacity {
+            return Err(Error::Unknown(
+                "selected NVMe I/O queue count exceeds discovery resources",
+            ));
+        }
+        let queue_entries = depth
+            .checked_add(1)
+            .filter(|entries| *entries <= self.io_queue_entries)
+            .ok_or(Error::Unknown(
+                "selected NVMe queue depth exceeds controller resources",
+            ))?;
+        let queues = allocate_owned_io_queues(
+            self.bar,
+            &self.dma,
+            &self.mmio_lease,
+            self.page_size,
+            count,
+            queue_entries,
+        )?;
+        let init = queues.iter().map(NvmeIoQueueInit::from_queue).collect();
+        Ok(PreparedNvmeIoQueues { queues, init })
+    }
+
     pub(crate) fn io_queue_interrupts_enabled(&self) -> bool {
         self.io_queue_interrupts
     }
@@ -514,16 +701,22 @@ impl Nvme {
 
     /// Creates an independent INTMS/INTMC capability.
     ///
-    /// # Safety
-    ///
-    /// The returned capability must not outlive this controller's BAR mapping.
-    /// It may be stored beside the controller in one pinned owner object.
-    pub(crate) const unsafe fn interrupt_port(&self) -> NvmeInterruptPort {
-        NvmeInterruptPort { bar: self.bar }
+    /// The capability retains its own mapping lease so IRQ registration and
+    /// source-control teardown cannot outlive the BAR they access.
+    pub(crate) fn interrupt_port(&self) -> NvmeInterruptPort {
+        NvmeInterruptPort {
+            bar: self.bar,
+            _mmio_lease: self.mmio_lease.clone(),
+        }
     }
 
-    pub(crate) fn take_io_queue(&mut self, index: usize) -> Option<NvmeQueue> {
-        self.io_queues.get_mut(index)?.take()
+    /// Retains one preallocated queue for a fixed maintenance ownership domain.
+    ///
+    /// The controller control part keeps its own reference only to program and
+    /// reset the queue under an explicit DMA-quiesced lifecycle transition.
+    /// Normal SQ/CQ progress belongs exclusively to the I/O-domain reference.
+    pub(crate) fn io_queue(&self, index: usize) -> Option<Arc<NvmeQueue>> {
+        self.io_queues.get(index).cloned()
     }
 
     pub(crate) fn alloc_prp_list(&self) -> Result<CoherentArray<u64>> {
@@ -551,17 +744,30 @@ impl NvmeInterruptPort {
 
     fn reg(&self) -> &NvmeReg {
         unsafe {
-            // SAFETY: the containing `NvmeBlockOwner` retains the MMIO mapping
-            // for every endpoint/control reference, and discovery validated
-            // that the mapping covers INTMS and INTMC.
+            // SAFETY: this capability retains the MMIO mapping lease, and
+            // discovery validated that it covers INTMS and INTMC.
             self.bar.as_ref()
+        }
+    }
+
+    #[cfg(test)]
+    /// Creates a register capability over test-owned backing storage.
+    ///
+    /// # Safety
+    ///
+    /// `bar` must remain valid and suitably aligned for [`NvmeReg`] for the
+    /// complete returned capability lifetime.
+    pub(crate) unsafe fn from_test_bar(bar: NonNull<u8>) -> Self {
+        Self {
+            bar: bar.cast(),
+            _mmio_lease: NvmeMmioLease { _mapping: None },
         }
     }
 }
 
 // SAFETY: the capability accesses only the atomic device-side INTMS/INTMC
-// write-one register pair. The owner retains the mapping and serializes
-// lifecycle activation with owner-thread rearm; hard IRQ may only mask.
+// write-one register pair. The capability retains the mapping and lifecycle
+// activation serializes owner-thread rearm with hard-IRQ masking.
 unsafe impl Send for NvmeInterruptPort {}
 
 // SAFETY: concurrent writes to INTMS/INTMC are independent write-one bit
@@ -570,13 +776,66 @@ unsafe impl Sync for NvmeInterruptPort {}
 
 unsafe impl Send for Nvme {}
 
+impl NvmeIoQueueInit {
+    fn from_queue(queue: &NvmeQueue) -> Self {
+        Self {
+            qid: queue.qid,
+            sq_len: queue.sq_len(),
+            cq_len: queue.cq_len(),
+            sq_bus_addr: queue.sq_bus_addr(),
+            cq_bus_addr: queue.cq_bus_addr(),
+        }
+    }
+}
+
+impl PreparedNvmeIoQueues {
+    pub(crate) fn queues(&self) -> &[NvmeQueue] {
+        &self.queues
+    }
+
+    /// Commits immutable creation geometry and returns the unique queue owners.
+    pub(crate) fn commit(self, controller: &mut Nvme) -> Vec<NvmeQueue> {
+        debug_assert!(controller.io_queues.is_empty());
+        debug_assert!(controller.io_queue_init.is_empty());
+        debug_assert_eq!(controller.requested_io_queue_count, 0);
+        controller.requested_io_queue_count = self.queues.len();
+        controller.io_queue_init = self.init;
+        self.queues
+    }
+}
+
+fn allocate_owned_io_queues(
+    bar: NonNull<NvmeReg>,
+    dma: &DeviceDma,
+    mmio_lease: &NvmeMmioLease,
+    page_size: usize,
+    count: usize,
+    queue_entries: usize,
+) -> Result<Vec<NvmeQueue>> {
+    let mut queues = Vec::with_capacity(count);
+    for queue_index in 0..count {
+        let queue_id = u32::try_from(queue_index + 1)
+            .map_err(|_| Error::Unknown("NVMe I/O queue ID exceeds u32"))?;
+        queues.push(NvmeQueue::new(
+            queue_id,
+            bar,
+            dma,
+            page_size,
+            queue_entries,
+            queue_entries,
+            mmio_lease.clone(),
+        )?);
+    }
+    Ok(queues)
+}
+
 fn validate_discovery_config(config: &Config) -> Result<()> {
     if config.page_size < 4096 || !config.page_size.is_power_of_two() {
         return Err(Error::Unknown(
             "NVMe controller page size must be a power of two of at least 4096 bytes",
         ));
     }
-    if config.io_queue_pair_count == 0 || config.io_queue_pair_count > MAX_IO_QUEUE_PAIRS {
+    if config.max_io_queue_pairs == 0 || config.max_io_queue_pairs > MAX_IO_QUEUE_PAIRS {
         return Err(Error::Unknown("invalid NVMe I/O queue count"));
     }
     if !config.io_queue_interrupts || config.interrupt_vectors.is_empty() {
@@ -595,7 +854,7 @@ fn validate_discovery_config(config: &Config) -> Result<()> {
         ));
     }
     if config.msix_interrupts
-        && (config.interrupt_vectors.len() < config.io_queue_pair_count
+        && (config.interrupt_vectors.len() < config.max_io_queue_pairs
             || config.interrupt_vectors.first() != Some(&0))
     {
         return Err(Error::Unknown(

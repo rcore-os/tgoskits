@@ -29,7 +29,7 @@ pub(crate) enum AdminCommand {
 pub(crate) trait LifecycleHardware {
     fn controller_cookie(&self) -> usize;
     fn controller_timeout_ns(&self) -> u64;
-    fn begin_controller_disable(&self);
+    fn begin_controller_disable(&mut self);
     fn controller_ready(&self) -> bool;
     fn controller_fatal(&self) -> bool;
     /// Reinitializes retained DMA queue memory and writes CC.EN.
@@ -38,13 +38,13 @@ pub(crate) trait LifecycleHardware {
     ///
     /// The matching controller must have acknowledged CC.RDY=0, and every OS
     /// IRQ action and task-side queue accessor must remain drained.
-    unsafe fn prepare_reinitialize(&self) -> Result<(), InitError>;
+    unsafe fn prepare_reinitialize(&mut self, quiesced: &DmaQuiesced) -> Result<(), InitError>;
     fn queue_count(&self) -> usize;
     fn admin_irq_source(&self) -> Option<usize>;
-    fn submit_admin_command(&self, command: AdminCommand) -> Result<u16, InitError>;
-    fn take_admin_completion(&self) -> Option<AdminCompletion>;
+    fn submit_admin_command(&mut self, command: AdminCommand) -> Result<u16, InitError>;
+    fn take_admin_completion(&mut self) -> Option<AdminCompletion>;
     fn complete_admin_command(
-        &self,
+        &mut self,
         command: AdminCommand,
         completion: AdminCompletion,
     ) -> Result<Option<AdminCommand>, InitError>;
@@ -96,9 +96,19 @@ impl NvmeLifecycle {
 
     pub(crate) fn begin_dma_quiesce(
         &mut self,
-        hardware: &impl LifecycleHardware,
+        hardware: &mut impl LifecycleHardware,
         epoch: ControllerEpoch,
         _cause: RecoveryCause,
+    ) -> Result<(), InitError> {
+        self.begin_quiesce(hardware, epoch)
+    }
+
+    /// Starts the hardware quiescence transition for an already classified
+    /// runtime intent.
+    pub(crate) fn begin_quiesce(
+        &mut self,
+        hardware: &mut impl LifecycleHardware,
+        epoch: ControllerEpoch,
     ) -> Result<(), InitError> {
         if !matches!(
             self.state,
@@ -118,7 +128,7 @@ impl NvmeLifecycle {
 
     pub(crate) fn poll_dma_quiesce(
         &mut self,
-        hardware: &impl LifecycleHardware,
+        hardware: &mut impl LifecycleHardware,
         input: InitInput,
     ) -> InitPoll<DmaQuiesced> {
         let LifecycleState::Disabling {
@@ -154,7 +164,7 @@ impl NvmeLifecycle {
 
     pub(crate) fn enter_guest_owned(
         &mut self,
-        hardware: &impl LifecycleHardware,
+        hardware: &mut impl LifecycleHardware,
         quiesced: DmaQuiesced,
     ) -> Result<(), InitError> {
         let LifecycleState::Quiesced { epoch } = self.state else {
@@ -170,7 +180,7 @@ impl NvmeLifecycle {
 
     pub(crate) fn begin_reinitialize(
         &mut self,
-        hardware: &impl LifecycleHardware,
+        hardware: &mut impl LifecycleHardware,
         quiesced: DmaQuiesced,
     ) -> Result<(), InitError> {
         let LifecycleState::Quiesced { epoch } = self.state else {
@@ -186,7 +196,7 @@ impl NvmeLifecycle {
 
         // SAFETY: the state machine only reaches Quiesced after producing and
         // validating the exact linear DmaQuiesced proof consumed above.
-        unsafe { hardware.prepare_reinitialize()? };
+        unsafe { hardware.prepare_reinitialize(&quiesced)? };
         self.state = LifecycleState::Enabling {
             epoch,
             deadline_ns: None,
@@ -196,7 +206,7 @@ impl NvmeLifecycle {
 
     pub(crate) fn poll_reinitialize(
         &mut self,
-        hardware: &impl LifecycleHardware,
+        hardware: &mut impl LifecycleHardware,
         input: InitInput,
     ) -> InitPoll<ControllerReady> {
         match self.state {
@@ -221,7 +231,7 @@ impl NvmeLifecycle {
 
     fn poll_enabling(
         &mut self,
-        hardware: &impl LifecycleHardware,
+        hardware: &mut impl LifecycleHardware,
         input: InitInput,
         epoch: ControllerEpoch,
         mut deadline_ns: Option<u64>,
@@ -263,7 +273,7 @@ impl NvmeLifecycle {
 
     fn issue_admin(
         &mut self,
-        hardware: &impl LifecycleHardware,
+        hardware: &mut impl LifecycleHardware,
         input: InitInput,
         epoch: ControllerEpoch,
         command: AdminCommand,
@@ -287,7 +297,7 @@ impl NvmeLifecycle {
 
     fn poll_admin(
         &mut self,
-        hardware: &impl LifecycleHardware,
+        hardware: &mut impl LifecycleHardware,
         input: InitInput,
         epoch: ControllerEpoch,
         command: AdminCommand,
@@ -348,7 +358,7 @@ impl NvmeLifecycle {
 
     fn begin_abort<T>(
         &mut self,
-        hardware: &impl LifecycleHardware,
+        hardware: &mut impl LifecycleHardware,
         now_ns: u64,
         error: InitError,
     ) -> InitPoll<T> {
@@ -454,7 +464,7 @@ mod tests {
             500_000_000
         }
 
-        fn begin_controller_disable(&self) {
+        fn begin_controller_disable(&mut self) {
             self.disable_count.set(self.disable_count.get() + 1);
         }
 
@@ -466,7 +476,10 @@ mod tests {
             self.fatal.get()
         }
 
-        unsafe fn prepare_reinitialize(&self) -> Result<(), InitError> {
+        unsafe fn prepare_reinitialize(
+            &mut self,
+            _quiesced: &rdif_block::DmaQuiesced,
+        ) -> Result<(), InitError> {
             self.prepare_count.set(self.prepare_count.get() + 1);
             Ok(())
         }
@@ -479,19 +492,19 @@ mod tests {
             Some(0)
         }
 
-        fn submit_admin_command(&self, command: AdminCommand) -> Result<u16, InitError> {
+        fn submit_admin_command(&mut self, command: AdminCommand) -> Result<u16, InitError> {
             let command_id = self.next_command_id.get();
             self.next_command_id.set(command_id + 1);
             self.commands.borrow_mut().push(command);
             Ok(command_id)
         }
 
-        fn take_admin_completion(&self) -> Option<AdminCompletion> {
+        fn take_admin_completion(&mut self) -> Option<AdminCompletion> {
             self.completions.borrow_mut().pop_front()
         }
 
         fn complete_admin_command(
-            &self,
+            &mut self,
             command: AdminCommand,
             completion: AdminCompletion,
         ) -> Result<Option<AdminCommand>, InitError> {
@@ -532,16 +545,20 @@ mod tests {
 
     #[test]
     fn quiesce_waits_without_spinning_and_proves_dma_only_after_ready_clears() {
-        let hardware = FakeHardware::new(1);
+        let mut hardware = FakeHardware::new(1);
         let mut lifecycle = NvmeLifecycle::new();
         let epoch = ControllerEpoch::new(9);
 
         lifecycle
-            .begin_dma_quiesce(&hardware, epoch, RecoveryCause::QueueFault { queue_id: 0 })
+            .begin_dma_quiesce(
+                &mut hardware,
+                epoch,
+                RecoveryCause::QueueFault { queue_id: 0 },
+            )
             .expect("quiesce must start without blocking");
         assert_eq!(hardware.disable_count.get(), 1);
 
-        let pending = lifecycle.poll_dma_quiesce(&hardware, InitInput::at(10));
+        let pending = lifecycle.poll_dma_quiesce(&mut hardware, InitInput::at(10));
         let InitPoll::Pending(schedule) = pending else {
             panic!("ready controller must schedule a later status check")
         };
@@ -550,7 +567,7 @@ mod tests {
 
         hardware.ready.set(false);
         let InitPoll::Ready(proof) =
-            lifecycle.poll_dma_quiesce(&hardware, InitInput::new(20, IdList::none()))
+            lifecycle.poll_dma_quiesce(&mut hardware, InitInput::new(20, IdList::none()))
         else {
             panic!("RDY=0 must produce the linear DMA proof")
         };
@@ -560,78 +577,84 @@ mod tests {
 
     #[test]
     fn quiesce_timeout_uses_absolute_time_not_poll_count() {
-        let hardware = FakeHardware::new(1);
+        let mut hardware = FakeHardware::new(1);
         let mut lifecycle = NvmeLifecycle::new();
         lifecycle
-            .begin_dma_quiesce(&hardware, ControllerEpoch::new(1), RecoveryCause::Handoff)
+            .begin_dma_quiesce(
+                &mut hardware,
+                ControllerEpoch::new(1),
+                RecoveryCause::Handoff,
+            )
             .unwrap();
 
         assert!(matches!(
-            lifecycle.poll_dma_quiesce(&hardware, InitInput::at(100)),
+            lifecycle.poll_dma_quiesce(&mut hardware, InitInput::at(100)),
             InitPoll::Pending(_)
         ));
         assert!(matches!(
-            lifecycle.poll_dma_quiesce(&hardware, InitInput::at(500_000_099)),
+            lifecycle.poll_dma_quiesce(&mut hardware, InitInput::at(500_000_099)),
             InitPoll::Pending(_)
         ));
         assert!(matches!(
-            lifecycle.poll_dma_quiesce(&hardware, InitInput::at(500_000_100)),
+            lifecycle.poll_dma_quiesce(&mut hardware, InitInput::at(500_000_100)),
             InitPoll::Failed(InitError::TimedOut)
         ));
     }
 
     #[test]
     fn guest_return_starts_a_fresh_quiescence_epoch() {
-        let hardware = FakeHardware::new(1);
+        let mut hardware = FakeHardware::new(1);
         let mut lifecycle = NvmeLifecycle::new();
         let handoff_epoch = ControllerEpoch::new(4);
         hardware.ready.set(false);
         lifecycle
-            .begin_dma_quiesce(&hardware, handoff_epoch, RecoveryCause::Handoff)
+            .begin_dma_quiesce(&mut hardware, handoff_epoch, RecoveryCause::Handoff)
             .unwrap();
-        let InitPoll::Ready(proof) = lifecycle.poll_dma_quiesce(&hardware, InitInput::at(0)) else {
+        let InitPoll::Ready(proof) = lifecycle.poll_dma_quiesce(&mut hardware, InitInput::at(0))
+        else {
             panic!("disabled controller must produce the handoff proof")
         };
-        lifecycle.enter_guest_owned(&hardware, proof).unwrap();
+        lifecycle.enter_guest_owned(&mut hardware, proof).unwrap();
 
         hardware.ready.set(true);
         let return_epoch = ControllerEpoch::new(5);
         lifecycle
-            .begin_dma_quiesce(&hardware, return_epoch, RecoveryCause::Handoff)
+            .begin_dma_quiesce(&mut hardware, return_epoch, RecoveryCause::Handoff)
             .unwrap();
         assert_eq!(hardware.disable_count.get(), 2);
         assert!(matches!(
-            lifecycle.poll_dma_quiesce(&hardware, InitInput::at(1)),
+            lifecycle.poll_dma_quiesce(&mut hardware, InitInput::at(1)),
             InitPoll::Pending(_)
         ));
     }
 
     #[test]
     fn reinitialize_timeout_disables_the_controller_before_failure() {
-        let hardware = FakeHardware::new(1);
+        let mut hardware = FakeHardware::new(1);
         let mut lifecycle = NvmeLifecycle::new();
         let epoch = ControllerEpoch::new(6);
         hardware.ready.set(false);
         lifecycle
-            .begin_dma_quiesce(&hardware, epoch, RecoveryCause::Handoff)
+            .begin_dma_quiesce(&mut hardware, epoch, RecoveryCause::Handoff)
             .unwrap();
-        let InitPoll::Ready(proof) = lifecycle.poll_dma_quiesce(&hardware, InitInput::at(0)) else {
+        let InitPoll::Ready(proof) = lifecycle.poll_dma_quiesce(&mut hardware, InitInput::at(0))
+        else {
             panic!("disabled controller must produce a reinitialization proof")
         };
-        lifecycle.begin_reinitialize(&hardware, proof).unwrap();
+        lifecycle.begin_reinitialize(&mut hardware, proof).unwrap();
         hardware.ready.set(true);
         assert!(matches!(
-            lifecycle.poll_reinitialize(&hardware, InitInput::at(1)),
+            lifecycle.poll_reinitialize(&mut hardware, InitInput::at(1)),
             InitPoll::Pending(schedule) if schedule.run_again()
         ));
         assert!(matches!(
-            lifecycle.poll_reinitialize(&hardware, InitInput::at(2)),
+            lifecycle.poll_reinitialize(&mut hardware, InitInput::at(2)),
             InitPoll::Pending(schedule) if schedule.irq_sources().contains(0)
         ));
 
         assert!(matches!(
             lifecycle.poll_reinitialize(
-                &hardware,
+                &mut hardware,
                 InitInput::at(2_u64.saturating_add(ADMIN_COMMAND_TIMEOUT_NS)),
             ),
             InitPoll::Pending(_)
@@ -641,7 +664,7 @@ mod tests {
         hardware.ready.set(false);
         assert!(matches!(
             lifecycle.poll_reinitialize(
-                &hardware,
+                &mut hardware,
                 InitInput::at(3_u64.saturating_add(ADMIN_COMMAND_TIMEOUT_NS)),
             ),
             InitPoll::Failed(InitError::TimedOut)
@@ -650,22 +673,23 @@ mod tests {
 
     #[test]
     fn reinitialize_rebuilds_each_queue_only_from_irq_evidenced_admin_completions() {
-        let hardware = FakeHardware::new(2);
+        let mut hardware = FakeHardware::new(2);
         let mut lifecycle = NvmeLifecycle::new();
         let epoch = ControllerEpoch::new(3);
         hardware.ready.set(false);
         lifecycle
-            .begin_dma_quiesce(&hardware, epoch, RecoveryCause::Handoff)
+            .begin_dma_quiesce(&mut hardware, epoch, RecoveryCause::Handoff)
             .unwrap();
-        let InitPoll::Ready(proof) = lifecycle.poll_dma_quiesce(&hardware, InitInput::at(0)) else {
+        let InitPoll::Ready(proof) = lifecycle.poll_dma_quiesce(&mut hardware, InitInput::at(0))
+        else {
             panic!("disabled fake controller must quiesce")
         };
 
-        lifecycle.begin_reinitialize(&hardware, proof).unwrap();
+        lifecycle.begin_reinitialize(&mut hardware, proof).unwrap();
         assert_eq!(hardware.prepare_count.get(), 1);
         hardware.ready.set(true);
         assert!(matches!(
-            lifecycle.poll_reinitialize(&hardware, InitInput::at(10)),
+            lifecycle.poll_reinitialize(&mut hardware, InitInput::at(10)),
             InitPoll::Pending(schedule) if schedule.run_again()
         ));
 
@@ -682,7 +706,7 @@ mod tests {
         for (index, expected_command) in expected.into_iter().enumerate() {
             let now = 20 + index as u64 * 10;
             let InitPoll::Pending(wait) =
-                lifecycle.poll_reinitialize(&hardware, InitInput::at(now))
+                lifecycle.poll_reinitialize(&mut hardware, InitInput::at(now))
             else {
                 panic!("issuing an admin command must arm IRQ plus watchdog")
             };
@@ -697,7 +721,8 @@ mod tests {
             };
             hardware.complete_last_command(set_queue_result);
             if index == 1 {
-                let without_irq = lifecycle.poll_reinitialize(&hardware, InitInput::at(now + 1));
+                let without_irq =
+                    lifecycle.poll_reinitialize(&mut hardware, InitInput::at(now + 1));
                 assert!(matches!(without_irq, InitPoll::Pending(_)));
                 assert_eq!(
                     hardware.completions.borrow().len(),
@@ -706,7 +731,7 @@ mod tests {
                 );
             }
             let progress = lifecycle
-                .poll_reinitialize(&hardware, InitInput::new(now + 2, IdList::from_bits(1)));
+                .poll_reinitialize(&mut hardware, InitInput::new(now + 2, IdList::from_bits(1)));
             if index + 1 == expected.len() {
                 let InitPoll::Ready(ready) = progress else {
                     panic!("last SQ completion must publish ready proof")

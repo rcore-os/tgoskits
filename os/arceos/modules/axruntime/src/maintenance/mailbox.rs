@@ -31,6 +31,8 @@ impl MaintenanceCauses {
     pub const WATCHDOG: Self = Self(1 << 2);
     /// Domain shutdown needs owner-thread progress.
     pub const SHUTDOWN: Self = Self(1 << 3);
+    /// A controller lifecycle transaction needs owner-thread progress.
+    pub const LIFECYCLE: Self = Self(1 << 4);
     /// At least one event could not fit in the fixed mailbox.
     pub const OVERFLOW: Self = Self(1 << 63);
 

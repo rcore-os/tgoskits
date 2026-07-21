@@ -1491,6 +1491,16 @@ impl BlockHost for MockHost {
         Ok(BlockPoll::Complete)
     }
 
+    fn service_request_with_snapshot(
+        &mut self,
+        pending: &mut Option<Self::Request>,
+        request: BlockRequestId,
+        slot: &mut Self::Slot,
+        _snapshot: crate::sdio::host::HostIrqSnapshot,
+    ) -> Result<BlockPoll, Error> {
+        self.service_request(pending, request, slot)
+    }
+
     fn abort_request(
         &mut self,
         pending: &mut Option<Self::Request>,

@@ -50,20 +50,19 @@ pub(super) struct RequestTable {
     slots: [RequestSlot; MAX_REQUESTS],
 }
 
-/// Linear request-table capability for the interval in which the portable
-/// driver decides whether it accepted ownership.
+/// Linear capability for one request published as in-flight before dispatch.
 ///
-/// The only legal consumers are [`Self::commit_queued`],
-/// [`Self::restore_rejected`], and [`Self::commit_inline_return`]. Keeping the
-/// transition capability separate from the owned request prevents callers from
-/// updating the tag and request slot through unrelated APIs.
-#[must_use = "a dispatch permit must commit queued, rejected, or inline ownership"]
-pub(super) struct DispatchPermit<'table> {
+/// The only legal consumers acknowledge driver acceptance, restore a proven
+/// rejection, or retain the prepublished state for a contract-violating inline
+/// return. No fallible state commit remains after hardware can observe the ID.
+#[must_use = "an in-flight dispatch permit must be accepted, rejected, or returned inline"]
+pub(super) struct InFlightDispatchPermit<'table> {
     table: &'table RequestTable,
     tag: RequestTag,
 }
 
 /// Failed driver rejection rollback that returns the CPU-owned request.
+#[derive(Debug)]
 pub(super) struct DispatchRestoreError {
     error: HardwareQueueError,
     request: OwnedRequest,
@@ -75,11 +74,9 @@ impl DispatchRestoreError {
     }
 }
 
-impl DispatchPermit<'_> {
-    /// Commits driver ownership and its absolute watchdog deadline.
-    pub(super) fn commit_queued(self, deadline_ns: u64) -> Result<(), HardwareQueueError> {
-        self.table.commit_dispatch_inflight(self.tag, deadline_ns)
-    }
+impl InFlightDispatchPermit<'_> {
+    /// Confirms that the driver retained the already-published request.
+    pub(super) fn accept(self) {}
 
     /// Atomically returns a driver-rejected request to software staging.
     pub(super) fn restore_rejected(
@@ -91,7 +88,7 @@ impl DispatchPermit<'_> {
 
     /// Consumes the dispatch capability while retaining driver ownership for
     /// the caller's immediate completion publication.
-    pub(super) fn commit_inline_return(self) {}
+    pub(super) fn retain_for_inline_return(self) {}
 }
 
 #[derive(Clone, Copy)]
@@ -127,18 +124,24 @@ impl RequestTable {
     pub(super) fn begin_dispatch(
         &self,
         tag: RequestTag,
-    ) -> Result<(DispatchPermit<'_>, OwnedRequest), HardwareQueueError> {
+        deadline_ns: u64,
+    ) -> Result<(InFlightDispatchPermit<'_>, OwnedRequest), HardwareQueueError> {
         let mut slot = self.slots[tag.slot()].record.lock();
         let record = checked_record_mut(&mut slot, tag)?;
         if !matches!(record.ownership, RequestOwnership::Runtime(_)) {
             return Err(HardwareQueueError::StaleCompletion);
         }
-        self.tags.begin_dispatch(tag)?;
         let ownership = core::mem::replace(&mut record.ownership, RequestOwnership::Driver);
         let RequestOwnership::Runtime(request) = ownership else {
             unreachable!("validated runtime request ownership changed while its slot was locked");
         };
-        Ok((DispatchPermit { table: self, tag }, request))
+        record.deadline_ns = Some(deadline_ns);
+        if let Err(error) = self.tags.begin_dispatch(tag) {
+            record.deadline_ns = None;
+            record.ownership = RequestOwnership::Runtime(request);
+            return Err(error.into());
+        }
+        Ok((InFlightDispatchPermit { table: self, tag }, request))
     }
 
     fn restore_rejected_dispatch(
@@ -158,26 +161,6 @@ impl RequestTable {
         let mut slot = self.slots[tag.slot()].record.lock();
         let record = checked_record_mut(&mut slot, tag)?;
         take_runtime_ownership(record)
-    }
-
-    fn commit_dispatch_inflight(
-        &self,
-        tag: RequestTag,
-        deadline_ns: u64,
-    ) -> Result<(), HardwareQueueError> {
-        {
-            let mut slot = self.slots[tag.slot()].record.lock();
-            let record = checked_record_mut(&mut slot, tag)?;
-            if !matches!(record.ownership, RequestOwnership::Driver) {
-                return Err(HardwareQueueError::RequestState);
-            }
-            record.deadline_ns = Some(deadline_ns);
-            if let Err(error) = self.tags.mark_inflight(tag) {
-                record.deadline_ns = None;
-                return Err(error.into());
-            }
-        }
-        Ok(())
     }
 
     pub(super) fn earliest_deadline(&self) -> Option<u64> {
@@ -377,13 +360,19 @@ fn restore_rejected_ownership<const N: usize>(
             request,
         });
     }
+    let deadline_ns = record.deadline_ns.take();
+    record.ownership = RequestOwnership::Runtime(request);
     if let Err(error) = tags.restore_after_rejection(tag) {
+        let ownership = core::mem::replace(&mut record.ownership, RequestOwnership::Driver);
+        let RequestOwnership::Runtime(request) = ownership else {
+            unreachable!("rejected dispatch rollback retained its runtime-owned request");
+        };
+        record.deadline_ns = deadline_ns;
         return Err(DispatchRestoreError {
             error: error.into(),
             request,
         });
     }
-    record.ownership = RequestOwnership::Runtime(request);
     Ok(())
 }
 
@@ -442,53 +431,35 @@ fn install_completion<const N: usize>(
     tag: RequestTag,
     mut completion: CompletedRequest,
 ) -> Result<bool, CompletionPublicationError> {
-    let ownership_was_driver = matches!(record.ownership, RequestOwnership::Driver);
-    if !matches!(
-        record.ownership,
-        RequestOwnership::Driver | RequestOwnership::Returning
-    ) {
-        return Err(CompletionPublicationError::new(
-            HardwareQueueError::StaleCompletion,
-            completion,
-        ));
-    }
     let state = match tags.state(tag) {
         Ok(state) => state,
         Err(error) => {
             return Err(CompletionPublicationError::new(error.into(), completion));
         }
     };
-    if !ownership_accepts_completion(&record.ownership, state) {
-        return Err(CompletionPublicationError::new(
-            HardwareQueueError::StaleCompletion,
-            completion,
-        ));
-    }
-    let claimed_state = match finish_completion_tag_state(tags, tag, &mut completion) {
-        Ok(state) => state,
-        Err(error) => return Err(CompletionPublicationError::new(error, completion)),
+    let was_inflight = match record.ownership {
+        RequestOwnership::Driver => {
+            if let Err(error) = finish_driver_completion_state(tags, tag, state, &mut completion) {
+                return Err(CompletionPublicationError::new(error, completion));
+            }
+            true
+        }
+        RequestOwnership::Returning => {
+            if let Err(error) = finish_runtime_return_state(tags, tag, state, &mut completion) {
+                return Err(CompletionPublicationError::new(error, completion));
+            }
+            false
+        }
+        RequestOwnership::Runtime(_) | RequestOwnership::Completed(_) => {
+            return Err(CompletionPublicationError::new(
+                HardwareQueueError::StaleCompletion,
+                completion,
+            ));
+        }
     };
-    let was_inflight = ownership_was_driver && claimed_state != RequestState::Dispatching;
     record.ownership = RequestOwnership::Completed(completion);
     record.deadline_ns = None;
     Ok(was_inflight)
-}
-
-fn ownership_accepts_completion(ownership: &RequestOwnership, state: RequestState) -> bool {
-    match ownership {
-        RequestOwnership::Driver => matches!(
-            state,
-            RequestState::Dispatching
-                | RequestState::InFlight
-                | RequestState::TimingOut
-                | RequestState::Canceling
-        ),
-        RequestOwnership::Returning => matches!(
-            state,
-            RequestState::Staged | RequestState::TimingOut | RequestState::Canceling
-        ),
-        RequestOwnership::Runtime(_) | RequestOwnership::Completed(_) => false,
-    }
 }
 
 fn completion_is_ready(slot: &RequestSlot, tag: RequestTag) -> bool {
@@ -497,13 +468,13 @@ fn completion_is_ready(slot: &RequestSlot, tag: RequestTag) -> bool {
     })
 }
 
-fn finish_completion_tag_state<const N: usize>(
+fn finish_driver_completion_state<const N: usize>(
     tags: &RequestTagSet<N>,
     tag: RequestTag,
+    state: RequestState,
     completion: &mut CompletedRequest,
-) -> Result<RequestState, HardwareQueueError> {
-    let claimed_state = tags.state(tag)?;
-    match claimed_state {
+) -> Result<(), HardwareQueueError> {
+    match state {
         RequestState::TimingOut => {
             completion.result = Err(BlkError::TimedOut);
             tags.finish_timeout_after_return(tag)?;
@@ -512,15 +483,33 @@ fn finish_completion_tag_state<const N: usize>(
             completion.result = Err(BlkError::Cancelled);
             tags.finish_cancel_after_return(tag)?;
         }
-        RequestState::Reserved
-        | RequestState::Staged
-        | RequestState::Dispatching
-        | RequestState::InFlight => {
+        RequestState::InFlight => {
             tags.claim_completion(tag)?.finish()?;
         }
         _ => return Err(HardwareQueueError::StaleCompletion),
     }
-    Ok(claimed_state)
+    Ok(())
+}
+
+fn finish_runtime_return_state<const N: usize>(
+    tags: &RequestTagSet<N>,
+    tag: RequestTag,
+    state: RequestState,
+    completion: &mut CompletedRequest,
+) -> Result<(), HardwareQueueError> {
+    match state {
+        RequestState::Staged => tags.finish_staged_after_return(tag)?,
+        RequestState::TimingOut => {
+            completion.result = Err(BlkError::TimedOut);
+            tags.finish_timeout_after_return(tag)?;
+        }
+        RequestState::Canceling => {
+            completion.result = Err(BlkError::Cancelled);
+            tags.finish_cancel_after_return(tag)?;
+        }
+        _ => return Err(HardwareQueueError::StaleCompletion),
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -577,19 +566,40 @@ mod tests {
     }
 
     #[test]
-    fn synchronous_driver_return_completes_the_dispatching_tag_before_recovery() {
-        let tags = RequestTagSet::<1>::new(1).unwrap();
-        let tag = tags.reserve().unwrap();
-        tags.mark_staged(tag).unwrap();
-        tags.begin_dispatch(tag).unwrap();
-        let mut completion = CompletedRequest::new(
-            tag.into_request_id().unwrap(),
-            Err(BlkError::Io),
-            flush_request(),
-        );
+    fn completion_during_submit_observes_the_prepublished_inflight_state() {
+        let table = RequestTable::new().unwrap();
+        let tag = table.reserve(flush_request()).unwrap();
+        table.ensure_staged(tag).unwrap();
+        let (permit, request) = table.begin_dispatch(tag, 100).unwrap();
+        let completion = CompletedRequest::new(tag.into_request_id().unwrap(), Ok(()), request);
 
-        finish_completion_tag_state(&tags, tag, &mut completion).unwrap();
-        assert_eq!(tags.state(tag), Ok(RequestState::Terminal));
+        assert_eq!(table.tags.state(tag), Ok(RequestState::InFlight));
+        assert_eq!(table.earliest_deadline(), Some(100));
+        let was_inflight = table
+            .install_completion(tag, completion)
+            .unwrap_or_else(|rejected| {
+                let (error, completion) = rejected.into_parts();
+                drop(completion);
+                panic!("prepublished in-flight completion was rejected: {error}");
+            });
+        assert!(was_inflight);
+        permit.accept();
+        assert_eq!(table.tags.state(tag), Ok(RequestState::Terminal));
+        assert_eq!(table.earliest_deadline(), None);
+    }
+
+    #[test]
+    fn rejected_submit_rolls_back_deadline_state_and_request_ownership() {
+        let table = RequestTable::new().unwrap();
+        let tag = table.reserve(flush_request()).unwrap();
+        table.ensure_staged(tag).unwrap();
+        let (permit, request) = table.begin_dispatch(tag, 100).unwrap();
+
+        permit.restore_rejected(request).unwrap();
+
+        assert_eq!(table.tags.state(tag), Ok(RequestState::Staged));
+        assert_eq!(table.earliest_deadline(), None);
+        drop(table.take_staged(tag).unwrap());
     }
 
     #[test]
@@ -623,11 +633,11 @@ mod tests {
         let tag = tags.reserve().unwrap();
         tags.mark_staged(tag).unwrap();
         tags.begin_dispatch(tag).unwrap();
-        tags.mark_inflight(tag).unwrap();
+        let cancel = tags.claim_cancel(tag).unwrap();
         let mut record = RequestRecord {
             tag,
             ownership: RequestOwnership::Driver,
-            deadline_ns: None,
+            deadline_ns: Some(100),
         };
 
         let failed = restore_rejected_ownership(&tags, &mut record, tag, flush_request())
@@ -635,8 +645,10 @@ mod tests {
         let (error, request) = failed.into_parts();
 
         assert!(matches!(error, HardwareQueueError::RequestState));
-        assert_eq!(tags.state(tag), Ok(RequestState::InFlight));
+        assert_eq!(tags.state(tag), Ok(RequestState::Canceling));
         assert!(matches!(record.ownership, RequestOwnership::Driver));
+        assert_eq!(record.deadline_ns, Some(100));
+        drop(cancel);
         drop(request);
     }
 

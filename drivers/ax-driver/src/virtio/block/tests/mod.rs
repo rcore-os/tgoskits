@@ -67,14 +67,14 @@ fn reclaim_proof_is_bound_to_owner_and_advances_monotonically() {
     assert_eq!(tracker.validate(&stale), Err(BlkError::InvalidDmaProof));
 }
 
-struct RecordingTransport {
+pub(super) struct RecordingTransport {
     commands: Arc<AtomicUsize>,
     status: Cell<DeviceStatus>,
     sticky_reset: bool,
 }
 
 impl RecordingTransport {
-    fn new(commands: Arc<AtomicUsize>) -> Self {
+    pub(super) fn new(commands: Arc<AtomicUsize>) -> Self {
         Self {
             commands,
             status: Cell::new(DeviceStatus::empty()),

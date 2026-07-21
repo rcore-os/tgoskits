@@ -386,3 +386,21 @@ impl sdmmc_protocol::sdio::host2::SdioHost2Timed for DwMmc {
         request.state.wake_at_ns()
     }
 }
+
+impl SdioHost2Evidence for DwMmc {
+    fn poll_transaction_with_snapshot<'a>(
+        &mut self,
+        request: &mut Self::TransactionRequest<'a>,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<sdio_host2::RequestPoll<sdio_host2::RawResponse>, sdio_host2::PollRequestError>
+    where
+        Self: 'a,
+    {
+        if let Err(error) = self.install_evidence_snapshot(snapshot) {
+            return Ok(sdio_host2::RequestPoll::Ready(Err(map_protocol_error(
+                error,
+            ))));
+        }
+        <Self as sdio_host2::SdioHost>::poll_transaction(self, request)
+    }
+}

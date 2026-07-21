@@ -1,11 +1,10 @@
+mod activation_binding;
+mod activation_owner;
 mod binding;
+mod deferred_irq;
+mod inline;
 mod irq_bound;
-#[cfg(any(
-    test,
-    feature = "rockchip-dwmmc",
-    feature = "rockchip-sdhci",
-    feature = "starfive-jh7110-dwmmc",
-))]
+#[cfg(any(test, feature = "starfive-jh7110-dwmmc"))]
 mod staged;
 
 #[cfg(any(feature = "ahci", feature = "ls2k1000-ahci"))]
@@ -27,5 +26,9 @@ mod rockchip;
 #[cfg(feature = "starfive-jh7110-dwmmc")]
 pub mod starfive_mmc;
 
+pub use activation_binding::*;
+pub use activation_owner::*;
 pub use binding::*;
+pub use deferred_irq::*;
+pub use inline::*;
 pub use irq_bound::{IrqBoundBlock, IrqBoundControllerBundle};

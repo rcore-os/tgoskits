@@ -12,8 +12,8 @@ use rdif_block::{
 };
 
 use super::{
-    BlockController, BlockControllerError, ControllerOwnerLink, InlineQueue, MAX_HARDWARE_QUEUES,
-    RuntimeBlockDevice, RuntimeQueue,
+    BlockController, BlockControllerError, ControllerOwnerLink, DeviceSoftwareContexts,
+    InlineQueue, MAX_HARDWARE_QUEUES, RuntimeBlockDevice, RuntimeQueue,
 };
 use crate::{
     block::{
@@ -56,9 +56,16 @@ pub(super) fn capture_pci_endpoint(device: &RdifBlockDevice) -> Option<HostPciEn
 /// Takes every driver-core block controller and publishes only those whose
 /// complete IRQ-only activation succeeds.
 pub fn activate_discovered_controllers() -> Vec<Arc<BlockController>> {
+    activate_discovered_controllers_with_config(crate::block::BlockRuntimeConfig::default())
+}
+
+/// Activates every discovered controller with one runtime-owned policy.
+pub fn activate_discovered_controllers_with_config(
+    config: crate::block::BlockRuntimeConfig,
+) -> Vec<Arc<BlockController>> {
     let mut activated = Vec::new();
     for device in ax_driver::block::take_rdif_block_devices() {
-        match BlockController::activate(device) {
+        match BlockController::activate_with_config(device, config) {
             Ok(controller) => {
                 info!("activated IRQ-only block controller {}", controller.name());
                 RUNTIME_CONTROLLERS.lock().push(Arc::clone(&controller));
@@ -211,6 +218,8 @@ pub(super) fn create_runtime_devices(
     maintenance: Arc<DeviceMaintenanceHandle<super::source::BlockMaintenanceEvent>>,
     owner_link: Arc<ControllerOwnerLink>,
     lifecycle_cookie: usize,
+    online_cpu_count: usize,
+    config: crate::block::BlockRuntimeConfig,
     quarantine_reservations: &mut QueueQuarantineReservations,
 ) -> Result<Vec<RuntimeBlockDevice>, BlockControllerError> {
     validate_controller_devices(&logical_devices)?;
@@ -224,9 +233,17 @@ pub(super) fn create_runtime_devices(
             queue_limits,
             queues,
         } = logical_device.into_parts();
+        let queue_info = queues.iter().map(QueueHandle::info).collect::<Vec<_>>();
+        let software_contexts = Arc::new(DeviceSoftwareContexts::from_queue_info(
+            &queue_info,
+            online_cpu_count,
+        ));
         let mut pending_queues = queues.into_iter();
         let mut runtime_queues = Vec::new();
+        let mut hctx_index = 0;
         while let Some(mut queue) = pending_queues.next() {
+            let queue_index = hctx_index;
+            hctx_index += 1;
             let info = queue.info();
             let quarantine_reservation = quarantine_reservations.bind(info);
             let runtime_queue = match info.kind {
@@ -245,13 +262,16 @@ pub(super) fn create_runtime_devices(
                         rollback_unpublished_runtime_devices(&runtime_devices);
                         return Err(error.into());
                     }
-                    match HardwareQueue::activate(
+                    match HardwareQueue::activate(super::super::hctx::HardwareQueueActivation {
                         queue,
                         quarantine_reservation,
-                        Arc::clone(&maintenance),
-                        Arc::clone(&owner_link),
-                        lifecycle_cookie,
-                    ) {
+                        maintenance: Arc::clone(&maintenance),
+                        controller_link: Arc::clone(&owner_link),
+                        controller_cookie: lifecycle_cookie,
+                        software_contexts: Arc::clone(&software_contexts),
+                        hctx_index: queue_index,
+                        config,
+                    }) {
                         Ok(queue) => RuntimeQueue::Interrupt(queue),
                         Err(error) => {
                             rollback_unpublished_runtime_queues(&runtime_queues);
@@ -274,6 +294,7 @@ pub(super) fn create_runtime_devices(
                 queues: Vec::new(),
             },
             runtime_queues,
+            software_contexts,
         ));
     }
     Ok(runtime_devices)

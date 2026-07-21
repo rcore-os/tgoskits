@@ -1,84 +1,97 @@
 use std::{fs, path::PathBuf};
 
+fn source(relative: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative);
+    fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("virtio block source {path:?}: {error}"))
+}
+
+/// Production v0.13 sources. The cfg(test) v0.12 fixtures in `queue/legacy.rs`,
+/// `controller.rs`, and `lifecycle.rs` are intentionally excluded.
 fn virtio_block_source() -> String {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let domain = manifest.join("src/virtio/block");
     [
-        "discovery.rs",
-        "controller.rs",
-        "device.rs",
-        "initialization.rs",
-        "irq.rs",
-        "lifecycle.rs",
-        "queue.rs",
+        "src/virtio/block/mod.rs",
+        "src/virtio/block/discovery.rs",
+        "src/virtio/block/device.rs",
+        "src/virtio/block/initialization.rs",
+        "src/virtio/block/irq.rs",
+        "src/virtio/block/notify.rs",
+        "src/virtio/block/queue.rs",
+        "src/virtio/block/queue/owned.rs",
+        "src/virtio/block/v13.rs",
+        "src/virtio/block/v13/activation.rs",
+        "src/virtio/block/v13/evidence.rs",
+        "src/virtio/block/v13/io.rs",
     ]
     .into_iter()
-    .map(|module| {
-        let path = domain.join(module);
-        fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("virtio block source {path:?}: {error}"))
-    })
+    .map(source)
     .collect::<Vec<_>>()
     .join("\n")
 }
 
 fn virtio_common_source() -> String {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    fs::read_to_string(manifest.join("src/virtio/mod.rs"))
-        .expect("virtio common source must be readable")
+    source("src/virtio/mod.rs")
 }
 
 #[test]
-fn virtio_block_uses_interrupt_owned_request_contract() {
+fn virtio_block_uses_v013_interrupt_owned_request_contract() {
     let source = virtio_block_source();
 
     for required in [
         "QueueKind::Interrupt",
         "QueueExecution::Tagged",
-        "submit_owned",
-        "service_events",
-        "QueueEventBatch",
-        "fn shutdown(&mut self) -> Result<(), BlkError>",
+        "HardwareQueueDepth::fixed(NonZeroU16::MIN)",
+        "Result<AcceptedRequest, UnacceptedRequest>",
+        "fn service_evidence(",
+        "EvidenceServiceResult",
+        "IrqEvidenceId",
         "CompletedRequest",
+        "fn shutdown(&mut self) -> Result<(), BlkError>",
     ] {
         assert!(
             source.contains(required),
-            "missing rdif-block 0.12 contract: {required}"
+            "missing rdif-block 0.13 contract: {required}"
         );
     }
 
     for forbidden in [
         "poll_request",
-        "RequestStatus",
+        "poll_completions",
+        "QueueEventBatch",
+        "ServiceRerunReason",
+        "SubmitOutcome",
+        "RequestPoller",
         "next_request_id",
-        "shutdown(&mut self, sink",
-        "shutdown(&mut self, _sink",
+        "queue_work_on",
+        "workqueue",
+        "Waker",
     ] {
         assert!(
             !source.contains(forbidden),
-            "legacy polling/driver-ID contract remains: {forbidden}"
+            "legacy polling or OS-policy contract remains: {forbidden}"
         );
     }
 }
 
 #[test]
-fn irq_status_is_owned_by_a_split_capture_and_control_port() {
+fn irq_status_is_owned_by_a_split_evidence_and_notify_port() {
     let source = virtio_block_source();
 
     for required in [
         "VirtioInterruptPort",
-        "BlockIrqSource::new",
+        "VirtioQueueNotifyPort",
+        "BlockEvidenceSource::new",
         "impl IrqEndpoint",
         "fn capture(&mut self)",
-        "fn contain(",
-        "impl IrqSourceControl",
-        "fn rearm(&mut self, source: MaskedSource)",
-        "IrqCapture::Captured",
+        "fn capture_raw_status(&mut self)",
+        "IrqEvidenceId",
+        "VirtioBlockEvidenceLedger",
+        "IrqCapture::Unhandled",
         "Arc<mmio_api::Mmio>",
     ] {
         assert!(
             source.contains(required),
-            "missing split VirtIO IRQ ownership contract: {required}"
+            "missing split VirtIO IRQ evidence contract: {required}"
         );
     }
 
@@ -92,7 +105,6 @@ fn irq_status_is_owned_by_a_split_capture_and_control_port() {
         "irq_ack_pending",
         "transport.ack_interrupt",
         "MmioRaw",
-        "ioremap_raw",
     ] {
         assert!(
             !source.contains(forbidden),
@@ -103,44 +115,58 @@ fn irq_status_is_owned_by_a_split_capture_and_control_port() {
 }
 
 #[test]
-fn discovery_defers_all_virtio_initialization_until_irq_binding() {
+fn queue_doorbell_is_bound_before_requests_can_become_visible() {
     let source = virtio_block_source();
 
     for required in [
-        "ControllerInitEndpoint::Pending",
-        "impl<T: VirtIoTransport> rdif_block::InitialController",
-        "VirtioBlockInitPhase",
-        "InitSchedule::immediate()",
-        "take_initialization_source",
+        "struct BoundVirtioQueueNotifyPort",
+        "Result<BoundVirtioQueueNotifyPort, (BlkError, Self)>",
+        "notify: BoundVirtioQueueNotifyPort",
+        "self.notify.notify();",
     ] {
         assert!(
             source.contains(required),
-            "missing staged virtio-blk initialization contract: {required}"
+            "VirtIO queue publication lacks the bound doorbell proof: {required}"
         );
     }
-
-    for forbidden in ["VirtIOBlk::new", "read_consistent("] {
+    for forbidden in ["notification_fault", "!self.notify.notify("] {
         assert!(
             !source.contains(forbidden),
-            "discovery still enters an eager or unbounded upstream initializer: {forbidden}"
+            "accepted VirtIO requests still depend on a fallible late doorbell: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn discovery_defers_all_virtio_initialization_until_activation() {
+    let production = virtio_block_source();
+    let discovery = source("src/virtio/block/discovery.rs");
+
+    for required in [
+        "impl<T: VirtIoTransport> ControllerActivator",
+        "VirtioBlockActivator::discovered",
+        "ControllerControlPart::new_combined_shared",
+        "VirtioBlockInitPhase",
+        "InitSchedule::immediate()",
+        "register_block_activator_with_info",
+    ] {
+        assert!(
+            production.contains(required),
+            "missing two-phase VirtIO activation contract: {required}"
         );
     }
 
-    let registration = source
-        .find("plat_dev.register_block_with_info")
-        .expect("discovery must publish an unresolved block controller");
-    let first_init_poll = source
-        .find("fn poll_init")
-        .expect("initialization must be driven by the runtime endpoint");
-    assert!(
-        registration < first_init_poll,
-        "the discovered controller must be registered before its first init transition exists"
-    );
+    for forbidden in ["VirtIOBlk::new", ".poll_init(", "read_consistent("] {
+        assert!(
+            !discovery.contains(forbidden),
+            "discovery still enters hardware initialization: {forbidden}"
+        );
+    }
 }
 
 #[test]
 fn pci_discovery_captures_memory_bars_before_transport_takeover() {
-    let source = virtio_block_source();
+    let source = source("src/virtio/block/discovery.rs");
     let probe = source
         .find("fn probe_pci")
         .expect("VirtIO block must expose PCI discovery");
@@ -163,33 +189,35 @@ fn pci_discovery_captures_memory_bars_before_transport_takeover() {
 }
 
 #[test]
-fn mmio_and_pci_preserve_interrupt_capability_before_transport_erasure() {
+fn mmio_and_pci_preserve_isr_and_notify_capabilities_before_transport_erasure() {
     let block = virtio_block_source();
+    let discovery = source("src/virtio/block/discovery.rs");
     let common = virtio_common_source();
 
-    let pci_port = block
+    let pci_isr = discovery
         .find("let interrupt_port = pci_interrupt_port(probe.endpoint())")
         .expect("PCI probe must extract the dedicated ISR capability");
-    let pci_transport = block
+    let pci_notify = discovery
+        .find("let notify_port = pci_notify_port(probe.endpoint())")
+        .expect("PCI probe must extract the dedicated notify capability");
+    let pci_transport = discovery
         .find("crate::pci::take_virtio_block_transport")
         .expect("PCI probe must still construct the queue/config transport");
-    assert!(
-        pci_port < pci_transport,
-        "PCI ISR ownership must be retained before endpoint takeover"
-    );
+    assert!(pci_isr < pci_transport && pci_notify < pci_transport);
 
     for required in [
         "VirtioInterruptPort::from_pci_isr",
         "VirtioInterruptPort::from_mmio",
+        "VirtioQueueNotifyPort::from_pci",
+        "VirtioQueueNotifyPort::from_mmio",
         "register_transport_with_interrupt_port",
         "block::register_mmio_transport",
-        "VirtioRegisterMappingLease",
         "if bar >= 6",
         "capability_length < PCI_VIRTIO_ISR_CAP_MIN_LENGTH",
     ] {
         assert!(
             block.contains(required) || common.contains(required),
-            "block registration erased its interrupt capability: {required}"
+            "block registration erased an interrupt/notify capability: {required}"
         );
     }
     assert!(
@@ -202,41 +230,39 @@ fn mmio_and_pci_preserve_interrupt_capability_before_transport_erasure() {
 }
 
 #[test]
-fn queue_and_capacity_are_gated_by_the_ready_state() {
-    let source = virtio_block_source();
-
-    assert!(source.contains("fn is_ready(&self) -> bool"));
-    assert!(source.contains("if self.queue_created || !self.dev.is_ready()"));
-    assert!(source.contains("fn capacity_if_ready(&self) -> Option<u64>"));
-    assert!(
-        source.contains("capacity_if_ready().unwrap_or(0)"),
-        "discovery must not publish hardware capacity before init reaches Ready"
-    );
-}
-
-#[test]
-fn recovery_uses_acknowledged_device_reset_and_the_staged_initializer() {
+fn queue_and_capacity_are_moved_only_after_ready() {
     let source = virtio_block_source();
 
     for required in [
-        "DmaQuiesced::new",
-        "ControllerReady::new",
-        "finish_reset_after_acknowledgement",
-        "prepare_reinitialize",
-        "poll_reinitialize",
-        "self.queue.take()",
+        "VirtioOwnedQueue::take_ready",
+        "inner.init_phase != crate::virtio::block::initialization::VirtioBlockInitPhase::Ready",
+        "inner.queue.take()",
+        "inner.descriptor_storage.take()",
+        "let info = queue.info()",
     ] {
         assert!(
             source.contains(required),
-            "missing acknowledged VirtIO reset/reinitialize contract: {required}"
+            "ready publication does not linearly move queue state: {required}"
         );
     }
+}
 
-    for forbidden in ["ResetUnavailable", "VIRTIO_RESET_UNAVAILABLE"] {
+#[test]
+fn recovery_requires_acknowledged_dma_quiescence_and_fails_closed_without_rebuild_parts() {
+    let source = virtio_block_source();
+
+    for required in [
+        "rdif_block::DmaQuiesced::new",
+        "set_status(virtio_drivers::transport::DeviceStatus::empty())",
+        "VirtioV13Lifecycle::Quiesced",
+        "fn reclaim_after_quiesce(",
+        "fn resume_after_reinitialize",
+        "fn begin_rebuild(",
+        "fn install_rebuilt_queue(",
+    ] {
         assert!(
-            !source.contains(forbidden),
-            "VirtIO recovery still fails closed despite Transport status reset support: \
-             {forbidden}"
+            source.contains(required),
+            "VirtIO lifecycle can reclaim or resume without proof: {required}"
         );
     }
 }
@@ -306,7 +332,9 @@ fn virtio_block_entry_is_a_small_domain_directory() {
         "initialization",
         "irq",
         "lifecycle",
+        "notify",
         "queue",
+        "v13",
     ] {
         assert!(
             source.contains(&format!("mod {module};")),
@@ -318,7 +346,7 @@ fn virtio_block_entry_is_a_small_domain_directory() {
         "impl<T: VirtIoTransport",
         "fn probe_pci",
         "fn submit_owned",
-        "fn virtio_blk_irq_outcome",
+        "fn capture_raw_status",
     ] {
         assert!(
             !source.contains(implementation),

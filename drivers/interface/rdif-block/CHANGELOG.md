@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Add the v0.13 two-phase `ControllerCapabilities -> ActivationPlan ->
+  ActivatedControllerParts` boundary. Plans retain the discovered logical
+  device and ownership-domain snapshot, while move-only control and I/O parts
+  preserve one explicit control owner, including control-only admin domains.
+- Split new inline execution from interrupt submission. Interrupt rejection
+  returns the complete owned request plus a linear hardware-not-visible proof;
+  synchronous completion is not representable on the new interrupt surface.
 - Bind every interrupt `QueueHandle` to its retained controller and publication
   epoch, then reject foreign, pre-publication, or replayed DMA-quiescence proofs
   in the generic RDIF layer before driver code can reclaim request ownership.
@@ -53,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Return an explicit quarantine owner when unpublished-device rollback cannot
   close every queue, retaining both the original contract failure and the
   close diagnostics instead of dropping them with a temporary collection.
+- Require an inseparable shared control/I/O owner to consume its exact
+  publication-bound domain permit before installing a newer controller epoch;
+  normal I/O borrows no longer expose the driver's raw epoch-resume method.
 
 ### Fixed
 

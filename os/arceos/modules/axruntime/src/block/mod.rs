@@ -1,19 +1,28 @@
 //! Linux-style block runtime primitives owned by ax-runtime.
 
 mod activation;
+mod activation_v13;
+mod config;
 mod controller;
 mod event_ring;
 mod handoff;
 mod hctx;
 pub mod hctx_model;
+mod inline;
 mod quarantine;
 mod request;
 mod service;
 mod statistics;
 
+pub use activation_v13::{
+    ReadyControllerCloseFailure, ReadyControllerInstallation, V13ActivationError,
+    V13BlockDeviceView, V13SubmitError, V13SubmitErrorKind, V13SubmittedRequest,
+    activate_discovered_controllers_v13,
+};
+pub use config::{BlockRuntimeConfig, DEFAULT_REQUEST_WATCHDOG_NS};
 pub use controller::{
     BlockController, BlockControllerError, BlockDeviceView, BlockHandoffError,
-    activate_discovered_controllers, block_io_stats,
+    activate_discovered_controllers, activate_discovered_controllers_with_config, block_io_stats,
 };
 pub(crate) use event_ring::{EventRing, RingFull};
 pub use handoff::{
@@ -31,6 +40,7 @@ pub use hctx_model::{
     ServiceContinuation, ServiceStage,
 };
 pub(crate) use hctx_model::{HctxAccessGate, HctxAccessPermit};
+pub use inline::InlineBlockDeviceView;
 pub(crate) use request::{RequestState, RequestTag, RequestTagSet, TagError};
 pub use service::BlockServiceError;
 pub use statistics::BlockIoStats;

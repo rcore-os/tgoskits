@@ -249,6 +249,38 @@ fn card_sideband_irq_is_acknowledged_without_entering_request_epoch() {
 }
 
 #[test]
+fn evidence_endpoint_publishes_only_the_typed_snapshot() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    assert!(host.irq.state.begin_request());
+    let (mut endpoint, _control) = host.take_evidence_irq_source().unwrap().into_parts();
+    host.write_u16(
+        REG_NORMAL_INT_STATUS,
+        NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE,
+    );
+
+    let IrqCapture::Captured {
+        event,
+        masked: None,
+    } = endpoint.capture()
+    else {
+        panic!("request completion must produce one typed evidence snapshot")
+    };
+    let summary = event.stable_summary();
+    assert_eq!(
+        summary.stable_status,
+        u32::from(NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE)
+    );
+    assert!(summary.queue_service);
+    assert_eq!(host.irq.state.pending_normal(), 0);
+    assert_eq!(host.irq.state.pending_error(), 0);
+}
+
+#[test]
 fn exposes_block_buffer_constraints() {
     let host = unsafe { Sdhci::new_from_addr(0x1000_0000) };
 

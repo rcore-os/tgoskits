@@ -134,7 +134,7 @@ impl HardwareQueue {
             cause_pending: self.control.has_pending(),
             dispatch_budget_exhausted,
             staged_request: self.has_staged(),
-            inflight_request: self.inflight.load(Ordering::Acquire) != 0,
+            inflight_request: self.hardware_credits.in_use() != 0,
         };
         Ok(if continuation.requires_immediate_requeue() {
             OwnerServiceProgress::More
@@ -258,8 +258,7 @@ impl HardwareQueue {
 
     pub(super) fn finish_installed_completion(&self, tag: RequestTag, was_inflight: bool) {
         if was_inflight {
-            let previous = self.inflight.fetch_sub(1, Ordering::AcqRel);
-            assert!(previous != 0, "block hctx inflight count underflowed");
+            self.hardware_credits.release_inflight();
         }
         self.finish_accepted_request();
         self.requests.notify_completion(tag);
@@ -391,9 +390,7 @@ impl HardwareQueue {
 
     fn remove_staged_tag(&self, tag: RequestTag) -> Result<(), HardwareQueueError> {
         let mut removed = usize::from(self.dispatch_list.lock().remove(tag));
-        for context in &self.software_contexts {
-            removed += usize::from(context.lock().remove(tag));
-        }
+        removed += self.software_contexts.remove(self.hctx_index, tag);
         if removed == 1 {
             Ok(())
         } else {
@@ -404,10 +401,13 @@ impl HardwareQueue {
     fn dispatch_staged(&self, budget: &mut ServiceBudget) -> Result<bool, HardwareQueueError> {
         let mut driver = self.take_driver_on_owner()?;
         while !budget.is_exhausted() {
+            let Some(credit) = self.hardware_credits.try_reserve() else {
+                break;
+            };
             let Some(tag) = self.next_dispatch_tag() else {
                 break;
             };
-            let mut result = self.dispatch_one_locked(tag, &mut driver)?;
+            let mut result = self.dispatch_one_locked(tag, &mut driver, credit)?;
             match result.disposition {
                 DispatchDisposition::Queued => {
                     consume_service_budget(budget, 1)?;
@@ -430,38 +430,27 @@ impl HardwareQueue {
                     consume_service_budget(budget, 1)?;
                     driver = self.take_driver_on_owner()?;
                 }
-                DispatchDisposition::Deferred => {
-                    self.dispatch_list.lock().push(tag)?;
-                    break;
-                }
             }
-        }
-        if self.has_staged() && self.inflight.load(Ordering::Acquire) == 0 {
-            return Err(HardwareQueueError::Driver(BlkError::Busy));
         }
         Ok(budget.is_exhausted() && self.has_staged())
     }
 
     fn next_dispatch_tag(&self) -> Option<RequestTag> {
         let hardware_ready = !self.dispatch_list.lock().is_empty();
-        let software_ready =
-            core::array::from_fn(|cpu| !self.software_contexts[cpu].lock().is_empty());
+        let software_ready = self.software_contexts.readiness_for(self.hctx_index);
         let source = self
             .dispatch_arbiter
             .lock()
             .select(hardware_ready, &software_ready)?;
         match source {
             DispatchSource::HardwareDispatchList => self.dispatch_list.lock().pop(),
-            DispatchSource::Cpu(cpu) => self.software_contexts[cpu].lock().pop(),
+            DispatchSource::Cpu(cpu) => self.software_contexts.pop_for(cpu, self.hctx_index),
         }
     }
 
     pub(super) fn has_staged(&self) -> bool {
         !self.dispatch_list.lock().is_empty()
-            || self
-                .software_contexts
-                .iter()
-                .any(|context| !context.lock().is_empty())
+            || self.software_contexts.has_staged_for(self.hctx_index)
     }
 
     pub(super) fn reserve_submission(
@@ -504,7 +493,7 @@ impl HardwareQueue {
 
     pub(super) fn is_drained(&self) -> bool {
         self.accepted_requests.load(Ordering::Acquire) == 0
-            && self.inflight.load(Ordering::Acquire) == 0
+            && self.hardware_credits.in_use() == 0
             && !self.has_staged()
             && self.events.is_empty()
             && !self.control.has_pending()
@@ -530,7 +519,7 @@ impl HardwareQueue {
             HardwareQueueError::StaleCompletion
             | HardwareQueueError::SynchronousCompletion
             | HardwareQueueError::RequestState => 2,
-            HardwareQueueError::Driver(_) => 3,
+            HardwareQueueError::Driver(_) | HardwareQueueError::DispatchContract { .. } => 3,
             _ => 4,
         };
         self.service_error.store(code, Ordering::Release);
@@ -570,9 +559,7 @@ impl HardwareQueue {
             .and_then(|mut driver| driver.reclaim_after_quiesce(proof, &mut completions));
 
         self.dispatch_list.lock().clear();
-        for context in &self.software_contexts {
-            context.lock().clear();
-        }
+        self.software_contexts.clear_hctx(self.hctx_index);
         let runtime_result = self.requests.reclaim_runtime_owned(&mut completions);
         while self.events.pop().is_some() {}
         let _stale_causes = self.control.take_service_batch();
@@ -583,7 +570,7 @@ impl HardwareQueue {
         runtime_result?;
         driver_result.map_err(HardwareQueueError::from)?;
         if self.accepted_requests.load(Ordering::Acquire) != 0
-            || self.inflight.load(Ordering::Acquire) != 0
+            || self.hardware_credits.in_use() != 0
         {
             return Err(HardwareQueueError::StaleCompletion);
         }

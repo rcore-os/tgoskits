@@ -20,7 +20,7 @@ use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
 use sdmmc_protocol::{
     error::{Error, ErrorContext, Phase},
-    sdio::host::{ClockSpeed, SignalVoltage},
+    sdio::host::{ClockSpeed, HostIrqSnapshot, SignalVoltage},
 };
 use volatile::VolatilePtr;
 
@@ -371,6 +371,11 @@ pub struct DwMmc {
     pub(crate) ext_clock: Option<Box<dyn HostClock>>,
     pub(crate) pending_data: Option<PendingData>,
     pub(crate) command_state: CommandState,
+    /// Task-owned remainder of the exact v0.13 controller snapshot.
+    pub(crate) evidence_status: u32,
+    /// Task-owned remainder of the exact v0.13 IDMAC snapshot.
+    pub(crate) evidence_idmac_status: u32,
+    pub(crate) evidence_irq: bool,
     pub(crate) data_blocks_remaining: u32,
     pub(crate) data_cmd_index: u8,
     pub(crate) dma: Option<DeviceDma>,
@@ -423,6 +428,9 @@ impl DwMmc {
             ext_clock: None,
             pending_data: None,
             command_state: CommandState::Idle,
+            evidence_status: 0,
+            evidence_idmac_status: 0,
+            evidence_irq: false,
             data_blocks_remaining: 0,
             data_cmd_index: 0,
             dma: None,
@@ -578,11 +586,53 @@ impl DwMmc {
         // The IRQ endpoint is the sole owner of destructive RINTSTS reads and
         // W1C acknowledgement. An empty mailbox means no acknowledged event,
         // never permission to inspect hardware from task context.
-        self.irq.state.take(mask)
+        if self.evidence_irq {
+            let status = self.evidence_status & mask;
+            self.evidence_status &= !mask;
+            status
+        } else {
+            self.irq.state.take(mask)
+        }
     }
 
     pub(crate) fn take_task_idmac_status(&mut self, mask: u32) -> u32 {
-        self.irq.state.take_idmac(mask)
+        if self.evidence_irq {
+            let status = self.evidence_idmac_status & mask;
+            self.evidence_idmac_status &= !mask;
+            status
+        } else {
+            self.irq.state.take_idmac(mask)
+        }
+    }
+
+    pub(crate) fn install_evidence_snapshot(
+        &mut self,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<(), Error> {
+        if !self.evidence_irq {
+            return Err(Error::InvalidArgument);
+        }
+        self.evidence_status |= snapshot.stable_status;
+        self.evidence_idmac_status |= snapshot.dma_status;
+        Ok(())
+    }
+
+    pub(crate) fn begin_request_irq_epoch(&mut self) {
+        self.evidence_status = 0;
+        self.evidence_idmac_status = 0;
+        self.irq.state.begin_request();
+    }
+
+    pub(crate) fn end_request_irq_epoch(&mut self) {
+        self.evidence_status = 0;
+        self.evidence_idmac_status = 0;
+        self.irq.state.end_request();
+    }
+
+    pub(crate) fn clear_task_irq_evidence(&mut self) {
+        self.evidence_status = 0;
+        self.evidence_idmac_status = 0;
+        self.irq.state.clear_all();
     }
 
     pub(crate) fn program_linux_init_baseline(&self) {

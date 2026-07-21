@@ -56,6 +56,7 @@ impl HostEvent for Event {
     fn stable_summary(&self) -> HostEventSummary {
         HostEventSummary {
             stable_status: u32::from(self.normal) | (u32::from(self.error) << 16),
+            dma_status: 0,
             queue_service: self.requests_block_queue_service(),
             card_function_interrupt: self.normal & NORMAL_INT_CARD_INTERRUPT != 0,
         }
@@ -84,10 +85,29 @@ impl Sdhci {
     /// until that registration succeeds. A later activation may acquire a new
     /// lease only after both halves of the synchronized old lease are retired.
     pub fn take_irq_source(&mut self) -> Option<SdhciIrqSource> {
+        let source = self.take_irq_source_for(IrqPublication::LegacyMailbox);
+        if source.is_some() {
+            self.evidence_irq = false;
+        }
+        source
+    }
+
+    /// Acquires the source whose endpoint publishes only typed v0.13 ledger
+    /// evidence and never fills the compatibility task mailbox.
+    pub fn take_evidence_irq_source(&mut self) -> Option<SdhciIrqSource> {
+        let source = self.take_irq_source_for(IrqPublication::EvidenceLedger);
+        if source.is_some() {
+            self.evidence_irq = true;
+        }
+        source
+    }
+
+    fn take_irq_source_for(&mut self, publication: IrqPublication) -> Option<SdhciIrqSource> {
         self.irq.state.take_source().then(|| {
             SdioIrqSource::new(
                 SdhciIrqEndpoint {
                     irq: Arc::clone(&self.irq),
+                    publication,
                 },
                 SdhciIrqControl {
                     irq: Arc::clone(&self.irq),
@@ -102,7 +122,7 @@ impl IrqEndpoint for SdhciIrqEndpoint {
     type Fault = Error;
 
     fn capture(&mut self) -> IrqCapture<Self::Event, Self::Fault> {
-        capture_irq_core(&self.irq)
+        capture_irq_core(&self.irq, self.publication)
     }
 
     fn contain(&mut self, _cause: ContainmentCause) -> Result<MaskedSource, Self::Fault> {
@@ -171,7 +191,7 @@ impl Drop for SdhciIrqControl {
     }
 }
 
-fn capture_irq_core(irq: &host::IrqCore) -> IrqCapture<Event, Error> {
+fn capture_irq_core(irq: &host::IrqCore, publication: IrqPublication) -> IrqCapture<Event, Error> {
     let generation = irq.state.generation();
     let (normal, error) = if irq.aligned_32bit {
         let status = read_u32(irq.base_addr, REG_NORMAL_INT_STATUS);
@@ -211,8 +231,10 @@ fn capture_irq_core(irq: &host::IrqCore) -> IrqCapture<Event, Error> {
     // Card-detect, SDIO-card, re-tuning, and vendor sideband causes are
     // controller-owned. They are acknowledged here but must never become
     // request-generation evidence or prevent the next command handoff.
-    irq.state
-        .cache_if_current(generation, normal & NORMAL_INT_REQUEST_MASK, error);
+    if matches!(publication, IrqPublication::LegacyMailbox) {
+        irq.state
+            .cache_if_current(generation, normal & NORMAL_INT_REQUEST_MASK, error);
+    }
 
     let event = event_from_status(normal, error);
     if event.is_empty() {

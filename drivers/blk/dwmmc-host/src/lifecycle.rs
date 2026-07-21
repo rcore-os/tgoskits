@@ -99,7 +99,7 @@ impl SdioHost2Lifecycle for DwMmc {
                 // task-local until the action is enabled again.
                 self.clear_all_int_status();
                 self.clear_all_idmac_status();
-                self.irq.state.clear_all();
+                self.clear_task_irq_evidence();
                 self.pending_data = None;
                 self.data_blocks_remaining = 0;
                 self.data_cmd_index = 0;
@@ -198,7 +198,7 @@ impl SdioHost2Lifecycle for DwMmc {
                 }
                 self.clear_all_int_status();
                 self.clear_all_idmac_status();
-                self.irq.state.clear_all();
+                self.clear_task_irq_evidence();
                 self.dma_poisoned = false;
                 self.recovery_quiesced = false;
                 state.phase = DwMmcRecoveryPhase::Ready;

@@ -10,6 +10,43 @@ use crate::block::{HardwareQueueError, HostPhysicalRangeError, StorageGuestKey};
 /// A controller activation failure that prevents device publication.
 #[derive(Debug, Error)]
 pub enum BlockControllerError {
+    /// No CPU is available for a non-migratable maintenance owner.
+    #[error("block controller activation observed no online CPU")]
+    NoOnlineCpu,
+    /// Platform metadata assigned one logical source identifier more than once.
+    #[error("block controller logical IRQ source {0} is duplicated")]
+    DuplicateIrqSource(usize),
+    /// Existing shared lines in one physical ownership domain are pinned to
+    /// different CPUs and therefore cannot be owned by one maintenance thread.
+    #[error(
+        "block IRQ ownership conflict: {first_irq:?} is fixed to CPU {first_cpu}, but \
+         {conflicting_irq:?} is fixed to CPU {conflicting_cpu}"
+    )]
+    IrqOwnershipConflict {
+        first_irq: ax_hal::irq::IrqId,
+        first_cpu: usize,
+        conflicting_irq: ax_hal::irq::IrqId,
+        conflicting_cpu: usize,
+    },
+    /// A retained shared-line owner is outside the frozen online CPU set.
+    #[error(
+        "block IRQ owner CPU {owner_cpu} is outside the frozen online CPU set of \
+         {online_cpu_count} CPUs"
+    )]
+    IrqOwnerOutsideOnlineSet {
+        owner_cpu: usize,
+        online_cpu_count: usize,
+    },
+    /// The spawned maintenance owner does not match the CPU reserved by the
+    /// immutable IRQ ownership domain.
+    #[error("block maintenance owner CPU {actual_cpu} does not match reserved CPU {expected_cpu}")]
+    MaintenanceOwnerCpuMismatch {
+        expected_cpu: usize,
+        actual_cpu: usize,
+    },
+    /// The fixed block IRQ-line ownership registry is exhausted.
+    #[error("block IRQ ownership registry capacity is exhausted")]
+    IrqOwnershipCapacity,
     /// Probe metadata contained a malformed host resource interval.
     #[error("block controller {controller} exposed an invalid host resource: {source}")]
     InvalidHostResource {

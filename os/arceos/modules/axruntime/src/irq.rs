@@ -392,6 +392,7 @@ mod registration {
         }
 
         /// Returns a task-context snapshot of this action and backing line.
+        #[cfg(feature = "block")]
         pub(crate) fn status(&self) -> Result<ax_hal::irq::IrqStatus, IrqError> {
             ax_hal::irq::irq_status(self.required_handle()?)
         }
@@ -500,9 +501,9 @@ mod registration {
             match ax_hal::irq::reattach_irq_action(action) {
                 Ok(handle) => {
                     // A successful reattach published a fresh prepared-line
-                    // generation before the disabled host callback. The old
-                    // release proof has completed its linear handoff role.
-                    drop(released_line);
+                    // generation before the disabled host callback. Ownership
+                    // of the old release proof was moved into this operation;
+                    // leaving this branch retires it after that handoff.
                     Ok(Registration {
                         name: core::mem::take(&mut self.name),
                         handle: Some(handle),

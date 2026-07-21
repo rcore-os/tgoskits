@@ -86,6 +86,9 @@ pub struct Sdhci {
     /// while preserving a coalesced transfer-complete bit for the next FSM
     /// transition.
     pub(crate) pending_irq: IrqSnapshot,
+    /// Selects explicit v0.13 ledger snapshots instead of the compatibility
+    /// task-side atomic mailbox.
+    pub(crate) evidence_irq: bool,
     /// Whether the platform has wired up the IO-domain regulator needed to
     /// actually run the bus at 1.8 V. Default `false` — toggling
     /// `HOST_CONTROL2.1V8_SIGNALING_ENABLE` alone changes the controller
@@ -159,6 +162,7 @@ impl Sdhci {
             reset_hook: None,
             timer: None,
             pending_irq: IrqSnapshot::empty(),
+            evidence_irq: false,
             support_1v8: false,
             base_clock_override_hz: None,
             active_data_cmd: 0,

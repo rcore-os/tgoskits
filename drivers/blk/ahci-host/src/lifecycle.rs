@@ -33,6 +33,20 @@ impl AhciLifecycle {
         epoch: ControllerEpoch,
         _cause: RecoveryCause,
     ) -> Result<(), InitError> {
+        self.begin_dma_quiesce_epoch(shared, epoch)
+    }
+
+    /// Starts the invariant quiesce protocol for a v0.13 control trigger.
+    ///
+    /// `QuiesceIntent` deliberately does not get converted into a fabricated
+    /// queue/request-specific [`RecoveryCause`]. AHCI uses the same complete
+    /// controller stop protocol for every intent, so the epoch is the only
+    /// hardware fact required by this state machine.
+    pub(crate) fn begin_dma_quiesce_epoch(
+        &mut self,
+        shared: &HostShared,
+        epoch: ControllerEpoch,
+    ) -> Result<(), InitError> {
         if !matches!(
             self.state,
             LifecycleState::Running | LifecycleState::GuestOwned

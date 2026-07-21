@@ -6280,7 +6280,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-block"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "dma-api",
  "rdif-base",
@@ -7179,6 +7179,7 @@ dependencies = [
  "rdif-block",
  "rdif-irq",
  "sdio-host2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

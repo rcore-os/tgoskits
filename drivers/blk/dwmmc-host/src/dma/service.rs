@@ -49,7 +49,7 @@ impl DwMmc {
                 completed
             }
         };
-        self.irq.state.end_request();
+        self.end_request_irq_epoch();
         Ok(completed_dma)
     }
 
@@ -305,8 +305,8 @@ impl DwMmc {
         self.disable_idmac();
     }
 
-    fn prepare_data_irq_for_transfer(&self) {
-        self.irq.state.clear_all();
+    fn prepare_data_irq_for_transfer(&mut self) {
+        self.clear_task_irq_evidence();
     }
 
     fn take_idmac_data_error(&mut self, cmd_index: u8, phase: Phase) -> Option<Error> {

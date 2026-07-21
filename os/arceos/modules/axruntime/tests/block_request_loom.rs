@@ -11,7 +11,6 @@ const IN_FLIGHT: u8 = 1;
 const COMPLETING: u8 = 2;
 const TIMING_OUT: u8 = 3;
 const CANCELING: u8 = 4;
-const DISPATCHING: u8 = 5;
 const TERMINAL_CLOSED: usize = 1 << 7;
 const IRQ_PUBLISHERS: usize = TERMINAL_CLOSED - 1;
 
@@ -94,57 +93,76 @@ fn submit_gate_decides_whether_cancellation_requires_dma_recovery() {
 }
 
 #[test]
-fn driver_acceptance_boundary_cannot_be_claimed_as_software_owned_timeout() {
+fn hardware_visibility_follows_inflight_and_credit_publication() {
     loom::model(|| {
         let state = Arc::new(AtomicU8::new(STAGED));
-        let driver_owned = Arc::new(AtomicBool::new(false));
+        let inflight = Arc::new(AtomicUsize::new(0));
+        let credits = Arc::new(AtomicUsize::new(0));
+        let hardware_visible = Arc::new(AtomicBool::new(false));
 
         let submit = {
             let state = Arc::clone(&state);
-            let driver_owned = Arc::clone(&driver_owned);
+            let inflight = Arc::clone(&inflight);
+            let credits = Arc::clone(&credits);
+            let hardware_visible = Arc::clone(&hardware_visible);
             thread::spawn(move || {
-                if state
-                    .compare_exchange(STAGED, DISPATCHING, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
+                if credits
+                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
                 {
-                    driver_owned.store(true, Ordering::Release);
-                    state
-                        .compare_exchange(
-                            DISPATCHING,
-                            IN_FLIGHT,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        )
-                        .unwrap();
+                    return;
                 }
+                if state
+                    .compare_exchange(STAGED, IN_FLIGHT, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    credits.fetch_sub(1, Ordering::AcqRel);
+                    return;
+                }
+                inflight.store(1, Ordering::Release);
+
+                // This models descriptor publication and the doorbell write.
+                // There is deliberately no intermediate Dispatching state:
+                // any completion made possible by this store must already see
+                // the request as InFlight with one retained hardware credit.
+                hardware_visible.store(true, Ordering::Release);
             })
         };
-        let timeout = {
+        let completion = {
             let state = Arc::clone(&state);
-            let driver_owned = Arc::clone(&driver_owned);
+            let inflight = Arc::clone(&inflight);
+            let credits = Arc::clone(&credits);
+            let hardware_visible = Arc::clone(&hardware_visible);
             thread::spawn(move || {
-                let observed = state.load(Ordering::Acquire);
-                if matches!(observed, STAGED | IN_FLIGHT)
-                    && state
-                        .compare_exchange(observed, TIMING_OUT, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
+                if !hardware_visible.load(Ordering::Acquire) {
+                    return;
+                }
+                assert_ne!(state.load(Ordering::Acquire), STAGED);
+                if state
+                    .compare_exchange(IN_FLIGHT, COMPLETING, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
                 {
-                    assert_eq!(
-                        driver_owned.load(Ordering::Acquire),
-                        observed == IN_FLIGHT,
-                        "timeout recovery must agree with the driver's ownership boundary"
-                    );
+                    assert_eq!(inflight.swap(0, Ordering::AcqRel), 1);
+                    assert_eq!(credits.fetch_sub(1, Ordering::AcqRel), 1);
                 }
             })
         };
 
         submit.join().unwrap();
-        timeout.join().unwrap();
-        if driver_owned.load(Ordering::Acquire) {
+        completion.join().unwrap();
+        if hardware_visible.load(Ordering::Acquire) {
             assert!(matches!(
                 state.load(Ordering::Acquire),
-                IN_FLIGHT | TIMING_OUT
+                IN_FLIGHT | COMPLETING
             ));
+            assert_eq!(
+                inflight.load(Ordering::Acquire),
+                usize::from(state.load(Ordering::Acquire) == IN_FLIGHT)
+            );
+            assert_eq!(
+                credits.load(Ordering::Acquire),
+                inflight.load(Ordering::Acquire)
+            );
         }
     });
 }

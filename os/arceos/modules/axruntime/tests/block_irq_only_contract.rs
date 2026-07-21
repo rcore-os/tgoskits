@@ -165,6 +165,29 @@ fn filesystem_and_rdif_keep_the_irq_only_boundary() {
 }
 
 #[test]
+fn request_watchdog_policy_is_owned_by_the_runtime() {
+    let runtime = rust_sources_under("os/arceos/modules/axruntime/src/block");
+    let activation = read_workspace_file("drivers/interface/rdif-block/src/activation/mod.rs");
+
+    assert!(runtime.contains("pub struct BlockRuntimeConfig"));
+    assert!(runtime.contains("DEFAULT_REQUEST_WATCHDOG_NS"));
+    assert!(
+        !runtime.contains("limits.request_timeout_ns"),
+        "portable queue metadata must not select the OS watchdog policy"
+    );
+
+    let hardware_limits = source_section(
+        &activation,
+        "pub struct HardwareQueueLimits",
+        "impl HardwareQueueLimits",
+    );
+    assert!(
+        !hardware_limits.contains("request_timeout_ns"),
+        "v0.13 hardware limits describe hardware, not runtime watchdog policy"
+    );
+}
+
+#[test]
 fn queue_shutdown_cannot_publish_request_ownership() {
     let mut implementations = rust_crate_sources_under("drivers/blk");
     implementations.push_str(&rust_sources_under("drivers/ax-driver/src/block"));
@@ -223,7 +246,7 @@ fn maintenance_thread_pins_itself_before_registering_irq_actions() {
     );
     assert!(controller_spawn.contains("spawn_maintenance_domain"));
     assert!(controller_spawn.contains("move |registrar|"));
-    assert!(controller_spawn.contains("run_controller_owner(device, registrar"));
+    assert!(controller_spawn.contains("run_controller_owner(device, topology, config, registrar"));
 
     let initialize = activation
         .split_once("pub(super) fn initialize_controller_on_owner")
@@ -395,7 +418,7 @@ fn every_hardware_submit_stages_before_owner_dispatch() {
         staging,
         &[
             "self.requests.ensure_staged(tag)?",
-            "context.lock().push(tag)?",
+            ".stage(cpu, self.hctx_index, tag)?",
             "self.queue_service(HctxCause::Submit)",
         ],
     );
@@ -546,7 +569,8 @@ fn handoff_retains_and_reattaches_the_same_owner_actions() {
 
 #[test]
 fn explicit_close_precedes_reclamation_and_failed_drop_is_quarantined() {
-    let activation = read_workspace_file("os/arceos/modules/axruntime/src/block/activation.rs");
+    let teardown =
+        read_workspace_file("os/arceos/modules/axruntime/src/block/activation/teardown.rs");
     let runtime = read_workspace_file("os/arceos/modules/axruntime/src/maintenance/runtime.rs");
     let lifecycle = read_workspace_file("os/arceos/modules/axruntime/src/maintenance/lifecycle.rs");
     let quarantine = read_workspace_file("os/arceos/modules/axruntime/src/block/quarantine.rs");
@@ -556,16 +580,18 @@ fn explicit_close_precedes_reclamation_and_failed_drop_is_quarantined() {
         read_workspace_file("os/arceos/modules/axruntime/src/block/hctx/lifecycle.rs");
     let irq_source =
         read_workspace_file("os/arceos/modules/axruntime/src/block/controller/source.rs");
+    let irq_source_quarantine = read_workspace_file(
+        "os/arceos/modules/axruntime/src/block/controller/source/quarantine.rs",
+    );
     let mut owned_runtime = rust_sources_under("os/arceos/modules/axruntime/src/block");
     owned_runtime.push_str(&rust_sources_under(
         "os/arceos/modules/axruntime/src/maintenance",
     ));
 
-    let close = source_section(
-        &activation,
-        "fn close_controller_resources",
-        "/// Live owner state",
-    );
+    let close = teardown
+        .split_once("pub(super) fn close_controller_resources")
+        .expect("block controller close must remain an explicit teardown transaction")
+        .1;
     assert_in_order(
         close,
         &[
@@ -598,9 +624,9 @@ fn explicit_close_precedes_reclamation_and_failed_drop_is_quarantined() {
     assert!(quarantine.contains("failure.into_quarantine()"));
     assert!(logical_devices.contains("quarantine_live_queue(queue, reason, reservation)"));
     assert!(hctx_lifecycle.contains("quarantine_live_queue(queue, reason, reservation)"));
-    assert!(irq_source.contains("IrqSourceQuarantineRegistry"));
+    assert!(irq_source_quarantine.contains("IrqSourceQuarantineRegistry"));
     assert!(irq_source.contains("fn close(mut self)"));
-    assert!(irq_source.contains("reservation.retain"));
+    assert!(irq_source_quarantine.contains("pub(super) fn retain"));
     assert_absent(
         &(logical_devices + &hctx_lifecycle),
         &["ManuallyDrop"],
@@ -680,7 +706,7 @@ fn owner_driver_transactions_exclude_the_same_cpu_irq_endpoint() {
     );
     let rearm = source_section(
         &irq_source,
-        "pub(in crate::block) fn rearm(",
+        "pub(in crate::block) fn rearm_retained(",
         "pub(in crate::block) fn detach(",
     );
     assert_in_order(
@@ -726,7 +752,7 @@ fn init_irq_replacement_quench_and_rearm_are_linear_owner_protocols() {
         &[
             "retire_initial_sources",
             "BlockController::prepare_on_owner",
-            "prepared.declared_sources()",
+            "bind_normal_sources",
             "prepared.commit_on_owner",
         ],
     );
@@ -747,7 +773,7 @@ fn init_irq_replacement_quench_and_rearm_are_linear_owner_protocols() {
 
     let rearm = source_section(
         &irq_source,
-        "pub(in crate::block) fn rearm(",
+        "pub(in crate::block) fn rearm_retained(",
         "pub(in crate::block) fn detach(",
     );
     assert_in_order(rearm, &[".enable()", ".rearm(masked)"]);

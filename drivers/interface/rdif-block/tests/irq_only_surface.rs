@@ -1,5 +1,6 @@
 const RDIF_PRODUCTION_SOURCE: &str = concat!(
     include_str!("../src/bundle.rs"),
+    include_str!("../src/evidence.rs"),
     include_str!("../src/error.rs"),
     include_str!("../src/info.rs"),
     include_str!("../src/init.rs"),
@@ -35,5 +36,6 @@ fn irq_only_surface_keeps_init_deadlines_separate_from_completion_evidence() {
     assert!(RDIF_PRODUCTION_SOURCE.contains("ControllerInitEndpoint"));
     assert!(RDIF_PRODUCTION_SOURCE.contains("wake_at_ns"));
     assert!(RDIF_PRODUCTION_SOURCE.contains("QueueEventBatch"));
+    assert!(RDIF_PRODUCTION_SOURCE.contains("PendingBlockIrq"));
     assert!(RDIF_PRODUCTION_SOURCE.contains("DmaQuiesced"));
 }

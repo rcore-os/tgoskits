@@ -5,7 +5,7 @@ sidebar_label: "能力边界"
 
 # 能力边界 rdif
 
-`rdif-*` 是能力边界（capability boundary），只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。`rdif-block` 承载 owned request、IRQ event、初始化状态机和控制器生命周期契约；共享 worker、tag、watchdog、阻塞等待及恢复编排属于 `ax-runtime::block`。其它领域如网络仍可按需保留独立 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
+`rdif-*` 是能力边界（capability boundary），只定义某类设备向上暴露什么能力，不负责设备发现、iomap、IRQ 注册、任务调度或系统启动顺序。`rdif-block` 承载 owned request、线性 IRQ evidence、分阶段激活和控制器生命周期契约；software ctx、tag/credit、CPU 固定维护域、watchdog、阻塞等待及恢复编排属于 `ax-runtime::block`。其它领域如网络仍可按需保留独立 runtime wrapper，负责 waker、poll、blocking API、buffer pool 等运行时行为。
 
 所有 `rdif-*` crate 位于 `drivers/interface/`，公共基础是 `rdif-base`。
 
@@ -39,22 +39,30 @@ pub trait DriverGeneric: Send + Any {
 
 | 源码 | 职责 |
 | --- | --- |
-| `interface.rs` | `Interface`、`IQueue`、completion ownership |
+| `activation/` | capability、activation plan、control/I/O ownership parts、Ready publication |
+| `interface.rs` | 迁移期 legacy `Interface` / `IQueue`，不作为新硬件驱动入口 |
 | `request.rs` | `RequestId`、`OwnedRequest`、typed submit result |
 | `planner.rs` | request transfer 分段与硬件约束规划 |
-| `irq.rs` | `IrqSourceInfo`、`IrqOutcome`、稳定 IRQ 事件 |
+| `evidence.rs` | `IrqEvidenceId`、`PendingBlockIrq`、drain/rearm proof |
+| `irq.rs` | 迁移期 queue bitmap 事件 |
 | `init.rs` | discovery-to-ready 初始化状态机 |
 | `lifecycle.rs` | recovery/handoff 与 DMA quiescence proof |
 | `info.rs` | 设备信息 |
 | `error.rs` | `BlkError`、queue contract error |
 
-接口保留 blk-mq 风格的结构能力：设备通过 `create_queue()` 发布实际 queue geometry，runtime 为每个硬件 queue 建立独立 hctx，并在调用驱动前分配 generation-based `RequestId`/tag。`IQueue::submit_owned()` 转移完整 `OwnedRequest` 所有权：纯软件 `Inline` queue 可在调用栈中返回 `SubmitOutcome::Completed`；硬件 `Interrupt` queue 返回 `Queued`，之后只能消费 IRQ 产生的 `QueueEventBatch` 并发布一次 terminal `CompletedRequest`。接口没有 normal-I/O completion query 或 polling fallback。
+接口保留 blk-mq 风格的结构能力，但不复制 Linux 的 polling、elevator 或热插拔实现。runtime 为每个 CPU 建一个 software ctx，通过冻结的 CPU→hctx map 路由到 hardware queue；在调用驱动前先安装 generation-based `RequestId`/tag、deadline、inflight 状态和硬件 credit。credit 深度由 ownership domain 的 activation plan 选择，并由最终 queue descriptor 精确实现；它不是 logical device/namespace 的属性。`InterruptIoDomain::submit_owned()` 只能返回 accepted，或返回完整 `UnacceptedRequest` 及“描述符和 doorbell 从未对硬件可见”的线性证明；accepted 后的错误只能由 IRQ evidence 或 recovery 终结。纯软件设备走独立 `InlineExecuteQueue`，在调用栈中归还完整 request，不分配 tag、waiter 或 IRQ 资源。
 
-硬件 discovery 也不允许同步执行 reset/identify。`Interface::controller_init()` 返回 `ControllerInitEndpoint`，runtime 先绑定 worker 和所有初始化 IRQ action，再调用有界 `poll_init(InitInput)`。`InitSchedule` 必须明确给出可立即重排的内存状态、可推进的 IRQ source 或绝对 `wake_at_ns`；deadline 只用于 reset/clock/power/OCR/PHY 等初始化等待，不能探测普通 I/O 是否完成。capacity 与 queue 只在状态机返回 `Ready` 后发布。
+硬件 discovery 不允许同步执行 reset/identify，也不能伪造初始化后才能知道的 namespace、capacity 或 block size。driver 先发布 controller identity、ownership-domain/IRQ 能力和硬件约束，runtime 冻结 `ActivationPlan`，再把 prepared control owner 移到最终 CPU。该线程亲自注册 control IRQ action 后才启动有界初始化状态机。状态机的下一触发条件只能是明确的内部硬件进展、IRQ source 或绝对 `wake_at_ns`；deadline 只用于 reset/clock/power/OCR/PHY 等协议等待，不能探测普通 I/O 是否完成。
 
-块设备内部的 IRQ 事件按 source 和 queue 分离。`Interface::irq_sources()` 返回的是 `rdif-block` 能力边界内的逻辑 source 列表，每个 `IrqSourceInfo { id, queues }` 描述该 source 可能影响的 queue mask。IRQ endpoint 必须返回 `Unhandled`、已确认事件，或显式 `Deferred`；后者只表示破坏性确认因寄存器所有权竞争而转交给同一 hctx worker，不能伪装成已经确认的完成。runtime 把事件放入固定 ring、合并 hctx 的 `service_work`，worker 以固定 batch 按“IRQ/error → timeout/cancel → completion/wake → dispatch”推进。
+`Ready` 也不能把所有 driver queue 再集中到 controller 对象。它先生成只含 catalog/route 的 publication coordinator 与若干 move-only unbound domain；每个 domain 移入最终维护线程，在该线程绑定精确 IRQ source 后变为 `!Send`，只向 coordinator 返回不可复制的 binding proof。coordinator 收齐全部 proof 后才一次性发布 logical-device geometry 与 route。不同 I/O domain 的 portable source ID 必须互斥；多个不同 source 映射到同一物理 shared line 是 OS binding 事实，并使这些 domain 固定到同一 CPU。shared control 只能复用其 I/O domain 的精确 source 子集。
 
-timeout 和 recovery 通过 lifecycle 契约保持所有权严格：watchdog 获胜后直接把请求判为失败并进入恢复，不读完成寄存器补发现成功。runtime 在发布 interrupt hctx 前把 `QueueHandle` 一次性绑定到 retained controller identity 和 publication epoch；通用 handle 先拒绝未绑定、foreign、不晚于发布时刻、重复或倒退 epoch 的 `DmaQuiesced` proof，驱动再复核自己的 cookie/epoch，双层验证通过后才允许 queue 把 DMA buffer 所有权归还给 CPU。无法证明 DMA 已停止时设备进入 quarantine/offline，而不是继续发布 queue。
+`SharedWithIo` 有两种物理实现，不能用同一种共享对象强行模拟。寄存器和 queue storage 真正可分离时，可以发布独立的 move-only I/O domain；初始化、I/O、恢复共用同一命令引擎时，control part 必须保留唯一 concrete owner，只把最终 queue 描述发布为不可变事实，并在同一维护线程内通过短生命周期 `&mut` 借出 `InterruptIoDomain`。设备 IRQ enable/disable 同样是硬件状态修改，portable control API 必须使用 `&mut self`。禁止用 `Arc<UnsafeCell<_>>`、大锁或两个同时可调用的 trait object 伪造拆分所有权。
+
+平台侧的 binding facts、父 IRQ allocation lease 与 portable activator 同样是一个不可拆分的线性事务。`ax-driver` 只暴露只读查询和 `Discovered → Prepared → Staged → PublicationOwner → Published` 转换；任一失败都返还完整 owner。`Staged` 只能一次性拆成 publication owner 与 unbound domains，不提供会留下“已经取空但类型未改变”状态的重复 `take_*` API。
+
+块设备内部的 IRQ 事实按 source 和 driver ledger slot 分离。IRQ endpoint 先检查真实硬件事实；shared INTx 在没有有效 CQ phase/status 时必须返回 `Unhandled`。捕获成功后，endpoint 把完整 typed snapshot 写入预分配 ledger，只向 runtime 返回包含 source、device generation、slot 和 slot generation 的 `IrqEvidenceId`。runtime 将其包装为不可复制的 `PendingBlockIrq`；维护线程每次只能返回 `Drained`、`Retained` 或 `Recover`。只有 drained proof 可以生成 rearm permit，旧 evidence、mask epoch 或 lifecycle generation 都不能重开新 source。锁竞争不是硬件事实，也不存在 deferred acknowledgement。
+
+timeout 和 recovery 通过 lifecycle 契约保持所有权严格：watchdog 获胜后直接停止 dispatch 并进入恢复，不读完成寄存器补发现成功。recovery 先 mask/synchronize IRQ，再 quiesce DMA、增加 queue epoch，随后才终结请求并返还 buffer。无法证明 DMA 已停止、action 已关闭或 evidence 已收回时，完整 MMIO/CQ/DMA/token owner 进入有界命名 quarantine，而不是伪造 proof、匿名泄漏或继续发布 queue。
 
 ## rdif-display / rdif-input / rdif-vsock
 

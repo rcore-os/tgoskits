@@ -11,7 +11,7 @@ use rdif_block::{
 
 use super::{
     BlockController, BlockControllerError, ControllerPhase, DriverEndpointSlot,
-    MAX_HARDWARE_QUEUES, RuntimeBlockDevice,
+    MAX_HARDWARE_QUEUES, OwnershipDomainTopology, RuntimeBlockDevice,
     owner::ControllerOwnerLink,
     recovery::RecoveryStep,
     registry::{
@@ -45,13 +45,22 @@ pub(in crate::block) struct PreparedBlockController {
     lifecycle_cookie: usize,
     owner_link: Arc<ControllerOwnerLink>,
     declared_sources: Vec<IrqSourceInfo>,
+    ownership_topology: OwnershipDomainTopology,
 }
 
 impl BlockController {
     pub(in crate::block) fn prepare_on_owner(
         device: &mut Option<RdifBlockDevice>,
         maintenance: Arc<DeviceMaintenanceHandle<BlockMaintenanceEvent>>,
+        ownership_topology: OwnershipDomainTopology,
+        config: crate::block::BlockRuntimeConfig,
     ) -> Result<PreparedBlockController, BlockControllerError> {
+        if maintenance.owner_cpu() != ownership_topology.owner_cpu() {
+            return Err(BlockControllerError::MaintenanceOwnerCpuMismatch {
+                expected_cpu: ownership_topology.owner_cpu(),
+                actual_cpu: maintenance.owner_cpu(),
+            });
+        }
         let device_owner = device
             .as_mut()
             .expect("controller preparation requires its unpublished device owner");
@@ -94,6 +103,8 @@ impl BlockController {
             Arc::clone(&maintenance),
             Arc::clone(&owner_link),
             lifecycle_cookie,
+            ownership_topology.online_cpu_count(),
+            config,
             &mut quarantine_reservations,
         )?;
         let declared_sources = device_owner.bundle().irq_sources();
@@ -106,6 +117,7 @@ impl BlockController {
             lifecycle_cookie,
             owner_link,
             declared_sources,
+            ownership_topology,
         })
     }
 }
@@ -114,6 +126,12 @@ impl PreparedBlockController {
     /// Returns the normal-I/O source topology frozen after queue creation.
     pub(in crate::block) fn declared_sources(&self) -> &[IrqSourceInfo] {
         &self.declared_sources
+    }
+
+    /// Returns the IRQ id resolved in the immutable pre-spawn ownership
+    /// topology for one logical driver source.
+    pub(in crate::block) fn irq_for_source(&self, source_id: usize) -> Option<ax_hal::irq::IrqId> {
+        self.ownership_topology.irq_for_source(source_id)
     }
 
     /// Commits the unpublished queues after every frozen source is bound.
@@ -165,6 +183,7 @@ impl PreparedBlockController {
             recovery_pending_sources: AtomicU64::new(0),
             recovery_irqs_enabled: AtomicBool::new(false),
             owner_link: Arc::clone(&self.owner_link),
+            ownership_topology: self.ownership_topology,
         });
         self.owner_link.publish(&controller);
         Ok(controller)

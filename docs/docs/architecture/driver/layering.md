@@ -115,24 +115,24 @@ OS Glue 将硬件实例包装成 `rdif-*::Interface` 后通过 `PlatformDevice::
 
 ## Runtime
 
-Runtime wrapper 从 `rdif-*::Interface` 构建领域运行时对象，供服务层和上层模块使用。块设备 runtime 位于 `ax-runtime::block`：它从 `rdif-block` 的 owned-request/IRQ/lifecycle 能力构建 per-CPU software ctx 和 hardware queue，不再放在文件系统内。
+Runtime wrapper 从 `rdif-*` capability 构建领域运行时对象，供服务层和上层模块使用。块设备 runtime 位于 `ax-runtime::block`：它从 `rdif-block` 的 owned-request/evidence/activation/lifecycle 能力构建 per-CPU software ctx、hardware queue 和 CPU 固定 ownership domain，不再放在文件系统内。
 
 Runtime wrapper 职责：
 
 - **waker / blocking facade**：把 `rdif-*::Interface` 的能力包装成异步或阻塞 API。
 - **buffer pool**：管理收发 buffer（如 `rd-net` 的 RX/TX queue）。
-- **事件分发**：把 IRQ 事件转换成上层可消费的事件流。
-- **block hctx**：在提交前发布 generation tag，管理 direct/serialized dispatch、固定 event ring、定向 completion 和 watchdog。
+- **事件分发**：保存线性 IRQ evidence 所有权并激活对应 maintenance owner。
+- **block hctx**：在提交前发布 generation tag 与 hardware credit，管理 software ctx dispatch、定向 completion 和 watchdog。
 - **恢复与移交**：关闭 IRQ action、证明 DMA quiescence、增加 controller epoch，并在 guest 归还后运行相同初始化状态机。
 
 典型 Runtime crate：
 
 | crate | 说明 |
 | --- | --- |
-| `os/arceos/modules/axruntime/src/block/` | 块设备 runtime：共享 worker、ctx/hctx、tag、watchdog、recovery/handoff |
+| `os/arceos/modules/axruntime/src/block/` | 块设备 runtime：maintenance domain、ctx/hctx、tag/credit、watchdog、recovery/handoff |
 | `drivers/net/rd-net/` | 网卡 runtime：waker、buffer pool、IRQ 适配 |
 
-块设备的 worker 使用 Linux 风格逻辑隔离而非一 queue 一线程：每个 hardware queue 拥有一个固定、可合并、串行的 `service_work`，所有 work item 由 per-CPU shared pool 执行。hard IRQ 只确认并发布事件；worker 以固定 batch 执行 IRQ/error、timeout/cancel、completion/wake 和 dispatch。任何 completion polling、定时 repoll 或 IRQ 注册失败后的降级路径都不属于这一层。
+块设备按硬件所有权域建立维护线程，而不是按 logical device、request 或任意 queue 建线程。SD/MMC、AHCI、shared INTx 的共享控制状态属于一个域；独立 MSI-X vector/hctx 可以各自形成域。线程在目标 CPU 获得 lease 后亲自注册同 CPU affinity 的 IRQ action，运行期不迁移。domain driver part 一旦完成绑定即为 `!Send`，中央 controller 只保留 catalog、lifecycle 协调和各 owner 返回的线性 binding proof，不重新取得 queue 对象。hard IRQ 只捕获 evidence 并本地唤醒 owner；owner 以域级总预算依次处理 IRQ/fault、timeout/cancel、completion/wake 和 staged dispatch。任何 completion polling、定时 repoll、共享 workqueue 设备推进或 IRQ 注册失败后的降级路径都不属于这一层。
 
 ## 文件拆分约束
 

@@ -5,7 +5,7 @@ use core::num::NonZeroU16;
 use log::warn;
 
 use super::{
-    host::{BusWidth, ClockSpeed, SdioHost},
+    host::{BusWidth, ClockSpeed, HostIrqSnapshot, SdioHost},
     init::{MmcSwitchRequest, MmcSwitchRequestState},
     nonzero_block_size,
 };
@@ -191,6 +191,18 @@ impl<H: SdioHost> SdioSdmmc<H> {
         self.host.poll_data_request_at(&mut request.inner, now_ns)
     }
 
+    pub fn poll_data_request_with_snapshot<'a>(
+        &mut self,
+        request: &mut SdioDataRequest<'a, H>,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<DataCommandPoll, Error>
+    where
+        H: 'a,
+    {
+        self.host
+            .poll_data_request_with_snapshot(&mut request.inner, snapshot)
+    }
+
     pub fn data_request_wake_at<'a>(&self, request: &SdioDataRequest<'a, H>) -> Option<u64>
     where
         H: 'a,
@@ -216,6 +228,14 @@ impl<H: SdioHost> SdioSdmmc<H> {
         now_ns: u64,
     ) -> Result<CommandResponsePoll, Error> {
         self.host.poll_command_response_at(now_ns)
+    }
+
+    pub fn poll_command_request_with_snapshot(
+        &mut self,
+        _request: &mut SdioCommandRequest,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<CommandResponsePoll, Error> {
+        self.host.poll_command_response_with_snapshot(snapshot)
     }
 
     pub fn command_wake_at(&self) -> Option<u64> {
@@ -250,6 +270,23 @@ impl<H: SdioHost> SdioSdmmc<H> {
         now_ns: u64,
     ) -> Result<OperationPoll<CardState>, Error> {
         match self.poll_command_request_at(&mut request.inner, now_ns)? {
+            CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
+            CommandResponsePoll::Complete(Response::R1(r1)) => {
+                Ok(OperationPoll::Complete(r1.current_state()))
+            }
+            CommandResponsePoll::Complete(_) => Err(Error::BadResponse(ErrorContext::for_cmd(
+                Phase::ResponseWait,
+                13,
+            ))),
+        }
+    }
+
+    pub fn poll_status_request_with_snapshot(
+        &mut self,
+        request: &mut SdioStatusRequest,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<OperationPoll<CardState>, Error> {
+        match self.poll_command_request_with_snapshot(&mut request.inner, snapshot)? {
             CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
             CommandResponsePoll::Complete(Response::R1(r1)) => {
                 Ok(OperationPoll::Complete(r1.current_state()))
@@ -315,6 +352,20 @@ impl<H: SdioHost> SdioSdmmc<H> {
         }
     }
 
+    pub fn poll_ext_csd_request_with_snapshot<'a>(
+        &mut self,
+        request: &mut ExtCsdRequest<'a, H>,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<OperationPoll<()>, Error>
+    where
+        H: 'a,
+    {
+        match self.poll_data_request_with_snapshot(&mut request.inner, snapshot)? {
+            DataCommandPoll::Pending => Ok(OperationPoll::Pending),
+            DataCommandPoll::Complete(_) => Ok(OperationPoll::Complete(())),
+        }
+    }
+
     pub fn ext_csd_request_wake_at<'a>(&self, request: &ExtCsdRequest<'a, H>) -> Option<u64>
     where
         H: 'a,
@@ -361,6 +412,20 @@ impl<H: SdioHost> SdioSdmmc<H> {
         }
     }
 
+    pub fn poll_switch_function_request_with_snapshot<'a>(
+        &mut self,
+        request: &mut SwitchFunctionRequest<'a, H>,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<OperationPoll<()>, Error>
+    where
+        H: 'a,
+    {
+        match self.poll_data_request_with_snapshot(&mut request.inner, snapshot)? {
+            DataCommandPoll::Pending => Ok(OperationPoll::Pending),
+            DataCommandPoll::Complete(_) => Ok(OperationPoll::Complete(())),
+        }
+    }
+
     pub fn switch_function_request_wake_at<'a>(
         &self,
         request: &SwitchFunctionRequest<'a, H>,
@@ -395,9 +460,27 @@ impl<H: SdioHost> SdioSdmmc<H> {
         request: &mut MmcSwitchRequest,
         now_ns: u64,
     ) -> Result<OperationPoll<()>, Error> {
+        self.poll_mmc_switch_request_inner(request, now_ns, None)
+    }
+
+    pub fn poll_mmc_switch_request_with_snapshot(
+        &mut self,
+        request: &mut MmcSwitchRequest,
+        now_ns: u64,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<OperationPoll<()>, Error> {
+        self.poll_mmc_switch_request_inner(request, now_ns, Some(snapshot))
+    }
+
+    fn poll_mmc_switch_request_inner(
+        &mut self,
+        request: &mut MmcSwitchRequest,
+        now_ns: u64,
+        mut snapshot: Option<HostIrqSnapshot>,
+    ) -> Result<OperationPoll<()>, Error> {
         match request.state {
             MmcSwitchRequestState::PollSwitch => {
-                match self.host.poll_command_response_at(now_ns)? {
+                match poll_command_with_optional_snapshot(&mut self.host, now_ns, &mut snapshot)? {
                     CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
                     CommandResponsePoll::Complete(_) => {
                         let cmd = crate::cmd::cmd13(request.rca);
@@ -408,7 +491,7 @@ impl<H: SdioHost> SdioSdmmc<H> {
                 }
             }
             MmcSwitchRequestState::PollStatus => {
-                match self.host.poll_command_response_at(now_ns)? {
+                match poll_command_with_optional_snapshot(&mut self.host, now_ns, &mut snapshot)? {
                     CommandResponsePoll::Pending => Ok(OperationPoll::Pending),
                     CommandResponsePoll::Complete(Response::R1(r1)) => {
                         if r1.switch_error() {
@@ -458,6 +541,17 @@ impl<H: SdioHost> SdioSdmmc<H> {
                 Ok(OperationPoll::Pending)
             }
         }
+    }
+}
+
+fn poll_command_with_optional_snapshot<H: SdioHost>(
+    host: &mut H,
+    now_ns: u64,
+    snapshot: &mut Option<HostIrqSnapshot>,
+) -> Result<CommandResponsePoll, Error> {
+    match snapshot.take() {
+        Some(snapshot) => host.poll_command_response_with_snapshot(snapshot),
+        None => host.poll_command_response_at(now_ns),
     }
 }
 

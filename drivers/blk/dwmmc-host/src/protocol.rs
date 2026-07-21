@@ -127,6 +127,12 @@ impl SdioIrqHost for DwMmc {
     fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
         DwMmc::take_irq_source(self)
     }
+
+    fn take_evidence_irq_source(
+        &mut self,
+    ) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        DwMmc::take_evidence_irq_source(self)
+    }
 }
 
 fn submit_read_with_dma_fifo_fallback(

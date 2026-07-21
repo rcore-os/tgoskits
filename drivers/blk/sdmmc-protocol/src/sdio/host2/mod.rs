@@ -17,8 +17,8 @@ use log::{debug, warn};
 use super::{
     card::SdioSdmmc,
     host::{
-        BusWidth, ClockSpeed, HostEvent, SdioBusOp, SdioHost, SdioIrqControlError, SdioIrqHost,
-        SdioIrqSource, SignalVoltage,
+        BusWidth, ClockSpeed, HostEvent, HostIrqSnapshot, SdioBusOp, SdioHost, SdioIrqControlError,
+        SdioIrqHost, SdioIrqSource, SignalVoltage,
     },
 };
 use crate::{
@@ -101,8 +101,18 @@ type TimedTransactionPollFn<H> = for<'a> fn(
 
 struct TimedTransactions<H: SdioHost2Irq + 'static> {
     poll: TimedTransactionPollFn<H>,
+    evidence_poll: Option<EvidenceTransactionPollFn<H>>,
     wake_at: for<'a> fn(&H, &H::TransactionRequest<'a>) -> Option<u64>,
 }
+
+type EvidenceTransactionPollFn<H> = for<'a> fn(
+    &mut H,
+    &mut <H as sdio_host2::SdioHost>::TransactionRequest<'a>,
+    HostIrqSnapshot,
+) -> Result<
+    sdio_host2::RequestPoll<sdio_host2::RawResponse>,
+    sdio_host2::PollRequestError,
+>;
 
 struct TimedBusOps<H: SdioHost2Irq + 'static> {
     poll: TimedBusPollFn<H>,
@@ -129,6 +139,23 @@ pub trait SdioHost2Irq: sdio_host2::SdioHost {
     fn disable_completion_irq(&mut self) -> Result<(), Error>;
 
     fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>>;
+
+    fn take_evidence_irq_source(
+        &mut self,
+    ) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        self.take_irq_source()
+    }
+}
+
+/// Host2 transaction service driven exclusively by one ledger snapshot.
+pub trait SdioHost2Evidence: SdioHost2Irq {
+    fn poll_transaction_with_snapshot<'a>(
+        &mut self,
+        request: &mut Self::TransactionRequest<'a>,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<sdio_host2::RequestPoll<sdio_host2::RawResponse>, sdio_host2::PollRequestError>
+    where
+        Self: 'a;
 }
 
 /// Absolute-time extension for eventless physical-host bus transitions.
@@ -182,6 +209,12 @@ where
 
     fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
         SdioIrqHost::take_irq_source(self)
+    }
+
+    fn take_evidence_irq_source(
+        &mut self,
+    ) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        SdioIrqHost::take_evidence_irq_source(self)
     }
 }
 
@@ -254,6 +287,7 @@ impl<H: SdioHost2Irq + 'static> SdioHost2Adapter<H> {
             command_request: None,
             timed_transactions: TimedTransactions {
                 poll: poll_legacy_transaction::<H>,
+                evidence_poll: None,
                 wake_at: no_transaction_wake::<H>,
             },
             timed_bus_ops: TimedBusOps {
@@ -275,6 +309,30 @@ impl<H: SdioHost2Irq + 'static> SdioHost2Adapter<H> {
             command_request: None,
             timed_transactions: TimedTransactions {
                 poll: poll_timed_transaction::<H>,
+                evidence_poll: None,
+                wake_at: timed_transaction_wake::<H>,
+            },
+            timed_bus_ops: TimedBusOps {
+                poll: H::poll_bus_op_at,
+                wake_at: H::bus_op_wake_at,
+            },
+            #[cfg(feature = "rdif")]
+            recovery: None,
+        }
+    }
+
+    /// Wrap a timed host whose command/data progress consumes only explicit
+    /// ledger snapshots after IRQ acknowledgement.
+    pub fn new_timed_evidence(host: H) -> Self
+    where
+        H: SdioHost2Timed + SdioHost2Evidence,
+    {
+        Self {
+            core: Host2Shared::new(host),
+            command_request: None,
+            timed_transactions: TimedTransactions {
+                poll: poll_timed_transaction::<H>,
+                evidence_poll: Some(poll_evidence_transaction::<H>),
                 wake_at: timed_transaction_wake::<H>,
             },
             timed_bus_ops: TimedBusOps {
@@ -488,6 +546,17 @@ impl<H: SdioHost2Irq + 'static> SdioHost for SdioHost2Adapter<H> {
         self.poll_command_response_with(|host, request| host.poll_transaction(request))
     }
 
+    fn poll_command_response_with_snapshot(
+        &mut self,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<CommandResponsePoll, Error> {
+        let poll = self
+            .timed_transactions
+            .evidence_poll
+            .ok_or(Error::UnsupportedCommand)?;
+        self.poll_command_response_with(|host, request| poll(host, request, snapshot))
+    }
+
     fn poll_command_response_at(&mut self, now_ns: u64) -> Result<CommandResponsePoll, Error> {
         let poll = self.timed_transactions.poll;
         self.poll_command_response_with(|host, request| poll(host, request, now_ns))
@@ -504,6 +573,18 @@ impl<H: SdioHost2Irq + 'static> SdioHost for SdioHost2Adapter<H> {
         request: &mut Self::DataRequest<'a>,
     ) -> Result<DataCommandPoll, Error> {
         poll_adapter_data_request(request, |host, inner| host.poll_transaction(inner))
+    }
+
+    fn poll_data_request_with_snapshot<'a>(
+        &mut self,
+        request: &mut Self::DataRequest<'a>,
+        snapshot: HostIrqSnapshot,
+    ) -> Result<DataCommandPoll, Error> {
+        let poll = self
+            .timed_transactions
+            .evidence_poll
+            .ok_or(Error::UnsupportedCommand)?;
+        poll_adapter_data_request(request, |host, inner| poll(host, inner, snapshot))
     }
 
     fn poll_data_request_at<'a>(
@@ -733,6 +814,12 @@ impl<H: SdioHost2Irq + 'static> SdioIrqHost for SdioHost2Adapter<H> {
     fn take_irq_source(&mut self) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
         self.core.with_mut(SdioHost2Irq::take_irq_source)
     }
+
+    fn take_evidence_irq_source(
+        &mut self,
+    ) -> Option<SdioIrqSource<Self::IrqEndpoint, Self::IrqControl>> {
+        self.core.with_mut(SdioHost2Irq::take_evidence_irq_source)
+    }
 }
 
 #[cfg(feature = "rdif")]
@@ -862,6 +949,15 @@ impl<H: SdioHost2Irq + 'static> SdioSdmmc<SdioHost2Adapter<H>> {
     {
         Self::new(SdioHost2Adapter::new_timed(host))
     }
+
+    /// Construct the evidence-only timed adapter used by v0.13 controller
+    /// activation.
+    pub fn new_host2_timed_evidence(host: H) -> Self
+    where
+        H: SdioHost2Timed + SdioHost2Evidence,
+    {
+        Self::new(SdioHost2Adapter::new_timed_evidence(host))
+    }
 }
 
 fn poll_legacy_bus_op<H: SdioHost2Irq>(
@@ -886,6 +982,14 @@ fn poll_timed_transaction<'a, H: SdioHost2Timed + 'static>(
     now_ns: u64,
 ) -> Result<sdio_host2::RequestPoll<sdio_host2::RawResponse>, sdio_host2::PollRequestError> {
     H::poll_transaction_at(host, request, now_ns)
+}
+
+fn poll_evidence_transaction<'a, H: SdioHost2Evidence + 'static>(
+    host: &mut H,
+    request: &mut H::TransactionRequest<'a>,
+    snapshot: HostIrqSnapshot,
+) -> Result<sdio_host2::RequestPoll<sdio_host2::RawResponse>, sdio_host2::PollRequestError> {
+    H::poll_transaction_with_snapshot(host, request, snapshot)
 }
 
 fn timed_transaction_wake<'a, H: SdioHost2Timed + 'static>(

@@ -8,16 +8,21 @@ use core::{
 };
 
 use rdif_block::{
-    BlkError, BlockIrqCapture, BlockIrqSource, ContainmentCause, Event, FaultContainment,
-    IrqCapture, IrqControlError, IrqEndpoint, IrqSourceControl, MaskedSource,
+    BlkError, BlockEvidenceSource, BlockIrqCapture, BlockIrqSource, ContainmentCause, Event,
+    FaultContainment, IrqCapture, IrqControlError, IrqEndpoint, IrqEvidenceId, IrqSourceControl,
+    IrqSourceId, MaskedSource,
 };
 
-use crate::registers::{
-    DEFAULT_PORT_IRQ_MASK, HOST_IS, IRQ_COMPLETION, IRQ_ERROR, MAX_PORTS, PX_CI, PX_IE, PX_IS,
-    PX_SACT, PX_SERR, PX_TFD, SharedRegisters, TFD_ERR, read_port, write_port,
+use crate::{
+    evidence::{AhciEvidenceError, AhciEvidenceLedger},
+    registers::{
+        DEFAULT_PORT_IRQ_MASK, HOST_IS, IRQ_COMPLETION, IRQ_ERROR, MAX_PORTS, PX_CI, PX_IE, PX_IS,
+        PX_SACT, PX_SERR, PX_TFD, SharedRegisters, TFD_ERR, read_port, write_port,
+    },
 };
 
 pub(crate) const IRQ_SNAPSHOT_CAPACITY: usize = 64;
+const REARMING_MASK_EPOCH: u64 = u64::MAX;
 
 /// Stable register state captured by the unique destructive IRQ endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,6 +173,10 @@ pub(crate) struct HostShared {
     init_handler_live: AtomicBool,
     io_handler_taken: AtomicBool,
     io_handler_live: AtomicBool,
+    v13_handler_taken: AtomicBool,
+    v13_handler_live: AtomicBool,
+    next_mask_epoch: AtomicU64,
+    active_mask_epoch: AtomicU64,
 }
 
 impl HostShared {
@@ -185,6 +194,10 @@ impl HostShared {
             init_handler_live: AtomicBool::new(false),
             io_handler_taken: AtomicBool::new(false),
             io_handler_live: AtomicBool::new(false),
+            v13_handler_taken: AtomicBool::new(false),
+            v13_handler_live: AtomicBool::new(false),
+            next_mask_epoch: AtomicU64::new(0),
+            active_mask_epoch: AtomicU64::new(0),
         })
     }
 
@@ -244,6 +257,14 @@ impl HostShared {
         self.init_handler_live.load(Ordering::Acquire)
     }
 
+    pub(crate) fn control_handler_live(&self) -> bool {
+        self.initial_handler_live() || self.v13_handler_live.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn v13_handler_live(&self) -> bool {
+        self.v13_handler_live.load(Ordering::Acquire)
+    }
+
     pub(crate) fn take_io_source(self: &Arc<Self>) -> Option<BlockIrqSource> {
         if self.initial_handler_live() {
             return None;
@@ -257,6 +278,34 @@ impl HostShared {
 
     pub(crate) fn io_handler_live(&self) -> bool {
         self.io_handler_live.load(Ordering::Acquire)
+    }
+
+    /// Transfers the one v0.13 shared-source endpoint and its fixed ledger.
+    pub(crate) fn take_v13_source(
+        self: &Arc<Self>,
+        source: IrqSourceId,
+    ) -> Option<(BlockEvidenceSource, Arc<AhciEvidenceLedger>)> {
+        if self.initial_handler_live() || self.io_handler_live() {
+            return None;
+        }
+        self.v13_handler_taken
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        self.v13_handler_live.store(true, Ordering::Release);
+        let ledger = Arc::new(AhciEvidenceLedger::new(source, 0));
+        let endpoint = AhciEvidenceEndpoint {
+            shared: Arc::clone(self),
+            source,
+            ledger: Arc::clone(&ledger),
+        };
+        let control = AhciEvidenceIrqControl {
+            shared: Arc::clone(self),
+            source,
+        };
+        Some((
+            BlockEvidenceSource::new(Box::new(endpoint), Box::new(control)),
+            ledger,
+        ))
     }
 
     pub(crate) fn try_claim_register_window(&self) -> Option<CaptureGuard<'_>> {
@@ -282,6 +331,23 @@ impl HostShared {
                 containment: FaultContainment::Uncontained,
             };
         };
+        self.capture_irq_facts()
+    }
+
+    /// Captures v0.13 facts through its unique, fixed-CPU IRQ endpoint.
+    ///
+    /// Unlike the retained compatibility endpoint, this path never shares a
+    /// register-window try-lock with task-side submission. The bound endpoint
+    /// is the only PxIS/PxSERR W1C owner and the runtime serializes action
+    /// disable/synchronize with controller lifecycle operations.
+    fn capture_v13_irq(&self) -> BlockIrqCapture {
+        if !self.irq_delivery_enabled() {
+            return IrqCapture::Unhandled;
+        }
+        self.capture_irq_facts()
+    }
+
+    fn capture_irq_facts(&self) -> BlockIrqCapture {
         let host_status = self.registers.read32(HOST_IS);
         if host_status == 0 {
             return IrqCapture::Unhandled;
@@ -393,6 +459,107 @@ impl HostShared {
         Ok(self.masked_source(ports))
     }
 
+    fn mask_v13_source(&self, source: IrqSourceId) -> Result<MaskedSource, BlkError> {
+        let source_bitmap = 1_u64
+            .checked_shl(source.get() as u32)
+            .and_then(NonZeroU64::new)
+            .ok_or(BlkError::InvalidRequest)?;
+        let lifecycle_generation = NonZeroU64::new(self.source_generation.load(Ordering::Acquire))
+            .ok_or(BlkError::Other("AHCI source lifecycle generation is zero"))?;
+        let ghc = self.registers.read32(crate::registers::HOST_GHC);
+        self.registers
+            .write32(crate::registers::HOST_GHC, ghc & !crate::registers::GHC_IE);
+        let mask_epoch = loop {
+            let observed = self.active_mask_epoch.load(Ordering::Acquire);
+            if observed != 0 && observed != REARMING_MASK_EPOCH {
+                break observed;
+            }
+            let next = self.allocate_mask_epoch();
+            if self
+                .active_mask_epoch
+                .compare_exchange(observed, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                break next;
+            }
+        };
+        let mask_epoch =
+            NonZeroU64::new(mask_epoch).ok_or(BlkError::Other("AHCI source mask epoch is zero"))?;
+        Ok(MaskedSource::new_with_epoch(
+            lifecycle_generation,
+            mask_epoch,
+            source_bitmap,
+        ))
+    }
+
+    fn allocate_mask_epoch(&self) -> u64 {
+        loop {
+            let next = self
+                .next_mask_epoch
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1);
+            if next != 0 && next != REARMING_MASK_EPOCH {
+                return next;
+            }
+        }
+    }
+
+    fn rearm_v13_source(
+        &self,
+        source_id: IrqSourceId,
+        source: MaskedSource,
+    ) -> Result<(), IrqControlError> {
+        let expected_lifecycle = self.source_generation.load(Ordering::Acquire);
+        if source.lifecycle_generation().get() != expected_lifecycle {
+            return Err(IrqControlError::StaleGeneration {
+                expected: expected_lifecycle,
+                actual: source.lifecycle_generation().get(),
+            });
+        }
+        let expected_epoch = source.mask_epoch().get();
+        let expected_bitmap =
+            1_u64
+                .checked_shl(source_id.get() as u32)
+                .ok_or(IrqControlError::SourceNotMasked {
+                    bitmap: source.bitmap().get(),
+                })?;
+        if source.bitmap().get() != expected_bitmap {
+            return Err(IrqControlError::SourceNotMasked {
+                bitmap: source.bitmap().get(),
+            });
+        }
+        // Mark the old episode as being rearmed before opening the hardware
+        // gate. A shared-line callback that interrupts this transaction can
+        // replace the sentinel with a new mask epoch; the tail then observes
+        // that episode and leaves the source disabled.
+        self.active_mask_epoch
+            .compare_exchange(
+                expected_epoch,
+                REARMING_MASK_EPOCH,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|current| IrqControlError::StaleMaskEpoch {
+                expected: current,
+                actual: source.mask_epoch().get(),
+            })?;
+        let ghc = self.registers.read32(crate::registers::HOST_GHC);
+        self.registers.write32(
+            crate::registers::HOST_GHC,
+            ghc | crate::registers::GHC_AE | crate::registers::GHC_IE,
+        );
+        if self
+            .active_mask_epoch
+            .compare_exchange(REARMING_MASK_EPOCH, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            let ghc = self.registers.read32(crate::registers::HOST_GHC);
+            self.registers
+                .write32(crate::registers::HOST_GHC, ghc & !crate::registers::GHC_IE);
+        }
+        Ok(())
+    }
+
     fn rearm_source(&self, source: MaskedSource) -> Result<(), IrqControlError> {
         let generation = source.generation().get();
         let active = self.source_generation.load(Ordering::Acquire);
@@ -472,6 +639,109 @@ struct AhciIrqControl {
     shared: Arc<HostShared>,
 }
 
+struct AhciEvidenceEndpoint {
+    shared: Arc<HostShared>,
+    source: IrqSourceId,
+    ledger: Arc<AhciEvidenceLedger>,
+}
+
+impl IrqEndpoint for AhciEvidenceEndpoint {
+    type Event = IrqEvidenceId;
+    type Fault = BlkError;
+
+    fn capture(&mut self) -> IrqCapture<Self::Event, Self::Fault> {
+        let port_facts = match self.shared.capture_v13_irq() {
+            IrqCapture::Unhandled => return IrqCapture::Unhandled,
+            IrqCapture::Captured { event, .. } if !event.is_empty() => event.queues().bits(),
+            IrqCapture::Captured { .. } => {
+                let containment = match self.shared.mask_v13_source(self.source) {
+                    Ok(masked) => FaultContainment::DeviceSourceMasked(masked),
+                    Err(_) => FaultContainment::Uncontained,
+                };
+                return IrqCapture::Fault {
+                    reason: BlkError::Io,
+                    containment,
+                };
+            }
+            IrqCapture::Fault {
+                reason,
+                containment,
+            } => {
+                return IrqCapture::Fault {
+                    reason,
+                    containment,
+                };
+            }
+        };
+        let masked = match self.shared.mask_v13_source(self.source) {
+            Ok(masked) => masked,
+            Err(reason) => {
+                return IrqCapture::Fault {
+                    reason,
+                    containment: FaultContainment::Uncontained,
+                };
+            }
+        };
+        let port_facts = match u32::try_from(port_facts) {
+            Ok(port_facts) => port_facts,
+            Err(_) => {
+                return IrqCapture::Fault {
+                    reason: BlkError::InvalidRequest,
+                    containment: FaultContainment::DeviceSourceMasked(masked),
+                };
+            }
+        };
+        match self
+            .ledger
+            .publish(masked.lifecycle_generation(), port_facts)
+        {
+            Ok(event) => IrqCapture::Captured {
+                event,
+                masked: Some(masked),
+            },
+            Err(error) => IrqCapture::Fault {
+                reason: evidence_error(error),
+                containment: FaultContainment::DeviceSourceMasked(masked),
+            },
+        }
+    }
+
+    fn contain(&mut self, _cause: ContainmentCause) -> Result<MaskedSource, Self::Fault> {
+        self.shared.mask_v13_source(self.source)
+    }
+}
+
+impl Drop for AhciEvidenceEndpoint {
+    fn drop(&mut self) {
+        self.shared.v13_handler_live.store(false, Ordering::Release);
+    }
+}
+
+struct AhciEvidenceIrqControl {
+    shared: Arc<HostShared>,
+    source: IrqSourceId,
+}
+
+impl IrqSourceControl for AhciEvidenceIrqControl {
+    type Error = IrqControlError;
+
+    fn rearm(&mut self, source: MaskedSource) -> Result<(), Self::Error> {
+        self.shared.rearm_v13_source(self.source, source)
+    }
+}
+
+const fn evidence_error(error: AhciEvidenceError) -> BlkError {
+    match error {
+        AhciEvidenceError::EmptyFacts | AhciEvidenceError::IdentityMismatch => {
+            BlkError::InvalidRequest
+        }
+        AhciEvidenceError::GenerationExhausted
+        | AhciEvidenceError::LifecycleConflict
+        | AhciEvidenceError::NotPublished
+        | AhciEvidenceError::PublicationInProgress => BlkError::Io,
+    }
+}
+
 impl IrqSourceControl for AhciIrqControl {
     type Error = IrqControlError;
 
@@ -509,11 +779,11 @@ struct SnapshotRing {
     tail: AtomicUsize,
 }
 
-// SAFETY: `HostShared::capture_active` serializes the retained initialization
-// and normal handler endpoints into one effective producer. Controller runtime
-// serialization provides one consumer for each port. Release publication of
-// `head` happens after slot initialization; Acquire observation happens before
-// the consumer read.
+// SAFETY: the retained endpoint uses `HostShared::capture_active`, while the
+// v0.13 endpoint is a unique action fixed to one CPU. Both contracts permit one
+// effective producer; the ownership-domain maintenance thread is the sole
+// consumer. Release publication of `head` happens after slot initialization;
+// Acquire observation happens before the consumer read.
 unsafe impl Sync for SnapshotRing {}
 
 impl SnapshotRing {
@@ -595,6 +865,105 @@ mod tests {
         assert!(snapshot.has_error());
         assert!(snapshot.completes(0, generation));
         assert_eq!(snapshot.sata_error, 0x40);
+    }
+
+    #[test]
+    fn v13_shared_irq_claims_only_real_ahci_status_and_masks_the_logical_source() {
+        let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
+        let shared = HostShared::new(registers.shared());
+        shared.publish_implemented_ports(1);
+        shared.publish_ready_port(0);
+        shared.set_irq_delivery_enabled(true);
+        let source_id = rdif_block::IrqSourceId::new(3).unwrap();
+        let (source, _ledger) = shared
+            .take_v13_source(source_id)
+            .expect("one v0.13 source must be transferable");
+        let (mut endpoint, mut control) = source.into_parts();
+
+        assert!(endpoint.capture().is_unhandled());
+
+        registers.set(HOST_IS, 1);
+        registers.set(port_offset(0, PX_IS), IRQ_D2H_REG_FIS);
+        let IrqCapture::Captured { event, masked } = endpoint.capture() else {
+            panic!("programmed AHCI status must create linear evidence")
+        };
+        assert_eq!(event.source(), source_id);
+        assert_eq!(event.slot(), 0);
+        let first_mask = masked.unwrap();
+        assert_eq!(first_mask.bitmap().get(), 1 << source_id.get());
+        control.rearm(first_mask).unwrap();
+
+        let second_mask = endpoint
+            .contain(ContainmentCause::OwnerUnavailable)
+            .expect("the live AHCI source must fail closed");
+        assert_ne!(first_mask.mask_epoch(), second_mask.mask_epoch());
+        assert!(matches!(
+            control.rearm(first_mask),
+            Err(IrqControlError::StaleMaskEpoch { .. })
+        ));
+        control.rearm(second_mask).unwrap();
+    }
+
+    #[test]
+    fn v13_irq_capture_is_independent_from_the_legacy_register_gate() {
+        let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
+        let shared = HostShared::new(registers.shared());
+        shared.publish_implemented_ports(1);
+        shared.publish_ready_port(0);
+        shared.set_irq_delivery_enabled(true);
+        let source_id = rdif_block::IrqSourceId::new(3).unwrap();
+        let (source, _ledger) = shared
+            .take_v13_source(source_id)
+            .expect("one v0.13 source must be transferable");
+        let (mut endpoint, _control) = source.into_parts();
+        let _legacy_window = shared
+            .try_claim_register_window()
+            .expect("the legacy compatibility gate starts available");
+        registers.set(HOST_IS, 1);
+        registers.set(port_offset(0, PX_IS), IRQ_D2H_REG_FIS);
+
+        assert!(
+            endpoint.capture().is_captured(),
+            "v0.13 hard IRQ must capture hardware facts instead of reporting lock contention"
+        );
+    }
+
+    #[test]
+    fn v13_capture_during_rearm_replaces_the_consumed_mask_epoch() {
+        let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
+        let shared = HostShared::new(registers.shared());
+        shared.publish_implemented_ports(1);
+        shared.publish_ready_port(0);
+        shared.set_irq_delivery_enabled(true);
+        let source_id = rdif_block::IrqSourceId::new(3).unwrap();
+        let (source, _ledger) = shared.take_v13_source(source_id).unwrap();
+        let (mut endpoint, mut control) = source.into_parts();
+        let old = endpoint
+            .contain(ContainmentCause::OwnerUnavailable)
+            .unwrap();
+        assert!(
+            shared
+                .active_mask_epoch
+                .compare_exchange(
+                    old.mask_epoch().get(),
+                    REARMING_MASK_EPOCH,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        );
+
+        let raced = endpoint
+            .contain(ContainmentCause::OwnerUnavailable)
+            .unwrap();
+
+        assert_ne!(old.mask_epoch(), raced.mask_epoch());
+        assert_ne!(raced.mask_epoch().get(), REARMING_MASK_EPOCH);
+        assert!(matches!(
+            control.rearm(old),
+            Err(IrqControlError::StaleMaskEpoch { .. })
+        ));
+        control.rearm(raced).unwrap();
     }
 
     #[test]

@@ -109,8 +109,8 @@ pub use binding_resolver::{
 pub use binding_resolver::{binding_info_from_pci, binding_info_from_pci_endpoint};
 pub use error::{Error, Result};
 pub use irq_binding::{
-    IrqBindingError, IrqBindingFailure, IrqBindingFault, IrqBindingLease, IrqBindingOperation,
-    IrqBindingStage,
+    ExactIrqSourceBinding, ExactIrqSourceBindingError, IrqBindingError, IrqBindingFailure,
+    IrqBindingFault, IrqBindingLease, IrqBindingOperation, IrqBindingStage,
 };
 
 #[cfg(test)]

@@ -24,17 +24,30 @@ fn inline_ramdisk_has_no_async_completion_or_os_lock_state() {
 
 #[test]
 fn inline_ramdisk_returns_terminal_ownership_in_the_submit_call() {
-    assert!(RAMDISK_SOURCE.contains("kind: QueueKind::Inline"));
-    assert!(RAMDISK_SOURCE.contains("execution: QueueExecution::Inline"));
+    assert!(RAMDISK_SOURCE.contains("InlineBlockDevice"));
+    assert!(RAMDISK_SOURCE.contains("impl InlineExecuteQueue for RamDiskInlineQueue"));
     assert!(!RAMDISK_SOURCE.contains("QueueExecution::Tagged"));
     assert!(!RAMDISK_SOURCE.contains("QueueExecution::Serialized"));
     assert!(RAMDISK_SOURCE.contains("RequestId::INLINE"));
-    assert!(RAMDISK_SOURCE.contains("SubmitOutcome::Completed"));
+    assert!(RAMDISK_SOURCE.contains("CompletedRequest::new"));
     assert!(RAMDISK_SOURCE.contains("let storage = self.storage.take()?"));
 }
 
 #[test]
-fn shutdown_cannot_publish_request_ownership() {
-    assert!(RAMDISK_SOURCE.contains("fn shutdown(&mut self) -> Result<(), BlkError>"));
-    assert!(!RAMDISK_SOURCE.contains("fn shutdown(&mut self,"));
+fn inline_ramdisk_has_no_hardware_lifecycle_surface() {
+    for forbidden in [
+        "impl IQueue",
+        "impl Interface",
+        "LifecycleEndpoint",
+        "fn shutdown(",
+        "fn service_events(",
+        "fn reclaim_after_quiesce(",
+        "QueueEventBatch",
+        "SubmitOutcome",
+    ] {
+        assert!(
+            !RAMDISK_SOURCE.contains(forbidden),
+            "inline ramdisk retained hardware lifecycle surface `{forbidden}`"
+        );
+    }
 }

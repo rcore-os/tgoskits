@@ -13,7 +13,7 @@ mod registers;
 
 use core::{alloc::Layout, ptr::NonNull};
 
-pub use block::NvmeBlockDriver;
+pub use block::{NvmeBlockActivator, NvmeBlockDriver};
 pub use nvme::{Config, Namespace};
 
 #[derive(Clone, Copy)]

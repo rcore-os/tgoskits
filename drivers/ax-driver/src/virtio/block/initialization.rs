@@ -13,8 +13,8 @@ use super::{
 };
 use crate::virtio::{VirtIoHalImpl, VirtIoTransport};
 
-const VIRTIO_BLK_CONFIG_CAPACITY_LOW: usize = 0;
-const VIRTIO_BLK_CONFIG_CAPACITY_HIGH: usize = 4;
+pub(super) const VIRTIO_BLK_CONFIG_CAPACITY_LOW: usize = 0;
+pub(super) const VIRTIO_BLK_CONFIG_CAPACITY_HIGH: usize = 4;
 pub(super) const VIRTIO_BLK_F_RO: u64 = 1 << 5;
 const VIRTIO_F_RING_INDIRECT_DESC: u64 = 1 << 28;
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;
@@ -253,6 +253,7 @@ impl<T: VirtIoTransport> VirtIoBlkInner<T> {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn finish_reset_after_acknowledgement(&mut self) -> bool {
         if !self.transport.get_status().is_empty() {
             return false;

@@ -13,8 +13,8 @@ use super::{
     transaction::*,
 };
 use crate::{
-    BindingInfo, BindingIrq, BindingIrqBinding, IrqBindingFailure, IrqBindingFault,
-    IrqBindingOperation, IrqBindingStage,
+    BindingInfo, BindingIrq, BindingIrqBinding, ExactIrqSourceBindingError, IrqBindingFailure,
+    IrqBindingFault, IrqBindingOperation, IrqBindingStage, irq_binding::ExactIrqSourceSet,
 };
 
 #[test]
@@ -95,6 +95,39 @@ fn binding_info_keeps_host_resources_and_uses_leaf_irq_not_parent_lpi() {
     );
     assert_eq!(info.locator(), resources.locator());
     assert_eq!(info.host_mmio_ranges(), &[range]);
+}
+
+#[test]
+fn exact_msix_source_binding_is_move_only_and_one_shot() {
+    let binding = binding_info_from_msi_vectors(&test_vectors());
+    let sources = ExactIrqSourceSet::new(binding.irq_sources()).unwrap();
+
+    let source = sources.take(1).unwrap();
+    assert_eq!(source.source_id(), 1);
+    assert_eq!(sources.live_source_bits(), 1 << 1);
+    assert_eq!(
+        sources.take(1).unwrap_err(),
+        ExactIrqSourceBindingError::AlreadyTaken { source_id: 1 }
+    );
+
+    drop(source);
+    assert_eq!(
+        sources.live_source_bits(),
+        1 << 1,
+        "implicit Drop must retain fail-closed source accounting"
+    );
+    assert_eq!(
+        sources.take(1).unwrap_err(),
+        ExactIrqSourceBindingError::AlreadyTaken { source_id: 1 }
+    );
+
+    let source = sources.take(2).unwrap();
+    unsafe {
+        // SAFETY: this unit test models a successfully synchronized action
+        // close; no IRQ callback exists for the pure ownership tracker.
+        source.retire_after_action_close();
+    }
+    assert_eq!(sources.live_source_bits(), 1 << 1);
 }
 
 #[test]

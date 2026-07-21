@@ -2,11 +2,12 @@
 
 use alloc::vec::Vec;
 
+use super::queue_runtime::CommandIdentity;
 use crate::queue::{NvmeCompletion, NvmeQueue as HardwareQueue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CachedCompletion {
-    pub(super) cid: usize,
+    pub(super) identity: CommandIdentity,
     pub(super) status: CompletionStatus,
 }
 
@@ -18,7 +19,7 @@ pub(super) struct CompletionStatus {
 }
 
 pub(super) struct CompletionCache {
-    entries: Vec<Option<CompletionStatus>>,
+    entries: Vec<Option<CachedCompletion>>,
 }
 
 #[derive(Clone, Copy)]
@@ -46,13 +47,25 @@ pub(super) fn drain_owner_completions_to_cache(
     cache: &mut CompletionCache,
     budget: usize,
 ) -> CompletionDrain {
-    drain_completion_source(
-        || queue.take_owner_completion().map(CachedCompletion::from),
-        cache,
-        budget,
-    )
+    if budget == 0 {
+        return CompletionDrain::budget_exhausted();
+    }
+    let mut invalid = false;
+    let batch = queue.drain_owner_completions(budget, |completion| {
+        let Some(completion) = CachedCompletion::from_nvme(completion) else {
+            invalid = true;
+            return;
+        };
+        invalid |= !cache.record(completion);
+    });
+    CompletionDrain {
+        completed: batch.completed,
+        may_have_more: batch.owner_rerun,
+        invalid,
+    }
 }
 
+#[cfg(test)]
 pub(super) fn drain_completion_source(
     mut next: impl FnMut() -> Option<CachedCompletion>,
     cache: &mut CompletionCache,
@@ -93,22 +106,22 @@ impl CompletionCache {
     }
 
     pub(super) fn record(&mut self, completion: CachedCompletion) -> bool {
-        // CID zero is reserved by this queue, and a second unconsumed CQE for
-        // one CID would otherwise overwrite the first request result.
-        if completion.cid == 0 {
-            return false;
-        }
-        let Some(entry) = self.entries.get(completion.cid) else {
+        let slot = completion.identity.slot();
+        let Some(entry) = self.entries.get(slot) else {
             return false;
         };
         if entry.is_some() {
             return false;
         }
-        self.entries[completion.cid] = Some(completion.status);
+        self.entries[slot] = Some(completion);
         true
     }
 
-    pub(super) fn take(&mut self, cid: usize) -> Option<CompletionStatus> {
+    pub(super) fn get(&self, cid: usize) -> Option<CachedCompletion> {
+        self.entries.get(cid).copied().flatten()
+    }
+
+    pub(super) fn take(&mut self, cid: usize) -> Option<CachedCompletion> {
         self.entries.get_mut(cid)?.take()
     }
 
@@ -141,28 +154,29 @@ impl ReadyCompletionSnapshot {
     }
 }
 
-impl From<NvmeCompletion> for CachedCompletion {
-    fn from(completion: NvmeCompletion) -> Self {
-        Self {
-            cid: usize::from(completion.command_id),
+impl CachedCompletion {
+    pub(in crate::block) fn from_nvme(completion: NvmeCompletion) -> Option<Self> {
+        Some(Self {
+            identity: CommandIdentity::from_raw(completion.command_id)?,
             status: CompletionStatus {
                 success: completion.status.is_success(),
                 raw_status: completion.status.0,
                 result: completion.result,
             },
-        }
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{CachedCompletion, CompletionCache, CompletionStatus, drain_completion_source};
+    use crate::block::CommandIdentity;
 
     #[test]
     fn duplicate_cqe_cannot_replace_owner_retained_completion() {
         let mut cache = CompletionCache::new(2);
         let first = CachedCompletion {
-            cid: 1,
+            identity: CommandIdentity::new(1, 1).unwrap(),
             status: CompletionStatus {
                 success: true,
                 raw_status: 0,
@@ -170,7 +184,7 @@ mod tests {
             },
         };
         let late_duplicate = CachedCompletion {
-            cid: 1,
+            identity: CommandIdentity::new(1, 2).unwrap(),
             status: CompletionStatus {
                 success: false,
                 raw_status: 0xdead,
@@ -179,7 +193,7 @@ mod tests {
         };
         assert!(cache.record(first));
         assert!(!cache.record(late_duplicate));
-        assert_eq!(cache.take(1), Some(first.status));
+        assert_eq!(cache.take(1), Some(first));
     }
 
     #[test]

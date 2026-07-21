@@ -5,9 +5,12 @@ use alloc::{sync::Arc, vec::Vec};
 use ax_alloc::UsageKind;
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::{BlockDevice, BlockDeviceMetadata, os::BlockTimeProvider};
+use ax_kspin::SpinNoPreempt;
 
 use crate::block::{
-    BlockDeviceView, BlockServiceError, HardwareQueueError, activate_discovered_controllers,
+    BlockDeviceView, BlockServiceError, HardwareQueueError, InlineBlockDeviceView,
+    ReadyControllerInstallation, V13BlockDeviceView, V13SubmitErrorKind,
+    activate_discovered_controllers, activate_discovered_controllers_v13,
 };
 
 struct RuntimeTimeProvider;
@@ -42,15 +45,63 @@ impl ax_fs_ng::os::FsPageProvider for RuntimePageProvider {
 }
 
 struct RuntimeBlockDevice {
-    device: BlockDeviceView,
+    device: RuntimeBlockBackend,
     metadata: BlockDeviceMetadata,
 }
 
 impl RuntimeBlockDevice {
-    fn new(device: BlockDeviceView) -> AxResult<Self> {
+    fn new(device: RuntimeBlockBackend) -> AxResult<Self> {
         let info = device.device_info();
         let metadata = BlockDeviceMetadata::new(info.num_blocks, info.logical_block_size)?;
         Ok(Self { device, metadata })
+    }
+}
+
+enum RuntimeBlockBackend {
+    Inline(InlineBlockDeviceView),
+    V13(V13BlockDeviceView),
+    Legacy(BlockDeviceView),
+}
+
+impl RuntimeBlockBackend {
+    fn name(&self) -> &str {
+        match self {
+            Self::Inline(device) => device.name(),
+            Self::V13(device) => device.name(),
+            Self::Legacy(device) => device.name(),
+        }
+    }
+
+    fn device_info(&self) -> rdif_block::DeviceInfo {
+        match self {
+            Self::Inline(device) => device.device_info(),
+            Self::V13(device) => device.device_info(),
+            Self::Legacy(device) => device.device_info(),
+        }
+    }
+
+    fn read_blocks(&self, start_block: u64, buffer: &mut [u8]) -> Result<(), BlockServiceError> {
+        match self {
+            Self::Inline(device) => device.read_blocks(start_block, buffer),
+            Self::V13(device) => device.read_blocks(start_block, buffer),
+            Self::Legacy(device) => device.read_blocks(start_block, buffer),
+        }
+    }
+
+    fn write_blocks(&self, start_block: u64, buffer: &[u8]) -> Result<(), BlockServiceError> {
+        match self {
+            Self::Inline(device) => device.write_blocks(start_block, buffer),
+            Self::V13(device) => device.write_blocks(start_block, buffer),
+            Self::Legacy(device) => device.write_blocks(start_block, buffer),
+        }
+    }
+
+    fn flush(&self) -> Result<(), BlockServiceError> {
+        match self {
+            Self::Inline(device) => device.flush(),
+            Self::V13(device) => device.flush(),
+            Self::Legacy(device) => device.flush(),
+        }
     }
 }
 
@@ -82,12 +133,37 @@ impl BlockDevice for RuntimeBlockDevice {
 
 static TIME_PROVIDER: RuntimeTimeProvider = RuntimeTimeProvider;
 static PAGE_PROVIDER: RuntimePageProvider = RuntimePageProvider;
+// A named shutdown-lifetime arena retains maintenance threads, IRQ actions,
+// MMIO leases, and queue storage for every published v0.13 controller.
+static V13_CONTROLLERS: SpinNoPreempt<Vec<ReadyControllerInstallation>> =
+    SpinNoPreempt::new(Vec::new());
 
 pub(super) fn init(bootargs: Option<&str>) {
     ax_fs_ng::os::install(&TIME_PROVIDER, &PAGE_PROVIDER);
-    let devices = activate_discovered_controllers()
+    let mut block_devices = ax_driver::block::take_inline_block_devices()
         .into_iter()
-        .flat_map(|controller| controller.logical_devices())
+        .map(InlineBlockDeviceView::new)
+        .map(RuntimeBlockBackend::Inline)
+        .collect::<Vec<_>>();
+
+    let v13_controllers = activate_discovered_controllers_v13();
+    block_devices.extend(
+        v13_controllers
+            .iter()
+            .flat_map(ReadyControllerInstallation::logical_device_views)
+            .cloned()
+            .map(RuntimeBlockBackend::V13),
+    );
+    V13_CONTROLLERS.lock().extend(v13_controllers);
+
+    block_devices.extend(
+        activate_discovered_controllers()
+            .into_iter()
+            .flat_map(|controller| controller.logical_devices())
+            .map(RuntimeBlockBackend::Legacy),
+    );
+    let devices = block_devices
+        .into_iter()
         .filter_map(|device| match RuntimeBlockDevice::new(device) {
             Ok(device) => Some(Arc::new(device) as Arc<dyn BlockDevice>),
             Err(error) => {
@@ -106,9 +182,24 @@ fn map_block_service_error(error: BlockServiceError) -> AxError {
         BlockServiceError::Dma(_) => AxError::Io,
         BlockServiceError::Driver(error) => map_driver_error(error),
         BlockServiceError::HardwareQueue(error) => map_hctx_error(error),
+        BlockServiceError::V13(error) => map_v13_error(error),
         BlockServiceError::DriverInvariant => AxError::BadState,
         BlockServiceError::ControllerUnavailable => AxError::NoSuchDevice,
         BlockServiceError::AmbiguousLogicalDevice { .. } => AxError::BadState,
+    }
+}
+
+fn map_v13_error(error: V13SubmitErrorKind) -> AxError {
+    match error {
+        V13SubmitErrorKind::UnsafeContext
+        | V13SubmitErrorKind::InvalidCpu(_)
+        | V13SubmitErrorKind::AdmissionClosed
+        | V13SubmitErrorKind::RequestTable
+        | V13SubmitErrorKind::Maintenance(_) => AxError::BadState,
+        V13SubmitErrorKind::SoftwareCtxFull { .. }
+        | V13SubmitErrorKind::AdmissionFrozen
+        | V13SubmitErrorKind::AdmissionSaturated => AxError::ResourceBusy,
+        V13SubmitErrorKind::Driver(error) => map_driver_error(error),
     }
 }
 
@@ -119,6 +210,10 @@ fn map_driver_error(error: rdif_block::BlkError) -> AxError {
         rdif_block::BlkError::TimedOut => AxError::TimedOut,
         rdif_block::BlkError::Cancelled => AxError::Interrupted,
         rdif_block::BlkError::Offline | rdif_block::BlkError::Quarantined => AxError::NoSuchDevice,
+        // Reusing a hardware-visible identifier now requires a queue epoch
+        // transition. This is a runtime lifecycle failure, not caller-visible
+        // backpressure that the filesystem may safely retry in place.
+        rdif_block::BlkError::QueueEpochExhausted => AxError::BadState,
         rdif_block::BlkError::InvalidDmaProof => AxError::BadState,
         rdif_block::BlkError::NoMemory => AxError::NoMemory,
         rdif_block::BlkError::InvalidBlockIndex(_) | rdif_block::BlkError::InvalidRequest => {
@@ -142,8 +237,36 @@ fn map_hctx_error(error: HardwareQueueError) -> AxError {
         | HardwareQueueError::MissingInterruptSource { .. } => AxError::OperationNotSupported,
         HardwareQueueError::Maintenance(_) | HardwareQueueError::Task(_) => AxError::BadState,
         HardwareQueueError::Driver(error) => map_driver_error(error),
+        // The runtime reserved a hardware credit before invoking the driver.
+        // A Busy/Retry rejection therefore violates the queue contract and
+        // must not be exposed as ordinary retryable filesystem backpressure.
+        HardwareQueueError::DispatchContract { .. } => AxError::BadState,
         HardwareQueueError::EventOverflow { .. } => AxError::Io,
         HardwareQueueError::Capacity => AxError::NoMemory,
         HardwareQueueError::Offline => AxError::NoSuchDevice,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_epoch_exhaustion_is_an_internal_lifecycle_failure() {
+        assert_eq!(
+            map_driver_error(rdif_block::BlkError::QueueEpochExhausted),
+            AxError::BadState
+        );
+    }
+
+    #[test]
+    fn dispatch_contract_violation_is_not_reported_as_retryable_busy() {
+        assert_eq!(
+            map_hctx_error(HardwareQueueError::DispatchContract {
+                queue_id: 3,
+                error: rdif_block::BlkError::Busy,
+            }),
+            AxError::BadState
+        );
     }
 }

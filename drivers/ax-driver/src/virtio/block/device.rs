@@ -1,22 +1,28 @@
 //! Shared transport owner and task/IRQ exclusion boundary.
 
 use alloc::boxed::Box;
+#[cfg(test)]
 use core::{
     cell::UnsafeCell,
     hint::spin_loop,
     sync::atomic::{AtomicBool, Ordering},
 };
 
+#[cfg(test)]
 use ax_kspin::PreemptIrqGuard;
-use virtio_drivers::{queue::VirtQueue, transport::DeviceStatus};
+use virtio_drivers::queue::VirtQueue;
+#[cfg(test)]
+use virtio_drivers::transport::DeviceStatus;
 
+#[cfg(test)]
+use super::{initialization::VIRTIO_BLK_F_RO, lifecycle::VirtioLifecycleHardware};
 use super::{
-    initialization::{VIRTIO_BLK_F_RO, VirtioBlockInitPhase},
-    lifecycle::VirtioLifecycleHardware,
+    initialization::VirtioBlockInitPhase,
     queue::{InflightRequest, InflightStorage, VIRTIO_BLK_QUEUE_SIZE, VirtioDmaQuarantine},
 };
 use crate::virtio::{VirtIoHalImpl, VirtIoTransport};
 
+#[cfg(test)]
 pub(super) struct VirtIoBlkDevice<T: VirtIoTransport> {
     inner: UnsafeCell<VirtIoBlkInner<T>>,
     access_active: AtomicBool,
@@ -49,16 +55,20 @@ pub(super) struct VirtIoBlkInner<T: VirtIoTransport> {
 // SAFETY: `T: VirtIoTransport` proves the transport is movable. The transport
 // and in-flight request are accessed only by the maintenance owner while
 // holding `access_active`; moving the Arc does not bypass that exclusion.
+#[cfg(test)]
 unsafe impl<T: VirtIoTransport> Send for VirtIoBlkDevice<T> {}
 
 // SAFETY: `T` needs only Send because no shared reference reaches it. Task
 // access disables local IRQ/preemption before acquiring `access_active`.
 // Hard IRQ owns a separate interrupt-status port and never reaches `inner`.
 // Thus every dereference of `inner` is exclusive across task contexts.
+#[cfg(test)]
 unsafe impl<T: VirtIoTransport> Sync for VirtIoBlkDevice<T> {}
 
+#[cfg(test)]
 struct VirtioBlkAccessGuard<'state>(&'state AtomicBool);
 
+#[cfg(test)]
 impl<'state> VirtioBlkAccessGuard<'state> {
     fn enter(active: &'state AtomicBool) -> Self {
         while active
@@ -71,31 +81,18 @@ impl<'state> VirtioBlkAccessGuard<'state> {
     }
 }
 
+#[cfg(test)]
 impl Drop for VirtioBlkAccessGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
 }
 
+#[cfg(test)]
 impl<T: VirtIoTransport> VirtIoBlkDevice<T> {
     pub(super) fn discovered(transport: T) -> Self {
         Self {
-            inner: UnsafeCell::new(VirtIoBlkInner {
-                transport,
-                queue: None,
-                init_phase: VirtioBlockInitPhase::Discovered,
-                negotiated_features: 0,
-                config_generation: 0,
-                capacity_low: 0,
-                capacity: 0,
-                retained_capacity: None,
-                retained_read_only: None,
-                init_deadline_ns: 0,
-                init_error: None,
-                descriptor_storage: Some(Box::default()),
-                inflight: None,
-                dma_quarantine: None,
-            }),
+            inner: UnsafeCell::new(VirtIoBlkInner::discovered(transport)),
             access_active: AtomicBool::new(false),
             irq_enabled: AtomicBool::new(false),
         }
@@ -148,6 +145,28 @@ impl<T: VirtIoTransport> VirtIoBlkDevice<T> {
     }
 }
 
+impl<T: VirtIoTransport> VirtIoBlkInner<T> {
+    pub(super) fn discovered(transport: T) -> Self {
+        Self {
+            transport,
+            queue: None,
+            init_phase: VirtioBlockInitPhase::Discovered,
+            negotiated_features: 0,
+            config_generation: 0,
+            capacity_low: 0,
+            capacity: 0,
+            retained_capacity: None,
+            retained_read_only: None,
+            init_deadline_ns: 0,
+            init_error: None,
+            descriptor_storage: Some(Box::default()),
+            inflight: None,
+            dma_quarantine: None,
+        }
+    }
+}
+
+#[cfg(test)]
 pub(super) fn mask_and_publish_irq_disabled(
     irq_enabled: &AtomicBool,
     mask_device_source: impl FnOnce(),
@@ -160,6 +179,7 @@ pub(super) fn mask_and_publish_irq_disabled(
     irq_enabled.store(false, Ordering::Release);
 }
 
+#[cfg(test)]
 impl<T: VirtIoTransport> VirtioLifecycleHardware for VirtIoBlkDevice<T> {
     fn controller_cookie(&self) -> usize {
         core::ptr::from_ref(self).expose_provenance()

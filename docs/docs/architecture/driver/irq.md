@@ -130,13 +130,13 @@ pub enum PciIrqRequirement {
 
 ## rdif 内部 IRQ 事件
 
-部分 `rdif-*` 能力接口（如 `rdif-block`、`rdif-display`、`rdif-input`、`rdif-vsock`）提供 IRQ endpoint。这些 endpoint 只识别并确认中断源、生成稳定的 queue-local 事件，不做 OS wake、不阻塞、不持有 OS 锚，也不在中断上下文推进慢路径完成。
+部分 `rdif-*` 能力接口（如 `rdif-block`、`rdif-display`、`rdif-input`、`rdif-vsock`）提供 IRQ endpoint。这些 endpoint 只识别并确认中断源、生成稳定硬件事实，不做 OS wake、不阻塞、不持有 OS 锚，也不在中断上下文推进慢路径完成。
 
-例如 `rdif-block` 的 `IrqSourceInfo { id, queues }` 描述该硬件事件 source 可能影响的 queue mask，它不是平台 FDT/PCI IRQ source，也不写入 `rdrive` 或 `BindingInfo`。IRQ action 把 `IrqOutcome` 中已经确认的事件写入固定 event ring，并从 hard IRQ 合并相应 hctx 的预分配 `service_work`。若驱动显式返回 deferred destructive acknowledgement，worker 必须先确认和分类该 source，再消费 completion state；普通 task path 不得重新读取或 W1C 全局 IRQ status。
+例如 `rdif-block` endpoint 将完整 typed snapshot 写入驱动自己的固定 ledger，只返回 `IrqEvidenceId`。该 ID 携带 source、device generation、slot 和 slot generation；它不是平台 FDT/PCI IRQ source，也不写入 `rdrive` 或 `BindingInfo`。IRQ action 只把 ID 发布到固定 maintenance mailbox，并用预存的 local wake 激活注册该 action 的同 CPU owner。同一 source 同时只能存在一个 move-only evidence owner；旧 evidence 未 drain 时再次捕获相同 ID，只合并 dirty/rerun，不得用 copyable ID 再构造一个 `PendingBlockIrq`。若观察到不同 ID 则进入 containment/recovery。drain 后清 source latch 必须执行 clear-and-recheck，覆盖清理期间到达的新事实。普通 task path 不得重新读取或 W1C 全局 IRQ status；锁竞争不得变成 deferred acknowledgement。
 
-`ax-runtime::block` 使用共享的 per-CPU high-priority worker pool执行 hctx work item，而不是为每条 queue 永久占用一个线程。每个 hctx 同时最多只有一个串行 work item，重复的 submit/IRQ/timeout/cancel cause 通过原子状态合并；单次 callback 至多处理固定 batch，剩余工作返回 requeue。watchdog 只与 terminal completion 竞争并触发恢复，不调用驱动探测 completion。
+`ax-runtime::block` 为每个硬件 ownership domain 建立一个 CPU 固定维护线程。共享控制状态或 shared INTx 的 queues 必须在同一域；独立 MSI-X vector/hctx 可以各自建立域。combined shared domain 的 normal-I/O evidence 只路由一次：原 control owner 通过独占 `&mut` 借用其 I/O 能力消费，不能同时送入 control FSM 和第二个 I/O owner。非 owner CPU 只向 software ctx 提交 owned request并普通 wake owner，不访问 driver/MMIO。owner 每轮按域级固定总预算消费 evidence、完成请求并 dispatch；未完成时主动 yield。watchdog 只与 terminal completion 竞争并触发恢复，不调用驱动探测 completion。
 
-固定 event ring 溢出或 work admission 失败属于 controller 不变量破坏。block IRQ action 此时返回 `IrqReturn::QuenchAndWake`：IRQ framework 在本次 dispatch 返回前清除该 action 的 enabled gate，并立即屏蔽整条 backing line。共享 IRQ 的其他 action 保持逻辑 enabled，但在故障设备仍可能持续拉住电平时不能继续承受中断风暴。恢复 work 必须先成功执行设备 source mask，随后才能通过 action-owned `release_quench` 释放线路隔离；多个 action 同时 quench 时必须全部释放，peer 才重新获得线路。之后再完成 IRQ synchronize、DMA quiesce 和完整 reinitialize。该协议借鉴 Linux descriptor mask 与 deferred recovery 的所有权顺序，但把“设备源已屏蔽”作为显式 release 前置条件。
+固定 ledger/mailbox 溢出、owner 失效或 evidence identity 冲突属于 controller 不变量破坏。IRQ callback 必须先精确 mask 设备 source；能证明隔离时只禁用本 action 并唤醒 recovery，不能隔离时才 mask 整条 line。shared IRQ peer 不应因另一个设备已经精确 containment 而失去服务。recovery 保留原 evidence、mask token、action 和 MMIO/CQ lease，完成 IRQ synchronize、DMA quiesce 与完整 reinitialize 后才能生成新 lifecycle/mask epoch并 rearm。
 
 `rdif-serial` 同样把 hard IRQ 限制为固定 RX/TX/pass budget。`SerialIrqOutcome::budget_exhausted` 表示硬件或软件队列可能仍有工作，上层不能丢弃该状态：OS glue 应将它合并成 task-context 事件，再用 `SerialSoftWork::RESERVICE` 按固定批次继续推进。service thread 的单次 activation 也必须有固定事件批次上限；持续流量达到上限时保留 pending bit、显式 yield，再进入下一批。这样既不把 UART burst 变成无界 IRQ 或内核线程占用，也不会因为 controller EOI 或 level/edge 状态变化而遗失剩余数据。
 
@@ -144,9 +144,9 @@ pub enum PciIrqRequirement {
 flowchart LR
     Irq["platform IRQ<br/>IrqId"] --> Handler["HAL IRQ handler"]
     Handler --> Rdif["rdif Interface::handle_irq()"]
-    Rdif --> Event["已确认事件 / queue mask"]
-    Event --> Ring["固定 event ring"]
-    Ring --> Work["合并 hctx service_work"]
-    Work --> Service["有界 service_events()"]
+    Rdif --> Event["driver ledger / evidence ID"]
+    Event --> Ring["固定 maintenance mailbox"]
+    Ring --> Work["本地唤醒 ownership-domain owner"]
+    Work --> Service["有界 service_evidence()"]
     Service --> Wake["定向完成与唤醒"]
 ```

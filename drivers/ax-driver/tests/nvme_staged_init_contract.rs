@@ -20,7 +20,7 @@ fn nvme_discovery_registers_before_issuing_controller_commands() {
             "NVMe PCI discovery still enters the eager initializer through {forbidden}"
         );
     }
-    let required = "NvmeBlockDriver::discover";
+    let required = "NvmeBlockActivator::discover";
     assert!(
         adapter.contains(required),
         "NVMe discovery is missing the staged initialization boundary {required}"
@@ -37,15 +37,25 @@ fn nvme_discovery_registers_before_issuing_controller_commands() {
 fn nvme_initialization_and_normal_io_have_no_completion_polling_path() {
     let core = read_workspace_source("drivers/blk/nvme-driver/src/nvme.rs");
     let queue = read_workspace_source("drivers/blk/nvme-driver/src/queue.rs");
-    let runtime = ["mod", "adapter", "core", "dma", "prp", "request"]
-        .into_iter()
-        .map(|module| {
-            read_workspace_source(&format!(
-                "drivers/blk/nvme-driver/src/block/queue_runtime/{module}.rs"
-            ))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let runtime = [
+        "mod.rs",
+        "adapter.rs",
+        "core/mod.rs",
+        "core/submission.rs",
+        "core/completion_owner.rs",
+        "dma.rs",
+        "owned.rs",
+        "prp.rs",
+        "request/mod.rs",
+    ]
+    .into_iter()
+    .map(|relative| {
+        read_workspace_source(&format!(
+            "drivers/blk/nvme-driver/src/block/queue_runtime/{relative}"
+        ))
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
 
     for (source, name) in [
         (&core, "nvme.rs"),
@@ -96,6 +106,56 @@ fn nvme_recovery_reidentifies_controller_and_namespace_before_republication() {
     assert!(
         controller.contains("complete_reinitialize_admin"),
         "NVMe recovery does not validate the newly identified geometry before republishing"
+    );
+}
+
+#[test]
+fn nvme_v13_recovery_consumes_the_linear_quiesce_proof() {
+    let control = [
+        read_workspace_source("drivers/blk/nvme-driver/src/block/v13/control.rs"),
+        read_workspace_source("drivers/blk/nvme-driver/src/block/v13/recovery.rs"),
+    ]
+    .join("\n");
+
+    assert!(
+        !control.contains("NVMe v0.13 recovery requires"),
+        "the v0.13 controller still rejects recovery instead of advancing its lifecycle"
+    );
+    for required in [
+        "NvmeLifecycle",
+        "DriverControlTrigger::BeginQuiesce",
+        "DriverControlTrigger::BeginReinitialize",
+        "ControlProgress::DmaQuiesced",
+        "ControlProgress::Reinitialized",
+    ] {
+        assert!(
+            control.contains(required),
+            "NVMe v0.13 recovery is missing the linear lifecycle step {required}"
+        );
+    }
+}
+
+#[test]
+fn nvme_queue_reset_precedes_controller_queue_recreation() {
+    let domain = read_workspace_source("drivers/blk/nvme-driver/src/block/io_domain.rs");
+
+    let reclaim = domain
+        .find("fn reclaim_after_quiesce")
+        .expect("the NVMe domain must reclaim under a DMA proof");
+    let resume = domain[reclaim..]
+        .find("fn resume_after_reinitialize")
+        .map(|offset| reclaim + offset)
+        .expect("the NVMe domain must consume a controller reinit permit");
+    let reclaim_body = &domain[reclaim..resume];
+    let resume_body = &domain[resume..];
+
+    assert!(
+        reclaim_body.contains("reset_after_quiesce"),
+        "SQ/CQ cursors and CID epoch must reset while the matching DMA proof is borrowed"
+    );
+    assert!(
+        !resume_body.contains("reset_after_reinitialize"),
+        "queue memory cannot be reset after Create CQ/Create SQ has already rebuilt the controller"
     );
 }
 
@@ -153,7 +213,8 @@ fn nvme_msix_lease_retains_the_pci_endpoint_until_shutdown() {
     );
     for required in [
         "let endpoint = probe.take_endpoint()",
-        "preflight.activate(endpoint)",
+        "preflight.activate(endpoint, vector_count)",
+        "register_deferred_irq_block_activator",
     ] {
         assert!(
             adapter.contains(required),
@@ -169,19 +230,23 @@ fn nvme_msix_setup_and_probe_failure_keep_one_fail_closed_lease() {
     let lease = read_workspace_source("drivers/ax-driver/src/pci/msi/lease.rs");
     let transaction = read_workspace_source("drivers/ax-driver/src/pci/msi/transaction.rs");
 
-    let activate = adapter
-        .find("preflight.activate(endpoint)")
-        .expect("NVMe must transfer the endpoint into MSI-X activation");
-    let register = adapter
-        .find("register_msix_block(probe, bar, msix)")
-        .expect("NVMe must keep a distinct MSI-X registration transaction");
+    let preflight = adapter
+        .find("PciIrqLease::preflight")
+        .expect("NVMe must validate the policy-independent MSI-X ceiling");
     let discover = adapter
-        .find("NvmeBlockDriver::discover")
-        .expect("NVMe staged discovery must remain present");
+        .find("discover_msix_activator(bar.clone(), max_queue_pairs)")
+        .expect("NVMe staged discovery must advertise the maximum topology");
+    let take = adapter
+        .find("let endpoint = probe.take_endpoint()")
+        .expect("the deferred platform owner must take the PCI endpoint once");
+    let register = adapter
+        .find("register_deferred_irq_block_activator")
+        .expect("runtime plan selection must precede physical MSI-X allocation");
     assert!(
-        activate < register && register < discover,
-        "the endpoint must enter the MSI-X lease before fallible NVMe discovery"
+        preflight < discover && discover < take && take < register,
+        "discovery must retain only the MSI-X ceiling and defer allocation until runtime selection"
     );
+    assert!(adapter.contains("match preflight.activate(endpoint, vector_count)"));
 
     for required in [
         "rollback_msix_setup_steps",
@@ -240,17 +305,29 @@ fn nvme_queue_runtime_is_a_small_domain_directory() {
         source.lines().count() <= 120,
         "queue_runtime/mod.rs must remain a directory page"
     );
-    for module in ["adapter", "core", "dma", "prp", "request"] {
+    for module in ["adapter", "core", "dma", "owned", "prp", "request"] {
         assert!(
             source.contains(&format!("mod {module};")),
             "queue runtime is missing the {module} responsibility module"
         );
-        let leaf = domain.join(format!("{module}.rs"));
+    }
+    for relative in [
+        "adapter.rs",
+        "core/mod.rs",
+        "core/submission.rs",
+        "core/completion_owner.rs",
+        "dma.rs",
+        "owned.rs",
+        "prp.rs",
+        "request/mod.rs",
+        "request/tests.rs",
+    ] {
+        let leaf = domain.join(relative);
         let leaf_source = fs::read_to_string(&leaf)
             .unwrap_or_else(|error| panic!("NVMe queue runtime leaf {leaf:?}: {error}"));
         assert!(
             leaf_source.lines().count() <= 400,
-            "{module}.rs still mixes responsibilities at {} lines",
+            "{relative} still mixes responsibilities at {} lines",
             leaf_source.lines().count()
         );
     }

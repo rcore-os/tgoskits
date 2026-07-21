@@ -39,9 +39,9 @@ use intx::SharedPciEndpoint;
 pub use intx::{PciIntxIrqLease, PciIntxSourceMask};
 pub use msi::PciMsiTarget;
 #[cfg(feature = "nvme")]
-pub(crate) use msi::PciMsixActivationFailure;
-#[cfg(feature = "nvme")]
 pub use msi::{PciIrqLease, PciMsixAllocation};
+#[cfg(feature = "nvme")]
+pub(crate) use msi::{PciMsixActivationFailure, PciMsixPreflight};
 
 const MAX_PCIE_LEGACY_IRQS: usize = 8;
 #[cfg(virtio_dev)]

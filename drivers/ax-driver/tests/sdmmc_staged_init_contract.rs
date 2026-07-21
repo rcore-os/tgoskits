@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const STAGED_SDMMC_CONSUMERS: &[&str] = &[
+const SDMMC_CONSUMERS: &[&str] = &[
     "src/block/bcm2835.rs",
     "src/block/cvsd.rs",
     "src/block/k230_sdhci.rs",
@@ -11,9 +11,17 @@ const STAGED_SDMMC_CONSUMERS: &[&str] = &[
     "src/block/starfive_mmc.rs",
 ];
 
+const LEGACY_STAGED_SDMMC_CONSUMERS: &[&str] = &[
+    "src/block/bcm2835.rs",
+    "src/block/cvsd.rs",
+    "src/block/k230_sdhci.rs",
+    "src/block/phytium_mci.rs",
+    "src/block/starfive_mmc.rs",
+];
+
 #[test]
 fn platform_discovery_does_not_drive_card_initialization_synchronously() {
-    for relative in STAGED_SDMMC_CONSUMERS {
+    for relative in SDMMC_CONSUMERS {
         let source = production_source(relative);
         for forbidden in [
             "fn poll_card_init(",
@@ -34,7 +42,7 @@ fn platform_discovery_does_not_drive_card_initialization_synchronously() {
 
 #[test]
 fn platform_discovery_registers_a_staged_controller_before_initialization() {
-    for relative in STAGED_SDMMC_CONSUMERS {
+    for relative in LEGACY_STAGED_SDMMC_CONSUMERS {
         let source = read_source(relative);
         assert!(
             source.contains("staged") || source.contains("Staged"),
@@ -52,10 +60,64 @@ fn platform_discovery_registers_a_staged_controller_before_initialization() {
 }
 
 #[test]
+fn rk3568_registers_one_combined_v13_activation_owner() {
+    let source = production_source("src/block/rockchip/sdhci_rk3568.rs");
+
+    for required in [
+        "SdmmcControllerActivator::new",
+        "ProbeFdtBlockActivation",
+        "register_block_activator(activator)",
+        "SdioSdmmc::new_host2_timed",
+    ] {
+        assert!(
+            source.contains(required),
+            "RK3568 SDHCI is missing the v0.13 activation boundary `{required}`"
+        );
+    }
+    for forbidden in [
+        "StagedBlockDevice",
+        "ProbeFdtBlock,",
+        "register_block(staged)",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "RK3568 SDHCI retained legacy staged boundary `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn orange_pi_5_plus_hosts_register_combined_v13_activation_owners() {
+    for relative in [
+        "src/block/rockchip/sdhci_rk3588/mod.rs",
+        "src/block/rockchip/sd/mod.rs",
+    ] {
+        let source = production_source(relative);
+        for required in [
+            "SdmmcControllerActivator::new_with_prelude",
+            "ProbeFdtBlockActivation",
+            "register_block_activator(activator)",
+            "SdioSdmmc::new_host2_timed",
+        ] {
+            assert!(
+                source.contains(required),
+                "{relative} is missing the v0.13 activation boundary `{required}`"
+            );
+        }
+        for forbidden in ["StagedBlockDevice", "register_block(staged)"] {
+            assert!(
+                !source.contains(forbidden),
+                "{relative} retained legacy staged boundary `{forbidden}`"
+            );
+        }
+    }
+}
+
+#[test]
 fn rk3588_external_reset_is_an_absolute_time_state_machine() {
     let source = production_source("src/block/rockchip/sdhci_rk3588/mod.rs");
     assert!(source.contains("ResetHookRecoveryMode::Scheduled"));
-    assert!(source.contains("SdioSdmmc::new_host2_timed(host)"));
+    assert!(source.contains("SdioSdmmc::new_host2_timed_evidence(host)"));
     assert!(source.contains("ResetHookPoll::Pending { wake_at_ns }"));
     assert!(source.contains("fn cancel_before_reset_all"));
     assert!(source.contains("deassert_resets(&self.resets)?"));
@@ -81,22 +143,23 @@ fn rockchip_phase_setup_does_not_issue_synchronous_block_io() {
 fn rockchip_platform_resources_are_an_initial_controller_prelude() {
     let consumer = production_source("src/block/rockchip/sd/mod.rs");
     let sdhci = production_source("src/block/rockchip/sdhci_rk3588/mod.rs");
-    let adapter = production_source("src/block/staged.rs");
+    let domain = read_source("../blk/sdmmc-protocol/src/rdif/v13/domain.rs");
     assert!(!consumer.contains("apply_rockchip_sd_resources(info)"));
-    assert!(consumer.contains("StagedPlatformBlock::new(staged, resources)"));
-    assert!(adapter.contains("ControllerInitEndpoint::Pending(self)"));
-    let irq_bound_guard = adapter
-        .find("if !self.irq_requested.load(Ordering::Acquire)")
+    assert!(consumer.contains("SdmmcControllerActivator::new_with_prelude"));
+    assert!(consumer.contains("impl SdmmcActivationPrelude for RockchipSdResources"));
+    let irq_bound_guard = domain
+        .find("if !self.prelude.irq_requested")
         .expect("resource prelude must reject an unbound IRQ route");
-    let resource_transition = adapter
-        .find(".advance(input.now_ns")
+    let resource_transition = domain
+        .find("self.prelude.advance(now_ns)")
         .expect("resource prelude must be driven by the runtime timestamp");
     assert!(irq_bound_guard < resource_transition);
     assert!(consumer.contains("enable_staged_regulators(&self.regulators)"));
-    assert!(sdhci.contains("StagedPlatformBlock::new(staged, resources)"));
+    assert!(sdhci.contains("SdmmcControllerActivator::new_with_prelude"));
+    assert!(sdhci.contains("impl SdmmcActivationPrelude for RockchipSdhciResources"));
     assert!(sdhci.contains("clocks: staged_node_clocks(info)?"));
     assert!(!sdhci.contains("enable_node_clocks(info"));
-    assert!(adapter.contains("InitSchedule::wait_until(wake_at_ns)"));
+    assert!(domain.contains("Some(wake_at_ns)"));
 }
 
 #[test]

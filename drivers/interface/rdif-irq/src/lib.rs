@@ -59,9 +59,10 @@ pub enum ContainmentCause {
 /// This endpoint is intentionally separate from [`IrqEndpoint`]. The capture
 /// endpoint normally belongs to the OS hard-IRQ action while this control
 /// endpoint belongs to the bounded worker that consumed the captured event.
-/// Implementations must compare [`MaskedSource::generation`] with their active
-/// device epoch before changing hardware state. Stale, replayed, or partially
-/// overlapping tokens must return an error and leave the source masked.
+/// Implementations must compare both [`MaskedSource::lifecycle_generation`]
+/// and [`MaskedSource::mask_epoch`] with their active state before changing
+/// hardware. Stale, replayed, or partially overlapping tokens must return an
+/// error and leave the source masked.
 pub trait IrqSourceControl: Send + 'static {
     /// Driver-specific, matchable failure reported by a rearm attempt.
     type Error: Error + Send + Sync + 'static;
@@ -149,21 +150,40 @@ impl IrqSourceState {
 
 /// Non-zero identity of a device source left masked by one capture pass.
 ///
-/// The generation prevents a late worker from reopening a source after
-/// recovery, shutdown, or a newer capture epoch. The bitmap lets one endpoint
-/// represent a bounded set of independently maskable device causes without
-/// leaking controller-specific register layouts into the OS runtime.
+/// The lifecycle generation prevents a late worker from crossing recovery or
+/// shutdown. The independent mask epoch makes each armed-to-masked transition
+/// one-shot even while the device lifecycle remains unchanged. The bitmap lets
+/// one endpoint represent a bounded set of independently maskable causes
+/// without leaking controller-specific register layouts into the OS runtime.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct MaskedSource {
-    generation: NonZeroU64,
+    lifecycle_generation: NonZeroU64,
+    mask_epoch: NonZeroU64,
     bitmap: NonZeroU64,
 }
 
 impl MaskedSource {
-    /// Creates a masked-source token from already-validated non-zero values.
+    /// Creates a legacy token whose lifecycle and mask epochs are equal.
+    ///
+    /// New endpoints should use [`Self::new_with_epoch`]. Keeping this
+    /// constructor allows existing portable drivers to migrate without
+    /// weakening equality: their former generation remains a one-shot epoch.
     pub const fn new(generation: NonZeroU64, bitmap: NonZeroU64) -> Self {
-        Self { generation, bitmap }
+        Self::new_with_epoch(generation, generation, bitmap)
+    }
+
+    /// Creates a token from independently validated lifecycle and mask epochs.
+    pub const fn new_with_epoch(
+        lifecycle_generation: NonZeroU64,
+        mask_epoch: NonZeroU64,
+        bitmap: NonZeroU64,
+    ) -> Self {
+        Self {
+            lifecycle_generation,
+            mask_epoch,
+            bitmap,
+        }
     }
 
     /// Validates raw generation and bitmap values at an FFI or register
@@ -183,15 +203,99 @@ impl MaskedSource {
         Ok(Self::new(generation, bitmap))
     }
 
-    /// Returns the device activation epoch captured in this token.
+    /// Validates independent lifecycle generation, mask epoch, and bitmap.
+    pub const fn try_new_with_epoch(
+        lifecycle_generation: u64,
+        mask_epoch: u64,
+        bitmap: u64,
+    ) -> Result<Self, MaskedSourceError> {
+        let Some(lifecycle_generation) = NonZeroU64::new(lifecycle_generation) else {
+            return Err(MaskedSourceError::ZeroGeneration);
+        };
+        let Some(mask_epoch) = NonZeroU64::new(mask_epoch) else {
+            return Err(MaskedSourceError::ZeroMaskEpoch);
+        };
+        let Some(bitmap) = NonZeroU64::new(bitmap) else {
+            return Err(MaskedSourceError::EmptyBitmap);
+        };
+        Ok(Self::new_with_epoch(
+            lifecycle_generation,
+            mask_epoch,
+            bitmap,
+        ))
+    }
+
+    /// Returns the device lifecycle generation captured in this token.
+    pub const fn lifecycle_generation(self) -> NonZeroU64 {
+        self.lifecycle_generation
+    }
+
+    /// Returns the one-shot armed-to-masked transition epoch.
+    pub const fn mask_epoch(self) -> NonZeroU64 {
+        self.mask_epoch
+    }
+
+    /// Compatibility alias for the device lifecycle generation.
     pub const fn generation(self) -> NonZeroU64 {
-        self.generation
+        self.lifecycle_generation
     }
 
     /// Returns the non-empty device-source bitmap held masked.
     pub const fn bitmap(self) -> NonZeroU64 {
         self.bitmap
     }
+
+    /// Unions source bits from the same one-shot mask transition.
+    ///
+    /// Duplicate captures may discover additional masked causes while a
+    /// single evidence transaction is outstanding. Combining those causes is
+    /// valid only when both tokens name the same device lifecycle and the same
+    /// armed-to-masked transition. A mismatch leaves both input values usable
+    /// through the returned error so the caller can fail closed.
+    pub const fn try_union(self, other: Self) -> Result<Self, MaskedSourceUnionError> {
+        if self.lifecycle_generation.get() != other.lifecycle_generation.get() {
+            return Err(MaskedSourceUnionError::LifecycleGenerationMismatch {
+                active: self,
+                captured: other,
+            });
+        }
+        if self.mask_epoch.get() != other.mask_epoch.get() {
+            return Err(MaskedSourceUnionError::MaskEpochMismatch {
+                active: self,
+                captured: other,
+            });
+        }
+
+        let bitmap = self.bitmap.get() | other.bitmap.get();
+        // SAFETY: both input bitmaps are non-zero, so their union is non-zero.
+        let bitmap = unsafe { NonZeroU64::new_unchecked(bitmap) };
+        Ok(Self::new_with_epoch(
+            self.lifecycle_generation,
+            self.mask_epoch,
+            bitmap,
+        ))
+    }
+}
+
+/// Incompatible source-mask identities found while coalescing one IRQ fact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum MaskedSourceUnionError {
+    /// The second token belongs to another controller lifecycle.
+    #[error("cannot union IRQ source masks from different lifecycle generations")]
+    LifecycleGenerationMismatch {
+        /// Existing source-mask ownership.
+        active: MaskedSource,
+        /// Newly captured source-mask ownership.
+        captured: MaskedSource,
+    },
+    /// The second token belongs to another one-shot mask transition.
+    #[error("cannot union IRQ source masks from different mask epochs")]
+    MaskEpochMismatch {
+        /// Existing source-mask ownership.
+        active: MaskedSource,
+        /// Newly captured source-mask ownership.
+        captured: MaskedSource,
+    },
 }
 
 /// Invalid masked-source identity decoded at a public boundary.
@@ -200,6 +304,9 @@ pub enum MaskedSourceError {
     /// Zero is reserved for the absence of a source epoch.
     #[error("masked IRQ source generation must be nonzero")]
     ZeroGeneration,
+    /// Zero is reserved for the absence of a mask transition.
+    #[error("masked IRQ source mask epoch must be nonzero")]
+    ZeroMaskEpoch,
     /// A token that owns no device source cannot authorize rearming anything.
     #[error("masked IRQ source bitmap must be nonempty")]
     EmptyBitmap,
@@ -355,6 +462,46 @@ mod tests {
         assert_eq!(
             MaskedSource::try_new(1, 0),
             Err(MaskedSourceError::EmptyBitmap)
+        );
+        assert_eq!(
+            MaskedSource::try_new_with_epoch(1, 0, 1),
+            Err(MaskedSourceError::ZeroMaskEpoch)
+        );
+    }
+
+    #[test]
+    fn mask_epoch_is_independent_from_the_device_lifecycle_generation() {
+        let first = MaskedSource::try_new_with_epoch(9, 41, 0b10).unwrap();
+        let second = MaskedSource::try_new_with_epoch(9, 42, 0b10).unwrap();
+
+        assert_eq!(first.lifecycle_generation().get(), 9);
+        assert_eq!(second.lifecycle_generation().get(), 9);
+        assert_eq!(first.mask_epoch().get(), 41);
+        assert_eq!(second.mask_epoch().get(), 42);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn masked_source_union_requires_the_same_one_shot_epoch() {
+        let first = MaskedSource::try_new_with_epoch(9, 41, 0b001).unwrap();
+        let same_epoch = MaskedSource::try_new_with_epoch(9, 41, 0b100).unwrap();
+        let next_epoch = MaskedSource::try_new_with_epoch(9, 42, 0b010).unwrap();
+        let next_lifecycle = MaskedSource::try_new_with_epoch(10, 41, 0b010).unwrap();
+
+        assert_eq!(first.try_union(same_epoch).unwrap().bitmap().get(), 0b101);
+        assert_eq!(
+            first.try_union(next_epoch),
+            Err(MaskedSourceUnionError::MaskEpochMismatch {
+                active: first,
+                captured: next_epoch,
+            })
+        );
+        assert_eq!(
+            first.try_union(next_lifecycle),
+            Err(MaskedSourceUnionError::LifecycleGenerationMismatch {
+                active: first,
+                captured: next_lifecycle,
+            })
         );
     }
 

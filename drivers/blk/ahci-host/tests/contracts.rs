@@ -85,6 +85,113 @@ fn portable_driver_has_no_completion_polling_or_os_scheduler_dependency() {
 }
 
 #[test]
+fn v13_boundary_is_linear_evidence_without_runtime_policy() {
+    let source = concat!(
+        include_str!("../src/activation_v13.rs"),
+        include_str!("../src/domain_v13.rs"),
+        include_str!("../src/evidence.rs"),
+    );
+
+    for forbidden in [
+        "ServiceRerunReason",
+        "QueueEventBatch",
+        "ServiceProgress",
+        "request_timeout_ns",
+        "SpinNoPreempt",
+        "QueueHandle",
+        "IrqGuard",
+        "poll_request",
+        "poll_completions",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "rdif-block v0.13 AHCI boundary leaks legacy/runtime policy: {forbidden}",
+        );
+    }
+    for required in [
+        "IrqEvidenceId",
+        "InterruptIoDomain",
+        "LogicalDeviceSelector::Unrouted",
+        "EvidenceServiceResult::Retained",
+    ] {
+        assert!(
+            source.contains(required),
+            "rdif-block v0.13 AHCI boundary lost required invariant: {required}",
+        );
+    }
+
+    let irq = include_str!("../src/irq.rs");
+    let queue = include_str!("../src/queue.rs");
+    let controller = include_str!("../src/controller.rs");
+    let initialization = include_str!("../src/initialization.rs");
+    for (name, region) in [
+        (
+            "capture_v13_irq",
+            source_region(irq, "fn capture_v13_irq", "fn capture_irq_facts"),
+        ),
+        (
+            "mask_v13_source",
+            source_region(irq, "fn mask_v13_source", "fn rearm_v13_source"),
+        ),
+        (
+            "rearm_v13_source",
+            source_region(irq, "fn rearm_v13_source", "fn rearm_source"),
+        ),
+        (
+            "submit_v13",
+            source_region(
+                queue,
+                "pub(crate) fn submit_v13",
+                "pub(crate) fn scan_v13_evidence",
+            ),
+        ),
+        (
+            "poll_engine_start_v13",
+            source_region(
+                initialization,
+                "fn poll_engine_start_v13",
+                "fn poll_identify",
+            ),
+        ),
+    ] {
+        assert!(
+            !region.contains("try_claim_register_window"),
+            "v0.13 {name} must not convert portable register-lock contention into hardware state",
+        );
+    }
+    let evidence_mapping = source_region(irq, "const fn evidence_error", "impl IrqSourceControl");
+    assert!(
+        !evidence_mapping.contains("BlkError::Busy"),
+        "a concurrent evidence publication is a protocol/ownership fault, not an OS retry policy",
+    );
+    for (name, region) in [
+        (
+            "v13 queue binding",
+            source_region(controller, "fn v13_queue_binding", "fn v13_shared"),
+        ),
+        (
+            "v13 queue constructor",
+            source_region(queue, "pub(crate) fn new_v13", "fn from_info"),
+        ),
+    ] {
+        assert!(
+            !region.contains("request_timeout_ns"),
+            "{name} must leave watchdog policy in the runtime",
+        );
+    }
+}
+
+fn source_region<'source>(source: &'source str, start: &str, end: &str) -> &'source str {
+    let (_, tail) = source
+        .split_once(start)
+        .unwrap_or_else(|| panic!("missing source boundary `{start}`"));
+    let (region, _) = tail
+        .split_once(end)
+        .unwrap_or_else(|| panic!("missing source boundary `{end}`"));
+    region
+}
+
+#[test]
 fn live_dma_retention_has_one_named_quarantine_owner() {
     let source = concat!(
         include_str!("../src/controller.rs"),

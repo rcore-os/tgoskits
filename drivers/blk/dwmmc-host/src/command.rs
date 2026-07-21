@@ -175,13 +175,13 @@ impl DwMmc {
             CommandState::Complete { response } => {
                 self.command_state = CommandState::Idle;
                 if self.data_cmd_index == 0 {
-                    self.irq.state.end_request();
+                    self.end_request_irq_epoch();
                 }
                 Ok(response)
             }
             CommandState::Failed { error } => {
                 self.command_state = CommandState::Idle;
-                self.irq.state.end_request();
+                self.end_request_irq_epoch();
                 Err(error)
             }
             CommandState::Idle
@@ -250,7 +250,7 @@ impl DwMmc {
     }
 
     fn prepare_irq_for_request(&mut self) {
-        self.irq.state.begin_request();
+        self.begin_request_irq_epoch();
     }
 
     pub(crate) fn abort_command(&mut self) -> Result<(), Error> {

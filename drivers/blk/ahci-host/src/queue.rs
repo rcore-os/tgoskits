@@ -6,10 +6,10 @@ use core::{
 
 use dma_api::{DmaDirection, InFlightDma};
 use rdif_block::{
-    BlkError, CompletedRequest, CompletionSink, DmaQuiesced, IQueue, IdList, OwnedRequest,
-    QueueEventBatch, QueueExecution, QueueInfo, QueueKind, QueueLimits, RequestFlags, RequestId,
-    RequestOp, ServiceProgress, ServiceRerunReason, SubmitError, SubmitOutcome,
-    validate_owned_request,
+    AcceptedRequest, BlkError, CompletedRequest, CompletionSink, DeviceInfo, DmaQuiesced,
+    HardwareQueueLimits, IQueue, IdList, OwnedRequest, QueueEventBatch, QueueExecution, QueueInfo,
+    QueueKind, QueueLimits, RequestFlags, RequestId, RequestOp, ServiceProgress,
+    ServiceRerunReason, SubmitError, SubmitOutcome, UnacceptedRequest, validate_owned_request,
 };
 
 use crate::{
@@ -48,6 +48,14 @@ impl ReadyPort {
         )
     }
 
+    pub(crate) fn v13_queue_info(&self, binding: V13QueueBinding) -> V13QueueInfo {
+        let info = binding.compatibility_queue_info(self.port, self.ata);
+        V13QueueInfo {
+            device: info.device,
+            limits: HardwareQueueLimits::from(info.limits),
+        }
+    }
+
     pub(crate) fn into_quarantine(
         self,
         shared: &Arc<HostShared>,
@@ -76,6 +84,11 @@ pub(crate) struct AhciPortQueue {
     destroyable_epoch: Option<u64>,
     inflight: Option<InflightRequest>,
     pending_completion_generation: Option<u64>,
+}
+
+/// Result of classifying one bounded set of already-acknowledged snapshots.
+pub(crate) struct QueueEvidenceScan {
+    pub(crate) retained: bool,
 }
 
 enum QueueDmaOwner {
@@ -125,6 +138,37 @@ impl QueueBinding {
     }
 }
 
+/// Hardware-only binding used by the v0.13 ownership domain.
+#[derive(Clone, Copy)]
+pub(crate) struct V13QueueBinding {
+    pub name: &'static str,
+    pub dma_mask: u64,
+    pub dma_domain: dma_api::DmaDomainId,
+    pub irq_source_id: usize,
+    pub controller_cookie: usize,
+}
+
+pub(crate) struct V13QueueInfo {
+    pub device: DeviceInfo,
+    pub limits: HardwareQueueLimits,
+}
+
+impl V13QueueBinding {
+    fn compatibility_queue_info(self, port: usize, ata: AtaDevice) -> QueueInfo {
+        // `AhciPortQueue` still implements the retained v0.12 IQueue surface,
+        // but the v0.13 boundary never exports or consumes its timeout field.
+        queue_info(
+            port,
+            ata,
+            self.name,
+            self.dma_mask,
+            self.dma_domain,
+            self.irq_source_id,
+            0,
+        )
+    }
+}
+
 impl AhciPortQueue {
     pub(crate) fn new(ready: ReadyPort, shared: Arc<HostShared>, binding: QueueBinding) -> Self {
         let info = ready.queue_info(
@@ -134,13 +178,31 @@ impl AhciPortQueue {
             binding.irq_source_id,
             binding.request_timeout_ns,
         );
+        Self::from_info(ready, shared, binding.controller_cookie, info)
+    }
+
+    pub(crate) fn new_v13(
+        ready: ReadyPort,
+        shared: Arc<HostShared>,
+        binding: V13QueueBinding,
+    ) -> Self {
+        let info = binding.compatibility_queue_info(ready.port, ready.ata);
+        Self::from_info(ready, shared, binding.controller_cookie, info)
+    }
+
+    fn from_info(
+        ready: ReadyPort,
+        shared: Arc<HostShared>,
+        controller_cookie: usize,
+        info: QueueInfo,
+    ) -> Self {
         let epoch = shared.port(ready.port).epoch();
         Self {
             info,
             ata: ready.ata,
             command_memory: QueueDmaOwner::Live(ready.command_memory),
             shared,
-            controller_cookie: binding.controller_cookie,
+            controller_cookie,
             epoch,
             // A proof must be newer than the epoch in which this queue and
             // its command memory were published. Accepting that same epoch
@@ -279,6 +341,148 @@ impl AhciPortQueue {
             inflight.request,
         ));
     }
+
+    /// Submits after the runtime published the request and consumed one
+    /// serialized hardware credit.
+    pub(crate) fn submit_v13(
+        &mut self,
+        id: RequestId,
+        request: OwnedRequest,
+    ) -> Result<AcceptedRequest, UnacceptedRequest> {
+        if !self.command_memory.is_live() {
+            return Err(UnacceptedRequest::new(id, BlkError::Offline, request));
+        }
+        if self.inflight.is_some()
+            || self.shared.port(self.info.id).active_request_generation() != 0
+        {
+            return Err(UnacceptedRequest::new(
+                id,
+                BlkError::Other("AHCI serialized hardware credit contract was violated"),
+                request,
+            ));
+        }
+
+        let inflight = self.prepare_request(id, request).map_err(|error| {
+            let (id, error, request) = error.into_parts();
+            UnacceptedRequest::new(id, error, request)
+        })?;
+        self.inflight = Some(inflight);
+        let generation = self.shared.port(self.info.id).next_request_generation();
+        self.inflight
+            .as_mut()
+            .expect("the prepared AHCI request remains locally owned")
+            .generation = generation;
+        if !self
+            .shared
+            .port(self.info.id)
+            .publish_active_request(generation)
+        {
+            let request = self
+                .return_before_doorbell()
+                .expect("the just-prepared AHCI request remains locally owned");
+            return Err(UnacceptedRequest::new(
+                id,
+                BlkError::Other("AHCI serialized hardware credit contract was violated"),
+                request,
+            ));
+        }
+        // The fixed maintenance owner publishes request identity before the
+        // only task-side register write. The hard endpoint reads only status
+        // and atomically published identity, so it never contends on an OS
+        // scheduling lock or portable-driver retry gate.
+        fence(Ordering::Release);
+        write_port(
+            self.shared.registers(),
+            self.info.id,
+            PX_CI,
+            1 << COMMAND_SLOT,
+        );
+        Ok(AcceptedRequest::new(id))
+    }
+
+    /// Classifies acknowledged snapshots without publishing a success yet.
+    ///
+    /// A domain first classifies every affected port, so an error from any
+    /// port wins over completions observed in the same shared interrupt.
+    pub(crate) fn scan_v13_evidence(&mut self) -> Result<QueueEvidenceScan, BlkError> {
+        let port_id = self.info.id;
+        if self.shared.port(port_id).take_overflow() {
+            self.pending_completion_generation = None;
+            freeze_port(&self.shared, port_id);
+            if let Some(inflight) = self.inflight.as_ref() {
+                self.shared
+                    .port(port_id)
+                    .clear_active_request(inflight.generation);
+            }
+            return Err(BlkError::Io);
+        }
+
+        let mut processed = 0;
+        let mut completion_generation = self.pending_completion_generation.take();
+        while processed < IRQ_SNAPSHOT_CAPACITY {
+            let Some(snapshot) = self.shared.port(port_id).pop_snapshot() else {
+                break;
+            };
+            processed += 1;
+            if snapshot.epoch != self.epoch {
+                continue;
+            }
+            if snapshot.has_error() {
+                self.pending_completion_generation = None;
+                freeze_port(&self.shared, port_id);
+                if let Some(inflight) = self.inflight.as_ref() {
+                    self.shared
+                        .port(port_id)
+                        .clear_active_request(inflight.generation);
+                }
+                return Err(BlkError::Io);
+            }
+            if let Some(generation) = self.inflight.as_ref().map(|inflight| inflight.generation)
+                && snapshot.completes(COMMAND_SLOT, generation)
+            {
+                completion_generation = Some(generation);
+            }
+        }
+        self.pending_completion_generation = completion_generation;
+        Ok(QueueEvidenceScan {
+            retained: self.shared.port(port_id).has_snapshots(),
+        })
+    }
+
+    /// Publishes the completion candidate only after the whole shared source
+    /// has been classified error-free.
+    pub(crate) fn commit_v13_completion(
+        &mut self,
+        sink: &mut dyn CompletionSink,
+    ) -> Result<(), BlkError> {
+        if self.shared.port(self.info.id).has_snapshots() {
+            return Err(BlkError::Busy);
+        }
+        if let Some(generation) = self.pending_completion_generation.take() {
+            self.complete_from_snapshot(generation, sink)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn resume_v13(
+        &mut self,
+        epoch: rdif_block::ControllerEpoch,
+    ) -> Result<(), BlkError> {
+        let epoch = epoch.get();
+        let port = self.shared.port(self.info.id);
+        if self.last_reclaim_epoch != Some(epoch)
+            || self.destroyable_epoch != Some(epoch)
+            || self.inflight.is_some()
+            || !self.command_memory.is_live()
+            || port.epoch() != epoch
+            || !port.is_online()
+        {
+            return Err(BlkError::InvalidDmaProof);
+        }
+        self.pending_completion_generation = None;
+        self.destroyable_epoch = None;
+        Ok(())
+    }
 }
 
 impl IQueue for AhciPortQueue {
@@ -348,55 +552,14 @@ impl IQueue for AhciPortQueue {
         if events.queue_id() != self.id() {
             return Err(BlkError::InvalidRequest);
         }
-        let port_id = self.id();
-        if self.shared.port(port_id).take_overflow() {
-            self.pending_completion_generation = None;
-            freeze_port(&self.shared, port_id);
-            if let Some(inflight) = self.inflight.as_ref() {
-                self.shared
-                    .port(port_id)
-                    .clear_active_request(inflight.generation);
-            }
-            return Err(BlkError::Io);
-        }
-
-        let mut processed = 0;
-        let mut completion_generation = self.pending_completion_generation.take();
-        while processed < IRQ_SNAPSHOT_CAPACITY {
-            let Some(snapshot) = self.shared.port(port_id).pop_snapshot() else {
-                break;
-            };
-            processed += 1;
-            if snapshot.epoch != self.epoch {
-                continue;
-            }
-            if snapshot.has_error() {
-                self.pending_completion_generation = None;
-                freeze_port(&self.shared, port_id);
-                if let Some(inflight) = self.inflight.as_ref() {
-                    self.shared
-                        .port(port_id)
-                        .clear_active_request(inflight.generation);
-                }
-                return Err(BlkError::Io);
-            }
-            if let Some(generation) = self.inflight.as_ref().map(|inflight| inflight.generation)
-                && snapshot.completes(COMMAND_SLOT, generation)
-            {
-                completion_generation = Some(generation);
-            }
-        }
-
-        if self.shared.port(port_id).has_snapshots() {
+        let scan = self.scan_v13_evidence()?;
+        if scan.retained {
             // Keep ownership local until every already-published IRQ fact has
             // been classified. A later error in the bounded continuation must
             // win over an earlier command-complete snapshot.
-            self.pending_completion_generation = completion_generation;
             return Ok(events.requeue_service(ServiceRerunReason::RetainedFacts));
         }
-        if let Some(generation) = completion_generation {
-            self.complete_from_snapshot(generation, sink)?;
-        }
+        self.commit_v13_completion(sink)?;
         Ok(ServiceProgress::Idle)
     }
 
@@ -634,6 +797,29 @@ mod tests {
                 .iter()
                 .all(|write| write.offset != port_offset(0, PX_CI)),
             "a deferred submission must not ring the command doorbell"
+        );
+    }
+
+    #[test]
+    fn v13_submit_does_not_use_the_legacy_register_gate() {
+        let (mut queue, shared, registers, _irq) = test_queue();
+        let _legacy_window = shared
+            .try_claim_register_window()
+            .expect("the legacy compatibility gate starts available");
+        registers.clear_access_log();
+
+        let accepted = queue
+            .submit_v13(RequestId::new(4), flush_request())
+            .expect("the fixed v0.13 owner must not retry on a legacy lock");
+
+        assert_eq!(accepted.id(), RequestId::new(4));
+        assert_ne!(shared.port(0).active_request_generation(), 0);
+        assert!(
+            registers
+                .writes()
+                .iter()
+                .any(|write| write.offset == port_offset(0, PX_CI)),
+            "accepted v0.13 submission must publish its doorbell"
         );
     }
 

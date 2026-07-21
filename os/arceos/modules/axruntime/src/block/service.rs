@@ -9,7 +9,7 @@ use rdif_block::{
 };
 use thiserror::Error;
 
-use super::{BlockDeviceView, HardwareQueueError};
+use super::{BlockDeviceView, HardwareQueueError, V13SubmitErrorKind};
 use crate::block::controller::RuntimeQueue;
 
 /// Failure of one runtime-owned synchronous block operation.
@@ -27,6 +27,9 @@ pub enum BlockServiceError {
     /// The shared hardware queue rejected runtime ownership or scheduling.
     #[error(transparent)]
     HardwareQueue(#[from] HardwareQueueError),
+    /// The v0.13 immutable ctx-to-hctx runtime rejected the request.
+    #[error(transparent)]
+    V13(#[from] V13SubmitErrorKind),
     /// A driver violated its declared inline/interrupt ownership contract.
     #[error("block driver violated its queue completion contract")]
     DriverInvariant,
@@ -111,10 +114,7 @@ impl BlockDeviceView {
             .begin_operation()
             .ok_or(BlockServiceError::ControllerUnavailable)?;
         let device = self.runtime_device();
-        let Some(queue) = device
-            .queues
-            .iter()
-            .find(|queue| queue.info().limits.supports_flush)
+        let Some(queue) = device.queue_for_cpu(ax_hal::percpu::this_cpu_id(), RequestOp::Flush)
         else {
             return Ok(());
         };
@@ -135,28 +135,13 @@ impl BlockDeviceView {
         start_block: u64,
         byte_len: usize,
     ) -> Result<(), BlockServiceError> {
-        let device_info = self.runtime_device().info();
-        let block_size = device_info.logical_block_size;
-        if byte_len == 0 || block_size == 0 || !byte_len.is_multiple_of(block_size) {
-            return Err(BlockServiceError::InvalidTransfer);
-        }
-        let blocks =
-            u64::try_from(byte_len / block_size).map_err(|_| BlockServiceError::InvalidTransfer)?;
-        if start_block
-            .checked_add(blocks)
-            .is_none_or(|end| end > device_info.num_blocks)
-        {
-            return Err(BlockServiceError::InvalidTransfer);
-        }
-        Ok(())
+        validate_data_transfer(self.runtime_device().info(), start_block, byte_len)
     }
 
     fn select_queue(&self, operation: RequestOp) -> Result<&RuntimeQueue, BlockServiceError> {
         let device = self.runtime_device();
-        let start = device.dispatch_cursor.fetch_add(1, Ordering::Relaxed);
-        (0..device.queues.len())
-            .map(|offset| &device.queues[(start + offset) % device.queues.len()])
-            .find(|queue| queue_supports(queue.info(), operation))
+        device
+            .queue_for_cpu(ax_hal::percpu::this_cpu_id(), operation)
             .ok_or(BlockServiceError::Driver(BlkError::NotSupported))
     }
 }
@@ -238,7 +223,27 @@ fn contain_inline_contract_violation(queue: &super::controller::InlineQueue) -> 
     BlockServiceError::DriverInvariant
 }
 
-fn build_data_request(
+pub(in crate::block) fn validate_data_transfer(
+    device_info: rdif_block::DeviceInfo,
+    start_block: u64,
+    byte_len: usize,
+) -> Result<(), BlockServiceError> {
+    let block_size = device_info.logical_block_size;
+    if byte_len == 0 || block_size == 0 || !byte_len.is_multiple_of(block_size) {
+        return Err(BlockServiceError::InvalidTransfer);
+    }
+    let blocks =
+        u64::try_from(byte_len / block_size).map_err(|_| BlockServiceError::InvalidTransfer)?;
+    if start_block
+        .checked_add(blocks)
+        .is_none_or(|end| end > device_info.num_blocks)
+    {
+        return Err(BlockServiceError::InvalidTransfer);
+    }
+    Ok(())
+}
+
+pub(in crate::block) fn build_data_request(
     info: QueueInfo,
     operation: RequestOp,
     lba: u64,
@@ -278,7 +283,10 @@ fn build_data_request(
     Ok(request)
 }
 
-fn transfer_chunk_len(info: QueueInfo, remaining: usize) -> Result<usize, BlockServiceError> {
+pub(in crate::block) fn transfer_chunk_len(
+    info: QueueInfo,
+    remaining: usize,
+) -> Result<usize, BlockServiceError> {
     let block_size = info.device.logical_block_size;
     let max_blocks = usize::try_from(info.limits.max_blocks_per_request)
         .map_err(|_| BlockServiceError::InvalidTransfer)?;
@@ -291,16 +299,6 @@ fn transfer_chunk_len(info: QueueInfo, remaining: usize) -> Result<usize, BlockS
         return Err(BlockServiceError::InvalidTransfer);
     }
     Ok(remaining.min(aligned_limit))
-}
-
-fn queue_supports(info: QueueInfo, operation: RequestOp) -> bool {
-    match operation {
-        RequestOp::Read => true,
-        RequestOp::Write => !info.device.read_only,
-        RequestOp::Flush => info.limits.supports_flush,
-        RequestOp::Discard => info.limits.supports_discard,
-        RequestOp::WriteZeroes => info.limits.supports_write_zeroes,
-    }
 }
 
 #[cfg(test)]

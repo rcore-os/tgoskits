@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use rdif_block::Event;
+use rdif_block::{Event, IrqEvidenceId};
 
 struct CountingAllocator;
 
@@ -36,6 +36,17 @@ fn irq_event_is_a_compact_copyable_queue_fact() {
         size_of::<Event>() <= 16,
         "IRQ event must fit in at most two machine words, got {} bytes",
         size_of::<Event>()
+    );
+}
+
+#[test]
+fn evidence_identity_is_a_compact_irq_safe_value() {
+    assert_copy::<IrqEvidenceId>();
+    assert!(!needs_drop::<IrqEvidenceId>());
+    assert_eq!(
+        size_of::<IrqEvidenceId>(),
+        16,
+        "evidence IDs are stored directly in fixed IRQ mailboxes"
     );
 }
 

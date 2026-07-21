@@ -18,6 +18,7 @@ use super::{
         rollback_msix_setup_steps,
     },
 };
+use crate::irq_binding::ExactIrqSourceSet;
 
 #[cfg(feature = "nvme")]
 impl PciMsixPreflight {
@@ -26,9 +27,19 @@ impl PciMsixPreflight {
     /// Every failure explicitly reports whether the endpoint was restored to
     /// a reusable state or retained with uncertain hardware resources.
     pub(crate) fn activate(
-        self,
+        &self,
         mut endpoint: Endpoint,
+        vector_count: u16,
     ) -> Result<PciIrqLease, PciMsixActivationFailure> {
+        if vector_count == 0 || vector_count > self.max_vector_count {
+            return Err(PciMsixActivationFailure::Returned {
+                endpoint,
+                error: OnProbeError::other(format!(
+                    "PCI endpoint {} selected {vector_count} MSI-X vectors outside 1..={}",
+                    self.info.address, self.max_vector_count
+                )),
+            });
+        }
         let provider = match rdrive::get::<Msi>(self.target.provider) {
             Ok(provider) => provider,
             Err(error) => {
@@ -64,7 +75,7 @@ impl PciMsixPreflight {
             }
         };
         let mut allocation =
-            match provider.allocate(MsiRequest::new(self.target.device, self.vector_count)) {
+            match provider.allocate(MsiRequest::new(self.target.device, vector_count)) {
                 Ok(allocation) => Some(allocation),
                 Err(error) => {
                     quarantine.release();
@@ -72,7 +83,7 @@ impl PciMsixPreflight {
                         endpoint,
                         error: OnProbeError::other(format!(
                             "failed to allocate {} MSI-X vectors for {}: {error:?}",
-                            self.vector_count, self.info.address
+                            vector_count, self.info.address
                         )),
                     });
                 }
@@ -84,6 +95,56 @@ impl PciMsixPreflight {
                 .vectors(),
             &self.host_resources,
         );
+        let exact_sources = match ExactIrqSourceSet::new(binding.irq_sources()) {
+            Ok(sources)
+                if sources.source_bits().count_ones() as usize == usize::from(vector_count) =>
+            {
+                sources
+            }
+            result => {
+                let reason = match result {
+                    Ok(_) => format!(
+                        "MSI provider returned a vector count different from the requested {}",
+                        vector_count
+                    ),
+                    Err(error) => format!("invalid exact MSI-X source topology: {error}"),
+                };
+                let allocation = allocation
+                    .take()
+                    .expect("invalid source topology still retains its vector allocation");
+                let activation_error = OnProbeError::other(reason);
+                match provider.free(allocation) {
+                    Ok(()) => {
+                        quarantine.release();
+                        return Err(PciMsixActivationFailure::Returned {
+                            endpoint,
+                            error: activation_error,
+                        });
+                    }
+                    Err(failure) => {
+                        let (allocation, free_error) = failure.into_parts();
+                        quarantine.retain(
+                            allocation,
+                            None,
+                            endpoint,
+                            PciMsiQuarantineReason::ProviderRelease,
+                        );
+                        warn!(
+                            "failed to free an invalid MSI-X allocation for {}; retaining the \
+                             allocation and PCI endpoint: {free_error:?}",
+                            self.info.address
+                        );
+                        return Err(PciMsixActivationFailure::Claimed {
+                            error: OnProbeError::other(format!(
+                                "MSI-X source topology for {} was invalid and vector release \
+                                 could not be proven",
+                                self.info.address
+                            )),
+                        });
+                    }
+                }
+            }
+        };
 
         let mut table_mmio =
             match axklib::mmio::ioremap(self.table_range.start.into(), self.table_range.len()) {
@@ -271,6 +332,7 @@ impl PciMsixPreflight {
             provider: self.target.provider,
             allocation,
             binding,
+            exact_sources,
             table,
             table_mmio,
             endpoint: Some(endpoint),

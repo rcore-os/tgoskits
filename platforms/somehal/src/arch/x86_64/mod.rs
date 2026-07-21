@@ -441,10 +441,7 @@ fn decode_ioapic_gsi_route(encoded: u64) -> Option<(u64, u8)> {
     (encoded != UNPUBLISHED_IOAPIC_GSI_ROUTE).then_some(((encoded >> 8) << 12, encoded as u8))
 }
 
-const fn encode_ioapic_gsi_config(
-    trigger: AcpiIrqTrigger,
-    polarity: AcpiIrqPolarity,
-) -> u8 {
+const fn encode_ioapic_gsi_config(trigger: AcpiIrqTrigger, polarity: AcpiIrqPolarity) -> u8 {
     let mut config = IOAPIC_GSI_CONFIG_VALID;
     if matches!(trigger, AcpiIrqTrigger::Level) {
         config |= IOAPIC_GSI_CONFIG_LEVEL;
@@ -629,8 +626,7 @@ impl rdif_intc::Interface for X86IoApicIntc {
         // framework's desired/applied state.
         let endpoint = IOAPIC_CPU_IF.reserve_gsi_endpoint(route)?;
         let vector = IOAPIC_CPU_IF.reserve_external_vector(translation.id, route.gsi)?;
-        let reservation =
-            classify_ioapic_route_reservation(endpoint.is_new(), vector.is_new())?;
+        let reservation = classify_ioapic_route_reservation(endpoint.is_new(), vector.is_new())?;
         let programmed = ProgrammedIoApicRoute {
             acpi: *route,
             vector: vector.vector(),

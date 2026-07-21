@@ -22,11 +22,14 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+mod activation_v13;
 mod ata;
 mod command;
 mod config;
 mod controller;
+mod domain_v13;
 mod error;
+mod evidence;
 mod initialization;
 mod irq;
 mod lifecycle;
@@ -37,6 +40,7 @@ mod registers;
 #[cfg(test)]
 mod test_support;
 
+pub use activation_v13::AhciControllerActivator;
 pub use config::AhciConfig;
 pub use controller::{AhciHost, AhciPortDevice};
 pub use error::AhciError;

@@ -21,7 +21,7 @@ pub(crate) enum InitialAdminCommand {
 /// Narrow register/DMA boundary consumed by the portable init state machine.
 pub(crate) trait InitialHardware {
     fn controller_timeout_ns(&self) -> u64;
-    fn begin_controller_disable(&self);
+    fn begin_controller_disable(&mut self);
     fn controller_ready(&self) -> bool;
     fn controller_fatal(&self) -> bool;
     /// Returns the admin source only after its handler and delivery path are live.
@@ -34,17 +34,17 @@ pub(crate) trait InitialHardware {
     /// The controller must have acknowledged `CC.RDY=0`, and the OS must keep
     /// the registered initialization IRQ action live for the following admin
     /// commands.
-    unsafe fn prepare_initial_enable(&self) -> Result<(), InitError>;
+    unsafe fn prepare_initial_enable(&mut self) -> Result<(), InitError>;
 
-    fn submit_initial_admin(&self, command: InitialAdminCommand) -> Result<u16, InitError>;
-    fn take_admin_completion(&self) -> Option<AdminCompletion>;
+    fn submit_initial_admin(&mut self, command: InitialAdminCommand) -> Result<u16, InitError>;
+    fn take_admin_completion(&mut self) -> Option<AdminCompletion>;
 
     /// Applies DMA output and returns the next serialized command.
     ///
     /// `Ok(None)` means namespace geometry and every retained I/O queue are
     /// ready for publication.
     fn complete_initial_admin(
-        &self,
+        &mut self,
         command: InitialAdminCommand,
         completion: AdminCompletion,
     ) -> Result<Option<InitialAdminCommand>, InitError>;
@@ -53,7 +53,7 @@ pub(crate) trait InitialHardware {
     ///
     /// This remains part of the initialization transaction: failure must
     /// disable the controller before the runtime can observe terminal failure.
-    fn publish_ready(&self) -> Result<(), InitError>;
+    fn publish_ready(&mut self) -> Result<(), InitError>;
 }
 
 /// Initial controller lifecycle. It never sleeps or inspects a CQ on timeout.
@@ -99,7 +99,7 @@ impl NvmeInitialization {
 
     pub(crate) fn poll(
         &mut self,
-        hardware: &impl InitialHardware,
+        hardware: &mut impl InitialHardware,
         input: InitInput,
     ) -> InitPoll<()> {
         match self.state {
@@ -127,7 +127,7 @@ impl NvmeInitialization {
         }
     }
 
-    fn begin_disable(&mut self, hardware: &impl InitialHardware, now_ns: u64) -> InitPoll<()> {
+    fn begin_disable(&mut self, hardware: &mut impl InitialHardware, now_ns: u64) -> InitPoll<()> {
         if hardware.live_admin_irq_source().is_none() {
             return self.finish_failure(InitError::MissingInterrupt);
         }
@@ -139,7 +139,7 @@ impl NvmeInitialization {
 
     fn poll_disabling(
         &mut self,
-        hardware: &impl InitialHardware,
+        hardware: &mut impl InitialHardware,
         now_ns: u64,
         deadline_ns: u64,
     ) -> InitPoll<()> {
@@ -165,7 +165,7 @@ impl NvmeInitialization {
 
     fn poll_enabling(
         &mut self,
-        hardware: &impl InitialHardware,
+        hardware: &mut impl InitialHardware,
         now_ns: u64,
         deadline_ns: u64,
     ) -> InitPoll<()> {
@@ -190,7 +190,7 @@ impl NvmeInitialization {
 
     fn issue_admin(
         &mut self,
-        hardware: &impl InitialHardware,
+        hardware: &mut impl InitialHardware,
         now_ns: u64,
         command: InitialAdminCommand,
     ) -> InitPoll<()> {
@@ -212,7 +212,7 @@ impl NvmeInitialization {
 
     fn poll_admin(
         &mut self,
-        hardware: &impl InitialHardware,
+        hardware: &mut impl InitialHardware,
         input: InitInput,
         command: InitialAdminCommand,
         command_id: u16,
@@ -265,7 +265,7 @@ impl NvmeInitialization {
 
     fn begin_abort<T>(
         &mut self,
-        hardware: &impl InitialHardware,
+        hardware: &mut impl InitialHardware,
         now_ns: u64,
         error: InitError,
     ) -> InitPoll<T> {
@@ -277,7 +277,7 @@ impl NvmeInitialization {
 
     fn poll_aborting<T>(
         &mut self,
-        hardware: &impl InitialHardware,
+        hardware: &mut impl InitialHardware,
         now_ns: u64,
         error: InitError,
         deadline_ns: u64,
@@ -357,7 +357,7 @@ mod tests {
             100
         }
 
-        fn begin_controller_disable(&self) {
+        fn begin_controller_disable(&mut self) {
             self.disable_count.set(self.disable_count.get() + 1);
         }
 
@@ -373,22 +373,22 @@ mod tests {
             self.irq_ready.get().then_some(3)
         }
 
-        unsafe fn prepare_initial_enable(&self) -> Result<(), InitError> {
+        unsafe fn prepare_initial_enable(&mut self) -> Result<(), InitError> {
             self.prepared.set(true);
             Ok(())
         }
 
-        fn submit_initial_admin(&self, command: InitialAdminCommand) -> Result<u16, InitError> {
+        fn submit_initial_admin(&mut self, command: InitialAdminCommand) -> Result<u16, InitError> {
             self.submitted.borrow_mut().push(command);
             Ok(7)
         }
 
-        fn take_admin_completion(&self) -> Option<AdminCompletion> {
+        fn take_admin_completion(&mut self) -> Option<AdminCompletion> {
             self.completions.borrow_mut().pop_front()
         }
 
         fn complete_initial_admin(
-            &self,
+            &mut self,
             command: InitialAdminCommand,
             _completion: AdminCompletion,
         ) -> Result<Option<InitialAdminCommand>, InitError> {
@@ -424,7 +424,7 @@ mod tests {
             }
         }
 
-        fn publish_ready(&self) -> Result<(), InitError> {
+        fn publish_ready(&mut self) -> Result<(), InitError> {
             if let Some(error) = self.publish_error.get() {
                 return Err(error);
             }
@@ -435,12 +435,12 @@ mod tests {
 
     #[test]
     fn initialization_does_not_touch_hardware_before_irq_delivery_is_live() {
-        let hardware = FakeHardware::new();
+        let mut hardware = FakeHardware::new();
         hardware.irq_ready.set(false);
         let mut initialization = NvmeInitialization::discovered();
 
         assert!(matches!(
-            initialization.poll(&hardware, InitInput::at(0)),
+            initialization.poll(&mut hardware, InitInput::at(0)),
             InitPoll::Failed(InitError::MissingInterrupt)
         ));
         assert_eq!(hardware.disable_count.get(), 0);
@@ -449,18 +449,18 @@ mod tests {
 
     #[test]
     fn first_controller_command_occurs_only_after_disable_acknowledgement() {
-        let hardware = FakeHardware::new();
+        let mut hardware = FakeHardware::new();
         let mut initialization = NvmeInitialization::discovered();
 
         assert!(matches!(
-            initialization.poll(&hardware, InitInput::at(0)),
+            initialization.poll(&mut hardware, InitInput::at(0)),
             InitPoll::Pending(_)
         ));
         assert!(hardware.submitted.borrow().is_empty());
 
         hardware.ready.set(false);
         assert!(matches!(
-            initialization.poll(&hardware, InitInput::at(1)),
+            initialization.poll(&mut hardware, InitInput::at(1)),
             InitPoll::Pending(_)
         ));
         assert!(hardware.prepared.get());
@@ -468,12 +468,12 @@ mod tests {
 
         hardware.ready.set(true);
         assert!(matches!(
-            initialization.poll(&hardware, InitInput::at(2)),
+            initialization.poll(&mut hardware, InitInput::at(2)),
             InitPoll::Pending(schedule) if schedule.run_again()
         ));
         assert!(hardware.submitted.borrow().is_empty());
         assert!(matches!(
-            initialization.poll(&hardware, InitInput::at(3)),
+            initialization.poll(&mut hardware, InitInput::at(3)),
             InitPoll::Pending(schedule) if schedule.irq_sources().contains(3)
         ));
         assert_eq!(
@@ -484,18 +484,18 @@ mod tests {
 
     #[test]
     fn deadline_does_not_consume_admin_completion_without_irq_evidence() {
-        let hardware = FakeHardware::new();
+        let mut hardware = FakeHardware::new();
         let mut initialization = NvmeInitialization::discovered();
-        initialization.poll(&hardware, InitInput::at(0));
+        initialization.poll(&mut hardware, InitInput::at(0));
         hardware.ready.set(false);
-        initialization.poll(&hardware, InitInput::at(1));
+        initialization.poll(&mut hardware, InitInput::at(1));
         hardware.ready.set(true);
-        initialization.poll(&hardware, InitInput::at(2));
-        initialization.poll(&hardware, InitInput::at(3));
+        initialization.poll(&mut hardware, InitInput::at(2));
+        initialization.poll(&mut hardware, InitInput::at(3));
         hardware.complete(7);
 
         assert!(matches!(
-            initialization.poll(&hardware, InitInput::at(10)),
+            initialization.poll(&mut hardware, InitInput::at(10)),
             InitPoll::Pending(_)
         ));
         assert_eq!(hardware.completions.borrow().len(), 1);
@@ -503,7 +503,7 @@ mod tests {
         let mut sources = IdList::none();
         sources.insert(3);
         assert!(matches!(
-            initialization.poll(&hardware, InitInput::new(11, sources)),
+            initialization.poll(&mut hardware, InitInput::new(11, sources)),
             InitPoll::Pending(schedule) if schedule.run_again()
         ));
         assert!(hardware.completions.borrow().is_empty());
@@ -511,18 +511,18 @@ mod tests {
 
     #[test]
     fn admin_timeout_disables_the_controller_before_reporting_failure() {
-        let hardware = FakeHardware::new();
+        let mut hardware = FakeHardware::new();
         let mut initialization = NvmeInitialization::discovered();
-        initialization.poll(&hardware, InitInput::at(0));
+        initialization.poll(&mut hardware, InitInput::at(0));
         hardware.ready.set(false);
-        initialization.poll(&hardware, InitInput::at(1));
+        initialization.poll(&mut hardware, InitInput::at(1));
         hardware.ready.set(true);
-        initialization.poll(&hardware, InitInput::at(2));
-        initialization.poll(&hardware, InitInput::at(3));
+        initialization.poll(&mut hardware, InitInput::at(2));
+        initialization.poll(&mut hardware, InitInput::at(3));
 
         assert!(matches!(
             initialization.poll(
-                &hardware,
+                &mut hardware,
                 InitInput::at(3_u64.saturating_add(ADMIN_COMMAND_TIMEOUT_NS)),
             ),
             InitPoll::Pending(_)
@@ -536,7 +536,7 @@ mod tests {
         hardware.ready.set(false);
         assert!(matches!(
             initialization.poll(
-                &hardware,
+                &mut hardware,
                 InitInput::at(4_u64.saturating_add(ADMIN_COMMAND_TIMEOUT_NS)),
             ),
             InitPoll::Failed(InitError::TimedOut)
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn namespace_publication_failure_is_part_of_the_disable_transaction() {
-        let hardware = FakeHardware::new();
+        let mut hardware = FakeHardware::new();
         hardware
             .publish_error
             .set(Some(InitError::Hardware("namespace publication rejected")));
@@ -561,7 +561,7 @@ mod tests {
         sources.insert(3);
 
         assert!(matches!(
-            initialization.poll(&hardware, InitInput::new(1, sources)),
+            initialization.poll(&mut hardware, InitInput::new(1, sources)),
             InitPoll::Pending(_)
         ));
         assert!(!hardware.published.get());
@@ -569,20 +569,20 @@ mod tests {
 
         hardware.ready.set(false);
         assert!(matches!(
-            initialization.poll(&hardware, InitInput::at(2)),
+            initialization.poll(&mut hardware, InitInput::at(2)),
             InitPoll::Failed(InitError::Hardware("namespace publication rejected"))
         ));
     }
 
     #[test]
     fn full_initialization_serializes_every_admin_command_behind_irq_evidence() {
-        let hardware = FakeHardware::new();
+        let mut hardware = FakeHardware::new();
         let mut initialization = NvmeInitialization::discovered();
-        initialization.poll(&hardware, InitInput::at(0));
+        initialization.poll(&mut hardware, InitInput::at(0));
         hardware.ready.set(false);
-        initialization.poll(&hardware, InitInput::at(1));
+        initialization.poll(&mut hardware, InitInput::at(1));
         hardware.ready.set(true);
-        initialization.poll(&hardware, InitInput::at(2));
+        initialization.poll(&mut hardware, InitInput::at(2));
 
         let expected = [
             InitialAdminCommand::IdentifyController,
@@ -597,7 +597,7 @@ mod tests {
         for (index, expected_command) in expected.into_iter().enumerate() {
             let now_ns = 3 + index as u64 * 2;
             assert!(matches!(
-                initialization.poll(&hardware, InitInput::at(now_ns)),
+                initialization.poll(&mut hardware, InitInput::at(now_ns)),
                 InitPoll::Pending(schedule) if schedule.irq_sources().contains(3)
             ));
             assert_eq!(hardware.submitted.borrow()[index], expected_command);
@@ -605,7 +605,8 @@ mod tests {
             hardware.complete(7);
             let mut sources = IdList::none();
             sources.insert(3);
-            let completion = initialization.poll(&hardware, InitInput::new(now_ns + 1, sources));
+            let completion =
+                initialization.poll(&mut hardware, InitInput::new(now_ns + 1, sources));
             if index + 1 == expected.len() {
                 assert!(matches!(completion, InitPoll::Ready(())));
             } else {

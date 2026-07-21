@@ -6,6 +6,7 @@ pub enum Error {
     Layout,
     Dma(dma_api::DmaError),
     Mmio(mmio_api::MapError),
+    Activation(rdif_block::ActivationError),
     Unknown(&'static str),
 }
 
@@ -27,6 +28,12 @@ impl From<mmio_api::MapError> for Error {
     }
 }
 
+impl From<rdif_block::ActivationError> for Error {
+    fn from(value: rdif_block::ActivationError) -> Self {
+        Self::Activation(value)
+    }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -34,6 +41,7 @@ impl Display for Error {
             Self::Layout => f.write_str("invalid memory layout"),
             Self::Dma(err) => write!(f, "dma error: {err}"),
             Self::Mmio(err) => write!(f, "mmio map error: {err}"),
+            Self::Activation(err) => write!(f, "block activation contract error: {err}"),
             Self::Unknown(message) => f.write_str(message),
         }
     }

@@ -39,6 +39,12 @@ pub(crate) struct AhciInitialization {
     quarantined_dma: Option<AhciDmaQuarantine>,
 }
 
+#[derive(Clone, Copy)]
+enum RegisterOwnershipMode {
+    LegacyCompatibility,
+    FixedV13Owner,
+}
+
 impl AhciInitialization {
     pub(crate) const fn discovered() -> Self {
         Self {
@@ -121,6 +127,25 @@ impl AhciInitialization {
         ready_ports: &mut Vec<Option<ReadyPort>>,
         input: InitInput,
     ) -> InitPoll<()> {
+        self.poll_with_register_owner(
+            shared,
+            dma,
+            config,
+            ready_ports,
+            input,
+            RegisterOwnershipMode::LegacyCompatibility,
+        )
+    }
+
+    fn poll_with_register_owner(
+        &mut self,
+        shared: &Arc<HostShared>,
+        dma: &DeviceDma,
+        config: AhciConfig,
+        ready_ports: &mut Vec<Option<ReadyPort>>,
+        input: InitInput,
+        ownership: RegisterOwnershipMode,
+    ) -> InitPoll<()> {
         let state = mem::replace(&mut self.state, InitState::Transition);
         let progress = match state {
             InitState::Discovered => self.begin_ownership(shared, config, input),
@@ -148,7 +173,19 @@ impl AhciInitialization {
             InitState::StartingEngine {
                 cursor,
                 command_memory,
-            } => self.poll_engine_start(shared, dma, config, input, cursor, command_memory),
+            } => match ownership {
+                RegisterOwnershipMode::LegacyCompatibility => self.poll_engine_start_legacy(
+                    shared,
+                    dma,
+                    config,
+                    input,
+                    cursor,
+                    command_memory,
+                ),
+                RegisterOwnershipMode::FixedV13Owner => {
+                    self.poll_engine_start_v13(shared, dma, config, input, cursor, command_memory)
+                }
+            },
             InitState::WaitingIdentify(command) => {
                 self.poll_identify(shared, config, ready_ports, input, command)
             }
@@ -164,13 +201,66 @@ impl AhciInitialization {
         progress
     }
 
+    /// Advances the v0.13 controller owner without treating a timer or an
+    /// internal transition as permission to consume IRQ evidence.
+    pub(crate) fn poll_v13(
+        &mut self,
+        shared: &Arc<HostShared>,
+        dma: &DeviceDma,
+        config: AhciConfig,
+        ready_ports: &mut Vec<Option<ReadyPort>>,
+        now_ns: u64,
+        irq_evidence: bool,
+    ) -> InitPoll<()> {
+        if irq_evidence || !matches!(self.state, InitState::WaitingIdentify(_)) {
+            return self.poll_with_register_owner(
+                shared,
+                dma,
+                config,
+                ready_ports,
+                InitInput::at(now_ns),
+                RegisterOwnershipMode::FixedV13Owner,
+            );
+        }
+
+        let state = mem::replace(&mut self.state, InitState::Transition);
+        let InitState::WaitingIdentify(command) = state else {
+            self.state = state;
+            return self.poll_with_register_owner(
+                shared,
+                dma,
+                config,
+                ready_ports,
+                InitInput::at(now_ns),
+                RegisterOwnershipMode::FixedV13Owner,
+            );
+        };
+        if now_ns < command.cursor.deadline_ns {
+            let deadline_ns = command.cursor.deadline_ns;
+            self.state = InitState::WaitingIdentify(command);
+            return InitPoll::Pending(command_wait_schedule(config.irq_source_id, deadline_ns));
+        }
+
+        shared
+            .port(command.cursor.port)
+            .clear_active_request(command.generation);
+        self.begin_abort(
+            shared,
+            config,
+            now_ns,
+            command.cursor,
+            command.command_memory,
+            Some(command.dma),
+        )
+    }
+
     fn begin_reset(
         &mut self,
         shared: &HostShared,
         config: AhciConfig,
         input: InitInput,
     ) -> InitPoll<()> {
-        if !shared.initial_handler_live() || !shared.irq_delivery_enabled() {
+        if !shared.control_handler_live() || !shared.irq_delivery_enabled() {
             return self.fail(InitError::MissingInterrupt);
         }
         let ghc = shared.registers().read32(HOST_GHC);
@@ -191,7 +281,7 @@ impl AhciInitialization {
         config: AhciConfig,
         input: InitInput,
     ) -> InitPoll<()> {
-        if !shared.initial_handler_live() || !shared.irq_delivery_enabled() {
+        if !shared.control_handler_live() || !shared.irq_delivery_enabled() {
             return self.fail(InitError::MissingInterrupt);
         }
         if shared.registers().read32(HOST_CAP2) & CAP2_BOH == 0 {
@@ -478,7 +568,26 @@ impl AhciInitialization {
         ))
     }
 
-    fn poll_engine_start(
+    fn poll_engine_start_legacy(
+        &mut self,
+        shared: &HostShared,
+        dma_device: &DeviceDma,
+        config: AhciConfig,
+        input: InitInput,
+        cursor: PortCursor,
+        command_memory: PortCommandMemory,
+    ) -> InitPoll<()> {
+        let Some(_register_window) = shared.try_claim_register_window() else {
+            self.state = InitState::StartingEngine {
+                cursor,
+                command_memory,
+            };
+            return InitPoll::Pending(InitSchedule::immediate());
+        };
+        self.poll_engine_start_v13(shared, dma_device, config, input, cursor, command_memory)
+    }
+
+    fn poll_engine_start_v13(
         &mut self,
         shared: &HostShared,
         dma_device: &DeviceDma,
@@ -511,13 +620,6 @@ impl AhciInitialization {
             ));
         }
 
-        let Some(_register_window) = shared.try_claim_register_window() else {
-            self.state = InitState::StartingEngine {
-                cursor,
-                command_memory,
-            };
-            return InitPoll::Pending(InitSchedule::immediate());
-        };
         clear_initial_irq_state(shared, cursor.port);
         let port_dma = constrained_dma(dma_device, cursor.scan.cap);
         let identify_len = NonZeroUsize::new(IDENTIFY_BYTES)
@@ -1248,6 +1350,51 @@ mod tests {
     }
 
     #[test]
+    fn v13_identify_arm_does_not_use_the_legacy_register_gate() {
+        let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
+        registers.set(port_offset(0, PX_CMD), CMD_CR | CMD_FR | CMD_ST | CMD_FRE);
+        let shared = HostShared::new(registers.shared());
+        let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
+        let command_memory = PortCommandMemory::allocate(&dma).unwrap();
+        let cursor = PortCursor {
+            scan: PortScan {
+                cap: CAP_S64A,
+                ports: 1,
+                next: 1,
+            },
+            port: 0,
+            deadline_ns: 100,
+        };
+        let mut initialization = AhciInitialization {
+            state: InitState::StartingEngine {
+                cursor,
+                command_memory,
+            },
+            quarantined_dma: None,
+        };
+        let _legacy_window = shared
+            .try_claim_register_window()
+            .expect("the legacy compatibility gate starts available");
+        registers.clear_access_log();
+
+        assert!(matches!(
+            initialization.poll_v13(&shared, &dma, test_config(), &mut Vec::new(), 10, false,),
+            InitPoll::Pending(_)
+        ));
+        assert!(matches!(
+            initialization.state,
+            InitState::WaitingIdentify(_)
+        ));
+        assert!(
+            registers
+                .writes()
+                .iter()
+                .any(|write| write.offset == port_offset(0, PX_CI)),
+            "the v0.13 owner must publish IDENTIFY without consulting the legacy gate"
+        );
+    }
+
+    #[test]
     fn identify_watchdog_never_reads_completion_state() {
         let registers = FakeRegisters::new(MMIO_REQUIRED_SIZE);
         let shared = HostShared::new(registers.shared());
@@ -1328,7 +1475,7 @@ mod tests {
 
         registers.clear_access_log();
         assert!(matches!(
-            initialization.poll(&shared, &dma, test_config(), &mut ready, InitInput::at(108),),
+            initialization.poll_v13(&shared, &dma, test_config(), &mut ready, 108, false,),
             InitPoll::Pending(_)
         ));
         assert!(
@@ -1403,10 +1550,19 @@ mod tests {
         assert!(handler.capture().is_captured());
 
         assert!(matches!(
-            initialization.poll(&shared, &dma, test_config(), &mut ready, InitInput::at(10),),
+            initialization.poll_v13(&shared, &dma, test_config(), &mut ready, 9, false,),
             InitPoll::Pending(_)
         ));
         assert!(ready.is_empty());
+        assert!(matches!(
+            initialization.state,
+            InitState::WaitingIdentify(_)
+        ));
+        assert!(shared.port(0).has_snapshots());
+        assert!(matches!(
+            initialization.poll_v13(&shared, &dma, test_config(), &mut ready, 10, true,),
+            InitPoll::Pending(_)
+        ));
         assert!(matches!(initialization.state, InitState::AbortCommand(_)));
         assert!(initialization.quarantine_owned_dma(&shared));
     }

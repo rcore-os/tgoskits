@@ -1,4 +1,10 @@
-use core::{cell::UnsafeCell, mem, ptr::NonNull};
+use alloc::sync::Arc;
+use core::{
+    cell::UnsafeCell,
+    mem,
+    ptr::{NonNull, addr_of},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 use dma_api::{CoherentArray, DeviceDma};
 use mbarrier::{mb, rmb, wmb};
@@ -7,6 +13,7 @@ use tock_registers::register_bitfields;
 use crate::{
     command::{self, Feature},
     err::*,
+    nvme::NvmeMmioLease,
     registers::NvmeReg,
 };
 
@@ -214,6 +221,17 @@ pub(crate) struct NvmeCompletion {
     pub status: CompletionStatus,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CompletionCursor {
+    head: u32,
+    phase: bool,
+}
+
+pub(crate) struct OwnerCompletionBatch {
+    pub(crate) completed: usize,
+    pub(crate) owner_rerun: bool,
+}
+
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct CompletionStatus(pub u16);
@@ -240,7 +258,9 @@ pub struct NvmeQueue {
     pub qid: u32,
     sq: UnsafeCell<SubmitQueue>,
     cq: UnsafeCell<CompleteQueue>,
+    completion_probe: NvmeCompletionProbe,
     reg: NonNull<NvmeReg>,
+    _mmio_lease: NvmeMmioLease,
 }
 
 // SAFETY: An `NvmeQueue` is advanced by exactly one CPU-pinned maintenance
@@ -251,26 +271,30 @@ unsafe impl Send for NvmeQueue {}
 // SAFETY: SQ and CQ storage live in disjoint `UnsafeCell`s. The maintenance
 // owner is the sole submitter and completion consumer; lifecycle reset is only
 // allowed after the same owner has drained IRQ actions and proved DMA quiesced.
-// Hard IRQ owns only the separate interrupt-source capability.
+// Hard IRQ owns only separate source-mask and read-only CQ-phase capabilities.
 unsafe impl Sync for NvmeQueue {}
 
 impl NvmeQueue {
-    pub fn new(
+    pub(crate) fn new(
         qid: u32,
         reg: NonNull<NvmeReg>,
         dma: &DeviceDma,
         page_size: usize,
         sq: usize,
         cq: usize,
+        mmio_lease: NvmeMmioLease,
     ) -> Result<Self> {
         let submit_queue = SubmitQueue::new(dma, sq, page_size)?;
         let complete_queue = CompleteQueue::new(dma, cq, page_size)?;
+        let completion_probe = complete_queue.probe();
 
         Ok(NvmeQueue {
             sq: UnsafeCell::new(submit_queue),
             cq: UnsafeCell::new(complete_queue),
+            completion_probe,
             qid,
             reg,
+            _mmio_lease: mmio_lease,
         })
     }
 
@@ -307,15 +331,49 @@ impl NvmeQueue {
     /// The caller may invoke this only while servicing an acknowledged source
     /// event whose exact device vector remains masked.
     pub(crate) fn take_owner_completion(&self) -> Option<NvmeCompletion> {
-        let (complete, head) = self.with_cq(|cq| {
-            let complete = cq.take_complete()?;
-            Some((complete, cq.head))
-        })?;
-        // The controller may reuse this CQ slot after observing the head
-        // doorbell, so every CQE read must retire before that MMIO write.
-        mb();
-        self.reg().write_cq_y_head_doolbell(self.qid as _, head);
-        Some(complete)
+        let mut completion = None;
+        let _ = self.drain_owner_completions(1, |entry| completion = Some(entry));
+        completion
+    }
+
+    /// Drains one bounded owner batch and publishes its final CQ head once.
+    pub(crate) fn drain_owner_completions(
+        &self,
+        budget: usize,
+        mut consume: impl FnMut(NvmeCompletion),
+    ) -> OwnerCompletionBatch {
+        let mut owner_rerun = false;
+        let completed = self.with_cq(|cq| {
+            drain_completion_batch(
+                budget,
+                || {
+                    let completion = cq.take_complete()?;
+                    Some((completion, cq.cursor()))
+                },
+                &mut consume,
+                |cursor| {
+                    // The controller may reuse every retired CQ slot after
+                    // observing this head, so all CQE copies must complete
+                    // before the single batched MMIO publication.
+                    mb();
+                    self.reg()
+                        .write_cq_y_head_doolbell(self.qid as _, cursor.head);
+                    owner_rerun = self.completion_probe.finish_owner_batch(cursor);
+                },
+            )
+        });
+        OwnerCompletionBatch {
+            completed,
+            owner_rerun,
+        }
+    }
+
+    /// Creates a read-only phase probe for the IRQ endpoint.
+    ///
+    /// The returned probe never consumes a CQE or changes the owner cursor.
+    /// The probe retains the CQ DMA allocation independently of this queue.
+    pub(crate) fn completion_probe(&self) -> NvmeCompletionProbe {
+        self.completion_probe.clone()
     }
 
     pub(crate) fn depth(&self) -> usize {
@@ -390,41 +448,77 @@ impl SubmitQueue {
 }
 
 pub struct CompleteQueue {
-    queue: CoherentArray<NvmeCompletion>,
+    storage: Arc<CompletionQueueStorage>,
     head: u32,
     phase: bool,
+    published_cursor: Arc<PublishedCompletionCursor>,
+}
+
+/// Read-only CQ phase capability owned by an IRQ endpoint.
+///
+/// The maintenance owner publishes its consumer cursor atomically. The probe
+/// reads only the phase bit at that cursor, so it can distinguish a shared
+/// INTx peer from an NVMe completion without consuming queue state.
+#[derive(Clone)]
+pub(crate) struct NvmeCompletionProbe {
+    backing: CompletionProbeBacking,
+    cursor: Arc<PublishedCompletionCursor>,
+}
+
+#[derive(Clone)]
+enum CompletionProbeBacking {
+    Dma(Arc<CompletionQueueStorage>),
+    #[cfg(test)]
+    Test {
+        entries: NonNull<NvmeCompletion>,
+        len: usize,
+    },
+}
+
+struct CompletionQueueStorage(UnsafeCell<CoherentArray<NvmeCompletion>>);
+
+struct PublishedCompletionCursor {
+    cursor: AtomicU64,
+    irq_claimed: AtomicBool,
 }
 
 impl CompleteQueue {
     fn new(dma: &DeviceDma, queue_size: usize, page_size: usize) -> Result<Self> {
-        let queue = dma.coherent_array_zero_with_align(queue_size, page_size)?;
+        let storage = Arc::new(CompletionQueueStorage(UnsafeCell::new(
+            dma.coherent_array_zero_with_align(queue_size, page_size)?,
+        )));
         Ok(CompleteQueue {
-            queue,
+            storage,
             head: 0,
             phase: false,
+            published_cursor: Arc::new(PublishedCompletionCursor::new(0, false)),
         })
     }
 
     // check if there is completed command in completion queue
     fn complete(&self) -> Option<NvmeCompletion> {
-        read_completed_entry(self.phase, || self.read_head_entry(), rmb)
+        read_completed_entry(
+            self.phase,
+            || self.read_head_status(),
+            || self.read_head_entry(),
+            rmb,
+        )
+    }
+
+    fn read_head_status(&self) -> Option<CompletionStatus> {
+        let index = usize::try_from(self.head).ok()?;
+        self.storage.read_status(index)
     }
 
     fn read_head_entry(&self) -> Option<NvmeCompletion> {
         let index = usize::try_from(self.head).ok()?;
-        if index >= self.queue.len() {
-            return None;
-        }
-        // SAFETY: `index` was checked against the retained coherent array.
-        // Volatile loads are required because the controller, not a Rust
-        // alias, publishes and may update this memory between observations.
-        Some(unsafe { self.queue.as_ptr().add(index).read_volatile() })
+        self.storage.read_entry(index)
     }
 
     fn take_complete(&mut self) -> Option<NvmeCompletion> {
         let complete = self.complete()?;
         let next_head = self.head + 1;
-        if next_head >= self.queue.len() as u32 {
+        if next_head >= self.storage.len() as u32 {
             self.head = 0;
             self.phase = !self.phase;
         } else {
@@ -434,29 +528,73 @@ impl CompleteQueue {
         Some(complete)
     }
 
+    fn cursor(&self) -> CompletionCursor {
+        CompletionCursor::new(self.head, self.phase)
+    }
+
+    fn probe(&self) -> NvmeCompletionProbe {
+        NvmeCompletionProbe {
+            backing: CompletionProbeBacking::Dma(Arc::clone(&self.storage)),
+            cursor: Arc::clone(&self.published_cursor),
+        }
+    }
+
     pub fn len(&self) -> usize {
-        self.queue.len()
+        self.storage.len()
     }
 
     pub fn bus_addr(&self) -> u64 {
-        self.queue.dma_addr().as_u64()
+        self.storage.bus_addr()
     }
 
     fn reset(&mut self) {
-        for index in 0..self.queue.len() {
-            self.queue.set_cpu(index, NvmeCompletion::default());
+        unsafe {
+            // SAFETY: callers reset a CQ only after controller DMA stopped and
+            // every IRQ action plus maintenance owner was drained.
+            self.storage.clear_after_quiesce();
         }
         self.head = 0;
         self.phase = false;
+        self.published_cursor
+            .reset_after_quiesce(CompletionCursor::new(self.head, self.phase));
     }
+}
+
+impl CompletionCursor {
+    const fn new(head: u32, phase: bool) -> Self {
+        Self { head, phase }
+    }
+}
+
+fn drain_completion_batch<T>(
+    budget: usize,
+    mut next: impl FnMut() -> Option<(T, CompletionCursor)>,
+    mut consume: impl FnMut(T),
+    publish: impl FnOnce(CompletionCursor),
+) -> usize {
+    let mut completed = 0;
+    let mut final_cursor = None;
+    while completed < budget {
+        let Some((completion, cursor)) = next() else {
+            break;
+        };
+        consume(completion);
+        final_cursor = Some(cursor);
+        completed += 1;
+    }
+    if let Some(cursor) = final_cursor {
+        publish(cursor);
+    }
+    completed
 }
 
 fn read_completed_entry(
     consumer_phase: bool,
-    mut read_entry: impl FnMut() -> Option<NvmeCompletion>,
+    read_status: impl FnOnce() -> Option<CompletionStatus>,
+    read_entry: impl FnOnce() -> Option<NvmeCompletion>,
     read_barrier: impl FnOnce(),
 ) -> Option<NvmeCompletion> {
-    let observed_phase = read_entry()?.status.phase();
+    let observed_phase = read_status()?.phase();
     if observed_phase == consumer_phase {
         return None;
     }
@@ -464,12 +602,214 @@ fn read_completed_entry(
     read_entry()
 }
 
+fn read_completion_status(
+    entries: NonNull<NvmeCompletion>,
+    len: usize,
+    index: usize,
+) -> Option<CompletionStatus> {
+    if index >= len {
+        return None;
+    }
+    let entry = unsafe {
+        // SAFETY: `index` is within the retained coherent CQ allocation.
+        entries.as_ptr().add(index)
+    };
+    Some(unsafe {
+        // SAFETY: the controller publishes the phase bit through coherent DMA
+        // and may change it independently of Rust. A volatile field read is
+        // therefore required and does not create a reference to DMA memory.
+        addr_of!((*entry).status).read_volatile()
+    })
+}
+
+impl NvmeCompletionProbe {
+    /// Claims one pending CQ phase observation for IRQ publication.
+    ///
+    /// Repeated IRQ callbacks coalesce until the owner advances the cursor.
+    pub(crate) fn try_claim_pending(&self) -> bool {
+        if self
+            .cursor
+            .irq_claimed
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return false;
+        }
+        let (head, consumer_phase) = self.cursor.load();
+        let pending = self
+            .backing
+            .read_status(head)
+            .is_some_and(|status| status.phase() != consumer_phase);
+        if !pending {
+            self.cursor.irq_claimed.store(false, Ordering::Release);
+        }
+        pending
+    }
+
+    /// Publishes owner progress, releases the old IRQ claim, and closes the
+    /// edge-loss window by rechecking the newly exposed CQ head.
+    ///
+    /// A `true` result means the maintenance owner must run another local
+    /// service batch. The owner reclaims the CQ fact when possible; if an IRQ
+    /// callback won the claim race, both paths may coalesce harmlessly.
+    fn finish_owner_batch(&self, cursor: CompletionCursor) -> bool {
+        self.cursor.publish(cursor);
+        self.cursor.irq_claimed.store(false, Ordering::Release);
+        let pending = self
+            .backing
+            .read_status(cursor.head as usize)
+            .is_some_and(|status| status.phase() != cursor.phase);
+        if pending {
+            let _ = self.cursor.irq_claimed.compare_exchange(
+                false,
+                true,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            );
+        }
+        pending
+    }
+
+    #[cfg(test)]
+    /// Creates a probe over test-owned CQ entries.
+    ///
+    /// # Safety
+    ///
+    /// `entries` must outlive the returned probe and must not be moved while
+    /// the probe is used. Concurrent mutation must follow the same coherent
+    /// DMA publication rules as a real NVMe completion queue.
+    pub(crate) unsafe fn from_test_entries(
+        entries: &mut [NvmeCompletion],
+        head: usize,
+        consumer_phase: bool,
+    ) -> Self {
+        let entries_ptr = NonNull::new(entries.as_mut_ptr())
+            .expect("a test completion queue must have at least one entry");
+        Self {
+            backing: CompletionProbeBacking::Test {
+                entries: entries_ptr,
+                len: entries.len(),
+            },
+            cursor: Arc::new(PublishedCompletionCursor::new(head, consumer_phase)),
+        }
+    }
+}
+
+impl CompletionProbeBacking {
+    fn read_status(&self, index: usize) -> Option<CompletionStatus> {
+        match self {
+            Self::Dma(storage) => storage.read_status(index),
+            #[cfg(test)]
+            Self::Test { entries, len } => read_completion_status(*entries, *len, index),
+        }
+    }
+}
+
+impl CompletionQueueStorage {
+    fn array(&self) -> &CoherentArray<NvmeCompletion> {
+        unsafe {
+            // SAFETY: normal owner and IRQ access are read-only. The only
+            // mutable access is proof-gated reset after both have drained.
+            &*self.0.get()
+        }
+    }
+
+    fn read_status(&self, index: usize) -> Option<CompletionStatus> {
+        let queue = self.array();
+        read_completion_status(queue.as_ptr(), queue.len(), index)
+    }
+
+    fn read_entry(&self, index: usize) -> Option<NvmeCompletion> {
+        let queue = self.array();
+        if index >= queue.len() {
+            return None;
+        }
+        Some(unsafe {
+            // SAFETY: the checked index addresses retained coherent storage.
+            // The controller publishes through DMA, so the CPU copies the CQE
+            // with a volatile load after the caller's read barrier.
+            queue.as_ptr().add(index).read_volatile()
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.array().len()
+    }
+
+    fn bus_addr(&self) -> u64 {
+        self.array().dma_addr().as_u64()
+    }
+
+    unsafe fn clear_after_quiesce(&self) {
+        let queue = unsafe {
+            // SAFETY: the caller proves no device, IRQ, probe, or owner access
+            // can overlap this exclusive mutation of retained DMA storage.
+            &mut *self.0.get()
+        };
+        for index in 0..queue.len() {
+            queue.set_cpu(index, NvmeCompletion::default());
+        }
+    }
+}
+
+impl PublishedCompletionCursor {
+    fn new(head: usize, phase: bool) -> Self {
+        Self {
+            cursor: AtomicU64::new(Self::encode(head, phase)),
+            irq_claimed: AtomicBool::new(false),
+        }
+    }
+
+    fn publish(&self, cursor: CompletionCursor) {
+        self.cursor.store(
+            Self::encode(cursor.head as usize, cursor.phase),
+            Ordering::Release,
+        );
+    }
+
+    fn reset_after_quiesce(&self, cursor: CompletionCursor) {
+        self.publish(cursor);
+        self.irq_claimed.store(false, Ordering::Release);
+    }
+
+    fn load(&self) -> (usize, bool) {
+        let cursor = self.cursor.load(Ordering::Acquire);
+        (cursor as u32 as usize, cursor >> u32::BITS != 0)
+    }
+
+    fn encode(head: usize, phase: bool) -> u64 {
+        debug_assert!(u32::try_from(head).is_ok());
+        head as u32 as u64 | ((phase as u64) << u32::BITS)
+    }
+}
+
+// SAFETY: production probes retain their coherent CQ allocation. Test probes
+// have an explicit unsafe lifetime contract. Both read DMA memory only through
+// a checked volatile phase-field load and share only an atomic cursor.
+unsafe impl Send for NvmeCompletionProbe {}
+
+// SAFETY: `try_claim_pending` does not mutate the CQ or owner cursor. Concurrent
+// callers observe an atomically published cursor and volatile DMA phase field.
+unsafe impl Sync for NvmeCompletionProbe {}
+
+// SAFETY: normal access to the coherent allocation is read-only. Mutation is
+// confined to `clear_after_quiesce`, whose unsafe contract excludes device,
+// IRQ, probe, and maintenance-owner access.
+unsafe impl Send for CompletionQueueStorage {}
+
+// SAFETY: see the `Send` implementation; all shared live operations perform
+// checked volatile reads and the sole mutation requires global quiescence.
+unsafe impl Sync for CompletionQueueStorage {}
+
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
     use core::cell::{Cell, RefCell};
 
-    use super::{CompletionStatus, NvmeCompletion, read_completed_entry};
+    use super::{
+        CompletionCursor, CompletionStatus, NvmeCompletion, NvmeCompletionProbe,
+        drain_completion_batch, read_completed_entry,
+    };
 
     #[test]
     fn completion_status_ignores_phase_for_success() {
@@ -496,17 +836,76 @@ mod tests {
         let observed = read_completed_entry(
             false,
             || {
-                let read = reads.get();
-                reads.set(read + 1);
-                trace
-                    .borrow_mut()
-                    .push(if read == 0 { "phase" } else { "entry" });
+                reads.set(reads.get() + 1);
+                trace.borrow_mut().push("phase");
+                Some(completion.status)
+            },
+            || {
+                reads.set(reads.get() + 1);
+                trace.borrow_mut().push("entry");
                 Some(completion)
             },
             || trace.borrow_mut().push("barrier"),
         );
 
         assert!(observed.is_some());
+        assert_eq!(reads.get(), 2);
         assert_eq!(&*trace.borrow(), &["phase", "barrier", "entry"]);
+    }
+
+    #[test]
+    fn bounded_completion_batch_publishes_only_the_final_head() {
+        let mut source = [
+            (11, CompletionCursor::new(1, false)),
+            (22, CompletionCursor::new(2, false)),
+            (33, CompletionCursor::new(3, false)),
+        ]
+        .into_iter();
+        let mut consumed = Vec::new();
+        let mut published = Vec::new();
+
+        let completed = drain_completion_batch(
+            64,
+            || source.next(),
+            |value| consumed.push(value),
+            |cursor| published.push(cursor),
+        );
+
+        assert_eq!(completed, 3);
+        assert_eq!(consumed, [11, 22, 33]);
+        assert_eq!(published, [CompletionCursor::new(3, false)]);
+    }
+
+    #[test]
+    fn owner_handoff_reclaims_a_cqe_whose_irq_edge_was_coalesced() {
+        let mut entries = [
+            NvmeCompletion {
+                status: CompletionStatus(1),
+                ..NvmeCompletion::default()
+            },
+            NvmeCompletion::default(),
+        ];
+        let probe = unsafe {
+            // SAFETY: the array remains pinned on this test stack for every
+            // phase observation, and mutation models coherent device writes.
+            NvmeCompletionProbe::from_test_entries(&mut entries, 0, false)
+        };
+        assert!(probe.try_claim_pending());
+
+        unsafe {
+            // SAFETY: this volatile write models a coherent device DMA update
+            // to the pinned test CQ while the probe retains a raw phase view.
+            core::ptr::write_volatile(&mut entries[1].status, CompletionStatus(1));
+        }
+        assert!(
+            !probe.try_claim_pending(),
+            "the new IRQ edge must coalesce while the old owner claim is live"
+        );
+
+        assert!(probe.finish_owner_batch(CompletionCursor::new(1, false)));
+        assert!(
+            !probe.try_claim_pending(),
+            "the owner-local rerun must retain the CQ claim until it drains the new fact"
+        );
     }
 }

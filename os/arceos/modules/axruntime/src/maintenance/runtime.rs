@@ -569,6 +569,26 @@ impl MaintenanceThread {
     pub fn owner_thread(&self) -> ThreadId {
         self.thread.id()
     }
+
+    /// Waits until the fixed owner exits without consuming its lifetime owner.
+    ///
+    /// Multi-domain device teardown uses this phase to prove that every owner
+    /// reached its terminal close state before any thread handle is reaped.
+    /// A failed wait therefore leaves the complete [`MaintenanceThread`]
+    /// available to the caller for quarantine or a later diagnostic attempt.
+    pub fn wait(&self) -> Result<i32, TaskError> {
+        crate::task::wait_thread(&self.thread)
+    }
+
+    /// Reaps an owner that has completed its explicit maintenance close.
+    ///
+    /// Callers coordinating several ownership domains should call
+    /// [`Self::wait`] for every participant first. Consuming handles one by one
+    /// before all waits succeed would make a later failure impossible to
+    /// return as one complete controller transaction.
+    pub fn join(self) -> Result<i32, TaskError> {
+        crate::task::join_thread(self.thread)
+    }
 }
 
 impl<T: Copy + Send + 'static> DeviceMaintenanceHandle<T> {
@@ -661,26 +681,7 @@ impl<T: Copy + Send + 'static> LocalIrqWake<T> {
         causes: MaintenanceCauses,
         event: T,
     ) -> Result<MaintenancePublishResult, LocalIrqWakeError> {
-        if !ax_hal::irq::in_irq_context() {
-            return Err(LocalIrqWakeError::NotHardIrq);
-        }
-        let actual_cpu = ax_hal::percpu::this_cpu_id();
-        if actual_cpu != self.core.owner_cpu {
-            return Err(LocalIrqWakeError::WrongCpu {
-                expected: self.core.owner_cpu,
-                actual: actual_cpu,
-            });
-        }
-        if self.wake.thread_id() != self.core.owner_thread {
-            return Err(LocalIrqWakeError::OwnerIdentityMismatch);
-        }
-        let wake_target = self.wake.target_cpu().map(|cpu| cpu.as_u32() as usize);
-        if wake_target != Some(self.core.owner_cpu) {
-            return Err(LocalIrqWakeError::OwnerPlacementMismatch {
-                expected: self.core.owner_cpu,
-                actual: wake_target,
-            });
-        }
+        self.validate_irq_owner()?;
         if !self.core.lifecycle.permits_irq_publication() {
             return Err(LocalIrqWakeError::Closed);
         }
@@ -704,6 +705,44 @@ impl<T: Copy + Send + 'static> LocalIrqWake<T> {
                 })
             }
         }
+    }
+
+    /// Quarantines this domain when a captured IRQ fact cannot reach its owner.
+    ///
+    /// The lifecycle transition occurs even when owner validation fails, so the
+    /// registered action gate cannot call the device endpoint again. A valid
+    /// same-CPU owner receives one direct wake to leave its park or scheduler
+    /// safe point. This path consumes no mailbox slot and performs no
+    /// allocation, free, blocking operation, or remote IPI.
+    pub fn fail_closed_from_irq(&self) -> Result<WakeResult, LocalIrqWakeError> {
+        let validation = self.validate_irq_owner();
+        self.core.lifecycle.quarantine_from_irq();
+        validation?;
+        Ok(self.wake.wake())
+    }
+
+    fn validate_irq_owner(&self) -> Result<(), LocalIrqWakeError> {
+        if !ax_hal::irq::in_irq_context() {
+            return Err(LocalIrqWakeError::NotHardIrq);
+        }
+        let actual_cpu = ax_hal::percpu::this_cpu_id();
+        if actual_cpu != self.core.owner_cpu {
+            return Err(LocalIrqWakeError::WrongCpu {
+                expected: self.core.owner_cpu,
+                actual: actual_cpu,
+            });
+        }
+        if self.wake.thread_id() != self.core.owner_thread {
+            return Err(LocalIrqWakeError::OwnerIdentityMismatch);
+        }
+        let wake_target = self.wake.target_cpu().map(|cpu| cpu.as_u32() as usize);
+        if wake_target != Some(self.core.owner_cpu) {
+            return Err(LocalIrqWakeError::OwnerPlacementMismatch {
+                expected: self.core.owner_cpu,
+                actual: wake_target,
+            });
+        }
+        Ok(())
     }
 
     /// Returns the registered owner CPU.
@@ -891,6 +930,15 @@ fn classify_task_wake<T: Copy + Send + 'static>(
 }
 
 #[cfg(test)]
+fn fail_closed_after_irq_validation(
+    lifecycle: &MaintenanceLifecycle,
+    wake: impl FnOnce() -> WakeResult,
+) -> WakeResult {
+    lifecycle.quarantine_from_irq();
+    wake()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -901,6 +949,12 @@ mod tests {
     fn remote_handle_is_cross_cpu_but_local_irq_wake_is_move_only() {
         require_send_sync::<DeviceMaintenanceHandle<u8>>();
         require_send::<LocalIrqWake<u8>>();
+    }
+
+    #[test]
+    fn maintenance_thread_supports_non_consuming_wait_before_reap() {
+        let _wait: fn(&MaintenanceThread) -> Result<i32, TaskError> = MaintenanceThread::wait;
+        let _join: fn(MaintenanceThread) -> Result<i32, TaskError> = MaintenanceThread::join;
     }
 
     #[test]
@@ -941,6 +995,24 @@ mod tests {
         );
         assert_eq!(core.lifecycle.state(), MaintenanceState::Quarantined);
         assert!(!core.lifecycle.permits_service_access());
+    }
+
+    #[test]
+    fn fail_closed_transition_quarantines_a_closing_owner_before_wake() {
+        let core = test_core();
+        core.lifecycle.activate().unwrap();
+        core.lifecycle.begin_close().unwrap();
+        let observed_state = Cell::new(MaintenanceState::Registering);
+
+        let wake = fail_closed_after_irq_validation(&core.lifecycle, || {
+            observed_state.set(core.lifecycle.state());
+            WakeResult::Unavailable
+        });
+
+        assert_eq!(wake, WakeResult::Unavailable);
+        assert_eq!(observed_state.get(), MaintenanceState::Quarantined);
+        assert_eq!(core.lifecycle.state(), MaintenanceState::Quarantined);
+        assert!(!core.lifecycle.permits_irq_access());
     }
 
     fn test_core() -> MaintenanceCore<u8> {

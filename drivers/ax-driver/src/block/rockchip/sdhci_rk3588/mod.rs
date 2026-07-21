@@ -30,18 +30,12 @@ use sdhci_host::{
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
-    rdif::StagedBlockDevice,
+    rdif::v13::{SdmmcActivationPrelude, SdmmcControllerActivator},
     sdio::{CardInitPreference, OwnedSdioInit, SdioSdmmc},
 };
 
 use super::clock::{StagedClockEnable, staged_node_clocks};
-use crate::{
-    block::{
-        ProbeFdtBlock,
-        staged::{PlatformPrelude, StagedPlatformBlock},
-    },
-    mmio::iomap,
-};
+use crate::{block::ProbeFdtBlockActivation, mmio::iomap};
 
 // RK3588 DWCMSHC follows Linux's normal SDHCI completion path: command/data
 // status is acknowledged in the hard IRQ and task context advances the RDIF
@@ -182,7 +176,7 @@ impl HostResetHook for RockchipSdhciResetHook {
     }
 }
 
-impl PlatformPrelude for RockchipSdhciResources {
+impl SdmmcActivationPrelude for RockchipSdhciResources {
     fn prepare(&mut self) -> Result<u64, InitError> {
         for clock in &self.clocks {
             clock.enable().map_err(|error| {
@@ -245,15 +239,21 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     host.set_dma(dma.clone());
 
-    let card = SdioSdmmc::new_host2_timed(host);
-    let staged = StagedBlockDevice::new(
+    let card = SdioSdmmc::new_host2_timed_evidence(host);
+    let activator = SdmmcControllerActivator::new_with_prelude(
         OwnedSdioInit::new(card, CardInitPreference::MmcFirst),
         rockchip_sdhci_rdif_config(0, dma),
-        sdhci_rdif::device,
-    );
-    let staged = StagedPlatformBlock::new(staged, resources);
-    let irq = probe.register_block(staged)?;
-    info!("rockchip-sdhci controller staged irq={irq:?}");
+        resources,
+    )
+    .map_err(|error| {
+        OnProbeError::other(alloc::format!(
+            "failed to prepare RK3588 SDHCI activation owner: {error}"
+        ))
+    })?;
+    let slot = probe
+        .register_block_activator(activator)?
+        .ok_or_else(|| OnProbeError::other("failed to register RK3588 SDHCI activation owner"))?;
+    info!("rockchip-sdhci activation owner registered slot={slot}");
     Ok(())
 }
 

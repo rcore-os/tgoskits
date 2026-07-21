@@ -9,15 +9,14 @@ const MAX_GENERATION: u64 = u64::MAX >> STATE_BITS;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub(crate) enum RequestState {
-    Free        = 0,
-    Reserved    = 1,
-    Staged      = 2,
-    Dispatching = 3,
-    InFlight    = 4,
-    Completing  = 5,
-    TimingOut   = 6,
-    Terminal    = 7,
-    Canceling   = 8,
+    Free       = 0,
+    Reserved   = 1,
+    Staged     = 2,
+    InFlight   = 4,
+    Completing = 5,
+    TimingOut  = 6,
+    Terminal   = 7,
+    Canceling  = 8,
 }
 
 impl RequestState {
@@ -26,7 +25,6 @@ impl RequestState {
             0 => Ok(Self::Free),
             1 => Ok(Self::Reserved),
             2 => Ok(Self::Staged),
-            3 => Ok(Self::Dispatching),
             4 => Ok(Self::InFlight),
             5 => Ok(Self::Completing),
             6 => Ok(Self::TimingOut),
@@ -206,8 +204,11 @@ impl<const N: usize> RequestTagSet<N> {
         self.transition(tag, RequestState::Reserved, RequestState::Staged)
     }
 
-    /// Claims the exact interval in which the driver decides whether it keeps
-    /// request ownership. Timeout and cancellation cannot claim this state.
+    /// Publishes driver ownership before the request ID can become hardware-visible.
+    ///
+    /// The request record installs its deadline and driver ownership before
+    /// this release transition. Completion, timeout, and cancellation may
+    /// therefore claim only fully published in-flight requests.
     pub(crate) fn begin_dispatch(&self, tag: RequestTag) -> Result<(), TagError> {
         let slot = self.slot(tag)?;
         loop {
@@ -219,7 +220,7 @@ impl<const N: usize> RequestTagSet<N> {
             ) {
                 return Err(TagError::InvalidTransition);
             }
-            let updated = encode(tag.generation, RequestState::Dispatching);
+            let updated = encode(tag.generation, RequestState::InFlight);
             if slot
                 .compare_exchange_weak(observed, updated, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
@@ -231,11 +232,7 @@ impl<const N: usize> RequestTagSet<N> {
 
     /// Returns a driver-rejected request to software staging.
     pub(crate) fn restore_after_rejection(&self, tag: RequestTag) -> Result<(), TagError> {
-        self.transition(tag, RequestState::Dispatching, RequestState::Staged)
-    }
-
-    pub(crate) fn mark_inflight(&self, tag: RequestTag) -> Result<(), TagError> {
-        self.transition(tag, RequestState::Dispatching, RequestState::InFlight)
+        self.transition(tag, RequestState::InFlight, RequestState::Staged)
     }
 
     pub(crate) fn claim_completion(
@@ -305,6 +302,11 @@ impl<const N: usize> RequestTagSet<N> {
         self.transition(tag, RequestState::Canceling, RequestState::Terminal)
     }
 
+    /// Publishes a terminal software-owned request rejected by the driver.
+    pub(crate) fn finish_staged_after_return(&self, tag: RequestTag) -> Result<(), TagError> {
+        self.transition(tag, RequestState::Staged, RequestState::Terminal)
+    }
+
     pub(crate) fn state(&self, tag: RequestTag) -> Result<RequestState, TagError> {
         let control = self.slot(tag)?.load(Ordering::Acquire);
         validate_generation(control, tag)?;
@@ -323,13 +325,7 @@ impl<const N: usize> RequestTagSet<N> {
             validate_generation(observed, tag)?;
             let state = RequestState::decode(observed)?;
             let claimable = match owner {
-                ClaimOwner::Completion => matches!(
-                    state,
-                    RequestState::Reserved
-                        | RequestState::Staged
-                        | RequestState::Dispatching
-                        | RequestState::InFlight
-                ),
+                ClaimOwner::Completion => state == RequestState::InFlight,
                 ClaimOwner::Timeout => {
                     matches!(state, RequestState::Staged | RequestState::InFlight)
                 }
@@ -405,7 +401,6 @@ mod tests {
         let tags = RequestTagSet::<1>::new(1).unwrap();
         let first = tags.reserve().unwrap();
         tags.begin_dispatch(first).unwrap();
-        tags.mark_inflight(first).unwrap();
         tags.claim_completion(first).unwrap().finish().unwrap();
         tags.release(first).unwrap();
 
@@ -420,7 +415,6 @@ mod tests {
         let tags = Arc::new(RequestTagSet::<1>::new(1).unwrap());
         let tag = tags.reserve().unwrap();
         tags.begin_dispatch(tag).unwrap();
-        tags.mark_inflight(tag).unwrap();
 
         let completion_tags = Arc::clone(&tags);
         let completion = std::thread::spawn(move || {
@@ -450,7 +444,6 @@ mod tests {
         let tags = Arc::new(RequestTagSet::<1>::new(1).unwrap());
         let tag = tags.reserve().unwrap();
         tags.begin_dispatch(tag).unwrap();
-        tags.mark_inflight(tag).unwrap();
 
         let completion_tags = Arc::clone(&tags);
         let completion = std::thread::spawn(move || {
@@ -499,35 +492,39 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_boundary_excludes_timeout_and_cancel_until_driver_decides_ownership() {
+    fn driver_rejection_can_restore_an_unclaimed_inflight_request() {
         let tags = RequestTagSet::<1>::new(1).unwrap();
         let tag = tags.reserve().unwrap();
         tags.mark_staged(tag).unwrap();
 
         tags.begin_dispatch(tag).unwrap();
 
-        assert_eq!(tags.state(tag), Ok(RequestState::Dispatching));
-        assert_eq!(
-            tags.claim_timeout(tag).err(),
-            Some(TagError::InvalidTransition)
-        );
-        assert_eq!(
-            tags.claim_cancel(tag).err(),
-            Some(TagError::InvalidTransition)
-        );
-
+        assert_eq!(tags.state(tag), Ok(RequestState::InFlight));
         tags.restore_after_rejection(tag).unwrap();
         assert_eq!(tags.state(tag), Ok(RequestState::Staged));
     }
 
     #[test]
-    fn inline_driver_completion_can_finish_a_prepublished_reserved_tag() {
+    fn dispatch_publishes_inflight_before_the_driver_can_observe_the_request_id() {
+        let tags = RequestTagSet::<1>::new(1).unwrap();
+        let tag = tags.reserve().unwrap();
+        tags.mark_staged(tag).unwrap();
+
+        tags.begin_dispatch(tag).unwrap();
+
+        assert_eq!(tags.state(tag), Ok(RequestState::InFlight));
+    }
+
+    #[test]
+    fn completion_cannot_claim_a_request_before_inflight_publication() {
         let tags = RequestTagSet::<1>::new(1).unwrap();
         let tag = tags.reserve().unwrap();
 
-        tags.claim_completion(tag).unwrap().finish().unwrap();
-
-        assert_eq!(tags.state(tag), Ok(RequestState::Terminal));
+        assert_eq!(
+            tags.claim_completion(tag).err(),
+            Some(TagError::InvalidTransition)
+        );
+        assert_eq!(tags.state(tag), Ok(RequestState::Reserved));
     }
 
     #[test]
@@ -535,7 +532,6 @@ mod tests {
         let tags = RequestTagSet::<1>::new(1).unwrap();
         let tag = tags.reserve().unwrap();
         tags.begin_dispatch(tag).unwrap();
-        tags.mark_inflight(tag).unwrap();
 
         let claim = tags.claim_timeout(tag).unwrap();
         assert_eq!(tags.state(tag), Ok(RequestState::TimingOut));
@@ -551,7 +547,6 @@ mod tests {
         let tags = RequestTagSet::<1>::new(1).unwrap();
         let tag = tags.reserve().unwrap();
         tags.begin_dispatch(tag).unwrap();
-        tags.mark_inflight(tag).unwrap();
 
         let claim = tags.claim_cancel(tag).unwrap();
         assert!(claim.requires_dma_quiesce());
@@ -573,6 +568,17 @@ mod tests {
         assert!(!claim.requires_dma_quiesce());
         assert_eq!(tags.state(tag), Ok(RequestState::Canceling));
         tags.finish_cancel_after_return(tag).unwrap();
+        assert_eq!(tags.state(tag), Ok(RequestState::Terminal));
+    }
+
+    #[test]
+    fn staged_request_can_finish_after_driver_rejection_returns_ownership() {
+        let tags = RequestTagSet::<1>::new(1).unwrap();
+        let tag = tags.reserve().unwrap();
+        tags.mark_staged(tag).unwrap();
+
+        tags.finish_staged_after_return(tag).unwrap();
+
         assert_eq!(tags.state(tag), Ok(RequestState::Terminal));
     }
 

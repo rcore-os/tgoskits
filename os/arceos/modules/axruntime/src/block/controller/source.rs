@@ -1,25 +1,30 @@
 //! CPU-local block IRQ capture and maintenance-owner routing.
 
+mod ledger;
+mod quarantine;
+
 use alloc::{boxed::Box, format, sync::Arc};
 use core::{
     marker::PhantomData,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use ax_kspin::SpinNoPreempt;
+use ledger::IrqSourceLedger;
+pub(in crate::block) use ledger::RuntimeIrqSourceError;
+use quarantine::IrqSourceQuarantineReservation;
 use rdif_block::{
     BIrqControl, BlkError, BlockIrqSource, ContainmentCause, Event, FaultContainment, IrqCapture,
-    MaskedSource,
+    IrqControlError, MaskedSource,
 };
 
-use crate::maintenance::{
-    LocalIrqWake, LocalIrqWakeError, MaintenanceCauses, MaintenanceDetachedIrqAction,
-    MaintenanceError, MaintenanceIrqAction, MaintenancePublishResult, MaintenanceRegistrar,
-    MaintenanceSession,
+use crate::{
+    block::hctx_model::{HctxIrqPublication, HctxTerminalGate, HctxTerminalPermit},
+    maintenance::{
+        LocalIrqWake, LocalIrqWakeError, MaintenanceCauses, MaintenanceDetachedIrqAction,
+        MaintenanceError, MaintenanceIrqAction, MaintenancePublishResult, MaintenanceRegistrar,
+        MaintenanceSession,
+    },
 };
-use crate::block::hctx_model::{HctxIrqPublication, HctxTerminalGate, HctxTerminalPermit};
-
-const IRQ_SOURCE_QUARANTINE_CAPACITY: usize = 256;
 
 /// Immutable fact transferred from one device top half to its sole owner.
 #[derive(Clone, Copy, Debug)]
@@ -63,9 +68,7 @@ impl BlockIrqFaultSet {
     }
 
     /// Establishes a controller-wide watchdog cutoff after earlier IRQ ingress.
-    pub(in crate::block) fn try_begin_watchdog_cutoff(
-        &self,
-    ) -> Option<HctxTerminalPermit<'_>> {
+    pub(in crate::block) fn try_begin_watchdog_cutoff(&self) -> Option<HctxTerminalPermit<'_>> {
         self.terminal_gate.try_begin_terminal()
     }
 
@@ -84,10 +87,21 @@ impl BlockIrqFaultSet {
 /// Owner-side registration and rearm capability for one block IRQ source.
 pub(in crate::block) struct RuntimeIrqSource {
     source_id: usize,
+    ledger: IrqSourceLedger,
     control: Option<BIrqControl>,
     action: Option<RuntimeIrqAction>,
     quarantine: Option<IrqSourceQuarantineReservation>,
     _not_send: PhantomData<*mut ()>,
+}
+
+pub(in crate::block) fn runtime_irq_source_mut(
+    sources: &mut [RuntimeIrqSource],
+    source_id: usize,
+) -> Result<&mut RuntimeIrqSource, RuntimeIrqSourceError> {
+    sources
+        .iter_mut()
+        .find(|source| source.source_id == source_id)
+        .ok_or(RuntimeIrqSourceError::UnknownSource { source_id })
 }
 
 /// Failed consuming close that retains the complete owner-local IRQ source.
@@ -99,147 +113,6 @@ pub(in crate::block) struct RuntimeIrqSourceCloseFailure {
 enum RuntimeIrqAction {
     Active(MaintenanceIrqAction),
     Detached(MaintenanceDetachedIrqAction),
-}
-
-struct QuarantinedIrqSource {
-    source_id: usize,
-    _control: BIrqControl,
-}
-
-enum IrqSourceQuarantineSlot {
-    Free,
-    Reserved(Option<usize>),
-    Occupied(QuarantinedIrqSource),
-}
-
-struct IrqSourceQuarantineRegistry {
-    slots: [IrqSourceQuarantineSlot; IRQ_SOURCE_QUARANTINE_CAPACITY],
-}
-
-impl IrqSourceQuarantineRegistry {
-    const fn new() -> Self {
-        Self {
-            slots: [const { IrqSourceQuarantineSlot::Free }; IRQ_SOURCE_QUARANTINE_CAPACITY],
-        }
-    }
-
-    fn reserve(&mut self) -> Result<usize, ax_hal::irq::IrqError> {
-        let (slot, entry) = self
-            .slots
-            .iter_mut()
-            .enumerate()
-            .find(|(_, entry)| matches!(entry, IrqSourceQuarantineSlot::Free))
-            .ok_or(ax_hal::irq::IrqError::NoMemory)?;
-        *entry = IrqSourceQuarantineSlot::Reserved(None);
-        Ok(slot)
-    }
-
-    fn bind(&mut self, slot: usize, source_id: usize) {
-        let entry = self
-            .slots
-            .get_mut(slot)
-            .expect("IRQ-source quarantine reservation index is valid");
-        assert!(
-            matches!(entry, IrqSourceQuarantineSlot::Reserved(None)),
-            "IRQ-source quarantine reservation was already bound"
-        );
-        *entry = IrqSourceQuarantineSlot::Reserved(Some(source_id));
-    }
-
-    fn release(&mut self, slot: usize, source_id: Option<usize>) {
-        let entry = self
-            .slots
-            .get_mut(slot)
-            .expect("IRQ-source quarantine reservation index is valid");
-        assert!(
-            matches!(entry, IrqSourceQuarantineSlot::Reserved(bound) if *bound == source_id),
-            "IRQ-source quarantine release does not match its reservation"
-        );
-        *entry = IrqSourceQuarantineSlot::Free;
-    }
-
-    fn retain(&mut self, slot: usize, source: QuarantinedIrqSource) -> usize {
-        let entry = self
-            .slots
-            .get_mut(slot)
-            .expect("IRQ-source quarantine reservation index is valid");
-        assert!(
-            matches!(entry, IrqSourceQuarantineSlot::Reserved(Some(bound)) if *bound == source.source_id),
-            "IRQ-source quarantine owner does not match its reservation"
-        );
-        *entry = IrqSourceQuarantineSlot::Occupied(source);
-        self.slots
-            .iter()
-            .filter_map(|entry| match entry {
-                IrqSourceQuarantineSlot::Occupied(source) => Some(source.source_id),
-                IrqSourceQuarantineSlot::Free | IrqSourceQuarantineSlot::Reserved(_) => None,
-            })
-            .count()
-    }
-}
-
-static IRQ_SOURCE_QUARANTINE: SpinNoPreempt<IrqSourceQuarantineRegistry> =
-    SpinNoPreempt::new(IrqSourceQuarantineRegistry::new());
-
-struct IrqSourceQuarantineReservation {
-    slot: Option<usize>,
-    source_id: Option<usize>,
-}
-
-impl IrqSourceQuarantineReservation {
-    fn reserve() -> Result<Self, ax_hal::irq::IrqError> {
-        let slot = IRQ_SOURCE_QUARANTINE.lock().reserve()?;
-        Ok(Self {
-            slot: Some(slot),
-            source_id: None,
-        })
-    }
-
-    fn bind(mut self, source_id: usize) -> Self {
-        let slot = self.slot.expect("live IRQ-source reservation has a slot");
-        IRQ_SOURCE_QUARANTINE.lock().bind(slot, source_id);
-        self.source_id = Some(source_id);
-        self
-    }
-
-    fn release(mut self) {
-        let slot = self
-            .slot
-            .take()
-            .expect("live IRQ-source reservation has a slot");
-        IRQ_SOURCE_QUARANTINE.lock().release(slot, self.source_id);
-    }
-
-    fn retain(mut self, source_id: usize, control: BIrqControl) {
-        let slot = self
-            .slot
-            .take()
-            .expect("live IRQ-source reservation has a slot");
-        let retained = IRQ_SOURCE_QUARANTINE.lock().retain(
-            slot,
-            QuarantinedIrqSource {
-                source_id,
-                _control: control,
-            },
-        );
-        error!("quarantined block IRQ source {source_id}; {retained} source owner(s) retained");
-    }
-}
-
-impl Drop for IrqSourceQuarantineReservation {
-    fn drop(&mut self) {
-        let Some(slot) = self.slot.take() else {
-            return;
-        };
-        if self.source_id.is_none() {
-            IRQ_SOURCE_QUARANTINE.lock().release(slot, None);
-        } else {
-            error!(
-                "bound block IRQ-source quarantine reservation {} lost its owner",
-                self.source_id.unwrap_or(usize::MAX)
-            );
-        }
-    }
 }
 
 pub(in crate::block) struct RuntimeIrqRegistration {
@@ -396,6 +269,7 @@ impl RuntimeIrqSource {
             })?;
         Ok(Self {
             source_id,
+            ledger: IrqSourceLedger::default(),
             control: Some(control),
             action: Some(RuntimeIrqAction::Active(registration)),
             quarantine: Some(quarantine.bind(source_id)),
@@ -447,31 +321,74 @@ impl RuntimeIrqSource {
         self.active_action()?.release_quench()
     }
 
-    pub(in crate::block) fn rearm(
+    /// Records one stable IRQ fact before it is routed to initialization or a
+    /// runtime queue. The source mask becomes owned by this registration.
+    pub(in crate::block) fn record_service_fact(
         &mut self,
-        masked: MaskedSource,
-    ) -> Result<(), rdif_block::IrqControlError> {
+        masked: Option<MaskedSource>,
+    ) -> Result<(), RuntimeIrqSourceError> {
+        self.ledger.record_service_fact(self.source_id, masked)
+    }
+
+    /// Marks every fact currently routed from this source as serviced.
+    pub(in crate::block) fn finish_service(&mut self) {
+        self.ledger.finish_service();
+    }
+
+    /// Rearms the exact retained mask only after its captured facts drain.
+    ///
+    /// A failed control operation leaves the token in `self.ledger`, so
+    /// recovery can diagnose or retire the same generation without guessing.
+    pub(in crate::block) fn rearm_retained(&mut self) -> Result<bool, RuntimeIrqSourceError> {
+        if self.ledger.service_pending() {
+            return Err(RuntimeIrqSourceError::ServicePending {
+                source_id: self.source_id,
+            });
+        }
+
         // Reopen the OS action while the generation-bearing device source is
         // still masked. If the action cannot be enabled, hardware remains
         // contained. A failed device rearm is rolled back to a disabled action.
         let irq_guard = ax_kspin::IrqGuard::new();
-        let result = (|| {
-            self.active_action()
-                .map_err(|_| rdif_block::IrqControlError::Offline)?
-                .enable()
-                .map_err(|_| rdif_block::IrqControlError::Offline)?;
-            match self.control.as_mut() {
-                Some(control) => control.rearm(masked),
-                None => Err(rdif_block::IrqControlError::Offline),
+        let source_id = self.source_id;
+        let action = self.action.as_ref();
+        let control = self.control.as_mut();
+        let result = self.ledger.try_rearm(|masked| {
+            let operation = (|| {
+                match action {
+                    Some(RuntimeIrqAction::Active(action)) => {
+                        action.enable().map_err(|_| IrqControlError::Offline)?
+                    }
+                    Some(RuntimeIrqAction::Detached(_)) | None => {
+                        return Err(IrqControlError::Offline);
+                    }
+                }
+                match control {
+                    Some(control) => control.rearm(masked),
+                    None => Err(IrqControlError::Offline),
+                }
+            })();
+            if operation.is_err()
+                && let Some(RuntimeIrqAction::Active(action)) = action
+            {
+                let _ = action.disable();
             }
-        })();
-        if result.is_err()
-            && let Ok(action) = self.active_action()
-        {
-            let _ = action.disable();
-        }
+            operation.map_err(|error| RuntimeIrqSourceError::Rearm {
+                source_id,
+                generation: masked.lifecycle_generation().get(),
+                mask_epoch: masked.mask_epoch().get(),
+                bitmap: masked.bitmap().get(),
+                error,
+            })
+        });
         drop(irq_guard);
         result
+    }
+
+    /// Retires every old mask only after reset or full device-source masking
+    /// has made the old generation unreachable by hardware.
+    pub(in crate::block) fn discard_ledger_after_device_quiesce(&mut self) {
+        self.ledger.discard_after_device_quiesce();
     }
 
     pub(in crate::block) fn detach(&mut self) -> Result<(), MaintenanceError> {
@@ -694,5 +611,67 @@ mod tests {
 
         drop(publication);
         assert!(ingress.try_begin_watchdog_cutoff().is_some());
+    }
+
+    #[test]
+    fn failed_rearm_retains_the_exact_mask_capability() {
+        let token = MaskedSource::try_new(7, 0b101).unwrap();
+        let mut ledger = IrqSourceLedger::default();
+        ledger.record_service_fact(3, Some(token)).unwrap();
+        ledger.finish_service();
+
+        let result = ledger.try_rearm(|observed| {
+            assert_eq!(observed, token);
+            Err::<(), _>(IrqControlError::Offline)
+        });
+
+        assert_eq!(result, Err(IrqControlError::Offline));
+        assert_eq!(ledger.retained_mask(), Some(token));
+    }
+
+    #[test]
+    fn same_generation_masks_merge_but_new_generation_is_rejected() {
+        let mut ledger = IrqSourceLedger::default();
+        ledger
+            .record_service_fact(5, Some(MaskedSource::try_new(11, 0b001).unwrap()))
+            .unwrap();
+        ledger
+            .record_service_fact(5, Some(MaskedSource::try_new(11, 0b100).unwrap()))
+            .unwrap();
+        assert_eq!(
+            ledger.retained_mask(),
+            Some(MaskedSource::try_new(11, 0b101).unwrap())
+        );
+
+        assert_eq!(
+            ledger.record_service_fact(5, Some(MaskedSource::try_new(12, 0b010).unwrap())),
+            Err(RuntimeIrqSourceError::ConflictingGeneration {
+                source_id: 5,
+                retained_generation: 11,
+                observed_generation: 12,
+            })
+        );
+        assert_eq!(
+            ledger.retained_mask(),
+            Some(MaskedSource::try_new(11, 0b101).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_new_mask_epoch_cannot_merge_with_retained_evidence() {
+        let mut ledger = IrqSourceLedger::default();
+        let retained = MaskedSource::try_new_with_epoch(7, 31, 0b001).unwrap();
+        let newer = MaskedSource::try_new_with_epoch(7, 32, 0b010).unwrap();
+        ledger.record_service_fact(2, Some(retained)).unwrap();
+
+        assert!(matches!(
+            ledger.record_service_fact(2, Some(newer)),
+            Err(RuntimeIrqSourceError::ConflictingMaskEpoch {
+                source_id: 2,
+                retained_mask_epoch: 31,
+                observed_mask_epoch: 32,
+            })
+        ));
+        assert_eq!(ledger.retained_mask(), Some(retained));
     }
 }

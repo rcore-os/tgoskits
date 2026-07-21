@@ -19,6 +19,7 @@ impl FixedTagQueue {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn push(&mut self, tag: RequestTag) -> Result<(), HardwareQueueError> {
         if self.len == MAX_REQUESTS || self.contains(tag) {
             return Err(HardwareQueueError::Capacity);
@@ -57,6 +58,7 @@ impl FixedTagQueue {
         removed
     }
 
+    #[cfg(test)]
     fn contains(&self, target: RequestTag) -> bool {
         (0..self.len).any(|offset| {
             self.tags[(self.head + offset) % MAX_REQUESTS].is_some_and(|tag| tag == target)
@@ -215,7 +217,6 @@ impl CompletionSink for QuarantineCompletionSink<'_> {
 pub(super) enum DispatchDisposition {
     Queued,
     Terminal,
-    Deferred,
 }
 
 pub(super) struct DispatchResult {
@@ -225,17 +226,9 @@ pub(super) struct DispatchResult {
 }
 
 impl DispatchResult {
-    pub(super) const fn queued(recovery_error: Option<HardwareQueueError>) -> Self {
+    pub(super) const fn queued() -> Self {
         Self {
             disposition: DispatchDisposition::Queued,
-            completion: None,
-            recovery_error,
-        }
-    }
-
-    pub(super) const fn deferred() -> Self {
-        Self {
-            disposition: DispatchDisposition::Deferred,
             completion: None,
             recovery_error: None,
         }

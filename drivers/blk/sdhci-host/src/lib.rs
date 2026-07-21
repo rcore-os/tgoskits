@@ -102,10 +102,10 @@ use sdmmc_protocol::{
     sdio::{
         host::{
             BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, HostEventSummary,
-            ReadyBusRequest, SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHost, SdioIrqSource,
-            SignalVoltage, poll_ready_bus_op,
+            HostIrqSnapshot, ReadyBusRequest, SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHost,
+            SdioIrqSource, SignalVoltage, poll_ready_bus_op,
         },
-        host2::{SdioHost2Lifecycle, SdioHost2Timed},
+        host2::{SdioHost2Evidence, SdioHost2Lifecycle, SdioHost2Timed},
     },
 };
 
@@ -349,6 +349,13 @@ fn next_host2_check(now_ns: u64, deadline_ns: u64) -> u64 {
 /// W1C the destructive SDHCI interrupt-status banks.
 pub struct SdhciIrqEndpoint {
     irq: Arc<host::IrqCore>,
+    publication: IrqPublication,
+}
+
+#[derive(Clone, Copy)]
+enum IrqPublication {
+    LegacyMailbox,
+    EvidenceLedger,
 }
 
 /// Owner-side capability for generation-checked SDHCI source rearming.

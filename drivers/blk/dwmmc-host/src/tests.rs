@@ -145,6 +145,40 @@ fn owned_irq_endpoint_acks_and_caches_status() {
 }
 
 #[test]
+fn evidence_endpoint_publishes_both_status_banks_without_legacy_mailboxes() {
+    let mut mmio = [0u32; 256];
+    let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+    let mut host = unsafe { DwMmc::new(base) };
+    const MINTSTS_WORD: usize = 16;
+    const IDSTS_WORD: usize = 35;
+    let raw_status = crate::DWMMC_INT_COMMAND_DONE | crate::DWMMC_INT_DATA_TRANSFER_OVER;
+    host.irq.state.begin_request();
+    unsafe {
+        mmio.as_mut_ptr()
+            .add(MINTSTS_WORD)
+            .write_volatile(raw_status);
+        mmio.as_mut_ptr()
+            .add(IDSTS_WORD)
+            .write_volatile(DWMMC_IDMAC_INT_TI);
+    }
+    let (mut endpoint, _control) = host.take_evidence_irq_source().unwrap().into_parts();
+
+    let IrqCapture::Captured {
+        event,
+        masked: None,
+    } = endpoint.capture()
+    else {
+        panic!("DWMMC completion must produce one typed evidence snapshot")
+    };
+    let summary = event.stable_summary();
+    assert_eq!(summary.stable_status, raw_status);
+    assert_eq!(summary.dma_status, DWMMC_IDMAC_INT_TI);
+    assert!(summary.queue_service);
+    assert_eq!(host.irq.state.pending(), 0);
+    assert_eq!(host.irq.state.pending_idmac(), 0);
+}
+
+#[test]
 fn protocol_cannot_enable_delivery_before_unique_source_transfer() {
     let mut mmio = [0u32; 256];
     let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();

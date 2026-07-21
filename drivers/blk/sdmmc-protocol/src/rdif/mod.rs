@@ -14,6 +14,7 @@ pub mod irq;
 pub mod queue;
 pub mod shared_core;
 pub mod staged;
+pub mod v13;
 
 pub use config::{
     BLOCK_SIZE, BlockConfig, BlockDataPath, DEFAULT_DMA_MASK, DEFAULT_DMA_MAX_BLOCKS_PER_REQUEST,

@@ -1,6 +1,7 @@
 //! Runtime-owned blk-mq style hardware queue.
 
 mod completion_quarantine;
+mod credits;
 mod irq_publication;
 mod lifecycle;
 mod ownership;
@@ -17,6 +18,7 @@ use completion_quarantine::{
     CompletionPublicationError, CompletionQuarantineReservation, QuarantineRetention,
     RejectedCompletionQuarantine,
 };
+use credits::{HardwareCreditReservation, HardwareCredits};
 use irq_publication::{EpochEvent, MAX_EVENTS};
 use lifecycle::shutdown_unpublished_queue;
 use ownership::{DriverAccessGuard, DriverEndpointLease};
@@ -39,7 +41,7 @@ use crate::{
     task::{TaskError, WaitQueue},
 };
 
-const MAX_REQUESTS: usize = 64;
+pub(in crate::block) const MAX_REQUESTS: usize = 64;
 
 /// Runtime activation or service failure for one hardware queue.
 #[derive(Debug, Error)]
@@ -65,6 +67,9 @@ pub enum HardwareQueueError {
     /// Driver queue service failed after activation.
     #[error("block driver queue service failed: {0}")]
     Driver(BlkError),
+    /// The driver rejected a request despite an advertised hardware credit.
+    #[error("block driver queue {queue_id} rejected reserved hardware credit with {error}")]
+    DispatchContract { queue_id: usize, error: BlkError },
     /// A fixed staging or completion structure exceeded its contract.
     #[error("block hardware queue fixed capacity was exhausted")]
     Capacity,
@@ -165,12 +170,13 @@ pub(super) struct ServiceDrainedHardwareQueue {
 /// fixed maintenance owner.
 pub struct HardwareQueue {
     info: QueueInfo,
+    hctx_index: usize,
     queue: SpinNoPreempt<Option<QueueHandle>>,
     quarantine_reservation: SpinNoPreempt<Option<QueueQuarantineReservation>>,
     requests: RequestTable,
     rejected_completions: SpinNoPreempt<Option<Box<RejectedCompletionQuarantine>>>,
     completion_quarantine_reservation: SpinNoPreempt<Option<CompletionQuarantineReservation>>,
-    software_contexts: [SpinNoPreempt<FixedTagQueue>; crate::CPU_CAPACITY],
+    software_contexts: Arc<super::controller::DeviceSoftwareContexts>,
     dispatch_list: SpinNoPreempt<FixedTagQueue>,
     dispatch_arbiter: SpinNoPreempt<DispatchArbiter<{ crate::CPU_CAPACITY }>>,
     events: EventRing<EpochEvent, MAX_EVENTS>,
@@ -179,11 +185,23 @@ pub struct HardwareQueue {
     access_gate: HctxAccessGate,
     fatal_completion_quarantine: AtomicBool,
     accepted_requests: AtomicUsize,
-    inflight: AtomicUsize,
+    hardware_credits: HardwareCredits,
+    request_watchdog_ns: u64,
     drain_wait: WaitQueue,
     service_error: AtomicU8,
     maintenance: alloc::sync::Arc<DeviceMaintenanceHandle<BlockMaintenanceEvent>>,
     controller_link: Arc<ControllerOwnerLink>,
+}
+
+pub(super) struct HardwareQueueActivation {
+    pub(super) queue: QueueHandle,
+    pub(super) quarantine_reservation: QueueQuarantineReservation,
+    pub(super) maintenance: Arc<DeviceMaintenanceHandle<BlockMaintenanceEvent>>,
+    pub(super) controller_link: Arc<ControllerOwnerLink>,
+    pub(super) controller_cookie: usize,
+    pub(super) software_contexts: Arc<super::controller::DeviceSoftwareContexts>,
+    pub(super) hctx_index: usize,
+    pub(super) config: super::BlockRuntimeConfig,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -195,12 +213,18 @@ pub(in crate::block) enum OwnerServiceProgress {
 impl HardwareQueue {
     /// Constructs a shutdown-lifetime hctx after its maintenance owner is live.
     pub(super) fn activate(
-        queue: QueueHandle,
-        quarantine_reservation: QueueQuarantineReservation,
-        maintenance: Arc<DeviceMaintenanceHandle<BlockMaintenanceEvent>>,
-        controller_link: Arc<ControllerOwnerLink>,
-        controller_cookie: usize,
+        activation: HardwareQueueActivation,
     ) -> Result<Arc<Self>, HardwareQueueError> {
+        let HardwareQueueActivation {
+            queue,
+            quarantine_reservation,
+            maintenance,
+            controller_link,
+            controller_cookie,
+            software_contexts,
+            hctx_index,
+            config,
+        } = activation;
         let cpu = maintenance.owner_cpu();
         if cpu >= crate::CPU_CAPACITY {
             shutdown_unpublished_queue(queue, quarantine_reservation);
@@ -222,15 +246,26 @@ impl HardwareQueue {
                 return Err(error.into());
             }
         };
+        let hardware_depth = match info.execution {
+            rdif_block::QueueExecution::Serialized => 1,
+            rdif_block::QueueExecution::Tagged => info.limits.max_inflight.min(MAX_REQUESTS),
+            rdif_block::QueueExecution::Inline => 0,
+        };
+        let Some(hardware_credits) = HardwareCredits::new(hardware_depth) else {
+            shutdown_unpublished_queue(queue, quarantine_reservation);
+            return Err(HardwareQueueError::Capacity);
+        };
         let Some(completion_quarantine_reservation) =
             CompletionQuarantineReservation::reserve(info.id, controller_cookie)
         else {
             shutdown_unpublished_queue(queue, quarantine_reservation);
             return Err(HardwareQueueError::Capacity);
         };
+        let request_watchdog_ns = config.request_watchdog_ns();
 
         Ok(Arc::new(Self {
             info,
+            hctx_index,
             queue: SpinNoPreempt::new(Some(queue)),
             quarantine_reservation: SpinNoPreempt::new(Some(quarantine_reservation)),
             requests,
@@ -240,7 +275,7 @@ impl HardwareQueue {
             completion_quarantine_reservation: SpinNoPreempt::new(Some(
                 completion_quarantine_reservation,
             )),
-            software_contexts: core::array::from_fn(|_| SpinNoPreempt::new(FixedTagQueue::new())),
+            software_contexts,
             dispatch_list: SpinNoPreempt::new(FixedTagQueue::new()),
             dispatch_arbiter: SpinNoPreempt::new(DispatchArbiter::new()),
             events: EventRing::new(),
@@ -249,7 +284,8 @@ impl HardwareQueue {
             access_gate: HctxAccessGate::new(),
             fatal_completion_quarantine: AtomicBool::new(false),
             accepted_requests: AtomicUsize::new(0),
-            inflight: AtomicUsize::new(0),
+            hardware_credits,
+            request_watchdog_ns,
             drain_wait: WaitQueue::new(),
             service_error: AtomicU8::new(0),
             maintenance,

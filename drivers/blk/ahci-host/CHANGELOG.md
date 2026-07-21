@@ -2,6 +2,18 @@
 
 ## 0.1.0
 
+- Add the rdif-block v0.13 two-phase activation boundary. Runtime planning sees
+  one shared controller/IRQ ownership domain with a fixed queue for every PI
+  port, while active disks and empty ports are published as `Exact` and
+  `Unrouted` selectors respectively.
+- Add a fixed, generation-checked IRQ evidence ledger. Shared IRQ facts coalesce
+  under one opaque identity, all affected ports are classified error-first, and
+  only fully drained evidence can be rearmed.
+- Keep initialization completion behind the same linear evidence boundary:
+  timer/deadline calls cannot consume IDENTIFY snapshots captured by an IRQ.
+- Split owner-thread domain service from controller activation and retain all
+  partially converted queues/ports in typed publication failures.
+
 - Add mask-only AHCI BAR discovery and an explicit, absolute-deadline
   initialization state machine for firmware handoff, HBA reset, COMRESET, link
   activation, engine startup, and ATA IDENTIFY. Discovery clears only GHC.IE

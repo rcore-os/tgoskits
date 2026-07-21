@@ -1,6 +1,7 @@
 //! Controller initialization driven by its final CPU-pinned maintenance owner.
 
 mod initialization;
+mod teardown;
 
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -10,13 +11,22 @@ use initialization::{
     close_failed_registration, close_failed_session, close_owner_resources, drive_init_fsm,
     enable_irq_delivery, register_initial_sources,
 };
-use rdif_block::{ControllerInitEndpoint, IdList, InitError, MaskedSource};
+use rdif_block::{ControllerInitEndpoint, IdList, InitError};
+use teardown::{
+    CloseIrqSourcesFailure, close_controller_resources, close_irq_sources,
+    finish_maintenance_close, quarantine_controller_owner, quarantine_source_close_failure,
+    quarantine_unpublished_owner_after_close_failure,
+};
 
-use super::controller::{
-    BlockController, BlockControllerError, OwnerHandoff, OwnerShutdown, OwnerShutdownProgress,
-    source::{
-        BlockIrqFaultSet, BlockMaintenanceEvent, RuntimeIrqRegistration, RuntimeIrqSource,
-        quiesce_after_device_masked,
+use super::{
+    BlockRuntimeConfig,
+    controller::{
+        BlockController, BlockControllerError, OwnerHandoff, OwnerShutdown, OwnerShutdownProgress,
+        OwnershipDomainTopology, PreparedBlockController,
+        source::{
+            BlockIrqFaultSet, BlockMaintenanceEvent, RuntimeIrqRegistration, RuntimeIrqSource,
+            RuntimeIrqSourceError, quiesce_after_device_masked, runtime_irq_source_mut,
+        },
     },
 };
 use crate::{
@@ -26,8 +36,6 @@ use crate::{
     },
     task::{WaitQueue, yield_current_cpu},
 };
-
-const DEFAULT_BLOCK_OWNER_CPU: usize = 0;
 
 /// Runs one pre-publication portable driver transaction without same-CPU IRQ
 /// reentry. Published controllers encode the same rule in their endpoint
@@ -100,16 +108,19 @@ impl ControllerActivationSlot {
 
 pub(super) fn activate_controller(
     device: RdifBlockDevice,
+    config: BlockRuntimeConfig,
 ) -> Result<Arc<BlockController>, BlockControllerError> {
+    let topology = OwnershipDomainTopology::reserve(&device)?;
+    let owner_cpu = topology.owner_cpu();
     let name = String::from(device.name());
     let slot = Arc::new(ControllerActivationSlot::new());
     let owner_slot = Arc::clone(&slot);
     let failure_slot = Arc::clone(&slot);
     let thread = spawn_maintenance_domain::<BlockMaintenanceEvent, _>(
-        DEFAULT_BLOCK_OWNER_CPU,
+        owner_cpu,
         alloc::format!("blk-maint/{name}"),
         move |registrar| {
-            let result = run_controller_owner(device, registrar, owner_slot);
+            let result = run_controller_owner(device, topology, config, registrar, owner_slot);
             if let Err(error) = result.as_ref() {
                 failure_slot.publish_owner_failure(*error);
             }
@@ -123,6 +134,8 @@ pub(super) fn activate_controller(
 
 fn run_controller_owner(
     device: RdifBlockDevice,
+    topology: OwnershipDomainTopology,
+    config: BlockRuntimeConfig,
     registrar: MaintenanceRegistrar<BlockMaintenanceEvent>,
     activation: Arc<ControllerActivationSlot>,
 ) -> Result<MaintenanceClosed, MaintenanceError> {
@@ -165,7 +178,7 @@ fn run_controller_owner(
         remote,
     } = initialized;
     let mut device = Some(device);
-    let prepared = match BlockController::prepare_on_owner(&mut device, remote) {
+    let prepared = match BlockController::prepare_on_owner(&mut device, remote, topology, config) {
         Ok(prepared) => prepared,
         Err(error) => {
             let device = device
@@ -183,7 +196,7 @@ fn run_controller_owner(
         &session,
         &mut sources,
         &faults,
-        prepared.declared_sources(),
+        &prepared,
     ) {
         Ok(bound) => bound,
         Err(error) => {
@@ -268,16 +281,14 @@ fn bind_normal_sources(
     session: &MaintenanceSession<BlockMaintenanceEvent>,
     sources: &mut Vec<RuntimeIrqSource>,
     faults: &Arc<BlockIrqFaultSet>,
-    declared: &[rdif_block::IrqSourceInfo],
+    prepared: &PreparedBlockController,
 ) -> Result<IdList, BlockControllerError> {
     let mut bound = IdList::none();
-    for source_info in declared {
+    for source_info in prepared.declared_sources() {
         let source_id = source_info.id;
-        let binding = device
+        let irq = prepared
             .irq_for_source(source_id)
-            .cloned()
             .ok_or(BlockControllerError::MissingIrqBinding(source_id))?;
-        let irq = crate::irq::resolve_binding_irq(binding)?;
         let source = device
             .bundle_mut()
             .take_irq_source(source_id)
@@ -359,7 +370,6 @@ fn run_owner_loop(
     mut sources: Vec<RuntimeIrqSource>,
     faults: Arc<BlockIrqFaultSet>,
 ) -> Result<MaintenanceClosed, MaintenanceError> {
-    let mut masked = [None; 64];
     let mut handoff = OwnerHandoff::new();
     let mut shutdown = OwnerShutdown::new();
     let mut shutdown_requested = false;
@@ -374,13 +384,23 @@ fn run_owner_loop(
                         facts,
                         masked: token,
                     } => {
+                        match runtime_irq_source_mut(&mut sources, source_id)
+                            .and_then(|source| source.record_service_fact(token))
+                        {
+                            Ok(()) => {}
+                            Err(error) => {
+                                error!(
+                                    "block controller {} rejected IRQ source ledger update: \
+                                     {error}",
+                                    controller.name()
+                                );
+                                service_error.get_or_insert(super::HardwareQueueError::Offline);
+                            }
+                        }
                         if let Err(error) =
                             controller.route_owner_irq(source_id, source_epoch, facts)
                         {
                             service_error = Some(error);
-                        }
-                        if source_id < masked.len() && token.is_some() {
-                            masked[source_id] = token;
                         }
                     }
                     BlockMaintenanceEvent::Fault {
@@ -388,10 +408,17 @@ fn run_owner_loop(
                         containment,
                         ..
                     } => {
-                        if let rdif_block::FaultContainment::DeviceSourceMasked(token) = containment
-                            && source_id < masked.len()
+                        let token = match containment {
+                            rdif_block::FaultContainment::DeviceSourceMasked(token) => Some(token),
+                            rdif_block::FaultContainment::Uncontained => None,
+                        };
+                        if let Err(error) = runtime_irq_source_mut(&mut sources, source_id)
+                            .and_then(|source| source.record_service_fact(token))
                         {
-                            masked[source_id] = Some(token);
+                            error!(
+                                "block controller {} rejected fault source ledger update: {error}",
+                                controller.name()
+                            );
                         }
                         service_error = Some(super::HardwareQueueError::Offline);
                     }
@@ -462,7 +489,7 @@ fn run_owner_loop(
                             drop(cutoff);
                             quarantine_controller_owner(controller, session, sources, error);
                         }
-                    }
+                    },
                     None => irq_ingress_pending = true,
                 }
             }
@@ -486,11 +513,20 @@ fn run_owner_loop(
         // consumed by the next owner pass as late recovery evidence.
         drop(watchdog_cutoff);
         more |= irq_ingress_pending;
-        if controller.normal_irq_service_active() {
-            rearm_runtime_sources(&mut sources, &mut masked, &controller);
+        more |= drain.pending();
+        if !more
+            && controller.normal_irq_service_active()
+            && let Err(error) = rearm_runtime_sources(&mut sources)
+        {
+            error!(
+                "block controller {} could not rearm a drained IRQ source: {error}",
+                controller.name()
+            );
+            controller.record_owner_service_failure(&super::HardwareQueueError::Offline);
+            more = true;
         }
         more |= controller.service_owner_return(&mut sources);
-        match controller.service_owner_recovery(&mut sources, &mut masked) {
+        match controller.service_owner_recovery(&mut sources) {
             Ok(recovery_more) => more |= recovery_more,
             Err(error) => {
                 error!(
@@ -540,181 +576,14 @@ fn run_owner_loop(
     }
 }
 
-fn rearm_runtime_sources(
-    sources: &mut [RuntimeIrqSource],
-    masked: &mut [Option<MaskedSource>; 64],
-    controller: &BlockController,
-) {
+fn rearm_runtime_sources(sources: &mut [RuntimeIrqSource]) -> Result<(), RuntimeIrqSourceError> {
+    for source in sources.iter_mut() {
+        source.finish_service();
+    }
     for source in sources {
-        let source_id = source.source_id();
-        let Some(token) = masked.get_mut(source_id).and_then(Option::take) else {
-            continue;
-        };
-        if source.rearm(token).is_err() {
-            controller.record_owner_service_failure(&super::HardwareQueueError::Offline);
-        }
+        source.rearm_retained()?;
     }
-}
-
-fn quarantine_controller_owner(
-    controller: Arc<BlockController>,
-    session: MaintenanceSession<BlockMaintenanceEvent>,
-    sources: Vec<RuntimeIrqSource>,
-    error: MaintenanceError,
-) -> ! {
-    error!(
-        "block controller {} owner failed and will remain CPU-pinned in quarantine: {error}",
-        controller.name()
-    );
-    controller.mark_offline();
-    controller.quarantine_queue_endpoints(rdif_block::BlkError::Quarantined);
-    let retained_sources = sources;
-    match controller.disable_device_irq_on_owner() {
-        Ok(()) => {
-            if let Err(quiesce_error) = quiesce_after_device_masked(&retained_sources) {
-                error!(
-                    "block controller {} could not quiesce IRQ actions before owner quarantine: \
-                     {quiesce_error:?}",
-                    controller.name()
-                );
-            }
-        }
-        Err(mask_error) => {
-            error!(
-                "block controller {} could not mask device IRQs before owner quarantine: \
-                 {mask_error}",
-                controller.name()
-            );
-            // Without a device-side mask proof the line quench must remain in
-            // force. Disable and drain only the owner action; never reopen a
-            // shared backing line around an uncontained source.
-            for source in &retained_sources {
-                let _ = source.disable();
-            }
-            for source in &retained_sources {
-                let _ = source.synchronize();
-            }
-        }
-    }
-    // `retained_sources` remains in this non-returning stack frame. Any action
-    // that could not be disabled is still paired with the pinned owner lease;
-    // late dispatch observes the closed lifecycle and contains its source.
-    session.quarantine_and_park()
-}
-
-fn close_controller_resources(
-    controller: &BlockController,
-    session: MaintenanceSession<BlockMaintenanceEvent>,
-    sources: Vec<RuntimeIrqSource>,
-) -> Result<MaintenanceClosed, MaintenanceError> {
-    if let Err(error) = session.begin_close() {
-        error!("block controller close could not cut off publication: {error}");
-        session.quarantine_and_park();
-    }
-    controller.mark_offline();
-    if let Err(error) = controller.disable_device_irq_on_owner() {
-        error!(
-            "block controller {} could not mask device IRQs during close: {error}",
-            controller.name()
-        );
-        controller.quarantine_queue_endpoints(rdif_block::BlkError::Quarantined);
-        session.quarantine_and_park();
-    }
-    if let Err(error) = quiesce_after_device_masked(&sources) {
-        error!(
-            "block controller {} could not drain IRQ source during close: {error:?}",
-            controller.name()
-        );
-        session.quarantine_and_park();
-    }
-    if let Err(failure) = close_irq_sources(sources) {
-        error!(
-            "block controller {} could not close an IRQ action: {:?}",
-            controller.name(),
-            failure.reason()
-        );
-        quarantine_source_close_failure(session, failure);
-    }
-    controller.clear_owner_link_after_drain();
-    finish_maintenance_close(session)
-}
-
-struct CloseIrqSourcesFailure {
-    reason: MaintenanceError,
-    _retained: Vec<RuntimeIrqSource>,
-}
-
-impl CloseIrqSourcesFailure {
-    const fn reason(&self) -> MaintenanceError {
-        self.reason
-    }
-}
-
-fn close_irq_sources(sources: Vec<RuntimeIrqSource>) -> Result<(), CloseIrqSourcesFailure> {
-    let mut first_error = None;
-    let mut retained = Vec::new();
-    for source in sources {
-        if let Err(failure) = source.close() {
-            let (reason, source) = failure.into_parts();
-            first_error.get_or_insert(reason);
-            retained.push(source);
-        }
-    }
-    match first_error {
-        None => Ok(()),
-        Some(reason) => Err(CloseIrqSourcesFailure {
-            reason,
-            _retained: retained,
-        }),
-    }
-}
-
-fn quarantine_source_close_failure(
-    session: MaintenanceSession<BlockMaintenanceEvent>,
-    _failure: CloseIrqSourcesFailure,
-) -> ! {
-    session.quarantine_and_park()
-}
-
-fn quarantine_unpublished_owner_after_close_failure(
-    _device: RdifBlockDevice,
-    session: MaintenanceSession<BlockMaintenanceEvent>,
-    _sources: Vec<RuntimeIrqSource>,
-    _failure: CloseIrqSourcesFailure,
-) -> ! {
-    error!("unpublished block owner retained an IRQ action after close failure");
-    session.quarantine_and_park()
-}
-
-fn finish_maintenance_close(
-    session: MaintenanceSession<BlockMaintenanceEvent>,
-) -> Result<MaintenanceClosed, MaintenanceError> {
-    if let Err(error) = session.try_begin_draining() {
-        error!("block maintenance domain could not begin final drain: {error}");
-        session.quarantine_and_park();
-    }
-    loop {
-        match session.drain_owner(crate::maintenance::MAINTENANCE_BATCH_LIMIT, |_| {}) {
-            Ok(drain) if drain.pending() => {}
-            Ok(_) => break,
-            Err(error) => {
-                error!("block maintenance domain could not drain accepted events: {error}");
-                session.quarantine_and_park();
-            }
-        }
-    }
-    if let Err(error) = session.finish_close() {
-        error!("block maintenance domain could not commit close: {error}");
-        session.quarantine_and_park();
-    }
-    match session.try_into_closed() {
-        Ok(closed) => Ok(closed),
-        Err(failure) => {
-            let error = failure.error();
-            error!("block maintenance domain lost its close proof: {error}");
-            failure.into_session().quarantine_and_park();
-        }
-    }
+    Ok(())
 }
 
 /// Live owner state after the portable initialization FSM reaches Ready.
@@ -782,15 +651,7 @@ pub(super) fn initialize_controller_on_owner(
     }
 
     let mut pending = IdList::none();
-    let mut masked = [None; 64];
-    let init_result = drive_init_fsm(
-        &mut device,
-        &session,
-        &mut sources,
-        &faults,
-        &mut pending,
-        &mut masked,
-    );
+    let init_result = drive_init_fsm(&mut device, &session, &mut sources, &faults, &mut pending);
     match init_result {
         Ok(()) => Ok(ControllerInitialization::Ready(
             InitializedControllerOwner {

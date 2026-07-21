@@ -5,12 +5,13 @@ use core::sync::atomic::Ordering;
 
 use rdif_block::{
     ControllerEpoch, ControllerReady, DmaQuiesced, IdList, InitError, InitInput, InitPoll,
-    LifecycleEndpoint, MaskedSource, RecoveryCause,
+    LifecycleEndpoint, RecoveryCause,
 };
 
 use super::{
     BlockController, BlockHandoffError, ControllerPhase, OwnerCommand, RuntimeQueue,
-    irq_routes::reattach_host_actions, source::RuntimeIrqSource,
+    irq_routes::reattach_host_actions,
+    source::{RuntimeIrqSource, RuntimeIrqSourceError, runtime_irq_source_mut},
 };
 
 const RECOVERY_TRANSITION_BUDGET: usize = 64;
@@ -141,7 +142,6 @@ impl BlockController {
     pub(in crate::block) fn service_owner_recovery(
         &self,
         sources: &mut [RuntimeIrqSource],
-        masked: &mut [Option<MaskedSource>; 64],
     ) -> Result<bool, InitError> {
         let pending_irq_queues = self.irq_recovery_queues.swap(0, Ordering::AcqRel);
         if pending_irq_queues != 0 && self.phase() == ControllerPhase::Running {
@@ -166,9 +166,12 @@ impl BlockController {
                             "recovery could not quiesce IRQ actions after masking the device",
                         )
                     })?;
-                    // Reset/reinitialization supersedes generation-bearing masks
-                    // captured before the destructive recovery boundary.
-                    masked.fill(None);
+                    // The fully masked and synchronized device establishes the
+                    // retirement boundary for generation-bearing masks. The
+                    // following reset/reinitialization creates a new epoch.
+                    for source in sources.iter_mut() {
+                        source.discard_ledger_after_device_quiesce();
+                    }
                     self.recovery_irqs_enabled.store(false, Ordering::Release);
                     self.recovery_step
                         .store(RecoveryStep::BeginQuiesce as u8, Ordering::Release);
@@ -188,7 +191,7 @@ impl BlockController {
                         .store(RecoveryStep::PollQuiesce as u8, Ordering::Release);
                 }
                 RecoveryStep::PollQuiesce => {
-                    let (input, consumed) = self.take_recovery_input();
+                    let (input, _) = self.take_recovery_input();
                     let progress = self.with_driver_endpoint_on_owner(|device| {
                         match device.bundle_mut().lifecycle() {
                             LifecycleEndpoint::Inline => InitPoll::Failed(InitError::InvalidState),
@@ -197,7 +200,6 @@ impl BlockController {
                             }
                         }
                     });
-                    self.discard_consumed_masks(consumed, masked);
                     match progress {
                         InitPoll::Ready(proof) => self.begin_owner_reinitialize(proof)?,
                         InitPoll::Failed(error) => return Err(error),
@@ -234,10 +236,10 @@ impl BlockController {
                             }
                         }
                     });
-                    self.rearm_consumed_sources(sources, consumed, masked)?;
                     match progress {
                         InitPoll::Ready(proof) => {
                             self.validate_ready_proof(&proof)?;
+                            self.rearm_consumed_sources(sources, consumed)?;
                             for queue in self.runtime_queues() {
                                 if let RuntimeQueue::Interrupt(queue) = queue {
                                     queue
@@ -250,6 +252,8 @@ impl BlockController {
                         }
                         InitPoll::Failed(error) => return Err(error),
                         InitPoll::Pending(schedule) => {
+                            let schedule = schedule.validate()?;
+                            self.rearm_consumed_sources(sources, consumed)?;
                             return self.arm_recovery_schedule(schedule);
                         }
                     }
@@ -322,29 +326,17 @@ impl BlockController {
         &self,
         sources: &mut [RuntimeIrqSource],
         consumed: IdList,
-        masked: &mut [Option<MaskedSource>; 64],
     ) -> Result<(), InitError> {
         for source_id in consumed.iter() {
-            let Some(token) = masked.get_mut(source_id).and_then(Option::take) else {
-                continue;
-            };
-            let source = sources
-                .iter_mut()
-                .find(|source| source.source_id() == source_id)
-                .ok_or(InitError::MissingInterrupt)?;
-            source
-                .rearm(token)
-                .map_err(|_| InitError::Hardware("recovery IRQ source rearm failed"))?;
+            let source = runtime_irq_source_mut(sources, source_id).map_err(|error| {
+                recovery_source_error("recovery IRQ source lookup failed", error)
+            })?;
+            source.finish_service();
+            source.rearm_retained().map_err(|error| {
+                recovery_source_error("recovery IRQ source rearm failed", error)
+            })?;
         }
         Ok(())
-    }
-
-    fn discard_consumed_masks(&self, consumed: IdList, masked: &mut [Option<MaskedSource>; 64]) {
-        for source_id in consumed.iter() {
-            if let Some(slot) = masked.get_mut(source_id) {
-                *slot = None;
-            }
-        }
     }
 
     fn begin_return_from_guest(
@@ -431,5 +423,16 @@ impl BlockController {
             return Err(InitError::InvalidState);
         }
         Ok(())
+    }
+}
+
+fn recovery_source_error(context: &'static str, error: RuntimeIrqSourceError) -> InitError {
+    error!("{context}: {error}");
+    match error {
+        RuntimeIrqSourceError::UnknownSource { .. } => InitError::MissingInterrupt,
+        RuntimeIrqSourceError::ConflictingGeneration { .. }
+        | RuntimeIrqSourceError::ConflictingMaskEpoch { .. }
+        | RuntimeIrqSourceError::ServicePending { .. }
+        | RuntimeIrqSourceError::Rearm { .. } => InitError::Hardware(context),
     }
 }

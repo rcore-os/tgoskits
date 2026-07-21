@@ -7,7 +7,7 @@ use super::{
         CardInfo, CardKind, ExtCsdRequest, SdioCommandRequest, SdioSdmmc, SdioStatusRequest,
         SwitchFunctionRequest,
     },
-    host::{BusWidth, ClockSpeed, SdioBusOp, SdioHost, SignalVoltage},
+    host::{BusWidth, ClockSpeed, HostIrqSnapshot, SdioBusOp, SdioHost, SignalVoltage},
     init_schedule::{InitInput, InitPoll, InitSchedule},
 };
 use crate::{
@@ -278,6 +278,7 @@ pub struct SdioInitRequest<'a, H: SdioHost + 'a> {
     deadline_state: Option<SdioInitState>,
     hardware_deadline_ns: Option<u64>,
     terminal_error: Option<Error>,
+    irq_snapshot: Option<HostIrqSnapshot>,
     pub(super) ext_csd_buf: ScratchSlot<512>,
     pub(super) switch_status_buf: ScratchSlot<64>,
     pub(super) ext_csd_request: Option<ExtCsdRequest<'a, H>>,
@@ -315,6 +316,7 @@ impl<'a, H: SdioHost + 'a> SdioInitRequest<'a, H> {
             deadline_state: None,
             hardware_deadline_ns: None,
             terminal_error: None,
+            irq_snapshot: None,
             ext_csd_buf: ScratchSlot::new(&mut scratch.ext_csd),
             switch_status_buf: ScratchSlot::new(&mut scratch.switch_status),
             ext_csd_request: None,
@@ -332,6 +334,10 @@ impl<'a, H: SdioHost + 'a> SdioInitRequest<'a, H> {
             mmc_hs200_attempted: false,
             _scratch: core::marker::PhantomData,
         }
+    }
+
+    fn take_irq_snapshot(&mut self) -> Option<HostIrqSnapshot> {
+        self.irq_snapshot.take()
     }
 }
 
@@ -432,7 +438,10 @@ impl<H: SdioHost> SdioSdmmc<H> {
         request: &mut SdioInitRequest<'a, H>,
         now_ns: u64,
     ) -> Result<CommandResponsePoll, Error> {
-        let progress = self.host.poll_command_response_at(now_ns);
+        let progress = match request.take_irq_snapshot() {
+            Some(snapshot) => self.host.poll_command_response_with_snapshot(snapshot),
+            None => self.host.poll_command_response_at(now_ns),
+        };
         request.transaction_wake_at_ns = match &progress {
             Ok(CommandResponsePoll::Pending) => self.host.command_wake_at(),
             Ok(CommandResponsePoll::Complete(_)) | Err(_) => None,
@@ -449,7 +458,10 @@ impl<H: SdioHost> SdioSdmmc<H> {
             .command_request
             .take()
             .ok_or(Error::InvalidArgument)?;
-        let progress = self.poll_command_request_at(&mut command, now_ns);
+        let progress = match request.take_irq_snapshot() {
+            Some(snapshot) => self.poll_command_request_with_snapshot(&mut command, snapshot),
+            None => self.poll_command_request_at(&mut command, now_ns),
+        };
         request.transaction_wake_at_ns = match &progress {
             Ok(CommandResponsePoll::Pending) => self.command_wake_at(),
             Ok(CommandResponsePoll::Complete(_)) | Err(_) => None,
@@ -467,7 +479,10 @@ impl<H: SdioHost> SdioSdmmc<H> {
             .status_request
             .take()
             .ok_or(Error::InvalidArgument)?;
-        let progress = self.poll_status_request_at(&mut status, now_ns);
+        let progress = match request.take_irq_snapshot() {
+            Some(snapshot) => self.poll_status_request_with_snapshot(&mut status, snapshot),
+            None => self.poll_status_request_at(&mut status, now_ns),
+        };
         request.transaction_wake_at_ns = match &progress {
             Ok(OperationPoll::Pending) => self.command_wake_at(),
             Ok(OperationPoll::Complete(_)) | Err(_) => None,
@@ -488,7 +503,10 @@ impl<H: SdioHost> SdioSdmmc<H> {
             .ext_csd_request
             .take()
             .ok_or(Error::InvalidArgument)?;
-        let progress = self.poll_ext_csd_request_at(&mut ext_csd, now_ns);
+        let progress = match request.take_irq_snapshot() {
+            Some(snapshot) => self.poll_ext_csd_request_with_snapshot(&mut ext_csd, snapshot),
+            None => self.poll_ext_csd_request_at(&mut ext_csd, now_ns),
+        };
         request.transaction_wake_at_ns = match &progress {
             Ok(OperationPoll::Pending) => self.ext_csd_request_wake_at(&ext_csd),
             Ok(OperationPoll::Complete(())) | Err(_) => None,
@@ -509,7 +527,12 @@ impl<H: SdioHost> SdioSdmmc<H> {
             .switch_function_request
             .take()
             .ok_or(Error::InvalidArgument)?;
-        let progress = self.poll_switch_function_request_at(&mut switch, now_ns);
+        let progress = match request.take_irq_snapshot() {
+            Some(snapshot) => {
+                self.poll_switch_function_request_with_snapshot(&mut switch, snapshot)
+            }
+            None => self.poll_switch_function_request_at(&mut switch, now_ns),
+        };
         request.transaction_wake_at_ns = match &progress {
             Ok(OperationPoll::Pending) => self.switch_function_request_wake_at(&switch),
             Ok(OperationPoll::Complete(())) | Err(_) => None,
@@ -527,7 +550,12 @@ impl<H: SdioHost> SdioSdmmc<H> {
             .mmc_switch_request
             .take()
             .ok_or(Error::InvalidArgument)?;
-        let progress = self.poll_mmc_switch_request(&mut switch, now_ns);
+        let progress = match request.take_irq_snapshot() {
+            Some(snapshot) => {
+                self.poll_mmc_switch_request_with_snapshot(&mut switch, now_ns, snapshot)
+            }
+            None => self.poll_mmc_switch_request(&mut switch, now_ns),
+        };
         request.transaction_wake_at_ns = match &progress {
             Ok(OperationPoll::Pending) => self.command_wake_at(),
             Ok(OperationPoll::Complete(())) | Err(_) => None,
@@ -672,7 +700,17 @@ impl<H: SdioHost> SdioSdmmc<H> {
             }
         }
 
-        match self.poll_init_inner(request, input.now_ns) {
+        request.irq_snapshot = input.snapshot;
+
+        let progress = self.poll_init_inner(request, input.now_ns);
+        if request
+            .irq_snapshot
+            .take()
+            .is_some_and(|snapshot| snapshot.queue_service)
+        {
+            return self.fail_init(request, Error::InvalidArgument);
+        }
+        match progress {
             Ok(OperationPoll::Complete(info)) => InitPoll::Ready(info),
             Ok(OperationPoll::Pending) => {
                 let activation = next_init_activation(request, input.now_ns);

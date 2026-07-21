@@ -4,14 +4,10 @@ use alloc::sync::Arc;
 
 use rdif_block::{
     BlkError, CompletionSink, IQueue, OwnedRequest, QueueEventBatch, QueueInfo, RequestId,
-    ServiceProgress, ServiceRerunReason, SubmitError, SubmitOutcome, validate_owned_request,
+    ServiceProgress, ServiceRerunReason, SubmitError, SubmitOutcome,
 };
 
-use super::{
-    core::NvmeQueueCore,
-    dma::{prepare_request_dma, restore_prepared_dma},
-    request::AcceptedRequest,
-};
+use super::core::NvmeQueueCore;
 use crate::block::NvmeBlockOwner;
 
 const SERVICE_COMPLETION_BUDGET: usize = 64;
@@ -44,57 +40,12 @@ impl NvmeBlockQueue {
         }
     }
 
-    fn submit_accepted(
-        &self,
-        id: RequestId,
-        request: OwnedRequest,
-    ) -> Result<SubmitOutcome, SubmitError> {
-        let (mut request, mut prepared) = prepare_request_dma(id, request)?;
-        let Some(mut state) = self.core.try_claim_state() else {
-            request = restore_prepared_dma(request, prepared.take());
-            return Err(SubmitError::new(id, BlkError::Retry, request));
-        };
-        let cid = match state.alloc_cid() {
-            Ok(cid) => cid,
-            Err(error) => {
-                request = restore_prepared_dma(request, prepared.take());
-                return Err(SubmitError::new(id, error, request));
-            }
-        };
-        let (command, prp_list) = match state.build_command(
-            self.core.namespace(),
-            self.core.page_size(),
-            cid,
-            &request,
-            prepared.as_ref(),
-        ) {
-            Ok(command) => command,
-            Err(error) => {
-                state.release_cid(cid);
-                request = restore_prepared_dma(request, prepared.take());
-                return Err(SubmitError::new(id, error, request));
-            }
-        };
-        let dma = prepared
-            .take()
-            // SAFETY: accepted ownership is installed before the SQ doorbell.
-            // Owner-side completion or proof-gated reclaim returns it only
-            // after CQ observation or full controller quiescence.
-            .map(|prepared| unsafe { prepared.into_in_flight() });
-        state.accept(cid, AcceptedRequest { id, request, dma }, prp_list);
-
-        // Runtime identity and request ownership are visible before hardware
-        // can assert the source consumed by the maintenance owner.
-        self.core.submit_command(command);
-        Ok(SubmitOutcome::Queued)
-    }
-
-    fn emit_cached_completions(
+    pub(in crate::block) fn service_claimed_evidence(
         &self,
         budget: usize,
         sink: &mut dyn CompletionSink,
-    ) -> Result<Option<usize>, BlkError> {
-        self.core.emit_owner_cached_completions(budget, sink)
+    ) -> Result<super::core::NvmeQueueEvidenceProgress, BlkError> {
+        self.core.service_claimed_evidence(budget, sink)
     }
 }
 
@@ -112,10 +63,18 @@ impl IQueue for NvmeBlockQueue {
         id: RequestId,
         request: OwnedRequest,
     ) -> Result<SubmitOutcome, SubmitError> {
-        if let Err(error) = validate_owned_request(self.core.queue_info(), &request) {
-            return Err(SubmitError::new(id, error, request));
-        }
-        self.submit_accepted(id, request)
+        self.core
+            .submit_owned(
+                self.core.namespace(),
+                self.core.max_transfer_bytes(),
+                id,
+                request,
+            )
+            .map(|_| SubmitOutcome::Queued)
+            .map_err(|unaccepted| {
+                let (id, error, request, _not_visible) = unaccepted.into_parts();
+                SubmitError::new(id, error, request)
+            })
     }
 
     fn service_events(
@@ -126,29 +85,8 @@ impl IQueue for NvmeBlockQueue {
         if events.queue_id() != self.core.id() {
             return Err(BlkError::InvalidRequest);
         }
-        if self.core.completion_failed() {
-            return Err(BlkError::Io);
-        }
-
-        let Some(emitted) = self.emit_cached_completions(SERVICE_COMPLETION_BUDGET, sink)? else {
-            return Ok(events.requeue_service(ServiceRerunReason::CachedCompletions));
-        };
-        let remaining = SERVICE_COMPLETION_BUDGET.saturating_sub(emitted);
-        if remaining == 0 {
-            return Ok(events.requeue_service(ServiceRerunReason::CompletionBudget));
-        }
-
-        let drain = self.core.drain_owner_completions(remaining);
-        if self.core.completion_failed() {
-            return Err(BlkError::Io);
-        }
-        let Some(emitted_after_drain) = self.emit_cached_completions(remaining, sink)? else {
-            return Ok(events.requeue_service(ServiceRerunReason::CachedCompletions));
-        };
-
-        if drain.may_have_more || emitted + emitted_after_drain == SERVICE_COMPLETION_BUDGET {
-            Ok(events.requeue_service(ServiceRerunReason::CompletionBudget))
-        } else if self.core.service_pending() {
+        let progress = self.service_claimed_evidence(SERVICE_COMPLETION_BUDGET, sink)?;
+        if progress.retained {
             Ok(events.requeue_service(ServiceRerunReason::RetainedFacts))
         } else {
             Ok(ServiceProgress::Idle)
@@ -161,31 +99,13 @@ impl IQueue for NvmeBlockQueue {
         sink: &mut dyn CompletionSink,
     ) -> Result<(), BlkError> {
         self.reclaim_proof.validate(proof)?;
-        let Some(mut state) = self.core.try_claim_state() else {
-            return Err(BlkError::Busy);
-        };
-        state.cancel_all(sink);
-        drop(state);
-        self.core.clear_service_state_after_quiesce();
+        self.core.reclaim_requests_after_quiesce(sink)?;
         self.reclaim_proof.commit(proof);
         Ok(())
     }
 
     fn shutdown(&mut self) -> Result<(), BlkError> {
-        let Some(state) = self.core.try_claim_state() else {
-            return Err(BlkError::Busy);
-        };
-        if state.has_accepted() {
-            return Err(BlkError::Busy);
-        }
-        drop(state);
-        if self.core.completion_failed() {
-            return Err(BlkError::Io);
-        }
-        if self.core.service_pending() {
-            return Err(BlkError::Busy);
-        }
-        Ok(())
+        self.core.shutdown()
     }
 }
 

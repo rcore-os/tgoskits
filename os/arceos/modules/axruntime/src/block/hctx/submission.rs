@@ -1,12 +1,12 @@
 //! Accepted-request ownership from CPU staging through driver dispatch.
 
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
 
 use rdif_block::{BlkError, CompletedRequest, QueueHandle, SubmitOutcome};
 
 use super::{
-    DispatchResult, HardwareQueue, HardwareQueueError, RuntimeSubmitError, SubmittedRequest,
+    DispatchResult, HardwareCreditReservation, HardwareQueue, HardwareQueueError,
+    RuntimeSubmitError, SubmittedRequest,
 };
 use crate::block::{HctxCause, RequestTag};
 
@@ -81,14 +81,14 @@ impl HardwareQueue {
         tag: RequestTag,
     ) -> Result<SubmittedRequest, HardwareQueueError> {
         let cpu = ax_hal::percpu::this_cpu_id();
-        let Some(context) = self.software_contexts.get(cpu) else {
-            return Err(HardwareQueueError::InvalidCpu(cpu));
-        };
         self.requests.ensure_staged(tag)?;
-        context.lock().push(tag)?;
+        self.software_contexts.stage(cpu, self.hctx_index, tag)?;
         if let Err(error) = self.queue_service(HctxCause::Submit) {
-            let removed = context.lock().remove(tag);
-            assert!(removed, "failed work activation lost staged request tag");
+            let removed = self.software_contexts.remove(self.hctx_index, tag);
+            assert_eq!(
+                removed, 1,
+                "failed owner activation lost or duplicated a staged request tag"
+            );
             return Err(error);
         }
         Ok(SubmittedRequest {
@@ -101,22 +101,22 @@ impl HardwareQueue {
         &self,
         tag: RequestTag,
         driver: &mut QueueHandle,
+        credit: HardwareCreditReservation<'_>,
     ) -> Result<DispatchResult, HardwareQueueError> {
-        // Publish the non-claimable dispatch boundary before the driver can
-        // observe the request ID. A watchdog never gets to mistake a request
-        // that the driver is deciding to keep for software-owned staging.
         let id = tag.into_request_id()?;
-        let (permit, request) = self.requests.begin_dispatch(tag)?;
+        let deadline =
+            ax_hal::time::monotonic_time_nanos().saturating_add(self.request_watchdog_ns);
+        let (permit, request) = self.requests.begin_dispatch(tag, deadline)?;
+
         match driver.submit_owned(id, request) {
             Ok(SubmitOutcome::Queued) => {
-                let deadline = ax_hal::time::monotonic_time_nanos()
-                    .saturating_add(self.info.limits.request_timeout_ns);
-                let recovery_error = permit.commit_queued(deadline).err();
-                self.inflight.fetch_add(1, Ordering::AcqRel);
-                Ok(DispatchResult::queued(recovery_error))
+                permit.accept();
+                credit.retain_for_inflight();
+                Ok(DispatchResult::queued())
             }
             Ok(SubmitOutcome::Completed(mut completion)) => {
-                permit.commit_inline_return();
+                permit.retain_for_inline_return();
+                credit.retain_for_inflight();
                 completion.id = id;
                 completion.result = Err(BlkError::Io);
                 Ok(DispatchResult::terminal(
@@ -128,6 +128,7 @@ impl HardwareQueue {
                 let (returned_id, driver_error, request) = error.into_parts();
                 if let Err(failed) = permit.restore_rejected(request) {
                     let (state_error, request) = failed.into_parts();
+                    credit.retain_for_inflight();
                     return Ok(DispatchResult::terminal(
                         CompletedRequest::new(id, Err(BlkError::Io), request),
                         Some(state_error),
@@ -140,20 +141,44 @@ impl HardwareQueue {
                         Some(HardwareQueueError::StaleCompletion),
                     ));
                 }
-                if matches!(driver_error, BlkError::Busy | BlkError::Retry)
-                    && self.inflight.load(Ordering::Acquire) != 0
-                {
-                    Ok(DispatchResult::deferred())
-                } else {
-                    let request = self.requests.take_staged(tag)?;
-                    let recovery_error = matches!(driver_error, BlkError::Busy | BlkError::Retry)
-                        .then_some(HardwareQueueError::Driver(driver_error));
-                    Ok(DispatchResult::terminal(
-                        CompletedRequest::new(id, Err(driver_error), request),
-                        recovery_error,
-                    ))
-                }
+                let request = self.requests.take_staged(tag)?;
+                let recovery_error = classify_driver_rejection(self.info.id, driver_error);
+                Ok(DispatchResult::terminal(
+                    CompletedRequest::new(id, Err(driver_error), request),
+                    recovery_error,
+                ))
             }
         }
+    }
+}
+
+fn classify_driver_rejection(queue_id: usize, error: BlkError) -> Option<HardwareQueueError> {
+    match error {
+        BlkError::Busy | BlkError::Retry => {
+            Some(HardwareQueueError::DispatchContract { queue_id, error })
+        }
+        BlkError::QueueEpochExhausted => Some(HardwareQueueError::Driver(error)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn busy_after_hardware_credit_is_a_driver_contract_fault() {
+        assert!(matches!(
+            classify_driver_rejection(7, BlkError::Busy),
+            Some(HardwareQueueError::DispatchContract {
+                queue_id: 7,
+                error: BlkError::Busy,
+            })
+        ));
+        assert!(classify_driver_rejection(7, BlkError::InvalidRequest).is_none());
+        assert!(matches!(
+            classify_driver_rejection(7, BlkError::QueueEpochExhausted),
+            Some(HardwareQueueError::Driver(BlkError::QueueEpochExhausted))
+        ));
     }
 }

@@ -31,7 +31,7 @@ use crate::{
         AdminCommand, AdminCompletion, LifecycleHardware, NvmeLifecycle, queue_count_supported,
     },
     nvme::Nvme,
-    queue::{CommandSet, NvmeQueue as HardwareQueue},
+    queue::{CommandSet, NvmeCompletionProbe, NvmeQueue as HardwareQueue},
 };
 
 const DEFAULT_QUEUE_DEPTH: usize = 64;
@@ -119,12 +119,7 @@ impl NvmeBlockDriver {
         let msix_interrupts = nvme.msix_interrupts_enabled();
         let interrupt_vectors = nvme.interrupt_vectors().to_vec();
         let admin_queue = nvme.admin_queue();
-        let interrupt_port = unsafe {
-            // SAFETY: the port and `nvme` move into the same Arc owner. Every
-            // endpoint/control reference retains that owner and therefore the
-            // BAR mapping for the complete port lifetime.
-            nvme.interrupt_port()
-        };
+        let interrupt_port = nvme.interrupt_port();
         let irq = Arc::new(NvmeIrqState::new(
             interrupt_port,
             &interrupt_vectors,
@@ -196,6 +191,28 @@ unsafe impl Send for NvmeBlockOwner {}
 unsafe impl Sync for NvmeBlockOwner {}
 
 impl NvmeBlockOwner {
+    pub(super) fn admin_completion_probe(&self) -> NvmeCompletionProbe {
+        self.admin_queue.completion_probe()
+    }
+
+    pub(super) fn completion_probes(
+        &self,
+        source_id: usize,
+        queue_ids: IdList,
+    ) -> Vec<NvmeCompletionProbe> {
+        let mut probes = Vec::new();
+        if self.admin_irq_source_id() == Some(source_id) {
+            probes.push(self.admin_completion_probe());
+        }
+        probes.extend(
+            self.queues()
+                .iter()
+                .filter(|queue| queue_ids.contains(queue.id()))
+                .map(|queue| queue.completion_probe()),
+        );
+        probes
+    }
+
     fn with_ref<R>(&self, f: impl FnOnce(&NvmeBlockInner) -> R) -> R {
         // SAFETY: the owner-side initialization/lifecycle state machines
         // serialize these controller borrows. IRQ endpoints use only the
@@ -422,12 +439,12 @@ impl NvmeBlockOwner {
     }
 }
 
-impl InitialHardware for NvmeBlockOwner {
+impl InitialHardware for &NvmeBlockOwner {
     fn controller_timeout_ns(&self) -> u64 {
         self.with_ref(|inner| inner.nvme.controller_timeout_ns())
     }
 
-    fn begin_controller_disable(&self) {
+    fn begin_controller_disable(&mut self) {
         self.with_ref(|inner| inner.nvme.begin_controller_disable());
     }
 
@@ -445,7 +462,7 @@ impl InitialHardware for NvmeBlockOwner {
             .flatten()
     }
 
-    unsafe fn prepare_initial_enable(&self) -> Result<(), InitError> {
+    unsafe fn prepare_initial_enable(&mut self) -> Result<(), InitError> {
         self.clear_admin_completion_after_quiesce()?;
         let source_id = self
             .live_admin_irq_source()
@@ -462,29 +479,29 @@ impl InitialHardware for NvmeBlockOwner {
         Ok(())
     }
 
-    fn submit_initial_admin(&self, command: InitialAdminCommand) -> Result<u16, InitError> {
+    fn submit_initial_admin(&mut self, command: InitialAdminCommand) -> Result<u16, InitError> {
         let command = self.with_ref(|inner| inner.nvme.build_initial_admin_command(command))?;
         self.submit_lifecycle_admin(command)
     }
 
-    fn take_admin_completion(&self) -> Option<AdminCompletion> {
+    fn take_admin_completion(&mut self) -> Option<AdminCompletion> {
         NvmeBlockOwner::take_admin_completion(self)
     }
 
     fn complete_initial_admin(
-        &self,
+        &mut self,
         command: InitialAdminCommand,
         completion: AdminCompletion,
     ) -> Result<Option<InitialAdminCommand>, InitError> {
         self.with_mut(|inner| inner.nvme.complete_initial_admin(command, completion))
     }
 
-    fn publish_ready(&self) -> Result<(), InitError> {
+    fn publish_ready(&mut self) -> Result<(), InitError> {
         self.publish_ready_namespace()
     }
 }
 
-impl LifecycleHardware for NvmeBlockOwner {
+impl LifecycleHardware for &NvmeBlockOwner {
     fn controller_cookie(&self) -> usize {
         NvmeBlockOwner::controller_cookie(self)
     }
@@ -493,7 +510,7 @@ impl LifecycleHardware for NvmeBlockOwner {
         self.with_ref(|inner| inner.nvme.controller_timeout_ns())
     }
 
-    fn begin_controller_disable(&self) {
+    fn begin_controller_disable(&mut self) {
         self.with_ref(|inner| inner.nvme.begin_controller_disable());
     }
 
@@ -505,7 +522,10 @@ impl LifecycleHardware for NvmeBlockOwner {
         self.with_ref(|inner| inner.nvme.controller_fatal())
     }
 
-    unsafe fn prepare_reinitialize(&self) -> Result<(), InitError> {
+    unsafe fn prepare_reinitialize(
+        &mut self,
+        _quiesced: &rdif_block::DmaQuiesced,
+    ) -> Result<(), InitError> {
         self.clear_admin_completion_after_quiesce()?;
         for queue in self.queues() {
             // SAFETY: this trait method requires the exact controller proof
@@ -528,17 +548,17 @@ impl LifecycleHardware for NvmeBlockOwner {
         self.admin_irq_source_id()
     }
 
-    fn submit_admin_command(&self, command: AdminCommand) -> Result<u16, InitError> {
+    fn submit_admin_command(&mut self, command: AdminCommand) -> Result<u16, InitError> {
         let command = self.queue_reinitialize_command(command)?;
         self.submit_lifecycle_admin(command)
     }
 
-    fn take_admin_completion(&self) -> Option<AdminCompletion> {
+    fn take_admin_completion(&mut self) -> Option<AdminCompletion> {
         NvmeBlockOwner::take_admin_completion(self)
     }
 
     fn complete_admin_command(
-        &self,
+        &mut self,
         command: AdminCommand,
         completion: AdminCompletion,
     ) -> Result<Option<AdminCommand>, InitError> {
@@ -580,11 +600,13 @@ impl InitialController for NvmeBlockDriver {
         Some(new_initial_irq_source(
             Arc::clone(&self.inner.irq),
             source_id,
+            self.inner.admin_completion_probe(),
         ))
     }
 
     fn poll_init(&mut self, input: InitInput) -> InitPoll<()> {
-        self.initialization.poll(self.inner.as_ref(), input)
+        let mut hardware = self.inner.as_ref();
+        self.initialization.poll(&mut hardware, input)
     }
 }
 
@@ -632,7 +654,7 @@ impl Interface for NvmeBlockDriver {
         }
 
         let queue = self.inner.with_mut(|inner| {
-            let queue = inner.nvme.take_io_queue(id)?;
+            let queue = inner.nvme.io_queue(id)?;
             let depth = self.queue_depth.min(queue.depth().saturating_sub(1).max(1));
             let prp_lists = alloc_prp_lists(&inner.nvme, depth).ok()?;
             Some(NvmeQueueCore::new(
@@ -720,10 +742,13 @@ impl Interface for NvmeBlockDriver {
         if !self.inner.irq.take_queue_source(source_id) {
             return None;
         }
+        let queues = IdList::from_bits(queue_bits);
+        let probes = self.inner.completion_probes(source_id, queues);
         Some(new_queue_irq_source(
             Arc::clone(&self.inner.irq),
             source_id,
-            IdList::from_bits(queue_bits),
+            queues,
+            probes,
         ))
     }
 }
@@ -738,25 +763,28 @@ impl InterruptLifecycle for NvmeBlockDriver {
         epoch: rdif_block::ControllerEpoch,
         cause: RecoveryCause,
     ) -> Result<(), InitError> {
+        let mut hardware = self.inner.as_ref();
         self.lifecycle
-            .begin_dma_quiesce(self.inner.as_ref(), epoch, cause)
+            .begin_dma_quiesce(&mut hardware, epoch, cause)
     }
 
     fn poll_dma_quiesce(&mut self, input: InitInput) -> InitPoll<rdif_block::DmaQuiesced> {
-        self.lifecycle.poll_dma_quiesce(self.inner.as_ref(), input)
+        let mut hardware = self.inner.as_ref();
+        self.lifecycle.poll_dma_quiesce(&mut hardware, input)
     }
 
     fn enter_guest_owned(&mut self, quiesced: rdif_block::DmaQuiesced) -> Result<(), InitError> {
-        self.lifecycle
-            .enter_guest_owned(self.inner.as_ref(), quiesced)
+        let mut hardware = self.inner.as_ref();
+        self.lifecycle.enter_guest_owned(&mut hardware, quiesced)
     }
 
     fn begin_reinitialize(&mut self, quiesced: rdif_block::DmaQuiesced) -> Result<(), InitError> {
-        self.lifecycle
-            .begin_reinitialize(self.inner.as_ref(), quiesced)
+        let mut hardware = self.inner.as_ref();
+        self.lifecycle.begin_reinitialize(&mut hardware, quiesced)
     }
 
     fn poll_reinitialize(&mut self, input: InitInput) -> InitPoll<rdif_block::ControllerReady> {
-        self.lifecycle.poll_reinitialize(self.inner.as_ref(), input)
+        let mut hardware = self.inner.as_ref();
+        self.lifecycle.poll_reinitialize(&mut hardware, input)
     }
 }

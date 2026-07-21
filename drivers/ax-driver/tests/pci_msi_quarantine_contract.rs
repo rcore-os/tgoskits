@@ -46,7 +46,7 @@ fn failed_provider_release_returns_the_allocation_owner() {
 }
 
 #[test]
-fn msix_activation_takes_endpoint_ownership_after_read_only_preflight() {
+fn msix_activation_is_deferred_until_the_runtime_selects_a_plan() {
     let lease = read_source("drivers/ax-driver/src/pci/msi/lease.rs");
     let activation = read_source("drivers/ax-driver/src/pci/msi/activation.rs");
     let nvme = read_source("drivers/ax-driver/src/block/nvme.rs");
@@ -79,13 +79,17 @@ fn msix_activation_takes_endpoint_ownership_after_read_only_preflight() {
     let take = nvme
         .find("probe.take_endpoint()")
         .expect("NVMe must transfer the endpoint before MSI-X activation");
-    let activate = nvme
-        .find("preflight.activate(endpoint)")
-        .expect("NVMe must activate through the ownership-bearing preflight token");
-    assert!(preflight < take && take < activate);
+    let discover = nvme
+        .find("discover_msix_activator(bar.clone(), max_queue_pairs)")
+        .expect("NVMe must advertise the hardware ceiling before taking the endpoint");
+    let register = nvme
+        .find("register_deferred_irq_block_activator")
+        .expect("NVMe must transfer the endpoint into a deferred IRQ owner");
+    assert!(preflight < discover && discover < take && take < register);
     assert!(
-        nvme.contains("probe.restore_endpoint(endpoint)"),
-        "a fully rolled-back activation must explicitly restore the endpoint owner"
+        nvme.contains("match preflight.activate(endpoint, vector_count)")
+            && nvme.contains("PlatformIrqActivationFailure::returned"),
+        "a fully rolled-back plan-selected activation must return the complete deferred owner"
     );
     assert!(
         nvme.contains("OnProbeError::claimed"),

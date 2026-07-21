@@ -1,22 +1,16 @@
-//! AHCI discovery and controller-bundle registration.
+//! AHCI discovery and rdif-block v0.13 activation registration.
 //!
-//! One registered bundle owns the HBA-wide initialization, IRQ endpoint, and
-//! DMA lifecycle. Every identified ATA port is extracted later as an isolated
-//! logical device, so the runtime never treats different disks as queues of a
-//! single logical address space.
+//! One move-only activator retains HBA initialization, shared IRQ, DMA, and all
+//! sparse physical ports until the runtime selects one immutable ownership
+//! plan. The PCI path transfers its INTx lease with that same owner.
 
 extern crate alloc;
 
-use alloc::{format, vec};
-use core::{any::Any, num::NonZeroUsize};
+use alloc::format;
 
-use ahci_host::{AhciConfig, AhciHost};
+use ahci_host::{AhciConfig, AhciControllerActivator, AhciHost};
 #[cfg(feature = "ahci")]
 use pcie::CommandRegister;
-use rdif_block::{
-    BlkError, BlockIrqSource, BundleError, ControllerBundle, ControllerInitEndpoint, DriverGeneric,
-    IrqSourceList, LifecycleEndpoint, LogicalDevice, LogicalDeviceId, LogicalDeviceIds,
-};
 use rdrive::probe::OnProbeError;
 #[cfg(feature = "ahci")]
 use rdrive::probe::pci::{FnOnProbe, ProbePci};
@@ -24,7 +18,7 @@ use rdrive::probe::pci::{FnOnProbe, ProbePci};
 use rdrive::register::ProbeFdt;
 
 #[cfg(any(feature = "ahci", feature = "ls2k1000-ahci"))]
-use super::PlatformDeviceBlock;
+use super::PlatformDeviceBlockActivation;
 #[cfg(feature = "ls2k1000-ahci")]
 use crate::binding_info_from_fdt;
 #[cfg(feature = "ahci")]
@@ -33,7 +27,6 @@ use crate::{PciIrqRequirement, binding_info_from_pci_endpoint, pci::PciIntxIrqLe
 pub const DEVICE_NAME: &str = "ahci";
 #[cfg(feature = "ls2k1000-ahci")]
 const LS2K1000_DEVICE_NAME: &str = "ls2k1000-ahci";
-const AHCI_LOGICAL_DEVICE_NAME: &str = "ahci-disk";
 const LOGICAL_IRQ_SOURCE: usize = 0;
 
 #[cfg(feature = "ahci")]
@@ -63,93 +56,6 @@ crate::model_register!(
     }],
 );
 
-struct AhciControllerBundle {
-    host: AhciHost,
-}
-
-impl AhciControllerBundle {
-    const fn new(host: AhciHost) -> Self {
-        Self { host }
-    }
-}
-
-impl DriverGeneric for AhciControllerBundle {
-    fn name(&self) -> &str {
-        self.host.name()
-    }
-
-    fn raw_any(&self) -> Option<&dyn Any> {
-        Some(self)
-    }
-
-    fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
-        Some(self)
-    }
-}
-
-impl ControllerBundle for AhciControllerBundle {
-    fn controller_init(&mut self) -> ControllerInitEndpoint<'_> {
-        self.host.controller_init()
-    }
-
-    fn lifecycle(&mut self) -> LifecycleEndpoint<'_> {
-        self.host.lifecycle()
-    }
-
-    fn logical_device_ids(&self) -> LogicalDeviceIds {
-        LogicalDeviceIds::from_bits(self.host.available_port_ids().bits())
-    }
-
-    fn take_logical_device(
-        &mut self,
-        device_id: LogicalDeviceId,
-        _max_queues: NonZeroUsize,
-    ) -> Result<LogicalDevice, BundleError> {
-        let port = device_id.get();
-        if !self.host.available_port_ids().contains(port) {
-            return Err(BundleError::DeviceUnavailable { device_id });
-        }
-
-        let logical_device_name = format!("{}-port{port}", self.host.name());
-        let mut port_device = self
-            .host
-            .take_port_device(port, AHCI_LOGICAL_DEVICE_NAME)
-            .map_err(|_| BundleError::DeviceUnavailable { device_id })?;
-        let device_info = port_device.device_info();
-        let queue_limits = port_device.queue_limits();
-        let queue = port_device
-            .create_queue()
-            .ok_or(BundleError::NoQueues { device_id })?;
-        Ok(LogicalDevice::new(
-            device_id,
-            logical_device_name,
-            device_info,
-            queue_limits,
-            vec![queue],
-        ))
-    }
-
-    fn enable_irq(&self) -> Result<(), BlkError> {
-        self.host.enable_irq()
-    }
-
-    fn disable_irq(&self) -> Result<(), BlkError> {
-        self.host.disable_irq()
-    }
-
-    fn is_irq_enabled(&self) -> bool {
-        self.host.is_irq_enabled()
-    }
-
-    fn irq_sources(&self) -> IrqSourceList {
-        self.host.irq_sources()
-    }
-
-    fn take_irq_source(&mut self, source_id: usize) -> Option<BlockIrqSource> {
-        self.host.take_irq_source(source_id)
-    }
-}
-
 #[cfg(feature = "ahci")]
 fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     let class = probe.endpoint().revision_and_class();
@@ -176,13 +82,14 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
         command
     });
 
-    let host = discover_host(DEVICE_NAME, bar.start, bar.count().max(1))?;
+    let activator = discover_activator(DEVICE_NAME, bar.start, bar.count().max(1))?;
     let endpoint = probe.take_endpoint();
     let irq_lease = PciIntxIrqLease::new(endpoint, binding);
     let registered = probe
         .into_platform_device()
-        .register_irq_bound_controller_bundle(AhciControllerBundle::new(host), irq_lease);
-    log::info!("registered AHCI controller bundle: slot={registered:?}");
+        .register_irq_bound_block_activator(activator, irq_lease)
+        .ok_or_else(|| OnProbeError::other("failed to register AHCI activation owner"))?;
+    log::info!("registered AHCI activation owner: slot={registered}");
     Ok(())
 }
 
@@ -208,19 +115,20 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         ));
     }
 
-    let host = discover_host(LS2K1000_DEVICE_NAME, address, size)?;
-    let registered =
-        platform.register_controller_bundle_with_info(AhciControllerBundle::new(host), binding);
-    log::info!("registered LS2K1000 AHCI controller bundle: slot={registered:?}");
+    let activator = discover_activator(LS2K1000_DEVICE_NAME, address, size)?;
+    let registered = platform
+        .register_block_activator_with_info(activator, binding)
+        .ok_or_else(|| OnProbeError::other("failed to register LS2K1000 AHCI activation owner"))?;
+    log::info!("registered LS2K1000 AHCI activation owner: slot={registered}");
     Ok(())
 }
 
-fn discover_host(
+fn discover_activator(
     name: &'static str,
     address: usize,
     size: usize,
-) -> Result<AhciHost, OnProbeError> {
-    AhciHost::discover(
+) -> Result<AhciControllerActivator, OnProbeError> {
+    let host = AhciHost::discover(
         name,
         address,
         size,
@@ -229,5 +137,7 @@ fn discover_host(
         axklib::mmio::op(),
         AhciConfig::legacy_irq(LOGICAL_IRQ_SOURCE),
     )
-    .map_err(|error| OnProbeError::other(format!("failed to discover {name}: {error}")))
+    .map_err(|error| OnProbeError::other(format!("failed to discover {name}: {error}")))?;
+    host.into_v13_activator()
+        .map_err(|error| OnProbeError::other(format!("failed to prepare {name}: {error}")))
 }

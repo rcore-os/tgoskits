@@ -1,5 +1,8 @@
+#[cfg(test)]
+use core::alloc::Layout;
 use core::{marker::PhantomData, ptr::NonNull};
 
+#[cfg(not(test))]
 use ax_alloc::{UsageKind, global_allocator};
 #[cfg(feature = "virtio-net")]
 use virtio_drivers::Error as VirtIoError;
@@ -48,20 +51,47 @@ pub const fn has_static_mmio_drivers() -> bool {
 
 unsafe impl VirtIoHal for VirtIoHalImpl {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (VirtIoPhysAddr, NonNull<u8>) {
-        let Ok(vaddr) = global_allocator().alloc_pages(pages, 0x1000, UsageKind::Dma) else {
-            return (0, NonNull::dangling());
-        };
-        unsafe {
-            core::ptr::write_bytes(vaddr as *mut u8, 0, pages * 0x1000);
+        #[cfg(test)]
+        {
+            let layout = Layout::from_size_align(pages * virtio_drivers::PAGE_SIZE, 0x1000)
+                .expect("VirtIO test DMA layout must be valid");
+            let pointer = unsafe { alloc::alloc::alloc_zeroed(layout) };
+            let Some(pointer) = NonNull::new(pointer) else {
+                return (0, NonNull::dangling());
+            };
+            let paddr = axklib::mem::virt_to_phys(pointer.as_ptr().expose_provenance().into())
+                .as_usize() as VirtIoPhysAddr;
+            return (paddr, pointer);
         }
-        let paddr = axklib::mem::virt_to_phys(vaddr.into()).as_usize() as VirtIoPhysAddr;
-        let ptr = NonNull::new(vaddr as _).expect("DMA allocator returned null");
-        (paddr, ptr)
+
+        #[cfg(not(test))]
+        {
+            let Ok(vaddr) = global_allocator().alloc_pages(pages, 0x1000, UsageKind::Dma) else {
+                return (0, NonNull::dangling());
+            };
+            unsafe {
+                core::ptr::write_bytes(vaddr as *mut u8, 0, pages * 0x1000);
+            }
+            let paddr = axklib::mem::virt_to_phys(vaddr.into()).as_usize() as VirtIoPhysAddr;
+            let ptr = NonNull::new(vaddr as _).expect("DMA allocator returned null");
+            (paddr, ptr)
+        }
     }
 
     unsafe fn dma_dealloc(_paddr: VirtIoPhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
-        global_allocator().dealloc_pages(vaddr.as_ptr() as usize, pages, UsageKind::Dma);
-        0
+        #[cfg(test)]
+        {
+            let layout = Layout::from_size_align(pages * virtio_drivers::PAGE_SIZE, 0x1000)
+                .expect("VirtIO test DMA layout must be valid");
+            unsafe { alloc::alloc::dealloc(vaddr.as_ptr(), layout) };
+            return 0;
+        }
+
+        #[cfg(not(test))]
+        {
+            global_allocator().dealloc_pages(vaddr.as_ptr() as usize, pages, UsageKind::Dma);
+            0
+        }
     }
 
     unsafe fn mmio_phys_to_virt(paddr: VirtIoPhysAddr, size: usize) -> NonNull<u8> {

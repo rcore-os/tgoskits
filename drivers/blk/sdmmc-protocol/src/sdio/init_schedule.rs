@@ -1,6 +1,6 @@
 //! Runtime-neutral activation contract for SD/MMC initialization.
 
-use crate::Error;
+use crate::{Error, sdio::HostIrqSnapshot};
 
 /// IRQ event acknowledged before one initialization state-machine pass.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,6 +18,9 @@ pub struct InitInput {
     pub now_ns: u64,
     /// IRQ event acknowledged since the previous invocation.
     pub irq: InitIrqEvent,
+    /// Complete acknowledged controller facts for an evidence-driven IRQ
+    /// activation. Legacy callers may leave this empty while migrating.
+    pub snapshot: Option<HostIrqSnapshot>,
 }
 
 impl InitInput {
@@ -26,6 +29,7 @@ impl InitInput {
         Self {
             now_ns,
             irq: InitIrqEvent::None,
+            snapshot: None,
         }
     }
 
@@ -34,6 +38,17 @@ impl InitInput {
         Self {
             now_ns,
             irq: InitIrqEvent::Controller,
+            snapshot: None,
+        }
+    }
+
+    /// Construct an initialization activation from one claimed ledger
+    /// snapshot.
+    pub const fn with_controller_snapshot(now_ns: u64, snapshot: HostIrqSnapshot) -> Self {
+        Self {
+            now_ns,
+            irq: InitIrqEvent::Controller,
+            snapshot: Some(snapshot),
         }
     }
 

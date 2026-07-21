@@ -76,20 +76,20 @@ fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()>
                 let (parent, name) = match namespace.parent_for_create(path.as_ref()) {
                     Ok(parent) => parent,
                     Err(error) => {
-                        warn!("pseudofs mount failed while resolving parent: path={path} error={error:?}");
+                        warn!(
+                            "pseudofs mount failed while resolving parent: path={path} \
+                             error={error:?}"
+                        );
                         return Err(error);
                     }
                 };
-                match parent.create(
-                    name,
-                    axfs_ng_vfs::NodeType::Directory,
-                    DIR_PERMISSION,
-                    0,
-                    0,
-                ) {
+                match parent.create(name, axfs_ng_vfs::NodeType::Directory, DIR_PERMISSION, 0, 0) {
                     Ok(location) => location,
                     Err(error) => {
-                        warn!("pseudofs mount failed while creating target: path={path} error={error:?}");
+                        warn!(
+                            "pseudofs mount failed while creating target: path={path} \
+                             error={error:?}"
+                        );
                         return Err(error);
                     }
                 }

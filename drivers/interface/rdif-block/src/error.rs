@@ -18,6 +18,11 @@ pub enum BlkError {
     Offline,
     #[error("block request backing was quarantined")]
     Quarantined,
+    /// A hardware-visible identifier generation can no longer advance without
+    /// a queue quiesce and epoch change. The rejected request remains wholly
+    /// software-owned; the runtime must recover/reinitialize before retrying.
+    #[error("block queue identifier generation requires a new hardware epoch")]
+    QueueEpochExhausted,
     #[error("DMA-quiescence proof does not belong to this queue's controller epoch")]
     InvalidDmaProof,
     #[error("insufficient memory")]
@@ -105,6 +110,8 @@ pub enum QueueContractError {
 pub enum IrqControlError {
     #[error("stale IRQ source generation: expected {expected}, got {actual}")]
     StaleGeneration { expected: u64, actual: u64 },
+    #[error("stale IRQ source mask epoch: expected {expected}, got {actual}")]
+    StaleMaskEpoch { expected: u64, actual: u64 },
     #[error("IRQ source bitmap {bitmap:#x} is not owned by the masked capture")]
     SourceNotMasked { bitmap: u64 },
     #[error("IRQ source owner is offline")]
@@ -119,7 +126,9 @@ impl From<BlkError> for io::ErrorKind {
             BlkError::NotSupported => io::ErrorKind::Unsupported,
             BlkError::Retry | BlkError::Busy | BlkError::Cancelled => io::ErrorKind::Interrupted,
             BlkError::TimedOut => io::ErrorKind::TimedOut,
-            BlkError::Offline | BlkError::Quarantined => io::ErrorKind::NotAvailable,
+            BlkError::Offline | BlkError::Quarantined | BlkError::QueueEpochExhausted => {
+                io::ErrorKind::NotAvailable
+            }
             BlkError::InvalidDmaProof => io::ErrorKind::InvalidParameter {
                 name: "DMA-quiescence proof",
             },
