@@ -72,6 +72,23 @@ fn preserves_arch_specific_linker_contracts() {
 }
 
 #[test]
+fn riscv_boot_stack_is_aligned_for_the_cpu_identity_record() {
+    let script = render_linker_script(LinkerArch::Riscv64, CONFIG);
+    let stack_prefix = script
+        .split_once("        __cpu0_stack = .;")
+        .expect("RISC-V linker script must define the primary boot stack")
+        .0
+        .rsplit_once("        /* CPU stacks */")
+        .expect("RISC-V boot stack must remain in the common BSS layout")
+        .1;
+
+    assert!(
+        stack_prefix.contains(". = ALIGN(PAGE_SIZE);"),
+        "the stack-resident RISC-V CpuBootInfoV1 requires an aligned stack top"
+    );
+}
+
+#[test]
 fn omits_tls_program_header_and_sections_when_kernel_tls_is_disabled() {
     for arch in [
         LinkerArch::Aarch64,

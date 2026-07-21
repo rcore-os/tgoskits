@@ -159,7 +159,7 @@ const RISCV64_REPLACEMENTS: &[(&str, &str)] = &[
     ("${pre_sbss_align}", ""),
     ("${sbss_extra}", "*(.sbss.*)"),
     ("${bss_output}", ""),
-    ("${cpu_stack_align}", ""),
+    ("${cpu_stack_align}", ". = ALIGN(PAGE_SIZE);"),
     ("${discard_options}", ""),
     ("${discard_dynamic_extra}", ""),
 ];
