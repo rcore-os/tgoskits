@@ -46,3 +46,5 @@ ax-runtime
 ax-api
 rockchip-jpeg
 rockchip-npu
+rockchip-rga
+dwmmc-host

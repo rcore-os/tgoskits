@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -122,6 +123,22 @@ static void expect_valid_wait4(void)
     }
 }
 
+static void expect_int_min_selector(void)
+{
+    int status = 0x12345678;
+    errno = 0;
+    pid_t ret = wait4_raw(INT_MIN, &status, WNOHANG, NULL);
+    if (ret == -1 && errno == ESRCH && status == 0x12345678) {
+        note_pass("wait4 INT_MIN selector returns ESRCH without changing status");
+    } else {
+        char detail[192];
+        snprintf(detail, sizeof(detail),
+                 "ret=%ld errno=%d (%s) status=0x%x, expected -1/ESRCH",
+                 (long)ret, errno, strerror(errno), status);
+        note_fail("wait4 INT_MIN selector", detail);
+    }
+}
+
 int main(void)
 {
     printf("=== bug-wait4-invalid-options ===\n");
@@ -129,6 +146,7 @@ int main(void)
     expect_invalid_option("wait4 rejects waitid-only WEXITED", WEXITED);
     expect_invalid_option("wait4 rejects waitid-only WNOWAIT", WNOWAIT);
     expect_invalid_option("wait4 rejects unknown option bit 0x10", 0x10);
+    expect_int_min_selector();
     expect_valid_wait4();
 
     printf("=== Results: %d passed, %d failed ===\n", passed, failed);

@@ -268,6 +268,8 @@ mod tests {
             "--qemu-config",
             "qemu.toml",
             "--coverage",
+            "--out-fmt",
+            "html",
         ])
         .unwrap();
 
@@ -279,6 +281,7 @@ mod tests {
                     assert_eq!(args.arch.as_deref(), Some("x86_64"));
                     assert_eq!(args.qemu_config, Some(PathBuf::from("qemu.toml")));
                     assert!(args.coverage);
+                    assert_eq!(args.out_fmt, Some(ktest::KtestCoverageOutFmt::Html));
                 }
                 _ => panic!("expected ktest qemu command"),
             },

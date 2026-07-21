@@ -793,7 +793,7 @@ pub fn sys_copy_file_range(
     }
 
     if len > isize::MAX as usize {
-        return Err(AxError::InvalidInput);
+        return Err(AxError::from(LinuxError::EOVERFLOW));
     }
 
     let remap = |e| match e {

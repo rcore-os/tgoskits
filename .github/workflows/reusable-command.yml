@@ -72,6 +72,16 @@ on:
         required: false
         type: string
         default: tg-xtask-bin
+      upload_coverage_artifacts:
+        description: Upload coverage report artifacts through artifact.ci.
+        required: false
+        type: boolean
+        default: false
+      coverage_artifact_name:
+        description: Artifact name used for coverage report artifacts.
+        required: false
+        type: string
+        default: ""
     secrets:
       CLAW_API_KEY:
         required: false
@@ -222,6 +232,54 @@ jobs:
           sed 's/^/+ /' "${command_file}"
           bash -e -o pipefail "${command_file}"
 
+      - name: Upload coverage artifacts
+        id: coverage_artifact
+        if: always() && inputs.upload_coverage_artifacts
+        # Pinned from mmkal/artifact.ci main on 2026-07-16.
+        # upload index.html only, uploading every html will result in a very long CI process
+        uses: mmkal/artifact.ci/upload@b8aba3046b03968e80bb65c1f5550817328a7bfa
+        with:
+          name: ${{ inputs.coverage_artifact_name != '' && inputs.coverage_artifact_name || format('coverage-{0}', github.job) }}
+          path: |
+            coverage/*.profdata
+            coverage/*-html/index.html
+            coverage/*-html/style.css
+            coverage/*-html/control.js
+          if-no-files-found: warn
+          retention-days: 7
+          artifactci-visibility: public
+          artifactci-mode: eager
+
+      - name: Summarize coverage links
+        if: always() && inputs.upload_coverage_artifacts
+        shell: bash
+        env:
+          ARTIFACT_URL: ${{ steps.coverage_artifact.outputs.artifact-url }}
+          ARTIFACTCI_RUN_URL: ${{ steps.coverage_artifact.outputs.artifactci-run-url }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Coverage reports"
+            echo ""
+            echo "- GitHub artifact: ${ARTIFACT_URL:-not uploaded}"
+            echo "- artifact.ci: ${ARTIFACTCI_RUN_URL:-not uploaded}"
+
+            if [ -d coverage ]; then
+              echo ""
+              echo "### HTML report entries"
+              find coverage -mindepth 2 -maxdepth 2 -type f -name index.html | sort | while read -r report; do
+                report_path="${report#coverage/}"
+                report_name="${report_path%/index.html}"
+                if [ -n "${ARTIFACTCI_RUN_URL:-}" ]; then
+                  echo "- ${report_name}: ${ARTIFACTCI_RUN_URL}/${report_path}"
+                else
+                  echo "- ${report_name}: ${report_path}"
+                fi
+              done
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   run_container:
     if: >-
       ${{
@@ -343,3 +401,50 @@ jobs:
           path: ${{ runner.temp }}/tg-xtask-bin.tar
           if-no-files-found: error
           retention-days: 1
+
+      - name: Upload coverage artifacts
+        id: coverage_artifact
+        if: always() && inputs.upload_coverage_artifacts
+        # Pinned from mmkal/artifact.ci main on 2026-07-16.
+        uses: mmkal/artifact.ci/upload@b8aba3046b03968e80bb65c1f5550817328a7bfa
+        with:
+          name: ${{ inputs.coverage_artifact_name != '' && inputs.coverage_artifact_name || format('coverage-{0}', github.job) }}
+          path: |
+            coverage/*.profdata
+            coverage/*-html/index.html
+            coverage/*-html/style.css
+            coverage/*-html/control.js
+          if-no-files-found: warn
+          retention-days: 7
+          artifactci-visibility: public
+          artifactci-mode: eager
+
+      - name: Summarize coverage links
+        if: always() && inputs.upload_coverage_artifacts
+        shell: bash
+        env:
+          ARTIFACT_URL: ${{ steps.coverage_artifact.outputs.artifact-url }}
+          ARTIFACTCI_RUN_URL: ${{ steps.coverage_artifact.outputs.artifactci-run-url }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Coverage reports"
+            echo ""
+            echo "- GitHub artifact: ${ARTIFACT_URL:-not uploaded}"
+            echo "- artifact.ci: ${ARTIFACTCI_RUN_URL:-not uploaded}"
+
+            if [ -d coverage ]; then
+              echo ""
+              echo "### HTML report entries"
+              find coverage -mindepth 2 -maxdepth 2 -type f -name index.html | sort | while read -r report; do
+                report_path="${report#coverage/}"
+                report_name="${report_path%/index.html}"
+                if [ -n "${ARTIFACTCI_RUN_URL:-}" ]; then
+                  echo "- ${report_name}: ${ARTIFACTCI_RUN_URL}/${report_path}"
+                else
+                  echo "- ${report_name}: ${report_path}"
+                fi
+              done
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

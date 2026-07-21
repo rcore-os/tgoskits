@@ -21,6 +21,7 @@ use crate::{
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
+
     tracepoint_init().expect("Failed to initialize tracepoints");
 
     crate::ebpf::init_ebpf();
@@ -75,7 +76,14 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let proc = ProcessData::new(
         proc,
-        ProcessImage::new(path.to_string(), Arc::new(args.to_vec()), auxv),
+        ProcessImage::new(
+            path.to_string(),
+            Arc::new(args.to_vec()),
+            Arc::new(envs.to_vec()),
+            auxv,
+            "/".to_string(),
+            "/".to_string(),
+        ),
         Arc::new(Mutex::new(uspace)),
         Arc::default(),
         None,
@@ -83,13 +91,11 @@ pub fn init(args: &[String], envs: &[String]) {
         false,
     );
 
-    {
-        let mut scope = proc.scope.write();
-        crate::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
-            .expect("Failed to add stdio");
-    }
+    let mut scope = scope_local::Scope::new();
+    crate::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
+        .expect("Failed to add stdio");
 
-    let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default());
+    let thr = Thread::new(pid, proc, None, starry_signal::SignalSet::default(), scope);
     *task.task_ext_mut() = Some(AxTaskExt::from_impl(thr));
 
     let task = {

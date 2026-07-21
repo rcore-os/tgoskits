@@ -7720,6 +7720,7 @@ dependencies = [
  "rdrive",
  "ringbuf",
  "riscv",
+ "rockchip-rga",
  "scope-local",
  "sg2002-tpu",
  "sg200x-bsp",
