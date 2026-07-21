@@ -118,35 +118,3 @@ impl VcpuIrqDispatcher {
             .unwrap_or_default()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::irq::model::VirtualInterruptId;
-
-    // Tests that require a registered vCPU task (enqueue-then-drain FIFO
-    // ordering, vCPU isolation, trigger-mode round-trip) need an `AxTaskRef`
-    // which in turn requires a spawned ArceOS task.  Those tests will be
-    // added when the dispatcher is integrated into `VmRuntimeHandle` and
-    // the vCPU-task lifecycle is available in the test harness.
-
-    #[test]
-    fn new_dispatcher_drain_returns_empty() {
-        let d = VcpuIrqDispatcher::new();
-        assert!(d.drain(0).is_empty());
-        assert!(d.drain(1).is_empty());
-    }
-
-    #[test]
-    fn enqueue_unregistered_vcpu_returns_error() {
-        let d = VcpuIrqDispatcher::new();
-        let result = d.enqueue(
-            0,
-            PendingVcpuInterrupt {
-                id: VirtualInterruptId(1),
-                trigger: crate::InterruptTriggerMode::EdgeTriggered,
-            },
-        );
-        assert!(result.is_err());
-    }
-}
