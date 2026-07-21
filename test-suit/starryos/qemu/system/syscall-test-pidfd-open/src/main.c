@@ -148,25 +148,48 @@ static void test_pidfd_open_zombie(void)
 {
     printf("--- pidfd_open zombie ---\n");
 
+    /*
+     * Deterministically pin the "exited-but-unreaped zombie" state before
+     * pidfd_open(). kill(child, 0) == 0 is also true for a *live* child, so it
+     * cannot prove the child has actually exited; under SMP the child may still
+     * be running (open succeeds by luck) or already past the window, racing
+     * pidfd_open() to ESRCH. Instead, use a pipe whose write end is held only by
+     * the child: the kernel closes the child's fds at _exit(), so the parent's
+     * read() returns 0 (EOF) exactly when the child has fully exited. The parent
+     * has not waited yet, so the child is now a zombie.
+     */
+    int fds[2];
+    int pipe_rc = pipe(fds);
+    CHECK(pipe_rc == 0, "pipe 成功");
+    if (pipe_rc != 0) {
+        return;
+    }
+
     pid_t child = fork();
     CHECK(child >= 0, "fork 成功");
     if (child < 0) {
+        close(fds[0]);
+        close(fds[1]);
         return;
     }
 
     if (child == 0) {
+        close(fds[0]);
+        /* Keep fds[1] open; the kernel closes it at _exit -> parent sees EOF. */
         _exit(0);
     }
 
-    /* waitpid(WNOHANG) reaps the child; poll with kill(0) until it is a zombie. */
-    for (int i = 0; i < 1000; i++) {
-        if (kill(child, 0) == 0) {
-            break;
-        }
-        usleep(1000);
-    }
-    CHECK(kill(child, 0) == 0, "子进程已退出且尚未 reap");
+    close(fds[1]);
+    /* Block until the child has fully exited (read returns 0 = EOF). */
+    char b;
+    ssize_t r;
+    do {
+        r = read(fds[0], &b, 1);
+    } while (r == -1 && errno == EINTR);
+    CHECK(r == 0, "子进程已退出 (pipe EOF)");
+    close(fds[0]);
 
+    /* The child is now a zombie: exited but not yet reaped. */
     int pfd = x_pidfd_open(child, 0);
     CHECK(pfd >= 0, "reap 前 pidfd_open(zombie child) 成功");
     if (pfd >= 0) {
