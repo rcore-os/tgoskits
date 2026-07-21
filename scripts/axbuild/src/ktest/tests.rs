@@ -90,7 +90,7 @@ fn axvisor_qemu_default_build_config_uses_board_defconfig() {
 }
 
 #[test]
-fn starry_kernel_ktest_axstd_dev_dependency_enables_std_entry_compat() {
+fn starry_kernel_ktest_axstd_dev_dependency_keeps_freestanding_entry_contract() {
     let manifest_path = crate::context::workspace_root_path()
         .unwrap()
         .join("os/StarryOS/kernel/Cargo.toml");
@@ -99,12 +99,17 @@ fn starry_kernel_ktest_axstd_dev_dependency_enables_std_entry_compat() {
     let axstd = manifest["dev-dependencies"]["ax-std"].as_table().unwrap();
     let features = axstd["features"].as_array().unwrap();
 
+    assert_eq!(axstd["default-features"].as_bool(), Some(false));
     assert!(
         features
             .iter()
-            .any(|feature| feature.as_str() == Some("std-compat")),
-        "starry-kernel ktest uses the Rust std main(argc, argv) ABI and must enable \
-         ax-std/std-compat"
+            .any(|feature| feature.as_str() == Some("alloc"))
+    );
+    assert!(
+        features
+            .iter()
+            .all(|feature| !matches!(feature.as_str(), Some("std-compat" | "tls"))),
+        "Starry ktest targets share the bare no_std/no-TLS kernel entry contract"
     );
 }
 
@@ -161,6 +166,42 @@ fn prepare_ktest_cargo_replaces_bin_selector_with_test_target() {
             .env
             .get("CARGO_ENCODED_RUSTFLAGS")
             .is_some_and(|flags| flags.contains("cfg(axtest)"))
+    );
+}
+
+#[test]
+fn prepare_ktest_cargo_preserves_inline_target_rustflags() {
+    let mut cargo = Cargo {
+        target: "x86_64-unknown-none".into(),
+        package: "demo".into(),
+        args: vec![
+            "--config".into(),
+            concat!(
+                "target.x86_64-unknown-none.rustflags=[",
+                "\"-Crelocation-model=pic\", ",
+                "\"-Clink-args=-Tlinker.x\"",
+                "]"
+            )
+            .into(),
+        ],
+        ..Cargo::default()
+    };
+    let target = KtestTarget {
+        name: "kernel".into(),
+        kind: KtestTargetKind::Test,
+        harness: false,
+        required_features: Vec::new(),
+    };
+
+    prepare_ktest_cargo(&mut cargo, &target, true);
+
+    let args = cargo.args.join("\n");
+    assert!(args.contains("-Clink-args=-Tlinker.x"));
+    assert!(args.contains("cfg(axtest)"));
+    assert!(args.contains("-Cinstrument-coverage"));
+    assert!(
+        !cargo.env.contains_key("CARGO_ENCODED_RUSTFLAGS"),
+        "encoded rustflags would shadow the inline target linker contract"
     );
 }
 

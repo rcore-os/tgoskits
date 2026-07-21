@@ -69,6 +69,24 @@ fn starry_manifest_disables_std_compat_and_default_tls() {
 }
 
 #[test]
+fn starry_kernel_test_manifest_forwards_the_smp_capability() {
+    let manifest =
+        fs::read_to_string(find_workspace_root().join("os/StarryOS/kernel/Cargo.toml")).unwrap();
+    let manifest: toml::Value = toml::from_str(&manifest).unwrap();
+    let smp_features = manifest
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .and_then(|features| features.get("smp"))
+        .and_then(toml::Value::as_array)
+        .expect("starry-kernel must expose the SMP capability")
+        .iter()
+        .map(|feature| feature.as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(smp_features, ["ax-std/smp"]);
+}
+
+#[test]
 fn resolve_build_info_path_ignores_source_tree_defaults() {
     let root = tempdir().unwrap();
     let starry_dir = root.path().join("os/StarryOS/starryos");
