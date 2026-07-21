@@ -68,7 +68,7 @@ serial = [
     "dep:some-serial",
 ]
 rknpu = ["rockchip-pm", "rockchip-soc", "dep:rockchip-npu"]
-rga = ["dep:rockchip-rga"]
+rga = ["rockchip-pm", "rockchip-soc", "dep:rockchip-rga"]
 jpeg = ["rockchip-pm", "rockchip-soc", "dep:rockchip-jpeg"]
 jpu-selftest = ["jpeg"]
 rockchip-sdhci = [

@@ -1,8 +1,12 @@
 // Shared contiguous dma-buf primitive + resolver used by every accelerator that
-// exchanges buffers (JPU / NPU; RGA when its node lands).
-#[cfg(any(feature = "jpeg", feature = "rknpu"))]
+// exchanges buffers (JPU / NPU / RGA).
+#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 pub mod dmabuf;
 pub mod epoll;
+#[cfg(axtest)]
+mod epoll_axtest;
+mod epoll_file;
+mod epoll_topology;
 pub mod event;
 mod fs;
 pub mod inotify;
@@ -38,6 +42,8 @@ use linux_raw_sys::general::{
 };
 use starry_process::Pid;
 
+#[cfg(axtest)]
+pub(crate) use self::epoll_axtest::concurrent_reverse_add_is_serialized_for_test;
 #[cfg(axtest)]
 pub(crate) use self::pipe::{
     peer_close_with_multiple_readers_is_visible_for_test, resize_rejects_oversized_pipe_for_test,
@@ -329,8 +335,9 @@ pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(P
         if task.state() == TaskState::Exited {
             continue;
         }
-        let pid = task.as_thread().proc_data.proc.pid();
-        let scope = task.as_thread().proc_data.scope.read();
+        let thread = task.as_thread();
+        let pid = thread.proc_data.proc.pid();
+        let scope = thread.scope.read();
         let scoped_fd_table = FD_TABLE.scope(&scope);
         let table = scoped_fd_table.read();
         for id in table.ids() {
@@ -382,11 +389,12 @@ pub fn release_locks_on_close(fd: FileDescriptor) {
     }
 }
 
-/// Close all open file descriptors for the current process.
+/// Close all descriptors in the current thread's fd table when it is the last
+/// table sharer.
 ///
-/// This must be called when a process exits, so that pipe write ends and other
-/// resources are properly released. Without this, parent processes blocking on
-/// pipe reads will never receive EOF.
+/// This must be called whenever a thread exits because `unshare(CLONE_FILES)`
+/// can give one thread a private table. Shared tables are left intact until the
+/// final thread or process using them exits.
 pub fn close_all_fds() {
     // Acquire the write lock before checking strong_count. The clone(CLONE_FILES)
     // path in syscall/task/clone.rs also acquires FD_TABLE.read() before cloning

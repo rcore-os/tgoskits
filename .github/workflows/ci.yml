@@ -311,7 +311,6 @@ jobs:
             cache_key: ""
             container_image: base
             fetch_depth: full
-            upload_xtask_bin_artifact: true
           - name: Run spin-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
@@ -358,11 +357,31 @@ jobs:
       upload_xtask_bin_artifact: ${{ matrix.upload_xtask_bin_artifact || false }}
       xtask_bin_artifact_name: tg-xtask-bin
 
+  build_xtask:
+    # Dedicated job that builds and uploads the tg-xtask binary artifact.
+    # Decoupling this from static_checks ensures container test jobs can
+    # always download the prebuilt binary, even if a sibling lint job is
+    # cancelled by fail-fast or skipped on a re-run.
+    name: Build tg-xtask binary
+    needs: detect_changes
+    if: needs.detect_changes.outputs.ci_checks == 'true'
+    uses: ./.github/workflows/reusable-command.yml
+    with:
+      runs_on: '["ubuntu-latest"]'
+      use_container: true
+      command: cargo build -p tg-xtask
+      cache_key: ""
+      container_image: ${{ format('{0}:latest', needs.detect_changes.outputs.base_container_image) }}
+      fetch_depth: "1"
+      upload_xtask_bin_artifact: true
+      xtask_bin_artifact_name: tg-xtask-bin
+
   test_checks:
     name: ${{ matrix.name }}
     if: needs.detect_changes.outputs.ci_checks == 'true'
     needs:
       - detect_changes
+      - build_xtask
       - static_checks
     strategy:
       fail-fast: true
@@ -721,6 +740,48 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
+          - name: Coverage test starry
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: |
+              rustup component add llvm-tools
+              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch aarch64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch riscv64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch loongarch64 --coverage --out-fmt html
+            cache_key: ""
+            container_image: base
+            limit_to_owner: ""
+            main_pr_only: false
+            coverage_artifact_name: coverage-starry
+            upload_coverage_artifacts: true
+          - name: Coverage test axvisor
+            use_container: false
+            runs_on: '["self-hosted","linux","kvm"]'
+            self_hosted_owner: rcore-os
+            require_kvm: true
+            command: |
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+              rustup component add llvm-tools
+              cargo xtask ktest qemu -p axvisor --test axtest --arch x86_64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p axvisor --test axtest --arch riscv64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p axvisor --test axtest --arch loongarch64 --coverage --out-fmt html
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: ""
+            main_pr_only: false
+            coverage_artifact_name: coverage-axvisor
+            upload_coverage_artifacts: true
+          - name: Test starry self-hosted board jl-lsgd2k10
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask starry test board --board jl-lsgd2k10
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
@@ -773,6 +834,8 @@ jobs:
           )
         }}
       xtask_bin_artifact_name: tg-xtask-bin
+      upload_coverage_artifacts: ${{ matrix.upload_coverage_artifacts || false }}
+      coverage_artifact_name: ${{ matrix.coverage_artifact_name || '' }}
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 

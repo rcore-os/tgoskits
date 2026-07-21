@@ -81,6 +81,24 @@ impl NsProxy {
         }
     }
 
+    /// Clone namespace references for a transactional `unshare(2)` update.
+    ///
+    /// Unlike [`Self::clone_all`], this preserves a PID namespace already
+    /// staged for the next child. Preparing an unrelated unshare operation
+    /// must not discard pending `unshare(CLONE_NEWPID)` or `setns` state.
+    pub fn clone_for_unshare(&self) -> Self {
+        Self {
+            uts_ns: self.uts_ns.clone(),
+            ipc_ns: self.ipc_ns.clone(),
+            mnt_ns: self.mnt_ns.clone(),
+            pid_ns: self.pid_ns.clone(),
+            child_pid_ns: self.child_pid_ns.clone(),
+            net_ns: self.net_ns.clone(),
+            user_ns: self.user_ns.clone(),
+            cgroup_ns: self.cgroup_ns.clone(),
+        }
+    }
+
     pub fn unshare_uts(&mut self) {
         let new_inner = self.uts_ns.lock().clone_ns();
         self.uts_ns = Arc::new(SpinNoIrq::new(new_inner));
@@ -166,5 +184,18 @@ impl NsProxy {
     /// Replace the cgroup namespace with an existing one (used by `setns(2)`).
     pub fn set_ns_cgroup(&mut self, ns: Arc<SpinNoIrq<CgroupNamespace>>) {
         self.cgroup_ns = ns;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clone_for_unshare_preserves_cgroup_namespace() {
+        let nsproxy = NsProxy::new_root();
+        let cloned = nsproxy.clone_for_unshare();
+
+        assert!(Arc::ptr_eq(&nsproxy.cgroup_ns, &cloned.cgroup_ns));
     }
 }

@@ -1,4 +1,3 @@
-// Migrated from the former nix-sandbox-debug suite.
 #define _GNU_SOURCE
 #include <errno.h>
 #include <limits.h>

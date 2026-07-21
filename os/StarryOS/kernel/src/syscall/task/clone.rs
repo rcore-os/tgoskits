@@ -7,6 +7,7 @@ use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_task::{AxTaskExt, current, spawn_task};
 use bitflags::bitflags;
 use linux_raw_sys::general::*;
+use scope_local::Scope;
 use starry_process::Pid;
 use starry_signal::Signo;
 use starry_vm::VmMutPtr;
@@ -122,8 +123,13 @@ pub struct CloneArgs {
 
 impl CloneArgs {
     fn validate(&self) -> AxResult<()> {
-        let Self { flags, .. } = self;
+        let Self {
+            flags, exit_signal, ..
+        } = self;
 
+        if *exit_signal > 0 && flags.contains(CloneFlags::THREAD) {
+            return Err(AxError::InvalidInput);
+        }
         if flags.contains(CloneFlags::THREAD)
             && !flags.contains(CloneFlags::VM | CloneFlags::SIGHAND)
         {
@@ -324,34 +330,32 @@ impl CloneArgs {
 
             *proc_data.nsproxy.lock() = new_nsproxy;
 
-            {
-                let mut scope = proc_data.scope.write();
-                if flags.contains(CloneFlags::FILES) {
-                    // Synchronize with close_all_fds: holding a read lock
-                    // ensures close_all_fds either observes our strong_count
-                    // increment or blocks on write lock until we release.
-                    let _guard = FD_TABLE.read();
-                    FD_TABLE.scope_mut(&mut scope).clone_from(&FD_TABLE);
-                } else {
-                    FD_TABLE
-                        .scope_mut(&mut scope)
-                        .write()
-                        .clone_from(&FD_TABLE.read());
-                }
-
-                if flags.contains(CloneFlags::FS) {
-                    FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
-                } else {
-                    let mut fs_context = FS_CONTEXT.lock().clone();
-                    if flags.contains(CloneFlags::NEWNS) {
-                        fs_context.unshare_mount_namespace()?;
-                    }
-                    *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
-                }
-            }
-
             proc_data
         };
+
+        let mut scope = Scope::new();
+        if flags.contains(CloneFlags::FILES) {
+            // Synchronize with close_all_fds: holding a read lock ensures
+            // close_all_fds either observes our strong-count increment or
+            // blocks until the new thread has installed the shared Arc.
+            let _guard = FD_TABLE.read();
+            FD_TABLE.scope_mut(&mut scope).clone_from(&FD_TABLE);
+        } else {
+            FD_TABLE
+                .scope_mut(&mut scope)
+                .write()
+                .clone_from(&FD_TABLE.read());
+        }
+
+        if flags.contains(CloneFlags::FS) {
+            FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
+        } else {
+            let mut fs_context = FS_CONTEXT.lock().clone();
+            if flags.contains(CloneFlags::NEWNS) {
+                fs_context.unshare_mount_namespace()?;
+            }
+            *FS_CONTEXT.scope_mut(&mut scope).lock() = fs_context;
+        }
 
         new_proc_data.proc.add_thread(tid);
 
@@ -361,6 +365,7 @@ impl CloneArgs {
             new_proc_data.clone(),
             parent_cred,
             curr_thread.signal.blocked(),
+            scope,
         );
         if curr_thread.no_new_privs() {
             thr.set_no_new_privs();
@@ -529,7 +534,9 @@ pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use linux_raw_sys::general::SIGCHLD;
+
+    use super::{CloneArgs, CloneFlags};
 
     #[test]
     fn accepts_thread_and_parent_when_thread_dependencies_are_present() {
@@ -542,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_legacy_parent_with_exit_signal() {
+    fn clone_parent_allows_nonzero_exit_signal() {
         let args = CloneArgs {
             flags: CloneFlags::PARENT,
             exit_signal: SIGCHLD as u64,
@@ -550,5 +557,16 @@ mod tests {
         };
 
         assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn clone_thread_rejects_nonzero_exit_signal() {
+        let args = CloneArgs {
+            flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND,
+            exit_signal: SIGCHLD as u64,
+            ..Default::default()
+        };
+
+        assert!(args.validate().is_err());
     }
 }

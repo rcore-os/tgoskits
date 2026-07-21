@@ -45,9 +45,18 @@ pub struct RegisterBlock {
     pub cmdarg: u32,
     /// Command Register
     pub cmd: Cmd,
-    /// Response Registers (4 × 32 bits)
+    /// Response Register 0
     #[access(ReadOnly)]
-    pub resp: [u32; 4],
+    pub resp0: u32,
+    /// Response Register 1
+    #[access(ReadOnly)]
+    pub resp1: u32,
+    /// Response Register 2
+    #[access(ReadOnly)]
+    pub resp2: u32,
+    /// Response Register 3
+    #[access(ReadOnly)]
+    pub resp3: u32,
     /// Masked Interrupt Status Register
     #[access(ReadOnly)]
     pub mintsts: u32,
@@ -265,4 +274,23 @@ pub struct UHS {
     pub ddr: u16,
     /// Per card: 0 = 3.3 V buffers, 1 = 1.8 V buffers.
     pub volt: u16,
+}
+
+#[cfg(test)]
+mod tests {
+    use core::mem::{offset_of, size_of};
+
+    use super::*;
+
+    #[test]
+    fn response_registers_are_individual_32_bit_mmio_words() {
+        assert_eq!(offset_of!(RegisterBlock, resp0), 0x30);
+        assert_eq!(offset_of!(RegisterBlock, resp1), 0x34);
+        assert_eq!(offset_of!(RegisterBlock, resp2), 0x38);
+        assert_eq!(offset_of!(RegisterBlock, resp3), 0x3c);
+        assert_eq!(
+            offset_of!(RegisterBlock, mintsts) - offset_of!(RegisterBlock, resp3),
+            size_of::<u32>()
+        );
+    }
 }

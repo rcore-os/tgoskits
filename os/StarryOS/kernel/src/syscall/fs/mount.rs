@@ -3,6 +3,7 @@ use core::ffi::{c_char, c_void};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_fs_ng::vfs::{FS_CONTEXT, is_mount_busy as fs_is_mount_busy};
+use ax_task::current;
 
 use crate::{
     file::{Directory, FD_TABLE, File, FileLike},
@@ -102,7 +103,7 @@ fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
         let Some(thread) = task.try_as_thread() else {
             continue;
         };
-        let scope = thread.proc_data.scope.read();
+        let scope = thread.scope.read();
         let fd_table = FD_TABLE.scope(&scope).clone();
         drop(scope);
         let table = fd_table.read();
@@ -336,11 +337,19 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
+    if target.is_empty() {
+        return Err(AxError::NotFound);
+    }
+
     let target = if (flags & UMOUNT_NOFOLLOW) != 0 {
         FS_CONTEXT.lock().resolve_no_follow(target)?
     } else {
         FS_CONTEXT.lock().resolve(target)?
     };
+
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
 
     // Linux umount2 returns EINVAL for paths that are not mount points.
     if !target.is_root_of_mount() {

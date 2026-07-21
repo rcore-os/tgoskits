@@ -233,6 +233,9 @@ fn waitable_processes(
 
 pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isize> {
     let options = WaitPidOptions::from_bits(options).ok_or(AxError::InvalidInput)?;
+    if pid == i32::MIN {
+        return Err(AxError::from(LinuxError::ESRCH));
+    }
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
     let curr = current();
@@ -431,6 +434,36 @@ pub fn sys_waitid(
             }
 
             return Ok(Some(0));
+        }
+
+        let want_stopped = options.contains(WaitIdOptions::WUNTRACED);
+        let want_continued = options.contains(WaitIdOptions::WCONTINUED);
+        if want_stopped || want_continued {
+            for child in &children {
+                let Ok(data) = get_process_data(child.pid()) else {
+                    continue;
+                };
+                if let Some(status) = data.peek_job_status_if(want_stopped, want_continued) {
+                    let (code, status) = match status {
+                        JobStatus::Stopped(signo) => {
+                            (linux_raw_sys::general::CLD_STOPPED as i32, signo as i32)
+                        }
+                        JobStatus::Continued => (
+                            linux_raw_sys::general::CLD_CONTINUED as i32,
+                            Signo::SIGCONT as i32,
+                        ),
+                    };
+                    if let Some(infop) = infop.nullable() {
+                        let siginfo =
+                            SignalInfo::new_sigchld(child.pid(), child_uid(child), code, status);
+                        infop.vm_write(siginfo.0)?;
+                    }
+                    if !options.contains(WaitIdOptions::WNOWAIT) {
+                        data.take_job_status_if(want_stopped, want_continued);
+                    }
+                    return Ok(Some(0));
+                }
+            }
         }
 
         if options.contains(WaitIdOptions::WEXITED)

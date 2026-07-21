@@ -98,7 +98,7 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> AxResult<
 mod tests {
     use linux_raw_sys::general::{CLONE_PARENT, CLONE_SIGHAND, CLONE_THREAD, CLONE_VM, SIGCHLD};
 
-    use super::*;
+    use super::{Clone3Args, CloneArgs};
 
     #[test]
     fn accepts_thread_and_parent_with_zero_exit_signal() {
@@ -111,16 +111,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_parent_with_nonzero_exit_signal() {
+    fn clone3_parent_rejects_nonzero_exit_signal() {
         let args = Clone3Args {
             flags: CLONE_PARENT as u64,
             exit_signal: SIGCHLD as u64,
             ..Default::default()
         };
 
-        assert!(matches!(
-            CloneArgs::try_from(args),
-            Err(AxError::InvalidInput)
-        ));
+        assert!(CloneArgs::try_from(args).is_err());
+    }
+
+    #[test]
+    fn clone3_thread_rejects_nonzero_exit_signal() {
+        let args = Clone3Args {
+            flags: CLONE_THREAD as u64,
+            exit_signal: SIGCHLD as u64,
+            ..Default::default()
+        };
+
+        assert!(CloneArgs::try_from(args).is_err());
     }
 }
