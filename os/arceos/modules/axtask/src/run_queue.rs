@@ -58,14 +58,46 @@ static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; crate::build_info:
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
 
-/// Bitmask (bit `cpu_id`) of CPUs whose per-CPU run queue in [`RUN_QUEUES`] has
-/// been initialized. Round-robin spawn placement ([`select_run_queue_index`])
-/// must only target online queues: during early boot the secondaries have not
-/// yet written their `RUN_QUEUES` slot, and `get_run_queue` on an uninitialized
-/// slot is a use of uninitialized memory (a near-null data abort). Set by each
-/// CPU as it initializes (see `init` / `init_secondary`).
+/// Number of `usize` words needed to hold one online-bit per CPU, up to
+/// `CPU_CAPACITY`. `CPU_CAPACITY` (from `build.rs`, the `SMP` env var) can
+/// exceed `usize::BITS` — `AxCpuMask` supports up to 1024 CPUs — so the
+/// online bitmap is sharded across multiple words instead of a single
+/// `AtomicUsize`, which would overflow/alias `1 << cpu_id` for `cpu_id >=
+/// usize::BITS` (e.g. CPU 64 would alias CPU 0 on a 64-bit target).
 #[cfg(feature = "smp")]
-static RUN_QUEUE_ONLINE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+const RUN_QUEUE_ONLINE_WORDS: usize =
+    crate::build_info::CPU_CAPACITY.div_ceil(usize::BITS as usize);
+
+/// Bitmask (bit `cpu_id % usize::BITS`, word `cpu_id / usize::BITS`) of CPUs
+/// whose per-CPU run queue in [`RUN_QUEUES`] has been initialized.
+/// Round-robin spawn placement ([`select_run_queue_index`]) must only target
+/// online queues: during early boot the secondaries have not yet written
+/// their `RUN_QUEUES` slot, and `get_run_queue` on an uninitialized slot is a
+/// use of uninitialized memory (a near-null data abort). Set by each CPU as
+/// it initializes (see `init` / `init_secondary`), through [`mark_cpu_online`].
+#[cfg(feature = "smp")]
+static RUN_QUEUE_ONLINE: [core::sync::atomic::AtomicUsize; RUN_QUEUE_ONLINE_WORDS] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; RUN_QUEUE_ONLINE_WORDS];
+
+/// Marks `cpu`'s run queue as online in the sharded [`RUN_QUEUE_ONLINE`] bitmap.
+#[cfg(feature = "smp")]
+#[inline]
+fn mark_cpu_online(cpu: usize) {
+    RUN_QUEUE_ONLINE[cpu / usize::BITS as usize].fetch_or(
+        1 << (cpu % usize::BITS as usize),
+        core::sync::atomic::Ordering::Release,
+    );
+}
+
+/// Returns whether `cpu`'s run queue in [`RUN_QUEUES`] has been initialized.
+#[cfg(feature = "smp")]
+#[inline]
+fn is_cpu_online(cpu: usize) -> bool {
+    cpu < crate::build_info::CPU_CAPACITY
+        && RUN_QUEUE_ONLINE[cpu / usize::BITS as usize].load(core::sync::atomic::Ordering::Acquire)
+            & (1 << (cpu % usize::BITS as usize))
+            != 0
+}
 
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
@@ -131,11 +163,10 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
     // (their run queue is initialized). The online gate matters during early boot,
     // when secondaries have not yet registered their run queue — targeting one
     // would dereference uninitialized memory in `get_run_queue`.
-    let online = RUN_QUEUE_ONLINE.load(Ordering::Acquire);
     for _ in 0..crate::build_info::CPU_CAPACITY {
         let index =
             RUN_QUEUE_INDEX.fetch_add(1, Ordering::SeqCst) % crate::build_info::CPU_CAPACITY;
-        if cpumask.get(index) && (online & (1 << index)) != 0 {
+        if cpumask.get(index) && is_cpu_online(index) {
             return index;
         }
     }
@@ -396,6 +427,64 @@ mod tests {
     }
 }
 
+#[cfg(all(test, feature = "smp", feature = "host-test"))]
+mod online_bitmap_tests {
+    use core::sync::atomic::Ordering;
+
+    // Reset every word of the shared bitmap so tests do not observe state left
+    // behind by `init`/`init_secondary` or by other tests in this process.
+    fn reset_online_bitmap() {
+        for word in super::RUN_QUEUE_ONLINE.iter() {
+            word.store(0, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn mark_cpu_online_is_visible_only_for_marked_cpu() {
+        reset_online_bitmap();
+
+        super::mark_cpu_online(0);
+
+        assert!(
+            super::is_cpu_online(0),
+            "a CPU marked online must report itself as online",
+        );
+        assert!(
+            !super::is_cpu_online(1),
+            "marking one CPU online must not mark an unrelated CPU online",
+        );
+
+        reset_online_bitmap();
+    }
+
+    // The reviewer explicitly asked for coverage across the word boundary a
+    // single-word `AtomicUsize` bitmap could not represent (CPU_CAPACITY >=
+    // usize::BITS, e.g. SMP=65): CPU 64 must not alias CPU 0. This only
+    // exercises a second word when the test build's `CPU_CAPACITY` exceeds
+    // `usize::BITS`; it is a no-op assertion of intent otherwise, and the
+    // real cross-word coverage is the `SMP=65` build check (see PR
+    // discussion / commit message).
+    #[test]
+    fn cross_word_cpu_does_not_alias_low_word() {
+        reset_online_bitmap();
+
+        super::mark_cpu_online(0);
+
+        if crate::build_info::CPU_CAPACITY > usize::BITS as usize {
+            assert!(
+                super::is_cpu_online(0),
+                "CPU 0 must remain online after marking it",
+            );
+            assert!(
+                !super::is_cpu_online(64),
+                "CPU 64 must not alias CPU 0's bit in a sharded bitmap",
+            );
+        }
+
+        reset_online_bitmap();
+    }
+}
+
 #[cfg(all(test, feature = "sched-rr", feature = "host-test"))]
 mod rr_tests {
     use alloc::{string::String, sync::Arc};
@@ -514,8 +603,6 @@ pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueu
         let current_cpu = this_cpu_id();
         let last_cpu = task.cpu_id() as usize;
         let cpumask = task.cpumask();
-        let online = RUN_QUEUE_ONLINE.load(core::sync::atomic::Ordering::Acquire);
-        let is_online = |c: usize| (online & (1usize << c)) != 0;
         // Prefer the CPU the woken task last ran on. This is cache-warm for the
         // *woken* task and, crucially, keeps threads spread out: preferring the
         // *waker's* CPU (as before) piled every worker onto one core whenever a
@@ -523,9 +610,13 @@ pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueu
         // re-collapsed the round-robin spawn placement and was why multi-threaded
         // workloads stayed on the boot core. Fall back to the waker's CPU, then
         // round-robin; only ever select an online CPU.
+        //
+        // `last_cpu` is checked against `CPU_CAPACITY` before indexing into
+        // `cpumask`: `AxCpuMask::get` only `debug_assert`s in-range, so an
+        // out-of-range `last_cpu` must be filtered here first.
         let index = if last_cpu < crate::build_info::CPU_CAPACITY
             && cpumask.get(last_cpu)
-            && is_online(last_cpu)
+            && is_cpu_online(last_cpu)
         {
             last_cpu
         } else if cpumask.get(current_cpu) {
@@ -1251,7 +1342,7 @@ pub(crate) fn init() {
     }
     // Mark this CPU's run queue online so round-robin spawn placement may target it.
     #[cfg(feature = "smp")]
-    RUN_QUEUE_ONLINE.fetch_or(1 << cpu_id, core::sync::atomic::Ordering::Release);
+    mark_cpu_online(cpu_id);
 }
 
 pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
@@ -1277,5 +1368,5 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     }
     // Mark this CPU's run queue online so round-robin spawn placement may target it.
     #[cfg(feature = "smp")]
-    RUN_QUEUE_ONLINE.fetch_or(1 << cpu_id, core::sync::atomic::Ordering::Release);
+    mark_cpu_online(cpu_id);
 }
