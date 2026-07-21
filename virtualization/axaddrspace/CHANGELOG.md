@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.17](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.16...axaddrspace-v0.5.17) - 2026-07-21
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+- *(axaddrspace)* introduce typed errors ([#1592](https://github.com/rcore-os/tgoskits/pull/1592))
+
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/axaddrspace-v0.5.15...axaddrspace-v0.5.16) - 2026-07-07
 
 ### Other

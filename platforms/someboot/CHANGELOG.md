@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.5...someboot-v0.3.6) - 2026-07-21
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.3.5](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.4...someboot-v0.3.5) - 2026-07-10
 
 ### Added

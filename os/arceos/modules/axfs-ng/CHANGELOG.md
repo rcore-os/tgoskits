@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.4...ax-fs-ng-v0.8.5) - 2026-07-21
+
+### Added
+
+- *(starry)* run x86_64 self-build through the Starry app ([#1076](https://github.com/rcore-os/tgoskits/pull/1076))
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.3...ax-fs-ng-v0.8.4) - 2026-07-10
 
 ### Other

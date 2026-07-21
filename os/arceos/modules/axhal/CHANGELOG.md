@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.29](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.28...ax-hal-v0.5.29) - 2026-07-21
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.5.28](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.27...ax-hal-v0.5.28) - 2026-07-10
 
 ### Added

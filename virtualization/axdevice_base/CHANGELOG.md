@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.6.1...axdevice_base-v0.6.2) - 2026-07-21
+
+### Added
+
+- *(axdevice)* register exclusive IRQ line resources ([#1630](https://github.com/rcore-os/tgoskits/pull/1630))
+
+### Other
+
+- *(axdevice)* replace errno contracts ([#1595](https://github.com/rcore-os/tgoskits/pull/1595))
+- *(axvm-types)* introduce backend errors ([#1591](https://github.com/rcore-os/tgoskits/pull/1591))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/axdevice_base-v0.6.0...axdevice_base-v0.6.1) - 2026-07-07
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/rcore-os/tgoskits/compare/cv181x-sdhci-v0.1.2...cv181x-sdhci-v0.1.3) - 2026-07-21
+
+### Other
+
+- updated the following local packages: sdmmc-protocol, sdhci-host
+
 ## [0.1.2](https://github.com/rcore-os/tgoskits/compare/cv181x-sdhci-v0.1.1...cv181x-sdhci-v0.1.2) - 2026-07-08
 
 ### Other

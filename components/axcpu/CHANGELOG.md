@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.3...ax-cpu-v0.8.4) - 2026-07-21
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.2...ax-cpu-v0.8.3) - 2026-07-08
 
 ### Added

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.5...rsext4-v0.7.6) - 2026-07-21
+
+### Added
+
+- *(starry)* run x86_64 self-build through the Starry app ([#1076](https://github.com/rcore-os/tgoskits/pull/1076))
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/rsext4-v0.7.4...rsext4-v0.7.5) - 2026-07-08
 
 ### Other

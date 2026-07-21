@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.1...rockchip-soc-v0.4.2) - 2026-07-21
+
+### Added
+
+- *(rockchip-rga)* add the RK3588 RGA2 2D accelerator driver with /dev/rga and dma-heap ([#1388](https://github.com/rcore-os/tgoskits/pull/1388))
+
 ## [0.4.1](https://github.com/rcore-os/tgoskits/compare/rockchip-soc-v0.4.0...rockchip-soc-v0.4.1) - 2026-07-08
 
 ### Other

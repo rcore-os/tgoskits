@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.5](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.4...ax-net-v0.12.5) - 2026-07-21
+
+### Added
+
+- *(starry)* /proc/net/dev stats implement ([#1645](https://github.com/rcore-os/tgoskits/pull/1645))
+- *(starry,ax-net)* return L2 frame length from Device send/recv for net_stats byte counters ([#1571](https://github.com/rcore-os/tgoskits/pull/1571))
+
+### Fixed
+
+- *(ax-net)* publish socket write shutdown to peers ([#1639](https://github.com/rcore-os/tgoskits/pull/1639))
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.12.4](https://github.com/rcore-os/tgoskits/compare/ax-net-v0.12.3...ax-net-v0.12.4) - 2026-07-10
 
 ### Other

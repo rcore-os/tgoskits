@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.4...starry-kernel-v0.7.5) - 2026-07-21
+
+### Added
+
+- *(rockchip-rga)* add the RK3588 RGA2 2D accelerator driver with /dev/rga and dma-heap ([#1388](https://github.com/rcore-os/tgoskits/pull/1388))
+- Add HTML report generation and CI coverage tests ([#1627](https://github.com/rcore-os/tgoskits/pull/1627))
+- *(starry)* /proc/net/dev stats implement ([#1645](https://github.com/rcore-os/tgoskits/pull/1645))
+- *(starry)* add proc process environment and path links ([#1643](https://github.com/rcore-os/tgoskits/pull/1643))
+- *(cvi-vdec)* add SG2002 scaled JPEG replay pipeline ([#1594](https://github.com/rcore-os/tgoskits/pull/1594))
+- *(sg200x-jpu)* add checked scaled decode support ([#1589](https://github.com/rcore-os/tgoskits/pull/1589))
+
+### Fixed
+
+- *(starry-kernel)* align syscall behavior with Linux semantics ([#1631](https://github.com/rcore-os/tgoskits/pull/1631))
+- *(starry-kernel)* accept CLONE_PARENT exit signals ([#1641](https://github.com/rcore-os/tgoskits/pull/1641))
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.7.4](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.3...starry-kernel-v0.7.4) - 2026-07-10
 
 ### Added

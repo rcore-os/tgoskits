@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.1...axvmconfig-v0.8.2) - 2026-07-21
+
+### Other
+
+- *(axvmconfig)* introduce configuration errors ([#1597](https://github.com/rcore-os/tgoskits/pull/1597))
+
 ## [0.8.1](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.0...axvmconfig-v0.8.1) - 2026-07-07
 
 ### Other

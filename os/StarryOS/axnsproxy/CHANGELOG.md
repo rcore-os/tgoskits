@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/rcore-os/tgoskits/compare/axnsproxy-v0.3.1...axnsproxy-v0.3.2) - 2026-07-21
+
+### Fixed
+
+- *(starry-kernel)* align syscall behavior with Linux semantics ([#1631](https://github.com/rcore-os/tgoskits/pull/1631))
+
 ## [0.3.1](https://github.com/rcore-os/tgoskits/compare/axnsproxy-v0.3.0...axnsproxy-v0.3.1) - 2026-07-08
 
 ### Other

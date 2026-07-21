@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.2...nvme-driver-v0.7.3) - 2026-07-21
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.7.2](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.1...nvme-driver-v0.7.2) - 2026-07-10
 
 ### Added

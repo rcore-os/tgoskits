@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.26](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.25...starryos-v0.5.26) - 2026-07-21
+
+### Added
+
+- *(rockchip-rga)* add the RK3588 RGA2 2D accelerator driver with /dev/rga and dma-heap ([#1388](https://github.com/rcore-os/tgoskits/pull/1388))
+
+### Other
+
+- *(axbuild)* 将构建与启动能力收敛到显式配置 ([#1620](https://github.com/rcore-os/tgoskits/pull/1620))
+
 ## [0.5.25](https://github.com/rcore-os/tgoskits/compare/starryos-v0.5.24...starryos-v0.5.25) - 2026-07-10
 
 ### Other

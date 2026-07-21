@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.13](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.12...loongarch_vcpu-v0.5.13) - 2026-07-21
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.5.12](https://github.com/rcore-os/tgoskits/compare/loongarch_vcpu-v0.5.11...loongarch_vcpu-v0.5.12) - 2026-07-10
 
 ### Other

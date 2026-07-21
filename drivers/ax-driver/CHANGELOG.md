@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.0...ax-driver-v0.12.1) - 2026-07-21
+
+### Added
+
+- *(rockchip-rga)* add the RK3588 RGA2 2D accelerator driver with /dev/rga and dma-heap ([#1388](https://github.com/rcore-os/tgoskits/pull/1388))
+
 ## [0.12.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.11.3...ax-driver-v0.12.0) - 2026-07-10
 
 ### Added

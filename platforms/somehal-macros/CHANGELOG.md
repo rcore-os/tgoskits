@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/rcore-os/tgoskits/compare/somehal-macros-v0.1.5...somehal-macros-v0.1.6) - 2026-07-21
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.1.5](https://github.com/rcore-os/tgoskits/compare/somehal-macros-v0.1.4...somehal-macros-v0.1.5) - 2026-07-07
 
 ### Other

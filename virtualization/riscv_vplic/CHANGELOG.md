@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.21](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.20...riscv_vplic-v0.4.21) - 2026-07-21
+
+### Other
+
+- *(axdevice)* replace errno contracts ([#1595](https://github.com/rcore-os/tgoskits/pull/1595))
+
 ## [0.4.20](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.19...riscv_vplic-v0.4.20) - 2026-07-08
 
 ### Other
