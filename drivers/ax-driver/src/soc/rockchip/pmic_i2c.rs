@@ -696,13 +696,17 @@ mod tests {
     }
 
     #[test]
-    fn envelope_is_down_only_675_to_800() {
-        assert!(in_envelope(675_000));
-        assert!(in_envelope(800_000));
+    fn envelope_is_675k_to_1000k_inclusive() {
+        // Safe envelope is [VDD_FLOOR_UV, VDD_CEIL_UV] = [675 mV, 1.0 V]. The
+        // ceiling was raised from the boot 800 mV to the calibrated 1.0 V
+        // over-volted safe max needed for the higher A76/A55 OPPs; both bounds
+        // are inclusive.
+        assert!(in_envelope(VDD_FLOOR_UV)); // 675 mV floor, inclusive
         assert!(in_envelope(725_000));
-        assert!(!in_envelope(674_999)); // below OPP floor
-        assert!(!in_envelope(800_001)); // above boot voltage
-        assert!(!in_envelope(1_000_000));
+        assert!(in_envelope(800_000));
+        assert!(in_envelope(VDD_CEIL_UV)); // 1.0 V ceiling, inclusive
+        assert!(!in_envelope(VDD_FLOOR_UV - 1)); // below floor
+        assert!(!in_envelope(VDD_CEIL_UV + 1)); // above ceiling
     }
 
     #[test]
