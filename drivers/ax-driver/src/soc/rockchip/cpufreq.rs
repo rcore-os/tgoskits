@@ -510,16 +510,79 @@ impl Cluster {
 /// the voltage-coupled clock never overshoots its rail:
 ///   - going UP:   raise voltage first, then the SCMI ring (clock follows up);
 ///   - going DOWN: lower the SCMI ring first, then voltage (clock follows down).
-fn apply_opp(cluster: Cluster, opp: Opp, going_up: bool) {
+///
+/// TRANSACTIONAL: stops at the first failed step instead of falling through to
+/// the second (which could otherwise create exactly the freq-high/voltage-low
+/// window this ordering exists to prevent), and returns `true` only when BOTH
+/// steps are confirmed. The caller ([`governor_poll`]) must commit its software
+/// OPP index only on `true`; on `false` it must keep tracking the last
+/// confirmed index so the next poll retries from there.
+///
+/// No-undervolt argument (both failure points, each direction):
+///   - UPSHIFT, voltage step fails: the ring set is skipped entirely, so
+///     nothing changed — old freq + old voltage, still a valid, previously
+///     confirmed pairing.
+///   - UPSHIFT, voltage step succeeds but the ring set fails: the rail is
+///     already at (or above) `opp.uv` while the ring is still at its old,
+///     lower value — over-volted for whatever it is currently delivering,
+///     never under-volted.
+///   - DOWNSHIFT, ring step fails: the voltage lower is skipped entirely, so
+///     nothing changed — old freq + old voltage, still valid.
+///   - DOWNSHIFT, ring step succeeds but the voltage step fails: the ring is
+///     already at its new, lower value while the rail is still at its old,
+///     higher voltage — over-volted for the new (lower) clock, never
+///     under-volted.
+#[must_use]
+fn apply_opp(cluster: Cluster, opp: Opp, going_up: bool) -> bool {
     let phandle = Phandle::from(0u32);
     let hz = opp.ring_khz as u64 * 1_000;
     if going_up {
-        cluster.set_voltage(opp.uv);
-        scmi::set_clock_rate(phandle, cluster.clock_id(), hz);
+        if !cluster.set_voltage(opp.uv) {
+            warn!(
+                "cpufreq: {} upshift to {} mV failed; leaving clock id {} unchanged (no \
+                 undervolt: old freq stays paired with old voltage)",
+                cluster.name(),
+                opp.uv / 1_000,
+                cluster.clock_id()
+            );
+            return false;
+        }
+        if scmi::set_clock_rate(phandle, cluster.clock_id(), hz).is_none() {
+            warn!(
+                "cpufreq: {} voltage already raised to {} mV but SCMI rejected clock id {} -> {} \
+                 Hz; not committing this OPP (safe: over-volted for the old, lower clock, never \
+                 under-volted)",
+                cluster.name(),
+                opp.uv / 1_000,
+                cluster.clock_id(),
+                hz
+            );
+            return false;
+        }
     } else {
-        scmi::set_clock_rate(phandle, cluster.clock_id(), hz);
-        cluster.set_voltage(opp.uv);
+        if scmi::set_clock_rate(phandle, cluster.clock_id(), hz).is_none() {
+            warn!(
+                "cpufreq: {} downshift: SCMI rejected clock id {} -> {} Hz; leaving voltage \
+                 unchanged (no undervolt: old freq stays paired with old voltage)",
+                cluster.name(),
+                cluster.clock_id(),
+                hz
+            );
+            return false;
+        }
+        if !cluster.set_voltage(opp.uv) {
+            warn!(
+                "cpufreq: {} clock already lowered to {} Hz but voltage write to {} mV failed; \
+                 not committing this OPP (safe: over-volted for the new, lower clock, never \
+                 under-volted)",
+                cluster.name(),
+                hz,
+                opp.uv / 1_000
+            );
+            return false;
+        }
     }
+    true
 }
 
 /// Period, in ms, the kernel governor task sleeps between [`governor_poll`]s.
@@ -640,17 +703,36 @@ pub fn governor_poll(busy: &[u64]) {
         };
 
         if new != cur {
-            apply_opp(cluster, opps[new], new > cur);
-            IDX[ci].store(new, Ordering::Relaxed);
-            info!(
-                "gov: {} peak={}% opp {}->{} = {} MHz @ {} mV",
-                cluster.name(),
-                peak_pct,
-                cur,
-                new,
-                opps[new].mhz,
-                opps[new].uv / 1_000
-            );
+            // Only commit IDX (the software record of the last CONFIRMED OPP)
+            // when both the voltage write and the SCMI clock set are verified
+            // successful. On failure, IDX is left at `cur` — the hardware is
+            // always left in a safe (never-undervolted, see `apply_opp`) state
+            // for that index, so the next poll retries the same climb/descent
+            // from a known-good starting point rather than silently pretending
+            // the change took effect.
+            if apply_opp(cluster, opps[new], new > cur) {
+                IDX[ci].store(new, Ordering::Relaxed);
+                info!(
+                    "gov: {} peak={}% opp {}->{} = {} MHz @ {} mV",
+                    cluster.name(),
+                    peak_pct,
+                    cur,
+                    new,
+                    opps[new].mhz,
+                    opps[new].uv / 1_000
+                );
+            } else {
+                warn!(
+                    "gov: {} peak={}% opp {}->{} FAILED to apply; staying at {} ({} MHz @ {} mV)",
+                    cluster.name(),
+                    peak_pct,
+                    cur,
+                    new,
+                    cur,
+                    opps[cur].mhz,
+                    opps[cur].uv / 1_000
+                );
+            }
         }
     }
 }
