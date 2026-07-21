@@ -271,10 +271,17 @@ Pass `--coverage` to `ktest qemu`:
 cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64 --coverage
 ```
 
+Pass `--out-fmt html` together with `--coverage` to generate an HTML report automatically:
+
+```bash
+cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64 --coverage --out-fmt html
+```
+
 The build tool will automatically:
 1. Add the `axtest/coverage` Cargo feature
 2. Inject `--cfg axtest_coverage`, `-Cinstrument-coverage`, `-Zno-profiler-runtime` into rustflags
 3. Set up a QEMU monitor socket for memory extraction
+4. Generate `<workspace>/coverage/<package>-<target>.profdata` and `<workspace>/coverage/<package>-<target>-html/index.html` when `--out-fmt html` is set
 
 ### How It Works
 

@@ -211,7 +211,11 @@ pub fn sys_kill(pid: i32, signo: u32) -> AxResult<isize> {
     Ok(0)
 }
 
-pub fn sys_tkill(tid: Pid, signo: u32) -> AxResult<isize> {
+pub fn sys_tkill(tid: i32, signo: u32) -> AxResult<isize> {
+    if tid <= 0 {
+        return Err(AxError::InvalidInput);
+    }
+    let tid = tid as Pid;
     check_kill_permission(tid)?;
     let sig = make_siginfo(signo, SI_TKILL)?;
     send_signal_to_thread(None, tid, sig)?;

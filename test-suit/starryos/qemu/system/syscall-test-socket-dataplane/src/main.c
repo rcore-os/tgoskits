@@ -206,6 +206,12 @@ static int make_tcp_sock(void)
     return fd;
 }
 
+static void test_socket_type_errors(void)
+{
+    CHECK_ERR(socket(AF_UNIX, SOCK_RDM, 0), ESOCKTNOSUPPORT,
+              "socket(AF_UNIX, SOCK_RDM) returns ESOCKTNOSUPPORT");
+}
+
 static int wait_readable(int fd, int timeout_ms)
 {
     fd_set rfds;
@@ -1569,6 +1575,8 @@ static void test_rm7_recvmsg_msg_trunc_flags(void)
 int main(void)
 {
     TEST_START("socket-dataplane");
+
+    test_socket_type_errors();
 
     /* ---- sendto (14) ---- */
     test_s1_sendto_udp_basic();

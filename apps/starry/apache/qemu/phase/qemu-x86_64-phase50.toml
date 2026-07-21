@@ -11,8 +11,8 @@ args = [
     "-netdev",
     "user,id=net0",
 ]
-uefi = false
-to_bin = false
+uefi = true
+to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = "/usr/bin/apache-runner.sh phase phase50"
 success_regex = ["(?m)^APACHE_RUNNER_PASSED\\b"]

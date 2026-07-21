@@ -20,7 +20,7 @@ use crate::{
     },
     mm::vm_load_path_string,
     pseudofs::{Device, dev::tty},
-    task::AsThread,
+    task::{AsThread, get_task},
 };
 
 /// Convert open flags to [`OpenOptions`].
@@ -127,6 +127,16 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                 let inner = device.inner().as_any();
                 if crate::pseudofs::usbfs::is_usbfs_device(inner) {
                     let wrapped = crate::pseudofs::usbfs::open_usbfs_file(inner, file, flags)?;
+                    if flags & O_NONBLOCK != 0 {
+                        wrapped.set_nonblocking(true)?;
+                    }
+                    return add_file_like(wrapped, flags & O_CLOEXEC != 0);
+                }
+                // `/dev/rga` is served by a per-open `RgaFile` holding this open's handle/
+                // request session; `dup`/`fork` share its Arc and it is freed at last close.
+                #[cfg(feature = "rga")]
+                if crate::pseudofs::dev::rga::is_rga_device(inner) {
+                    let wrapped = crate::pseudofs::dev::rga::open_rga_file(file, flags)?;
                     if flags & O_NONBLOCK != 0 {
                         wrapped.set_nonblocking(true)?;
                     }
@@ -265,7 +275,11 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
     };
 
     let mnt_fs_ns = if ns_type_str == "mnt" {
-        let scope = proc_data.scope.read();
+        let task = match get_task(pid) {
+            Ok(task) => task,
+            Err(_) => return Some(Err(AxError::NotFound)),
+        };
+        let scope = task.as_thread().scope.read();
         let fs_context = FS_CONTEXT.scope(&scope).clone();
         drop(scope);
         Some(fs_context.lock().mount_namespace().clone())
@@ -487,17 +501,16 @@ bitflags! {
     }
 }
 
-pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
-    if first < 0 || last < first {
+pub fn sys_close_range(first: u32, last: u32, flags: u32) -> AxResult<isize> {
+    if last < first {
         return Err(AxError::InvalidInput);
     }
     let flags = CloseRangeFlags::from_bits(flags).ok_or(AxError::InvalidInput)?;
     debug!("sys_close_range <= fds: [{first}, {last}], flags: {flags:?}");
     if flags.contains(CloseRangeFlags::UNSHARE) {
         let curr = current();
-        let proc_data = &curr.as_thread().proc_data;
         let new_files = Arc::new(ax_kspin::SpinRwLock::new(FD_TABLE.read().clone()));
-        proc_data.with_current_scope_mut(|scope| {
+        curr.as_thread().with_current_scope_mut(|scope| {
             *FD_TABLE.scope_mut(scope).deref_mut() = new_files;
         });
     }
@@ -512,7 +525,7 @@ pub fn sys_close_range(first: i32, last: i32, flags: u32) -> AxResult<isize> {
     // setup) hangs. Mirrors the `close_all_fds` / execve CLOEXEC pattern.
     let mut closing = alloc::vec::Vec::new();
     if let Some(max_index) = fd_table.ids().next_back() {
-        for fd in first..=last.min(max_index as i32) {
+        for fd in first..=last.min(max_index as u32) {
             if cloexec {
                 if let Some(f) = fd_table.get_mut(fd as _) {
                     f.cloexec = true;

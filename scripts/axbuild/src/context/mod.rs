@@ -231,7 +231,7 @@ impl AppContext {
             &cargo.package,
             &cargo.target,
         )?;
-        crate::support::axtest_coverage::apply_qemu_monitor(&mut qemu, &paths);
+        crate::support::axtest_coverage::apply_qemu_monitor(&mut qemu, &paths)?;
         crate::support::axtest_coverage::update_success_regex(&mut qemu);
         let capture = crate::support::axtest_coverage::AxtestCoverageCaptureGuard::install(&paths)
             .context("failed to install axtest coverage capture")?;

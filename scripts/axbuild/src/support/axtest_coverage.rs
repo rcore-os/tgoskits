@@ -2,9 +2,11 @@ use std::{
     collections::hash_map::DefaultHasher,
     fs,
     hash::{Hash, Hasher},
+    io,
     path::{Path, PathBuf},
 };
 
+use anyhow::Context;
 use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 pub(crate) const AXTEST_COVERAGE_RUSTFLAGS: &[&str] = &[
@@ -77,8 +79,17 @@ fn sanitize_path_component(value: &str) -> String {
         .collect()
 }
 
-pub(crate) fn apply_qemu_monitor(qemu: &mut QemuConfig, paths: &AxtestCoveragePaths) {
+pub(crate) fn apply_qemu_monitor(
+    qemu: &mut QemuConfig,
+    paths: &AxtestCoveragePaths,
+) -> anyhow::Result<()> {
     let _ = fs::remove_file(&paths.monitor_socket);
+    remove_stale_profraw(&paths.profraw_path).with_context(|| {
+        format!(
+            "failed to remove stale coverage profile at {}",
+            paths.profraw_path.display()
+        )
+    })?;
     let monitor = format!("unix:{},server,nowait", paths.monitor_socket.display());
     qemu.args.extend([
         "-monitor".to_string(),
@@ -90,6 +101,15 @@ pub(crate) fn apply_qemu_monitor(qemu: &mut QemuConfig, paths: &AxtestCoveragePa
             .display()
             .to_string(),
     ]);
+    Ok(())
+}
+
+fn remove_stale_profraw(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 /// Replace the QEMU success regex so that ostool waits for coverage extraction
@@ -126,7 +146,10 @@ mod capture {
     use anyhow::{Context, bail};
     use regex::Regex;
 
-    use super::{AxtestCoveragePaths, COVERAGE_DONE_MARKER, MARKER_PREFIX, SUITE_OK_MARKER};
+    use super::{
+        AxtestCoveragePaths, COVERAGE_DONE_MARKER, MARKER_PREFIX, SUITE_OK_MARKER,
+        remove_stale_profraw,
+    };
 
     pub(crate) struct AxtestCoverageCaptureGuard {
         saved_stdout: i32,
@@ -334,6 +357,12 @@ mod capture {
                         self.monitor_socket.display()
                     )
                 })?;
+            remove_stale_profraw(&self.profraw_path).with_context(|| {
+                format!(
+                    "failed to remove stale coverage profile at {}",
+                    self.profraw_path.display()
+                )
+            })?;
             let command = format!(
                 "memsave 0x{addr:x} {size} \"{}\"\n",
                 self.profraw_path.display()
@@ -342,8 +371,33 @@ mod capture {
                 .write_all(command.as_bytes())
                 .context("failed to send QEMU memsave command")?;
             stream.flush().ok();
-            Ok(())
+            wait_for_profraw(&self.profraw_path, size)
         }
+    }
+
+    fn wait_for_profraw(path: &Path, size: usize) -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Ok(metadata) = fs::metadata(path) {
+                match metadata.len().cmp(&(size as u64)) {
+                    std::cmp::Ordering::Equal => return Ok(()),
+                    std::cmp::Ordering::Greater => bail!(
+                        "QEMU memsave created coverage profile {} with unexpected size {}; \
+                         expected {}",
+                        path.display(),
+                        metadata.len(),
+                        size
+                    ),
+                    std::cmp::Ordering::Less => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        bail!(
+            "QEMU memsave did not create coverage profile {} with expected size {}",
+            path.display(),
+            size
+        )
     }
 
     fn wait_and_connect_monitor(socket: &Path) -> anyhow::Result<UnixStream> {
@@ -380,6 +434,8 @@ mod capture {
 
     #[cfg(test)]
     mod tests {
+        use std::{io::BufRead, sync::mpsc};
+
         use super::*;
 
         #[test]
@@ -388,6 +444,43 @@ mod capture {
                 parse_coverage_marker("AXTEST_COVERAGE status=ready addr=0x1234abcd size=4096"),
                 Ok((0x1234abcd, 4096))
             );
+        }
+
+        #[test]
+        fn ignores_stale_profraw_before_memsave_completes() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let profraw_path = temp_dir.path().join("coverage.profraw");
+            fs::write(&profraw_path, b"old-profile-data").unwrap();
+
+            let (client, mut server) = UnixStream::pair().unwrap();
+            let (written_tx, written_rx) = mpsc::channel();
+            let writer_path = profraw_path.clone();
+            let writer = std::thread::spawn(move || {
+                let mut command = String::new();
+                let mut reader = io::BufReader::new(&mut server);
+                reader.read_line(&mut command).unwrap();
+                assert!(command.starts_with("memsave 0x1234 4 "));
+                std::thread::sleep(Duration::from_millis(100));
+                fs::write(writer_path, b"new!").unwrap();
+                written_tx.send(()).unwrap();
+            });
+
+            let mut state = AxtestCoverageState {
+                monitor_socket: temp_dir.path().join("monitor.sock"),
+                profraw_path: profraw_path.clone(),
+                line_buf: String::new(),
+                dumped: false,
+                completion_signaled: false,
+                error: None,
+                monitor_conn: Some(client),
+            };
+
+            state.dump_coverage(0x1234, 4).unwrap();
+            let profile_after_dump = fs::read(&profraw_path).unwrap();
+            written_rx.recv().unwrap();
+            writer.join().unwrap();
+
+            assert_eq!(profile_after_dump, b"new!");
         }
     }
 }
