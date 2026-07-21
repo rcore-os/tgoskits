@@ -103,13 +103,11 @@ pub enum HostProviderResourceControlKind {
 }
 
 /// A clock capability that structurally retains its ownership lease.
-#[cfg(any(target_arch = "aarch64", test))]
 #[derive(Clone)]
 pub(crate) struct LeasedHostClock {
     lease: Arc<dyn HostProviderResourceLease>,
 }
 
-#[cfg(any(target_arch = "aarch64", test))]
 impl LeasedHostClock {
     fn new(lease: Arc<dyn HostProviderResourceLease>) -> Self {
         Self { lease }
@@ -144,7 +142,6 @@ impl LeasedHostClock {
     }
 }
 
-#[cfg(any(target_arch = "aarch64", test))]
 impl core::fmt::Debug for LeasedHostClock {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("LeasedHostClock(..)")
@@ -152,13 +149,11 @@ impl core::fmt::Debug for LeasedHostClock {
 }
 
 /// A reset capability that structurally retains its ownership lease.
-#[cfg(any(target_arch = "aarch64", test))]
 #[derive(Clone)]
 pub(crate) struct LeasedHostReset {
     lease: Arc<dyn HostProviderResourceLease>,
 }
 
-#[cfg(any(target_arch = "aarch64", test))]
 impl LeasedHostReset {
     fn new(lease: Arc<dyn HostProviderResourceLease>) -> Self {
         Self { lease }
@@ -188,7 +183,6 @@ impl LeasedHostReset {
     }
 }
 
-#[cfg(any(target_arch = "aarch64", test))]
 impl core::fmt::Debug for LeasedHostReset {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("LeasedHostReset(..)")
@@ -196,7 +190,6 @@ impl core::fmt::Debug for LeasedHostReset {
 }
 
 /// Runtime authority carried by one provider-resource lease.
-#[cfg(any(target_arch = "aarch64", test))]
 #[derive(Clone, Debug)]
 pub(crate) enum HostProviderResourceControl {
     /// The lease pins static state and exposes no guest operation.
@@ -207,7 +200,6 @@ pub(crate) enum HostProviderResourceControl {
     Reset(LeasedHostReset),
 }
 
-#[cfg(any(target_arch = "aarch64", test))]
 impl HostProviderResourceControl {
     fn from_lease(lease: Arc<dyn HostProviderResourceLease>) -> Self {
         match lease.control_kind() {
@@ -357,7 +349,6 @@ struct PendingHostLeases {
 }
 
 struct ClaimedProviderResource {
-    #[cfg(target_arch = "aarch64")]
     claim: HostProviderResourceClaim,
     lease: Arc<dyn HostProviderResourceLease>,
 }
@@ -385,7 +376,6 @@ impl PendingHostLeases {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
     fn provider_control(
         &self,
         claim: &HostProviderResourceClaim,
@@ -432,7 +422,6 @@ impl VmMachineTransaction {
             let lease = provider.claim_provider_resource(resource)?;
             validate_provider_resource_lease(resource, lease.as_ref())?;
             leases.provider_resources.push(ClaimedProviderResource {
-                #[cfg(target_arch = "aarch64")]
                 claim: resource.clone(),
                 lease,
             });
@@ -466,7 +455,6 @@ impl VmMachineTransaction {
     }
 
     /// Returns the lease-bound runtime capability for one planned resource.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn provider_control(
         &self,
         claim: &HostProviderResourceClaim,
@@ -501,7 +489,6 @@ impl HostDeviceLeases {
     }
 
     /// Returns the lease-bound runtime capability for one planned resource.
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn provider_control(
         &self,
         claim: &HostProviderResourceClaim,

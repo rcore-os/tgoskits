@@ -266,12 +266,10 @@ impl AxVMResources {
         &mut self.arch_state
     }
 
-    #[cfg(target_arch = "aarch64")]
     pub(crate) const fn arch_state(&self) -> &VmArchState {
         &self.arch_state
     }
 
-    #[cfg(target_arch = "aarch64")]
     pub(crate) fn host_provider_control(
         &self,
         claim: &crate::machine::HostProviderResourceClaim,
