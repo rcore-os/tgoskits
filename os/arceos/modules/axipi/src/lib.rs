@@ -38,9 +38,14 @@ const SYNC_IPI_SPIN_LIMIT: usize = 10_000_000;
 
 /// Initialize the per-CPU IPI event queue.
 pub fn init() {
-    IPI_EVENT_QUEUE.with_current(|ipi_queue| {
-        ipi_queue.init_once(SpinNoIrq::new(IpiEventQueue::default()));
-    });
+    // SAFETY: runtime initialization pins this CPU before its IPI queue becomes
+    // reachable from another processor.
+    let pin = unsafe { ax_percpu::CpuPin::new_unchecked() };
+    unsafe {
+        IPI_EVENT_QUEUE.with_current_mut_raw(&pin, |ipi_queue| {
+            ipi_queue.init_once(SpinNoIrq::new(IpiEventQueue::default()));
+        })
+    };
 }
 
 /// Marks the current CPU ready to receive and handle queued IPI callbacks.
@@ -96,7 +101,10 @@ pub fn run_on_cpu<T: Into<Callback>>(dest_cpu: usize, callback: T) {
         // Execute callback on current CPU immediately
         callback.into().call();
     } else {
-        unsafe { IPI_EVENT_QUEUE.remote_ref_raw(dest_cpu) }
+        let dest_index = ax_percpu::CpuIndex::try_from(dest_cpu)
+            .expect("logical CPU ID must fit the CPU-local ABI");
+        unsafe { IPI_EVENT_QUEUE.remote_ref_raw(dest_index) }
+            .expect("destination CPU-local area must be installed")
             .lock()
             .push(this_cpu_id(), callback.into());
         ax_hal::irq::send_ipi(
@@ -169,7 +177,10 @@ pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) {
     // Push the callback to all other CPUs' IPI event queues
     for cpu_id in 0..cpu_num {
         if cpu_id != current_cpu_id {
-            unsafe { IPI_EVENT_QUEUE.remote_ref_raw(cpu_id) }
+            let cpu_index = ax_percpu::CpuIndex::try_from(cpu_id)
+                .expect("logical CPU ID must fit the CPU-local ABI");
+            unsafe { IPI_EVENT_QUEUE.remote_ref_raw(cpu_index) }
+                .expect("destination CPU-local area must be installed")
                 .lock()
                 .push(current_cpu_id, callback.clone().into_unicast());
         }
@@ -186,10 +197,13 @@ pub fn run_on_each_cpu<T: Into<MulticastCallback>>(callback: T) {
 
 /// The handler for IPI events. It retrieves the events from the queue and calls the corresponding callbacks.
 pub fn ipi_handler() {
-    while let Some((src_cpu_id, callback)) = unsafe { IPI_EVENT_QUEUE.current_ref_mut_raw() }
-        .lock()
-        .pop_one()
-    {
+    // SAFETY: the interrupt entry pins this CPU until the handler returns.
+    let pin = unsafe { ax_percpu::CpuPin::new_unchecked() };
+    while let Some((src_cpu_id, callback)) = unsafe {
+        // The IPI handler excludes local re-entry, and the queue's internal
+        // lock serializes remote producers.
+        IPI_EVENT_QUEUE.with_current_mut_raw(&pin, |queue| queue.lock().pop_one())
+    } {
         debug!("Received IPI event from CPU {src_cpu_id}");
         callback.call();
     }

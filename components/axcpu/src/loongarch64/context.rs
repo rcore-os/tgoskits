@@ -1,8 +1,13 @@
-use core::arch::naked_asm;
-#[cfg(feature = "fp-simd")]
-use core::mem::offset_of;
+use core::{
+    arch::naked_asm,
+    mem::{align_of, offset_of, size_of},
+    ptr::NonNull,
+};
 
 use ax_memory_addr::VirtAddr;
+use cpu_local::CurrentThreadHeader;
+
+use crate::KernelTlsBase;
 
 /// General registers of Loongarch64.
 #[allow(missing_docs)]
@@ -30,6 +35,8 @@ pub struct GeneralRegisters {
     pub t6: usize,
     pub t7: usize,
     pub t8: usize,
+    /// User `u0` on a user-origin trap; a diagnostic per-CPU snapshot on a
+    /// kernel-origin trap. Kernel return deliberately ignores this field.
     pub u0: usize,
     pub fp: usize,
     pub s0: usize,
@@ -106,6 +113,19 @@ pub struct TrapFrame {
 }
 
 impl TrapFrame {
+    /// Returns whether the saved register image belongs to kernel or user
+    /// execution.
+    ///
+    /// In particular, `regs.u0` is restorable user state only for
+    /// [`crate::TrapOrigin::User`].
+    pub const fn origin(&self) -> crate::TrapOrigin {
+        if self.prmd & 0b11 == 0 {
+            crate::TrapOrigin::Kernel
+        } else {
+            crate::TrapOrigin::User
+        }
+    }
+
     /// Gets the 0th syscall argument.
     pub const fn arg0(&self) -> usize {
         self.regs.a0
@@ -240,7 +260,7 @@ impl TrapFrame {
 /// and the next task restores its context from memory to CPU.
 #[allow(missing_docs)]
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TaskContext {
     /// Return Address
     pub ra: usize,
@@ -248,14 +268,53 @@ pub struct TaskContext {
     pub sp: usize,
     /// loongArch need to save 10 static registers from $r22 to $r31
     pub s: [usize; 10],
-    /// Thread Pointer
-    pub tp: usize,
+    /// Pinned task-owned header loaded into `$tp` by LinuxCurrent images.
+    current_header: usize,
+    /// Kernel task TLS pointer (`$tp`).
+    ///
+    /// The CPU-local base (`$r21`) is deliberately absent: it belongs to the
+    /// physical CPU and must survive task migration and kernel trap return.
+    kernel_tls: KernelTlsBase,
+    /// The `PGDL` value restored for this task's userspace address space.
     #[cfg(feature = "uspace")]
-    /// user page table root
-    pub pgdl: usize,
+    page_table_root: usize,
     #[cfg(feature = "fp-simd")]
     /// Floating Point Unit states
     pub fpu: FpuState,
+}
+
+// The naked switch uses one machine-word load/store for each field. Keep the
+// array packing and TLS representation assumptions checked by the compiler.
+const _: () = {
+    assert!(size_of::<KernelTlsBase>() == size_of::<usize>());
+    assert!(align_of::<KernelTlsBase>() == align_of::<usize>());
+    assert!(offset_of!(TaskContext, ra) == 0);
+    assert!(offset_of!(TaskContext, sp) == offset_of!(TaskContext, ra) + size_of::<usize>());
+    assert!(size_of::<[usize; 10]>() == 10 * size_of::<usize>());
+    assert!(
+        offset_of!(TaskContext, current_header)
+            == offset_of!(TaskContext, s) + size_of::<[usize; 10]>()
+    );
+    assert!(
+        offset_of!(TaskContext, kernel_tls)
+            == offset_of!(TaskContext, current_header) + size_of::<usize>()
+    );
+};
+
+impl Default for TaskContext {
+    fn default() -> Self {
+        Self {
+            ra: 0,
+            sp: 0,
+            s: [0; 10],
+            current_header: 0,
+            kernel_tls: KernelTlsBase::new(0),
+            #[cfg(feature = "uspace")]
+            page_table_root: 0,
+            #[cfg(feature = "fp-simd")]
+            fpu: FpuState::default(),
+        }
+    }
 }
 
 impl TaskContext {
@@ -263,51 +322,63 @@ impl TaskContext {
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "uspace")]
-            pgdl: crate::asm::read_user_page_table().as_usize(),
-            ..Default::default()
+            page_table_root: crate::asm::read_user_page_table().as_usize(),
+            ..Self::default()
         }
     }
 
-    /// Initializes the context for a new task, with the given entry point and
-    /// kernel stack.
-    pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, tls_area: VirtAddr) {
+    /// Initializes a task context with its entry point, kernel stack, and
+    /// task-owned kernel TLS base.
+    pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, kernel_tls: KernelTlsBase) {
         self.sp = kstack_top.as_usize();
         self.ra = entry;
-        self.tp = tls_area.as_usize();
+        self.kernel_tls = KernelTlsBase::for_task_context(kernel_tls);
     }
 
-    /// Changes the page table root in this context.
-    ///
-    /// The hardware register for user page table root (`pgdl` for loongarch64)
-    /// will be updated to the next task's after [`Self::switch_to`].
+    /// Sets the pinned task-owned current-thread header.
+    pub fn set_current_header(&mut self, header: NonNull<CurrentThreadHeader>) {
+        self.current_header = header.as_ptr() as usize;
+    }
+
+    /// Returns the configured task-owned current-thread header.
+    pub const fn current_header(&self) -> Option<NonNull<CurrentThreadHeader>> {
+        NonNull::new(self.current_header as *mut CurrentThreadHeader)
+    }
+
+    /// Changes the page table root restored for this task.
     #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, pgdl: ax_memory_addr::PhysAddr) {
-        self.pgdl = pgdl.as_usize();
+    pub fn set_page_table_root(&mut self, page_table_root: ax_memory_addr::PhysAddr) {
+        self.page_table_root = page_table_root.as_usize();
     }
 
-    /// Switches to another task.
-    ///
-    /// It first saves the current task's context from CPU to this place, and then
-    /// restores the next task's context from `next_ctx` to CPU.
-    pub fn switch_to(&mut self, next_ctx: &Self) {
-        #[cfg(feature = "tls")]
-        {
-            self.tp = crate::asm::read_thread_pointer();
-            unsafe { crate::asm::write_thread_pointer(next_ctx.tp) };
-        }
-        #[cfg(feature = "uspace")]
-        {
-            if self.pgdl != next_ctx.pgdl {
-                unsafe { crate::asm::write_user_page_table(pa!(next_ctx.pgdl)) };
-                crate::asm::flush_tlb(None); // currently flush the entire TLB
-            }
-        }
+    /// Completes FPU work before current-thread publication.
+    pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
         {
             self.fpu.save();
-            next_ctx.fpu.restore();
+            _next_ctx.fpu.restore();
         }
-        unsafe { context_switch(self, next_ctx) }
+        #[cfg(feature = "uspace")]
+        if self.page_table_root != _next_ctx.page_table_root {
+            // SAFETY: the scheduler owns both contexts with IRQs disabled.
+            unsafe {
+                crate::asm::write_user_page_table(ax_memory_addr::PhysAddr::from(
+                    _next_ctx.page_table_root,
+                ))
+            };
+            crate::asm::flush_tlb(None);
+        }
+    }
+
+    /// Performs only the final GPR/current/TLS transfer.
+    ///
+    /// # Safety
+    ///
+    /// Scheduling must be serialized, FPU state prepared, and the next current
+    /// header published. No fallible Rust work may follow before this call.
+    #[inline(always)]
+    pub unsafe fn switch_to_raw(&mut self, next_ctx: &Self) {
+        unsafe { context_switch_raw(self, next_ctx) }
     }
 }
 
@@ -373,39 +444,110 @@ unsafe extern "C" fn restore_fp_registers(fpu: &FpuState) {
     )
 }
 
+#[cfg(feature = "tls")]
 #[unsafe(naked)]
-unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(
         include_asm_macros!(),
         "
         // save old context (callee-saved registers)
-        STD     $ra, $a0, 0
-        STD     $sp, $a0, 1
-        STD     $s0, $a0, 2
-        STD     $s1, $a0, 3
-        STD     $s2, $a0, 4
-        STD     $s3, $a0, 5
-        STD     $s4, $a0, 6
-        STD     $s5, $a0, 7
-        STD     $s6, $a0, 8
-        STD     $s7, $a0, 9
-        STD     $s8, $a0, 10
-        STD     $fp, $a0, 11
+        st.d    $ra, $a0, {ra_offset}
+        st.d    $sp, $a0, {sp_offset}
+        st.d    $s0, $a0, {s0_offset}
+        st.d    $s1, $a0, {s1_offset}
+        st.d    $s2, $a0, {s2_offset}
+        st.d    $s3, $a0, {s3_offset}
+        st.d    $s4, $a0, {s4_offset}
+        st.d    $s5, $a0, {s5_offset}
+        st.d    $s6, $a0, {s6_offset}
+        st.d    $s7, $a0, {s7_offset}
+        st.d    $s8, $a0, {s8_offset}
+        st.d    $fp, $a0, {frame_pointer_offset}
+        // Keep task TLS inside the final, IRQ-disabled context-switch
+        // boundary. In particular, never add the CPU-owned $r21 here.
+        st.d    $tp, $a0, {kernel_tls_offset}
 
         // restore new context
-        LDD     $fp, $a1, 11
-        LDD     $s8, $a1, 10
-        LDD     $s7, $a1, 9
-        LDD     $s6, $a1, 8
-        LDD     $s5, $a1, 7
-        LDD     $s4, $a1, 6
-        LDD     $s3, $a1, 5
-        LDD     $s2, $a1, 4
-        LDD     $s1, $a1, 3
-        LDD     $s0, $a1, 2
-        LDD     $sp, $a1, 1
-        LDD     $ra, $a1, 0
+        ld.d    $fp, $a1, {frame_pointer_offset}
+        ld.d    $s8, $a1, {s8_offset}
+        ld.d    $s7, $a1, {s7_offset}
+        ld.d    $s6, $a1, {s6_offset}
+        ld.d    $s5, $a1, {s5_offset}
+        ld.d    $s4, $a1, {s4_offset}
+        ld.d    $s3, $a1, {s3_offset}
+        ld.d    $s2, $a1, {s2_offset}
+        ld.d    $s1, $a1, {s1_offset}
+        ld.d    $s0, $a1, {s0_offset}
+        ld.d    $sp, $a1, {sp_offset}
+        ld.d    $ra, $a1, {ra_offset}
+        ld.d    $tp, $a1, {kernel_tls_offset}
 
         ret",
+        ra_offset = const offset_of!(TaskContext, ra),
+        sp_offset = const offset_of!(TaskContext, sp),
+        s0_offset = const offset_of!(TaskContext, s),
+        s1_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 1]>(),
+        s2_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 2]>(),
+        s3_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 3]>(),
+        s4_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 4]>(),
+        s5_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 5]>(),
+        s6_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 6]>(),
+        s7_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 7]>(),
+        s8_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 8]>(),
+        frame_pointer_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 9]>(),
+        kernel_tls_offset = const offset_of!(TaskContext, kernel_tls),
+    )
+}
+
+#[cfg(not(feature = "tls"))]
+#[unsafe(naked)]
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+    naked_asm!(
+        include_asm_macros!(),
+        "
+        // Save old callee state. The CPU-owned r21/KS3 anchor and the
+        // LinuxCurrent task-owned tp value are not generic saved registers.
+        st.d    $ra, $a0, {ra_offset}
+        st.d    $sp, $a0, {sp_offset}
+        st.d    $s0, $a0, {s0_offset}
+        st.d    $s1, $a0, {s1_offset}
+        st.d    $s2, $a0, {s2_offset}
+        st.d    $s3, $a0, {s3_offset}
+        st.d    $s4, $a0, {s4_offset}
+        st.d    $s5, $a0, {s5_offset}
+        st.d    $s6, $a0, {s6_offset}
+        st.d    $s7, $a0, {s7_offset}
+        st.d    $s8, $a0, {s8_offset}
+        st.d    $fp, $a0, {frame_pointer_offset}
+
+        // Restore next state and make tp current immediately before the direct
+        // return. r21 and KS3 continue to identify the physical CPU.
+        ld.d    $fp, $a1, {frame_pointer_offset}
+        ld.d    $s8, $a1, {s8_offset}
+        ld.d    $s7, $a1, {s7_offset}
+        ld.d    $s6, $a1, {s6_offset}
+        ld.d    $s5, $a1, {s5_offset}
+        ld.d    $s4, $a1, {s4_offset}
+        ld.d    $s3, $a1, {s3_offset}
+        ld.d    $s2, $a1, {s2_offset}
+        ld.d    $s1, $a1, {s1_offset}
+        ld.d    $s0, $a1, {s0_offset}
+        ld.d    $sp, $a1, {sp_offset}
+        ld.d    $ra, $a1, {ra_offset}
+        ld.d    $tp, $a1, {current_header_offset}
+        ret",
+        ra_offset = const offset_of!(TaskContext, ra),
+        sp_offset = const offset_of!(TaskContext, sp),
+        s0_offset = const offset_of!(TaskContext, s),
+        s1_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 1]>(),
+        s2_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 2]>(),
+        s3_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 3]>(),
+        s4_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 4]>(),
+        s5_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 5]>(),
+        s6_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 6]>(),
+        s7_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 7]>(),
+        s8_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 8]>(),
+        frame_pointer_offset = const offset_of!(TaskContext, s) + size_of::<[usize; 9]>(),
+        current_header_offset = const offset_of!(TaskContext, current_header),
     )
 }

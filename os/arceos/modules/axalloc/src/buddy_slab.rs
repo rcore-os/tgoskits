@@ -92,9 +92,12 @@ fn current_percpu_slab() -> &'static PercpuSlab<PAGE_SIZE> {
 }
 
 fn remote_percpu_slab(cpu_idx: usize) -> &'static PercpuSlab<PAGE_SIZE> {
+    let cpu_index = ax_percpu::CpuIndex::try_from(cpu_idx)
+        .expect("allocator CPU index must fit the CPU-local ABI");
     // Safety: the owner CPU id comes from slab metadata and references a valid
     // per-CPU slab that was initialized during CPU bring-up.
-    unsafe { PERCPU_SLAB.remote_ref_raw(cpu_idx) }
+    unsafe { PERCPU_SLAB.remote_ref_raw(cpu_index) }
+        .expect("allocator CPU index must name an installed CPU-local area")
 }
 
 struct SlabPool;

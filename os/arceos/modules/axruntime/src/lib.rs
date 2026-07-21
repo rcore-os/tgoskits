@@ -526,7 +526,8 @@ fn ipi_irq_handler(_ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
 #[cfg(all(feature = "tls", not(feature = "multitask")))]
 fn init_tls() {
     let main_tls = ax_hal::tls::TlsArea::alloc();
-    unsafe { ax_hal::asm::write_thread_pointer(main_tls.tls_ptr() as usize) };
+    let kernel_tls = ax_hal::context::KernelTlsBase::new(main_tls.tls_ptr() as usize);
+    unsafe { ax_hal::asm::write_thread_pointer(kernel_tls) };
     core::mem::forget(main_tls);
 }
 

@@ -26,7 +26,7 @@ use crate::{
     AxVmError, AxVmResult, StopReason,
     host::{HostMemory, default_host},
     manager,
-    vcpu::get_current_vcpu,
+    vcpu::with_current_vcpu,
 };
 
 pub(crate) mod boot;
@@ -270,9 +270,9 @@ impl X86VlapicHostOps for AxvmX86HostOps {
     }
 
     fn current_vm_id() -> X86VmId {
-        get_current_vcpu::<AxvmX86Vcpu>()
-            .expect("current x86 vCPU is not set")
-            .vm_id()
+        with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| {
+            vcpu.expect("current x86 vCPU is not set").vm_id()
+        })
     }
 
     fn current_vm_vcpu_num() -> usize {
@@ -327,9 +327,10 @@ impl X86HostOps for AxvmX86HostOps {
     }
 
     fn read_guest_u8(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8> {
-        let vcpu = get_current_vcpu::<AxvmX86Vcpu>().ok_or(X86VcpuError::BadState)?;
+        let vm_id = with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| vcpu.vm_id()))
+            .ok_or(X86VcpuError::BadState)?;
         let mut byte = [0u8; 1];
-        let result = manager::with_vm(vcpu.vm_id(), |vm| {
+        let result = manager::with_vm(vm_id, |vm| {
             vm.read_from_guest(GuestPhysAddr::from(paddr.as_usize()), &mut byte)
         })
         .ok_or(X86VcpuError::BadState)?;

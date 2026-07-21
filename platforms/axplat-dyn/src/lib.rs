@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(all(feature = "uspace", feature = "tls"))]
+compile_error!("axplat-dyn userspace requires LinuxCurrent and cannot enable kernel TLS mode");
+
 extern crate alloc;
 extern crate ax_driver as _;
 extern crate somehal;
@@ -18,6 +21,7 @@ mod init;
 #[cfg(feature = "irq")]
 mod irq;
 mod mem;
+mod percpu;
 mod platform;
 mod power;
 

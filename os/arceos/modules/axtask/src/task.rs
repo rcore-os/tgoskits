@@ -13,14 +13,19 @@ use core::{
     fmt,
     mem::ManuallyDrop,
     ops::Deref,
+    pin::Pin,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering},
     task::{Context, Poll},
 };
 
-use ax_hal::context::TaskContext;
 #[cfg(feature = "tls")]
 use ax_hal::tls::TlsArea;
+use ax_hal::{
+    context::{KernelTlsBase, TaskContext},
+    percpu::{ContextIdentity, CurrentThreadHeader, ThreadIdentity},
+};
 use ax_kspin::SpinNoIrq;
+use ax_lazyinit::LazyInit;
 #[cfg(feature = "stack-guard-page")]
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{VirtAddr, align_up_4k};
@@ -132,6 +137,8 @@ pub struct TaskInner {
 
     kstack: TaskStack,
     ctx: UnsafeCell<TaskContext>,
+    /// Pinned identity and CPU-binding state published by the switch tail.
+    current_header: LazyInit<CurrentThreadHeader>,
     #[cfg(feature = "lockdep")]
     held_locks: UnsafeCell<HeldLockStack>,
 
@@ -181,14 +188,14 @@ impl TaskInner {
         debug!("new task: {}", t.id_name());
 
         #[cfg(feature = "tls")]
-        let tls = VirtAddr::from(t.tls.tls_ptr() as usize);
+        let kernel_tls = KernelTlsBase::new(t.tls.tls_ptr() as usize);
         #[cfg(not(feature = "tls"))]
-        let tls = VirtAddr::from(0);
+        let kernel_tls = KernelTlsBase::new(0);
         let kstack_top = t.kstack.top();
 
         t.entry = Cell::new(Some(Box::new(entry)));
         t.ctx_mut()
-            .init(task_entry as *const () as usize, kstack_top, tls);
+            .init(task_entry as *const () as usize, kstack_top, kernel_tls);
         if t.name() == "idle" {
             t.is_idle = true;
         }
@@ -389,6 +396,7 @@ impl TaskInner {
             wait_for_exit: WaitQueue::new(),
             kstack,
             ctx: UnsafeCell::new(TaskContext::new()),
+            current_header: LazyInit::new(),
             #[cfg(feature = "lockdep")]
             held_locks: UnsafeCell::new(HeldLockStack::new()),
             #[cfg(feature = "task-ext")]
@@ -418,7 +426,44 @@ impl TaskInner {
     }
 
     pub(crate) fn into_arc(self) -> AxTaskRef {
-        Arc::new(AxTask::new(self))
+        let task = Arc::new(AxTask::new(self));
+        let context_identity = ContextIdentity::from_raw(Arc::as_ptr(&task) as usize)
+            .expect("Arc task pointer must be non-null");
+        let header = task
+            .current_header
+            .init_once(CurrentThreadHeader::new(context_identity));
+        // SAFETY: `header` is stored inside the Arc allocation that owns the
+        // task. That allocation is stable until the last task reference drops.
+        let header = unsafe { Pin::new_unchecked(header) };
+        header
+            .bind_thread(task.thread_identity())
+            .expect("fresh task header must accept its scheduler identity");
+        // SAFETY: the Arc is not visible to any scheduler yet, so this is the
+        // only access to its architecture context.
+        unsafe { (*task.ctx_mut_ptr()).set_current_header(header.as_non_null()) };
+        task
+    }
+
+    fn thread_identity(&self) -> ThreadIdentity {
+        // `u32::MAX` is reserved by the stable ABI. Split the monotonic TaskId
+        // over the remaining slot space and a nonzero reuse generation.
+        const SLOT_COUNT: u64 = u32::MAX as u64;
+        let raw = self.id.as_u64();
+        let slot = (raw % SLOT_COUNT) as u32;
+        let generation = u32::try_from(raw / SLOT_COUNT + 1)
+            .expect("task identity generation exhausted the CPU-local ABI");
+        ThreadIdentity::from_parts(slot, generation)
+            .expect("TaskId mapping must produce a valid thread identity")
+    }
+
+    pub(crate) fn current_header(&self) -> Pin<&CurrentThreadHeader> {
+        let header = self
+            .current_header
+            .get()
+            .expect("task header must be initialized after Arc allocation");
+        // SAFETY: `into_arc` initializes this field only after the containing
+        // scheduler task reaches its permanent Arc allocation.
+        unsafe { Pin::new_unchecked(header) }
     }
 
     /// Returns the current state of the task.
@@ -986,7 +1031,12 @@ pub struct CurrentTask(ManuallyDrop<AxTaskRef>);
 
 impl CurrentTask {
     pub(crate) fn try_get() -> Option<Self> {
-        let ptr: *const super::AxTask = ax_hal::percpu::current_task_ptr();
+        // SAFETY: the scheduler keeps one raw strong reference for the current
+        // task until `set_current` transfers ownership to the next task. This
+        // bootstrap read is also used by the preemption guard implementation,
+        // so it cannot require that same guard to have been acquired already.
+        let header = unsafe { ax_hal::percpu::current_thread_raw().as_ref()? };
+        let ptr = header.context_identity().as_usize() as *const super::AxTask;
         if !ptr.is_null() {
             Some(Self(unsafe { ManuallyDrop::new(AxTaskRef::from_raw(ptr)) }))
         } else {
@@ -1011,23 +1061,38 @@ impl CurrentTask {
 
     pub(crate) unsafe fn init_current(init_task: AxTaskRef) {
         assert!(init_task.is_init());
+        // SAFETY: scheduler initialization runs on an offline CPU before any
+        // task switch or migration can occur.
+        let pin = unsafe { ax_hal::percpu::CpuPin::new_unchecked() };
+        let binding = ax_hal::percpu::current_cpu_binding(&pin)
+            .expect("CPU-local binding must precede task initialization");
+        let header = init_task.current_header();
+        // SAFETY: this init task is not runnable elsewhere and the CPU is still
+        // offline, so the scheduler exclusively owns this first binding.
+        unsafe { header.bind_cpu(binding) }
+            .expect("bootstrap task header must bind to the current CPU");
         #[cfg(feature = "tls")]
-        unsafe {
-            ax_hal::asm::write_thread_pointer(init_task.tls.tls_ptr() as usize)
-        };
-        let ptr = Arc::into_raw(init_task);
-        unsafe {
-            ax_hal::percpu::set_current_task_ptr(ptr);
+        {
+            let prepared = unsafe { ax_hal::percpu::prepare_current_thread_publish(&pin, header) }
+                .expect("bootstrap current-thread publication must validate");
+            unsafe {
+                ax_hal::percpu::install_bootstrap_kernel_tls(KernelTlsBase::new(
+                    init_task.tls.tls_ptr() as usize,
+                ))
+            }
+            .expect("bootstrap kernel TLS must install");
+            unsafe { ax_hal::percpu::commit_current_thread_publish(prepared) };
         }
+        #[cfg(not(feature = "tls"))]
+        unsafe { ax_hal::percpu::install_bootstrap_current_thread(&pin, header) }
+            .expect("bootstrap current-thread register must install");
+        let _ = Arc::into_raw(init_task);
     }
 
     pub(crate) unsafe fn set_current(prev: Self, next: AxTaskRef) {
         let Self(arc) = prev;
         ManuallyDrop::into_inner(arc); // `call Arc::drop()` to decrease prev task reference count.
-        let ptr = Arc::into_raw(next);
-        unsafe {
-            ax_hal::percpu::set_current_task_ptr(ptr);
-        }
+        let _ = Arc::into_raw(next);
     }
 }
 
@@ -1040,7 +1105,6 @@ impl Deref for CurrentTask {
 }
 
 extern "C" fn task_entry() -> ! {
-    #[cfg(feature = "smp")]
     unsafe {
         // Clear the prev task on CPU before running the task entry function.
         crate::run_queue::clear_prev_task_on_cpu();

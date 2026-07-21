@@ -1,11 +1,9 @@
 use alloc::{collections::VecDeque, sync::Arc};
-use core::mem::MaybeUninit;
-#[cfg(feature = "smp")]
-use core::ptr::NonNull;
 #[cfg(all(feature = "smp", feature = "ipi"))]
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::{mem::MaybeUninit, ptr::NonNull};
 
-use ax_hal::percpu::this_cpu_id;
+use ax_hal::percpu::{CpuBindingEpoch, CpuPin, this_cpu_id};
 use ax_kernel_guard::BaseGuard;
 use ax_kspin::{SpinNoIrqGuard, SpinRaw};
 use ax_lazyinit::LazyInit;
@@ -17,6 +15,12 @@ use crate::{
     task::{CurrentTask, TASK_STACK_ALIGN, TaskStack, TaskState},
     wait_queue::WaitQueueGuard,
 };
+
+#[derive(Clone, Copy)]
+struct PreviousTask {
+    task: NonNull<crate::AxTask>,
+    binding_epoch: CpuBindingEpoch,
+}
 
 macro_rules! percpu_static {
     ($(
@@ -36,12 +40,11 @@ percpu_static! {
     EXITED_TASKS: VecDeque<AxTaskRef> = VecDeque::new(),
     WAIT_FOR_EXIT: WaitQueue = WaitQueue::new(),
     IDLE_TASK: LazyInit<AxTaskRef> = LazyInit::new(),
-    /// Stores a raw pointer to the previous task running on this CPU.
-    /// The pointer is valid only within the window between `switch_to` storing it
-    /// and `clear_prev_task_on_cpu` consuming it — both in the same non-preemptible
-    /// call chain, so the task cannot be freed while the pointer is held.
-    #[cfg(feature = "smp")]
-    PREV_TASK: Option<NonNull<crate::AxTask>> = None,
+    /// Stores the previous task and the exact CPU-binding epoch withdrawn by
+    /// the incoming switch tail. The raw pointer is valid only between
+    /// `switch_to` and `clear_prev_task_on_cpu`: the scheduler retains an Arc
+    /// throughout that non-preemptible handoff.
+    PREV_TASK: Option<PreviousTask> = None,
 }
 
 /// An array of references to run queues, one for each CPU, indexed by cpu_id.
@@ -1060,14 +1063,46 @@ impl AxRunQueue {
             let prev_ctx_ptr = prev_task.ctx_mut_ptr();
             let next_ctx_ptr = next_task.ctx_mut_ptr();
 
-            // Store a raw pointer to prev_task in PREV_TASK.
-            // Safety: prev_task is alive (Arc held on caller's stack) and will
-            // remain so through clear_prev_task_on_cpu() below.
-            #[cfg(feature = "smp")]
-            {
-                *PREV_TASK.current_ref_mut_raw() =
-                    Some(NonNull::new(Arc::as_ptr(&prev_task) as *mut _).unwrap());
-            }
+            // The enclosing run-queue guard has already disabled migration and
+            // local IRQs for the complete switch lifetime.
+            let pin = CpuPin::new_unchecked();
+            let cpu_binding = ax_hal::percpu::current_cpu_binding(&pin)
+                .expect("scheduler switch requires a valid CPU-local binding");
+            let prev_header = prev_task.current_header();
+            let next_header_pointer = next_task.current_header().as_non_null();
+            // SAFETY: the scheduler owns `next_task` and immediately transfers
+            // that Arc into the current-task raw reference. The allocation, and
+            // therefore its embedded header, cannot move or disappear during
+            // this switch lifetime.
+            let next_header = core::pin::Pin::new_unchecked(next_header_pointer.as_ref());
+            let published = ax_hal::percpu::current_thread(&pin)
+                .expect("scheduler switch requires a valid current-thread header");
+            assert_eq!(
+                published,
+                prev_header.as_non_null(),
+                "published current-thread header must identify prev_task"
+            );
+            let prev_binding = prev_header
+                .cpu_binding()
+                .expect("prev_task must remain bound until the incoming tail");
+            assert_eq!(prev_binding.area_base(), cpu_binding.area_base);
+            assert_eq!(prev_binding.cpu_index(), cpu_binding.cpu_index().unwrap());
+            next_header
+                .bind_cpu(cpu_binding)
+                .expect("next_task must be unbound before scheduling");
+
+            // Finish every helper operation, including FP state and user page
+            // table changes, before preparing the infallible switch tail.
+            (*prev_ctx_ptr).prepare_switch_to(&*next_ctx_ptr);
+            let prepared = ax_hal::percpu::prepare_current_thread_publish(&pin, next_header)
+                .expect("next current-thread publication must validate");
+
+            // Safety: prev_task is alive (Arc held on the suspended caller's
+            // stack) and remains so through the incoming switch-tail cleanup.
+            *PREV_TASK.current_ref_mut_raw() = Some(PreviousTask {
+                task: NonNull::new(Arc::as_ptr(&prev_task) as *mut _).unwrap(),
+                binding_epoch: prev_binding.epoch(),
+            });
 
             // The strong reference count of `prev_task` will be decremented by 1,
             // but won't be dropped until `gc_entry()` is called.
@@ -1076,11 +1111,13 @@ impl AxRunQueue {
 
             CurrentTask::set_current(prev_task, next_task);
 
-            (*prev_ctx_ptr).switch_to(&*next_ctx_ptr);
+            // From publication through the naked transfer there are no result
+            // branches, allocations, or ownership-sensitive Rust operations.
+            ax_hal::percpu::commit_current_thread_publish(prepared);
+            (*prev_ctx_ptr).switch_to_raw(&*next_ctx_ptr);
 
-            // The current task is now **next_task** on this CPU, so clear `prev_task.on_cpu`
-            // to indicate that it has finished its scheduling process and no longer running on this CPU.
-            #[cfg(feature = "smp")]
+            // Execution resumes here as the incoming task. Withdraw the exact
+            // previous binding before making that task runnable elsewhere.
             clear_prev_task_on_cpu();
         }
     }
@@ -1089,10 +1126,21 @@ impl AxRunQueue {
 fn gc_entry() {
     loop {
         // Drop all exited tasks and recycle resources.
-        let n = EXITED_TASKS.with_current(|exited_tasks| exited_tasks.len());
+        let n = {
+            let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+            // SAFETY: the guard prevents migration and IRQ re-entry, and the
+            // closure does not let the per-CPU borrow escape.
+            let pin = unsafe { CpuPin::new_unchecked() };
+            unsafe { EXITED_TASKS.with_current_mut_raw(&pin, |tasks| tasks.len()) }
+        };
         for _ in 0..n {
             // Do not do the slow drops in the critical section.
-            let task = EXITED_TASKS.with_current(|exited_tasks| exited_tasks.pop_front());
+            let task = {
+                let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+                // SAFETY: the guard prevents migration and IRQ re-entry.
+                let pin = unsafe { CpuPin::new_unchecked() };
+                unsafe { EXITED_TASKS.with_current_mut_raw(&pin, |tasks| tasks.pop_front()) }
+            };
             if let Some(task) = task {
                 if Arc::strong_count(&task) == 1 {
                     // If I'm the last holder of the task, drop it immediately.
@@ -1100,7 +1148,12 @@ fn gc_entry() {
                 } else {
                     // Otherwise (e.g, `switch_to` is not completed, held by the
                     // joiner, etc), push it back and wait for them to drop first.
-                    EXITED_TASKS.with_current(|exited_tasks| exited_tasks.push_back(task));
+                    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+                    // SAFETY: the guard prevents migration and IRQ re-entry.
+                    let pin = unsafe { CpuPin::new_unchecked() };
+                    unsafe {
+                        EXITED_TASKS.with_current_mut_raw(&pin, |tasks| tasks.push_back(task))
+                    };
                 }
             }
         }
@@ -1145,20 +1198,25 @@ pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
 
 /// Clear the `on_cpu` field of the previous task running on this CPU, then
 /// complete any cross-core wake that was deferred while it was still `on_cpu`.
-#[cfg(feature = "smp")]
 pub(crate) unsafe fn clear_prev_task_on_cpu() {
-    let prev = unsafe { PREV_TASK.current_ref_mut_raw() }
+    let previous = unsafe { PREV_TASK.current_ref_mut_raw() }
         .take()
         .expect("PREV_TASK should have been set by switch_to");
     // Safety: prev_task's Arc is still alive on the caller's stack at this point
     // (switch_to has not yet returned), so the pointer is valid.
-    let prev = unsafe { prev.as_ref() };
+    let prev = unsafe { previous.task.as_ref() };
+    // SAFETY: current publication and architecture registers already identify
+    // the incoming task, and this is the sole owner of the recorded epoch.
+    unsafe { prev.current_header().unbind_cpu(previous.binding_epoch) }
+        .expect("incoming switch tail must withdraw prev_task CPU binding");
     // Publish that the context is fully saved. The SeqCst store pairs with the
     // waker's `on_cpu()`/`take_wake()` handshake in `put_task_with_state`.
+    #[cfg(feature = "smp")]
     prev.set_on_cpu(false);
     // Drain a wake that raced our switch-out. `take_wake` is the single arbiter:
     // if the waker did not reclaim it (it saw `on_cpu` still true), we get the
     // owned reference and enqueue it now that the context is saved.
+    #[cfg(feature = "smp")]
     if let Some(task) = prev.take_wake() {
         let target = task.cpu_id() as usize;
         // Leaf lock: `resched()` already dropped this CPU's scheduler lock before
@@ -1202,18 +1260,25 @@ pub(crate) fn init() {
     let idle_task = TaskInner::new(|| crate::run_idle(), "idle".into(), idle_task_stack_size);
     // idle task should be pinned to the current CPU.
     idle_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
-    IDLE_TASK.with_current(|i| {
-        i.init_once(idle_task.into_arc());
-    });
+    // SAFETY: scheduler bootstrap runs before this CPU can schedule or accept
+    // interrupts, and the closure keeps the mutable borrow local.
+    let pin = unsafe { CpuPin::new_unchecked() };
+    unsafe {
+        IDLE_TASK.with_current_mut_raw(&pin, |idle| {
+            idle.init_once(idle_task.into_arc());
+        })
+    };
 
     // Put the subsequent execution into the `main` task.
     let main_task = TaskInner::new_init("main".into(), main_task_stack()).into_arc();
     main_task.set_state(TaskState::Running);
     unsafe { CurrentTask::init_current(main_task) }
 
-    RUN_QUEUE.with_current(|rq| {
-        rq.init_once(AxRunQueue::new(cpu_id));
-    });
+    unsafe {
+        RUN_QUEUE.with_current_mut_raw(&pin, |run_queue| {
+            run_queue.init_once(AxRunQueue::new(cpu_id));
+        })
+    };
     unsafe {
         RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
     }
@@ -1229,14 +1294,21 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     )
     .into_arc();
     idle_task.set_state(TaskState::Running);
-    IDLE_TASK.with_current(|i| {
-        i.init_once(idle_task.clone());
-    });
+    // SAFETY: the secondary CPU remains offline and IRQ-disabled throughout
+    // its scheduler initialization.
+    let pin = unsafe { CpuPin::new_unchecked() };
+    unsafe {
+        IDLE_TASK.with_current_mut_raw(&pin, |idle| {
+            idle.init_once(idle_task.clone());
+        })
+    };
     unsafe { CurrentTask::init_current(idle_task) }
 
-    RUN_QUEUE.with_current(|rq| {
-        rq.init_once(AxRunQueue::new(cpu_id));
-    });
+    unsafe {
+        RUN_QUEUE.with_current_mut_raw(&pin, |run_queue| {
+            run_queue.init_once(AxRunQueue::new(cpu_id));
+        })
+    };
     unsafe {
         RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
     }

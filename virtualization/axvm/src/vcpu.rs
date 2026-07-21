@@ -17,13 +17,76 @@
 use alloc::format;
 use core::{cell::UnsafeCell, mem::MaybeUninit};
 
+use ax_kernel_guard::NoPreempt;
 use ax_kspin::SpinNoIrq as Mutex;
+use ax_percpu::{BoundCpuPin, CpuPin};
 use axvm_types::{
     GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
     VmBackendError, VmVcpuState,
 };
 
 use crate::{AxVmError, AxVmResult, ax_err};
+
+/// CPU-local identity sampled before entering an architecture backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HostCpuIdentity {
+    cpu_index: ax_percpu::CpuIndex,
+    area_base: usize,
+    generation: u32,
+    cookie: usize,
+}
+
+impl HostCpuIdentity {
+    fn current(pin: &BoundCpuPin<'_>) -> Self {
+        Self {
+            cpu_index: pin.cpu_index(),
+            area_base: pin.area().runtime_base(),
+            generation: pin.generation(),
+            cookie: pin.cookie(),
+        }
+    }
+}
+
+/// Borrowed proof that one AxVM operation cannot migrate between host CPUs.
+struct PinnedCpuContext<'pin> {
+    cpu_pin: &'pin CpuPin,
+    bound_cpu_pin: BoundCpuPin<'pin>,
+    identity: HostCpuIdentity,
+}
+
+impl<'pin> PinnedCpuContext<'pin> {
+    fn new(cpu_pin: &'pin CpuPin) -> Self {
+        let bound_cpu_pin =
+            ax_percpu::bound_current(cpu_pin).expect("vCPU operation requires a bound CPU area");
+        let identity = HostCpuIdentity::current(&bound_cpu_pin);
+        Self {
+            cpu_pin,
+            bound_cpu_pin,
+            identity,
+        }
+    }
+
+    fn assert_host_cpu_binding(&self) {
+        let current = ax_percpu::bound_current(self.cpu_pin).unwrap_or_else(|error| {
+            panic!("vCPU transition did not restore CPU-local state: {error}")
+        });
+        assert_eq!(
+            HostCpuIdentity::current(&current),
+            self.identity,
+            "vCPU transition restored a different CPU-local identity"
+        );
+    }
+}
+
+struct CurrentVcpuPublication<'scope, 'cpu> {
+    pin: &'scope BoundCpuPin<'cpu>,
+}
+
+impl Drop for CurrentVcpuPublication<'_, '_> {
+    fn drop(&mut self) {
+        CURRENT_VCPU.write_current(self.pin, 0);
+    }
+}
 
 /// Mutable runtime state of a virtual CPU.
 pub struct AxVCpuInnerMut {
@@ -139,24 +202,31 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     }
 
     /// Runs `f` with this vCPU recorded as current on the physical CPU.
-    pub fn with_current_cpu_set<F, T>(&self, f: F) -> T
+    pub(crate) fn with_current_cpu_set<F, T>(&self, f: F) -> T
     where
         F: FnOnce() -> T,
     {
-        if let Some(current_vcpu) = get_current_vcpu::<A>() {
+        let _guard = NoPreempt::new();
+        // SAFETY: the guard prevents migration until all CPU-local borrows end.
+        let cpu_pin = unsafe { CpuPin::new_unchecked() };
+        let pinned_cpu = PinnedCpuContext::new(&cpu_pin);
+
+        if let Some(current_vcpu) = get_current_vcpu::<A>(&pinned_cpu.bound_cpu_pin) {
             if core::ptr::eq(current_vcpu, self) {
-                f()
+                let result = f();
+                pinned_cpu.assert_host_cpu_binding();
+                result
             } else {
                 panic!("nested vCPU operation is not allowed");
             }
         } else {
-            unsafe {
-                set_current_vcpu(self);
-            }
+            set_current_vcpu(self, &pinned_cpu.bound_cpu_pin);
+            let publication = CurrentVcpuPublication {
+                pin: &pinned_cpu.bound_cpu_pin,
+            };
             let result = f();
-            unsafe {
-                clear_current_vcpu();
-            }
+            pinned_cpu.assert_host_cpu_binding();
+            drop(publication);
             result
         }
     }
@@ -245,44 +315,37 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
 }
 
 #[ax_percpu::def_percpu]
-static mut CURRENT_VCPU: Option<*mut u8> = None;
+static CURRENT_VCPU: usize = 0;
 
 /// Gets the current AxVM vCPU on this physical CPU.
-#[allow(static_mut_refs)]
-pub fn get_current_vcpu<'a, A: VmArchVcpuOps>() -> Option<&'a AxVCpu<A>> {
-    unsafe {
-        CURRENT_VCPU
-            .current_ref_raw()
-            .as_ref()
-            .copied()
-            .and_then(|p| (p as *const AxVCpu<A>).as_ref())
-    }
+pub(crate) fn get_current_vcpu<'pin, A: VmArchVcpuOps>(
+    pin: &'pin BoundCpuPin<'_>,
+) -> Option<&'pin AxVCpu<A>> {
+    let pointer = CURRENT_VCPU.read_current(pin);
+    // SAFETY: publication is scoped by with_current_cpu_set, which borrows the
+    // live AxVCpu and clears this pointer before its CPU pin expires.
+    unsafe { (pointer as *const AxVCpu<A>).as_ref() }
 }
 
-/// Sets the current AxVM vCPU on this physical CPU.
-///
-/// # Safety
-///
-/// The caller must clear the current vCPU before the wrapped operation returns.
-#[allow(static_mut_refs)]
-pub unsafe fn set_current_vcpu<A: VmArchVcpuOps>(vcpu: &AxVCpu<A>) {
-    unsafe {
-        CURRENT_VCPU
-            .current_ref_mut_raw()
-            .replace(vcpu as *const _ as *mut u8);
-    }
+fn set_current_vcpu<A: VmArchVcpuOps>(vcpu: &AxVCpu<A>, pin: &BoundCpuPin<'_>) {
+    assert_eq!(
+        CURRENT_VCPU.read_current(pin),
+        0,
+        "current vCPU publication must be empty"
+    );
+    CURRENT_VCPU.write_current(pin, vcpu as *const _ as usize);
 }
 
-/// Clears the current AxVM vCPU on this physical CPU.
-///
-/// # Safety
-///
-/// The caller must only clear a vCPU it previously installed.
-#[allow(static_mut_refs)]
-pub unsafe fn clear_current_vcpu() {
-    unsafe {
-        CURRENT_VCPU.current_ref_mut_raw().take();
-    }
+/// Runs `operation` with the current vCPU borrowed only for a pinned CPU scope.
+pub(crate) fn with_current_vcpu<A: VmArchVcpuOps, R>(
+    operation: impl FnOnce(Option<&AxVCpu<A>>) -> R,
+) -> R {
+    let _guard = NoPreempt::new();
+    // SAFETY: the guard prevents migration through the closure.
+    let cpu_pin = unsafe { CpuPin::new_unchecked() };
+    let bound =
+        ax_percpu::bound_current(&cpu_pin).expect("current vCPU lookup requires a bound CPU area");
+    operation(get_current_vcpu(&bound))
 }
 
 /// Host per-CPU virtualization state wrapper owned by AxVM.

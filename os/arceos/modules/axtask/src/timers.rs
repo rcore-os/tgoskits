@@ -105,11 +105,16 @@ pub(crate) fn next_deadline_nanos() -> Option<u64> {
 
 pub(crate) fn set_alarm_wakeup(deadline: TimeValue, task: AxTaskRef) {
     let _g = NoPreemptIrqSave::new();
-    TIMER_LIST.with_current(|timer_list| {
-        let ticket_id = TIMER_TICKET_ID.fetch_add(1, Ordering::AcqRel);
-        task.set_timer_ticket(ticket_id);
-        timer_list.set(deadline, TaskWakeupEvent { ticket_id, task });
-    });
+    // SAFETY: `NoPreemptIrqSave` pins the CPU and excludes timer IRQ re-entry;
+    // the closure does not let the mutable per-CPU borrow escape.
+    let pin = unsafe { ax_hal::percpu::CpuPin::new_unchecked() };
+    unsafe {
+        TIMER_LIST.with_current_mut_raw(&pin, |timer_list| {
+            let ticket_id = TIMER_TICKET_ID.fetch_add(1, Ordering::AcqRel);
+            task.set_timer_ticket(ticket_id);
+            timer_list.set(deadline, TaskWakeupEvent { ticket_id, task });
+        })
+    };
     maybe_reprogram_timer(deadline);
 }
 
