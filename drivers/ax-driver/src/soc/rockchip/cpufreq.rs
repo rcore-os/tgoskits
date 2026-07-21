@@ -708,29 +708,66 @@ pub fn calibrate_wanted() -> bool {
     CALIBRATE && GOV_READY.load(Ordering::Acquire)
 }
 
+// The calibration sweep is board-only (gated off by `CALIBRATE = false` in
+// production), but `rk3588-cpufreq` is a public feature and must still COMPILE
+// on a non-aarch64 host (e.g. a plain `cargo build`/`cargo test` on the CI
+// host). These four leaf reads are the only AArch64 inline asm in this module;
+// everything above them (`measure_mhz`, `cal_delay_ms`, `calibrate_cluster`)
+// is arch-generic and calls only these, so gating just the leaves keeps the
+// aarch64/board behavior byte-for-byte identical while giving every other
+// target a harmless stub (0 never causes a hang: `cal_delay_ms`'s `frq.max(1)`
+// and `measure_mhz`'s zero-length window both degenerate to an immediate
+// return rather than spinning).
+#[cfg(target_arch = "aarch64")]
 #[inline]
 fn rd_pmccntr() -> u64 {
     let v: u64;
     unsafe { core::arch::asm!("mrs {}, pmccntr_el0", out(reg) v) };
     v
 }
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn rd_pmccntr() -> u64 {
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
 #[inline]
 fn rd_cntvct() -> u64 {
     let v: u64;
     unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) v) };
     v
 }
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn rd_cntvct() -> u64 {
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
 #[inline]
 fn rd_cntfrq() -> u64 {
     let v: u64;
     unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) v) };
     v
 }
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn rd_cntfrq() -> u64 {
+    0
+}
+
+#[cfg(target_arch = "aarch64")]
 #[inline]
 fn rd_mpidr() -> u64 {
     let v: u64;
     unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) v) };
     v
+}
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn rd_mpidr() -> u64 {
+    0
 }
 
 /// Busy-wait `ms` milliseconds against the fixed-rate `CNTVCT` clock.
