@@ -19,10 +19,32 @@ int main(void)
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
     strncpy(ifr.ifr_name, "lo", IFNAMSIZ - 1);
-    ifr.ifr_flags = IFF_UP | IFF_LOOPBACK | IFF_RUNNING;
+
+    if (ioctl(fd, SIOCGIFFLAGS, &ifr) != 0) {
+        printf("FAIL: SIOCGIFFLAGS lo errno=%d (%s)\n", errno,
+               strerror(errno));
+        close(fd);
+        return 1;
+    }
 
     if (ioctl(fd, SIOCSIFFLAGS, &ifr) != 0) {
-        printf("FAIL: SIOCSIFFLAGS lo errno=%d (%s)\n", errno, strerror(errno));
+        printf("FAIL: privileged SIOCSIFFLAGS lo errno=%d (%s)\n", errno,
+               strerror(errno));
+        close(fd);
+        return 1;
+    }
+
+    if (setuid(65534) != 0 || geteuid() != 65534) {
+        printf("FAIL: drop privileges errno=%d (%s)\n", errno,
+               strerror(errno));
+        close(fd);
+        return 1;
+    }
+
+    errno = 0;
+    if (ioctl(fd, SIOCSIFFLAGS, &ifr) != -1 || errno != EPERM) {
+        printf("FAIL: unprivileged SIOCSIFFLAGS expected EPERM, errno=%d (%s)\n",
+               errno, strerror(errno));
         close(fd);
         return 1;
     }
