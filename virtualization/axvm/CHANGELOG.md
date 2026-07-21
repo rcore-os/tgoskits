@@ -43,11 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Select the default AArch64 virtual console from the firmware-selected UART
   model; PL011, packed NS16550, and DW-APB register layouts are not conflated.
 - Replace raw shared clock/reset-controller passthrough with selector-level
-  platform grants, transactional resource claims, and guest-local fixed
-  clocks or preconfigured resets while keeping provider MMIO unmapped.
+  platform grants and transactional resource claims. Static resources become
+  guest-local providers; mutable resources use a VM-private SCMI service whose
+  controls retain the physical ownership lease, while provider MMIO remains
+  unmapped.
 
 ### Fixed
 
+- Reject an explicit ACPI firmware request when assigned AArch64 devices need
+  mutable SCMI-mediated providers; the current private transport is described
+  only in generated FDT and never falls back to exposing host provider MMIO.
 - Support AArch64 GICv3 implementations without `ICH_HCR_EL2.TDIR` by using
   the common CPU-interface trap and preserving CTLR, PMR, RPR, and DIR
   semantics instead of rejecting VM creation.
@@ -83,6 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   physical provider with an assigned device.
 - Remove firmware aliases whose register ranges overlap a protected provider
   aperture, so a guest driver cannot bypass the provider's stage-2 hole.
+- Preserve assigned AArch64 device clock-rate and reset transitions through a
+  lease-filtered SCMI endpoint instead of freezing the host's observed boot
+  state into fixed-clock firmware nodes.
 
 ### Removed
 

@@ -59,6 +59,9 @@ pub type Aarch64VCpuCreateConfig = ArmVcpuCreateConfig;
 /// Compatibility alias for existing AArch64 users.
 pub type Aarch64VCpuSetupConfig = ArmVcpuSetupConfig;
 
+/// SMCCC return value used when no VM-local firmware capability owns a call.
+pub const SMCCC_NOT_SUPPORTED: u64 = smccc::NOT_SUPPORTED;
+
 /// Returns the maximum guest page table levels supported by the hardware.
 ///
 /// This is determined by the physical address size:

@@ -8,15 +8,16 @@ use std::{
 
 use axdevice::ControllerInputId;
 use axvm::machine::{
-    Aarch64GicV3Profile, AddressRange, ConsoleRxPolicy, ConsoleTxPolicy, DeviceBackend,
-    DeviceInstanceId, DeviceModelId, DeviceRequirements, GuestMemoryPlacement, GuestMemoryRegion,
-    HostConsoleBackend, HostDeviceClaimProvider, HostDeviceDependency, HostDeviceDependencyKind,
-    HostDeviceDescriptor, HostDeviceId, HostDeviceLease, HostDeviceOwnership, HostDeviceSelector,
-    HostInterruptResource, HostPlatformSnapshot, HostProviderReference, HostProviderResourceClaim,
-    HostProviderResourceGrant, HostProviderResourceLease, InterruptControllerPlan,
-    InterruptControllerProfile, IoPortRange, MachinePlanError, MachineProfile,
-    RegisteredHostDeviceClaimProvider, ResourceSlot, VirtualDeviceDescriptor, VirtualDeviceSource,
-    VmMachinePlanner, VmMachineRequest, VmMachineTransaction,
+    Aarch64GicV3Profile, AddressRange, ArmScmiMediationProfile, ConsoleRxPolicy, ConsoleTxPolicy,
+    DeviceBackend, DeviceInstanceId, DeviceModelId, DeviceRequirements, GuestMemoryPlacement,
+    GuestMemoryRegion, HostConsoleBackend, HostDeviceClaimProvider, HostDeviceDependency,
+    HostDeviceDependencyKind, HostDeviceDescriptor, HostDeviceId, HostDeviceLease,
+    HostDeviceOwnership, HostDeviceSelector, HostInterruptResource, HostPlatformSnapshot,
+    HostProviderReference, HostProviderResourceClaim, HostProviderResourceGrant,
+    HostProviderResourceLease, InterruptControllerPlan, InterruptControllerProfile, IoPortRange,
+    MachinePlanError, MachineProfile, RegisteredHostDeviceClaimProvider, ResourceSlot,
+    VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner, VmMachineRequest,
+    VmMachineTransaction,
 };
 use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolicy, VmMachineMode};
 
@@ -46,6 +47,17 @@ fn virtual_machine_allocates_resources_deterministically_without_host_io_mapping
         0x1000_1000
     );
     assert_eq!(plan.virtual_devices()[1].interrupts()[0].id(), 33);
+}
+
+#[test]
+fn scmi_profile_rejects_smc_ids_owned_by_the_vcpu_core() {
+    for function in [0x0200_0010, 0x8000_0010, 0x8400_0010] {
+        assert!(
+            ArmScmiMediationProfile::new(function).is_err(),
+            "SMC function {function:#x} must not collide with local SMCCC/PSCI handling"
+        );
+    }
+    assert!(ArmScmiMediationProfile::new(0x8200_0010).is_ok());
 }
 
 #[test]
@@ -759,6 +771,50 @@ fn registered_provider_resource_claims_reject_competing_vm() {
     assert_eq!(second.len(), 2);
 }
 
+#[test]
+fn exclusion_registry_cannot_impersonate_a_mediated_provider_capability() {
+    let profile = MachineProfile::new(AddressRange::new(0x1000_0000, 0x10_0000).unwrap(), 32..=127)
+        .unwrap()
+        .with_arm_scmi_mediation(ArmScmiMediationProfile::new(0x8200_0010).unwrap());
+    let provider_id = HostDeviceId::new("/mediated-clock-controller").unwrap();
+    let dependency = HostDeviceDependency::new(
+        provider_id.clone(),
+        "clocks",
+        HostDeviceDependencyKind::Required,
+        HostProviderReference::clock(vec![7]),
+    )
+    .unwrap();
+    let mut snapshot = HostPlatformSnapshot::new(89)
+        .with_device(
+            HostDeviceDescriptor::new(provider_id.clone(), HostDeviceOwnership::HostExclusive)
+                .with_mmio(AddressRange::new(0x2200_0000, 0x1000).unwrap()),
+        )
+        .with_device(
+            HostDeviceDescriptor::new(
+                HostDeviceId::new("/mediated-clock-consumer").unwrap(),
+                HostDeviceOwnership::Assignable,
+            )
+            .with_mmio(AddressRange::new(0x2200_1000, 0x1000).unwrap())
+            .with_dependency(dependency),
+        );
+    snapshot
+        .grant_provider_resource(
+            &provider_id,
+            HostProviderResourceGrant::mediated_clock(vec![7]),
+        )
+        .unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt);
+    let plan = VmMachinePlanner::new(profile)
+        .plan(&request, &snapshot)
+        .unwrap();
+    let provider = RegisteredHostDeviceClaimProvider::new(snapshot.generation(), 1201);
+
+    let error = VmMachineTransaction::claim(&plan, &provider).unwrap_err();
+
+    assert!(error.to_string().contains("requires Clock control"));
+    assert!(error.to_string().contains("lease exposes Pinned"));
+}
+
 struct FailingClaimProvider {
     generation: u64,
     releases: Arc<AtomicUsize>,
@@ -784,8 +840,8 @@ impl HostDeviceClaimProvider for FailingClaimProvider {
     fn claim_provider_resource(
         &self,
         _resource: &HostProviderResourceClaim,
-    ) -> Result<Box<dyn HostProviderResourceLease>, MachinePlanError> {
-        Ok(Box::new(CountingLease {
+    ) -> Result<Arc<dyn HostProviderResourceLease>, MachinePlanError> {
+        Ok(Arc::new(CountingLease {
             releases: self.releases.clone(),
         }))
     }

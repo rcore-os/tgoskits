@@ -16,7 +16,7 @@ bitflags = "2"
 log = "0.4"
 mbarrier = "0.1"
 smccc = "0.2"
-thiserror = {version = "2", default-features = false}
+thiserror.workspace = true
 tock-registers = "0.10"
 nb = "1"
 aarch64-cpu-ext = "0.1"

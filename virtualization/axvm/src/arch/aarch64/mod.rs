@@ -36,6 +36,7 @@ mod npt;
 mod ns16550_model;
 mod pl011;
 mod placement;
+mod scmi;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod timer;
@@ -82,7 +83,8 @@ pub fn standard_machine_profile()
     )?
     .with_interrupt_controller(crate::machine::InterruptControllerProfile::Aarch64GicV3(
         controller,
-    )))
+    ))
+    .with_arm_scmi_mediation(crate::machine::ArmScmiMediationProfile::new(0x8200_0010)?))
 }
 
 pub(crate) struct Aarch64Arch;
@@ -126,6 +128,7 @@ pub(crate) struct VmArchState {
     gic_controller: Option<Arc<arm_vgic::GicV3Controller>>,
     host_spi_forwarding: Option<gic::HostSpiForwarding>,
     maintenance_interrupt: Option<gic::HostMaintenanceInterrupt>,
+    scmi_service: Option<Arc<scmi::Aarch64ScmiService>>,
 }
 
 impl VmArchState {
@@ -134,6 +137,7 @@ impl VmArchState {
             gic_controller: None,
             host_spi_forwarding: None,
             maintenance_interrupt: None,
+            scmi_service: None,
         }
     }
 
@@ -150,6 +154,14 @@ impl VmArchState {
 
     pub(crate) fn gic_controller(&self) -> Option<Arc<arm_vgic::GicV3Controller>> {
         self.gic_controller.clone()
+    }
+
+    pub(crate) fn set_scmi_service(&mut self, service: Option<Arc<scmi::Aarch64ScmiService>>) {
+        self.scmi_service = service;
+    }
+
+    pub(crate) fn scmi_service(&self) -> Option<Arc<scmi::Aarch64ScmiService>> {
+        self.scmi_service.clone()
     }
 }
 
@@ -233,6 +245,15 @@ impl ArchOps for Aarch64Arch {
         match exit {
             ArmVmExit::Hypercall { nr, args } => {
                 super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
+            }
+            ArmVmExit::FirmwareCall { function, .. } => {
+                let service =
+                    vm.with_resources(|resources| Ok(resources.arch_state().scmi_service()))?;
+                let result = service
+                    .and_then(|service| service.handle_smc(function))
+                    .unwrap_or(arm_vcpu::SMCCC_NOT_SUPPORTED as usize);
+                vcpu.set_gpr(0, result);
+                Ok(BoundVcpuExit::Continue)
             }
             ArmVmExit::DataAbort { abort } => data_abort::handle(vm, vcpu, abort),
             ArmVmExit::SysRegRead { addr, reg } => sysreg::handle_read(

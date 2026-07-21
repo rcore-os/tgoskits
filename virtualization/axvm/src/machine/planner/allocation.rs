@@ -88,6 +88,16 @@ impl ResourceAllocators {
         AddressRange::new(range.start(), range.len())
     }
 
+    pub(super) fn allocate_infrastructure_mmio(
+        &mut self,
+        owner: &'static str,
+        size: u64,
+        alignment: u64,
+    ) -> MachinePlanResult<AddressRange> {
+        let owner = DeviceInstanceId::new(owner)?;
+        self.allocate_mmio(&owner, size, alignment)
+    }
+
     fn allocate_interrupt(&mut self, owner: &DeviceInstanceId) -> MachinePlanResult<u32> {
         let range = self
             .interrupts

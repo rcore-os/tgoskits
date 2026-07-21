@@ -165,7 +165,43 @@ pub struct MachineProfile {
     reserved_mmio: Vec<AddressRange>,
     reserved_interrupts: Vec<u32>,
     interrupt_controller: Option<super::InterruptControllerProfile>,
+    provider_mediation: Option<ArmScmiMediationProfile>,
     loongarch_platform: Option<super::LoongArchPlatformProfile>,
+}
+
+/// VM-local Arm SCMI transport reserved for assigned provider resources.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArmScmiMediationProfile {
+    smc_function_id: u32,
+}
+
+impl ArmScmiMediationProfile {
+    /// Size and alignment of the SCMI shared-memory transport window.
+    pub const SHARED_MEMORY_SIZE: u64 = 0x1000;
+
+    /// Creates a fast SMC transport in the SiP or OEM owner namespace.
+    pub fn new(smc_function_id: u32) -> MachinePlanResult<Self> {
+        const FAST_CALL: u32 = 1 << 31;
+        const OWNER_SHIFT: u32 = 24;
+        const OWNER_MASK: u32 = 0x3f;
+        const SIP_OWNER: u32 = 2;
+        const OEM_OWNER: u32 = 3;
+
+        let owner = (smc_function_id >> OWNER_SHIFT) & OWNER_MASK;
+        if smc_function_id & FAST_CALL == 0 || !matches!(owner, SIP_OWNER | OEM_OWNER) {
+            return Err(MachinePlanError::InvalidProviderMediation {
+                detail: alloc::format!(
+                    "SCMI function {smc_function_id:#x} must be a fast SiP or OEM SMC"
+                ),
+            });
+        }
+        Ok(Self { smc_function_id })
+    }
+
+    /// Returns the function identifier advertised to the guest.
+    pub const fn smc_function_id(self) -> u32 {
+        self.smc_function_id
+    }
 }
 
 impl MachineProfile {
@@ -187,6 +223,7 @@ impl MachineProfile {
             reserved_mmio: Vec::new(),
             reserved_interrupts: Vec::new(),
             interrupt_controller: None,
+            provider_mediation: None,
             loongarch_platform: None,
         })
     }
@@ -218,6 +255,12 @@ impl MachineProfile {
         self
     }
 
+    /// Enables VM-local mediation for mutable Arm clock/reset resources.
+    pub const fn with_arm_scmi_mediation(mut self, profile: ArmScmiMediationProfile) -> Self {
+        self.provider_mediation = Some(profile);
+        self
+    }
+
     /// Selects firmware-facing LoongArch platform resources.
     pub fn with_loongarch_platform(mut self, platform: super::LoongArchPlatformProfile) -> Self {
         self.loongarch_platform = Some(platform);
@@ -246,6 +289,10 @@ impl MachineProfile {
 
     pub(crate) const fn interrupt_controller(&self) -> Option<&super::InterruptControllerProfile> {
         self.interrupt_controller.as_ref()
+    }
+
+    pub(crate) const fn arm_scmi_mediation(&self) -> Option<ArmScmiMediationProfile> {
+        self.provider_mediation
     }
 
     pub(crate) const fn loongarch_platform(&self) -> Option<&super::LoongArchPlatformProfile> {

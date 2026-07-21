@@ -26,9 +26,9 @@ enum ProviderProtectionError {
     SharedProvider(Box<SharedProviderConflict>),
     #[error(
         "host device '{device}' cannot use shared provider '{provider}' through '{property}' \
-         selector {specifier:?}: no pinned host resource grant is available"
+         selector {specifier:?}: no lease-backed provider grant is available"
     )]
-    MissingPinnedResource {
+    MissingProviderGrant {
         device: String,
         provider: String,
         property: String,
@@ -62,6 +62,7 @@ pub(super) fn plan_host_devices(
     snapshot: &HostPlatformSnapshot,
     denied: &BTreeSet<usize>,
     virtual_templates: &BTreeSet<usize>,
+    provider_mediation_supported: bool,
 ) -> MachinePlanResult<(
     Vec<PlannedHostDevice>,
     Vec<PreconfiguredHostDeviceResources>,
@@ -120,7 +121,8 @@ pub(super) fn plan_host_devices(
             }
         }
     }
-    let mut preconfigured = protect_host_managed_providers(&mut planned)?;
+    let mut preconfigured =
+        protect_host_managed_providers(&mut planned, provider_mediation_supported)?;
 
     loop {
         let unavailable = planned
@@ -165,6 +167,7 @@ pub(super) fn plan_host_devices(
 
 fn protect_host_managed_providers(
     planned: &mut [PlannedHostDevice],
+    provider_mediation_supported: bool,
 ) -> MachinePlanResult<Vec<PreconfiguredHostDeviceResources>> {
     let protected_providers = protected_provider_indices(planned);
     let protected_provider_ids = protected_providers
@@ -218,7 +221,14 @@ fn protect_host_managed_providers(
     let mut preconfigured = Vec::new();
     for consumer_index in affected_consumers {
         let result = blocked_consumers.remove(&consumer_index).map_or_else(
-            || preconfigure_host_device(&planned[consumer_index], planned, &protected_provider_ids),
+            || {
+                preconfigure_host_device(
+                    &planned[consumer_index],
+                    planned,
+                    &protected_provider_ids,
+                    provider_mediation_supported,
+                )
+            },
             Err,
         );
         match result {
@@ -388,6 +398,7 @@ fn preconfigure_host_device(
     device: &PlannedHostDevice,
     planned: &[PlannedHostDevice],
     protected_providers: &BTreeSet<crate::machine::HostDeviceId>,
+    provider_mediation_supported: bool,
 ) -> Result<PreconfiguredHostDeviceResources, ProviderProtectionError> {
     let clocks = device
         .dependencies()
@@ -398,14 +409,20 @@ fn preconfigure_host_device(
         })
         .map(|dependency| {
             let state = provider_resource_state(planned, device, dependency)?;
-            let HostProviderResourceState::FixedClock(rate_hz) = state else {
-                return Err(missing_provider_resource(device, dependency));
-            };
-            Ok(PreconfiguredHostClock::new(
-                dependency.provider().clone(),
-                dependency.reference().specifier().to_vec(),
-                rate_hz,
-            ))
+            match state {
+                HostProviderResourceState::FixedClock(rate_hz) => Ok(PreconfiguredHostClock::new(
+                    dependency.provider().clone(),
+                    dependency.reference().specifier().to_vec(),
+                    rate_hz,
+                )),
+                HostProviderResourceState::MediatedClock if provider_mediation_supported => {
+                    Ok(PreconfiguredHostClock::mediated(
+                        dependency.provider().clone(),
+                        dependency.reference().specifier().to_vec(),
+                    ))
+                }
+                _ => Err(missing_provider_resource(device, dependency)),
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
     let resets = device
@@ -417,13 +434,19 @@ fn preconfigure_host_device(
         })
         .map(|dependency| {
             let state = provider_resource_state(planned, device, dependency)?;
-            if state != HostProviderResourceState::DeassertedReset {
-                return Err(missing_provider_resource(device, dependency));
+            match state {
+                HostProviderResourceState::DeassertedReset => Ok(PreconfiguredHostReset::new(
+                    dependency.provider().clone(),
+                    dependency.reference().specifier().to_vec(),
+                )),
+                HostProviderResourceState::MediatedReset if provider_mediation_supported => {
+                    Ok(PreconfiguredHostReset::mediated(
+                        dependency.provider().clone(),
+                        dependency.reference().specifier().to_vec(),
+                    ))
+                }
+                _ => Err(missing_provider_resource(device, dependency)),
             }
-            Ok(PreconfiguredHostReset::new(
-                dependency.provider().clone(),
-                dependency.reference().specifier().to_vec(),
-            ))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let all_clock_configurations = device
@@ -449,16 +472,31 @@ fn preconfigure_host_device(
         .into_iter()
         .map(|dependency| {
             let state = provider_resource_state(planned, device, dependency)?;
-            let HostProviderResourceState::FixedClock(rate_hz) = state else {
-                return Err(missing_provider_resource(device, dependency));
-            };
-            Ok(PreconfiguredHostClock::new(
-                dependency.provider().clone(),
-                dependency.reference().specifier().to_vec(),
-                rate_hz,
-            ))
+            match state {
+                HostProviderResourceState::FixedClock(rate_hz) => Ok(PreconfiguredHostClock::new(
+                    dependency.provider().clone(),
+                    dependency.reference().specifier().to_vec(),
+                    rate_hz,
+                )),
+                HostProviderResourceState::MediatedClock if provider_mediation_supported => {
+                    Ok(PreconfiguredHostClock::mediated(
+                        dependency.provider().clone(),
+                        dependency.reference().specifier().to_vec(),
+                    ))
+                }
+                _ => Err(missing_provider_resource(device, dependency)),
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if let Some(first) = clock_configurations.first()
+        && clock_configurations
+            .iter()
+            .any(|clock| clock.is_mediated() != first.is_mediated())
+    {
+        return Err(ProviderProtectionError::PartialClockConfiguration {
+            device: device.id().to_string(),
+        });
+    }
     Ok(PreconfiguredHostDeviceResources::new(
         device.id().clone(),
         clocks,
@@ -496,7 +534,7 @@ fn missing_provider_resource(
     device: &PlannedHostDevice,
     dependency: &crate::machine::HostDeviceDependency,
 ) -> ProviderProtectionError {
-    ProviderProtectionError::MissingPinnedResource {
+    ProviderProtectionError::MissingProviderGrant {
         device: device.id().to_string(),
         provider: dependency.provider().to_string(),
         property: dependency.property().into(),

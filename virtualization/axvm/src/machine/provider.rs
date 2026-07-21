@@ -1,4 +1,4 @@
-//! Provider-local firmware references and trusted static resource grants.
+//! Provider-local firmware references and lease-backed assignment grants.
 
 use alloc::{string::String, vec::Vec};
 use core::num::NonZeroU32;
@@ -14,8 +14,8 @@ pub enum HostProviderReferenceKind {
     Clock,
     /// One reset line selected from a reset controller.
     Reset,
-    /// Boot-time clock configuration that may be omitted after a trusted
-    /// platform adapter has pinned the resulting clock state.
+    /// Boot-time clock configuration that is either pinned by the platform or
+    /// replayed through a VM-local mediator.
     ClockConfiguration,
     /// One provider-managed resource such as a DMA channel or power domain.
     ManagedSubresource,
@@ -170,14 +170,18 @@ pub enum HostProviderResourceState {
     FixedClock(NonZeroU32),
     /// A reset line that remains deasserted for the lease lifetime.
     DeassertedReset,
+    /// A clock whose operations are exposed through a VM-local mediator.
+    MediatedClock,
+    /// A reset line whose operations are exposed through a VM-local mediator.
+    MediatedReset,
 }
 
-/// Trusted static state for one provider-local host resource.
+/// Trusted assignment authority for one provider-local host resource.
 ///
-/// This is an authority grant, not just an observation. The platform adapter
-/// must ensure that the selected clock or reset remains in this state for the
-/// complete guest-device lease. A dynamic host must instead provide a
-/// mediated provider or a lease that pins the resource.
+/// This is not an observation of current hardware state. For fixed resources,
+/// the platform adapter must pin the described state for the complete lease.
+/// For mediated resources, the claim provider must return a matching runtime
+/// capability whose handle structurally retains that lease.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct HostProviderResourceGrant {
     reference: HostProviderReference,
@@ -198,6 +202,22 @@ impl HostProviderResourceGrant {
         Self {
             reference: HostProviderReference::reset(specifier),
             state: HostProviderResourceState::DeassertedReset,
+        }
+    }
+
+    /// Grants mutable access to one clock through a VM-local mediator.
+    pub const fn mediated_clock(specifier: Vec<u32>) -> Self {
+        Self {
+            reference: HostProviderReference::clock(specifier),
+            state: HostProviderResourceState::MediatedClock,
+        }
+    }
+
+    /// Grants mutable access to one reset line through a VM-local mediator.
+    pub const fn mediated_reset(specifier: Vec<u32>) -> Self {
+        Self {
+            reference: HostProviderReference::reset(specifier),
+            state: HostProviderResourceState::MediatedReset,
         }
     }
 
@@ -225,6 +245,8 @@ impl HostProviderResourceGrant {
                 hash_bytes(hash, &rate_hz.get().to_le_bytes())
             }
             HostProviderResourceState::DeassertedReset => hash_bytes(hash, &[1]),
+            HostProviderResourceState::MediatedClock => hash_bytes(hash, &[2]),
+            HostProviderResourceState::MediatedReset => hash_bytes(hash, &[3]),
         }
     }
 }

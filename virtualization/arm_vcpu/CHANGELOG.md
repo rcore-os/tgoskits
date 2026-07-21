@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Decode trapped GICv3 common CPU-interface registers into typed exits so a
   VMM can provide the architectural fallback when dedicated `TDIR` trapping is
   unavailable.
+- Return unclaimed, valid SMC function identifiers as a typed
+  `ArmVmExit::FirmwareCall`, allowing the VMM to bind VM-local services without
+  forwarding guest arguments to host firmware.
 
 ## [0.5.16](https://github.com/rcore-os/tgoskits/compare/arm_vcpu-v0.5.15...arm_vcpu-v0.5.16) - 2026-07-07
 

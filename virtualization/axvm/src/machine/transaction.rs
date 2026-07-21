@@ -1,6 +1,13 @@
 //! Transactional ownership transfer for planned host devices.
 
-use alloc::{boxed::Box, collections::BTreeMap, format, string::ToString, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 
 use ax_kspin::SpinNoIrq as Mutex;
 
@@ -21,7 +28,195 @@ pub trait HostDeviceLease: Send {}
 /// Implementations keep a clock, reset, or other provider-owned resource in
 /// the state recorded by the immutable machine plan. The device lease is
 /// released before this supporting-resource lease during rollback and VM drop.
-pub trait HostProviderResourceLease: Send {}
+pub trait HostProviderResourceLease: Send + Sync {
+    /// Returns which runtime operation domain this lease exposes.
+    fn control_kind(&self) -> HostProviderResourceControlKind {
+        HostProviderResourceControlKind::Pinned
+    }
+
+    /// Borrows the clock capability owned by this lease, when present.
+    fn clock_control(&self) -> Option<&dyn HostClockControl> {
+        None
+    }
+
+    /// Borrows the reset capability owned by this lease, when present.
+    fn reset_control(&self) -> Option<&dyn HostResetControl> {
+        None
+    }
+}
+
+/// Runtime failure returned by a mediated host-provider capability.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum HostProviderControlError {
+    /// The selected resource or operation is not implemented by the backend.
+    #[error("host provider operation '{operation}' is unsupported")]
+    Unsupported {
+        /// Operation rejected by the backend.
+        operation: &'static str,
+    },
+    /// The live provider failed an otherwise valid operation.
+    #[error("host provider operation '{operation}' failed: {detail}")]
+    Backend {
+        /// Operation attempted by the mediator.
+        operation: &'static str,
+        /// Platform-specific diagnostic detail.
+        detail: String,
+    },
+}
+
+/// Lease-bound operations for one assigned host clock.
+pub trait HostClockControl: Send + Sync {
+    /// Returns whether the physical clock is currently enabled.
+    fn is_enabled(&self) -> Result<bool, HostProviderControlError>;
+
+    /// Ensures that the physical clock is enabled.
+    fn enable(&self) -> Result<(), HostProviderControlError>;
+
+    /// Returns the current physical rate in hertz.
+    fn rate(&self) -> Result<u64, HostProviderControlError>;
+
+    /// Requests a new physical rate in hertz.
+    fn set_rate(&self, rate_hz: u64) -> Result<(), HostProviderControlError>;
+}
+
+/// Lease-bound operations for one assigned host reset line.
+pub trait HostResetControl: Send + Sync {
+    /// Returns whether the line is currently asserted.
+    fn is_asserted(&self) -> Result<bool, HostProviderControlError>;
+
+    /// Asserts the physical reset line.
+    fn assert(&self) -> Result<(), HostProviderControlError>;
+
+    /// Deasserts the physical reset line.
+    fn deassert(&self) -> Result<(), HostProviderControlError>;
+}
+
+/// Operation domain exposed by one retained provider-resource lease.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostProviderResourceControlKind {
+    /// The resource is statically pinned and has no runtime operations.
+    Pinned,
+    /// The lease exposes clock operations.
+    Clock,
+    /// The lease exposes reset operations.
+    Reset,
+}
+
+/// A clock capability that structurally retains its ownership lease.
+#[cfg(any(target_arch = "aarch64", test))]
+#[derive(Clone)]
+pub(crate) struct LeasedHostClock {
+    lease: Arc<dyn HostProviderResourceLease>,
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+impl LeasedHostClock {
+    fn new(lease: Arc<dyn HostProviderResourceLease>) -> Self {
+        Self { lease }
+    }
+
+    fn control(&self) -> Result<&dyn HostClockControl, HostProviderControlError> {
+        self.lease
+            .clock_control()
+            .ok_or(HostProviderControlError::Unsupported {
+                operation: "access leased host clock",
+            })
+    }
+
+    /// Returns whether the assigned clock is physically enabled.
+    pub(crate) fn is_enabled(&self) -> Result<bool, HostProviderControlError> {
+        self.control()?.is_enabled()
+    }
+
+    /// Ensures that the assigned clock is physically enabled.
+    pub(crate) fn enable(&self) -> Result<(), HostProviderControlError> {
+        self.control()?.enable()
+    }
+
+    /// Returns the assigned clock's current physical rate.
+    pub(crate) fn rate(&self) -> Result<u64, HostProviderControlError> {
+        self.control()?.rate()
+    }
+
+    /// Requests a new physical rate for the assigned clock.
+    pub(crate) fn set_rate(&self, rate_hz: u64) -> Result<(), HostProviderControlError> {
+        self.control()?.set_rate(rate_hz)
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+impl core::fmt::Debug for LeasedHostClock {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("LeasedHostClock(..)")
+    }
+}
+
+/// A reset capability that structurally retains its ownership lease.
+#[cfg(any(target_arch = "aarch64", test))]
+#[derive(Clone)]
+pub(crate) struct LeasedHostReset {
+    lease: Arc<dyn HostProviderResourceLease>,
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+impl LeasedHostReset {
+    fn new(lease: Arc<dyn HostProviderResourceLease>) -> Self {
+        Self { lease }
+    }
+
+    fn control(&self) -> Result<&dyn HostResetControl, HostProviderControlError> {
+        self.lease
+            .reset_control()
+            .ok_or(HostProviderControlError::Unsupported {
+                operation: "access leased host reset",
+            })
+    }
+
+    /// Returns whether the assigned reset line is asserted.
+    pub(crate) fn is_asserted(&self) -> Result<bool, HostProviderControlError> {
+        self.control()?.is_asserted()
+    }
+
+    /// Asserts the assigned reset line.
+    pub(crate) fn assert(&self) -> Result<(), HostProviderControlError> {
+        self.control()?.assert()
+    }
+
+    /// Deasserts the assigned reset line.
+    pub(crate) fn deassert(&self) -> Result<(), HostProviderControlError> {
+        self.control()?.deassert()
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+impl core::fmt::Debug for LeasedHostReset {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("LeasedHostReset(..)")
+    }
+}
+
+/// Runtime authority carried by one provider-resource lease.
+#[cfg(any(target_arch = "aarch64", test))]
+#[derive(Clone, Debug)]
+pub(crate) enum HostProviderResourceControl {
+    /// The lease pins static state and exposes no guest operation.
+    Pinned,
+    /// Mutable access to one assigned physical clock.
+    Clock(LeasedHostClock),
+    /// Mutable access to one assigned physical reset line.
+    Reset(LeasedHostReset),
+}
+
+#[cfg(any(target_arch = "aarch64", test))]
+impl HostProviderResourceControl {
+    fn from_lease(lease: Arc<dyn HostProviderResourceLease>) -> Self {
+        match lease.control_kind() {
+            HostProviderResourceControlKind::Pinned => Self::Pinned,
+            HostProviderResourceControlKind::Clock => Self::Clock(LeasedHostClock::new(lease)),
+            HostProviderResourceControlKind::Reset => Self::Reset(LeasedHostReset::new(lease)),
+        }
+    }
+}
 
 /// Platform capability used to atomically claim the physical devices and
 /// provider-local dependencies in a VM machine plan.
@@ -36,7 +231,7 @@ pub trait HostDeviceClaimProvider {
     fn claim_provider_resource(
         &self,
         resource: &HostProviderResourceClaim,
-    ) -> MachinePlanResult<Box<dyn HostProviderResourceLease>>;
+    ) -> MachinePlanResult<Arc<dyn HostProviderResourceLease>>;
 }
 
 static HOST_DEVICE_OWNERS: Mutex<BTreeMap<HostDeviceId, usize>> = Mutex::new(BTreeMap::new());
@@ -103,7 +298,7 @@ impl HostDeviceClaimProvider for RegisteredHostDeviceClaimProvider {
     fn claim_provider_resource(
         &self,
         resource: &HostProviderResourceClaim,
-    ) -> MachinePlanResult<Box<dyn HostProviderResourceLease>> {
+    ) -> MachinePlanResult<Arc<dyn HostProviderResourceLease>> {
         let key = HostProviderResourceKey::from_claim(resource);
         let mut owners = HOST_PROVIDER_RESOURCE_OWNERS.lock();
         if let Some(owner) = owners.get(&key) {
@@ -117,7 +312,7 @@ impl HostDeviceClaimProvider for RegisteredHostDeviceClaimProvider {
             });
         }
         owners.insert(key.clone(), self.vm_id);
-        Ok(Box::new(RegisteredHostProviderResourceLease {
+        Ok(Arc::new(RegisteredHostProviderResourceLease {
             key,
             vm_id: self.vm_id,
         }))
@@ -158,7 +353,13 @@ impl Drop for RegisteredHostProviderResourceLease {
 
 struct PendingHostLeases {
     devices: Vec<Box<dyn HostDeviceLease>>,
-    provider_resources: Vec<Box<dyn HostProviderResourceLease>>,
+    provider_resources: Vec<ClaimedProviderResource>,
+}
+
+struct ClaimedProviderResource {
+    #[cfg(target_arch = "aarch64")]
+    claim: HostProviderResourceClaim,
+    lease: Arc<dyn HostProviderResourceLease>,
 }
 
 impl PendingHostLeases {
@@ -179,7 +380,20 @@ impl PendingHostLeases {
 
     fn release_all(&mut self) {
         while self.devices.pop().is_some() {}
-        while self.provider_resources.pop().is_some() {}
+        while let Some(resource) = self.provider_resources.pop() {
+            drop(resource.lease);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn provider_control(
+        &self,
+        claim: &HostProviderResourceClaim,
+    ) -> Option<HostProviderResourceControl> {
+        self.provider_resources
+            .iter()
+            .find(|resource| &resource.claim == claim)
+            .map(|resource| HostProviderResourceControl::from_lease(resource.lease.clone()))
     }
 }
 
@@ -215,9 +429,13 @@ impl VmMachineTransaction {
         let mut leases =
             PendingHostLeases::new(plan.claims().len(), plan.provider_resource_claims().len());
         for resource in plan.provider_resource_claims() {
-            leases
-                .provider_resources
-                .push(provider.claim_provider_resource(resource)?);
+            let lease = provider.claim_provider_resource(resource)?;
+            validate_provider_resource_lease(resource, lease.as_ref())?;
+            leases.provider_resources.push(ClaimedProviderResource {
+                #[cfg(target_arch = "aarch64")]
+                claim: resource.clone(),
+                lease,
+            });
         }
         for device in plan.claims() {
             leases.devices.push(provider.claim(device)?);
@@ -246,6 +464,15 @@ impl VmMachineTransaction {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Returns the lease-bound runtime capability for one planned resource.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn provider_control(
+        &self,
+        claim: &HostProviderResourceClaim,
+    ) -> Option<HostProviderResourceControl> {
+        self.leases.as_ref()?.provider_control(claim)
+    }
 }
 
 impl core::fmt::Debug for VmMachineTransaction {
@@ -272,6 +499,15 @@ impl HostDeviceLeases {
     pub fn is_empty(&self) -> bool {
         self.leases.is_empty()
     }
+
+    /// Returns the lease-bound runtime capability for one planned resource.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn provider_control(
+        &self,
+        claim: &HostProviderResourceClaim,
+    ) -> Option<HostProviderResourceControl> {
+        self.leases.provider_control(claim)
+    }
 }
 
 impl core::fmt::Debug for HostDeviceLeases {
@@ -284,5 +520,179 @@ impl core::fmt::Debug for HostDeviceLeases {
                 &self.leases.provider_resources.len(),
             )
             .finish()
+    }
+}
+
+fn validate_provider_resource_lease(
+    resource: &HostProviderResourceClaim,
+    lease: &dyn HostProviderResourceLease,
+) -> MachinePlanResult<()> {
+    let expected = match resource.grant().state() {
+        super::HostProviderResourceState::FixedClock(_)
+        | super::HostProviderResourceState::DeassertedReset => {
+            HostProviderResourceControlKind::Pinned
+        }
+        super::HostProviderResourceState::MediatedClock => HostProviderResourceControlKind::Clock,
+        super::HostProviderResourceState::MediatedReset => HostProviderResourceControlKind::Reset,
+    };
+    let actual = lease.control_kind();
+    let capability_present = match actual {
+        HostProviderResourceControlKind::Pinned => true,
+        HostProviderResourceControlKind::Clock => lease.clock_control().is_some(),
+        HostProviderResourceControlKind::Reset => lease.reset_control().is_some(),
+    };
+    if actual == expected && capability_present {
+        return Ok(());
+    }
+    Err(MachinePlanError::ClaimRejected {
+        device: resource.provider().to_string(),
+        detail: format!(
+            "provider selector {:?} requires {expected:?} control, but the lease exposes \
+             {actual:?} with capability_present={capability_present}",
+            resource.grant().reference().specifier(),
+        ),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[test]
+    fn runtime_control_cannot_outlive_its_ownership_lease() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let rate = Arc::new(AtomicU64::new(24_000_000));
+        let lease: Arc<dyn HostProviderResourceLease> = Arc::new(ClockLease {
+            drops: drops.clone(),
+            clock: TestClock { rate: rate.clone() },
+        });
+        let control = HostProviderResourceControl::from_lease(lease);
+        let HostProviderResourceControl::Clock(clock) = control else {
+            panic!("clock lease produced a non-clock control");
+        };
+
+        assert!(clock.is_enabled().unwrap());
+        clock.enable().unwrap();
+        clock.set_rate(375_000).unwrap();
+        assert_eq!(clock.rate().unwrap(), 375_000);
+        assert_eq!(rate.load(Ordering::Acquire), 375_000);
+        assert_eq!(drops.load(Ordering::Acquire), 0);
+
+        drop(clock);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn reset_control_retains_and_uses_only_its_lease() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let asserted = Arc::new(AtomicBool::new(false));
+        let lease: Arc<dyn HostProviderResourceLease> = Arc::new(ResetLease {
+            drops: drops.clone(),
+            reset: TestReset {
+                asserted: asserted.clone(),
+            },
+        });
+        let control = HostProviderResourceControl::from_lease(lease);
+        let HostProviderResourceControl::Reset(reset) = control else {
+            panic!("reset lease produced a non-reset control");
+        };
+
+        assert!(!reset.is_asserted().unwrap());
+        reset.assert().unwrap();
+        assert!(asserted.load(Ordering::Acquire));
+        reset.deassert().unwrap();
+        assert!(!asserted.load(Ordering::Acquire));
+        assert_eq!(drops.load(Ordering::Acquire), 0);
+
+        drop(reset);
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+    }
+
+    struct ClockLease {
+        drops: Arc<AtomicUsize>,
+        clock: TestClock,
+    }
+
+    impl HostProviderResourceLease for ClockLease {
+        fn control_kind(&self) -> HostProviderResourceControlKind {
+            HostProviderResourceControlKind::Clock
+        }
+
+        fn clock_control(&self) -> Option<&dyn HostClockControl> {
+            Some(&self.clock)
+        }
+    }
+
+    impl Drop for ClockLease {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    struct TestClock {
+        rate: Arc<AtomicU64>,
+    }
+
+    impl HostClockControl for TestClock {
+        fn is_enabled(&self) -> Result<bool, HostProviderControlError> {
+            Ok(true)
+        }
+
+        fn enable(&self) -> Result<(), HostProviderControlError> {
+            Ok(())
+        }
+
+        fn rate(&self) -> Result<u64, HostProviderControlError> {
+            Ok(self.rate.load(Ordering::Acquire))
+        }
+
+        fn set_rate(&self, rate_hz: u64) -> Result<(), HostProviderControlError> {
+            self.rate.store(rate_hz, Ordering::Release);
+            Ok(())
+        }
+    }
+
+    struct ResetLease {
+        drops: Arc<AtomicUsize>,
+        reset: TestReset,
+    }
+
+    impl HostProviderResourceLease for ResetLease {
+        fn control_kind(&self) -> HostProviderResourceControlKind {
+            HostProviderResourceControlKind::Reset
+        }
+
+        fn reset_control(&self) -> Option<&dyn HostResetControl> {
+            Some(&self.reset)
+        }
+    }
+
+    impl Drop for ResetLease {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    struct TestReset {
+        asserted: Arc<AtomicBool>,
+    }
+
+    impl HostResetControl for TestReset {
+        fn is_asserted(&self) -> Result<bool, HostProviderControlError> {
+            Ok(self.asserted.load(Ordering::Acquire))
+        }
+
+        fn assert(&self) -> Result<(), HostProviderControlError> {
+            self.asserted.store(true, Ordering::Release);
+            Ok(())
+        }
+
+        fn deassert(&self) -> Result<(), HostProviderControlError> {
+            self.asserted.store(false, Ordering::Release);
+            Ok(())
+        }
     }
 }

@@ -79,6 +79,11 @@ axplat-dyn.workspace = true
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 axplat-dyn = { workspace = true, features = ["hv"] }
 
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+rdif-clk.workspace = true
+rdif-reset.workspace = true
+rdrive.workspace = true
+
 [dev-dependencies]
 axtest.workspace = true
 

@@ -260,6 +260,13 @@ pub enum ArmVmExit {
         /// Hypercall arguments.
         args: [u64; 6],
     },
+    /// An SMC function not owned by the vCPU core requires VMM mediation.
+    FirmwareCall {
+        /// Valid 32-bit SMCCC function identifier.
+        function: u32,
+        /// First three function arguments.
+        args: [u64; 3],
+    },
     /// A guest data abort whose address ownership is intentionally unresolved.
     DataAbort {
         /// Architectural fault information captured by the vCPU core.

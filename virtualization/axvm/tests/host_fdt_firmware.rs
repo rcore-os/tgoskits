@@ -2,11 +2,12 @@ use core::num::NonZeroU32;
 
 use axdevice::{DeviceModelId, DeviceRequirements, ResourceSlot};
 use axvm::machine::{
-    Aarch64GicV3Profile, AddressRange, DeviceDisposition, DeviceInstanceId, FdtInterruptEncoding,
-    GuestMemoryRegion, HostConsoleEvidence, HostConsoleLocation, HostDeviceId, HostDeviceSelector,
-    HostFdtConfig, HostPlatformSnapshot, HostProviderResourceGrant, InterruptControllerProfile,
-    MachineProfile, VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner,
-    VmMachineRequest, generate_host_fdt,
+    Aarch64GicV3Profile, AddressRange, ArmScmiMediationProfile, DeviceDisposition,
+    DeviceInstanceId, FdtInterruptEncoding, GuestMemoryRegion, HostConsoleEvidence,
+    HostConsoleLocation, HostDeviceId, HostDeviceSelector, HostFdtConfig, HostPlatformSnapshot,
+    HostProviderResourceGrant, InterruptControllerProfile, MachinePlanError, MachineProfile,
+    VirtualDeviceDescriptor, VirtualDeviceSource, VmMachinePlanner, VmMachineRequest,
+    generate_host_fdt,
 };
 use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolicy, VmMachineMode};
 use fdt_edit::{Fdt, Node, Property};
@@ -873,6 +874,226 @@ fn pinned_provider_resources_replace_raw_shared_controller_access() {
 }
 
 #[test]
+fn mutable_provider_resources_are_mediated_instead_of_frozen() {
+    let host = host_fdt_with_shared_clock_controller();
+    let mut snapshot = whole_machine_snapshot(&host);
+    let provider = HostDeviceId::new("/soc/clock-controller@b000000").unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::mediated_clock(vec![8]),
+        )
+        .unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::mediated_reset(vec![18]),
+        )
+        .unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_virtual_device(pl011());
+
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+    let mediation = plan
+        .provider_mediation()
+        .expect("mutable provider resources require one VM-local mediator");
+    assert_eq!(mediation.clocks().len(), 1);
+    assert_eq!(mediation.resets().len(), 1);
+    assert_eq!(mediation.shared_memory().size(), 0x1000);
+    assert!(
+        !plan
+            .identity_mappings()
+            .iter()
+            .any(|mapping| mapping.overlaps(mediation.shared_memory())),
+        "the emulated SCMI channel must remain a stage-2 hole"
+    );
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    assert!(
+        guest
+            .get_by_path_id("/soc/clock-controller@b000000")
+            .is_none()
+    );
+    let scmi = guest
+        .get_by_path("/firmware/scmi-65535")
+        .expect("the guest must receive a private SCMI transport")
+        .as_node();
+    assert!(
+        scmi.compatibles()
+            .any(|compatible| compatible == "arm,scmi-smc")
+    );
+    let shmem_phandle = scmi.get_property("shmem").unwrap().get_u32().unwrap();
+    let shmem = guest
+        .get_by_phandle(shmem_phandle.into())
+        .unwrap()
+        .as_node();
+    assert!(
+        shmem
+            .compatibles()
+            .any(|compatible| compatible == "arm,scmi-shmem")
+    );
+    assert!(shmem.get_property("no-map").is_some());
+    assert!(
+        guest
+            .get_by_path_id("/reserved-memory/scmi-shmem@103000")
+            .is_none(),
+        "unselected host reserved-memory must not leak with VM-local infrastructure"
+    );
+    assert_eq!(
+        shmem
+            .get_property("reg")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        vec![
+            (mediation.shared_memory().base() >> 32) as u32,
+            mediation.shared_memory().base() as u32,
+            0,
+            mediation.shared_memory().size() as u32,
+        ]
+    );
+    let clock = guest
+        .get_by_path("/firmware/scmi-65535/protocol@14")
+        .unwrap()
+        .as_node();
+    let reset = guest
+        .get_by_path("/firmware/scmi-65535/protocol@16")
+        .unwrap()
+        .as_node();
+    let clock_phandle = clock.get_property("phandle").unwrap().get_u32().unwrap();
+    let reset_phandle = reset.get_property("phandle").unwrap().get_u32().unwrap();
+    let storage = guest.get_by_path("/soc/storage@a100000").unwrap().as_node();
+    assert_eq!(
+        storage
+            .get_property("clocks")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        vec![clock_phandle, 0]
+    );
+    assert_eq!(
+        storage
+            .get_property("resets")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        vec![reset_phandle, 0]
+    );
+    assert_eq!(
+        storage
+            .get_property("assigned-clocks")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        vec![clock_phandle, 0]
+    );
+    assert_eq!(
+        storage
+            .get_property("assigned-clock-rates")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        vec![200_000_000]
+    );
+}
+
+#[test]
+fn vm_local_scmi_reserved_memory_uses_root_cell_widths() {
+    let host = host_fdt_with_shared_clock_controller();
+    let mut host = Fdt::from_bytes(&host).unwrap();
+    let root = host.root_id();
+    host.node_mut(root)
+        .unwrap()
+        .set_property(u32_property("#address-cells", &[1]));
+    host.node_mut(root)
+        .unwrap()
+        .set_property(u32_property("#size-cells", &[1]));
+    let memory = host.get_by_path_id("/memory@40000000").unwrap();
+    host.view_typed_mut(memory)
+        .unwrap()
+        .set_regs(&[RegInfo::new(0x4000_0000, Some(0x1000_0000))]);
+    let host = host.encode().as_ref().to_vec();
+
+    let mut snapshot = whole_machine_snapshot(&host);
+    let provider = HostDeviceId::new("/soc/clock-controller@b000000").unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::mediated_clock(vec![8]),
+        )
+        .unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::mediated_reset(vec![18]),
+        )
+        .unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Fdt)
+        .with_virtual_device(pl011());
+    let plan = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap();
+    let mediation = plan.provider_mediation().unwrap();
+
+    let guest = generate_host_fdt(&plan, &snapshot, &HostFdtConfig::new([0])).unwrap();
+    let guest = Fdt::from_bytes(&guest).unwrap();
+    let reserved = guest.get_by_path("/reserved-memory").unwrap().as_node();
+    assert_eq!(reserved.address_cells(), Some(1));
+    assert_eq!(reserved.size_cells(), Some(1));
+    let scmi = guest.get_by_path("/firmware/scmi-65535").unwrap().as_node();
+    let shmem_phandle = scmi.get_property("shmem").unwrap().get_u32().unwrap();
+    let shmem = guest
+        .get_by_phandle(shmem_phandle.into())
+        .unwrap()
+        .as_node();
+    assert_eq!(
+        shmem
+            .get_property("reg")
+            .unwrap()
+            .get_u32_iter()
+            .collect::<Vec<_>>(),
+        vec![
+            mediation.shared_memory().base() as u32,
+            mediation.shared_memory().size() as u32,
+        ]
+    );
+}
+
+#[test]
+fn mutable_provider_resources_reject_an_unimplemented_acpi_transport() {
+    let host = host_fdt_with_shared_clock_controller();
+    let mut snapshot = whole_machine_snapshot(&host);
+    let provider = HostDeviceId::new("/soc/clock-controller@b000000").unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::mediated_clock(vec![8]),
+        )
+        .unwrap();
+    snapshot
+        .grant_provider_resource(
+            &provider,
+            HostProviderResourceGrant::mediated_reset(vec![18]),
+        )
+        .unwrap();
+    let request = VmMachineRequest::new(VmMachineMode::Passthrough, GuestFirmwareKind::Acpi)
+        .with_virtual_device(pl011());
+
+    let error = VmMachinePlanner::new(aarch64_profile())
+        .plan(&request, &snapshot)
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        MachinePlanError::InvalidProviderMediation { .. }
+    ));
+    assert!(error.to_string().contains("ACPI"));
+}
+
+#[test]
 fn holed_shared_provider_aperture_has_no_guest_visible_alias_nodes() {
     let host = host_fdt_with_overlapping_shared_provider_alias();
     let mut snapshot = whole_machine_snapshot(&host);
@@ -1241,6 +1462,7 @@ fn aarch64_profile() -> MachineProfile {
         )
         .unwrap(),
     ))
+    .with_arm_scmi_mediation(ArmScmiMediationProfile::new(0x8200_0010).unwrap())
 }
 
 fn host_fdt() -> Vec<u8> {

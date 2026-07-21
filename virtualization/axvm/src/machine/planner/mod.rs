@@ -20,9 +20,9 @@ use self::{
 };
 use super::{
     DeviceDisposition, HostDeviceId, HostDeviceSelector, HostInterruptResource,
-    HostPlatformSnapshot, HostProviderResourceClaim, HostProviderResourceGrant,
-    InterruptControllerPlan, MachinePlanError, MachinePlanResult, MachineProfile,
-    VirtualDeviceDescriptor, VirtualDeviceSource, VmMachineRequest, resolve_interrupt_controller,
+    HostPlatformSnapshot, HostProviderResourceClaim, InterruptControllerPlan, MachinePlanError,
+    MachinePlanResult, MachineProfile, VirtualDeviceDescriptor, VirtualDeviceSource,
+    VmMachineRequest, resolve_interrupt_controller,
 };
 
 /// Builds one deterministic machine plan from immutable inputs.
@@ -75,16 +75,49 @@ impl VmMachinePlanner {
         let interrupt_controller =
             resolve_interrupt_controller(self.profile.interrupt_controller(), request, snapshot)?;
         validate_virtual_device_interrupts(&resolved_devices, interrupt_controller.as_ref())?;
+        let mediation_profile = self.profile.arm_scmi_mediation();
         let (host_devices, preconfigured_host_devices) = plan_host_devices(
             request.mode(),
             snapshot,
             &denied_devices,
             &consumed_templates,
+            mediation_profile.is_some(),
         )?;
         let assigned_host_interrupts =
             resolve_assigned_host_interrupts(&host_devices, interrupt_controller.as_ref())?;
         let provider_resource_claims =
             resolve_provider_resource_claims(&preconfigured_host_devices);
+        let provider_mediation = if provider_resource_claims.iter().any(|claim| {
+            matches!(
+                claim.grant().state(),
+                super::HostProviderResourceState::MediatedClock
+                    | super::HostProviderResourceState::MediatedReset
+            )
+        }) {
+            if request.firmware() == axvm_types::GuestFirmwareKind::Acpi {
+                return Err(MachinePlanError::InvalidProviderMediation {
+                    detail: "AArch64 SCMI provider mediation has no ACPI transport description"
+                        .into(),
+                });
+            }
+            let profile =
+                mediation_profile.ok_or_else(|| MachinePlanError::InvalidProviderMediation {
+                    detail: "mutable host provider resources have no architecture mediator".into(),
+                })?;
+            let shared_memory = allocators.allocate_infrastructure_mmio(
+                "arm-scmi-shmem",
+                super::ArmScmiMediationProfile::SHARED_MEMORY_SIZE,
+                super::ArmScmiMediationProfile::SHARED_MEMORY_SIZE,
+            )?;
+            virtual_holes.push(shared_memory);
+            Some(ArmScmiMediationPlan::new(
+                shared_memory,
+                profile.smc_function_id(),
+                &provider_resource_claims,
+            ))
+        } else {
+            None
+        };
         let claims = host_devices
             .iter()
             .filter(|device| device.requires_claim())
@@ -113,6 +146,7 @@ impl VmMachinePlanner {
             virtual_devices: resolved_devices,
             host_devices,
             preconfigured_host_devices,
+            provider_mediation,
             provider_resource_claims,
             assigned_host_interrupts,
             claims,
@@ -130,16 +164,10 @@ fn resolve_provider_resource_claims(
             .iter()
             .chain(resources.clock_configurations())
         {
-            claims.insert(HostProviderResourceClaim::new(
-                clock.provider().clone(),
-                HostProviderResourceGrant::fixed_clock(clock.specifier().to_vec(), clock.rate_hz()),
-            ));
+            claims.insert(clock.to_claim());
         }
         for reset in resources.resets() {
-            claims.insert(HostProviderResourceClaim::new(
-                reset.provider().clone(),
-                HostProviderResourceGrant::deasserted_reset(reset.specifier().to_vec()),
-            ));
+            claims.insert(reset.to_claim());
         }
     }
     claims.into_iter().collect()

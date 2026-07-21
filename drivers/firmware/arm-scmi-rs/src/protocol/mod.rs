@@ -10,7 +10,7 @@ pub mod base;
 pub mod clock;
 
 pub use base::Base;
-pub use clock::Clock;
+pub use clock::{Clock, ClockAttributes, RateInfo};
 
 const PROTOCOL_VERSION: u8 = 0;
 #[allow(dead_code)]

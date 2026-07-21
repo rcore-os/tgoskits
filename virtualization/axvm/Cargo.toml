@@ -79,6 +79,7 @@ rdrive.workspace = true
 aarch64-cpu = "11.0"
 aarch64-cpu-ext = "0.1"
 aarch64_sysreg.workspace = true
+arm-scmi-rs.workspace = true
 arm_vpl011.workspace = true
 arm_vcpu = { workspace = true }
 arm_vgic.workspace = true

@@ -107,11 +107,17 @@ boot blob、deny 资源、虚拟设备窗口和虚拟控制器窗口始终打洞
 保持 unmapped，使访问触发设备模拟。
 
 时钟、复位、power-domain、pinctrl、syscon 等共享 provider 不按整个寄存器窗口透传。
-Planner 保留 FDT selector，拒绝仍被 host consumer 使用的同一子资源；静态平台仅可把
-整个 lease 期间保持启用和固定频率的 clock、保持 deasserted 的 reset 转换成 Guest-local
-固件资源。对应 selector 会与设备一起进入 claim/rollback 事务，原始 provider MMIO 始终
-打洞。无法取得这种授权的设备会被标记为 `Unrepresentable`，不能用
-`clk_ignore_unused`、猜测频率或板级 compatible 特例绕过。
+Planner 保留 FDT selector，拒绝仍被 host consumer 使用的同一子资源。真正静态且在整个
+lease 期间保持不变的 clock/reset 可转换成 Guest-local 静态资源；动态资源则转换成
+VM-private SCMI ID，并仅调用该 VM 已 claim 的 clock/reset capability。控制句柄本身持有
+provider lease，因此不能先释放 ownership 再继续操作。原始 provider MMIO 和 host SCMI
+transport 始终打洞；缺少静态或 mediated grant 的设备标记为 `Unrepresentable`。当前硬件
+状态只用于可用性检查，不能被当作冻结资源的授权，也不能用 `clk_ignore_unused`、猜测频率
+或板级 compatible 特例绕过。
+
+当前 VM-private SCMI transport 只在生成的 FDT 中描述。若 AArch64 设备需要动态 provider
+且配置显式选择 ACPI，Planner 会在构建期返回不支持，不会退化为暴露 host provider MMIO
+或把当前状态伪装成固定资源。
 
 ## Virtual FDT
 

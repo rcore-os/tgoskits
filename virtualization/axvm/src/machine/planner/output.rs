@@ -9,7 +9,8 @@ use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolic
 use super::super::{
     AddressRange, DeviceDisposition, DeviceInstanceId, GuestMemoryRegion, HostDeviceDependency,
     HostDeviceDescriptor, HostDeviceId, HostFirmwareActivation, HostInterruptResource,
-    HostProviderResourceClaim, InterruptControllerPlan, IoPortRange, LoongArchPlatformPlan,
+    HostProviderResourceClaim, HostProviderResourceState, InterruptControllerPlan, IoPortRange,
+    LoongArchPlatformPlan,
 };
 
 /// A guest interrupt assigned to one named virtual-device resource slot.
@@ -239,12 +240,18 @@ impl PlannedHostDevice {
     }
 }
 
-/// One fixed clock substituted for a shared physical clock-controller input.
+/// One static or mediated clock substituted for a physical provider input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreconfiguredHostClock {
     provider: HostDeviceId,
     specifier: Vec<u32>,
-    rate_hz: NonZeroU32,
+    access: PlannedHostClockAccess,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlannedHostClockAccess {
+    Fixed(NonZeroU32),
+    Mediated,
 }
 
 impl PreconfiguredHostClock {
@@ -256,7 +263,15 @@ impl PreconfiguredHostClock {
         Self {
             provider,
             specifier,
-            rate_hz,
+            access: PlannedHostClockAccess::Fixed(rate_hz),
+        }
+    }
+
+    pub(super) const fn mediated(provider: HostDeviceId, specifier: Vec<u32>) -> Self {
+        Self {
+            provider,
+            specifier,
+            access: PlannedHostClockAccess::Mediated,
         }
     }
 
@@ -270,17 +285,41 @@ impl PreconfiguredHostClock {
         &self.specifier
     }
 
-    /// Returns the rate pinned by the host platform capability.
-    pub const fn rate_hz(&self) -> NonZeroU32 {
-        self.rate_hz
+    /// Returns the statically pinned rate, or `None` for a mediated clock.
+    pub const fn rate_hz(&self) -> Option<NonZeroU32> {
+        match self.access {
+            PlannedHostClockAccess::Fixed(rate_hz) => Some(rate_hz),
+            PlannedHostClockAccess::Mediated => None,
+        }
+    }
+
+    /// Returns whether guest operations are forwarded through a VM-local provider.
+    pub const fn is_mediated(&self) -> bool {
+        matches!(self.access, PlannedHostClockAccess::Mediated)
+    }
+
+    pub(super) fn to_claim(&self) -> HostProviderResourceClaim {
+        let grant = match self.access {
+            PlannedHostClockAccess::Fixed(rate_hz) => {
+                super::super::HostProviderResourceGrant::fixed_clock(
+                    self.specifier.clone(),
+                    rate_hz,
+                )
+            }
+            PlannedHostClockAccess::Mediated => {
+                super::super::HostProviderResourceGrant::mediated_clock(self.specifier.clone())
+            }
+        };
+        HostProviderResourceClaim::new(self.provider.clone(), grant)
     }
 }
 
-/// One physical reset line pinned deasserted for a guest-device lease.
+/// One static or mediated reset line projected into a guest-device lease.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreconfiguredHostReset {
     provider: HostDeviceId,
     specifier: Vec<u32>,
+    mediated: bool,
 }
 
 impl PreconfiguredHostReset {
@@ -288,6 +327,15 @@ impl PreconfiguredHostReset {
         Self {
             provider,
             specifier,
+            mediated: false,
+        }
+    }
+
+    pub(super) const fn mediated(provider: HostDeviceId, specifier: Vec<u32>) -> Self {
+        Self {
+            provider,
+            specifier,
+            mediated: true,
         }
     }
 
@@ -300,16 +348,102 @@ impl PreconfiguredHostReset {
     pub fn specifier(&self) -> &[u32] {
         &self.specifier
     }
+
+    /// Returns whether guest operations are forwarded through a VM-local provider.
+    pub const fn is_mediated(&self) -> bool {
+        self.mediated
+    }
+
+    pub(super) fn to_claim(&self) -> HostProviderResourceClaim {
+        let grant = if self.mediated {
+            super::super::HostProviderResourceGrant::mediated_reset(self.specifier.clone())
+        } else {
+            super::super::HostProviderResourceGrant::deasserted_reset(self.specifier.clone())
+        };
+        HostProviderResourceClaim::new(self.provider.clone(), grant)
+    }
 }
 
-/// Static provider resources substituted into one passthrough device's guest
-/// firmware description.
+/// Provider resources substituted into one passthrough device's guest
+/// firmware description without exposing the physical provider aperture.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreconfiguredHostDeviceResources {
     device: HostDeviceId,
     clocks: Vec<PreconfiguredHostClock>,
     clock_configurations: Vec<PreconfiguredHostClock>,
     resets: Vec<PreconfiguredHostReset>,
+}
+
+/// VM-local Arm SCMI endpoint for mutable assigned clock/reset resources.
+#[derive(Clone, Debug)]
+pub struct ArmScmiMediationPlan {
+    shared_memory: AddressRange,
+    smc_function_id: u32,
+    clocks: Vec<HostProviderResourceClaim>,
+    resets: Vec<HostProviderResourceClaim>,
+}
+
+impl ArmScmiMediationPlan {
+    pub(super) fn new(
+        shared_memory: AddressRange,
+        smc_function_id: u32,
+        claims: &[HostProviderResourceClaim],
+    ) -> Self {
+        let clocks = claims
+            .iter()
+            .filter(|claim| claim.grant().state() == HostProviderResourceState::MediatedClock)
+            .cloned()
+            .collect();
+        let resets = claims
+            .iter()
+            .filter(|claim| claim.grant().state() == HostProviderResourceState::MediatedReset)
+            .cloned()
+            .collect();
+        Self {
+            shared_memory,
+            smc_function_id,
+            clocks,
+            resets,
+        }
+    }
+
+    /// Returns the emulated shared-memory transport window.
+    pub const fn shared_memory(&self) -> AddressRange {
+        self.shared_memory
+    }
+
+    /// Returns the SMC function identifier advertised to the guest.
+    pub const fn smc_function_id(&self) -> u32 {
+        self.smc_function_id
+    }
+
+    /// Returns clocks in guest SCMI identifier order.
+    pub fn clocks(&self) -> &[HostProviderResourceClaim] {
+        &self.clocks
+    }
+
+    /// Returns reset domains in guest SCMI identifier order.
+    pub fn resets(&self) -> &[HostProviderResourceClaim] {
+        &self.resets
+    }
+
+    pub(crate) fn clock_id(&self, provider: &HostDeviceId, specifier: &[u32]) -> Option<u32> {
+        self.clocks
+            .iter()
+            .position(|claim| {
+                claim.provider() == provider && claim.grant().reference().specifier() == specifier
+            })
+            .and_then(|index| u32::try_from(index).ok())
+    }
+
+    pub(crate) fn reset_id(&self, provider: &HostDeviceId, specifier: &[u32]) -> Option<u32> {
+        self.resets
+            .iter()
+            .position(|claim| {
+                claim.provider() == provider && claim.grant().reference().specifier() == specifier
+            })
+            .and_then(|index| u32::try_from(index).ok())
+    }
 }
 
 impl PreconfiguredHostDeviceResources {
@@ -337,13 +471,12 @@ impl PreconfiguredHostDeviceResources {
         &self.clocks
     }
 
-    /// Returns clock selectors whose boot-time configuration is pinned by the
-    /// host and therefore must not be replayed by the guest.
+    /// Returns clock selectors referenced by boot-time configuration.
     pub fn clock_configurations(&self) -> &[PreconfiguredHostClock] {
         &self.clock_configurations
     }
 
-    /// Returns reset lines pinned deasserted in source `resets` order.
+    /// Returns reset lines in source `resets` order.
     pub fn resets(&self) -> &[PreconfiguredHostReset] {
         &self.resets
     }
@@ -364,6 +497,7 @@ pub struct VmMachinePlan {
     virtual_devices: Vec<ResolvedVirtualDevice>,
     host_devices: Vec<PlannedHostDevice>,
     preconfigured_host_devices: Vec<PreconfiguredHostDeviceResources>,
+    provider_mediation: Option<ArmScmiMediationPlan>,
     provider_resource_claims: Vec<HostProviderResourceClaim>,
     assigned_host_interrupts: Vec<HostInterruptResource>,
     claims: Vec<HostDeviceId>,
@@ -383,6 +517,7 @@ pub(super) struct VmMachinePlanParts {
     pub(super) virtual_devices: Vec<ResolvedVirtualDevice>,
     pub(super) host_devices: Vec<PlannedHostDevice>,
     pub(super) preconfigured_host_devices: Vec<PreconfiguredHostDeviceResources>,
+    pub(super) provider_mediation: Option<ArmScmiMediationPlan>,
     pub(super) provider_resource_claims: Vec<HostProviderResourceClaim>,
     pub(super) assigned_host_interrupts: Vec<HostInterruptResource>,
     pub(super) claims: Vec<HostDeviceId>,
@@ -424,6 +559,7 @@ impl VmMachinePlan {
             virtual_devices: parts.virtual_devices,
             host_devices: parts.host_devices,
             preconfigured_host_devices: parts.preconfigured_host_devices,
+            provider_mediation: parts.provider_mediation,
             provider_resource_claims: parts.provider_resource_claims,
             assigned_host_interrupts: parts.assigned_host_interrupts,
             claims: parts.claims,
@@ -450,6 +586,7 @@ impl VmMachinePlan {
             virtual_devices: Vec::new(),
             host_devices: Vec::new(),
             preconfigured_host_devices: Vec::new(),
+            provider_mediation: None,
             provider_resource_claims: Vec::new(),
             assigned_host_interrupts: Vec::new(),
             claims: Vec::new(),
@@ -519,10 +656,15 @@ impl VmMachinePlan {
         &self.host_devices
     }
 
-    /// Returns physical devices whose shared provider resources are exposed as
-    /// pinned guest-local firmware resources instead of raw provider MMIO.
+    /// Returns physical devices whose provider resources are projected as
+    /// static or mediated guest capabilities instead of raw provider MMIO.
     pub fn preconfigured_host_devices(&self) -> &[PreconfiguredHostDeviceResources] {
         &self.preconfigured_host_devices
+    }
+
+    /// Returns the VM-local provider mediator required by mutable host resources.
+    pub const fn provider_mediation(&self) -> Option<&ArmScmiMediationPlan> {
+        self.provider_mediation.as_ref()
     }
 
     /// Returns provider-local resources retained for the complete physical

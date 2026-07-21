@@ -266,6 +266,23 @@ impl AxVMResources {
         &mut self.arch_state
     }
 
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) const fn arch_state(&self) -> &VmArchState {
+        &self.arch_state
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn host_provider_control(
+        &self,
+        claim: &crate::machine::HostProviderResourceClaim,
+    ) -> Option<crate::machine::HostProviderResourceControl> {
+        match &self.host_device_claims {
+            HostDeviceClaimState::Pending(transaction) => transaction.provider_control(claim),
+            HostDeviceClaimState::Committed(leases) => leases.provider_control(claim),
+            HostDeviceClaimState::Unclaimed => None,
+        }
+    }
+
     fn begin_host_device_claims(&mut self, provider: &dyn HostDeviceClaimProvider) -> AxVmResult {
         if !matches!(self.host_device_claims, HostDeviceClaimState::Unclaimed) {
             return Err(AxVmError::invalid_state(

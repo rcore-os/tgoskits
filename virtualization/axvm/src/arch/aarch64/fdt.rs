@@ -2,8 +2,6 @@
 
 use alloc::vec::Vec;
 
-use ::core::num::NonZeroU32;
-
 use crate::{
     AxVmResult,
     boot::{BootImageProvider, fdt::GuestDtbImage},
@@ -53,9 +51,9 @@ fn grant_preconfigured_provider_resources(
         let grant = match request.kind {
             crate::machine::HostProviderReferenceKind::Clock
             | crate::machine::HostProviderReferenceKind::ClockConfiguration => {
-                capture_fixed_clock(&request)
+                capture_mediated_clock(&request)
             }
-            crate::machine::HostProviderReferenceKind::Reset => capture_deasserted_reset(&request),
+            crate::machine::HostProviderReferenceKind::Reset => capture_mediated_reset(&request),
             _ => None,
         };
         if let Some(grant) = grant {
@@ -94,7 +92,7 @@ fn provider_resource_requests(
     requests
 }
 
-fn capture_fixed_clock(
+fn capture_mediated_clock(
     request: &ProviderResourceRequest,
 ) -> Option<crate::machine::HostProviderResourceGrant> {
     let selector = single_selector(request)?;
@@ -107,31 +105,26 @@ fn capture_fixed_clock(
     {
         return None;
     }
-    let rate = clock
+    clock
         .get_rate(rdif_clk::ClockId::from(selector as usize))
         .ok()
-        .and_then(|rate| u32::try_from(rate).ok())
-        .and_then(NonZeroU32::new)?;
-    Some(crate::machine::HostProviderResourceGrant::fixed_clock(
+        .filter(|rate| *rate != 0)?;
+    Some(crate::machine::HostProviderResourceGrant::mediated_clock(
         request.specifier.clone(),
-        rate,
     ))
 }
 
-fn capture_deasserted_reset(
+fn capture_mediated_reset(
     request: &ProviderResourceRequest,
 ) -> Option<crate::machine::HostProviderResourceGrant> {
     let selector = single_selector(request)?;
     let device_id = rdrive::fdt_path_to_device_id(request.provider.as_str())?;
     let device = rdrive::get::<rdif_reset::Reset>(device_id).ok()?;
     let reset = device.lock().ok()?;
-    if reset
+    reset
         .is_asserted(rdif_reset::ResetId::from(selector))
-        .ok()?
-    {
-        return None;
-    }
-    Some(crate::machine::HostProviderResourceGrant::deasserted_reset(
+        .ok()?;
+    Some(crate::machine::HostProviderResourceGrant::mediated_reset(
         request.specifier.clone(),
     ))
 }

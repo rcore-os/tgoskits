@@ -77,9 +77,9 @@ pub fn generate_host_fdt(
     })?;
     sanitize_host_managed_cpu_properties(&mut source)?;
     sanitize_virtual_device_templates(&mut source, plan)?;
-    materialize_preconfigured_provider_resources(&mut source, plan)?;
-    let selected = selected_paths(plan, &mut source, config)?;
-    let mut guest = clone_selected_tree(&source, &selected, config)?;
+    let vm_local_paths = materialize_preconfigured_provider_resources(&mut source, plan)?;
+    let selected = selected_paths(plan, &mut source, config, &vm_local_paths)?;
+    let mut guest = clone_selected_tree(&source, &selected, config, &vm_local_paths)?;
     mark_passthrough_devices_available(&mut guest, plan)?;
     sanitize_path_tables(&mut guest)?;
     rebuild_memory(&mut guest, plan)?;
@@ -96,8 +96,10 @@ fn selected_paths(
     plan: &VmMachinePlan,
     source: &mut Fdt,
     config: &HostFdtConfig,
+    vm_local_paths: &BTreeSet<String>,
 ) -> MachinePlanResult<BTreeSet<String>> {
     let mut selected = BTreeSet::from([String::from("/")]);
+    selected.extend(vm_local_paths.iter().cloned());
     for device in plan.host_devices() {
         let path = device.id().as_str();
         if source
@@ -195,6 +197,7 @@ fn clone_selected_tree(
     source: &Fdt,
     selected: &BTreeSet<String>,
     config: &HostFdtConfig,
+    vm_local_paths: &BTreeSet<String>,
 ) -> MachinePlanResult<Fdt> {
     let mut guest = Fdt::new();
     let source_root =
@@ -218,6 +221,7 @@ fn clone_selected_tree(
         guest_root,
         selected,
         config,
+        vm_local_paths,
     )?;
     Ok(guest)
 }
@@ -261,6 +265,7 @@ fn copy_children(
     guest_parent: NodeId,
     selected: &BTreeSet<String>,
     config: &HostFdtConfig,
+    vm_local_paths: &BTreeSet<String>,
 ) -> MachinePlanResult<()> {
     let children = source
         .node(source_parent)
@@ -272,7 +277,7 @@ fn copy_children(
     for source_id in children {
         let path = source.path_of(source_id);
         if !selected.contains(&path)
-            || is_host_memory_path(&path)
+            || (is_host_memory_path(&path) && !vm_local_paths.contains(&path))
             || !selected_cpu(source, source_id, &path, config)
         {
             continue;
@@ -291,7 +296,15 @@ fn copy_children(
                     detail: format!("new guest FDT node '{path}' cannot be updated"),
                 })?;
         copy_properties(source_node, guest_node);
-        copy_children(source, source_id, guest, guest_id, selected, config)?;
+        copy_children(
+            source,
+            source_id,
+            guest,
+            guest_id,
+            selected,
+            config,
+            vm_local_paths,
+        )?;
     }
     Ok(())
 }

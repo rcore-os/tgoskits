@@ -255,8 +255,14 @@ fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     if let Some(result) = handle_vm_firmware_call(ctx) {
         result
     } else {
-        ctx.gpr[0] = crate::smccc::NOT_SUPPORTED;
-        Ok(ArmVmExit::Nothing)
+        let Ok(function) = u32::try_from(ctx.gpr[0]) else {
+            ctx.gpr[0] = crate::smccc::NOT_SUPPORTED;
+            return Ok(ArmVmExit::Nothing);
+        };
+        Ok(ArmVmExit::FirmwareCall {
+            function,
+            args: [ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]],
+        })
     }
 }
 

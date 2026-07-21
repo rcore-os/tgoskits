@@ -8,7 +8,7 @@ use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use super::{
     Aarch64Arch,
     gic::{PreparedGicV3, register_maintenance_interrupt},
-    npt, timer,
+    npt, scmi, timer,
 };
 use crate::{
     AxVmResult, ax_err,
@@ -79,6 +79,14 @@ fn init_vm_with(
         let prepared_gic = PreparedGicV3::from_vm_config(vm.id(), resources.config(), &placements)?;
         let mut devices = PreparedDevices::empty();
         prepared_gic.register(&mut devices.devices, interrupt_topology)?;
+        let scmi_service =
+            if let Some(plan) = resources.config().machine_plan().provider_mediation() {
+                let (service, bundle) = scmi::Aarch64ScmiService::prepare(plan, resources)?;
+                devices.devices.register_bundle(bundle)?;
+                Some(service)
+            } else {
+                None
+            };
         let ports = vcpus.interrupt_ports(vm.id(), &placements)?;
         interrupt_topology.finalize(&ports)?;
         let interrupt_roles = resources.config().arch().interrupt_roles().ok_or_else(|| {
@@ -117,6 +125,7 @@ fn init_vm_with(
             host_spi_forwarding,
             maintenance_interrupt,
         );
+        resources.arch_state_mut().set_scmi_service(scmi_service);
 
         Ok(PreparedVm::new(vcpus, devices))
     })

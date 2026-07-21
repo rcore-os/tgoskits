@@ -18,10 +18,10 @@ English | [中文](README_CN.md)
 `arm_vcpu` provides an OS-neutral AArch64 vCPU core. It owns EL2 guest entry/exit, guest register state, trap decode, and hardware virtualization register semantics. Host OS and VMM policy is supplied through `ArmHostOps`; AxVM integration lives in `virtualization/axvm/src/arch/aarch64`.
 
 Guest PSCI calls and bounded SMCCC architecture discovery are implemented as
-VM-local services. Unregistered SMCCC owners are denied by default and return
-`SMCCC_RET_NOT_SUPPORTED`; a VMM that needs SCMI or another secure-firmware
-protocol must provide an ownership-checked mediated capability instead of
-forwarding arbitrary guest SMC arguments to host firmware.
+VM-local services. Other valid SMC function identifiers exit as
+`ArmVmExit::FirmwareCall`; the embedding VMM must match them against an
+explicit VM-local capability and return `SMCCC_RET_NOT_SUPPORTED` otherwise.
+Arbitrary guest SMC arguments must never be forwarded to host firmware.
 
 Trapped GICv3 common CPU-interface accesses are decoded into
 `ArmGicCpuInterfaceRegister` and typed `ArmVmExit` variants. The VMM therefore

@@ -46,6 +46,12 @@ pub enum MachinePlanError {
         /// Last interrupt ID.
         end: u32,
     },
+    /// A firmware-provider mediation profile is internally inconsistent.
+    #[error("invalid provider mediation profile: {detail}")]
+    InvalidProviderMediation {
+        /// Invalid transport or resource detail.
+        detail: String,
+    },
     /// A machine request contained no virtual CPU.
     #[error("VM machine planning requires at least one vCPU")]
     InvalidVcpuCount,
