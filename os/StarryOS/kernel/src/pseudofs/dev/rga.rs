@@ -250,20 +250,42 @@ impl RgaFile {
             return Err(VfsError::NoSuchDevice);
         }
 
-        // The RK3588 DTB exposes three RGA cores as separate devices (rga3_core0 @
-        // fdb60000, rga3_core1 @ fdb70000, rga2_core0 @ fdb80000). Only the RGA2
-        // backend is implemented (RGA3 is an Unsupported skeleton). Lock the device
-        // that actually owns the RGA2 core -- NOT blindly devs[0], which is an RGA3
-        // core on this board and has no RGA2 core (-> NoSuchDevice, blit fails).
-        let mut guard = devs
-            .iter()
-            .filter_map(|d| d.try_lock().ok())
-            .find(|g| {
-                g.cores()
+        // The RK3588 DTB exposes three RGA cores as separate devices (rga3_core0 @ fdb60000,
+        // rga3_core1 @ fdb70000, rga2_core0 @ fdb80000). Only the RGA2 backend is implemented
+        // (RGA3 is an Unsupported skeleton). Acquire the device that owns the RGA2 core -- NOT
+        // blindly devs[0], which is an RGA3 core on this board with no RGA2 core.
+        //
+        // Serialise with any concurrent blit: another `BLIT_SYNC` may already hold the single
+        // RGA2 device, so "busy" must not be mistaken for "absent". The old `try_lock().ok()`
+        // dropped a busy device and fell through to NoSuchDevice, so a normal concurrent submit
+        // saw ENODEV — as if the hardware were gone — for transient contention. We `try_lock()`
+        // first for the fast uncontended path (and to skip idle RGA3 skeletons without
+        // blocking), then fall back to the blocking `lock()` to wait our turn on a busy device.
+        // NoSuchDevice is therefore reported only when no RGA2 core exists at all, never for a
+        // busy-but-present one. (A future non-blocking submit path should return EBUSY instead.)
+        let mut guard = 'acquire: {
+            for d in devs.iter() {
+                let guard = match d.try_lock() {
+                    Ok(g) => g,
+                    // Busy (or transiently unavailable): wait our turn on it, serialising
+                    // concurrent blits on the RGA2 device instead of reporting it absent.
+                    Err(_) => match d.lock() {
+                        Ok(g) => g,
+                        Err(_) => continue, // device released — not the one we want
+                    },
+                };
+                if guard
+                    .cores()
                     .iter()
                     .any(|c| c.config().version == RgaVersion::Rga2)
-            })
-            .ok_or(VfsError::NoSuchDevice)?;
+                {
+                    break 'acquire guard;
+                }
+                // Not the RGA2 device — release and keep looking.
+                drop(guard);
+            }
+            return Err(VfsError::NoSuchDevice);
+        };
         let rga = &mut *guard;
 
         let core = rga
