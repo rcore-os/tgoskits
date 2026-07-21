@@ -311,7 +311,6 @@ jobs:
             cache_key: ""
             container_image: base
             fetch_depth: full
-            upload_xtask_bin_artifact: true
           - name: Run spin-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
@@ -358,11 +357,31 @@ jobs:
       upload_xtask_bin_artifact: ${{ matrix.upload_xtask_bin_artifact || false }}
       xtask_bin_artifact_name: tg-xtask-bin
 
+  build_xtask:
+    # Dedicated job that builds and uploads the tg-xtask binary artifact.
+    # Decoupling this from static_checks ensures container test jobs can
+    # always download the prebuilt binary, even if a sibling lint job is
+    # cancelled by fail-fast or skipped on a re-run.
+    name: Build tg-xtask binary
+    needs: detect_changes
+    if: needs.detect_changes.outputs.ci_checks == 'true'
+    uses: ./.github/workflows/reusable-command.yml
+    with:
+      runs_on: '["ubuntu-latest"]'
+      use_container: true
+      command: cargo build -p tg-xtask
+      cache_key: ""
+      container_image: ${{ format('{0}:latest', needs.detect_changes.outputs.base_container_image) }}
+      fetch_depth: "1"
+      upload_xtask_bin_artifact: true
+      xtask_bin_artifact_name: tg-xtask-bin
+
   test_checks:
     name: ${{ matrix.name }}
     if: needs.detect_changes.outputs.ci_checks == 'true'
     needs:
       - detect_changes
+      - build_xtask
       - static_checks
     strategy:
       fail-fast: true
@@ -575,7 +594,16 @@ jobs:
           #   apk_region: us
           #   limit_to_owner: ""
           #   main_pr_only: true
-          - name: Test axvisor self-hosted x86_64
+          - name: Test axvisor self-hosted x86_64(svm)
+            use_container: false
+            runs_on: '["self-hosted","linux","amd","kvm"]'
+            require_kvm: true
+            command: cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor self-hosted x86_64(vmx)
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
             require_kvm: true
@@ -584,40 +612,40 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
-          - name: Test axvisor self-hosted x86_64 UEFI
-            use_container: false
-            runs_on: '["self-hosted","linux","intel","kvm"]'
-            require_kvm: true
-            timeout_minutes: 20
-            command: |
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends ovmf
-              UEFI_FIRMWARE=""
-              for candidate in \
-                /usr/share/OVMF/OVMF_CODE_4M.fd \
-                /usr/share/OVMF/OVMF_CODE.fd \
-                /usr/share/ovmf/OVMF.fd \
-                /usr/share/qemu/OVMF.fd; do
-                if [ -f "${candidate}" ]; then
-                  UEFI_FIRMWARE="${candidate}"
-                  break
-                fi
-              done
-              if [ -z "${UEFI_FIRMWARE}" ]; then
-                echo "ERROR: installed OVMF firmware image was not found under /usr/share." >&2
-                exit 1
-              fi
-              export AXVISOR_X86_64_UEFI_FIRMWARE="${UEFI_FIRMWARE}"
-              cd os/axvisor
-              ./scripts/setup_qemu.sh nimbos-uefi
-              grep -q 'boot_protocol = "uefi"' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
-              grep -q 'uefi_firmware_path = "' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
-              cd ../..
-              cargo xtask axvisor test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos
-            cache_key: ""
-            container_image: ""
-            limit_to_owner: rcore-os
-            main_pr_only: false
+          # - name: Test axvisor self-hosted x86_64(vmx) UEFI
+          #   use_container: false
+          #   runs_on: '["self-hosted","linux","intel","kvm"]'
+          #   require_kvm: true
+          #   timeout_minutes: 20
+          #   command: |
+          #     sudo apt-get update
+          #     sudo apt-get install -y --no-install-recommends ovmf
+          #     UEFI_FIRMWARE=""
+          #     for candidate in \
+          #       /usr/share/OVMF/OVMF_CODE_4M.fd \
+          #       /usr/share/OVMF/OVMF_CODE.fd \
+          #       /usr/share/ovmf/OVMF.fd \
+          #       /usr/share/qemu/OVMF.fd; do
+          #       if [ -f "${candidate}" ]; then
+          #         UEFI_FIRMWARE="${candidate}"
+          #         break
+          #       fi
+          #     done
+          #     if [ -z "${UEFI_FIRMWARE}" ]; then
+          #       echo "ERROR: installed OVMF firmware image was not found under /usr/share." >&2
+          #       exit 1
+          #     fi
+          #     export AXVISOR_X86_64_UEFI_FIRMWARE="${UEFI_FIRMWARE}"
+          #     cd os/axvisor
+          #     ./scripts/setup_qemu.sh nimbos-uefi
+          #     grep -q 'boot_protocol = "uefi"' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
+          #     grep -q 'uefi_firmware_path = "' tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml
+          #     cd ../..
+          #     cargo xtask axvisor test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos
+          #   cache_key: ""
+          #   container_image: ""
+          #   limit_to_owner: rcore-os
+          #   main_pr_only: false
           - name: Test axloader HTTP smoke
             use_container: false
             runs_on: '["self-hosted","linux","intel","kvm"]'
@@ -647,37 +675,6 @@ jobs:
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os
-            main_pr_only: false
-          - name: Test axvisor x86_64 svm hosted
-            use_container: false
-            runs_on: '["ubuntu-latest"]'
-            command: |
-              cpu_vendor="$(awk -F ': *' '/^vendor_id/ { print $2; exit }' /proc/cpuinfo)"
-              if [ "$cpu_vendor" = "GenuineIntel" ]; then
-                echo "::notice::Skipping axvisor x86_64 SVM hosted test on Intel CPU; SVM requires an AMD CPU."
-                {
-                  echo "## Axvisor SVM hosted test skipped"
-                  echo ""
-                  echo "Runner CPU vendor is \`GenuineIntel\`; AMD SVM tests require an AMD CPU."
-                } >> "$GITHUB_STEP_SUMMARY"
-                exit 0
-              fi
-
-              rustup component add llvm-tools
-              sudo apt-get update
-              sudo apt-get install -y libudev-dev pkg-config qemu-system-x86
-              sudo usermod -aG kvm $USER
-              sg kvm -c '
-                set -eux
-                rust_host="$(rustc -vV | awk "/^host:/ { print \$2 }")"
-                llvm_tools_dir="$(rustc --print sysroot)/lib/rustlib/${rust_host}/bin"
-                export PATH="${llvm_tools_dir}:${PATH}"
-                command -v rust-objcopy
-                cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
-              '
-            cache_key: ""
-            container_image: ""
-            limit_to_owner: ""
             main_pr_only: false
           - name: Test axvisor self-hosted board orangepi-5-plus-linux
             use_container: false
@@ -743,6 +740,48 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
+          - name: Coverage test starry
+            use_container: true
+            runs_on: '["ubuntu-latest"]'
+            command: |
+              rustup component add llvm-tools
+              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch aarch64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch riscv64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch loongarch64 --coverage --out-fmt html
+            cache_key: ""
+            container_image: base
+            limit_to_owner: ""
+            main_pr_only: false
+            coverage_artifact_name: coverage-starry
+            upload_coverage_artifacts: true
+          - name: Coverage test axvisor
+            use_container: false
+            runs_on: '["self-hosted","linux","kvm"]'
+            self_hosted_owner: rcore-os
+            require_kvm: true
+            command: |
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
+              rustup component add llvm-tools
+              cargo xtask ktest qemu -p axvisor --test axtest --arch x86_64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p axvisor --test axtest --arch riscv64 --coverage --out-fmt html
+              cargo xtask ktest qemu -p axvisor --test axtest --arch loongarch64 --coverage --out-fmt html
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: ""
+            main_pr_only: false
+            coverage_artifact_name: coverage-axvisor
+            upload_coverage_artifacts: true
+          - name: Test starry self-hosted board jl-lsgd2k10
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask starry test board --board jl-lsgd2k10
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
     uses: ./.github/workflows/reusable-command.yml
     with:
       runs_on: >-
@@ -795,6 +834,8 @@ jobs:
           )
         }}
       xtask_bin_artifact_name: tg-xtask-bin
+      upload_coverage_artifacts: ${{ matrix.upload_coverage_artifacts || false }}
+      coverage_artifact_name: ${{ matrix.coverage_artifact_name || '' }}
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 

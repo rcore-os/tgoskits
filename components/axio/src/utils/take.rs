@@ -87,7 +87,7 @@ impl<T: Read> Read for Take<T> {
         Ok(n)
     }
 
-    fn read_buf(&mut self, mut buf: BorrowedCursor<'_>) -> Result<()> {
+    fn read_buf(&mut self, mut buf: BorrowedCursor<'_, u8>) -> Result<()> {
         // Don't call into inner reader at all at EOF because it may still block
         if self.limit == 0 {
             return Ok(());
@@ -102,7 +102,7 @@ impl<T: Read> Read for Take<T> {
             // SAFETY: no uninit data is written to ibuf
             let ibuf = unsafe { &mut buf.as_mut()[..limit] };
 
-            let mut sliced_buf: BorrowedBuf<'_> = ibuf.into();
+            let mut sliced_buf: BorrowedBuf<'_, u8> = ibuf.into();
 
             // SAFETY: extra_init bytes of ibuf are known to be initialized
             if is_init {

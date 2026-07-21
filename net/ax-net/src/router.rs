@@ -79,16 +79,21 @@ const DEVICE_RX_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Per-interface cumulative RX/TX byte and packet counters.
 ///
 /// Populated from the router data paths and read by `/proc/net/dev`. Byte
-/// counts use the IP packet length carried on the `Medium::Ip` links exposed by
-/// this stack.
+/// counts use L2 frame length (IP payload plus per-device L2 framing
+/// overhead, excluding trailing FCS), aligned with Linux `/proc/net/dev`
+/// semantics.
 #[derive(Debug, Clone)]
 pub struct NetDevStats {
     pub interface_id: InterfaceId,
     pub name: String,
     pub rx_bytes: u64,
     pub rx_packets: u64,
+    pub rx_errors: u64,
+    pub rx_dropped: u64,
     pub tx_bytes: u64,
     pub tx_packets: u64,
+    pub tx_errors: u64,
+    pub tx_dropped: u64,
 }
 
 #[derive(Debug)]
@@ -275,11 +280,16 @@ struct DeviceHandle {
     /// must be preserved here until the worker observes it.
     rx_ready: AtomicBool,
     /// Cumulative bytes/packets received on and transmitted by this interface,
-    /// exposed through `/proc/net/dev`.
+    /// exposed through `/proc/net/dev`. Byte counts use L2 frame length (IP
+    /// payload plus per-device L2 header), aligned with Linux semantics.
     rx_bytes: AtomicU64,
     rx_packets: AtomicU64,
+    rx_errors: AtomicU64,
+    rx_dropped: AtomicU64,
     tx_bytes: AtomicU64,
     tx_packets: AtomicU64,
+    tx_errors: AtomicU64,
+    tx_dropped: AtomicU64,
 }
 
 impl DeviceHandle {
@@ -303,21 +313,74 @@ impl DeviceHandle {
             rx_ready: AtomicBool::new(false),
             rx_bytes: AtomicU64::new(0),
             rx_packets: AtomicU64::new(0),
+            rx_errors: AtomicU64::new(0),
+            rx_dropped: AtomicU64::new(0),
             tx_bytes: AtomicU64::new(0),
             tx_packets: AtomicU64::new(0),
+            tx_errors: AtomicU64::new(0),
+            tx_dropped: AtomicU64::new(0),
         })
     }
 
     /// Records `len` bytes received on this interface.
+    ///
+    /// `rx_packets` is incremented for every call regardless of `len`. Callers
+    /// must ensure `len > 0` when counting a real reception; a zero `len` only
+    /// makes sense for testing or diagnostic paths.
     fn count_rx(&self, len: usize) {
+        // Relaxed ordering is sufficient: fetch_add provides atomic RMW that
+        // guarantees no lost updates even with concurrent writers (device
+        // worker + loopback dispatch + deferred drains).  /proc/net/dev
+        // readers tolerate slight staleness, and no cross-thread
+        // happens-before relationship depends on these counters.
         self.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
         self.rx_packets.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records `len` bytes transmitted by this interface.
+    ///
+    /// `tx_packets` is incremented for every call regardless of `len`. Callers
+    /// must ensure `len > 0` when counting a real transmission.
     fn count_tx(&self, len: usize) {
         self.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);
         self.tx_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn count_rx_errors(&self, n: u64) {
+        self.rx_errors.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn count_rx_dropped(&self, n: u64) {
+        self.rx_dropped.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn count_tx_errors(&self, n: u64) {
+        self.tx_errors.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn count_tx_dropped(&self, n: u64) {
+        self.tx_dropped.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Drains all deferred error/drop counters from `device_inner` into this
+    /// `DeviceHandle`, using a single atomic bulk-add per counter.
+    fn drain_device_error_counters(&self, device_inner: &mut dyn Device) {
+        let n = device_inner.drain_deferred_tx_errors();
+        if n > 0 {
+            self.count_tx_errors(n);
+        }
+        let n = device_inner.drain_deferred_tx_drops();
+        if n > 0 {
+            self.count_tx_dropped(n);
+        }
+        let n = device_inner.drain_deferred_rx_errors();
+        if n > 0 {
+            self.count_rx_errors(n);
+        }
+        let n = device_inner.drain_deferred_rx_drops();
+        if n > 0 {
+            self.count_rx_dropped(n);
+        }
     }
 
     fn stats(&self) -> NetDevStats {
@@ -326,9 +389,42 @@ impl DeviceHandle {
             name: self.name.clone(),
             rx_bytes: self.rx_bytes.load(Ordering::Relaxed),
             rx_packets: self.rx_packets.load(Ordering::Relaxed),
+            rx_errors: self.rx_errors.load(Ordering::Relaxed),
+            rx_dropped: self.rx_dropped.load(Ordering::Relaxed),
             tx_bytes: self.tx_bytes.load(Ordering::Relaxed),
             tx_packets: self.tx_packets.load(Ordering::Relaxed),
+            tx_errors: self.tx_errors.load(Ordering::Relaxed),
+            tx_dropped: self.tx_dropped.load(Ordering::Relaxed),
         }
+    }
+
+    /// Drains one iteration of the RX worker's local batch into the shared RX
+    /// queue. Pops entries from `local_batch` and pushes them to `rx_queue`;
+    /// counts each successfully pushed frame via `count_rx`. On backpressure,
+    /// the failed entry is returned to the front of `local_batch` and the
+    /// function returns `Err(())`. If all entries drain successfully, returns
+    /// `Ok(())`. This shared helper keeps the backpressure retry logic and
+    /// frame-length pairing consistent between the production RX worker and
+    /// tests that verify the pairing invariant.
+    fn drain_local_batch_step(
+        &self,
+        local_batch: &mut VecDeque<(RxPacket, usize)>,
+    ) -> Result<(), ()> {
+        while let Some((rx, frame_len)) = local_batch.pop_front() {
+            match self.rx_queue.push(rx) {
+                Ok(()) => {
+                    self.count_rx(frame_len);
+                }
+                Err(rx) => {
+                    // Queue is full — return the entry to the front and
+                    // signal backpressure to the caller. The frame_len stays
+                    // paired with its packet.
+                    local_batch.push_front((rx, frame_len));
+                    return Err(());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn wake_rx(&self) {
@@ -348,6 +444,7 @@ impl DeviceHandle {
                 next_hop,
                 packet.len()
             );
+            self.count_tx_dropped(1);
             return false;
         };
         let tx = TxPacket { next_hop, bytes };
@@ -356,9 +453,9 @@ impl DeviceHandle {
                 "{}: TX queue is full, dropping packet to {}",
                 self.name, next_hop
             );
+            self.count_tx_dropped(1);
             return false;
         }
-        self.count_tx(packet.len());
         self.tx_wake.notify_one(true);
         true
     }
@@ -712,6 +809,13 @@ impl Router {
                 .enqueue(bytes.len(), rx_metadata(packet.interface_id, bytes))
             else {
                 warn!("Router RX buffer is full, dropping packet");
+                if let Some(dev) = self
+                    .devices
+                    .iter()
+                    .find(|d| d.interface_id == packet.interface_id)
+                {
+                    dev.count_rx_dropped(1);
+                }
                 break;
             };
             dst.copy_from_slice(bytes);
@@ -731,12 +835,22 @@ impl Router {
         let device = &self.devices[dev];
         if device.interface_id == InterfaceId::LOOPBACK {
             // Loopback traffic is transmitted and received on the same
-            // interface. RX is counted here (not in `poll`) because the injected
-            // packet is drained from the shared RX queue without an owning
-            // device.
-            device.count_tx(packet.len());
-            device.count_rx(packet.len());
-            return inject_loopback_rx(&self.queues.rx, next_hop, packet);
+            // interface.  Count only after successful injection so that
+            // failures (buffer full, over-MTU) are correctly recorded as
+            // drops rather than silently inflating the byte/packet counters.
+            // The drop is attributed to rx_dropped (not tx_dropped) because
+            // the packet was successfully consumed from smoltcp's TX buffer
+            // and the loss occurs on the receive-side injection.  Linux
+            // loopback behaves identically — send(2) returns success but the
+            // packet never reaches the receiver.
+            let ok = inject_loopback_rx(&self.queues.rx, next_hop, packet);
+            if ok {
+                device.count_tx(packet.len());
+                device.count_rx(packet.len());
+            } else {
+                device.count_rx_dropped(1);
+            }
+            return ok;
         }
         device.enqueue_tx(next_hop, packet)
     }
@@ -865,21 +979,37 @@ fn dispatch_unicast_packet(
 ) -> bool {
     let routes = table.read();
     let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
-        warn!(
+        debug!(
             "No route found for source {} destination {}",
             src_addr, dst_addr
         );
+        // The packet is dropped at the IP layer before reaching any device's
+        // ndo_start_xmit.  Linux accounts this via the system-wide SNMP counter
+        // IPSTATS_MIB_OUTNOROUTES (IpOutNoRoutes in /proc/net/snmp), never via
+        // per-device tx_dropped.  Once system-level SNMP counters are available
+        // this should update IpOutNoRoutes instead.
         return false;
     };
 
     let dev = &devices[route.dev];
     if dev.interface_id == InterfaceId::LOOPBACK {
         // Loopback packets are copied directly from the TX buffer into the RX
-        // buffer, bypassing per-device workers and the shared RX queue. This
-        // fast path never reaches `poll`, so both directions are counted here.
-        dev.count_tx(packet.len());
-        dev.count_rx(packet.len());
-        inject_loopback_rx_direct(rx_buffer, dst_addr, packet, sockets)
+        // buffer, bypassing per-device workers and the shared RX queue. Count
+        // only after successful injection so that failures (buffer full) are
+        // correctly recorded as drops rather than silently inflating the
+        // byte/packet counters.
+        let ok = inject_loopback_rx_direct(rx_buffer, dst_addr, packet, sockets);
+        if ok {
+            dev.count_tx(packet.len());
+            dev.count_rx(packet.len());
+        } else {
+            // The packet was consumed from smoltcp's TX buffer (send(2) returns
+            // success); the loss is on the receive side (buffer full or
+            // over-MTU), so only rx_dropped is incremented.  Linux loopback
+            // behaves identically.
+            dev.count_rx_dropped(1);
+        }
+        ok
     } else {
         dev.enqueue_tx(route.next_hop, packet)
     }
@@ -934,14 +1064,21 @@ fn inject_loopback_rx(
 fn device_tx_worker(device: Arc<DeviceHandle>) {
     loop {
         if let Some(packet) = device.tx_queue.pop() {
-            let poll_next =
-                device
-                    .inner
-                    .lock()
-                    .send(packet.next_hop, packet.bytes.as_slice(), now());
-            if poll_next {
-                crate::request_poll();
+            {
+                let mut inner = device.inner.lock();
+                let len = inner.send(packet.next_hop, packet.bytes.as_slice(), now());
+                if len > 0 {
+                    device.count_tx(len);
+                }
+                // Drain TX-specific deferred counters immediately so they are
+                // visible to /proc/net/dev readers without waiting for the RX
+                // worker.  The RX worker also drains all counters as a safety
+                // net for paths where the RX side acquires the device lock.
+                device.drain_device_error_counters(&mut **inner);
             }
+            // ARP-pending packets are not dropped — they are queued in
+            // pending_packets and sent later in process_arp() where their frame
+            // lengths flow through deferred_tx_frame_lens → drain_deferred_tx().
         } else {
             device.tx_wake.wait_until(|| !device.tx_queue.is_empty());
         }
@@ -954,47 +1091,83 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         vec![PacketMetadata::EMPTY; DEVICE_RX_WORKER_BATCH],
         vec![0u8; STANDARD_MTU * DEVICE_RX_WORKER_BATCH],
     );
+    // Persistent FIFO pairing each received packet with its L2 frame length.
+    // Entries that could not be pushed to the shared RX queue due to
+    // backpressure stay here and are retried on the next iteration. This
+    // keeps frame_len paired with its packet regardless of queue state.
+    let mut local_batch: VecDeque<(RxPacket, usize)> =
+        VecDeque::with_capacity(DEVICE_RX_WORKER_BATCH);
 
     loop {
         let mut received = false;
         {
             let mut device_inner = device.inner.lock();
             let mut snoop = |_packet: &[u8]| {};
-            while !rx_buffer.is_full()
-                && device_inner.recv(device.interface_id, &mut rx_buffer, now(), &mut snoop)
-            {
+            while local_batch.len() < DEVICE_RX_WORKER_BATCH && !rx_buffer.is_full() {
+                let frame_len =
+                    device_inner.recv(device.interface_id, &mut rx_buffer, now(), &mut snoop);
+                if frame_len == 0 {
+                    break;
+                }
+                // Dequeue immediately so frame_len stays paired with its
+                // packet — the 1:1 correspondence is established before
+                // any backpressure can desynchronise them.
+                let Ok((interface_id, packet)) = rx_buffer.dequeue() else {
+                    break;
+                };
+                let Some(bytes) = QueuedPacket::new(packet) else {
+                    warn!(
+                        "{}: RX packet exceeds MTU ({} bytes), dropping",
+                        device.name,
+                        packet.len()
+                    );
+                    device.count_rx_dropped(1);
+                    continue;
+                };
+                local_batch.push_back((
+                    RxPacket {
+                        interface_id,
+                        bytes,
+                    },
+                    frame_len,
+                ));
                 received = true;
             }
-        }
-
-        while let Ok((interface_id, packet)) = rx_buffer.dequeue() {
-            let packet_len = packet.len();
-            let rx = RxPacket {
-                interface_id,
-                bytes: match QueuedPacket::new(packet) {
-                    Some(bytes) => bytes,
-                    None => {
-                        warn!(
-                            "{}: RX packet exceeds MTU ({} bytes), dropping",
-                            device.name,
-                            packet.len()
-                        );
-                        continue;
-                    }
-                },
-            };
-            if device.rx_queue.push(rx).is_err() {
-                warn!("{}: RX queue is full, dropping packet", device.name);
-                crate::request_poll();
-                ax_task::yield_now();
-                break;
+            // Count TX bytes from packets sent asynchronously during recv()
+            // (e.g. pending ARP sends and ARP replies inside process_arp()).
+            for frame_len in device_inner.drain_deferred_tx() {
+                device.count_tx(frame_len);
             }
-            device.count_rx(packet_len);
-            crate::request_poll();
-            received = true;
+            // Count RX bytes from non-IP frames received during recv()
+            // (e.g. ARP requests processed in handle_frame()).
+            for frame_len in device_inner.drain_deferred_rx() {
+                device.count_rx(frame_len);
+            }
+            // Drain device-internal error/drop counters in one consolidated
+            // call.  Each counter is transferred from the device-level deferred
+            // accumulator into the DeviceHandle atomics via a single bulk-add.
+            device.drain_device_error_counters(&mut **device_inner);
         }
 
-        if !received {
+        // Push to the shared RX queue outside the device lock.
+        if device.drain_local_batch_step(&mut local_batch).is_err() {
+            // Backpressure: the shared RX queue is full. Notify the main poll
+            // loop to drain, yield CPU to allow progress, then retry on the
+            // next iteration. The unpushed entries remain in local_batch with
+            // their frame lengths paired.
+            warn!("{}: RX queue is full, delaying packet", device.name);
+            crate::request_poll();
+            ax_task::yield_now();
+        } else {
+            // All entries were successfully pushed — notify the main poll loop
+            // that new packets are available for processing.
+            if !local_batch.is_empty() {
+                panic!("drain_local_batch_step returned Ok but local_batch is not empty");
+            }
+            crate::request_poll();
+        }
+
+        if !received && local_batch.is_empty() {
             register_device_poll(&device, &device.rx_waker);
             device
                 .rx_wake
@@ -1139,12 +1312,12 @@ mod tests {
             _buffer: &mut PacketBuffer<InterfaceId>,
             _timestamp: Instant,
             _snoop: &mut dyn FnMut(&[u8]),
-        ) -> bool {
-            false
+        ) -> usize {
+            0
         }
 
-        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> bool {
-            false
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
+            0
         }
     }
 
@@ -1330,5 +1503,491 @@ mod tests {
         assert_eq!(queue.pop(), Some(2));
         assert_eq!(queue.pop(), None);
         assert!(queue.is_empty());
+    }
+
+    /// When no route exists for a destination, `dispatch_unicast_packet`
+    /// must NOT attribute the L3 drop to any interface's `tx_dropped`.
+    /// Linux accounts this as the system-wide `IpOutNoRoutes` SNMP counter;
+    /// per-interface tx_dropped is reserved for drops after an egress device
+    /// has been selected (e.g. queue full, MTU exceeded).  This test guards
+    /// against accidentally polluting interface counters via source-route
+    /// fallback (the primary path the old code used).  The secondary
+    /// loopback-only fallback (when the source address also has no covering
+    /// route) is not exercised here — it requires a loopback device — but
+    /// was removed together with the source-route path.
+    #[test]
+    fn no_route_does_not_count_interface_tx_dropped() {
+        use smoltcp::{iface::SocketSet, storage::PacketMetadata};
+
+        // Two devices with independent counters.
+        let dev0 = test_device_handle(Box::new(EmptyDevice));
+        let queues1 = Arc::new(RouterQueues {
+            rx: Arc::new(BoundedPacketQueue::new(1)),
+        });
+        let dev1 = DeviceHandle::new(IF1, Box::new(EmptyDevice), &queues1);
+        let devices = vec![dev0.clone(), dev1];
+
+        // Route table: only a subnet route for dev0, which covers the
+        // source address but NOT the destination.
+        let mut route_table = RouteTable::new();
+        route_table.add_rule(Rule::new(
+            ipv4_cidr(Ipv4Address::new(10, 0, 0, 0), 24),
+            Some(SRC0),
+            0,
+            IF0, // dev index in `devices`
+            SRC0,
+            100,
+        ));
+        let shared_table: SharedRouteTable = Arc::new(RwLock::new(route_table));
+
+        let mut rx_buffer: RouterPacketBuffer = PacketBuffer::new(
+            vec![PacketMetadata::EMPTY; 1],
+            vec![0u8; super::STANDARD_MTU],
+        );
+        let mut sockets = SocketSet::new(vec![]);
+
+        let src_addr = SRC0;
+        let dst_addr = IpAddress::Ipv4(Ipv4Address::new(203, 0, 113, 10));
+        let packet = [0u8; 64];
+
+        let before: Vec<_> = devices.iter().map(|d| d.stats()).collect();
+
+        let ok = dispatch_unicast_packet(
+            &mut rx_buffer,
+            &devices,
+            &shared_table,
+            src_addr,
+            dst_addr,
+            &packet,
+            &mut sockets,
+        );
+
+        assert!(!ok, "no-route dispatch must return false");
+
+        for (i, dev) in devices.iter().enumerate() {
+            let snap = dev.stats();
+            assert_eq!(
+                snap.tx_dropped, before[i].tx_dropped,
+                "device {i} tx_dropped changed from {} to {} after no-route dispatch",
+                before[i].tx_dropped, snap.tx_dropped,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod l2_counter_tests {
+    use smoltcp::{
+        storage::{PacketBuffer, PacketMetadata},
+        time::Instant,
+        wire::{IpAddress, Ipv4Address},
+    };
+
+    use super::*;
+
+    const IF0: InterfaceId = InterfaceId::new(2);
+
+    /// Configurable mock device for L2 frame-length counter tests.
+    struct CountingMockDevice {
+        name: &'static str,
+        send_returns: usize,
+        recv_returns: usize,
+        /// Pre-canned lengths returned by drain_deferred_tx(), drained on each call.
+        deferred_tx_lens: Vec<usize>,
+        /// Pre-canned lengths returned by drain_deferred_rx(), drained on each call.
+        deferred_rx_lens: Vec<usize>,
+    }
+
+    impl Device for CountingMockDevice {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn recv(
+            &mut self,
+            _interface_id: InterfaceId,
+            _buffer: &mut PacketBuffer<InterfaceId>,
+            _timestamp: Instant,
+            _snoop: &mut dyn FnMut(&[u8]),
+        ) -> usize {
+            self.recv_returns
+        }
+
+        fn send(&mut self, _next_hop: IpAddress, _packet: &[u8], _timestamp: Instant) -> usize {
+            self.send_returns
+        }
+
+        fn drain_deferred_tx(&mut self) -> Vec<usize> {
+            core::mem::take(&mut self.deferred_tx_lens)
+        }
+
+        fn drain_deferred_rx(&mut self) -> Vec<usize> {
+            core::mem::take(&mut self.deferred_rx_lens)
+        }
+    }
+
+    fn test_device_handle(device: Box<dyn Device>) -> Arc<DeviceHandle> {
+        let queues = Arc::new(RouterQueues {
+            rx: Arc::new(BoundedPacketQueue::new(1)),
+        });
+        DeviceHandle::new(IF0, device, &queues)
+    }
+
+    fn test_ip() -> IpAddress {
+        IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1))
+    }
+
+    fn test_packet_buffer() -> PacketBuffer<'static, InterfaceId> {
+        PacketBuffer::new(
+            vec![PacketMetadata::EMPTY; 1],
+            vec![0u8; super::STANDARD_MTU],
+        )
+    }
+
+    // ── count_rx / count_tx ────────────────────────────────────────────
+
+    #[test]
+    fn count_rx_accumulates_bytes_and_packets() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 0,
+        }));
+
+        device.count_rx(100);
+        assert_eq!(device.stats().rx_bytes, 100);
+        assert_eq!(device.stats().rx_packets, 1);
+
+        device.count_rx(200);
+        assert_eq!(device.stats().rx_bytes, 300);
+        assert_eq!(device.stats().rx_packets, 2);
+    }
+
+    #[test]
+    fn count_tx_accumulates_bytes_and_packets() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 0,
+        }));
+
+        device.count_tx(64);
+        assert_eq!(device.stats().tx_bytes, 64);
+        assert_eq!(device.stats().tx_packets, 1);
+
+        device.count_tx(1500);
+        assert_eq!(device.stats().tx_bytes, 1564);
+        assert_eq!(device.stats().tx_packets, 2);
+    }
+
+    // ── stats snapshot ─────────────────────────────────────────────────
+
+    #[test]
+    fn stats_starts_at_zero() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 0,
+        }));
+
+        let snap = device.stats();
+        assert_eq!(snap.rx_bytes, 0);
+        assert_eq!(snap.rx_packets, 0);
+        assert_eq!(snap.tx_bytes, 0);
+        assert_eq!(snap.tx_packets, 0);
+    }
+
+    #[test]
+    fn stats_reflects_current_counters_after_counting() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 0,
+        }));
+
+        device.count_rx(100);
+        device.count_tx(64);
+
+        let snap = device.stats();
+        assert_eq!(snap.rx_bytes, 100);
+        assert_eq!(snap.rx_packets, 1);
+        assert_eq!(snap.tx_bytes, 64);
+        assert_eq!(snap.tx_packets, 1);
+    }
+
+    // ── frame-length contract: send ────────────────────────────────────
+
+    #[test]
+    fn send_returns_frame_len_tx_counts_l2_not_ip_payload() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 1514, // L2 frame length (14 eth hdr + 1500 IP payload)
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 0,
+        }));
+
+        // Simulate what device_tx_worker does
+        let frame_len = device
+            .inner
+            .lock()
+            .send(test_ip(), &[0u8; 100], Instant::from_millis(0));
+        assert_eq!(frame_len, 1514);
+        if frame_len > 0 {
+            device.count_tx(frame_len);
+        }
+
+        let snap = device.stats();
+        // Byte counter reflects L2 frame length, NOT the IP payload (100 bytes)
+        assert_eq!(snap.tx_bytes, 1514);
+        assert_eq!(snap.tx_packets, 1);
+    }
+
+    #[test]
+    fn send_returns_zero_no_tx_counted() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0, // ARP pending or send failure
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 0,
+        }));
+
+        let frame_len = device
+            .inner
+            .lock()
+            .send(test_ip(), &[0u8; 100], Instant::from_millis(0));
+        assert_eq!(frame_len, 0);
+        // Worker skips count_tx when frame_len == 0
+        if frame_len > 0 {
+            device.count_tx(frame_len);
+        }
+
+        let snap = device.stats();
+        assert_eq!(snap.tx_bytes, 0);
+        assert_eq!(snap.tx_packets, 0);
+    }
+
+    // ── frame-length contract: recv ────────────────────────────────────
+
+    #[test]
+    fn recv_returns_frame_len_rx_counts_it() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 1514,
+        }));
+
+        let frame_len = device.inner.lock().recv(
+            IF0,
+            &mut test_packet_buffer(),
+            Instant::from_millis(0),
+            &mut |_| {},
+        );
+        assert_eq!(frame_len, 1514);
+        if frame_len > 0 {
+            device.count_rx(frame_len);
+        }
+
+        let snap = device.stats();
+        assert_eq!(snap.rx_bytes, 1514);
+        assert_eq!(snap.rx_packets, 1);
+    }
+
+    #[test]
+    fn recv_returns_zero_no_rx_counted() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 0, // no packet available
+        }));
+
+        let frame_len = device.inner.lock().recv(
+            IF0,
+            &mut test_packet_buffer(),
+            Instant::from_millis(0),
+            &mut |_| {},
+        );
+        assert_eq!(frame_len, 0);
+        if frame_len > 0 {
+            device.count_rx(frame_len);
+        }
+
+        let snap = device.stats();
+        assert_eq!(snap.rx_bytes, 0);
+        assert_eq!(snap.rx_packets, 0);
+    }
+
+    // ── drain_deferred_tx default ─────────────────────────────────────────
+
+    #[test]
+    fn drain_deferred_tx_default_returns_empty_vec() {
+        let mut device = CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 0,
+        };
+
+        // Default trait implementation returns Vec::new().
+        let drained = device.drain_deferred_tx();
+        assert!(drained.is_empty());
+
+        // Second call is also empty (no side effects).
+        let drained = device.drain_deferred_tx();
+        assert!(drained.is_empty());
+    }
+
+    // ── drain_deferred_rx default ─────────────────────────────────────────
+
+    #[test]
+    fn drain_deferred_rx_default_returns_empty_vec() {
+        let mut device = CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![],
+            deferred_rx_lens: vec![],
+            recv_returns: 0,
+        };
+
+        // Default trait implementation returns Vec::new().
+        let drained = device.drain_deferred_rx();
+        assert!(drained.is_empty());
+
+        // Second call is also empty and idempotent.
+        let drained = device.drain_deferred_rx();
+        assert!(drained.is_empty());
+    }
+
+    // ── RX queue backpressure preserves frame_len pairing ──────────────
+
+    #[test]
+    fn rx_backpressure_preserves_frame_len_pairing() {
+        // When the shared RX queue is full, unprocessed (packet, frame_len)
+        // pairs must stay paired for the next drain iteration. This test
+        // verifies that the production drain_local_batch_step() helper
+        // preserves FIFO order and pairing across backpressure retries.
+        //
+        // Use a queue large enough that backpressure is deliberate (capacity 1)
+        // but the second drain can exercise the full successful path.
+        let queues = Arc::new(RouterQueues {
+            rx: Arc::new(BoundedPacketQueue::new(4)),
+        });
+        let device: Arc<DeviceHandle> = DeviceHandle::new(
+            IF0,
+            Box::new(CountingMockDevice {
+                name: "mock",
+                send_returns: 0,
+                deferred_tx_lens: vec![],
+                deferred_rx_lens: vec![],
+                recv_returns: 0,
+            }),
+            &queues,
+        );
+
+        let mut local_batch: VecDeque<(RxPacket, usize)> = VecDeque::new();
+
+        // Simulate receiving 3 packets with distinct L2 frame lengths.
+        for (i, frame_len) in [100usize, 200, 300].iter().enumerate() {
+            let bytes = QueuedPacket::new(&[i as u8; 64]).unwrap();
+            local_batch.push_back((
+                RxPacket {
+                    interface_id: IF0,
+                    bytes,
+                },
+                *frame_len,
+            ));
+        }
+        assert_eq!(local_batch.len(), 3);
+
+        // Fill the shared RX queue to capacity so pushes fail.
+        for n in 0..4 {
+            let fill = RxPacket {
+                interface_id: IF0,
+                bytes: QueuedPacket::new(&[n as u8; 64]).unwrap(),
+            };
+            assert!(device.rx_queue.push(fill).is_ok());
+        }
+
+        // First drain attempt — no entries can be pushed (queue full).
+        // drain_local_batch_step returns Err on backpressure and leaves
+        // all entries in local_batch.
+        let result = device.drain_local_batch_step(&mut local_batch);
+        assert!(result.is_err(), "Expected backpressure Err on full queue");
+        // All 3 entries are still paired in local_batch.
+        assert_eq!(local_batch.len(), 3);
+
+        // Drain all fill packets to make room.
+        for _ in 0..4 {
+            assert!(device.rx_queue.pop().is_some());
+        }
+
+        // Second drain — all entries should succeed, each with its original
+        // frame length still paired.
+        let result = device.drain_local_batch_step(&mut local_batch);
+        assert!(result.is_ok(), "Expected Ok after clearing queue");
+        assert!(local_batch.is_empty(), "All entries should be drained");
+
+        let stats = device.stats();
+        assert_eq!(stats.rx_packets, 3);
+        // 100 + 200 + 300 = 600
+        assert_eq!(stats.rx_bytes, 600);
+    }
+
+    // ── RX worker combined drain integration ──────────────────────────
+
+    /// Verifies that a single recv+drain cycle correctly aggregates counts
+    /// from all three counting paths: recv() return value (IP RX),
+    /// drain_deferred_tx() (ARP TX), and drain_deferred_rx() (ARP RX).
+    #[test]
+    fn rx_worker_three_path_combined_drain() {
+        let device = test_device_handle(Box::new(CountingMockDevice {
+            name: "mock",
+            send_returns: 0,
+            deferred_tx_lens: vec![60, 60], // 2 ARP TX frames (42+padding)
+            deferred_rx_lens: vec![42],     // 1 ARP RX frame
+            recv_returns: 1514,             // 1 IP RX frame
+        }));
+
+        // Simulate one iteration of device_rx_worker's inner loop:
+        //   1. recv IP frame → count_rx(frame_len)
+        //   2. drain deferred TX → count_tx(each)
+        //   3. drain deferred RX → count_rx(each)
+        let frame_len = device.inner.lock().recv(
+            IF0,
+            &mut test_packet_buffer(),
+            Instant::from_millis(0),
+            &mut |_| {},
+        );
+        if frame_len > 0 {
+            device.count_rx(frame_len);
+        }
+        for len in device.inner.lock().drain_deferred_tx() {
+            device.count_tx(len);
+        }
+        for len in device.inner.lock().drain_deferred_rx() {
+            device.count_rx(len);
+        }
+
+        let snap = device.stats();
+        // RX: 1 IP frame (1514) + 1 ARP frame (42) = 2 packets, 1556 bytes
+        assert_eq!(snap.rx_packets, 2);
+        assert_eq!(snap.rx_bytes, 1556);
+        // TX: 2 ARP frames (60 + 60) = 2 packets, 120 bytes
+        assert_eq!(snap.tx_packets, 2);
+        assert_eq!(snap.tx_bytes, 120);
     }
 }

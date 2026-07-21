@@ -7,7 +7,9 @@ publish = false
 [features]
 default = []
 std = []
-ax-std = ["dep:ax-driver", "dep:ax-hal", "dep:ax-std"]
+# Every kernel test reaches ax-std through this feature, so it owns the ArceOS
+# baseline instead of relying on axbuild to add it for the selected test case.
+ax-std = ["dep:ax-driver", "dep:ax-hal", "dep:ax-std", "ax-std/arceos"]
 memtest = ["ax-std", "dep:rand", "ax-std/alloc", "ax-std/multitask"]
 task-yield = ["ax-std", "ax-std/multitask"]
 sched-rr = ["ax-std", "ax-std/alloc", "ax-std/multitask", "ax-std/sched-rr"]

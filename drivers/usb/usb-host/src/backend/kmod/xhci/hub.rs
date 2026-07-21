@@ -11,7 +11,7 @@ use core::{
 use futures::{FutureExt, future::BoxFuture, task::AtomicWaker};
 use usb_if::{err::USBError, host::hub::Speed};
 
-use super::reg::XhciRegisters;
+use super::reg::{MemMapper, PortStatusRegisters, XhciRegisters};
 use crate::backend::kmod::hub::{HubInfo, HubOp, PortChangeInfo, PortState};
 
 pub struct PortChangeWaker {
@@ -58,8 +58,7 @@ pub struct Port {
 ///
 /// Root Hub 是集成在 xHCI 控制器中的虚拟 Hub。
 pub struct XhciRootHub {
-    /// 寄存器访问
-    reg: XhciRegisters,
+    portsc: PortStatusRegisters<MemMapper>,
 
     ports: Arc<UnsafeCell<Vec<Port>>>,
 }
@@ -87,19 +86,19 @@ impl HubOp for XhciRootHub {
             info.speed = Speed::SuperSpeedPlus;
             debug!("Resetting all ports of xHCI Root Hub");
 
-            for idx in 0..self.reg.port_register_set.len() {
-                self.reg.port_register_set.update_volatile_at(idx, |reg| {
-                    if !reg.portsc.port_power() {
+            for idx in 0..self.portsc.len() {
+                self.portsc.update_volatile_at(idx, |portsc| {
+                    if !portsc.port_power() {
                         trace!("Powering on port {}", idx + 1);
-                        reg.portsc.set_port_power();
+                        portsc.set_port_power();
                     }
                 });
             }
 
-            for idx in 0..self.reg.port_register_set.len() {
-                self.reg.port_register_set.update_volatile_at(idx, |reg| {
-                    reg.portsc.set_0_port_enabled_disabled();
-                    reg.portsc.set_port_reset();
+            for idx in 0..self.portsc.len() {
+                self.portsc.update_volatile_at(idx, |portsc| {
+                    portsc.set_0_port_enabled_disabled();
+                    portsc.set_port_reset();
                 });
             }
 
@@ -116,10 +115,11 @@ impl HubOp for XhciRootHub {
 impl XhciRootHub {
     /// 创建新的 xHCI Root Hub
     pub fn new(reg: XhciRegisters) -> Result<Self, USBError> {
-        let port_num = reg.port_register_set.len();
+        let portsc = reg.port_status_registers();
+        let port_num = portsc.len();
         let ports = PortChangeWaker::new(port_num as _).ports.clone();
 
-        Ok(Self { reg, ports })
+        Ok(Self { portsc, ports })
     }
 
     pub fn waker(&self) -> PortChangeWaker {
@@ -145,7 +145,7 @@ impl XhciRootHub {
             debug!("Waiting for port {id} reset ...");
             let i = (id - 1) as usize;
 
-            let port = self.reg.port_register_set.read_volatile_at(i).portsc;
+            let port = self.portsc.read_volatile_at(i);
 
             if port.port_reset() {
                 continue;
@@ -176,15 +176,14 @@ impl XhciRootHub {
 
         for &id in &reseted {
             let i = (id - 1) as usize;
-            let port_reg = self.reg.port_register_set.read_volatile_at(i);
-            if !port_reg.portsc.current_connect_status() || !port_reg.portsc.port_enabled_disabled()
-            {
+            let portsc = self.portsc.read_volatile_at(i);
+            if !portsc.current_connect_status() || !portsc.port_enabled_disabled() {
                 continue;
             }
-            let speed_raw = port_reg.portsc.port_speed();
+            let speed_raw = portsc.port_speed();
             let speed = Speed::from_xhci_portsc(speed_raw);
             debug!("Port {} device connected at speed {:?}", id, speed);
-            debug!("Port {} : \r\n {:?}", id, port_reg.portsc);
+            debug!("Port {} : \r\n {:?}", id, portsc);
             self.ports_mut()[i].state = PortState::Probed;
 
             out.push(PortChangeInfo {

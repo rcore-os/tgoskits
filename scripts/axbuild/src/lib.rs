@@ -5,6 +5,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::{arceos::ArceOS, axloader::Axloader, axvisor::Axvisor, starry::Starry};
 
+mod agent_review_bench;
 pub mod arceos;
 pub mod axloader;
 pub mod axvisor;
@@ -13,7 +14,6 @@ mod board;
 mod build;
 mod clippy;
 pub mod context;
-mod firmware;
 pub mod image;
 mod ktest;
 mod rootfs;
@@ -51,6 +51,11 @@ pub(crate) struct SyncLintArgs {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run offline Codex review benchmarks from historical PR snapshots
+    AgentReviewBench {
+        #[command(subcommand)]
+        command: agent_review_bench::Command,
+    },
     /// Run std tests for the configured workspace package whitelist
     Test,
     /// Run kernel axtest targets through QEMU or a remote board
@@ -102,12 +107,10 @@ pub async fn run() -> anyhow::Result<()> {
 
 async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Commands::AgentReviewBench { command } => agent_review_bench::execute(command).await,
         Commands::Test => test::std::run_std_test_command(),
         Commands::Ktest(args) => ktest::run(args).await,
-        Commands::Clippy(args) => {
-            ensure_aic8800_firmware().await?;
-            clippy::run_workspace_clippy_command(&args)
-        }
+        Commands::Clippy(args) => clippy::run_workspace_clippy_command(&args),
         Commands::SyncLint(args) => sync_lint::run_sync_lint_command(&args),
         Commands::SpinLint => spin_lint::run_spin_lint_command(),
         Commands::Board { command } => board::execute(command).await,
@@ -116,10 +119,7 @@ async fn run_root_cli(cli: Cli) -> anyhow::Result<()> {
         Commands::Axvisor { command } => Axvisor::new()?.execute(command).await,
         Commands::Axloader { command } => Axloader::new()?.execute(command).await,
         Commands::Arceos { command } => ArceOS::new()?.execute(command).await,
-        Commands::Starry { command } => {
-            ensure_aic8800_firmware().await?;
-            Starry::new()?.execute(command).await
-        }
+        Commands::Starry { command } => Starry::new()?.execute(command).await,
     }
 }
 
@@ -137,6 +137,122 @@ mod tests {
         command: Commands,
     }
 
+    fn assert_os_command_contract(os: &'static str, command: &[&'static str]) {
+        let mut args = vec!["xtask", os];
+        args.extend_from_slice(command);
+        TestCli::try_parse_from(args).unwrap_or_else(|err| {
+            panic!(
+                "{os} must support the shared CLI contract `{}`: {err}",
+                command.join(" ")
+            )
+        });
+    }
+
+    #[test]
+    fn arceos_starry_and_axvisor_share_the_base_cli_contract() {
+        let common_commands: &[&[&str]] = &[
+            &[
+                "build",
+                "--config",
+                "build.toml",
+                "--arch",
+                "aarch64",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--smp",
+                "2",
+                "--debug",
+            ],
+            &[
+                "qemu",
+                "--config",
+                "build.toml",
+                "--arch",
+                "aarch64",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--smp",
+                "2",
+                "--debug",
+                "--qemu-config",
+                "qemu.toml",
+                "--rootfs",
+                "rootfs.img",
+            ],
+            &[
+                "uboot",
+                "--config",
+                "build.toml",
+                "--arch",
+                "aarch64",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--smp",
+                "2",
+                "--debug",
+                "--uboot-config",
+                "uboot.toml",
+            ],
+            &[
+                "board",
+                "--config",
+                "build.toml",
+                "--arch",
+                "aarch64",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--smp",
+                "2",
+                "--debug",
+                "--board-config",
+                "board.toml",
+                "--board-type",
+                "qemu",
+                "--server",
+                "127.0.0.1",
+                "--port",
+                "5555",
+            ],
+            &["defconfig", "qemu-aarch64"],
+            &["config", "ls"],
+            &["test", "qemu", "--list"],
+            &["test", "board", "--list"],
+        ];
+
+        for os in ["arceos", "starry", "axvisor"] {
+            for command in common_commands {
+                assert_os_command_contract(os, command);
+            }
+        }
+    }
+
+    #[test]
+    fn os_specific_cli_extensions_remain_additive() {
+        assert_os_command_contract(
+            "arceos",
+            &[
+                "qemu",
+                "--package",
+                "arceos-helloworld",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+            ],
+        );
+        assert_os_command_contract(
+            "axvisor",
+            &[
+                "qemu",
+                "--target",
+                "aarch64-unknown-none-softfloat",
+                "--vmconfigs",
+                "vm-1.toml",
+                "--vmconfigs",
+                "vm-2.toml",
+            ],
+        );
+        assert_os_command_contract("axvisor", &["test", "uboot", "--board", "qemu-aarch64"]);
+    }
+
     #[test]
     fn command_parses_ktest_qemu() {
         let cli = TestCli::try_parse_from([
@@ -152,6 +268,8 @@ mod tests {
             "--qemu-config",
             "qemu.toml",
             "--coverage",
+            "--out-fmt",
+            "html",
         ])
         .unwrap();
 
@@ -163,6 +281,7 @@ mod tests {
                     assert_eq!(args.arch.as_deref(), Some("x86_64"));
                     assert_eq!(args.qemu_config, Some(PathBuf::from("qemu.toml")));
                     assert!(args.coverage);
+                    assert_eq!(args.out_fmt, Some(ktest::KtestCoverageOutFmt::Html));
                 }
                 _ => panic!("expected ktest qemu command"),
             },
@@ -209,11 +328,4 @@ mod tests {
             _ => panic!("expected ktest command"),
         }
     }
-}
-
-/// Provisions the AIC8800 Wi-Fi firmware blobs (fetched + integrity-checked,
-/// never committed) before any command that may compile the `aic8800` crate.
-async fn ensure_aic8800_firmware() -> anyhow::Result<()> {
-    let workspace_root = context::workspace_root_path()?;
-    firmware::ensure_aic8800_firmware(&workspace_root).await
 }

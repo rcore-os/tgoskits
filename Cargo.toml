@@ -314,7 +314,7 @@ mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1.0", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }
 log = "0.4"
-spin = { version = "=0.12.0", default-features = false, features = ["lock_api", "once", "lazylock"] }
+spin = { version = "=0.12.2", default-features = false, features = ["lock_api", "once", "lazylock"] }
 atomic-waker = { version = "1.1", default-features = false }
 ostool = { version = "0.24.0" }
 riscv = { version = "0.16.1", default-features = false }

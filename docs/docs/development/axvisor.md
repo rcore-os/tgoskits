@@ -12,7 +12,7 @@ Axvisor 是运行在 ArceOS 基础能力之上的 Type-1 Hypervisor。与 ArceOS
 
 ### 1.1 工具链
 
-Axvisor 共享 TGOSKits 工作区统一工具链（`nightly-2026-04-27`）。Axvisor 的交叉编译配置位于 `os/axvisor/.cargo/config.toml`，包含各架构的链接器标志和 runner 配置。
+Axvisor 共享 TGOSKits 工作区统一工具链（`nightly-2026-07-15`）。Axvisor 的交叉编译配置位于 `os/axvisor/.cargo/config.toml`，包含各架构的链接器标志和 runner 配置。
 
 ### 1.2 QEMU
 
@@ -22,7 +22,7 @@ Axvisor 开发依赖 QEMU 的硬件虚拟化支持：
 |------|-----------|-----------|
 | aarch64 | `qemu-system-aarch64` | EL2 虚拟化扩展 |
 | riscv64 | `qemu-system-riscv64` | H 扩展 |
-| x86_64 | `qemu-system-x86_64` | VMX |
+| x86_64 | `qemu-system-x86_64` | VMX 或 SVM |
 | loongarch64 | `qemu-system-loongarch64` | 虚拟化支持 |
 
 推荐 QEMU 版本 ≥ 10.2.1。

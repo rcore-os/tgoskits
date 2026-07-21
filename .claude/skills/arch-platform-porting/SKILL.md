@@ -22,8 +22,17 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 ## Porting Checklist
 
 - **Target and toolchain**: add or verify `scripts/targets` specs, target triple, panic strategy, relocation model, code model, ABI, soft-float setting, musl/std support, linker, objcopy, and `rust-src` availability.
+- **RISC-V per-CPU register contract**: `ax-percpu` reserves `x3`/`gp` as the per-CPU base, so every RISC-V kernel target spec must pass `--no-relax` to the linker. Do not enable global-pointer relaxation or define `__global_pointer$` unless the per-CPU register design changes at the same time.
 - **Build system**: wire arch/target mapping in `scripts/axbuild`, dynamic platform defaults, feature propagation, kernel format conversion, UEFI/to-bin behavior, rootfs handling, and per-OS test discovery.
 - **QEMU and firmware**: verify QEMU binary, machine type, CPU, SMP count, pflash/OVMF files, serial console, disk/rootfs device, `-snapshot`, debug flags, timeout, and success/fail regexes.
+  QEMU `uefi`, `to_bin`, acceleration, CPU feature, and device choices are part of each
+  `qemu-*.toml` contract; axbuild must not infer or overwrite them from the target architecture
+  or host `/dev/kvm` availability.
+  Axvisor x86_64 selects the VMX or SVM backend at runtime from CPUID; the generic QEMU board
+  and all Axvisor build configs remain backend-neutral. CI must retain separate Intel/VMX and
+  AMD/SVM QEMU cases because their host CPU exposure differs, but neither case may select a
+  Cargo `vmx` or `svm` feature. Both cases must use the same backend-neutral guest baseline so
+  their result isolates the runtime CPUID-selected virtualization path.
 - **someboot arch layer**: implement or audit entry, relocation, BSS clearing, stack setup, memory map parsing, paging, trap vectors, timer, IRQ, power, SMP, and address translation.
 - **CPU runtime**: update `components/axcpu/src/<arch>` for trap entry, context switch, user/kernel context, syscall return path, FP/SIMD state, and per-CPU assumptions.
 - **Platform bridge**: update `platforms/axplat-dyn`, `platforms/somehal`, platform config, memory regions, IRQ routing, timer source, power operations, and CPU boot operations.

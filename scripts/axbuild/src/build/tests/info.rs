@@ -20,6 +20,7 @@ fn build_info_enables_backtrace_matches_env_flags() {
 fn build_info_defaults_to_empty_env() {
     let info = BuildInfo::default();
     assert!(info.env.is_empty());
+    assert!(info.features.is_empty());
 }
 
 #[test]

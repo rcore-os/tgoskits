@@ -157,8 +157,8 @@ fn is_unused_entry(entry: &[u8]) -> bool {
 
 fn decode_partition_name(bytes: &[u8]) -> Option<String> {
     let mut name = String::new();
-    for chunk in bytes.chunks_exact(2) {
-        let unit = u16::from_le_bytes(chunk.try_into().expect("slice length is fixed"));
+    for chunk in bytes.as_chunks::<2>().0 {
+        let unit = u16::from_le_bytes(*chunk);
         if unit == 0 {
             break;
         }

@@ -4,8 +4,8 @@ mod card0;
 #[cfg(feature = "rknpu")]
 mod card1;
 // The real contiguous coherent dma-heap is shared by every accelerator that
-// exchanges buffers (JPU / NPU; RGA when its node lands).
-#[cfg(any(feature = "jpeg", feature = "rknpu"))]
+// exchanges buffers (JPU / NPU / RGA).
+#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 mod dmaheap;
 mod drm;
 #[cfg(feature = "input")]
@@ -21,6 +21,8 @@ mod r#loop;
 mod loop_block;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
+#[cfg(feature = "rga")]
+pub(crate) mod rga;
 #[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
@@ -257,7 +259,7 @@ fn random_seed() -> [u8; 32] {
     let mut state = time_entropy() ^ counter ^ stack_addr.rotate_left(17);
     let mut seed = [0; 32];
 
-    for chunk in seed.chunks_exact_mut(core::mem::size_of::<u64>()) {
+    for chunk in seed.as_chunks_mut::<{ core::mem::size_of::<u64>() }>().0 {
         state = splitmix64(state.wrapping_add(RANDOM_SEED_STEP));
         chunk.copy_from_slice(&state.to_le_bytes());
     }
@@ -573,7 +575,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // accelerators share buffers from (zero-copy across JPU / NPU / RGA). Every
     // heap name maps to the same allocator. Available under any accelerator
     // feature, not just `jpeg`.
-    #[cfg(any(feature = "jpeg", feature = "rknpu"))]
+    #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
     {
         let mut dma_heap_dir = DirMapping::new();
         for name in dmaheap::HEAP_NAMES {
@@ -628,6 +630,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(226, 128),
             dri_card0,
+        ),
+    );
+
+    #[cfg(feature = "rga")]
+    root.add(
+        "rga",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(252, 16), // CONFIRM ON BOARD: real /dev/rga major/minor
+            Arc::new(rga::RgaDevice::new()),
         ),
     );
 

@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
+use anyhow::bail;
+
 const C_DEFINE_FEATURE_PREFIX: &str = "c-define:";
-const REMOVED_AX_DRIVER_PLAT_STATIC_FEATURE: &str = concat!("ax-driver/", "plat", "-static");
 
 pub(super) fn dynamic_pie_for_c_app(features: &[String]) -> bool {
     let _ = features;
@@ -71,7 +72,7 @@ pub(super) fn c_define_name(feature: &str) -> String {
 pub(super) fn map_c_app_features(
     case_features: &[String],
     base_features: &[String],
-) -> Vec<String> {
+) -> anyhow::Result<Vec<String>> {
     const LIB_FEATURES: &[&str] = &[
         "fp-simd",
         "irq",
@@ -91,9 +92,7 @@ pub(super) fn map_c_app_features(
 
     let mut features = BTreeSet::new();
     for feature in base_features {
-        if removed_cargo_feature(feature) {
-            continue;
-        }
+        reject_removed_c_app_feature(feature)?;
         let normalized = feature
             .strip_prefix("ax-std/")
             .or_else(|| feature.strip_prefix("ax-libc/"))
@@ -107,7 +106,10 @@ pub(super) fn map_c_app_features(
         }
         match normalized {
             "ax-std" | "ax-libc" => {}
-            "plat-dyn" => {}
+            "plat-dyn" => bail!(
+                "C app feature `plat-dyn` is no longer supported; dynamic platform selection is \
+                 automatic"
+            ),
             "smp" => {
                 features.insert("smp".to_string());
             }
@@ -120,9 +122,10 @@ pub(super) fn map_c_app_features(
         }
     }
     for feature in case_features {
-        if feature.starts_with(C_DEFINE_FEATURE_PREFIX) || removed_cargo_feature(feature) {
+        if feature.starts_with(C_DEFINE_FEATURE_PREFIX) {
             continue;
         }
+        reject_removed_c_app_feature(feature)?;
         let normalized = feature
             .strip_prefix("ax-std/")
             .or_else(|| feature.strip_prefix("ax-libc/"))
@@ -135,19 +138,19 @@ pub(super) fn map_c_app_features(
             continue;
         }
         if normalized == "plat-dyn" {
-            continue;
+            bail!(
+                "C app feature `plat-dyn` is no longer supported; dynamic platform selection is \
+                 automatic"
+            );
         }
         features.insert(normalized.to_string());
     }
-    if features
-        .iter()
-        .any(|feature| matches!(feature.as_str(), "fs" | "net" | "pipe" | "select" | "epoll"))
-    {
-        features.insert("fd".to_string());
-    }
-    features.into_iter().collect()
+    Ok(features.into_iter().collect())
 }
 
-fn removed_cargo_feature(feature: &str) -> bool {
-    matches!(feature, REMOVED_AX_DRIVER_PLAT_STATIC_FEATURE)
+fn reject_removed_c_app_feature(feature: &str) -> anyhow::Result<()> {
+    if feature == concat!("ax-driver/", "plat", "-static") {
+        bail!("C app feature `{feature}` is no longer supported; remove it from the configuration");
+    }
+    Ok(())
 }

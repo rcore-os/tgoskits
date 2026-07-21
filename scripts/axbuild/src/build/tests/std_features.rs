@@ -2,17 +2,13 @@ use super::*;
 
 #[test]
 fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
-    let mut envs = HashMap::new();
     let mut features = vec![
-        "plat-dyn".to_string(),
-        "ax-driver/plat-dyn".to_string(),
         "ax-driver/virtio-blk".to_string(),
         "ax-driver/virtio-net".to_string(),
         "dns".to_string(),
     ];
 
     pass_std_build_nested_features(
-        &mut envs,
         &mut features,
         &["dns".to_string()],
         &[
@@ -28,26 +24,22 @@ fn std_build_nested_features_are_passed_through_not_enabled_on_app() {
         features,
         vec![
             "ax-std/dns".to_string(),
-            "ax-std/std-compat".to_string(),
             "ax-std/virtio-blk".to_string(),
             "ax-std/virtio-net".to_string(),
             "dns".to_string(),
         ]
     );
-    assert!(envs.is_empty());
 }
 
 #[test]
 fn std_build_runtime_features_are_passed_through_after_normalization() {
     let mut info = BuildInfo {
-        features: vec!["plat-dyn".to_string(), "dns".to_string()],
+        features: vec!["dns".to_string()],
         ..BuildInfo::default()
     };
 
     info.resolve_std_features();
-    let mut envs = HashMap::new();
     pass_std_build_nested_features(
-        &mut envs,
         &mut info.features,
         &["dns".to_string()],
         &[
@@ -59,13 +51,8 @@ fn std_build_runtime_features_are_passed_through_after_normalization() {
 
     assert_eq!(
         info.features,
-        vec![
-            "ax-std/dns".to_string(),
-            "ax-std/std-compat".to_string(),
-            "dns".to_string()
-        ]
+        vec!["ax-std/dns".to_string(), "dns".to_string()]
     );
-    assert!(envs.is_empty());
 }
 
 #[test]
@@ -95,15 +82,9 @@ fn std_build_cargo_config_builds_fake_lib_before_app() {
     );
     assert_eq!(
         cargo.features,
-        vec![
-            "arceos".to_string(),
-            "ax-std/dns".to_string(),
-            "ax-std/fs".to_string(),
-            "ax-std/smp".to_string(),
-            "ax-std/std-compat".to_string(),
-        ]
+        vec!["ax-std/dns".to_string(), "ax-std/fs".to_string(),]
     );
-    assert!(cargo.to_bin);
+    assert!(!cargo.to_bin);
     assert_eq!(
         cargo.env.get("CARGO_UNSTABLE_JSON_TARGET_SPEC"),
         Some(&"true".to_string())

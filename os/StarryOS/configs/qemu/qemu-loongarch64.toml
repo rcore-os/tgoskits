@@ -15,7 +15,8 @@ args = [
   "-netdev",
   "user,id=net0",
 ]
-uefi = false
+# The LoongArch Starry kernel uses the dynamic UEFI platform on the default QEMU path.
+uefi = true
 to_bin = true
 success_regex = []
 fail_regex = ["(?i)\\bpanic(?:ked)?\\b"]

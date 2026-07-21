@@ -5,7 +5,7 @@ use ostool::build::config::Cargo;
 
 use crate::support::process::ProcessExt;
 
-pub(super) const AX_LIBC_PACKAGE: &str = "ax-libc";
+pub(crate) const AX_LIBC_PACKAGE: &str = "ax-libc";
 pub(super) const PIC_RUSTFLAG: &str = "-Crelocation-model=pic";
 
 pub(super) fn build_axlibc_staticlib(

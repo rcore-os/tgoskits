@@ -1,5 +1,4 @@
 args = [
-  "-nodefaults",
   "-no-user-config",
   "-display",
   "none",
@@ -8,9 +7,9 @@ args = [
   "-monitor",
   "none",
   "-cpu",
-  "host",
+  "host,-la57,+svm,+npt,+nrip-save",
   "-machine",
-  "q35,sata=off,smbus=off,i8042=off,usb=off,graphics=off",
+  "q35,smbus=off,usb=off,graphics=off",
   "-smp",
   "1",
   "-accel",
@@ -21,8 +20,12 @@ args = [
   "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
   "-m",
   "512M",
+  "-net",
+  "none",
+  "-vga",
+  "none",
 ]
-timeout = 300
+timeout = 600
 fail_regex = [
   "(?i)\\bpanic(?:ked)?\\b",
   "(?i)kernel panic",
@@ -32,5 +35,5 @@ fail_regex = [
 success_regex = ["(?m)^guest linux test pass!\\s*$"]
 shell_prefix = "~ #"
 shell_init_cmd = "pwd && echo 'guest linux test pass!'"
-to_bin = false
-uefi = false
+to_bin = true
+uefi = true

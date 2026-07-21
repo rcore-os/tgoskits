@@ -5,96 +5,93 @@ sidebar_label: "概述"
 
 # Axvisor
 
-Axvisor 是 TGOSKits 的 Hypervisor 子系统。与 [ArceOS](../arceos/overview)（app 模块化）和 [StarryOS](../starry/overview)（单内核）不同，Axvisor 编译的是**虚拟机监控器**本身，同时需要管理一个或多个 Guest VM 的配置（`--vmconfigs`）、Guest 镜像和 rootfs。Axvisor 也是**唯一支持 `test uboot` 测试模式**和**唯一需要 LVZ 扩展版 QEMU（loongarch64）**的子系统。
+Axvisor 构建固定 package `axvisor`，并可在 Build Config 或 CLI 中选择一个或多个 VM 配置。它的核心职责是构建 hypervisor 本体；guest 的内存、设备、启动协议、firmware 路径等由 `vm_configs` 及 QEMU TOML 显式描述。
 
-本目录详细描述 Axvisor 的全部命令。深入的主题有独立文档：
+## 1. 命令边界
 
-- [Axvisor 构建](./build)：Hypervisor 编译、旧平台选择项过滤、板卡配置自动复制
-- [Axvisor 运行](./runtime)：QEMU / U-Boot / 板卡、loongarch64 LVZ QEMU、Guest UEFI firmware
-- [Axvisor 测试](./test)：QEMU / U-Boot / Board 三种测试模式（含 Axvisor 独有的 `test uboot`）
+Axvisor 命令在固定 hypervisor package 上叠加 VM 描述选择；Build Config、VM TOML 和 host QEMU TOML 由不同入口消费。下表概括各命令的责任。
 
-通用的参数解析、Snapshot、Build Info 和动态平台构建约定详见 [参数与配置](../configuration)。
+| 命令 | 职责 |
+| --- | --- |
+| `build` | 构建 Axvisor ELF |
+| `qemu` | 准备 rootfs、读取 QEMU TOML 并启动 |
+| `uboot` / `board` | 通过 U-Boot 或远程板卡启动 |
+| `test qemu` / `test board` | QEMU 与板卡回归 |
+| `test uboot` | Axvisor 专属的 U-Boot 真实板卡测试 |
+| `defconfig <board>` / `config ls` | 选择或列出 `os/axvisor/configs/board/` 模板 |
 
-## 子命令
+通用参数是 `--config`、`--arch`、`--target`、`--smp`、`--debug`；`--vmconfigs <PATH>` 可以重复传入。QEMU 另有 `--qemu-config` 和 `--rootfs`。
+
+## 2. 配置布局
+
+### 2.1 文件组织
+
+host board/QEMU 配置与 guest VM 配置分目录存放，这让 target 能力、host 启动和 guest 引导协议可独立演进。下列路径与 `axvisor/board.rs` 的发现规则一致。
 
 ```text
-cargo xtask axvisor <subcommand> [options]
+os/axvisor/configs/
+├── board/                 # target + BuildInfo + 可选 vm_configs
+│   └── qemu-x86_64.toml
+├── qemu/                  # host QEMU boot contract
+│   └── qemu-x86_64.toml
+└── vms/                   # guest VM 描述，按 qemu/或具体板卡组织
+    └── qemu/x86_64/linux-vmx-smp1.toml
 ```
 
-| 子命令 | 说明 | 详细文档 |
-|--------|------|----------|
-| `build` | 编译 Axvisor | [构建](./build) |
-| `qemu` | 编译并在 QEMU 中运行（含 rootfs/guest 镜像准备） | [运行](./runtime) |
-| `uboot` | 编译并通过 U-Boot 运行 | [运行](./runtime) |
-| `board` | 编译并在远程板卡运行 | [运行](./runtime) |
-| `test qemu` | QEMU 测试 | [测试](./test) |
-| `test uboot` | U-Boot 测试（Axvisor 独有） | [测试](./test) |
-| `test board` | 板级测试 | [测试](./test) |
-| `defconfig <board>` | 生成默认板卡配置 | 见下文 |
-| `config ls` | 列出可用板卡名称 | 见下文 |
+请使用 `configs/vms/`（复数）路径。`configs/vm/` 是过时的文档路径，当前源码树不存在该目录。
 
-## 参数
+Axvisor board Build Config 的额外字段为：
 
-**通用参数**（`build` / `qemu` / `uboot` / `board`）：`--arch`、`--target`、`--config`、`--smp`、`--debug`、`--vmconfigs`。默认架构 `aarch64`。
-
-**QEMU 额外参数**：`--qemu-config <PATH>`、`--rootfs <IMAGE>`
-**Board 额外参数**：`--board-config <PATH>`、`-b/--board-type <TYPE>`、`--server <HOST>`、`--port <PORT>`
-**U-Boot 测试参数**（`test uboot`）：`--board <TYPE>`（必需）、`--guest <IMAGE>`、`--uboot-config <CFG>`
-
-## 特有行为
-
-### `--vmconfigs`：多 Guest VM 配置
-
-Axvisor 的核心特有参数 `--vmconfigs <PATH>...` 指定一个或多个 VM 配置文件列表。每个 VM 配置描述一个 Guest（如 Linux、StarryOS guest）的内存、CPU、设备和启动来源。Axvisor 在 QEMU 运行前会准备所有引用的 rootfs 和 guest 镜像。详见 [Axvisor 构建](./build) 和 [Axvisor 运行](./runtime)。
-
-### 旧平台选择项过滤
-
-Axvisor 旧配置中可能出现 `defplat`、`myplat`、`plat-dyn` 或 `axplat-dyn/*` 等平台选择项。当前构建固定走动态平台路径，`axbuild` 会过滤这些旧 feature；Build Info 中的旧 `plat_dyn` 字段会被拒绝。详见 [Axvisor 构建](./build)。
-
-### LoongArch LVZ QEMU
-
-loongarch64 需要定制 QEMU（LVZ 扩展），axbuild 自动定位，详见 [Axvisor 运行](./runtime)。
-
-### 独有的 `test uboot` 模式
-
-Axvisor 是唯一支持 U-Boot 测试模式的子系统，验证"U-Boot → Axvisor → Guest"引导链路。详见 [Axvisor 测试](./test)。
-
-## defconfig：生成默认板卡配置
-
-```bash
-cargo xtask axvisor defconfig <board>
+```toml
+target = "x86_64-unknown-none"
+features = ["ax-driver/virtio-blk", "vmx"]
+vm_configs = ["os/axvisor/configs/vms/qemu/x86_64/linux-vmx-smp1.toml"]
 ```
 
-把对应板卡的默认配置复制到默认构建配置位置（`tmp/axbuild/config/<pkg>/build-<target>.toml`），并更新 Axvisor 命令快照。之后的 `build`/`qemu`/`uboot`/`board` 会沿用该配置。
+### 2.2 VM 选择
 
-## config ls：列出可用板卡名称
+CLI 传入的 `--vmconfigs` 非空时覆盖该配置中的 `vm_configs`；否则使用 Build Config 中的列表。相对 VM 路径相对于 workspace 根解析后写入 `AXVISOR_VM_CONFIGS`，以平台路径分隔符连接。
+
+## 3. 虚拟化后端
+
+`vmx` 和 `svm` 是 Axvisor x86 Build Config 的显式 capability。Intel 配置选择 `vmx`，AMD 配置选择 `svm`；`BuildInfo` 将选中的 feature 传入 Axvisor Cargo 构建，测试 QEMU TOML 则定义对应 CPU 扩展。
+
+相应 QEMU CPU flags 也属于启动配置。例如仓库的 VMX 和 SVM 测试 build 配置分别位于：
+
+```text
+test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-vmx.toml
+test-suit/axvisor/normal/qemu/build-x86_64-unknown-none-svm.toml
+```
+
+## 4. 默认配置
+
+`cargo xtask axvisor defconfig <board>` 将 board TOML 写到：
+
+```text
+tmp/axbuild/config/axvisor/build-<target>.toml
+```
+
+并更新 Snapshot 的 arch、target、config，清除旧 QEMU/U-Boot 路径。它保留已有 Snapshot 中的 `vmconfigs`，因此 CLI 选择的 guest 不会因切换 defconfig 被无意丢弃。
+
+首次读取一个缺失的默认 Build Config 时，Axvisor 也会查找同 target 且名称以 `qemu-` 开头的 board 配置；找到即复制，找不到才写入空的默认 BuildInfo。
+
+## 5. 命令示例
+
+以下命令分别覆盖 QEMU guest 选择、x86 后端测试与 defconfig 流程。
 
 ```bash
+# 默认 aarch64，指定 QEMU guest 描述
+cargo xtask axvisor qemu \
+  --vmconfigs os/axvisor/configs/vms/qemu/aarch64/linux-smp1.toml
+
+# x86 VMX 和 SVM 是不同的显式构建契约
+cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-vmx
+cargo xtask axvisor test qemu --arch x86_64 --test-case smoke-svm
+
+# 板卡配置
 cargo xtask axvisor config ls
+cargo xtask axvisor defconfig qemu-x86_64
+cargo xtask axvisor build
 ```
 
-输出 `os/axvisor/configs/board/` 目录下所有可用的板卡配置名称，供 `defconfig <board>` 使用。
-
-## 用法示例
-
-```bash
-# 构建 + QEMU 运行（默认 aarch64）
-cargo axvisor build
-cargo axvisor qemu --vmconfigs os/axvisor/configs/vm/aarch64-linux.toml
-
-# 多个 Guest
-cargo axvisor qemu \
-    --vmconfigs configs/vm/aarch64-linux.toml \
-    --vmconfigs configs/vm/aarch64-starry.toml
-
-# 板卡流程
-cargo axvisor config ls
-cargo axvisor defconfig <board>
-cargo axvisor board
-
-# loongarch64（自动定位 LVZ QEMU）
-cargo axvisor qemu --arch loongarch64 --vmconfigs configs/vm/loongarch64-linux.toml
-
-# U-Boot 测试（Axvisor 独有）
-cargo axvisor test uboot --board OrangePi-5-Plus --guest <image>
-```
+详见 [构建](./build)、[运行](./runtime) 和 [测试](./test)。

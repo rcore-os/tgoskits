@@ -16,7 +16,6 @@ mod test_utils;
 
 use ax_memory_addr::PhysAddr;
 use axaddrspace::{AddrSpaceError, AddrSpaceResult, GuestMemoryAccessor};
-use axin::axin;
 use axvm_types::GuestPhysAddr;
 use test_utils::{BASE_PADDR, MEMORY_LEN, MockHal, mock_hal_test};
 
@@ -52,8 +51,8 @@ impl GuestMemoryAccessor for MockTranslator {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_basic_read_write_operations() {
+    let _guard = mock_hal_test();
     let translator = MockTranslator::new(PhysAddr::from_usize(0), MEMORY_LEN);
 
     // Test u32 read/write operations
@@ -115,8 +114,8 @@ fn test_basic_read_write_operations() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_two_vm_isolation() {
+    let _guard = mock_hal_test();
     // Create two different translators to simulate two different VMs
     let vm1_translator = MockTranslator::new(PhysAddr::from_usize(0), MEMORY_LEN / 2); // Offset for VM1
     let vm2_translator = MockTranslator::new(PhysAddr::from_usize(MEMORY_LEN / 2), MEMORY_LEN); // Offset for VM2
@@ -199,8 +198,8 @@ fn test_two_vm_isolation() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_cross_page_access() {
+    let _guard = mock_hal_test();
     let translator = MockTranslator::new(PhysAddr::from_usize(0), MEMORY_LEN);
 
     // Test cross-region buffer operations
@@ -242,8 +241,8 @@ fn test_cross_page_access() {
 }
 
 #[test]
-#[axin(decorator(mock_hal_test))]
 fn test_region_boundary_edge_cases() {
+    let _guard = mock_hal_test();
     let translator = MockTranslator::new(PhysAddr::from_usize(0), MEMORY_LEN);
 
     let boundary_addr = GuestPhysAddr::from_usize(4096);
