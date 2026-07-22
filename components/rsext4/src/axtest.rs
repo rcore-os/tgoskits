@@ -4,7 +4,7 @@ use axtest::prelude::*;
 
 use crate as rsext4;
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_crc_and_error_rules_hold() {
     use rsext4::{
         Errno, Ext4Error,
@@ -96,7 +96,7 @@ fn rsext4_crc_and_error_rules_hold() {
     ax_assert!(operated.to_string().contains("op=read_inode"));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_superblock_geometry_rules_hold() {
     use rsext4::{GROUP_DESC_SIZE, GROUP_DESC_SIZE_OLD, superblock::Ext4Superblock};
 
@@ -139,7 +139,7 @@ fn rsext4_superblock_geometry_rules_hold() {
     ax_assert!(superblock.has_journal());
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_inode_extent_timestamp_rules_hold() {
     use rsext4::disknode::{Ext4Extent, Ext4Inode, Ext4TimeSpec, Ext4Timestamp};
 
@@ -245,7 +245,7 @@ fn rsext4_inode_extent_timestamp_rules_hold() {
     ax_assert_eq!(Ext4Inode::max_extra_isize(Ext4Inode::LARGE_INODE_SIZE), 128);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_bitmap_blockgroup_rules_hold() {
     use rsext4::{
         bitmap::bitmap_utils::{
@@ -343,7 +343,7 @@ fn rsext4_bitmap_blockgroup_rules_hold() {
     ax_assert!(stats.inode_usage_percent(200_000) > 0.0);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_entries_and_directory_iterator_rules_hold() {
     use rsext4::{
         DIRNAME_LEN,
@@ -453,7 +453,7 @@ fn rsext4_entries_and_directory_iterator_rules_hold() {
     ax_assert_eq!(status.es_lblk + status.es_len + status.es_pblk, 6);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_disk_format_and_journal_struct_rules_hold() {
     use rsext4::{
         BLOCK_SIZE_U32,
@@ -632,7 +632,7 @@ fn rsext4_disk_format_and_journal_struct_rules_hold() {
     ax_assert_eq!(parsed_commit.h_commit_nsec, 0xaabb_ccdd);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
     use rsext4::{
         BLOCK_SIZE, Errno, Ext4Error,
@@ -874,7 +874,7 @@ fn rsext4_checksum_blockgroup_and_api_helpers_hold() {
     ax_assert_eq!(bitmap[1], 0x80);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_journal_device_overlay_rules_hold() {
     use core::cell::Cell;
 
@@ -1068,7 +1068,7 @@ fn write_dirent(slot: &mut [u8], inode: u32, rec_len: u16, file_type: u8, name: 
     slot[8..8 + name.len()].copy_from_slice(name);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
     use rsext4::{
         bmalloc::AbsoluteBN,
@@ -1252,7 +1252,7 @@ fn rsext4_extent_tree_parse_store_and_hash_tree_rules_hold() {
     ax_assert_eq!(result.offset, 16);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_tool_layout_and_blockgroup_disk_rules_hold() {
     use rsext4::{
         RESERVED_GDT_BLOCKS,
@@ -1358,7 +1358,7 @@ fn rsext4_tool_layout_and_blockgroup_disk_rules_hold() {
     ax_assert_eq!(RelativeInodeIndex::new(8).to_string(), "8");
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_path_and_bitmap_rules_hold() {
     use rsext4::{
         bitmap::{BitmapError, BlockBitmap, InodeBitmap},
@@ -1452,7 +1452,7 @@ fn rsext4_path_and_bitmap_rules_hold() {
     ax_assert_eq!(inode_data[1] & 1, 0);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_bmalloc_allocator_rules_hold() {
     use rsext4::{
         Errno,
@@ -1578,7 +1578,7 @@ fn rsext4_bmalloc_allocator_rules_hold() {
     );
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_blockgroup_table_and_stats_rules_hold() {
     use core::mem::size_of;
 
@@ -1715,7 +1715,7 @@ fn rsext4_blockgroup_table_and_stats_rules_hold() {
     ax_assert!(checksum_desc.verify_checksum(&new_superblock, 2).is_err());
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_extent_tree_lookup_and_run_rules_hold() {
     use rsext4::{
         BLOCK_SIZE, BlockDevice, Ext4Result, Jbd2Dev,
@@ -1990,7 +1990,7 @@ fn rsext4_extent_tree_lookup_and_run_rules_hold() {
     ax_assert_eq!(indexed_runs[3].len, 1);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_dirblock_checksum_edge_rules_hold() {
     use rsext4::{
         BLOCK_SIZE,
@@ -2116,7 +2116,7 @@ fn rsext4_dirblock_checksum_edge_rules_hold() {
     ax_assert_eq!(verify_ext4_dx_checksum(&superblock, 2, 3, &block), None);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     use core::cell::Cell;
 
@@ -2887,4 +2887,22 @@ fn rsext4_mounted_filesystem_file_dir_and_metadata_rules_hold() {
     delete_dir(&mut fs, &mut device, "/cov").unwrap();
 
     rsext4::api::fs_umount(fs, &mut device).unwrap();
+}
+
+#[axtest]
+fn rsext4_bitmap_error_mapping_rules_hold() {
+    use rsext4::{Errno, bitmap::BitmapError, bmalloc::map_bitmap_error};
+
+    ax_assert_eq!(
+        map_bitmap_error(BitmapError::IndexOutOfRange).code,
+        Errno::EINVAL
+    );
+    ax_assert_eq!(
+        map_bitmap_error(BitmapError::AlreadyAllocated).code,
+        Errno::EEXIST
+    );
+    ax_assert_eq!(
+        map_bitmap_error(BitmapError::AlreadyFree).code,
+        Errno::ENOENT
+    );
 }

@@ -4,7 +4,7 @@ use axtest::prelude::*;
 
 use crate as ax_errno;
 
-#[axtest::def_test]
+#[axtest]
 fn axerrno_kind_and_linux_mapping_rules_hold() {
     use ax_errno::{AxError, AxErrorKind, LinuxError};
 
@@ -104,7 +104,7 @@ fn axerrno_kind_and_linux_mapping_rules_hold() {
     ax_assert!(AxErrorKind::try_from(i32::MAX).is_err());
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axerrno_axerror_conversion_and_formatting_rules_hold() {
     use ax_errno::{AxError, AxErrorKind, LinuxError};
 
@@ -155,7 +155,7 @@ fn axerrno_axerror_conversion_and_formatting_rules_hold() {
     );
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axerrno_linux_error_roundtrip_rules_hold() {
     use ax_errno::{AxErrorKind, LinuxError};
 
@@ -219,7 +219,7 @@ fn axerrno_linux_error_roundtrip_rules_hold() {
     );
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axerrno_macros_return_expected_errors() {
     use ax_errno::{AxError, AxResult, ax_bail, ax_err, ax_err_type, ensure};
 
@@ -245,4 +245,77 @@ fn axerrno_macros_return_expected_errors() {
     ax_assert_eq!(ensure_positive(7), Ok(7));
     ax_assert_eq!(ensure_positive(0), Err(AxError::InvalidInput));
     ax_assert_eq!(bail_now(), Err(AxError::PermissionDenied));
+}
+
+#[axtest]
+fn axerrno_all_public_constants_match_their_kinds() {
+    use ax_errno::{AxError, AxErrorKind, LinuxError};
+
+    let constants = [
+        (AxError::AddrInUse, AxErrorKind::AddrInUse),
+        (AxError::AlreadyConnected, AxErrorKind::AlreadyConnected),
+        (AxError::AlreadyExists, AxErrorKind::AlreadyExists),
+        (
+            AxError::ArgumentListTooLong,
+            AxErrorKind::ArgumentListTooLong,
+        ),
+        (AxError::BadAddress, AxErrorKind::BadAddress),
+        (AxError::BadFileDescriptor, AxErrorKind::BadFileDescriptor),
+        (AxError::BadState, AxErrorKind::BadState),
+        (AxError::BrokenPipe, AxErrorKind::BrokenPipe),
+        (AxError::ConnectionRefused, AxErrorKind::ConnectionRefused),
+        (AxError::ConnectionReset, AxErrorKind::ConnectionReset),
+        (AxError::CrossesDevices, AxErrorKind::CrossesDevices),
+        (AxError::DirectoryNotEmpty, AxErrorKind::DirectoryNotEmpty),
+        (AxError::FilesystemLoop, AxErrorKind::FilesystemLoop),
+        (AxError::IllegalBytes, AxErrorKind::IllegalBytes),
+        (AxError::InProgress, AxErrorKind::InProgress),
+        (AxError::Interrupted, AxErrorKind::Interrupted),
+        (AxError::InvalidData, AxErrorKind::InvalidData),
+        (AxError::InvalidExecutable, AxErrorKind::InvalidExecutable),
+        (AxError::InvalidInput, AxErrorKind::InvalidInput),
+        (AxError::Io, AxErrorKind::Io),
+        (AxError::IsADirectory, AxErrorKind::IsADirectory),
+        (AxError::NameTooLong, AxErrorKind::NameTooLong),
+        (AxError::NoMemory, AxErrorKind::NoMemory),
+        (AxError::NoSuchDevice, AxErrorKind::NoSuchDevice),
+        (
+            AxError::NoSuchDeviceOrAddress,
+            AxErrorKind::NoSuchDeviceOrAddress,
+        ),
+        (AxError::NoSuchProcess, AxErrorKind::NoSuchProcess),
+        (AxError::NotADirectory, AxErrorKind::NotADirectory),
+        (AxError::NotASocket, AxErrorKind::NotASocket),
+        (AxError::NotATty, AxErrorKind::NotATty),
+        (AxError::NotConnected, AxErrorKind::NotConnected),
+        (AxError::NotFound, AxErrorKind::NotFound),
+        (
+            AxError::OperationNotPermitted,
+            AxErrorKind::OperationNotPermitted,
+        ),
+        (
+            AxError::OperationNotSupported,
+            AxErrorKind::OperationNotSupported,
+        ),
+        (AxError::OutOfRange, AxErrorKind::OutOfRange),
+        (AxError::PermissionDenied, AxErrorKind::PermissionDenied),
+        (AxError::ReadOnlyFilesystem, AxErrorKind::ReadOnlyFilesystem),
+        (AxError::ResourceBusy, AxErrorKind::ResourceBusy),
+        (AxError::StorageFull, AxErrorKind::StorageFull),
+        (AxError::TimedOut, AxErrorKind::TimedOut),
+        (AxError::TooManyOpenFiles, AxErrorKind::TooManyOpenFiles),
+        (AxError::UnexpectedEof, AxErrorKind::UnexpectedEof),
+        (AxError::Unsupported, AxErrorKind::Unsupported),
+        (AxError::WouldBlock, AxErrorKind::WouldBlock),
+        (AxError::DestAddrRequired, AxErrorKind::DestAddrRequired),
+        (AxError::MessageTooLong, AxErrorKind::MessageTooLong),
+        (AxError::WriteZero, AxErrorKind::WriteZero),
+    ];
+
+    for (error, kind) in constants {
+        ax_assert_eq!(AxErrorKind::try_from(error), Ok(kind));
+        ax_assert_eq!(error.code(), kind.code());
+        ax_assert_eq!(LinuxError::from(error), LinuxError::from(kind));
+        ax_assert_eq!(format!("{error}"), kind.as_str());
+    }
 }

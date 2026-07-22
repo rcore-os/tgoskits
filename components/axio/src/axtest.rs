@@ -12,7 +12,7 @@ use axtest::prelude::*;
 
 use crate as ax_io;
 
-#[axtest::def_test]
+#[axtest]
 fn axio_slice_read_rules_hold() {
     use ax_io::{BufRead, Error, Read, read_to_string};
 
@@ -56,7 +56,7 @@ fn axio_slice_read_rules_hold() {
     ax_assert!(!buffered.has_data_left().unwrap());
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_adapter_read_rules_hold() {
     use ax_io::{Error, Read};
 
@@ -91,7 +91,7 @@ fn axio_adapter_read_rules_hold() {
     ax_assert!(short.is_empty());
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_write_rules_hold() {
     use ax_io::{Error, Write};
 
@@ -120,7 +120,7 @@ fn axio_write_rules_hold() {
     boxed.flush().unwrap();
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_buffered_reader_rules_hold() {
     use ax_io::{BufRead, BufReader, IoBuf, Read};
 
@@ -152,7 +152,7 @@ fn axio_buffered_reader_rules_hold() {
     ax_assert_eq!(fields, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_buffered_writer_rules_hold() {
     use ax_io::{BufWriter, IoBufMut, Write};
 
@@ -180,7 +180,7 @@ fn axio_buffered_writer_rules_hold() {
     ax_assert!(buffered.unwrap().is_empty());
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_iobuf_extension_rules_hold() {
     use ax_io::{BufReader, IoBuf, IoBufExt, IoBufMut, IoBufMutExt, Read};
 
@@ -217,7 +217,7 @@ fn axio_iobuf_extension_rules_hold() {
     ax_assert_eq!(rest, b"zw");
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_poll_state_and_formatting_rules_hold() {
     use ax_io::PollState;
 
@@ -236,7 +236,7 @@ fn axio_poll_state_and_formatting_rules_hold() {
     ax_assert!(formatted.contains("readiness_version: 7"));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_cursor_seek_read_write_rules_hold() {
     use ax_io::{Cursor, Error, IoBuf, IoBufMut, Read, Seek, SeekFrom, Write};
 
@@ -286,7 +286,7 @@ fn axio_cursor_seek_read_write_rules_hold() {
     ax_assert_eq!(source.remaining(), 6);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_empty_repeat_sink_rules_hold() {
     use ax_io::{
         BufRead, Error, IoBuf, IoBufMut, Read, Seek, SeekFrom, Write, empty, repeat, sink,
@@ -324,7 +324,7 @@ fn axio_empty_repeat_sink_rules_hold() {
     ax_assert_eq!(sink_ref.write(b"via-ref").unwrap(), 7);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_copy_and_function_adapter_rules_hold() {
     use ax_io::{BufReader, BufWriter, Read, Write, copy, read_fn, stack_buffer_copy, write_fn};
 
@@ -382,7 +382,7 @@ fn axio_copy_and_function_adapter_rules_hold() {
     ax_assert_eq!(captured, b"fn-writer");
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_line_writer_rules_hold() {
     use ax_io::{IoBufMut, LineWriter, Write};
 
@@ -404,7 +404,7 @@ fn axio_line_writer_rules_hold() {
     ax_assert_eq!(inner, b"partial\nnext line 2\ntail");
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_take_chain_and_recovery_rules_hold() {
     use ax_io::{BufRead, BufWriter, Cursor, Error, Read, Seek, SeekFrom, Write};
 
@@ -491,7 +491,7 @@ fn axio_take_chain_and_recovery_rules_hold() {
     ax_assert_eq!(recovered.buffer(), b"cd");
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_buffered_reader_edge_paths_hold() {
     use ax_io::{BufRead, BufReader, Cursor, Error, Read, Seek, SeekFrom};
 
@@ -539,7 +539,7 @@ fn axio_buffered_reader_edge_paths_hold() {
     ax_assert_eq!(reset, "xy");
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_buffered_writer_edge_paths_hold() {
     use ax_io::{BufWriter, Error, Write};
 
@@ -583,7 +583,7 @@ fn axio_buffered_writer_edge_paths_hold() {
     ax_assert_eq!(*into_inner_error.error(), Error::WriteZero);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_cursor_additional_buffer_forms_hold() {
     use ax_io::{Cursor, Error, IoBuf, IoBufMut, Read, Write};
 
@@ -637,7 +637,7 @@ fn axio_cursor_additional_buffer_forms_hold() {
     ax_assert_eq!(source.remaining(), 3);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_copy_error_and_adapter_edges_hold() {
     use ax_io::{Error, Read, Write, copy, read_fn, stack_buffer_copy, write_fn};
 
@@ -698,7 +698,7 @@ fn axio_copy_error_and_adapter_edges_hold() {
     ax_assert_eq!(boxed.flush(), Ok(()));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_line_writer_edge_paths_hold() {
     use ax_io::{Error, IoBufMut, LineWriter, Write};
 
@@ -784,7 +784,7 @@ fn axio_line_writer_edge_paths_hold() {
     ax_assert_eq!(recovered.get_ref().accepted, b"ab");
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_seek_forwarding_and_default_rules_hold() {
     use ax_io::{Cursor, Error, Seek, SeekFrom, default_stream_len};
 
@@ -840,7 +840,7 @@ fn axio_seek_forwarding_and_default_rules_hold() {
     ax_assert_eq!(seekable.seeks, 2);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_chain_take_and_iobuf_edges_hold() {
     use ax_io::{BufRead, Cursor, Error, IoBuf, IoBufMut, Read, Seek, SeekFrom, Write};
 
@@ -893,7 +893,7 @@ fn axio_chain_take_and_iobuf_edges_hold() {
     ax_assert_eq!(deque.len(), 3);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_empty_repeat_sink_edge_rules_hold() {
     use ax_io::{
         BufRead, Error, IoBuf, IoBufMut, Read, Seek, SeekFrom, Write, empty, repeat, sink,
@@ -1005,7 +1005,7 @@ fn axio_empty_repeat_sink_edge_rules_hold() {
     sink_ref_writer.flush().unwrap();
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_vecdeque_split_read_and_bufread_rules_hold() {
     use ax_io::{BufRead, Error, Read};
 
@@ -1063,7 +1063,7 @@ fn axio_vecdeque_split_read_and_bufread_rules_hold() {
     ax_assert_eq!(invalid.read_to_string(&mut text), Err(Error::IllegalBytes));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_iobuf_extension_specialization_rules_hold() {
     use ax_io::{BufReader, BufWriter, IoBuf, IoBufExt, IoBufMut, IoBufMutExt, Read, Write};
 
@@ -1119,7 +1119,7 @@ fn axio_iobuf_extension_specialization_rules_hold() {
     ax_assert_eq!(reader.remaining(), 0);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_forwarding_box_and_borrowed_writer_rules_hold() {
     use ax_io::{Error, Read, Write};
 
@@ -1162,7 +1162,7 @@ fn axio_forwarding_box_and_borrowed_writer_rules_hold() {
     ax_assert_eq!(&fixed, b"abc");
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_borrowed_cursor_writer_rules_hold() {
     use ax_io::{Error, Write};
 
@@ -1186,7 +1186,7 @@ fn axio_borrowed_cursor_writer_rules_hold() {
     ax_assert_eq!(borrowed.filled(), b"xy");
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axio_copy_and_default_transfer_edges_hold() {
     use ax_io::{Error, IoBuf, IoBufExt, IoBufMut, IoBufMutExt, Read, Result, Write, copy};
 
@@ -1276,4 +1276,88 @@ fn axio_copy_and_default_transfer_edges_hold() {
     let mut failing = FailingRead;
     let mut output = Vec::new();
     ax_assert_eq!(copy(&mut failing, &mut output), Err(Error::BrokenPipe));
+}
+
+#[axtest]
+fn axio_vecdeque_wrapped_buffer_read_paths_hold() {
+    use ax_io::{BufRead, Error, Read};
+
+    let mut deque = VecDeque::with_capacity(8);
+    deque.extend(b"abcdef");
+    let mut scratch = [0_u8; 4];
+    ax_assert_eq!(deque.read(&mut scratch).unwrap(), 4);
+    ax_assert_eq!(&scratch, b"abcd");
+    deque.extend(b"ghijk");
+    let mut joined = [0_u8; 7];
+    deque.read_exact(&mut joined).unwrap();
+    ax_assert_eq!(&joined, b"efghijk");
+    ax_assert!(deque.is_empty());
+
+    let mut deque = VecDeque::with_capacity(8);
+    deque.extend(b"abcdef");
+    let mut drain = [0_u8; 5];
+    ax_assert_eq!(deque.read(&mut drain).unwrap(), 5);
+    ax_assert_eq!(&drain, b"abcde");
+    deque.extend(b"ghij");
+    let mut too_large = [0_u8; 8];
+    ax_assert_eq!(deque.read_exact(&mut too_large), Err(Error::UnexpectedEof));
+    ax_assert!(deque.is_empty());
+
+    let mut deque = VecDeque::with_capacity(8);
+    deque.extend(b"abcdef");
+    let mut head = [0_u8; 5];
+    ax_assert_eq!(deque.read(&mut head).unwrap(), 5);
+    deque.extend(b"ghij");
+    let mut raw = [MaybeUninit::<u8>::uninit(); 5];
+    let mut borrowed: BorrowedBuf<'_, u8> = raw.as_mut_slice().into();
+    deque.read_buf_exact(borrowed.unfilled()).unwrap();
+    ax_assert_eq!(borrowed.filled(), b"fghij");
+    ax_assert!(deque.is_empty());
+
+    let mut deque = VecDeque::with_capacity(8);
+    deque.extend(b"abc");
+    let mut raw = [MaybeUninit::<u8>::uninit(); 4];
+    let mut borrowed: BorrowedBuf<'_, u8> = raw.as_mut_slice().into();
+    ax_assert_eq!(
+        deque.read_buf_exact(borrowed.unfilled()),
+        Err(Error::UnexpectedEof)
+    );
+    ax_assert_eq!(borrowed.filled(), b"abc");
+    ax_assert!(deque.is_empty());
+
+    let mut deque = VecDeque::from(Vec::from(&b"line\nrest"[..]));
+    ax_assert_eq!(deque.fill_buf().unwrap(), b"line\nrest");
+    deque.consume(5);
+    ax_assert_eq!(deque.fill_buf().unwrap(), b"rest");
+
+    let mut deque = VecDeque::from(Vec::from("utf8".as_bytes()));
+    let mut text = "prefix:".to_string();
+    ax_assert_eq!(deque.read_to_string(&mut text).unwrap(), 4);
+    ax_assert_eq!(text, "prefix:utf8");
+}
+
+#[axtest]
+fn axio_boxed_bufread_and_seek_forwarding_rules_hold() {
+    use ax_io::{BufRead, Cursor, Seek, SeekFrom};
+
+    let deque = VecDeque::from(Vec::from(&b"alpha\nbeta"[..]));
+    let mut boxed_buf: Box<dyn BufRead> = Box::new(deque);
+    ax_assert!(boxed_buf.has_data_left().unwrap());
+    let mut first = Vec::new();
+    ax_assert_eq!(boxed_buf.read_until(b'\n', &mut first).unwrap(), 6);
+    ax_assert_eq!(first, b"alpha\n");
+    let mut second = String::new();
+    ax_assert_eq!(boxed_buf.read_line(&mut second).unwrap(), 4);
+    ax_assert_eq!(second, "beta");
+    ax_assert!(!boxed_buf.has_data_left().unwrap());
+
+    let cursor = Cursor::new(Vec::from(&b"seekable"[..]));
+    let mut boxed_seek: Box<dyn Seek> = Box::new(cursor);
+    ax_assert_eq!(boxed_seek.stream_position().unwrap(), 0);
+    ax_assert_eq!(boxed_seek.seek(SeekFrom::Start(4)).unwrap(), 4);
+    boxed_seek.seek_relative(-2).unwrap();
+    ax_assert_eq!(boxed_seek.stream_position().unwrap(), 2);
+    ax_assert_eq!(boxed_seek.stream_len().unwrap(), 8);
+    boxed_seek.rewind().unwrap();
+    ax_assert_eq!(boxed_seek.stream_position().unwrap(), 0);
 }

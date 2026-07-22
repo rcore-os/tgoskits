@@ -22,7 +22,7 @@ impl Hasher for ByteHasher {
     }
 }
 
-#[axtest::def_test]
+#[axtest]
 fn cpumask_small_mask_bit_and_iteration_rules_hold() {
     use ax_cpumask::CpuMask;
 
@@ -93,7 +93,7 @@ fn cpumask_small_mask_bit_and_iteration_rules_hold() {
     ax_assert_eq!(full.prev_false_index(7), None);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn cpumask_bit_ops_value_hash_and_order_rules_hold() {
     use ax_cpumask::CpuMask;
 
@@ -147,4 +147,72 @@ fn cpumask_bit_ops_value_hash_and_order_rules_hold() {
     ax_assert!(larger.get(256 + 63));
     let raw: [u128; 4] = larger.into();
     ax_assert_eq!(raw[2], 1_u128 << 63);
+}
+
+#[axtest]
+fn cpumask_large_array_conversion_rules_hold() {
+    use ax_cpumask::CpuMask;
+
+    let cases_384 = [1_u128, 1_u128 << 64, 1_u128 << 127];
+    let mask = CpuMask::<384>::from(cases_384);
+    ax_assert!(mask.get(0));
+    ax_assert!(mask.get(128 + 64));
+    ax_assert!(mask.get(256 + 127));
+    ax_assert_eq!(mask.len(), 3);
+    let raw: [u128; 3] = mask.into();
+    ax_assert_eq!(raw, cases_384);
+
+    let cases_640 = [0_u128, 2, 4, 8, 16];
+    let mask = CpuMask::<640>::from(cases_640);
+    ax_assert!(mask.get(128 + 1));
+    ax_assert!(mask.get(256 + 2));
+    ax_assert!(mask.get(384 + 3));
+    ax_assert!(mask.get(512 + 4));
+    let raw: [u128; 5] = mask.into();
+    ax_assert_eq!(raw, cases_640);
+
+    let cases_768 = [1_u128, 0, 0, 0, 0, 1_u128 << 9];
+    let mask = CpuMask::<768>::from(cases_768);
+    ax_assert_eq!(mask.first_index(), Some(0));
+    ax_assert_eq!(mask.last_index(), Some(640 + 9));
+    let raw: [u128; 6] = mask.into();
+    ax_assert_eq!(raw, cases_768);
+
+    let cases_896 = [0_u128, 0, 0, 0, 0, 0, 1_u128 << 17];
+    let mask = CpuMask::<896>::from(cases_896);
+    ax_assert_eq!(mask.first_index(), Some(768 + 17));
+    let raw: [u128; 7] = mask.into();
+    ax_assert_eq!(raw, cases_896);
+
+    let cases_1024 = [0_u128, 0, 0, 0, 0, 0, 0, 1_u128 << 31];
+    let mask = CpuMask::<1024>::from(cases_1024);
+    ax_assert_eq!(mask.last_index(), Some(896 + 31));
+    let raw: [u128; 8] = mask.into();
+    ax_assert_eq!(raw, cases_1024);
+}
+
+#[axtest]
+fn cpumask_iterator_clone_debug_and_empty_crossing_rules_hold() {
+    use ax_cpumask::CpuMask;
+
+    let mask = CpuMask::<16>::from_raw_bits(0b1000_0000_0000_0001);
+    let mut iter = (&mask).into_iter();
+    ax_assert!(format!("{iter:?}").contains("Iter"));
+
+    let mut cloned = iter.clone();
+    ax_assert_eq!(cloned.next(), Some(0));
+    ax_assert_eq!(cloned.next_back(), Some(15));
+    ax_assert_eq!(cloned.next(), Some(15));
+    ax_assert_eq!(cloned.next(), None);
+
+    ax_assert_eq!(iter.next_back(), Some(15));
+    ax_assert_eq!(iter.next(), Some(0));
+    ax_assert_eq!(iter.next_back(), Some(0));
+    ax_assert_eq!(iter.next_back(), None);
+    ax_assert_eq!(iter.next(), None);
+
+    let empty = CpuMask::<16>::new();
+    let mut iter = (&empty).into_iter();
+    ax_assert_eq!(iter.next(), None);
+    ax_assert_eq!(iter.next_back(), None);
 }

@@ -1,10 +1,10 @@
 use alloc::{format, sync::Arc, task::Wake, vec::Vec};
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
-    task::Waker,
+    task::{Context, Waker},
 };
 
-use axpoll::{IoEvents, PollSet};
+use axpoll::{IoEvents, PollSet, Pollable};
 use axtest::prelude::*;
 
 use crate as axpoll;
@@ -39,7 +39,7 @@ fn counter_waker(counter: &Arc<WakeCounter>) -> Waker {
     Waker::from(counter.clone())
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axpoll_event_masks_and_empty_wake_rules_hold() {
     let events = IoEvents::IN | IoEvents::OUT | IoEvents::ALWAYS_POLL;
     ax_assert!(events.contains(IoEvents::IN));
@@ -54,7 +54,7 @@ fn axpoll_event_masks_and_empty_wake_rules_hold() {
     ax_assert_eq!(poll_set.wake_from_irq(IoEvents::IN), 0);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axpoll_wakes_only_matching_interests() {
     let poll_set = PollSet::new();
     let read_counter = WakeCounter::new();
@@ -77,7 +77,7 @@ fn axpoll_wakes_only_matching_interests() {
     ax_assert_eq!(unsafe { poll_set.wake(IoEvents::IN | IoEvents::OUT) }, 0);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axpoll_capacity_overwrite_and_drop_rules_hold() {
     let poll_set = PollSet::new();
     let counters = (0..65).map(|_| WakeCounter::new()).collect::<Vec<_>>();
@@ -104,4 +104,50 @@ fn axpoll_capacity_overwrite_and_drop_rules_hold() {
     }
     drop(poll_set);
     ax_assert_eq!(drop_counter.count(), 4);
+}
+
+struct FixedPollable {
+    poll_set: PollSet,
+    ready: IoEvents,
+}
+
+impl FixedPollable {
+    fn new(ready: IoEvents) -> Self {
+        Self {
+            poll_set: PollSet::new(),
+            ready,
+        }
+    }
+}
+
+impl Pollable for FixedPollable {
+    fn poll(&self) -> IoEvents {
+        self.ready
+    }
+
+    fn register(&self, context: &mut Context<'_>, events: IoEvents) {
+        unsafe { self.poll_set.register(context.waker(), events) };
+    }
+}
+
+#[axtest]
+fn axpoll_pollable_context_registration_rules_hold() {
+    let pollable = FixedPollable::new(IoEvents::IN | IoEvents::HUP);
+    let counter = WakeCounter::new();
+    let waker = counter_waker(&counter);
+    let mut context = Context::from_waker(&waker);
+
+    ax_assert!(pollable.poll().contains(IoEvents::IN));
+    ax_assert!(pollable.poll().contains(IoEvents::HUP));
+    pollable.register(&mut context, IoEvents::IN | IoEvents::ERR);
+
+    ax_assert_eq!(unsafe { pollable.poll_set.wake(IoEvents::OUT) }, 0);
+    ax_assert_eq!(counter.count(), 0);
+    ax_assert_eq!(pollable.poll_set.wake_from_irq(IoEvents::ERR), 1);
+    ax_assert_eq!(counter.count(), 1);
+
+    let all_readable = IoEvents::all() & !IoEvents::NVAL;
+    ax_assert!(all_readable.contains(IoEvents::IN));
+    ax_assert!(all_readable.contains(IoEvents::RDHUP));
+    ax_assert!(!all_readable.contains(IoEvents::NVAL));
 }

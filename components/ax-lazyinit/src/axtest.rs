@@ -5,7 +5,7 @@ use axtest::prelude::*;
 
 use crate as ax_lazyinit;
 
-#[axtest::def_test]
+#[axtest]
 fn ax_lazyinit_basic_state_transitions_hold() {
     let value: LazyInit<String> = LazyInit::new();
     ax_assert!(!value.is_inited());
@@ -32,7 +32,7 @@ fn ax_lazyinit_basic_state_transitions_hold() {
     );
 }
 
-#[axtest::def_test]
+#[axtest]
 fn ax_lazyinit_unchecked_access_returns_initialized_storage() {
     let mut value: LazyInit<u32> = LazyInit::default();
     ax_assert_eq!(value.get_or_init(|| 7_u32), &7);
@@ -43,4 +43,12 @@ fn ax_lazyinit_unchecked_access_returns_initialized_storage() {
     let exclusive = unsafe { value.get_mut_unchecked() };
     *exclusive += 5;
     ax_assert_eq!(*value, 12);
+}
+
+#[axtest]
+fn ax_lazyinit_uninitialized_drop_and_default_formatting_hold() {
+    let value: LazyInit<Vec<u8>> = LazyInit::default();
+    ax_assert!(!value.is_inited());
+    ax_assert_eq!(format!("{value:?}"), "LazyInit { <uninitialized> }");
+    drop(value);
 }

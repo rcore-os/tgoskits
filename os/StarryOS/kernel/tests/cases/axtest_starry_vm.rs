@@ -6,7 +6,7 @@ use starry_vm::{
     VmError, VmMutPtr, VmPtr, vm_load, vm_load_until_nul, vm_read_slice, vm_write_slice,
 };
 
-#[axtest::def_test]
+#[axtest]
 fn starry_vm_pointer_and_error_mapping_rules_hold() {
     let null_ptr = core::ptr::null::<u32>();
     ax_assert!(null_ptr.nullable().is_none());
@@ -30,7 +30,7 @@ fn starry_vm_pointer_and_error_mapping_rules_hold() {
     );
 }
 
-#[axtest::def_test]
+#[axtest]
 fn starry_vm_slice_access_rejects_invalid_user_ranges() {
     let mut one_byte = [MaybeUninit::<u8>::uninit()];
     ax_assert_eq!(
@@ -47,7 +47,7 @@ fn starry_vm_slice_access_rejects_invalid_user_ranges() {
     ax_assert_eq!(vm_read_slice(core::ptr::null::<u8>(), &mut []), Ok(()));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn starry_vm_alloc_helpers_validate_bad_inputs_before_copying() {
     let mut unaligned = [0_u16; 2];
     let unaligned_ptr = unaligned

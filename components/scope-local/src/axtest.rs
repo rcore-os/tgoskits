@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use axtest::prelude::*;
-use scope_local::{Scope, scope_local};
+use scope_local::{ActiveScope, Scope, scope_local};
 
 use crate as scope_local;
 
@@ -17,7 +17,7 @@ scope_local! {
     };
 }
 
-#[axtest::def_test]
+#[axtest]
 fn scope_local_explicit_scope_values_are_lazy_and_isolated() {
     UNUSED_INIT_COUNT.store(0, Ordering::Release);
 
@@ -38,7 +38,7 @@ fn scope_local_explicit_scope_values_are_lazy_and_isolated() {
     ax_assert_eq!(UNUSED_INIT_COUNT.load(Ordering::Acquire), 1);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn scope_local_drops_scope_owned_values() {
     ax_assert_eq!(Arc::strong_count(&COVERAGE_SHARED), 1);
 
@@ -54,4 +54,22 @@ fn scope_local_drops_scope_owned_values() {
     }
 
     ax_assert_eq!(Arc::strong_count(&COVERAGE_SHARED), 1);
+}
+
+#[axtest]
+fn scope_local_active_scope_switching_rules_hold() {
+    ActiveScope::set_global();
+    ax_assert!(ActiveScope::is_global());
+    ax_assert_eq!(*COVERAGE_NUMBER, 7);
+
+    let mut scope = Scope::new();
+    *COVERAGE_NUMBER.scope_mut(&mut scope) = 123;
+
+    unsafe { ActiveScope::set(&scope) };
+    ax_assert!(!ActiveScope::is_global());
+    ax_assert_eq!(*COVERAGE_NUMBER, 123);
+
+    ActiveScope::set_global();
+    ax_assert!(ActiveScope::is_global());
+    ax_assert_eq!(*COVERAGE_NUMBER, 7);
 }

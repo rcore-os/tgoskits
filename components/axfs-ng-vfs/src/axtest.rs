@@ -17,7 +17,7 @@ use axtest::prelude::*;
 
 use crate as axfs_ng_vfs;
 
-#[axtest::def_test]
+#[axtest]
 fn axfs_ng_vfs_path_rules_hold() {
     use axfs_ng_vfs::path::{Component, Path, PathBuf};
 
@@ -52,7 +52,7 @@ fn axfs_ng_vfs_path_rules_hold() {
     );
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axfs_ng_vfs_path_ownership_and_join_rules_hold() {
     use alloc::sync::Arc;
 
@@ -104,7 +104,30 @@ fn axfs_ng_vfs_path_ownership_and_join_rules_hold() {
     );
 }
 
-#[axtest::def_test]
+#[axtest]
+fn axfs_ng_vfs_path_entry_name_validation_rules_hold() {
+    use axfs_ng_vfs::{
+        VfsError,
+        path::{Component, MAX_NAME_LEN, Path, verify_entry_name},
+    };
+
+    for invalid_name in ["", ".", "..", "a/b", "a\0b"] {
+        ax_assert_eq!(verify_entry_name(invalid_name), Err(VfsError::InvalidInput));
+    }
+
+    let too_long = "a".repeat(MAX_NAME_LEN + 1);
+    ax_assert_eq!(verify_entry_name(&too_long), Err(VfsError::NameTooLong));
+    ax_assert_eq!(verify_entry_name("file-name"), Ok(()));
+
+    let path = Path::new("././");
+    let forward: Vec<_> = path.components().collect();
+    let mut backward: Vec<_> = path.components().rev().collect();
+    backward.reverse();
+    ax_assert_eq!(forward, backward);
+    ax_assert_eq!(forward, vec![Component::CurDir]);
+}
+
+#[axtest]
 fn axfs_ng_vfs_device_and_metadata_update_rules_hold() {
     use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType};
 
@@ -152,7 +175,7 @@ fn axfs_ng_vfs_device_and_metadata_update_rules_hold() {
     ax_assert_eq!(update.mtime.unwrap().as_secs(), 20);
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axfs_ng_vfs_type_rules_hold() {
     use axfs_ng_vfs::{DeviceId, FsIoEvents, NodePermission, NodeType, Reference, TypeMap};
 
@@ -182,7 +205,7 @@ fn axfs_ng_vfs_type_rules_hold() {
     ax_assert_eq!(Reference::root().key(), (0, String::new()));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axfs_ng_vfs_file_node_defaults_hold() {
     use ax_errno::AxError;
     use axfs_ng_vfs::{
@@ -358,7 +381,7 @@ fn axfs_ng_vfs_file_node_defaults_hold() {
     ax_assert_eq!(fs_ops.flush(), Ok(()));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     use ax_errno::AxError;
     use axfs_ng_vfs::{
@@ -683,7 +706,7 @@ fn axfs_ng_vfs_dir_node_cache_and_mutation_rules_hold() {
     ax_assert!(matches!(dir.lookup("child"), Err(AxError::NotFound)));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axfs_ng_vfs_mount_tree_rules_hold() {
     use ax_errno::AxError;
     use axfs_ng_vfs::{
@@ -1474,7 +1497,7 @@ fn new_more_fs(
     }))
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axfs_ng_vfs_shared_mount_propagation_rules_hold() {
     use ax_errno::AxError;
     use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType};
@@ -1565,7 +1588,7 @@ fn axfs_ng_vfs_shared_mount_propagation_rules_hold() {
     ));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axfs_ng_vfs_bind_mount_propagation_and_unbindable_rules_hold() {
     use ax_errno::AxError;
     use axfs_ng_vfs::Mountpoint;
@@ -1659,7 +1682,7 @@ fn axfs_ng_vfs_bind_mount_propagation_and_unbindable_rules_hold() {
     ));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
     use ax_errno::AxError;
     use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType};
@@ -1750,7 +1773,7 @@ fn axfs_ng_vfs_mount_move_detach_and_error_rules_hold() {
     ));
 }
 
-#[axtest::def_test]
+#[axtest]
 fn axfs_ng_vfs_location_link_rename_and_transient_rules_hold() {
     use ax_errno::AxError;
     use axfs_ng_vfs::{Mountpoint, NodePermission, NodeType, OpenOptions};
