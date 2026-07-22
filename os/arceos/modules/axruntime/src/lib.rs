@@ -57,6 +57,8 @@ mod fs;
 #[cfg(feature = "irq")]
 pub mod irq;
 mod registers;
+#[cfg(feature = "serial")]
+pub mod serial;
 
 #[cfg(all(feature = "net", feature = "fs"))]
 mod unix_ns;
@@ -126,6 +128,10 @@ fn runtime_page_fault_handler(
 #[ax_crate_interface::impl_interface]
 impl ax_log::LogIf for LogIfImpl {
     fn console_write_str(s: &str) {
+        #[cfg(feature = "serial")]
+        if serial::route_console_bytes(s.as_bytes()).is_some() {
+            return;
+        }
         ax_hal::console::write_text_bytes(s.as_bytes());
     }
 
@@ -299,6 +305,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     wifi_glue::install_runtime();
 
     devices::probe_all_devices();
+
+    #[cfg(feature = "serial")]
+    serial::init(cpu_id);
 
     #[cfg(feature = "rtc")]
     ax_println!(

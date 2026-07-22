@@ -4,17 +4,17 @@
 //! - IO Port 版本（x86_64 架构）
 //! - MMIO 版本（通用嵌入式平台）
 
-extern crate alloc;
-
 // 公共寄存器定义
 mod registers;
 
 use bitflags::Flags;
 use rdif_serial::{
-    Config, ConfigError, DataBits, InterruptMask, IrqSnapshot, IrqSource, Parity, RawUart, RxFlag,
-    RxSample, SerialDirection, SerialEvent, StopBits, TransBytesError, TransferError,
+    Config, ConfigError, DataBits, Parity, RxErrorFlags, RxFlag, RxSample, SerialEventSet,
+    SerialIrqEvent, SplitUart, StopBits, UartInfo, UartIrq, UartParts, UartPort,
 };
 use registers::*;
+
+use crate::{PollingUart, SerialDirection, SerialEvent, TransBytesError, TransferError};
 
 pub mod dw_apb;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -110,19 +110,93 @@ pub struct Ns16550<T: Kind> {
     pub(crate) saved_lsr: LineStatusFlags,
 }
 
-impl<T: Kind> RawUart for Ns16550<T> {
-    fn name(&self) -> &'static str {
-        "NS16550 UART"
+/// IRQ-only endpoint for an NS16550-compatible UART.
+///
+/// It intentionally has no FIFO data methods.
+pub struct Ns16550Irq<T: Kind> {
+    base: T,
+}
+
+impl<T: Kind> Ns16550Irq<T> {
+    fn next_event(&self) -> Option<SerialEventSet> {
+        let iir: InterruptIdentificationFlags = self.base.read_flags(UART_IIR);
+        if iir.bits() & (UART_IIR_ID | UART_IIR_NO_INT) == UART_IIR_BUSY {
+            return Some(SerialEventSet::BUSY_DETECT);
+        }
+        if iir.contains(InterruptIdentificationFlags::NO_INTERRUPT_PENDING) {
+            return None;
+        }
+
+        let interrupt_id = iir & InterruptIdentificationFlags::INTERRUPT_ID_MASK;
+        let event = if interrupt_id == InterruptIdentificationFlags::RECEIVER_LINE_STATUS {
+            SerialEventSet::RX_STATUS
+        } else if interrupt_id == InterruptIdentificationFlags::RECEIVED_DATA_AVAILABLE {
+            SerialEventSet::RX_DATA
+        } else if interrupt_id == InterruptIdentificationFlags::CHARACTER_TIMEOUT {
+            SerialEventSet::RX_TIMEOUT
+        } else if interrupt_id == InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY {
+            SerialEventSet::TX_SPACE
+        } else if interrupt_id == InterruptIdentificationFlags::MODEM_STATUS {
+            SerialEventSet::MODEM_STATUS
+        } else {
+            SerialEventSet::FAULT
+        };
+        Some(event)
     }
 
-    fn base_addr(&self) -> usize {
-        self.base.get_base()
+    fn ack_modem_status(&self) {
+        let _: ModemStatusFlags = self.base.read_flags(UART_MSR);
     }
 
-    fn clock_freq(&self) -> Option<core::num::NonZeroU32> {
-        self.clock_freq.try_into().ok()
+    fn ack_busy_detect(&self) {
+        self.base.ack_busy_detect();
     }
 
+    fn mask(&self, events: SerialEventSet) {
+        let mut ier: InterruptEnableFlags = self.base.read_flags(UART_IER);
+        ier.remove(interrupt_enable_for_events(events));
+        self.base.write_flags(UART_IER, ier);
+    }
+}
+
+impl<T: Kind> UartIrq for Ns16550Irq<T> {
+    fn handle(&mut self) -> Option<SerialIrqEvent> {
+        const IRQ_PASS_BUDGET: usize = 32;
+
+        let mut event = SerialIrqEvent::default();
+        for _ in 0..IRQ_PASS_BUDGET {
+            let Some(current) = self.next_event() else {
+                break;
+            };
+            event.events |= current;
+            if current.contains(SerialEventSet::RX_STATUS) {
+                let lsr: LineStatusFlags = self.base.read_flags(UART_LSR);
+                event.rx_errors |= rx_error_flags(lsr);
+            }
+            if current.contains(SerialEventSet::MODEM_STATUS) {
+                self.ack_modem_status();
+            }
+            if current.contains(SerialEventSet::BUSY_DETECT) {
+                self.ack_busy_detect();
+            }
+            if current.contains(SerialEventSet::FAULT) {
+                self.base
+                    .write_flags(UART_IER, InterruptEnableFlags::empty());
+                break;
+            }
+
+            let rearm = current & (SerialEventSet::RX | SerialEventSet::TX_SPACE);
+            if !rearm.is_empty() {
+                self.mask(rearm);
+                event.rearm |= rearm;
+            }
+        }
+
+        (!event.events.is_empty()).then_some(event)
+    }
+}
+
+impl<T: Kind> UartPort for Ns16550<T> {
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
         self.write_flags(UART_IER, InterruptEnableFlags::empty());
         self.set_config(config)?;
@@ -166,99 +240,12 @@ impl<T: Kind> RawUart for Ns16550<T> {
         Ok(())
     }
 
-    fn baudrate(&self) -> u32 {
-        self.base.baudrate(self.clock_freq)
-    }
-
-    fn data_bits(&self) -> DataBits {
-        let lcr: LineControlFlags = self.read_flags(UART_LCR);
-        let wlen = lcr & LineControlFlags::WORD_LENGTH_MASK;
-        if wlen == LineControlFlags::WORD_LENGTH_5 {
-            DataBits::Five
-        } else if wlen == LineControlFlags::WORD_LENGTH_6 {
-            DataBits::Six
-        } else if wlen == LineControlFlags::WORD_LENGTH_7 {
-            DataBits::Seven
-        } else {
-            DataBits::Eight // 默认值
-        }
-    }
-
-    fn stop_bits(&self) -> StopBits {
-        let lcr: LineControlFlags = self.read_flags(UART_LCR);
-        if lcr.contains(LineControlFlags::STOP_BITS) {
-            StopBits::Two
-        } else {
-            StopBits::One
-        }
-    }
-
-    fn parity(&self) -> Parity {
-        let lcr: LineControlFlags = self.read_flags(UART_LCR);
-
-        if !lcr.contains(LineControlFlags::PARITY_ENABLE) {
-            Parity::None
-        } else if lcr.contains(LineControlFlags::STICK_PARITY) {
-            // Stick parity
-            if lcr.contains(LineControlFlags::EVEN_PARITY) {
-                Parity::Space
-            } else {
-                Parity::Mark
-            }
-        } else {
-            // Normal parity
-            if lcr.contains(LineControlFlags::EVEN_PARITY) {
-                Parity::Even
-            } else {
-                Parity::Odd
-            }
-        }
-    }
-
-    fn enable_loopback(&mut self) {
-        let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
-        mcr.insert(ModemControlFlags::LOOPBACK_ENABLE);
-        self.write_flags(UART_MCR, mcr);
-    }
-
-    fn disable_loopback(&mut self) {
-        let mut mcr: ModemControlFlags = self.read_flags(UART_MCR);
-        mcr.remove(ModemControlFlags::LOOPBACK_ENABLE);
-        self.write_flags(UART_MCR, mcr);
-    }
-
-    fn is_loopback_enabled(&self) -> bool {
-        let mcr: ModemControlFlags = self.read_flags(UART_MCR);
-        mcr.contains(ModemControlFlags::LOOPBACK_ENABLE)
-    }
-
-    fn set_irq_mask(&mut self, mask: InterruptMask) {
-        Ns16550::set_irq_mask(self, mask);
-    }
-
-    fn take_irq_snapshot(&mut self) -> IrqSnapshot {
-        Ns16550::take_irq_snapshot(self)
-    }
-
     fn read_rx(&mut self) -> Option<RxSample> {
         Ns16550::read_rx(self)
     }
 
-    fn tx_ready(&mut self) -> bool {
-        self.read_flags::<LineStatusFlags>(UART_LSR)
-            .contains(LineStatusFlags::TRANSMITTER_HOLDING_EMPTY)
-    }
-
-    fn write_tx(&mut self, byte: u8) {
-        self.base.write_reg(UART_THR, byte);
-    }
-
-    fn tx_load_size(&self) -> usize {
-        if self.is_fifo_enabled() {
-            UART_FIFO_SIZE as usize
-        } else {
-            1
-        }
+    fn write_tx(&mut self, bytes: &[u8]) -> usize {
+        self.try_write(bytes)
     }
 
     fn tx_idle(&mut self) -> bool {
@@ -268,14 +255,60 @@ impl<T: Kind> RawUart for Ns16550<T> {
         )
     }
 
-    fn ack_modem_status(&mut self) {
-        let _: ModemStatusFlags = self.read_flags(UART_MSR);
+    fn mask_all(&mut self) {
+        self.write_flags(UART_IER, InterruptEnableFlags::empty());
     }
 
-    fn ack_busy_detect(&mut self) {
-        self.base.ack_busy_detect();
+    fn rearm(&mut self, sources: SerialEventSet) -> SerialEventSet {
+        let mut ier: InterruptEnableFlags = self.read_flags(UART_IER);
+        ier.insert(interrupt_enable_for_events(sources));
+        self.write_flags(UART_IER, ier);
+
+        let lsr = self.read_lsr_preserving();
+        let mut ready = SerialEventSet::empty();
+        if sources.intersects(SerialEventSet::RX)
+            && lsr.intersects(LineStatusFlags::DATA_READY | LineStatusFlags::ERROR_MASK)
+        {
+            ready |= if lsr.contains(LineStatusFlags::DATA_READY) {
+                SerialEventSet::RX_DATA
+            } else {
+                SerialEventSet::RX_STATUS
+            };
+        }
+        if sources.contains(SerialEventSet::TX_SPACE)
+            && lsr.contains(LineStatusFlags::TRANSMITTER_HOLDING_EMPTY)
+        {
+            ready |= SerialEventSet::TX_SPACE;
+        }
+        if !ready.is_empty() {
+            ier.remove(interrupt_enable_for_events(ready));
+            self.write_flags(UART_IER, ier);
+        }
+        ready
+    }
+}
+
+impl<T: Kind> SplitUart for Ns16550<T> {
+    type Port = Self;
+    type Irq = Ns16550Irq<T>;
+
+    fn runtime_info(&self) -> UartInfo {
+        UartInfo {
+            name: "NS16550 UART",
+            register_base: self.base.get_base(),
+            initial_baudrate: self.base.baudrate(self.clock_freq),
+        }
     }
 
+    fn split(self) -> UartParts<Self::Port, Self::Irq> {
+        let irq = Ns16550Irq {
+            base: self.base.clone(),
+        };
+        UartParts::new(self, irq)
+    }
+}
+
+impl<T: Kind> PollingUart for Ns16550<T> {
     fn poll_status(&mut self) -> SerialEvent {
         Ns16550::poll_status(self)
     }
@@ -359,51 +392,8 @@ impl<T: Kind> Ns16550<T> {
         }
     }
 
-    pub fn handle_irq(&mut self) -> SerialEvent {
-        serial_event_from_snapshot(self.take_irq_snapshot())
-    }
-
     pub fn write_byte(&mut self, byte: u8) {
         self.base.write_reg(UART_THR, byte);
-    }
-
-    pub fn take_irq_snapshot(&mut self) -> IrqSnapshot {
-        let iir: InterruptIdentificationFlags = self.read_flags(UART_IIR);
-
-        if iir.bits() & (UART_IIR_ID | UART_IIR_NO_INT) == UART_IIR_BUSY {
-            return IrqSnapshot {
-                claimed: true,
-                sources: IrqSource::BUSY_DETECT,
-            };
-        }
-
-        if iir.contains(InterruptIdentificationFlags::NO_INTERRUPT_PENDING) {
-            return IrqSnapshot::default();
-        }
-
-        let interrupt_id = iir & InterruptIdentificationFlags::INTERRUPT_ID_MASK;
-        let sources = if interrupt_id == InterruptIdentificationFlags::RECEIVER_LINE_STATUS {
-            IrqSource::RX_STATUS
-        } else if interrupt_id == InterruptIdentificationFlags::RECEIVED_DATA_AVAILABLE {
-            IrqSource::RX_DATA
-        } else if interrupt_id == InterruptIdentificationFlags::CHARACTER_TIMEOUT {
-            IrqSource::RX_TIMEOUT
-        } else if interrupt_id == InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY {
-            IrqSource::TX_SPACE
-        } else if interrupt_id == InterruptIdentificationFlags::MODEM_STATUS {
-            IrqSource::MODEM_STATUS
-        } else {
-            IrqSource::OTHER_ACK
-        };
-
-        if sources.intersects(IrqSource::RX_DATA | IrqSource::RX_TIMEOUT | IrqSource::RX_STATUS) {
-            let _ = self.read_lsr_preserving();
-        }
-
-        IrqSnapshot {
-            claimed: true,
-            sources,
-        }
     }
 
     pub fn read_rx(&mut self) -> Option<RxSample> {
@@ -484,32 +474,25 @@ impl<T: Kind> Ns16550<T> {
         self.write_flags(UART_MCR, mcr);
     }
 
-    pub fn set_irq_mask(&mut self, mask: InterruptMask) {
-        let mut ier = InterruptEnableFlags::empty();
-
-        if mask.intersects(InterruptMask::RX) {
-            ier.insert(InterruptEnableFlags::RECEIVED_DATA_AVAILABLE);
-            ier.insert(InterruptEnableFlags::RECEIVER_LINE_STATUS);
-        }
-        if mask.contains(InterruptMask::TX_SPACE) {
-            ier.insert(InterruptEnableFlags::TRANSMITTER_HOLDING_EMPTY);
-        }
-
-        self.write_flags(UART_IER, ier);
+    pub fn set_irq_mask(&mut self, events: SerialEventSet) {
+        self.write_flags(UART_IER, interrupt_enable_for_events(events));
     }
 
-    pub fn get_irq_mask(&self) -> InterruptMask {
+    pub fn get_irq_mask(&self) -> SerialEventSet {
         let ier: InterruptEnableFlags = self.read_flags(UART_IER);
-        let mut mask = InterruptMask::empty();
+        let mut events = SerialEventSet::empty();
 
         if ier.contains(InterruptEnableFlags::RECEIVED_DATA_AVAILABLE) {
-            mask |= InterruptMask::RX;
+            events |= SerialEventSet::RX_DATA;
+        }
+        if ier.contains(InterruptEnableFlags::RECEIVER_LINE_STATUS) {
+            events |= SerialEventSet::RX_STATUS;
         }
         if ier.contains(InterruptEnableFlags::TRANSMITTER_HOLDING_EMPTY) {
-            mask |= InterruptMask::TX_SPACE;
+            events |= SerialEventSet::TX_SPACE;
         }
 
-        mask
+        events
     }
 
     /// 检查是否为 16550+（支持 FIFO）
@@ -598,7 +581,10 @@ impl<T: Kind> Ns16550<T> {
             let mut fcr = FifoControlFlags::ENABLE_FIFO;
             fcr.insert(FifoControlFlags::CLEAR_RECEIVER_FIFO);
             fcr.insert(FifoControlFlags::CLEAR_TRANSMITTER_FIFO);
-            fcr.insert(FifoControlFlags::TRIGGER_1_BYTE);
+            // Match Linux's 16550A default. A half-full threshold leaves FIFO
+            // headroom for deferred service while avoiding one IRQ wakeup per
+            // character on high-baudrate DesignWare UARTs.
+            fcr.insert(FifoControlFlags::TRIGGER_8_BYTES);
             self.write_flags(UART_FCR, fcr);
             if self.is_fifo_enabled() {
                 return;
@@ -643,6 +629,37 @@ impl<T: Kind> Ns16550<T> {
     }
 }
 
+fn rx_error_flags(lsr: LineStatusFlags) -> RxErrorFlags {
+    let mut errors = RxErrorFlags::empty();
+    if lsr.contains(LineStatusFlags::BREAK_INTERRUPT) {
+        errors |= RxErrorFlags::BREAK;
+    }
+    if lsr.contains(LineStatusFlags::PARITY_ERROR) {
+        errors |= RxErrorFlags::PARITY;
+    }
+    if lsr.contains(LineStatusFlags::FRAMING_ERROR) {
+        errors |= RxErrorFlags::FRAMING;
+    }
+    if lsr.contains(LineStatusFlags::OVERRUN_ERROR) {
+        errors |= RxErrorFlags::OVERRUN;
+    }
+    errors
+}
+
+fn interrupt_enable_for_events(events: SerialEventSet) -> InterruptEnableFlags {
+    let mut ier = InterruptEnableFlags::empty();
+    if events.intersects(SerialEventSet::RX) {
+        ier.insert(
+            InterruptEnableFlags::RECEIVED_DATA_AVAILABLE
+                | InterruptEnableFlags::RECEIVER_LINE_STATUS,
+        );
+    }
+    if events.contains(SerialEventSet::TX_SPACE) {
+        ier.insert(InterruptEnableFlags::TRANSMITTER_HOLDING_EMPTY);
+    }
+    ier
+}
+
 fn serial_event_from_lsr(lsr: LineStatusFlags) -> SerialEvent {
     let mut event = SerialEvent::empty();
     if lsr.contains(LineStatusFlags::DATA_READY) {
@@ -664,41 +681,10 @@ fn serial_event_from_lsr(lsr: LineStatusFlags) -> SerialEvent {
     event
 }
 
-fn serial_event_from_snapshot(snapshot: IrqSnapshot) -> SerialEvent {
-    let mut event = SerialEvent::empty();
-    if !snapshot.claimed {
-        return event;
-    }
-    if snapshot
-        .sources
-        .intersects(IrqSource::RX_DATA | IrqSource::RX_TIMEOUT)
-    {
-        event |= SerialEvent::RX_READY;
-    }
-    if snapshot.sources.contains(IrqSource::RX_STATUS) {
-        event |= SerialEvent::RX_ERROR;
-    }
-    if snapshot.sources.contains(IrqSource::TX_SPACE) {
-        event |= SerialEvent::TX_READY;
-    }
-    if snapshot.sources.contains(IrqSource::MODEM_STATUS) {
-        event |= SerialEvent::MODEM_STATUS;
-    }
-    if snapshot
-        .sources
-        .intersects(IrqSource::BUSY_DETECT | IrqSource::OTHER_ACK)
-    {
-        event |= SerialEvent::IRQ_ACK;
-    }
-    event
-}
-
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
     use std::sync::{Mutex, MutexGuard};
-
-    use rdif_serial::{OwnerId, OwnerLease, RxItem, SerialParts, SerialPort};
 
     use super::*;
 
@@ -706,6 +692,9 @@ mod tests {
     static DLL_REG: AtomicU8 = AtomicU8::new(0);
     static DLH_REG: AtomicU8 = AtomicU8::new(0);
     static THR_WRITES: AtomicUsize = AtomicUsize::new(0);
+    static RBR_READS: AtomicUsize = AtomicUsize::new(0);
+    static LSR_READS: AtomicUsize = AtomicUsize::new(0);
+    static LAST_FCR_WRITE: AtomicU8 = AtomicU8::new(0);
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[derive(Clone)]
@@ -725,7 +714,11 @@ mod tests {
             }
 
             let value = REGS[reg as usize].load(Ordering::SeqCst);
+            if reg == UART_LSR {
+                LSR_READS.fetch_add(1, Ordering::SeqCst);
+            }
             if reg == UART_RBR {
+                RBR_READS.fetch_add(1, Ordering::SeqCst);
                 REGS[UART_LSR as usize].fetch_and(
                     !(LineStatusFlags::ERROR_MASK | LineStatusFlags::DATA_READY).bits(),
                     Ordering::SeqCst,
@@ -757,6 +750,7 @@ mod tests {
 
             REGS[reg as usize].store(val, Ordering::SeqCst);
             if reg == UART_FCR {
+                LAST_FCR_WRITE.store(val, Ordering::SeqCst);
                 if val & FifoControlFlags::ENABLE_FIFO.bits() != 0 {
                     REGS[UART_IIR as usize].fetch_or(
                         InterruptIdentificationFlags::FIFO_ENABLE_MASK.bits(),
@@ -800,10 +794,13 @@ mod tests {
         DLL_REG.store(0, Ordering::SeqCst);
         DLH_REG.store(0, Ordering::SeqCst);
         THR_WRITES.store(0, Ordering::SeqCst);
+        RBR_READS.store(0, Ordering::SeqCst);
+        LSR_READS.store(0, Ordering::SeqCst);
+        LAST_FCR_WRITE.store(0, Ordering::SeqCst);
     }
 
     fn serial() -> (MutexGuard<'static, ()>, Ns16550<MockKind>) {
-        let guard = TEST_LOCK.lock().unwrap();
+        let guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         reset_regs();
         (
             guard,
@@ -815,13 +812,11 @@ mod tests {
         )
     }
 
-    fn owner_lease() -> OwnerLease<'static> {
-        unsafe { OwnerLease::new_unchecked(OwnerId(0)) }
-    }
-
-    fn started_parts(uart: Ns16550<MockKind>) -> SerialParts<64, 64> {
-        let parts = SerialPort::<64, 64>::split(uart, OwnerId(0));
-        parts.port.startup(owner_lease(), &Config::new()).unwrap();
+    fn started_parts(
+        uart: Ns16550<MockKind>,
+    ) -> UartParts<Ns16550<MockKind>, Ns16550Irq<MockKind>> {
+        let mut parts = uart.split();
+        parts.port.startup(&Config::new()).unwrap();
         parts
     }
 
@@ -836,7 +831,7 @@ mod tests {
         DLL_REG.store(1, Ordering::SeqCst);
         DLH_REG.store(0, Ordering::SeqCst);
 
-        assert_eq!(uart.baudrate(), 115_200);
+        assert_eq!(uart.runtime_info().initial_baudrate, 115_200);
         assert_eq!(
             REGS[UART_LCR as usize].load(Ordering::SeqCst),
             original_lcr.bits()
@@ -900,8 +895,7 @@ mod tests {
 
         uart.open();
 
-        let fcr =
-            FifoControlFlags::from_bits_retain(REGS[UART_FCR as usize].load(Ordering::SeqCst));
+        let fcr = FifoControlFlags::from_bits_retain(LAST_FCR_WRITE.load(Ordering::SeqCst));
         assert!(fcr.contains(FifoControlFlags::ENABLE_FIFO));
         assert!(fcr.contains(FifoControlFlags::CLEAR_RECEIVER_FIFO));
         assert!(fcr.contains(FifoControlFlags::CLEAR_TRANSMITTER_FIFO));
@@ -922,7 +916,21 @@ mod tests {
             REGS[UART_IIR as usize].load(Ordering::SeqCst),
         );
         assert!(iir.contains(InterruptIdentificationFlags::FIFO_ENABLE_MASK));
-        assert_eq!(uart.tx_load_size(), UART_FIFO_SIZE as usize);
+        assert_eq!(THR_WRITES.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn startup_uses_half_full_rx_trigger_for_deferred_service() {
+        let (_guard, mut uart) = serial();
+
+        uart.startup(&Config::new()).unwrap();
+
+        let fcr = FifoControlFlags::from_bits_retain(LAST_FCR_WRITE.load(Ordering::SeqCst));
+        assert_eq!(
+            fcr & FifoControlFlags::TRIGGER_LEVEL_MASK,
+            FifoControlFlags::TRIGGER_8_BYTES,
+            "deferred RX service must amortize IRQ wakeups at the Linux 16550A default trigger",
+        );
     }
 
     #[test]
@@ -934,8 +942,9 @@ mod tests {
     }
 
     #[test]
-    fn handle_irq_saves_rx_error_for_task_read() {
-        let (_guard, mut uart) = serial();
+    fn irq_reports_rx_error_without_consuming_fifo_data() {
+        let (_guard, uart) = serial();
+        let mut parts = uart.split();
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVER_LINE_STATUS.bits(),
             Ordering::SeqCst,
@@ -946,27 +955,17 @@ mod tests {
         );
         REGS[UART_RBR as usize].store(0xab, Ordering::SeqCst);
 
-        let event = uart.handle_irq();
-        assert!(event.intersects(SerialEvent::RX_ERROR | SerialEvent::OVERRUN));
-
-        REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
-        let mut buf = [0];
-        let err = uart
-            .try_read(&mut buf)
-            .expect_err("saved overrun should be reported by task read");
-        assert_eq!(buf[0], 0xab);
-        assert_eq!(err.bytes_transferred, 1);
-        assert_eq!(err.kind, TransferError::Overrun(0xab));
+        let event = parts.irq.handle().unwrap();
+        assert!(event.events.contains(SerialEventSet::RX_STATUS));
+        assert!(event.rx_errors.contains(RxErrorFlags::OVERRUN));
+        assert_eq!(RBR_READS.load(Ordering::SeqCst), 0);
+        assert_eq!(REGS[UART_RBR as usize].load(Ordering::SeqCst), 0xab);
     }
 
     #[test]
-    fn serial_core_single_irq_services_rx_and_tx_fifo() {
+    fn split_endpoints_service_rx_and_tx_fifo() {
         let (_guard, uart) = serial();
-        let parts = started_parts(uart);
-        let mut tx = parts.tx;
-        let mut rx_queue = parts.rx;
-        let mut irq = parts.irq;
-        assert_eq!(tx.submit(b"ab").accepted, 2);
+        let mut parts = started_parts(uart);
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
@@ -976,9 +975,9 @@ mod tests {
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
             Ordering::SeqCst,
         );
-        let outcome = irq.handle(owner_lease());
-        assert!(outcome.claimed);
-        assert_eq!(outcome.tx_sent, 1);
+        let event = parts.irq.handle().unwrap();
+        assert!(event.events.contains(SerialEventSet::TX_SPACE));
+        assert_eq!(parts.port.write_tx(b"ab"), 1);
         assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
 
         REGS[UART_IIR as usize].store(
@@ -987,28 +986,49 @@ mod tests {
         );
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
         REGS[UART_RBR as usize].store(b'z', Ordering::SeqCst);
-        let outcome = irq.handle(owner_lease());
-        assert!(outcome.claimed);
-        assert_eq!(outcome.rx_pushed, 1);
-
-        let mut rx = [RxItem::default(); 1];
-        assert_eq!(rx_queue.drain(&mut rx), 1);
+        let event = parts.irq.handle().unwrap();
+        assert!(event.events.contains(SerialEventSet::RX_DATA));
         assert_eq!(
-            rx[0],
-            RxItem::Byte {
-                byte: b'z',
-                flag: RxFlag::Normal
-            }
+            parts.port.read_rx(),
+            Some(RxSample {
+                byte: Some(b'z'),
+                flag: RxFlag::Normal,
+                overrun: false,
+            })
         );
     }
 
     #[test]
-    fn serial_core_does_not_synthesize_tx_irq_from_plain_lsr_ready() {
+    fn runtime_irq_endpoint_does_not_read_fifo() {
         let (_guard, uart) = serial();
-        let parts = started_parts(uart);
-        let mut tx = parts.tx;
-        let mut irq = parts.irq;
-        assert_eq!(tx.submit(b"x").accepted, 1);
+        let mut parts = started_parts(uart);
+        REGS[UART_IIR as usize].store(
+            InterruptIdentificationFlags::RECEIVER_LINE_STATUS.bits(),
+            Ordering::SeqCst,
+        );
+        REGS[UART_LSR as usize].store(
+            (LineStatusFlags::DATA_READY | LineStatusFlags::PARITY_ERROR).bits(),
+            Ordering::SeqCst,
+        );
+        LSR_READS.store(0, Ordering::SeqCst);
+
+        let event = parts.irq.handle().unwrap();
+
+        assert!(event.events.contains(SerialEventSet::RX_STATUS));
+        assert!(event.rx_errors.contains(RxErrorFlags::PARITY));
+        assert!(LSR_READS.load(Ordering::SeqCst) > 0);
+        assert_eq!(RBR_READS.load(Ordering::SeqCst), 0);
+        assert_eq!(THR_WRITES.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            REGS[UART_LSR as usize].load(Ordering::SeqCst),
+            (LineStatusFlags::DATA_READY | LineStatusFlags::PARITY_ERROR).bits()
+        );
+    }
+
+    #[test]
+    fn irq_endpoint_does_not_synthesize_tx_irq_from_plain_lsr_ready() {
+        let (_guard, uart) = serial();
+        let mut parts = started_parts(uart);
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::NO_INTERRUPT_PENDING.bits(),
             Ordering::SeqCst,
@@ -1018,17 +1038,14 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        let outcome = irq.handle(owner_lease());
-        assert!(!outcome.claimed);
-        assert_eq!(outcome.tx_sent, 0);
-        assert_eq!(tx.chars_in_buffer(), 1);
+        assert!(parts.irq.handle().is_none());
     }
 
     #[test]
     fn hard_irq_does_not_claim_tx_ready_without_iir_pending() {
-        let (_guard, mut uart) = serial();
-
-        uart.set_irq_mask(InterruptMask::TX_EMPTY);
+        let (_guard, uart) = serial();
+        let mut parts = uart.split();
+        parts.port.set_irq_mask(SerialEventSet::TX_SPACE);
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::NO_INTERRUPT_PENDING.bits(),
             Ordering::SeqCst,
@@ -1038,30 +1055,29 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        assert!(uart.handle_irq().is_empty());
-        assert!(uart.poll_status().tx_ready());
+        assert!(parts.irq.handle().is_none());
+        assert!(parts.port.poll_status().tx_ready());
     }
 
     #[test]
     fn hard_irq_does_not_claim_rx_ready_without_iir_pending() {
-        let (_guard, mut uart) = serial();
-
-        uart.set_irq_mask(InterruptMask::RX_AVAILABLE);
+        let (_guard, uart) = serial();
+        let mut parts = uart.split();
+        parts.port.set_irq_mask(SerialEventSet::RX);
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::NO_INTERRUPT_PENDING.bits(),
             Ordering::SeqCst,
         );
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
 
-        assert!(uart.handle_irq().is_empty());
-        assert!(uart.poll_status().rx_ready());
+        assert!(parts.irq.handle().is_none());
+        assert!(parts.port.poll_status().rx_ready());
     }
 
     #[test]
     fn hard_irq_claims_and_clears_modem_status_interrupt() {
         let (_guard, uart) = serial();
-        let parts = started_parts(uart);
-        let mut irq = parts.irq;
+        let mut parts = started_parts(uart);
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::MODEM_STATUS.bits()
@@ -1073,10 +1089,8 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        let outcome = irq.handle(owner_lease());
-        assert!(outcome.claimed);
-        assert_eq!(outcome.rx_pushed, 0);
-        assert_eq!(outcome.tx_sent, 0);
+        let event = parts.irq.handle().unwrap();
+        assert!(event.events.contains(SerialEventSet::MODEM_STATUS));
         assert!(
             ModemStatusFlags::from_bits_retain(REGS[UART_MSR as usize].load(Ordering::SeqCst))
                 .intersection(ModemStatusFlags::DELTA_MASK)
@@ -1085,11 +1099,9 @@ mod tests {
     }
 
     #[test]
-    fn serial_core_rx_irq_drains_raw_fifo() {
+    fn irq_event_then_port_drains_rx_fifo() {
         let (_guard, uart) = serial();
-        let parts = started_parts(uart);
-        let mut rx_queue = parts.rx;
-        let mut irq = parts.irq;
+        let mut parts = started_parts(uart);
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVED_DATA_AVAILABLE.bits(),
@@ -1098,30 +1110,22 @@ mod tests {
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
         REGS[UART_RBR as usize].store(b'r', Ordering::SeqCst);
 
-        let outcome = irq.handle(owner_lease());
-        assert!(outcome.claimed);
-        assert_eq!(outcome.rx_pushed, 1);
-
-        let mut rx = [RxItem::default(); 1];
-        assert_eq!(rx_queue.drain(&mut rx), 1);
+        let event = parts.irq.handle().unwrap();
+        assert!(event.events.contains(SerialEventSet::RX_DATA));
         assert_eq!(
-            rx[0],
-            RxItem::Byte {
-                byte: b'r',
-                flag: RxFlag::Normal
-            }
+            parts.port.read_rx(),
+            Some(RxSample {
+                byte: Some(b'r'),
+                flag: RxFlag::Normal,
+                overrun: false,
+            })
         );
     }
 
     #[test]
-    fn serial_core_tx_irq_uses_software_fifo() {
+    fn tx_irq_exposes_space_without_owning_a_software_fifo() {
         let (_guard, uart) = serial();
-        let parts = started_parts(uart);
-        let mut tx = parts.tx;
-        let mut irq = parts.irq;
-
-        assert_eq!(tx.submit(b"ab").accepted, 2);
-        assert_eq!(tx.chars_in_buffer(), 2);
+        let mut parts = started_parts(uart);
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
@@ -1132,19 +1136,16 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        let outcome = irq.handle(owner_lease());
-        assert!(outcome.claimed);
-        assert_eq!(outcome.tx_sent, 1);
+        let event = parts.irq.handle().unwrap();
+        assert!(event.events.contains(SerialEventSet::TX_SPACE));
+        assert_eq!(parts.port.write_tx(b"ab"), 1);
         assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
-        assert_eq!(tx.chars_in_buffer(), 1);
     }
 
     #[test]
-    fn serial_core_saved_lsr_error_is_consumed_by_rx_fifo() {
+    fn irq_lsr_error_is_observed_by_port_rx() {
         let (_guard, uart) = serial();
-        let parts = started_parts(uart);
-        let mut rx_queue = parts.rx;
-        let mut irq = parts.irq;
+        let mut parts = started_parts(uart);
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVER_LINE_STATUS.bits(),
@@ -1156,27 +1157,22 @@ mod tests {
         );
         REGS[UART_RBR as usize].store(b'p', Ordering::SeqCst);
 
-        let outcome = irq.handle(owner_lease());
-        assert!(outcome.claimed);
-        assert_eq!(outcome.rx_pushed, 1);
-
-        let mut rx = [RxItem::default(); 1];
-        assert_eq!(rx_queue.drain(&mut rx), 1);
+        let event = parts.irq.handle().unwrap();
+        assert!(event.rx_errors.contains(RxErrorFlags::PARITY));
         assert_eq!(
-            rx[0],
-            RxItem::Byte {
-                byte: b'p',
-                flag: RxFlag::Parity
-            }
+            parts.port.read_rx(),
+            Some(RxSample {
+                byte: Some(b'p'),
+                flag: RxFlag::Parity,
+                overrun: false,
+            })
         );
     }
 
     #[test]
-    fn serial_core_rx_overrun_returns_current_byte_and_marker() {
+    fn port_rx_returns_current_byte_and_overrun_marker() {
         let (_guard, uart) = serial();
-        let parts = started_parts(uart);
-        let mut rx_queue = parts.rx;
-        let mut irq = parts.irq;
+        let mut parts = started_parts(uart);
 
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::RECEIVER_LINE_STATUS.bits(),
@@ -1188,19 +1184,59 @@ mod tests {
         );
         REGS[UART_RBR as usize].store(b'S', Ordering::SeqCst);
 
-        let outcome = irq.handle(owner_lease());
-        assert!(outcome.claimed);
-        assert_eq!(outcome.rx_pushed, 2);
-
-        let mut rx = [RxItem::default(); 2];
-        assert_eq!(rx_queue.drain(&mut rx), 2);
+        let event = parts.irq.handle().unwrap();
+        assert!(event.rx_errors.contains(RxErrorFlags::OVERRUN));
         assert_eq!(
-            rx[0],
-            RxItem::Byte {
-                byte: b'S',
-                flag: RxFlag::Normal
-            }
+            parts.port.read_rx(),
+            Some(RxSample {
+                byte: Some(b'S'),
+                flag: RxFlag::Normal,
+                overrun: true,
+            })
         );
-        assert_eq!(rx[1], RxItem::Overrun);
+    }
+
+    #[test]
+    fn irq_masks_rx_source_without_consuming_fifo() {
+        let (_guard, uart) = serial();
+        let mut parts = started_parts(uart);
+        REGS[UART_IER as usize].store(UART_IER_RDI | UART_IER_RLSI, Ordering::SeqCst);
+        REGS[UART_IIR as usize].store(UART_IIR_RDI, Ordering::SeqCst);
+        REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
+        REGS[UART_RBR as usize].store(b'q', Ordering::SeqCst);
+
+        let event = parts.irq.handle().unwrap();
+
+        assert!(event.events.contains(SerialEventSet::RX_DATA));
+        assert!(event.rearm.contains(SerialEventSet::RX_DATA));
+        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), 0);
+        assert_eq!(RBR_READS.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn rearm_remasks_a_source_that_is_already_ready() {
+        let (_guard, mut uart) = serial();
+        uart.startup(&Config::new()).unwrap();
+        REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
+
+        let ready = uart.rearm(SerialEventSet::RX);
+
+        assert_eq!(ready, SerialEventSet::RX_DATA);
+        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn unknown_irq_source_masks_all_and_reports_fault() {
+        let (_guard, uart) = serial();
+        let mut parts = started_parts(uart);
+        REGS[UART_IER as usize].store(0xff, Ordering::SeqCst);
+        REGS[UART_IIR as usize].store(0x08, Ordering::SeqCst);
+
+        let event = parts.irq.handle().unwrap();
+
+        assert!(event.events.contains(SerialEventSet::FAULT));
+        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), 0);
+        assert_eq!(RBR_READS.load(Ordering::SeqCst), 0);
+        assert_eq!(THR_WRITES.load(Ordering::SeqCst), 0);
     }
 }

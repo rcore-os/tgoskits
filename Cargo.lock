@@ -1073,6 +1073,7 @@ dependencies = [
  "axfs-ng-vfs",
  "axklib",
  "axpanic",
+ "axpoll",
  "cfg-if",
  "chrono",
  "dma-api",
@@ -1082,6 +1083,7 @@ dependencies = [
  "rd-net",
  "rdif-block",
  "rdif-intc",
+ "rdif-serial",
  "rdrive",
  "sdhci-cv1800",
  "spin",
@@ -6373,9 +6375,6 @@ name = "rdif-serial"
 version = "0.9.0"
 dependencies = [
  "bitflags 2.13.0",
- "futures",
- "heapless",
- "rdif-base",
  "thiserror 2.0.18",
 ]
 

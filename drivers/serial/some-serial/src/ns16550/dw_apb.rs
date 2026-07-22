@@ -1,6 +1,6 @@
 //! Synopsys DesignWare APB UART backend for the NS16550-compatible core.
 
-use rdif_serial::RawUart;
+use rdif_serial::UartPort;
 
 use super::{Config, DataBits, Kind, Ns16550, Parity, StopBits, registers::*};
 
@@ -205,17 +205,25 @@ impl Ns16550<DwApb> {
 mod tests {
     use std::boxed::Box;
 
+    use rdif_serial::{SplitUart as _, UartIrq as _};
+
     use super::*;
 
     #[test]
-    fn busy_detect_interrupt_is_claimed_as_irq_ack() {
+    fn busy_detect_interrupt_is_claimed_by_irq_endpoint() {
         let regs = Box::leak(Box::new([0u32; 0x100 / 4]));
         regs[UART_IIR as usize] = UART_IIR_BUSY as u32;
         regs[UART_USR_OFFSET / 4] = 0x1;
 
-        let mut uart = DwApbUart::new(regs.as_ptr() as usize);
+        let uart = DwApbUart::new(regs.as_ptr() as usize);
+        let mut parts = uart.split();
 
-        assert_eq!(uart.handle_irq(), rdif_serial::SerialEvent::IRQ_ACK);
+        let event = parts.irq.handle().unwrap();
+        assert!(
+            event
+                .events
+                .contains(rdif_serial::SerialEventSet::BUSY_DETECT)
+        );
         assert_eq!(regs[UART_USR_OFFSET / 4], 0x1);
     }
 

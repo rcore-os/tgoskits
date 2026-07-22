@@ -1,46 +1,49 @@
 use bitflags::bitflags;
 
 bitflags! {
+    /// Stable event classes exchanged between a UART and its runtime.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct InterruptMask: u32 {
-        const RX_DATA      = 1 << 0;
-        const RX_STATUS    = 1 << 1;
-        const TX_SPACE     = 1 << 2;
-        const MODEM_STATUS = 1 << 3;
-
-        const RX = Self::RX_DATA.bits() | Self::RX_STATUS.bits();
-        const RX_AVAILABLE = Self::RX.bits();
-        const TX_EMPTY = Self::TX_SPACE.bits();
-    }
-}
-
-impl InterruptMask {
-    pub fn rx_available(&self) -> bool {
-        self.intersects(Self::RX)
-    }
-
-    pub fn tx_empty(&self) -> bool {
-        self.contains(Self::TX_SPACE)
-    }
-}
-
-bitflags! {
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct IrqSource: u32 {
+    pub struct SerialEventSet: u32 {
         const RX_DATA      = 1 << 0;
         const RX_TIMEOUT   = 1 << 1;
         const RX_STATUS    = 1 << 2;
         const TX_SPACE     = 1 << 3;
         const MODEM_STATUS = 1 << 4;
         const BUSY_DETECT  = 1 << 5;
-        const OTHER_ACK    = 1 << 6;
+        const FAULT        = 1 << 6;
+
+        const RX = Self::RX_DATA.bits() | Self::RX_TIMEOUT.bits() | Self::RX_STATUS.bits();
     }
 }
 
+impl SerialEventSet {
+    pub const fn has_rx(self) -> bool {
+        self.intersects(Self::RX)
+    }
+
+    pub const fn has_tx(self) -> bool {
+        self.contains(Self::TX_SPACE)
+    }
+}
+
+bitflags! {
+    /// RX error state captured without consuming FIFO data.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct RxErrorFlags: u32 {
+        const BREAK   = 1 << 0;
+        const PARITY  = 1 << 1;
+        const FRAMING = 1 << 2;
+        const OVERRUN = 1 << 3;
+    }
+}
+
+/// Stable event produced by an IRQ-owned UART endpoint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct IrqSnapshot {
-    pub claimed: bool,
-    pub sources: IrqSource,
+pub struct SerialIrqEvent {
+    pub events: SerialEventSet,
+    pub rx_errors: RxErrorFlags,
+    /// Sources masked by the IRQ endpoint and awaiting task-side rearm.
+    pub rearm: SerialEventSet,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -52,47 +55,10 @@ pub enum RxFlag {
     Framing,
 }
 
+/// One hardware receive sample. Runtime channel policy is intentionally absent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RxSample {
     pub byte: Option<u8>,
     pub flag: RxFlag,
     pub overrun: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RxItem {
-    Byte { byte: u8, flag: RxFlag },
-    Overrun,
-}
-
-impl Default for RxItem {
-    fn default() -> Self {
-        Self::Byte {
-            byte: 0,
-            flag: RxFlag::Normal,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SerialCounters {
-    pub irq_total: u64,
-    pub irq_spurious: u64,
-    pub irq_budget_exhausted: u64,
-    pub rx_bytes: u64,
-    pub rx_fifo_overruns: u64,
-    pub rx_queue_dropped: u64,
-    pub rx_breaks: u64,
-    pub rx_parity_errors: u64,
-    pub rx_framing_errors: u64,
-    pub tx_bytes: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SerialIrqOutcome {
-    pub claimed: bool,
-    pub rx_pushed: usize,
-    pub tx_sent: usize,
-    pub tx_wakeup: bool,
-    pub budget_exhausted: bool,
 }

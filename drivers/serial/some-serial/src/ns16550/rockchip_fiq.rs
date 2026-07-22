@@ -1,22 +1,20 @@
 //! Rockchip RK3588 FIQ debugger UART support.
 
-extern crate alloc;
-
-use core::{any::Any, num::NonZeroU32, ptr::NonNull};
+use core::ptr::NonNull;
 
 use heapless::{String, Vec};
 use rdif_serial::{
-    Config, ConfigError, DataBits, DriverGeneric, InterruptMask, IrqSnapshot, Parity, RawUart,
-    RxSample, SerialEvent, StopBits, TransferError,
+    Config, ConfigError, RxSample, SerialEventSet, SplitUart, UartInfo, UartParts, UartPort,
 };
 
 use super::{
-    Kind, Ns16550,
+    Kind, Ns16550, Ns16550Irq,
     registers::{
         LineStatusFlags, UART_DLH, UART_DLL, UART_FCR, UART_IER, UART_IER_RDI, UART_LCR,
         UART_LCR_DLAB, UART_LCR_WLEN8, UART_LSR, UART_LSR_DR, UART_LSR_THRE, UART_MCR, UART_RBR,
     },
 };
+use crate::{PollingUart, SerialEvent, TransferError};
 
 pub const ROCKCHIP_FIQ_RK3588_UART_CLOCK: u32 = 24_000_000;
 pub const ROCKCHIP_FIQ_DEFAULT_BAUDRATE: u32 = 1_500_000;
@@ -561,29 +559,7 @@ impl RockchipFiqSerial {
     }
 }
 
-impl DriverGeneric for RockchipFiqSerial {
-    fn name(&self) -> &str {
-        "Rockchip FIQ Debugger UART"
-    }
-
-    fn raw_any(&self) -> Option<&dyn Any> {
-        Some(self)
-    }
-
-    fn raw_any_mut(&mut self) -> Option<&mut dyn Any> {
-        Some(self)
-    }
-}
-
-impl RawUart for RockchipFiqSerial {
-    fn name(&self) -> &'static str {
-        "Rockchip FIQ Debugger UART"
-    }
-
-    fn base_addr(&self) -> usize {
-        self.serial.base_addr()
-    }
-
+impl UartPort for RockchipFiqSerial {
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
         self.serial.startup(config)
     }
@@ -596,76 +572,50 @@ impl RawUart for RockchipFiqSerial {
         self.serial.set_config(config)
     }
 
-    fn baudrate(&self) -> u32 {
-        self.serial.baudrate()
-    }
-
-    fn data_bits(&self) -> DataBits {
-        self.serial.data_bits()
-    }
-
-    fn stop_bits(&self) -> StopBits {
-        self.serial.stop_bits()
-    }
-
-    fn parity(&self) -> Parity {
-        self.serial.parity()
-    }
-
-    fn clock_freq(&self) -> Option<NonZeroU32> {
-        self.serial.clock_freq()
-    }
-
-    fn enable_loopback(&mut self) {
-        self.serial.enable_loopback()
-    }
-
-    fn disable_loopback(&mut self) {
-        self.serial.disable_loopback()
-    }
-
-    fn is_loopback_enabled(&self) -> bool {
-        self.serial.is_loopback_enabled()
-    }
-
-    fn set_irq_mask(&mut self, mask: InterruptMask) {
-        self.serial.set_irq_mask(mask)
-    }
-
-    fn poll_status(&mut self) -> SerialEvent {
-        self.serial.poll_status()
-    }
-
-    fn take_irq_snapshot(&mut self) -> IrqSnapshot {
-        self.serial.take_irq_snapshot()
-    }
-
     fn read_rx(&mut self) -> Option<RxSample> {
-        self.serial.read_rx()
+        UartPort::read_rx(&mut self.serial)
     }
 
-    fn tx_ready(&mut self) -> bool {
-        self.serial.tx_ready()
-    }
-
-    fn write_tx(&mut self, byte: u8) {
-        self.serial.write_tx(byte)
-    }
-
-    fn tx_load_size(&self) -> usize {
-        self.serial.tx_load_size()
+    fn write_tx(&mut self, bytes: &[u8]) -> usize {
+        UartPort::write_tx(&mut self.serial, bytes)
     }
 
     fn tx_idle(&mut self) -> bool {
         self.serial.tx_idle()
     }
 
-    fn ack_modem_status(&mut self) {
-        self.serial.ack_modem_status()
+    fn mask_all(&mut self) {
+        UartPort::mask_all(&mut self.serial);
     }
 
-    fn ack_busy_detect(&mut self) {
-        self.serial.ack_busy_detect()
+    fn rearm(&mut self, sources: SerialEventSet) -> SerialEventSet {
+        UartPort::rearm(&mut self.serial, sources)
+    }
+}
+
+impl SplitUart for RockchipFiqSerial {
+    type Port = Self;
+    type Irq = Ns16550Irq<RockchipFiqPort>;
+
+    fn runtime_info(&self) -> UartInfo {
+        UartInfo {
+            name: "Rockchip FIQ Debugger UART",
+            register_base: self.serial.base.get_base(),
+            initial_baudrate: self.config.baudrate,
+        }
+    }
+
+    fn split(self) -> UartParts<Self::Port, Self::Irq> {
+        let irq = Ns16550Irq {
+            base: self.serial.base,
+        };
+        UartParts::new(self, irq)
+    }
+}
+
+impl PollingUart for RockchipFiqSerial {
+    fn poll_status(&mut self) -> SerialEvent {
+        self.serial.poll_status()
     }
 
     fn write_byte(&mut self, byte: u8) {

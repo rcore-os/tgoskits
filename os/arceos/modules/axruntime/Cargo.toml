@@ -70,6 +70,15 @@ aic8800-wifi = [
   "dep:sdhci-cv1800",
 ]
 vsock = ["net", "ax-net/vsock", "ax-driver/vsock"]
+serial = [
+  "irq",
+  "multitask",
+  "ax-driver/serial",
+  "dep:ax-errno",
+  "dep:axpoll",
+  "dep:rdif-serial",
+  "dep:spin",
+]
 
 [dependencies]
 aic8800 = {workspace = true, optional = true}
@@ -95,6 +104,7 @@ ax-percpu = {workspace = true, optional = true}
 ax-plat = {workspace = true}
 ax-task = {workspace = true, optional = true}
 axbacktrace = {workspace = true}
+axpoll = {workspace = true, optional = true}
 axklib.workspace = true
 axpanic = {workspace = true}
 cfg-if = {workspace = true}
@@ -104,6 +114,7 @@ indoc = "2"
 irq-framework = { workspace = true }
 rdif-block = { workspace = true, optional = true }
 rdif-intc = { workspace = true, optional = true }
+rdif-serial = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdrive.workspace = true
 spin = {workspace = true, optional = true}
