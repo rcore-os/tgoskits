@@ -3,6 +3,8 @@ use alloc::{format, string::String, vec::Vec};
 use ax_lazyinit::LazyInit;
 use axtest::prelude::*;
 
+use crate as ax_lazyinit;
+
 #[axtest::def_test]
 fn ax_lazyinit_basic_state_transitions_hold() {
     let value: LazyInit<String> = LazyInit::new();

@@ -1,6 +1,8 @@
 use ax_kernel_guard::{BaseGuard, NoOp, NoPreempt};
 use axtest::prelude::*;
 
+use crate as ax_kernel_guard;
+
 #[axtest::def_test]
 fn kernel_guard_noop_contracts_hold() {
     <NoOp as BaseGuard>::acquire();

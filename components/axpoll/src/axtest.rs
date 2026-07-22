@@ -7,6 +7,8 @@ use core::{
 use axpoll::{IoEvents, PollSet};
 use axtest::prelude::*;
 
+use crate as axpoll;
+
 struct WakeCounter(AtomicUsize);
 
 impl WakeCounter {

@@ -9,6 +9,13 @@ keywords.workspace = true
 repository.workspace = true
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 heapless = "0.9"
-ranges-ext = {workspace = true}
+ranges-ext = { workspace = true }
 num-align = "0.1"
+
+[features]
+axtest = ["dep:axtest"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

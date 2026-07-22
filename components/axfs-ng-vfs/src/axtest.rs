@@ -1,4 +1,11 @@
-use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{
+    borrow::ToOwned,
+    format,
+    string::{String, ToString},
+    sync::Arc,
+    vec,
+    vec::Vec,
+};
 use core::{
     any::Any,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -7,6 +14,8 @@ use core::{
 };
 
 use axtest::prelude::*;
+
+use crate as axfs_ng_vfs;
 
 #[axtest::def_test]
 fn axfs_ng_vfs_path_rules_hold() {

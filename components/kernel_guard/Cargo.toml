@@ -10,10 +10,15 @@ categories = ["os", "no-std"]
 license = "Apache-2.0"
 
 [features]
+axtest = ["dep:axtest"]
 preempt = []
 host-test = []
 default = []
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 cfg-if = "1.0"
 ax-crate-interface = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

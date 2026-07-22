@@ -4,6 +4,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use axtest::prelude::*;
 use scope_local::{Scope, scope_local};
 
+use crate as scope_local;
+
 static UNUSED_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 scope_local! {

@@ -177,7 +177,7 @@ rbpf = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 axtest.workspace = true
-ax-cpumask.workspace = true
+ax-cpumask = { workspace = true, features = ["axtest"] }
 ax-hal.workspace = true
 ax-std = { workspace = true, default-features = false, features = [
     "alloc",
@@ -187,9 +187,16 @@ ax-std = { workspace = true, default-features = false, features = [
     "multitask",
     "irq",
 ] }
-kernutil.workspace = true
+ax-errno = { workspace = true, features = ["axtest"] }
+axfs-ng-vfs = { workspace = true, features = ["axtest"] }
+ax-io = { workspace = true, features = ["axtest"] }
+ax-kernel-guard = { workspace = true, features = ["axtest"] }
+ax-lazyinit = { workspace = true, features = ["axtest"] }
+axpoll = { workspace = true, features = ["axtest"] }
+kernutil = { workspace = true, features = ["axtest"] }
 ranges-ext.workspace = true
-rsext4.workspace = true
+rsext4 = { workspace = true, features = ["axtest"] }
+scope-local = { workspace = true, features = ["axtest"] }
 
 [[test]]
 name = "coverage"

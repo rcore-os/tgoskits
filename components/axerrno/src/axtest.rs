@@ -2,6 +2,8 @@ use alloc::{format, string::ToString};
 
 use axtest::prelude::*;
 
+use crate as ax_errno;
+
 #[axtest::def_test]
 fn axerrno_kind_and_linux_mapping_rules_hold() {
     use ax_errno::{AxError, AxErrorKind, LinuxError};

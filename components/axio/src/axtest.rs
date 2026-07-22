@@ -10,6 +10,8 @@ use core::{io::BorrowedBuf, mem::MaybeUninit};
 
 use axtest::prelude::*;
 
+use crate as ax_io;
+
 #[axtest::def_test]
 fn axio_slice_read_rules_hold() {
     use ax_io::{BufRead, Error, Read, read_to_string};

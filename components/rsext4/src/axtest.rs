@@ -2,6 +2,8 @@ use alloc::{string::ToString, vec, vec::Vec};
 
 use axtest::prelude::*;
 
+use crate as rsext4;
+
 #[axtest::def_test]
 fn rsext4_crc_and_error_rules_hold() {
     use rsext4::{
