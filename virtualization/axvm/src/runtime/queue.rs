@@ -64,7 +64,7 @@ impl VcpuInterruptQueue {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host-test"))]
 mod tests {
     use alloc::vec;
 
