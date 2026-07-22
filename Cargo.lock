@@ -527,6 +527,7 @@ name = "ax-alloc"
 version = "0.8.12"
 dependencies = [
  "ax-errno 0.6.1",
+ "ax-kernel-guard",
  "ax-kspin",
  "ax-memory-addr",
  "ax-percpu",
@@ -593,6 +594,7 @@ dependencies = [
  "ax-percpu",
  "axbacktrace",
  "cfg-if",
+ "cpu-local",
  "log",
  "loongArch64",
  "riscv",
@@ -785,6 +787,7 @@ dependencies = [
  "ax-plat",
  "axplat-dyn",
  "cfg-if",
+ "cpu-local",
  "fdt-parser",
  "heapless",
  "log",
@@ -970,18 +973,17 @@ dependencies = [
 name = "ax-percpu"
 version = "0.4.14"
 dependencies = [
- "ax-kernel-guard",
+ "ax-lazyinit",
  "ax-percpu-macros",
- "cfg-if",
+ "cpu-local",
  "spin",
- "x86",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "ax-percpu-macros"
 version = "0.4.10"
 dependencies = [
- "cfg-if",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -1350,6 +1352,7 @@ dependencies = [
  "ax-percpu",
  "ax-plat",
  "axklib",
+ "cpu-local",
  "heapless",
  "log",
  "rdrive",
@@ -1495,6 +1498,7 @@ dependencies = [
  "bitflags 2.13.0",
  "byte-unit",
  "cfg-if",
+ "cpu-local",
  "extern-trait",
  "fdt-edit",
  "fdt-raw",
@@ -2244,6 +2248,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0667304c32ea56cb4cd6d2d7c0cfe9a2f8041229db8c033af7f8d69492429def"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "cpu-local"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4802,6 +4813,7 @@ name = "loongarch_vcpu"
 version = "0.5.12"
 dependencies = [
  "bitflags 2.13.0",
+ "cpu-local",
  "log",
  "spin",
  "tock-registers 0.10.1",
@@ -7050,7 +7062,9 @@ dependencies = [
 name = "scope-local"
 version = "0.4.2"
 dependencies = [
+ "ax-kernel-guard",
  "ax-percpu",
+ "cpu-local",
  "ctor 0.6.3",
  "spin",
 ]
@@ -7529,6 +7543,7 @@ dependencies = [
  "heapless",
  "kasm-aarch64",
  "kernutil",
+ "libc",
  "log",
  "loongArch64",
  "num-align",
@@ -7558,8 +7573,10 @@ dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
  "arm-gic-driver",
+ "ax-cpu",
  "ax-kspin",
  "ax-riscv-plic",
+ "cpu-local",
  "irq-framework",
  "kernutil",
  "log",
@@ -7720,6 +7737,7 @@ dependencies = [
  "rdrive",
  "ringbuf",
  "riscv",
+ "rockchip-rga",
  "scope-local",
  "sg2002-tpu",
  "sg200x-bsp",

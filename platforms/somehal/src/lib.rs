@@ -75,6 +75,17 @@ pub fn __somehal_secondary_default() -> ! {
 
 #[someboot::secondary_entry]
 fn secondary_entry() -> ! {
+    let cpu_index =
+        setup::cpu_index(meta.cpu_idx).expect("someboot must publish the secondary CPU-local area");
+    setup::kernel()
+        .bind_current_cpu(cpu_index)
+        .unwrap_or_else(|error| {
+            panic!(
+                "the platform must bind CPU-local state before secondary HAL initialization: \
+                 {error}"
+            )
+        });
+
     someboot::set_kernel_page_table_paddr(meta.primary_table_paddr);
     arch::Plat::secondary_init();
     irq::init_secondary_boot_irqs(meta.cpu_idx);

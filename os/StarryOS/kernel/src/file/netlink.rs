@@ -313,6 +313,22 @@ impl NetlinkSocket {
         self.protocol
     }
 
+    /// Enqueue a kernel-originated datagram into this socket's receive queue
+    /// and wake readers, exactly as [`broadcast`] does for a single socket.
+    /// Drops silently when the queue is full (Linux `netlink_unicast` under
+    /// buffer pressure). Used by `mq_notify(SIGEV_THREAD)` to hand the
+    /// notification cookie to the glibc/musl helper thread that reads this
+    /// netlink socket (`netlink_sendskb` in ipc/mqueue.c `__do_notify`).
+    pub fn deliver_datagram(&self, payload: Vec<u8>) {
+        let mut queue = self.queue.lock();
+        if queue.len() < MAX_QUEUED {
+            queue.push_back(payload);
+            drop(queue);
+            // Datagram is queued before readers are woken.
+            unsafe { self.poll_rx.wake(IoEvents::IN) };
+        }
+    }
+
     fn local_pid(&self) -> u32 {
         let mut state = self.state.lock();
         match state.addr {

@@ -9,9 +9,11 @@ repository = "https://github.com/Starry-OS/scope-local"
 license = "Apache-2.0"
 
 [dependencies]
-ax-percpu = { workspace = true, features = ["non-zero-vma"] }
+ax-kernel-guard.workspace = true
+ax-percpu.workspace = true
 spin = { workspace = true }
 
 [dev-dependencies]
 ctor = "0.6"
-ax-percpu = { workspace = true, features = ["host-test", "non-zero-vma"] }
+cpu-local = { workspace = true, features = ["host-test"] }
+ax-percpu = { workspace = true, features = ["host-test"] }

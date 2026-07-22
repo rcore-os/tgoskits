@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- *(cpu-local)* allocate one runtime CPU area per discovered CPU from the single ELF template and
+  publish the layout only after typed initialization completes; the final-image handoff is the
+  unversioned scalar `__percpu_initialize_layout(base, stride, count)` entry.
+
+### Removed
+
+- *(cpu-local)* remove the alternate preallocated layout and legacy per-CPU linker aliases.
+
 ## [0.3.5](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.4...someboot-v0.3.5) - 2026-07-10
 
 ### Added

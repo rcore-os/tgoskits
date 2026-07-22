@@ -12,7 +12,7 @@ pub(crate) mod region;
 
 pub use page_table_generic::*;
 
-use crate::{ArchTrait, DCacheOp, arch::Arch, smp::percpu_range};
+use crate::{ArchTrait, DCacheOp, arch::Arch, smp::cpu_area_region};
 
 pub const KB: usize = 1024;
 pub const MB: usize = 1024 * KB;
@@ -66,8 +66,8 @@ pub fn __io(paddr: usize) -> *mut u8 {
     crate::arch::Arch::_io(paddr)
 }
 
-pub fn __percpu(paddr: usize) -> *mut u8 {
-    crate::arch::Arch::_percpu(paddr)
+pub fn cpu_area_phys_to_virt(paddr: usize) -> *mut u8 {
+    crate::arch::Arch::cpu_area_phys_to_virt(paddr)
 }
 
 /// kernel image 物理地址转换为内核虚拟地址
@@ -117,8 +117,8 @@ pub fn phys_to_virt(paddr: usize) -> *mut u8 {
     if mmu::is_kernel_relocated() {
         if kimage_range().contains(&paddr) {
             __kimage_va(paddr)
-        } else if percpu_range().contains(&paddr) {
-            __percpu(paddr)
+        } else if cpu_area_region().contains(&paddr) {
+            cpu_area_phys_to_virt(paddr)
         } else {
             __va(paddr)
         }

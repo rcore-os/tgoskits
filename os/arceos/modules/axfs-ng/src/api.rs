@@ -3,32 +3,32 @@ use alloc::string::{String, ToString};
 use ax_errno::AxResult;
 use axfs_ng_vfs::NodePermission;
 
-use crate::highlevel::FS_CONTEXT;
+use crate::highlevel::current_fs_context;
 
 pub fn create_dir(path: &str) -> AxResult {
-    FS_CONTEXT
+    current_fs_context()
         .lock()
         .create_dir(path, NodePermission::default(), 0, 0)?;
     Ok(())
 }
 
 pub fn remove_dir(path: &str) -> AxResult {
-    FS_CONTEXT.lock().remove_dir(path)?;
+    current_fs_context().lock().remove_dir(path)?;
     Ok(())
 }
 
 pub fn remove_file(path: &str) -> AxResult {
-    FS_CONTEXT.lock().remove_file(path)?;
+    current_fs_context().lock().remove_file(path)?;
     Ok(())
 }
 
 pub fn rename(old: &str, new: &str) -> AxResult {
-    FS_CONTEXT.lock().rename(old, new)?;
+    current_fs_context().lock().rename(old, new)?;
     Ok(())
 }
 
 pub fn current_dir() -> AxResult<String> {
-    FS_CONTEXT
+    current_fs_context()
         .lock()
         .current_dir()
         .absolute_path()
@@ -36,7 +36,8 @@ pub fn current_dir() -> AxResult<String> {
 }
 
 pub fn set_current_dir(path: &str) -> AxResult {
-    let mut ctx = FS_CONTEXT.lock();
+    let fs_context = current_fs_context();
+    let mut ctx = fs_context.lock();
     let dir = ctx.resolve(path)?;
     ctx.set_current_dir(dir)?;
     Ok(())

@@ -312,6 +312,20 @@ fn qemu_test_request_ignores_inherited_smp() {
 }
 
 #[test]
+fn board_test_request_ignores_inherited_smp() {
+    let mut request = axvisor_request(
+        PathBuf::from("/tmp/build-aarch64-unknown-none-softfloat.toml"),
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+    );
+    request.smp = Some(2);
+
+    let request = Axvisor::board_test_request(request);
+
+    assert_eq!(request.smp, None);
+}
+
+#[test]
 fn qemu_test_request_ignores_inherited_vmconfigs() {
     let mut request = axvisor_request(
         PathBuf::from("/tmp/build-x86_64-unknown-none.toml"),

@@ -1,84 +1,26 @@
-<h1 align="center">ax-percpu-macros</h1>
+# ax-percpu-macros
 
-<p align="center">Macros to define and access a per-CPU data structure</p>
+Procedural macros used by `ax-percpu`. Applications should import
+`ax_percpu::def_percpu` instead of depending on this crate directly.
 
-<div align="center">
+`#[def_percpu]` emits three pieces of final-image metadata:
 
-[![Crates.io](https://img.shields.io/crates/v/ax-percpu-macros.svg)](https://crates.io/crates/ax-percpu-macros)
-[![Docs.rs](https://docs.rs/ax-percpu-macros/badge.svg)](https://docs.rs/ax-percpu-macros)
-[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+- uninitialized typed storage in `.percpu.template.storage`;
+- a typed constructor registration in `.percpu.init`;
+- an alignment descriptor in `.percpu.align`.
 
-</div>
+Primitive integers and booleans use their matching atomic representation.
+Other objects retain their Rust type and are constructed once in each final
+runtime CPU area. The generated access wrapper calculates a template-relative
+offset and delegates all current and remote access checks to `ax-percpu`.
 
-English | [中文](README_CN.md)
-
-# Introduction
-
-`ax-percpu-macros` provides Macros to define and access a per-CPU data structure. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
-
-
-> ax-percpu-macros was derived from https://github.com/arceos-org/percpu
-
-## Quick Start
-
-### Installation
-
-Add this crate to your `Cargo.toml`:
-
-```toml
-[dependencies]
-ax-percpu-macros = "0.4.3"
-```
-
-### Run Check and Test
+This crate has no Cargo features or runtime storage backend. Linker layout,
+dynamic allocation, initialization, CPU pinning, and register ownership belong
+to `ax-percpu`, the platform, and `cpu-local` respectively.
 
 ```bash
-# Enter the crate directory
-cd components/percpu/percpu_macros
-
-# Format code
-cargo fmt --all
-
-# Run clippy
-cargo clippy --all-targets --all-features
-
-# Run tests
-cargo test --all-features
-
-# Build documentation
-cargo doc --no-deps
+cargo test -p ax-percpu-macros
+cargo xtask clippy --package ax-percpu-macros
 ```
 
-## Integration
-
-### Example
-
-```rust
-use ax_percpu_macros as _;
-
-fn main() {
-    // Integrate `ax-percpu-macros` into your project here.
-}
-```
-
-### Documentation
-
-Generate and view API documentation:
-
-```bash
-cargo doc --no-deps --open
-```
-
-Online documentation: [docs.rs/ax-percpu-macros](https://docs.rs/ax-percpu-macros)
-
-# Contributing
-
-1. Fork the repository and create a branch
-2. Run local format and checks
-3. Run local tests relevant to this crate
-4. Submit a PR and ensure CI passes
-
-# License
-
-Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.
+Licensed under Apache-2.0.

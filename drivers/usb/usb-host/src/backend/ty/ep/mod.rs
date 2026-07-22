@@ -34,7 +34,14 @@ pub(crate) trait EndpointOp: Send + Any + 'static {
     fn cancel_request(&mut self, _id: RequestId) -> Result<(), TransferError> {
         Err(TransferError::NotSupported)
     }
+
+    fn reset(&mut self) -> EndpointResetFuture {
+        Box::pin(async { Err(TransferError::NotSupported) })
+    }
 }
+
+pub type EndpointResetFuture =
+    Pin<Box<dyn Future<Output = Result<(), TransferError>> + Send + 'static>>;
 
 pub struct Endpoint {
     info: EndpointInfo,
@@ -85,6 +92,12 @@ impl Endpoint {
 
     pub fn cancel(&mut self, id: RequestId) -> Result<(), TransferError> {
         self.raw.cancel_request(id)
+    }
+
+    /// Resets host-controller state for this endpoint after a successful
+    /// `CLEAR_FEATURE(ENDPOINT_HALT)` request.
+    pub fn reset(&mut self) -> EndpointResetFuture {
+        self.raw.reset()
     }
 
     pub async fn wait(

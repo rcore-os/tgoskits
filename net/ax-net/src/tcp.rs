@@ -575,6 +575,13 @@ impl SocketOps for TcpSocket {
     fn send(&self, mut src: impl Read + IoBuf, options: SendOptions) -> AxResult<usize> {
         // SAFETY: `self.handle` should be initialized in a connected socket.
         let extra_nb = options.flags.contains(crate::SendFlags::DONTWAIT);
+        // A partial send on a non-blocking socket must report the bytes already
+        // enqueued rather than `WouldBlock`. The poller treats the socket as
+        // non-blocking when either `O_NONBLOCK` or `MSG_DONTWAIT` is set, so
+        // `finish_tcp_send_step` has to use the same effective flag: otherwise a
+        // partial send returns EAGAIN after `src` was already consumed, and the
+        // caller retransmits those bytes and corrupts the stream.
+        let nonblocking = self.general.nonblocking() || extra_nb;
         let target_len = src.remaining();
         if target_len == 0 {
             return Ok(0);
@@ -602,7 +609,7 @@ impl SocketOps for TcpSocket {
             if step.as_ref().is_ok_and(|sent| *sent > 0) {
                 request_poll();
             }
-            finish_tcp_send_step(&mut total_sent, target_len, extra_nb, step)
+            finish_tcp_send_step(&mut total_sent, target_len, nonblocking, step)
         });
         if result.is_ok() {
             request_poll();

@@ -4,8 +4,8 @@ mod card0;
 #[cfg(feature = "rknpu")]
 mod card1;
 // The real contiguous coherent dma-heap is shared by every accelerator that
-// exchanges buffers (JPU / NPU; RGA when its node lands).
-#[cfg(any(feature = "jpeg", feature = "rknpu"))]
+// exchanges buffers (JPU / NPU / RGA).
+#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 mod dmaheap;
 mod drm;
 #[cfg(feature = "input")]
@@ -21,6 +21,8 @@ mod r#loop;
 mod loop_block;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
+#[cfg(feature = "rga")]
+pub(crate) mod rga;
 #[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
@@ -573,7 +575,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // accelerators share buffers from (zero-copy across JPU / NPU / RGA). Every
     // heap name maps to the same allocator. Available under any accelerator
     // feature, not just `jpeg`.
-    #[cfg(any(feature = "jpeg", feature = "rknpu"))]
+    #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
     {
         let mut dma_heap_dir = DirMapping::new();
         for name in dmaheap::HEAP_NAMES {
@@ -596,6 +598,11 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // This is mounted to a tmpfs in `new_procfs`
     root.add(
         "shm",
+        SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+    );
+    // Mount point for mqueuefs; `mount_all` mounts it at `/dev/mqueue`.
+    root.add(
+        "mqueue",
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
     );
     {
@@ -628,6 +635,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(226, 128),
             dri_card0,
+        ),
+    );
+
+    #[cfg(feature = "rga")]
+    root.add(
+        "rga",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(252, 16), // CONFIRM ON BOARD: real /dev/rga major/minor
+            Arc::new(rga::RgaDevice::new()),
         ),
     );
 

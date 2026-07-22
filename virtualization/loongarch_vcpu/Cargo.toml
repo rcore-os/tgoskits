@@ -13,6 +13,7 @@ license = "Apache-2.0"
 targets = ["loongarch64-unknown-none-softfloat"]
 
 [dependencies]
+cpu-local.workspace = true
 log = "0.4"
 bitflags.workspace = true
 spin = { workspace = true }

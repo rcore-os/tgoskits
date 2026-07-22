@@ -1297,6 +1297,22 @@ impl crate::backend::ty::ep::EndpointOp for EhciEndpoint {
         submitted.cancelled = true;
         Ok(())
     }
+
+    fn reset(&mut self) -> crate::backend::ty::ep::EndpointResetFuture {
+        let result = if self.inflight.is_some() {
+            Err(TransferError::QueueFull)
+        } else {
+            let qh_addr = self.qh.dma_addr().as_u64() as u32;
+            self.schedule.detach(qh_addr);
+            self.qh.modify_cpu(|qh| {
+                qh.current_qtd = 0;
+                qh.overlay = QueueTransferDescriptor::terminated();
+            });
+            mb();
+            Ok(())
+        };
+        Box::pin(async move { result })
+    }
 }
 
 struct SubmittedTransfer {

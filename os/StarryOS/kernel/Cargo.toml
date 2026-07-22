@@ -23,6 +23,7 @@ loongarch64-low-va = []
 memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
 rknpu = ["ax-driver/rknpu", "dep:ax-dma"]
 jpeg = ["ax-driver/jpeg", "dep:ax-dma"]
+rga = ["ax-driver/rga", "dep:rockchip-rga", "dep:ax-dma"]
 rk3588-pwm = [
     "ax-driver/rk3588-pwm",
     "dep:rdif-pwm",
@@ -54,6 +55,7 @@ sg2002-cvi-usb-camera = [
     "dep:dma-api",
     "dep:sg200x-jpu",
 ]
+smp = ["ax-std/smp"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = []
@@ -89,6 +91,7 @@ ax-task = { workspace = true, features = [
     "sched-rr",
 ] }
 ax-dma = { workspace = true, optional = true }
+rockchip-rga = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
 crab-usb.workspace = true
@@ -174,7 +177,14 @@ rbpf = { version = "0.4", default-features = false }
 [dev-dependencies]
 axtest.workspace = true
 ax-hal.workspace = true
-ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
+ax-std = { workspace = true, default-features = false, features = [
+    "alloc",
+    "fd",
+    "ext-ld",
+    "fs",
+    "multitask",
+    "irq",
+] }
 
 [[test]]
 name = "axtest_kernel"
