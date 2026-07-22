@@ -9,11 +9,11 @@ description: Review one specified GitHub pull request in this tgoskits repositor
 
 This skill is a normative review specification, not a suggestion list. When it triggers, read the entire `SKILL.md` before deciding the review outcome, then follow every applicable requirement unless a higher-priority system or developer instruction conflicts.
 
-Before judging code quality, maintainability, or merge readiness, fully read `book/guideline/code-quality.md` and treat it as the mandatory baseline for author-side implementation and reviewer-side assessment. Read additional domain guidelines only when the changed behavior is in their scope. In particular, fully read `book/guideline/starry/syscall.md` whenever the PR changes or claims to change user-visible StarryOS syscall/Linux ABI semantics. This is a semantic trigger: it also applies when the diff is in task, VFS, namespace, signal, socket, credential, memory-management, or another helper rather than the syscall directory. When a domain guideline is inapplicable, record the concrete reason in the review checklist. If context is compacted, resumed from a summary, or an applicable guideline cannot be recalled confidently, re-read that complete guideline before continuing; do not rely on memory or a previous partial read.
+Before judging code quality, maintainability, or merge readiness, fully read `book/guideline/code-quality.md` and treat it as the mandatory baseline for author-side implementation and reviewer-side assessment. Fully read `book/guideline/feature-development.md` whenever the PR adds or expands user-visible behavior, a shared or public interface, a crate or subsystem, or a platform or hardware capability. This new-feature trigger is semantic rather than title-based: a PR labeled as a refactor or fix still triggers the guideline when it exposes new behavior or capability. Read additional domain guidelines only when the changed behavior is in their scope. In particular, fully read `book/guideline/starry/syscall.md` whenever the PR changes or claims to change user-visible StarryOS syscall/Linux ABI semantics. This syscall trigger is also semantic: it applies when the diff is in task, VFS, namespace, signal, socket, credential, memory-management, or another helper rather than the syscall directory. When a guideline is inapplicable, record the concrete reason in the review checklist. If context is compacted, resumed from a summary, or an applicable guideline cannot be recalled confidently, re-read that complete guideline before continuing; do not rely on memory or a previous partial read.
 
 Do not submit `APPROVE`, `REQUEST_CHANGES`, a no-submit summary, or any PR-facing comment from only the frontmatter, title, partial sections, memory, or a previous review. If context or time pressure prevents reading the full skill, state that limitation and do not claim a complete `review-single-pr` review.
 
-After reading the full skill, `book/guideline/code-quality.md`, and every applicable domain guideline, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, baseline code quality, domain-guideline applicability and compliance, required test coverage and test placement/discovery, duplicate and overlap analysis, validation, blocking findings, submission rules, recommended reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
+After reading the full skill, `book/guideline/code-quality.md`, and every applicable guideline, create a review todo/checklist before deciding or submitting any outcome. The checklist must cover all applicable merge-readiness requirements from this skill, including PR metadata and intake, review threads and CI, worktree setup, merge-conflict handling when applicable, review focus, baseline code quality, new-feature applicability and `feature-development.md` compliance, domain-guideline applicability and compliance, required test coverage and test placement/discovery, duplicate and overlap analysis, validation, blocking findings, submission rules, recommended reviewer assignment, and cleanup. Verify each item one by one as satisfied, not applicable with a concrete reason, or blocking with evidence; do not collapse the checklist into a generic "tests passed" statement.
 
 When requirements overlap, apply the stricter rule. If skipping a requirement is necessary because it is inapplicable or impossible, record the concrete reason and evidence in the review body or user summary.
 
@@ -25,7 +25,8 @@ environment and output contract for this mode. If either condition is absent, fo
 online workflow in the rest of this skill.
 
 In offline benchmark mode, treat the committed change from `bench-base` to `HEAD` as the one change
-under review. Read the complete skill, `AGENTS.md`, `book/guideline/code-quality.md`, every domain
+under review. Read the complete skill, `AGENTS.md`, `book/guideline/code-quality.md`,
+`book/guideline/feature-development.md` when the change adds or expands a feature, every domain
 guideline applicable to the changed semantics, the offline contract, and the supplied output schema
 before judging the change. Apply the review-focus,
 test-quality, blocking-finding, hardware/ABI, security/soundness, maintainability, and documentation
@@ -244,6 +245,14 @@ Review the PR against its stated intent, the current base branch, existing proje
 
 For any change that affects or claims to affect user-visible StarryOS syscall/Linux ABI semantics, fully read and apply `book/guideline/starry/syscall.md` before judging correctness. Follow its evidence hierarchy and comparison workflow even when the changed line is outside the syscall directory. The review must trace indirect helper changes back to every affected syscall entry and must record the Linux version or commit used when behavior is version-dependent.
 
+### New Feature Design Gate
+
+For a PR that adds or expands a feature, fully read and apply `book/guideline/feature-development.md` before reviewing implementation details. Classify the feature as local, shared, or high risk using that guideline, and record the classification and evidence location in the review checklist.
+
+Review the feature in the guideline's required order: necessity, duplication, semantics and prior art, alternatives, overall architecture and API, implementation, then validation and delivery. Verify the problem, target users or callers, concrete scenarios, success criteria, non-goals, internal repository research, authoritative external research when applicable, realistic alternatives, and the cost of not implementing the feature. Prior art may inform the design but does not establish project need by itself.
+
+High-risk features must have independently reviewable design material that covers the applicable ownership, dependency, compatibility, migration, rollback, observability, performance, and security questions. Send major design blockers before spending time on low-level polish. Do not approve a feature merely because its tests pass when the review cannot explain why the feature belongs in the project, why this design is preferable to reuse or extension, and why its added complexity is necessary now.
+
 ### Review Lenses And Finding Discipline
 
 Review is recall-first: prefer finding every real defect in the changed surface over producing a short or polished review. Do not invent issues, but do not dismiss a plausible in-scope defect with "looks fine"; construct the concrete input, interleaving, device state, guest config, or test-run path that would trigger it, or explain why that scenario is impossible.
@@ -445,6 +454,9 @@ When GitHub log download fails or returns an empty log, do not infer the check p
 Treat these as blocking unless clearly non-blocking:
 
 - behavior differs from POSIX/Linux/RFC/VirtIO semantics;
+- a new feature lacks a concrete problem, users or callers, success criteria, non-goals, internal duplicate search, applicable authoritative research, or a comparison with realistic alternatives;
+- a high-risk feature identified by `book/guideline/feature-development.md` lacks independently reviewable design material or an appropriately qualified domain reviewer;
+- a feature uses an unexplained cross-layer shortcut, hard-coded special path, duplicated source of truth, fake success, or silent fallback, or adds speculative abstractions, public APIs, configuration, or extension points without a current consumer and demonstrated need;
 - targeted tests, formatting, clippy, or PR-related CI fail;
 - a newly added or changed Starry app/QEMU case fails when run as described by the PR, including one architecture among newly added multi-arch `qemu-*.toml` cases;
 - a Starry QEMU test failure is visible in guest logs but does not make `cargo xtask starry test qemu ...` fail, including hidden `$?`, missing failure marker, overly loose `success_regex`, or missing `fail_regex` coverage;
@@ -510,6 +522,8 @@ After submission, re-query the PR. If a new commit landed during review submissi
 Review body must explain in Chinese:
 
 - what the PR changed;
+- whether `book/guideline/feature-development.md` applies and, when it does, the feature's risk classification and design-material location;
+- for new features, the problem and users, success criteria and non-goals, internal and external research, alternatives considered, selected-design trade-offs, and why the implementation is neither a hack nor unnecessary over-engineering;
 - the implementation logic and why this approach is correct for the project semantics;
 - validation commands and results, including exact failure mode for failing tests;
 - required test coverage status, including why tests were required or not applicable, where new tests were placed, how the runner discovers/selects them, and whether local or current-head CI evidence shows the specific tests executing;
