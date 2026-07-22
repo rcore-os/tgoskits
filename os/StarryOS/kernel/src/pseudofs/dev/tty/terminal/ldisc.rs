@@ -381,8 +381,14 @@ impl<R: TtyRead> SimpleReader<R> {
     }
 
     pub fn poll(&mut self) {
-        let read = self.reader.read(&mut self.read_buf);
-        let _ = self.buf_tx.push_slice(&self.read_buf[..read]);
+        let available = self.buf_tx.vacant_len().min(self.read_buf.len());
+        if available == 0 {
+            return;
+        }
+
+        let read = self.reader.read(&mut self.read_buf[..available]);
+        let pushed = self.buf_tx.push_slice(&self.read_buf[..read]);
+        debug_assert_eq!(pushed, read);
     }
 }
 
@@ -1075,5 +1081,32 @@ mod tests {
         assert_eq!(ldisc.read(&mut buf), Ok(payload.len()));
         assert_eq!(&buf, payload);
         assert_eq!(ldisc.read(&mut buf), Ok(0));
+    }
+
+    #[test]
+    fn passive_read_preserves_input_across_partially_full_ring_buffer() {
+        let payload: Vec<u8> = (0..(BUF_SIZE * 2 + 31))
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let mut ldisc = LineDiscipline::new(
+            Arc::new(Terminal::default()),
+            TtyConfig {
+                reader: MockReader::closed(payload.clone()),
+                writer: MockWriter,
+                process_mode: ProcessMode::Passive(Arc::new(PollSet::new())),
+            },
+        );
+        let mut received = Vec::new();
+        let mut chunk = [0; 17];
+
+        loop {
+            match ldisc.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => received.extend_from_slice(&chunk[..read]),
+                Err(error) => panic!("passive reader returned {error:?}"),
+            }
+        }
+
+        assert_eq!(received, payload);
     }
 }

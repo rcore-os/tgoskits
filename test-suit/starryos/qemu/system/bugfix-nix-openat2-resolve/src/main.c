@@ -14,14 +14,13 @@
 #define RESOLVE_BENEATH 0x08
 
 #ifndef SYS_openat2
-
-int main(void)
-{
-    puts("NIX_OPENAT2_RESOLVE_SKIPPED: SYS_openat2 unavailable");
-    return 0;
-}
-
+#if defined(__x86_64__) || defined(__aarch64__) || defined(__riscv) ||         \
+    defined(__loongarch64)
+#define SYS_openat2 437
 #else
+#error "SYS_openat2 is unknown for this architecture"
+#endif
+#endif
 
 struct open_how {
     uint64_t flags;
@@ -148,5 +147,3 @@ int main(void)
     puts("NIX_OPENAT2_RESOLVE_PASSED");
     return 0;
 }
-
-#endif

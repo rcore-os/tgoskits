@@ -17,9 +17,10 @@ use ax_net::{
     Socket as SocketInner, SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
+use ax_task::current;
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
-    general::{O_RDWR, S_IFSOCK},
+    general::{CAP_NET_ADMIN, O_RDWR, S_IFSOCK},
     ioctl::{
         FIONREAD, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS,
         SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK,
@@ -33,6 +34,7 @@ use super::{FileLike, Kstat};
 use crate::{
     file::{IoDst, IoSrc, get_file_like},
     syscall::in_root_net_ns,
+    task::AsThread,
 };
 
 pub(super) const ARPHRD_ETHER: u16 = 1;
@@ -295,6 +297,9 @@ impl FileLike for Socket {
             }
             SIOCSIFFLAGS => {
                 let info = read_ifreq_interface(arg)?;
+                if !current().as_thread().cred().has_cap(CAP_NET_ADMIN) {
+                    return Err(AxError::OperationNotPermitted);
+                }
                 if read_ifreq_flags(arg)? != linux_flags(&info) {
                     return Err(AxError::OperationNotSupported);
                 }

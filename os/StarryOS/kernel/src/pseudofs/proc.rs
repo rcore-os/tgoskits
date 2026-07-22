@@ -1373,11 +1373,17 @@ impl SimpleDirOps for ThreadDir {
                 fs,
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => {
-                        let mut bytes = vec![0; 16];
+                        // `/proc/<pid>/comm` must return only the name plus one
+                        // trailing newline, with no NUL padding: musl's
+                        // pthread_getname_np() reads the file into a 16-byte buffer
+                        // and strips just the final byte, so any padding would leave
+                        // the newline inside the read-back name and break Envoy's
+                        // thread setName() round-trip assertion.
                         let name = task.name();
                         let copy_len = name.len().min(15);
-                        bytes[..copy_len].copy_from_slice(&name.as_bytes()[..copy_len]);
-                        bytes[copy_len] = b'\n';
+                        let mut bytes = Vec::with_capacity(copy_len + 1);
+                        bytes.extend_from_slice(&name.as_bytes()[..copy_len]);
+                        bytes.push(b'\n');
                         Ok(Some(bytes))
                     }
                     SimpleFileOperation::Write(data) => {
