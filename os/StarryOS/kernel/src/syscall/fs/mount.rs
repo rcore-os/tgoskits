@@ -365,9 +365,10 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         return Ok(0);
     }
 
-    // Linux umount2 returns EBUSY if any task has cwd/root or open fd
-    // inside the mount.
-    if is_mount_busy(target.mountpoint()) {
+    let plan = target
+        .mountpoint()
+        .plan_unmount(axfs_ng_vfs::UnmountKind::Normal)?;
+    if plan.targets().any(is_mount_busy) {
         return Err(AxError::from(LinuxError::EBUSY));
     }
 
@@ -386,7 +387,10 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         ud.get::<Box<dyn Fn() -> AxResult<()> + Send + Sync>>()
     }; // user_data lock released
 
-    target.unmount()?;
+    if plan.targets().any(is_mount_busy) {
+        return Err(AxError::from(LinuxError::EBUSY));
+    }
+    target.commit_unmount(plan)?;
 
     // After unmount, filesystem block I/O has stopped; it is safe to do VFS
     // writeback here. Propagate writeback errors so userspace sees EIO when
