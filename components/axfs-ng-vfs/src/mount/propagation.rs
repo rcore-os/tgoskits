@@ -32,25 +32,31 @@ impl Mountpoint {
 
     pub(super) fn rebuild_cloned_relations(clones: &[(Arc<Self>, Arc<Self>)]) {
         for (source, cloned) in clones {
-            match source.propagation() {
-                PropagationType::Shared => cloned.join_shared_group_locked(source),
-                PropagationType::Slave => {
-                    let masters: Vec<_> = source
-                        .masters
-                        .lock()
-                        .iter()
-                        .filter_map(Weak::upgrade)
-                        .collect();
-                    for master in masters {
-                        let cloned_master = clones
-                            .iter()
-                            .find(|(candidate, _)| Arc::ptr_eq(candidate, &master))
-                            .map(|(_, clone)| clone)
-                            .unwrap_or(&master);
-                        Self::attach_master_locked(cloned, cloned_master);
-                    }
-                }
-                PropagationType::Private | PropagationType::Unbindable => {}
+            if source.is_shared() {
+                cloned.join_shared_group_locked(source);
+            }
+        }
+
+        // Joining a shared group clears the clone's previous propagation
+        // relations. Rebuild slave edges only after every shared clone has
+        // joined its group so traversal order cannot remove an attached slave.
+        for (source, cloned) in clones {
+            if !source.is_slave() {
+                continue;
+            }
+            let masters: Vec<_> = source
+                .masters
+                .lock()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .collect();
+            for master in masters {
+                let cloned_master = clones
+                    .iter()
+                    .find(|(candidate, _)| Arc::ptr_eq(candidate, &master))
+                    .map(|(_, clone)| clone)
+                    .unwrap_or(&master);
+                Self::attach_master_locked(cloned, cloned_master);
             }
         }
     }
