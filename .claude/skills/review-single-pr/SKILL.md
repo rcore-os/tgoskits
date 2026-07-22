@@ -244,6 +244,10 @@ Review the PR against its stated intent, the current base branch, existing proje
 
 For any change that affects or claims to affect user-visible StarryOS syscall/Linux ABI semantics, fully read and apply `book/guideline/starry/syscall.md` before judging correctness. Follow its evidence hierarchy and comparison workflow even when the changed line is outside the syscall directory. The review must trace indirect helper changes back to every affected syscall entry and must record the Linux version or commit used when behavior is version-dependent.
 
+Before submitting any syscall review outcome, build the per-syscall standards table required by `book/guideline/starry/syscall.md`. Give every directly or indirectly affected syscall its own row, including syscalls for which no problem was found. Each row must contain the conclusion, a brief basis, and at least one authoritative link that supports the reviewed ABI, errno, permission, state-transition, or other user-visible semantic claim. Use a direct documentation page or section, or an immutable GitHub source permalink with a full Linux commit SHA and line anchor. Do not merge several syscalls into one row, write "same as above", rely on a shared footnote, use a floating source branch, or treat inline findings as a substitute for the table. Repeat a shared standard link in every applicable syscall row.
+
+This table is mandatory for `APPROVE`, `REQUEST_CHANGES`, and any no-submit summary that presents a completed syscall review. If any affected syscall or supporting link is missing, continue the standards investigation; do not claim that the syscall review is complete or submit a final review outcome.
+
 ### Review Lenses And Finding Discipline
 
 Review is recall-first: prefer finding every real defect in the changed surface over producing a short or polished review. Do not invent issues, but do not dismiss a plausible in-scope defect with "looks fine"; construct the concrete input, interleaving, device state, guest config, or test-run path that would trigger it, or explain why that scenario is impossible.
@@ -511,6 +515,7 @@ Review body must explain in Chinese:
 
 - what the PR changed;
 - the implementation logic and why this approach is correct for the project semantics;
+- for any directly or indirectly affected syscall, the complete per-syscall standards table required by `book/guideline/starry/syscall.md`, with one row and at least one qualifying authoritative link per syscall regardless of whether a problem was found;
 - validation commands and results, including exact failure mode for failing tests;
 - required test coverage status, including why tests were required or not applicable, where new tests were placed, how the runner discovers/selects them, and whether local or current-head CI evidence shows the specific tests executing;
 - for CI-missing app/tool workflows, the documented preparation performed, the exact QEMU/runtime command run, the architecture, and the guest-visible or tool-output postcondition that proved usability;
