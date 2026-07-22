@@ -111,3 +111,22 @@ impl VcpuIrqDispatcher {
         self.queue.drain(vcpu_id)
     }
 }
+
+#[cfg(all(test, feature = "host-test"))]
+mod tests {
+    use super::*;
+    use crate::irq::model::VirtualInterruptId;
+
+    #[test]
+    fn enqueue_unregistered_vcpu_returns_error() {
+        let d = VcpuIrqDispatcher::new();
+        let result = d.enqueue(
+            0,
+            PendingVcpuInterrupt {
+                id: VirtualInterruptId(1),
+                trigger: crate::InterruptTriggerMode::EdgeTriggered,
+            },
+        );
+        assert!(result.is_err());
+    }
+}
