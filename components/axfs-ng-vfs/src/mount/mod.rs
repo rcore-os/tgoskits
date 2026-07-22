@@ -7,7 +7,7 @@ use alloc::{
 };
 use core::{
     any::Any,
-    iter, mem,
+    iter,
     sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     task::Context,
     time::Duration,
@@ -15,7 +15,6 @@ use core::{
 
 use hashbrown::HashMap;
 use inherit_methods_macro::inherit_methods;
-use log::warn;
 
 use crate::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, Filesystem, FilesystemOps, FsIoEvents,
@@ -24,10 +23,21 @@ use crate::{
     path::{DOT, DOTDOT, PathBuf, verify_entry_name},
 };
 
+mod propagation;
+mod unmount;
+
+pub use unmount::*;
+
 static DEVICE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static MOUNT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 static PEER_GROUP_COUNTER: AtomicU64 = AtomicU64::new(1);
 static SYNTHETIC_MOUNT_INODE_COUNTER: AtomicU64 = AtomicU64::new(1_u64 << 63);
+static MOUNT_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(1);
+/// Serializes mount-tree and propagation-graph mutations.
+///
+/// Callers acquire this outer guard before node-local locks. Node-local locks
+/// are never held while acquiring this guard.
+static MOUNT_TOPOLOGY_MUTATION: Mutex<()> = Mutex::new(());
 
 struct SyntheticMountDir {
     parent: DirEntry,
@@ -232,7 +242,9 @@ impl Mountpoint {
             .readonly
             .store(source.mountpoint.is_readonly(), Ordering::Release);
         if recursive {
-            Self::clone_children_under(source, &result, true);
+            let mut clones = Vec::new();
+            Self::clone_children_under(source, &result, true, &mut clones);
+            Self::rebuild_cloned_relations(&clones);
         }
         result
     }
@@ -255,7 +267,12 @@ impl Mountpoint {
         result
     }
 
-    fn clone_children_from(source: &Arc<Self>, target: &Arc<Self>, skip_unbindable: bool) {
+    fn clone_children_from(
+        source: &Arc<Self>,
+        target: &Arc<Self>,
+        skip_unbindable: bool,
+        clones: &mut Vec<(Arc<Self>, Arc<Self>)>,
+    ) {
         let children: Vec<_> = source
             .children
             .lock()
@@ -272,12 +289,18 @@ impl Mountpoint {
                 .as_ref()
                 .map(|loc| Location::new(target.clone(), loc.entry.clone()));
             let cloned = Self::clone_shallow(&child, location);
-            Self::clone_children_from(&child, &cloned, skip_unbindable);
+            clones.push((child.clone(), cloned.clone()));
+            Self::clone_children_from(&child, &cloned, skip_unbindable, clones);
             target_children.insert(key, cloned);
         }
     }
 
-    fn clone_children_under(source: &Location, target: &Arc<Self>, skip_unbindable: bool) {
+    fn clone_children_under(
+        source: &Location,
+        target: &Arc<Self>,
+        skip_unbindable: bool,
+        clones: &mut Vec<(Arc<Self>, Arc<Self>)>,
+    ) {
         let children: Vec<_> = source
             .mountpoint
             .children
@@ -302,9 +325,18 @@ impl Mountpoint {
                 source_child_location.entry.clone(),
             ));
             let cloned = Self::clone_shallow(&child, location);
-            Self::clone_children_from(&child, &cloned, skip_unbindable);
+            clones.push((child.clone(), cloned.clone()));
+            Self::clone_children_from(&child, &cloned, skip_unbindable, clones);
             target_children.insert(key, cloned);
         }
+    }
+
+    fn clone_tree_locked(self: &Arc<Self>, skip_unbindable: bool) -> Arc<Self> {
+        let result = Self::clone_shallow(self, None);
+        let mut clones = vec![(self.clone(), result.clone())];
+        Self::clone_children_from(self, &result, skip_unbindable, &mut clones);
+        Self::rebuild_cloned_relations(&clones);
+        result
     }
 
     /// Clone this mount tree into an independent namespace-local topology.
@@ -313,8 +345,9 @@ impl Mountpoint {
     /// objects, but all `Mountpoint` nodes and parent/child links are private
     /// to the clone.
     pub fn clone_tree(self: &Arc<Self>) -> Arc<Self> {
-        let result = Self::clone_shallow(self, None);
-        Self::clone_children_from(self, &result, false);
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        let result = self.clone_tree_locked(false);
+        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         result
     }
 
@@ -350,6 +383,7 @@ impl Mountpoint {
         new_root_mp: &Arc<Self>, // new root mountpoint
         put_old: &Location,      // directory under new_root_mp where old root goes
     ) -> VfsResult<()> {
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let new_root = new_root_mp.root_location();
         // put_old must be strictly below the new root in the resolved mount
         // tree. This rejects both sibling locations and new_root itself.
@@ -389,6 +423,7 @@ impl Mountpoint {
             *self.location.lock() = Some(put_old.clone());
         }
 
+        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -499,167 +534,8 @@ impl Mountpoint {
         *self.propagation.lock()
     }
 
-    pub fn is_shared(&self) -> bool {
-        self.propagation() == PropagationType::Shared
-    }
-
-    pub fn is_slave(&self) -> bool {
-        self.propagation() == PropagationType::Slave
-    }
-
-    pub fn is_unbindable(&self) -> bool {
-        self.propagation() == PropagationType::Unbindable
-    }
-
-    fn remove_from_shared_group(self: &Arc<Self>) {
-        let peers: Vec<_> = self.peers.lock().iter().filter_map(Weak::upgrade).collect();
-        for peer in peers {
-            peer.peers.lock().retain(|candidate| {
-                candidate
-                    .upgrade()
-                    .is_some_and(|mp| !Arc::ptr_eq(&mp, self))
-            });
-        }
-        self.peers.lock().clear();
-    }
-
-    fn remove_from_masters(self: &Arc<Self>) {
-        let masters: Vec<_> = self
-            .masters
-            .lock()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect();
-        for master in masters {
-            master.slaves.lock().retain(|candidate| {
-                candidate
-                    .upgrade()
-                    .is_some_and(|mp| !Arc::ptr_eq(&mp, self))
-            });
-        }
-        self.masters.lock().clear();
-    }
-
-    pub fn set_shared(self: &Arc<Self>) {
-        self.remove_from_shared_group();
-        self.remove_from_masters();
-        *self.propagation.lock() = PropagationType::Shared;
-        if self.peer_group_id.load(Ordering::Acquire) == 0 {
-            self.peer_group_id.store(
-                PEER_GROUP_COUNTER.fetch_add(1, Ordering::Relaxed),
-                Ordering::Release,
-            );
-        }
-    }
-
-    pub fn set_private(self: &Arc<Self>) {
-        self.remove_from_shared_group();
-        self.remove_from_masters();
-        *self.propagation.lock() = PropagationType::Private;
-        self.peer_group_id.store(0, Ordering::Release);
-    }
-
-    pub fn set_slave(self: &Arc<Self>) {
-        let mut masters = Vec::new();
-        if self.is_shared() {
-            masters.extend(self.peers.lock().iter().filter_map(Weak::upgrade));
-        }
-
-        self.remove_from_shared_group();
-        self.remove_from_masters();
-        *self.propagation.lock() = PropagationType::Slave;
-        self.peer_group_id.store(0, Ordering::Release);
-        for master in masters {
-            master.slaves.lock().push(Arc::downgrade(self));
-            self.masters.lock().push(Arc::downgrade(&master));
-        }
-    }
-
-    pub fn set_unbindable(self: &Arc<Self>) {
-        self.set_private();
-        *self.propagation.lock() = PropagationType::Unbindable;
-    }
-
-    pub fn join_shared_group(self: &Arc<Self>, source: &Arc<Self>) {
-        let mut group = vec![source.clone()];
-        group.extend(source.peers.lock().iter().filter_map(Weak::upgrade));
-
-        self.set_shared();
-        let source_group = source.peer_group_id.load(Ordering::Acquire);
-        if source_group != 0 {
-            self.peer_group_id.store(source_group, Ordering::Release);
-        }
-        for member in group {
-            if Arc::ptr_eq(&member, self) {
-                continue;
-            }
-            member.peers.lock().push(Arc::downgrade(self));
-            self.peers.lock().push(Arc::downgrade(&member));
-        }
-    }
-
-    fn attach_child(parent: &Arc<Self>, location: Location, child: &Arc<Self>) -> VfsResult<()> {
-        location.check_is_dir()?;
-        parent
-            .children
-            .lock()
-            .insert(location.entry.key(), child.clone());
-        Ok(())
-    }
-
-    fn propagate_new_child(
-        source_parent: &Arc<Self>,
-        source_location: &Location,
-        child: &Arc<Self>,
-    ) -> VfsResult<()> {
-        let peers: Vec<_> = source_parent
-            .peers
-            .lock()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect();
-        let slaves: Vec<_> = source_parent
-            .slaves
-            .lock()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect();
-        let mut path_components = vec![];
-        let mut current = source_location.clone();
-        while !current.is_root_of_mount() {
-            path_components.push(current.name().into_owned());
-            current = current.parent().ok_or(VfsError::InvalidInput)?;
-        }
-        path_components.reverse();
-
-        for target_parent in peers.into_iter().chain(slaves) {
-            let mut location = target_parent.root_location();
-            for component in &path_components {
-                location = location.lookup_no_follow(component)?;
-            }
-            let inserted_key = location.entry.key();
-            Self::attach_child(&target_parent, location, child)?;
-            let mut resolved = target_parent.root_location();
-            for component in &path_components {
-                resolved = resolved.lookup_no_follow(component)?;
-            }
-            if !Arc::ptr_eq(resolved.mountpoint(), child) {
-                warn!(
-                    "mount propagation mismatch path={:?} inserted_key={:?} resolved_key={:?} \
-                     resolved_is_root={} resolved_mp_device={} replicated_device={}",
-                    path_components,
-                    inserted_key,
-                    resolved.entry.key(),
-                    resolved.is_root_of_mount(),
-                    resolved.mountpoint().device(),
-                    child.device(),
-                );
-            }
-        }
-        Ok(())
-    }
-
     pub fn move_to(self: &Arc<Self>, new_location: &Location) -> VfsResult<()> {
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         if self.is_root() {
             return Err(VfsError::InvalidInput);
         }
@@ -693,68 +569,7 @@ impl Mountpoint {
             .insert(new_location.entry.key(), self.clone());
 
         *self.location.lock() = Some(new_location.clone());
-        Ok(())
-    }
-
-    /// Detach this mountpoint from its parent, propagating the unmount to
-    /// all shared peer group members (Linux `UMOUNT_PROPAGATE` semantics).
-    ///
-    /// On Linux, unmounting a shared mount propagates the unmount to every
-    /// member of the same shared peer group. This matters for nix sandbox
-    /// and systemd-nspawn which set up shared mounts and expect peer-group
-    /// unmount semantics.
-    ///
-    /// Peers form a clique (each peer's `peers` list contains every other
-    /// peer, and each peer also lists `self`). To prevent re-entrant cycles
-    /// when propagating, this method:
-    ///   1. Snapshots the live peers of `self`.
-    ///   2. Detaches `self` from its parent via the non-propagating helper
-    ///      [`detach_from_parent`](Self::detach_from_parent).
-    ///   3. Detaches each peer via the same helper (no further propagation).
-    ///   4. Tears down the shared-group membership for `self`.
-    pub fn detach(self: &Arc<Self>) -> VfsResult<()> {
-        if self.is_root() {
-            return Err(VfsError::InvalidInput);
-        }
-
-        let peers: Vec<Arc<Self>> = self
-            .peers
-            .lock()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .filter(|p| !Arc::ptr_eq(p, self))
-            .collect();
-
-        Self::detach_from_parent(self)?;
-
-        for peer in &peers {
-            let _ = Self::detach_from_parent(peer);
-        }
-
-        self.remove_from_shared_group();
-
-        Ok(())
-    }
-
-    /// Detach this mountpoint from its parent WITHOUT propagating to shared
-    /// peers.
-    ///
-    /// This is the internal helper used by [`detach`](Self::detach) to
-    /// perform the actual parent-children unlink. It does NOT touch the
-    /// `peers` list, so callers that want peer-group unmount semantics
-    /// must use [`detach`](Self::detach) instead.
-    fn detach_from_parent(self: &Arc<Self>) -> VfsResult<()> {
-        if self.is_root() {
-            return Err(VfsError::InvalidInput);
-        }
-        let Some(location) = self.location.lock().clone() else {
-            return Err(VfsError::InvalidInput);
-        };
-        location
-            .mountpoint
-            .children
-            .lock()
-            .remove(&location.entry.key());
+        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 }
@@ -1058,6 +873,7 @@ impl Location {
     }
 
     pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let result = Mountpoint::new(fs, Some(self.clone()));
         let should_propagate = self.mountpoint.is_shared();
         self.check_is_dir()?;
@@ -1071,10 +887,12 @@ impl Location {
         if should_propagate {
             Mountpoint::propagate_new_child(self.mountpoint(), self, &result)?;
         }
+        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         Ok(result)
     }
 
     pub fn bind_mount(&self, source: &Self, recursive: bool) -> VfsResult<Arc<Mountpoint>> {
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         if source.mountpoint().is_unbindable() {
             return Err(VfsError::InvalidInput);
         }
@@ -1090,9 +908,19 @@ impl Location {
         }
         let result = Mountpoint::bind(source, self.clone(), recursive);
         if source.mountpoint().is_shared() {
-            result.join_shared_group(source.mountpoint());
+            result.join_shared_group_locked(source.mountpoint());
         } else if source.mountpoint().is_slave() {
-            result.set_slave();
+            *result.propagation.lock() = PropagationType::Slave;
+            let masters: Vec<_> = source
+                .mountpoint()
+                .masters
+                .lock()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .collect();
+            for master in masters {
+                Mountpoint::attach_master_locked(&result, &master);
+            }
         }
 
         let mut children = self.mountpoint.children.lock();
@@ -1100,6 +928,7 @@ impl Location {
             return Err(VfsError::ResourceBusy);
         }
         children.insert(self.entry.key(), result.clone());
+        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         Ok(result)
     }
 
@@ -1114,23 +943,28 @@ impl Location {
         if !self.is_root_of_mount() {
             return Err(VfsError::InvalidInput);
         }
-        if !self.mountpoint.children.lock().is_empty() {
-            return Err(VfsError::ResourceBusy);
-        }
         assert!(self.entry.ptr_eq(&self.mountpoint.root));
 
-        // Flush filesystem metadata (superblock, bitmaps, etc.) to the
-        // backing block device before tearing down the mount.  For ext4
-        // this writes a clean superblock so the next mount does not see
-        // s_state = ERROR_FS.  For tmpfs/ramfs the default flush is a
-        // no-op.
-        self.filesystem().flush()?;
-        self.mountpoint.clear_expired();
+        let plan = self.mountpoint.plan_unmount(UnmountKind::Normal)?;
+        self.commit_unmount(plan)
+    }
 
+    /// Flushes this mount once and commits an already admitted unmount plan.
+    pub fn commit_unmount(&self, plan: UnmountPlan) -> VfsResult<()> {
+        if !self.is_root_of_mount()
+            || !plan
+                .targets()
+                .any(|mountpoint| Arc::ptr_eq(mountpoint, &self.mountpoint))
+        {
+            return Err(VfsError::InvalidInput);
+        }
+        self.filesystem().flush()?;
+        plan.commit()?;
+        self.mountpoint.clear_expired();
         if let Ok(directory) = self.entry.as_dir() {
             directory.forget();
         }
-        self.mountpoint.detach()
+        Ok(())
     }
 
     pub fn detach_mount(&self) -> VfsResult<()> {
@@ -1144,8 +978,8 @@ impl Location {
         if !self.is_root_of_mount() {
             return Err(VfsError::InvalidInput);
         }
-        let children = mem::take(&mut *self.mountpoint.children.lock());
-        for (_, child) in children {
+        let children = self.mountpoint.children();
+        for child in children {
             child.root_location().unmount_all()?;
         }
         self.unmount()
@@ -1509,7 +1343,7 @@ mod tests {
     }
 
     #[test]
-    fn detach_propagates_to_shared_peer_group_members() {
+    fn detaching_shared_mount_preserves_unrelated_peer() {
         let fs = mock_filesystem();
         let root = Mountpoint::new_root(&fs);
 
@@ -1545,11 +1379,9 @@ mod tests {
             root.children.lock().get(&shared_entry.key()).is_none(),
             "shared should be detached from root"
         );
-        assert!(
-            root.children.lock().get(&peer_entry.key()).is_none(),
-            "peer should be detached via propagation"
-        );
+        assert!(root.children.lock().contains_key(&peer_entry.key()));
         assert!(shared.peers.lock().is_empty());
+        assert!(peer.peers.lock().is_empty());
     }
 
     #[test]
@@ -1588,5 +1420,411 @@ mod tests {
             root.children.lock().contains_key(&neighbor_entry.key()),
             "neighbor should remain — no propagation without peer group"
         );
+    }
+
+    #[test]
+    fn clone_tree_reconnects_shared_clone_to_source_peer_group() {
+        let fs = mock_filesystem();
+        let source = Mountpoint::new_root(&fs);
+        source.set_shared();
+
+        let cloned = source.clone_tree();
+
+        assert_ne!(source.mount_id(), cloned.mount_id());
+        assert_eq!(source.peer_group_id(), cloned.peer_group_id());
+        assert!(
+            source
+                .peers
+                .lock()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .any(|peer| Arc::ptr_eq(&peer, &cloned)),
+            "source must retain the cloned namespace mount as a live peer"
+        );
+        assert!(
+            cloned
+                .peers
+                .lock()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .any(|peer| Arc::ptr_eq(&peer, &source)),
+            "cloned namespace mount must retain the source as a live peer"
+        );
+    }
+
+    #[test]
+    fn clone_tree_rebuilds_slave_master_directionality() {
+        let fs = mock_filesystem();
+        let master = Mountpoint::new_root(&fs);
+        let slave = Mountpoint::new_root(&fs);
+        master.set_shared();
+        slave.join_shared_group(&master);
+        slave.set_slave();
+
+        let cloned_slave = slave.clone_tree();
+
+        assert!(cloned_slave.is_slave());
+        assert_eq!(
+            cloned_slave.first_master_peer_group_id(),
+            Some(master.peer_group_id())
+        );
+        assert!(
+            master
+                .slaves
+                .lock()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .any(|candidate| Arc::ptr_eq(&candidate, &cloned_slave)),
+            "master must retain the cloned slave as a downstream mount"
+        );
+    }
+
+    #[test]
+    fn propagated_child_has_destination_specific_mount_identity() {
+        let fs = mock_filesystem();
+        let source_parent = Mountpoint::new_root(&fs);
+        let peer_parent = Mountpoint::new_root(&fs);
+        source_parent.set_shared();
+        peer_parent.join_shared_group(&source_parent);
+
+        let source_location = source_parent.root_location();
+        let child = Mountpoint::new_with_root(
+            make_dir_entry("child-root"),
+            Some(source_location.clone()),
+            source_parent.device() + 1,
+        );
+        source_parent
+            .children
+            .lock()
+            .insert(source_location.entry.key(), child.clone());
+
+        Mountpoint::propagate_new_child(&source_parent, &source_location, &child)
+            .expect("propagation succeeds");
+
+        let peer_child = peer_parent
+            .children
+            .lock()
+            .get(&peer_parent.root.key())
+            .cloned()
+            .expect("peer receives a propagated child");
+        assert!(!Arc::ptr_eq(&child, &peer_child));
+        assert_ne!(child.mount_id(), peer_child.mount_id());
+        assert!(
+            peer_child
+                .location()
+                .is_some_and(|location| Arc::ptr_eq(location.mountpoint(), &peer_parent)),
+            "propagated child location must belong to its destination parent"
+        );
+    }
+
+    #[test]
+    fn propagation_change_removes_master_slave_edges_symmetrically() {
+        let fs = mock_filesystem();
+        let master = Mountpoint::new_root(&fs);
+        let slave = Mountpoint::new_root(&fs);
+        master.set_shared();
+        slave.join_shared_group(&master);
+        slave.set_slave();
+
+        master.set_private();
+
+        assert!(master.slaves.lock().is_empty());
+        assert!(slave.masters.lock().is_empty());
+        assert_eq!(slave.first_master_peer_group_id(), None);
+    }
+
+    #[test]
+    fn detaching_slave_removes_master_slave_edges_symmetrically() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let master = Mountpoint::new_root(&fs);
+        let slave_entry = make_dir_entry("slave");
+        let slave = Mountpoint::new_with_root(
+            slave_entry.clone(),
+            Some(Location::new(root.clone(), slave_entry.clone())),
+            root.device() + 1,
+        );
+        root.children
+            .lock()
+            .insert(slave_entry.key(), slave.clone());
+        master.set_shared();
+        slave.join_shared_group(&master);
+        slave.set_slave();
+
+        slave.detach().expect("detach succeeds");
+
+        assert!(master.slaves.lock().is_empty());
+        assert!(slave.masters.lock().is_empty());
+    }
+
+    #[test]
+    fn propagated_detach_includes_downstream_slaves() {
+        let fs = mock_filesystem();
+        let source_parent = Mountpoint::new_root(&fs);
+        let slave_parent = Mountpoint::new_root(&fs);
+        source_parent.set_shared();
+        slave_parent.join_shared_group(&source_parent);
+        slave_parent.set_slave();
+
+        let source_slot = make_child_dir_entry(Some(source_parent.root.clone()), "slot");
+        let slave_slot = make_child_dir_entry(Some(slave_parent.root.clone()), "slot");
+        let source_child = Mountpoint::new_with_root(
+            make_dir_entry("source-child"),
+            Some(Location::new(source_parent.clone(), source_slot.clone())),
+            source_parent.device() + 1,
+        );
+        let slave_child = Mountpoint::new_with_root(
+            make_dir_entry("slave-child"),
+            Some(Location::new(slave_parent.clone(), slave_slot.clone())),
+            source_parent.device() + 2,
+        );
+        source_parent
+            .children
+            .lock()
+            .insert(source_slot.key(), source_child.clone());
+        slave_parent
+            .children
+            .lock()
+            .insert(slave_slot.key(), slave_child.clone());
+
+        source_child.detach().expect("propagated detach succeeds");
+
+        assert!(source_parent.children.lock().is_empty());
+        assert!(slave_parent.children.lock().is_empty());
+        assert!(source_child.location().is_none());
+        assert!(slave_child.location().is_none());
+    }
+
+    #[test]
+    fn propagated_detach_is_all_or_nothing_when_a_target_cannot_detach() {
+        let fs = mock_filesystem();
+        let source_parent = Mountpoint::new_root(&fs);
+        let peer_parent = Mountpoint::new_root(&fs);
+        source_parent.set_shared();
+        peer_parent.join_shared_group(&source_parent);
+
+        let source_slot = make_child_dir_entry(Some(source_parent.root.clone()), "slot");
+        let peer_slot = make_child_dir_entry(Some(peer_parent.root.clone()), "slot");
+        let source_child = Mountpoint::new_with_root(
+            make_dir_entry("source-child"),
+            Some(Location::new(source_parent.clone(), source_slot.clone())),
+            source_parent.device() + 1,
+        );
+        let peer_child = Mountpoint::new_with_root(
+            make_dir_entry("peer-child"),
+            Some(Location::new(peer_parent.clone(), peer_slot.clone())),
+            source_parent.device() + 2,
+        );
+        source_parent
+            .children
+            .lock()
+            .insert(source_slot.key(), source_child.clone());
+        peer_parent
+            .children
+            .lock()
+            .insert(peer_slot.key(), peer_child.clone());
+
+        let plan = source_child
+            .plan_unmount(UnmountKind::Detach)
+            .expect("plan succeeds");
+        let unrelated = Mountpoint::new_root(&fs);
+        unrelated.set_shared();
+
+        assert_eq!(plan.commit(), Err(UnmountCommitError::TopologyChanged));
+        assert!(
+            source_parent
+                .children
+                .lock()
+                .contains_key(&source_slot.key())
+        );
+        assert!(peer_parent.children.lock().contains_key(&peer_slot.key()));
+        assert!(source_child.location().is_some());
+        assert!(peer_child.location().is_some());
+    }
+
+    #[test]
+    fn normal_unmount_plan_rejects_corresponding_child_subtree_without_mutation() {
+        let fs = mock_filesystem();
+        let source_parent = Mountpoint::new_root(&fs);
+        let peer_parent = Mountpoint::new_root(&fs);
+        source_parent.set_shared();
+        peer_parent.join_shared_group(&source_parent);
+
+        let source_slot = make_child_dir_entry(Some(source_parent.root.clone()), "slot");
+        let peer_slot = make_child_dir_entry(Some(peer_parent.root.clone()), "slot");
+        let source = Mountpoint::new_with_root(
+            make_dir_entry("source-root"),
+            Some(Location::new(source_parent.clone(), source_slot.clone())),
+            source_parent.device() + 1,
+        );
+        let peer = Mountpoint::new_with_root(
+            make_dir_entry("peer-root"),
+            Some(Location::new(peer_parent.clone(), peer_slot.clone())),
+            source_parent.device() + 2,
+        );
+        source_parent
+            .children
+            .lock()
+            .insert(source_slot.key(), source.clone());
+        peer_parent
+            .children
+            .lock()
+            .insert(peer_slot.key(), peer.clone());
+
+        let child_entry = make_dir_entry("child");
+        let child = Mountpoint::new_with_root(
+            make_dir_entry("child-root"),
+            Some(Location::new(peer.clone(), child_entry.clone())),
+            source_parent.device() + 3,
+        );
+        peer.children
+            .lock()
+            .insert(child_entry.key(), child.clone());
+
+        assert!(matches!(
+            source.plan_unmount(UnmountKind::Normal),
+            Err(VfsError::ResourceBusy)
+        ));
+        assert!(
+            source_parent
+                .children
+                .lock()
+                .get(&source_slot.key())
+                .is_some_and(|mount| Arc::ptr_eq(mount, &source))
+        );
+        assert!(
+            peer_parent
+                .children
+                .lock()
+                .get(&peer_slot.key())
+                .is_some_and(|mount| Arc::ptr_eq(mount, &peer))
+        );
+        assert!(
+            peer.children
+                .lock()
+                .get(&child_entry.key())
+                .is_some_and(|mount| Arc::ptr_eq(mount, &child))
+        );
+    }
+
+    #[test]
+    fn lazy_detach_removes_complete_propagated_subtrees_child_first() {
+        let fs = mock_filesystem();
+        let source_parent = Mountpoint::new_root(&fs);
+        let peer_parent = Mountpoint::new_root(&fs);
+        source_parent.set_shared();
+        peer_parent.join_shared_group(&source_parent);
+
+        let source_entry = make_child_dir_entry(Some(source_parent.root.clone()), "slot");
+        let peer_entry = make_child_dir_entry(Some(peer_parent.root.clone()), "slot");
+        let source = Mountpoint::new_with_root(
+            make_dir_entry("source-root"),
+            Some(Location::new(source_parent.clone(), source_entry.clone())),
+            source_parent.device() + 1,
+        );
+        let peer = Mountpoint::new_with_root(
+            make_dir_entry("peer-root"),
+            Some(Location::new(peer_parent.clone(), peer_entry.clone())),
+            source_parent.device() + 2,
+        );
+        source_parent
+            .children
+            .lock()
+            .insert(source_entry.key(), source.clone());
+        peer_parent
+            .children
+            .lock()
+            .insert(peer_entry.key(), peer.clone());
+
+        let source_child_entry = make_dir_entry("source-child");
+        let peer_child_entry = make_dir_entry("peer-child");
+        let source_child = Mountpoint::new_with_root(
+            make_dir_entry("source-child-root"),
+            Some(Location::new(source.clone(), source_child_entry.clone())),
+            source_parent.device() + 3,
+        );
+        let peer_child = Mountpoint::new_with_root(
+            make_dir_entry("peer-child-root"),
+            Some(Location::new(peer.clone(), peer_child_entry.clone())),
+            source_parent.device() + 4,
+        );
+        source
+            .children
+            .lock()
+            .insert(source_child_entry.key(), source_child.clone());
+        peer.children
+            .lock()
+            .insert(peer_child_entry.key(), peer_child.clone());
+        source.detach().expect("lazy detach succeeds");
+
+        assert!(source.children.lock().is_empty());
+        assert!(peer.children.lock().is_empty());
+        assert!(source_parent.children.lock().is_empty());
+        assert!(peer_parent.children.lock().is_empty());
+        assert!(source_child.location().is_none());
+        assert!(peer_child.location().is_none());
+        assert!(source_child.peers.lock().is_empty());
+        assert!(peer_child.peers.lock().is_empty());
+    }
+
+    #[test]
+    fn stale_unmount_plan_reports_topology_change_without_detaching() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let source_entry = make_dir_entry("source");
+        let source = Mountpoint::new_with_root(
+            make_dir_entry("source-root"),
+            Some(Location::new(root.clone(), source_entry.clone())),
+            root.device() + 1,
+        );
+        root.children
+            .lock()
+            .insert(source_entry.key(), source.clone());
+
+        let plan = source
+            .plan_unmount(UnmountKind::Normal)
+            .expect("plan succeeds");
+        let unrelated = Mountpoint::new_root(&fs);
+        unrelated.set_shared();
+
+        assert_eq!(plan.commit(), Err(UnmountCommitError::TopologyChanged));
+        assert!(
+            root.children
+                .lock()
+                .get(&source_entry.key())
+                .is_some_and(|mount| Arc::ptr_eq(mount, &source))
+        );
+        assert!(source.location().is_some());
+    }
+
+    #[test]
+    fn joining_shared_group_prunes_dead_and_duplicate_peer_edges() {
+        let fs = mock_filesystem();
+        let source = Mountpoint::new_root(&fs);
+        let peer = Mountpoint::new_root(&fs);
+        source.set_shared();
+        peer.join_shared_group(&source);
+
+        let dead = Arc::downgrade(&Mountpoint::new_root(&fs));
+        source.peers.lock().push(dead);
+        source.peers.lock().push(Arc::downgrade(&peer));
+        peer.join_shared_group(&source);
+
+        let source_peers: Vec<_> = source
+            .peers
+            .lock()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+        let peer_sources: Vec<_> = peer
+            .peers
+            .lock()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|candidate| Arc::ptr_eq(candidate, &source))
+            .collect();
+        assert_eq!(source_peers.len(), 1);
+        assert!(Arc::ptr_eq(&source_peers[0], &peer));
+        assert_eq!(peer_sources.len(), 1);
     }
 }
