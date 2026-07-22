@@ -40,6 +40,7 @@ pub(crate) mod boot;
 mod capabilities;
 mod exit;
 pub(crate) mod fdt;
+mod guest_serial;
 mod host_irq;
 pub(crate) mod irq;
 mod nested_paging;
@@ -68,6 +69,7 @@ impl ArchOps for X86_64Arch {
     }
 
     fn before_first_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
+        guest_serial::activate_ovmf_sec_diagnostic(vm);
         irq::enable_ioapic_irq_forwarding(vm, vcpu);
     }
 
@@ -88,6 +90,7 @@ impl ArchOps for X86_64Arch {
 
     fn on_last_vcpu_exit(vm: &crate::AxVMRef) {
         irq::disable_ioapic_irq_forwarding_for_vm(vm);
+        guest_serial::forget_vm(vm.id());
     }
 
     fn handle_vcpu_exit_bound(
@@ -270,6 +273,7 @@ impl X86VlapicHostOps for AxvmX86HostOps {
 
     fn write_bytes(bytes: &[u8]) {
         ax_std::os::arceos::modules::ax_hal::console::write_bytes(bytes);
+        guest_serial::observe(Self::current_vm_id(), bytes);
     }
 
     fn read_bytes(bytes: &mut [u8]) -> usize {

@@ -15,6 +15,7 @@ set -euo pipefail
 # LoongArch64 AxVisor shell smoke uses quick-start.sh instead of this script.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${REPO_ROOT}/scripts/ovmf-profile.sh"
 IMAGE_STORAGE_ROOT="/tmp/.axvisor-images"
 DEFAULT_REGISTRY_URL="https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml"
 # Keep this version aligned with the guest release used in this branch.
@@ -97,21 +98,6 @@ verify_sha256() {
   fi
 }
 
-file_size_bytes() {
-  local file="$1"
-
-  if stat -c '%s' "${file}" >/dev/null 2>&1; then
-    stat -c '%s' "${file}"
-  else
-    stat -f '%z' "${file}"
-  fi
-}
-
-align_up_4k() {
-  local value="$1"
-  echo $(( (value + 0xfff) & ~0xfff ))
-}
-
 nimbos_image_ready() {
   [ -f "${IMAGE_DIR}/qemu-x86_64" ] \
     && [ -f "${IMAGE_DIR}/rootfs.img" ] \
@@ -167,8 +153,8 @@ usage() {
   echo "  linux           - aarch64 Linux guest"
   echo "  linux-x86_64    - x86_64 Linux guest through direct boot"
   echo "  nimbos          - x86_64 NimbOS guest (requires VT-x/KVM)"
-  echo "  nimbos-uefi     - x86_64 NimbOS guest through external UEFI firmware"
-  echo "  linux-x86_64-uefi - x86_64 Linux guest through external UEFI firmware"
+  echo "  nimbos-uefi     - x86_64 NimbOS guest through the fixed OVMF DEBUG profile"
+  echo "  linux-x86_64-uefi - x86_64 Linux guest through the fixed OVMF DEBUG profile"
   echo ""
   echo "LoongArch64 AxVisor shell smoke is a separate quick-start flow:"
   echo "  ./scripts/quick-start.sh qemu-loongarch64 start"
@@ -314,34 +300,21 @@ if [[ "$GUEST" == "nimbos" ]]; then
   fi
 fi
 
-# x86_64 UEFI mode requires an external OVMF image. Keep the path
-# configurable because distributions install OVMF in different locations.
+# x86_64 UEFI mode uses the fixed AxVisor OVMF DEBUG profile. A developer may
+# opt into a same-layout external CODE image, but that path is marked
+# UNVERIFIED and does not prepare the canonical test-suit VM config.
 if [[ "$GUEST" == "nimbos-uefi" || "$GUEST" == "linux-x86_64-uefi" ]]; then
-  UEFI_FIRMWARE="${AXVISOR_X86_64_UEFI_FIRMWARE:-}"
-  if [ -z "${UEFI_FIRMWARE}" ]; then
-    for candidate in \
-      "${IMAGE_DIR}/OVMF_CODE.fd" \
-      "/usr/share/OVMF/OVMF_CODE_4M.fd" \
-      "/usr/share/OVMF/OVMF_CODE.fd" \
-      "/usr/share/ovmf/OVMF.fd" \
-      "/usr/share/qemu/OVMF.fd"; do
-      if [ -f "${candidate}" ]; then
-        UEFI_FIRMWARE="${candidate}"
-        break
-      fi
-    done
-  fi
-  if [ -z "${UEFI_FIRMWARE}" ] || [ ! -f "${UEFI_FIRMWARE}" ]; then
-    echo "ERROR: UEFI firmware image not found." >&2
-    echo "  -> Install OVMF or set AXVISOR_X86_64_UEFI_FIRMWARE=/path/to/OVMF_CODE.fd." >&2
-    exit 1
-  fi
-
-  UEFI_FIRMWARE_SIZE="$(file_size_bytes "${UEFI_FIRMWARE}")"
-  UEFI_FIRMWARE_WINDOW_SIZE="$(align_up_4k "${UEFI_FIRMWARE_SIZE}")"
-  UEFI_FIRMWARE_LOAD_ADDR=$((0x100000000 - UEFI_FIRMWARE_WINDOW_SIZE))
+  ovmf_prepare_firmware "${REPO_ROOT}" "${IMAGE_STORAGE_ROOT}"
+  UEFI_FIRMWARE="${OVMF_CODE_PATH}"
+  UEFI_FIRMWARE_SIZE="${OVMF_CODE_SIZE}"
+  UEFI_FIRMWARE_WINDOW_SIZE="${OVMF_CODE_SIZE}"
+  UEFI_FIRMWARE_LOAD_ADDR="${OVMF_CODE_BASE}"
   UEFI_FIRMWARE_LOAD_ADDR_HEX="$(printf '0x%x' "${UEFI_FIRMWARE_LOAD_ADDR}")"
   UEFI_FIRMWARE_WINDOW_SIZE_HEX="$(printf '0x%x' "${UEFI_FIRMWARE_WINDOW_SIZE}")"
+
+  if [ "${OVMF_VERIFICATION_LABEL}" = "UNVERIFIED" ]; then
+    GENERATED_VMCONFIG_PATH="${VMCONFIG_TMP_DIR}/${VMCONFIG_OUTPUT_NAME%.toml}.unverified.generated.toml"
+  fi
 fi
 
 echo "[setup_qemu] Step 2: patch VM config kernel_path..."
@@ -368,9 +341,15 @@ fi
 if [[ "$GUEST" == "nimbos-uefi" || "$GUEST" == "linux-x86_64-uefi" ]]; then
   sed -i 's|^uefi_firmware_path *=.*|uefi_firmware_path = "'"${UEFI_FIRMWARE}"'"|' "${GENERATED_VMCONFIG_PATH}"
   sed -i 's|^bios_load_addr *=.*|bios_load_addr = '"${UEFI_FIRMWARE_LOAD_ADDR_HEX}"'|' "${GENERATED_VMCONFIG_PATH}"
-  sed -i 's|^\(  \[\)0xffc0_0000, 0x40_0000\(, 0x7, 0\].*UEFI firmware window.*\)|\1'"${UEFI_FIRMWARE_LOAD_ADDR_HEX}"', '"${UEFI_FIRMWARE_WINDOW_SIZE_HEX}"'\2|' "${GENERATED_VMCONFIG_PATH}"
+  sed -i 's|^\(  \[\)0xffc8_4000, 0x37c000\(, 0x7, 0\].*OVMF CODE window.*\)|\1'"${UEFI_FIRMWARE_LOAD_ADDR_HEX}"', '"${UEFI_FIRMWARE_WINDOW_SIZE_HEX}"'\2|' "${GENERATED_VMCONFIG_PATH}"
+  if ! grep -Eq '^bios_load_addr = 0xffc84000$' "${GENERATED_VMCONFIG_PATH}" || \
+     ! grep -Eq '^  \[0xffc84000, 0x37c000, 0x7, 0\], # OVMF CODE window$' "${GENERATED_VMCONFIG_PATH}"; then
+    echo "ERROR: generated UEFI VM config does not match the fixed OVMF CODE layout." >&2
+    exit 1
+  fi
   echo "  -> Updated UEFI firmware path to ${UEFI_FIRMWARE}"
-  echo "  -> Updated UEFI firmware load address to ${UEFI_FIRMWARE_LOAD_ADDR_HEX} (size ${UEFI_FIRMWARE_SIZE} bytes)"
+  echo "  -> Updated UEFI firmware load address to ${UEFI_FIRMWARE_LOAD_ADDR_HEX} (size $((UEFI_FIRMWARE_SIZE)) bytes)"
+  echo "  -> Firmware verification: ${OVMF_VERIFICATION_LABEL}"
 fi
 
 if [[ "$GUEST" == "linux-x86_64-uefi" ]]; then
@@ -410,11 +389,11 @@ if [[ "$GUEST" == "nimbos" ]]; then
 fi
 
 if [[ "$GUEST" == "nimbos-uefi" ]]; then
-  echo "*** NimbOS UEFI mode requires VT-x/VMX, KVM, and an OVMF-compatible firmware image."
+  echo "*** NimbOS UEFI mode requires VT-x/VMX, KVM, and the fixed AxVisor OVMF DEBUG profile."
   echo ""
 fi
 
 if [[ "$GUEST" == "linux-x86_64-uefi" ]]; then
-  echo "*** Linux x86_64 UEFI mode requires VT-x/VMX, KVM, and an OVMF-compatible firmware image."
+  echo "*** Linux x86_64 UEFI mode requires VT-x/VMX, KVM, and the fixed AxVisor OVMF DEBUG profile."
   echo ""
 fi

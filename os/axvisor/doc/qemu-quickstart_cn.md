@@ -37,7 +37,7 @@ cargo +stable install ostool --version '^0.15'
 - `cargo-binutils`：提供 `rust-objcopy`、`rust-objdump` 等工具
 - `ostool`：AxVisor 的自定义构建运行器
 
-## 3. KVM 配置（仅 NimbOS x86_64 需要）
+## 3. KVM 与 UEFI 固件（仅 x86_64 需要）
 
 NimbOS 运行在 x86_64 QEMU 上并依赖 KVM 硬件加速。ArceOS 和 Linux 使用 AArch64 QEMU（TCG 模式），不需要 KVM，可跳过本节。
 
@@ -64,6 +64,11 @@ newgrp kvm
 ```bash
 id  # 输出应包含 "kvm"
 ```
+
+x86_64 UEFI Guest 默认从 tgosimages 拉取并校验固定资产
+`qemu_x86_64_axvisor_ovmf_debug`，不会扫描发行版的 `/usr/share/OVMF`。
+固定 EDK2 版本、CODE/VARS 布局、manifest 契约和阶段标记见
+[AxVisor x86_64 Guest OVMF DEBUG Profile](x86-uefi-profile.md)。
 
 ## 4. 运行客户机
 
@@ -112,6 +117,34 @@ cargo xtask qemu \
 
 > **注意**：NimbOS 依赖 VT-x/KVM。如果 `/dev/kvm` 不存在或权限不足，会报 `Permission denied` 错误。WSL2 需要内核支持嵌套虚拟化才能使用 KVM。
 
+### NimbOS UEFI 固件入口（x86_64，需要 KVM）
+
+```bash
+./scripts/setup_qemu.sh nimbos-uefi
+
+cargo xtask axvisor test qemu --arch x86_64 \
+  --test-group uefi --test-case ovmf-entry-vmx
+```
+
+AMD 主机使用 `ovmf-entry-svm`。这两个用例是非门禁诊断用例，只接受 AxVM
+在模拟 Guest COM1 写出完整 `SecCoreStartupWithStack(` 后生成的带 VM ID
+边界标记，不接受原始串口文本或宿主的 VM 启动日志。
+
+当 `quick-start.sh` 的 setup 和 run 分属不同进程时，setup 会持久记录本次实际生成的
+verified 或 unverified VM 配置，run 不会根据后来进程的环境变量重新推导配置。新一轮
+setup 若失败，会保持旧选择失效，避免启动陈旧输入。
+
+如需诊断本地构建的同布局 CODE，必须同时显式设置：
+
+```bash
+export AXVISOR_X86_64_UEFI_FIRMWARE=/absolute/path/to/OVMF_CODE.fd
+export AXVISOR_X86_64_UEFI_ALLOW_UNVERIFIED=1
+./scripts/setup_qemu.sh nimbos-uefi
+```
+
+脚本会输出 `UNVERIFIED` 和实际 SHA-256，并生成
+`.unverified.generated.toml`；UEFI test-suit 不引用该配置。
+
 ### ArceOS（RISC-V64）
 
 ```bash
@@ -143,8 +176,8 @@ cargo xtask qemu \
 
 对于需要 guest 镜像的启动链路，该脚本自动完成以下三步，省去手动操作：
 
-1. **下载镜像**：调用 `cargo axvisor image pull` 将 Guest 镜像下载并解压到 `/tmp/.axvisor-images/`
-2. **生成临时配置**：复制模板 VM 配置到 `tmp/vmconfigs/*.generated.toml`，并用 `sed` 更新 `kernel_path`（以及 NimbOS 的 `bios_path`）到实际镜像路径，不修改仓库内 `configs/vms/**/*.toml`
+1. **下载镜像**：调用 `cargo axvisor image pull` 将 Guest 镜像和固定 OVMF bundle 下载到 `/tmp/.axvisor-images/`
+2. **校验固件并生成临时配置**：校验 manifest、文件大小、单文件哈希、拼接关系和固定 CODE 布局，再生成 `tmp/vmconfigs/*.generated.toml`，不修改仓库内 VM 模板
 3. **准备 rootfs**：将 `rootfs.img` 复制到项目的 `tmp/` 目录下供 QEMU 使用
 
 如果不想使用脚本，也可以手动执行上述步骤。
@@ -162,6 +195,10 @@ VM 配置中的 `kernel_path` 指向了不存在的文件。运行 `./scripts/se
 ### `qemu-system-aarch64: command not found`
 
 未安装 QEMU。执行第 1 步的 `apt install` 命令。
+
+### `image not found: qemu_x86_64_axvisor_ovmf_debug`
+
+当前 tgosimages registry 尚未包含固定 OVMF 资产。不要回退到发行版 OVMF；应发布该资产或选择包含它的 registry。
 
 ### LoongArch64 下出现 `Hardware support: false`，随后 panic
 

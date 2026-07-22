@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use ostool::run::qemu::QemuConfig;
@@ -25,6 +26,13 @@ struct TestVmKernelConfig {
 #[derive(serde::Deserialize)]
 struct TestVmKernel {
     cmdline: String,
+}
+
+#[derive(serde::Deserialize)]
+struct TestOvmfBuildConfig {
+    features: Vec<String>,
+    log: String,
+    vm_configs: Vec<PathBuf>,
 }
 
 fn write_qemu_config(root: &Path, case: &str, arch: &str, body: &str) -> PathBuf {
@@ -198,6 +206,208 @@ fn nimbos_uefi_case_uses_uefi_host_boot() {
 
     assert!(config.uefi);
     assert!(config.to_bin);
+    assert_eq!(config.success_regex, ["usertests passed!"]);
+    assert!(
+        config
+            .success_regex
+            .iter()
+            .all(|pattern| !pattern.contains("VM\\[1\\] boot success"))
+    );
+}
+
+#[test]
+fn ovmf_entry_variants_require_vm_qualified_guest_sec_output_and_trace_builds() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let case_dir = workspace_root.join("test-suit/axvisor/uefi/ovmf-entry");
+
+    for backend in ["vmx", "svm"] {
+        let qemu_path = case_dir.join(format!("qemu-x86_64-{backend}.toml"));
+        let qemu_source = fs::read_to_string(qemu_path).unwrap();
+        let qemu: QemuConfig = toml::from_str(&qemu_source).unwrap();
+        assert!(qemu.uefi);
+        assert!(qemu.to_bin);
+        assert!(
+            qemu_source.contains("nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65")
+        );
+        assert!(!qemu_source.contains("virtio-blk-pci"));
+        assert_eq!(
+            qemu.success_regex,
+            ["VM\\[1\\] guest COM1 reached OVMF SEC: SecCoreStartupWithStack\\("]
+        );
+        assert!(
+            qemu.success_regex
+                .iter()
+                .all(|pattern| !pattern.contains("VM\\[1\\] boot success"))
+        );
+
+        let build_path = case_dir.join(format!("build-x86_64-unknown-none-{backend}.toml"));
+        let build: TestOvmfBuildConfig =
+            toml::from_str(&fs::read_to_string(build_path).unwrap()).unwrap();
+        assert_eq!(build.features, ["ax-driver/nvme", "fs"]);
+        assert_eq!(build.log, "Trace");
+        assert_eq!(
+            build.vm_configs,
+            [PathBuf::from(
+                "os/axvisor/tmp/vmconfigs/nimbos-x86_64-qemu-uefi-smp1.generated.toml"
+            )]
+        );
+    }
+}
+
+#[test]
+fn checked_in_x86_uefi_guests_use_fixed_ovmf_code_layout_and_com1() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let config_dir = workspace_root.join("os/axvisor/configs/vms/qemu/x86_64");
+
+    for guest in ["nimbos", "linux", "arceos"] {
+        let path = config_dir.join(format!("{guest}-uefi-smp1.toml"));
+        let config =
+            axvmconfig::AxVMCrateConfig::from_toml(&fs::read_to_string(path).unwrap()).unwrap();
+
+        assert_eq!(config.kernel.entry_point, 0xffff_fff0);
+        assert_eq!(config.kernel.bios_load_addr, Some(0xffc8_4000));
+        assert!(
+            config
+                .kernel
+                .memory_regions
+                .iter()
+                .any(|region| { region.gpa == 0xffc8_4000 && region.size == 0x37c000 })
+        );
+        assert!(config.devices.emu_devices.iter().any(|device| {
+            device.name == "x86-com1" && device.base_gpa == 0x3f8 && device.length == 8
+        }));
+    }
+}
+
+#[test]
+fn quick_start_persists_the_selected_uefi_vm_config() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let script =
+        fs::read_to_string(workspace_root.join("os/axvisor/scripts/quick-start.sh")).unwrap();
+
+    assert!(script.contains("nimbos-x86_64-qemu-uefi-smp1.unverified.toml"));
+    assert!(script.contains("arceos-x86_64-qemu-uefi-smp1.unverified.toml"));
+    assert!(script.contains("qemu_x86_64_record_uefi_config"));
+    assert!(script.contains("qemu_x86_64_selected_uefi_config"));
+    assert!(script.contains(".selected"));
+}
+
+#[test]
+fn quick_start_uefi_selection_survives_cross_process_environment_changes() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let script = workspace_root.join("os/axvisor/scripts/quick-start.sh");
+    let root = tempdir().unwrap();
+    fs::create_dir_all(root.path().join("tmp/configs")).unwrap();
+
+    for (guest, verified, unverified) in [
+        (
+            "nimbos",
+            "tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml",
+            "tmp/configs/nimbos-x86_64-qemu-uefi-smp1.unverified.toml",
+        ),
+        (
+            "arceos",
+            "tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml",
+            "tmp/configs/arceos-x86_64-qemu-uefi-smp1.unverified.toml",
+        ),
+    ] {
+        let setup_verified = Command::new("bash")
+            .args([
+                "-c",
+                r#"set -euo pipefail; source "$1"; OVMF_VERIFICATION_LABEL=VERIFIED; config=$(qemu_x86_64_setup_uefi_config_path "$2"); touch "$config"; qemu_x86_64_record_uefi_config "$2" "$config""#,
+                "quick-start-test",
+            ])
+            .arg(&script)
+            .arg(guest)
+            .current_dir(root.path())
+            .status()
+            .unwrap();
+        assert!(setup_verified.success());
+
+        let selected_verified = Command::new("bash")
+            .args([
+                "-c",
+                r#"set -euo pipefail; source "$1"; qemu_x86_64_selected_uefi_config "$2""#,
+                "quick-start-test",
+            ])
+            .arg(&script)
+            .arg(guest)
+            .env(
+                "AXVISOR_X86_64_UEFI_FIRMWARE",
+                "/different/process/firmware.fd",
+            )
+            .env("AXVISOR_X86_64_UEFI_ALLOW_UNVERIFIED", "1")
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        assert!(selected_verified.status.success());
+        assert_eq!(
+            String::from_utf8(selected_verified.stdout).unwrap().trim(),
+            verified
+        );
+
+        let cleared_selection = Command::new("bash")
+            .args([
+                "-c",
+                r#"set -euo pipefail; source "$1"; qemu_x86_64_clear_uefi_config_selection "$2"; ! qemu_x86_64_selected_uefi_config "$2" >/dev/null 2>&1"#,
+                "quick-start-test",
+            ])
+            .arg(&script)
+            .arg(guest)
+            .current_dir(root.path())
+            .status()
+            .unwrap();
+        assert!(cleared_selection.success());
+
+        let setup_unverified = Command::new("bash")
+            .args([
+                "-c",
+                r#"set -euo pipefail; source "$1"; OVMF_VERIFICATION_LABEL=UNVERIFIED; config=$(qemu_x86_64_setup_uefi_config_path "$2"); touch "$config"; qemu_x86_64_record_uefi_config "$2" "$config""#,
+                "quick-start-test",
+            ])
+            .arg(&script)
+            .arg(guest)
+            .current_dir(root.path())
+            .status()
+            .unwrap();
+        assert!(setup_unverified.success());
+
+        let selected_unverified = Command::new("bash")
+            .args([
+                "-c",
+                r#"set -euo pipefail; source "$1"; qemu_x86_64_selected_uefi_config "$2""#,
+                "quick-start-test",
+            ])
+            .arg(&script)
+            .arg(guest)
+            .env_remove("AXVISOR_X86_64_UEFI_FIRMWARE")
+            .env_remove("AXVISOR_X86_64_UEFI_ALLOW_UNVERIFIED")
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        assert!(selected_unverified.status.success());
+        assert_eq!(
+            String::from_utf8(selected_unverified.stdout)
+                .unwrap()
+                .trim(),
+            unverified
+        );
+    }
+}
+
+#[test]
+fn fixed_ovmf_load_defers_sec_matcher_until_the_registered_vm_runs() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let boot =
+        fs::read_to_string(workspace_root.join("virtualization/axvm/src/arch/x86_64/boot/mod.rs"))
+            .unwrap();
+    let arch =
+        fs::read_to_string(workspace_root.join("virtualization/axvm/src/arch/x86_64/mod.rs"))
+            .unwrap();
+
+    assert!(boot.contains("mark_fixed_ovmf_profile_loaded"));
+    assert!(!boot.contains("enable_ovmf_sec_diagnostic"));
+    assert!(arch.contains("activate_ovmf_sec_diagnostic"));
 }
 
 #[test]

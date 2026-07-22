@@ -1,0 +1,37 @@
+args = [
+  "-no-user-config",
+  "-display",
+  "none",
+  "-serial",
+  "stdio",
+  "-monitor",
+  "none",
+  "-cpu",
+  "host,-la57,+svm,+npt,+nrip-save",
+  "-machine",
+  "q35,smbus=off,usb=off,graphics=off",
+  "-smp",
+  "1",
+  "-accel",
+  "kvm",
+  "-device",
+  "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+  "-drive",
+  "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+  "-m",
+  "512M",
+  "-net",
+  "none",
+  "-vga",
+  "none",
+]
+timeout = 60
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+]
+# Diagnostic only: AxVM emits this VM-qualified boundary after guest COM1 has
+# written the complete OVMF SEC marker.
+success_regex = ["VM\\[1\\] guest COM1 reached OVMF SEC: SecCoreStartupWithStack\\("]
+to_bin = true
+uefi = true

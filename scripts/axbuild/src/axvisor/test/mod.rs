@@ -4,9 +4,6 @@ mod discovery;
 mod qemu;
 mod types;
 
-#[cfg(test)]
-mod tests;
-
 use std::path::Path;
 
 pub(crate) use types::{AxvisorQemuCase, BoardTestGroup};
@@ -49,3 +46,8 @@ pub(super) async fn test(axvisor: &mut Axvisor, args: ArgsTest) -> anyhow::Resul
 
 const AXVISOR_TEST_SUITE_OS: &str = "axvisor";
 const AXVISOR_NORMAL_GROUP: &str = "normal";
+
+#[cfg(test)]
+mod ovmf_tests;
+#[cfg(test)]
+mod tests;

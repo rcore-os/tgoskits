@@ -100,6 +100,16 @@ execution and then fail only on traps or vCPU exits, so it is not a valid fallba
 - For std/musl targets, derive the initial JSON from a known Rust target where possible, then minimally adjust ABI, linker, relocation model, and soft-float. A `none-softfloat` target passing does not prove musl/std ABI correctness.
 - Prefer runtime memory map data over board constants. Any early helper such as `phys_to_virt` must be valid for the phase where it is called.
 
+## AxVisor x86 Guest OVMF DEBUG Profile
+
+- Use only the tgosimages profile `qemu_x86_64_axvisor_ovmf_debug` for normal setup: EDK2 `edk2-stable202605` at `b03a21a63e3bd001f52c527e5a57feddb53a690b`, X64 DEBUG, 4 MiB, COM1 debug, Shell enabled, SMM/Secure Boot disabled.
+- The current guest firmware path loads only `OVMF_CODE.fd` (`0x37c000` bytes) at `0xffc84000..0xffffffff` and enters at `0xfffffff0`. `OVMF_VARS.fd` (`0x84000`) is an asset/reference-QEMU template; do not map it until the pflash/VARS lifecycle is implemented.
+- `os/axvisor/scripts/ovmf-profile.sh` is the setup contract. It accepts only a flat manifest of unique bare keys with single-line scalar values, then validates provenance fields, fixed addresses and sizes, single-file hashes, `VARS + CODE = combined`, feature switches, and stage markers. Reject table headers, quoted keys, arrays, inline tables, and multiline values rather than partially parsing TOML. Do not restore distribution OVMF scanning.
+- A developer CODE override requires both `AXVISOR_X86_64_UEFI_FIRMWARE` and `AXVISOR_X86_64_UEFI_ALLOW_UNVERIFIED=1`, must retain the fixed CODE size, and is diagnostic-only. Its config name contains `.unverified.` so the UEFI test-suit does not select it.
+- Every x86 UEFI guest must register `x86-com1` at `0x3f8..0x3ff`. Trace builds log device name, bus, direction, address, width, and value. Missing device resources must remain errors; never synthesize all-ones reads or ignore writes to advance OVMF.
+- Diagnose by the last ordered marker: no `SecCoreStartupWithStack(` means entry/mapping/early serial; `Platform PEIM Loaded` means PEI platform discovery; `DXE IPL Entry` or `Loading DXE CORE at` means DXE enumeration; `[BdsDxe]` means boot-source or OS handoff.
+- `ovmf-entry-vmx` and `ovmf-entry-svm` are non-gating SEC diagnostics and may pass only on the VM-qualified marker emitted after guest COM1 writes the complete SEC marker. A successful fixed-layout CODE load records a weak reference to the exact AxVM in the x86 diagnostic layer, but must not create or mutate matcher state. Activate the matcher from the first-run hook only after the VM registry contains the same instance, make repeated vCPU activation idempotent, remove matcher state at the last vCPU exit, and let reset reactivate it from the retained exact-instance qualification. Prepare/register failure and an unregistered duplicate VM ID must never create or overwrite matcher state. Non-UEFI COM1 output must not create firmware-diagnostic state. Raw serial output is not a success condition because host and guest firmware share the QEMU transcript. Full UEFI cases must use an EFI-application or guest-OS marker; `VM[1] boot success` only reports host task startup and is never a UEFI success condition.
+
 ## someboot Startup Checklist
 
 Use this order when auditing an early boot port:

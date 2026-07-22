@@ -81,17 +81,66 @@ impl RuntimeAccessPorts {
     }
 }
 
-#[inline]
-#[allow(dead_code)]
-fn log_device_io(
-    addr_type: &'static str,
-    addr: impl core::fmt::LowerHex,
-    addr_range: impl core::fmt::LowerHex,
-    read: bool,
-    width: AccessWidth,
+fn trace_unregistered_device_access(access: &BusAccess) {
+    if access.is_read {
+        trace!(
+            "guest device access: device=<unregistered> bus={:?} direction=read address={:#x} \
+             width={:?} value=<unavailable> error=not-found",
+            access.kind, access.addr, access.width,
+        );
+    } else {
+        trace!(
+            "guest device access: device=<unregistered> bus={:?} direction=write address={:#x} \
+             width={:?} value={:#x} error=not-found",
+            access.kind, access.addr, access.width, access.data,
+        );
+    }
+}
+
+fn trace_device_access(
+    device: &dyn Device,
+    access: &BusAccess,
+    response: &Result<BusResponse, DeviceError>,
 ) {
-    let rw = if read { "read" } else { "write" };
-    trace!("emu_device {rw}: {addr_type} {addr:#x} in range {addr_range:#x} with width {width:?}")
+    match response {
+        Ok(BusResponse::Read { value }) => trace!(
+            "guest device access: device={} bus={:?} direction=read address={:#x} width={:?} \
+             value={:#x}",
+            device.name(),
+            access.kind,
+            access.addr,
+            access.width,
+            value,
+        ),
+        Ok(BusResponse::Write) => trace!(
+            "guest device access: device={} bus={:?} direction=write address={:#x} width={:?} \
+             value={:#x}",
+            device.name(),
+            access.kind,
+            access.addr,
+            access.width,
+            access.data,
+        ),
+        Err(error) if access.is_read => trace!(
+            "guest device access: device={} bus={:?} direction=read address={:#x} width={:?} \
+             value=<unavailable> error={:?}",
+            device.name(),
+            access.kind,
+            access.addr,
+            access.width,
+            error,
+        ),
+        Err(error) => trace!(
+            "guest device access: device={} bus={:?} direction=write address={:#x} width={:?} \
+             value={:#x} error={:?}",
+            device.name(),
+            access.kind,
+            access.addr,
+            access.width,
+            access.data,
+            error,
+        ),
+    }
 }
 
 /// Internal range entry cached in the index maps.
@@ -967,15 +1016,16 @@ impl DeviceRuntime {
             width,
             data: val as u64,
         };
-        let idx =
-            self.lookup_mmio(access.addr, access.width)
-                .ok_or(DeviceManagerError::Access {
-                    operation: "write",
-                    bus: BusKind::Mmio,
-                    addr: access.addr,
-                    width,
-                    source: DeviceError::NotFound,
-                })?;
+        let Some(idx) = self.lookup_mmio(access.addr, access.width) else {
+            trace_unregistered_device_access(&access);
+            return Err(DeviceManagerError::Access {
+                operation: "write",
+                bus: BusKind::Mmio,
+                addr: access.addr,
+                width,
+                source: DeviceError::NotFound,
+            });
+        };
         let id = DeviceId::new(idx as u32);
         let mut context = RuntimeDeviceAccess {
             device_id: id,
@@ -986,15 +1036,16 @@ impl DeviceRuntime {
             stop_grants: &self.stop_grants,
             access_ports: &self.access_ports,
         };
-        let response = self.devices[idx]
-            .access(&access, &mut context)
-            .map_err(|source| DeviceManagerError::Access {
-                operation: "write",
-                bus: BusKind::Mmio,
-                addr: access.addr,
-                width,
-                source,
-            })?;
+        let device = &self.devices[idx];
+        let response = device.access(&access, &mut context);
+        trace_device_access(device.as_ref(), &access, &response);
+        let response = response.map_err(|source| DeviceManagerError::Access {
+            operation: "write",
+            bus: BusKind::Mmio,
+            addr: access.addr,
+            width,
+            source,
+        })?;
         Self::expect_write_response(response, "write MMIO device")
     }
 
@@ -1147,7 +1198,7 @@ impl DeviceRegistry for DeviceRuntime {
 
 impl BusRouter for DeviceRuntime {
     fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
-        let idx = match access.kind {
+        let device_slot = match access.kind {
             BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
             BusKind::Port => {
                 let port = u16::try_from(access.addr)
@@ -1159,12 +1210,17 @@ impl BusRouter for DeviceRuntime {
                     .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
                 self.lookup_sysreg(reg)
             }
-        }
-        .ok_or(DeviceError::NotFound)?;
+        };
+        let Some(device_slot) = device_slot else {
+            if access.kind != BusKind::SysReg {
+                trace_unregistered_device_access(access);
+            }
+            return Err(DeviceError::NotFound);
+        };
 
-        let device = &self.devices[idx];
+        let device = &self.devices[device_slot];
         let mut context = RuntimeDeviceAccess {
-            device_id: DeviceId::new(idx as u32),
+            device_id: DeviceId::new(device_slot as u32),
             memory: None,
             dma_grants: &self.dma_grants,
             timer_grants: &self.timer_grants,
@@ -1172,7 +1228,11 @@ impl BusRouter for DeviceRuntime {
             stop_grants: &self.stop_grants,
             access_ports: &self.access_ports,
         };
-        device.access(access, &mut context)
+        let response = device.access(access, &mut context);
+        if access.kind != BusKind::SysReg {
+            trace_device_access(device.as_ref(), access, &response);
+        }
+        response
     }
 
     fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError> {

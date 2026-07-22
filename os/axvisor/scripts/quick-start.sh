@@ -7,6 +7,9 @@
 
 set -e  # Exit on error
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/ovmf-profile.sh"
+
 # Color output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -98,7 +101,7 @@ Launch Options (for run/start commands):
     QEMU x86_64:
         -n, --nimbos        Launch single NimbOS guest (default)
         -l, --linux         Launch single Linux guest
-        --nimbos-uefi       Launch NimbOS through an external UEFI firmware image
+        --nimbos-uefi       Launch NimbOS through the fixed OVMF DEBUG profile
         --arceos-uefi       Launch a local ArceOS x86_64 UEFI guest image
     Phytium Pi:
         -a, --arceos        Launch single ArceOS guest (default)
@@ -346,35 +349,112 @@ setup_qemu_x86_64() {
     info "=== QEMU x86_64 Preparation Complete ==="
 }
 
+qemu_x86_64_setup_uefi_config_path() {
+    local guest="$1"
+
+    case "${guest}:${OVMF_VERIFICATION_LABEL:-}" in
+        nimbos:VERIFIED) printf '%s\n' "tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml" ;;
+        nimbos:UNVERIFIED) printf '%s\n' "tmp/configs/nimbos-x86_64-qemu-uefi-smp1.unverified.toml" ;;
+        arceos:VERIFIED) printf '%s\n' "tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml" ;;
+        arceos:UNVERIFIED) printf '%s\n' "tmp/configs/arceos-x86_64-qemu-uefi-smp1.unverified.toml" ;;
+        *)
+            echo "ERROR: unsupported x86_64 UEFI guest or verification label: ${guest}" >&2
+            return 1
+            ;;
+    esac
+}
+
+qemu_x86_64_uefi_selection_file() {
+    case "$1" in
+        nimbos) printf '%s\n' "tmp/configs/nimbos-x86_64-qemu-uefi-smp1.selected" ;;
+        arceos) printf '%s\n' "tmp/configs/arceos-x86_64-qemu-uefi-smp1.selected" ;;
+        *)
+            echo "ERROR: unsupported x86_64 UEFI guest config: $1" >&2
+            return 1
+            ;;
+    esac
+}
+
+qemu_x86_64_clear_uefi_config_selection() {
+    local selection_file
+    selection_file="$(qemu_x86_64_uefi_selection_file "$1")"
+    rm -f "${selection_file}" "${selection_file}.tmp"
+}
+
+qemu_x86_64_record_uefi_config() {
+    local guest="$1"
+    local config_path="$2"
+    local selection_file
+    selection_file="$(qemu_x86_64_uefi_selection_file "${guest}")"
+
+    case "${guest}:${config_path}" in
+        nimbos:tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml | \
+        nimbos:tmp/configs/nimbos-x86_64-qemu-uefi-smp1.unverified.toml | \
+        arceos:tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml | \
+        arceos:tmp/configs/arceos-x86_64-qemu-uefi-smp1.unverified.toml) ;;
+        *)
+            echo "ERROR: refusing unexpected x86_64 UEFI config path: ${config_path}" >&2
+            return 1
+            ;;
+    esac
+    if [ ! -f "${config_path}" ]; then
+        echo "ERROR: generated x86_64 UEFI config does not exist: ${config_path}" >&2
+        return 1
+    fi
+
+    printf '%s\n' "${config_path}" > "${selection_file}.tmp"
+    mv "${selection_file}.tmp" "${selection_file}"
+}
+
+qemu_x86_64_selected_uefi_config() {
+    local guest="$1"
+    local selection_file
+    local config_path
+    selection_file="$(qemu_x86_64_uefi_selection_file "${guest}")"
+    if [ ! -f "${selection_file}" ]; then
+        echo "ERROR: no saved x86_64 UEFI config for ${guest}; run setup first" >&2
+        return 1
+    fi
+    if [ "$(wc -l < "${selection_file}")" -ne 1 ]; then
+        echo "ERROR: invalid x86_64 UEFI config selection: ${selection_file}" >&2
+        return 1
+    fi
+    IFS= read -r config_path < "${selection_file}"
+
+    case "${guest}:${config_path}" in
+        nimbos:tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml | \
+        nimbos:tmp/configs/nimbos-x86_64-qemu-uefi-smp1.unverified.toml | \
+        arceos:tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml | \
+        arceos:tmp/configs/arceos-x86_64-qemu-uefi-smp1.unverified.toml) ;;
+        *)
+            echo "ERROR: invalid saved x86_64 UEFI config path: ${config_path}" >&2
+            return 1
+            ;;
+    esac
+    if [ ! -f "${config_path}" ]; then
+        echo "ERROR: saved x86_64 UEFI config does not exist: ${config_path}" >&2
+        return 1
+    fi
+
+    printf '%s\n' "${config_path}"
+}
+
 setup_qemu_x86_64_uefi() {
     info "=== QEMU x86_64 UEFI Preparation ==="
+    qemu_x86_64_clear_uefi_config_selection nimbos
 
     setup_qemu_x86_64
 
-    local firmware_path="${AXVISOR_X86_64_UEFI_FIRMWARE:-}"
-    if [ -z "$firmware_path" ]; then
-        for candidate in \
-            "$(pwd)/tmp/images/qemu_x86_64_nimbos/OVMF_CODE.fd" \
-            "/usr/share/OVMF/OVMF_CODE.fd" \
-            "/usr/share/ovmf/OVMF.fd" \
-            "/usr/share/qemu/OVMF.fd"; do
-            if [ -f "$candidate" ]; then
-                firmware_path="$candidate"
-                break
-            fi
-        done
-    fi
-
-    if [ -z "$firmware_path" ] || [ ! -f "$firmware_path" ]; then
-        error "UEFI firmware image not found."
-        echo "Install OVMF or set AXVISOR_X86_64_UEFI_FIRMWARE=/path/to/OVMF_CODE.fd"
-        exit 1
-    fi
+    ovmf_prepare_firmware "$(pwd)" "$(pwd)/tmp/images"
+    local firmware_path="${OVMF_CODE_PATH}"
+    local guest_config_path
+    guest_config_path="$(qemu_x86_64_setup_uefi_config_path nimbos)"
 
     info "Preparing UEFI guest config file..."
-    run_cmd cp configs/vms/qemu/x86_64/nimbos-uefi-smp1.toml tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_x86_64_nimbos/qemu-x86_64"|g' tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
-    run_cmd sed -i 's|^uefi_firmware_path = .*|uefi_firmware_path = "'"$firmware_path"'"|g' tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml
+    run_cmd cp configs/vms/qemu/x86_64/nimbos-uefi-smp1.toml "${guest_config_path}"
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "../images/qemu_x86_64_nimbos/qemu-x86_64"|g' "${guest_config_path}"
+    run_cmd sed -i 's|^uefi_firmware_path = .*|uefi_firmware_path = "'"$firmware_path"'"|g' "${guest_config_path}"
+    info "Firmware verification: ${OVMF_VERIFICATION_LABEL}"
 
     info "Preparing UEFI QEMU config file..."
     run_cmd cp .github/workflows/qemu-x86_64-uefi.toml tmp/configs/qemu-x86_64-uefi-runtime.toml
@@ -382,6 +462,7 @@ setup_qemu_x86_64_uefi() {
     local rootfs_path
     rootfs_path="$(pwd)/tmp/images/qemu_x86_64_nimbos/rootfs.img"
     run_cmd sed -i 's|file=${workspaceFolder}/tmp/rootfs.img|file='"$rootfs_path"'|g' tmp/configs/qemu-x86_64-uefi-runtime.toml
+    qemu_x86_64_record_uefi_config nimbos "${guest_config_path}"
 
     info "=== QEMU x86_64 UEFI Preparation Complete ==="
 }
@@ -413,6 +494,7 @@ setup_qemu_x86_64_linux() {
 
 setup_qemu_x86_64_arceos_uefi() {
     info "=== QEMU x86_64 ArceOS UEFI Preparation ==="
+    qemu_x86_64_clear_uefi_config_selection arceos
 
     run_cmd mkdir -p tmp/{configs,images}
 
@@ -436,36 +518,23 @@ setup_qemu_x86_64_arceos_uefi() {
         exit 1
     fi
 
-    local firmware_path="${AXVISOR_X86_64_UEFI_FIRMWARE:-}"
-    if [ -z "$firmware_path" ]; then
-        for candidate in \
-            "$(pwd)/tmp/images/OVMF_CODE.fd" \
-            "/usr/share/OVMF/OVMF_CODE.fd" \
-            "/usr/share/ovmf/OVMF.fd" \
-            "/usr/share/qemu/OVMF.fd"; do
-            if [ -f "$candidate" ]; then
-                firmware_path="$candidate"
-                break
-            fi
-        done
-    fi
-
-    if [ -z "$firmware_path" ] || [ ! -f "$firmware_path" ]; then
-        error "UEFI firmware image not found."
-        echo "Install OVMF or set AXVISOR_X86_64_UEFI_FIRMWARE=/path/to/OVMF_CODE.fd"
-        exit 1
-    fi
+    ovmf_prepare_firmware "$(pwd)" "$(pwd)/tmp/images"
+    local firmware_path="${OVMF_CODE_PATH}"
+    local guest_config_path
+    guest_config_path="$(qemu_x86_64_setup_uefi_config_path arceos)"
 
     info "Preparing board config file..."
     run_cmd cp configs/board/qemu-x86_64.toml tmp/configs/
 
     info "Preparing ArceOS UEFI guest config file..."
-    run_cmd cp configs/vms/qemu/x86_64/arceos-uefi-smp1.toml tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml
-    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "'"$kernel_path"'"|g' tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml
-    run_cmd sed -i 's|^uefi_firmware_path = .*|uefi_firmware_path = "'"$firmware_path"'"|g' tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml
+    run_cmd cp configs/vms/qemu/x86_64/arceos-uefi-smp1.toml "${guest_config_path}"
+    run_cmd sed -i 's|^kernel_path = .*|kernel_path = "'"$kernel_path"'"|g' "${guest_config_path}"
+    run_cmd sed -i 's|^uefi_firmware_path = .*|uefi_firmware_path = "'"$firmware_path"'"|g' "${guest_config_path}"
+    info "Firmware verification: ${OVMF_VERIFICATION_LABEL}"
 
     info "Preparing UEFI QEMU config file..."
     run_cmd cp .github/workflows/qemu-x86_64-arceos-uefi.toml tmp/configs/qemu-x86_64-arceos-uefi-runtime.toml
+    qemu_x86_64_record_uefi_config arceos "${guest_config_path}"
 
     info "=== QEMU x86_64 ArceOS UEFI Preparation Complete ==="
 }
@@ -479,19 +548,23 @@ run_qemu_x86_64_nimbos() {
 }
 
 run_qemu_x86_64_nimbos_uefi() {
+    local guest_config_path
+    guest_config_path="$(qemu_x86_64_selected_uefi_config nimbos)"
     info "=== Launching QEMU x86_64 NimbOS UEFI Guest ==="
     run_axvisor_qemu \
         --config "$(pwd)/tmp/configs/qemu-x86_64.toml" \
         --qemu-config "$(pwd)/tmp/configs/qemu-x86_64-uefi-runtime.toml" \
-        --vmconfigs "$(pwd)/tmp/configs/nimbos-x86_64-qemu-uefi-smp1.toml"
+        --vmconfigs "$(pwd)/${guest_config_path}"
 }
 
 run_qemu_x86_64_arceos_uefi() {
+    local guest_config_path
+    guest_config_path="$(qemu_x86_64_selected_uefi_config arceos)"
     info "=== Launching QEMU x86_64 ArceOS UEFI Guest ==="
     run_axvisor_qemu \
         --config "$(pwd)/tmp/configs/qemu-x86_64.toml" \
         --qemu-config "$(pwd)/tmp/configs/qemu-x86_64-arceos-uefi-runtime.toml" \
-        --vmconfigs "$(pwd)/tmp/configs/arceos-x86_64-qemu-uefi-smp1.toml"
+        --vmconfigs "$(pwd)/${guest_config_path}"
 }
 
 run_qemu_x86_64_linux() {
@@ -1415,6 +1488,10 @@ cmd_run_rdk_s100() {
 # ============================================================================
 # Main Program
 # ============================================================================
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
 
 check_root_dir
 

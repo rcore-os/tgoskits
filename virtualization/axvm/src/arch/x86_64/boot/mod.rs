@@ -24,6 +24,11 @@ mod linux_boot;
 mod mptable;
 mod multiboot;
 
+const OVMF_PROFILE_NAME: &str = "qemu_x86_64_axvisor_ovmf_debug";
+const OVMF_CODE_LOAD_GPA: usize = 0xffc8_4000;
+const OVMF_CODE_SIZE: usize = 0x37c000;
+const OVMF_RESET_VECTOR: usize = 0xffff_fff0;
+
 pub struct ImageLoader<'a>(ImageLoaderCore<'a>);
 
 impl<'a> ImageLoader<'a> {
@@ -209,7 +214,13 @@ fn load_boot_image_from_memory(loader: &ImageLoaderCore<'_>, bios: Option<&[u8]>
         let load_gpa = loader
             .bios_load_gpa
             .ok_or_else(|| ax_err_type!(NotFound, "boot firmware load address is missing"))?;
+        if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
+            validate_uefi_firmware_layout(load_gpa, bios.len(), loader.config.kernel.entry_point)?;
+        }
         load_vm_image_from_memory(bios, load_gpa, loader.vm.clone())?;
+        if loader.config.kernel.effective_boot_protocol() == VMBootProtocol::Uefi {
+            record_uefi_firmware_loaded(loader, "<static image>", bios.len(), load_gpa);
+        }
         if should_patch_multiboot_info(&loader.config) {
             load_multiboot_info(loader, bios, load_gpa)?;
         }
@@ -242,12 +253,23 @@ fn load_boot_image_from_filesystem(loader: &ImageLoaderCore<'_>) -> AxVmResult {
             load_vm_image_from_memory(&bios, load_gpa, loader.vm.clone())?;
             load_multiboot_info(loader, &bios, load_gpa)
         } else {
+            let size =
+                query_uefi_firmware_size(loader.config.kernel.effective_boot_protocol(), || {
+                    crate::boot::images::fs::image_size(path, loader.provider)
+                })?;
+            if let Some(size) = size {
+                validate_uefi_firmware_layout(load_gpa, size, loader.config.kernel.entry_point)?;
+            }
             crate::boot::images::fs::load_vm_image(
                 path,
                 load_gpa,
                 loader.vm.clone(),
                 loader.provider,
-            )
+            )?;
+            if let Some(size) = size {
+                record_uefi_firmware_loaded(loader, path, size, load_gpa);
+            }
+            Ok(())
         }
     } else if should_load_default_boot_image(loader) {
         let load_gpa = builtin_bios_load_gpa(loader.bios_load_gpa)?;
@@ -269,7 +291,11 @@ fn load_uefi_from_configured_path(loader: &ImageLoaderCore<'_>) -> AxVmResult {
         .ok_or_else(|| ax_err_type!(NotFound, "UEFI firmware load addr is missed"))?;
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     {
-        crate::boot::images::fs::load_vm_image(path, load_gpa, loader.vm.clone(), loader.provider)
+        let size = crate::boot::images::fs::image_size(path, loader.provider)?;
+        validate_uefi_firmware_layout(load_gpa, size, loader.config.kernel.entry_point)?;
+        crate::boot::images::fs::load_vm_image(path, load_gpa, loader.vm.clone(), loader.provider)?;
+        record_uefi_firmware_loaded(loader, path, size, load_gpa);
+        Ok(())
     }
     #[cfg(not(any(feature = "fs", feature = "host-fs")))]
     {
@@ -279,6 +305,71 @@ fn load_uefi_from_configured_path(loader: &ImageLoaderCore<'_>) -> AxVmResult {
             "UEFI firmware path requires the fs feature when no firmware image buffer is available"
         )
     }
+}
+
+#[cfg(any(feature = "fs", feature = "host-fs", test))]
+fn query_uefi_firmware_size(
+    protocol: VMBootProtocol,
+    query_size: impl FnOnce() -> AxVmResult<usize>,
+) -> AxVmResult<Option<usize>> {
+    if protocol == VMBootProtocol::Uefi {
+        query_size().map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+fn validate_uefi_firmware_layout(
+    load_gpa: GuestPhysAddr,
+    size: usize,
+    entry_point: usize,
+) -> AxVmResult {
+    if load_gpa.as_usize() != OVMF_CODE_LOAD_GPA {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!(
+                "x86 UEFI profile {OVMF_PROFILE_NAME} requires CODE GPA {OVMF_CODE_LOAD_GPA:#x}, \
+                 but configured {:#x}",
+                load_gpa.as_usize()
+            )
+        ));
+    }
+    if size != OVMF_CODE_SIZE {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!(
+                "x86 UEFI profile {OVMF_PROFILE_NAME} requires CODE size {OVMF_CODE_SIZE:#x}, but \
+                 image size is {size:#x}"
+            )
+        ));
+    }
+    if entry_point != OVMF_RESET_VECTOR {
+        return Err(ax_err_type!(
+            InvalidInput,
+            format!(
+                "x86 UEFI profile {OVMF_PROFILE_NAME} requires reset vector \
+                 {OVMF_RESET_VECTOR:#x}, but entry_point is {:#x}",
+                entry_point
+            )
+        ));
+    }
+    Ok(())
+}
+
+fn record_uefi_firmware_loaded(
+    loader: &ImageLoaderCore<'_>,
+    path: &str,
+    size: usize,
+    load_gpa: GuestPhysAddr,
+) {
+    let start = load_gpa.as_usize();
+    let end = start + size - 1;
+    info!(
+        "VM[{}] loaded x86 UEFI firmware: profile={} path={} size={:#x} GPA={:#x}..={:#x} \
+         reset_vector={:#x}",
+        loader.config.base.id, OVMF_PROFILE_NAME, path, size, start, end, OVMF_RESET_VECTOR
+    );
+    super::guest_serial::mark_fixed_ovmf_profile_loaded(&loader.vm);
 }
 
 fn adjust_linux_dma_identity_layout(loader: &mut ImageLoaderCore<'_>) {
@@ -528,6 +619,57 @@ mod tests {
         config.kernel.enable_bios = true;
         config.kernel.boot_protocol = Some(VMBootProtocol::Uefi);
         assert!(!should_patch_multiboot_info(&config));
+    }
+
+    #[test]
+    fn non_uefi_firmware_does_not_query_file_size() {
+        let size = query_uefi_firmware_size(VMBootProtocol::Multiboot, || {
+            panic!("non-UEFI firmware must not query file size")
+        })
+        .unwrap();
+
+        assert_eq!(size, None);
+    }
+
+    #[test]
+    fn uefi_firmware_queries_file_size() {
+        let size = query_uefi_firmware_size(VMBootProtocol::Uefi, || Ok(OVMF_CODE_SIZE)).unwrap();
+
+        assert_eq!(size, Some(OVMF_CODE_SIZE));
+    }
+
+    #[test]
+    fn fixed_ovmf_profile_constants_cover_the_reset_vector() {
+        let code_end = OVMF_CODE_LOAD_GPA + OVMF_CODE_SIZE;
+
+        assert_eq!(code_end, 0x1_0000_0000);
+        assert!(OVMF_RESET_VECTOR >= OVMF_CODE_LOAD_GPA);
+        assert!(OVMF_RESET_VECTOR + 16 <= code_end);
+    }
+
+    #[test]
+    fn fixed_ovmf_profile_rejects_wrong_layout_or_entry() {
+        let expected_gpa = GuestPhysAddr::from(OVMF_CODE_LOAD_GPA);
+
+        assert!(
+            validate_uefi_firmware_layout(expected_gpa, OVMF_CODE_SIZE, OVMF_RESET_VECTOR).is_ok()
+        );
+        assert!(
+            validate_uefi_firmware_layout(
+                GuestPhysAddr::from(OVMF_CODE_LOAD_GPA - 0x1000),
+                OVMF_CODE_SIZE,
+                OVMF_RESET_VECTOR,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_uefi_firmware_layout(expected_gpa, OVMF_CODE_SIZE - 1, OVMF_RESET_VECTOR)
+                .is_err()
+        );
+        assert!(
+            validate_uefi_firmware_layout(expected_gpa, OVMF_CODE_SIZE, OVMF_RESET_VECTOR - 0x10)
+                .is_err()
+        );
     }
 
     #[test]

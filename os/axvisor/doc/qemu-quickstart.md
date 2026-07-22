@@ -37,7 +37,7 @@ cargo +stable install ostool --version '^0.15'
 - `cargo-binutils`: provides `rust-objcopy`, `rust-objdump`, etc.
 - `ostool`: custom build runner for AxVisor
 
-## 3. KVM and UEFI Firmware Setup (NimbOS x86_64 Only)
+## 3. KVM Setup (NimbOS x86_64 Only)
 
 NimbOS runs on x86_64 QEMU and requires KVM hardware acceleration. ArceOS and Linux use AArch64 QEMU (TCG mode) and do not need KVM — you can skip this section.
 
@@ -65,17 +65,10 @@ Verify:
 id  # output should include "kvm"
 ```
 
-The optional x86_64 UEFI guest path uses an external OVMF-compatible firmware image. On Debian/Ubuntu, install it with:
-
-```bash
-sudo apt install ovmf
-```
-
-If your firmware is not installed in a standard location, export:
-
-```bash
-export AXVISOR_X86_64_UEFI_FIRMWARE=/path/to/OVMF_CODE.fd
-```
+The optional x86_64 UEFI guest path automatically pulls and verifies the fixed
+`qemu_x86_64_axvisor_ovmf_debug` tgosimages asset. It does not search distribution
+OVMF packages. See [AxVisor x86_64 Guest OVMF DEBUG Profile](x86-uefi-profile.md) for the exact
+EDK2 revision, layout, manifest, and diagnostic markers.
 
 ## 4. Running Guest OSes
 
@@ -124,7 +117,24 @@ After booting, you will enter the Rust user shell (`>>` prompt). Type `usertests
 
 > **Note**: NimbOS requires VT-x/KVM. If `/dev/kvm` does not exist or has insufficient permissions, you will get a `Permission denied` error. WSL2 requires nested virtualization support in the kernel to use KVM.
 
-### Linux UEFI (x86_64, requires KVM and OVMF)
+### NimbOS UEFI entry (x86_64, requires KVM)
+
+```bash
+./scripts/setup_qemu.sh nimbos-uefi
+
+cargo xtask axvisor test qemu --arch x86_64 \
+  --test-group uefi --test-case ovmf-entry-vmx
+```
+
+Use `ovmf-entry-svm` on an AMD host. These are non-gating diagnostics and pass
+only when AxVM emits the VM-qualified boundary after Guest OVMF writes the
+complete `SecCoreStartupWithStack(` marker through emulated COM1.
+
+When `quick-start.sh` setup and run are separate processes, setup saves the exact verified or
+unverified VM config it generated. Run uses that saved selection regardless of later environment
+changes; a failed replacement setup clears the old selection instead of launching stale input.
+
+### Linux UEFI (x86_64, requires KVM)
 
 ```bash
 ./scripts/setup_qemu.sh linux-x86_64-uefi
@@ -135,15 +145,18 @@ cargo xtask qemu \
   --vmconfigs tmp/vmconfigs/linux-x86_64-qemu-uefi-smp1.generated.toml
 ```
 
-The UEFI VM config sets `boot_protocol = "uefi"` and `uefi_firmware_path`, which tells AxVisor to load the external firmware image without applying the legacy axvm-bios multiboot patch. This Linux guest also provides `ramdisk_path` so the initramfs is available before boot.
+The UEFI VM config sets `boot_protocol = "uefi"` and points at the verified fixed
+CODE bank. This Linux guest also provides `ramdisk_path`; the current path does not yet provide
+the platform devices or boot source required for a complete guest boot.
 
-### ArceOS UEFI (x86_64, requires KVM, OVMF, and a local guest image)
+### ArceOS UEFI (x86_64, requires KVM and a local guest image)
 
 The ArceOS x86_64 UEFI path is provided as a local bring-up flow because the image registry does not currently publish a prebuilt ArceOS x86_64 UEFI guest. Build or place the guest image locally, then export:
 
 ```bash
 export AXVISOR_X86_64_ARCEOS_UEFI_KERNEL=/path/to/arceos-x86_64-uefi.bin
 export AXVISOR_X86_64_UEFI_FIRMWARE=/path/to/OVMF_CODE.fd
+export AXVISOR_X86_64_UEFI_ALLOW_UNVERIFIED=1
 ```
 
 Then run:
@@ -185,8 +198,8 @@ Success indicator: `Welcome to AxVisor Shell!` appears in the output.
 
 For guest-image flows, the script automates three steps, eliminating manual work:
 
-1. **Download images**: calls `cargo axvisor image pull` to fetch and extract guest images to `/tmp/.axvisor-images/`
-2. **Generate temp configs**: copies VM config templates to `tmp/vmconfigs/*.generated.toml`, then uses `sed` to update `kernel_path` and firmware paths (`bios_path` for legacy NimbOS BIOS mode, `uefi_firmware_path` for UEFI mode) to actual image paths without modifying tracked files in `configs/vms/**/*.toml`
+1. **Download images**: calls `cargo axvisor image pull` to fetch guest images and the fixed OVMF bundle to `/tmp/.axvisor-images/`
+2. **Verify firmware and generate configs**: validates the OVMF manifest, sizes, hashes, concatenation, and fixed CODE layout, then writes `tmp/vmconfigs/*.generated.toml` without modifying tracked VM templates
 3. **Prepare rootfs**: copies `rootfs.img` to the project's `tmp/` directory for QEMU to use
 
 You can also perform these steps manually if you prefer not to use the script.
@@ -201,9 +214,18 @@ The `kernel_path` in the VM config points to a non-existent file. Run `./scripts
 
 Your user is not in the `kvm` group. See the "KVM Setup" section above.
 
-### `UEFI firmware image not found`
+### `image not found: qemu_x86_64_axvisor_ovmf_debug`
 
-Install OVMF or set `AXVISOR_X86_64_UEFI_FIRMWARE` to the firmware image path before running `./scripts/setup_qemu.sh linux-x86_64-uefi`.
+The pinned OVMF asset is not present in the selected tgosimages registry. Do not
+fall back to `/usr/share/OVMF`; publish or select the registry containing the
+qualified asset.
+
+### Using a local diagnostic firmware
+
+Set both `AXVISOR_X86_64_UEFI_FIRMWARE` and
+`AXVISOR_X86_64_UEFI_ALLOW_UNVERIFIED=1`. The firmware must retain the fixed CODE
+size. Setup prints its actual hash and creates an `.unverified.generated.toml`
+that is not selected by UEFI test-suit build configs.
 
 ### `qemu-system-aarch64: command not found`
 
