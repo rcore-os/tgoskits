@@ -91,6 +91,11 @@ static void read_one(int fd, const char *what) {
         FAIL(what);
 }
 
+static void child_exit_with_status(int fd, unsigned char status) {
+    while (write(fd, &status, 1) < 0 && errno == EINTR) {}
+    _exit(status);
+}
+
 static void prepare_tree(void) {
     mkdir(BASE, 0755);
     mkdir(SOURCE, 0755);
@@ -448,56 +453,61 @@ static void test_clone_ns_master_slave(void) {
     if (pid == 0) {
         close(ready_pipe[0]);
         if (unshare(CLONE_NEWNS) < 0)
-            _exit(1);
+            child_exit_with_status(ready_pipe[1], 1);
 
         /* ── 2.2.1  bidirectional peer propagation ── */
         if (mkdir(PROP_MS_SUB_P2P, 0755) < 0)
-            _exit(2);
+            child_exit_with_status(ready_pipe[1], 2);
         if (syscall(SYS_mount, "tmpfs", PROP_MS_SUB_P2P, "tmpfs", 0, NULL) < 0)
-            _exit(3);
+            child_exit_with_status(ready_pipe[1], 3);
         mntrec_t peer_event;
         if (mountinfo_rec(PROP_MS_PEER "/ch-peer-sub", &peer_event) < 0)
-            _exit(4);
+            child_exit_with_status(ready_pipe[1], 4);
         if (syscall(SYS_umount2, PROP_MS_SUB_P2P, MNT_DETACH) < 0)
-            _exit(5);
+            child_exit_with_status(ready_pipe[1], 5);
         rmdir(PROP_MS_SUB_P2P);
 
         /* ── 2.2.2  master → slave propagation ── */
         if (mkdir(PROP_MS_SUB_M2S, 0755) < 0)
-            _exit(6);
+            child_exit_with_status(ready_pipe[1], 6);
         if (syscall(SYS_mount, "tmpfs", PROP_MS_SUB_M2S, "tmpfs", 0, NULL) < 0)
-            _exit(7);
+            child_exit_with_status(ready_pipe[1], 7);
         mntrec_t slave_event;
         if (mountinfo_rec(PROP_MS_SLAVE "/ch-m2s", &slave_event) < 0)
-            _exit(8);
+            child_exit_with_status(ready_pipe[1], 8);
         if (syscall(SYS_umount2, PROP_MS_SUB_M2S, MNT_DETACH) < 0)
-            _exit(9);
+            child_exit_with_status(ready_pipe[1], 9);
         rmdir(PROP_MS_SUB_M2S);
 
         /* ── 2.2.3  slave → master does NOT propagate ── */
         if (mkdir(PROP_MS_SUB_S2M, 0755) < 0)
-            _exit(10);
+            child_exit_with_status(ready_pipe[1], 10);
         if (syscall(SYS_mount, "tmpfs", PROP_MS_SUB_S2M, "tmpfs", 0, NULL) < 0)
-            _exit(11);
+            child_exit_with_status(ready_pipe[1], 11);
         mntrec_t reverse_event;
         if (mountinfo_rec(PROP_MS_SRC "/ch-s2m", &reverse_event) == 0)
-            _exit(12);
+            child_exit_with_status(ready_pipe[1], 12);
         if (syscall(SYS_umount2, PROP_MS_SUB_S2M, MNT_DETACH) < 0)
-            _exit(13);
+            child_exit_with_status(ready_pipe[1], 13);
         rmdir(PROP_MS_SUB_S2M);
 
-        write_all(ready_pipe[1], "P", 1, "prop-ms child signal");
-        _exit(0);
+        child_exit_with_status(ready_pipe[1], 0);
     }
 
     close(ready_pipe[1]);
-    read_one(ready_pipe[0], "prop-ms wait child");
+    unsigned char child_status;
+    ssize_t n;
+    do {
+        n = read(ready_pipe[0], &child_status, 1);
+    } while (n < 0 && errno == EINTR);
+    if (n != 1)
+        FAIL("prop-ms wait child");
 
     int status;
     if (waitpid(pid, &status, 0) < 0)
         FAIL("prop-ms: waitpid");
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        errno = WEXITSTATUS(status);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 || child_status != 0) {
+        errno = child_status;
         FAIL("prop-ms: child non-zero exit");
     }
 
