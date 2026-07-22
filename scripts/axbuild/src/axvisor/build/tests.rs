@@ -91,6 +91,37 @@ fn axvisor_ax_std_dependency_declares_std_compat() {
 }
 
 #[test]
+fn axvisor_host_xtask_is_opt_in() {
+    let metadata = crate::build::workspace_metadata().unwrap();
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| package.name == AXVISOR_PACKAGE)
+        .unwrap();
+    let target = package
+        .targets
+        .iter()
+        .find(|target| target.name == "xtask")
+        .unwrap();
+
+    assert_eq!(
+        target.required_features,
+        ["host-xtask"],
+        "the host build tool must not be linked as part of kernel integration tests"
+    );
+
+    let config_path = crate::context::workspace_root_path()
+        .unwrap()
+        .join("os/axvisor/.cargo/config.toml");
+    let config: toml::Table = toml::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+    let alias = config["alias"]["xtask"].as_str().unwrap();
+    assert!(
+        alias.contains("--features host-xtask"),
+        "the Axvisor-local alias must explicitly enable the host-only target"
+    );
+}
+
+#[test]
 fn resolve_build_info_path_uses_default_axvisor_location() {
     let root = tempdir().unwrap();
     let path = resolve_build_info_path(

@@ -8,6 +8,7 @@ mod dir;
 mod dyn_debug;
 mod file;
 mod fs;
+mod mqueue;
 pub(crate) mod overlay;
 pub(crate) mod proc;
 mod proc_mountinfo;
@@ -18,7 +19,7 @@ pub(crate) mod usbfs;
 use alloc::{boxed::Box, sync::Arc};
 
 use ax_errno::LinuxResult;
-use ax_fs_ng::vfs::{FS_CONTEXT, FsContext};
+use ax_fs_ng::vfs::FsContext;
 use ax_lazyinit::LazyInit;
 use axfs_ng_vfs::{DirNodeOps, FileNodeOps, Filesystem, NodePermission, WeakDirEntry};
 pub use tmp::MemoryFs;
@@ -84,7 +85,8 @@ fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()>
 pub fn mount_all() -> LinuxResult<()> {
     info!("Initialize pseudofs...");
 
-    let fs = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let fs = fs_context.lock();
     mount_at(&fs, "/dev", dev::new_devfs())?;
     let usbfs = usbfs::new_usbfs()?;
     if let Some(dev_usbfs) = usbfs {
@@ -98,6 +100,8 @@ pub fn mount_all() -> LinuxResult<()> {
     let (tmp_fs, tmp_handle) = tmp::MemoryFs::new_with_handle();
     mount_at(&fs, "/tmp", tmp_fs)?;
     TMP_TMPFS.init_once(tmp_handle);
+
+    mount_at(&fs, "/dev/mqueue", mqueue::new_mqueuefs())?;
 
     mount_at(&fs, "/proc", proc::new_procfs())?;
 

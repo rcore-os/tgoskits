@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- *(host-test)* use the unprivileged FXSAVE fallback when scheduler tests run outside ring 0.
+
 ## [0.8.3](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.2...ax-cpu-v0.8.3) - 2026-07-08
 
 ### Added

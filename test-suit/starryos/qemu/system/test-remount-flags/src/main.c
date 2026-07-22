@@ -1,17 +1,63 @@
 // Migrated from the former nix-sandbox-debug suite.
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #define BUF_SIZE 65536
 
+static long remount_tmp(unsigned long flags) {
+    return syscall(SYS_mount, NULL, "/tmp", NULL, MS_REMOUNT | flags, NULL);
+}
+
+static int verify_remount_readonly_transition(void) {
+    const char *path = "/tmp/remount-readonly-transition";
+
+    unlink(path);
+    if (remount_tmp(MS_RDONLY) < 0) {
+        perror("remount /tmp readonly");
+        return 1;
+    }
+
+    errno = 0;
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd >= 0) {
+        close(fd);
+        fprintf(stderr, "FAIL: readonly remount still allowed file creation\n");
+        return 1;
+    }
+    if (errno != EROFS) {
+        fprintf(stderr, "FAIL: readonly write errno=%d, expected EROFS\n", errno);
+        return 1;
+    }
+
+    if (remount_tmp(0) < 0) {
+        perror("remount /tmp read-write");
+        return 1;
+    }
+
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        perror("create file after read-write remount");
+        return 1;
+    }
+    close(fd);
+    unlink(path);
+    return 0;
+}
+
 int main(void) {
+    if (verify_remount_readonly_transition() != 0) {
+        return 1;
+    }
+
     /* Remount /tmp with nosuid */
-    if (mount(NULL, "/tmp", NULL, MS_REMOUNT | MS_NOSUID, NULL) < 0) {
+    if (remount_tmp(MS_NOSUID) < 0) {
         perror("remount /tmp nosuid");
         return 1;
     }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- *(host-test)* initialize and bind CPU zero's dynamic CPU-local area before scheduler startup.
+
 ## [0.6.4](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.3...ax-task-v0.6.4) - 2026-07-10
 
 ### Other
