@@ -1,5 +1,3 @@
-use core::{fmt, marker::PhantomData};
-
 /// Dense logical index assigned to one CPU-local area.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -38,8 +36,9 @@ impl TryFrom<usize> for CpuIndex {
     }
 }
 
-/// Error returned when a logical CPU index does not fit the stable ABI.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Error returned when a logical CPU index does not fit the supported range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("CPU index {index} exceeds the CPU-local index range")]
 pub struct CpuIndexError {
     index: usize,
 }
@@ -48,45 +47,6 @@ impl CpuIndexError {
     /// Returns the rejected index.
     pub const fn index(self) -> usize {
         self.index
-    }
-}
-
-impl fmt::Display for CpuIndexError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "CPU index {} exceeds the CPU-local ABI",
-            self.index
-        )
-    }
-}
-
-impl core::error::Error for CpuIndexError {}
-
-/// Proof that the current execution context cannot migrate to another CPU.
-///
-/// ```compile_fail
-/// fn require_send<T: Send>() {}
-/// require_send::<cpu_local::CpuPin>();
-/// ```
-#[must_use = "the CPU may only be treated as pinned while this token is alive"]
-#[derive(Debug)]
-pub struct CpuPin {
-    _not_send_or_sync: PhantomData<*mut ()>,
-}
-
-impl CpuPin {
-    /// Creates a CPU pin without changing scheduler state.
-    ///
-    /// # Safety
-    ///
-    /// The caller must prevent migration until this token is dropped. Early
-    /// boot may use this while the CPU is offline; normal code obtains it from
-    /// an IRQ/preemption guard.
-    pub const unsafe fn new_unchecked() -> Self {
-        Self {
-            _not_send_or_sync: PhantomData,
-        }
     }
 }
 

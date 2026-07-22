@@ -18,4 +18,4 @@ tls = []
 host-test = []
 
 [dependencies]
-trait-ffi.workspace = true
+thiserror.workspace = true

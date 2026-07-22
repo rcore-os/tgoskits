@@ -1,79 +1,71 @@
 use super::*;
-use crate::{HostLevelV1, RegisterModeV1};
 
-fn live_host_level() -> Option<HostLevelV1> {
+fn current_el() -> Result<usize, CpuLocalError> {
     let current_el: usize;
-    // CurrentEL, rather than a Cargo feature, selects TPIDR_EL1/TPIDR_EL2.
     unsafe { core::arch::asm!("mrs {value}, CurrentEL", value = out(reg) current_el) };
-    match (current_el >> 2) & 0b11 {
-        1 => Some(HostLevelV1::Supervisor),
-        2 => Some(HostLevelV1::Hypervisor),
-        _ => None,
-    }
-}
-
-pub(super) fn validate_arch_binding(binding: CpuBindingV1) -> Result<(), CpuLocalError> {
-    if live_host_level() == binding.host_level() {
-        Ok(())
+    let level = (current_el >> 2) & 0b11;
+    if matches!(level, 1 | 2) {
+        Ok(level)
     } else {
-        Err(CpuLocalError::HostLevelMismatch)
+        Err(CpuLocalError::UnsupportedHostLevel { level })
     }
 }
 
-pub(super) unsafe fn install_current(binding: CpuBindingV1) {
-    let expected = binding
-        .host_level()
-        .expect("binding host level was validated");
-    match expected {
-        HostLevelV1::Supervisor => unsafe {
-            core::arch::asm!("msr TPIDR_EL1, {base}", base = in(reg) binding.area_base)
-        },
-        HostLevelV1::Hypervisor => unsafe {
-            core::arch::asm!("msr TPIDR_EL2, {base}", base = in(reg) binding.area_base)
-        },
+pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
+    current_el().map(|_| ())
+}
+
+pub(super) unsafe fn install_cpu_base(area_base: usize, boot_thread: usize) {
+    match current_el().unwrap_or_else(|_| super::fatal_register_invariant()) {
+        1 => unsafe { core::arch::asm!("msr TPIDR_EL1, {base}", base = in(reg) area_base) },
+        2 => unsafe { core::arch::asm!("msr TPIDR_EL2, {base}", base = in(reg) area_base) },
+        _ => unreachable!(),
     }
-    if binding.register_mode() == Some(RegisterModeV1::LinuxCurrent) {
-        unsafe { core::arch::asm!("msr SP_EL0, {current}", current = in(reg) binding.boot_thread) };
+    if !cfg!(feature = "tls") {
+        unsafe { core::arch::asm!("msr SP_EL0, {current}", current = in(reg) boot_thread) };
     }
 }
 
-pub(super) unsafe fn read_current_area_base() -> usize {
+pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
     let area_base: usize;
-    match live_host_level().unwrap_or_else(|| super::fatal_register_invariant()) {
-        HostLevelV1::Supervisor => unsafe {
-            core::arch::asm!("mrs {base}, TPIDR_EL1", base = out(reg) area_base)
-        },
-        HostLevelV1::Hypervisor => unsafe {
-            core::arch::asm!("mrs {base}, TPIDR_EL2", base = out(reg) area_base)
-        },
+    match current_el()? {
+        1 => unsafe { core::arch::asm!("mrs {base}, TPIDR_EL1", base = out(reg) area_base) },
+        2 => unsafe { core::arch::asm!("mrs {base}, TPIDR_EL2", base = out(reg) area_base) },
+        _ => unreachable!(),
     }
-    area_base
+    Ok(area_base)
 }
 
 pub(super) unsafe fn read_current_thread(area_base: usize) -> usize {
-    if image_register_mode() == RegisterModeV1::LinuxCurrent {
+    if cfg!(feature = "tls") {
+        unsafe { area_runtime_anchor(area_base) }.current_thread_raw()
+    } else {
         let current: usize;
         unsafe { core::arch::asm!("mrs {current}, SP_EL0", current = out(reg) current) };
         current
-    } else {
-        unsafe { runtime_anchor(area_base) }.current_thread_raw()
     }
 }
 
-pub(super) unsafe fn get_task_pointer() -> usize {
-    let value: usize;
-    if image_register_mode() == RegisterModeV1::LinuxCurrent {
-        unsafe { core::arch::asm!("mrs {value}, SP_EL0", value = out(reg) value) };
-    } else {
-        unsafe { core::arch::asm!("mrs {value}, TPIDR_EL0", value = out(reg) value) };
+pub(super) unsafe fn write_current_thread(value: usize) {
+    if !cfg!(feature = "tls") {
+        unsafe { core::arch::asm!("msr SP_EL0, {value}", value = in(reg) value) };
     }
+}
+
+#[cfg(feature = "tls")]
+pub(super) unsafe fn read_kernel_tls() -> usize {
+    let value: usize;
+    unsafe { core::arch::asm!("mrs {value}, TPIDR_EL0", value = out(reg) value) };
     value
 }
 
-pub(super) unsafe fn set_task_pointer(value: usize) {
-    if image_register_mode() == RegisterModeV1::LinuxCurrent {
-        unsafe { core::arch::asm!("msr SP_EL0, {value}", value = in(reg) value) };
-    } else {
-        unsafe { core::arch::asm!("msr TPIDR_EL0, {value}", value = in(reg) value) };
+#[cfg(feature = "tls")]
+pub(super) unsafe fn write_kernel_tls(value: usize) {
+    unsafe { core::arch::asm!("msr TPIDR_EL0, {value}", value = in(reg) value) };
+}
+
+unsafe fn area_runtime_anchor(area_base: usize) -> &'static crate::CpuRuntimeAnchor {
+    unsafe {
+        &*((area_base + crate::CPU_AREA_RUNTIME_ANCHOR_OFFSET) as *const crate::CpuRuntimeAnchor)
     }
 }

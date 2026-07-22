@@ -1,12 +1,10 @@
 use super::*;
-use crate::RegisterModeV1;
 
-pub(super) fn validate_arch_binding(_binding: CpuBindingV1) -> Result<(), CpuLocalError> {
+pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
     Ok(())
 }
 
-pub(super) unsafe fn install_current(binding: CpuBindingV1) {
-    let area_base = binding.area_base;
+pub(super) unsafe fn install_cpu_base(area_base: usize, boot_thread: usize) {
     let shadow = area_base;
     unsafe {
         core::arch::asm!(
@@ -16,18 +14,14 @@ pub(super) unsafe fn install_current(binding: CpuBindingV1) {
         );
         core::arch::asm!("move $r21, {base}", base = in(reg) area_base, options(nostack));
     }
-    if binding.register_mode() == Some(RegisterModeV1::LinuxCurrent) {
+    if !cfg!(feature = "tls") {
         unsafe {
-            core::arch::asm!(
-                "move $tp, {current}",
-                current = in(reg) binding.boot_thread,
-                options(nostack),
-            )
+            core::arch::asm!("move $tp, {current}", current = in(reg) boot_thread, options(nostack))
         };
     }
 }
 
-pub(super) unsafe fn read_current_area_base() -> usize {
+pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
     let area_base: usize;
     let shadow: usize;
     unsafe {
@@ -39,26 +33,42 @@ pub(super) unsafe fn read_current_area_base() -> usize {
             options(nostack),
         )
     };
-    assert_eq!(area_base, shadow, "LoongArch live r21 differs from KS3");
-    area_base
+    if area_base != shadow {
+        super::fatal_register_invariant();
+    }
+    Ok(area_base)
 }
 
 pub(super) unsafe fn read_current_thread(area_base: usize) -> usize {
-    if image_register_mode() == RegisterModeV1::LinuxCurrent {
-        let current_thread: usize;
-        unsafe { core::arch::asm!("move {current}, $tp", current = out(reg) current_thread) };
-        current_thread
+    if cfg!(feature = "tls") {
+        unsafe { area_runtime_anchor(area_base) }.current_thread_raw()
     } else {
-        unsafe { runtime_anchor(area_base) }.current_thread_raw()
+        let current: usize;
+        unsafe { core::arch::asm!("move {current}, $tp", current = out(reg) current) };
+        current
     }
 }
 
-pub(super) unsafe fn get_task_pointer() -> usize {
+pub(super) unsafe fn write_current_thread(value: usize) {
+    if !cfg!(feature = "tls") {
+        unsafe { core::arch::asm!("move $tp, {value}", value = in(reg) value) };
+    }
+}
+
+#[cfg(feature = "tls")]
+pub(super) unsafe fn read_kernel_tls() -> usize {
     let value: usize;
     unsafe { core::arch::asm!("move {value}, $tp", value = out(reg) value) };
     value
 }
 
-pub(super) unsafe fn set_task_pointer(value: usize) {
+#[cfg(feature = "tls")]
+pub(super) unsafe fn write_kernel_tls(value: usize) {
     unsafe { core::arch::asm!("move $tp, {value}", value = in(reg) value) };
+}
+
+unsafe fn area_runtime_anchor(area_base: usize) -> &'static crate::CpuRuntimeAnchor {
+    unsafe {
+        &*((area_base + crate::CPU_AREA_RUNTIME_ANCHOR_OFFSET) as *const crate::CpuRuntimeAnchor)
+    }
 }

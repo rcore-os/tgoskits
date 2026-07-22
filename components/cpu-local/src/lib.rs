@@ -4,32 +4,30 @@
 #[cfg(feature = "host-test")]
 extern crate std;
 
-mod header;
+mod area;
+mod error;
 mod identity;
 #[cfg(target_arch = "loongarch64")]
 pub mod loongarch64;
-pub mod platform;
+mod pin;
 mod register;
+mod switch;
 mod symbol;
+mod thread;
 
-pub mod abi;
-
-pub use abi::*;
-pub use header::*;
+pub use area::*;
+pub use error::*;
 pub use identity::*;
-pub use register::{
-    CpuLocalError, PreparedCurrentThreadPublish, commit_current_thread_publish,
-    prepare_current_thread_publish, prepare_current_thread_publish_for_binding, runtime_anchor,
-};
+pub use pin::*;
+pub use register::current_thread;
+#[cfg(feature = "tls")]
+#[doc(hidden)]
+pub use register::install_kernel_tls;
+#[cfg(feature = "tls")]
+pub use register::kernel_tls;
+#[doc(hidden)]
+pub use register::{install_bootstrap_thread, install_cpu_area, scheduler_current_thread};
+pub use switch::{PreparedThreadSwitch, PreviousThreadBinding, prepare_thread_switch};
 #[doc(hidden)]
 pub use symbol::{cpu_area_template_base, cpu_area_template_size};
-
-/// Architecture register allowlist used only by the platform binder/provider.
-#[doc(hidden)]
-pub mod raw {
-    pub use crate::register::{
-        current_area_base_raw, current_area_base_unchecked, current_cpu_binding as current_binding,
-        current_thread, get_task_pointer_raw as get_task_pointer, install_binding,
-        set_task_pointer_raw as set_task_pointer,
-    };
-}
+pub use thread::*;

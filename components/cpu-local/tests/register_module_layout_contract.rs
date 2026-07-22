@@ -16,11 +16,14 @@ fn register_backends_are_split_by_architecture() {
         "aarch64.rs",
         "riscv.rs",
         "loongarch64.rs",
-        "arm.rs",
     ] {
         assert!(
             register_dir.join(backend).is_file(),
             "missing architecture register backend {backend}"
         );
     }
+    assert!(
+        !register_dir.join("arm.rs").exists(),
+        "an unsupported ARM32 backend must not silently return zero or no-op"
+    );
 }

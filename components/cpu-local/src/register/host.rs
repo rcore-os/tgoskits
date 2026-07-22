@@ -1,43 +1,46 @@
 use core::cell::Cell;
 
 use super::*;
-use crate::RegisterModeV1;
 
 std::thread_local! {
-    static CURRENT_BINDING: Cell<Option<CpuBindingV1>> = const { Cell::new(None) };
-    static TASK_POINTER: Cell<usize> = const { Cell::new(0) };
+    static CPU_BASE: Cell<usize> = const { Cell::new(0) };
+    static KERNEL_TLS: Cell<usize> = const { Cell::new(0) };
 }
 
-pub(super) fn validate_arch_binding(_binding: CpuBindingV1) -> Result<(), CpuLocalError> {
+pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
     Ok(())
 }
 
-pub(super) unsafe fn install_current(binding: CpuBindingV1) {
-    CURRENT_BINDING.set(Some(binding));
+pub(super) unsafe fn install_cpu_base(area_base: usize, _boot_thread: usize) {
+    CPU_BASE.set(area_base);
 }
 
-pub(super) unsafe fn read_current_area_base() -> usize {
-    CURRENT_BINDING.get().map_or(0, |binding| binding.area_base)
+pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
+    Ok(CPU_BASE.get())
 }
 
 pub(super) unsafe fn read_current_thread(area_base: usize) -> usize {
-    unsafe { runtime_anchor(area_base) }.current_thread_raw()
+    // Host tests execute on x86_64, whose current pointer is the GS runtime
+    // anchor itself. Modeling that source directly also lets IRQ worker
+    // threads attach to the same serialized CPU fixture without inventing a
+    // second thread-local current-task state source.
+    unsafe { area_runtime_anchor(area_base) }.current_thread_raw()
 }
 
-pub(super) unsafe fn get_task_pointer() -> usize {
-    if image_register_mode() == RegisterModeV1::LinuxCurrent {
-        let area_base = unsafe { read_current_area_base() };
-        unsafe { runtime_anchor(area_base) }.current_thread_raw()
-    } else {
-        TASK_POINTER.get()
-    }
+pub(super) unsafe fn write_current_thread(_value: usize) {}
+
+#[cfg(feature = "tls")]
+pub(super) unsafe fn read_kernel_tls() -> usize {
+    KERNEL_TLS.get()
 }
 
-pub(super) unsafe fn set_task_pointer(value: usize) {
-    if image_register_mode() == RegisterModeV1::LinuxCurrent {
-        let area_base = unsafe { read_current_area_base() };
-        unsafe { runtime_anchor(area_base).publish_current_thread_raw(value) };
-    } else {
-        TASK_POINTER.set(value);
+#[cfg(feature = "tls")]
+pub(super) unsafe fn write_kernel_tls(value: usize) {
+    KERNEL_TLS.set(value);
+}
+
+unsafe fn area_runtime_anchor(area_base: usize) -> &'static crate::CpuRuntimeAnchor {
+    unsafe {
+        &*((area_base + crate::CPU_AREA_RUNTIME_ANCHOR_OFFSET) as *const crate::CpuRuntimeAnchor)
     }
 }

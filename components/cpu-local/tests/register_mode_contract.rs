@@ -1,8 +1,8 @@
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const HEADER: &str = concat!(
-    include_str!("../src/header/mod.rs"),
-    include_str!("../src/header/area.rs"),
-    include_str!("../src/header/thread.rs"),
+    include_str!("../src/lib.rs"),
+    include_str!("../src/area.rs"),
+    include_str!("../src/thread.rs"),
 );
 const REGISTER: &str = concat!(
     include_str!("../src/register/mod.rs"),
@@ -28,22 +28,31 @@ fn image_mode_is_additive_but_the_prefix_layout_is_not() {
         "the CPU-local leaf must discover the live AArch64 exception level at runtime"
     );
     assert!(
-        HEADER.contains("pub struct CpuAreaPrefixV2")
+        HEADER.contains("pub struct CpuAreaPrefix")
             && HEADER.contains("pub struct CpuRuntimeAnchor")
             && HEADER.contains("pub struct BootThreadHeader")
             && HEADER.contains("pub struct CurrentThreadHeader"),
-        "the stable v2 prefix must reserve runtime-anchor and boot-thread cache lines"
+        "the prefix must reserve runtime-anchor and boot-thread cache lines"
     );
     assert!(
         HEADER.contains("CPU_AREA_RUNTIME_ANCHOR_OFFSET")
             && HEADER.contains("CPU_AREA_BOOT_THREAD_OFFSET")
-            && HEADER.contains("size_of::<CpuAreaPrefixV2>() == 192"),
-        "the v2 prefix ABI must keep runtime state at 64 and the boot header at 128"
+            && HEADER.contains("size_of::<CpuAreaPrefix>() == 192"),
+        "the prefix must keep runtime state at 64 and the boot header at 128"
     );
-    assert!(
-        !HEADER.contains("cfg(feature = \"tls\")"),
-        "Cargo image mode must never alter CpuAreaPrefixV2 or CurrentThreadHeader layout"
-    );
+    for type_name in ["CpuRuntimeAnchor", "CpuAreaPrefix", "CurrentThreadHeader"] {
+        let definition = HEADER
+            .split_once(&format!("pub struct {type_name}"))
+            .unwrap_or_else(|| panic!("{type_name} must exist"))
+            .1
+            .split_once("\n}")
+            .unwrap_or_else(|| panic!("{type_name} must have a bounded definition"))
+            .0;
+        assert!(
+            !definition.contains("cfg(feature = \"tls\")"),
+            "Cargo image mode must never alter {type_name} layout"
+        );
+    }
 }
 
 #[test]
@@ -56,13 +65,7 @@ fn current_thread_header_is_task_owned_and_resource_free() {
         .expect("CurrentThreadHeader must have a bounded definition")
         .0;
 
-    for field in [
-        "thread_identity",
-        "context_identity",
-        "cpu_base",
-        "cpu_index",
-        "binding_epoch",
-    ] {
+    for field in ["context", "cpu_area", "binding_epoch", "architecture_state"] {
         assert!(
             header.contains(field),
             "CurrentThreadHeader is missing {field}"
@@ -77,9 +80,8 @@ fn current_thread_header_is_task_owned_and_resource_free() {
 
     for api in [
         "pub const fn new(",
-        "pub fn bind_thread(",
-        "pub unsafe fn bind_cpu(",
-        "pub fn cpu_binding(",
+        "unsafe fn bind_cpu(",
+        "fn cpu_binding(",
     ] {
         assert!(
             HEADER.contains(api),
@@ -89,13 +91,8 @@ fn current_thread_header_is_task_owned_and_resource_free() {
 }
 
 #[test]
-fn register_backends_implement_both_image_modes() {
-    for mode in ["LinuxCurrent", "UnikernelTls"] {
-        assert!(
-            REGISTER.contains(mode),
-            "architecture register binding is missing the {mode} mode"
-        );
-    }
+fn register_backends_implement_both_compile_time_image_modes() {
+    assert!(REGISTER.contains("cfg(feature = \"tls\")"));
 
     assert!(X86_64.contains("IA32_GS_BASE"));
 

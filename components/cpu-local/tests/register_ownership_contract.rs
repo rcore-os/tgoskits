@@ -1,30 +1,30 @@
 //! Architecture register ownership and assembly allowlist contract.
 
-use std::{fs, path::Path};
+use std::{fs, mem::MaybeUninit, path::Path};
 
 #[test]
 #[cfg(feature = "host-test")]
 fn each_host_thread_must_install_its_own_cpu_binding() {
     std::thread::spawn(|| {
-        // SAFETY: this fixture thread models one non-migrating CPU.
-        let pin = unsafe { cpu_local::CpuPin::new_unchecked() };
         assert_eq!(
-            cpu_local::raw::current_binding(&pin),
-            Err(cpu_local::CpuLocalError::NotInitialized)
+            unsafe { cpu_local::with_cpu_pin(|_| ()) },
+            Err(cpu_local::CpuLocalError::AreaNotInstalled)
         );
 
-        let prefix = Box::leak(Box::new(cpu_local::CpuAreaPrefix::template()));
-        let base = (prefix as *mut cpu_local::CpuAreaPrefix) as usize;
-        *prefix = cpu_local::CpuAreaPrefix::for_area(
-            cpu_local::CpuIndex::try_from(1).unwrap(),
-            base,
-            1,
-            0xace0,
+        let storage = Box::leak(Box::new(MaybeUninit::<cpu_local::CpuAreaPrefix>::uninit()));
+        let base = storage.as_mut_ptr() as usize;
+        storage.write(
+            cpu_local::CpuAreaPrefix::initialize(cpu_local::CpuIndex::try_from(1).unwrap(), base)
+                .unwrap(),
         );
+        let area = unsafe { cpu_local::CpuAreaRef::from_initialized_base(base) }.unwrap();
         // SAFETY: this thread explicitly owns the leaked CPU fixture and cannot
-        // receive modeled traps while installing the complete frozen binding.
-        unsafe { cpu_local::raw::install_binding(prefix.header().binding()) }.unwrap();
-        assert_eq!(unsafe { cpu_local::raw::current_area_base_raw(&pin) }, base);
+        // receive modeled traps while installing the completed area.
+        unsafe { cpu_local::install_cpu_area(area) }.unwrap();
+        assert_eq!(
+            unsafe { cpu_local::with_cpu_pin(|pin| pin.area().base()) },
+            Ok(base)
+        );
     })
     .join()
     .unwrap();
@@ -41,13 +41,7 @@ const SYMBOL: &str = include_str!("../src/symbol.rs");
 #[test]
 fn architecture_assembly_stays_in_the_leaf_allowlist() {
     let source_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let allowed = [
-        "x86_64.rs",
-        "aarch64.rs",
-        "riscv.rs",
-        "loongarch64.rs",
-        "arm.rs",
-    ];
+    let allowed = ["x86_64.rs", "aarch64.rs", "riscv.rs", "loongarch64.rs"];
 
     for path in rust_sources(&source_dir) {
         let source = fs::read_to_string(&path)
@@ -72,28 +66,25 @@ fn architecture_assembly_stays_in_the_leaf_allowlist() {
 }
 
 #[test]
-fn unchecked_area_base_uses_a_nonnull_pointer_capability() {
+fn register_validation_returns_a_typed_cpu_area() {
     assert!(
-        REGISTER.contains("pub unsafe fn current_area_base_unchecked() -> NonNull<u8>"),
-        "the unchecked boot/trap boundary must not expose an untyped nullable integer base"
+        REGISTER.contains("fn current_area() -> Result<CpuAreaRef, CpuLocalError>"),
+        "register validation must reconstruct a typed CpuAreaRef"
     );
 }
 
 #[test]
-fn leaf_exports_only_raw_value_reads_for_higher_layer_verification() {
+fn register_leaf_does_not_export_raw_area_or_thread_access() {
     assert!(
-        REGISTER.contains("pub unsafe fn current_area_base_raw("),
-        "ax-percpu needs a raw value-only register read before layout verification"
+        !REGISTER.contains("pub unsafe fn current_area_base_raw(")
+            && !REGISTER.contains("pub unsafe fn current_thread_raw("),
+        "architecture values must remain behind shared typed validation"
     );
     assert!(
         !REGISTER.contains("pub fn current_area_base(")
             && !REGISTER.contains("pub fn current_header(")
             && !REGISTER.contains("pub fn verify_current("),
-        "the leaf must not expose safe current-area access that bypasses BoundCpuPin"
-    );
-    assert!(
-        !REGISTER.contains("read_current_area_base() -> CpuLocalAnchor"),
-        "raw register observation must not dereference a header to recover relocation"
+        "the leaf must not expose safe access that bypasses CpuPin"
     );
 }
 
@@ -134,13 +125,13 @@ fn riscv_uses_linux_current_or_unikernel_scratch_by_image_mode() {
 fn x86_and_aarch64_keep_task_tls_separate_from_the_cpu_anchor() {
     let x86 = X86_64;
     assert!(x86.contains("IA32_GS_BASE"));
-    assert!(x86.contains("gs:[{self_base_offset}]"));
-    assert!(x86.contains("gs:[{current_thread_offset}]"));
+    assert!(x86.contains("gs:[{offset}]") && x86.contains("CPU_AREA_SELF_BASE_OFFSET"));
+    assert!(x86.contains("CPU_AREA_CURRENT_THREAD_OFFSET"));
     let x86_install = x86
-        .split_once("unsafe fn install_current")
+        .split_once("unsafe fn install_cpu_base")
         .unwrap()
         .1
-        .split_once("unsafe fn read_current_area_base")
+        .split_once("unsafe fn read_cpu_base")
         .unwrap()
         .0;
     assert!(!x86_install.contains("IA32_FS_BASE"));
@@ -149,14 +140,14 @@ fn x86_and_aarch64_keep_task_tls_separate_from_the_cpu_anchor() {
     assert!(aarch64.contains("TPIDR_EL1"));
     assert!(aarch64.contains("TPIDR_EL2"));
     let install = aarch64
-        .split_once("unsafe fn install_current")
+        .split_once("unsafe fn install_cpu_base")
         .unwrap()
         .1
-        .split_once("unsafe fn read_current_area_base")
+        .split_once("unsafe fn read_cpu_base")
         .unwrap()
         .0;
     let area_read = aarch64
-        .split_once("unsafe fn read_current_area_base")
+        .split_once("unsafe fn read_cpu_base")
         .unwrap()
         .1
         .split_once("unsafe fn read_current_thread")
@@ -164,9 +155,9 @@ fn x86_and_aarch64_keep_task_tls_separate_from_the_cpu_anchor() {
         .0;
     assert!(!install.contains("TPIDR_EL0"));
     assert!(!area_read.contains("TPIDR_EL0"));
-    let task_pointer = aarch64.split_once("unsafe fn get_task_pointer").unwrap().1;
+    let task_pointer = aarch64.split_once("unsafe fn read_kernel_tls").unwrap().1;
     assert!(task_pointer.contains("TPIDR_EL0"));
-    assert!(task_pointer.contains("RegisterModeV1::LinuxCurrent"));
+    assert!(aarch64.contains("cfg(feature = \"tls\")"));
 }
 
 #[test]

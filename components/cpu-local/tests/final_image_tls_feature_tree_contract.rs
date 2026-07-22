@@ -33,6 +33,7 @@ fn axvisor_final_images_select_the_complete_unikernel_tls_chain() {
         for package in TLS_CHAIN {
             assert_has_feature(&feature_graph, package, "tls", "Axvisor", target);
         }
+        assert_has_feature(&feature_graph, "axvm", "tls", "Axvisor", target);
     }
 }
 

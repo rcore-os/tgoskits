@@ -10,7 +10,8 @@ fn current_anchor_verifies_the_live_r21_against_ks3() {
     );
     let semantic = REGISTER.split_whitespace().collect::<String>();
     assert!(
-        semantic.contains("assert_eq!(area_base,shadow,"),
+        semantic.contains("ifarea_base!=shadow{")
+            && semantic.contains("super::fatal_register_invariant();"),
         "a mismatched live r21 and KS3 must be a fatal CPU-local invariant"
     );
     assert!(
