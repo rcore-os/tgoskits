@@ -199,3 +199,17 @@ fn push_topology_item<T>(items: &mut Vec<T>, item: T) -> AxResult<()> {
     items.push(item);
     Ok(())
 }
+
+#[cfg(axtest)]
+pub(crate) fn push_topology_item_preserves_order_and_grows_capacity() -> bool {
+    let mut items: Vec<u32> = Vec::new();
+    // First push seeds the vector with one element.
+    push_topology_item(&mut items, 10).is_ok()
+        && items == [10]
+        // Subsequent pushes preserve insertion order.
+        && push_topology_item(&mut items, 20).is_ok()
+        && push_topology_item(&mut items, 30).is_ok()
+        && items == [10, 20, 30]
+        // Capacity must grow to accommodate the reservation request.
+        && items.capacity() >= 3
+}

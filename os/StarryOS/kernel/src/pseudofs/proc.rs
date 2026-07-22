@@ -2086,6 +2086,104 @@ pub(crate) fn formatting_contracts_hold_for_test() -> bool {
         && proc_net_snmp_field_counts_match()
         && proc_net_dev_header_matches_linux_layout()
         && task_status_fields_match_linux_layout()
+        && usb_label_helpers_match_busybox_lsusb_layout()
+        && usb_bcd_format_matches_linux_layout()
+        && proc_mountinfo_lines_match_linux_layout()
+        && descriptor_helpers_round_trip_known_offsets()
+        && format_cpu_presence_list_handles_single_cpu()
+        && format_cpu_presence_hex_handles_zero_size_input()
+}
+
+#[cfg(axtest)]
+fn usb_label_helpers_match_busybox_lsusb_layout() -> bool {
+    // usb_class_label: cover every match arm.
+    usb_class_label(0x00) == ">ifc"
+        && usb_class_label(0x03) == "HID"
+        && usb_class_label(0x08) == "stor."
+        && usb_class_label(0x09) == "hub"
+        && usb_class_label(0x0e) == "video"
+        && usb_class_label(0xe0) == "wlcon"
+        && usb_class_label(0xef) == "misc"
+        && usb_class_label(0xff) == "vend."
+        // Unknown class falls back to the "unk." label.
+        && usb_class_label(0x42) == "unk."
+        // usb_endpoint_type_label: cover every match arm.
+        && usb_endpoint_type_label(0) == "Ctrl"
+        && usb_endpoint_type_label(1) == "Isoc"
+        && usb_endpoint_type_label(2) == "Bulk"
+        && usb_endpoint_type_label(3) == "Int."
+        && usb_endpoint_type_label(9) == "Unk."
+}
+
+#[cfg(axtest)]
+fn usb_bcd_format_matches_linux_layout() -> bool {
+    // Linux renders bcdUSB/bcdDevice as Major.Minor_subminor with each nibble
+    // shown as one hex digit. The Rust `{:2x}` spec pads the major field to a
+    // minimum width of 2 with a *space* (not '0'), so single-digit majors are
+    // preceded by one space. 0x0210 -> " 2.10".
+    usb_bcd(0x0210) == " 2.10"
+        // 0x0100 -> " 1.00" (single-digit major, space-padded).
+        && usb_bcd(0x0100) == " 1.00"
+        // 0x0312 -> " 3.12".
+        && usb_bcd(0x0312) == " 3.12"
+        // 0xa051 -> "a0.51" (two-digit major, no padding).
+        && usb_bcd(0xa051) == "a0.51"
+        // 0xffff -> "ff.ff" (largest possible nibbles).
+        && usb_bcd(0xffff) == "ff.ff"
+        // 0x0001 -> " 0.01" (zero major still width-2-padded).
+        && usb_bcd(0x0001) == " 0.01"
+}
+
+#[cfg(axtest)]
+fn proc_mountinfo_lines_match_linux_layout() -> bool {
+    let text = render_mountinfo();
+    let line_count = text.lines().count();
+    // Must include the root fs plus the standard pseudo mounts.
+    line_count == 7
+        && text.contains("21 20 254:0 / / rw,relatime - ")
+        && text.contains("/dev rw,nosuid,relatime - devtmpfs devtmpfs rw")
+        && text.contains("/dev/shm rw,nosuid,nodev - tmpfs tmpfs rw")
+        && text.contains("/tmp rw,nosuid,nodev - tmpfs tmpfs rw")
+        && text.contains("/proc rw,nosuid,nodev,noexec,relatime - proc proc rw")
+        && text.contains("/sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw")
+        && text.contains("/sys/kernel/debug rw,nosuid,nodev,noexec,relatime - debugfs debugfs rw")
+}
+
+#[cfg(axtest)]
+fn descriptor_helpers_round_trip_known_offsets() -> bool {
+    // Build a blob with known bytes at the u8 and u16 read offsets.
+    let blob: Vec<u8> = alloc::vec![0x10, 0x20, 0x30, 0x40, 0x50];
+    // In-bounds reads return the expected value.
+    descriptor_u8(&blob, 0) == 0x10
+        && descriptor_u8(&blob, 4) == 0x50
+        // Out-of-bounds u8 reads return 0 (no panic).
+        && descriptor_u8(&blob, 99) == 0
+        && descriptor_u16(&blob, 0) == 0x2010
+        && descriptor_u16(&blob, 3) == 0x5040
+        // Partial out-of-bounds u16 reads (offset+1 past end) return the high
+        // byte paired with 0 (descriptor_u8 returns 0 for the missing byte).
+        && descriptor_u16(&blob, 4) == 0x0050
+}
+
+#[cfg(axtest)]
+fn format_cpu_presence_list_handles_single_cpu() -> bool {
+    // Single present CPU with no neighbors yields a bare number.
+    let presence = collect_cpu_presence([0usize], 1);
+    format_cpu_presence_list(&presence) == "0"
+        // All-absent list renders as the empty string (no ranges).
+        && format_cpu_presence_list(&collect_cpu_presence([], 4)).is_empty()
+        // Contiguous range across the whole mask collapses to one range.
+        && format_cpu_presence_list(&collect_cpu_presence([0usize, 1, 2, 3], 4)) == "0-3"
+}
+
+#[cfg(axtest)]
+fn format_cpu_presence_hex_handles_zero_size_input() -> bool {
+    // Empty input still produces at least one 32-bit word ("00000000").
+    format_cpu_presence_hex(&[]) == "00000000"
+        // Exactly 32 CPUs in one word emits a single word.
+        && format_cpu_presence_hex(&collect_cpu_presence([0usize], 32)) == "00000001"
+        // Boundary: cpu 31 sets bit 31 in the single word.
+        && format_cpu_presence_hex(&collect_cpu_presence([31usize], 32)) == "80000000"
 }
 
 #[cfg(axtest)]

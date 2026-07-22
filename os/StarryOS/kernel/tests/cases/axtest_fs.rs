@@ -37,6 +37,11 @@ fn epoll_event_matching_rules_hold() {
 }
 
 #[axtest::def_test]
+fn push_topology_item_preserves_order_and_grows_capacity() {
+    ax_assert!(axtest_exports::push_topology_item_preserves_order_and_grows_capacity());
+}
+
+#[axtest::def_test]
 fn proc_formatting_contracts_hold() {
     ax_assert!(axtest_exports::proc_formatting_contracts_hold());
 }

@@ -210,3 +210,11 @@ pub fn pipe_size_rounding_and_rejection_rules_hold() -> bool {
 pub fn seccomp_filter_construction_rules_hold() -> bool {
     super::task::seccomp_filter_construction_rules_hold_for_test()
 }
+
+pub fn push_topology_item_preserves_order_and_grows_capacity() -> bool {
+    super::file::push_topology_item_preserves_order_and_grows_capacity()
+}
+
+pub fn dummy_stat_fs_fields_match_expected_defaults() -> bool {
+    super::pseudofs::dummy_stat_fs_fields_match_expected_defaults_for_test()
+}

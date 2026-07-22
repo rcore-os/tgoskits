@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
+#![feature(core_io)]
+#![feature(core_io_borrowed_buf)]
 
 extern crate alloc;
 
@@ -15,14 +17,22 @@ mod axtest_axfs_ng_vfs;
 mod axtest_axio;
 #[path = "cases/axtest_axpoll.rs"]
 mod axtest_axpoll;
+#[path = "cases/axtest_core_utils.rs"]
+mod axtest_core_utils;
 #[path = "cases/axtest_fs.rs"]
 mod axtest_fs;
+#[path = "cases/axtest_kernel_guard.rs"]
+mod axtest_kernel_guard;
 #[path = "cases/axtest_memory.rs"]
 mod axtest_memory;
 #[path = "cases/axtest_rsext4.rs"]
 mod axtest_rsext4;
 #[path = "cases/axtest_runtime.rs"]
 mod axtest_runtime;
+#[path = "cases/axtest_scope_local.rs"]
+mod axtest_scope_local;
+#[path = "cases/axtest_starry_vm.rs"]
+mod axtest_starry_vm;
 #[path = "cases/axtest_syscall.rs"]
 mod axtest_syscall;
 

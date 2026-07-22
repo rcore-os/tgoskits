@@ -30,3 +30,8 @@ fn random_write_mixes_entropy() {
 fn time_value_conversion_rules_hold() {
     ax_assert!(axtest_exports::time_value_conversion_rules_hold());
 }
+
+#[axtest::def_test]
+fn dummy_stat_fs_fields_match_expected_defaults() {
+    ax_assert!(axtest_exports::dummy_stat_fs_fields_match_expected_defaults());
+}
