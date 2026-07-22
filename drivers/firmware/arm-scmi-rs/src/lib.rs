@@ -37,12 +37,17 @@ extern crate log;
 
 pub use crate::{
     err::ScmiError,
-    protocol::{Base, Clock, Xfer},
+    protocol::{Base, Clock, ClockAttributes, FuturePoll, RateInfo, Xfer},
+    server::{
+        ScmiServer, ScmiServerBackend, ScmiServerCodecError, ScmiServerOperationError,
+        ScmiServerRequest, ScmiServerResponse,
+    },
     shmem::Shmem,
 };
 
 mod err;
 mod protocol;
+mod server;
 mod shmem;
 mod transport;
 

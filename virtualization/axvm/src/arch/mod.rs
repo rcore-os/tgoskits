@@ -16,19 +16,23 @@ mod riscv64;
 mod x86_64;
 
 #[cfg(target_arch = "aarch64")]
-pub(crate) use aarch64::Aarch64Arch as CurrentArch;
-#[cfg(target_arch = "aarch64")]
 pub use aarch64::ImageLoader;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::fdt;
-#[cfg(target_arch = "loongarch64")]
-pub(crate) use loongarch64::LoongArch64Arch as CurrentArch;
+#[cfg(target_arch = "aarch64")]
+pub(crate) use aarch64::{
+    Aarch64Arch as CurrentArch, VmArchConfig, VmArchState, VmRuntimeArchState,
+};
 #[cfg(target_arch = "loongarch64")]
 pub(crate) use loongarch64::boot as guest_platform;
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch64::boot::ImageLoader;
 #[cfg(target_arch = "loongarch64")]
 pub(crate) use loongarch64::fdt;
+#[cfg(target_arch = "loongarch64")]
+pub(crate) use loongarch64::{
+    LoongArch64Arch as CurrentArch, VmArchConfig, VmArchState, VmRuntimeArchState,
+};
 #[cfg(not(target_arch = "loongarch64"))]
 pub(crate) mod guest_platform {
     #[doc(hidden)]
@@ -37,39 +41,52 @@ pub(crate) mod guest_platform {
 #[cfg(target_arch = "riscv64")]
 pub use riscv64::ImageLoader;
 #[cfg(target_arch = "riscv64")]
-pub(crate) use riscv64::Riscv64Arch as CurrentArch;
-#[cfg(target_arch = "riscv64")]
 pub(crate) use riscv64::fdt;
-#[cfg(target_arch = "x86_64")]
-pub(crate) use x86_64::X86_64Arch as CurrentArch;
+#[cfg(target_arch = "riscv64")]
+pub(crate) use riscv64::{
+    Riscv64Arch as CurrentArch, VmArchConfig, VmArchState, VmRuntimeArchState,
+};
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::boot::ImageLoader;
 #[cfg(target_arch = "x86_64")]
 pub(crate) use x86_64::fdt;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use x86_64::{VmArchConfig, VmArchState, VmRuntimeArchState, X86_64Arch as CurrentArch};
 
 /// Architecture-specific public compatibility exports.
 pub mod platform {
     #[cfg(target_arch = "aarch64")]
-    pub use super::aarch64::{host_fdt_bootarg, host_phys_to_virt};
+    pub use super::aarch64::{
+        Aarch64Pl011Model, DW_APB_UART_MODEL_ID, current_host_platform_snapshot,
+        dw_apb_uart_device_requirements, host_fdt_bootarg, host_phys_to_virt,
+        ns16550_device_requirements, pl011_device_requirements, standard_machine_profile,
+    };
     #[cfg(target_arch = "loongarch64")]
     pub use super::loongarch64::irq::{
         register_guest_irq_route as register_loongarch_guest_irq_route,
         unregister_guest_irq_routes as unregister_loongarch_guest_irq_routes,
     };
     #[cfg(target_arch = "loongarch64")]
-    pub use super::loongarch64::{host_fdt_bootarg, host_phys_to_virt};
+    pub use super::loongarch64::{
+        current_host_platform_snapshot, host_fdt_bootarg, host_phys_to_virt,
+        ns16550_device_requirements, standard_machine_profile,
+    };
     #[cfg(target_arch = "riscv64")]
-    pub use super::riscv64::{host_fdt_bootarg, host_phys_to_virt};
+    pub use super::riscv64::{
+        current_host_platform_snapshot, host_fdt_bootarg, host_phys_to_virt,
+        ns16550_device_requirements, standard_machine_profile,
+    };
     #[cfg(target_arch = "x86_64")]
     pub use super::x86_64::irq::{
         register_ioapic_irq_forwarding_activator as register_x86_ioapic_irq_forwarding_activator,
         register_ioapic_irq_forwarding_route as register_x86_ioapic_irq_forwarding_route,
         register_ioapic_irq_forwarding_route_with_trigger as register_x86_ioapic_irq_forwarding_route_with_trigger,
     };
-    #[cfg(all(
-        any(target_arch = "x86_64", target_arch = "loongarch64"),
-        any(feature = "fs", feature = "host-fs")
-    ))]
+    #[cfg(target_arch = "x86_64")]
+    pub use super::x86_64::{
+        current_host_platform_snapshot, standard_machine_profile, x86_com1_device_requirements,
+    };
+    #[cfg(any(feature = "fs", feature = "host-fs"))]
     pub use crate::host::arceos::shutdown_host_filesystems;
 }
 
@@ -94,7 +111,13 @@ pub(crate) fn prepare_guest_boot(
     vm_create_config: &mut axvmconfig::AxVMCrateConfig,
     provider: &dyn crate::boot::BootImageProvider,
 ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
-    CurrentArch::prepare_guest_boot(vm_config, vm_create_config, provider)
+    vm_config.arch_mut().reset_prepared_boot_state();
+    let guest_dtb = CurrentArch::prepare_guest_boot(vm_config, vm_create_config, provider)?;
+    let physical_interrupt_policy = vm_config.physical_interrupt_policy();
+    vm_config
+        .arch()
+        .validate_prepared_boot_state(physical_interrupt_policy)?;
+    Ok(guest_dtb)
 }
 
 pub(crate) fn load_images_from_memory(

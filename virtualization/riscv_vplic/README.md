@@ -1,81 +1,47 @@
 <h1 align="center">riscv_vplic</h1>
 
-<p align="center">RISC-V Virtual PLIC implementation</p>
-
-<div align="center">
-
-[![Crates.io](https://img.shields.io/crates/v/riscv_vplic.svg)](https://crates.io/crates/riscv_vplic)
-[![Docs.rs](https://docs.rs/riscv_vplic/badge.svg)](https://docs.rs/riscv_vplic)
-[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
-
-</div>
+<p align="center">VM-local, software RISC-V PLIC emulation</p>
 
 English | [中文](README_CN.md)
 
-# Introduction
+`riscv_vplic` is a `no_std + alloc` PLIC 1.0.0 device model for hypervisors. Each `VPlicGlobal` owns one VM's priority, enable, pending, active, source-level, threshold, and claim/complete state.
 
-`riscv_vplic` provides RISC-V Virtual PLIC implementation. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+The crate never dereferences a host PLIC aperture and does not assume that host and guest PLIC addresses are identical. A platform IRQ adapter owns physical IRQ routing and signals assigned vPLIC inputs through the AxVM interrupt topology.
 
-## Quick Start
+## Features
 
-### Installation
+- PLIC priority, pending, enable, threshold, and claim/complete registers
+- Independent state for every VM and context
+- Edge and level input APIs, including level re-pending after completion
+- Explicit per-VM source ownership with RAZ/WI for unassigned sources
+- Typed construction, MMIO, context, and source errors
 
-Add this crate to your `Cargo.toml`:
-
-```toml
-[dependencies]
-riscv_vplic = "0.4.2"
-```
-
-### Run Check and Test
-
-```bash
-# Enter the crate directory
-cd virtualization/riscv_vplic
-
-# Format code
-cargo fmt --all
-
-# Run clippy
-cargo clippy --all-targets --all-features
-
-# Run tests
-cargo test --all-features
-
-# Build documentation
-cargo doc --no-deps
-```
-
-## Integration
-
-### Example
+## Usage
 
 ```rust
-use riscv_vplic as _;
+use axvm_types::GuestPhysAddr;
+use riscv_vplic::VPlicGlobal;
 
-fn main() {
-    // Integrate `riscv_vplic` into your project here.
-}
+let plic = VPlicGlobal::new(
+    GuestPhysAddr::from(0x0c00_0000),
+    Some(0x40_0000),
+    2,
+)?;
+plic.restrict_to_assigned_sources();
+plic.assign_source(10)?;
+plic.set_source_level(10, true)?;
+# Ok::<(), riscv_vplic::VplicError>(())
 ```
 
-### Documentation
+AxVM always installs an explicit source assignment policy from `VmMachinePlan`. Physical IRQ ownership and host claim/complete belong to the host adapter, not this crate.
 
-Generate and view API documentation:
+## Validation
 
 ```bash
-cargo doc --no-deps --open
+cargo fmt --all
+cargo xtask clippy --package riscv_vplic
+cargo test -p riscv_vplic --all-features
+RUSTDOCFLAGS="-Dwarnings" cargo doc -p riscv_vplic --no-deps
 ```
 
-Online documentation: [docs.rs/riscv_vplic](https://docs.rs/riscv_vplic)
-
-# Contributing
-
-1. Fork the repository and create a branch
-2. Run local format and checks
-3. Run local tests relevant to this crate
-4. Submit a PR and ensure CI passes
-
-# License
-
-Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.
+Licensed under Apache-2.0.

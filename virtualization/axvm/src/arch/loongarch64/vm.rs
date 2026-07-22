@@ -1,18 +1,22 @@
 //! LoongArch64 VM resource creation and initialization.
 
+use alloc::sync::Arc;
+
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
 use loongarch_vcpu::{LoongArchVCpuCreateConfig, LoongArchVCpuSetupConfig};
 
-use super::{LoongArch64Arch, loongarch_result, npt};
+use super::{
+    LoongArch64Arch, interrupt_controller::LoongArchInterruptController, loongarch_result, npt,
+};
 use crate::{
     AxVmError, AxVmResult, ax_err,
     config::AxVMConfig,
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            PreparedVm,
             address_space::{guest_owned_regions, map_guest_address_space},
-            complete_vm_init, default_device_factories,
+            complete_vm_init,
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -40,27 +44,32 @@ impl LoongArch64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
-        match request {
-            VmInitRequest::Default => {
-                let factories = default_device_factories()?;
-                let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
-                init_vm_with(vm, &factories, interrupt_fabric)
-            }
-            VmInitRequest::Provided {
-                factories,
-                interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
-        }
+    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+        let models = default_virtual_device_models()?;
+        let (interrupt_topology, interrupt_authority) = axdevice::InterruptTopology::new();
+        init_vm_with(
+            vm,
+            &models,
+            Arc::new(interrupt_topology),
+            interrupt_authority,
+        )
     }
+}
+
+fn default_virtual_device_models() -> AxVmResult<axdevice::VirtualDeviceModelRegistry> {
+    let mut registry = axdevice::VirtualDeviceModelRegistry::new();
+    super::ns16550_model::register_ns16550_model(&mut registry, 0x1000)?;
+    super::ns16550_model::register_dw_apb_uart_model(&mut registry, 0x1000)?;
+    Ok(registry)
 }
 
 fn init_vm_with(
     vm: &AxVM,
-    factories: &axdevice::DeviceFactoryRegistry,
-    interrupt_fabric: crate::InterruptFabric,
+    models: &axdevice::VirtualDeviceModelRegistry,
+    interrupt_topology: Arc<axdevice::InterruptTopology>,
+    interrupt_authority: axdevice::InterruptPlanAuthority,
 ) -> AxVmResult {
-    complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
+    complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
         let placements = vcpu_placements(resources);
         let state_count = placements
             .iter()
@@ -86,8 +95,32 @@ fn init_vm_with(
                 iocsr_state: iocsr_state.clone(),
             })
         })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
+        let mut devices = PreparedDevices::empty();
+        register_interrupt_controller(
+            resources.config(),
+            &mut devices.devices,
+            interrupt_topology,
+        )?;
+        interrupt_topology.finalize(&vcpus.interrupt_ports(vm.id(), &placements)?)?;
+        devices.register_planned(
+            resources.config().machine_plan(),
+            models,
+            interrupt_topology,
+            &interrupt_authority,
+        )?;
         devices.register_special_devices(vm)?;
+        let external_irq_sources = resources
+            .config()
+            .machine_plan()
+            .assigned_host_interrupts()
+            .to_vec();
+        let physical_interrupt_policy = resources.config().physical_interrupt_policy();
+        resources.arch_state_mut().connect_external_irq_lines(
+            interrupt_topology,
+            &interrupt_authority,
+            physical_interrupt_policy,
+            &external_irq_sources,
+        )?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);
@@ -98,11 +131,58 @@ fn init_vm_with(
     })
 }
 
+fn register_interrupt_controller(
+    config: &AxVMConfig,
+    devices: &mut axdevice::AxVmDevices,
+    interrupt_topology: &axdevice::InterruptTopology,
+) -> AxVmResult {
+    let layout = match config.machine_plan().interrupt_controller() {
+        Some(crate::machine::InterruptControllerPlan::LoongArch(layout)) => layout,
+        Some(_) => {
+            return Err(AxVmError::invalid_config(
+                "LoongArch VM machine plan contains a controller for another architecture",
+            ));
+        }
+        None => {
+            return Err(AxVmError::invalid_config(
+                "LoongArch VM machine plan has no mandatory PCH-PIC/EIOINTC controller",
+            ));
+        }
+    };
+    let pch_pic_base = usize::try_from(layout.pch_pic().base())
+        .map_err(|_| AxVmError::invalid_config("PCH-PIC base exceeds usize"))?;
+    let pch_pic_size = usize::try_from(layout.pch_pic().size())
+        .map_err(|_| AxVmError::invalid_config("PCH-PIC size exceeds usize"))?;
+
+    let pch_pic = Arc::new(axdevice::LoongArchPchPic::new(
+        pch_pic_base.into(),
+        pch_pic_size,
+    ));
+    let controller = Arc::new(LoongArchInterruptController::new(
+        axdevice::InterruptControllerId::new(0),
+        pch_pic.clone(),
+    ));
+    devices
+        .add_loongarch_pch_pic_controller(
+            axdevice::MmioDeviceAdapter::from_arc(pch_pic),
+            controller.clone(),
+            controller.registration(),
+            interrupt_topology,
+        )
+        .map_err(|error| AxVmError::device("register LoongArch PCH-PIC/EIOINTC topology", error))?;
+    info!(
+        "LoongArch PCH-PIC initialized with base GPA {:#x} and length {:#x}",
+        pch_pic_base, pch_pic_size
+    );
+    Ok(())
+}
+
 fn build_vcpu_setup_config(
     config: &AxVMConfig,
     _memory_regions: &[crate::vm::VMMemoryRegion],
 ) -> AxVmResult<<super::AxvmLoongArchVcpu as VmArchVcpuOps>::SetupConfig> {
-    let passthrough = config.interrupt_mode() == axvm_types::VMInterruptMode::Passthrough;
+    let passthrough = config.physical_interrupt_policy()
+        == axvm_types::PhysicalInterruptPolicy::HardwareForwarded;
     Ok(LoongArchVCpuSetupConfig {
         passthrough_interrupt: passthrough,
         passthrough_timer: passthrough,

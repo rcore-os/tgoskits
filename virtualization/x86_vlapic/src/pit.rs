@@ -10,7 +10,6 @@ const PIT_CHANNEL0: u16 = 0x40;
 const PIT_CHANNEL2: u16 = 0x42;
 const PIT_COMMAND: u16 = 0x43;
 const PIT_SPEAKER_CONTROL: u16 = 0x61;
-const PIT_PORT_END: u16 = PIT_SPEAKER_CONTROL;
 
 const PIT_BASE_FREQUENCY_HZ: u64 = 1_193_182;
 const NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
@@ -366,9 +365,15 @@ impl<H: X86VlapicHostOps> Default for EmulatedPit<H> {
 }
 
 impl<H: X86VlapicHostOps> EmulatedPit<H> {
-    /// Returns the PIT port range.
-    pub fn address_range(&self) -> X86PortRange {
-        X86PortRange::new(X86Port::new(PIT_CHANNEL0), X86Port::new(PIT_PORT_END))
+    /// Returns the two discrete PIT timer and speaker-control port ranges.
+    pub fn port_ranges(&self) -> [X86PortRange; 2] {
+        [
+            X86PortRange::new(X86Port::new(PIT_CHANNEL0), X86Port::new(PIT_COMMAND)),
+            X86PortRange::new(
+                X86Port::new(PIT_SPEAKER_CONTROL),
+                X86Port::new(PIT_SPEAKER_CONTROL),
+            ),
+        ]
     }
 
     /// Handles a PIT port read.

@@ -18,7 +18,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use axdevice_base::Device;
 
-use crate::DeviceManagerResult;
+use crate::{ControllerRegistration, DeviceManagerResult, InterruptEndpointRegistration};
 
 /// A device capability that can be polled by the VM runtime.
 pub trait PollableDeviceOps: Send + Sync {
@@ -33,6 +33,10 @@ pub enum DeviceRegistration {
     Device(Arc<dyn Device>),
     /// A capability that requires periodic polling.
     Pollable(Arc<dyn PollableDeviceOps>),
+    /// An interrupt controller and its connection capabilities.
+    InterruptController(ControllerRegistration),
+    /// A planner-authorized endpoint consumed by a device in this bundle.
+    InterruptEndpoint(InterruptEndpointRegistration),
 }
 
 /// A set of device capabilities that must be registered atomically.
@@ -43,6 +47,8 @@ pub enum DeviceRegistration {
 pub struct DeviceBundle {
     pub(crate) devices: Vec<Arc<dyn Device>>,
     pub(crate) pollable: Vec<Arc<dyn PollableDeviceOps>>,
+    pub(crate) interrupt_controllers: Vec<ControllerRegistration>,
+    pub(crate) interrupt_endpoints: Vec<InterruptEndpointRegistration>,
 }
 
 impl DeviceBundle {
@@ -51,6 +57,8 @@ impl DeviceBundle {
         Self {
             devices: Vec::new(),
             pollable: Vec::new(),
+            interrupt_controllers: Vec::new(),
+            interrupt_endpoints: Vec::new(),
         }
     }
 
@@ -66,6 +74,12 @@ impl DeviceBundle {
         match registration {
             DeviceRegistration::Device(device) => self.devices.push(device),
             DeviceRegistration::Pollable(device) => self.pollable.push(device),
+            DeviceRegistration::InterruptController(controller) => {
+                self.interrupt_controllers.push(controller);
+            }
+            DeviceRegistration::InterruptEndpoint(endpoint) => {
+                self.interrupt_endpoints.push(endpoint);
+            }
         }
     }
 
@@ -77,7 +91,10 @@ impl DeviceBundle {
 
     /// Returns whether this bundle contains no capabilities.
     pub fn is_empty(&self) -> bool {
-        self.devices.is_empty() && self.pollable.is_empty()
+        self.devices.is_empty()
+            && self.pollable.is_empty()
+            && self.interrupt_controllers.is_empty()
+            && self.interrupt_endpoints.is_empty()
     }
 }
 

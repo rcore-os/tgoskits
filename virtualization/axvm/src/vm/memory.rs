@@ -3,10 +3,15 @@
 use alloc::vec::Vec;
 use core::alloc::Layout;
 
-use axvm_types::{GuestPhysAddr, VmMemConfig, VmMemMappingType};
+#[cfg(test)]
+use axvm_types::HostVirtAddr;
+use axvm_types::{GuestPhysAddr, HostPhysAddr, MappingFlags};
 
 use super::{AxVM, VMMemoryRegion};
-use crate::{AxVmResult, ax_err_type};
+use crate::{
+    AxVmResult, ax_err_type,
+    config::{VmMemoryBacking, VmMemoryConfig},
+};
 
 const VM_MEMORY_ALIGN: usize = 2 * 1024 * 1024;
 
@@ -20,9 +25,10 @@ pub struct PreparedMemoryLayout {
 impl PreparedMemoryLayout {
     fn new(regions: Vec<VMMemoryRegion>) -> AxVmResult<Self> {
         let main_memory = regions
-            .first()
+            .iter()
+            .find(|region| !matches!(region.backing, VmMemoryBacking::Reserved { .. }))
             .cloned()
-            .ok_or_else(|| ax_err_type!(InvalidData, "VM must have at least one memory region"))?;
+            .ok_or_else(|| ax_err_type!(InvalidData, "VM must have at least one RAM region"))?;
         Ok(Self {
             main_memory,
             regions,
@@ -40,10 +46,33 @@ impl PreparedMemoryLayout {
     }
 }
 
+/// Selects whether an owned allocation has a fixed or allocator-derived GPA.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GuestMemoryPlacement {
+    /// Map the allocation at a configured guest physical address.
+    Fixed(GuestPhysAddr),
+    /// Use the allocation's host physical address as its guest physical address.
+    Identity,
+}
+
 pub(crate) trait MemoryRegionMapper {
     fn prepared_memory_regions(&self) -> Vec<VMMemoryRegion>;
-    fn allocate_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult<()>;
-    fn map_reserved_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult;
+
+    fn allocate_memory_region(
+        &self,
+        layout: Layout,
+        placement: GuestMemoryPlacement,
+        flags: MappingFlags,
+    ) -> AxVmResult;
+
+    fn map_backed_memory_region(
+        &self,
+        layout: Layout,
+        gpa: GuestPhysAddr,
+        hpa: HostPhysAddr,
+        flags: MappingFlags,
+        backing: VmMemoryBacking,
+    ) -> AxVmResult;
 }
 
 impl MemoryRegionMapper for AxVM {
@@ -51,22 +80,39 @@ impl MemoryRegionMapper for AxVM {
         self.memory_regions()
     }
 
-    fn allocate_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult<()> {
-        self.alloc_memory_region(layout, gpa).map(|_| ())
+    fn allocate_memory_region(
+        &self,
+        layout: Layout,
+        placement: GuestMemoryPlacement,
+        flags: MappingFlags,
+    ) -> AxVmResult {
+        let (gpa, backing) = match placement {
+            GuestMemoryPlacement::Fixed(gpa) => (Some(gpa), VmMemoryBacking::Allocated),
+            GuestMemoryPlacement::Identity => (None, VmMemoryBacking::IdentityAllocated),
+        };
+        self.alloc_owned_memory_region_with_flags(layout, gpa, flags, backing)
+            .map(|_| ())
     }
 
-    fn map_reserved_memory_region(&self, layout: Layout, gpa: Option<GuestPhysAddr>) -> AxVmResult {
-        self.map_reserved_memory_region(layout, gpa)
+    fn map_backed_memory_region(
+        &self,
+        layout: Layout,
+        gpa: GuestPhysAddr,
+        hpa: HostPhysAddr,
+        flags: MappingFlags,
+        backing: VmMemoryBacking,
+    ) -> AxVmResult {
+        self.map_backed_memory_region(layout, gpa, hpa, flags, backing)
     }
 }
 
 pub(crate) struct MemoryLayoutBuilder<'a, M: MemoryRegionMapper + ?Sized> {
     mapper: &'a M,
-    configs: &'a [VmMemConfig],
+    configs: &'a [VmMemoryConfig],
 }
 
 impl<'a, M: MemoryRegionMapper + ?Sized> MemoryLayoutBuilder<'a, M> {
-    pub(crate) const fn new(mapper: &'a M, configs: &'a [VmMemConfig]) -> Self {
+    pub(crate) const fn new(mapper: &'a M, configs: &'a [VmMemoryConfig]) -> Self {
         Self { mapper, configs }
     }
 
@@ -77,59 +123,78 @@ impl<'a, M: MemoryRegionMapper + ?Sized> MemoryLayoutBuilder<'a, M> {
         }
 
         for config in self.configs {
-            let plan = MemoryRegionPlan::from_config(config)?;
-            if plan.maps_reserved_memory() {
-                self.mapper
-                    .map_reserved_memory_region(plan.layout(), plan.configured_gpa())?;
-            } else {
-                self.mapper
-                    .allocate_memory_region(plan.layout(), plan.configured_gpa())?;
-            }
+            MemoryRegionPlan::from_config(*config)?.apply(self.mapper)?;
         }
 
         PreparedMemoryLayout::new(self.mapper.prepared_memory_regions())
     }
 }
 
-/// One planned guest memory mapping operation.
-#[derive(Debug, Clone)]
+/// One checked guest-memory mapping operation.
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct MemoryRegionPlan {
-    configured_gpa: Option<GuestPhysAddr>,
+    operation: MemoryRegionOperation,
     layout: Layout,
-    map_type: VmMemMappingType,
+    flags: MappingFlags,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MemoryRegionOperation {
+    Allocate(GuestMemoryPlacement),
+    Map {
+        gpa: GuestPhysAddr,
+        hpa: HostPhysAddr,
+        backing: VmMemoryBacking,
+    },
 }
 
 impl MemoryRegionPlan {
-    pub(crate) fn from_config(config: &VmMemConfig) -> AxVmResult<Self> {
-        let layout = Layout::from_size_align(config.size, VM_MEMORY_ALIGN).map_err(|err| {
+    pub(crate) fn from_config(config: VmMemoryConfig) -> AxVmResult<Self> {
+        let layout = Layout::from_size_align(config.size(), VM_MEMORY_ALIGN).map_err(|error| {
             ax_err_type!(
                 InvalidInput,
-                alloc::format!("invalid VM memory region {config:?}: {err:?}")
+                alloc::format!("invalid VM memory region {config:?}: {error:?}")
             )
         })?;
-        let configured_gpa = match config.map_type {
-            VmMemMappingType::MapIdentical => None,
-            VmMemMappingType::MapAlloc | VmMemMappingType::MapReserved => {
-                Some(GuestPhysAddr::from(config.gpa))
+        let operation = match config.backing() {
+            VmMemoryBacking::Allocated => {
+                MemoryRegionOperation::Allocate(GuestMemoryPlacement::Fixed(config.guest_base()))
             }
+            VmMemoryBacking::IdentityAllocated => {
+                MemoryRegionOperation::Allocate(GuestMemoryPlacement::Identity)
+            }
+            backing @ (VmMemoryBacking::Host { host_base: hpa }
+            | VmMemoryBacking::Shared { host_base: hpa }
+            | VmMemoryBacking::Reserved { host_base: hpa }) => MemoryRegionOperation::Map {
+                gpa: config.guest_base(),
+                hpa,
+                backing,
+            },
         };
         Ok(Self {
-            configured_gpa,
+            operation,
             layout,
-            map_type: config.map_type.clone(),
+            flags: config.flags(),
         })
     }
 
-    pub(crate) fn configured_gpa(&self) -> Option<GuestPhysAddr> {
-        self.configured_gpa
+    fn apply(self, mapper: &(impl MemoryRegionMapper + ?Sized)) -> AxVmResult {
+        match self.operation {
+            MemoryRegionOperation::Allocate(placement) => {
+                mapper.allocate_memory_region(self.layout, placement, self.flags)
+            }
+            MemoryRegionOperation::Map { gpa, hpa, backing } => {
+                mapper.map_backed_memory_region(self.layout, gpa, hpa, self.flags, backing)
+            }
+        }
     }
 
-    pub(crate) const fn layout(&self) -> Layout {
-        self.layout
-    }
-
-    pub(crate) const fn maps_reserved_memory(&self) -> bool {
-        matches!(self.map_type, VmMemMappingType::MapReserved)
+    #[cfg(test)]
+    const fn host_base(self) -> Option<HostPhysAddr> {
+        match self.operation {
+            MemoryRegionOperation::Allocate(_) => None,
+            MemoryRegionOperation::Map { hpa, .. } => Some(hpa),
+        }
     }
 }
 
@@ -140,10 +205,14 @@ mod tests {
 
     use super::*;
 
+    const FLAGS: MappingFlags = MappingFlags::READ
+        .union(MappingFlags::WRITE)
+        .union(MappingFlags::USER);
+
     #[derive(Default)]
     struct FakeMemoryMapper {
         regions: RefCell<Vec<VMMemoryRegion>>,
-        map_reserved_calls: Cell<usize>,
+        backed_calls: Cell<usize>,
     }
 
     impl MemoryRegionMapper for FakeMemoryMapper {
@@ -154,30 +223,45 @@ mod tests {
         fn allocate_memory_region(
             &self,
             layout: Layout,
-            gpa: Option<GuestPhysAddr>,
-        ) -> AxVmResult<()> {
-            let gpa = gpa.unwrap_or_else(|| GuestPhysAddr::from(0x5000_0000));
+            placement: GuestMemoryPlacement,
+            flags: MappingFlags,
+        ) -> AxVmResult {
+            let hpa = HostPhysAddr::from(0x5000_0000);
+            let (gpa, backing) = match placement {
+                GuestMemoryPlacement::Fixed(gpa) => (gpa, VmMemoryBacking::Allocated),
+                GuestMemoryPlacement::Identity => (
+                    GuestPhysAddr::from(hpa.as_usize()),
+                    VmMemoryBacking::IdentityAllocated,
+                ),
+            };
             self.regions.borrow_mut().push(VMMemoryRegion {
                 gpa,
-                hva: gpa.as_usize().into(),
+                hva: HostVirtAddr::from(0x5000_0000),
+                hpa,
                 layout,
+                flags,
+                backing,
                 needs_dealloc: true,
             });
             Ok(())
         }
 
-        fn map_reserved_memory_region(
+        fn map_backed_memory_region(
             &self,
             layout: Layout,
-            gpa: Option<GuestPhysAddr>,
+            gpa: GuestPhysAddr,
+            hpa: HostPhysAddr,
+            flags: MappingFlags,
+            backing: VmMemoryBacking,
         ) -> AxVmResult {
-            let gpa = gpa.ok_or_else(|| ax_err_type!(InvalidInput, "reserved GPA is required"))?;
-            self.map_reserved_calls
-                .set(self.map_reserved_calls.get() + 1);
+            self.backed_calls.set(self.backed_calls.get() + 1);
             self.regions.borrow_mut().push(VMMemoryRegion {
                 gpa,
-                hva: gpa.as_usize().into(),
+                hva: HostVirtAddr::from(hpa.as_usize()),
+                hpa,
                 layout,
+                flags,
+                backing,
                 needs_dealloc: false,
             });
             Ok(())
@@ -185,67 +269,71 @@ mod tests {
     }
 
     #[test]
-    fn memory_region_plan_preserves_mapping_intent_from_vm_config() {
-        let alloc = VmMemConfig {
-            gpa: 0x8000_0000,
-            size: 0x20_0000,
-            flags: 0,
-            map_type: VmMemMappingType::MapAlloc,
-        };
-        let reserved = VmMemConfig {
-            gpa: 0x9000_0000,
-            size: 0x10_0000,
-            flags: 0,
-            map_type: VmMemMappingType::MapReserved,
-        };
-        let identical = VmMemConfig {
-            gpa: 0,
-            size: 0x10_0000,
-            flags: 0,
-            map_type: VmMemMappingType::MapIdentical,
-        };
+    fn memory_plan_preserves_non_identity_host_backing() {
+        let config = VmMemoryConfig::new(
+            GuestPhysAddr::from(0x8000_0000),
+            0x20_0000,
+            FLAGS,
+            VmMemoryBacking::Host {
+                host_base: HostPhysAddr::from(0xa000_0000),
+            },
+        )
+        .unwrap();
 
-        assert_eq!(
-            MemoryRegionPlan::from_config(&alloc)
-                .unwrap()
-                .configured_gpa(),
-            Some(GuestPhysAddr::from(0x8000_0000))
-        );
-        assert!(
-            !MemoryRegionPlan::from_config(&alloc)
-                .unwrap()
-                .maps_reserved_memory()
-        );
-        assert!(
-            MemoryRegionPlan::from_config(&reserved)
-                .unwrap()
-                .maps_reserved_memory()
-        );
-        assert!(
-            MemoryRegionPlan::from_config(&identical)
-                .unwrap()
-                .configured_gpa()
-                .is_none()
-        );
+        let plan = MemoryRegionPlan::from_config(config).unwrap();
+
+        assert_eq!(plan.host_base(), Some(HostPhysAddr::from(0xa000_0000)));
     }
 
     #[test]
-    fn prepare_memory_layout_maps_configured_reserved_region_once() {
+    fn prepare_memory_layout_maps_each_configured_backing_once() {
         let mapper = FakeMemoryMapper::default();
-        let configs = vec![VmMemConfig {
-            gpa: 0x4000_0000,
-            size: 0x20_0000,
-            flags: 0,
-            map_type: VmMemMappingType::MapReserved,
-        }];
+        let configs = vec![
+            VmMemoryConfig::new(
+                GuestPhysAddr::from(0x4000_0000),
+                0x20_0000,
+                FLAGS,
+                VmMemoryBacking::Host {
+                    host_base: HostPhysAddr::from(0x6000_0000),
+                },
+            )
+            .unwrap(),
+        ];
         let builder = MemoryLayoutBuilder::new(&mapper, &configs);
 
         let layout = builder.prepare().unwrap();
         let again = builder.prepare().unwrap();
 
         assert_eq!(layout.main_memory().gpa, GuestPhysAddr::from(0x4000_0000));
+        assert_eq!(
+            layout.main_memory().host_paddr(),
+            HostPhysAddr::from(0x6000_0000)
+        );
         assert_eq!(layout.regions().len(), 1);
         assert_eq!(again.regions().len(), 1);
-        assert_eq!(mapper.map_reserved_calls.get(), 1);
+        assert_eq!(mapper.backed_calls.get(), 1);
+    }
+
+    #[test]
+    fn identity_allocated_memory_uses_the_allocator_physical_address_as_its_gpa() {
+        let mapper = FakeMemoryMapper::default();
+        let configs = vec![
+            VmMemoryConfig::new(
+                GuestPhysAddr::from(0),
+                0x20_0000,
+                FLAGS,
+                VmMemoryBacking::IdentityAllocated,
+            )
+            .unwrap(),
+        ];
+
+        let layout = MemoryLayoutBuilder::new(&mapper, &configs)
+            .prepare()
+            .unwrap();
+        let main_memory = layout.main_memory();
+
+        assert_eq!(main_memory.gpa.as_usize(), main_memory.hpa.as_usize());
+        assert_eq!(main_memory.backing, VmMemoryBacking::IdentityAllocated);
+        assert!(main_memory.needs_dealloc);
     }
 }

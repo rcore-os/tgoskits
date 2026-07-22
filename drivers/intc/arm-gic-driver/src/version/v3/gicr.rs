@@ -506,6 +506,13 @@ impl SGI {
         (self.IGROUPR0.get() & bit) != 0
     }
 
+    /// Returns whether the Group modifier bit is set for one private interrupt.
+    pub fn is_group_modifier(&self, intid: IntId) -> bool {
+        let int_id: u32 = intid.into();
+        let bit = 1 << (int_id % 32);
+        (self.IGRPMODR0.get() & bit) != 0
+    }
+
     /// Set interrupt group modifier
     pub fn set_group_modifier(&self, intid: IntId, modifier: bool) {
         let int_id: u32 = intid.into();

@@ -22,7 +22,7 @@ use riscv_decode::{
 #[cfg(feature = "sstc")]
 use riscv_h::register::vstimecmp;
 use riscv_h::register::{
-    hgeie, hie, hstatus, htimedelta, hvip,
+    henvcfg, hgeie, hie, hstatus, htimedelta, hvip,
     vsatp::{self, Vsatp},
     vscause::{self, Vscause},
     vsepc,
@@ -136,6 +136,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
         regs.guest_regs.gprs.set_reg(GprIndex::A0, config.hart_id);
         // `a1` is the address of the device tree blob.
         regs.guest_regs.gprs.set_reg(GprIndex::A1, config.dtb_addr);
+        regs.virtual_hs_csrs.henvcfg = config.isa.henvcfg().bits();
 
         Ok(Self {
             regs,
@@ -238,6 +239,7 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     pub fn bind(&mut self) -> RiscvVcpuResult {
         // Load the vCPU's CSRs from the stored state.
         unsafe {
+            henvcfg::Henvcfg::from_bits(self.regs.virtual_hs_csrs.henvcfg).write();
             let vsatp = Vsatp::from_bits(self.regs.vs_csrs.vsatp);
             vsatp.write();
             let vstvec = Vstvec::from_bits(self.regs.vs_csrs.vstvec);
@@ -305,6 +307,10 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
             // previous guest's virtual IRQs into later host/guest execution.
             hvip::Hvip::from_bits(0).write();
             hgeie::write(0);
+            // `henvcfg` is hart-local execution policy. Clear it before the
+            // physical CPU can run another vCPU so capabilities never leak
+            // between guest CPU models.
+            henvcfg::Henvcfg::from_bits(0).write();
             #[cfg(feature = "sstc")]
             vstimecmp::write(usize::MAX);
             core::arch::asm!("csrw hgatp, x0");

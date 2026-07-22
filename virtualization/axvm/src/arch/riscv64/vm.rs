@@ -1,7 +1,9 @@
 //! RISC-V VM resource creation and initialization.
 
+use alloc::sync::Arc;
+
 use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
-use riscv_vcpu::RiscvVcpuCreateConfig;
+use riscv_vcpu::{RiscvGuestIsaConfig, RiscvVcpuCreateConfig};
 
 use super::{Riscv64Arch, irq, npt};
 use crate::{
@@ -10,9 +12,9 @@ use crate::{
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            PreparedVm,
             address_space::{guest_owned_regions, map_guest_address_space},
-            complete_vm_init, default_device_factories,
+            complete_vm_init,
             devices::PreparedDevices,
             validate_guest_dtb,
             vcpus::{PreparedVcpus, vcpu_placements},
@@ -30,43 +32,70 @@ impl Riscv64Arch {
         })
     }
 
-    pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
-        match request {
-            VmInitRequest::Default => {
-                let mut factories = default_device_factories()?;
-                let mode = vm.interrupt_mode();
-                let emulated_devices = vm.with_config(|config| config.emu_devices().clone());
-                let interrupt_fabric = irq::configure(&mut factories, mode, &emulated_devices)?;
-                init_vm_with(vm, &factories, interrupt_fabric)
-            }
-            VmInitRequest::Provided {
-                factories,
-                interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
-        }
+    pub(crate) fn init_vm(vm: &AxVM) -> AxVmResult {
+        let models = default_virtual_device_models()?;
+        let (interrupt_topology, interrupt_authority) = axdevice::InterruptTopology::new();
+        init_vm_with(
+            vm,
+            &models,
+            Arc::new(interrupt_topology),
+            interrupt_authority,
+        )
     }
+}
+
+fn default_virtual_device_models() -> AxVmResult<axdevice::VirtualDeviceModelRegistry> {
+    let mut registry = axdevice::VirtualDeviceModelRegistry::new();
+    super::ns16550_model::register_ns16550_model(&mut registry, 0x1000)?;
+    super::ns16550_model::register_dw_apb_uart_model(&mut registry, 0x1000)?;
+    Ok(registry)
 }
 
 fn init_vm_with(
     vm: &AxVM,
-    factories: &axdevice::DeviceFactoryRegistry,
-    interrupt_fabric: crate::InterruptFabric,
+    models: &axdevice::VirtualDeviceModelRegistry,
+    interrupt_topology: Arc<axdevice::InterruptTopology>,
+    interrupt_authority: axdevice::InterruptPlanAuthority,
 ) -> AxVmResult {
-    complete_vm_init(vm, interrupt_fabric, |resources, interrupt_fabric| {
+    complete_vm_init(vm, interrupt_topology, |resources, interrupt_topology| {
         let placements = vcpu_placements(resources);
         let dtb_addr = resources
             .config()
             .image_config()
             .dtb_load_gpa
             .unwrap_or_default();
+        let guest_isa = match resources.config().machine_mode() {
+            axvm_types::VmMachineMode::Passthrough => RiscvGuestIsaConfig::inherited_host(),
+            axvm_types::VmMachineMode::Virtual => RiscvGuestIsaConfig::baseline(),
+        };
         let vcpus = PreparedVcpus::create(vm.id(), &placements, |placement| {
             Ok(RiscvVcpuCreateConfig {
                 hart_id: placement.id,
                 dtb_addr: dtb_addr.as_usize(),
+                isa: guest_isa,
             })
         })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
+        let mut devices = PreparedDevices::empty();
+        let plic = irq::PreparedPlic::from_machine_plan(resources.config().machine_plan())?;
+        plic.register(&mut devices.devices, interrupt_topology)?;
+        interrupt_topology.finalize(&vcpus.interrupt_ports(vm.id(), &placements)?)?;
+        devices.register_planned(
+            resources.config().machine_plan(),
+            models,
+            interrupt_topology,
+            &interrupt_authority,
+        )?;
         devices.register_special_devices(vm)?;
+        let external_irq_sources = resources
+            .config()
+            .machine_plan()
+            .assigned_host_interrupts()
+            .to_vec();
+        resources.arch_state_mut().connect_external_irq_lines(
+            interrupt_topology,
+            &interrupt_authority,
+            &external_irq_sources,
+        )?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);

@@ -44,8 +44,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Context;
-use quote::quote;
+use anyhow::{Context, bail};
+use axvmconfig::AxVMCrateConfig;
+use quote::{format_ident, quote};
 use syn::LitStr;
 use toml::Table;
 
@@ -349,6 +350,73 @@ fn generate_firmware_img_loading_functions(
     Ok(())
 }
 
+fn generate_host_memory_reservations(
+    out_file: &mut fs::File,
+    config_files: &[ConfigFile],
+    target_arch: &str,
+) -> anyhow::Result<()> {
+    let mut reservations = Vec::new();
+    for config_file in config_files {
+        let config = AxVMCrateConfig::from_toml_for_target_arch(&config_file.content, target_arch)
+            .with_context(|| {
+                format!(
+                    "failed to parse VM config {} while reserving fixed host memory",
+                    PathBuf::from(&config_file.path).display()
+                )
+            })?;
+        for reservation in config
+            .memory
+            .regions
+            .iter()
+            .filter_map(axvmconfig::MemoryRegionConfig::host_physical_reservation)
+        {
+            if reservation
+                .host_base()
+                .checked_add(reservation.size())
+                .is_none()
+            {
+                bail!(
+                    "host memory reservation {:#x}/{:#x} overflows the physical address space",
+                    reservation.host_base(),
+                    reservation.size()
+                );
+            }
+            let Ok(start) = usize::try_from(reservation.host_base()) else {
+                bail!(
+                    "host memory reservation base {:#x} exceeds the target address width",
+                    reservation.host_base()
+                );
+            };
+            let Ok(size) = usize::try_from(reservation.size()) else {
+                bail!(
+                    "host memory reservation size {:#x} exceeds the target address width",
+                    reservation.size()
+                );
+            };
+            reservations.push((start, size));
+        }
+    }
+
+    let definitions = reservations
+        .into_iter()
+        .enumerate()
+        .map(|(index, (start, size))| {
+            let name = format_ident!("AXVISOR_RESERVED_PHYS_RAM_{index}");
+            quote! {
+                #[used]
+                #[unsafe(link_section = "ax_reserved_phys_ram")]
+                static #name: axplat_dyn::EarlyReservedPhysRamRange =
+                    axplat_dyn::EarlyReservedPhysRamRange::new(#start, #size);
+            }
+        });
+    write_tokens(
+        out_file,
+        quote! {
+            #(#definitions)*
+        },
+    )
+}
+
 fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed=linker.ld");
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR is not set")?);
@@ -400,6 +468,7 @@ fn main() -> anyhow::Result<()> {
             };
             write_tokens(&mut output_file, output)?;
 
+            generate_host_memory_reservations(&mut output_file, &config_files, &arch)?;
             // generate "load kernel and dtb images function"
             generate_firmware_img_loading_functions(&mut output_file, &config_files)?;
             generate_guest_img_loading_functions(&mut output_file, config_files)?;

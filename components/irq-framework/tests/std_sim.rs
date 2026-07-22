@@ -416,6 +416,21 @@ fn boxed_callback_persists_captured_state() {
 }
 
 #[test]
+fn forwarded_irq_transfers_physical_deactivation_to_the_consumer() {
+    let registry = Registry::new(MockOps::with_cpus(1));
+    registry
+        .request(irq(49), IrqRequest::new(|_| IrqReturn::Forwarded))
+        .unwrap();
+
+    let outcome = registry.dispatch(irq(49), CpuId(0));
+
+    assert!(outcome.handled);
+    assert!(outcome.defer_deactivation);
+    assert!(!outcome.wake);
+    assert_eq!(outcome.called, 1);
+}
+
+#[test]
 fn boxed_callback_rejects_concurrent_execution() {
     let registry = Registry::new(MockOps::with_cpus(1));
 

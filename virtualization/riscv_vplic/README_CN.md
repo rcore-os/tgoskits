@@ -1,81 +1,47 @@
 <h1 align="center">riscv_vplic</h1>
 
-<p align="center">RISC-V Virtual PLIC implementation</p>
-
-<div align="center">
-
-[![Crates.io](https://img.shields.io/crates/v/riscv_vplic.svg)](https://crates.io/crates/riscv_vplic)
-[![Docs.rs](https://docs.rs/riscv_vplic/badge.svg)](https://docs.rs/riscv_vplic)
-[![Rust](https://img.shields.io/badge/edition-2021-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
-
-</div>
+<p align="center">每 VM 独立的软件 RISC-V PLIC</p>
 
 [English](README.md) | 中文
 
-# 介绍
+`riscv_vplic` 是面向 hypervisor 的 `no_std + alloc` PLIC 1.0.0 设备模型。每个 `VPlicGlobal` 独立保存一个 VM 的 priority、enable、pending、active、source level、threshold 和 claim/complete 状态。
 
-`riscv_vplic` 提供了 RISC-V Virtual PLIC implementation。它是 TGOSKits 组件集合的一部分，可用于集成 ArceOS、AxVisor 及相关底层系统软件的 Rust 项目。
+该 crate 不解引用 host PLIC MMIO，也不假设 host 与 guest PLIC 地址相同。平台 IRQ adapter 负责物理 IRQ ownership 和路由，并通过 AxVM 中断拓扑触发已经分配的 vPLIC 输入。
 
-## 快速开始
+## 功能
 
-### 添加依赖
+- PLIC priority、pending、enable、threshold 与 claim/complete 寄存器
+- 每 VM、每 context 独立状态
+- edge/level 输入，以及 level 在 complete 后重新 pending
+- 显式的每 VM source ownership；未分配位为 RAZ/WI
+- 构造、MMIO、context 和 source 的结构化错误
 
-在 `Cargo.toml` 中加入：
-
-```toml
-[dependencies]
-riscv_vplic = "0.4.2"
-```
-
-### 检查与测试
-
-```bash
-# 进入 crate 目录
-cd virtualization/riscv_vplic
-
-# 代码格式化
-cargo fmt --all
-
-# 运行 clippy
-cargo clippy --all-targets --all-features
-
-# 运行测试
-cargo test --all-features
-
-# 生成文档
-cargo doc --no-deps
-```
-
-## 集成方式
-
-### 示例
+## 使用
 
 ```rust
-use riscv_vplic as _;
+use axvm_types::GuestPhysAddr;
+use riscv_vplic::VPlicGlobal;
 
-fn main() {
-    // 在这里将 `riscv_vplic` 集成到你的项目中。
-}
+let plic = VPlicGlobal::new(
+    GuestPhysAddr::from(0x0c00_0000),
+    Some(0x40_0000),
+    2,
+)?;
+plic.restrict_to_assigned_sources();
+plic.assign_source(10)?;
+plic.set_source_level(10, true)?;
+# Ok::<(), riscv_vplic::VplicError>(())
 ```
 
-### 文档
+AxVM 总是根据 `VmMachinePlan` 安装显式 source assignment。物理 IRQ ownership 和 host claim/complete 属于 host adapter，不属于该 crate。
 
-生成并查看 API 文档：
+## 验证
 
 ```bash
-cargo doc --no-deps --open
+cargo fmt --all
+cargo xtask clippy --package riscv_vplic
+cargo test -p riscv_vplic --all-features
+RUSTDOCFLAGS="-Dwarnings" cargo doc -p riscv_vplic --no-deps
 ```
 
-在线文档：[docs.rs/riscv_vplic](https://docs.rs/riscv_vplic)
-
-# 贡献
-
-1. Fork 仓库并创建分支
-2. 在本地运行格式化与检查
-3. 运行与该 crate 相关的测试
-4. 提交 PR 并确保 CI 通过
-
-# 许可证
-
-本项目采用 Apache License 2.0 许可证。详情见 [LICENSE](./LICENSE)。
+许可证：Apache-2.0。

@@ -6,7 +6,7 @@ use ax_plat::{
     console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
     impl_plat_interface,
     init::InitIf,
-    mem::{DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, RawRange},
+    mem::{DCacheOp, IomapAttrs, IomapDecision, IomapError, MemIf, PhysAddr, RawRange},
     power::PowerIf,
     time::TimeIf,
 };
@@ -46,7 +46,17 @@ impl ConsoleIf for DummyConsole {
         Err(ConsoleDeviceIdError::NotSpecified)
     }
 
+    fn physical_mmio_base() -> Option<PhysAddr> {
+        None
+    }
+
     fn claim_runtime_output() {}
+
+    fn try_suspend_boot_output() -> bool {
+        false
+    }
+
+    fn resume_boot_output() {}
 
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<IrqId> {
@@ -151,6 +161,10 @@ impl PowerIf for DummyPower {
 
     fn cpu_num() -> usize {
         1
+    }
+
+    fn cpu_hardware_id(cpu_id: usize) -> Option<usize> {
+        (cpu_id == 0).then_some(0)
     }
 }
 

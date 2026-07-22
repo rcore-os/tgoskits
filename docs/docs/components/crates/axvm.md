@@ -1,198 +1,138 @@
 # `axvm`
 
 > 路径：`virtualization/axvm`
-> 类型：库 crate
-> 分层：组件层 / 可复用基础组件
-> 版本：`0.2.3`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/vm.rs`、`src/vcpu.rs`、`src/hal.rs`、`src/config.rs`
 
-`axvm` 是 Axvisor 虚拟化软件栈中的“VM 资源管理层”。它不负责 Hypervisor 顶层编排，也不直接实现所有架构相关虚拟化细节，而是把虚拟机对象、vCPU 列表、客户机地址空间、设备集合和生命周期状态封装成一个统一的 `AxVM` 抽象，供上层 VMM 直接使用。
+`axvm` 是 VM 领域与资源生命周期层。它把不可变机型请求、host 平台快照、设备/中断
+拓扑、Guest 地址空间、固件、vCPU 与启动状态组装成一个可事务创建的 `AxVM`。Axvisor
+负责文件 I/O 和顶层编排；架构 crate 负责硬件细节。
 
-## 架构设计
-### 设计定位
-从职责上看，`axvm` 位于三类组件的交汇处：
+## 统一机型流程
 
-- 向下依赖 `axvm-types`、各架构 vCPU crate、`axaddrspace`、`axdevice` 等组件，承接 vCPU、地址空间和设备模型。
-- 向外通过 `AxVMHal` 把宿主能力注入进来，例如地址翻译、时间、当前 VM/vCPU/pCPU 信息和中断注入。
-- 向上被 Axvisor 的 `vmm` 层直接调用，作为真正的 VM 实例与生命周期实体。
-
-可以把 `axvm` 理解为“可被 Hypervisor 编排的 VM 对象层”，而不是顶层 Hypervisor 程序。
-
-### 模块结构
-- `src/lib.rs`：crate 入口，导出 `AxVM`、`AxVMRef`、`VMMemoryRegion`、`VMStatus`、`config`、`AxVMHal` 与 `has_hardware_support()`。
-- `src/vm.rs`：核心实现文件，定义 `AxVM`、内部可变/不可变状态、内存区管理、状态切换、`init()`、`boot()`、`shutdown()`、`run_vcpu()` 等。
-- `src/vcpu.rs`：AxVM 自有 vCPU wrapper、状态机、current-vCPU 绑定和架构适配层，按 `x86_64`、`riscv64`、`aarch64`、`loongarch64` 选择具体后端。
-- `src/hal.rs`：定义 `AxVMHal` trait，规定宿主必须提供的能力边界。
-- `src/config.rs`：把 `axvmconfig` 的 TOML 侧配置转成运行时 `AxVMConfig`、`AxVCpuConfig`、`VMImageConfig`、`PhysCpuList` 等结构。
-
-### 1.3 关键数据结构
-- `AxVM<H, U>`：虚拟机主对象，其中 `H: AxVMHal`、`U: AxVCpuHal`。
-- `AxVMInnerConst<U>`：初始化后不再变化的部分，主要是 `phys_cpu_ls`、`vcpu_list` 和 `devices`。
-- `AxVMInnerMut<H>`：可变状态，包含 `address_space`、`memory_regions`、`config` 和 `vm_status`。
-- `VMMemoryRegion`：记录客户机物理地址、宿主虚拟地址、布局信息和是否需要回收。
-- `VMStatus`：`Loading`、`Loaded`、`Running`、`Suspended`、`Stopping`、`Stopped`，描述 VM 生命周期。
-- `VcpuSnapshot`：对外暴露的架构无关 vCPU 状态快照。
-- `AxVMConfig` / `AxVMCrateConfig`：前者用于运行时 VM 创建，后者更贴近 TOML 配置源。
-
-### 1.4 VM 生命周期与主线
-`axvm` 的主要执行路径如下：
-
-```mermaid
-flowchart TD
-    New["AxVM::new(config)"] --> Init["vm.init()"]
-    Init --> BuildVCpu["创建 vCPU 列表"]
-    Init --> BuildMem["建立客户机地址空间/直通区域"]
-    Init --> BuildDev["构造 AxVmDevices"]
-    BuildVCpu --> SetupVCpu["vcpu.setup(...)"]
-    BuildMem --> Loaded["VMStatus::Loaded"]
-    BuildDev --> Loaded
-    Loaded --> Boot["vm.boot()"]
-    Boot --> Running["VMStatus::Running"]
-    Running --> Run["vm.run_vcpu(vcpu_id)"]
-    Run --> Exit["处理 VM exit"]
-    Running --> Shutdown["vm.shutdown()"]
-    Shutdown --> Stopped["VMStatus::Stopped / 资源清理"]
+```text
+VmMachineRequest
+  + HostPlatformSnapshot
+  -> VmMachinePlanner
+  -> VmMachinePlan
+  -> AxVM build transaction
 ```
 
-对应到源码：
+`VmMachineRequest` 来自严格配置，创建后不可变。`HostPlatformSnapshot` 由 host FDT/ACPI
+和可信 capability 构建，包含稳定设备 identity、资源和 ownership。planner 统一决定：
 
-1. `AxVM::new(config)` 创建空的客户机地址空间，并把状态初始化为 `Loading`。
-2. `init()` 负责真正完成 VM 组装：创建 vCPU、合并直通地址区间、建立设备、设置页表根与 vCPU 初始入口。
-3. `boot()` 把状态切换到 `Running`，但不直接执行客户机代码。
-4. 真正执行路径在 `run_vcpu(vcpu_id)`，它循环处理 `VmExit`。
-5. `shutdown()` 把 VM 推入停止状态；`Drop` 中会触发资源清理。
+- Guest RAM、共享内存与 identity I/O mappings；
+- host device 的 passthrough/deny/virtual replacement disposition；
+- 虚拟设备 MMIO、PIO、IRQ 与 MSI 分配；
+- 中断控制器布局和物理 IRQ forwarding policy；
+- 最终 FDT/ACPI 需要描述的资源。
 
-当前源码表明：
+地址和 ID 分配使用 rust-vmm `vm-allocator`，Virtual FDT 使用 `vm-fdt`，ACPI/AML 使用
+`acpi_tables`。host AML 不会被复制或裁剪到 Guest。
 
-- `suspend` / `resume` 语义尚未完整实现，`Suspended` 更偏状态预留。
-- `boot()` 后不意味着所有资源自动启动，上层 VMM 仍需调度相应的 vCPU 任务。
+## 两种 Machine Mode
 
-### 1.5 架构相关分层
-`axvm` 自身不把所有架构细节写死，而是通过 `src/vcpu.rs` 做一层统一绑定：
+### Passthrough
 
-- `x86_64`：对接 `x86_vcpu`，在运行时选择 VMX 或 SVM 路径。
-- `riscv64`：对接 `riscv_vcpu`。
-- `aarch64`：对接 `arm_vcpu`，并与 `arm_vgic` 协作处理中断控制器与虚拟定时设备。
+Passthrough 从 host FDT/ACPI 得到设备模板。默认授权 `Assignable` 和 `Transferable`，
+但强制保护、deny 和虚拟替换优先。
+x86_64 不再用配置 feature 选择 VMX/SVM，而是在 host 初始化时按 CPUID 固定 backend，
+并为所有参与虚拟化的 pCPU 校验一致性；nested page table 随 backend 选择 EPT 或 NPT。
 
-同时，架构 vCPU crate 只保留贴近硬件的后端能力，统一生命周期和运行循环在 `axvm` 中完成。
+非 RAM I/O aperture 默认 identity-map，同时对 host exclusive、reserved、deny、Guest
+RAM、boot blobs、虚拟设备和虚拟 controller window 打洞。RAM 始终显式分配，未分配
+host RAM 永不映射。
 
-## 核心功能
-### 功能概览
-- 管理虚拟机对象生命周期：创建、初始化、启动、停止。
-- 管理 vCPU 列表与物理 CPU 亲和信息。
-- 管理客户机地址空间和内存区域。
-- 管理直通设备与仿真设备配置。
-- 统一处理 VM exit，并把硬件相关能力通过 HAL 向上层隔离。
+固定 GPA RAM 在 planning 阶段形成 I/O hole；`identity-allocate` RAM 则只记录大小，
+由运行时 allocator 选择 host RAM 后令 GPA=HPA。配置中的零 `guest_base` 是占位符，
+不能被当成低地址固定 RAM hole；FDT 在内存分配完成后使用实际范围重建。
 
-### 2.2 关键 API
-- `AxVM::new(config)`：创建 VM 对象。
-- `AxVM::init()`：构造 vCPU、设备和地址空间，是最关键的初始化步骤。
-- `AxVM::boot()`：切到 `Running` 状态。
-- `AxVM::shutdown()`：进入停止流程。
-- `AxVM::run_vcpu(vcpu_id)`：执行并处理一次或一轮 vCPU 运行/退出。
-- `set_vm_status()` / `vm_status()`：状态管理接口。
-- `has_hardware_support()`：检查底层虚拟化支持是否可用。
+已分配物理 IRQ 的 forwarding policy 有两种：
 
-### 使用场景
-`axvm` 最典型的消费方不是应用程序，而是 VMM：
+- `Mediated`：host IRQ adapter 连接 VM-local controller 的 software input；
+- `HardwareForwarded`：取得 host IRQ ownership 后，使用固定 pCPU route 和 HW-backed LR。
 
-- 根据 TOML 配置创建一个 VM。
-- 准备内存映射、内核镜像和设备配置。
-- 在上层任务系统中为每个 vCPU 分配执行实体。
-- 在 VM exit 循环中调用 `run_vcpu()` 并处理 hypercall、MMIO、外部中断等事件。
+该策略只作用于物理 source。PL011 等虚拟设备仍持有软件 `IrqLine`，并可与 HW-backed
+物理 endpoint 共用一个 VM-local controller 和 CPU Interface。真正不经 EL2 的设备/CPU
+bypass 属于独立的静态分区机型，不由该字段表达。
 
-### 2.4 使用示意
-```rust
-// 伪代码：宿主需要提供 AxVMHal/AxVCpuHal 的具体实现
-let vm = AxVM::<MyVmHal, MyVCpuHal>::new(config)?;
-vm.init()?;
-vm.boot()?;
+### Virtual
 
-let exit_reason = vm.run_vcpu(0)?;
+Virtual 不读取 host 设备模板，不映射 host MMIO/PIO/PCI。只映射显式 Guest RAM、共享
+内存和 backing。虚拟设备窗口只注册到 bus，stage-2 保持 unmapped。controller 固定为
+emulated，设备地址和 IRQ 从架构 profile 按稳定 instance ID 确定性分配。
+
+## 创建事务
+
+Axvisor 先读取 kernel、ramdisk 和外部 firmware，随后 AxVM 一次性 claim plan 中全部
+physical device。`HostDeviceLease` RAII 保存交接状态；claim 竞争、snapshot generation
+变化或后续失败会释放所有 lease。
+
+构建顺序固定为：
+
+1. RAM；
+2. vCPU；
+3. controller 与 vCPU binding；
+4. devices 与 `InterruptTopology`；
+5. bus 与 stage-2 mapping；
+6. FDT/ACPI；
+7. boot state；
+8. commit。
+
+controller、MMIO view 和设备 endpoint 作为同一 bundle/事务注册，避免半初始化 VM。
+
+## 设备与中断边界
+
+虚拟设备通过 `VirtualDeviceModel` 两阶段构建。第一阶段只声明具名资源需求，planner
+完成分配后，第二阶段得到 `ResolvedDeviceResources` 和 `DeviceBuildContext`。
+
+设备调用 `context.irq(slot)` 或 `context.msi(slot)` 获得 endpoint。设备实现不会看到
+vCPU、controller ID、Guest INTID 或 host IRQ；设备到 controller input、controller 到
+vCPU/上级 controller 的关系全部由 machine plan 与 topology 完成。
+
+AArch64 PL011 与 Synopsys DW-APB UART 是完整示例：模型 core 只持有 level
+`IrqLine`，AxVM adapter 提供 per-instance host-console backend、polling 和 FDT 节点。
+DW-APB 与 packed NS16550 使用不同 model ID，运行时访问宽度、寄存器步长和固件属性
+保持一致。CNTP timer 同样每 vCPU 持有 PPI line，并用 generation token 取消过期回调。
+
+## 架构 profile
+
+Virtual 标准 profile 的基础设施：
+
+| 架构 | Controller | Timer/IPI | 默认 console | Firmware |
+| --- | --- | --- | --- | --- |
+| AArch64 | GICv3 | architected timer / PSCI | PL011 | FDT |
+| RISC-V | PLIC | SBI timer/IPI/reset | NS16550 | FDT |
+| x86_64 | LAPIC/IOAPIC | PIT | COM1 | ACPI |
+| LoongArch64 | EIOINTC/PCH-PIC | timer/IPI | NS16550 | ACPI/fw_cfg |
+
+console 可用 `disable_defaults = ["console"]` 关闭；controller、timer 和 reset 是强制
+基础设施。Virtual AArch64 默认使用 PL011；host 派生的 Passthrough VM 会按固件选中
+的 UART 使用 PL011、packed NS16550 或 DW-APB 虚拟替换。block、net、RNG 不会隐式
+创建。
+
+## AArch64 ownership
+
+AArch64 从平台 capability 与 FDT 自动识别 host IPI/timer、GIC maintenance 与 Guest
+EL1 timer role，不需要 TOML 列表。GICD/GICR 始终 trap；GICD SPI 按 endpoint ownership
+过滤，host-owned 位 RAZ/WI，Guest GICR/SGI/PPI 状态完全保存在 VM 内，不修改 host
+Redistributor。
+
+可交接 SPI 只有在 host-side release 完成、planner claim 被消费后才能绑定物理 source；
+失败或 Drop 会恢复 priority、trigger、route、pending/active 与 ownership。无隔离 ITS
+capability 时不暴露物理 GITS，但虚拟 MSI 可使用独立的软件 ITS。
+
+## 错误与 feature
+
+library/domain 层返回可匹配的 `AxVmError`、`MachinePlanError`、`DeviceManagerError` 和
+架构 backend 错误；Axvisor 边界再用 `anyhow` 添加文件和编排上下文。Guest 可触发路径
+不使用 panic/todo 代替错误。
+
+crate 默认保持 `no_std + alloc`；可选 `std` feature 用于领域测试和 host fixture。
+
+## 验证
+
+```bash
+cargo test -p axvm --no-default-features --lib --tests
+cargo test -p axvm --features std --lib --tests
+cargo xtask clippy --package axvm
+RUSTDOCFLAGS="-D warnings" cargo doc -p axvm --no-deps
 ```
-
-在实际仓库中，这套流程由 `virtualization/axvm/src/runtime/*` 完成，而不是由普通库使用者直接手写。
-
-## 依赖关系
-```mermaid
-graph LR
-    axvmconfig["axvmconfig"] --> axvm["axvm"]
-    axvm_types["axvm-types"] --> axvm
-    axaddrspace["axaddrspace"] --> axvm
-    axdevice["axdevice"] --> axvm
-    axdevice_base["axdevice_base"] --> axvm
-    arm_vcpu["arm_vcpu / riscv_vcpu / x86_vcpu"] --> axvm
-    arm_vgic["arm_vgic"] --> axvm
-
-    axvm --> axvisor["axvisor"]
-```
-
-### 直接依赖
-- `axvm-types`：提供 VM/vCPU 共享值类型、架构协议 trait 和 VM exit 原因。
-- `axaddrspace`：提供客户机地址空间管理与 GPA 映射能力。
-- `axdevice`、`axdevice_base`：提供虚拟设备与直通设备建模。
-- `axvmconfig`：提供从配置文件到运行时结构的配置来源。
-- 架构相关 vCPU crate：`x86_vcpu`、`riscv_vcpu`、`arm_vcpu`。
-- `arm_vgic`：在 AArch64 路径上参与虚拟中断控制器与定时设备支持。
-
-### 间接依赖
-- `ax-page-table-multiarch`、`ax-page-table-entry`：通过地址空间和页表路径参与 VM 内存管理。
-- `ax-memory-set` 等：在地址空间和内存建模路径上间接提供支撑。
-- `axvisor_api` 生态：更多出现在消费者侧，但会影响 `axvm` 的宿主接入方式。
-
-### 3.3 关键直接消费者
-当前仓库内最重要、也是几乎唯一的直接消费者是 `os/axvisor`。它把 `AxVM<AxVMHalImpl, AxVCpuHalImpl>` 固化为 VMM 内使用的 `VM` 类型，并围绕它组织 vCPU 任务、配置加载与控制台命令。
-
-## 开发指南
-### 接入方式
-```toml
-[dependencies]
-axvm = { workspace = true }
-```
-
-`axvm` 不提供 `vmx` 或 `svm` feature。x86 后端在 AxVM 初始化时由 CPU 能力选择，并在所有参与虚拟化的物理 CPU 上验证一致性。Nested page table 层级由运行时硬件能力探测和 VM 配置共同决定。
-
-### 4.2 初始化顺序
-1. 先从 `axvmconfig` 或其他来源构造 `AxVMConfig`。
-2. 调 `AxVM::new()` 创建空 VM 对象。
-3. 调 `init()` 绑定 vCPU、设备和地址空间。
-4. 由上层 VMM 负责在适当时机调用 `boot()`。
-5. 在宿主调度框架中反复调用 `run_vcpu()` 处理执行与退出原因。
-
-### 4.3 开发注意事项
-- 修改 `init()` 时，要同时验证 vCPU 创建、设备初始化和地址空间映射三条路径。
-- 修改 `VMStatus` 时，要同步检查上层 VMM 的状态机是否仍匹配。
-- 修改 `run_vcpu()` 时，要把这类改动视为 Hypervisor 热路径改动，优先关注 VM exit 分类和错误恢复。
-- 修改 `AxVMHal` trait 时，要同步更新 Axvisor 的 `hal` 实现，否则整个虚拟化栈会失配。
-
-## 测试
-### 单元测试
-当前 crate 内没有完整的 `tests/` 目录，说明 `axvm` 的主要验证方式不是普通 host 单元测试，而是与真实 VMM 路径集成验证。后续若补充单元测试，优先覆盖：
-
-- `VMStatus` 状态转换。
-- 内存区域合并、对齐和回收。
-- 配置解析到运行时结构的转换边界。
-- 错误输入下的失败路径。
-
-### 集成测试
-更重要的是系统级验证：
-
-- Axvisor 的 VM 创建、启动、停止路径。
-- AArch64、x86_64、RISC-V 三种架构相关适配。
-- 直通设备与仿真设备场景。
-- Guest 镜像可正常加载与启动。
-
-### 5.3 覆盖率要求
-- 生命周期主线必须覆盖：`new -> init -> boot -> run_vcpu -> shutdown`。
-- 至少要覆盖一种地址空间映射场景和一种设备处理场景。
-- VM exit 热路径应通过集成测试覆盖成功与异常分支。
-
-## 跨项目定位
-### ArceOS
-`axvm` 与 ArceOS 的关系不是“标准模块依赖”，而是“运行在 ArceOS 宿主之上的虚拟化资源层”。它属于 ArceOS Hypervisor 生态的一部分，复用了 ArceOS 风格的组件化设计，但并不直接参与普通 ArceOS unikernel 的默认运行路径。
-
-### StarryOS
-当前仓库中没有发现 StarryOS 对 `axvm` 的直接依赖。若 StarryOS 参与虚拟化场景，更常见的是作为 Axvisor 的 guest，而不是把 `axvm` 直接链接进 `starry-kernel`。
-
-### Axvisor
-`axvm` 是 Axvisor VMM 的核心依赖之一。Axvisor 负责 VM 配置解析、镜像加载、vCPU 任务调度和控制台命令，而 `axvm` 负责真正承载 VM 对象、状态与底层资源。这种分层使得 Axvisor 可以专注于“编排”，而把“VM 资源生命周期”交给 `axvm` 处理。

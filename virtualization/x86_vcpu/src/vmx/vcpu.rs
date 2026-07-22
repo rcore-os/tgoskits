@@ -40,11 +40,11 @@ use super::{
     },
 };
 use crate::{
-    X86AccessFlags, X86AccessWidth, X86GuestMemoryRegion, X86GuestPhysAddr, X86GuestVirtAddr,
-    X86HostOps, X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig,
-    X86Port, X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit, host,
-    msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag, x86_real_mode_entry_state,
-    xstate::XState,
+    X86AccessFlags, X86AccessWidth, X86EmulatedMmioRegion, X86GuestMemoryRegion, X86GuestPhysAddr,
+    X86GuestVirtAddr, X86HostOps, X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo,
+    X86NestedPagingConfig, X86Port, X86VcpuCreateConfig, X86VcpuError, X86VcpuResult,
+    X86VcpuSetupConfig, X86VmExit, host, msr::Msr, regs::GeneralRegisters,
+    restore_host_interrupt_flag, x86_real_mode_entry_state, xstate::XState,
 };
 
 const VMX_PREEMPTION_TIMER_SET_VALUE: u32 = 100_000;
@@ -61,8 +61,6 @@ const X2APIC_EOI_MSR: u32 = X2APIC_MSR_BASE + 0xb;
 pub const X86_APIC_ACCESS_GPA: usize = 0xfee0_0000;
 const X86_LOCAL_APIC_SIZE: usize = 0x1000;
 const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
-const X86_IOAPIC_BASE: usize = 0xfec0_0000;
-const X86_IOAPIC_SIZE: usize = 0x1000;
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum VmCpuMode {
@@ -129,6 +127,8 @@ pub struct VmxVcpu<H: X86HostOps> {
     guest_cr2: usize,
     /// Guest RAM regions used to read guest instructions and page tables.
     guest_memory_regions: Vec<X86GuestMemoryRegion>,
+    /// Registered guest MMIO windows whose instructions are decoded for the VMM.
+    emulated_mmio_regions: Vec<X86EmulatedMmioRegion>,
 
     // Extra states
     /// The XState of the VCpu. Both host and guest.
@@ -159,6 +159,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
             guest_cr2: 0,
             guest_memory_regions: Vec::new(),
+            emulated_mmio_regions: Vec::new(),
             xstate: XState::new(),
             #[cfg(feature = "tracing")]
             guest_regs_exiting: GeneralRegisters::default(),
@@ -379,7 +380,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
 
 // Implementation of private methods
 impl<H: X86HostOps> VmxVcpu<H> {
-    fn setup_io_bitmap(&mut self, config: X86VcpuSetupConfig) -> X86VcpuResult {
+    fn setup_io_bitmap(&mut self, config: &X86VcpuSetupConfig) -> X86VcpuResult {
         // By default, I/O bitmap is set as `intercept_all`.
         // Todo: these should be combined with emulated pio device management,
         // in `modules/axvm/src/device/x86_64/mod.rs` somehow.
@@ -393,7 +394,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
             .set_intercept_of_range(X86_PIT_PORT_BASE as u32, X86_PIT_PORT_COUNT, true);
         self.io_bitmap
             .set_intercept(X86_PIT_SPEAKER_PORT as u32, true);
-        if config.emulate_com1 {
+        if config.emulates_com1() {
             self.io_bitmap.set_intercept_of_range(
                 X86_COM1_PORT_BASE as u32,
                 X86_COM1_PORT_COUNT,
@@ -436,7 +437,8 @@ impl<H: X86HostOps> VmxVcpu<H> {
         nested_page_table_root: X86HostPhysAddr,
         config: X86VcpuSetupConfig,
     ) -> X86VcpuResult {
-        self.guest_memory_regions = config.guest_memory_regions.clone();
+        self.guest_memory_regions = config.guest_memory_regions().to_vec();
+        self.emulated_mmio_regions = config.emulated_mmio_regions().to_vec();
         let paddr = self.vmcs.phys_addr().as_usize() as u64;
         unsafe {
             vmx::vmclear(paddr).map_err(as_axerr)?;
@@ -444,7 +446,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         self.bind_to_current_processor()?;
         self.setup_msr_bitmap()?;
         self.setup_vmcs_guest(entry)?;
-        self.setup_vmcs_control(nested_page_table_root, true, config)?;
+        self.setup_vmcs_control(nested_page_table_root, true, &config)?;
         self.unbind_from_current_processor()?;
         Ok(())
     }
@@ -549,7 +551,7 @@ impl<H: X86HostOps> VmxVcpu<H> {
         &mut self,
         nested_page_table_root: X86HostPhysAddr,
         is_guest: bool,
-        config: X86VcpuSetupConfig,
+        config: &X86VcpuSetupConfig,
     ) -> X86VcpuResult {
         // Intercept external interrupts and use the VMX preemption timer.
         use PinbasedControls as PinCtrl;
@@ -1066,15 +1068,18 @@ impl<H: X86HostOps> VmxVcpu<H> {
         addr: X86GuestPhysAddr,
         write: bool,
     ) -> Option<(X86VmExit, u8)> {
-        // Keep EPT-violation MMIO decoding scoped to the PC APIC windows used
-        // by the current x86 Linux direct-boot path. The VMX exit qualification
-        // alone does not tell us whether an unmapped GPA is an emulated device
-        // or a genuine missing memory mapping.
+        // The VMX exit qualification alone does not distinguish an emulated
+        // device from a missing guest-memory mapping. Decode only windows that
+        // the VMM registered explicitly, plus the vCPU-owned local APIC.
         let addr_usize = addr.as_usize();
         let local_apic =
             (X86_APIC_ACCESS_GPA..X86_APIC_ACCESS_GPA + X86_LOCAL_APIC_SIZE).contains(&addr_usize);
-        let ioapic = (X86_IOAPIC_BASE..X86_IOAPIC_BASE + X86_IOAPIC_SIZE).contains(&addr_usize);
-        if !local_apic && !ioapic {
+        if !local_apic
+            && !self
+                .emulated_mmio_regions
+                .iter()
+                .any(|region| region.contains(addr))
+        {
             return None;
         }
 

@@ -14,143 +14,268 @@
 
 //! RISC-V virtual PLIC interrupt backend.
 
-use alloc::sync::Arc;
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, MmioDeviceAdapter,
+    AxVmDevices, ControllerInputId, ControllerRegistration, ControllerRole, DeviceBundle,
+    DeviceRegistration, InterruptControllerId, InterruptEndpoint, InterruptEndpointRegistration,
+    InterruptPlanAuthority, InterruptSharing, InterruptTopology, InterruptTriggerMode, IrqError,
+    IrqLine, IrqResult, MmioDeviceAdapter, WiredInterruptInputs, WiredIrqInput, WiredIrqRequest,
+    WiredIrqSink,
 };
-use axdevice_base::{IrqError, IrqLineId, IrqResult, IrqSink};
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, VMInterruptMode};
-use riscv_vplic::{
-    PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE, VPlicGlobal,
+use riscv_vplic::{PLIC_NUM_SOURCES, VPlicGlobal};
+
+use crate::{
+    AxVmError, AxVmResult, ax_err, ax_err_type,
+    machine::{HostInterruptResource, InterruptControllerPlan, RiscvPlicPlan, VmMachinePlan},
 };
 
-use crate::{AxVmError, AxVmResult, ax_err, ax_err_type, irq::InterruptFabric};
+const PLIC_CONTROLLER_ID: InterruptControllerId = InterruptControllerId::new(0);
+
+pub(crate) struct VmArchState {
+    external_irq_routes: BTreeMap<usize, ExternalIrqRoute>,
+}
+
+struct ExternalIrqRoute {
+    line: IrqLine,
+    _registration: InterruptEndpointRegistration,
+}
+
+impl VmArchState {
+    pub(crate) fn new() -> Self {
+        Self {
+            external_irq_routes: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn connect_external_irq_lines(
+        &mut self,
+        topology: &InterruptTopology,
+        authority: &InterruptPlanAuthority,
+        sources: &[HostInterruptResource],
+    ) -> AxVmResult {
+        for interrupt in sources {
+            let source = interrupt.input().value();
+            self.connect_external_irq_line(topology, authority, source, interrupt.input())?;
+        }
+        Ok(())
+    }
+
+    fn connect_external_irq_line(
+        &mut self,
+        topology: &InterruptTopology,
+        authority: &InterruptPlanAuthority,
+        source: usize,
+        input: ControllerInputId,
+    ) -> AxVmResult {
+        let trigger = InterruptTriggerMode::EdgeTriggered;
+        if let Some(existing) = self.external_irq_routes.get(&source) {
+            if existing.line.input() == input && existing.line.trigger() == trigger {
+                return Ok(());
+            }
+            return ax_err!(
+                AlreadyExists,
+                format_args!(
+                    "external interrupt source {source} is already connected to input {:?}",
+                    existing.line.input()
+                )
+            );
+        }
+        let claim = authority.claim_wired(
+            topology,
+            WiredIrqRequest::new(input, trigger, InterruptSharing::Exclusive),
+        )?;
+        let (line, registration) = topology.connect_irq(claim)?.into_parts();
+        self.external_irq_routes.insert(
+            source,
+            ExternalIrqRoute {
+                line,
+                _registration: registration,
+            },
+        );
+        Ok(())
+    }
+
+    fn signal_external_interrupt(&self, source: usize) -> AxVmResult {
+        self.external_irq_routes
+            .get(&source)
+            .ok_or_else(|| {
+                ax_err_type!(
+                    NotFound,
+                    alloc::format!("external interrupt source {source} is not connected")
+                )
+            })?
+            .line
+            .pulse()?;
+        Ok(())
+    }
+}
+
+pub(crate) fn signal_external_interrupt(vm: &crate::AxVM, source: usize) -> AxVmResult {
+    match vm.status() {
+        crate::VmStatus::Running | crate::VmStatus::Paused => vm.with_resources_mut(|resources| {
+            resources.arch_state_mut().signal_external_interrupt(source)
+        }),
+        status => ax_err!(
+            BadState,
+            alloc::format!("VM[{}] cannot accept IRQ in {status:?}", vm.id())
+        ),
+    }
+}
 
 struct RiscvPlicIrqSink {
     vplic: Arc<VPlicGlobal>,
 }
 
-impl IrqSink for RiscvPlicIrqSink {
-    fn set_level(&self, line: IrqLineId, asserted: bool) -> IrqResult {
-        let result = if asserted {
-            self.vplic.set_pending(line.0)
-        } else {
-            self.vplic.clear_pending(line.0)
-        };
-        result.map_err(|error| IrqError::Backend {
-            line,
-            operation: "set vPLIC line level",
-            detail: alloc::format!("{error}"),
-        })
+impl WiredIrqSink for RiscvPlicIrqSink {
+    fn set_level(&self, input: ControllerInputId, asserted: bool) -> IrqResult {
+        self.vplic
+            .set_source_level(input.value(), asserted)
+            .map_err(|error| IrqError::Backend {
+                endpoint: InterruptEndpoint::Wired {
+                    controller: PLIC_CONTROLLER_ID,
+                    input,
+                },
+                operation: "set vPLIC line level",
+                detail: alloc::format!("{error}"),
+            })
     }
 
-    fn pulse(&self, line: IrqLineId) -> IrqResult {
+    fn pulse(&self, input: ControllerInputId) -> IrqResult {
         self.vplic
-            .set_pending(line.0)
+            .set_pending(input.value())
             .map_err(|error| IrqError::Backend {
-                line,
+                endpoint: InterruptEndpoint::Wired {
+                    controller: PLIC_CONTROLLER_ID,
+                    input,
+                },
                 operation: "pulse vPLIC line",
                 detail: alloc::format!("{error}"),
             })
     }
 }
 
-struct RiscvPlicFactory {
-    base_gpa: usize,
-    length: usize,
-    contexts_num: usize,
-    vplic: Arc<VPlicGlobal>,
+struct RiscvPlicWiredInputs {
+    sink: Arc<RiscvPlicIrqSink>,
 }
 
-impl DeviceFactory for RiscvPlicFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::PPPTGlobal
-    }
-
-    fn build(
+impl WiredInterruptInputs for RiscvPlicWiredInputs {
+    fn input(
         &self,
-        config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        if config.base_gpa != self.base_gpa
-            || config.length != self.length
-            || config.cfg_list.as_slice() != [self.contexts_num]
-        {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "build virtual PLIC",
+        input: ControllerInputId,
+        trigger: InterruptTriggerMode,
+    ) -> IrqResult<WiredIrqInput> {
+        if input.value() == 0 || input.value() >= PLIC_NUM_SOURCES {
+            return Err(IrqError::InvalidInput {
+                endpoint: InterruptEndpoint::Wired {
+                    controller: PLIC_CONTROLLER_ID,
+                    input,
+                },
+                operation: "connect vPLIC source",
                 detail: alloc::format!(
-                    "factory configuration does not match device '{}'",
-                    config.name
+                    "PLIC source must be in 1..{PLIC_NUM_SOURCES}, got {}",
+                    input.value()
                 ),
             });
         }
-        Ok(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(self.vplic.clone())).into())
+        Ok(WiredIrqInput::new(
+            PLIC_CONTROLLER_ID,
+            input,
+            trigger,
+            self.sink.clone(),
+        ))
     }
 }
 
-fn validate_vplic_config(config: &EmulatedDeviceConfig) -> AxVmResult<usize> {
-    let [contexts_num] = config.cfg_list.as_slice() else {
-        return ax_err!(
-            InvalidInput,
-            format_args!(
-                "virtual PLIC device '{}' requires exactly one context-count argument",
-                config.name
-            )
-        );
-    };
-    let context_end = contexts_num
-        .checked_mul(PLIC_CONTEXT_STRIDE)
-        .and_then(|offset| offset.checked_add(PLIC_CONTEXT_CTRL_OFFSET))
-        .and_then(|offset| offset.checked_add(PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET))
-        .and_then(|offset| config.base_gpa.checked_add(offset))
-        .ok_or_else(|| ax_err_type!(InvalidInput, "virtual PLIC context range overflow"))?;
-    let region_end = config
-        .base_gpa
-        .checked_add(config.length)
-        .ok_or_else(|| ax_err_type!(InvalidInput, "virtual PLIC region range overflow"))?;
-    if region_end <= context_end {
-        return ax_err!(
-            InvalidInput,
-            format_args!(
-                "virtual PLIC device '{}' range [{:#x}, {:#x}) does not cover {} contexts",
-                config.name, config.base_gpa, region_end, contexts_num
-            )
-        );
-    }
-    Ok(*contexts_num)
+/// Runtime PLIC capabilities built from the immutable machine plan.
+pub(crate) struct PreparedPlic {
+    vplic: Arc<VPlicGlobal>,
+    interrupt_inputs: Arc<RiscvPlicWiredInputs>,
 }
 
-pub(crate) fn configure(
-    factories: &mut DeviceFactoryRegistry,
-    mode: VMInterruptMode,
-    configs: &[EmulatedDeviceConfig],
-) -> AxVmResult<InterruptFabric> {
-    let mut vplic_configs = configs
+impl PreparedPlic {
+    pub(crate) fn from_machine_plan(plan: &VmMachinePlan) -> AxVmResult<Self> {
+        let layout = plic_layout(plan)?;
+        let base = usize::try_from(layout.mmio().base())
+            .map_err(|_| AxVmError::invalid_config("virtual PLIC base exceeds usize"))?;
+        let size = usize::try_from(layout.mmio().size())
+            .map_err(|_| AxVmError::invalid_config("virtual PLIC size exceeds usize"))?;
+        let vplic = Arc::new(
+            VPlicGlobal::new(base.into(), Some(size), layout.context_count())
+                .map_err(AxVmError::invalid_config)?,
+        );
+        vplic.restrict_to_assigned_sources();
+        for source in planned_plic_sources(plan, layout.source_count())? {
+            vplic
+                .assign_source(source)
+                .map_err(AxVmError::invalid_config)?;
+        }
+        let interrupt_inputs = Arc::new(RiscvPlicWiredInputs {
+            sink: Arc::new(RiscvPlicIrqSink {
+                vplic: vplic.clone(),
+            }),
+        });
+        Ok(Self {
+            vplic,
+            interrupt_inputs,
+        })
+    }
+
+    pub(crate) fn register(
+        &self,
+        devices: &mut AxVmDevices,
+        topology: &InterruptTopology,
+    ) -> AxVmResult {
+        let mut bundle = DeviceBundle::new();
+        bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
+            self.vplic.clone(),
+        )));
+        bundle.push(DeviceRegistration::InterruptController(
+            ControllerRegistration::new(PLIC_CONTROLLER_ID, ControllerRole::Default)
+                .with_wired_inputs(self.interrupt_inputs.clone()),
+        ));
+        devices.register_bundle_with_topology(bundle, topology)?;
+        Ok(())
+    }
+}
+
+fn planned_plic_sources(plan: &VmMachinePlan, source_count: u32) -> AxVmResult<BTreeSet<usize>> {
+    let mut sources = BTreeSet::new();
+    for source in plan
+        .assigned_host_interrupts()
         .iter()
-        .filter(|config| config.emu_type == EmulatedDeviceType::PPPTGlobal);
-    let Some(config) = vplic_configs.next() else {
-        return Ok(InterruptFabric::new(mode));
-    };
-    if vplic_configs.next().is_some() {
-        return ax_err!(
-            AlreadyExists,
-            "a VM can register only one virtual PLIC global controller"
-        );
+        .map(HostInterruptResource::input_u32)
+        .chain(
+            plan.virtual_devices()
+                .iter()
+                .flat_map(|device| device.interrupts())
+                .map(crate::machine::ResolvedInterrupt::id),
+        )
+    {
+        if source == 0 || source > source_count {
+            return Err(AxVmError::invalid_config(alloc::format!(
+                "planned PLIC source {source} is outside 1..={source_count}"
+            )));
+        }
+        sources
+            .insert(usize::try_from(source).map_err(|_| {
+                AxVmError::invalid_config("planned PLIC source does not fit usize")
+            })?);
     }
+    Ok(sources)
+}
 
-    let contexts_num = validate_vplic_config(config)?;
-    let vplic = Arc::new(
-        VPlicGlobal::new(config.base_gpa.into(), Some(config.length), contexts_num)
-            .map_err(AxVmError::invalid_config)?,
-    );
-    factories.register(Arc::new(RiscvPlicFactory {
-        base_gpa: config.base_gpa,
-        length: config.length,
-        contexts_num,
-        vplic: vplic.clone(),
-    }))?;
-
-    InterruptFabric::with_sink(mode, Arc::new(RiscvPlicIrqSink { vplic }))
+fn plic_layout(plan: &VmMachinePlan) -> AxVmResult<&RiscvPlicPlan> {
+    match plan.interrupt_controller() {
+        Some(InterruptControllerPlan::RiscvPlic(layout)) => Ok(layout),
+        Some(_) => Err(AxVmError::invalid_config(
+            "RISC-V VM machine plan contains a controller for another architecture",
+        )),
+        None => Err(AxVmError::invalid_config(
+            "RISC-V VM machine plan has no mandatory PLIC controller",
+        )),
+    }
 }

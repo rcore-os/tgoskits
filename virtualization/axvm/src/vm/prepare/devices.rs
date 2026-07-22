@@ -1,30 +1,43 @@
 //! Device construction for VM preparation.
 
-use axdevice::{AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry};
+use axdevice::{
+    AxVmDevices, DeviceBuildContext, InterruptPlanAuthority, InterruptTopology,
+    VirtualDeviceModelRegistry,
+};
 
-use super::super::{AxVM, AxVMResources};
-use crate::{AxVmResult, irq::InterruptFabric};
+use super::super::AxVM;
+use crate::AxVmResult;
 
 pub(crate) struct PreparedDevices {
     pub(crate) devices: AxVmDevices,
 }
 
 impl PreparedDevices {
-    pub(crate) fn build_common(
-        resources: &AxVMResources,
-        factories: &DeviceFactoryRegistry,
-        interrupt_fabric: &InterruptFabric,
-    ) -> AxVmResult<Self> {
-        let build_context = DeviceBuildContext::new(interrupt_fabric);
-        let devices = AxVmDevices::build_with_factories(
-            AxVmDeviceConfig {
-                emu_configs: resources.config.emu_devices().to_vec(),
-            },
-            factories,
-            &build_context,
-        )?;
+    pub(crate) fn empty() -> Self {
+        Self {
+            devices: AxVmDevices::empty(),
+        }
+    }
 
-        Ok(Self { devices })
+    pub(crate) fn register_planned(
+        &mut self,
+        plan: &crate::machine::VmMachinePlan,
+        models: &VirtualDeviceModelRegistry,
+        interrupt_topology: &InterruptTopology,
+        interrupt_authority: &InterruptPlanAuthority,
+    ) -> AxVmResult {
+        for device in plan.virtual_devices() {
+            let context = DeviceBuildContext::with_backend(
+                interrupt_topology,
+                interrupt_authority,
+                device.resources(),
+                device.backend(),
+            );
+            let bundle = models.build(device.model_id(), device.resources(), context)?;
+            self.devices
+                .register_bundle_with_topology(bundle, interrupt_topology)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn register_special_devices(&mut self, vm: &AxVM) -> AxVmResult {

@@ -1,4 +1,4 @@
-// Copyright 2025 The Axvisor Team
+// Copyright 2026 The Axvisor Team
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,67 +12,43 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! ARM Virtual Generic Interrupt Controller (VGIC) implementation.
-//!
-//! This crate provides virtualization support for ARM's Generic Interrupt Controller (GIC),
-//! enabling virtual machines to manage interrupts in a virtualized environment.
+#![no_std]
 
-#![cfg_attr(not(test), no_std)]
+//! Per-VM Arm GICv3 interrupt-controller model.
+//!
+//! The crate owns only architecture state and validated backend capabilities.
+//! Guest buses, host GIC discovery, timers, and VM scheduling are supplied by
+//! the AxVM integration layer. Only Group 1 Non-secure delivery is modeled.
+//! Software-backed and physical-backed SPIs may coexist in one controller.
+//! Physical backends receive only ownership-checked bindings and use HW-backed
+//! list registers; SGIs and PPIs remain VM-local, so guest Redistributor
+//! accesses can never alias host private-interrupt state. Pending and active
+//! deliveries may overflow the finite LR working set without losing their
+//! software/physical backing; maintenance state and trapped deactivation fold
+//! them back into the controller state.
 
 extern crate alloc;
 
-mod devops_impl;
+mod backend;
+mod config;
+mod controller;
+mod cpu_interface;
+mod distributor;
 mod error;
-pub mod host;
-
-pub use error::{VgicError, VgicResult};
-
-/// Virtual GIC implementation module.
-pub mod vgic;
-pub use vgic::Vgic;
-
-mod consts;
 mod interrupt;
-// mod list_register;
-mod registers;
-mod vgicd;
-/// Virtual timer implementation module.
-pub mod vtimer;
+mod its;
+mod redistributor;
+mod register;
+mod types;
 
-#[cfg(feature = "vgicv3")]
-/// GICv3 specific implementation module.
-pub mod v3;
-
-#[cfg(target_arch = "aarch64")]
-/// Re-export arch specific APIs for VGIC to avoid doc build errors
-mod api_reexp {
-    #[allow(unused_imports)]
-    pub use crate::host::{
-        get_host_gicd_base, get_host_gicr_base, hardware_inject_virtual_interrupt, read_vgicd_iidr,
-        read_vgicd_typer,
-    };
-}
-
-#[allow(dead_code)]
-#[cfg(not(target_arch = "aarch64"))]
-mod api_reexp {
-    use ax_memory_addr::{PhysAddr, pa};
-
-    pub fn read_vgicd_iidr() -> u32 {
-        0
-    }
-
-    pub fn read_vgicd_typer() -> u32 {
-        0
-    }
-
-    pub fn get_host_gicd_base() -> PhysAddr {
-        pa!(0)
-    }
-
-    pub fn get_host_gicr_base() -> PhysAddr {
-        pa!(0)
-    }
-
-    pub fn hardware_inject_virtual_interrupt(_vector: u8) {}
-}
+pub use backend::*;
+pub use config::*;
+pub use controller::*;
+pub use cpu_interface::*;
+pub(crate) use distributor::DistributorState;
+pub use error::*;
+pub(crate) use interrupt::InterruptRecord;
+pub use its::{GuestMemory, GuestMemoryError};
+pub(crate) use its::{ItsAction, ItsState};
+pub(crate) use redistributor::{QueuedDelivery, RedistributorState};
+pub use types::*;

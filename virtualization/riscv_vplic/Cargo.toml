@@ -16,9 +16,7 @@ default = []
 
 [dependencies]
 ax-kspin.workspace = true
-ax-crate-interface = { workspace = true }
 axdevice_base = { workspace = true }
-ax-memory-addr = { workspace = true }
 axvm-types = { workspace = true }
 bitmaps = { version = "3.2", default-features = false }
 log = "0.4"

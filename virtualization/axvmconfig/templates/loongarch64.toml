@@ -1,0 +1,25 @@
+[machine]
+mode = "virtual"
+firmware = "auto"
+
+[base]
+id = 1
+name = "GuestVM-loongarch64"
+cpu_num = 1
+phys_cpu_sets = [1]
+
+[kernel]
+entry_point = 0x200040
+kernel_path = "arceos-loongarch64.bin"
+kernel_load_addr = 0x200000
+image_location = "fs"
+
+[[memory.regions]]
+guest_base = 0x0
+size = 0x10000000
+permissions = "rwx"
+backing = { kind = "allocate" }
+
+[devices]
+disable_defaults = []
+deny = []

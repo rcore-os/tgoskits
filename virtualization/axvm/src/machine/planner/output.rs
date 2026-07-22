@@ -1,0 +1,741 @@
+//! Final resource assignments consumed by VM construction.
+
+use alloc::vec::Vec;
+use core::num::NonZeroU32;
+
+use axdevice::{DeviceBackend, DeviceModelId, ResolvedDeviceResources, ResourceSlot};
+use axvm_types::{GuestFirmwareKind, InterruptTriggerMode, PhysicalInterruptPolicy, VmMachineMode};
+
+use super::super::{
+    AddressRange, DeviceDisposition, DeviceInstanceId, GuestMemoryRegion, HostDeviceDependency,
+    HostDeviceDescriptor, HostDeviceId, HostFirmwareActivation, HostInterruptResource,
+    HostProviderResourceClaim, HostProviderResourceState, InterruptControllerPlan, IoPortRange,
+    LoongArchPlatformPlan,
+};
+
+/// A guest interrupt assigned to one named virtual-device resource slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedInterrupt {
+    slot: ResourceSlot,
+    id: u32,
+    trigger: InterruptTriggerMode,
+}
+
+impl ResolvedInterrupt {
+    pub(super) const fn new(slot: ResourceSlot, id: u32, trigger: InterruptTriggerMode) -> Self {
+        Self { slot, id, trigger }
+    }
+
+    /// Returns the model-defined resource name.
+    pub const fn slot(&self) -> &ResourceSlot {
+        &self.slot
+    }
+
+    /// Returns the guest interrupt identifier.
+    pub const fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Returns the required trigger mode.
+    pub const fn trigger(&self) -> InterruptTriggerMode {
+        self.trigger
+    }
+}
+
+/// A guest MMIO window assigned to one named virtual-device resource slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedMmio {
+    slot: ResourceSlot,
+    range: AddressRange,
+}
+
+impl ResolvedMmio {
+    pub(super) const fn new(slot: ResourceSlot, range: AddressRange) -> Self {
+        Self { slot, range }
+    }
+
+    /// Returns the model-defined resource name.
+    pub const fn slot(&self) -> &ResourceSlot {
+        &self.slot
+    }
+
+    /// Returns the assigned guest address range.
+    pub const fn range(&self) -> AddressRange {
+        self.range
+    }
+}
+
+/// A guest port range assigned to one named virtual-device resource slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedPio {
+    slot: ResourceSlot,
+    range: IoPortRange,
+}
+
+impl ResolvedPio {
+    pub(super) const fn new(slot: ResourceSlot, range: IoPortRange) -> Self {
+        Self { slot, range }
+    }
+
+    /// Returns the model-defined resource name.
+    pub const fn slot(&self) -> &ResourceSlot {
+        &self.slot
+    }
+
+    /// Returns the assigned guest port range.
+    pub const fn range(&self) -> IoPortRange {
+        self.range
+    }
+}
+
+/// Resources resolved for one virtual device instance.
+#[derive(Clone, Debug)]
+pub struct ResolvedVirtualDevice {
+    instance_id: DeviceInstanceId,
+    model_id: DeviceModelId,
+    host_template: Option<HostDeviceId>,
+    mmio: Vec<ResolvedMmio>,
+    pio: Vec<ResolvedPio>,
+    interrupts: Vec<ResolvedInterrupt>,
+    resources: ResolvedDeviceResources,
+    backend: DeviceBackend,
+}
+
+pub(super) struct ResolvedVirtualDeviceParts {
+    pub(super) instance_id: DeviceInstanceId,
+    pub(super) model_id: DeviceModelId,
+    pub(super) host_template: Option<HostDeviceId>,
+    pub(super) mmio: Vec<ResolvedMmio>,
+    pub(super) pio: Vec<ResolvedPio>,
+    pub(super) interrupts: Vec<ResolvedInterrupt>,
+    pub(super) resources: ResolvedDeviceResources,
+    pub(super) backend: DeviceBackend,
+}
+
+impl ResolvedVirtualDevice {
+    pub(super) fn from_parts(parts: ResolvedVirtualDeviceParts) -> Self {
+        Self {
+            instance_id: parts.instance_id,
+            model_id: parts.model_id,
+            host_template: parts.host_template,
+            mmio: parts.mmio,
+            pio: parts.pio,
+            interrupts: parts.interrupts,
+            resources: parts.resources,
+            backend: parts.backend,
+        }
+    }
+
+    /// Returns the stable virtual device instance identity.
+    pub const fn instance_id(&self) -> &DeviceInstanceId {
+        &self.instance_id
+    }
+
+    /// Returns the selected virtual device model.
+    pub const fn model_id(&self) -> &DeviceModelId {
+        &self.model_id
+    }
+
+    /// Returns the host firmware template, if one was consumed.
+    pub const fn host_template(&self) -> Option<&HostDeviceId> {
+        self.host_template.as_ref()
+    }
+
+    /// Returns resolved guest MMIO windows.
+    pub fn mmio(&self) -> &[ResolvedMmio] {
+        &self.mmio
+    }
+
+    /// Returns resolved guest port-I/O ranges.
+    pub fn pio(&self) -> &[ResolvedPio] {
+        &self.pio
+    }
+
+    /// Returns resolved guest interrupt inputs.
+    pub fn interrupts(&self) -> &[ResolvedInterrupt] {
+        &self.interrupts
+    }
+
+    /// Returns the same named resources consumed by the model build phase.
+    pub const fn resources(&self) -> &ResolvedDeviceResources {
+        &self.resources
+    }
+
+    /// Returns the external backend capability selected for this instance.
+    pub const fn backend(&self) -> DeviceBackend {
+        self.backend
+    }
+}
+
+/// Host-device disposition recorded in a final plan.
+#[derive(Clone, Debug)]
+pub struct PlannedHostDevice {
+    descriptor: HostDeviceDescriptor,
+    disposition: DeviceDisposition,
+}
+
+impl PlannedHostDevice {
+    pub(super) const fn new(
+        descriptor: HostDeviceDescriptor,
+        disposition: DeviceDisposition,
+    ) -> Self {
+        Self {
+            descriptor,
+            disposition,
+        }
+    }
+
+    /// Returns the host device identity.
+    pub const fn id(&self) -> &HostDeviceId {
+        self.descriptor.id()
+    }
+
+    /// Returns the selected physical-device disposition.
+    pub const fn disposition(&self) -> DeviceDisposition {
+        self.disposition
+    }
+
+    /// Returns how assignment affects the source firmware activation state.
+    pub const fn firmware_activation(&self) -> HostFirmwareActivation {
+        self.descriptor.firmware_activation()
+    }
+
+    /// Returns the final host MMIO resources associated with this device.
+    pub fn mmio(&self) -> &[AddressRange] {
+        self.descriptor.mmio()
+    }
+
+    /// Returns final host port-I/O resources associated with this device.
+    pub fn pio(&self) -> &[IoPortRange] {
+        self.descriptor.pio()
+    }
+
+    /// Returns complete platform interrupt identifiers associated with this device.
+    pub fn interrupts(&self) -> &[HostInterruptResource] {
+        self.descriptor.interrupts()
+    }
+
+    /// Returns firmware provider dependencies associated with this device.
+    pub fn dependencies(&self) -> &[HostDeviceDependency] {
+        self.descriptor.dependencies()
+    }
+
+    pub(super) const fn descriptor(&self) -> &HostDeviceDescriptor {
+        &self.descriptor
+    }
+
+    /// Returns firmware-compatible identifiers in source order.
+    pub fn compatibles(&self) -> &[alloc::string::String] {
+        self.descriptor.compatibles()
+    }
+
+    pub(super) fn requires_claim(&self) -> bool {
+        self.disposition == DeviceDisposition::Passthrough
+            || (self.disposition == DeviceDisposition::Structural
+                && self.descriptor.has_physical_resources())
+    }
+
+    pub(super) const fn set_disposition(&mut self, disposition: DeviceDisposition) {
+        self.disposition = disposition;
+    }
+}
+
+/// One static or mediated clock substituted for a physical provider input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreconfiguredHostClock {
+    provider: HostDeviceId,
+    specifier: Vec<u32>,
+    access: PlannedHostClockAccess,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlannedHostClockAccess {
+    Fixed(NonZeroU32),
+    Mediated,
+}
+
+impl PreconfiguredHostClock {
+    pub(super) const fn new(
+        provider: HostDeviceId,
+        specifier: Vec<u32>,
+        rate_hz: NonZeroU32,
+    ) -> Self {
+        Self {
+            provider,
+            specifier,
+            access: PlannedHostClockAccess::Fixed(rate_hz),
+        }
+    }
+
+    pub(super) const fn mediated(provider: HostDeviceId, specifier: Vec<u32>) -> Self {
+        Self {
+            provider,
+            specifier,
+            access: PlannedHostClockAccess::Mediated,
+        }
+    }
+
+    /// Returns the physical provider that owns the clock.
+    pub const fn provider(&self) -> &HostDeviceId {
+        &self.provider
+    }
+
+    /// Returns the provider-local clock selector cells.
+    pub fn specifier(&self) -> &[u32] {
+        &self.specifier
+    }
+
+    /// Returns the statically pinned rate, or `None` for a mediated clock.
+    pub const fn rate_hz(&self) -> Option<NonZeroU32> {
+        match self.access {
+            PlannedHostClockAccess::Fixed(rate_hz) => Some(rate_hz),
+            PlannedHostClockAccess::Mediated => None,
+        }
+    }
+
+    /// Returns whether guest operations are forwarded through a VM-local provider.
+    pub const fn is_mediated(&self) -> bool {
+        matches!(self.access, PlannedHostClockAccess::Mediated)
+    }
+
+    pub(super) fn to_claim(&self) -> HostProviderResourceClaim {
+        let grant = match self.access {
+            PlannedHostClockAccess::Fixed(rate_hz) => {
+                super::super::HostProviderResourceGrant::fixed_clock(
+                    self.specifier.clone(),
+                    rate_hz,
+                )
+            }
+            PlannedHostClockAccess::Mediated => {
+                super::super::HostProviderResourceGrant::mediated_clock(self.specifier.clone())
+            }
+        };
+        HostProviderResourceClaim::new(self.provider.clone(), grant)
+    }
+}
+
+/// One static or mediated reset line projected into a guest-device lease.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreconfiguredHostReset {
+    provider: HostDeviceId,
+    specifier: Vec<u32>,
+    mediated: bool,
+}
+
+impl PreconfiguredHostReset {
+    pub(super) const fn new(provider: HostDeviceId, specifier: Vec<u32>) -> Self {
+        Self {
+            provider,
+            specifier,
+            mediated: false,
+        }
+    }
+
+    pub(super) const fn mediated(provider: HostDeviceId, specifier: Vec<u32>) -> Self {
+        Self {
+            provider,
+            specifier,
+            mediated: true,
+        }
+    }
+
+    /// Returns the physical provider that owns the reset line.
+    pub const fn provider(&self) -> &HostDeviceId {
+        &self.provider
+    }
+
+    /// Returns the provider-local reset selector cells.
+    pub fn specifier(&self) -> &[u32] {
+        &self.specifier
+    }
+
+    /// Returns whether guest operations are forwarded through a VM-local provider.
+    pub const fn is_mediated(&self) -> bool {
+        self.mediated
+    }
+
+    pub(super) fn to_claim(&self) -> HostProviderResourceClaim {
+        let grant = if self.mediated {
+            super::super::HostProviderResourceGrant::mediated_reset(self.specifier.clone())
+        } else {
+            super::super::HostProviderResourceGrant::deasserted_reset(self.specifier.clone())
+        };
+        HostProviderResourceClaim::new(self.provider.clone(), grant)
+    }
+}
+
+/// Provider resources substituted into one passthrough device's guest
+/// firmware description without exposing the physical provider aperture.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreconfiguredHostDeviceResources {
+    device: HostDeviceId,
+    clocks: Vec<PreconfiguredHostClock>,
+    clock_configurations: Vec<PreconfiguredHostClock>,
+    resets: Vec<PreconfiguredHostReset>,
+}
+
+/// VM-local Arm SCMI endpoint for mutable assigned clock/reset resources.
+#[derive(Clone, Debug)]
+pub struct ArmScmiMediationPlan {
+    shared_memory: AddressRange,
+    smc_function_id: u32,
+    clocks: Vec<HostProviderResourceClaim>,
+    resets: Vec<HostProviderResourceClaim>,
+}
+
+impl ArmScmiMediationPlan {
+    pub(super) fn new(
+        shared_memory: AddressRange,
+        smc_function_id: u32,
+        claims: &[HostProviderResourceClaim],
+    ) -> Self {
+        let clocks = claims
+            .iter()
+            .filter(|claim| claim.grant().state() == HostProviderResourceState::MediatedClock)
+            .cloned()
+            .collect();
+        let resets = claims
+            .iter()
+            .filter(|claim| claim.grant().state() == HostProviderResourceState::MediatedReset)
+            .cloned()
+            .collect();
+        Self {
+            shared_memory,
+            smc_function_id,
+            clocks,
+            resets,
+        }
+    }
+
+    /// Returns the emulated shared-memory transport window.
+    pub const fn shared_memory(&self) -> AddressRange {
+        self.shared_memory
+    }
+
+    /// Returns the SMC function identifier advertised to the guest.
+    pub const fn smc_function_id(&self) -> u32 {
+        self.smc_function_id
+    }
+
+    /// Returns clocks in guest SCMI identifier order.
+    pub fn clocks(&self) -> &[HostProviderResourceClaim] {
+        &self.clocks
+    }
+
+    /// Returns reset domains in guest SCMI identifier order.
+    pub fn resets(&self) -> &[HostProviderResourceClaim] {
+        &self.resets
+    }
+
+    pub(crate) fn clock_id(&self, provider: &HostDeviceId, specifier: &[u32]) -> Option<u32> {
+        self.clocks
+            .iter()
+            .position(|claim| {
+                claim.provider() == provider && claim.grant().reference().specifier() == specifier
+            })
+            .and_then(|index| u32::try_from(index).ok())
+    }
+
+    pub(crate) fn reset_id(&self, provider: &HostDeviceId, specifier: &[u32]) -> Option<u32> {
+        self.resets
+            .iter()
+            .position(|claim| {
+                claim.provider() == provider && claim.grant().reference().specifier() == specifier
+            })
+            .and_then(|index| u32::try_from(index).ok())
+    }
+}
+
+impl PreconfiguredHostDeviceResources {
+    pub(super) const fn new(
+        device: HostDeviceId,
+        clocks: Vec<PreconfiguredHostClock>,
+        clock_configurations: Vec<PreconfiguredHostClock>,
+        resets: Vec<PreconfiguredHostReset>,
+    ) -> Self {
+        Self {
+            device,
+            clocks,
+            clock_configurations,
+            resets,
+        }
+    }
+
+    /// Returns the passthrough device whose provider references are replaced.
+    pub const fn device(&self) -> &HostDeviceId {
+        &self.device
+    }
+
+    /// Returns fixed clocks in the source `clocks` property order.
+    pub fn clocks(&self) -> &[PreconfiguredHostClock] {
+        &self.clocks
+    }
+
+    /// Returns clock selectors referenced by boot-time configuration.
+    pub fn clock_configurations(&self) -> &[PreconfiguredHostClock] {
+        &self.clock_configurations
+    }
+
+    /// Returns reset lines in source `resets` order.
+    pub fn resets(&self) -> &[PreconfiguredHostReset] {
+        &self.resets
+    }
+}
+
+/// Complete deterministic result consumed by VM construction.
+#[derive(Clone, Debug)]
+pub struct VmMachinePlan {
+    snapshot_generation: u64,
+    host_console: Option<HostDeviceId>,
+    mode: VmMachineMode,
+    firmware: GuestFirmwareKind,
+    physical_interrupt_policy: PhysicalInterruptPolicy,
+    interrupt_controller: Option<InterruptControllerPlan>,
+    loongarch_platform: Option<LoongArchPlatformPlan>,
+    guest_memory: Vec<GuestMemoryRegion>,
+    identity_mappings: Vec<AddressRange>,
+    virtual_devices: Vec<ResolvedVirtualDevice>,
+    host_devices: Vec<PlannedHostDevice>,
+    preconfigured_host_devices: Vec<PreconfiguredHostDeviceResources>,
+    provider_mediation: Option<ArmScmiMediationPlan>,
+    provider_resource_claims: Vec<HostProviderResourceClaim>,
+    assigned_host_interrupts: Vec<HostInterruptResource>,
+    claims: Vec<HostDeviceId>,
+    generated_firmware: Option<GeneratedFirmware>,
+}
+
+pub(super) struct VmMachinePlanParts {
+    pub(super) snapshot_generation: u64,
+    pub(super) host_console: Option<HostDeviceId>,
+    pub(super) mode: VmMachineMode,
+    pub(super) firmware: GuestFirmwareKind,
+    pub(super) physical_interrupt_policy: PhysicalInterruptPolicy,
+    pub(super) interrupt_controller: Option<InterruptControllerPlan>,
+    pub(super) loongarch_platform: Option<LoongArchPlatformPlan>,
+    pub(super) guest_memory: Vec<GuestMemoryRegion>,
+    pub(super) identity_mappings: Vec<AddressRange>,
+    pub(super) virtual_devices: Vec<ResolvedVirtualDevice>,
+    pub(super) host_devices: Vec<PlannedHostDevice>,
+    pub(super) preconfigured_host_devices: Vec<PreconfiguredHostDeviceResources>,
+    pub(super) provider_mediation: Option<ArmScmiMediationPlan>,
+    pub(super) provider_resource_claims: Vec<HostProviderResourceClaim>,
+    pub(super) assigned_host_interrupts: Vec<HostInterruptResource>,
+    pub(super) claims: Vec<HostDeviceId>,
+}
+
+/// Final firmware representation produced from resolved machine resources.
+#[derive(Clone, Debug)]
+pub enum GeneratedFirmware {
+    /// A flattened device tree loaded at the configured DTB address.
+    DeviceTree(Vec<u8>),
+    /// Address-resolved ACPI tables whose image begins at the RSDP.
+    Acpi(super::super::GeneratedAcpiImage),
+    /// Relocatable ACPI files installed by a fw_cfg-aware guest firmware.
+    FwCfgAcpi(axdevice::FwCfgAcpiFiles),
+}
+
+impl Default for VmMachinePlan {
+    fn default() -> Self {
+        Self::empty(
+            VmMachineMode::Virtual,
+            GuestFirmwareKind::Auto,
+            PhysicalInterruptPolicy::Mediated,
+        )
+    }
+}
+
+impl VmMachinePlan {
+    pub(super) fn from_parts(parts: VmMachinePlanParts) -> Self {
+        Self {
+            snapshot_generation: parts.snapshot_generation,
+            host_console: parts.host_console,
+            mode: parts.mode,
+            firmware: parts.firmware,
+            physical_interrupt_policy: parts.physical_interrupt_policy,
+            interrupt_controller: parts.interrupt_controller,
+            loongarch_platform: parts.loongarch_platform,
+            guest_memory: parts.guest_memory,
+            identity_mappings: parts.identity_mappings,
+            virtual_devices: parts.virtual_devices,
+            host_devices: parts.host_devices,
+            preconfigured_host_devices: parts.preconfigured_host_devices,
+            provider_mediation: parts.provider_mediation,
+            provider_resource_claims: parts.provider_resource_claims,
+            assigned_host_interrupts: parts.assigned_host_interrupts,
+            claims: parts.claims,
+            generated_firmware: None,
+        }
+    }
+
+    /// Creates an empty plan for architecture-owned tests and infrastructure.
+    pub const fn empty(
+        mode: VmMachineMode,
+        firmware: GuestFirmwareKind,
+        physical_interrupt_policy: PhysicalInterruptPolicy,
+    ) -> Self {
+        Self {
+            snapshot_generation: 0,
+            host_console: None,
+            mode,
+            firmware,
+            physical_interrupt_policy,
+            interrupt_controller: None,
+            loongarch_platform: None,
+            guest_memory: Vec::new(),
+            identity_mappings: Vec::new(),
+            virtual_devices: Vec::new(),
+            host_devices: Vec::new(),
+            preconfigured_host_devices: Vec::new(),
+            provider_mediation: None,
+            provider_resource_claims: Vec::new(),
+            assigned_host_interrupts: Vec::new(),
+            claims: Vec::new(),
+            generated_firmware: None,
+        }
+    }
+
+    /// Returns the host snapshot generation that must be revalidated at commit.
+    pub const fn snapshot_generation(&self) -> u64 {
+        self.snapshot_generation
+    }
+
+    /// Returns the physical device selected for host console I/O.
+    pub const fn host_console(&self) -> Option<&HostDeviceId> {
+        self.host_console.as_ref()
+    }
+
+    /// Returns the machine construction mode.
+    pub const fn mode(&self) -> VmMachineMode {
+        self.mode
+    }
+
+    /// Returns the selected guest firmware description.
+    pub const fn firmware(&self) -> GuestFirmwareKind {
+        self.firmware
+    }
+
+    /// Returns how assigned physical IRQs are forwarded.
+    pub const fn physical_interrupt_policy(&self) -> PhysicalInterruptPolicy {
+        self.physical_interrupt_policy
+    }
+
+    /// Returns the controller topology selected by the architecture profile.
+    pub const fn interrupt_controller(&self) -> Option<&InterruptControllerPlan> {
+        self.interrupt_controller.as_ref()
+    }
+
+    /// Returns finalized LoongArch firmware-facing platform resources.
+    pub const fn loongarch_platform(&self) -> Option<&LoongArchPlatformPlan> {
+        self.loongarch_platform.as_ref()
+    }
+
+    /// Returns fixed and dynamically placed guest-memory requirements.
+    pub fn guest_memory(&self) -> &[GuestMemoryRegion] {
+        &self.guest_memory
+    }
+
+    /// Iterates memory ranges whose guest addresses are known during planning.
+    pub fn fixed_guest_memory(&self) -> impl Iterator<Item = AddressRange> + '_ {
+        self.guest_memory
+            .iter()
+            .filter_map(|memory| memory.fixed_range())
+    }
+
+    /// Returns final non-overlapping identity-mapped I/O ranges.
+    pub fn identity_mappings(&self) -> &[AddressRange] {
+        &self.identity_mappings
+    }
+
+    /// Returns virtual devices sorted by stable instance identity.
+    pub fn virtual_devices(&self) -> &[ResolvedVirtualDevice] {
+        &self.virtual_devices
+    }
+
+    /// Returns physical-device dispositions in host firmware order.
+    pub fn host_devices(&self) -> &[PlannedHostDevice] {
+        &self.host_devices
+    }
+
+    /// Returns physical devices whose provider resources are projected as
+    /// static or mediated guest capabilities instead of raw provider MMIO.
+    pub fn preconfigured_host_devices(&self) -> &[PreconfiguredHostDeviceResources] {
+        &self.preconfigured_host_devices
+    }
+
+    /// Returns the VM-local provider mediator required by mutable host resources.
+    pub const fn provider_mediation(&self) -> Option<&ArmScmiMediationPlan> {
+        self.provider_mediation.as_ref()
+    }
+
+    /// Returns provider-local resources retained for the complete physical
+    /// device lease lifetime.
+    pub fn provider_resource_claims(&self) -> &[HostProviderResourceClaim] {
+        &self.provider_resource_claims
+    }
+
+    /// Returns unique physical interrupt routes owned by passthrough devices.
+    pub fn assigned_host_interrupts(&self) -> &[HostInterruptResource] {
+        &self.assigned_host_interrupts
+    }
+
+    /// Iterates port-I/O ranges owned by passthrough devices.
+    pub fn assigned_host_pio(&self) -> impl Iterator<Item = IoPortRange> + '_ {
+        self.host_devices
+            .iter()
+            .filter(|device| device.disposition == DeviceDisposition::Passthrough)
+            .flat_map(|device| device.pio().iter().copied())
+    }
+
+    /// Returns devices that must be claimed transactionally before commit.
+    pub fn claims(&self) -> &[HostDeviceId] {
+        &self.claims
+    }
+
+    /// Returns whether VM construction must run the host ownership
+    /// transaction before preparing devices.
+    pub fn requires_host_claims(&self) -> bool {
+        !self.claims.is_empty() || !self.provider_resource_claims.is_empty()
+    }
+
+    /// Attaches a final generated device tree.
+    pub fn with_device_tree_firmware(mut self, bytes: Vec<u8>) -> Self {
+        self.generated_firmware = Some(GeneratedFirmware::DeviceTree(bytes));
+        self
+    }
+
+    /// Attaches a final generated ACPI image.
+    pub fn with_acpi_firmware(mut self, image: super::super::GeneratedAcpiImage) -> Self {
+        self.generated_firmware = Some(GeneratedFirmware::Acpi(image));
+        self
+    }
+
+    /// Returns the generated device tree, if selected.
+    pub fn device_tree_firmware(&self) -> Option<&[u8]> {
+        match self.generated_firmware.as_ref() {
+            Some(GeneratedFirmware::DeviceTree(bytes)) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// Returns the generated ACPI image, if selected.
+    pub const fn acpi_firmware(&self) -> Option<&super::super::GeneratedAcpiImage> {
+        match self.generated_firmware.as_ref() {
+            Some(GeneratedFirmware::Acpi(image)) => Some(image),
+            _ => None,
+        }
+    }
+
+    /// Returns relocatable fw_cfg ACPI files, if selected.
+    pub const fn fw_cfg_acpi_firmware(&self) -> Option<&axdevice::FwCfgAcpiFiles> {
+        match self.generated_firmware.as_ref() {
+            Some(GeneratedFirmware::FwCfgAcpi(files)) => Some(files),
+            _ => None,
+        }
+    }
+
+    /// Attaches relocatable ACPI files for a fw_cfg-aware guest firmware.
+    pub fn with_fw_cfg_acpi_firmware(mut self, files: axdevice::FwCfgAcpiFiles) -> Self {
+        self.generated_firmware = Some(GeneratedFirmware::FwCfgAcpi(files));
+        self
+    }
+}

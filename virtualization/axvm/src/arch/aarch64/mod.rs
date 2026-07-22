@@ -4,50 +4,180 @@
 //! `AxvmArmHostOps` supplies host IRQ/GIC operations, while this module handles
 //! `arm_vcpu` exits inside the AArch64 architecture boundary.
 
-use alloc::boxed::Box;
-use core::time::Duration;
+use alloc::sync::Arc;
 
 use arm_vcpu::{
-    ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr,
-    ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError, ArmVcpuResult, ArmVcpuSetupConfig, ArmVmExit,
+    ArmAccessWidth, ArmDataAbort, ArmDataAccessResult, ArmGicCpuInterfaceRegister,
+    ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu,
+    ArmVcpuCreateConfig, ArmVcpuError, ArmVcpuResult, ArmVcpuSetupConfig, ArmVmExit,
 };
-use arm_vgic::host::ArmVgicHostIf;
-use ax_crate_interface::impl_interface;
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_kernel_guard::IrqSave;
+use ax_memory_addr::VirtAddr;
 use axvm_types::{
     AccessWidth, GuestPhysAddr, NestedPagingConfig, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
     VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
 };
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
-use crate::{
-    AxVmResult, ax_err,
-    host::{HostCpu, HostMemory, HostTime, default_host},
-};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, VcpuRunAction, VcpuScheduling};
+use crate::{AxVmResult, ax_err};
 
 mod capabilities;
 #[path = "../../architecture/cpu_up.rs"]
 mod cpu_up;
+mod data_abort;
 pub(crate) mod fdt;
 mod gic;
 mod images;
 mod ipi;
+#[path = "../../architecture/nested_page_fault.rs"]
+mod nested_page_fault;
 mod npt;
+#[path = "../../machine/ns16550_model.rs"]
+mod ns16550_model;
+mod pl011;
+mod placement;
+mod scmi;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
+mod timer;
 mod vm;
+#[path = "../../architecture/timer_scheduler.rs"]
+mod vm_timer_scheduler;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};
+pub use fdt::current_host_platform_snapshot;
 pub use images::ImageLoader;
 use ipi::SendIpiExit;
+pub use pl011::{Aarch64Pl011Model, pl011_device_requirements};
 use sysreg::{SysRegReadExit, SysRegWriteExit};
+
+/// Stable model identifier for an AArch64 Synopsys DesignWare APB UART.
+pub const DW_APB_UART_MODEL_ID: &str = ns16550_model::DW_APB_UART_MODEL_ID;
+
+/// Returns named resources for a DesignWare APB virtual console.
+pub fn dw_apb_uart_device_requirements()
+-> axdevice::DeviceManagerResult<axdevice::DeviceRequirements> {
+    ns16550_model::ns16550_device_requirements(0x100)
+}
+
+/// Returns named resources for a packed AArch64 NS16550 console.
+pub fn ns16550_device_requirements() -> axdevice::DeviceManagerResult<axdevice::DeviceRequirements>
+{
+    ns16550_model::ns16550_device_requirements(0x100)
+}
+
+/// Returns the deterministic resource pools for an AArch64 virtual machine.
+pub fn standard_machine_profile()
+-> crate::machine::MachinePlanResult<crate::machine::MachineProfile> {
+    let controller = crate::machine::Aarch64GicV3Profile::new(
+        crate::machine::AddressRange::new(0x0800_0000, 0x0001_0000)?,
+        0x080a_0000,
+        0x0002_0000,
+        Some(crate::machine::AddressRange::new(0x0808_0000, 0x0002_0000)?),
+        480,
+    )?;
+    Ok(crate::machine::MachineProfile::new(
+        crate::machine::AddressRange::new(0x0900_0000, 0x0100_0000)?,
+        32..=511,
+    )?
+    .with_interrupt_controller(crate::machine::InterruptControllerProfile::Aarch64GicV3(
+        controller,
+    ))
+    .with_arm_scmi_mediation(crate::machine::ArmScmiMediationProfile::new(0x8200_0010)?))
+}
 
 pub(crate) struct Aarch64Arch;
 
+#[derive(Debug, Default)]
+pub(crate) struct VmArchConfig {
+    interrupt_roles: Option<gic::Aarch64InterruptRoles>,
+}
+
+impl VmArchConfig {
+    pub(crate) const fn new() -> Self {
+        Self {
+            interrupt_roles: None,
+        }
+    }
+
+    pub(crate) fn reset_prepared_boot_state(&mut self) {
+        self.interrupt_roles = None;
+    }
+
+    pub(crate) fn validate_prepared_boot_state(
+        &self,
+        _physical_interrupt_policy: axvm_types::PhysicalInterruptPolicy,
+    ) -> AxVmResult {
+        if self.interrupt_roles.is_none() {
+            return ax_err!(InvalidInput, "AArch64 interrupt roles were not prepared");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_interrupt_roles(&mut self, roles: gic::Aarch64InterruptRoles) {
+        self.interrupt_roles = Some(roles);
+    }
+
+    pub(crate) const fn interrupt_roles(&self) -> Option<&gic::Aarch64InterruptRoles> {
+        self.interrupt_roles.as_ref()
+    }
+}
+
+pub(crate) struct VmArchState {
+    gic_controller: Option<Arc<arm_vgic::GicV3Controller>>,
+    host_spi_forwarding: Option<gic::HostSpiForwarding>,
+    maintenance_interrupt: Option<gic::HostMaintenanceInterrupt>,
+    scmi_service: Option<Arc<scmi::Aarch64ScmiService>>,
+}
+
+impl VmArchState {
+    pub(crate) const fn new() -> Self {
+        Self {
+            gic_controller: None,
+            host_spi_forwarding: None,
+            maintenance_interrupt: None,
+            scmi_service: None,
+        }
+    }
+
+    pub(crate) fn set_gic_controller(
+        &mut self,
+        controller: Arc<arm_vgic::GicV3Controller>,
+        host_spi_forwarding: Option<gic::HostSpiForwarding>,
+        maintenance_interrupt: gic::HostMaintenanceInterrupt,
+    ) {
+        self.gic_controller = Some(controller);
+        self.host_spi_forwarding = host_spi_forwarding;
+        self.maintenance_interrupt = Some(maintenance_interrupt);
+    }
+
+    pub(crate) fn gic_controller(&self) -> Option<Arc<arm_vgic::GicV3Controller>> {
+        self.gic_controller.clone()
+    }
+
+    pub(crate) fn set_scmi_service(&mut self, service: Option<Arc<scmi::Aarch64ScmiService>>) {
+        self.scmi_service = service;
+    }
+
+    pub(crate) fn scmi_service(&self) -> Option<Arc<scmi::Aarch64ScmiService>> {
+        self.scmi_service.clone()
+    }
+}
+
+pub(crate) struct VmRuntimeArchState;
+
+impl VmRuntimeArchState {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+
+    pub(crate) const fn register_vcpu(&self, _vcpu_id: usize) {}
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Aarch64DeferredRunWork {
-    ExternalInterrupt { vector: usize },
+    ExternalInterrupt,
 }
 
 impl CpuUpOps for Aarch64Arch {}
@@ -70,6 +200,43 @@ impl ArchOps for Aarch64Arch {
         );
     }
 
+    fn synchronize_interrupts_after_exit(
+        topology: &axdevice::InterruptTopology,
+        vcpu: axdevice::VcpuInterruptId,
+        exit: &ArmVmExit,
+    ) -> AxVmResult {
+        match exit {
+            // The binding must harvest the live LR and apply DIR as one
+            // operation. A generic synchronization here would save and reload
+            // the same CPU interface twice for every trapped deactivation.
+            ArmVmExit::DeactivateInterrupt { .. } => Ok(()),
+            _ => {
+                topology.synchronize_vcpu(vcpu)?;
+                Ok(())
+            }
+        }
+    }
+
+    fn with_vcpu_interrupt_context<T>(vm: &crate::AxVMRef, run: impl FnOnce() -> T) -> T {
+        let _ = vm;
+        // ICH registers are banked per physical CPU, not per Rust task. Keep
+        // the complete load/synchronize/unload transaction atomic with
+        // respect to host IRQ dispatch so an interrupt cannot observe or
+        // mutate a partially switched vCPU interface. Guest IRQs still exit
+        // through HCR_EL2 routing while the guest is running.
+        let _irq_guard = IrqSave::new();
+        run()
+    }
+
+    fn after_external_interrupt(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        _vector: usize,
+    ) {
+        gic::handle_current_irq();
+        crate::check_timer_events();
+    }
+
     fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -79,31 +246,16 @@ impl ArchOps for Aarch64Arch {
             ArmVmExit::Hypercall { nr, args } => {
                 super::handle_hypercall(vm, vcpu, HypercallExit { nr, args })
             }
-            ArmVmExit::MmioRead {
-                addr,
-                width,
-                reg,
-                reg_width,
-                signed_ext,
-            } => super::handle_mmio_read(
-                vm,
-                vcpu,
-                MmioReadExit {
-                    addr: arm_guest_phys_addr_to_ax(addr),
-                    width: arm_access_width_to_ax(width),
-                    reg,
-                    reg_width: arm_access_width_to_ax(reg_width),
-                    signed_ext,
-                },
-            ),
-            ArmVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
-                vm,
-                MmioWriteExit {
-                    addr: arm_guest_phys_addr_to_ax(addr),
-                    width: arm_access_width_to_ax(width),
-                    data,
-                },
-            ),
+            ArmVmExit::FirmwareCall { function, .. } => {
+                let service =
+                    vm.with_resources(|resources| Ok(resources.arch_state().scmi_service()))?;
+                let result = service
+                    .and_then(|service| service.handle_smc(function))
+                    .unwrap_or(arm_vcpu::SMCCC_NOT_SUPPORTED as usize);
+                vcpu.set_gpr(0, result);
+                Ok(BoundVcpuExit::Continue)
+            }
+            ArmVmExit::DataAbort { abort } => data_abort::handle(vm, vcpu, abort),
             ArmVmExit::SysRegRead { addr, reg } => sysreg::handle_read(
                 vm,
                 vcpu,
@@ -119,12 +271,30 @@ impl ArchOps for Aarch64Arch {
                     value,
                 },
             ),
-            ArmVmExit::ExternalInterrupt { vector } => {
-                debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
+            ArmVmExit::GicCpuInterfaceRead {
+                register,
+                destination,
+            } => {
+                let value = read_gic_cpu_interface_register(vcpu.id(), register)?;
+                vcpu.set_gpr(destination, value as usize);
+                Ok(BoundVcpuExit::Continue)
+            }
+            ArmVmExit::GicCpuInterfaceWrite { register, value } => {
+                write_gic_cpu_interface_register(vcpu.id(), register, value)?;
+                Ok(BoundVcpuExit::Continue)
+            }
+            ArmVmExit::DeactivateInterrupt { intid } => {
+                vm.prepared_interrupt_topology()?
+                    .deactivate_vcpu_interrupt(
+                        axdevice::VcpuInterruptId::new(vcpu.id()),
+                        axdevice::GuestInterruptId::new(intid),
+                    )?;
+                Ok(BoundVcpuExit::Continue)
+            }
+            ArmVmExit::ExternalInterrupt => {
+                debug!("VM[{}] run VCpu[{}] handles a host IRQ", vm.id(), vcpu.id());
                 Ok(BoundVcpuExit::Defer(
-                    Aarch64DeferredRunWork::ExternalInterrupt {
-                        vector: vector as usize,
-                    },
+                    Aarch64DeferredRunWork::ExternalInterrupt,
                 ))
             }
             ArmVmExit::CpuDown { state } => {
@@ -133,10 +303,7 @@ impl ArchOps for Aarch64Arch {
                     vm.id(),
                     vcpu.id()
                 );
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: true,
-                    stop_reason: None,
-                }))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::wait_for_event()))
             }
             ArmVmExit::CpuUp {
                 target_cpu,
@@ -153,32 +320,15 @@ impl ArchOps for Aarch64Arch {
             ),
             ArmVmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: false,
-                    stop_reason: Some(crate::StopReason::SystemDown),
-                }))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::new(
+                    VcpuScheduling::Resume,
+                    Some(crate::StopReason::SystemDown),
+                )))
             }
-            ArmVmExit::SendIPI {
-                target_cpu,
-                target_cpu_aux,
-                send_to_all,
-                send_to_self,
-                vector,
-            } => ipi::handle(
-                vm,
-                vcpu.id(),
-                SendIpiExit {
-                    target_cpu,
-                    target_cpu_aux,
-                    send_to_all,
-                    send_to_self,
-                    vector,
-                },
-            ),
-            ArmVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-            })),
+            ArmVmExit::SendIPI { value } => {
+                ipi::handle(vm, vcpu.id(), SendIpiExit { sgi1r: value })
+            }
+            ArmVmExit::Nothing => Ok(BoundVcpuExit::Continue),
             _ => ax_err!(Unsupported, "unsupported AArch64 VM exit"),
         }
     }
@@ -189,35 +339,54 @@ impl ArchOps for Aarch64Arch {
         work: Self::DeferredRunWork,
     ) -> AxVmResult<VcpuRunAction> {
         match work {
-            Aarch64DeferredRunWork::ExternalInterrupt { vector } => {
-                Self::after_external_interrupt(vm, vcpu, vector);
+            Aarch64DeferredRunWork::ExternalInterrupt => {
+                Self::after_external_interrupt(vm, vcpu, 0);
             }
         }
-        Ok(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        })
+        Ok(VcpuRunAction::resume())
     }
+}
+
+fn read_gic_cpu_interface_register(
+    vcpu: usize,
+    register: ArmGicCpuInterfaceRegister,
+) -> AxVmResult<u64> {
+    gic::read_cpu_interface_register(vcpu, register)
+        .map_err(|error| crate::AxVmError::interrupt("read GICv3 CPU interface", error))
+}
+
+fn write_gic_cpu_interface_register(
+    vcpu: usize,
+    register: ArmGicCpuInterfaceRegister,
+    value: u64,
+) -> AxVmResult {
+    gic::write_cpu_interface_register(vcpu, register, value)
+        .map_err(|error| crate::AxVmError::interrupt("write GICv3 CPU interface", error))
 }
 
 struct AxvmArmHostOps;
 
 impl ArmHostOps for AxvmArmHostOps {
-    fn inject_virtual_interrupt(vector: u8) -> ArmVcpuResult {
-        gic::inject_interrupt(vector as usize);
-        Ok(())
-    }
-
-    fn fetch_pending_host_irq() -> Option<usize> {
-        Some(gic::fetch_irq())
-    }
-
     fn handle_current_host_irq() {
         gic::handle_current_irq();
     }
 }
 
 pub(crate) struct AxvmArmVcpu(ArmVcpu<AxvmArmHostOps>);
+
+impl AxvmArmVcpu {
+    fn complete_data_abort(
+        &mut self,
+        abort: ArmDataAbort,
+        result: ArmDataAccessResult,
+    ) -> BackendResult {
+        arm_result(self.0.complete_data_abort(abort, result))
+    }
+
+    fn inject_external_data_abort(&mut self, abort: ArmDataAbort) -> BackendResult {
+        arm_result(self.0.inject_external_data_abort(abort))
+    }
+}
 
 impl VmArchVcpuOps for AxvmArmVcpu {
     type CreateConfig = ArmVcpuCreateConfig;
@@ -257,10 +426,6 @@ impl VmArchVcpuOps for AxvmArmVcpu {
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
         self.0.set_gpr(reg, val);
-    }
-
-    fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
-        arm_result(self.0.inject_interrupt(vector))
     }
 
     fn set_return_value(&mut self, val: usize) {
@@ -383,58 +548,5 @@ mod tests {
             arm_sys_reg_addr_to_ax(ArmSysRegAddr::new(0x3a_3016)).addr(),
             0x3a_3016
         );
-    }
-}
-
-struct ArmVgicHostIfImpl;
-
-#[impl_interface]
-impl ArmVgicHostIf for ArmVgicHostIfImpl {
-    fn alloc_contiguous_frames(frame_count: usize, frame_align: usize) -> Option<PhysAddr> {
-        default_host().alloc_contiguous_frames(frame_count, frame_align)
-    }
-
-    fn dealloc_contiguous_frames(start_paddr: PhysAddr, frame_count: usize) {
-        default_host().dealloc_contiguous_frames(start_paddr, frame_count);
-    }
-
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        default_host().phys_to_virt(paddr)
-    }
-
-    fn host_cpu_num() -> usize {
-        default_host().cpu_count()
-    }
-
-    fn current_vcpu_id() -> usize {
-        crate::current_vcpu_id().expect("current AArch64 vCPU is not set")
-    }
-
-    fn current_time_nanos() -> u64 {
-        default_host().monotonic_time().as_nanos() as u64
-    }
-
-    fn register_timer(deadline: Duration, callback: Box<dyn FnOnce(Duration) + Send + 'static>) {
-        let _ = crate::timer::register_timer(deadline.as_nanos() as u64, callback);
-    }
-
-    fn read_vgicd_iidr() -> u32 {
-        gic::read_gicd_iidr()
-    }
-
-    fn read_vgicd_typer() -> u32 {
-        gic::read_gicd_typer()
-    }
-
-    fn get_host_gicd_base() -> PhysAddr {
-        gic::host_gicd_base()
-    }
-
-    fn get_host_gicr_base() -> PhysAddr {
-        gic::host_gicr_base()
-    }
-
-    fn hardware_inject_virtual_interrupt(vector: u8) {
-        gic::inject_interrupt(vector as usize);
     }
 }

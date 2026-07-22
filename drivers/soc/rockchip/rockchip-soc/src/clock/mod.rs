@@ -17,6 +17,8 @@ pub trait ResetOp {
     fn reset_assert(&mut self, id: RstId);
 
     fn reset_deassert(&mut self, id: RstId);
+
+    fn reset_is_asserted(&self, id: RstId) -> Option<bool>;
 }
 
 pub trait ClockOp {
@@ -121,6 +123,13 @@ impl ResetOp for Cru {
         match self {
             Self::Rk3568(cru) => cru.reset_deassert(id),
             Self::Rk3588(cru) => cru.reset_deassert(id),
+        }
+    }
+
+    fn reset_is_asserted(&self, id: RstId) -> Option<bool> {
+        match self {
+            Self::Rk3568(cru) => cru.reset_is_asserted(id),
+            Self::Rk3588(cru) => cru.reset_is_asserted(id),
         }
     }
 }

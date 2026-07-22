@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add active boot-console MMIO discovery and an RAII output suspension
+  capability for reversible device ownership transfers.
+
 ## [0.5.28](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.27...ax-hal-v0.5.28) - 2026-07-10
 
 ### Added

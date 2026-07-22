@@ -86,11 +86,11 @@ fn every_architecture_owns_vm_resource_creation_and_initialization() {
 }
 
 #[test]
-fn custom_vm_init_inputs_cross_the_arch_boundary_unchanged() {
+fn machine_plan_owns_interrupt_topology_construction() {
     let preparation = include_str!("../src/vm/prepare.rs");
-    assert!(preparation.contains("VmInitRequest::Provided"));
-    assert!(preparation.contains("factories,"));
-    assert!(preparation.contains("interrupt_fabric,"));
+    assert!(!preparation.contains("prepare_with_topology"));
+    assert!(!preparation.contains("VmInitRequest::Provided"));
+    assert!(!preparation.contains("DeviceFactory"));
 
     for source in [
         include_str!("../src/arch/aarch64/vm.rs"),
@@ -98,9 +98,27 @@ fn custom_vm_init_inputs_cross_the_arch_boundary_unchanged() {
         include_str!("../src/arch/riscv64/vm.rs"),
         include_str!("../src/arch/x86_64/vm.rs"),
     ] {
-        assert!(source.contains("VmInitRequest::Provided"));
-        assert!(source.contains("init_vm_with(vm, factories, interrupt_fabric)"));
+        assert!(!source.contains("VmInitRequest::Provided"));
+        assert!(source.contains("InterruptTopology::new()"));
+        assert!(!source.contains("InterruptTopology::new(vm."));
+        assert!(source.contains("let (interrupt_topology, interrupt_authority)"));
+        assert!(source.contains("interrupt_authority)"));
     }
+}
+
+#[test]
+fn riscv_host_plic_notifications_are_edge_adapted_before_topology() {
+    let source = include_str!("../src/arch/riscv64/irq.rs");
+    let connection = source
+        .split_once("fn connect_external_irq_line(")
+        .expect("RISC-V must connect planned host IRQ sources")
+        .1
+        .split_once("fn signal_external_interrupt")
+        .expect("RISC-V host IRQ connection must precede signaling")
+        .0;
+
+    assert!(connection.contains("InterruptTriggerMode::EdgeTriggered"));
+    assert!(!connection.contains("interrupt.trigger()"));
 }
 
 #[test]
@@ -129,6 +147,202 @@ fn runtime_vcpu_loop_only_consumes_scheduler_actions() {
             "runtime/vcpus.rs must not match architecture-local exit action: {forbidden}"
         );
     }
+}
+
+#[test]
+fn controller_state_is_harvested_before_vcpu_exit_side_effects() {
+    let ops = include_str!("../src/architecture/ops.rs");
+    let run_loop = ops
+        .split_once("fn run_vcpu(")
+        .expect("architecture operations must define the vCPU run loop")
+        .1
+        .split_once("pub(crate) fn target_phys_cpu_ids")
+        .expect("the vCPU run loop must precede affinity helpers")
+        .0;
+    let after_run = run_loop
+        .split_once("let exit = vcpu.run()?;")
+        .expect("the vCPU run loop must enter the architecture backend")
+        .1;
+    let handle_exit = after_run
+        .find("Self::handle_vcpu_exit_bound")
+        .expect("the vCPU run loop must apply architecture exit side effects");
+    let synchronize_controller = after_run
+        .find("Self::synchronize_interrupts_after_exit")
+        .expect("the vCPU run loop must apply its post-exit synchronization policy");
+
+    assert!(
+        synchronize_controller < handle_exit,
+        "hardware LR state must be folded into the controller before a guest MMIO/sysreg exit \
+         observes or modifies interrupt state"
+    );
+}
+
+#[test]
+fn aarch64_trapped_dir_owns_one_live_cpu_interface_harvest() {
+    let ops = include_str!("../src/architecture/ops.rs");
+    assert!(
+        ops.contains("Self::synchronize_interrupts_after_exit("),
+        "the common run loop must let an architecture select the synchronization owner"
+    );
+
+    let arch = include_str!("../src/arch/aarch64/mod.rs");
+    let synchronization = arch
+        .split_once("fn synchronize_interrupts_after_exit(")
+        .expect("AArch64 must specialize post-exit interrupt synchronization")
+        .1
+        .split_once("fn with_vcpu_interrupt_context")
+        .expect("the synchronization policy must precede the ICH critical section")
+        .0;
+    assert!(
+        synchronization.contains("ArmVmExit::DeactivateInterrupt { .. } => Ok(())"),
+        "a trapped DIR must not perform a generic harvest before its atomic deactivation"
+    );
+
+    let binding = include_str!("../../arm_vgic/src/controller/binding.rs");
+    let deactivate = binding
+        .split_once("pub fn deactivate(&self, intid: IntId)")
+        .expect("the GICv3 binding must handle trapped DIR")
+        .1
+        .split_once("pub fn cpu_interface_snapshot")
+        .expect("DIR handling must precede snapshot inspection")
+        .0;
+    let save = deactivate
+        .find("save_cpu_interface")
+        .expect("DIR must harvest the live hardware LR state");
+    let deactivate_state = deactivate
+        .find("deactivate_interrupt")
+        .expect("DIR must update the VM-local interrupt state");
+    assert!(
+        save < deactivate_state,
+        "the hardware LR transition must be harvested before applying DIR"
+    );
+}
+
+#[test]
+fn aarch64_hardware_forwarding_keeps_the_virtual_cpu_interface_loaded() {
+    let ops = include_str!("../src/architecture/ops.rs");
+    let run_loop = ops
+        .split_once("fn run_vcpu(")
+        .expect("architecture operations must define the vCPU run loop")
+        .1
+        .split_once("pub(crate) fn target_phys_cpu_ids")
+        .expect("the vCPU run loop must precede affinity helpers")
+        .0;
+    assert!(
+        run_loop.contains("Self::with_vcpu_interrupt_context(vm, ||"),
+        "the architecture must keep ICH load, guest exits, and ICH save in one interrupt context"
+    );
+
+    let setup = include_str!("../src/arch/aarch64/vm.rs");
+    assert!(setup.contains("Ok(ArmVcpuSetupConfig)"));
+    assert!(
+        !run_loop.contains("IrqSave"),
+        "hardware forwarding must not mask all host IRQs while a guest runs"
+    );
+
+    let arm_vcpu = include_str!("../../arm_vcpu/src/vcpu.rs");
+    let run = arm_vcpu
+        .split_once("pub fn run(&mut self)")
+        .expect("arm_vcpu must define its guest run entry")
+        .1
+        .split_once("/// Binds this vCPU")
+        .expect("the guest run entry must precede vCPU binding")
+        .0;
+    assert!(run.contains("host_daif"));
+    assert!(run.contains("msr daif, {host_daif}"));
+    assert!(
+        !run.contains("msr daifclr"),
+        "arm_vcpu must restore the caller's DAIF state instead of enabling host IRQs \
+         unconditionally"
+    );
+}
+
+#[test]
+fn aarch64_cpu_interface_switch_is_one_irq_atomic_transaction() {
+    let arch = include_str!("../src/arch/aarch64/mod.rs");
+    let interrupt_context = arch
+        .split_once("fn with_vcpu_interrupt_context<T>")
+        .expect("AArch64 must define its ICH ownership critical section")
+        .1
+        .split_once("fn after_external_interrupt")
+        .expect("the ICH ownership critical section must precede IRQ dispatch")
+        .0;
+    assert!(
+        interrupt_context.contains("IrqSave::new()"),
+        "ICH load, synchronize, and unload must not be interrupted by a host IRQ"
+    );
+
+    let cpu_interface = include_str!("../src/arch/aarch64/gic/cpu_interface.rs");
+    let load = cpu_interface
+        .split_once("pub(super) fn load(")
+        .expect("the AArch64 GIC backend must load ICH state")
+        .1
+        .split_once("pub(super) fn save(")
+        .expect("ICH load must precede ICH save")
+        .0;
+    let disable = load
+        .find("ICH_HCR_EL2.set(0)")
+        .expect("ICH must remain disabled while a vCPU state is restored");
+    let restore_lrs = load
+        .find("write_list_register(index, entry)")
+        .expect("ICH load must restore list registers");
+    let enable = load
+        .rfind("ICH_HCR_EL2.set(hardware_hcr_for_load(state.hcr()))")
+        .expect("ICH load must restore the saved control state and host trap policy last");
+    assert!(
+        disable < restore_lrs && restore_lrs < enable,
+        "ICH load must disable HCR, restore all state, then enable HCR"
+    );
+    assert!(
+        load[restore_lrs..enable].contains("data_sync_barrier()"),
+        "restored LR state must reach the GIC before ICH is enabled"
+    );
+
+    let save = cpu_interface
+        .split_once("pub(super) fn save(")
+        .expect("the AArch64 GIC backend must save ICH state")
+        .1
+        .split_once("fn disable_cpu_interface")
+        .expect("ICH save must precede hardware-state release")
+        .0;
+    let barrier = save
+        .find("data_sync_barrier()")
+        .expect("ICH save must synchronize guest GIC state before reading LRs");
+    let read_lr = save
+        .find("read_list_register(index, *slot)")
+        .expect("ICH save must harvest list registers");
+    assert!(barrier < read_lr);
+}
+
+#[test]
+fn aarch64_lr_overflow_has_a_host_maintenance_irq_path() {
+    let gic = include_str!("../src/arch/aarch64/gic/mod.rs");
+    assert!(gic.contains("mod maintenance;"));
+    let arch = include_str!("../src/arch/aarch64/mod.rs");
+    assert!(
+        arch.contains("maintenance_interrupt: Option<gic::HostMaintenanceInterrupt>"),
+        "the VM architecture state must own the maintenance IRQ registration"
+    );
+
+    let roles = include_str!("../src/arch/aarch64/gic/roles.rs");
+    assert!(
+        roles.contains("pub(crate) const fn maintenance_interrupt(&self) -> PpiId"),
+        "maintenance PPI discovery must be exposed as a checked internal capability"
+    );
+
+    let vm = include_str!("../src/arch/aarch64/vm.rs");
+    assert!(vm.contains("register_maintenance_interrupt("));
+    assert!(vm.contains("set_gic_controller("));
+}
+
+#[test]
+fn aarch64_internal_exit_keeps_interrupt_context_loaded() {
+    let source = include_str!("../src/arch/aarch64/mod.rs");
+
+    assert!(
+        source.contains("ArmVmExit::Nothing => Ok(BoundVcpuExit::Continue)"),
+        "an exit handled entirely inside arm_vcpu must resume within the current run slice"
+    );
 }
 
 #[test]
@@ -199,6 +413,21 @@ fn common_domains_live_outside_architecture_directories() {
             "common AxVM domain must use its canonical source path: {relative_path}"
         );
     }
+}
+
+#[test]
+fn axvisor_enables_synchronous_cross_cpu_irq_operations() {
+    let manifest = include_str!("../../../os/axvisor/Cargo.toml");
+    let ax_std = manifest
+        .lines()
+        .find(|line| line.trim_start().starts_with("ax-std ="))
+        .expect("Axvisor must depend on ax-std");
+
+    assert!(
+        ax_std.contains("\"ipi\""),
+        "Axvisor configures per-CPU interrupt state and therefore needs ax-std's full IPI \
+         capability"
+    );
 }
 
 #[test]
@@ -298,6 +527,32 @@ fn host_time_trait_only_exposes_common_clock_capabilities() {
 }
 
 #[test]
+fn aarch64_timer_serializes_generation_check_with_token_install() {
+    let source = include_str!("../src/arch/aarch64/timer/state.rs");
+    let schedule = source
+        .split_once("fn schedule(")
+        .expect("AArch64 timer must have a scheduling step")
+        .1
+        .split_once("fn cancel_scheduled(")
+        .expect("AArch64 timer scheduling must precede cancellation")
+        .0;
+    let lock = schedule
+        .find("self.scheduled_token.lock()")
+        .expect("timer scheduling must lock its token slot");
+    let generation = schedule
+        .find("self.generation.load(Ordering::Acquire)")
+        .expect("timer scheduling must reject stale generations");
+    let install = schedule
+        .find("replace(token)")
+        .expect("timer scheduling must install the new token");
+
+    assert!(
+        lock < generation && generation < install,
+        "the generation check and token replacement must share one serialized section"
+    );
+}
+
+#[test]
 fn vcpu_setup_context_keeps_named_capabilities() {
     let types = include_str!("../src/architecture/types.rs");
     let ops = include_str!("../src/architecture/ops.rs");
@@ -339,6 +594,302 @@ fn eager_vm_lifecycle_has_no_uninit_state() {
     assert!(!status.contains("Uninit"));
     assert!(!machine.contains("Machine::Uninit"));
     assert!(vm.contains("machine: Mutex::new(Machine::Ready(resources))"));
+}
+
+#[test]
+fn shared_vcpu_protocol_does_not_expose_interrupt_controller_operations() {
+    let source = include_str!("../../axvm-types/src/lib.rs");
+    let vcpu_protocol = source
+        .split_once("pub trait VmArchVcpuOps")
+        .expect("axvm-types must define the shared vCPU protocol")
+        .1
+        .split_once("pub trait VmArchPerCpuOps")
+        .expect("the vCPU protocol must precede the per-CPU protocol")
+        .0;
+
+    for controller_operation in ["fn inject_interrupt", "fn handle_eoi"] {
+        assert!(
+            !vcpu_protocol.contains(controller_operation),
+            "interrupt controller operation leaked into the shared vCPU protocol: \
+             {controller_operation}"
+        );
+    }
+}
+
+#[test]
+fn aarch64_physical_irq_binding_completes_handoff_before_forwarding_registration() {
+    let source = include_str!("../src/arch/aarch64/gic/physical_spi.rs");
+    let bind = source
+        .split_once("pub(super) fn bind(")
+        .expect("AArch64 must define physical IRQ binding")
+        .1
+        .split_once("pub(super) fn prepare_enabled(")
+        .expect("physical IRQ binding must precede activation")
+        .0;
+
+    assert!(bind.contains("reserve_irq("));
+    assert!(bind.contains("claim_irq_for_guest("));
+    for premature_handoff in ["host_irq::set_enable", "host_irq::set_affinity"] {
+        assert!(
+            !bind.contains(premature_handoff),
+            "binding must acquire ownership without configuring the forwarding action: \
+             {premature_handoff}"
+        );
+    }
+
+    let handoff = source
+        .split_once("fn take_physical_spi_snapshot(")
+        .expect("physical IRQ handoff must snapshot the host GIC state")
+        .1
+        .split_once("fn restore_physical_spi(")
+        .expect("physical IRQ snapshot must precede restoration")
+        .0;
+    let snapshot = handoff
+        .find("let snapshot = PhysicalSpiSnapshot")
+        .expect("physical IRQ handoff must capture a complete host snapshot");
+    let mask = handoff
+        .find("gic.set_irq_enable(intid, false)")
+        .expect("physical IRQ handoff must mask the host line");
+    assert!(
+        snapshot < mask,
+        "the host snapshot must precede handoff mutation"
+    );
+    assert!(handoff.contains("gic.set_pending(intid, false)"));
+    assert!(handoff.contains("gic.set_active(intid, false)"));
+
+    let activation = source
+        .split_once("pub(super) fn prepare_enabled(")
+        .expect("AArch64 must define physical IRQ activation")
+        .1
+        .split_once("pub(super) fn unbind(")
+        .expect("physical IRQ activation must precede unbinding")
+        .0;
+    assert!(activation.contains("require_guest_owned("));
+    assert!(!activation.contains("claim_irq_for_guest("));
+    assert!(activation.contains("host_irq::set_affinity"));
+    assert!(
+        !activation.contains("host_irq::set_enable"),
+        "physical ownership preparation must not bypass the registered forwarding action"
+    );
+
+    let forwarding = include_str!("../src/arch/aarch64/gic/forwarding.rs");
+    let hardware_backed_state = forwarding
+        .split_once("pub(super) fn set_hardware_backed_enabled(")
+        .expect("hardware-backed forwarding must expose a checked enable transition")
+        .1
+        .split_once("pub(super) fn retire_guest_interrupt(")
+        .expect("hardware-backed enable must precede mediated retirement")
+        .0;
+    assert!(hardware_backed_state.contains("host_irq::enable_irq(registration)"));
+    assert!(hardware_backed_state.contains("host_irq::disable_irq(registration)"));
+}
+
+#[test]
+fn aarch64_host_console_stays_owned_by_the_hypervisor() {
+    let source = include_str!("../src/arch/aarch64/fdt.rs");
+    let snapshot = source
+        .split_once("pub fn current_host_platform_snapshot()")
+        .expect("AArch64 must capture the live host platform")
+        .1
+        .split_once("fn fdt_generation")
+        .expect("host snapshot construction must precede generation hashing")
+        .0;
+
+    assert!(snapshot.contains("grant_whole_machine_assignment"));
+    assert!(
+        !snapshot.contains("grant_console_transfer"),
+        "the active Axvisor console can back a virtual UART, but its MMIO and IRQ must never be \
+         transferred to the guest"
+    );
+}
+
+#[test]
+fn aarch64_mediated_host_irq_preserves_level_line_lifetime() {
+    let forwarding = include_str!("../src/arch/aarch64/gic/forwarding.rs");
+
+    assert!(forwarding.contains("InterruptTriggerMode::LevelTriggered => line.raise()"));
+    assert!(forwarding.contains("InterruptTriggerMode::EdgeTriggered => line.pulse()"));
+    let lower = forwarding
+        .find("line.lower()")
+        .expect("level forwarding must deassert the VM-local line on guest retirement");
+    let unmask = forwarding
+        .find("self.unmask_host_irq()")
+        .expect("guest retirement must re-enable the physical host IRQ");
+    assert!(
+        lower < unmask,
+        "the VM-local level must clear before the host IRQ is unmasked"
+    );
+}
+
+#[test]
+fn aarch64_hardware_forwarded_host_irq_uses_an_exclusive_hardware_backed_lr() {
+    let forwarding = include_str!("../src/arch/aarch64/gic/forwarding.rs");
+    assert!(forwarding.contains("ShareMode::Exclusive"));
+    assert!(forwarding.contains("controller.forward_physical_spi(self.spi)"));
+    assert!(forwarding.contains("IrqReturn::Forwarded"));
+
+    let cpu_interface = include_str!("../src/arch/aarch64/gic/cpu_interface.rs");
+    assert!(cpu_interface.contains("ICH_LR_EL2::HW::SET"));
+    assert!(cpu_interface.contains("ICH_LR_EL2::PINTID"));
+
+    let arm_vcpu = include_str!("../../arm_vcpu/src/vcpu.rs");
+    assert!(arm_vcpu.contains("HCR_EL2::IMO::EnableVirtualIRQ"));
+    assert!(arm_vcpu.contains("HCR_EL2::FMO::EnableVirtualFIQ"));
+}
+
+#[test]
+fn aarch64_falls_back_to_common_cpu_interface_traps_without_tdir() {
+    let registration = include_str!("../src/arch/aarch64/gic/registration.rs");
+    assert!(
+        !registration.contains("require_deactivation_trap()"),
+        "a CPU without ICH_HCR_EL2.TDIR must use the architectural common-register trap fallback"
+    );
+
+    let cpu_interface = include_str!("../src/arch/aarch64/gic/cpu_interface.rs");
+    assert!(cpu_interface.contains("ICH_HCR_EL2::TC"));
+    assert!(cpu_interface.contains("ICH_VTR_EL2::TDS"));
+    for register in ["ICC_CTLR_EL1", "ICC_PMR_EL1", "ICC_RPR_EL1"] {
+        assert!(
+            cpu_interface.contains(register),
+            "the common trap fallback must preserve {register} semantics"
+        );
+    }
+
+    let arm_vcpu = include_str!("../../arm_vcpu/src/vcpu.rs");
+    assert!(arm_vcpu.contains("ArmVmExit::GicCpuInterfaceRead"));
+    assert!(arm_vcpu.contains("ArmVmExit::GicCpuInterfaceWrite"));
+
+    let arch = include_str!("../src/arch/aarch64/mod.rs");
+    assert!(arch.contains("read_gic_cpu_interface_register(vcpu.id(), register)"));
+    assert!(arch.contains("write_gic_cpu_interface_register(vcpu.id(), register, value)"));
+}
+
+#[test]
+fn aarch64_hardware_forwarding_has_no_physical_private_interrupt_backend() {
+    let vgic_backend = include_str!("../../arm_vgic/src/backend.rs");
+    for obsolete_operation in [
+        "load_physical_private_interrupts",
+        "save_physical_private_interrupts",
+        "synchronize_physical_private_interrupts",
+        "update_physical_private_interrupts",
+        "send_physical_sgi",
+    ] {
+        assert!(
+            !vgic_backend.contains(obsolete_operation),
+            "hardware forwarding must keep SGIs and PPIs virtual instead of exposing the obsolete \
+             physical-private backend operation {obsolete_operation}"
+        );
+    }
+
+    let axvm_backend = include_str!("../src/arch/aarch64/gic/mod.rs");
+    assert!(!axvm_backend.contains("mod private_interrupts;"));
+    assert!(!axvm_backend.contains("PrivateInterruptMask"));
+    assert!(!axvm_backend.contains("PrivateInterruptState"));
+
+    let vgic_config = include_str!("../../arm_vgic/src/config.rs");
+    assert!(!vgic_config.contains("passthrough_private_interrupts"));
+
+    let arm_vcpu = include_str!("../../arm_vcpu/src/vcpu.rs");
+    assert!(!arm_vcpu.contains("passthrough_interrupt"));
+    assert!(!arm_vcpu.contains("passthrough_timer"));
+}
+
+#[test]
+fn aarch64_cpu_interface_save_relinquishes_hardware_state() {
+    let cpu_interface = include_str!("../src/arch/aarch64/gic/cpu_interface.rs");
+    let save = cpu_interface
+        .split_once("pub(super) fn save(")
+        .expect("AArch64 GIC backend must save its CPU interface")
+        .1
+        .split_once("pub(super) fn hardware_list_register_count")
+        .expect("CPU-interface save must precede hardware capability helpers")
+        .0;
+    let save_body = save
+        .split_once("fn disable_cpu_interface()")
+        .expect("CPU-interface save must have a hardware relinquish step")
+        .0;
+
+    let read_lr = save_body
+        .find("read_list_register(index, *slot)?")
+        .expect("CPU-interface save must harvest every guest LR");
+    let relinquish = save_body
+        .find("disable_cpu_interface();")
+        .expect("CPU-interface save must always relinquish hardware state");
+    let clear_lr = save
+        .find("ich_lr_el2_set(index, LocalRegisterCopy::new(0))")
+        .expect("CPU-interface save must invalidate every hardware LR");
+    let disable = save
+        .find("ICH_HCR_EL2.set(0)")
+        .expect("CPU-interface save must disable the virtual CPU interface");
+
+    assert!(
+        read_lr < relinquish && clear_lr < disable,
+        "saved LRs must be harvested, invalidated, and followed by disabling ICH_HCR_EL2"
+    );
+}
+
+#[test]
+fn aarch64_emulated_timer_progresses_while_the_vcpu_is_not_running() {
+    let capabilities = include_str!("../src/arch/aarch64/capabilities.rs");
+
+    assert!(
+        capabilities.contains(
+            "const VM_TIMER_INTEGRATION: VmTimerIntegration = VmTimerIntegration::RuntimeCallback;"
+        ),
+        "AArch64 VM timer expiry must run from the host timer callback even after WFI yields the \
+         vCPU task"
+    );
+}
+
+#[test]
+fn aarch64_hardware_forwarded_routes_separate_mpidr_from_host_cpu_index() {
+    let registration = include_str!("../src/arch/aarch64/gic/registration.rs");
+    let placement = include_str!("../src/arch/aarch64/placement.rs");
+    let vm = include_str!("../src/arch/aarch64/vm.rs");
+
+    assert!(
+        !registration.contains("VcpuRoute::new(placement.id, placement.phys_cpu_id, affinity)"),
+        "the guest MPIDR affinity must not be reused as an AxVM logical CPU index"
+    );
+    assert!(
+        registration.contains("placement.fixed_host_cpu()?"),
+        "hardware forwarding must consume the normalized fixed CPU mask"
+    );
+    assert!(placement.contains("super::capabilities::logical_cpu_id"));
+    assert!(placement.contains("config.phys_cpu_ls.set_guest_cpu_sets(cpu_sets)"));
+    assert!(placement.contains("mask & available_cpu_mask != mask"));
+    assert!(placement.contains("mask.count_ones() != 1"));
+    assert!(placement.contains("mask.trailing_zeros() as usize"));
+    let normalize = vm
+        .find("normalize_hardware_forwarded_vcpu_cpu_sets(&mut config)?")
+        .expect("hardware-forwarded vCPU placement must be normalized during VM creation");
+    let consume = vm
+        .find("let placements = config.phys_cpu_ls.get_vcpu_affinities_pcpu_ids()")
+        .expect("VM resource creation must consume normalized vCPU placements");
+    assert!(normalize < consume);
+}
+
+#[test]
+fn aarch64_guest_smc_does_not_implicitly_enter_host_secure_firmware() {
+    let exception = include_str!("../../arm_vcpu/src/exception.rs");
+    let library = include_str!("../../arm_vcpu/src/lib.rs");
+    let smccc = include_str!("../../arm_vcpu/src/smccc.rs");
+
+    assert!(exception.contains("crate::smccc::NOT_SUPPORTED"));
+    assert!(smccc.contains("VERSION_1_1"));
+    assert!(
+        exception.matches("handle_vm_firmware_call(ctx)").count() >= 2,
+        "both SMC and HVC conduits must use the VM-local firmware dispatcher"
+    );
+    assert!(
+        !exception.contains("smc_call("),
+        "an unowned guest SMC must not be forwarded to host secure firmware"
+    );
+    assert!(library.contains("mod smccc;"));
+    assert!(
+        !library.contains("mod smc;"),
+        "the vCPU core must not own an unrestricted host SMC backend"
+    );
 }
 
 fn find_target_arch_cfg_outside_arch(

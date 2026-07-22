@@ -2,6 +2,15 @@
 
 use crate::AxVmResult;
 
+/// How a guest architecture integrates VM deadlines with the host timer source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VmTimerIntegration {
+    /// VM deadlines directly program the host one-shot timer.
+    DedicatedOneShot,
+    /// The host runtime owns the one-shot timer and periodically checks VM deadlines.
+    RuntimeCallback,
+}
+
 /// Guest firmware preparation performed before common VM memory loading.
 pub(crate) trait GuestBootPlatform {
     fn init_guest_boot_resources() {}
@@ -54,9 +63,20 @@ pub(crate) trait BootImagePlatform {
 
 /// Architecture-specific host timer policy used by the ArceOS adapter.
 pub(crate) trait HostTimePlatform {
+    /// Selects whether AxVM or the host runtime owns hardware timer programming.
+    const VM_TIMER_INTEGRATION: VmTimerIntegration = VmTimerIntegration::DedicatedOneShot;
+
     fn set_oneshot_timer(deadline_ns: u64) {
-        ax_std::os::arceos::modules::ax_hal::time::set_oneshot_timer(deadline_ns);
+        if Self::VM_TIMER_INTEGRATION == VmTimerIntegration::DedicatedOneShot {
+            ax_std::os::arceos::modules::ax_hal::time::set_oneshot_timer(deadline_ns);
+        }
     }
 
-    fn register_timer_callback() {}
+    fn register_timer_callback() {
+        if Self::VM_TIMER_INTEGRATION == VmTimerIntegration::RuntimeCallback {
+            ax_std::os::arceos::modules::ax_task::register_timer_callback(|_| {
+                crate::check_timer_events();
+            });
+        }
+    }
 }

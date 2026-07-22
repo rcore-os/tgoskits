@@ -34,3 +34,6 @@ sbi-spec = { version = "0.0.9", features = ["legacy"] }
 thiserror = { workspace = true }
 tock-registers = "0.10"
 memoffset = { version = ">=0.6.5", features = ["unstable_const"] }
+
+[dev-dependencies]
+riscv-h = { workspace = true }

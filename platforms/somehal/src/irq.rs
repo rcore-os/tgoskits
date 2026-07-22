@@ -266,6 +266,11 @@ impl ActiveIrq {
     pub fn id(&self) -> IrqId {
         resolve_irq_route(Plat::active_irq_id(&self.inner))
     }
+
+    /// Transfers physical source deactivation to a hardware-backed virtual IRQ.
+    pub fn defer_deactivation(&mut self) -> Result<(), IrqError> {
+        Plat::defer_irq_deactivation(&mut self.inner)
+    }
 }
 
 pub fn map_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {

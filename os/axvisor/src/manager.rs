@@ -33,7 +33,6 @@ impl AxvmManager {
     pub fn init_default_vms(&self) {
         crate::config::init_guest_vms();
         self.runtime.init_vms();
-        self.release_host_filesystem_for_guest_passthrough();
     }
 
     /// Start the default VM set and wait until it exits.
@@ -87,29 +86,6 @@ impl AxvmManager {
     pub fn vm_by_id(vm_id: VMId) -> Option<AxVMRef> {
         axvm::get_vm_by_id(vm_id)
     }
-
-    #[cfg(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    ))]
-    fn release_host_filesystem_for_guest_passthrough(&self) {
-        if !crate::config::host_filesystem_release_required() {
-            return;
-        }
-
-        axvm::shutdown_host_filesystems().expect(
-            "Failed to release host filesystem before guest passthrough devices take ownership",
-        );
-        #[cfg(target_arch = "x86_64")]
-        crate::config::prepare_x86_host_fs_passthrough_devices();
-        info!("Host filesystem cleanly unmounted before guest passthrough devices start");
-    }
-
-    #[cfg(not(all(
-        feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
-    )))]
-    fn release_host_filesystem_for_guest_passthrough(&self) {}
 
     /// Read VM config files from an Axvisor-owned directory.
     #[cfg(feature = "fs")]
@@ -213,7 +189,11 @@ pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
     let routes = axvm::boot::guest_platform::loongarch64::get_guest_irq_routes(vm_id);
     if routes.is_empty() {
         if let Some(vm) = axvm::get_vm_by_id(vm_id) {
-            let passthrough = vm.with_config(|cfg| !cfg.pass_through_devices().is_empty());
+            let passthrough = vm.with_config(|config| {
+                config.machine_plan().host_devices().iter().any(|device| {
+                    device.disposition() == axvm::machine::DeviceDisposition::Passthrough
+                })
+            });
             if passthrough {
                 warn!(
                     "VM[{vm_id}] has passthrough devices but no LoongArch guest IRQ route parsed"
@@ -229,12 +209,18 @@ pub(crate) fn register_loongarch_passthrough_irq_routes(vm_id: VMId) {
         routes.len()
     );
     for route in routes {
-        axvm::register_loongarch_guest_irq_route(
+        if let Err(error) = axvm::register_loongarch_guest_irq_route(
             route.physical_irq,
             vm_id,
             vcpu_id,
             route.guest_vector,
-        );
+        ) {
+            warn!(
+                "failed to register LoongArch passthrough IRQ {} -> guest input {} for VM[{}]: \
+                 {error:?}",
+                route.physical_irq, route.guest_vector, vm_id
+            );
+        }
     }
 }
 

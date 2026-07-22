@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add immutable host platform snapshots, deterministic machine planning,
+  transactional physical-device claims, and FDT/ACPI generation from one
+  resolved resource plan.
+- Add Virtual and Passthrough machine profiles, per-source mediated or
+  hardware-backed physical IRQ forwarding, AArch64 PL011, RISC-V/LoongArch
+  NS16550, and per-instance console backends.
+- Add optional `std` support for domain tests while keeping the runtime
+  `no_std + alloc` compatible.
+- Add an AArch64 QEMU regression that boots Linux from a hardware-forwarded
+  virtio-blk IRQ while keeping the VM-local PL011 console software-backed.
+- Add a distinct Synopsys DW-APB virtual UART model with checked 32-bit,
+  four-byte-stride register access for host-derived AArch64 consoles.
+
+### Changed
+
+- Build VMs in RAM, vCPU, controller/binding, device/topology, mapping,
+  firmware, and boot-state order with complete rollback on failure.
+- Derive AArch64 private interrupt roles from platform/FDT capabilities, keep
+  guest SGI/PPI state VM-local, and never overwrite host GICR state.
+- Resolve every hardware-forwarded AArch64 physical IRQ route to one available
+  host CPU mask before creating the vCPU task and GIC binding, so both consume
+  the same fixed placement without scheduler fallback.
+- Preserve x86 passthrough DMA semantics with VM-owned identity-allocated RAM,
+  reserve host PIO before virtual-device allocation, and replace host COM1
+  resources through the planned virtual console template.
+- Keep allocator-placed identity RAM as a dynamic machine-plan requirement so
+  its zero configuration placeholder cannot hide low passthrough I/O, and
+  restore this placement for RK3568 guests.
+- Track the firmware-selected host console separately from other compatible
+  UARTs, prefer it for virtual-console replacement, and require a reversible
+  host capability lease before assigning it as a physical device.
+- Select the default AArch64 virtual console from the firmware-selected UART
+  model; PL011, packed NS16550, and DW-APB register layouts are not conflated.
+- Replace raw shared clock/reset-controller passthrough with selector-level
+  platform grants and transactional resource claims. Static resources become
+  guest-local providers; mutable resources use a VM-private SCMI service whose
+  controls retain the physical ownership lease, while provider MMIO remains
+  unmapped.
+
+### Fixed
+
+- Reject an explicit ACPI firmware request when assigned AArch64 devices need
+  mutable SCMI-mediated providers; the current private transport is described
+  only in generated FDT and never falls back to exposing host provider MMIO.
+- Support AArch64 GICv3 implementations without `ICH_HCR_EL2.TDIR` by using
+  the common CPU-interface trap and preserving CTLR, PMR, RPR, and DIR
+  semantics instead of rejecting VM creation.
+- Coalesce identical passthrough-device references to a shared physical
+  interrupt input before controller registration, and reject inconsistent
+  route metadata during machine planning.
+- Mark a live-authorized passthrough device available in the generated guest
+  FDT when its host firmware node carries a stale disabled status.
+- Select host-derived AArch64 CPU nodes by their `reg` hardware affinity and
+  preserve the platform PSCI conduit while completing its calls inside the VM.
+- Let an authoritative live console capability identify an unprobed boot UART
+  by its physical MMIO base and supersede stale disabled FDT status, while
+  continuing to reject structural nodes as transferable devices.
+- Keep nested FDT interrupt specifiers out of the root-controller topology,
+  reject devices with unavailable required providers during planning, and
+  remove optional or stale references without exposing host-owned providers;
+  retain only assigned-hart entries in mixed RISC-V interrupt context tables.
+- Filter assigned devices that require a physical ITS when no isolated ITS
+  capability is present, while allowing an independent VM-local software ITS
+  for virtual MSI endpoints.
+- Deassert a forwarded x86 level source by its in-service IOAPIC identity
+  before processing EOI, allowing physical INTx delivery to rearm after the
+  guest masks or reroutes the entry.
+- Resolve an active Rockchip FIQ debugger's UART alias, replace the underlying
+  physical UART with a software-backed DW-APB model, and rewrite the guest
+  console description without exposing the host debugger.
+- Implement standard 16550 modem/data loopback and retain destructively read
+  host-console bytes until the guest UART accepts them, so Linux probing and
+  FIFO backpressure no longer emit garbage or truncate input.
+- Route trapped AArch64 DIR through one atomic live-LR harvest and deactivation
+  instead of performing a redundant generic CPU-interface synchronization.
+- Prevent guest clock cleanup from disabling host-owned consumers that share a
+  physical provider with an assigned device.
+- Remove firmware aliases whose register ranges overlap a protected provider
+  aperture, so a guest driver cannot bypass the provider's stage-2 hole.
+- Preserve assigned AArch64 device clock-rate and reset transitions through a
+  lease-filtered SCMI endpoint instead of freezing the host's observed boot
+  state into fixed-clock firmware nodes.
+
+### Removed
+
+- Remove mutable FDT-driven `AxVMConfig` expansion, legacy device factories,
+  the VM pending-vector queue, and shared manual interrupt-injection APIs.
+
 ## [0.5.23](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.22...axvm-v0.5.23) - 2026-07-10
 
 ### Other

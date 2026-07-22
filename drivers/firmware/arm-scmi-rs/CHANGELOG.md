@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a `no_std` platform-side SCMI shared-memory codec and synchronous Base,
+  Clock v1.0, and Reset v1.0 dispatcher over a lease-filtered backend trait.
+
 ## [0.1.7](https://github.com/rcore-os/tgoskits/compare/arm-scmi-rs-v0.1.6...arm-scmi-rs-v0.1.7) - 2026-07-08
 
 ### Other

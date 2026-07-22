@@ -74,6 +74,49 @@ impl UpperHex for ArmGuestPhysAddr {
     }
 }
 
+/// Guest virtual address captured from an AArch64 fault register.
+///
+/// This is intentionally distinct from [`ArmGuestPhysAddr`] so exception
+/// injection cannot substitute an IPA for an architecturally invalid FAR.
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+pub struct ArmGuestVirtAddr(u64);
+
+impl ArmGuestVirtAddr {
+    /// Creates a guest virtual address from its architectural value.
+    pub const fn from_u64(address: u64) -> Self {
+        Self(address)
+    }
+
+    /// Returns the architectural address value.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for ArmGuestVirtAddr {
+    fn from(value: u64) -> Self {
+        Self::from_u64(value)
+    }
+}
+
+impl Debug for ArmGuestVirtAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "GVA({:#x})", self.0)
+    }
+}
+
+impl LowerHex for ArmGuestVirtAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:#x}", self.0)
+    }
+}
+
+impl UpperHex for ArmGuestVirtAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:#X}", self.0)
+    }
+}
+
 /// AArch64 system-register address encoding used by trapped MRS/MSR exits.
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ArmSysRegAddr(usize);
@@ -190,6 +233,22 @@ impl ArmNestedPagingConfig {
     }
 }
 
+/// A GICv3 common CPU-interface register trapped for VM-local emulation.
+///
+/// These registers share one architectural trap control on implementations
+/// that do not provide the dedicated `ICC_DIR_EL1` trap. Keeping the register
+/// identity typed prevents raw system-register encodings from leaking into the
+/// VMM boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmGicCpuInterfaceRegister {
+    /// `ICC_CTLR_EL1`, the common CPU-interface control register.
+    Control,
+    /// `ICC_PMR_EL1`, the virtual priority-mask register.
+    PriorityMask,
+    /// `ICC_RPR_EL1`, the virtual running-priority register.
+    RunningPriority,
+}
+
 /// VM-exit reason returned by the AArch64 vCPU core.
 #[non_exhaustive]
 #[derive(Debug)]
@@ -201,27 +260,17 @@ pub enum ArmVmExit {
         /// Hypercall arguments.
         args: [u64; 6],
     },
-    /// The guest performed an MMIO read.
-    MmioRead {
-        /// Guest physical address being read.
-        addr: ArmGuestPhysAddr,
-        /// Access width.
-        width: ArmAccessWidth,
-        /// Destination guest register.
-        reg: usize,
-        /// Destination register width.
-        reg_width: ArmAccessWidth,
-        /// Whether the value should be sign-extended.
-        signed_ext: bool,
+    /// An SMC function not owned by the vCPU core requires VMM mediation.
+    FirmwareCall {
+        /// Valid 32-bit SMCCC function identifier.
+        function: u32,
+        /// First three function arguments.
+        args: [u64; 3],
     },
-    /// The guest performed an MMIO write.
-    MmioWrite {
-        /// Guest physical address being written.
-        addr: ArmGuestPhysAddr,
-        /// Access width.
-        width: ArmAccessWidth,
-        /// Value written by the guest.
-        data: u64,
+    /// A guest data abort whose address ownership is intentionally unresolved.
+    DataAbort {
+        /// Architectural fault information captured by the vCPU core.
+        abort: crate::ArmDataAbort,
     },
     /// The guest performed a system-register read.
     SysRegRead {
@@ -237,11 +286,22 @@ pub enum ArmVmExit {
         /// Value written by the guest.
         value: u64,
     },
-    /// A physical host interrupt should be handled by the embedding VMM.
-    ExternalInterrupt {
-        /// Host or placeholder vector reported by the host adapter.
-        vector: u64,
+    /// The guest read a trapped GICv3 common CPU-interface register.
+    GicCpuInterfaceRead {
+        /// Register selected by the trapped MRS instruction.
+        register: ArmGicCpuInterfaceRegister,
+        /// Destination guest general-purpose register.
+        destination: usize,
     },
+    /// The guest wrote a trapped GICv3 common CPU-interface register.
+    GicCpuInterfaceWrite {
+        /// Register selected by the trapped MSR instruction.
+        register: ArmGicCpuInterfaceRegister,
+        /// Value written by the guest.
+        value: u64,
+    },
+    /// A physical host interrupt should be handled by the embedding VMM.
+    ExternalInterrupt,
     /// A guest PSCI CPU_OFF call was trapped.
     CpuDown {
         /// Guest-provided target state.
@@ -260,16 +320,13 @@ pub enum ArmVmExit {
     SystemDown,
     /// The guest wrote a GIC SGI system register.
     SendIPI {
-        /// Primary target selector.
-        target_cpu: u64,
-        /// Auxiliary target selector.
-        target_cpu_aux: u64,
-        /// Whether the SGI targets all other vCPUs.
-        send_to_all: bool,
-        /// Whether the SGI targets the current vCPU.
-        send_to_self: bool,
-        /// SGI interrupt ID.
-        vector: u64,
+        /// Complete ICC_SGI1R_EL1 value, including affinity and range selector.
+        value: u64,
+    },
+    /// The guest wrote ICC_DIR_EL1 while deactivation trapping was enabled.
+    DeactivateInterrupt {
+        /// Guest-visible INTID carried by ICC_DIR_EL1.
+        intid: u32,
     },
     /// The vCPU handled the event internally.
     Nothing,

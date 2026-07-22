@@ -10,6 +10,7 @@ keywords = ["vm", "hypervisor", "arceos"]
 license = "Apache-2.0"
 
 [features]
+std = ["axdevice/std", "axvmconfig/std", "virtual_ns16550/std"]
 fs = ["ax-std/fs"]
 host-fs = ["ax-std/fs"]
 sstc = ["riscv_vcpu/sstc"]
@@ -24,6 +25,10 @@ byte-unit = { version = "5", default-features = false, features = ["byte"] }
 numeric-enum-macro = "0.2"
 spin = { workspace = true }
 thiserror = { workspace = true }
+vm-allocator = { workspace = true }
+vm-fdt = { workspace = true }
+acpi_tables = { workspace = true }
+virtual_ns16550.workspace = true
 
 # System independent crates provided by ArceOS.
 ax-cpumask = { workspace = true }
@@ -58,6 +63,7 @@ fdt-edit = { workspace = true }
 fdt-raw = { workspace = true }
 hashbrown = "0.14"
 [target.'cfg(target_arch = "x86_64")'.dependencies]
+rdrive.workspace = true
 x86 = "0.52"
 x86_vcpu = { workspace = true }
 x86_vlapic = { workspace = true }
@@ -68,10 +74,21 @@ riscv_vplic = { workspace = true }
 ax-driver = { workspace = true }
 ax-plat = { workspace = true }
 loongarch_vcpu = { workspace = true }
+rdrive.workspace = true
 [target.'cfg(target_arch = "aarch64")'.dependencies]
+aarch64-cpu = "11.0"
 aarch64-cpu-ext = "0.1"
+aarch64_sysreg.workspace = true
+arm-scmi-rs.workspace = true
+arm_vpl011.workspace = true
 arm_vcpu = { workspace = true }
-arm_vgic = { workspace = true, features = ["vgicv3"] }
+arm_vgic.workspace = true
 arm-gic-driver = { workspace = true, features = ["rdif"] }
 rdif-intc.workspace = true
+rdif-msi.workspace = true
+rdif-clk.workspace = true
+rdif-reset.workspace = true
 rdrive.workspace = true
+
+[dev-dependencies]
+ax-kspin = { workspace = true, features = ["host-test"] }

@@ -8,7 +8,7 @@ use axdevice_base::Resource;
 use super::super::{AxVM, AxVMResources, VM_ASPACE_BASE, VM_ASPACE_SIZE};
 use crate::{
     AxVmError, AxVmResult,
-    layout::{GuestOwnedRegion, VmRegionKind, build_address_layout},
+    layout::{GuestOwnedRegion, VmRegionKind, build_planned_address_layout},
 };
 
 pub(crate) fn map_guest_address_space(
@@ -21,12 +21,10 @@ pub(crate) fn map_guest_address_space(
         .devices()
         .flat_map(|device| device.resources().iter().cloned())
         .collect::<Vec<Resource>>();
-    let address_layout = build_address_layout(
-        resources.config.address_space_policy(),
+    let address_layout = build_planned_address_layout(
+        resources.config.machine_plan(),
         VM_ASPACE_BASE,
         VM_ASPACE_SIZE,
-        resources.config.pass_through_devices(),
-        resources.config.pass_through_addresses(),
         owned_regions,
         &emulated_resources,
     )?;
@@ -69,15 +67,5 @@ pub(crate) fn guest_owned_regions(resources: &AxVMResources) -> Vec<GuestOwnedRe
                 GuestOwnedRegion::new(base, length, VmRegionKind::BootDescription)
             }),
     );
-    regions.extend(
-        resources
-            .config
-            .reserved_address_ranges()
-            .iter()
-            .map(|range| {
-                GuestOwnedRegion::new(range.base_gpa, range.length, VmRegionKind::Reserved)
-            }),
-    );
-
     regions
 }

@@ -305,8 +305,8 @@ impl From<RegistryError> for AxVmError {
             RegistryError::AddressConflict { .. } => {
                 Self::resource_conflict("device address range", error)
             }
-            RegistryError::IrqLineConflict { .. } => {
-                Self::resource_conflict("device IRQ line", error)
+            RegistryError::InterruptEndpointConflict { .. } => {
+                Self::resource_conflict("device interrupt endpoint", error)
             }
             RegistryError::InvalidResource { .. } => {
                 Self::invalid_input("register virtual device", error)

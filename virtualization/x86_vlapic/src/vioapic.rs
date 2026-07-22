@@ -28,6 +28,7 @@ struct IoApicState {
     selector: u32,
     redirection_table: [u64; REDIRECTION_ENTRY_COUNT],
     pending_level: [bool; REDIRECTION_ENTRY_COUNT],
+    in_service_vector: [Option<u8>; REDIRECTION_ENTRY_COUNT],
 }
 
 impl IoApicState {
@@ -36,6 +37,7 @@ impl IoApicState {
             selector: 0,
             redirection_table: [REDIRECTION_ENTRY_MASKED; REDIRECTION_ENTRY_COUNT],
             pending_level: [false; REDIRECTION_ENTRY_COUNT],
+            in_service_vector: [None; REDIRECTION_ENTRY_COUNT],
         }
     }
 
@@ -62,6 +64,7 @@ impl IoApicState {
                 return None;
             }
             *entry |= REDIRECTION_ENTRY_REMOTE_IRR;
+            self.in_service_vector[gsi] = Some(vector);
         }
 
         Some(IoApicInterrupt {
@@ -74,13 +77,13 @@ impl IoApicState {
         for gsi in 0..REDIRECTION_ENTRY_COUNT {
             let matched = {
                 let entry = &mut self.redirection_table[gsi];
-                if (*entry & 0xff) as u8 != vector
-                    || *entry & REDIRECTION_ENTRY_TRIGGER_MODE == 0
+                if self.in_service_vector[gsi] != Some(vector)
                     || *entry & REDIRECTION_ENTRY_REMOTE_IRR == 0
                 {
                     false
                 } else {
                     *entry &= !REDIRECTION_ENTRY_REMOTE_IRR;
+                    self.in_service_vector[gsi] = None;
                     true
                 }
             };
@@ -95,6 +98,12 @@ impl IoApicState {
         }
 
         None
+    }
+
+    fn in_service_gsi_for_vector(&self, vector: u8) -> Option<usize> {
+        self.in_service_vector
+            .iter()
+            .position(|active| *active == Some(vector))
     }
 }
 
@@ -171,6 +180,15 @@ impl EmulatedIoApic {
         state.end_of_interrupt(vector)
     }
 
+    /// Returns the level-triggered GSI currently awaiting an EOI for `vector`.
+    ///
+    /// This identity remains stable while software masks or reroutes the
+    /// redirection entry. It can therefore be used to deassert the originating
+    /// input before broadcasting the EOI.
+    pub fn in_service_gsi_for_vector(&self, vector: u8) -> Option<usize> {
+        self.state.lock().in_service_gsi_for_vector(vector)
+    }
+
     fn offset(&self, addr: X86GuestPhysAddr) -> usize {
         addr.as_usize() - self.base.as_usize()
     }
@@ -209,14 +227,17 @@ impl EmulatedIoApic {
                 }
                 let entry = &mut state.redirection_table[index];
                 if (reg - IOREDTBL_BASE) & 1 == 0 {
-                    let old_low = *entry & !REDIRECTION_ENTRY_REMOTE_IRR & 0xffff_ffff;
                     let new_low = (value as u64) & !REDIRECTION_ENTRY_REMOTE_IRR;
-                    let remote_irr = if old_low == new_low {
+                    let level_triggered = new_low & REDIRECTION_ENTRY_TRIGGER_MODE != 0;
+                    let remote_irr = if level_triggered {
                         *entry & REDIRECTION_ENTRY_REMOTE_IRR
                     } else {
-                        state.pending_level[index] = false;
                         0
                     };
+                    if !level_triggered {
+                        state.in_service_vector[index] = None;
+                        state.pending_level[index] = false;
+                    }
                     *entry = (*entry & !0xffff_ffff) | new_low | remote_irr;
                     if *entry & REDIRECTION_ENTRY_MASKED != 0 {
                         state.pending_level[index] = false;
@@ -277,6 +298,29 @@ mod tests {
                 }),
             })
         );
+    }
+
+    #[test]
+    fn eoi_completes_masked_in_service_level_entry() {
+        let mut state = IoApicState::new();
+        program_level_gsi(&mut state, 18, 0x51);
+        assert!(state.interrupt_for_entry(18).is_some());
+
+        select(&mut state, IOREDTBL_BASE + 18 * 2);
+        write_iowin(
+            &mut state,
+            REDIRECTION_ENTRY_MASKED as u32 | REDIRECTION_ENTRY_TRIGGER_MODE as u32 | 0x51,
+        );
+
+        assert_eq!(state.in_service_gsi_for_vector(0x51), Some(18));
+        assert_eq!(
+            state.end_of_interrupt(0x51),
+            Some(IoApicEoi {
+                gsi: 18,
+                pending: None,
+            })
+        );
+        assert_eq!(state.in_service_gsi_for_vector(0x51), None);
     }
 }
 

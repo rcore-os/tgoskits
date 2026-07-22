@@ -2,6 +2,10 @@
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
+use axdevice::{
+    DeviceManagerError, DeviceManagerResult, VcpuInterruptAffinity, VcpuInterruptId,
+    VcpuInterruptPort, VcpuInterruptWake,
+};
 use axvm_types::VmArchVcpuOps;
 
 use super::super::{AxVCpuRef, AxVMResources, VCpu};
@@ -64,7 +68,6 @@ impl PreparedVcpus {
         >,
     ) -> AxVmResult {
         for vcpu in &self.vcpus {
-            let setup_config = build_config(&resources.config, &resources.memory_regions)?;
             let entry = if vcpu.id() == 0 {
                 resources.config.bsp_entry()
             } else {
@@ -72,9 +75,41 @@ impl PreparedVcpus {
             };
 
             debug!("Setting up vCPU[{}] entry at {:#x}", vcpu.id(), entry);
-            vcpu.setup(entry, resources.nested_paging, setup_config)?;
+            vcpu.setup(
+                entry,
+                resources.nested_paging,
+                build_config(&resources.config, &resources.memory_regions)?,
+            )?;
         }
         Ok(())
+    }
+
+    pub(crate) fn interrupt_ports(
+        &self,
+        vm_id: usize,
+        placements: &[VcpuPlacement],
+    ) -> AxVmResult<Vec<VcpuInterruptPort>> {
+        let mut ports = Vec::with_capacity(self.vcpus.len());
+        for vcpu in &self.vcpus {
+            let placement = placements
+                .iter()
+                .find(|placement| placement.id == vcpu.id())
+                .ok_or_else(|| {
+                    crate::ax_err_type!(
+                        BadState,
+                        alloc::format!("vCPU {} has no interrupt affinity", vcpu.id())
+                    )
+                })?;
+            ports.push(VcpuInterruptPort::new(
+                VcpuInterruptId::new(vcpu.id()),
+                VcpuInterruptAffinity::new(placement.phys_cpu_id as u64),
+                Arc::new(RuntimeVcpuWake {
+                    vm_id,
+                    vcpu_id: vcpu.id(),
+                }),
+            ));
+        }
+        Ok(ports)
     }
 
     pub(crate) fn into_boxed_slice(self) -> Box<[AxVCpuRef]> {
@@ -82,9 +117,30 @@ impl PreparedVcpus {
     }
 }
 
+struct RuntimeVcpuWake {
+    vm_id: usize,
+    vcpu_id: usize,
+}
+
+impl VcpuInterruptWake for RuntimeVcpuWake {
+    fn wake(&self) -> DeviceManagerResult {
+        crate::runtime::vcpus::wake_vcpu(self.vm_id, self.vcpu_id).map_err(|error| {
+            DeviceManagerError::UnexpectedResponse {
+                operation: "wake vCPU interrupt port",
+                detail: alloc::format!("{error}"),
+            }
+        })
+    }
+}
+
 pub(crate) fn vcpu_placements(resources: &AxVMResources) -> Vec<VcpuPlacement> {
-    resources
-        .config
+    vcpu_placements_from_config(&resources.config)
+}
+
+pub(crate) fn vcpu_placements_from_config(
+    config: &crate::config::AxVMConfig,
+) -> Vec<VcpuPlacement> {
+    config
         .phys_cpu_ls
         .get_vcpu_affinities_pcpu_ids()
         .into_iter()

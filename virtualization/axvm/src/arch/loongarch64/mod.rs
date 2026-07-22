@@ -1,6 +1,7 @@
-use alloc::boxed::Box;
+use alloc::{boxed::Box, collections::BTreeMap, format, vec::Vec};
 use core::time::Duration;
 
+use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::VirtAddr;
 use axvm_types::{
     AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
@@ -13,23 +14,144 @@ use loongarch_vcpu::{
     LoongArchVcpuResult, LoongArchVmExit,
 };
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, VcpuRunAction};
 use crate::{
-    AxVmError, AxVmResult,
+    AxVmError, AxVmResult, VmStatus, ax_err_type,
     host::{HostMemory, HostTime, default_host},
 };
 
 pub(crate) mod boot;
 mod capabilities;
+#[path = "../../architecture/decoded_mmio.rs"]
+mod decoded_mmio;
 pub(crate) mod fdt;
+#[path = "../../machine/host_acpi.rs"]
+mod host_acpi;
 mod idle;
+mod interrupt_controller;
 pub(crate) mod irq;
+#[path = "../../architecture/nested_page_fault.rs"]
+mod nested_page_fault;
 mod npt;
+#[path = "../../machine/ns16550_model.rs"]
+mod ns16550_model;
 mod vm;
+#[path = "../../architecture/timer_scheduler.rs"]
+mod vm_timer_scheduler;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
+use decoded_mmio::{DecodedMmioOps, MmioReadExit, MmioWriteExit};
+pub(crate) use irq::VmArchState;
+
+pub fn current_host_platform_snapshot()
+-> crate::machine::MachinePlanResult<crate::machine::HostPlatformSnapshot> {
+    host_acpi::current_host_platform_snapshot()
+}
+
+pub fn standard_machine_profile()
+-> crate::machine::MachinePlanResult<crate::machine::MachineProfile> {
+    Ok(crate::machine::MachineProfile::new(
+        crate::machine::AddressRange::new(0x1fe0_0000, 0x0010_0000)?,
+        1..=255,
+    )?
+    .with_interrupt_controller(crate::machine::InterruptControllerProfile::LoongArch(
+        crate::machine::LoongArchInterruptProfile::new(
+            crate::machine::AddressRange::new(0x1000_0000, 0x1000)?,
+            crate::machine::AddressRange::new(0x2ff0_0000, 0x1_0000)?,
+            crate::machine::LoongArchInterruptRouting::new(
+                3,
+                0,
+                0x20,
+                0xe0,
+                crate::machine::LoongArchAcpiInterruptRouting::new(0x40, 0x40, 0xc0),
+            ),
+        ),
+    ))
+    .with_loongarch_platform(crate::machine::LoongArchPlatformProfile::new(
+        crate::machine::AddressRange::new(0x1e02_0000, 0x18)?,
+        crate::machine::LoongArchPciProfile::new(
+            crate::machine::AddressRange::new(0x2000_0000, 0x0800_0000)?,
+            crate::machine::AddressRange::new(0x4000_0000, 0x4000_0000)?,
+            crate::machine::AddressRange::new(0x1800_0000, 0x1_0000)?,
+            16,
+        ),
+        crate::machine::LoongArchPowerProfile::new(
+            0x100e_001e,
+            0x42,
+            0x100e_001c,
+            0x34,
+            0x100e_001c,
+            0x100e_001d,
+        ),
+        crate::machine::LoongArchFirmwareDevicesProfile::new(
+            crate::machine::AddressRange::new(0x100d_0100, 0x100)?,
+            6,
+            [
+                crate::machine::AddressRange::new(0x1c00_0000, 0x0100_0000)?,
+                crate::machine::AddressRange::new(0x1d00_0000, 0x0100_0000)?,
+            ],
+            4,
+        ),
+    )))
+}
+
+/// Returns named resources for the standard LoongArch 16550 console.
+pub fn ns16550_device_requirements() -> axdevice::DeviceManagerResult<axdevice::DeviceRequirements>
+{
+    ns16550_model::ns16550_device_requirements(0x1000)
+}
 
 pub(crate) struct LoongArch64Arch;
+
+#[derive(Debug, Default)]
+pub(crate) struct VmArchConfig;
+
+impl VmArchConfig {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+
+    pub(crate) const fn reset_prepared_boot_state(&mut self) {}
+
+    pub(crate) const fn validate_prepared_boot_state(
+        &self,
+        _physical_interrupt_policy: axvm_types::PhysicalInterruptPolicy,
+    ) -> AxVmResult {
+        Ok(())
+    }
+}
+
+pub(crate) struct VmRuntimeArchState {
+    pending_interrupts: Mutex<BTreeMap<usize, Vec<usize>>>,
+}
+
+impl VmRuntimeArchState {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending_interrupts: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub(crate) fn register_vcpu(&self, vcpu_id: usize) {
+        self.pending_interrupts.lock().entry(vcpu_id).or_default();
+    }
+
+    pub(crate) fn queue_interrupt(&self, vcpu_id: usize, vector: usize) {
+        self.pending_interrupts
+            .lock()
+            .entry(vcpu_id)
+            .or_default()
+            .push(vector);
+    }
+
+    pub(crate) fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<usize> {
+        self.pending_interrupts
+            .lock()
+            .get_mut(&vcpu_id)
+            .map(core::mem::take)
+            .unwrap_or_default()
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum LoongArchDeferredRunWork {
@@ -51,62 +173,25 @@ impl ArchOps for LoongArch64Arch {
         irq::register_platform_irq_injector();
     }
 
-    fn inject_pending_interrupt(
+    fn deliver_pending_controller_interrupts(
         vm: &crate::AxVMRef,
         vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        interrupt: crate::vm::PendingInterrupt,
     ) {
-        match interrupt {
-            crate::vm::PendingInterrupt::Normal(vector) => {
-                trace!(
-                    "Injecting queued interrupt {vector:#x} into VM[{}] VCpu[{}]",
-                    vcpu.vm_id(),
-                    vcpu.id()
-                );
-                if let Err(err) = vcpu.inject_interrupt(vector) {
-                    warn!(
-                        "Failed to inject queued interrupt {vector:#x} into VM[{}] VCpu[{}]: \
-                         {err:?}",
-                        vcpu.vm_id(),
-                        vcpu.id()
-                    );
-                }
-            }
-            crate::vm::PendingInterrupt::External {
-                vector,
-                physical_irq,
-            } => {
-                let Some(vector) = loongarch_external_irq_vector(vm, vector, physical_irq) else {
-                    trace!(
-                        "Queued LoongArch external interrupt physical_irq={physical_irq:#x} is \
-                         masked in VM[{}]",
-                        vm.id()
-                    );
-                    return;
-                };
-                trace!(
-                    "Injecting queued LoongArch external interrupt vector={vector:#x}, \
-                     physical_irq={physical_irq:#x} into VM[{}] VCpu[{}]",
-                    vm.id(),
-                    vcpu.id()
-                );
-                if let Err(err) = vcpu
-                    .get_arch_vcpu()
-                    .inject_external_interrupt(vector, physical_irq)
-                {
-                    warn!(
-                        "Failed to inject queued LoongArch external interrupt vector={vector:#x}, \
-                         physical_irq={physical_irq:#x} into VM[{}] VCpu[{}]: {err:?}",
-                        vm.id(),
-                        vcpu.id()
-                    );
-                }
-            }
-        }
+        deliver_pending_controller_interrupts(vm, vcpu);
     }
 
     fn after_mmio_write(vm: &crate::AxVMRef) {
-        drain_loongarch_pch_pic_events(vm);
+        let result = vm.get_devices().and_then(|devices| {
+            devices
+                .service_loongarch_pch_pic_outputs()
+                .map_err(Into::into)
+        });
+        if let Err(error) = result {
+            warn!(
+                "failed to service LoongArch VM[{}] PCH-PIC output: {error:?}",
+                vm.id()
+            );
+        }
     }
 
     fn handle_vcpu_exit_bound(
@@ -124,7 +209,7 @@ impl ArchOps for LoongArch64Arch {
                 reg,
                 reg_width,
                 signed_ext,
-            } => super::handle_mmio_read(
+            } => Self::handle_decoded_mmio_read(
                 vm,
                 vcpu,
                 MmioReadExit {
@@ -135,7 +220,7 @@ impl ArchOps for LoongArch64Arch {
                     signed_ext,
                 },
             ),
-            LoongArchVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
+            LoongArchVmExit::MmioWrite { addr, width, data } => Self::handle_decoded_mmio_write(
                 vm,
                 MmioWriteExit {
                     addr: loong_guest_phys_addr_to_ax(addr),
@@ -160,15 +245,9 @@ impl ArchOps for LoongArch64Arch {
             }
             LoongArchVmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: true,
-                    stop_reason: None,
-                }))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::wait_for_event()))
             }
-            LoongArchVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-            })),
+            LoongArchVmExit::Nothing => Ok(BoundVcpuExit::Complete(VcpuRunAction::resume())),
             _ => Err(AxVmError::unsupported(
                 "handle LoongArch VM exit",
                 "unsupported VM exit reason",
@@ -187,10 +266,7 @@ impl ArchOps for LoongArch64Arch {
             }
             LoongArchDeferredRunWork::Idle => idle::wait(vcpu),
         }
-        Ok(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        })
+        Ok(VcpuRunAction::resume())
     }
 
     fn clean_dcache_range(addr: VirtAddr, size: usize) {
@@ -216,16 +292,16 @@ fn handle_loongarch_nested_page_fault(
                 vcpu.id(),
                 ax_addr.as_usize()
             );
-            return Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                waits_for_event: false,
-                stop_reason: None,
-            }));
+            return Ok(BoundVcpuExit::Complete(VcpuRunAction::resume()));
         };
         return LoongArch64Arch::handle_vcpu_exit_bound(vm, vcpu, decoded);
     }
 
     let ax_flags = loong_access_flags_to_ax(access_flags);
-    if vm.handle_nested_page_fault(ax_addr, ax_flags) {
+    if matches!(
+        nested_page_fault::resolve(vm, ax_addr, ax_flags)?,
+        nested_page_fault::NestedPageFaultResolution::Resolved
+    ) {
         Ok(BoundVcpuExit::Continue)
     } else {
         warn!(
@@ -235,47 +311,8 @@ fn handle_loongarch_nested_page_fault(
             ax_addr.as_usize(),
             ax_flags
         );
-        Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        }))
+        Ok(BoundVcpuExit::Complete(VcpuRunAction::resume()))
     }
-}
-
-fn loongarch_external_irq_vector(
-    vm: &crate::AxVMRef,
-    fallback_vector: usize,
-    _physical_irq: usize,
-) -> Option<usize> {
-    let devices = vm.get_devices().ok()?;
-    match devices.loongarch_pch_pic_assert_irq(fallback_vector) {
-        Some(Some(vector)) => Some(vector),
-        Some(None) => None,
-        None => Some(fallback_vector),
-    }
-}
-
-fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
-    let Ok(devices) = vm.get_devices() else {
-        return;
-    };
-    devices.drain_loongarch_pch_pic_events(|event| {
-        if !event.asserted {
-            trace!(
-                "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
-                vm.id(),
-                event.vector
-            );
-            return;
-        }
-        if let Err(err) = crate::manager::inject_vm_vcpu_interrupt(vm.id(), 0, event.vector) {
-            warn!(
-                "failed to inject LoongArch VM[{}] PCH-PIC output vector {}: {err:?}",
-                vm.id(),
-                event.vector
-            );
-        }
-    });
 }
 
 struct AxvmLoongArchHostOps;
@@ -301,15 +338,15 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
         deadline: Duration,
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,
     ) -> usize {
-        crate::timer::register_timer(deadline.as_nanos() as u64, callback)
+        vm_timer_scheduler::register(deadline.as_nanos() as u64, callback)
     }
 
     fn cancel_timer(token: usize) {
-        crate::timer::cancel_timer(token);
+        vm_timer_scheduler::cancel(token);
     }
 
     fn inject_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) {
-        if let Err(err) = crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector) {
+        if let Err(err) = queue_interrupt(vm_id, vcpu_id, vector) {
             warn!(
                 "failed to queue LoongArch interrupt {vector:#x} for VM[{vm_id}] VCpu[{vcpu_id}]: \
                  {err:?}"
@@ -318,12 +355,59 @@ impl LoongArchHostOps for AxvmLoongArchHostOps {
     }
 }
 
+fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
+    let vm = crate::get_vm_by_id(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return Err(ax_err_type!(
+            BadState,
+            format!("VM[{vm_id}] is not accepting interrupts")
+        ));
+    }
+
+    let cpu_id = vm.with_runtime(|runtime| {
+        let cpu_id = runtime.vcpu_task_cpu(vcpu_id)?;
+        runtime.arch_state().queue_interrupt(vcpu_id, vector);
+        Ok(cpu_id)
+    })?;
+    vm.with_runtime(|runtime| {
+        runtime.notify_all();
+        Ok(())
+    })?;
+    crate::host::task::send_ipi(cpu_id);
+    Ok(())
+}
+
+fn deliver_pending_controller_interrupts(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<AxvmLoongArchVcpu>,
+) {
+    let Ok(interrupts) =
+        vm.with_runtime(|runtime| Ok(runtime.arch_state().drain_pending_interrupts(vcpu.id())))
+    else {
+        warn!(
+            "VM[{}] vCPU runtime not found while synchronizing the LoongArch interrupt controller",
+            vm.id()
+        );
+        return;
+    };
+    for vector in interrupts {
+        if let Err(error) = vcpu.get_arch_vcpu().deliver_controller_interrupt(vector) {
+            warn!(
+                "failed to deliver LoongArch controller vector {vector:#x} to VM[{}] VCpu[{}]: \
+                 {error}",
+                vm.id(),
+                vcpu.id()
+            );
+        }
+    }
+}
+
 pub(crate) struct AxvmLoongArchVcpu(LoongArchVcpu<AxvmLoongArchHostOps>);
 
 impl AxvmLoongArchVcpu {
-    fn inject_external_interrupt(&mut self, vector: usize, physical_irq: usize) -> AxVmResult {
-        loongarch_result(self.0.inject_external_interrupt(vector, physical_irq))
-            .map_err(|error| AxVmError::interrupt("inject LoongArch external interrupt", error))
+    fn deliver_controller_interrupt(&mut self, vector: usize) -> BackendResult {
+        loongarch_result(self.0.inject_interrupt(vector))
     }
 
     fn has_enabled_pending_interrupt(&self) -> bool {
@@ -381,10 +465,6 @@ impl VmArchVcpuOps for AxvmLoongArchVcpu {
 
     fn set_gpr(&mut self, reg: usize, val: usize) {
         self.0.set_gpr(reg, val);
-    }
-
-    fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
-        loongarch_result(self.0.inject_interrupt(vector))
     }
 
     fn set_return_value(&mut self, val: usize) {

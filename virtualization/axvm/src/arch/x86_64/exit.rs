@@ -62,23 +62,23 @@ pub(crate) fn finish(
     vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
     work: DeferredRunWork,
 ) -> AxVmResult<VcpuRunAction> {
-    match work {
+    let action = match work {
         DeferredRunWork::ExternalInterrupt { vector } => {
             X86_64Arch::after_external_interrupt(vm, vcpu, vector);
+            VcpuRunAction::resume()
         }
         DeferredRunWork::PreemptionTimer => {
             crate::timer::check_events();
             super::irq::inject_due_pit_irq0(vm, vcpu);
             super::irq::inject_pending_serial_irq(vm, vcpu);
+            VcpuRunAction::new(crate::architecture::VcpuScheduling::YIELD, None)
         }
         DeferredRunWork::InterruptEnd { vector } => {
             if let Some(vector) = vector {
                 super::irq::inject_pending_ioapic_irq_after_eoi(vm, vcpu, vector);
             }
+            VcpuRunAction::resume()
         }
-    }
-    Ok(VcpuRunAction {
-        waits_for_event: false,
-        stop_reason: None,
-    })
+    };
+    Ok(action)
 }

@@ -84,18 +84,10 @@
     b       .Lexception_return_el2
 .endm
 
-.macro HANDLE_LOWER_IRQ_VCPU
+.macro HANDLE_LOWER_VCPU kind
 .p2align 7
     SAVE_REGS_FROM_EL1
-    mov    x0, {exception_irq}
-    bl     vmexit_trampoline
-    # b .Lexception_return_el2 is called by `vmexit_trampoline`
-.endm
-
-.macro HANDLE_LOWER_SYNC_VCPU
-.p2align 7
-    SAVE_REGS_FROM_EL1
-    mov    x0, {exception_sync}
+    mov    x0, \kind
     bl     vmexit_trampoline
     # b .Lexception_return_el2 is called by `vmexit_trampoline`
 .endm
@@ -118,10 +110,10 @@ exception_vector_base_vcpu:
     INVALID_EXCP_EL2 3 1
 
     // lower EL, aarch64
-    HANDLE_LOWER_SYNC_VCPU
-    HANDLE_LOWER_IRQ_VCPU
-    INVALID_EXCP_EL2 2 2
-    INVALID_EXCP_EL2 3 2
+    HANDLE_LOWER_VCPU {exception_sync}
+    HANDLE_LOWER_VCPU {exception_irq}
+    HANDLE_LOWER_VCPU {exception_fiq}
+    HANDLE_LOWER_VCPU {exception_serror}
 
     // lower EL, aarch32
     INVALID_EXCP_EL2 0 3

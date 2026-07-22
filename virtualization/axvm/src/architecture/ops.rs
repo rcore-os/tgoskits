@@ -29,47 +29,23 @@ pub(crate) trait ArchOps {
         default_vcpu_affinities(cpu_num, phys_cpu_ids, phys_cpu_sets)
     }
 
-    fn set_vcpu_on_args(vcpu: &crate::vm::AxVCpuRef<Self::VCpu>, _vcpu_id: usize, arg: usize) {
-        vcpu.set_gpr(0, arg);
-    }
-
     fn before_first_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
 
     fn before_vcpu_run(_vm: &crate::AxVMRef, _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {}
 
-    fn inject_pending_interrupt(
+    fn deliver_pending_controller_interrupts(
         _vm: &crate::AxVMRef,
-        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
-        interrupt: crate::vm::PendingInterrupt,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
     ) {
-        match interrupt {
-            crate::vm::PendingInterrupt::Normal(vector) => {
-                trace!(
-                    "Injecting queued interrupt {vector:#x} into VM[{}] VCpu[{}]",
-                    vcpu.vm_id(),
-                    vcpu.id()
-                );
-                if let Err(err) = vcpu.inject_interrupt(vector) {
-                    warn!(
-                        "Failed to inject queued interrupt {vector:#x} into VM[{}] VCpu[{}]: \
-                         {err:?}",
-                        vcpu.vm_id(),
-                        vcpu.id()
-                    );
-                }
-            }
-            crate::vm::PendingInterrupt::External {
-                vector,
-                physical_irq,
-            } => {
-                warn!(
-                    "VM[{}] VCpu[{}] dropped unsupported external interrupt vector={vector:#x}, \
-                     physical_irq={physical_irq:#x}",
-                    vcpu.vm_id(),
-                    vcpu.id()
-                );
-            }
-        }
+    }
+
+    fn synchronize_interrupts_after_exit(
+        topology: &axdevice::InterruptTopology,
+        vcpu: axdevice::VcpuInterruptId,
+        _exit: &<Self::VCpu as VmArchVcpuOps>::Exit,
+    ) -> AxVmResult {
+        topology.synchronize_vcpu(vcpu)?;
+        Ok(())
     }
 
     fn after_external_interrupt(
@@ -84,6 +60,10 @@ pub(crate) trait ArchOps {
     fn on_last_vcpu_exit(_vm_id: usize) {}
 
     fn after_mmio_write(_vm: &crate::AxVMRef) {}
+
+    fn with_vcpu_interrupt_context<T>(_vm: &crate::AxVMRef, run: impl FnOnce() -> T) -> T {
+        run()
+    }
 
     fn handle_vcpu_exit_bound(
         vm: &crate::AxVMRef,
@@ -106,6 +86,8 @@ pub(crate) trait ArchOps {
     {
         let vm_id = vm.id();
         let vcpu_id = vcpu.id();
+        let interrupt_vcpu = axdevice::VcpuInterruptId::new(vcpu_id);
+        let interrupt_topology = vm.prepared_interrupt_topology()?;
 
         match vcpu.state() {
             VmVcpuState::Free => vcpu.bind()?,
@@ -118,17 +100,48 @@ pub(crate) trait ArchOps {
             }
         }
 
-        let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
-            loop {
-                crate::runtime::vcpus::inject_pending_interrupts::<Self>(vm.id(), vcpu_id, vcpu);
+        let run_result = vcpu.with_current_cpu_set(|| {
+            Self::with_vcpu_interrupt_context(vm, || -> AxVmResult<_> {
+                interrupt_topology.load_vcpu(interrupt_vcpu)?;
+                let result = (|| {
+                    loop {
+                        Self::deliver_pending_controller_interrupts(vm, vcpu);
+                        interrupt_topology.synchronize_vcpu(interrupt_vcpu)?;
 
-                let exit = vcpu.run()?;
-                trace!("{exit:#x?}");
-                match Self::handle_vcpu_exit_bound(vm, vcpu, exit)? {
-                    BoundVcpuExit::Continue => continue,
-                    action => break Ok(action),
+                        let exit = vcpu.run()?;
+                        trace!("{exit:#x?}");
+                        // Fold hardware LR transitions before a trapped GIC access can observe or
+                        // modify pending/active state. An architecture may instead make one exit
+                        // handler own an atomic harvest-and-update operation.
+                        Self::synchronize_interrupts_after_exit(
+                            &interrupt_topology,
+                            interrupt_vcpu,
+                            &exit,
+                        )?;
+                        let action = Self::handle_vcpu_exit_bound(vm, vcpu, exit)?;
+                        match action {
+                            BoundVcpuExit::Continue => continue,
+                            action => break Ok(action),
+                        }
+                    }
+                })();
+                let save_result = interrupt_topology.save_vcpu(interrupt_vcpu);
+                match result {
+                    Ok(action) => {
+                        save_result?;
+                        Ok(action)
+                    }
+                    Err(error) => {
+                        if let Err(save_error) = save_result {
+                            warn!(
+                                "VM[{vm_id}] VCpu[{vcpu_id}] interrupt-controller save after run \
+                                 error failed: {save_error}"
+                            );
+                        }
+                        Err(error)
+                    }
                 }
-            }
+            })
         });
 
         let unbind_result = vcpu.unbind();

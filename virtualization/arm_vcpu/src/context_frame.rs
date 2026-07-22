@@ -16,6 +16,27 @@ use core::{arch::asm, fmt::Formatter};
 
 use aarch64_cpu::registers::*;
 
+use crate::{ArmVcpuError, ArmVcpuResult};
+
+const PSTATE_MODE_MASK: u64 = 0x1f;
+const PSTATE_MODE_EL0T: u64 = 0;
+const PSTATE_MODE_EL1T: u64 = 4;
+const PSTATE_MODE_EL1H: u64 = 5;
+const PSTATE_NZCV_MASK: u64 = 0xf << 28;
+const PSTATE_DIT_BIT: u64 = 1 << 24;
+const PSTATE_PAN_BIT: u64 = 1 << 22;
+const PSTATE_DAIF_MASK: u64 = 0xf << 6;
+const SCTLR_SPAN_BIT: u64 = 1 << 23;
+const ESR_EC_DABT_LOW: u32 = 0x24;
+const ESR_EC_DABT_CUR: u32 = 0x25;
+const ESR_EC_SHIFT: u32 = 26;
+const ESR_IL_BIT: u32 = 1 << 25;
+const ESR_FNV_BIT: u32 = 1 << 10;
+const ESR_FSC_SYNC_EXTERNAL_ABORT: u32 = 0x10;
+const CURRENT_EL_SP_EL0_VECTOR: u64 = 0x000;
+const CURRENT_EL_SP_ELX_VECTOR: u64 = 0x200;
+const LOWER_EL_AARCH64_VECTOR: u64 = 0x400;
+
 /// A struct representing the AArch64 CPU context frame.
 ///
 /// This context frame includes
@@ -179,7 +200,7 @@ pub struct GuestSystemRegisters {
     sp_el1: u64,
     elr_el1: u64,
     spsr_el1: u32,
-    pub sctlr_el1: u32,
+    pub sctlr_el1: u64,
     actlr_el1: u64,
     cpacr_el1: u32,
     ttbr0_el1: u64,
@@ -221,6 +242,40 @@ struct GuestTimerRegisters {
 }
 
 impl GuestSystemRegisters {
+    #[cfg(test)]
+    pub(crate) const fn injected_fault_state(&self) -> (u32, u64) {
+        (self.esr_el1, self.far_el1)
+    }
+
+    /// Enters the guest EL1 synchronous vector with an external data abort.
+    ///
+    /// The faulting PC is retained in `ELR_EL1`; the caller must not advance
+    /// the instruction before invoking this transition.
+    pub(crate) fn inject_external_data_abort(
+        &mut self,
+        frame: &mut Aarch64ContextFrame,
+        fault_address: Option<u64>,
+        instruction_size: usize,
+    ) -> ArmVcpuResult {
+        let old_pstate = frame.spsr;
+        let old_pc = frame.elr;
+        let (vector_offset, exception_class) = exception_target(old_pstate)?;
+        let vector = self
+            .vbar_el1
+            .checked_add(vector_offset)
+            .ok_or(ArmVcpuError::BadState)?;
+        let saved_pstate = u32::try_from(old_pstate).map_err(|_| ArmVcpuError::BadState)?;
+
+        self.elr_el1 = old_pc;
+        self.spsr_el1 = saved_pstate;
+        self.esr_el1 =
+            external_data_abort_esr(exception_class, instruction_size, fault_address.is_some())?;
+        self.far_el1 = fault_address.unwrap_or(0);
+        frame.elr = vector;
+        frame.spsr = exception_entry_pstate(old_pstate, self.sctlr_el1);
+        Ok(())
+    }
+
     /// Resets the VM context by setting all registers to zero.
     ///
     /// This method allows the `GuestSystemRegisters` instance to be reused by resetting
@@ -253,7 +308,7 @@ impl GuestSystemRegisters {
             asm!("mrs {0}, SP_EL1", out(reg) self.sp_el1);
             asm!("mrs {0}, ELR_EL1", out(reg) self.elr_el1);
             asm!("mrs {0:x}, SPSR_EL1", out(reg) self.spsr_el1);
-            asm!("mrs {0:x}, SCTLR_EL1", out(reg) self.sctlr_el1);
+            asm!("mrs {0}, SCTLR_EL1", out(reg) self.sctlr_el1);
             asm!("mrs {0:x}, CPACR_EL1", out(reg) self.cpacr_el1);
             asm!("mrs {0}, TTBR0_EL1", out(reg) self.ttbr0_el1);
             asm!("mrs {0}, TTBR1_EL1", out(reg) self.ttbr1_el1);
@@ -313,7 +368,7 @@ impl GuestSystemRegisters {
             asm!("msr SP_EL1, {0}", in(reg) self.sp_el1);
             asm!("msr ELR_EL1, {0}", in(reg) self.elr_el1);
             asm!("msr SPSR_EL1, {0:x}", in(reg) self.spsr_el1);
-            asm!("msr SCTLR_EL1, {0:x}", in(reg) self.sctlr_el1);
+            asm!("msr SCTLR_EL1, {0}", in(reg) self.sctlr_el1);
             asm!("msr CPACR_EL1, {0:x}", in(reg) self.cpacr_el1);
             asm!("msr TTBR0_EL1, {0}", in(reg) self.ttbr0_el1);
             asm!("msr TTBR1_EL1, {0}", in(reg) self.ttbr1_el1);
@@ -349,5 +404,115 @@ impl GuestSystemRegisters {
             cntv_ctl_el0: self.cntv_ctl_el0,
             cnthctl_el2: self.cnthctl_el2,
         }
+    }
+}
+
+fn exception_target(old_pstate: u64) -> ArmVcpuResult<(u64, u32)> {
+    match old_pstate & PSTATE_MODE_MASK {
+        PSTATE_MODE_EL1H => Ok((CURRENT_EL_SP_ELX_VECTOR, ESR_EC_DABT_CUR)),
+        PSTATE_MODE_EL1T => Ok((CURRENT_EL_SP_EL0_VECTOR, ESR_EC_DABT_CUR)),
+        PSTATE_MODE_EL0T => Ok((LOWER_EL_AARCH64_VECTOR, ESR_EC_DABT_LOW)),
+        _ => Err(ArmVcpuError::Unsupported),
+    }
+}
+
+fn external_data_abort_esr(
+    exception_class: u32,
+    instruction_size: usize,
+    fault_address_valid: bool,
+) -> ArmVcpuResult<u32> {
+    let instruction_length = match instruction_size {
+        2 => 0,
+        4 => ESR_IL_BIT,
+        _ => return Err(ArmVcpuError::InvalidInput),
+    };
+    let fault_address_not_valid = if fault_address_valid { 0 } else { ESR_FNV_BIT };
+    Ok((exception_class << ESR_EC_SHIFT)
+        | instruction_length
+        | fault_address_not_valid
+        | ESR_FSC_SYNC_EXTERNAL_ABORT)
+}
+
+fn exception_entry_pstate(old_pstate: u64, sctlr_el1: u64) -> u64 {
+    let mut new_pstate = old_pstate & (PSTATE_NZCV_MASK | PSTATE_DIT_BIT | PSTATE_PAN_BIT);
+    if sctlr_el1 & SCTLR_SPAN_BIT == 0 {
+        new_pstate |= PSTATE_PAN_BIT;
+    }
+    new_pstate | PSTATE_DAIF_MASK | PSTATE_MODE_EL1H
+}
+
+#[cfg(test)]
+mod tests {
+    use core::mem::{size_of, size_of_val};
+
+    use super::*;
+
+    #[test]
+    fn guest_sctlr_context_preserves_complete_register_width() {
+        let registers = GuestSystemRegisters::default();
+
+        assert_eq!(size_of_val(&registers.sctlr_el1), size_of::<u64>());
+    }
+
+    #[test]
+    fn external_abort_entry_preserves_faulting_pc_and_selects_current_el_vector() {
+        let mut registers = GuestSystemRegisters {
+            vbar_el1: 0x8000,
+            sctlr_el1: SCTLR_SPAN_BIT,
+            ..GuestSystemRegisters::default()
+        };
+        let old_pstate = PSTATE_MODE_EL1H | 0xa000_0000 | PSTATE_DIT_BIT | PSTATE_PAN_BIT;
+        let mut frame = Aarch64ContextFrame {
+            elr: 0x1234,
+            spsr: old_pstate,
+            ..Aarch64ContextFrame::default()
+        };
+
+        registers
+            .inject_external_data_abort(&mut frame, Some(0xffff_0000_1030_a0), 4)
+            .unwrap();
+
+        assert_eq!(frame.elr, 0x8200);
+        assert_eq!(registers.elr_el1, 0x1234);
+        assert_eq!(registers.spsr_el1, old_pstate as u32);
+        assert_eq!(registers.far_el1, 0xffff_0000_1030_a0);
+        assert_eq!(
+            registers.esr_el1,
+            (ESR_EC_DABT_CUR << ESR_EC_SHIFT) | ESR_IL_BIT | ESR_FSC_SYNC_EXTERNAL_ABORT
+        );
+        assert_eq!(
+            frame.spsr,
+            (old_pstate & (PSTATE_NZCV_MASK | PSTATE_DIT_BIT | PSTATE_PAN_BIT))
+                | PSTATE_DAIF_MASK
+                | PSTATE_MODE_EL1H
+        );
+    }
+
+    #[test]
+    fn external_abort_entry_selects_lower_el_vector_and_marks_missing_far() {
+        let mut registers = GuestSystemRegisters {
+            vbar_el1: 0x10_000,
+            ..GuestSystemRegisters::default()
+        };
+        let mut frame = Aarch64ContextFrame {
+            elr: 0x2000,
+            spsr: PSTATE_MODE_EL0T,
+            ..Aarch64ContextFrame::default()
+        };
+
+        registers
+            .inject_external_data_abort(&mut frame, None, 4)
+            .unwrap();
+
+        assert_eq!(frame.elr, 0x10_400);
+        assert_eq!(registers.elr_el1, 0x2000);
+        assert_eq!(registers.far_el1, 0);
+        assert_eq!(
+            registers.esr_el1,
+            (ESR_EC_DABT_LOW << ESR_EC_SHIFT)
+                | ESR_IL_BIT
+                | ESR_FNV_BIT
+                | ESR_FSC_SYNC_EXTERNAL_ABORT
+        );
     }
 }

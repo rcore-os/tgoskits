@@ -64,6 +64,10 @@ impl PlatOp for Plat {
         gic_irq_id(HwIrq(raw as u32))
     }
 
+    fn defer_irq_deactivation(active: &mut Self::ActiveIrq) -> Result<(), IrqError> {
+        active.defer_deactivation()
+    }
+
     fn systick_irq() -> IrqId {
         systick::systick_irq()
     }

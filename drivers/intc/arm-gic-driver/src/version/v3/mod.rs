@@ -439,6 +439,35 @@ impl Gic {
         }
     }
 
+    /// Resolves the ITS collection target for one processor affinity.
+    ///
+    /// Physical collection targets use the matching Redistributor frame's
+    /// physical address. Processor-number targets use that Redistributor's
+    /// `GICR_TYPER.Processor_Number` value.
+    pub fn collection_target_for_affinity(
+        &self,
+        gicr_phys_base: u64,
+        affinity: Affinity,
+        use_physical_target: bool,
+    ) -> Option<u64> {
+        let wanted = affinity.affinity();
+        for (index, redistributor) in self.rd_slice().iter().enumerate() {
+            // SAFETY: every pointer is produced by the bounded Redistributor
+            // iterator rooted in the validated GICR mapping.
+            let redistributor = unsafe { redistributor.as_ref() };
+            if redistributor.lpi.get_affinity() != wanted {
+                continue;
+            }
+            return if use_physical_target {
+                let offset = index.checked_mul(core::mem::size_of::<RedistributorV3>())?;
+                gicr_phys_base.checked_add(offset as u64)
+            } else {
+                Some(u64::from(redistributor.lpi.processor_number()) << 16)
+            };
+        }
+        None
+    }
+
     pub fn init_lpi_tables(
         &self,
         property_table_phys: u64,
@@ -878,6 +907,25 @@ impl Gic {
         self.gicd().get_interrupt_route(id.to_u32())
     }
 
+    /// Configures one interrupt's architectural Group and modifier bits.
+    pub fn set_group(&self, id: IntId, group1: bool, modifier: bool) {
+        if id.is_private() {
+            self.cpu_interface().set_group(id, group1, modifier);
+        } else {
+            self.gicd()
+                .set_interrupt_group(id.to_u32(), u32::from(group1), modifier);
+        }
+    }
+
+    /// Returns one interrupt's Group 1 and modifier state.
+    pub fn group(&self, id: IntId) -> (bool, bool) {
+        if id.is_private() {
+            self.cpu_interface().group(id)
+        } else {
+            self.gicd().interrupt_group(id.to_u32())
+        }
+    }
+
     pub fn max_cpu_num(&self) -> usize {
         self.gicd().max_cpu_num() as _
     }
@@ -1100,6 +1148,28 @@ impl CpuInterface {
             "Cannot check pending state for non-private interrupt: {id:?}"
         );
         self.rd().sgi.is_pending(id)
+    }
+
+    /// Configures one private interrupt's architectural Group and modifier bits.
+    pub fn set_group(&self, id: IntId, group1: bool, modifier: bool) {
+        assert!(
+            id.is_private(),
+            "Cannot set group for non-private interrupt: {id:?}"
+        );
+        self.rd().sgi.set_group(id, group1);
+        self.rd().sgi.set_group_modifier(id, modifier);
+    }
+
+    /// Returns one private interrupt's Group 1 and modifier state.
+    pub fn group(&self, id: IntId) -> (bool, bool) {
+        assert!(
+            id.is_private(),
+            "Cannot read group for non-private interrupt: {id:?}"
+        );
+        (
+            self.rd().sgi.is_group1(id),
+            self.rd().sgi.is_group_modifier(id),
+        )
     }
 
     pub fn set_cfg(&self, id: IntId, cfg: Trigger) {

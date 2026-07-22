@@ -200,7 +200,7 @@ impl<'a> ImageLoaderCore<'a> {
     }
 
     fn record_ramdisk_size(&self, size: usize) {
-        self.vm.with_config(|config| {
+        self.vm.with_config_mut(|config| {
             if let Some(ramdisk) = config.image_config.ramdisk.as_mut() {
                 ramdisk.size = Some(size);
             }

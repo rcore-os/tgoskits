@@ -69,6 +69,18 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
             .contains_range(GuestPhysAddrRange::from_start_size(start, size))
     }
 
+    /// Returns the permissions of the mapping area that owns `address`.
+    ///
+    /// This reports address-space ownership even when a lazy allocation has
+    /// not installed a page-table entry yet.
+    pub fn mapping_flags_at(&self, address: GuestPhysAddr) -> Option<MappingFlags> {
+        self.va_range
+            .contains(address)
+            .then(|| self.areas.find(address))
+            .flatten()
+            .map(MemoryArea::flags)
+    }
+
     /// Creates a new empty address space with the architecture default page table level.
     pub fn new_empty(page_table: Npt, base: GuestPhysAddr, size: usize) -> AddrSpaceResult<Self> {
         base.as_usize()

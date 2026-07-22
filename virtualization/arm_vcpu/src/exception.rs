@@ -12,19 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
+use aarch64_cpu::registers::{ESR_EL2, FAR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VTTBR_EL2};
 use log::error;
 
 use crate::{
-    ArmAccessWidth, ArmGuestPhysAddr, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
-    TrapFrame,
+    ArmDataAbort, ArmDataAbortSyndrome, ArmGuestPhysAddr, ArmGuestVirtAddr, ArmSysRegAddr,
+    ArmVcpuResult, ArmVmExit, TrapFrame,
+    data_abort::decode_data_access,
     exception_utils::{
-        exception_class, exception_class_value, exception_data_abort_access_is_write,
-        exception_data_abort_access_reg, exception_data_abort_access_reg_width,
-        exception_data_abort_access_width, exception_data_abort_handleable,
-        exception_data_abort_is_permission_fault, exception_data_abort_is_translate_fault,
-        exception_esr, exception_fault_addr, exception_next_instruction_step,
-        exception_sysreg_addr, exception_sysreg_direction_write, exception_sysreg_gpr,
+        exception_class, exception_class_value, exception_esr, exception_fault_ipa,
+        exception_next_instruction_step, exception_sysreg_addr, exception_sysreg_direction_write,
+        exception_sysreg_gpr,
     },
 };
 
@@ -43,6 +41,10 @@ pub enum TrapKind {
 const EXCEPTION_SYNC: usize = TrapKind::Synchronous as usize;
 /// Equals to [`TrapKind::Irq`], used in exception.S.
 const EXCEPTION_IRQ: usize = TrapKind::Irq as usize;
+/// Equals to [`TrapKind::Fiq`], used in exception.S.
+const EXCEPTION_FIQ: usize = TrapKind::Fiq as usize;
+/// Equals to [`TrapKind::SError`], used in exception.S.
+const EXCEPTION_SERROR: usize = TrapKind::SError as usize;
 
 #[repr(u8)]
 #[derive(Debug)]
@@ -58,6 +60,8 @@ core::arch::global_asm!(
     include_str!("exception.S"),
     exception_sync = const EXCEPTION_SYNC,
     exception_irq = const EXCEPTION_IRQ,
+    exception_fiq = const EXCEPTION_FIQ,
+    exception_serror = const EXCEPTION_SERROR,
     trap_frame_size = const crate::ARM_VCPU_TRAP_FRAME_SIZE,
 );
 
@@ -84,21 +88,14 @@ core::arch::global_asm!(
 /// syndrome register (ESR), and system control registers.
 pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     match exception_class() {
-        Some(ESR_EL2::EC::Value::DataAbortLowerEL) => {
-            let elr = ctx.exception_pc();
-            let val = elr + exception_next_instruction_step();
-            ctx.set_exception_pc(val);
-            handle_data_abort(ctx)
-        }
+        Some(ESR_EL2::EC::Value::DataAbortLowerEL) => handle_data_abort(ctx),
         Some(ESR_EL2::EC::Value::HVC64) => {
             // The `#imm`` argument when triggering a hvc call, currently not used.
             let _hvc_arg_imm16 = ESR_EL2.read(ESR_EL2::ISS);
 
-            // Is this a psci call?
-            //
-            // By convention, a psci call can use either the `hvc` or the `smc` instruction.
-            // NimbOS uses `hvc`, `ArceOS` use `hvc` too when running on QEMU.
-            if let Some(result) = handle_psci_call(ctx) {
+            // PSCI and SMCCC architecture calls may use either conduit. Keep
+            // their semantics inside the VM before considering VMM hypercalls.
+            if let Some(result) = handle_vm_firmware_call(ctx) {
                 return result;
             }
 
@@ -121,11 +118,10 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
             handle_smc64_exception(ctx)
         }
         _ => {
-            panic!(
-                "handler not presents for EC_{} @ipa 0x{:x}, @pc 0x{:x}, @esr 0x{:x},
-                @sctlr_el1 0x{:x}, @vttbr_el2 0x{:x}, @vtcr_el2: {:#x} hcr: {:#x} ctx:{}",
+            error!(
+                "unsupported synchronous exception EC_{} at PC {:#x}, ESR {:#x}, SCTLR_EL1={:#x}, \
+                 VTTBR_EL2={:#x}, VTCR_EL2={:#x}, HCR_EL2={:#x}; context: {}",
                 exception_class_value(),
-                exception_fault_addr()?,
                 (*ctx).exception_pc(),
                 exception_esr(),
                 SCTLR_EL1.get() as usize,
@@ -134,57 +130,48 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
                 HCR_EL2.get() as usize,
                 ctx
             );
+            Err(crate::ArmVcpuError::Unsupported)
         }
     }
 }
 
 fn handle_data_abort(context_frame: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
-    let addr = exception_fault_addr()?;
-    let access_width = exception_data_abort_access_width();
-    let is_write = exception_data_abort_access_is_write();
-    // let sign_ext = exception_data_abort_access_is_sign_ext();
-    let reg = exception_data_abort_access_reg();
-    let reg_width = exception_data_abort_access_reg_width();
+    let syndrome = ArmDataAbortSyndrome::from_esr(exception_esr() as u32);
+    let fault_ipa = match exception_fault_ipa(syndrome) {
+        Ok(addr) => addr,
+        Err(error) => {
+            warn!(
+                "data abort at ELR {:#x} has no recoverable IPA: ESR={:#x}, error={error:?}",
+                context_frame.exception_pc(),
+                syndrome.raw_esr(),
+            );
+            None
+        }
+    };
+    let fault_virtual_address = syndrome
+        .has_valid_fault_address()
+        .then(|| ArmGuestVirtAddr::from_u64(FAR_EL2.get()));
+    let access = decode_data_access(syndrome, |register| {
+        context_frame.gpr(register.index()) as u64
+    })?;
 
     trace!(
-        "Data fault @{:?}, ELR {:#x}, esr: 0x{:x}",
-        addr,
+        "Data fault @{:?}, FAR {:?}, ELR {:#x}, ESR {:#x}, access {:?}",
+        fault_ipa,
+        fault_virtual_address,
         context_frame.exception_pc(),
-        exception_esr(),
+        syndrome.raw_esr(),
+        access,
     );
 
-    let width = ArmAccessWidth::try_from(access_width)?;
-    let reg_width = ArmAccessWidth::try_from(reg_width)?;
-
-    if !exception_data_abort_handleable() {
-        panic!(
-            "Core data abort not handleable {:#x}, esr {:#x}",
-            addr,
-            exception_esr()
-        );
-    }
-
-    if !exception_data_abort_is_translate_fault() {
-        if exception_data_abort_is_permission_fault() {
-            return Err(ArmVcpuError::Unsupported);
-        } else {
-            panic!("Core data abort is not translate fault {:#x}", addr,);
-        }
-    }
-
-    if is_write {
-        return Ok(ArmVmExit::MmioWrite {
-            addr,
-            width,
-            data: context_frame.gpr(reg) as u64,
-        });
-    }
-    Ok(ArmVmExit::MmioRead {
-        addr,
-        width,
-        reg,
-        reg_width,
-        signed_ext: false,
+    Ok(ArmVmExit::DataAbort {
+        abort: ArmDataAbort::new(
+            fault_ipa,
+            fault_virtual_address,
+            context_frame.exception_pc() as u64,
+            syndrome,
+            access,
+        ),
     })
 }
 
@@ -220,63 +207,62 @@ fn handle_system_register(context_frame: &mut TrapFrame) -> ArmVcpuResult<ArmVmE
     })
 }
 
-/// Handles HVC or SMC exceptions that serve as psci (Power State Coordination Interface) calls.
+/// Handles VM-local PSCI calls made through HVC or SMC.
 ///
-/// A hvc or smc call with the function in range 0x8000_0000..=0x8000_001F  (when the 32-bit
-/// hvc/smc calling convention is used) or 0xC000_0000..=0xC000_001F (when the 64-bit hvc/smc
-/// calling convention is used) is a psci call. This function handles them all.
+/// PSCI uses the standard-service owner ranges `0x8400_0000..=0x8400_001f`
+/// and `0xc400_0000..=0xc400_001f`. Recognized but unsupported calls are
+/// completed with `PSCI_RET_NOT_SUPPORTED`, so guest requests cannot fall
+/// through to host firmware.
 ///
-/// Returns `None` if the HVC is not a psci call.
+/// Returns `None` when the function identifier is outside the PSCI ranges.
 fn handle_psci_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
-    const PSCI_FN_RANGE_32: core::ops::RangeInclusive<u64> = 0x8400_0000..=0x8400_001F;
-    const PSCI_FN_RANGE_64: core::ops::RangeInclusive<u64> = 0xC400_0000..=0xC400_001F;
+    let call = crate::psci::decode(ctx.gpr[0], [ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]])?;
+    Some(Ok(match call {
+        crate::psci::PsciCall::Complete(result) => {
+            ctx.gpr[0] = result;
+            ArmVmExit::Nothing
+        }
+        crate::psci::PsciCall::CpuOff { state } => ArmVmExit::CpuDown { state },
+        crate::psci::PsciCall::CpuOn {
+            target_cpu,
+            entry_point,
+            context,
+        } => ArmVmExit::CpuUp {
+            target_cpu,
+            entry_point: ArmGuestPhysAddr::from_usize(entry_point as usize),
+            arg: context,
+        },
+        crate::psci::PsciCall::SystemOff => ArmVmExit::SystemDown,
+    }))
+}
 
-    const PSCI_FN_VERSION: u64 = 0x0;
-    const _PSCI_FN_CPU_SUSPEND: u64 = 0x1;
-    const PSCI_FN_CPU_OFF: u64 = 0x2;
-    const PSCI_FN_CPU_ON: u64 = 0x3;
-    const _PSCI_FN_MIGRATE: u64 = 0x5;
-    const PSCI_FN_SYSTEM_OFF: u64 = 0x8;
-    const _PSCI_FN_SYSTEM_RESET: u64 = 0x9;
-    const PSCI_FN_END: u64 = 0x1f;
-
-    let fn_ = ctx.gpr[0];
-    let fn_offset = if PSCI_FN_RANGE_32.contains(&fn_) {
-        Some(fn_ - PSCI_FN_RANGE_32.start())
-    } else if PSCI_FN_RANGE_64.contains(&fn_) {
-        Some(fn_ - PSCI_FN_RANGE_64.start())
-    } else {
-        None
-    };
-
-    match fn_offset {
-        Some(PSCI_FN_CPU_OFF) => Some(Ok(ArmVmExit::CpuDown { state: ctx.gpr[1] })),
-        Some(PSCI_FN_CPU_ON) => Some(Ok(ArmVmExit::CpuUp {
-            target_cpu: ctx.gpr[1],
-            entry_point: ArmGuestPhysAddr::from_usize(ctx.gpr[2] as usize),
-            arg: ctx.gpr[3],
-        })),
-        Some(PSCI_FN_SYSTEM_OFF) => Some(Ok(ArmVmExit::SystemDown)),
-        // We just forward these request to the ATF directly.
-        Some(PSCI_FN_VERSION..PSCI_FN_END) => None,
-        _ => None,
+fn handle_vm_firmware_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
+    if let Some(result) = handle_psci_call(ctx) {
+        return Some(result);
     }
+    let result = crate::smccc::architecture_call(ctx.gpr[0], ctx.gpr[1])?;
+    ctx.gpr[0] = result;
+    Some(Ok(ArmVmExit::Nothing))
 }
 
 /// Handles SMC (Secure Monitor Call) exceptions.
 ///
-/// This function will judge if the SMC call is a PSCI call, if so, it will handle it as a PSCI call.
-/// Otherwise, it will forward the SMC call to the ATF directly.
+/// PSCI and architecture discovery are implemented as VM-local services. Other
+/// SMCCC owners require an explicit mediated capability above the vCPU
+/// boundary; forwarding arbitrary guest arguments into host secure firmware
+/// would let the guest address host resources that were never assigned to it.
 fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
-    // Is this a psci call?
-    if let Some(result) = handle_psci_call(ctx) {
+    if let Some(result) = handle_vm_firmware_call(ctx) {
         result
     } else {
-        // We just forward the SMC call to the ATF directly.
-        // The args are from lower EL, so it is safe to call the ATF.
-        (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
-            unsafe { crate::smc::smc_call(ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) };
-        Ok(ArmVmExit::Nothing)
+        let Ok(function) = u32::try_from(ctx.gpr[0]) else {
+            ctx.gpr[0] = crate::smccc::NOT_SUPPORTED;
+            return Ok(ArmVmExit::Nothing);
+        };
+        Ok(ArmVmExit::FirmwareCall {
+            function,
+            args: [ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]],
+        })
     }
 }
 

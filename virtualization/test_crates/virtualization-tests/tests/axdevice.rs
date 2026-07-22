@@ -15,17 +15,14 @@
 use std::sync::{Arc, Mutex};
 
 use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    IrqResolver, MmioDeviceAdapter, PollableDeviceOps, PortDeviceAdapter, SysRegDeviceAdapter,
-    register_builtin_factories,
+    AxVmDevices, DeviceBundle, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
+    MmioDeviceAdapter, PollableDeviceOps, PortDeviceAdapter, SysRegDeviceAdapter,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, Device, DeviceError, DeviceRegistry as _, DeviceResult,
-    InterruptTriggerMode, InvalidResourceReason, IrqError, IrqLine, IrqLineId, Port, PortRange,
-    RegistryError, Resource, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BaseDeviceOps, DeviceRegistry as _, DeviceResult, Port, PortRange, RegistryError,
+    SysRegAddr, SysRegAddrRange,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
+use axvm_types::{EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 
 /// Registers a legacy MMIO device through the new DeviceManager API.
 fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
@@ -140,41 +137,6 @@ struct MockSysRegDevice {
     range: SysRegAddrRange,
 }
 
-struct MockResourceDevice {
-    name: String,
-    resources: Vec<Resource>,
-}
-
-impl MockResourceDevice {
-    fn new(name: &str, resources: Vec<Resource>) -> Self {
-        Self {
-            name: String::from(name),
-            resources,
-        }
-    }
-}
-
-impl Device for MockResourceDevice {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn resources(&self) -> &[Resource] {
-        &self.resources
-    }
-
-    fn handle(
-        &self,
-        _access: &axdevice_base::BusAccess,
-    ) -> Result<axdevice_base::BusResponse, DeviceError> {
-        Ok(axdevice_base::BusResponse::Read { value: 0x5a })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
 struct MockMmioPollableDevice {
     range: GuestPhysAddrRange,
     polled_at: Mutex<Vec<u64>>,
@@ -245,15 +207,7 @@ impl BaseDeviceOps<SysRegAddrRange> for MockSysRegDevice {
 }
 
 fn empty_devices() -> AxVmDevices {
-    AxVmDevices::new(AxVmDeviceConfig::new(vec![])).unwrap()
-}
-
-fn irq_resource(line: u32, trigger: InterruptTriggerMode) -> Resource {
-    Resource::IrqLine { line, trigger }
-}
-
-fn resource_device(name: &str, resources: Vec<Resource>) -> Arc<MockResourceDevice> {
-    Arc::new(MockResourceDevice::new(name, resources))
+    AxVmDevices::empty()
 }
 
 fn mmio_device(name: &str, start: usize, end: usize) -> Arc<MockMmioDevice> {
@@ -263,79 +217,9 @@ fn mmio_device(name: &str, start: usize, end: usize) -> Arc<MockMmioDevice> {
     ))
 }
 
-fn device_config(
-    name: &str,
-    emu_type: EmulatedDeviceType,
-    base_gpa: usize,
-    length: usize,
-) -> EmulatedDeviceConfig {
-    EmulatedDeviceConfig {
-        name: String::from(name),
-        base_gpa,
-        length,
-        irq_id: 0,
-        emu_type,
-        cfg_list: vec![],
-    }
-}
-
-struct RejectingIrqResolver;
-
-impl IrqResolver for RejectingIrqResolver {
-    fn resolve_irq(
-        &self,
-        line: usize,
-        _trigger: InterruptTriggerMode,
-    ) -> DeviceManagerResult<IrqLine> {
-        Err(IrqError::Unsupported {
-            line: IrqLineId(line),
-            operation: "resolve test IRQ",
-            detail: "test resolver rejects every line".into(),
-        }
-        .into())
-    }
-}
-
-struct MockMmioFactory;
-
-impl DeviceFactory for MockMmioFactory {
-    fn device_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::VirtioBlk
-    }
-
-    fn build(
-        &self,
-        config: &EmulatedDeviceConfig,
-        _context: &DeviceBuildContext<'_>,
-    ) -> DeviceManagerResult<DeviceBundle> {
-        let Some(end) = config.base_gpa.checked_add(config.length) else {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "build mock MMIO device",
-                detail: "device address range overflows".into(),
-            });
-        };
-        if config.length == 0 {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "build mock MMIO device",
-                detail: "device range is empty".into(),
-            });
-        }
-
-        Ok(
-            DeviceRegistration::Device(MmioDeviceAdapter::from_arc(mmio_device(
-                &config.name,
-                config.base_gpa,
-                end,
-            )))
-            .into(),
-        )
-    }
-}
-
 #[test]
 fn test_mmio_dispatch_functionality() {
-    let config = AxVmDeviceConfig::new(vec![]);
-    let mut devices = AxVmDevices::new(config).unwrap();
+    let mut devices = AxVmDevices::empty();
 
     let base_addr = 0x1000_0000;
     let dev_size = 0x1000;
@@ -368,8 +252,7 @@ fn test_mmio_dispatch_functionality() {
 
 #[test]
 fn test_mmio_missing_device_returns_error() {
-    let config = AxVmDeviceConfig::new(vec![]);
-    let devices = AxVmDevices::new(config).unwrap();
+    let devices = AxVmDevices::empty();
 
     let invalid_addr = GuestPhysAddr::from(0x9999_9999);
     let width = AccessWidth::try_from(4).unwrap();
@@ -522,38 +405,6 @@ fn test_equal_address_values_on_different_buses_are_allowed() {
 }
 
 #[test]
-fn test_conflicting_factory_device_config_returns_structured_error() {
-    let mut factories = DeviceFactoryRegistry::new();
-    factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
-    let first = device_config(
-        "factory-mmio-first",
-        EmulatedDeviceType::VirtioBlk,
-        0x2_0000,
-        0x1000,
-    );
-    let overlap = device_config(
-        "factory-mmio-overlap",
-        EmulatedDeviceType::VirtioBlk,
-        0x2_0800,
-        0x1000,
-    );
-
-    assert!(matches!(
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![first, overlap]),
-            &factories,
-            &context,
-        )
-        .err(),
-        Some(DeviceManagerError::Registry(
-            RegistryError::AddressConflict { .. }
-        ))
-    ));
-}
-
-#[test]
 fn test_bundle_registers_mmio_and_port_together() {
     let mut devices = empty_devices();
     let mut bundle = DeviceBundle::new();
@@ -663,125 +514,6 @@ fn test_duplicate_pollable_rejects_entire_bundle() {
 }
 
 #[test]
-fn test_factory_registry_registers_and_finds_factory() {
-    let mut factories = DeviceFactoryRegistry::new();
-
-    assert_eq!(factories.register(Arc::new(MockMmioFactory)), Ok(()));
-    assert!(factories.get(EmulatedDeviceType::VirtioBlk).is_some());
-    assert!(factories.get(EmulatedDeviceType::VirtioNet).is_none());
-}
-
-#[test]
-fn test_factory_registry_rejects_duplicate_device_type() {
-    let mut factories = DeviceFactoryRegistry::new();
-
-    assert_eq!(factories.register(Arc::new(MockMmioFactory)), Ok(()));
-    assert!(matches!(
-        factories.register(Arc::new(MockMmioFactory)),
-        Err(DeviceManagerError::ResourceConflict { .. })
-    ));
-}
-
-#[test]
-fn test_missing_factory_returns_unsupported() {
-    let factories = DeviceFactoryRegistry::new();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
-    let config = device_config(
-        "missing-console",
-        EmulatedDeviceType::VirtioConsole,
-        0x1000,
-        0x1000,
-    );
-
-    assert!(matches!(
-        factories.build(&config, &context).err(),
-        Some(DeviceManagerError::Unsupported { .. })
-    ));
-    assert!(matches!(
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![config]),
-            &factories,
-            &context,
-        )
-        .err(),
-        Some(DeviceManagerError::Unsupported { .. })
-    ));
-}
-
-#[test]
-fn test_factory_build_registers_new_device_type_without_legacy_branch() {
-    let mut factories = DeviceFactoryRegistry::new();
-    factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
-    let base = 0x1_0000;
-    let devices = AxVmDevices::build_with_factories(
-        AxVmDeviceConfig::new(vec![device_config(
-            "factory-mmio",
-            EmulatedDeviceType::VirtioBlk,
-            base,
-            0x1000,
-        )]),
-        &factories,
-        &context,
-    )
-    .unwrap();
-
-    assert_eq!(devices.devices().count(), 1);
-    assert_eq!(
-        devices
-            .handle_mmio_read(base.into(), AccessWidth::try_from(4).unwrap())
-            .unwrap(),
-        0xDEAD_BEEF
-    );
-}
-
-#[test]
-fn test_factory_validation_failure_leaves_devices_unchanged() {
-    let mut devices = empty_devices();
-    register_port(&mut devices, Arc::new(MockPortDevice::new(0x3f8, 0x3ff))).unwrap();
-    let count_before = devices.devices().count();
-    let mut factories = DeviceFactoryRegistry::new();
-    factories.register(Arc::new(MockMmioFactory)).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
-    let invalid = device_config(
-        "invalid-factory-mmio",
-        EmulatedDeviceType::VirtioBlk,
-        0x2_0000,
-        0,
-    );
-
-    assert!(matches!(
-        devices.register_factory_device(&invalid, &factories, &context),
-        Err(DeviceManagerError::InvalidConfig { .. })
-    ));
-    assert_eq!(devices.devices().count(), count_before);
-}
-
-#[test]
-fn test_builtin_meta_factory_builds_dummy_config() {
-    let mut factories = DeviceFactoryRegistry::new();
-    register_builtin_factories(&mut factories).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
-    let devices = AxVmDevices::build_with_factories(
-        AxVmDeviceConfig::new(vec![device_config(
-            "metadata",
-            EmulatedDeviceType::Dummy,
-            0,
-            0,
-        )]),
-        &factories,
-        &context,
-    )
-    .unwrap();
-
-    assert_eq!(devices.devices().count(), 0);
-}
-
-#[test]
 fn test_wrapped_native_mmio_resource_is_rejected() {
     // Simulate a native Device whose resources() returns a zero-size
     // MmioRange — this must be rejected as InvalidResource, not
@@ -877,24 +609,16 @@ fn test_native_device_port_resource_overflow_rejected() {
 }
 
 #[test]
-fn test_build_with_factories_preserves_legacy_ivc_config() {
-    let mut factories = DeviceFactoryRegistry::new();
-    register_builtin_factories(&mut factories).unwrap();
-    let resolver = RejectingIrqResolver;
-    let context = DeviceBuildContext::new(&resolver);
-    let devices = AxVmDevices::build_with_factories(
-        AxVmDeviceConfig::new(vec![device_config(
-            "ivc",
-            EmulatedDeviceType::IVCChannel,
-            0x4_0000,
-            0x2000,
-        )]),
-        &factories,
-        &context,
-    )
-    .unwrap();
+fn test_ivc_range_is_explicit_and_rejects_duplicate_configuration() {
+    let mut devices = AxVmDevices::empty();
+    devices
+        .configure_ivc_range(GuestPhysAddr::from(0x4_0000), 0x2000)
+        .unwrap();
 
-    assert_eq!(devices.devices().count(), 0);
+    assert!(matches!(
+        devices.configure_ivc_range(GuestPhysAddr::from(0x8_0000), 0x2000),
+        Err(DeviceManagerError::ResourceConflict { .. })
+    ));
 }
 
 #[test]
@@ -921,240 +645,4 @@ fn test_sysreg_range_interior_address_dispatch() {
             .handle_sys_reg_read(SysRegAddr::new(0x111), AccessWidth::Qword)
             .is_err()
     );
-}
-
-#[test]
-fn test_irq_line_resource_accepts_full_identifier_range_without_bus_dispatch() {
-    let mut devices = empty_devices();
-
-    for line in [0, 63, 64, 255, 256, u32::MAX] {
-        devices
-            .register(resource_device(
-                "irq-only",
-                vec![irq_resource(line, InterruptTriggerMode::EdgeTriggered)],
-            ))
-            .unwrap_or_else(|error| panic!("IRQ line {line} was rejected: {error}"));
-    }
-
-    assert_eq!(devices.devices().count(), 6);
-    assert!(
-        devices
-            .handle_mmio_read(GuestPhysAddr::from(0), AccessWidth::Dword)
-            .is_err()
-    );
-    assert!(
-        devices
-            .handle_port_read(Port::new(0), AccessWidth::Byte)
-            .is_err()
-    );
-    assert!(
-        devices
-            .handle_sys_reg_read(SysRegAddr::new(0), AccessWidth::Qword)
-            .is_err()
-    );
-}
-
-#[test]
-fn test_irq_line_resource_rejects_duplicate_declarations_and_cross_device_conflicts() {
-    let mut devices = empty_devices();
-    let duplicate = resource_device(
-        "duplicate",
-        vec![
-            irq_resource(10, InterruptTriggerMode::EdgeTriggered),
-            irq_resource(10, InterruptTriggerMode::LevelTriggered),
-        ],
-    );
-
-    assert!(matches!(
-        devices.register(duplicate),
-        Err(RegistryError::InvalidResource {
-            reason: InvalidResourceReason::DuplicateIrqLine { line: 10 },
-            ..
-        })
-    ));
-    assert_eq!(devices.devices().count(), 0);
-
-    let existing_device = devices
-        .register(resource_device(
-            "owner",
-            vec![irq_resource(20, InterruptTriggerMode::EdgeTriggered)],
-        ))
-        .unwrap();
-    assert_eq!(
-        devices.register(resource_device(
-            "contender",
-            vec![irq_resource(20, InterruptTriggerMode::LevelTriggered)],
-        )),
-        Err(RegistryError::IrqLineConflict {
-            line: 20,
-            existing_device,
-        })
-    );
-}
-
-#[test]
-fn test_failed_registration_does_not_reserve_an_earlier_irq_line() {
-    let cases = [
-        (
-            "zero-sized MMIO",
-            30,
-            Resource::MmioRange {
-                base: 0x1000,
-                size: 0,
-            },
-            InvalidResourceReason::ZeroSized,
-        ),
-        (
-            "overflowing MMIO",
-            31,
-            Resource::MmioRange {
-                base: u64::MAX - 1,
-                size: 4,
-            },
-            InvalidResourceReason::AddressOverflow,
-        ),
-        (
-            "zero-sized port range",
-            32,
-            Resource::PortRange {
-                base: 0x3f8,
-                size: 0,
-            },
-            InvalidResourceReason::ZeroSized,
-        ),
-        (
-            "overflowing port range",
-            33,
-            Resource::PortRange {
-                base: u16::MAX - 1,
-                size: 4,
-            },
-            InvalidResourceReason::AddressOverflow,
-        ),
-        (
-            "zero-sized system register range",
-            34,
-            Resource::SysReg {
-                addr: 0x100,
-                count: 0,
-            },
-            InvalidResourceReason::ZeroSized,
-        ),
-        (
-            "overflowing system register range",
-            35,
-            Resource::SysReg {
-                addr: u32::MAX - 1,
-                count: 4,
-            },
-            InvalidResourceReason::AddressOverflow,
-        ),
-    ];
-
-    for (case, line, invalid_resource, expected_reason) in cases {
-        let mut devices = empty_devices();
-        let error = devices
-            .register(resource_device(
-                "invalid",
-                vec![
-                    irq_resource(line, InterruptTriggerMode::EdgeTriggered),
-                    invalid_resource,
-                ],
-            ))
-            .unwrap_err();
-
-        let RegistryError::InvalidResource { reason, .. } = error else {
-            panic!("{case} returned an unexpected error: {error:?}");
-        };
-        assert_eq!(reason, expected_reason, "{case}");
-        assert_eq!(devices.devices().count(), 0, "{case}");
-        assert!(
-            devices
-                .register(resource_device(
-                    "replacement",
-                    vec![irq_resource(line, InterruptTriggerMode::EdgeTriggered)],
-                ))
-                .is_ok(),
-            "{case} leaked IRQ line {line}"
-        );
-    }
-}
-
-#[test]
-fn test_bundle_irq_conflict_rolls_back_all_resources_from_prior_devices() {
-    let mut devices = empty_devices();
-    devices
-        .register(resource_device(
-            "existing",
-            vec![irq_resource(40, InterruptTriggerMode::EdgeTriggered)],
-        ))
-        .unwrap();
-
-    let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(resource_device(
-        "bundle-first",
-        vec![
-            Resource::MmioRange {
-                base: 0x20_000,
-                size: 0x100,
-            },
-            irq_resource(41, InterruptTriggerMode::EdgeTriggered),
-        ],
-    )));
-    bundle.push(DeviceRegistration::Device(resource_device(
-        "bundle-conflict",
-        vec![irq_resource(40, InterruptTriggerMode::LevelTriggered)],
-    )));
-
-    assert!(matches!(
-        devices.register_bundle(bundle),
-        Err(DeviceManagerError::Registry(
-            RegistryError::IrqLineConflict { line: 40, .. }
-        ))
-    ));
-    assert_eq!(devices.devices().count(), 1);
-
-    devices
-        .register(resource_device(
-            "replacement",
-            vec![
-                Resource::MmioRange {
-                    base: 0x20_000,
-                    size: 0x100,
-                },
-                irq_resource(41, InterruptTriggerMode::EdgeTriggered),
-            ],
-        ))
-        .expect("bundle rollback must release both MMIO and IRQ resources");
-}
-
-#[test]
-fn test_device_can_declare_mmio_and_irq_resources_together() {
-    let mut devices = empty_devices();
-    devices
-        .register(resource_device(
-            "mmio-and-irq",
-            vec![
-                Resource::MmioRange {
-                    base: 0x30_000,
-                    size: 0x100,
-                },
-                irq_resource(50, InterruptTriggerMode::LevelTriggered),
-            ],
-        ))
-        .unwrap();
-
-    assert_eq!(
-        devices
-            .handle_mmio_read(GuestPhysAddr::from(0x30_040), AccessWidth::Dword)
-            .unwrap(),
-        0x5a
-    );
-    assert!(matches!(
-        devices.register(resource_device(
-            "irq-conflict",
-            vec![irq_resource(50, InterruptTriggerMode::EdgeTriggered)],
-        )),
-        Err(RegistryError::IrqLineConflict { line: 50, .. })
-    ));
 }

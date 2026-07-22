@@ -2,7 +2,7 @@
 
 use alloc::string::{String, ToString};
 
-use crate::VMBootProtocol;
+use crate::{VMBootProtocol, VmMachineMode};
 
 /// Result type returned by AxVM configuration operations.
 pub type AxVmConfigResult<T = ()> = Result<T, AxVmConfigError>;
@@ -43,6 +43,60 @@ pub enum AxVmConfigError {
     MissingFirmwareLoadAddress {
         /// The boot protocol requiring a firmware load address.
         protocol: VMBootProtocol,
+    },
+    /// One configured guest memory range was empty or overflowed.
+    #[error("invalid guest memory range at {guest_base:#x} with size {size:#x}")]
+    InvalidMemoryRegion {
+        /// First guest physical address.
+        guest_base: u64,
+        /// Region length.
+        size: u64,
+    },
+    /// One explicit host backing range overflowed.
+    #[error("invalid host memory backing at {host_base:#x} with size {size:#x}")]
+    InvalidMemoryBacking {
+        /// First host physical address.
+        host_base: u64,
+        /// Region length.
+        size: u64,
+    },
+    /// Identity-allocated memory used a fixed guest address instead of the zero placeholder.
+    #[error("identity-allocated memory requires guest_base = 0, got {guest_base:#x}")]
+    InvalidIdentityAllocatedMemoryBase {
+        /// Unsupported configured guest base.
+        guest_base: u64,
+    },
+    /// Identity-allocated memory was requested by an unsupported machine.
+    #[error(
+        "identity-allocated memory requires an x86_64 or aarch64 passthrough machine, got {arch} \
+         {mode:?}"
+    )]
+    UnsupportedIdentityAllocatedMemory {
+        /// Build target architecture.
+        arch: String,
+        /// Configured machine policy.
+        mode: VmMachineMode,
+    },
+    /// Two configured regions claim at least one common guest physical address.
+    #[error(
+        "guest memory ranges at {first_guest_base:#x}/{first_size:#x} and \
+         {second_guest_base:#x}/{second_size:#x} overlap"
+    )]
+    OverlappingMemoryRegions {
+        /// First conflicting guest physical address.
+        first_guest_base: u64,
+        /// Length of the first conflicting region.
+        first_size: u64,
+        /// Second conflicting guest physical address.
+        second_guest_base: u64,
+        /// Length of the second conflicting region.
+        second_size: u64,
+    },
+    /// A mandatory architecture-profile device was listed as disableable.
+    #[error("default device '{device}' cannot be disabled; only 'console' is optional")]
+    UnsupportedDefaultDevice {
+        /// Unsupported profile device name supplied by the configuration.
+        device: String,
     },
 }
 

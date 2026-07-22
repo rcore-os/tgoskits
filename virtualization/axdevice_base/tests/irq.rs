@@ -14,12 +14,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use axdevice_base::{InterruptTriggerMode, IrqError, IrqLine, IrqLineId, IrqResult, IrqSink};
+use axdevice_base::{
+    ControllerInputId, InterruptControllerId, InterruptEndpoint, InterruptTriggerMode, IrqError,
+    IrqResult, WiredIrqInput, WiredIrqSink,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum IrqEvent {
-    SetLevel(IrqLineId, bool),
-    Pulse(IrqLineId),
+    SetLevel(ControllerInputId, bool),
+    Pulse(ControllerInputId),
 }
 
 struct MockIrqSink {
@@ -40,59 +43,120 @@ impl MockIrqSink {
     }
 }
 
-impl IrqSink for MockIrqSink {
-    fn set_level(&self, line: IrqLineId, asserted: bool) -> IrqResult {
+impl WiredIrqSink for MockIrqSink {
+    fn set_level(&self, input: ControllerInputId, asserted: bool) -> IrqResult {
         if let Some(error) = self.error.clone() {
             return Err(error);
         }
         self.events
             .lock()
             .unwrap()
-            .push(IrqEvent::SetLevel(line, asserted));
+            .push(IrqEvent::SetLevel(input, asserted));
         Ok(())
     }
 
-    fn pulse(&self, line: IrqLineId) -> IrqResult {
+    fn pulse(&self, input: ControllerInputId) -> IrqResult {
         if let Some(error) = self.error.clone() {
             return Err(error);
         }
-        self.events.lock().unwrap().push(IrqEvent::Pulse(line));
+        self.events.lock().unwrap().push(IrqEvent::Pulse(input));
         Ok(())
     }
-
-    // eoi is intentionally absent — MockIrqSink only implements the upstream
-    // IrqSink trait (set_level + pulse).
 }
 
 #[test]
 fn edge_line_pulses_sink() {
     let sink = Arc::new(MockIrqSink::new(None));
-    let line = IrqLine::new(
-        IrqLineId(4),
+    let input = WiredIrqInput::new(
+        InterruptControllerId::new(0),
+        ControllerInputId::new(4),
         InterruptTriggerMode::EdgeTriggered,
         sink.clone(),
     );
+    let line = input.connect().unwrap();
 
     assert_eq!(line.pulse(), Ok(()));
-    assert_eq!(sink.events(), vec![IrqEvent::Pulse(IrqLineId(4))]);
+    assert_eq!(
+        sink.events(),
+        vec![IrqEvent::Pulse(ControllerInputId::new(4))]
+    );
 }
 
 #[test]
 fn level_line_raises_and_lowers_sink() {
     let sink = Arc::new(MockIrqSink::new(None));
-    let line = IrqLine::new(
-        IrqLineId(33),
+    let input = WiredIrqInput::new(
+        InterruptControllerId::new(0),
+        ControllerInputId::new(33),
         InterruptTriggerMode::LevelTriggered,
         sink.clone(),
     );
+    let line = input.connect().unwrap();
 
     assert_eq!(line.raise(), Ok(()));
     assert_eq!(line.lower(), Ok(()));
     assert_eq!(
         sink.events(),
         vec![
-            IrqEvent::SetLevel(IrqLineId(33), true),
-            IrqEvent::SetLevel(IrqLineId(33), false),
+            IrqEvent::SetLevel(ControllerInputId::new(33), true),
+            IrqEvent::SetLevel(ControllerInputId::new(33), false),
+        ]
+    );
+}
+
+#[test]
+fn shared_level_input_stays_asserted_until_every_source_lowers() {
+    let sink = Arc::new(MockIrqSink::new(None));
+    let input = WiredIrqInput::new(
+        InterruptControllerId::new(0),
+        ControllerInputId::new(33),
+        InterruptTriggerMode::LevelTriggered,
+        sink.clone(),
+    );
+    let first_source = input.connect().unwrap();
+    let second_source = input.connect().unwrap();
+
+    first_source.raise().unwrap();
+    second_source.raise().unwrap();
+    first_source.lower().unwrap();
+
+    assert_eq!(
+        sink.events(),
+        vec![IrqEvent::SetLevel(ControllerInputId::new(33), true)]
+    );
+
+    second_source.lower().unwrap();
+    assert_eq!(
+        sink.events(),
+        vec![
+            IrqEvent::SetLevel(ControllerInputId::new(33), true),
+            IrqEvent::SetLevel(ControllerInputId::new(33), false),
+        ]
+    );
+}
+
+#[test]
+fn cloned_level_line_keeps_one_source_identity() {
+    let sink = Arc::new(MockIrqSink::new(None));
+    let input = WiredIrqInput::new(
+        InterruptControllerId::new(0),
+        ControllerInputId::new(33),
+        InterruptTriggerMode::LevelTriggered,
+        sink.clone(),
+    );
+    let line = input.connect().unwrap();
+    let clone = line.clone();
+
+    line.raise().unwrap();
+    clone.raise().unwrap();
+    clone.lower().unwrap();
+    line.lower().unwrap();
+
+    assert_eq!(
+        sink.events(),
+        vec![
+            IrqEvent::SetLevel(ControllerInputId::new(33), true),
+            IrqEvent::SetLevel(ControllerInputId::new(33), false),
         ]
     );
 }
@@ -100,16 +164,20 @@ fn level_line_raises_and_lowers_sink() {
 #[test]
 fn mismatched_line_operations_return_invalid_input() {
     let sink = Arc::new(MockIrqSink::new(None));
-    let edge_line = IrqLine::new(
-        IrqLineId(4),
+    let edge_input = WiredIrqInput::new(
+        InterruptControllerId::new(0),
+        ControllerInputId::new(4),
         InterruptTriggerMode::EdgeTriggered,
         sink.clone(),
     );
-    let level_line = IrqLine::new(
-        IrqLineId(33),
+    let level_input = WiredIrqInput::new(
+        InterruptControllerId::new(0),
+        ControllerInputId::new(33),
         InterruptTriggerMode::LevelTriggered,
         sink.clone(),
     );
+    let edge_line = edge_input.connect().unwrap();
+    let level_line = level_input.connect().unwrap();
 
     assert!(matches!(
         edge_line.raise(),
@@ -136,21 +204,33 @@ fn mismatched_line_operations_return_invalid_input() {
 }
 
 #[test]
-fn sink_errors_are_propagated() {
+fn sink_errors_are_propagated_without_committing_level_state() {
     let backend_error = IrqError::Backend {
-        line: IrqLineId(4),
+        endpoint: InterruptEndpoint::Wired {
+            controller: InterruptControllerId::new(0),
+            input: ControllerInputId::new(4),
+        },
         operation: "signal",
         detail: "controller unavailable".into(),
     };
     let sink = Arc::new(MockIrqSink::new(Some(backend_error.clone())));
-    let edge_line = IrqLine::new(
-        IrqLineId(4),
+    let edge_input = WiredIrqInput::new(
+        InterruptControllerId::new(0),
+        ControllerInputId::new(4),
         InterruptTriggerMode::EdgeTriggered,
         sink.clone(),
     );
-    let level_line = IrqLine::new(IrqLineId(33), InterruptTriggerMode::LevelTriggered, sink);
+    let level_input = WiredIrqInput::new(
+        InterruptControllerId::new(0),
+        ControllerInputId::new(33),
+        InterruptTriggerMode::LevelTriggered,
+        sink,
+    );
+    let edge_line = edge_input.connect().unwrap();
+    let level_line = level_input.connect().unwrap();
 
     assert_eq!(edge_line.pulse(), Err(backend_error.clone()));
     assert_eq!(level_line.raise(), Err(backend_error.clone()));
-    assert_eq!(level_line.lower(), Err(backend_error));
+    assert_eq!(level_line.lower(), Ok(()));
+    assert_eq!(level_line.raise(), Err(backend_error));
 }

@@ -17,12 +17,15 @@
 use alloc::{string::String, vec::Vec};
 
 pub use axvm_types::{
-    AddressSpacePolicy, EmulatedDeviceConfig, GuestPhysAddr, PassThroughAddressConfig,
-    PassThroughDeviceConfig, PassThroughPortConfig, ReservedAddressConfig, VMBootProtocol,
-    VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    GuestFirmwareKind, GuestPhysAddr, HostPhysAddr, MappingFlags, PhysicalInterruptPolicy,
+    VMBootProtocol, VmMachineMode,
 };
 
-use crate::arch::{ArchOps, CurrentArch};
+use crate::{
+    AxVmResult,
+    arch::{ArchOps, CurrentArch},
+    ax_err,
+};
 
 /// Policy used by AxVM when deriving runtime guest boot image addresses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -68,30 +71,111 @@ pub struct VMImageConfig {
     pub ramdisk: Option<RamdiskInfo>,
 }
 
+/// Physical ownership and backing of one guest memory region.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VmMemoryBacking {
+    /// Zeroed memory allocated and owned by this VM.
+    Allocated,
+    /// VM-owned memory whose guest and host physical addresses are identical.
+    IdentityAllocated,
+    /// A host physical range exclusively assigned to this VM.
+    Host { host_base: HostPhysAddr },
+    /// A host physical range intentionally shared with another owner.
+    Shared { host_base: HostPhysAddr },
+    /// An identity-addressed platform range reserved for guest use.
+    Reserved { host_base: HostPhysAddr },
+}
+
+/// Immutable runtime description of one guest memory mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VmMemoryConfig {
+    guest_base: GuestPhysAddr,
+    size: usize,
+    flags: MappingFlags,
+    backing: VmMemoryBacking,
+}
+
+impl VmMemoryConfig {
+    /// Creates a checked non-empty memory mapping description.
+    pub fn new(
+        guest_base: GuestPhysAddr,
+        size: usize,
+        flags: MappingFlags,
+        backing: VmMemoryBacking,
+    ) -> AxVmResult<Self> {
+        if size == 0
+            || guest_base.as_usize().checked_add(size).is_none()
+            || matches!(backing, VmMemoryBacking::IdentityAllocated) && guest_base.as_usize() != 0
+            || backing
+                .host_base()
+                .is_some_and(|base| base.as_usize().checked_add(size).is_none())
+        {
+            return ax_err!(
+                InvalidInput,
+                alloc::format!(
+                    "invalid memory region at guest {:#x} with size {size:#x}",
+                    guest_base.as_usize()
+                )
+            );
+        }
+        Ok(Self {
+            guest_base,
+            size,
+            flags,
+            backing,
+        })
+    }
+
+    /// Returns the guest physical base.
+    pub const fn guest_base(self) -> GuestPhysAddr {
+        self.guest_base
+    }
+
+    /// Returns the region length in bytes.
+    pub const fn size(self) -> usize {
+        self.size
+    }
+
+    /// Returns guest stage-2 access permissions.
+    pub const fn flags(self) -> MappingFlags {
+        self.flags
+    }
+
+    /// Returns the physical backing policy.
+    pub const fn backing(self) -> VmMemoryBacking {
+        self.backing
+    }
+}
+
+impl VmMemoryBacking {
+    /// Returns the first host physical address for externally backed memory.
+    pub const fn host_base(self) -> Option<HostPhysAddr> {
+        match self {
+            Self::Allocated | Self::IdentityAllocated => None,
+            Self::Host { host_base }
+            | Self::Shared { host_base }
+            | Self::Reserved { host_base } => Some(host_base),
+        }
+    }
+
+    /// Returns whether AxVM must release the backing allocation on drop.
+    pub const fn is_allocated(self) -> bool {
+        matches!(self, Self::Allocated | Self::IdentityAllocated)
+    }
+}
+
 /// Runtime configuration for one VM.
 #[derive(Debug, Default)]
 pub struct AxVMConfig {
     id: usize,
     name: String,
-    #[allow(dead_code)]
-    vm_type: VMType,
+    machine_plan: crate::machine::VmMachinePlan,
     pub(crate) phys_cpu_ls: PhysCpuList,
-    /// vCPU configuration.
-    pub cpu_config: AxVCpuConfig,
-    /// VM image configuration.
-    pub image_config: VMImageConfig,
-    emu_devices: Vec<EmulatedDeviceConfig>,
-    pass_through_devices: Vec<PassThroughDeviceConfig>,
-    excluded_devices: Vec<Vec<String>>,
-    pass_through_addresses: Vec<PassThroughAddressConfig>,
-    reserved_address_ranges: Vec<ReservedAddressConfig>,
-    pass_through_ports: Vec<PassThroughPortConfig>,
-    address_space_policy: AddressSpacePolicy,
-    memory_regions: Vec<VmMemConfig>,
+    pub(crate) cpu_config: AxVCpuConfig,
+    pub(crate) image_config: VMImageConfig,
+    memory_regions: Vec<VmMemoryConfig>,
     boot_policy: GuestBootPolicy,
-    // Physical interrupt sources forwarded to the guest in passthrough mode.
-    passthrough_irq_list: Vec<u32>,
-    interrupt_mode: VMInterruptMode,
+    arch: crate::arch::VmArchConfig,
 }
 
 /// Parameters used to build an [`AxVMConfig`].
@@ -99,20 +183,12 @@ pub struct AxVMConfig {
 pub struct AxVMConfigParams {
     pub id: usize,
     pub name: String,
-    pub vm_type: VMType,
+    pub machine_plan: crate::machine::VmMachinePlan,
     pub phys_cpu_ls: PhysCpuList,
     pub cpu_config: AxVCpuConfig,
     pub image_config: VMImageConfig,
-    pub emu_devices: Vec<EmulatedDeviceConfig>,
-    pub pass_through_devices: Vec<PassThroughDeviceConfig>,
-    pub excluded_devices: Vec<Vec<String>>,
-    pub pass_through_addresses: Vec<PassThroughAddressConfig>,
-    pub reserved_address_ranges: Vec<ReservedAddressConfig>,
-    pub pass_through_ports: Vec<PassThroughPortConfig>,
-    pub address_space_policy: AddressSpacePolicy,
-    pub memory_regions: Vec<VmMemConfig>,
+    pub memory_regions: Vec<VmMemoryConfig>,
     pub boot_policy: GuestBootPolicy,
-    pub interrupt_mode: VMInterruptMode,
 }
 
 impl AxVMConfig {
@@ -120,37 +196,29 @@ impl AxVMConfig {
         Self {
             id: params.id,
             name: params.name,
-            vm_type: params.vm_type,
+            machine_plan: params.machine_plan,
             phys_cpu_ls: params.phys_cpu_ls,
             cpu_config: params.cpu_config,
             image_config: params.image_config,
-            emu_devices: params.emu_devices,
-            pass_through_devices: params.pass_through_devices,
-            excluded_devices: params.excluded_devices,
-            pass_through_addresses: params.pass_through_addresses,
-            reserved_address_ranges: params.reserved_address_ranges,
-            pass_through_ports: params.pass_through_ports,
-            address_space_policy: params.address_space_policy,
             memory_regions: params.memory_regions,
             boot_policy: params.boot_policy,
-            passthrough_irq_list: Vec::new(),
-            interrupt_mode: params.interrupt_mode,
+            arch: crate::arch::VmArchConfig::new(),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn default_for_test(id: usize, name: &str) -> Self {
-        Self::new(AxVMConfigParams {
-            id,
-            name: String::from(name),
-            phys_cpu_ls: PhysCpuList::new(1, None, None),
-            ..Default::default()
-        })
     }
 
     /// Returns VM id.
     pub fn id(&self) -> usize {
         self.id
+    }
+
+    /// Returns whether the platform is fully virtual or host-derived.
+    pub const fn machine_mode(&self) -> VmMachineMode {
+        self.machine_plan.mode()
+    }
+
+    /// Returns the selected guest firmware format.
+    pub const fn firmware(&self) -> GuestFirmwareKind {
+        self.machine_plan.firmware()
     }
 
     /// Returns VM name.
@@ -163,14 +231,9 @@ impl AxVMConfig {
         &self.image_config
     }
 
-    /// Clears the configured DTB load address when no guest DTB is available.
-    pub fn clear_dtb_load_gpa(&mut self) {
-        self.image_config.dtb_load_gpa = None;
-    }
-
-    /// Sets the DTB load address used as an architecture boot argument.
-    pub fn set_dtb_load_gpa(&mut self, dtb_load_gpa: GuestPhysAddr) {
-        self.image_config.dtb_load_gpa = Some(dtb_load_gpa);
+    /// Updates the DTB load address used as an architecture boot argument.
+    pub(crate) fn update_dtb_load_gpa(&mut self, dtb_load_gpa: Option<GuestPhysAddr>) {
+        self.image_config.dtb_load_gpa = dtb_load_gpa;
     }
 
     /// Returns whether VM images are loaded from the host filesystem.
@@ -190,49 +253,9 @@ impl AxVMConfig {
         self.cpu_config.ap_entry
     }
 
-    /// Returns a mutable reference to the physical CPU list.
-    pub fn phys_cpu_ls_mut(&mut self) -> &mut PhysCpuList {
-        &mut self.phys_cpu_ls
-    }
-
-    /// Returns the list of excluded devices.
-    pub fn excluded_devices(&self) -> &Vec<Vec<String>> {
-        &self.excluded_devices
-    }
-
-    /// Returns the list of passthrough address configurations.
-    pub fn pass_through_addresses(&self) -> &Vec<PassThroughAddressConfig> {
-        &self.pass_through_addresses
-    }
-
-    /// Returns guest address ranges reserved from default passthrough mapping.
-    pub fn reserved_address_ranges(&self) -> &Vec<ReservedAddressConfig> {
-        &self.reserved_address_ranges
-    }
-
-    /// Adds a guest address range reserved from default passthrough mapping.
-    pub fn add_reserved_address_range(&mut self, range: ReservedAddressConfig) {
-        self.reserved_address_ranges.push(range);
-    }
-
-    /// Returns the list of passthrough host I/O port configurations.
-    pub fn pass_through_ports(&self) -> &Vec<PassThroughPortConfig> {
-        &self.pass_through_ports
-    }
-
-    /// Returns the guest physical address space population policy.
-    pub fn address_space_policy(&self) -> AddressSpacePolicy {
-        self.address_space_policy
-    }
-
     /// Returns configurations related to VM memory regions.
-    pub fn memory_regions(&self) -> &[VmMemConfig] {
+    pub fn memory_regions(&self) -> &[VmMemoryConfig] {
         &self.memory_regions
-    }
-
-    /// Replaces configurations related to VM memory regions.
-    pub fn set_memory_regions(&mut self, memory_regions: Vec<VmMemConfig>) {
-        self.memory_regions = memory_regions;
     }
 
     /// Returns the policy used to adjust runtime boot image addresses.
@@ -240,66 +263,27 @@ impl AxVMConfig {
         self.boot_policy
     }
 
-    /// Sets the policy used to adjust runtime boot image addresses.
-    pub fn set_boot_policy(&mut self, boot_policy: GuestBootPolicy) {
-        self.boot_policy = boot_policy;
+    pub(crate) const fn arch(&self) -> &crate::arch::VmArchConfig {
+        &self.arch
     }
 
-    /// Returns configurations related to VM emulated devices.
-    pub fn emu_devices(&self) -> &Vec<EmulatedDeviceConfig> {
-        &self.emu_devices
+    pub(crate) const fn arch_mut(&mut self) -> &mut crate::arch::VmArchConfig {
+        &mut self.arch
     }
 
-    /// Returns configurations related to VM passthrough devices.
-    pub fn pass_through_devices(&self) -> &Vec<PassThroughDeviceConfig> {
-        &self.pass_through_devices
+    /// Returns how assigned physical IRQs are forwarded.
+    pub fn physical_interrupt_policy(&self) -> PhysicalInterruptPolicy {
+        self.machine_plan.physical_interrupt_policy()
     }
 
-    /// Adds a new passthrough device to the VM configuration.
-    pub fn add_pass_through_device(&mut self, device: PassThroughDeviceConfig) {
-        self.pass_through_devices.push(device);
-    }
-
-    /// Removes passthrough device from the VM configuration.
-    pub fn remove_pass_through_device(&mut self, device: PassThroughDeviceConfig) {
-        self.pass_through_devices.retain(|d| d != &device);
-    }
-
-    /// Clears all passthrough devices from the VM configuration.
-    pub fn clear_pass_through_devices(&mut self) {
-        self.pass_through_devices.clear();
-    }
-
-    /// Adds a passthrough SPI to the VM configuration.
-    pub fn add_pass_through_spi(&mut self, spi: u32) {
-        self.add_pass_through_irq(spi);
-    }
-
-    /// Adds a physical interrupt source forwarded to the guest.
-    pub fn add_pass_through_irq(&mut self, irq: u32) {
-        if !self.passthrough_irq_list.contains(&irq) {
-            self.passthrough_irq_list.push(irq);
-        }
-    }
-
-    /// Returns the list of passthrough SPIs.
-    pub fn pass_through_spis(&self) -> &Vec<u32> {
-        &self.passthrough_irq_list
-    }
-
-    /// Returns the physical interrupt sources forwarded to the guest.
-    pub fn pass_through_irqs(&self) -> &Vec<u32> {
-        &self.passthrough_irq_list
-    }
-
-    /// Returns the interrupt mode of the VM.
-    pub fn interrupt_mode(&self) -> VMInterruptMode {
-        self.interrupt_mode
+    /// Returns the immutable machine plan consumed by VM construction.
+    pub const fn machine_plan(&self) -> &crate::machine::VmMachinePlan {
+        &self.machine_plan
     }
 
     /// Relocate the guest kernel image while preserving the configured
     /// entry-point offsets relative to the load address.
-    pub fn relocate_kernel_image(&mut self, kernel_load_gpa: GuestPhysAddr) {
+    pub(crate) fn relocate_kernel_image(&mut self, kernel_load_gpa: GuestPhysAddr) {
         let old_load = self.image_config.kernel_load_gpa.as_usize();
         let new_load = kernel_load_gpa.as_usize();
 
@@ -400,30 +384,51 @@ mod tests {
 
     use super::*;
 
-    fn memory_region(gpa: usize, size: usize, map_type: VmMemMappingType) -> VmMemConfig {
-        VmMemConfig {
-            gpa,
+    fn memory_region(gpa: usize, size: usize, backing: VmMemoryBacking) -> VmMemoryConfig {
+        VmMemoryConfig::new(
+            GuestPhysAddr::from(gpa),
             size,
-            flags: 0x7,
-            map_type,
-        }
+            MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+            backing,
+        )
+        .unwrap()
     }
 
     #[test]
-    fn set_memory_regions_replaces_stale_snapshot_after_config_enrichment() {
-        let main_memory = memory_region(0x8000_0000, 0x200000, VmMemMappingType::MapIdentical);
-        let reserved_memory = memory_region(0x110000, 0x10000, VmMemMappingType::MapReserved);
-        let mut config = AxVMConfig::default_for_test(1, "linux");
-
-        config.set_memory_regions(vec![main_memory.clone()]);
-        assert_eq!(config.memory_regions().len(), 1);
-
-        config.set_memory_regions(vec![main_memory, reserved_memory]);
+    fn memory_regions_preserve_explicit_backing() {
+        let main_memory = memory_region(
+            0x8000_0000,
+            0x200000,
+            VmMemoryBacking::Host {
+                host_base: HostPhysAddr::from(0xa000_0000),
+            },
+        );
+        let reserved_memory = memory_region(
+            0x110000,
+            0x10000,
+            VmMemoryBacking::Reserved {
+                host_base: HostPhysAddr::from(0x110000),
+            },
+        );
+        let config = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            name: String::from("linux"),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            memory_regions: vec![main_memory, reserved_memory],
+            ..Default::default()
+        });
 
         let regions = config.memory_regions();
         assert_eq!(regions.len(), 2);
-        assert_eq!(regions[1].gpa, 0x110000);
-        assert_eq!(regions[1].size, 0x10000);
-        assert_eq!(regions[1].map_type, VmMemMappingType::MapReserved);
+        assert_eq!(regions[0].guest_base(), GuestPhysAddr::from(0x8000_0000));
+        assert_eq!(
+            regions[0].backing().host_base(),
+            Some(HostPhysAddr::from(0xa000_0000))
+        );
+        assert_eq!(regions[1].size(), 0x10000);
+        assert!(matches!(
+            regions[1].backing(),
+            VmMemoryBacking::Reserved { .. }
+        ));
     }
 }

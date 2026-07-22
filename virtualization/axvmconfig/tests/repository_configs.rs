@@ -1,0 +1,141 @@
+#[cfg(feature = "std")]
+#[test]
+fn every_repository_axvisor_vm_config_uses_the_typed_schema() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let config_root = workspace.join("os/axvisor/configs/vms");
+    let mut configs = Vec::new();
+    collect_toml_files(&config_root, &mut configs);
+    assert!(!configs.is_empty());
+
+    for path in configs {
+        let source = std::fs::read_to_string(&path).unwrap();
+        axvmconfig::AxVMCrateConfig::from_toml(&source)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn every_architecture_template_uses_the_typed_schema() {
+    let template_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+    let mut templates = Vec::new();
+    collect_toml_files(&template_root, &mut templates);
+    assert_eq!(templates.len(), 4);
+
+    for path in templates {
+        let source = std::fs::read_to_string(&path).unwrap();
+        axvmconfig::AxVMCrateConfig::from_toml(&source)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn x86_backend_neutral_passthrough_config_keeps_identity_ram_as_the_primary_region() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let path = workspace.join("os/axvisor/configs/vms/qemu/x86_64/linux-smp1.toml");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let config = axvmconfig::AxVMCrateConfig::from_toml(&source).unwrap();
+    let primary = config.memory.regions.first().unwrap();
+
+    assert_eq!(
+        config.kernel.kernel_load_addr,
+        0x20_0000,
+        "{}",
+        path.display()
+    );
+    assert_eq!(primary.guest_base, 0, "{}", path.display());
+    assert_eq!(primary.size, 0x800_0000, "{}", path.display());
+    assert!(
+        matches!(
+            primary.backing,
+            axvmconfig::MemoryBackingConfig::IdentityAllocate
+        ),
+        "{}",
+        path.display()
+    );
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn rk3568_configs_keep_dynamically_placed_identity_ram() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let config_root = workspace.join("os/axvisor/configs/vms/roc-rk3568-pc");
+
+    for file_name in [
+        "arceos-smp1.toml",
+        "arceos-smp2.toml",
+        "linux-smp1.toml",
+        "linux-smp2.toml",
+    ] {
+        let path = config_root.join(file_name);
+        let source = std::fs::read_to_string(&path).unwrap();
+        let config =
+            axvmconfig::AxVMCrateConfig::from_toml_for_target_arch(&source, "aarch64").unwrap();
+        let primary = config.memory.regions.first().unwrap();
+
+        assert_eq!(primary.guest_base, 0, "{}", path.display());
+        assert!(
+            matches!(
+                primary.backing,
+                axvmconfig::MemoryBackingConfig::IdentityAllocate
+            ),
+            "{}",
+            path.display()
+        );
+    }
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn orangepi_linux_guest_uses_a_virtual_console_with_hardware_backed_device_irqs() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap();
+    let path = workspace.join("os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let config = axvmconfig::AxVMCrateConfig::from_toml(&source).unwrap();
+    assert_eq!(
+        config.machine.physical_interrupt_policy(),
+        axvm_types::PhysicalInterruptPolicy::HardwareForwarded
+    );
+    let cmdline = config
+        .kernel
+        .cmdline
+        .as_deref()
+        .expect("OrangePi Linux guest must define its guest console command line");
+
+    assert!(cmdline.contains("console=ttyAMA0,115200"));
+    assert!(
+        cmdline
+            .split_ascii_whitespace()
+            .any(|argument| argument == "earlycon")
+    );
+    assert!(!cmdline.contains("ttyS2"));
+    assert!(!cmdline.contains("0xfeb50000"));
+}
+
+#[cfg(feature = "std")]
+fn collect_toml_files(directory: &std::path::Path, output: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_toml_files(&path, output);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "toml")
+        {
+            output.push(path);
+        }
+    }
+}

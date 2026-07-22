@@ -195,6 +195,8 @@ impl GuestVsCsrs {
 #[derive(Debug, Default, Clone)]
 #[repr(C)]
 pub struct GuestVirtualHsCsrs {
+    /// Execution controls derived from the guest-visible ISA contract.
+    pub henvcfg: usize,
     pub hie: usize,
     // hvip lives at HS level, but its pending bits directly determine which
     // virtual interrupts the guest will observe after the next VM entry.
@@ -206,8 +208,9 @@ pub struct GuestVirtualHsCsrs {
 impl GuestVirtualHsCsrs {
     /// Load the virtualized HS-level CSRs from hardware into this structure.
     pub fn load_from_hw(&mut self) {
-        use riscv_h::register::{hgatp, hgeie, hie, hvip};
+        use riscv_h::register::{henvcfg, hgatp, hgeie, hie, hvip};
 
+        self.henvcfg = henvcfg::read().bits();
         self.hie = hie::read().bits();
         self.hvip = hvip::read().bits();
         self.hgeie = hgeie::read();

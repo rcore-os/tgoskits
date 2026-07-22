@@ -3,7 +3,7 @@
 use alloc::format;
 
 use axvm_types::GuestPhysAddr;
-use axvmconfig::{EmulatedDeviceType, VMBootProtocol, VmMemMappingType};
+use axvmconfig::VMBootProtocol;
 
 use super::X86_64Arch;
 #[cfg(not(any(feature = "fs", feature = "host-fs")))]
@@ -62,6 +62,7 @@ impl BootImagePlatform for X86_64Arch {
         loader: &mut ImageLoaderCore<'_>,
         images: StaticVmImage,
     ) -> AxVmResult {
+        load_planned_acpi(loader)?;
         if should_direct_boot_linux(&loader.config)
             && let Some(header) = detect_linux_image(images.kernel)
         {
@@ -77,6 +78,7 @@ impl BootImagePlatform for X86_64Arch {
 
     #[cfg(any(feature = "fs", feature = "host-fs"))]
     fn load_images_from_filesystem(loader: &mut ImageLoaderCore<'_>) -> AxVmResult {
+        load_planned_acpi(loader)?;
         if should_direct_boot_linux(&loader.config) {
             let probe = crate::boot::images::fs::kernel_read(
                 &loader.config,
@@ -291,7 +293,7 @@ fn adjust_linux_dma_identity_layout(loader: &mut ImageLoaderCore<'_>) {
     if let Some(ramdisk_load_addr) = loader.config.kernel.ramdisk_load_addr {
         loader.ramdisk_load_gpa = Some(GuestPhysAddr::from(memory_base + ramdisk_load_addr));
     }
-    loader.vm.with_config(|config| {
+    loader.vm.with_config_mut(|config| {
         config.image_config.kernel_load_gpa = loader.kernel_load_gpa;
         if let Some(load_gpa) = loader.ramdisk_load_gpa
             && let Some(ramdisk) = config.image_config.ramdisk.as_mut()
@@ -326,7 +328,7 @@ fn load_linux_layout(
         loader.vm.clone(),
     )?;
     let entry = GuestPhysAddr::from(linux_boot::DEFAULT_LINUX_BOOT_LOAD_GPA);
-    loader.vm.with_config(|config| {
+    loader.vm.with_config_mut(|config| {
         config.cpu_config.bsp_entry = entry;
         config.cpu_config.ap_entry = entry;
     });
@@ -357,28 +359,58 @@ fn build_boot_params(
             format!("invalid x86 Linux command line: {err:?}")
         )
     })?;
-    for memory in &loader.config.kernel.memory_regions {
-        if memory.map_type == VmMemMappingType::MapAlloc {
-            builder.add_ram_range(linux::X86LinuxRange::new(memory.gpa, memory.size));
+    for memory in loader.vm.memory_regions() {
+        if memory.gpa != loader.main_memory.gpa {
+            builder.add_ram_range(linux::X86LinuxRange::new(
+                memory.gpa.as_usize(),
+                memory.size(),
+            ));
         }
     }
-    for device in &loader.config.devices.passthrough_devices {
-        builder.add_reserved_range(linux::X86LinuxRange::new(device.base_gpa, device.length));
+    if let Some((address, size)) = planned_acpi_range(loader)? {
+        builder.set_acpi_rsdp_address(address as u64);
+        builder.add_reserved_range(linux::X86LinuxRange::new(address, size));
     }
-    for address in &loader.config.devices.passthrough_addresses {
-        builder.add_reserved_range(linux::X86LinuxRange::new(address.base_gpa, address.length));
-    }
-    for device in &loader.config.devices.emu_devices {
-        if matches!(device.emu_type, EmulatedDeviceType::X86IoApic) {
-            builder.add_reserved_range(linux::X86LinuxRange::new(device.base_gpa, device.length));
-        }
-    }
+    builder.add_reserved_range(linux::X86LinuxRange::new(0xfec0_0000, 0x1000));
     builder.add_reserved_range(mptable::reserved_range());
     builder.build().map_err(|err| {
         ax_err_type!(
             InvalidInput,
             format!("failed to build x86 boot_params: {err:?}")
         )
+    })
+}
+
+fn load_planned_acpi(loader: &ImageLoaderCore<'_>) -> AxVmResult {
+    let Some((address, bytes)) = loader.vm.with_config(|config| {
+        config
+            .machine_plan()
+            .acpi_firmware()
+            .map(|image| (image.load_address(), image.bytes().to_vec()))
+    }) else {
+        return Ok(());
+    };
+    let load_gpa =
+        GuestPhysAddr::from(usize::try_from(address).map_err(|_| {
+            ax_err_type!(InvalidInput, "generated ACPI load address exceeds usize")
+        })?);
+    load_vm_image_from_memory(&bytes, load_gpa, loader.vm.clone())?;
+    loader.vm.set_guest_acpi_tables(load_gpa, bytes)
+}
+
+fn planned_acpi_range(loader: &ImageLoaderCore<'_>) -> AxVmResult<Option<(usize, usize)>> {
+    loader.vm.with_config(|config| {
+        config
+            .machine_plan()
+            .acpi_firmware()
+            .map(|image| {
+                usize::try_from(image.load_address())
+                    .map(|address| (address, image.len()))
+                    .map_err(|_| {
+                        ax_err_type!(InvalidInput, "generated ACPI load address exceeds usize")
+                    })
+            })
+            .transpose()
     })
 }
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add active boot-console MMIO discovery and exclusive, reversible suspension
+  of its register access for transactional physical-device handoff.
+
 ## [0.3.5](https://github.com/rcore-os/tgoskits/compare/someboot-v0.3.4...someboot-v0.3.5) - 2026-07-10
 
 ### Added

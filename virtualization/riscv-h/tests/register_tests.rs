@@ -14,11 +14,44 @@
 
 //! Unit tests for individual RISC-V hypervisor registers
 
-use riscv_h::register::{hcounteren, hie, hip, hvip, vsatp, vsie, vsip, vstvec};
+use riscv_h::register::{hcounteren, henvcfg, hie, hip, hvip, vsatp, vsie, vsip, vstvec};
 
 // ============================================================================
 // Hypervisor Control Registers Tests
 // ============================================================================
+
+mod henvcfg_tests {
+    use super::*;
+
+    #[test]
+    fn cache_block_permissions_match_privileged_isa_encodings() {
+        let mut config = henvcfg::Henvcfg::from_bits(0);
+
+        config.set_cache_block_invalidate(henvcfg::CacheBlockInvalidate::Invalidate);
+        config.set_cache_block_clean_flush(true);
+        config.set_cache_block_zero(true);
+
+        assert_eq!(
+            config.cache_block_invalidate(),
+            henvcfg::CacheBlockInvalidate::Invalidate
+        );
+        assert!(config.cache_block_clean_flush());
+        assert!(config.cache_block_zero());
+        assert_eq!(config.bits(), (0b11 << 4) | (1 << 6) | (1 << 7));
+    }
+
+    #[test]
+    fn disabled_cache_block_permissions_leave_guest_operations_trapping() {
+        let config = henvcfg::Henvcfg::from_bits(0);
+
+        assert_eq!(
+            config.cache_block_invalidate(),
+            henvcfg::CacheBlockInvalidate::Trap
+        );
+        assert!(!config.cache_block_clean_flush());
+        assert!(!config.cache_block_zero());
+    }
+}
 
 mod hvip_tests {
     use super::*;

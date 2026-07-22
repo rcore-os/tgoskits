@@ -13,11 +13,6 @@ pub struct PreparedGuestBoot {
 }
 
 impl PreparedGuestBoot {
-    /// Returns the architecture-enriched VM configuration.
-    pub const fn config(&self) -> &AxVMCrateConfig {
-        &self.config
-    }
-
     /// Loads all configured guest images into prepared VM memory.
     ///
     /// # Errors

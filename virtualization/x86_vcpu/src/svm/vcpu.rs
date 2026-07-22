@@ -1,4 +1,4 @@
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, vec::Vec};
 use core::{
     arch::asm,
     fmt::{Debug, Formatter, Result as FmtResult},
@@ -21,9 +21,9 @@ use super::{
     vmcb::{InterceptCrRw, InterceptExceptions, NestedCtl, VmcbTlbControl, set_vmcb_segment},
 };
 use crate::{
-    X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86GuestVirtAddr, X86HostOps,
-    X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig, X86Port,
-    X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit, host,
+    X86AccessFlags, X86AccessWidth, X86EmulatedMmioRegion, X86GuestPhysAddr, X86GuestVirtAddr,
+    X86HostOps, X86HostPhysAddr, X86MsrAddr, X86NestedPageFaultInfo, X86NestedPagingConfig,
+    X86Port, X86VcpuCreateConfig, X86VcpuError, X86VcpuResult, X86VcpuSetupConfig, X86VmExit, host,
     msr::Msr, regs::GeneralRegisters, restore_host_interrupt_flag, x86_real_mode_entry_state,
     xstate::XState,
 };
@@ -34,8 +34,6 @@ const X86_PIT_PORT_COUNT: u32 = 4;
 const X86_PIT_SPEAKER_PORT: u16 = 0x61;
 const X86_COM1_PORT_BASE: u16 = 0x3f8;
 const X86_COM1_PORT_COUNT: u32 = 8;
-const X86_IOAPIC_BASE: usize = 0xfec0_0000;
-const X86_IOAPIC_SIZE: usize = 0x1000;
 const X86_LOCAL_APIC_BASE: usize = 0xfee0_0000;
 const X86_LOCAL_APIC_SIZE: usize = 0x1000;
 const X86_LOCAL_APIC_EOI_OFFSET: usize = 0xb0;
@@ -204,6 +202,8 @@ pub struct SvmVcpu<H: X86HostOps> {
     injecting_event: Option<PendingEvent>,
     /// Emulated Local APIC for x2APIC MSR accesses.
     vlapic: EmulatedLocalApic<H>,
+    /// Registered guest MMIO windows whose instructions are decoded for the VMM.
+    emulated_mmio_regions: Vec<X86EmulatedMmioRegion>,
     /// The XState of the VCpu. Both host and guest.
     xstate: XState,
 }
@@ -224,6 +224,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
             pending_events: VecDeque::with_capacity(8),
             injecting_event: None,
             vlapic: EmulatedLocalApic::<H>::new(vm_id, vcpu_id),
+            emulated_mmio_regions: Vec::new(),
             xstate: XState::new(),
         };
         info!("[HV] created SvmVcpu(vmcb: {:#x})", vcpu.vmcb.phys_addr());
@@ -236,7 +237,8 @@ impl<H: X86HostOps> SvmVcpu<H> {
         npt_root: X86HostPhysAddr,
         config: X86VcpuSetupConfig,
     ) -> X86VcpuResult {
-        self.setup_io_bitmap(config)?;
+        self.emulated_mmio_regions = config.emulated_mmio_regions().to_vec();
+        self.setup_io_bitmap(&config)?;
         self.setup_msr_bitmap()?;
         self.setup_vmcb_guest(entry)?;
         self.setup_vmcb_control(npt_root)
@@ -363,14 +365,14 @@ impl<H: X86HostOps> SvmVcpu<H> {
         Ok(())
     }
 
-    fn setup_io_bitmap(&mut self, config: X86VcpuSetupConfig) -> X86VcpuResult {
+    fn setup_io_bitmap(&mut self, config: &X86VcpuSetupConfig) -> X86VcpuResult {
         // This port is part of the x86 QEMU test contract: 0x604 reports test completion.
         self.iopm
             .set_intercept_of_range(QEMU_EXIT_PORT as _, 2, true);
         self.iopm
             .set_intercept_of_range(X86_PIT_PORT_BASE as u32, X86_PIT_PORT_COUNT, true);
         self.iopm.set_intercept(X86_PIT_SPEAKER_PORT as u32, true);
-        if config.emulate_com1 {
+        if config.emulates_com1() {
             self.iopm
                 .set_intercept_of_range(X86_COM1_PORT_BASE as u32, X86_COM1_PORT_COUNT, true);
         }
@@ -1053,8 +1055,12 @@ impl<H: X86HostOps> SvmVcpu<H> {
         let addr_usize = addr.as_usize();
         let local_apic =
             (X86_LOCAL_APIC_BASE..X86_LOCAL_APIC_BASE + X86_LOCAL_APIC_SIZE).contains(&addr_usize);
-        let ioapic = (X86_IOAPIC_BASE..X86_IOAPIC_BASE + X86_IOAPIC_SIZE).contains(&addr_usize);
-        if !local_apic && !ioapic {
+        if !local_apic
+            && !self
+                .emulated_mmio_regions
+                .iter()
+                .any(|region| region.contains(addr))
+        {
             return Ok(None);
         }
 

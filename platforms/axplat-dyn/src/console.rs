@@ -1,6 +1,9 @@
 #[cfg(feature = "irq")]
 use ax_plat::console::ConsoleIrqEvent;
-use ax_plat::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf};
+use ax_plat::{
+    console::{ConsoleDeviceIdError, ConsoleDeviceIdResult, ConsoleIf},
+    mem::PhysAddr,
+};
 
 #[cfg(all(feature = "irq", target_arch = "x86_64"))]
 fn console_irq(raw: usize) -> Option<ax_plat::irq::IrqId> {
@@ -59,8 +62,20 @@ impl ConsoleIf for ConsoleIfImpl {
         })
     }
 
+    fn physical_mmio_base() -> Option<PhysAddr> {
+        somehal::console::physical_mmio_base().map(PhysAddr::from_usize)
+    }
+
     fn claim_runtime_output() {
         somehal::console::claim_runtime_output();
+    }
+
+    fn try_suspend_boot_output() -> bool {
+        somehal::console::try_suspend_boot_output()
+    }
+
+    fn resume_boot_output() {
+        somehal::console::resume_boot_output();
     }
 
     /// Returns the IRQ number for the console input interrupt.

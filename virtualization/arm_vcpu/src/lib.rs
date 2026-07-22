@@ -20,21 +20,27 @@
 extern crate log;
 
 mod context_frame;
+mod data_abort;
 #[macro_use]
 mod exception_utils;
 mod exception;
 pub mod host;
 mod pcpu;
-mod smc;
+mod psci;
+mod smccc;
 mod types;
 mod vcpu;
 
 pub use self::{
+    data_abort::{
+        ArmDataAbort, ArmDataAbortSyndrome, ArmDataAccess, ArmDataAccessResult, ArmDataFault,
+        ArmFaultIpa, ArmGpr, ArmLoadExtension,
+    },
     host::ArmHostOps,
     pcpu::ArmPerCpu,
     types::{
-        ArmAccessWidth, ArmGuestPhysAddr, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError,
-        ArmVcpuResult, ArmVmExit,
+        ArmAccessWidth, ArmGicCpuInterfaceRegister, ArmGuestPhysAddr, ArmGuestVirtAddr,
+        ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
     },
     vcpu::{
         ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
@@ -52,6 +58,9 @@ pub type Aarch64PerCpu = ArmPerCpu;
 pub type Aarch64VCpuCreateConfig = ArmVcpuCreateConfig;
 /// Compatibility alias for existing AArch64 users.
 pub type Aarch64VCpuSetupConfig = ArmVcpuSetupConfig;
+
+/// SMCCC return value used when no VM-local firmware capability owns a call.
+pub const SMCCC_NOT_SUPPORTED: u64 = smccc::NOT_SUPPORTED;
 
 /// Returns the maximum guest page table levels supported by the hardware.
 ///

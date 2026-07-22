@@ -360,6 +360,25 @@ impl DistributorReg {
         }
     }
 
+    /// Returns the Group 1 and Group modifier bits for one SPI.
+    pub fn interrupt_group(&self, intid: u32) -> (bool, bool) {
+        if intid < 32 {
+            return (false, false);
+        }
+        let reg_idx = (intid / 32) as usize;
+        let bit_idx = intid % 32;
+        let bit = 1 << bit_idx;
+        let group1 = self
+            .IGROUPR
+            .get(reg_idx)
+            .is_some_and(|register| register.get() & bit != 0);
+        let modifier = self
+            .IGRPMODR
+            .get(reg_idx)
+            .is_some_and(|register| register.get() & bit != 0);
+        (group1, modifier)
+    }
+
     /// Configure interrupt configuration (edge/level triggered)
     pub fn set_interrupt_config(&self, id: IntId, trigger: Trigger) {
         let int_num = id.to_u32();

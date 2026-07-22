@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Correct the ICH and ICC IDbits fields to their architectural three-bit widths
+  so they no longer overlap PREbits or SEIS.
+
 ## [0.17.9](https://github.com/rcore-os/tgoskits/compare/arm-gic-driver-v0.17.8...arm-gic-driver-v0.17.9) - 2026-07-10
 
 ### Added

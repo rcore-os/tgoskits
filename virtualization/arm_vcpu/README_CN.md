@@ -17,6 +17,16 @@
 
 `arm_vcpu` 提供 OS-neutral 的 AArch64 vCPU core。它负责 EL2 guest entry/exit、guest register state、trap decode 和硬件虚拟化寄存器语义。宿主 OS/VMM 策略通过 `ArmHostOps` 提供；AxVM 接入层位于 `virtualization/axvm/src/arch/aarch64`。
 
+Guest PSCI 调用和受限的 SMCCC architecture discovery 由 VM 内部实现。其他合法
+SMC function ID 通过 `ArmVmExit::FirmwareCall` 交给 VMM；VMM 只能匹配显式注册的
+VM-local capability，否则返回 `SMCCC_RET_NOT_SUPPORTED`。不能把任意 guest SMC
+参数直接转发给 host firmware。
+
+被 trap 的 GICv3 common CPU Interface 访问会解码为
+`ArmGicCpuInterfaceRegister` 和强类型 `ArmVmExit`。VMM 处理
+`ICC_CTLR_EL1`、`ICC_PMR_EL1` 和 `ICC_RPR_EL1` 时不再依赖裸 sysreg 编码；
+`ICC_DIR_EL1` 仍使用独立 deactivation exit，因为它负责一个原子的中断状态转换。
+
 ## 快速开始
 
 ### 添加依赖
@@ -57,14 +67,6 @@ use arm_vcpu::{ArmHostOps, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuResult};
 struct MyHost;
 
 impl ArmHostOps for MyHost {
-    fn inject_virtual_interrupt(_vector: u8) -> ArmVcpuResult {
-        Ok(())
-    }
-
-    fn fetch_pending_host_irq() -> Option<usize> {
-        None
-    }
-
     fn handle_current_host_irq() {}
 }
 

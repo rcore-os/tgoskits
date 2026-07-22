@@ -1,7 +1,7 @@
 use alloc::{format, string::String, vec::Vec};
 
 use fdt_edit::{Fdt, Node, NodeId, Property};
-use fdt_raw::{Header, RegInfo};
+use fdt_raw::RegInfo;
 
 use crate::{AxVmResult, ax_err_type};
 
@@ -22,10 +22,6 @@ pub(crate) struct FdtTree {
 }
 
 impl FdtTree {
-    pub(crate) fn new() -> Self {
-        Self { fdt: Fdt::new() }
-    }
-
     pub(crate) fn from_fdt(fdt: Fdt) -> Self {
         Self { fdt }
     }
@@ -38,10 +34,6 @@ impl FdtTree {
 
     pub(crate) fn inner(&self) -> &Fdt {
         &self.fdt
-    }
-
-    pub(crate) fn inner_mut(&mut self) -> &mut Fdt {
-        &mut self.fdt
     }
 
     pub(crate) fn finish(mut self) -> Vec<u8> {
@@ -92,8 +84,23 @@ impl FdtTree {
         Ok(())
     }
 
-    pub(crate) fn add_node(&mut self, parent: NodeId, node: Node) -> NodeId {
-        self.fdt.add_node(parent, node)
+    pub(crate) fn remove_path(&mut self, path: &str) {
+        self.fdt.remove_by_path(path);
+    }
+
+    pub(crate) fn remove_properties(
+        &mut self,
+        node_id: NodeId,
+        property_names: &[&str],
+    ) -> AxVmResult {
+        let node = self
+            .fdt
+            .node_mut(node_id)
+            .ok_or_else(|| ax_err_type!(InvalidData, "FDT node id is invalid"))?;
+        for property_name in property_names {
+            node.remove_property(property_name);
+        }
+        Ok(())
     }
 
     pub(crate) fn rebuild_memory_nodes(&mut self, regions: &[GuestMemorySpec]) -> AxVmResult {
@@ -127,101 +134,36 @@ impl FdtTree {
 
     pub(crate) fn patch_chosen(&mut self, initrd_start_size: Option<(u64, u64)>) -> AxVmResult {
         let chosen_id = self.ensure_path("/chosen")?;
-        let chosen = self
-            .fdt
-            .node_mut(chosen_id)
-            .ok_or_else(|| ax_err_type!(InvalidData, "/chosen node is missing"))?;
-
-        if let Some(bootargs) = chosen
-            .get_property("bootargs")
-            .and_then(|prop| prop.as_str())
-            .map(sanitize_bootargs)
         {
-            chosen.set_property(prop_string("bootargs", &bootargs));
+            let chosen = self
+                .fdt
+                .node_mut(chosen_id)
+                .ok_or_else(|| ax_err_type!(InvalidData, "/chosen node is missing"))?;
+            if let Some(bootargs) = chosen
+                .get_property("bootargs")
+                .and_then(|prop| prop.as_str())
+                .map(sanitize_bootargs)
+            {
+                chosen.set_property(prop_string("bootargs", &bootargs));
+            }
         }
 
-        chosen.remove_property("linux,initrd-start");
-        chosen.remove_property("linux,initrd-end");
+        self.remove_properties(chosen_id, &["linux,initrd-start", "linux,initrd-end"])?;
         if let Some((start, size)) = initrd_start_size {
+            let chosen = self
+                .fdt
+                .node_mut(chosen_id)
+                .ok_or_else(|| ax_err_type!(InvalidData, "/chosen node is missing"))?;
             chosen.set_property(prop_u64("linux,initrd-start", start));
             chosen.set_property(prop_u64("linux,initrd-end", start.saturating_add(size)));
         }
         Ok(())
     }
 
-    pub(crate) fn copy_subtree_from(
-        &mut self,
-        source: &Fdt,
-        source_id: NodeId,
-        dest_parent: NodeId,
-        skip_cpu_cache_props: bool,
-    ) -> AxVmResult<NodeId> {
-        let source_node = source
-            .node(source_id)
-            .ok_or_else(|| ax_err_type!(InvalidData, "source FDT node id is invalid"))?;
-        let dest_id = self.add_node(dest_parent, Node::new(source_node.name()));
-        copy_properties(
-            source_node,
-            self.fdt.node_mut(dest_id).unwrap(),
-            skip_cpu_cache_props,
-        );
-
-        for child_id in source_node.children() {
-            self.copy_subtree_from(source, *child_id, dest_id, skip_cpu_cache_props)?;
-        }
-
-        Ok(dest_id)
-    }
-
-    pub(crate) fn clone_filtered(
-        source: &Fdt,
-        keep: impl Fn(NodeId, &str, &Node) -> bool,
-    ) -> AxVmResult<Self> {
-        let mut dest = FdtTree::new();
-        dest.fdt.boot_cpuid_phys = source.boot_cpuid_phys;
-        dest.fdt.memory_reservations = source.memory_reservations.clone();
-
-        let root_id = source.root_id();
-        let root = source
-            .node(root_id)
-            .ok_or_else(|| ax_err_type!(InvalidData, "source FDT root is missing"))?;
-        copy_properties(root, dest.fdt.node_mut(dest.fdt.root_id()).unwrap(), false);
-
-        let mut stack = Vec::new();
-        for child in root.children().iter().rev() {
-            stack.push((*child, dest.fdt.root_id()));
-        }
-
-        while let Some((source_id, dest_parent)) = stack.pop() {
-            let Some(source_node) = source.node(source_id) else {
-                continue;
-            };
-            let path = source.path_of(source_id);
-            let node_kept = keep(source_id, &path, source_node);
-            let next_parent = if node_kept {
-                let new_id = dest.add_node(dest_parent, Node::new(source_node.name()));
-                copy_properties(
-                    source_node,
-                    dest.fdt.node_mut(new_id).unwrap(),
-                    path.starts_with("/cpus/"),
-                );
-                new_id
-            } else {
-                dest_parent
-            };
-
-            for child in source_node.children().iter().rev() {
-                stack.push((*child, next_parent));
-            }
-        }
-
-        Ok(dest)
-    }
-
     fn remove_paths_deepest_first(&mut self, mut paths: Vec<String>) {
         paths.sort_by_key(|path| core::cmp::Reverse(path.matches('/').count()));
         for path in paths {
-            self.fdt.remove_by_path(&path);
+            self.remove_path(&path);
         }
     }
 }
@@ -236,19 +178,6 @@ pub(crate) fn prop_string(name: &str, value: &str) -> Property {
     let mut prop = Property::new(name, Vec::new());
     prop.set_string(value);
     prop
-}
-
-pub(crate) fn host_fdt_bytes_from_ptr(ptr: *const u8) -> Option<&'static [u8]> {
-    if ptr.is_null() {
-        return None;
-    }
-
-    let header = unsafe {
-        let bytes = core::slice::from_raw_parts(ptr, core::mem::size_of::<Header>());
-        Header::from_bytes(bytes).ok()?
-    };
-
-    Some(unsafe { core::slice::from_raw_parts(ptr, header.totalsize as usize) })
 }
 
 pub(crate) fn sanitize_bootargs(bootargs: &str) -> String {
@@ -293,20 +222,4 @@ pub(crate) fn sanitize_bootargs(bootargs: &str) -> String {
     }
 
     sanitized.join(" ")
-}
-
-pub(crate) fn should_skip_guest_cpu_prop(prop_name: &str) -> bool {
-    matches!(
-        prop_name,
-        "riscv,cbop-block-size" | "riscv,cboz-block-size" | "riscv,cbom-block-size"
-    )
-}
-
-fn copy_properties(source: &Node, dest: &mut Node, skip_cpu_cache_props: bool) {
-    for prop in source.properties() {
-        if skip_cpu_cache_props && should_skip_guest_cpu_prop(prop.name()) {
-            continue;
-        }
-        dest.set_property(prop.clone());
-    }
 }

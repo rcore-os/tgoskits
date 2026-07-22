@@ -1,274 +1,160 @@
-# AxVisor 设备树配置使用说明
+# Axvisor Guest FDT 与机型配置指南
 
-本文档详细说明了在 AxVisor 中如何配置和使用设备树（FDT）来生成客户机 VM 的设备树。
+Axvisor 不再从一组裸地址、IRQ 和设备类型编号拼接 Guest 设备树。VM 配置先转换成
+不可变的 `VmMachineRequest`，再与 host 平台快照一起生成 `VmMachinePlan`；FDT 最终只
+描述计划中已经授权并分配完成的资源。
 
-本文档所述功能只在aarch64 架构下支持。
+## 机型
 
-## 1. 概述
-
-AxVisor 支持两种方式生成客户机 VM 的设备树：
-
-1. **使用预定义的设备树文件**：通过 [kernel] 部分的 `dtb_path` 指定设备树文件路径
-2. **动态生成设备树**：当 `dtb_path` 字段未使用时，根据配置文件中的参数动态生成设备树
-
-无论采用哪种方式，CPU 节点和内存节点都会根据配置进行更新。
-
-## 2. 配置文件结构
-
-配置文件采用 TOML 格式，主要包含以下几个部分：
+纯虚拟机型：
 
 ```toml
-[base]
-# 基本配置信息
-
-[kernel]
-# 内核和设备树配置
-
-[devices]
-# 设备配置信息
+[machine]
+mode = "virtual"
+firmware = "auto"
 ```
 
-## 3. 设备树处理机制
-
-### 3.1 使用预定义设备树文件
-
-当 [kernel] 部分的 `dtb_path` 配置了设备树文件路径时：
+透传机型：
 
 ```toml
-[kernel]
-dtb_path = "/path/to/device-tree.dtb"
+[machine]
+mode = "passthrough"
+firmware = "auto"
+interrupts_passthrough = false
 ```
 
-AxVisor 会优先使用提供的设备树文件，并根据以下配置更新其中的 CPU 节点和内存节点：
+`interrupts_passthrough` 只允许出现在 `mode = "passthrough"` 中，省略时为 `false`：
 
-- CPU 节点根据 [base] 部分的 `phys_cpu_ids` 更新
-- 内存节点根据 [kernel] 部分的 `memory_regions` 更新
+- `false`：host 捕获物理 IRQ，再通过 VM-local 控制器投递；虚拟设备可以持有软件
+  `IrqLine`。
+- `true`：已分配且取得 host ownership 的物理 IRQ 使用 HW-backed LR 转发；虚拟设备
+  仍使用软件 `IrqLine`，两类 endpoint 可连接同一个 VM-local 控制器。
 
-注意：当使用预定义设备树文件时，[devices] 部分的 `passthrough_devices` 中如果有规范化的[Name,Base-Ipa,Base-Pa,Length,Alloc-Irq]设备配置，则axvisor会直接按照 `passthrough_devices`中的配置给guest映射设备内存，设备树中的解析则会被忽略，只是将更改过内存和cpu的预定义设备树文件直接传给guest。
+`true` 不是把 CPU 和物理中断控制器永久切给 Guest 的 no-exit 模式。物理 IRQ 仍先进入
+host/EL2，由 host 完成 acknowledge、ownership 校验和 HW-backed virtual interrupt 安装，
+Guest 退出、调度、停止和资源回收语义保持不变。真正的 CPU/device bypass 需要单独的静态
+分区机型，不能由这个布尔字段隐式开启。
 
-### 3.2 动态生成设备树
+解析后该字段会立即归一化为
+`PhysicalInterruptPolicy::{Mediated, HardwareForwarded}`。控制器和设备实现不接触配置
+布尔值，`InterruptTopology` 也不保存该整机策略。
 
-当 [kernel] 部分的 `dtb_path` 未添加时：
+旧 `vm_type`、`interrupt_mode`、`emu_devices`、`passthrough_devices`、
+`passthrough_addresses`、`excluded_devices`、裸 `irq_id` 和 `cfg_list` 已删除，不提供
+兼容解析。
+
+## 内存
+
+Guest RAM 必须显式声明。未分配的 host RAM 永远不会映射给 Guest。
 
 ```toml
-[kernel]
-# dtb_path = ""
+[[memory.regions]]
+guest_base = 0x8000_0000
+size = 0x4000_0000
+permissions = "rwx"
+backing = { kind = "allocate" }
 ```
 
-AxVisor 会根据配置文件中的参数动态生成客户机设备树：
+`backing.kind` 可为 `allocate`、`identity-allocate`、`host`、`shared` 或 `reserved`。
+`host` 与 `shared` 需要提供 `host_base`。`identity-allocate` 用于 x86_64 或 AArch64
+Passthrough VM：配置中的 `guest_base` 必须为零占位符，实际 GPA 取 VM-owned 分配的
+HPA，以保留无 IOMMU 设备的 DMA 语义；零占位符不会形成 `[0, size)` 固定范围。固定
+GPA 内存区域不得重叠。
 
-1. **CPU 节点**：根据 [base] 部分的 `phys_cpu_ids` 生成
-2. **内存节点**：根据 [kernel] 部分的 `memory_regions` 生成
-3. **其他设备节点**：根据 [devices] 部分的 `passthrough_devices` 和 `excluded_devices` 生成
-
-## 4. 配置参数详解
-
-### 4.1 基本配置 [base]
-
-```toml
-[base]
-id = 1                      # 客户机 VM ID
-name = "linux-qemu"         # 客户机 VM 名称
-vm_type = 1                 # 虚拟化类型
-cpu_num = 1                 # 虚拟 CPU 数量
-phys_cpu_ids = [0]          # 客户机 VM 物理 CPU 集合
-```
-
-注意：配置文件中的 `phys_cpu_sets` 字段已不再需要手动配置。AxVisor 会根据主机设备树和 `phys_cpu_ids` 自动识别并生成相应的 CPU 集合掩码。
-
-### 4.2 内核配置 [kernel]
-
-```toml
-[kernel]
-entry_point = 0x8020_0000           # 内核镜像入口点
-image_location = "memory"           # 镜像位置 ("memory" | "fs")
-kernel_path = "tmp/Image"           # 内核镜像文件路径
-kernel_load_addr = 0x8020_0000      # 内核镜像加载地址
-dtb_path = "tmp/linux.dtb"          # 设备树文件路径（空字符串表示动态生成）
-dtb_load_addr = 0x8000_0000         # 设备树加载地址
-
-# 内存区域配置，格式为 (基地址, 大小, 标志, 映射类型)
-其中映射类型0为MAP_Alloc(由host负责，随机分配内存)，1为Map_Identical(由host负责1:1给guest映射内存，但是起始地址随机)，2为MAP_Reserved(由host负责，将host中一块标记为reserved的内存完全1:1映射给guest，起始地址和配置一致)
-memory_regions = [
-  [0x8000_0000, 0x1000_0000, 0x7, 0], # 系统 RAM 1G MAP_IDENTICAL
-]
-```
-
-### 4.3 设备配置 [devices]
+## 设备策略
 
 ```toml
 [devices]
-# 直通设备配置（仅在动态生成设备树时生效）
-passthrough_devices = [
-  ["/intc"],
+disable_defaults = []
+deny = [
+  { kind = "fdt-path", value = "/soc/mmc@fe2b0000" },
 ]
 
-# 排除设备配置（仅在动态生成设备树时生效）
-excluded_devices = [
-  ["/intc"],
-]
+[[devices.virtual]]
+id = "console0"
+model = "arm-pl011"
+source = { kind = "auto" }
+backend = { kind = "host-console", rx = "exclusive", tx = "shared" }
 ```
 
-注意：直通设备配置已简化，现在只需要提供从根节点开始的完整路径即可，如 ["/intc"]。设备的地址、大小等信息会根据设备树自动识别并直通，无需手动填写。
+`disable_defaults` 当前只接受 `"console"`。timer、中断控制器和 power/reset 是架构基础
+设施，不能通过设备配置关闭。
 
-## 5. 设备直通机制
+`deny` 支持以下稳定选择器：
 
-### 5.1 直通设备配置
+- `fdt-path` 或 `acpi-path`：选择节点/对象及其后代；
+- `compatible`：选择 compatible 或 ACPI hardware ID；
+- `mmio`：按 `{ base, size }` 选择资源重叠设备并打洞；
+- `interrupt`：按 `{ intid }` 选择中断所属设备。
 
-`passthrough_devices` 定义了需要直通给客户机的设备节点：
+## Passthrough FDT
 
-```toml
-passthrough_devices = [
-  ["/"],              # 直通根节点及其所有子节点
-  ["/intc"],          # 直通 /intc 节点及其子节点
-]
+AArch64 和 RISC-V 的透传 FDT 以 host FDT 与可信平台 capability 生成的
+`HostPlatformSnapshot` 为输入。节点 ownership 分为：
+
+- `HostExclusive`：host/hypervisor 永久占用；
+- `Transferable`：创建 VM 时可事务性交接；
+- `Assignable`：可直接分配；
+- `Structural`：只保留总线、时钟或拓扑结构；
+- `Unrepresentable`：无法安全隔离或无法生成合法 Guest 描述。
+
+设备处理优先级固定为：强制保护、配置 deny、虚拟替换、剩余可分配设备透传。生成器
+重新构造 phandle 引用，只保留最终 Guest 节点需要的依赖；不会把 host FDT 原样交给
+Guest。
+
+非 RAM 平台 I/O aperture 默认 identity-map，但 host 独占区、固件保留区、Guest RAM、
+boot blob、deny 资源、虚拟设备窗口和虚拟控制器窗口始终打洞。虚拟 MMIO 在 stage-2
+保持 unmapped，使访问触发设备模拟。
+
+时钟、复位、power-domain、pinctrl、syscon 等共享 provider 不按整个寄存器窗口透传。
+Planner 保留 FDT selector，拒绝仍被 host consumer 使用的同一子资源。真正静态且在整个
+lease 期间保持不变的 clock/reset 可转换成 Guest-local 静态资源；动态资源则转换成
+VM-private SCMI ID，并仅调用该 VM 已 claim 的 clock/reset capability。控制句柄本身持有
+provider lease，因此不能先释放 ownership 再继续操作。原始 provider MMIO 和 host SCMI
+transport 始终打洞；缺少静态或 mediated grant 的设备标记为 `Unrepresentable`。当前硬件
+状态只用于可用性检查，不能被当作冻结资源的授权，也不能用 `clk_ignore_unused`、猜测频率
+或板级 compatible 特例绕过。
+
+当前 VM-private SCMI transport 只在生成的 FDT 中描述。若 AArch64 设备需要动态 provider
+且配置显式选择 ACPI，Planner 会在构建期返回不支持，不会退化为暴露 host provider MMIO
+或把当前状态伪装成固定资源。
+
+## Virtual FDT
+
+Virtual 机型不读取 host 设备作为资源来源，也不映射 host MMIO/PIO/PCI。AArch64 默认
+生成 GICv3、architected timer、PSCI 与 PL011；RISC-V 默认生成 PLIC、SBI 基础设施与
+NS16550。地址、IRQ 与 phandle 从架构 profile 确定性分配，因此相同 instance ID 和配置
+会得到稳定结果。
+
+`source = { kind = "auto" }` 在 Virtual 机型中等价于动态分配，不会意外匹配 host
+设备。
+
+## AArch64 PL011
+
+`arm-pl011` 模型声明一个 4 KiB MMIO 槽、一个 level-triggered SPI 和 24 MHz fixed
+clock。设备构建时只获得具名资源以及 `DeviceBuildContext::irq("irq")` 返回的
+`IrqLine`，不会看到 vCPU、控制器 ID、Guest INTID 或 host IRQ。
+
+在 Passthrough 机型中，`source = auto` 优先复用第一个未消费的 `arm,pl011` 模板的
+Guest 地址、IRQ、clock 和固件属性，同时对真实 MMIO 打洞；没有匹配节点时再从 profile
+资源池分配。即使物理 IRQ 使用 `HardwareForwarded`，虚拟 PL011 仍使用软件 SPI。
+
+生成的 FDT 包含 PL011、fixed-clock、`serial0` alias 和 `/chosen/stdout-path`。
+
+## 创建与回滚
+
+创建顺序固定为：RAM、vCPU、控制器/binding、设备/topology、bus/mapping、FDT/ACPI、
+boot state、commit。Axvisor 先加载 kernel、ramdisk 和外部 firmware，随后一次性 claim
+全部透传设备。claim 竞争、host snapshot generation 变化或后续任一步失败时，
+`HostDeviceLease` 与 provider-resource lease 会恢复已经取得的设备、IRQ 和依赖资源
+ownership，整机创建不会留下半完成状态。设备 lease 总是先于其 clock/reset lease 释放。
+
+## 验证
+
+配置可使用 `axvmconfig` 的 std 工具生成 schema 并做严格解析。常用本地验证命令：
+
+```bash
+cargo test -p axvmconfig --all-features
+cargo test -p axvm --lib --tests
+cargo xtask axvisor build -c os/axvisor/configs/board/qemu-aarch64.toml --debug
 ```
-
-设备节点格式为从根节点开始的全局路径（如 `/intc`），在直通时会将以下节点包含在客户机设备树中：
-
-1. 指定的直通节点本身
-2. 直通节点的所有后代节点
-3. 与直通设备相关的依赖节点
-
-注意：
-1. 此配置仅在动态生成设备树时生效，当使用预定义设备树文件时将被忽略。
-2. 直通设备配置已简化，现在只需要提供从根节点开始的完整路径即可，设备的地址、大小等信息会根据设备树自动识别并直通。
-
-### 5.2 排除设备配置
-
-`excluded_devices` 定义了不希望直通给客户机的设备节点：
-
-```toml
-excluded_devices = [
-  ["/timer"],         # 排除 /timer 节点及其子节点
-]
-```
-
-在查找所有直通节点后，会将排除的节点及其后代节点从最终的客户机设备树中移除。
-
-注意：此配置仅在动态生成设备树时生效，当使用预定义设备树文件时将被忽略。
-
-### 5.3 直通地址配置
-
-`passthrough_addresses` 定义了直通给客户机使用的地址信息：
-
-```
-passthrough_addresses = [
-  [0x28041000, 0x100_0000],
-]
-```
-
-该字段定义的地址会直通给客户机使用，这在某些情况下非常有用，例如设备树文件为非标准设备树格式或客户机系统时定制linux。
-
-## 6. 示例配置
-
-### 6.1 使用预定义设备树文件的配置
-
-```toml
-[base]
-id = 1
-name = "linux-qemu"
-vm_type = 1
-cpu_num = 2
-phys_cpu_ids = [0, 1]
-# phys_cpu_sets 不再需要手动配置，会自动根据 phys_cpu_ids 生成
-
-[kernel]
-entry_point = 0x8020_0000
-image_location = "memory"
-kernel_path = "tmp/Image"
-kernel_load_addr = 0x8020_0000
-dtb_path = "/home/user/device-tree.dtb"  # 使用预定义设备树文件
-dtb_load_addr = 0x8000_0000
-
-memory_regions = [
-  [0x8000_0000, 0x1000_0000, 0x7, 1], # System RAM 1G MAP_IDENTICAL
-]
-
-[devices]
-# 注意：以下配置在使用预定义设备树时将被忽略
-passthrough_devices = [
-  ["/intc"],
-]
-# 直通地址配置
-passthrough_addresses = [
-  [0x28041000, 0x100_0000],
-]
-
-excluded_devices = [
-  ["/timer"],
-]
-```
-
-### 6.2 动态生成设备树的配置
-
-```toml
-[base]
-id = 1
-name = "linux-qemu"
-vm_type = 1
-cpu_num = 2
-phys_cpu_ids = [0, 1]
-# phys_cpu_sets 不再需要手动配置，会自动根据 phys_cpu_ids 生成
-
-[kernel]
-entry_point = 0x8020_0000
-image_location = "memory"
-kernel_path = "tmp/Image"
-kernel_load_addr = 0x8020_0000
-# dtb_path = ""  # 不使用该字段表示动态生成设备树
-dtb_load_addr = 0x8000_0000
-
-memory_regions = [
-  [0x8000_0000, 0x1000_0000, 0x7, 1], # System RAM 1G MAP_IDENTICAL
-]
-
-[devices]
-# 以下配置仅在动态生成设备树时生效
-# 注意：直通设备配置已简化，现在只需要提供从根节点开始的完整路径即可
-passthrough_devices = [
-  ["/"],
-  ["/intc"],
-]
-# 直通地址配置
-passthrough_addresses = [
-  [0x28041000, 0x100_0000],
-]
-excluded_devices = [
-  ["/timer"],
-  ["/watchdog"],
-]
-```
-
-## 7. 处理流程
-
-1. **检查 dtb_path**：
-   - 如果使用 `dtb_path` 字段，则加载并使用预定义的设备树文件，此时 `passthrough_devices` 和 `excluded_devices` 配置将被忽略
-   - 如果未使用 `dtb_path` 字段，则动态生成设备树，此时 `passthrough_devices` 和 `excluded_devices` 配置生效
-
-2. **CPU 节点处理**：
-   - 根据 `phys_cpu_ids` 配置更新或生成 CPU 节点
-   - 只包含配置中指定的 CPU
-   - 自动根据 `phys_cpu_ids` 生成 `phys_cpu_sets`，无需手动配置
-
-3. **内存节点处理**：
-   - 根据 `memory_regions` 配置更新或生成内存节点
-   - 按照指定的地址和大小创建内存区域
-
-4. **设备节点处理**（仅在动态生成时）：
-   - 根据 `passthrough_devices` 确定需要包含的设备节点
-   - 包括直通节点、其后代节点以及相关依赖节点
-   - 根据 `excluded_devices` 排除指定的设备节点及其后代节点
-
-5. **生成最终设备树**：
-   - 将处理后的节点组合成完整的设备树
-   - 存储在全局缓存中供后续使用
-
-## 8. 特别配置
-1. **qemu 启动参数**：
-```
-  arceos_args = ["BUS=mmio", "BLK=y", "LOG=info", "SMP=4", "MEM=8g",
-                "QEMU_ARGS=\"-machine gic-version=3  -cpu cortex-a72 -append 'root=/dev/vda rw init=/bin/sh' \"",
-                "DISK_IMG=\"tmp/qemu/rootfs.img\"",]
-```
-其中当不提供设备树时 `-append 'root=/dev/vda rw init=/bin/sh'`参数必须添加，目的是在主机设备树中添加chosen节点的bootargs属性。

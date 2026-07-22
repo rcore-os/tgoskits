@@ -19,12 +19,9 @@ use core::cmp::{max, min};
 
 use ax_memory_addr::{PAGE_SIZE_4K, align_down_4k};
 use axdevice_base::Resource;
-use axvm_types::{
-    AddressSpacePolicy, GuestPhysAddr, HostPhysAddr, MappingFlags, PassThroughAddressConfig,
-    PassThroughDeviceConfig,
-};
+use axvm_types::{GuestPhysAddr, HostPhysAddr, MappingFlags, VmMachineMode};
 
-use crate::{AxVmResult, ax_err_type};
+use crate::{AxVmResult, ax_err_type, machine::VmMachinePlan};
 
 /// The ownership class of a guest physical range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,7 +174,7 @@ impl PassthroughWindow {
     }
 }
 
-/// Final guest physical address layout owned by [`crate::AxVMResources`].
+/// Final guest physical address layout owned by one VM resource set.
 #[derive(Debug, Default, Clone)]
 pub struct VmAddressLayout {
     mappings: Vec<VmStage2Mapping>,
@@ -208,7 +205,7 @@ impl VmAddressLayout {
 
 /// Planner for guest physical address mappings.
 pub struct GuestRegionPlanner {
-    policy: AddressSpacePolicy,
+    policy: VmMachineMode,
     guest_base: usize,
     guest_end: usize,
     windows: Vec<PassthroughWindow>,
@@ -216,17 +213,51 @@ pub struct GuestRegionPlanner {
     owned_regions: Vec<PlannedRegion>,
 }
 
+/// Builds a stage-2 I/O layout exclusively from an immutable machine plan.
+pub(crate) fn build_planned_address_layout(
+    plan: &VmMachinePlan,
+    guest_base: usize,
+    guest_size: usize,
+    owned_regions: &[GuestOwnedRegion],
+    emulated_resources: &[Resource],
+) -> AxVmResult<VmAddressLayout> {
+    let mut planner = GuestRegionPlanner::new(VmMachineMode::Virtual, guest_base, guest_size)?;
+    for region in owned_regions {
+        planner.reserve(region.base, region.length, region.kind)?;
+    }
+    for resource in emulated_resources {
+        if let Resource::MmioRange { base, size } = resource {
+            planner.reserve(
+                usize::try_from(*base).map_err(|_| {
+                    ax_err_type!(InvalidInput, "emulated MMIO base exceeds host usize")
+                })?,
+                usize::try_from(*size).map_err(|_| {
+                    ax_err_type!(InvalidInput, "emulated MMIO size exceeds host usize")
+                })?,
+                VmRegionKind::EmulatedDevice,
+            )?;
+        }
+    }
+    for mapping in plan.identity_mappings() {
+        planner.add_identity_passthrough(
+            usize::try_from(mapping.base()).map_err(|_| {
+                ax_err_type!(InvalidInput, "planned I/O mapping base exceeds host usize")
+            })?,
+            usize::try_from(mapping.size()).map_err(|_| {
+                ax_err_type!(InvalidInput, "planned I/O mapping size exceeds host usize")
+            })?,
+        )?;
+    }
+    planner.finish()
+}
+
 impl GuestRegionPlanner {
     /// Creates a planner for a guest physical address space.
-    pub fn new(
-        policy: AddressSpacePolicy,
-        guest_base: usize,
-        guest_size: usize,
-    ) -> AxVmResult<Self> {
+    pub fn new(policy: VmMachineMode, guest_base: usize, guest_size: usize) -> AxVmResult<Self> {
         let guest_end = checked_end("guest address space", guest_base, guest_size)?;
         let windows = match policy {
-            AddressSpacePolicy::Virtualized => Vec::new(),
-            AddressSpacePolicy::Passthrough => alloc::vec![PassthroughWindow {
+            VmMachineMode::Virtual => Vec::new(),
+            VmMachineMode::Passthrough => alloc::vec![PassthroughWindow {
                 base: guest_base,
                 size: guest_size,
             }],
@@ -345,7 +376,7 @@ impl GuestRegionPlanner {
             }
         }
 
-        if self.policy == AddressSpacePolicy::Passthrough {
+        if self.policy == VmMachineMode::Passthrough {
             self.punch_hole(base_gpa, size);
         }
         self.explicit_mappings.push(mapping);
@@ -397,7 +428,7 @@ impl GuestRegionPlanner {
     }
 
     fn punch_hole(&mut self, base: usize, size: usize) {
-        if self.policy == AddressSpacePolicy::Virtualized {
+        if self.policy == VmMachineMode::Virtual {
             return;
         }
 
@@ -438,51 +469,6 @@ impl GuestRegionPlanner {
         }
         Ok(())
     }
-}
-
-/// Plans all non-memory stage-2 mappings for a VM.
-pub(crate) fn build_address_layout(
-    policy: AddressSpacePolicy,
-    guest_base: usize,
-    guest_size: usize,
-    passthrough_devices: &[PassThroughDeviceConfig],
-    passthrough_addresses: &[PassThroughAddressConfig],
-    owned_regions: &[GuestOwnedRegion],
-    emulated_resources: &[Resource],
-) -> AxVmResult<VmAddressLayout> {
-    let mut planner = GuestRegionPlanner::new(policy, guest_base, guest_size)?;
-
-    for region in owned_regions {
-        planner.reserve(region.base, region.length, region.kind)?;
-    }
-
-    for resource in emulated_resources {
-        if let Resource::MmioRange { base, size } = *resource {
-            let base = usize::try_from(base).map_err(|_| {
-                ax_err_type!(
-                    InvalidInput,
-                    format!("emulated MMIO base exceeds usize: {base:#x}")
-                )
-            })?;
-            let size = usize::try_from(size).map_err(|_| {
-                ax_err_type!(
-                    InvalidInput,
-                    format!("emulated MMIO size exceeds usize: {size:#x}")
-                )
-            })?;
-            planner.reserve(base, size, VmRegionKind::EmulatedDevice)?;
-        }
-    }
-
-    for device in passthrough_devices {
-        planner.add_passthrough_mapping(device.base_gpa, device.base_hpa, device.length)?;
-    }
-
-    for address in passthrough_addresses {
-        planner.add_identity_passthrough(address.base_gpa, address.length)?;
-    }
-
-    planner.finish()
 }
 
 fn device_mapping_flags() -> MappingFlags {
@@ -625,8 +611,6 @@ impl VmRegionKind {
 
 #[cfg(test)]
 mod tests {
-    use axvm_types::{PassThroughAddressConfig, PassThroughDeviceConfig};
-
     use super::*;
 
     const GUEST_BASE: usize = 0;
@@ -634,35 +618,14 @@ mod tests {
 
     #[test]
     fn virtualized_policy_only_maps_explicit_passthrough() {
-        let layout = build_address_layout(
-            AddressSpacePolicy::Virtualized,
-            GUEST_BASE,
-            GUEST_SIZE,
-            &[],
-            &[],
-            &[],
-            &[],
-        )
-        .unwrap();
+        let layout = new_planner(VmMachineMode::Virtual).finish().unwrap();
         assert!(layout.mappings().is_empty());
 
-        let device = PassThroughDeviceConfig {
-            name: alloc::string::String::from("uart"),
-            base_gpa: 0x2000,
-            base_hpa: 0x9000,
-            length: 0x1000,
-            irq_id: 0,
-        };
-        let layout = build_address_layout(
-            AddressSpacePolicy::Virtualized,
-            GUEST_BASE,
-            GUEST_SIZE,
-            &[device],
-            &[],
-            &[],
-            &[],
-        )
-        .unwrap();
+        let mut planner = new_planner(VmMachineMode::Virtual);
+        planner
+            .add_passthrough_mapping(0x2000, 0x9000, 0x1000)
+            .unwrap();
+        let layout = planner.finish().unwrap();
         assert_eq!(layout.mappings().len(), 1);
         assert_eq!(layout.mappings()[0].gpa.as_usize(), 0x2000);
         assert_eq!(layout.mappings()[0].hpa.as_usize(), 0x9000);
@@ -671,22 +634,14 @@ mod tests {
 
     #[test]
     fn passthrough_policy_punches_memory_and_emulated_mmio_holes() {
-        let owned = [GuestOwnedRegion::new(0x2000, 0x2000, VmRegionKind::Memory)];
-        let emu = [Resource::MmioRange {
-            base: 0x8000,
-            size: 0x1000,
-        }];
-
-        let layout = build_address_layout(
-            AddressSpacePolicy::Passthrough,
-            GUEST_BASE,
-            GUEST_SIZE,
-            &[],
-            &[],
-            &owned,
-            &emu,
-        )
-        .unwrap();
+        let mut planner = new_planner(VmMachineMode::Passthrough);
+        planner
+            .reserve(0x2000, 0x2000, VmRegionKind::Memory)
+            .unwrap();
+        planner
+            .reserve(0x8000, 0x1000, VmRegionKind::EmulatedDevice)
+            .unwrap();
+        let layout = planner.finish().unwrap();
 
         let mappings = layout.mappings();
         assert_eq!(mappings.len(), 3);
@@ -715,22 +670,11 @@ mod tests {
 
     #[test]
     fn passthrough_policy_punches_reserved_regions() {
-        let owned = [GuestOwnedRegion::new(
-            0x3000,
-            0x2000,
-            VmRegionKind::Reserved,
-        )];
-
-        let layout = build_address_layout(
-            AddressSpacePolicy::Passthrough,
-            GUEST_BASE,
-            GUEST_SIZE,
-            &[],
-            &[],
-            &owned,
-            &[],
-        )
-        .unwrap();
+        let mut planner = new_planner(VmMachineMode::Passthrough);
+        planner
+            .reserve(0x3000, 0x2000, VmRegionKind::Reserved)
+            .unwrap();
+        let layout = planner.finish().unwrap();
 
         let mappings = layout.mappings();
         assert_eq!(mappings.len(), 2);
@@ -749,33 +693,14 @@ mod tests {
 
     #[test]
     fn passthrough_device_uses_base_hpa_and_keeps_non_contiguous_mappings_split() {
-        let devices = [
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev0"),
-                base_gpa: 0x1000,
-                base_hpa: 0x9000,
-                length: 0x1000,
-                irq_id: 0,
-            },
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev1"),
-                base_gpa: 0x2000,
-                base_hpa: 0xb000,
-                length: 0x1000,
-                irq_id: 0,
-            },
-        ];
-
-        let layout = build_address_layout(
-            AddressSpacePolicy::Virtualized,
-            GUEST_BASE,
-            GUEST_SIZE,
-            &devices,
-            &[],
-            &[],
-            &[],
-        )
-        .unwrap();
+        let mut planner = new_planner(VmMachineMode::Virtual);
+        planner
+            .add_passthrough_mapping(0x1000, 0x9000, 0x1000)
+            .unwrap();
+        planner
+            .add_passthrough_mapping(0x2000, 0xb000, 0x1000)
+            .unwrap();
+        let layout = planner.finish().unwrap();
 
         assert_eq!(layout.mappings().len(), 2);
         assert_eq!(layout.mappings()[0].hpa.as_usize(), 0x9000);
@@ -784,33 +709,14 @@ mod tests {
 
     #[test]
     fn duplicate_explicit_passthrough_ranges_are_merged_when_linear_mapping_matches() {
-        let devices = [
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev0"),
-                base_gpa: 0x1000,
-                base_hpa: 0x9000,
-                length: 0x2000,
-                irq_id: 0,
-            },
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev1"),
-                base_gpa: 0x2000,
-                base_hpa: 0xa000,
-                length: 0x2000,
-                irq_id: 0,
-            },
-        ];
-
-        let layout = build_address_layout(
-            AddressSpacePolicy::Virtualized,
-            GUEST_BASE,
-            GUEST_SIZE,
-            &devices,
-            &[],
-            &[],
-            &[],
-        )
-        .unwrap();
+        let mut planner = new_planner(VmMachineMode::Virtual);
+        planner
+            .add_passthrough_mapping(0x1000, 0x9000, 0x2000)
+            .unwrap();
+        planner
+            .add_passthrough_mapping(0x2000, 0xa000, 0x2000)
+            .unwrap();
+        let layout = planner.finish().unwrap();
 
         assert_eq!(layout.mappings().len(), 1);
         assert_eq!(layout.mappings()[0].gpa.as_usize(), 0x1000);
@@ -820,21 +726,9 @@ mod tests {
 
     #[test]
     fn passthrough_address_is_identity_and_unaligned_ranges_are_expanded() {
-        let addresses = [PassThroughAddressConfig {
-            base_gpa: 0x1803,
-            length: 0x20,
-        }];
-
-        let layout = build_address_layout(
-            AddressSpacePolicy::Virtualized,
-            GUEST_BASE,
-            GUEST_SIZE,
-            &[],
-            &addresses,
-            &[],
-            &[],
-        )
-        .unwrap();
+        let mut planner = new_planner(VmMachineMode::Virtual);
+        planner.add_identity_passthrough(0x1803, 0x20).unwrap();
+        let layout = planner.finish().unwrap();
 
         assert_eq!(layout.mappings().len(), 1);
         assert_eq!(layout.mappings()[0].gpa.as_usize(), 0x1000);
@@ -844,68 +738,26 @@ mod tests {
 
     #[test]
     fn invalid_and_conflicting_ranges_are_rejected() {
-        let zero = [PassThroughAddressConfig {
-            base_gpa: 0x1000,
-            length: 0,
-        }];
-        assert!(
-            build_address_layout(
-                AddressSpacePolicy::Virtualized,
-                GUEST_BASE,
-                GUEST_SIZE,
-                &[],
-                &zero,
-                &[],
-                &[],
-            )
-            .is_err()
-        );
+        let mut planner = new_planner(VmMachineMode::Virtual);
+        assert!(planner.add_identity_passthrough(0x1000, 0).is_err());
 
-        let owned = [GuestOwnedRegion::new(0x2000, 0x1000, VmRegionKind::Memory)];
-        let conflict = [PassThroughAddressConfig {
-            base_gpa: 0x2000,
-            length: 0x1000,
-        }];
-        assert!(
-            build_address_layout(
-                AddressSpacePolicy::Virtualized,
-                GUEST_BASE,
-                GUEST_SIZE,
-                &[],
-                &conflict,
-                &owned,
-                &[],
-            )
-            .is_err()
-        );
+        planner
+            .reserve(0x2000, 0x1000, VmRegionKind::Memory)
+            .unwrap();
+        assert!(planner.add_identity_passthrough(0x2000, 0x1000).is_err());
 
-        let conflicting_hpa = [
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev0"),
-                base_gpa: 0x3000,
-                base_hpa: 0x9000,
-                length: 0x1000,
-                irq_id: 0,
-            },
-            PassThroughDeviceConfig {
-                name: alloc::string::String::from("dev1"),
-                base_gpa: 0x3000,
-                base_hpa: 0xa000,
-                length: 0x1000,
-                irq_id: 0,
-            },
-        ];
+        let mut planner = new_planner(VmMachineMode::Virtual);
+        planner
+            .add_passthrough_mapping(0x3000, 0x9000, 0x1000)
+            .unwrap();
         assert!(
-            build_address_layout(
-                AddressSpacePolicy::Virtualized,
-                GUEST_BASE,
-                GUEST_SIZE,
-                &conflicting_hpa,
-                &[],
-                &[],
-                &[],
-            )
-            .is_err()
+            planner
+                .add_passthrough_mapping(0x3000, 0xa000, 0x1000)
+                .is_err()
         );
+    }
+
+    fn new_planner(mode: VmMachineMode) -> GuestRegionPlanner {
+        GuestRegionPlanner::new(mode, GUEST_BASE, GUEST_SIZE).unwrap()
     }
 }

@@ -3,13 +3,14 @@
 //! This module owns the AxVM/ArceOS glue for the OS-neutral `x86_vcpu` and
 //! `x86_vlapic` cores.
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, collections::BTreeMap, format, vec::Vec};
 use core::{arch::asm, time::Duration};
 
+use ax_kspin::SpinNoIrq as Mutex;
 use axvm_types::{
-    AccessWidth, EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, InterruptTriggerMode,
-    MappingFlags, NestedPagingConfig, Port, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
+    AccessWidth, GuestPhysAddr, InterruptTriggerMode, MappingFlags, NestedPagingConfig, Port,
+    SysRegAddr, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
+    VmBackendResult as BackendResult,
 };
 use x86_vcpu::{
     X86AccessFlags, X86AccessWidth, X86GuestPhysAddr, X86HostOps, X86HostPhysAddr, X86HostVirtAddr,
@@ -21,34 +22,146 @@ use x86_vlapic::{
     X86VlapicResult, X86VmId,
 };
 
-use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
+use super::{ArchOps, BoundVcpuExit, HypercallExit, VcpuRunAction, VcpuScheduling};
 use crate::{
-    AxVmError, AxVmResult, StopReason,
+    AxVmError, AxVmResult, StopReason, VmStatus, ax_err, ax_err_type,
     host::{HostMemory, default_host},
-    manager,
     vcpu::get_current_vcpu,
 };
 
 pub(crate) mod boot;
 mod capabilities;
+#[path = "../../architecture/decoded_mmio.rs"]
+mod decoded_mmio;
 mod exit;
 pub(crate) mod fdt;
+#[path = "../../machine/host_acpi.rs"]
+mod host_acpi;
 mod host_irq;
+mod interrupt_controller;
 pub(crate) mod irq;
+#[path = "../../architecture/nested_page_fault.rs"]
+mod nested_page_fault;
 mod nested_paging;
 pub(crate) mod port;
+mod serial;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod vm;
+#[path = "../../architecture/timer_scheduler.rs"]
+mod vm_timer_scheduler;
 
+use decoded_mmio::{DecodedMmioOps, MmioReadExit, MmioWriteExit};
 use exit::{DeferredRunWork, IoReadExit, IoWriteExit, NestedPageFaultExit};
 use sysreg::{SysRegReadExit, SysRegWriteExit};
 
 const QEMU_EXIT_PORT: u16 = 0x604;
 const QEMU_EXIT_MAGIC: u64 = 0x2000;
 const RFLAGS_INTERRUPT_FLAG: u64 = 1 << 9;
+/// AMD FCH fixed system-management register aperture.
+const AMD_FCH_MMIO_BASE: u64 = 0xfed8_0000;
+const AMD_FCH_MMIO_SIZE: u64 = 0x1_0000;
+
+pub fn current_host_platform_snapshot()
+-> crate::machine::MachinePlanResult<crate::machine::HostPlatformSnapshot> {
+    host_acpi::current_host_platform_snapshot()
+}
+
+pub fn standard_machine_profile()
+-> crate::machine::MachinePlanResult<crate::machine::MachineProfile> {
+    Ok(crate::machine::MachineProfile::new(
+        crate::machine::AddressRange::new(0x1000_0000, 0x1000_0000)?,
+        4..=23,
+    )?
+    .with_reserved_mmio(crate::machine::AddressRange::new(
+        AMD_FCH_MMIO_BASE,
+        AMD_FCH_MMIO_SIZE,
+    )?)
+    .with_pio_pool(crate::machine::IoPortRange::new(0x3f8, 8)?)
+    .with_interrupt_controller(crate::machine::InterruptControllerProfile::X86Apic(
+        crate::machine::X86ApicProfile::new(
+            crate::machine::AddressRange::new(0xfee0_0000, 0x1000)?,
+            crate::machine::AddressRange::new(0xfec0_0000, 0x1000)?,
+        ),
+    )))
+}
+
+pub use serial::x86_com1_device_requirements;
 
 pub(crate) struct X86_64Arch;
+
+#[derive(Debug, Default)]
+pub(crate) struct VmArchConfig;
+
+impl VmArchConfig {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+
+    pub(crate) const fn reset_prepared_boot_state(&mut self) {}
+
+    pub(crate) const fn validate_prepared_boot_state(
+        &self,
+        _physical_interrupt_policy: axvm_types::PhysicalInterruptPolicy,
+    ) -> AxVmResult {
+        Ok(())
+    }
+}
+
+pub(crate) struct VmArchState {
+    ioapic_forwarding: Option<irq::IoApicForwardingConnections>,
+}
+
+impl VmArchState {
+    pub(crate) const fn new() -> Self {
+        Self {
+            ioapic_forwarding: None,
+        }
+    }
+
+    pub(crate) fn set_ioapic_forwarding(
+        &mut self,
+        forwarding: irq::IoApicForwardingConnections,
+    ) -> AxVmResult {
+        if self.ioapic_forwarding.is_some() {
+            return ax_err!(AlreadyExists, "x86 IOAPIC forwarding is already prepared");
+        }
+        self.ioapic_forwarding = Some(forwarding);
+        Ok(())
+    }
+}
+
+pub(crate) struct VmRuntimeArchState {
+    pending_interrupts: Mutex<BTreeMap<usize, Vec<usize>>>,
+}
+
+impl VmRuntimeArchState {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending_interrupts: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub(crate) fn register_vcpu(&self, vcpu_id: usize) {
+        self.pending_interrupts.lock().entry(vcpu_id).or_default();
+    }
+
+    pub(crate) fn queue_interrupt(&self, vcpu_id: usize, vector: usize) {
+        self.pending_interrupts
+            .lock()
+            .entry(vcpu_id)
+            .or_default()
+            .push(vector);
+    }
+
+    pub(crate) fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<usize> {
+        self.pending_interrupts
+            .lock()
+            .get_mut(&vcpu_id)
+            .map(core::mem::take)
+            .unwrap_or_default()
+    }
+}
 
 impl ArchOps for X86_64Arch {
     type VCpu = AxvmX86Vcpu;
@@ -67,6 +180,13 @@ impl ArchOps for X86_64Arch {
     fn before_vcpu_run(vm: &crate::AxVMRef, vcpu: &crate::vm::AxVCpuRef<Self::VCpu>) {
         irq::drain_pending_ioapic_irqs(vm, vcpu);
         irq::activate_ready_ioapic_forwarding_routes(vm);
+    }
+
+    fn deliver_pending_controller_interrupts(
+        vm: &crate::AxVMRef,
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+    ) {
+        deliver_pending_controller_interrupts(vm, vcpu);
     }
 
     fn after_external_interrupt(
@@ -103,10 +223,10 @@ impl ArchOps for X86_64Arch {
             X86VmExit::PortIoWrite { port, width, data } => {
                 if x86_qemu_shutdown_port(port, width, data) {
                     warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                    Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                        waits_for_event: false,
-                        stop_reason: Some(StopReason::SystemDown),
-                    }))
+                    Ok(BoundVcpuExit::Complete(VcpuRunAction::new(
+                        VcpuScheduling::Resume,
+                        Some(StopReason::SystemDown),
+                    )))
                 } else {
                     exit::handle_io_write(
                         vm,
@@ -124,7 +244,7 @@ impl ArchOps for X86_64Arch {
                 reg,
                 reg_width,
                 signed_ext,
-            } => super::handle_mmio_read(
+            } => Self::handle_decoded_mmio_read(
                 vm,
                 vcpu,
                 MmioReadExit {
@@ -135,7 +255,7 @@ impl ArchOps for X86_64Arch {
                     signed_ext,
                 },
             ),
-            X86VmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
+            X86VmExit::MmioWrite { addr, width, data } => Self::handle_decoded_mmio_write(
                 vm,
                 MmioWriteExit {
                     addr: x86_guest_phys_addr_to_ax(addr),
@@ -181,17 +301,14 @@ impl ArchOps for X86_64Arch {
             }
             X86VmExit::Halt => {
                 debug!("VM[{}] run VCpu[{}] Halt", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: false,
-                    stop_reason: None,
-                }))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::wait_for_event()))
             }
             X86VmExit::SystemDown => {
                 warn!("VM[{}] run VCpu[{}] SystemDown", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: false,
-                    stop_reason: Some(StopReason::SystemDown),
-                }))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::new(
+                    VcpuScheduling::Resume,
+                    Some(StopReason::SystemDown),
+                )))
             }
             X86VmExit::FailEntry {
                 hardware_entry_failure_reason,
@@ -201,10 +318,7 @@ impl ArchOps for X86_64Arch {
                     vm.id(),
                     vcpu.id()
                 );
-                Ok(BoundVcpuExit::Complete(VcpuRunAction {
-                    waits_for_event: false,
-                    stop_reason: None,
-                }))
+                Ok(BoundVcpuExit::Complete(VcpuRunAction::resume()))
             }
             X86VmExit::Nothing => Ok(BoundVcpuExit::Continue),
             _ => Err(AxVmError::unsupported(
@@ -251,22 +365,14 @@ impl X86VlapicHostOps for AxvmX86HostOps {
     }
 
     fn register_timer(deadline_nanos: u64, callback: X86TimerCallback) -> Option<usize> {
-        Some(crate::timer::register_timer(
+        Some(vm_timer_scheduler::register(
             deadline_nanos,
             Box::new(move |deadline: Duration| callback(deadline.as_nanos() as u64)),
         ))
     }
 
     fn cancel_timer(token: usize) {
-        crate::timer::cancel_timer(token);
-    }
-
-    fn write_bytes(bytes: &[u8]) {
-        ax_std::os::arceos::modules::ax_hal::console::write_bytes(bytes);
-    }
-
-    fn read_bytes(bytes: &mut [u8]) -> usize {
-        ax_std::os::arceos::modules::ax_hal::console::read_bytes(bytes)
+        vm_timer_scheduler::cancel(token);
     }
 
     fn current_vm_id() -> X86VmId {
@@ -277,15 +383,15 @@ impl X86VlapicHostOps for AxvmX86HostOps {
 
     fn current_vm_vcpu_num() -> usize {
         let vm_id = Self::current_vm_id();
-        manager::with_vm(vm_id, |vm| vm.vcpu_num()).unwrap_or(0)
+        crate::get_vm_by_id(vm_id).map_or(0, |vm| vm.vcpu_num())
     }
 
     fn current_vm_active_vcpus() -> usize {
-        manager::active_vcpu_mask(Self::current_vm_id()).unwrap_or(0)
+        active_vcpu_mask(Self::current_vm_id()).unwrap_or(0)
     }
 
     fn active_vcpus(vm_id: X86VmId) -> Option<usize> {
-        manager::active_vcpu_mask(vm_id)
+        active_vcpu_mask(vm_id)
     }
 
     fn inject_interrupt(
@@ -293,8 +399,66 @@ impl X86VlapicHostOps for AxvmX86HostOps {
         vcpu_id: X86VcpuId,
         vector: X86InterruptVector,
     ) -> X86VlapicResult {
-        manager::inject_interrupt(vm_id, vcpu_id, vector as usize).map_err(ax_error_to_vlapic)
+        queue_interrupt(vm_id, vcpu_id, vector as usize).map_err(ax_error_to_vlapic)
     }
+}
+
+fn queue_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxVmResult {
+    let vm = crate::get_vm_by_id(vm_id)
+        .ok_or_else(|| ax_err_type!(NotFound, format!("VM[{vm_id}] not found")))?;
+    if !matches!(vm.status(), VmStatus::Running | VmStatus::Paused) {
+        return Err(ax_err_type!(
+            BadState,
+            format!("VM[{vm_id}] is not accepting interrupts")
+        ));
+    }
+
+    let cpu_id = vm.with_runtime(|runtime| {
+        let cpu_id = runtime.vcpu_task_cpu(vcpu_id)?;
+        runtime.arch_state().queue_interrupt(vcpu_id, vector);
+        Ok(cpu_id)
+    })?;
+    vm.with_runtime(|runtime| {
+        runtime.notify_all();
+        Ok(())
+    })?;
+    crate::host::task::send_ipi(cpu_id);
+    Ok(())
+}
+
+fn deliver_pending_controller_interrupts(
+    vm: &crate::AxVMRef,
+    vcpu: &crate::vm::AxVCpuRef<AxvmX86Vcpu>,
+) {
+    let Ok(interrupts) =
+        vm.with_runtime(|runtime| Ok(runtime.arch_state().drain_pending_interrupts(vcpu.id())))
+    else {
+        warn!(
+            "VM[{}] vCPU runtime not found while synchronizing the x86 interrupt controller",
+            vm.id()
+        );
+        return;
+    };
+    for vector in interrupts {
+        if let Err(error) = vcpu.get_arch_vcpu().deliver_local_apic_vector(vector) {
+            warn!(
+                "failed to deliver x86 controller vector {vector:#x} to VM[{}] VCpu[{}]: {error}",
+                vm.id(),
+                vcpu.id()
+            );
+        }
+    }
+}
+
+fn active_vcpu_mask(vm_id: X86VmId) -> Option<usize> {
+    crate::get_vm_by_id(vm_id).map(|vm| {
+        let vcpu_num = vm.vcpu_num();
+        if vcpu_num >= usize::BITS as usize {
+            usize::MAX
+        } else {
+            (1usize << vcpu_num) - 1
+        }
+    })
 }
 
 impl X86HostOps for AxvmX86HostOps {
@@ -329,10 +493,8 @@ impl X86HostOps for AxvmX86HostOps {
     fn read_guest_u8(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8> {
         let vcpu = get_current_vcpu::<AxvmX86Vcpu>().ok_or(X86VcpuError::BadState)?;
         let mut byte = [0u8; 1];
-        let result = manager::with_vm(vcpu.vm_id(), |vm| {
-            vm.read_from_guest(GuestPhysAddr::from(paddr.as_usize()), &mut byte)
-        })
-        .ok_or(X86VcpuError::BadState)?;
+        let vm = crate::get_vm_by_id(vcpu.vm_id()).ok_or(X86VcpuError::BadState)?;
+        let result = vm.read_from_guest(GuestPhysAddr::from(paddr.as_usize()), &mut byte);
         result.map_err(|_| X86VcpuError::BadState)?;
         Ok(byte[0])
     }
@@ -352,6 +514,25 @@ impl X86HostOps for AxvmX86HostOps {
 }
 
 pub(crate) struct AxvmX86Vcpu(X86Vcpu<AxvmX86HostOps>);
+
+impl AxvmX86Vcpu {
+    fn deliver_local_apic_vector(&mut self, vector: usize) -> BackendResult {
+        x86_result(self.0.inject_interrupt(vector))
+    }
+
+    fn deliver_ioapic_interrupt(
+        &mut self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> BackendResult {
+        x86_result(
+            self.0.inject_interrupt_with_trigger(
+                vector,
+                trigger == InterruptTriggerMode::LevelTriggered,
+            ),
+        )
+    }
+}
 
 impl VmArchVcpuOps for AxvmX86Vcpu {
     type CreateConfig = X86VcpuCreateConfig;
@@ -393,27 +574,6 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
         self.0.set_gpr(reg, val);
     }
 
-    fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
-        x86_result(self.0.inject_interrupt(vector))
-    }
-
-    fn inject_interrupt_with_trigger(
-        &mut self,
-        vector: usize,
-        trigger: InterruptTriggerMode,
-    ) -> BackendResult {
-        x86_result(
-            self.0.inject_interrupt_with_trigger(
-                vector,
-                trigger == InterruptTriggerMode::LevelTriggered,
-            ),
-        )
-    }
-
-    fn handle_eoi(&mut self) -> Option<u8> {
-        self.0.handle_eoi()
-    }
-
     fn set_return_value(&mut self, val: usize) {
         self.0.set_return_value(val);
     }
@@ -437,43 +597,6 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
     fn hardware_disable(&mut self) -> BackendResult {
         x86_result(self.0.hardware_disable())
     }
-}
-
-pub(crate) fn register_arch_device(
-    config: &EmulatedDeviceConfig,
-    devices: &mut axdevice::AxVmDevices,
-) -> AxVmResult {
-    match config.emu_type {
-        EmulatedDeviceType::Console => {
-            let serial = Arc::new(axdevice::X86SerialPortDevice::<AxvmX86HostOps>::new());
-            devices
-                .add_x86_serial_dev(serial)
-                .map_err(|error| AxVmError::device("register x86 serial device", error))?;
-            info!("x86 16550 serial initialized for ports 0x3f8..=0x3ff");
-        }
-        EmulatedDeviceType::X86IoApic => {
-            let ioapic = Arc::new(axdevice::X86IoApicDevice::new(
-                x86_vlapic::X86GuestPhysAddr::from_usize(config.base_gpa),
-                Some(config.length),
-            ));
-            devices
-                .add_x86_ioapic_dev(ioapic)
-                .map_err(|error| AxVmError::device("register x86 I/O APIC", error))?;
-            info!(
-                "x86 IO APIC initialized with base GPA {:#x} and length {:#x}",
-                config.base_gpa, config.length
-            );
-        }
-        EmulatedDeviceType::X86Pit => {
-            let pit = Arc::new(axdevice::X86PitDevice::<AxvmX86HostOps>::new());
-            devices
-                .add_x86_pit_dev(pit)
-                .map_err(|error| AxVmError::device("register x86 PIT", error))?;
-            info!("x86 PIT initialized for ports 0x40..=0x43 and 0x61");
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 pub(crate) fn x86_apic_access_page_addr() -> AxVmResult<axvm_types::HostPhysAddr> {
@@ -503,13 +626,13 @@ fn handle_x86_nested_page_fault(
             vm.id(),
             exit.addr.as_usize()
         );
-        return Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        }));
+        return Ok(BoundVcpuExit::Complete(VcpuRunAction::resume()));
     }
 
-    if vm.handle_nested_page_fault(exit.addr, exit.access_flags) {
+    if matches!(
+        nested_page_fault::resolve(vm, exit.addr, exit.access_flags)?,
+        nested_page_fault::NestedPageFaultResolution::Resolved
+    ) {
         Ok(BoundVcpuExit::Continue)
     } else {
         warn!(
@@ -518,10 +641,7 @@ fn handle_x86_nested_page_fault(
             exit.addr.as_usize(),
             exit.access_flags
         );
-        Ok(BoundVcpuExit::Complete(VcpuRunAction {
-            waits_for_event: false,
-            stop_reason: None,
-        }))
+        Ok(BoundVcpuExit::Complete(VcpuRunAction::resume()))
     }
 }
 
@@ -674,5 +794,26 @@ mod tests {
             X86AccessWidth::Dword,
             QEMU_EXIT_MAGIC
         ));
+    }
+
+    #[test]
+    fn standard_profile_protects_amd_fch_mmio_from_identity_mapping() {
+        let snapshot = crate::machine::HostPlatformSnapshot::new(1)
+            .with_io_aperture(crate::machine::AddressRange::new(0xfed0_0000, 0x10_0000).unwrap());
+        let request = crate::machine::VmMachineRequest::new(
+            axvm_types::VmMachineMode::Passthrough,
+            axvm_types::GuestFirmwareKind::Auto,
+        );
+        let plan = crate::machine::VmMachinePlanner::new(standard_machine_profile().unwrap())
+            .plan(&request, &snapshot)
+            .unwrap();
+
+        assert!(
+            !plan
+                .identity_mappings()
+                .iter()
+                .any(|range| range.contains(0xfed8_03c0)),
+            "AMD FCH system-management MMIO must stay protected from guest identity mappings"
+        );
     }
 }

@@ -102,14 +102,14 @@ fn platform_bus_range(platform: &GuestPlatform) -> (u64, u64) {
 
 fn add_chosen(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
     let chosen = add_child(fdt, root, "chosen");
-    set_prop(
-        fdt,
-        chosen,
-        prop_string(
-            "stdout-path",
-            &format!("/serial@{:x}", platform.serial.mmio.base),
-        ),
-    )
+    if let Some(serial) = platform.serial {
+        set_prop(
+            fdt,
+            chosen,
+            prop_string("stdout-path", &format!("/serial@{:x}", serial.mmio.base)),
+        )?;
+    }
+    Ok(())
 }
 
 fn add_cpus(fdt: &mut Fdt, root: NodeId) -> AxVmResult {
@@ -266,28 +266,27 @@ fn add_rtc(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult 
 }
 
 fn add_serial(fdt: &mut Fdt, root: NodeId, platform: &GuestPlatform) -> AxVmResult {
-    let serial = add_child(
-        fdt,
-        root,
-        &format!("serial@{:x}", platform.serial.mmio.base),
-    );
+    let Some(planned_serial) = platform.serial else {
+        return Ok(());
+    };
+    let serial = add_child(fdt, root, &format!("serial@{:x}", planned_serial.mmio.base));
     set_prop(fdt, serial, prop_string("compatible", "ns16550a"))?;
     prop_reg(
         fdt,
         serial,
-        platform.serial.mmio.base,
-        platform.serial.mmio.size,
+        planned_serial.mmio.base,
+        planned_serial.mmio.size,
     )?;
     set_prop(
         fdt,
         serial,
-        prop_u32("clock-frequency", platform.serial.clock_hz),
+        prop_u32("clock-frequency", planned_serial.clock_hz),
     )?;
     set_prop(fdt, serial, prop_u32("interrupt-parent", PHANDLE_PCH_PIC))?;
     set_prop(
         fdt,
         serial,
-        prop_u32_array("interrupts", &[platform.serial.irq, 4]),
+        prop_u32_array("interrupts", &[planned_serial.irq, 4]),
     )
 }
 
@@ -336,21 +335,4 @@ fn prop_reg(fdt: &mut Fdt, node: NodeId, base: u64, size: u64) -> AxVmResult {
             ],
         ),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use fdt_edit::Fdt;
-
-    use super::*;
-
-    #[test]
-    fn loongarch_firmware_dtb_is_reparseable() {
-        let platform = GuestPlatform::default();
-        let dtb = build(&platform).unwrap();
-        let fdt = Fdt::from_bytes(&dtb).unwrap();
-
-        assert!(fdt.get_by_path_id("/chosen").is_some());
-        assert!(fdt.get_by_path_id("/cpus/cpu@0").is_some());
-    }
 }

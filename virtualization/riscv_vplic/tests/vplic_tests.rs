@@ -1,32 +1,13 @@
-use ax_crate_interface::impl_interface;
-use ax_memory_addr::{PhysAddr, VirtAddr};
 use axdevice_base::{AccessWidth, BaseDeviceOps};
 use axvm_types::GuestPhysAddr;
 use riscv_vplic::{
     PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE,
     PLIC_ENABLE_OFFSET, PLIC_ENABLE_STRIDE, PLIC_NUM_SOURCES, PLIC_PENDING_OFFSET,
-    PLIC_PRIORITY_OFFSET, VPlicGlobal, VplicError, host::RiscvVplicHostIf,
+    PLIC_PRIORITY_OFFSET, VPlicGlobal, VplicError,
 };
 
 const HOST_PLIC_BASE: usize = 0x0c00_0000;
 const HOST_PLIC_SIZE: usize = 0x40_0000;
-
-#[repr(align(8))]
-struct AlignedHostPlic([u8; HOST_PLIC_SIZE]);
-
-static mut HOST_PLIC: AlignedHostPlic = AlignedHostPlic([0; HOST_PLIC_SIZE]);
-
-struct TestRiscvVplicHostIf;
-
-#[impl_interface]
-impl RiscvVplicHostIf for TestRiscvVplicHostIf {
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        let offset = paddr.as_usize() - HOST_PLIC_BASE;
-        assert!(offset < HOST_PLIC_SIZE);
-        let base = unsafe { core::ptr::addr_of_mut!(HOST_PLIC.0).cast::<u8>() };
-        VirtAddr::from(unsafe { base.add(offset) } as usize)
-    }
-}
 
 /// Calculate minimum required size for VPlicGlobal with given contexts
 fn calculate_min_size(contexts_num: usize) -> usize {
@@ -44,9 +25,9 @@ fn test_vplic_global_creation() {
 
     let vplic = VPlicGlobal::new(addr, Some(size), contexts_num).unwrap();
 
-    assert_eq!(vplic.addr, addr);
-    assert_eq!(vplic.size, size);
-    assert_eq!(vplic.contexts_num, contexts_num);
+    assert_eq!(vplic.address(), addr);
+    assert_eq!(vplic.size(), size);
+    assert_eq!(vplic.context_count(), contexts_num);
 }
 
 #[test]
@@ -55,15 +36,15 @@ fn test_vplic_global_with_different_contexts() {
 
     // Test with 1 context
     let vplic = VPlicGlobal::new(addr, Some(0x400000), 1).unwrap();
-    assert_eq!(vplic.contexts_num, 1);
+    assert_eq!(vplic.context_count(), 1);
 
     // Test with 4 contexts
     let vplic = VPlicGlobal::new(addr, Some(0x400000), 4).unwrap();
-    assert_eq!(vplic.contexts_num, 4);
+    assert_eq!(vplic.context_count(), 4);
 
     // Test with 8 contexts
     let vplic = VPlicGlobal::new(addr, Some(0x400000), 8).unwrap();
-    assert_eq!(vplic.contexts_num, 8);
+    assert_eq!(vplic.context_count(), 8);
 }
 
 #[test]
@@ -89,9 +70,9 @@ fn test_vplic_global_bitmaps_initialized_empty() {
     let addr = GuestPhysAddr::from(0x0c000000);
     let vplic = VPlicGlobal::new(addr, Some(0x400000), 2).unwrap();
 
-    assert!(vplic.assigned_irqs.lock().is_empty());
-    assert!(vplic.pending_irqs.lock().is_empty());
-    assert!(vplic.active_irqs.lock().is_empty());
+    assert!(vplic.has_unrestricted_sources());
+    assert!(!vplic.is_pending(1).unwrap());
+    assert!(!vplic.is_active(1).unwrap());
 }
 
 #[test]
@@ -133,12 +114,26 @@ fn test_pending_api_rejects_reserved_unassigned_and_out_of_range_sources() {
         })
     );
 
-    vplic.assigned_irqs.lock().set(5, true);
+    vplic.assign_source(5).unwrap();
     assert_eq!(
         vplic.set_pending(6),
         Err(VplicError::SourceNotAssigned { source_id: 6 })
     );
     assert_eq!(vplic.set_pending(5), Ok(()));
+}
+
+#[test]
+fn explicit_empty_assignment_rejects_every_external_source() {
+    let vplic =
+        VPlicGlobal::new(GuestPhysAddr::from(HOST_PLIC_BASE), Some(HOST_PLIC_SIZE), 2).unwrap();
+
+    vplic.restrict_to_assigned_sources();
+
+    assert!(!vplic.has_unrestricted_sources());
+    assert_eq!(
+        vplic.set_pending(1),
+        Err(VplicError::SourceNotAssigned { source_id: 1 })
+    );
 }
 
 #[test]
@@ -173,12 +168,12 @@ fn test_claim_and_complete_move_irq_between_pending_and_active() {
         irq_id
     );
     assert!(!vplic.is_pending(irq_id).unwrap());
-    assert!(vplic.active_irqs.lock().get(irq_id));
+    assert!(vplic.is_active(irq_id).unwrap());
 
     vplic
         .handle_write(claim_addr, AccessWidth::Dword, irq_id)
         .unwrap();
-    assert!(!vplic.active_irqs.lock().get(irq_id));
+    assert!(!vplic.is_active(irq_id).unwrap());
 }
 
 #[test]
@@ -192,4 +187,93 @@ fn test_virtual_plic_instances_and_guest_addresses_are_independent() {
 
     assert!(first.is_pending(11).unwrap());
     assert!(!second.is_pending(11).unwrap());
+}
+
+#[test]
+fn register_state_is_vm_local_and_guest_address_independent() {
+    let first_addr = GuestPhysAddr::from(HOST_PLIC_BASE);
+    let second_addr = GuestPhysAddr::from(0x1c00_0000);
+    let first = VPlicGlobal::new(first_addr, Some(HOST_PLIC_SIZE), 2).unwrap();
+    let second = VPlicGlobal::new(second_addr, Some(HOST_PLIC_SIZE), 2).unwrap();
+    let source = 9;
+
+    first
+        .handle_write(
+            first_addr + PLIC_PRIORITY_OFFSET + source * 4,
+            AccessWidth::Dword,
+            3,
+        )
+        .unwrap();
+    second
+        .handle_write(
+            second_addr + PLIC_PRIORITY_OFFSET + source * 4,
+            AccessWidth::Dword,
+            7,
+        )
+        .unwrap();
+
+    assert_eq!(
+        first
+            .handle_read(
+                first_addr + PLIC_PRIORITY_OFFSET + source * 4,
+                AccessWidth::Dword,
+            )
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        second
+            .handle_read(
+                second_addr + PLIC_PRIORITY_OFFSET + source * 4,
+                AccessWidth::Dword,
+            )
+            .unwrap(),
+        7
+    );
+}
+
+#[test]
+fn asserted_level_source_repends_after_guest_completion() {
+    let addr = GuestPhysAddr::from(HOST_PLIC_BASE);
+    let vplic = VPlicGlobal::new(addr, Some(HOST_PLIC_SIZE), 2).unwrap();
+    let source = 10;
+    let context = 1;
+    let claim = addr
+        + PLIC_CONTEXT_CTRL_OFFSET
+        + context * PLIC_CONTEXT_STRIDE
+        + PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET;
+    vplic
+        .handle_write(
+            addr + PLIC_PRIORITY_OFFSET + source * 4,
+            AccessWidth::Dword,
+            1,
+        )
+        .unwrap();
+    vplic
+        .handle_write(
+            addr + PLIC_ENABLE_OFFSET + context * PLIC_ENABLE_STRIDE,
+            AccessWidth::Dword,
+            1 << source,
+        )
+        .unwrap();
+
+    vplic.set_source_level(source, true).unwrap();
+    assert_eq!(
+        vplic.handle_read(claim, AccessWidth::Dword).unwrap(),
+        source
+    );
+    vplic
+        .handle_write(claim, AccessWidth::Dword, source)
+        .unwrap();
+    assert!(vplic.is_pending(source).unwrap());
+
+    vplic.set_source_level(source, false).unwrap();
+    assert_eq!(
+        vplic.handle_read(claim, AccessWidth::Dword).unwrap(),
+        source
+    );
+    vplic
+        .handle_write(claim, AccessWidth::Dword, source)
+        .unwrap();
+    assert!(!vplic.is_pending(source).unwrap());
 }

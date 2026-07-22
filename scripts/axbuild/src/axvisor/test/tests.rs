@@ -842,3 +842,22 @@ fn board_case_config_is_also_valid_board_run_config() {
     assert_eq!(config.board_type, "PhytiumPi");
     assert_eq!(config.shell_prefix.as_deref(), Some("login:"));
 }
+
+#[test]
+fn qemu_build_groups_preserve_distinct_executable_artifacts() {
+    let root = tempdir().unwrap();
+    let build_output = root.path().join("target/release/axvisor");
+    let artifact_directory = root.path().join("preserved");
+    fs::create_dir_all(build_output.parent().unwrap()).unwrap();
+
+    fs::write(&build_output, b"first VM config").unwrap();
+    let first =
+        super::qemu::preserve_qemu_build_artifact(&build_output, &artifact_directory, 0).unwrap();
+    fs::write(&build_output, b"second VM config").unwrap();
+    let second =
+        super::qemu::preserve_qemu_build_artifact(&build_output, &artifact_directory, 1).unwrap();
+
+    assert_ne!(first, second);
+    assert_eq!(fs::read(first).unwrap(), b"first VM config");
+    assert_eq!(fs::read(second).unwrap(), b"second VM config");
+}

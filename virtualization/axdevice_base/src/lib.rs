@@ -23,9 +23,7 @@
 //! The crate contains the following key components:
 //!
 //! - [`BaseDeviceOps`]: The core trait that all emulated devices must implement.
-//! - [`EmuDeviceType`]: Enumeration representing the type of emulator devices
-//!   (re-exported from `axvmconfig` crate).
-//! - [`EmulatedDeviceConfig`]: Configuration structure for device initialization.
+//! - [`EmuDeviceType`]: Runtime classification for emulator devices.
 //! - Trait aliases for specific device types:
 //!   - [`BaseMmioDeviceOps`]: For MMIO (Memory-Mapped I/O) devices.
 //!   - [`BaseSysRegDeviceOps`]: For system register devices.
@@ -86,7 +84,7 @@ extern crate alloc;
 
 mod device;
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc};
 use core::any::Any;
 
 pub use axvm_types::{
@@ -98,79 +96,6 @@ pub use crate::device::{
     AccessWidth, BusAccess, BusKind, BusResponse, DeviceAddr, DeviceAddrRange, DeviceError,
     DeviceResult, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
-
-/// Represents the configuration of an emulated device for a virtual machine.
-///
-/// This structure holds all the necessary information to initialize and configure
-/// an emulated device, including its memory mapping, interrupt configuration, and
-/// device-specific parameters.
-///
-/// # Fields
-///
-/// - `name`: A human-readable identifier for the device.
-/// - `base_ipa`: The starting address in guest physical address space.
-/// - `length`: The size of the device's address space in bytes.
-/// - `irq_id`: The interrupt line number for device interrupts.
-/// - `emu_type`: Numeric identifier for the device type.
-/// - `cfg_list`: Device-specific configuration parameters.
-///
-/// # Example
-///
-/// ```rust
-/// use axdevice_base::EmulatedDeviceConfig;
-///
-/// let config = EmulatedDeviceConfig {
-///     name: "uart0".into(),
-///     base_ipa: 0x0900_0000,
-///     length: 0x1000,
-///     irq_id: 33,
-///     emu_type: 1,
-///     cfg_list: vec![115200], // baud rate
-/// };
-/// ```
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
-pub struct EmulatedDeviceConfig {
-    /// The name of the device.
-    ///
-    /// This is a human-readable identifier used for logging, debugging, and
-    /// device tree generation. It should be unique within a virtual machine.
-    pub name: String,
-
-    /// The base IPA (Intermediate Physical Address) of the device.
-    ///
-    /// This is the starting address in the guest's physical address space
-    /// where the device's registers are mapped. The guest OS will use this
-    /// address to access the device.
-    pub base_ipa: usize,
-
-    /// The length of the device's address space in bytes.
-    ///
-    /// This defines the size of the memory region that the device occupies.
-    /// Any access within `[base_ipa, base_ipa + length)` will be routed to
-    /// this device.
-    pub length: usize,
-
-    /// The IRQ (Interrupt Request) ID of the device.
-    ///
-    /// This is the interrupt line number that the device uses to signal
-    /// events to the guest. The value should correspond to a valid interrupt
-    /// ID in the virtual interrupt controller.
-    pub irq_id: usize,
-
-    /// The type of emulated device.
-    ///
-    /// This numeric value identifies the device type and is used by the
-    /// device manager to instantiate the correct device implementation.
-    /// See [`EmuDeviceType`] for predefined device types.
-    pub emu_type: usize,
-
-    /// Device-specific configuration parameters.
-    ///
-    /// This is a list of configuration values whose meaning depends on the
-    /// specific device type. For example, a UART device might use this to
-    /// specify baud rate, while a virtio device might use it for queue sizes.
-    pub cfg_list: Vec<usize>,
-}
 
 /// The core trait that all emulated devices must implement.
 ///
@@ -347,7 +272,7 @@ pub trait BasePortDeviceOps = BaseDeviceOps<PortRange>;
 // ---------------------------------------------------------------------------
 
 /// Opaque identifier assigned to a device when it is registered into a
-/// [`AxVmDevices`].
+/// an AxVM device registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceId(u32);
 
@@ -403,20 +328,102 @@ pub enum Resource {
         /// Number of registers in the range.
         count: u32,
     },
-    /// An exclusive IRQ line connected to the VM's interrupt fabric.
+    /// A planner-authorized wired interrupt-controller endpoint.
     ///
-    /// The `line` is an architecture-neutral identifier on the virtual
-    /// interrupt controller input side (e.g. GSI, INTID, or PLIC source).
-    /// It is not a host `IrqId`, CPU trap vector, or physical IRQ.
-    ///
-    /// This stage only supports exclusive declaration. Sharing policy
-    /// will be added when a concrete device needs it.
-    IrqLine {
-        /// The interrupt line number.
-        line: u32,
-        /// The trigger mode configured for this line.
+    /// Runtime devices cannot register this resource directly. The device
+    /// build transaction derives it from an opaque interrupt claim and adds
+    /// it to the bundle-level endpoint inventory.
+    WiredIrq {
+        /// Controller owning the input.
+        controller: InterruptControllerId,
+        /// Controller-local input number.
+        input: ControllerInputId,
+        /// Electrical trigger semantics.
         trigger: InterruptTriggerMode,
+        /// Whether independently owned sources may share this input.
+        sharing: InterruptSharing,
     },
+    /// A planner-authorized message-signaled interrupt endpoint.
+    MessageInterrupt {
+        /// Controller receiving the message.
+        controller: InterruptControllerId,
+        /// Controller-local MSI device identity.
+        device: MsiDeviceId,
+        /// Device-local event identity.
+        event: MsiEventId,
+    },
+}
+
+/// VM-global identity of an interrupt endpoint.
+///
+/// Wired input numbers are controller-local, so the controller identifier is
+/// part of the key. Message-signaled events are identified by the controller,
+/// device, and event tuple.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum InterruptEndpointKey {
+    /// One wired input on an interrupt controller.
+    Wired {
+        /// Controller that owns the input namespace.
+        controller: InterruptControllerId,
+        /// Input number within `controller`.
+        input: ControllerInputId,
+    },
+    /// One message-signaled event accepted by an interrupt controller.
+    Message {
+        /// Controller that accepts the message.
+        controller: InterruptControllerId,
+        /// Controller-local message device identifier.
+        device: MsiDeviceId,
+        /// Event identifier within `device`.
+        event: MsiEventId,
+    },
+}
+
+impl Resource {
+    /// Returns the VM-global endpoint key for an interrupt resource.
+    pub const fn interrupt_endpoint_key(&self) -> Option<InterruptEndpointKey> {
+        match *self {
+            Self::WiredIrq {
+                controller, input, ..
+            } => Some(InterruptEndpointKey::Wired { controller, input }),
+            Self::MessageInterrupt {
+                controller,
+                device,
+                event,
+            } => Some(InterruptEndpointKey::Message {
+                controller,
+                device,
+                event,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Returns whether two interrupt resources make incompatible ownership
+    /// claims on the same VM-global endpoint.
+    pub fn interrupt_endpoint_conflicts_with(&self, other: &Self) -> bool {
+        let Some(key) = self.interrupt_endpoint_key() else {
+            return false;
+        };
+        if other.interrupt_endpoint_key() != Some(key) {
+            return false;
+        }
+        !matches!(
+            (self, other),
+            (
+                Self::WiredIrq {
+                    trigger,
+                    sharing: InterruptSharing::Shared,
+                    ..
+                },
+                Self::WiredIrq {
+                    trigger: other_trigger,
+                    sharing: InterruptSharing::Shared,
+                    ..
+                },
+            ) if trigger == other_trigger
+        )
+    }
 }
 
 /// The reason a resource was rejected as structurally invalid during
@@ -441,12 +448,10 @@ pub enum InvalidResourceReason {
     /// dispatch index.
     #[error("device resources overlap")]
     OverlappingResources,
-    /// The device declared the same IRQ line more than once.
-    #[error("duplicate IRQ line {line}")]
-    DuplicateIrqLine {
-        /// The duplicated line number.
-        line: u32,
-    },
+    /// An interrupt endpoint was declared directly by a device instead of
+    /// being backed by a planner-issued claim.
+    #[error("interrupt endpoint is not backed by a planner claim")]
+    UnbackedInterruptEndpoint,
 }
 
 /// Errors that can be returned when registering a device.
@@ -473,6 +478,20 @@ pub enum RegistryError {
         /// The device that already owns the conflicting resource.
         existing_device: DeviceId,
     },
+    /// Two registered bundles claim incompatible ownership of one interrupt
+    /// controller input.
+    #[error(
+        "interrupt resource {resource:?} conflicts with {existing:?} owned by device \
+         {existing_device:?}"
+    )]
+    InterruptEndpointConflict {
+        /// The endpoint requested by the new bundle.
+        resource: Resource,
+        /// The endpoint ownership already registered.
+        existing: Resource,
+        /// First device in the bundle that owns the existing endpoint.
+        existing_device: DeviceId,
+    },
     /// The device requested a bus type that the current architecture does
     /// not support (e.g. Port I/O on AArch64).
     #[error("device bus {kind:?} is unsupported on {arch:?}")]
@@ -495,14 +514,6 @@ pub enum RegistryError {
         /// The architecture the hypervisor is currently built for.
         current_arch: Arch,
     },
-    /// Two devices claim the same IRQ line.
-    #[error("IRQ line {line} conflicts with device {existing_device:?}")]
-    IrqLineConflict {
-        /// The IRQ line the new device is attempting to register.
-        line: u32,
-        /// The device that already owns the conflicting IRQ line.
-        existing_device: DeviceId,
-    },
 }
 
 /// The unified device trait.
@@ -514,12 +525,15 @@ pub enum RegistryError {
 ///
 /// # Downcasting
 ///
-/// `Device` extends [`Any`](core::any::Any) so callers can downcast to a
-/// concrete device type via [`as_any`](Device::as_any):
+/// `Device` extends [`Any`] so callers can downcast to a
+/// concrete device type via [`as_any`](Device::as_any). Downcasting is only
+/// intended for device-specific data-plane operations; interrupt-controller
+/// capabilities are registered separately and devices connect through owned
+/// interrupt endpoints.
 ///
 /// ```ignore
-/// if let Some(vgic) = device.as_any().downcast_ref::<VGicD>() {
-///     vgic.assign_irq(32, cpu_id, (0, 0, 0, cpu_id));
+/// if let Some(console) = device.as_any().downcast_ref::<GuestConsole>() {
+///     console.flush_output()?;
 /// }
 /// ```
 pub trait Device: Send + Sync + Any {
@@ -563,7 +577,7 @@ pub trait Device: Send + Sync + Any {
 }
 
 /// Device registration interface — the build-time / management-path half of a
-/// [`AxVmDevices`].
+/// an AxVM device registry.
 ///
 /// Used when constructing or reconfiguring a VM; not on the vCPU hot path.
 pub trait DeviceRegistry {
@@ -576,7 +590,7 @@ pub trait DeviceRegistry {
 }
 
 /// Bus dispatch interface — the runtime hot-path half of a
-/// [`AxVmDevices`].
+/// an AxVM device registry.
 ///
 /// Called on every vCPU exit that targets an emulated device (MMIO / Port /
 /// SysReg).
@@ -596,7 +610,7 @@ pub trait BusRouter {
 // ---------------------------------------------------------------------------
 
 mod adapter;
-mod irq;
+mod interrupt;
 
 pub use adapter::{MmioDeviceAdapter, PortDeviceAdapter, SysRegDeviceAdapter};
-pub use irq::{IrqError, IrqLine, IrqResult, IrqSink};
+pub use interrupt::*;

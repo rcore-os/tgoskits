@@ -17,6 +17,18 @@ English | [中文](README_CN.md)
 
 `arm_vcpu` provides an OS-neutral AArch64 vCPU core. It owns EL2 guest entry/exit, guest register state, trap decode, and hardware virtualization register semantics. Host OS and VMM policy is supplied through `ArmHostOps`; AxVM integration lives in `virtualization/axvm/src/arch/aarch64`.
 
+Guest PSCI calls and bounded SMCCC architecture discovery are implemented as
+VM-local services. Other valid SMC function identifiers exit as
+`ArmVmExit::FirmwareCall`; the embedding VMM must match them against an
+explicit VM-local capability and return `SMCCC_RET_NOT_SUPPORTED` otherwise.
+Arbitrary guest SMC arguments must never be forwarded to host firmware.
+
+Trapped GICv3 common CPU-interface accesses are decoded into
+`ArmGicCpuInterfaceRegister` and typed `ArmVmExit` variants. The VMM therefore
+handles `ICC_CTLR_EL1`, `ICC_PMR_EL1`, and `ICC_RPR_EL1` without depending on
+raw system-register encodings; `ICC_DIR_EL1` remains a distinct deactivation
+exit because it owns an atomic interrupt-state transition.
+
 ## Quick Start
 
 ### Installation
@@ -57,14 +69,6 @@ use arm_vcpu::{ArmHostOps, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuResult};
 struct MyHost;
 
 impl ArmHostOps for MyHost {
-    fn inject_virtual_interrupt(_vector: u8) -> ArmVcpuResult {
-        Ok(())
-    }
-
-    fn fetch_pending_host_irq() -> Option<usize> {
-        None
-    }
-
     fn handle_current_host_irq() {}
 }
 

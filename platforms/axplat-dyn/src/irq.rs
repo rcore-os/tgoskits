@@ -20,6 +20,44 @@ static VIRTUAL_IRQ_AFFINITY_CONFIGURED: [AtomicBool; RISCV_PLIC_SOURCE_COUNT] =
 #[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
 const RISCV_PLIC_SOURCE_COUNT: usize = 1024;
 
+#[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
+trait RiscvGuestIrqControl {
+    fn set_affinity(&self, irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError>;
+
+    fn set_enabled(&self, irq: IrqId, enabled: bool) -> Result<(), IrqError>;
+}
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+struct PlatformRiscvGuestIrqControl;
+
+#[cfg(all(target_arch = "riscv64", feature = "hv"))]
+impl RiscvGuestIrqControl for PlatformRiscvGuestIrqControl {
+    fn set_affinity(&self, irq: IrqId, affinity: IrqAffinity) -> Result<(), IrqError> {
+        let affinity = match affinity {
+            IrqAffinity::Any => somehal::irq::IrqAffinity::Any,
+            IrqAffinity::Fixed(cpu) => somehal::irq::IrqAffinity::Fixed { cpu_id: cpu.0 },
+        };
+        somehal::irq::irq_set_affinity(irq, affinity)
+    }
+
+    fn set_enabled(&self, irq: IrqId, enabled: bool) -> Result<(), IrqError> {
+        somehal::irq::irq_set_enable(irq, enabled)
+    }
+}
+
+#[cfg(any(all(target_arch = "riscv64", feature = "hv"), test))]
+fn apply_riscv_guest_irq_route(
+    control: &impl RiscvGuestIrqControl,
+    irq: IrqId,
+    target_cpu: usize,
+) -> Result<(), IrqError> {
+    // Host drivers disable a PLIC source when their registration is dropped.
+    // Establish the guest affinity before activating the claimed source so an
+    // interrupt can never be delivered through the stale host route.
+    control.set_affinity(irq, IrqAffinity::Fixed(CpuId(target_cpu)))?;
+    control.set_enabled(irq, true)
+}
+
 #[cfg(all(target_arch = "riscv64", feature = "hv"))]
 pub fn register_virtual_irq_injector(injector: fn(usize) -> bool) {
     VIRTUAL_IRQ_INJECTOR.store(injector as *mut (), Ordering::Release);
@@ -68,7 +106,7 @@ impl IrqIf for IrqIfImpl {
     /// Handles the IRQ.
     fn handle(vector: TrapVector) -> Option<IrqId> {
         let irq = {
-            let active = somehal::irq::begin_irq(vector.0)?;
+            let mut active = somehal::irq::begin_irq(vector.0)?;
             let irq = active.id();
 
             #[cfg(all(target_arch = "riscv64", feature = "hv"))]
@@ -80,6 +118,11 @@ impl IrqIf for IrqIfImpl {
 
             let cpu = current_irq_cpu();
             let outcome = dispatch_irq_on(irq, cpu);
+            if outcome.defer_deactivation
+                && let Err(error) = active.defer_deactivation()
+            {
+                warn!("Failed to defer physical IRQ {irq:?} deactivation: {error:?}");
+            }
             if !outcome.handled {
                 #[cfg(all(target_arch = "loongarch64", feature = "hv"))]
                 if is_loongarch_guest_forwardable(irq)
@@ -200,17 +243,22 @@ fn route_virtual_irq_to_target_cpu(irq: usize) {
         return;
     };
     let irq_id = IrqId::new(domain, ax_plat::irq::HwIrq(irq as u32));
-    let affinity = somehal::irq::IrqAffinity::Fixed { cpu_id: target_cpu };
-    if let Err(err) = somehal::irq::irq_set_affinity(irq_id, affinity) {
+    if let Err(err) = apply_riscv_guest_irq_route(&PlatformRiscvGuestIrqControl, irq_id, target_cpu)
+    {
         configured.store(false, Ordering::Release);
-        trace!("skip RISC-V virtual IRQ {irq} affinity to CPU {target_cpu}: {err:?}");
+        trace!("skip RISC-V virtual IRQ {irq} route to CPU {target_cpu}: {err:?}");
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+    use core::cell::RefCell;
+
     use ax_plat::irq::{CPU_LOCAL_IRQ_DOMAIN, HwIrq, IrqId};
     use spin::Once;
+
+    use super::{IrqAffinity, IrqError, RiscvGuestIrqControl, apply_riscv_guest_irq_route};
 
     fn plic_irq(hwirq: u32) -> IrqId {
         static PLIC_DOMAIN: Once<somehal::irq::IrqDomainId> = Once::new();
@@ -227,6 +275,35 @@ mod tests {
                 })
         });
         IrqId::new(domain, HwIrq(hwirq))
+    }
+
+    struct RecordingRiscvGuestIrqControl {
+        operations: RefCell<Vec<&'static str>>,
+    }
+
+    impl RiscvGuestIrqControl for RecordingRiscvGuestIrqControl {
+        fn set_affinity(&self, _irq: IrqId, _affinity: IrqAffinity) -> Result<(), IrqError> {
+            self.operations.borrow_mut().push("affinity");
+            Ok(())
+        }
+
+        fn set_enabled(&self, _irq: IrqId, enabled: bool) -> Result<(), IrqError> {
+            self.operations
+                .borrow_mut()
+                .push(if enabled { "enable" } else { "disable" });
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn riscv_guest_route_enables_the_source_after_setting_affinity() {
+        let control = RecordingRiscvGuestIrqControl {
+            operations: RefCell::new(Vec::new()),
+        };
+
+        apply_riscv_guest_irq_route(&control, plic_irq(8), 0).unwrap();
+
+        assert_eq!(&*control.operations.borrow(), &["affinity", "enable"]);
     }
 
     #[test]
@@ -250,6 +327,7 @@ mod tests {
             handled: true,
             wake: false,
             called: 1,
+            defer_deactivation: false,
         };
 
         assert!(super::should_forward_riscv_guest_irq(irq, host_outcome));

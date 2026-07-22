@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace the legacy `Vgic`/GICv2 API with a GICv3-only per-VM controller,
+  validated configuration and typed INTID/affinity/ITS identifiers.
+- Move MMIO, host GIC discovery, guest memory, timer and scheduler integration
+  behind checked backend capabilities owned by the VMM.
+- Save and restore complete virtual CPU-interface state, retain software
+  pending interrupts when LRs are full, and drive maintenance refill without
+  panicking.
+- Implement a bounded software ITS command queue and explicit physical
+  SPI/MSI ownership with cleanup on controller drop.
+- Keep physical SPIs masked until their guest enables both Distributor gates,
+  and mask them again when either gate is disabled.
+- Filter explicit-ownership GICD accesses per VM while keeping every GICR,
+  SGI, and PPI entirely VM-local. Mixed Distributor writes never modify
+  host-owned SPI state.
+- Defer physical SPI handoff until activation, then restore the saved host
+  group, priority, trigger, route, pending, active, and enable state on release.
+- Report physical `GICD_TYPER` capacity and make LPI registers RAZ/WI unless an
+  emulated guest ITS is present.
+- Replace the controller-wide emulated/passthrough mode with an SPI ownership
+  policy and per-endpoint software or physical backing. One GIC can now deliver
+  virtual-device IRQs and owned physical IRQs through the same CPU interface.
+- Rebuild the LR working set when active entries overflow, preserve software or
+  physical backing outside LRs, drive NPIE/LRENPIE/UIE/TDIR maintenance, and
+  reconcile EOImode 0 EOIcount or trapped EOImode 1 DIR without starving newer
+  pending interrupts.
+- Make trapped DIR harvest the live ICH state before deactivation, so a hardware
+  Pending-to-Active LR transition cannot be missed by a stale VM-local snapshot.
+- Fall back from the optional dedicated `TDIR` trap to the architectural common
+  CPU-interface trap, including checked CTLR, PMR, and RPR emulation, on GICv3
+  implementations that report `ICH_VTR_EL2.TDS=0`.
+- Keep an owned physical SPI armed from VM-local Distributor state even while
+  its target vCPU is not loaded, so host scheduling cannot disconnect a guest
+  device interrupt source.
+
+### Removed
+
+- Remove GICv2 support, global host callbacks and global ITS/LPI state, the
+  embedded virtual timer, GPA=HPA assumptions and manual inject functions.
+
 ## [0.5.3](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.2...arm_vgic-v0.5.3) - 2026-07-08
 
 ### Other

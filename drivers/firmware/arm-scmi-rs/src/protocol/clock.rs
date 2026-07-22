@@ -66,7 +66,7 @@ impl<T: Transport> Clock<T> {
         self.protocol_attributes().unwrap();
     }
 
-    /// Number of clocks discovered during [`init`](Self::init).
+    /// Number of clocks discovered while creating an initialized client.
     pub fn num_clocks(&self) -> u16 {
         self.num_clocks
     }

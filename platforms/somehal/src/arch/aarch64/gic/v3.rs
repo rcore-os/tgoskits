@@ -112,18 +112,27 @@ pub fn is_support_icc() -> bool {
 pub struct ActiveIrq {
     irq: rdrive::IrqId,
     ack: IntId,
+    deactivate_on_drop: bool,
 }
 
 impl ActiveIrq {
     pub fn id(&self) -> rdrive::IrqId {
         self.irq
     }
+
+    pub fn defer_deactivation(&mut self) -> Result<(), crate::irq::IrqError> {
+        if !eoi_mode() {
+            return Err(crate::irq::IrqError::Unsupported);
+        }
+        self.deactivate_on_drop = false;
+        Ok(())
+    }
 }
 
 impl Drop for ActiveIrq {
     fn drop(&mut self) {
         eoi1(self.ack);
-        if eoi_mode() {
+        if self.deactivate_on_drop && eoi_mode() {
             dir(self.ack);
         }
     }
@@ -138,6 +147,7 @@ pub fn begin_irq() -> Option<ActiveIrq> {
     Some(ActiveIrq {
         irq: (ack.to_u32() as usize).into(),
         ack,
+        deactivate_on_drop: true,
     })
 }
 

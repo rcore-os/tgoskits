@@ -9,7 +9,7 @@ use ostool::{build::config::Cargo, run::qemu::QemuConfig};
 
 use super::{
     AXVISOR_NORMAL_GROUP, AxvisorQemuCase,
-    assets::axvisor_case_asset_config,
+    assets::{axvisor_case_asset_config, inject_busybox_initramfs_if_requested},
     discover_qemu_cases,
     discovery::{
         discover_test_group_names, qemu_list_error_is_ignorable, test_suite_dir, test_suite_root,
@@ -116,14 +116,30 @@ impl Axvisor {
         let mut build_groups = test_qemu::prepare_case_build_groups(&cases, |build_config_path| {
             Self::qemu_group_build_context(&request, build_config_path)
         })?;
+        let artifact_parent = self.app.workspace_root().join("target");
+        std::fs::create_dir_all(&artifact_parent).with_context(|| {
+            format!(
+                "failed to create Axvisor qemu artifact parent {}",
+                artifact_parent.display()
+            )
+        })?;
+        let artifact_directory = tempfile::Builder::new()
+            .prefix("axvisor-qemu-artifacts-")
+            .tempdir_in(&artifact_parent)
+            .context("failed to create temporary Axvisor qemu artifact directory")?;
+        let mut build_artifacts = Vec::with_capacity(build_groups.len());
 
         // Phase 1: Build all build groups first so compilation errors surface
-        // before any QEMU time is spent.
-        for build_group in &mut build_groups {
+        // before any QEMU time is spent. Preserve each executable immediately:
+        // Cargo uses one output path for build groups that differ only in
+        // embedded VM configuration, so a later build would otherwise replace
+        // the executable belonging to an earlier group.
+        for (index, build_group) in build_groups.iter_mut().enumerate() {
             rootfs::ensure_qemu_rootfs_ready(&build_group.request, self.app.workspace_root(), None)
                 .await?;
             build_group.cargo = build::load_cargo_config(&build_group.request)?;
-            self.app
+            let output = self
+                .app
                 .build(
                     build_group.cargo.clone(),
                     build_group.request.build_info_path.clone(),
@@ -136,26 +152,41 @@ impl Axvisor {
                         build_group.group.build_config_path.display()
                     )
                 })?;
+            build_artifacts.push(preserve_qemu_build_artifact(
+                output.elf_path(),
+                artifact_directory.path(),
+                index,
+            )?);
         }
 
         // Phase 2: Run all QEMU tests now that every artifact is available.
         let mut completed = 0;
-        for build_group in &build_groups {
+        for (build_group, build_artifact) in build_groups.iter().zip(&build_artifacts) {
             for case in &build_group.group.cases {
                 completed += 1;
                 let case_name = &case.case.case.name;
                 println!("[{completed}/{total}] axvisor qemu {case_name}");
 
                 let case_started = Instant::now();
-                let result = self
-                    .run_qemu_case(
+                let result = async {
+                    self.app
+                        .prepare_elf_artifact(build_artifact.clone(), case.qemu.to_bin)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "failed to activate Axvisor qemu artifact for case `{case_name}`"
+                            )
+                        })?;
+                    self.run_qemu_case(
                         &build_group.request,
                         &build_group.cargo,
                         case,
                         &asset_config,
                     )
                     .await
-                    .with_context(|| format!("axvisor qemu test failed for case `{case_name}`"));
+                }
+                .await
+                .with_context(|| format!("axvisor qemu test failed for case `{case_name}`"));
                 let duration = case_started.elapsed();
                 match result {
                     Ok(()) => {
@@ -253,7 +284,7 @@ impl Axvisor {
         test_qemu::apply_timeout_scale(&mut qemu);
 
         let rootfs_path = rootfs::qemu_rootfs_path(request, self.app.workspace_root(), None)?;
-        let prepared_assets = test_case::prepare_case_assets(
+        let mut prepared_assets = test_case::prepare_case_assets(
             self.app.workspace_root(),
             &request.arch,
             &request.target,
@@ -262,6 +293,18 @@ impl Axvisor {
             asset_config.clone(),
         )
         .await?;
+        inject_busybox_initramfs_if_requested(
+            self.app.workspace_root(),
+            request,
+            case,
+            &mut prepared_assets,
+        )
+        .with_context(|| {
+            format!(
+                "failed to prepare BusyBox initramfs for Axvisor qemu case `{}`",
+                case.case.case.name
+            )
+        })?;
         rootfs::patch_qemu_rootfs_path(&mut qemu, &prepared_assets.rootfs_path);
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
         // UEFI needs a writable ESP for firmware variables. Keep the explicit
@@ -332,4 +375,33 @@ fn axvisor_qemu_test_build_args(arch: &str, config: Option<PathBuf>) -> AxvisorC
         debug: false,
         vmconfigs: Vec::new(),
     }
+}
+
+pub(super) fn preserve_qemu_build_artifact(
+    source: &Path,
+    artifact_directory: &Path,
+    build_group_index: usize,
+) -> anyhow::Result<PathBuf> {
+    let file_name = source.file_name().with_context(|| {
+        format!(
+            "Axvisor qemu build artifact {} has no file name",
+            source.display()
+        )
+    })?;
+    let group_directory = artifact_directory.join(format!("group-{build_group_index}"));
+    std::fs::create_dir_all(&group_directory).with_context(|| {
+        format!(
+            "failed to create Axvisor qemu build-group artifact directory {}",
+            group_directory.display()
+        )
+    })?;
+    let destination = group_directory.join(file_name);
+    std::fs::copy(source, &destination).with_context(|| {
+        format!(
+            "failed to preserve Axvisor qemu build artifact {} at {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(destination)
 }

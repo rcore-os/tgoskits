@@ -24,6 +24,7 @@ extern crate alloc;
 mod consts;
 /// The Control and Status Registers (CSRs) for a RISC-V hypervisor.
 mod detect;
+mod environment;
 mod guest_mem;
 pub mod host;
 mod percpu;
@@ -36,6 +37,7 @@ mod vcpu;
 mod vpmu;
 
 pub use detect::{detect_h_extension as has_hardware_support, max_guest_page_table_levels};
+pub use environment::RiscvGuestIsaConfig;
 pub use regs::GprIndex;
 pub use types::{
     RiscvAccessFlags, RiscvAccessWidth, RiscvGuestPhysAddr, RiscvGuestVirtAddr, RiscvHostPhysAddr,
@@ -63,6 +65,8 @@ pub struct RiscvVcpuCreateConfig {
     /// The physical address of the device tree blob.
     /// Default to `0x9000_0000`.
     pub dtb_addr: usize,
+    /// Guest ISA extensions that require HS-level execution controls.
+    pub isa: RiscvGuestIsaConfig,
 }
 
 impl Default for RiscvVcpuCreateConfig {
@@ -70,6 +74,7 @@ impl Default for RiscvVcpuCreateConfig {
         Self {
             hart_id: 0,
             dtb_addr: 0x9000_0000,
+            isa: RiscvGuestIsaConfig::baseline(),
         }
     }
 }

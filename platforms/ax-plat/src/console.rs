@@ -2,6 +2,7 @@
 
 use core::fmt::{Arguments, Result, Write};
 
+use ax_memory_addr::PhysAddr;
 use bitflags::bitflags;
 pub use rdrive::DeviceId as ConsoleDeviceId;
 
@@ -49,12 +50,25 @@ pub trait ConsoleIf {
     /// [`ConsoleDeviceIdError::NotSpecified`].
     fn device_id() -> ConsoleDeviceIdResult;
 
+    /// Returns the physical MMIO base used by the active boot console.
+    ///
+    /// Port-I/O consoles and platforms without an initialized hardware console
+    /// return `None`.
+    fn physical_mmio_base() -> Option<PhysAddr>;
+
     /// Hands platform console output ownership to a higher-level runtime driver.
     ///
     /// After this call, low-level console write paths must stop touching the
     /// same hardware registers if the platform firmware console is backed by a
     /// runtime-owned device.
     fn claim_runtime_output();
+
+    /// Tries to suspend low-level boot-console output for a reversible device
+    /// ownership transfer.
+    fn try_suspend_boot_output() -> bool;
+
+    /// Releases one successful [`ConsoleIf::try_suspend_boot_output`] call.
+    fn resume_boot_output();
 
     /// Returns the IRQ number for the console input interrupt.
     ///

@@ -1,15 +1,19 @@
 //! AArch64 implementations of AxVM platform capability hooks.
 
-use alloc::format;
+use ax_std::os::arceos::modules::ax_hal;
 
 use super::Aarch64Arch;
 use crate::{
     AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform},
+    architecture::{
+        BootImagePlatform, GuestBootPlatform, HostTimePlatform, capabilities::VmTimerIntegration,
+    },
     ax_err_type,
 };
 
-impl HostTimePlatform for Aarch64Arch {}
+impl HostTimePlatform for Aarch64Arch {
+    const VM_TIMER_INTEGRATION: VmTimerIntegration = VmTimerIntegration::RuntimeCallback;
+}
 
 impl BootImagePlatform for Aarch64Arch {
     fn load_guest_dtb(
@@ -29,7 +33,25 @@ impl GuestBootPlatform for Aarch64Arch {
         vm_create_config: &mut axvmconfig::AxVMCrateConfig,
         provider: &dyn crate::boot::BootImageProvider,
     ) -> AxVmResult<Option<crate::boot::fdt::GuestDtbImage>> {
-        super::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)
+        let guest_dtb = super::fdt::core::prepare_dtb_guest(vm_config, vm_create_config, provider)?;
+        let host_ipi = ax_hal::irq::ipi_irq().hwirq.0;
+        let host_timer = ax_hal::time::irq_num().hwirq.0;
+        let assigned_interrupts = vm_config
+            .machine_plan()
+            .assigned_host_interrupts()
+            .iter()
+            .map(crate::machine::HostInterruptResource::input_u32)
+            .collect::<alloc::vec::Vec<_>>();
+        let roles =
+            super::gic::Aarch64InterruptRoles::discover(super::gic::Aarch64InterruptDiscovery {
+                host_ipi_intid: host_ipi,
+                host_timer_intid: host_timer,
+                host_fdt_bytes: super::fdt::try_get_host_fdt(),
+                guest_fdt_bytes: guest_dtb.as_ref().map(|dtb| dtb.as_bytes()),
+                assigned_device_intids: &assigned_interrupts,
+            })?;
+        vm_config.arch_mut().set_interrupt_roles(roles);
+        Ok(guest_dtb)
     }
 }
 
@@ -41,10 +63,13 @@ pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::Vir
     ax_std::os::arceos::modules::ax_hal::mem::phys_to_virt(paddr)
 }
 
-pub(super) fn decode_gic_spi(specifier: &[u32]) -> Option<u32> {
-    (specifier.first().copied() == Some(0))
-        .then(|| specifier.get(1).copied())
-        .flatten()
+pub(crate) fn host_fdt_bytes() -> Option<&'static [u8]> {
+    ax_hal::dtb::get_fdt().map(|fdt| fdt.as_slice())
+}
+
+pub(super) fn logical_cpu_id(hardware_cpu_id: usize) -> Option<usize> {
+    (0..ax_hal::cpu_num())
+        .find(|logical_cpu_id| ax_hal::cpu_hardware_id(*logical_cpu_id) == Some(hardware_cpu_id))
 }
 
 pub(super) fn patch_runtime_fdt(
@@ -52,37 +77,17 @@ pub(super) fn patch_runtime_fdt(
     vm: &crate::AxVMRef,
     crate_config: &axvmconfig::AxVMCrateConfig,
 ) -> AxVmResult<alloc::vec::Vec<u8>> {
+    let memory_regions = vm.memory_regions();
     let initrd = vm.with_config(|config| {
         super::fdt::initrd_start_size_from_image_config(config.image_config.ramdisk.as_ref())
     });
-    super::fdt::core::patch_guest_fdt_for_runtime(
+    let patched = super::fdt::core::patch_guest_fdt_for_runtime(
         fdt_bytes,
-        &vm.memory_regions(),
+        &memory_regions,
         crate_config,
         initrd,
         true,
-    )
-}
-
-pub(super) fn patch_provided_fdt(
-    provided_dtb: &[u8],
-    host_dtb: Option<&[u8]>,
-    crate_config: &axvmconfig::AxVMCrateConfig,
-) -> AxVmResult<alloc::vec::Vec<u8>> {
-    let provided_fdt = fdt_edit::Fdt::from_bytes(provided_dtb).map_err(|err| {
-        ax_err_type!(
-            InvalidData,
-            format!("Failed to parse provided DTB image: {err:#?}")
-        )
-    })?;
-    let host_fdt = host_dtb
-        .map(fdt_edit::Fdt::from_bytes)
-        .transpose()
-        .map_err(|err| {
-            ax_err_type!(
-                InvalidData,
-                format!("Failed to parse host DTB image: {err:#?}")
-            )
-        })?;
-    super::fdt::update_cpu_node(&provided_fdt, host_fdt.as_ref(), crate_config)
+    )?;
+    let patched = super::fdt::patch_physical_timer_interrupts(&patched)?;
+    Ok(patched)
 }

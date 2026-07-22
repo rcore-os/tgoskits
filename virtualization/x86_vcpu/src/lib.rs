@@ -88,15 +88,46 @@ pub struct X86GuestMemoryRegion {
     pub size: usize,
 }
 
+/// Guest MMIO range whose accesses are decoded and returned to the VMM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct X86EmulatedMmioRegion {
+    base: X86GuestPhysAddr,
+    size: usize,
+}
+
+impl X86EmulatedMmioRegion {
+    /// Creates a checked, non-empty guest MMIO range.
+    pub fn new(base: X86GuestPhysAddr, size: usize) -> X86VcpuResult<Self> {
+        if size == 0 || base.as_usize().checked_add(size).is_none() {
+            return Err(X86VcpuError::InvalidInput);
+        }
+        Ok(Self { base, size })
+    }
+
+    /// Returns the first guest physical address in the range.
+    pub const fn base(self) -> X86GuestPhysAddr {
+        self.base
+    }
+
+    /// Returns the range size in bytes.
+    pub const fn size(self) -> usize {
+        self.size
+    }
+
+    /// Returns whether the range contains a guest physical address.
+    pub fn contains(self, addr: X86GuestPhysAddr) -> bool {
+        let offset = addr.as_usize().wrapping_sub(self.base.as_usize());
+        offset < self.size
+    }
+}
+
 /// x86 vCPU setup configuration.
 #[derive(Clone, Debug)]
 pub struct X86VcpuSetupConfig {
-    /// Intercept COM1 PIO ports and route them to an emulated serial device.
-    pub emulate_com1: bool,
-    /// Host I/O port ranges routed through AxVM passthrough port devices.
-    pub passthrough_ports: [Option<X86PassthroughPortRange>; X86_MAX_PASSTHROUGH_PORT_RANGES],
-    /// Guest RAM regions used by the VMX instruction decoder to read guest bytes.
-    pub guest_memory_regions: Vec<X86GuestMemoryRegion>,
+    emulate_com1: bool,
+    passthrough_ports: [Option<X86PassthroughPortRange>; X86_MAX_PASSTHROUGH_PORT_RANGES],
+    guest_memory_regions: Vec<X86GuestMemoryRegion>,
+    emulated_mmio_regions: Vec<X86EmulatedMmioRegion>,
 }
 
 impl Default for X86VcpuSetupConfig {
@@ -105,11 +136,61 @@ impl Default for X86VcpuSetupConfig {
             emulate_com1: false,
             passthrough_ports: [None; X86_MAX_PASSTHROUGH_PORT_RANGES],
             guest_memory_regions: Vec::new(),
+            emulated_mmio_regions: Vec::new(),
         }
     }
 }
 
 impl X86VcpuSetupConfig {
+    /// Selects whether COM1 port accesses are returned to the VMM.
+    pub const fn set_com1_emulation(&mut self, enabled: bool) {
+        self.emulate_com1 = enabled;
+    }
+
+    /// Returns whether COM1 port accesses are returned to the VMM.
+    pub const fn emulates_com1(&self) -> bool {
+        self.emulate_com1
+    }
+
+    /// Replaces the guest RAM regions used by instruction decoders.
+    pub fn set_guest_memory_regions(
+        &mut self,
+        regions: Vec<X86GuestMemoryRegion>,
+    ) -> X86VcpuResult {
+        if regions.iter().any(|region| {
+            region.size == 0
+                || region.gpa.as_usize().checked_add(region.size).is_none()
+                || region.hva.as_usize().checked_add(region.size).is_none()
+        }) {
+            return Err(X86VcpuError::InvalidInput);
+        }
+        self.guest_memory_regions = regions;
+        Ok(())
+    }
+
+    /// Returns the guest RAM regions used by instruction decoders.
+    pub fn guest_memory_regions(&self) -> &[X86GuestMemoryRegion] {
+        &self.guest_memory_regions
+    }
+
+    /// Adds one guest MMIO range whose accesses must be decoded for the VMM.
+    pub fn add_emulated_mmio_region(
+        &mut self,
+        base: X86GuestPhysAddr,
+        size: usize,
+    ) -> X86VcpuResult {
+        let region = X86EmulatedMmioRegion::new(base, size)?;
+        if !self.emulated_mmio_regions.contains(&region) {
+            self.emulated_mmio_regions.push(region);
+        }
+        Ok(())
+    }
+
+    /// Returns the configured emulated MMIO ranges.
+    pub fn emulated_mmio_regions(&self) -> &[X86EmulatedMmioRegion] {
+        &self.emulated_mmio_regions
+    }
+
     /// Adds one host I/O port range to the vCPU I/O intercept list.
     pub fn add_passthrough_port_range(&mut self, base: u16, length: u16) -> X86VcpuResult {
         if length == 0 {
@@ -257,5 +338,42 @@ mod tests {
                 .unwrap();
         }
         assert!(config.add_passthrough_port_range(0x3000, 1).is_err());
+    }
+
+    #[test]
+    fn setup_config_records_checked_emulated_mmio_regions_once() {
+        let mut config = X86VcpuSetupConfig::default();
+        let base = X86GuestPhysAddr::from_usize(0xfed8_0000);
+
+        config.add_emulated_mmio_region(base, 0x1_0000).unwrap();
+        config.add_emulated_mmio_region(base, 0x1_0000).unwrap();
+
+        assert_eq!(
+            config.emulated_mmio_regions(),
+            &[X86EmulatedMmioRegion::new(base, 0x1_0000).unwrap()]
+        );
+        assert!(
+            config.emulated_mmio_regions()[0].contains(X86GuestPhysAddr::from_usize(0xfed8_03c0))
+        );
+        assert!(config.add_emulated_mmio_region(base, 0).is_err());
+        assert!(
+            config
+                .add_emulated_mmio_region(X86GuestPhysAddr::from_usize(usize::MAX), 2)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn setup_config_validates_guest_memory_regions() {
+        let mut config = X86VcpuSetupConfig::default();
+        assert!(
+            config
+                .set_guest_memory_regions(std::vec![X86GuestMemoryRegion {
+                    gpa: X86GuestPhysAddr::from_usize(0x1000),
+                    hva: X86HostVirtAddr::from_usize(0x2000),
+                    size: 0,
+                }])
+                .is_err()
+        );
     }
 }

@@ -829,7 +829,10 @@ fn show_vm_basic_details(vm_id: usize, show_config: bool, show_stats: bool) {
             vm.with_config(|cfg| {
                 println!("  BSP Entry:      {:#x}", cfg.bsp_entry().as_usize());
                 println!("  AP Entry:       {:#x}", cfg.ap_entry().as_usize());
-                println!("  Interrupt Mode: {:?}", cfg.interrupt_mode());
+                println!(
+                    "  Physical IRQ Policy: {:?}",
+                    cfg.physical_interrupt_policy()
+                );
                 if let Some(dtb_addr) = cfg.image_config().dtb_load_gpa {
                     println!("  DTB Address:    {:#x}", dtb_addr.as_usize());
                 }
@@ -991,7 +994,10 @@ fn show_vm_full_details(vm_id: usize) {
         vm.with_config(|cfg| {
             println!("  BSP Entry:      {:#x}", cfg.bsp_entry().as_usize());
             println!("  AP Entry:       {:#x}", cfg.ap_entry().as_usize());
-            println!("  Interrupt Mode: {:?}", cfg.interrupt_mode());
+            println!(
+                "  Physical IRQ Policy: {:?}",
+                cfg.physical_interrupt_policy()
+            );
 
             if let Some(dtb_addr) = cfg.image_config().dtb_load_gpa {
                 println!("  DTB Address:    {:#x}", dtb_addr.as_usize());
@@ -1003,62 +1009,71 @@ fn show_vm_full_details(vm_id: usize) {
                 cfg.image_config().kernel_load_gpa.as_usize()
             );
 
-            // Show passthrough devices
-            if !cfg.pass_through_devices().is_empty() {
+            let plan = cfg.machine_plan();
+            let passthrough_devices = plan
+                .host_devices()
+                .iter()
+                .filter(|device| {
+                    device.disposition() == axvm::machine::DeviceDisposition::Passthrough
+                })
+                .collect::<Vec<_>>();
+            if !passthrough_devices.is_empty() {
                 println!();
                 println!(
                     "  Passthrough Devices: ({} device(s))",
-                    cfg.pass_through_devices().len()
+                    passthrough_devices.len()
                 );
-                for device in cfg.pass_through_devices() {
-                    println!(
-                        "    - {}: GPA[{:#x}~{:#x}] -> HPA[{:#x}~{:#x}] ({})",
-                        device.name,
-                        device.base_gpa,
-                        device.base_gpa + device.length,
-                        device.base_hpa,
-                        device.base_hpa + device.length,
-                        format_memory_size(device.length)
-                    );
+                for device in passthrough_devices {
+                    println!("    - {}", device.id());
+                    for mmio in device.mmio() {
+                        println!(
+                            "      MMIO: [{:#x}~{:#x}] ({})",
+                            mmio.base(),
+                            mmio.end(),
+                            format_memory_size(mmio.size() as usize)
+                        );
+                    }
+                    if !device.interrupts().is_empty() {
+                        println!("      IRQs: {:?}", device.interrupts());
+                    }
                 }
             }
 
-            // Show passthrough addresses
-            if !cfg.pass_through_addresses().is_empty() {
+            if !plan.identity_mappings().is_empty() {
                 println!();
                 println!(
-                    "  Passthrough Memory Regions: ({} region(s))",
-                    cfg.pass_through_addresses().len()
+                    "  Identity-mapped I/O: ({} region(s))",
+                    plan.identity_mappings().len()
                 );
-                for pt_addr in cfg.pass_through_addresses() {
+                for range in plan.identity_mappings() {
                     println!(
                         "    - GPA[{:#x}~{:#x}] ({})",
-                        pt_addr.base_gpa,
-                        pt_addr.base_gpa + pt_addr.length,
-                        format_memory_size(pt_addr.length)
+                        range.base(),
+                        range.end(),
+                        format_memory_size(range.size() as usize)
                     );
                 }
             }
 
-            // Show passthrough SPIs (ARM specific)
-            #[cfg(target_arch = "aarch64")]
-            {
-                let spis = cfg.pass_through_spis();
-                if !spis.is_empty() {
-                    println!();
-                    println!("  Passthrough SPIs: {:?}", spis);
-                }
+            let host_interrupts = plan.assigned_host_interrupts();
+            if !host_interrupts.is_empty() {
+                println!();
+                println!("  Assigned Host IRQs: {:?}", host_interrupts);
             }
 
-            // Show emulated devices
-            if !cfg.emu_devices().is_empty() {
+            if !plan.virtual_devices().is_empty() {
                 println!();
                 println!(
-                    "  Emulated Devices: ({} device(s))",
-                    cfg.emu_devices().len()
+                    "  Virtual Devices: ({} device(s))",
+                    plan.virtual_devices().len()
                 );
-                for (idx, device) in cfg.emu_devices().iter().enumerate() {
-                    println!("    {}. {:?}", idx + 1, device);
+                for device in plan.virtual_devices() {
+                    println!(
+                        "    - {}: {} {:?}",
+                        device.instance_id(),
+                        device.model_id(),
+                        device.resources()
+                    );
                 }
             }
         });

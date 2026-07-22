@@ -10,6 +10,68 @@ static FREE_LIST: Once<Vec<RawRange, 32>> = Once::new();
 static RESERVED_LIST: Once<Vec<RawRange, 32>> = Once::new();
 static MMIO_LIST: Once<Vec<RawRange, 16>> = Once::new();
 
+/// One immutable physical RAM range retained for early host-allocator exclusion.
+///
+/// Axvisor's build output places values of this type in `ax_reserved_phys_ram`. The dynamic
+/// platform consumes that section before the global allocator is initialized, so fixed guest RAM
+/// cannot be reused for host objects.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EarlyReservedPhysRamRange {
+    start: usize,
+    size: usize,
+}
+
+impl EarlyReservedPhysRamRange {
+    /// Creates one immutable early-boot host RAM reservation.
+    pub const fn new(start: usize, size: usize) -> Self {
+        Self { start, size }
+    }
+}
+
+/// Returns physical RAM ranges reserved by the image before host allocation begins.
+///
+/// These ranges are suitable for validating embedded startup VM memory during construction. The
+/// iterator does not grant ownership; the VM lifecycle must still prevent two live guests from
+/// claiming the same backing.
+pub fn early_reserved_phys_ram_ranges() -> impl Iterator<Item = RawRange> {
+    linked_reserved_phys_ram_ranges()
+        .iter()
+        .filter_map(|range| (range.size != 0).then_some((range.start, range.size)))
+}
+
+#[used]
+#[unsafe(link_section = "ax_reserved_phys_ram")]
+static LINKED_RESERVED_PHYS_RAM_SENTINEL: EarlyReservedPhysRamRange =
+    EarlyReservedPhysRamRange::new(0, 0);
+
+fn linked_reserved_phys_ram_ranges() -> &'static [EarlyReservedPhysRamRange] {
+    unsafe extern "C" {
+        static __start_ax_reserved_phys_ram: EarlyReservedPhysRamRange;
+        static __stop_ax_reserved_phys_ram: EarlyReservedPhysRamRange;
+    }
+
+    let start = core::ptr::addr_of!(__start_ax_reserved_phys_ram) as usize;
+    let end = core::ptr::addr_of!(__stop_ax_reserved_phys_ram) as usize;
+    let entry_size = core::mem::size_of::<EarlyReservedPhysRamRange>();
+    let Some(byte_len) = end.checked_sub(start) else {
+        return &[];
+    };
+    if !byte_len.is_multiple_of(entry_size) {
+        return &[];
+    }
+
+    // SAFETY: every input item in `ax_reserved_phys_ram` has this `repr(C)` two-usize ABI. The
+    // linker-provided bounds delimit the retained section for the lifetime of the image, and the
+    // size check above rejects trailing bytes rather than constructing a partial entry.
+    unsafe {
+        core::slice::from_raw_parts(
+            start as *const EarlyReservedPhysRamRange,
+            byte_len / entry_size,
+        )
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 const X86_FIXED_MMIO_RANGES: &[RawRange] = &[
     (0xfec0_0000, 0x1000), // IOAPIC
@@ -91,6 +153,9 @@ impl MemIf for MemIfImpl {
                 ) {
                     push_non_overlapping(&mut list, (r.physical_start, r.size_in_bytes));
                 }
+            }
+            for reservation in linked_reserved_phys_ram_ranges() {
+                push_non_overlapping(&mut list, (reservation.start, reservation.size));
             }
             #[cfg(target_arch = "x86_64")]
             for &range in X86_RESERVED_RAM_RANGES {
@@ -185,4 +250,23 @@ fn to_somehal_dcache_op(op: DCacheOp) -> somehal::cache::DCacheOp {
 #[unsafe(no_mangle)]
 fn _percpu_base_ptr(idx: usize) -> *mut u8 {
     somehal::smp::percpu_data_ptr(idx).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_LINKED_RESERVATION: EarlyReservedPhysRamRange =
+        EarlyReservedPhysRamRange::new(0x1_8000_0000, 0x2000_0000);
+
+    #[used]
+    #[unsafe(link_section = "ax_reserved_phys_ram")]
+    static LINKED_RESERVED_PHYS_RAM_TEST_ENTRY: EarlyReservedPhysRamRange = TEST_LINKED_RESERVATION;
+
+    #[test]
+    fn discovers_linked_early_physical_reservations() {
+        assert!(early_reserved_phys_ram_ranges().any(|range| {
+            range == (TEST_LINKED_RESERVATION.start, TEST_LINKED_RESERVATION.size)
+        }));
+    }
 }

@@ -23,6 +23,10 @@ pub trait PlatOp {
 
     fn active_irq_id(active: &Self::ActiveIrq) -> IrqId;
 
+    fn defer_irq_deactivation(_active: &mut Self::ActiveIrq) -> Result<(), IrqError> {
+        Err(IrqError::Unsupported)
+    }
+
     fn systick_irq() -> IrqId;
 
     fn resolve_irq_source(source: IrqSource) -> Result<IrqId, IrqError> {

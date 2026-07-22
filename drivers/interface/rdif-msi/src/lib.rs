@@ -9,7 +9,7 @@ pub use irq_framework::{IrqAffinity, IrqError, IrqId};
 pub use rdif_base::DriverGeneric;
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MsiProviderId(pub u64);
 
 #[repr(transparent)]
@@ -126,8 +126,76 @@ impl MsiRequest {
     }
 }
 
+/// Requests one exact MSI translation from a parent interrupt controller.
+///
+/// Unlike [`MsiRequest`], this request does not permit the provider to choose
+/// the event or parent interrupt. It is intended for resource-assignment
+/// boundaries such as a VMM that has already partitioned ITS/LPI ownership.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MsiReservationRequest {
+    device: MsiDeviceId,
+    index: MsiVectorIndex,
+    event: MsiEventId,
+    parent_irq: IrqId,
+    affinity: IrqAffinity,
+}
+
+impl MsiReservationRequest {
+    /// Creates an exact reservation request with provider-selected affinity.
+    pub const fn new(
+        device: MsiDeviceId,
+        index: MsiVectorIndex,
+        event: MsiEventId,
+        parent_irq: IrqId,
+    ) -> Self {
+        Self {
+            device,
+            index,
+            event,
+            parent_irq,
+            affinity: IrqAffinity::Any,
+        }
+    }
+
+    /// Requests delivery to a particular CPU.
+    pub const fn affinity(mut self, affinity: IrqAffinity) -> Self {
+        self.affinity = affinity;
+        self
+    }
+
+    /// Returns the MSI-producing device identifier.
+    pub const fn device(self) -> MsiDeviceId {
+        self.device
+    }
+
+    /// Returns the device-local vector index.
+    pub const fn index(self) -> MsiVectorIndex {
+        self.index
+    }
+
+    /// Returns the exact device event identifier.
+    pub const fn event(self) -> MsiEventId {
+        self.event
+    }
+
+    /// Returns the exact parent-controller interrupt.
+    pub const fn parent_irq(self) -> IrqId {
+        self.parent_irq
+    }
+
+    /// Returns the requested delivery affinity.
+    pub const fn requested_affinity(self) -> IrqAffinity {
+        self.affinity
+    }
+}
+
 pub trait Interface: DriverGeneric {
     fn allocate_vectors(&mut self, request: &MsiRequest) -> Result<Vec<MsiVector>, IrqError>;
+
+    /// Reserves one caller-selected event and parent interrupt.
+    fn reserve_vector(&mut self, _request: &MsiReservationRequest) -> Result<MsiVector, IrqError> {
+        Err(IrqError::Unsupported)
+    }
 
     fn compose_message(&self, vector: &MsiVector) -> Result<MsiMessage, IrqError>;
 
@@ -175,6 +243,28 @@ impl Msi {
             self.provider,
             request.device,
             vectors.into_boxed_slice(),
+        ))
+    }
+
+    /// Reserves one exact device event and parent-controller interrupt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IrqError::Unsupported`] when the provider cannot reserve
+    /// explicit resources, or [`IrqError::InvalidIrq`] when the provider
+    /// returns a different event, vector index, or parent interrupt.
+    pub fn reserve(&mut self, request: MsiReservationRequest) -> Result<MsiAllocation, IrqError> {
+        let vector = self.inner.reserve_vector(&request)?;
+        if vector.index != request.index()
+            || vector.event != request.event()
+            || vector.parent_irq != request.parent_irq()
+        {
+            return Err(IrqError::InvalidIrq);
+        }
+        Ok(MsiAllocation::new(
+            self.provider,
+            request.device(),
+            Box::new([vector]),
         ))
     }
 
@@ -254,7 +344,7 @@ mod tests {
 
     use crate::{
         Interface, Msi, MsiAllocation, MsiDeviceId, MsiEventId, MsiMessage, MsiProviderId,
-        MsiRequest, MsiVector, MsiVectorIndex,
+        MsiRequest, MsiReservationRequest, MsiVector, MsiVectorIndex,
     };
 
     struct MockProvider {
@@ -282,6 +372,17 @@ mod tests {
 
         fn compose_message(&self, vector: &MsiVector) -> Result<MsiMessage, IrqError> {
             Ok(MsiMessage::new(0x0808_0000, vector.event.0))
+        }
+
+        fn reserve_vector(
+            &mut self,
+            request: &MsiReservationRequest,
+        ) -> Result<MsiVector, IrqError> {
+            Ok(MsiVector::new(
+                request.index(),
+                request.event(),
+                request.parent_irq(),
+            ))
         }
 
         fn free_vectors(&mut self, allocation: MsiAllocation) -> Result<(), IrqError> {
@@ -327,6 +428,32 @@ mod tests {
 
         assert_eq!(vector.irq, leaf_irq);
         assert_eq!(vector.parent_irq, parent_irq);
+    }
+
+    #[test]
+    fn explicit_reservation_preserves_requested_identity() {
+        let mut msi = Msi::new(
+            MsiProviderId(3),
+            MockProvider {
+                freed: RefCell::new(Vec::new()),
+            },
+        );
+        let parent_irq = IrqId::new(IrqDomainId(7), HwIrq(8201));
+        let request = MsiReservationRequest::new(
+            MsiDeviceId(0x1234),
+            MsiVectorIndex(5),
+            MsiEventId(17),
+            parent_irq,
+        )
+        .affinity(irq_framework::IrqAffinity::Fixed(irq_framework::CpuId(2)));
+
+        let allocation = msi.reserve(request).unwrap();
+
+        assert_eq!(allocation.device(), MsiDeviceId(0x1234));
+        assert_eq!(allocation.vectors().len(), 1);
+        assert_eq!(allocation.vectors()[0].index, MsiVectorIndex(5));
+        assert_eq!(allocation.vectors()[0].event, MsiEventId(17));
+        assert_eq!(allocation.vectors()[0].parent_irq, parent_irq);
     }
 
     #[test]

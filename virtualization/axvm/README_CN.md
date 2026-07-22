@@ -59,6 +59,15 @@ fn main() {
 }
 ```
 
+固件中 `status = "disabled"` 的节点会归一化为 inactive alias：它既不申请设备，
+也不授权 I/O aperture；若 active 且已授权的节点与它描述同一物理资源，它也不会
+反向给该资源打洞。只有 inactive 描述的地址仍保持未映射。
+
+`HostPlatformSnapshot` 单独记录固件选中的 console。AArch64 进行虚拟替换时会保持
+客户机可见的 UART 编程模型：PL011、packed NS16550 与 Synopsys DW-APB 使用不同
+model ID，DW-APB 固定为 32 位访问和四字节寄存器步长，并生成一致的 FDT 属性。
+Rockchip FIQ debugger 等固件包装节点只用于解析底层 UART，不会暴露给客户机。
+
 ### 文档
 
 生成并查看 API 文档：

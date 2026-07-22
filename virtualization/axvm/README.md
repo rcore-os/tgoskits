@@ -15,7 +15,16 @@ English | [中文](README_CN.md)
 
 # Introduction
 
-`axvm` provides Virtual Machine resource management crate for ArceOS's hypervisor variant. It is maintained as part of the TGOSKits component set and is intended for Rust projects that integrate with ArceOS, AxVisor, or related low-level systems software.
+`axvm` owns VM machine planning and transactional resource lifecycle. A strict
+`VmMachineRequest` plus a host FDT/ACPI snapshot becomes an immutable
+`VmMachinePlan` containing memory, mappings, devices, interrupt topology, and
+guest firmware resources. VM preparation commits the whole plan or rolls it
+back.
+
+Passthrough machines derive authorized hardware from the host snapshot;
+Virtual machines map no host I/O and allocate a new virtual platform. The crate
+uses rust-vmm `vm-allocator`, `vm-fdt`, and `acpi_tables`, and keeps a
+`no_std + alloc` runtime with an optional `std` test feature.
 
 ## Quick Start
 
@@ -51,13 +60,32 @@ cargo doc --no-deps
 
 ### Example
 
-```rust
-use axvm as _;
+```rust,ignore
+use axvm::machine::{HostPlatformSnapshot, VmMachinePlanner};
 
-fn main() {
-    // Integrate `axvm` into your project here.
-}
+let plan = VmMachinePlanner::new(architecture_profile)
+    .plan(&machine_request, &HostPlatformSnapshot::new(0))?;
 ```
+
+The build order is RAM, vCPUs, interrupt controllers and bindings, devices and
+topology, bus mappings, firmware, boot state, and commit. Physical-device
+leases restore ownership on every failure path.
+
+Firmware nodes with `status = "disabled"` are recorded as inactive aliases.
+They neither claim a device nor authorize an I/O aperture, and they do not
+hide an overlapping resource that an active assigned node owns. Consequently,
+an inactive-only range remains unmapped while common alternative bindings for
+one physical device do not punch a hole in an authorized passthrough mapping.
+
+`HostPlatformSnapshot` records the firmware-selected console independently
+from its UART model. This identity lets a guest replace the correct host node
+even when several compatible UARTs exist. AArch64 replacements keep PL011,
+packed NS16550, and Synopsys DW-APB as distinct virtual models; DW-APB uses
+checked 32-bit accesses, a four-byte register stride, and matching FDT
+properties. Firmware wrappers such as a Rockchip FIQ debugger select the
+underlying UART but are not exposed to the guest. Console identity is not
+physical-device authorization by itself: a live platform adapter must grant
+any requested physical transfer and retain its reversible output lease.
 
 ### Documentation
 

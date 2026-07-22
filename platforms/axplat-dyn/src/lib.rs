@@ -23,6 +23,7 @@ mod power;
 
 pub use boot::{boot_stack_bounds, bootargs};
 pub use generic_timer::try_init_epoch_offset;
+pub use mem::{EarlyReservedPhysRamRange, early_reserved_phys_ram_ranges};
 
 #[cfg(feature = "irq")]
 pub fn enable_timer_irq() {

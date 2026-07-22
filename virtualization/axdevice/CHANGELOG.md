@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add per-VM `InterruptTopology`, typed wired/MSI endpoints, controller
+  capabilities, cascades, and vCPU bindings.
+- Add two-phase `VirtualDeviceModel` construction with named resolved resources
+  and optional `std` support for host-side tests.
+
+### Fixed
+
+- Model COM1 as an edge-triggered ISA interrupt, rearm it after guest register
+  accesses, and expose only the PIT's discrete I/O-port ranges.
+- Expose the IOAPIC's stable in-service GSI identity to interrupt-topology
+  adapters even when the guest temporarily masks the redirection entry.
+
+### Removed
+
+- Remove the configuration-driven `DeviceFactory`, `IrqResolver`, manual vector
+  injection surface, and legacy raw emulated-device configuration.
+
 ## [0.5.4](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.3...axdevice-v0.5.4) - 2026-07-10
 
 ### Other

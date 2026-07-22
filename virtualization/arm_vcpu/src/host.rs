@@ -2,20 +2,13 @@
 
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use crate::ArmVcpuResult;
-
 /// Host operations required by AArch64 virtualization code.
 ///
 /// The vCPU core calls these static methods at architecture boundaries where
-/// the embedding OS or VMM owns the policy: virtual interrupt injection,
-/// physical interrupt reporting, and current-EL interrupt dispatch.
+/// the embedding OS or VMM owns physical interrupt reporting and current-EL
+/// interrupt dispatch. Guest interrupt delivery belongs to the registered
+/// interrupt controller rather than this host callback.
 pub trait ArmHostOps {
-    /// Inject a virtual interrupt through host interrupt-controller state.
-    fn inject_virtual_interrupt(vector: u8) -> ArmVcpuResult;
-
-    /// Report a pending host IRQ after a lower-EL IRQ VM exit.
-    fn fetch_pending_host_irq() -> Option<usize>;
-
     /// Dispatch a host IRQ taken while running at the current exception level.
     fn handle_current_host_irq();
 }

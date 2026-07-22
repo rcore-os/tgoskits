@@ -104,8 +104,22 @@ mod tests {
 
     #[test]
     fn keep_configured_boot_policy_does_not_relocate_identical_memory() {
-        let mut config = config_for_boot_policy(VMBootProtocol::Multiboot, Some(0x8000));
-        config.set_boot_policy(GuestBootPolicy::KeepConfigured);
+        let mut config = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            name: String::from("boot-policy-test"),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            cpu_config: AxVCpuConfig {
+                bsp_entry: GuestPhysAddr::from(0x101000),
+                ap_entry: GuestPhysAddr::from(0x102000),
+            },
+            image_config: VMImageConfig {
+                kernel_load_gpa: GuestPhysAddr::from(0x100000),
+                bios_load_gpa: Some(GuestPhysAddr::from(0x8000)),
+                ..Default::default()
+            },
+            boot_policy: GuestBootPolicy::KeepConfigured,
+            ..Default::default()
+        });
         let plan = BootImagePlan::new(GuestPhysAddr::from(0x4000_0000), true);
 
         plan.apply_to_config(&mut config);

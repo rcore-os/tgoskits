@@ -8,11 +8,8 @@ use ax_kspin::SpinNoIrq as Mutex;
 use axvm_types::VMId;
 
 use crate::{
-    AxVmError, AxVmResult,
-    arch::ArchVCpu,
-    ax_err,
+    AxVmResult, ax_err,
     host::{HostPlatform, default_host},
-    vcpu::get_current_vcpu,
     vm::AxVMRef,
 };
 
@@ -54,67 +51,14 @@ pub fn get_vm_list() -> Vec<AxVMRef> {
     VM_REGISTRY.lock().values().cloned().collect()
 }
 
-/// Run an operation with a VM selected from the process-wide runtime registry.
-pub(crate) fn with_vm<F, R>(vm_id: VMId, f: F) -> Option<R>
-where
-    F: FnOnce(&AxVMRef) -> R,
-{
-    let vm = VM_REGISTRY.lock().get(&vm_id).cloned();
-    vm.map(|vm| f(&vm))
-}
-
-/// Return the active-vCPU mask for a VM.
-pub(crate) fn active_vcpu_mask(vm_id: VMId) -> Option<usize> {
-    with_vm(vm_id, |vm| {
-        let vcpu_num = vm.vcpu_num();
-        if vcpu_num >= usize::BITS as usize {
-            usize::MAX
-        } else {
-            (1usize << vcpu_num) - 1
-        }
-    })
-}
-
-/// Inject a virtual interrupt into a VM's vCPU.
-pub(crate) fn inject_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
-    crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
-}
-
-/// Inject a virtual interrupt into a VM's vCPU.
-#[expect(
-    dead_code,
-    reason = "only the LoongArch IRQ backend injects external VM interrupts"
-)]
-pub(crate) fn inject_vm_vcpu_interrupt(vm_id: VMId, vcpu_id: usize, vector: usize) -> AxVmResult {
-    use crate::AsVCpuTask;
-
-    let current = crate::host::task::current_task();
-    if let Some(task) = current.try_as_vcpu_task()
-        && task.vm().id() == vm_id
-        && task.vcpu.id() == vcpu_id
-    {
-        return task.vcpu.inject_interrupt(vector);
-    }
-
-    crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
-}
-
 /// Return the current VM ID from the vCPU currently executing on this CPU.
 pub fn current_vm_id() -> Option<VMId> {
-    get_current_vcpu::<ArchVCpu>().map(|vcpu| vcpu.vm_id())
+    crate::vcpu::get_current_vcpu::<crate::arch::ArchVCpu>().map(|vcpu| vcpu.vm_id())
 }
 
 /// Return the current vCPU ID from the vCPU currently executing on this CPU.
 pub fn current_vcpu_id() -> Option<usize> {
-    get_current_vcpu::<ArchVCpu>().map(|vcpu| vcpu.id())
-}
-
-/// Inject a virtual interrupt into the vCPU currently executing on this CPU.
-pub fn inject_current_vcpu_interrupt(vector: usize) -> AxVmResult {
-    let vcpu = get_current_vcpu::<ArchVCpu>().ok_or_else(|| {
-        AxVmError::resource_unavailable("current vCPU", "current vCPU is not set")
-    })?;
-    vcpu.inject_interrupt(vector)
+    crate::vcpu::get_current_vcpu::<crate::arch::ArchVCpu>().map(|vcpu| vcpu.id())
 }
 
 impl AxvmRuntime {
