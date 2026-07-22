@@ -393,6 +393,15 @@ jobs:
             container_image: base
             limit_to_owner: ""
             main_pr_only: false
+          - name: Test axvisor qemu ivc
+            use_container: false
+            runs_on: '["self-hosted","linux","qcs"]'
+            self_hosted_owner: rcore-os
+            command: cargo xtask axvisor test qemu --arch aarch64 --test-group normal --test-case ivc
+            cache_key: ""
+            container_image: base
+            limit_to_owner: ""
+            main_pr_only: false
           - name: Test axvisor riscv64 qemu
             use_container: false
             runs_on: '["self-hosted","linux","qcs"]'
