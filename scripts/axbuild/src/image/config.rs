@@ -8,9 +8,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml";
+    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/ivc/registry/v0.0.9.toml";
 pub const DEFAULT_FALLBACK_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.8.toml";
+    "https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/ivc/registry/v0.0.9.toml";
 pub const IMAGE_CONFIG_FILENAME: &str = ".image.toml";
 const DEFAULT_AUTO_SYNC_THRESHOLD: u64 = 60 * 60 * 24 * 7;
 const LOCAL_STORAGE_ENV: &str = "TGOS_IMAGE_LOCAL_STORAGE";
