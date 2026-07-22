@@ -171,6 +171,22 @@ pub fn init_scheduler_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     crate::run_queue::init_secondary(stack_ptr, stack_size);
 }
 
+/// Optional per-CPU "perf tick" callback (a `fn(bool)` stored as its address),
+/// invoked from the periodic scheduler tick. Registered by the perf subsystem
+/// via [`set_perf_tick`]; `0` (a single atomic load + branch) when perf is not in
+/// use, so `axtask` carries no hard dependency on the perf subsystem. Mirrors the
+/// nullable `ax_hal::irq::set_run_on_cpu_sync` registration hook.
+#[cfg(feature = "irq")]
+static PERF_TICK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Register the per-CPU perf-tick callback `f`, invoked (in timer-IRQ context)
+/// from each periodic scheduler tick. Set once at perf-subsystem init; the
+/// argument is the `scheduler_tick` flag.
+#[cfg(feature = "irq")]
+pub fn set_perf_tick(f: fn(bool)) {
+    PERF_TICK.store(f as usize, core::sync::atomic::Ordering::Release);
+}
+
 /// Handles periodic timer ticks for the task manager.
 ///
 /// For example, advance scheduler states, checks timed events, etc.
@@ -190,6 +206,15 @@ pub fn on_timer_irq(scheduler_tick: bool) {
         // Since irq and preemption are both disabled here,
         // we can get current run queue with the default `ax_kernel_guard::NoOp`.
         current_run_queue::<NoOp>().scheduler_timer_tick();
+        // Drive Tier-2 perf counter rotation, if the perf subsystem registered a
+        // tick. A null (zero) address means perf is unused — just a load + branch.
+        let perf = PERF_TICK.load(core::sync::atomic::Ordering::Acquire);
+        if perf != 0 {
+            // SAFETY: `PERF_TICK` only ever holds an address stored from a valid
+            // `fn(bool)` via `set_perf_tick` (or 0).
+            let f: fn(bool) = unsafe { core::mem::transmute::<usize, fn(bool)>(perf) };
+            f(scheduler_tick);
+        }
     }
 }
 

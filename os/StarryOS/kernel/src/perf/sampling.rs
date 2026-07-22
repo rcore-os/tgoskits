@@ -41,7 +41,7 @@
 //! the slot — *before* dropping that `Arc`. The handler therefore only ever
 //! dereferences a pointer whose target is still alive.
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_kernel_guard::NoPreemptIrqSave;
@@ -106,14 +106,17 @@ const PERF_RECORD_MISC_KERNEL: u16 = 1;
 /// `PERF_RECORD_MISC_USER`: the sample landed in user (EL0) context.
 const PERF_RECORD_MISC_USER: u16 = 2;
 
-/// Upper bound on a single `PERF_RECORD_SAMPLE` we emit: 8-byte header plus at
-/// most nine 8-byte scalar fields (IDENTIFIER, IP, TID(pid+tid), TIME, ADDR, ID,
-/// STREAM_ID, CPU(cpu+res), PERIOD). [`build_sample`] writes into a stack buffer
-/// of this size and returns the actual length.
-const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8;
+/// Upper bound on a single `PERF_RECORD_SAMPLE` we emit: 8-byte header, at most
+/// nine 8-byte scalar fields (IDENTIFIER, IP, TID(pid+tid), TIME, ADDR, ID,
+/// STREAM_ID, CPU(cpu+res), PERIOD), then an optional callchain block — a `u64
+/// nr` count followed by up to two `PERF_CONTEXT_*` markers and `2 *
+/// MAX_STACK_DEPTH` instruction pointers (a kernel region + a user region).
+/// [`build_sample`] writes into a stack buffer of this size and returns the
+/// actual length.
+const SAMPLE_RECORD_MAX_LEN: usize = 8 + 9 * 8 + 8 + (2 + 2 * MAX_STACK_DEPTH) * 8;
 
-// `perf_event_sample_format` bits (see `man perf_event_open`). Only the scalar
-// fields below are supported; every other bit (READ, CALLCHAIN, RAW,
+// `perf_event_sample_format` bits (see `man perf_event_open`). The scalar fields
+// below plus `PERF_SAMPLE_CALLCHAIN` are supported; every other bit (READ, RAW,
 // BRANCH_STACK, REGS_USER/INTR, STACK_USER, WEIGHT, DATA_SRC, TRANSACTION,
 // PHYS_ADDR, …) is rejected at open time.
 /// `PERF_SAMPLE_IP`: instruction pointer. Always set by real `perf` for samples.
@@ -134,11 +137,28 @@ const PERF_SAMPLE_PERIOD: u64 = 1 << 8;
 const PERF_SAMPLE_STREAM_ID: u64 = 1 << 9;
 /// `PERF_SAMPLE_IDENTIFIER`: leading event id (`u64`), emitted first.
 const PERF_SAMPLE_IDENTIFIER: u64 = 1 << 16;
+/// `PERF_SAMPLE_CALLCHAIN`: per-sample call stack — a `u64 nr` count then `nr`
+/// u64 instruction pointers, split into kernel/user regions by the
+/// `PERF_CONTEXT_*` markers below. Set by `perf record -g` / `--call-graph fp`.
+const PERF_SAMPLE_CALLCHAIN: u64 = 1 << 5;
+
+/// Callchain marker: the entries that follow are kernel (EL1) instruction
+/// pointers (Linux `PERF_CONTEXT_KERNEL`). Counts as one callchain entry.
+const PERF_CONTEXT_KERNEL: u64 = (-128i64) as u64;
+/// Callchain marker: the entries that follow are user (EL0) instruction pointers
+/// (Linux `PERF_CONTEXT_USER`). Counts as one callchain entry.
+const PERF_CONTEXT_USER: u64 = (-512i64) as u64;
+
+/// Per-region cap on callchain depth (the kernel and user regions are bounded
+/// separately). Sizes the fixed on-stack chain and record buffers, so it stays
+/// allocation-free in the overflow handler.
+const MAX_STACK_DEPTH: usize = 64;
 
 /// Every `sample_type` bit the sampling backend can emit a well-formed
 /// `PERF_RECORD_SAMPLE` for. A sampling event whose `sample_type` sets any bit
 /// outside this mask is rejected at open ([`super::hw`] reuses this constant);
-/// real `perf record` sets `IP|TID|TIME|PERIOD`, all within the mask.
+/// real `perf record` sets `IP|TID|TIME|PERIOD`, and `-g` adds `CALLCHAIN`, all
+/// within the mask.
 pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_TID
     | PERF_SAMPLE_TIME
@@ -147,7 +167,8 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_CPU
     | PERF_SAMPLE_PERIOD
     | PERF_SAMPLE_STREAM_ID
-    | PERF_SAMPLE_IDENTIFIER;
+    | PERF_SAMPLE_IDENTIFIER
+    | PERF_SAMPLE_CALLCHAIN;
 
 /// Everything the overflow handler needs for one counter, in a lock-free,
 /// alloc-free `Copy` POD.
@@ -186,6 +207,12 @@ pub struct SampleSlot {
     /// before the first sample, when the period is left at its initial estimate.
     /// Mutated in place by the handler as the period adapts.
     pub last_time: u64,
+    /// Raw pointer to the owning event's lost-sample `AtomicU64`, bumped each time
+    /// a `PERF_RECORD_SAMPLE` is dropped because the ring is full. Read back by
+    /// `read(perf_fd)` for `PERF_FORMAT_LOST`. Kept alive by the event for as long
+    /// as the slot is registered (teardown unregisters first), exactly like
+    /// [`notify`](Self::notify). Null when the event tracks no lost count.
+    pub lost: *const (),
 }
 
 // SAFETY: `SampleSlot` is a plain bag of integers plus a raw pointer. The
@@ -252,6 +279,11 @@ pub fn unregister(n: usize) {
 /// under smp1 the PMU PPI would otherwise stay masked and the overflow IRQ would
 /// never fire on cpu0.
 pub fn ensure_pmu_irq_registered() {
+    // Guarantee this core's PMU is brought up (PMCR.E set, clean slate) before
+    // we arm an overflow on it. On secondary cores nothing else does this, so
+    // without it the counter would never count / the overflow never fire.
+    super::percpu::ensure_core_inited();
+
     let pmu_irq = match pmu_irq() {
         Ok(irq) => irq,
         Err(err) => {
@@ -341,6 +373,7 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         let sample_type = slot.sample_type;
         let id = slot.id;
         let notify_ptr = slot.notify;
+        let lost_ptr = slot.lost;
         let ring_vaddr = slot.ring_vaddr;
         let ring_len = slot.ring_len;
         let cur_period = slot.period;
@@ -353,6 +386,15 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
         let tid = ax_task::current().id().as_u64() as u32;
         let time = ax_runtime::hal::time::monotonic_time_nanos();
         let cpu = ax_hal::percpu::this_cpu_id() as u32;
+        // Call stack for PERF_SAMPLE_CALLCHAIN (alloc-free, fixed on-stack buffer;
+        // empty unless the event requested it). Kernel frames are unwound from the
+        // interrupted x29; the user region is the leaf IP in M4a.
+        let mut chain = [0u64; 2 + 2 * MAX_STACK_DEPTH];
+        let nchain = if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
+            build_callchain(ip, is_user, &mut chain)
+        } else {
+            0
+        };
         let mut record = [0u8; SAMPLE_RECORD_MAX_LEN];
         let data = SampleData {
             ip,
@@ -364,13 +406,20 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
             stream_id: 0,
             cpu,
             period: cur_period as u64,
+            callchain: &chain[..nchain],
         };
         let len = build_sample(&mut record, sample_type, misc, &data);
 
         // SAFETY: `ring_vaddr`/`ring_len` describe live, kernel-mapped pages for
         // as long as the slot is registered (the event pins them, and teardown
         // unregisters before freeing). `ring_write` only touches that region.
-        unsafe { ring_write(ring_vaddr, ring_len, &record[..len]) };
+        let wrote = unsafe { ring_write(ring_vaddr, ring_len, &record[..len]) };
+        if !wrote && !lost_ptr.is_null() {
+            // The ring was full; account the dropped sample for PERF_FORMAT_LOST.
+            // SAFETY: `lost_ptr` points at the owning event's `AtomicU64`, kept
+            // alive while the slot is registered (teardown unregisters first).
+            unsafe { (*(lost_ptr as *const AtomicU64)).fetch_add(1, Ordering::Relaxed) };
+        }
 
         // Frequency mode: adapt the period toward the target rate and persist it
         // (plus the sample timestamp) in the slot for the next interval. Fixed
@@ -412,6 +461,48 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
     IrqReturn::Handled
 }
 
+/// Fills `chain` with the interrupted call stack for `PERF_SAMPLE_CALLCHAIN`,
+/// returning the number of `u64` entries written.
+///
+/// The layout mirrors Linux: a `PERF_CONTEXT_*` region marker followed by that
+/// region's instruction pointers, leaf first — `[PERF_CONTEXT_KERNEL, ip, ra0,
+/// …]` for a kernel sample, `[PERF_CONTEXT_USER, ip, ra0, …]` for a user sample.
+/// Kernel frames are unwound from the interrupted `x29` via
+/// [`super::unwind::kernel_callchain`], user frames via
+/// [`super::unwind::user_callchain`] (through the IRQ-safe no-fault `TTBR0`
+/// reader). If no frame pointer was published the region degrades to
+/// `[marker, ip]` (never empty, so the sample is never dropped). Deep frames
+/// appear only when the sampled code keeps frame pointers (the kernel when built
+/// with `-Cforce-frame-pointers`, user binaries built `-fno-omit-frame-pointer`).
+/// Allocation-free and safe from the overflow handler.
+fn build_callchain(ip: u64, is_user: bool, chain: &mut [u64]) -> usize {
+    // `chain` is the handler's fixed `[u64; 2 + 2 * MAX_STACK_DEPTH]` buffer, so
+    // the leading fixed-index writes below are always in bounds. Each region is
+    // capped at `MAX_STACK_DEPTH` frames (plus its one-word marker).
+    chain[0] = if is_user {
+        PERF_CONTEXT_USER
+    } else {
+        PERF_CONTEXT_KERNEL
+    };
+    let region_end = (1 + MAX_STACK_DEPTH).min(chain.len());
+    let region = &mut chain[1..region_end];
+    match ax_cpu::pmu::interrupted_fp() {
+        Some(fp) if is_user => {
+            // Bound the user walk to the interrupted user stack (SP_EL0); fall back
+            // to the frame pointer itself as the window anchor if unavailable.
+            let sp = ax_cpu::pmu::interrupted_sp().unwrap_or(fp);
+            1 + super::unwind::user_callchain(ip as usize, fp, sp, region)
+        }
+        Some(fp) => 1 + super::unwind::kernel_callchain(ip as usize, fp, region),
+        None => {
+            // No frame pointer published (e.g. sampled on a path that does not
+            // plumb it): emit the leaf IP alone rather than dropping the region.
+            chain[1] = ip;
+            2
+        }
+    }
+}
+
 /// Lays out one `PERF_RECORD_SAMPLE` into `buf` per `sample_type`, returning its
 /// total length in bytes.
 ///
@@ -429,13 +520,15 @@ pub fn pmu_overflow_handler(_ctx: IrqContext) -> IrqReturn {
 /// 8. `STREAM_ID` → `u64 stream_id`
 /// 9. `CPU` → `u32 cpu`, `u32 res = 0`
 /// 10. `PERIOD` → `u64 period`
+/// 11. `CALLCHAIN` → `u64 nr`, then `nr` u64 entries (`PERF_CONTEXT_*` markers +
+///     instruction pointers) from `d.callchain`
 ///
 /// `buf` must be at least [`SAMPLE_RECORD_MAX_LEN`] bytes. With
 /// `sample_type == PERF_SAMPLE_IP` exactly, the result is the original 16-byte
 /// IP-only record (8-byte header + `u64 ip`).
-/// The per-sample scalar values [`build_sample`] may emit (those not implied by
+/// The per-sample values [`build_sample`] may emit (those not implied by
 /// `sample_type` alone). Gathered by the overflow handler at interrupt time.
-struct SampleData {
+struct SampleData<'a> {
     ip: u64,
     pid: u32,
     tid: u32,
@@ -445,11 +538,17 @@ struct SampleData {
     stream_id: u64,
     cpu: u32,
     period: u64,
+    /// The `PERF_SAMPLE_CALLCHAIN` entries (`PERF_CONTEXT_*` markers + IPs), or an
+    /// empty slice when the event did not request a callchain. Emitted verbatim as
+    /// the `nr` count followed by the entries. Borrows the handler's fixed on-stack
+    /// chain buffer.
+    callchain: &'a [u64],
 }
 
-fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> usize {
+fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData<'_>) -> usize {
     // Cursor into `buf`. All offsets stay within `SAMPLE_RECORD_MAX_LEN` because
-    // at most the header + 9 u64-sized fields are written and the caller passes a
+    // at most the header + 9 u64 scalar fields + the callchain block (`nr` plus at
+    // most `2 + 2*MAX_STACK_DEPTH` entries) are written, and the caller passes a
     // buffer of that size. `put!` appends a native-endian scalar and advances the
     // cursor (a macro, not a closure, so it never holds a borrow of `off`).
     let mut off = 0usize;
@@ -499,6 +598,14 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
     if sample_type & PERF_SAMPLE_PERIOD != 0 {
         put!(d.period);
     }
+    if sample_type & PERF_SAMPLE_CALLCHAIN != 0 {
+        // `u64 nr` count (the `PERF_CONTEXT_*` markers count as entries) followed
+        // by the entries themselves, exactly as Linux lays out the block.
+        put!(d.callchain.len() as u64);
+        for &entry in d.callchain {
+            put!(entry);
+        }
+    }
 
     // Back-patch the header's `size` field now that the total length is known.
     buf[size_off..size_off + 2].copy_from_slice(&(off as u16).to_ne_bytes());
@@ -514,9 +621,10 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
 /// then `data_head` is published with a release fence so a userspace reader that
 /// observes the new `data_head` also observes the bytes.
 ///
-/// If the record would overwrite still-unread bytes
-/// (`data_head - data_tail + len > data_size`) it is dropped: `data_head` is not
-/// advanced. Lost-record accounting is intentionally omitted for M2.
+/// Returns `true` if the record was written, `false` if it was dropped because it
+/// would overwrite still-unread bytes (`data_head - data_tail + len > data_size`);
+/// on drop `data_head` is not advanced and the caller bumps the event's
+/// `PERF_FORMAT_LOST` counter so `perf record` can report the loss.
 ///
 /// # Safety
 ///
@@ -525,12 +633,12 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
 /// `HwPerfEvent::device_mmap`. The caller must ensure no concurrent kernel
 /// writer touches the same ring (guaranteed here: one counter ⇒ one writer, and
 /// the handler runs with local IRQs masked).
-unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
+unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) -> bool {
     // Guard the enable-before-mmap case (slot registered with a zero ring) and
     // any ring too small to even hold the header page: there is nowhere to
     // write, and the header pointer would be null/out of bounds.
     if ring_vaddr == 0 || ring_len < core::mem::size_of::<perf_event_mmap_page>() {
-        return;
+        return false;
     }
 
     let header = ring_vaddr as *mut perf_event_mmap_page;
@@ -543,12 +651,12 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
     // Defensive: a malformed/zero header (no data region, or a data window that
     // does not fit in the buffer) means there is nowhere safe to write.
     if data_size == 0 || data_offset > ring_len || data_offset + data_size > ring_len {
-        return;
+        return false;
     }
 
     let len = record.len();
     if len > data_size {
-        return;
+        return false;
     }
 
     // SAFETY: header page is initialized; these are plain u64 fields.
@@ -556,9 +664,10 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
     let tail = unsafe { core::ptr::addr_of!((*header).data_tail).read_volatile() };
 
     // Would this record overwrite bytes the reader has not consumed yet? Drop it
-    // if so (back-pressure; no lost-record accounting in M2).
+    // if so (back-pressure). Returning `false` lets the caller bump the event's
+    // lost-sample counter (`PERF_FORMAT_LOST`).
     if head.wrapping_sub(tail).wrapping_add(len as u64) > data_size as u64 {
-        return;
+        return false;
     }
 
     let data_base = ring_vaddr + data_offset;
@@ -585,6 +694,7 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
     unsafe {
         core::ptr::addr_of_mut!((*header).data_head).write_volatile(head.wrapping_add(len as u64));
     }
+    true
 }
 
 /// Write one record into a sampling ring from **process context** (the side-band

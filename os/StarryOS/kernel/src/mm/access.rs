@@ -258,6 +258,10 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
         return false;
     };
 
+    // Count this fault for any `PERF_COUNT_SW_PAGE_FAULTS` event on the thread
+    // (cheap no-op when none exists).
+    crate::perf::sw::on_page_fault(thr);
+
     if unlikely(!thr.is_accessing_user_memory()) {
         // Still try to handle kernel-mode faults on user-space addresses.
         // Several syscall sites (e.g. event.rs, net/io.rs, fs/lock.rs) obtain

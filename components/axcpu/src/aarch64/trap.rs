@@ -128,7 +128,15 @@ fn aarch64_trap_handler(tf: &mut TrapFrame, kind: TrapKind, source: TrapSource) 
             );
         }
         TrapKind::Irq => {
+            // Publish the interrupted frame so a PMU overflow handler running
+            // inside `dispatch_irq` can unwind the interrupted call stack for
+            // `PERF_SAMPLE_CALLCHAIN`. Purely additive: set after SAVE_REGS, clear
+            // before returning, both under the IRQ-masked dispatch window, so no
+            // nested IRQ observes a stale frame and the save/restore path is
+            // untouched.
+            unsafe { super::pmu::set_trap_frame(tf as *const _) };
             crate::trap::dispatch_irq(0);
+            super::pmu::clear_trap_frame();
         }
         TrapKind::Synchronous => {
             #[cfg(not(feature = "arm-el2"))]

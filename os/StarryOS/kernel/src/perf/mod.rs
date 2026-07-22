@@ -9,6 +9,15 @@
 pub mod bpf;
 pub mod hw;
 pub mod kprobe;
+/// IRQ-safe no-fault user/kernel memory reader for PMU-sampling FP unwinding.
+/// ARM PMUv3 only; walks `TTBR0`/`TTBR1` against the direct map so a bad frame
+/// pointer never faults.
+#[cfg(target_arch = "aarch64")]
+pub mod nofault;
+/// Per-CPU hardware-PMU state (allocator, cluster identity). ARM PMUv3 only;
+/// the per-core counter pools + cluster classification live here.
+#[cfg(target_arch = "aarch64")]
+pub mod percpu;
 pub mod raw_tracepoint;
 /// PMU overflow-IRQ sampling backend (M2). ARM PMUv3 only; the counting and
 /// tracing paths are arch-agnostic, but sampling depends on CPU PMU registers.
@@ -19,12 +28,26 @@ pub mod sampling;
 /// gated like `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod sideband;
+/// Software events (`PERF_TYPE_SOFTWARE`) as real per-task counters — the default
+/// `perf stat` rows (cpu-clock / task-clock / context-switches / cpu-migrations /
+/// page-faults). Pure accounting driven by the scheduler + fault hooks, no PMU,
+/// so it is arch-independent.
+pub mod sw;
 /// Per-task hardware-PMU counting (`perf stat -- cmd`, M3). ARM PMUv3 only; the
 /// scheduler hooks call into CPU PMU register helpers, so it is gated like
 /// `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod task;
+/// Per-CPU perf tick driving Tier-2 counter rotation (multiplexing). ARM PMUv3
+/// only; registered with the scheduler tick at [`perf_event_init`].
+#[cfg(target_arch = "aarch64")]
+pub mod tick;
 pub mod tracepoint;
+/// Frame-pointer call-graph unwinding for PMU sampling (`PERF_SAMPLE_CALLCHAIN`).
+/// ARM PMUv3 only; consumes the interrupted frame pointer plumbed through
+/// `ax_cpu::pmu` and the alloc-free `axbacktrace::walk_fp` engine.
+#[cfg(target_arch = "aarch64")]
+pub mod unwind;
 pub mod uprobe;
 
 use alloc::{borrow::Cow, boxed::Box, sync::Arc, vec};
@@ -46,7 +69,7 @@ pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
 use kbpf_basic::{
     linux_bpf::{PERF_FLAG_FD_CLOEXEC, perf_event_attr},
-    perf::{PerfEventIoc, PerfProbeArgs, PerfTypeId},
+    perf::{PerfEventIoc, PerfProbeArgs, PerfProbeConfig, PerfTypeId},
 };
 
 use crate::{
@@ -73,6 +96,28 @@ static NEXT_PERF_EVENT_ID: AtomicU64 = AtomicU64::new(1);
 /// agnostic (and compile under multi-target clippy).
 pub fn read_midr_el1() -> u64 {
     pmu::cpu_id_raw().unwrap_or(0)
+}
+
+/// Test-only: enable/disable the big.LITTLE cluster parity override (even CPU =
+/// `Little`, odd = `Big`) so a homogeneous machine can exercise the cluster
+/// logic. Backs `/proc/sys/kernel/perf_test_force_clusters`. No-op off aarch64.
+pub fn set_force_clusters(on: bool) {
+    #[cfg(target_arch = "aarch64")]
+    percpu::set_force_clusters(on);
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = on;
+}
+
+/// Whether the cluster parity override is enabled (see [`set_force_clusters`]).
+pub fn force_clusters_enabled() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        percpu::force_clusters_enabled()
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        false
+    }
 }
 
 /// `ioctl` type byte for the perf-event ioctls (`'$'`).
@@ -105,7 +150,7 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// Allocate the user-visible ringbuf and return its physical start
     /// address (length is the user-supplied mmap length, page-aligned)
     /// together with a retainer that owns the backing pages. The caller
-    /// threads the retainer into `DeviceMmap::Physical(.., Some(anchor))`
+    /// threads the retainer into `DeviceMmap::PhysicalCached(.., Some(anchor))`
     /// so the pages stay live for as long as the user mapping exists, even
     /// after `close(perf_fd)`. Only `bpf::BpfPerfEventWrapper` overrides
     /// this; the other variants (kprobe/tracepoint/raw-tp/uprobe wrappers)
@@ -176,6 +221,12 @@ const PERF_FORMAT_TOTAL_TIME_ENABLED: u64 = 1 << 0;
 const PERF_FORMAT_TOTAL_TIME_RUNNING: u64 = 1 << 1;
 /// `read_format` bit selecting the per-event `id` in `read(perf_fd)`.
 const PERF_FORMAT_ID: u64 = 1 << 2;
+/// `read_format` bit selecting the per-event lost-sample count in `read(perf_fd)`
+/// (`PERF_FORMAT_LOST`, Linux 5.19+). `perf record` sets it so its
+/// `record__read_lost_samples` can total samples the ring dropped; the `u64` is
+/// appended last, after `id`. Without it, `perf record` prints "read LOST count
+/// failed" because the read returns a short buffer.
+const PERF_FORMAT_LOST: u64 = 1 << 4;
 
 /// Counter snapshot returned by [`PerfEventOps::read_values`].
 ///
@@ -194,6 +245,9 @@ pub struct PerfReadValues {
     /// The `PERF_FORMAT_ID` value itself comes from the owning [`PerfEvent`]'s
     /// id (so `read` and `PERF_EVENT_IOC_ID` agree), not from this snapshot.
     pub read_format: u64,
+    /// Samples the ring dropped for this event (`PERF_FORMAT_LOST`). `0` for
+    /// counting-only events (no sampling ring).
+    pub lost: u64,
 }
 
 /// File-like handle returned by `perf_event_open(2)`. Locks a
@@ -290,7 +344,7 @@ impl FileLike for PerfEvent {
         let values = self.event.lock().read_values()?;
 
         // Build the field sequence gated by `read_format`, in Linux order.
-        let mut fields = [0u64; 4];
+        let mut fields = [0u64; 5];
         let mut n = 0;
         fields[n] = values.value;
         n += 1;
@@ -306,6 +360,10 @@ impl FileLike for PerfEvent {
             // The id is the wrapper's, so `read(perf_fd)` reports the same value
             // `PERF_EVENT_IOC_ID` handed userspace (the inner snapshot has none).
             fields[n] = self.id;
+            n += 1;
+        }
+        if values.read_format & PERF_FORMAT_LOST != 0 {
+            fields[n] = values.lost;
             n += 1;
         }
 
@@ -396,7 +454,16 @@ impl FileLike for PerfEvent {
         // Anchor the ringbuf pages to the VMA: the retainer keeps them alive
         // until `munmap`/exit, so closing the perf fd can't free memory the
         // user address space still maps. See `BpfPerfEventWrapper::pages`.
-        Ok(DeviceMmap::Physical(
+        //
+        // CACHEABLE, not `Physical`/`UNCACHED`: these are RAM pages the kernel
+        // writes through its cacheable linear map (the mmap-page header, the
+        // sample ring, the rdpmc counter page) and userspace reads back. Both
+        // are Normal Inner-Shareable cacheable mappings of the same physical
+        // page, so the hardware keeps them coherent with no explicit
+        // maintenance. An `UNCACHED` user mapping reads stale zeros on real
+        // silicon (the kernel's cached writes never reach RAM) — a bug QEMU
+        // hides because it models no caches.
+        Ok(DeviceMmap::PhysicalCached(
             PhysAddrRange::from_start_size(paddr, len),
             Some(anchor),
         ))
@@ -447,14 +514,18 @@ pub fn perf_event_open(
     // `PerfProbeArgs::try_from_perf_attr`, which maps any non-probe type through
     // `perf_sw_ids` and rejects hardware configs with `EINVAL`.
     let event: Box<dyn PerfEventOps> = if attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
+        || attr.type_ == PerfTypeId::PERF_TYPE_HW_CACHE as u32
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
         || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
+        || attr.type_ == hw::ARMV8_CORTEX_A55_TYPE
+        || attr.type_ == hw::ARMV8_CORTEX_A76_TYPE
     {
-        // Thread `pid` into the hardware path so it can choose between the
-        // system-wide M1 path (`pid <= 0`) and per-task counting (`pid > 0`).
-        // `cpu` / `group_fd` / `flags` are not consumed by the hardware path
-        // (single-CPU, no event groups), so they are intentionally dropped.
-        Box::new(hw::perf_event_open_hw(attr, pid)?)
+        // Thread `pid` + `cpu` into the hardware path: it chooses between
+        // per-task counting (`pid > 0`), a cpu-bound system-wide event
+        // (`pid <= 0 && cpu >= 0`, the `perf stat -a` fan-out — counts on that
+        // core via its per-CPU pool), and the current-core path (`cpu < 0`).
+        // `group_fd` / `flags` are not consumed by the hardware path.
+        Box::new(hw::perf_event_open_hw(attr, pid, cpu)?)
     } else {
         let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
             attr, pid, cpu, group_fd, flags,
@@ -462,7 +533,16 @@ pub fn perf_event_open(
         .into_ax_result()?;
         match args.type_ {
             PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
-            PerfTypeId::PERF_TYPE_SOFTWARE => Box::new(bpf::perf_event_open_bpf(args)),
+            // The five counting software events (`perf stat`'s default rows) become
+            // real per-task counters; every other software config (e.g.
+            // `PERF_COUNT_SW_DUMMY`, `perf record`'s tracking event) keeps the
+            // BPF/ring path.
+            PerfTypeId::PERF_TYPE_SOFTWARE => match &args.config {
+                PerfProbeConfig::PerfSwIds(sw_id) if sw::is_counting_sw(*sw_id) => {
+                    Box::new(sw::perf_event_open_sw(attr, *sw_id, pid)?)
+                }
+                _ => Box::new(bpf::perf_event_open_bpf(args)),
+            },
             PerfTypeId::PERF_TYPE_TRACEPOINT => {
                 Box::new(tracepoint::perf_event_open_tracepoint(args)?)
             }
@@ -494,9 +574,13 @@ pub fn perf_event_open(
 static PERF_FILE: LazyInit<SpinNoPreempt<HashMap<usize, alloc::sync::Weak<dyn FileLike>>>> =
     LazyInit::new();
 
-/// Initialize the perf-event runtime: build the fd→event lookup table.
+/// Initialize the perf-event runtime: build the fd→event lookup table and
+/// register the Tier-2 rotation tick with the periodic scheduler tick.
 pub fn perf_event_init() {
     PERF_FILE.init_once(SpinNoPreempt::new(HashMap::new()));
+    // Drive per-CPU counter rotation (multiplexing) from the scheduler tick.
+    #[cfg(target_arch = "aarch64")]
+    ax_task::set_perf_tick(tick::perf_tick);
 }
 
 /// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,

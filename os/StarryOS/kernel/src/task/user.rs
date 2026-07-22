@@ -124,6 +124,9 @@ pub fn new_user_task(name: &str, mut uctx: UserContext, set_child_tid: usize) ->
                         // addresses are counted separately in the mm page-fault handler.
                         crate::mm::PAGE_FAULT_COUNT
                             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        // Count it for any `PERF_COUNT_SW_PAGE_FAULTS` event on
+                        // this thread (cheap no-op when none exists).
+                        crate::perf::sw::on_page_fault(thr);
                         // Classify si_code while holding the aspace lock: an
                         // existing mapping that rejected the access is a
                         // permission violation (SEGV_ACCERR), otherwise the
