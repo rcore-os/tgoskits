@@ -135,7 +135,13 @@ impl NodeOps for SimpleFsNode {
 
     fn metadata(&self) -> VfsResult<Metadata> {
         let mut metadata = self.metadata.lock().clone();
-        metadata.size = self.len()?;
+        // A non-zero stored size is a fixed inode width recorded via
+        // `SimpleFile::set_fixed_size` (e.g. mqueuefs `FILENT_SIZE` = 80, which
+        // Linux `mqueue_get_inode` stamps regardless of the rendered status
+        // line's length); otherwise report the live content length.
+        if metadata.size == 0 {
+            metadata.size = self.len()?;
+        }
         Ok(metadata)
     }
 

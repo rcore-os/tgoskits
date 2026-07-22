@@ -1653,6 +1653,54 @@ impl SimpleDirOps for ProcFsHandler {
     }
 }
 
+/// Build a writable `/proc/sys/fs/mqueue/*` tunable file over a live atomic.
+/// Reads render the current value; writes parse a decimal integer, clamp it to
+/// `[min, max]` (as `proc_dointvec_minmax` in ipc/mq_sysctl.c does — an
+/// out-of-range value is rejected with `EINVAL`) and store it, so the next
+/// `mq_open` sees the change.
+///
+/// These files are owned by the ipc-namespace root (uid 0) and mode `0644`, and
+/// Linux gates writes through `mq_permissions` (ipc/mq_sysctl.c:92): only the
+/// owning root gets the write bit, everyone else sees the file read-only. Raising
+/// `msg_max`/`msgsize_max` toward the hard ceiling is a system-wide resource
+/// change, so the faithful capability is `CAP_SYS_RESOURCE`. Reads stay open to
+/// all; an unprivileged write is rejected with `EPERM`.
+fn mq_sysctl_file(
+    fs: &Arc<SimpleFs>,
+    cell: &'static core::sync::atomic::AtomicUsize,
+    min: usize,
+    max: usize,
+) -> Arc<SimpleFile> {
+    SimpleFile::new_regular(
+        fs.clone(),
+        RwFile::new(move |req| match req {
+            SimpleFileOperation::Read => Ok(Some(
+                format!("{}\n", cell.load(Ordering::Relaxed)).into_bytes(),
+            )),
+            SimpleFileOperation::Write(data) => {
+                // A truncating open (`fopen(path, "w")`) writes an empty buffer
+                // first; treat it as a no-op rather than a parse error, the way
+                // the other writable procfs files here do. Gate the no-op too so
+                // a truncating open by an unprivileged writer still fails cleanly.
+                if !current().as_thread().cred().has_cap_sys_resource() {
+                    return Err(VfsError::OperationNotPermitted);
+                }
+                let text = core::str::from_utf8(data).map_err(|_| VfsError::InvalidInput)?;
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    return Ok(None);
+                }
+                let value: usize = trimmed.parse().map_err(|_| VfsError::InvalidInput)?;
+                if value < min || value > max {
+                    return Err(VfsError::InvalidInput);
+                }
+                cell.store(value, Ordering::Relaxed);
+                Ok(None)
+            }
+        }),
+    )
+}
+
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
@@ -1822,6 +1870,60 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 "nr_open",
                 SimpleFile::new_regular(fs.clone(), || Ok("1048576\n")),
             );
+            // /proc/sys/fs/mqueue/{queues_max,msg_max,msgsize_max,
+            // msg_default,msgsize_default} — the writable POSIX message-queue
+            // tunables Linux registers in ipc/mq_sysctl.c. Reads return the
+            // live value; writes clamp to the same [min,max] the kernel
+            // enforces and take effect on the next mq_open.
+            fs_sys.add("mqueue", {
+                let mut mqueue = DirMapping::new();
+                mqueue.add(
+                    "queues_max",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_QUEUES_MAX,
+                        0,
+                        i32::MAX as usize,
+                    ),
+                );
+                mqueue.add(
+                    "msg_max",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSG_MAX,
+                        crate::ipc::mqueue::MQ_MIN_MSG_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSG_MAX,
+                    ),
+                );
+                mqueue.add(
+                    "msgsize_max",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSGSIZE_MAX,
+                        crate::ipc::mqueue::MQ_MIN_MSGSIZE_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSGSIZE_MAX,
+                    ),
+                );
+                mqueue.add(
+                    "msg_default",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSG_DEFAULT,
+                        crate::ipc::mqueue::MQ_MIN_MSG_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSG_MAX,
+                    ),
+                );
+                mqueue.add(
+                    "msgsize_default",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSGSIZE_DEFAULT,
+                        crate::ipc::mqueue::MQ_MIN_MSGSIZE_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSGSIZE_MAX,
+                    ),
+                );
+                SimpleDir::new_maker(fs.clone(), Arc::new(mqueue))
+            });
             SimpleDir::new_maker(fs.clone(), Arc::new(fs_sys))
         });
 
