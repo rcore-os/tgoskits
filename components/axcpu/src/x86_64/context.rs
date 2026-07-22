@@ -6,9 +6,9 @@ use core::{
 };
 
 use ax_memory_addr::VirtAddr;
-use cpu_local::CurrentThreadHeader;
+use cpu_local::{CurrentThreadHeader, PreparedThreadSwitch};
 
-use crate::KernelTlsBase;
+use crate::{KernelTlsBase, TaskLocalState};
 
 /// Saved registers when a trap (interrupt or exception) occurs.
 #[allow(missing_docs)]
@@ -368,10 +368,8 @@ pub struct TaskContext {
     kstack_top: VirtAddr,
     /// `RSP` after all callee-saved registers are pushed.
     rsp: u64,
-    /// Pinned task-owned header published through the CPU current slot.
-    current_header: usize,
-    /// Kernel task-local storage base held in the FS segment base.
-    kernel_tls: KernelTlsBase,
+    /// Architecture-neutral current-header and kernel-TLS switch state.
+    task_local: TaskLocalState,
     /// The `CR3` value restored for this task's userspace address space.
     #[cfg(feature = "uspace")]
     page_table_root: ax_memory_addr::PhysAddr,
@@ -387,20 +385,14 @@ const _: () = {
     assert!(align_of::<KernelTlsBase>() == align_of::<usize>());
     assert!(offset_of!(TaskContext, kstack_top) == 0);
     assert!(offset_of!(TaskContext, rsp) == size_of::<VirtAddr>());
-    assert!(
-        offset_of!(TaskContext, current_header) == offset_of!(TaskContext, rsp) + size_of::<u64>()
-    );
-    assert!(
-        offset_of!(TaskContext, kernel_tls)
-            == offset_of!(TaskContext, current_header) + size_of::<usize>()
-    );
+    assert!(offset_of!(TaskContext, task_local) == offset_of!(TaskContext, rsp) + size_of::<u64>());
 };
 
 impl TaskContext {
     /// Creates a dummy context for a new task.
     ///
     /// Note the context is not initialized, it will be filled by
-    /// [`switch_to_raw`](Self::switch_to_raw) (for initial tasks) and [`init`]
+    /// [`switch_to_prepared`](Self::switch_to_prepared) (for initial tasks) and [`init`]
     /// (for regular tasks) methods.
     ///
     /// [`init`]: TaskContext::init
@@ -408,8 +400,7 @@ impl TaskContext {
         Self {
             kstack_top: va!(0),
             rsp: 0,
-            current_header: 0,
-            kernel_tls: KernelTlsBase::new(0),
+            task_local: TaskLocalState::new(),
             #[cfg(feature = "uspace")]
             page_table_root: crate::asm::read_kernel_page_table(),
             #[cfg(feature = "fp-simd")]
@@ -436,18 +427,18 @@ impl TaskContext {
             self.rsp = frame_ptr as u64;
         }
         self.kstack_top = kstack_top;
-        self.kernel_tls = KernelTlsBase::for_task_context(kernel_tls);
+        self.task_local.set_kernel_tls(kernel_tls);
     }
 
     /// Sets the pinned task-owned current-thread header restored by the raw
     /// switch tail in LinuxCurrent images.
     pub fn set_current_header(&mut self, header: NonNull<CurrentThreadHeader>) {
-        self.current_header = header.as_ptr() as usize;
+        self.task_local.set_current_header(header);
     }
 
     /// Returns the configured task-owned current-thread header.
     pub const fn current_header(&self) -> Option<NonNull<CurrentThreadHeader>> {
-        NonNull::new(self.current_header as *mut CurrentThreadHeader)
+        self.task_local.current_header()
     }
 
     /// Changes the page table root restored for this task.
@@ -471,15 +462,25 @@ impl TaskContext {
         }
     }
 
-    /// Performs only the final register/stack transfer to `next_ctx`.
+    /// Commits current-thread publication and performs the raw transfer.
     ///
     /// # Safety
     ///
     /// The caller must have serialized scheduling, prepared FP/SIMD state, and
-    /// published `next_ctx.current_header`. No fallible Rust work may be placed
-    /// between this call and the naked switch tail.
+    /// `prepared` must belong to `next_ctx`. No fallible Rust work may be
+    /// placed between its commit and the naked switch tail.
     #[inline(always)]
-    pub unsafe fn switch_to_raw(&mut self, next_ctx: &Self) {
+    pub unsafe fn switch_to_prepared(
+        &mut self,
+        next_ctx: &Self,
+        prepared: PreparedThreadSwitch<'_>,
+    ) {
+        assert_eq!(
+            next_ctx.current_header(),
+            Some(prepared.next_header()),
+            "prepared switch token must belong to the next task context",
+        );
+        unsafe { prepared.commit() };
         unsafe { context_switch_raw(self, next_ctx) }
     }
 }
@@ -519,7 +520,8 @@ unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_t
         pop     rbp
         ret",
         rsp_offset = const offset_of!(TaskContext, rsp),
-        kernel_tls_offset = const offset_of!(TaskContext, kernel_tls),
+        kernel_tls_offset = const offset_of!(TaskContext, task_local)
+            + offset_of!(TaskLocalState, kernel_tls),
         fs_base_msr = const 0xc000_0100_u32,
     )
 }

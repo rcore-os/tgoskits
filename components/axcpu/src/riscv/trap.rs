@@ -1,13 +1,7 @@
 use core::mem::size_of;
 
-#[cfg(feature = "tls")]
-use cpu_local::{CPU_AREA_ENTRY_SCRATCH0_OFFSET, CPU_AREA_ENTRY_SCRATCH1_OFFSET};
-use cpu_local::{CPU_AREA_KERNEL_STACK_POINTER_OFFSET, CPU_AREA_USER_TRAP_FRAME_OFFSET};
 #[cfg(not(feature = "tls"))]
-use cpu_local::{
-    CURRENT_THREAD_CPU_BASE_OFFSET, CURRENT_THREAD_TRAP_SCRATCH0_OFFSET,
-    CURRENT_THREAD_TRAP_SCRATCH1_OFFSET,
-};
+use cpu_local::CURRENT_THREAD_CPU_BASE_OFFSET;
 #[cfg(feature = "fp-simd")]
 use riscv::register::sstatus;
 use riscv::{
@@ -18,7 +12,14 @@ use riscv::{
     register::{scause, stval},
 };
 
-use super::TrapFrame;
+#[cfg(feature = "tls")]
+use super::local_state::{CPU_ENTRY_SCRATCH0_OFFSET, CPU_ENTRY_SCRATCH1_OFFSET};
+#[cfg(not(feature = "tls"))]
+use super::local_state::{THREAD_SCRATCH0_OFFSET, THREAD_SCRATCH1_OFFSET};
+use super::{
+    TrapFrame,
+    local_state::{CPU_KERNEL_STACK_POINTER_OFFSET, CPU_USER_TRAP_FRAME_OFFSET},
+};
 use crate::{TrapOrigin, trap::PageFaultFlags};
 
 /// Untrusted register image produced and consumed by trap assembly.
@@ -99,11 +100,11 @@ core::arch::global_asm!(
     include_asm_macros!(),
     include_str!("trap.S"),
     trapframe_size = const size_of::<RawTrapFrame>(),
-    kernel_stack_pointer_index = const CPU_AREA_KERNEL_STACK_POINTER_OFFSET / size_of::<usize>(),
-    user_trap_frame_index = const CPU_AREA_USER_TRAP_FRAME_OFFSET / size_of::<usize>(),
+    kernel_stack_pointer_index = const CPU_KERNEL_STACK_POINTER_OFFSET / size_of::<usize>(),
+    user_trap_frame_index = const CPU_USER_TRAP_FRAME_OFFSET / size_of::<usize>(),
     thread_cpu_base_index = const CURRENT_THREAD_CPU_BASE_OFFSET / size_of::<usize>(),
-    thread_scratch0_index = const CURRENT_THREAD_TRAP_SCRATCH0_OFFSET / size_of::<usize>(),
-    thread_scratch1_index = const CURRENT_THREAD_TRAP_SCRATCH1_OFFSET / size_of::<usize>(),
+    thread_scratch0_index = const THREAD_SCRATCH0_OFFSET / size_of::<usize>(),
+    thread_scratch1_index = const THREAD_SCRATCH1_OFFSET / size_of::<usize>(),
 );
 
 #[cfg(feature = "tls")]
@@ -111,10 +112,10 @@ core::arch::global_asm!(
     include_asm_macros!(),
     include_str!("trap_tls.S"),
     trapframe_size = const size_of::<RawTrapFrame>(),
-    kernel_stack_pointer_index = const CPU_AREA_KERNEL_STACK_POINTER_OFFSET / size_of::<usize>(),
-    user_trap_frame_index = const CPU_AREA_USER_TRAP_FRAME_OFFSET / size_of::<usize>(),
-    entry_scratch0_index = const CPU_AREA_ENTRY_SCRATCH0_OFFSET / size_of::<usize>(),
-    entry_scratch1_index = const CPU_AREA_ENTRY_SCRATCH1_OFFSET / size_of::<usize>(),
+    kernel_stack_pointer_index = const CPU_KERNEL_STACK_POINTER_OFFSET / size_of::<usize>(),
+    user_trap_frame_index = const CPU_USER_TRAP_FRAME_OFFSET / size_of::<usize>(),
+    entry_scratch0_index = const CPU_ENTRY_SCRATCH0_OFFSET / size_of::<usize>(),
+    entry_scratch1_index = const CPU_ENTRY_SCRATCH1_OFFSET / size_of::<usize>(),
 );
 
 fn handle_breakpoint(tf: &mut KernelTrapFrame<'_>) {

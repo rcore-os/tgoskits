@@ -2,6 +2,7 @@
 mod macros;
 
 mod context;
+mod local_state;
 mod trap;
 
 pub mod asm;

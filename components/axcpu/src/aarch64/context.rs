@@ -6,9 +6,9 @@ use core::{
 };
 
 use ax_memory_addr::VirtAddr;
-use cpu_local::CurrentThreadHeader;
+use cpu_local::{CurrentThreadHeader, PreparedThreadSwitch};
 
-use crate::KernelTlsBase;
+use crate::{KernelTlsBase, TaskLocalState};
 
 /// Saved registers when a trap (exception) occurs.
 #[repr(C)]
@@ -209,10 +209,8 @@ pub struct TaskContext {
     r28: u64,
     r29: u64,
     lr: u64, // r30
-    /// Pinned task-owned header loaded into SP_EL0 by LinuxCurrent images.
-    current_header: usize,
-    /// Kernel task-local storage base held in TPIDR_EL0.
-    kernel_tls: KernelTlsBase,
+    /// Architecture-neutral current-header and kernel-TLS switch state.
+    task_local: TaskLocalState,
     /// The `TTBR0_EL1` value restored for this task's userspace address space.
     #[cfg(feature = "uspace")]
     page_table_root: ax_memory_addr::PhysAddr,
@@ -232,20 +230,14 @@ const _: () = {
     assert!(offset_of!(TaskContext, r26) == offset_of!(TaskContext, r25) + size_of::<u64>());
     assert!(offset_of!(TaskContext, r28) == offset_of!(TaskContext, r27) + size_of::<u64>());
     assert!(offset_of!(TaskContext, lr) == offset_of!(TaskContext, r29) + size_of::<u64>());
-    assert!(
-        offset_of!(TaskContext, current_header) == offset_of!(TaskContext, lr) + size_of::<u64>()
-    );
-    assert!(
-        offset_of!(TaskContext, kernel_tls)
-            == offset_of!(TaskContext, current_header) + size_of::<usize>()
-    );
+    assert!(offset_of!(TaskContext, task_local) == offset_of!(TaskContext, lr) + size_of::<u64>());
 };
 
 impl TaskContext {
     /// Creates a dummy context for a new task.
     ///
     /// Note the context is not initialized, it will be filled by
-    /// [`switch_to_raw`](Self::switch_to_raw) (for initial tasks) and [`init`]
+    /// [`switch_to_prepared`](Self::switch_to_prepared) (for initial tasks) and [`init`]
     /// (for regular tasks) methods.
     ///
     /// [`init`]: TaskContext::init
@@ -258,17 +250,17 @@ impl TaskContext {
     pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, kernel_tls: KernelTlsBase) {
         self.sp = kstack_top.as_usize() as u64;
         self.lr = entry as u64;
-        self.kernel_tls = KernelTlsBase::for_task_context(kernel_tls);
+        self.task_local.set_kernel_tls(kernel_tls);
     }
 
     /// Sets the pinned task-owned current-thread header.
     pub fn set_current_header(&mut self, header: NonNull<CurrentThreadHeader>) {
-        self.current_header = header.as_ptr() as usize;
+        self.task_local.set_current_header(header);
     }
 
     /// Returns the configured task-owned current-thread header.
     pub const fn current_header(&self) -> Option<NonNull<CurrentThreadHeader>> {
-        NonNull::new(self.current_header as *mut CurrentThreadHeader)
+        self.task_local.current_header()
     }
 
     /// Changes the page table root restored for this task.
@@ -299,7 +291,17 @@ impl TaskContext {
     /// Scheduling must be serialized, FP state prepared, and the next current
     /// header published. No fallible Rust work may follow before this call.
     #[inline(always)]
-    pub unsafe fn switch_to_raw(&mut self, next_ctx: &Self) {
+    pub unsafe fn switch_to_prepared(
+        &mut self,
+        next_ctx: &Self,
+        prepared: PreparedThreadSwitch<'_>,
+    ) {
+        assert_eq!(
+            next_ctx.current_header(),
+            Some(prepared.next_header()),
+            "prepared switch token must belong to the next task context",
+        );
+        unsafe { prepared.commit() };
         unsafe { context_switch_raw(self, next_ctx) }
     }
 }
@@ -341,7 +343,8 @@ unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_t
         r25_offset = const offset_of!(TaskContext, r25),
         r27_offset = const offset_of!(TaskContext, r27),
         r29_offset = const offset_of!(TaskContext, r29),
-        kernel_tls_offset = const offset_of!(TaskContext, kernel_tls),
+        kernel_tls_offset = const offset_of!(TaskContext, task_local)
+            + offset_of!(TaskLocalState, kernel_tls),
     )
 }
 
@@ -380,7 +383,8 @@ unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_t
         r25_offset = const offset_of!(TaskContext, r25),
         r27_offset = const offset_of!(TaskContext, r27),
         r29_offset = const offset_of!(TaskContext, r29),
-        current_header_offset = const offset_of!(TaskContext, current_header),
+        current_header_offset = const offset_of!(TaskContext, task_local)
+            + offset_of!(TaskLocalState, current_header),
     )
 }
 

@@ -427,6 +427,9 @@ fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {
             let notify = notify.clone();
             let barrier = barrier.clone();
             handles.push(thread::spawn(move || {
+                // Model an interrupt arriving on CPU 0: host register state is
+                // thread-local even though the initialized area is shared.
+                ax_hal::percpu::initialize_host_test_cpu();
                 barrier.wait();
                 notify.notify_irq();
             }));

@@ -5,10 +5,10 @@ use core::{
 };
 
 use ax_memory_addr::VirtAddr;
-use cpu_local::CurrentThreadHeader;
+use cpu_local::{CurrentThreadHeader, PreparedThreadSwitch};
 use riscv::register::sstatus::{self, FS};
 
-use crate::KernelTlsBase;
+use crate::{KernelTlsBase, TaskLocalState};
 
 /// General registers of RISC-V.
 #[allow(missing_docs)]
@@ -310,10 +310,8 @@ pub struct TaskContext {
     pub s9: usize,
     pub s10: usize,
     pub s11: usize,
-    /// Pinned task-owned header loaded into `tp` by LinuxCurrent images.
-    current_header: usize,
-    /// Kernel task-local storage pointer loaded into `tp` by UnikernelTls.
-    kernel_tls: KernelTlsBase,
+    /// Architecture-neutral current-header and kernel-TLS switch state.
+    task_local: TaskLocalState,
     /// The `satp` value restored for this task's userspace address space.
     #[cfg(feature = "uspace")]
     page_table_root: ax_memory_addr::PhysAddr,
@@ -328,18 +326,14 @@ const _: () = {
     assert!(align_of::<KernelTlsBase>() == align_of::<usize>());
     assert!(offset_of!(TaskContext, ra) == 0);
     assert!(offset_of!(TaskContext, sp) == offset_of!(TaskContext, ra) + size_of::<usize>());
-    assert!(offset_of!(TaskContext, current_header) % size_of::<usize>() == 0);
-    assert!(
-        offset_of!(TaskContext, kernel_tls)
-            == offset_of!(TaskContext, current_header) + size_of::<usize>()
-    );
+    assert!(offset_of!(TaskContext, task_local) % size_of::<usize>() == 0);
 };
 
 impl TaskContext {
     /// Creates a dummy context for a new task.
     ///
     /// Note the context is not initialized, it will be filled by
-    /// [`switch_to_raw`](Self::switch_to_raw) (for initial tasks) and [`init`]
+    /// [`switch_to_prepared`](Self::switch_to_prepared) (for initial tasks) and [`init`]
     /// (for regular tasks) methods.
     ///
     /// [`init`]: TaskContext::init
@@ -356,17 +350,17 @@ impl TaskContext {
     pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, tls_area: KernelTlsBase) {
         self.sp = kstack_top.as_usize();
         self.ra = entry;
-        self.kernel_tls = KernelTlsBase::for_task_context(tls_area);
+        self.task_local.set_kernel_tls(tls_area);
     }
 
     /// Sets the pinned task-owned current-thread header.
     pub fn set_current_header(&mut self, header: NonNull<CurrentThreadHeader>) {
-        self.current_header = header.as_ptr() as usize;
+        self.task_local.set_current_header(header);
     }
 
     /// Returns the configured task-owned current-thread header.
     pub const fn current_header(&self) -> Option<NonNull<CurrentThreadHeader>> {
-        NonNull::new(self.current_header as *mut CurrentThreadHeader)
+        self.task_local.current_header()
     }
 
     /// Changes the page table root restored for this task.
@@ -396,7 +390,17 @@ impl TaskContext {
     /// Scheduling must be serialized, FP state prepared, and the next current
     /// header published. No fallible Rust work may follow before this call.
     #[inline(always)]
-    pub unsafe fn switch_to_raw(&mut self, next_ctx: &Self) {
+    pub unsafe fn switch_to_prepared(
+        &mut self,
+        next_ctx: &Self,
+        prepared: PreparedThreadSwitch<'_>,
+    ) {
+        assert_eq!(
+            next_ctx.current_header(),
+            Some(prepared.next_header()),
+            "prepared switch token must belong to the next task context",
+        );
+        unsafe { prepared.commit() };
         unsafe { context_switch_raw(self, next_ctx) }
     }
 }
@@ -493,7 +497,8 @@ unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_t
         s9_index = const offset_of!(TaskContext, s9) / size_of::<usize>(),
         s10_index = const offset_of!(TaskContext, s10) / size_of::<usize>(),
         s11_index = const offset_of!(TaskContext, s11) / size_of::<usize>(),
-        kernel_tls_index = const offset_of!(TaskContext, kernel_tls) / size_of::<usize>(),
+        kernel_tls_index = const (offset_of!(TaskContext, task_local)
+            + offset_of!(TaskLocalState, kernel_tls)) / size_of::<usize>(),
     )
 }
 
@@ -552,6 +557,7 @@ unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_t
         s9_index = const offset_of!(TaskContext, s9) / size_of::<usize>(),
         s10_index = const offset_of!(TaskContext, s10) / size_of::<usize>(),
         s11_index = const offset_of!(TaskContext, s11) / size_of::<usize>(),
-        current_header_index = const offset_of!(TaskContext, current_header) / size_of::<usize>(),
+        current_header_index = const (offset_of!(TaskContext, task_local)
+            + offset_of!(TaskLocalState, current_header)) / size_of::<usize>(),
     )
 }

@@ -18,6 +18,9 @@ pub mod trap;
 
 pub use trap::TrapOrigin;
 
+mod task_local;
+pub use task_local::TaskLocalState;
+
 pub mod cap;
 
 /// Kernel task-local storage base owned by one execution context.

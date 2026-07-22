@@ -8,10 +8,12 @@
 //! drifting across `ax-cpu`, `riscv_vcpu`, and `someboot`.
 
 const CONTEXT: &str = include_str!("../src/riscv/context.rs");
+const TASK_LOCAL: &str = include_str!("../src/task_local.rs");
 const ASM: &str = include_str!("../src/riscv/asm.rs");
 const TRAP_ENTRY: &str = include_str!("../src/riscv/trap.S");
 const TLS_TRAP_ENTRY: &str = include_str!("../src/riscv/trap_tls.S");
 const TRAP_GLUE: &str = include_str!("../src/riscv/trap.rs");
+const LOCAL_STATE: &str = include_str!("../src/riscv/local_state.rs");
 const VCPU_DETECT: &str = include_str!("../../../virtualization/riscv_vcpu/src/detect.rs");
 const SOMEBOOT_ENTRY: &str = include_str!("../../../platforms/someboot/src/arch/riscv64/entry.rs");
 const SOMEBOOT_ARCH: &str = include_str!("../../../platforms/someboot/src/arch/riscv64/mod.rs");
@@ -68,7 +70,7 @@ fn task_context_switches_tp_inside_the_naked_handoff() {
     let linux_switch = section(
         CONTEXT,
         "#[cfg(not(feature = \"tls\"))]\n#[unsafe(naked)]",
-        "current_header_index = const offset_of!(TaskContext, current_header)",
+        "+ offset_of!(TaskLocalState, current_header)) / size_of::<usize>(),",
     );
     assert!(!linux_switch.contains("STR     tp"));
     assert!(linux_switch.contains("LDR     tp, a1, {current_header_index}"));
@@ -109,12 +111,13 @@ fn task_context_owns_kernel_tls_and_preserves_current_address_space_model() {
         "TaskContext::init must distinguish kernel TLS from an arbitrary address"
     );
     assert!(
-        CONTEXT.contains(
-            "kernel_tls_index = const offset_of!(TaskContext, kernel_tls) / size_of::<usize>()"
-        ) && CONTEXT.contains(
-            "current_header_index = const offset_of!(TaskContext, current_header) / \
-             size_of::<usize>()"
-        ),
+        CONTEXT.contains("kernel_tls_index = const (offset_of!(TaskContext, task_local)")
+            && CONTEXT.contains("offset_of!(TaskLocalState, kernel_tls)")
+            && CONTEXT
+                .contains("current_header_index = const (offset_of!(TaskContext, task_local)")
+            && CONTEXT.contains("offset_of!(TaskLocalState, current_header)")
+            && TASK_LOCAL.contains("kernel_tls: KernelTlsBase")
+            && TASK_LOCAL.contains("current_header: usize"),
         "both image-mode assembly offsets must derive from TaskContext"
     );
 
@@ -127,7 +130,7 @@ fn task_context_owns_kernel_tls_and_preserves_current_address_space_model() {
     let prepare = section(
         CONTEXT,
         "pub fn prepare_switch_to(&mut self, _next_ctx: &Self)",
-        "pub unsafe fn switch_to_raw",
+        "pub unsafe fn switch_to_prepared",
     );
     assert!(
         task_fields.contains("page_table_root: ax_memory_addr::PhysAddr")
@@ -186,16 +189,27 @@ fn trap_entry_uses_privilege_origin_and_restores_cpu_anchor_before_rust() {
         "LinuxCurrent must not treat sscratch as the permanent CPU prefix"
     );
 
+    assert!(TRAP_GLUE.contains("CURRENT_THREAD_CPU_BASE_OFFSET"));
     for field in [
-        "CPU_AREA_KERNEL_STACK_POINTER_OFFSET",
-        "CPU_AREA_USER_TRAP_FRAME_OFFSET",
-        "CURRENT_THREAD_CPU_BASE_OFFSET",
-        "CURRENT_THREAD_TRAP_SCRATCH0_OFFSET",
-        "CURRENT_THREAD_TRAP_SCRATCH1_OFFSET",
+        "CPU_KERNEL_STACK_POINTER_OFFSET",
+        "CPU_USER_TRAP_FRAME_OFFSET",
+        "THREAD_SCRATCH0_OFFSET",
+        "THREAD_SCRATCH1_OFFSET",
     ] {
         assert!(
             TRAP_GLUE.contains(field),
-            "trap glue must bind the shared CPU-area ABI field `{field}`"
+            "trap glue must bind the RISC-V local-state field `{field}`"
+        );
+    }
+    for field in [
+        "struct CpuTrapState",
+        "struct ThreadTrapState",
+        "CPU_AREA_ARCH_STATE_OFFSET",
+        "CURRENT_THREAD_ARCH_STATE_OFFSET",
+    ] {
+        assert!(
+            LOCAL_STATE.contains(field),
+            "RISC-V local state must own `{field}`"
         );
     }
 

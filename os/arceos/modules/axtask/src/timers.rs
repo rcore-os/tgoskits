@@ -60,18 +60,19 @@ pub fn register_timer_callback<F>(callback: F)
 where
     F: Fn(TimeValue) + Send + Sync + 'static,
 {
-    let _g = NoPreemptIrqSave::new();
-    unsafe {
-        TIMER_CALLBACKS
-            .current_ref_mut_raw()
-            .push(Box::new(callback))
-    };
+    with_local_exclusive(|exclusive| {
+        TIMER_CALLBACKS.with_current_mut(exclusive, |callbacks| callbacks.push(Box::new(callback)))
+    });
 }
 
 fn check_callbacks() {
-    for callback in unsafe { TIMER_CALLBACKS.current_ref_raw().iter() } {
-        callback(monotonic_time());
-    }
+    with_local_pin(|pin| {
+        TIMER_CALLBACKS.with_current(pin, |callbacks| {
+            for callback in callbacks {
+                callback(monotonic_time());
+            }
+        })
+    });
 }
 
 fn deadline_to_nanos(deadline: TimeValue) -> u64 {
@@ -79,21 +80,24 @@ fn deadline_to_nanos(deadline: TimeValue) -> u64 {
 }
 
 pub(crate) fn note_programmed_deadline_nanos(deadline_nanos: u64) {
-    unsafe { PROGRAMMED_DEADLINE_NANOS.write_current_raw(deadline_nanos) };
+    with_local_pin(|pin| PROGRAMMED_DEADLINE_NANOS.write_current(pin, deadline_nanos));
 }
 
 pub(crate) fn maybe_reprogram_timer(deadline: TimeValue) {
     let deadline_nanos = deadline_to_nanos(deadline);
-    let _g = NoPreemptIrqSave::new();
-    let programmed = unsafe { PROGRAMMED_DEADLINE_NANOS.read_current_raw() };
-    if programmed == 0 || deadline_nanos < programmed {
-        unsafe { PROGRAMMED_DEADLINE_NANOS.write_current_raw(deadline_nanos) };
-        ax_hal::time::set_oneshot_timer(deadline_nanos);
-    }
+    with_local_pin(|pin| {
+        let programmed = PROGRAMMED_DEADLINE_NANOS.read_current(pin);
+        if programmed == 0 || deadline_nanos < programmed {
+            PROGRAMMED_DEADLINE_NANOS.write_current(pin, deadline_nanos);
+            ax_hal::time::set_oneshot_timer(deadline_nanos);
+        }
+    });
 }
 
 pub(crate) fn next_deadline_nanos() -> Option<u64> {
-    let timer_list_deadline = unsafe { TIMER_LIST.current_ref_raw() }.next_deadline();
+    let timer_list_deadline = with_local_exclusive(|exclusive| {
+        TIMER_LIST.with_current_mut(exclusive, |timer_list| timer_list.next_deadline())
+    });
     let future_deadline = crate::future::next_timer_deadline();
 
     match (timer_list_deadline, future_deadline) {
@@ -104,17 +108,13 @@ pub(crate) fn next_deadline_nanos() -> Option<u64> {
 }
 
 pub(crate) fn set_alarm_wakeup(deadline: TimeValue, task: AxTaskRef) {
-    let _g = NoPreemptIrqSave::new();
-    // SAFETY: `NoPreemptIrqSave` pins the CPU and excludes timer IRQ re-entry;
-    // the closure does not let the mutable per-CPU borrow escape.
-    let pin = unsafe { ax_hal::percpu::CpuPin::new_unchecked() };
-    unsafe {
-        TIMER_LIST.with_current_mut_raw(&pin, |timer_list| {
+    with_local_exclusive(|exclusive| {
+        TIMER_LIST.with_current_mut(exclusive, |timer_list| {
             let ticket_id = TIMER_TICKET_ID.fetch_add(1, Ordering::AcqRel);
             task.set_timer_ticket(ticket_id);
             timer_list.set(deadline, TaskWakeupEvent { ticket_id, task });
         })
-    };
+    });
     maybe_reprogram_timer(deadline);
 }
 
@@ -126,11 +126,9 @@ pub fn check_events(run_callbacks: bool) {
     }
     loop {
         let now = monotonic_time();
-        let event = unsafe {
-            // Safety: IRQs are disabled at this time.
-            TIMER_LIST.current_ref_mut_raw()
-        }
-        .expire_one(now);
+        let event = with_local_exclusive(|exclusive| {
+            TIMER_LIST.with_current_mut(exclusive, |timer_list| timer_list.expire_one(now))
+        });
         if let Some((_deadline, event)) = event {
             event.callback(now);
         } else {
@@ -140,4 +138,25 @@ pub fn check_events(run_callbacks: bool) {
 
     // Handle async timer events
     crate::future::check_timer_events();
+}
+
+fn with_local_pin<R>(
+    operation: impl for<'scope> FnOnce(&ax_hal::percpu::CpuPin<'scope>) -> R,
+) -> R {
+    let _guard = NoPreemptIrqSave::new();
+    // SAFETY: the guard prevents migration for the complete callback.
+    unsafe { ax_hal::percpu::with_cpu_pin(operation) }
+        .expect("timer access requires an installed CPU-local area")
+}
+
+fn with_local_exclusive<R>(
+    operation: impl for<'exclusive> FnOnce(&ax_hal::percpu::ExclusiveCpu<'exclusive>) -> R,
+) -> R {
+    let _guard = NoPreemptIrqSave::new();
+    // SAFETY: the guard excludes migration, local IRQ/re-entry, and conflicting
+    // local access for the complete callback.
+    unsafe {
+        ax_hal::percpu::with_cpu_pin(|pin| ax_hal::percpu::with_exclusive_cpu(pin, operation))
+    }
+    .expect("timer access requires an installed CPU-local area")
 }

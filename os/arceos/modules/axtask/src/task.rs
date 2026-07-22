@@ -22,7 +22,7 @@ use core::{
 use ax_hal::tls::TlsArea;
 use ax_hal::{
     context::{KernelTlsBase, TaskContext},
-    percpu::{ContextIdentity, CurrentThreadHeader, ThreadIdentity},
+    percpu::{CurrentContext, CurrentThreadHeader},
 };
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
@@ -427,33 +427,18 @@ impl TaskInner {
 
     pub(crate) fn into_arc(self) -> AxTaskRef {
         let task = Arc::new(AxTask::new(self));
-        let context_identity = ContextIdentity::from_raw(Arc::as_ptr(&task) as usize)
+        let current_context = CurrentContext::from_raw(Arc::as_ptr(&task) as usize)
             .expect("Arc task pointer must be non-null");
         let header = task
             .current_header
-            .init_once(CurrentThreadHeader::new(context_identity));
+            .init_once(CurrentThreadHeader::new(current_context));
         // SAFETY: `header` is stored inside the Arc allocation that owns the
         // task. That allocation is stable until the last task reference drops.
         let header = unsafe { Pin::new_unchecked(header) };
-        header
-            .bind_thread(task.thread_identity())
-            .expect("fresh task header must accept its scheduler identity");
         // SAFETY: the Arc is not visible to any scheduler yet, so this is the
         // only access to its architecture context.
         unsafe { (*task.ctx_mut_ptr()).set_current_header(header.as_non_null()) };
         task
-    }
-
-    fn thread_identity(&self) -> ThreadIdentity {
-        // `u32::MAX` is reserved by the stable ABI. Split the monotonic TaskId
-        // over the remaining slot space and a nonzero reuse generation.
-        const SLOT_COUNT: u64 = u32::MAX as u64;
-        let raw = self.id.as_u64();
-        let slot = (raw % SLOT_COUNT) as u32;
-        let generation = u32::try_from(raw / SLOT_COUNT + 1)
-            .expect("task identity generation exhausted the CPU-local ABI");
-        ThreadIdentity::from_parts(slot, generation)
-            .expect("TaskId mapping must produce a valid thread identity")
     }
 
     pub(crate) fn current_header(&self) -> Pin<&CurrentThreadHeader> {
@@ -1036,7 +1021,7 @@ impl CurrentTask {
         // bootstrap read is also used by the preemption guard implementation,
         // so it cannot require that same guard to have been acquired already.
         let header = unsafe { ax_hal::percpu::current_thread_raw().as_ref()? };
-        let ptr = header.context_identity().as_usize() as *const super::AxTask;
+        let ptr = header.current_context()?.as_usize() as *const super::AxTask;
         if !ptr.is_null() {
             Some(Self(unsafe { ManuallyDrop::new(AxTaskRef::from_raw(ptr)) }))
         } else {
@@ -1063,29 +1048,19 @@ impl CurrentTask {
         assert!(init_task.is_init());
         // SAFETY: scheduler initialization runs on an offline CPU before any
         // task switch or migration can occur.
-        let pin = unsafe { ax_hal::percpu::CpuPin::new_unchecked() };
-        let binding = ax_hal::percpu::current_cpu_binding(&pin)
-            .expect("CPU-local binding must precede task initialization");
         let header = init_task.current_header();
-        // SAFETY: this init task is not runnable elsewhere and the CPU is still
-        // offline, so the scheduler exclusively owns this first binding.
-        unsafe { header.bind_cpu(binding) }
-            .expect("bootstrap task header must bind to the current CPU");
-        #[cfg(feature = "tls")]
-        {
-            let prepared = unsafe { ax_hal::percpu::prepare_current_thread_publish(&pin, header) }
-                .expect("bootstrap current-thread publication must validate");
-            unsafe {
-                ax_hal::percpu::install_bootstrap_kernel_tls(KernelTlsBase::new(
-                    init_task.tls.tls_ptr() as usize,
-                ))
-            }
-            .expect("bootstrap kernel TLS must install");
-            unsafe { ax_hal::percpu::commit_current_thread_publish(prepared) };
+        unsafe {
+            ax_hal::percpu::with_cpu_pin(|pin| {
+                #[cfg(feature = "tls")]
+                ax_hal::percpu::install_bootstrap_kernel_tls(
+                    pin,
+                    KernelTlsBase::new(init_task.tls.tls_ptr() as usize),
+                );
+                ax_hal::percpu::install_bootstrap_thread(pin, header)
+            })
         }
-        #[cfg(not(feature = "tls"))]
-        unsafe { ax_hal::percpu::install_bootstrap_current_thread(&pin, header) }
-            .expect("bootstrap current-thread register must install");
+        .expect("CPU-local area must precede task initialization")
+        .expect("bootstrap current-thread state must install");
         let _ = Arc::into_raw(init_task);
     }
 

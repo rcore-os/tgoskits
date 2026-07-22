@@ -11,6 +11,7 @@
 const TRAP_MACROS: &str = include_str!("../src/loongarch64/macros.rs");
 const TRAP_ENTRY: &str = include_str!("../src/loongarch64/trap.S");
 const TASK_CONTEXT: &str = include_str!("../src/loongarch64/context.rs");
+const TASK_LOCAL: &str = include_str!("../src/task_local.rs");
 const ARCH_ASM: &str = include_str!("../src/loongarch64/asm.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
@@ -116,9 +117,10 @@ fn task_switch_owns_tls_but_never_percpu() {
         "impl Default for TaskContext",
     );
     assert!(
-        task_context_definition.contains("KernelTlsBase"),
-        "TaskContext must use the architecture-neutral kernel TLS newtype"
+        task_context_definition.contains("TaskLocalState"),
+        "TaskContext must compose the architecture-neutral task-local state"
     );
+    assert!(TASK_LOCAL.contains("kernel_tls: KernelTlsBase"));
     assert!(
         !task_context_definition.contains("pub tp: usize"),
         "the raw task TLS register must not remain a public usize field"
@@ -139,7 +141,8 @@ fn task_switch_owns_tls_but_never_percpu() {
         "kernel task TLS must switch beside the callee-saved registers"
     );
     assert!(
-        TASK_CONTEXT.contains("kernel_tls_offset = const offset_of!(TaskContext, kernel_tls)"),
+        TASK_CONTEXT.contains("kernel_tls_offset = const offset_of!(TaskContext, task_local)")
+            && TASK_CONTEXT.contains("offset_of!(TaskLocalState, kernel_tls)"),
         "the assembly boundary must derive the TLS offset from TaskContext"
     );
     assert!(
@@ -156,7 +159,7 @@ fn current_scheduler_installs_address_space_before_the_raw_switch() {
     let prepare = section(
         TASK_CONTEXT,
         "pub fn prepare_switch_to(&mut self, _next_ctx: &Self)",
-        "pub unsafe fn switch_to_raw",
+        "pub unsafe fn switch_to_prepared",
     );
     assert!(
         TASK_CONTEXT.contains("page_table_root: usize")

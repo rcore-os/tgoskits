@@ -1,5 +1,6 @@
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const LIB: &str = include_str!("../src/lib.rs");
+const TASK_LOCAL: &str = include_str!("../src/task_local.rs");
 const RISCV_CONTEXT: &str = include_str!("../src/riscv/context.rs");
 const RISCV_TRAP: &str = include_str!("../src/riscv/trap.S");
 const RISCV_TLS_TRAP: &str = include_str!("../src/riscv/trap_tls.S");
@@ -19,13 +20,14 @@ fn tls_feature_selects_register_semantics_without_changing_context_layout() {
             .split_once("\n}")
             .expect("TaskContext must have a bounded layout")
             .0;
-        assert!(task_context.contains("current_header"));
-        assert!(task_context.contains("kernel_tls"));
+        assert!(task_context.contains("task_local: TaskLocalState"));
         assert!(
             !task_context.contains("cfg(feature = \"tls\")"),
             "image mode must not change TaskContext ABI"
         );
     }
+    assert!(TASK_LOCAL.contains("current_header: usize"));
+    assert!(TASK_LOCAL.contains("kernel_tls: KernelTlsBase"));
     assert!(LIB.contains("fn for_task_context"));
     assert!(LIB.contains("requested.0 == 0"));
     assert!(LIB.contains("cfg(all(feature = \"uspace\", feature = \"tls\"))"));
@@ -68,7 +70,9 @@ fn context_switches_select_tls_only_for_unikernel_images() {
         assert!(source.contains("#[cfg(feature = \"tls\")]"));
         assert!(source.contains("#[cfg(not(feature = \"tls\"))]"));
         assert!(source.contains("pub fn prepare_switch_to("));
-        assert!(source.contains("pub unsafe fn switch_to_raw("));
+        assert!(source.contains("pub unsafe fn switch_to_prepared("));
+        assert!(source.contains("prepared.commit()"));
+        assert!(!source.contains("pub unsafe fn switch_to_raw("));
         assert!(!source.contains("pub fn switch_to(&mut self, next_ctx: &Self)"));
     }
 }
