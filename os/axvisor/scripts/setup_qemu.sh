@@ -15,61 +15,77 @@ set -euo pipefail
 # LoongArch64 AxVisor shell smoke uses quick-start.sh instead of this script.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_STORAGE_ROOT="/tmp/.axvisor-images"
+WORKSPACE_ROOT="$(cd "${REPO_ROOT}/../.." && pwd)"
+# Use the same env var and default path as cargo xtask image pull
+# (TGOS_IMAGE_LOCAL_STORAGE, defaults to $WORKSPACE_ROOT/tmp/axbuild/rootfs).
+IMAGE_STORAGE_ROOT="${TGOS_IMAGE_LOCAL_STORAGE:-${WORKSPACE_ROOT}/tmp/axbuild/rootfs}"
+export TGOS_IMAGE_LOCAL_STORAGE="${IMAGE_STORAGE_ROOT}"
+
+# Sync xtask's persistent config so that `cargo xtask axvisor qemu` finds
+# images at the same path even after this script exits and the env var is gone.
+_image_config="${WORKSPACE_ROOT}/tmp/axbuild/.image.toml"
+if [ -f "${_image_config}" ]; then
+  sed -i 's|^local_storage = .*|local_storage = "'"${IMAGE_STORAGE_ROOT}"'"|' "${_image_config}"
+fi
+
 DEFAULT_REGISTRY_URL="https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/default.toml"
-# Keep this version aligned with the guest release used in this branch.
-BUILTIN_FALLBACK_REGISTRY_URL="https://raw.githubusercontent.com/rcore-os/tgosimages/refs/heads/main/registry/v0.0.25.toml"
 IMAGE_DOWNLOAD_MAX_ATTEMPTS=2
-TGOSIMAGES_RELEASE="${AXVISOR_TGOSIMAGES_RELEASE:-v0.0.5}"
-TGOSIMAGES_QEMU_X86_64_ARCHIVE="qemu-x86_64.tar.xz"
-TGOSIMAGES_QEMU_X86_64_URL="${AXVISOR_TGOSIMAGES_QEMU_X86_64_URL:-https://github.com/rcore-os/tgosimages/releases/download/${TGOSIMAGES_RELEASE}/${TGOSIMAGES_QEMU_X86_64_ARCHIVE}}"
-TGOSIMAGES_QEMU_X86_64_SHA256="${AXVISOR_TGOSIMAGES_QEMU_X86_64_SHA256:-64434d91166bf70ebfab42481d935c68640301fd031d0836d2bdec3f82bb2e20}"
+
+# Resolve the actual versioned registry URL from the default registry's
+# [[includes]] directive.  Echoes the URL on stdout, or an empty line on
+# failure (never returns non-zero, so set -e won't cut off the caller's
+# fallback path).
+resolve_registry_url() {
+  local default_url="$1"
+  local tmpfile include_url
+
+  tmpfile="$(mktemp)"
+  if curl -4 --retry 5 --retry-delay 2 -fsSL "${default_url}" -o "${tmpfile}"; then
+    include_url="$(sed -n 's/^[[:space:]]*url[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p' "${tmpfile}" | sed -n '1p')"
+    rm -f "${tmpfile}"
+    if [ -n "${include_url}" ]; then
+      echo "${include_url}"
+    else
+      echo "${default_url}"
+    fi
+    return 0
+  fi
+  rm -f "${tmpfile}"
+  echo ""
+}
 
 bootstrap_image_registry() {
   local storage_dir="${IMAGE_STORAGE_ROOT}"
-  local default_registry_url="${DEFAULT_REGISTRY_URL}"
-  # Built-in fallback keeps setup resilient when default/include URLs are flaky.
-  local fallback_registry_url="${AXVISOR_REGISTRY_FALLBACK_URL:-${BUILTIN_FALLBACK_REGISTRY_URL}}"
-  local default_registry_file
-  local include_url
-  local source_kind
-  local source_url
+  local registry_url
 
   mkdir -p "${storage_dir}"
   if [ -f "${storage_dir}/images.toml" ]; then
     return 0
   fi
 
-  default_registry_file="$(mktemp)"
-  if ! curl -4 --retry 5 --retry-delay 2 -fL "${default_registry_url}" -o "${default_registry_file}"; then
-    rm -f "${default_registry_file}"
-    echo "  -> Warning: failed to fetch default registry: ${default_registry_url}" >&2
-    source_kind="fallback registry"
-    source_url="${fallback_registry_url}"
-  else
-    include_url="$(sed -n 's/^[[:space:]]*url[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p' "${default_registry_file}" | sed -n '1p')"
-    rm -f "${default_registry_file}"
-    if [ -n "${include_url}" ]; then
-      source_kind="included registry from default.toml"
-      source_url="${include_url}"
-    else
-      source_kind="default registry"
-      source_url="${default_registry_url}"
-    fi
+  registry_url="$(resolve_registry_url "${DEFAULT_REGISTRY_URL}")"
+  if [ -z "${registry_url}" ] && [ -n "${AXVISOR_REGISTRY_FALLBACK_URL:-}" ]; then
+    echo "  -> Default registry unreachable, trying AXVISOR_REGISTRY_FALLBACK_URL." >&2
+    registry_url="${AXVISOR_REGISTRY_FALLBACK_URL}"
   fi
 
-  echo "  -> Bootstrapping local image registry from ${source_kind}: ${source_url}"
-  if ! curl -4 --retry 5 --retry-delay 2 -fL "${source_url}" -o "${storage_dir}/images.toml"; then
-    if [ "${source_url}" != "${fallback_registry_url}" ]; then
-      echo "  -> Warning: failed to fetch ${source_kind}, retrying fallback registry: ${fallback_registry_url}" >&2
-      curl -4 --retry 5 --retry-delay 2 -fL "${fallback_registry_url}" -o "${storage_dir}/images.toml"
-    else
-      echo "  -> Error: failed to bootstrap local image registry from fallback registry." >&2
-      return 1
-    fi
+  if [ -z "${registry_url}" ]; then
+    echo "  -> Could not resolve registry URL; letting cargo xtask handle image sync." >&2
+    return 0
+  fi
+
+  echo "  -> Bootstrapping local image registry from: ${registry_url}"
+  if ! curl -4 --retry 5 --retry-delay 2 -fsSL "${registry_url}" -o "${storage_dir}/images.toml"; then
+    echo "  -> Error: failed to bootstrap local image registry." >&2
+    return 0
   fi
   date +%s > "${storage_dir}/.last_sync" || true
 }
+
+TGOSIMAGES_RELEASE="${AXVISOR_TGOSIMAGES_RELEASE:-v0.0.5}"
+TGOSIMAGES_QEMU_X86_64_ARCHIVE="qemu-x86_64.tar.xz"
+TGOSIMAGES_QEMU_X86_64_URL="${AXVISOR_TGOSIMAGES_QEMU_X86_64_URL:-https://github.com/rcore-os/tgosimages/releases/download/${TGOSIMAGES_RELEASE}/${TGOSIMAGES_QEMU_X86_64_ARCHIVE}}"
+TGOSIMAGES_QEMU_X86_64_SHA256="${AXVISOR_TGOSIMAGES_QEMU_X86_64_SHA256:-64434d91166bf70ebfab42481d935c68640301fd031d0836d2bdec3f82bb2e20}"
 
 verify_sha256() {
   local file="$1"
@@ -195,6 +211,10 @@ EOF
   exit 1
 }
 
+# Only execute main logic when run directly (not sourced).
+# When sourced (e.g. by test scripts), only function/variable definitions are loaded.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+
 GUEST=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -233,20 +253,20 @@ done
 # Guest configuration:
 # image_name|vmconfig_template|generated_vmconfig_name|build_config|qemu_config_path|kernel_file|success_msg
 case "$GUEST" in
-  arceos)         CFG="qemu_aarch64_arceos|qemu/aarch64/arceos-smp1.toml|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|.github/workflows/qemu-aarch64.toml|qemu-aarch64|Hello, world!" ;;
-  arceos-riscv64) CFG="qemu_riscv64_arceos|qemu/riscv64/arceos-smp1.toml|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|.github/workflows/qemu-riscv64.toml|qemu-riscv64|Hello, world!" ;;
-  linux)          CFG="qemu_aarch64_linux|qemu/aarch64/linux-smp1.toml|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|.github/workflows/qemu-aarch64.toml|qemu-aarch64|test pass!" ;;
-  linux-x86_64)   CFG="qemu_x86_64_linux|qemu/x86_64/linux-smp1.toml|linux-x86_64-qemu-smp1.toml|qemu-x86_64-linux.toml|configs/qemu/qemu-x86_64-linux.toml|linux-qemu|test pass!" ;;
-  nimbos)         CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-smp1.toml|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!" ;;
-  nimbos-uefi)    CFG="qemu_x86_64_nimbos|qemu/x86_64/nimbos-uefi-smp1.toml|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!" ;;
-  linux-x86_64-uefi) CFG="qemu_x86_64_linux|qemu/x86_64/linux-uefi-smp1.toml|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-uefi.toml|qemu-x86_64|test pass!" ;;
+  arceos)         CFG="qemu-aarch64|qemu/aarch64/arceos-smp1.toml|arceos-aarch64-qemu-smp1.toml|qemu-aarch64.toml|.github/workflows/qemu-aarch64.toml|arceos/arceos-qemu|Hello, world!|rootfs-aarch64-alpine.img" ;;
+  arceos-riscv64) CFG="qemu-riscv64|qemu/riscv64/arceos-smp1.toml|arceos-riscv64-qemu-smp1.toml|qemu-riscv64.toml|.github/workflows/qemu-riscv64.toml|arceos/arceos-qemu|Hello, world!|rootfs-riscv64-alpine.img" ;;
+  linux)          CFG="qemu-aarch64|qemu/aarch64/linux-smp1.toml|linux-aarch64-qemu-smp1.toml|qemu-aarch64.toml|.github/workflows/qemu-aarch64.toml|linux/linux-qemu|BusyBox shell (~ #)|rootfs-aarch64-alpine.img" ;;
+  linux-x86_64)   CFG="qemu-x86_64|qemu/x86_64/linux-smp1.toml|linux-x86_64-qemu-smp1.toml|qemu-x86_64-linux.toml|configs/qemu/qemu-x86_64-linux.toml|linux/linux-qemu|BusyBox shell (~ #)|rootfs-x86_64-alpine.img" ;;
+  nimbos)         CFG="qemu-x86_64|qemu/x86_64/nimbos-smp1.toml|nimbos-x86_64-qemu-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-kvm.toml|qemu-x86_64|usertests passed!|" ;;
+  nimbos-uefi)    CFG="qemu-x86_64|qemu/x86_64/nimbos-uefi-smp1.toml|nimbos-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-uefi.toml|qemu-x86_64|usertests passed!|" ;;
+  linux-x86_64-uefi) CFG="qemu-x86_64|qemu/x86_64/linux-uefi-smp1.toml|linux-x86_64-qemu-uefi-smp1.toml|qemu-x86_64.toml|.github/workflows/qemu-x86_64-uefi.toml|linux/linux-qemu|BusyBox shell (~ #)|rootfs-x86_64-alpine.img" ;;
   *)       echo "Unknown guest: $GUEST" >&2; usage ;;
 esac
 
-IFS='|' read -r IMAGE_NAME VMCONFIG VMCONFIG_OUTPUT_NAME BUILD_CONFIG QEMU_CONFIG_PATH KERNEL_FILE SUCCESS_MSG <<< "$CFG"
+IFS='|' read -r IMAGE_NAME VMCONFIG VMCONFIG_OUTPUT_NAME BUILD_CONFIG QEMU_CONFIG_PATH KERNEL_FILE SUCCESS_MSG ROOTFS_IMAGE_NAME <<< "$CFG"
 # NOTE:
-#  - `cargo axvisor image pull` extracts images to
-#    `/tmp/.axvisor-images/<IMAGE_NAME>` by default.
+#  - `cargo xtask image pull` extracts images to
+#    `${IMAGE_STORAGE_ROOT}/<IMAGE_NAME>` by default.
 #  - NimbOS x86_64 is normalized into the same directory layout even when it is
 #    sourced from the rcore-os/tgosimages qemu-x86_64 release archive.
 IMAGE_DIR="${IMAGE_STORAGE_ROOT}/${IMAGE_NAME}"
@@ -255,9 +275,14 @@ VMCONFIG_TMP_DIR="${REPO_ROOT}/tmp/vmconfigs"
 GENERATED_VMCONFIG_PATH="${VMCONFIG_TMP_DIR}/${VMCONFIG_OUTPUT_NAME%.toml}.generated.toml"
 ROOTFS_TARGET="${REPO_ROOT}/tmp/rootfs.img"
 KERNEL_IMAGE="${IMAGE_DIR}/${KERNEL_FILE}"
-ROOTFS_IMAGE="${IMAGE_DIR}/rootfs.img"
+ROOTFS_IMAGE_DIR="${IMAGE_STORAGE_ROOT}/${ROOTFS_IMAGE_NAME}"
+ROOTFS_IMAGE="${ROOTFS_IMAGE_DIR}/${ROOTFS_IMAGE_NAME}"
 ABS_KERNEL_PATH="${IMAGE_DIR}/${KERNEL_FILE}"
 QEMU_CONFIG_ABS_PATH="${REPO_ROOT}/${QEMU_CONFIG_PATH}"
+
+if [[ "$GUEST" == "nimbos" || "$GUEST" == "nimbos-uefi" ]]; then
+  ROOTFS_IMAGE="${IMAGE_DIR}/rootfs.img"
+fi
 
 if [[ "$GUEST" == "linux-x86_64" ]]; then
   ROOTFS_TARGET="${REPO_ROOT}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img"
@@ -268,22 +293,27 @@ echo "[setup_qemu] Guest: ${GUEST} | Repo: ${REPO_ROOT}"
 echo "[setup_qemu] Step 1: ensure guest image is downloaded..."
 if [[ "$GUEST" == "nimbos" || "$GUEST" == "nimbos-uefi" ]]; then
   if ! prepare_nimbos_from_tgosimages; then
-    echo "  -> Warning: failed to prepare NimbOS from tgosimages; falling back to cargo axvisor image." >&2
+    echo "  -> Warning: failed to prepare NimbOS from tgosimages; falling back to cargo xtask image." >&2
     rm -rf "${IMAGE_DIR}"
     mkdir -p "${IMAGE_DIR}"
-    (cd "${REPO_ROOT}" && cargo axvisor image pull "${IMAGE_NAME}")
+    (cd "${REPO_ROOT}" && cargo xtask image pull -S "${IMAGE_STORAGE_ROOT}" "${IMAGE_NAME}")
   fi
 elif [ ! -d "${IMAGE_DIR}" ]; then
-  echo "  -> Image directory ${IMAGE_DIR} not found, downloading via cargo axvisor image..."
+  echo "  -> Image directory ${IMAGE_DIR} not found, downloading via cargo xtask image..."
   echo "  -> Download attempt 1/${IMAGE_DOWNLOAD_MAX_ATTEMPTS}"
-  if ! (cd "${REPO_ROOT}" && cargo axvisor image pull "${IMAGE_NAME}"); then
+  if ! (cd "${REPO_ROOT}" && cargo xtask image pull -S "${IMAGE_STORAGE_ROOT}" "${IMAGE_NAME}"); then
     echo "  -> Attempt 1/${IMAGE_DOWNLOAD_MAX_ATTEMPTS} failed. Trying to bootstrap registry..."
     bootstrap_image_registry
     echo "  -> Download attempt 2/${IMAGE_DOWNLOAD_MAX_ATTEMPTS}"
-    (cd "${REPO_ROOT}" && cargo axvisor image pull "${IMAGE_NAME}")
+    (cd "${REPO_ROOT}" && cargo xtask image pull -S "${IMAGE_STORAGE_ROOT}" "${IMAGE_NAME}")
   fi
 else
   echo "  -> Found existing image directory: ${IMAGE_DIR}"
+fi
+
+if [[ -n "${ROOTFS_IMAGE_NAME}" && ! -f "${ROOTFS_IMAGE}" ]]; then
+  echo "  -> Rootfs image not found, downloading ${ROOTFS_IMAGE_NAME}..."
+  (cd "${REPO_ROOT}" && cargo xtask image pull -S "${IMAGE_STORAGE_ROOT}" "${ROOTFS_IMAGE_NAME}")
 fi
 
 if [ ! -f "${KERNEL_IMAGE}" ]; then
@@ -309,7 +339,7 @@ if [[ "$GUEST" == "nimbos" ]]; then
   BIOS_IMAGE="${IMAGE_DIR}/axvm-bios.bin"
   if [ ! -f "${BIOS_IMAGE}" ]; then
     echo "ERROR: axvm-bios.bin not found at ${BIOS_IMAGE}" >&2
-    echo "  -> Please re-download the NimbOS image via 'cargo axvisor image pull qemu_x86_64_nimbos'." >&2
+    echo "  -> Please re-run to download the NimbOS image from rcore-os/tgosimages." >&2
     exit 1
   fi
 fi
@@ -394,10 +424,9 @@ cat <<EOF
 [setup_qemu] Done. Guest: ${GUEST}
 You can now run the QEMU test with:
 
-  cd ${REPO_ROOT}
   cargo xtask axvisor qemu \\
-    --config configs/board/${BUILD_CONFIG} \\
-    --qemu-config ${QEMU_CONFIG_PATH} \\
+    --config ${REPO_ROOT}/configs/board/${BUILD_CONFIG} \\
+    --qemu-config ${REPO_ROOT}/${QEMU_CONFIG_PATH} \\
     --vmconfigs ${GENERATED_VMCONFIG_PATH}
 
 Success indicator: '${SUCCESS_MSG}'
@@ -418,3 +447,5 @@ if [[ "$GUEST" == "linux-x86_64-uefi" ]]; then
   echo "*** Linux x86_64 UEFI mode requires VT-x/VMX, KVM, and an OVMF-compatible firmware image."
   echo ""
 fi
+
+fi  # end of sourced-guard: [[ "${BASH_SOURCE[0]}" == "${0}" ]]
