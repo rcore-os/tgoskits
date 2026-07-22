@@ -241,6 +241,9 @@ impl Mountpoint {
         result
             .readonly
             .store(source.mountpoint.is_readonly(), Ordering::Release);
+        result
+            .mount_flags
+            .store(source.mountpoint.mount_flags(), Ordering::Release);
         if recursive {
             let mut clones = Vec::new();
             Self::clone_children_under(source, &result, true, &mut clones);
