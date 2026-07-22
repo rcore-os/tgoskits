@@ -1480,6 +1480,42 @@ mod tests {
     }
 
     #[test]
+    fn cloned_relations_do_not_depend_on_slave_master_rebuild_order() {
+        let fs = mock_filesystem();
+        let master = Mountpoint::new_root(&fs);
+        let slave = Mountpoint::new_root(&fs);
+        master.set_shared();
+        slave.join_shared_group(&master);
+        slave.set_slave();
+
+        let cloned_master = Mountpoint::clone_shallow(&master, None);
+        let cloned_slave = Mountpoint::clone_shallow(&slave, None);
+        Mountpoint::rebuild_cloned_relations(&[
+            (slave, cloned_slave.clone()),
+            (master, cloned_master.clone()),
+        ]);
+
+        assert!(
+            cloned_master
+                .slaves
+                .lock()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .any(|candidate| Arc::ptr_eq(&candidate, &cloned_slave)),
+            "rebuilding a later shared master must preserve its cloned slave edge"
+        );
+        assert!(
+            cloned_slave
+                .masters
+                .lock()
+                .iter()
+                .filter_map(Weak::upgrade)
+                .any(|candidate| Arc::ptr_eq(&candidate, &cloned_master)),
+            "rebuilding a slave before its master must preserve directionality"
+        );
+    }
+
+    #[test]
     fn propagated_child_has_destination_specific_mount_identity() {
         let fs = mock_filesystem();
         let source_parent = Mountpoint::new_root(&fs);
