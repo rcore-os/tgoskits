@@ -17,6 +17,7 @@ mod ivc;
 pub(crate) mod vcpus;
 
 mod dispatcher;
+mod queue;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 // Re-exported for [`VmRuntimeHandle`](crate::vm::VmRuntimeHandle) which will
