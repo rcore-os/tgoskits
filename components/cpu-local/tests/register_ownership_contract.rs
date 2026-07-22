@@ -30,20 +30,26 @@ fn each_host_thread_must_install_its_own_cpu_binding() {
     .unwrap();
 }
 
-const REGISTER: &str = include_str!("../src/register.rs");
+const REGISTER: &str = include_str!("../src/register/mod.rs");
+const X86_64: &str = include_str!("../src/register/x86_64.rs");
+const AARCH64: &str = include_str!("../src/register/aarch64.rs");
+const RISCV: &str = include_str!("../src/register/riscv.rs");
+const LOONGARCH64: &str = include_str!("../src/register/loongarch64.rs");
 const IDENTITY: &str = include_str!("../src/identity.rs");
 const SYMBOL: &str = include_str!("../src/symbol.rs");
 
 #[test]
 fn architecture_assembly_stays_in_the_leaf_allowlist() {
     let source_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let allowed = ["register.rs"];
+    let allowed = [
+        "x86_64.rs",
+        "aarch64.rs",
+        "riscv.rs",
+        "loongarch64.rs",
+        "arm.rs",
+    ];
 
-    for entry in fs::read_dir(source_dir).expect("cpu-local source directory must be readable") {
-        let path = entry.expect("source entry must be readable").path();
-        if path.extension().is_none_or(|extension| extension != "rs") {
-            continue;
-        }
+    for path in rust_sources(&source_dir) {
         let source = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
         assert!(
@@ -111,7 +117,7 @@ fn template_metadata_uses_position_independent_rust_addresses() {
 
 #[test]
 fn riscv_uses_linux_current_or_unikernel_scratch_by_image_mode() {
-    let backend = architecture_backend(REGISTER, "riscv32", "loongarch64");
+    let backend = RISCV;
     assert!(backend.contains("csrw sscratch, zero"));
     assert!(backend.contains("csrw sscratch, {base}"));
     assert!(backend.contains("mv tp, {current}"));
@@ -126,49 +132,46 @@ fn riscv_uses_linux_current_or_unikernel_scratch_by_image_mode() {
 
 #[test]
 fn x86_and_aarch64_keep_task_tls_separate_from_the_cpu_anchor() {
-    let x86 = architecture_backend(REGISTER, "x86_64", "aarch64");
+    let x86 = X86_64;
     assert!(x86.contains("IA32_GS_BASE"));
     assert!(x86.contains("gs:[{self_base_offset}]"));
     assert!(x86.contains("gs:[{current_thread_offset}]"));
     let x86_install = x86
-        .split_once("pub unsafe fn install_current")
+        .split_once("unsafe fn install_current")
         .unwrap()
         .1
-        .split_once("pub unsafe fn read_current_area_base")
+        .split_once("unsafe fn read_current_area_base")
         .unwrap()
         .0;
     assert!(!x86_install.contains("IA32_FS_BASE"));
 
-    let aarch64 = architecture_backend(REGISTER, "aarch64", "riscv32");
+    let aarch64 = AARCH64;
     assert!(aarch64.contains("TPIDR_EL1"));
     assert!(aarch64.contains("TPIDR_EL2"));
     let install = aarch64
-        .split_once("pub unsafe fn install_current")
+        .split_once("unsafe fn install_current")
         .unwrap()
         .1
-        .split_once("pub unsafe fn read_current_area_base")
+        .split_once("unsafe fn read_current_area_base")
         .unwrap()
         .0;
     let area_read = aarch64
-        .split_once("pub unsafe fn read_current_area_base")
+        .split_once("unsafe fn read_current_area_base")
         .unwrap()
         .1
-        .split_once("pub unsafe fn read_current_thread")
+        .split_once("unsafe fn read_current_thread")
         .unwrap()
         .0;
     assert!(!install.contains("TPIDR_EL0"));
     assert!(!area_read.contains("TPIDR_EL0"));
-    let task_pointer = aarch64
-        .split_once("pub unsafe fn get_task_pointer")
-        .unwrap()
-        .1;
+    let task_pointer = aarch64.split_once("unsafe fn get_task_pointer").unwrap().1;
     assert!(task_pointer.contains("TPIDR_EL0"));
     assert!(task_pointer.contains("RegisterModeV1::LinuxCurrent"));
 }
 
 #[test]
 fn loongarch_mirrors_the_direct_area_base_in_ks3() {
-    let backend = architecture_backend(REGISTER, "loongarch64", "arm");
+    let backend = LOONGARCH64;
     assert!(backend.contains("csrwr {shadow}, 0x33"));
     assert!(backend.contains("move $r21, {base}"));
     assert!(backend.contains("csrrd {shadow}, 0x33"));
@@ -183,18 +186,25 @@ fn loongarch_mirrors_the_direct_area_base_in_ks3() {
     );
 }
 
-fn architecture_backend<'source>(source: &'source str, start: &str, end: &str) -> &'source str {
-    source
-        .split_once(&format!("target_arch = \"{start}\""))
-        .unwrap_or_else(|| panic!("missing {start} register backend"))
-        .1
-        .split_once(&format!("target_arch = \"{end}\""))
-        .unwrap_or_else(|| panic!("missing end marker after {start} register backend"))
-        .0
-}
-
 fn words(source: &str) -> impl Iterator<Item = &str> {
     source
         .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
         .filter(|word| !word.is_empty())
+}
+
+fn rust_sources(root: &Path) -> Vec<std::path::PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut sources = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).expect("cpu-local source directory must be readable")
+        {
+            let path = entry.expect("source entry must be readable").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                sources.push(path);
+            }
+        }
+    }
+    sources
 }

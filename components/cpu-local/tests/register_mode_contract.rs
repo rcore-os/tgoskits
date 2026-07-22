@@ -4,7 +4,17 @@ const HEADER: &str = concat!(
     include_str!("../src/header/area.rs"),
     include_str!("../src/header/thread.rs"),
 );
-const REGISTER: &str = include_str!("../src/register.rs");
+const REGISTER: &str = concat!(
+    include_str!("../src/register/mod.rs"),
+    include_str!("../src/register/x86_64.rs"),
+    include_str!("../src/register/aarch64.rs"),
+    include_str!("../src/register/riscv.rs"),
+    include_str!("../src/register/loongarch64.rs"),
+);
+const X86_64: &str = include_str!("../src/register/x86_64.rs");
+const AARCH64: &str = include_str!("../src/register/aarch64.rs");
+const RISCV: &str = include_str!("../src/register/riscv.rs");
+const LOONGARCH64: &str = include_str!("../src/register/loongarch64.rs");
 const SYMBOL: &str = include_str!("../src/symbol.rs");
 
 #[test]
@@ -87,31 +97,27 @@ fn register_backends_implement_both_image_modes() {
         );
     }
 
-    let x86 = architecture_backend("x86_64", "aarch64");
-    assert!(x86.contains("IA32_GS_BASE"));
+    assert!(X86_64.contains("IA32_GS_BASE"));
 
-    let aarch64 = architecture_backend("aarch64", "riscv32");
     for register in ["CurrentEL", "TPIDR_EL1", "TPIDR_EL2", "SP_EL0"] {
         assert!(
-            aarch64.contains(register),
+            AARCH64.contains(register),
             "AArch64 dual-mode binding is missing {register}"
         );
     }
 
-    let riscv = architecture_backend("riscv32", "loongarch64");
     assert!(
-        riscv.contains("csrw sscratch, zero") && riscv.contains("mv tp"),
+        RISCV.contains("csrw sscratch, zero") && RISCV.contains("mv tp"),
         "RISC-V LinuxCurrent must install tp=current header and leave kernel sscratch zero"
     );
     assert!(
-        riscv.contains("csrw sscratch, {base}"),
+        RISCV.contains("csrw sscratch, {base}"),
         "RISC-V UnikernelTls must retain the CPU prefix in sscratch"
     );
 
-    let loongarch = architecture_backend("loongarch64", "arm");
     for operation in ["move $r21", "0x33", "move $tp"] {
         assert!(
-            loongarch.contains(operation),
+            LOONGARCH64.contains(operation),
             "LoongArch binding is missing {operation}"
         );
     }
@@ -126,14 +132,4 @@ fn riscv_template_symbols_never_use_absolute_relocation_assembly() {
         );
     }
     assert!(!SYMBOL.contains("asm!("));
-}
-
-fn architecture_backend(start: &str, end: &str) -> &'static str {
-    REGISTER
-        .split_once(&format!("target_arch = \"{start}\""))
-        .unwrap_or_else(|| panic!("missing {start} register backend"))
-        .1
-        .split_once(&format!("target_arch = \"{end}\""))
-        .unwrap_or_else(|| panic!("missing backend after {start}"))
-        .0
 }
