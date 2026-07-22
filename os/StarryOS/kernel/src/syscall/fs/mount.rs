@@ -190,11 +190,7 @@ pub fn sys_mount(
         let ctx = FS_CONTEXT.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
-        let mp = target.bind_mount(&source, (flags & MS_REC) != 0)?;
-        if (flags & MS_RDONLY) != 0 {
-            mp.set_readonly(true);
-        }
-        mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
+        target.bind_mount(&source, (flags & MS_REC) != 0)?;
         return Ok(0);
     }
 
