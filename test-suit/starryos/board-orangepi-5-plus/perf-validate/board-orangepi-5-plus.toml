@@ -1,0 +1,32 @@
+# Board run config for perf-validate on the Orange Pi 5 Plus.
+#
+# The `perf-validate` binary must already be on the board's ext4 rootfs (the
+# xtask deploys the KERNEL only). Cross-compile + scp it first with `deploy.sh`,
+# which installs it to /usr/local/bin/perf-validate (the shared ext4 that
+# StarryOS mounts as /, alongside the perf 6.6 binary). See README.md.
+#
+# It auto-discovers topology and prints PASS/FAIL/SKIP/INFO per check, then:
+#   BOARD_PERF_SUMMARY ...
+#   BOARD_PERF_VALIDATE_VERDICT <FULL|PARTIAL|FAIL|INVALID>
+#   BOARD_PERF_VALIDATE_DONE     (unique final sentinel)
+#
+# Today (smp1 boot): VERDICT PARTIAL = "single-core regression anchor passed;
+# big.LITTLE UNVALIDATED, blocked by the smp8 boot hang" — that is a SUCCESS.
+# When smp8 boots, VERDICT FULL. So success matches FULL|PARTIAL; FAIL/INVALID
+# (and panic) fail. ostool tears down on the FIRST success match, so we gate on
+# the explicit verdict line, and DONE is the unconditional last line — a hang
+# after partial output times out instead of matching an early line.
+board_type   = "OrangePi-5-Plus"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "/usr/local/bin/perf-validate"
+success_regex = ['(?m)^BOARD_PERF_VALIDATE_VERDICT (FULL|PARTIAL)\s*$']
+fail_regex = [
+  '(?m)^BOARD_PERF_VALIDATE_VERDICT (FAIL|INVALID)',
+  '(?i)\bpanic(?:ked)?\b',
+  '(?i)segmentation fault',
+  '(?i)SIGSEGV',
+  'exit with code: 139',
+]
+# SMP-ROTATE / SMP-MIGRATE / RDPMC-3 loops are long on real silicon; the smp8
+# ymodem transfer + full-matrix run needs headroom over the smp1 anchor.
+timeout = 900

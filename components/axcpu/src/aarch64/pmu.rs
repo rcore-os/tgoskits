@@ -12,6 +12,8 @@
 
 use core::arch::asm;
 
+use super::TrapFrame;
+
 /// Information probed from the PMU.
 pub struct PmuInfo {
     /// `PMCR_EL0.N`: number of programmable event counters.
@@ -126,6 +128,51 @@ pub fn read_midr_el1() -> u64 {
         asm!("mrs {}, MIDR_EL1", out(reg) value);
     }
     value
+}
+
+/// Which CPU cluster (microarchitecture) a core belongs to, decoded from
+/// `MIDR_EL1`. RK3588 is big.LITTLE: Cortex-A76 "big" + Cortex-A55 "LITTLE".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterId {
+    /// Cortex-A55 ("LITTLE"), `MIDR_EL1` partnum `0xD05`.
+    Little,
+    /// Cortex-A76 ("big"), `MIDR_EL1` partnum `0xD0B`.
+    Big,
+    /// Any other implementation (e.g. QEMU `virt`'s Cortex-A53 `0xD03`); the
+    /// raw partnum is carried for diagnostics.
+    Other(u16),
+}
+
+/// `MIDR_EL1.Implementer` value for Arm Limited.
+const MIDR_IMPLEMENTER_ARM: u64 = 0x41;
+/// `MIDR_EL1.PartNum` for Cortex-A55.
+const MIDR_PARTNUM_CORTEX_A55: u64 = 0xD05;
+/// `MIDR_EL1.PartNum` for Cortex-A76.
+const MIDR_PARTNUM_CORTEX_A76: u64 = 0xD0B;
+
+/// Classify a raw `MIDR_EL1` value into a [`ClusterId`].
+///
+/// Mirrors Linux's `MIDR_CPU_MODEL_MASK` comparison (implementer + partnum;
+/// variant/revision excluded). Pure so it is host-unit-testable.
+pub fn classify_midr(midr: u64) -> ClusterId {
+    let implementer = (midr >> 24) & 0xff;
+    let partnum = (midr >> 4) & 0xfff;
+    if implementer != MIDR_IMPLEMENTER_ARM {
+        return ClusterId::Other(partnum as u16);
+    }
+    match partnum {
+        MIDR_PARTNUM_CORTEX_A55 => ClusterId::Little,
+        MIDR_PARTNUM_CORTEX_A76 => ClusterId::Big,
+        other => ClusterId::Other(other as u16),
+    }
+}
+
+/// Classify the current core into a [`ClusterId`] from `MIDR_EL1`.
+///
+/// Must be called *on* the core being classified — `MIDR_EL1` reflects only the
+/// executing PE.
+pub fn cluster_id() -> ClusterId {
+    classify_midr(read_midr_el1())
 }
 
 /// Self-check guarding against firmware / `MDCR_EL2` issues that keep the cycle
@@ -294,6 +341,52 @@ pub fn hw_event_to_arm(hw_id: u32) -> Option<u16> {
         // PERF_COUNT_HW_REF_CPU_CYCLES (9) and anything else are unmapped.
         _ => None,
     }
+}
+
+/// Maps a `PERF_TYPE_HW_CACHE` config to an ARM PMUv3 event number, or `None`
+/// for a combination ARM PMUv3 does not define (matching Linux's
+/// `CACHE_OP_UNSUPPORTED`, which rejects the event at open).
+///
+/// The config packs `cache_id | (op << 8) | (result << 16)`: `cache_id` is
+/// L1D(0)/L1I(1)/LL(2)/DTLB(3)/ITLB(4)/BPU(5)/NODE(6), `op` is READ(0)/WRITE(1)/
+/// PREFETCH(2), `result` is ACCESS(0)/MISS(1). ARM's basic cache events do not
+/// split read vs write, so both map to the same event; PREFETCH and NODE have no
+/// architectural counterpart and are rejected.
+pub fn hw_cache_to_arm(config: u64) -> Option<u16> {
+    const READ: u8 = 0;
+    const WRITE: u8 = 1;
+    const ACCESS: u8 = 0;
+    const MISS: u8 = 1;
+
+    let cache_id = (config & 0xff) as u8;
+    let op = ((config >> 8) & 0xff) as u8;
+    let result = ((config >> 16) & 0xff) as u8;
+
+    Some(match (cache_id, op, result) {
+        // L1D: L1D_CACHE / L1D_CACHE_REFILL.
+        (0, READ | WRITE, ACCESS) => 0x04,
+        (0, READ | WRITE, MISS) => 0x03,
+        // L1I: L1I_CACHE / L1I_CACHE_REFILL.
+        (1, READ, ACCESS) => 0x14,
+        (1, READ, MISS) => 0x01,
+        // LL (last level): LL_CACHE_RD / LL_CACHE_MISS_RD for reads, else
+        // LL_CACHE / LL_CACHE_MISS.
+        (2, READ, ACCESS) => 0x36,
+        (2, READ, MISS) => 0x37,
+        (2, WRITE, ACCESS) => 0x32,
+        (2, WRITE, MISS) => 0x33,
+        // DTLB: L1D_TLB / L1D_TLB_REFILL.
+        (3, READ | WRITE, ACCESS) => 0x25,
+        (3, READ | WRITE, MISS) => 0x05,
+        // ITLB: L1I_TLB / L1I_TLB_REFILL.
+        (4, READ, ACCESS) => 0x26,
+        (4, READ, MISS) => 0x02,
+        // BPU (branch prediction): BR_PRED / BR_MIS_PRED.
+        (5, READ | WRITE, ACCESS) => 0x12,
+        (5, READ | WRITE, MISS) => 0x10,
+        // PREFETCH ops, NODE cache, and every other combination are unsupported.
+        _ => return None,
+    })
 }
 
 /// The generic programmable event counters (`PMEVCNTRn_EL0` / `PMEVTYPERn_EL0`).
@@ -476,6 +569,16 @@ pub mod counter {
         }
     }
 
+    /// Disables every counter at once (`PMCNTENCLR_EL0 = 0xFFFF_FFFF`), the
+    /// programmable counters and the cycle counter (bit 31). Used by the
+    /// per-core clean-slate bring-up so a freshly-entered secondary core starts
+    /// with nothing counting.
+    pub fn disable_all() {
+        unsafe {
+            asm!("msr PMCNTENCLR_EL0, {}", in(reg) 0xFFFF_FFFFu64);
+        }
+    }
+
     /// Resets counter `n` (`PMEVCNTRn_EL0 = 0`).
     ///
     /// Out-of-range `n` is a no-op (debug builds assert).
@@ -592,6 +695,24 @@ pub mod overflow {
             asm!("msr PMINTENCLR_EL1, {}", in(reg) 1u64 << n);
         }
     }
+
+    /// Masks the overflow interrupt for every counter
+    /// (`PMINTENCLR_EL1 = 0xFFFF_FFFF`). Used by the per-core clean-slate
+    /// bring-up so a freshly-entered secondary core has no overflow IRQ armed.
+    pub fn disable_all_irq() {
+        unsafe {
+            asm!("msr PMINTENCLR_EL1, {}", in(reg) 0xFFFF_FFFFu64);
+        }
+    }
+
+    /// Clears every overflow-status flag (`PMOVSCLR_EL0 = 0xFFFF_FFFF`,
+    /// write-1-to-clear). Used by the per-core clean-slate bring-up so a stale
+    /// overflow flag cannot raise a spurious PMU interrupt.
+    pub fn clear_all() {
+        unsafe {
+            asm!("msr PMOVSCLR_EL0, {}", in(reg) 0xFFFF_FFFFu64);
+        }
+    }
 }
 
 /// The interrupted program counter (`ELR_EL1`).
@@ -618,4 +739,87 @@ pub fn interrupted_is_user() -> bool {
         asm!("mrs {}, SPSR_EL1", out(reg) spsr);
     }
     (spsr & 0xf) == 0
+}
+
+/// Per-CPU pointer to the [`TrapFrame`] of the context interrupted by the IRQ
+/// currently being dispatched, or `0` when not inside an IRQ dispatch.
+///
+/// Published at the two IRQ-entry sites (EL1 kernel interrupt, EL0 user
+/// interrupt) immediately before `dispatch_irq` and cleared immediately after,
+/// so the PMU overflow handler — which runs *inside* `dispatch_irq` — can read
+/// the interrupted frame pointer (`x29`) for `PERF_SAMPLE_CALLCHAIN` unwinding.
+/// The live `ELR_EL1`/`SPSR_EL1` (see [`interrupted_pc`]/[`interrupted_is_user`])
+/// still describe the interrupted PC and EL, but `x29` survives only in the
+/// saved frame — the handler's own frames have long since clobbered the GPR.
+#[ax_percpu::def_percpu]
+static PMU_TRAP_FRAME: usize = 0;
+
+/// Publishes `tf` as the interrupted trap frame for the current CPU.
+///
+/// Called at IRQ entry, immediately before `dispatch_irq`, and paired with
+/// [`clear_trap_frame`] immediately after it returns. A single per-CPU store
+/// (TPIDR-relative) that cannot fault and does not touch the register
+/// save/restore path.
+///
+/// # Safety
+/// `tf` must point to a valid [`TrapFrame`] that stays alive until
+/// [`clear_trap_frame`] runs on this CPU (i.e. for the duration of the IRQ
+/// dispatch). Interrupts must remain masked across the publish → dispatch →
+/// clear window so no nested IRQ observes this CPU's pointer for a frame that
+/// has already returned.
+#[inline]
+pub unsafe fn set_trap_frame(tf: *const TrapFrame) {
+    PMU_TRAP_FRAME.write_current(tf as usize);
+}
+
+/// Clears the published interrupted trap frame for the current CPU.
+///
+/// Called immediately after `dispatch_irq` returns, so no later sampling
+/// interrupt can observe a stale (already-returned) frame.
+#[inline]
+pub fn clear_trap_frame() {
+    PMU_TRAP_FRAME.write_current(0);
+}
+
+/// The interrupted frame pointer (`x29`), from the trap frame published at IRQ
+/// entry.
+///
+/// Returns `None` when no frame is published — e.g. the overflow was taken on a
+/// path that does not plumb the frame (synchronous exceptions), or before the
+/// plumbing ran. Callers must fall back to a leaf-only callchain in that case
+/// rather than skipping the sample.
+pub fn interrupted_fp() -> Option<usize> {
+    let p = PMU_TRAP_FRAME.read_current();
+    if p == 0 {
+        return None;
+    }
+    // SAFETY: `p` was published from a live `&TrapFrame` by `set_trap_frame` and
+    // is only non-zero for the duration of the IRQ dispatch on this CPU, during
+    // which we are running.
+    let tf = p as *const TrapFrame;
+    Some(unsafe { (*tf).x[29] as usize })
+}
+
+/// The interrupted stack pointer.
+///
+/// For a user (EL0) interrupt the interrupted SP lives in `SP_EL0`, which the
+/// kernel never overwrites (it runs on `SP_EL1`), so it still holds the user SP
+/// and is read live. For a kernel (EL1) interrupt it is the pre-trap SP saved in
+/// the published frame. Returns `None` if no frame is published on the kernel
+/// path. Used only to bound the user-stack unwind window.
+pub fn interrupted_sp() -> Option<usize> {
+    if interrupted_is_user() {
+        let sp: u64;
+        unsafe {
+            asm!("mrs {}, SP_EL0", out(reg) sp);
+        }
+        return Some(sp as usize);
+    }
+    let p = PMU_TRAP_FRAME.read_current();
+    if p == 0 {
+        return None;
+    }
+    // SAFETY: see `interrupted_fp`.
+    let tf = p as *const TrapFrame;
+    Some(unsafe { (*tf).sp as usize })
 }

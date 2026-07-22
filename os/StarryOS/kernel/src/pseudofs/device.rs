@@ -31,11 +31,21 @@ pub enum DeviceMmap {
     /// [`LinearBackend`] so userspace can't observe freed memory if
     /// the device drops the buffer before munmap.
     Physical(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
-    /// Maps to cacheable physical RAM.
+    /// Maps to cacheable (Normal, Write-Back, Inner-Shareable) physical RAM,
+    /// unlike [`Physical`](Self::Physical) which maps `UNCACHED`.
     ///
-    /// This is for DMA buffers that are normal memory and whose driver/runtime
-    /// performs explicit cache maintenance around device access.
-    #[cfg(feature = "rknpu")]
+    /// Two uses, distinguished by who else touches the pages:
+    /// - **Coherent CPU↔userspace sharing** (e.g. the perf `perf_event_mmap_page`
+    ///   header, sample ring, and rdpmc counter page): the kernel writes the
+    ///   pages through its cacheable linear map and userspace reads them through
+    ///   this cacheable mapping. Because both are Normal Inner-Shareable
+    ///   cacheable mappings of the same physical page, the hardware keeps them
+    ///   coherent and **no explicit cache maintenance is required**. Mapping
+    ///   such pages `UNCACHED` (as [`Physical`](Self::Physical) does) is a bug on
+    ///   real hardware: the kernel's cached writes are invisible to userspace's
+    ///   uncached reads (masked under QEMU, which models no caches).
+    /// - **DMA buffers** touched by a non-coherent device: the driver/runtime
+    ///   must perform explicit cache maintenance around device access.
     PhysicalCached(PhysAddrRange, Option<Arc<dyn Any + Send + Sync>>),
     /// Maps to an already offset-resolved physical address range.
     ///

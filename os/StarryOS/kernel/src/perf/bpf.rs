@@ -48,7 +48,7 @@ const BPF_JIT_MEM_PAGES: usize = 4;
 /// `mmap(perf_fd)`; None before).
 ///
 /// Ownership model: the user VMA owns the ringbuf pages via the strong
-/// `Arc<GlobalPage>` threaded into `DeviceMmap::Physical`'s retainer slot;
+/// `Arc<GlobalPage>` threaded into `DeviceMmap::PhysicalCached`'s retainer slot;
 /// this wrapper keeps only a `Weak`. Consequences:
 ///
 /// * UAF safety — the pages outlive `close(perf_fd)` (which drops this
@@ -202,7 +202,7 @@ impl PerfEventOps for BpfPerfEventWrapper {
         }
         let pages = Arc::new(pages);
         // Keep only a `Weak`; hand the sole strong ref to the caller, which
-        // threads it into `DeviceMmap::Physical`'s retainer so the user VMA
+        // threads it into `DeviceMmap::PhysicalCached`'s retainer so the user VMA
         // pins these frames until `munmap`/exit even if the perf fd (and this
         // wrapper) is closed first. Because the wrapper does not retain a
         // strong ref, an mmap that is abandoned or fails before a VMA adopts
