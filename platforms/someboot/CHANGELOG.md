@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - *(cpu-local)* allocate one runtime CPU area per discovered CPU from the single ELF template and
-  publish the layout only after typed initialization completes.
+  publish the layout only after typed initialization completes; the final-image handoff is the
+  unversioned scalar `__percpu_initialize_layout(base, stride, count)` entry.
 
 ### Removed
 

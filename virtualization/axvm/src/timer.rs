@@ -104,8 +104,6 @@ fn with_current_timer_list<R>(
 ) -> R {
     let _guard = NoPreempt::new();
     // SAFETY: the guard prevents migration through the non-escaping borrow.
-    let pin = unsafe { ax_percpu::CpuPin::new_unchecked() };
-    let bound =
-        ax_percpu::bound_current(&pin).expect("AxVM timer access requires a bound CPU area");
-    TIMER_LIST.with_current_ref(&bound, operation)
+    unsafe { ax_percpu::with_cpu_pin(|pin| TIMER_LIST.with_current(pin, operation)) }
+        .expect("AxVM timer access requires an installed CPU area")
 }

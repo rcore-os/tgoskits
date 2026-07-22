@@ -1498,6 +1498,7 @@ dependencies = [
  "bitflags 2.13.0",
  "byte-unit",
  "cfg-if",
+ "cpu-local",
  "extern-trait",
  "fdt-edit",
  "fdt-raw",
@@ -2253,7 +2254,7 @@ dependencies = [
 name = "cpu-local"
 version = "0.1.0"
 dependencies = [
- "trait-ffi",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -1,18 +1,14 @@
-pub use cpu_local::CpuBindingV1;
+pub use cpu_local::CpuIndex;
 pub use mmio_api::{MapError, MmioAddr, MmioOp, MmioRaw};
 
-/// Resolves a value-only binding from someboot's immutable CPU-area table.
-pub fn cpu_register_binding(cpu_index: usize) -> Result<CpuBindingV1, CpuBindError> {
-    let cpu_index = u32::try_from(cpu_index).map_err(|_| CpuBindError::InvalidCpu)?;
-    let area_base =
-        crate::smp::percpu_data_ptr(cpu_index as usize).ok_or(CpuBindError::MissingArea)? as usize;
-    // SAFETY: someboot constructs every frozen prefix before publishing the
-    // runtime layout and keeps the mapped area alive until shutdown.
-    let binding = unsafe { &*(area_base as *const cpu_local::CpuAreaHeader) }.binding();
-    if binding.area_base != area_base || binding.cpu_index != cpu_index {
-        return Err(CpuBindError::LayoutMismatch);
-    }
-    Ok(binding)
+/// Resolves a typed logical index from someboot's immutable CPU-area table.
+pub fn cpu_index(cpu_index: usize) -> Result<CpuIndex, CpuBindError> {
+    let raw_index = cpu_index;
+    let cpu_index =
+        CpuIndex::try_from(cpu_index).map_err(|_| CpuBindError::InvalidCpu { index: raw_index })?;
+    crate::smp::percpu_data_ptr(cpu_index.as_usize())
+        .ok_or(CpuBindError::MissingArea { cpu_index })?;
+    Ok(cpu_index)
 }
 
 /// Failure to bind the CPU-owned architecture register before HAL startup.
@@ -22,24 +18,36 @@ pub enum CpuBindError {
     #[error("the kernel runtime does not support CPU-local register binding")]
     Unsupported,
     /// The logical index cannot be represented by the stable binding value.
-    #[error("logical CPU index is outside the CPU-local binding ABI")]
-    InvalidCpu,
+    #[error("logical CPU index {index} is outside the CPU-local index range")]
+    InvalidCpu { index: usize },
     /// Someboot did not publish a runtime area for this logical CPU.
-    #[error("someboot did not publish the selected CPU-local area")]
-    MissingArea,
+    #[error("someboot did not publish CPU-local area {cpu_index:?}")]
+    MissingArea { cpu_index: CpuIndex },
+    /// The final image did not install its frozen typed layout.
+    #[error("the final image has not installed its per-CPU layout")]
+    LayoutNotInstalled,
+    /// The requested CPU is outside the final image's frozen layout.
+    #[error("CPU {cpu_index:?} is outside per-CPU layout area count {area_count}")]
+    CpuOutOfRange {
+        cpu_index: CpuIndex,
+        area_count: u32,
+    },
+    /// Address calculation failed while selecting the CPU area.
+    #[error("CPU-local area address calculation overflowed")]
+    AddressOverflow,
     /// The binding does not match the runtime's installed CPU-local layout.
     #[error("CPU-local binding does not match the installed runtime layout")]
     LayoutMismatch,
     /// The architecture register could not be bound to the selected area.
-    #[error("failed to install the CPU-local architecture register")]
-    Register,
+    #[error(transparent)]
+    CpuLocal(#[from] cpu_local::CpuLocalError),
 }
 
 pub trait KernelOp: MmioOp {
     /// Installs the CPU-owned architecture anchor before any HAL lock or IRQ
     /// path can observe the secondary CPU.
-    fn bind_current_cpu(&self, binding: CpuBindingV1) -> Result<(), CpuBindError> {
-        let _ = binding;
+    fn bind_current_cpu(&self, cpu_index: CpuIndex) -> Result<(), CpuBindError> {
+        let _ = cpu_index;
         Err(CpuBindError::Unsupported)
     }
 

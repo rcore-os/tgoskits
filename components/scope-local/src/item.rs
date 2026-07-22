@@ -84,14 +84,14 @@ impl<T: Send + Sync + 'static> LocalItem<T> {
     pub fn with<R>(&self, operation: impl for<'access> FnOnce(&'access T) -> R) -> R {
         let _guard = NoPreempt::new();
         // SAFETY: `NoPreempt` prevents migration for this complete operation.
-        let pin = unsafe { CpuPin::new_unchecked() };
-        self.with_pinned(&pin, operation)
+        unsafe { ax_percpu::with_cpu_pin(|pin| self.with_pinned(pin, operation)) }
+            .expect("scope-local access requires an installed CPU area")
     }
 
     /// Runs `operation` under an existing CPU pin.
     pub fn with_pinned<R>(
         &self,
-        pin: &CpuPin,
+        pin: &CpuPin<'_>,
         operation: impl for<'access> FnOnce(&'access T) -> R,
     ) -> R {
         ActiveScope::with_item(self.item, pin, |item| operation(item.as_ref()))
@@ -103,7 +103,7 @@ impl<T: Send + Sync + 'static> LocalItem<T> {
     /// initialized, allowing hard-IRQ callers to avoid allocation.
     pub fn try_with_pinned<R>(
         &self,
-        pin: &CpuPin,
+        pin: &CpuPin<'_>,
         operation: impl for<'access> FnOnce(&'access T) -> R,
     ) -> Option<R> {
         ActiveScope::try_with_item(self.item, pin, |item| operation(item.as_ref()))

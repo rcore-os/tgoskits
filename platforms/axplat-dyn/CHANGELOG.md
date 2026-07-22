@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- *(cpu-local)* validate and bind someboot's frozen dynamic CPU-area layout without a base callback
-  or linked-layout feature propagation.
+- *(cpu-local)* validate and install exact `CpuAreaRef` values from someboot's frozen dynamic
+  CPU-area layout without version/generation/cookie fields, a base callback, or linked-layout
+  feature propagation.
 
 ## [0.7.12](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.11...axplat-dyn-v0.7.12) - 2026-07-10
 

@@ -103,18 +103,16 @@ fn runtime_cpu_areas_have_one_template_and_no_legacy_linker_abi() {
 fn layout_initialization_uses_only_the_neutral_c_abi() {
     let percpu_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_dir = workspace_dir(percpu_dir);
-    let provider = read(&percpu_dir.join("src/initialization.rs"));
+    let provider = read(&percpu_dir.join("src/ffi.rs"));
     let consumer = read(&workspace_dir.join("platforms/someboot/src/smp/mod.rs"));
 
-    for symbol in [
-        "__percpu_initialize_layout_v2",
-        "__percpu_image_register_mode_v1",
-    ] {
-        assert!(provider.contains(symbol), "missing C ABI provider {symbol}");
-        assert!(consumer.contains(symbol), "missing C ABI consumer {symbol}");
-    }
+    let symbol = "__percpu_initialize_layout";
+    assert!(provider.contains(symbol), "missing C ABI provider {symbol}");
+    assert!(consumer.contains(symbol), "missing C ABI consumer {symbol}");
 
     for legacy_symbol in [
+        "__percpu_initialize_layout_v2",
+        "__percpu_image_register_mode_v1",
         concat!("__ax_", "percpu_initialize_layout_v2"),
         concat!("__ax_", "percpu_image_register_mode_v1"),
     ] {

@@ -21,9 +21,6 @@ static mut CPU_AREA_REGION_END: usize = 0;
 static CPU_AREA_LAYOUT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static CPU_AREA_RUNTIME_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-const CPU_AREA_LAYOUT_GENERATION: u32 = 1;
-const CPU_AREA_LAYOUT_COOKIE: usize = 0x534f_4d45;
-const CPU_LOCAL_ABI_VERSION: u16 = 2;
 const PERCPU_INIT_OK: u32 = 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -102,17 +99,10 @@ pub fn alloc_percpu() {
 /// so someboot does not acquire a semantic dependency on `ax-percpu`.
 pub(crate) fn initialize_percpu_layout() {
     unsafe extern "C" {
-        fn __percpu_image_register_mode_v1() -> u8;
-        fn __percpu_initialize_layout_v2(
+        fn __percpu_initialize_layout(
             runtime_base: usize,
             area_stride: usize,
             area_count: u32,
-            flags: u32,
-            abi_version: u16,
-            register_mode: u8,
-            host_level: u8,
-            generation: u32,
-            cookie: usize,
         ) -> u32;
     }
 
@@ -134,23 +124,10 @@ pub(crate) fn initialize_percpu_layout() {
     // reserved, zeroed, and mapped every area for the kernel lifetime; runtime
     // metadata and online count remain unpublished until construction and
     // cache maintenance complete below.
-    let status = unsafe {
-        let register_mode = __percpu_image_register_mode_v1();
-        __percpu_initialize_layout_v2(
-            runtime_base,
-            area_stride,
-            area_count,
-            0,
-            CPU_LOCAL_ABI_VERSION,
-            register_mode,
-            Arch::cpu_local_host_level(),
-            CPU_AREA_LAYOUT_GENERATION,
-            CPU_AREA_LAYOUT_COOKIE,
-        )
-    };
+    let status = unsafe { __percpu_initialize_layout(runtime_base, area_stride, area_count) };
     assert_eq!(
         status, PERCPU_INIT_OK,
-        "final CPU-local typed initialization rejected the reserved layout"
+        "final CPU-local typed initialization rejected the reserved layout with status {status}"
     );
 
     initialize_runtime_metadata();

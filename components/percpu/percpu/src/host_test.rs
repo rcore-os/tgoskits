@@ -1,9 +1,9 @@
 //! Process-lifetime dynamic CPU areas for host-side tests.
 
-use core::num::NonZeroU32;
+use core::{num::NonZeroU32, ptr::NonNull};
 use std::sync::Mutex;
 
-use crate::{PerCpuError, PerCpuLayoutInitV2, PerCpuLayoutV1};
+use crate::{PerCpuError, PerCpuLayout, PerCpuRegion};
 
 static STORAGE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
@@ -11,9 +11,9 @@ static STORAGE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 ///
 /// Repeated calls with the original area count return the installed layout.
 /// A different count is rejected because CPU-area publication is one-shot.
-pub fn initialize(area_count: NonZeroU32) -> Result<PerCpuLayoutV1, PerCpuError> {
+pub fn initialize(area_count: NonZeroU32) -> Result<&'static PerCpuLayout, PerCpuError> {
     if let Ok(layout) = crate::layout() {
-        return if layout.area_count == area_count.get() {
+        return if layout.area_count() == area_count.get() {
             Ok(layout)
         } else {
             Err(PerCpuError::LayoutAlreadyInitialized)
@@ -24,7 +24,7 @@ pub fn initialize(area_count: NonZeroU32) -> Result<PerCpuLayoutV1, PerCpuError>
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Ok(layout) = crate::layout() {
-        return if layout.area_count == area_count.get() {
+        return if layout.area_count() == area_count.get() {
             Ok(layout)
         } else {
             Err(PerCpuError::LayoutAlreadyInitialized)
@@ -41,18 +41,13 @@ pub fn initialize(area_count: NonZeroU32) -> Result<PerCpuLayoutV1, PerCpuError>
     storage.resize(storage_size, 0);
     let runtime_base = align_up(storage.as_mut_ptr() as usize, required_alignment)
         .ok_or(PerCpuError::AddressOverflow)?;
-    let layout = PerCpuLayoutV1 {
-        runtime_base,
-        area_stride,
-        area_count: area_count.get(),
-        flags: 0,
-    };
-    layout.validate()?;
+    let runtime_base = NonNull::new(runtime_base as *mut u8)
+        .expect("aligned host storage must have a non-null address");
+    let region = PerCpuRegion::new(runtime_base, area_stride, area_count);
     // SAFETY: STORAGE exclusively owns fresh, aligned raw bytes for the
     // process lifetime. No host thread can bind an area before this call
     // constructs every typed object and freezes the layout.
-    unsafe { crate::initialize_layout(PerCpuLayoutInitV2::for_supervisor_image(layout)) }?;
-    Ok(layout)
+    unsafe { crate::initialize_layout(region) }
 }
 
 fn align_up(value: usize, alignment: usize) -> Option<usize> {

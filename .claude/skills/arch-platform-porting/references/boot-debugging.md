@@ -37,10 +37,20 @@ then binds a CPU. There is no linked runtime alias and the template size must no
 Linker boundaries use only `__PERCPU_*` and `__CPU_LOCAL_*`; x86 trap entry consumes the relative
 `__CPU_LOCAL_TSS_OFFSET`.
 
+The exact initialized `CpuAreaRef` address is the area identity. One final image has no CPU-local
+ABI version, layout generation, cookie, or provider-trait FFI. A `CpuPin<'scope>` validates the
+live CPU base, prefix self pointer/index, and current header and cannot escape its guard. Atomic
+scalars require migration exclusion; shared `T: Sync` values require the same pin plus their own
+synchronization; mutable local objects require `ExclusiveCpu` after IRQ/re-entry and conflicting
+remote access are excluded. CPU-area construction is permitted only while that CPU is offline and
+the raw destination is exclusively owned.
+
 Context-switch publication follows one ordering: validate the outgoing binding, bind the next
 stable task header, prepare every fallible state transition, commit the architecture register,
 perform the naked switch, and unbind the previous header in the incoming tail. The interrupt-off
-`CpuPin` spans that sequence. vCPU exits must restore the host register contract before returning
+`CpuPin` spans that sequence. An uncommitted prepared token rolls the next binding back, while the
+previous binding epoch rejects a stale incoming tail after task rebinding; that epoch is a runtime
+concurrency guard, not an ABI version. vCPU exits must restore the host register contract before returning
 to host Rust; LoongArch KS4/KS5 remain vCPU scratch and AArch64 must restore host TPIDR_EL0 before
 calling Rust exception handlers.
 
@@ -55,7 +65,8 @@ execution and then fail only on traps or vCPU exits, so it is not a valid fallba
   `build-std=core,alloc`; SMP remains a compile-time capability, while the runtime CPU limit is
   configured separately. Its ELF must be `ET_DYN` without `PT_TLS`, `.tdata`, or `.tbss`.
 - Axvisor remains a std/musl PIE and explicitly selects the complete TLS chain down through
-  axruntime, axhal, `cpu-local`, axplat-dyn, somehal, and someboot.
+  axruntime, axhal, `cpu-local`, axvm, axplat-dyn, somehal, and someboot. AxVM snapshots the host
+  kernel-TLS value around each guest transition in addition to validating the exact CPU area.
 - ArceOS retains TLS by default. A userspace build owns the same architecture register for
   Linux-current semantics, so `uspace + tls` is a configuration error.
 - someboot renders TLS and no-TLS linker layouts separately. For relocatable direct images,

@@ -67,7 +67,7 @@ fn linker_contract_uses_one_neutral_template() {
             .unwrap()
             .join("percpu_macros/src/lib.rs"),
     );
-    let header = read(&workspace_dir.join("components/cpu-local/src/header/area.rs"));
+    let header = read(&workspace_dir.join("components/cpu-local/src/area.rs"));
     let symbol = read(&workspace_dir.join("components/cpu-local/src/symbol.rs"));
 
     for section in [".percpu.template.storage", ".percpu.init", ".percpu.align"] {
@@ -119,7 +119,7 @@ fn linker_contract_uses_one_neutral_template() {
 #[test]
 fn cpu_pin_does_not_create_safe_mutable_aliases() {
     let percpu_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let area_api = read_rust_module(&percpu_dir.join("src/area"));
+    let area_api = read(&percpu_dir.join("src/area.rs"));
     let value_api = read(&percpu_dir.join("src/value.rs"));
     let macro_api = read(
         &percpu_dir
@@ -139,25 +139,26 @@ fn cpu_pin_does_not_create_safe_mutable_aliases() {
     ] {
         assert!(macro_api.contains(atomic));
     }
-    assert!(value_api.contains("pub unsafe fn with_current_mut_raw"));
-    assert!(value_api.contains("T: Sync") && value_api.contains("pub fn with_current_ref"));
-    assert!(value_api.contains("T::load(self.current_ptr(pin))"));
-    assert!(value_api.contains("T::store(self.current_ptr(pin) as *mut T, value)"));
-    assert!(!area_api.contains("pub const fn pin(&self) -> &CpuPin"));
+    assert!(value_api.contains("pub fn with_current_mut"));
+    assert!(value_api.contains("&ExclusiveCpu<'_>"));
+    assert!(value_api.contains("T: Sync") && value_api.contains("pub fn with_current"));
+    assert!(value_api.contains("T::load(S::current_ptr(pin))"));
+    assert!(value_api.contains("T::store(S::current_ptr(pin), value)"));
+    assert!(!area_api.contains("CpuPin::new_unchecked"));
 }
 
 #[test]
-fn safe_current_access_requires_a_verified_bound_cpu_pin() {
+fn safe_current_access_requires_a_verified_scoped_cpu_pin() {
     let percpu_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let area_api = read_rust_module(&percpu_dir.join("src/area"));
+    let area_api = read(&percpu_dir.join("src/area.rs"));
     let value_api = read(&percpu_dir.join("src/value.rs"));
     let library = read(&percpu_dir.join("src/lib.rs"));
 
-    assert!(area_api.contains("pub struct BoundCpuPin"));
-    assert!(area_api.contains("pub fn bound_current("));
-    assert!(value_api.contains("pin: &BoundCpuPin<'_>"));
-    assert!(library.contains("pin.area_base().wrapping_add(offset)"));
-    assert!(library.contains("platform::current_cpu_binding()"));
+    assert!(!area_api.contains("pub struct BoundCpuPin"));
+    assert!(area_api.contains("pub fn current_area(pin: &CpuPin<'_>)"));
+    assert!(value_api.contains("pin: &CpuPin<'_>"));
+    assert!(library.contains("pin.area().base() + offset"));
+    assert!(!library.contains("platform::current_cpu_binding()"));
     assert!(library.contains("checked_sub(crate::template_base())"));
     assert!(!library.contains("current_area_base_raw"));
 }
@@ -181,7 +182,8 @@ fn typed_values_are_constructed_only_in_final_runtime_areas() {
     assert!(initialization.contains("validate_init_records"));
     assert!(initialization.contains("validate_prefixes"));
     assert!(initialization.contains("initialize_area"));
-    assert!(someboot.contains("__percpu_initialize_layout_v2"));
+    assert!(someboot.contains("__percpu_initialize_layout"));
+    assert!(!someboot.contains("__percpu_initialize_layout_v2"));
     assert!(someboot.contains("publish_runtime_cpu_areas"));
 
     let allocation = function_body(&layout, "pub fn allocate_cpu_areas(");
@@ -193,7 +195,7 @@ fn typed_values_are_constructed_only_in_final_runtime_areas() {
 #[test]
 fn typed_initializer_registration_is_an_explicit_unsafe_boundary() {
     let percpu_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let initialization = read(&percpu_dir.join("src/initialization.rs"));
+    let descriptor = read(&percpu_dir.join("src/descriptor.rs"));
     let macro_api = read(
         &percpu_dir
             .parent()
@@ -201,9 +203,9 @@ fn typed_initializer_registration_is_an_explicit_unsafe_boundary() {
             .join("percpu_macros/src/lib.rs"),
     );
 
-    assert!(initialization.contains("pub const unsafe fn new(\n        storage_address:"));
-    assert!(initialization.contains("pub const unsafe fn new(describe:"));
-    assert!(initialization.contains("same descriptor on every invocation"));
+    assert!(descriptor.contains("pub const unsafe fn new(\n        storage_address:"));
+    assert!(descriptor.contains("pub const unsafe fn new(describe:"));
+    assert!(descriptor.contains("The thunk must remain deterministic"));
     assert!(macro_api.contains("PerCpuInitDescriptor::new("));
     assert!(macro_api.contains("PerCpuInitRegistration::new(#descriptor_name)"));
 }
@@ -218,16 +220,6 @@ fn workspace_dir(crate_dir: &Path) -> &Path {
 fn read(path: &Path) -> String {
     fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
-}
-
-fn read_rust_module(path: &Path) -> String {
-    let mut files = rust_sources(path);
-    files.sort();
-    files
-        .into_iter()
-        .map(|source| read(&source))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn rust_sources(directory: &Path) -> Vec<std::path::PathBuf> {

@@ -57,19 +57,21 @@ pub fn tracking_enabled() -> bool {
 pub(crate) fn with_state<R>(f: impl FnOnce(Option<&mut GlobalState>) -> R) -> R {
     let _guard = ax_kernel_guard::NoPreempt::new();
     // SAFETY: the guard prevents migration throughout all accesses below.
-    let pin = unsafe { ax_percpu::CpuPin::new_unchecked() };
-    let bound =
-        ax_percpu::bound_current(&pin).expect("allocator tracking requires a bound CPU-local area");
-    if IN_GLOBAL_ALLOCATOR.read_current(&bound) || !tracking_enabled() {
-        return f(None);
-    }
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            if IN_GLOBAL_ALLOCATOR.read_current(pin) || !tracking_enabled() {
+                return f(None);
+            }
 
-    IN_GLOBAL_ALLOCATOR.write_current(&bound, true);
-    let mut state = STATE.lock();
-    let result = f(Some(&mut state));
-    drop(state);
-    IN_GLOBAL_ALLOCATOR.write_current(&bound, false);
-    result
+            IN_GLOBAL_ALLOCATOR.write_current(pin, true);
+            let mut state = STATE.lock();
+            let result = f(Some(&mut state));
+            drop(state);
+            IN_GLOBAL_ALLOCATOR.write_current(pin, false);
+            result
+        })
+    }
+    .expect("allocator tracking requires an installed CPU area")
 }
 
 /// Returns the current generation of the global allocator.

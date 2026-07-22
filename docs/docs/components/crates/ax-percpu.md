@@ -11,9 +11,10 @@
 1. 从 `.percpu.template` 取得唯一模板的地址与大小。
 2. 根据 `.percpu.align` 求出最终区域对齐和 stride。
 3. 为所有 CPU 分配持续到关机的可写区域。
-4. 用 `PerCpuLayoutInitV2` 一次校验完整布局。
-5. 在每个最终地址构造 `CpuAreaPrefixV2` 和全部类型化变量。
-6. 冻结布局，然后才允许平台安装 `PerCpuArea::binding()`。
+4. 用 `initialize_layout(PerCpuRegion)` 在第一次目标写入前校验完整布局。
+5. 在每个最终地址构造 `CpuAreaPrefix` 和全部类型化变量。
+6. 冻结布局，然后平台才可从 `PerCpuArea::cpu_area()` 取得 `CpuAreaRef` 并在
+   offline CPU 上安装。
 
 不存在链接期运行时 alias、静态 CPU 区域或链接脚本按 `SMP`/CPU 数展开的路径。
 因此 CPU 数只影响运行时分配，不影响 `.percpu.template` 大小。
@@ -32,19 +33,19 @@
 `.percpu.template.end`。边界统一使用 `__PERCPU_*` 和 `__CPU_LOCAL_*`；
 链接脚本只接收这些精确节名。
 
-someboot 通过值类型 C ABI 调用：
-
-- `__percpu_image_register_mode_v1`
-- `__percpu_initialize_layout_v2`
+someboot 只通过一个无版本、纯标量 C ABI 调用
+`__percpu_initialize_layout(runtime_base, area_stride, area_count)`。寄存器模式由最终
+镜像的 feature graph 决定，不在运行时重复传递。
 
 ## 公共接口
 
-- `PerCpuLayoutV1`：连续运行时区域的 base、stride 与 area count。
-- `PerCpuLayoutInitV2`：增加 ABI、寄存器模式、host level、generation 和 cookie。
-- `PerCpuArea`：一个已初始化 CPU 区域的只读描述符及 binding。
-- `BoundCpuPin`：把调用者的 `CpuPin` 强化为已验证的当前区域能力。
+- `PerCpuRegion`：平台拥有的 base、stride 与非零 area count。
+- `PerCpuLayout`：初始化完成后冻结的进程级布局。
+- `PerCpuArea`：一个已初始化 CPU 区域的只读描述符。
+- `CpuPin<'scope>`：不可逃逸、不可跨线程的当前 CPU 能力。
+- `ExclusiveCpu<'pin>`：额外证明本地 IRQ/重入和冲突远端访问已排除的可变访问能力。
 - `PerCpuError`：可匹配的布局、初始化与绑定错误。
-- `initialize_layout`、`layout`、`area`、`bound_current`：初始化和查询入口。
+- `initialize_layout`、`layout`、`area`、`current_area`：初始化和查询入口。
 
 典型访问：
 
@@ -52,21 +53,30 @@ someboot 通过值类型 C ABI 调用：
 #[ax_percpu::def_percpu]
 static CPU_ID: usize = 0;
 
-fn set_cpu_id(pin: &ax_percpu::CpuPin, value: usize) {
-    let bound = ax_percpu::bound_current(pin).unwrap();
-    CPU_ID.write_current(&bound, value);
+fn set_cpu_id(pin: &ax_percpu::CpuPin<'_>, value: usize) {
+    ax_percpu::current_area(pin).unwrap();
+    CPU_ID.write_current(pin, value);
 }
 ```
 
-安全访问必须持有 `BoundCpuPin`。原始标量使用匹配的原子类型，避免中断重入造成
-Rust data race；对象在每个最终区域只构造一次。对象可变访问仍为 `unsafe`，因为
-pin 只能证明不迁移，不能单独证明引用排他。
+原始标量使用匹配的原子类型；对象在每个最终区域只构造一次。`T: Sync` 对象可在
+`CpuPin` 下共享访问，本地可变对象必须通过 `ExclusiveCpu` 的非逃逸回调访问。远端
+访问显式接收 `PerCpuArea` 并由调用者负责同步。
+
+| 操作 | 必要保护 |
+| --- | --- |
+| 原子标量 | 禁止迁移；允许本地 IRQ |
+| `T: Sync` 共享对象 | 禁止迁移；对象自行同步 |
+| 本地可变对象 | 禁止迁移、IRQ/重入和冲突远端访问 |
+| 调度切换 | IRQ 关闭、禁止迁移，并消费事务 token |
+| vCPU 运行 | 禁止迁移；退出汇编在 Rust 前恢复 host 寄存器 |
+| CPU 区域初始化 | CPU offline，区域独占且尚无 live Rust 值 |
 
 ## Feature 与测试
 
 crate 只提供 `host-test` feature。`host_test::initialize(NonZeroU32)` 为测试进程
 分配生命周期内的动态区域并执行同一套类型化初始化。每个模拟 CPU 线程都必须显式
-安装 `area(cpu).binding()`，不存在进程级当前 CPU fallback。
+安装 `area(cpu).cpu_area()`，不存在进程级当前 CPU fallback。
 
 ```bash
 cargo test -p ax-percpu --features host-test

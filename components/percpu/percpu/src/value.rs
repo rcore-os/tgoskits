@@ -1,50 +1,50 @@
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ptr::NonNull};
 
-use crate::{BoundCpuPin, CpuIndex, CpuPin, PerCpuError};
+use cpu_local::{CpuPin, ExclusiveCpu};
+
+use crate::PerCpuArea;
 
 /// Provider generated for one concrete symbol in the per-CPU template.
 ///
 /// # Safety
 ///
-/// Every returned pointer must address the declared `T` in the selected CPU's
-/// live area. Implementations must not turn a [`BoundCpuPin`] into a stronger
-/// aliasing or IRQ-exclusion guarantee. Providers used with
-/// [`PrimitiveAccess`] must address the corresponding `core::sync::atomic`
-/// representation, including its alignment requirement.
+/// Every returned pointer must address the declared `T` in the selected live
+/// area. Primitive providers must use the matching atomic representation.
 #[doc(hidden)]
 pub unsafe trait PerCpuSymbol<T> {
     fn offset() -> usize;
-    fn current_ptr(pin: &BoundCpuPin<'_>) -> *const T;
-    unsafe fn current_ptr_unchecked() -> *const T;
-    fn remote_ptr(cpu_index: CpuIndex) -> Result<*const T, PerCpuError>;
+    fn current_ptr(pin: &CpuPin<'_>) -> NonNull<T>;
+    fn remote_ptr(area: PerCpuArea) -> NonNull<T>;
 }
 
-/// Marker selecting reference-based access for a non-primitive CPU-local
-/// object.
-#[doc(hidden)]
-pub enum ObjectAccess {}
-
-/// Marker selecting instantaneous value access for a primitive CPU-local
-/// object.
-#[doc(hidden)]
-pub enum PrimitiveAccess {}
-
-type PerCpuMarker<T, S, A> = fn() -> (T, S, A);
-
-/// Typed descriptor for one symbol replicated in every CPU-local area.
+/// Marker implemented only by macro-generated object symbols.
 ///
-/// `S` is a macro-generated symbol provider and `A` selects the safe access
-/// surface. The descriptor owns no runtime value and therefore imposes no
-/// `Send` or `Sync` bound on the CPU-owned `T`.
-pub struct PerCpu<T, S, A = ObjectAccess> {
-    _marker: PhantomData<PerCpuMarker<T, S, A>>,
+/// # Safety
+///
+/// The provider's storage must contain a live `T` in every initialized area.
+#[doc(hidden)]
+pub unsafe trait PerCpuObjectSymbol<T>: PerCpuSymbol<T> {}
+
+/// Marker implemented only by macro-generated atomic scalar symbols.
+///
+/// # Safety
+///
+/// The provider's storage must use the atomic representation paired with `T`.
+#[doc(hidden)]
+pub unsafe trait PerCpuPrimitiveSymbol<T>: PerCpuSymbol<T> {}
+
+type PerCpuMarker<T, S> = fn() -> (T, S);
+
+/// Typed descriptor for one symbol replicated in every runtime CPU area.
+pub struct PerCpu<T, S> {
+    _marker: PhantomData<PerCpuMarker<T, S>>,
 }
 
-impl<T, S, A> PerCpu<T, S, A>
+impl<T, S> PerCpu<T, S>
 where
     S: PerCpuSymbol<T>,
 {
-    /// Creates the zero-sized descriptor for its macro-generated symbol.
+    /// Creates the zero-sized descriptor for a macro-generated symbol.
     #[doc(hidden)]
     pub const fn new() -> Self {
         Self {
@@ -52,161 +52,80 @@ where
         }
     }
 
-    /// Returns this symbol's byte offset in one CPU-local area.
-    #[inline]
+    /// Returns this symbol's byte offset in one area.
     pub fn offset(&self) -> usize {
         S::offset()
     }
 
-    /// Returns a raw pointer whose address remains stable while `pin` lives.
-    #[inline]
-    pub fn current_ptr(&self, pin: &BoundCpuPin<'_>) -> *const T {
+    /// Returns a typed pointer whose address is stable for `pin`.
+    pub fn current_ptr(&self, pin: &CpuPin<'_>) -> NonNull<T> {
         S::current_ptr(pin)
     }
 
-    /// Returns a current-CPU pointer under a caller-provided pinning invariant.
+    /// Returns a typed pointer in an explicitly selected remote area.
     ///
-    /// # Safety
-    ///
-    /// The current execution context must remain on one CPU until the pointer
-    /// is no longer used.
-    #[inline]
-    pub unsafe fn current_ptr_unchecked(&self) -> *const T {
-        // SAFETY: forwarded caller contract matches the symbol provider.
-        unsafe { S::current_ptr_unchecked() }
-    }
-
-    /// Returns a current-CPU shared reference under raw synchronization rules.
-    ///
-    /// # Safety
-    ///
-    /// The caller must prevent migration and all conflicting mutation for the
-    /// returned borrow. Prefer `with_current_ref` when that API is available.
-    #[inline]
-    pub unsafe fn current_ref_raw(&self) -> &T {
-        // SAFETY: forwarded caller contract covers pointer validity and aliasing.
-        unsafe { &*self.current_ptr_unchecked() }
-    }
-
-    /// Returns a current-CPU mutable reference under raw synchronization rules.
-    ///
-    /// # Safety
-    ///
-    /// The caller must prevent migration, IRQ re-entry, and every local or
-    /// remote alias for the complete borrow.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn current_ref_mut_raw(&self) -> &mut T {
-        // SAFETY: forwarded caller contract covers validity and exclusivity.
-        unsafe { &mut *(self.current_ptr_unchecked() as *mut T) }
-    }
-
-    /// Mutates the current CPU's value without allowing its borrow to escape.
-    ///
-    /// # Safety
-    ///
-    /// [`CpuPin`] proves only address stability. The caller must additionally
-    /// guarantee exclusive access, including against nested calls, hard IRQs,
-    /// and remote CPU access, for the complete closure.
-    pub unsafe fn with_current_mut_raw<R>(
-        &self,
-        pin: &CpuPin,
-        operation: impl for<'value> FnOnce(&'value mut T) -> R,
-    ) -> R {
-        let _ = pin;
-        // SAFETY: forwarded caller contract establishes both the current-area
-        // binding and the unique borrow for this unchecked compatibility path.
-        operation(unsafe { &mut *(self.current_ptr_unchecked() as *mut T) })
-    }
-
-    /// Returns a pointer to another installed CPU's instance.
-    #[inline]
-    pub fn remote_ptr(&self, cpu_index: CpuIndex) -> Result<*const T, PerCpuError> {
-        S::remote_ptr(cpu_index)
-    }
-
-    /// Returns another CPU's shared reference.
-    ///
-    /// # Safety
-    ///
-    /// The caller must keep the remote area live and prevent conflicting
-    /// mutation for the returned borrow.
-    #[inline]
-    pub unsafe fn remote_ref_raw(&self, cpu_index: CpuIndex) -> Result<&T, PerCpuError> {
-        // SAFETY: forwarded caller contract covers the remote borrow.
-        Ok(unsafe { &*self.remote_ptr(cpu_index)? })
-    }
-
-    /// Returns another CPU's mutable reference.
-    ///
-    /// # Safety
-    ///
-    /// The caller must provide exclusive access to the remote instance for the
-    /// returned borrow.
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    pub unsafe fn remote_ref_mut_raw(&self, cpu_index: CpuIndex) -> Result<&mut T, PerCpuError> {
-        // SAFETY: forwarded caller contract covers the remote exclusive borrow.
-        Ok(unsafe { &mut *(self.remote_ptr(cpu_index)? as *mut T) })
+    /// The caller remains responsible for synchronization before dereference.
+    pub fn remote_ptr(&self, area: PerCpuArea) -> NonNull<T> {
+        S::remote_ptr(area)
     }
 }
 
-impl<T, S> PerCpu<T, S, ObjectAccess>
+impl<T, S> PerCpu<T, S>
+where
+    S: PerCpuObjectSymbol<T>,
+{
+    /// Mutates the current CPU's object without allowing its borrow to escape.
+    pub fn with_current_mut<R>(
+        &self,
+        exclusive: &ExclusiveCpu<'_>,
+        operation: impl for<'value> FnOnce(&'value mut T) -> R,
+    ) -> R {
+        // SAFETY: ExclusiveCpu proves local and remote alias exclusion for the
+        // closure, while its area fixes the generated address.
+        let mut pointer =
+            unsafe { NonNull::new_unchecked((exclusive.area().base() + S::offset()) as *mut T) };
+        operation(unsafe { pointer.as_mut() })
+    }
+}
+
+impl<T, S> PerCpu<T, S>
 where
     T: Sync,
-    S: PerCpuSymbol<T>,
+    S: PerCpuObjectSymbol<T>,
 {
-    /// Borrows a shared current-CPU value without allowing it to escape.
-    ///
-    /// This method is intentionally unavailable for owner-only `!Sync` values
-    /// and for primitive descriptors that also expose safe writes.
-    pub fn with_current_ref<R>(
+    /// Borrows a shared current-CPU object for one non-escaping callback.
+    pub fn with_current<R>(
         &self,
-        pin: &BoundCpuPin<'_>,
+        pin: &CpuPin<'_>,
         operation: impl for<'value> FnOnce(&'value T) -> R,
     ) -> R {
-        // SAFETY: T: Sync permits shared observation, CpuPin fixes the address,
-        // and no safe mutable API exists for ObjectAccess.
-        operation(unsafe { &*self.current_ptr(pin) })
+        // SAFETY: T: Sync permits shared observation and the pin fixes address.
+        operation(unsafe { S::current_ptr(pin).as_ref() })
     }
 }
 
 mod primitive {
-    use core::sync::atomic::{
-        AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+    use core::{
+        ptr::NonNull,
+        sync::atomic::{
+            AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+        },
     };
 
     pub trait Sealed: Copy {
-        /// Loads from the macro-generated atomic representation.
-        ///
-        /// # Safety
-        ///
-        /// `pointer` must be aligned for and point to the matching atomic type.
-        unsafe fn load(pointer: *const Self) -> Self;
-
-        /// Stores into the macro-generated atomic representation.
-        ///
-        /// # Safety
-        ///
-        /// `pointer` must be aligned for and point to the matching atomic type.
-        unsafe fn store(pointer: *mut Self, value: Self);
+        unsafe fn load(pointer: NonNull<Self>) -> Self;
+        unsafe fn store(pointer: NonNull<Self>, value: Self);
     }
 
     macro_rules! impl_atomic_primitive {
         ($value:ty, $atomic:ty) => {
             impl Sealed for $value {
-                #[inline]
-                unsafe fn load(pointer: *const Self) -> Self {
-                    // SAFETY: the macro stores this primitive as the matching
-                    // atomic type and the provider preserves that address.
-                    unsafe { &*pointer.cast::<$atomic>() }.load(Ordering::Relaxed)
+                unsafe fn load(pointer: NonNull<Self>) -> Self {
+                    unsafe { pointer.cast::<$atomic>().as_ref() }.load(Ordering::Relaxed)
                 }
 
-                #[inline]
-                unsafe fn store(pointer: *mut Self, value: Self) {
-                    // SAFETY: the macro stores this primitive as the matching
-                    // atomic type and the provider preserves that address.
-                    unsafe { &*pointer.cast::<$atomic>() }.store(value, Ordering::Relaxed);
+                unsafe fn store(pointer: NonNull<Self>, value: Self) {
+                    unsafe { pointer.cast::<$atomic>().as_ref() }.store(value, Ordering::Relaxed);
                 }
             }
         };
@@ -220,65 +139,18 @@ mod primitive {
     impl_atomic_primitive!(usize, AtomicUsize);
 }
 
-impl<T, S> PerCpu<T, S, PrimitiveAccess>
+impl<T, S> PerCpu<T, S>
 where
     T: primitive::Sealed,
-    S: PerCpuSymbol<T>,
+    S: PerCpuPrimitiveSymbol<T>,
 {
-    /// Copies the primitive value on the CPU proven by `pin`.
-    ///
-    /// This is a relaxed atomic load so hard-IRQ re-entry cannot create a Rust
-    /// data race. It intentionally provides no inter-variable ordering.
-    ///
-    /// ```compile_fail
-    /// use ax_percpu::def_percpu;
-    ///
-    /// #[def_percpu]
-    /// static VALUE: usize = 0;
-    ///
-    /// // SAFETY: this only proves that the execution context cannot migrate.
-    /// let migration_pin = unsafe { ax_percpu::CpuPin::new_unchecked() };
-    /// let _ = VALUE.read_current(&migration_pin);
-    /// ```
-    #[inline]
-    pub fn read_current(&self, pin: &BoundCpuPin<'_>) -> T {
-        // SAFETY: PrimitiveAccess providers use the corresponding atomic
-        // representation and CpuPin keeps the address on one CPU.
-        unsafe { T::load(self.current_ptr(pin)) }
+    /// Loads the current CPU's atomic scalar with relaxed ordering.
+    pub fn read_current(&self, pin: &CpuPin<'_>) -> T {
+        unsafe { T::load(S::current_ptr(pin)) }
     }
 
-    /// Replaces the primitive value on the CPU proven by `pin`.
-    ///
-    /// This is a relaxed atomic store so hard-IRQ re-entry cannot create a Rust
-    /// data race. It intentionally provides no inter-variable ordering.
-    #[inline]
-    pub fn write_current(&self, pin: &BoundCpuPin<'_>, value: T) {
-        // SAFETY: PrimitiveAccess providers use the corresponding atomic
-        // representation and no safe reference API exists for this class.
-        unsafe { T::store(self.current_ptr(pin) as *mut T, value) }
-    }
-
-    /// Copies the primitive value under a raw pinning contract.
-    ///
-    /// # Safety
-    ///
-    /// The caller must prevent migration and conflicting access.
-    #[inline]
-    pub unsafe fn read_current_raw(&self) -> T {
-        // SAFETY: the provider uses the matching atomic representation and the
-        // forwarded caller contract covers address stability.
-        unsafe { T::load(self.current_ptr_unchecked()) }
-    }
-
-    /// Replaces the primitive value under a raw pinning contract.
-    ///
-    /// # Safety
-    ///
-    /// The caller must prevent migration and conflicting access.
-    #[inline]
-    pub unsafe fn write_current_raw(&self, value: T) {
-        // SAFETY: the provider uses the matching atomic representation and the
-        // forwarded caller contract covers address stability.
-        unsafe { T::store(self.current_ptr_unchecked() as *mut T, value) }
+    /// Stores the current CPU's atomic scalar with relaxed ordering.
+    pub fn write_current(&self, pin: &CpuPin<'_>, value: T) {
+        unsafe { T::store(S::current_ptr(pin), value) }
     }
 }

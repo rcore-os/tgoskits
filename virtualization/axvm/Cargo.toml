@@ -13,6 +13,7 @@ license = "Apache-2.0"
 fs = ["ax-std/fs"]
 host-fs = ["ax-std/fs"]
 sstc = ["riscv_vcpu/sstc"]
+tls = ["ax-hal/tls", "ax-std/tls", "cpu-local/tls"]
 
 [dependencies]
 log = "0.4"
@@ -34,6 +35,7 @@ ax-lazyinit = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-memory-set = { workspace = true }
 ax-percpu.workspace = true
+cpu-local.workspace = true
 page-table-generic = { workspace = true }
 ax-std = { workspace = true, default-features = false, features = [
     "alloc",

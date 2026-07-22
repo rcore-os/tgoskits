@@ -197,14 +197,6 @@ impl ArchTrait for Arch {
         MPIDR_EL1.get() as usize & MASK
     }
 
-    fn cpu_local_host_level() -> u8 {
-        match CurrentEL.read(CurrentEL::EL) {
-            1 => 0,
-            2 => 1,
-            level => panic!("unsupported AArch64 kernel exception level EL{level}"),
-        }
-    }
-
     fn kernel_space() -> core::ops::Range<usize> {
         PAGE_OFFSET..usize::MAX
     }

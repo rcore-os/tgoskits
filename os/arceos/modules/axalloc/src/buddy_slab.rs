@@ -85,30 +85,35 @@ impl<const PAGE_SIZE: usize> SlabTrait for PercpuSlab<PAGE_SIZE> {
     }
 }
 
-fn current_percpu_slab() -> &'static PercpuSlab<PAGE_SIZE> {
-    // Safety: the outer allocator lock disables local IRQs/preemption before
-    // upstream buddy-slab-allocator calls this hook.
-    unsafe { PERCPU_SLAB.current_ref_raw() }
+fn current_percpu_slab() -> NonNull<PercpuSlab<PAGE_SIZE>> {
+    // SAFETY: the outer allocator lock disables local IRQs/preemption before
+    // upstream buddy-slab-allocator calls this hook. CPU areas live until
+    // shutdown and PercpuSlab serializes all later interior mutation.
+    unsafe { ax_percpu::with_cpu_pin(|pin| PERCPU_SLAB.current_ptr(pin)) }
+        .expect("allocator access requires an installed CPU area")
 }
 
-fn remote_percpu_slab(cpu_idx: usize) -> &'static PercpuSlab<PAGE_SIZE> {
+fn remote_percpu_slab(cpu_idx: usize) -> NonNull<PercpuSlab<PAGE_SIZE>> {
     let cpu_index = ax_percpu::CpuIndex::try_from(cpu_idx)
         .expect("allocator CPU index must fit the CPU-local ABI");
-    // Safety: the owner CPU id comes from slab metadata and references a valid
-    // per-CPU slab that was initialized during CPU bring-up.
-    unsafe { PERCPU_SLAB.remote_ref_raw(cpu_index) }
-        .expect("allocator CPU index must name an installed CPU-local area")
+    let area = ax_percpu::area(cpu_index)
+        .expect("allocator CPU index must name an initialized CPU-local area");
+    PERCPU_SLAB.remote_ptr(area)
 }
 
 struct SlabPool;
 
 impl SlabPoolTrait for SlabPool {
     fn current_slab(&self) -> &dyn SlabTrait {
-        current_percpu_slab()
+        // SAFETY: CPU areas outlive the global pool, and the allocator's outer
+        // guard pins the current CPU while the returned trait borrow is used.
+        unsafe { current_percpu_slab().as_ref() }
     }
 
     fn owner_slab(&self, cpu_idx: usize) -> &dyn SlabTrait {
-        remote_percpu_slab(cpu_idx)
+        // SAFETY: the selected area is permanent and PercpuSlab serializes all
+        // local and remote interior mutation through its IRQ-safe lock.
+        unsafe { remote_percpu_slab(cpu_idx).as_ref() }
     }
 }
 
@@ -382,13 +387,16 @@ pub fn global_allocator() -> &'static GlobalAllocator {
 /// Must run after per-CPU storage is initialized and before scheduler, IPI, or
 /// IRQ paths can allocate on this CPU.
 pub fn init_percpu_slab(cpu_id: usize) {
-    // Safety: while the CPU-local slab is still private to this CPU, initialize
-    // it directly instead of entering the runtime SpinNoIrq guard path.
+    // SAFETY: CPU bring-up excludes migration, IRQ/re-entry, and remote access
+    // until this CPU-local slab has been initialized.
     unsafe {
-        PERCPU_SLAB
-            .current_ref_mut_raw()
-            .init_during_cpu_bringup(cpu_id)
-    };
+        ax_percpu::with_cpu_pin(|pin| {
+            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+                PERCPU_SLAB.with_current_mut(exclusive, |slab| slab.init_during_cpu_bringup(cpu_id))
+            })
+        })
+    }
+    .expect("per-CPU slab initialization requires an installed CPU area");
 }
 
 /// Initializes the global allocator with the given memory region.

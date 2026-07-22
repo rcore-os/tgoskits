@@ -7,55 +7,55 @@ extern crate self as ax_percpu;
 
 mod alignment;
 mod area;
+mod descriptor;
+mod error;
+mod ffi;
 #[cfg(feature = "host-test")]
 pub mod host_test;
 mod initialization;
+mod layout;
+mod region;
 mod template;
 mod value;
 
 pub(crate) use alignment::required_area_alignment;
 pub use ax_percpu_macros::def_percpu;
-pub use initialization::initialize_layout;
+pub use cpu_local::{CpuAreaRef, CpuIndex, CpuPin, ExclusiveCpu, with_cpu_pin, with_exclusive_cpu};
 pub(crate) use template::{template_base, template_size};
 
 pub use self::{
-    area::*,
-    value::{ObjectAccess, PerCpu, PrimitiveAccess},
+    area::{PerCpuArea, area, current_area, current_cpu_index, layout},
+    error::PerCpuError,
+    initialization::initialize_layout,
+    layout::PerCpuLayout,
+    region::PerCpuRegion,
+    value::PerCpu,
 };
 
 #[doc(hidden)]
 pub mod __priv {
     pub use crate::{
-        initialization::{PerCpuInitDescriptor, PerCpuInitRegistration},
-        value::PerCpuSymbol,
+        descriptor::{PerCpuInitDescriptor, PerCpuInitRegistration},
+        value::{PerCpuObjectSymbol, PerCpuPrimitiveSymbol, PerCpuSymbol},
     };
 
-    /// Calculates one symbol's offset from the per-CPU template header.
-    #[inline(always)]
+    /// Calculates one symbol's offset from the template prefix.
     pub fn symbol_offset(symbol_address: usize) -> usize {
         symbol_address
             .checked_sub(crate::template_base())
             .expect("per-CPU symbol must follow the loaded template prefix")
     }
 
-    /// Calculates a symbol address covered by an explicit CPU pin.
-    #[inline(always)]
-    pub fn current_symbol_ptr<T>(pin: &crate::BoundCpuPin<'_>, offset: usize) -> *const T {
-        pin.area_base().wrapping_add(offset) as *const T
+    /// Calculates a symbol pointer covered by an explicit CPU pin.
+    pub fn current_symbol_ptr<T>(pin: &crate::CpuPin<'_>, offset: usize) -> core::ptr::NonNull<T> {
+        // SAFETY: macro-generated offsets were validated before layout
+        // publication and CpuPin carries an initialized permanent area.
+        unsafe { core::ptr::NonNull::new_unchecked((pin.area().base() + offset) as *mut T) }
     }
 
-    /// Calculates the current runtime address of one per-CPU symbol.
-    ///
-    /// # Safety
-    ///
-    /// The caller must keep the current execution context pinned until the
-    /// returned pointer is no longer used.
-    #[inline(always)]
-    pub unsafe fn current_symbol_ptr_unchecked<T>(offset: usize) -> *const T {
-        let binding = cpu_local::platform::current_cpu_binding()
-            .expect("unchecked CPU-local access requires a platform-published binding");
-        let area_base = binding.area_base;
-        area_base.wrapping_add(offset) as *const T
+    /// Calculates a symbol pointer in an explicit remote area.
+    pub fn remote_symbol_ptr<T>(area: crate::PerCpuArea, offset: usize) -> core::ptr::NonNull<T> {
+        crate::area::symbol_ptr(area, offset)
     }
 }
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+- Keep only dynamic runtime CPU areas and the single `.percpu.template` / `.percpu.init` /
+  `.percpu.align` linker contract.
+- Replace versioned layouts, generation/cookie identity, linked aliases, raw current access, and
+  `BoundCpuPin` with `PerCpuRegion`, `PerCpuLayout`, `CpuPin`, and `ExclusiveCpu`.
+- Remove `custom-base`, `linked-template`, `non-zero-vma`, `sp-naive`, and TLS forwarding
+  features. `host-test` is the only crate feature.
+- Replace versioned C entry points with
+  `__percpu_initialize_layout(runtime_base, area_stride, area_count)`.
+
 ## 0.2.0
 
 ### Breaking Changes

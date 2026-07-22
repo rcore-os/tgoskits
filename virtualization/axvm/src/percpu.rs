@@ -77,12 +77,14 @@ pub(crate) fn enable_current_cpu() -> AxVmResult {
 
 fn with_current_percpu_mut<R>(operation: impl FnOnce(&mut AxVMPerCpu) -> R) -> R {
     let _guard = NoPreemptIrqSave::new();
-    // SAFETY: the guard prevents migration and local IRQ aliases through the
-    // complete owner-only mutation.
-    let pin = unsafe { ax_percpu::CpuPin::new_unchecked() };
-    let _bound =
-        ax_percpu::bound_current(&pin).expect("AxVM per-CPU state requires a bound CPU area");
     // SAFETY: initialization and hardware enable are serialized once per CPU;
-    // NoPreemptIrqSave excludes local aliases for the complete closure.
-    unsafe { AXVM_PER_CPU.with_current_mut_raw(&pin, operation) }
+    // the guard excludes migration, IRQ/re-entry, and conflicting access.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+                AXVM_PER_CPU.with_current_mut(exclusive, operation)
+            })
+        })
+    }
+    .expect("AxVM per-CPU state requires an installed CPU area")
 }

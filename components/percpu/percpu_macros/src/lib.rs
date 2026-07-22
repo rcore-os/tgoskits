@@ -99,7 +99,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let ty_str = quote!(#ty).to_string();
     let is_primitive_int = ["bool", "u8", "u16", "u32", "u64", "usize"].contains(&ty_str.as_str());
 
-    let (access_kind, storage_type, initial_value) = if is_primitive_int {
+    let (access_trait, storage_type, initial_value) = if is_primitive_int {
         let atomic_ty = match ty_str.as_str() {
             "bool" => quote!(::core::sync::atomic::AtomicBool),
             "u8" => quote!(::core::sync::atomic::AtomicU8),
@@ -110,13 +110,13 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             _ => unreachable!("primitive type classification must stay exhaustive"),
         };
         (
-            quote!(ax_percpu::PrimitiveAccess),
+            quote!(ax_percpu::__priv::PerCpuPrimitiveSymbol),
             atomic_ty.clone(),
             quote!(#atomic_ty::new(#init_expr)),
         )
     } else {
         (
-            quote!(ax_percpu::ObjectAccess),
+            quote!(ax_percpu::__priv::PerCpuObjectSymbol),
             quote!(#ty),
             quote!(#init_expr),
         )
@@ -128,10 +128,9 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let offset = address::gen_offset(inner_symbol_name);
-    let current_ptr = address::gen_current_ptr(inner_symbol_name, ty);
     let current_ptr_pinned =
         address::gen_current_ptr_pinned(inner_symbol_name, &format_ident!("pin"), ty);
-    let remote_ptr = address::gen_remote_ptr(inner_symbol_name, &format_ident!("cpu_index"), ty);
+    let remote_ptr = address::gen_remote_ptr(inner_symbol_name, &format_ident!("area"), ty);
     let initialization = quote! {
             #(#conditional_attrs)*
             #[allow(non_upper_case_globals)]
@@ -211,27 +210,25 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             #[inline]
-            fn current_ptr(pin: &ax_percpu::BoundCpuPin<'_>) -> *const #ty {
+            fn current_ptr(pin: &ax_percpu::CpuPin<'_>) -> ::core::ptr::NonNull<#ty> {
                 #current_ptr_pinned
             }
 
             #[inline]
-            unsafe fn current_ptr_unchecked() -> *const #ty {
-                unsafe { #current_ptr }
-            }
-
-            #[inline]
-            fn remote_ptr(
-                cpu_index: ax_percpu::CpuIndex,
-            ) -> Result<*const #ty, ax_percpu::PerCpuError> {
+            fn remote_ptr(area: ax_percpu::PerCpuArea) -> ::core::ptr::NonNull<#ty> {
                 #remote_ptr
             }
         }
 
+        // SAFETY: the marker selects the access surface matching the exact
+        // storage representation emitted above.
+        #(#conditional_attrs)*
+        unsafe impl #access_trait<#ty> for #symbol_provider_name {}
+
         #[doc = concat!("Wrapper type for the per-CPU data [`", stringify!(#name), "`]")]
         #[allow(non_camel_case_types)]
         #(#conditional_attrs)*
-        #vis type #struct_name = ax_percpu::PerCpu<#ty, #symbol_provider_name, #access_kind>;
+        #vis type #struct_name = ax_percpu::PerCpu<#ty, #symbol_provider_name>;
 
         #(#attrs)*
         #vis static #name: #struct_name = ax_percpu::PerCpu::new();

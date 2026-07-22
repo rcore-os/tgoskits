@@ -19,7 +19,7 @@ use core::{cell::UnsafeCell, mem::MaybeUninit};
 
 use ax_kernel_guard::NoPreempt;
 use ax_kspin::SpinNoIrq as Mutex;
-use ax_percpu::{BoundCpuPin, CpuPin};
+use ax_percpu::{CpuAreaRef, CpuPin};
 use axvm_types::{
     GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
     VmBackendError, VmVcpuState,
@@ -27,59 +27,54 @@ use axvm_types::{
 
 use crate::{AxVmError, AxVmResult, ax_err};
 
-/// CPU-local identity sampled before entering an architecture backend.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct HostCpuIdentity {
-    cpu_index: ax_percpu::CpuIndex,
-    area_base: usize,
-    generation: u32,
-    cookie: usize,
-}
-
-impl HostCpuIdentity {
-    fn current(pin: &BoundCpuPin<'_>) -> Self {
-        Self {
-            cpu_index: pin.cpu_index(),
-            area_base: pin.area().runtime_base(),
-            generation: pin.generation(),
-            cookie: pin.cookie(),
-        }
-    }
-}
-
 /// Borrowed proof that one AxVM operation cannot migrate between host CPUs.
-struct PinnedCpuContext<'pin> {
-    cpu_pin: &'pin CpuPin,
-    bound_cpu_pin: BoundCpuPin<'pin>,
-    identity: HostCpuIdentity,
+struct PinnedCpuContext<'pin, 'cpu> {
+    cpu_pin: &'pin CpuPin<'cpu>,
+    area: CpuAreaRef,
+    #[cfg(feature = "tls")]
+    kernel_tls: usize,
 }
 
-impl<'pin> PinnedCpuContext<'pin> {
-    fn new(cpu_pin: &'pin CpuPin) -> Self {
-        let bound_cpu_pin =
-            ax_percpu::bound_current(cpu_pin).expect("vCPU operation requires a bound CPU area");
-        let identity = HostCpuIdentity::current(&bound_cpu_pin);
+impl<'pin, 'cpu> PinnedCpuContext<'pin, 'cpu> {
+    fn new(cpu_pin: &'pin CpuPin<'cpu>) -> Self {
+        ax_percpu::current_area(cpu_pin)
+            .expect("vCPU operation requires the installed per-CPU area");
         Self {
             cpu_pin,
-            bound_cpu_pin,
-            identity,
+            area: cpu_pin.area(),
+            #[cfg(feature = "tls")]
+            kernel_tls: cpu_local::kernel_tls(cpu_pin),
         }
     }
 
     fn assert_host_cpu_binding(&self) {
-        let current = ax_percpu::bound_current(self.cpu_pin).unwrap_or_else(|error| {
-            panic!("vCPU transition did not restore CPU-local state: {error}")
-        });
+        // SAFETY: the outer NoPreempt guard remains active. A new pin forces a
+        // fresh read of both host CPU-local and current-thread registers.
+        let current = unsafe {
+            ax_percpu::with_cpu_pin(|pin| {
+                (
+                    pin.area(),
+                    #[cfg(feature = "tls")]
+                    cpu_local::kernel_tls(pin),
+                )
+            })
+        }
+        .unwrap_or_else(|error| panic!("vCPU transition did not restore host state: {error}"));
         assert_eq!(
-            HostCpuIdentity::current(&current),
-            self.identity,
-            "vCPU transition restored a different CPU-local identity"
+            current.0, self.area,
+            "vCPU transition restored a different host CPU area"
         );
+        #[cfg(feature = "tls")]
+        assert_eq!(
+            current.1, self.kernel_tls,
+            "vCPU transition did not restore the host kernel TLS register"
+        );
+        assert_eq!(self.cpu_pin.area(), self.area);
     }
 }
 
 struct CurrentVcpuPublication<'scope, 'cpu> {
-    pin: &'scope BoundCpuPin<'cpu>,
+    pin: &'scope CpuPin<'cpu>,
 }
 
 impl Drop for CurrentVcpuPublication<'_, '_> {
@@ -207,28 +202,31 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
         F: FnOnce() -> T,
     {
         let _guard = NoPreempt::new();
-        // SAFETY: the guard prevents migration until all CPU-local borrows end.
-        let cpu_pin = unsafe { CpuPin::new_unchecked() };
-        let pinned_cpu = PinnedCpuContext::new(&cpu_pin);
+        // SAFETY: the guard prevents migration through the backend operation,
+        // guest run, restoration check, and publication withdrawal.
+        unsafe {
+            ax_percpu::with_cpu_pin(|cpu_pin| {
+                let pinned_cpu = PinnedCpuContext::new(cpu_pin);
 
-        if let Some(current_vcpu) = get_current_vcpu::<A>(&pinned_cpu.bound_cpu_pin) {
-            if core::ptr::eq(current_vcpu, self) {
-                let result = f();
-                pinned_cpu.assert_host_cpu_binding();
-                result
-            } else {
-                panic!("nested vCPU operation is not allowed");
-            }
-        } else {
-            set_current_vcpu(self, &pinned_cpu.bound_cpu_pin);
-            let publication = CurrentVcpuPublication {
-                pin: &pinned_cpu.bound_cpu_pin,
-            };
-            let result = f();
-            pinned_cpu.assert_host_cpu_binding();
-            drop(publication);
-            result
+                if let Some(current_vcpu) = get_current_vcpu::<A>(cpu_pin) {
+                    if core::ptr::eq(current_vcpu, self) {
+                        let result = f();
+                        pinned_cpu.assert_host_cpu_binding();
+                        result
+                    } else {
+                        panic!("nested vCPU operation is not allowed");
+                    }
+                } else {
+                    set_current_vcpu(self, cpu_pin);
+                    let publication = CurrentVcpuPublication { pin: cpu_pin };
+                    let result = f();
+                    pinned_cpu.assert_host_cpu_binding();
+                    drop(publication);
+                    result
+                }
+            })
         }
+        .expect("vCPU operation requires an installed CPU-local area")
     }
 
     /// Runs an architecture operation under a state transition.
@@ -319,7 +317,7 @@ static CURRENT_VCPU: usize = 0;
 
 /// Gets the current AxVM vCPU on this physical CPU.
 pub(crate) fn get_current_vcpu<'pin, A: VmArchVcpuOps>(
-    pin: &'pin BoundCpuPin<'_>,
+    pin: &'pin CpuPin<'_>,
 ) -> Option<&'pin AxVCpu<A>> {
     let pointer = CURRENT_VCPU.read_current(pin);
     // SAFETY: publication is scoped by with_current_cpu_set, which borrows the
@@ -327,7 +325,7 @@ pub(crate) fn get_current_vcpu<'pin, A: VmArchVcpuOps>(
     unsafe { (pointer as *const AxVCpu<A>).as_ref() }
 }
 
-fn set_current_vcpu<A: VmArchVcpuOps>(vcpu: &AxVCpu<A>, pin: &BoundCpuPin<'_>) {
+fn set_current_vcpu<A: VmArchVcpuOps>(vcpu: &AxVCpu<A>, pin: &CpuPin<'_>) {
     assert_eq!(
         CURRENT_VCPU.read_current(pin),
         0,
@@ -342,10 +340,8 @@ pub(crate) fn with_current_vcpu<A: VmArchVcpuOps, R>(
 ) -> R {
     let _guard = NoPreempt::new();
     // SAFETY: the guard prevents migration through the closure.
-    let cpu_pin = unsafe { CpuPin::new_unchecked() };
-    let bound =
-        ax_percpu::bound_current(&cpu_pin).expect("current vCPU lookup requires a bound CPU area");
-    operation(get_current_vcpu(&bound))
+    unsafe { ax_percpu::with_cpu_pin(|pin| operation(get_current_vcpu(pin))) }
+        .expect("current vCPU lookup requires an installed CPU-local area")
 }
 
 /// Host per-CPU virtualization state wrapper owned by AxVM.

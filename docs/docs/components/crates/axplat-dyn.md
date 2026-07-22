@@ -97,7 +97,7 @@ flowchart TD
 - `phys_to_virt()` / `virt_to_phys()` 直接转发到 `somehal::mem`
 - `kernel_aspace()` 来自 `somehal::mem::kernel_space()`
 
-CPU-local 区域由 someboot 在 final-high 阶段按固件 CPU 数动态分配并一次完成类型化初始化。`axplat-dyn::boot` 会比较 `somehal::smp::percpu_data_layout()` 与 `ax_percpu::layout()`，再从冻结的 area header 取得 `CpuBindingV1` 并安装架构寄存器。`mem.rs` 不再提供基址回调或第二套运行时布局。
+CPU-local 区域由 someboot 在 final-high 阶段按固件 CPU 数动态分配并一次完成类型化初始化。`axplat-dyn::boot` 会比较 `somehal::smp::percpu_data_layout()` 与 `ax_percpu::layout()`，再从冻结的 `PerCpuArea` 取得精确 `CpuAreaRef` 并在 offline CPU 边界安装架构寄存器。布局身份就是最终区域地址，不再传递 ABI version、generation 或 cookie；`mem.rs` 也不提供基址回调或第二套运行时布局。
 
 #### 时间、中断与电源
 

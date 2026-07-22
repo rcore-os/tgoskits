@@ -29,7 +29,9 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   constructing an image with overlapping register ownership.
 - **CPU-local register ABI**: `cpu-local` owns the register contract and `ax-percpu` owns only
   typed layout/storage. Do not create a second current-task per-CPU pointer. The active image
-  mode determines the register assignment:
+  mode determines the register assignment. The exact initialized `CpuAreaRef` address is the
+  area identity; do not add in-image ABI versions, generation counters, cookies, provider-trait
+  FFI, or raw TP access:
 
   | Architecture | CPU area | `LinuxCurrent` | `UnikernelTls` |
   | --- | --- | --- | --- |
@@ -41,6 +43,11 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   Keep LoongArch KS4/KS5 reserved for vCPU scratch. On RISC-V, `gp` is the ordinary global
   pointer again; target specs still need `--no-relax` where the PIE relocation model requires
   it, but must not describe `gp` as CPU-local storage.
+  `CpuPin<'scope>` must be created only through the non-escaping guarded callback after checking
+  the live CPU base, area self pointer/index, and current header. Atomic scalars require migration
+  exclusion; shared `T: Sync` objects also rely on object-owned synchronization; mutable local
+  objects additionally require `ExclusiveCpu` after excluding IRQ/re-entry and conflicting remote
+  access. Scheduler switches keep IRQs off and consume prepared/previous transaction tokens.
 - **Build system**: wire arch/target mapping in `scripts/axbuild`, dynamic platform defaults, feature propagation, kernel format conversion, UEFI/to-bin behavior, rootfs handling, and per-OS test discovery.
 - **QEMU and firmware**: verify QEMU binary, machine type, CPU, SMP count, pflash/OVMF files, serial console, disk/rootfs device, `-snapshot`, debug flags, timeout, and success/fail regexes.
   QEMU `uefi`, `to_bin`, acceleration, CPU feature, and device choices are part of each
@@ -56,7 +63,10 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   `.percpu.init` and `.percpu.align`; it never carries a linked runtime area or compatibility
   alias. Discover the runtime CPU count, dynamically allocate every final area from that template
   geometry, construct all typed values once, freeze the layout, then bind each CPU with a
-  `CpuPin`. Register publication must happen only after all fallible preparation succeeds.
+  `CpuAreaRef` while it is offline; only then may runtime code obtain a scoped `CpuPin`. Register
+  publication must happen only after all fallible preparation succeeds. Dropping an uncommitted
+  prepared-switch token must roll back the next task binding; the incoming tail must consume the
+  previous binding epoch before that task can run elsewhere.
   AArch64 final aliases need cache maintenance consistent with their shareability attributes;
   RISC-V secondary boot must initialize `sscratch`; LoongArch must keep r21 and KS3 coherent.
 - **CPU runtime**: update `components/axcpu/src/<arch>` for trap entry, context switch, user/kernel context, syscall return path, FP/SIMD state, and per-CPU assumptions.
@@ -116,8 +126,9 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 4. Flush boot arguments and page tables before `cpu_on`.
 5. In the secondary path, initialize arch address windows, stack, page table state, the
    architecture CPU-local register contract, trap vectors, timer, and interrupt state before
-   entering generic secondary code. Bind the final area through `CpuPin`; do not publish a raw
-   base and initialize fallible state afterward.
+   entering generic secondary code. Install the final `CpuAreaRef` while the CPU is offline, then
+   obtain runtime access only through a scoped `CpuPin`; do not publish a raw base and initialize
+   fallible state afterward.
 6. Before the OS per-CPU register is initialized on a secondary CPU, use cached controller fast paths for interrupt and timer setup through `somehal::irq::init_secondary_boot_irqs(cpu_id)`; do not take `rdrive`, IRQ-domain, or generic route locks from that window.
 7. Debug secondary failure with physical-address markers first; serial logging may not work until the secondary has its own mapping and trap state.
 
