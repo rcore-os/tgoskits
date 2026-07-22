@@ -3,7 +3,6 @@ use alloc::{
     sync::Arc,
 };
 
-use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
@@ -34,7 +33,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
 
-    let loc = FS_CONTEXT
+    let loc = ax_fs_ng::vfs::current_fs_context()
         .lock()
         .resolve(&args[0])
         .expect("Failed to resolve executable path");
@@ -110,7 +109,8 @@ pub fn init(args: &[String], envs: &[String]) {
     let exit_code = task.join();
     info!("Init process exited with code: {exit_code:?}");
 
-    let cx = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let cx = fs_context.lock();
     cx.root_dir()
         .unmount_all()
         .expect("Failed to unmount all filesystems");

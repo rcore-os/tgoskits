@@ -55,7 +55,7 @@ pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};
 
 use crate::{
     irq::IrqId,
-    mem::{__percpu, PageTableInfo},
+    mem::{PageTableInfo, cpu_area_phys_to_virt},
     power::CpuOnError,
 };
 
@@ -71,7 +71,7 @@ pub trait ArchTrait {
     fn ioremap_device(_addr: usize, _size: usize) -> Option<*mut u8> {
         None
     }
-    fn _percpu(paddr: usize) -> *mut u8 {
+    fn cpu_area_phys_to_virt(paddr: usize) -> *mut u8 {
         Self::_va(paddr)
     }
 
@@ -82,7 +82,6 @@ pub trait ArchTrait {
     fn post_allocator();
 
     fn init_boot_tls() {}
-    fn init_runtime_percpu_reg(_cpu_idx: usize) {}
 
     fn per_cpu_trap_init(is_primary: bool);
     fn trap_addr() -> usize;
@@ -166,7 +165,7 @@ pub enum DCacheOp {
 
 pub fn post_allocator() {
     fdt::init_with_alloc();
-    smp::init_percpu();
+    smp::finalize_secondary_boot_metadata();
     debug!("Setup after allocator");
     arch::Arch::post_allocator();
 }
@@ -210,15 +209,16 @@ fn prime_entry() -> ! {
     mem::memory_map_setup();
     mem::print_memory_map();
 
+    smp::initialize_percpu_layout();
+
     unsafe extern "C" {
         fn __someboot_main() -> !;
     }
 
     let entry = __someboot_main as *const () as usize;
     let cpu_idx = crate::smp::early_current_cpu_idx();
-    arch::Arch::init_runtime_percpu_reg(cpu_idx);
     let sp = crate::smp::cpu_meta(cpu_idx).unwrap().stack_top;
-    let sp = __percpu(sp);
+    let sp = cpu_area_phys_to_virt(sp);
     println!(
         "Jumping to main entry point at {:#x} with SP {:#p}",
         entry, sp

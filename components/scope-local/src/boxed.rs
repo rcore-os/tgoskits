@@ -38,6 +38,8 @@ pub(crate) struct ItemBox {
 }
 
 unsafe impl Send for ItemBox {}
+// SAFETY: item descriptors are constructed only for `Send + Sync + 'static`
+// payloads, and access to mutable scope slots remains exclusive.
 unsafe impl Sync for ItemBox {}
 
 impl ItemBox {

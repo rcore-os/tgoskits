@@ -132,6 +132,14 @@ scope_local::scope_local! {
     };
 }
 
+/// Returns an owned reference to the filesystem context of the active scope.
+///
+/// CPU pinning ends after the `Arc` clone, before callers acquire the
+/// potentially sleepable filesystem lock.
+pub fn current_fs_context() -> Arc<Mutex<FsContext>> {
+    FS_CONTEXT.clone_current()
+}
+
 /// A single entry returned by [`FsContext::read_dir`].
 pub struct ReadDirEntry {
     /// Entry name (file or directory name, not the full path).

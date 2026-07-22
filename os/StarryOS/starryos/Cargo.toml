@@ -49,9 +49,16 @@ name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-# Starry links Rust `std` dynamically on the musl target; keep the libc
-# compatibility surface in the package manifest rather than axbuild.
-ax-std = { workspace = true, features = ["ext-ld", "std-compat", "fs", "multitask", "irq"] }
+# Starry is a freestanding PIE. Keep host `std` compatibility and kernel TLS
+# out of the final feature tree.
+ax-std = { workspace = true, default-features = false, features = [
+  "alloc",
+  "fd",
+  "ext-ld",
+  "fs",
+  "multitask",
+  "irq",
+] }
 ax-driver.workspace = true
 ax-hal.workspace = true
 ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
