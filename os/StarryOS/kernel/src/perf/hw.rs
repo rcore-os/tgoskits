@@ -27,7 +27,7 @@
 use alloc::sync::{Arc, Weak};
 use core::any::Any;
 #[cfg(target_arch = "aarch64")]
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(target_arch = "aarch64")]
 use ax_alloc::GlobalPage;
@@ -68,6 +68,83 @@ use super::sampling::{self, SampleSlot};
 /// 16 bits of `config` are the ARM event number on a programmable counter.
 pub const ARMV8_PMUV3_PERF_TYPE: u32 = 8;
 
+/// Dynamic `perf_event_attr.type` for the Cortex-A55 ("LITTLE") cluster PMU,
+/// exposed at `/sys/bus/event_source/devices/armv8_cortex_a55/type`. An event
+/// opened against it is restricted to the A55 cluster (its `cpus` mask).
+pub const ARMV8_CORTEX_A55_TYPE: u32 = 9;
+
+/// Dynamic `perf_event_attr.type` for the Cortex-A76 ("big") cluster PMU,
+/// exposed at `/sys/bus/event_source/devices/armv8_cortex_a76/type`. An event
+/// opened against it is restricted to the A76 cluster.
+pub const ARMV8_CORTEX_A76_TYPE: u32 = 10;
+
+/// The [`ClusterMask`](super::percpu::ClusterMask) an event opened against
+/// hardware `type_` is restricted to: the generic PMU (`PERF_TYPE_HARDWARE` /
+/// `PERF_TYPE_RAW` / `armv8_pmuv3_0` = 8) runs on all clusters; the cluster PMUs
+/// (9 / 10) are pinned to their cluster. `None` if `type_` is not a hardware PMU.
+#[cfg(target_arch = "aarch64")]
+fn cluster_mask_for_type(type_: u32) -> Option<super::percpu::ClusterMask> {
+    use super::percpu::ClusterMask;
+    if type_ == perf_type_id::PERF_TYPE_HARDWARE as u32
+        || type_ == perf_type_id::PERF_TYPE_RAW as u32
+        || type_ == ARMV8_PMUV3_PERF_TYPE
+    {
+        Some(ClusterMask::ALL)
+    } else if type_ == ARMV8_CORTEX_A55_TYPE {
+        Some(ClusterMask::LITTLE_ONLY)
+    } else if type_ == ARMV8_CORTEX_A76_TYPE {
+        Some(ClusterMask::BIG_ONLY)
+    } else {
+        None
+    }
+}
+
+/// Resolve a Linux `perf_hw_id` to an ARM event number, with the per-cluster
+/// `PERF_COUNT_HW_BRANCH_INSTRUCTIONS` (hw_id 4) special case.
+///
+/// Mirrors Linux's `__armv8_pmuv3_map_event_id`: BRANCH_INSTRUCTIONS prefers
+/// `PC_WRITE_RETIRED` (0x0C) when the CURRENT core implements it (true on A55),
+/// else `BR_RETIRED` (0x21, A76). The repo's static [`ax_cpu::pmu::hw_event_to_arm`]
+/// hard-maps it to 0x21, which is wrong on A55, so this resolver is used at the
+/// open/program sites where a per-core `PMCEID` (`event_supported`) is available.
+/// Every other hw_id falls through to the architectural static map.
+#[cfg(target_arch = "aarch64")]
+fn resolve_hw_event(hw_id: u32) -> Option<u16> {
+    const PERF_COUNT_HW_BRANCH_INSTRUCTIONS: u32 = 4;
+    const PC_WRITE_RETIRED: u16 = 0x0C;
+    const BR_RETIRED: u16 = 0x21;
+    if hw_id == PERF_COUNT_HW_BRANCH_INSTRUCTIONS {
+        if ax_cpu::pmu::event_supported(PC_WRITE_RETIRED) {
+            return Some(PC_WRITE_RETIRED);
+        }
+        if ax_cpu::pmu::event_supported(BR_RETIRED) {
+            return Some(BR_RETIRED);
+        }
+        return None;
+    }
+    ax_cpu::pmu::hw_event_to_arm(hw_id)
+}
+
+/// Decode the ARM PMUv3 event number from a hardware `perf_event_attr`
+/// (`type_` + `config`): `PERF_TYPE_HARDWARE` via the per-cluster
+/// [`resolve_hw_event`]; `PERF_TYPE_RAW` and the sysfs PMU types (generic
+/// `armv8_pmuv3_0` = 8, cluster `armv8_cortex_a55`/`_a76` = 9/10) take the low 16
+/// bits of `config`. `None` for an unsupported type/config.
+#[cfg(target_arch = "aarch64")]
+fn decode_arm_event(type_: u32, config: u64) -> Option<u16> {
+    if type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
+        resolve_hw_event(config as u32)
+    } else if type_ == perf_type_id::PERF_TYPE_RAW as u32
+        || type_ == ARMV8_PMUV3_PERF_TYPE
+        || type_ == ARMV8_CORTEX_A55_TYPE
+        || type_ == ARMV8_CORTEX_A76_TYPE
+    {
+        Some((config & 0xFFFF) as u16)
+    } else {
+        None
+    }
+}
+
 /// `sample_type` value M2 supports: `perf_event_sample_format::PERF_SAMPLE_IP`.
 /// A sampling event with any other `sample_type` is rejected at open.
 #[cfg(target_arch = "aarch64")]
@@ -90,95 +167,18 @@ enum Counter {
     Programmable(usize),
 }
 
-/// Per-CPU counter allocator. M1 is single-core, so a single global allocator
-/// (mirroring the cycle-only PMU state already living in sysregs) tracks which
-/// physical counters are in use. `used` is a bitmask over programmable counter
-/// indices `0..num_counters`; `cycle_used` guards the dedicated cycle counter.
-#[cfg(target_arch = "aarch64")]
-struct HwAlloc {
-    /// Number of programmable counters (`PMCR_EL0.N`), from `ax_hal::pmu::info`.
-    num_counters: usize,
-    /// Bitmask of allocated programmable counters (bit `n` ⇒ index `n` in use).
-    used: u32,
-    /// Whether the dedicated cycle counter is allocated.
-    cycle_used: bool,
-}
-
-#[cfg(target_arch = "aarch64")]
-impl HwAlloc {
-    const fn new() -> Self {
-        HwAlloc {
-            num_counters: 0,
-            used: 0,
-            cycle_used: false,
-        }
-    }
-
-    /// Allocate the dedicated cycle counter, if free.
-    fn alloc_cycle(&mut self) -> Option<Counter> {
-        if self.cycle_used {
-            return None;
-        }
-        self.cycle_used = true;
-        Some(Counter::Cycle)
-    }
-
-    /// Allocate the lowest free programmable counter, if any.
-    fn alloc_counter(&mut self) -> Option<Counter> {
-        for n in 0..self.num_counters.min(32) {
-            if self.used & (1 << n) == 0 {
-                self.used |= 1 << n;
-                return Some(Counter::Programmable(n));
-            }
-        }
-        None
-    }
-
-    /// Release a previously allocated counter.
-    fn free(&mut self, counter: Counter) {
-        match counter {
-            Counter::Cycle => self.cycle_used = false,
-            Counter::Programmable(n) => {
-                if n < 32 {
-                    self.used &= !(1 << n);
-                }
-            }
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-static ALLOC: ax_kspin::SpinNoPreempt<HwAlloc> = ax_kspin::SpinNoPreempt::new(HwAlloc::new());
-
-/// Reserve a programmable counter for the per-task path ([`super::task`]).
-///
-/// The system-wide path reaches the allocator through [`alloc_programmable`],
-/// which also configures and validates the event; the per-task path keeps the
-/// slot unconfigured (the scheduler hook configures it per slice), so it needs a
-/// bare reservation. Returns the logical counter index, or `None` if no
-/// programmable counter is free.
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn alloc_programmable_counter() -> Option<usize> {
-    match ALLOC.lock().alloc_counter() {
-        Some(Counter::Programmable(n)) => Some(n),
-        // `alloc_counter` only ever yields `Programmable`; the cycle counter is
-        // not handed to the per-task path.
-        _ => None,
-    }
-}
-
-/// Release a programmable counter previously reserved via
-/// [`alloc_programmable_counter`]. Called by [`super::task::free_hw`].
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn free_programmable_counter(n: usize) {
-    ALLOC.lock().free(Counter::Programmable(n));
-}
+/// The counter allocator is per-CPU (`super::percpu::ALLOC`): `PMEVCNTRn_EL0` is
+/// banked per-PE, so each core owns its own pool. Reservation/release go through
+/// [`super::percpu::alloc_programmable_counter`] /
+/// [`super::percpu::free_programmable_counter`] (and the cycle-counter pair),
+/// which the per-task path drives per scheduling slice and the system-wide path
+/// at open/close on the owning core.
 
 /// The backing pages of a sampling event's mmap ring buffer, after the first
 /// `mmap(perf_fd)`.
 ///
 /// Ownership mirrors [`super::bpf::BpfPerfEventWrapper`]: the strong
-/// `Arc<GlobalPage>` is handed to the user VMA via `DeviceMmap::Physical`'s
+/// `Arc<GlobalPage>` is handed to the user VMA via `DeviceMmap::PhysicalCached`'s
 /// retainer, and the event keeps only a `Weak`. `ring_vaddr` / `ring_len`
 /// describe the kernel mapping the IRQ handler writes into; they are valid for
 /// as long as some VMA pins the pages (i.e. while [`RingState::is_mapped`]).
@@ -237,6 +237,14 @@ struct SamplingState {
     /// events in one mmap buffer. `anchor` pins the target ring's pages for as
     /// long as this event may write into them.
     redirect: Option<(usize, usize, Arc<dyn Any + Send + Sync>)>,
+    /// Samples dropped because the ring was full. The overflow handler bumps it
+    /// through the registered [`SampleSlot`]'s `lost` pointer at this `Arc`, and
+    /// `read` returns it for `PERF_FORMAT_LOST`. The `Arc` keeps the counter alive
+    /// for that raw pointer; it drops only after teardown unregisters the slot.
+    lost: Arc<AtomicU64>,
+    /// How many of [`lost`](Self::lost) have been emitted as `PERF_RECORD_LOST`
+    /// records, so the handler only reports newly-dropped samples in-band.
+    lost_reported: Arc<AtomicU64>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -318,6 +326,26 @@ fn alloc_sampling_ring(len: usize) -> AxResult<(Arc<GlobalPage>, usize, PhysAddr
     Ok((Arc::new(pages), kvirt.as_usize(), paddr))
 }
 
+/// A system-wide event pinned to a specific CPU (`perf_event_open` with
+/// `pid <= 0 && cpu >= 0`, i.e. `perf stat -a`'s per-CPU fan-out).
+///
+/// Counting only: the event programs a programmable counter from the *target*
+/// core's per-CPU pool and counts all activity on that core. Because the fd may
+/// be opened, read, and closed from a different core, those operations run on
+/// `cpu` via a synchronous IPI (mirroring Linux `smp_call_function_single` in
+/// `__perf_event_read` / `perf_install_in_context`); they are infrequent (open /
+/// end-of-run read / close), never a hot path. `slot` is the counter index on
+/// `cpu`, `None` until the first `enable`.
+#[cfg(target_arch = "aarch64")]
+#[derive(Debug)]
+struct SysCpuBinding {
+    cpu: usize,
+    event: u16,
+    exclude_user: bool,
+    exclude_kernel: bool,
+    slot: Option<usize>,
+}
+
 /// A hardware-PMU perf event: one allocated counter plus the timing
 /// accumulators `perf stat` reads back through `read_format`, and — for sampling
 /// events — the [`SamplingState`] driving the overflow-IRQ ring buffer.
@@ -354,6 +382,22 @@ pub struct HwPerfEvent {
     /// the `PerfEventOps` methods + `Drop` delegate to the per-task path. The
     /// `Arc` is shared with the target [`crate::task::Thread`]'s counter list.
     per_task: Option<Arc<super::task::PerTaskCounter>>,
+    /// Cpu-bound system-wide counting state, `Some` iff opened with
+    /// `pid <= 0 && cpu >= 0` (the `perf stat -a` fan-out). When set, the counter
+    /// lives on `sys_cpu.cpu`'s per-CPU pool and `enable` / `read_values` /
+    /// `disable` / `Drop` drive it there (locally or via IPI); `counter` is an
+    /// inert placeholder. The timing fields (`enabled_since` / `time_*`) still
+    /// apply (a cpu-bound event runs continuously while enabled).
+    sys_cpu: Option<SysCpuBinding>,
+    /// The core this event's HW counter lives on, for the self/system-wide
+    /// (`pid <= 0 && cpu < 0`) path whose counter is allocated on the opening
+    /// core and counts there. Because the monitoring thread is migratable, the
+    /// HW lifecycle (`enable`/`disable`/`reset`/`read`/`Drop`) must run on
+    /// `home_cpu` — via a synchronous IPI when the caller has migrated — so it
+    /// never stomps another core's banked `PMEVCNTRn` or frees the slot in the
+    /// wrong per-CPU pool. `usize::MAX` for the per-task / `sys_cpu` paths (which
+    /// route their HW ops to the owning core by other means).
+    home_cpu: usize,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -374,6 +418,14 @@ impl HwPerfEvent {
             Counter::Programmable(n) => Some(n),
             Counter::Cycle => None,
         }
+    }
+
+    /// Samples the sampling ring dropped for this event (`0` for a non-sampling
+    /// event), for `read`'s `PERF_FORMAT_LOST` field.
+    fn sampling_lost(&self) -> u64 {
+        self.sampling
+            .as_ref()
+            .map_or(0, |s| s.lost.load(Ordering::Relaxed))
     }
 
     /// Tears down the overflow-IRQ sampling path for this event, in the strict
@@ -443,6 +495,378 @@ impl HwPerfEvent {
         let anchor: Arc<dyn Any + Send + Sync> = Arc::new(pages);
         Ok((paddr, anchor))
     }
+
+    /// Program (alloc + configure + enable) this cpu-bound system event's counter
+    /// on its target core. Idempotent: a no-op if already armed. Returns
+    /// `NoMemory` if the target core's pool is full.
+    fn sys_program(&mut self) -> AxResult<()> {
+        let Some(sc) = &mut self.sys_cpu else {
+            return Ok(());
+        };
+        if sc.slot.is_some() {
+            return Ok(());
+        }
+        let mut op = SysCpuOp {
+            op: SYS_OP_PROGRAM,
+            event: sc.event,
+            exclude_user: sc.exclude_user,
+            exclude_kernel: sc.exclude_kernel,
+            slot: 0,
+            value: 0,
+            ok: false,
+        };
+        run_sys_cpu_op(sc.cpu, &mut op);
+        if !op.ok {
+            return Err(AxError::NoMemory);
+        }
+        sc.slot = Some(op.slot);
+        Ok(())
+    }
+
+    /// Build + run a slot-only [`SysCpuOp`] (`START` / `STOP` / `READ`) on the
+    /// target core. No-op before the counter is allocated.
+    fn sys_slot_op(&self, op_code: u8) -> u64 {
+        let Some(sc) = &self.sys_cpu else {
+            return 0;
+        };
+        let Some(n) = sc.slot else {
+            return 0;
+        };
+        let mut op = SysCpuOp {
+            op: op_code,
+            event: sc.event,
+            exclude_user: sc.exclude_user,
+            exclude_kernel: sc.exclude_kernel,
+            slot: n,
+            value: 0,
+            ok: false,
+        };
+        run_sys_cpu_op(sc.cpu, &mut op);
+        op.value
+    }
+
+    /// Start (enable) the already-configured counter on its target core.
+    fn sys_start(&self) {
+        self.sys_slot_op(SYS_OP_START);
+    }
+
+    /// Stop (disable) the counter on its target core, keeping it allocated so its
+    /// value stays readable until `Drop`.
+    fn sys_stop(&self) {
+        self.sys_slot_op(SYS_OP_STOP);
+    }
+
+    /// Reset the counter to 0 on its target core (re-configure), if allocated.
+    fn sys_reset(&self) {
+        self.sys_slot_op(SYS_OP_RESET);
+    }
+
+    /// Stop + free this cpu-bound system event's counter on its target core.
+    fn sys_free(&mut self) {
+        let Some(sc) = &mut self.sys_cpu else {
+            return;
+        };
+        if let Some(n) = sc.slot.take() {
+            let mut op = SysCpuOp {
+                op: SYS_OP_FREE,
+                event: 0,
+                exclude_user: false,
+                exclude_kernel: false,
+                slot: n,
+                value: 0,
+                ok: false,
+            };
+            run_sys_cpu_op(sc.cpu, &mut op);
+        }
+    }
+
+    /// Read this cpu-bound system event's counter value from its target core.
+    fn sys_read(&self) -> u64 {
+        self.sys_slot_op(SYS_OP_READ)
+    }
+
+    // --- self/system-wide (`pid<=0 && cpu<0`) HW lifecycle, pinned to `home_cpu`.
+    // The `*_local` methods touch this core's banked PMU state directly; they run
+    // either on `home_cpu` (when the caller is there) or via [`hw_home_thunk`]
+    // over an IPI. They carry the exact logic the `enable`/`disable`/`reset`/
+    // `read`/`Drop` paths used before, just routed to the owning core.
+
+    /// Arm the HW counter (sampling overflow path, or plain counter enable).
+    fn hw_enable_local(&mut self) {
+        if let Some(sampling) = &self.sampling {
+            let Counter::Programmable(n) = self.counter else {
+                return; // unreachable: sampling always takes a programmable counter
+            };
+            let period = sampling.period;
+            let sample_type = sampling.sample_type;
+            let freq = sampling.freq;
+            let target_freq = sampling.target_freq;
+            let (ring_vaddr, ring_len) = if let Some((rv, rl, _anchor)) = &sampling.redirect {
+                (*rv, *rl)
+            } else {
+                match sampling.ring.as_ref() {
+                    Some(r) => (r.ring_vaddr, r.ring_len),
+                    None => (0, 0),
+                }
+            };
+            let notify_ptr = Arc::as_ptr(&sampling.notify) as *const ();
+            let lost_ptr = Arc::as_ptr(&sampling.lost) as *const ();
+            let lost_reported_ptr = Arc::as_ptr(&sampling.lost_reported) as *const ();
+            sampling::ensure_pmu_irq_registered();
+            ax_cpu::pmu::counter::preload(n, period);
+            sampling::register(
+                n,
+                SampleSlot {
+                    ring_vaddr,
+                    ring_len,
+                    period,
+                    sample_type,
+                    id: self.sample_id,
+                    notify: notify_ptr,
+                    freq,
+                    target_freq,
+                    last_time: 0,
+                    lost: lost_ptr,
+                    lost_reported: lost_reported_ptr,
+                    // System-wide sampling: attribute to the interrupted
+                    // `current()` in the handler (it matches the sampled IP).
+                    owner_ids: None,
+                },
+            );
+            ax_cpu::pmu::overflow::enable_irq(n);
+            ax_cpu::pmu::counter::enable(n);
+            return;
+        }
+        match self.counter {
+            Counter::Cycle => ax_cpu::pmu::cycles::enable(),
+            Counter::Programmable(n) => ax_cpu::pmu::counter::enable(n),
+        }
+    }
+
+    /// Stop the HW counter (sampling teardown, or plain counter disable). Keeps
+    /// the counter allocated so a post-disable `read` returns the final value.
+    fn hw_disable_local(&mut self) {
+        if self.sampling.is_some() {
+            self.teardown_sampling_irq();
+        } else {
+            match self.counter {
+                Counter::Cycle => ax_cpu::pmu::cycles::disable(),
+                Counter::Programmable(n) => ax_cpu::pmu::counter::disable(n),
+            }
+        }
+    }
+
+    /// Reset the HW counter to 0.
+    fn hw_reset_local(&mut self) {
+        match self.counter {
+            Counter::Cycle => ax_cpu::pmu::cycles::reset(),
+            Counter::Programmable(n) => ax_cpu::pmu::counter::reset(n),
+        }
+    }
+
+    /// Tear down + free the HW counter (sampling slot unregistered first so the
+    /// overflow handler can no longer reach the ring/notify), releasing it to
+    /// this core's per-CPU pool.
+    fn hw_free_local(&mut self) {
+        self.teardown_sampling_irq();
+        match self.counter {
+            Counter::Cycle => {
+                ax_cpu::pmu::cycles::disable();
+                super::percpu::free_cycle_counter();
+            }
+            Counter::Programmable(n) => {
+                ax_cpu::pmu::counter::disable(n);
+                super::percpu::free_programmable_counter(n);
+            }
+        }
+    }
+
+    /// Dispatch a [`HwOp`] to the matching `*_local` method on the current core.
+    fn hw_op_local(&mut self, op: HwOp) -> u64 {
+        match op {
+            HwOp::Enable => {
+                self.hw_enable_local();
+                0
+            }
+            HwOp::Disable => {
+                self.hw_disable_local();
+                0
+            }
+            HwOp::Reset => {
+                self.hw_reset_local();
+                0
+            }
+            HwOp::Read => self.hw_read_local(),
+            HwOp::Free => {
+                self.hw_free_local();
+                0
+            }
+        }
+    }
+
+    /// Read the HW counter value.
+    fn hw_read_local(&self) -> u64 {
+        self.raw_value()
+    }
+
+    /// Run a [`HwOp`] on this event's `home_cpu`: directly if the caller is on it
+    /// (or it is unset), else over a synchronous IPI. Pins the self/system-wide
+    /// counter's lifecycle to the core its slot lives on, so a migrated
+    /// monitoring thread never touches another core's banked counter / pool.
+    fn run_hw_on_home(&mut self, op: HwOp) -> u64 {
+        if self.home_cpu == usize::MAX || self.home_cpu == ax_hal::percpu::this_cpu_id() {
+            return self.hw_op_local(op);
+        }
+        let home = self.home_cpu;
+        let mut ho = HwHomeOp {
+            ev: self as *mut HwPerfEvent,
+            op,
+            value: 0,
+        };
+        let arg = &mut ho as *mut HwHomeOp as *mut ();
+        if ax_ipi::wait_until_cpu_ready(home) {
+            // SAFETY: `self` outlives the synchronous IPI (we block until the
+            // thunk returns), so the remote `&mut` does not alias our paused one.
+            let _ = unsafe { ax_ipi::run_on_cpu_sync_raw(home, hw_home_thunk, arg) };
+            ho.value
+        } else {
+            // Home core not ready (should not happen for an online core);
+            // best-effort local rather than skipping the op.
+            self.hw_op_local(op)
+        }
+    }
+}
+
+/// A HW-counter lifecycle operation routed to [`HwPerfEvent::home_cpu`].
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+enum HwOp {
+    Enable,
+    Disable,
+    Reset,
+    Read,
+    Free,
+}
+
+/// IPI argument for [`hw_home_thunk`]: the event + the op, with the read value
+/// written back for the (blocked) caller.
+#[cfg(target_arch = "aarch64")]
+struct HwHomeOp {
+    ev: *mut HwPerfEvent,
+    op: HwOp,
+    value: u64,
+}
+
+/// IPI thunk running a [`HwOp`] on the event's `home_cpu`.
+///
+/// # Safety
+/// `arg` must point at a live [`HwHomeOp`] whose `ev` is a valid `HwPerfEvent`
+/// kept alive for the call — guaranteed because the caller blocks on
+/// `run_on_cpu_sync_raw` until this returns.
+#[cfg(target_arch = "aarch64")]
+unsafe fn hw_home_thunk(arg: *mut ()) {
+    let ho = unsafe { &mut *(arg as *mut HwHomeOp) };
+    super::percpu::ensure_core_inited();
+    let ev = unsafe { &mut *ho.ev };
+    ho.value = ev.hw_op_local(ho.op);
+}
+
+/// IPI opcode: alloc + configure a programmable counter (leaves it DISABLED).
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_PROGRAM: u8 = 0;
+/// IPI opcode: read a programmable counter.
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_READ: u8 = 1;
+/// IPI opcode: disable + free a programmable counter.
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_FREE: u8 = 2;
+/// IPI opcode: start (enable) an already-configured counter.
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_START: u8 = 3;
+/// IPI opcode: stop (disable) a counter, keeping it allocated + its value.
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_STOP: u8 = 4;
+/// IPI opcode: reset a counter to 0 (re-configure), keeping it allocated.
+#[cfg(target_arch = "aarch64")]
+const SYS_OP_RESET: u8 = 5;
+
+/// Argument marshalled to [`sys_cpu_op_thunk`] when it runs on the target core
+/// (in-place: outputs `slot`/`value`/`ok` are written back for the caller, which
+/// blocks on the synchronous IPI until the thunk returns).
+#[cfg(target_arch = "aarch64")]
+struct SysCpuOp {
+    op: u8,
+    event: u16,
+    exclude_user: bool,
+    exclude_kernel: bool,
+    slot: usize,
+    value: u64,
+    ok: bool,
+}
+
+/// Perform a [`SysCpuOp`] on the current core (the target core, reached locally
+/// or via the IPI in [`run_sys_cpu_op`]).
+///
+/// # Safety
+/// `arg` must point at a live [`SysCpuOp`] for the duration of the call (the
+/// caller keeps it alive across the synchronous IPI).
+#[cfg(target_arch = "aarch64")]
+unsafe fn sys_cpu_op_thunk(arg: *mut ()) {
+    let op = unsafe { &mut *(arg as *mut SysCpuOp) };
+    super::percpu::ensure_core_inited();
+    match op.op {
+        // Allocate + configure (resets to 0); leaves the counter DISABLED so a
+        // later STOP can pause it without freeing (perf reads the final value
+        // after DISABLE). A separate START enables it.
+        SYS_OP_PROGRAM => match super::percpu::alloc_programmable_counter() {
+            Some(n) => {
+                ax_cpu::pmu::counter::configure(n, op.event, op.exclude_user, op.exclude_kernel);
+                op.slot = n;
+                op.ok = true;
+            }
+            None => op.ok = false,
+        },
+        SYS_OP_START => {
+            ax_cpu::pmu::counter::enable(op.slot);
+            op.ok = true;
+        }
+        SYS_OP_STOP => {
+            // Stop counting but KEEP the slot + value: `read(perf_fd)` after
+            // DISABLE must still return the final count (Linux semantics).
+            ax_cpu::pmu::counter::disable(op.slot);
+            op.ok = true;
+        }
+        SYS_OP_RESET => {
+            // Re-configure resets the counter to 0 (Linux `PERF_EVENT_IOC_RESET`).
+            ax_cpu::pmu::counter::configure(op.slot, op.event, op.exclude_user, op.exclude_kernel);
+            op.ok = true;
+        }
+        SYS_OP_READ => {
+            op.value = ax_cpu::pmu::counter::read(op.slot);
+            op.ok = true;
+        }
+        SYS_OP_FREE => {
+            ax_cpu::pmu::counter::disable(op.slot);
+            super::percpu::free_programmable_counter(op.slot);
+            op.ok = true;
+        }
+        _ => {}
+    }
+}
+
+/// Run a [`SysCpuOp`] on `cpu`: directly if it is the current core, else via a
+/// synchronous IPI. Leaves `op.ok == false` if the target core is not ready.
+#[cfg(target_arch = "aarch64")]
+fn run_sys_cpu_op(cpu: usize, op: &mut SysCpuOp) {
+    let arg = op as *mut SysCpuOp as *mut ();
+    if cpu == ax_hal::percpu::this_cpu_id() {
+        // SAFETY: `op` is live for this call.
+        unsafe { sys_cpu_op_thunk(arg) };
+    } else if ax_ipi::wait_until_cpu_ready(cpu) {
+        // SAFETY: `op` outlives the synchronous IPI (we block until it returns),
+        // and the thunk only touches `cpu`'s per-CPU PMU state.
+        let _ = unsafe { ax_ipi::run_on_cpu_sync_raw(cpu, sys_cpu_op_thunk, arg) };
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -455,21 +879,22 @@ impl Drop for HwPerfEvent {
             super::task::free_hw(ptc);
             return;
         }
-        // For sampling events, mask the IRQ, stop the counter, and clear the
-        // registry slot BEFORE the `Arc<IrqNotify>`/`Arc<GlobalPage>` held in
-        // `sampling` drop, so the overflow handler can never dereference a
-        // freed `notify` pointer or write into freed ring pages.
-        self.teardown_sampling_irq();
-        // Stop the cycle counter too (sampling already disabled its
-        // programmable counter above; `disable` is idempotent), then release the
-        // counter back to the allocator for reuse.
-        match self.counter {
-            Counter::Cycle => ax_cpu::pmu::cycles::disable(),
-            Counter::Programmable(n) => ax_cpu::pmu::counter::disable(n),
+        // Cpu-bound system event: free its counter on the target core (IPI if the
+        // closing core differs), then stop.
+        if self.sys_cpu.is_some() {
+            self.sys_free();
+            return;
         }
-        ALLOC.lock().free(self.counter);
+        // Self/system-wide event: tear down + free the HW counter ON its
+        // `home_cpu` (IPI if the closing thread migrated). For a sampling event
+        // this unregisters the per-CPU `REGISTRY` slot on `home_cpu` BEFORE the
+        // `Arc<IrqNotify>`/`Arc<GlobalPage>` drop below, so the overflow handler on
+        // that core can never dereference a freed `notify` or write freed ring
+        // pages, and the slot is returned to the correct core's pool.
+        self.run_hw_on_home(HwOp::Free);
         // Stop the deferred worker (mirrors `BpfPerfEventWrapper::drop`). The
-        // `Arc`s in `sampling` drop after this returns.
+        // `Arc`s in `sampling` drop after this returns — safe, the slot was just
+        // unregistered on `home_cpu`.
         if let Some(sampling) = &self.sampling {
             sampling.poll_alive.store(false, Ordering::Release);
             sampling.notify.notify();
@@ -562,65 +987,25 @@ impl PerfEventOps for HwPerfEvent {
             ptc.set_enabled();
             return Ok(());
         }
+        // Cpu-bound system event (`perf stat -a`): allocate + configure the
+        // counter on its target core (first enable), then start it. The counter
+        // stays allocated across DISABLE so `read(perf_fd)` returns the final
+        // count; it is freed only at `Drop`.
+        if self.sys_cpu.is_some() {
+            self.sys_program()?;
+            self.sys_start();
+            if self.enabled_since.is_none() {
+                self.enabled_since = Some(ax_runtime::hal::time::monotonic_time_nanos());
+            }
+            return Ok(());
+        }
         if self.enabled_since.is_none() {
             self.enabled_since = Some(ax_runtime::hal::time::monotonic_time_nanos());
         }
-        // Sampling events: arm the overflow IRQ path before starting the
-        // counter. A programmable counter is guaranteed (see `perf_event_open_hw`).
-        if let Some(sampling) = &self.sampling {
-            let Counter::Programmable(n) = self.counter else {
-                // Should be unreachable: sampling always takes a programmable
-                // counter. Fail loudly rather than silently never sampling.
-                return Err(AxError::Unsupported);
-            };
-            let period = sampling.period;
-            let sample_type = sampling.sample_type;
-            let freq = sampling.freq;
-            let target_freq = sampling.target_freq;
-            // Pick the ring this event writes into: a SET_OUTPUT redirect target
-            // (another event's ring) takes precedence; otherwise this event's own
-            // mmap'd ring; otherwise a zero slot (enable-before-mmap is a no-op
-            // until a mapping appears).
-            let (ring_vaddr, ring_len) = if let Some((rv, rl, _anchor)) = &sampling.redirect {
-                (*rv, *rl)
-            } else {
-                match sampling.ring.as_ref() {
-                    Some(r) => (r.ring_vaddr, r.ring_len),
-                    None => (0, 0),
-                }
-            };
-            let notify_ptr = Arc::as_ptr(&sampling.notify) as *const ();
-
-            // 1. Make sure the PMU overflow IRQ handler is registered AND the
-            //    PMU PPI is enabled on this core.
-            sampling::ensure_pmu_irq_registered();
-            // 2. Preload the counter so it overflows after `period` events.
-            ax_cpu::pmu::counter::preload(n, period);
-            // 3. Publish the slot so the handler can find this event's ring.
-            sampling::register(
-                n,
-                SampleSlot {
-                    ring_vaddr,
-                    ring_len,
-                    period,
-                    sample_type,
-                    id: self.sample_id,
-                    notify: notify_ptr,
-                    freq,
-                    target_freq,
-                    last_time: 0,
-                },
-            );
-            // 4. Arm the per-counter overflow interrupt, then start counting.
-            ax_cpu::pmu::overflow::enable_irq(n);
-            ax_cpu::pmu::counter::enable(n);
-            return Ok(());
-        }
-
-        match self.counter {
-            Counter::Cycle => ax_cpu::pmu::cycles::enable(),
-            Counter::Programmable(n) => ax_cpu::pmu::counter::enable(n),
-        }
+        // Self/system-wide event: arm the counter (sampling overflow path or plain
+        // enable) ON its `home_cpu`, where its slot + (for sampling) `REGISTRY`
+        // entry live — via IPI if this monitoring thread has migrated off it.
+        self.run_hw_on_home(HwOp::Enable);
         Ok(())
     }
 
@@ -631,16 +1016,24 @@ impl PerfEventOps for HwPerfEvent {
             ptc.set_disabled();
             return Ok(());
         }
-        // Sampling events: strict teardown (mask IRQ → stop counter → unregister
-        // slot) so the handler can no longer touch this event, then accrue time.
-        if self.sampling.is_some() {
-            self.teardown_sampling_irq();
-        } else {
-            match self.counter {
-                Counter::Cycle => ax_cpu::pmu::cycles::disable(),
-                Counter::Programmable(n) => ax_cpu::pmu::counter::disable(n),
+        // Cpu-bound system event: STOP (not free) its counter on the target core
+        // — the value must survive for a post-disable `read(perf_fd)` — then
+        // accrue the enabled window. The counter is freed only at `Drop`.
+        if self.sys_cpu.is_some() {
+            self.sys_stop();
+            if let Some(since) = self.enabled_since.take() {
+                let now = ax_runtime::hal::time::monotonic_time_nanos();
+                let elapsed = now.saturating_sub(since);
+                self.time_enabled += elapsed;
+                self.time_running += elapsed;
             }
+            return Ok(());
         }
+        // Self/system-wide event: stop the counter (sampling strict teardown, or
+        // plain disable) ON its `home_cpu`, then accrue the enabled window. The
+        // counter stays allocated (freed only at `Drop`) so a post-disable
+        // `read(perf_fd)` returns the final value.
+        self.run_hw_on_home(HwOp::Disable);
         if let Some(since) = self.enabled_since.take() {
             let now = ax_runtime::hal::time::monotonic_time_nanos();
             let elapsed = now.saturating_sub(since);
@@ -657,10 +1050,16 @@ impl PerfEventOps for HwPerfEvent {
             ptc.reset();
             return Ok(());
         }
-        match self.counter {
-            Counter::Cycle => ax_cpu::pmu::cycles::reset(),
-            Counter::Programmable(n) => ax_cpu::pmu::counter::reset(n),
+        // Cpu-bound system event: if armed, reset the counter to 0 on its target
+        // core (re-configure); before enable there is nothing to reset, so
+        // `perf stat`'s RESET-before-ENABLE is a no-op (the counter is configured
+        // — and thus zeroed — at the first enable).
+        if self.sys_cpu.is_some() {
+            self.sys_reset();
+            return Ok(());
         }
+        // Self/system-wide event: reset the counter to 0 ON its `home_cpu`.
+        self.run_hw_on_home(HwOp::Reset);
         Ok(())
     }
 
@@ -674,9 +1073,33 @@ impl PerfEventOps for HwPerfEvent {
                 time_enabled,
                 time_running,
                 read_format: ptc.read_format(),
+                lost: super::task::read_lost(ptc),
             });
         }
-        // Current timing = accumulated past windows + the live window, if any.
+        // Cpu-bound system event: read the counter from its target core (IPI if
+        // the reader is elsewhere); timing is the enabled window (runs
+        // continuously while enabled, so time_running == time_enabled).
+        if self.sys_cpu.is_some() {
+            let value = self.sys_read();
+            let (mut time_enabled, mut time_running) = (self.time_enabled, self.time_running);
+            if let Some(since) = self.enabled_since {
+                let now = ax_runtime::hal::time::monotonic_time_nanos();
+                let elapsed = now.saturating_sub(since);
+                time_enabled += elapsed;
+                time_running += elapsed;
+            }
+            return Ok(PerfReadValues {
+                value,
+                time_enabled,
+                time_running,
+                read_format: self.read_format,
+                lost: self.sampling_lost(),
+            });
+        }
+        // Self/system-wide event: read the counter from its `home_cpu` (IPI if the
+        // reader migrated off it — `PMEVCNTRn` is per-PE banked). Current timing =
+        // accumulated past windows + the live window, if any.
+        let value = self.run_hw_on_home(HwOp::Read);
         let (mut time_enabled, mut time_running) = (self.time_enabled, self.time_running);
         if let Some(since) = self.enabled_since {
             let now = ax_runtime::hal::time::monotonic_time_nanos();
@@ -685,10 +1108,11 @@ impl PerfEventOps for HwPerfEvent {
             time_running += elapsed;
         }
         Ok(PerfReadValues {
-            value: self.raw_value(),
+            value,
             time_enabled,
             time_running,
             read_format: self.read_format,
+            lost: self.sampling_lost(),
         })
     }
 
@@ -747,6 +1171,13 @@ impl PerfEventOps for HwPerfEvent {
             return device_mmap_per_task(ptc, len);
         }
 
+        // Cpu-bound system event: no `rdpmc` page — its counter lives on another
+        // core, so a userspace `mrs` on the mapping core would read the wrong PE's
+        // counter. (`perf stat -a` does not mmap; only self-monitoring does.)
+        if self.sys_cpu.is_some() {
+            return Err(AxError::Unsupported);
+        }
+
         // A counting event has no ring; it exposes a single-page
         // `perf_event_mmap_page` for `rdpmc` (userspace reads the counter
         // directly via `mrs`). Only sampling events allocate a ring below.
@@ -765,7 +1196,7 @@ impl PerfEventOps for HwPerfEvent {
         let (pages, ring_vaddr, paddr) = alloc_sampling_ring(len)?;
 
         // Hand the sole strong ref to the caller (threaded into the VMA via
-        // `DeviceMmap::Physical`'s retainer); keep only a `Weak`. See `bpf.rs`
+        // `DeviceMmap::PhysicalCached`'s retainer); keep only a `Weak`. See `bpf.rs`
         // for the ownership/UAF rationale.
         sampling.ring = Some(RingState {
             pages: Arc::downgrade(&pages),
@@ -851,18 +1282,17 @@ fn resolve_sampling(raw: u64, is_freq: bool) -> (u32, u32) {
 /// value reset to 0) but left disabled: the attr carries `disabled = 1`, and
 /// the caller drives it with `ioctl(PERF_EVENT_IOC_ENABLE)`.
 #[cfg(target_arch = "aarch64")]
-pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEvent> {
+pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32, cpu: i32) -> AxResult<HwPerfEvent> {
     // No PMUv3 → no hardware events.
-    let Some(info) = ax_hal::pmu::info() else {
+    if ax_hal::pmu::info().is_none() {
         return Err(AxError::Unsupported);
-    };
+    }
 
-    // Idempotent per-CPU global enable (`PMCR_EL0.E`).
-    ax_cpu::pmu::init_cpu();
-
-    // Refresh the counter count the allocator sizes its bitmask against. Safe
-    // to set every open: M1 is single-core so `num_counters` is invariant.
-    ALLOC.lock().num_counters = info.num_counters;
+    // Per-CPU one-time clean-slate bring-up on the opening core (replaces the
+    // bare per-open `init_cpu()`; the clears inside run exactly once per core,
+    // so re-opens never disturb live counters of other events). The per-CPU
+    // allocator caches this core's `PMCR.N` here, so no global counter count.
+    super::percpu::ensure_core_inited();
 
     // `pid > 0`: attach a per-task counter to that task. `pid <= 0` (0 = self,
     // -1 = system-wide) keeps the existing M1/M2 behaviour untouched below.
@@ -882,6 +1312,64 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
     let raw = unsafe { attr.__bindgen_anon_1.sample_period };
     let is_freq = attr.freq() != 0;
     let is_sampling = raw > 0;
+
+    // `perf stat -a` per-CPU fan-out: a system-wide COUNTING event pinned to a
+    // specific cpu (`cpu >= 0`) counts on THAT core via its per-CPU pool,
+    // programmed / read / freed over a synchronous IPI. Sampling `-a`
+    // (`perf record -a`) is not fanned out here — it stays on the current core.
+    if cpu >= 0 && !is_sampling {
+        // big.LITTLE: an event opened against a cluster's PMU but pinned to a CPU
+        // of another cluster cannot run there — reject with ENOENT so `perf`
+        // falls back / iterates PMUs (Linux `armpmu_event_init` cpumask gate).
+        let valid_clusters =
+            cluster_mask_for_type(attr.type_).unwrap_or(super::percpu::ClusterMask::ALL);
+        if !valid_clusters.contains(super::percpu::cluster_of_cpu(cpu as usize)) {
+            return Err(AxError::NotFound);
+        }
+        let Some(event) = decode_arm_event(attr.type_, attr.config) else {
+            warn!(
+                "perf_event_open: unsupported -a hardware type {:#x} config {:#x}",
+                attr.type_, attr.config
+            );
+            return Err(AxError::Unsupported);
+        };
+        // Validated on the opening core; the target cluster's PMCEID would refine
+        // this, but the common event set is architectural (all clusters).
+        if !ax_cpu::pmu::event_supported(event) {
+            warn!("perf_event_open: -a ARM event {event:#x} not implemented on this CPU");
+            return Err(AxError::Unsupported);
+        }
+        return Ok(HwPerfEvent {
+            counter: Counter::Programmable(usize::MAX),
+            sample_id: 0,
+            read_format: attr.read_format,
+            enabled_since: None,
+            time_enabled: 0,
+            time_running: 0,
+            sampling: None,
+            per_task: None,
+            sys_cpu: Some(SysCpuBinding {
+                cpu: cpu as usize,
+                event,
+                exclude_user,
+                exclude_kernel,
+                slot: None,
+            }),
+            // Routed via `sys_cpu`'s own IPI ops, not `home_cpu`.
+            home_cpu: usize::MAX,
+        });
+    }
+
+    // System-wide / self counting+sampling on the opening core: an event opened
+    // against a cluster PMU whose cluster differs from the opening core cannot run
+    // here (it is pinned to this core) — ENOENT.
+    {
+        let valid_clusters =
+            cluster_mask_for_type(attr.type_).unwrap_or(super::percpu::ClusterMask::ALL);
+        if !valid_clusters.contains(super::percpu::current_cluster()) {
+            return Err(AxError::NotFound);
+        }
+    }
 
     if is_sampling {
         // The IRQ handler (build_sample) emits the scalar sample_type fields perf
@@ -912,17 +1400,19 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
     // the dedicated cycle counter is not used by the M2 overflow path.
     let counter = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
         if attr.config == perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u64 && !is_sampling {
-            // Counting CPU_CYCLES: the dedicated 64-bit cycle counter.
-            let Some(counter) = ALLOC.lock().alloc_cycle() else {
+            // Counting CPU_CYCLES: the dedicated 64-bit cycle counter, from this
+            // core's per-CPU pool.
+            if !super::percpu::alloc_cycle_counter() {
                 return Err(AxError::NoMemory);
-            };
+            }
             // `exclude_*` map onto the cycle filter; `configure` also resets.
             ax_cpu::pmu::cycles::configure(exclude_user, exclude_kernel);
-            counter
+            Counter::Cycle
         } else {
-            // Map the generic hardware event to an ARM PMUv3 event number.
-            // (CPU_CYCLES → 0x11 here for the sampling case.)
-            let Some(event) = ax_cpu::pmu::hw_event_to_arm(attr.config as u32) else {
+            // Map the generic hardware event to an ARM PMUv3 event number
+            // (per-cluster BRANCH_INSTRUCTIONS resolution; CPU_CYCLES → 0x11 for
+            // the sampling case).
+            let Some(event) = resolve_hw_event(attr.config as u32) else {
                 warn!(
                     "perf_event_open: unsupported hardware config {:#x}",
                     attr.config
@@ -933,13 +1423,15 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
         }
     } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
         || attr.type_ == ARMV8_PMUV3_PERF_TYPE
+        || attr.type_ == ARMV8_CORTEX_A55_TYPE
+        || attr.type_ == ARMV8_CORTEX_A76_TYPE
     {
-        // Raw events (`PERF_TYPE_RAW`) and dynamic ARM PMUv3 events
-        // (`ARMV8_PMUV3_PERF_TYPE`, the sysfs-advertised PMU type) are decoded
-        // identically: the low 16 bits of `config` are the ARM event number.
-        // The real `perf` tool resolves a named event like
-        // `armv8_pmuv3_0/cpu_cycles/` to (type = ARMV8_PMUV3_PERF_TYPE,
-        // config = 0x11) via sysfs, so it lands here.
+        // Raw events (`PERF_TYPE_RAW`), the generic PMU (`armv8_pmuv3_0` = 8) and
+        // the cluster PMUs (`armv8_cortex_a55`/`_a76` = 9/10) are decoded
+        // identically: the low 16 bits of `config` are the ARM event number. The
+        // real `perf` tool resolves a named event like `armv8_pmuv3_0/cpu_cycles/`
+        // to (type, config = 0x11) via sysfs, so it lands here. (The cluster
+        // restriction was already enforced as ENOENT above.)
         let event = (attr.config & 0xFFFF) as u16;
         alloc_programmable(event, exclude_user, exclude_kernel)?
     } else {
@@ -974,6 +1466,8 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
             poll_alive,
             ring: None,
             redirect: None,
+            lost: Arc::new(AtomicU64::new(0)),
+            lost_reported: Arc::new(AtomicU64::new(0)),
         })
     } else {
         None
@@ -991,6 +1485,12 @@ pub fn perf_event_open_hw(attr: &perf_event_attr, pid: i32) -> AxResult<HwPerfEv
         sampling,
         // System-wide / self event: not per-task.
         per_task: None,
+        // Counts on the opening core (`cpu < 0`); the cpu-bound `-a` fan-out
+        // returned earlier.
+        sys_cpu: None,
+        // The counter is allocated on THIS (the opening) core; its HW lifecycle
+        // is pinned here via IPI even if the monitoring thread migrates.
+        home_cpu: ax_hal::percpu::this_cpu_id(),
     })
 }
 
@@ -1050,30 +1550,21 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
     }
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
-    // Decode the ARM event. Per-task always uses a programmable counter, so even
-    // CPU_CYCLES maps to ARM event 0x11 (never the dedicated cycle counter).
-    let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
-        match ax_cpu::pmu::hw_event_to_arm(attr.config as u32) {
-            Some(event) => event,
-            None => {
-                warn!(
-                    "perf_event_open: unsupported per-task hardware config {:#x}",
-                    attr.config
-                );
-                return Err(AxError::Unsupported);
-            }
-        }
-    } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
-        || attr.type_ == ARMV8_PMUV3_PERF_TYPE
-    {
-        (attr.config & 0xFFFF) as u16
-    } else {
+    // Decode the ARM event (per-cluster BRANCH_INSTRUCTIONS resolution; cluster
+    // PMU types 9/10 accepted). Per-task always uses a programmable counter, so
+    // even CPU_CYCLES maps to ARM event 0x11 (never the dedicated cycle counter).
+    let Some(event) = decode_arm_event(attr.type_, attr.config) else {
         warn!(
-            "perf_event_open: unsupported per-task hardware type {:#x}",
-            attr.type_
+            "perf_event_open: unsupported per-task hardware type {:#x} config {:#x}",
+            attr.type_, attr.config
         );
         return Err(AxError::Unsupported);
     };
+    // The cluster the event is restricted to (big.LITTLE). A per-task event is
+    // NOT rejected for a cluster mismatch — it follows the task and simply skips
+    // arming on non-matching cores (`perf_sched_in`), matching Linux's filter.
+    let valid_clusters =
+        cluster_mask_for_type(attr.type_).unwrap_or(super::percpu::ClusterMask::ALL);
 
     if !ax_cpu::pmu::event_supported(event) {
         warn!(
@@ -1083,11 +1574,10 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
         return Err(AxError::Unsupported);
     }
 
-    // Reserve a programmable counter slot, but do NOT configure/enable HW now:
-    // the scheduler hook configures it per slice when the target runs.
-    let Some(n) = alloc_programmable_counter() else {
-        return Err(AxError::NoMemory);
-    };
+    // No counter is reserved at open: the per-task path allocates a programmable
+    // slot from the *running* core's per-CPU pool at each `perf_sched_in` and
+    // releases it at `perf_sched_out`, so concurrent demand is bounded by the
+    // events of the running task per core, not by live events system-wide.
 
     // `disabled = 0` ⇒ count from the next sched-in; `disabled = 1` ⇒ wait for
     // `enable_on_exec` / `ioctl(ENABLE)`. `perf stat -- cmd` sets both
@@ -1097,7 +1587,6 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
 
     let ptc = Arc::new(super::task::PerTaskCounter::new(
         super::task::PerTaskConfig {
-            n,
             event,
             exclude_user,
             exclude_kernel,
@@ -1116,13 +1605,16 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
             sample_id_all: attr.sample_id_all() != 0,
             // Follow forked children into the same ring (`perf record` default).
             inherit: attr.inherit() != 0,
+            valid_clusters,
         },
     ));
     super::task::attach(thr, ptc.clone());
 
     Ok(HwPerfEvent {
-        // Inert placeholders: the per-task path drives `ptc`, not these fields.
-        counter: Counter::Programmable(n),
+        // Inert placeholders: the per-task path drives `ptc` (which holds the
+        // per-slice slot), not these fields. `usize::MAX` is never used as a real
+        // counter index — the per-task `Drop` delegates to `free_hw` and returns.
+        counter: Counter::Programmable(usize::MAX),
         // Mirrors the wrapper id onto the ptc via `set_sample_id`; 0 until then.
         sample_id: 0,
         read_format: attr.read_format,
@@ -1131,6 +1623,9 @@ fn perf_event_open_hw_per_task(attr: &perf_event_attr, pid: i32) -> AxResult<HwP
         time_running: 0,
         sampling: None,
         per_task: Some(ptc),
+        sys_cpu: None,
+        // Per-task HW lives in the scheduler hooks (per slice), not `home_cpu`.
+        home_cpu: usize::MAX,
     })
 }
 
@@ -1148,7 +1643,7 @@ fn alloc_programmable(event: u16, exclude_user: bool, exclude_kernel: bool) -> A
         );
         return Err(AxError::Unsupported);
     }
-    let Some(Counter::Programmable(n)) = ALLOC.lock().alloc_counter() else {
+    let Some(n) = super::percpu::alloc_programmable_counter() else {
         return Err(AxError::NoMemory);
     };
     // `configure` applies the event + filter and resets the counter to 0.
@@ -1191,6 +1686,6 @@ impl PerfEventOps for HwPerfEvent {
 
 /// Non-aarch64 fallback: no hardware PMU support outside ARM PMUv3.
 #[cfg(not(target_arch = "aarch64"))]
-pub fn perf_event_open_hw(_attr: &perf_event_attr, _pid: i32) -> AxResult<HwPerfEvent> {
+pub fn perf_event_open_hw(_attr: &perf_event_attr, _pid: i32, _cpu: i32) -> AxResult<HwPerfEvent> {
     Err(AxError::Unsupported)
 }
