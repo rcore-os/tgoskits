@@ -30,6 +30,10 @@
  */
 
 #define MOUNTINFO_PATH "/proc/self/mountinfo"
+#define MOUNTS_PATH "/proc/self/mounts"
+#define ROOT_MOUNT_SOURCE "/dev/vda"
+#define SOURCE_TEST_DIR "/mountinfo_source"
+#define SOURCE_TEST_NAME "mountinfo-source"
 
 /* 隔离挂载树路径 — 唯一, 不与根挂载或其他测试的字符串重合。*/
 #define REG26_SRC "/reg26_src"
@@ -121,6 +125,48 @@ static int find_line_by_mp(const char *mp, char *out, size_t out_sz)
         }
     }
     return 0;
+}
+
+static int mountinfo_source_by_mp(const char *mp, char *out, size_t out_sz)
+{
+    char line[1024];
+    if (!find_line_by_mp(mp, line, sizeof line))
+        return 0;
+
+    char *tokens[64];
+    int count = 0;
+    for (char *token = strtok(line, " \t"); token && count < 64;
+         token = strtok(NULL, " \t"))
+        tokens[count++] = token;
+
+    for (int i = 0; i + 2 < count; i++) {
+        if (strcmp(tokens[i], "-") == 0) {
+            copy_tok(out, out_sz, tokens[i + 2]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int mounts_source_by_mp(const char *mp, char *out, size_t out_sz)
+{
+    FILE *f = fopen(MOUNTS_PATH, "r");
+    if (!f)
+        return 0;
+
+    char line[1024];
+    int found = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *source = strtok(line, " \t\n");
+        char *mountpoint = strtok(NULL, " \t\n");
+        if (source && mountpoint && strcmp(mountpoint, mp) == 0) {
+            copy_tok(out, out_sz, source);
+            found = 1;
+            break;
+        }
+    }
+    fclose(f);
+    return found;
 }
 
 /* Check whether a line contains a given optional-field prefix
@@ -248,10 +294,43 @@ int main(void)
     snprintf(msg, sizeof msg, "分隔符后 mount source 非空 (\"%s\")", rl.source);
     CHECK(rl.source[0] != '\0', msg);
 
+    snprintf(msg, sizeof msg, "根 mountinfo source == %s (\"%s\")",
+             ROOT_MOUNT_SOURCE, rl.source);
+    CHECK(strcmp(rl.source, ROOT_MOUNT_SOURCE) == 0, msg);
+
+    {
+        char source[160] = "";
+        CHECK(mounts_source_by_mp("/", source, sizeof source),
+              "根挂载存在于 /proc/self/mounts");
+        snprintf(msg, sizeof msg, "根 mounts source == %s (\"%s\")",
+                 ROOT_MOUNT_SOURCE, source);
+        CHECK(strcmp(source, ROOT_MOUNT_SOURCE) == 0, msg);
+    }
+
     snprintf(msg, sizeof msg, "分隔符后 super options 非空 (\"%s\")", rl.super_opts);
     CHECK(rl.super_opts[0] != '\0', msg);
 
     CHECK(proc_found, "含 /proc (fstype proc) 伪文件系统挂载行");
+
+    mkdir(SOURCE_TEST_DIR, 0755);
+    CHECK(mount(SOURCE_TEST_NAME, SOURCE_TEST_DIR, "tmpfs", 0, NULL) == 0,
+          "mount tmpfs with a source distinct from fstype");
+    {
+        char source[160] = "";
+        CHECK(mountinfo_source_by_mp(SOURCE_TEST_DIR, source, sizeof source),
+              "source test mount exists in mountinfo");
+        snprintf(msg, sizeof msg, "tmpfs mountinfo source == %s (\"%s\")",
+                 SOURCE_TEST_NAME, source);
+        CHECK(strcmp(source, SOURCE_TEST_NAME) == 0, msg);
+
+        source[0] = '\0';
+        CHECK(mounts_source_by_mp(SOURCE_TEST_DIR, source, sizeof source),
+              "source test mount exists in mounts");
+        snprintf(msg, sizeof msg, "tmpfs mounts source == %s (\"%s\")",
+                 SOURCE_TEST_NAME, source);
+        CHECK(strcmp(source, SOURCE_TEST_NAME) == 0, msg);
+    }
+    CHECK(umount(SOURCE_TEST_DIR) == 0, "unmount source test tmpfs");
 
     /* ================================================================
      * task 2.6: 传播类型可选字段 shared:N / master:N
@@ -329,5 +408,5 @@ int main(void)
         rmdir(REG26_SRC);
     }
 
-    TEST_DONE(33);
+    TEST_DONE(42);
 }
