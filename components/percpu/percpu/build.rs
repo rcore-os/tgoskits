@@ -1,17 +1,9 @@
 use std::path::Path;
 
 fn main() {
-    if cfg!(feature = "host-test") && cfg!(not(feature = "sp-naive")) {
-        let ld = if cfg!(feature = "custom-base") {
-            "test_percpu_custom.x"
-        } else {
-            "test_percpu.x"
-        };
-
-        let ld_script_path = Path::new(std::env!("CARGO_MANIFEST_DIR")).join(ld);
-        if !cfg!(feature = "custom-base") {
-            println!("cargo:rustc-link-arg-tests=-no-pie");
-        }
+    if cfg!(feature = "host-test") {
+        let ld_script_path = Path::new(std::env!("CARGO_MANIFEST_DIR")).join("host-test.ld");
+        println!("cargo:rerun-if-changed={}", ld_script_path.display());
         println!("cargo:rustc-link-arg-tests=-T{}", ld_script_path.display());
     }
 }

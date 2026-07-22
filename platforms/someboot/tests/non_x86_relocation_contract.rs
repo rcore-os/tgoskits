@@ -121,12 +121,13 @@ fn verify_runtime_load_biases(architecture: Architecture, temporary_root: &Path)
         "{} fixture must not hide a non-relative dynamic relocation:\n{relocation_output}",
         architecture.name
     );
-    let percpu_range = symbol(&symbols, "percpu_start")..symbol(&symbols, "percpu_end");
+    let template_range =
+        symbol(&symbols, "__CPU_LOCAL_AREA_PREFIX")..symbol(&symbols, "__CPU_LOCAL_TEMPLATE_END");
     assert!(
         all_relocation_offsets
             .iter()
-            .all(|offset| !percpu_range.contains(offset)),
-        "{} per-CPU storage must not contain a relocation target",
+            .all(|offset| !template_range.contains(offset)),
+        "{} CPU-local template must not contain a relocation target",
         architecture.name
     );
 
@@ -257,25 +258,26 @@ fn verify_runtime_addresses(
         architecture.name
     );
 
-    let linked_percpu_offset = symbol(symbols, "percpu_value") - symbol(symbols, "percpu_start");
-    let stored_percpu_offset =
-        read_word(elf.runtime_address(mapping, symbol(symbols, "percpu_offset")));
+    let linked_template_offset =
+        symbol(symbols, "cpu_local_template_value") - symbol(symbols, "__CPU_LOCAL_AREA_PREFIX");
+    let stored_template_offset =
+        read_word(elf.runtime_address(mapping, symbol(symbols, "cpu_local_template_offset")));
     assert_eq!(
-        stored_percpu_offset, linked_percpu_offset,
+        stored_template_offset, linked_template_offset,
         "{} final ELF must store a load-bias-independent per-CPU offset",
         architecture.name
     );
-    let runtime_percpu_value = elf
-        .runtime_address(mapping, symbol(symbols, "percpu_start"))
-        .wrapping_add(stored_percpu_offset);
+    let runtime_template_value = elf
+        .runtime_address(mapping, symbol(symbols, "__CPU_LOCAL_AREA_PREFIX"))
+        .wrapping_add(stored_template_offset);
     assert_eq!(
-        runtime_percpu_value,
-        elf.runtime_address(mapping, symbol(symbols, "percpu_value")),
+        runtime_template_value,
+        elf.runtime_address(mapping, symbol(symbols, "cpu_local_template_value")),
         "{} area_base + relative_offset must resolve after relocation",
         architecture.name
     );
     assert_eq!(
-        read_word(runtime_percpu_value),
+        read_word(runtime_template_value),
         PERCPU_MAGIC,
         "{} resolved per-CPU storage must retain its initialized value",
         architecture.name

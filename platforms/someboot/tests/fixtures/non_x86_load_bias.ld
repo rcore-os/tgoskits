@@ -7,7 +7,7 @@ SECTIONS {
     . = 0x00400000;
     .text : { KEEP(*(.text.fixture)) } :image
     .data : ALIGN(8) { KEEP(*(.data.fixture)) } :image
-    .percpu : ALIGN(64) { KEEP(*(.percpu.fixture)) } :image
+    .percpu.template : ALIGN(64) { KEEP(*(.percpu.template.fixture)) } :image
     .dynsym : { *(.dynsym) } :image
     .gnu.hash : { *(.gnu.hash) } :image
     .hash : { *(.hash) } :image

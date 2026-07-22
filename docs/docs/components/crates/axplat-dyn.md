@@ -32,7 +32,7 @@
 | `boot` | 启动 glue | `#[somehal::entry(Kernel)]`、`#[somehal::secondary_entry]`、`Kernel` 的 `MmioOp` 实现 |
 | `init` | `InitIf` 实现 | trap 初始化、计时器打开、`post_paging()`、后期 IRQ 打开 |
 | `console` | `ConsoleIf` 实现 | 控制台读写、`\n` 到 `\r\n` 的串口兼容转换 |
-| `mem` | `MemIf` 实现 | 从 `somehal::mem::memory_map()` 生成 RAM/保留区/MMIO 视图，导出 `_percpu_base_ptr` |
+| `mem` | `MemIf` 实现 | 从 `somehal::mem::memory_map()` 生成 RAM/保留区/MMIO 视图 |
 | `generic_timer` | `TimeIf` 实现 | tick/nanos 转换、定时器 IRQ 编号、one-shot 定时器 |
 | `irq` | `IrqIf` 实现 | `HandlerTable<1024>`、启停 IRQ、注册/撤销、公共分发入口 |
 | `power` | `PowerIf` 实现 | `cpu_boot()`、`system_off()`、`cpu_num()` |
@@ -97,7 +97,7 @@ flowchart TD
 - `phys_to_virt()` / `virt_to_phys()` 直接转发到 `somehal::mem`
 - `kernel_aspace()` 来自 `somehal::mem::kernel_space()`
 
-此外，`_percpu_base_ptr()` 通过 `somehal::smp::percpu_data_ptr()` 向 `ax-percpu` crate 提供每核数据基址。这也解释了为什么 `ax-hal::mem` 不再额外注入一套传统平台包的内核保留区逻辑：当前路径默认信任 `somehal` 给出的内存事实已经包含 `KImage` 和 `PerCpuData`。
+CPU-local 区域由 someboot 在 final-high 阶段按固件 CPU 数动态分配并一次完成类型化初始化。`axplat-dyn::boot` 会比较 `somehal::smp::percpu_data_layout()` 与 `ax_percpu::layout()`，再从冻结的 area header 取得 `CpuBindingV1` 并安装架构寄存器。`mem.rs` 不再提供基址回调或第二套运行时布局。
 
 #### 时间、中断与电源
 
@@ -249,7 +249,7 @@ graph TD
 
 - `send_ipi()` 仍是 `todo!()`，因此不要把它误判为一条已经完成的 SMP IPI 路径。
 - `VirtIO` block 的 IRQ enable/disable/handle 仍未完成，中断驱动块 I/O 不是当前实现重点。
-- `build.rs` 生成的 `axplat.x` 会把 `__SMP` 固定替换成 `16`；若下层假设变化，需要同步检查链接脚本和启动约定。
+- `build.rs` 生成的 `axplat.x` 默认把 `__SMP` 容量替换成 `16`；CPU-local 模板不得依赖该值，运行时区域数量只来自 someboot 发布的 CPU 布局。
 - 当前 crate 根部有 `#![cfg(not(any(windows, unix)))]`，说明主机侧 `cargo test`/`cargo check` 不是它的主要验证面。
 - 源码中虽保留了被注释掉的 `config` 模块草稿，但现行代码不实际消费旧式静态配置文件。
 
@@ -267,7 +267,7 @@ graph TD
 - 启动测试：验证主核、次核入口都能正确进入 `axplat` 入口函数。
 - 契约测试：对 `InitIf`、`MemIf`、`TimeIf`、`PowerIf` 的桥接语义做最小集成回归。
 - 设备测试：在含 `virtio,mmio` 或 PCIe ECAM 的环境下验证 `probe_all_devices()` 至少能发现块设备。
-- 多核测试：在 `smp` 打开时验证 `cpu_boot()`、`_percpu_base_ptr()` 和 CPU 计数一致性。
+- 多核测试：在 `smp` 打开时验证 `cpu_boot()`、动态 CPU-area 布局、binding 与 CPU 计数一致性，并确认不同 `SMP` 值不会改变模板大小。
 
 ### 5.3 重点风险
 

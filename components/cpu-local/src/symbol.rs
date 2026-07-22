@@ -7,7 +7,7 @@
 /// CPU-local runtime area address.
 #[inline(always)]
 pub fn cpu_area_template_base() -> usize {
-    core::ptr::addr_of!(crate::__AX_CPU_AREA_PREFIX).cast::<u8>() as usize
+    core::ptr::addr_of!(crate::__CPU_LOCAL_AREA_PREFIX).cast::<u8>() as usize
 }
 
 /// Returns the exact initialized CPU-area template size.
@@ -18,7 +18,7 @@ pub fn cpu_area_template_base() -> usize {
 #[inline(always)]
 pub fn cpu_area_template_size() -> Option<usize> {
     let start = cpu_area_template_base();
-    let end = core::ptr::addr_of!(crate::__AX_CPU_AREA_TEMPLATE_END) as usize;
+    let end = core::ptr::addr_of!(crate::__CPU_LOCAL_TEMPLATE_END) as usize;
     end.checked_sub(start)?
         .checked_add(core::mem::size_of::<u8>())
 }

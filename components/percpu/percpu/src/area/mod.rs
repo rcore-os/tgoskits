@@ -6,9 +6,9 @@ pub use cpu_local::{
 
 mod layout;
 
-#[cfg(not(feature = "sp-naive"))]
-pub(crate) use layout::freeze_initialized_layout;
-pub(crate) use layout::{InstalledLayout, LayoutIdentity, installed_layout};
+pub(crate) use layout::{
+    InstalledLayout, LayoutIdentity, freeze_initialized_layout, installed_layout,
+};
 pub use layout::{PerCpuArea, PerCpuError};
 
 /// Currently supported flag bits in [`PerCpuLayoutV1`].
@@ -92,10 +92,7 @@ impl PerCpuLayoutInitV2 {
     /// Creates facts for linked host fixtures and supervisor-only images.
     ///
     /// Platform boot paths must use [`Self::new`] with their live host level.
-    #[cfg(all(
-        not(feature = "sp-naive"),
-        any(not(feature = "custom-base"), feature = "host-test")
-    ))]
+    #[cfg(feature = "host-test")]
     pub(crate) fn for_supervisor_image(layout: PerCpuLayoutV1) -> Self {
         let identity = LayoutIdentity::for_supervisor_image(layout);
         Self {
@@ -202,27 +199,16 @@ impl BoundCpuPin<'_> {
 
 /// Verifies and borrows the live CPU-area binding covered by `pin`.
 pub fn bound_current(pin: &CpuPin) -> Result<BoundCpuPin<'_>, PerCpuError> {
-    #[cfg(feature = "sp-naive")]
-    {
-        Ok(BoundCpuPin {
-            _migration_pin: pin,
-            area: PerCpuArea::sp_naive(),
-        })
-    }
-
-    #[cfg(not(feature = "sp-naive"))]
-    {
-        let binding = current_platform_binding()?;
-        let current_area = installed_layout()?.area_from_binding(binding)?;
-        current_area
-            .prefix()
-            .validate_init(current_area.init_facts())
-            .map_err(PerCpuError::Header)?;
-        Ok(BoundCpuPin {
-            _migration_pin: pin,
-            area: current_area,
-        })
-    }
+    let binding = current_platform_binding()?;
+    let current_area = installed_layout()?.area_from_binding(binding)?;
+    current_area
+        .prefix()
+        .validate_init(current_area.init_facts())
+        .map_err(PerCpuError::Header)?;
+    Ok(BoundCpuPin {
+        _migration_pin: pin,
+        area: current_area,
+    })
 }
 
 /// Returns the logical index owned by the verified current CPU area.
@@ -234,7 +220,6 @@ pub const fn current_cpu_index(pin: &BoundCpuPin<'_>) -> Result<CpuIndex, PerCpu
     Ok(pin.area.cpu_index)
 }
 
-#[cfg(not(feature = "sp-naive"))]
 fn current_platform_binding() -> Result<CpuBindingV1, PerCpuError> {
     match cpu_local::platform::current_cpu_binding() {
         Ok(binding) => Ok(binding),

@@ -24,20 +24,6 @@ pub struct PerCpuArea {
 }
 
 impl PerCpuArea {
-    #[cfg(feature = "sp-naive")]
-    pub(super) fn sp_naive() -> Self {
-        Self {
-            cpu_index: CpuIndex::from_u32(0).expect("CPU zero must be representable"),
-            runtime_base: 0,
-            area_size: 0,
-            abi_version: CPU_LOCAL_ABI_VERSION,
-            register_mode: cpu_local::image_register_mode().as_u8(),
-            host_level: HostLevelV1::Supervisor.as_u8(),
-            generation: CPU_AREA_GENERATION,
-            cookie: cpu_local::CPU_AREA_DEFAULT_COOKIE,
-        }
-    }
-
     /// Returns this area's logical CPU index.
     pub const fn cpu_index(self) -> CpuIndex {
         self.cpu_index
@@ -62,7 +48,7 @@ impl PerCpuArea {
     pub fn prefix(self) -> &'static CpuAreaPrefixV2 {
         assert_ne!(
             self.runtime_base, 0,
-            "the sp-naive compatibility area has no CPU-area prefix"
+            "an installed CPU area must have a nonzero runtime base"
         );
         // SAFETY: PerCpuArea is obtainable only from the frozen initialized
         // layout, whose unsafe installation contract keeps every area mapped
@@ -93,7 +79,6 @@ impl PerCpuArea {
         .expect("installed layout must retain validated CPU-area initialization facts")
     }
 
-    #[cfg(not(feature = "sp-naive"))]
     pub(crate) fn runtime_ptr(self) -> *mut u8 {
         self.runtime_base as *mut u8
     }
@@ -127,8 +112,8 @@ pub(crate) struct LayoutIdentity {
 
 impl LayoutIdentity {
     pub(crate) fn for_supervisor_image(layout: PerCpuLayoutV1) -> Self {
-        let template_base = crate::percpu_template_base();
-        let area_size = crate::percpu_area_size();
+        let template_base = crate::template_base();
+        let area_size = crate::template_size();
         Self {
             abi_version: CPU_LOCAL_ABI_VERSION,
             register_mode: cpu_local::image_register_mode().as_u8(),
@@ -164,7 +149,7 @@ impl InstalledLayout {
                 host_level: identity.host_level,
             });
         }
-        let area_size = crate::percpu_area_size();
+        let area_size = crate::template_size();
         let required_alignment = crate::required_area_alignment()?;
         if area_size < size_of::<CpuAreaPrefix>() {
             return Err(PerCpuError::AreaTooSmall {
@@ -185,7 +170,7 @@ impl InstalledLayout {
                 alignment: required_alignment,
             });
         }
-        let template_base = crate::percpu_template_base();
+        let template_base = crate::template_base();
         if !template_base.is_multiple_of(required_alignment) {
             return Err(PerCpuError::MisalignedTemplateBase {
                 base: template_base,
@@ -253,27 +238,22 @@ impl InstalledLayout {
         })
     }
 
-    #[cfg(not(feature = "sp-naive"))]
     pub(crate) const fn area_size(self) -> usize {
         self.area_size
     }
 
-    #[cfg(not(feature = "sp-naive"))]
     pub(crate) const fn template_base(self) -> usize {
         self.template_base
     }
 
-    #[cfg(not(feature = "sp-naive"))]
     pub(crate) const fn required_alignment(self) -> usize {
         self.required_alignment
     }
 
-    #[cfg(not(feature = "sp-naive"))]
     pub(crate) const fn public(self) -> PerCpuLayoutV1 {
         self.public
     }
 
-    #[cfg(not(feature = "sp-naive"))]
     pub(super) fn area_from_binding(
         self,
         binding: CpuBindingV1,
@@ -318,7 +298,6 @@ pub(crate) fn installed_layout() -> Result<InstalledLayout, PerCpuError> {
         .ok_or(PerCpuError::LayoutNotInstalled)
 }
 
-#[cfg(not(feature = "sp-naive"))]
 pub(crate) fn freeze_initialized_layout(layout: InstalledLayout) {
     assert!(
         INSTALLED_LAYOUT.get().is_none(),
@@ -527,7 +506,7 @@ pub enum PerCpuError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(all(feature = "host-test", not(feature = "sp-naive")))]
+    #[cfg(feature = "host-test")]
     use crate::{CpuPin, bound_current};
 
     struct UnitCpuLocalPlatform;
@@ -618,7 +597,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "host-test", not(feature = "sp-naive")))]
+    #[cfg(feature = "host-test")]
     #[test]
     fn uninstalled_host_binding_is_a_typed_unbound_error() {
         // SAFETY: the unit-test thread never enables a scheduler or migrates.

@@ -1,3 +1,4 @@
+use core::num::NonZeroU32;
 use std::{
     panic,
     sync::{
@@ -61,7 +62,9 @@ impl cpu_local::CpuLocalPlatformV1 for HostCpuLocalPlatform {
 
 #[ctor]
 fn init_percpu() {
-    CPU_COUNT.store(ax_percpu::init().max(1), Ordering::Release);
+    let area_count = NonZeroU32::new(4).unwrap();
+    let layout = ax_percpu::host_test::initialize(area_count).unwrap();
+    CPU_COUNT.store(layout.area_count as usize, Ordering::Release);
 
     let area = ax_percpu::area(ax_percpu::CpuIndex::try_from(0).unwrap()).unwrap();
     println!("per-CPU area base = {:#x}", area.runtime_base());

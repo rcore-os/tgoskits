@@ -596,11 +596,11 @@ impl core::error::Error for CpuAreaHeaderError {}
 #[doc(hidden)]
 #[used]
 #[unsafe(no_mangle)]
-#[unsafe(link_section = ".percpu.000.header")]
-pub static mut __AX_CPU_AREA_PREFIX: CpuAreaPrefixV2 = CpuAreaPrefixV2::template();
+#[unsafe(link_section = ".percpu.template.header")]
+pub static mut __CPU_LOCAL_AREA_PREFIX: CpuAreaPrefixV2 = CpuAreaPrefixV2::template();
 
 #[doc(hidden)]
 #[used]
 #[unsafe(no_mangle)]
-#[unsafe(link_section = ".percpu_end")]
-pub static __AX_CPU_AREA_TEMPLATE_END: u8 = 0;
+#[unsafe(link_section = ".percpu.template.end")]
+pub static __CPU_LOCAL_TEMPLATE_END: u8 = 0;

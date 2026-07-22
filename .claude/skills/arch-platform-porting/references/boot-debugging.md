@@ -30,6 +30,13 @@ image boundary:
 | RISC-V | recover from current header, or sscratch | tp is current and sscratch is zero in kernel Rust | tp is task TLS and sscratch is CPU base |
 | LoongArch | r21, mirrored in KS3 | tp is current | tp is task TLS |
 
+The final ELF owns exactly one `.percpu.template`, one `.percpu.init` descriptor table, and one
+`.percpu.align` table. someboot or another platform allocates the runtime areas dynamically from
+that geometry, initializes every typed object at its final address, freezes the layout, and only
+then binds a CPU. There is no linked runtime alias and the template size must not depend on SMP.
+Linker boundaries use only `__PERCPU_*` and `__CPU_LOCAL_*`; x86 trap entry consumes the relative
+`__CPU_LOCAL_TSS_OFFSET`.
+
 Context-switch publication follows one ordering: validate the outgoing binding, bind the next
 stable task header, prepare every fallible state transition, commit the architecture register,
 perform the naked switch, and unbind the previous header in the incoming tail. The interrupt-off
@@ -94,9 +101,9 @@ Use this order when auditing an early boot port:
 6. Trap vectors are installed using the address form required by the architecture at that moment.
 7. MMU enable is followed by the required barrier, TLB flush, and an address-basis-safe jump.
 8. Post-MMU console and panic paths are usable.
-9. The typed per-CPU layout is finalized, final high-address areas are initialized once, frozen,
-   and bound through the architecture CPU-local register contract.
-10. Per-CPU data and secondary boot stacks are allocated and initialized.
+9. The single ELF CPU-local template and descriptor tables are resolved after relocation.
+10. Runtime CPU areas and secondary boot stacks are dynamically allocated; every typed area is
+    initialized once, frozen, and bound through the architecture CPU-local register contract.
 11. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
 
 ## RISC-V FDT SMP Notes

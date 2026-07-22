@@ -10,29 +10,8 @@ categories = ["development-tools::procedural-macro-helpers", "no-std"]
 license = "Apache-2.0"
 
 [features]
-default = []
-
-# Enable Linux user-space fallback used by ax-percpu's own host tests.
+# Allocate process-lifetime dynamic CPU areas for host-side tests.
 host-test = ["cpu-local/host-test"]
-
-# For single CPU use, just make the per-CPU data a global variable.
-sp-naive = ["ax-percpu-macros/sp-naive"]
-
-# Select the final-image unikernel TLS/current-register ownership mode.
-tls = ["cpu-local/tls"]
-
-# Allow using non-zero VMA addresses for `.percpu` section. Required for testing
-# on Linux user-space. May reduce performance slightly.
-non-zero-vma = []
-
-# Enable externally allocated CPU-area storage. The public variable API remains
-# identical; the caller installs the immutable layout and binds each CPU area.
-custom-base = []
-
-# Obtain the exact linked template bounds from cpu-local's retained Rust
-# sentinels. Kernel platforms select this explicitly; host fixtures select
-# `host-test` instead, so no target-triple heuristic is required.
-linked-template = []
 
 [dependencies]
 cpu-local.workspace = true

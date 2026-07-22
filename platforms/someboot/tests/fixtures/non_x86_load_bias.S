@@ -21,22 +21,22 @@ marker:
         .size marker, 8
 
         /* This same-section difference must remain a scalar, not a relocation. */
-        .globl percpu_offset
-        .type percpu_offset,@object
-percpu_offset:
-        .quad percpu_value - percpu_start
-        .size percpu_offset, 8
+        .globl cpu_local_template_offset
+        .type cpu_local_template_offset,@object
+cpu_local_template_offset:
+        .quad cpu_local_template_value - __CPU_LOCAL_AREA_PREFIX
+        .size cpu_local_template_offset, 8
 
-        .section .percpu.fixture,"aw"
+        .section .percpu.template.fixture,"aw"
         .p2align 6
-        .globl percpu_start
-        .type percpu_start,@object
-percpu_start:
+        .globl __CPU_LOCAL_AREA_PREFIX
+        .type __CPU_LOCAL_AREA_PREFIX,@object
+__CPU_LOCAL_AREA_PREFIX:
         .zero 64
-        .globl percpu_value
-        .type percpu_value,@object
-percpu_value:
+        .globl cpu_local_template_value
+        .type cpu_local_template_value,@object
+cpu_local_template_value:
         .quad 0x5a5aa5a513572468
-        .size percpu_value, 8
-        .globl percpu_end
-percpu_end:
+        .size cpu_local_template_value, 8
+        .globl __CPU_LOCAL_TEMPLATE_END
+__CPU_LOCAL_TEMPLATE_END:

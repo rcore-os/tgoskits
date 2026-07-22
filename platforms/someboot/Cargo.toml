@@ -13,7 +13,6 @@ version = "0.3.5"
 efi = []
 hv = []
 mmu = []
-percpu-prealloc = []
 thead-mae = []
 tls = []
 uspace = ["mmu"]

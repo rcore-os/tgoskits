@@ -1,6 +1,6 @@
-#![cfg(all(target_os = "linux", feature = "host-test", feature = "non-zero-vma"))]
+#![cfg(all(target_os = "linux", feature = "host-test"))]
 
-use core::num::NonZeroUsize;
+use core::num::{NonZeroU32, NonZeroUsize};
 
 use ax_lazyinit::LazyInit;
 use ax_percpu::*;
@@ -51,8 +51,8 @@ impl cpu_local::CpuLocalPlatformV1 for HostCpuLocalPlatform {
 }
 
 unsafe extern "C" {
-    static __AX_PERCPU_LINKER_ALIGNMENT_START: u8;
-    static __AX_PERCPU_LINKER_ALIGNMENT_END: u8;
+    static __PERCPU_TEMPLATE_ALIGN_START: u8;
+    static __PERCPU_TEMPLATE_ALIGN_END: u8;
 }
 
 #[def_percpu]
@@ -115,12 +115,10 @@ static OVER_ALIGNED: OverAligned = OverAligned {
     marker: 0xfeed_cafe,
 };
 
-#[cfg(feature = "custom-base")]
 struct OwnerCpuOnly {
     pointer: *mut u8,
 }
 
-#[cfg(feature = "custom-base")]
 #[def_percpu]
 static OWNER_CPU_ONLY: OwnerCpuOnly = OwnerCpuOnly {
     pointer: core::ptr::null_mut(),
@@ -128,21 +126,18 @@ static OWNER_CPU_ONLY: OwnerCpuOnly = OwnerCpuOnly {
 
 #[test]
 fn test_percpu() {
-    println!("feature = \"sp-naive\": {}", cfg!(feature = "sp-naive"));
-
     // SAFETY: a host test thread cannot be migrated between modeled CPU-local
     // anchors, and this token never leaves the thread.
     let migration_pin_guard = unsafe { CpuPin::new_unchecked() };
     let migration_pin = &migration_pin_guard;
 
-    #[cfg(not(feature = "sp-naive"))]
     let installed_area = {
-        assert_eq!(init(), 4);
-        assert_eq!(init(), 0, "CPU-local storage initialization is one-shot");
-        let layout = layout().unwrap();
+        let area_count = NonZeroU32::new(4).unwrap();
+        let layout = host_test::initialize(area_count).unwrap();
+        assert_eq!(host_test::initialize(area_count), Ok(layout));
         let required_alignment = core::mem::align_of::<OverAligned>();
-        let linker_alignment = (core::ptr::addr_of!(__AX_PERCPU_LINKER_ALIGNMENT_END) as usize)
-            - (core::ptr::addr_of!(__AX_PERCPU_LINKER_ALIGNMENT_START) as usize);
+        let linker_alignment = (core::ptr::addr_of!(__PERCPU_TEMPLATE_ALIGN_END) as usize)
+            - (core::ptr::addr_of!(__PERCPU_TEMPLATE_ALIGN_START) as usize);
         assert_eq!(linker_alignment, required_alignment);
         assert_eq!(layout.runtime_base % required_alignment, 0);
         assert_eq!(layout.area_stride % required_alignment, 0);
@@ -217,7 +212,6 @@ fn test_percpu() {
         area
     };
 
-    #[cfg(not(feature = "sp-naive"))]
     let base = installed_area.runtime_base();
 
     let bound_pin = bound_current(migration_pin).unwrap();
@@ -233,20 +227,17 @@ fn test_percpu() {
     println!("over-aligned offset: {:#x}", OVER_ALIGNED.offset());
     println!();
 
-    #[cfg(not(feature = "sp-naive"))]
-    {
-        assert_eq!(base + BOOL.offset(), BOOL.current_ptr(pin) as usize);
-        assert_eq!(base + U8.offset(), U8.current_ptr(pin) as usize);
-        assert_eq!(base + U16.offset(), U16.current_ptr(pin) as usize);
-        assert_eq!(base + U32.offset(), U32.current_ptr(pin) as usize);
-        assert_eq!(base + U64.offset(), U64.current_ptr(pin) as usize);
-        assert_eq!(base + USIZE.offset(), USIZE.current_ptr(pin) as usize);
-        assert_eq!(base + STRUCT.offset(), STRUCT.current_ptr(pin) as usize);
-        assert_eq!(
-            base + OVER_ALIGNED.offset(),
-            OVER_ALIGNED.current_ptr(pin) as usize
-        );
-    }
+    assert_eq!(base + BOOL.offset(), BOOL.current_ptr(pin) as usize);
+    assert_eq!(base + U8.offset(), U8.current_ptr(pin) as usize);
+    assert_eq!(base + U16.offset(), U16.current_ptr(pin) as usize);
+    assert_eq!(base + U32.offset(), U32.current_ptr(pin) as usize);
+    assert_eq!(base + U64.offset(), U64.current_ptr(pin) as usize);
+    assert_eq!(base + USIZE.offset(), USIZE.current_ptr(pin) as usize);
+    assert_eq!(base + STRUCT.offset(), STRUCT.current_ptr(pin) as usize);
+    assert_eq!(
+        base + OVER_ALIGNED.offset(),
+        OVER_ALIGNED.current_ptr(pin) as usize
+    );
     assert_eq!(
         OVER_ALIGNED.current_ptr(pin) as usize % core::mem::align_of::<OverAligned>(),
         0
@@ -268,7 +259,6 @@ fn test_percpu() {
         });
     }
 
-    #[cfg(feature = "custom-base")]
     // SAFETY: this single-threaded test exclusively owns the bound CPU-local
     // area. This also verifies that owner-only `!Sync` values remain usable.
     unsafe {
@@ -309,11 +299,9 @@ fn test_percpu() {
         assert_eq!(value.marker, 0xfeed_cafe);
     });
 
-    #[cfg(not(feature = "sp-naive"))]
     test_remote_access();
 }
 
-#[cfg(not(feature = "sp-naive"))]
 fn test_remote_access() {
     let cpu1 = CpuIndex::try_from(1).unwrap();
     // Every typed initializer constructs an independent CPU-owned value. CPU

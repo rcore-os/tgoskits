@@ -32,7 +32,7 @@ dynamic  = true
 | `hv` | ✗ | `somehal/hv`；AArch64 目标再选择 `ax-cpu/arm-el2`，hypervisor 模式 |
 | `thead-mae` | ✗ | T-Head 扩展；`somehal/thead-mae` + `ax-cpu/xuantie-c9xx` |
 
-依赖：`anyhow`、`ax-cpu`、`ax-driver`、`ax-errno`、`axklib`（`buddy-slab`）、`ax-plat`、`heapless`、`log`、`ax-memory-addr`、`ax-percpu`（`custom-base`）、`rdrive`、`somehal`、`spin`。
+依赖：`anyhow`、`ax-cpu`、`cpu-local`、`ax-driver`、`ax-errno`、`axklib`（`buddy-slab`）、`ax-plat`、`heapless`、`log`、`ax-memory-addr`、`ax-percpu`、`rdrive`、`someboot`、`somehal`、`spin`。
 
 ## lib.rs 总览
 
@@ -151,7 +151,7 @@ fn platform_name() -> &'static str {
 | `RESERVED_LIST` | 32 | `MemoryType::Reserved \| KImage \| PerCpuData`，并附加架构相关空洞（x86 低 2 MiB、loongarch 低 256 MiB） |
 | `MMIO_LIST` | 16 | `MemoryType::Mmio`，以及 x86 固定区（IOAPIC `0xfec0_0000`、HPET `0xfed0_0000`、LAPIC `0xfee0_0000`） |
 
-`push_non_overlapping` 负责合并/拆分相邻或重叠的 range，确保最终列表单调不重叠。模块还导出 `_percpu_base_ptr(idx)` 给 `ax-percpu/custom-base`，让它能找到 `somehal` 维护的 percpu 区域基址。
+`push_non_overlapping` 负责合并/拆分相邻或重叠的 range，确保最终列表单调不重叠。CPU-local 区域不再通过 `mem.rs` callback 查询：someboot 在 final-high 阶段为全部 CPU 动态分配并初始化区域，`boot.rs` 将 somehal 发布的布局与 `ax_percpu::layout()` 对照后安装当前 CPU 的 binding。
 
 `phys_to_virt` / `virt_to_phys` 直接转发到 `somehal::mem`。
 
@@ -249,8 +249,8 @@ pub fn probe_all_devices() -> Result<(), AxError> {
 
 - `INCLUDE "link.x"` 引入 somehal/someboot 提供的脚本。
 - 把 `{{SMP}}` 占位符替换成 `SMP` 环境变量（默认 16）。
-- 定义 `__SMP`、`boot_stack`、`boot_stack_top`，导出 `_percpu_load_start`。
-- x86_64 上额外提供 `__PERCPU_TSS` 符号给 trap 汇编使用。
+- 定义 `__SMP`、`boot_stack`、`boot_stack_top`；`__SMP` 只表示运行时容量，不参与 `.percpu.template` 复制。
+- CPU-local 输出节和中性边界符号由 include 的 someboot 脚本统一提供；x86 trap 通过 `__CPU_LOCAL_TSS_OFFSET` 取得相对 CPU-area prefix 的 TSS 偏移。
 
 ## 约束
 

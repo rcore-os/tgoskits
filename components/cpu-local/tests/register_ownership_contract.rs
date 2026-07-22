@@ -103,7 +103,7 @@ fn template_metadata_uses_position_independent_rust_addresses() {
         !SYMBOL.contains("asm!(") && !SYMBOL.contains("target_arch"),
         "template metadata must not embed architecture-specific absolute relocations"
     );
-    for symbol in ["__AX_CPU_AREA_PREFIX", "__AX_CPU_AREA_TEMPLATE_END"] {
+    for symbol in ["__CPU_LOCAL_AREA_PREFIX", "__CPU_LOCAL_TEMPLATE_END"] {
         assert!(
             SYMBOL.contains(&format!("addr_of!(crate::{symbol})")),
             "rustc must materialize the load-relocated address of {symbol}"

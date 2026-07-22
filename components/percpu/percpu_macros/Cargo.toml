@@ -9,12 +9,6 @@ keywords = ["arceos", "percpu"]
 categories = ["development-tools::procedural-macro-helpers", "no-std"]
 license = "Apache-2.0"
 
-[features]
-default = []
-
-# For single CPU use, just make the per-CPU data a global variable.
-sp-naive = []
-
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"

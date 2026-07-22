@@ -10,8 +10,6 @@ categories = ["os", "no-std"]
 license.workspace = true
 
 [features]
-default = []
-
 # Select the no-userspace UnikernelTls register ownership model. Images that
 # leave this disabled use LinuxCurrent semantics.
 tls = []

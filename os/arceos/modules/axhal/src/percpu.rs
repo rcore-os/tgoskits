@@ -149,3 +149,68 @@ fn platform_binding() -> Result<CpuBindingV1, CpuLocalError> {
     }
     Ok(binding)
 }
+
+/// Allocates and binds the single modeled CPU used by host-side scheduler tests.
+#[cfg(feature = "host-test")]
+pub fn initialize_host_test_cpu() {
+    use core::num::NonZeroU32;
+
+    let layout = ax_percpu::host_test::initialize(NonZeroU32::new(1).unwrap())
+        .expect("host CPU-local layout must initialize");
+    let area =
+        ax_percpu::area(ax_percpu::CpuIndex::try_from(0).expect("CPU zero must be representable"))
+            .expect("host CPU zero area must exist");
+    debug_assert_eq!(layout.runtime_base, area.runtime_base());
+
+    // SAFETY: the scheduler test worker models one non-migrating CPU and the
+    // process-lifetime host fixture has completed typed initialization.
+    let pin = unsafe { CpuPin::new_unchecked() };
+    match cpu_local::raw::current_binding(&pin) {
+        Ok(binding) => assert_eq!(binding, area.binding()),
+        Err(CpuLocalError::NotInitialized) => {
+            // SAFETY: this is the unique offline binding point for the host
+            // scheduler worker and the area remains mapped until process exit.
+            unsafe { cpu_local::raw::install_binding(area.binding()) }
+                .expect("host CPU-local binding must install");
+        }
+        Err(error) => panic!("invalid host CPU-local binding: {error}"),
+    }
+}
+
+#[cfg(feature = "host-test")]
+struct HostCpuLocalPlatform;
+
+#[cfg(feature = "host-test")]
+#[cpu_local::abi::impl_extern_trait(name = "cpu-local_0_1", abi = "rust")]
+impl cpu_local::CpuLocalPlatformV1 for HostCpuLocalPlatform {
+    fn current_cpu_binding() -> cpu_local::CpuBindingResultV1 {
+        // SAFETY: host-test callers remain on their modeled CPU thread.
+        let pin = unsafe { CpuPin::new_unchecked() };
+        match cpu_local::raw::current_binding(&pin) {
+            Ok(binding) => cpu_local::CpuBindingResultV1::ok(binding),
+            Err(CpuLocalError::NotInitialized) => {
+                cpu_local::CpuBindingResultV1::error(cpu_local::CpuLocalStatus::NotInitialized)
+            }
+            Err(_) => {
+                cpu_local::CpuBindingResultV1::error(cpu_local::CpuLocalStatus::InvalidBinding)
+            }
+        }
+    }
+
+    fn get_tp() -> usize {
+        // SAFETY: the host fixture models the same pinning contract as a CPU.
+        unsafe { cpu_local::raw::get_task_pointer() }
+    }
+
+    unsafe fn set_tp(value: usize) -> cpu_local::CpuLocalStatus {
+        // SAFETY: forwarded trait contract owns the modeled task-pointer slot.
+        unsafe { cpu_local::raw::set_task_pointer(value) };
+        cpu_local::CpuLocalStatus::Ok
+    }
+
+    fn current_thread() -> usize {
+        // SAFETY: the host fixture models the same pinning contract as a CPU.
+        let pin = unsafe { CpuPin::new_unchecked() };
+        cpu_local::raw::current_thread(&pin).map_or(0, |header| header.as_ptr() as usize)
+    }
+}

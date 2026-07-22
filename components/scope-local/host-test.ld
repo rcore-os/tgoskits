@@ -1,10 +1,5 @@
-    .data : ALIGN(16) {
-        *(.data .data.*)
-        *(.init.data)
-        *(.sdata .sdata.*)
-        ${data_extra}
-    }
-
+SECTIONS
+{
     .percpu.init : ALIGN(8) {
         __PERCPU_INIT_START = .;
         KEEP(*(.percpu.init))
@@ -30,4 +25,5 @@
     ASSERT(__CPU_LOCAL_TEMPLATE_END + 1 ==
                ADDR(.percpu.template) + SIZEOF(.percpu.template),
            "CPU area end sentinel must follow every template object")
-    ${cpu_local_arch_symbols}
+}
+INSERT AFTER .data;

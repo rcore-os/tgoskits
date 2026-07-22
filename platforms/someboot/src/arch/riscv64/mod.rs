@@ -23,7 +23,7 @@ use crate::{
     power::CpuOnError,
 };
 #[cfg(any(uspace, hv))]
-use crate::{mem::__kimage_va_to_pa, smp::percpu_va_range};
+use crate::{mem::__kimage_va_to_pa, smp::cpu_area_virtual_region};
 
 const SATP_MODE_SV39: usize = 8usize << 60;
 const SSTATUS_SIE: usize = 1 << 1;
@@ -194,7 +194,7 @@ impl ArchTrait for Arch {
         (paddr + addrspace::PAGE_OFFSET) as *mut u8
     }
 
-    fn _percpu(paddr: usize) -> *mut u8 {
+    fn cpu_area_phys_to_virt(paddr: usize) -> *mut u8 {
         (paddr + addrspace::PERCPU_BASE) as *mut u8
     }
 
@@ -229,7 +229,7 @@ impl ArchTrait for Arch {
         #[cfg(any(uspace, hv))]
         {
             if mmu::is_kernel_relocated() {
-                if percpu_va_range().contains(&vaddr) {
+                if cpu_area_virtual_region().contains(&vaddr) {
                     return vaddr - addrspace::PERCPU_BASE;
                 }
                 if vaddr >= crate::consts::VM_LOAD_ADDRESS {

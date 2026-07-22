@@ -10,29 +10,21 @@ use crate::{
     ArchTrait, DCacheOp,
     arch::Arch,
     kernel_page_table_paddr,
-    mem::{__percpu, dcache_range, page_size, phys_to_virt},
+    mem::{cpu_area_phys_to_virt, dcache_range, page_size, phys_to_virt},
 };
 
 mod cpu_iter;
-#[cfg(not(feature = "percpu-prealloc"))]
-mod legacy;
-#[cfg(feature = "percpu-prealloc")]
-mod prealloc;
+mod layout;
 
-#[cfg(not(feature = "percpu-prealloc"))]
-use legacy as layout;
-#[cfg(feature = "percpu-prealloc")]
-use prealloc as layout;
+static mut CPU_AREA_REGION_START: usize = 0;
+static mut CPU_AREA_REGION_END: usize = 0;
+static CPU_AREA_LAYOUT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static CPU_AREA_RUNTIME_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-static mut PERCPU_START: usize = 0;
-static mut PERCPU_END: usize = 0;
-static PERCPU_LAYOUT_COUNT: AtomicUsize = AtomicUsize::new(0);
-static PERCPU_RUNTIME_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-const PERCPU_LAYOUT_GENERATION: u32 = 1;
-const PERCPU_LAYOUT_COOKIE: usize = 0x534f_4d45;
-const AX_CPU_LOCAL_ABI_VERSION: u16 = 2;
-const AX_PERCPU_INIT_OK: u32 = 0;
+const CPU_AREA_LAYOUT_GENERATION: u32 = 1;
+const CPU_AREA_LAYOUT_COOKIE: usize = 0x534f_4d45;
+const CPU_LOCAL_ABI_VERSION: u16 = 2;
+const PERCPU_INIT_OK: u32 = 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 enum PerCpuLayoutError {
@@ -72,23 +64,23 @@ fn meta_align() -> usize {
     core::mem::align_of::<PerCpuMeta>().max(64)
 }
 
-fn percpu_region_align() -> Result<usize, PerCpuLayoutError> {
+fn cpu_area_region_alignment() -> Result<usize, PerCpuLayoutError> {
     let alignment = page_size()
         .max(meta_align())
-        .max(percpu_template_alignment()?);
+        .max(cpu_area_template_alignment()?);
     if !alignment.is_power_of_two() {
         return Err(PerCpuLayoutError::InvalidAlignment { alignment });
     }
     Ok(alignment)
 }
 
-fn percpu_template_alignment() -> Result<usize, PerCpuLayoutError> {
+fn cpu_area_template_alignment() -> Result<usize, PerCpuLayoutError> {
     unsafe extern "C" {
-        static __AX_PERCPU_LINKER_ALIGNMENT_START: u8;
-        static __AX_PERCPU_LINKER_ALIGNMENT_END: u8;
+        static __PERCPU_TEMPLATE_ALIGN_START: u8;
+        static __PERCPU_TEMPLATE_ALIGN_END: u8;
     }
-    let start = core::ptr::addr_of!(__AX_PERCPU_LINKER_ALIGNMENT_START) as usize;
-    let end = core::ptr::addr_of!(__AX_PERCPU_LINKER_ALIGNMENT_END) as usize;
+    let start = core::ptr::addr_of!(__PERCPU_TEMPLATE_ALIGN_START) as usize;
+    let end = core::ptr::addr_of!(__PERCPU_TEMPLATE_ALIGN_END) as usize;
     let alignment = end
         .checked_sub(start)
         .ok_or(PerCpuLayoutError::MalformedTemplateRange { start, end })?;
@@ -99,7 +91,7 @@ fn percpu_template_alignment() -> Result<usize, PerCpuLayoutError> {
 }
 
 pub fn alloc_percpu() {
-    layout::alloc_percpu();
+    layout::allocate_cpu_areas();
 }
 
 /// Constructs the final CPU-area values and publishes platform metadata.
@@ -110,8 +102,8 @@ pub fn alloc_percpu() {
 /// so someboot does not acquire a semantic dependency on `ax-percpu`.
 pub(crate) fn initialize_percpu_layout() {
     unsafe extern "C" {
-        fn __ax_percpu_image_register_mode_v1() -> u8;
-        fn __ax_percpu_initialize_layout_v2(
+        fn __percpu_image_register_mode_v1() -> u8;
+        fn __percpu_initialize_layout_v2(
             runtime_base: usize,
             area_stride: usize,
             area_count: u32,
@@ -130,7 +122,7 @@ pub(crate) fn initialize_percpu_layout() {
     assert_ne!(area_count, 0, "per-CPU storage must contain CPU zero");
     let runtime_base =
         percpu_data_ptr(0).expect("reserved CPU zero data area must remain addressable") as usize;
-    let area_stride = layout::percpu_data_stride();
+    let area_stride = layout::cpu_area_stride();
     let last_offset = area_stride
         .checked_mul(cpu_count - 1)
         .expect("reserved per-CPU area offset must not overflow");
@@ -143,36 +135,36 @@ pub(crate) fn initialize_percpu_layout() {
     // metadata and online count remain unpublished until construction and
     // cache maintenance complete below.
     let status = unsafe {
-        let register_mode = __ax_percpu_image_register_mode_v1();
-        __ax_percpu_initialize_layout_v2(
+        let register_mode = __percpu_image_register_mode_v1();
+        __percpu_initialize_layout_v2(
             runtime_base,
             area_stride,
             area_count,
             0,
-            AX_CPU_LOCAL_ABI_VERSION,
+            CPU_LOCAL_ABI_VERSION,
             register_mode,
             Arch::cpu_local_host_level(),
-            PERCPU_LAYOUT_GENERATION,
-            PERCPU_LAYOUT_COOKIE,
+            CPU_AREA_LAYOUT_GENERATION,
+            CPU_AREA_LAYOUT_COOKIE,
         )
     };
     assert_eq!(
-        status, AX_PERCPU_INIT_OK,
+        status, PERCPU_INIT_OK,
         "final CPU-local typed initialization rejected the reserved layout"
     );
 
     initialize_runtime_metadata();
-    let allocation = percpu_data_range();
+    let allocation = cpu_area_region();
     let allocation_size = allocation
         .end
         .checked_sub(allocation.start)
         .expect("reserved per-CPU range must remain ordered");
     dcache_range(
         DCacheOp::CleanInvalidate,
-        __percpu(allocation.start),
+        cpu_area_phys_to_virt(allocation.start),
         allocation_size,
     );
-    publish_runtime_percpu(cpu_count);
+    publish_runtime_cpu_areas(cpu_count);
 }
 
 /// Publishes the page-table facts consumed by secondary boot trampolines.
@@ -242,15 +234,9 @@ pub enum RuntimeCpuTargetError {
 }
 
 #[allow(dead_code)]
-/// Physical RAM allocated for per-CPU data should be mapped to this virtual address range in the kernel
-pub(crate) fn percpu_range() -> core::ops::Range<usize> {
-    unsafe { PERCPU_START..PERCPU_END }
-}
-
-#[allow(dead_code)]
-pub(crate) fn percpu_va_range() -> core::ops::Range<usize> {
-    let start = __percpu(unsafe { PERCPU_START });
-    let end = __percpu(unsafe { PERCPU_END });
+pub(crate) fn cpu_area_virtual_region() -> core::ops::Range<usize> {
+    let start = cpu_area_phys_to_virt(unsafe { CPU_AREA_REGION_START });
+    let end = cpu_area_phys_to_virt(unsafe { CPU_AREA_REGION_END });
     start as usize..end as usize
 }
 
@@ -291,7 +277,7 @@ pub fn runtime_cpu_target(idx: usize) -> Result<RuntimeCpuTarget, RuntimeCpuTarg
 ///
 /// Unlike [`cpu_count`], this accessor never revisits firmware tables.
 pub fn runtime_cpu_count() -> usize {
-    PERCPU_RUNTIME_COUNT.load(Ordering::Acquire)
+    CPU_AREA_RUNTIME_COUNT.load(Ordering::Acquire)
 }
 
 /// Physical address of cpu meta
@@ -299,12 +285,12 @@ pub(crate) fn cpu_meta_addr(idx: usize) -> Option<usize> {
     layout::cpu_meta_addr(idx)
 }
 
-pub(crate) fn percpu_data_phys(idx: usize) -> Option<usize> {
-    layout::percpu_data_phys(idx)
+pub(crate) fn cpu_area_phys(idx: usize) -> Option<usize> {
+    layout::cpu_area_phys(idx)
 }
 
 pub fn percpu_data_ptr(idx: usize) -> Option<*mut u8> {
-    percpu_data_phys(idx).map(__percpu)
+    cpu_area_phys(idx).map(cpu_area_phys_to_virt)
 }
 
 /// Contiguous runtime layout of the platform-owned CPU-local data areas.
@@ -330,7 +316,7 @@ pub fn percpu_data_layout() -> Option<PerCpuDataLayout> {
         return None;
     }
     let runtime_base = percpu_data_ptr(0)? as usize;
-    let area_stride = layout::percpu_data_stride();
+    let area_stride = layout::cpu_area_stride();
     let last_offset = area_stride.checked_mul(area_count as usize - 1)?;
     runtime_base.checked_add(last_offset)?;
     Some(PerCpuDataLayout {
@@ -350,7 +336,7 @@ pub fn percpu_data_layout() -> Option<PerCpuDataLayout> {
     target_arch = "x86_64"
 ))]
 pub(crate) fn primary_stack_top_virtual(cpu_index: usize) -> Option<usize> {
-    layout::cpu_stack_top(cpu_index).map(|stack_top| __percpu(stack_top) as usize)
+    layout::cpu_stack_top(cpu_index).map(|stack_top| cpu_area_phys_to_virt(stack_top) as usize)
 }
 
 /// Returns the current hardware CPU ID from the early boot register convention.
@@ -425,18 +411,18 @@ impl Iterator for CpuMetaIterMutable {
     }
 }
 
-fn percpu_link_range() -> core::ops::Range<usize> {
+fn cpu_area_template_range() -> core::ops::Range<usize> {
     unsafe extern "C" {
-        fn __percpu_start();
-        fn __percpu_end();
+        static __CPU_LOCAL_AREA_PREFIX: u8;
+        static __CPU_LOCAL_TEMPLATE_END: u8;
     }
-    let start = __percpu_start as *const () as usize;
-    let end = __percpu_end as *const () as usize;
+    let start = core::ptr::addr_of!(__CPU_LOCAL_AREA_PREFIX) as usize;
+    let end = core::ptr::addr_of!(__CPU_LOCAL_TEMPLATE_END) as usize + 1;
     start..end
 }
 
-fn percpu_link_size() -> Result<usize, PerCpuLayoutError> {
-    let range = percpu_link_range();
+fn cpu_area_template_size() -> Result<usize, PerCpuLayoutError> {
+    let range = cpu_area_template_range();
     range
         .end
         .checked_sub(range.start)
@@ -446,21 +432,21 @@ fn percpu_link_size() -> Result<usize, PerCpuLayoutError> {
         })
 }
 
-fn set_percpu_range(start: usize, size: usize, cpu_count: usize) {
-    debug_assert_eq!(PERCPU_LAYOUT_COUNT.load(Ordering::Relaxed), 0);
+fn set_cpu_area_region(start: usize, size: usize, cpu_count: usize) {
+    debug_assert_eq!(CPU_AREA_LAYOUT_COUNT.load(Ordering::Relaxed), 0);
     let end = start
         .checked_add(size)
         .expect("the allocator returned a wrapping per-CPU region");
     unsafe {
-        PERCPU_START = start;
-        PERCPU_END = end;
+        CPU_AREA_REGION_START = start;
+        CPU_AREA_REGION_END = end;
     }
-    PERCPU_LAYOUT_COUNT.store(cpu_count, Ordering::Relaxed);
+    CPU_AREA_LAYOUT_COUNT.store(cpu_count, Ordering::Relaxed);
 }
 
-fn publish_runtime_percpu(cpu_count: usize) {
-    debug_assert_eq!(PERCPU_LAYOUT_COUNT.load(Ordering::Relaxed), cpu_count);
-    PERCPU_RUNTIME_COUNT.store(cpu_count, Ordering::Release);
+fn publish_runtime_cpu_areas(cpu_count: usize) {
+    debug_assert_eq!(CPU_AREA_LAYOUT_COUNT.load(Ordering::Relaxed), cpu_count);
+    CPU_AREA_RUNTIME_COUNT.store(cpu_count, Ordering::Release);
 }
 
 fn initialize_runtime_metadata() {
@@ -476,7 +462,7 @@ fn initialize_runtime_metadata() {
             stack_top,
             cpu_id: hardware_id,
             cpu_idx: cpu_index,
-            stack_top_virt: __percpu(stack_top) as usize,
+            stack_top_virt: cpu_area_phys_to_virt(stack_top) as usize,
             entry_virt,
             boot_table_paddr: 0,
             primary_table_paddr: 0,
@@ -490,14 +476,15 @@ fn initialize_runtime_metadata() {
 }
 
 pub(crate) fn allocated_cpu_count() -> usize {
-    PERCPU_LAYOUT_COUNT.load(Ordering::Relaxed)
+    CPU_AREA_LAYOUT_COUNT.load(Ordering::Relaxed)
 }
 
-fn percpu_data_range() -> core::ops::Range<usize> {
-    unsafe { PERCPU_START..PERCPU_END }
+/// Physical region that owns every runtime CPU area, metadata record, and stack.
+pub(crate) fn cpu_area_region() -> core::ops::Range<usize> {
+    unsafe { CPU_AREA_REGION_START..CPU_AREA_REGION_END }
 }
 
-fn alloc_percpu_region(layout: Layout) -> usize {
+fn allocate_cpu_area_region(layout: Layout) -> usize {
     unsafe { crate::mem::ram::flush_to_memory_map(MemoryType::Reserved) };
 
     let physical_base = unsafe {

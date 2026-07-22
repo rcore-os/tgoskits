@@ -11,7 +11,7 @@ use x86::{
 use crate::{
     arch::addrspace::{KERNEL_BASE, PERCPU_BASE, PHYS_VIRT_OFFSET},
     console::print_mapping,
-    mem::{__kimage_va, __percpu, PageTableInfo, page_size},
+    mem::{__kimage_va, PageTableInfo, cpu_area_phys_to_virt, page_size},
 };
 
 const IA32_EFER: u32 = 0xc000_0080;
@@ -291,17 +291,17 @@ fn setup_page_table() -> anyhow::Result<()> {
         flush: false,
     })?;
 
-    let percpu = crate::smp::percpu_range();
+    let cpu_area_region = crate::smp::cpu_area_region();
     print_mapping(
         "PerCpu",
-        __percpu(percpu.start) as _,
-        percpu.start,
-        percpu.len(),
+        cpu_area_phys_to_virt(cpu_area_region.start) as _,
+        cpu_area_region.start,
+        cpu_area_region.len(),
     );
     table.map(&MapConfig {
-        vaddr: __percpu(percpu.start).into(),
-        paddr: percpu.start.into(),
-        size: percpu.len(),
+        vaddr: cpu_area_phys_to_virt(cpu_area_region.start).into(),
+        paddr: cpu_area_region.start.into(),
+        size: cpu_area_region.len(),
         pte: PteConfig {
             valid: true,
             read: true,
@@ -355,7 +355,7 @@ pub fn set_table(info: PageTableInfo) {
 
 pub fn virt_to_phys(vaddr: *const u8) -> usize {
     let vaddr = vaddr as usize;
-    if crate::smp::percpu_va_range().contains(&vaddr) {
+    if crate::smp::cpu_area_virtual_region().contains(&vaddr) {
         vaddr - PERCPU_BASE
     } else if vaddr >= KERNEL_BASE {
         crate::mem::__kimage_va_to_pa(vaddr as *const u8)

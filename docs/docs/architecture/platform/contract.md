@@ -172,7 +172,7 @@ static CPU_ID:  usize = 0;
 static IS_BSP:  bool  = false;
 ```
 
-公共函数：`this_cpu_id`、`this_cpu_is_bsp`、`init_primary`、`init_secondary`。`axplat-dyn` 还通过 `ax-percpu/custom-base` feature 让 percpu 基址指向 `somehal` 维护的区域，见 [dynamic.md](dynamic.md)。
+公共函数：`this_cpu_id`、`this_cpu_is_bsp`、`init_primary`、`init_secondary`。动态平台由 someboot 为每个 CPU 分配运行时区域并调用 `ax-percpu` 完成类型化初始化；`axplat-dyn` 进入主核或从核时只校验已冻结布局并安装对应 `CpuBindingV1`。最终 ELF 只携带一份 `.percpu.template`，不存在链接期运行时区域或 base callback，见 [dynamic.md](dynamic.md)。
 
 ## 平台选择
 

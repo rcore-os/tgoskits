@@ -13,7 +13,6 @@ version = "0.8.0"
 efi = ["someboot/efi"]
 hv = ["mmu", "someboot/hv", "dep:ax-cpu"]
 mmu = ["someboot/mmu"]
-percpu-prealloc = ["someboot/percpu-prealloc"]
 thead-mae = ["someboot/thead-mae"]
 tls = ["someboot/tls"]
 uspace = ["mmu", "someboot/uspace"]

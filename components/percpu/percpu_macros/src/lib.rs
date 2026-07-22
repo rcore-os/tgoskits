@@ -9,7 +9,7 @@
 //! ### Core idea
 //!
 //! The core idea is to collect uninitialized storage for all per-CPU static
-//! variables in the `.percpu.storage` input section. A separate initializer table describes
+//! variables in the `.percpu.template.storage` input section. A separate initializer table describes
 //! how to construct each value at its final runtime address after image
 //! relocation. This is required for Rust values whose bytes cannot legally be
 //! duplicated into another allocation.
@@ -33,19 +33,19 @@
 //! For each static variable `X` with type `T` that is defined with the `def_percpu` macro, the following items are
 //! generated:
 //!
-//! - A `MaybeUninit` static variable `__PERCPU_X` in `.percpu.storage` that
+//! - A `MaybeUninit` static variable `__PERCPU_X` in `.percpu.template.storage` that
 //!   reserves the per-CPU storage. Primitive values use their matching atomic representation so
 //!   hard-IRQ re-entry does not make safe reads and writes data-racy; objects
 //!   retain `T` directly.
 //!
-//!   This variable is placed in the `.percpu` section. All attributes of the original static variable, as well as the
+//!   This variable is placed in the `.percpu.template` section. All attributes of the original static variable, as well as the
 //!   initialization expression, are preserved. The expression is retained as
 //!   a Rust `const` and instantiated independently in every runtime CPU area.
 //!
 //!   This variable is never, and should never be, accessed directly. To access the per-CPU data, the offset of the
 //!   variable is, and should be, used.
 //!
-//! - A typed initializer registration in `.ax_percpu.init`. Its descriptor
+//! - A typed initializer registration in `.percpu.init`. Its descriptor
 //!   thunk is consumed only after the final image relocation and resolves the
 //!   storage symbol to a checked template-relative scalar offset. Rust cannot
 //!   encode this subtraction directly in a static integer: separate statics
@@ -64,7 +64,6 @@ use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::{Attribute, Error, ItemStatic};
 
-#[cfg_attr(feature = "sp-naive", path = "naive.rs")]
 mod address;
 
 fn compiler_error(err: Error) -> TokenStream {
@@ -123,15 +122,9 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         )
     };
 
-    let storage_definition = if cfg!(feature = "sp-naive") {
-        quote! {
-            static mut #inner_symbol_name: #storage_type = #initial_value;
-        }
-    } else {
-        quote! {
-            static mut #inner_symbol_name: ::core::mem::MaybeUninit<#storage_type> =
-                ::core::mem::MaybeUninit::uninit();
-        }
+    let storage_definition = quote! {
+        static mut #inner_symbol_name: ::core::mem::MaybeUninit<#storage_type> =
+            ::core::mem::MaybeUninit::uninit();
     };
 
     let offset = address::gen_offset(inner_symbol_name);
@@ -139,10 +132,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
     let current_ptr_pinned =
         address::gen_current_ptr_pinned(inner_symbol_name, &format_ident!("pin"), ty);
     let remote_ptr = address::gen_remote_ptr(inner_symbol_name, &format_ident!("cpu_index"), ty);
-    let initialization = if cfg!(feature = "sp-naive") {
-        quote! {}
-    } else {
-        quote! {
+    let initialization = quote! {
             #(#conditional_attrs)*
             #[allow(non_upper_case_globals)]
             const #initial_value_name: #storage_type = #initial_value;
@@ -179,7 +169,7 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#conditional_attrs)*
             #[cfg_attr(
                 not(target_os = "macos"),
-                unsafe(link_section = ".ax_percpu.init")
+                unsafe(link_section = ".percpu.init")
             )]
             #[used]
             static #registration_name: ax_percpu::__priv::PerCpuInitRegistration =
@@ -187,20 +177,19 @@ fn def_percpu_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // deterministic, final-image resident, and always describes
                 // the same generated storage and initializer.
                 unsafe { ax_percpu::__priv::PerCpuInitRegistration::new(#descriptor_name) };
-        }
     };
 
     quote! {
         #[cfg_attr(
             not(target_os = "macos"),
-            unsafe(link_section = ".ax_percpu.align")
+            unsafe(link_section = ".percpu.align")
         )]
         #[used]
         static #alignment_descriptor_name: usize = ::core::mem::align_of::<#storage_type>();
 
         #[cfg_attr(
             not(target_os = "macos"),
-            unsafe(link_section = ".percpu.storage")
+            unsafe(link_section = ".percpu.template.storage")
         )]
         #(#attrs)*
         #storage_definition

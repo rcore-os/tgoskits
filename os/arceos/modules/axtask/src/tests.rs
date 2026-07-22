@@ -77,9 +77,9 @@ impl Pollable for CountingPollable {
     }
 }
 
-#[cfg(any(feature = "lockdep", feature = "preempt"))]
+#[cfg(any(feature = "host-test", feature = "lockdep", feature = "preempt"))]
 const RAW_TASK_STACK_SIZE: usize = 0x10000;
-#[cfg(not(any(feature = "lockdep", feature = "preempt")))]
+#[cfg(not(any(feature = "host-test", feature = "lockdep", feature = "preempt")))]
 const RAW_TASK_STACK_SIZE: usize = 0x1000;
 
 #[cfg(all(feature = "lockdep", feature = "preempt"))]

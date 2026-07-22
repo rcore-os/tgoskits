@@ -251,10 +251,20 @@ impl ExtendedState {
     /// (`CR4.OSXSAVE`), which is the single source of truth for whether
     /// XSAVE/XRSTOR (and reading `XCR0` via `XGETBV`) are safe to use.
     #[inline]
+    #[cfg(not(feature = "host-test"))]
     fn xsave_enabled() -> bool {
         // SAFETY: reading CR4 from ring 0 is always well-defined.
         let cr4 = unsafe { x86::controlregs::cr4() };
         cr4.contains(x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE)
+    }
+
+    /// Host scheduler tests execute at ring 3 and therefore cannot inspect
+    /// CR4. FXSAVE/FXRSTOR remain available and cover the state exercised by
+    /// the test fixture without changing the kernel's XSAVE policy.
+    #[inline]
+    #[cfg(feature = "host-test")]
+    fn xsave_enabled() -> bool {
+        false
     }
 
     /// The set of state components to save/restore, i.e. the `XCR0` mask the

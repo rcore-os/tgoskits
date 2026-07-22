@@ -24,6 +24,8 @@ license = "Apache-2.0"
 default = []
 exception-table = []
 fp-simd = []
+# Use unprivileged host-safe register fallbacks in scheduler tests.
+host-test = []
 tls = ["cpu-local/tls"]
 uspace = ["exception-table"]
 arm-el2 = ["ax-page-table-entry/arm-el2"]

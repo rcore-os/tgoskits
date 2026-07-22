@@ -5,7 +5,7 @@ use page_table_generic::{MapConfig, MemAttributes, PteConfig};
 
 use crate::{
     console::print_mapping,
-    mem::{__kimage_va, __percpu, __va, MB, PageTableInfo},
+    mem::{__kimage_va, __va, MB, PageTableInfo, cpu_area_phys_to_virt},
     smp::PerCpuMeta,
 };
 
@@ -133,16 +133,21 @@ fn setup_page_table() -> anyhow::Result<()> {
         })?;
     }
 
-    let percpu = crate::smp::percpu_range();
-    let percpu_vstart = __percpu(percpu.start) as usize;
+    let cpu_area_region = crate::smp::cpu_area_region();
+    let cpu_area_virtual_start = cpu_area_phys_to_virt(cpu_area_region.start) as usize;
 
-    if !is_ram_alias(percpu_vstart, percpu.start) {
-        print_mapping("PerCpu", percpu_vstart, percpu.start, percpu.len());
+    if !is_ram_alias(cpu_area_virtual_start, cpu_area_region.start) {
+        print_mapping(
+            "PerCpu",
+            cpu_area_virtual_start,
+            cpu_area_region.start,
+            cpu_area_region.len(),
+        );
 
         table.map(&MapConfig {
-            vaddr: percpu_vstart.into(),
-            paddr: percpu.start.into(),
-            size: percpu.len(),
+            vaddr: cpu_area_virtual_start.into(),
+            paddr: cpu_area_region.start.into(),
+            size: cpu_area_region.len(),
             pte: PteConfig {
                 valid: true,
                 read: true,

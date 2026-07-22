@@ -75,7 +75,7 @@ const AARCH64_REPLACEMENTS: &[(&str, &str)] = &[
         *(.got.plt .got.plt.*)
         *(.igot .igot.*)"#,
     ),
-    ("${percpu_align}", "64"),
+    ("${cpu_local_arch_symbols}", ""),
     ("${tdata_align}", ""),
     ("${tdata_output}", ":text :tls"),
     ("${post_tdata_sections}", ""),
@@ -96,7 +96,7 @@ const LOONGARCH64_REPLACEMENTS: &[(&str, &str)] = &[
     ("${text_output}", ":text = 0"),
     ("${rodata_extra}", ""),
     ("${data_extra}", ""),
-    ("${percpu_align}", "PAGE_SIZE"),
+    ("${cpu_local_arch_symbols}", ""),
     ("${tdata_align}", ""),
     ("${tdata_output}", ":text :tls"),
     ("${post_tdata_sections}", ""),
@@ -117,7 +117,10 @@ const X86_64_REPLACEMENTS: &[(&str, &str)] = &[
     ("${text_output}", ":text = 0"),
     ("${rodata_extra}", ""),
     ("${data_extra}", "*(.got .got.*)"),
-    ("${percpu_align}", "PAGE_SIZE"),
+    (
+        "${cpu_local_arch_symbols}",
+        "__CPU_LOCAL_TSS_OFFSET = ABSOLUTE(__PERCPU_TSS - __CPU_LOCAL_AREA_PREFIX);",
+    ),
     ("${tdata_align}", "ALIGN(16)"),
     ("${tdata_output}", ":text :tls"),
     ("${post_tdata_sections}", ""),
@@ -138,7 +141,7 @@ const RISCV64_REPLACEMENTS: &[(&str, &str)] = &[
     ("${text_output}", ""),
     ("${rodata_extra}", "*(.srodata .srodata.*)"),
     ("${data_extra}", ""),
-    ("${percpu_align}", "PAGE_SIZE"),
+    ("${cpu_local_arch_symbols}", ""),
     ("${tdata_align}", ""),
     ("${tdata_output}", ""),
     (

@@ -99,11 +99,11 @@ trap_handler_table:
 .global syscall_entry
 syscall_entry:
     swapgs                              # swap in kernel gs
-    mov     gs:[offset __PERCPU_TSS_OFFSET + 12], rsp # store user rsp -> scratch at TSS.sp1
-    mov     rsp, gs:[offset __PERCPU_TSS_OFFSET + 4]  # load end of TrapFrame <- TSS.sp0
+    mov     gs:[offset __CPU_LOCAL_TSS_OFFSET + 12], rsp # store user rsp -> scratch at TSS.sp1
+    mov     rsp, gs:[offset __CPU_LOCAL_TSS_OFFSET + 4]  # load end of TrapFrame <- TSS.sp0
 
     push    {UDATA}                     # push ss
-    push    gs:[offset __PERCPU_TSS_OFFSET + 12]      # push rsp
+    push    gs:[offset __CPU_LOCAL_TSS_OFFSET + 12]      # push rsp
     push    r11                         # push rflags
     push    {UCODE64}                   # push cs
     push    rcx                         # push rip
@@ -180,7 +180,7 @@ enter_user:
 
     mov rsp, rdi
     add rdi, {trapframe_size}
-    mov gs:[offset __PERCPU_TSS_OFFSET + 4], rdi      # store end of TrapFrame -> TSS.sp0
+    mov gs:[offset __CPU_LOCAL_TSS_OFFSET + 4], rdi      # store end of TrapFrame -> TSS.sp0
 
     swapgs                              # swap in user gs
 

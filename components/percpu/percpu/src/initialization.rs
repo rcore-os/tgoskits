@@ -14,10 +14,10 @@ const UNINITIALIZED: u8 = 0;
 const INITIALIZING: u8 = 1;
 const INITIALIZED: u8 = 2;
 
-/// Success returned by [`__ax_percpu_initialize_layout_v2`].
+/// Success returned by [`__percpu_initialize_layout_v2`].
 #[doc(hidden)]
 pub const FFI_INIT_OK: u32 = 0;
-/// Failure returned by [`__ax_percpu_initialize_layout_v2`].
+/// Failure returned by [`__percpu_initialize_layout_v2`].
 #[doc(hidden)]
 pub const FFI_INIT_FAILED: u32 = 1;
 
@@ -213,11 +213,11 @@ pub unsafe fn initialize_layout(init: PerCpuLayoutInitV2) -> Result<usize, PerCp
 /// Returns the register-ownership mode selected by this final image.
 ///
 /// Boot code uses this scalar query before supplying the complete facts to
-/// [`__ax_percpu_initialize_layout_v2`]. Keeping the mode explicit prevents a
+/// [`__percpu_initialize_layout_v2`]. Keeping the mode explicit prevents a
 /// platform ABI from silently overloading the v1 layout flags.
 #[doc(hidden)]
 #[unsafe(no_mangle)]
-pub extern "C" fn __ax_percpu_image_register_mode_v1() -> u8 {
+pub extern "C" fn __percpu_image_register_mode_v1() -> u8 {
     cpu_local::image_register_mode().as_u8()
 }
 
@@ -232,7 +232,7 @@ pub extern "C" fn __ax_percpu_image_register_mode_v1() -> u8 {
 /// lifetime contract.
 #[doc(hidden)]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __ax_percpu_initialize_layout_v2(
+pub unsafe extern "C" fn __percpu_initialize_layout_v2(
     runtime_base: usize,
     area_stride: usize,
     area_count: u32,
@@ -363,12 +363,12 @@ unsafe fn initialize_area(
 #[cfg(not(target_os = "macos"))]
 fn init_registrations() -> Result<&'static [PerCpuInitRegistration], PerCpuError> {
     unsafe extern "C" {
-        static __AX_PERCPU_INIT_START: PerCpuInitRegistration;
-        static __AX_PERCPU_INIT_END: PerCpuInitRegistration;
+        static __PERCPU_INIT_START: PerCpuInitRegistration;
+        static __PERCPU_INIT_END: PerCpuInitRegistration;
     }
 
-    let start = core::ptr::addr_of!(__AX_PERCPU_INIT_START) as usize;
-    let end = core::ptr::addr_of!(__AX_PERCPU_INIT_END) as usize;
+    let start = core::ptr::addr_of!(__PERCPU_INIT_START) as usize;
+    let end = core::ptr::addr_of!(__PERCPU_INIT_END) as usize;
     let byte_len = end
         .checked_sub(start)
         .ok_or(PerCpuError::MalformedInitTable { start, end })?;

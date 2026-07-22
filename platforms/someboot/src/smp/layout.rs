@@ -1,9 +1,11 @@
+//! Runtime allocation geometry for CPU areas, metadata, and boot stacks.
+
 use core::{alloc::Layout, mem::size_of};
 
 use super::{
-    PerCpuLayoutError, PerCpuMeta, alloc_percpu_region, allocated_cpu_count, checked_align_up_pow2,
-    checked_allocation_layout, cpu_count, meta_align, percpu_data_range, percpu_link_size,
-    percpu_region_align, set_percpu_range,
+    PerCpuLayoutError, PerCpuMeta, allocate_cpu_area_region, allocated_cpu_count,
+    checked_align_up_pow2, checked_allocation_layout, cpu_area_region, cpu_area_region_alignment,
+    cpu_area_template_size, cpu_count, meta_align, set_cpu_area_region,
 };
 use crate::mem::stack_size;
 
@@ -29,12 +31,12 @@ fn layout_info(cpu_count: usize) -> Result<LayoutInfo, PerCpuLayoutError> {
     calculate_layout(
         cpu_count,
         LayoutRequirements {
-            data_size: percpu_link_size()?,
+            data_size: cpu_area_template_size()?,
             metadata_size: size_of::<PerCpuMeta>(),
             metadata_alignment: meta_align(),
             stack_size: stack_size(),
             page_alignment: crate::mem::page_size(),
-            region_alignment: percpu_region_align()?,
+            region_alignment: cpu_area_region_alignment()?,
         },
     )
 }
@@ -69,9 +71,9 @@ fn calculate_layout(
     })
 }
 
-pub(crate) fn percpu_data_stride() -> usize {
+pub(crate) fn cpu_area_stride() -> usize {
     layout_info(allocated_cpu_count())
-        .expect("published per-CPU count must preserve its validated layout")
+        .expect("published CPU count must preserve its validated layout")
         .area_stride
 }
 
@@ -81,32 +83,30 @@ fn cpu_area_start(cpu_index: usize) -> Option<usize> {
         return None;
     }
     let layout = layout_info(cpu_count).ok()?;
-    let allocation = percpu_data_range();
+    let allocation = cpu_area_region();
     let area_offset = layout.area_stride.checked_mul(cpu_index)?;
     let area_start = allocation.start.checked_add(area_offset)?;
     let area_end = area_start.checked_add(layout.area_stride)?;
     (area_end <= allocation.end).then_some(area_start)
 }
 
-pub fn alloc_percpu() {
-    println!("Reserving per-CPU data");
+pub fn allocate_cpu_areas() {
+    println!("Reserving CPU-local areas");
     let cpu_count = cpu_count();
     let layout = layout_info(cpu_count)
-        .unwrap_or_else(|error| panic!("invalid firmware per-CPU layout: {error}"));
+        .unwrap_or_else(|error| panic!("invalid firmware CPU-area layout: {error}"));
     let total_size = layout.allocation_layout.size();
 
-    println!("Per-CPU data one cpu size: {:#x} bytes", layout.area_stride);
-    println!(
-        "Total per-CPU data size for secondary CPUs: {total_size:#x} bytes ({cpu_count} CPUs)"
-    );
+    println!("CPU-local area stride: {:#x} bytes", layout.area_stride);
+    println!("Total CPU-local allocation: {total_size:#x} bytes ({cpu_count} CPUs)");
 
-    let percpu_data = alloc_percpu_region(layout.allocation_layout);
-    set_percpu_range(percpu_data, total_size, cpu_count);
+    let region_start = allocate_cpu_area_region(layout.allocation_layout);
+    set_cpu_area_region(region_start, total_size, cpu_count);
 
     println!(
-        "Per-CPU data allocated at {:#x} - {:#x}",
-        percpu_data_range().start,
-        percpu_data_range().end
+        "CPU-local areas allocated at {:#x} - {:#x}",
+        cpu_area_region().start,
+        cpu_area_region().end
     );
 }
 
@@ -115,7 +115,7 @@ pub(crate) fn cpu_meta_addr(cpu_index: usize) -> Option<usize> {
     cpu_area_start(cpu_index)?.checked_add(layout.meta_offset)
 }
 
-pub(crate) fn percpu_data_phys(cpu_index: usize) -> Option<usize> {
+pub(crate) fn cpu_area_phys(cpu_index: usize) -> Option<usize> {
     cpu_area_start(cpu_index)
 }
 

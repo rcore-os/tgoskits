@@ -8,10 +8,10 @@ use crate::PerCpuError;
 
 #[cfg(not(target_os = "macos"))]
 unsafe extern "C" {
-    static __AX_PERCPU_ALIGNMENT_START: usize;
-    static __AX_PERCPU_ALIGNMENT_END: usize;
-    static __AX_PERCPU_LINKER_ALIGNMENT_START: u8;
-    static __AX_PERCPU_LINKER_ALIGNMENT_END: u8;
+    static __PERCPU_ALIGN_START: usize;
+    static __PERCPU_ALIGN_END: usize;
+    static __PERCPU_TEMPLATE_ALIGN_START: u8;
+    static __PERCPU_TEMPLATE_ALIGN_END: u8;
 }
 
 /// Returns the maximum alignment required by the fixed prefix and every
@@ -23,8 +23,8 @@ unsafe extern "C" {
 /// its proc macro.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn required_area_alignment() -> Result<usize, PerCpuError> {
-    let start = core::ptr::addr_of!(__AX_PERCPU_ALIGNMENT_START) as usize;
-    let end = core::ptr::addr_of!(__AX_PERCPU_ALIGNMENT_END) as usize;
+    let start = core::ptr::addr_of!(__PERCPU_ALIGN_START) as usize;
+    let end = core::ptr::addr_of!(__PERCPU_ALIGN_END) as usize;
     let byte_len = end
         .checked_sub(start)
         .ok_or(PerCpuError::MalformedAlignmentMetadata { start, end })?;
@@ -50,8 +50,8 @@ pub(crate) fn required_area_alignment() -> Result<usize, PerCpuError> {
         required = required.max(alignment);
         descriptor_address += size_of::<usize>();
     }
-    let linker_start = core::ptr::addr_of!(__AX_PERCPU_LINKER_ALIGNMENT_START) as usize;
-    let linker_end = core::ptr::addr_of!(__AX_PERCPU_LINKER_ALIGNMENT_END) as usize;
+    let linker_start = core::ptr::addr_of!(__PERCPU_TEMPLATE_ALIGN_START) as usize;
+    let linker_end = core::ptr::addr_of!(__PERCPU_TEMPLATE_ALIGN_END) as usize;
     let linker_required =
         linker_end
             .checked_sub(linker_start)
@@ -68,9 +68,8 @@ pub(crate) fn required_area_alignment() -> Result<usize, PerCpuError> {
     Ok(required)
 }
 
-/// macOS does not expose the ELF linker-section contract used by replicated
-/// CPU areas. Its supported model is `sp-naive`; retaining this fallback keeps
-/// source-only host consumers free of unresolved ELF boundary symbols.
+/// macOS does not expose the ELF linker-section contract used by dynamic CPU
+/// areas. This fallback permits source-only consumers but not area creation.
 #[cfg(target_os = "macos")]
 pub(crate) fn required_area_alignment() -> Result<usize, PerCpuError> {
     Ok(align_of::<CpuAreaPrefix>())

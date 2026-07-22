@@ -24,6 +24,35 @@ fn assert_common_contract(script: &str) {
     assert!(script.contains("__bss_stop = .;"));
     assert!(script.contains("__cpu0_stack_top = .;"));
     assert!(script.contains("__kernel_code_end = .;"));
+    assert!(script.contains(".percpu.init : ALIGN(8)"));
+    assert!(script.contains("__PERCPU_INIT_START = .;"));
+    assert!(script.contains("__PERCPU_INIT_END = .;"));
+    assert!(script.contains(".percpu.align : ALIGN(8)"));
+    assert!(script.contains("__PERCPU_ALIGN_START = .;"));
+    assert!(script.contains("__PERCPU_ALIGN_END = .;"));
+    assert!(script.contains("__PERCPU_TEMPLATE_ALIGN_START = .;"));
+    assert!(script.contains("__PERCPU_TEMPLATE_ALIGN_END ="));
+    assert!(script.contains(".percpu.template :"));
+    assert!(script.contains("KEEP(*(.percpu.template.header))"));
+    assert!(script.contains("*(SORT_BY_NAME(.percpu.template.storage*))"));
+    assert!(script.contains("KEEP(*(.percpu.template.end))"));
+    assert!(script.contains("__CPU_LOCAL_AREA_PREFIX"));
+    assert!(script.contains("__CPU_LOCAL_TEMPLATE_END"));
+    assert!(!script.contains("CPU_NUM"));
+    for legacy_name in [
+        concat!(".ax_", "percpu"),
+        concat!("__A", "X_"),
+        concat!("__ax_", "percpu"),
+        concat!("_percpu_", "start"),
+        concat!("_percpu_", "end"),
+        concat!("_percpu_", "load"),
+        concat!(".percpu_", "data"),
+    ] {
+        assert!(
+            !script.contains(legacy_name),
+            "legacy per-CPU linker name remains: {legacy_name}"
+        );
+    }
     assert!(
         !script.contains("${"),
         "all template tokens must be rendered"
@@ -62,6 +91,10 @@ fn preserves_arch_specific_linker_contracts() {
     let x86_64 = render_linker_script(LinkerArch::X86_64, CONFIG);
     assert!(x86_64.contains("OUTPUT_ARCH(i386:x86-64)"));
     assert!(x86_64.contains("_kernel_image_size = ABSOLUTE(_end - _head);"));
+    assert!(
+        x86_64
+            .contains("__CPU_LOCAL_TSS_OFFSET = ABSOLUTE(__PERCPU_TSS - __CPU_LOCAL_AREA_PREFIX);")
+    );
     assert!(!x86_64.contains("*(.options)"));
 
     let riscv64 = render_linker_script(LinkerArch::Riscv64, CONFIG);
@@ -69,6 +102,10 @@ fn preserves_arch_specific_linker_contracts() {
     assert!(riscv64.contains("KEEP(*(.text._head))"));
     assert!(riscv64.contains(".dynamic : ALIGN(8)"));
     assert!(!riscv64.contains("*(.dynamic .dynsym .dynstr .hash .gnu.hash)"));
+
+    for script in [&aarch64, &loongarch64, &riscv64] {
+        assert!(!script.contains("__CPU_LOCAL_TSS_OFFSET"));
+    }
 }
 
 #[test]

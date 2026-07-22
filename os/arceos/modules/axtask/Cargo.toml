@@ -51,7 +51,7 @@ host-test = [
   "ax-hal/host-test",
   "ax-kspin?/host-test",
   "ax-kspin?/smp",
-  "ax-percpu?/sp-naive",
+  "ax-percpu?/host-test",
 ]
 test = ["host-test"]
 

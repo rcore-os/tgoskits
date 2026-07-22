@@ -1,9 +1,4 @@
-//! Typed ownership boundary for the host CPU-local architecture register.
-//!
-//! The crate owns only the register encoding and the fixed header visible to
-//! early trap entry. Allocation, per-CPU area layout, scheduling, IRQ policy,
-//! and task-local TLS remain in higher layers.
-
+#![doc = include_str!("../README.md")]
 #![cfg_attr(not(any(test, feature = "host-test")), no_std)]
 
 #[cfg(feature = "host-test")]

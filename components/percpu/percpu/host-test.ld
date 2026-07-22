@@ -1,10 +1,5 @@
-    .data : ALIGN(16) {
-        *(.data .data.*)
-        *(.init.data)
-        *(.sdata .sdata.*)
-        ${data_extra}
-    }
-
+SECTIONS
+{
     .percpu.init : ALIGN(8) {
         __PERCPU_INIT_START = .;
         KEEP(*(.percpu.init))
@@ -25,9 +20,12 @@
         *(SORT_BY_NAME(.percpu.template.storage*))
         KEEP(*(.percpu.template.end))
     }
-    ASSERT(__CPU_LOCAL_AREA_PREFIX == ADDR(.percpu.template),
+    ASSERT(!DEFINED(__CPU_LOCAL_AREA_PREFIX) ||
+           __CPU_LOCAL_AREA_PREFIX == ADDR(.percpu.template),
            "CPU area prefix must be at template offset zero")
-    ASSERT(__CPU_LOCAL_TEMPLATE_END + 1 ==
+    ASSERT(!DEFINED(__CPU_LOCAL_TEMPLATE_END) ||
+           __CPU_LOCAL_TEMPLATE_END + 1 ==
                ADDR(.percpu.template) + SIZEOF(.percpu.template),
            "CPU area end sentinel must follow every template object")
-    ${cpu_local_arch_symbols}
+}
+INSERT AFTER .data;
