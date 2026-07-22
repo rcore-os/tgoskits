@@ -198,7 +198,7 @@ pub fn sys_mount(
         "proc" | "sysfs" | "devtmpfs" | "tmpfs" => {
             let fs = MemoryFs::new();
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
-            let mp = target.mount(&fs)?;
+            let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
@@ -216,7 +216,7 @@ pub fn sys_mount(
         "cgroup2" => {
             let fs = crate::pseudofs::cgroup::new_cgroup2fs();
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
-            let mp = target.mount(&fs)?;
+            let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
@@ -243,7 +243,7 @@ pub fn sys_mount(
                 work_dir,
             })?;
             let target = ctx.resolve(target)?;
-            let mp = target.mount(&fs)?;
+            let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if readonly || (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
@@ -253,6 +253,10 @@ pub fn sys_mount(
     }
 
     Ok(0)
+}
+
+fn mount_source(source: &str) -> &str {
+    if source.is_empty() { "none" } else { source }
 }
 
 #[cfg(feature = "ext4")]
@@ -294,7 +298,7 @@ fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
 
     // Mount at the target location
     let target_loc = ctx.resolve(target)?;
-    let mountpoint = target_loc.mount(&fs).map_err(|e| {
+    let mountpoint = target_loc.mount_with_source(&fs, source).map_err(|e| {
         warn!("mount_ext4: failed to mount at {:?}: {:?}", target, e);
         AxError::Io
     })?;

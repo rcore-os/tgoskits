@@ -26,6 +26,7 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
             .unwrap_or_else(|_| "/".into());
 
         let fstype = root_loc.filesystem().name();
+        let source = mp.source();
         let dev = DeviceId(mp.device());
 
         let options = render_options(mp.is_readonly(), mp.mount_flags());
@@ -52,7 +53,7 @@ pub fn render_mountinfo(fs_context: &FsContext) -> String {
         let _ = writeln!(
             &mut buf,
             "{mount_id} {parent_id} {}:{} / {mount_point} {options}{optional_fields} - {fstype} \
-             {fstype} {options}",
+             {source} {options}",
             dev.major(),
             dev.minor(),
         );
@@ -72,9 +73,10 @@ pub fn render_mounts(fs_context: &FsContext) -> String {
             .unwrap_or_else(|_| "/".into());
 
         let fstype = root_loc.filesystem().name();
+        let source = mp.source();
         let options = render_options(mp.is_readonly(), mp.mount_flags());
 
-        let _ = writeln!(&mut buf, "{fstype} {mount_point} {fstype} {options} 0 0",);
+        let _ = writeln!(&mut buf, "{source} {mount_point} {fstype} {options} 0 0",);
     }
     buf
 }

@@ -76,7 +76,7 @@ fn mount_at(fs: &FsContext, path: &str, mount_fs: Filesystem) -> LinuxResult<()>
         fs.create_dir(path, DIR_PERMISSION, 0, 0)?;
     }
     let loc = fs.resolve(path)?;
-    loc.mount(&mount_fs)?;
+    loc.mount_with_source(&mount_fs, mount_fs.name())?;
     info!("Mounted {} at {}", mount_fs.name(), path);
     Ok(())
 }
