@@ -253,6 +253,16 @@ pub trait FileLike: Pollable + DowncastSync {
         Ok(())
     }
 
+    /// Per-close hook, invoked with the closing task's tgid whenever a file
+    /// descriptor referring to this object is dropped from an fd table -
+    /// explicit `close`, `close_range`, `dup2`/`dup3` replacement, exec
+    /// CLOEXEC, or process exit. This mirrors Linux `f_op->flush`
+    /// (`filp_flush`, fs/open.c:1470), which runs on every fd-closing path
+    /// rather than only on the last reference. The default is a no-op; POSIX
+    /// message-queue descriptors override it to drop a matching `mq_notify`
+    /// registration (`mqueue_flush_file`, ipc/mqueue.c:658).
+    fn on_close(&self, _owner: Pid) {}
+
     fn from_fd(fd: c_int) -> AxResult<Arc<Self>>
     where
         Self: Sized + 'static,
@@ -383,6 +393,12 @@ fn notify_close_write(fd: &FileDescriptor) {
 /// `Weak` still alive, and sleep forever.
 pub fn release_locks_on_close(fd: FileDescriptor) {
     let key = fd.inner.inode_key();
+    // Linux `filp_flush` runs `f_op->flush` on every fd-closing path (explicit
+    // close, close_range, dup2/dup3 replacement, exec CLOEXEC, process exit),
+    // all of which funnel through here. This is where an mq descriptor drops a
+    // matching `mq_notify` registration (`mqueue_flush_file`).
+    fd.inner
+        .on_close(current().as_thread().proc_data.proc.pid());
     notify_close_write(&fd);
     if let Some(k) = key {
         let pid = current().as_thread().proc_data.proc.pid();

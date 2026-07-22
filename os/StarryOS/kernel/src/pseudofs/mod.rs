@@ -8,6 +8,7 @@ mod dir;
 mod dyn_debug;
 mod file;
 mod fs;
+mod mqueue;
 pub(crate) mod overlay;
 pub(crate) mod proc;
 mod sysfs;
@@ -98,6 +99,8 @@ pub fn mount_all() -> LinuxResult<()> {
     let (tmp_fs, tmp_handle) = tmp::MemoryFs::new_with_handle();
     mount_at(&fs, "/tmp", tmp_fs)?;
     TMP_TMPFS.init_once(tmp_handle);
+
+    mount_at(&fs, "/dev/mqueue", mqueue::new_mqueuefs())?;
 
     mount_at(&fs, "/proc", proc::new_procfs())?;
 
