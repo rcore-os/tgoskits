@@ -169,6 +169,8 @@ pub struct Mountpoint {
     children: Mutex<HashMap<ReferenceKey, Arc<Self>>>,
     /// Device ID (filesystem superblock device — used for major:minor in mountinfo).
     device: u64,
+    /// Source name supplied when this mount was created (Linux `mnt_devname`).
+    source: String,
     /// Unique mount identifier (Linux `mnt_id`), assigned from `MOUNT_ID_COUNTER`.
     /// Distinct from `device` which is the filesystem's device number.
     mount_id: u64,
@@ -196,16 +198,27 @@ pub struct Mountpoint {
 }
 
 impl Mountpoint {
+    #[cfg(test)]
     fn new_with_root(
         root: DirEntry,
         location_in_parent: Option<Location>,
         device: u64,
+    ) -> Arc<Self> {
+        Self::new_with_root_and_source(root, location_in_parent, device, "none".into())
+    }
+
+    fn new_with_root_and_source(
+        root: DirEntry,
+        location_in_parent: Option<Location>,
+        device: u64,
+        source: String,
     ) -> Arc<Self> {
         Arc::new(Self {
             root,
             location: Mutex::new(location_in_parent),
             children: Mutex::new(HashMap::default()),
             device,
+            source,
             mount_id: MOUNT_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             peer_group_id: AtomicU64::new(0),
             readonly: AtomicBool::new(false),
@@ -219,10 +232,20 @@ impl Mountpoint {
     }
 
     pub fn new(fs: &Filesystem, location_in_parent: Option<Location>) -> Arc<Self> {
-        let result = Self::new_with_root(
+        Self::new_with_source(fs, location_in_parent, "none")
+    }
+
+    /// Creates a mountpoint with the source name exposed through mount metadata.
+    pub fn new_with_source(
+        fs: &Filesystem,
+        location_in_parent: Option<Location>,
+        source: &str,
+    ) -> Arc<Self> {
+        let result = Self::new_with_root_and_source(
             fs.root_dir(),
             location_in_parent,
             DEVICE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            source.to_owned(),
         );
         result.readonly.store(fs.is_readonly(), Ordering::Release);
         result
@@ -232,11 +255,17 @@ impl Mountpoint {
         Self::new(fs, None)
     }
 
+    /// Creates the root mountpoint with the source name exposed through mount metadata.
+    pub fn new_root_with_source(fs: &Filesystem, source: &str) -> Arc<Self> {
+        Self::new_with_source(fs, None, source)
+    }
+
     fn bind(source: &Location, location_in_parent: Location, recursive: bool) -> Arc<Self> {
-        let result = Self::new_with_root(
+        let result = Self::new_with_root_and_source(
             source.entry.clone(),
             Some(location_in_parent),
             source.mountpoint.device(),
+            source.mountpoint.source.clone(),
         );
         result
             .readonly
@@ -253,7 +282,12 @@ impl Mountpoint {
     }
 
     fn clone_shallow(source: &Arc<Self>, location_in_parent: Option<Location>) -> Arc<Self> {
-        let result = Self::new_with_root(source.root.clone(), location_in_parent, source.device());
+        let result = Self::new_with_root_and_source(
+            source.root.clone(),
+            location_in_parent,
+            source.device(),
+            source.source.clone(),
+        );
         result
             .readonly
             .store(source.is_readonly(), Ordering::Release);
@@ -416,6 +450,11 @@ impl Mountpoint {
 
     pub fn device(self: &Arc<Self>) -> u64 {
         self.device
+    }
+
+    /// Returns the source name supplied when this mount was created.
+    pub fn source(&self) -> &str {
+        &self.source
     }
 
     pub fn mount_id(&self) -> u64 {
@@ -840,8 +879,13 @@ impl Location {
     }
 
     pub fn mount(&self, fs: &Filesystem) -> VfsResult<Arc<Mountpoint>> {
+        self.mount_with_source(fs, "none")
+    }
+
+    /// Mounts a filesystem with the source name exposed through mount metadata.
+    pub fn mount_with_source(&self, fs: &Filesystem, source: &str) -> VfsResult<Arc<Mountpoint>> {
         let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        let result = Mountpoint::new(fs, Some(self.clone()));
+        let result = Mountpoint::new_with_source(fs, Some(self.clone()), source);
         let should_propagate = self.mountpoint.is_shared();
         self.check_is_dir()?;
         {
@@ -1042,6 +1086,23 @@ mod tests {
             |_| DirNode::new(node),
             Reference::new(parent, name.to_string()),
         )
+    }
+
+    #[test]
+    fn bind_and_namespace_clone_preserve_mount_source() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root_with_source(&fs, "/dev/vda");
+        let root_loc = root.root_location();
+        let bind_target = Location::new(
+            root.clone(),
+            make_child_dir_entry(Some(root_loc.entry().clone()), "bind"),
+        );
+
+        let bound = Mountpoint::bind(&root_loc, bind_target, false);
+        assert_eq!(bound.source(), "/dev/vda");
+
+        let cloned = root.clone_tree();
+        assert_eq!(cloned.source(), "/dev/vda");
     }
 
     #[test]
