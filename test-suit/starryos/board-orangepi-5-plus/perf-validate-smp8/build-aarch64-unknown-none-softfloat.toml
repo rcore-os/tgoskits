@@ -1,0 +1,25 @@
+# Build wrapper for the perf-validate-smp8 board case — the FULL big.LITTLE
+# enforcement variant (see ./board-orangepi-5-plus.toml).
+#
+# `nearest_build_wrapper` walks up from this case dir and finds THIS file first,
+# so perf-validate-smp8 gets its own MULTI-CORE kernel build, independent of the
+# smp1 anchor next door in ../perf-validate (which stays max_cpu_num=1 as a fast,
+# always-green single-core regression anchor).
+#
+# WHY a MINIMAL feature set (drops USB + NPU + PCIe + net vs the smp1 wrapper):
+# the smp8 late-boot hang is NOT the block path (it polls → smp-safe) — it is a
+# secondary-core (first A76 / cpu4) IRQ storm from rockchip-dwc-xhci once a second
+# A76 comes online. Dropping the drivers whose IRQs storm on a secondary PE lets
+# the board boot fully multi-core (online=8, clusters 4+4). None of USB/NPU/PCIe/
+# net is needed to exercise the perf PMU, so this build keeps only the SoC + SD/
+# block drivers to mount the rootfs. PROVEN 2026-07-02 on real 4×A55+4×A76: this
+# config boots smp8 and perf-validate ran the entire SMP + big.LITTLE matrix on
+# silicon (39 pass / 0 fail → VERDICT FULL).
+target = "aarch64-unknown-none-softfloat"
+features = [
+  "ax-driver/rockchip-soc",
+  "ax-driver/rockchip-sdhci",
+  "ax-driver/rockchip-dwmmc",
+]
+log = "Warn"
+max_cpu_num = 8
