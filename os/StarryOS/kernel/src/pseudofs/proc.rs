@@ -1332,9 +1332,10 @@ impl SimpleDirOps for ThreadDir {
             .into(),
             "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
             "mounts" => {
-                let proc_data = self.proc_data.clone();
+                let task = self.task.clone();
                 SimpleFile::new_regular(fs, move || {
-                    let scope = proc_data.scope.read();
+                    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+                    let scope = task.as_thread().scope.read();
                     let ctx_arc = FS_CONTEXT.scope(&scope).clone();
                     drop(scope);
                     let ctx = ctx_arc.lock();
@@ -1343,9 +1344,10 @@ impl SimpleDirOps for ThreadDir {
                 .into()
             }
             "mountinfo" => {
-                let proc_data = self.proc_data.clone();
+                let task = self.task.clone();
                 SimpleFile::new_regular(fs, move || {
-                    let scope = proc_data.scope.read();
+                    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+                    let scope = task.as_thread().scope.read();
                     let ctx_arc = FS_CONTEXT.scope(&scope).clone();
                     drop(scope);
                     let ctx = ctx_arc.lock();
