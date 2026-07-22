@@ -1,6 +1,6 @@
 use crate::{
     ArchTrait, DCacheOp,
-    mem::{__kimage_va, __percpu, dcache_range, virt_to_phys},
+    mem::{__kimage_va, cpu_area_phys_to_virt, dcache_range, virt_to_phys},
     smp::PerCpuMeta,
 };
 
@@ -18,7 +18,7 @@ pub fn cpu_on(cpu_idx: usize) -> Result<(), CpuOnError> {
     let arg = crate::smp::cpu_meta_addr(cpu_idx).ok_or(CpuOnError::InvalidParameters)?;
     debug!("Secondary entry argument (cpu meta address): {arg:#x}");
 
-    let meta = unsafe { &*(__percpu(arg) as *const PerCpuMeta) };
+    let meta = unsafe { &*(cpu_area_phys_to_virt(arg) as *const PerCpuMeta) };
 
     debug!("Power on CPU {meta:#x?}");
     let kimg = crate::mem::kimage_range();

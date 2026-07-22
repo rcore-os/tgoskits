@@ -11,7 +11,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FS_CONTEXT, FsContext, sync_all_cached_files};
+use ax_fs_ng::vfs::{FsContext, sync_all_cached_files};
 use ax_runtime::hal::time::wall_time;
 use ax_task::current;
 use axfs_ng_vfs::{DeviceId, MetadataUpdate, NodePermission, NodeType, path::Path};
@@ -22,7 +22,7 @@ use linux_raw_sys::{
 use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{
-    file::{Directory, FD_TABLE, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
+    file::{Directory, FileLike, fd_is_path, get_file_like, resolve_at, with_fs},
     mm::{vm_load_path_string, vm_load_string},
     task::AsThread,
     time::TimeValueLike,
@@ -61,7 +61,7 @@ pub fn sys_ioctl(fd: i32, cmd: u32, arg: usize) -> AxResult<isize> {
     // handle them here so any fd (not just ttys) accepts them, as Linux does. Without
     // this, curses/CPython (glances) hit "Unsupported ioctl command".
     if cmd == FIOCLEX || cmd == FIONCLEX {
-        FD_TABLE
+        crate::file::current_fd_table()
             .write()
             .get_mut(fd as _)
             .ok_or(AxError::BadFileDescriptor)?
@@ -87,7 +87,8 @@ pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_path_string(path)?;
     debug_fn!("sys_chdir <= path: {path}");
 
-    let mut fs = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mut fs = fs_context.lock();
     let entry = fs.resolve(path)?;
     fs.set_current_dir(entry)?;
     let cwd = fs.current_dir().absolute_path()?.to_string();
@@ -99,7 +100,8 @@ pub fn sys_fchdir(dirfd: i32) -> AxResult<isize> {
     debug!("sys_fchdir <= dirfd: {dirfd}");
 
     let entry = with_fs(dirfd, |fs| Ok(fs.current_dir().clone()))?;
-    let mut fs = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mut fs = fs_context.lock();
     fs.set_current_dir(entry)?;
     let cwd = fs.current_dir().absolute_path()?.to_string();
     *current().as_thread().proc_data.cwd_path.write() = cwd;
@@ -120,7 +122,8 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     let path = vm_load_path_string(path)?;
     debug!("sys_chroot <= path: {path}");
 
-    let mut fs = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mut fs = fs_context.lock();
     let loc = fs.resolve(path)?;
     if loc.node_type() != NodeType::Directory {
         return Err(AxError::NotADirectory);
@@ -428,7 +431,10 @@ pub fn sys_unlink(path: *const c_char) -> AxResult<isize> {
 pub fn sys_getcwd(buf: *mut u8, size: isize) -> AxResult<isize> {
     let size: usize = size.try_into().map_err(|_| AxError::BadAddress)?;
 
-    let cwd = FS_CONTEXT.lock().current_dir().absolute_path()?;
+    let cwd = ax_fs_ng::vfs::current_fs_context()
+        .lock()
+        .current_dir()
+        .absolute_path()?;
     debug!("sys_getcwd => cwd: {cwd}");
 
     let cwd = CString::new(cwd.as_str()).map_err(|_| AxError::InvalidInput)?;
@@ -859,7 +865,10 @@ pub fn sys_sync() -> AxResult<isize> {
     // Only syncs root filesystem; does not iterate all mount points like Linux sync(2).
     // Write back ax-fs-ng page cache first, then flush filesystem metadata.
     sync_all_cached_files(false)?;
-    FS_CONTEXT.lock().root_dir().sync(false)?;
+    ax_fs_ng::vfs::current_fs_context()
+        .lock()
+        .root_dir()
+        .sync(false)?;
     Ok(0)
 }
 

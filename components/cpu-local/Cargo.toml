@@ -1,0 +1,21 @@
+[package]
+name = "cpu-local"
+version = "0.1.0"
+description = "Architecture CPU-local register capability for TGOSKits"
+repository.workspace = true
+edition.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories = ["os", "no-std"]
+license.workspace = true
+
+[features]
+# Select the no-userspace UnikernelTls register ownership model. Images that
+# leave this disabled use LinuxCurrent semantics.
+tls = []
+
+# Use a thread-local register model for host-side tests.
+host-test = []
+
+[dependencies]
+thiserror.workspace = true

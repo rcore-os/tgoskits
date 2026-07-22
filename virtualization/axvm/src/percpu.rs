@@ -2,6 +2,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use ax_kernel_guard::NoPreemptIrqSave;
 use axvm_types::VmArchPerCpuOps;
 
 use crate::{
@@ -51,30 +52,39 @@ pub(crate) fn cpu_guest_phys_addr_bits(cpu_id: usize) -> Option<usize> {
 }
 
 pub(crate) fn init_current_cpu() -> AxVmResult {
-    // SAFETY: Called once per CPU during hypervisor initialization before any
-    // vCPU task uses this CPU-local virtualization state.
-    #[allow(static_mut_refs)]
-    let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
-    percpu.init(default_host().this_cpu_id())
+    with_current_percpu_mut(|percpu| percpu.init(default_host().this_cpu_id()))
 }
 
 pub(crate) fn enable_current_cpu() -> AxVmResult {
-    // SAFETY: The per-CPU value belongs to the currently pinned CPU.
-    #[allow(static_mut_refs)]
-    let percpu = unsafe { AXVM_PER_CPU.current_ref_mut_raw() };
-    percpu.hardware_enable()?;
-    let cpu_id = default_host().this_cpu_id();
-    if let Some(levels) = CPU_MAX_GPT_LEVELS.get(cpu_id) {
-        levels.store(
-            percpu.arch_checked().max_guest_page_table_levels(),
-            Ordering::Release,
-        );
+    with_current_percpu_mut(|percpu| {
+        percpu.hardware_enable()?;
+        let cpu_id = default_host().this_cpu_id();
+        if let Some(levels) = CPU_MAX_GPT_LEVELS.get(cpu_id) {
+            levels.store(
+                percpu.arch_checked().max_guest_page_table_levels(),
+                Ordering::Release,
+            );
+        }
+        if let Some(bits) = CPU_GPA_BITS.get(cpu_id) {
+            bits.store(
+                percpu.arch_checked().guest_phys_addr_bits(),
+                Ordering::Release,
+            );
+        }
+        Ok(())
+    })
+}
+
+fn with_current_percpu_mut<R>(operation: impl FnOnce(&mut AxVMPerCpu) -> R) -> R {
+    let _guard = NoPreemptIrqSave::new();
+    // SAFETY: initialization and hardware enable are serialized once per CPU;
+    // the guard excludes migration, IRQ/re-entry, and conflicting access.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            ax_percpu::with_exclusive_cpu(pin, |exclusive| {
+                AXVM_PER_CPU.with_current_mut(exclusive, operation)
+            })
+        })
     }
-    if let Some(bits) = CPU_GPA_BITS.get(cpu_id) {
-        bits.store(
-            percpu.arch_checked().guest_phys_addr_bits(),
-            Ordering::Release,
-        );
-    }
-    Ok(())
+    .expect("AxVM per-CPU state requires an installed CPU area")
 }

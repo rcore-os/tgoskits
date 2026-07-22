@@ -466,7 +466,7 @@ impl<H: LoongArchHostOps + 'static> LoongArchVcpu<H> {
             "st.d $s8, $sp, 72",
             "st.d $fp, $sp, 80",
             "st.d $tp, $sp, 88",
-            "st.d $r21, $sp, 96",
+            // r21 is CPU-owned and restored from KS3 by guest-exit assembly.
             "move $s0, $a0",
             "move $t0, $sp",
             "addi.d $t1, $a0, {host_stack_top_offset}",

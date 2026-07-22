@@ -13,6 +13,14 @@ const DEFAULT_TASK_STACK_SIZE: usize = 0x40000;
 fn main() -> Result<()> {
     println!("cargo:rerun-if-env-changed=SMP");
 
+    if cfg!(feature = "host-test") {
+        let linker = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("host-test.ld");
+        println!("cargo:rerun-if-changed={}", linker.display());
+        // This crate keeps its scheduler tests in the library target rather
+        // than a standalone integration-test target.
+        println!("cargo:rustc-link-arg=-T{}", linker.display());
+    }
+
     let config = TaskConfig::load()?;
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     fs::write(out_dir.join(BUILD_INFO_NAME), build_info_source(config))

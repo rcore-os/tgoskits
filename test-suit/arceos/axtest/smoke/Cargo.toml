@@ -11,5 +11,5 @@ ax-std = ["dep:ax-hal", "dep:ax-std"]
 
 [dependencies]
 ax-hal = { workspace = true, optional = true }
-ax-std = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true, features = ["default"] }
 axtest.workspace = true
