@@ -569,6 +569,7 @@ pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
     let ptr = UserPtr::<u32>::from(user_base);
     let const_ptr = UserConstPtr::<u64>::from(user_base + 8);
     let default_ptr = UserPtr::<u8>::default();
+    let default_const_ptr = UserConstPtr::<u8>::default();
     let cast_ptr = ptr.cast::<u8>();
     let cast_const_ptr = const_ptr.cast::<u8>();
 
@@ -579,10 +580,27 @@ pub(crate) fn user_pointer_metadata_rules_hold_for_test() -> bool {
         && cast_ptr.address().as_usize() == user_base
         && const_ptr.address().as_usize() == user_base + 8
         && cast_const_ptr.address().as_usize() == user_base + 8
+        // Default const pointer is also null.
+        && default_const_ptr.is_null()
+        && !const_ptr.is_null()
+        // UserPtr/UserConstPtr From<usize> round-trips through address().
+        && UserPtr::<u64>::from(user_end - 8).address().as_usize() == user_end - 8
+        && UserConstPtr::<u64>::from(user_end - 8).address().as_usize() == user_end - 8
+        // check_access accepts zero-length access anywhere in user space,
+        // including exactly at USER_SPACE_BASE and one byte before USER_SPACE_END.
         && check_access(user_base, 0).is_ok()
+        && check_access(user_end - 1, 0).is_ok()
+        && check_access(user_end, 0).is_err()
+        // check_access rejects start below USER_SPACE_BASE even for zero length.
+        && check_access(user_base - 1, 0).is_err()
+        && check_access(0, 0).is_err()
         && check_access(user_base, 4096).is_ok()
         && check_access(user_end - 1, 1).is_ok()
         && check_access(user_base - 1, 1).is_err()
         && check_access(user_end, 0).is_err()
         && check_access(user_end - 1, 2).is_err()
+        // Lengths that would wrap the end pointer are rejected.
+        && check_access(user_base, USER_SPACE_SIZE).is_ok()
+        && check_access(user_base, USER_SPACE_SIZE + 1).is_err()
+        && check_access(user_end - 1, usize::MAX).is_err()
 }

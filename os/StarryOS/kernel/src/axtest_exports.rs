@@ -50,6 +50,10 @@ pub fn private_mmap_rejects_fault_at_file_eof() -> bool {
     super::mm::private_mmap_eof_check_for_test()
 }
 
+pub fn cow_file_max_read_len_boundary_rules_hold() -> bool {
+    super::mm::cow_file_max_read_len_boundary_rules_hold_for_test()
+}
+
 pub fn concurrent_epoll_reverse_add_is_serialized() -> bool {
     super::file::concurrent_reverse_add_is_serialized_for_test()
 }
@@ -181,4 +185,28 @@ pub fn proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout() -> bool {
 
 pub fn bpf_unknown_command_is_invalid() -> bool {
     super::ebpf::bpf_unknown_command_is_invalid_for_test()
+}
+
+pub fn pipe_resize_rounding_and_state_rules_hold() -> bool {
+    super::file::pipe_resize_rounding_and_state_rules_hold_for_test()
+}
+
+pub fn epoll_event_matching_rules_hold() -> bool {
+    super::file::epoll_event_matching_rules_hold_for_test()
+}
+
+pub fn stats_classify_and_accumulate_rules_hold() -> bool {
+    super::mm::stats_classify_and_accumulate_rules_hold_for_test()
+}
+
+pub fn capability_data_conversion_rules_hold() -> bool {
+    super::syscall::capability_data_conversion_rules_hold_for_test()
+}
+
+pub fn pipe_size_rounding_and_rejection_rules_hold() -> bool {
+    super::syscall::pipe_size_rounding_and_rejection_rules_hold_for_test()
+}
+
+pub fn seccomp_filter_construction_rules_hold() -> bool {
+    super::task::seccomp_filter_construction_rules_hold_for_test()
 }

@@ -5,10 +5,16 @@ extern crate alloc;
 
 use ax_std as _;
 
+#[path = "cases/axtest_ax_lazyinit.rs"]
+mod axtest_ax_lazyinit;
+#[path = "cases/axtest_axerrno.rs"]
+mod axtest_axerrno;
 #[path = "cases/axtest_axfs_ng_vfs.rs"]
 mod axtest_axfs_ng_vfs;
 #[path = "cases/axtest_axio.rs"]
 mod axtest_axio;
+#[path = "cases/axtest_axpoll.rs"]
+mod axtest_axpoll;
 #[path = "cases/axtest_fs.rs"]
 mod axtest_fs;
 #[path = "cases/axtest_memory.rs"]

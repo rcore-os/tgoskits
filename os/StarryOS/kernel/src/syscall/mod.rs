@@ -1014,6 +1014,18 @@ pub(crate) fn task_clone_validation_rules_hold_for_test() -> bool {
 }
 
 #[cfg(axtest)]
+pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
+    task::capability_data_conversion_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn pipe_size_rounding_and_rejection_rules_hold_for_test() -> bool {
+    // fd_ops is re-exported via `pub use self::fs::*`, so the helper is
+    // accessible directly through the fs module.
+    fs::pipe_size_rounding_and_rejection_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
 pub(crate) fn membarrier_validation_rules_hold_for_test() -> bool {
     sync::membarrier_validation_rules_hold_for_test()
 }

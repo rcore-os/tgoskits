@@ -43,10 +43,13 @@ use linux_raw_sys::general::{
 use starry_process::Pid;
 
 #[cfg(axtest)]
+pub(crate) use self::epoll::epoll_event_matching_rules_hold_for_test;
+#[cfg(axtest)]
 pub(crate) use self::epoll_axtest::concurrent_reverse_add_is_serialized_for_test;
 #[cfg(axtest)]
 pub(crate) use self::pipe::{
-    peer_close_with_multiple_readers_is_visible_for_test, resize_rejects_oversized_pipe_for_test,
+    peer_close_with_multiple_readers_is_visible_for_test,
+    pipe_resize_rounding_and_state_rules_hold_for_test, resize_rejects_oversized_pipe_for_test,
 };
 pub use self::{
     fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},

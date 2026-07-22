@@ -400,3 +400,90 @@ fn axio_line_writer_rules_hold() {
     let inner = writer.into_inner().unwrap();
     ax_assert_eq!(inner, b"partial\nnext line 2\ntail");
 }
+
+#[axtest::def_test]
+fn axio_take_chain_and_recovery_rules_hold() {
+    use ax_io::{BufRead, BufWriter, Cursor, Error, Read, Seek, SeekFrom, Write};
+
+    let mut limited = Cursor::new(Vec::from(&b"abcdef"[..])).take(4);
+    ax_assert_eq!(limited.limit(), 4);
+    ax_assert_eq!(limited.position(), 0);
+    ax_assert_eq!(limited.stream_len().unwrap(), 4);
+
+    let mut first = [0; 2];
+    ax_assert_eq!(limited.read(&mut first).unwrap(), 2);
+    ax_assert_eq!(&first, b"ab");
+    ax_assert_eq!(limited.position(), 2);
+    ax_assert_eq!(limited.limit(), 2);
+
+    limited.seek(SeekFrom::Start(1)).unwrap();
+    ax_assert_eq!(limited.position(), 1);
+    ax_assert_eq!(limited.limit(), 3);
+    limited.seek_relative(2).unwrap();
+    ax_assert_eq!(limited.position(), 3);
+    ax_assert_eq!(limited.seek_relative(2), Err(Error::InvalidInput));
+    ax_assert_eq!(limited.get_ref().position(), 3);
+    limited.get_mut().set_position(0);
+    ax_assert_eq!(limited.into_inner().position(), 0);
+
+    let mut limited_buf = (&b"line-one\nline-two"[..]).take(8);
+    ax_assert_eq!(limited_buf.fill_buf().unwrap(), b"line-one");
+    limited_buf.consume(20);
+    ax_assert_eq!(limited_buf.fill_buf().unwrap(), b"");
+
+    let mut chained = (&b"aa,"[..]).chain(&b"bb,cc"[..]);
+    let (left, right) = chained.get_ref();
+    ax_assert_eq!(*left, b"aa,");
+    ax_assert_eq!(*right, b"bb,cc");
+    let mut field = Vec::new();
+    ax_assert_eq!(chained.read_until(b',', &mut field).unwrap(), 3);
+    ax_assert_eq!(field, b"aa,");
+    field.clear();
+    ax_assert_eq!(chained.read_until(b',', &mut field).unwrap(), 3);
+    ax_assert_eq!(field, b"bb,");
+    let (_, second) = chained.get_mut();
+    ax_assert_eq!(*second, b"cc");
+    let (_, second) = chained.into_inner();
+    ax_assert_eq!(second, b"cc");
+
+    #[derive(Debug)]
+    struct FailingWriter {
+        accepted: Vec<u8>,
+        fail_after: usize,
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, buf: &[u8]) -> ax_io::Result<usize> {
+            if self.accepted.len() >= self.fail_after {
+                return Err(Error::StorageFull);
+            }
+            let writable = (self.fail_after - self.accepted.len()).min(buf.len());
+            self.accepted.extend_from_slice(&buf[..writable]);
+            Ok(writable)
+        }
+
+        fn flush(&mut self) -> ax_io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = BufWriter::with_capacity(
+        8,
+        FailingWriter {
+            accepted: Vec::new(),
+            fail_after: 2,
+        },
+    );
+    writer.write_all(b"abcd").unwrap();
+    let into_inner_error = writer.into_inner().unwrap_err();
+    ax_assert_eq!(*into_inner_error.error(), Error::StorageFull);
+    ax_assert_eq!(
+        format!("{into_inner_error}"),
+        format!("{}", Error::StorageFull)
+    );
+
+    let (error, recovered) = into_inner_error.into_parts();
+    ax_assert_eq!(error, Error::StorageFull);
+    ax_assert_eq!(recovered.get_ref().accepted, b"ab");
+    ax_assert_eq!(recovered.buffer(), b"cd");
+}

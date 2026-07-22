@@ -27,6 +27,16 @@ fn concurrent_epoll_reverse_add_is_serialized() {
 }
 
 #[axtest::def_test]
+fn pipe_resize_rounding_and_state_rules_hold() {
+    ax_assert!(axtest_exports::pipe_resize_rounding_and_state_rules_hold());
+}
+
+#[axtest::def_test]
+fn epoll_event_matching_rules_hold() {
+    ax_assert!(axtest_exports::epoll_event_matching_rules_hold());
+}
+
+#[axtest::def_test]
 fn proc_formatting_contracts_hold() {
     ax_assert!(axtest_exports::proc_formatting_contracts_hold());
 }
@@ -34,4 +44,14 @@ fn proc_formatting_contracts_hold() {
 #[axtest::def_test]
 fn proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout() {
     ax_assert!(axtest_exports::proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout());
+}
+
+#[axtest::def_test]
+fn capability_data_conversion_rules_hold() {
+    ax_assert!(axtest_exports::capability_data_conversion_rules_hold());
+}
+
+#[axtest::def_test]
+fn pipe_size_rounding_and_rejection_rules_hold() {
+    ax_assert!(axtest_exports::pipe_size_rounding_and_rejection_rules_hold());
 }

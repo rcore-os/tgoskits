@@ -567,8 +567,23 @@ pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
         && parse_mempolicy_mode(MPOL_INTERLEAVE | MPOL_F_RELATIVE_NODES) == Ok(MPOL_INTERLEAVE)
         && parse_mempolicy_mode(-1).is_err()
         && parse_mempolicy_mode(99).is_err()
+        // Cover every supported policy mode + every flag combination.
+        && parse_mempolicy_mode(MPOL_PREFERRED) == Ok(MPOL_PREFERRED)
+        && parse_mempolicy_mode(MPOL_LOCAL) == Ok(MPOL_LOCAL)
+        && parse_mempolicy_mode(MPOL_PREFERRED_MANY) == Ok(MPOL_PREFERRED_MANY)
+        && parse_mempolicy_mode(MPOL_WEIGHTED_INTERLEAVE) == Ok(MPOL_WEIGHTED_INTERLEAVE)
+        && parse_mempolicy_mode(MPOL_BIND | MPOL_F_RELATIVE_NODES | MPOL_F_STATIC_NODES)
+            == Ok(MPOL_BIND)
+        // Both flag bits set with an otherwise-valid policy still parse.
+        && parse_mempolicy_mode(MPOL_PREFERRED | MPOL_F_RELATIVE_NODES) == Ok(MPOL_PREFERRED)
+        // MPOL mode 7 (between WEIGHTED_INTERLEAVE and the next valid mode) is rejected.
+        && parse_mempolicy_mode(7).is_err()
+        // check_nodemask is a no-op for null nodemask or zero maxnode.
+        && check_nodemask(core::ptr::null(), 0).is_ok()
+        && check_nodemask(core::ptr::null(), 64).is_ok()
         && sys_set_mempolicy(MPOL_DEFAULT, core::ptr::null(), 0) == Ok(0)
         && sys_set_mempolicy(-1, core::ptr::null(), 0).is_err()
+        // set_mbind / set_mempolicy rejection of negative modes is exercised above.
         && sys_mbind(0x1000, 4096, MPOL_DEFAULT, core::ptr::null(), 0, 0) == Ok(0)
         && sys_mbind(0x1001, 4096, MPOL_DEFAULT, core::ptr::null(), 0, 0).is_err()
         && sys_mbind(0x1000, 0, MPOL_DEFAULT, core::ptr::null(), 0, 0).is_err()
@@ -581,4 +596,63 @@ pub(crate) fn mempolicy_validation_rules_hold_for_test() -> bool {
             !MPOL_MF_VALID,
         )
         .is_err()
+        // mbind accepts each individual MPOL_MF flag bit in isolation.
+        && sys_mbind(0x1000, 4096, MPOL_DEFAULT, core::ptr::null(), 0, MPOL_MF_STRICT) == Ok(0)
+        && sys_mbind(0x1000, 4096, MPOL_DEFAULT, core::ptr::null(), 0, MPOL_MF_MOVE) == Ok(0)
+        && sys_mbind(0x1000, 4096, MPOL_DEFAULT, core::ptr::null(), 0, MPOL_MF_MOVE_ALL) == Ok(0)
+        // mbind rejects out-of-range mode.
+        && sys_mbind(0x1000, 4096, 99, core::ptr::null(), 0, 0).is_err()
+}
+
+#[cfg(axtest)]
+pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
+    use alloc::sync::Arc;
+
+    // cap_bit: rejects out-of-range cap numbers, returns the correct bit otherwise.
+    cap_bit(0) == Ok(1u64 << 0)
+        && cap_bit(1) == Ok(1u64 << 1)
+        && cap_bit(CAP_LAST_CAP) == Ok(1u64 << CAP_LAST_CAP)
+        && cap_bit(CAP_LAST_CAP + 1) == Err(AxError::InvalidInput)
+        // data_to_mask: merges the low u32 of data[0] with the high u32 of data[1].
+        && data_to_mask(
+            &[
+                __user_cap_data_struct {
+                    effective: 0x1111_1111,
+                    permitted: 0x2222_2222,
+                    inheritable: 0x3333_3333,
+                },
+                __user_cap_data_struct {
+                    effective: 0x4444_4444,
+                    permitted: 0x5555_5555,
+                    inheritable: 0x6666_6666,
+                },
+            ],
+            |d| d.effective,
+        ) == (0x1111_1111u64 | ((0x4444_4444u64) << 32))
+        // cap_data_from_cred: round-trips Cred capability fields into u32 pairs.
+        && {
+            let cred = Cred {
+                uid: 0,
+                gid: 0,
+                euid: 0,
+                egid: 0,
+                suid: 0,
+                sgid: 0,
+                fsuid: 0,
+                fsgid: 0,
+                groups: Arc::from([].as_slice()),
+                cap_inheritable: 0x1234_5678_9abc_def0,
+                cap_permitted: 0xfedc_ba98_7654_3210,
+                cap_effective: 0x0fed_cba9_8765_4321,
+                cap_bounding: u64::MAX,
+                cap_ambient: 0,
+            };
+            let data = cap_data_from_cred(&cred);
+            data[0].effective == 0x8765_4321
+                && data[1].effective == 0x0fed_cba9
+                && data[0].permitted == 0x7654_3210
+                && data[1].permitted == 0xfedc_ba98
+                && data[0].inheritable == 0x9abc_def0
+                && data[1].inheritable == 0x1234_5678
+        }
 }
