@@ -1,5 +1,5 @@
 use alloc::alloc::{alloc, dealloc, handle_alloc_error};
-use core::{alloc::Layout, ptr::NonNull};
+use core::{alloc::Layout, mem, ptr::NonNull};
 
 use crate::item::Item;
 
@@ -27,12 +27,6 @@ impl Header {
     }
 }
 
-impl Drop for Header {
-    fn drop(&mut self) {
-        (self.item.drop)(self.body());
-    }
-}
-
 pub(crate) struct ItemBox {
     ptr: NonNull<Header>,
 }
@@ -45,21 +39,52 @@ unsafe impl Sync for ItemBox {}
 impl ItemBox {
     pub(crate) fn new(item: &'static Item) -> Self {
         let (layout, offset) = layout(item.layout);
-        let ptr = NonNull::new(unsafe { alloc(layout) })
-            .unwrap_or_else(|| handle_alloc_error(layout))
-            .cast();
+        let allocation = Allocation::new(layout);
+        let ptr = allocation.ptr.cast::<Header>();
 
         unsafe {
+            // The allocation uses the combined header/body layout. The item
+            // descriptor guarantees that `init` writes exactly one payload
+            // with the body's layout before the allocation is committed.
             ptr.write(Header { item });
             (item.init)(ptr.cast().byte_add(offset));
         }
 
-        Self { ptr }
+        Self {
+            ptr: allocation.commit().cast(),
+        }
     }
 
     #[inline]
     fn header(&self) -> &Header {
         unsafe { self.ptr.as_ref() }
+    }
+}
+
+struct Allocation {
+    ptr: NonNull<u8>,
+    layout: Layout,
+}
+
+impl Allocation {
+    fn new(layout: Layout) -> Self {
+        let ptr =
+            NonNull::new(unsafe { alloc(layout) }).unwrap_or_else(|| handle_alloc_error(layout));
+        Self { ptr, layout }
+    }
+
+    fn commit(self) -> NonNull<u8> {
+        let ptr = self.ptr;
+        mem::forget(self);
+        ptr
+    }
+}
+
+impl Drop for Allocation {
+    fn drop(&mut self) {
+        // SAFETY: an uncommitted allocation still owns the exact pointer and
+        // layout returned by `alloc`.
+        unsafe { dealloc(self.ptr.as_ptr(), self.layout) };
     }
 }
 

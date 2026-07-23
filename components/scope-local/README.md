@@ -49,6 +49,14 @@ cargo doc --no-deps
 
 ## Integration
 
+### Initialization contract
+
+`Scope::new` eagerly initializes every registered scope-local item in the
+caller's ordinary context. Pinned access only reads an already initialized
+scope and never allocates or invokes an item initializer. The first unpinned
+access to the global scope initializes it before entering the pinned section;
+recursive access from an initializer fails immediately with a diagnostic.
+
 ### Example
 
 ```rust
