@@ -12,6 +12,7 @@ license = "Apache-2.0"
 [features]
 fs = ["ax-std/fs"]
 host-fs = ["ax-std/fs"]
+host-test = ["ax-kspin/host-test", "ax-kernel-guard/host-test"]
 sstc = ["riscv_vcpu/sstc"]
 tls = ["ax-hal/tls", "ax-std/tls", "cpu-local/tls"]
 

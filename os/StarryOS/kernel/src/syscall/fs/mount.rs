@@ -8,7 +8,7 @@ use ax_task::current;
 use crate::{
     file::{Directory, FD_TABLE, File, FileLike},
     mm::vm_load_string,
-    pseudofs::{MemoryFs, dev::new_devptsfs, overlay::OverlayOptions},
+    pseudofs::{MemoryFs, overlay::OverlayOptions},
     task::{AsThread, tasks},
 };
 
@@ -138,6 +138,10 @@ pub fn sys_mount(
     };
     debug!("sys_mount <= source: {source:?}, target: {target:?}, fs_type: {fs_type:?}");
 
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
+
     let propagation = flags & PROPAGATION_FLAGS;
 
     if propagation.count_ones() > 1 {
@@ -205,19 +209,10 @@ pub fn sys_mount(
     }
 
     match fs_type.as_str() {
-        "proc" | "sysfs" | "devtmpfs" | "tmpfs" => {
+        "proc" | "sysfs" | "devtmpfs" | "devpts" | "tmpfs" => {
             let fs = MemoryFs::new();
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
-            if (flags & MS_RDONLY) != 0 {
-                mp.set_readonly(true);
-            }
-            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
-        }
-        "devpts" => {
-            let fs = new_devptsfs();
-            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
-            let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
@@ -423,6 +418,10 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
         "sys_pivot_root <= new_root: {:?}, put_old: {:?}",
         new_root, put_old
     );
+
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let mut ctx = fs_context.lock();

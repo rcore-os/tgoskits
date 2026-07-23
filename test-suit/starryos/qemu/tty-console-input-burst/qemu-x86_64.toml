@@ -2,6 +2,8 @@ args = [
     "-nographic",
     "-m",
     "512M",
+    "-smp",
+    "4",
     "-device",
     "nvme,serial=deadbeef,drive=nvm",
     "-drive",

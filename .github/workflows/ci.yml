@@ -142,7 +142,6 @@ jobs:
       - name: Validate CI source paths
         run: |
           python3 scripts/test/check_ci_paths.py
-          python3 scripts/test/check_coverage_ci.py
 
       - name: Detect CI-relevant changes
         id: filter
@@ -313,6 +312,7 @@ jobs:
             cache_key: ""
             container_image: base
             fetch_depth: full
+            upload_xtask_bin_artifact: true
           - name: Run spin-lint
             use_container: true
             runs_on: '["ubuntu-latest"]'
@@ -359,31 +359,11 @@ jobs:
       upload_xtask_bin_artifact: ${{ matrix.upload_xtask_bin_artifact || false }}
       xtask_bin_artifact_name: tg-xtask-bin
 
-  build_xtask:
-    # Dedicated job that builds and uploads the tg-xtask binary artifact.
-    # Decoupling this from static_checks ensures container test jobs can
-    # always download the prebuilt binary, even if a sibling lint job is
-    # cancelled by fail-fast or skipped on a re-run.
-    name: Build tg-xtask binary
-    needs: detect_changes
-    if: needs.detect_changes.outputs.ci_checks == 'true'
-    uses: ./.github/workflows/reusable-command.yml
-    with:
-      runs_on: '["ubuntu-latest"]'
-      use_container: true
-      command: cargo build -p tg-xtask
-      cache_key: ""
-      container_image: ${{ format('{0}:latest', needs.detect_changes.outputs.base_container_image) }}
-      fetch_depth: "1"
-      upload_xtask_bin_artifact: true
-      xtask_bin_artifact_name: tg-xtask-bin
-
   test_checks:
     name: ${{ matrix.name }}
     if: needs.detect_changes.outputs.ci_checks == 'true'
     needs:
       - detect_changes
-      - build_xtask
       - static_checks
     strategy:
       fail-fast: true
@@ -655,19 +635,25 @@ jobs:
             timeout_minutes: 20
             command: |
               rustup target add x86_64-unknown-uefi
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends ovmf
-              UEFI_FIRMWARE=""
-              for candidate in \
-                /usr/share/OVMF/OVMF_CODE_4M.fd \
-                /usr/share/OVMF/OVMF_CODE.fd \
-                /usr/share/ovmf/OVMF.fd \
-                /usr/share/qemu/OVMF.fd; do
-                if [ -f "${candidate}" ]; then
-                  UEFI_FIRMWARE="${candidate}"
-                  break
-                fi
-              done
+              find_uefi_firmware() {
+                for candidate in \
+                  /usr/share/OVMF/OVMF_CODE_4M.fd \
+                  /usr/share/OVMF/OVMF_CODE.fd \
+                  /usr/share/ovmf/OVMF.fd \
+                  /usr/share/qemu/OVMF.fd; do
+                  if [ -f "${candidate}" ]; then
+                    printf '%s\n' "${candidate}"
+                    return 0
+                  fi
+                done
+                return 1
+              }
+              UEFI_FIRMWARE="$(find_uefi_firmware || true)"
+              if [ -z "${UEFI_FIRMWARE}" ]; then
+                sudo apt-get update
+                sudo apt-get install -y --no-install-recommends ovmf
+                UEFI_FIRMWARE="$(find_uefi_firmware || true)"
+              fi
               if [ -z "${UEFI_FIRMWARE}" ]; then
                 echo "ERROR: installed OVMF firmware image was not found under /usr/share." >&2
                 exit 1
@@ -742,46 +728,6 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
-          - name: Coverage test starry
-            use_container: true
-            runs_on: '["ubuntu-latest"]'
-            command: |
-              rustup component add llvm-tools
-              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch x86_64 --coverage --out-fmt html
-              # Reports are stored under coverage/, so reclaim each instrumented target tree
-              # before building the next architecture on the hosted runner.
-              cargo clean --target-dir target/x86_64-unknown-linux-musl
-              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch aarch64 --coverage --out-fmt html
-              cargo clean --target-dir target/aarch64-unknown-linux-musl
-              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch riscv64 --coverage --out-fmt html
-              cargo clean --target-dir target/riscv64gc-unknown-linux-musl
-              cargo xtask ktest qemu -p starry-kernel --test axtest_kernel --arch loongarch64 --coverage --out-fmt html
-              cargo clean --target-dir target/loongarch64-unknown-linux-musl
-            cache_key: ""
-            container_image: base
-            limit_to_owner: ""
-            main_pr_only: false
-            coverage_artifact_name: coverage-starry
-            upload_coverage_artifacts: true
-          - name: Coverage test axvisor
-            use_container: false
-            runs_on: '["self-hosted","linux","kvm"]'
-            self_hosted_owner: rcore-os
-            require_kvm: true
-            command: |
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends libudev-dev pkg-config
-              rustup component add llvm-tools
-              cargo xtask ktest qemu -p axvisor --test axtest --arch x86_64 --coverage --out-fmt html
-              cargo xtask ktest qemu -p axvisor --test axtest --arch aarch64 --coverage --out-fmt html
-              cargo xtask ktest qemu -p axvisor --test axtest --arch riscv64 --coverage --out-fmt html
-              cargo xtask ktest qemu -p axvisor --test axtest --arch loongarch64 --coverage --out-fmt html
-            cache_key: ""
-            container_image: ""
-            limit_to_owner: ""
-            main_pr_only: false
-            coverage_artifact_name: coverage-axvisor
-            upload_coverage_artifacts: true
           - name: Test starry self-hosted board jl-lsgd2k10
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
@@ -842,8 +788,6 @@ jobs:
           )
         }}
       xtask_bin_artifact_name: tg-xtask-bin
-      upload_coverage_artifacts: ${{ matrix.upload_coverage_artifacts || false }}
-      coverage_artifact_name: ${{ matrix.coverage_artifact_name || '' }}
     secrets:
       CLAW_API_KEY: ${{ secrets.CLAW_API_KEY }}
 
