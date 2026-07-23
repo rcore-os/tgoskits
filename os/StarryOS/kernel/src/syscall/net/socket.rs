@@ -31,9 +31,16 @@ use crate::{
     task::AsThread,
 };
 
+const SOCK_TYPE_MASK: u32 = 0xf;
+const SOCK_MAX: u32 = 11;
+const SOCK_FLAGS_MASK: u32 = O_NONBLOCK | O_CLOEXEC;
+
 pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
     debug!("sys_socket <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
-    let ty = raw_ty & 0xFF;
+    let ty = raw_ty & SOCK_TYPE_MASK;
+    if raw_ty & !(SOCK_TYPE_MASK | SOCK_FLAGS_MASK) != 0 || ty >= SOCK_MAX {
+        return Err(AxError::InvalidInput);
+    }
 
     if domain == AF_PACKET {
         if ty != SOCK_DGRAM {
