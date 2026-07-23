@@ -23,6 +23,7 @@ aml = "0.16"
 ansi_rgb = "0.2"
 anyhow = { workspace = true, default-features = false }
 arrayvec = { version = "0.7", default-features = false }
+ax-kspin.workspace = true
 bit_field = "0.10"
 bitflags = "2.9"
 byte-unit = { workspace = true }
@@ -39,7 +40,6 @@ ax-page-table = { workspace = true, features = ["boot"] }
 rgb = "0.8"
 some-serial.workspace = true
 somehal-macros = { workspace = true }
-spin = { workspace = true, features = ["mutex", "spin_mutex"] }
 tock-registers.workspace = true
 uguid = "2.2.1"
 derive_more.workspace = true
@@ -68,4 +68,5 @@ quote = "1.0"
 syn = "2.0"
 
 [dev-dependencies]
+ax-kspin = { workspace = true, features = ["host-test", "smp"] }
 libc.workspace = true

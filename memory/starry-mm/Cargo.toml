@@ -12,13 +12,14 @@ starry-strict-commit = []
 
 [dependencies]
 ax-errno.workspace = true
+ax-kspin.workspace = true
 ax-memory-addr.workspace = true
 log.workspace = true
 ax-page-table.workspace = true
 scope-local.workspace = true
-spin = { workspace = true, features = ["mutex", "spin_mutex"] }
 thiserror = { workspace = true, default-features = false }
 
 [dev-dependencies]
 ax-percpu = { workspace = true, features = ["host-test"] }
+ax-kspin = { workspace = true, features = ["host-test", "smp"] }
 cpu-local = { workspace = true, features = ["host-test"] }

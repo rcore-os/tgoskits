@@ -7310,6 +7310,7 @@ dependencies = [
  "ansi_rgb",
  "anyhow",
  "arrayvec",
+ "ax-kspin",
  "ax-page-table",
  "bit_field",
  "bitflags 2.13.0",
@@ -7333,7 +7334,6 @@ dependencies = [
  "smccc",
  "some-serial",
  "somehal-macros",
- "spin",
  "syn 2.0.118",
  "thiserror 2.0.18",
  "tock-registers 0.10.1",
@@ -7541,13 +7541,13 @@ name = "starry-mm"
 version = "0.1.0"
 dependencies = [
  "ax-errno 0.6.1",
+ "ax-kspin",
  "ax-memory-addr",
  "ax-page-table",
  "ax-percpu",
  "cpu-local",
  "log",
  "scope-local",
- "spin",
  "thiserror 2.0.18",
 ]
 

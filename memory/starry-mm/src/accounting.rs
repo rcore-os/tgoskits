@@ -8,10 +8,10 @@ use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoPreempt;
 use ax_memory_addr::VirtAddr;
 use log::warn;
 use scope_local::scope_local;
-use spin::Mutex;
 
 static GENERATION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -31,6 +31,7 @@ pub enum RssKind {
 ///
 /// COW-backend per-VA charges are serialized independently so every public
 /// accounting operation remains safe even outside the address-space lock.
+/// Charge-map operations run only in process context, never in IRQ handlers.
 pub struct MemoryAccounting {
     rss_anon: AtomicU64,
     rss_file: AtomicU64,
@@ -39,10 +40,9 @@ pub struct MemoryAccounting {
     /// Monotonic generation counter, incremented on every charge map mutation.
     generation: AtomicU64,
     /// Cow resident pages keyed by user VA (4 KiB granularity today).
-    // This lock intentionally does not disable IRQs or preemption: BTreeMap
-    // insertion may allocate. Charge operations run only in process-context VM
-    // paths and are normally also serialized by the owning address-space lock.
-    charges: Mutex<BTreeMap<VirtAddr, RssKind>>,
+    // The kernel allocator is non-sleeping, so BTreeMap insertion is valid in
+    // this non-preemptible process-context critical section.
+    charges: SpinNoPreempt<BTreeMap<VirtAddr, RssKind>>,
 }
 
 /// Validated RSS charge relocation performed as part of an `mremap` transaction.
@@ -108,7 +108,7 @@ impl MemoryAccounting {
             rss_shmem: AtomicU64::new(0),
             hiwater_rss: AtomicU64::new(0),
             generation: AtomicU64::new(gen_id),
-            charges: Mutex::new(BTreeMap::new()),
+            charges: SpinNoPreempt::new(BTreeMap::new()),
         }
     }
 

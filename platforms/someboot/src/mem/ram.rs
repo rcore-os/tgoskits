@@ -1,5 +1,6 @@
 use core::{alloc::Layout, ops::Range};
 
+use ax_kspin::SpinRaw;
 use ax_page_table::boot::PageFrameProvider;
 use kernutil::memory::{MemoryDescriptor, MemoryType};
 use num_align::NumAlign;
@@ -17,8 +18,9 @@ enum RamAllocatorState {
     Frozen,
 }
 
-static RAM_ALLOCATOR: spin::Mutex<RamAllocatorState> =
-    spin::Mutex::new(RamAllocatorState::Uninitialized);
+// The early arena is used only by the BSP before secondary CPUs start. SpinRaw
+// provides interior mutability without imposing runtime IRQ or scheduler hooks.
+static RAM_ALLOCATOR: SpinRaw<RamAllocatorState> = SpinRaw::new(RamAllocatorState::Uninitialized);
 
 /// Allocates from the early-boot linear RAM arena.
 pub fn alloc(layout: Layout) -> Option<usize> {
