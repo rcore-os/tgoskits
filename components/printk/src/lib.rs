@@ -28,6 +28,7 @@
 
 use core::{
     cell::UnsafeCell,
+    ptr::NonNull,
     sync::atomic::{AtomicU64, AtomicUsize},
 };
 
@@ -36,12 +37,6 @@ use dev_printk::DevInfo;
 
 /// Maximum stored message length.
 pub const MSG_MAX: usize = 1024;
-
-// ---- size-independent bit layout --------------------------------------------
-//
-// The descriptor `state_var` packs the id (low bits) and a 2-bit state (top
-// bits). This layout depends only on the machine word width, never on the ring
-// geometry, so it stays as free constants/functions shared by every instance.
 
 const DESC_SV_BITS: u32 = usize::BITS;
 const DESC_FLAGS_SHIFT: u32 = DESC_SV_BITS - 2;
@@ -63,8 +58,17 @@ enum DescState {
     Reusable,
 }
 
-// Special data-less lpos sentinels (`LPOS_DATALESS` = low bit set). These never
-// collide with real positions because blocks are aligned up to `usize` size.
+/// Special data block logical position values (for fields of
+/// `prb_desc.text_blk_lpos`).
+///
+/// - Bit0 is used to identify if the record has no data block. (Implemented in
+///   the `LPOS_DATALESS()` macro.)
+///
+/// - Bit1 specifies the reason for not having a data block.
+///
+/// These special values could never be real lpos values because of the
+/// meta data and alignment padding of data blocks. (See `to_blk_size()` for
+/// details.)
 const FAILED_LPOS: usize = 0x1;
 const EMPTY_LINE_LPOS: usize = 0x3;
 
@@ -98,9 +102,10 @@ fn to_blk_size(size: usize) -> usize {
 
 // ---- rings ------------------------------------------------------------------
 
-/// One descriptor: the atomic state machine plus the data-block location.
-/// The block location is stored as its `begin`/`next` logical positions.
-struct Desc {
+/// A descriptor: the complete meta-data for a record.
+///
+/// `state_var`: A bitwise combination of descriptor ID and descriptor state.
+pub struct Desc {
     state_var: AtomicUsize,
     begin: AtomicUsize,
     next: AtomicUsize,
@@ -116,15 +121,12 @@ impl Desc {
     }
 }
 
-/// Per-record metadata, valid once the descriptor is consistent.
+/// Meta information about each stored message.
 ///
-/// Plain fields (not atomics): they are writer-exclusive while the descriptor is
-/// `reserved` and read-only once finalized; their visibility is published by the
-/// `state_var` release/acquire and validated by the reader's `state_var`
-/// re-read. Accessed via volatile loads/stores through the enclosing
-/// `UnsafeCell`.
+/// All fields are set by the printk code except for `seq`, which is
+/// set by the ringbuffer code.
 #[derive(Clone, Copy)]
-struct Info {
+pub struct Info {
     /// Sequence number.
     seq: u64,
     /// Timestamp in nanoseconds.
@@ -158,80 +160,71 @@ impl Info {
     }
 }
 
-/// The descriptor ring. `descs`/`infos` point to backing arrays of
-/// `1 << count_bits` elements, provided either statically (see the
-/// `define_printkrb!` macro) or at runtime (see [`Prb::from_buffers`]). The
-/// geometry (`count_bits`) is carried per instance rather than fixed at compile
-/// time, so the same code serves rings of any size.
+/// A ringbuffer of "struct prb_desc" elements.
 struct DescRing {
     count_bits: u32,
-    descs: *const Desc,
-    infos: *const UnsafeCell<Info>,
+    descs: NonNull<Desc>,
+    infos: NonNull<UnsafeCell<Info>>,
     head_id: AtomicUsize,
     tail_id: AtomicUsize,
     last_finalized_seq: AtomicU64,
 }
 
 impl DescRing {
-    /// `DESCS_COUNT`: number of descriptor slots.
     #[inline]
     fn count(&self) -> usize {
         1 << self.count_bits
     }
-    /// `DESC_INDEX`: descriptor array index for an id or sequence number.
+    /// Determine the desc array index from an ID or sequence number.
     #[inline]
     fn index(&self, n: usize) -> usize {
         n & (self.count() - 1)
     }
-    /// `DESC_ID_PREV_WRAP`: the id of the same slot one wrap earlier.
+    /// Get the ID for the same index of the previous wrap as the given ID.
     #[inline]
     fn id_prev_wrap(&self, id: usize) -> usize {
         desc_id(id.wrapping_sub(self.count()))
     }
-    /// The descriptor for `id` (masked into the backing array).
+    /// Returns the descriptor associated with `n`.
+    ///
+    /// `n` can be either a descriptor ID or a sequence number.
     #[inline]
     fn desc(&self, id: usize) -> &Desc {
-        // SAFETY: `descs` points to `count()` initialized descriptors; `index`
-        // masks into bounds.
-        unsafe { &*self.descs.add(self.index(id)) }
+        unsafe { &*self.descs.as_ptr().add(self.index(id)) }
     }
-    /// A raw pointer to the `Info` for `id` (behind its `UnsafeCell`).
+    /// Returns the printk_info associated with `n`.
+    ///
+    /// `n` can be either a descriptor ID or a sequence number.
     #[inline]
     fn info_ptr(&self, id: usize) -> *mut Info {
-        // SAFETY: `infos` points to `count()` initialized cells; `index` masks
-        // into bounds.
-        unsafe { (*self.infos.add(self.index(id))).get() }
+        unsafe { UnsafeCell::raw_get(self.infos.as_ptr().add(self.index(id))) }
     }
 }
 
-/// The text data ring. `data` points to a backing array of `1 << size_bits`
-/// plain bytes whose accesses are ordered by the descriptor state machine and
-/// the surrounding fences (zero-copy writer path). The geometry (`size_bits`)
-/// is carried per instance.
+/// A ringbuffer of "ID + data" elements.
 struct DataRing {
     size_bits: u32,
-    data: *const UnsafeCell<u8>,
+    data: NonNull<UnsafeCell<u8>>,
     head_lpos: AtomicUsize,
     tail_lpos: AtomicUsize,
 }
 
 impl DataRing {
-    /// `DATA_SIZE`: byte capacity of the data ring.
     #[inline]
     fn size(&self) -> usize {
         1 << self.size_bits
     }
-    /// `DATA_INDEX`: data array index for a logical position.
+    /// Determine the data array index from a logical position.
     #[inline]
     fn index(&self, lpos: usize) -> usize {
         lpos & (self.size() - 1)
     }
-    /// `DATA_WRAPS`: how many times the data array has wrapped at `lpos`.
+    /// Determine how many times the data array has wrapped.
     #[inline]
     fn wraps(&self, lpos: usize) -> usize {
         lpos >> self.size_bits
     }
-    /// `DATA_THIS_WRAP_START_LPOS`: start-of-wrap lpos containing `lpos`.
+    /// Get the logical position at index 0 of the current wrap.
     #[inline]
     fn this_wrap_start(&self, lpos: usize) -> usize {
         lpos & !(self.size() - 1)
@@ -239,18 +232,223 @@ impl DataRing {
     /// Raw byte pointer to the data array (contiguous, `size()` bytes).
     #[inline]
     fn base(&self) -> *mut u8 {
-        self.data as *mut u8
+        UnsafeCell::raw_get(self.data.as_ptr())
     }
 }
 
-pub struct Prb {
+pub struct PrintkRingBuffer {
     desc_ring: DescRing,
     data_ring: DataRing,
     fail: AtomicU64,
 }
 
-// SAFETY: the ring holds raw pointers to its backing arrays (which are either
-// `'static` or owned for the ring's lifetime); every access to those arrays is
-// synchronized by the descriptor state machine + fences, and all other fields
-// are atomics.
-unsafe impl Sync for Prb {}
+// SAFETY: the ring holds `NonNull` pointers to its backing arrays (established
+// by `from_buffers`, valid and unaliased for the ring's lifetime); every access
+// to those arrays is synchronized by the descriptor state machine + fences, and
+// all other fields are atomics.
+unsafe impl Sync for PrintkRingBuffer {}
+
+impl PrintkRingBuffer {
+    /// Initialize a ring over caller-provided backing buffers (mirrors Linux
+    /// `prb_init`). The descriptor and info arrays are (re)initialized in place;
+    /// the text data buffer is left untouched.
+    ///
+    /// This is the single place the backing-array invariant relied upon by the
+    /// `desc`/`info_ptr`/`base` accessors is established, so those need no
+    /// further checks.
+    ///
+    /// # Safety
+    /// - `descs` and `infos` must each point to `1 << desc_count_bits` writable,
+    ///   properly-aligned elements; `data` to `1 << data_size_bits` bytes.
+    /// - All three buffers must stay valid, and must not be aliased by any other
+    ///   `PrintkRingBuffer`, for as long as the returned ring is used.
+    pub unsafe fn from_buffers(
+        descs: NonNull<Desc>,
+        infos: NonNull<UnsafeCell<Info>>,
+        desc_count_bits: u32,
+        data: NonNull<UnsafeCell<u8>>,
+        data_size_bits: u32,
+    ) -> Self {
+        let count = 1usize << desc_count_bits;
+        // Initial head/tail id sits at the last array index and overflows into
+        // index 0 on the first wrap.
+        let head_id = desc_id(((1usize << desc_count_bits) + 1).wrapping_neg());
+        // Initial head/tail lpos sits at index 0 and overflows on the first wrap.
+        let head_lpos = (1usize << data_size_bits).wrapping_neg();
+
+        for i in 0..count {
+            // The last slot is the initial head and tail: a data-less, reusable
+            // descriptor.
+            let bootstrap = i == count - 1;
+            let desc = Desc {
+                state_var: AtomicUsize::new(if bootstrap {
+                    desc_sv(head_id, DESC_REUSABLE)
+                } else {
+                    0
+                }),
+                begin: AtomicUsize::new(if bootstrap { FAILED_LPOS } else { 0 }),
+                next: AtomicUsize::new(if bootstrap { FAILED_LPOS } else { 0 }),
+            };
+
+            // Bootstrap sequence numbers: slot 0 is the first record a writer
+            // reserves (incremented to 0 on that reservation); the last slot
+            // reports seq 0 during the bootstrap phase.
+            let mut info = Info::new();
+            if i == 0 {
+                info.seq = (count as u64).wrapping_neg();
+            }
+            if bootstrap {
+                info.seq = 0;
+            }
+
+            // SAFETY: the caller guarantees `count` writable, aligned slots in
+            // both arrays; this runs before any concurrent access to the ring.
+            unsafe {
+                descs.as_ptr().add(i).write(desc);
+                infos.as_ptr().add(i).write(UnsafeCell::new(info));
+            }
+        }
+
+        Self {
+            desc_ring: DescRing {
+                count_bits: desc_count_bits,
+                descs,
+                infos,
+                head_id: AtomicUsize::new(head_id),
+                tail_id: AtomicUsize::new(head_id),
+                last_finalized_seq: AtomicU64::new(0),
+            },
+            data_ring: DataRing {
+                size_bits: data_size_bits,
+                data,
+                head_lpos: AtomicUsize::new(head_lpos),
+                tail_lpos: AtomicUsize::new(head_lpos),
+            },
+            fail: AtomicU64::new(0),
+        }
+    }
+
+    /// Const-construct a ring over already-bootstrapped `'static` backing arrays
+    /// (mirrors Linux `DEFINE_PRINTKRB`). Unlike `from_buffers`, the arrays are
+    /// *not* touched here — `bootstrap_descs`/`bootstrap_infos` must have set
+    /// their initial contents at compile time. Used by `define_printkrb!`.
+    ///
+    /// # Safety
+    /// - `descs`/`infos` must point to `1 << desc_count_bits` elements
+    ///   bootstrapped by `bootstrap_descs`/`bootstrap_infos`; `data` to
+    ///   `1 << data_size_bits` writable bytes.
+    /// - All three must be valid for `'static` and unaliased by any other ring.
+    pub const unsafe fn from_static(
+        descs: NonNull<Desc>,
+        infos: NonNull<UnsafeCell<Info>>,
+        desc_count_bits: u32,
+        data: NonNull<UnsafeCell<u8>>,
+        data_size_bits: u32,
+    ) -> Self {
+        // Initial head/tail id sits at the last array index; initial head/tail
+        // lpos at index 0. Both overflow on the first wrap.
+        let head_id = desc_id(((1usize << desc_count_bits) + 1).wrapping_neg());
+        let head_lpos = (1usize << data_size_bits).wrapping_neg();
+
+        Self {
+            desc_ring: DescRing {
+                count_bits: desc_count_bits,
+                descs,
+                infos,
+                head_id: AtomicUsize::new(head_id),
+                tail_id: AtomicUsize::new(head_id),
+                last_finalized_seq: AtomicU64::new(0),
+            },
+            data_ring: DataRing {
+                size_bits: data_size_bits,
+                data,
+                head_lpos: AtomicUsize::new(head_lpos),
+                tail_lpos: AtomicUsize::new(head_lpos),
+            },
+            fail: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Build a compile-time-bootstrapped descriptor array for `define_printkrb!`.
+/// The last slot is the initial head/tail: a data-less, `reusable` descriptor.
+#[doc(hidden)]
+pub const fn bootstrap_descs<const N: usize>() -> [Desc; N] {
+    let mut arr = [const { Desc::new() }; N];
+    let head_id = desc_id(N.wrapping_add(1).wrapping_neg());
+    arr[N - 1] = Desc {
+        state_var: AtomicUsize::new(desc_sv(head_id, DESC_REUSABLE)),
+        begin: AtomicUsize::new(FAILED_LPOS),
+        next: AtomicUsize::new(FAILED_LPOS),
+    };
+    arr
+}
+
+/// Build a compile-time-bootstrapped info array for `define_printkrb!`. Slot 0
+/// is the first record a writer reserves; the last slot reports seq 0.
+#[doc(hidden)]
+pub const fn bootstrap_infos<const N: usize>() -> [UnsafeCell<Info>; N] {
+    let mut arr = [const { UnsafeCell::new(Info::new()) }; N];
+    let mut first = Info::new();
+    first.seq = (N as u64).wrapping_neg();
+    arr[0] = UnsafeCell::new(first);
+    let mut last = Info::new();
+    last.seq = 0;
+    arr[N - 1] = UnsafeCell::new(last);
+    arr
+}
+
+/// `Sync` wrapper for `define_printkrb!`'s `UnsafeCell` backing arrays, which
+/// are otherwise `!Sync` and cannot back a `static`.
+#[doc(hidden)]
+#[repr(transparent)]
+pub struct SyncWrap<T>(pub T);
+
+// SAFETY: the wrapped array is shared across CPUs only through the ring, whose
+// access to it is synchronized by the descriptor state machine + fences — the
+// same contract as `unsafe impl Sync for PrintkRingBuffer`.
+unsafe impl<T> Sync for SyncWrap<T> {}
+
+/// Define a `static` printk ring buffer with compile-time backing storage
+/// (mirrors Linux `DEFINE_PRINTKRB`).
+///
+/// `desc_bits` sets the number of descriptor slots (`1 << desc_bits`); the text
+/// data buffer is `1 << (desc_bits + avg_text_bits)` bytes.
+#[macro_export]
+macro_rules! define_printkrb {
+    ($vis:vis $name:ident, $desc_bits:expr, $avg_text_bits:expr $(,)?) => {
+        $vis static $name: $crate::PrintkRingBuffer = {
+            const DESC_BITS: u32 = $desc_bits;
+            const SIZE_BITS: u32 = $desc_bits + $avg_text_bits;
+            const COUNT: usize = 1usize << DESC_BITS;
+            const DATA_SIZE: usize = 1usize << SIZE_BITS;
+
+            // `Desc` is `Sync` (atomics); the `UnsafeCell` arrays need `SyncWrap`.
+            static DESCS: [$crate::Desc; COUNT] = $crate::bootstrap_descs::<COUNT>();
+            static INFOS: $crate::SyncWrap<[::core::cell::UnsafeCell<$crate::Info>; COUNT]> =
+                $crate::SyncWrap($crate::bootstrap_infos::<COUNT>());
+            static DATA: $crate::SyncWrap<[::core::cell::UnsafeCell<u8>; DATA_SIZE]> =
+                $crate::SyncWrap([const { ::core::cell::UnsafeCell::new(0u8) }; DATA_SIZE]);
+
+            // SAFETY: the three sibling statics live for `'static`, are writable
+            // (interior mutability via atomics / `UnsafeCell`), bootstrapped at
+            // compile time, and used by no other ring.
+            unsafe {
+                $crate::PrintkRingBuffer::from_static(
+                    ::core::ptr::NonNull::new_unchecked(
+                        ::core::ptr::addr_of!(DESCS) as *mut $crate::Desc,
+                    ),
+                    ::core::ptr::NonNull::new_unchecked(
+                        ::core::ptr::addr_of!(INFOS.0)
+                            as *mut ::core::cell::UnsafeCell<$crate::Info>,
+                    ),
+                    DESC_BITS,
+                    ::core::ptr::NonNull::new_unchecked(
+                        ::core::ptr::addr_of!(DATA.0) as *mut ::core::cell::UnsafeCell<u8>,
+                    ),
+                    SIZE_BITS,
+                )
+            }
+        };
+    };
+}
