@@ -1,3 +1,4 @@
+use hashbrown::HashSet;
 use log::warn;
 
 use super::*;
@@ -251,21 +252,26 @@ impl Mountpoint {
         source_location: &Location,
         child: &Arc<Self>,
     ) -> VfsResult<()> {
-        let peers: Vec<_> = source_parent
-            .peers
-            .lock()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect();
-        let slaves: Vec<_> = source_parent
-            .slaves
-            .lock()
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect();
         let path_components = Self::relative_path_from_mount_root(source_location)?;
 
-        for target_parent in peers.into_iter().chain(slaves) {
+        // Walk the entire downstream propagation graph so the child reaches
+        // slaves-of-peers and slaves-of-slaves too. Linux requires transitive
+        // forwarding along slave chains (A shared -> B slave -> C slave must
+        // deliver to C). Shared peer groups are cliques, so a `mount_id`-keyed
+        // visited set is mandatory to stop peers from echoing the event back.
+        let mut visited: HashSet<u64> = HashSet::new();
+        visited.insert(source_parent.mount_id());
+        let mut frontier: Vec<Arc<Self>> = source_parent.propagation_targets();
+
+        while let Some(target_parent) = frontier.pop() {
+            if !visited.insert(target_parent.mount_id()) {
+                continue;
+            }
+
+            for receiver in target_parent.propagation_targets() {
+                frontier.push(receiver);
+            }
+
             let mut location = target_parent.root_location();
             for component in &path_components {
                 location = location.lookup_no_follow(component)?;
