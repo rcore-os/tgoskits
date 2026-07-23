@@ -16,4 +16,4 @@ features = [
   "ax-driver/rk3588-cpufreq",
 ]
 log = "Info"
-max_cpu_num = 8
+max_cpu_num = 4
