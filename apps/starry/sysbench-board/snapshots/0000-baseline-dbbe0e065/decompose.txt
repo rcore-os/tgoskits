@@ -39,4 +39,3 @@
   HS_MEMSW bs=1K op=write 425.03 MiB transferred (42.47 MiB/sec)
   HS_MEMSW bs=1M op=read 2048.00 MiB transferred (2925.81 MiB/sec)
   HS_MEMSW bs=1M op=write 2048.00 MiB transferred (1933.64 MiB/sec)
-
