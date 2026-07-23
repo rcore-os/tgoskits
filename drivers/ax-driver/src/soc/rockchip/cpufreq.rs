@@ -402,9 +402,20 @@ const A76_OPPS: &[Opp] = &[
     },
 ];
 
-/// A55 (little) OPP ladder, low→high, same hybrid rationale: ring-scaled below the
-/// 675 mV point, then ring 1008 with rising voltage. Top rung 1523 MHz @ 950 mV
-/// (the RK806 force-write ceiling), the sweep's safe maximum for the little cluster.
+/// A55 (little) OPP ladder, low→high. Unlike the A76 ladder this is **ring-only**:
+/// every rung sits on the boot-confirmed 675 mV rail and only the SCMI PVTPLL ring
+/// moves. The A55 rail is RK806 DCDC2 over SPI2, whose *read* path is a hardware
+/// scope-wall — writes reach the chip (proven by the rail-alignment freq drop) but
+/// MISO never feeds the shift register, so a write cannot be read back to confirm
+/// the rail actually reached target. Scaling the A55 voltage on such an unconfirmable
+/// write could commit an OPP whose rail never arrived; rather than risk that, the
+/// little cluster forgoes the voltage lever and stays on 675 mV, which board
+/// measurement proves delivers the full 1008 MHz ring exactly. 675 mV over-volts
+/// every ring at or below 1008, so no A55 rung can undervolt regardless of the PMIC
+/// (see [`Cluster::voltage_managed`]). The big clusters keep the voltage lever
+/// because their RK8602/RK8603 rails read back over I2C. Restoring the higher
+/// voltage-scaled A55 rungs (1212–1523 MHz) is gated on a trusted RK806 write-back
+/// (an oscilloscope-level MISO fix, or a delivered-frequency oracle confirmation).
 const A55_OPPS: &[Opp] = &[
     Opp {
         ring_khz: 408_000,
@@ -420,26 +431,6 @@ const A55_OPPS: &[Opp] = &[
         ring_khz: 1_008_000,
         uv: 675_000,
         mhz: 1021,
-    },
-    Opp {
-        ring_khz: 1_008_000,
-        uv: 762_500,
-        mhz: 1212,
-    },
-    Opp {
-        ring_khz: 1_008_000,
-        uv: 800_000,
-        mhz: 1285,
-    },
-    Opp {
-        ring_khz: 1_008_000,
-        uv: 850_000,
-        mhz: 1372,
-    },
-    Opp {
-        ring_khz: 1_008_000,
-        uv: 950_000,
-        mhz: 1523,
     },
 ];
 
@@ -496,6 +487,10 @@ impl Cluster {
     /// regulator; A55 uses the bounded force-write (its RK806 read is a
     /// scope-wall, but writes reach the chip — proven by the rail-alignment freq drop).
     /// Both PMIC helpers clamp to their rail's safe envelope internally.
+    ///
+    /// Only ever called for a [`voltage_managed`](Self::voltage_managed) domain —
+    /// the A55 arm remains for the one-time boot alignment path but the governor
+    /// never drives it, so no dynamic (unconfirmable) A55 SPI write is issued.
     fn set_voltage(self, uv: u32) -> bool {
         use super::{pmic_i2c, pmic_spi};
         match self {
@@ -503,6 +498,21 @@ impl Cluster {
             Cluster::Big0 => pmic_i2c::set_uv(pmic_i2c::RK8602_BIG0_ADDR, uv),
             Cluster::Big1 => pmic_i2c::set_uv(pmic_i2c::RK8603_BIG1_ADDR, uv),
         }
+    }
+
+    /// Whether the governor may scale this domain's rail voltage dynamically.
+    ///
+    /// The A76 rails (RK8602/RK8603 over I2C) read back, so each write is confirmed
+    /// before the clock is allowed to follow it up — they get the full voltage lever.
+    /// The A55 rail (RK806 DCDC2 over SPI2) cannot be read back (a MISO hardware
+    /// scope-wall), so its voltage is programmed exactly once at init — the down-only,
+    /// boot-safe 675 mV alignment — and never scaled dynamically. The A55 ladder is
+    /// therefore ring-only and every A55 rung stays over-volted (675 mV supports the
+    /// whole ≤1008 MHz ring), which is undervolt-safe no matter what the unconfirmable
+    /// SPI write actually did. This per-cluster split keeps the readback-verified A76
+    /// DVFS while removing every dynamic A55 voltage write.
+    fn voltage_managed(self) -> bool {
+        !matches!(self, Cluster::A55)
     }
 }
 
@@ -577,6 +587,16 @@ fn apply_opp(cluster: Cluster, opp: Opp, going_up: bool) -> bool {
     let hz = opp.ring_khz as u64 * 1_000;
     run_apply_steps(apply_step_order(going_up), |step| match step {
         ApplyStep::Voltage => {
+            // Ring-only clusters (A55) never scale voltage dynamically: their rail
+            // was pinned once at init to the boot-safe 675 mV row (down-only, and
+            // over-volted for every ring ≤ 1008) and cannot be read back to confirm
+            // a dynamic write. Treat the voltage step as a confirmed no-op so the
+            // ordered/transactional apply logic is unchanged while no unconfirmable
+            // SPI write is ever issued and the clock (already within the fixed rail's
+            // envelope) can safely follow. See [`Cluster::voltage_managed`].
+            if !cluster.voltage_managed() {
+                return true;
+            }
             if cluster.set_voltage(opp.uv) {
                 return true;
             }
@@ -1092,10 +1112,16 @@ mod tests {
             next_opp_idx(&[0, 0], BOOT_OPP_IDX, A76_OPPS.len(), false),
             BOOT_OPP_IDX - 1
         );
-        // Every A55 core just under the down-threshold sheds exactly one step.
+        // Every A55 core just under the down-threshold sheds exactly one step
+        // (from the top of the ring-only A55 ladder down one rung).
         assert_eq!(
-            next_opp_idx(&[DOWN_THRESHOLD_PCT - 1; 4], 3, A55_OPPS.len(), false),
-            2
+            next_opp_idx(
+                &[DOWN_THRESHOLD_PCT - 1; 4],
+                A55_OPPS.len() - 1,
+                A55_OPPS.len(),
+                false
+            ),
+            A55_OPPS.len() - 2
         );
     }
 
@@ -1167,6 +1193,29 @@ mod tests {
                 opp.uv / 1_000
             );
         }
+    }
+
+    #[test]
+    fn a55_ladder_is_ring_only_on_the_boot_rail() {
+        // The A55 RK806 rail cannot be read back (MISO scope-wall), so the little
+        // cluster forgoes the voltage lever: every A55 rung must sit on the single
+        // boot-confirmed 675 mV rail (see `Cluster::voltage_managed`). This locks in
+        // the cluster split — a future rung that raised the A55 voltage on an
+        // unconfirmable SPI write would fail here.
+        assert!(
+            !Cluster::A55.voltage_managed(),
+            "A55 must stay voltage-unmanaged (ring-only) until its rail reads back"
+        );
+        for opp in A55_OPPS {
+            assert_eq!(
+                opp.uv, 675_000,
+                "A55 rung {} MHz must stay on the 675 mV boot rail (ring-only)",
+                opp.mhz
+            );
+        }
+        // The A76 clusters keep the full voltage lever.
+        assert!(Cluster::Big0.voltage_managed());
+        assert!(Cluster::Big1.voltage_managed());
     }
 
     #[test]
