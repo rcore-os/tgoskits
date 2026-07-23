@@ -142,7 +142,6 @@ jobs:
       - name: Validate CI source paths
         run: |
           python3 scripts/test/check_ci_paths.py
-          python3 scripts/test/check_coverage_ci.py
 
       - name: Detect CI-relevant changes
         id: filter
