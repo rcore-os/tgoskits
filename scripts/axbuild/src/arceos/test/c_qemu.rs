@@ -418,4 +418,21 @@ mod tests {
         assert_eq!(config.fail_regex, vec!["panic"]);
         assert_eq!(config.timeout, Some(120));
     }
+
+    #[test]
+    fn arceos_runtime_smp_owns_remote_tlb_shootdown_capability() {
+        let metadata = crate::build::workspace_metadata().unwrap();
+        let runtime = metadata
+            .packages
+            .iter()
+            .find(|package| package.name == "ax-runtime")
+            .unwrap();
+        let smp_dependencies = runtime.features.get("smp").unwrap();
+
+        assert!(
+            smp_dependencies.iter().any(|feature| feature == "ipi"),
+            "ax-runtime/smp must provide the IPI capability required by local-only TLB \
+             invalidators"
+        );
+    }
 }
