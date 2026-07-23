@@ -27,7 +27,7 @@ impl SerialEventSet {
 }
 
 bitflags! {
-    /// RX error state captured without consuming FIFO data.
+    /// RX error state reported by the IRQ endpoint while buffering samples.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct RxErrorFlags: u32 {
         const BREAK   = 1 << 0;
