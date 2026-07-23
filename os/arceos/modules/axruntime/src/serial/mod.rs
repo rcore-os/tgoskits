@@ -5,6 +5,7 @@
 
 mod control;
 mod ingress;
+mod spsc;
 mod state;
 mod worker;
 
@@ -23,13 +24,16 @@ pub use state::SerialStats;
 
 use self::{
     control::{ControlOp, ControlQueue},
-    ingress::{RxChannel, TxIngress},
+    ingress::TxIngress,
+    spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
     state::{SerialIrqLatch, SerialStatsAtomic},
     worker::SerialWorker,
 };
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
 const PANIC_TX_READY_SPINS: usize = 100_000;
+const IRQ_RX_CAPACITY: usize = 16_384;
+const SUBSCRIPTION_RX_CAPACITY: usize = 4_096;
 
 static SERIAL_RUNTIMES: Once<Box<[SerialRuntimeHandle]>> = Once::new();
 static ACTIVE_CONSOLE: AtomicUsize = AtomicUsize::new(NO_ACTIVE_CONSOLE);
@@ -51,6 +55,7 @@ impl Default for RxItem {
 
 struct RuntimeIrqBridge {
     latch: SerialIrqLatch,
+    rx_overflow: AtomicBool,
     notify: IrqNotify,
 }
 
@@ -58,6 +63,7 @@ impl RuntimeIrqBridge {
     const fn new() -> Self {
         Self {
             latch: SerialIrqLatch::new(),
+            rx_overflow: AtomicBool::new(false),
             notify: IrqNotify::new(),
         }
     }
@@ -70,8 +76,7 @@ struct RuntimeShared {
     polling: bool,
     port: SpinNoIrq<Box<dyn rdif_serial::UartPort>>,
     ingress: TxIngress,
-    rx: Arc<RxChannel>,
-    rx_subscription_available: SpinNoIrq<bool>,
+    rx_subscription: SpinNoIrq<Option<SpscConsumer<RxItem>>>,
     control: ControlQueue,
     bridge: Arc<RuntimeIrqBridge>,
     stats: Arc<SerialStatsAtomic>,
@@ -127,14 +132,10 @@ impl SerialRuntimeHandle {
 
     /// Takes the only RX subscription. Starry serializes its readers above it.
     pub fn take_rx_subscription(&self) -> Option<SerialRxSubscription> {
-        let mut available = self.shared.rx_subscription_available.lock();
-        if !*available {
-            return None;
-        }
-        *available = false;
+        let consumer = self.shared.rx_subscription.lock().take()?;
         Some(SerialRxSubscription {
-            channel: self.shared.rx.clone(),
-            consumer: SpinNoIrq::new(()),
+            consumer: SpinNoIrq::new(consumer),
+            bridge: self.shared.bridge.clone(),
             source: self.shared.rx_source.clone(),
         })
     }
@@ -236,19 +237,26 @@ impl SerialTxSender {
 
 /// The unique RX consumer for one UART runtime.
 pub struct SerialRxSubscription {
-    channel: Arc<RxChannel>,
-    consumer: SpinNoIrq<()>,
+    consumer: SpinNoIrq<SpscConsumer<RxItem>>,
+    bridge: Arc<RuntimeIrqBridge>,
     source: Arc<PollSet>,
 }
 
 impl SerialRxSubscription {
     pub fn drain(&self, out: &mut [RxItem]) -> usize {
-        let _consumer = self.consumer.lock();
-        self.channel.drain(out)
+        let count = self.consumer.lock().drain(out);
+        notify_drained_space(count, || self.bridge.notify.notify());
+        count
     }
 
     pub fn poll_source(&self) -> Arc<PollSet> {
         self.source.clone()
+    }
+}
+
+fn notify_drained_space(count: usize, notify_space: impl FnOnce()) {
+    if count != 0 {
+        notify_space();
     }
 }
 
@@ -282,6 +290,8 @@ fn build_runtime(
     let polling = info.irq.is_none();
     let bridge = Arc::new(RuntimeIrqBridge::new());
     let stats = Arc::new(SerialStatsAtomic::new());
+    let (irq_rx_producer, irq_rx_consumer) = spsc::channel(IRQ_RX_CAPACITY);
+    let (rx_output_producer, rx_output_consumer) = spsc::channel(SUBSCRIPTION_RX_CAPACITY);
     let shared = Arc::new(RuntimeShared {
         index,
         info,
@@ -289,8 +299,7 @@ fn build_runtime(
         polling,
         port: SpinNoIrq::new(port),
         ingress: TxIngress::new(),
-        rx: Arc::new(RxChannel::new()),
-        rx_subscription_available: SpinNoIrq::new(true),
+        rx_subscription: SpinNoIrq::new(Some(rx_output_consumer)),
         control: ControlQueue::new(),
         bridge: bridge.clone(),
         stats: stats.clone(),
@@ -301,7 +310,7 @@ fn build_runtime(
         irq_handle: Once::new(),
     });
 
-    let worker = SerialWorker::new(shared.clone());
+    let worker = SerialWorker::new(shared.clone(), irq_rx_consumer, rx_output_producer);
     let task = TaskInner::new(
         move || worker.run(),
         alloc::format!("serial{index}-maint"),
@@ -319,8 +328,13 @@ fn build_runtime(
         })?;
         let callback_bridge = bridge;
         let callback_stats = stats;
+        let mut callback_rx = RuntimeIrqRxSink {
+            producer: irq_rx_producer,
+            bridge: callback_bridge.clone(),
+            stats: callback_stats.clone(),
+        };
         let request = ax_hal::irq::IrqRequest::new(move |_| {
-            let Some(event) = irq.handle() else {
+            let Some(event) = irq.handle(&mut callback_rx) else {
                 callback_stats.spurious_irq();
                 return ax_hal::irq::IrqReturn::Unhandled;
             };
@@ -350,6 +364,21 @@ fn build_runtime(
         shared.info.name, shared.owner_cpu, shared.info.irq, shared.polling
     );
     Ok(SerialRuntimeHandle { shared })
+}
+
+struct RuntimeIrqRxSink {
+    producer: SpscProducer<rdif_serial::RxSample>,
+    bridge: Arc<RuntimeIrqBridge>,
+    stats: Arc<SerialStatsAtomic>,
+}
+
+impl rdif_serial::IrqRxSink for RuntimeIrqRxSink {
+    fn push(&mut self, sample: rdif_serial::RxSample) {
+        if self.producer.push(sample).is_err() {
+            self.stats.add_rx_dropped(1);
+            self.bridge.rx_overflow.store(true, Ordering::Release);
+        }
+    }
 }
 
 /// Routes normal logs through the bounded TX channel. Panic output only takes
@@ -385,4 +414,59 @@ pub(crate) fn route_console_bytes(bytes: &[u8]) -> Option<usize> {
         .try_write_log(bytes, &runtime.shared.bridge.notify);
     runtime.shared.stats.add_log_dropped(bytes.len() - accepted);
     Some(accepted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn irq_sink_drops_only_after_the_preallocated_ring_is_full() {
+        let bridge = Arc::new(RuntimeIrqBridge::new());
+        let stats = Arc::new(SerialStatsAtomic::new());
+        let (producer, mut consumer) = spsc::channel(2);
+        let mut sink = RuntimeIrqRxSink {
+            producer,
+            bridge: bridge.clone(),
+            stats: stats.clone(),
+        };
+        let samples = [
+            rdif_serial::RxSample {
+                byte: Some(1),
+                ..rdif_serial::RxSample::default()
+            },
+            rdif_serial::RxSample {
+                byte: Some(2),
+                ..rdif_serial::RxSample::default()
+            },
+            rdif_serial::RxSample {
+                byte: Some(3),
+                ..rdif_serial::RxSample::default()
+            },
+        ];
+        for sample in samples {
+            rdif_serial::IrqRxSink::push(&mut sink, sample);
+        }
+
+        assert_eq!(consumer.pop().and_then(|sample| sample.byte), Some(1));
+        assert_eq!(consumer.pop().and_then(|sample| sample.byte), Some(2));
+        assert!(consumer.pop().is_none());
+        assert_eq!(stats.snapshot().rx_dropped, 1);
+        assert!(bridge.rx_overflow.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn subscription_drain_notifies_a_worker_waiting_for_output_space() {
+        let (mut producer, consumer) = spsc::channel(1);
+        producer.push(RxItem::Overrun).unwrap();
+        let mut consumer = consumer;
+        let mut item = [RxItem::default()];
+        let mut notify_count = 0;
+
+        let count = consumer.drain(&mut item);
+        notify_drained_space(count, || notify_count += 1);
+        assert_eq!(count, 1);
+        assert_eq!(item, [RxItem::Overrun]);
+        assert_eq!(notify_count, 1);
+    }
 }

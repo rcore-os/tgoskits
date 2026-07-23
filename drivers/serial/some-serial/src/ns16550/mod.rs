@@ -9,8 +9,8 @@ mod registers;
 
 use bitflags::Flags;
 use rdif_serial::{
-    Config, ConfigError, DataBits, Parity, RxErrorFlags, RxFlag, RxSample, SerialEventSet,
-    SerialIrqEvent, SplitUart, StopBits, UartInfo, UartIrq, UartParts, UartPort,
+    Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
+    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartInfo, UartIrq, UartParts, UartPort,
 };
 use registers::*;
 
@@ -110,11 +110,10 @@ pub struct Ns16550<T: Kind> {
     pub(crate) saved_lsr: LineStatusFlags,
 }
 
-/// IRQ-only endpoint for an NS16550-compatible UART.
-///
-/// It intentionally has no FIFO data methods.
+/// IRQ endpoint for an NS16550-compatible UART.
 pub struct Ns16550Irq<T: Kind> {
     base: T,
+    saved_lsr: LineStatusFlags,
 }
 
 impl<T: Kind> Ns16550Irq<T> {
@@ -160,18 +159,30 @@ impl<T: Kind> Ns16550Irq<T> {
 }
 
 impl<T: Kind> UartIrq for Ns16550Irq<T> {
-    fn handle(&mut self) -> Option<SerialIrqEvent> {
+    fn handle(&mut self, rx: &mut dyn IrqRxSink) -> Option<SerialIrqEvent> {
         const IRQ_PASS_BUDGET: usize = 32;
+        const RX_SAMPLE_BUDGET: usize = 256;
 
         let mut event = SerialIrqEvent::default();
+        let mut rx_samples = 0;
         for _ in 0..IRQ_PASS_BUDGET {
             let Some(current) = self.next_event() else {
                 break;
             };
             event.events |= current;
-            if current.contains(SerialEventSet::RX_STATUS) {
-                let lsr: LineStatusFlags = self.base.read_flags(UART_LSR);
-                event.rx_errors |= rx_error_flags(lsr);
+            if current.intersects(SerialEventSet::RX) {
+                let before = rx_samples;
+                while rx_samples < RX_SAMPLE_BUDGET {
+                    let Some(sample) = read_rx_sample(&self.base, &mut self.saved_lsr) else {
+                        break;
+                    };
+                    event.rx_errors |= rx_errors_from_sample(sample);
+                    rx.push(sample);
+                    rx_samples += 1;
+                }
+                if rx_samples == RX_SAMPLE_BUDGET || rx_samples == before {
+                    break;
+                }
             }
             if current.contains(SerialEventSet::MODEM_STATUS) {
                 self.ack_modem_status();
@@ -185,7 +196,7 @@ impl<T: Kind> UartIrq for Ns16550Irq<T> {
                 break;
             }
 
-            let rearm = current & (SerialEventSet::RX | SerialEventSet::TX_SPACE);
+            let rearm = current & SerialEventSet::TX_SPACE;
             if !rearm.is_empty() {
                 self.mask(rearm);
                 event.rearm |= rearm;
@@ -303,6 +314,7 @@ impl<T: Kind> SplitUart for Ns16550<T> {
     fn split(self) -> UartParts<Self::Port, Self::Irq> {
         let irq = Ns16550Irq {
             base: self.base.clone(),
+            saved_lsr: LineStatusFlags::empty(),
         };
         UartParts::new(self, irq)
     }
@@ -397,32 +409,7 @@ impl<T: Kind> Ns16550<T> {
     }
 
     pub fn read_rx(&mut self) -> Option<RxSample> {
-        let lsr = self.read_lsr_preserving();
-        if !lsr.intersects(LineStatusFlags::DATA_READY | LineStatusFlags::ERROR_MASK) {
-            return None;
-        }
-
-        let byte = lsr
-            .contains(LineStatusFlags::DATA_READY)
-            .then(|| self.base.read_reg(UART_RBR));
-        let flag = if lsr.contains(LineStatusFlags::BREAK_INTERRUPT) {
-            RxFlag::Break
-        } else if lsr.contains(LineStatusFlags::PARITY_ERROR) {
-            RxFlag::Parity
-        } else if lsr.contains(LineStatusFlags::FRAMING_ERROR) {
-            RxFlag::Framing
-        } else {
-            RxFlag::Normal
-        };
-        let overrun = lsr.contains(LineStatusFlags::OVERRUN_ERROR);
-        self.saved_lsr
-            .remove(LineStatusFlags::ERROR_MASK | LineStatusFlags::FIFO_ERROR);
-
-        Some(RxSample {
-            byte,
-            flag,
-            overrun,
-        })
+        read_rx_sample(&self.base, &mut self.saved_lsr)
     }
 
     fn read_lsr_preserving(&mut self) -> LineStatusFlags {
@@ -629,18 +616,44 @@ impl<T: Kind> Ns16550<T> {
     }
 }
 
-fn rx_error_flags(lsr: LineStatusFlags) -> RxErrorFlags {
-    let mut errors = RxErrorFlags::empty();
-    if lsr.contains(LineStatusFlags::BREAK_INTERRUPT) {
-        errors |= RxErrorFlags::BREAK;
+fn read_rx_sample<T: Kind>(base: &T, saved_lsr: &mut LineStatusFlags) -> Option<RxSample> {
+    let current: LineStatusFlags = base.read_flags(UART_LSR);
+    saved_lsr.insert(current & (LineStatusFlags::ERROR_MASK | LineStatusFlags::FIFO_ERROR));
+    let lsr = current | *saved_lsr;
+    if !lsr.intersects(LineStatusFlags::DATA_READY | LineStatusFlags::ERROR_MASK) {
+        return None;
     }
-    if lsr.contains(LineStatusFlags::PARITY_ERROR) {
-        errors |= RxErrorFlags::PARITY;
-    }
-    if lsr.contains(LineStatusFlags::FRAMING_ERROR) {
-        errors |= RxErrorFlags::FRAMING;
-    }
-    if lsr.contains(LineStatusFlags::OVERRUN_ERROR) {
+
+    let byte = lsr
+        .contains(LineStatusFlags::DATA_READY)
+        .then(|| base.read_reg(UART_RBR));
+    let flag = if lsr.contains(LineStatusFlags::BREAK_INTERRUPT) {
+        RxFlag::Break
+    } else if lsr.contains(LineStatusFlags::PARITY_ERROR) {
+        RxFlag::Parity
+    } else if lsr.contains(LineStatusFlags::FRAMING_ERROR) {
+        RxFlag::Framing
+    } else {
+        RxFlag::Normal
+    };
+    let overrun = lsr.contains(LineStatusFlags::OVERRUN_ERROR);
+    saved_lsr.remove(LineStatusFlags::ERROR_MASK | LineStatusFlags::FIFO_ERROR);
+
+    Some(RxSample {
+        byte,
+        flag,
+        overrun,
+    })
+}
+
+fn rx_errors_from_sample(sample: RxSample) -> RxErrorFlags {
+    let mut errors = match sample.flag {
+        RxFlag::Normal => RxErrorFlags::empty(),
+        RxFlag::Break => RxErrorFlags::BREAK,
+        RxFlag::Parity => RxErrorFlags::PARITY,
+        RxFlag::Framing => RxErrorFlags::FRAMING,
+    };
+    if sample.overrun {
         errors |= RxErrorFlags::OVERRUN;
     }
     errors
@@ -684,7 +697,10 @@ fn serial_event_from_lsr(lsr: LineStatusFlags) -> SerialEvent {
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-    use std::sync::{Mutex, MutexGuard};
+    use std::{
+        sync::{Arc, Mutex, MutexGuard},
+        vec::Vec,
+    };
 
     use super::*;
 
@@ -696,6 +712,21 @@ mod tests {
     static LSR_READS: AtomicUsize = AtomicUsize::new(0);
     static LAST_FCR_WRITE: AtomicU8 = AtomicU8::new(0);
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[derive(Default)]
+    struct CollectRx(Vec<RxSample>);
+
+    impl IrqRxSink for CollectRx {
+        fn push(&mut self, sample: RxSample) {
+            self.0.push(sample);
+        }
+    }
+
+    fn handle_irq(irq: &mut impl UartIrq) -> (Option<SerialIrqEvent>, Vec<RxSample>) {
+        let mut rx = CollectRx::default();
+        let event = irq.handle(&mut rx);
+        (event, rx.0)
+    }
 
     #[derive(Clone)]
     struct MockKind;
@@ -784,6 +815,28 @@ mod tests {
 
         fn get_base(&self) -> usize {
             0x1000
+        }
+    }
+
+    #[derive(Clone)]
+    struct FloodKind {
+        rbr_reads: Arc<AtomicUsize>,
+    }
+
+    impl Kind for FloodKind {
+        fn read_reg(&self, reg: u8) -> u8 {
+            match reg {
+                UART_IIR => InterruptIdentificationFlags::RECEIVED_DATA_AVAILABLE.bits(),
+                UART_LSR => LineStatusFlags::DATA_READY.bits(),
+                UART_RBR => self.rbr_reads.fetch_add(1, Ordering::SeqCst) as u8,
+                _ => 0,
+            }
+        }
+
+        fn write_reg(&self, _reg: u8, _val: u8) {}
+
+        fn get_base(&self) -> usize {
+            0x2000
         }
     }
 
@@ -942,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn irq_reports_rx_error_without_consuming_fifo_data() {
+    fn irq_reports_rx_error_and_buffers_fifo_data() {
         let (_guard, uart) = serial();
         let mut parts = uart.split();
         REGS[UART_IIR as usize].store(
@@ -955,11 +1008,19 @@ mod tests {
         );
         REGS[UART_RBR as usize].store(0xab, Ordering::SeqCst);
 
-        let event = parts.irq.handle().unwrap();
+        let (event, samples) = handle_irq(&mut parts.irq);
+        let event = event.unwrap();
         assert!(event.events.contains(SerialEventSet::RX_STATUS));
         assert!(event.rx_errors.contains(RxErrorFlags::OVERRUN));
-        assert_eq!(RBR_READS.load(Ordering::SeqCst), 0);
-        assert_eq!(REGS[UART_RBR as usize].load(Ordering::SeqCst), 0xab);
+        assert_eq!(
+            samples,
+            [RxSample {
+                byte: Some(0xab),
+                flag: RxFlag::Normal,
+                overrun: true,
+            }]
+        );
+        assert_eq!(RBR_READS.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -975,7 +1036,7 @@ mod tests {
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
             Ordering::SeqCst,
         );
-        let event = parts.irq.handle().unwrap();
+        let event = handle_irq(&mut parts.irq).0.unwrap();
         assert!(event.events.contains(SerialEventSet::TX_SPACE));
         assert_eq!(parts.port.write_tx(b"ab"), 1);
         assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
@@ -986,20 +1047,21 @@ mod tests {
         );
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
         REGS[UART_RBR as usize].store(b'z', Ordering::SeqCst);
-        let event = parts.irq.handle().unwrap();
+        let (event, samples) = handle_irq(&mut parts.irq);
+        let event = event.unwrap();
         assert!(event.events.contains(SerialEventSet::RX_DATA));
         assert_eq!(
-            parts.port.read_rx(),
-            Some(RxSample {
+            samples,
+            [RxSample {
                 byte: Some(b'z'),
                 flag: RxFlag::Normal,
                 overrun: false,
-            })
+            }]
         );
     }
 
     #[test]
-    fn runtime_irq_endpoint_does_not_read_fifo() {
+    fn hard_irq_drains_rx_before_deferred_worker_can_overrun_fifo() {
         let (_guard, uart) = serial();
         let mut parts = started_parts(uart);
         REGS[UART_IIR as usize].store(
@@ -1012,17 +1074,44 @@ mod tests {
         );
         LSR_READS.store(0, Ordering::SeqCst);
 
-        let event = parts.irq.handle().unwrap();
+        let (event, samples) = handle_irq(&mut parts.irq);
+        let event = event.unwrap();
 
         assert!(event.events.contains(SerialEventSet::RX_STATUS));
         assert!(event.rx_errors.contains(RxErrorFlags::PARITY));
         assert!(LSR_READS.load(Ordering::SeqCst) > 0);
-        assert_eq!(RBR_READS.load(Ordering::SeqCst), 0);
-        assert_eq!(THR_WRITES.load(Ordering::SeqCst), 0);
         assert_eq!(
-            REGS[UART_LSR as usize].load(Ordering::SeqCst),
-            (LineStatusFlags::DATA_READY | LineStatusFlags::PARITY_ERROR).bits()
+            RBR_READS.load(Ordering::SeqCst),
+            1,
+            "the hard IRQ must free a bounded hardware FIFO slot before the worker runs",
         );
+        assert_eq!(THR_WRITES.load(Ordering::SeqCst), 0);
+        assert_eq!(REGS[UART_LSR as usize].load(Ordering::SeqCst), 0);
+        assert_eq!(
+            samples,
+            [RxSample {
+                byte: Some(0),
+                flag: RxFlag::Parity,
+                overrun: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn hard_irq_rx_drain_is_bounded_to_256_samples() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut irq = Ns16550Irq {
+            base: FloodKind {
+                rbr_reads: reads.clone(),
+            },
+            saved_lsr: LineStatusFlags::empty(),
+        };
+
+        let (event, samples) = handle_irq(&mut irq);
+
+        assert!(event.unwrap().events.contains(SerialEventSet::RX_DATA));
+        assert_eq!(samples.len(), 256);
+        assert_eq!(reads.load(Ordering::SeqCst), 256);
     }
 
     #[test]
@@ -1038,7 +1127,7 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        assert!(parts.irq.handle().is_none());
+        assert!(handle_irq(&mut parts.irq).0.is_none());
     }
 
     #[test]
@@ -1055,7 +1144,7 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        assert!(parts.irq.handle().is_none());
+        assert!(handle_irq(&mut parts.irq).0.is_none());
         assert!(parts.port.poll_status().tx_ready());
     }
 
@@ -1070,7 +1159,7 @@ mod tests {
         );
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
 
-        assert!(parts.irq.handle().is_none());
+        assert!(handle_irq(&mut parts.irq).0.is_none());
         assert!(parts.port.poll_status().rx_ready());
     }
 
@@ -1089,7 +1178,7 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        let event = parts.irq.handle().unwrap();
+        let event = handle_irq(&mut parts.irq).0.unwrap();
         assert!(event.events.contains(SerialEventSet::MODEM_STATUS));
         assert!(
             ModemStatusFlags::from_bits_retain(REGS[UART_MSR as usize].load(Ordering::SeqCst))
@@ -1099,7 +1188,7 @@ mod tests {
     }
 
     #[test]
-    fn irq_event_then_port_drains_rx_fifo() {
+    fn irq_event_drains_rx_fifo_into_sink() {
         let (_guard, uart) = serial();
         let mut parts = started_parts(uart);
 
@@ -1110,15 +1199,16 @@ mod tests {
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
         REGS[UART_RBR as usize].store(b'r', Ordering::SeqCst);
 
-        let event = parts.irq.handle().unwrap();
+        let (event, samples) = handle_irq(&mut parts.irq);
+        let event = event.unwrap();
         assert!(event.events.contains(SerialEventSet::RX_DATA));
         assert_eq!(
-            parts.port.read_rx(),
-            Some(RxSample {
+            samples,
+            [RxSample {
                 byte: Some(b'r'),
                 flag: RxFlag::Normal,
                 overrun: false,
-            })
+            }]
         );
     }
 
@@ -1136,14 +1226,14 @@ mod tests {
             Ordering::SeqCst,
         );
 
-        let event = parts.irq.handle().unwrap();
+        let event = handle_irq(&mut parts.irq).0.unwrap();
         assert!(event.events.contains(SerialEventSet::TX_SPACE));
         assert_eq!(parts.port.write_tx(b"ab"), 1);
         assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
     }
 
     #[test]
-    fn irq_lsr_error_is_observed_by_port_rx() {
+    fn irq_lsr_error_is_preserved_in_buffered_sample() {
         let (_guard, uart) = serial();
         let mut parts = started_parts(uart);
 
@@ -1157,15 +1247,16 @@ mod tests {
         );
         REGS[UART_RBR as usize].store(b'p', Ordering::SeqCst);
 
-        let event = parts.irq.handle().unwrap();
+        let (event, samples) = handle_irq(&mut parts.irq);
+        let event = event.unwrap();
         assert!(event.rx_errors.contains(RxErrorFlags::PARITY));
         assert_eq!(
-            parts.port.read_rx(),
-            Some(RxSample {
+            samples,
+            [RxSample {
                 byte: Some(b'p'),
                 flag: RxFlag::Parity,
                 overrun: false,
-            })
+            }]
         );
     }
 
@@ -1184,8 +1275,6 @@ mod tests {
         );
         REGS[UART_RBR as usize].store(b'S', Ordering::SeqCst);
 
-        let event = parts.irq.handle().unwrap();
-        assert!(event.rx_errors.contains(RxErrorFlags::OVERRUN));
         assert_eq!(
             parts.port.read_rx(),
             Some(RxSample {
@@ -1197,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn irq_masks_rx_source_without_consuming_fifo() {
+    fn irq_keeps_rx_source_enabled_after_draining_fifo() {
         let (_guard, uart) = serial();
         let mut parts = started_parts(uart);
         REGS[UART_IER as usize].store(UART_IER_RDI | UART_IER_RLSI, Ordering::SeqCst);
@@ -1205,12 +1294,17 @@ mod tests {
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
         REGS[UART_RBR as usize].store(b'q', Ordering::SeqCst);
 
-        let event = parts.irq.handle().unwrap();
+        let (event, samples) = handle_irq(&mut parts.irq);
+        let event = event.unwrap();
 
         assert!(event.events.contains(SerialEventSet::RX_DATA));
-        assert!(event.rearm.contains(SerialEventSet::RX_DATA));
-        assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), 0);
-        assert_eq!(RBR_READS.load(Ordering::SeqCst), 0);
+        assert!(!event.rearm.intersects(SerialEventSet::RX));
+        assert_eq!(
+            REGS[UART_IER as usize].load(Ordering::SeqCst),
+            UART_IER_RDI | UART_IER_RLSI
+        );
+        assert_eq!(RBR_READS.load(Ordering::SeqCst), 1);
+        assert_eq!(samples[0].byte, Some(b'q'));
     }
 
     #[test]
@@ -1232,7 +1326,7 @@ mod tests {
         REGS[UART_IER as usize].store(0xff, Ordering::SeqCst);
         REGS[UART_IIR as usize].store(0x08, Ordering::SeqCst);
 
-        let event = parts.irq.handle().unwrap();
+        let event = handle_irq(&mut parts.irq).0.unwrap();
 
         assert!(event.events.contains(SerialEventSet::FAULT));
         assert_eq!(REGS[UART_IER as usize].load(Ordering::SeqCst), 0);

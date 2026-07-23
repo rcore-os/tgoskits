@@ -5,7 +5,7 @@ use ax_errno::{AxError, AxResult};
 use ax_runtime::{
     hal::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
     serial::{
-        Config, DataBits, Parity, RxFlag, RxItem, SerialRuntimeHandle, SerialRxSubscription,
+        Config, DataBits, Parity, RxItem, SerialRuntimeHandle, SerialRxSubscription,
         SerialTxSender, StopBits,
     },
 };
@@ -351,24 +351,11 @@ impl TtyRead for SerialReader {
             }
             for item in &temp[..read] {
                 match *item {
-                    RxItem::Byte {
-                        byte,
-                        flag: RxFlag::Normal,
-                    } => {
+                    RxItem::Byte { byte, .. } => {
                         buf[total] = byte;
                         total += 1;
                     }
-                    RxItem::Byte { byte, flag } => {
-                        warn!(
-                            "{} RX error {:?} while preserving byte {byte:#x}",
-                            self.backend.tty_name, flag
-                        );
-                        buf[total] = byte;
-                        total += 1;
-                    }
-                    RxItem::Overrun => {
-                        warn!("{} RX overrun", self.backend.tty_name);
-                    }
+                    RxItem::Overrun => {}
                 }
             }
         }

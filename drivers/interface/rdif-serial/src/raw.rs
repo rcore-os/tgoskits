@@ -62,11 +62,21 @@ pub trait UartPort: Send + 'static {
     fn rearm(&mut self, sources: SerialEventSet) -> SerialEventSet;
 }
 
+/// Non-blocking destination for samples drained by a UART hard-IRQ endpoint.
+///
+/// Implementations must be allocation-free and IRQ-safe. `push` deliberately
+/// has no backpressure result: a hard IRQ cannot wait for capacity, so the
+/// runtime sink owns overflow accounting and sticky error publication.
+pub trait IrqRxSink {
+    fn push(&mut self, sample: RxSample);
+}
+
 /// UART hard-IRQ endpoint owned by the registered IRQ callback.
 pub trait UartIrq: Send + 'static {
-    /// Acknowledges and masks the current hardware event.
+    /// Handles the current hardware event and drains a bounded RX batch.
     ///
     /// `None` means the shared interrupt was not raised by this UART. The
-    /// implementation must not read or write RX/TX FIFO data.
-    fn handle(&mut self) -> Option<SerialIrqEvent>;
+    /// implementation may read RX FIFO data only through `rx`; it must never
+    /// write TX FIFO data.
+    fn handle(&mut self, rx: &mut dyn IrqRxSink) -> Option<SerialIrqEvent>;
 }

@@ -608,6 +608,7 @@ impl SplitUart for RockchipFiqSerial {
     fn split(self) -> UartParts<Self::Port, Self::Irq> {
         let irq = Ns16550Irq {
             base: self.serial.base,
+            saved_lsr: LineStatusFlags::empty(),
         };
         UartParts::new(self, irq)
     }

@@ -9,6 +9,7 @@ use super::{
     RuntimeShared, RxItem,
     control::{CONTROL_QUEUE_CAPACITY, ControlOp},
     ingress::TxFrameCursor,
+    spsc::{Consumer as SpscConsumer, Producer as SpscProducer},
 };
 
 const RX_BUDGET: usize = 256;
@@ -16,6 +17,10 @@ const TX_BUDGET: usize = 64;
 
 pub(super) struct SerialWorker {
     shared: Arc<RuntimeShared>,
+    irq_rx: SpscConsumer<RxSample>,
+    rx_output: SpscProducer<RxItem>,
+    pending_rx: Option<PendingRx>,
+    port_rx_ready: bool,
     pending_frame: Option<TxFrameCursor>,
     pending_rearm: SerialEventSet,
     immediate_events: SerialEventSet,
@@ -23,9 +28,17 @@ pub(super) struct SerialWorker {
 }
 
 impl SerialWorker {
-    pub(super) fn new(shared: Arc<RuntimeShared>) -> Self {
+    pub(super) fn new(
+        shared: Arc<RuntimeShared>,
+        irq_rx: SpscConsumer<RxSample>,
+        rx_output: SpscProducer<RxItem>,
+    ) -> Self {
         Self {
             shared,
+            irq_rx,
+            rx_output,
+            pending_rx: None,
+            port_rx_ready: false,
             pending_frame: None,
             pending_rearm: SerialEventSet::empty(),
             immediate_events: SerialEventSet::empty(),
@@ -43,20 +56,43 @@ impl SerialWorker {
                 events |= event.events;
                 self.pending_rearm |= event.rearm;
                 self.latched_rx_errors |= event.rx_errors;
-                self.shared
-                    .stats
-                    .add_rx_errors(event.rx_errors.bits().count_ones());
+            }
+            if self
+                .shared
+                .bridge
+                .rx_overflow
+                .swap(false, core::sync::atomic::Ordering::AcqRel)
+            {
+                self.latched_rx_errors |= RxErrorFlags::OVERRUN;
             }
 
             if events.contains(SerialEventSet::FAULT) {
                 self.stop_faulted_port();
             }
 
-            if self.shared.started()
-                && (force_service || self.shared.polling || events.has_rx())
-                && (self.service_rx() || self.shared.bridge.latch.has_pending())
-            {
-                continue;
+            let rx_path = if let Some(pending) = self.pending_rx {
+                Some(pending.path)
+            } else if !self.shared.started() {
+                None
+            } else if force_service || self.shared.polling || self.port_rx_ready {
+                Some(RxPath::Port)
+            } else if events.has_rx() || !self.irq_rx.is_empty() {
+                Some(RxPath::Irq)
+            } else {
+                None
+            };
+            let mut rx_blocked = false;
+            if let Some(path) = rx_path {
+                if path == RxPath::Port {
+                    self.port_rx_ready = false;
+                }
+                let outcome = self.service_rx(path);
+                rx_blocked = outcome.blocked;
+                if outcome.budget_exhausted
+                    || (!outcome.blocked && self.shared.bridge.latch.has_pending())
+                {
+                    continue;
+                }
             }
 
             let tx_needed = self.pending_frame.is_some()
@@ -75,6 +111,9 @@ impl SerialWorker {
             if budget_exhausted {
                 continue;
             }
+            if self.port_rx_ready {
+                continue;
+            }
 
             if self.shared.started() && !self.shared.polling {
                 self.rearm_sources();
@@ -87,6 +126,9 @@ impl SerialWorker {
                 || self.shared.control.has_pending()
                 || (!tx_blocked
                     && (self.pending_frame.is_some() || self.shared.ingress.has_pending()))
+                || (!rx_blocked
+                    && (self.pending_rx.is_some()
+                        || (!self.shared.polling && !self.irq_rx.is_empty())))
             {
                 continue;
             }
@@ -115,7 +157,11 @@ impl SerialWorker {
                     self.shutdown_port();
                     Ok(())
                 }
-                ControlOp::SetConfig(config) => self.set_config(config),
+                ControlOp::SetConfig(config) => {
+                    let result = self.set_config(config);
+                    force_service |= result.is_ok();
+                    result
+                }
             };
             command.complete(result);
         }
@@ -144,9 +190,14 @@ impl SerialWorker {
         self.pending_rearm = SerialEventSet::empty();
         self.immediate_events = SerialEventSet::empty();
         self.latched_rx_errors = RxErrorFlags::empty();
-        let mut port = self.shared.port.lock();
-        port.mask_all();
-        port.shutdown();
+        self.port_rx_ready = false;
+        {
+            let mut port = self.shared.port.lock();
+            port.mask_all();
+            port.shutdown();
+        }
+        self.irq_rx.clear();
+        self.pending_rx = None;
     }
 
     fn set_config(&mut self, config: &Config) -> AxResult {
@@ -176,79 +227,95 @@ impl SerialWorker {
         self.shared.tx_progress.notify_all(true);
     }
 
-    /// Returns whether RX service must continue before any slower TX work.
-    fn service_rx(&mut self) -> bool {
-        let mut samples = [RxSample::default(); RX_BUDGET];
-        let mut count = 0;
-        let (drained, ready) = {
-            let mut port = self.shared.port.lock();
-            while count < samples.len() {
-                let Some(sample) = port.read_rx() else {
+    fn service_rx(&mut self, path: RxPath) -> RxServiceOutcome {
+        let mut processed = 0;
+        let mut published = false;
+        let mut blocked = false;
+        let mut source_drained = false;
+
+        while processed < RX_BUDGET {
+            let sample = if let Some(pending) = self.pending_rx.take() {
+                debug_assert_eq!(pending.path, path);
+                pending.sample
+            } else {
+                let next = match path {
+                    RxPath::Irq => self.irq_rx.pop(),
+                    RxPath::Port => self.shared.port.lock().read_rx(),
+                };
+                let Some(sample) = next else {
+                    source_drained = true;
                     break;
                 };
-                samples[count] = sample;
-                count += 1;
+                sample
+            };
+
+            let normalized =
+                match prepare_rx_output(&self.rx_output, sample, self.latched_rx_errors) {
+                    Ok(normalized) => normalized,
+                    Err(sample) => {
+                        self.pending_rx = Some(PendingRx { path, sample });
+                        blocked = true;
+                        break;
+                    }
+                };
+
+            self.latched_rx_errors = RxErrorFlags::empty();
+            if normalized.flag != RxFlag::Normal {
+                self.shared.stats.add_rx_errors(1);
             }
-            let drained = count < samples.len();
-            let ready = rearm_drained_rx(
-                drained,
-                self.shared.polling,
-                &mut self.pending_rearm,
-                |sources| port.rearm(sources),
-            );
-            (drained, ready)
-        };
-        self.immediate_events |= ready;
-        let rx = self.shared.rx.clone();
-        let rx_source = self.shared.rx_source.clone();
-        let mut publisher = RxBatchPublisher::new(rx.as_ref(), || {
-            // SAFETY: the worker publishes ring entries before waking task-context waiters.
-            unsafe { rx_source.wake(IoEvents::IN) };
-        });
-        for sample in samples.into_iter().take(count) {
-            self.publish_rx_sample(sample, &mut publisher);
-        }
-        self.shared.stats.add_rx_dropped(publisher.finish());
-        if !drained {
-            // The source remains masked while the worker drains the next
-            // budget. No edge is required to keep the service loop alive.
-            self.immediate_events |= SerialEventSet::RX_DATA;
-        }
-        !drained || !ready.is_empty()
-    }
-
-    fn publish_rx_sample(
-        &mut self,
-        sample: RxSample,
-        publisher: &mut RxBatchPublisher<'_, impl FnMut()>,
-    ) {
-        let latched = core::mem::take(&mut self.latched_rx_errors);
-        let flag = if sample.flag != RxFlag::Normal {
-            sample.flag
-        } else if latched.contains(RxErrorFlags::BREAK) {
-            RxFlag::Break
-        } else if latched.contains(RxErrorFlags::PARITY) {
-            RxFlag::Parity
-        } else if latched.contains(RxErrorFlags::FRAMING) {
-            RxFlag::Framing
-        } else {
-            RxFlag::Normal
-        };
-        let overrun = sample.overrun || latched.contains(RxErrorFlags::OVERRUN);
-
-        if sample.flag != RxFlag::Normal {
-            self.shared.stats.add_rx_errors(1);
-        }
-        if sample.overrun {
-            self.shared.stats.add_rx_errors(1);
+            if normalized.overrun {
+                self.shared.stats.add_rx_errors(1);
+            }
+            if let Some(byte) = normalized.byte {
+                self.shared.stats.add_rx_bytes(1);
+                self.rx_output
+                    .push(RxItem::Byte {
+                        byte,
+                        flag: normalized.flag,
+                    })
+                    .expect("RX output capacity was checked");
+                published = true;
+            }
+            if normalized.overrun {
+                self.rx_output
+                    .push(RxItem::Overrun)
+                    .expect("RX output capacity was checked");
+                published = true;
+            }
+            processed += 1;
         }
 
-        if let Some(byte) = sample.byte {
-            self.shared.stats.add_rx_bytes(1);
-            publisher.push(RxItem::Byte { byte, flag });
+        if published {
+            // SAFETY: the worker Release-publishes ring entries before waking
+            // task-context waiters.
+            unsafe { self.shared.rx_source.wake(IoEvents::IN) };
         }
-        if overrun {
-            publisher.push(RxItem::Overrun);
+
+        if path == RxPath::Port && source_drained {
+            let ready = {
+                let mut port = self.shared.port.lock();
+                rearm_drained_rx(
+                    true,
+                    self.shared.polling,
+                    &mut self.pending_rearm,
+                    |sources| port.rearm(sources),
+                )
+            };
+            if ready.has_rx() {
+                self.port_rx_ready = true;
+            }
+        } else if path == RxPath::Port {
+            self.port_rx_ready = true;
+        }
+
+        let source_pending = self.pending_rx.is_some()
+            || match path {
+                RxPath::Irq => !self.irq_rx.is_empty(),
+                RxPath::Port => !source_drained,
+            };
+        RxServiceOutcome {
+            blocked,
+            budget_exhausted: !blocked && processed == RX_BUDGET && source_pending,
         }
     }
 
@@ -337,37 +404,65 @@ impl SerialWorker {
     }
 }
 
-struct RxBatchPublisher<'a, W> {
-    channel: &'a super::ingress::RxChannel,
-    wake: W,
-    published: bool,
-    dropped: usize,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RxPath {
+    Irq,
+    Port,
 }
 
-impl<'a, W: FnMut()> RxBatchPublisher<'a, W> {
-    fn new(channel: &'a super::ingress::RxChannel, wake: W) -> Self {
-        Self {
-            channel,
-            wake,
-            published: false,
-            dropped: 0,
-        }
-    }
+#[derive(Clone, Copy)]
+struct PendingRx {
+    path: RxPath,
+    sample: RxSample,
+}
 
-    fn push(&mut self, item: RxItem) {
-        if self.channel.push(item).is_err() {
-            self.dropped += 1;
-            return;
-        }
-        self.published = true;
-    }
+struct NormalizedRx {
+    byte: Option<u8>,
+    flag: RxFlag,
+    overrun: bool,
+}
 
-    fn finish(mut self) -> usize {
-        if self.published {
-            (self.wake)();
-        }
-        self.dropped
+impl NormalizedRx {
+    fn output_items(&self) -> usize {
+        usize::from(self.byte.is_some()) + usize::from(self.overrun)
     }
+}
+
+fn normalize_rx(sample: RxSample, latched: RxErrorFlags) -> NormalizedRx {
+    let flag = if sample.flag != RxFlag::Normal {
+        sample.flag
+    } else if latched.contains(RxErrorFlags::BREAK) {
+        RxFlag::Break
+    } else if latched.contains(RxErrorFlags::PARITY) {
+        RxFlag::Parity
+    } else if latched.contains(RxErrorFlags::FRAMING) {
+        RxFlag::Framing
+    } else {
+        RxFlag::Normal
+    };
+    NormalizedRx {
+        byte: sample.byte,
+        flag,
+        overrun: sample.overrun || latched.contains(RxErrorFlags::OVERRUN),
+    }
+}
+
+fn prepare_rx_output(
+    output: &SpscProducer<RxItem>,
+    sample: RxSample,
+    latched: RxErrorFlags,
+) -> Result<NormalizedRx, RxSample> {
+    let normalized = normalize_rx(sample, latched);
+    if output.write_room() < normalized.output_items() {
+        Err(sample)
+    } else {
+        Ok(normalized)
+    }
+}
+
+struct RxServiceOutcome {
+    blocked: bool,
+    budget_exhausted: bool,
 }
 
 struct TxServiceOutcome {
@@ -410,21 +505,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rx_batch_wakes_a_reregistering_reader_once() {
-        let channel = super::super::ingress::RxChannel::new();
-        let mut wake_count = 0;
-        let mut publisher = RxBatchPublisher::new(&channel, || wake_count += 1);
-        for byte in 0..64 {
-            publisher.push(RxItem::Byte {
-                byte,
+    fn normalized_sample_reserves_byte_and_overrun_slots_together() {
+        let normalized = normalize_rx(
+            RxSample {
+                byte: Some(b'x'),
                 flag: RxFlag::Normal,
-            });
-        }
-        assert_eq!(publisher.finish(), 0);
-        assert_eq!(
-            wake_count, 1,
-            "one hardware RX batch must publish one reader wakeup",
+                overrun: false,
+            },
+            RxErrorFlags::PARITY | RxErrorFlags::OVERRUN,
         );
+        assert_eq!(normalized.byte, Some(b'x'));
+        assert_eq!(normalized.flag, RxFlag::Parity);
+        assert!(normalized.overrun);
+        assert_eq!(normalized.output_items(), 2);
+    }
+
+    #[test]
+    fn full_subscription_ring_keeps_sample_pending_until_space_is_released() {
+        let (mut output, mut subscription) = super::super::spsc::channel(1);
+        output.push(RxItem::Overrun).unwrap();
+        let sample = RxSample {
+            byte: Some(b'x'),
+            ..RxSample::default()
+        };
+
+        assert!(prepare_rx_output(&output, sample, RxErrorFlags::empty()).is_err());
+        assert_eq!(subscription.pop(), Some(RxItem::Overrun));
+        let prepared = prepare_rx_output(&output, sample, RxErrorFlags::empty()).unwrap();
+        assert_eq!(prepared.byte, Some(b'x'));
     }
 
     #[test]

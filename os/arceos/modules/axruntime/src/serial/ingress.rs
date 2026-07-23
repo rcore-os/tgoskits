@@ -1,18 +1,10 @@
 use alloc::collections::VecDeque;
-use core::{
-    cell::UnsafeCell,
-    mem::MaybeUninit,
-    sync::atomic::{AtomicUsize, Ordering},
-};
 
 use ax_kspin::SpinNoIrq;
 use ax_task::IrqNotify;
 
-use super::RxItem;
-
 pub(super) const TX_FRAME_BYTES: usize = 256;
 const TX_FRAME_CAPACITY: usize = 16;
-const RX_RING_SLOTS: usize = 4097;
 
 #[derive(Clone, Copy)]
 pub(super) struct TxFrame {
@@ -169,78 +161,6 @@ impl TxFrameCursor {
     }
 }
 
-struct Slot<T>(UnsafeCell<MaybeUninit<T>>);
-
-unsafe impl<T: Send> Send for Slot<T> {}
-unsafe impl<T: Send> Sync for Slot<T> {}
-
-impl<T> Slot<T> {
-    const fn uninit() -> Self {
-        Self(UnsafeCell::new(MaybeUninit::uninit()))
-    }
-}
-
-/// Runtime-private SPSC RX ring: the worker produces and one subscription consumes.
-pub(super) struct RxChannel {
-    slots: [Slot<RxItem>; RX_RING_SLOTS],
-    head: AtomicUsize,
-    tail: AtomicUsize,
-}
-
-unsafe impl Send for RxChannel {}
-unsafe impl Sync for RxChannel {}
-
-impl RxChannel {
-    pub(super) fn new() -> Self {
-        Self {
-            slots: [const { Slot::uninit() }; RX_RING_SLOTS],
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-        }
-    }
-
-    pub(super) fn push(&self, item: RxItem) -> Result<(), RxItem> {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let next = advance_rx(tail);
-        if next == self.head.load(Ordering::Acquire) {
-            return Err(item);
-        }
-        // SAFETY: only the worker writes the current tail slot, and publishing
-        // the new tail with Release makes the initialized value visible.
-        unsafe { (*self.slots[tail].0.get()).write(item) };
-        self.tail.store(next, Ordering::Release);
-        Ok(())
-    }
-
-    pub(super) fn drain(&self, out: &mut [RxItem]) -> usize {
-        let mut count = 0;
-        for slot in out {
-            let head = self.head.load(Ordering::Relaxed);
-            if head == self.tail.load(Ordering::Acquire) {
-                break;
-            }
-            // SAFETY: the single consumer owns the current head slot after it
-            // observes the producer's Release publication.
-            *slot = unsafe { (*self.slots[head].0.get()).assume_init_read() };
-            self.head.store(advance_rx(head), Ordering::Release);
-            count += 1;
-        }
-        count
-    }
-}
-
-impl Drop for RxChannel {
-    fn drop(&mut self) {
-        let mut scratch = [RxItem::default(); 64];
-        while self.drain(&mut scratch) != 0 {}
-    }
-}
-
-const fn advance_rx(index: usize) -> usize {
-    let next = index + 1;
-    if next == RX_RING_SLOTS { 0 } else { next }
-}
-
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -341,35 +261,5 @@ mod tests {
         drop(locked);
         producer.join().unwrap();
         assert!(state.lock().unwrap().idle);
-    }
-
-    #[test]
-    fn rx_ring_reports_overflow_and_preserves_order() {
-        let channel = RxChannel::new();
-        for byte in 0..RX_RING_SLOTS - 1 {
-            channel
-                .push(RxItem::Byte {
-                    byte: byte as u8,
-                    flag: rdif_serial::RxFlag::Normal,
-                })
-                .unwrap();
-        }
-        assert_eq!(channel.push(RxItem::Overrun), Err(RxItem::Overrun));
-
-        let mut first = [RxItem::default(); 2];
-        assert_eq!(channel.drain(&mut first), 2);
-        assert_eq!(
-            first,
-            [
-                RxItem::Byte {
-                    byte: 0,
-                    flag: rdif_serial::RxFlag::Normal,
-                },
-                RxItem::Byte {
-                    byte: 1,
-                    flag: rdif_serial::RxFlag::Normal,
-                },
-            ]
-        );
     }
 }
