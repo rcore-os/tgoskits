@@ -138,6 +138,10 @@ pub fn sys_mount(
     };
     debug!("sys_mount <= source: {source:?}, target: {target:?}, fs_type: {fs_type:?}");
 
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
+
     let propagation = flags & PROPAGATION_FLAGS;
 
     if propagation.count_ones() > 1 {
@@ -414,6 +418,10 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
         "sys_pivot_root <= new_root: {:?}, put_old: {:?}",
         new_root, put_old
     );
+
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let mut ctx = fs_context.lock();

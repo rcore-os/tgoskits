@@ -61,17 +61,25 @@ static void test_unprivileged_mount_operations(void) {
         errno = 0;
         if (umount2("/", MNT_DETACH) != -1 || errno != EPERM)
             _exit(5);
+        errno = 0;
+        if (syscall(SYS_mount, NULL, "/", NULL, MS_SHARED, NULL) != -1 ||
+            errno != EPERM)
+            _exit(6);
+        errno = 0;
+        if (syscall(SYS_pivot_root, "/", "/") != -1 || errno != EPERM)
+            _exit(7);
         _exit(0);
     }
 
     int status = 0;
     if (waitpid(pid, &status, 0) != pid)
         FAIL("waitpid unprivileged mount checks");
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    int child_status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (child_status != 0) {
         errno = EPERM;
         FAIL("unprivileged mount-operation errno priority mismatch");
     }
-    PASS("unprivileged umount2 preserves path errors before EPERM");
+    PASS("unprivileged mount family operations enforce CAP_SYS_ADMIN");
 }
 
 static void write_all(int fd, const char *buf, size_t len, const char *what) {
@@ -600,7 +608,9 @@ static void test_clone_ns_transitive_slave_propagation(void) {
         if (mountinfo_rec(PROP_TR_SLAVE "/slot", &slave_slot) < 0)
             child_exit_with_status(ready_pipe[1], 3);
 
-        write_all(ready_pipe[1], "C", 1, "prop-tr child verified");
+        const unsigned char success = 0;
+        write_all(ready_pipe[1], (const char *)&success, 1,
+                  "prop-tr child verified");
         read_one(release_pipe[0], "prop-tr cleanup");
         _exit(0);
     }
