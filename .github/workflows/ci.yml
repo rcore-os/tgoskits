@@ -630,19 +630,25 @@ jobs:
             timeout_minutes: 20
             command: |
               rustup target add x86_64-unknown-uefi
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends ovmf
-              UEFI_FIRMWARE=""
-              for candidate in \
-                /usr/share/OVMF/OVMF_CODE_4M.fd \
-                /usr/share/OVMF/OVMF_CODE.fd \
-                /usr/share/ovmf/OVMF.fd \
-                /usr/share/qemu/OVMF.fd; do
-                if [ -f "${candidate}" ]; then
-                  UEFI_FIRMWARE="${candidate}"
-                  break
-                fi
-              done
+              find_uefi_firmware() {
+                for candidate in \
+                  /usr/share/OVMF/OVMF_CODE_4M.fd \
+                  /usr/share/OVMF/OVMF_CODE.fd \
+                  /usr/share/ovmf/OVMF.fd \
+                  /usr/share/qemu/OVMF.fd; do
+                  if [ -f "${candidate}" ]; then
+                    printf '%s\n' "${candidate}"
+                    return 0
+                  fi
+                done
+                return 1
+              }
+              UEFI_FIRMWARE="$(find_uefi_firmware || true)"
+              if [ -z "${UEFI_FIRMWARE}" ]; then
+                sudo apt-get update
+                sudo apt-get install -y --no-install-recommends ovmf
+                UEFI_FIRMWARE="$(find_uefi_firmware || true)"
+              fi
               if [ -z "${UEFI_FIRMWARE}" ]; then
                 echo "ERROR: installed OVMF firmware image was not found under /usr/share." >&2
                 exit 1
