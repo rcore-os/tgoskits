@@ -53,6 +53,7 @@ pub(crate) fn init_filesystem(
     dev: Arc<BlockDeviceHandle>,
     region: BlockRegion,
     description: &str,
+    source: &str,
 ) -> Location {
     info!("Initialize filesystem subsystem...");
     info!("  selected root device: {}", description);
@@ -63,7 +64,7 @@ pub(crate) fn init_filesystem(
             description
         )
     });
-    finish_filesystem_init(fs)
+    finish_filesystem_init(fs, source)
 }
 
 pub(crate) fn init_detected_filesystem(
@@ -71,6 +72,7 @@ pub(crate) fn init_detected_filesystem(
     region: BlockRegion,
     kind: FilesystemKind,
     description: &str,
+    source: &str,
 ) -> Location {
     info!("Initialize filesystem subsystem...");
     info!("  selected root device: {}", description);
@@ -81,13 +83,13 @@ pub(crate) fn init_detected_filesystem(
             description
         )
     });
-    finish_filesystem_init(fs)
+    finish_filesystem_init(fs, source)
 }
 
-fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem) -> Location {
+fn finish_filesystem_init(fs: axfs_ng_vfs::Filesystem, source: &str) -> Location {
     info!("  filesystem type: {:?}", fs.name());
 
-    let mp = axfs_ng_vfs::Mountpoint::new_root(&fs);
+    let mp = axfs_ng_vfs::Mountpoint::new_root_with_source(&fs, source);
     let root = mp.root_location();
     highlevel::ROOT_FS_CONTEXT.call_once(|| highlevel::FsContext::new(root.clone()));
     root

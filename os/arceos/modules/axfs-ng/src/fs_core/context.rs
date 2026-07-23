@@ -102,6 +102,14 @@ impl MountNamespace {
         &self.root_mount
     }
 
+    /// Walk the mount tree of this namespace, returning `(mount_id,
+    /// parent_id, mountpoint)` tuples in DFS order.
+    ///
+    /// Delegates to [`Mountpoint::walk_tree`] on the root mount.
+    pub fn walk_tree(&self) -> Vec<(u64, u64, Arc<Mountpoint>)> {
+        self.root_mount.walk_tree()
+    }
+
     fn clone_namespace(&self) -> Arc<Self> {
         Arc::new(Self::new(self.root_mount.clone_tree()))
     }
@@ -601,7 +609,11 @@ impl FsContext {
     ///
     /// This avoids incorrectly updating tasks that have chroot'd into a
     /// subdirectory of the old root (same mountpoint, different dentry).
-    pub fn propagate_pivot_root(old_root: &Location, new_root: &Location) {
+    pub fn propagate_pivot_root(
+        #[cfg(feature = "vfs")] mount_namespace: &Arc<MountNamespace>,
+        old_root: &Location,
+        new_root: &Location,
+    ) {
         // 1. Collect strong references while holding the registry lock, then
         //    release it so we never nest two Mutex guards.
         let refs: Vec<Arc<Mutex<FsContext>>> = {
@@ -614,6 +626,10 @@ impl FsContext {
         //    Linux chroot_fs_refs().
         for ctx_arc in refs {
             let mut ctx = ctx_arc.lock();
+            #[cfg(feature = "vfs")]
+            if !Arc::ptr_eq(ctx.mount_namespace(), mount_namespace) {
+                continue;
+            }
 
             let update_root = old_root.ptr_eq(&ctx.root_dir);
             let update_cwd = old_root.ptr_eq(&ctx.current_dir);
