@@ -204,7 +204,7 @@ d88P     888 888      "Y8888P  "Y8888   "Y88888P"   "Y8888P"
 arch = aarch64
 platform = RK3588 OPi 5 Plus
 target = aarch64-unknown-none-softfloat
-build_mode = 
+build_mode =
 log_level = info
 backtrace = false
 smp = 8
