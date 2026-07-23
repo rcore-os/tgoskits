@@ -180,22 +180,13 @@ impl Mountpoint {
         }
     }
 
-    pub fn set_shared(self: &Arc<Self>) {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
-        self.set_shared_locked();
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
-    }
-
-    pub fn set_private(self: &Arc<Self>) {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+    fn set_private_locked(self: &Arc<Self>) {
         self.leave_propagation_relations_locked();
         *self.propagation.lock() = PropagationType::Private;
         self.peer_group_id.store(0, Ordering::Release);
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
     }
 
-    pub fn set_slave(self: &Arc<Self>) {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+    fn set_slave_locked(self: &Arc<Self>) {
         let mut masters = Vec::new();
         if self.is_shared() {
             masters.extend(self.peers.lock().iter().filter_map(Weak::upgrade));
@@ -207,15 +198,75 @@ impl Mountpoint {
         for master in masters {
             Self::attach_master_locked(self, &master);
         }
-        MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
     }
 
-    pub fn set_unbindable(self: &Arc<Self>) {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+    fn set_unbindable_locked(self: &Arc<Self>) {
         self.leave_propagation_relations_locked();
         *self.propagation.lock() = PropagationType::Unbindable;
         self.peer_group_id.store(0, Ordering::Release);
+    }
+
+    fn set_propagation_locked(self: &Arc<Self>, propagation: PropagationType) {
+        match propagation {
+            PropagationType::Private => self.set_private_locked(),
+            PropagationType::Shared => self.set_shared_locked(),
+            PropagationType::Slave => self.set_slave_locked(),
+            PropagationType::Unbindable => self.set_unbindable_locked(),
+        }
+    }
+
+    fn set_propagation_recursive_locked(self: &Arc<Self>, propagation: PropagationType) {
+        let mut frontier = vec![self.clone()];
+        while let Some(mountpoint) = frontier.pop() {
+            mountpoint.set_propagation_locked(propagation);
+            frontier.extend(mountpoint.children());
+        }
+    }
+
+    fn set_propagation(self: &Arc<Self>, propagation: PropagationType, recursive: bool) {
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        if recursive {
+            self.set_propagation_recursive_locked(propagation);
+        } else {
+            self.set_propagation_locked(propagation);
+        }
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub fn set_shared(self: &Arc<Self>) {
+        self.set_propagation(PropagationType::Shared, false);
+    }
+
+    /// Makes this mount and every descendant mount shared.
+    pub fn set_shared_recursive(self: &Arc<Self>) {
+        self.set_propagation(PropagationType::Shared, true);
+    }
+
+    pub fn set_private(self: &Arc<Self>) {
+        self.set_propagation(PropagationType::Private, false);
+    }
+
+    /// Makes this mount and every descendant mount private.
+    pub fn set_private_recursive(self: &Arc<Self>) {
+        self.set_propagation(PropagationType::Private, true);
+    }
+
+    pub fn set_slave(self: &Arc<Self>) {
+        self.set_propagation(PropagationType::Slave, false);
+    }
+
+    /// Makes this mount and every descendant mount a slave mount.
+    pub fn set_slave_recursive(self: &Arc<Self>) {
+        self.set_propagation(PropagationType::Slave, true);
+    }
+
+    pub fn set_unbindable(self: &Arc<Self>) {
+        self.set_propagation(PropagationType::Unbindable, false);
+    }
+
+    /// Makes this mount and every descendant mount unbindable.
+    pub fn set_unbindable_recursive(self: &Arc<Self>) {
+        self.set_propagation(PropagationType::Unbindable, true);
     }
 
     pub(super) fn join_shared_group_locked(self: &Arc<Self>, source: &Arc<Self>) {

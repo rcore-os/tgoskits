@@ -1580,6 +1580,84 @@ mod tests {
     }
 
     #[test]
+    fn recursive_propagation_change_reaches_every_descendant() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let child_entry = make_dir_entry("child");
+        let child = Mountpoint::new_with_root(
+            child_entry.clone(),
+            Some(Location::new(root.clone(), child_entry.clone())),
+            root.device() + 1,
+        );
+        let grandchild_entry = make_dir_entry("grandchild");
+        let grandchild = Mountpoint::new_with_root(
+            grandchild_entry.clone(),
+            Some(Location::new(child.clone(), grandchild_entry.clone())),
+            root.device() + 2,
+        );
+        root.children
+            .lock()
+            .insert(child_entry.key(), child.clone());
+        child
+            .children
+            .lock()
+            .insert(grandchild_entry.key(), grandchild.clone());
+
+        root.set_shared_recursive();
+        assert!(root.is_shared());
+        assert!(child.is_shared());
+        assert!(grandchild.is_shared());
+
+        root.set_private_recursive();
+        assert_eq!(root.propagation(), PropagationType::Private);
+        assert_eq!(child.propagation(), PropagationType::Private);
+        assert_eq!(grandchild.propagation(), PropagationType::Private);
+
+        root.set_unbindable_recursive();
+        assert!(root.is_unbindable());
+        assert!(child.is_unbindable());
+        assert!(grandchild.is_unbindable());
+
+        root.set_slave_recursive();
+        assert!(root.is_slave());
+        assert!(child.is_slave());
+        assert!(grandchild.is_slave());
+    }
+
+    #[test]
+    fn recursive_private_change_removes_descendant_relations_symmetrically() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let child_entry = make_dir_entry("child");
+        let child = Mountpoint::new_with_root(
+            child_entry.clone(),
+            Some(Location::new(root.clone(), child_entry.clone())),
+            root.device() + 1,
+        );
+        root.children
+            .lock()
+            .insert(child_entry.key(), child.clone());
+
+        let root_peer = Mountpoint::new_root(&fs);
+        root.set_shared();
+        root_peer.join_shared_group(&root);
+
+        let child_master = Mountpoint::new_root(&fs);
+        child_master.set_shared();
+        child.join_shared_group(&child_master);
+        child.set_slave();
+
+        root.set_private_recursive();
+
+        assert_eq!(root.propagation(), PropagationType::Private);
+        assert_eq!(child.propagation(), PropagationType::Private);
+        assert!(root.peers.lock().is_empty());
+        assert!(root_peer.peers.lock().is_empty());
+        assert!(child.masters.lock().is_empty());
+        assert!(child_master.slaves.lock().is_empty());
+    }
+
+    #[test]
     fn propagated_child_has_destination_specific_mount_identity() {
         let fs = mock_filesystem();
         let source_parent = Mountpoint::new_root(&fs);
