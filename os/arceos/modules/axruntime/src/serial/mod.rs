@@ -111,6 +111,31 @@ impl RuntimeShared {
         // SAFETY: idle is published under the TX queue lock before this wake.
         unsafe { self.tx_source.wake(IoEvents::OUT) };
     }
+
+    fn enable_irq(&self) -> AxResult {
+        let Some(handle) = self.irq_handle.get().copied() else {
+            return Ok(());
+        };
+        ax_hal::irq::enable_irq(handle).map_err(|err| {
+            warn!(
+                "failed to enable serial IRQ for {}: {err:?}",
+                self.info.name
+            );
+            AxError::Io
+        })
+    }
+
+    fn disable_irq(&self) {
+        let Some(handle) = self.irq_handle.get().copied() else {
+            return;
+        };
+        if let Err(err) = ax_hal::irq::disable_irq(handle) {
+            warn!(
+                "failed to disable serial IRQ for {}: {err:?}",
+                self.info.name
+            );
+        }
+    }
 }
 
 /// Cloneable OS-facing façade for one UART runtime.
@@ -333,21 +358,19 @@ fn build_runtime(
             bridge: callback_bridge.clone(),
             stats: callback_stats.clone(),
         };
-        let request = ax_hal::irq::IrqRequest::new(move |_| {
-            let Some(event) = irq.handle(&mut callback_rx) else {
-                callback_stats.spurious_irq();
-                return ax_hal::irq::IrqReturn::Unhandled;
-            };
-            callback_stats.handled_irq(event);
-            callback_bridge.latch.publish(event);
-            callback_bridge.notify.notify_irq();
-            ax_hal::irq::IrqReturn::Handled
-        })
-        .share_mode(ax_hal::irq::ShareMode::Shared)
-        .affinity(ax_hal::irq::IrqAffinity::Fixed(ax_hal::irq::CpuId(
+        let request = serial_irq_request(
+            ax_hal::irq::IrqRequest::new(move |_| {
+                let Some(event) = irq.handle(&mut callback_rx) else {
+                    callback_stats.spurious_irq();
+                    return ax_hal::irq::IrqReturn::Unhandled;
+                };
+                callback_stats.handled_irq(event);
+                callback_bridge.latch.publish(event);
+                callback_bridge.notify.notify_irq();
+                ax_hal::irq::IrqReturn::Handled
+            }),
             primary_cpu,
-        )))
-        .auto_enable(ax_hal::irq::AutoEnable::Yes);
+        );
         let handle = ax_hal::irq::request_irq(irq_id, request).map_err(|err| {
             warn!(
                 "failed to register serial IRQ for {}: {err:?}",
@@ -364,6 +387,18 @@ fn build_runtime(
         shared.info.name, shared.owner_cpu, shared.info.irq, shared.polling
     );
     Ok(SerialRuntimeHandle { shared })
+}
+
+fn serial_irq_request(
+    request: ax_hal::irq::IrqRequest,
+    primary_cpu: usize,
+) -> ax_hal::irq::IrqRequest {
+    request
+        .share_mode(ax_hal::irq::ShareMode::Shared)
+        .affinity(ax_hal::irq::IrqAffinity::Fixed(ax_hal::irq::CpuId(
+            primary_cpu,
+        )))
+        .auto_enable(ax_hal::irq::AutoEnable::No)
 }
 
 struct RuntimeIrqRxSink {
@@ -468,5 +503,19 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(item, [RxItem::Overrun]);
         assert_eq!(notify_count, 1);
+    }
+
+    #[test]
+    fn serial_irq_stays_disabled_until_the_worker_starts_the_port() {
+        let request = serial_irq_request(
+            ax_hal::irq::IrqRequest::new(|_| ax_hal::irq::IrqReturn::Handled),
+            0,
+        );
+
+        assert_eq!(
+            request.auto_enable_mode(),
+            ax_hal::irq::AutoEnable::No,
+            "the IRQ action must not run before the worker has configured the UART"
+        );
     }
 }

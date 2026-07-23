@@ -177,6 +177,12 @@ impl SerialWorker {
             port.startup(config).map_err(map_config_error)?;
             port.mask_all();
         }
+        if let Err(err) = self.shared.enable_irq() {
+            let mut port = self.shared.port.lock();
+            port.mask_all();
+            port.shutdown();
+            return Err(err);
+        }
         self.shared.ingress.start_accepting();
         self.shared.set_started(true);
         self.pending_rearm = SerialEventSet::RX;
@@ -184,6 +190,7 @@ impl SerialWorker {
     }
 
     fn shutdown_port(&mut self) {
+        self.shared.disable_irq();
         self.shared.set_started(false);
         self.shared.ingress.stop_and_discard();
         self.pending_frame = None;
