@@ -56,7 +56,16 @@
 
 use core::time::Duration;
 
-use ax_kspin::SpinNoIrq as Mutex;
+// PMIC access is slow (register reads/writes that busy-wait on I2C hardware), so
+// the lock is held across the whole transaction. Use `SpinNoPreempt`, not
+// `SpinNoIrq`: it keeps local IRQs ENABLED during the poll (so IRQ latency is not
+// held hostage to a millisecond PMIC transaction) while still disabling preemption
+// so no task switch can interleave mid-transaction and corrupt the register
+// sequence. This is sound because the lock is NEVER taken from an interrupt
+// handler — every caller (`init`/`get_uv`/`set_uv*`) runs in the boot probe or the
+// sleepable `cpufreq` governor task, so an IRQ arriving mid-transaction can never
+// re-enter and self-deadlock.
+use ax_kspin::SpinNoPreempt as Mutex;
 use log::{info, warn};
 use mmio_api::{MmioAddr, MmioRaw};
 use rdif_pinctrl::PinctrlDevice;

@@ -83,7 +83,16 @@
 
 use core::time::Duration;
 
-use ax_kspin::SpinNoIrq as Mutex;
+// PMIC access is slow (SPI register reads/writes that busy-wait on hardware), so
+// the lock is held across the whole transaction. Use `SpinNoPreempt`, not
+// `SpinNoIrq`: it keeps local IRQs ENABLED during the poll (so IRQ latency is not
+// held hostage to a millisecond SPI transaction) while still disabling preemption
+// so no task switch can interleave mid-transaction and corrupt the register
+// sequence. This is sound because the lock is NEVER taken from an interrupt
+// handler — every caller (`init`/`get_uv`/`set_uv*`/`force_write_dcdc2`) runs in
+// the boot probe or the sleepable `cpufreq` governor task, so an IRQ arriving
+// mid-transaction can never re-enter and self-deadlock.
+use ax_kspin::SpinNoPreempt as Mutex;
 use log::{info, warn};
 use rdif_pinctrl::PinctrlDevice;
 
@@ -257,7 +266,7 @@ struct Rk806Spi {
     base: *mut u8,
 }
 
-// The controller is reached only through `PMIC` (a `SpinNoIrq` mutex), which
+// The controller is reached only through `PMIC` (a `SpinNoPreempt` mutex), which
 // serializes all access; the MMIO mapping is stable for the kernel lifetime.
 unsafe impl Send for Rk806Spi {}
 

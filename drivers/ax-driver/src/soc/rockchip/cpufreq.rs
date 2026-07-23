@@ -506,6 +506,43 @@ impl Cluster {
     }
 }
 
+/// One of the two hardware levers an OPP transition programs. Naming them makes
+/// the safety-critical apply *ordering* assertable by a host test with no
+/// hardware (see [`apply_step_order`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ApplyStep {
+    /// Program the rail voltage (PMIC I2C/SPI write).
+    Voltage,
+    /// Program the SCMI PVTPLL ring (clock rate).
+    Clock,
+}
+
+/// Ordering policy for [`apply_opp`], pure so a host test can pin it: to keep the
+/// voltage-coupled clock from ever overshooting its rail, an UPSHIFT raises the
+/// voltage before the clock (clock follows up), and a DOWNSHIFT lowers the clock
+/// before the voltage (clock follows down).
+const fn apply_step_order(going_up: bool) -> [ApplyStep; 2] {
+    if going_up {
+        [ApplyStep::Voltage, ApplyStep::Clock]
+    } else {
+        [ApplyStep::Clock, ApplyStep::Voltage]
+    }
+}
+
+/// Transactional core of [`apply_opp`], pure so a host test can drive every
+/// success/failure combination. Runs the ordered steps, STOPS at the first failed
+/// step (so the second lever is never moved after the first failed), and returns
+/// `true` only when BOTH steps are confirmed. `run(step)` performs one hardware
+/// step and reports whether it was confirmed.
+fn run_apply_steps(order: [ApplyStep; 2], mut run: impl FnMut(ApplyStep) -> bool) -> bool {
+    for step in order {
+        if !run(step) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Apply an OPP to a domain as a matched (voltage, frequency) pair, ordered so
 /// the voltage-coupled clock never overshoots its rail:
 ///   - going UP:   raise voltage first, then the SCMI ring (clock follows up);
@@ -516,7 +553,9 @@ impl Cluster {
 /// window this ordering exists to prevent), and returns `true` only when BOTH
 /// steps are confirmed. The caller ([`governor_poll`]) must commit its software
 /// OPP index only on `true`; on `false` it must keep tracking the last
-/// confirmed index so the next poll retries from there.
+/// confirmed index so the next poll retries from there. The ordering +
+/// stop-on-failure logic is the pure, host-tested [`apply_step_order`] +
+/// [`run_apply_steps`]; only the hardware writes and their logs live here.
 ///
 /// No-undervolt argument (both failure points, each direction):
 ///   - UPSHIFT, voltage step fails: the ring set is skipped entirely, so
@@ -536,53 +575,57 @@ impl Cluster {
 fn apply_opp(cluster: Cluster, opp: Opp, going_up: bool) -> bool {
     let phandle = Phandle::from(0u32);
     let hz = opp.ring_khz as u64 * 1_000;
-    if going_up {
-        if !cluster.set_voltage(opp.uv) {
-            warn!(
-                "cpufreq: {} upshift to {} mV failed; leaving clock id {} unchanged (no \
-                 undervolt: old freq stays paired with old voltage)",
-                cluster.name(),
-                opp.uv / 1_000,
-                cluster.clock_id()
-            );
-            return false;
+    run_apply_steps(apply_step_order(going_up), |step| match step {
+        ApplyStep::Voltage => {
+            if cluster.set_voltage(opp.uv) {
+                return true;
+            }
+            if going_up {
+                warn!(
+                    "cpufreq: {} upshift to {} mV failed; leaving clock id {} unchanged (no \
+                     undervolt: old freq stays paired with old voltage)",
+                    cluster.name(),
+                    opp.uv / 1_000,
+                    cluster.clock_id()
+                );
+            } else {
+                warn!(
+                    "cpufreq: {} clock already lowered to {} Hz but voltage write to {} mV \
+                     failed; not committing this OPP (safe: over-volted for the new, lower clock, \
+                     never under-volted)",
+                    cluster.name(),
+                    hz,
+                    opp.uv / 1_000
+                );
+            }
+            false
         }
-        if scmi::set_clock_rate(phandle, cluster.clock_id(), hz).is_none() {
-            warn!(
-                "cpufreq: {} voltage already raised to {} mV but SCMI rejected clock id {} -> {} \
-                 Hz; not committing this OPP (safe: over-volted for the old, lower clock, never \
-                 under-volted)",
-                cluster.name(),
-                opp.uv / 1_000,
-                cluster.clock_id(),
-                hz
-            );
-            return false;
+        ApplyStep::Clock => {
+            if scmi::set_clock_rate(phandle, cluster.clock_id(), hz).is_some() {
+                return true;
+            }
+            if going_up {
+                warn!(
+                    "cpufreq: {} voltage already raised to {} mV but SCMI rejected clock id {} -> \
+                     {} Hz; not committing this OPP (safe: over-volted for the old, lower clock, \
+                     never under-volted)",
+                    cluster.name(),
+                    opp.uv / 1_000,
+                    cluster.clock_id(),
+                    hz
+                );
+            } else {
+                warn!(
+                    "cpufreq: {} downshift: SCMI rejected clock id {} -> {} Hz; leaving voltage \
+                     unchanged (no undervolt: old freq stays paired with old voltage)",
+                    cluster.name(),
+                    cluster.clock_id(),
+                    hz
+                );
+            }
+            false
         }
-    } else {
-        if scmi::set_clock_rate(phandle, cluster.clock_id(), hz).is_none() {
-            warn!(
-                "cpufreq: {} downshift: SCMI rejected clock id {} -> {} Hz; leaving voltage \
-                 unchanged (no undervolt: old freq stays paired with old voltage)",
-                cluster.name(),
-                cluster.clock_id(),
-                hz
-            );
-            return false;
-        }
-        if !cluster.set_voltage(opp.uv) {
-            warn!(
-                "cpufreq: {} clock already lowered to {} Hz but voltage write to {} mV failed; \
-                 not committing this OPP (safe: over-volted for the new, lower clock, never \
-                 under-volted)",
-                cluster.name(),
-                hz,
-                opp.uv / 1_000
-            );
-            return false;
-        }
-    }
-    true
+    })
 }
 
 /// Period, in ms, the kernel governor task sleeps between [`governor_poll`]s.
@@ -624,6 +667,33 @@ pub fn governor_wanted() -> bool {
 /// to [`governor_poll`].
 pub fn governor_period_ms() -> u64 {
     GOV_PERIOD_MS
+}
+
+/// Pure ondemand policy, split out of [`governor_poll`] so the up/down/hold/prime
+/// decision is host-testable with no hardware or tick counters. Given each core's
+/// busy% over the last window (each already clamped to `0..=100`), the cluster's
+/// current OPP index `cur`, the ladder length, and whether this is the priming
+/// poll, return the next OPP index:
+///   * priming poll, an empty cluster, or an empty ladder -> hold (no change);
+///   * any core at/above [`UP_THRESHOLD_PCT`] -> jump straight to the top OPP
+///     (ondemand fast-attack; a cluster shares one clock, so its busiest core
+///     drives it — averaging would bury a single saturated thread);
+///   * every core below [`DOWN_THRESHOLD_PCT`] -> shed exactly one step (never
+///     below index 0);
+///   * otherwise hold.
+fn next_opp_idx(core_pcts: &[u64], cur: usize, ladder_len: usize, priming: bool) -> usize {
+    if priming || core_pcts.is_empty() || ladder_len == 0 {
+        return cur;
+    }
+    let any_core_high = core_pcts.iter().any(|&p| p >= UP_THRESHOLD_PCT);
+    let all_cores_low = core_pcts.iter().all(|&p| p < DOWN_THRESHOLD_PCT);
+    if any_core_high {
+        ladder_len - 1
+    } else if all_cores_low && cur > 0 {
+        cur - 1
+    } else {
+        cur
+    }
 }
 
 /// One ondemand iteration, called periodically by the kernel governor task with
@@ -668,39 +738,37 @@ pub fn governor_poll(busy: &[u64]) {
         // thread on the 2-core A76 pair only reads 50%, below the up-threshold,
         // so the cluster never boosted. Each CPU belongs to exactly one cluster,
         // so every LAST_BUSY entry is refreshed exactly once per poll.
-        let mut any_core_high = false; // some core wants the top OPP
-        let mut all_cores_low = true; // every core is near-idle → shed one step
         let mut peak_pct = 0u64; // busiest core, for the log line
-        let mut n = 0u64;
+        // RK3588 clusters have at most 4 cores (A55 cpu0-3; the big pairs have 2).
+        let mut core_pcts = [0u64; 4];
+        let mut n = 0usize;
         for cpu in cluster.cpus() {
             let now = busy.get(cpu).copied().unwrap_or(0);
             let last = LAST_BUSY[cpu].swap(now, Ordering::Relaxed);
             // Per-core busy% = busy_ticks / window_ticks (one core), clamped.
             let pct = ((now.saturating_sub(last) * 100) / WINDOW_TICKS).min(100);
-            if pct >= UP_THRESHOLD_PCT {
-                any_core_high = true;
-            }
-            if pct >= DOWN_THRESHOLD_PCT {
-                all_cores_low = false;
-            }
             if pct > peak_pct {
                 peak_pct = pct;
             }
+            if let Some(slot) = core_pcts.get_mut(n) {
+                *slot = pct;
+            }
             n += 1;
         }
-        if n == 0 || priming {
+        if n == 0 {
             continue;
         }
 
         let opps = cluster.opps();
         let cur = IDX[ci].load(Ordering::Relaxed);
-        let new = if any_core_high {
-            opps.len() - 1 // fast attack: jump straight to the top OPP
-        } else if all_cores_low && cur > 0 {
-            cur - 1 // slow decay: shed one step only when the whole cluster is idle
-        } else {
-            cur
-        };
+        // Pure up/down/hold/prime decision (host-tested); the priming poll only
+        // seeds the baseline above and holds here.
+        let new = next_opp_idx(
+            &core_pcts[..n.min(core_pcts.len())],
+            cur,
+            opps.len(),
+            priming,
+        );
 
         if new != cur {
             // Only commit IDX (the software record of the last CONFIRMED OPP)
@@ -925,4 +993,200 @@ pub fn calibrate_cluster(cluster_idx: usize, intended_cpu: usize) {
         cluster.name(),
         restore_khz / 1_000
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // OPP transactional apply: ordering + commit-only-on-full-success
+    //
+    // These pin the two prior state-machine fixes: `apply_opp` orders the levers
+    // so the voltage-coupled clock never overshoots, and commits (returns `true`,
+    // which is what lets `governor_poll` advance `IDX`) ONLY when both the voltage
+    // and SCMI steps succeed. They exercise the exact pure helpers `apply_opp`
+    // uses, so a partial-failure regression (advancing past a step that failed)
+    // would fail here.
+    // -----------------------------------------------------------------------
+
+    /// Run `run_apply_steps` with injected per-step outcomes (keyed by execution
+    /// order), recording which steps actually ran — exactly how `apply_opp` drives
+    /// the two levers, minus the hardware.
+    fn run_recording(order: [ApplyStep; 2], outcomes: [bool; 2]) -> (bool, [Option<ApplyStep>; 2]) {
+        let mut ran: [Option<ApplyStep>; 2] = [None, None];
+        let mut i = 0usize;
+        let committed = run_apply_steps(order, |step| {
+            ran[i] = Some(step);
+            let ok = outcomes[i];
+            i += 1;
+            ok
+        });
+        (committed, ran)
+    }
+
+    #[test]
+    fn apply_step_order_up_is_voltage_then_clock_down_is_clock_then_voltage() {
+        assert_eq!(
+            apply_step_order(true),
+            [ApplyStep::Voltage, ApplyStep::Clock]
+        );
+        assert_eq!(
+            apply_step_order(false),
+            [ApplyStep::Clock, ApplyStep::Voltage]
+        );
+    }
+
+    #[test]
+    fn apply_commits_only_when_both_steps_succeed() {
+        let (committed, ran) = run_recording(apply_step_order(true), [true, true]);
+        assert!(committed, "both steps confirmed must commit the OPP");
+        assert_eq!(ran, [Some(ApplyStep::Voltage), Some(ApplyStep::Clock)]);
+    }
+
+    #[test]
+    fn apply_first_step_failure_skips_second_and_does_not_commit() {
+        // UPSHIFT with the voltage (first) step failing: the SCMI ring must NOT be
+        // touched, and the OPP must not commit.
+        let (committed, ran) = run_recording(apply_step_order(true), [false, true]);
+        assert!(!committed, "a failed first step must not commit the OPP");
+        assert_eq!(
+            ran,
+            [Some(ApplyStep::Voltage), None],
+            "the second lever must be skipped after the first step fails"
+        );
+    }
+
+    #[test]
+    fn apply_second_step_failure_does_not_commit() {
+        // DOWNSHIFT with the voltage (second) step failing after the ring lowered:
+        // both steps ran, but the OPP must not commit (hardware is left over-volted
+        // for the new lower clock — safe, never under-volted).
+        let (committed, ran) = run_recording(apply_step_order(false), [true, false]);
+        assert!(!committed, "a failed second step must not commit the OPP");
+        assert_eq!(ran, [Some(ApplyStep::Clock), Some(ApplyStep::Voltage)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Ondemand governor policy (pure): up / down / hold / prime / floor
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn governor_saturated_core_jumps_to_top_opp() {
+        // A single saturated core in a 2-core big pair drives the whole cluster to
+        // its top OPP (fast attack; the up-threshold is inclusive).
+        let top = A76_OPPS.len() - 1;
+        assert_eq!(
+            next_opp_idx(&[100, 0], BOOT_OPP_IDX, A76_OPPS.len(), false),
+            top
+        );
+        assert_eq!(
+            next_opp_idx(&[UP_THRESHOLD_PCT, 0], 0, A76_OPPS.len(), false),
+            top
+        );
+    }
+
+    #[test]
+    fn governor_all_idle_sheds_one_step() {
+        assert_eq!(
+            next_opp_idx(&[0, 0], BOOT_OPP_IDX, A76_OPPS.len(), false),
+            BOOT_OPP_IDX - 1
+        );
+        // Every A55 core just under the down-threshold sheds exactly one step.
+        assert_eq!(
+            next_opp_idx(&[DOWN_THRESHOLD_PCT - 1; 4], 3, A55_OPPS.len(), false),
+            2
+        );
+    }
+
+    #[test]
+    fn governor_does_not_shed_below_bottom_opp() {
+        assert_eq!(next_opp_idx(&[0, 0], 0, A76_OPPS.len(), false), 0);
+    }
+
+    #[test]
+    fn governor_holds_on_moderate_load() {
+        // No core saturated and not every core idle: hold.
+        let mid = (DOWN_THRESHOLD_PCT + UP_THRESHOLD_PCT) / 2;
+        assert_eq!(
+            next_opp_idx(&[mid, mid], BOOT_OPP_IDX, A76_OPPS.len(), false),
+            BOOT_OPP_IDX
+        );
+        // One busy-but-not-saturated core keeps the cluster put (down-threshold is
+        // exclusive at the top, up-threshold not yet reached).
+        assert_eq!(
+            next_opp_idx(
+                &[UP_THRESHOLD_PCT - 1, 0],
+                BOOT_OPP_IDX,
+                A76_OPPS.len(),
+                false
+            ),
+            BOOT_OPP_IDX
+        );
+    }
+
+    #[test]
+    fn governor_priming_and_degenerate_inputs_make_no_change() {
+        // The first (priming) poll only seeds the busy baseline; even a saturated
+        // reading must not move the OPP that window.
+        assert_eq!(
+            next_opp_idx(&[100, 100], BOOT_OPP_IDX, A76_OPPS.len(), true),
+            BOOT_OPP_IDX
+        );
+        // An empty cluster or an empty ladder also holds.
+        assert_eq!(
+            next_opp_idx(&[], BOOT_OPP_IDX, A76_OPPS.len(), false),
+            BOOT_OPP_IDX
+        );
+        assert_eq!(next_opp_idx(&[100], BOOT_OPP_IDX, 0, false), BOOT_OPP_IDX);
+    }
+
+    // -----------------------------------------------------------------------
+    // OPP-table invariants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn opp_table_voltages_within_pmic_envelope() {
+        // Every ladder rung must be a voltage its rail's PMIC layer will actually
+        // accept, or the governor's transition would silently fail. The A76 rails
+        // (RK8602/03 over I2C) accept [VDD_FLOOR_UV, VDD_CEIL_UV] = [675_000,
+        // 1_000_000] uV (see pmic_i2c); the A55 rail (RK806 force-write over SPI)
+        // accepts [675_000, 950_000] uV (see pmic_spi::force_write_dcdc2). Both
+        // bounds are inclusive. (This complements pmic_i2c's own envelope test.)
+        for opp in A76_OPPS {
+            assert!(
+                (675_000..=1_000_000).contains(&opp.uv),
+                "A76 OPP {} mV outside the I2C PMIC envelope",
+                opp.uv / 1_000
+            );
+        }
+        for opp in A55_OPPS {
+            assert!(
+                (675_000..=950_000).contains(&opp.uv),
+                "A55 OPP {} mV outside the SPI PMIC envelope",
+                opp.uv / 1_000
+            );
+        }
+    }
+
+    #[test]
+    fn opp_table_rings_within_boot_safe_ceiling() {
+        // The ladders never ring a cluster above its boot-safe ceiling: the top
+        // rungs hold the boot ring and raise only voltage. Guards against a future
+        // rung that would ring past the ceiling the probe verified.
+        for opp in A76_OPPS {
+            assert!(
+                opp.ring_khz as u64 * 1_000 <= A76_MAX_HZ,
+                "A76 ring {} kHz above the boot-safe ceiling",
+                opp.ring_khz
+            );
+        }
+        for opp in A55_OPPS {
+            assert!(
+                opp.ring_khz as u64 * 1_000 <= A55_MAX_HZ,
+                "A55 ring {} kHz above the boot-safe ceiling",
+                opp.ring_khz
+            );
+        }
+    }
 }
