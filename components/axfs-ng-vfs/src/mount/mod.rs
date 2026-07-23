@@ -1529,6 +1529,58 @@ mod tests {
     }
 
     #[test]
+    fn propagate_new_child_reaches_slave_of_slave() {
+        let fs = mock_filesystem();
+        let source_parent = Mountpoint::new_root(&fs);
+        let middle_parent = Mountpoint::new_root(&fs);
+        let leaf_parent = Mountpoint::new_root(&fs);
+
+        source_parent.set_shared();
+        middle_parent.join_shared_group(&source_parent);
+        middle_parent.set_slave();
+        leaf_parent.join_shared_group(&middle_parent);
+        leaf_parent.set_slave();
+
+        let source_location = source_parent.root_location();
+        let child = Mountpoint::new_with_root(
+            make_dir_entry("child-root"),
+            Some(source_location.clone()),
+            source_parent.device() + 1,
+        );
+        source_parent
+            .children
+            .lock()
+            .insert(source_location.entry.key(), child.clone());
+
+        Mountpoint::propagate_new_child(&source_parent, &source_location, &child)
+            .expect("propagation succeeds");
+
+        let middle_child = middle_parent
+            .children
+            .lock()
+            .get(&middle_parent.root.key())
+            .cloned()
+            .expect("middle slave receives a propagated child");
+        let leaf_child = leaf_parent
+            .children
+            .lock()
+            .get(&leaf_parent.root.key())
+            .cloned()
+            .expect("leaf slave-of-slave must also receive the propagated child");
+
+        assert!(!Arc::ptr_eq(&child, &middle_child));
+        assert!(!Arc::ptr_eq(&child, &leaf_child));
+        assert_ne!(child.mount_id(), middle_child.mount_id());
+        assert_ne!(child.mount_id(), leaf_child.mount_id());
+        assert!(
+            leaf_child
+                .location()
+                .is_some_and(|location| Arc::ptr_eq(location.mountpoint(), &leaf_parent)),
+            "leaf propagated child must live under the leaf parent"
+        );
+    }
+
+    #[test]
     fn propagation_change_removes_master_slave_edges_symmetrically() {
         let fs = mock_filesystem();
         let master = Mountpoint::new_root(&fs);

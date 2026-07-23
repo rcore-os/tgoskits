@@ -526,6 +526,140 @@ static void test_clone_ns_master_slave(void) {
     printf("UNSHARE_MOUNT_NS_CLONE_MASTER_SLAVE_PASSED\n");
 }
 
+/* ── Task 2.3: CLONE_NEWNS transitive slave-of-peer propagation ──── */
+/*
+ * Regression for the propagation graph walk: when the parent namespace
+ * owns `src(shared) -> slave(slave of src)`, an unshared child namespace
+ * ends up with `src_c(peer of src) -> slave_c(slave of src_c)`. Adding a
+ * mount under `src` must reach `slave_c` too, which is only reachable by
+ * walking past `src_c` — direct iteration over `src.peers + src.slaves`
+ * stops at `src_c` and the parent's `slave`, leaving the child namespace
+ * `slave_c` without the new mount.
+ */
+
+#define PROP_TR_BASE   "/tmp/nix-prop-tr"
+#define PROP_TR_SRC    PROP_TR_BASE "/src"
+#define PROP_TR_SLAVE  PROP_TR_BASE "/slave"
+#define PROP_TR_SLOT   PROP_TR_SRC "/slot"
+
+static void test_clone_ns_transitive_slave_propagation(void) {
+    printf("\n--- CLONE_NEWNS transitive slave-of-peer propagation ---\n");
+
+    syscall(SYS_umount2, PROP_TR_SLAVE, MNT_DETACH);
+    syscall(SYS_umount2, PROP_TR_SRC, MNT_DETACH);
+    rmdir(PROP_TR_SLAVE);
+    rmdir(PROP_TR_SRC);
+    rmdir(PROP_TR_BASE);
+
+    if (mkdir(PROP_TR_BASE, 0755) < 0)
+        FAIL("prop-tr: mkdir base");
+    if (mkdir(PROP_TR_SRC, 0755) < 0)
+        FAIL("prop-tr: mkdir src");
+    if (mkdir(PROP_TR_SLAVE, 0755) < 0)
+        FAIL("prop-tr: mkdir slave");
+
+    if (syscall(SYS_mount, "tmpfs", PROP_TR_SRC, "tmpfs", 0, NULL) < 0)
+        FAIL("prop-tr: mount src tmpfs");
+    if (syscall(SYS_mount, NULL, PROP_TR_SRC, NULL, MS_SHARED, NULL) < 0)
+        FAIL("prop-tr: make src shared");
+    if (syscall(SYS_mount, PROP_TR_SRC, PROP_TR_SLAVE, NULL, MS_BIND, NULL) < 0)
+        FAIL("prop-tr: bind src -> slave");
+    if (syscall(SYS_mount, NULL, PROP_TR_SLAVE, NULL, MS_SLAVE, NULL) < 0)
+        FAIL("prop-tr: make slave type");
+
+    mntrec_t p_slv;
+    if (mountinfo_rec(PROP_TR_SLAVE, &p_slv) < 0)
+        FAIL("prop-tr: parent slave mountinfo");
+    if (p_slv.master_id == 0)
+        FAIL("prop-tr: parent slave lacks master:N tag");
+
+    int ready_pipe[2];
+    int release_pipe[2];
+    if (pipe(ready_pipe) < 0 || pipe(release_pipe) < 0)
+        FAIL("prop-tr: pipe");
+
+    pid_t pid = fork();
+    if (pid < 0)
+        FAIL("prop-tr: fork");
+
+    if (pid == 0) {
+        close(ready_pipe[0]);
+        close(release_pipe[1]);
+
+        if (unshare(CLONE_NEWNS) < 0)
+            child_exit_with_status(ready_pipe[1], 1);
+
+        write_all(ready_pipe[1], "R", 1, "prop-tr child ready");
+        read_one(release_pipe[0], "prop-tr wait parent mount");
+
+        mntrec_t src_slot;
+        if (mountinfo_rec(PROP_TR_SLOT, &src_slot) < 0)
+            child_exit_with_status(ready_pipe[1], 2);
+
+        mntrec_t slave_slot;
+        if (mountinfo_rec(PROP_TR_SLAVE "/slot", &slave_slot) < 0)
+            child_exit_with_status(ready_pipe[1], 3);
+
+        write_all(ready_pipe[1], "C", 1, "prop-tr child verified");
+        read_one(release_pipe[0], "prop-tr cleanup");
+        _exit(0);
+    }
+
+    close(ready_pipe[1]);
+    close(release_pipe[0]);
+    read_one(ready_pipe[0], "prop-tr wait child ready");
+
+    if (mkdir(PROP_TR_SLOT, 0755) < 0)
+        FAIL("prop-tr: mkdir slot");
+    if (syscall(SYS_mount, "tmpfs", PROP_TR_SLOT, "tmpfs", 0, NULL) < 0)
+        FAIL("prop-tr: mount slot");
+
+    mntrec_t slot_info;
+    if (mountinfo_rec(PROP_TR_SLOT, &slot_info) < 0)
+        FAIL("prop-tr: parent slot mountinfo");
+
+    write_all(release_pipe[1], "P", 1, "prop-tr release child");
+
+    unsigned char child_status;
+    ssize_t n;
+    do {
+        n = read(ready_pipe[0], &child_status, 1);
+    } while (n < 0 && errno == EINTR);
+    if (n != 1)
+        FAIL("prop-tr: child verification lost");
+    if (child_status == 2)
+        FAIL("prop-tr: child did not see propagated mount on cloned shared peer");
+    if (child_status == 3)
+        FAIL("prop-tr: child did not see transitive propagation on cloned slave");
+    if (child_status != 0) {
+        errno = child_status;
+        FAIL("prop-tr: child unshare or setup failed");
+    }
+
+    write_all(release_pipe[1], "D", 1, "prop-tr cleanup complete");
+
+    int status;
+    if (waitpid(pid, &status, 0) < 0)
+        FAIL("prop-tr: waitpid");
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        FAIL("prop-tr: child non-zero exit");
+
+    PASS("prop-tr: parent mount reached cloned slave via peer-of-slave graph walk");
+
+    if (syscall(SYS_umount2, PROP_TR_SLOT, MNT_DETACH) < 0)
+        FAIL("prop-tr: umount slot");
+    if (syscall(SYS_umount2, PROP_TR_SLAVE, MNT_DETACH) < 0)
+        FAIL("prop-tr: umount slave");
+    if (syscall(SYS_umount2, PROP_TR_SRC, MNT_DETACH) < 0)
+        FAIL("prop-tr: umount src");
+    rmdir(PROP_TR_SLOT);
+    rmdir(PROP_TR_SLAVE);
+    rmdir(PROP_TR_SRC);
+    rmdir(PROP_TR_BASE);
+
+    printf("UNSHARE_MOUNT_NS_TRANSITIVE_SLAVE_PASSED\n");
+}
+
 /* ── original fork-based test ──────────────────────────────────────── */
 
 static void child_body(int ready_fd, int release_fd) {
@@ -561,6 +695,7 @@ int main(void) {
 
     test_clone_ns_shared_peer();
     test_clone_ns_master_slave();
+    test_clone_ns_transitive_slave_propagation();
 
     /* Scenario 2: fork() + child unshare(CLONE_NEWNS) + setns. */
     prepare_tree();
