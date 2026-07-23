@@ -172,6 +172,10 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(base_reg.address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
+    // A previous owner (for example the hypervisor host) may leave completion
+    // IRQ signaling enabled. Card discovery runs before this driver's IRQ
+    // handler is registered, so always begin the handoff in polling mode.
+    host.disable_completion_irq();
     if let Some(clock) = sdhci_core_clock(info)? {
         info!("rockchip-sdhci: using external CRU clock");
         host.set_external_clock(RockchipSdhciClock { clock });
