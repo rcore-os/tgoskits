@@ -33,6 +33,12 @@ use crate::{
 const SO_PRIORITY_UNPRIVILEGED_MAX: i32 = 6;
 const IP_TOS_ECN_MASK: u8 = 0x03;
 
+/// Linux IP_PMTUDISC_WANT: use per-route path-MTU discovery. Default for a fresh
+/// socket, echoed back by getsockopt(IP_MTU_DISCOVER).
+const IP_PMTUDISC_WANT: u8 = 1;
+/// Highest valid IP_PMTUDISC_* mode Linux accepts (IP_PMTUDISC_OMIT).
+const IP_PMTUDISC_MAX: u8 = 5;
+
 /// General options for all sockets.
 pub(crate) struct GeneralOptions {
     /// Whether the socket is non-blocking.
@@ -52,6 +58,9 @@ pub(crate) struct GeneralOptions {
 
     /// IP_TOS value used by protocol sockets when marking outgoing packets.
     ip_tos: AtomicU8,
+    /// IP_MTU_DISCOVER mode (IP_PMTUDISC_*). Stored for Linux ABI compatibility;
+    /// smoltcp does not model path-MTU discovery, so it has no wire effect.
+    ip_mtu_discover: AtomicU8,
     /// Whether recvmsg should report IPv4 TOS as IP_TOS ancillary data.
     recv_tos: AtomicBool,
     /// Whether recvmsg should report IPv6 traffic class as IPV6_TCLASS ancillary data.
@@ -84,6 +93,7 @@ impl GeneralOptions {
             bound_if: AtomicU32::new(0),
 
             ip_tos: AtomicU8::new(0),
+            ip_mtu_discover: AtomicU8::new(IP_PMTUDISC_WANT),
             recv_tos: AtomicBool::new(false),
             recv_traffic_class: AtomicBool::new(false),
             priority: AtomicI32::new(0),
@@ -149,6 +159,21 @@ impl GeneralOptions {
     /// Updates the IPv4 TOS / IPv6 traffic-class byte configured on this socket.
     pub fn set_ip_tos(&self, tos: u8) {
         self.ip_tos.store(tos & !IP_TOS_ECN_MASK, Ordering::Relaxed);
+    }
+
+    /// Returns the IP_MTU_DISCOVER (IP_PMTUDISC_*) mode configured on this socket.
+    pub fn ip_mtu_discover(&self) -> u8 {
+        self.ip_mtu_discover.load(Ordering::Relaxed)
+    }
+
+    /// Updates the IP_MTU_DISCOVER mode. Rejects modes Linux does not define so a
+    /// probing client sees the same EINVAL, then stores the mode for readback.
+    pub fn set_ip_mtu_discover(&self, mode: u8) -> AxResult<()> {
+        if mode > IP_PMTUDISC_MAX {
+            return Err(AxError::from(LinuxError::EINVAL));
+        }
+        self.ip_mtu_discover.store(mode, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Returns whether IPv4 TOS ancillary data is enabled for receive calls.
@@ -277,6 +302,9 @@ impl Configurable for GeneralOptions {
             O::IpTos(tos) => {
                 **tos = self.ip_tos.load(Ordering::Relaxed);
             }
+            O::IpMtuDiscover(mode) => {
+                **mode = self.ip_mtu_discover();
+            }
             O::RecvTos(enabled) => {
                 **enabled = self.recv_tos();
             }
@@ -342,6 +370,9 @@ impl Configurable for GeneralOptions {
             }
             O::IpTos(tos) => {
                 self.set_ip_tos(*tos);
+            }
+            O::IpMtuDiscover(mode) => {
+                self.set_ip_mtu_discover(*mode)?;
             }
             O::RecvTos(enabled) => {
                 self.set_recv_tos(*enabled);

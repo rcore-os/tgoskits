@@ -477,6 +477,18 @@ pub fn request_poll() {
     });
 }
 
+/// Synchronously drive the interface poll until idle.
+///
+/// [`request_poll`] only wakes the poll worker; the actual dispatch happens
+/// later. A socket that is closed in the same breath as its last send would
+/// otherwise be torn down before the worker runs, discarding the datagram still
+/// queued in its TX buffer. Draining egress here mirrors Linux, where a sent
+/// datagram already sits in the peer's receive buffer and `close()` cannot
+/// unsend it. Must not be called while holding `SOCKET_SET.inner`.
+pub(crate) fn flush_egress() {
+    poll_until_idle();
+}
+
 fn publish_poll_request(requested: &AtomicBool, wake: impl FnOnce()) {
     if !requested.swap(true, Ordering::AcqRel) {
         wake();
