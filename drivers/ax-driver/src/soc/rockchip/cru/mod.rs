@@ -5,6 +5,7 @@ use rdrive::{DriverGeneric, KError};
 use rockchip_soc::{ClkId, ClockOp, Cru, ResetOp, RstId};
 
 mod rk3568;
+mod rk3576;
 mod rk3588;
 
 type SharedCru = Arc<Mutex<Cru>>;

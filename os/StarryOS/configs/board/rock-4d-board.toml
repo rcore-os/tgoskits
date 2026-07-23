@@ -1,0 +1,7 @@
+board_type = "Rock-4D"
+dtb_file = "os/StarryOS/configs/board/rock-4d.dtb"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "echo 'STARRY_ROCK4D_BOOT_OK'"
+success_regex = ["(?m)^STARRY_ROCK4D_BOOT_OK\\s*$"]
+fail_regex = ["(?i)\\bpanic(?:ked)?\\b", "(?i)segmentation fault", "(?i)SIGSEGV"]
+timeout = 300

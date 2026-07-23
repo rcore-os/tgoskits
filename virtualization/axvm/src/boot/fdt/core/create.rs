@@ -36,7 +36,7 @@ pub fn create_guest_fdt(
         .as_deref()
         .ok_or_else(|| ax_err_type!(InvalidInput, "phys_cpu_ids is missing"))?;
 
-    let guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
+    let mut guest_tree = FdtTree::clone_filtered(fdt, |node_id, path, node| {
         should_keep_generated_node(
             fdt,
             node_id,
@@ -46,7 +46,38 @@ pub fn create_guest_fdt(
             phys_cpu_ids,
         )
     })?;
+    guest_tree.prune_cpu_topology();
+    (super::selected_guest_fdt_policy().normalize_host_derived)(fdt, &mut guest_tree)?;
     Ok(guest_tree.finish())
+}
+
+pub(crate) fn replace_cpu_subtree_from_host(
+    guest_tree: &mut FdtTree,
+    host_fdt: &Fdt,
+    phys_cpu_ids: &[usize],
+) -> AxVmResult<Option<NodeId>> {
+    guest_tree.inner_mut().remove_by_path("/cpus");
+    let Some(host_cpus_id) = host_fdt.get_by_path_id("/cpus") else {
+        return Ok(None);
+    };
+
+    let guest_cpus_id =
+        guest_tree.copy_subtree_from(host_fdt, host_cpus_id, guest_tree.inner().root_id(), true)?;
+    let removed_cpu_paths = guest_tree
+        .node_paths()
+        .into_iter()
+        .filter_map(|(id, path)| {
+            (is_direct_cpu_node_path(&path)
+                && !need_cpu_node(phys_cpu_ids, guest_tree.inner(), id, &path))
+            .then_some(path)
+        })
+        .collect::<Vec<_>>();
+    for path in removed_cpu_paths {
+        guest_tree.inner_mut().remove_by_path(&path);
+    }
+    guest_tree.prune_cpu_topology();
+
+    Ok(Some(guest_cpus_id))
 }
 
 fn should_keep_generated_node(
@@ -74,6 +105,11 @@ fn should_keep_generated_node(
         .any(|device_path| device_path == node_path)
         || is_descendant_of_passthrough_device(node_path, passthrough_device_names)
         || is_ancestor_of_passthrough_device(node_path, passthrough_device_names)
+}
+
+fn is_direct_cpu_node_path(path: &str) -> bool {
+    path.strip_prefix("/cpus/")
+        .is_some_and(|name| name.starts_with("cpu@") && !name.contains('/'))
 }
 
 fn is_descendant_of_passthrough_device(
@@ -292,6 +328,28 @@ mod tests {
         fdt
     }
 
+    fn test_fdt_with_cpu_map() -> Fdt {
+        let mut fdt = test_fdt("cpu@0=200\ncpu@100=0\ncpu@101=100");
+        let cpus = fdt.get_by_path_id("/cpus").unwrap();
+        let cpu_map = fdt.add_node(cpus, Node::new("cpu-map"));
+        let cluster = fdt.add_node(cpu_map, Node::new("cluster0"));
+
+        for (cpu_name, phandle) in [("cpu@0", 1), ("cpu@100", 2), ("cpu@101", 3)] {
+            let cpu = fdt
+                .get_by_path_id(&alloc::format!("/cpus/{cpu_name}"))
+                .unwrap();
+            fdt.node_mut(cpu)
+                .unwrap()
+                .set_property(prop_u32("phandle", phandle));
+            let core = fdt.add_node(cluster, Node::new(&alloc::format!("core{phandle}")));
+            fdt.node_mut(core)
+                .unwrap()
+                .set_property(prop_u32("cpu", phandle));
+        }
+
+        fdt
+    }
+
     #[test]
     fn cpu_node_selection_uses_node_id_when_reg_differs() {
         let fdt = test_fdt("cpu@0=200\ncpu@100=0\ncpu@101=100");
@@ -382,5 +440,36 @@ mod tests {
         assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_some());
         assert!(reparsed.get_by_path_id("/cpus/cpu@0").is_none());
         assert!(reparsed.get_by_path_id("/cpus/cpu@101").is_none());
+    }
+
+    #[test]
+    fn generated_fdt_prunes_cpu_map_after_filtering_cpu_nodes() {
+        let fdt = test_fdt_with_cpu_map();
+        let cfg = AxVMCrateConfig {
+            base: axvmconfig::VMBaseConfig {
+                phys_cpu_ids: Some(alloc::vec![0x100]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let dtb = super::create_guest_fdt(&fdt, &[], &cfg).unwrap();
+        let reparsed = Fdt::from_bytes(&dtb).unwrap();
+
+        assert!(
+            reparsed
+                .get_by_path_id("/cpus/cpu-map/cluster0/core2")
+                .is_some()
+        );
+        assert!(
+            reparsed
+                .get_by_path_id("/cpus/cpu-map/cluster0/core1")
+                .is_none()
+        );
+        assert!(
+            reparsed
+                .get_by_path_id("/cpus/cpu-map/cluster0/core3")
+                .is_none()
+        );
     }
 }

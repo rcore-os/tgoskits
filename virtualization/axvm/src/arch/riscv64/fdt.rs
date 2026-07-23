@@ -3,10 +3,12 @@
 use alloc::vec::Vec;
 
 use crate::{
-    AxVmResult,
+    AxVmResult, ax_err_type,
     boot::{BootImageProvider, fdt::GuestDtbImage},
     config::AxVMConfig,
 };
+
+mod plic;
 
 #[path = "../../boot/fdt/core/mod.rs"]
 pub(crate) mod core;
@@ -22,7 +24,20 @@ pub(crate) fn guest_fdt_policy() -> core::GuestFdtPolicy {
         patch_runtime: super::capabilities::patch_runtime_fdt,
         patch_provided: super::capabilities::patch_provided_fdt,
         decode_interrupt: super::capabilities::decode_plic_source,
+        normalize_host_derived,
     }
+}
+
+fn normalize_host_derived(
+    host_fdt: &fdt_edit::Fdt,
+    guest_tree: &mut core::tree::FdtTree,
+) -> AxVmResult {
+    plic::normalize_interrupts_extended(host_fdt, guest_tree.inner_mut()).map_err(|err| {
+        ax_err_type!(
+            InvalidData,
+            alloc::format!("Failed to normalize RISC-V PLIC guest FDT: {err}")
+        )
+    })
 }
 
 pub(crate) fn host_fdt_bootarg() -> usize {

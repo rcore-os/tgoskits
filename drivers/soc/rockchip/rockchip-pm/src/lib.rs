@@ -46,10 +46,12 @@ pub use variants::PowerDomain;
 /// Supported Rockchip SoC board types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RkBoard {
-    /// RK3588 SoC
-    Rk3588,
     /// RK3568 SoC
     Rk3568,
+    /// RK3576 SoC
+    Rk3576,
+    /// RK3588 SoC
+    Rk3588,
 }
 
 /// Power management operation errors
@@ -126,6 +128,7 @@ impl RockchipPM {
     pub fn new_with_compatible(base: NonNull<u8>, compatible: &str) -> Self {
         let board = match compatible {
             "rockchip,rk3568-power-controller" => RkBoard::Rk3568,
+            "rockchip,rk3576-power-controller" => RkBoard::Rk3576,
             "rockchip,rk3588-power-controller" => RkBoard::Rk3588,
             _ => panic!("Unsupported compatible string: {compatible}"),
         };
