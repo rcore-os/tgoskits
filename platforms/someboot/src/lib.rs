@@ -43,6 +43,9 @@ pub(crate) mod fdt;
 pub mod irq;
 pub mod mem;
 pub mod power;
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub mod axtest;
 pub mod rtc;
 pub mod smp;
 pub mod timer;

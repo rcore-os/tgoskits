@@ -99,7 +99,7 @@ pub fn dma_coherent_after_mapping_update() {
     Arch::dma_coherent_after_mapping_update();
 }
 
-#[cfg(any(test, all(target_arch = "riscv64", feature = "thead-mae")))]
+#[cfg(any(test, axtest, all(target_arch = "riscv64", feature = "thead-mae")))]
 pub(crate) fn cache_line_range(
     addr: usize,
     size: usize,
@@ -110,6 +110,36 @@ pub(crate) fn cache_line_range(
     }
     let end = addr.checked_add(size)?;
     Some((addr & !(line_size - 1), end))
+}
+
+#[cfg(axtest)]
+pub(crate) fn mem_constants_and_cache_line_rules_hold_for_test() -> bool {
+    // KB/MB/GB constants
+    assert!(KB == 1024);
+    assert!(MB == 1024 * KB);
+    assert!(GB == 1024 * MB);
+    
+    // KIMAGE_MAP_ALIGN
+    assert!(KIMAGE_MAP_ALIGN == 2 * MB);
+    
+    // cache_line_range: valid inputs
+    let result = cache_line_range(0x1000, 64, 64).unwrap();
+    assert!(result.0 == 0x1000);  // aligned down
+    assert!(result.1 == 0x1040);  // addr + size
+    
+    // cache_line_range: zero size returns None
+    assert!(cache_line_range(0x1000, 0, 64).is_none());
+    
+    // cache_line_range: zero line_size returns None
+    assert!(cache_line_range(0x1000, 64, 0).is_none());
+    
+    // cache_line_range: non-power-of-2 line_size returns None
+    assert!(cache_line_range(0x1000, 64, 63).is_none());
+    
+    // cache_line_range: overflow returns None
+    assert!(cache_line_range(usize::MAX, 1, 64).is_none());
+    
+    true
 }
 
 /// 物理RAM实际转换为的内核虚拟地址

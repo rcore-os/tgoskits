@@ -813,3 +813,14 @@ mod tests {
         assert_eq!(route_to_rdif(route_to_irq_framework(route)), route);
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn somehal_x86_64_constants_hold_for_test() -> bool {
+    // IRQ route constant
+    assert!(IRQ_ROUTE_VALID == 1 << 63);
+    
+    // IOAPIC placeholder vector
+    assert!(MASKED_IOAPIC_PLACEHOLDER_VECTOR == 0x21);
+    
+    true
+}

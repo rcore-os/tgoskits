@@ -370,3 +370,44 @@ fn copy_from_slice<T: DmaPod>(ptr: NonNull<T>, len: usize, src: &[T]) {
             .copy_from_nonoverlapping(src.as_ptr(), src.len());
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn array_helper_len_and_layout_rules_hold_for_test() -> bool {
+    // len_from_bytes: normal types
+    assert!(len_from_bytes::<u8>(100) == 100);
+    assert!(len_from_bytes::<u16>(100) == 50);
+    assert!(len_from_bytes::<u32>(100) == 25);
+    assert!(len_from_bytes::<u64>(100) == 12);
+    
+    // array_layout: valid layout succeeds
+    let layout = array_layout::<u8>(100, 1);
+    assert!(layout.is_ok());
+    let l = layout.unwrap();
+    assert!(l.size() == 100);
+    
+    // array_layout: overflow on size returns error
+    let overflow = array_layout::<u8>(usize::MAX, 1);
+    assert!(overflow.is_err());
+    
+    // array_layout: alignment must be power of 2
+    let bad_align = array_layout::<u8>(10, 3);  // 3 is not power of 2
+    assert!(bad_align.is_err());
+    
+    // len_from_bytes: zero bytes returns 0
+    assert!(len_from_bytes::<u32>(0) == 0);
+    
+    // array_layout: zero length is valid
+    let empty = array_layout::<u32>(0, 4);
+    assert!(empty.is_ok());
+    assert!(empty.unwrap().size() == 0);
+    
+    // len_from_bytes: u16 with odd bytes
+    assert!(len_from_bytes::<u16>(5) == 2);  // 5/2 = 2 (integer division)
+    
+    // array_layout: large alignment
+    let large_align = array_layout::<u8>(16, 4096);  // page-aligned
+    assert!(large_align.is_ok());
+    assert!(large_align.unwrap().align() == 4096);
+    
+    true
+}

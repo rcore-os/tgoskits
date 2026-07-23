@@ -408,3 +408,8 @@ fn dma_api_rejects_mask_alignment_segment_boundary_and_zero_sized_errors() {
         "streaming map should reject zero-sized buffers"
     );
 }
+
+#[axtest]
+fn dma_api_array_helper_functions_cover_len_and_layout() {
+    ax_assert!(crate::array::array_helper_len_and_layout_rules_hold_for_test());
+}

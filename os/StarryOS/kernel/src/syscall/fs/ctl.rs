@@ -31,8 +31,22 @@ use crate::{
 /// `FIOCLEX` / `FIONCLEX`: set / clear the close-on-exec flag on a file descriptor
 /// via `ioctl` (the ioctl spelling of `fcntl(fd, F_SETFD, ...)`). libc/musl and CPython
 /// use these on freshly-opened fds; Linux implements them generically for any fd.
-const FIOCLEX: u32 = 0x5451;
-const FIONCLEX: u32 = 0x5450;
+pub const FIOCLEX: u32 = 0x5451;
+pub const FIONCLEX: u32 = 0x5450;
+
+#[cfg(axtest)]
+pub(crate) fn ctl_ioctl_constants_hold_for_test() -> bool {
+    // Verify ioctl command constants
+    assert!(FIOCLEX == 0x5451);
+    assert!(FIONCLEX == 0x5450);
+    
+    // FIONBIO and FIOASYNC from linux_raw_sys
+    use linux_raw_sys::ioctl::{FIONBIO, FIOASYNC};
+    assert!(FIONBIO == 0x5421);
+    assert!(FIOASYNC == 0x5452);
+    
+    true
+}
 
 fn path_info_at(dirfd: i32, path: &str) -> AxResult<(String, bool)> {
     with_fs(dirfd, |fs| {

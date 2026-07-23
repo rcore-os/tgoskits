@@ -115,3 +115,21 @@ mod tests {
         assert!(!is_aligned_4k(0x12345678));
     }
 }
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub fn memory_addr_page_size_constants_hold() -> bool {
+    // Page size constants
+    assert!(PAGE_SIZE_4K == 4096);
+    assert!(PAGE_SIZE_2M == 2097152);
+    assert!(PAGE_SIZE_1G == 1073741824);
+    
+    // align_down and align_up basic tests
+    assert!(align_down(0, 4096) == 0);
+    assert!(align_up(0, 4096) == 0);
+    assert!(align_down(4096, 4096) == 4096);
+    assert!(align_up(4096, 4096) == 4096);
+    assert!(align_down(4097, 4096) == 4096);
+    assert!(align_up(4097, 4096) == 8192);
+    
+    true
+}

@@ -2,6 +2,8 @@
 
 mod desc;
 mod disk;
+#[cfg(axtest)]
+pub(crate) use self::disk::block_group_desc_disk_format_rules_hold_for_test;
 mod stats;
 mod table;
 

@@ -398,3 +398,48 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxRe
     }
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn signal_sigset_size_and_signo_validation_rules_hold_for_test() -> bool {
+    use core::mem::size_of;
+
+    use starry_signal::{SignalSet, Signo};
+
+    // check_sigset_size: only accepts exact size of SignalSet.
+    let correct_size = size_of::<SignalSet>();
+    let ok = check_sigset_size(correct_size).is_ok();
+    let too_small = check_sigset_size(correct_size - 1).is_err();
+    let too_big = check_sigset_size(correct_size + 1).is_err();
+    let zero = check_sigset_size(0).is_err();
+
+    // parse_signo: valid signos (1-31 typically) parse, 0 and out-of-range fail.
+    // SIGKILL=9, SIGSTOP=19 on Linux x86_64.
+    let valid_signo = parse_signo(9).is_ok(); // SIGKILL
+    let valid_signo2 = parse_signo(19).is_ok(); // SIGSTOP
+    let zero_signo = parse_signo(0).is_err(); // 0 is not a valid signo
+    // Signo::from_repr uses u8, so values > 255 fail
+    let overflow = parse_signo(256).is_err();
+
+    ok && too_small && too_big && zero && valid_signo && valid_signo2 && zero_signo && overflow
+}
+
+#[cfg(axtest)]
+pub(crate) fn signal_sigset_and_signo_validation_rules_hold_for_test() -> bool {
+    use core::mem::size_of;
+    use starry_signal::{SignalSet, Signo};
+    
+    // Test check_sigset_size
+    let correct_size = size_of::<SignalSet>();
+    assert!(check_sigset_size(correct_size).is_ok());
+    assert!(check_sigset_size(correct_size - 1).is_err());
+    assert!(check_sigset_size(correct_size + 1).is_err());
+    assert!(check_sigset_size(0).is_err());
+    
+    // Test parse_signo
+    assert!(parse_signo(1).is_ok()); // SIGHUP
+    assert!(parse_signo(9).is_ok()); // SIGKILL
+    assert!(parse_signo(0).is_err()); // Invalid signo
+    assert!(parse_signo(255).is_err()); // Out of range
+    
+    true
+}

@@ -1497,3 +1497,55 @@ pub fn sys_io_cancel(
     };
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn aio_iocb_validation_rules_hold_for_test() -> bool {
+    // validate_iocb_common: rejects non-zero reserved2 and invalid flags.
+    let valid_iocb = Iocb {
+        data: 0,
+        key: 0,
+        rw_flags: 0,
+        lio_opcode: IOCB_CMD_PREAD,
+        reqprio: 0,
+        fildes: 0,
+        buf: 0,
+        nbytes: 0,
+        offset: 0,
+        reserved2: 0,
+        flags: 0,
+        resfd: 0,
+    };
+
+    // Valid iocb passes validation.
+    validate_iocb_common(&valid_iocb).is_ok()
+        // Non-zero reserved2 is rejected.
+        && {
+            let mut bad = valid_iocb;
+            bad.reserved2 = 1;
+            validate_iocb_common(&bad).is_err()
+        }
+        // Invalid flags (bit outside RESFD|IOPRIO) are rejected.
+        && {
+            let mut bad = valid_iocb;
+            bad.flags = 0xFFFF;
+            validate_iocb_common(&bad).is_err()
+        }
+        // Only IOCB_FLAG_RESFD is accepted.
+        && {
+            let mut ok = valid_iocb;
+            ok.flags = IOCB_FLAG_RESFD;
+            validate_iocb_common(&ok).is_ok()
+        }
+        // Only IOCB_FLAG_IOPRIO is accepted.
+        && {
+            let mut ok = valid_iocb;
+            ok.flags = IOCB_FLAG_IOPRIO;
+            validate_iocb_common(&ok).is_ok()
+        }
+        // Both flags together are accepted.
+        && {
+            let mut ok = valid_iocb;
+            ok.flags = IOCB_FLAG_RESFD | IOCB_FLAG_IOPRIO;
+            validate_iocb_common(&ok).is_ok()
+        }
+}

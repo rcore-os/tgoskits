@@ -546,3 +546,18 @@ mod tests {
         assert!(observed.load(Ordering::Relaxed) <= THREADS * ITERS);
     }
 }
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub fn rwlock_constants_hold_for_test() -> bool {
+    // RwLock state constants
+    assert!(READER == 1);
+    assert!(WRITER == 1 << (usize::BITS - 1));
+    assert!(MAX_READER == 1 << (usize::BITS - 2));
+    
+    // WRITER should be much larger than READER
+    assert!(WRITER > READER);
+    // MAX_READER should be half of WRITER
+    assert!(MAX_READER == WRITER / 2);
+    
+    true
+}

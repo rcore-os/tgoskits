@@ -363,6 +363,52 @@ pub(crate) fn bridge_rss_accounting() -> Option<&'static MemoryAccounting> {
     }
 }
 
+#[cfg(axtest)]
+pub(crate) fn accounting_edge_cases_and_snapshot_rules_hold_for_test() -> bool {
+    use ax_memory_addr::VirtAddr;
+
+    // inc(0) and dec(0) are no-ops.
+    let acct = MemoryAccounting::new();
+    acct.inc(RssKind::Anon, 0);
+    assert!(acct.rss_total_pages() == 0);
+    acct.dec(RssKind::File, 0);
+    assert!(acct.rss_total_pages() == 0);
+
+    // hiwater_rss starts at 0 and tracks max(total, stored).
+    assert!(acct.hiwater_rss_pages() == 0);
+    acct.inc(RssKind::Anon, 5);
+    assert!(acct.hiwater_rss_pages() == 5);
+    acct.dec(RssKind::Anon, 3);
+    // hiwater stays at peak even after dec.
+    assert!(acct.hiwater_rss_pages() == 5);
+    assert!(acct.rss_total_pages() == 2);
+
+    // snapshot_resident_charges counts by kind from charge map.
+    let va1 = VirtAddr::from(0x1000usize);
+    let va2 = VirtAddr::from(0x2000usize);
+    let va3 = VirtAddr::from(0x3000usize);
+    acct.record_charge(va1, RssKind::Anon).unwrap();
+    acct.record_charge(va2, RssKind::File).unwrap();
+    acct.record_charge(va3, RssKind::File).unwrap();
+    let (anon, file, shmem) = acct.snapshot_resident_charges();
+    assert_eq!(anon, 1); // va1
+    assert_eq!(file, 2); // va2 + va3
+    assert_eq!(shmem, 0);
+
+    // generation is monotonic (new() sets it from global counter).
+    let gen1 = acct.generation.load(core::sync::atomic::Ordering::Relaxed);
+    acct.remove_charge(va1);
+    let gen2 = acct.generation.load(core::sync::atomic::Ordering::Relaxed);
+    assert!(gen2 > gen1);
+
+    // move_charge with non-existent src is a no-op (returns Ok).
+    let ghost = VirtAddr::from(0xDEADusize);
+    assert!(acct.move_charge(ghost, VirtAddr::from(0xBEEFusize)).is_ok());
+    assert!(acct.charge_kind(ghost).is_none());
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,4 +500,30 @@ mod tests {
         assert_eq!(child_anon, parent_anon + 1);
         assert_eq!(child_file, 0);
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn rss_kind_and_accounting_rules_hold_for_test() -> bool {
+    // RssKind variants are Debug, Clone, Copy, PartialEq, Eq
+    let anon = RssKind::Anon;
+    let file = RssKind::File;
+    let shmem = RssKind::Shmem;
+    
+    // PartialEq
+    assert!(anon == RssKind::Anon);
+    assert!(anon != file);
+    assert!(file != shmem);
+    
+    // Clone
+    let anon2 = anon.clone();
+    assert!(anon2 == anon);
+    
+    // Default MemoryAccounting has zero counters
+    let acc = MemoryAccounting::new();
+    let (a, f, s) = acc.snapshot_resident_charges();
+    assert!(a == 0);
+    assert!(f == 0);
+    assert!(s == 0);
+    
+    true
 }

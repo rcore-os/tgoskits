@@ -22,6 +22,11 @@ fn process_vm_stat_watermarks_hold() {
 }
 
 #[axtest]
+fn process_vm_stat_edge_cases_hold() {
+    ax_assert!(axtest_exports::process_vm_stat_edge_cases_hold());
+}
+
+#[axtest]
 fn user_pointer_metadata_rules_hold() {
     ax_assert!(axtest_exports::user_pointer_metadata_rules_hold());
 }
@@ -34,4 +39,9 @@ fn cow_file_max_read_len_boundary_rules_hold() {
 #[axtest]
 fn stats_classify_and_accumulate_rules_hold() {
     ax_assert!(axtest_exports::stats_classify_and_accumulate_rules_hold());
+}
+
+#[axtest]
+fn accounting_edge_cases_and_snapshot_rules_hold() {
+    ax_assert!(axtest_exports::accounting_edge_cases_and_snapshot_rules_hold());
 }

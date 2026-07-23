@@ -102,3 +102,22 @@ fn read_snapshot(io: &mut impl CmosIo, snapshot: &mut [u8; 128]) {
         snapshot[reg as usize] = io.read(reg);
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn cmos_register_constants_hold_for_test() -> bool {
+    // Register addresses
+    assert!(REG_SECONDS == 0x00);
+    assert!(REG_MINUTES == 0x02);
+    assert!(REG_HOURS == 0x04);
+    assert!(REG_DAY_OF_MONTH == 0x07);
+    assert!(REG_MONTH == 0x08);
+    assert!(REG_YEAR == 0x09);
+    assert!(REG_CENTURY == 0x32);
+    assert!(REG_B == 0x0b);
+    
+    // REG_A and UIP bit
+    assert!(REG_A == 0x0a);
+    assert!(REG_A_UIP == 0x80);
+    
+    true
+}

@@ -238,3 +238,10 @@ impl<I: Write + ?Sized> BufferedWriterSpec for BufWriter<I> {
         }
     }
 }
+
+#[cfg(axtest)]
+pub fn copy_constants_hold_for_test() -> bool {
+    // DEFAULT_BUF_SIZE constant
+    assert!(DEFAULT_BUF_SIZE == 2048);
+    true
+}

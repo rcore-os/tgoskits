@@ -1361,3 +1361,8 @@ fn axio_boxed_bufread_and_seek_forwarding_rules_hold() {
     boxed_seek.rewind().unwrap();
     ax_assert_eq!(boxed_seek.stream_position().unwrap(), 0);
 }
+
+#[axtest]
+fn axio_copy_constants_hold() {
+    ax_assert!(crate::copy_constants_hold_for_test());
+}

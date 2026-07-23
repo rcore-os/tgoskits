@@ -168,3 +168,39 @@ fn rdif_display_pixel_formats_and_error_mapping_hold() {
         io::ErrorKind::Other(_)
     ));
 }
+
+#[axtest]
+fn rdif_display_pixel_format_and_info_hold() {
+    // PixelFormat variants
+    let formats = [
+        PixelFormat::Xrgb8888,
+        PixelFormat::Xbgr8888,
+        PixelFormat::Rgb565,
+        PixelFormat::Rgb888,
+        PixelFormat::Argb8888,
+        PixelFormat::Bgr888,
+    ];
+    
+    // Just verify they can be created
+    for fmt in &formats {
+        match fmt {
+            PixelFormat::Xrgb8888 => {}
+            PixelFormat::Xbgr8888 => {}
+            PixelFormat::Rgb565 => {}
+            PixelFormat::Rgb888 => {}
+            PixelFormat::Argb8888 => {}
+            PixelFormat::Bgr888 => {}
+        }
+    }
+    
+    // DisplayInfo creation
+    let info = DisplayInfo {
+        width: 1920,
+        height: 1080,
+        stride: 1920 * 4,
+        format: PixelFormat::Xrgb8888,
+        fb_size: 1920 * 1080 * 4,
+    };
+    ax_assert_eq!(info.width, 1920);
+    ax_assert_eq!(info.height, 1080);
+}

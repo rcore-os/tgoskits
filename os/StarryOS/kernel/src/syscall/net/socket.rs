@@ -299,3 +299,28 @@ pub fn sys_socketpair(
     ];
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn net_socket_constants_hold_for_test() -> bool {
+    // Address family constants
+    assert!(AF_INET == 2);
+    assert!(AF_INET6 == 10);
+    assert!(AF_UNIX == 1);
+    assert!(AF_NETLINK == 16);
+    assert!(AF_PACKET == 17);
+    #[cfg(feature = "vsock")]
+    assert!(AF_VSOCK == 40);
+    
+    // Socket type constants
+    assert!(SOCK_STREAM == 1);
+    assert!(SOCK_DGRAM == 2);
+    assert!(SOCK_RAW == 3);
+    assert!(SOCK_SEQPACKET == 5);
+    
+    // Shutdown constants
+    assert!(SHUT_RD == 0);
+    assert!(SHUT_WR == 1);
+    assert!(SHUT_RDWR == 2);
+    
+    true
+}

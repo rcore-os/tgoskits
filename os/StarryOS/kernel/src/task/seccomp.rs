@@ -660,3 +660,90 @@ pub(crate) fn seccomp_filter_construction_rules_hold_for_test() -> bool {
         ])
         .is_err()
 }
+
+#[cfg(axtest)]
+pub(crate) fn seccomp_action_and_precedence_rules_hold_for_test() -> bool {
+    // action_to_decision: converts raw seccomp return to decision.
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_ALLOW),
+        SeccompDecision::Allow
+    ));
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_LOG),
+        SeccompDecision::Allow
+    ));
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_ERRNO | 1),
+        SeccompDecision::Errno(1)
+    ));
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_KILL_PROCESS),
+        SeccompDecision::KillProcess
+    ));
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_KILL_THREAD),
+        SeccompDecision::KillThread
+    ));
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_TRAP),
+        SeccompDecision::UnsupportedAction
+    ));
+
+    // action_precedence: KILL_PROCESS has highest precedence (7).
+    assert!(action_precedence(SECCOMP_RET_KILL_PROCESS) == 7);
+    assert!(action_precedence(SECCOMP_RET_KILL_THREAD) == 6);
+    assert!(action_precedence(SECCOMP_RET_ERRNO) == 4);
+    assert!(action_precedence(SECCOMP_RET_ALLOW) == 1);
+
+    // jump_rhs: selects RHS operand based on BPF_SRC_MASK.
+    let insn_k = SockFilter {
+        code: BPF_JEQ, // immediate mode
+        jt: 0,
+        jf: 0,
+        k: 42,
+    };
+    assert!(jump_rhs(insn_k, 100) == 42);
+
+    let insn_x = SockFilter {
+        code: BPF_JEQ | BPF_X, // X register mode
+        jt: 0,
+        jf: 0,
+        k: 0,
+    };
+    assert!(jump_rhs(insn_x, 100) == 100);
+
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) fn seccomp_bpf_constants_hold_for_test() -> bool {
+    // BPF limits
+    assert!(BPF_MAXINSNS == 4096);
+    assert!(BPF_MEMWORDS == 16);
+    
+    // BPF class constants
+    assert!(BPF_CLASS_MASK == 0x07);
+    assert!(BPF_LD == 0x00);
+    assert!(BPF_LDX == 0x01);
+    assert!(BPF_ST == 0x02);
+    assert!(BPF_STX == 0x03);
+    assert!(BPF_ALU == 0x04);
+    assert!(BPF_JMP == 0x05);
+    assert!(BPF_RET == 0x06);
+    assert!(BPF_MISC == 0x07);
+    
+    // BPF size constants
+    assert!(BPF_SIZE_MASK == 0x18);
+    assert!(BPF_W == 0x00);
+    assert!(BPF_H == 0x08);
+    assert!(BPF_B == 0x10);
+    
+    // BPF mode constants
+    assert!(BPF_MODE_MASK == 0xe0);
+    assert!(BPF_IMM == 0x00);
+    assert!(BPF_ABS == 0x20);
+    assert!(BPF_MEM == 0x60);
+    assert!(BPF_LEN == 0x80);
+    
+    true
+}

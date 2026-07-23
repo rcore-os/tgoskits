@@ -609,3 +609,13 @@ pub fn run_idle() -> ! {
         ax_hal::asm::wait_for_irqs();
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn axtask_api_constants_hold_for_test() -> bool {
+    // default_task_stack_size should return a non-zero value
+    let stack_size = default_task_stack_size();
+    assert!(stack_size > 0);
+    assert!(stack_size % 4096 == 0);  // Should be page-aligned
+    
+    true
+}

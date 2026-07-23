@@ -346,3 +346,22 @@ impl SocketAddrExt for SocketAddrEx {
         }
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn net_addr_conversion_rules_hold_for_test() -> bool {
+    use core::net::{Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+    
+    // Test socket_addr_v4_to_mapped_v6 conversion
+    let v4 = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 8080);
+    let v6 = socket_addr_v4_to_mapped_v6(&v4);
+    
+    // Check port preservation
+    assert!(v6.port() == 8080);
+    
+    // Test localhost mapping
+    let localhost_v4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 80);
+    let localhost_v6 = socket_addr_v4_to_mapped_v6(&localhost_v4);
+    assert!(localhost_v6.port() == 80);
+    
+    true
+}

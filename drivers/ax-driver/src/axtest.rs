@@ -117,3 +117,9 @@ fn ax_driver_error_conversions_preserve_driver_and_probe_categories() {
     let on_probe = Error::from(ProbeError::from(OnProbeError::NotMatch));
     ax_assert!(matches!(on_probe, Error::Probe(_)));
 }
+
+#[cfg(target_arch = "x86_64")]
+#[axtest]
+fn ax_driver_cmos_register_constants_hold() {
+    ax_assert!(crate::time::cmos_register_constants_hold_for_test());
+}

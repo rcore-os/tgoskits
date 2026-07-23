@@ -65,3 +65,9 @@ fn starry_vm_alloc_helpers_validate_bad_inputs_before_copying() {
     let empty: Vec<u8> = vm_load(core::ptr::null::<u8>(), 0).unwrap();
     ax_assert!(empty.is_empty());
 }
+
+#[axtest]
+fn starry_vm_alloc_is_zero_and_max_bytes_hold() {
+    use starry_vm::vm_alloc_is_zero_and_max_bytes_rules_hold_for_test;
+    ax_assert!(vm_alloc_is_zero_and_max_bytes_rules_hold_for_test());
+}

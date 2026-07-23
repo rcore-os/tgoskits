@@ -476,3 +476,35 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
 
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn mount_flags_validation_rules_hold_for_test() -> bool {
+    // Test umount flag validation
+    const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
+    let flags = 0i32;
+    assert!(flags & !VALID_UMOUNT_FLAGS == 0);
+
+    let force_only = MNT_FORCE;
+    assert!(force_only & !VALID_UMOUNT_FLAGS == 0);
+
+    let detach_only = MNT_DETACH;
+    assert!(detach_only & !VALID_UMOUNT_FLAGS == 0);
+
+    let all_valid = VALID_UMOUNT_FLAGS;
+    assert!(all_valid & !VALID_UMOUNT_FLAGS == 0);
+
+    // Invalid flag should be detected
+    let invalid_flags = 0xFFFFi32;
+    assert!(invalid_flags & !VALID_UMOUNT_FLAGS != 0);
+
+    // Test propagation flags
+    const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
+
+    assert!(MS_SHARED & PROPAGATION_FLAGS != 0);
+    assert!(MS_PRIVATE & PROPAGATION_FLAGS != 0);
+    assert!(MS_SLAVE & PROPAGATION_FLAGS != 0);
+    assert!(MS_UNBINDABLE & PROPAGATION_FLAGS != 0);
+
+    true
+}

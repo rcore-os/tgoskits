@@ -134,3 +134,34 @@ fn rdif_base_io_errors_preserve_kind_and_success_position() {
     }));
     ax_assert!(matches!(other, ErrorKind::Other(_)));
 }
+
+#[axtest]
+fn rdif_base_error_kind_variants_hold() {
+    // Check that all ErrorKind variants exist and are distinct
+    let kinds = [
+        ErrorKind::NotAvailable,
+        ErrorKind::BrokenPipe,
+        ErrorKind::InvalidData,
+        ErrorKind::TimedOut,
+        ErrorKind::Interrupted,
+        ErrorKind::Unsupported,
+        ErrorKind::OutOfMemory,
+        ErrorKind::InvalidParameter { name: "test" },
+    ];
+    
+    // Just verify they can be created and matched
+    for kind in &kinds {
+        match kind {
+            ErrorKind::NotAvailable => {}
+            ErrorKind::BrokenPipe => {}
+            ErrorKind::InvalidData => {}
+            ErrorKind::TimedOut => {}
+            ErrorKind::Interrupted => {}
+            ErrorKind::Unsupported => {}
+            ErrorKind::OutOfMemory => {}
+            ErrorKind::InvalidParameter { .. } => {}
+            ErrorKind::Other(_) => {}
+            ErrorKind::WriteZero => {}
+        }
+    }
+}

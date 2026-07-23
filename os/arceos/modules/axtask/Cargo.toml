@@ -54,6 +54,7 @@ host-test = [
   "ax-percpu?/host-test",
 ]
 test = ["host-test"]
+axtest = ["dep:axtest"]
 
 [dependencies]
 ax-alloc = {workspace = true, optional = true}
@@ -71,6 +72,7 @@ ax-mm = {workspace = true, optional = true}
 ax-percpu = {workspace = true, optional = true}
 ax-sched = { workspace = true, optional = true }
 ax-timer-list = {workspace = true, optional = true}
+axtest = {workspace = true, optional = true}
 axpoll = {workspace = true, optional = true}
 cfg-if.workspace = true
 extern-trait = {version = "0.4", optional = true}

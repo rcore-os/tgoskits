@@ -71,3 +71,19 @@ pub fn vm_load_until_nul<T: Pod>(ptr: *const T) -> VmResult<Vec<T>> {
 
     Ok(result)
 }
+
+#[cfg(axtest)]
+pub fn vm_alloc_is_zero_and_max_bytes_rules_hold_for_test() -> bool {
+    // is_zero: zero value returns true
+    let zero_val: u64 = 0;
+    assert!(is_zero(&zero_val));
+    
+    // is_zero: non-zero value returns false
+    let nonzero_val: u64 = 42;
+    assert!(!is_zero(&nonzero_val));
+    
+    // MAX_BYTES constant check
+    assert!(MAX_BYTES == 131072);
+    
+    true
+}

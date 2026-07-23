@@ -53,6 +53,10 @@ pub(crate) use self::pipe::{
     peer_close_with_multiple_readers_is_visible_for_test,
     pipe_resize_rounding_and_state_rules_hold_for_test, resize_rejects_oversized_pipe_for_test,
 };
+#[cfg(axtest)]
+pub(crate) use self::fs::metadata_to_kstat_conversion_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::wext::is_wext_ioctl_validation_rules_hold_for_test;
 pub use self::{
     fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
     io_uring::IoUring,

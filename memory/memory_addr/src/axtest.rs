@@ -197,3 +197,43 @@ fn memory_addr_page_iterators_accept_only_aligned_power_of_two_pages() {
     ax_assert!(DynPageIter::<usize>::new(0, 0x3001, PAGE_SIZE_4K).is_none());
     ax_assert!(DynPageIter::<usize>::new(0, 0x3000, 0x1800).is_none());
 }
+
+#[axtest]
+fn memory_addr_overflowing_and_checked_ops_hold() {
+    use crate::{PhysAddr, VirtAddr};
+
+    // overflowing_sub
+    let (result, overflow) = PhysAddr::from(0x100).overflowing_sub(0x50);
+    ax_assert_eq!(result, PhysAddr::from(0xb0));
+    ax_assert!(!overflow);
+    let (result, overflow) = PhysAddr::from(0x50).overflowing_sub(0x100);
+    ax_assert_eq!(result, PhysAddr::from(usize::MAX - 0xaf));
+    ax_assert!(overflow);
+
+    // checked_sub
+    ax_assert_eq!(PhysAddr::from(0x100).checked_sub(0x50), Some(PhysAddr::from(0xb0)));
+    ax_assert_eq!(PhysAddr::from(0x50).checked_sub(0x100), None);
+
+    // sub_addr
+    ax_assert_eq!(PhysAddr::from(0x200).sub_addr(PhysAddr::from(0x100)), 0x100);
+
+    // wrapping_sub_addr
+    ax_assert_eq!(VirtAddr::from(0x100).wrapping_sub_addr(VirtAddr::from(0x200)), usize::MAX - 0xff);
+
+    // overflowing_sub_addr
+    let (diff, ovf) = VirtAddr::from(0x300).overflowing_sub_addr(VirtAddr::from(0x100));
+    ax_assert_eq!(diff, 0x200);
+    ax_assert!(!ovf);
+    let (diff, ovf) = VirtAddr::from(0x100).overflowing_sub_addr(VirtAddr::from(0x300));
+    ax_assert_eq!(diff, usize::MAX - 0x1ff);
+    ax_assert!(ovf);
+
+    // checked_sub_addr
+    ax_assert_eq!(VirtAddr::from(0x300).checked_sub_addr(VirtAddr::from(0x100)), Some(0x200));
+    ax_assert_eq!(VirtAddr::from(0x100).checked_sub_addr(VirtAddr::from(0x300)), None);
+}
+
+#[axtest]
+fn memory_addr_page_size_constants_hold() {
+    ax_assert!(crate::memory_addr_page_size_constants_hold());
+}

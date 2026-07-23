@@ -112,3 +112,20 @@ impl Drop for ItemBox {
         }
     }
 }
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub fn boxed_layout_rules_hold_for_test() -> bool {
+    // layout: valid layouts succeed
+    let l1 = Layout::new::<u8>();
+    let (header_layout, offset1) = layout(l1);
+    assert!(header_layout.size() >= core::mem::size_of::<Header>());
+    assert!(offset1 >= core::mem::size_of::<Header>());
+    
+    // layout: larger type
+    let l2 = Layout::new::<[u64; 8]>();
+    let (header_layout2, offset2) = layout(l2);
+    assert!(header_layout2.size() >= core::mem::size_of::<Header>());
+    assert!(offset2 >= core::mem::size_of::<Header>());
+    
+    true
+}

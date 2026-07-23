@@ -633,3 +633,27 @@ fn rdif_serial_irq_handler_services_tx_space_from_queue() {
     ax_assert_eq!(tx.chars_in_buffer(), 1);
     ax_assert_eq!(parts.port.counters().tx_bytes, 1);
 }
+
+#[axtest]
+fn rdif_serial_config_data_bits_parity_stopbits_hold() {
+    // DataBits variants - just check they exist and are distinct
+    let five = DataBits::Five;
+    let six = DataBits::Six;
+    let seven = DataBits::Seven;
+    let eight = DataBits::Eight;
+    ax_assert!(five != six);
+    ax_assert!(six != seven);
+    ax_assert!(seven != eight);
+    
+    // Parity variants - just check they exist and are distinct
+    let none = Parity::None;
+    let odd = Parity::Odd;
+    let even = Parity::Even;
+    ax_assert!(none != odd);
+    ax_assert!(odd != even);
+    
+    // StopBits variants - just check they exist and are distinct
+    let one = StopBits::One;
+    let two = StopBits::Two;
+    ax_assert!(one != two);
+}

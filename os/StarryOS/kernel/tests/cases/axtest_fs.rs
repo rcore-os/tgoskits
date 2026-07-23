@@ -60,3 +60,13 @@ fn capability_data_conversion_rules_hold() {
 fn pipe_size_rounding_and_rejection_rules_hold() {
     ax_assert!(axtest_exports::pipe_size_rounding_and_rejection_rules_hold());
 }
+
+#[axtest]
+fn metadata_to_kstat_conversion_rules_hold() {
+    ax_assert!(axtest_exports::metadata_to_kstat_conversion_rules_hold());
+}
+
+#[axtest]
+fn is_wext_ioctl_validation_rules_hold() {
+    ax_assert!(axtest_exports::is_wext_ioctl_validation_rules_hold());
+}

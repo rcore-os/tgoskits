@@ -241,3 +241,6 @@ pub fn sys_bpf(cmd: u64, uattr: usize, size: u32) -> AxResult<isize> {
 pub(crate) fn bpf_unknown_command_is_invalid_for_test() -> bool {
     sys_bpf(u64::MAX, 0, 0) == Err(AxError::InvalidInput)
 }
+
+#[cfg(axtest)]
+pub(crate) use self::error::bpf_error_adapter_rules_hold_for_test;

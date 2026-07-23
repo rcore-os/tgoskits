@@ -73,3 +73,8 @@ fn scope_local_active_scope_switching_rules_hold() {
     ax_assert!(ActiveScope::is_global());
     ax_assert_eq!(*COVERAGE_NUMBER, 7);
 }
+
+#[axtest]
+fn scope_local_boxed_layout_rules_hold() {
+    ax_assert!(crate::boxed::boxed_layout_rules_hold_for_test());
+}

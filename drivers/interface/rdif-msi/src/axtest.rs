@@ -170,3 +170,27 @@ fn rdif_msi_wrapper_rejects_driver_returning_wrong_vector_count() {
         Err(IrqError::InvalidIrq)
     );
 }
+
+#[axtest]
+fn rdif_msi_type_constants_hold() {
+    // MsiMessage::new
+    let msg = MsiMessage::new(0xFEE00000, 0x1234);
+    ax_assert_eq!(msg.address, 0xFEE00000);
+    ax_assert_eq!(msg.data, 0x1234);
+    
+    // MsiVectorIndex
+    let idx = MsiVectorIndex(42);
+    ax_assert_eq!(idx.0, 42);
+    
+    // MsiEventId
+    let evt = MsiEventId(10);
+    ax_assert_eq!(evt.0, 10);
+    
+    // MsiDeviceId
+    let dev = MsiDeviceId(5);
+    ax_assert_eq!(dev.0, 5);
+    
+    // MsiProviderId
+    let prov = MsiProviderId(99);
+    ax_assert_eq!(prov.0, 99);
+}

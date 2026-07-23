@@ -135,8 +135,20 @@ pub fn memory_accounting_rejects_duplicate_and_conflicting_charges() -> bool {
         && acct.rss_anon_pages() == 1
 }
 
+pub fn accounting_edge_cases_and_snapshot_rules_hold() -> bool {
+    super::mm::accounting_edge_cases_and_snapshot_rules_hold_for_test()
+}
+
+pub fn rss_kind_and_accounting_rules_hold() -> bool {
+    super::mm::rss_kind_and_accounting_rules_hold_for_test()
+}
+
 pub fn process_vm_stat_watermarks_hold() -> bool {
     super::mm::process_vm_stat_watermarks_hold_for_test()
+}
+
+pub fn process_vm_stat_edge_cases_hold() -> bool {
+    super::mm::process_vm_stat_edge_cases_hold_for_test()
 }
 
 pub fn user_pointer_metadata_rules_hold() -> bool {
@@ -155,6 +167,14 @@ pub fn resource_limit_defaults_hold() -> bool {
     super::task::resource_limit_defaults_hold_for_test()
 }
 
+pub fn posix_timer_clock_validation_rules_hold() -> bool {
+    super::task::posix_timer_clock_validation_rules_hold_for_test()
+}
+
+pub fn itimer_type_signo_and_time_conversion_rules_hold() -> bool {
+    super::task::itimer_type_signo_and_time_conversion_rules_hold_for_test()
+}
+
 pub fn seccomp_filter_rules_hold() -> bool {
     super::task::seccomp_filter_rules_hold_for_test()
 }
@@ -165,6 +185,26 @@ pub fn rseq_validation_rejects_invalid_arguments() -> bool {
 
 pub fn membarrier_validation_rules_hold() -> bool {
     super::syscall::membarrier_validation_rules_hold_for_test()
+}
+
+pub fn signal_sigset_size_and_signo_validation_rules_hold() -> bool {
+    super::syscall::signal_sigset_size_and_signo_validation_rules_hold_for_test()
+}
+
+pub fn signal_sigset_and_signo_validation_rules_hold() -> bool {
+    super::syscall::signal_sigset_and_signo_validation_rules_hold_for_test()
+}
+
+pub fn io_rwf_flags_validation_rules_hold() -> bool {
+    super::syscall::io_rwf_flags_validation_rules_hold_for_test()
+}
+
+pub fn metadata_to_kstat_conversion_rules_hold() -> bool {
+    super::file::metadata_to_kstat_conversion_rules_hold_for_test()
+}
+
+pub fn uid_valid_and_syslog_validation_rules_hold() -> bool {
+    super::syscall::uid_valid_and_syslog_validation_rules_hold_for_test()
 }
 
 pub fn mempolicy_validation_rules_hold() -> bool {
@@ -185,6 +225,10 @@ pub fn proc_bus_usb_devices_snapshot_matches_busybox_lsusb_layout() -> bool {
 
 pub fn bpf_unknown_command_is_invalid() -> bool {
     super::ebpf::bpf_unknown_command_is_invalid_for_test()
+}
+
+pub fn bpf_error_adapter_rules_hold() -> bool {
+    super::ebpf::bpf_error_adapter_rules_hold_for_test()
 }
 
 pub fn pipe_resize_rounding_and_state_rules_hold() -> bool {
@@ -217,4 +261,168 @@ pub fn push_topology_item_preserves_order_and_grows_capacity() -> bool {
 
 pub fn dummy_stat_fs_fields_match_expected_defaults() -> bool {
     super::pseudofs::dummy_stat_fs_fields_match_expected_defaults_for_test()
+}
+
+pub fn is_wext_ioctl_validation_rules_hold() -> bool {
+    super::file::is_wext_ioctl_validation_rules_hold_for_test()
+}
+
+pub fn cmsg_alignment_and_space_rules_hold() -> bool {
+    super::syscall::cmsg_alignment_and_space_rules_hold_for_test()
+}
+
+pub fn seccomp_action_and_precedence_rules_hold() -> bool {
+    super::task::seccomp_action_and_precedence_rules_hold_for_test()
+}
+
+pub fn seccomp_bpf_constants_hold() -> bool {
+    super::task::seccomp_bpf_constants_hold_for_test()
+}
+
+pub fn syscall_signal_restart_rules_hold() -> bool {
+    super::syscall::syscall_signal_restart_rules_hold_for_test()
+}
+
+pub fn futex_op_and_compare_rules_hold() -> bool {
+    super::syscall::futex_op_and_compare_rules_hold_for_test()
+}
+
+pub fn mmap_capped_device_map_len_rules_hold() -> bool {
+    super::syscall::mmap_capped_device_map_len_rules_hold_for_test()
+}
+
+pub fn aio_iocb_validation_rules_hold() -> bool {
+    super::syscall::aio_iocb_validation_rules_hold_for_test()
+}
+
+pub fn decode_wait_status_rules_hold() -> bool {
+    super::task::decode_wait_status_rules_hold_for_test()
+}
+
+pub fn xattr_name_and_value_validation_rules_hold() -> bool {
+    super::syscall::xattr_name_and_value_validation_rules_hold_for_test()
+}
+
+pub fn eventfd_flags_validation_rules_hold() -> bool {
+    super::syscall::eventfd_flags_validation_rules_hold_for_test()
+}
+
+pub fn signalfd_flags_validation_rules_hold() -> bool {
+    super::syscall::signalfd_flags_validation_rules_hold_for_test()
+}
+
+pub fn pidfd_flags_and_signal_validation_rules_hold() -> bool {
+    super::syscall::pidfd_flags_and_signal_validation_rules_hold_for_test()
+}
+
+pub fn timerfd_timespec_conversion_rules_hold() -> bool {
+    super::syscall::timerfd_timespec_conversion_rules_hold_for_test()
+}
+
+pub fn inotify_flags_validation_rules_hold() -> bool {
+    super::syscall::inotify_flags_validation_rules_hold_for_test()
+}
+
+pub fn pipe_flags_validation_rules_hold() -> bool {
+    super::syscall::pipe_flags_validation_rules_hold_for_test()
+}
+
+pub fn stat_flags_validation_rules_hold() -> bool {
+    super::syscall::stat_flags_validation_rules_hold_for_test()
+}
+
+pub fn memfd_flags_validation_rules_hold() -> bool {
+    super::syscall::memfd_flags_validation_rules_hold_for_test()
+}
+
+pub fn mount_flags_validation_rules_hold() -> bool {
+    super::syscall::mount_flags_validation_rules_hold_for_test()
+}
+
+pub fn io_offset_from_hilo_rules_hold() -> bool {
+    super::syscall::io_offset_from_hilo_rules_hold_for_test()
+}
+
+pub fn io_uring_round_ring_entries_rules_hold() -> bool {
+    super::syscall::io_uring_round_ring_entries_rules_hold_for_test()
+}
+
+pub fn fd_ops_flags_to_options_rules_hold() -> bool {
+    super::syscall::fd_ops_flags_to_options_rules_hold_for_test()
+}
+
+pub fn rseq_validation_rules_hold() -> bool {
+    super::syscall::rseq_validation_rules_hold_for_test()
+}
+
+pub fn mincore_validation_rules_hold() -> bool {
+    super::syscall::mincore_validation_rules_hold_for_test()
+}
+
+pub fn time_clock_id_validation_rules_hold() -> bool {
+    super::syscall::time_clock_id_validation_rules_hold_for_test()
+}
+
+pub fn exit_code_encoding_rules_hold() -> bool {
+    super::syscall::exit_code_encoding_rules_hold_for_test()
+}
+
+pub fn job_setpgid_validation_rules_hold() -> bool {
+    super::syscall::job_setpgid_validation_rules_hold_for_test()
+}
+
+pub fn schedule_clock_and_sched_validation_rules_hold() -> bool {
+    super::syscall::schedule_clock_and_sched_validation_rules_hold_for_test()
+}
+
+pub fn thread_arch_prctl_code_rules_hold() -> bool {
+    super::syscall::thread_arch_prctl_code_rules_hold_for_test()
+}
+
+pub fn resources_rlimit_validation_rules_hold() -> bool {
+    super::syscall::resources_rlimit_validation_rules_hold_for_test()
+}
+
+pub fn kmod_flags_validation_rules_hold() -> bool {
+    super::syscall::kmod_flags_validation_rules_hold_for_test()
+}
+
+pub fn sys_constants_and_validation_rules_hold() -> bool {
+    super::syscall::sys_constants_and_validation_rules_hold_for_test()
+}
+
+pub fn select_fd_set_and_validation_rules_hold() -> bool {
+    super::syscall::select_fd_set_and_validation_rules_hold_for_test()
+}
+
+pub fn poll_nfds_validation_rules_hold() -> bool {
+    super::syscall::poll_nfds_validation_rules_hold_for_test()
+}
+
+pub fn epoll_validation_rules_hold() -> bool {
+    super::syscall::epoll_validation_rules_hold_for_test()
+}
+
+pub fn ipc_permission_and_constants_rules_hold() -> bool {
+    super::syscall::ipc_permission_and_constants_rules_hold_for_test()
+}
+
+pub fn net_addr_conversion_rules_hold() -> bool {
+    super::syscall::net_addr_conversion_rules_hold_for_test()
+}
+
+pub fn ctl_ioctl_constants_hold() -> bool {
+    super::syscall::ctl_ioctl_constants_hold_for_test()
+}
+
+pub fn net_optNormalization_rules_hold() -> bool {
+    super::syscall::net_optNormalization_rules_hold_for_test()
+}
+
+pub fn net_io_constants_hold() -> bool {
+    super::syscall::net_io_constants_hold_for_test()
+}
+
+pub fn net_socket_constants_hold() -> bool {
+    super::syscall::net_socket_constants_hold_for_test()
 }

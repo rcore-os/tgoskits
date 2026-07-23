@@ -2906,3 +2906,28 @@ fn rsext4_bitmap_error_mapping_rules_hold() {
         Errno::ENOENT
     );
 }
+
+#[axtest]
+fn rsext4_bmalloc_type_conversions_and_validation_hold() {
+    ax_assert!(rsext4::bmalloc::bmalloc_type_conversions_and_validation_rules_hold_for_test());
+}
+
+#[axtest]
+fn rsext4_errno_additional_codes_hold() {
+    use rsext4::Errno;
+    
+    // Test additional errno codes
+    ax_assert_eq!(Errno::EEXIST.as_i32(), 17);
+    ax_assert_eq!(Errno::ENOENT.as_i32(), 2);
+    ax_assert_eq!(Errno::EACCES.as_i32(), 13);
+    ax_assert_eq!(Errno::EBUSY.as_i32(), 16);
+    ax_assert_eq!(Errno::ENOTDIR.as_i32(), 20);
+    ax_assert_eq!(Errno::EISDIR.as_i32(), 21);
+    ax_assert_eq!(Errno::EFBIG.as_i32(), 27);
+    ax_assert_eq!(Errno::ENOSPC.as_i32(), 28);
+}
+
+#[axtest]
+fn rsext4_block_group_desc_disk_format_rules_hold() {
+    ax_assert!(rsext4::blockgroup_description::block_group_desc_disk_format_rules_hold_for_test());
+}

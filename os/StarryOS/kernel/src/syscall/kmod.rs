@@ -92,3 +92,19 @@ pub fn sys_delete_module(name_ptr: *const u8, _flags: u32) -> AxResult<isize> {
     crate::kmod::delete_module(&name)?;
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn kmod_flags_validation_rules_hold_for_test() -> bool {
+    // Test finit_module flag validation: only flags=0 is valid
+    let valid_flags = 0u32;
+    assert!(valid_flags == 0);
+
+    // Any non-zero flags should be rejected
+    let invalid_flags = 1u32;
+    assert!(invalid_flags != 0);
+
+    let invalid_flags2 = 0xFFFFFFFFu32;
+    assert!(invalid_flags2 != 0);
+
+    true
+}

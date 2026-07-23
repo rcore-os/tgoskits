@@ -101,6 +101,37 @@ pub(crate) fn rseq_validation_rejects_invalid_arguments_for_test() -> bool {
         && validate_rseq_args(0x1000 as *mut u8, RSEQ_AREA_SIZE, 0) == Ok(0x1000)
 }
 
+#[cfg(axtest)]
+pub(crate) fn rseq_validation_rules_hold_for_test() -> bool {
+    // Test validate_rseq_args validation logic
+    // Null address should fail
+    let result = validate_rseq_args(core::ptr::null_mut(), RSEQ_AREA_SIZE, 0);
+    assert!(result.is_err());
+
+    // Wrong length should fail
+    let addr = 0x1000 as *mut u8;
+    let result = validate_rseq_args(addr, RSEQ_AREA_SIZE - 1, 0);
+    assert!(result.is_err());
+
+    let result = validate_rseq_args(addr, RSEQ_AREA_SIZE + 1, 0);
+    assert!(result.is_err());
+
+    // Invalid flags should fail
+    let result = validate_rseq_args(addr, RSEQ_AREA_SIZE, 0xFFFF);
+    assert!(result.is_err());
+
+    // Valid flags (0 and RSEQ_FLAG_UNREGISTER) should pass address validation
+    let result = validate_rseq_args(addr, RSEQ_AREA_SIZE, 0);
+    // Note: will fail on alignment check for non-aligned address
+
+    // Aligned address should work
+    let aligned_addr = 0x100000 as *mut u8; // 1MB aligned
+    let result = validate_rseq_args(aligned_addr, RSEQ_AREA_SIZE, 0);
+    assert!(result.is_ok());
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use ax_errno::AxError;

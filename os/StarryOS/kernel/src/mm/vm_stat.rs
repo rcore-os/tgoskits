@@ -147,3 +147,43 @@ pub(crate) fn process_vm_stat_watermarks_hold_for_test() -> bool {
         && parent.peak_vss_pages() == 0
         && parent.peak_rss_pages() == 0
 }
+
+#[cfg(axtest)]
+pub(crate) fn process_vm_stat_edge_cases_hold_for_test() -> bool {
+    use core::sync::atomic::Ordering;
+
+    // Initial state: all zeros.
+    let stat = ProcessVmStat::new();
+    let init_ok = stat.vss_pages() == 0 && stat.peak_vss_pages() == 0 && stat.peak_rss_pages() == 0;
+
+    // Map advances VSS and peaks.
+    stat.on_map(10);
+    let after_map =
+        stat.vss_pages() == 10 && stat.peak_vss_pages() == 10 && stat.peak_rss_pages() == 10;
+
+    // More mapping raises peaks further.
+    stat.on_map(5);
+    let after_more =
+        stat.vss_pages() == 15 && stat.peak_vss_pages() == 15 && stat.peak_rss_pages() == 15;
+
+    // Unmap reduces VSS but peaks stay high.
+    stat.on_unmap(8);
+    let after_unmap = stat.vss_pages() == 7
+        && stat.peak_vss_pages() == 15  // unchanged
+        && stat.peak_rss_pages() == 15; // unchanged
+
+    // Over-unmap: VSS goes signed but vss_pages() clamps to 0.
+    stat.on_unmap(20); // 7 - 20 = -13, but .max(0) gives 0
+    let after_over = stat.vss_pages() == 0; // clamped to 0
+    // Peaks still at historical max.
+    let peaks_stable = stat.peak_vss_pages() == 15 && stat.peak_rss_pages() == 15;
+
+    // seed_from with zeroed parent.
+    let empty = ProcessVmStat::new();
+    let child = ProcessVmStat::new();
+    child.seed_from(&empty);
+    let from_empty =
+        child.vss_pages() == 0 && child.peak_vss_pages() == 0 && child.peak_rss_pages() == 0;
+
+    init_ok && after_map && after_more && after_unmap && after_over && peaks_stable && from_empty
+}
