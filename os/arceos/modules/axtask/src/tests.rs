@@ -393,6 +393,51 @@ fn test_irq_notify_wakes_sleeping_deferred_worker() {
     });
 }
 
+#[cfg(all(feature = "irq", feature = "sched-rr"))]
+#[test]
+fn test_irq_notify_preserves_rr_ready_order() {
+    run_in_test_scheduler(|| {
+        const NOT_RUN: usize = usize::MAX;
+
+        let notify = Arc::new(IrqNotify::new());
+        let worker_started = Arc::new(AtomicUsize::new(0));
+        let next_order = Arc::new(AtomicUsize::new(0));
+        let queued_order = Arc::new(AtomicUsize::new(NOT_RUN));
+        let worker_order = Arc::new(AtomicUsize::new(NOT_RUN));
+
+        let worker = {
+            let notify = notify.clone();
+            let worker_started = worker_started.clone();
+            let next_order = next_order.clone();
+            let worker_order = worker_order.clone();
+            ax_task::spawn(move || {
+                worker_started.store(1, Ordering::Release);
+                notify.wait();
+                worker_order.store(next_order.fetch_add(1, Ordering::AcqRel), Ordering::Release);
+            })
+        };
+
+        ax_task::yield_now();
+        assert_eq!(worker_started.load(Ordering::Acquire), 1);
+
+        let queued = {
+            let next_order = next_order.clone();
+            let queued_order = queued_order.clone();
+            ax_task::spawn(move || {
+                queued_order.store(next_order.fetch_add(1, Ordering::AcqRel), Ordering::Release);
+            })
+        };
+
+        notify.notify_irq();
+        ax_task::yield_now();
+
+        assert_eq!(queued.join(), 0);
+        assert_eq!(worker.join(), 0);
+        assert_eq!(queued_order.load(Ordering::Acquire), 0);
+        assert_eq!(worker_order.load(Ordering::Acquire), 1);
+    });
+}
+
 #[cfg(feature = "irq")]
 #[test]
 fn test_irq_notify_wakes_after_concurrent_irq_callbacks() {

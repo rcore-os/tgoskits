@@ -1,16 +1,9 @@
-use alloc::{string::String, vec::Vec};
-use core::cell::UnsafeCell;
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use ax_errno::AxError;
-use ax_kernel_guard::IrqSave;
-use axklib::irq::{CpuId, IrqError, run_on_cpu_sync};
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
-pub use rdif_serial::{
-    Config, ConfigError, DataBits, OwnerId, OwnerLease, Parity, RawUart, RxFlag, RxItem, RxQueue,
-    SerialCounters, SerialIrqHandler, SerialIrqOutcome, SerialParts, SerialPort, SerialSoftWork,
-    StopBits, TxQueue,
-};
+use rdif_serial::{SplitUart, UartInfo, UartIrq, UartParts, UartPort};
 use rdrive::{Device, DeviceId, DriverGeneric, probe::acpi::AcpiInfo, register::FdtInfo};
 
 mod ns16550;
@@ -19,45 +12,56 @@ mod rockchip_fiq;
 
 use crate::{BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt};
 
-pub type SerialRuntime = SerialParts;
+type ErasedUartParts = UartParts<Box<dyn UartPort>, Box<dyn UartIrq>>;
 
-struct SerialProbeRuntime {
-    name: &'static str,
-    base_addr: usize,
-    baudrate: u32,
-    runtime: SerialRuntime,
+struct ProbedUart {
+    hardware: UartInfo,
+    parts: ErasedUartParts,
 }
 
 struct PlatformSerialDevice {
     name: String,
-    info: SerialDeviceInfo,
-    runtime: Option<SerialRuntime>,
+    firmware_path: String,
+    alias_index: Option<usize>,
+    paddr: usize,
+    initial_baudrate: u32,
+    irq: Option<BindingIrq>,
+    parts: Option<ErasedUartParts>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SerialDeviceInfo {
-    pub fdt_path: String,
+    pub name: String,
+    pub device_id: DeviceId,
+    pub firmware_path: String,
     pub alias_index: Option<usize>,
     pub paddr: usize,
-    pub mapped_base: usize,
-    pub baudrate: u32,
+    pub initial_baudrate: u32,
     pub irq: Option<BindingIrq>,
-    pub binding_info: BindingInfo,
 }
 
 pub struct SerialDevice {
-    pub name: String,
-    pub rdrive_device_id: DeviceId,
     pub info: SerialDeviceInfo,
-    pub runtime: SerialRuntime,
+    pub port: Box<dyn UartPort>,
+    pub irq: Box<dyn UartIrq>,
 }
 
 impl PlatformSerialDevice {
-    fn new(name: String, info: SerialDeviceInfo, runtime: SerialRuntime) -> Self {
+    fn new(
+        probe: ProbedUart,
+        firmware_path: String,
+        alias_index: Option<usize>,
+        paddr: usize,
+        irq: Option<BindingIrq>,
+    ) -> Self {
         Self {
-            name,
-            info,
-            runtime: Some(runtime),
+            name: probe.hardware.name.into(),
+            firmware_path,
+            alias_index,
+            paddr,
+            initial_baudrate: probe.hardware.initial_baudrate,
+            irq,
+            parts: Some(probe.parts),
         }
     }
 }
@@ -68,16 +72,12 @@ impl DriverGeneric for PlatformSerialDevice {
     }
 }
 
-fn serial_runtime(raw: impl RawUart) -> SerialProbeRuntime {
-    let name = raw.name();
-    let base_addr = raw.base_addr();
-    let baudrate = raw.baudrate();
-    let runtime = SerialPort::split(raw, OwnerId(0));
-    SerialProbeRuntime {
-        name,
-        base_addr,
-        baudrate,
-        runtime,
+fn erase_uart(raw: impl SplitUart) -> ProbedUart {
+    let hardware = raw.runtime_info();
+    let UartParts { port, irq } = raw.split();
+    ProbedUart {
+        hardware,
+        parts: UartParts::new(Box::new(port), Box::new(irq)),
     }
 }
 
@@ -85,63 +85,23 @@ impl TryFrom<Device<PlatformSerialDevice>> for SerialDevice {
     type Error = AxError;
 
     fn try_from(base: Device<PlatformSerialDevice>) -> Result<Self, Self::Error> {
-        let rdrive_device_id = base.descriptor().device_id();
+        let device_id = base.descriptor().device_id();
         let mut dev = base.lock().map_err(|_| AxError::BadState)?;
-        let name = dev.name.clone();
-        let info = dev.info.clone();
-        let runtime = dev.runtime.take().ok_or(AxError::BadState)?;
+        let parts = dev.parts.take().ok_or(AxError::BadState)?;
         Ok(Self {
-            name,
-            rdrive_device_id,
-            info,
-            runtime,
+            info: SerialDeviceInfo {
+                name: dev.name.clone(),
+                device_id,
+                firmware_path: dev.firmware_path.clone(),
+                alias_index: dev.alias_index,
+                paddr: dev.paddr,
+                initial_baudrate: dev.initial_baudrate,
+                irq: dev.irq.clone(),
+            },
+            port: parts.port,
+            irq: parts.irq,
         })
     }
-}
-
-pub fn run_on_owner<F, R>(owner: OwnerId, op: F) -> Result<R, IrqError>
-where
-    F: FnOnce(OwnerLease<'_>) -> R,
-{
-    struct OwnerCall<F, R> {
-        owner: OwnerId,
-        op: UnsafeCell<Option<F>>,
-        result: UnsafeCell<Option<R>>,
-    }
-
-    unsafe fn thunk<F, R>(arg: *mut ())
-    where
-        F: FnOnce(OwnerLease<'_>) -> R,
-    {
-        let call = unsafe { &*(arg as *const OwnerCall<F, R>) };
-        let op = unsafe { &mut *call.op.get() }
-            .take()
-            .expect("serial owner call entered twice");
-        let _irq_guard = IrqSave::new();
-        let lease = unsafe { OwnerLease::new_unchecked(call.owner) };
-        let result = op(lease);
-        unsafe { *call.result.get() = Some(result) };
-    }
-
-    let call = OwnerCall {
-        owner,
-        op: UnsafeCell::new(Some(op)),
-        result: UnsafeCell::new(None),
-    };
-    unsafe {
-        run_on_cpu_sync(
-            CpuId(owner.0),
-            thunk::<F, R>,
-            (&call as *const OwnerCall<F, R> as *mut ()).cast(),
-        )?;
-    }
-    Ok(unsafe { &mut *call.result.get() }
-        .take()
-        .expect("serial owner call did not complete"))
-}
-
-pub fn owner_lease_for_cpu(owner: OwnerId, cpu: CpuId) -> Option<OwnerLease<'static>> {
-    (cpu.0 == owner.0).then(|| unsafe { OwnerLease::new_unchecked(owner) })
 }
 
 pub fn take_serial_devices() -> Vec<SerialDevice> {
@@ -162,43 +122,33 @@ pub fn take_serial_devices() -> Vec<SerialDevice> {
         .collect()
 }
 
-fn serial_device_info(
-    info: &FdtInfo<'_>,
-    base_reg: &RegFixed,
-    mapped_base: usize,
-    baudrate: u32,
-) -> SerialDeviceInfo {
-    let fdt_path = info.node.path();
-    let alias_index = rdrive::with_fdt(|fdt| serial_alias_index(fdt, &fdt_path)).flatten();
-    let binding_info = serial_binding_info(info, &fdt_path);
-    let irq = binding_info.irq_cloned();
-    SerialDeviceInfo {
-        fdt_path,
+struct SerialFirmwareInfo {
+    path: String,
+    alias_index: Option<usize>,
+    paddr: usize,
+    irq: Option<BindingIrq>,
+}
+
+fn serial_device_info(info: &FdtInfo<'_>, base_reg: &RegFixed) -> SerialFirmwareInfo {
+    let path = info.node.path();
+    let alias_index = rdrive::with_fdt(|fdt| serial_alias_index(fdt, &path)).flatten();
+    let irq = serial_binding_info(info, &path).irq_cloned();
+    SerialFirmwareInfo {
+        path,
         alias_index,
         paddr: base_reg.address as usize,
-        mapped_base,
-        baudrate,
         irq,
-        binding_info,
     }
 }
 
-fn acpi_serial_device_info(
-    info: &AcpiInfo<'_>,
-    paddr: usize,
-    mapped_base: usize,
-    baudrate: u32,
-) -> SerialDeviceInfo {
+fn acpi_serial_device_info(info: &AcpiInfo<'_>, paddr: usize) -> SerialFirmwareInfo {
     let binding_info = acpi_serial_binding_info(info);
     let irq = binding_info.irq_cloned();
-    SerialDeviceInfo {
-        fdt_path: info.path.into(),
+    SerialFirmwareInfo {
+        path: info.path.into(),
         alias_index: None,
         paddr,
-        mapped_base,
-        baudrate,
         irq,
-        binding_info,
     }
 }
 

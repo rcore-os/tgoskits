@@ -65,15 +65,16 @@
 some-serial = "0.1.0"
 ```
 
-### Raw 单对象 polling 使用
+### 单对象 polling 使用
 
-raw concrete 驱动直接持有寄存器和状态；读、写、poll、IRQ sync 都通过同一个对象完成。
-someboot 等 allocator 初始化前路径直接保存这个对象，不需要 `Box`、rdif trait object 或内部锁。
+concrete 驱动直接持有寄存器和状态；allocator 初始化前的 early console 通过
+`PollingUart` 轮询收发，不需要 `Box`、trait object、软件队列或内部锁。
 
 ```rust
 use core::ptr::NonNull;
 use some_serial::{
-    ns16550::Ns16550, Config, DataBits, Parity, RawUart as _, StopBits,
+    Config, DataBits, Parity, PollingUart as _, StopBits, UartPort as _,
+    ns16550::Ns16550,
 };
 
 let base_addr = NonNull::new(0x9000000 as *mut u8).unwrap();
@@ -143,44 +144,45 @@ let mut uart = some_serial::ns16550::Ns16550::new_mmio(
 #### 中断驱动通信
 
 ```rust
-use rdif_serial::{InterruptMask, RawUart as _};
+use rdif_serial::{Config, SplitUart as _, UartIrq as _, UartPort as _};
 use some_serial::pl011::Pl011;
 
-// 创建并配置 UART
-let mut uart = Pl011::new(base_addr, clock_freq);
-uart.startup(&config).unwrap();
+// 运行时取得两个不可克隆、职责互斥的端点。
+let uart = Pl011::new(base_addr, clock_freq);
+let parts = uart.split();
+let mut port = parts.port;
+let mut irq = parts.irq;
+port.startup(&Config::new().baudrate(115200)).unwrap();
 
-// 启用中断
-uart.set_irq_mask(InterruptMask::RX | InterruptMask::TX_SPACE);
-
-// 在中断控制器回调中同步硬件 IRQ 状态
-let snapshot = uart.take_irq_snapshot();
-if snapshot.claimed {
-    // 上层 runtime 决定是否读取 RX FIFO、推进 TX FIFO、唤醒任务。
+// IRQ callback 只 ACK/mask 并发布事件，不读写 FIFO。
+if let Some(event) = irq.handle() {
+    // 维护线程根据 event 通过 port 处理数据，完成后调用 port.rearm(event.rearm)。
 }
 ```
 
 #### 平台检测与适配
 
-需要运行时动态分发的 rdrive/Starry 路径应在 OS glue 层把 concrete raw driver 包装进
-`rdif_serial::SerialCore`，再由目标内核提供端口锁。`some-serial` 自身不包含 mutex、
-wait queue、poll set 或任务唤醒逻辑。
+需要运行时动态分发的 rdrive/Starry 路径应在驱动探测层调用 `SplitUart::split()`，并且
+仅在那里把两个端点分别擦除为 `Box<dyn UartPort>` 与 `Box<dyn UartIrq>`。软件队列、
+维护线程、IRQ 注册、wait queue 和 poll source 均由 OS runtime 提供；`some-serial`
+不包含这些调度策略。
 
 ```rust
 use core::ptr::NonNull;
-use rdif_serial::{Config, SerialCore};
+use rdif_serial::{Config, SplitUart as _, UartPort as _};
 use some_serial::ns16550::Ns16550;
 
-let raw = Ns16550::new_mmio(
+let uart = Ns16550::new_mmio(
     NonNull::new(0x40000000 as *mut u8).unwrap(),
     16_000_000,
     1,
 );
-let mut core = SerialCore::new(raw);
-core.startup(&Config::new().baudrate(115200)).unwrap();
+let parts = uart.split();
+let mut port = parts.port;
+port.startup(&Config::new().baudrate(115200)).unwrap();
 
-let accepted = core.enqueue_tx(b"runtime serial\n").accepted;
-assert!(accepted > 0);
+let accepted = port.write_tx(b"runtime serial\n");
+assert!(accepted <= b"runtime serial\n".len());
 ```
 
 #### 平台特定配置获取
@@ -283,7 +285,7 @@ cargo test --test test --  --show-output --uboot
 ### 添加新驱动支持
 
 1. **创建驱动模块**：在 `src/` 目录下创建新的驱动文件
-2. **实现 raw 接口**：驱动对象实现 `RawUart` 的配置、IRQ mask、IRQ snapshot、RX sample、TX ready/write 等寄存器级方法
+2. **拆分运行时端点**：驱动实现 `SplitUart`，数据面实现 `UartPort`，中断面实现 `UartIrq`
 3. **添加测试**：为新驱动编写完整的测试套件
 4. **更新文档**：在 README 中添加驱动说明和使用示例
 5. **提交 PR**：详细描述新驱动的功能和使用方法
@@ -295,11 +297,11 @@ cargo test --test test --  --show-output --uboot
 ```rust
 // 新驱动的基本结构示例
 pub struct NewDriver {
-    // 驱动寄存器句柄、时钟、saved status、IRQ mask shadow 等状态
+    // 驱动寄存器句柄、时钟和配置状态
 }
 
-impl RawUart for NewDriver {
-    // 实现配置、IRQ mask、take_irq_snapshot、read_rx、tx_ready、write_tx 等方法
+impl SplitUart for NewDriver {
+    // 将共享寄存器 core 拆成 task-owned port 与 IRQ-owned endpoint。
 }
 ```
 

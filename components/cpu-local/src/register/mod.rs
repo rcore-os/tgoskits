@@ -117,13 +117,65 @@ pub fn current_thread(pin: &CpuPin<'_>) -> Result<NonNull<CurrentThreadHeader>, 
 /// dereference the result after a context switch.
 #[doc(hidden)]
 pub unsafe fn scheduler_current_thread() -> Result<NonNull<CurrentThreadHeader>, CpuLocalError> {
-    let area = current_area()?;
-    let slot = area.runtime_anchor().current_thread_raw();
-    let register = unsafe { imp::read_current_thread(area.base()) };
-    if slot == 0 || slot != register {
-        return Err(CpuLocalError::CurrentThreadMismatch);
+    #[cfg(not(feature = "tls"))]
+    {
+        // LinuxCurrent images keep the task pointer in one architecture-owned
+        // source. Reading a CPU area first would race migration because this
+        // function is itself used to construct the preemption guard.
+        let register = unsafe { imp::read_current_thread(0) };
+        NonNull::new(register as *mut CurrentThreadHeader)
+            .ok_or(CpuLocalError::CurrentThreadMismatch)
     }
-    NonNull::new(slot as *mut CurrentThreadHeader).ok_or(CpuLocalError::CurrentThreadMismatch)
+
+    #[cfg(feature = "tls")]
+    loop {
+        // UnikernelTls images keep current in the CPU area's runtime anchor.
+        // Retry if migration changes the base between sampling the area and
+        // loading its slot; the caller cannot be pinned before this lookup.
+        let area = current_area()?;
+        let register = unsafe { imp::read_current_thread(area.base()) };
+        if unsafe { imp::read_cpu_base()? } != area.base() {
+            continue;
+        }
+        return NonNull::new(register as *mut CurrentThreadHeader)
+            .ok_or(CpuLocalError::CurrentThreadMismatch);
+    }
+}
+
+#[cfg(all(test, feature = "host-test"))]
+mod tests {
+    use core::mem::MaybeUninit;
+
+    use super::*;
+    use crate::{CpuAreaPrefix, CpuIndex};
+
+    fn modeled_area(cpu_index: usize) -> CpuAreaRef {
+        let storage = Box::leak(Box::new(MaybeUninit::<CpuAreaPrefix>::uninit()));
+        let base = storage.as_mut_ptr() as usize;
+        storage.write(
+            CpuAreaPrefix::initialize(CpuIndex::try_from(cpu_index).unwrap(), base).unwrap(),
+        );
+        // SAFETY: the initialized fixture is leaked for the process lifetime.
+        unsafe { CpuAreaRef::from_initialized_base(base) }.unwrap()
+    }
+
+    #[test]
+    fn scheduler_current_thread_survives_migration_during_bootstrap_read() {
+        let first = modeled_area(0);
+        let second = modeled_area(1);
+        let first_boot = first.prefix().boot_thread().header();
+        let second_boot = second.prefix().boot_thread().header();
+
+        // SAFETY: this host thread serially owns both leaked CPU fixtures.
+        unsafe { imp::install_cpu_base(first.base(), first_boot as *const _ as usize) };
+        imp::migrate_on_next_current_read(second.base());
+
+        assert_eq!(
+            // SAFETY: both boot headers have process-lifetime storage.
+            unsafe { scheduler_current_thread() },
+            Ok(NonNull::from(second_boot)),
+        );
+    }
 }
 
 /// Binds and publishes the first scheduler task on an offline CPU.

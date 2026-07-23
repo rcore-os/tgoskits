@@ -5,6 +5,8 @@ use super::*;
 std::thread_local! {
     static CPU_BASE: Cell<usize> = const { Cell::new(0) };
     static KERNEL_TLS: Cell<usize> = const { Cell::new(0) };
+    #[cfg(test)]
+    static MIGRATION_TARGET: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(super) fn validate_environment() -> Result<(), CpuLocalError> {
@@ -19,12 +21,18 @@ pub(super) unsafe fn read_cpu_base() -> Result<usize, CpuLocalError> {
     Ok(CPU_BASE.get())
 }
 
-pub(super) unsafe fn read_current_thread(area_base: usize) -> usize {
+pub(super) unsafe fn read_current_thread(_area_base: usize) -> usize {
+    #[cfg(test)]
+    MIGRATION_TARGET.with(|target| {
+        let target = target.replace(0);
+        if target != 0 {
+            CPU_BASE.set(target);
+        }
+    });
     // Host tests execute on x86_64, whose current pointer is the GS runtime
-    // anchor itself. Modeling that source directly also lets IRQ worker
-    // threads attach to the same serialized CPU fixture without inventing a
-    // second thread-local current-task state source.
-    unsafe { area_runtime_anchor(area_base) }.current_thread_raw()
+    // anchor itself. Read the live modeled CPU, rather than a previously
+    // sampled base, so tests can reproduce migration between the two reads.
+    unsafe { area_runtime_anchor(CPU_BASE.get()) }.current_thread_raw()
 }
 
 pub(super) unsafe fn write_current_thread(_value: usize) {}
@@ -43,4 +51,9 @@ unsafe fn area_runtime_anchor(area_base: usize) -> &'static crate::CpuRuntimeAnc
     unsafe {
         &*((area_base + crate::CPU_AREA_RUNTIME_ANCHOR_OFFSET) as *const crate::CpuRuntimeAnchor)
     }
+}
+
+#[cfg(test)]
+pub(super) fn migrate_on_next_current_read(area_base: usize) {
+    MIGRATION_TARGET.set(area_base);
 }

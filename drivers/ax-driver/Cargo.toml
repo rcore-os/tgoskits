@@ -62,8 +62,6 @@ xhci-mmio = ["usb"]
 xhci-pci = ["usb", "pci"]
 serial = [
     "dep:ax-errno",
-    "dep:ax-kernel-guard",
-    "dep:ax-kspin",
     "dep:rdif-serial",
     "dep:some-serial",
 ]

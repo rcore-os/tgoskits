@@ -4,6 +4,8 @@ args = [
     "512M",
     "-cpu",
     "rv64",
+    "-smp",
+    "4",
     "-device",
     "nvme,serial=deadbeef,drive=nvm",
     "-drive",
