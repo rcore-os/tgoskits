@@ -15,6 +15,7 @@
 struct mi_entry {
     long mount_id;
     long parent_id;
+    long shared_id;
     char mount_point[256];
 };
 
@@ -53,6 +54,17 @@ static int find_mount_entry(const char *buf, const char *path,
                    &entry->mount_id, &entry->parent_id, &major, &minor, root,
                    entry->mount_point, options) == 7 &&
             strcmp(entry->mount_point, path) == 0) {
+            entry->shared_id = 0;
+            char *separator = strstr(line, " - ");
+            if (separator) {
+                *separator = '\0';
+                char *field_save = NULL;
+                for (char *field = strtok_r(line, " ", &field_save); field;
+                     field = strtok_r(NULL, " ", &field_save)) {
+                    if (sscanf(field, "shared:%ld", &entry->shared_id) == 1)
+                        break;
+                }
+            }
             free(copy);
             return 1;
         }
@@ -210,6 +222,59 @@ static int test_nullable_shared_and_independent_peer(void) {
     return 0;
 }
 
+static int expect_shared_state(const char *path, int expected_shared) {
+    char buf[BUF_SIZE];
+    struct mi_entry entry;
+    if (read_mountinfo(buf, sizeof(buf)) < 0 ||
+        !find_mount_entry(buf, path, &entry)) {
+        fprintf(stderr, "FAIL: mountinfo entry missing for %s\n", path);
+        return 1;
+    }
+    if ((entry.shared_id != 0) != expected_shared) {
+        fprintf(stderr, "FAIL: %s shared_id=%ld, expected shared=%d\n", path,
+                entry.shared_id, expected_shared);
+        return 1;
+    }
+    return 0;
+}
+
+static int test_recursive_propagation_change(void) {
+    const char *root = "/prop_rec";
+    const char *child = "/prop_rec/child";
+    const char *grandchild = "/prop_rec/child/grandchild";
+
+    if (make_dir(root) || mount("tmpfs", root, "tmpfs", 0, NULL) < 0 ||
+        make_dir(child) || mount("tmpfs", child, "tmpfs", 0, NULL) < 0 ||
+        make_dir(grandchild) ||
+        mount("tmpfs", grandchild, "tmpfs", 0, NULL) < 0) {
+        perror("set up recursive propagation tree");
+        return 1;
+    }
+
+    if (syscall(SYS_mount, NULL, root, NULL, MS_SHARED | MS_REC, NULL) < 0) {
+        perror("make propagation tree recursively shared");
+        return 1;
+    }
+    if (expect_shared_state(root, 1) || expect_shared_state(child, 1) ||
+        expect_shared_state(grandchild, 1))
+        return 1;
+
+    if (syscall(SYS_mount, NULL, root, NULL, MS_PRIVATE | MS_REC, NULL) < 0) {
+        perror("make propagation tree recursively private");
+        return 1;
+    }
+    if (expect_shared_state(root, 0) || expect_shared_state(child, 0) ||
+        expect_shared_state(grandchild, 0))
+        return 1;
+
+    if (umount(grandchild) < 0 || umount(child) < 0 || umount(root) < 0)
+        return 1;
+    rmdir(grandchild);
+    rmdir(child);
+    rmdir(root);
+    return 0;
+}
+
 static int test_corresponding_mount_identity(void) {
     struct propagation_tree tree;
     if (setup_propagation_tree(&tree, "prop_identity"))
@@ -355,6 +420,7 @@ static int test_lazy_detach(void) {
 
 int main(void) {
     if (test_nullable_shared_and_independent_peer() ||
+        test_recursive_propagation_change() ||
         test_corresponding_mount_identity() || test_normal_unmount_busy() ||
         test_lazy_detach())
         return 1;

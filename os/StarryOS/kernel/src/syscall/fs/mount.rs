@@ -155,12 +155,22 @@ pub fn sys_mount(
             return Err(AxError::InvalidInput);
         }
         let mountpoint = target.mountpoint().clone();
-        match propagation {
-            MS_SHARED => mountpoint.set_shared(),
-            MS_PRIVATE => mountpoint.set_private(),
-            MS_SLAVE => mountpoint.set_slave(),
-            MS_UNBINDABLE => mountpoint.set_unbindable(),
-            _ => {}
+        if (flags & MS_REC) != 0 {
+            match propagation {
+                MS_SHARED => mountpoint.set_shared_recursive(),
+                MS_PRIVATE => mountpoint.set_private_recursive(),
+                MS_SLAVE => mountpoint.set_slave_recursive(),
+                MS_UNBINDABLE => mountpoint.set_unbindable_recursive(),
+                _ => {}
+            }
+        } else {
+            match propagation {
+                MS_SHARED => mountpoint.set_shared(),
+                MS_PRIVATE => mountpoint.set_private(),
+                MS_SLAVE => mountpoint.set_slave(),
+                MS_UNBINDABLE => mountpoint.set_unbindable(),
+                _ => {}
+            }
         }
         return Ok(0);
     }
