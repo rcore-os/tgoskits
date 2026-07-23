@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.13](https://github.com/rcore-os/tgoskits/compare/axplat-dyn-v0.7.12...axplat-dyn-v0.7.13) - 2026-07-23
+
+### Other
+
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+
 ### Changed
 
 - *(cpu-local)* validate and install exact `CpuAreaRef` values from someboot's frozen dynamic

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.3...arm_vgic-v0.5.4) - 2026-07-23
+
+### Other
+
+- *(axdevice)* replace errno contracts ([#1595](https://github.com/rcore-os/tgoskits/pull/1595))
+
 ## [0.5.3](https://github.com/rcore-os/tgoskits/compare/arm_vgic-v0.5.2...arm_vgic-v0.5.3) - 2026-07-08
 
 ### Other

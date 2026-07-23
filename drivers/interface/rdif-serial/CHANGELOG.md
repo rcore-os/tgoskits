@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/rcore-os/tgoskits/compare/rdif-serial-v0.9.0...rdif-serial-v0.9.1) - 2026-07-23
+
+### Other
+
+- *(ax-runtime)* centralize UART scheduling ([#1675](https://github.com/rcore-os/tgoskits/pull/1675))
+
 ## [0.9.0](https://github.com/rcore-os/tgoskits/compare/rdif-serial-v0.8.2...rdif-serial-v0.9.0) - 2026-06-27
 
 ### Other
