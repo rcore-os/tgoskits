@@ -3,7 +3,7 @@
 //! Ion 是一个用于 Android 系统的内存分配器，用于在不同的硬件组件
 //! （如 GPU、摄像头、显示器等）之间共享内存缓冲区。
 //!
-//! 这个实现基于 ArceOS 的 ax-dma 模块，提供 DMA coherent 内存分配。
+//! DMA memory is obtained through an injected `dma-api::DeviceDma` capability.
 
 pub mod buffer;
 pub mod error;

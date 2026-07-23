@@ -28,7 +28,7 @@ pub mod setup;
 pub mod arch; // 按目标架构条件编译
 
 pub use boot_console::{ConsoleDeviceIdError, device_id as console_device_id};
-pub use page_table_generic::{PagingError, PagingResult};
+pub use ax_page_table::boot::{PagingError, PagingResult};
 pub use platform::platform_name;
 pub use setup::KernelOp;
 pub use someboot::{
@@ -62,7 +62,7 @@ pub fn __somehal_secondary_default() -> ! { loop { core::hint::spin_loop(); } }
 | --- | --- |
 | `someboot` | `bootargs`、`console`、`entry`、`fdt_addr(_phys)`、`mem`、`power`、`rsdp_addr_phys`、`smp`、`timer` |
 | `somehal-macros` | `somehal_secondary_entry` → 别名 `secondary_entry` |
-| `page-table-generic` | `PagingError`、`PagingResult` |
+| `ax-page-table` | `PagingError`、`PagingResult` |
 | `setup` | `KernelOp` trait，以及 `MmioOp`/`MmioAddr`/`MmioRaw`/`MapError`（re-export 自 `mmio-api`） |
 | `platform` | `platform_name() -> Option<&'static str>` |
 | `boot_console` | `ConsoleDeviceIdError`、`device_id()` |

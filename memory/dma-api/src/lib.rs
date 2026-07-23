@@ -39,8 +39,8 @@ impl DeviceDma {
         }
     }
 
-    pub fn new_legacy(dma_mask: u64, op: &'static dyn DmaOp) -> Self {
-        Self::new(DmaDomainId::legacy_global(), dma_mask, op)
+    pub fn new_identity(dma_mask: u64, op: &'static dyn DmaOp) -> Self {
+        Self::new(DmaDomainId::identity(), dma_mask, op)
     }
 
     pub fn with_constraints(&self, constraints: DmaConstraints) -> Self {
@@ -63,6 +63,18 @@ impl DeviceDma {
         self.domain
     }
 
+    /// Verifies that an imported DMA resource belongs to this device domain.
+    pub fn validate_domain(&self, actual: DmaDomainId) -> Result<(), DmaError> {
+        if actual == self.domain {
+            Ok(())
+        } else {
+            Err(DmaError::DomainMismatch {
+                expected: self.domain,
+                actual,
+            })
+        }
+    }
+
     pub fn flush(&self, addr: NonNull<u8>, size: usize) {
         self.op.flush(addr, size)
     }
@@ -83,6 +95,9 @@ impl DeviceDma {
         &self,
         layout: core::alloc::Layout,
     ) -> Result<DmaAllocHandle, DmaError> {
+        if layout.size() == 0 {
+            return Err(DmaError::ZeroSizedBuffer);
+        }
         let constraints = self.constraints.with_align(layout.align());
         let res =
             unsafe { self.op.alloc_contiguous(constraints, layout) }.ok_or(DmaError::NoMemory)?;
@@ -99,10 +114,22 @@ impl DeviceDma {
         unsafe { self.op.dealloc_contiguous(handle) }
     }
 
-    pub(crate) unsafe fn alloc_coherent(
+    /// Allocates a coherent buffer and returns its move-only backend token.
+    ///
+    /// Prefer the owned coherent container APIs. This low-level entry exists
+    /// for external driver traits that split allocation and deallocation.
+    ///
+    /// # Safety
+    ///
+    /// The returned token must be consumed exactly once by
+    /// [`Self::dealloc_coherent`].
+    pub unsafe fn alloc_coherent(
         &self,
         layout: core::alloc::Layout,
     ) -> Result<DmaAllocHandle, DmaError> {
+        if layout.size() == 0 {
+            return Err(DmaError::ZeroSizedBuffer);
+        }
         let constraints = self.constraints.with_align(layout.align());
         let res =
             unsafe { self.op.alloc_coherent(constraints, layout) }.ok_or(DmaError::NoMemory)?;
@@ -115,11 +142,26 @@ impl DeviceDma {
         }
     }
 
-    pub(crate) unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
+    /// Releases a coherent allocation token.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must have been returned by [`Self::alloc_coherent`] for this
+    /// device and must not have been consumed previously.
+    pub unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
         unsafe { self.op.dealloc_coherent(handle) }
     }
 
-    pub(crate) unsafe fn map_streaming(
+    /// Creates a streaming mapping and returns its move-only backend token.
+    ///
+    /// Prefer [`Self::map_streaming_slice`]. This entry supports external
+    /// driver traits whose ABI separates share and unshare calls.
+    ///
+    /// # Safety
+    ///
+    /// The buffer must remain live and obey the DMA ownership rules until the
+    /// token is consumed by [`Self::unmap_streaming`].
+    pub unsafe fn map_streaming(
         &self,
         addr: NonNull<u8>,
         size: NonZeroUsize,
@@ -137,7 +179,13 @@ impl DeviceDma {
         }
     }
 
-    pub(crate) unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
+    /// Releases a streaming mapping token.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must have been returned by [`Self::map_streaming`] for this
+    /// device and must not have been consumed previously.
+    pub unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
         unsafe { self.op.unmap_streaming(handle) }
     }
 
@@ -162,7 +210,8 @@ impl DeviceDma {
         self.op.sync_alloc_for_cpu(handle, offset, size, direction);
     }
 
-    pub(crate) fn sync_map_for_device(
+    /// Transfers a mapped range from CPU ownership to device ownership.
+    pub fn sync_map_for_device(
         &self,
         handle: &DmaMapHandle,
         offset: usize,
@@ -172,7 +221,8 @@ impl DeviceDma {
         self.op.sync_map_for_device(handle, offset, size, direction);
     }
 
-    pub(crate) fn sync_map_for_cpu(
+    /// Transfers a mapped range from device ownership to CPU ownership.
+    pub fn sync_map_for_cpu(
         &self,
         handle: &DmaMapHandle,
         offset: usize,

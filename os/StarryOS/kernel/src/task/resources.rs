@@ -3,7 +3,7 @@
 use core::ops::{Index, IndexMut};
 
 use linux_raw_sys::general::{
-    RLIM_NLIMITS, RLIMIT_DATA, RLIMIT_MSGQUEUE, RLIMIT_NOFILE, RLIMIT_STACK,
+    RLIM_NLIMITS, RLIMIT_AS, RLIMIT_DATA, RLIMIT_MSGQUEUE, RLIMIT_NOFILE, RLIMIT_STACK,
 };
 
 /// The maximum number of open files
@@ -61,6 +61,7 @@ impl Default for Rlimits {
         // the per-user ceiling on bytes held across all that user's POSIX
         // message queues. mq_open charges the queue's mq_bytes against it.
         result[RLIMIT_MSGQUEUE] = Rlimit::new(MQ_BYTES_MAX, MQ_BYTES_MAX);
+        result[RLIMIT_AS] = Rlimit::new(u64::MAX, u64::MAX);
         result
     }
 }

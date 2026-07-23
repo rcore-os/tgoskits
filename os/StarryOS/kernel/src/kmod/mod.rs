@@ -126,11 +126,19 @@ impl Drop for KmodMemSection {
             }
             #[cfg(target_arch = "loongarch64")]
             KmodMemBackend::DirectMap => {
-                global_allocator().dealloc_pages(
-                    self.vaddr.as_usize(),
-                    self.num_pages,
-                    UsageKind::VirtMem,
-                );
+                // SAFETY: KmodMem owns this direct-map allocation and retains
+                // the original page count until its single Drop.
+                unsafe {
+                    global_allocator().deallocate_pages_raw(
+                        self.vaddr.as_usize(),
+                        ax_alloc::PageRequest {
+                            count: self.num_pages,
+                            align: PAGE_SIZE_4K,
+                            zone: ax_alloc::MemoryZone::Normal,
+                        },
+                        UsageKind::VirtMem,
+                    );
+                }
                 ax_runtime::hal::cache::flush_icache_all();
             }
         }
@@ -180,7 +188,14 @@ fn alloc_kmod_dmw_frames(num_pages: usize) -> AxResult<VirtAddr> {
     // DMW-linked kernel code share the same PC-relative address class.
     let vaddr = VirtAddr::from_usize(
         global_allocator()
-            .alloc_pages(num_pages, PAGE_SIZE_4K, UsageKind::VirtMem)
+            .allocate_pages_raw(
+                ax_alloc::PageRequest {
+                    count: num_pages,
+                    align: PAGE_SIZE_4K,
+                    zone: ax_alloc::MemoryZone::Normal,
+                },
+                UsageKind::VirtMem,
+            )
             .map_err(|_| AxError::NoMemory)?,
     );
     unsafe { core::ptr::write_bytes(vaddr.as_mut_ptr(), 0, PAGE_SIZE_4K * num_pages) };

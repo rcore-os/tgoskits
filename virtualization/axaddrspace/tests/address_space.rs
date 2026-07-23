@@ -22,7 +22,9 @@ use ax_memory_addr::PhysAddr;
 use axaddrspace::{AddrSpace, AddrSpaceError, MappingFlags};
 use axvm_types::GuestPhysAddr;
 use mock_npt::MockNestedPageTable;
-use test_utils::{ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, mock_hal_test};
+use test_utils::{
+    ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, UNMAP_FAIL_ADDRESS, mock_hal_test,
+};
 
 /// Generate an address space for the test
 fn setup_test_addr_space() -> (AddrSpace<MockNestedPageTable>, GuestPhysAddr, usize) {
@@ -258,6 +260,28 @@ fn test_unmap() {
 }
 
 #[test]
+fn failed_multi_area_unmap_restores_original_frames() {
+    let _guard = mock_hal_test();
+    let (mut addr_space, base, _size) = setup_test_addr_space();
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+    let second = base + 0x2000;
+    addr_space.map_alloc(base, 0x1000, flags, true).unwrap();
+    addr_space.map_alloc(second, 0x1000, flags, true).unwrap();
+    let first_frame = addr_space.translate(base).unwrap();
+    let second_frame = addr_space.translate(second).unwrap();
+    let deallocations = DEALLOC_COUNT.load(Ordering::SeqCst);
+
+    UNMAP_FAIL_ADDRESS.store(second.as_usize(), Ordering::SeqCst);
+    let result = addr_space.unmap(base, 0x3000);
+    UNMAP_FAIL_ADDRESS.store(usize::MAX, Ordering::SeqCst);
+
+    assert_eq!(result, Err(AddrSpaceError::MappingState));
+    assert_eq!(addr_space.translate(base), Some(first_frame));
+    assert_eq!(addr_space.translate(second), Some(second_frame));
+    assert_eq!(DEALLOC_COUNT.load(Ordering::SeqCst), deallocations);
+}
+
+#[test]
 fn test_clear() {
     let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
@@ -281,7 +305,7 @@ fn test_clear() {
     let before_clear_deallocs = DEALLOC_COUNT.load(Ordering::SeqCst);
 
     // Clear all mappings
-    addr_space.clear();
+    addr_space.clear().unwrap();
 
     // Verify all mappings are removed
     assert!(addr_space.translate(vaddr1).is_none());
@@ -290,6 +314,23 @@ fn test_clear() {
     // Verify frames were deallocated
     let after_clear_deallocs = DEALLOC_COUNT.load(Ordering::SeqCst);
     assert!(after_clear_deallocs > before_clear_deallocs);
+}
+
+#[test]
+fn clear_returns_backend_failure_without_panicking_or_losing_metadata() {
+    let _guard = mock_hal_test();
+    let (mut addr_space, base, _size) = setup_test_addr_space();
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+    addr_space.map_alloc(base, 0x1000, flags, true).unwrap();
+    let frame = addr_space.translate(base);
+
+    UNMAP_FAIL_ADDRESS.store(base.as_usize(), Ordering::SeqCst);
+    let result = addr_space.clear();
+    UNMAP_FAIL_ADDRESS.store(usize::MAX, Ordering::SeqCst);
+
+    assert_eq!(result, Err(AddrSpaceError::MappingState));
+    assert_eq!(addr_space.translate(base), frame);
+    addr_space.clear().unwrap();
 }
 
 #[test]
@@ -367,6 +408,17 @@ fn test_translated_byte_buffer() {
             .translated_byte_buffer(unmapped_vaddr, 0x100)
             .is_none()
     );
+}
+
+#[test]
+fn translated_byte_buffer_rejects_a_lazy_unpopulated_mapping() {
+    let _guard = mock_hal_test();
+    let (mut addr_space, base, _size) = setup_test_addr_space();
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+
+    addr_space.map_alloc(base, 0x1000, flags, false).unwrap();
+
+    assert!(addr_space.translated_byte_buffer(base, 0x100).is_none());
 }
 
 #[test]

@@ -16,9 +16,9 @@ use core::marker::PhantomData;
 
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_memory_set::{MappingError, MappingResult};
-use axaddrspace::{AddrSpaceResult, NestedPageTableOps, PageSize};
+use ax_page_table::stage2 as ptg;
+use axaddrspace::{AddrSpaceError, AddrSpaceResult, NestedPageTableOps, PageSize};
 use axvm_types::{GuestPhysAddr, MappingFlags};
-use page_table_generic as ptg;
 
 use crate::{AxVmError, AxVmResult, ax_err, host::PagingHandler};
 
@@ -38,25 +38,25 @@ impl<H> Clone for GenericFrameAllocator<H> {
 
 impl<H> Copy for GenericFrameAllocator<H> {}
 
-impl<H: PagingHandler + 'static> ptg::FrameAllocator for GenericFrameAllocator<H> {
+impl<H: PagingHandler + 'static> ptg::PageFrameProvider for GenericFrameAllocator<H> {
     fn alloc_frame(&self) -> Option<ptg::PhysAddr> {
-        H::alloc_frame().map(|paddr| ptg::PhysAddr::new(paddr.as_usize()))
+        H::alloc_frame()
     }
 
     fn dealloc_frame(&self, frame: ptg::PhysAddr) {
-        H::dealloc_frame(PhysAddr::from(frame.raw()));
+        H::dealloc_frame(frame);
     }
 
-    fn phys_to_virt(&self, paddr: ptg::PhysAddr) -> *mut u8 {
-        H::phys_to_virt(PhysAddr::from(paddr.raw())).as_usize() as *mut u8
+    fn phys_to_virt(&self, paddr: ptg::PhysAddr) -> ptg::VirtAddr {
+        H::phys_to_virt(paddr)
     }
 
     fn alloc_frames(&self, frames: usize, align: usize) -> Option<ptg::PhysAddr> {
-        H::alloc_frames(frames, align).map(|paddr| ptg::PhysAddr::new(paddr.as_usize()))
+        H::alloc_frames(frames, align)
     }
 
-    fn dealloc_frames(&self, start: ptg::PhysAddr, frames: usize, _frame_size: usize) {
-        H::dealloc_frames(PhysAddr::from(start.raw()), frames);
+    fn dealloc_frames(&self, start: ptg::PhysAddr, frames: usize) {
+        H::dealloc_frames(start, frames);
     }
 }
 
@@ -82,7 +82,7 @@ where
     }
 
     pub(crate) fn root_paddr(&self) -> PhysAddr {
-        PhysAddr::from(self.inner.root_paddr().raw())
+        self.inner.root_paddr()
     }
 
     pub(crate) fn map(
@@ -93,8 +93,8 @@ where
         flags: MappingFlags,
     ) -> ptg::PagingResult {
         self.inner.map(&ptg::MapConfig {
-            vaddr: ptg::VirtAddr::new(vaddr.as_usize()),
-            paddr: ptg::PhysAddr::new(paddr.as_usize()),
+            vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
+            paddr: ptg::PhysAddr::from_usize(paddr.as_usize()),
             size: size.into(),
             pte: flags_to_config(flags),
             allow_huge: size.is_huge(),
@@ -112,8 +112,8 @@ where
     ) -> ptg::PagingResult {
         let paddr = get_paddr(vaddr);
         self.inner.map(&ptg::MapConfig {
-            vaddr: ptg::VirtAddr::new(vaddr.as_usize()),
-            paddr: ptg::PhysAddr::new(paddr.as_usize()),
+            vaddr: ptg::VirtAddr::from_usize(vaddr.as_usize()),
+            paddr: ptg::PhysAddr::from_usize(paddr.as_usize()),
             size,
             pte: flags_to_config(flags),
             allow_huge,
@@ -126,13 +126,16 @@ where
         vaddr: GuestPhysAddr,
     ) -> ptg::PagingResult<(PhysAddr, MappingFlags, PageSize)> {
         let (paddr, flags, page_size) = self.query(vaddr)?;
-        self.inner
-            .unmap(ptg::VirtAddr::new(vaddr.as_usize()), page_size.into())?;
+        self.inner.unmap(
+            ptg::VirtAddr::from_usize(vaddr.as_usize()),
+            page_size.into(),
+        )?;
         Ok((paddr, flags, page_size))
     }
 
     pub(crate) fn unmap_region(&mut self, start: GuestPhysAddr, size: usize) -> ptg::PagingResult {
-        self.inner.unmap(ptg::VirtAddr::new(start.as_usize()), size)
+        self.inner
+            .unmap(ptg::VirtAddr::from_usize(start.as_usize()), size)
     }
 
     pub(crate) fn remap(
@@ -156,8 +159,10 @@ where
         let end = start + size;
         while vaddr < end {
             let (paddr, _, page_size) = self.query(vaddr)?;
-            self.inner
-                .unmap(ptg::VirtAddr::new(vaddr.as_usize()), page_size.into())?;
+            self.inner.unmap(
+                ptg::VirtAddr::from_usize(vaddr.as_usize()),
+                page_size.into(),
+            )?;
             self.map(vaddr, paddr, page_size, new_flags)?;
             vaddr += usize::from(page_size);
         }
@@ -170,12 +175,12 @@ where
     ) -> ptg::PagingResult<(PhysAddr, MappingFlags, PageSize)> {
         let (paddr, pte, level) = self
             .inner
-            .translate_with_level(ptg::VirtAddr::new(vaddr.as_usize()))?;
+            .translate_with_level(ptg::VirtAddr::from_usize(vaddr.as_usize()))?;
         let config = pte.to_config(level > 1);
         Ok((
-            PhysAddr::from(paddr.raw()),
+            PhysAddr::from(paddr.as_usize()),
             config_to_flags(config),
-            page_size_for_level::<M, GenericFrameAllocator<H>>(level, config.huge),
+            page_size_for_level::<M>(level, config.huge),
         ))
     }
 }
@@ -304,12 +309,12 @@ where
     pub(crate) fn query(
         &self,
         vaddr: GuestPhysAddr,
-    ) -> MappingResult<(PhysAddr, MappingFlags, PageSize)> {
+    ) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
         match self {
             Self::L3(pt) => pt.query(vaddr),
             Self::L4(pt) => pt.query(vaddr),
         }
-        .map_err(map_error)
+        .map_err(|error| map_query_error(error, vaddr))
     }
 }
 
@@ -388,7 +393,7 @@ where
     }
 
     fn query(&self, vaddr: GuestPhysAddr) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
-        Ok(LeveledPageTable::query(self, vaddr)?)
+        LeveledPageTable::query(self, vaddr)
     }
 }
 
@@ -432,18 +437,17 @@ fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
     flags
 }
 
-fn page_size_for_level<M, A>(level: usize, huge: bool) -> PageSize
+fn page_size_for_level<M>(level: usize, huge: bool) -> PageSize
 where
     M: ptg::TableMeta,
-    A: ptg::FrameAllocator,
 {
     if !huge {
         return PageSize::Size4K;
     }
-    match ptg::Frame::<M, A>::level_size(level) {
-        0x10_0000 => PageSize::Size1M,
-        0x20_0000 => PageSize::Size2M,
-        0x4000_0000 => PageSize::Size1G,
+    match ptg::level_size::<M>(level) {
+        Some(0x10_0000) => PageSize::Size1M,
+        Some(0x20_0000) => PageSize::Size2M,
+        Some(0x4000_0000) => PageSize::Size1G,
         _ => PageSize::Size4K,
     }
 }
@@ -459,13 +463,25 @@ pub(crate) fn map_new_error(err: ptg::PagingError) -> AxVmError {
 
 pub(crate) fn map_error(err: ptg::PagingError) -> MappingError {
     match err {
-        ptg::PagingError::MappingConflict { .. } => MappingError::AlreadyExists,
-        ptg::PagingError::AlignmentError { .. }
+        ptg::PagingError::AlreadyMapped | ptg::PagingError::MappingConflict { .. } => {
+            MappingError::AlreadyExists
+        }
+        ptg::PagingError::NotAligned
+        | ptg::PagingError::AlignmentError { .. }
         | ptg::PagingError::AddressOverflow { .. }
         | ptg::PagingError::InvalidSize { .. }
         | ptg::PagingError::InvalidRange { .. } => MappingError::InvalidParam,
-        ptg::PagingError::NoMemory
-        | ptg::PagingError::HierarchyError { .. }
+        ptg::PagingError::NoMemory => MappingError::NoMemory,
+        ptg::PagingError::HierarchyError { .. }
+        | ptg::PagingError::MappedToHugePage
         | ptg::PagingError::NotMapped => MappingError::BadState,
+    }
+}
+
+fn map_query_error(error: ptg::PagingError, address: GuestPhysAddr) -> AddrSpaceError {
+    if error == ptg::PagingError::NotMapped {
+        AddrSpaceError::Unmapped { address }
+    } else {
+        AddrSpaceError::from(map_error(error))
     }
 }

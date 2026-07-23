@@ -7,7 +7,11 @@ pub struct CoherentBox<T: DmaPod> {
     _marker: PhantomData<T>,
 }
 
+// SAFETY: the allocation is uniquely owned and `T: Send`; moving the owner
+// preserves the DMA allocation and release token.
 unsafe impl<T: DmaPod + Send> Send for CoherentBox<T> {}
+// SAFETY: shared CPU access only reads copied `T` values and requires
+// `T: Sync`; mutable CPU access requires `&mut self`.
 unsafe impl<T: DmaPod + Sync> Sync for CoherentBox<T> {}
 
 impl<T: DmaPod> CoherentBox<T> {
@@ -24,14 +28,18 @@ impl<T: DmaPod> CoherentBox<T> {
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
-        self.data.handle.dma_addr()
+        self.data.handle().dma_addr()
     }
 
     pub fn read_cpu(&self) -> T {
+        // SAFETY: the allocation is live and aligned for one initialized `T`;
+        // `DmaPod` makes every device-written bit pattern valid to read.
         unsafe { self.as_ptr().read() }
     }
 
     pub fn write_cpu(&mut self, value: T) {
+        // SAFETY: `&mut self` provides exclusive CPU access to the live,
+        // correctly aligned allocation.
         unsafe { self.as_ptr().write(value) };
     }
 
@@ -42,7 +50,7 @@ impl<T: DmaPod> CoherentBox<T> {
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
-        self.data.handle.as_ptr().cast::<T>()
+        self.data.handle().as_ptr().cast::<T>()
     }
 
     /// # Safety
@@ -59,7 +67,11 @@ pub struct ContiguousBox<T: DmaPod> {
     _marker: PhantomData<T>,
 }
 
+// SAFETY: the allocation is uniquely owned and `T: Send`; moving the owner
+// preserves the DMA allocation and release token.
 unsafe impl<T: DmaPod + Send> Send for ContiguousBox<T> {}
+// SAFETY: shared CPU access only reads copied `T` values and requires
+// `T: Sync`; cache ownership transitions do not expose mutable Rust aliases.
 unsafe impl<T: DmaPod + Sync> Sync for ContiguousBox<T> {}
 
 impl<T: DmaPod> ContiguousBox<T> {
@@ -80,14 +92,18 @@ impl<T: DmaPod> ContiguousBox<T> {
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
-        self.data.handle.dma_addr()
+        self.data.handle().dma_addr()
     }
 
     pub fn read_cpu(&self) -> T {
+        // SAFETY: the allocation is live and aligned for one initialized `T`;
+        // `DmaPod` makes every device-written bit pattern valid to read.
         unsafe { self.as_ptr().read() }
     }
 
     pub fn write_cpu(&mut self, value: T) {
+        // SAFETY: `&mut self` provides exclusive CPU access to the live,
+        // correctly aligned allocation.
         unsafe { self.as_ptr().write(value) };
     }
 
@@ -129,7 +145,7 @@ impl<T: DmaPod> ContiguousBox<T> {
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
-        self.data.handle.as_ptr().cast::<T>()
+        self.data.handle().as_ptr().cast::<T>()
     }
 
     /// # Safety

@@ -180,7 +180,7 @@ cargo xtask clippy
 cargo xtask clippy --all
 
 # 只检查指定包
-cargo xtask clippy --package axcpu --package page_table_multiarch
+cargo xtask clippy --package axcpu --package ax-page-table
 
 # 增量：只检查自某个 git ref 以来变更及受影响的包
 cargo xtask clippy --since origin/main

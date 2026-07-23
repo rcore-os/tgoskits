@@ -109,7 +109,6 @@ graph LR
 
     ax-mm --> ax-runtime["ax-runtime"]
     ax-mm --> ax-api["ax-api"]
-    ax-mm --> ax_dma["ax-dma"]
     ax-mm --> starry_kernel["starry-kernel (部分复用)"]
 ```
 
@@ -122,7 +121,6 @@ graph LR
 ### 主要消费者
 - `ax-runtime`：在 `paging` 路径中调用 `init_memory_management()` 和 `init_memory_management_secondary()`。
 - `ax-api`：在 `paging` feature 下对外再导出 `ax-mm`。
-- `ax-dma`：通过 `kernel_aspace().lock().protect(...)` 调整 DMA 映射权限。
 - StarryOS：虽然用户地址空间实现主要在 `starry-kernel` 自己的 `mm` 中，但仍会复用 `kernel_aspace()` 提供的宿主内核映射视图。
 
 ### 3.3 间接消费者
@@ -163,7 +161,6 @@ ax-mm = { workspace = true }
 ### 集成测试
 - 开启 `paging` 的 ArceOS 系统是否能正常启动并进入 `main()`。
 - SMP 场景下从核是否能共享并安装同一根内核页表。
-- `ax-dma` 等消费者修改页表权限后，设备访问是否仍然正确。
 - 若启用 `copy`，需覆盖不同架构下的用户地址空间复制行为。
 
 ### 覆盖率

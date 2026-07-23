@@ -407,7 +407,7 @@ fn ehci_qh_link(addr: u32) -> u32 {
     (addr & !0x1f) | EHCI_QH_LINK_TYPE_QH
 }
 
-#[derive(Clone, Copy)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 #[repr(C, align(32))]
 struct QueueHead {
     horizontal_link: u32,
@@ -415,6 +415,7 @@ struct QueueHead {
     endpoint_caps: u32,
     current_qtd: u32,
     overlay: QueueTransferDescriptor,
+    _reserved: [u32; 4],
 }
 
 impl QueueHead {
@@ -425,6 +426,7 @@ impl QueueHead {
             endpoint_caps: 1 << 30,
             current_qtd: 0,
             overlay: QueueTransferDescriptor::terminated(),
+            _reserved: [0; 4],
         }
     }
 
@@ -445,6 +447,7 @@ impl QueueHead {
             endpoint_caps: 1 << 30,
             current_qtd: 0,
             overlay: QueueTransferDescriptor::terminated(),
+            _reserved: [0; 4],
         }
     }
 
@@ -455,15 +458,26 @@ impl QueueHead {
     }
 }
 
-#[derive(Clone, Copy)]
-#[repr(C, align(32))]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
+#[repr(C)]
 struct QueueTransferDescriptor {
     next_qtd: u32,
     alt_next_qtd: u32,
     token: u32,
     buffer: [u32; 5],
     ext_buffer: [u32; 5],
+    _reserved: [u32; 3],
 }
+
+const _: () = {
+    assert!(core::mem::align_of::<QueueHead>() == 32);
+    assert!(core::mem::size_of::<QueueHead>() == 96);
+    assert!(core::mem::offset_of!(QueueHead, overlay) == 16);
+    assert!(core::mem::align_of::<QueueTransferDescriptor>() == 4);
+    assert!(core::mem::size_of::<QueueTransferDescriptor>() == 64);
+    assert!(core::mem::offset_of!(QueueTransferDescriptor, buffer) == 12);
+    assert!(core::mem::offset_of!(QueueTransferDescriptor, ext_buffer) == 32);
+};
 
 impl QueueTransferDescriptor {
     const fn terminated() -> Self {
@@ -473,6 +487,7 @@ impl QueueTransferDescriptor {
             token: 0,
             buffer: [0; 5],
             ext_buffer: [0; 5],
+            _reserved: [0; 3],
         }
     }
 

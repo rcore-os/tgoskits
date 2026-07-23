@@ -1,7 +1,7 @@
 use core::arch::asm;
 
+use ax_page_table::boot::{MapConfig, MemAttributes, PteConfig, TableMeta, VirtAddr};
 use num_align::NumAlign;
-use page_table_generic::{MapConfig, MemAttributes, PteConfig, TableMeta, VirtAddr};
 use x86::{
     controlregs::{self, Cr0, Cr4},
     msr::{rdmsr, wrmsr},
@@ -32,9 +32,9 @@ const PTE_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Entry(u64);
 
-impl page_table_generic::PageTableEntry for Entry {
+impl ax_page_table::boot::PageTableEntry for Entry {
     fn from_config(config: PteConfig) -> Self {
-        let mut bits = (config.paddr.raw() as u64) & PTE_ADDR_MASK;
+        let mut bits = (config.paddr.as_usize() as u64) & PTE_ADDR_MASK;
         if config.valid {
             bits |= PTE_PRESENT;
         }
@@ -115,7 +115,7 @@ impl TableMeta for Generic {
     fn flush(vaddr: Option<VirtAddr>) {
         unsafe {
             if let Some(vaddr) = vaddr {
-                tlb::flush(vaddr.raw());
+                tlb::flush(vaddr.as_usize());
             } else {
                 tlb::flush_all();
             }
@@ -275,7 +275,7 @@ fn setup_page_table() -> anyhow::Result<()> {
     let kimage_vaddr = __kimage_va(kimage.start);
     print_mapping("KImage", kimage_vaddr as _, kimage.start, kimage_size);
     table.map(&MapConfig {
-        vaddr: kimage_vaddr.into(),
+        vaddr: VirtAddr::from_usize(kimage_vaddr as usize),
         paddr: kimage.start.into(),
         size: kimage_size,
         pte: PteConfig {
@@ -299,7 +299,7 @@ fn setup_page_table() -> anyhow::Result<()> {
         cpu_area_region.len(),
     );
     table.map(&MapConfig {
-        vaddr: cpu_area_phys_to_virt(cpu_area_region.start).into(),
+        vaddr: VirtAddr::from_usize(cpu_area_phys_to_virt(cpu_area_region.start) as usize),
         paddr: cpu_area_region.start.into(),
         size: cpu_area_region.len(),
         pte: PteConfig {
@@ -345,7 +345,7 @@ fn enable_page_features() {
 pub fn current_table() -> PageTableInfo {
     PageTableInfo {
         asid: 0,
-        addr: super::trap::current_cr3().raw(),
+        addr: super::trap::current_cr3().as_usize(),
     }
 }
 

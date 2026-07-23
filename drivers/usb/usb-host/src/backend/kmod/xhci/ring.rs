@@ -16,7 +16,7 @@ pub(crate) const TRB_SIZE: usize = size_of::<TrbData>();
 pub(crate) const TRBS_PER_SEGMENT: usize = 256;
 const DEFAULT_RING_PAGES: usize = 2;
 
-#[derive(Clone, Copy)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 #[repr(transparent)]
 pub struct TrbData([u32; TRB_LEN]);
 

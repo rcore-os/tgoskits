@@ -1,5 +1,63 @@
 use ax_memory_addr::MemoryAddr;
 
+use crate::MappingResult;
+
+/// Page-table state expected before a map operation commits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MapPrecondition {
+    /// The target range must not contain existing mappings.
+    Vacant,
+    /// Existing mappings are removed by earlier operations in this transaction.
+    Replacing,
+}
+
+/// A page-table operation prepared by [`MappingBackend`].
+#[derive(Clone, Copy, Debug)]
+pub enum MappingOperation<A, F> {
+    /// Add a mapping.
+    Map {
+        /// Start address.
+        start: A,
+        /// Mapping size.
+        size: usize,
+        /// Mapping flags.
+        flags: F,
+        /// Expected state of the target range during transaction preparation.
+        precondition: MapPrecondition,
+    },
+    /// Remove a mapping.
+    Unmap {
+        /// Start address.
+        start: A,
+        /// Mapping size.
+        size: usize,
+        /// Flags recorded by the area being removed.
+        old_flags: F,
+    },
+    /// Change mapping flags.
+    Protect {
+        /// Start address.
+        start: A,
+        /// Mapping size.
+        size: usize,
+        /// Flags to restore on rollback.
+        old_flags: F,
+        /// New mapping flags.
+        new_flags: F,
+    },
+}
+
+impl<A, F> MappingOperation<A, F> {
+    /// Returns the start address and byte length affected by this operation.
+    pub fn range(self) -> (A, usize) {
+        match self {
+            Self::Map { start, size, .. }
+            | Self::Unmap { start, size, .. }
+            | Self::Protect { start, size, .. } => (start, size),
+        }
+    }
+}
+
 /// Underlying operations to do when manipulating mappings within the specific
 /// [`MemoryArea`](crate::MemoryArea).
 ///
@@ -14,38 +72,42 @@ pub trait MappingBackend: Clone {
     type Flags: Copy;
     /// The page table type used in the memory area.
     type PageTable;
+    /// Resources and validation state reserved before a transaction commits.
+    type MappingPlan;
+    /// State required to roll back or finalize a committed operation.
+    type CommitState;
 
-    /// What to do when mapping a region within the area with the given flags.
-    fn map(
+    /// Validates an operation and reserves all resources it can require.
+    ///
+    /// This method must not change mappings or externally visible backend
+    /// state. The caller must pass every uncommitted plan to [`Self::abort`].
+    fn prepare(
         &self,
-        start: Self::Addr,
-        size: usize,
-        flags: Self::Flags,
+        operation: MappingOperation<Self::Addr, Self::Flags>,
         page_table: &mut Self::PageTable,
-    ) -> bool;
+    ) -> MappingResult<Self::MappingPlan>;
 
-    /// What to do when unmaping a memory region within the area.
-    fn unmap(&self, start: Self::Addr, size: usize, page_table: &mut Self::PageTable) -> bool;
+    /// Releases a plan that will not be committed.
+    fn abort(&self, plan: Self::MappingPlan, page_table: &mut Self::PageTable);
 
-    /// What to do when changing access flags.
-    fn protect(
+    /// Commits one prepared operation.
+    ///
+    /// A backend whose commit can fail must restore all changes made by that
+    /// operation before returning the error. Earlier operations in the same
+    /// transaction are rolled back by [`MemorySet`](crate::MemorySet).
+    fn commit(
         &self,
-        start: Self::Addr,
-        size: usize,
-        new_flags: Self::Flags,
+        plan: Self::MappingPlan,
         page_table: &mut Self::PageTable,
-    ) -> bool;
+    ) -> MappingResult<Self::CommitState>;
+
+    /// Rolls back a successfully committed operation.
+    fn rollback(&self, state: Self::CommitState, page_table: &mut Self::PageTable)
+    -> MappingResult;
+
+    /// Releases deferred resources after the whole transaction commits.
+    fn finalize(&self, state: Self::CommitState, page_table: &mut Self::PageTable);
 
     /// Splits the backend into two backends at the given alignment difference.
     fn split(&mut self, align_diff: usize) -> Option<Self>;
-
-    /// Shrinks the backend from the left by the given size.
-    ///
-    /// The backend start address is increased by `shrink_size`.
-    fn shrink_left(&mut self, _shrink_size: usize) {}
-
-    /// Shrinks the backend from the right by the given size.
-    ///
-    /// The backend end address is decreased by `shrink_size`.
-    fn shrink_right(&mut self, _shrink_size: usize) {}
 }

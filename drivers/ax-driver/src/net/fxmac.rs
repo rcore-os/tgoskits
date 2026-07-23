@@ -6,7 +6,7 @@ use core::{
 };
 
 use ax_kspin::SpinRaw as Mutex;
-use dma_api::{DmaAddr, DmaAllocHandle, DmaConstraints, DmaOp};
+use dma_api::{DmaAddr, DmaAllocHandle};
 use fxmac_rs::{FXmac, FXmacGetMacAddress, FXmacLwipPortTx, FXmacRecvHandler, xmac_init};
 use rd_net::{DmaBuffer, Event, IRxQueue, ITxQueue, NetError, QueueConfig};
 use rdrive::{DriverGeneric, PlatformDevice};
@@ -396,9 +396,8 @@ impl fxmac_rs::KernelFunc for FxmacKernelFunc {
             log::error!("FXmac DMA allocation layout is invalid: {size} bytes");
             return (0, 0);
         };
-        let Some(handle) =
-            (unsafe { axklib::dma::op().alloc_coherent(DmaConstraints::new(DMA_MASK), layout) })
-        else {
+        let device = axklib::dma::device_with_mask(DMA_MASK);
+        let Ok(handle) = (unsafe { device.alloc_coherent(layout) }) else {
             log::error!("FXmac DMA allocation failed: {pages} pages");
             return (0, 0);
         };
@@ -422,6 +421,6 @@ impl fxmac_rs::KernelFunc for FxmacKernelFunc {
         };
         let paddr = axklib::mem::virt_to_phys((vaddr.as_ptr() as usize).into()).as_usize();
         let handle = unsafe { DmaAllocHandle::new(vaddr, DmaAddr::from(paddr as u64), layout) };
-        unsafe { axklib::dma::op().dealloc_coherent(handle) };
+        unsafe { axklib::dma::device_with_mask(DMA_MASK).dealloc_coherent(handle) };
     }
 }

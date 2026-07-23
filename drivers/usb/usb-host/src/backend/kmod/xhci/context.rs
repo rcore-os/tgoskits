@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use dma_api::{CoherentArray, CoherentBox, ContiguousArray, DmaDirection};
+use dma_api::{CoherentArray, CoherentBox, ContiguousArray, DmaDirection, DmaPod};
 use xhci::context::{Device32Byte, Device64Byte, Input32Byte, Input64Byte, InputHandler};
 
 use super::SlotId;
@@ -11,17 +11,64 @@ pub struct DeviceContextList {
     max_slots: usize,
 }
 
-unsafe impl Send for DeviceContextList {}
-unsafe impl Sync for DeviceContextList {}
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Device32Dma(Device32Byte);
+
+// SAFETY: the transparent xHCI context contains only u32-backed records, has
+// no uninitialized padding, accepts every device-written bit pattern, and owns
+// no Rust resources.
+unsafe impl DmaPod for Device32Dma {}
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Input32Dma(Input32Byte);
+
+// SAFETY: the transparent xHCI context contains only u32-backed records, has
+// no uninitialized padding, accepts every device-written bit pattern, and owns
+// no Rust resources.
+unsafe impl DmaPod for Input32Dma {}
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Device64Dma(Device64Byte);
+
+// SAFETY: the transparent xHCI context contains only u32-backed records, has
+// no uninitialized padding, accepts every device-written bit pattern, and owns
+// no Rust resources.
+unsafe impl DmaPod for Device64Dma {}
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Input64Dma(Input64Byte);
+
+// SAFETY: the transparent xHCI context contains only u32-backed records, has
+// no uninitialized padding, accepts every device-written bit pattern, and owns
+// no Rust resources.
+unsafe impl DmaPod for Input64Dma {}
+
+const _: () = {
+    // xhci 0.9 defines these contexts as `repr(C)` compositions of
+    // `repr(transparent)` u32 arrays. Keep the audited layout assumptions next
+    // to the only manual `DmaPod` implementations in the driver.
+    assert!(core::mem::size_of::<Device32Dma>() == 1024);
+    assert!(core::mem::size_of::<Input32Dma>() == 1056);
+    assert!(core::mem::size_of::<Device64Dma>() == 2048);
+    assert!(core::mem::size_of::<Input64Dma>() == 2112);
+    assert!(core::mem::align_of::<Device32Dma>() == core::mem::align_of::<u32>());
+    assert!(core::mem::align_of::<Input32Dma>() == core::mem::align_of::<u32>());
+    assert!(core::mem::align_of::<Device64Dma>() == core::mem::align_of::<u32>());
+    assert!(core::mem::align_of::<Input64Dma>() == core::mem::align_of::<u32>());
+};
 
 pub(crate) struct Context32 {
-    out: CoherentBox<Device32Byte>,
-    input: CoherentBox<Input32Byte>,
+    out: CoherentBox<Device32Dma>,
+    input: CoherentBox<Input32Dma>,
 }
 
 pub(crate) struct Context64 {
-    out: CoherentBox<Device64Byte>,
-    input: CoherentBox<Input64Byte>,
+    out: CoherentBox<Device64Dma>,
+    input: CoherentBox<Input64Dma>,
 }
 pub(crate) enum ContextData {
     Context32(Context32),
@@ -51,12 +98,12 @@ impl ContextData {
             ContextData::Context32(ctx) => {
                 let mut input = Input32Byte::new_32byte();
                 f(&mut input);
-                ctx.input.write_cpu(input);
+                ctx.input.write_cpu(Input32Dma(input));
             }
             ContextData::Context64(ctx) => {
                 let mut input = Input64Byte::new_64byte();
                 f(&mut input);
-                ctx.input.write_cpu(input);
+                ctx.input.write_cpu(Input64Dma(input));
             }
         }
     }
@@ -67,14 +114,14 @@ impl ContextData {
     {
         match self {
             ContextData::Context32(ctx) => {
-                let mut input = ctx.input.read_cpu();
+                let mut input = ctx.input.read_cpu().0;
                 f(&mut input);
-                ctx.input.write_cpu(input);
+                ctx.input.write_cpu(Input32Dma(input));
             }
             ContextData::Context64(ctx) => {
-                let mut input = ctx.input.read_cpu();
+                let mut input = ctx.input.read_cpu().0;
                 f(&mut input);
-                ctx.input.write_cpu(input);
+                ctx.input.write_cpu(Input64Dma(input));
             }
         }
     }

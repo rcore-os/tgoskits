@@ -1,0 +1,31 @@
+[package]
+name = "ax-alloc"
+version = "0.8.12"
+repository = "https://github.com/rcore-os/tgoskits"
+edition.workspace = true
+authors = ["Yuekai Jia <equation618@gmail.com>"]
+description = "TGOSKits runtime memory allocator"
+license.workspace = true
+
+[features]
+default = []
+global-allocator = []
+smp = ["ax-kspin/smp", "ax-plat/smp", "buddy-slab-allocator/smp"]
+tracking = ["dep:axbacktrace"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "doc_cfg"]
+
+[dependencies]
+ax-errno.workspace = true
+ax-kernel-guard.workspace = true
+ax-kspin.workspace = true
+ax-memory-addr.workspace = true
+ax-percpu.workspace = true
+ax-plat.workspace = true
+axbacktrace = { workspace = true, optional = true }
+buddy-slab-allocator.workspace = true
+log.workspace = true
+strum = { version = "0.27.2", default-features = false, features = ["derive"] }
+thiserror = { workspace = true, default-features = false }

@@ -13,8 +13,10 @@ mod trap;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use ax_page_table::boot::{
+    MemAttributes, PageTableEntry, PhysAddr, PteConfig, TableMeta, VirtAddr,
+};
 pub(crate) use entry::_secondary_entry;
-use page_table_generic::{MemAttributes, PageTableEntry, PhysAddr, PteConfig, TableMeta, VirtAddr};
 pub use relocate::apply as relocate;
 
 use crate::{
@@ -127,7 +129,7 @@ impl PageTableEntry for Entry {
             bits |= thead_mae_pte_bits(config.mem_attr);
         }
 
-        bits |= ((config.paddr.raw() >> 12) & PTE_PPN_MASK) << SV39_PPN_SHIFT;
+        bits |= ((config.paddr.as_usize() >> 12) & PTE_PPN_MASK) << SV39_PPN_SHIFT;
         Self(bits)
     }
 
@@ -141,7 +143,7 @@ impl PageTableEntry for Entry {
         let global = (bits & PTE_G) != 0;
         let dirty = (bits & PTE_D) != 0;
         let huge = is_dir && (read || writable || executable);
-        let paddr = PhysAddr::new(((bits >> SV39_PPN_SHIFT) & PTE_PPN_MASK) << 12);
+        let paddr = PhysAddr::from_usize(((bits >> SV39_PPN_SHIFT) & PTE_PPN_MASK) << 12);
 
         PteConfig {
             paddr,

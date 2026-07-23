@@ -57,7 +57,7 @@
       "request": "custom",
       "initCommands": [
         "process handle SIGINT -p false -s false -n false",
-        "settings set target.process.thread.step-avoid-regexp ^(core::|alloc::|bitflags::|ax_page_table_entry::|page_table_multiarch::)"
+        "settings set target.process.thread.step-avoid-regexp ^(core::|alloc::|bitflags::|ax_page_table::)"
       ],
       "preLaunchTask": "TGOS: Prepare Axvisor QEMU debug",
       "postDebugTask": "TGOS: Stop Axvisor QEMU debug",
@@ -82,7 +82,7 @@
       "request": "custom",
       "initCommands": [
         "process handle SIGINT -p false -s false -n false",
-        "settings set target.process.thread.step-avoid-regexp ^(core::|alloc::|bitflags::|ax_page_table_entry::|page_table_multiarch::)"
+        "settings set target.process.thread.step-avoid-regexp ^(core::|alloc::|bitflags::|ax_page_table::)"
       ],
       "preLaunchTask": "TGOS: Prepare Axvisor QEMU debug",
       "postDebugTask": "TGOS: Stop Axvisor QEMU debug",

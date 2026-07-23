@@ -200,6 +200,7 @@ impl AxVmError {
                 "guest address range",
                 format_args!("{operation} failed: {error}"),
             ),
+            AddrSpaceError::NoMemory => Self::OutOfMemory { operation },
             AddrSpaceError::MappingState
             | AddrSpaceError::Unmapped { .. }
             | AddrSpaceError::InsufficientAccess { .. } => Self::memory(operation, error),

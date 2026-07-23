@@ -60,7 +60,7 @@ sidebar_label: "平台实现"
 **Axvisor 配置额外包含一条步进过滤规则**：
 
 ```json
-"settings set target.process.thread.step-avoid-regexp ^(core::|alloc::|bitflags::|ax_page_table_entry::|page_table_multiarch::)"
+"settings set target.process.thread.step-avoid-regexp ^(core::|alloc::|bitflags::|ax_page_table::)"
 ```
 
 这条规则让 LLDB 在单步执行（step over / step into）时**自动跳过**匹配的 crate 路径。Axvisor 作为 hypervisor，其执行路径会频繁穿过 `core::`（Rust 核心库）、`alloc::`（全局分配器）、`bitflags::`（位标志宏展开）以及页表操作 crate。如果不做步进过滤，开发者按一次 F10 可能会陷入数十个无关帧才回到业务代码。ArceOS 和 StarryOS 当前未启用此规则——它们的调用深度和 crate 依赖模式使得默认步进行为已经可用。

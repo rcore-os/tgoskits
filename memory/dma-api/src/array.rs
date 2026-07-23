@@ -10,7 +10,12 @@ pub struct CoherentArray<T: DmaPod> {
     _phantom: PhantomData<T>,
 }
 
+// SAFETY: the allocation is uniquely owned and `T: Send`; moving the owner
+// preserves the DMA allocation and release token.
 unsafe impl<T: DmaPod + Send> Send for CoherentArray<T> {}
+// SAFETY: shared CPU access only produces copied `T` values and requires
+// `T: Sync`; mutable CPU access still requires `&mut self` and the documented
+// device-quiescence contract.
 unsafe impl<T: DmaPod + Sync> Sync for CoherentArray<T> {}
 
 impl<T: DmaPod> CoherentArray<T> {
@@ -31,11 +36,11 @@ impl<T: DmaPod> CoherentArray<T> {
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
-        self.data.handle.dma_addr()
+        self.data.handle().dma_addr()
     }
 
     pub fn len(&self) -> usize {
-        len_from_bytes::<T>(self.data.handle.size())
+        len_from_bytes::<T>(self.data.handle().size())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -43,7 +48,7 @@ impl<T: DmaPod> CoherentArray<T> {
     }
 
     pub fn bytes_len(&self) -> usize {
-        self.data.handle.size()
+        self.data.handle().size()
     }
 
     pub fn read_cpu(&self, index: usize) -> Option<T> {
@@ -68,21 +73,27 @@ impl<T: DmaPod> CoherentArray<T> {
 
     pub fn write_with_cpu<R>(&mut self, len: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
         assert!(len <= self.len(), "range out of bounds");
+        // SAFETY: `&mut self` provides exclusive CPU access; the caller-facing
+        // closure cannot retain the slice beyond this borrow.
         let data = unsafe { self.as_mut_slice_cpu() };
         f(&mut data[..len])
     }
 
     pub fn read_with_cpu<R>(&self, len: usize, f: impl FnOnce(&[T]) -> R) -> R {
         assert!(len <= self.len(), "range out of bounds");
+        // SAFETY: the allocation is live and `len` was checked against its
+        // typed element count.
         let data = unsafe { core::slice::from_raw_parts(self.as_ptr().as_ptr(), len) };
         f(data)
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
-        self.data.handle.as_ptr().cast::<T>()
+        self.data.handle().as_ptr().cast::<T>()
     }
 
     pub fn as_slice_cpu(&self) -> &[T] {
+        // SAFETY: the allocation is live, aligned for `T`, and its byte size
+        // was created from an exact typed array layout.
         unsafe { core::slice::from_raw_parts(self.as_ptr().as_ptr(), self.len()) }
     }
 
@@ -100,7 +111,11 @@ pub struct ContiguousArray<T: DmaPod> {
     _phantom: PhantomData<T>,
 }
 
+// SAFETY: the allocation is uniquely owned and `T: Send`; moving the owner
+// preserves the DMA allocation and release token.
 unsafe impl<T: DmaPod + Send> Send for ContiguousArray<T> {}
+// SAFETY: shared CPU access only produces copied `T` values and requires
+// `T: Sync`; cache ownership transitions do not expose mutable Rust aliases.
 unsafe impl<T: DmaPod + Sync> Sync for ContiguousArray<T> {}
 
 impl<T: DmaPod> ContiguousArray<T> {
@@ -126,11 +141,11 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 
     pub fn dma_addr(&self) -> DmaAddr {
-        self.data.handle.dma_addr()
+        self.data.handle().dma_addr()
     }
 
     pub fn len(&self) -> usize {
-        len_from_bytes::<T>(self.data.handle.size())
+        len_from_bytes::<T>(self.data.handle().size())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -138,7 +153,7 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 
     pub fn bytes_len(&self) -> usize {
-        self.data.handle.size()
+        self.data.handle().size()
     }
 
     pub fn domain_id(&self) -> DmaDomainId {
@@ -242,7 +257,7 @@ impl<T: DmaPod> ContiguousArray<T> {
     }
 
     pub fn as_ptr(&self) -> NonNull<T> {
-        self.data.handle.as_ptr().cast::<T>()
+        self.data.handle().as_ptr().cast::<T>()
     }
 
     pub fn as_slice_cpu(&self) -> &[T] {

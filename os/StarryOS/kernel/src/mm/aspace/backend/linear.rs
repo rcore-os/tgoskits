@@ -100,10 +100,6 @@ impl BackendOps for LinearBackend {
     fn split(&mut self, _align_diff: usize) -> Option<Backend> {
         Some(Backend::Linear(self.clone()))
     }
-
-    fn shrink_left(&mut self, _shrink_size: usize) {}
-
-    fn shrink_right(&mut self, _shrink_size: usize) {}
 }
 
 impl Backend {

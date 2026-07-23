@@ -5,7 +5,7 @@ use ax_task::{TaskInner, TaskState};
 use starry_signal::Signo;
 
 use crate::{
-    mm::ProcessMemStats,
+    mm::collect_process_mem_stats,
     task::{AsThread, task_cpu_time},
 };
 
@@ -96,7 +96,7 @@ impl TaskStat {
         let cutime = (cutime_tv.as_millis() / 10) as u64;
         let cstime = (cstime_tv.as_millis() / 10) as u64;
 
-        let mem = ProcessMemStats::collect(&proc_data.aspace().lock());
+        let mem = collect_process_mem_stats(&proc_data.aspace().lock());
 
         Ok(Self {
             pid,

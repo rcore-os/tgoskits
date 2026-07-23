@@ -25,8 +25,6 @@ pub struct ContiguousBuffer {
     pool: Weak<Mutex<Inner>>,
 }
 
-unsafe impl Send for ContiguousBuffer {}
-
 impl Deref for ContiguousBuffer {
     type Target = ContiguousArray<u8>;
 
@@ -47,25 +45,13 @@ impl Drop for ContiguousBuffer {
             && let Some(pool) = self.pool.upgrade()
         {
             let mut inner = pool.lock();
-            inner.dealloc(data);
+            inner.pool.push_back(data);
         }
     }
 }
 
 struct Inner {
-    dev: DeviceDma,
-    config: ContiguousBufferConfig,
     pool: VecDeque<ContiguousArray<u8>>,
-}
-
-impl Inner {
-    fn alloc(&mut self) -> Option<ContiguousArray<u8>> {
-        self.pool.pop_front()
-    }
-
-    fn dealloc(&mut self, data: ContiguousArray<u8>) {
-        self.pool.push_back(data);
-    }
 }
 
 impl ContiguousBufferPool {
@@ -87,32 +73,20 @@ impl ContiguousBufferPool {
         }
 
         ContiguousBufferPool {
-            inner: Arc::new(Mutex::new(Inner { dev, pool, config })),
+            inner: Arc::new(Mutex::new(Inner { pool })),
         }
     }
 
+    /// Takes one preallocated buffer without growing the pool.
+    ///
+    /// Returns [`DmaError::NoMemory`] immediately when every buffer is in use.
     pub fn alloc(&self) -> Result<ContiguousBuffer, DmaError> {
-        let config;
-        let dev;
-        {
-            let mut inner = self.inner.lock();
-            if let Some(data) = inner.alloc() {
-                return Ok(ContiguousBuffer {
-                    data: Some(data),
-                    pool: Arc::downgrade(&self.inner),
-                });
-            } else {
-                config = inner.config.clone();
-                dev = inner.dev.clone();
-            }
-        };
-
-        let data = ContiguousArray::new_zero_with_align(
-            &dev,
-            config.size,
-            config.align,
-            config.direction,
-        )?;
+        let data = self
+            .inner
+            .lock()
+            .pool
+            .pop_front()
+            .ok_or(DmaError::NoMemory)?;
         Ok(ContiguousBuffer {
             data: Some(data),
             pool: Arc::downgrade(&self.inner),

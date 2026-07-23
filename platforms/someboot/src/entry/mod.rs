@@ -1,4 +1,4 @@
-use page_table_generic::{PhysAddr, VirtAddr};
+use ax_page_table::boot::{PhysAddr, VirtAddr};
 
 use crate::{ArchTrait, smp::PerCpuMeta};
 

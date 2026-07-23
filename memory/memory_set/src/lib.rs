@@ -10,16 +10,26 @@ mod set;
 #[cfg(test)]
 mod tests;
 
-pub use self::{area::MemoryArea, backend::MappingBackend, set::MemorySet};
+pub use self::{
+    area::MemoryArea,
+    backend::{MapPrecondition, MappingBackend, MappingOperation},
+    set::MemorySet,
+};
 
 /// Error type for memory mapping operations.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum MappingError {
     /// Invalid parameter (e.g., `addr`, `size`, `flags`, etc.)
+    #[error("invalid mapping parameter")]
     InvalidParam,
     /// The given range overlaps with an existing mapping.
+    #[error("mapping overlaps an existing mapping")]
     AlreadyExists,
+    /// The backend could not reserve memory required by the transaction.
+    #[error("mapping transaction is out of memory")]
+    NoMemory,
     /// The backend page table is in a bad state.
+    #[error("mapping backend is in a bad state")]
     BadState,
 }
 
@@ -29,6 +39,7 @@ impl From<MappingError> for ax_errno::AxError {
         match err {
             MappingError::InvalidParam => ax_errno::AxError::InvalidInput,
             MappingError::AlreadyExists => ax_errno::AxError::AlreadyExists,
+            MappingError::NoMemory => ax_errno::AxError::NoMemory,
             MappingError::BadState => ax_errno::AxError::BadState,
         }
     }

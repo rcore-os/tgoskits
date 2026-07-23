@@ -178,7 +178,7 @@ impl FileBackendInner {
 #[derive(Clone)]
 pub struct FileBackend(Arc<FileBackendInner>, Weak<Mutex<AddrSpace>>);
 impl FileBackend {
-    fn check_flags(&self, flags: MappingFlags) -> AxResult {
+    pub(super) fn check_flags(&self, flags: MappingFlags) -> AxResult {
         let mut required_flags = FileFlags::empty();
         if flags.contains(MappingFlags::READ) {
             required_flags |= FileFlags::READ;
@@ -227,7 +227,7 @@ impl FileBackend {
         self.0.shared
     }
 
-    fn rss_kind(&self) -> RssKind {
+    pub(super) fn rss_kind(&self) -> RssKind {
         if self.0.shared {
             RssKind::Shmem
         } else {
@@ -488,18 +488,6 @@ impl BackendOps for FileBackend {
         }
 
         Some(Backend::File(FileBackend(inner, self.1.clone())))
-    }
-
-    fn shrink_left(&mut self, shrink_size: usize) {
-        assert!(shrink_size.is_multiple_of(PAGE_SIZE_4K));
-
-        let mut file_data = self.0.file_data.lock();
-        file_data.start += shrink_size;
-        file_data.offset_page += (shrink_size / PAGE_SIZE_4K) as u32;
-    }
-
-    fn shrink_right(&mut self, _shrink_size: usize) {
-        // shrinking right does not require any action since the file backend does not have any state
     }
 }
 

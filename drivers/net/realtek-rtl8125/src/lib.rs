@@ -112,7 +112,7 @@ impl Rtl8125 {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size.max(RTL8125_REGS_SIZE))?;
         let regs = Regs::new(mmio.as_nonnull_ptr());
-        let dma = DeviceDma::new_legacy(dma_mask, dma_op);
+        let dma = DeviceDma::new_identity(dma_mask, dma_op);
         let xid = rtl8125_xid(regs);
         let chip = chip_version(xid);
 

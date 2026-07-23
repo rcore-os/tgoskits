@@ -50,7 +50,7 @@ use crate::{
 ///   4      address[31:0]
 /// ```
 #[repr(C, align(4))]
-#[derive(Clone, Copy, Default)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Default)]
 pub(crate) struct Adma2Desc32 {
     attr: u16,
     length: u16,
@@ -1519,7 +1519,9 @@ fn map_dma_error(err: dma_api::DmaError) -> Error {
         | dma_api::DmaError::SegmentTooLarge { .. }
         | dma_api::DmaError::BoundaryCross { .. }
         | dma_api::DmaError::NullPointer
-        | dma_api::DmaError::ZeroSizedBuffer => Error::InvalidArgument,
+        | dma_api::DmaError::ZeroSizedBuffer
+        | dma_api::DmaError::Unsupported { .. }
+        | dma_api::DmaError::DomainMismatch { .. } => Error::InvalidArgument,
     }
 }
 

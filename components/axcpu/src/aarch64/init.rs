@@ -61,9 +61,9 @@ pub unsafe fn switch_to_el1() {
 ///
 /// This function is unsafe as it changes the address translation configuration.
 pub unsafe fn init_mmu(root_paddr: PhysAddr) {
-    use ax_page_table_entry::aarch64::MemAttr;
+    use ax_page_table::entry::aarch64::MemAttrLayout;
 
-    MAIR_EL1.set(MemAttr::MAIR_VALUE);
+    MAIR_EL1.set(MemAttrLayout::MAIR_VALUE);
 
     // Enable TTBR0 and TTBR1 walks, page size = 4K, vaddr size = 48 bits, paddr size = 48 bits.
     let tcr_flags0 = TCR_EL1::EPD0::EnableTTBR0Walks

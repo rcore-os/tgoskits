@@ -130,17 +130,11 @@ int main(void)
     /* (c) offset 4096 (>= eof_page=1) 落在 EOF 之外 → 必须故障(未被预分配) */
     unsigned char v = 0xFF;
     int sig = read_fault_signal(p + PAGE, &v);
-    CHECK(sig != 0, "access at offset 4096 (beyond EOF) faults (page not preallocated)");
-    /* #1164 的保证是"EOF 外页不预分配、真实访问会故障"——上面已断言。具体信号:
-     * Linux 对越过文件映射 EOF 的访问发 SIGBUS; StarryOS 目前对任何无后备缺页统一发
-     * SIGSEGV(handle_page_fault 尚无 Bus 分支, 属独立 fault-handler gap, 另行修复)。
-     * 此处仅记录(不门控)实际信号, 避免把独立的信号语义 gap 混入本 OOM-bound 修复。 */
-    printf("  INFO | beyond-EOF fault signal=%d (Linux: SIGBUS=%d; StarryOS now SIGSEGV=%d)\n",
-           sig, SIGBUS, SIGSEGV);
+    CHECK(sig == SIGBUS, "access at offset 4096 (beyond EOF) raises SIGBUS");
 
     /* (d) 稀疏区深处(接近 256MB 末尾)同样未预分配 → 访问故障 */
     int sig2 = read_fault_signal(p + (HUGE_LEN - PAGE), NULL);
-    CHECK(sig2 != 0, "access near end of huge sparse mapping faults (never preallocated)");
+    CHECK(sig2 == SIGBUS, "access near end of huge sparse mapping raises SIGBUS");
 
     munmap(m, HUGE_LEN);
     close(fd);

@@ -462,12 +462,11 @@ pub(crate) fn cpu_area_region() -> core::ops::Range<usize> {
 }
 
 fn allocate_cpu_area_region(layout: Layout) -> usize {
-    unsafe { crate::mem::ram::flush_to_memory_map(MemoryType::Reserved) };
+    crate::mem::ram::flush_to_memory_map(MemoryType::Reserved);
 
-    let physical_base = unsafe {
+    let physical_base =
         crate::mem::ram::alloc_and_flush_to_memory_map(layout, MemoryType::PerCpuData)
-            .expect("validated per-CPU allocation must fit available boot memory")
-    };
+            .expect("validated per-CPU allocation must fit available boot memory");
     // SAFETY: the early bump allocator uniquely owns this complete allocation,
     // and the existing early physical mapping makes it writable. Clearing raw
     // storage prevents stale firmware bytes from being mistaken for values;

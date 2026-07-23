@@ -1,103 +1,151 @@
 use core::{alloc::Layout, ops::Range};
 
+use ax_page_table::boot::PageFrameProvider;
 use kernutil::memory::{MemoryDescriptor, MemoryType};
 use num_align::NumAlign;
-use page_table_generic::FrameAllocator;
 
 use crate::mem::{add_memory_descriptor, page_size};
 
-/// RAM 分配器的起始地址
-static mut RAM_START: usize = 0;
+#[derive(Clone, Copy)]
+enum RamAllocatorState {
+    Uninitialized,
+    Active {
+        used_start: usize,
+        end: usize,
+        current: usize,
+    },
+    Frozen,
+}
 
-/// RAM 分配器的结束地址
-static mut RAM_END: usize = 0;
+static RAM_ALLOCATOR: spin::Mutex<RamAllocatorState> =
+    spin::Mutex::new(RamAllocatorState::Uninitialized);
 
-/// 当前分配位置
-static mut RAM_CURRENT: usize = 0;
-
-/// 简单的线性内存分配器
-///
-/// # Safety
-/// 此函数仅应在单核环境下的早期启动阶段使用
-pub unsafe fn alloc(layout: Layout) -> Option<usize> {
-    let start = unsafe { RAM_CURRENT.align_up(layout.align()) };
-    let end = start + layout.size();
-
-    if end > unsafe { RAM_END } {
+/// Allocates from the early-boot linear RAM arena.
+pub fn alloc(layout: Layout) -> Option<usize> {
+    let mut allocator = RAM_ALLOCATOR.lock();
+    let RamAllocatorState::Active {
+        used_start,
+        end: region_end,
+        current,
+    } = *allocator
+    else {
+        return None;
+    };
+    let align_mask = layout.align().checked_sub(1)?;
+    let start = current.checked_add(align_mask)? & !align_mask;
+    let end = start.checked_add(layout.size())?;
+    if end > region_end {
         return None;
     }
 
-    unsafe {
-        RAM_CURRENT = end;
-    }
+    *allocator = RamAllocatorState::Active {
+        used_start,
+        end: region_end,
+        current: end,
+    };
     Some(start)
 }
 
-pub unsafe fn alloc_and_flush_to_memory_map(layout: Layout, kind: MemoryType) -> Option<usize> {
-    unsafe {
-        let addr = alloc(layout)?;
-        flush_to_memory_map(kind);
-        Some(addr)
-    }
+pub fn alloc_and_flush_to_memory_map(layout: Layout, kind: MemoryType) -> Option<usize> {
+    let addr = alloc(layout)?;
+    flush_to_memory_map(kind);
+    Some(addr)
 }
 
-pub unsafe fn flush_to_memory_map(kind: MemoryType) {
-    let range = used_range();
+pub fn flush_to_memory_map(kind: MemoryType) {
+    let mut allocator = RAM_ALLOCATOR.lock();
+    let RamAllocatorState::Active {
+        used_start,
+        end: region_end,
+        current,
+    } = *allocator
+    else {
+        return;
+    };
+    let range = used_start..current.align_up(page_size());
     if range.is_empty() {
         return;
     }
 
     let end = range.end;
     let desc = MemoryDescriptor::new_with_range(range.clone(), kind);
-    add_memory_descriptor(desc).unwrap();
+    add_memory_descriptor(desc).expect("early RAM range must fit in the boot memory map");
     println!(
         "Flushed RAM used range to memory map: {:#x?}, current: {:#x}",
         range, end
     );
-    unsafe {
-        RAM_START = end;
-        RAM_CURRENT = end;
-    }
+    *allocator = RamAllocatorState::Active {
+        used_start: end,
+        end: region_end,
+        current: end,
+    };
 }
 
-#[allow(dead_code)]
-/// 获取当前分配位置
-pub fn current() -> *mut u8 {
-    unsafe { RAM_CURRENT as _ }
-}
-
-/// 初始化 RAM 分配器
+/// Initializes the early-boot RAM arena.
 pub fn init(range: Range<usize>) {
     println!("Initialize RAM allocator: {:#x?}", range);
-    unsafe {
-        RAM_START = range.start;
-        RAM_END = range.end;
-        RAM_CURRENT = range.start.max(0x40);
+    *RAM_ALLOCATOR.lock() = RamAllocatorState::Active {
+        used_start: range.start,
+        end: range.end,
+        current: range.start.max(0x40),
+    };
+}
+
+/// Prevents further allocations before control is handed to the runtime.
+pub fn freeze() {
+    let mut allocator = RAM_ALLOCATOR.lock();
+    if matches!(*allocator, RamAllocatorState::Active { .. }) {
+        *allocator = RamAllocatorState::Frozen;
     }
 }
 
-/// 获取已使用的内存范围
+/// Returns the active arena range not yet flushed to the memory map.
 pub fn used_range() -> Range<usize> {
-    unsafe {
-        let start = RAM_START;
-        let end = RAM_CURRENT;
-        start..end.align_up(page_size())
+    match *RAM_ALLOCATOR.lock() {
+        RamAllocatorState::Active {
+            used_start,
+            current,
+            ..
+        } => used_start..current.align_up(page_size()),
+        RamAllocatorState::Uninitialized | RamAllocatorState::Frozen => 0..0,
     }
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct Ram;
 
-impl FrameAllocator for Ram {
-    fn alloc_frame(&self) -> Option<page_table_generic::PhysAddr> {
-        unsafe {
-            alloc(Layout::from_size_align_unchecked(page_size(), page_size())).map(|ptr| ptr.into())
-        }
+impl PageFrameProvider for Ram {
+    fn alloc_frame(&self) -> Option<ax_page_table::boot::PhysAddr> {
+        self.alloc_frames(1, page_size())
     }
 
-    fn dealloc_frame(&self, _frame: page_table_generic::PhysAddr) {}
+    fn dealloc_frame(&self, _paddr: ax_page_table::boot::PhysAddr) {}
 
-    fn phys_to_virt(&self, paddr: page_table_generic::PhysAddr) -> *mut u8 {
-        super::phys_to_virt(paddr.raw())
+    fn alloc_frames(&self, count: usize, align: usize) -> Option<ax_page_table::boot::PhysAddr> {
+        let size = page_size().checked_mul(count)?;
+        let layout = Layout::from_size_align(size, align).ok()?;
+        alloc(layout).map(Into::into)
+    }
+
+    fn dealloc_frames(&self, _start: ax_page_table::boot::PhysAddr, _count: usize) {}
+
+    fn phys_to_virt(&self, paddr: ax_page_table::boot::PhysAddr) -> ax_page_table::boot::VirtAddr {
+        ax_page_table::boot::VirtAddr::from_usize(super::phys_to_virt(paddr.as_usize()) as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frozen_early_allocator_rejects_further_allocations() {
+        init(0x1000..0x5000);
+        let layout = Layout::from_size_align(0x1000, 0x1000).unwrap();
+        assert_eq!(alloc(layout), Some(0x1000));
+
+        freeze();
+
+        assert_eq!(alloc(layout), None);
     }
 }

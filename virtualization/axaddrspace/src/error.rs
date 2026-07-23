@@ -63,6 +63,9 @@ pub enum AddrSpaceError {
     /// The mapping layer is not in a state that permits the operation.
     #[error("guest address mapping state does not permit the operation")]
     MappingState,
+    /// The mapping transaction could not reserve the required memory.
+    #[error("guest address mapping transaction is out of memory")]
+    NoMemory,
     /// A guest address cannot be translated.
     #[error("guest address {address:#x} is not mapped")]
     Unmapped {
@@ -91,6 +94,7 @@ impl From<MappingError> for AddrSpaceError {
         match error {
             MappingError::InvalidParam => Self::InvalidMapping,
             MappingError::AlreadyExists => Self::MappingConflict,
+            MappingError::NoMemory => Self::NoMemory,
             MappingError::BadState => Self::MappingState,
         }
     }

@@ -75,32 +75,6 @@ pub mod mem {
         /// the buffer life cycle.
         pub unsafe fn ax_dealloc(ptr: NonNull<u8>, layout: Layout);
     }
-
-    define_api_type! {
-        @cfg "dma";
-        pub type DMAInfo;
-    }
-
-    define_api! {
-        @cfg "dma";
-        /// Allocates **coherent** memory that meets Direct Memory Access (DMA)
-        /// requirements.
-        ///
-        /// Returns [`None`] if the allocation fails.
-        ///
-        /// # Safety
-        ///
-        /// This function is unsafe because it requires users to manually manage
-        /// the buffer life cycle.
-        pub unsafe fn ax_alloc_coherent(layout: Layout) -> Option<DMAInfo>;
-        /// Deallocates coherent memory previously allocated.
-        ///
-        /// # Safety
-        ///
-        /// This function is unsafe because it requires users to manually manage
-        /// the buffer life cycle.
-        pub unsafe fn ax_dealloc_coherent(dma: DMAInfo, layout: Layout);
-    }
 }
 
 /// Standard input and output.
@@ -405,8 +379,6 @@ pub mod modules {
     pub use ax_alloc;
     #[cfg(feature = "display")]
     pub use ax_display;
-    #[cfg(feature = "dma")]
-    pub use ax_dma;
     #[cfg(feature = "fs")]
     pub use ax_fs_ng;
     pub use ax_hal;

@@ -14,13 +14,30 @@
 
 //! Memory mapping backends.
 
-use ax_memory_set::MappingBackend;
+use ::alloc::vec::Vec;
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr};
+use ax_memory_set::{
+    MapPrecondition, MappingBackend, MappingError, MappingOperation, MappingResult,
+};
 use axvm_types::{GuestPhysAddr, MappingFlags};
 
-use crate::NestedPageTableOps;
+use crate::{AddrSpaceError, NestedPageTableOps, PageSize};
 
 mod alloc;
 mod linear;
+
+#[derive(Clone, Copy)]
+struct SavedMapping {
+    vaddr: GuestPhysAddr,
+    paddr: PhysAddr,
+    flags: MappingFlags,
+}
+
+#[doc(hidden)]
+pub struct BackendTransaction {
+    operation: MappingOperation<GuestPhysAddr, MappingFlags>,
+    previous: Vec<Option<SavedMapping>>,
+}
 
 /// A unified enum type for different memory mapping backends.
 ///
@@ -71,48 +88,172 @@ impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
     type Addr = GuestPhysAddr;
     type Flags = MappingFlags;
     type PageTable = Npt;
+    type MappingPlan = BackendTransaction;
+    type CommitState = BackendTransaction;
 
-    fn map(&self, start: GuestPhysAddr, size: usize, flags: MappingFlags, pt: &mut Npt) -> bool {
-        match *self {
-            Self::Linear { pa_to_va_delta } => {
-                self.map_linear(start, size, flags, pt, pa_to_va_delta)
-            }
-            Self::Alloc { populate, .. } => self.map_alloc(start, size, flags, pt, populate),
-        }
-    }
-
-    fn unmap(&self, start: GuestPhysAddr, size: usize, pt: &mut Npt) -> bool {
-        match *self {
-            Self::Linear { pa_to_va_delta } => self.unmap_linear(start, size, pt, pa_to_va_delta),
-            Self::Alloc { populate, .. } => self.unmap_alloc(start, size, pt, populate),
-        }
-    }
-
-    fn protect(
+    fn prepare(
         &self,
-        start: GuestPhysAddr,
-        size: usize,
-        new_flags: MappingFlags,
-        page_table: &mut Npt,
-    ) -> bool {
-        page_table.protect_region(start, size, new_flags)
+        operation: MappingOperation<GuestPhysAddr, MappingFlags>,
+        pt: &mut Npt,
+    ) -> MappingResult<Self::MappingPlan> {
+        let (start, size) = operation.range();
+        let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
+        let pages = PageIter4K::new(start, end).ok_or(MappingError::InvalidParam)?;
+        let mut previous = Vec::new();
+        previous
+            .try_reserve_exact(size / PAGE_SIZE_4K)
+            .map_err(|_| MappingError::NoMemory)?;
+        for vaddr in pages {
+            match pt.query(vaddr) {
+                Ok((paddr, flags, PageSize::Size4K)) => previous.push(Some(SavedMapping {
+                    vaddr,
+                    paddr,
+                    flags,
+                })),
+                Ok((..)) => return Err(MappingError::BadState),
+                Err(AddrSpaceError::Unmapped { .. }) => previous.push(None),
+                Err(_) => return Err(MappingError::BadState),
+            }
+        }
+
+        if matches!(
+            operation,
+            MappingOperation::Map {
+                precondition: MapPrecondition::Vacant,
+                ..
+            }
+        ) && previous.iter().any(Option::is_some)
+        {
+            return Err(MappingError::AlreadyExists);
+        }
+        if let (Self::Linear { pa_to_va_delta }, MappingOperation::Map { start, size, .. }) =
+            (self, operation)
+        {
+            let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
+            if Self::linear_paddr(start, *pa_to_va_delta).is_none()
+                || Self::linear_paddr(end, *pa_to_va_delta).is_none()
+            {
+                return Err(MappingError::InvalidParam);
+            }
+        }
+        if matches!(self, Self::Linear { .. })
+            && matches!(operation, MappingOperation::Unmap { .. })
+            && previous.iter().any(Option::is_none)
+        {
+            return Err(MappingError::BadState);
+        }
+        Ok(BackendTransaction {
+            operation,
+            previous,
+        })
+    }
+
+    fn abort(&self, _plan: Self::MappingPlan, _pt: &mut Npt) {}
+
+    fn commit(&self, plan: Self::MappingPlan, pt: &mut Npt) -> MappingResult<Self::CommitState> {
+        if self.apply(plan.operation, pt) {
+            Ok(plan)
+        } else {
+            self.rollback(plan, pt)?;
+            Err(MappingError::BadState)
+        }
+    }
+
+    fn rollback(&self, state: Self::CommitState, pt: &mut Npt) -> MappingResult {
+        match state.operation {
+            MappingOperation::Map { .. } => {
+                let (start, size) = state.operation.range();
+                let end = start.checked_add(size).ok_or(MappingError::BadState)?;
+                for (vaddr, previous) in PageIter4K::new(start, end)
+                    .ok_or(MappingError::BadState)?
+                    .zip(state.previous)
+                {
+                    match pt.unmap(vaddr) {
+                        Ok((frame, _, PageSize::Size4K)) => {
+                            if matches!(self, Self::Alloc { .. }) {
+                                pt.dealloc_frame(frame);
+                            }
+                        }
+                        Ok(_) | Err(AddrSpaceError::Unmapped { .. }) => {}
+                        Err(_) => return Err(MappingError::BadState),
+                    }
+                    if let Some(saved) = previous {
+                        pt.map(saved.vaddr, saved.paddr, PageSize::Size4K, saved.flags)
+                            .map_err(|_| MappingError::BadState)?;
+                    }
+                }
+            }
+            MappingOperation::Unmap { .. } => {
+                for saved in state.previous.into_iter().flatten() {
+                    match pt.query(saved.vaddr) {
+                        Err(AddrSpaceError::Unmapped { .. }) => pt
+                            .map(saved.vaddr, saved.paddr, PageSize::Size4K, saved.flags)
+                            .map_err(|_| MappingError::BadState)?,
+                        Ok((paddr, flags, PageSize::Size4K))
+                            if paddr == saved.paddr && flags == saved.flags => {}
+                        _ => return Err(MappingError::BadState),
+                    }
+                }
+            }
+            MappingOperation::Protect { .. } => {
+                for saved in state.previous.into_iter().flatten() {
+                    if !pt.protect_region(saved.vaddr, PAGE_SIZE_4K, saved.flags) {
+                        return Err(MappingError::BadState);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finalize(&self, state: Self::CommitState, pt: &mut Npt) {
+        if matches!(self, Self::Alloc { .. })
+            && matches!(state.operation, MappingOperation::Unmap { .. })
+        {
+            for saved in state.previous.into_iter().flatten() {
+                pt.dealloc_frame(saved.paddr);
+            }
+        }
     }
 
     fn split(&mut self, _align_diff: usize) -> Option<Self> {
         // backend can be trivially split since it does not have any state.
         Some(self.clone())
     }
-
-    fn shrink_left(&mut self, _shrink_size: usize) {
-        // backend can be trivially shrunk since it does not have any state.
-    }
-
-    fn shrink_right(&mut self, _shrink_size: usize) {
-        // backend can be trivially shrunk since it does not have any state.
-    }
 }
 
 impl<Npt: NestedPageTableOps> Backend<Npt> {
+    fn apply(
+        &self,
+        operation: MappingOperation<GuestPhysAddr, MappingFlags>,
+        page_table: &mut Npt,
+    ) -> bool {
+        match operation {
+            MappingOperation::Map {
+                start, size, flags, ..
+            } => match *self {
+                Self::Linear { pa_to_va_delta } => {
+                    self.map_linear(start, size, flags, page_table, pa_to_va_delta)
+                }
+                Self::Alloc { populate, .. } => {
+                    self.map_alloc(start, size, flags, page_table, populate)
+                }
+            },
+            MappingOperation::Unmap { start, size, .. } => match *self {
+                Self::Linear { pa_to_va_delta } => {
+                    self.unmap_linear(start, size, page_table, pa_to_va_delta)
+                }
+                Self::Alloc { populate, .. } => self.unmap_alloc(start, size, page_table, populate),
+            },
+            MappingOperation::Protect {
+                start,
+                size,
+                new_flags,
+                ..
+            } => page_table.protect_region(start, size, new_flags),
+        }
+    }
+
     pub(crate) fn handle_page_fault(
         &self,
         vaddr: GuestPhysAddr,

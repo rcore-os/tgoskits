@@ -22,13 +22,32 @@ struct RuntimePageProvider;
 impl FsPageProvider for RuntimePageProvider {
     fn alloc_page(&self) -> ax_errno::AxResult<FsPage> {
         let addr = ax_alloc::global_allocator()
-            .alloc_pages(1, ax_fs_ng::os::memory::PAGE_SIZE, UsageKind::PageCache)
+            .allocate_pages_raw(
+                ax_alloc::PageRequest {
+                    count: 1,
+                    align: ax_fs_ng::os::memory::PAGE_SIZE,
+                    zone: ax_alloc::MemoryZone::Normal,
+                },
+                UsageKind::PageCache,
+            )
             .map_err(|_| ax_errno::AxError::NoMemory)?;
         Ok(unsafe { FsPage::from_raw(addr) })
     }
 
     fn dealloc_page(&self, page: FsPage) {
-        ax_alloc::global_allocator().dealloc_pages(page.addr(), 1, UsageKind::PageCache);
+        // SAFETY: consuming FsPage transfers the unique page returned by this
+        // allocator with the same single-page request and usage.
+        unsafe {
+            ax_alloc::global_allocator().deallocate_pages_raw(
+                page.addr(),
+                ax_alloc::PageRequest {
+                    count: 1,
+                    align: ax_fs_ng::os::memory::PAGE_SIZE,
+                    zone: ax_alloc::MemoryZone::Normal,
+                },
+                UsageKind::PageCache,
+            );
+        }
     }
 
     fn virt_to_phys(&self, vaddr: usize) -> Option<usize> {

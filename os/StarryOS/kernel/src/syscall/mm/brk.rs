@@ -2,7 +2,7 @@ use ax_errno::AxResult;
 use ax_memory_addr::{VirtAddr, align_up_4k};
 use ax_runtime::hal::paging::{MappingFlags, PageSize};
 use ax_task::current;
-use linux_raw_sys::general::RLIMIT_DATA;
+use linux_raw_sys::general::{RLIMIT_AS, RLIMIT_DATA};
 
 use crate::{
     config::{USER_HEAP_BASE, USER_HEAP_SIZE, USER_HEAP_SIZE_MAX},
@@ -34,7 +34,10 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
     // Since we don't have end_data - start_data, we approximate by checking
     // (addr - USER_HEAP_BASE) against the soft limit.
     // RLIM_INFINITY (u64::MAX) means unlimited.
-    let rlimit_data = proc_data.rlim.read()[RLIMIT_DATA].current;
+    let limits = proc_data.rlim.read();
+    let rlimit_data = limits[RLIMIT_DATA].current;
+    let rlimit_as = limits[RLIMIT_AS].current;
+    drop(limits);
     if rlimit_data != u64::MAX {
         let heap_size = addr.saturating_sub(USER_HEAP_BASE);
         if heap_size > rlimit_data as usize {
@@ -56,6 +59,16 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
         if expand_size > 0 {
             let aspace_arc = proc_data.aspace();
             let mut aspace = aspace_arc.lock();
+            let current_bytes = aspace
+                .vm_stat
+                .vss_pages()
+                .checked_mul(ax_memory_addr::PAGE_SIZE_4K as u64);
+            if current_bytes.is_none_or(|current_bytes| {
+                starry_mm::admit_address_space(current_bytes, 0, expand_size as u64, rlimit_as)
+                    .is_err()
+            }) {
+                return Ok(current_top as isize);
+            }
             if aspace
                 .map(
                     expand_start,

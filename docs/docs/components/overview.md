@@ -105,8 +105,7 @@ flowchart TB
 | `arceos-yield` | 测试层 | `test-suit/arceos/rust/task/yield` | 1 | 0 | [查看](crates/arceos-yield) |
 | `arm_vcpu` | 组件层 | `virtualization/arm_vcpu` | 6 | 1 | [查看](crates/arm-vcpu) |
 | `arm_vgic` | 组件层 | `virtualization/arm_vgic` | 6 | 2 | [查看](crates/arm-vgic) |
-| `ax-alloc` | ArceOS 层 | `os/arceos/modules/axalloc` | 6 | 11 | [查看](crates/ax-alloc) |
-| `ax-allocator` | 组件层 | `memory/axallocator` | 2 | 2 | [查看](crates/ax-allocator) |
+| `ax-alloc` | 内存层 | `memory/ax-alloc` | 7 | 11 | [查看](crates/ax-alloc) |
 | `ax-api` | ArceOS 层 | `os/arceos/api/arceos_api` | 17 | 1 | [查看](crates/ax-api) |
 | `ax-arm-pl031` | 组件层 | `drivers/rtc/arm_pl031` | 0 | 1 | [查看](crates/ax-arm-pl031) |
 | `ax-cpu` | 组件层 | `components/axcpu` | 6 | 14 | [查看](crates/ax-cpu) |
@@ -115,7 +114,7 @@ flowchart TB
 | `ax-ctor-bare` | 组件层 | `components/ctor_bare/ctor_bare` | 1 | 1 | [查看](crates/ax-ctor-bare) |
 | `ax-ctor-bare-macros` | 组件层 | `components/ctor_bare/ctor_bare_macros` | 0 | 1 | [查看](crates/ax-ctor-bare-macros) |
 | `ax-display` | ArceOS 层 | `os/arceos/modules/axdisplay` | 3 | 4 | [查看](crates/ax-display) |
-| `ax-dma` | ArceOS 层 | `os/arceos/modules/axdma` | 7 | 2 | [查看](crates/ax-dma) |
+| `dma-api` | 内存层 | `memory/dma-api` | 6 | 2 | [查看](../architecture/memory/dma) |
 | `ax-driver` | ArceOS 层 | `drivers/ax-driver` | 15 | 10 | [查看](../architecture/driver/overview) |
 | `ax-errno` | 组件层 | `components/axerrno` | 0 | 36 | [查看](crates/ax-errno) |
 | `ax-runtime` | ArceOS 层 | `os/arceos/api/feature` | 16 | 7 | [查看](crates/ax-runtime) |
@@ -141,8 +140,7 @@ flowchart TB
 | `ax-memory-set` | 组件层 | `memory/memory_set` | 2 | 3 | [查看](crates/ax-memory-set) |
 | `ax-mm` | ArceOS 层 | `os/arceos/modules/axmm` | 8 | 4 | [查看](crates/ax-mm) |
 | `ax-net` | 组件层 | `net/ax-net` | 11 | 6 | [查看](crates/ax-net) |
-| `ax-page-table-entry` | 组件层 | `memory/page_table_entry` | 1 | 12 | [查看](crates/ax-page-table-entry) |
-| `ax-page-table-multiarch` | 组件层 | `memory/page_table_multiarch` | 3 | 7 | [查看](crates/ax-page-table-multiarch) |
+| `ax-page-table` | 内存层 | `memory/ax-page-table` | 8 | 12 | [查看](crates/ax-page-table) |
 | `ax-percpu` | 组件层 | `components/percpu/percpu` | 2 | 17 | [查看](crates/ax-percpu) |
 | `ax-percpu-macros` | 组件层 | `components/percpu/percpu_macros` | 0 | 1 | [查看](crates/ax-percpu-macros) |
 | `ax-plat` | 组件层 | `platforms/ax-plat` | 6 | 15 | [查看](crates/ax-plat) |
@@ -169,7 +167,7 @@ flowchart TB
 | `axvisor_api_proc` | 组件层 | `virtualization/axvisor_api_proc` | 0 | 1 | [查看](crates/axvisor-api-proc) |
 | `axvm` | 组件层 | `virtualization/axvm` | 16 | 1 | [查看](crates/axvm) |
 | `axvmconfig` | 组件层 | `virtualization/axvmconfig` | 1 | 4 | [查看](crates/axvmconfig) |
-| `bitmap-allocator` | 组件层 | `memory/bitmap-allocator` | 0 | 1 | [查看](crates/bitmap-allocator) |
+| `buddy-slab-allocator` | 组件层 | `memory/buddy-slab-allocator` | 0 | 1 | [查看](../architecture/memory/runtime-allocator) |
 | `bwbench-client` | ArceOS 层 | `os/arceos/tools/bwbench_client` | 0 | 0 | [查看](crates/bwbench-client) |
 | `define-simple-traits` | 组件层 | `components/crate_interface/test_crates/define-simple-traits` | 1 | 2 | [查看](crates/define-simple-traits) |
 | `define-weak-traits` | 组件层 | `components/crate_interface/test_crates/define-weak-traits` | 1 | 4 | [查看](crates/define-weak-traits) |
@@ -188,6 +186,7 @@ flowchart TB
 | `smoltcp` | 组件层 | `components/starry-smoltcp` | 0 | 3 | [查看](crates/smoltcp) |
 | `smoltcp-fuzz` | 组件层 | `components/starry-smoltcp/fuzz` | 1 | 0 | [查看](crates/smoltcp-fuzz) |
 | `starry-kernel` | StarryOS 层 | `os/StarryOS/kernel` | 29 | 2 | [查看](crates/starry-kernel) |
+| `starry-mm` | 内存层 | `memory/starry-mm` | 7 | 1 | [查看](crates/starry-mm) |
 | `starry-process` | 组件层 | `components/starry-process` | 2 | 1 | [查看](crates/starry-process) |
 | `starry-signal` | 组件层 | `components/starry-signal` | 3 | 1 | [查看](crates/starry-signal) |
 | `starry-vm` | 组件层 | `components/starry-vm` | 1 | 2 | [查看](crates/starry-vm) |

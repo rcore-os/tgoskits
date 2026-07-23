@@ -116,7 +116,11 @@ impl AddrSpace {
             return ax_err!(InvalidInput, "address not aligned");
         }
 
-        let offset = start_vaddr.as_usize() - start_paddr.as_usize();
+        start_paddr
+            .as_usize()
+            .checked_add(size)
+            .ok_or(AxError::InvalidInput)?;
+        let offset = start_vaddr.as_usize() as i128 - start_paddr.as_usize() as i128;
         let area = MemoryArea::new(start_vaddr, size, flags, Backend::new_linear(offset));
         self.areas.map(area, &mut self.pt, unmap_overlap)?;
         Ok(())
@@ -259,17 +263,15 @@ impl AddrSpace {
             return ax_err!(InvalidInput, "address not aligned");
         }
 
-        // TODO
-        self.pt
-            .cursor()
-            .protect_region(start, size, flags)
-            .map_err(|_| AxError::BadState)?;
+        self.areas
+            .protect(start, size, |_| Some(flags), &mut self.pt)?;
         Ok(())
     }
 
     /// Removes all mappings in the address space.
-    pub fn clear(&mut self) {
-        self.areas.clear(&mut self.pt).unwrap();
+    pub fn clear(&mut self) -> AxResult {
+        self.areas.clear(&mut self.pt)?;
+        Ok(())
     }
 
     /// Checks whether an access to the specified memory region is valid.
@@ -339,6 +341,8 @@ impl fmt::Debug for AddrSpace {
 
 impl Drop for AddrSpace {
     fn drop(&mut self) {
-        self.clear();
+        if let Err(error) = self.clear() {
+            error!("failed to clear ArceOS address space during drop: {error}");
+        }
     }
 }

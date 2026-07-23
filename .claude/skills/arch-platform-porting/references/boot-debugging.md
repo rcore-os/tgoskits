@@ -107,6 +107,14 @@ Use this order when auditing an early boot port:
 1. Entry preserves firmware arguments and records them before BSS or relocation can destroy them.
 2. Early serial output works before `ExitBootServices`.
 3. Firmware memory map is captured, classified, and converted into the kernel memory model.
+   For FDT input, enumerate every tuple in each `/reserved-memory` `reg`
+   property and fail explicitly if a fixed-capacity collection cannot retain
+   every usable RAM range; silently dropping later ranges can expose reserved
+   pages or leave RAM unmapped. When one early bump arena is required, select
+   the largest nonempty valid free range instead of depending on firmware
+   descriptor order. Do not impose an arbitrary size threshold: checked bump
+   allocation must report when the selected range cannot hold the actual boot
+   objects.
 4. Kernel image physical range, load offset, and high-half range are known before address translation helpers are used.
 5. Page tables or arch direct-map windows cover the currently executing code, boot stack, page tables, kernel high map, MMIO, and boot data.
 6. Trap vectors are installed using the address form required by the architecture at that moment.

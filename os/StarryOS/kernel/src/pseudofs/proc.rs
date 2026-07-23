@@ -32,7 +32,7 @@ use zerocopy::IntoBytes;
 
 use crate::{
     file::FD_TABLE,
-    mm::{BackendFileInfo, ProcessMemStats},
+    mm::{BackendFileInfo, ProcessMemStats, collect_process_mem_stats},
     pseudofs::{
         DirMaker, DirMapping, DirectRwFsFileOps, NodeOpsMux, RwFile, SeqObject, SimpleDir,
         SimpleDirOps, SimpleFile, SimpleFileOperation, SimpleFs, SpecialFsFile,
@@ -99,17 +99,17 @@ fn procfs_lookup_process(pid: Pid) -> VfsResult<Arc<ProcessData>> {
 
 fn render_meminfo() -> String {
     let total = ax_runtime::hal::mem::total_ram_size();
-    let usages = ax_alloc::global_allocator().usages();
+    let stats = ax_alloc::global_allocator().stats();
     // Sum all allocator categories to estimate kernel-consumed memory.
-    let used = usages.get(ax_alloc::UsageKind::RustHeap)
-        + usages.get(ax_alloc::UsageKind::VirtMem)
-        + usages.get(ax_alloc::UsageKind::PageCache)
-        + usages.get(ax_alloc::UsageKind::PageTable)
-        + usages.get(ax_alloc::UsageKind::Dma)
-        + usages.get(ax_alloc::UsageKind::Global);
-    let cached = usages.get(ax_alloc::UsageKind::PageCache);
-    let page_tables = usages.get(ax_alloc::UsageKind::PageTable);
-    let anon_pages = usages.get(ax_alloc::UsageKind::VirtMem);
+    let used = stats.usage(ax_alloc::UsageKind::RustHeap)
+        + stats.usage(ax_alloc::UsageKind::VirtMem)
+        + stats.usage(ax_alloc::UsageKind::PageCache)
+        + stats.usage(ax_alloc::UsageKind::PageTable)
+        + stats.usage(ax_alloc::UsageKind::Dma)
+        + stats.usage(ax_alloc::UsageKind::Global);
+    let cached = stats.usage(ax_alloc::UsageKind::PageCache);
+    let page_tables = stats.usage(ax_alloc::UsageKind::PageTable);
+    let anon_pages = stats.usage(ax_alloc::UsageKind::VirtMem);
     let free = total.saturating_sub(used);
 
     let total_kb = total / 1024;
@@ -118,6 +118,8 @@ fn render_meminfo() -> String {
     let available_kb = free_kb + cached_kb;
     let page_tables_kb = page_tables / 1024;
     let anon_pages_kb = anon_pages / 1024;
+    let commit_limit_kb = starry_mm::commit_limit_bytes() / 1024;
+    let committed_kb = starry_mm::committed_bytes() / 1024;
 
     format!(
         "MemTotal:       {total_kb:>10} kB\n\
@@ -142,8 +144,8 @@ fn render_meminfo() -> String {
          NFS_Unstable:            0 kB\n\
          Bounce:                  0 kB\n\
          WritebackTmp:            0 kB\n\
-         CommitLimit:    {total_kb:>10} kB\n\
-         Committed_AS:            0 kB\n\
+         CommitLimit:    {commit_limit_kb:>10} kB\n\
+         Committed_AS:   {committed_kb:>10} kB\n\
          VmallocTotal:   34359738367 kB\n\
          VmallocUsed:             0 kB\n\
          VmallocChunk:            0 kB\n\
@@ -163,13 +165,13 @@ fn render_vmstat() -> String {
     // so the counter surfaces as node_vmstat_pgfault. Both values move with real workload, unlike a
     // static stub.
     let total = ax_runtime::hal::mem::total_ram_size();
-    let usages = ax_alloc::global_allocator().usages();
-    let used = usages.get(ax_alloc::UsageKind::RustHeap)
-        + usages.get(ax_alloc::UsageKind::VirtMem)
-        + usages.get(ax_alloc::UsageKind::PageCache)
-        + usages.get(ax_alloc::UsageKind::PageTable)
-        + usages.get(ax_alloc::UsageKind::Dma)
-        + usages.get(ax_alloc::UsageKind::Global);
+    let stats = ax_alloc::global_allocator().stats();
+    let used = stats.usage(ax_alloc::UsageKind::RustHeap)
+        + stats.usage(ax_alloc::UsageKind::VirtMem)
+        + stats.usage(ax_alloc::UsageKind::PageCache)
+        + stats.usage(ax_alloc::UsageKind::PageTable)
+        + stats.usage(ax_alloc::UsageKind::Dma)
+        + stats.usage(ax_alloc::UsageKind::Global);
     let free_pages = total.saturating_sub(used) / 4096;
     let pgfault = crate::mm::PAGE_FAULT_COUNT.load(Ordering::Relaxed);
     format!("nr_free_pages {free_pages}\npgfault {pgfault}\n")
@@ -745,7 +747,7 @@ fn render_thread_status(
     let task = task.upgrade().ok_or(VfsError::NotFound)?;
     let thread = task.as_thread();
     let aspace_arc = proc_data.aspace();
-    let mem = ProcessMemStats::collect(&aspace_arc.lock());
+    let mem = collect_process_mem_stats(&aspace_arc.lock());
     let cred = thread.cred();
     let name = task.name();
     let num_threads = proc_data.proc.threads().len() as u32;
@@ -1161,7 +1163,7 @@ fn render_thread_statm(
     };
     let aspace_arc = proc_data.aspace();
     let mm = aspace_arc.lock();
-    Ok(ProcessMemStats::collect(&mm).format_statm())
+    Ok(collect_process_mem_stats(&mm).format_statm())
 }
 
 fn render_thread_stat(
@@ -1173,7 +1175,7 @@ fn render_thread_stat(
     let task = task.upgrade().ok_or(VfsError::NotFound)?;
     let mut stat = TaskStat::from_thread(&task)?;
     let aspace_arc = proc_data.aspace();
-    let mem = ProcessMemStats::collect(&aspace_arc.lock());
+    let mem = collect_process_mem_stats(&aspace_arc.lock());
     stat.vsize = mem.vsize_bytes();
     stat.rss = mem.rss_pages();
     stat.start_code = mem.start_code;
@@ -1770,7 +1772,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "meminfo2",
         SimpleFile::new_regular(fs.clone(), || {
             let allocator = ax_alloc::global_allocator();
-            Ok(format!("{:?}\n", allocator.usages()))
+            Ok(format!("{:?}\n", allocator.stats()))
         }),
     );
     root.add(
@@ -1857,7 +1859,13 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             let mut vm = DirMapping::new();
             vm.add(
                 "overcommit_memory",
-                SimpleFile::new_regular(fs.clone(), || Ok("0\n")),
+                SimpleFile::new_regular(fs.clone(), || {
+                    Ok(if starry_mm::overcommit_memory_mode() == 2 {
+                        "2\n"
+                    } else {
+                        "1\n"
+                    })
+                }),
             );
             vm.add(
                 "max_map_count",

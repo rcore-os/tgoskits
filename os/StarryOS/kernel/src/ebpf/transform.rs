@@ -30,6 +30,7 @@ use kbpf_basic::{
     preprocessor::EbpfInst,
 };
 use rbpf::ebpf::Insn;
+use starry_mm::PageInitialization;
 
 use crate::{
     ebpf::{KernelRawMutex, map::BpfMap},
@@ -227,7 +228,7 @@ impl KernelAuxiliaryOps for EbpfKernelAuxiliary {
         // Reuse the address-space backend's frame allocator
         // (`mm::aspace::backend::alloc_frame`) so eBPF page allocation goes
         // through the same path as the rest of the kernel.
-        crate::mm::alloc_frame(true, PageSize::Size4K)
+        crate::mm::alloc_frame(PageInitialization::Zeroed, PageSize::Size4K)
             .map(|p| p.as_usize())
             .map_err(|_| BpfError::ENOMEM)
     }

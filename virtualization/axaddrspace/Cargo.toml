@@ -26,4 +26,4 @@ thiserror = { workspace = true }
 [dev-dependencies]
 lazy_static = "1.5"
 assert_matches = "1.5.0"
-page-table-generic = { workspace = true }
+ax-page-table = { workspace = true, features = ["stage2"] }

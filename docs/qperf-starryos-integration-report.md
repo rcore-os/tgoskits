@@ -297,7 +297,7 @@ kernel symbols including:
 - `ax_plat::call_main`
 - `ax_task::api::current_may_uninit`
 - `ax_mm::backend::Backend`
-- `ax_page_table_multiarch`
+- `ax_page_table`
 
 `--format all` was also verified with a 20 second timeout. The container did
 not contain a flamegraph generator, so no SVG was produced, but the command

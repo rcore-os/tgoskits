@@ -1,16 +1,23 @@
-use ax_alloc::{UsageKind, global_allocator};
+use ax_alloc::{MemoryZone, PageRequest, UsageKind, global_allocator};
 use ax_hal::{
     mem::{phys_to_virt, virt_to_phys},
     paging::{MappingFlags, PageSize, PageTable},
 };
-use ax_memory_addr::{PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr};
 
 use super::Backend;
 
 fn alloc_frame(zeroed: bool) -> Option<PhysAddr> {
     let vaddr = VirtAddr::from(
         global_allocator()
-            .alloc_pages(1, PAGE_SIZE_4K, UsageKind::VirtMem)
+            .allocate_pages_raw(
+                PageRequest {
+                    count: 1,
+                    align: PAGE_SIZE_4K,
+                    zone: MemoryZone::Normal,
+                },
+                UsageKind::VirtMem,
+            )
             .ok()?,
     );
     if zeroed {
@@ -20,9 +27,21 @@ fn alloc_frame(zeroed: bool) -> Option<PhysAddr> {
     Some(paddr)
 }
 
-fn dealloc_frame(frame: PhysAddr) {
+pub(super) fn dealloc_frame(frame: PhysAddr) {
     let vaddr = phys_to_virt(frame);
-    global_allocator().dealloc_pages(vaddr.as_usize(), 1, UsageKind::VirtMem);
+    // SAFETY: allocated mappings call this exactly once for a frame returned
+    // by alloc_frame with the same single-page request and usage.
+    unsafe {
+        global_allocator().deallocate_pages_raw(
+            vaddr.as_usize(),
+            PageRequest {
+                count: 1,
+                align: PAGE_SIZE_4K,
+                zone: MemoryZone::Normal,
+            },
+            UsageKind::VirtMem,
+        );
+    }
 }
 
 impl Backend {
@@ -39,26 +58,33 @@ impl Backend {
         pt: &mut PageTable,
         populate: bool,
     ) -> bool {
+        let Some(end) = start.checked_add(size) else {
+            return false;
+        };
         debug!(
             "map_alloc: [{:#x}, {:#x}) {:?} (populate={})",
-            start,
-            start + size,
-            flags,
-            populate
+            start, end, flags, populate
         );
         if populate {
             // allocate all possible physical frames for populated mapping.
-            for addr in PageIter4K::new(start, start + size).unwrap() {
+            let mut mapped_pages = 0;
+            for addr in PageIter4K::new(start, end)
+                .expect("prepared allocation range must be 4-KiB aligned")
+            {
                 if let Some(frame) = alloc_frame(true) {
                     if pt
                         .cursor()
                         .map(addr, frame, PageSize::Size4K, flags)
                         .is_err()
                     {
+                        dealloc_frame(frame);
+                        rollback_alloc_mapping(start, mapped_pages, pt);
                         return false;
                     }
+                    mapped_pages += 1;
                     // TLB flush on map is unnecessary, as there are no outdated mappings.
                 } else {
+                    rollback_alloc_mapping(start, mapped_pages, pt);
                     return false;
                 }
             }
@@ -79,18 +105,30 @@ impl Backend {
         pt: &mut PageTable,
         _populate: bool,
     ) -> bool {
-        debug!("unmap_alloc: [{:#x}, {:#x})", start, start + size);
-        for addr in PageIter4K::new(start, start + size).unwrap() {
-            if let Ok((frame, _, page_size)) = pt.cursor().unmap(addr) {
-                // Deallocate the physical frame if there is a mapping in the
-                // page table.
-                if page_size.is_huge() {
-                    return false;
+        let Some(end) = start.checked_add(size) else {
+            return false;
+        };
+        debug!("unmap_alloc: [{:#x}, {:#x})", start, end);
+        for addr in PageIter4K::new(start, end).expect("prepared unmap range must be 4-KiB aligned")
+        {
+            if pt
+                .query(addr)
+                .is_ok_and(|(_, _, page_size)| page_size.is_huge())
+            {
+                return false;
+            }
+        }
+        for addr in PageIter4K::new(start, end).expect("prepared unmap range must be 4-KiB aligned")
+        {
+            match pt.cursor().unmap(addr) {
+                Ok((_frame, _, page_size)) => {
+                    debug_assert_eq!(page_size, PageSize::Size4K);
+                    // Physical ownership is retained until the whole MemorySet
+                    // transaction succeeds. `Backend::finalize` releases it;
+                    // rollback maps this exact frame again.
                 }
-                // TLB flush is handled automatically when cursor is dropped.
-                dealloc_frame(frame);
-            } else {
-                // Deallocation is needn't if the page is not mapped.
+                Err(ax_hal::paging::PagingError::NotMapped) => {}
+                Err(_) => return false,
             }
         }
         true
@@ -109,9 +147,29 @@ impl Backend {
             // Allocate a physical frame lazily and map it to the fault address.
             // `vaddr` does not need to be aligned. It will be automatically
             // aligned during `pt.cursor().remap` regardless of the page size.
-            pt.cursor().remap(vaddr, frame, orig_flags).is_ok()
+            if pt.cursor().remap(vaddr, frame, orig_flags).is_ok() {
+                true
+            } else {
+                dealloc_frame(frame);
+                false
+            }
         } else {
             false
+        }
+    }
+}
+
+fn rollback_alloc_mapping(start: VirtAddr, mapped_pages: usize, pt: &mut PageTable) {
+    let bytes = mapped_pages
+        .checked_mul(PAGE_SIZE_4K)
+        .expect("mapped page count must fit in an address range");
+    let end = start
+        .checked_add(bytes)
+        .expect("mapped rollback range must not overflow");
+    for addr in PageIter4K::new(start, end).expect("mapped rollback range must be aligned") {
+        if let Ok((frame, _, page_size)) = pt.cursor().unmap(addr) {
+            debug_assert_eq!(page_size, PageSize::Size4K);
+            dealloc_frame(frame);
         }
     }
 }

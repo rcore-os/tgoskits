@@ -2,15 +2,16 @@ use core::ops::Range;
 
 use byte_unit::{Byte, UnitType};
 use kernutil::StaticCell;
-pub use kernutil::memory::{MemoryDescriptor, MemoryType, PageTableInfo};
+pub use kernutil::memory::{
+    MemoryDescriptor, MemoryMapExt, MemoryRangeError, MemoryType, PageTableInfo,
+};
 use num_align::NumAlign;
-use ranges_ext::*;
 
 pub mod mmu;
 pub(crate) mod ram;
 pub(crate) mod region;
 
-pub use page_table_generic::*;
+pub use ax_page_table::boot::*;
 
 use crate::{ArchTrait, DCacheOp, arch::Arch, smp::cpu_area_region};
 
@@ -25,7 +26,7 @@ static MEMORY_MAP: StaticCell<MemoryMap> = StaticCell::new(MemoryMap::new());
 /// Load address of the kernel start
 static mut KIMAGE_START: Option<PhysAddr> = None;
 /// Load address of the kernel end
-static mut KIMAGE_END: PhysAddr = PhysAddr::new(0);
+static mut KIMAGE_END: PhysAddr = PhysAddr::from_usize(0);
 
 const MEMORY_MAP_CAPACITY: usize = 512;
 
@@ -38,9 +39,9 @@ pub(crate) fn setup_entry(
 ) {
     unsafe {
         KIMAGE_START = Some(kernel_start);
-        KIMAGE_END = kernel_end.raw().align_up(KIMAGE_MAP_ALIGN).into();
+        KIMAGE_END = kernel_end.as_usize().align_up(KIMAGE_MAP_ALIGN).into();
 
-        VM_LOAD_OFFSET = kernel_start.raw() as isize - kernel_start_link.raw() as isize;
+        VM_LOAD_OFFSET = kernel_start.as_usize() as isize - kernel_start_link.as_usize() as isize;
     }
 }
 
@@ -56,12 +57,12 @@ pub fn vm_load_offset() -> isize {
     unsafe { VM_LOAD_OFFSET }
 }
 
-/// RAM 物理地址应当转换为的内核虚拟地址
+/// Converts a RAM physical address to its kernel virtual address.
 pub fn __va(paddr: usize) -> *mut u8 {
     crate::arch::Arch::_va(paddr)
 }
 
-/// IO 物理地址应当转换为的内核虚拟地址
+/// Converts an I/O physical address to its kernel virtual address.
 pub fn __io(paddr: usize) -> *mut u8 {
     crate::arch::Arch::_io(paddr)
 }
@@ -70,7 +71,7 @@ pub fn cpu_area_phys_to_virt(paddr: usize) -> *mut u8 {
     crate::arch::Arch::cpu_area_phys_to_virt(paddr)
 }
 
-/// kernel image 物理地址转换为内核虚拟地址
+/// Converts a kernel-image physical address to its linked virtual address.
 pub(crate) fn __kimage_va(paddr: usize) -> *mut u8 {
     (paddr as isize - vm_load_offset()) as usize as *mut u8
 }
@@ -112,7 +113,7 @@ pub(crate) fn cache_line_range(
     Some((addr & !(line_size - 1), end))
 }
 
-/// 物理RAM实际转换为的内核虚拟地址
+/// Converts a physical RAM address according to the active boot mapping.
 pub fn phys_to_virt(paddr: usize) -> *mut u8 {
     if mmu::is_kernel_relocated() {
         if kimage_range().contains(&paddr) {
@@ -159,19 +160,23 @@ pub(crate) fn early_init() {
 
     print_memory_map();
 
-    let mut free_range = None;
-
-    for desc in memory_map().iter() {
-        if desc.memory_type == MemoryType::Free && desc.size_in_bytes > 8 * MB {
-            free_range = Some(desc.physical_start..(desc.physical_start + desc.size_in_bytes));
-            break;
-        }
-    }
-
-    ram::init(free_range.expect("No free memory"));
+    ram::init(select_early_ram(memory_map()).expect("no suitable early RAM region"));
 
     crate::fdt::save_fdt();
     crate::smp::alloc_percpu();
+}
+
+fn select_early_ram(descriptors: &[MemoryDescriptor]) -> Option<Range<usize>> {
+    descriptors
+        .iter()
+        .filter(|desc| desc.memory_type == MemoryType::Free && desc.size_in_bytes != 0)
+        .filter_map(|desc| {
+            desc.physical_start
+                .checked_add(desc.size_in_bytes)
+                .map(|end| (desc.size_in_bytes, desc.physical_start..end))
+        })
+        .max_by_key(|(size, _)| *size)
+        .map(|(_, range)| range)
 }
 
 fn reserve_arch_early_ranges() {
@@ -183,7 +188,7 @@ fn reserve_arch_early_ranges() {
             MemoryDescriptor::new_aligned(tramp, page_size(), MemoryType::Reserved, page_size());
         match add_memory_descriptor(desc) {
             Ok(()) => {}
-            Err(RangeError::Conflict { existing, .. })
+            Err(MemoryRangeError::Conflict { existing, .. })
                 if existing.memory_type != MemoryType::Free =>
             {
                 // Already reserved by firmware map; keep it as-is.
@@ -200,7 +205,7 @@ pub(crate) fn kimage_range() -> core::ops::Range<usize> {
             panic!("Kernel image start is not set");
         };
         let end = KIMAGE_END;
-        start.raw()..end.raw()
+        start.as_usize()..end.as_usize()
     }
 }
 
@@ -225,6 +230,7 @@ pub(crate) fn memory_map_setup() {
     if let Some(desc) = crate::console::debug_to_memory_desc() {
         add_memory_descriptor(desc).unwrap();
     }
+    ram::freeze();
 }
 
 pub fn print_memory_map() {
@@ -243,9 +249,7 @@ pub fn print_memory_map() {
     }
 }
 
-pub(crate) fn add_memory_descriptor(
-    desc: MemoryDescriptor,
-) -> Result<(), RangeError<MemoryDescriptor>> {
+pub(crate) fn add_memory_descriptor(desc: MemoryDescriptor) -> Result<(), MemoryRangeError> {
     unsafe { MEMORY_MAP.update(|mem| mem.merge_add(desc)) }
 }
 
@@ -269,5 +273,49 @@ mod tests {
         assert_eq!(cache_line_range(0x1000, 1, 0), None);
         assert_eq!(cache_line_range(0x1000, 1, 63), None);
         assert_eq!(cache_line_range(usize::MAX, 2, 64), None);
+    }
+
+    #[test]
+    fn early_ram_uses_the_largest_usable_firmware_region() {
+        let descriptors = [
+            MemoryDescriptor {
+                physical_start: 0x1000_0000,
+                size_in_bytes: 16 * MB,
+                memory_type: MemoryType::Free,
+            },
+            MemoryDescriptor {
+                physical_start: 0x2000_0000,
+                size_in_bytes: 128 * MB,
+                memory_type: MemoryType::Free,
+            },
+            MemoryDescriptor {
+                physical_start: 0x3000_0000,
+                size_in_bytes: 256 * MB,
+                memory_type: MemoryType::Reserved,
+            },
+        ];
+
+        assert_eq!(
+            select_early_ram(&descriptors),
+            Some(0x2000_0000..0x2800_0000)
+        );
+    }
+
+    #[test]
+    fn early_ram_accepts_small_valid_region_and_rejects_overflow() {
+        let descriptors = [
+            MemoryDescriptor {
+                physical_start: 0x1000,
+                size_in_bytes: 2 * MB,
+                memory_type: MemoryType::Free,
+            },
+            MemoryDescriptor {
+                physical_start: usize::MAX - 0x1000,
+                size_in_bytes: 16 * MB,
+                memory_type: MemoryType::Free,
+            },
+        ];
+
+        assert_eq!(select_early_ram(&descriptors), Some(0x1000..0x20_1000));
     }
 }

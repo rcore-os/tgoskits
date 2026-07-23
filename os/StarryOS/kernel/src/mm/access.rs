@@ -291,7 +291,10 @@ fn handle_page_fault(vaddr: VirtAddr, access_flags: MappingFlags) -> bool {
         return false;
     }
     PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
-    aspace_arc.lock().handle_page_fault(vaddr, access_flags)
+    aspace_arc
+        .lock()
+        .handle_page_fault(vaddr, access_flags)
+        .is_resolved()
 }
 
 pub const PATH_MAX: usize = 4096;

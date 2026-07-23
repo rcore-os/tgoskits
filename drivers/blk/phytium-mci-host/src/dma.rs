@@ -42,7 +42,7 @@ const IDSTS_INT_ENABLE_MASK: u32 = IDSTS_TRANSMIT
     | IDSTS_ABNORMAL_SUMMARY;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct IdmacDesc {
     attribute: u32,
     reserved0: u32,
@@ -1625,7 +1625,7 @@ mod tests {
 
     impl NoopDmaBuffer {
         fn progress() -> DmaProgress {
-            let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
+            let dma = DeviceDma::new_identity(u64::MAX, &TEST_DMA);
             let descriptors = dma
                 .coherent_array_zero_with_align::<IdmacDesc>(1, IDMAC_DESC_ALIGN)
                 .unwrap();
@@ -1813,7 +1813,7 @@ mod tests {
 
     #[test]
     fn request_slot_returns_completed_owned_dma_once() {
-        let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
+        let dma = DeviceDma::new_identity(u64::MAX, &TEST_DMA);
         let buffer = dma_api::CpuDmaBuffer::new_zero(
             &dma,
             NonZeroUsize::new(BLOCK_SIZE).unwrap(),

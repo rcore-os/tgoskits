@@ -1,0 +1,40 @@
+[package]
+name = "ax-page-table"
+version = "0.1.0"
+edition.workspace = true
+description = "Shared stage-1, stage-2, and boot page-table core"
+repository.workspace = true
+license.workspace = true
+
+[features]
+default = []
+stage1 = []
+stage2 = []
+boot = []
+ax-errno = ["stage1", "dep:ax-errno"]
+copy-from = ["stage1", "dep:bitmaps"]
+arm-el2 = []
+xuantie-c9xx = []
+
+[dependencies]
+arrayvec = { version = "0.7", default-features = false }
+ax-errno = { workspace = true, optional = true }
+ax-memory-addr.workspace = true
+bitflags = "2.9"
+bitmaps = { version = "3.2", default-features = false, optional = true }
+heapless = "0.9"
+log = "0.4"
+num-align = "0.1"
+thiserror = { version = "2", default-features = false }
+
+[target.'cfg(any(target_arch = "x86_64", doc, docsrs))'.dependencies]
+x86 = "0.52"
+x86_64 = { version = "0.15", default-features = false }
+
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64", doc, docsrs))'.dependencies]
+riscv.workspace = true
+
+[dev-dependencies]
+env_logger = "0.11"
+rand = { version = "0.10", default-features = false }
+tock-registers = "0.10"

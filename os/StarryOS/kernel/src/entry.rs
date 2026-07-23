@@ -21,6 +21,12 @@ use crate::{
 pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
 
+    let allocator = ax_alloc::global_allocator();
+    let commit_limit = allocator
+        .used_bytes()
+        .saturating_add(allocator.available_bytes()) as u64;
+    starry_mm::configure_commit_limit(commit_limit);
+
     tracepoint_init().expect("Failed to initialize tracepoints");
 
     crate::ebpf::init_ebpf();
@@ -30,8 +36,6 @@ pub fn init(args: &[String], envs: &[String]) {
     pseudofs::mount_all().expect("Failed to mount pseudofs");
     spawn_alarm_task();
     pseudofs::usbfs::start_event_pump();
-
-    ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
 
     let loc = ax_fs_ng::vfs::current_fs_context()
         .lock()

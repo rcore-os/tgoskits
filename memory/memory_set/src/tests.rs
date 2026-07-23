@@ -1,66 +1,16 @@
+use std::{cell::Cell, rc::Rc};
+
 use ax_memory_addr::{MemoryAddr, VirtAddr, va_range};
 
-use crate::{MappingBackend, MappingError, MemoryArea, MemorySet};
+use crate::{
+    MapPrecondition, MappingBackend, MappingError, MappingOperation, MappingResult, MemoryArea,
+    MemorySet,
+};
 
 const MAX_ADDR: usize = 0x10000;
 
 type MockFlags = u8;
 type MockPageTable = [MockFlags; MAX_ADDR];
-
-#[derive(Clone)]
-struct MockBackend;
-
-type MockMemorySet = MemorySet<MockBackend>;
-
-impl MappingBackend for MockBackend {
-    type Addr = VirtAddr;
-    type Flags = MockFlags;
-    type PageTable = MockPageTable;
-
-    fn map(&self, start: VirtAddr, size: usize, flags: MockFlags, pt: &mut MockPageTable) -> bool {
-        for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
-            if *entry != 0 {
-                return false;
-            }
-            *entry = flags;
-        }
-        true
-    }
-
-    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut MockPageTable) -> bool {
-        for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
-            if *entry == 0 {
-                return false;
-            }
-            *entry = 0;
-        }
-        true
-    }
-
-    fn protect(
-        &self,
-        start: VirtAddr,
-        size: usize,
-        new_flags: MockFlags,
-        pt: &mut MockPageTable,
-    ) -> bool {
-        for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
-            if *entry == 0 {
-                return false;
-            }
-            *entry = new_flags;
-        }
-        true
-    }
-
-    fn split(&mut self, _align_diff: usize) -> Option<Self> {
-        Some(self.clone())
-    }
-
-    fn shrink_left(&mut self, _shrink_size: usize) {}
-
-    fn shrink_right(&mut self, _shrink_size: usize) {}
-}
 
 macro_rules! assert_ok {
     ($expr:expr) => {
@@ -75,6 +25,620 @@ macro_rules! assert_err {
     ($expr:expr, $err:ident) => {
         assert_eq!(($expr).err(), Some(MappingError::$err))
     };
+}
+
+#[derive(Clone)]
+struct MockBackend;
+
+type MockMemorySet = MemorySet<MockBackend>;
+
+impl MappingBackend for MockBackend {
+    type Addr = VirtAddr;
+    type Flags = MockFlags;
+    type PageTable = MockPageTable;
+    type MappingPlan = MappingOperation<VirtAddr, MockFlags>;
+    type CommitState = MockCommitState;
+
+    fn prepare(
+        &self,
+        operation: Self::MappingPlan,
+        pt: &mut MockPageTable,
+    ) -> MappingResult<Self::MappingPlan> {
+        if let MappingOperation::Map {
+            start,
+            size,
+            precondition: MapPrecondition::Vacant,
+            ..
+        } = operation
+            && pt
+                .iter()
+                .skip(start.as_usize())
+                .take(size)
+                .any(|entry| *entry != 0)
+        {
+            return Err(MappingError::AlreadyExists);
+        }
+        Ok(operation)
+    }
+
+    fn abort(&self, _plan: Self::MappingPlan, _pt: &mut MockPageTable) {}
+
+    fn commit(
+        &self,
+        operation: Self::MappingPlan,
+        pt: &mut MockPageTable,
+    ) -> MappingResult<Self::CommitState> {
+        commit_mock_operation(operation, pt)
+    }
+
+    fn rollback(&self, state: Self::CommitState, pt: &mut MockPageTable) -> MappingResult {
+        state.restore(pt);
+        Ok(())
+    }
+
+    fn finalize(&self, _state: Self::CommitState, _pt: &mut MockPageTable) {}
+
+    fn split(&mut self, _align_diff: usize) -> Option<Self> {
+        Some(self.clone())
+    }
+}
+
+fn mock_map(start: VirtAddr, size: usize, flags: MockFlags, pt: &mut MockPageTable) -> bool {
+    for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
+        if *entry != 0 {
+            return false;
+        }
+        *entry = flags;
+    }
+    true
+}
+
+fn mock_unmap(start: VirtAddr, size: usize, pt: &mut MockPageTable) -> bool {
+    for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
+        if *entry == 0 {
+            return false;
+        }
+        *entry = 0;
+    }
+    true
+}
+
+fn mock_protect(
+    start: VirtAddr,
+    size: usize,
+    new_flags: MockFlags,
+    pt: &mut MockPageTable,
+) -> bool {
+    for entry in pt.iter_mut().skip(start.as_usize()).take(size) {
+        if *entry == 0 {
+            return false;
+        }
+        *entry = new_flags;
+    }
+    true
+}
+
+struct MockCommitState {
+    start: usize,
+    entries: Vec<MockFlags>,
+}
+
+impl MockCommitState {
+    fn restore(self, pt: &mut MockPageTable) {
+        pt[self.start..self.start + self.entries.len()].copy_from_slice(&self.entries);
+    }
+}
+
+fn commit_mock_operation(
+    operation: MappingOperation<VirtAddr, MockFlags>,
+    pt: &mut MockPageTable,
+) -> MappingResult<MockCommitState> {
+    let (start, size) = match operation {
+        MappingOperation::Map { start, size, .. }
+        | MappingOperation::Unmap { start, size, .. }
+        | MappingOperation::Protect { start, size, .. } => (start.as_usize(), size),
+    };
+    let state = MockCommitState {
+        start,
+        entries: pt[start..start + size].to_vec(),
+    };
+    let success = match operation {
+        MappingOperation::Map {
+            start, size, flags, ..
+        } => mock_map(start, size, flags, pt),
+        MappingOperation::Unmap { start, size, .. } => mock_unmap(start, size, pt),
+        MappingOperation::Protect {
+            start,
+            size,
+            new_flags,
+            ..
+        } => mock_protect(start, size, new_flags, pt),
+    };
+    if success {
+        Ok(state)
+    } else {
+        state.restore(pt);
+        Err(MappingError::BadState)
+    }
+}
+
+#[derive(Clone, Default)]
+struct FaultControl {
+    prepare_map_calls: Rc<Cell<usize>>,
+    prepare_unmap_calls: Rc<Cell<usize>>,
+    prepare_protect_calls: Rc<Cell<usize>>,
+    map_calls: Rc<Cell<usize>>,
+    unmap_calls: Rc<Cell<usize>>,
+    protect_calls: Rc<Cell<usize>>,
+    rollback_calls: Rc<Cell<usize>>,
+    fail_prepare_map_on: Rc<Cell<Option<usize>>>,
+    fail_prepare_unmap_on: Rc<Cell<Option<usize>>>,
+    fail_prepare_protect_on: Rc<Cell<Option<usize>>>,
+    fail_map_on: Rc<Cell<Option<usize>>>,
+    fail_unmap_on: Rc<Cell<Option<usize>>>,
+    fail_protect_on: Rc<Cell<Option<usize>>>,
+    fail_rollback_on: Rc<Cell<Option<usize>>>,
+}
+
+impl FaultControl {
+    fn should_fail(calls: &Cell<usize>, fail_on: &Cell<Option<usize>>) -> bool {
+        let call = calls.get() + 1;
+        calls.set(call);
+        fail_on.get() == Some(call)
+    }
+
+    fn reset(&self) {
+        self.prepare_map_calls.set(0);
+        self.prepare_unmap_calls.set(0);
+        self.prepare_protect_calls.set(0);
+        self.map_calls.set(0);
+        self.unmap_calls.set(0);
+        self.protect_calls.set(0);
+        self.rollback_calls.set(0);
+        self.fail_prepare_map_on.set(None);
+        self.fail_prepare_unmap_on.set(None);
+        self.fail_prepare_protect_on.set(None);
+        self.fail_map_on.set(None);
+        self.fail_unmap_on.set(None);
+        self.fail_protect_on.set(None);
+        self.fail_rollback_on.set(None);
+    }
+}
+
+#[derive(Clone, Default)]
+struct FaultBackend(FaultControl);
+
+impl MappingBackend for FaultBackend {
+    type Addr = VirtAddr;
+    type Flags = MockFlags;
+    type PageTable = MockPageTable;
+    type MappingPlan = MappingOperation<VirtAddr, MockFlags>;
+    type CommitState = MockCommitState;
+
+    fn prepare(
+        &self,
+        operation: Self::MappingPlan,
+        _pt: &mut MockPageTable,
+    ) -> MappingResult<Self::MappingPlan> {
+        let should_fail = match operation {
+            MappingOperation::Map { .. } => {
+                FaultControl::should_fail(&self.0.prepare_map_calls, &self.0.fail_prepare_map_on)
+            }
+            MappingOperation::Unmap { .. } => FaultControl::should_fail(
+                &self.0.prepare_unmap_calls,
+                &self.0.fail_prepare_unmap_on,
+            ),
+            MappingOperation::Protect { .. } => FaultControl::should_fail(
+                &self.0.prepare_protect_calls,
+                &self.0.fail_prepare_protect_on,
+            ),
+        };
+        if should_fail {
+            Err(MappingError::NoMemory)
+        } else {
+            Ok(operation)
+        }
+    }
+
+    fn abort(&self, _plan: Self::MappingPlan, _pt: &mut MockPageTable) {}
+
+    fn commit(
+        &self,
+        operation: Self::MappingPlan,
+        pt: &mut MockPageTable,
+    ) -> MappingResult<Self::CommitState> {
+        let should_fail = match operation {
+            MappingOperation::Map { .. } => {
+                FaultControl::should_fail(&self.0.map_calls, &self.0.fail_map_on)
+            }
+            MappingOperation::Unmap { .. } => {
+                FaultControl::should_fail(&self.0.unmap_calls, &self.0.fail_unmap_on)
+            }
+            MappingOperation::Protect { .. } => {
+                FaultControl::should_fail(&self.0.protect_calls, &self.0.fail_protect_on)
+            }
+        };
+        if should_fail {
+            Err(MappingError::BadState)
+        } else {
+            commit_mock_operation(operation, pt)
+        }
+    }
+
+    fn rollback(&self, state: Self::CommitState, pt: &mut MockPageTable) -> MappingResult {
+        if FaultControl::should_fail(&self.0.rollback_calls, &self.0.fail_rollback_on) {
+            return Err(MappingError::BadState);
+        }
+        state.restore(pt);
+        Ok(())
+    }
+
+    fn finalize(&self, _state: Self::CommitState, _pt: &mut MockPageTable) {}
+
+    fn split(&mut self, _align_diff: usize) -> Option<Self> {
+        Some(self.clone())
+    }
+}
+
+type FaultMemorySet = MemorySet<FaultBackend>;
+
+struct CloneCounterBackend {
+    clone_count: Rc<Cell<usize>>,
+}
+
+impl Clone for CloneCounterBackend {
+    fn clone(&self) -> Self {
+        self.clone_count.set(self.clone_count.get() + 1);
+        Self {
+            clone_count: self.clone_count.clone(),
+        }
+    }
+}
+
+impl MappingBackend for CloneCounterBackend {
+    type Addr = VirtAddr;
+    type Flags = MockFlags;
+    type PageTable = MockPageTable;
+    type MappingPlan = MappingOperation<VirtAddr, MockFlags>;
+    type CommitState = MockCommitState;
+
+    fn prepare(
+        &self,
+        operation: Self::MappingPlan,
+        _pt: &mut Self::PageTable,
+    ) -> MappingResult<Self::MappingPlan> {
+        Ok(operation)
+    }
+
+    fn abort(&self, _plan: Self::MappingPlan, _pt: &mut Self::PageTable) {}
+
+    fn commit(
+        &self,
+        operation: Self::MappingPlan,
+        pt: &mut Self::PageTable,
+    ) -> MappingResult<Self::CommitState> {
+        commit_mock_operation(operation, pt)
+    }
+
+    fn rollback(&self, state: Self::CommitState, pt: &mut Self::PageTable) -> MappingResult {
+        state.restore(pt);
+        Ok(())
+    }
+
+    fn finalize(&self, _state: Self::CommitState, _pt: &mut Self::PageTable) {}
+
+    fn split(&mut self, _align_diff: usize) -> Option<Self> {
+        Some(self.clone())
+    }
+}
+
+#[derive(Clone)]
+struct UnsplittableBackend;
+
+impl MappingBackend for UnsplittableBackend {
+    type Addr = VirtAddr;
+    type Flags = MockFlags;
+    type PageTable = MockPageTable;
+    type MappingPlan = MappingOperation<VirtAddr, MockFlags>;
+    type CommitState = MockCommitState;
+
+    fn prepare(
+        &self,
+        operation: Self::MappingPlan,
+        _pt: &mut Self::PageTable,
+    ) -> MappingResult<Self::MappingPlan> {
+        Ok(operation)
+    }
+
+    fn abort(&self, _plan: Self::MappingPlan, _pt: &mut Self::PageTable) {}
+
+    fn commit(
+        &self,
+        operation: Self::MappingPlan,
+        pt: &mut Self::PageTable,
+    ) -> MappingResult<Self::CommitState> {
+        commit_mock_operation(operation, pt)
+    }
+
+    fn rollback(&self, state: Self::CommitState, pt: &mut Self::PageTable) -> MappingResult {
+        state.restore(pt);
+        Ok(())
+    }
+
+    fn finalize(&self, _state: Self::CommitState, _pt: &mut Self::PageTable) {}
+
+    fn split(&mut self, _align_diff: usize) -> Option<Self> {
+        None
+    }
+}
+
+#[test]
+fn unsplittable_backend_reports_failure_without_panicking() {
+    let mut area = MemoryArea::new(VirtAddr::from(0x1000), 0x2000, 1, UnsplittableBackend);
+
+    assert!(area.split(VirtAddr::from(0x2000)).is_none());
+    assert_eq!(area.va_range(), va_range!(0x1000..0x3000));
+}
+
+#[test]
+fn failed_metadata_split_preserves_the_original_area() {
+    let mut set = MemorySet::new();
+    let mut page_table = [0; MAX_ADDR];
+    set.map(
+        MemoryArea::new(VirtAddr::from(0x1000), 0x3000, 1, UnsplittableBackend),
+        &mut page_table,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(
+        set.unmap_metadata(VirtAddr::from(0x2000), 0x1000),
+        Err(MappingError::BadState)
+    );
+    let areas = set.iter().map(|area| area.va_range()).collect::<Vec<_>>();
+    assert_eq!(areas, [va_range!(0x1000..0x4000)]);
+}
+
+fn fault_set_snapshot(set: &FaultMemorySet) -> Vec<(usize, usize, MockFlags)> {
+    set.iter()
+        .map(|area| (area.start().as_usize(), area.size(), area.flags()))
+        .collect()
+}
+
+fn mapped_fault_set() -> (FaultMemorySet, MockPageTable, FaultControl) {
+    let control = FaultControl::default();
+    let backend = FaultBackend(control.clone());
+    let mut set = FaultMemorySet::new();
+    let mut pt = [0; MAX_ADDR];
+    assert_ok!(set.map(
+        MemoryArea::new(0x1000.into(), 0x1000, 1, backend.clone()),
+        &mut pt,
+        false,
+    ));
+    assert_ok!(set.map(
+        MemoryArea::new(0x3000.into(), 0x1000, 1, backend),
+        &mut pt,
+        false,
+    ));
+    control.reset();
+    (set, pt, control)
+}
+
+fn mapped_fault_set_three() -> (FaultMemorySet, MockPageTable, FaultControl) {
+    let control = FaultControl::default();
+    let backend = FaultBackend(control.clone());
+    let mut set = FaultMemorySet::new();
+    let mut pt = [0; MAX_ADDR];
+    for start in [0x1000, 0x3000, 0x5000] {
+        assert_ok!(set.map(
+            MemoryArea::new(start.into(), 0x1000, 1, backend.clone()),
+            &mut pt,
+            false,
+        ));
+    }
+    control.reset();
+    (set, pt, control)
+}
+
+#[test]
+fn prepare_failure_at_each_unmap_backend_preserves_the_transaction() {
+    for fail_on in 1..=3 {
+        let (mut set, mut pt, control) = mapped_fault_set_three();
+        let areas_before = fault_set_snapshot(&set);
+        let pt_before = pt;
+        control.fail_prepare_unmap_on.set(Some(fail_on));
+
+        assert_err!(set.unmap(0x1000.into(), 0x5000, &mut pt), NoMemory);
+        assert_eq!(fault_set_snapshot(&set), areas_before);
+        assert_eq!(pt, pt_before);
+    }
+}
+
+#[test]
+fn commit_failure_at_each_unmap_backend_rolls_back_the_transaction() {
+    for fail_on in 1..=3 {
+        let (mut set, mut pt, control) = mapped_fault_set_three();
+        let areas_before = fault_set_snapshot(&set);
+        let pt_before = pt;
+        control.fail_unmap_on.set(Some(fail_on));
+
+        assert_err!(set.unmap(0x1000.into(), 0x5000, &mut pt), BadState);
+        assert_eq!(fault_set_snapshot(&set), areas_before);
+        assert_eq!(pt, pt_before);
+    }
+}
+
+#[test]
+fn prepare_failure_at_each_protect_backend_preserves_the_transaction() {
+    for fail_on in 1..=3 {
+        let (mut set, mut pt, control) = mapped_fault_set_three();
+        let areas_before = fault_set_snapshot(&set);
+        let pt_before = pt;
+        control.fail_prepare_protect_on.set(Some(fail_on));
+
+        assert_err!(
+            set.protect(0x1000.into(), 0x5000, |_| Some(2), &mut pt),
+            NoMemory
+        );
+        assert_eq!(fault_set_snapshot(&set), areas_before);
+        assert_eq!(pt, pt_before);
+    }
+}
+
+#[test]
+fn commit_failure_at_each_protect_backend_rolls_back_the_transaction() {
+    for fail_on in 1..=3 {
+        let (mut set, mut pt, control) = mapped_fault_set_three();
+        let areas_before = fault_set_snapshot(&set);
+        let pt_before = pt;
+        control.fail_protect_on.set(Some(fail_on));
+
+        assert_err!(
+            set.protect(0x1000.into(), 0x5000, |_| Some(2), &mut pt),
+            BadState
+        );
+        assert_eq!(fault_set_snapshot(&set), areas_before);
+        assert_eq!(pt, pt_before);
+    }
+}
+
+#[test]
+fn one_rollback_failure_does_not_skip_remaining_rollback_attempts() {
+    let (mut set, mut pt, control) = mapped_fault_set_three();
+    control.fail_protect_on.set(Some(3));
+    control.fail_rollback_on.set(Some(1));
+
+    assert_err!(
+        set.protect(0x1000.into(), 0x5000, |_| Some(2), &mut pt),
+        BadState
+    );
+    assert_eq!(control.rollback_calls.get(), 2);
+}
+
+#[test]
+fn failed_unmap_rolls_back_all_vmas_and_page_table_entries() {
+    let (mut set, mut pt, control) = mapped_fault_set();
+    let areas_before = fault_set_snapshot(&set);
+    let pt_before = pt;
+    control.fail_unmap_on.set(Some(2));
+
+    assert_err!(set.unmap(0x1000.into(), 0x3000, &mut pt), BadState);
+    assert_eq!(fault_set_snapshot(&set), areas_before);
+    assert_eq!(pt, pt_before);
+}
+
+#[test]
+fn failed_protect_rolls_back_all_vmas_and_page_table_entries() {
+    let (mut set, mut pt, control) = mapped_fault_set();
+    let areas_before = fault_set_snapshot(&set);
+    let pt_before = pt;
+    control.fail_protect_on.set(Some(2));
+
+    assert_err!(
+        set.protect(0x1000.into(), 0x3000, |_| Some(2), &mut pt),
+        BadState
+    );
+    assert_eq!(fault_set_snapshot(&set), areas_before);
+    assert_eq!(pt, pt_before);
+}
+
+#[test]
+fn failed_replacement_map_restores_overlapped_mapping() {
+    let (mut set, mut pt, control) = mapped_fault_set();
+    let areas_before = fault_set_snapshot(&set);
+    let pt_before = pt;
+    control.fail_map_on.set(Some(1));
+
+    assert_err!(
+        set.map(
+            MemoryArea::new(0x1000.into(), 0x3000, 2, FaultBackend(control.clone())),
+            &mut pt,
+            true,
+        ),
+        BadState
+    );
+    assert_eq!(fault_set_snapshot(&set), areas_before);
+    assert_eq!(pt, pt_before);
+}
+
+#[test]
+fn failed_explicit_replacement_restores_the_full_replacement_range() {
+    let (mut set, mut pt, control) = mapped_fault_set();
+    let areas_before = fault_set_snapshot(&set);
+    let pt_before = pt;
+    control.fail_map_on.set(Some(1));
+
+    assert_err!(
+        set.replace(
+            va_range!(0x1000..0x4000),
+            MemoryArea::new(0x1000.into(), 0x1000, 2, FaultBackend(control.clone())),
+            &mut pt,
+        ),
+        BadState
+    );
+    assert_eq!(fault_set_snapshot(&set), areas_before);
+    assert_eq!(pt, pt_before);
+}
+
+#[test]
+fn explicit_replacement_removes_the_tail_outside_the_new_area() {
+    let (mut set, mut pt, _) = mapped_fault_set();
+
+    assert_ok!(set.replace(
+        va_range!(0x1000..0x4000),
+        MemoryArea::new(0x1000.into(), 0x1000, 2, FaultBackend::default()),
+        &mut pt,
+    ));
+    assert_eq!(fault_set_snapshot(&set), vec![(0x1000, 0x1000, 2)]);
+    assert!(pt[0x1000..0x2000].iter().all(|&entry| entry == 2));
+    assert!(pt[0x2000..0x4000].iter().all(|&entry| entry == 0));
+}
+
+#[test]
+fn replacement_preflight_accepts_mappings_removed_by_the_same_transaction() {
+    let (mut set, mut pt, _) = mapped_fault_set();
+
+    assert_ok!(set.map(
+        MemoryArea::new(0x1000.into(), 0x3000, 2, FaultBackend::default()),
+        &mut pt,
+        true,
+    ));
+    assert_eq!(fault_set_snapshot(&set), vec![(0x1000, 0x3000, 2)]);
+    assert!(pt[0x1000..0x4000].iter().all(|&entry| entry == 2));
+}
+
+#[test]
+fn protect_does_not_clone_unrelated_vma_backends() {
+    let counters = [
+        Rc::new(Cell::new(0)),
+        Rc::new(Cell::new(0)),
+        Rc::new(Cell::new(0)),
+    ];
+    let mut set = MemorySet::<CloneCounterBackend>::new();
+    let mut pt = [0; MAX_ADDR];
+    for (start, clone_count) in [0x1000, 0x3000, 0x5000].into_iter().zip(&counters) {
+        assert_ok!(set.map(
+            MemoryArea::new(
+                start.into(),
+                0x1000,
+                1,
+                CloneCounterBackend {
+                    clone_count: clone_count.clone(),
+                },
+            ),
+            &mut pt,
+            false,
+        ));
+    }
+    for counter in &counters {
+        counter.set(0);
+    }
+
+    assert_ok!(set.protect(0x3000.into(), 0x1000, |_| Some(2), &mut pt));
+
+    assert_eq!(counters[0].get(), 0);
+    assert!(counters[1].get() > 0);
+    assert_eq!(counters[2].get(), 0);
 }
 
 fn dump_memory_set(set: &MockMemorySet) {
@@ -158,6 +722,22 @@ fn test_map_unmap() {
     for &e in &pt[0..MAX_ADDR] {
         assert_eq!(e, 0);
     }
+}
+
+#[test]
+fn map_metadata_does_not_touch_preinstalled_page_table_entries() {
+    let mut set = MockMemorySet::new();
+    let mut pt = [0; MAX_ADDR];
+    pt[0x1000] = 7;
+
+    assert_ok!(set.map_metadata(MemoryArea::new(0x1000.into(), 0x1000, 7, MockBackend,)));
+
+    assert_eq!(pt[0x1000], 7);
+    assert_eq!(set.find(0x1000.into()).map(MemoryArea::flags), Some(7));
+    assert_eq!(
+        set.map_metadata(MemoryArea::new(0x1000.into(), 0x1000, 7, MockBackend,)),
+        Err(MappingError::AlreadyExists),
+    );
 }
 
 #[test]

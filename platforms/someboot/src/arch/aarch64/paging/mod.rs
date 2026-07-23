@@ -1,8 +1,8 @@
 use core::arch::asm;
 
 use aarch64_cpu::asm::barrier::{self, dsb, isb};
+use ax_page_table::boot::{MapConfig, MemAttributes, PteConfig, VirtAddr};
 use num_align::NumAlign;
-use page_table_generic::{MapConfig, MemAttributes, PteConfig};
 
 #[cfg(not(feature = "hv"))]
 use crate::arch::elx::set_user_table;
@@ -114,7 +114,7 @@ fn setup_page_table() -> anyhow::Result<()> {
     print_mapping("KImage", v_start as _, k_start, size);
 
     table.map(&MapConfig {
-        vaddr: v_start.into(),
+        vaddr: VirtAddr::from_usize(v_start as usize),
         paddr: k_start.into(),
         size,
         pte,
@@ -132,7 +132,7 @@ fn setup_page_table() -> anyhow::Result<()> {
 
     table
         .map(&MapConfig {
-            vaddr: cpu_area_phys_to_virt(cpu_area_region.start).into(),
+            vaddr: VirtAddr::from_usize(cpu_area_phys_to_virt(cpu_area_region.start) as usize),
             paddr: cpu_area_region.start.into(),
             size: cpu_area_region.len(),
             pte: PteConfig {

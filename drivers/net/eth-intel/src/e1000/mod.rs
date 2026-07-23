@@ -44,7 +44,7 @@ impl E1000 {
         mmio_api::init(mmio_op);
         let mmio = mmio_api::ioremap(bar_addr.into(), bar_size)?;
         let regs = Regs::new(mmio.as_nonnull_ptr());
-        let dma = DeviceDma::new_legacy(dma_mask, dma_op);
+        let dma = DeviceDma::new_identity(dma_mask, dma_op);
 
         regs.reset();
         regs.disable_all_irq();

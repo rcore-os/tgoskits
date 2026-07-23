@@ -26,7 +26,7 @@
 - `src/percpu.rs`：每 CPU 局部状态入口，通过 `cpu-local` 的类型化 header 读取当前线程，并复用 `ax_plat::percpu` 提供的 CPU 本地能力。
 - `src/time.rs`：时间相关能力的再导出层，把时钟源、计时器和时间转换统一暴露给上层。
 - `src/irq.rs`：IRQ 处理桥接层，负责 trap handler 注册、IRQ hook、与 `ax_plat::irq` 的派发对接。
-- `src/paging.rs`：页表处理桥接层，向 `ax-page-table-multiarch` 提供 `PagingHandlerImpl`，并在不同 ISA 下导出统一的页表类型。
+- `src/paging.rs`：页表处理桥接层，保留原有 `PagingHandlerImpl` 名称并实现 `ax-page-table::PageFrameProvider`，在不同 ISA 下导出统一的页表类型。
 - `src/tls.rs`：内核态 TLS 布局与 `TlsArea` 管理，仅在 `tls` feature 启用时进入构建。
 - `build.rs` + `linker.lds.S`：生成选中平台 crate 的导入代码、SMP build info，并配合链接路径完成内核段布局。
 

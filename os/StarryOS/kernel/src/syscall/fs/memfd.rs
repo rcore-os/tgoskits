@@ -11,9 +11,8 @@ pub(crate) use crate::file::memfd::{
     collect_metas_touching_mprotect_range as memfd_collect_metas_touching_mprotect_range,
     on_after_map as memfd_on_after_map,
     on_aspace_replace_metadata as memfd_on_aspace_replace_metadata,
-    on_aspace_unmap_range as memfd_on_aspace_unmap_range,
     release_all_shared_writable_counts_for_aspace as memfd_release_all_shared_writable_counts_for_aspace,
-    resync_shared_writable_counts_after_mprotect as memfd_resync_shared_writable_counts_after_mprotect,
+    resync_shared_writable_counts as memfd_resync_shared_writable_counts,
 };
 use crate::{
     file::{

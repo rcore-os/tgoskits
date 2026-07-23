@@ -36,17 +36,32 @@ pub(crate) fn arceos_host() -> &'static ArceOsHost {
 impl HostMemory for ArceOsHost {
     fn alloc_frame(&self) -> Option<HostPhysAddr> {
         modules::ax_alloc::global_allocator()
-            .alloc_pages(1, PAGE_SIZE_4K, modules::ax_alloc::UsageKind::PageTable)
+            .allocate_pages_raw(
+                modules::ax_alloc::PageRequest {
+                    count: 1,
+                    align: PAGE_SIZE_4K,
+                    zone: modules::ax_alloc::MemoryZone::Normal,
+                },
+                modules::ax_alloc::UsageKind::PageTable,
+            )
             .map(|vaddr| self.virt_to_phys(vaddr.into()))
             .ok()
     }
 
     fn dealloc_frame(&self, paddr: HostPhysAddr) {
-        modules::ax_alloc::global_allocator().dealloc_pages(
-            self.phys_to_virt(paddr).as_usize(),
-            1,
-            modules::ax_alloc::UsageKind::PageTable,
-        );
+        // SAFETY: HostMemory returns only frames obtained from alloc_frame on
+        // this adapter, which uses the same single-page request and usage.
+        unsafe {
+            modules::ax_alloc::global_allocator().deallocate_pages_raw(
+                self.phys_to_virt(paddr).as_usize(),
+                modules::ax_alloc::PageRequest {
+                    count: 1,
+                    align: PAGE_SIZE_4K,
+                    zone: modules::ax_alloc::MemoryZone::Normal,
+                },
+                modules::ax_alloc::UsageKind::PageTable,
+            );
+        }
     }
 
     fn alloc_contiguous_frames(
@@ -55,9 +70,12 @@ impl HostMemory for ArceOsHost {
         frame_align: usize,
     ) -> Option<HostPhysAddr> {
         modules::ax_alloc::global_allocator()
-            .alloc_pages(
-                num_frames,
-                frame_align.max(PAGE_SIZE_4K),
+            .allocate_pages_raw(
+                modules::ax_alloc::PageRequest {
+                    count: num_frames,
+                    align: frame_align.max(PAGE_SIZE_4K),
+                    zone: modules::ax_alloc::MemoryZone::Normal,
+                },
                 modules::ax_alloc::UsageKind::Dma,
             )
             .map(|vaddr| self.virt_to_phys(vaddr.into()))
@@ -65,11 +83,19 @@ impl HostMemory for ArceOsHost {
     }
 
     fn dealloc_contiguous_frames(&self, paddr: HostPhysAddr, num_frames: usize) {
-        modules::ax_alloc::global_allocator().dealloc_pages(
-            self.phys_to_virt(paddr).as_usize(),
-            num_frames,
-            modules::ax_alloc::UsageKind::Dma,
-        );
+        // SAFETY: HostMemory returns the exclusive range obtained from the
+        // matching allocation method with its original frame count.
+        unsafe {
+            modules::ax_alloc::global_allocator().deallocate_pages_raw(
+                self.phys_to_virt(paddr).as_usize(),
+                modules::ax_alloc::PageRequest {
+                    count: num_frames,
+                    align: PAGE_SIZE_4K,
+                    zone: modules::ax_alloc::MemoryZone::Normal,
+                },
+                modules::ax_alloc::UsageKind::Dma,
+            );
+        }
     }
 
     fn phys_to_virt(&self, paddr: HostPhysAddr) -> HostVirtAddr {

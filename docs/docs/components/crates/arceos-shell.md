@@ -42,7 +42,7 @@ graph LR
 - `ax-arm-pl031`
 - `axaddrspace`
 - `ax-alloc`
-- `ax-allocator`
+- `buddy-slab-allocator`
 - `axbacktrace`
 - `ax-cpu`
 - `ax-display`

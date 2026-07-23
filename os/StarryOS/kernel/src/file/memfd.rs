@@ -301,26 +301,6 @@ pub(crate) fn on_after_map(aspace: &AddrSpace, start: VirtAddr) {
     apply_shared_writable_count_delta(memfd.as_ref(), 1);
 }
 
-pub(crate) fn on_aspace_unmap_range(aspace: &AddrSpace, ustart: VirtAddr, ulen: usize) {
-    let uend = ustart + ulen;
-    for area in aspace.areas() {
-        let a0 = area.start();
-        let a1 = area.end();
-        if a1 <= ustart || a0 >= uend {
-            continue;
-        }
-        let Some(memfd) = memfd_from_shared_writable_area(area) else {
-            continue;
-        };
-        if ustart <= a0 && uend >= a1 {
-            apply_shared_writable_count_delta(memfd.as_ref(), -1);
-        } else if ustart > a0 && uend < a1 {
-            // Strict interior unmap splits one writable shared VMA into two.
-            apply_shared_writable_count_delta(memfd.as_ref(), 1);
-        }
-    }
-}
-
 pub(crate) fn collect_metas_touching_mprotect_range(
     aspace: &AddrSpace,
     ustart: VirtAddr,
@@ -342,10 +322,7 @@ pub(crate) fn collect_metas_touching_mprotect_range(
     memfds
 }
 
-pub(crate) fn resync_shared_writable_counts_after_mprotect(
-    aspace: &AddrSpace,
-    touched: &[Arc<Memfd>],
-) {
+pub(crate) fn resync_shared_writable_counts(aspace: &AddrSpace, touched: &[Arc<Memfd>]) {
     for memfd in touched {
         let mut count: u32 = 0;
         for area in aspace.areas() {

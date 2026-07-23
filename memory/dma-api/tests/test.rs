@@ -2,10 +2,12 @@
 
 mod test_helpers;
 
+use std::sync::Arc;
+
 use dma_api::*;
 use test_helpers::{DmaOperation, TrackingDmaOp};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct Descriptor {
     addr: u64,
@@ -16,7 +18,81 @@ struct Descriptor {
 fn new_tracking_device() -> (DeviceDma, &'static TrackingDmaOp) {
     let tracker = Box::new(TrackingDmaOp::new());
     let tracker = Box::leak(tracker);
-    (DeviceDma::new_legacy(u64::MAX, tracker), tracker)
+    (DeviceDma::new_identity(u64::MAX, tracker), tracker)
+}
+
+#[test]
+fn dma_raii_owners_release_backend_tokens_once() {
+    let (dev, tracker) = new_tracking_device();
+    let coherent = dev.coherent_array_zero::<u8>(64).unwrap();
+    let contiguous = dev
+        .contiguous_array_zero::<u8>(64, DmaDirection::ToDevice)
+        .unwrap();
+
+    tracker.clear();
+    drop(coherent);
+    drop(contiguous);
+
+    let operations = tracker.operations();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|op| matches!(op, DmaOperation::DeallocCoherent { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|op| matches!(op, DmaOperation::DeallocContiguous { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn shared_dma_owner_releases_backing_after_the_last_retainer() {
+    let (dev, tracker) = new_tracking_device();
+    let owner = Arc::new(dev.coherent_array_zero::<u8>(64).unwrap());
+    let fd_retainer = owner.clone();
+    let mmap_retainer = owner.clone();
+    let import_retainer = owner.clone();
+    tracker.clear();
+
+    drop(owner);
+    drop(fd_retainer);
+    drop(mmap_retainer);
+    assert!(
+        tracker
+            .operations()
+            .iter()
+            .all(|operation| !matches!(operation, DmaOperation::DeallocCoherent { .. }))
+    );
+
+    drop(import_retainer);
+    assert_eq!(
+        tracker
+            .operations()
+            .iter()
+            .filter(|operation| matches!(operation, DmaOperation::DeallocCoherent { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn owned_dma_allocations_reject_zero_length_before_calling_backend() {
+    let (dev, tracker) = new_tracking_device();
+
+    assert!(matches!(
+        dev.coherent_array_zero::<u8>(0),
+        Err(DmaError::ZeroSizedBuffer)
+    ));
+    assert!(matches!(
+        dev.contiguous_array_zero::<u8>(0, DmaDirection::ToDevice),
+        Err(DmaError::ZeroSizedBuffer)
+    ));
+    assert!(tracker.operations().is_empty());
 }
 
 #[test]
@@ -91,7 +167,7 @@ fn contiguous_box_supports_cpu_sync() {
 fn streaming_map_has_explicit_device_and_cpu_sync() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0x4000));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_legacy(u64::MAX, tracker);
+    let dev = DeviceDma::new_identity(u64::MAX, tracker);
     let mut backing = [0u8; 128];
     let map = dev
         .map_streaming_slice(&mut backing, 64, DmaDirection::Bidirectional)
@@ -116,7 +192,7 @@ fn streaming_map_has_explicit_device_and_cpu_sync() {
 fn streaming_map_for_device_syncs_after_mapping() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0x4000));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_legacy(u64::MAX, tracker);
+    let dev = DeviceDma::new_identity(u64::MAX, tracker);
     let mut backing = [0u8; 128];
 
     tracker.clear();
@@ -141,7 +217,7 @@ fn streaming_map_for_device_syncs_after_mapping() {
 fn streaming_write_for_device_syncs_after_cpu_write() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0x4000));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_legacy(u64::MAX, tracker);
+    let dev = DeviceDma::new_identity(u64::MAX, tracker);
     let mut backing = [0u8; 16];
     let mut map = dev
         .map_streaming_slice(&mut backing, 4, DmaDirection::ToDevice)
@@ -166,7 +242,7 @@ fn streaming_write_for_device_syncs_after_cpu_write() {
 fn streaming_read_from_device_syncs_before_cpu_read_and_copies_bounce_buffer() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0x80));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_legacy(0xff, tracker);
+    let dev = DeviceDma::new_identity(0xff, tracker);
     let mut backing = [1u8; 16];
     let map = dev
         .map_streaming_slice(&mut backing, 16, DmaDirection::FromDevice)
@@ -200,7 +276,7 @@ fn streaming_read_from_device_syncs_before_cpu_read_and_copies_bounce_buffer() {
 fn streaming_bounce_buffer_copies_back_on_cpu_sync() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0x80));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_legacy(0xff, tracker);
+    let dev = DeviceDma::new_identity(0xff, tracker);
     let mut backing = [1u8; 16];
     let map = dev
         .map_streaming_slice(&mut backing, 16, DmaDirection::FromDevice)
@@ -302,7 +378,7 @@ fn allocation_rejects_backend_address_outside_mask() {
 fn explicit_dma_domain_survives_constraint_updates() {
     let tracker = Box::new(TrackingDmaOp::new());
     let tracker = Box::leak(tracker);
-    let domain = DmaDomainId::from_raw(0x42);
+    let domain = DmaDomainId::from_raw(0x42).unwrap();
     let dev = DeviceDma::new(domain, u64::MAX, tracker);
 
     assert_eq!(dev.domain_id(), domain);
@@ -314,10 +390,29 @@ fn explicit_dma_domain_survives_constraint_updates() {
 }
 
 #[test]
+fn raw_domain_rejects_reserved_identifiers() {
+    assert_eq!(DmaDomainId::from_raw(0), None);
+    assert_eq!(DmaDomainId::from_raw(1), None);
+}
+
+#[test]
+fn device_rejects_import_from_another_domain() {
+    let expected = DmaDomainId::from_raw(0x42).unwrap();
+    let actual = DmaDomainId::from_raw(0x43).unwrap();
+    let tracker = Box::leak(Box::new(TrackingDmaOp::new()));
+    let dev = DeviceDma::new(expected, u64::MAX, tracker);
+
+    assert_eq!(
+        dev.validate_domain(actual),
+        Err(DmaError::DomainMismatch { expected, actual })
+    );
+}
+
+#[test]
 fn low_32bit_allocations_are_validated() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0xffff_f000));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_legacy(u32::MAX as u64, tracker);
+    let dev = DeviceDma::new_identity(u32::MAX as u64, tracker);
     let buff = dev
         .contiguous_array_zero_with_align::<u8>(0x1000, 0x1000, DmaDirection::ToDevice)
         .unwrap();
@@ -366,4 +461,19 @@ fn pool_reuses_contiguous_buffers_without_implicit_zeroing() {
     assert_eq!(buff.as_slice_cpu()[0], 0x7e);
     assert_eq!(tracker.count_sync_alloc_for_device(), 0);
     assert_eq!(tracker.count_sync_alloc_for_cpu(), 0);
+}
+
+#[test]
+fn fixed_contiguous_buffer_pool_fails_immediately_when_exhausted() {
+    let (dev, tracker) = new_tracking_device();
+    let pool = dev.contiguous_buffer_pool(
+        core::alloc::Layout::from_size_align(64, 64).unwrap(),
+        DmaDirection::ToDevice,
+        1,
+    );
+    tracker.clear();
+
+    let _only_buffer = pool.alloc().unwrap();
+    assert!(matches!(pool.alloc(), Err(DmaError::NoMemory)));
+    assert!(tracker.operations().is_empty());
 }

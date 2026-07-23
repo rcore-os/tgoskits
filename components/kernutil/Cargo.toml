@@ -10,5 +10,5 @@ repository.workspace = true
 
 [dependencies]
 heapless = "0.9"
-ranges-ext = {workspace = true}
 num-align = "0.1"
+thiserror = { workspace = true, default-features = false }

@@ -548,7 +548,7 @@ mod tests {
     }
 
     fn test_dma() -> dma_api::DeviceDma {
-        dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA)
+        dma_api::DeviceDma::new_identity(u32::MAX as u64, &TEST_DMA)
     }
 
     struct TestDma;

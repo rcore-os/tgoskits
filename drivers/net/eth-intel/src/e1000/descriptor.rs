@@ -1,5 +1,5 @@
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Default)]
 pub struct TxDesc {
     pub addr: u64,
     pub length: u16,
@@ -35,7 +35,7 @@ impl TxDesc {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Default)]
 pub struct RxDesc {
     pub addr: u64,
     pub length: u16,

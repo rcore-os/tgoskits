@@ -27,7 +27,7 @@ ax-cpu.workspace = true
 cpu-local.workspace = true
 ax-driver.workspace = true
 ax-errno.workspace = true
-axklib = { workspace = true, features = ["buddy-slab"] }
+axklib.workspace = true
 ax-plat.workspace = true
 heapless = "0.9"
 log.workspace = true

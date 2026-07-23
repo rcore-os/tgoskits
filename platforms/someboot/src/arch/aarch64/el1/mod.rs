@@ -3,7 +3,7 @@ use aarch64_cpu::{
     registers::*,
 };
 use aarch64_cpu_ext::asm::tlb::*;
-use page_table_generic::VirtAddr;
+use ax_page_table::boot::VirtAddr;
 
 use crate::{
     arch::entry::{el_entry, eret_with_timer_mode_arg},
@@ -125,7 +125,7 @@ pub fn switch_to_elx_secondary(cpu_meta_paddr: usize) -> ! {
 pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     match vaddr {
         Some(addr) => {
-            tlbi(VAAE1IS::new(addr.raw()));
+            tlbi(VAAE1IS::new(addr.as_usize()));
         }
         None => {
             tlbi(VMALLE1);
@@ -137,19 +137,7 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 
 #[inline(always)]
 pub fn setup_table_regs() {
-    // Device-nGnRE
-    let attr0 = MAIR_EL1::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck;
-    // Normal
-    let attr1 = MAIR_EL1::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc
-        + MAIR_EL1::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc;
-    // No cache
-    let attr2 =
-        MAIR_EL1::Attr2_Normal_Inner::NonCacheable + MAIR_EL1::Attr2_Normal_Outer::NonCacheable;
-    // WriteThrough
-    let attr3 = MAIR_EL1::Attr3_Normal_Inner::WriteThrough_Transient_WriteAlloc
-        + MAIR_EL1::Attr3_Normal_Outer::WriteThrough_Transient_WriteAlloc;
-
-    MAIR_EL1.write(attr0 + attr1 + attr2 + attr3);
+    MAIR_EL1.set(ax_page_table::entry::aarch64::MemAttrLayout::MAIR_VALUE);
 
     // Enable TTBR0 and TTBR1 walks, page size = 4K, vaddr size = 48 bits, paddr size = 40 bits.
     const VADDR_SIZE: u64 = 48;

@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
-use page_table_generic::PhysAddr;
+use ax_page_table::boot::PhysAddr;
 use x86::{
     bits64::{rflags, segmentation::Descriptor64},
     controlregs,
@@ -577,6 +577,6 @@ pub fn current_cr3() -> PhysAddr {
 
 pub fn set_cr3(addr: PhysAddr) {
     unsafe {
-        controlregs::cr3_write(addr.raw() as u64);
+        controlregs::cr3_write(addr.as_usize() as u64);
     }
 }

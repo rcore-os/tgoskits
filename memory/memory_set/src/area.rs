@@ -9,6 +9,7 @@ use crate::{MappingBackend, MappingError, MappingResult};
 ///
 /// The target physical memory frames are determined by [`MappingBackend`] and
 /// may not be contiguous.
+#[derive(Clone)]
 pub struct MemoryArea<B: MappingBackend> {
     va_range: AddrRange<B::Addr>,
     flags: B::Flags,
@@ -96,140 +97,19 @@ impl<B: MappingBackend> MemoryArea<B> {
         self.reported_flags = new_reported_flags;
     }
 
-    /// Maps the whole memory area in the page table.
-    pub(crate) fn map_area(&self, page_table: &mut B::PageTable) -> MappingResult {
-        self.backend
-            .map(self.start(), self.size(), self.flags, page_table)
-            .then_some(())
-            .ok_or(MappingError::BadState)
-    }
-
-    /// Unmaps the whole memory area in the page table.
-    pub(crate) fn unmap_area(&self, page_table: &mut B::PageTable) -> MappingResult {
-        self.backend
-            .unmap(self.start(), self.size(), page_table)
-            .then_some(())
-            .ok_or(MappingError::BadState)
-    }
-
-    /// Changes the flags in the page table.
-    pub(crate) fn protect_area(
-        &mut self,
-        new_flags: B::Flags,
-        page_table: &mut B::PageTable,
-    ) -> MappingResult {
-        self.backend
-            .protect(self.start(), self.size(), new_flags, page_table);
-        Ok(())
-    }
-
-    /// Shrinks the memory area at the left side.
-    ///
-    /// The memory area is shrunk to `new_size`, and the left-side part is
-    /// unmapped.
-    ///
-    /// The start address is increased by `old_size - new_size`.
-    ///
-    /// `new_size` must be greater than 0 and less than the current size.
-    pub(crate) fn shrink_left(
-        &mut self,
-        new_size: usize,
-        page_table: &mut B::PageTable,
-    ) -> MappingResult {
-        assert!(new_size > 0 && new_size < self.size());
-
-        let old_size = self.size();
-        let unmap_size = old_size - new_size;
-
-        if !self.backend.unmap(self.start(), unmap_size, page_table) {
-            return Err(MappingError::BadState);
-        }
-        // Use wrapping_add to avoid overflow check.
-        // Safety: `unmap_size` is less than the current size, so it will never
-        // overflow.
-        self.va_range.start = self.va_range.start.wrapping_add(unmap_size);
-        self.backend.shrink_left(unmap_size);
-        Ok(())
-    }
-
-    /// Shrinks the memory area at the left side without touching the page
-    /// table.
-    pub(crate) fn shrink_left_metadata(&mut self, new_size: usize) {
-        assert!(new_size > 0 && new_size < self.size());
-
-        let old_size = self.size();
-        let unmap_size = old_size - new_size;
-        self.va_range.start = self.va_range.start.wrapping_add(unmap_size);
-        self.backend.shrink_left(unmap_size);
-    }
-
-    /// Shrinks the memory area at the right side.
-    ///
-    /// The memory area is shrunk to `new_size`, and the right-side part is
-    /// unmapped.
-    ///
-    /// The end address is decreased by `old_size - new_size`.
-    ///
-    /// `new_size` must be greater than 0 and less than the current size.
-    pub(crate) fn shrink_right(
-        &mut self,
-        new_size: usize,
-        page_table: &mut B::PageTable,
-    ) -> MappingResult {
-        assert!(new_size > 0 && new_size < self.size());
-        let old_size = self.size();
-        let unmap_size = old_size - new_size;
-
-        // Use wrapping_add to avoid overflow check.
-        // Safety: `new_size` is less than the current size, so it will never overflow.
-        let unmap_start = self.start().wrapping_add(new_size);
-
-        if !self.backend.unmap(unmap_start, unmap_size, page_table) {
-            return Err(MappingError::BadState);
-        }
-
-        // Use wrapping_sub to avoid overflow check, same as above.
-        self.va_range.end = self.va_range.end.wrapping_sub(unmap_size);
-        self.backend.shrink_right(unmap_size);
-        Ok(())
-    }
-
-    /// Shrinks the memory area at the right side without touching the page
-    /// table.
-    pub(crate) fn shrink_right_metadata(&mut self, new_size: usize) {
-        assert!(new_size > 0 && new_size < self.size());
-        let old_size = self.size();
-        let unmap_size = old_size - new_size;
-
-        self.va_range.end = self.va_range.end.wrapping_sub(unmap_size);
-        self.backend.shrink_right(unmap_size);
-    }
-
-    /// Inverse of [`shrink_right`]: extends the end by `additional_size`
-    /// and maps the new region via the backend.
-    pub(crate) fn grow_right(
-        &mut self,
-        additional_size: usize,
-        page_table: &mut B::PageTable,
-    ) -> MappingResult {
+    /// Extends the metadata at the right side.
+    pub(crate) fn grow_right_metadata(&mut self, additional_size: usize) -> MappingResult {
         assert!(additional_size > 0);
         assert!(
             self.end().is_aligned_4k()
                 && additional_size.is_multiple_of(ax_memory_addr::PAGE_SIZE_4K),
             "grow_right: end and additional_size must be page-aligned"
         );
-        let map_start = self.end();
         let new_end = self
             .va_range
             .end
             .checked_add(additional_size)
             .ok_or(MappingError::InvalidParam)?;
-        if !self
-            .backend
-            .map(map_start, additional_size, self.flags, page_table)
-        {
-            return Err(MappingError::BadState);
-        }
         self.va_range.end = new_end;
         Ok(())
     }
@@ -245,10 +125,7 @@ impl<B: MappingBackend> MemoryArea<B> {
         if self.start() < pos && pos < self.end() {
             let align_diff = pos.sub_addr(self.start());
 
-            let right = self
-                .backend
-                .split(align_diff)
-                .expect("backend should be splittable");
+            let right = self.backend.split(align_diff)?;
 
             let new_area = Self::new_with_reported_flags(
                 pos,

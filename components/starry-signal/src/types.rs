@@ -14,6 +14,8 @@ pub const SI_MESGQ: i32 = -3;
 pub const SEGV_MAPERR: i32 = 1;
 /// `si_code` for SIGSEGV: invalid permissions for mapped object.
 pub const SEGV_ACCERR: i32 = 2;
+/// `si_code` for SIGBUS: address exists but the backing object cannot supply it.
+pub const BUS_ADRERR: i32 = 2;
 /// `si_code` for SIGFPE: integer divide by zero (x86 `#DE`). Linux value from
 /// include/uapi/asm-generic/siginfo.h; HotSpot's x86 SIGFPE handler keys on this
 /// to turn an `idiv`-by-zero into a Java `ArithmeticException`.

@@ -35,12 +35,11 @@ kernutil = { workspace = true }
 log = "0.4"
 num-align = "0.1"
 numeric-enum-macro = "0.2"
-page-table-generic = { workspace = true }
-ranges-ext = { workspace = true }
+ax-page-table = { workspace = true, features = ["boot"] }
 rgb = "0.8"
 some-serial.workspace = true
 somehal-macros = { workspace = true }
-spin = { workspace = true }
+spin = { workspace = true, features = ["mutex", "spin_mutex"] }
 tock-registers.workspace = true
 uguid = "2.2.1"
 derive_more.workspace = true

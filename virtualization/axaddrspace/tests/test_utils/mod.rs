@@ -56,6 +56,9 @@ pub static DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Flag to simulate memory allocation failures for testing error handling.
 pub static ALLOC_SHOULD_FAIL: AtomicBool = AtomicBool::new(false);
 
+/// Guest address whose unmap operation should fail, or `usize::MAX` when disabled.
+pub static UNMAP_FAIL_ADDRESS: AtomicUsize = AtomicUsize::new(usize::MAX);
+
 #[derive(Debug)]
 /// A mock paging handler for testing purposes.
 /// It simulates memory allocation and deallocation without actual hardware interaction.
@@ -93,6 +96,7 @@ impl MockHal {
     pub fn reset_state() {
         NEXT_PADDR.store(BASE_PADDR, Ordering::SeqCst);
         ALLOC_SHOULD_FAIL.store(false, Ordering::SeqCst);
+        UNMAP_FAIL_ADDRESS.store(usize::MAX, Ordering::SeqCst);
         ALLOC_COUNT.store(0, Ordering::SeqCst);
         DEALLOC_COUNT.store(0, Ordering::SeqCst);
         // Lock and clear the simulated memory.

@@ -3,7 +3,7 @@
 > 路径：`os/arceos/api/arceos_api`
 > 类型：库 crate
 > 分层：ArceOS 层 / ArceOS 公共 API/feature 聚合层
-> 版本：`0.3.0-preview.3`
+> 版本：`0.7.4`
 > 文档依据：`Cargo.toml`、`src/lib.rs`、`src/macros.rs`、`src/imp/mod.rs`、`src/imp/mem.rs`、`src/imp/task.rs`、`src/imp/fs.rs`、`src/imp/net.rs`、`src/imp/display.rs`
 
 `ax-api` 是 ArceOS 官方的公共 API 门面层。它把底层 `ax*` 模块能力按领域重新组织成稳定的 `ax_*` 接口，使上层用户库、应用接口层和部分系统软件可以在不直接耦合大量内部模块的前提下访问内核能力。
@@ -23,7 +23,7 @@
 - `src/lib.rs`：顶层 API 定义文件。用 `define_api!` / `define_api_type!` 分域导出 `sys`、`time`、`mem`、`stdio`、`task`、`fs`、`net`、`display` 等接口。
 - `src/macros.rs`：核心宏定义。负责把 API 声明转换为真正的 `pub fn`、`pub use` 或可选占位类型。
 - `src/imp/mod.rs`：实现聚合层，按 feature 组织 `mem`、`task`、`stdio`、`sys`、`time`、`fs`、`net`、`display` 等子模块。
-- `src/imp/mem.rs`：内存与 DMA API 的具体实现。
+- `src/imp/mem.rs`：全局堆分配 API 的具体实现。
 - `src/imp/task.rs`：睡眠、yield、退出、任务句柄、等待队列和亲和性相关实现。
 - `src/imp/fs.rs`：文件/目录句柄、路径操作和 `OpenOptions` 等文件系统门面实现。
 - `src/imp/net.rs`：TCP/UDP 句柄、DNS、接口轮询等网络 API 实现。
@@ -55,7 +55,6 @@
 - `AxError` / `AxResult`：统一错误类型与返回值约定。
 - `AxTimeValue`：时间 API 的核心类型。
 - `AxPollState`：`io` 域导出的 poll 状态类型。
-- `DMAInfo`：在 `dma` feature 下导出的 DMA 元信息。
 - `AxTaskHandle`、`AxWaitQueueHandle`、`AxCpuMask`、`AxRawMutex`：在 `multitask` feature 下导出的任务和同步相关句柄。
 - `AxFileHandle`、`AxDirHandle`、`AxOpenOptions`、`AxFileAttr` 等：在 `fs` feature 下导出的文件系统句柄与属性类型。
 - `AxTcpSocketHandle`、`AxUdpSocketHandle`：在 `net` feature 下导出的网络句柄。
@@ -68,9 +67,8 @@
 - `time` -> `ax-hal::time`
 - `stdio` -> `ax-hal::console` 与 `ax-log`
 - `mem::alloc` -> `ax-alloc`
-- `mem::dma` -> `ax-dma`
 - `task` -> `ax-task`、`ax-sync`、`ax-hal::time`
-- `fs` -> `ax-fs`
+- `fs` -> `ax-fs-ng`
 - `net` -> `ax-net`
 - `display` -> `ax-display`
 
@@ -86,7 +84,7 @@
 ### 使用场景
 - `ax_get_cpu_num()`、`ax_terminate()`：系统级基础控制。
 - `ax_monotonic_time()`、`ax_wall_time()`：时间查询。
-- `ax_alloc()`、`ax_dealloc()`、`ax_alloc_coherent()`：内存与 DMA 申请。
+- `ax_alloc()`、`ax_dealloc()`：全局堆内存申请与释放。
 - `ax_sleep_until()`、`ax_yield_now()`、`ax_exit()`：任务控制。
 - `ax_open_file()`、`ax_open_dir()`、路径和目录操作：文件系统接口。
 - `ax_tcp_connect()`、`ax_udp_bind()`、`ax_dns_query()`：网络接口。
@@ -112,9 +110,8 @@ graph LR
     ax-runtime["ax-runtime"] --> ax-api["ax-api"]
     ax-hal["ax-hal"] --> ax-api
     ax-alloc["ax-alloc"] --> ax-api
-    ax_dma["ax-dma"] --> ax-api
     ax-task["ax-task"] --> ax-api
-    ax-fs["ax-fs"] --> ax-api
+    ax-fs-ng["ax-fs-ng"] --> ax-api
     ax-net["ax-net"] --> ax-api
     ax-display["ax-display"] --> ax-api
 
@@ -124,8 +121,8 @@ graph LR
 ```
 
 ### 直接依赖
-- 核心基础：`ax-errno`、`ax-runtime`、`ax-hal`、`axio`、`ax-log`、`ax-runtime`、`ax-sync`。
-- 可选能力：`ax-alloc`、`ax-dma`、`ax-task`、`ax-fs`、`ax-net`、`ax-display`、`ax-driver`、`ax-ipi`、`ax-mm`。
+- 核心基础：`ax-errno`、`ax-runtime`、`ax-hal`、`ax-io`、`ax-log`、`ax-sync`、`axpoll`。
+- 可选能力：`ax-alloc`、`ax-task`、`ax-fs-ng`、`ax-net`、`ax-display`、`ax-ipi`、`ax-mm`。
 
 ### 主要消费者
 - `ax-std`：最重要的直接消费者，会把 `ax-api` 作为用户库的重要下层能力来源。
@@ -161,11 +158,11 @@ ax-api = { workspace = true, features = ["alloc", "multitask", "fs", "net"] }
 ### 单元测试
 - `define_api!` / `define_api_type!` 在不同 feature 组合下的符号生成行为。
 - `dummy-if-not-enabled` 路径是否按预期生成占位函数/类型。
-- 任务、DMA、文件系统和网络句柄等薄包装是否保持稳定语义。
+- 任务、文件系统和网络句柄等薄包装是否保持稳定语义。
 
 ### 集成测试
 - 通过 `ax-std` 或最小 ArceOS 应用验证时间、I/O、任务、文件系统、网络等门面 API 的实际可用性。
-- 覆盖不同 feature 组合下的编译与运行路径，尤其是 `multitask`、`fs`、`net`、`dma`。
+- 覆盖不同 feature 组合下的编译与运行路径，尤其是 `multitask`、`fs`、`net`、`paging`。
 - 对 `dummy-if-not-enabled`，至少要验证调用方不会误把占位 API 当成可运行实现。
 
 ### 覆盖率

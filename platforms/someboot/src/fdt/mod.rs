@@ -90,9 +90,10 @@ pub(crate) fn save_fdt() {
     };
     let size = slice.len();
 
-    let fdt_buff = unsafe {
-        crate::mem::ram::alloc(core::alloc::Layout::from_size_align(size, 8).unwrap()).unwrap()
-    };
+    let fdt_buff = crate::mem::ram::alloc(
+        core::alloc::Layout::from_size_align(size, 8).expect("FDT allocation alignment is valid"),
+    )
+    .expect("early RAM must have space for the validated FDT");
 
     unsafe {
         core::ptr::copy_nonoverlapping(slice.as_ptr(), phys_to_virt(fdt_buff), size);

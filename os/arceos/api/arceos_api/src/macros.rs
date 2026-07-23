@@ -89,10 +89,6 @@ macro_rules! cfg_alloc {
     ($($item:item)*) => { _cfg_common!{ "alloc" $($item)* } }
 }
 
-macro_rules! cfg_dma {
-    ($($item:item)*) => { _cfg_common!{ "dma" $($item)* } }
-}
-
 macro_rules! cfg_fs {
     ($($item:item)*) => { _cfg_common!{ "fs" $($item)* } }
 }

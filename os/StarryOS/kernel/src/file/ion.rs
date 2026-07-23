@@ -3,6 +3,7 @@
 //! 实现 FileLike trait，用于支持对 Ion 分配的缓冲区进行 mmap。
 
 use alloc::{borrow::Cow, sync::Arc};
+use core::any::Any;
 
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::PhysAddrRange;
@@ -36,7 +37,7 @@ impl IonBufferFile {
     /// 获取物理地址范围
     pub fn phys_range(&self) -> PhysAddrRange {
         PhysAddrRange::from_start_size(
-            ax_memory_addr::PhysAddr::from(self.buffer.dma_info.bus_addr.as_u64() as usize),
+            ax_memory_addr::PhysAddr::from(self.buffer.dma_addr() as usize),
             self.buffer.size,
         )
     }
@@ -80,7 +81,8 @@ impl FileLike for IonBufferFile {
     }
 
     fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
-        Ok(DeviceMmap::Physical(self.phys_range(), None))
+        let retainer: Arc<dyn Any + Send + Sync> = self.buffer.clone();
+        Ok(DeviceMmap::Physical(self.phys_range(), Some(retainer)))
     }
 }
 

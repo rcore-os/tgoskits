@@ -14,7 +14,6 @@ irq = ["ax-task?/irq"]
 ipi = ["dep:ax-ipi"]
 alloc = ["dep:ax-alloc"]
 paging = ["dep:ax-mm"]
-dma = ["dep:ax-dma"]
 multitask = ["ax-task/multitask", "ax-sync/multitask"]
 fs = ["dep:ax-fs-ng"]
 net = ["dep:ax-net"]
@@ -27,7 +26,6 @@ dummy-if-not-enabled = []
 [dependencies]
 ax-alloc = { workspace = true, optional = true }
 ax-display = { workspace = true, optional = true }
-ax-dma = { workspace = true, optional = true }
 ax-errno.workspace = true
 ax-fs-ng = { workspace = true, optional = true }
 ax-hal.workspace = true

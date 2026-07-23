@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_memory_addr::PageIter4K;
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K};
 use axvm_types::{GuestPhysAddr, MappingFlags};
 
 use super::Backend;
@@ -35,21 +35,26 @@ impl<Npt: NestedPageTableOps> Backend<Npt> {
         pt: &mut Npt,
         populate: bool,
     ) -> bool {
+        let Some(end) = start.checked_add(size) else {
+            return false;
+        };
         debug!(
             "map_alloc: [{:#x}, {:#x}) {:?} (populate={})",
-            start,
-            start + size,
-            flags,
-            populate
+            start, end, flags, populate
         );
         if populate {
             // allocate all possible physical frames for populated mapping.
-            for addr in PageIter4K::new(start, start + size).unwrap() {
-                if pt
-                    .alloc_frame()
-                    .and_then(|frame| pt.map(addr, frame, PageSize::Size4K, flags).ok())
-                    .is_none()
-                {
+            for (mapped_pages, addr) in PageIter4K::new(start, end)
+                .expect("prepared allocation range must be 4-KiB aligned")
+                .enumerate()
+            {
+                let Some(frame) = pt.alloc_frame() else {
+                    rollback_alloc_mapping(start, mapped_pages, pt);
+                    return false;
+                };
+                if pt.map(addr, frame, PageSize::Size4K, flags).is_err() {
+                    pt.dealloc_frame(frame);
+                    rollback_alloc_mapping(start, mapped_pages, pt);
                     return false;
                 }
             }
@@ -68,17 +73,29 @@ impl<Npt: NestedPageTableOps> Backend<Npt> {
         pt: &mut Npt,
         _populate: bool,
     ) -> bool {
-        debug!("unmap_alloc: [{:#x}, {:#x})", start, start + size);
-        for addr in PageIter4K::new(start, start + size).unwrap() {
-            if let Ok((frame, _, page_size)) = pt.unmap(addr) {
-                // Deallocate the physical frame if there is a mapping in the
-                // page table.
-                if page_size.is_huge() {
-                    return false;
+        let Some(end) = start.checked_add(size) else {
+            return false;
+        };
+        debug!("unmap_alloc: [{:#x}, {:#x})", start, end);
+        for addr in PageIter4K::new(start, end).expect("prepared unmap range must be 4-KiB aligned")
+        {
+            if pt
+                .query(addr)
+                .is_ok_and(|(_, _, page_size)| page_size.is_huge())
+            {
+                return false;
+            }
+        }
+        for addr in PageIter4K::new(start, end).expect("prepared unmap range must be 4-KiB aligned")
+        {
+            match pt.unmap(addr) {
+                Ok((_frame, _, page_size)) => {
+                    debug_assert_eq!(page_size, PageSize::Size4K);
+                    // Keep the frame owned until the complete MemorySet
+                    // transaction commits. The backend finalizer releases it.
                 }
-                pt.dealloc_frame(frame);
-            } else {
-                // It's fine if the page is not mapped.
+                Err(crate::AddrSpaceError::Unmapped { .. }) => {}
+                Err(_) => return false,
             }
         }
         true
@@ -100,7 +117,31 @@ impl<Npt: NestedPageTableOps> Backend<Npt> {
             let Some(frame) = pt.alloc_frame() else {
                 return false;
             };
-            pt.remap(vaddr, frame, orig_flags)
+            if pt.remap(vaddr, frame, orig_flags) {
+                true
+            } else {
+                pt.dealloc_frame(frame);
+                false
+            }
+        }
+    }
+}
+
+fn rollback_alloc_mapping<Npt: NestedPageTableOps>(
+    start: GuestPhysAddr,
+    mapped_pages: usize,
+    pt: &mut Npt,
+) {
+    let bytes = mapped_pages
+        .checked_mul(PAGE_SIZE_4K)
+        .expect("mapped page count must fit in an address range");
+    let end = start
+        .checked_add(bytes)
+        .expect("mapped rollback range must not overflow");
+    for addr in PageIter4K::new(start, end).expect("mapped rollback range must be aligned") {
+        if let Ok((frame, _, page_size)) = pt.unmap(addr) {
+            debug_assert_eq!(page_size, PageSize::Size4K);
+            pt.dealloc_frame(frame);
         }
     }
 }

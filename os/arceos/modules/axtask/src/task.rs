@@ -775,7 +775,14 @@ impl TaskStack {
             .expect("guarded task stack size overflow");
         let pages = guarded_size / PAGE_SIZE_4K;
         let base = ax_alloc::global_allocator()
-            .alloc_pages(pages, PAGE_SIZE_4K, ax_alloc::UsageKind::Global)
+            .allocate_pages_raw(
+                ax_alloc::PageRequest {
+                    count: pages,
+                    align: PAGE_SIZE_4K,
+                    zone: ax_alloc::MemoryZone::Normal,
+                },
+                ax_alloc::UsageKind::Global,
+            )
             .expect("guarded task stack allocation failed");
         let usable_bottom = base + PAGE_SIZE_4K;
         let stack = Self {
@@ -965,11 +972,19 @@ impl Drop for TaskStack {
             #[cfg(feature = "stack-guard-page")]
             TaskStackKind::GuardedAlloc => {
                 self.remap_guard_page();
-                ax_alloc::global_allocator().dealloc_pages(
-                    self.guard_bottom().as_usize(),
-                    self.alloc_pages,
-                    ax_alloc::UsageKind::Global,
-                );
+                // SAFETY: TaskStack owns the entire guarded allocation and
+                // records its original page count until this single Drop.
+                unsafe {
+                    ax_alloc::global_allocator().deallocate_pages_raw(
+                        self.guard_bottom().as_usize(),
+                        ax_alloc::PageRequest {
+                            count: self.alloc_pages,
+                            align: PAGE_SIZE_4K,
+                            zone: ax_alloc::MemoryZone::Normal,
+                        },
+                        ax_alloc::UsageKind::Global,
+                    );
+                }
             }
             TaskStackKind::Borrowed => {}
         }

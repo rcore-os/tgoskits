@@ -9,7 +9,7 @@ use linux_raw_sys::general::*;
 
 use crate::{
     file::get_file_like,
-    mm::{Backend, BackendOps, SharedPages},
+    mm::{Backend, BackendOps, MappingRequest, SharedPages, runtime_page_source},
     pseudofs::{Device, DeviceMmap},
     syscall::fs::{memfd_check_write_seal, memfd_check_write_seal_for_shared_file_backend},
     task::AsThread,
@@ -84,6 +84,22 @@ fn reported_mapping_flags_from_prot(value: MmapProt) -> MappingFlags {
 
 fn capped_device_map_len(request_len: usize, available_len: usize, page_size: PageSize) -> usize {
     request_len.min(available_len.align_up(page_size))
+}
+
+fn enforce_address_change(
+    aspace: &crate::mm::AddrSpace,
+    replaced: u64,
+    requested: u64,
+    limit: u64,
+) -> AxResult {
+    let current = aspace
+        .vm_stat
+        .vss_pages()
+        .checked_mul(PAGE_SIZE_4K as u64)
+        .ok_or(AxError::NoMemory)?;
+    starry_mm::admit_address_space(current, replaced, requested, limit)
+        .map(|_| ())
+        .map_err(|_| AxError::NoMemory)
 }
 
 bitflags::bitflags! {
@@ -259,12 +275,10 @@ pub fn sys_mmap(
         }
     }
 
+    let replace_fixed =
+        map_flags.contains(MmapFlags::FIXED) && !map_flags.contains(MmapFlags::FIXED_NOREPLACE);
     let start = if map_flags.intersects(MmapFlags::FIXED | MmapFlags::FIXED_NOREPLACE) {
-        let dst_addr = VirtAddr::from(aligned);
-        if !map_flags.contains(MmapFlags::FIXED_NOREPLACE) {
-            aspace.unmap(dst_addr, length)?;
-        }
-        dst_addr
+        VirtAddr::from(aligned)
     } else {
         let align = page_size as usize;
         // Defense-in-depth (#242): cap the search upper bound to
@@ -282,6 +296,14 @@ pub fn sys_mmap(
             .or(aspace.find_free_area(aspace.base(), length, limit, align))
             .ok_or(AxError::NoMemory)?
     };
+    let address_limit = curr.as_thread().proc_data.rlim.read()[RLIMIT_AS].current;
+    let replaced = if replace_fixed {
+        aspace.mapped_bytes_in_range(start, length)?
+    } else {
+        0
+    };
+    enforce_address_change(&aspace, replaced, length as u64, address_limit)?;
+    let replacement_size = length;
 
     // IonBufferFile 特殊处理：直接线性映射物理地址，跳过通用 file_mmap/device_mmap 路径。
     // 这样可以避免通用路径中 `range.start += offset` 对 Ion buffer 的错误偏移。
@@ -323,14 +345,28 @@ pub fn sys_mmap(
                 ion_file.buffer().clone(),
             );
             let populate = map_flags.contains(MmapFlags::POPULATE);
-            aspace.map_with_reported_flags(
-                start,
-                map_length,
-                ion_mapping_flags,
-                reported_mapping_flags,
-                populate,
-                backend,
-            )?;
+            if replace_fixed {
+                aspace.replace_mapping(
+                    replacement_size,
+                    MappingRequest {
+                        start,
+                        size: map_length,
+                        flags: ion_mapping_flags,
+                        reported_flags: reported_mapping_flags,
+                        populate,
+                        backend,
+                    },
+                )?;
+            } else {
+                aspace.map_with_reported_flags(
+                    start,
+                    map_length,
+                    ion_mapping_flags,
+                    reported_mapping_flags,
+                    populate,
+                    backend,
+                )?;
+            }
             drop(aspace);
             info!(
                 "Ion buffer mmap success: vaddr=0x{:x}, length={}",
@@ -525,7 +561,14 @@ pub fn sys_mmap(
                     }
                 }
             } else {
-                Backend::new_shared(start, Arc::new(SharedPages::new(length, PageSize::Size4K)?))
+                Backend::new_shared(
+                    start,
+                    Arc::new(SharedPages::new(
+                        length,
+                        PageSize::Size4K,
+                        runtime_page_source(),
+                    )?),
+                )
             }
         }
         MmapFlags::PRIVATE => {
@@ -547,14 +590,28 @@ pub fn sys_mmap(
     };
 
     let populate = map_flags.contains(MmapFlags::POPULATE);
-    aspace.map_with_reported_flags(
-        start,
-        length,
-        mapping_flags,
-        reported_mapping_flags,
-        populate,
-        backend,
-    )?;
+    if replace_fixed {
+        aspace.replace_mapping(
+            replacement_size,
+            MappingRequest {
+                start,
+                size: length,
+                flags: mapping_flags,
+                reported_flags: reported_mapping_flags,
+                populate,
+                backend,
+            },
+        )?;
+    } else {
+        aspace.map_with_reported_flags(
+            start,
+            length,
+            mapping_flags,
+            reported_mapping_flags,
+            populate,
+            backend,
+        )?;
+    }
     drop(aspace);
 
     // perf side-band: an executable, file-backed mapping is (almost always) a
@@ -682,6 +739,7 @@ struct MremapMove<'a> {
     flags: MappingFlags,
     reported_flags: MappingFlags,
     dontunmap: bool,
+    replace_target: bool,
     src_offset: usize,
 }
 
@@ -699,12 +757,34 @@ fn mremap_move(
         flags,
         reported_flags,
         dontunmap,
+        replace_target,
         src_offset,
     } = move_args;
     let move_size = src_size.min(target_size);
     let backend = src_backend.relocated(target, src_offset, aspace_ref)?;
 
-    aspace.map_with_reported_flags(target, target_size, flags, reported_flags, false, backend)?;
+    if replace_target {
+        aspace.replace_mapping(
+            target_size,
+            MappingRequest {
+                start: target,
+                size: target_size,
+                flags,
+                reported_flags,
+                populate: false,
+                backend,
+            },
+        )?;
+    } else {
+        aspace.map_with_reported_flags(
+            target,
+            target_size,
+            flags,
+            reported_flags,
+            false,
+            backend,
+        )?;
+    }
 
     if dontunmap {
         let empty = Backend::new_alloc(src, src_backend.page_size(), "");
@@ -721,8 +801,8 @@ fn mremap_move(
     }
 
     if let Err(e) = aspace.move_pages(src, target, move_size) {
-        if dontunmap {
-            aspace
+        let source_restored = !dontunmap
+            || aspace
                 .replace_area_metadata_with_reported_flags(
                     src,
                     move_size,
@@ -730,24 +810,23 @@ fn mremap_move(
                     reported_flags,
                     src_backend.clone(),
                 )
-                .expect("restore source VMA metadata after failed mremap move");
-        }
-        let _ = aspace.unmap(target, target_size);
-        return Err(e);
+                .is_ok();
+        let target_removed = aspace.unmap(target, target_size).is_ok();
+        return Err(if source_restored && target_removed {
+            e
+        } else {
+            AxError::BadState
+        });
     }
 
     if dontunmap {
         return Ok(());
     }
 
-    aspace
-        .unmap_metadata(src, move_size)
-        .expect("remove moved source VMA metadata");
+    aspace.unmap_metadata(src, move_size)?;
 
     if src_size > move_size {
-        aspace
-            .unmap(src + move_size, src_size - move_size)
-            .expect("unmap truncated source tail after mremap move");
+        aspace.unmap(src + move_size, src_size - move_size)?;
     } else {
         debug_assert_eq!(src_size, move_size);
     }
@@ -802,7 +881,9 @@ pub fn sys_mremap(
     }
 
     let curr = current();
-    let aspace_ref = &curr.as_thread().proc_data.aspace();
+    let proc_data = &curr.as_thread().proc_data;
+    let address_limit = proc_data.rlim.read()[RLIMIT_AS].current;
+    let aspace_ref = &proc_data.aspace();
     let mut aspace = aspace_ref.lock();
 
     let (vma_start, vma_end, vma_flags, vma_reported_flags, src_backend, shared_pages, page_size) = {
@@ -838,7 +919,7 @@ pub fn sys_mremap(
             return Err(AxError::InvalidInput);
         }
         let pages = shared_pages.unwrap();
-        let shared_size = pages.len() * pages.size as usize;
+        let shared_size = pages.len() * pages.page_size() as usize;
         if src_offset + new_size > shared_size {
             return Err(AxError::InvalidInput);
         }
@@ -847,25 +928,44 @@ pub fn sys_mremap(
             if !page_size.is_aligned(new_addr) {
                 return Err(AxError::InvalidInput);
             }
-            aspace.unmap(VirtAddr::from(new_addr), new_size)?;
             VirtAddr::from(new_addr)
         } else {
             find_free(&aspace, addr, new_size, page_size as usize)?
         };
+        let replaced = if fixed {
+            aspace.mapped_bytes_in_range(target, new_size)?
+        } else {
+            0
+        };
+        enforce_address_change(&aspace, replaced, new_size as u64, address_limit)?;
         let backend_start = target
             .as_usize()
             .checked_sub(src_offset)
             .map(VirtAddr::from)
             .ok_or(AxError::InvalidInput)?;
         let backend = Backend::new_shared(backend_start, pages);
-        aspace.map_with_reported_flags(
-            target,
-            new_size,
-            vma_flags,
-            vma_reported_flags,
-            false,
-            backend,
-        )?;
+        if fixed {
+            aspace.replace_mapping(
+                new_size,
+                MappingRequest {
+                    start: target,
+                    size: new_size,
+                    flags: vma_flags,
+                    reported_flags: vma_reported_flags,
+                    populate: false,
+                    backend,
+                },
+            )?;
+        } else {
+            aspace.map_with_reported_flags(
+                target,
+                new_size,
+                vma_flags,
+                vma_reported_flags,
+                false,
+                backend,
+            )?;
+        }
         return Ok(target.as_usize() as isize);
     }
 
@@ -883,7 +983,14 @@ pub fn sys_mremap(
             return Err(AxError::InvalidInput);
         }
         let target = VirtAddr::from(new_addr);
-        aspace.unmap(target, new_size)?;
+        let target_replaced = aspace.mapped_bytes_in_range(target, new_size)?;
+        let source_replaced = if dontunmap { 0 } else { old_size as u64 };
+        enforce_address_change(
+            &aspace,
+            target_replaced.saturating_add(source_replaced),
+            new_size as u64,
+            address_limit,
+        )?;
 
         mremap_move(
             &mut aspace,
@@ -897,6 +1004,7 @@ pub fn sys_mremap(
                 flags: vma_flags,
                 reported_flags: vma_reported_flags,
                 dontunmap,
+                replace_target: true,
                 src_offset,
             },
         )?;
@@ -914,6 +1022,7 @@ pub fn sys_mremap(
 
     if dontunmap {
         let target = find_free(&aspace, addr + old_size, new_size, page_size as usize)?;
+        enforce_address_change(&aspace, 0, new_size as u64, address_limit)?;
         mremap_move(
             &mut aspace,
             aspace_ref,
@@ -926,6 +1035,7 @@ pub fn sys_mremap(
                 flags: vma_flags,
                 reported_flags: vma_reported_flags,
                 dontunmap: true,
+                replace_target: false,
                 src_offset,
             },
         )?;
@@ -935,6 +1045,7 @@ pub fn sys_mremap(
     let delta = new_size - old_size;
 
     if addr + old_size == vma_end {
+        enforce_address_change(&aspace, 0, delta as u64, address_limit)?;
         match aspace.extend_area(addr, delta) {
             Ok(()) => return Ok(addr.as_usize() as isize),
             Err(AxError::NoMemory | AxError::AlreadyExists) => {}
@@ -947,6 +1058,7 @@ pub fn sys_mremap(
     }
 
     let target = find_free(&aspace, addr + old_size, new_size, page_size as usize)?;
+    enforce_address_change(&aspace, old_size as u64, new_size as u64, address_limit)?;
     mremap_move(
         &mut aspace,
         aspace_ref,
@@ -959,6 +1071,7 @@ pub fn sys_mremap(
             flags: vma_flags,
             reported_flags: vma_reported_flags,
             dontunmap: false,
+            replace_target: false,
             src_offset,
         },
     )?;

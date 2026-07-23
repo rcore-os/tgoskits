@@ -5,7 +5,7 @@
 
 use core::fmt::Debug;
 
-use page_table_generic::{MemAttributes, PageTableEntry};
+use ax_page_table::boot::{MemAttributes, PageTableEntry};
 use tock_registers::{interfaces::*, register_bitfields, registers::*};
 
 // LoongArch64 页表项寄存器位域定义
@@ -145,7 +145,7 @@ impl Entry {
         }
     }
 
-    fn from_huge(config: page_table_generic::PteConfig) -> u64 {
+    fn from_huge(config: ax_page_table::boot::PteConfig) -> u64 {
         let mut val = PTE_DIR::H::SET;
         if config.valid {
             val = val + PTE_DIR::VALID::SET + PTE_DIR::PRESENT::SET;
@@ -173,7 +173,7 @@ impl Entry {
         };
 
         // 设置物理地址
-        let ppn = (config.paddr.raw() as u64) >> 12;
+        let ppn = (config.paddr.as_usize() as u64) >> 12;
         val += PTE_DIR::PHYS_ADDR.val(ppn);
 
         if config.global {
@@ -190,12 +190,12 @@ impl Entry {
         val.value
     }
 
-    fn from_dir(config: page_table_generic::PteConfig) -> u64 {
-        let paddr = config.paddr.raw();
+    fn from_dir(config: ax_page_table::boot::PteConfig) -> u64 {
+        let paddr = config.paddr.as_usize();
         PTE_DIR::PHYS_ADDR.val((paddr >> 12) as u64).value
     }
 
-    fn from_base(config: page_table_generic::PteConfig) -> u64 {
+    fn from_base(config: ax_page_table::boot::PteConfig) -> u64 {
         let mut val = PTE::VALID::CLEAR;
 
         // 设置有效位和存在位
@@ -224,7 +224,7 @@ impl Entry {
         };
 
         // 设置物理地址
-        let ppn = (config.paddr.raw() as u64) >> 12;
+        let ppn = (config.paddr.as_usize() as u64) >> 12;
         val += PTE::PHYS_ADDR.val(ppn);
 
         // 设置全局标志（页表项使用 G 位，bit 6）
@@ -254,7 +254,7 @@ impl Debug for EntryDebug {
 }
 
 impl PageTableEntry for Entry {
-    fn from_config(config: page_table_generic::PteConfig) -> Self {
+    fn from_config(config: ax_page_table::boot::PteConfig) -> Self {
         let val = if config.is_dir {
             if config.huge {
                 Self::from_huge(config)
@@ -267,7 +267,7 @@ impl PageTableEntry for Entry {
         Self(val)
     }
 
-    fn to_config(&self, is_dir: bool) -> page_table_generic::PteConfig {
+    fn to_config(&self, is_dir: bool) -> ax_page_table::boot::PteConfig {
         let valid = self.as_base().is_set(PTE::VALID);
         let mut paddr = self.as_base().read(PTE::PHYS_ADDR) << 12;
 
@@ -296,8 +296,8 @@ impl PageTableEntry for Entry {
             _ => MemAttributes::Normal,
         };
 
-        page_table_generic::PteConfig {
-            paddr: paddr.into(),
+        ax_page_table::boot::PteConfig {
+            paddr: (paddr as usize).into(),
             valid,
             read: valid, // LoongArch64: 假设有效项可读
             writable: self.as_base().is_set(PTE::WRITE),

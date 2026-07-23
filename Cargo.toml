@@ -94,9 +94,7 @@ members = [
     "os/StarryOS/kernel",
     "os/StarryOS/starryos",
     "os/arceos/api/*",
-    "os/arceos/modules/axalloc",
     "os/arceos/modules/axdisplay",
-    "os/arceos/modules/axdma",
     "os/arceos/modules/axfs-ng",
     "os/arceos/modules/axhal",
     "os/arceos/modules/axinput",
@@ -135,8 +133,7 @@ arm-scmi-rs = { version = "0.1.7", path = "drivers/firmware/arm-scmi-rs" }
 arceos-test-suit = { version = "0.3.1", path = "test-suit/arceos/rust" }
 arm_vcpu = { version = "0.5.16", path = "virtualization/arm_vcpu" }
 arm_vgic = { version = "0.5.3", path = "virtualization/arm_vgic" }
-ax-alloc = { version = "0.8.12", path = "os/arceos/modules/axalloc", default-features = false }
-ax-allocator = { version = "0.5.5", path = "memory/axallocator" }
+ax-alloc = { version = "0.8.12", path = "memory/ax-alloc", default-features = false }
 ax-api = { version = "0.7.4", path = "os/arceos/api/arceos_api" }
 ax-arm-pl031 = { version = "0.4.7", path = "drivers/rtc/arm_pl031" }
 cpu-local = { version = "0.1.0", path = "components/cpu-local" }
@@ -146,7 +143,6 @@ ax-crate-interface = { version = "0.5.7", path = "components/crate_interface" }
 ax-ctor-bare = { version = "0.4.8", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4.8", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.6.5", path = "os/arceos/modules/axdisplay" }
-ax-dma = { version = "0.6.12", path = "os/arceos/modules/axdma" }
 ax-driver = { version = "0.12.0", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-errno = { version = "0.6.1", path = "components/axerrno" }
@@ -169,8 +165,7 @@ ax-memory-set = { version = "0.6.12", path = "memory/memory_set" }
 axpanic = { version = "0.1.1", path = "components/axpanic" }
 ax-mm = { version = "0.5.28", path = "os/arceos/modules/axmm" }
 ax-net = { version = "0.12.4", path = "net/ax-net" }
-ax-page-table-entry = { version = "0.8.10", path = "memory/page_table_entry" }
-ax-page-table-multiarch = { version = "0.8.13", path = "memory/page_table_multiarch" }
+ax-page-table = { version = "0.1.0", path = "memory/ax-page-table", default-features = false }
 ax-percpu = { version = "0.4.14", path = "components/percpu/percpu" }
 ax-percpu-macros = { version = "0.4.10", path = "components/percpu/percpu_macros" }
 ax-plat = { version = "0.12.0", path = "platforms/ax-plat" }
@@ -200,7 +195,6 @@ axvisor = { version = "0.5.21", path = "os/axvisor" }
 axvm = { version = "0.5.23", path = "virtualization/axvm", default-features = false }
 axvm-types = { version = "0.7.0", path = "virtualization/axvm-types" }
 axvmconfig = { version = "0.8.1", path = "virtualization/axvmconfig", default-features = false }
-bitmap-allocator = { version = "0.4.6", path = "memory/bitmap-allocator" }
 bwbench-client = { version = "0.3.1", path = "os/arceos/tools/bwbench_client" }
 define-simple-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-simple-traits" }
 define-weak-traits = { version = "0.3.4", path = "components/crate_interface/test_crates/define-weak-traits" }
@@ -274,6 +268,7 @@ starry-kernel = { version = "0.7.4", path = "os/StarryOS/kernel" }
 starry-process = { version = "0.4.14", path = "components/starry-process" }
 starry-signal = { version = "0.8.10", path = "components/starry-signal" }
 starry-vm = { version = "0.5.11", path = "components/starry-vm" }
+starry-mm = { version = "0.1.0", path = "memory/starry-mm", default-features = false }
 starryos = { version = "0.5.25", path = "os/StarryOS/starryos" }
 test-simple = { version = "0.3.4", path = "components/crate_interface/test_crates/test-simple" }
 test-weak = { version = "0.3.4", path = "components/crate_interface/test_crates/test-weak" }
@@ -283,11 +278,9 @@ axloader = { version = "0.5.11", path = "bootloader/axloader" }
 httpboot-protocol = { version = "0.1.0", default-features = false }
 x86_vcpu = { version = "0.5.19", path = "virtualization/x86_vcpu", default-features = false }
 x86_vlapic = { version = "0.5.0", path = "virtualization/x86_vlapic" }
-page-table-generic = { version = "0.7.4", path = "memory/page-table-generic" }
 someboot = { version = "0.3.5", path = "platforms/someboot" }
 some-serial = { version = "0.7.0", path = "drivers/serial/some-serial" }
 kernutil = { path = "components/kernutil", version = "0.2.2" }
-ranges-ext = { version = "0.6.4", path = "memory/ranges-ext" }
 somehal-macros = { path = "platforms/somehal-macros", version = "0.1.5" }
 kasm-aarch64 = { path = "components/kasm-aarch64", version = "0.2.1" }
 somehal = { version = "0.8.0", path = "platforms/somehal" }
@@ -310,6 +303,7 @@ heapless = "0.9"
 schemars = "1.2.1"
 toml = { version = "1.1.2", default-features = false }
 dma-api = { version = "0.9.3", path = "memory/dma-api" }
+bytemuck = { version = "1.24", default-features = false, features = ["derive"] }
 mmio-api = { version = "0.2.2", path = "memory/mmio-api" }
 cvi-vdec-uapi = { version = "0.1.0", path = "drivers/interface/cvi-vdec-uapi" }
 lock_api = { version = "0.4", default-features = false }

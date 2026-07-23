@@ -5,14 +5,162 @@ use core::fmt;
 
 use ax_memory_addr::{AddrRange, MemoryAddr};
 
-use crate::{MappingBackend, MappingError, MappingResult, MemoryArea};
+use crate::{
+    MapPrecondition, MappingBackend, MappingError, MappingOperation, MappingResult, MemoryArea,
+};
+
+type BackendOperation<B> = (
+    B,
+    MappingOperation<<B as MappingBackend>::Addr, <B as MappingBackend>::Flags>,
+);
+
+struct MetadataPlan<B: MappingBackend> {
+    remove: Vec<B::Addr>,
+    insert: Vec<MemoryArea<B>>,
+}
+
+impl<B: MappingBackend> MetadataPlan<B> {
+    fn apply(self, areas: &mut BTreeMap<B::Addr, MemoryArea<B>>) {
+        for start in self.remove {
+            assert!(areas.remove(&start).is_some());
+        }
+        for area in self.insert {
+            assert!(areas.insert(area.start(), area).is_none());
+        }
+    }
+}
 
 /// A container that maintains memory mappings ([`MemoryArea`]).
+#[derive(Clone)]
 pub struct MemorySet<B: MappingBackend> {
     areas: BTreeMap<B::Addr, MemoryArea<B>>,
 }
 
 impl<B: MappingBackend> MemorySet<B> {
+    fn execute(
+        operations: Vec<BackendOperation<B>>,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        let mut prepared = Vec::new();
+        prepared
+            .try_reserve_exact(operations.len())
+            .map_err(|_| MappingError::NoMemory)?;
+        for (backend, operation) in operations {
+            match backend.prepare(operation, page_table) {
+                Ok(plan) => prepared.push((backend, plan)),
+                Err(error) => {
+                    for (backend, plan) in prepared.into_iter().rev() {
+                        backend.abort(plan, page_table);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        let mut committed = Vec::new();
+        if committed.try_reserve_exact(prepared.len()).is_err() {
+            for (backend, plan) in prepared.into_iter().rev() {
+                backend.abort(plan, page_table);
+            }
+            return Err(MappingError::NoMemory);
+        }
+        let mut prepared = prepared.into_iter();
+        while let Some((backend, plan)) = prepared.next() {
+            match backend.commit(plan, page_table) {
+                Ok(state) => committed.push((backend, state)),
+                Err(error) => {
+                    for (backend, plan) in prepared.rev() {
+                        backend.abort(plan, page_table);
+                    }
+                    let mut rollback_failed = false;
+                    for (backend, state) in committed.into_iter().rev() {
+                        if backend.rollback(state, page_table).is_err() {
+                            rollback_failed = true;
+                        }
+                    }
+                    return Err(if rollback_failed {
+                        MappingError::BadState
+                    } else {
+                        error
+                    });
+                }
+            }
+        }
+
+        for (backend, state) in committed {
+            backend.finalize(state, page_table);
+        }
+        Ok(())
+    }
+
+    fn affected_area_starts(&self, range: AddrRange<B::Addr>) -> MappingResult<Vec<B::Addr>> {
+        let preceding = self
+            .areas
+            .range(..range.start)
+            .next_back()
+            .filter(|(_, area)| area.end() > range.start)
+            .map(|(&start, _)| start);
+        let starts_in_range = self.areas.range(range.start..range.end).count();
+        let mut starts = Vec::new();
+        starts
+            .try_reserve_exact(starts_in_range + usize::from(preceding.is_some()))
+            .map_err(|_| MappingError::NoMemory)?;
+        starts.extend(preceding);
+        starts.extend(
+            self.areas
+                .range(range.start..range.end)
+                .map(|(&start, _)| start),
+        );
+        Ok(starts)
+    }
+
+    fn plan_unmap(
+        &self,
+        range: AddrRange<B::Addr>,
+    ) -> MappingResult<(MetadataPlan<B>, Vec<BackendOperation<B>>)> {
+        let affected = self.affected_area_starts(range)?;
+        let mut remove = Vec::new();
+        let mut insert = Vec::new();
+        let mut operations = Vec::new();
+        remove
+            .try_reserve_exact(affected.len())
+            .map_err(|_| MappingError::NoMemory)?;
+        insert
+            .try_reserve_exact(affected.len().saturating_mul(2))
+            .map_err(|_| MappingError::NoMemory)?;
+        operations
+            .try_reserve_exact(affected.len())
+            .map_err(|_| MappingError::NoMemory)?;
+
+        for area_start in affected {
+            let source = self.areas.get(&area_start).ok_or(MappingError::BadState)?;
+            let start = source.start().max(range.start);
+            let end = source.end().min(range.end);
+            operations.push((
+                source.backend().clone(),
+                MappingOperation::Unmap {
+                    start,
+                    size: end.sub_addr(start),
+                    old_flags: source.flags(),
+                },
+            ));
+            remove.push(area_start);
+
+            let mut area = source.clone();
+            if area.start() < range.start {
+                let right = area.split(range.start).ok_or(MappingError::BadState)?;
+                insert.push(area);
+                area = right;
+            }
+            if area.end() > range.end {
+                let right = area.split(range.end).ok_or(MappingError::BadState)?;
+                insert.push(right);
+            }
+        }
+
+        Ok((MetadataPlan { remove, insert }, operations))
+    }
+
     /// Creates a new memory set.
     pub const fn new() -> Self {
         Self {
@@ -133,10 +281,30 @@ impl<B: MappingBackend> MemorySet<B> {
             return Err(MappingError::AlreadyExists);
         }
 
-        self.areas
-            .get_mut(&area_start)
-            .unwrap()
-            .grow_right(additional_size, page_table)?;
+        let area = &self.areas[&area_start];
+        let operation = MappingOperation::Map {
+            start: area.end(),
+            size: additional_size,
+            flags: area.flags(),
+            precondition: MapPrecondition::Vacant,
+        };
+        let backend = area.backend().clone();
+        let mut grown = area.clone();
+        grown.grow_right_metadata(additional_size)?;
+        let mut remove = Vec::new();
+        let mut insert = Vec::new();
+        remove
+            .try_reserve_exact(1)
+            .map_err(|_| MappingError::NoMemory)?;
+        insert
+            .try_reserve_exact(1)
+            .map_err(|_| MappingError::NoMemory)?;
+        remove.push(area_start);
+        insert.push(grown);
+        let metadata = MetadataPlan { remove, insert };
+
+        Self::execute(alloc::vec![(backend, operation)], page_table)?;
+        metadata.apply(&mut self.areas);
         Ok(())
     }
 
@@ -158,16 +326,110 @@ impl<B: MappingBackend> MemorySet<B> {
             return Err(MappingError::InvalidParam);
         }
 
-        if self.overlaps(area.va_range()) {
+        let mut operations = Vec::new();
+        operations
+            .try_reserve(1)
+            .map_err(|_| MappingError::NoMemory)?;
+        let overlaps = self.overlaps(area.va_range());
+        let mut metadata = MetadataPlan {
+            remove: Vec::new(),
+            insert: Vec::new(),
+        };
+        if overlaps {
             if unmap_overlap {
-                self.unmap(area.start(), area.size(), page_table)?;
+                (metadata, operations) = self.plan_unmap(area.va_range())?;
+                operations
+                    .try_reserve(1)
+                    .map_err(|_| MappingError::NoMemory)?;
             } else {
                 return Err(MappingError::AlreadyExists);
             }
         }
 
-        area.map_area(page_table)?;
-        assert!(self.areas.insert(area.start(), area).is_none());
+        operations.push((
+            area.backend().clone(),
+            MappingOperation::Map {
+                start: area.start(),
+                size: area.size(),
+                flags: area.flags(),
+                precondition: if overlaps {
+                    MapPrecondition::Replacing
+                } else {
+                    MapPrecondition::Vacant
+                },
+            },
+        ));
+        metadata
+            .insert
+            .try_reserve(1)
+            .map_err(|_| MappingError::NoMemory)?;
+        metadata.insert.push(area);
+        Self::execute(operations, page_table)?;
+        metadata.apply(&mut self.areas);
+        Ok(())
+    }
+
+    /// Inserts area metadata for mappings already installed by the caller.
+    ///
+    /// This operation never invokes the backend or changes the page table. It
+    /// is intended for ownership transfers such as a fork operation that
+    /// installs child PTEs and their resource references atomically before
+    /// publishing the corresponding VMA.
+    pub fn map_metadata(&mut self, area: MemoryArea<B>) -> MappingResult {
+        if area.va_range().is_empty() {
+            return Err(MappingError::InvalidParam);
+        }
+        if self.overlaps(area.va_range()) {
+            return Err(MappingError::AlreadyExists);
+        }
+        if self.areas.insert(area.start(), area).is_some() {
+            return Err(MappingError::BadState);
+        }
+        Ok(())
+    }
+
+    /// Replaces every mapping in `replace_range` and installs `area` in one
+    /// backend transaction.
+    ///
+    /// The new area must be fully contained in the replacement range. This is
+    /// useful when a device mapping is shorter than the user-requested
+    /// replacement span: the whole requested span is removed, while only the
+    /// validated device range is installed.
+    pub fn replace(
+        &mut self,
+        replace_range: AddrRange<B::Addr>,
+        area: MemoryArea<B>,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        if replace_range.is_empty()
+            || area.va_range().is_empty()
+            || !area.va_range().contained_in(replace_range)
+        {
+            return Err(MappingError::InvalidParam);
+        }
+
+        let (mut metadata, mut operations) = self.plan_unmap(replace_range)?;
+        operations
+            .try_reserve(1)
+            .map_err(|_| MappingError::NoMemory)?;
+        operations.push((
+            area.backend().clone(),
+            MappingOperation::Map {
+                start: area.start(),
+                size: area.size(),
+                flags: area.flags(),
+                precondition: MapPrecondition::Replacing,
+            },
+        ));
+
+        metadata
+            .insert
+            .try_reserve(1)
+            .map_err(|_| MappingError::NoMemory)?;
+        metadata.insert.push(area);
+
+        Self::execute(operations, page_table)?;
+        metadata.apply(&mut self.areas);
         Ok(())
     }
 
@@ -189,47 +451,9 @@ impl<B: MappingBackend> MemorySet<B> {
             return Ok(());
         }
 
-        let end = range.end;
-
-        // Unmap entire areas that are contained by the range.
-        self.areas.retain(|_, area| {
-            if area.va_range().contained_in(range) {
-                area.unmap_area(page_table).unwrap();
-                false
-            } else {
-                true
-            }
-        });
-
-        // Shrink right if the area intersects with the left boundary.
-        if let Some((&before_start, before)) = self.areas.range_mut(..start).last() {
-            let before_end = before.end();
-            if before_end > start {
-                if before_end <= end {
-                    // the unmapped area is at the end of `before`.
-                    before.shrink_right(start.sub_addr(before_start), page_table)?;
-                } else {
-                    // the unmapped area is in the middle `before`, need to split.
-                    let right_part = before.split(end).unwrap();
-                    before.shrink_right(start.sub_addr(before_start), page_table)?;
-                    assert_eq!(right_part.start().into(), Into::<usize>::into(end));
-                    self.areas.insert(end, right_part);
-                }
-            }
-        }
-
-        // Shrink left if the area intersects with the right boundary.
-        if let Some((&after_start, after)) = self.areas.range_mut(start..).next() {
-            let after_end = after.end();
-            if after_start < end {
-                // the unmapped area is at the start of `after`.
-                let mut new_area = self.areas.remove(&after_start).unwrap();
-                new_area.shrink_left(after_end.sub_addr(end), page_table)?;
-                assert_eq!(new_area.start().into(), Into::<usize>::into(end));
-                self.areas.insert(end, new_area);
-            }
-        }
-
+        let (metadata, operations) = self.plan_unmap(range)?;
+        Self::execute(operations, page_table)?;
+        metadata.apply(&mut self.areas);
         Ok(())
     }
 
@@ -244,35 +468,8 @@ impl<B: MappingBackend> MemorySet<B> {
             return Ok(());
         }
 
-        let end = range.end;
-
-        self.areas
-            .retain(|_, area| !area.va_range().contained_in(range));
-
-        if let Some((&before_start, before)) = self.areas.range_mut(..start).last() {
-            let before_end = before.end();
-            if before_end > start {
-                if before_end <= end {
-                    before.shrink_right_metadata(start.sub_addr(before_start));
-                } else {
-                    let right_part = before.split(end).unwrap();
-                    before.shrink_right_metadata(start.sub_addr(before_start));
-                    assert_eq!(right_part.start().into(), Into::<usize>::into(end));
-                    self.areas.insert(end, right_part);
-                }
-            }
-        }
-
-        if let Some((&after_start, _)) = self.areas.range(start..).next()
-            && after_start < end
-        {
-            let mut new_area = self.areas.remove(&after_start).unwrap();
-            let after_end = new_area.end();
-            new_area.shrink_left_metadata(after_end.sub_addr(end));
-            assert_eq!(new_area.start().into(), Into::<usize>::into(end));
-            self.areas.insert(end, new_area);
-        }
-
+        let (metadata, _operations) = self.plan_unmap(range)?;
+        metadata.apply(&mut self.areas);
         Ok(())
     }
 
@@ -293,14 +490,17 @@ impl<B: MappingBackend> MemorySet<B> {
             .map(|(&old_start, _)| old_start)
             .ok_or(MappingError::InvalidParam)?;
 
-        let mut old_area = self.areas.remove(&old_start).unwrap();
+        let mut old_area = self
+            .areas
+            .remove(&old_start)
+            .ok_or(MappingError::BadState)?;
         if old_start < start {
-            let right_part = old_area.split(start).unwrap();
+            let right_part = old_area.split(start).ok_or(MappingError::BadState)?;
             self.areas.insert(old_start, old_area);
             old_area = right_part;
         }
         if old_area.end() > end {
-            let right_part = old_area.split(end).unwrap();
+            let right_part = old_area.split(end).ok_or(MappingError::BadState)?;
             self.areas.insert(right_part.start(), right_part);
         }
         assert!(self.areas.insert(start, area).is_none());
@@ -309,10 +509,22 @@ impl<B: MappingBackend> MemorySet<B> {
 
     /// Remove all memory areas and the underlying mappings.
     pub fn clear(&mut self, page_table: &mut B::PageTable) -> MappingResult {
-        for area in self.areas.values() {
-            area.unmap_area(page_table)?;
-        }
-        self.areas.clear();
+        let mut operations = Vec::new();
+        operations
+            .try_reserve_exact(self.areas.len())
+            .map_err(|_| MappingError::NoMemory)?;
+        operations.extend(self.areas.values().map(|area| {
+            (
+                area.backend().clone(),
+                MappingOperation::Unmap {
+                    start: area.start(),
+                    size: area.size(),
+                    old_flags: area.flags(),
+                },
+            )
+        }));
+        Self::execute(operations, page_table)?;
+        self.areas = BTreeMap::new();
         Ok(())
     }
 
@@ -348,59 +560,69 @@ impl<B: MappingBackend> MemorySet<B> {
         update_flags: impl Fn(B::Flags, B::Flags) -> Option<(B::Flags, B::Flags)>,
         page_table: &mut B::PageTable,
     ) -> MappingResult {
-        let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
-        let mut to_insert = Vec::new();
-        for (&area_start, area) in self.areas.iter_mut() {
-            let area_end = area.end();
-
-            if let Some((new_flags, new_reported_flags)) =
-                update_flags(area.flags(), area.reported_flags())
-            {
-                if area_start >= end {
-                    // [ prot ]
-                    //          [ area ]
-                    break;
-                } else if area_end <= start {
-                    //          [ prot ]
-                    // [ area ]
-                    // Do nothing
-                } else if area_start >= start && area_end <= end {
-                    // [   prot   ]
-                    //   [ area ]
-                    area.protect_area(new_flags, page_table)?;
-                    area.set_flags_with_reported_flags(new_flags, new_reported_flags);
-                } else if area_start < start && area_end > end {
-                    //        [ prot ]
-                    // [ left | area | right ]
-                    let mut middle_part = area.split(start).unwrap();
-                    let right_part = middle_part.split(end).unwrap();
-
-                    middle_part.protect_area(new_flags, page_table)?;
-                    middle_part.set_flags_with_reported_flags(new_flags, new_reported_flags);
-
-                    to_insert.push((right_part.start(), right_part));
-                    to_insert.push((middle_part.start(), middle_part));
-                } else if area_end > end {
-                    // [    prot ]
-                    //   [  area | right ]
-                    let right_part = area.split(end).unwrap();
-                    area.protect_area(new_flags, page_table)?;
-                    area.set_flags_with_reported_flags(new_flags, new_reported_flags);
-
-                    to_insert.push((right_part.start(), right_part));
-                } else {
-                    //        [ prot    ]
-                    // [ left |  area ]
-                    let mut right_part = area.split(start).unwrap();
-                    right_part.protect_area(new_flags, page_table)?;
-                    right_part.set_flags_with_reported_flags(new_flags, new_reported_flags);
-
-                    to_insert.push((right_part.start(), right_part));
-                }
-            }
+        let range =
+            AddrRange::try_from_start_size(start, size).ok_or(MappingError::InvalidParam)?;
+        if range.is_empty() {
+            return Ok(());
         }
-        self.areas.extend(to_insert);
+        let (metadata, operations) = self.plan_protect(range, update_flags)?;
+        Self::execute(operations, page_table)?;
+        metadata.apply(&mut self.areas);
         Ok(())
+    }
+
+    fn plan_protect(
+        &self,
+        range: AddrRange<B::Addr>,
+        update_flags: impl Fn(B::Flags, B::Flags) -> Option<(B::Flags, B::Flags)>,
+    ) -> MappingResult<(MetadataPlan<B>, Vec<BackendOperation<B>>)> {
+        let affected = self.affected_area_starts(range)?;
+        let mut remove = Vec::new();
+        let mut insert = Vec::new();
+        let mut operations = Vec::new();
+        remove
+            .try_reserve_exact(affected.len())
+            .map_err(|_| MappingError::NoMemory)?;
+        insert
+            .try_reserve_exact(affected.len().saturating_mul(3))
+            .map_err(|_| MappingError::NoMemory)?;
+        operations
+            .try_reserve_exact(affected.len())
+            .map_err(|_| MappingError::NoMemory)?;
+
+        for area_start in affected {
+            let source = self.areas.get(&area_start).ok_or(MappingError::BadState)?;
+            let Some((new_flags, new_reported_flags)) =
+                update_flags(source.flags(), source.reported_flags())
+            else {
+                continue;
+            };
+
+            remove.push(area_start);
+            let mut protected = source.clone();
+            if protected.start() < range.start {
+                let right = protected.split(range.start).ok_or(MappingError::BadState)?;
+                insert.push(protected);
+                protected = right;
+            }
+            if protected.end() > range.end {
+                let right = protected.split(range.end).ok_or(MappingError::BadState)?;
+                insert.push(right);
+            }
+            operations.push((
+                protected.backend().clone(),
+                MappingOperation::Protect {
+                    start: protected.start(),
+                    size: protected.size(),
+                    old_flags: protected.flags(),
+                    new_flags,
+                },
+            ));
+            protected.set_flags_with_reported_flags(new_flags, new_reported_flags);
+            insert.push(protected);
+        }
+
+        Ok((MetadataPlan { remove, insert }, operations))
     }
 }
 

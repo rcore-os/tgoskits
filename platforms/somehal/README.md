@@ -294,7 +294,7 @@ somehal = { version = "0.5", features = ["hv", "uspace"] }
 - **`someboot`**: 底层架构抽象和引导支持
 - **`rdrive`**: 统一驱动框架
 - **`rdif-intc`**: 中断控制器驱动接口
-- **`page-table-generic`**: 通用页表管理
+- **`ax-page-table`**: 通用页表管理
 - **`kernutil`**: 内核工具库（StaticCell 等）
 
 ### AArch64 特定依赖

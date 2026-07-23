@@ -575,7 +575,7 @@ mod tests {
     fn request_validation_rejects_transfer_larger_than_hard_block_limit() {
         let info = queue_info_with(QueueLimits {
             dma_mask: u64::MAX,
-            dma_domain: dma_api::DmaDomainId::legacy_global(),
+            dma_domain: dma_api::DmaDomainId::identity(),
             dma_alignment: 512,
             max_inflight: 1,
             max_blocks_per_request: 2,

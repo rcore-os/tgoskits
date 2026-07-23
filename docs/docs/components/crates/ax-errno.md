@@ -83,7 +83,6 @@ graph LR
     strum["strum"] --> ax_errno
 
     ax_errno --> ax-alloc["ax-alloc"]
-    ax_errno --> ax-allocator["ax-allocator"]
     ax_errno --> axio["ax-io"]
     ax_errno --> ax-mm["ax-mm"]
     ax_errno --> ax-net["ax-net/ax-net"]

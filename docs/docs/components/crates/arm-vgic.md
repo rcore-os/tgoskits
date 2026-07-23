@@ -252,8 +252,6 @@ graph LR
 - `crate_interface`
 - `ax-lazyinit`
 - `ax-memory-set`
-- `ax-page-table-entry`
-- `ax-page-table-multiarch`
 
 ### 3.3 被依赖情况
 - `axdevice`

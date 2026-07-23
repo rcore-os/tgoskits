@@ -1,4 +1,7 @@
-use page_table_generic::{MemAttributes, PageTableEntry, TableMeta};
+use ax_page_table::{
+    boot::{MemAttributes, PageTableEntry, TableMeta},
+    entry::aarch64::MemAttrLayout,
+};
 use tock_registers::{interfaces::*, register_bitfields, registers::ReadWrite};
 
 register_bitfields![u64,
@@ -46,7 +49,7 @@ impl Entry {
 }
 
 impl PageTableEntry for Entry {
-    fn from_config(config: page_table_generic::PteConfig) -> Self {
+    fn from_config(config: ax_page_table::boot::PteConfig) -> Self {
         let entry = Entry::empty();
         if !config.valid {
             return entry;
@@ -58,7 +61,7 @@ impl PageTableEntry for Entry {
             val += PTE::AF::SET;
         }
 
-        val += PTE::PHYS_ADDR.val((config.paddr.raw() as u64) >> 12);
+        val += PTE::PHYS_ADDR.val((config.paddr.as_usize() as u64) >> 12);
 
         // 设置大页标志（NON_BLOCK=0 表示大页）
         if !config.huge {
@@ -106,7 +109,7 @@ impl PageTableEntry for Entry {
         // 设置内存属性
         match config.mem_attr {
             MemAttributes::Device => {
-                val += PTE::MAIR.val(0) + PTE::SHAREABLE::OUTER;
+                val += PTE::MAIR.val(MemAttrLayout::DEVICE_INDEX) + PTE::SHAREABLE::OUTER;
             }
             MemAttributes::Normal | MemAttributes::PerCpu => {
                 // CPU-local areas have a second virtual alias, but they remain
@@ -114,17 +117,18 @@ impl PageTableEntry for Entry {
                 // and diagnostic paths access another CPU's area directly.
                 // Both aliases therefore need the exact same cacheability and
                 // shareability attributes.
-                val += PTE::MAIR.val(1) + PTE::SHAREABLE::INNER;
+                val += PTE::MAIR.val(MemAttrLayout::NORMAL_INDEX) + PTE::SHAREABLE::INNER;
             }
             MemAttributes::Uncached => {
-                val += PTE::MAIR.val(2) + PTE::SHAREABLE::OUTER;
+                val += PTE::MAIR.val(MemAttrLayout::NORMAL_NON_CACHEABLE_INDEX)
+                    + PTE::SHAREABLE::OUTER;
             }
         }
         entry.as_typed().write(val);
         entry
     }
 
-    fn to_config(&self, is_dir: bool) -> page_table_generic::PteConfig {
+    fn to_config(&self, is_dir: bool) -> ax_page_table::boot::PteConfig {
         let pte = self.as_typed();
         let lower;
         let executable;
@@ -143,7 +147,7 @@ impl PageTableEntry for Entry {
             executable = !pte.is_set(PTE::PXN);
         }
 
-        page_table_generic::PteConfig {
+        ax_page_table::boot::PteConfig {
             paddr: ((pte.read(PTE::PHYS_ADDR) << 12) as usize).into(),
             valid: pte.is_set(PTE::VALID),
             read: pte.is_set(PTE::AF),
@@ -154,13 +158,11 @@ impl PageTableEntry for Entry {
             global: !pte.is_set(PTE::NG),
             is_dir,
             huge: !pte.is_set(PTE::NON_BLOCK),
-            mem_attr: {
-                match pte.read(PTE::MAIR) {
-                    0 => MemAttributes::Device,
-                    1 => MemAttributes::Normal,
-                    2 => MemAttributes::Uncached,
-                    _ => MemAttributes::Normal,
-                }
+            mem_attr: match pte.read(PTE::MAIR) {
+                MemAttrLayout::DEVICE_INDEX => MemAttributes::Device,
+                MemAttrLayout::NORMAL_INDEX => MemAttributes::Normal,
+                MemAttrLayout::NORMAL_NON_CACHEABLE_INDEX => MemAttributes::Uncached,
+                _ => MemAttributes::Normal,
             },
         }
     }
@@ -191,7 +193,7 @@ impl TableMeta for Generic {
 
     const MAX_BLOCK_LEVEL: usize = 3;
 
-    fn flush(vaddr: Option<page_table_generic::VirtAddr>) {
+    fn flush(vaddr: Option<ax_page_table::boot::VirtAddr>) {
         super::super::elx::flush_tlb(vaddr);
     }
 }
