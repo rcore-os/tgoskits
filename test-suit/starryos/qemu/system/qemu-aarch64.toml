@@ -94,7 +94,7 @@ echo "STARRY_GROUPED_TESTS_PASSED"
 ]
 success_regex = ["(?m)^STARRY_GROUPED_TESTS_PASSED\\s*$"]
 fail_regex = ['(?i)\bpanic(?:ked)?\b', "(?m)^lockdep fatal violation\\s*$", '(?m)^STARRY_GROUPED_TEST_FAILED:']
-timeout = 2700
+timeout = 1800
 
 [host_http_server]
 bind = "127.0.0.1"
