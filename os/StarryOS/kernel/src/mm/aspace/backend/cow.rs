@@ -9,6 +9,8 @@ use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FileBackend;
 use ax_kspin::SpinNoIrq;
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+#[cfg(axtest)]
+use ax_runtime::hal::paging::PageTable;
 use ax_runtime::hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageSize, PageTableCursor, PagingError},
@@ -107,6 +109,55 @@ static FRAME_TABLE: SpinNoIrq<FrameTableRefCount> = SpinNoIrq::new(FrameTableRef
 #[cfg(axtest)]
 pub(crate) fn private_mmap_eof_check_for_test() -> bool {
     starry_mm::private_file_eof_policy_matches_linux_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn fault_accounting_failure_rolls_back_for_test() -> bool {
+    let Ok(mut page_table) = PageTable::try_new() else {
+        return false;
+    };
+    let vaddr = VirtAddr::from(0x20_0000);
+    let backend = CowBackend {
+        start: vaddr,
+        size: PageSize::Size4K,
+        file: None,
+        name: None,
+        shared: false,
+    };
+    let accounting = MemoryAccounting::new();
+    let duplicate_charge = vaddr + PAGE_SIZE_4K;
+    if accounting
+        .record_charge(duplicate_charge, RssKind::Anon)
+        .is_err()
+    {
+        return false;
+    }
+
+    let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+    let result = backend.alloc_file_run(
+        &[vaddr, duplicate_charge],
+        flags,
+        MappingFlags::READ,
+        Some(&accounting),
+        &mut page_table.cursor(),
+    );
+    let mut mappings_removed = true;
+    for address in [vaddr, duplicate_charge] {
+        let query = page_table.cursor().query(address);
+        if let Ok((paddr, _, page_size)) = query {
+            mappings_removed = false;
+            let _ = page_table.cursor().unmap(address);
+            let frame = FRAME_TABLE.lock().get_frame_ref(paddr);
+            if let Some(frame) = frame {
+                release_frame(&mut frame.lock(), paddr, page_size);
+            }
+        }
+    }
+    let accounting_rolled_back = accounting.charge_kind(vaddr).is_none()
+        && accounting.charge_kind(duplicate_charge) == Some(RssKind::Anon)
+        && accounting.rss_anon_pages() == 1;
+    let _ = accounting.remove_charge(duplicate_charge);
+    result.is_err() && mappings_removed && accounting_rolled_back
 }
 
 /// Copy-on-write mapping backend.
@@ -228,7 +279,7 @@ impl CowBackend {
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
-    ) -> AxResult {
+    ) -> AxResult<PhysAddr> {
         let kind = self.rss_kind_for_fault(access_flags);
         let frame = self.alloc_new_frame(PageInitialization::Zeroed)?;
 
@@ -246,10 +297,16 @@ impl CowBackend {
             self.deinit_frame(frame);
             return Err(err.into());
         }
-        if let Some(acct) = acct {
-            acct.record_charge(vaddr, kind)?;
+        if let Some(acct) = acct
+            && let Err(error) = acct.record_charge(vaddr, kind)
+        {
+            if pt.unmap(vaddr).is_err() {
+                return Err(AxError::BadState);
+            }
+            self.deinit_frame(frame);
+            return Err(error);
         }
-        Ok(())
+        Ok(frame)
     }
 
     /// Fill a run of consecutive not-mapped FILE-backed pages with a single
@@ -263,38 +320,110 @@ impl CowBackend {
         pt: &mut PageTableCursor,
     ) -> AxResult<usize> {
         let Some(file_mapping) = &self.file else {
-            for &addr in run {
-                self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
-            }
-            return Ok(run.len());
+            return self.alloc_pages_individually(run, flags, access_flags, acct, pt);
         };
         let ps = self.size as usize;
         let v0 = run[0];
         if v0.as_usize() < file_mapping.vaddr_base().as_usize() {
-            for &addr in run {
-                self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
-            }
-            return Ok(run.len());
+            return self.alloc_pages_individually(run, flags, access_flags, acct, pt);
         }
         let n = run.len();
         let total = n * ps;
         let mut buf = alloc::vec![0u8; total];
         file_mapping.read_run(v0, &mut buf)?;
         let kind = self.rss_kind_for_fault(access_flags);
+        let mut mapped = alloc::vec::Vec::new();
+        mapped
+            .try_reserve_exact(run.len())
+            .map_err(|_| AxError::NoMemory)?;
         for (k, &addr) in run.iter().enumerate() {
-            let frame = self.alloc_new_frame(PageInitialization::Uninitialized)?;
+            let frame = match self.alloc_new_frame(PageInitialization::Uninitialized) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    return if self.rollback_fault_run(&mapped, acct, pt) {
+                        Err(error)
+                    } else {
+                        Err(AxError::BadState)
+                    };
+                }
+            };
             let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
             dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
             let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
             if let Err(err) = pt.map(addr, frame, self.size, pte_flags) {
                 self.deinit_frame(frame);
-                return Err(err.into());
+                return if self.rollback_fault_run(&mapped, acct, pt) {
+                    Err(err.into())
+                } else {
+                    Err(AxError::BadState)
+                };
             }
-            if let Some(acct) = acct {
-                acct.record_charge(addr, kind)?;
+            if let Some(acct) = acct
+                && let Err(error) = acct.record_charge(addr, kind)
+            {
+                let current_rolled_back = if pt.unmap(addr).is_ok() {
+                    self.deinit_frame(frame);
+                    true
+                } else {
+                    false
+                };
+                let previous_rolled_back = self.rollback_fault_run(&mapped, Some(acct), pt);
+                return if current_rolled_back && previous_rolled_back {
+                    Err(error)
+                } else {
+                    Err(AxError::BadState)
+                };
             }
+            mapped.push((addr, frame));
         }
         Ok(n)
+    }
+
+    fn alloc_pages_individually(
+        &self,
+        run: &[VirtAddr],
+        flags: MappingFlags,
+        access_flags: MappingFlags,
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult<usize> {
+        let mut mapped = alloc::vec::Vec::new();
+        mapped
+            .try_reserve_exact(run.len())
+            .map_err(|_| AxError::NoMemory)?;
+        for &addr in run {
+            match self.alloc_new_at(addr, flags, access_flags, acct, pt) {
+                Ok(frame) => mapped.push((addr, frame)),
+                Err(error) => {
+                    return if self.rollback_fault_run(&mapped, acct, pt) {
+                        Err(error)
+                    } else {
+                        Err(AxError::BadState)
+                    };
+                }
+            }
+        }
+        Ok(run.len())
+    }
+
+    fn rollback_fault_run(
+        &self,
+        mapped: &[(VirtAddr, PhysAddr)],
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> bool {
+        let mut restored = true;
+        for &(vaddr, frame) in mapped.iter().rev() {
+            if pt.unmap(vaddr).is_err() {
+                restored = false;
+                continue;
+            }
+            if acct.is_some_and(|acct| acct.remove_charge(vaddr).is_none()) {
+                restored = false;
+            }
+            self.deinit_frame(frame);
+        }
+        restored
     }
 
     fn handle_cow_fault(

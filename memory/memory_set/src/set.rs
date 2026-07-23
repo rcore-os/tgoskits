@@ -1,5 +1,3 @@
-use alloc::collections::BTreeMap;
-#[allow(unused_imports)] // this is a weird false alarm
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -20,12 +18,29 @@ struct MetadataPlan<B: MappingBackend> {
 }
 
 impl<B: MappingBackend> MetadataPlan<B> {
-    fn apply(self, areas: &mut BTreeMap<B::Addr, MemoryArea<B>>) {
+    fn reserve(&self, areas: &mut Vec<MemoryArea<B>>) -> MappingResult {
+        let final_len = areas
+            .len()
+            .checked_sub(self.remove.len())
+            .and_then(|len| len.checked_add(self.insert.len()))
+            .ok_or(MappingError::BadState)?;
+        areas
+            .try_reserve(final_len.saturating_sub(areas.len()))
+            .map_err(|_| MappingError::NoMemory)
+    }
+
+    fn apply(self, areas: &mut Vec<MemoryArea<B>>) {
         for start in self.remove {
-            assert!(areas.remove(&start).is_some());
+            let index = areas
+                .binary_search_by_key(&start, MemoryArea::start)
+                .expect("prepared metadata removal must still exist");
+            areas.remove(index);
         }
         for area in self.insert {
-            assert!(areas.insert(area.start(), area).is_none());
+            let index = areas
+                .binary_search_by_key(&area.start(), MemoryArea::start)
+                .expect_err("prepared metadata insertion must remain vacant");
+            areas.insert(index, area);
         }
     }
 }
@@ -33,14 +48,14 @@ impl<B: MappingBackend> MetadataPlan<B> {
 /// A container that maintains memory mappings ([`MemoryArea`]).
 #[derive(Clone)]
 pub struct MemorySet<B: MappingBackend> {
-    areas: BTreeMap<B::Addr, MemoryArea<B>>,
+    areas: Vec<MemoryArea<B>>,
 }
 
 impl<B: MappingBackend> MemorySet<B> {
     fn execute(
         operations: Vec<BackendOperation<B>>,
         page_table: &mut B::PageTable,
-    ) -> MappingResult {
+    ) -> MappingResult<Vec<(B, B::CommitState)>> {
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(operations.len())
@@ -87,6 +102,18 @@ impl<B: MappingBackend> MemorySet<B> {
             }
         }
 
+        Ok(committed)
+    }
+
+    fn execute_with_metadata(
+        &mut self,
+        metadata: MetadataPlan<B>,
+        operations: Vec<BackendOperation<B>>,
+        page_table: &mut B::PageTable,
+    ) -> MappingResult {
+        metadata.reserve(&mut self.areas)?;
+        let committed = Self::execute(operations, page_table)?;
+        metadata.apply(&mut self.areas);
         for (backend, state) in committed {
             backend.finalize(state, page_table);
         }
@@ -94,22 +121,28 @@ impl<B: MappingBackend> MemorySet<B> {
     }
 
     fn affected_area_starts(&self, range: AddrRange<B::Addr>) -> MappingResult<Vec<B::Addr>> {
-        let preceding = self
+        let first_in_range = self
             .areas
-            .range(..range.start)
-            .next_back()
-            .filter(|(_, area)| area.end() > range.start)
-            .map(|(&start, _)| start);
-        let starts_in_range = self.areas.range(range.start..range.end).count();
+            .partition_point(|area| area.start() < range.start);
+        let preceding = first_in_range
+            .checked_sub(1)
+            .and_then(|index| self.areas.get(index))
+            .filter(|area| area.end() > range.start)
+            .map(MemoryArea::start);
+        let starts_in_range = self.areas[first_in_range..]
+            .iter()
+            .take_while(|area| area.start() < range.end)
+            .count();
         let mut starts = Vec::new();
         starts
             .try_reserve_exact(starts_in_range + usize::from(preceding.is_some()))
             .map_err(|_| MappingError::NoMemory)?;
         starts.extend(preceding);
         starts.extend(
-            self.areas
-                .range(range.start..range.end)
-                .map(|(&start, _)| start),
+            self.areas[first_in_range..]
+                .iter()
+                .take_while(|area| area.start() < range.end)
+                .map(MemoryArea::start),
         );
         Ok(starts)
     }
@@ -133,7 +166,12 @@ impl<B: MappingBackend> MemorySet<B> {
             .map_err(|_| MappingError::NoMemory)?;
 
         for area_start in affected {
-            let source = self.areas.get(&area_start).ok_or(MappingError::BadState)?;
+            let source = self
+                .areas
+                .binary_search_by_key(&area_start, MemoryArea::start)
+                .ok()
+                .and_then(|index| self.areas.get(index))
+                .ok_or(MappingError::BadState)?;
             let start = source.start().max(range.start);
             let end = source.end().min(range.end);
             operations.push((
@@ -163,9 +201,7 @@ impl<B: MappingBackend> MemorySet<B> {
 
     /// Creates a new memory set.
     pub const fn new() -> Self {
-        Self {
-            areas: BTreeMap::new(),
-        }
+        Self { areas: Vec::new() }
     }
 
     /// Returns the number of memory areas in the memory set.
@@ -180,17 +216,20 @@ impl<B: MappingBackend> MemorySet<B> {
 
     /// Returns the iterator over all memory areas.
     pub fn iter(&self) -> impl Iterator<Item = &MemoryArea<B>> {
-        self.areas.values()
+        self.areas.iter()
     }
 
     /// Returns whether the given address range overlaps with any existing area.
     pub fn overlaps(&self, range: AddrRange<B::Addr>) -> bool {
-        if let Some((_, before)) = self.areas.range(..range.start).last()
+        let index = self
+            .areas
+            .partition_point(|area| area.start() < range.start);
+        if let Some(before) = index.checked_sub(1).and_then(|index| self.areas.get(index))
             && before.va_range().overlaps(range)
         {
             return true;
         }
-        if let Some((_, after)) = self.areas.range(range.start..).next()
+        if let Some(after) = self.areas.get(index)
             && after.va_range().overlaps(range)
         {
             return true;
@@ -200,7 +239,11 @@ impl<B: MappingBackend> MemorySet<B> {
 
     /// Finds the memory area that contains the given address.
     pub fn find(&self, addr: B::Addr) -> Option<&MemoryArea<B>> {
-        let candidate = self.areas.range(..=addr).last().map(|(_, a)| a);
+        let candidate = self
+            .areas
+            .partition_point(|area| area.start() <= addr)
+            .checked_sub(1)
+            .and_then(|index| self.areas.get(index));
         candidate.filter(|a| a.va_range().contains(addr))
     }
 
@@ -231,11 +274,16 @@ impl<B: MappingBackend> MemorySet<B> {
         }
         // brute force: try each area's end address as the start.
         let mut last_end: <B as MappingBackend>::Addr = hint.max(limit.start).align_up(align);
-        if let Some((_, area)) = self.areas.range(..last_end).last() {
+        let mut index = self.areas.partition_point(|area| area.start() < last_end);
+        if let Some(area) = index.checked_sub(1).and_then(|index| self.areas.get(index)) {
             last_end = last_end.max(area.end()).align_up(align);
         }
-        for (&addr, area) in self.areas.range(last_end..) {
-            if last_end.checked_add(size).is_some_and(|end| end <= addr) {
+        index = self.areas.partition_point(|area| area.start() < last_end);
+        for area in &self.areas[index..] {
+            if last_end
+                .checked_add(size)
+                .is_some_and(|end| end <= area.start())
+            {
                 return Some(last_end);
             }
             last_end = area.end().align_up(align);
@@ -262,26 +310,25 @@ impl<B: MappingBackend> MemorySet<B> {
         }
 
         // Find the area containing addr.
-        let area_start = self
+        let area_index = self
             .areas
-            .range(..=addr)
-            .last()
-            .filter(|(_, a)| a.va_range().contains(addr))
-            .map(|(&start, _)| start)
+            .partition_point(|area| area.start() <= addr)
+            .checked_sub(1)
+            .filter(|&index| self.areas[index].va_range().contains(addr))
             .ok_or(MappingError::InvalidParam)?;
 
         // Only the next area can conflict with a rightward extension.
-        let area_end = self.areas[&area_start].end();
+        let area_end = self.areas[area_index].end();
         let new_end = area_end
             .checked_add(additional_size)
             .ok_or(MappingError::InvalidParam)?;
-        if let Some((_, next)) = self.areas.range(area_end..).next()
+        if let Some(next) = self.areas.get(area_index + 1)
             && new_end > next.start()
         {
             return Err(MappingError::AlreadyExists);
         }
 
-        let area = &self.areas[&area_start];
+        let area = &self.areas[area_index];
         let operation = MappingOperation::Map {
             start: area.end(),
             size: additional_size,
@@ -299,13 +346,11 @@ impl<B: MappingBackend> MemorySet<B> {
         insert
             .try_reserve_exact(1)
             .map_err(|_| MappingError::NoMemory)?;
-        remove.push(area_start);
+        remove.push(area.start());
         insert.push(grown);
         let metadata = MetadataPlan { remove, insert };
 
-        Self::execute(alloc::vec![(backend, operation)], page_table)?;
-        metadata.apply(&mut self.areas);
-        Ok(())
+        self.execute_with_metadata(metadata, alloc::vec![(backend, operation)], page_table)
     }
 
     /// Add a new memory mapping.
@@ -364,9 +409,7 @@ impl<B: MappingBackend> MemorySet<B> {
             .try_reserve(1)
             .map_err(|_| MappingError::NoMemory)?;
         metadata.insert.push(area);
-        Self::execute(operations, page_table)?;
-        metadata.apply(&mut self.areas);
-        Ok(())
+        self.execute_with_metadata(metadata, operations, page_table)
     }
 
     /// Inserts area metadata for mappings already installed by the caller.
@@ -382,9 +425,17 @@ impl<B: MappingBackend> MemorySet<B> {
         if self.overlaps(area.va_range()) {
             return Err(MappingError::AlreadyExists);
         }
-        if self.areas.insert(area.start(), area).is_some() {
-            return Err(MappingError::BadState);
-        }
+        self.areas
+            .try_reserve(1)
+            .map_err(|_| MappingError::NoMemory)?;
+        let index = match self
+            .areas
+            .binary_search_by_key(&area.start(), MemoryArea::start)
+        {
+            Ok(_) => return Err(MappingError::BadState),
+            Err(index) => index,
+        };
+        self.areas.insert(index, area);
         Ok(())
     }
 
@@ -428,9 +479,7 @@ impl<B: MappingBackend> MemorySet<B> {
             .map_err(|_| MappingError::NoMemory)?;
         metadata.insert.push(area);
 
-        Self::execute(operations, page_table)?;
-        metadata.apply(&mut self.areas);
-        Ok(())
+        self.execute_with_metadata(metadata, operations, page_table)
     }
 
     /// Remove memory mappings within the given address range.
@@ -452,9 +501,7 @@ impl<B: MappingBackend> MemorySet<B> {
         }
 
         let (metadata, operations) = self.plan_unmap(range)?;
-        Self::execute(operations, page_table)?;
-        metadata.apply(&mut self.areas);
-        Ok(())
+        self.execute_with_metadata(metadata, operations, page_table)
     }
 
     /// Remove memory area metadata without calling the backend's unmap hook.
@@ -469,6 +516,7 @@ impl<B: MappingBackend> MemorySet<B> {
         }
 
         let (metadata, _operations) = self.plan_unmap(range)?;
+        metadata.reserve(&mut self.areas)?;
         metadata.apply(&mut self.areas);
         Ok(())
     }
@@ -482,28 +530,36 @@ impl<B: MappingBackend> MemorySet<B> {
         let start = area.start();
         let end = area.end();
 
-        let old_start = self
+        let old_index = self
             .areas
-            .range(..=start)
-            .last()
-            .filter(|(_, old)| old.start() <= start && end <= old.end())
-            .map(|(&old_start, _)| old_start)
+            .partition_point(|old| old.start() <= start)
+            .checked_sub(1)
+            .filter(|&index| end <= self.areas[index].end())
             .ok_or(MappingError::InvalidParam)?;
-
-        let mut old_area = self
-            .areas
-            .remove(&old_start)
-            .ok_or(MappingError::BadState)?;
+        let old_start = self.areas[old_index].start();
+        let mut old_area = self.areas[old_index].clone();
+        let mut remove = Vec::new();
+        let mut insert = Vec::new();
+        remove
+            .try_reserve_exact(1)
+            .map_err(|_| MappingError::NoMemory)?;
+        insert
+            .try_reserve_exact(3)
+            .map_err(|_| MappingError::NoMemory)?;
+        remove.push(old_start);
         if old_start < start {
             let right_part = old_area.split(start).ok_or(MappingError::BadState)?;
-            self.areas.insert(old_start, old_area);
+            insert.push(old_area);
             old_area = right_part;
         }
         if old_area.end() > end {
             let right_part = old_area.split(end).ok_or(MappingError::BadState)?;
-            self.areas.insert(right_part.start(), right_part);
+            insert.push(right_part);
         }
-        assert!(self.areas.insert(start, area).is_none());
+        insert.push(area);
+        let metadata = MetadataPlan { remove, insert };
+        metadata.reserve(&mut self.areas)?;
+        metadata.apply(&mut self.areas);
         Ok(())
     }
 
@@ -513,7 +569,7 @@ impl<B: MappingBackend> MemorySet<B> {
         operations
             .try_reserve_exact(self.areas.len())
             .map_err(|_| MappingError::NoMemory)?;
-        operations.extend(self.areas.values().map(|area| {
+        operations.extend(self.areas.iter().map(|area| {
             (
                 area.backend().clone(),
                 MappingOperation::Unmap {
@@ -523,8 +579,11 @@ impl<B: MappingBackend> MemorySet<B> {
                 },
             )
         }));
-        Self::execute(operations, page_table)?;
-        self.areas = BTreeMap::new();
+        let committed = Self::execute(operations, page_table)?;
+        self.areas.clear();
+        for (backend, state) in committed {
+            backend.finalize(state, page_table);
+        }
         Ok(())
     }
 
@@ -566,9 +625,7 @@ impl<B: MappingBackend> MemorySet<B> {
             return Ok(());
         }
         let (metadata, operations) = self.plan_protect(range, update_flags)?;
-        Self::execute(operations, page_table)?;
-        metadata.apply(&mut self.areas);
-        Ok(())
+        self.execute_with_metadata(metadata, operations, page_table)
     }
 
     fn plan_protect(
@@ -591,7 +648,12 @@ impl<B: MappingBackend> MemorySet<B> {
             .map_err(|_| MappingError::NoMemory)?;
 
         for area_start in affected {
-            let source = self.areas.get(&area_start).ok_or(MappingError::BadState)?;
+            let source = self
+                .areas
+                .binary_search_by_key(&area_start, MemoryArea::start)
+                .ok()
+                .and_then(|index| self.areas.get(index))
+                .ok_or(MappingError::BadState)?;
             let Some((new_flags, new_reported_flags)) =
                 update_flags(source.flags(), source.reported_flags())
             else {
@@ -638,6 +700,6 @@ where
     B::Flags: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_list().entries(self.areas.values()).finish()
+        f.debug_list().entries(self.areas.iter()).finish()
     }
 }

@@ -27,7 +27,7 @@ sidebar_label: "地址空间事务"
 
 ### 1.2 MemorySet
 
-`MemorySet<B>` 使用 `BTreeMap<B::Addr, MemoryArea<B>>`，key 等于 area start。查询可以通过前驱 area 判断 containment，free-area 搜索则从 hint 开始扫描 gaps。
+`MemorySet<B>` 使用按 area start 排序的紧凑 `Vec<MemoryArea<B>>`。containment、overlap 和 page-fault 查找通过 `partition_point` 或 binary search 定位前驱，保持 O(log n)；free-area 搜索从 hint 对应的二分位置开始扫描 gaps。VMA 插入、删除和 split 为 O(n)，但这些操作不在 page-fault 热路径。选择该表示是为了让 `try_reserve` 在 backend commit 前可靠预留最终容量，避免为树节点再引入 allocator 或不可恢复的提交后分配。
 
 | 操作 | metadata 目标 | backend 目标 |
 | --- | --- | --- |
@@ -84,7 +84,7 @@ pub trait MappingBackend: Clone {
 
 ## 3. MemorySet 执行流程
 
-`MemorySet::execute()` 为 plan 和 commit state Vec 预留精确容量，避免事务中途因为容器扩容失败而无法记录 undo。metadata split 与 flags 更新在只包含相交 VMA 的 `MetadataPlan` 中完成。
+`MemorySet::execute()` 为 plan 和 commit state Vec 预留精确容量，`execute_with_metadata()` 还在进入 backend prepare 前预留 live VMA Vec 的最终容量，避免事务中途因为容器扩容失败而无法记录 undo 或发布 metadata。metadata split 与 flags 更新在只包含相交 VMA 的 `MetadataPlan` 中完成。
 
 ### 3.1 Prepare 与 commit
 
@@ -94,17 +94,17 @@ pub trait MappingBackend: Clone {
 flowchart TB
     Input["requested map/unmap/protect"] --> Select["select intersecting areas"]
     Select --> PlanMeta["clone affected areas; prepare remove/insert delta"]
-    PlanMeta --> Reserve["reserve plan + state vectors"]
+    PlanMeta --> Reserve["reserve plan/state vectors + final VMA capacity"]
     Reserve --> Prepare["prepare every backend operation"]
     Prepare -->|"prepare fails"| Abort["abort prepared plans in reverse"]
     Prepare -->|"all prepared"| Commit["commit operations in order"]
     Commit -->|"one fails"| AbortRest["abort remaining plans"]
     AbortRest --> Rollback["rollback committed states in reverse"]
-    Commit -->|"all succeed"| Finalize["finalize deferred resources"]
-    Finalize --> Publish["apply metadata remove/insert delta"]
+    Commit -->|"all succeed"| Publish["apply allocation-free metadata delta"]
+    Publish --> Finalize["finalize deferred resources"]
 ```
 
-live metadata 只在 `execute()` 成功返回后应用差量。因此 PTE/backend 失败不会留下已 split 但未映射的 VMA，也不会为一次局部操作复制整个地址空间。
+live metadata 容量在 backend prepare 前预留，差量只在全部 backend commit 成功后应用，随后才 finalize 旧资源。因此 PTE/backend 失败不会留下已 split 但未映射的 VMA，metadata 发布不会再分配，也不会为一次局部操作复制整个地址空间。
 
 ### 3.2 Rollback 失败
 

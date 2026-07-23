@@ -28,7 +28,9 @@ use starry_mm::{CloneMapAccounting, CommitKind, MemoryAccounting, PageInitializa
 pub use starry_mm::{RssKind, SharedPages};
 
 #[cfg(axtest)]
-pub(crate) use self::cow::private_mmap_eof_check_for_test;
+pub(crate) use self::cow::{
+    fault_accounting_failure_rolls_back_for_test, private_mmap_eof_check_for_test,
+};
 use super::AddrSpace;
 
 fn divide_page(size: usize, page_size: PageSize) -> usize {

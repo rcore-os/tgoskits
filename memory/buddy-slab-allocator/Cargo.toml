@@ -44,6 +44,6 @@ ax-kspin = { workspace = true }
 log = "0.4"
 
 [dev-dependencies]
-ax-kspin = { workspace = true, features = ["smp"] }
+ax-kspin = { workspace = true, features = ["host-test", "smp"] }
 divan = "0.1.21"
 rand = { version = "0.10", features = ["std_rng"] }

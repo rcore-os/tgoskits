@@ -399,6 +399,30 @@ fn failed_metadata_split_preserves_the_original_area() {
     assert_eq!(areas, [va_range!(0x1000..0x4000)]);
 }
 
+#[test]
+fn failed_replacement_metadata_split_preserves_the_original_area() {
+    let mut set = MemorySet::new();
+    let mut page_table = [0; MAX_ADDR];
+    set.map(
+        MemoryArea::new(VirtAddr::from(0x1000), 0x3000, 1, UnsplittableBackend),
+        &mut page_table,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(
+        set.replace_area_metadata(MemoryArea::new(
+            VirtAddr::from(0x2000),
+            0x1000,
+            2,
+            UnsplittableBackend,
+        )),
+        Err(MappingError::BadState)
+    );
+    let areas = set.iter().map(|area| area.va_range()).collect::<Vec<_>>();
+    assert_eq!(areas, [va_range!(0x1000..0x4000)]);
+}
+
 fn fault_set_snapshot(set: &FaultMemorySet) -> Vec<(usize, usize, MockFlags)> {
     set.iter()
         .map(|area| (area.start().as_usize(), area.size(), area.flags()))

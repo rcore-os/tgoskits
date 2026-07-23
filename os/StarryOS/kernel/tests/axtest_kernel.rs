@@ -56,6 +56,11 @@ mod tests {
     }
 
     #[test]
+    fn cow_fault_accounting_failure_rolls_back() {
+        ax_assert!(axtest_exports::cow_fault_accounting_failure_rolls_back());
+    }
+
+    #[test]
     fn concurrent_epoll_reverse_add_is_serialized() {
         ax_assert!(axtest_exports::concurrent_epoll_reverse_add_is_serialized());
     }

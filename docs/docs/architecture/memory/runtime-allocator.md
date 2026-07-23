@@ -61,9 +61,9 @@ flowchart LR
 | 路径 | 锁与并发行为 | 统计分类 |
 | --- | --- | --- |
 | 本 CPU Slab alloc/free | CPU-local `SpinNoIrq<SlabAllocator>` | `Normal × RustHeap` |
-| Slab 扩容/归还 | 短时进入全局 Buddy 锁 | `Normal × RustHeap` 的请求字节数 |
+| Slab 扩容/归还 | 短时进入全局 `SpinNoIrq<BuddyAllocator>` | `Normal × RustHeap` 的请求字节数 |
 | 跨 CPU Slab free | CAS 压入 owner slab page 的 remote-free stack | 释放仍归原 byte allocation |
-| 大对象 alloc/free | 全局 Buddy 锁 | `Normal × RustHeap` |
+| 大对象 alloc/free | 全局 `SpinNoIrq<BuddyAllocator>` | `Normal × RustHeap` |
 
 Remote free 不是单独 allocator 或固定容量 manager。释放对象自身保存链表节点，owner CPU 在后续分配或回收 Slab 时通过 Acquire/Release 操作 drain 该栈。
 
