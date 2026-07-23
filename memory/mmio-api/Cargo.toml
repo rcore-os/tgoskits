@@ -12,3 +12,10 @@ repository.workspace = true
 [dependencies]
 derive_more.workspace=true
 thiserror.workspace=true
+axtest = { workspace = true, optional = true }
+
+[features]
+axtest = ["dep:axtest"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

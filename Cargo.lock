@@ -674,6 +674,7 @@ dependencies = [
  "ax-kernel-guard",
  "ax-kspin",
  "axklib",
+ "axtest",
  "bcm2835-sdhci",
  "crab-usb",
  "cv181x-sdhci",
@@ -900,6 +901,9 @@ dependencies = [
 [[package]]
 name = "ax-memory-addr"
 version = "0.6.9"
+dependencies = [
+ "axtest",
+]
 
 [[package]]
 name = "ax-memory-set"
@@ -907,6 +911,7 @@ version = "0.6.12"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-memory-addr",
+ "axtest",
 ]
 
 [[package]]
@@ -937,6 +942,7 @@ dependencies = [
  "ax-sync",
  "ax-task",
  "axpoll",
+ "axtest",
  "bitflags 2.13.1",
  "cfg-if",
  "enum_dispatch",
@@ -957,6 +963,7 @@ version = "0.8.10"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "ax-memory-addr",
+ "axtest",
  "bitflags 2.13.1",
  "x86_64",
 ]
@@ -2924,6 +2931,7 @@ version = "0.9.3"
 dependencies = [
  "aarch64-cpu-ext",
  "ax-kspin",
+ "axtest",
  "cfg-if",
  "derive_more",
  "log",
@@ -4257,6 +4265,9 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 [[package]]
 name = "irq-framework"
 version = "0.3.0"
+dependencies = [
+ "axtest",
+]
 
 [[package]]
 name = "is-terminal"
@@ -5063,6 +5074,7 @@ dependencies = [
 name = "mmio-api"
 version = "0.2.2"
 dependencies = [
+ "axtest",
  "derive_more",
  "thiserror 2.0.19",
 ]
@@ -6289,6 +6301,7 @@ version = "0.8.3"
 dependencies = [
  "as-any",
  "async-trait",
+ "axtest",
  "paste",
  "rdif-def",
  "thiserror 2.0.19",
@@ -6300,6 +6313,7 @@ name = "rdif-block"
 version = "0.11.2"
 dependencies = [
  "ax-kspin",
+ "axtest",
  "dma-api",
  "rdif-base",
  "thiserror 2.0.19",
@@ -6316,6 +6330,7 @@ dependencies = [
 name = "rdif-def"
 version = "0.3.0"
 dependencies = [
+ "axtest",
  "thiserror 2.0.19",
 ]
 
@@ -6323,6 +6338,7 @@ dependencies = [
 name = "rdif-display"
 version = "0.2.0"
 dependencies = [
+ "axtest",
  "rdif-base",
  "thiserror 2.0.19",
 ]
@@ -6331,6 +6347,7 @@ dependencies = [
 name = "rdif-eth"
 version = "0.3.8"
 dependencies = [
+ "axtest",
  "dma-api",
  "rdif-base",
  "thiserror 2.0.19",
@@ -6340,6 +6357,7 @@ dependencies = [
 name = "rdif-input"
 version = "0.2.0"
 dependencies = [
+ "axtest",
  "rdif-base",
  "thiserror 2.0.19",
 ]
@@ -6348,6 +6366,7 @@ dependencies = [
 name = "rdif-intc"
 version = "0.15.0"
 dependencies = [
+ "axtest",
  "cfg-if",
  "irq-framework",
  "rdif-base",
@@ -6357,6 +6376,7 @@ dependencies = [
 name = "rdif-msi"
 version = "0.2.0"
 dependencies = [
+ "axtest",
  "irq-framework",
  "rdif-base",
 ]
@@ -6365,6 +6385,7 @@ dependencies = [
 name = "rdif-pcie"
 version = "0.2.5"
 dependencies = [
+ "axtest",
  "pci_types",
  "rdif-base",
  "serde",
@@ -6375,6 +6396,7 @@ dependencies = [
 name = "rdif-pinctrl"
 version = "0.1.2"
 dependencies = [
+ "axtest",
  "fdt-edit",
  "rdif-base",
  "thiserror 2.0.19",
@@ -6384,6 +6406,7 @@ dependencies = [
 name = "rdif-power"
 version = "0.8.0"
 dependencies = [
+ "axtest",
  "rdif-base",
  "thiserror 2.0.19",
 ]
@@ -6400,6 +6423,7 @@ dependencies = [
 name = "rdif-reset"
 version = "0.1.0"
 dependencies = [
+ "axtest",
  "rdif-base",
  "thiserror 2.0.19",
 ]
@@ -6408,7 +6432,9 @@ dependencies = [
 name = "rdif-serial"
 version = "0.9.1"
 dependencies = [
+ "axtest",
  "bitflags 2.13.1",
+ "heapless",
  "thiserror 2.0.19",
 ]
 
@@ -6430,6 +6456,7 @@ dependencies = [
 name = "rdif-vsock"
 version = "0.1.2"
 dependencies = [
+ "axtest",
  "rdif-base",
  "thiserror 2.0.19",
 ]
@@ -6440,6 +6467,7 @@ version = "0.23.7"
 dependencies = [
  "acpi",
  "ax-kspin",
+ "axtest",
  "fdt-edit",
  "fdt-raw",
  "log",
@@ -7729,6 +7757,7 @@ dependencies = [
  "ax-memory-set",
  "ax-mm",
  "ax-net",
+ "ax-page-table-entry",
  "ax-page-table-multiarch",
  "ax-percpu",
  "ax-runtime",
@@ -7759,6 +7788,7 @@ dependencies = [
  "hashbrown 0.16.1",
  "indoc",
  "inherit-methods-macro",
+ "irq-framework",
  "k230-kpu",
  "kbpf-basic",
  "kernel-elf-parser",
@@ -7771,14 +7801,27 @@ dependencies = [
  "linux-raw-sys 0.12.1",
  "lock_api",
  "lwprintf-rs",
+ "mmio-api",
  "num_enum",
  "ouroboros",
  "rand 0.10.2",
  "ranges-ext",
  "rbpf",
+ "rdif-base",
  "rdif-block",
+ "rdif-def",
+ "rdif-display",
+ "rdif-eth",
+ "rdif-input",
+ "rdif-intc",
+ "rdif-msi",
+ "rdif-pcie",
  "rdif-pinctrl",
+ "rdif-power",
  "rdif-pwm",
+ "rdif-reset",
+ "rdif-serial",
+ "rdif-vsock",
  "rdrive",
  "ringbuf",
  "riscv",

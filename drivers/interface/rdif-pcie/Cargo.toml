@@ -10,10 +10,15 @@ repository.workspace = true
 version = "0.2.5"
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 pci_types = "0.10"
 rdif-base = { workspace = true }
 thiserror = { version = "2", default-features = false }
 serde = { version = "1", optional = true, features = ["derive"] }
 
 [features]
+axtest = ["dep:axtest"]
 serde = ["dep:serde"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

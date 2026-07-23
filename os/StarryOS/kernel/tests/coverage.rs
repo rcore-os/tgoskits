@@ -6,14 +6,37 @@
 extern crate alloc;
 
 use ax_cpumask as _;
+use ax_driver as _;
 use ax_errno as _;
 use ax_io as _;
 use ax_kernel_guard as _;
 use ax_lazyinit as _;
+use ax_memory_addr as _;
+use ax_memory_set as _;
+use ax_net as _;
+use ax_page_table_entry as _;
 use ax_std as _;
 use axfs_ng_vfs as _;
 use axpoll as _;
+use dma_api as _;
+use irq_framework as _;
 use kernutil as _;
+use mmio_api as _;
+use rdif_base as _;
+use rdif_block as _;
+use rdif_def as _;
+use rdif_display as _;
+use rdif_eth as _;
+use rdif_input as _;
+use rdif_intc as _;
+use rdif_msi as _;
+use rdif_pcie as _;
+use rdif_pinctrl as _;
+use rdif_power as _;
+use rdif_reset as _;
+use rdif_serial as _;
+use rdif_vsock as _;
+use rdrive as _;
 use rsext4 as _;
 use scope_local as _;
 

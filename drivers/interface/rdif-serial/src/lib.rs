@@ -91,3 +91,20 @@ impl Config {
         self
     }
 }
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub mod axtest;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serial_event_reports_readiness_and_errors() {
+        let event = SerialEvent::RX_READY | SerialEvent::OVERRUN;
+
+        assert!(event.rx_ready());
+        assert!(!event.tx_ready());
+        assert!(event.rx_error());
+    }
+}

@@ -1,9 +1,16 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
+#[cfg(all(axtest, feature = "axtest"))]
+extern crate alloc;
+
 mod addr;
 mod iter;
 mod range;
+
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for address arithmetic and range iteration.
+pub mod axtest;
 
 pub use self::{
     addr::{MemoryAddr, PhysAddr, VirtAddr},

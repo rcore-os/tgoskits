@@ -10,10 +10,15 @@ repository.workspace = true
 version = "0.1.2"
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 fdt-edit = { workspace = true, optional = true }
 rdif-base = { workspace = true }
 thiserror = { version = "2", default-features = false }
 
 [features]
+axtest = ["dep:axtest"]
 default = []
 fdt = ["dep:fdt-edit"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

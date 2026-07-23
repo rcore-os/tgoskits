@@ -10,5 +10,13 @@ repository.workspace = true
 version = "0.9.1"
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 bitflags = "2.8"
-thiserror = {version = "2", default-features = false}
+thiserror = { version = "2", default-features = false }
+heapless = "0.9"
+
+[features]
+axtest = ["dep:axtest"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

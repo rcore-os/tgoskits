@@ -8,9 +8,11 @@ description = "Unified network stack for TGOSKits (ArceOS, StarryOS, Axvisor)"
 license.workspace = true
 
 [features]
+axtest = ["dep:axtest"]
 vsock = ["dep:rdif-vsock"]
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 async-channel = { version = "2.5", default-features = false }
 async-trait = "0.1"
 ax-errno = { workspace = true }
@@ -60,3 +62,6 @@ features = [
 ax-hal = { workspace = true, features = ["host-test"] }
 ax-kspin = { workspace = true, features = ["host-test"] }
 ax-task = { workspace = true, features = ["host-test"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
