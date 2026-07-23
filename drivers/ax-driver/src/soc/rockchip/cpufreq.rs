@@ -567,6 +567,12 @@ fn run_apply_steps(order: [ApplyStep; 2], mut run: impl FnMut(ApplyStep) -> bool
 /// stop-on-failure logic is the pure, host-tested [`apply_step_order`] +
 /// [`run_apply_steps`]; only the hardware writes and their logs live here.
 ///
+/// Each step is CONFIRMED, not just requested: the clock step reads the SCMI rate
+/// back and requires it to equal the request (a SET ack alone is not proof the ring
+/// switched), and the A76 voltage step reads back over I2C. So "ring set succeeds"
+/// below means the ring is read-back-confirmed at the new rate — a downshift only
+/// reaches its voltage-lower step once the clock is verified already lowered.
+///
 /// No-undervolt argument (both failure points, each direction):
 ///   - UPSHIFT, voltage step fails: the ring set is skipped entirely, so
 ///     nothing changed — old freq + old voltage, still a valid, previously
@@ -621,26 +627,38 @@ fn apply_opp(cluster: Cluster, opp: Opp, going_up: bool) -> bool {
             false
         }
         ApplyStep::Clock => {
-            if scmi::set_clock_rate(phandle, cluster.clock_id(), hz).is_some() {
+            let cid = cluster.clock_id();
+            // A SCMI CLOCK_RATE_SET ack is NOT proof the PVTPLL ring actually
+            // switched — read the rate back and require it to equal the request
+            // before treating the clock step as confirmed (same read-back the boot
+            // `set_and_verify` does). This is what makes a DOWNSHIFT safe: the
+            // voltage step that follows only runs once the clock is CONFIRMED at its
+            // new, lower rate, so we can never lower the rail under a still-high
+            // clock (the high-freq/low-voltage window the ordering exists to prevent).
+            let set_ok = scmi::set_clock_rate(phandle, cid, hz).is_some();
+            let applied = if set_ok {
+                scmi::clock_rate(phandle, cid)
+            } else {
+                None
+            };
+            if set_ok && applied == Some(hz) {
                 return true;
             }
             if going_up {
                 warn!(
-                    "cpufreq: {} voltage already raised to {} mV but SCMI rejected clock id {} -> \
-                     {} Hz; not committing this OPP (safe: over-volted for the old, lower clock, \
-                     never under-volted)",
-                    cluster.name(),
-                    opp.uv / 1_000,
-                    cluster.clock_id(),
-                    hz
+                    "cpufreq: {} upshift: SCMI clock id {cid} not confirmed at {hz} Hz \
+                     (set_ok={set_ok}, read_back={applied:?}); not committing this OPP (safe: \
+                     voltage already raised, over-volted for the old, lower clock, never \
+                     under-volted)",
+                    cluster.name()
                 );
             } else {
                 warn!(
-                    "cpufreq: {} downshift: SCMI rejected clock id {} -> {} Hz; leaving voltage \
-                     unchanged (no undervolt: old freq stays paired with old voltage)",
-                    cluster.name(),
-                    cluster.clock_id(),
-                    hz
+                    "cpufreq: {} downshift: SCMI clock id {cid} not confirmed at {hz} Hz \
+                     (set_ok={set_ok}, read_back={applied:?}); leaving voltage unchanged (no \
+                     undervolt: clock not confirmed lowered, old freq stays paired with old \
+                     voltage)",
+                    cluster.name()
                 );
             }
             false
