@@ -181,6 +181,7 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/select.h>
 #include <unistd.h>
 
@@ -208,6 +209,18 @@ static int make_tcp_sock(void)
 
 static void test_socket_type_errors(void)
 {
+    const int unknown_socket_flag = 1 << 8;
+    long ret;
+
+    CHECK_ERR((ret = syscall(SYS_socket, AF_UNIX, SOCK_PACKET + 1, 0)), EINVAL,
+              "socket rejects a type at Linux SOCK_MAX");
+    if (ret >= 0) close((int)ret);
+
+    CHECK_ERR((ret = syscall(SYS_socket, AF_UNIX,
+                             SOCK_STREAM | unknown_socket_flag, 0)),
+              EINVAL, "socket rejects unknown type flag bits");
+    if (ret >= 0) close((int)ret);
+
     CHECK_ERR(socket(AF_UNIX, SOCK_RDM, 0), ESOCKTNOSUPPORT,
               "socket(AF_UNIX, SOCK_RDM) returns ESOCKTNOSUPPORT");
 }
