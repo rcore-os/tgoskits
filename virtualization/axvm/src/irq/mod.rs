@@ -159,3 +159,4 @@ impl IrqResolver for InterruptFabric {
 }
 
 pub(crate) mod model;
+pub(crate) mod sender;

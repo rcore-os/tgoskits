@@ -37,9 +37,10 @@ use crate::{
     boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::virt_to_phys,
-    irq::InterruptFabric,
+    irq::{InterruptFabric, model::PendingVcpuInterrupt},
     layout::VmAddressLayout,
     lifecycle::{Machine, StopReason, VmStatus},
+    runtime::VcpuIrqDispatcher,
     vcpu::AxVCpu,
 };
 
@@ -141,6 +142,7 @@ pub(crate) struct VmRuntimeHandle {
     wait_queue: crate::WaitQueue,
     vcpu_task_list: Mutex<BTreeMap<usize, crate::AxTaskRef>>,
     pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
+    irq_dispatcher: VcpuIrqDispatcher,
     running_halting_vcpu_count: AtomicUsize,
 }
 
@@ -150,11 +152,14 @@ impl VmRuntimeHandle {
             wait_queue: crate::WaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
             pending_interrupts: Mutex::new(BTreeMap::new()),
+            irq_dispatcher: VcpuIrqDispatcher::new(),
             running_halting_vcpu_count: AtomicUsize::new(0),
         }
     }
 
     pub(crate) fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) {
+        self.irq_dispatcher
+            .register_vcpu_task(vcpu_id, vcpu_task.clone());
         self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
         self.pending_interrupts.lock().entry(vcpu_id).or_default();
     }
@@ -199,6 +204,37 @@ impl VmRuntimeHandle {
                 physical_irq,
             });
         Ok(task.cpu_id() as usize)
+    }
+
+    /// New delivery path: enqueue → notify → host IPI.
+    ///
+    /// Called under `machine.lock()` via `with_runtime`.  `send_ipi` is a fast
+    /// MMIO/MSR write — it never sleeps or acquires other locks — so calling it
+    /// inside the `SpinNoIrq` critical section is safe.  Merging enqueue +
+    /// notify + IPI into a single lock acquisition eliminates the enqueue→notify
+    /// race window present in the old two-`with_runtime` code.
+    #[allow(dead_code, reason = "wired in PR 1c / module 2+")]
+    pub(crate) fn dispatch_vcpu_interrupt(
+        &self,
+        vcpu_id: usize,
+        interrupt: PendingVcpuInterrupt,
+    ) -> AxVmResult {
+        let pcpu_id = self.irq_dispatcher.enqueue(vcpu_id, interrupt)?;
+        self.notify_all();
+        // SAFETY: send_ipi is a fast MMIO/MSR write; it does not sleep or
+        // acquire locks, so calling it inside the machine.lock SpinNoIrq
+        // critical section is safe.
+        crate::host::task::send_ipi(pcpu_id);
+        Ok(())
+    }
+
+    /// Returns a reference to the new interrupt dispatcher.
+    ///
+    /// Called by the vCPU run loop (PR 1c) to drain pending interrupts before
+    /// entering the guest.
+    #[allow(dead_code, reason = "wired in PR 1c")]
+    pub(crate) fn irq_dispatcher(&self) -> &VcpuIrqDispatcher {
+        &self.irq_dispatcher
     }
 
     pub(crate) fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<PendingInterrupt> {

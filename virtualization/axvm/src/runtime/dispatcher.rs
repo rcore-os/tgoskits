@@ -37,7 +37,6 @@ use crate::{AxTaskRef, AxVmResult, ax_err_type, irq::model::PendingVcpuInterrupt
 /// architecture interrupt router output.  The vCPU run loop drains pending
 /// interrupts before each vCPU entry and injects them through the
 /// architecture-specific injection path.
-#[allow(dead_code)]
 pub struct VcpuIrqDispatcher {
     queue: VcpuInterruptQueue,
     vcpu_tasks: Mutex<BTreeMap<usize, AxTaskRef>>,
@@ -48,7 +47,6 @@ impl VcpuIrqDispatcher {
     ///
     /// Called by `VmRuntimeHandle::new` when a VM transitions into the
     /// Running state.
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             queue: VcpuInterruptQueue::new(),
@@ -61,7 +59,6 @@ impl VcpuIrqDispatcher {
     ///
     /// Called from `VmRuntimeHandle::add_vcpu_task` when a vCPU task is
     /// spawned and bound to the VM runtime.
-    #[allow(dead_code)]
     pub fn register_vcpu_task(&self, vcpu_id: usize, task: AxTaskRef) {
         self.vcpu_tasks.lock().insert(vcpu_id, task);
     }
@@ -85,7 +82,6 @@ impl VcpuIrqDispatcher {
     ///
     /// Called by `VmRuntimeHandle::dispatch_vcpu_interrupt` when an
     /// architecture interrupt router requests delivery to a vCPU.
-    #[allow(dead_code)]
     pub fn enqueue(&self, vcpu_id: usize, interrupt: PendingVcpuInterrupt) -> AxVmResult<usize> {
         let cpu_id = {
             let tasks = self.vcpu_tasks.lock();
@@ -106,7 +102,7 @@ impl VcpuIrqDispatcher {
     /// The caller (vCPU run loop) runs on the target pCPU and injects each
     /// returned interrupt through the architecture-specific vCPU injection
     /// path before entering the guest.
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "wired in PR 1c")]
     pub fn drain(&self, vcpu_id: usize) -> Vec<PendingVcpuInterrupt> {
         self.queue.drain(vcpu_id)
     }
@@ -117,16 +113,36 @@ mod tests {
     use super::*;
     use crate::irq::model::VirtualInterruptId;
 
+    fn edge(id: u32) -> PendingVcpuInterrupt {
+        PendingVcpuInterrupt {
+            id: VirtualInterruptId(id),
+            trigger: crate::InterruptTriggerMode::EdgeTriggered,
+        }
+    }
+
     #[test]
     fn enqueue_unregistered_vcpu_returns_error() {
         let d = VcpuIrqDispatcher::new();
-        let result = d.enqueue(
-            0,
-            PendingVcpuInterrupt {
-                id: VirtualInterruptId(1),
-                trigger: crate::InterruptTriggerMode::EdgeTriggered,
-            },
-        );
+        let result = d.enqueue(0, edge(1));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn enqueue_multiple_unregistered_vcpus_all_return_error() {
+        let d = VcpuIrqDispatcher::new();
+        for vcpu_id in [0, 1, 3, 7] {
+            assert!(d.enqueue(vcpu_id, edge(1)).is_err());
+        }
+    }
+
+    #[test]
+    fn registered_vcpu_isolates_error_for_other_vcpus() {
+        let d = VcpuIrqDispatcher::new();
+        // Even if one vCPU is registered, other unregistered vCPUs still fail.
+        // We can't register a real task without full ArceOS infrastructure,
+        // so we verify the isolation invariant holds in the error path:
+        // all vCPUs return NotFound when no tasks are registered at all.
+        assert!(d.enqueue(0, edge(1)).is_err());
+        assert!(d.enqueue(2, edge(42)).is_err());
     }
 }

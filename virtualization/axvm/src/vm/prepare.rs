@@ -33,13 +33,13 @@ impl PreparedVm {
 
 impl AxVM {
     /// Sets up the VM before booting.
-    pub fn prepare(&self) -> AxVmResult {
+    pub fn prepare(self: &Arc<Self>) -> AxVmResult {
         crate::arch::CurrentArch::init_vm(self, VmInitRequest::Default)
     }
 
     /// Sets up the VM with explicit device factories and an interrupt fabric.
     pub fn prepare_with_factories(
-        &self,
+        self: &Arc<Self>,
         factories: &DeviceFactoryRegistry,
         interrupt_fabric: InterruptFabric,
     ) -> AxVmResult {
