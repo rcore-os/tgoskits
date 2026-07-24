@@ -52,7 +52,7 @@ cargo doc --no-deps
 ### 示例
 
 ```rust
-use arm_vcpu::{ArmHostOps, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuResult};
+use arm_vcpu::{ArmHostIrq, ArmHostOps, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuResult};
 
 struct MyHost;
 
@@ -61,7 +61,7 @@ impl ArmHostOps for MyHost {
         Ok(())
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
+    fn fetch_pending_host_irq() -> Option<ArmHostIrq> {
         None
     }
 

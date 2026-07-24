@@ -1,0 +1,10 @@
+# Runtime U-Boot config template for booting StarryOS on Rock 4D.
+# This file is consumed by ostool's U-Boot runner, not by cargo build itself.
+serial = "/dev/ttyUSB0"
+baud_rate = "1500000"
+dtb_file = "os/StarryOS/configs/board/rock-4d.dtb"
+
+success_regex = []
+fail_regex = [
+  "panicked at",
+]

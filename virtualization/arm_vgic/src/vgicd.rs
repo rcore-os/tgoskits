@@ -55,7 +55,19 @@ impl Vgicd {
     pub fn vgicd_isenabler_write(&mut self, idx: u32, isenabler: usize) {
         for i in 0..32 {
             if isenabler & (1 << i) != 0 {
-                self.interrupt[(idx * 32 + i) as usize].set_enable(true);
+                let irq = idx * 32 + i;
+                self.interrupt[irq as usize].set_enable(true);
+                crate::api_reexp::set_host_irq_enable(irq, true);
+            }
+        }
+    }
+
+    pub fn vgicd_icenabler_write(&mut self, idx: u32, icenabler: usize) {
+        for i in 0..32 {
+            if icenabler & (1 << i) != 0 {
+                let irq = idx * 32 + i;
+                self.interrupt[irq as usize].set_enable(false);
+                crate::api_reexp::set_host_irq_enable(irq, false);
             }
         }
     }
@@ -67,5 +79,22 @@ impl Vgicd {
 
     pub fn fetch_irq(&self, idx: u32) -> VgicInt {
         self.interrupt[idx as usize]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Vgicd;
+
+    #[test]
+    fn isenabler_write_enables_each_host_irq() {
+        crate::api_reexp::reset_host_irq_enables();
+        let mut vgicd = Vgicd::new();
+
+        vgicd.vgicd_isenabler_write(1, (1 << 3) | (1 << 9));
+
+        assert!(crate::api_reexp::host_irq_is_enabled(35));
+        assert!(crate::api_reexp::host_irq_is_enabled(41));
+        assert!(!crate::api_reexp::host_irq_is_enabled(36));
     }
 }

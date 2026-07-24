@@ -32,6 +32,7 @@ fn guest_fdt_policy() -> test_core::GuestFdtPolicy {
         patch_runtime: test_runtime_patch,
         patch_provided: test_provided_patch,
         decode_interrupt: |specifier| specifier.first().copied(),
+        normalize_host_derived: test_host_derived_normalize,
     }
 }
 
@@ -61,4 +62,12 @@ fn test_provided_patch(
     _config: &axvmconfig::AxVMCrateConfig,
 ) -> crate::AxVmResult<Vec<u8>> {
     Ok(fdt.to_vec())
+}
+
+#[cfg(test)]
+fn test_host_derived_normalize(
+    _host_fdt: &fdt_edit::Fdt,
+    _guest_tree: &mut test_core::tree::FdtTree,
+) -> crate::AxVmResult {
+    Ok(())
 }

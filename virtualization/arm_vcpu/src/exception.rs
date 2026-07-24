@@ -16,8 +16,8 @@ use aarch64_cpu::registers::{ESR_EL2, HCR_EL2, Readable, SCTLR_EL1, VTCR_EL2, VT
 use log::error;
 
 use crate::{
-    ArmAccessWidth, ArmGuestPhysAddr, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult, ArmVmExit,
-    TrapFrame,
+    ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps, ArmSysRegAddr, ArmVcpuError, ArmVcpuResult,
+    ArmVmExit, TrapFrame,
     exception_utils::{
         exception_class, exception_class_value, exception_data_abort_access_is_write,
         exception_data_abort_access_reg, exception_data_abort_access_reg_width,
@@ -84,8 +84,13 @@ core::arch::global_asm!(
 /// If an unhandled exception class is encountered, the function will panic, outputting
 /// details about the exception including the instruction pointer, faulting address, exception
 /// syndrome register (ESR), and system control registers.
-pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
+pub fn handle_exception_sync<H: ArmHostOps>(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     match exception_class() {
+        Some(ESR_EL2::EC::Value::TrappedWFIorWFE) => {
+            let next_pc = ctx.exception_pc() + exception_next_instruction_step();
+            ctx.set_exception_pc(next_pc);
+            Ok(ArmVmExit::WaitForInterrupt)
+        }
         Some(ESR_EL2::EC::Value::DataAbortLowerEL) => {
             let elr = ctx.exception_pc();
             let val = elr + exception_next_instruction_step();
@@ -120,7 +125,7 @@ pub fn handle_exception_sync(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
             let elr = ctx.exception_pc();
             let val = elr + exception_next_instruction_step();
             ctx.set_exception_pc(val);
-            handle_smc64_exception(ctx)
+            handle_smc64_exception::<H>(ctx)
         }
         _ => {
             panic!(
@@ -269,10 +274,16 @@ fn handle_psci_call(ctx: &mut TrapFrame) -> Option<ArmVcpuResult<ArmVmExit>> {
 ///
 /// This function will judge if the SMC call is a PSCI call, if so, it will handle it as a PSCI call.
 /// Otherwise, it will forward the SMC call to the ATF directly.
-fn handle_smc64_exception(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
+fn handle_smc64_exception<H: ArmHostOps>(ctx: &mut TrapFrame) -> ArmVcpuResult<ArmVmExit> {
     // Is this a psci call?
     if let Some(result) = handle_psci_call(ctx) {
         result
+    } else if let Some(result) =
+        H::emulate_guest_smc(ctx.gpr[0], [ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]])
+    {
+        (ctx.gpr[0], ctx.gpr[1], ctx.gpr[2], ctx.gpr[3]) =
+            (result[0], result[1], result[2], result[3]);
+        Ok(ArmVmExit::Nothing)
     } else {
         // We just forward the SMC call to the ATF directly.
         // The args are from lower EL, so it is safe to call the ATF.

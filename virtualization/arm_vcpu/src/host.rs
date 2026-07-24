@@ -2,7 +2,7 @@
 
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use crate::ArmVcpuResult;
+use crate::{ArmHostIrq, ArmVcpuResult};
 
 /// Host operations required by AArch64 virtualization code.
 ///
@@ -14,7 +14,12 @@ pub trait ArmHostOps {
     fn inject_virtual_interrupt(vector: u8) -> ArmVcpuResult;
 
     /// Report a pending host IRQ after a lower-EL IRQ VM exit.
-    fn fetch_pending_host_irq() -> Option<usize>;
+    fn fetch_pending_host_irq() -> Option<ArmHostIrq>;
+
+    /// Emulate a guest SMC that must not be forwarded to host firmware.
+    fn emulate_guest_smc(_function: u64, _args: [u64; 3]) -> Option<[u64; 4]> {
+        None
+    }
 
     /// Dispatch a host IRQ taken while running at the current exception level.
     fn handle_current_host_irq();

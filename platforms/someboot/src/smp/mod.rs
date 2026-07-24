@@ -336,20 +336,46 @@ pub fn try_early_cpu_idx() -> Option<usize> {
     cpu_id_to_idx(early_current_hart_id())
 }
 
-pub fn cpu_id_to_idx(hart_id: usize) -> Option<usize> {
-    for (idx, id) in __cpu_id_list().enumerate() {
-        if id == hart_id {
-            return Some(idx);
-        }
+fn cpu_index_from_mappings<R, F, I>(
+    hardware_id: usize,
+    runtime_cpu_ids: R,
+    early_cpu_ids: F,
+) -> Option<usize>
+where
+    R: Iterator<Item = usize>,
+    F: FnOnce() -> I,
+    I: Iterator<Item = usize>,
+{
+    let mut runtime_cpu_ids = runtime_cpu_ids.peekable();
+    if runtime_cpu_ids.peek().is_some() {
+        return runtime_cpu_ids.position(|id| id == hardware_id);
     }
-    None
+
+    early_cpu_ids().position(|id| id == hardware_id)
+}
+
+pub fn cpu_id_to_idx(hart_id: usize) -> Option<usize> {
+    cpu_index_from_mappings(
+        hart_id,
+        cpu_meta_list().map(|meta| meta.cpu_id),
+        __cpu_id_list,
+    )
 }
 
 pub fn cpu_idx_to_id(idx: usize) -> Option<usize> {
+    if runtime_cpu_count() != 0 {
+        return cpu_meta(idx).map(|meta| meta.cpu_id);
+    }
+
     __cpu_id_list().nth(idx)
 }
 
 pub fn cpu_count() -> usize {
+    let runtime_cpu_count = runtime_cpu_count();
+    if runtime_cpu_count != 0 {
+        return runtime_cpu_count;
+    }
+
     __cpu_id_list().count()
 }
 
@@ -486,5 +512,20 @@ mod tests {
             checked_align_up_pow2(usize::MAX, 4096),
             Err(PerCpuLayoutError::AddressOverflow)
         );
+    }
+
+    #[test]
+    fn runtime_cpu_lookup_does_not_revisit_early_firmware_mapping() {
+        let runtime_cpu_ids = [1, 0x103, 0x101, 2];
+
+        let cpu_index = cpu_index_from_mappings(
+            0x101,
+            runtime_cpu_ids.into_iter(),
+            || -> core::iter::Empty<usize> {
+                panic!("runtime CPU lookup must not revisit early firmware state")
+            },
+        );
+
+        assert_eq!(cpu_index, Some(2));
     }
 }

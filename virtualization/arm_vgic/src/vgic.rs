@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(not(test))]
 use ax_kspin::SpinNoIrq as Mutex;
+#[cfg(test)]
+use ax_kspin::SpinRaw as Mutex;
 
-use crate::{VgicResult, host, interrupt::VgicInt, registers::GicRegister, vgicd::Vgicd};
+use crate::{VgicResult, interrupt::VgicInt, registers::GicRegister, vgicd::Vgicd};
 
 /// Virtual Generic Interrupt Controller.
 ///
@@ -56,6 +59,10 @@ impl Vgic {
                 // // GicRegister::GicdStatusr => self.read_statusr(),
                 // // GicRegister::GicdIgroupr(idx) => self.read_igroupr(idx),
                 GicRegister::GicdIsenabler(idx) => Ok(self.vgicd.lock().vgicd_isenabler_read(idx)),
+                GicRegister::GicdIcenabler(idx) => Ok(self.vgicd.lock().vgicd_isenabler_read(idx)),
+                GicRegister::GicdItargetsr(idx) if idx < 8 => {
+                    Ok(usize::from(crate::api_reexp::current_cpu_target()) * 0x0101_0101)
+                }
                 // GicRegister::GicdIcenabler(idx) => self.read_icenabler(idx),
                 // GicRegister::GicdIspendr(idx) => self.read_ispendr(idx),
                 _ => {
@@ -82,13 +89,15 @@ impl Vgic {
 
     /// Handles 32-bit write access to VGIC registers.
     pub fn handle_write32(&self, addr: usize, value: usize) {
-        let _vcpu_id = host::current_vcpu_id();
         if let Some(reg) = GicRegister::from_addr(addr as u32) {
             match reg {
                 GicRegister::GicdCtlr => self.vgicd.lock().vgicd_ctrlr_write(value),
                 // GicRegister::GicdIsenabler(idx) => self.write_isenabler(idx, value),
                 GicRegister::GicdIsenabler(idx) => {
                     self.vgicd.lock().vgicd_isenabler_write(idx, value)
+                }
+                GicRegister::GicdIcenabler(idx) => {
+                    self.vgicd.lock().vgicd_icenabler_write(idx, value)
                 }
                 _ => {
                     // error!("Write register address: {:#x}", addr);
@@ -109,4 +118,30 @@ impl Vgic {
 
     /// Placeholder method for unused operations.
     pub fn nothing(&self, _value: u32) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Vgic;
+
+    #[test]
+    fn private_itargetsr_reports_current_cpu_target() {
+        let vgic = Vgic::new();
+
+        assert_eq!(vgic.handle_read32(0x800).unwrap(), 0x0101_0101);
+        assert_eq!(vgic.handle_read32(0x81c).unwrap(), 0x0101_0101);
+    }
+
+    #[test]
+    fn icenabler_write_disables_virtual_and_host_irq() {
+        crate::api_reexp::reset_host_irq_enables();
+        let vgic = Vgic::new();
+
+        vgic.handle_write32(0x104, (1 << 3) | (1 << 9));
+        vgic.handle_write32(0x184, 1 << 3);
+
+        assert!(!crate::api_reexp::host_irq_is_enabled(35));
+        assert!(crate::api_reexp::host_irq_is_enabled(41));
+        assert_eq!(vgic.handle_read32(0x184).unwrap(), 1 << 9);
+    }
 }

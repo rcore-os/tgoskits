@@ -38,13 +38,13 @@ pub fn init_current_cpu() {
 
 pub fn init_cpu(cpu_idx: usize) {
     match backend() {
-        GicBackend::V2 => v2::init_cpu(),
+        GicBackend::V2 => v2::init_cpu(cpu_idx),
         GicBackend::V3 => v3::init_cpu(cpu_idx),
         GicBackend::None => {
             if v3::is_support_icc() {
                 v3::init_cpu(cpu_idx);
             } else {
-                v2::init_cpu();
+                v2::init_cpu(cpu_idx);
             }
         }
     }

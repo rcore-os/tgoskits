@@ -25,4 +25,7 @@ pub trait PowerIf {
     /// For statically configured platforms, by convention, this value should be
     /// the same as `MAX_CPU_NUM` defined in the platform configuration.
     fn cpu_num() -> usize;
+
+    /// Resolves a firmware or hardware CPU ID to its runtime logical index.
+    fn cpu_id_to_idx(hardware_id: usize) -> Option<usize>;
 }

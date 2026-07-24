@@ -363,6 +363,12 @@ pub fn parse_reserved_memory_regions(crate_cfg: &mut AxVMCrateConfig, dtb: &[u8]
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct FdtCpuNode {
+    unit_address: usize,
+    hardware_id: usize,
+}
+
 pub fn set_phys_cpu_sets(
     vm_cfg: &mut AxVMConfig,
     fdt: &Fdt,
@@ -387,7 +393,10 @@ pub fn set_phys_cpu_sets(
                 "CPU node: {}, node_id: 0x{:x}, guest_cpu_id: 0x{:x}",
                 path, node_id_from_path, guest_cpu_id
             );
-            Some((node_id_from_path, guest_cpu_id))
+            Some(FdtCpuNode {
+                unit_address: node_id_from_path,
+                hardware_id: guest_cpu_id,
+            })
         })
         .collect();
     info!("Found {} host CPU nodes", cpu_nodes_info.len());
@@ -395,14 +404,25 @@ pub fn set_phys_cpu_sets(
     let mut new_phys_cpu_sets = Vec::new();
     let mut guest_phys_cpu_ids = Vec::new();
     for phys_cpu_id in phys_cpu_ids {
-        if let Some((cpu_index, (_, guest_cpu_id))) = cpu_nodes_info
+        if let Some(cpu_node) = cpu_nodes_info
             .iter()
-            .enumerate()
-            .find(|(_, (node_id, _))| node_id == phys_cpu_id)
+            .find(|cpu_node| cpu_node.unit_address == *phys_cpu_id)
         {
-            let cpu_mask = 1usize << cpu_index;
+            let cpu_mask = cpu_mask_from_fdt_cpu_node(*cpu_node, |hardware_id| {
+                ax_std::os::arceos::modules::ax_hal::power::cpu_id_to_idx(hardware_id)
+            })
+            .ok_or_else(|| {
+                ax_err_type!(
+                    InvalidInput,
+                    format!(
+                        "CPU node cpu@{phys_cpu_id:x} has hardware ID {:#x}, which has no runtime \
+                         logical CPU mapping",
+                        cpu_node.hardware_id
+                    )
+                )
+            })?;
             new_phys_cpu_sets.push(cpu_mask);
-            guest_phys_cpu_ids.push(*guest_cpu_id);
+            guest_phys_cpu_ids.push(cpu_node.hardware_id);
         } else {
             error!(
                 "vCPU {} with phys_cpu_id 0x{:x} not found in device tree!",
@@ -416,6 +436,22 @@ pub fn set_phys_cpu_sets(
     phys_cpu_ls.set_guest_cpu_sets(new_phys_cpu_sets);
     phys_cpu_ls.set_guest_phys_cpu_ids(guest_phys_cpu_ids);
     Ok(())
+}
+
+fn cpu_mask_from_fdt_cpu_node(
+    cpu_node: FdtCpuNode,
+    cpu_id_to_idx: impl FnOnce(usize) -> Option<usize>,
+) -> Option<usize> {
+    cpu_mask_from_hardware_id(cpu_node.hardware_id, cpu_id_to_idx)
+}
+
+fn cpu_mask_from_hardware_id(
+    hardware_id: usize,
+    cpu_id_to_idx: impl FnOnce(usize) -> Option<usize>,
+) -> Option<usize> {
+    cpu_id_to_idx(hardware_id)
+        .and_then(|cpu_idx| u32::try_from(cpu_idx).ok())
+        .and_then(|cpu_idx| 1usize.checked_shl(cpu_idx))
 }
 
 fn add_device_address_config(
@@ -634,7 +670,10 @@ mod tests {
     use fdt_edit::{Fdt, Node};
     use fdt_raw::RegInfo;
 
-    use super::{align_reserved_region_4k, reserve_excluded_device_ranges};
+    use super::{
+        FdtCpuNode, align_reserved_region_4k, cpu_mask_from_fdt_cpu_node,
+        reserve_excluded_device_ranges,
+    };
     use crate::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};
 
     fn prop_u32(name: &str, value: u32) -> fdt_edit::Property {
@@ -685,6 +724,23 @@ mod tests {
     #[test]
     fn align_reserved_region_rejects_zero_sized_range() {
         assert_eq!(align_reserved_region_4k(0x1000, 0), None);
+    }
+
+    #[test]
+    fn fdt_cpu_node_reg_uses_runtime_logical_mapping() {
+        let cpu_node = FdtCpuNode {
+            unit_address: 0x100,
+            hardware_id: 0,
+        };
+        let runtime_hardware_ids = [0, 0x200, 0x201, 0x100];
+
+        let cpu_mask = cpu_mask_from_fdt_cpu_node(cpu_node, |hardware_id| {
+            runtime_hardware_ids
+                .iter()
+                .position(|id| *id == hardware_id)
+        });
+
+        assert_eq!(cpu_mask, Some(1));
     }
 
     #[test]

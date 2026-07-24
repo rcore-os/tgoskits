@@ -36,5 +36,6 @@ pub type Mmio = NonNull<u8>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocType {
     Rk3568,
+    Rk3576,
     Rk3588,
 }

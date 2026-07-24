@@ -1,4 +1,4 @@
-use alloc::{format, string::String, vec::Vec};
+use alloc::{collections::BTreeSet, format, string::String, vec::Vec};
 
 use fdt_edit::{Fdt, Node, NodeId, Property};
 use fdt_raw::{Header, RegInfo};
@@ -59,6 +59,44 @@ impl FdtTree {
             .iter_node_ids()
             .map(|id| (id, self.fdt.path_of(id)))
             .collect()
+    }
+
+    pub(crate) fn prune_cpu_topology(&mut self) {
+        const CPU_MAP_PATH: &str = "/cpus/cpu-map";
+
+        let retained_cpu_phandles = self
+            .node_paths()
+            .into_iter()
+            .filter(|(_, path)| is_direct_cpu_node(path))
+            .filter_map(|(id, _)| self.fdt.node(id)?.phandle().map(|phandle| phandle.raw()))
+            .collect::<BTreeSet<_>>();
+        let mut topology_paths = self
+            .node_paths()
+            .into_iter()
+            .filter_map(|(_, path)| {
+                (path == CPU_MAP_PATH || path.starts_with("/cpus/cpu-map/")).then_some(path)
+            })
+            .collect::<Vec<_>>();
+        topology_paths.sort_by_key(|path| core::cmp::Reverse(path.matches('/').count()));
+
+        for path in topology_paths {
+            let Some(node_id) = self.fdt.get_by_path_id(&path) else {
+                continue;
+            };
+            let Some(node) = self.fdt.node(node_id) else {
+                continue;
+            };
+            if !node.children().is_empty() {
+                continue;
+            }
+            let references_retained_cpu = node
+                .get_property("cpu")
+                .and_then(Property::get_u32)
+                .is_some_and(|phandle| retained_cpu_phandles.contains(&phandle));
+            if !references_retained_cpu {
+                self.fdt.remove_by_path(&path);
+            }
+        }
     }
 
     pub(crate) fn ensure_path(&mut self, path: &str) -> AxVmResult<NodeId> {
@@ -224,6 +262,11 @@ impl FdtTree {
             self.fdt.remove_by_path(&path);
         }
     }
+}
+
+fn is_direct_cpu_node(path: &str) -> bool {
+    path.strip_prefix("/cpus/")
+        .is_some_and(|name| name.starts_with("cpu@") && !name.contains('/'))
 }
 
 pub(crate) fn prop_u64(name: &str, value: u64) -> Property {

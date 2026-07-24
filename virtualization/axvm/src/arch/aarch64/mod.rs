@@ -33,6 +33,7 @@ mod gic;
 mod images;
 mod ipi;
 mod npt;
+mod smc;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod vm;
@@ -57,6 +58,14 @@ impl ArchOps for Aarch64Arch {
     type PerCpu = AxvmArmPerCpu;
     type DeferredRunWork = Aarch64DeferredRunWork;
     type NestedPageTable = npt::NestedPageTable<crate::HostPagingHandler>;
+
+    fn after_external_interrupt(
+        _vm: &crate::AxVMRef,
+        _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        _vector: usize,
+    ) {
+        crate::check_timer_events();
+    }
 
     fn has_hardware_support() -> bool {
         arm_vcpu::has_hardware_support()
@@ -119,14 +128,22 @@ impl ArchOps for Aarch64Arch {
                     value,
                 },
             ),
-            ArmVmExit::ExternalInterrupt { vector } => {
+            ArmVmExit::ExternalInterrupt { irq } => {
+                let vector = irq.vector();
                 debug!("VM[{}] run VCpu[{}] get irq {vector}", vm.id(), vcpu.id());
-                Ok(BoundVcpuExit::Defer(
-                    Aarch64DeferredRunWork::ExternalInterrupt {
-                        vector: vector as usize,
-                    },
-                ))
+                if !irq.is_guest_forwarded() {
+                    Ok(BoundVcpuExit::Defer(
+                        Aarch64DeferredRunWork::ExternalInterrupt { vector },
+                    ))
+                } else {
+                    Ok(BoundVcpuExit::Continue)
+                }
             }
+            // The AArch64 IRQ path currently delivers guest IRQs only while the
+            // vCPU is running. Blocking the vCPU here would therefore lose the
+            // wakeup that should complete WFI. Re-enter until IRQ-driven wakeup
+            // is represented by the common runtime.
+            ArmVmExit::WaitForInterrupt => Ok(BoundVcpuExit::Continue),
             ArmVmExit::CpuDown { state } => {
                 warn!(
                     "VM[{}] run VCpu[{}] CpuDown state {state:#x}",
@@ -208,12 +225,16 @@ impl ArmHostOps for AxvmArmHostOps {
         Ok(())
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
-        Some(gic::fetch_irq())
+    fn fetch_pending_host_irq() -> Option<arm_vcpu::ArmHostIrq> {
+        gic::handle_current_irq()
+    }
+
+    fn emulate_guest_smc(function: u64, args: [u64; 3]) -> Option<[u64; 4]> {
+        smc::emulate_guest_smc(function, args)
     }
 
     fn handle_current_host_irq() {
-        gic::handle_current_irq();
+        let _ = gic::handle_current_irq();
     }
 }
 
@@ -280,7 +301,9 @@ impl VmArchPerCpuOps for AxvmArmPerCpu {
     }
 
     fn hardware_enable(&mut self) -> BackendResult {
-        arm_result(self.0.hardware_enable::<AxvmArmHostOps>())
+        arm_result(self.0.hardware_enable::<AxvmArmHostOps>())?;
+        gic::init_current_cpu();
+        Ok(())
     }
 
     fn hardware_disable(&mut self) -> BackendResult {
@@ -406,10 +429,6 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
         default_host().cpu_count()
     }
 
-    fn current_vcpu_id() -> usize {
-        crate::current_vcpu_id().expect("current AArch64 vCPU is not set")
-    }
-
     fn current_time_nanos() -> u64 {
         default_host().monotonic_time().as_nanos() as u64
     }
@@ -426,6 +445,10 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
         gic::read_gicd_typer()
     }
 
+    fn current_cpu_target() -> u8 {
+        gic::current_cpu_target()
+    }
+
     fn get_host_gicd_base() -> PhysAddr {
         gic::host_gicd_base()
     }
@@ -436,5 +459,9 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
 
     fn hardware_inject_virtual_interrupt(vector: u8) {
         gic::inject_interrupt(vector as usize);
+    }
+
+    fn set_host_irq_enable(irq: u32, enable: bool) {
+        gic::set_host_irq_enable(irq, enable);
     }
 }

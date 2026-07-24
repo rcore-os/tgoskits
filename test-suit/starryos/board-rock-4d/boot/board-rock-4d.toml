@@ -1,0 +1,12 @@
+board_type = "Rock-4D"
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "echo STARRY_ROCK4D_BOOT_OK"
+success_regex = ["(?m)^STARRY_ROCK4D_BOOT_OK\\s*$"]
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)segmentation fault",
+  "(?i)SIGSEGV",
+  "exit with code: 139",
+  "failed to determine root device",
+]
+timeout = 300

@@ -1,4 +1,5 @@
 use alloc::format;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use arm_gic_driver::{checked_intid, v2::*};
 use irq_framework::IrqId;
@@ -9,6 +10,9 @@ use crate::common::ioremap;
 
 static CPU_IF: StaticCell<CpuInterface> = StaticCell::uninit();
 static TRAP: StaticCell<TrapOp> = StaticCell::uninit();
+const MAX_GIC_V2_CPU_INTERFACES: usize = 8;
+static CPU_TARGETS: [AtomicU8; MAX_GIC_V2_CPU_INTERFACES] =
+    [const { AtomicU8::new(0) }; MAX_GIC_V2_CPU_INTERFACES];
 
 module_driver!(
     name: "GICv2",
@@ -72,7 +76,9 @@ fn probe_gic(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     TRAP.init(trap);
     super::set_backend(super::GicBackend::V2);
 
-    init_cpu();
+    let cpu_idx = crate::cpu::current_cpu_idx()
+        .unwrap_or_else(|| panic!("current logical CPU index is not available for GICv2 init"));
+    init_cpu(cpu_idx);
 
     let domain = crate::irq::alloc_irq_domain(
         dev.descriptor.device_id(),
@@ -122,16 +128,21 @@ pub fn begin_irq() -> Option<ActiveIrq> {
     })
 }
 
-pub fn init_cpu() {
-    unsafe {
+pub fn init_cpu(cpu_idx: usize) {
+    let target = unsafe {
         CPU_IF.update(|cpu| {
             cpu.init_current_cpu();
             #[cfg(feature = "hv")]
             cpu.set_eoi_mode_ns(true);
-        });
-    }
+            cpu.current_cpu_target()
+        })
+    };
+    record_cpu_target(cpu_idx, target);
 
-    debug!("GICCv2 initialized");
+    debug!(
+        "GICCv2 initialized for logical CPU {cpu_idx}, target mask {:#04x}",
+        target.as_u8()
+    );
 }
 
 pub fn irq_set_enable(irq: IrqId, enable: bool) -> Result<(), crate::irq::IrqError> {
@@ -158,10 +169,10 @@ pub fn irq_set_affinity(
     let crate::irq::IrqAffinity::Fixed { cpu_id } = affinity else {
         return Ok(());
     };
-    let target_cpu = super::hardware_cpu_id(cpu_id);
+    let target_cpu = cpu_target(cpu_id).ok_or(crate::irq::IrqError::InvalidIrq)?;
     super::with_gic_domain::<Gic, _>(irq.domain, |gic| {
         let intid = checked_runtime_intid(irq.hwirq.0, gic.max_intid())?;
-        gic.set_target_cpu(intid, TargetList::new(&mut core::iter::once(target_cpu)));
+        gic.set_target_cpu(intid, target_cpu);
         Ok::<(), crate::irq::IrqError>(())
     })??;
     Ok(())
@@ -180,10 +191,29 @@ pub fn send_ipi(raw: usize, target: crate::irq::IpiTarget) {
     let target = match target {
         crate::irq::IpiTarget::Current { cpu_id: _ } => SGITarget::Current,
         crate::irq::IpiTarget::Other { cpu_id } => {
-            let target_cpu = super::hardware_cpu_id(cpu_id);
-            SGITarget::TargetList(TargetList::new(&mut core::iter::once(target_cpu)))
+            let target_cpu = cpu_target(cpu_id).unwrap_or_else(|| {
+                panic!("GICv2 target is not initialized for logical CPU {cpu_id}")
+            });
+            SGITarget::TargetList(target_cpu)
         }
         crate::irq::IpiTarget::AllExceptCurrent { .. } => SGITarget::AllOther,
     };
     CPU_IF.send_sgi(sgi, target);
+}
+
+fn record_cpu_target(cpu_idx: usize, target: TargetList) {
+    let target_mask = target.as_u8();
+    assert!(
+        target_mask.is_power_of_two(),
+        "Invalid GICv2 target mask {target_mask:#04x} for logical CPU {cpu_idx}"
+    );
+    let slot = CPU_TARGETS
+        .get(cpu_idx)
+        .unwrap_or_else(|| panic!("GICv2 logical CPU index out of range: {cpu_idx}"));
+    slot.store(target_mask, Ordering::Release);
+}
+
+fn cpu_target(cpu_idx: usize) -> Option<TargetList> {
+    let target_mask = CPU_TARGETS.get(cpu_idx)?.load(Ordering::Acquire);
+    (target_mask != 0).then(|| TargetList::from_raw(target_mask))
 }

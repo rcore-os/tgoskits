@@ -3,7 +3,10 @@ use alloc::{vec, vec::Vec};
 use fdt_edit::{Fdt, Node, Property};
 use fdt_raw::{MemoryReservation, RegInfo};
 
-use super::tree::{FdtTree, GuestMemorySpec, host_fdt_bytes_from_ptr};
+use super::{
+    create::replace_cpu_subtree_from_host,
+    tree::{FdtTree, GuestMemorySpec, host_fdt_bytes_from_ptr},
+};
 
 fn prop_u32(name: &str, value: u32) -> Property {
     let mut prop = Property::new(name, vec![]);
@@ -45,6 +48,134 @@ fn sample_dtb() -> Vec<u8> {
         .set_regs(&[RegInfo::new(0x4000_0000, Some(0x1000_0000))]);
 
     fdt.encode().as_ref().to_vec()
+}
+
+fn cpu_topology_dtb() -> Vec<u8> {
+    let mut fdt = Fdt::new();
+    let cpus = fdt.add_node(fdt.root_id(), Node::new("cpus"));
+    let cpu_map = fdt.add_node(cpus, Node::new("cpu-map"));
+    let cluster = fdt.add_node(cpu_map, Node::new("cluster0"));
+
+    for cpu_id in 0..4 {
+        let cpu = fdt.add_node(cpus, Node::new(&alloc::format!("cpu@{cpu_id}")));
+        fdt.node_mut(cpu)
+            .unwrap()
+            .set_property(prop_u32("phandle", cpu_id + 1));
+
+        let core = fdt.add_node(cluster, Node::new(&alloc::format!("core{cpu_id}")));
+        fdt.node_mut(core)
+            .unwrap()
+            .set_property(prop_u32("cpu", cpu_id + 1));
+    }
+
+    fdt.encode().as_ref().to_vec()
+}
+
+#[test]
+fn tree_prunes_cpu_map_to_retained_cpu_phandles() {
+    let source = Fdt::from_bytes(&cpu_topology_dtb()).unwrap();
+    let mut tree = FdtTree::clone_filtered(&source, |_, path, _| path != "/cpus/cpu@2").unwrap();
+
+    tree.prune_cpu_topology();
+
+    let bytes = tree.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+    assert!(
+        reparsed
+            .get_by_path_id("/cpus/cpu-map/cluster0/core0")
+            .is_some()
+    );
+    assert!(
+        reparsed
+            .get_by_path_id("/cpus/cpu-map/cluster0/core1")
+            .is_some()
+    );
+    assert!(
+        reparsed
+            .get_by_path_id("/cpus/cpu-map/cluster0/core2")
+            .is_none()
+    );
+    assert!(
+        reparsed
+            .get_by_path_id("/cpus/cpu-map/cluster0/core3")
+            .is_some()
+    );
+}
+
+#[test]
+fn tree_removes_empty_cpu_map() {
+    let source = Fdt::from_bytes(&cpu_topology_dtb()).unwrap();
+    let mut tree =
+        FdtTree::clone_filtered(&source, |_, path, _| !path.starts_with("/cpus/cpu@")).unwrap();
+
+    tree.prune_cpu_topology();
+
+    let bytes = tree.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+    assert!(reparsed.get_by_path_id("/cpus/cpu-map").is_none());
+}
+
+#[test]
+fn aarch64_copied_cpu_subtree_prunes_stale_topology() {
+    let host = Fdt::from_bytes(&cpu_topology_dtb()).unwrap();
+    let mut guest = FdtTree::new();
+
+    replace_cpu_subtree_from_host(&mut guest, &host, &[2]).unwrap();
+
+    let bytes = guest.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+    assert!(reparsed.get_by_path_id("/cpus/cpu@2").is_some());
+    assert!(reparsed.get_by_path_id("/cpus/cpu@0").is_none());
+    assert!(reparsed.get_by_path_id("/cpus/cpu@1").is_none());
+    assert!(reparsed.get_by_path_id("/cpus/cpu@3").is_none());
+    assert!(
+        reparsed
+            .get_by_path_id("/cpus/cpu-map/cluster0/core2")
+            .is_some()
+    );
+    assert!(
+        reparsed
+            .get_by_path_id("/cpus/cpu-map/cluster0/core0")
+            .is_none()
+    );
+    assert!(
+        reparsed
+            .get_by_path_id("/cpus/cpu-map/cluster0/core1")
+            .is_none()
+    );
+    assert!(
+        reparsed
+            .get_by_path_id("/cpus/cpu-map/cluster0/core3")
+            .is_none()
+    );
+}
+
+#[test]
+fn aarch64_copied_cpu_subtree_selects_unit_address_before_using_reg() {
+    let mut host = Fdt::new();
+    let cpus = host.add_node(host.root_id(), Node::new("cpus"));
+    host.node_mut(cpus)
+        .unwrap()
+        .set_property(prop_u32("#address-cells", 2));
+    host.node_mut(cpus)
+        .unwrap()
+        .set_property(prop_u32("#size-cells", 0));
+
+    for (unit_address, hardware_id) in [(0, 0x200), (0x100, 0)] {
+        let cpu = host.add_node(cpus, Node::new(&alloc::format!("cpu@{unit_address:x}")));
+        host.view_typed_mut(cpu)
+            .unwrap()
+            .set_regs(&[RegInfo::new(hardware_id, None)]);
+    }
+
+    let mut guest = FdtTree::new();
+    replace_cpu_subtree_from_host(&mut guest, &host, &[0]).unwrap();
+
+    let bytes = guest.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+    let selected_cpu = reparsed.get_by_path("/cpus/cpu@0").unwrap();
+    assert_eq!(selected_cpu.regs()[0].address, 0x200);
+    assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_none());
 }
 
 #[test]

@@ -18,7 +18,7 @@ use core::mem::size_of;
 
 use arm_vcpu::{
     ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
-    Aarch64PerCpu, Aarch64VCpu, ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps,
+    Aarch64PerCpu, Aarch64VCpu, ArmAccessWidth, ArmGuestPhysAddr, ArmHostIrq, ArmHostOps,
     ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu, ArmVcpuError, ArmVcpuResult,
     ArmVmExit, TrapFrame,
 };
@@ -30,7 +30,7 @@ impl ArmHostOps for DummyHost {
         Ok(())
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
+    fn fetch_pending_host_irq() -> Option<ArmHostIrq> {
         None
     }
 
