@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.3...ax-cpu-v0.8.4) - 2026-07-23
+
+### Other
+
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ### Changed
 
 - *(host-test)* use the unprivileged FXSAVE fallback when scheduler tests run outside ring 0.

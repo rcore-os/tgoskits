@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.6.1...ax-io-v0.6.2) - 2026-07-23
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/ax-io-v0.6.0...ax-io-v0.6.1) - 2026-07-02
 
 ### Other

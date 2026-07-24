@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.13](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.12...ax-alloc-v0.8.13) - 2026-07-23
+
+### Other
+
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+
 ## [0.8.12](https://github.com/rcore-os/tgoskits/compare/ax-alloc-v0.8.11...ax-alloc-v0.8.12) - 2026-07-10
 
 ### Other
