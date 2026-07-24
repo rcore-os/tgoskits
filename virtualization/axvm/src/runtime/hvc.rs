@@ -24,6 +24,110 @@ use crate::{
     },
 };
 
+const PSCI_VERSION_0_2: usize = 0x0000_0002;
+const PSCI_RET_NOT_SUPPORTED: usize = usize::MAX;
+const PSCI_RET_INVALID_PARAMETERS: usize = (-2isize) as usize;
+const PSCI_RET_DENIED: usize = (-3isize) as usize;
+const PSCI_RET_ALREADY_ON: usize = (-4isize) as usize;
+const PSCI_RET_INTERNAL_FAILURE: usize = (-6isize) as usize;
+const PSCI_AFFINITY_LEVEL_ON: usize = 0;
+const PSCI_AFFINITY_LEVEL_OFF: usize = 1;
+const PSCI_MIGRATE_TYPE_TOS_NOT_PRESENT: usize = 2;
+
+fn decode_hypercall_code(code: u64) -> HyperCallResult<HyperCallCode> {
+    Ok(HyperCallCode::try_from(code as u32)?)
+}
+
+fn dispatch_psci(code: HyperCallCode, args: [u64; 6]) -> Option<HyperCallResult> {
+    match code {
+        HyperCallCode::PSCIVersion => Some(Ok(PSCI_VERSION_0_2)),
+        HyperCallCode::PSCIFeatures => Some(Ok(PSCI_RET_NOT_SUPPORTED)),
+        HyperCallCode::PSCICpuOn | HyperCallCode::PSCICpuOn64 => {
+            if args[0] == 0 {
+                Some(Ok(PSCI_RET_ALREADY_ON))
+            } else {
+                Some(Ok(PSCI_RET_INVALID_PARAMETERS))
+            }
+        }
+        HyperCallCode::PSCICpuSuspend
+        | HyperCallCode::PSCICpuSuspend64
+        | HyperCallCode::PSCICpuOff => Some(Ok(PSCI_RET_DENIED)),
+        HyperCallCode::PSCIAffinityInfo | HyperCallCode::PSCIAffinityInfo64 => {
+            if args[1] > 3 {
+                Some(Ok(PSCI_RET_INVALID_PARAMETERS))
+            } else if args[0] == 0 {
+                Some(Ok(PSCI_AFFINITY_LEVEL_ON))
+            } else {
+                Some(Ok(PSCI_AFFINITY_LEVEL_OFF))
+            }
+        }
+        HyperCallCode::PSCIMigrateInfoType => Some(Ok(PSCI_MIGRATE_TYPE_TOS_NOT_PRESENT)),
+        HyperCallCode::PSCISystemOff | HyperCallCode::PSCISystemReset => {
+            Some(Ok(PSCI_RET_INTERNAL_FAILURE))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hvc_decodes_psci_version_and_dispatches_0_2() {
+        let code = decode_hypercall_code(0x8400_0000).unwrap();
+
+        assert_eq!(code, HyperCallCode::PSCIVersion);
+        assert_eq!(dispatch_psci(code, [0; 6]), Some(Ok(0x0000_0002)));
+    }
+
+    #[test]
+    fn hvc_decodes_psci_calls_and_returns_standard_errors() {
+        for raw_code in [
+            0x8400_000a,
+            0x8400_0001,
+            0xc400_0001,
+            0x8400_0002,
+            0x8400_0003,
+            0xc400_0003,
+            0x8400_0004,
+            0xc400_0004,
+            0x8400_0006,
+            0x8400_0008,
+            0x8400_0009,
+        ] {
+            let code = decode_hypercall_code(raw_code).unwrap();
+
+            assert!(dispatch_psci(code, [0; 6]).is_some());
+        }
+
+        let features = decode_hypercall_code(0x8400_000a).unwrap();
+        assert_eq!(
+            dispatch_psci(features, [0; 6]),
+            Some(Ok(PSCI_RET_NOT_SUPPORTED))
+        );
+
+        let cpu_on = decode_hypercall_code(0xc400_0003).unwrap();
+        assert_eq!(
+            dispatch_psci(cpu_on, [1, 0x80000, 0, 0, 0, 0]),
+            Some(Ok(PSCI_RET_INVALID_PARAMETERS))
+        );
+
+        let cpu_off = decode_hypercall_code(0x8400_0002).unwrap();
+        assert_eq!(dispatch_psci(cpu_off, [0; 6]), Some(Ok(PSCI_RET_DENIED)));
+
+        let affinity_info = decode_hypercall_code(0xc400_0004).unwrap();
+        assert_eq!(
+            dispatch_psci(affinity_info, [0, 0, 0, 0, 0, 0]),
+            Some(Ok(PSCI_AFFINITY_LEVEL_ON))
+        );
+    }
+
+    #[test]
+    fn hvc_rejects_unknown_psci_function_ids() {
+        assert!(decode_hypercall_code(0x8400_ffff).is_err());
+    }
+}
 pub struct HyperCall {
     vm: VMRef,
     code: HyperCallCode,
@@ -32,13 +136,50 @@ pub struct HyperCall {
 
 impl HyperCall {
     pub fn new(vm: VMRef, code: u64, args: [u64; 6]) -> HyperCallResult<Self> {
-        let code = HyperCallCode::try_from(code as u32)?;
+        let code = decode_hypercall_code(code)?;
 
         Ok(Self { vm, code, args })
     }
 
     pub fn execute(&self) -> HyperCallResult {
         match self.code {
+            HyperCallCode::PSCIVersion => {
+                info!("VM[{}] PSCI_VERSION", self.vm.id());
+                dispatch_psci(self.code, self.args).unwrap()
+            }
+            HyperCallCode::PSCIFeatures => {
+                info!(
+                    "VM[{}] PSCI_FEATURES function_id={:#x}",
+                    self.vm.id(),
+                    self.args[0]
+                );
+                dispatch_psci(self.code, self.args).unwrap()
+            }
+            HyperCallCode::PSCICpuOn | HyperCallCode::PSCICpuOn64 => {
+                warn!(
+                    "VM[{}] PSCI_CPU_ON target_cpu={:#x} entry={:#x} context={:#x}",
+                    self.vm.id(),
+                    self.args[0],
+                    self.args[1],
+                    self.args[2]
+                );
+                dispatch_psci(self.code, self.args).unwrap()
+            }
+            HyperCallCode::PSCICpuSuspend
+            | HyperCallCode::PSCICpuSuspend64
+            | HyperCallCode::PSCICpuOff
+            | HyperCallCode::PSCIAffinityInfo
+            | HyperCallCode::PSCIAffinityInfo64
+            | HyperCallCode::PSCIMigrateInfoType
+            | HyperCallCode::PSCISystemOff
+            | HyperCallCode::PSCISystemReset => {
+                warn!(
+                    "VM[{}] unsupported PSCI call: {:?}",
+                    self.vm.id(),
+                    self.code
+                );
+                dispatch_psci(self.code, self.args).unwrap()
+            }
             HyperCallCode::HIVCPublishChannel => {
                 let key = self.args[0] as usize;
                 let shm_base_gpa_ptr = GuestPhysAddr::from_usize(self.args[1] as usize);
