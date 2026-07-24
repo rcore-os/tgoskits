@@ -1,5 +1,5 @@
 ---
-sidebar_position: 13
+sidebar_position: 14
 sidebar_label: "系统集成"
 ---
 
@@ -114,7 +114,7 @@ Starry `/dev/dma_heap`、ION compatibility 和 RGA/JPEG/NPU/TPU glue 使用 `dma
 
 ## 4. Axvisor 集成
 
-Axvisor 的核心内存对象是 Guest physical address space 和 nested page table。Host allocator 与 Guest policy 通过 `NestedPageTableOps` 分离。
+Axvisor 的核心内存对象是 Guest Physical Address（客户机物理地址，GPA）空间和嵌套页表。宿主分配器与客户机策略通过 `NestedPageTableOps` 分离；`axaddrspace` 的内部状态、后端所有权、事务恢复、缺页和并发细节见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md)。
 
 ### 4.1 嵌套页表
 

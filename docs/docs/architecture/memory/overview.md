@@ -34,13 +34,15 @@ flowchart TB
     subgraph Policy["并列地址空间策略"]
         AXMM["ax-mm\nArceOS 第一阶段"]
         STARRY["starry-mm + Starry kernel mm\nLinux 兼容策略"]
-        AXAS["axaddrspace\n客户机第二阶段"]
+        AXAS["axaddrspace\n客户机 GPA 策略"]
+        AXVM["axvm adapter\nNestedPageTableOps"]
         AXMM --> PT
         AXMM --> SET
         STARRY --> PT
         STARRY --> SET
-        AXAS --> PT
         AXAS --> SET
+        AXVM --> AXAS
+        AXVM --> PT
     end
 
     subgraph Device["设备能力边界"]
@@ -50,12 +52,12 @@ flowchart TB
 
     ALLOC -. "PageFrameProvider" .-> AXMM
     ALLOC -. "PageFrameProvider" .-> STARRY
-    ALLOC -. "PageFrameProvider" .-> AXAS
+    ALLOC -. "HostMemory / PageFrameProvider" .-> AXVM
     ALLOC --> DMA
     MMIO --> AXMM
 ```
 
-源码目录和关键调用链见[内存管理源码结构](./source-map.md)，各架构的地址转换、页表根、页表项和失效差异见[多架构内存实现](./architecture-support.md)，锁类型和顺序见[内存管理锁与并发](./concurrency.md)。
+源码目录和关键调用链见[内存管理源码结构](./source-map.md)，客户机 GPA 策略和 AxVM adapter 见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md)，各架构的地址转换、页表根、页表项和失效差异见[多架构内存实现](./architecture-support.md)，锁类型和顺序见[内存管理锁与并发](./concurrency.md)。
 
 ### 1.1 层级职责
 

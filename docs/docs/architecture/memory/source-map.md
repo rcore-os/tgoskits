@@ -80,7 +80,8 @@ flowchart TB
         STARRY --> SET
         STARRY --> PT
         GUEST["axaddrspace"] --> SET
-        GUEST --> PT
+        AXVM["axvm adapter"] --> GUEST
+        AXVM --> PT
     end
 
     subgraph Device["设备能力"]
@@ -93,7 +94,7 @@ flowchart TB
     PLAT --> ALLOC
     AXMM -. "PageFrameProvider" .-> ALLOC
     STARRY -. "PageFrameProvider" .-> ALLOC
-    GUEST -. "PageFrameProvider" .-> ALLOC
+    AXVM -. "HostMemory / PageFrameProvider" .-> ALLOC
     KDMA --> ALLOC
     KMMIO --> AXMM
 ```
@@ -185,6 +186,7 @@ firmware entry
 | `boot-memory.md` | 固件到冻结内存图的完整流程 | 集成文档从冻结交接点开始 |
 | `runtime-allocator.md` | Buddy、Slab、页 owner 和统计实现 | 并发文档只维护锁与原子规则 |
 | `page-table.md` / `address-space.md` | 页表机制与映射事务 | 系统策略文档只解释自身 backend |
+| `axaddrspace.md` | 客户机 GPA、Guest RAM ownership、嵌套页表 adapter 与 AxVM 生命周期接线 | 通用事务和架构页表项只链接对应机制文档 |
 | `concurrency.md` | 锁类型、锁顺序、原子发布和上下文限制 | 机制文档不重复完整锁表 |
 | `starry-mm.md` / `dma.md` / `mmio.md` | 各自领域策略与 owner | 集成文档只描述接线关系 |
 | `integration.md` | 三套系统的启动接线、构建组合和跨层资源路径 | 不重复公共依赖图和源码索引 |

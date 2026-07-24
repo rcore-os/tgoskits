@@ -1,5 +1,5 @@
 ---
-sidebar_position: 9
+sidebar_position: 10
 sidebar_label: "锁与并发"
 ---
 
@@ -39,6 +39,7 @@ sidebar_label: "锁与并发"
 | `AtomicUsize` 统计矩阵 | `ax-alloc/src/lib.rs` | source × usage 字节计数 | Relaxed，仅统计，不发布资源 |
 | `SpinNoIrq<AddrSpace>` | `axmm/src/lib.rs` | ArceOS 内核地址空间 | 不在锁内执行可睡眠 I/O |
 | `Mutex<AddrSpace>` | Starry `kernel/src/mm/aspace` | 单个进程地址空间、虚拟内存区域与页表事务 | fault、map、clone 通过同一 owner 串行化 |
+| `SpinNoIrq<Machine<...>>` | `axvm/src/vm/mod.rs` | AxVM 生命周期资源、`axaddrspace` 与嵌套页表 | map、fault、客户机访问和 clear 均在同一虚拟机 owner 下执行 |
 | `SpinNoPreempt<BTreeMap<...>>` | `starry-mm/src/accounting.rs` | 单地址空间 RSS charge 分类 | 与计数原子共同更新时由函数内顺序维护 |
 | `SpinNoIrq<FrameTableRefCount>` | Starry COW backend | 写时复制物理帧索引 | 不在 table 锁内执行外部 I/O |
 | `AtomicU64/AtomicI64` | `starry-mm` policy/stat | commit、RSS/VSS 与峰值 | 原子顺序按 admission 或统计语义选择 |
@@ -135,9 +136,9 @@ sequenceDiagram
 | ArceOS kernel | `SpinNoIrq<AddrSpace>` | 不睡眠、不调用文件系统，完成 map/unmap/protect 后释放 |
 | ArceOS user address space | 由进程/调用链持有可变访问 | 不允许另一个线程并发修改同一实例 |
 | StarryOS process | `Arc<Mutex<AddrSpace>>` | 虚拟内存区域、页表和记账作为一个状态转换提交 |
-| Axvisor guest | 虚拟机/地址空间 owner | 客户机映射修改与虚拟处理器运行协调 |
+| Axvisor guest | `SpinNoIrq<Machine<AxVMResources, ...>>` | 客户机映射修改、缺页和内存访问由同一虚拟机 owner 串行化；销毁前停止虚拟处理器 |
 
-`prepare` 可以预留内存、检查全部区间并生成 undo 数据；`commit` 不应调用不可控外部代码。若 backend 无法提供不可失败 commit，失败路径必须在仍持外层地址空间 owner 时逆序 rollback。
+`prepare` 可以预留内存、检查全部区间并生成 undo 数据；`commit` 不应调用不可控外部代码。若 backend 无法提供不可失败 commit，失败路径必须在仍持外层地址空间 owner 时逆序 rollback。Axvisor 的具体锁闭包和 slice 生命周期见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md#7-锁并发与安全边界)。
 
 ### 4.2 地址转换缓存失效
 
