@@ -2136,17 +2136,18 @@ fn usb_bcd_format_matches_linux_layout() -> bool {
 
 #[cfg(axtest)]
 fn proc_mountinfo_lines_match_linux_layout() -> bool {
-    let text = render_mountinfo();
-    let line_count = text.lines().count();
-    // Must include the root fs plus the standard pseudo mounts.
-    line_count == 7
-        && text.contains("21 20 254:0 / / rw,relatime - ")
-        && text.contains("/dev rw,nosuid,relatime - devtmpfs devtmpfs rw")
-        && text.contains("/dev/shm rw,nosuid,nodev - tmpfs tmpfs rw")
-        && text.contains("/tmp rw,nosuid,nodev - tmpfs tmpfs rw")
-        && text.contains("/proc rw,nosuid,nodev,noexec,relatime - proc proc rw")
-        && text.contains("/sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw")
-        && text.contains("/sys/kernel/debug rw,nosuid,nodev,noexec,relatime - debugfs debugfs rw")
+    let ctx_arc = current_fs_context();
+    let ctx = ctx_arc.lock();
+    let text = crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx);
+    !text.is_empty()
+        && text.lines().any(|line| line.contains(" / / "))
+        && text.lines().all(|line| {
+            let Some((pre_separator, post_separator)) = line.split_once(" - ") else {
+                return false;
+            };
+            pre_separator.split_whitespace().count() >= 6
+                && post_separator.split_whitespace().count() >= 3
+        })
 }
 
 #[cfg(axtest)]

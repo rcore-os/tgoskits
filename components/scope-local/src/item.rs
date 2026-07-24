@@ -228,8 +228,8 @@ macro_rules! scope_local {
                 static ITEM: $crate::Item = unsafe {
                     $crate::Item::new::<$ty>(|ptr| {
                         let val: $ty = $default;
-                        unsafe { ptr.cast().write(val) }
-                    }, |ptr| unsafe {
+                        ptr.cast().write(val)
+                    }, |ptr| {
                         ptr.cast::<$ty>().drop_in_place();
                     })
                 };

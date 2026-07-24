@@ -101,10 +101,10 @@ mod tests {
 
     #[test]
     fn serial_event_reports_readiness_and_errors() {
-        let event = SerialEvent::RX_READY | SerialEvent::OVERRUN;
+        let event = SerialEventSet::RX_DATA | SerialEventSet::FAULT;
 
-        assert!(event.rx_ready());
-        assert!(!event.tx_ready());
-        assert!(event.rx_error());
+        assert!(event.has_rx());
+        assert!(!event.has_tx());
+        assert!(event.contains(SerialEventSet::FAULT));
     }
 }

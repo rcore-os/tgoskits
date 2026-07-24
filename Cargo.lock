@@ -6437,7 +6437,6 @@ version = "0.9.1"
 dependencies = [
  "axtest",
  "bitflags 2.13.1",
- "heapless",
  "thiserror 2.0.19",
 ]
 

@@ -13,7 +13,6 @@ version = "0.9.1"
 axtest = { workspace = true, optional = true }
 bitflags = "2.8"
 thiserror = { version = "2", default-features = false }
-heapless = "0.9"
 
 [features]
 axtest = ["dep:axtest"]
