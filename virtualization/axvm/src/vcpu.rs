@@ -21,8 +21,8 @@ use ax_kernel_guard::NoPreempt;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_percpu::{CpuAreaRef, CpuPin};
 use axvm_types::{
-    GuestPhysAddr, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps, VmArchVcpuOps,
-    VmBackendError, VmVcpuState,
+    GuestPhysAddr, InterruptTriggerMode, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
+    VmArchVcpuOps, VmBackendError, VmVcpuState,
 };
 
 use crate::{AxVmError, AxVmResult, ax_err};
@@ -303,6 +303,17 @@ impl<A: VmArchVcpuOps> AxVCpu<A> {
     pub fn inject_interrupt(&self, vector: usize) -> AxVmResult {
         self.get_arch_vcpu()
             .inject_interrupt(vector)
+            .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
+    }
+
+    /// Injects an interrupt while preserving its trigger-mode metadata.
+    pub fn inject_interrupt_with_trigger(
+        &self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> AxVmResult {
+        self.get_arch_vcpu()
+            .inject_interrupt_with_trigger(vector, trigger)
             .map_err(|error| map_interrupt_backend_error("inject vCPU interrupt", error))
     }
 

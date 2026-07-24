@@ -15,8 +15,9 @@ use arm_vgic::host::ArmVgicHostIf;
 use ax_crate_interface::impl_interface;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
-    AccessWidth, GuestPhysAddr, NestedPagingConfig, SysRegAddr, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
+    AccessWidth, GuestPhysAddr, InterruptTriggerMode, NestedPagingConfig, SysRegAddr, VCpuId, VMId,
+    VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
+    VmBackendResult as BackendResult,
 };
 
 use super::{ArchOps, BoundVcpuExit, HypercallExit, MmioReadExit, MmioWriteExit, VcpuRunAction};
@@ -261,6 +262,20 @@ impl VmArchVcpuOps for AxvmArmVcpu {
 
     fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
         arm_result(self.0.inject_interrupt(vector))
+    }
+
+    fn inject_interrupt_with_trigger(
+        &mut self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> BackendResult {
+        // The Arm Router/VGIC consumes line trigger semantics before emitting
+        // an INTID. The GIC list-register injection itself is mode-agnostic.
+        match trigger {
+            InterruptTriggerMode::EdgeTriggered | InterruptTriggerMode::LevelTriggered => {
+                arm_result(self.0.inject_interrupt(vector))
+            }
+        }
     }
 
     fn set_return_value(&mut self, val: usize) {

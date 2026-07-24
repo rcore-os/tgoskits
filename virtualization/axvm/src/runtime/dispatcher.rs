@@ -127,7 +127,7 @@ impl VcpuIrqDispatcher {
     ///
     /// This bypasses the real `AxTaskRef` requirement so that round-trip
     /// enqueue→drain tests can run on the host.
-    fn register_test_vcpu(&self, vcpu_id: usize, cpu_id: usize) {
+    pub(crate) fn register_test_vcpu(&self, vcpu_id: usize, cpu_id: usize) {
         self.test_vcpu_cpu_ids.lock().insert(vcpu_id, cpu_id);
     }
 }
@@ -156,7 +156,10 @@ mod tests {
     #[test]
     fn enqueue_unregistered_vcpu_returns_error() {
         let d = VcpuIrqDispatcher::new();
-        assert!(d.enqueue(0, edge(1)).is_err());
+        assert!(matches!(
+            d.enqueue(0, edge(1)),
+            Err(crate::AxVmError::ResourceUnavailable { .. })
+        ));
     }
 
     #[test]

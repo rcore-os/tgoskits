@@ -17,12 +17,9 @@
 //! The sender holds only a [`Weak`] reference to the VM, so it never creates
 //! a strong reference cycle and automatically fails when the VM is destroyed.
 
-use alloc::{
-    format,
-    sync::{Arc, Weak},
-};
+use alloc::sync::{Arc, Weak};
 
-use crate::{AxVM, AxVmResult, VmStatus, ax_err, ax_err_type, irq::model::PendingVcpuInterrupt};
+use crate::{AxVM, AxVmResult, ax_err_type, irq::model::PendingVcpuInterrupt};
 
 /// Router-to-runtime stable send channel.
 ///
@@ -30,18 +27,24 @@ use crate::{AxVM, AxVmResult, VmStatus, ax_err, ax_err_type, irq::model::Pending
 /// reference. Every [`send`](Self::send) call looks up the current runtime
 /// through the VM, so a VM stop/start/reset cycle cannot leave the sender
 /// pointing at a stale dispatcher.
-#[allow(dead_code, reason = "routers create senders in module 2+")]
+#[expect(
+    dead_code,
+    reason = "architecture routers create senders in later modules"
+)]
 #[derive(Clone)]
 pub struct VmInterruptSender {
-    vm: Weak<AxVM>,
+    target: StableInterruptTarget<AxVM>,
 }
 
 impl VmInterruptSender {
     /// Constructs a sender from an `AxVMRef` (`Arc<AxVM>`).
-    #[allow(dead_code, reason = "routers create senders in module 2+")]
+    #[expect(
+        dead_code,
+        reason = "architecture routers create senders in later modules"
+    )]
     pub fn new(vm: &Arc<AxVM>) -> Self {
         Self {
-            vm: Arc::downgrade(vm),
+            target: StableInterruptTarget::new(vm),
         }
     }
 
@@ -52,32 +55,241 @@ impl VmInterruptSender {
     ///
     /// 1. Upgrade `Weak<AxVM>` — returns `NotFound` if the VM has been
     ///    destroyed.
-    /// 2. Check VM status — only `Running` and `Paused` accept interrupts;
-    ///    other states return `BadState`.
-    /// 3. `vm.with_runtime(|rt| rt.dispatch_vcpu_interrupt(vcpu_id,
-    ///    interrupt))` — runtime not yet created returns `BadState`;
+    /// 2. Select the current runtime while checking under the same machine
+    ///    lock that the VM is `Running` or `Paused`; other states and a
+    ///    missing runtime return `BadState`.
+    /// 3. `runtime.dispatch_vcpu_interrupt(vcpu_id, interrupt)` —
     ///    unregistered vCPU task returns `NotFound`.
-    ///
-    /// A TOCTOU window exists between steps 2 and 3 (status may change), but
-    /// this matches the existing `vcpus::queue_interrupt` behaviour and is an
-    /// acceptable window.
-    #[allow(dead_code, reason = "interrupt routers will call send")]
+    #[expect(
+        dead_code,
+        reason = "architecture interrupt routers call send in later modules"
+    )]
     pub fn send(&self, vcpu_id: usize, interrupt: PendingVcpuInterrupt) -> AxVmResult {
-        let vm = self
-            .vm
+        self.target.send_with(
+            vcpu_id,
+            interrupt,
+            AxVM::current_interrupt_runtime,
+            |runtime, vcpu_id, interrupt| runtime.dispatch_vcpu_interrupt(vcpu_id, interrupt),
+        )
+    }
+}
+
+struct StableInterruptTarget<T> {
+    target: Weak<T>,
+}
+
+impl<T> Clone for StableInterruptTarget<T> {
+    fn clone(&self) -> Self {
+        Self {
+            target: self.target.clone(),
+        }
+    }
+}
+
+impl<T> StableInterruptTarget<T> {
+    fn new(target: &Arc<T>) -> Self {
+        Self {
+            target: Arc::downgrade(target),
+        }
+    }
+
+    fn send_with<R>(
+        &self,
+        vcpu_id: usize,
+        interrupt: PendingVcpuInterrupt,
+        current_runtime: impl FnOnce(&T) -> AxVmResult<R>,
+        dispatch: impl FnOnce(&R, usize, PendingVcpuInterrupt) -> AxVmResult,
+    ) -> AxVmResult {
+        let target = self
+            .target
             .upgrade()
             .ok_or_else(|| ax_err_type!(NotFound, "VM has been destroyed"))?;
+        let runtime = current_runtime(&target)?;
+        dispatch(&runtime, vcpu_id, interrupt)
+    }
+}
 
-        match vm.status() {
-            VmStatus::Running | VmStatus::Paused => {}
-            status => {
-                return ax_err!(
-                    BadState,
-                    format!("VM[{}] cannot accept interrupts in {status:?}", vm.id())
-                );
-            }
+#[cfg(all(test, feature = "host-test"))]
+mod tests {
+    use alloc::vec::Vec;
+    use core::cell::RefCell;
+
+    use ax_kspin::SpinNoIrq;
+
+    use super::*;
+    use crate::{
+        AxVmError, InterruptTriggerMode,
+        irq::model::VirtualInterruptId,
+        lifecycle::{Machine, StopReason},
+        vm::{VmRuntimeHandle, dispatch_vcpu_interrupt_with},
+    };
+
+    struct TestVm {
+        machine: SpinNoIrq<Machine<(), Arc<VmRuntimeHandle>>>,
+    }
+
+    impl TestVm {
+        fn new(machine: Machine<(), Arc<VmRuntimeHandle>>) -> Arc<Self> {
+            Arc::new(Self {
+                machine: SpinNoIrq::new(machine),
+            })
         }
 
-        vm.with_runtime(|rt| rt.dispatch_vcpu_interrupt(vcpu_id, interrupt))
+        fn current_interrupt_runtime(&self) -> AxVmResult<Arc<VmRuntimeHandle>> {
+            Ok(self.machine.lock().interrupt_runtime()?.clone())
+        }
+    }
+
+    fn runtime(cpu_id: Option<usize>) -> Arc<VmRuntimeHandle> {
+        let runtime = Arc::new(VmRuntimeHandle::new());
+        if let Some(cpu_id) = cpu_id {
+            runtime.irq_dispatcher().register_test_vcpu(0, cpu_id);
+        }
+        runtime
+    }
+
+    fn interrupt(id: u32) -> PendingVcpuInterrupt {
+        PendingVcpuInterrupt {
+            id: VirtualInterruptId(id),
+            trigger: InterruptTriggerMode::LevelTriggered,
+        }
+    }
+
+    fn send(
+        sender: &StableInterruptTarget<TestVm>,
+        vcpu_id: usize,
+        interrupt: PendingVcpuInterrupt,
+        events: &RefCell<Vec<&'static str>>,
+    ) -> AxVmResult {
+        sender.send_with(
+            vcpu_id,
+            interrupt,
+            TestVm::current_interrupt_runtime,
+            |runtime, vcpu_id, interrupt| {
+                dispatch_vcpu_interrupt_with(
+                    || {
+                        let cpu_id = runtime.irq_dispatcher().enqueue(vcpu_id, interrupt)?;
+                        events.borrow_mut().push("enqueue");
+                        Ok(cpu_id)
+                    },
+                    || events.borrow_mut().push("notify"),
+                    |_| events.borrow_mut().push("ipi"),
+                )
+            },
+        )
+    }
+
+    #[test]
+    fn sender_accepts_running_and_paused_registered_vcpu() {
+        for paused in [false, true] {
+            let runtime = runtime(Some(3));
+            let vm = TestVm::new(Machine::Running {
+                resources: (),
+                runtime: runtime.clone(),
+            });
+            if paused {
+                vm.machine.lock().pause().unwrap();
+            }
+            let sender = StableInterruptTarget::new(&vm);
+            let events = RefCell::new(Vec::new());
+
+            send(&sender, 0, interrupt(1), &events).unwrap();
+
+            assert_eq!(*events.borrow(), ["enqueue", "notify", "ipi"]);
+            assert_eq!(runtime.irq_dispatcher().drain(0), alloc::vec![interrupt(1)]);
+        }
+    }
+
+    #[test]
+    fn sender_rejects_ready_stopped_and_destroyed_states() {
+        let states = [
+            Machine::Ready(()),
+            Machine::Stopped {
+                resources: Some(()),
+                runtime: None,
+                reason: StopReason::Forced,
+            },
+            Machine::Destroyed,
+        ];
+
+        for machine in states {
+            let vm = TestVm::new(machine);
+            let sender = StableInterruptTarget::new(&vm);
+            let events = RefCell::new(Vec::new());
+
+            assert!(matches!(
+                send(&sender, 0, interrupt(1), &events),
+                Err(AxVmError::InvalidState { .. })
+            ));
+            assert!(events.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn sender_reports_not_found_for_unregistered_vcpu_without_callbacks() {
+        let vm = TestVm::new(Machine::Running {
+            resources: (),
+            runtime: runtime(None),
+        });
+        let sender = StableInterruptTarget::new(&vm);
+        let events = RefCell::new(Vec::new());
+
+        assert!(matches!(
+            send(&sender, 0, interrupt(1), &events),
+            Err(AxVmError::ResourceUnavailable { .. })
+        ));
+        assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn sender_reports_not_found_after_vm_release() {
+        let vm = TestVm::new(Machine::Ready(()));
+        let sender = StableInterruptTarget::new(&vm);
+        let events = RefCell::new(Vec::new());
+        drop(vm);
+
+        assert!(matches!(
+            send(&sender, 0, interrupt(1), &events),
+            Err(AxVmError::ResourceUnavailable { .. })
+        ));
+        assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn sender_uses_replacement_runtime_after_restart() {
+        let old_runtime = runtime(Some(1));
+        let new_runtime = runtime(Some(2));
+        let vm = TestVm::new(Machine::Running {
+            resources: (),
+            runtime: old_runtime.clone(),
+        });
+        let sender = StableInterruptTarget::new(&vm);
+        let events = RefCell::new(Vec::new());
+
+        send(&sender, 0, interrupt(1), &events).unwrap();
+        {
+            let mut machine = vm.machine.lock();
+            machine
+                .request_stop_with(StopReason::Forced, |_, _| Ok(()))
+                .unwrap();
+            machine.finish_stop().unwrap();
+            drop(machine.take_stopped_runtime().unwrap());
+            machine.reset_with(|_| Ok(())).unwrap();
+            machine.start_with(|_| Ok(new_runtime.clone())).unwrap();
+        }
+        send(&sender, 0, interrupt(2), &events).unwrap();
+
+        assert_eq!(
+            old_runtime.irq_dispatcher().drain(0),
+            alloc::vec![interrupt(1)]
+        );
+        assert_eq!(
+            new_runtime.irq_dispatcher().drain(0),
+            alloc::vec![interrupt(2)]
+        );
+        assert_eq!(
+            *events.borrow(),
+            ["enqueue", "notify", "ipi", "enqueue", "notify", "ipi"]
+        );
     }
 }

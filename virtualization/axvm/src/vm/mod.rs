@@ -146,6 +146,17 @@ pub(crate) struct VmRuntimeHandle {
     running_halting_vcpu_count: AtomicUsize,
 }
 
+pub(crate) fn dispatch_vcpu_interrupt_with(
+    enqueue: impl FnOnce() -> AxVmResult<usize>,
+    notify: impl FnOnce(),
+    send_ipi: impl FnOnce(usize),
+) -> AxVmResult {
+    let pcpu_id = enqueue()?;
+    notify();
+    send_ipi(pcpu_id);
+    Ok(())
+}
+
 impl VmRuntimeHandle {
     pub(crate) fn new() -> Self {
         Self {
@@ -208,24 +219,25 @@ impl VmRuntimeHandle {
 
     /// New delivery path: enqueue → notify → host IPI.
     ///
-    /// Called under `machine.lock()` via `with_runtime`.  `send_ipi` is a fast
-    /// MMIO/MSR write — it never sleeps or acquires other locks — so calling it
-    /// inside the `SpinNoIrq` critical section is safe.  Merging enqueue +
-    /// notify + IPI into a single lock acquisition eliminates the enqueue→notify
-    /// race window present in the old two-`with_runtime` code.
-    #[allow(dead_code, reason = "wired in module 2+")]
+    /// The dispatcher releases its queue lock before this method notifies
+    /// waiters or invokes the host IPI boundary.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "architecture interrupt routers dispatch in later modules"
+        )
+    )]
     pub(crate) fn dispatch_vcpu_interrupt(
         &self,
         vcpu_id: usize,
         interrupt: PendingVcpuInterrupt,
     ) -> AxVmResult {
-        let pcpu_id = self.irq_dispatcher.enqueue(vcpu_id, interrupt)?;
-        self.notify_all();
-        // SAFETY: send_ipi is a fast MMIO/MSR write; it does not sleep or
-        // acquire locks, so calling it inside the machine.lock SpinNoIrq
-        // critical section is safe.
-        crate::host::task::send_ipi(pcpu_id);
-        Ok(())
+        dispatch_vcpu_interrupt_with(
+            || self.irq_dispatcher.enqueue(vcpu_id, interrupt),
+            || self.notify_all(),
+            crate::host::task::send_ipi,
+        )
     }
 
     /// Called by the vCPU run loop to drain pending interrupts before
@@ -509,6 +521,11 @@ impl AxVM {
             .runtime()
             .ok_or_else(|| ax_err_type!(BadState, "VM runtime is not available"))?;
         f(runtime)
+    }
+
+    pub(crate) fn current_interrupt_runtime(&self) -> AxVmResult<Arc<VmRuntimeHandle>> {
+        let machine = self.machine.lock();
+        Ok(machine.interrupt_runtime()?.clone())
     }
 
     fn take_stopped_runtime(&self) -> Option<Arc<VmRuntimeHandle>> {
@@ -1362,6 +1379,8 @@ impl Drop for AxVM {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::RefCell;
+
     use super::*;
 
     #[test]
@@ -1395,5 +1414,66 @@ mod tests {
         write_guest_bytes_to_chunks(&mut chunks, &[]).unwrap();
 
         assert_eq!(chunk, [7, 7]);
+    }
+
+    #[test]
+    fn runtime_dispatch_orders_enqueue_before_notify_and_ipi() {
+        let events = RefCell::new(Vec::new());
+
+        dispatch_vcpu_interrupt_with(
+            || {
+                events.borrow_mut().push("enqueue");
+                Ok(3)
+            },
+            || events.borrow_mut().push("notify"),
+            |cpu_id| {
+                assert_eq!(cpu_id, 3);
+                events.borrow_mut().push("ipi");
+            },
+        )
+        .unwrap();
+
+        assert_eq!(*events.borrow(), ["enqueue", "notify", "ipi"]);
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn runtime_dispatch_releases_queue_lock_before_callbacks() {
+        let dispatcher = VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 3);
+        let interrupt = PendingVcpuInterrupt {
+            id: crate::irq::model::VirtualInterruptId(7),
+            trigger: crate::InterruptTriggerMode::LevelTriggered,
+        };
+        let events = RefCell::new(Vec::new());
+
+        dispatch_vcpu_interrupt_with(
+            || dispatcher.enqueue(0, interrupt),
+            || {
+                assert_eq!(dispatcher.drain(0), alloc::vec![interrupt]);
+                events.borrow_mut().push("notify");
+            },
+            |_| events.borrow_mut().push("ipi"),
+        )
+        .unwrap();
+
+        assert_eq!(*events.borrow(), ["notify", "ipi"]);
+    }
+
+    #[test]
+    fn runtime_dispatch_stops_when_enqueue_fails() {
+        let events = RefCell::new(Vec::new());
+
+        let result = dispatch_vcpu_interrupt_with(
+            || {
+                events.borrow_mut().push("enqueue");
+                Err(ax_err_type!(NotFound, "vCPU task not found"))
+            },
+            || events.borrow_mut().push("notify"),
+            |_| events.borrow_mut().push("ipi"),
+        );
+
+        assert!(matches!(result, Err(AxVmError::ResourceUnavailable { .. })));
+        assert_eq!(*events.borrow(), ["enqueue"]);
     }
 }

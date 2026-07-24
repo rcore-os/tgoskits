@@ -95,6 +95,16 @@ impl<R, H> Machine<R, H> {
         }
     }
 
+    pub(crate) fn interrupt_runtime(&self) -> AxVmResult<&H> {
+        match self {
+            Machine::Running { runtime, .. } | Machine::Paused { runtime, .. } => Ok(runtime),
+            state => Err(AxVmError::invalid_state(
+                "send vCPU interrupt",
+                alloc::format!("VM cannot accept interrupts in {:?}", state.status()),
+            )),
+        }
+    }
+
     pub fn start_with<F>(&mut self, f: F) -> AxVmResult
     where
         F: FnOnce(&mut R) -> AxVmResult<H>,
@@ -691,5 +701,35 @@ mod tests {
         assert_eq!(machine.resources(), Some(&7));
         assert!(machine.runtime().is_none());
         assert_eq!(machine.take_stopped_runtime(), Some(8));
+    }
+
+    #[test]
+    fn interrupt_runtime_accepts_only_running_and_paused_states() {
+        let running = Machine::Running {
+            resources: (),
+            runtime: 7,
+        };
+        assert_eq!(running.interrupt_runtime(), Ok(&7));
+
+        let paused = Machine::Paused {
+            resources: (),
+            runtime: 8,
+        };
+        assert_eq!(paused.interrupt_runtime(), Ok(&8));
+
+        for machine in [
+            Machine::<(), usize>::Ready(()),
+            Machine::Stopped {
+                resources: Some(()),
+                runtime: None,
+                reason: StopReason::Forced,
+            },
+            Machine::Destroyed,
+        ] {
+            assert!(matches!(
+                machine.interrupt_runtime(),
+                Err(AxVmError::InvalidState { .. })
+            ));
+        }
     }
 }

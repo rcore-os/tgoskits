@@ -3,8 +3,9 @@ use core::time::Duration;
 
 use ax_memory_addr::VirtAddr;
 use axvm_types::{
-    AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VmArchPerCpuOps,
-    VmArchVcpuOps, VmBackendError as BackendError, VmBackendResult as BackendResult,
+    AccessWidth, GuestPhysAddr, InterruptTriggerMode, MappingFlags, NestedPagingConfig, VCpuId,
+    VMId, VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
+    VmBackendResult as BackendResult,
 };
 use loongarch_vcpu::{
     LoongArchAccessFlags, LoongArchAccessWidth, LoongArchGuestPhysAddr, LoongArchHostOps,
@@ -385,6 +386,20 @@ impl VmArchVcpuOps for AxvmLoongArchVcpu {
 
     fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
         loongarch_result(self.0.inject_interrupt(vector))
+    }
+
+    fn inject_interrupt_with_trigger(
+        &mut self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> BackendResult {
+        // The PCH-PIC/EIOINTC Router consumes line trigger semantics before
+        // emitting a guest vector. The vCPU injection is mode-agnostic.
+        match trigger {
+            InterruptTriggerMode::EdgeTriggered | InterruptTriggerMode::LevelTriggered => {
+                loongarch_result(self.0.inject_interrupt(vector))
+            }
+        }
     }
 
     fn set_return_value(&mut self, val: usize) {
