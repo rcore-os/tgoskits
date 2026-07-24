@@ -101,6 +101,15 @@ pub(crate) fn save_fdt() {
     }
 }
 
+/// Returns the validated firmware device-tree size copied into early RAM.
+pub(crate) fn copy_size() -> usize {
+    let Some(src) = fdt_addr() else {
+        return 0;
+    };
+    // SAFETY: the firmware FDT remains readable until `save_fdt` copies it.
+    unsafe { validated_fdt_slice(src) }.map_or(0, <[u8]>::len)
+}
+
 /// # Safety
 ///
 /// `ptr` must reference a readable FDT blob that remains valid for the returned

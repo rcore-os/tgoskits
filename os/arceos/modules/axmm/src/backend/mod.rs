@@ -2,7 +2,7 @@
 
 use ::alloc::vec::Vec;
 use ax_hal::paging::{MappingFlags, PageSize, PageTable, PagingError};
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PageIter4K, PhysAddr, VirtAddr};
 use ax_memory_set::{MappingBackend, MappingError, MappingOperation, MappingResult};
 
 mod alloc;
@@ -51,7 +51,7 @@ struct SavedMapping {
 #[doc(hidden)]
 pub struct BackendTransaction {
     operation: MappingOperation<VirtAddr, MappingFlags>,
-    previous: Vec<Option<SavedMapping>>,
+    previous: Vec<SavedMapping>,
 }
 
 impl MappingBackend for Backend {
@@ -69,20 +69,23 @@ impl MappingBackend for Backend {
         let (start, size) = operation.range();
         let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
         let mut previous = Vec::new();
+        let mut contains_unmapped = false;
         if !matches!(operation, MappingOperation::Map { .. }) {
             let pages = PageIter4K::new(start, end).ok_or(MappingError::InvalidParam)?;
-            previous
-                .try_reserve_exact(size / PAGE_SIZE_4K)
-                .map_err(|_| MappingError::NoMemory)?;
             for vaddr in pages {
                 match pt.query(vaddr) {
-                    Ok((paddr, flags, PageSize::Size4K)) => previous.push(Some(SavedMapping {
-                        vaddr,
-                        paddr,
-                        flags,
-                    })),
+                    Ok((paddr, flags, PageSize::Size4K)) => {
+                        previous
+                            .try_reserve(1)
+                            .map_err(|_| MappingError::NoMemory)?;
+                        previous.push(SavedMapping {
+                            vaddr,
+                            paddr,
+                            flags,
+                        });
+                    }
                     Ok((..)) => return Err(MappingError::BadState),
-                    Err(PagingError::NotMapped) => previous.push(None),
+                    Err(PagingError::NotMapped) => contains_unmapped = true,
                     Err(_) => return Err(MappingError::BadState),
                 }
             }
@@ -99,7 +102,7 @@ impl MappingBackend for Backend {
         }
         if matches!(self, Self::Linear { .. })
             && matches!(operation, MappingOperation::Unmap { .. })
-            && previous.iter().any(Option::is_none)
+            && contains_unmapped
         {
             return Err(MappingError::BadState);
         }
@@ -146,7 +149,7 @@ impl MappingBackend for Backend {
                 }
             }
             MappingOperation::Unmap { .. } => {
-                for saved in state.previous.into_iter().flatten() {
+                for saved in state.previous {
                     match pt.query(saved.vaddr) {
                         Err(PagingError::NotMapped) => pt
                             .cursor()
@@ -159,7 +162,7 @@ impl MappingBackend for Backend {
                 }
             }
             MappingOperation::Protect { .. } => {
-                for saved in state.previous.into_iter().flatten() {
+                for saved in state.previous {
                     pt.cursor()
                         .protect(saved.vaddr, saved.flags)
                         .map_err(|_| MappingError::BadState)?;
@@ -173,7 +176,7 @@ impl MappingBackend for Backend {
         if matches!(self, Self::Alloc { .. })
             && matches!(state.operation, MappingOperation::Unmap { .. })
         {
-            for saved in state.previous.into_iter().flatten() {
+            for saved in state.previous {
                 dealloc_frame(saved.paddr);
             }
         }

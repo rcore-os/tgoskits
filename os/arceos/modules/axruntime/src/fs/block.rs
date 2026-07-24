@@ -40,9 +40,8 @@ impl FsPageProvider for RuntimePageProvider {
         unsafe {
             ax_alloc::global_allocator().deallocate_pages_raw(
                 page.addr(),
-                ax_alloc::PageRequest {
+                ax_alloc::PageRelease {
                     count: 1,
-                    align: ax_fs_ng::os::memory::PAGE_SIZE,
                     zone: ax_alloc::MemoryZone::Normal,
                 },
                 UsageKind::PageCache,

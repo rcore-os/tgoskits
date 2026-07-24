@@ -1,4 +1,4 @@
-use ax_alloc::{MemoryZone, PageRequest, UsageKind, global_allocator};
+use ax_alloc::{MemoryZone, PageRelease, PageRequest, UsageKind, global_allocator};
 use ax_hal::{
     mem::{phys_to_virt, virt_to_phys},
     paging::{MappingFlags, PageSize, PageTable},
@@ -34,9 +34,8 @@ pub(super) fn dealloc_frame(frame: PhysAddr) {
     unsafe {
         global_allocator().deallocate_pages_raw(
             vaddr.as_usize(),
-            PageRequest {
+            PageRelease {
                 count: 1,
-                align: PAGE_SIZE_4K,
                 zone: MemoryZone::Normal,
             },
             UsageKind::VirtMem,

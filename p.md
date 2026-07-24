@@ -281,7 +281,7 @@ ax-alloc 只提供：
 - 全局 allocator 的一次性初始化和追加 RAM section。
 - `PageRequest` 对应的物理页分配和释放。
 - `GlobalPage` 等具有明确所有权的页封装。
-- `PageFrameProvider`、task stack 和外部 split alloc/free trait 所需的低层 raw page pair；只允许 adapter 使用，调用方必须保存原 PageRequest/UsageKind 并成对释放。
+- `PageFrameProvider`、task stack 和外部 split alloc/free trait 所需的低层 raw page pair；只允许 adapter 使用，调用方必须保存由原请求派生的 `PageRelease { count, zone }` 和 `UsageKind` 并成对释放，对齐参数不进入释放契约。
 - 内核 Rust `GlobalAlloc`。
 - per-CPU Slab 的 CPU 启动初始化。
 - 单一 AllocatorStats；从同一底层计数派生按来源和按 UsageKind 的只读视图。
@@ -304,7 +304,7 @@ pub enum MemoryZone {
 
 pub struct PageRequest {
     pub count: usize,
-    pub align: usize,
+    pub align: usize, // physical-address alignment in bytes
     pub zone: MemoryZone,
 }
 ```
@@ -353,7 +353,7 @@ firmware/扁平设备树/UEFI memory map
 ```
 
 - 保留现有基于 RAM_CURRENT 的 O(1) bump 和 Ram no-free frame provider。
-- 从固件内存图选择最大的非空、地址计算不溢出且满足架构启动地址约束的 Free range 作为单一 early arena，不依赖描述符顺序，也不跨物理 hole 拼接；x86_64 将完整 early arena 限制在 4 GiB 以下，以满足应用处理器 trampoline 的 32 位 CR3 装载约束，高端 Free range 仍交给运行时 Buddy；不设置与实际启动对象无关的固定容量门槛，空间不足由 checked bump 返回错误。
+- 最终直接映射建立前，先以全部 CPU 区域的精确布局大小、经校验的设备树二进制对象大小及 2 MiB 页表/对齐元数据余量计算启动工作集，再从固件内存图中选择满足该容量和架构启动地址约束、物理地址最低的 Free range 作为单一 early arena；不能只按最大容量选择尚不可达的高地址 RAM，也不能选择无法容纳启动对象的最低小段。选择不依赖描述符顺序，也不跨物理 hole 拼接。x86_64 通过 `ArchTrait` 将完整 early arena 限制在 4 GiB 以下，以满足应用处理器 trampoline 的 32 位 CR3 装载约束，高端 Free range 仍交给运行时 Buddy；后续 bump 继续使用 checked arithmetic，空间不足立即失败。
 - 地址对齐和 `start + size` 使用 checked arithmetic。
 - 仅在引导处理器、单核、调度器和中断请求启用前使用。
 - 引导处理器在冻结前通过现有 someboot 多核 prealloc 为全部配置 CPU 分配 PerCpuMeta、secondary stack 和 per-CPU data，并写入启动内存描述。

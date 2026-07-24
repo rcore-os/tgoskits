@@ -13,10 +13,11 @@ use buddy_slab_allocator::{
     SlabDeallocResult, SlabPoolTrait, SlabTrait,
     eii::{slab_pool_impl, virt_to_phys_impl},
 };
+use log::{debug, info};
 
 use super::{
-    AllocResult, AllocationSource, AllocatorCounters, AllocatorStats, MemoryZone, PageRequest,
-    UsageKind,
+    AllocResult, AllocationSource, AllocatorCounters, AllocatorStats, MemoryZone, PageRelease,
+    PageRequest, UsageKind,
 };
 
 /// The global allocator instance for buddy-slab mode.
@@ -228,16 +229,17 @@ impl GlobalAllocator {
     /// # Safety
     ///
     /// `pos` must identify a live allocation returned by
-    /// [`Self::allocate_pages_raw`] with exactly the same `request` and `kind`.
+    /// [`Self::allocate_pages_raw`] with the original page count, source zone,
+    /// and `kind` recorded in `release`.
     /// The allocation must not be accessed or released again after this call.
     #[doc(hidden)]
-    pub unsafe fn deallocate_pages_raw(&self, pos: usize, request: PageRequest, kind: UsageKind) {
-        let bytes = request
+    pub unsafe fn deallocate_pages_raw(&self, pos: usize, release: PageRelease, kind: UsageKind) {
+        let bytes = release
             .count
             .checked_mul(PAGE_SIZE)
             .expect("a live page allocation has a validated byte size");
-        self.inner.dealloc_pages(pos, request.count);
-        self.stats.dealloc(request.zone.into(), kind, bytes);
+        self.inner.dealloc_pages(pos, release.count);
+        self.stats.dealloc(release.zone.into(), kind, bytes);
     }
 
     /// Returns the number of allocated bytes in the allocator backend.

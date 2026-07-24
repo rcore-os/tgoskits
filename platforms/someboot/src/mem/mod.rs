@@ -160,39 +160,42 @@ pub(crate) fn early_init() {
 
     print_memory_map();
 
-    ram::init(select_early_ram(memory_map()).expect("no suitable early RAM region"));
+    let minimum_size = crate::smp::layout::planned_cpu_area_size()
+        .checked_add(crate::fdt::copy_size())
+        .and_then(|size| size.checked_add(KIMAGE_MAP_ALIGN))
+        .expect("early RAM requirement overflowed");
+    ram::init(
+        select_early_ram(memory_map(), minimum_size)
+            .expect("no early RAM region can hold CPU areas and boot metadata"),
+    );
 
     crate::fdt::save_fdt();
     crate::smp::alloc_percpu();
 }
 
-fn select_early_ram(descriptors: &[MemoryDescriptor]) -> Option<Range<usize>> {
+fn select_early_ram(descriptors: &[MemoryDescriptor], minimum_size: usize) -> Option<Range<usize>> {
     descriptors
         .iter()
         .filter(|desc| desc.memory_type == MemoryType::Free && desc.size_in_bytes != 0)
         .filter_map(|desc| {
-            let end = desc.physical_start.checked_add(desc.size_in_bytes)?;
-            #[cfg(target_arch = "x86_64")]
-            let end = {
-                // The AP trampoline loads CR3 in 32-bit mode. Keeping the
-                // complete boot arena below 4 GiB guarantees that its root
-                // page table can be passed to every secondary processor.
-                end.min(1usize << 32)
-            };
+            let end = desc
+                .physical_start
+                .checked_add(desc.size_in_bytes)?
+                .min(Arch::EARLY_RAM_END_EXCLUSIVE);
             let size = end.checked_sub(desc.physical_start)?;
-            (size != 0).then_some((size, desc.physical_start..end))
+            (size >= minimum_size.max(1)).then_some(desc.physical_start..end)
         })
-        .max_by_key(|(size, _)| *size)
-        .map(|(_, range)| range)
+        .min_by_key(|range| range.start)
 }
 
 fn reserve_arch_early_ranges() {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // AP trampoline lives in low memory and must stay reserved.
-        let tramp = crate::arch::power::AP_TRAMPOLINE_PADDR;
-        let desc =
-            MemoryDescriptor::new_aligned(tramp, page_size(), MemoryType::Reserved, page_size());
+    if let Some(range) = Arch::EARLY_RESERVED_RANGE {
+        let desc = MemoryDescriptor::new_aligned(
+            range.start,
+            range.end - range.start,
+            MemoryType::Reserved,
+            page_size(),
+        );
         match add_memory_descriptor(desc) {
             Ok(()) => {}
             Err(MemoryRangeError::Conflict { existing, .. })
@@ -200,7 +203,7 @@ fn reserve_arch_early_ranges() {
             {
                 // Already reserved by firmware map; keep it as-is.
             }
-            Err(err) => panic!("failed to reserve x86 AP trampoline: {err:?}"),
+            Err(err) => panic!("failed to reserve architecture early-memory range: {err:?}"),
         }
     }
 }
@@ -283,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn early_ram_uses_the_largest_usable_firmware_region() {
+    fn early_ram_prefers_the_lowest_usable_firmware_region() {
         let descriptors = [
             MemoryDescriptor {
                 physical_start: 0x1000_0000,
@@ -303,8 +306,8 @@ mod tests {
         ];
 
         assert_eq!(
-            select_early_ram(&descriptors),
-            Some(0x2000_0000..0x2800_0000)
+            select_early_ram(&descriptors, 3 * MB),
+            Some(0x1000_0000..0x1100_0000)
         );
     }
 
@@ -323,7 +326,31 @@ mod tests {
             },
         ];
 
-        assert_eq!(select_early_ram(&descriptors), Some(0x1000..0x20_1000));
+        assert_eq!(
+            select_early_ram(&descriptors, 2 * MB),
+            Some(0x1000..0x20_1000)
+        );
+    }
+
+    #[test]
+    fn early_ram_skips_a_low_region_smaller_than_the_boot_requirement() {
+        let descriptors = [
+            MemoryDescriptor {
+                physical_start: 0x4000_0000,
+                size_in_bytes: 2 * MB,
+                memory_type: MemoryType::Free,
+            },
+            MemoryDescriptor {
+                physical_start: 0x4060_0000,
+                size_in_bytes: 64 * MB,
+                memory_type: MemoryType::Free,
+            },
+        ];
+
+        assert_eq!(
+            select_early_ram(&descriptors, 3 * MB),
+            Some(0x4060_0000..0x4460_0000)
+        );
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -342,6 +369,9 @@ mod tests {
             },
         ];
 
-        assert_eq!(select_early_ram(&descriptors), Some(0x20_0000..0x42f7_b000));
+        assert_eq!(
+            select_early_ram(&descriptors, 3 * MB),
+            Some(0x20_0000..0x42f7_b000)
+        );
     }
 }

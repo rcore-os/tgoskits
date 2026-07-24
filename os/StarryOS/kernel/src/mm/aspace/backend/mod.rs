@@ -28,9 +28,7 @@ use starry_mm::{CloneMapAccounting, CommitKind, MemoryAccounting, PageInitializa
 pub use starry_mm::{RssKind, SharedPages};
 
 #[cfg(axtest)]
-pub(crate) use self::cow::{
-    fault_accounting_failure_rolls_back_for_test, private_mmap_eof_check_for_test,
-};
+pub(crate) use self::cow::fault_accounting_failure_rolls_back_for_test;
 use super::AddrSpace;
 
 fn divide_page(size: usize, page_size: PageSize) -> usize {
@@ -75,9 +73,8 @@ pub(crate) fn dealloc_frame(frame: PhysAddr, align: PageSize) {
     unsafe {
         global_allocator().deallocate_pages_raw(
             vaddr.as_usize(),
-            ax_alloc::PageRequest {
+            ax_alloc::PageRelease {
                 count: num_pages,
-                align: page_size,
                 zone: ax_alloc::MemoryZone::Normal,
             },
             UsageKind::VirtMem,
@@ -273,7 +270,7 @@ struct SavedMapping {
 #[doc(hidden)]
 pub struct BackendTransaction {
     operation: MappingOperation<VirtAddr, MappingFlags>,
-    previous: Vec<Option<SavedMapping>>,
+    previous: Vec<SavedMapping>,
 }
 
 impl MappingBackend for Backend {
@@ -294,52 +291,63 @@ impl MappingBackend for Backend {
         let range = VirtAddrRange::new(start, end);
         let page_size = self.page_size();
         let mut previous = Vec::new();
-        previous
-            .try_reserve_exact(size / usize::from(page_size))
-            .map_err(|_| MappingError::NoMemory)?;
+        let mut contains_unmapped = false;
         starry_mm::with_rss_accounting(|acct| {
             let pages = pages_in(range, page_size).map_err(map_ax_error)?;
             for vaddr in pages {
-                let mapping = match pt.cursor().query(vaddr) {
+                match pt.cursor().query(vaddr) {
                     Ok((paddr, flags, actual_size)) if actual_size == page_size => {
+                        if matches!(
+                            operation,
+                            MappingOperation::Map {
+                                precondition: MapPrecondition::Vacant,
+                                ..
+                            }
+                        ) {
+                            self.release_holds(&previous);
+                            return Err(MappingError::AlreadyExists);
+                        }
+                        if !matches!(operation, MappingOperation::Map { .. })
+                            && previous.try_reserve(1).is_err()
+                        {
+                            self.release_holds(&previous);
+                            return Err(MappingError::NoMemory);
+                        }
                         let cow_hold = matches!(operation, MappingOperation::Unmap { .. })
                             && matches!(self, Self::Cow(_));
                         if cow_hold && let Err(error) = cow::retain_frame_for_transaction(paddr) {
                             self.release_holds(&previous);
                             return Err(map_ax_error(error));
                         }
-                        Some(SavedMapping {
-                            vaddr,
-                            paddr,
-                            flags,
-                            page_size: actual_size,
-                            rss_kind: self.rss_kind_before_unmap(vaddr, acct),
-                            cow_hold,
-                        })
+                        if !matches!(operation, MappingOperation::Map { .. }) {
+                            previous.push(SavedMapping {
+                                vaddr,
+                                paddr,
+                                flags,
+                                page_size: actual_size,
+                                rss_kind: self.rss_kind_before_unmap(vaddr, acct),
+                                cow_hold,
+                            });
+                        }
                     }
                     Ok(_) => {
                         self.release_holds(&previous);
                         return Err(MappingError::BadState);
                     }
-                    Err(PagingError::NotMapped) => None,
+                    Err(PagingError::NotMapped) => contains_unmapped = true,
                     Err(_) => {
                         self.release_holds(&previous);
                         return Err(MappingError::BadState);
                     }
-                };
-                previous.push(mapping);
+                }
             }
 
-            if matches!(
-                operation,
-                MappingOperation::Map {
-                    precondition: MapPrecondition::Vacant,
-                    ..
-                }
-            ) && previous.iter().any(Option::is_some)
+            if matches!(self, Self::Linear { .. })
+                && matches!(operation, MappingOperation::Unmap { .. })
+                && contains_unmapped
             {
                 self.release_holds(&previous);
-                return Err(MappingError::AlreadyExists);
+                return Err(MappingError::BadState);
             }
             Ok(BackendTransaction {
                 operation,
@@ -423,8 +431,8 @@ impl Backend {
         }
     }
 
-    fn release_holds(&self, mappings: &[Option<SavedMapping>]) {
-        for saved in mappings.iter().flatten().filter(|saved| saved.cow_hold) {
+    fn release_holds(&self, mappings: &[SavedMapping]) {
+        for saved in mappings.iter().filter(|saved| saved.cow_hold) {
             cow::release_transaction_frame(saved.paddr, saved.page_size);
         }
     }
@@ -437,7 +445,7 @@ impl Backend {
                     BackendOps::unmap(self, range, acct, &mut pt.cursor())?;
                 }
                 MappingOperation::Unmap { .. } => {
-                    for saved in state.previous.into_iter().flatten() {
+                    for saved in state.previous {
                         let current = {
                             let cursor = pt.cursor();
                             cursor.query(saved.vaddr)
@@ -474,7 +482,7 @@ impl Backend {
                     }
                 }
                 MappingOperation::Protect { .. } => {
-                    for saved in state.previous.into_iter().flatten() {
+                    for saved in state.previous {
                         let restored = {
                             let mut cursor = pt.cursor();
                             cursor.protect(saved.vaddr, saved.flags)

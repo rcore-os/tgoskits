@@ -14,7 +14,7 @@ use crate::{
 };
 
 mod cpu_iter;
-mod layout;
+pub(crate) mod layout;
 
 static mut CPU_AREA_REGION_START: usize = 0;
 static mut CPU_AREA_REGION_END: usize = 0;

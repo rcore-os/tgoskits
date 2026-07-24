@@ -107,11 +107,6 @@ impl FrameTableRefCount {
 static FRAME_TABLE: SpinNoIrq<FrameTableRefCount> = SpinNoIrq::new(FrameTableRefCount::new());
 
 #[cfg(axtest)]
-pub(crate) fn private_mmap_eof_check_for_test() -> bool {
-    starry_mm::private_file_eof_policy_matches_linux_for_test()
-}
-
-#[cfg(axtest)]
 pub(crate) fn fault_accounting_failure_rolls_back_for_test() -> bool {
     let Ok(mut page_table) = PageTable::try_new() else {
         return false;

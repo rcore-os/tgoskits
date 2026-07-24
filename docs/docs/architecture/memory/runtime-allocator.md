@@ -123,12 +123,17 @@ pub const fn slab_pages(self, page_size: usize) -> usize {
 
 ### 3.1 页请求模型
 
-请求包含连续页数、字节对齐和物理地址约束。当前 base page 固定为 4 KiB，`count` 必须非零，乘法和地址范围都执行 overflow 检查。
+请求包含连续页数、物理地址字节对齐和物理地址约束。当前 base page 固定为 4 KiB，`count` 必须非零，乘法和地址范围都执行 overflow 检查。Buddy 通过平台 `virt_to_phys` 转换计算普通页和 DMA32 页的候选位置，不能用内核虚拟地址对齐代替物理对齐；这允许直接映射偏移不满足大页对齐时仍返回正确的物理页帧。
 
 ```rust
 pub struct PageRequest {
     pub count: usize,
     pub align: usize,
+    pub zone: MemoryZone,
+}
+
+pub struct PageRelease {
+    pub count: usize,
     pub zone: MemoryZone,
 }
 
@@ -165,7 +170,7 @@ pub fn alloc_pages(
 
 需要把页交给页表项或外部对象长期持有的代码必须明确转移或封装生命周期。不能丢弃 `GlobalPage` 后继续使用其地址，否则 Drop 已经把页返回 allocator。
 
-`Drop` 实现是 owner 协议的执行点，它把构造时记录的 `request` 与 `usage` 原样传回 deallocator，不需要调用方重新传递 zone 或 usage 信息。`deallocate_pages_raw()` 标记为 `unsafe` 是因为它要求调用方保证地址确实来自对称的 `allocate_pages_raw()`。
+`Drop` 实现是 owner 协议的执行点。它从构造时记录的 `request` 派生只包含 `count` 和 `zone` 的 `PageRelease`，再连同 `usage` 传回 deallocator；分配时的对齐只影响地址选择，释放 Buddy block 时不参与计算。`deallocate_pages_raw()` 标记为 `unsafe` 是因为它要求调用方保证地址确实来自对称的 `allocate_pages_raw()`，并保持原页数、来源区域和用途。
 
 ```rust
 impl Drop for GlobalPage {
@@ -175,7 +180,7 @@ impl Drop for GlobalPage {
         unsafe {
             global_allocator().deallocate_pages_raw(
                 self.start_vaddr.into(),
-                self.request,
+                PageRelease::from(self.request),
                 self.usage,
             );
         }

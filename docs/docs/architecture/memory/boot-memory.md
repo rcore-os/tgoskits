@@ -60,9 +60,11 @@ flowchart TD
     R --> M
     K["内核镜像范围"] --> M
     A["架构早期保留区"] --> M
-    M --> C{"选择最大合法 Free 子区间"}
-    C -->|"x86_64"| L["候选末端裁剪到 4 GiB"]
-    C -->|"其他架构"| B["ram::init 进入 Active"]
+    M --> C["应用架构早期地址上限"]
+    C --> L{"容量覆盖 CPU 区、DTB 与启动元数据？"}
+    L -->|"否"| N["检查下一个更高地址候选"]
+    N --> L
+    L -->|"是：取最低地址候选"| B["ram::init 进入 Active"]
     L --> B
     B --> P["分配 boot 页表"]
     P --> D["保存 DTB / 固件数据"]
@@ -89,9 +91,9 @@ flowchart TD
 | 架构 | 固件与 RAM 输入 | early arena 限制 | 页表切换 | 地址处理 |
 | --- | --- | --- | --- | --- |
 | x86_64 | 主要来自 UEFI/动态平台描述 | 页表根必须在 4 GiB 以下，供应用处理器 32 位 trampoline 装载 | 写 `CR3` 并失效本地翻译 | 重定位前恒等，之后使用 `PHYS_VIRT_OFFSET` |
-| AArch64 | UEFI 或 U-Boot 传入设备树 | 选择最大合法 Free 段，无 4 GiB trampoline 限制 | 设置 EL1/EL2 translation registers、MAIR 和 TLBI | RAM 使用 `PAGE_OFFSET`，每 CPU 区有额外窗口 |
-| RISC-V 64 | OpenSBI/U-Boot 传入设备树 | 选择最大合法 Free 段 | 写 Sv39 `satp` 并执行 `sfence.vma` | 重定位配置下区分镜像、每 CPU 区和线性映射 |
-| LoongArch64 | UEFI 或设备树 | 选择最大合法 Free 段 | 写 `PGDH/PGDL`、ASID，执行 `invtlb` 与屏障 | 先移除直接映射窗口高位；RAM 与 MMIO 使用不同窗口 |
+| AArch64 | UEFI 或 U-Boot 传入设备树 | 在满足计算所得启动容量的段中选择最低地址，无 4 GiB trampoline 限制 | 设置 EL1/EL2 translation registers、MAIR 和 TLBI | RAM 使用 `PAGE_OFFSET`，每 CPU 区有额外窗口 |
+| RISC-V 64 | OpenSBI/U-Boot 传入设备树 | 在满足计算所得启动容量的段中选择最低地址 | 写 Sv39 `satp` 并执行 `sfence.vma` | 重定位配置下区分镜像、每 CPU 区和线性映射 |
+| LoongArch64 | UEFI 或设备树 | 在满足计算所得启动容量的段中选择最低地址 | 写 `PGDH/PGDL`、ASID，执行 `invtlb` 与屏障 | 先移除直接映射窗口高位；RAM 与 MMIO 使用不同窗口 |
 
 更完整的页表项、缓存属性和多 CPU 失效差异见[多架构内存实现](./architecture-support.md)。
 
@@ -180,7 +182,7 @@ flowchart LR
 
 ### 3.2 早期线性分配
 
-`someboot::mem::ram` 在 `early_init()` 中选择最大的非空、地址计算不溢出且满足架构启动地址约束的 `Free` 子区间作为 bump arena。选择不依赖固件描述符顺序；它不是运行期 heap，也不跨多个 RAM bank 拼接分配。实现不设置固定的最小容量，实际启动对象超出 arena 时由 checked bump 明确失败。
+`someboot::mem::ram` 在 `early_init()` 中先计算全部固件 CPU 区域的精确大小，加上经校验的设备树二进制对象大小和一个 `KIMAGE_MAP_ALIGN`（2 MiB）的页表、对齐及其他启动元数据余量；随后在非空、地址计算不溢出且满足架构启动地址约束的 `Free` 子区间中，选择物理地址最低且容量达到该工作集的区间作为 bump arena。最终直接映射尚未建立时，不能根据容量推断高地址 RAM 已经可访问；2 MiB 小段也不能仅因地址最低而被选中。选择过程先应用 `ArchTrait::EARLY_RAM_END_EXCLUSIVE`，不依赖固件描述符顺序。early arena 不是运行期 heap，也不跨多个 RAM bank 拼接分配，后续每次 bump 仍执行边界检查。
 
 x86_64 的应用处理器 trampoline 在 32 位启动阶段通过 `movl %eax, %cr3` 装载启动页表根物理地址，因此 early arena 必须位于 4 GiB 以下。`select_early_ram()` 会把 x86_64 候选区间的末端裁剪到 `0x1_0000_0000`；完全位于该地址以上的 RAM 不参与 early arena 选择。该限制只约束启动页表、设备树副本和每 CPU 启动对象，不会丢弃高端 RAM：`memory_map_setup()` 交接后，高端 `Free` 描述符仍进入运行时 Buddy section。
 
@@ -321,7 +323,7 @@ MemoryDescriptor[]
 | axplat dynamic free list | 32 ranges | 超出平台容量不能完整交接 |
 | axplat dynamic reserved list | 32 ranges | 复杂保留图需要显式处理 |
 | axplat dynamic MMIO list | 16 ranges | 设备窗口数量受限 |
-| early bump arena | 最大的非空有效且满足架构启动地址约束的 Free range | 不跨物理 hole；x86_64 位于 4 GiB 以下；容量不足由实际分配报告 |
+| early bump arena | 满足计算所得启动工作集和架构地址约束的最低地址 Free range | 不跨物理 hole；x86_64 位于 4 GiB 以下；无候选时初始化立即失败 |
 | Buddy contiguous allocation | 单 section 内完成 | 不能跨物理 hole 拼接连续页 |
 
 这些限制不应通过引入通用非统一内存访问、compaction 或页迁移框架解决。若具体平台超过固定容量，应先提高有依据的常量或压缩平台描述符；对应验收方法见[内存管理测试与验收](./testing.md)。

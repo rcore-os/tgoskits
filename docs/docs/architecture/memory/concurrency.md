@@ -58,7 +58,7 @@ sequenceDiagram
     participant Map as MemoryMap
     participant AP as 应用处理器
 
-    BSP->>RAM: init(largest_free_range)
+    BSP->>RAM: init(lowest_range_covering_boot_working_set)
     BSP->>RAM: alloc(boot tables / DTB / CPU areas)
     BSP->>RAM: used_range()
     BSP->>Map: merge_add(Reserved)

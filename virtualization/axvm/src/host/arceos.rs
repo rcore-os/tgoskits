@@ -54,9 +54,8 @@ impl HostMemory for ArceOsHost {
         unsafe {
             modules::ax_alloc::global_allocator().deallocate_pages_raw(
                 self.phys_to_virt(paddr).as_usize(),
-                modules::ax_alloc::PageRequest {
+                modules::ax_alloc::PageRelease {
                     count: 1,
-                    align: PAGE_SIZE_4K,
                     zone: modules::ax_alloc::MemoryZone::Normal,
                 },
                 modules::ax_alloc::UsageKind::PageTable,
@@ -88,9 +87,8 @@ impl HostMemory for ArceOsHost {
         unsafe {
             modules::ax_alloc::global_allocator().deallocate_pages_raw(
                 self.phys_to_virt(paddr).as_usize(),
-                modules::ax_alloc::PageRequest {
+                modules::ax_alloc::PageRelease {
                     count: num_frames,
-                    align: PAGE_SIZE_4K,
                     zone: modules::ax_alloc::MemoryZone::Normal,
                 },
                 modules::ax_alloc::UsageKind::Dma,

@@ -1,6 +1,6 @@
 //! Page table manipulation.
 
-use ax_alloc::{MemoryZone, PageRequest, UsageKind, global_allocator};
+use ax_alloc::{MemoryZone, PageRelease, PageRequest, UsageKind, global_allocator};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use ax_page_table::stage1::PageFrameProvider;
 #[doc(no_inline)]
@@ -21,19 +21,19 @@ pub fn validate_smp_invalidation() {
     #[cfg(target_arch = "x86_64")]
     let available = ax_page_table::stage1::smp_invalidation_available::<
         ax_page_table::stage1::x86_64::X64PagingMetaData<RuntimeTlbInvalidator>,
-    >(false);
+    >();
     #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
     let available = ax_page_table::stage1::smp_invalidation_available::<
         ax_page_table::stage1::riscv::Sv39MetaData<VirtAddr, RuntimeTlbInvalidator>,
-    >(false);
+    >();
     #[cfg(target_arch = "aarch64")]
     let available = ax_page_table::stage1::smp_invalidation_available::<
         ax_page_table::stage1::aarch64::A64PagingMetaData,
-    >(cfg!(feature = "ipi"));
+    >();
     #[cfg(target_arch = "loongarch64")]
     let available = ax_page_table::stage1::smp_invalidation_available::<
         ax_page_table::stage1::loongarch64::LA64MetaData<RuntimeTlbInvalidator>,
-    >(false);
+    >();
     assert!(
         available,
         "SMP paging requires hardware broadcast or the ax-hal `ipi` feature"
@@ -98,9 +98,8 @@ impl PageFrameProvider for PagingHandlerImpl {
         unsafe {
             global_allocator().deallocate_pages_raw(
                 phys_to_virt(paddr).as_usize(),
-                PageRequest {
+                PageRelease {
                     count: num,
-                    align: PAGE_SIZE_4K,
                     zone: MemoryZone::Normal,
                 },
                 UsageKind::PageTable,

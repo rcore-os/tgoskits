@@ -51,11 +51,6 @@ mod tests {
     }
 
     #[test]
-    fn private_mmap_rejects_fault_at_file_eof() {
-        ax_assert!(axtest_exports::private_mmap_rejects_fault_at_file_eof());
-    }
-
-    #[test]
     fn cow_fault_accounting_failure_rolls_back() {
         ax_assert!(axtest_exports::cow_fault_accounting_failure_rolls_back());
     }

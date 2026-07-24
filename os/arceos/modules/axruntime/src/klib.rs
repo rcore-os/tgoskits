@@ -168,9 +168,8 @@ impl_trait! {
             unsafe {
                 ax_alloc::global_allocator().deallocate_pages_raw(
                     addr.as_usize(),
-                    ax_alloc::PageRequest {
+                    ax_alloc::PageRelease {
                         count: num_pages,
-                        align: ax_memory_addr::PAGE_SIZE_4K,
                         zone: match zone {
                             DmaPageZone::Normal => ax_alloc::MemoryZone::Normal,
                             DmaPageZone::Dma32 => ax_alloc::MemoryZone::Dma32,

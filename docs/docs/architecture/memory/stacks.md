@@ -136,7 +136,7 @@ flowchart LR
     Usable --> Top["stack top"]
 ```
 
-Drop 时先通过 `ax-mm::kernel_aspace().map_linear()` 恢复 guard 页映射，再按原 `PageRequest` 释放整段 allocation。先恢复映射可避免 Buddy 重用该页后内核 direct map 仍残留 hole。
+Drop 时先通过 `ax-mm::kernel_aspace().map_linear()` 恢复 guard 页映射，再按原页数和来源区域构造 `PageRelease` 释放整段 allocation；分配对齐不属于释放契约。先恢复映射可避免 Buddy 重用该页后内核 direct map 仍残留 hole。
 
 ## 5. 栈保护一致性
 

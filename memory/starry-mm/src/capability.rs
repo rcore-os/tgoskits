@@ -128,18 +128,6 @@ fn private_file_max_read_len(
         .min(available as u64) as usize)
 }
 
-#[doc(hidden)]
-pub fn private_file_eof_policy_matches_linux_for_test() -> bool {
-    matches!(
-        private_file_max_read_len(4096, None, 4096, 4096),
-        Err(AxError::BadAddress)
-    ) && matches!(private_file_max_read_len(4096, None, 2048, 4096), Ok(2048))
-        && matches!(
-            private_file_max_read_len(4096, Some(8192), 4096, 4096),
-            Ok(4096)
-        )
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::vec;
@@ -186,6 +174,14 @@ mod tests {
 
     #[test]
     fn private_mapping_rejects_a_fault_at_file_eof() {
-        assert!(private_file_eof_policy_matches_linux_for_test());
+        assert_eq!(
+            private_file_max_read_len(4096, None, 4096, 4096),
+            Err(AxError::BadAddress)
+        );
+        assert_eq!(private_file_max_read_len(4096, None, 2048, 4096), Ok(2048));
+        assert_eq!(
+            private_file_max_read_len(4096, Some(8192), 4096, 4096),
+            Ok(4096)
+        );
     }
 }

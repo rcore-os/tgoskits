@@ -7,9 +7,6 @@
 
 #![no_std]
 
-#[allow(unused_imports)]
-#[macro_use]
-extern crate log;
 extern crate alloc;
 
 use core::{
@@ -62,10 +59,28 @@ pub enum MemoryZone {
 pub struct PageRequest {
     /// Number of 4-KiB pages.
     pub count: usize,
-    /// Required byte alignment.
+    /// Required physical-address alignment in bytes.
     pub align: usize,
     /// Required physical memory zone.
     pub zone: MemoryZone,
+}
+
+/// Metadata required to return a contiguous page allocation to its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageRelease {
+    /// Number of 4-KiB pages in the original allocation.
+    pub count: usize,
+    /// Physical memory zone that supplied the allocation.
+    pub zone: MemoryZone,
+}
+
+impl From<PageRequest> for PageRelease {
+    fn from(request: PageRequest) -> Self {
+        Self {
+            count: request.count,
+            zone: request.zone,
+        }
+    }
 }
 
 /// Source used to satisfy an allocation.
@@ -242,5 +257,21 @@ mod tests {
 
         counters.dealloc(AllocationSource::Normal, UsageKind::RustHeap, 128);
         assert_eq!(counters.snapshot().total(), 12_288);
+    }
+    #[test]
+    fn page_release_keeps_only_the_metadata_required_by_deallocation() {
+        let request = PageRequest {
+            count: 4,
+            align: 0x20_0000,
+            zone: MemoryZone::Dma32,
+        };
+
+        assert_eq!(
+            PageRelease::from(request),
+            PageRelease {
+                count: 4,
+                zone: MemoryZone::Dma32,
+            }
+        );
     }
 }

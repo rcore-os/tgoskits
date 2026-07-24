@@ -74,12 +74,11 @@ pub trait PagingMetaData: Sync + Send {
 }
 
 /// Returns whether the configured invalidator is safe for an SMP address space.
-pub const fn smp_invalidation_available<M: PagingMetaData>(remote_ipi: bool) -> bool {
-    remote_ipi
-        || matches!(
-            M::Tlb::SCOPE,
-            TlbScope::HardwareBroadcast | TlbScope::RemoteIpi
-        )
+pub const fn smp_invalidation_available<M: PagingMetaData>() -> bool {
+    matches!(
+        M::Tlb::SCOPE,
+        TlbScope::HardwareBroadcast | TlbScope::RemoteIpi
+    )
 }
 
 // Keep small TLB batches inline so page-table mutation never allocates heap

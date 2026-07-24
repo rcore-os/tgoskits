@@ -41,6 +41,14 @@ fn layout_info(cpu_count: usize) -> Result<LayoutInfo, PerCpuLayoutError> {
     )
 }
 
+/// Returns the exact storage required for all firmware-described CPU areas.
+pub(crate) fn planned_cpu_area_size() -> usize {
+    layout_info(cpu_count())
+        .unwrap_or_else(|error| panic!("invalid firmware CPU-area layout: {error}"))
+        .allocation_layout
+        .size()
+}
+
 fn calculate_layout(
     cpu_count: usize,
     requirements: LayoutRequirements,

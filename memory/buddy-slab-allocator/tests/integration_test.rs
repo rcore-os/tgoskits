@@ -12,7 +12,8 @@ use buddy_slab_allocator::{
 };
 use common::{
     GlobalTestContext, HostRegion, count_free_pages, global_test_context,
-    init_global as init_global_allocator, init_global_slice, set_current_cpu,
+    init_global as init_global_allocator, init_global_slice, set_current_cpu, set_physical_offset,
+    virt_to_phys,
 };
 
 const PAGE_SIZE: usize = 0x1000;
@@ -619,6 +620,20 @@ fn global_init_with_unaligned_region_preserves_large_alloc_alignment() {
     let ptr = allocator.alloc(layout).unwrap();
     assert_eq!((ptr.as_ptr() as usize) % ALIGN_2M, 0);
     unsafe { allocator.dealloc(ptr, layout) };
+}
+
+#[test]
+fn page_alignment_is_checked_in_the_physical_address_space() {
+    const ALIGN_2M: usize = 2 * 1024 * 1024;
+
+    let mut region = HostRegion::new(4 * ALIGN_2M, ALIGN_2M);
+    let allocator = GlobalAllocator::<PAGE_SIZE>::new();
+    let _ctx = init_global_allocator(&allocator, &mut region, 1);
+    set_physical_offset(PAGE_SIZE);
+
+    let addr = allocator.alloc_pages(1, ALIGN_2M).unwrap();
+    assert_eq!(virt_to_phys(addr) % ALIGN_2M, 0);
+    allocator.dealloc_pages(addr, 1);
 }
 
 #[test]

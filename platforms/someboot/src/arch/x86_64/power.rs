@@ -12,7 +12,7 @@ use crate::{mem::phys_to_virt, power::CpuOnError, smp::PerCpuMeta};
 
 pub const AP_TRAMPOLINE_PADDR: usize = 0x8000;
 const AP_TRAMPOLINE_VECTOR: u8 = (AP_TRAMPOLINE_PADDR >> 12) as u8;
-const AP_TRAMPOLINE_SIZE: usize = 0x1000;
+pub const AP_TRAMPOLINE_SIZE: usize = 0x1000;
 const AP_START_TIMEOUT_US: u64 = 500_000;
 
 const LAPIC_REG_ESR: u32 = 0x280;

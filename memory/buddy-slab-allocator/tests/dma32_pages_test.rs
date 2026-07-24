@@ -5,7 +5,7 @@ extern crate buddy_slab_allocator;
 mod common;
 
 use buddy_slab_allocator::GlobalAllocator;
-use common::{GlobalTestContext, HostRegion, init_global, virt_to_phys};
+use common::{GlobalTestContext, HostRegion, init_global, set_physical_offset, virt_to_phys};
 
 const PAGE_SIZE: usize = 0x1000;
 const TEST_HEAP_SIZE: usize = 16 * 1024 * 1024;
@@ -97,5 +97,19 @@ fn global_add_region_unaligned_lowmem_alignment() {
     let addr = allocator.alloc_pages_lowmem(1, ALIGN_2M).unwrap();
     assert_eq!(addr % ALIGN_2M, 0);
     assert!(virt_to_phys(addr) + PAGE_SIZE <= 0x1000_0000);
+    allocator.dealloc_pages(addr, 1);
+}
+
+#[test]
+fn lowmem_alignment_is_checked_in_the_physical_address_space() {
+    const ALIGN_2M: usize = 2 * 1024 * 1024;
+
+    let mut region = HostRegion::new(4 * ALIGN_2M, ALIGN_2M);
+    let allocator = GlobalAllocator::<PAGE_SIZE>::new();
+    let _ctx = init_allocator(&allocator, &mut region);
+    set_physical_offset(PAGE_SIZE);
+
+    let addr = allocator.alloc_pages_lowmem(1, ALIGN_2M).unwrap();
+    assert_eq!(virt_to_phys(addr) % ALIGN_2M, 0);
     allocator.dealloc_pages(addr, 1);
 }

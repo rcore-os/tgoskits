@@ -1,7 +1,7 @@
 use ax_errno::AxResult;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
-use crate::{MemoryZone, PAGE_SIZE, PageRequest, UsageKind, global_allocator};
+use crate::{MemoryZone, PAGE_SIZE, PageRelease, PageRequest, UsageKind, global_allocator};
 
 /// A RAII wrapper of contiguous 4K-sized pages.
 ///
@@ -128,7 +128,7 @@ impl Drop for GlobalPage {
         unsafe {
             global_allocator().deallocate_pages_raw(
                 self.start_vaddr.into(),
-                self.request,
+                PageRelease::from(self.request),
                 self.usage,
             );
         }
