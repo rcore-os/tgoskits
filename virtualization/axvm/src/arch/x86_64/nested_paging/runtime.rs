@@ -197,7 +197,7 @@ pub(super) fn flush_nested_page_table(vaddr: Option<ptg::VirtAddr>) {
     if let Some(vaddr) = vaddr {
         // SAFETY: ax-page-table calls this after changing the current CPU's
         // translation entries; `vaddr` is a virtual address belonging to that table.
-        unsafe { x86::tlb::flush(vaddr.raw()) }
+        unsafe { x86::tlb::flush(vaddr.as_usize()) }
     } else {
         // SAFETY: ax-page-table requests a full invalidation after changing
         // entries without a single virtual-address target.

@@ -206,7 +206,7 @@ impl ptg::TableMeta for A64HVPagingMetaDataL3 {
         // current EL2 context; they do not dereference memory.
         unsafe {
             if let Some(vaddr) = vaddr {
-                asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) vaddr.raw())
+                asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) vaddr.as_usize())
             } else {
                 asm!("tlbi alle2is; dsb sy; isb")
             }
