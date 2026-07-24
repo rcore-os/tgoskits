@@ -261,7 +261,7 @@ flowchart BT
 
 ## 8. 系统调用路径实例
 
-三套系统共享物理页和页表机制，但它们的最终 owner、错误翻译和 teardown 顺序不同。本节用同一个“需要 16 KiB memory”的规模对比 ArceOS、StarryOS 与 Axvisor 的实际路径。
+三套系统共享物理页和页表机制，但它们的最终 owner、错误翻译和 teardown 顺序不同。同一个“需要 16 KiB memory”的规模请求会在 ArceOS、StarryOS 与 Axvisor 中走过不同的实际路径。
 
 ### 8.1 ArceOS 映射
 

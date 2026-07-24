@@ -255,7 +255,7 @@ flowchart LR
 
 ## 7. 地址处理实例
 
-启动内存最容易出现的错误不是 allocator 算法错误，而是区间端点、对齐和覆盖顺序错误。本节把 `MemoryDescriptor` 的实际更新过程展开到具体地址，并给出决定这些结果的源码分支。
+启动内存最容易出现的错误不是 allocator 算法错误，而是区间端点、对齐和覆盖顺序错误。`MemoryDescriptor` 的实际更新过程可以展开到具体地址，其结果由 `MemoryMapExt::merge_add()` 的 split/insert/merge 分支决定。
 
 ### 7.1 保留区拆分
 
