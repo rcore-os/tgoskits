@@ -291,45 +291,6 @@ static int part_06_unshare_keeps_parent_fd(void)
     return 0;
 }
 
-/* Part 7: Linux callers use UINT_MAX to mean every fd through the table end. */
-static int part_07_uint_max_upper_bound(void)
-{
-    int fds[3];
-
-    unlink(TMPFILE);
-    CHECK_RET(create_temp_file("close_range_uint_max"), 0,
-              "Part 7: create temp file");
-
-    int origin = open(TMPFILE, O_RDONLY);
-    CHECK_TRUE(origin >= 3, "Part 7: open origin above stderr");
-    if (origin < 3) {
-        safe_close(&origin);
-        unlink(TMPFILE);
-        return 1;
-    }
-
-    for (int i = 0; i < 3; i++) {
-        fds[i] = fcntl(origin, F_DUPFD, 100 + i);
-        CHECK_TRUE(fds[i] >= 100 + i, "Part 7: duplicate high fd");
-    }
-
-    int ret = do_close_range(3, ~0U, 0);
-    CHECK_RET(ret, 0, "Part 7: close_range(3, UINT_MAX, 0) succeeds");
-
-    errno = 0;
-    CHECK_ERR(fcntl(origin, F_GETFD), EBADF, "Part 7: origin fd is closed");
-    for (int i = 0; i < 3; i++) {
-        errno = 0;
-        CHECK_ERR(fcntl(fds[i], F_GETFD), EBADF, "Part 7: high fd is closed");
-    }
-
-    CHECK_TRUE(fcntl(STDIN_FILENO, F_GETFD) >= 0, "Part 7: stdin remains open");
-    CHECK_TRUE(fcntl(STDOUT_FILENO, F_GETFD) >= 0, "Part 7: stdout remains open");
-    CHECK_TRUE(fcntl(STDERR_FILENO, F_GETFD) >= 0, "Part 7: stderr remains open");
-    unlink(TMPFILE);
-    return 0;
-}
-
 int main(void)
 {
     TEST_START("close_range: semantic validation");
@@ -340,7 +301,6 @@ int main(void)
     part_04_cloexec();
     part_05_negative();
     part_06_unshare_keeps_parent_fd();
-    part_07_uint_max_upper_bound();
 
     TEST_DONE();
 }

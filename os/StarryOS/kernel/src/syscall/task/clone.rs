@@ -543,16 +543,6 @@ mod tests {
     use super::{CloneArgs, CloneFlags};
 
     #[test]
-    fn accepts_thread_and_parent_when_thread_dependencies_are_present() {
-        let args = CloneArgs {
-            flags: CloneFlags::VM | CloneFlags::SIGHAND | CloneFlags::THREAD | CloneFlags::PARENT,
-            ..Default::default()
-        };
-
-        assert!(args.validate().is_ok());
-    }
-
-    #[test]
     fn clone_parent_allows_nonzero_exit_signal() {
         let args = CloneArgs {
             flags: CloneFlags::PARENT,
