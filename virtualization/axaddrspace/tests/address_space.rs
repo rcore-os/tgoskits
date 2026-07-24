@@ -89,6 +89,30 @@ fn test_map_linear() {
 }
 
 #[test]
+fn clear_restores_an_empty_address_space_after_a_huge_linear_mapping() {
+    let _guard = mock_hal_test();
+    let mut addr_space = AddrSpace::new_empty(
+        MockNestedPageTable::new(),
+        GuestPhysAddr::from_usize(0),
+        0x40_0000,
+    )
+    .unwrap();
+    let start = GuestPhysAddr::from_usize(0);
+
+    addr_space
+        .map_linear(
+            start,
+            PhysAddr::from_usize(0x20_0000),
+            0x20_0000,
+            MappingFlags::READ | MappingFlags::WRITE,
+        )
+        .unwrap();
+
+    assert_eq!(addr_space.clear(), Ok(()));
+    assert_eq!(addr_space.translate(start), None);
+}
+
+#[test]
 fn test_map_linear_allows_hpa_above_gpa() {
     let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();

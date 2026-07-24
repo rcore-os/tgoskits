@@ -15,7 +15,7 @@
 //! Memory mapping backends.
 
 use ::alloc::vec::Vec;
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr};
 use ax_memory_set::{
     MapPrecondition, MappingBackend, MappingError, MappingOperation, MappingResult,
 };
@@ -31,12 +31,13 @@ struct SavedMapping {
     vaddr: GuestPhysAddr,
     paddr: PhysAddr,
     flags: MappingFlags,
+    page_size: PageSize,
 }
 
 #[doc(hidden)]
 pub struct BackendTransaction {
     operation: MappingOperation<GuestPhysAddr, MappingFlags>,
-    previous: Vec<Option<SavedMapping>>,
+    previous: Vec<SavedMapping>,
 }
 
 /// A unified enum type for different memory mapping backends.
@@ -98,20 +99,36 @@ impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
     ) -> MappingResult<Self::MappingPlan> {
         let (start, size) = operation.range();
         let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
-        let pages = PageIter4K::new(start, end).ok_or(MappingError::InvalidParam)?;
         let mut previous = Vec::new();
-        previous
-            .try_reserve_exact(size / PAGE_SIZE_4K)
-            .map_err(|_| MappingError::NoMemory)?;
-        for vaddr in pages {
+        let mut contains_unmapped = false;
+        let mut vaddr = start;
+        while vaddr < end {
             match pt.query(vaddr) {
-                Ok((paddr, flags, PageSize::Size4K)) => previous.push(Some(SavedMapping {
-                    vaddr,
-                    paddr,
-                    flags,
-                })),
-                Ok((..)) => return Err(MappingError::BadState),
-                Err(AddrSpaceError::Unmapped { .. }) => previous.push(None),
+                Ok((paddr, flags, page_size)) => {
+                    let mapped_size = usize::from(page_size);
+                    let mapping_end = vaddr
+                        .checked_add(mapped_size)
+                        .ok_or(MappingError::BadState)?;
+                    if !vaddr.as_usize().is_multiple_of(mapped_size) || mapping_end > end {
+                        return Err(MappingError::BadState);
+                    }
+                    previous
+                        .try_reserve(1)
+                        .map_err(|_| MappingError::NoMemory)?;
+                    previous.push(SavedMapping {
+                        vaddr,
+                        paddr,
+                        flags,
+                        page_size,
+                    });
+                    vaddr = mapping_end;
+                }
+                Err(AddrSpaceError::Unmapped { .. }) => {
+                    contains_unmapped = true;
+                    vaddr = vaddr
+                        .checked_add(PAGE_SIZE_4K)
+                        .ok_or(MappingError::BadState)?;
+                }
                 Err(_) => return Err(MappingError::BadState),
             }
         }
@@ -122,7 +139,7 @@ impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
                 precondition: MapPrecondition::Vacant,
                 ..
             }
-        ) && previous.iter().any(Option::is_some)
+        ) && !previous.is_empty()
         {
             return Err(MappingError::AlreadyExists);
         }
@@ -138,7 +155,7 @@ impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
         }
         if matches!(self, Self::Linear { .. })
             && matches!(operation, MappingOperation::Unmap { .. })
-            && previous.iter().any(Option::is_none)
+            && contains_unmapped
         {
             return Err(MappingError::BadState);
         }
@@ -164,40 +181,60 @@ impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
             MappingOperation::Map { .. } => {
                 let (start, size) = state.operation.range();
                 let end = start.checked_add(size).ok_or(MappingError::BadState)?;
-                for (vaddr, previous) in PageIter4K::new(start, end)
-                    .ok_or(MappingError::BadState)?
-                    .zip(state.previous)
-                {
-                    match pt.unmap(vaddr) {
-                        Ok((frame, _, PageSize::Size4K)) => {
+                let mut vaddr = start;
+                while vaddr < end {
+                    match pt.query(vaddr) {
+                        Ok((_, _, page_size)) => {
+                            let mapped_size = usize::from(page_size);
+                            let mapping_end = vaddr
+                                .checked_add(mapped_size)
+                                .ok_or(MappingError::BadState)?;
+                            if !vaddr.as_usize().is_multiple_of(mapped_size) || mapping_end > end {
+                                return Err(MappingError::BadState);
+                            }
+                            let (frame, _, removed_size) =
+                                pt.unmap(vaddr).map_err(|_| MappingError::BadState)?;
+                            if removed_size != page_size {
+                                return Err(MappingError::BadState);
+                            }
                             if matches!(self, Self::Alloc { .. }) {
+                                if page_size != PageSize::Size4K {
+                                    return Err(MappingError::BadState);
+                                }
                                 pt.dealloc_frame(frame);
                             }
+                            vaddr = mapping_end;
                         }
-                        Ok(_) | Err(AddrSpaceError::Unmapped { .. }) => {}
+                        Err(AddrSpaceError::Unmapped { .. }) => {
+                            vaddr = vaddr
+                                .checked_add(PAGE_SIZE_4K)
+                                .ok_or(MappingError::BadState)?;
+                        }
                         Err(_) => return Err(MappingError::BadState),
                     }
-                    if let Some(saved) = previous {
-                        pt.map(saved.vaddr, saved.paddr, PageSize::Size4K, saved.flags)
-                            .map_err(|_| MappingError::BadState)?;
-                    }
+                }
+                for saved in state.previous {
+                    pt.map(saved.vaddr, saved.paddr, saved.page_size, saved.flags)
+                        .map_err(|_| MappingError::BadState)?;
                 }
             }
             MappingOperation::Unmap { .. } => {
-                for saved in state.previous.into_iter().flatten() {
+                for saved in state.previous {
                     match pt.query(saved.vaddr) {
                         Err(AddrSpaceError::Unmapped { .. }) => pt
-                            .map(saved.vaddr, saved.paddr, PageSize::Size4K, saved.flags)
+                            .map(saved.vaddr, saved.paddr, saved.page_size, saved.flags)
                             .map_err(|_| MappingError::BadState)?,
-                        Ok((paddr, flags, PageSize::Size4K))
-                            if paddr == saved.paddr && flags == saved.flags => {}
+                        Ok((paddr, flags, page_size))
+                            if paddr == saved.paddr
+                                && flags == saved.flags
+                                && page_size == saved.page_size => {}
                         _ => return Err(MappingError::BadState),
                     }
                 }
             }
             MappingOperation::Protect { .. } => {
-                for saved in state.previous.into_iter().flatten() {
-                    if !pt.protect_region(saved.vaddr, PAGE_SIZE_4K, saved.flags) {
+                for saved in state.previous {
+                    if !pt.protect_region(saved.vaddr, saved.page_size.into(), saved.flags) {
                         return Err(MappingError::BadState);
                     }
                 }
@@ -210,7 +247,8 @@ impl<Npt: NestedPageTableOps> MappingBackend for Backend<Npt> {
         if matches!(self, Self::Alloc { .. })
             && matches!(state.operation, MappingOperation::Unmap { .. })
         {
-            for saved in state.previous.into_iter().flatten() {
+            for saved in state.previous {
+                debug_assert_eq!(saved.page_size, PageSize::Size4K);
                 pt.dealloc_frame(saved.paddr);
             }
         }

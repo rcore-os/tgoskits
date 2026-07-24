@@ -171,9 +171,16 @@ fn select_early_ram(descriptors: &[MemoryDescriptor]) -> Option<Range<usize>> {
         .iter()
         .filter(|desc| desc.memory_type == MemoryType::Free && desc.size_in_bytes != 0)
         .filter_map(|desc| {
-            desc.physical_start
-                .checked_add(desc.size_in_bytes)
-                .map(|end| (desc.size_in_bytes, desc.physical_start..end))
+            let end = desc.physical_start.checked_add(desc.size_in_bytes)?;
+            #[cfg(target_arch = "x86_64")]
+            let end = {
+                // The AP trampoline loads CR3 in 32-bit mode. Keeping the
+                // complete boot arena below 4 GiB guarantees that its root
+                // page table can be passed to every secondary processor.
+                end.min(1usize << 32)
+            };
+            let size = end.checked_sub(desc.physical_start)?;
+            (size != 0).then_some((size, desc.physical_start..end))
         })
         .max_by_key(|(size, _)| *size)
         .map(|(_, range)| range)
@@ -317,5 +324,24 @@ mod tests {
         ];
 
         assert_eq!(select_early_ram(&descriptors), Some(0x1000..0x20_1000));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_early_ram_keeps_the_boot_page_table_root_below_4g() {
+        let descriptors = [
+            MemoryDescriptor {
+                physical_start: 0x20_0000,
+                size_in_bytes: 0x42d7_b000,
+                memory_type: MemoryType::Free,
+            },
+            MemoryDescriptor {
+                physical_start: 0x1_0000_0000,
+                size_in_bytes: 0x7_8000_0000,
+                memory_type: MemoryType::Free,
+            },
+        ];
+
+        assert_eq!(select_early_ram(&descriptors), Some(0x20_0000..0x42f7_b000));
     }
 }

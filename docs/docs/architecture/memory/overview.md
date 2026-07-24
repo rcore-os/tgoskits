@@ -217,7 +217,7 @@ flowchart BT
 | RAM bank 1 | `0x8000_0000..0x9000_0000` | 256 MiB | `Free` |
 | device firmware | `0x8800_0000..0x8820_0000` | 2 MiB | `Reserved` |
 
-覆盖完成后，内存图不把物理 hole `0x4800_0000..0x8000_0000` 表示成任何 RAM。`select_early_ram()` 比较剩余 Free 描述符的大小，选择 bank 1 的较大子段作为 early bump arena；该选择不会改变其他 Free 段的类型。
+覆盖完成后，内存图不把物理 hole `0x4800_0000..0x8000_0000` 表示成任何 RAM。`select_early_ram()` 比较满足架构启动地址约束的剩余 Free 子区间大小，选择 bank 1 的较大子段作为 early bump arena；该选择不会改变其他 Free 段的类型。x86_64 的候选区间必须位于 4 GiB 以下，以保证应用处理器能在 32 位启动阶段装载 CR3。
 
 ```text
 0x4000_0000                                                     0x4800_0000

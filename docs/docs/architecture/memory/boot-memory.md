@@ -123,7 +123,11 @@ flowchart LR
 
 ### 3.2 早期线性分配
 
-`someboot::mem::ram` 在 `early_init()` 中选择最大的非空、地址计算不溢出的 `Free` 描述符作为 bump arena。选择不依赖固件描述符顺序；它不是运行期 heap，也不跨多个 RAM bank 拼接分配。实现不设置固定的最小容量，实际启动对象超出 arena 时由 checked bump 明确失败。
+`someboot::mem::ram` 在 `early_init()` 中选择最大的非空、地址计算不溢出且满足架构启动地址约束的 `Free` 子区间作为 bump arena。选择不依赖固件描述符顺序；它不是运行期 heap，也不跨多个 RAM bank 拼接分配。实现不设置固定的最小容量，实际启动对象超出 arena 时由 checked bump 明确失败。
+
+x86_64 的应用处理器 trampoline 在 32 位启动阶段通过 `movl %eax, %cr3` 装载启动页表根物理地址，因此 early arena 必须位于 4 GiB 以下。`select_early_ram()` 会把 x86_64 候选区间的末端裁剪到 `0x1_0000_0000`；完全位于该地址以上的 RAM 不参与 early arena 选择。该限制只约束启动页表、设备树副本和每 CPU 启动对象，不会丢弃高端 RAM：`memory_map_setup()` 交接后，高端 `Free` 描述符仍进入运行时 Buddy section。
+
+例如固件同时报告 `0x20_0000..0x42f7_b000` 和 `0x1_0000_0000..0x8_8000_0000`，后者虽然更大，x86_64 仍选择前者。这样启动页表根保持在 4 GiB 以下，而 30 GiB 高端区间在运行时分配器初始化时继续作为独立 section 加入。
 
 `RamAllocatorState` 是一个三态显式状态机，定义在 `platforms/someboot/src/mem/ram.rs`。`Active` 携带 `used_start`、`end` 与 `current` 三个字段，使 `used_range()` 能在 flush 时把已用前缀切出未用尾部。
 
@@ -262,7 +266,7 @@ MemoryDescriptor[]
 | axplat dynamic free list | 32 ranges | 超出平台容量不能完整交接 |
 | axplat dynamic reserved list | 32 ranges | 复杂保留图需要显式处理 |
 | axplat dynamic MMIO list | 16 ranges | 设备窗口数量受限 |
-| early bump arena | 最大的非空有效 Free range | 不跨物理 hole；容量不足由实际分配报告 |
+| early bump arena | 最大的非空有效且满足架构启动地址约束的 Free range | 不跨物理 hole；x86_64 位于 4 GiB 以下；容量不足由实际分配报告 |
 | Buddy contiguous allocation | 单 section 内完成 | 不能跨物理 hole 拼接连续页 |
 
 这些限制应通过板级启动测试验证，而不是通过引入通用非统一内存访问、compaction 或页迁移框架解决。若具体平台超过固定容量，应先提高有依据的常量或压缩平台描述符。
@@ -282,7 +286,7 @@ MemoryDescriptor[]
 | `os/arceos/modules/axhal/src/mem.rs` | reserved subtraction 与页对齐 |
 | `os/arceos/modules/axruntime/src/lib.rs` | 最大初始段与其余 section 的交接 |
 
-任何修改都应至少构造“两段 RAM、中间有保留洞、early bump 位于其中一段”的确定性用例，并验证最终 Buddy 可见总页数与输入减去全部保留范围一致。
+任何修改都应至少构造“两段 RAM、中间有保留洞、early bump 位于其中一段”的确定性用例，并验证最终 Buddy 可见总页数与输入减去全部保留范围一致。x86_64 还必须覆盖“低于 4 GiB 的可用段小于高端 RAM 段”的输入，断言 early arena 仍位于 4 GiB 以下且高端段未从最终 Free 列表丢失。
 
 ## 7. 地址处理实例
 

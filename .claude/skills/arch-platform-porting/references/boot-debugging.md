@@ -111,10 +111,12 @@ Use this order when auditing an early boot port:
    property and fail explicitly if a fixed-capacity collection cannot retain
    every usable RAM range; silently dropping later ranges can expose reserved
    pages or leave RAM unmapped. When one early bump arena is required, select
-   the largest nonempty valid free range instead of depending on firmware
-   descriptor order. Do not impose an arbitrary size threshold: checked bump
-   allocation must report when the selected range cannot hold the actual boot
-   objects.
+   the largest nonempty valid free range that satisfies architecture boot-address
+   constraints instead of depending on firmware descriptor order. On x86_64,
+   keep the complete early arena below 4 GiB because the real-mode AP trampoline
+   loads CR3 through a 32-bit register; high RAM remains available to the runtime
+   allocator. Do not impose an arbitrary size threshold: checked bump allocation
+   must report when the selected range cannot hold the actual boot objects.
 4. Kernel image physical range, load offset, and high-half range are known before address translation helpers are used.
 5. Page tables or arch direct-map windows cover the currently executing code, boot stack, page tables, kernel high map, MMIO, and boot data.
 6. Trap vectors are installed using the address form required by the architecture at that moment.

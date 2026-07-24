@@ -353,7 +353,7 @@ firmware/扁平设备树/UEFI memory map
 ```
 
 - 保留现有基于 RAM_CURRENT 的 O(1) bump 和 Ram no-free frame provider。
-- 从固件内存图选择最大的非空、地址计算不溢出的 Free range 作为单一 early arena，不依赖描述符顺序，也不跨物理 hole 拼接；不设置与实际启动对象无关的固定容量门槛，空间不足由 checked bump 返回错误。
+- 从固件内存图选择最大的非空、地址计算不溢出且满足架构启动地址约束的 Free range 作为单一 early arena，不依赖描述符顺序，也不跨物理 hole 拼接；x86_64 将完整 early arena 限制在 4 GiB 以下，以满足应用处理器 trampoline 的 32 位 CR3 装载约束，高端 Free range 仍交给运行时 Buddy；不设置与实际启动对象无关的固定容量门槛，空间不足由 checked bump 返回错误。
 - 地址对齐和 `start + size` 使用 checked arithmetic。
 - 仅在引导处理器、单核、调度器和中断请求启用前使用。
 - 引导处理器在冻结前通过现有 someboot 多核 prealloc 为全部配置 CPU 分配 PerCpuMeta、secondary stack 和 per-CPU data，并写入启动内存描述。

@@ -213,7 +213,7 @@ impl NestedPageTableOps for MockNestedPageTable {
                 paddr: ptg::PhysAddr::from_usize(paddr.as_usize()),
                 size: size.into(),
                 pte: MockPte::flags_to_config(flags, paddr),
-                allow_huge: false,
+                allow_huge: size.is_huge(),
                 flush: false,
             })
             .map_err(Self::convert_err)?)
@@ -226,11 +226,14 @@ impl NestedPageTableOps for MockNestedPageTable {
         if UNMAP_FAIL_ADDRESS.load(Ordering::SeqCst) == vaddr.as_usize() {
             return Err(AddrSpaceError::MappingState);
         }
-        let (paddr, flags, _) = self.query(vaddr)?;
+        let (paddr, flags, page_size) = self.query(vaddr)?;
         self.inner
-            .unmap(ptg::VirtAddr::from_usize(vaddr.as_usize()), PAGE_SIZE)
+            .unmap(
+                ptg::VirtAddr::from_usize(vaddr.as_usize()),
+                page_size.into(),
+            )
             .map_err(Self::convert_err)?;
-        Ok((paddr, flags, PageSize::Size4K))
+        Ok((paddr, flags, page_size))
     }
 
     fn map_region(
@@ -239,7 +242,7 @@ impl NestedPageTableOps for MockNestedPageTable {
         get_paddr: impl Fn(GuestPhysAddr) -> PhysAddr,
         size: usize,
         flags: MappingFlags,
-        _allow_huge: bool,
+        allow_huge: bool,
     ) -> AddrSpaceResult {
         let paddr = get_paddr(vaddr);
         Ok(self
@@ -249,7 +252,7 @@ impl NestedPageTableOps for MockNestedPageTable {
                 paddr: ptg::PhysAddr::from_usize(paddr.as_usize()),
                 size,
                 pte: MockPte::flags_to_config(flags, paddr),
-                allow_huge: false,
+                allow_huge,
                 flush: false,
             })
             .map_err(Self::convert_err)?)
@@ -290,21 +293,27 @@ impl NestedPageTableOps for MockNestedPageTable {
     }
 
     fn query(&self, vaddr: GuestPhysAddr) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
-        let (paddr, pte) = self
+        let (paddr, pte, level) = self
             .inner
-            .translate(ptg::VirtAddr::from_usize(vaddr.as_usize()))
+            .translate_with_level(ptg::VirtAddr::from_usize(vaddr.as_usize()))
             .map_err(|err| match err {
                 ptg::PagingError::NotMapped => AddrSpaceError::Unmapped { address: vaddr },
                 _ => AddrSpaceError::MappingState,
             })?;
-        let config = pte.to_config(false);
+        let page_size = match level {
+            1 => PageSize::Size4K,
+            2 => PageSize::Size2M,
+            3 => PageSize::Size1G,
+            _ => return Err(AddrSpaceError::MappingState),
+        };
+        let config = pte.to_config(page_size.is_huge());
         if !config.valid || MockPte::config_to_flags(config).is_empty() {
             return Err(AddrSpaceError::Unmapped { address: vaddr });
         }
         Ok((
             PhysAddr::from(paddr.as_usize()),
             MockPte::config_to_flags(config),
-            PageSize::Size4K,
+            page_size,
         ))
     }
 }
