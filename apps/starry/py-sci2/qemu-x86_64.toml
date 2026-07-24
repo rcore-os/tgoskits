@@ -1,0 +1,17 @@
+# py-sci2 x86_64 - SciPy / SymPy (musl) + glibc conda sci/ML stack on CPython3.
+# -cpu Haswell exposes AVX2 + XSAVE to userspace (numpy / openblas / scipy SIMD kernels probe and
+# use AVX2); the kernel CR4.OSXSAVE + XCR0 enable lives in dev.
+# 4096M: the glibc conda stack (numba MCJIT + scikit-learn + matplotlib) is heap-heavy.
+args = [
+    "-nographic", "-cpu", "Haswell", "-m", "4096M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-pysci2.sh"
+success_regex = ['(?m)^PYSCI2_OK=9/9\s*$', '(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 9000
