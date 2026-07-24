@@ -60,6 +60,47 @@ static mut RUN_QUEUES: [MaybeUninit<NonNull<AxRunQueue>>; crate::build_info::CPU
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
 const ARRAY_REPEAT_VALUE: MaybeUninit<NonNull<AxRunQueue>> = MaybeUninit::uninit();
 
+/// Number of `usize` words needed to hold one online-bit per CPU, up to
+/// `CPU_CAPACITY`. `CPU_CAPACITY` (from `build.rs`, the `SMP` env var) can
+/// exceed `usize::BITS` — `AxCpuMask` supports up to 1024 CPUs — so the
+/// online bitmap is sharded across multiple words instead of a single
+/// `AtomicUsize`, which would overflow/alias `1 << cpu_id` for `cpu_id >=
+/// usize::BITS` (e.g. CPU 64 would alias CPU 0 on a 64-bit target).
+#[cfg(feature = "smp")]
+const RUN_QUEUE_ONLINE_WORDS: usize =
+    crate::build_info::CPU_CAPACITY.div_ceil(usize::BITS as usize);
+
+/// Bitmask (bit `cpu_id % usize::BITS`, word `cpu_id / usize::BITS`) of CPUs
+/// whose per-CPU run queue in [`RUN_QUEUES`] has been initialized.
+/// Round-robin spawn placement ([`select_run_queue_index`]) must only target
+/// online queues: during early boot the secondaries have not yet written
+/// their `RUN_QUEUES` slot, and `get_run_queue` on an uninitialized slot is a
+/// use of uninitialized memory (a near-null data abort). Set by each CPU as
+/// it initializes (see `init` / `init_secondary`), through [`mark_cpu_online`].
+#[cfg(feature = "smp")]
+static RUN_QUEUE_ONLINE: [core::sync::atomic::AtomicUsize; RUN_QUEUE_ONLINE_WORDS] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; RUN_QUEUE_ONLINE_WORDS];
+
+/// Marks `cpu`'s run queue as online in the sharded [`RUN_QUEUE_ONLINE`] bitmap.
+#[cfg(feature = "smp")]
+#[inline]
+fn mark_cpu_online(cpu: usize) {
+    RUN_QUEUE_ONLINE[cpu / usize::BITS as usize].fetch_or(
+        1 << (cpu % usize::BITS as usize),
+        core::sync::atomic::Ordering::Release,
+    );
+}
+
+/// Returns whether `cpu`'s run queue in [`RUN_QUEUES`] has been initialized.
+#[cfg(feature = "smp")]
+#[inline]
+fn is_cpu_online(cpu: usize) -> bool {
+    cpu < crate::build_info::CPU_CAPACITY
+        && RUN_QUEUE_ONLINE[cpu / usize::BITS as usize].load(core::sync::atomic::Ordering::Acquire)
+            & (1 << (cpu % usize::BITS as usize))
+            != 0
+}
+
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
     let (stack_ptr, stack_size) = ax_hal::mem::boot_stack_bounds(this_cpu_id());
@@ -111,14 +152,30 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
 
     assert!(!cpumask.is_empty(), "No available CPU for task execution");
 
-    // Round-robin selection of the run queue index.
-    loop {
+    // Round-robin over CPUs that are both allowed by the affinity mask AND online
+    // (their run queue is initialized). The online gate matters during early boot,
+    // when secondaries have not yet registered their run queue — targeting one
+    // would dereference uninitialized memory in `get_run_queue`.
+    for _ in 0..crate::build_info::CPU_CAPACITY {
         let index =
             RUN_QUEUE_INDEX.fetch_add(1, Ordering::SeqCst) % crate::build_info::CPU_CAPACITY;
-        if cpumask.get(index) {
+        if cpumask.get(index) && is_cpu_online(index) {
             return index;
         }
     }
+    // No allowed-and-online CPU in a full sweep: either very early boot, or a task
+    // pinned to a not-yet-online CPU. Fall back to the current CPU, whose run queue
+    // is necessarily initialized. This is availability-over-affinity, matching
+    // Linux's `select_fallback_rq`: the scheduler runs the task on an available CPU
+    // rather than block when its affinity target is offline, which avoids a
+    // boot-time deadlock (a permanently-blocked task on the only CPU that could
+    // later bring its affinity target online). Affinity is then restored by
+    // `migrate_current_to_affinity` — the pending-migration equivalent — which
+    // re-homes the task to an allowed CPU on the next reschedule once one is
+    // online. `AxCpuMask` is bounded to `CPU_CAPACITY`, so a non-empty mask always
+    // names a configured CPU that comes online during boot; the fallback never
+    // permanently strands a task off its affinity.
+    this_cpu_id()
 }
 
 /// Retrieves the permanent pointer to a run queue by logical CPU index.
@@ -261,7 +318,15 @@ fn force_remote_reschedule(cpu_id: usize) {
     });
 }
 
+// The coalescing kick: only sends the reschedule IPI if one is not already
+// pending for the target. Every production task-placement site (`add_task`,
+// `unblock_task`, the deferred wake in `clear_prev_task_on_cpu`) now uses
+// `force_kick_remote_cpu` instead, because a coalesced kick can be dropped for a
+// task that must make progress (see those sites). This is retained as the tested
+// primitive underlying the pending-bit coalescing; hence `allow(dead_code)` for
+// the non-test kernel build where it currently has no caller.
 #[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg_attr(not(all(test, feature = "host-test")), allow(dead_code))]
 fn kick_remote_cpu(cpu_id: usize) {
     if is_remote_cpu(cpu_id) {
         // axruntime's IPI handler only drains ax-ipi callbacks. A bare hardware
@@ -410,6 +475,93 @@ mod tests {
     }
 }
 
+#[cfg(all(test, feature = "smp", feature = "host-test"))]
+mod online_bitmap_tests {
+    use core::sync::atomic::Ordering;
+
+    // Reset every word of the shared bitmap so tests do not observe state left
+    // behind by `init`/`init_secondary` or by other tests in this process.
+    fn reset_online_bitmap() {
+        for word in super::RUN_QUEUE_ONLINE.iter() {
+            word.store(0, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn mark_cpu_online_is_visible_only_for_marked_cpu() {
+        reset_online_bitmap();
+
+        super::mark_cpu_online(0);
+
+        assert!(
+            super::is_cpu_online(0),
+            "a CPU marked online must report itself as online",
+        );
+        assert!(
+            !super::is_cpu_online(1),
+            "marking one CPU online must not mark an unrelated CPU online",
+        );
+
+        reset_online_bitmap();
+    }
+
+    // The reviewer explicitly asked for coverage across the word boundary a
+    // single-word `AtomicUsize` bitmap could not represent (CPU_CAPACITY >=
+    // usize::BITS, e.g. SMP=65): CPU 64 must not alias CPU 0. This only
+    // exercises a second word when the test build's `CPU_CAPACITY` exceeds
+    // `usize::BITS`; it is a no-op assertion of intent otherwise, and the
+    // real cross-word coverage is the `SMP=65` build check (see PR
+    // discussion / commit message).
+    #[test]
+    fn cross_word_cpu_does_not_alias_low_word() {
+        reset_online_bitmap();
+
+        super::mark_cpu_online(0);
+
+        if crate::build_info::CPU_CAPACITY > usize::BITS as usize {
+            assert!(
+                super::is_cpu_online(0),
+                "CPU 0 must remain online after marking it",
+            );
+            assert!(
+                !super::is_cpu_online(64),
+                "CPU 64 must not alias CPU 0's bit in a sharded bitmap",
+            );
+        }
+
+        reset_online_bitmap();
+    }
+
+    // Boot-time affinity/migration interleave (the reviewer's requested case): a
+    // task whose only allowed CPU is still offline must fall back to an online CPU
+    // (availability over affinity, like Linux `select_fallback_rq`) — never a hang
+    // and never an offline/uninitialized queue — and must honor the affinity once
+    // that CPU comes online.
+    #[test]
+    fn offline_affinity_target_falls_back_then_honors_when_online() {
+        reset_online_bitmap();
+        let this = super::this_cpu_id();
+        super::mark_cpu_online(this);
+
+        // An allowed CPU distinct from `this`, kept offline for now.
+        let other = if this == 1 { 2 } else { 1 };
+        if other >= crate::build_info::CPU_CAPACITY {
+            reset_online_bitmap();
+            return; // too few configured CPUs in this test build to exercise it
+        }
+        let only_other = super::AxCpuMask::one_shot(other);
+
+        // Allowed CPU offline -> availability fallback to the current (online) CPU.
+        assert_eq!(super::select_run_queue_index(only_other), this);
+
+        // Allowed CPU online -> affinity is honored.
+        super::mark_cpu_online(other);
+        assert_eq!(super::select_run_queue_index(only_other), other);
+
+        reset_online_bitmap();
+    }
+}
+
 #[cfg(all(test, feature = "sched-rr", feature = "host-test"))]
 mod rr_tests {
     use alloc::{string::String, sync::Arc};
@@ -490,14 +642,16 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
     }
     #[cfg(feature = "smp")]
     {
-        // When SMP is enabled, prefer the current CPU to keep the task's
-        // cache warm. Fall back to round-robin only when affinity forbids it.
-        let current_cpu = this_cpu_id();
-        let index = if task.cpumask().get(current_cpu) {
-            current_cpu
-        } else {
-            select_run_queue_index(task.cpumask())
-        };
+        // New tasks (spawn / clone) get round-robin placement across the CPUs
+        // their affinity allows, so a burst of threads spreads over the machine
+        // instead of piling onto the core that ran the spawning syscall. A fresh
+        // task has no warm cache to preserve, and with no load balancer to
+        // redistribute later (see the TODO above), initial placement is the only
+        // spreading we get — pinning every clone to the current CPU left all of a
+        // process's threads on the boot core (flat multi-core scaling). Wakeups
+        // still prefer the waking/last CPU for cache warmth; see
+        // `select_wake_run_queue`.
+        let index = select_run_queue_index(task.cpumask());
         AxRunQueueRef {
             inner: get_run_queue(index),
             state: irq_state,
@@ -530,10 +684,24 @@ pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueu
         let current_cpu = this_cpu_id();
         let last_cpu = task.cpu_id() as usize;
         let cpumask = task.cpumask();
-        let index = if cpumask.get(current_cpu) {
-            current_cpu
-        } else if last_cpu < crate::build_info::CPU_CAPACITY && cpumask.get(last_cpu) {
+        // Prefer the CPU the woken task last ran on. This is cache-warm for the
+        // *woken* task and, crucially, keeps threads spread out: preferring the
+        // *waker's* CPU (as before) piled every worker onto one core whenever a
+        // barrier/broadcast wake fanned out from a single thread — that
+        // re-collapsed the round-robin spawn placement and was why multi-threaded
+        // workloads stayed on the boot core. Fall back to the waker's CPU, then
+        // round-robin; only ever select an online CPU.
+        //
+        // `last_cpu` is checked against `CPU_CAPACITY` before indexing into
+        // `cpumask`: `AxCpuMask::get` only `debug_assert`s in-range, so an
+        // out-of-range `last_cpu` must be filtered here first.
+        let index = if last_cpu < crate::build_info::CPU_CAPACITY
+            && cpumask.get(last_cpu)
+            && is_cpu_online(last_cpu)
+        {
             last_cpu
+        } else if cpumask.get(current_cpu) {
+            current_cpu
         } else {
             select_run_queue_index(cpumask)
         };
@@ -629,8 +797,17 @@ impl<G: BaseGuard> AxRunQueueRef<G> {
         #[cfg(feature = "smp")]
         task.set_cpu_id(cpu_id as _);
         self.inner.scheduler.lock().add_task(task);
+        // A newly runnable task placed on a remote CPU may be one the spawner
+        // must see make progress (e.g. `fork` then `waitpid`, or a broadcast
+        // wake fanning a barrier out to idle CPUs). If that CPU is idle in
+        // `wait_for_irqs`, only the IPI wakes it — so do NOT let a stale
+        // coalescing bit suppress the kick, exactly as `migrate_entry` does.
+        // Coalescing here can otherwise drop the wake for a task that lands in
+        // the window after the target's in-flight reschedule already read its
+        // run queue, stranding it until the next tick or (tickless idle)
+        // indefinitely — the riscv64 SMP `test-fcntl-lock-lifecycle` hang.
         #[cfg(all(feature = "smp", feature = "ipi"))]
-        kick_remote_cpu(cpu_id);
+        force_kick_remote_cpu(cpu_id);
     }
 
     /// Unblock one task by inserting it into the run queue.
@@ -664,8 +841,13 @@ impl<G: BaseGuard> AxRunQueueRef<G> {
                 #[cfg(feature = "preempt")]
                 crate::current().set_preempt_pending(true);
             }
+            // Cross-core wake: the woken task must actually run (a waiter someone
+            // is blocked on — e.g. an `F_SETLKW` parked task woken when the lock
+            // is released). If its target CPU is idle in `wait_for_irqs`, only the
+            // IPI wakes it, so force the kick rather than let a stale coalescing
+            // bit drop it (same rationale as `migrate_entry` / `add_task`).
             #[cfg(all(feature = "smp", feature = "ipi"))]
-            kick_remote_cpu(cpu_id);
+            force_kick_remote_cpu(cpu_id);
         }
     }
 }
@@ -1308,9 +1490,14 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
             .put_prev_task(task, false);
         if target != this_cpu_id() {
             // Remote target: ask that CPU to reschedule so it picks the task up
-            // (and wakes if it is idle in `wait_for_irqs`).
+            // (and wakes if it is idle in `wait_for_irqs`). This is a deferred wake
+            // the waker could not deliver (it saw us still `on_cpu`), so the target
+            // MUST make progress — force the kick past the coalescing bit, like
+            // `migrate_entry`/`add_task`/`unblock_task`. A coalesced (dropped) kick
+            // here strands e.g. a futex/clone wake on an idle remote CPU
+            // indefinitely (the riscv64 SMP `test-futex-clone-thread` hang).
             #[cfg(feature = "ipi")]
-            kick_remote_cpu(target);
+            force_kick_remote_cpu(target);
         } else {
             // Local target: `kick_remote_cpu(self)` is a no-op, so the reschedule
             // the remote waker's IPI used to deliver here would be lost — the
@@ -1377,6 +1564,9 @@ pub(crate) fn init() {
     unsafe {
         RUN_QUEUES[cpu_id].write(run_queue);
     }
+    // Mark this CPU's run queue online so round-robin spawn placement may target it.
+    #[cfg(feature = "smp")]
+    mark_cpu_online(cpu_id);
 }
 
 pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
@@ -1421,4 +1611,7 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     unsafe {
         RUN_QUEUES[cpu_id].write(run_queue);
     }
+    // Mark this CPU's run queue online so round-robin spawn placement may target it.
+    #[cfg(feature = "smp")]
+    mark_cpu_online(cpu_id);
 }

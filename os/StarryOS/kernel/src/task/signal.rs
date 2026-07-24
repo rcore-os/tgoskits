@@ -206,23 +206,54 @@ pub fn wait_existing_ptrace_stop_current(thr: &Thread, uctx: &mut UserContext) {
 }
 
 fn wait_ptrace_resume(thr: &Thread, tid: u32, uctx: &mut UserContext) {
-    current().clear_interrupt();
-    let wait_result = block_on(interruptible(poll_fn(|cx| {
-        if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
-            Poll::Ready(())
-        } else {
-            thr.proc_data.register_ptrace_stop_waker(cx.waker());
+    loop {
+        current().clear_interrupt();
+        let wait_result = block_on(interruptible(poll_fn(|cx| {
             if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
                 Poll::Ready(())
             } else {
-                Poll::Pending
+                thr.proc_data.register_ptrace_stop_waker(cx.waker());
+                if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
             }
-        }
-    })));
+        })));
 
-    if wait_result.is_err() {
-        thr.proc_data.clear_ptrace_stop();
-    } else if let Some(resume_uctx) = thr.proc_data.take_ptrace_stop_user_context_for(tid) {
+        if wait_result.is_ok() {
+            // The tracer resumed us: the stop record's signal was cleared
+            // (`resume_ptrace_stop_with_signal_for`) or the whole record was
+            // removed (`clear_ptrace_stop`, e.g. on SIGKILL/detach).
+            break;
+        }
+
+        // Interrupted while the trace-stop is still active. A TASK_TRACED
+        // tracee only leaves the stop for a tracer resume (the Ok path above)
+        // or to die. Under boot-core serialization the tracee always parked
+        // before the tracer ran, so no interrupt raced its stop entry; once
+        // tasks are distributed across CPUs the tracer (and its SIGCHLD /
+        // ptrace activity) runs concurrently and a benign `interrupt()` can
+        // land on the tracee as it enters the stop. Aborting the stop on such
+        // a benign interrupt silently swallowed the stop signal and let the
+        // tracee run on — that is the race that made a freshly-TRACEME'd child
+        // skip its `raise(SIGSTOP)` trace-stop and run to `_exit`. Only abandon
+        // the stop when the tracee genuinely must leave it: a pending
+        // group-exit, an execve zap, a pending SIGKILL, or a stop record a
+        // concurrent tracer/kill already cleared. Otherwise stay stopped and
+        // re-park (Linux keeps a ptrace-stopped task stopped for non-fatal
+        // signals).
+        if thr.pending_exit()
+            || thr.has_exit_request()
+            || thr.signal.pending().has(Signo::SIGKILL)
+            || thr.proc_data.ptrace_stop_signo_for(tid).is_none()
+        {
+            thr.proc_data.clear_ptrace_stop();
+            return;
+        }
+    }
+
+    if let Some(resume_uctx) = thr.proc_data.take_ptrace_stop_user_context_for(tid) {
         *uctx = resume_uctx;
         thr.proc_data.restore_current_fp_for_ptrace(tid, uctx);
     }
