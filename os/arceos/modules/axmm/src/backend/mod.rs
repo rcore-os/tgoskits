@@ -3,9 +3,7 @@
 use ::alloc::vec::Vec;
 use ax_hal::paging::{MappingFlags, PageSize, PageTable, PagingError};
 use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PageIter4K, PhysAddr, VirtAddr};
-use ax_memory_set::{
-    MapPrecondition, MappingBackend, MappingError, MappingOperation, MappingResult,
-};
+use ax_memory_set::{MappingBackend, MappingError, MappingOperation, MappingResult};
 
 mod alloc;
 mod linear;
@@ -70,33 +68,24 @@ impl MappingBackend for Backend {
     ) -> MappingResult<Self::MappingPlan> {
         let (start, size) = operation.range();
         let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
-        let pages = PageIter4K::new(start, end).ok_or(MappingError::InvalidParam)?;
         let mut previous = Vec::new();
-        previous
-            .try_reserve_exact(size / PAGE_SIZE_4K)
-            .map_err(|_| MappingError::NoMemory)?;
-        for vaddr in pages {
-            match pt.query(vaddr) {
-                Ok((paddr, flags, PageSize::Size4K)) => previous.push(Some(SavedMapping {
-                    vaddr,
-                    paddr,
-                    flags,
-                })),
-                Ok((..)) => return Err(MappingError::BadState),
-                Err(PagingError::NotMapped) => previous.push(None),
-                Err(_) => return Err(MappingError::BadState),
+        if !matches!(operation, MappingOperation::Map { .. }) {
+            let pages = PageIter4K::new(start, end).ok_or(MappingError::InvalidParam)?;
+            previous
+                .try_reserve_exact(size / PAGE_SIZE_4K)
+                .map_err(|_| MappingError::NoMemory)?;
+            for vaddr in pages {
+                match pt.query(vaddr) {
+                    Ok((paddr, flags, PageSize::Size4K)) => previous.push(Some(SavedMapping {
+                        vaddr,
+                        paddr,
+                        flags,
+                    })),
+                    Ok((..)) => return Err(MappingError::BadState),
+                    Err(PagingError::NotMapped) => previous.push(None),
+                    Err(_) => return Err(MappingError::BadState),
+                }
             }
-        }
-
-        if matches!(
-            operation,
-            MappingOperation::Map {
-                precondition: MapPrecondition::Vacant,
-                ..
-            }
-        ) && previous.iter().any(Option::is_some)
-        {
-            return Err(MappingError::AlreadyExists);
         }
         if let (Self::Linear { pa_va_offset }, MappingOperation::Map { start, size, .. }) =
             (self, operation)
@@ -129,6 +118,10 @@ impl MappingBackend for Backend {
     ) -> MappingResult<Self::CommitState> {
         if self.apply(plan.operation, pt) {
             Ok(plan)
+        } else if matches!(plan.operation, MappingOperation::Map { .. }) {
+            // Every map implementation removes its own partial mappings before
+            // reporting failure, while preserving any colliding old mapping.
+            Err(MappingError::BadState)
         } else {
             self.rollback(plan, pt)?;
             Err(MappingError::BadState)
@@ -140,10 +133,7 @@ impl MappingBackend for Backend {
             MappingOperation::Map { .. } => {
                 let (start, size) = state.operation.range();
                 let end = start.checked_add(size).ok_or(MappingError::BadState)?;
-                for (vaddr, previous) in PageIter4K::new(start, end)
-                    .ok_or(MappingError::BadState)?
-                    .zip(state.previous)
-                {
+                for vaddr in PageIter4K::new(start, end).ok_or(MappingError::BadState)? {
                     match pt.cursor().unmap(vaddr) {
                         Ok((frame, _, PageSize::Size4K)) => {
                             if matches!(self, Self::Alloc { .. }) {
@@ -152,11 +142,6 @@ impl MappingBackend for Backend {
                         }
                         Ok(_) | Err(PagingError::NotMapped) => {}
                         Err(_) => return Err(MappingError::BadState),
-                    }
-                    if let Some(saved) = previous {
-                        pt.cursor()
-                            .map(saved.vaddr, saved.paddr, PageSize::Size4K, saved.flags)
-                            .map_err(|_| MappingError::BadState)?;
                     }
                 }
             }
