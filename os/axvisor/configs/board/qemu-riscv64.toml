@@ -1,9 +1,18 @@
 features = [
     "ax-driver/virtio-blk",
     "fs",
-    "sstc"
+    "sstc",
+    # Capturing a backtrace is an expensive runtime operation.
+    # Enable "backtrace" and [env] BACKTRACE = "y" below to
+    # activate panic backtrace. Disabled by default for release.
+    # "backtrace",
 ]
 log = "Info"
 target = "riscv64gc-unknown-none-elf"
 vm_configs = []
 max_cpu_num = 4
+
+# Set BACKTRACE=y together with the "backtrace" feature above to
+# add -Cforce-frame-pointers=yes via axbuild.
+# [env]
+# BACKTRACE = "y"

@@ -57,6 +57,9 @@ sdmmc = [
 ]
 rockchip-pm = ["ax-driver/rockchip-pm"]
 stack-protector = ["ax-std/stack-protector"]
+backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
+test-backtrace-panic = ["backtrace"]
+test-panic-no-backtrace = []
 
 [dependencies]
 spin = { workspace = true }
@@ -88,6 +91,7 @@ axvmconfig = { workspace = true, default-features = false }
 # System independent crates provided by ArceOS
 ax-driver.workspace = true
 axplat-dyn.workspace = true
+axbacktrace = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 axplat-dyn = { workspace = true, features = ["hv"] }

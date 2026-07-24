@@ -1,0 +1,20 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "1",
+    "-m",
+    "512M",
+]
+# Axvisor panics at startup (via test-backtrace-panic feature in main()).
+# The #[panic_handler] in axruntime calls Backtrace::capture().kind("panic")
+# which emits BACKTRACE_BEGIN … BACKTRACE_END markers.  With backtrace
+# enabled, alloc=true and actual frame pointers are captured.
+fail_regex = []
+success_regex = ["(?s)BACKTRACE_BEGIN\\b.*\\bkind=panic\\b.*\\bBACKTRACE_END"]
+timeout = 60
+to_bin = true
+uefi = false

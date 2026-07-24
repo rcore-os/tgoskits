@@ -1,0 +1,21 @@
+args = [
+    "-nographic",
+    "-cpu",
+    "cortex-a72",
+    "-machine",
+    "virt,virtualization=on,gic-version=3",
+    "-smp",
+    "1",
+    "-m",
+    "512M",
+]
+# Without the backtrace feature, axruntime's #[panic_handler] still emits
+# BACKTRACE_BEGIN … BACKTRACE_END markers, but with alloc=false and
+# BT_ERROR requires_alloc — proving the capture path is disabled.
+# Fail if the backtrace was actually captured (alloc=true would indicate
+# the backtrace feature leaked through).
+fail_regex = ["(?s)BACKTRACE_BEGIN\\b.*\\balloc=true\\b"]
+success_regex = ["(?s)BACKTRACE_BEGIN\\b.*\\bkind=panic\\b.*\\bBACKTRACE_END"]
+timeout = 60
+to_bin = true
+uefi = false
