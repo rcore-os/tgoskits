@@ -100,7 +100,7 @@ impl DmaDomainId {
 
 ## 3. 类型安全
 
-DMA typed buffer 允许设备直接读写 `T` 的原始字节，因此 `T` 必须没有引用、资源 owner、无效 bit pattern 或未初始化 padding。`DmaPod` 是这一不变量的 unsafe marker。
+DMA typed buffer 允许设备直接读写 `T` 的原始字节，因此 `T` 必须没有引用、资源 owner、无效 bit pattern 或未初始化 padding。`DmaPod` 是这一安全性条件的 unsafe marker。
 
 ### 3.1 安全契约
 
@@ -239,7 +239,7 @@ release 接口按值消费完整 allocation metadata，避免旧 `_dma32: bool` 
 | contiguous sync | 按 direction clean/invalidate normal mapping |
 | streaming bounce | 使用符合 mask 的 Normal/Dma32 pages，并在 sync 时 copy |
 
-恢复 cached mapping 是释放 coherent page 的前置不变量。失败时 adapter 立即终止该内核路径，绝不把属性不一致的 page 归还 Buddy；平台页表实现必须保证该恢复操作在合法 owner 上成功。
+恢复 cached mapping 是释放 coherent page 的前置条件。失败时 adapter 立即终止该内核路径，绝不把属性不一致的 page 归还 Buddy；平台页表实现必须保证该恢复操作在合法 owner 上成功。
 
 ## 7. Starry 共享缓冲区
 
@@ -280,7 +280,7 @@ flowchart LR
 
 DMA 错误往往表现为静默数据损坏，因此测试必须同时覆盖类型、constraint、cache transition、ownership 和异常 teardown。
 
-### 8.1 必测不变量
+### 8.1 必测一致性
 
 `dma-api` 已包含 compile-fail 文档测试和 tracking backend 单元测试。新增能力应继续使用确定性 backend 记录每次 alloc/free/map/unmap/sync。
 

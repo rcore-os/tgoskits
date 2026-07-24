@@ -9,7 +9,7 @@ sidebar_label: "系统集成"
 
 ## 1. 层级与组件数量
 
-层级是否必要应以不变量是否不同判断，而不是单纯统计 crate 数量。当前公共核心、系统策略和能力 adapter 各自维护不同 ownership，合并会造成反向依赖或重复策略。
+层级是否必要应以需要保持的一致性条件是否不同判断，而不是单纯统计 crate 数量。当前公共核心、系统策略和能力 adapter 各自维护不同 ownership，合并会造成反向依赖或重复策略。
 
 ### 1.1 必要层级
 
@@ -21,7 +21,7 @@ sidebar_label: "系统集成"
 | 启动事实 | `kernutil::memory` + `someboot` | 无堆、固定容量、固件区间与 early bump 状态机 |
 | 运行时资源 | `ax-alloc` | 唯一公共 page/heap/stats/zone 入口 |
 | allocator 算法 | `buddy-slab-allocator` | Buddy/Slab 内部结构不泄露给系统策略 |
-| 页表机制 | `ax-page-table` | 页表项/Stage-1/Stage-2/boot 共用 frame 与 entry 不变量 |
+| 页表机制 | `ax-page-table` | 页表项/Stage-1/Stage-2/boot 共用 frame 与 entry 一致性条件 |
 | 虚拟内存区域事务 | `ax-memory-set` | 跨 backend 的 metadata 与页表项 all-or-rollback |
 | 系统策略 | `ax-mm`、Starry mm、`axaddrspace` | Host kernel、Linux process、Guest RAM 语义不同 |
 | 设备能力 | `dma-api`、`mmio-api` 与 `axklib` 适配 | DMA 缓冲区所有权和 MMIO 寄存器映射分别与分配器、地址空间实现解耦 |
@@ -30,7 +30,7 @@ sidebar_label: "系统集成"
 
 ### 1.2 不应新增的层
 
-当前架构明确拒绝只做转发或保存重复状态的组件。新增 crate 必须拥有独立领域不变量和多个真实消费者。
+当前架构明确拒绝只做转发或保存重复状态的组件。新增 crate 必须拥有独立领域的一致性条件和多个真实消费者。
 
 | 不新增的抽象 | 原因 |
 | --- | --- |
@@ -79,7 +79,7 @@ sequenceDiagram
 
 应用处理器使用 someboot 已预留 stack 进入 `rust_main_secondary()`，先绑定 per-CPU data，再初始化本地 Slab和 local 硬件抽象层状态。
 
-| 顺序 | 操作 | 不变量 |
+| 顺序 | 操作 | 保证条件 |
 | --- | --- | --- |
 | 1 | 超出编译 CPU capacity 的 hart 停驻 | 不索引越界 per-CPU storage |
 | 2 | `ax_hal::percpu::init_secondary(cpu_id)` | 本 CPU per-CPU address 有效 |
@@ -245,7 +245,7 @@ flowchart BT
 
 ### 7.2 修改放置规则
 
-新行为按它拥有的不变量放置，避免用“调用方便”作为增加公共层职责的理由。
+新行为按它拥有的一致性条件放置，避免用“调用方便”作为增加公共层职责的理由。
 
 | 新行为 | 放置位置 |
 | --- | --- |
@@ -351,4 +351,4 @@ portable driver
   -> ax-alloc PageRequest { count=4, zone=Normal/Dma32 }, UsageKind::Dma
 ```
 
-这条路径跨越多层是因为每层分别拥有 device constraint、资源获取即初始化 token、platform cache policy 和物理页；不能为了减少调用层数把 mask/domain/cache状态塞进通用 allocator。相反，不含新不变量的转发 facade应删除。
+这条路径跨越多层是因为每层分别拥有 device constraint、资源获取即初始化 token、platform cache policy 和物理页；不能为了减少调用层数把 mask/domain/cache状态塞进通用 allocator。相反，不承担新一致性条件的转发 facade 应删除。

@@ -57,7 +57,7 @@ for memory in fdt.memory() {
 
 `Mmio` 不因为存在物理地址就属于 RAM。MMIO 映射只建立虚拟地址/页表项，不得把设备窗口加入 Buddy，也不得在 unmap 时释放其物理区。
 
-`MemoryType` 在 `components/kernutil/src/memory.rs` 中定义，公共枚举值就是上面六类。`Free` 是默认值，便于 `heapless::Vec::new()` 等构造路径在未显式赋类型时落到不可分配状态，而非隐式可分配状态。
+`MemoryType` 在 `components/kernutil/src/memory.rs` 中定义，公共枚举值就是上面六类。`Free` 是枚举默认值，但 `MemoryDescriptor::default()` 的长度为零，不会凭空形成可分配区间；任何非空描述符都必须由固件解析或平台代码显式填写起点、长度和类型。
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -91,6 +91,20 @@ flowchart LR
 
 同类型范围可以相邻或重叠后合并。新描述符可以覆盖 `Free`，但不能覆盖不同类型的非 `Free` 区间；例如 `Reserved` 与已有 `KImage` 冲突时会返回 `MemoryRangeError::Conflict`。
 
+### 2.3 分配资格、直接映射与页表属性
+
+一个物理区间至少有三个彼此独立的属性：能否交给页分配器、是否需要进入内核直接映射、映射时使用普通内存还是设备内存属性。`MemoryType` 当前主要回答第一个问题；它不能完整表达后两个问题。
+
+| 启动类型 | 进入 `ax-alloc` | 当前运行期映射处理 | 映射属性来源 |
+| --- | --- | --- | --- |
+| `Free` | 是 | `ax-hal` 生成普通 RAM 区域，`ax-mm` 建立线性映射 | 普通可缓存内存 |
+| `KImage` / `PerCpuData` | 否 | 作为保留物理 RAM 进入内核映射清单 | 当前与 `Reserved` 一样折叠为普通内存、可读/可写/可执行 |
+| `Reserved` | 否 | 当前统一作为保留物理 RAM 进入内核映射清单 | 普通内存、可读/可写/可执行 |
+| `Mmio` | 否 | 作为设备区域进入内核映射清单 | 设备内存属性 |
+| `Ram` | 取决于平台转换 | 动态平台当前不把它当作 `Free` | 取决于平台策略 |
+
+当前 `MemoryDescriptor` 没有类似 `NoDirectMap` 的独立标志。因此，固件私有窗口、PCI 空洞和“需要保留但不应由 CPU 普通访问”的区域若都被归为 `Reserved`，会和真正的保留 RAM 走同一条映射路径。这是当前表达能力的限制；平台在加入描述符前必须尽量区分 RAM、MMIO 和地址空洞，不能把所有不可分配地址都笼统标成 `Reserved`。
+
 ## 3. 保留区裁剪
 
 所有不可分配范围必须在运行时接管前进入同一内存图。这样 `ax-hal` 只需要消费最终描述符，不需要再次理解 扁平设备树 reserved-memory、内核镜像布局或 early bump 的内部状态。
@@ -111,14 +125,6 @@ flowchart LR
 
 `someboot::mem::ram` 在 `early_init()` 中选择最大的非空、地址计算不溢出的 `Free` 描述符作为 bump arena。选择不依赖固件描述符顺序；它不是运行期 heap，也不跨多个 RAM bank 拼接分配。实现不设置固定的最小容量，实际启动对象超出 arena 时由 checked bump 明确失败。
 
-| 状态 | 允许操作 | 转换条件 |
-| --- | --- | --- |
-| `Uninitialized` | 无分配 | `ram::init(free_range)` |
-| `Active` | checked bump allocation | boot object 分配完成 |
-| `Frozen` | 禁止继续分配 | `memory_map_setup()` 调用 `ram::freeze()` |
-
-Bump 的所有地址计算使用 checked arithmetic。`ram::used_range()` 在冻结前被作为 `Reserved` 加回内存图，因此 arena 中未使用的尾部仍可保持 `Free`，已使用前缀不会被运行时重复分配。
-
 `RamAllocatorState` 是一个三态显式状态机，定义在 `platforms/someboot/src/mem/ram.rs`。`Active` 携带 `used_start`、`end` 与 `current` 三个字段，使 `used_range()` 能在 flush 时把已用前缀切出未用尾部。
 
 ```rust
@@ -134,19 +140,21 @@ enum RamAllocatorState {
 }
 ```
 
-状态转换严格单向，没有从 `Frozen` 回到 `Active` 的 thaw 路径。下图展示三个状态、它们的入口动作和退出条件。
+状态转换严格单向，没有从 `Frozen` 回到 `Active` 的 thaw 路径。下图展示三个状态、它们的入口动作和退出条件，以及 `Active` 自循环对 `used_start` 与 `current` 字段的不同影响。
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Uninitialized: static init
-    Uninitialized --> Active: ram::init(free_range)
-    Active --> Active: alloc(Layout) advances current
-    Active --> Active: flush_to_memory_map(kind) publishes used prefix
-    Active --> Frozen: memory_map_setup() calls ram::freeze()
-    Frozen --> [*]: runtime allocator takes over
+    [*] --> Uninitialized: 编译期静态初值
+    Uninitialized --> Active: ram init 选择区间并设置 current
+    Active --> Active: alloc 成功后推进 current；失败返回 None
+    Active --> Active: flush_to_memory_map 发布已用前缀
+    Active --> Frozen: memory_map_setup 发布剩余前缀并冻结
+    Frozen --> [*]: 运行时分配器接管 Free 段
 ```
 
-`alloc()` 在非 `Active` 状态下直接返回 `None`，因此冻结后再次调用 early provider 只会得到分配失败，而不是默默回退到其他来源。该单向语义是 boot/runtime 边界的安全保证。
+`ram::init()` 把 `current` 初始化为 `range.start.max(0x40)` 而非 `range.start`，避免从地址 0 开始分配造成 NULL 指针语义混淆；当 `range.start < 0x40` 时 `used_start` 与 `current` 之间存在初始间隙，该间隙会随首次 `flush_to_memory_map()` 一同作为已用前缀发布。`alloc(Layout)` 仅在 checked arithmetic 全部成功时推进 `current` 并返回地址；arena 耗尽或加法溢出时保持状态字段不变并返回 `None`，因此冻结后再次调用 early provider 只会得到分配失败，而不是默默回退到其他来源。
+
+`flush_to_memory_map(kind)` 把区间 `[used_start, current.align_up(page_size))` 作为 `MemoryDescriptor` 加入内存图，随后把 `used_start` 与 `current` 同时重置为已发布区间的末端；下一次 `alloc` 从新的 `current` 继续推进。`memory_map_setup()` 是 boot/runtime 边界的最后一步：它先读取尚未 flush 的 `ram::used_range()`，把该剩余范围作为 `Reserved` 加入内存图（保证已使用前缀不会被运行时分配器重复分配），再调用 `ram::freeze()` 进入 `Frozen` 终态。该顺序保证 arena 已用前缀和未用尾部在冻结前都已正确反映到内存图中。
 
 ## 4. 启动对象
 
@@ -215,6 +223,29 @@ flowchart LR
 ```
 
 选择最大段作为初始化段可以保证初始 allocator metadata 有足够空间，但不会把其他段降级成“只能供 byte heap 使用”。页分配和大对象分配都可以扫描全部 Buddy section；单次连续分配仍必须完全落在某一个 section 内。
+
+### 5.3 描述符到内核直接映射
+
+运行时映射路径由三个模块连续完成。`axplat-dyn::mem::reserved_phys_ram_ranges()` 把 `Reserved`、`KImage` 和 `PerCpuData` 汇总为保留物理 RAM；`ax-hal::mem::memory_regions()` 为它们生成非 `FREE` 的 `MemRegion`；`ax-mm::new_kernel_aspace()` 再遍历全部 `MemRegion` 并调用 `map_linear()`。
+
+```text
+MemoryDescriptor[]
+  -> axplat-dyn: Free / reserved physical RAM / MMIO
+  -> ax-hal: MemRegion + FREE/RESERVED/DEVICE/permission flags
+  -> ax-mm: physical-to-virtual address + map_linear
+```
+
+这条路径保留了“不可分配”的含义，但当前也把“保留物理 RAM”和“需要直接映射”绑定在一起。维护固件内存解析时必须先判断区间的真实性质。
+
+| 物理区间性质 | 分配器处理 | 合理的直接映射处理 | 当前实现 |
+| --- | --- | --- | --- |
+| 可用 RAM | 加入 Buddy | 建立普通内存直接映射 | 已实现 |
+| 内核镜像、启动页表、每 CPU 数据 | 排除 | 保留映射，并按用途设置权限/属性 | 已实现为保留区域映射 |
+| CPU 必须访问的保留 RAM | 排除 | 按实际访问属性映射 | 当前作为普通保留区域映射 |
+| 固件私有、PCI 空洞或不可访问窗口 | 排除 | 不建立普通直接映射 | 当前缺少独立表达，可能被 `Reserved` 路径映射 |
+| MMIO | 排除 | 仅以设备内存属性映射需要访问的窗口 | 当前作为 `DEVICE` 区域映射，也可由 `iomap` 建立专用映射 |
+
+是否映射必须先于页尺寸选择。把一个不应访问的保留窗口改用 1 GiB 大页映射，只减少页表开销，并不能修正错误的区间分类。
 
 ## 6. 当前约束
 
@@ -343,3 +374,21 @@ pub(crate) fn memory_map_setup() {
 ```
 
 最终候选为 `0x4000_0000..0x4020_0000`、`0x40e0_0000..0x47ff_f000` 和 `0x4824_0000..0x5000_0000`。`ax-hal::memory_regions()` 还会执行 4 KiB 对齐，`buddy-slab-allocator` 再消耗每个 region 的 section metadata 和 2 MiB heap 对齐前缀，因此 `managed_bytes()` 必然小于这三段的简单字节和。
+
+### 7.5 大型固件保留区
+
+假设固件还报告一个 12 GiB 保留范围。该范围包含 `12 GiB / 4 KiB = 3,145,728` 个基础页，但启动内存图只需要一个 `MemoryDescriptor`；描述符成本与区间字节数无关。进入运行时前必须按来源判断它属于保留 RAM、MMIO，还是没有可访问存储的物理地址空洞。
+
+```text
+12 GiB firmware range
+  |
+  +-- actual RAM and CPU must access it? -- yes --> Reserved RAM, map required subranges
+  |                                          no
+  +-- device register/aperture? ------------- yes --> MMIO, device attributes, map on demand
+  |                                          no
+  +-- firmware-private or address hole ---------> exclude from allocator and direct map
+```
+
+若它是固件私有窗口或地址空洞，主流做法是只保留区间元数据并排除分配，不为每个基础页建立普通内存映射。若它确实是 CPU 必须访问的同属性 RAM，页表层应在地址、长度和属性边界允许时选择最大的硬件页尺寸。当前 ArceOS 的 `ax-mm::Backend::Linear` 调用 Stage-1 `map_region(..., false)`，仍会为该范围建立 4 KiB 映射；这不会再导致 map 准备阶段保存 314 万项快照，但会产生约 314 万个叶子页表项，是需要继续测量和收敛的现有限制。
+
+映射事务的临时内存成本见 [虚拟内存区域与页表事务](./address-space.md#53-大范围映射成本)，大页选择能力见 [统一页表核心](./page-table.md#33-区域页尺寸选择)。

@@ -168,6 +168,29 @@ stateDiagram-v2
 
 `SMALL_FLUSH_THRESHOLD` 当前为 32。新 map 通常没有旧 translation 需要失效；unmap、remap、protect 和 copy 等修改会按实际操作记录地址或升级为 full flush。
 
+### 3.3 区域页尺寸选择
+
+`memory/ax-page-table/src/stage1/bits64.rs::map_region()` 在 `allow_huge=true` 时按从大到小的顺序选择叶子页尺寸。每一步都要求虚拟地址、物理地址和剩余长度满足该页尺寸的对齐与容量条件；任一条件不满足就下降一级。
+
+| 候选页尺寸 | 选择条件 | 单个页表项覆盖范围 |
+| --- | --- | ---: |
+| 1 GiB | 架构支持，虚拟地址与物理地址均 1 GiB 对齐，剩余长度不少于 1 GiB | 1 GiB |
+| 2 MiB | 架构支持，虚拟地址与物理地址均 2 MiB 对齐，剩余长度不少于 2 MiB | 2 MiB |
+| 4 KiB | 基础页对齐 | 4 KiB |
+
+算法允许同一请求由不同页尺寸拼接。例如一个起点仅 4 KiB 对齐的范围会先用基础页映射到 2 MiB 边界，再使用 2 MiB 或 1 GiB 页，末尾不足大页的部分再退回基础页。调用方必须在权限、缓存属性或所有权发生变化的边界拆分请求，不能用一个大页跨越属性不同的物理区间。
+
+页表核心提供能力，消费者决定是否启用。当前主要调用点的策略如下。
+
+| 消费者路径 | `allow_huge` | 当前原因或结果 |
+| --- | --- | --- |
+| `someboot` 启动映射 | `true` | 尽量缩小启动页表并减少遍历层级 |
+| `axaddrspace` Guest linear | `true` | 已知连续 Host 物理范围可使用大页 |
+| `ax-mm` ArceOS linear | `false` | 当前事务保存与回滚只接受 4 KiB 页表项 |
+| `ax-mm` allocation-backed | `false` | 物理页可能不连续，按基础页拥有和回收 |
+
+因此“页表核心支持 1 GiB/2 MiB 页”不等于“内核直接映射已经使用大页”。大范围映射的性能评估必须记录实际生成的各尺寸页表项数量。
+
 ## 4. 地址转换后备缓冲区一致性
 
 页表项修改与地址转换后备缓冲区 shootdown 是同一个正确性协议的两部分。页表核心描述 invalidator scope，系统层负责保证所有可能运行该地址空间的 CPU 都观察到失效。
@@ -259,7 +282,7 @@ pub trait TableMeta: Sync + Send + Clone + Copy + 'static {
 
 `MapConfig` 提供虚拟地址、物理地址、size、页表项 template、`allow_huge` 和 `flush`。递归 mapper 只有在 level、剩余大小及虚拟地址/物理地址对齐都满足时才创建 block mapping。
 
-`PageTable<T, A>` 与 `PageTableRef<T, A>` 通过常量泛型 `T: TableMeta` 描述几何，使同一份递归 mapper 代码可同时服务 Stage-2 与 boot。下表列出当前每个 TableMeta 决定的不变量；具体架构在 `stage2` 或 `boot` feature 下提供这些常量。
+`PageTable<T, A>` 与 `PageTableRef<T, A>` 通过常量泛型 `T: TableMeta` 描述几何，使同一份递归 mapper 代码可同时服务 Stage-2 与 boot。下表列出当前每个 TableMeta 决定的一致性条件；具体架构在 `stage2` 或 `boot` feature 下提供这些常量。
 
 | `TableMeta` 常量 | 含义 | 决定的行为 |
 | --- | --- | --- |
@@ -304,7 +327,7 @@ ArceOS/Starry production tree 不应出现 `stage2`，Axvisor 也不应为普通
 
 ### 7.2 源码检查点
 
-以下文件覆盖统一页表的关键不变量。架构改动应配合 entry round-trip、map/query/unmap 和地址转换后备缓冲区 scope 测试。
+以下文件覆盖统一页表的关键一致性条件。架构改动应配合 entry round-trip、map/query/unmap 和地址转换后备缓冲区 scope 测试。
 
 | 源码 | 审计重点 |
 | --- | --- |
@@ -409,3 +432,17 @@ pub const fn smp_invalidation_available<M: PagingMetaData>(remote_ipi: bool) -> 
 | `0x4000_0000` | `0x9000_0000` | 12 KiB | 使用三个 4 KiB leaf |
 
 Stage-2 entry 只描述 Guest translation，不拥有 Guest RAM policy。allocation-backed Guest RAM 由 `axaddrspace` backend 保存并在 transaction finalize/teardown 释放；linear Guest mapping 删除 entry 时不能释放调用方传入的 Host 物理地址。
+
+### 8.5 大范围直接映射
+
+假设虚拟地址和物理地址都按 1 GiB 对齐，整个 12 GiB 区间具有相同权限与缓存属性。允许大页时，Stage-1 `map_region()` 可以用 12 个 1 GiB 叶子项完成映射；禁止大页时需要 3,145,728 个 4 KiB 叶子项。
+
+| 映射方式 | 叶子项数量 | 仅 4 KiB 叶子页表存储 | 地址转换后备缓冲区覆盖 |
+| --- | ---: | ---: | --- |
+| 1 GiB 页 | 12 | 不需要 4 KiB 叶子表 | 每项覆盖 1 GiB |
+| 2 MiB 页 | 6,144 | 不需要 4 KiB 叶子表 | 每项覆盖 2 MiB |
+| 4 KiB 页 | 3,145,728 | 约 24 MiB | 每项覆盖 4 KiB |
+
+这里的 24 MiB 是 `3,145,728 × 8` 字节的叶子页表项存储，不含少量上级页表。大页通常还能降低地址转换后备缓冲区压力和启动映射时间，但只适用于物理连续、虚拟连续且属性一致的范围；局部 unmap、protect 或写时复制会要求拆分大页或拒绝基础页事务。
+
+页尺寸优化不能代替固件区间分类。固件私有窗口、PCI 地址空洞或不允许 CPU 访问的保留区应先从普通直接映射中排除；只有确定需要 CPU 映射的 RAM 才进入上述尺寸选择。当前 ArceOS linear 直接映射仍传入 `allow_huge=false`，所以表中的 1 GiB 结果是页表核心已经具备、但该消费路径尚未启用的能力。
