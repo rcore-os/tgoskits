@@ -219,6 +219,17 @@ impl Ext4FileSystem {
         }
     }
 
+    /// Invalidates all caches without flushing dirty data.
+    ///
+    /// Clears the data-block cache, inode-table cache, and bitmap cache.
+    /// Dirty entries are discarded — call [`sync_to_disk`] first if you need
+    /// to persist pending modifications.
+    pub fn invalidate_cache(&self) {
+        self.datablock_cache.clear();
+        self.inodetable_cache.clear();
+        self.bitmap_cache.clear();
+    }
+
     /// Placeholder for creating the minimal filesystem base layout.
     pub fn make_base_dir(&self) {
         // root, journal, and lost+found initialization is handled elsewhere.

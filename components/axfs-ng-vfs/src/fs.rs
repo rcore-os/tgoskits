@@ -39,6 +39,9 @@ pub trait FilesystemOps: Send + Sync {
     fn flush(&self) -> VfsResult<()> {
         Ok(())
     }
+
+    /// Invalidates all in-memory caches without flushing dirty data.
+    fn invalid_cache(&self) {}
 }
 
 #[derive(Clone)]

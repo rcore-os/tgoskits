@@ -266,4 +266,9 @@ impl FilesystemOps for Ext4Filesystem {
     fn flush(&self) -> VfsResult<()> {
         self.sync_to_disk()
     }
+
+    fn invalid_cache(&self) {
+        let state = self.lock();
+        state.fs.invalidate_cache();
+    }
 }
