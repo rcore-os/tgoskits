@@ -20,9 +20,6 @@ pub trait ArmVgicHostIf {
     /// Return host CPU count.
     fn host_cpu_num() -> usize;
 
-    /// Return current vCPU ID.
-    fn current_vcpu_id() -> usize;
-
     /// Current monotonic host time in nanoseconds.
     fn current_time_nanos() -> u64;
 
@@ -35,6 +32,9 @@ pub trait ArmVgicHostIf {
     /// Read VGICD TYPER from host GIC.
     fn read_vgicd_typer() -> u32;
 
+    /// Read the banked GICv2 target mask for the current host CPU.
+    fn current_cpu_target() -> u8;
+
     /// Return host GICD base.
     fn get_host_gicd_base() -> PhysAddr;
 
@@ -43,6 +43,9 @@ pub trait ArmVgicHostIf {
 
     /// Inject a virtual interrupt.
     fn hardware_inject_virtual_interrupt(vector: u8);
+
+    /// Set whether one physical host IRQ is enabled.
+    fn set_host_irq_enable(irq: u32, enable: bool);
 }
 
 #[cfg(feature = "vgicv3")]
@@ -71,10 +74,6 @@ pub(crate) fn host_cpu_num() -> usize {
     ax_crate_interface::call_interface!(ArmVgicHostIf::host_cpu_num())
 }
 
-pub(crate) fn current_vcpu_id() -> usize {
-    ax_crate_interface::call_interface!(ArmVgicHostIf::current_vcpu_id())
-}
-
 pub(crate) fn current_time_nanos() -> u64 {
     ax_crate_interface::call_interface!(ArmVgicHostIf::current_time_nanos())
 }
@@ -94,6 +93,10 @@ pub fn read_vgicd_typer() -> u32 {
     ax_crate_interface::call_interface!(ArmVgicHostIf::read_vgicd_typer())
 }
 
+pub fn current_cpu_target() -> u8 {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::current_cpu_target())
+}
+
 pub fn get_host_gicd_base() -> PhysAddr {
     ax_crate_interface::call_interface!(ArmVgicHostIf::get_host_gicd_base())
 }
@@ -104,4 +107,8 @@ pub fn get_host_gicr_base() -> PhysAddr {
 
 pub fn hardware_inject_virtual_interrupt(vector: u8) {
     ax_crate_interface::call_interface!(ArmVgicHostIf::hardware_inject_virtual_interrupt(vector));
+}
+
+pub fn set_host_irq_enable(irq: u32, enable: bool) {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::set_host_irq_enable(irq, enable));
 }

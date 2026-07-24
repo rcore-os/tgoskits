@@ -1,0 +1,12 @@
+board_type = "Rock-4D"
+dtb_file = "os/axvisor/configs/board/rock-4d.dtb"
+fail_regex = [
+  "(?i)\\bpanic(?:ked)?\\b",
+  "(?i)kernel panic",
+  "(?i)login incorrect",
+  "(?i)permission denied",
+]
+success_regex = [
+  "(?m)^rock-4d-spi login: ?$",
+]
+timeout = 300

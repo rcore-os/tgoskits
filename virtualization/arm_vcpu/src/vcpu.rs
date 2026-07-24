@@ -17,8 +17,8 @@ use core::marker::PhantomData;
 use aarch64_cpu::registers::*;
 
 use crate::{
-    ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuResult, ArmVmExit,
-    TrapFrame,
+    ArmGuestPhysAddr, ArmHostIrq, ArmHostOps, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuResult,
+    ArmVmExit, TrapFrame,
     context_frame::GuestSystemRegisters,
     exception::{TrapKind, handle_exception_sync},
     exception_utils::exception_class_value,
@@ -66,7 +66,7 @@ impl ArmHostOps for AssemblyLayoutHost {
         Err(crate::ArmVcpuError::BadState)
     }
 
-    fn fetch_pending_host_irq() -> Option<usize> {
+    fn fetch_pending_host_irq() -> Option<ArmHostIrq> {
         None
     }
 
@@ -254,8 +254,10 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             self.guest_system_regs.vtcr_el2 = vtcr_for_config(levels, gpa_bits, pa_bits);
         }
 
-        let mut hcr_el2 =
-            HCR_EL2::VM::Enable + HCR_EL2::TSC::EnableTrapEl1SmcToEl2 + HCR_EL2::RW::EL1IsAarch64;
+        let mut hcr_el2 = HCR_EL2::VM::Enable
+            + HCR_EL2::TSC::EnableTrapEl1SmcToEl2
+            + HCR_EL2::TWI::SET
+            + HCR_EL2::RW::EL1IsAarch64;
 
         if !config.passthrough_interrupt {
             // Set HCR_EL2.IMO will trap IRQs to EL2 while enabling virtual IRQs.
@@ -384,9 +386,9 @@ impl<H: ArmHostOps> ArmVcpu<H> {
         }
 
         let result = match exit_reason {
-            TrapKind::Synchronous => handle_exception_sync(&mut self.ctx),
+            TrapKind::Synchronous => handle_exception_sync::<H>(&mut self.ctx),
             TrapKind::Irq => Ok(ArmVmExit::ExternalInterrupt {
-                vector: H::fetch_pending_host_irq().unwrap_or(0) as u64,
+                irq: H::fetch_pending_host_irq().unwrap_or_else(|| ArmHostIrq::host(0)),
             }),
             _ => panic!("Unhandled exception {:?}", exit_reason),
         };

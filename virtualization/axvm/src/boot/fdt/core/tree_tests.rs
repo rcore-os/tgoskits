@@ -151,6 +151,34 @@ fn aarch64_copied_cpu_subtree_prunes_stale_topology() {
 }
 
 #[test]
+fn aarch64_copied_cpu_subtree_selects_unit_address_before_using_reg() {
+    let mut host = Fdt::new();
+    let cpus = host.add_node(host.root_id(), Node::new("cpus"));
+    host.node_mut(cpus)
+        .unwrap()
+        .set_property(prop_u32("#address-cells", 2));
+    host.node_mut(cpus)
+        .unwrap()
+        .set_property(prop_u32("#size-cells", 0));
+
+    for (unit_address, hardware_id) in [(0, 0x200), (0x100, 0)] {
+        let cpu = host.add_node(cpus, Node::new(&alloc::format!("cpu@{unit_address:x}")));
+        host.view_typed_mut(cpu)
+            .unwrap()
+            .set_regs(&[RegInfo::new(hardware_id, None)]);
+    }
+
+    let mut guest = FdtTree::new();
+    replace_cpu_subtree_from_host(&mut guest, &host, &[0]).unwrap();
+
+    let bytes = guest.finish();
+    let reparsed = Fdt::from_bytes(&bytes).unwrap();
+    let selected_cpu = reparsed.get_by_path("/cpus/cpu@0").unwrap();
+    assert_eq!(selected_cpu.regs()[0].address, 0x200);
+    assert!(reparsed.get_by_path_id("/cpus/cpu@100").is_none());
+}
+
+#[test]
 fn tree_rebuilds_memory_nodes_from_guest_regions() {
     let mut tree = FdtTree::from_bytes(&sample_dtb()).unwrap();
 

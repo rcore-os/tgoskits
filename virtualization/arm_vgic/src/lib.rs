@@ -48,15 +48,21 @@ pub mod v3;
 mod api_reexp {
     #[allow(unused_imports)]
     pub use crate::host::{
-        get_host_gicd_base, get_host_gicr_base, hardware_inject_virtual_interrupt, read_vgicd_iidr,
-        read_vgicd_typer,
+        current_cpu_target, get_host_gicd_base, get_host_gicr_base,
+        hardware_inject_virtual_interrupt, read_vgicd_iidr, read_vgicd_typer, set_host_irq_enable,
     };
 }
 
 #[allow(dead_code)]
 #[cfg(not(target_arch = "aarch64"))]
 mod api_reexp {
+    #[cfg(test)]
+    use core::sync::atomic::{AtomicBool, Ordering};
+
     use ax_memory_addr::{PhysAddr, pa};
+
+    #[cfg(test)]
+    static HOST_IRQ_ENABLES: [AtomicBool; 512] = [const { AtomicBool::new(false) }; 512];
 
     pub fn read_vgicd_iidr() -> u32 {
         0
@@ -64,6 +70,10 @@ mod api_reexp {
 
     pub fn read_vgicd_typer() -> u32 {
         0
+    }
+
+    pub fn current_cpu_target() -> u8 {
+        1
     }
 
     pub fn get_host_gicd_base() -> PhysAddr {
@@ -75,4 +85,26 @@ mod api_reexp {
     }
 
     pub fn hardware_inject_virtual_interrupt(_vector: u8) {}
+
+    pub fn set_host_irq_enable(irq: u32, enable: bool) {
+        #[cfg(test)]
+        if let Some(host_irq) = HOST_IRQ_ENABLES.get(irq as usize) {
+            host_irq.store(enable, Ordering::Relaxed);
+            return;
+        }
+
+        let _ = (irq, enable);
+    }
+
+    #[cfg(test)]
+    pub fn reset_host_irq_enables() {
+        for enabled in &HOST_IRQ_ENABLES {
+            enabled.store(false, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn host_irq_is_enabled(irq: usize) -> bool {
+        HOST_IRQ_ENABLES[irq].load(Ordering::Relaxed)
+    }
 }

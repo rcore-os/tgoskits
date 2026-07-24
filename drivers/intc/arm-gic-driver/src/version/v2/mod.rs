@@ -273,6 +273,11 @@ pub enum SGITarget {
 pub struct TargetList(u8);
 
 impl TargetList {
+    /// Creates a target list from the CPU target mask reported by GICv2.
+    pub const fn from_raw(raw: u8) -> Self {
+        Self(raw)
+    }
+
     /// Create a new TargetList with a specific CPU target list. list is Cpu interface IDs.
     pub fn new(list: impl Iterator<Item = usize>) -> Self {
         let mut raw = 0;
@@ -359,6 +364,11 @@ impl CpuInterface {
 
     fn gicd(&self) -> &DistributorReg {
         unsafe { &*self.gicd }
+    }
+
+    /// Returns the banked CPU target mask for the current CPU interface.
+    pub fn current_cpu_target(&self) -> TargetList {
+        TargetList::from_raw(self.gicd().ITARGETSR[0].get())
     }
 
     /// Initialize the CPU interface for the current CPU
@@ -984,6 +994,14 @@ mod tests {
     extern crate std;
 
     use super::*;
+
+    #[test]
+    fn target_list_preserves_banked_cpu_target_mask() {
+        let target = TargetList::from_raw(0x20);
+
+        assert_eq!(target.as_u8(), 0x20);
+        assert_eq!(target.cpu_id_list().collect::<std::vec::Vec<_>>(), [5]);
+    }
 
     #[test]
     fn distributor_initializes_all_spi_byte_registers() {

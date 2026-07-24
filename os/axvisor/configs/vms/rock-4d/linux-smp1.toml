@@ -1,0 +1,28 @@
+[base]
+id = 1
+name = "linux"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [0x103]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "fs"
+kernel_load_addr = 0x8020_0000
+kernel_path = "/guest/linux/rock-4d"
+dtb_load_addr = 0x8000_0000
+dtb_path = "/guest/linux/rock-4d-linux-smp1.dtb"
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 2],
+]
+
+[devices]
+interrupt_mode = "emu"
+emu_devices = [
+  ["vgicd-v2", 0x0800_0000, 0x1_0000, 0, 0x1, [1]],
+]
+passthrough_devices = [
+  ["/"],
+]
+passthrough_addresses = []
+excluded_devices = []

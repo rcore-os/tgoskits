@@ -190,6 +190,41 @@ impl ArmNestedPagingConfig {
     }
 }
 
+/// A physical IRQ claimed by the host while running a guest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ArmHostIrq {
+    vector: usize,
+    guest_forwarded: bool,
+}
+
+impl ArmHostIrq {
+    /// Creates an IRQ that still requires host-side deferred handling.
+    pub const fn host(vector: usize) -> Self {
+        Self {
+            vector,
+            guest_forwarded: false,
+        }
+    }
+
+    /// Creates an IRQ already forwarded to the bound guest vCPU.
+    pub const fn guest_forwarded(vector: usize) -> Self {
+        Self {
+            vector,
+            guest_forwarded: true,
+        }
+    }
+
+    /// Returns the physical IRQ vector.
+    pub const fn vector(self) -> usize {
+        self.vector
+    }
+
+    /// Returns whether the IRQ was forwarded before leaving bound vCPU context.
+    pub const fn is_guest_forwarded(self) -> bool {
+        self.guest_forwarded
+    }
+}
+
 /// VM-exit reason returned by the AArch64 vCPU core.
 #[non_exhaustive]
 #[derive(Debug)]
@@ -239,9 +274,11 @@ pub enum ArmVmExit {
     },
     /// A physical host interrupt should be handled by the embedding VMM.
     ExternalInterrupt {
-        /// Host or placeholder vector reported by the host adapter.
-        vector: u64,
+        /// Physical IRQ state reported by the host adapter.
+        irq: ArmHostIrq,
     },
+    /// A guest WFI instruction was trapped.
+    WaitForInterrupt,
     /// A guest PSCI CPU_OFF call was trapped.
     CpuDown {
         /// Guest-provided target state.
