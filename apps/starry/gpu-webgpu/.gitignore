@@ -1,0 +1,6 @@
+node_modules/
+node_modules
+programs/carpets/webgpu_ts/webgpu_ts_full_api.js
+programs/carpets/webgpu_kotlin/build/
+target/
+*.klib

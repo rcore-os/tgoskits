@@ -1,0 +1,17 @@
+# gpu-webgpu aa - boots StarryOS and runs the on-target launcher. The WebGPU cells (webgpu_js /
+# webgpu_ts / webgpu_kotlin) run on Node against the dawn native addon on Mesa lavapipe; Node, dawn,
+# and kotlinc-js have no StarryOS build, so those cells are validated on the host by
+# programs/run_all.sh and the on-target launcher reports that honestly (single vCPU, -smp 1).
+args = [
+    "-nographic", "-cpu", "max", "-m", "4096M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-webgpu.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 12000
