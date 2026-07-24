@@ -7,7 +7,7 @@ use alloc::{sync::Arc, vec::Vec};
 pub use available::{AvailableRing, VirtQueueAvail};
 use axaddrspace::GuestMemoryAccessor;
 use axvm_types::GuestPhysAddr;
-pub use descriptor::{DescriptorTable, VirtQueueDesc};
+pub use descriptor::{DescriptorChain, DescriptorTable, VirtQueueDesc};
 use log::trace;
 pub use used::{UsedRing, VirtQueueUsed, VirtqUsedElem};
 
@@ -81,36 +81,36 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
 
     /// Set descriptor table address
     pub fn set_desc_table_addr(&mut self, addr: GuestPhysAddr) -> VirtioResult<()> {
-        if self.desc_table_addr.as_usize() != 0 {
-            return Err(VirtioError::InvalidConfig);
-        }
+        // Overwrite semantics: VirtIO MMIO programs a 64-bit address via separate
+        // LOW/HIGH 32-bit writes, so the setter accepts repeated updates and keeps
+        // the latest combined value rather than rejecting the second write.
         self.desc_table_addr = addr;
         if addr.as_usize() != 0 {
             self.desc_table = Some(DescriptorTable::new(addr, self.size, self.accessor.clone()));
+        } else {
+            self.desc_table = None;
         }
         Ok(())
     }
 
     /// Set available ring address
     pub fn set_avail_ring_addr(&mut self, addr: GuestPhysAddr) -> VirtioResult<()> {
-        if self.avail_ring_addr.as_usize() != 0 {
-            return Err(VirtioError::InvalidConfig);
-        }
         self.avail_ring_addr = addr;
         if addr.as_usize() != 0 {
             self.avail_ring = Some(AvailableRing::new(addr, self.size, self.accessor.clone()));
+        } else {
+            self.avail_ring = None;
         }
         Ok(())
     }
 
     /// Set used ring address
     pub fn set_used_ring_addr(&mut self, addr: GuestPhysAddr) -> VirtioResult<()> {
-        if self.used_ring_addr.as_usize() != 0 {
-            return Err(VirtioError::InvalidConfig);
-        }
         self.used_ring_addr = addr;
         if addr.as_usize() != 0 {
             self.used_ring = Some(UsedRing::new(addr, self.size, self.accessor.clone()));
+        } else {
+            self.used_ring = None;
         }
         Ok(())
     }
@@ -168,15 +168,62 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
         Ok(())
     }
 
-    /// Get next available descriptor
-    pub fn pop_avail(&mut self) -> VirtioResult<Option<u16>> {
+    /// Consume one available-ring head index, or `None` if the queue is empty.
+    ///
+    /// Advances `last_avail_idx` by one (wrapping at `u16::MAX`). Returns
+    /// [`VirtioError::InvalidQueue`] when the guest's `avail.idx` is ahead by
+    /// more than `size`, which indicates a corrupted available ring.
+    pub fn pop_available_head(&mut self) -> VirtioResult<Option<u16>> {
         if !self.is_valid() {
             return Err(VirtioError::QueueNotReady);
         }
+        let avail_idx = self.read_avail_idx()?;
+        let last = self.get_last_avail_idx();
+        let pending = avail_idx.wrapping_sub(last);
+        if pending > self.size {
+            return Err(VirtioError::InvalidQueue);
+        }
+        if pending == 0 {
+            return Ok(None);
+        }
+        let head = self.read_avail_entry(last % self.size)?;
+        self.update_last_avail_idx(last.wrapping_add(1));
+        Ok(Some(head))
+    }
 
-        // In a real implementation, this would read from guest memory
-        // For now, return None to indicate no available descriptors
-        Ok(None)
+    /// Consume one available head and return a validated [`DescriptorChain`].
+    ///
+    /// Returns `Ok(None)` when the queue is empty. The head is consumed *before*
+    /// the chain is validated; on a validation error the head is already
+    /// advanced (so the queue is not stalled) and the caller should complete
+    /// that head with length 0. To recover the head on error, use
+    /// [`pop_available_head`](Self::pop_available_head) plus
+    /// [`descriptor_chain`](Self::descriptor_chain) directly.
+    pub fn pop_available(&mut self) -> VirtioResult<Option<DescriptorChain>> {
+        let head = match self.pop_available_head()? {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+        Ok(Some(self.descriptor_chain(head)?))
+    }
+
+    /// Build a validated [`DescriptorChain`] for an already-consumed head index.
+    pub fn descriptor_chain(&self, head: u16) -> VirtioResult<DescriptorChain> {
+        if let Some(ref desc_table) = self.desc_table {
+            desc_table.descriptor_chain(head)
+        } else {
+            Err(VirtioError::QueueNotReady)
+        }
+    }
+
+    /// Complete a descriptor chain: append a used element for `head` with the
+    /// given written length, then report whether the driver should be notified.
+    ///
+    /// `written_len` is the number of bytes the device wrote into guest-writable
+    /// buffers (RX bytes, or 0 for TX / discarded / error completions).
+    pub fn complete(&mut self, head: u16, written_len: u32) -> VirtioResult<bool> {
+        self.add_used(head, written_len)?;
+        self.should_notify()
     }
 
     /// Get the used ring reference
@@ -262,10 +309,15 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
         }
     }
 
-    /// Check if should notify
+    /// Whether the device should interrupt the driver after updating the used ring.
+    ///
+    /// Per the VirtIO specification the device honors the *available* ring's
+    /// `VIRTQ_AVAIL_F_NO_INTERRUPT` flag. The used ring's `VIRTQ_USED_F_NO_NOTIFY`
+    /// flag is the opposite direction (the driver reads it to decide whether to
+    /// kick the device), so it must not gate device-to-driver interrupts.
     pub fn should_notify(&self) -> VirtioResult<bool> {
-        if let Some(ref used_ring) = self.used_ring {
-            used_ring.should_notify()
+        if let Some(ref avail_ring) = self.avail_ring {
+            Ok(!avail_ring.interrupts_suppressed()?)
         } else {
             Err(VirtioError::QueueNotReady)
         }

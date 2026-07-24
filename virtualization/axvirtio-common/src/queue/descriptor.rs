@@ -103,6 +103,79 @@ impl VirtQueueDesc {
     }
 }
 
+/// A fully validated, device-agnostic VirtIO descriptor chain.
+///
+/// The common queue layer hands complete, direction-tagged chains to device
+/// implementations (block, net, ...) so that each device can interpret its own
+/// wire layout without leaking protocol specifics into the queue code.
+///
+/// Direction follows the VirtIO convention:
+/// - `readable` descriptors are device-read (driver-written, not `WRITE`).
+/// - `writable` descriptors are device-write (driver-read, `WRITE` set).
+#[derive(Debug, Clone)]
+pub struct DescriptorChain {
+    /// Head descriptor index of this chain (the value read from the avail ring).
+    head: u16,
+    /// Descriptors in chain order, starting at `head`.
+    descriptors: Vec<VirtQueueDesc>,
+}
+
+impl DescriptorChain {
+    /// Construct a chain from its head index and ordered descriptors.
+    pub fn new(head: u16, descriptors: Vec<VirtQueueDesc>) -> Self {
+        Self { head, descriptors }
+    }
+
+    /// The head descriptor index (avail-ring entry value).
+    pub fn head(&self) -> u16 {
+        self.head
+    }
+
+    /// All descriptors in chain order.
+    pub fn descriptors(&self) -> &[VirtQueueDesc] {
+        &self.descriptors
+    }
+
+    /// Number of descriptors in the chain.
+    pub fn len(&self) -> usize {
+        self.descriptors.len()
+    }
+
+    /// Whether the chain is empty.
+    pub fn is_empty(&self) -> bool {
+        self.descriptors.is_empty()
+    }
+
+    /// Device-readable descriptors (driver-written, no `VIRTQ_DESC_F_WRITE`).
+    pub fn readable(&self) -> impl Iterator<Item = &VirtQueueDesc> {
+        self.descriptors.iter().filter(|d| !d.is_write())
+    }
+
+    /// Device-writable descriptors (`VIRTQ_DESC_F_WRITE` set).
+    pub fn writable(&self) -> impl Iterator<Item = &VirtQueueDesc> {
+        self.descriptors.iter().filter(|d| d.is_write())
+    }
+
+    /// Total bytes across device-readable descriptors, checked against overflow.
+    pub fn readable_len(&self) -> VirtioResult<usize> {
+        sum_descriptor_lens(self.readable().map(|d| d.len as usize))
+    }
+
+    /// Total bytes across device-writable descriptors, checked against overflow.
+    pub fn writable_len(&self) -> VirtioResult<usize> {
+        sum_descriptor_lens(self.writable().map(|d| d.len as usize))
+    }
+}
+
+/// Checked sum of descriptor lengths; fails on overflow rather than wrapping.
+fn sum_descriptor_lens(lens: impl Iterator<Item = usize>) -> VirtioResult<usize> {
+    let mut total = 0usize;
+    for v in lens {
+        total = total.checked_add(v).ok_or(VirtioError::InvalidDescriptor)?;
+    }
+    Ok(total)
+}
+
 /// Descriptor table management structure.
 ///
 /// This structure provides a high-level interface for managing the VirtIO
@@ -229,6 +302,57 @@ impl<T: GuestMemoryAccessor + Clone> DescriptorTable<T> {
         }
 
         Ok(descriptors)
+    }
+
+    /// Build a fully validated, device-agnostic [`DescriptorChain`] from a head
+    /// index.
+    ///
+    /// Validation performed (all guest-provided input is untrusted):
+    /// - `head` and every `next` index must be `< size`.
+    /// - `VIRTQ_DESC_F_INDIRECT` is rejected (indirect descriptors are not
+    ///   negotiated in the first version).
+    /// - `base_addr + len` must not overflow.
+    /// - The chain may reference at most `size` descriptors; a longer walk
+    ///   indicates a cycle or a corrupted `next` field.
+    pub fn descriptor_chain(&self, head: u16) -> VirtioResult<DescriptorChain> {
+        if !self.is_valid() {
+            return Err(VirtioError::QueueNotReady);
+        }
+        if head >= self.size {
+            return Err(VirtioError::InvalidDescriptor);
+        }
+
+        let mut descriptors = Vec::new();
+        let mut current = head;
+        loop {
+            if current >= self.size {
+                return Err(VirtioError::InvalidDescriptor);
+            }
+            let desc = self.read_desc(current)?;
+            if desc.is_indirect() {
+                return Err(VirtioError::NotSupported);
+            }
+            if desc
+                .base_addr
+                .as_usize()
+                .checked_add(desc.len as usize)
+                .is_none()
+            {
+                return Err(VirtioError::InvalidDescriptor);
+            }
+            descriptors.push(desc);
+            if !desc.has_next() {
+                break;
+            }
+            current = desc.next;
+            // A chain referencing more than `size` descriptors is a cycle or
+            // corruption. Bounding the walk also guarantees termination.
+            if descriptors.len() >= self.size as usize {
+                return Err(VirtioError::InvalidDescriptor);
+            }
+        }
+
+        Ok(DescriptorChain::new(head, descriptors))
     }
 
     /// Get the total length of a descriptor chain
