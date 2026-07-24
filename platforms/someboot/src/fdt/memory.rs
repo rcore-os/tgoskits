@@ -30,13 +30,16 @@ pub fn init_memory_map() -> Option<()> {
         let Some(region) = normalize_region(reserved.address, reserved.size) else {
             continue;
         };
-        add_memory_descriptor(MemoryDescriptor::new_aligned(
+        let descriptor = MemoryDescriptor::new_aligned(
             region.start,
             region.end - region.start,
             MemoryType::Reserved,
             PAGE_SIZE,
-        ))
-        .unwrap();
+        )
+        .expect("FDT reserved-memory descriptor must have a valid aligned range");
+        add_memory_descriptor(descriptor).unwrap_or_else(|error| {
+            panic!("failed to add FDT memory reservation {region:#x?}: {error}")
+        });
     }
 
     for reserved in fdt.reserved_memory() {

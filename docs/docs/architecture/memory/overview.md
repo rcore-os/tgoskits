@@ -211,7 +211,7 @@ sequenceDiagram
     Backend->>Backend: zero or copy file bytes
     Backend->>PT: map(vaddr, paddr, flags)
     PT-->>Backend: mapping installed
-    Backend->>常驻内存集大小: record_charge(vaddr, Anon)
+    Backend->>常驻内存集大小: inc(Anon, 1)
     alt accounting succeeds
         Backend-->>Fault: Resolved
     else accounting fails
@@ -221,7 +221,7 @@ sequenceDiagram
     end
 ```
 
-这里的回滚顺序是安全要求：只有页表项成功删除后才能归还 frame，否则 CPU 仍可能通过旧 translation 访问已经重新分配的物理页。连续预读一次填充多页时，`CowBackend::rollback_fault_run()` 逆序撤销此前成功的页，并同步删除对应常驻内存集大小 charge。
+这里的回滚顺序是安全要求：只有页表项成功删除后才能归还物理页，否则 CPU 仍可能通过旧地址转换访问已经重新分配的物理页。连续预读一次填充多页时，`CowBackend::rollback_fault_run()` 逆序撤销此前成功的页，并按物理页所有者记录的类别递减常驻内存集大小聚合计数。
 
 ## 5. 主流实现依据
 

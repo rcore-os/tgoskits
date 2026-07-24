@@ -21,7 +21,7 @@ use crate::mm::ProcessVmStat;
 
 mod backend;
 
-pub use starry_mm::{CloneMapAccounting, MemoryAccounting, RssAccountingGuard};
+pub use starry_mm::{CloneMapAccounting, MemoryAccounting};
 
 pub use self::backend::*;
 
@@ -60,7 +60,7 @@ fn rollback_moved_pages(cursor: &mut PageTableCursor, moved_pages: &[MovedPage])
 pub struct AddrSpace {
     va_range: VirtAddrRange,
     areas: MemorySet<Backend>,
-    pt: PageTable,
+    pt: AddressSpacePageTable,
     /// Number of live [`crate::task::ProcessData`] instances that reference this
     /// address space (each `fork`/`clone` / `execve` slot that holds the
     /// `Arc<Mutex<AddrSpace>>`).
@@ -72,7 +72,6 @@ pub struct AddrSpace {
     /// All VmX counters for this address space.  Maintained automatically by
     /// `map`, `unmap`, `clear`, and `try_clone`; never touch from outside mm/.
     pub vm_stat: ProcessVmStat,
-    rss: MemoryAccounting,
     commit: starry_mm::AddressSpaceCommit,
 }
 
@@ -94,17 +93,17 @@ impl AddrSpace {
 
     /// Returns the reference to the inner page table.
     pub const fn page_table(&self) -> &PageTable {
-        &self.pt
+        &self.pt.table
     }
 
     /// Returns a mutable reference to the inner page table.
     pub const fn page_table_mut(&mut self) -> &mut PageTable {
-        &mut self.pt
+        &mut self.pt.table
     }
 
     /// Returns the root physical address of the inner page table.
     pub const fn page_table_root(&self) -> PhysAddr {
-        self.pt.root_paddr()
+        self.pt.table.root_paddr()
     }
 
     /// Checks if the address space contains the given address range.
@@ -117,10 +116,9 @@ impl AddrSpace {
         Ok(Self {
             va_range: VirtAddrRange::from_start_size(base, size),
             areas: MemorySet::new(),
-            pt: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
+            pt: AddressSpacePageTable::try_new()?,
             process_slots: AtomicUsize::new(0),
             vm_stat: ProcessVmStat::new(),
-            rss: MemoryAccounting::new(),
             commit: starry_mm::AddressSpaceCommit::new(),
         })
     }
@@ -135,7 +133,7 @@ impl AddrSpace {
     }
 
     pub(crate) fn rss(&self) -> &MemoryAccounting {
-        &self.rss
+        &self.pt.accounting
     }
 
     fn validate_region(&self, start: VirtAddr, size: usize) -> AxResult {
@@ -244,7 +242,6 @@ impl AddrSpace {
             ax_bail!(InvalidInput, "address is not aligned");
         }
 
-        let _rss = RssAccountingGuard::enter(&self.rss);
         let offset = start_vaddr.as_usize() as isize - start_paddr.as_usize() as isize;
         let area = MemoryArea::new(
             start_vaddr,
@@ -349,7 +346,6 @@ impl AddrSpace {
         let commit = self.prepare_commit_delta(removed_bytes, added_bytes)?;
 
         {
-            let _rss = RssAccountingGuard::enter(&self.rss);
             let area =
                 MemoryArea::new_with_reported_flags(start, size, flags, reported_flags, backend);
             if let Some(replacement_size) = replacement_size {
@@ -459,10 +455,13 @@ impl AddrSpace {
             frags.push((VirtAddrRange::new(frag_start, frag_end), backend));
         }
 
-        let _rss = RssAccountingGuard::enter(&self.rss);
         for (range, backend) in frags {
-            let mut cursor = self.pt.cursor();
-            BackendOps::unmap(&backend, range, Some(&self.rss), &mut cursor)?;
+            BackendOps::unmap(
+                &backend,
+                range,
+                Some(&self.pt.accounting),
+                &mut self.pt.table.cursor(),
+            )?;
         }
 
         Ok(())
@@ -492,7 +491,6 @@ impl AddrSpace {
             crate::syscall::memfd_collect_metas_touching_mprotect_range(self, start, size);
         let removed_commit = self.accounted_bytes_in_range(start, size)?;
         let commit = self.prepare_commit_delta(removed_commit, 0)?;
-        let _rss = RssAccountingGuard::enter(&self.rss);
         self.areas.unmap(start, size, &mut self.pt)?;
         self.vm_stat.on_unmap(removed_pages);
         commit.commit(&mut self.commit);
@@ -561,10 +559,10 @@ impl AddrSpace {
     /// Pages already mapped at `dst` (shared backends) are skipped.
     /// Returns an error if any page-table update fails.
     ///
-    /// Uses direct PTE map/unmap (not [`BackendOps::unmap`]) so Cow RSS charges
-    /// migrate via [`MemoryAccounting::move_charge`] instead of remove+record.
+    /// Uses direct page-table entry map/unmap so resident-page ownership and
+    /// aggregate accounting remain unchanged while the virtual address moves.
     pub fn move_pages(&mut self, src: VirtAddr, dst: VirtAddr, size: usize) -> AxResult {
-        let mut cursor = self.pt.cursor();
+        let mut cursor = self.pt.table.cursor();
         let mut mapped_pages = alloc::vec::Vec::new();
         mapped_pages
             .try_reserve(size.div_ceil(PAGE_SIZE_4K))
@@ -585,22 +583,12 @@ impl AddrSpace {
         moved_pages
             .try_reserve_exact(mapped_pages.len())
             .map_err(|_| AxError::NoMemory)?;
-        let charge_moves = self.rss.prepare_move_charges(
-            mapped_pages
-                .iter()
-                .map(|&(src_va, dst_va, _paddr, _flags, _page_size)| (src_va, dst_va)),
-        )?;
-        let mut committed_charges = Some(charge_moves.commit(&self.rss)?);
-
         for &(src_va, dst_va, paddr, flags, page_size) in &mapped_pages {
             let mut dst_newly_mapped = false;
             if cursor.query(dst_va).is_err() {
                 if let Err(err) = cursor.map(dst_va, paddr, page_size, flags) {
                     let ptes_restored = rollback_moved_pages(&mut cursor, &moved_pages);
-                    let charges_restored = committed_charges
-                        .take()
-                        .is_some_and(|charges| charges.rollback(&self.rss).is_ok());
-                    return Err(if ptes_restored && charges_restored {
+                    return Err(if ptes_restored {
                         err.into()
                     } else {
                         AxError::BadState
@@ -611,10 +599,7 @@ impl AddrSpace {
             if let Err(err) = cursor.unmap(src_va) {
                 let current_restored = !dst_newly_mapped || cursor.unmap(dst_va).is_ok();
                 let ptes_restored = rollback_moved_pages(&mut cursor, &moved_pages);
-                let charges_restored = committed_charges
-                    .take()
-                    .is_some_and(|charges| charges.rollback(&self.rss).is_ok());
-                return Err(if current_restored && ptes_restored && charges_restored {
+                return Err(if current_restored && ptes_restored {
                     err.into()
                 } else {
                     AxError::BadState
@@ -643,7 +628,6 @@ impl AddrSpace {
             .backend()
             .accounted_bytes(area.flags(), additional_size);
         let commit = self.prepare_commit_delta(0, added_commit)?;
-        let _rss = RssAccountingGuard::enter(&self.rss);
         self.areas
             .extend_area(addr, additional_size, &mut self.pt)?;
         self.vm_stat.on_map((additional_size / PAGE_SIZE_4K) as u64);
@@ -667,7 +651,11 @@ impl AddrSpace {
         let pages =
             PageIter4K::new(start.align_down_4k(), end_align_up).ok_or(AxError::InvalidInput)?;
         for vaddr in pages {
-            let (mut paddr, ..) = self.pt.query(vaddr).map_err(|_| AxError::BadAddress)?;
+            let (mut paddr, ..) = self
+                .pt
+                .table
+                .query(vaddr)
+                .map_err(|_| AxError::BadAddress)?;
 
             let mut copy_size = (size - cnt).min(PAGE_SIZE_4K);
 
@@ -736,7 +724,6 @@ impl AddrSpace {
         let commit = self.prepare_protect_commit_delta(start, size, flags)?;
         let touched_memfds =
             crate::syscall::memfd_collect_metas_touching_mprotect_range(self, start, size);
-        let _rss = RssAccountingGuard::enter(&self.rss);
         self.areas.protect_with_reported_flags(
             start,
             size,
@@ -751,7 +738,6 @@ impl AddrSpace {
 
     /// Removes all mappings in the address space.
     pub fn clear(&mut self) -> AxResult {
-        let _rss = RssAccountingGuard::enter(&self.rss);
         self.areas.clear(&mut self.pt)?;
         crate::syscall::memfd_release_all_shared_writable_counts_for_aspace(self);
         self.vm_stat.on_clear();
@@ -854,8 +840,8 @@ impl AddrSpace {
                 range,
                 flags,
                 access_flags,
-                Some(&self.rss),
-                &mut self.pt.cursor(),
+                Some(&self.pt.accounting),
+                &mut self.pt.table.cursor(),
             )
         })
     }
@@ -878,25 +864,26 @@ impl AddrSpace {
         // is being populated. The new lock is not published yet, so this is a
         // structured source -> cloned-address-space nesting.
         let mut guard = new_aspace.lock_nested(CLONED_ADDR_SPACE_LOCK_SUBCLASS);
-        let parent_acct = &self.rss;
-
         let parent_ptes = self.snapshot_cow_parent_ptes()?;
-        let mut self_modify = self.pt.cursor();
+        let mut self_modify = self.pt.table.cursor();
         let clone_result = (|| -> AxResult {
             for area in self.areas.iter() {
                 let new_backend = {
                     let child = guard.deref_mut();
-                    area.backend().clone_map(
+                    let AddressSpacePageTable { table, accounting } = &mut child.pt;
+                    let mut child_cursor = table.cursor();
+                    let backend = area.backend().clone_map(
                         area.va_range(),
                         area.flags(),
                         &mut self_modify,
-                        &mut child.pt.cursor(),
+                        &mut child_cursor,
                         &new_aspace_clone,
                         CloneMapAccounting {
-                            parent: Some(parent_acct),
-                            child: Some(&child.rss),
+                            child: Some(accounting),
                         },
-                    )?
+                    )?;
+                    drop(child_cursor);
+                    backend
                 };
 
                 let new_area = MemoryArea::new_with_reported_flags(
@@ -915,34 +902,24 @@ impl AddrSpace {
                         BackendOps::unmap(
                             &rollback_backend,
                             range,
-                            Some(&child.rss),
-                            &mut child.pt.cursor(),
+                            Some(&child.pt.accounting),
+                            &mut child.pt.table.cursor(),
                         )?;
                         return Err(error.into());
                     }
                 } else {
                     let child = guard.deref_mut();
-                    let _rss = RssAccountingGuard::enter(&child.rss);
                     child.areas.map(new_area, &mut child.pt, false)?;
                 }
                 crate::syscall::memfd_on_after_map(&guard, start);
             }
-
-            let child = guard.deref_mut();
-            let child_cursor = child.pt.cursor();
-            MemoryAccounting::reconcile_fork_charges_from_parent(&child.rss, parent_acct, |vaddr| {
-                match child_cursor.query(vaddr) {
-                    Ok(_) => Ok(true),
-                    Err(ax_runtime::hal::paging::PagingError::NotMapped) => Ok(false),
-                    Err(_) => Err(AxError::BadAddress),
-                }
-            })
+            Ok(())
         })();
         drop(self_modify);
         if let Err(error) = clone_result {
             let mut restored = true;
             for &(vaddr, flags) in &parent_ptes {
-                restored &= self.pt.cursor().protect(vaddr, flags).is_ok();
+                restored &= self.pt.table.cursor().protect(vaddr, flags).is_ok();
             }
             return Err(if restored { error } else { AxError::BadState });
         }
@@ -977,7 +954,7 @@ impl AddrSpace {
             .filter(|area| matches!(area.backend(), Backend::Cow(_)))
         {
             for vaddr in pages_in(area.va_range(), area.backend().page_size())? {
-                match self.pt.query(vaddr) {
+                match self.pt.table.query(vaddr) {
                     Ok((_, flags, _)) => snapshot.push((vaddr, flags)),
                     Err(ax_runtime::hal::paging::PagingError::NotMapped) => {}
                     Err(error) => return Err(error.into()),
@@ -1056,7 +1033,7 @@ impl fmt::Debug for AddrSpace {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("AddrSpace")
             .field("va_range", &self.va_range)
-            .field("page_table_root", &self.pt.root_paddr())
+            .field("page_table_root", &self.pt.table.root_paddr())
             .field("areas", &self.areas)
             .field("process_slots", &self.process_slots.load(Ordering::Relaxed))
             .finish()

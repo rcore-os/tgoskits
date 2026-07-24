@@ -82,7 +82,7 @@ where
                 let entries = self.as_slice_mut();
                 let pte_ref = &mut entries[index];
                 if pte_ref.valid() {
-                    return Err(PagingError::mapping_conflict(vaddr, paddr));
+                    return Err(PagingError::AlreadyMapped);
                 }
                 let mut pte_config = config.pte_template;
                 pte_config.paddr = paddr;
@@ -105,7 +105,7 @@ where
                 let entries = self.as_slice_mut();
                 let pte_ref = &mut entries[index];
                 if pte_ref.valid() {
-                    return Err(PagingError::mapping_conflict(vaddr, paddr));
+                    return Err(PagingError::AlreadyMapped);
                 }
 
                 let mut pte_config = config.pte_template;
@@ -131,9 +131,9 @@ where
 
             let child_frame = if current_config.valid {
                 if current_config.huge {
-                    return Err(PagingError::hierarchy_error(
-                        "Cannot create page table under huge page",
-                    ));
+                    return Err(PagingError::HierarchyError {
+                        details: "Cannot create page table under huge page",
+                    });
                 }
 
                 Frame::from_paddr(current_config.paddr, allocator)

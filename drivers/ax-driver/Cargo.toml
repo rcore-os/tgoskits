@@ -24,7 +24,7 @@ vsock = ["dep:ax-errno", "dep:rdif-vsock"]
 rtc = []
 pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 
-virtio-core = ["dep:virtio-drivers", "virtio-drivers/alloc"]
+virtio-core = ["dep:ax-kspin", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
 virtio-blk = ["block", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-net = ["net", "virtio", "pci", "dep:ax-kernel-guard"]

@@ -1,6 +1,10 @@
+use alloc::vec::Vec;
 use core::{alloc::Layout, marker::PhantomData, num::NonZeroUsize, ptr::NonNull};
 
-use dma_api::{DmaAddr, DmaAllocHandle, DmaDirection, DmaMapHandle};
+use ax_kspin::SpinNoIrq;
+#[cfg(test)]
+use dma_api::DmaAddr;
+use dma_api::{DmaAllocHandle, DmaDirection, DmaMapHandle};
 #[cfg(feature = "virtio-net")]
 use virtio_drivers::Error as VirtIoError;
 use virtio_drivers::{
@@ -25,6 +29,94 @@ pub struct VirtIoHalImpl(PhantomData<()>);
 
 const VIRTIO_DMA_MASK: u64 = u64::MAX;
 const VIRTIO_DMA_ALIGN: usize = 0x1000;
+
+struct DmaAllocationRecord {
+    handle: DmaAllocHandle,
+}
+
+// SAFETY: the token is never dereferenced through the registry. The VirtIO
+// contract permits allocation and release callbacks on different CPUs, and
+// removal transfers the unique token to the DMA backend before use.
+unsafe impl Send for DmaAllocationRecord {}
+
+struct DmaMappingRecord {
+    handle: DmaMapHandle,
+    direction: DmaDirection,
+}
+
+// SAFETY: the mapped buffer remains owned by VirtIO until `unshare`. The
+// registry only transfers its unique DMA token between callbacks and never
+// dereferences the stored CPU or bounce pointer.
+unsafe impl Send for DmaMappingRecord {}
+
+struct VirtIoDmaState {
+    allocations: Vec<DmaAllocationRecord>,
+    mappings: Vec<DmaMappingRecord>,
+}
+
+impl VirtIoDmaState {
+    const fn new() -> Self {
+        Self {
+            allocations: Vec::new(),
+            mappings: Vec::new(),
+        }
+    }
+
+    fn record_allocation(&mut self, handle: DmaAllocHandle) -> Result<(), DmaAllocHandle> {
+        if self.allocations.try_reserve(1).is_err() {
+            return Err(handle);
+        }
+        self.allocations.push(DmaAllocationRecord { handle });
+        Ok(())
+    }
+
+    fn take_allocation(
+        &mut self,
+        cpu_addr: NonNull<u8>,
+        dma_addr: u64,
+        layout: Layout,
+    ) -> Option<DmaAllocHandle> {
+        let index = self.allocations.iter().position(|record| {
+            record.handle.as_ptr() == cpu_addr
+                && record.handle.dma_addr().as_u64() == dma_addr
+                && record.handle.layout() == layout
+        })?;
+        Some(self.allocations.swap_remove(index).handle)
+    }
+
+    fn record_mapping(
+        &mut self,
+        handle: DmaMapHandle,
+        direction: DmaDirection,
+    ) -> Result<(), DmaMapHandle> {
+        if self.mappings.try_reserve(1).is_err() {
+            return Err(handle);
+        }
+        self.mappings.push(DmaMappingRecord { handle, direction });
+        Ok(())
+    }
+
+    fn take_mapping(
+        &mut self,
+        cpu_addr: NonNull<u8>,
+        dma_addr: u64,
+        layout: Layout,
+        direction: DmaDirection,
+    ) -> Option<DmaMapHandle> {
+        let index = self.mappings.iter().position(|record| {
+            record.handle.as_ptr() == cpu_addr
+                && record.handle.dma_addr().as_u64() == dma_addr
+                && record.handle.layout() == layout
+                && record.direction == direction
+        })?;
+        Some(self.mappings.swap_remove(index).handle)
+    }
+}
+
+// The lock protects token ownership only. DMA backend calls occur after the
+// token has been inserted or removed, so this lock never nests with a backend
+// allocator, IOMMU, or cache-maintenance lock.
+static VIRTIO_DMA_STATE: SpinNoIrq<VirtIoDmaState> = SpinNoIrq::new(VirtIoDmaState::new());
 
 fn virtio_direction(direction: BufferDirection) -> DmaDirection {
     match direction {
@@ -66,9 +158,10 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
         }
         let dma_addr = handle.dma_addr().as_u64() as VirtIoPhysAddr;
         let cpu_addr = handle.as_ptr();
-        // The VirtIO Hal ABI owns this allocation until `dma_dealloc` and
-        // returns only its addresses. The move-only handle has no Drop action;
-        // that callback reconstructs and consumes the same backend fields.
+        if let Err(handle) = VIRTIO_DMA_STATE.lock().record_allocation(handle) {
+            unsafe { device.dealloc_coherent(handle) };
+            return (0, NonNull::dangling());
+        }
         (dma_addr, cpu_addr)
     }
 
@@ -79,9 +172,12 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
         let Some(layout) = page_layout(pages) else {
             return -1;
         };
-        // SAFETY: VirtIO supplies the unchanged addresses and page count from
-        // `dma_alloc`; the all-address mask selects backend token zero.
-        let handle = unsafe { DmaAllocHandle::new(vaddr, DmaAddr::from(paddr), layout) };
+        let Some(handle) = VIRTIO_DMA_STATE
+            .lock()
+            .take_allocation(vaddr, paddr, layout)
+        else {
+            return -1;
+        };
         unsafe { axklib::dma::device_with_mask(VIRTIO_DMA_MASK).dealloc_coherent(handle) };
         0
     }
@@ -119,7 +215,12 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
             direction,
         );
         let dma_addr = handle.dma_addr().as_u64() as VirtIoPhysAddr;
-        debug_assert!(handle.bounce_ptr().is_none());
+        if let Err(handle) = VIRTIO_DMA_STATE.lock().record_mapping(handle, direction) {
+            unsafe {
+                axklib::dma::device_with_mask(VIRTIO_DMA_MASK).unmap_streaming(handle);
+            }
+            panic!("failed to retain VirtIO DMA mapping ownership");
+        }
         dma_addr
     }
 
@@ -134,10 +235,11 @@ unsafe impl VirtIoHal for VirtIoHalImpl {
         };
         let cpu_addr = NonNull::new(buffer.as_ptr() as *mut u8).expect("non-empty DMA buffer");
         let layout = Layout::from_size_align(size, 1).expect("valid VirtIO buffer layout");
-        // SAFETY: this reconstructs the identity mapping created by `share`;
-        // the all-address mask guarantees no bounce buffer or backend token.
-        let handle = unsafe { DmaMapHandle::new(cpu_addr, DmaAddr::from(paddr), layout, None) };
         let direction = virtio_direction(direction);
+        let handle = VIRTIO_DMA_STATE
+            .lock()
+            .take_mapping(cpu_addr, paddr, layout, direction)
+            .expect("unshare must consume a live VirtIO DMA mapping");
         let device = axklib::dma::device_with_mask(VIRTIO_DMA_MASK);
         device.sync_map_for_cpu(&handle, 0, nonzero_size.get(), direction);
         unsafe { device.unmap_streaming(handle) };
@@ -253,3 +355,51 @@ pub trait VirtIoTransport: Transport + 'static {}
 
 #[cfg(feature = "virtio-net")]
 impl<T: Transport + 'static> VirtIoTransport for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dma_state_preserves_allocation_backend_token_and_consumes_once() {
+        let cpu_addr = NonNull::new(0x1000usize as *mut u8).unwrap();
+        let layout = Layout::from_size_align(0x2000, 0x1000).unwrap();
+        let handle = unsafe {
+            DmaAllocHandle::new_with_backend_token(cpu_addr, DmaAddr::from(0x3000), layout, 7)
+        };
+        let mut state = VirtIoDmaState::new();
+        state.record_allocation(handle).unwrap();
+
+        let restored = state.take_allocation(cpu_addr, 0x3000, layout).unwrap();
+
+        assert_eq!(restored.backend_token(), 7);
+        assert!(state.take_allocation(cpu_addr, 0x3000, layout).is_none());
+    }
+
+    #[test]
+    fn dma_state_preserves_mapping_bounce_buffer_and_backend_token() {
+        let cpu_addr = NonNull::new(0x1000usize as *mut u8).unwrap();
+        let bounce_addr = NonNull::new(0x2000usize as *mut u8).unwrap();
+        let layout = Layout::from_size_align(0x1000, 1).unwrap();
+        let handle = unsafe {
+            DmaMapHandle::new_with_backend_token(
+                cpu_addr,
+                DmaAddr::from(0x4000),
+                layout,
+                Some(bounce_addr),
+                11,
+            )
+        };
+        let mut state = VirtIoDmaState::new();
+        state
+            .record_mapping(handle, DmaDirection::FromDevice)
+            .unwrap();
+
+        let restored = state
+            .take_mapping(cpu_addr, 0x4000, layout, DmaDirection::FromDevice)
+            .unwrap();
+
+        assert_eq!(restored.bounce_ptr(), Some(bounce_addr));
+        assert_eq!(restored.backend_token(), 11);
+    }
+}

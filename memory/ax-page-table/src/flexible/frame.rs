@@ -136,9 +136,9 @@ where
         if A::FRAME_SIZE == T::PAGE_SIZE {
             Ok(())
         } else {
-            Err(PagingError::invalid_size(
-                "page-table size does not match provider frame size",
-            ))
+            Err(PagingError::InvalidSize {
+                details: "page-table size does not match provider frame size",
+            })
         }
     }
 
@@ -233,7 +233,7 @@ where
         let pte = entries[index];
         let config = pte.to_config(level > 1);
         if !config.valid {
-            return Err(PagingError::not_mapped());
+            return Err(PagingError::NotMapped);
         }
 
         if config.huge || level == 1 {
@@ -245,8 +245,8 @@ where
             return child_frame.translate_recursive_with_level(vaddr, level - 1);
         }
 
-        Err(PagingError::hierarchy_error(
-            "Invalid page table level during translation",
-        ))
+        Err(PagingError::HierarchyError {
+            details: "Invalid page table level during translation",
+        })
     }
 }

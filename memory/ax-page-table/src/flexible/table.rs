@@ -108,9 +108,9 @@ impl<T: TableMeta, A: PageFrameProvider> PageTableRef<T, A> {
         if config.vaddr.as_usize().checked_add(config.size).is_none()
             || config.paddr.as_usize().checked_add(config.size).is_none()
         {
-            return Err(PagingError::address_overflow(
-                "Virtual or physical address overflow",
-            ));
+            return Err(PagingError::AddressOverflow {
+                details: "Virtual or physical address overflow",
+            });
         }
         self.validate_address_width(config.vaddr, config.size, "map")?;
 
@@ -138,9 +138,9 @@ impl<T: TableMeta, A: PageFrameProvider> PageTableRef<T, A> {
         let end_vaddr: VirtAddr = match start_vaddr.as_usize().checked_add(size) {
             Some(end) => VirtAddr::from_usize(end),
             None => {
-                return Err(PagingError::address_overflow(
-                    "Virtual address overflow in unmap",
-                ));
+                return Err(PagingError::AddressOverflow {
+                    details: "Virtual address overflow in unmap",
+                });
             }
         };
         self.validate_address_width(start_vaddr, size, "unmap")?;
@@ -162,9 +162,9 @@ impl<T: TableMeta, A: PageFrameProvider> PageTableRef<T, A> {
         let end_vaddr = match config.start_vaddr.as_usize().checked_add(config.size) {
             Some(end) => VirtAddr::from_usize(end),
             None => {
-                return Err(PagingError::address_overflow(
-                    "Virtual address overflow in unmap_with_config",
-                ));
+                return Err(PagingError::AddressOverflow {
+                    details: "Virtual address overflow in unmap_with_config",
+                });
             }
         };
         self.validate_address_width(config.start_vaddr, config.size, "unmap_with_config")?;
@@ -181,19 +181,17 @@ impl<T: TableMeta, A: PageFrameProvider> PageTableRef<T, A> {
 
     fn validate_unmap_params(&self, start_vaddr: VirtAddr, size: usize) -> PagingResult<()> {
         if size == 0 {
-            return Err(PagingError::invalid_size("Size cannot be zero in unmap"));
+            return Err(PagingError::InvalidSize {
+                details: "Size cannot be zero in unmap",
+            });
         }
 
         if !start_vaddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
-            return Err(PagingError::alignment_error(
-                "Start virtual address not page aligned in unmap",
-            ));
+            return Err(PagingError::NotAligned);
         }
 
         if !size.is_multiple_of(T::PAGE_SIZE) {
-            return Err(PagingError::alignment_error(
-                "Size not page aligned in unmap",
-            ));
+            return Err(PagingError::NotAligned);
         }
 
         Ok(())
@@ -227,19 +225,17 @@ impl<T: TableMeta, A: PageFrameProvider> PageTableRef<T, A> {
 
     fn validate_map_config(&self, config: &MapConfig) -> PagingResult {
         if config.size == 0 {
-            return Err(PagingError::invalid_size("Size cannot be zero"));
+            return Err(PagingError::InvalidSize {
+                details: "Size cannot be zero",
+            });
         }
 
         if !config.vaddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
-            return Err(PagingError::alignment_error(
-                "Virtual address not page aligned",
-            ));
+            return Err(PagingError::NotAligned);
         }
 
         if !config.paddr.as_usize().is_multiple_of(T::PAGE_SIZE) {
-            return Err(PagingError::alignment_error(
-                "Physical address not page aligned",
-            ));
+            return Err(PagingError::NotAligned);
         }
 
         Ok(())
@@ -255,13 +251,13 @@ impl<T: TableMeta, A: PageFrameProvider> PageTableRef<T, A> {
             return Ok(());
         }
         let Some(end) = start_vaddr.as_usize().checked_add(size) else {
-            return Err(PagingError::address_overflow(
-                "Virtual address range overflow",
-            ));
+            return Err(PagingError::AddressOverflow {
+                details: "Virtual address range overflow",
+            });
         };
         let last = end.saturating_sub(1);
         if !Self::is_addr_in_width(start_vaddr.as_usize()) || !Self::is_addr_in_width(last) {
-            return Err(PagingError::address_overflow(operation));
+            return Err(PagingError::AddressOverflow { details: operation });
         }
         Ok(())
     }
@@ -323,7 +319,9 @@ impl<T: TableMeta, A: PageFrameProvider> PageTableRef<T, A> {
     /// Translates a virtual address and returns the matched PTE level.
     pub fn translate_with_level(&self, vaddr: VirtAddr) -> PagingResult<(PhysAddr, T::P, usize)> {
         if T::STRICT_ADDRESS_WIDTH && !Self::is_addr_in_width(vaddr.as_usize()) {
-            return Err(PagingError::address_overflow("translate"));
+            return Err(PagingError::AddressOverflow {
+                details: "translate",
+            });
         }
 
         let (pte, level) = self

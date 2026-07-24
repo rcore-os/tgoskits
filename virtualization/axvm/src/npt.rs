@@ -463,11 +463,8 @@ pub(crate) fn map_new_error(err: ptg::PagingError) -> AxVmError {
 
 pub(crate) fn map_error(err: ptg::PagingError) -> MappingError {
     match err {
-        ptg::PagingError::AlreadyMapped | ptg::PagingError::MappingConflict { .. } => {
-            MappingError::AlreadyExists
-        }
+        ptg::PagingError::AlreadyMapped => MappingError::AlreadyExists,
         ptg::PagingError::NotAligned
-        | ptg::PagingError::AlignmentError { .. }
         | ptg::PagingError::AddressOverflow { .. }
         | ptg::PagingError::InvalidSize { .. }
         | ptg::PagingError::InvalidRange { .. } => MappingError::InvalidParam,

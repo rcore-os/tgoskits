@@ -59,7 +59,7 @@ sg2002-cvi-usb-camera = [
 smp = ["ax-std/smp"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
-axtest = []
+axtest = ["starry-mm/axtest"]
 
 [dependencies]
 ax-alloc.workspace = true

@@ -195,7 +195,8 @@ fn reserve_arch_early_ranges() {
             range.end - range.start,
             MemoryType::Reserved,
             page_size(),
-        );
+        )
+        .expect("architecture early-memory range must be valid and aligned");
         match add_memory_descriptor(desc) {
             Ok(()) => {}
             Err(MemoryRangeError::Conflict { existing, .. })

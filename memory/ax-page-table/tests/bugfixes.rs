@@ -291,7 +291,7 @@ fn test_address_overflow_handling() {
         // 可能是AddressOverflow或AlignmentError
         assert!(
             matches!(e, PagingError::AddressOverflow { .. })
-                || matches!(e, PagingError::AlignmentError { .. }),
+                || matches!(e, PagingError::NotAligned),
             "应该返回AddressOverflow或AlignmentError错误，实际: {:?}",
             e
         );

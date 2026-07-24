@@ -59,8 +59,12 @@ pub trait PageFrameProvider: Clone + Sync + Send + 'static {
     fn dealloc_frame(&self, paddr: PhysAddr);
 
     /// Allocates contiguous frames with the requested byte alignment.
-    fn alloc_frames(&self, count: usize, _align: usize) -> Option<PhysAddr> {
-        (count == 1).then(|| self.alloc_frame()).flatten()
+    fn alloc_frames(&self, count: usize, align: usize) -> Option<PhysAddr> {
+        if count == 1 && align.is_power_of_two() && align <= Self::FRAME_SIZE {
+            self.alloc_frame()
+        } else {
+            None
+        }
     }
 
     /// Returns a frame range previously allocated by this provider.
@@ -114,16 +118,6 @@ pub enum PagingError {
     AlreadyMapped,
     #[error("mapping resolves through a huge-page entry")]
     MappedToHugePage,
-    #[error("address alignment error: {details}")]
-    AlignmentError { details: &'static str },
-    #[error(
-        "Mapping conflict: virtual address {vaddr:#x} already mapped to physical address \
-         {existing_paddr:#x}"
-    )]
-    MappingConflict {
-        vaddr: VirtAddr,
-        existing_paddr: PhysAddr,
-    },
     #[error("address overflow detected: {details}")]
     AddressOverflow { details: &'static str },
     #[error("invalid mapping size: {details}")]
@@ -132,39 +126,6 @@ pub enum PagingError {
     HierarchyError { details: &'static str },
     #[error("invalid address range: {details}")]
     InvalidRange { details: &'static str },
-}
-
-impl PagingError {
-    pub fn alignment_error(msg: &'static str) -> Self {
-        Self::AlignmentError { details: msg }
-    }
-
-    pub fn mapping_conflict(vaddr: VirtAddr, existing_paddr: PhysAddr) -> Self {
-        Self::MappingConflict {
-            vaddr,
-            existing_paddr,
-        }
-    }
-
-    pub fn address_overflow(msg: &'static str) -> Self {
-        Self::AddressOverflow { details: msg }
-    }
-
-    pub fn invalid_size(msg: &'static str) -> Self {
-        Self::InvalidSize { details: msg }
-    }
-
-    pub fn hierarchy_error(msg: &'static str) -> Self {
-        Self::HierarchyError { details: msg }
-    }
-
-    pub fn invalid_range(msg: &'static str) -> Self {
-        Self::InvalidRange { details: msg }
-    }
-
-    pub fn not_mapped() -> Self {
-        Self::NotMapped
-    }
 }
 
 bitflags::bitflags! {
@@ -235,4 +196,29 @@ pub struct PteConfig {
     pub is_dir: bool,
     pub huge: bool,
     pub mem_attr: MemAttributes,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone)]
+    struct SingleFrameProvider;
+
+    impl PageFrameProvider for SingleFrameProvider {
+        fn alloc_frame(&self) -> Option<PhysAddr> {
+            Some(PhysAddr::from(0x1000))
+        }
+
+        fn dealloc_frame(&self, _paddr: PhysAddr) {}
+
+        fn phys_to_virt(&self, paddr: PhysAddr) -> VirtAddr {
+            VirtAddr::from(paddr.as_usize())
+        }
+    }
+
+    #[test]
+    fn default_frame_allocation_rejects_stricter_alignment() {
+        assert_eq!(SingleFrameProvider.alloc_frames(1, PAGE_SIZE_4K * 2), None);
+    }
 }

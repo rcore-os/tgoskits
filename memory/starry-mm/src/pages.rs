@@ -58,7 +58,10 @@ impl SharedPages {
         let commit = reserve_commit(u64::try_from(size).map_err(|_| AxError::InvalidInput)?)
             .map_err(|_| AxError::NoMemory)?;
         let count = size / page_bytes;
-        let mut pages = Vec::with_capacity(count);
+        let mut pages = Vec::new();
+        pages
+            .try_reserve_exact(count)
+            .map_err(|_| AxError::NoMemory)?;
         for _ in 0..count {
             match source.alloc_page(PageInitialization::Zeroed, page_size) {
                 Ok(paddr) => pages.push(paddr),

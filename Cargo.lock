@@ -7568,13 +7568,9 @@ name = "starry-mm"
 version = "0.1.0"
 dependencies = [
  "ax-errno 0.6.1",
- "ax-kspin",
  "ax-memory-addr",
  "ax-page-table",
- "ax-percpu",
- "cpu-local",
  "log",
- "scope-local",
  "thiserror 2.0.19",
 ]
 

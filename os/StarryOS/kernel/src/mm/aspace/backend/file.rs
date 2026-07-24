@@ -118,8 +118,8 @@ impl FileBackendInner {
                 }
             }
         };
-        if unmapped {
-            aspace.rss().dec(kind, 1);
+        if unmapped && let Err(error) = aspace.rss().dec(kind, 1) {
+            warn!("file-backed RSS underflow while evicting {vaddr:?}: {error}");
         }
     }
 
@@ -308,9 +308,13 @@ impl BackendOps for FileBackend {
         let kind = self.rss_kind();
         for addr in pages_in(range, PageSize::Size4K)? {
             match pt.unmap(addr) {
-                Ok(_) => {
-                    if let Some(acct) = acct {
-                        acct.dec(kind, 1);
+                Ok((paddr, flags, page_size)) => {
+                    if let Some(acct) = acct
+                        && let Err(error) = acct.dec(kind, 1)
+                    {
+                        pt.map(addr, paddr, page_size, flags)
+                            .map_err(|_| AxError::BadState)?;
+                        return Err(error);
                     }
                 }
                 Err(PagingError::NotMapped) => {}
@@ -400,8 +404,11 @@ impl BackendOps for FileBackend {
                             PageSize::Size4K,
                             map_flags,
                         )?;
-                        if let Some(acct) = acct {
-                            acct.inc(kind, 1);
+                        if let Some(acct) = acct
+                            && let Err(error) = acct.inc(kind, 1)
+                        {
+                            pt.unmap(addr).map_err(|_| AxError::BadState)?;
+                            return Err(error);
                         }
                         pages += 1;
                         Ok(())

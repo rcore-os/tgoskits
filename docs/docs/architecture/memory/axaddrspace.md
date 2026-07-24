@@ -215,7 +215,7 @@ flowchart TB
     LaterFailure["后续区域提交失败"] --> Rollback["按相反顺序恢复 previous"]
 ```
 
-Map 使用 `MapPrecondition::Vacant` 时，`prepare()` 发现任一旧映射即返回 `MappingConflict`。Linear unmap 要求目标范围没有空洞；Alloc unmap 允许懒分配区域中存在尚未填充的页，但会拒绝在按基础页释放的路径中遇到大页。
+Map 使用 `MapPrecondition::Vacant` 时，`prepare()` 发现任一旧映射即返回 `AlreadyMapped`。Linear unmap 要求目标范围没有空洞；Alloc unmap 允许懒分配区域中存在尚未填充的页，但会拒绝在按基础页释放的路径中遇到大页。
 
 大范围空闲 Map 的 `previous` 保持为空，因此临时内存不随 4 KiB 页数增长；当前 `prepare()` 仍会按 4 KiB 查询整个空范围，时间复杂度仍与基础页数相关。不能把“消除逐页快照内存”误写为“prepare 已是常数时间”。
 

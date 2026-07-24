@@ -106,6 +106,22 @@ pub(super) fn pages_in(range: VirtAddrRange, align: PageSize) -> AxResult<DynPag
 
 pub(super) type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
 
+/// Page-table state and resident accounting committed by one address-space transaction.
+#[doc(hidden)]
+pub struct AddressSpacePageTable {
+    pub(super) table: PageTable,
+    pub(super) accounting: MemoryAccounting,
+}
+
+impl AddressSpacePageTable {
+    pub(super) fn try_new() -> AxResult<Self> {
+        Ok(Self {
+            table: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
+            accounting: MemoryAccounting::new(),
+        })
+    }
+}
+
 #[enum_dispatch]
 pub trait BackendOps {
     /// Returns the page size of the backend.
@@ -276,14 +292,14 @@ pub struct BackendTransaction {
 impl MappingBackend for Backend {
     type Addr = VirtAddr;
     type Flags = MappingFlags;
-    type PageTable = PageTable;
+    type PageTable = AddressSpacePageTable;
     type MappingPlan = BackendTransaction;
     type CommitState = BackendTransaction;
 
     fn prepare(
         &self,
         operation: MappingOperation<VirtAddr, MappingFlags>,
-        pt: &mut PageTable,
+        pt: &mut AddressSpacePageTable,
     ) -> MappingResult<Self::MappingPlan> {
         self.validate_operation(operation)?;
         let (start, size) = operation.range();
@@ -292,78 +308,76 @@ impl MappingBackend for Backend {
         let page_size = self.page_size();
         let mut previous = Vec::new();
         let mut contains_unmapped = false;
-        starry_mm::with_rss_accounting(|acct| {
-            let pages = pages_in(range, page_size).map_err(map_ax_error)?;
-            for vaddr in pages {
-                match pt.cursor().query(vaddr) {
-                    Ok((paddr, flags, actual_size)) if actual_size == page_size => {
-                        if matches!(
-                            operation,
-                            MappingOperation::Map {
-                                precondition: MapPrecondition::Vacant,
-                                ..
-                            }
-                        ) {
-                            self.release_holds(&previous);
-                            return Err(MappingError::AlreadyExists);
+        let pages = pages_in(range, page_size).map_err(map_ax_error)?;
+        for vaddr in pages {
+            match pt.table.cursor().query(vaddr) {
+                Ok((paddr, flags, actual_size)) if actual_size == page_size => {
+                    if matches!(
+                        operation,
+                        MappingOperation::Map {
+                            precondition: MapPrecondition::Vacant,
+                            ..
                         }
-                        if !matches!(operation, MappingOperation::Map { .. })
-                            && previous.try_reserve(1).is_err()
-                        {
-                            self.release_holds(&previous);
-                            return Err(MappingError::NoMemory);
-                        }
-                        let cow_hold = matches!(operation, MappingOperation::Unmap { .. })
-                            && matches!(self, Self::Cow(_));
-                        if cow_hold && let Err(error) = cow::retain_frame_for_transaction(paddr) {
-                            self.release_holds(&previous);
-                            return Err(map_ax_error(error));
-                        }
-                        if !matches!(operation, MappingOperation::Map { .. }) {
-                            previous.push(SavedMapping {
-                                vaddr,
-                                paddr,
-                                flags,
-                                page_size: actual_size,
-                                rss_kind: self.rss_kind_before_unmap(vaddr, acct),
-                                cow_hold,
-                            });
-                        }
-                    }
-                    Ok(_) => {
+                    ) {
                         self.release_holds(&previous);
-                        return Err(MappingError::BadState);
+                        return Err(MappingError::AlreadyExists);
                     }
-                    Err(PagingError::NotMapped) => contains_unmapped = true,
-                    Err(_) => {
+                    if !matches!(operation, MappingOperation::Map { .. })
+                        && previous.try_reserve(1).is_err()
+                    {
                         self.release_holds(&previous);
-                        return Err(MappingError::BadState);
+                        return Err(MappingError::NoMemory);
+                    }
+                    let cow_hold = matches!(operation, MappingOperation::Unmap { .. })
+                        && matches!(self, Self::Cow(_));
+                    if cow_hold && let Err(error) = cow::retain_frame_for_transaction(paddr) {
+                        self.release_holds(&previous);
+                        return Err(map_ax_error(error));
+                    }
+                    if !matches!(operation, MappingOperation::Map { .. }) {
+                        previous.push(SavedMapping {
+                            vaddr,
+                            paddr,
+                            flags,
+                            page_size: actual_size,
+                            rss_kind: self.rss_kind_before_unmap(paddr),
+                            cow_hold,
+                        });
                     }
                 }
+                Ok(_) => {
+                    self.release_holds(&previous);
+                    return Err(MappingError::BadState);
+                }
+                Err(PagingError::NotMapped) => contains_unmapped = true,
+                Err(_) => {
+                    self.release_holds(&previous);
+                    return Err(MappingError::BadState);
+                }
             }
+        }
 
-            if matches!(self, Self::Linear { .. })
-                && matches!(operation, MappingOperation::Unmap { .. })
-                && contains_unmapped
-            {
-                self.release_holds(&previous);
-                return Err(MappingError::BadState);
-            }
-            Ok(BackendTransaction {
-                operation,
-                previous,
-            })
+        if matches!(self, Self::Linear { .. })
+            && matches!(operation, MappingOperation::Unmap { .. })
+            && contains_unmapped
+        {
+            self.release_holds(&previous);
+            return Err(MappingError::BadState);
+        }
+        Ok(BackendTransaction {
+            operation,
+            previous,
         })
     }
 
-    fn abort(&self, plan: Self::MappingPlan, _pt: &mut PageTable) {
+    fn abort(&self, plan: Self::MappingPlan, _pt: &mut AddressSpacePageTable) {
         self.release_holds(&plan.previous);
     }
 
     fn commit(
         &self,
         plan: Self::MappingPlan,
-        pt: &mut PageTable,
+        pt: &mut AddressSpacePageTable,
     ) -> MappingResult<Self::CommitState> {
         match self.apply(plan.operation, pt) {
             Ok(()) => Ok(plan),
@@ -386,7 +400,7 @@ impl MappingBackend for Backend {
         })
     }
 
-    fn finalize(&self, state: Self::CommitState, _pt: &mut PageTable) {
+    fn finalize(&self, state: Self::CommitState, _pt: &mut AddressSpacePageTable) {
         self.release_holds(&state.previous);
     }
 
@@ -417,14 +431,9 @@ impl Backend {
         Ok(())
     }
 
-    fn rss_kind_before_unmap(
-        &self,
-        vaddr: VirtAddr,
-        acct: Option<&MemoryAccounting>,
-    ) -> Option<RssKind> {
-        let acct = acct?;
+    fn rss_kind_before_unmap(&self, paddr: PhysAddr) -> Option<RssKind> {
         match self {
-            Self::Cow(_) => acct.charge_kind(vaddr),
+            Self::Cow(_) => cow::frame_kind(paddr),
             Self::Shared(_) => Some(RssKind::Shmem),
             Self::File(file) => Some(file.rss_kind()),
             Self::Linear(_) => None,
@@ -437,94 +446,90 @@ impl Backend {
         }
     }
 
-    fn restore(&self, state: BackendTransaction, pt: &mut PageTable) -> AxResult {
-        starry_mm::with_rss_accounting(|acct| {
-            match state.operation {
-                MappingOperation::Map { start, size, .. } => {
-                    let range = VirtAddrRange::from_start_size(start, size);
-                    BackendOps::unmap(self, range, acct, &mut pt.cursor())?;
-                }
-                MappingOperation::Unmap { .. } => {
-                    for saved in state.previous {
-                        let current = {
-                            let cursor = pt.cursor();
-                            cursor.query(saved.vaddr)
-                        };
-                        match current {
-                            Ok((paddr, flags, page_size))
-                                if paddr == saved.paddr
-                                    && flags == saved.flags
-                                    && page_size == saved.page_size =>
-                            {
-                                if saved.cow_hold {
-                                    cow::release_transaction_frame(saved.paddr, saved.page_size);
-                                }
+    fn restore(&self, state: BackendTransaction, pt: &mut AddressSpacePageTable) -> AxResult {
+        match state.operation {
+            MappingOperation::Map { start, size, .. } => {
+                let range = VirtAddrRange::from_start_size(start, size);
+                BackendOps::unmap(self, range, Some(&pt.accounting), &mut pt.table.cursor())?;
+            }
+            MappingOperation::Unmap { .. } => {
+                for saved in state.previous {
+                    let current = {
+                        let cursor = pt.table.cursor();
+                        cursor.query(saved.vaddr)
+                    };
+                    match current {
+                        Ok((paddr, flags, page_size))
+                            if paddr == saved.paddr
+                                && flags == saved.flags
+                                && page_size == saved.page_size =>
+                        {
+                            if saved.cow_hold {
+                                cow::release_transaction_frame(saved.paddr, saved.page_size);
                             }
-                            Err(PagingError::NotMapped) => {
-                                pt.cursor().map(
-                                    saved.vaddr,
-                                    saved.paddr,
-                                    saved.page_size,
-                                    saved.flags,
-                                )?;
-                                if let (Some(acct), Some(kind)) = (acct, saved.rss_kind) {
-                                    if matches!(self, Self::Cow(_)) {
-                                        acct.record_charge(saved.vaddr, kind)?;
-                                    } else {
-                                        acct.inc(kind, 1);
-                                    }
-                                }
-                                // A retained COW reference now belongs to the
-                                // restored mapping and must not be released.
-                            }
-                            _ => return Err(AxError::BadState),
                         }
-                    }
-                }
-                MappingOperation::Protect { .. } => {
-                    for saved in state.previous {
-                        let restored = {
-                            let mut cursor = pt.cursor();
-                            cursor.protect(saved.vaddr, saved.flags)
-                        };
-                        match restored {
-                            Ok(page_size) if page_size == saved.page_size => {}
-                            Err(PagingError::NotMapped) => {
-                                pt.cursor().map(
-                                    saved.vaddr,
-                                    saved.paddr,
-                                    saved.page_size,
-                                    saved.flags,
-                                )?;
+                        Err(PagingError::NotMapped) => {
+                            pt.table.cursor().map(
+                                saved.vaddr,
+                                saved.paddr,
+                                saved.page_size,
+                                saved.flags,
+                            )?;
+                            if let Some(kind) = saved.rss_kind {
+                                pt.accounting.inc(kind, 1)?;
                             }
-                            _ => return Err(AxError::BadState),
+                            // A retained COW reference now belongs to the
+                            // restored mapping and must not be released.
                         }
+                        _ => return Err(AxError::BadState),
                     }
                 }
             }
-            Ok(())
-        })
+            MappingOperation::Protect { .. } => {
+                for saved in state.previous {
+                    let restored = {
+                        let mut cursor = pt.table.cursor();
+                        cursor.protect(saved.vaddr, saved.flags)
+                    };
+                    match restored {
+                        Ok(page_size) if page_size == saved.page_size => {}
+                        Err(PagingError::NotMapped) => {
+                            pt.table.cursor().map(
+                                saved.vaddr,
+                                saved.paddr,
+                                saved.page_size,
+                                saved.flags,
+                            )?;
+                        }
+                        _ => return Err(AxError::BadState),
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn apply(
         &self,
         operation: MappingOperation<VirtAddr, MappingFlags>,
-        pt: &mut PageTable,
+        pt: &mut AddressSpacePageTable,
     ) -> AxResult {
         match operation {
             MappingOperation::Map {
                 start, size, flags, ..
             } => {
                 let range = VirtAddrRange::from_start_size(start, size);
-                starry_mm::with_rss_accounting(|acct| {
-                    BackendOps::map(self, range, flags, acct, &mut pt.cursor())
-                })
+                BackendOps::map(
+                    self,
+                    range,
+                    flags,
+                    Some(&pt.accounting),
+                    &mut pt.table.cursor(),
+                )
             }
             MappingOperation::Unmap { start, size, .. } => {
                 let range = VirtAddrRange::from_start_size(start, size);
-                starry_mm::with_rss_accounting(|acct| {
-                    BackendOps::unmap(self, range, acct, &mut pt.cursor())
-                })
+                BackendOps::unmap(self, range, Some(&pt.accounting), &mut pt.table.cursor())
             }
             MappingOperation::Protect {
                 start,
@@ -533,7 +538,7 @@ impl Backend {
                 ..
             } => {
                 let range = VirtAddrRange::from_start_size(start, size);
-                let mut cursor = pt.cursor();
+                let mut cursor = pt.table.cursor();
                 BackendOps::on_protect(self, range, new_flags, &mut cursor)?;
                 let pte_flags = match self {
                     Backend::Cow(c) => c.pte_flags_for_protect(new_flags),

@@ -228,12 +228,12 @@ Starry backend 的 `commit()` 允许具体 backend 返回 `AxError`，但在向 
 
 | 阶段 | 常驻内存集大小/写时复制行为 |
 | --- | --- |
-| map 成功 | backend 在页表项成功后记录 resident charge |
+| map 成功 | backend 在页表项成功后按唯一页面分类增加汇总计数 |
 | unmap prepare | 保存常驻内存集大小 kind，写时复制 frame 增加 hold |
-| transaction rollback | 恢复页表项与 charge，转移或释放 hold |
+| transaction rollback | 恢复页表项与汇总计数，转移或释放 hold |
 | transaction finalize | 释放只用于 undo 的 hold，完成旧 owner 回收 |
 
-`RssAccountingGuard` 通过当前执行 scope 把 owning `MemoryAccounting` 暴露给通用 backend bridge。它依赖 AddrSpace lock 的外部一致性条件，不是跨线程全局常驻内存集大小 registry。
+Starry 的 `AddressSpacePageTable` 同时持有页表和 `MemoryAccounting`。backend transaction 从该显式对象取得两者，避免通过 scope-local 原始指针传递隐藏依赖，同时不修改 ArceOS 和 Axvisor 的通用 `MappingBackend` 接口。
 
 ## 8. 源码入口
 

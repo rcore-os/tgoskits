@@ -53,8 +53,12 @@ impl BackendOps for SharedBackend {
         {
             let newly_mapped = pt.query(vaddr).is_err();
             pt.map(vaddr, *paddr, self.pages.page_size(), flags)?;
-            if newly_mapped && let Some(acct) = acct {
-                acct.inc(RssKind::Shmem, 1);
+            if newly_mapped
+                && let Some(acct) = acct
+                && let Err(error) = acct.inc(RssKind::Shmem, 1)
+            {
+                pt.unmap(vaddr).map_err(|_| ax_errno::AxError::BadState)?;
+                return Err(error);
             }
         }
         Ok(())
@@ -69,10 +73,14 @@ impl BackendOps for SharedBackend {
         debug!("Shared::unmap: {:?}", range);
         for vaddr in pages_in(range, self.pages.page_size())? {
             match pt.unmap(vaddr) {
-                Ok((_, _, page_size)) => {
+                Ok((paddr, flags, page_size)) => {
                     debug_assert_eq!(page_size, self.pages.page_size());
-                    if let Some(acct) = acct {
-                        acct.dec(RssKind::Shmem, 1);
+                    if let Some(acct) = acct
+                        && let Err(error) = acct.dec(RssKind::Shmem, 1)
+                    {
+                        pt.map(vaddr, paddr, page_size, flags)
+                            .map_err(|_| ax_errno::AxError::BadState)?;
+                        return Err(error);
                     }
                 }
                 Err(PagingError::NotMapped) => {}

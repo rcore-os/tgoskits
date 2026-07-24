@@ -350,7 +350,12 @@ impl<B: MappingBackend> MemorySet<B> {
         insert.push(grown);
         let metadata = MetadataPlan { remove, insert };
 
-        self.execute_with_metadata(metadata, alloc::vec![(backend, operation)], page_table)
+        let mut operations = Vec::new();
+        operations
+            .try_reserve_exact(1)
+            .map_err(|_| MappingError::NoMemory)?;
+        operations.push((backend, operation));
+        self.execute_with_metadata(metadata, operations, page_table)
     }
 
     /// Add a new memory mapping.

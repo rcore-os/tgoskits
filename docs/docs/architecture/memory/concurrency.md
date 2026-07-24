@@ -40,8 +40,8 @@ sidebar_label: "锁与并发"
 | `SpinNoIrq<AddrSpace>` | `axmm/src/lib.rs` | ArceOS 内核地址空间 | 不在锁内执行可睡眠 I/O |
 | `Mutex<AddrSpace>` | Starry `kernel/src/mm/aspace` | 单个进程地址空间、虚拟内存区域与页表事务 | fault、map、clone 通过同一 owner 串行化 |
 | `SpinNoIrq<Machine<...>>` | `axvm/src/vm/mod.rs` | AxVM 生命周期资源、`axaddrspace` 与嵌套页表 | map、fault、客户机访问和 clear 均在同一虚拟机 owner 下执行 |
-| `SpinNoPreempt<BTreeMap<...>>` | `starry-mm/src/accounting.rs` | 单地址空间 RSS charge 分类 | 与计数原子共同更新时由函数内顺序维护 |
-| `SpinNoIrq<FrameTableRefCount>` | Starry COW backend | 写时复制物理帧索引 | 不在 table 锁内执行外部 I/O |
+| `AtomicU64` 汇总计数 | `starry-mm/src/accounting.rs` | 单地址空间匿名页、文件页、共享内存页和峰值 | 映射事务由地址空间锁串行化；原子只提供无锁统计快照 |
+| `SpinNoIrq<CowFrameTable>` | Starry 写时复制 backend | 写时复制物理页索引、引用计数和分类 | 不在表锁内执行外部 I/O；归还物理页前释放表锁 |
 | `AtomicU64/AtomicI64` | `starry-mm` policy/stat | commit、RSS/VSS 与峰值 | 原子顺序按 admission 或统计语义选择 |
 
 ## 2. 启动期同步
@@ -158,7 +158,7 @@ AArch64 默认失效器提供 inner-shareable 硬件广播。x86_64、RISC-V 和
 
 ## 5. StarryOS 并发
 
-StarryOS 的缺页、映射和进程克隆涉及可睡眠对象，因此以 `Arc<Mutex<AddrSpace>>` 为主要串行化边界。`starry-mm` 内的计数和 charge map 使用较小的原子或禁止抢占自旋锁，不反向获取地址空间 Mutex。
+StarryOS 的缺页、映射和进程克隆涉及可睡眠对象，因此以 `Arc<Mutex<AddrSpace>>` 为主要串行化边界。`MemoryAccounting` 只维护匿名页、文件页、共享内存页和峰值的原子汇总，不再维护按虚拟地址索引的第二套分类表。
 
 ### 5.1 地址空间与文件后端
 
@@ -168,13 +168,13 @@ StarryOS 的缺页、映射和进程克隆涉及可睡眠对象，因此以 `Arc
 
 ### 5.2 写时复制帧表
 
-全局 `FRAME_TABLE` 的 `SpinNoIrq` 保护物理地址到 per-frame 引用对象的索引；每个 `FrameRefCnt` 又有独立 `SpinNoIrq`。常规顺序是先短时查表并取得 `Arc`，释放 table 锁后再修改单个 frame 引用。
+全局 `FRAME_TABLE` 的 `SpinNoIrq<CowFrameTable>` 同时保护以物理地址数值为键的哈希表、带溢出检查的 `u32` 引用计数和常驻内存集大小分类，不再为每个物理页增加 `Arc<SpinNoIrq<_>>`。引用增加、释放和分类读取都在一次短临界区内完成；物理页释放在退出 `FRAME_TABLE` 临界区后执行。
 
-写时复制 clone 使用 preflight、commit 和 rollback。预检先验证计数不会溢出并准备所有页，提交阶段逐项增加引用并修改父子页表；任一步失败都逆序撤销已提交项。引用降到零后，必须先保证所有页表翻译已失效，才能释放物理页。
+写时复制 clone 使用 preflight、commit 和 rollback。预检先验证计数不会溢出并准备所有页，提交阶段逐项增加引用、修改父子页表并增加 child 汇总计数；任一步失败都逆序撤销已提交项。新 frame 登记前使用 `HashMap::try_reserve()`，因此内存不足返回 `AxError::NoMemory`；锁顺序固定为地址空间 Mutex、`FRAME_TABLE`、allocator，释放物理页时不持有 `FRAME_TABLE`。
 
 ### 5.3 记账与提交策略
 
-`MemoryAccounting` 用原子保存匿名页、文件页、共享内存页和峰值，用 `SpinNoPreempt<BTreeMap<VirtAddr, RssKind>>` 保存逐地址分类。改变分类时，在 charge map 临界区内确定旧值和新值，再更新对应原子，避免同一虚拟页同时属于两类。
+`MemoryAccounting` 用原子保存匿名页、文件页、共享内存页和峰值。File/Shared backend 的分类由 backend 类型确定；私有写时复制页的分类由 `CowFrameState::rss_kind` 确定。文件私有页第一次写入时，在地址空间锁内执行 checked File→Anon 汇总转换并更新 frame state；任一计数下溢都会返回 `AxError::BadState`，不会在发布构建中回绕。
 
 全局 commit admission 使用原子计数。严格模式通过原子 compare-exchange 保证“检查上限并扣费”不可被并发请求越过；Always 模式仍维护统计，但不因上限拒绝。测试锁只在 `cfg(test)` 中串行化全局测试状态，不是生产同步的一部分。
 

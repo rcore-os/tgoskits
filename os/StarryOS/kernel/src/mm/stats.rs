@@ -42,16 +42,14 @@ pub fn collect_process_mem_stats(aspace: &AddrSpace) -> ProcessMemStats {
     }
 
     let accounting = aspace.rss();
-    let total_pages = accounting.rss_total_pages();
-    accounting.sync_rss_atomics_from_charges();
-    let (charged_anon, charged_file, charged_shmem) = accounting.snapshot_resident_charges();
-    let file_only = accounting.rss_file_pages().saturating_sub(charged_file);
-    let shmem_only = accounting.rss_shmem_pages().saturating_sub(charged_shmem);
+    let (anon_pages, file_pages, shmem_pages) = accounting.snapshot_resident_pages();
     stats.finish(ResidentSnapshot {
-        total_pages,
-        anon_pages: charged_anon,
-        file_pages: charged_file.saturating_add(file_only),
-        shmem_pages: charged_shmem.saturating_add(shmem_only),
+        total_pages: anon_pages
+            .saturating_add(file_pages)
+            .saturating_add(shmem_pages),
+        anon_pages,
+        file_pages,
+        shmem_pages,
         hiwater_pages: accounting.hiwater_rss_pages(),
         peak_vss_pages: aspace.vm_stat.peak_vss_pages(),
     });

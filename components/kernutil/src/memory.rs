@@ -20,15 +20,6 @@ impl MemoryDescriptor {
         range: core::ops::Range<usize>,
         memory_type: MemoryType,
         align: usize,
-    ) -> Self {
-        Self::try_new_with_range_aligned(range, memory_type, align)
-            .expect("memory descriptor range and alignment must be valid")
-    }
-
-    pub fn try_new_with_range_aligned(
-        range: core::ops::Range<usize>,
-        memory_type: MemoryType,
-        align: usize,
     ) -> Result<Self, MemoryRangeError> {
         if range.start > range.end {
             return Err(MemoryRangeError::InvalidRange);
@@ -53,21 +44,11 @@ impl MemoryDescriptor {
         size_in_bytes: usize,
         memory_type: MemoryType,
         align: usize,
-    ) -> Self {
-        Self::try_new_aligned(physical_start, size_in_bytes, memory_type, align)
-            .expect("memory descriptor range and alignment must be valid")
-    }
-
-    pub fn try_new_aligned(
-        physical_start: usize,
-        size_in_bytes: usize,
-        memory_type: MemoryType,
-        align: usize,
     ) -> Result<Self, MemoryRangeError> {
         let end = physical_start
             .checked_add(size_in_bytes)
             .ok_or(MemoryRangeError::InvalidRange)?;
-        Self::try_new_with_range_aligned(physical_start..end, memory_type, align)
+        Self::new_with_range_aligned(physical_start..end, memory_type, align)
     }
 }
 
@@ -311,12 +292,7 @@ mod tests {
     #[test]
     fn aligned_descriptor_rejects_address_overflow() {
         assert_eq!(
-            MemoryDescriptor::try_new_aligned(
-                usize::MAX - 0xfff,
-                0x2000,
-                MemoryType::Reserved,
-                0x1000,
-            ),
+            MemoryDescriptor::new_aligned(usize::MAX - 0xfff, 0x2000, MemoryType::Reserved, 0x1000,),
             Err(MemoryRangeError::InvalidRange),
         );
     }
