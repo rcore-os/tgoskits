@@ -1,0 +1,18 @@
+# tun-tap x86_64 - /dev/net/tun carpet. x86_64 boots the ELF kernel via the
+# dynamic platform + OVMF (xtask prepares firmware automatically; no PVH note
+# needed). The probe is a static-musl binary staged into the overlay by
+# prebuild.sh; it drives the whole TUN datapath in-kernel over 127.0.0.1-style
+# local routing, so no guest network is required.
+args = [
+    "-nographic", "-m", "1024M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run-tun-tap.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 600
