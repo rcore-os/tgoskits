@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "wgpu-carpet"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "wgpu-carpet"
+path = "src/main.rs"
+
+[dependencies]
+wgpu = "22"
+pollster = "0.3"
+bytemuck = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level = 2
+debug = false
+incremental = false
+codegen-units = 16

@@ -172,6 +172,7 @@ jobs:
               - "tools/**"
               - "virtualization/**"
               - "xtask/**"
+              - "apps/starry/gpu-wgpu/**"
             base_container_publish:
               - "container/Dockerfile"
               - "rust-toolchain.toml"

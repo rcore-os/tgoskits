@@ -1,0 +1,5 @@
+target/
+wgpu_rust
+wgpu_c
+wgpu_cpp
+*.o
