@@ -123,25 +123,33 @@ impl ArchOps for Riscv64Arch {
                 reg,
                 reg_width,
                 signed_ext,
-            } => super::handle_mmio_read(
-                vm,
-                vcpu,
-                MmioReadExit {
-                    addr: riscv_guest_phys_addr_to_ax(addr),
-                    width: riscv_access_width_to_ax(width),
-                    reg,
-                    reg_width: riscv_access_width_to_ax(reg_width),
-                    signed_ext,
-                },
-            ),
-            RiscvVmExit::MmioWrite { addr, width, data } => super::handle_mmio_write::<Self>(
-                vm,
-                MmioWriteExit {
-                    addr: riscv_guest_phys_addr_to_ax(addr),
-                    width: riscv_access_width_to_ax(width),
-                    data,
-                },
-            ),
+            } => {
+                let ret = super::handle_mmio_read(
+                    vm,
+                    vcpu,
+                    MmioReadExit {
+                        addr: riscv_guest_phys_addr_to_ax(addr),
+                        width: riscv_access_width_to_ax(width),
+                        reg,
+                        reg_width: riscv_access_width_to_ax(reg_width),
+                        signed_ext,
+                    },
+                );
+                vcpu.get_arch_vcpu().latch_hvip_from_hw();
+                ret
+            }
+            RiscvVmExit::MmioWrite { addr, width, data } => {
+                let ret = super::handle_mmio_write::<Self>(
+                    vm,
+                    MmioWriteExit {
+                        addr: riscv_guest_phys_addr_to_ax(addr),
+                        width: riscv_access_width_to_ax(width),
+                        data,
+                    },
+                );
+                vcpu.get_arch_vcpu().latch_hvip_from_hw();
+                ret
+            }
             RiscvVmExit::NestedPageFault { addr, access_flags } => {
                 handle_riscv_nested_page_fault(vm, vcpu, addr, access_flags)
             }
@@ -166,6 +174,65 @@ impl ArchOps for Riscv64Arch {
                     arg,
                 },
             ),
+            RiscvVmExit::SendIPI {
+                target_cpu,
+                target_cpu_aux: _,
+                send_to_all,
+                send_to_self,
+                vector,
+            } => {
+                let mut targets = crate::CpuMask::new();
+
+                if send_to_all {
+                    for target_vcpu in vm.vcpu_list() {
+                        if target_vcpu.id() != vcpu.id() {
+                            targets.set(target_vcpu.id(), true);
+                        }
+                    }
+                } else if send_to_self {
+                    targets.set(vcpu.id(), true);
+                } else {
+                    let hart_mask = target_cpu;
+                    for target_vcpu in vm.vcpu_list() {
+                        let hart_id = target_vcpu.id();
+                        if hart_id < 64 && (hart_mask & (1u64 << hart_id)) != 0 {
+                            targets.set(target_vcpu.id(), true);
+                        }
+                    }
+                }
+
+                if targets.is_empty() {
+                    warn!(
+                        "VM[{}] SendIPI has no target: target_cpu={target_cpu:#x}",
+                        vm.id()
+                    );
+                    return Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                        waits_for_event: false,
+                        stop_reason: None,
+                    }));
+                }
+
+                if targets.get(vcpu.id()) {
+                    crate::inject_current_vcpu_interrupt(vector as _)
+                        .expect("failed to inject self IPI into current vCPU");
+                }
+
+                let mut remote_targets = targets;
+                remote_targets.set(vcpu.id(), false);
+                if !remote_targets.is_empty()
+                    && let Err(err) = vm.inject_interrupt_to_vcpu(remote_targets, vector as _)
+                {
+                    warn!(
+                        "failed to inject IPI to VM[{}] targets {remote_targets:?}: {err:?}",
+                        vm.id()
+                    );
+                }
+
+                Ok(BoundVcpuExit::Complete(VcpuRunAction {
+                    waits_for_event: false,
+                    stop_reason: None,
+                }))
+            }
             RiscvVmExit::CpuDown { state } => {
                 warn!(
                     "VM[{}] run VCpu[{}] CpuDown state {state:#x}",

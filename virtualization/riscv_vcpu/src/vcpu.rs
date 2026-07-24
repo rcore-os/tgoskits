@@ -37,7 +37,7 @@ use sbi_spec::{hsm, legacy, pmu, rfnc, srst};
 
 use crate::{
     EID_HVC, RiscvVcpuCreateConfig,
-    consts::traps::irq::S_EXT,
+    consts::traps::irq::{S_EXT, S_SOFT, S_TIMER},
     guest_mem,
     host::RiscvHostOps,
     registers::hgatp_value,
@@ -50,7 +50,6 @@ use crate::{
     },
     vpmu::VirtualPmu,
 };
-
 unsafe extern "C" {
     fn _run_guest(state: *mut VmCpuRegisters);
 }
@@ -334,14 +333,30 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
 
     /// Injects a virtual interrupt into the guest.
     pub fn inject_interrupt(&mut self, vector: usize) -> RiscvVcpuResult {
-        if vector != S_EXT {
-            return Err(RiscvVcpuError::Unsupported);
+        match vector {
+            S_SOFT => {
+                self.regs.virtual_hs_csrs.hvip |= 1 << 2;
+                unsafe {
+                    hvip::set_vssip();
+                }
+                Ok(())
+            }
+            S_TIMER => {
+                self.regs.virtual_hs_csrs.hvip |= 1 << 6;
+                unsafe {
+                    hvip::set_vstip();
+                }
+                Ok(())
+            }
+            S_EXT => {
+                self.regs.virtual_hs_csrs.hvip |= 1 << 10;
+                unsafe {
+                    hvip::set_vseip();
+                }
+                Ok(())
+            }
+            _ => Err(RiscvVcpuError::Unsupported),
         }
-        unsafe {
-            hvip::set_vseip();
-        }
-        self.regs.virtual_hs_csrs.hvip |= hvip::read().bits();
-        Ok(())
     }
 
     /// Sets the guest return value register.
@@ -355,7 +370,8 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
     /// last `unbind()` so the next `bind()` does not overwrite them with stale
     /// saved state.
     pub fn latch_hvip_from_hw(&mut self) {
-        self.regs.virtual_hs_csrs.hvip |= hvip::read().bits();
+        let hw_hvip = hvip::read().bits();
+        self.regs.virtual_hs_csrs.hvip |= hw_hvip;
     }
 
     /// Attempts to decode the current guest-page-fault trap as an MMIO access.
@@ -532,6 +548,42 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                         legacy::LEGACY_CONSOLE_GETCHAR => {
                             let c = sbi_call_legacy_0(legacy::LEGACY_CONSOLE_GETCHAR);
                             self.set_gpr_from_gpr_index(GprIndex::A0, c);
+                        }
+                        legacy::LEGACY_CLEAR_IPI => {
+                            self.regs.virtual_hs_csrs.hvip &= !(1 << 2);
+                            unsafe {
+                                hvip::clear_vssip();
+                            }
+                            self.set_gpr_from_gpr_index(GprIndex::A0, 0);
+                        }
+                        legacy::LEGACY_SEND_IPI => {
+                            let send_to_all = param[0] == 0;
+                            let hart_mask = if send_to_all {
+                                0
+                            } else {
+                                let mut mask_bytes = [0u8; core::mem::size_of::<usize>()];
+                                let copied = guest_mem::copy_from_guest_va(
+                                    &mut mask_bytes,
+                                    RiscvGuestVirtAddr::from(param[0]),
+                                );
+                                if copied != mask_bytes.len() {
+                                    warn!(
+                                        "failed to read legacy SBI IPI hart mask at {:#x}",
+                                        param[0]
+                                    );
+                                    self.advance_pc(4);
+                                    return Ok(RiscvVmExit::Nothing);
+                                }
+                                usize::from_ne_bytes(mask_bytes)
+                            };
+                            self.advance_pc(4);
+                            return Ok(RiscvVmExit::SendIPI {
+                                target_cpu: hart_mask as u64,
+                                target_cpu_aux: 0,
+                                send_to_all,
+                                send_to_self: false,
+                                vector: S_SOFT as u64,
+                            });
                         }
                         legacy::LEGACY_SHUTDOWN => {
                             // sbi_call_legacy_0(LEGACY_SHUTDOWN)
@@ -730,6 +782,19 @@ impl<H: RiscvHostOps> RiscvVcpu<H> {
                 Ok(RiscvVmExit::Nothing)
             }
             Trap::Exception(Exception::VirtualInstruction) => self.handle_virtual_instruction(),
+            Trap::Interrupt(Interrupt::SupervisorSoft) => {
+                // Host IPI used to wake/preempt the physical CPU while a vCPU is running.
+                // It is not a guest interrupt; consume HS SSIP and re-enter the guest.
+                unsafe {
+                    core::arch::asm!(
+                        "csrrc x0, sip, {mask}",
+                        mask = in(reg) 1usize << 1,
+                        options(nomem, nostack)
+                    );
+                }
+
+                Ok(RiscvVmExit::Nothing)
+            }
             Trap::Interrupt(Interrupt::SupervisorTimer) => {
                 // Forward the elapsed timer to VS and stop taking the same HS
                 // timer interrupt repeatedly until software programs a new one.

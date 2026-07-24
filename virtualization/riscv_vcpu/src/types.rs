@@ -244,6 +244,19 @@ pub enum RiscvVmExit {
         /// Guest CPU state value.
         state: u64,
     },
+    /// Guest requested an IPI.
+    SendIPI {
+        /// Target hart mask for legacy SBI IPI.
+        target_cpu: u64,
+        /// Auxiliary target selector, unused by RISC-V legacy SBI.
+        target_cpu_aux: u64,
+        /// Whether to broadcast to all vCPUs except the sender.
+        send_to_all: bool,
+        /// Whether to target the current vCPU.
+        send_to_self: bool,
+        /// IPI vector.
+        vector: u64,
+    },
     /// Guest halted.
     Halt,
     /// Guest requested system shutdown.
