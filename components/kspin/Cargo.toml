@@ -19,6 +19,9 @@ lockdep = ["dep:ax-lockdep"]
 lock_api = ["dep:lock_api"]
 default = []
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [dependencies]
 cfg-if = "1.0"
 ax-lockdep = { workspace = true, optional = true }

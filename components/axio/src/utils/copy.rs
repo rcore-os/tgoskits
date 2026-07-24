@@ -240,30 +240,145 @@ impl<I: Write + ?Sized> BufferedWriterSpec for BufWriter<I> {
 }
 
 #[cfg(axtest)]
-/// Checks copy buffer constants used by axtest coverage.
+struct AxtestShortReader<'a> {
+    remaining: &'a [u8],
+    max_read: usize,
+    largest_request: usize,
+}
+
+#[cfg(axtest)]
+impl Read for AxtestShortReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        self.largest_request = self.largest_request.max(buf.len());
+
+        let bytes = self.remaining.len().min(self.max_read).min(buf.len());
+        let (copied, remaining) = self.remaining.split_at(bytes);
+        buf[..bytes].copy_from_slice(copied);
+        self.remaining = remaining;
+
+        Ok(bytes)
+    }
+}
+
+#[cfg(axtest)]
+struct AxtestFixedWriter<'a> {
+    output: &'a mut [u8],
+    written: usize,
+    largest_write: usize,
+}
+
+#[cfg(axtest)]
+impl AxtestFixedWriter<'_> {
+    fn filled(&self) -> &[u8] {
+        &self.output[..self.written]
+    }
+}
+
+#[cfg(axtest)]
+impl Write for AxtestFixedWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        self.largest_write = self.largest_write.max(buf.len());
+
+        let bytes = (self.output.len() - self.written).min(buf.len());
+        let end = self.written + bytes;
+        self.output[self.written..end].copy_from_slice(&buf[..bytes]);
+        self.written = end;
+
+        Ok(bytes)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(axtest)]
+/// Verifies the stack-buffer copy path with short reads and writer failure.
 pub fn copy_constants_hold_for_test() -> bool {
-    // DEFAULT_BUF_SIZE constant
-    assert!(DEFAULT_BUF_SIZE == 2048);
-    // Test that stack_buffer_copy exists and is callable
-    // (actual I/O tested in integration tests)
+    let source = *b"stack-buffer-copy";
+    let mut reader = AxtestShortReader {
+        remaining: &source,
+        max_read: 3,
+        largest_request: 0,
+    };
+    let mut output = [0; 17];
+    let mut writer = AxtestFixedWriter {
+        output: &mut output,
+        written: 0,
+        largest_write: 0,
+    };
+
+    assert_eq!(
+        stack_buffer_copy(&mut reader, &mut writer),
+        Ok(source.len() as u64)
+    );
+    assert_eq!(writer.filled(), source);
+    assert!(reader.remaining.is_empty());
+    assert_eq!(reader.largest_request, DEFAULT_BUF_SIZE);
+
+    let mut reader = AxtestShortReader {
+        remaining: &source,
+        max_read: source.len(),
+        largest_request: 0,
+    };
+    let mut short_output = [0; 4];
+    let mut short_writer = AxtestFixedWriter {
+        output: &mut short_output,
+        written: 0,
+        largest_write: 0,
+    };
+
+    assert_eq!(
+        stack_buffer_copy(&mut reader, &mut short_writer),
+        Err(Error::WriteZero)
+    );
+
     true
 }
 
 #[cfg(axtest)]
-/// Checks buffered-reader copy assumptions used by axtest coverage.
+/// Verifies copy dispatches through the buffered-reader specialization.
 pub fn copy_buffered_reader_spec_hold_for_test() -> bool {
-    // Test BufferedReaderSpec trait methods exist
-    // The trait is tested through the copy function but we verify constants here
-    assert!(DEFAULT_BUF_SIZE > 0);
+    let source = [0x5a; DEFAULT_BUF_SIZE * 2 + 11];
+    let mut reader = BufReader::with_capacity(
+        DEFAULT_BUF_SIZE * 2,
+        AxtestShortReader {
+            remaining: &source,
+            max_read: source.len(),
+            largest_request: 0,
+        },
+    );
+    let mut output = [0; DEFAULT_BUF_SIZE * 2 + 11];
+    let mut writer = AxtestFixedWriter {
+        output: &mut output,
+        written: 0,
+        largest_write: 0,
+    };
+
+    assert_eq!(copy(&mut reader, &mut writer), Ok(source.len() as u64));
+    assert_eq!(writer.filled(), source);
+    assert_eq!(writer.largest_write, DEFAULT_BUF_SIZE * 2);
+    assert!(reader.into_inner().remaining.is_empty());
+
     true
 }
 
 #[cfg(axtest)]
-/// Checks byte-slice copy assumptions used by axtest coverage.
+/// Verifies copy dispatches through the byte-slice specialization.
 pub fn copy_slice_specialization_hold_for_test() -> bool {
-    // Test that &[u8] specialization for BufferedReaderSpec exists
-    // This specialization is used when copying from a byte slice
-    let data: &[u8] = &[1, 2, 3, 4, 5];
-    assert!(data.len() == 5);
+    let source = [0x7b; DEFAULT_BUF_SIZE + 17];
+    let mut reader = source.as_slice();
+    let mut output = [0; DEFAULT_BUF_SIZE + 17];
+    let mut writer = AxtestFixedWriter {
+        output: &mut output,
+        written: 0,
+        largest_write: 0,
+    };
+
+    assert_eq!(copy(&mut reader, &mut writer), Ok(source.len() as u64));
+    assert_eq!(writer.filled(), source);
+    assert_eq!(writer.largest_write, source.len());
+    assert!(reader.is_empty());
+
     true
 }

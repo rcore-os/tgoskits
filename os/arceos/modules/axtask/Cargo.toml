@@ -56,6 +56,9 @@ host-test = [
 test = ["host-test"]
 axtest = ["dep:axtest"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [dependencies]
 ax-alloc = {workspace = true, optional = true}
 ax-cpumask = { workspace = true, optional = true }

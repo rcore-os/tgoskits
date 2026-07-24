@@ -27,7 +27,7 @@ axtest = { workspace = true, optional = true }
 [features]
 axtest = ["dep:axtest"]
 
-[package.metadata.cargo-metadeps.check_cfg]
+[lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dev-dependencies]

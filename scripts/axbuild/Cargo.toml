@@ -9,6 +9,9 @@ repository.workspace = true
 version = "0.4.21"
 description = "An OS build lib toolkit used by arceos"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [target.'cfg(any(windows, unix))'.dependencies]
 anyhow = { workspace = true }
 axvmconfig = { workspace = true, features = ["std"] }

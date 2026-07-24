@@ -205,6 +205,9 @@ virtio-drivers = { workspace = true, optional = true }
 [dev-dependencies]
 ax-kernel-guard = { workspace = true, features = ["host-test"] }
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"
 

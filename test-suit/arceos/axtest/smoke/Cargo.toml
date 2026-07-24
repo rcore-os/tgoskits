@@ -9,6 +9,9 @@ default = []
 std = []
 ax-std = ["dep:ax-hal", "dep:ax-std"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [dependencies]
 ax-hal = { workspace = true, optional = true }
 ax-std = { workspace = true, optional = true, features = ["default"] }

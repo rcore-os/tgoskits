@@ -18,6 +18,9 @@ thead-mae = []
 tls = []
 uspace = ["mmu"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [dependencies]
 acpi = "6.0.1"
 aml = "0.16"

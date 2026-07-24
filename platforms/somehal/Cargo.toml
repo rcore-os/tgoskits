@@ -18,6 +18,9 @@ thead-mae = ["someboot/thead-mae"]
 tls = ["someboot/tls"]
 uspace = ["mmu", "someboot/uspace"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [dependencies]
 anyhow = {workspace = true}
 ax-kspin = { workspace = true }
