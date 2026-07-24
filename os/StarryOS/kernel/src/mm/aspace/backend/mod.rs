@@ -41,7 +41,7 @@ pub(crate) fn alloc_frame(
     let num_pages = page_size / PAGE_SIZE_4K;
     let vaddr = VirtAddr::from(
         global_allocator()
-            .allocate_pages_raw(
+            .alloc_pages(
                 ax_alloc::PageRequest {
                     count: num_pages,
                     align: page_size,
@@ -68,7 +68,7 @@ pub(crate) fn dealloc_frame(frame: PhysAddr, align: PageSize) {
     // SAFETY: VM backends transfer only exclusive frames returned by
     // alloc_frame and preserve their page-size-derived request metadata.
     unsafe {
-        global_allocator().deallocate_pages_raw(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
+        global_allocator().dealloc_pages(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
     }
 }
 
@@ -205,7 +205,6 @@ pub struct BackendFileInfo {
 
 impl Backend {
     /// Returns the committed bytes represented by this backend and VMA flags.
-    #[inline(never)]
     pub fn accounted_bytes(&self, flags: MappingFlags, bytes: usize) -> u64 {
         let kind = match self {
             Self::Linear(_) | Self::File(_) => CommitKind::Unaccounted,

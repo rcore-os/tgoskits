@@ -279,7 +279,7 @@ let guarded_size = usable_size
     .checked_add(PAGE_SIZE_4K)
     .expect("guarded task stack size overflow");
 let pages = guarded_size / PAGE_SIZE_4K;
-let base = ax_alloc::global_allocator().allocate_pages_raw(
+let base = ax_alloc::global_allocator().alloc_pages(
     PageRequest {
         count: pages,
         align: PAGE_SIZE_4K,
@@ -314,7 +314,7 @@ Drop 时顺序相反：先 remap guard page并完成地址转换后备缓冲区�
 
 | 属性 | Plain stack | Guarded stack |
 | --- | --- | --- |
-| 入口 | `alloc::alloc::alloc(Layout)` | `allocate_pages_raw(PageRequest)` |
+| 入口 | `alloc::alloc::alloc(Layout)` | `alloc_pages(PageRequest)` |
 | 下层 | large `GlobalAlloc` → Buddy | Buddy pages |
 | overflow 检测 | bottom canary | unmapped guard + canary |
 | Drop | `alloc::alloc::dealloc()` | remap guard后 raw page deallocation |

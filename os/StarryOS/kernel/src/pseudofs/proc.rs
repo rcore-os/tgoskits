@@ -17,7 +17,7 @@ use core::{
 
 use ax_fs_ng::vfs::{FS_CONTEXT, current_fs_context};
 use ax_lazyinit::LazyInit;
-use ax_memory_addr::{MemoryAddr, VirtAddr};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
 #[cfg(target_arch = "aarch64")]
 use ax_runtime::hal::pmu;
 use ax_runtime::hal::{
@@ -119,7 +119,7 @@ fn render_meminfo() -> String {
     let available_kb = free_kb + cached_kb;
     let page_tables_kb = page_tables / 1024;
     let anon_pages_kb = anon_pages / 1024;
-    let commit_limit_kb = starry_mm::commit_limit_bytes() / 1024;
+    let commit_limit_kb = total_kb;
     let committed_kb = starry_mm::committed_bytes() / 1024;
 
     format!(
@@ -774,6 +774,27 @@ fn render_task_status(
     })
 }
 
+fn format_status_vm_lines(mem: &ProcessMemStats) -> String {
+    let page_kb = PAGE_SIZE_4K as u64 / 1024;
+    let peak_kb = mem.peak_pages * page_kb;
+    let vss_kb = mem.vss_pages * page_kb;
+    let hwm_kb = mem.hiwater_rss_pages * page_kb;
+    let resident_kb = mem.resident_pages * page_kb;
+    let anon_kb = mem.rss_anon_pages * page_kb;
+    let file_kb = mem.rss_file_pages * page_kb;
+    let shmem_kb = mem.rss_shmem_pages * page_kb;
+    let data_kb = mem.data_pages * page_kb;
+    let stack_kb = mem.stack_pages * page_kb;
+    let exe_kb = mem.exe_pages * page_kb;
+    format!(
+        "VmPeak:\t{peak_kb} kB\nVmSize:\t{vss_kb} kB\nVmLck:\t0 kB\nVmPin:\t0 \
+         kB\nVmHWM:\t{hwm_kb} kB\nVmRSS:\t{resident_kb} kB\nRssAnon:\t{anon_kb} \
+         kB\nRssFile:\t{file_kb} kB\nRssShmem:\t{shmem_kb} kB\nVmData:\t{data_kb} \
+         kB\nVmStk:\t{stack_kb} kB\nVmExe:\t{exe_kb} kB\nVmLib:\t0 kB\nVmPTE:\t0 kB\nVmSwap:\t0 \
+         kB\n"
+    )
+}
+
 #[rustfmt::skip]
 fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
     let base = &status.base;
@@ -820,7 +841,7 @@ fn render_task_status_fields(status: &TaskStatusFields<'_>) -> String {
         base.cred.cap_bounding,
         base.cred.cap_ambient,
         base.num_threads,
-        status.mem.format_status_vm_lines(),
+        format_status_vm_lines(status.mem),
         status.cpus_allowed,
         status.cpus_allowed_list,
     )
@@ -1119,7 +1140,12 @@ fn render_thread_statm(
     };
     let aspace_arc = proc_data.aspace();
     let mm = aspace_arc.lock();
-    Ok(collect_process_mem_stats(&mm).format_statm())
+    let mem = collect_process_mem_stats(&mm);
+    let shared_rss = mem.rss_file_pages + mem.rss_shmem_pages;
+    Ok(format!(
+        "{} {} {} {} 0 {} 0\n",
+        mem.vss_pages, mem.resident_pages, shared_rss, mem.text_pages, mem.data_pages,
+    ))
 }
 
 fn render_thread_stat(
@@ -1849,13 +1875,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             let mut vm = DirMapping::new();
             vm.add(
                 "overcommit_memory",
-                SimpleFile::new_regular(fs.clone(), || {
-                    Ok(if starry_mm::overcommit_memory_mode() == 2 {
-                        "2\n"
-                    } else {
-                        "1\n"
-                    })
-                }),
+                SimpleFile::new_regular(fs.clone(), || Ok("1\n")),
             );
             vm.add(
                 "max_map_count",

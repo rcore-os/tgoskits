@@ -129,7 +129,7 @@ impl Drop for KmodMemSection {
                 // SAFETY: KmodMem owns this direct-map allocation and retains
                 // the original page count until its single Drop.
                 unsafe {
-                    global_allocator().deallocate_pages_raw(
+                    global_allocator().dealloc_pages(
                         self.vaddr.as_usize(),
                         self.num_pages,
                         UsageKind::VirtMem,
@@ -184,7 +184,7 @@ fn alloc_kmod_dmw_frames(num_pages: usize) -> AxResult<VirtAddr> {
     // DMW-linked kernel code share the same PC-relative address class.
     let vaddr = VirtAddr::from_usize(
         global_allocator()
-            .allocate_pages_raw(
+            .alloc_pages(
                 ax_alloc::PageRequest {
                     count: num_pages,
                     align: PAGE_SIZE_4K,

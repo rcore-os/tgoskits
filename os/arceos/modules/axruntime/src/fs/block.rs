@@ -22,7 +22,7 @@ struct RuntimePageProvider;
 impl FsPageProvider for RuntimePageProvider {
     fn alloc_page(&self) -> ax_errno::AxResult<FsPage> {
         let addr = ax_alloc::global_allocator()
-            .allocate_pages_raw(
+            .alloc_pages(
                 ax_alloc::PageRequest {
                     count: 1,
                     align: ax_fs_ng::os::memory::PAGE_SIZE,
@@ -38,7 +38,7 @@ impl FsPageProvider for RuntimePageProvider {
         // SAFETY: consuming FsPage transfers the unique page returned by this
         // allocator with the same single-page request and usage.
         unsafe {
-            ax_alloc::global_allocator().deallocate_pages_raw(page.addr(), 1, UsageKind::PageCache);
+            ax_alloc::global_allocator().dealloc_pages(page.addr(), 1, UsageKind::PageCache);
         }
     }
 

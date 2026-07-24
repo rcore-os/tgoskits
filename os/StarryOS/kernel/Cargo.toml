@@ -31,7 +31,6 @@ rk3588-pwm = [
 k230-kpu = ["ax-hal/xuantie-c9xx", "dep:axklib", "dep:k230-kpu"]
 vsock = ["ax-runtime/vsock"]
 dynamic_debug = ["ipi"]
-starry-strict-commit = ["starry-mm/starry-strict-commit"]
 sg2002 = [
     "ax-runtime/irq",
     "ax-driver/usb",

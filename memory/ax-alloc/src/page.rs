@@ -15,7 +15,7 @@ pub struct GlobalPage {
 
 impl GlobalPage {
     pub(crate) fn allocate(request: PageRequest, usage: UsageKind) -> crate::AllocResult<Self> {
-        let vaddr = global_allocator().allocate_pages_raw(request, usage)?;
+        let vaddr = global_allocator().alloc_pages(request, usage)?;
         Ok(Self {
             start_vaddr: vaddr.into(),
             num_pages: request.count,
@@ -74,11 +74,6 @@ impl GlobalPage {
         self.num_pages * PAGE_SIZE
     }
 
-    /// Returns the allocation usage classification.
-    pub const fn usage(&self) -> UsageKind {
-        self.usage
-    }
-
     /// Convert to a raw pointer.
     pub fn as_ptr(&self) -> *const u8 {
         self.start_vaddr.as_ptr()
@@ -121,11 +116,7 @@ impl Drop for GlobalPage {
         // SAFETY: this owner stores the page count and usage associated with
         // the live allocation, and Drop runs exactly once.
         unsafe {
-            global_allocator().deallocate_pages_raw(
-                self.start_vaddr.into(),
-                self.num_pages,
-                self.usage,
-            );
+            global_allocator().dealloc_pages(self.start_vaddr.into(), self.num_pages, self.usage);
         }
     }
 }

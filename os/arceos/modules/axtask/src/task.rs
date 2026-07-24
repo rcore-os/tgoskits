@@ -775,7 +775,7 @@ impl TaskStack {
             .expect("guarded task stack size overflow");
         let pages = guarded_size / PAGE_SIZE_4K;
         let base = ax_alloc::global_allocator()
-            .allocate_pages_raw(
+            .alloc_pages(
                 ax_alloc::PageRequest {
                     count: pages,
                     align: PAGE_SIZE_4K,
@@ -975,7 +975,7 @@ impl Drop for TaskStack {
                 // SAFETY: TaskStack owns the entire guarded allocation and
                 // records its original page count until this single Drop.
                 unsafe {
-                    ax_alloc::global_allocator().deallocate_pages_raw(
+                    ax_alloc::global_allocator().dealloc_pages(
                         self.guard_bottom().as_usize(),
                         self.alloc_pages,
                         ax_alloc::UsageKind::Global,

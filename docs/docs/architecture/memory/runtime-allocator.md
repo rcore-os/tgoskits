@@ -153,7 +153,7 @@ pub fn alloc_pages(
 
 ### 3.3 页所有权
 
-`GlobalPage` 保存 `start_vaddr`、页数和 `UsageKind`。它不实现复制，Drop 根据地址找到对应 Buddy section，并用原用途更新可选统计。
+`GlobalPage` 保存 `start_vaddr`、页数和 `UsageKind`。它不实现复制，Drop 根据地址找到对应 Buddy section，并用原用途更新可选统计。zone 只约束分配时的地址选择，不需要在 owner 中重复保存。
 
 | 方法 | 行为 | 所有权影响 |
 | --- | --- | --- |
@@ -161,11 +161,11 @@ pub fn alloc_pages(
 | `GlobalPage::alloc_zero()` | 分配并清零一个页 | 返回 live 资源获取即初始化 owner |
 | `GlobalPage::alloc_contiguous()` | 分配 Normal 连续页 | 返回同一 owner |
 | `as_slice()` / `as_slice_mut()` | 借用完整 allocation | 不转移所有权 |
-| `Drop::drop()` | 按 zone 和 usage 归还 | owner 生命周期结束 |
+| `Drop::drop()` | 按地址、页数和 usage 归还 | owner 生命周期结束 |
 
 需要把页交给页表项或外部对象长期持有的代码必须明确转移或封装生命周期。不能丢弃 `GlobalPage` 后继续使用其地址，否则 Drop 已经把页返回 allocator。
 
-`Drop` 实现是 owner 协议的执行点。它把构造时记录的页数和用途传回 deallocator；分配时的对齐与地址区域只影响地址选择，释放 Buddy block 时不参与计算。`deallocate_pages_raw()` 标记为 `unsafe` 是因为它要求调用方保证地址确实来自对称的 `allocate_pages_raw()`，并保持原页数和用途。
+`Drop` 实现是 owner 协议的执行点。它把构造时记录的页数和用途传回 deallocator；分配时的对齐与地址区域只影响地址选择，释放 Buddy block 时不参与计算。`dealloc_pages()` 标记为 `unsafe` 是因为它要求调用方保证地址确实来自对称的 `alloc_pages()`，并保持原页数和用途。
 
 ```rust
 impl Drop for GlobalPage {
@@ -173,7 +173,7 @@ impl Drop for GlobalPage {
         // SAFETY: this owner stores the unchanged request and usage associated
         // with the live allocation, and Drop runs exactly once.
         unsafe {
-            global_allocator().deallocate_pages_raw(
+            global_allocator().dealloc_pages(
                 self.start_vaddr.into(),
                 self.num_pages,
                 self.usage,

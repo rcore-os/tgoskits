@@ -1,7 +1,5 @@
 //! Linux process memory statistics derived from VMA and RSS snapshots.
 
-use alloc::{format, string::String};
-
 use ax_memory_addr::{PAGE_SIZE_4K, VirtAddr};
 
 const STACK_VMA_NAME: &str = "[stack]";
@@ -112,35 +110,6 @@ impl ProcessMemStats {
     pub const fn rss_pages(&self) -> i64 {
         self.resident_pages as i64
     }
-
-    pub fn format_statm(&self) -> String {
-        let shared_rss = self.rss_file_pages + self.rss_shmem_pages;
-        format!(
-            "{} {} {} {} 0 {} 0\n",
-            self.vss_pages, self.resident_pages, shared_rss, self.text_pages, self.data_pages,
-        )
-    }
-
-    pub fn format_status_vm_lines(&self) -> String {
-        let page_kb = PAGE_SIZE_4K as u64 / 1024;
-        let peak_kb = self.peak_pages * page_kb;
-        let vss_kb = self.vss_pages * page_kb;
-        let hwm_kb = self.hiwater_rss_pages * page_kb;
-        let resident_kb = self.resident_pages * page_kb;
-        let anon_kb = self.rss_anon_pages * page_kb;
-        let file_kb = self.rss_file_pages * page_kb;
-        let shmem_kb = self.rss_shmem_pages * page_kb;
-        let data_kb = self.data_pages * page_kb;
-        let stack_kb = self.stack_pages * page_kb;
-        let exe_kb = self.exe_pages * page_kb;
-        format!(
-            "VmPeak:\t{peak_kb} kB\nVmSize:\t{vss_kb} kB\nVmLck:\t0 kB\nVmPin:\t0 \
-             kB\nVmHWM:\t{hwm_kb} kB\nVmRSS:\t{resident_kb} kB\nRssAnon:\t{anon_kb} \
-             kB\nRssFile:\t{file_kb} kB\nRssShmem:\t{shmem_kb} kB\nVmData:\t{data_kb} \
-             kB\nVmStk:\t{stack_kb} kB\nVmExe:\t{exe_kb} kB\nVmLib:\t0 kB\nVmPTE:\t0 \
-             kB\nVmSwap:\t0 kB\n"
-        )
-    }
 }
 
 #[cfg(test)]
@@ -153,7 +122,7 @@ mod tests {
     };
 
     #[test]
-    fn classifies_and_formats_vma_snapshots() {
+    fn classifies_vma_snapshots() {
         let mut stats = ProcessMemStats::default();
         stats.record_vma(
             STACK,
@@ -188,6 +157,5 @@ mod tests {
         assert_eq!(stats.text_pages, 2);
         assert_eq!(stats.resident_pages, 2);
         assert_eq!(stats.peak_pages, 8);
-        assert_eq!(stats.format_statm(), "4 2 1 2 0 0 0\n");
     }
 }

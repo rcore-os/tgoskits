@@ -75,7 +75,7 @@ impl PageFrameProvider for PagingHandlerImpl {
 
     fn alloc_frames(&self, num: usize, align: usize) -> Option<PhysAddr> {
         global_allocator()
-            .allocate_pages_raw(
+            .alloc_pages(
                 PageRequest {
                     count: num,
                     align,
@@ -95,7 +95,7 @@ impl PageFrameProvider for PagingHandlerImpl {
         // SAFETY: PageFrameProvider returns only frame ranges allocated by the
         // matching method on this provider, with the original frame count.
         unsafe {
-            global_allocator().deallocate_pages_raw(
+            global_allocator().dealloc_pages(
                 phys_to_virt(paddr).as_usize(),
                 num,
                 UsageKind::PageTable,

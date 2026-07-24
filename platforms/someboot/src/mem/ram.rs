@@ -48,12 +48,6 @@ pub fn alloc(layout: Layout) -> Option<usize> {
     Some(start)
 }
 
-pub fn alloc_and_flush_to_memory_map(layout: Layout, kind: MemoryType) -> Option<usize> {
-    let addr = alloc(layout)?;
-    flush_to_memory_map(kind);
-    Some(addr)
-}
-
 pub fn flush_to_memory_map(kind: MemoryType) {
     let mut allocator = RAM_ALLOCATOR.lock();
     let RamAllocatorState::Active {

@@ -195,7 +195,6 @@ impl AddrSpace {
         Ok(total)
     }
 
-    #[inline(never)]
     fn prepare_protect_commit_delta(
         &self,
         start: VirtAddr,

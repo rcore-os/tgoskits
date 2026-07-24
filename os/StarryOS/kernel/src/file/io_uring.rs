@@ -73,7 +73,7 @@ impl RingMemory {
         let pages = size / PAGE_SIZE_4K;
         let vaddr = VirtAddr::from(
             global_allocator()
-                .allocate_pages_raw(
+                .alloc_pages(
                     ax_alloc::PageRequest {
                         count: pages,
                         align: PAGE_SIZE_4K,
@@ -132,11 +132,7 @@ impl Drop for RingMemory {
         // SAFETY: RingMemory is the unique owner of the unchanged allocation
         // request recorded at construction, and Drop runs once.
         unsafe {
-            global_allocator().deallocate_pages_raw(
-                self.vaddr.as_usize(),
-                self.pages,
-                UsageKind::VirtMem,
-            );
+            global_allocator().dealloc_pages(self.vaddr.as_usize(), self.pages, UsageKind::VirtMem);
         }
     }
 }

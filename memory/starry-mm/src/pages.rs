@@ -102,16 +102,6 @@ impl SharedPages {
     pub const fn page_size(&self) -> PageSize {
         self.page_size
     }
-
-    /// Returns the number of physical pages.
-    pub fn len(&self) -> usize {
-        self.phys_pages.len()
-    }
-
-    /// Returns whether the owner contains no pages.
-    pub fn is_empty(&self) -> bool {
-        self.phys_pages.is_empty()
-    }
 }
 
 impl Deref for SharedPages {
@@ -166,7 +156,6 @@ mod tests {
     #[test]
     fn allocation_failure_rolls_back_every_owned_page() {
         let _guard = crate::policy::GLOBAL_COMMIT_TEST_LOCK.lock().unwrap();
-        crate::configure_commit_limit(u64::MAX);
         let source = Box::leak(Box::new(TestPageSource {
             allocations: AtomicUsize::new(0),
             deallocations: AtomicUsize::new(0),
@@ -183,7 +172,6 @@ mod tests {
     #[test]
     fn shared_anonymous_owner_holds_one_commit_charge_across_arc_clones() {
         let _guard = crate::policy::GLOBAL_COMMIT_TEST_LOCK.lock().unwrap();
-        crate::configure_commit_limit(u64::MAX);
         let source = Box::leak(Box::new(TestPageSource {
             allocations: AtomicUsize::new(0),
             deallocations: AtomicUsize::new(0),

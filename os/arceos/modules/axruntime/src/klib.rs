@@ -144,7 +144,7 @@ impl_trait! {
             } else {
                 ax_alloc::MemoryZone::Normal
             };
-            let addr = ax_alloc::global_allocator().allocate_pages_raw(
+            let addr = ax_alloc::global_allocator().alloc_pages(
                 ax_alloc::PageRequest {
                     count: num_pages,
                     align,
@@ -160,7 +160,7 @@ impl_trait! {
             // SAFETY: consuming DmaPageAllocation proves unique ownership and
             // returns the unchanged address, count, and source zone.
             unsafe {
-                ax_alloc::global_allocator().deallocate_pages_raw(
+                ax_alloc::global_allocator().dealloc_pages(
                     addr.as_usize(),
                     num_pages,
                     ax_alloc::UsageKind::Dma,

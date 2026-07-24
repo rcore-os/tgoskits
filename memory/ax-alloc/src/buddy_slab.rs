@@ -207,8 +207,7 @@ impl GlobalAllocator {
     }
 
     /// Allocates contiguous pages.
-    #[doc(hidden)]
-    pub fn allocate_pages_raw(&self, request: PageRequest, _kind: UsageKind) -> AllocResult<usize> {
+    pub fn alloc_pages(&self, request: PageRequest, _kind: UsageKind) -> AllocResult<usize> {
         let _bytes = request
             .count
             .checked_mul(PAGE_SIZE)
@@ -231,10 +230,9 @@ impl GlobalAllocator {
     /// # Safety
     ///
     /// `pos` must identify a live allocation returned by
-    /// [`Self::allocate_pages_raw`] with the original page count and `kind`.
+    /// [`Self::alloc_pages`] with the original page count and `kind`.
     /// The allocation must not be accessed or released again after this call.
-    #[doc(hidden)]
-    pub unsafe fn deallocate_pages_raw(&self, pos: usize, count: usize, _kind: UsageKind) {
+    pub unsafe fn dealloc_pages(&self, pos: usize, count: usize, _kind: UsageKind) {
         let _bytes = count
             .checked_mul(PAGE_SIZE)
             .expect("a live page allocation has a validated byte size");

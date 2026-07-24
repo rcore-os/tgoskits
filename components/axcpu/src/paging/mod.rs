@@ -67,8 +67,8 @@ pub trait PagingMetaData: Sync + Send {
 
     /// The virtual address to be translated in this page table.
     ///
-    /// This associated type allows more flexible use of page tables structs
-    /// like [`PageTable64`], for example, to implement EPTs.
+    /// This keeps the architecture walker independent of the concrete host
+    /// virtual-address representation.
     type VirtAddr: MemoryAddr;
     /// Architecture TLB invalidation capability.
     type Tlb: TlbInvalidator<Self::VirtAddr>;

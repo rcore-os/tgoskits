@@ -21,12 +21,6 @@ use crate::{
 pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
 
-    let allocator = ax_alloc::global_allocator();
-    let commit_limit = allocator
-        .used_bytes()
-        .saturating_add(allocator.available_bytes()) as u64;
-    starry_mm::configure_commit_limit(commit_limit);
-
     tracepoint_init().expect("Failed to initialize tracepoints");
 
     crate::ebpf::init_ebpf();

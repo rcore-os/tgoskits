@@ -10,7 +10,7 @@ use super::Backend;
 fn alloc_frame(zeroed: bool) -> Option<PhysAddr> {
     let vaddr = VirtAddr::from(
         global_allocator()
-            .allocate_pages_raw(
+            .alloc_pages(
                 PageRequest {
                     count: 1,
                     align: PAGE_SIZE_4K,
@@ -32,7 +32,7 @@ pub(super) fn dealloc_frame(frame: PhysAddr) {
     // SAFETY: allocated mappings call this exactly once for a frame returned
     // by alloc_frame with the same single-page request and usage.
     unsafe {
-        global_allocator().deallocate_pages_raw(vaddr.as_usize(), 1, UsageKind::VirtMem);
+        global_allocator().dealloc_pages(vaddr.as_usize(), 1, UsageKind::VirtMem);
     }
 }
 
