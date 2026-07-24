@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.30](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.29...ax-std-v0.5.30) - 2026-07-24
+
+### Other
+
+- updated the following local packages: ax-driver, ax-runtime, ax-hal, ax-task, ax-api, ax-posix-api
+
 ## [0.5.29](https://github.com/rcore-os/tgoskits/compare/ax-std-v0.5.28...ax-std-v0.5.29) - 2026-07-23
 
 ### Other

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.22](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.21...axbuild-v0.4.22) - 2026-07-24
+
+### Added
+
+- *(axbuild)* run might_sleep tests in std CI ([#1689](https://github.com/rcore-os/tgoskits/pull/1689))
+- *(axvisor)* support StarryOS guest on Orange Pi 5 Plus ([#1684](https://github.com/rcore-os/tgoskits/pull/1684))
+
 ## [0.4.21](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.20...axbuild-v0.4.21) - 2026-07-23
 
 ### Added

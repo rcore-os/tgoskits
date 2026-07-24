@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.25](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.24...axvm-v0.5.25) - 2026-07-24
+
+### Added
+
+- *(axvisor)* support StarryOS guest on Orange Pi 5 Plus ([#1684](https://github.com/rcore-os/tgoskits/pull/1684))
+
 ## [0.5.24](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.23...axvm-v0.5.24) - 2026-07-23
 
 ### Added

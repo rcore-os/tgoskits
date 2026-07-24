@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.5...starry-kernel-v0.7.6) - 2026-07-24
+
+### Fixed
+
+- *(starry-kernel)* avoid sleeping lock in overlay root ([#1685](https://github.com/rcore-os/tgoskits/pull/1685))
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.4...starry-kernel-v0.7.5) - 2026-07-23
 
 ### Added
