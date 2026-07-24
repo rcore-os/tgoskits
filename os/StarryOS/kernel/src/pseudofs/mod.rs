@@ -105,6 +105,11 @@ pub fn mount_all() -> LinuxResult<()> {
 
     mount_at(&fs, "/proc", proc::new_procfs())?;
 
+    // Pin each CPU's cache leaves (starting with this primary CPU) before sysfs
+    // is mounted, so `/sys/.../cpuN/cache` serves that CPU's data regardless of
+    // which PE later reads it - the StarryOS analogue of Linux detecting cache
+    // attributes per CPU at bring-up (drivers/base/cacheinfo.c).
+    sysfs::init_cpu_cache();
     mount_at(&fs, "/sys", sysfs::new_sysfs())?;
     if usbfs::has_manager() {
         mount_at(&fs, "/sys/bus/usb", usbfs::new_bus_usb_sysfs())?;

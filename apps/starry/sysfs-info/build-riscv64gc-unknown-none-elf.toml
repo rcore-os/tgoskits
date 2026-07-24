@@ -1,0 +1,9 @@
+features = [
+  "ax-runtime/display",
+  "ax-runtime/rtc",
+  "ax-driver/serial",
+  "ax-driver/virtio-blk",
+  "ax-driver/virtio-net",
+]
+log = "Warn"
+target = "riscv64gc-unknown-none-elf"
