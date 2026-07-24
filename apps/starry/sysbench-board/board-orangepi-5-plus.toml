@@ -11,6 +11,7 @@ success_regex = [
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
   '(?m)^SYSBENCH_MISSING\s*$',
+  '(?m)^SYSBENCH_BOARD_FAILED\s*$',
   '(?i)error while loading shared libraries',
   '(?m)^FATAL:',
 ]
