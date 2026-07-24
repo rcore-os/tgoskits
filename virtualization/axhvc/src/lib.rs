@@ -91,6 +91,42 @@ pub use error::{HyperCallError, HyperCallResult, InvalidHyperCallCode};
 #[repr(u32)]
 #[derive(Eq, PartialEq, Copy, Clone)]
 pub enum HyperCallCode {
+    /// PSCI_VERSION.
+    PSCIVersion          = 0x8400_0000,
+
+    /// PSCI_CPU_SUSPEND.
+    PSCICpuSuspend       = 0x8400_0001,
+
+    /// PSCI_CPU_OFF.
+    PSCICpuOff           = 0x8400_0002,
+
+    /// PSCI_CPU_ON.
+    PSCICpuOn            = 0x8400_0003,
+
+    /// PSCI_AFFINITY_INFO.
+    PSCIAffinityInfo     = 0x8400_0004,
+
+    /// PSCI_MIGRATE_INFO_TYPE.
+    PSCIMigrateInfoType  = 0x8400_0006,
+
+    /// PSCI_SYSTEM_OFF.
+    PSCISystemOff        = 0x8400_0008,
+
+    /// PSCI_SYSTEM_RESET.
+    PSCISystemReset      = 0x8400_0009,
+
+    /// PSCI features.
+    PSCIFeatures         = 0x8400_000a,
+
+    /// PSCI CPU suspend, SMC64.
+    PSCICpuSuspend64     = 0xc400_0001,
+
+    /// PSCI CPU on, SMC64.
+    PSCICpuOn64          = 0xc400_0003,
+
+    /// PSCI affinity info, SMC64.
+    PSCIAffinityInfo64   = 0xc400_0004,
+
     /// Disable the hypervisor.
     ///
     /// This hypercall requests the hypervisor to disable itself and return
@@ -197,6 +233,19 @@ impl TryFrom<u32> for HyperCallCode {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
+            0x8400_0000 => Ok(HyperCallCode::PSCIVersion),
+            0x8400_0001 => Ok(HyperCallCode::PSCICpuSuspend),
+            0x8400_0002 => Ok(HyperCallCode::PSCICpuOff),
+            0x8400_0003 => Ok(HyperCallCode::PSCICpuOn),
+            0x8400_0004 => Ok(HyperCallCode::PSCIAffinityInfo),
+            0x8400_0006 => Ok(HyperCallCode::PSCIMigrateInfoType),
+            0x8400_0008 => Ok(HyperCallCode::PSCISystemOff),
+            0x8400_0009 => Ok(HyperCallCode::PSCISystemReset),
+            0x8400_000a => Ok(HyperCallCode::PSCIFeatures),
+            0xc400_0001 => Ok(HyperCallCode::PSCICpuSuspend64),
+            0xc400_0003 => Ok(HyperCallCode::PSCICpuOn64),
+            0xc400_0004 => Ok(HyperCallCode::PSCIAffinityInfo64),
+
             0 => Ok(HyperCallCode::HypervisorDisable),
             1 => Ok(HyperCallCode::HyperVisorPrepareDisable),
             2 => Ok(HyperCallCode::HyperVisorDebug),
@@ -213,6 +262,18 @@ impl core::fmt::Debug for HyperCallCode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "(")?;
         match self {
+            Self::PSCIVersion => write!(f, "PSCIVersion"),
+            Self::PSCICpuSuspend => write!(f, "PSCICpuSuspend"),
+            Self::PSCICpuOff => write!(f, "PSCICpuOff"),
+            Self::PSCICpuOn => write!(f, "PSCICpuOn"),
+            Self::PSCIAffinityInfo => write!(f, "PSCIAffinityInfo"),
+            Self::PSCIMigrateInfoType => write!(f, "PSCIMigrateInfoType"),
+            Self::PSCISystemOff => write!(f, "PSCISystemOff"),
+            Self::PSCISystemReset => write!(f, "PSCISystemReset"),
+            Self::PSCIFeatures => write!(f, "PSCIFeatures"),
+            Self::PSCICpuSuspend64 => write!(f, "PSCICpuSuspend64"),
+            Self::PSCICpuOn64 => write!(f, "PSCICpuOn64"),
+            Self::PSCIAffinityInfo64 => write!(f, "PSCIAffinityInfo64"),
             HyperCallCode::HypervisorDisable => write!(f, "HypervisorDisable {:#x}", *self as u32),
             HyperCallCode::HyperVisorPrepareDisable => {
                 write!(f, "HyperVisorPrepareDisable {:#x}", *self as u32)
