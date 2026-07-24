@@ -99,7 +99,7 @@ pub fn shutdown_filesystems() -> ax_errno::AxResult {
     #[cfg(feature = "vfs")]
     highlevel::sync_all_cached_files(false)?;
     if let Some(ctx) = highlevel::ROOT_FS_CONTEXT.get() {
-        ctx.root_dir().sync(false)?;
+        ctx.root_dir().filesystem().shutdown()?;
     }
     Ok(())
 }

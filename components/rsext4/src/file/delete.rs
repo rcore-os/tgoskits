@@ -32,6 +32,7 @@ pub fn free_inode<B: BlockDevice>(
     }
 
     *inode = updated_inode;
+    inode.i_links_count = 0;
     inode.i_block = [0; 15];
     inode.i_blocks_lo = 0;
     inode.l_i_blocks_high = 0;

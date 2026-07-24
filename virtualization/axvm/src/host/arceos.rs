@@ -170,7 +170,7 @@ pub fn shutdown_host_filesystems() -> AxVmResult {
         .map_err(|error| AxVmError::host("shut down host filesystems", error))?;
     let released = modules::ax_fs_ng::release_block_irqs_for_passthrough();
     if released != 0 {
-        info!("Released {released} host filesystem block IRQ registration(s) before passthrough");
+        info!("Released {released} host filesystem block IRQ registration(s) during shutdown");
     }
     Ok(())
 }

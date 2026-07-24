@@ -34,6 +34,14 @@ use spin::LazyLock;
 pub static COMMAND_TREE: LazyLock<BTreeMap<String, CommandNode>> =
     LazyLock::new(build_command_tree);
 
+pub(super) fn shutdown(exit_code: i32) -> ! {
+    #[cfg(feature = "fs")]
+    if let Err(error) = axvm::shutdown_host_filesystems() {
+        println!("Warning: failed to shut down host filesystems: {error}");
+    }
+    std::process::exit(exit_code);
+}
+
 #[derive(Debug, Clone)]
 pub struct CommandNode {
     handler: Option<fn(&ParsedCommand)>,
@@ -534,7 +542,7 @@ pub fn handle_builtin_commands(input: &str) -> bool {
         }
         "exit" | "quit" => {
             println!("Goodbye!");
-            std::process::exit(0);
+            shutdown(0);
         }
         "clear" => {
             print!("\x1b[2J\x1b[H"); // ANSI clear screen sequence

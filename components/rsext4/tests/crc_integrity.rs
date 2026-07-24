@@ -149,7 +149,7 @@ fn sync_with_axfs_ng_order(
     fs.sync_superblock(dev)?;
     fs.sync_group_descriptors(dev)?;
     if dev.is_use_journal() {
-        dev.umount_commit();
+        dev.umount_commit()?;
     }
     dev.cantflush()
 }
