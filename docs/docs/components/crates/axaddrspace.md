@@ -8,7 +8,7 @@
 
 ### 1.1 定位与依赖
 
-生产依赖由地址类型、虚拟区域容器和基础支持库组成。`ax-page-table` 只作为开发依赖验证适配器，生产环境由 `axvm` 组合具体页表和 `axaddrspace`。
+生产依赖由地址类型、虚拟区域容器和基础支持库组成。`page-table-generic` 只作为开发依赖构造 mock nested table，生产环境由 `axvm` 组合具体第二阶段页表和 `axaddrspace`。
 
 | 项目 | 内容 |
 | --- | --- |
@@ -16,7 +16,7 @@
 | 分层 | 虚拟化策略层 / 客户机物理地址空间 |
 | 公共机制依赖 | `ax-memory-addr`、`ax-memory-set`、`axvm-types` |
 | 主要消费者 | `axvm`、`axdevice`、`axvisor_api`、Axvisor |
-| 不直接依赖 | 生产 `ax-page-table`、`ax-alloc`、ArceOS `ax-mm` |
+| 不直接依赖 | 生产页表实现、`ax-alloc`、ArceOS `ax-mm` |
 
 `axaddrspace` 通过 `NestedPageTableOps` 接收页表、宿主页和物理地址转换能力。具体架构 adapter 位于 `virtualization/axvm/src/arch/` 与 `virtualization/axvm/src/npt.rs`。
 
@@ -43,7 +43,7 @@
 
 客户机地址空间的字段、Linear/Alloc 所有权、单次 map 失败清理、懒分配缺页、四种架构 adapter、AxVM 外层锁、不安全 slice 前置条件和销毁顺序见[Axvisor 客户机地址空间设计与实现](../../architecture/memory/axaddrspace.md)。
 
-通用 `MemorySet` 的 `BTreeMap` 区域管理与直接 backend 协议见[虚拟内存区域管理](../../architecture/memory/address-space.md)，页表遍历和页表项机制见[统一页表核心](../../architecture/memory/page-table.md)。
+通用 `MemorySet` 的 `BTreeMap` 区域管理与直接 backend 协议见[虚拟内存区域管理](../../architecture/memory/address-space.md)，页表遍历和页表项机制见[页表分层与实现](../../architecture/memory/page-table.md)。
 
 ### 2.2 验证与集成
 

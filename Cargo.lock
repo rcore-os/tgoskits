@@ -565,15 +565,19 @@ name = "ax-cpu"
 version = "0.8.4"
 dependencies = [
  "aarch64-cpu 11.2.0",
+ "arrayvec",
  "ax-lazyinit",
  "ax-memory-addr",
- "ax-page-table",
  "ax-percpu",
  "axbacktrace",
+ "bitflags 2.13.1",
+ "bitmaps",
  "cfg-if",
  "cpu-local",
  "log",
  "loongArch64",
+ "page-table-generic",
+ "rand 0.10.2",
  "riscv",
  "tock-registers 0.10.1",
  "x86",
@@ -745,7 +749,6 @@ dependencies = [
  "ax-kernel-guard",
  "ax-kspin",
  "ax-memory-addr",
- "ax-page-table",
  "ax-percpu",
  "ax-plat",
  "axplat-dyn",
@@ -877,7 +880,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
- "ax-page-table",
  "log",
 ]
 
@@ -906,26 +908,6 @@ dependencies = [
  "ringbuf",
  "smoltcp",
  "spin",
-]
-
-[[package]]
-name = "ax-page-table"
-version = "0.1.0"
-dependencies = [
- "arrayvec",
- "ax-errno 0.6.1",
- "ax-memory-addr",
- "bitflags 2.13.1",
- "bitmaps",
- "env_logger",
- "heapless",
- "log",
- "rand 0.10.2",
- "riscv",
- "thiserror 2.0.19",
- "tock-registers 0.10.1",
- "x86",
- "x86_64",
 ]
 
 [[package]]
@@ -1127,10 +1109,10 @@ dependencies = [
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
- "ax-page-table",
  "axvm-types",
  "lazy_static",
  "log",
+ "page-table-generic",
  "thiserror 2.0.19",
 ]
 
@@ -1438,7 +1420,6 @@ dependencies = [
  "ax-lazyinit",
  "ax-memory-addr",
  "ax-memory-set",
- "ax-page-table",
  "ax-percpu",
  "ax-plat",
  "ax-std",
@@ -1462,6 +1443,7 @@ dependencies = [
  "log",
  "loongarch_vcpu",
  "numeric-enum-macro",
+ "page-table-generic",
  "rdif-intc",
  "rdrive",
  "riscv_vcpu",
@@ -5264,6 +5246,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "page-table-generic"
+version = "0.8.0"
+dependencies = [
+ "ax-errno 0.6.1",
+ "ax-memory-addr",
+ "env_logger",
+ "heapless",
+ "log",
+ "rand 0.10.2",
+ "thiserror 2.0.19",
+ "tock-registers 0.10.1",
+]
+
+[[package]]
 name = "palette"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7340,7 +7336,6 @@ dependencies = [
  "anyhow",
  "arrayvec",
  "ax-kspin",
- "ax-page-table",
  "bit_field",
  "bitflags 2.13.1",
  "byte-unit",
@@ -7356,6 +7351,7 @@ dependencies = [
  "loongArch64",
  "num-align",
  "numeric-enum-macro",
+ "page-table-generic",
  "prettyplease",
  "quote",
  "rgb",
@@ -7380,7 +7376,6 @@ dependencies = [
  "arm-gic-driver",
  "ax-cpu",
  "ax-kspin",
- "ax-page-table",
  "ax-riscv-plic",
  "cpu-local",
  "irq-framework",
@@ -7490,7 +7485,6 @@ dependencies = [
  "ax-memory-set",
  "ax-mm",
  "ax-net",
- "ax-page-table",
  "ax-percpu",
  "ax-runtime",
  "ax-std",
@@ -7571,7 +7565,6 @@ version = "0.1.0"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-memory-addr",
- "ax-page-table",
  "log",
  "thiserror 2.0.19",
 ]

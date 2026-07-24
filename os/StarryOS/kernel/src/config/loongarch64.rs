@@ -13,7 +13,7 @@ pub const USER_SPACE_SIZE: usize = 0x3f_ffff_f000;
 /// The size of the user space.
 ///
 /// 128 TiB, matching aarch64/x86_64 (#242). LoongArch LA64 uses a 4-level page
-/// table with a 48-bit VA (`ax-page-table` `LA64MetaData`: LEVELS=4,
+/// table with a 48-bit VA (`axcpu::paging::LA64MetaData`: LEVELS=4,
 /// VA_MAX_BITS=48), so the low-half user window widens to the same
 /// `0x7fff_ffff_f000` as aarch64. The previous 256 GiB window predated the #242
 /// widen and was too small for high virtual reservations such as the JVM

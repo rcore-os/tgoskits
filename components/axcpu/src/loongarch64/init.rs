@@ -1,8 +1,9 @@
 //! Helper functions to initialize the CPU states on systems bootstrapping.
 
 use ax_memory_addr::PhysAddr;
-use ax_page_table::stage1::loongarch64::{LA64MetaData, LA64TlbInvalidator};
 use loongArch64::register::{MemoryAccessType, crmd, stlbps, tlbidx, tlbrehi, tlbrentry};
+
+use crate::paging::loongarch64::{LA64MetaData, LA64TlbInvalidator};
 
 /// Initializes TLB and MMU related registers on the current CPU.
 ///

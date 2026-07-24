@@ -199,7 +199,7 @@ graph TD
 
 ### 3.4 与页表库的边界
 
-需要特别指出的是，`ax-memory-set` 不直接依赖 `ax-page-table`。两者的联系发生在更上层：
+需要特别指出的是，`ax-memory-set` 不直接依赖任何具体页表实现。它与 `axcpu::paging` 或 AxVM 第二阶段页表的联系发生在更上层：
 
 - `ax-mm`：把 `MemorySet` 与 `ax-hal::paging::PageTable` 拼起来
 - `axaddrspace`：把 `MemorySet` 与嵌套页表 `NestedPageTable` 拼起来

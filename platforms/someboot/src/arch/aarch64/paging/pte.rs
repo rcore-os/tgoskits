@@ -1,7 +1,4 @@
-use ax_page_table::{
-    boot::{MemAttributes, PageTableEntry, TableMeta},
-    entry::aarch64::MemAttrLayout,
-};
+use page_table_generic::{MemAttributes, PageTableEntry, TableMeta};
 use tock_registers::{interfaces::*, register_bitfields, registers::ReadWrite};
 
 register_bitfields![u64,
@@ -37,6 +34,15 @@ register_bitfields![u64,
 #[derive(Clone, Copy)]
 pub struct Entry(u64);
 
+pub(crate) struct MemAttrLayout;
+
+impl MemAttrLayout {
+    pub(crate) const DEVICE_INDEX: u64 = 0;
+    pub(crate) const NORMAL_INDEX: u64 = 1;
+    pub(crate) const NORMAL_NON_CACHEABLE_INDEX: u64 = 2;
+    pub(crate) const MAIR_VALUE: u64 = 0x44ff04;
+}
+
 impl Entry {
     fn as_typed(&self) -> &ReadWrite<u64, PTE::Register> {
         unsafe { &*(self as *const Self as *const ReadWrite<u64, PTE::Register>) }
@@ -49,7 +55,7 @@ impl Entry {
 }
 
 impl PageTableEntry for Entry {
-    fn from_config(config: ax_page_table::boot::PteConfig) -> Self {
+    fn from_config(config: page_table_generic::PteConfig) -> Self {
         let entry = Entry::empty();
         if !config.valid {
             return entry;
@@ -128,7 +134,7 @@ impl PageTableEntry for Entry {
         entry
     }
 
-    fn to_config(&self, is_dir: bool) -> ax_page_table::boot::PteConfig {
+    fn to_config(&self, is_dir: bool) -> page_table_generic::PteConfig {
         let pte = self.as_typed();
         let lower;
         let executable;
@@ -147,7 +153,7 @@ impl PageTableEntry for Entry {
             executable = !pte.is_set(PTE::PXN);
         }
 
-        ax_page_table::boot::PteConfig {
+        page_table_generic::PteConfig {
             paddr: ((pte.read(PTE::PHYS_ADDR) << 12) as usize).into(),
             valid: pte.is_set(PTE::VALID),
             read: pte.is_set(PTE::AF),
@@ -193,7 +199,7 @@ impl TableMeta for Generic {
 
     const MAX_BLOCK_LEVEL: usize = 3;
 
-    fn flush(vaddr: Option<ax_page_table::boot::VirtAddr>) {
+    fn flush(vaddr: Option<page_table_generic::VirtAddr>) {
         super::super::elx::flush_tlb(vaddr);
     }
 }

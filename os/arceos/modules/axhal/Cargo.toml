@@ -26,9 +26,9 @@ xuantie-c9xx = ["ax-cpu/xuantie-c9xx"]
 rtc = ["axplat-dyn/rtc"]
 paging = [
     "dep:ax-alloc",
-    "dep:ax-page-table",
-    "ax-page-table/ax-errno",
+    "ax-cpu/ax-errno",
 ]
+copy-from = ["paging", "ax-cpu/copy-from"]
 tls = ["ax-cpu/tls", "cpu-local/tls", "axplat-dyn/tls"]
 uspace = ["paging", "ax-cpu/uspace", "axplat-dyn/uspace"]
 hv = [
@@ -54,7 +54,6 @@ ax-kernel-guard.workspace = true
 log.workspace = true
 ax-memory-addr.workspace = true
 ax-percpu.workspace = true
-ax-page-table = { workspace = true, optional = true, features = ["stage1"] }
 axplat-dyn = { workspace = true, default-features = false }
 rdrive.workspace = true
 spin.workspace = true

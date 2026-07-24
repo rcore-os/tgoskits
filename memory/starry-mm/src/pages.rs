@@ -4,8 +4,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, ops::Deref};
 
 use ax_errno::{AxError, AxResult};
-use ax_memory_addr::PhysAddr;
-use ax_page_table::common::PageSize;
+use ax_memory_addr::{PageSize, PhysAddr};
 
 use crate::{CommitCharge, reserve_commit};
 

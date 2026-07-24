@@ -41,7 +41,7 @@ flowchart TD
 
 - `ax-plat` 仅依赖 `ax-plat-macros`、`ax-crate-interface`、`irq-framework`、`ax-percpu`、`ax-kspin`、`ax-memory-addr`、`rdrive`、`spin`、`bitflags`、`const-str`。
 - `axplat-dyn` 依赖 `ax-plat`、`somehal`、`ax-driver`、`axklib`、`ax-cpu`、`rdrive`、`heapless`、`spin`，并按 feature 启用 `somehal/hv`、`somehal/uspace`、`ax-cpu/fp-simd` 等。
-- `somehal` 依赖 `someboot`、`somehal-macros`、`ax-page-table`、`mmio-api`、`irq-framework`、`rdif-intc`、`rdrive`，以及按目标架构引入 `aarch64-cpu`、`arm-gic-driver`、`ax-riscv-plic`、`riscv`、`sbi-rt`、`loongArch64`、`x2apic`、`x86` 等。
+- `somehal` 依赖 `someboot`、`somehal-macros`、`mmio-api`、`irq-framework`、`rdif-intc`、`rdrive`，以及按目标架构引入 `aarch64-cpu`、`arm-gic-driver`、`ax-riscv-plic`、`riscv`、`sbi-rt`、`loongArch64`、`x2apic`、`x86` 等。页表错误类型由 `someboot` 的启动契约重导出，不增加第二个页表依赖。
 
 ## 能力边界
 

@@ -16,9 +16,9 @@ use core::marker::PhantomData;
 
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_memory_set::{MappingError, MappingResult};
-use ax_page_table::stage2 as ptg;
 use axaddrspace::{AddrSpaceError, AddrSpaceResult, NestedPageTableOps, PageSize};
 use axvm_types::{GuestPhysAddr, MappingFlags};
+use page_table_generic as ptg;
 
 use crate::{AxVmError, AxVmResult, ax_err, host::PagingHandler};
 

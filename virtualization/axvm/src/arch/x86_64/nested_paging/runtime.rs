@@ -1,9 +1,9 @@
 //! Runtime dispatch and shared entry translation for x86 nested page tables.
 
 use ax_memory_addr::{PhysAddr, VirtAddr};
-use ax_page_table::stage2 as ptg;
 use axaddrspace::{AddrSpaceResult, NestedPageTableOps, PageSize};
 use axvm_types::{GuestPhysAddr, MappingFlags};
+use page_table_generic as ptg;
 
 use super::{ept::EptPageTableMetadata, npt::NptPageTableMetadata};
 
@@ -188,18 +188,18 @@ pub(super) fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
 }
 
 #[cfg(target_os = "none")]
-/// Invalidate host translations after ax-page-table changes an entry.
+/// Invalidate host translations after the nested page table changes an entry.
 ///
 /// The generic walker invokes this callback after installing or removing an
 /// entry. It may provide one address for a targeted invalidation or no address
 /// when the whole table must be invalidated.
 pub(super) fn flush_nested_page_table(vaddr: Option<ptg::VirtAddr>) {
     if let Some(vaddr) = vaddr {
-        // SAFETY: ax-page-table calls this after changing the current CPU's
+        // SAFETY: the nested page-table code calls this after changing the current CPU's
         // translation entries; `vaddr` is a virtual address belonging to that table.
         unsafe { x86::tlb::flush(vaddr.as_usize()) }
     } else {
-        // SAFETY: ax-page-table requests a full invalidation after changing
+        // SAFETY: the nested page-table code requests a full invalidation after changing
         // entries without a single virtual-address target.
         unsafe { x86::tlb::flush_all() }
     }

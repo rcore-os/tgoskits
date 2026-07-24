@@ -90,7 +90,7 @@ flowchart TD
 
 | 你要改什么 | 优先看哪里 | 常见影响面 |
 | --- | --- | --- |
-| 通用基础能力：错误、锁、页表、Per-CPU、容器 | `components/axerrno`、`components/kspin`、`memory/ax-page-table`、`components/percpu` | 三套系统都可能受影响 |
+| 通用基础能力：错误、锁、页表、Per-CPU、容器 | `components/axerrno`、`components/kspin`、`memory/page-table-generic`、`components/percpu` | 三套系统都可能受影响 |
 | ArceOS 内核服务：调度、HAL、驱动、网络、文件系统 | `os/arceos/modules/*`、`drivers/*`，以及相关 `memory/*` / `platforms/*` | ArceOS，且可能波及 StarryOS / Axvisor |
 | ArceOS 的 feature 或应用接口 | `os/arceos/api/feature`、`os/arceos/ulib/axstd`、`os/arceos/ulib/axlibc` | ArceOS 应用与上层系统 |
 | StarryOS 的 Linux 兼容行为 | `components/starry-*`、`os/StarryOS/kernel/*` | StarryOS |

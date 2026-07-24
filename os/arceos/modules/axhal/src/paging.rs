@@ -1,12 +1,12 @@
 //! Page table manipulation.
 
 use ax_alloc::{MemoryZone, PageRequest, UsageKind, global_allocator};
-use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
-use ax_page_table::stage1::PageFrameProvider;
+use ax_cpu::paging::PageFrameProvider;
 #[doc(no_inline)]
-pub use ax_page_table::stage1::{MappingFlags, PageSize, PagingError, PagingResult};
+pub use ax_cpu::paging::{MappingFlags, PageSize, PagingError, PagingResult};
 #[cfg(not(target_arch = "aarch64"))]
-use ax_page_table::stage1::{TlbInvalidator, TlbScope};
+use ax_cpu::paging::{TlbInvalidator, TlbScope};
+use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 
 use crate::mem::{phys_to_virt, virt_to_phys};
 
@@ -19,20 +19,19 @@ pub fn validate_smp_invalidation() {
         return;
     }
     #[cfg(target_arch = "x86_64")]
-    let available = ax_page_table::stage1::smp_invalidation_available::<
-        ax_page_table::stage1::x86_64::X64PagingMetaData<RuntimeTlbInvalidator>,
+    let available = ax_cpu::paging::smp_invalidation_available::<
+        ax_cpu::paging::x86_64::X64PagingMetaData<RuntimeTlbInvalidator>,
     >();
     #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-    let available = ax_page_table::stage1::smp_invalidation_available::<
-        ax_page_table::stage1::riscv::Sv39MetaData<VirtAddr, RuntimeTlbInvalidator>,
+    let available = ax_cpu::paging::smp_invalidation_available::<
+        ax_cpu::paging::riscv::Sv39MetaData<VirtAddr, RuntimeTlbInvalidator>,
     >();
     #[cfg(target_arch = "aarch64")]
-    let available = ax_page_table::stage1::smp_invalidation_available::<
-        ax_page_table::stage1::aarch64::A64PagingMetaData,
-    >();
+    let available =
+        ax_cpu::paging::smp_invalidation_available::<ax_cpu::paging::aarch64::A64PagingMetaData>();
     #[cfg(target_arch = "loongarch64")]
-    let available = ax_page_table::stage1::smp_invalidation_available::<
-        ax_page_table::stage1::loongarch64::LA64MetaData<RuntimeTlbInvalidator>,
+    let available = ax_cpu::paging::smp_invalidation_available::<
+        ax_cpu::paging::loongarch64::LA64MetaData<RuntimeTlbInvalidator>,
     >();
     assert!(
         available,
@@ -113,23 +112,23 @@ impl PageFrameProvider for PagingHandlerImpl {
 cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
         /// The architecture-specific page table.
-        pub type PageTable = ax_page_table::stage1::x86_64::X64PageTable<PagingHandlerImpl, RuntimeTlbInvalidator>;
+        pub type PageTable = ax_cpu::paging::x86_64::X64PageTable<PagingHandlerImpl, RuntimeTlbInvalidator>;
         /// The architecture-specific page table cursor.
-        pub type PageTableCursor<'a> = ax_page_table::stage1::x86_64::X64PageTableCursor<'a, PagingHandlerImpl, RuntimeTlbInvalidator>;
+        pub type PageTableCursor<'a> = ax_cpu::paging::x86_64::X64PageTableCursor<'a, PagingHandlerImpl, RuntimeTlbInvalidator>;
     } else if #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))] {
         /// The architecture-specific page table.
-        pub type PageTable = ax_page_table::stage1::riscv::Sv39PageTable<PagingHandlerImpl, RuntimeTlbInvalidator>;
+        pub type PageTable = ax_cpu::paging::riscv::Sv39PageTable<PagingHandlerImpl, RuntimeTlbInvalidator>;
         /// The architecture-specific page table cursor.
-        pub type PageTableCursor<'a> = ax_page_table::stage1::riscv::Sv39PageTableCursor<'a, PagingHandlerImpl, RuntimeTlbInvalidator>;
+        pub type PageTableCursor<'a> = ax_cpu::paging::riscv::Sv39PageTableCursor<'a, PagingHandlerImpl, RuntimeTlbInvalidator>;
     } else if #[cfg(target_arch = "aarch64")]{
         /// The architecture-specific page table.
-        pub type PageTable = ax_page_table::stage1::aarch64::A64PageTable<PagingHandlerImpl>;
+        pub type PageTable = ax_cpu::paging::aarch64::A64PageTable<PagingHandlerImpl>;
         /// The architecture-specific page table cursor.
-        pub type PageTableCursor<'a> = ax_page_table::stage1::aarch64::A64PageTableCursor<'a, PagingHandlerImpl>;
+        pub type PageTableCursor<'a> = ax_cpu::paging::aarch64::A64PageTableCursor<'a, PagingHandlerImpl>;
     } else if #[cfg(target_arch = "loongarch64")] {
         /// The architecture-specific page table.
-        pub type PageTable = ax_page_table::stage1::loongarch64::LA64PageTable<PagingHandlerImpl, RuntimeTlbInvalidator>;
+        pub type PageTable = ax_cpu::paging::loongarch64::LA64PageTable<PagingHandlerImpl, RuntimeTlbInvalidator>;
         /// The architecture-specific page table cursor.
-        pub type PageTableCursor<'a> = ax_page_table::stage1::loongarch64::LA64PageTableCursor<'a, PagingHandlerImpl, RuntimeTlbInvalidator>;
+        pub type PageTableCursor<'a> = ax_cpu::paging::loongarch64::LA64PageTableCursor<'a, PagingHandlerImpl, RuntimeTlbInvalidator>;
     }
 }

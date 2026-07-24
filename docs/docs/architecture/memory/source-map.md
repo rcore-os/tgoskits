@@ -9,7 +9,7 @@ sidebar_label: "源码结构"
 
 ## 1. 源码分层
 
-内存主线由启动期、公共机制、系统策略和设备能力四组源码组成。目录层级不是调用深度；例如 `ax-page-table` 通过 `PageFrameProvider` 获取页表页，但它不直接依赖 `ax-alloc`。
+内存主线由启动期、公共机制、系统策略和设备能力四组源码组成。目录层级不是调用深度；例如页表算法通过 `PageFrameProvider` 获取页表页，但 `page-table-generic` 和 `axcpu::paging` 都不直接依赖 `ax-alloc`。
 
 ### 1.1 公共组件
 
@@ -21,7 +21,10 @@ sidebar_label: "源码结构"
 | `components/kernutil/src/memory.rs` | `kernutil::memory` | 固定容量启动内存图及区间覆盖 | `MemoryDescriptor`、`MemoryMapExt::merge_add()` |
 | `memory/ax-alloc/` | `ax-alloc` | 运行时页、内核堆、全局分配器和统计 | `global_init()`、`global_add_memory()`、`alloc_pages()` |
 | `memory/buddy-slab-allocator/` | `buddy-slab-allocator` | 多段 Buddy 与每 CPU Slab 算法 | `GlobalAllocator`，仅供 `ax-alloc` 集成 |
-| `memory/ax-page-table/` | `ax-page-table` | 页表项、第一阶段、第二阶段和启动页表机制 | `PageFrameProvider`、`TlbInvalidator`、`PageTable64` |
+| `memory/page-table-generic/` | `page-table-generic` | 无架构选择的递归页表遍历和页帧契约 | `PageFrameProvider`、`TableMeta`、`PageTable` |
+| `components/axcpu/src/paging/` | `axcpu::paging` | 主机页表项、第一阶段 cursor 和失效元数据 | `PageTable32/64`、`PagingMetaData`、`MappingFlags`、`TlbInvalidator` |
+| `virtualization/axvm/src/arch/*/` | `axvm` | 客户机第二阶段页表项、几何和失效 | `NestedPageTable`、`GenericNestedPageTable` |
+| `platforms/someboot/src/arch/*/paging*` | `someboot` | 启动页表项、几何和启用流程 | 架构 boot table adapter |
 | `memory/memory_set/` | `ax-memory-set` | 虚拟内存区域集合和直接 backend 操作 | `MemorySet`、`MemoryArea`、`MappingBackend` |
 | `memory/starry-mm/` | `starry-mm` | Linux 兼容记账、提交策略和缺页能力边界 | `MemoryAccounting`、`AddressSpaceCommit`、`FaultOutcome` |
 | `memory/dma-api/` | `dma-api` | DMA 设备约束和资源所有权 | `DeviceDma`、`DmaAllocation`、`DmaMapping` |
@@ -68,20 +71,23 @@ flowchart TB
     subgraph Core["公共内存机制"]
         ADDR["ax-memory-addr"]
         ALLOC["ax-alloc"] --> BUDDY["buddy-slab-allocator"]
-        PT["ax-page-table"] --> ADDR
+        COREPT["page-table-generic"] --> ADDR
+        HOSTPT["axcpu::paging"] --> COREPT
+        GUESTPT["axvm Stage-2"] --> COREPT
+        BOOTPT["someboot paging"] --> COREPT
         SET["ax-memory-set"] --> ADDR
         SMM["starry-mm"] --> ADDR
     end
 
     subgraph Policy["并列策略层"]
         AXMM["ax-mm"] --> SET
-        AXMM --> PT
+        AXMM --> HOSTPT
         STARRY["Starry kernel mm"] --> SMM
         STARRY --> SET
-        STARRY --> PT
+        STARRY --> HOSTPT
         GUEST["axaddrspace"] --> SET
         AXVM["axvm adapter"] --> GUEST
-        AXVM --> PT
+        AXVM --> GUESTPT
     end
 
     subgraph Device["设备能力"]
@@ -107,7 +113,7 @@ flowchart TB
 
 | 禁止方向 | 原因 | 正确边界 |
 | --- | --- | --- |
-| `ax-page-table → ax-alloc` | 启动页表尚不能使用运行时 allocator | 上层实现 `PageFrameProvider` |
+| `page-table-generic` 或 `axcpu → ax-alloc` | 启动页表尚不能使用运行时 allocator，CPU 层也不应选择系统 allocator | 上层实现 `PageFrameProvider` |
 | `buddy-slab-allocator → ax-alloc` | 算法层不应知道公共用途和统计 | `ax-alloc` 包装算法层 |
 | `starry-mm → Starry kernel/VFS/task` | 可复用策略不能依赖操作系统对象 | `VmFile`、`PageSource`、`FaultOutcome` capability |
 | `dma-api → ax-alloc` | 设备能力接口不能选择全局 allocator | `axklib::dma` 或 OS adapter 实现 `DeviceDma` |

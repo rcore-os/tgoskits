@@ -18,16 +18,22 @@ flowchart TB
     subgraph Firmware["固件与启动阶段"]
         FW["UEFI / U-Boot / Device Tree Blob"] --> BOOT["someboot"]
         BOOT --> BMAP["kernutil::memory\n固定容量启动内存图"]
+        BOOT --> BOOTPT["someboot::paging\nboot tables"]
         BMAP --> HANDOFF["axplat-dyn / ax-hal\n规范化 Free、Reserved、MMIO"]
     end
 
     subgraph Runtime["公共运行时机制"]
         HANDOFF --> ALLOC["ax-alloc\n页、内核堆、GlobalAlloc、统计"]
         ALLOC --> BS["buddy-slab-allocator\n多 section Buddy + 每 CPU Slab"]
-        PT["ax-page-table\nentry / stage1 / stage2 / boot"]
+        CORE["page-table-generic\ngeneric walker"]
+        HOSTPT["axcpu::paging\nHost Stage-1"]
+        GUESTPT["axvm\nGuest Stage-2"]
         SET["ax-memory-set\n虚拟区域 + 直接 backend 操作"]
         ADDR["ax-memory-addr\n地址与范围"]
-        PT --> ADDR
+        CORE --> ADDR
+        HOSTPT --> CORE
+        GUESTPT --> CORE
+        BOOTPT --> CORE
         SET --> ADDR
     end
 
@@ -36,13 +42,13 @@ flowchart TB
         STARRY["starry-mm + Starry kernel mm\nLinux 兼容策略"]
         AXAS["axaddrspace\n客户机 GPA 策略"]
         AXVM["axvm adapter\nNestedPageTableOps"]
-        AXMM --> PT
+        AXMM --> HOSTPT
         AXMM --> SET
-        STARRY --> PT
+        STARRY --> HOSTPT
         STARRY --> SET
         AXAS --> SET
         AXVM --> AXAS
-        AXVM --> PT
+        AXVM --> GUESTPT
     end
 
     subgraph Device["设备能力边界"]
@@ -118,7 +124,7 @@ flowchart TB
 | Guest RAM | `NestedPageTableOps::alloc_frame` | `axaddrspace`/AxVM → `ax-alloc` | 客户机解除映射或虚拟机销毁 |
 | DMA buffer | `DeviceDma` 资源获取即初始化 API | `dma-api` → `axklib::dma` → `ax-alloc` | 最后一个 owner 被消费或 Drop |
 
-`PageFrameProvider` 只隔离“页从哪里来”，不会在 `ax-page-table` 内触发回收。Linux 缺页的有界 clean-page reclaim 位于 Starry 地址空间外层，失败后最多重新尝试一次。
+`PageFrameProvider` 只隔离“页从哪里来”，不会在 `page-table-generic`、`axcpu::paging`、`axvm` 或 `someboot` 内触发回收。Linux 缺页的有界 clean-page reclaim 位于 Starry 地址空间外层，失败后最多重新尝试一次。
 
 ## 3. 一致性保证
 

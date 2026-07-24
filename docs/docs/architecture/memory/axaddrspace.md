@@ -9,7 +9,7 @@ sidebar_label: "客户机地址空间"
 
 ## 1. 组件边界
 
-`axaddrspace` 是 Axvisor 的客户机内存策略层。虚拟区域查找、拆分与收缩由 `ax-memory-set` 提供，具体页表项格式与遍历由 `ax-page-table::stage2` 提供，宿主页来源与架构适配由 `axvm` 注入。
+`axaddrspace` 是 Axvisor 的客户机内存策略层。虚拟区域查找、拆分与收缩由 `ax-memory-set` 提供，通用遍历算法由 `page-table-generic` 提供，具体页表项格式、宿主页来源与架构适配由 `axvm` 拥有。
 
 ### 1.1 职责划分
 
@@ -20,12 +20,12 @@ sidebar_label: "客户机地址空间"
 | GPA 类型与映射权限 | `axvm-types` | 直接复用，不重复定义地址类型或 flags |
 | 地址区间集合 | `ax-memory-set` | 以 `Backend<Npt>` 实现直接 `MappingBackend` 操作 |
 | 客户机 RAM 策略 | `axaddrspace` | 区分外部线性内存与自身分配后备页 |
-| 第二阶段页表机制 | `ax-page-table::stage2` | 仅通过 `NestedPageTableOps` 使用 |
+| 第二阶段页表机制 | `page-table-generic` | 仅通过 `NestedPageTableOps` 使用 |
 | 宿主页分配与地址转换 | `axvm::HostPagingHandler` | 由页表适配器注入，不直接依赖 `ax-alloc` |
 | 虚拟机布局与生命周期 | `axvm` | 创建、加锁、装载、停止虚拟处理器并销毁资源 |
 | 架构页表根寄存器 | 各架构虚拟处理器实现 | `axaddrspace` 只公开根物理地址和层数 |
 
-`axaddrspace` 的生产依赖中没有 `ax-page-table`。该 crate 只在开发依赖中启用 `stage2`，用于组件测试；生产构建由 `axvm` 同时组合两者。
+`axaddrspace` 的生产依赖中没有具体页表实现。组件测试通过开发依赖 `page-table-generic` 构造 mock nested page table；生产构建由 `axvm` 实现第二阶段页表并组合 `axaddrspace`。
 
 ### 1.2 依赖方向
 
@@ -46,7 +46,7 @@ flowchart TB
         VM["axvm\n虚拟机布局与生命周期"]
         ADAPTER["NestedPageTableOps adapter"]
         HOST["HostPagingHandler\n宿主页能力"]
-        PT["ax-page-table::stage2\n页表遍历与页表项"]
+        PT["page-table-generic\n页表遍历与页表项"]
     end
 
     AS --> TYPES
@@ -58,7 +58,7 @@ flowchart TB
     ADAPTER -. "trait capability" .-> AS
 ```
 
-运行时真实链路是 `AxVM → AddrSpace<ArchNestedPageTable> → NestedPageTableOps → ax-page-table::stage2`。`axaddrspace` 不应增加只转发这些调用的页表 facade，也不应直接调用 `ax-alloc` 形成第二个宿主页入口。
+运行时真实链路是 `AxVM → AddrSpace<ArchNestedPageTable> → NestedPageTableOps → page-table-generic`。`axaddrspace` 不应增加只转发这些调用的页表 facade，也不应直接调用 `ax-alloc` 形成第二个宿主页入口。
 
 ## 2. 地址与状态模型
 
@@ -145,7 +145,7 @@ pub enum Backend<Npt: NestedPageTableOps> {
 
 线性映射的 HPA 由调用方拥有。`unmap_linear()` 只删除页表项，不调用 `dealloc_frame()`；虚拟机销毁时，外层 `VMMemoryRegion` 或平台保留内存 owner 决定是否释放实际内存。
 
-`map_linear()` 把 `allow_huge` 设为 `true`，因此连续、对齐且属性一致的范围可由第二阶段页表核心选择大页。具体页尺寸选择和架构页表项编码由[统一页表核心](./page-table.md)维护。
+`map_linear()` 把 `allow_huge` 设为 `true`，因此连续、对齐且属性一致的范围可由第二阶段页表选择大页。具体页尺寸选择和架构页表项编码见[页表分层与实现](./page-table.md)。
 
 ### 3.2 分配型映射
 
@@ -233,7 +233,7 @@ if pt.remap(vaddr, frame, orig_flags) {
 
 ### 5.2 通用适配器
 
-`virtualization/axvm/src/npt.rs` 用 `GenericFrameAllocator<H>` 把 `HostPagingHandler` 接到 `ax_page_table::stage2::PageFrameProvider`，再由 `LeveledPageTable` 实现 `NestedPageTableOps`。
+`virtualization/axvm/src/npt.rs` 用 `GenericFrameAllocator<H>` 把 `HostPagingHandler` 接到 `page_table_generic::PageFrameProvider`，再由 `LeveledPageTable` 实现 `NestedPageTableOps`。
 
 ```text
 HostPagingHandler
@@ -242,7 +242,7 @@ HostPagingHandler
 GenericFrameAllocator<H>
     │ PageFrameProvider
     ▼
-ax_page_table::stage2::PageTable
+page_table_generic::PageTable
     │ map / unmap / query / protect
     ▼
 LeveledPageTable
@@ -480,7 +480,8 @@ guest writes GPA 0x4000_1234
 | --- | --- |
 | 客户机 GVA、进程虚拟内存区域、写时复制和文件映射 | 客户机操作系统自身 |
 | 宿主内核第一阶段地址空间 | ArceOS `ax-mm` |
-| 页表项编码、页表遍历和 TLB 指令 | `ax-page-table::stage2` 与 AxVM 架构 adapter |
+| 页表遍历算法 | `page-table-generic` |
+| 页表项编码和 TLB 指令 | AxVM 架构 adapter |
 | Buddy、Slab、内存 zone 和回收策略 | `ax-alloc` 及上层系统策略 |
 | 输入输出内存管理单元 domain 与设备 DMA buffer | `dma-api` 和具体设备/domain adapter |
 | 虚拟设备地址冲突、直通窗口和启动布局 | `axvm::layout` 与设备管理层 |

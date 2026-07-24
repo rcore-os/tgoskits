@@ -29,7 +29,7 @@ ArceOS、StarryOS 和 Axvisor 分别在 `ax-mm`、StarryOS kernel 与 `axaddrspa
 | `ax-mm` | ArceOS 内核页表、线性映射和按需分配映射 | 文件虚拟内存、写时复制、客户机第二阶段策略 |
 | StarryOS `AddrSpace` | 进程页表、常驻页统计、commit accounting、Linux 虚拟内存区域策略 | 通用 allocator 和架构页表项编码 |
 | `axaddrspace` | 客户机物理地址范围、线性或分配型客户机 RAM backend | Linux 虚拟内存区域、宿主内核 iomap |
-| `ax-page-table` | 页表项、遍历、映射、权限修改和失效能力 | 虚拟内存区域策略和物理页回收策略 |
+| `axcpu::paging` / `axvm` | 所属上下文的页表项、映射、权限修改和失效能力 | 虚拟内存区域策略和物理页回收策略 |
 
 ## 2. 数据模型
 

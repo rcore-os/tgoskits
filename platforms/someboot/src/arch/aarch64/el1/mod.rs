@@ -3,7 +3,7 @@ use aarch64_cpu::{
     registers::*,
 };
 use aarch64_cpu_ext::asm::tlb::*;
-use ax_page_table::boot::VirtAddr;
+use page_table_generic::VirtAddr;
 
 use crate::{
     arch::entry::{el_entry, eret_with_timer_mode_arg},
@@ -137,7 +137,7 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
 
 #[inline(always)]
 pub fn setup_table_regs() {
-    MAIR_EL1.set(ax_page_table::entry::aarch64::MemAttrLayout::MAIR_VALUE);
+    MAIR_EL1.set(crate::arch::paging::MemAttrLayout::MAIR_VALUE);
 
     // Enable TTBR0 and TTBR1 walks, page size = 4K, vaddr size = 48 bits, paddr size = 40 bits.
     const VADDR_SIZE: u64 = 48;

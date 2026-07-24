@@ -114,7 +114,7 @@ pub fn alloc_pages(
 
 直接消费者包括 `ax-runtime`、`ax-hal`、`ax-mm`、`ax-api`、`ax-posix-api`、`ax-std`、`axklib` 和 `starry-kernel`。
 
-`ax-page-table` 不依赖 `ax-alloc`，页来源通过 `PageFrameProvider` 注入。`starry-mm` 也不直接控制该分配器；允许回收时，由 Starry kernel adapter 在外层组织一次有界重试。
+`page-table-generic` 和 `axcpu::paging` 不依赖 `ax-alloc`，页来源通过 `PageFrameProvider` 注入。`starry-mm` 也不直接控制该分配器；允许回收时，由 Starry kernel adapter 在外层组织一次有界重试。
 
 ## 验证
 

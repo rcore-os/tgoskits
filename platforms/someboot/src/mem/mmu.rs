@@ -1,13 +1,12 @@
-use ax_page_table::boot::PageTable;
-pub use ax_page_table::boot::{PagingError, PagingResult};
 use kernutil::StaticCell;
+use page_table_generic::PageTable;
+pub use page_table_generic::{PagingError, PagingResult};
 
 use crate::mem::ram::Ram;
 
 pub type ArchPageTable<A> = PageTable<<crate::arch::Arch as crate::ArchTrait>::P, A>;
 
-pub type ArchPte =
-    <<crate::arch::Arch as crate::ArchTrait>::P as ax_page_table::boot::TableMeta>::P;
+pub type ArchPte = <<crate::arch::Arch as crate::ArchTrait>::P as page_table_generic::TableMeta>::P;
 
 static BOOT_TABLE: StaticCell<ArchPageTable<Ram>> = StaticCell::uninit();
 pub static mut BOOT_TABLE_ADDR: usize = 0;
@@ -16,7 +15,7 @@ pub(crate) fn new_boot_table() -> ArchPageTable<Ram> {
     ArchPageTable::<Ram>::new(Ram).unwrap()
 }
 
-pub fn new_page_table<A: ax_page_table::boot::PageFrameProvider>(
+pub fn new_page_table<A: page_table_generic::PageFrameProvider>(
     allocator: A,
 ) -> Result<ArchPageTable<A>, PagingError> {
     ArchPageTable::<A>::new(allocator)
@@ -51,11 +50,8 @@ pub(crate) fn is_kernel_relocated() -> bool {
 
 pub trait PageTableOp {
     /// Maps a virtual-address range to a physical-address range.
-    fn map(&mut self, config: &ax_page_table::boot::MapConfig) -> PagingResult;
+    fn map(&mut self, config: &page_table_generic::MapConfig) -> PagingResult;
 
-    fn unmap(
-        &mut self,
-        start_vaddr: ax_page_table::boot::VirtAddr,
-        size: usize,
-    ) -> PagingResult<()>;
+    fn unmap(&mut self, start_vaddr: page_table_generic::VirtAddr, size: usize)
+    -> PagingResult<()>;
 }

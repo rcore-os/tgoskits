@@ -1,9 +1,9 @@
 use core::{alloc::Layout, ops::Range};
 
 use ax_kspin::SpinRaw;
-use ax_page_table::boot::PageFrameProvider;
 use kernutil::memory::{MemoryDescriptor, MemoryType};
 use num_align::NumAlign;
+use page_table_generic::PageFrameProvider;
 
 use crate::mem::{add_memory_descriptor, page_size};
 
@@ -117,22 +117,22 @@ pub fn used_range() -> Range<usize> {
 pub(crate) struct Ram;
 
 impl PageFrameProvider for Ram {
-    fn alloc_frame(&self) -> Option<ax_page_table::boot::PhysAddr> {
+    fn alloc_frame(&self) -> Option<page_table_generic::PhysAddr> {
         self.alloc_frames(1, page_size())
     }
 
-    fn dealloc_frame(&self, _paddr: ax_page_table::boot::PhysAddr) {}
+    fn dealloc_frame(&self, _paddr: page_table_generic::PhysAddr) {}
 
-    fn alloc_frames(&self, count: usize, align: usize) -> Option<ax_page_table::boot::PhysAddr> {
+    fn alloc_frames(&self, count: usize, align: usize) -> Option<page_table_generic::PhysAddr> {
         let size = page_size().checked_mul(count)?;
         let layout = Layout::from_size_align(size, align).ok()?;
         alloc(layout).map(Into::into)
     }
 
-    fn dealloc_frames(&self, _start: ax_page_table::boot::PhysAddr, _count: usize) {}
+    fn dealloc_frames(&self, _start: page_table_generic::PhysAddr, _count: usize) {}
 
-    fn phys_to_virt(&self, paddr: ax_page_table::boot::PhysAddr) -> ax_page_table::boot::VirtAddr {
-        ax_page_table::boot::VirtAddr::from_usize(super::phys_to_virt(paddr.as_usize()) as usize)
+    fn phys_to_virt(&self, paddr: page_table_generic::PhysAddr) -> page_table_generic::VirtAddr {
+        page_table_generic::VirtAddr::from_usize(super::phys_to_virt(paddr.as_usize()) as usize)
     }
 }
 

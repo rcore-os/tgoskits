@@ -1,7 +1,7 @@
 use core::arch::asm;
 
-use ax_page_table::boot::{MapConfig, MemAttributes, PteConfig, TableMeta, VirtAddr};
 use num_align::NumAlign;
+use page_table_generic::{MapConfig, MemAttributes, PteConfig, TableMeta, VirtAddr};
 use x86::{
     controlregs::{self, Cr0, Cr4},
     msr::{rdmsr, wrmsr},
@@ -32,7 +32,7 @@ const PTE_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Entry(u64);
 
-impl ax_page_table::boot::PageTableEntry for Entry {
+impl page_table_generic::PageTableEntry for Entry {
     fn from_config(config: PteConfig) -> Self {
         let mut bits = (config.paddr.as_usize() as u64) & PTE_ADDR_MASK;
         if config.valid {

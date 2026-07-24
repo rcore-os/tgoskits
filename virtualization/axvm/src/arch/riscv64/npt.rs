@@ -3,7 +3,7 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
-use ax_page_table::stage2 as ptg;
+use page_table_generic as ptg;
 
 #[derive(Clone, Copy)]
 pub struct Sv39x4MetaData;

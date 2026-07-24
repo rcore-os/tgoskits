@@ -141,7 +141,7 @@ flowchart TB
 | `ax-memory-set` | 组件层 | `memory/memory_set` | 2 | 3 | [查看](crates/ax-memory-set) |
 | `ax-mm` | ArceOS 层 | `os/arceos/modules/axmm` | 8 | 4 | [查看](crates/ax-mm) |
 | `ax-net` | 组件层 | `net/ax-net` | 11 | 6 | [查看](crates/ax-net) |
-| `ax-page-table` | 内存层 | `memory/ax-page-table` | 8 | 12 | [查看](crates/ax-page-table) |
+| `page-table-generic` | 内存层 | `memory/page-table-generic` | 2 | 4 | [查看](crates/page-table-generic) |
 | `ax-percpu` | 组件层 | `components/percpu/percpu` | 2 | 17 | [查看](crates/ax-percpu) |
 | `ax-percpu-macros` | 组件层 | `components/percpu/percpu_macros` | 0 | 1 | [查看](crates/ax-percpu-macros) |
 | `ax-plat` | 组件层 | `platforms/ax-plat` | 6 | 15 | [查看](crates/ax-plat) |

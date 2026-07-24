@@ -25,7 +25,8 @@ mod memory_accessor;
 mod paging;
 
 pub use address_space::{AddrSpace, Backend};
+pub use ax_memory_addr::PageSize;
 pub use axvm_types::MappingFlags;
 pub use error::{AddrSpaceError, AddrSpaceResult};
 pub use memory_accessor::GuestMemoryAccessor;
-pub use paging::{NestedPageTableOps, PageSize};
+pub use paging::NestedPageTableOps;

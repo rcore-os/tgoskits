@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
-use ax_page_table::boot::PhysAddr;
+use page_table_generic::PhysAddr;
 use x86::{
     bits64::{rflags, segmentation::Descriptor64},
     controlregs,

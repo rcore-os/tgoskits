@@ -5,8 +5,8 @@
 
 use core::{arch::asm, fmt};
 
-use ax_page_table::stage2 as ptg;
 use axvm_types::{HostPhysAddr, MappingFlags};
+use page_table_generic as ptg;
 
 bitflags::bitflags! {
     /// Memory attribute fields in VMSAv8-64 stage-2 descriptors.

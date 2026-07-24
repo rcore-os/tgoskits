@@ -13,10 +13,8 @@ mod trap;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_page_table::boot::{
-    MemAttributes, PageTableEntry, PhysAddr, PteConfig, TableMeta, VirtAddr,
-};
 pub(crate) use entry::_secondary_entry;
+use page_table_generic::{MemAttributes, PageTableEntry, PhysAddr, PteConfig, TableMeta, VirtAddr};
 pub use relocate::apply as relocate;
 
 use crate::{

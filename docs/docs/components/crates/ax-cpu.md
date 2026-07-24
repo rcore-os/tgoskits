@@ -6,7 +6,7 @@
 > 版本：`0.3.0-preview.8`
 > 文档依据：当前仓库源码、`Cargo.toml`、`README.md`、`src/lib.rs`、各架构 `mod.rs`/`asm.rs`/`context.rs`/`init.rs`/`trap.rs`
 
-`ax-cpu` 是 ArceOS 系栈中位于 `ax-hal` 之下、位于原始 CPU 指令之上的一层 ISA 抽象库。它负责把不同架构下的特权寄存器、异常现场、任务上下文切换、页表根寄存器、TLB 刷新和部分早期 CPU 初始化统一成可供内核/HAL 调用的接口。它不是页表库，也不是板级支持包，而是“面向 CPU 本身”的底层抽象层。
+`ax-cpu` 是 ArceOS 系栈中位于 `ax-hal` 之下、位于原始 CPU 指令之上的 ISA 抽象库。它负责不同架构的特权寄存器、异常现场、任务上下文切换、主机第一阶段页表、页表根寄存器、地址转换后备缓冲区失效和部分早期 CPU 初始化。它不处理虚拟内存区域策略、客户机第二阶段页表或板级资源。
 
 ## 架构设计
 
@@ -17,20 +17,23 @@
 - 特权寄存器读写
 - trap/exception 入口与现场表达
 - 任务上下文切换
+- 主机第一阶段页表项、遍历和批量失效
 - 页表根寄存器切换与 TLB 刷新
 - AArch64/LoongArch 等架构上的 MMU 初始化辅助
 
 它与相邻层的边界应明确区分：
 
 - `axplat`：负责“在什么时机调用这些 CPU 原语”
-- `ax-page-table`：负责“页表内容是什么”
-- `ax-cpu`：负责“CPU 如何装载页表根、如何刷 TLB、如何响应 trap”
+- `page-table-generic`：提供无架构选择的递归 walker 和 frame capability
+- `ax-cpu`：拥有主机页表内容、装载页表根、失效缓存翻译和 trap
+- `axvm` / `someboot`：分别拥有第二阶段和启动页表 adapter
 
 ### 模块结构
 
 `src/lib.rs` 的结构非常清楚：
 
 - 根层提供 `trap` 公共入口
+- `paging` 提供主机页表项、架构元数据和 32/64 位 cursor
 - `uspace_common` 在开启 `uspace` 时提供共享用户态辅助
 - 通过 `cfg_if!` 在编译期只选择一个目标架构实现
 
@@ -84,7 +87,7 @@
 
 #### `PageFaultFlags`
 
-这类页错误语义最终来自 `ax_page_table::MappingFlags`，说明 `ax-cpu` 并不自己重新定义一套访问权限语言，而是复用整个页表栈的公共位语义。
+`PageFaultFlags` 直接重导出 `ax_cpu::paging::MappingFlags`。主机页错误访问类型与主机页表权限在同一个 CPU 领域内维护，不再经过外部统一页表 facade。
 
 ### 1.6 典型架构差异
 
@@ -110,7 +113,7 @@
 #### LoongArch64
 
 - 负责页表根与 TLB refill 入口等专用初始化
-- 与 `ax-page-table` 的 LoongArch 元数据路径直接耦合
+- LoongArch 主机页表元数据与页表项位于 `axcpu::paging::loongarch64`
 
 ### 1.7 一个必须写清的边界
 
@@ -123,8 +126,7 @@
 
 它不管：
 
-- 多级页表遍历
-- 页表项格式定义
+- 客户机第二阶段或启动页表项格式
 - 物理页分配
 - 地址空间区间组织
 
@@ -154,10 +156,10 @@
 
 最常见的一条主线是：
 
-1. `ax-page-table` 定义页权限语义
-2. `ax-page-table` 维护页表内容
-3. `ax-mm` / `axaddrspace` 组织地址空间
-4. `ax-cpu::asm` 把页表根装载进 CPU，并执行 TLB 刷新
+1. `axcpu::paging` 定义主机页权限并维护第一阶段页表
+2. `ax-mm` 组织 ArceOS/Starry 主机地址空间
+3. `ax-hal::PagingHandlerImpl` 从 `ax-alloc` 提供页表帧并接入远程失效
+4. `ax-cpu::asm` 把页表根装载进 CPU
 
 这正好体现了它在内存子系统中的位置：不是页表内容层，而是页表生效层。
 
@@ -167,8 +169,8 @@
 
 | 依赖 | 作用 |
 | --- | --- |
-| `memory_addr` | 地址类型基础 |
-| `ax-page-table` | 页错误与页属性公共语义 |
+| `ax-memory-addr` | 地址与页尺寸类型 |
+| `page-table-generic` | 页帧和无架构 walker 契约 |
 | `axbacktrace` | 回溯支持 |
 | `linkme` | trap handler 分布式注册 |
 | 各架构专用依赖 | `x86`、`x86_64`、`aarch64-cpu`、`riscv`、`loongArch64` 等 |
@@ -186,13 +188,13 @@
 
 ```mermaid
 graph TD
-    A[ax-page-table] --> B[ax-cpu]
+    A[page-table-generic] --> B[ax-cpu]
     C[memory_addr] --> B
     B --> D[ax-hal]
     D --> E[axplat-*]
     D --> F[ArceOS]
     D --> G[StarryOS]
-    H[ax-page-table / ax-mm / axaddrspace] --> D
+    H[axcpu::paging / ax-mm] --> D
 ```
 
 ## 开发指南

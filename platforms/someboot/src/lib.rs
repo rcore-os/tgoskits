@@ -48,9 +48,9 @@ pub mod smp;
 pub mod timer;
 
 pub use acpi::rsdp_addr_phys;
-pub use ax_page_table::boot::*;
 pub use cmdline::cmdline;
 pub use fdt::{fdt_addr, fdt_addr_phys, platform_name};
+pub use page_table_generic::*;
 pub use somehal_macros::{entry, someboot_secondary_entry as secondary_entry};
 
 use crate::{

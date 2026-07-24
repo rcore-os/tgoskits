@@ -22,7 +22,6 @@ anyhow = {workspace = true}
 ax-kspin = { workspace = true }
 cpu-local.workspace = true
 irq-framework = { workspace = true }
-ax-page-table = { workspace = true, features = ["boot"] }
 rdif-intc.workspace = true
 rdif-msi.workspace = true
 rdrive = {workspace = true}

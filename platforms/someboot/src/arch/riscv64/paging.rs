@@ -1,7 +1,7 @@
 use core::arch::asm;
 
-use ax_page_table::boot::{MapConfig, MemAttributes, PteConfig};
 use num_align::NumAlign;
+use page_table_generic::{MapConfig, MemAttributes, PteConfig};
 
 use crate::{
     console::print_mapping,

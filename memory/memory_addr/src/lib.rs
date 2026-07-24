@@ -20,6 +20,44 @@ pub const PAGE_SIZE_2M: usize = 0x20_0000;
 /// The size of a 1G page (1073741824 bytes).
 pub const PAGE_SIZE_1G: usize = 0x4000_0000;
 
+/// Page sizes used by CPU and nested page tables.
+#[repr(usize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum PageSize {
+    /// 4 KiB page.
+    Size4K = PAGE_SIZE_4K,
+    /// 1 MiB block used by 32-bit ARM short-descriptor tables.
+    Size1M = 0x10_0000,
+    /// 2 MiB block.
+    Size2M = PAGE_SIZE_2M,
+    /// 1 GiB block.
+    Size1G = PAGE_SIZE_1G,
+}
+
+impl PageSize {
+    /// Returns whether this size represents a block larger than the base page.
+    pub const fn is_huge(self) -> bool {
+        !matches!(self, Self::Size4K)
+    }
+
+    /// Returns whether `value` is aligned to this page size.
+    pub const fn is_aligned(self, value: usize) -> bool {
+        is_aligned(value, self as usize)
+    }
+
+    /// Returns the offset of `addr` within a page of this size.
+    pub const fn align_offset(self, addr: usize) -> usize {
+        align_offset(addr, self as usize)
+    }
+}
+
+impl From<PageSize> for usize {
+    #[inline]
+    fn from(size: PageSize) -> Self {
+        size as usize
+    }
+}
+
 /// A [`PageIter`] for 4K pages.
 pub type PageIter4K<A> = PageIter<PAGE_SIZE_4K, A>;
 

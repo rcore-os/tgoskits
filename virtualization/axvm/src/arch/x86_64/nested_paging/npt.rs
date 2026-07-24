@@ -2,8 +2,8 @@
 
 use core::fmt;
 
-use ax_page_table::stage2 as ptg;
 use axvm_types::{HostPhysAddr, MappingFlags};
+use page_table_generic as ptg;
 
 use super::runtime::{config_to_flags, flush_nested_page_table};
 

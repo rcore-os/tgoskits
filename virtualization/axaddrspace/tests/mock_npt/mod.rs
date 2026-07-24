@@ -2,9 +2,9 @@ use core::sync::atomic::Ordering;
 
 use ax_memory_addr::{PAGE_SIZE_4K as PAGE_SIZE, PhysAddr, VirtAddr};
 use ax_memory_set::MappingError;
-use ax_page_table::stage2 as ptg;
 use axaddrspace::{AddrSpaceError, AddrSpaceResult, MappingFlags, NestedPageTableOps, PageSize};
 use axvm_types::GuestPhysAddr;
+use page_table_generic as ptg;
 use ptg::PageTableEntry;
 
 use crate::test_utils::{

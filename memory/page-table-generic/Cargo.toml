@@ -1,0 +1,23 @@
+[package]
+name = "page-table-generic"
+version = "0.8.0"
+edition.workspace = true
+description = "Architecture-neutral page-table traversal and frame-provider contracts"
+repository.workspace = true
+license.workspace = true
+
+[features]
+default = []
+ax-errno = ["dep:ax-errno"]
+
+[dependencies]
+ax-errno = { workspace = true, optional = true }
+ax-memory-addr.workspace = true
+heapless = "0.9"
+thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+env_logger = "0.11"
+log = "0.4"
+rand = { version = "0.10", default-features = false }
+tock-registers = "0.10"

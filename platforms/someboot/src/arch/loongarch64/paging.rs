@@ -5,9 +5,9 @@
 
 use core::arch::naked_asm;
 
-use ax_page_table::boot::{MapConfig, MemAttributes, PteConfig, TableMeta, VirtAddr};
 use loongArch64::register::{MemoryAccessType, crmd, pgdh, pgdl, pwch::*, pwcl::*, stlbps};
 use num_align::NumAlign;
+use page_table_generic::{MapConfig, MemAttributes, PteConfig, TableMeta, VirtAddr};
 
 // 导入 tock-registers 风格的页表项
 pub use super::pte::Entry;

@@ -61,7 +61,7 @@ pub unsafe fn switch_to_el1() {
 ///
 /// This function is unsafe as it changes the address translation configuration.
 pub unsafe fn init_mmu(root_paddr: PhysAddr) {
-    use ax_page_table::entry::aarch64::MemAttrLayout;
+    use crate::paging::entry::aarch64::MemAttrLayout;
 
     MAIR_EL1.set(MemAttrLayout::MAIR_VALUE);
 

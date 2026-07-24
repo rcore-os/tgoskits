@@ -3,9 +3,8 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_memory_addr::VirtAddr;
-pub use ax_page_table::entry::MappingFlags as PageFaultFlags;
 
-pub use crate::{KernelTrapFrame, UserRegisters};
+pub use crate::{KernelTrapFrame, UserRegisters, paging::MappingFlags as PageFaultFlags};
 
 /// Privilege domain that owns a saved register image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

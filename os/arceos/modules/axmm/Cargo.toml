@@ -8,7 +8,7 @@ description = "ArceOS virtual memory management module"
 license.workspace = true
 
 [features]
-copy = ["ax-page-table/copy-from"]
+copy = ["ax-hal/copy-from"]
 
 [dependencies]
 ax-alloc = { workspace = true }
@@ -19,4 +19,3 @@ ax-lazyinit.workspace = true
 log.workspace = true
 ax-memory-addr.workspace = true
 ax-memory-set = { workspace = true, features = ["ax-errno"] }
-ax-page-table = { workspace = true, optional = true, features = ["stage1"] }

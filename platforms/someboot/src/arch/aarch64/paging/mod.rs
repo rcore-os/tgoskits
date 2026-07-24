@@ -1,8 +1,8 @@
 use core::arch::asm;
 
 use aarch64_cpu::asm::barrier::{self, dsb, isb};
-use ax_page_table::boot::{MapConfig, MemAttributes, PteConfig, VirtAddr};
 use num_align::NumAlign;
+use page_table_generic::{MapConfig, MemAttributes, PteConfig, VirtAddr};
 
 #[cfg(not(feature = "hv"))]
 use crate::arch::elx::set_user_table;
@@ -15,6 +15,7 @@ use crate::{
 
 mod pte;
 
+pub(crate) use pte::MemAttrLayout;
 pub use pte::{Entry, Generic};
 
 pub fn enable_mmu() -> ! {

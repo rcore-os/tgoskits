@@ -5,7 +5,7 @@
 
 use core::fmt::Debug;
 
-use ax_page_table::boot::{MemAttributes, PageTableEntry};
+use page_table_generic::{MemAttributes, PageTableEntry};
 use tock_registers::{interfaces::*, register_bitfields, registers::*};
 
 // LoongArch64 页表项寄存器位域定义
@@ -145,7 +145,7 @@ impl Entry {
         }
     }
 
-    fn from_huge(config: ax_page_table::boot::PteConfig) -> u64 {
+    fn from_huge(config: page_table_generic::PteConfig) -> u64 {
         let mut val = PTE_DIR::H::SET;
         if config.valid {
             val = val + PTE_DIR::VALID::SET + PTE_DIR::PRESENT::SET;
@@ -190,12 +190,12 @@ impl Entry {
         val.value
     }
 
-    fn from_dir(config: ax_page_table::boot::PteConfig) -> u64 {
+    fn from_dir(config: page_table_generic::PteConfig) -> u64 {
         let paddr = config.paddr.as_usize();
         PTE_DIR::PHYS_ADDR.val((paddr >> 12) as u64).value
     }
 
-    fn from_base(config: ax_page_table::boot::PteConfig) -> u64 {
+    fn from_base(config: page_table_generic::PteConfig) -> u64 {
         let mut val = PTE::VALID::CLEAR;
 
         // 设置有效位和存在位
@@ -254,7 +254,7 @@ impl Debug for EntryDebug {
 }
 
 impl PageTableEntry for Entry {
-    fn from_config(config: ax_page_table::boot::PteConfig) -> Self {
+    fn from_config(config: page_table_generic::PteConfig) -> Self {
         let val = if config.is_dir {
             if config.huge {
                 Self::from_huge(config)
@@ -267,7 +267,7 @@ impl PageTableEntry for Entry {
         Self(val)
     }
 
-    fn to_config(&self, is_dir: bool) -> ax_page_table::boot::PteConfig {
+    fn to_config(&self, is_dir: bool) -> page_table_generic::PteConfig {
         let valid = self.as_base().is_set(PTE::VALID);
         let mut paddr = self.as_base().read(PTE::PHYS_ADDR) << 12;
 
@@ -296,7 +296,7 @@ impl PageTableEntry for Entry {
             _ => MemAttributes::Normal,
         };
 
-        ax_page_table::boot::PteConfig {
+        page_table_generic::PteConfig {
             paddr: (paddr as usize).into(),
             valid,
             read: valid, // LoongArch64: 假设有效项可读
