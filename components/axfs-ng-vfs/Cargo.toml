@@ -23,4 +23,6 @@ log = "0.4"
 smallvec = "1.15"
 
 [dev-dependencies]
+ax-crate-interface.workspace = true
+ax-kernel-guard = { workspace = true, features = ["preempt"] }
 ax-kspin = { workspace = true, features = ["host-test"] }

@@ -1235,7 +1235,9 @@ dependencies = [
 name = "axfs-ng-vfs"
 version = "0.5.6"
 dependencies = [
+ "ax-crate-interface",
  "ax-errno 0.6.1",
+ "ax-kernel-guard",
  "ax-kspin",
  "bitflags 2.13.1",
  "cfg-if",
@@ -6865,6 +6867,7 @@ dependencies = [
 name = "scope-local"
 version = "0.4.3"
 dependencies = [
+ "ax-crate-interface",
  "ax-kernel-guard",
  "ax-percpu",
  "cpu-local",

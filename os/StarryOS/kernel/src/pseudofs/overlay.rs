@@ -19,7 +19,7 @@ use alloc::{
 use core::{any::Any, task::Context};
 
 use ax_fs_ng::vfs::OpenOptions;
-use ax_kspin::SpinNoPreempt;
+use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
@@ -66,7 +66,7 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         lower_dirs: options.lower_dirs,
         upper_dir: options.upper_dir,
         _work_dir: options.work_dir,
-        root: SpinNoPreempt::new(None),
+        root: SpinNoIrq::new(None),
     });
     let root = OverlayDir::entry(
         fs.clone(),
@@ -113,9 +113,8 @@ struct OverlayFs {
     lower_dirs: Vec<Location>,
     upper_dir: Option<Location>,
     _work_dir: Option<Location>,
-    // The VFS mount path reads the root while holding its non-preemptible
-    // topology lock, so this leaf lock must never enter a sleepable path.
-    root: SpinNoPreempt<Option<DirEntry>>,
+    // root_dir() may be called from VFS mount paths with preemption disabled.
+    root: SpinNoIrq<Option<DirEntry>>,
 }
 
 impl FilesystemOps for OverlayFs {

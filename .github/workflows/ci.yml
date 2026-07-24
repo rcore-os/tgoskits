@@ -672,6 +672,14 @@ jobs:
             container_image: ""
             limit_to_owner: rcore-os
             main_pr_only: false
+          - name: Test axvisor self-hosted board orangepi-5-plus-starry
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask axvisor test board --board orangepi-5-plus-starry
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
           - name: Test axvisor self-hosted board roc-rk3568-pc-linux
             use_container: false
             runs_on: '["self-hosted","linux","board"]'

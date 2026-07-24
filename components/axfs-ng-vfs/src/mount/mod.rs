@@ -884,8 +884,12 @@ impl Location {
 
     /// Mounts a filesystem with the source name exposed through mount metadata.
     pub fn mount_with_source(&self, fs: &Filesystem, source: &str) -> VfsResult<Arc<Mountpoint>> {
-        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
+        // Filesystem callbacks may acquire sleepable locks. Prepare the
+        // unpublished mount before entering the non-preemptible topology
+        // transaction; only topology validation and publication belong inside
+        // the global guard.
         let result = Mountpoint::new_with_source(fs, Some(self.clone()), source);
+        let _topology = MOUNT_TOPOLOGY_MUTATION.lock();
         let should_propagate = self.mountpoint.is_shared();
         self.check_is_dir()?;
         {
@@ -1000,12 +1004,37 @@ impl FsPollable for Location {
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
-    use core::any::Any;
+    use core::{any::Any, cell::Cell};
 
     use super::*;
     use crate::StatFs;
 
+    std::thread_local! {
+        static PREEMPT_DEPTH: Cell<usize> = const { Cell::new(0) };
+    }
+
+    struct KernelGuardIfImpl;
+
+    #[ax_crate_interface::impl_interface]
+    impl ax_kernel_guard::KernelGuardIf for KernelGuardIfImpl {
+        fn enable_preempt() {
+            PREEMPT_DEPTH.with(|depth| {
+                depth.set(
+                    depth
+                        .get()
+                        .checked_sub(1)
+                        .expect("preemption depth must be balanced"),
+                );
+            });
+        }
+
+        fn disable_preempt() {
+            PREEMPT_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        }
+    }
+
     struct MockFs;
+    struct ContextCheckingFs;
     struct MockNode;
 
     static MOCK_FS: MockFs = MockFs;
@@ -1018,6 +1047,27 @@ mod tests {
             let node: Arc<dyn DirNodeOps> = Arc::new(MockNode);
             DirEntry::new_dir(|_| DirNode::new(node), Reference::root())
         }
+        fn stat(&self) -> VfsResult<StatFs> {
+            Err(VfsError::InvalidInput)
+        }
+    }
+
+    impl FilesystemOps for ContextCheckingFs {
+        fn name(&self) -> &str {
+            "context-checking"
+        }
+
+        fn root_dir(&self) -> DirEntry {
+            PREEMPT_DEPTH.with(|depth| {
+                assert_eq!(
+                    depth.get(),
+                    0,
+                    "filesystem callbacks must run outside the mount topology guard"
+                );
+            });
+            make_dir_entry("mounted-root")
+        }
+
         fn stat(&self) -> VfsResult<StatFs> {
             Err(VfsError::InvalidInput)
         }
@@ -1086,6 +1136,18 @@ mod tests {
             |_| DirNode::new(node),
             Reference::new(parent, name.to_string()),
         )
+    }
+
+    #[test]
+    fn mount_invokes_filesystem_callbacks_outside_topology_guard() {
+        let root = Mountpoint::new_root(&mock_filesystem());
+        let root_location = root.root_location();
+        let target_entry =
+            make_child_dir_entry(Some(root_location.entry().clone()), "mount-target");
+        let target = Location::new(root, target_entry);
+        let mounted = Filesystem::new(Arc::new(ContextCheckingFs));
+
+        target.mount(&mounted).expect("mount succeeds");
     }
 
     #[test]

@@ -80,15 +80,40 @@ impl<T: Send + Sync + 'static> LocalItem<T> {
     /// Runs `operation` with the value selected by the active scope.
     ///
     /// The higher-ranked closure prevents a reference into per-CPU-selected
-    /// storage from escaping after preemption is re-enabled.
+    /// storage from escaping after preemption is re-enabled. The first global
+    /// access initializes the global scope before entering the pinned access.
+    /// Concurrent first access waits for that initialization to be published.
     pub fn with<R>(&self, operation: impl for<'access> FnOnce(&'access T) -> R) -> R {
-        let _guard = NoPreempt::new();
-        // SAFETY: `NoPreempt` prevents migration for this complete operation.
-        unsafe { ax_percpu::with_cpu_pin(|pin| self.with_pinned(pin, operation)) }
-            .expect("scope-local access requires an installed CPU area")
+        let mut operation = Some(operation);
+        loop {
+            let guard = NoPreempt::new();
+            // SAFETY: `NoPreempt` prevents migration for this complete access.
+            let result = unsafe {
+                ax_percpu::with_cpu_pin(|pin| {
+                    ActiveScope::try_with_item(self.item, pin, |item| {
+                        let operation = operation
+                            .take()
+                            .expect("scope-local operation must run at most once");
+                        operation(item.as_ref())
+                    })
+                })
+            }
+            .expect("scope-local access requires an installed CPU area");
+            drop(guard);
+
+            if let Some(result) = result {
+                return result;
+            }
+            ActiveScope::initialize_global();
+        }
     }
 
-    /// Runs `operation` under an existing CPU pin.
+    /// Runs `operation` under an existing CPU pin without initialization.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the selected global scope has not been initialized by
+    /// [`LocalItem::with`]. Explicit [`Scope`] values are initialized eagerly.
     pub fn with_pinned<R>(
         &self,
         pin: &CpuPin<'_>,
@@ -99,7 +124,7 @@ impl<T: Send + Sync + 'static> LocalItem<T> {
 
     /// Runs `operation` without lazy initialization under an existing pin.
     ///
-    /// This returns `None` when the active scope or item has not yet been
+    /// This returns `None` when the selected global scope has not yet been
     /// initialized, allowing hard-IRQ callers to avoid allocation.
     pub fn try_with_pinned<R>(
         &self,
