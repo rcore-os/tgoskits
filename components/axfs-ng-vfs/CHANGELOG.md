@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.6...axfs-ng-vfs-v0.5.7) - 2026-07-24
+
+### Fixed
+
+- *(axfs-ng-vfs)* move mount callbacks outside atomic context ([#1683](https://github.com/rcore-os/tgoskits/pull/1683))
+
 ## [0.5.6](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.5...axfs-ng-vfs-v0.5.6) - 2026-07-23
 
 ### Added

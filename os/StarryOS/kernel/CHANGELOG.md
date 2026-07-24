@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.5...starry-kernel-v0.7.6) - 2026-07-24
+
+### Other
+
+- updated the following local packages: axfs-ng-vfs, ax-fs-ng, ax-runtime, ax-std
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.4...starry-kernel-v0.7.5) - 2026-07-23
 
 ### Added

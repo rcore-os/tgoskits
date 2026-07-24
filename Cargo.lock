@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "ax-alloc",
  "ax-display",
@@ -750,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.8.5"
+version = "0.8.6"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-io",
@@ -852,7 +852,7 @@ version = "0.4.8"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.29"
+version = "0.5.30"
 dependencies = [
  "ax-driver",
  "ax-errno 0.6.1",
@@ -1018,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.30"
+version = "0.5.31"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.1",
@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.10.5"
+version = "0.10.6"
 dependencies = [
  "aic8800",
  "ax-alloc",
@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.5.29"
+version = "0.5.30"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "axfs-ng-vfs"
-version = "0.5.6"
+version = "0.5.7"
 dependencies = [
  "ax-crate-interface",
  "ax-errno 0.6.1",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.5.22"
+version = "0.5.23"
 dependencies = [
  "anyhow",
  "ax-crate-interface",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.5.24"
+version = "0.5.25"
 dependencies = [
  "aarch64-cpu-ext",
  "arm-gic-driver",
@@ -7665,7 +7665,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "ax-alloc",
  "ax-cpu",
@@ -7800,7 +7800,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.26"
+version = "0.5.27"
 dependencies = [
  "anyhow",
  "ax-driver",

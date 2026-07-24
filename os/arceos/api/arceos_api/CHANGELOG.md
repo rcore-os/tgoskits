@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.7.5...ax-api-v0.7.6) - 2026-07-24
+
+### Other
+
+- updated the following local packages: ax-fs-ng, ax-runtime
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.7.4...ax-api-v0.7.5) - 2026-07-23
 
 ### Other
