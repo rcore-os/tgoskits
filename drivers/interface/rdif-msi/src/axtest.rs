@@ -177,19 +177,19 @@ fn rdif_msi_type_constants_hold() {
     let msg = MsiMessage::new(0xFEE00000, 0x1234);
     ax_assert_eq!(msg.address, 0xFEE00000);
     ax_assert_eq!(msg.data, 0x1234);
-    
+
     // MsiVectorIndex
     let idx = MsiVectorIndex(42);
     ax_assert_eq!(idx.0, 42);
-    
+
     // MsiEventId
     let evt = MsiEventId(10);
     ax_assert_eq!(evt.0, 10);
-    
+
     // MsiDeviceId
     let dev = MsiDeviceId(5);
     ax_assert_eq!(dev.0, 5);
-    
+
     // MsiProviderId
     let prov = MsiProviderId(99);
     ax_assert_eq!(prov.0, 99);
@@ -221,7 +221,9 @@ fn rdif_msi_request_and_interface_default_hold() {
     // Test Interface trait default implementations return Unsupported
     struct MinimalMsi;
     impl DriverGeneric for MinimalMsi {
-        fn name(&self) -> &str { "minimal-msi" }
+        fn name(&self) -> &str {
+            "minimal-msi"
+        }
     }
     impl Interface for MinimalMsi {
         fn allocate_vectors(&mut self, _request: &MsiRequest) -> Result<Vec<MsiVector>, IrqError> {
@@ -236,14 +238,23 @@ fn rdif_msi_request_and_interface_default_hold() {
     }
 
     let mut minimal = MinimalMsi;
-    let vector = MsiVector::new(MsiVectorIndex(0), MsiEventId(0), IrqId::new(IrqDomainId(0), irq_framework::HwIrq(0)));
+    let vector = MsiVector::new(
+        MsiVectorIndex(0),
+        MsiEventId(0),
+        IrqId::new(IrqDomainId(0), irq_framework::HwIrq(0)),
+    );
     ax_assert!(minimal.set_vector_enabled(&vector, true) == Err(IrqError::Unsupported));
-    ax_assert!(minimal.set_vector_affinity(&vector, IrqAffinity::Any) == Err(IrqError::Unsupported));
+    ax_assert!(
+        minimal.set_vector_affinity(&vector, IrqAffinity::Any) == Err(IrqError::Unsupported)
+    );
 }
 
 #[axtest]
 fn rdif_msi_message_and_allocation_hold() {
-    use crate::{MsiAllocation, MsiDeviceId, MsiMessage, MsiProviderId, MsiVector, MsiVectorIndex, MsiEventId};
+    use crate::{
+        MsiAllocation, MsiDeviceId, MsiEventId, MsiMessage, MsiProviderId, MsiVector,
+        MsiVectorIndex,
+    };
 
     // Test MsiMessage fields
     let msg = MsiMessage::new(0xfee0_0000, 0x1234);
@@ -263,7 +274,12 @@ fn rdif_msi_message_and_allocation_hold() {
     let alloc = MsiAllocation::new(
         MsiProviderId(2),
         MsiDeviceId(1),
-        alloc::vec![MsiVector::new(MsiVectorIndex(10), MsiEventId(0), IrqId::new(IrqDomainId(0), irq_framework::HwIrq(0)))].into_boxed_slice(),
+        alloc::vec![MsiVector::new(
+            MsiVectorIndex(10),
+            MsiEventId(0),
+            IrqId::new(IrqDomainId(0), irq_framework::HwIrq(0))
+        )]
+        .into_boxed_slice(),
     );
     ax_assert_eq!(alloc.provider().0, 2);
     ax_assert_eq!(alloc.device.0, 1);

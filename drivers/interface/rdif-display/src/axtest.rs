@@ -182,7 +182,7 @@ fn rdif_display_pixel_format_and_info_hold() {
         PixelFormat::Argb8888,
         PixelFormat::Bgr888,
     ];
-    
+
     // Just verify they can be created
     for fmt in &formats {
         match fmt {
@@ -194,7 +194,7 @@ fn rdif_display_pixel_format_and_info_hold() {
             PixelFormat::Bgr888 => {}
         }
     }
-    
+
     // DisplayInfo creation
     let info = DisplayInfo {
         width: 1920,
@@ -216,7 +216,9 @@ fn rdif_display_framebuffer_pixel_access_rules_hold() {
     }
 
     impl DriverGeneric for PixelTestDisplay {
-        fn name(&self) -> &str { "pixel-test" }
+        fn name(&self) -> &str {
+            "pixel-test"
+        }
     }
 
     impl Interface for PixelTestDisplay {
@@ -237,16 +239,16 @@ fn rdif_display_framebuffer_pixel_access_rules_hold() {
 
     let mut display = PixelTestDisplay { fb: [0; 32] };
     let mut fb = display.framebuffer().unwrap();
-    
+
     // Test pixel read/write via raw slice
     fb.as_mut_slice()[0] = 0xFF;
     fb.as_mut_slice()[1] = 0x00;
     fb.as_mut_slice()[2] = 0x00;
     ax_assert_eq!(fb.as_slice()[0], 0xFF);
-    
+
     // Test framebuffer size
     ax_assert_eq!(fb.as_slice().len(), 32);
-    
+
     // Test DisplayError variants
     ax_assert!(format!("{:?}", DisplayError::NotSupported).contains("NotSupported"));
     ax_assert!(format!("{:?}", DisplayError::InvalidFramebuffer).contains("InvalidFramebuffer"));
@@ -255,25 +257,33 @@ fn rdif_display_framebuffer_pixel_access_rules_hold() {
 
 #[axtest]
 fn rdif_display_event_and_default_impls_hold() {
-    use crate::{DisplayError, Event, DisplayInfo, DriverGeneric, Interface, PixelFormat};
+    use crate::{DisplayError, DisplayInfo, DriverGeneric, Event, Interface, PixelFormat};
 
     // Test Event
     let event = Event::none();
     ax_assert!(!event.handled);
     ax_assert!(!event.changed);
 
-    let handled = Event { handled: true, changed: false };
+    let handled = Event {
+        handled: true,
+        changed: false,
+    };
     ax_assert!(handled.handled);
     ax_assert!(!handled.changed);
 
-    let changed = Event { handled: true, changed: true };
+    let changed = Event {
+        handled: true,
+        changed: true,
+    };
     ax_assert!(changed.handled);
     ax_assert!(changed.changed);
 
     // Test default trait methods via a minimal implementation
     struct DefaultImplDisplay;
     impl DriverGeneric for DefaultImplDisplay {
-        fn name(&self) -> &str { "default-impl" }
+        fn name(&self) -> &str {
+            "default-impl"
+        }
     }
     impl Interface for DefaultImplDisplay {
         fn info(&self) -> DisplayInfo {
@@ -307,14 +317,8 @@ fn rdif_display_mode_info_and_connector_hold() {
     use crate::DisplayError;
 
     // Test DisplayError Debug formatting for all variants
-    ax_assert_eq!(
-        format!("{:?}", DisplayError::NotSupported),
-        "NotSupported"
-    );
-    ax_assert_eq!(
-        format!("{:?}", DisplayError::NotAvailable),
-        "NotAvailable"
-    );
+    ax_assert_eq!(format!("{:?}", DisplayError::NotSupported), "NotSupported");
+    ax_assert_eq!(format!("{:?}", DisplayError::NotAvailable), "NotAvailable");
     ax_assert_eq!(
         format!("{:?}", DisplayError::InvalidFramebuffer),
         "InvalidFramebuffer"

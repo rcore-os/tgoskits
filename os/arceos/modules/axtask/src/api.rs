@@ -615,7 +615,7 @@ pub(crate) fn axtask_api_constants_hold_for_test() -> bool {
     // default_task_stack_size should return a non-zero value
     let stack_size = default_task_stack_size();
     assert!(stack_size > 0);
-    assert!(stack_size % 4096 == 0);  // Should be page-aligned
+    assert!(stack_size % 4096 == 0); // Should be page-aligned
 
     true
 }
@@ -645,25 +645,25 @@ pub(crate) fn axtask_api_atomic_context_structs_hold_for_test() -> bool {
 pub(crate) fn axtask_api_current_and_exit_hold_for_test() -> bool {
     // Test that current() and exit() functions exist
     // (Can't actually call exit() in tests, but verify they compile)
-    
+
     // Verify current_task exists as a concept
     let _ = "current_task_exists";
-    
+
     // Test stack size alignment
     let stack_size = super::default_task_stack_size();
-    assert!(stack_size % 16 == 0);  // TASK_STACK_ALIGN
-    
+    assert!(stack_size % 16 == 0); // TASK_STACK_ALIGN
+
     true
 }
 
 #[cfg(axtest)]
 pub(crate) fn axtask_api_priority_constants_hold_for_test() -> bool {
     // Test priority-related constants if they exist
-    
+
     // Test stack size is reasonable (at least 4KB)
     let stack_size = super::default_task_stack_size();
     assert!(stack_size >= 4096);
-    
+
     true
 }
 
@@ -674,7 +674,7 @@ pub(crate) fn axtask_api_type_aliases_hold_for_test() -> bool {
     // WeakAxTaskRef = Weak<AxTask>
     let _type_check: Option<super::AxTaskRef> = None;
     let _weak_check: Option<super::WeakAxTaskRef> = None;
-    
+
     true
 }
 
@@ -683,7 +683,7 @@ pub(crate) fn axtask_api_scheduler_name_hold_for_test() -> bool {
     // Test that Scheduler::scheduler_name() returns a non-empty string
     let name = super::Scheduler::scheduler_name();
     assert!(!name.is_empty());
-    
+
     true
 }
 
@@ -691,20 +691,20 @@ pub(crate) fn axtask_api_scheduler_name_hold_for_test() -> bool {
 pub(crate) fn axtask_api_task_registry_functions_exist_hold_for_test() -> bool {
     // Verify task registry functions exist (multitask feature)
     // These are no-op when multitask is disabled, but should compile
-    
+
     #[cfg(feature = "multitask")]
     {
         // In multitask mode, task_by_id(0) returns current task
         let result = super::task_by_id(0);
-        assert!(result.is_some() || result.is_none());  // Either is valid
+        assert!(result.is_some() || result.is_none()); // Either is valid
     }
-    
+
     #[cfg(not(feature = "multitask"))]
     {
         // Without multitask, task_by_id always returns None
         let result = super::task_by_id(42);
         assert!(result.is_none());
     }
-    
+
     true
 }
