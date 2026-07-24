@@ -127,7 +127,7 @@ impl PageTableEntry for Entry {
             bits |= thead_mae_pte_bits(config.mem_attr);
         }
 
-        bits |= ((config.paddr.raw() >> 12) & PTE_PPN_MASK) << SV39_PPN_SHIFT;
+        bits |= ((config.paddr.as_usize() >> 12) & PTE_PPN_MASK) << SV39_PPN_SHIFT;
         Self(bits)
     }
 
@@ -141,7 +141,7 @@ impl PageTableEntry for Entry {
         let global = (bits & PTE_G) != 0;
         let dirty = (bits & PTE_D) != 0;
         let huge = is_dir && (read || writable || executable);
-        let paddr = PhysAddr::new(((bits >> SV39_PPN_SHIFT) & PTE_PPN_MASK) << 12);
+        let paddr = PhysAddr::from_usize(((bits >> SV39_PPN_SHIFT) & PTE_PPN_MASK) << 12);
 
         PteConfig {
             paddr,

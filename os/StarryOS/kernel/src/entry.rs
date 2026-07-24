@@ -31,8 +31,6 @@ pub fn init(args: &[String], envs: &[String]) {
     spawn_alarm_task();
     pseudofs::usbfs::start_event_pump();
 
-    ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
-
     let loc = ax_fs_ng::vfs::current_fs_context()
         .lock()
         .resolve(&args[0])

@@ -50,7 +50,6 @@ ext-ld = ["ax-runtime/ext-ld"]
 # Memory
 alloc = ["ax-api/alloc", "ax-io/alloc", "ax-posix-api/alloc"]
 paging = ["alloc", "ax-runtime/paging"]
-dma = ["ax-api/dma", "ax-runtime/paging"]
 tls = ["ax-runtime/tls"]
 
 # Multi-threading and scheduler

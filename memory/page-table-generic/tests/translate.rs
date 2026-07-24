@@ -1,5 +1,5 @@
 use page_table_generic::*;
-mod mocks;
+pub mod mocks;
 use mocks::*;
 
 // ===== 地址翻译测试 =====
@@ -74,7 +74,7 @@ fn test_translate_huge_page() {
                     "大页地址翻译失败: vaddr={:#x}, expected={:#x}, got={:#x}",
                     vaddr,
                     expected_paddr,
-                    translated.raw()
+                    translated.as_usize()
                 );
             }
             Err(e) => {
@@ -92,7 +92,7 @@ fn test_translate_huge_page() {
             println!(
                 "DEBUG: vaddr=0x{:x}, PTE paddr=0x{:x}",
                 vaddr,
-                pte.to_config(false).paddr.raw()
+                pte.to_config(false).paddr.as_usize()
             );
         }
     }
@@ -156,11 +156,11 @@ fn test_translate_multiple_mappings() {
 
     // 验证翻译结果的正确性
     if pte.to_config(false).huge {
-        let expected = pte.to_config(false).paddr.raw() + (0x200000 % (2 * MB));
-        assert_eq!(result.raw(), expected);
+        let expected = pte.to_config(false).paddr.as_usize() + (0x200000 % (2 * MB));
+        assert_eq!(result.as_usize(), expected);
     } else {
-        let expected = pte.to_config(false).paddr.raw() + (0x200000 % 0x1000);
-        assert_eq!(result.raw(), expected);
+        let expected = pte.to_config(false).paddr.as_usize() + (0x200000 % 0x1000);
+        assert_eq!(result.as_usize(), expected);
     }
 
     // 测试0x250000的翻译
@@ -169,11 +169,11 @@ fn test_translate_multiple_mappings() {
 
     // 根据PTE类型验证翻译结果
     if pte.to_config(false).huge {
-        let expected = pte.to_config(false).paddr.raw() + (0x250000 % (2 * MB));
-        assert_eq!(result.raw(), expected);
+        let expected = pte.to_config(false).paddr.as_usize() + (0x250000 % (2 * MB));
+        assert_eq!(result.as_usize(), expected);
     } else {
-        let expected = pte.to_config(false).paddr.raw() + (0x250000 % 0x1000);
-        assert_eq!(result.raw(), expected);
+        let expected = pte.to_config(false).paddr.as_usize() + (0x250000 % 0x1000);
+        assert_eq!(result.as_usize(), expected);
     }
 
     // 测试新的translate方法返回页表项
@@ -262,25 +262,25 @@ fn test_translate_complex_layout() {
         // 验证翻译的正确性，而不是假设特定的映射类型
         if pte.to_config(false).huge {
             // 大页映射：验证大页偏移计算
-            let expected = pte.to_config(false).paddr.raw() + (vaddr % (2 * MB));
+            let expected = pte.to_config(false).paddr.as_usize() + (vaddr % (2 * MB));
             assert_eq!(
-                translated.raw(),
+                translated.as_usize(),
                 expected,
                 "大页映射翻译失败: vaddr={:#x}, expected={:#x}, got={:#x}",
                 vaddr,
                 expected,
-                translated.raw()
+                translated.as_usize()
             );
         } else {
             // 普通页面映射：验证页面偏移计算
-            let expected = pte.to_config(false).paddr.raw() + (vaddr % 0x1000);
+            let expected = pte.to_config(false).paddr.as_usize() + (vaddr % 0x1000);
             assert_eq!(
-                translated.raw(),
+                translated.as_usize(),
                 expected,
                 "普通页面映射翻译失败: vaddr={:#x}, expected={:#x}, got={:#x}",
                 vaddr,
                 expected,
-                translated.raw()
+                translated.as_usize()
             );
         }
     }

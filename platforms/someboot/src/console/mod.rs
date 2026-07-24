@@ -54,12 +54,7 @@ pub(crate) fn debug_to_memory_desc() -> Option<MemoryDescriptor> {
         return None;
     }
 
-    Some(MemoryDescriptor::new_aligned(
-        debug_base,
-        100,
-        MemoryType::Mmio,
-        page_size(),
-    ))
+    MemoryDescriptor::new_aligned(debug_base, 100, MemoryType::Mmio, page_size()).ok()
 }
 
 pub fn _print(args: core::fmt::Arguments) {

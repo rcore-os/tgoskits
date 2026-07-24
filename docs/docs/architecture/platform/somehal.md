@@ -62,7 +62,7 @@ pub fn __somehal_secondary_default() -> ! { loop { core::hint::spin_loop(); } }
 | --- | --- |
 | `someboot` | `bootargs`、`console`、`entry`、`fdt_addr(_phys)`、`mem`、`power`、`rsdp_addr_phys`、`smp`、`timer` |
 | `somehal-macros` | `somehal_secondary_entry` → 别名 `secondary_entry` |
-| `page-table-generic` | `PagingError`、`PagingResult` |
+| `someboot` | `PagingError`、`PagingResult` 和启动能力 |
 | `setup` | `KernelOp` trait，以及 `MmioOp`/`MmioAddr`/`MmioRaw`/`MapError`（re-export 自 `mmio-api`） |
 | `platform` | `platform_name() -> Option<&'static str>` |
 | `boot_console` | `ConsoleDeviceIdError`、`device_id()` |

@@ -1,166 +1,132 @@
 # `ax-alloc`
 
-> 路径：`os/arceos/modules/axalloc`
-> 类型：库 crate
-> 分层：ArceOS 层 / 内存分配运行时基础件
-> 版本：`0.3.0-preview.3`
-> 文档依据：`Cargo.toml`、`README.md`、`src/lib.rs`、`src/default_impl.rs`、`src/axvisor_impl.rs`、`src/page.rs`、`src/tracking.rs`
+> 路径：`memory/ax-alloc`
+> 类型：`no_std` 库 crate
+> 分层：公共内存层 / 运行时分配入口
+> 版本：`0.8.12`
 
-`ax-alloc` 是 ArceOS 的全局分配入口。它把 `ax-allocator` 提供的字节分配器和页分配器包装成可直接挂到 `#[global_allocator]` 的 `GlobalAllocator`，并额外提供页级接口、使用量统计和可选的分配跟踪能力。它属于运行时叶子基础件：负责“分配”，但不负责页表建立、地址空间管理或物理内存发现，这些职责分别由 `ax-mm`、`ax-hal` 和 `ax-runtime` 承担。
+`ax-alloc` 是原有同名 crate 从 `os/arceos/modules/axalloc` 迁移后的公共组件，不是由 `ax-allocator` 改名而来。原 `ax-allocator` 是可切换算法集合，整改后已经删除；其职责没有整体迁入 `ax-alloc`，生产后端固定为独立的 `buddy-slab-allocator`。
 
-## 架构设计
-### 设计定位
-`ax-alloc` 在启动链和运行期之间扮演的是“统一分配服务”角色：
+## 组件变更
 
-- 向下，它复用 `ax-allocator` 或 `buddy-slab-allocator`，而不是自行实现完整分配算法。
-- 向上，它向 `ax-runtime`、`ax-mm`、`ax-hal::paging`、`ax-driver`、`ax-dma`、`ax-api` 等模块暴露统一的堆/页分配接口。
-- 横向，它通过 `UsageKind`/`Usages` 给页表、DMA、页缓存等不同用途打标签，方便上层做统计与诊断。
+| 原组件 | 处理 | 当前职责归属 |
+| --- | --- | --- |
+| `os/arceos/modules/axalloc` 中的 `ax-alloc` | 保留 crate 名并迁移目录 | `memory/ax-alloc` |
+| `ax-allocator` | 删除，不保留兼容包或别名 | 页和小对象算法统一由 `buddy-slab-allocator` 提供 |
+| `bitmap-allocator` | 随旧位图页分配路径删除 | 不再参与生产依赖 |
+| TLSF、RLSF、stub、`hv` backend 分支 | 删除 | 不再提供可切换运行时后端 |
 
-因此，`ax-alloc` 不是“内存管理本体”，而是“内存分配入口”。把它写成虚拟内存系统、页表系统或用户地址空间管理器，都会高估它的职责。
-
-### 模块结构
-- `src/lib.rs`：顶层 feature 分流与公共类型定义。声明 `UsageKind`、`Usages`，并在默认实现与 `hv` 实现之间切换。
-- `src/default_impl.rs`：默认 ArceOS 路径。把字节分配器与位图页分配器组合成全局分配器。
-- `src/axvisor_impl.rs`：虚拟化路径。改用 `buddy-slab-allocator`，并支持地址翻译器与 DMA32 页分配。
-- `src/page.rs`：`GlobalPage` RAII 封装，负责简单的连续页所有权管理。
-- `src/tracking.rs`：可选分配跟踪状态，记录 `Layout`、`Backtrace` 和分配代次。
-
-### 1.3 关键对象
-- `GlobalAllocator`：真正实现 `core::alloc::GlobalAlloc` 的核心对象。
-- `DefaultByteAllocator`：由 `tlsf` / `slab` / `buddy` feature 选择的字节分配器别名。
-- `BitmapPageAllocator<PAGE_SIZE>`：默认路径的页级后端。
-- `UsageKind`：把内存使用划分为 `RustHeap`、`VirtMem`、`PageCache`、`PageTable`、`Dma`、`Global`。
-- `Usages`：各类用途的累计统计。
-- `GlobalPage`：页块 RAII 包装，只负责申请/释放连续页，不负责映射属性。
-- `AllocationInfo`：只在 `tracking` 下存在的诊断元数据。
-
-### 1.4 默认实现主线
-默认路径采用“字节分配器 + 页分配器”的两级设计：
+因此当前依赖方向是：
 
 ```mermaid
-flowchart TD
-    A["global_init(start, size)"] --> B["BitmapPageAllocator::init"]
-    B --> C["切出 32 KiB 初始堆"]
-    C --> D["DefaultByteAllocator::init"]
-    D --> E["alloc(layout) 先走字节分配器"]
-    E --> F{"字节堆不足?"}
-    F -- 否 --> G["返回指针"]
-    F -- 是 --> H["alloc_pages 扩堆并 add_memory"]
-    H --> E
+flowchart LR
+    alloc[ax-alloc] --> buddy[buddy-slab-allocator]
+    runtime[ax-runtime] --> alloc
+    hal[ax-hal] --> alloc
+    mm[ax-mm] --> alloc
+    starry[starry-kernel] --> alloc
 ```
 
-实现里的关键约束有：
+## 职责边界
 
-- `global_init()` 只负责建立第一段可分配区域；后续热插入或额外区域接入走 `global_add_memory()`。
-- 默认两级模式下，`alloc()` 会根据当前堆大小和申请大小动态决定扩堆块大小，再从页分配器取页补给字节分配器。
-- `level-1` feature 会退化为单级字节分配器，此时 `alloc_pages_at()` 明确 `unimplemented!()`。
-- 对 `UsageKind::RustHeap` 的统计有特判，避免“扩堆用页”和“堆内字节分配”重复记账。
+`ax-alloc` 负责：
 
-### 1.5 `hv` 与 `tracking` 分支
-- `hv`：忽略 `ax-allocator` 的算法 feature，转而使用 `buddy-slab-allocator`。`global_init()` 需要额外注入 `AddrTranslator`，并暴露 `alloc_dma32_pages()`。当前这一路径的 `used_bytes()`、`available_bytes()`、`used_pages()`、`available_pages()` 都返回 `0`，因为底层库没有提供对应统计。
-- `tracking`：在 `GlobalAlloc::alloc/dealloc` 外围维护一个全局分配表，并记录 `axbacktrace::Backtrace`。`tracking::with_state()` 用每 CPU 的 `IN_GLOBAL_ALLOCATOR` 标记避免跟踪逻辑再次触发分配而递归爆栈。
+- 初始化和扩展运行时 Buddy 管理的物理内存区；
+- 提供内核小对象堆和 `GlobalAlloc`；
+- 提供带 zone、对齐和用途信息的连续页分配；
+- 初始化每 CPU Slab；
+- 保存统一的分配统计快照。
 
-## 核心功能
-### 功能概览
-- 为系统提供可挂到 `#[global_allocator]` 的全局堆分配器。
-- 提供页级接口 `alloc_pages()` / `alloc_pages_at()` / `dealloc_pages()`。
-- 提供 `GlobalPage` 这一轻量页所有权对象。
-- 提供按用途分类的使用量统计，以及可选的 backtrace 跟踪。
+`ax-alloc` 不负责：
 
-### 使用场景
-- `global_init()` / `global_add_memory()`：由 `ax-runtime/src/lib.rs` 的 `init_allocator()` 调用，是 ArceOS 启动期接入堆的入口。
-- `global_allocator().alloc_pages()`：被 `ax-mm/src/backend/alloc.rs`、`ax-hal/src/paging.rs` 等页级消费者直接使用。
-- `global_allocator().alloc()` / `dealloc()`：被 `ax-api/src/imp/mem.rs` 直接转发给更上层 API。
-- `GlobalPage::alloc*()`：适合需要“拿到一段连续页并在 drop 时自动归还”的简单路径。
+- 启动固件内存描述解析；
+- 页表遍历和 PTE 编码；
+- VMA、COW、Linux overcommit 或回收策略；
+- DMA map/unmap、cache ownership 或 IOMMU；
+- 在分配失败后调用 VFS、阻塞或隐式重试。
 
-### 边界说明
-- `ax-alloc` 不负责扫描物理内存，也不决定哪些区域可以加到堆里；这些输入由 `ax-runtime` 和 `ax-hal` 提供。
-- `ax-alloc` 不负责地址映射策略；页表和地址空间对象依然在 `ax-mm` 层。
-- `Usages` 是统计视图，不是安全边界或配额系统。
+## 公共类型
+
+### `MemoryZone` 与 `PageRequest`
+
+`MemoryZone` 只有 `Normal` 和 `Dma32`。`Dma32` 表示分配结果的物理地址必须完全位于 4 GiB 以下，不表示独立保留的 Linux 式 DMA zone。
+
+`PageRequest` 同时携带：
+
+- `count`：4 KiB 页数量；
+- `align`：字节对齐，必须是至少 4 KiB 的 2 次幂；
+- `zone`：物理地址约束。
+
+公共页入口为：
+
+```rust
+pub fn alloc_pages(
+    request: PageRequest,
+    usage: UsageKind,
+) -> AllocResult<GlobalPage>;
+```
+
+### `GlobalPage`
+
+`GlobalPage` 保存分配地址、页数和 `UsageKind`。对象 Drop 时根据地址找到对应 Buddy section，并按照原用途更新可选统计；`zone` 和对齐只用于分配筛选，不属于释放参数。
+
+页表 provider、任务栈和必须适配分离式 alloc/free trait 的边界可以使用内部 raw pair；raw 释放是 `unsafe`，adapter 必须证明地址仍由自己唯一持有、页数和用途未改变且只释放一次。普通调用方应使用 `GlobalPage`。
+
+### `AllocatorStats`
+
+启用 `stats` feature 后，统计只保存一张按 `UsageKind` 索引的计数表，分类包括 Rust 堆、虚拟内存、page cache、页表、DMA 和通用页对象。`Normal` 与 `Dma32` 共享 Buddy section，因此地址区域不作为统计维度。
+
+底层每个 bucket 使用一个 Relaxed 原子计数，每次 alloc/free 只更新一个 bucket，不使用统计全局锁串行化 Slab 命中。`stats()` 返回快照；`usage()` 和 `total()` 从快照计算，不维护第二份可漂移的统计状态。关闭 feature 后计数原子和更新分支均不进入镜像。
+
+## 后端和并发
+
+`buddy-slab-allocator` 是唯一生产后端：
+
+- Buddy 管理多个不连续物理内存 section、连续页、对齐和 DMA32 过滤；
+- 固定 size class 的 per-CPU Slab 处理小对象；
+- 跨 CPU 释放通过受限 remote-free 路径回到 owner Slab；
+- byte alloc/free 只在完整操作期间禁止任务迁移，不在 `buddy-slab-allocator` 外再持有跨 CPU 全局锁；
+- 默认页分配仍使用单一全局 Buddy 锁，不提前引入完整 PCP、NUMA 或页迁移机制。
+
+`global_init()` 注册第一段运行时内存，`global_add_memory()` 接入后续可用段。启动 bump allocator 的冻结和内存描述交接由 `someboot` 负责，不由 `ax-alloc` 重新解析固件信息。
+
+## 可选能力
+
+| Feature | 作用 |
+| --- | --- |
+| `global-allocator` | 注册 crate 提供的全局堆分配器 |
+| `smp` | 启用多核锁和 per-CPU Slab 路径 |
+| `tracking` | 记录堆分配布局、代次和回溯 |
+| `stats` | 启用按用途计数与诊断快照 |
+
+`embedded-default`、`starry` 和 `hypervisor` 是系统配置组合，不是 `ax-alloc` feature 名称。
 
 ## 依赖关系
-```mermaid
-graph LR
-    ax-allocator["ax-allocator"] --> ax-alloc["ax-alloc"]
-    axbacktrace["axbacktrace (tracking)"] --> ax-alloc
-    ax-percpu["ax-percpu (tracking)"] --> ax-alloc
-    ax_kspin["ax-kspin"] --> ax-alloc
 
-    ax-alloc --> ax-runtime["ax-runtime"]
-    ax-alloc --> ax-mm["ax-mm"]
-    ax-alloc --> ax-hal["ax-hal/paging"]
-    ax-alloc --> ax-driver["ax-driver"]
-    ax-alloc --> ax_dma["ax-dma"]
-    ax-alloc --> axfsng["ax-fs-ng"]
-    ax-alloc --> ax-api["ax-api"]
-    ax-alloc --> starry_kernel["starry-kernel"]
-    ax-alloc --> axplat_dyn["axplat-dyn"]
+直接依赖中的内存算法只有 `buddy-slab-allocator`。`ax-alloc` 还依赖：
+
+- `ax-memory-addr`：物理和虚拟地址类型；
+- `ax-plat`：地址转换；
+- `ax-percpu`：每 CPU Slab；
+- `ax-kspin`：非睡眠锁；
+- `ax-errno`、`thiserror`：错误边界；
+- 可选 `axbacktrace`：分配跟踪。
+
+直接消费者包括 `ax-runtime`、`ax-hal`、`ax-mm`、`ax-api`、`ax-posix-api`、`ax-std`、`axklib` 和 `starry-kernel`。
+
+`page-table-generic` 和 `axcpu::paging` 不依赖 `ax-alloc`，页来源通过 `PageFrameProvider` 注入。`starry-mm` 也不直接控制该分配器；允许回收时，由 Starry kernel adapter 在外层组织一次有界重试。
+
+## 验证
+
+修改该 crate 后至少执行：
+
+```bash
+cargo test -p ax-alloc
+cargo xtask clippy --package ax-alloc
+cargo test -p buddy-slab-allocator
+cargo test -p buddy-slab-allocator --test stress_test -- --ignored
 ```
 
-### 直接依赖
-- `ax-allocator`：默认路径的算法库来源。
-- `ax-kspin`：保护全局分配器内部状态。
-- `ax-errno`：把页对象和分配失败映射到 ArceOS 错误码。
-- `axbacktrace`、`ax-percpu`：只在 `tracking` 下参与分配跟踪。
-- `buddy-slab-allocator`：只在 `hv` 下启用。
+系统级验证还需要覆盖多段启动内存交接、SMP per-CPU Slab、DMA32 物理边界、页表分配、Starry COW/fault 和 Axvisor Guest RAM。
 
-### 主要消费者
-- `ax-runtime`：启动期初始化全局分配器。
-- `ax-mm`、`ax-hal`：页级分配的主要消费者。
-- `ax-driver`、`ax-dma`、`ax-fs-ng`：驱动、DMA、文件缓存等运行期场景。
-- `ax-api` / `ax-posix-api`：向上层 API 暴露堆能力。
-- `starry-kernel`：可复用其 tracking 和页/堆分配能力。
-
-## 开发指南
-### 接入方式
-```toml
-[dependencies]
-ax-alloc = { workspace = true }
-```
-
-对大多数上层模块来说，更常见的接入方式是通过 `ax-runtime`、`ax-api` 或其他运行时聚合层间接使用，而不是直接把 `ax-alloc` 当业务库调用。
-
-### 注意事项
-1. 修改 `global_init()` 或扩堆逻辑时，要同时检查默认路径与 `hv` 路径是否保持语义一致。
-2. 修改 `UsageKind` 或统计规则时，要避免默认两级分配里的双重记账。
-3. 若调整 `GlobalPage`，必须坚持它只是“分配到的连续页块”所有权对象，不能把映射、cache 属性或 IOMMU 语义塞进来。
-4. 若新增 feature，需要同步检查 `ax-runtime` 与 `ax-runtime` 的 feature 传播是否正确。
-
-### 4.3 开发建议
-- “算法选择”优先放在 `ax-allocator` 层，`ax-alloc` 更适合做全局装配。
-- “地址空间策略”应放在 `ax-mm` 或更上层，而不是让 `ax-alloc` 变成第二个内存管理器。
-- 需要定位泄漏或大户时优先用 `tracking`，不要在分配快路径堆太多日志。
-
-## 测试
-### 测试覆盖
-`ax-alloc` 本体没有独立的 crate 内测试，当前验证主要依赖：
-
-- `ax-allocator` 自身的算法测试与压力测试。
-- `ax-runtime` 启动链对 `global_init()` 的真实调用。
-- `StarryOS/kernel/src/pseudofs/dev/memtrack.rs` 对 tracking 路径的系统级消费。
-
-### 单元测试
-- `level-1` 与默认两级模式的差异分支。
-- `alloc_pages_at()`、`GlobalPage` 的边界行为。
-- `tracking::with_state()` 的递归保护。
-- `hv` 路径下地址翻译器和 DMA32 页分配。
-
-### 集成测试
-- ArceOS 正常启动并完成 `ax-runtime` 堆初始化。
-- `ax-mm` / `ax-hal` 的页级消费者能稳定拿到页块。
-- tracking 打开后 memtrack 结果与实际分配行为一致。
-- Axvisor 的 `hv` 组合下分配器初始化与地址翻译可用。
-
-### 覆盖率
-- 对 `ax-alloc`，比单纯行覆盖率更重要的是 feature 组合覆盖。
-- 至少应覆盖当前实际启用的字节分配算法，以及 `tracking`、`hv`、`level-1` 这些高风险分支。
-
-## 跨项目定位
-### ArceOS
-`ax-alloc` 是 ArceOS 运行时里的标准全局分配模块。它直接服务 `ax-runtime`、`ax-mm`、`ax-hal`、驱动和 API 层，是系统从“知道有哪些内存区域”走到“可以分配内存”的关键一环。
-
-### StarryOS
-StarryOS 复用 `ax-alloc` 作为共享堆/页分配基础，并在 `memtrack` 场景中消费其 tracking 能力。因此它在 StarryOS 中仍是叶子基础件，而不是 Linux 兼容内存子系统本体。
-
-### Axvisor
-Axvisor 通过 `hv` 路径复用 `ax-alloc`，重点是地址翻译友好的宿主侧分配。它承担的是 Hypervisor 运行时分配服务，不是 guest 物理内存管理器或二级页表策略层。
+更完整的启动交接、运行时算法和性能约束见[内存管理架构](../../architecture/memory/overview.md)与[运行时分配器](../../architecture/memory/runtime-allocator.md)。

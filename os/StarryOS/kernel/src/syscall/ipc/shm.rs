@@ -22,7 +22,7 @@ use super::{
     SHM_STAT, has_ipc_permission, next_ipc_id,
 };
 use crate::{
-    mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
+    mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable, runtime_page_source},
     task::AsThread,
 };
 
@@ -634,7 +634,11 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
         aspace.map(start_addr, length, mapping_flags, false, backend)?;
     } else {
         // This is the first process to attach the shared memory
-        let pages = Arc::new(SharedPages::new(length, PageSize::Size4K)?);
+        let pages = Arc::new(SharedPages::new(
+            length,
+            PageSize::Size4K,
+            runtime_page_source(),
+        )?);
         let backend = Backend::new_shared(start_addr, pages.clone());
         aspace.map(start_addr, length, mapping_flags, false, backend)?;
 

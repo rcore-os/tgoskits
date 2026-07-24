@@ -71,10 +71,9 @@ aarch64_sysreg
 ax-errno
 ax-io
 ax-kspin
-bitmap-allocator
 irq-framework
-memory_addr
-page_table_entry
+ax-lazyinit
+ax-linked-list-r4l
 rsext4
 scope-local
 ...

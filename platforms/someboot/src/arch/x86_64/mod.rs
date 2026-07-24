@@ -29,6 +29,11 @@ impl ArchTrait for Arch {
     type P = paging::Generic;
     type Console = console::Console;
 
+    // The AP trampoline loads CR3 in 32-bit mode.
+    const EARLY_RAM_END_EXCLUSIVE: usize = 1usize << 32;
+    const EARLY_RESERVED_RANGE: Option<core::ops::Range<usize>> =
+        Some(power::AP_TRAMPOLINE_PADDR..power::AP_TRAMPOLINE_PADDR + power::AP_TRAMPOLINE_SIZE);
+
     fn _va(paddr: usize) -> *mut u8 {
         if mem::mmu::is_kernel_relocated() {
             paddr.wrapping_add(addrspace::PHYS_VIRT_OFFSET) as *mut u8

@@ -13,6 +13,7 @@ version = "0.9.3"
 
 [dependencies]
 ax-kspin.workspace = true
+bytemuck.workspace = true
 cfg-if.workspace = true
 derive_more.workspace = true
 log.workspace = true
@@ -21,3 +22,6 @@ thiserror.workspace = true
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
+
+[dev-dependencies]
+ax-kspin = { workspace = true, features = ["host-test"] }

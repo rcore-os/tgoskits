@@ -11,15 +11,3 @@ cfg_alloc! {
         ax_alloc::global_allocator().dealloc(ptr, layout)
     }
 }
-
-cfg_dma! {
-    pub use ax_dma::DMAInfo;
-
-    pub unsafe fn ax_alloc_coherent(layout: Layout) -> Option<DMAInfo> {
-        unsafe { ax_dma::alloc_coherent(layout) }.ok()
-    }
-
-    pub unsafe fn ax_dealloc_coherent(dma: DMAInfo, layout: Layout) {
-        unsafe { ax_dma::dealloc_coherent(dma, layout) }
-    }
-}

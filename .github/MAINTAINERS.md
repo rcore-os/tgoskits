@@ -72,9 +72,9 @@ M: @bullhh
 R: @bullhh
 F: memory/
 F: os/arceos/modules/axmm/
-F: os/arceos/modules/axalloc/
+F: memory/ax-alloc/
 F: virtualization/axaddrspace/
 F: virtualization/axvm/src/layout.rs
 F: virtualization/x86_vcpu/src/ept.rs
 F: platforms/
-K: memory management, address space, page table, paging, `ax-mm`, `axaddrspace`, `page-table-generic`, `ax-page-table-multiarch`, `ax-page-table-entry`, `ax-memory-set`, `ax-memory-addr`, `axalloc`, `AddrSpace`, `KERNEL_ASPACE`, `PageTable`, `PageTableCursor`, `FrameAllocator`, `PagingHandlerImpl`, `MappingFlags`, `MemRegionFlags`, `Backend::Allocation`, `mmap`, `munmap`, `mprotect`, `brk`, user memory, EPT/NPT, Stage-2, nested page table, `NestedPagingConfig`, GPA/GVA
+K: memory management, address space, page table, paging, `ax-mm`, `starry-mm`, `axaddrspace`, `page-table-generic`, `ax-cpu::paging`, `ax-memory-set`, `ax-memory-addr`, `ax-alloc`, `AddrSpace`, `KERNEL_ASPACE`, `PageTable`, `PageTableCursor`, `PageFrameProvider`, `PagingHandlerImpl`, `MappingFlags`, `MemRegionFlags`, `Backend::Allocation`, `mmap`, `munmap`, `mprotect`, `brk`, user memory, EPT/NPT, Stage-2, nested page table, `NestedPagingConfig`, GPA/GVA

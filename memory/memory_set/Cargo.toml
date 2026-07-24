@@ -13,5 +13,6 @@ license = "Apache-2.0"
 [dependencies]
 ax-errno = { workspace = true, optional = true }
 ax-memory-addr = { workspace = true }
+thiserror.workspace = true
 [features]
 ax-errno = ["dep:ax-errno"]

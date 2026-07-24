@@ -1,19 +1,19 @@
 //! A minimal contiguous dma-buf file backing the `/dev/dma_heap` allocator.
 //!
 //! Each [`DmaBufFile`] owns one physically-contiguous, DMA-coherent allocation
-//! (via `ax_dma`). It is handed to userspace as a file descriptor; `mmap` maps
+//! (via `dma-api`). It is handed to userspace as a file descriptor; `mmap` maps
 //! the buffer's physical pages, and the physical base is what the
 //! `/dev/mpp_service` node programs into the JPEG decoder. The allocation lives
 //! in an inner `Arc` so that an active `mmap` keeps the pages alive even if the
 //! fd is closed first; it is freed only when both the fd and every mmap drop.
 
 use alloc::{borrow::Cow, sync::Arc};
-use core::{alloc::Layout, any::Any, ffi::c_int};
+use core::{any::Any, ffi::c_int};
 
-use ax_dma::DMAInfo;
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange};
 use axpoll::{IoEvents, Pollable};
+use dma_api::CoherentArray;
 use linux_raw_sys::general::O_RDWR;
 
 use super::{FileLike, Kstat};
@@ -22,22 +22,8 @@ use crate::pseudofs::DeviceMmap;
 /// The owned contiguous allocation. Freed when the last reference (the fd's
 /// `DmaBufFile` and any mmap retainer) drops.
 struct DmaBufAlloc {
-    dma: DMAInfo,
+    dma: CoherentArray<u8>,
     size: usize,
-    align: usize,
-}
-
-// The buffer is DMA-coherent memory addressed by physical address; the contained
-// CPU pointer is only touched (uniquely) in `Drop`.
-unsafe impl Send for DmaBufAlloc {}
-unsafe impl Sync for DmaBufAlloc {}
-
-impl Drop for DmaBufAlloc {
-    fn drop(&mut self) {
-        if let Ok(layout) = Layout::from_size_align(self.size, self.align) {
-            unsafe { ax_dma::dealloc_coherent_pages(self.dma, layout) };
-        }
-    }
 }
 
 /// A contiguous, DMA-coherent buffer exposed as a dma-buf file.
@@ -53,30 +39,31 @@ impl DmaBufFile {
             .checked_next_multiple_of(align)
             .ok_or(AxError::InvalidInput)?
             .max(align);
-        let layout = Layout::from_size_align(size, align).map_err(|_| AxError::InvalidInput)?;
         // The accelerators that consume these buffers (JPU/RGA/NPU) run with the
         // IOMMU bypassed and program raw 32-bit physical DMA addresses, so the
         // backing pages must live below 4 GiB. Plain `alloc_coherent_pages` draws
         // from anywhere in RAM and returns >4 GiB pages on large-memory boards,
         // which the 32-bit address registers cannot reach.
-        let dma =
-            unsafe { ax_dma::alloc_coherent_pages_dma32(layout) }.map_err(|_| AxError::NoMemory)?;
+        let device = axklib::dma::device_with_mask(u32::MAX as u64);
+        let dma = device
+            .coherent_array_zero_with_align::<u8>(size, align)
+            .map_err(|_| AxError::NoMemory)?;
         Ok(Self {
-            alloc: Arc::new(DmaBufAlloc { dma, size, align }),
+            alloc: Arc::new(DmaBufAlloc { dma, size }),
         })
     }
 
     /// Physical address range of the buffer.
     pub fn phys_range(&self) -> PhysAddrRange {
         PhysAddrRange::from_start_size(
-            PhysAddr::from(self.alloc.dma.bus_addr.as_u64() as usize),
+            PhysAddr::from(self.alloc.dma.dma_addr().as_u64() as usize),
             self.alloc.size,
         )
     }
 
     /// Physical base address.
     pub fn phys_base(&self) -> usize {
-        self.alloc.dma.bus_addr.as_u64() as usize
+        self.alloc.dma.dma_addr().as_u64() as usize
     }
 
     /// Size of the allocation in bytes (page-rounded up from the request).
@@ -122,7 +109,7 @@ impl ContiguousDmaBuf for DmaBufFile {
     }
 
     fn dma_cpu_base(&self) -> Option<usize> {
-        Some(self.alloc.dma.cpu_addr.as_ptr() as usize)
+        Some(self.alloc.dma.as_ptr().as_ptr() as usize)
     }
 
     fn dma_retainer(&self) -> Arc<dyn Any + Send + Sync> {

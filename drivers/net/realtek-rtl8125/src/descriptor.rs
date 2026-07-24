@@ -11,7 +11,7 @@ const RX_PACKET_LEN_MASK: u32 = 0x3fff;
 const ETH_FCS_LEN: usize = 4;
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Default)]
 pub struct TxDesc {
     pub opts1: u32,
     pub opts2: u32,
@@ -46,7 +46,7 @@ impl TxDesc {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Default)]
 pub struct RxDesc {
     pub opts1: u32,
     pub opts2: u32,

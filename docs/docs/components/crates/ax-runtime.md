@@ -3,7 +3,7 @@
 > 路径：`os/arceos/modules/axruntime`
 > 类型：库 crate
 > 分层：ArceOS 层 / ArceOS 内核模块
-> 版本：`0.5.0`
+> 版本：`0.10.4`
 > 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
 
 `ax-runtime` 的核心定位是：Runtime library of ArceOS
@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 内核模块
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`ax-driver`、`buddy-slab`、`display`、`dma`、`fs`、`fs-ng`、`input`、`ipi`、`irq` 等（另有 9 个 feature） 控制编译期能力装配。
+- feature 视角：通过 `display`、`fs`、`input`、`ipi`、`irq`、`multitask`、`net`、`paging`、`rtc`、`smp` 等 feature 装配运行时能力。
 - 关键数据结构：可直接观察到的关键数据结构/对象包括 `LogIfImpl`、`AddrTranslatorImpl`、`KlibImpl`、`LOGO`、`INITED_CPUS`、`TRANSLATOR`、`PERIODIC_INTERVAL_NANOS`。
 
 ### 模块结构
@@ -37,9 +37,10 @@ graph LR
     current --> axbacktrace["axbacktrace"]
     current --> ax-display["ax-display"]
     current --> ax-driver["ax-driver"]
-    current --> ax-fs["ax-fs"]
     current --> axfs_ng["ax-fs-ng"]
     current --> ax-hal["ax-hal"]
+    current --> ax_log["ax-log"]
+    current --> ax_plat["ax-plat"]
     ax_api["ax-api"] --> current
     arceos_feature["ax-runtime"] --> current
     ax_posix_api["ax-posix-api"] --> current
@@ -47,25 +48,45 @@ graph LR
 ```
 
 ### 直接依赖
+- `aic8800`
 - `ax-alloc`
+- `ax-crate-interface`
+- `ax-ctor-bare`
 - `axbacktrace`
 - `ax-display`
 - `ax-driver`
-- `ax-fs`
+- `ax-errno`
 - `ax-fs-ng`
+- `axfs-ng-vfs`
 - `ax-hal`
 - `ax-input`
 - `ax-ipi`
+- `ax-kspin`
+- `ax-lazyinit`
 - `axklib`
 - `ax-log`
-- 另外还有 `8` 个同类项未在此展开
+- `ax-memory-addr`
+- `ax-mm`
+- `ax-net`
+- `ax-percpu`
+- `ax-plat`
+- `ax-task`
+- `axpanic`
+- `dma-api`
+- `irq-framework`
+- `rdif-block`
+- `rdif-intc`
+- `rd-net`
+- `rdrive`
+- `sdhci-cv1800`
+- `spin`
 
 ### 间接依赖
 - `ax-arm-pl031`
 - `axaddrspace`
-- `ax-allocator`
+- `buddy-slab-allocator`
 - `ax-cpu`
-- `ax-dma`
+- `dma-api`
 - `rdrive`
 - `rdif-block`
 - `rd-net`

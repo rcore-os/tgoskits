@@ -2,10 +2,12 @@
 
 mod test_helpers;
 
+use std::sync::Arc;
+
 use dma_api::*;
 use test_helpers::{DmaOperation, TrackingDmaOp};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 struct Descriptor {
     addr: u64,
@@ -17,6 +19,80 @@ fn new_tracking_device() -> (DeviceDma, &'static TrackingDmaOp) {
     let tracker = Box::new(TrackingDmaOp::new());
     let tracker = Box::leak(tracker);
     (DeviceDma::new_legacy(u64::MAX, tracker), tracker)
+}
+
+#[test]
+fn dma_raii_owners_release_backend_tokens_once() {
+    let (dev, tracker) = new_tracking_device();
+    let coherent = dev.coherent_array_zero::<u8>(64).unwrap();
+    let contiguous = dev
+        .contiguous_array_zero::<u8>(64, DmaDirection::ToDevice)
+        .unwrap();
+
+    tracker.clear();
+    drop(coherent);
+    drop(contiguous);
+
+    let operations = tracker.operations();
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|op| matches!(op, DmaOperation::DeallocCoherent { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|op| matches!(op, DmaOperation::DeallocContiguous { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn shared_dma_owner_releases_backing_after_the_last_retainer() {
+    let (dev, tracker) = new_tracking_device();
+    let owner = Arc::new(dev.coherent_array_zero::<u8>(64).unwrap());
+    let fd_retainer = owner.clone();
+    let mmap_retainer = owner.clone();
+    let import_retainer = owner.clone();
+    tracker.clear();
+
+    drop(owner);
+    drop(fd_retainer);
+    drop(mmap_retainer);
+    assert!(
+        tracker
+            .operations()
+            .iter()
+            .all(|operation| !matches!(operation, DmaOperation::DeallocCoherent { .. }))
+    );
+
+    drop(import_retainer);
+    assert_eq!(
+        tracker
+            .operations()
+            .iter()
+            .filter(|operation| matches!(operation, DmaOperation::DeallocCoherent { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn owned_dma_allocations_reject_zero_length_before_calling_backend() {
+    let (dev, tracker) = new_tracking_device();
+
+    assert!(matches!(
+        dev.coherent_array_zero::<u8>(0),
+        Err(DmaError::ZeroSizedBuffer)
+    ));
+    assert!(matches!(
+        dev.contiguous_array_zero::<u8>(0, DmaDirection::ToDevice),
+        Err(DmaError::ZeroSizedBuffer)
+    ));
+    assert!(tracker.operations().is_empty());
 }
 
 #[test]
@@ -366,4 +442,19 @@ fn pool_reuses_contiguous_buffers_without_implicit_zeroing() {
     assert_eq!(buff.as_slice_cpu()[0], 0x7e);
     assert_eq!(tracker.count_sync_alloc_for_device(), 0);
     assert_eq!(tracker.count_sync_alloc_for_cpu(), 0);
+}
+
+#[test]
+fn fixed_contiguous_buffer_pool_fails_immediately_when_exhausted() {
+    let (dev, tracker) = new_tracking_device();
+    let pool = dev.contiguous_buffer_pool(
+        core::alloc::Layout::from_size_align(64, 64).unwrap(),
+        DmaDirection::ToDevice,
+        1,
+    );
+    tracker.clear();
+
+    let _only_buffer = pool.alloc().unwrap();
+    assert!(matches!(pool.alloc(), Err(DmaError::NoMemory)));
+    assert!(tracker.operations().is_empty());
 }

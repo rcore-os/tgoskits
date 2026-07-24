@@ -9,6 +9,10 @@ use std::{
 use page_table_generic::*;
 use tock_registers::{interfaces::*, register_bitfields, registers::*};
 
+pub const KB: usize = 1024;
+pub const MB: usize = 1024 * KB;
+pub const GB: usize = 1024 * MB;
+
 register_bitfields! [
     u64,
     PTE64 [
@@ -63,7 +67,7 @@ impl PageTableEntry for PteImpl {
         let pte = Self(0);
 
         // 设置物理地址
-        let paddr = config.paddr.raw() >> 12;
+        let paddr = config.paddr.as_usize() >> 12;
         pte.reg().modify(PTE64::PA.val(paddr as _));
 
         // 设置标志位
@@ -458,56 +462,6 @@ impl PteImpl {
             ..Default::default()
         }
     }
-
-    /// 获取页表项的内存配置
-    ///
-    /// 这是一个便捷方法，将细粒度的 PageTableEntry trait 方法
-    /// 组合成高级别的 MemConfig 结构。
-    pub fn mem_config(&self) -> MemConfig {
-        let config = self.to_config(false);
-        let mut access = AccessFlags::empty();
-
-        // 根据页表项状态设置访问权限
-        if config.writable {
-            access |= AccessFlags::WRITE;
-        }
-        if config.executable {
-            access |= AccessFlags::EXECUTE;
-        }
-        if config.lower {
-            access |= AccessFlags::LOWER;
-        }
-
-        // 假设所有有效的页表项都是可读的
-        // （如果架构不支持不可读的页，则总是设置此位）
-        if config.valid {
-            access |= AccessFlags::READ;
-        }
-
-        MemConfig {
-            access,
-            attrs: config.mem_attr,
-        }
-    }
-
-    /// 设置页表项的内存配置
-    ///
-    /// 这是一个便捷方法，从高级别的 MemConfig 结构中提取配置
-    /// 并调用相应的 PageTableEntry trait 方法。
-    pub fn set_mem_config(&mut self, config: MemConfig) {
-        let current_config = self.to_config(false);
-
-        // 创建新的配置
-        let new_config = PteConfig {
-            writable: config.access.contains(AccessFlags::WRITE),
-            executable: config.access.contains(AccessFlags::EXECUTE),
-            lower: config.access.contains(AccessFlags::LOWER),
-            mem_attr: config.attrs,
-            ..current_config
-        };
-
-        *self = Self::from_config(new_config);
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -564,21 +518,21 @@ impl TableMeta for T4kL5 {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Fram4k;
 
-impl FrameAllocator for Fram4k {
+impl PageFrameProvider for Fram4k {
     fn alloc_frame(&self) -> Option<PhysAddr> {
         let layout = Layout::from_size_align(4096, 4096).unwrap();
         let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
             None
         } else {
-            Some(PhysAddr::new(ptr as usize))
+            Some(PhysAddr::from_usize(ptr as usize))
         }
     }
 
     fn dealloc_frame(&self, frame: PhysAddr) {
         let layout = Layout::from_size_align(4096, 4096).unwrap();
         unsafe {
-            alloc::dealloc(frame.raw() as *mut u8, layout);
+            alloc::dealloc(frame.as_usize() as *mut u8, layout);
         }
     }
 
@@ -588,19 +542,19 @@ impl FrameAllocator for Fram4k {
         if ptr.is_null() {
             None
         } else {
-            Some(PhysAddr::new(ptr as usize))
+            Some(PhysAddr::from_usize(ptr as usize))
         }
     }
 
-    fn dealloc_frames(&self, start: PhysAddr, frames: usize, _frame_size: usize) {
+    fn dealloc_frames(&self, start: PhysAddr, frames: usize) {
         let layout = Layout::from_size_align(4096 * frames, 4096 * frames).unwrap();
         unsafe {
-            alloc::dealloc(start.raw() as *mut u8, layout);
+            alloc::dealloc(start.as_usize() as *mut u8, layout);
         }
     }
 
-    fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
-        paddr.raw() as *mut u8
+    fn phys_to_virt(&self, paddr: PhysAddr) -> VirtAddr {
+        VirtAddr::from_usize(paddr.as_usize())
     }
 }
 
@@ -670,7 +624,7 @@ impl TrackedFram4k {
 unsafe impl Send for TrackedFram4k {}
 unsafe impl Sync for TrackedFram4k {}
 
-impl FrameAllocator for TrackedFram4k {
+impl PageFrameProvider for TrackedFram4k {
     fn alloc_frame(&self) -> Option<PhysAddr> {
         let layout = Layout::from_size_align(4096, 4096).unwrap();
         let ptr = unsafe { alloc::alloc(layout) };
@@ -683,12 +637,12 @@ impl FrameAllocator for TrackedFram4k {
                 let frames = &*self.allocated_frames;
                 frames.lock().unwrap().insert(addr);
             }
-            Some(PhysAddr::new(addr))
+            Some(PhysAddr::from_usize(addr))
         }
     }
 
     fn dealloc_frame(&self, frame: PhysAddr) {
-        let addr = frame.raw();
+        let addr = frame.as_usize();
 
         // 从跟踪记录中移除
         unsafe {
@@ -719,11 +673,11 @@ impl FrameAllocator for TrackedFram4k {
                 tracked_frames.insert(addr + i * 4096);
             }
         }
-        Some(PhysAddr::new(addr))
+        Some(PhysAddr::from_usize(addr))
     }
 
-    fn dealloc_frames(&self, start: PhysAddr, frames: usize, _frame_size: usize) {
-        let addr = start.raw();
+    fn dealloc_frames(&self, start: PhysAddr, frames: usize) {
+        let addr = start.as_usize();
         unsafe {
             let tracked_frames = &*self.allocated_frames;
             let mut tracked_frames = tracked_frames.lock().unwrap();
@@ -742,7 +696,7 @@ impl FrameAllocator for TrackedFram4k {
         }
     }
 
-    fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8 {
-        paddr.raw() as *mut u8
+    fn phys_to_virt(&self, paddr: PhysAddr) -> VirtAddr {
+        VirtAddr::from_usize(paddr.as_usize())
     }
 }

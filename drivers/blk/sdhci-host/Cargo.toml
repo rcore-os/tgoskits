@@ -15,6 +15,7 @@ sdio-host2.workspace = true
 embedded-hal = "1"
 log.workspace = true
 dma-api.workspace = true
+bytemuck.workspace = true
 mmio-api.workspace = true
 rdif-block.workspace = true
 

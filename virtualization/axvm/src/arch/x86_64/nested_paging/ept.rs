@@ -130,7 +130,7 @@ impl ptg::PageTableEntry for EptEntry {
             }
             flags
         };
-        Self(flags.bits() | (config.paddr.raw() as u64 & Self::PHYS_ADDR_MASK))
+        Self(flags.bits() | (config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
 
     fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
@@ -139,7 +139,7 @@ impl ptg::PageTableEntry for EptEntry {
         let huge = is_dir && flags.contains(EptFlags::HUGE_PAGE);
         let mapping_flags = MappingFlags::from(flags);
         ptg::PteConfig {
-            paddr: ptg::PhysAddr::new(self.paddr().as_usize()),
+            paddr: ptg::PhysAddr::from_usize(self.paddr().as_usize()),
             valid,
             read: mapping_flags.contains(MappingFlags::READ),
             writable: mapping_flags.contains(MappingFlags::WRITE),

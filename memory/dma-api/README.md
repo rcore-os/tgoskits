@@ -42,12 +42,12 @@ pub struct DmaConstraints {
 }
 ```
 
-`DeviceDma::new_legacy(dma_mask, op)` is shorthand for
-`DmaConstraints::new(dma_mask)`. Use `with_constraints` when a specific queue
+`DeviceDma::new_identity(dma_mask, op)` selects the identity/bypass translation
+domain with `DmaConstraints::new(dma_mask)`. Use `with_constraints` when a specific queue
 or transfer has stronger alignment, boundary, or segment-size requirements.
 
 Backends must never hand a driver a DMA address outside the requested mask. For
-example, a device created with `DeviceDma::new_legacy(u32::MAX as u64, op)` must only
+example, a device created with `DeviceDma::new_identity(u32::MAX as u64, op)` must only
 return 32-bit reachable DMA addresses. Streaming mappings may use a fast path
 when the original buffer already satisfies the constraints; otherwise they
 should allocate an in-mask bounce buffer.
@@ -159,8 +159,10 @@ map.complete_for_cpu_all();
 
 Buffer pools use `ContiguousBufferPool` and return `ContiguousBuffer` values.
 They are intended for repeated owned data buffers such as network RX/TX pools
-or block read buffers. Reusing a buffer does not imply that the memory is
-zeroed again; callers own the content and the explicit sync points.
+or block read buffers. A pool allocates its fixed capacity during construction
+and returns `DmaError::NoMemory` immediately when exhausted; it never grows in
+the allocation path. Reusing a buffer does not imply that the memory is zeroed
+again; callers own the content and the explicit sync points.
 
 ## Choosing A Primitive
 

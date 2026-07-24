@@ -95,20 +95,20 @@ const iconLibrary = {
 /* ── Component Workspace Diagram ─────────────────────────── */
 function ComponentWorkspaceDiagram() {
   const repos = [
-    { name: 'axallocator', path: 'memory/axallocator', tone: 'memory' },
+    { name: 'ax-alloc', path: 'memory/ax-alloc', tone: 'memory' },
     { name: 'arm_vcpu', path: 'virtualization/arm_vcpu', tone: 'virtualization' },
     { name: 'rockchip-npu', path: 'drivers/npu/rockchip-npu', tone: 'driver' },
   ];
 
   const hubItems = [
-    { title: '外部仓库汇聚', desc: ['50 个 subtree 映射', 'OS · 内存 · 驱动 · VFS · 虚拟化'] },
+    { title: '外部仓库汇聚', desc: ['48 个 subtree 映射', 'OS · 内存 · 驱动 · VFS · 虚拟化'] },
     { title: 'Subtree 同步工具', desc: ['repo.py list / pull / push', '集成验证后同步回上游'] },
     { title: '来源边界清晰', desc: ['repos.csv · target_dir · category'] },
   ];
 
   return (
     <div className="workspace-diagram" aria-label="Git Subtree component workspace workflow">
-      <div className="workspace-diagram__title">50 个 Git Subtree 映射：外部仓库 ↔ 统一工作区 ↔ 上游</div>
+      <div className="workspace-diagram__title">48 个 Git Subtree 映射：外部仓库 ↔ 统一工作区 ↔ 上游</div>
       <div className="workspace-diagram__flow">
         <div className="workspace-diagram__repos workspace-diagram__repos--source">
           {repos.map((repo) => (
@@ -649,8 +649,8 @@ function ComponentWorkspaceSection() {
       id="component-workspace"
       className="section-shell--component-workspace"
       eyebrow="Component Workspace"
-      title="50 个 Git Subtree 映射的同步工作流"
-      description="scripts/repo/repos.csv 维护外部仓库与工作区目录的 50 组映射，repo.py 执行双向同步，使独立仓库演进、集成验证与上游回推保持一致。"
+      title="48 个 Git Subtree 映射的同步工作流"
+      description="scripts/repo/repos.csv 维护外部仓库与工作区目录的 48 组映射，repo.py 执行双向同步，使独立仓库演进、集成验证与上游回推保持一致。"
     >
       <ComponentWorkspaceDiagram />
     </SectionShell>
@@ -660,7 +660,7 @@ function ComponentWorkspaceSection() {
 /* ── Systems Section ─────────────────────────────────────── */
 function SystemsSection() {
   const systems = [
-    { accent: 'accent-arceos', name: 'ArceOS', subtitle: '模块化内核', tag: '组合系统', desc: '通过配置组合 axalloc、axtask、axfs、axnet、axhal 等模块，生成面向具体应用场景的系统镜像。', items: ['四架构 Rust、C 与 axtest 用例', '示例覆盖基础运行与设备场景', '基于 feature 和配置裁剪模块能力'] },
+    { accent: 'accent-arceos', name: 'ArceOS', subtitle: '模块化内核', tag: '组合系统', desc: '通过配置组合 ax-alloc、ax-task、ax-fs-ng、ax-net、ax-hal 等模块，生成面向具体应用场景的系统镜像。', items: ['四架构 Rust、C 与 axtest 用例', '示例覆盖基础运行与设备场景', '基于 feature 和配置裁剪模块能力'] },
     { accent: 'accent-starry', name: 'StarryOS', subtitle: 'Linux 兼容 OS', tag: '用户态兼容', desc: '实现 Linux 系统调用、ELF 加载、进程与信号语义，并通过 rootfs 和用户态程序验证兼容性。', items: ['四架构系统调用分组测试', '四架构 TTY 输入测试', '板测覆盖网络、USB、PCIe 与 NPU'] },
     { accent: 'accent-axvisor', name: 'Axvisor', subtitle: 'Type-I Hypervisor', tag: '虚拟化运行时', desc: '管理 VM、vCPU、虚拟地址空间与虚拟设备，并通过静态或动态平台配置启动不同 Guest。', items: ['四架构 Guest 启动冒烟测试', 'x86_64 支持 VMX 与 SVM', 'LoongArch64 支持动态 UEFI 启动'] },
   ];

@@ -153,10 +153,10 @@ impl<H: crate::host::PagingHandler + 'static> NestedPageTableOps for NestedPageT
     }
 
     fn query(&self, vaddr: GuestPhysAddr) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
-        Ok(match &self.inner {
+        match &self.inner {
             NestedPageTableInner::Ept(table) => table.query(vaddr),
             NestedPageTableInner::Npt(table) => table.query(vaddr),
-        }?)
+        }
     }
 }
 
@@ -188,18 +188,18 @@ pub(super) fn config_to_flags(config: ptg::PteConfig) -> MappingFlags {
 }
 
 #[cfg(target_os = "none")]
-/// Invalidate host translations after page-table-generic changes an entry.
+/// Invalidate host translations after the nested page table changes an entry.
 ///
 /// The generic walker invokes this callback after installing or removing an
 /// entry. It may provide one address for a targeted invalidation or no address
 /// when the whole table must be invalidated.
 pub(super) fn flush_nested_page_table(vaddr: Option<ptg::VirtAddr>) {
     if let Some(vaddr) = vaddr {
-        // SAFETY: page-table-generic calls this after changing the current CPU's
+        // SAFETY: the nested page-table code calls this after changing the current CPU's
         // translation entries; `vaddr` is a virtual address belonging to that table.
-        unsafe { x86::tlb::flush(vaddr.raw()) }
+        unsafe { x86::tlb::flush(vaddr.as_usize()) }
     } else {
-        // SAFETY: page-table-generic requests a full invalidation after changing
+        // SAFETY: the nested page-table code requests a full invalidation after changing
         // entries without a single virtual-address target.
         unsafe { x86::tlb::flush_all() }
     }

@@ -157,11 +157,9 @@ const DMA_INT_ENABLE: u32 = DMA_INT_NORMAL
     | DMA_INT_TX_STOPPED
     | DMA_INT_TX_COMPLETED;
 const HW_DMA_MASK_32: u64 = u32::MAX as u64;
-// The LS2K1000 board memory map used here stays below 4 GiB, while the TLSF
-// allocator backend does not implement the special dma32 allocation path.
-// Use the normal DMA allocation path and still reject addresses the GMAC cannot
-// encode before writing descriptors.
-const QUEUE_DMA_MASK: u64 = u64::MAX;
+// Descriptor buffer addresses are 32-bit fields, so allocation itself must
+// enforce the same limit that descriptor encoding validates below.
+const QUEUE_DMA_MASK: u64 = HW_DMA_MASK_32;
 const MDIO_TIMEOUT: usize = 100_000;
 const DMA_RESET_TIMEOUT: usize = 1_000_000;
 const QUEUE_ID0: usize = 0;

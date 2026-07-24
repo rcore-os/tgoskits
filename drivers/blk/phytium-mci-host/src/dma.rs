@@ -42,7 +42,7 @@ const IDSTS_INT_ENABLE_MASK: u32 = IDSTS_TRANSMIT
     | IDSTS_ABNORMAL_SUMMARY;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct IdmacDesc {
     attribute: u32,
     reserved0: u32,

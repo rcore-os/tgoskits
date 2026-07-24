@@ -23,7 +23,7 @@ use core::{
 use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
-use axaddrspace::{AddrSpace, NestedPageTableOps};
+use axaddrspace::AddrSpace;
 use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig};
 use axdevice_base::AccessWidth;
 use axvm_types::{
@@ -314,7 +314,9 @@ impl AxVMResources {
 
     fn reset_transient_resources(&mut self) -> AxVmResult {
         let memory_regions = self.memory_regions.clone();
-        self.address_space.clear();
+        self.address_space
+            .clear()
+            .map_err(|error| AxVmError::from_addrspace("clear guest address space", error))?;
         for region in &memory_regions {
             self.address_space
                 .map_linear(
@@ -843,7 +845,7 @@ impl AxVM {
         handled: bool,
     ) {
         let root = resources.address_space.page_table_root();
-        match resources.address_space.page_table().query(addr) {
+        match axaddrspace::NestedPageTableOps::query(resources.address_space.page_table(), addr) {
             Ok((hpa, flags, size)) => {
                 if handled {
                     debug!(
@@ -1255,29 +1257,20 @@ impl AxVM {
         }
         self.machine.lock().destroy_with(|resources| {
             if let Some(mut resources) = resources {
-                Self::cleanup_resource_set(vm_id, &mut resources);
+                Self::cleanup_resource_set(vm_id, &mut resources)?;
             }
             Ok(())
         })
     }
 
-    fn cleanup_resource_set(vm_id: usize, resources: &mut AxVMResources) {
+    fn cleanup_resource_set(vm_id: usize, resources: &mut AxVMResources) -> AxVmResult {
         info!("Cleaning up VM[{vm_id}] resources...");
 
         let regions_to_cleanup = resources.memory_regions.clone();
-        for region in &regions_to_cleanup {
-            debug!(
-                "VM[{vm_id}] unmapping memory region: GPA={:#x}, size={:#x}",
-                region.gpa.as_usize(),
-                region.size()
-            );
-            if let Err(err) = resources.address_space.unmap(region.gpa, region.size()) {
-                warn!(
-                    "VM[{vm_id}] failed to unmap region at GPA={:#x}: {err:?}",
-                    region.gpa.as_usize()
-                );
-            }
-        }
+        resources
+            .address_space
+            .clear()
+            .map_err(|error| AxVmError::from_addrspace("clear guest address space", error))?;
 
         for region in &regions_to_cleanup {
             if region.needs_dealloc {
@@ -1300,7 +1293,6 @@ impl AxVM {
             }
         }
         resources.memory_regions.clear();
-        resources.address_space.clear();
 
         if let Some(devices) = resources.devices.take() {
             debug!(
@@ -1312,6 +1304,7 @@ impl AxVM {
         resources.interrupt_fabric = None;
 
         info!("VM[{vm_id}] resources cleanup completed");
+        Ok(())
     }
 }
 

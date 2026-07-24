@@ -22,7 +22,9 @@ use ax_memory_addr::PhysAddr;
 use axaddrspace::{AddrSpace, AddrSpaceError, MappingFlags};
 use axvm_types::GuestPhysAddr;
 use mock_npt::MockNestedPageTable;
-use test_utils::{ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, mock_hal_test};
+use test_utils::{
+    ALLOC_COUNT, BASE_PADDR, DEALLOC_COUNT, DEALLOCATED_FRAMES, MEMORY_LEN, mock_hal_test,
+};
 
 /// Generate an address space for the test
 fn setup_test_addr_space() -> (AddrSpace<MockNestedPageTable>, GuestPhysAddr, usize) {
@@ -84,6 +86,30 @@ fn test_map_linear() {
         addr_space.translate(vaddr + 0x1000).unwrap(),
         paddr + 0x1000
     );
+}
+
+#[test]
+fn clear_restores_an_empty_address_space_after_a_huge_linear_mapping() {
+    let _guard = mock_hal_test();
+    let mut addr_space = AddrSpace::new_empty(
+        MockNestedPageTable::new(),
+        GuestPhysAddr::from_usize(0),
+        0x40_0000,
+    )
+    .unwrap();
+    let start = GuestPhysAddr::from_usize(0);
+
+    addr_space
+        .map_linear(
+            start,
+            PhysAddr::from_usize(0x20_0000),
+            0x20_0000,
+            MappingFlags::READ | MappingFlags::WRITE,
+        )
+        .unwrap();
+
+    assert_eq!(addr_space.clear(), Ok(()));
+    assert_eq!(addr_space.translate(start), None);
 }
 
 #[test]
@@ -242,6 +268,10 @@ fn test_unmap() {
     // Verify mapping exists
     assert!(addr_space.translate(vaddr).is_some());
     assert!(addr_space.translate(vaddr + 0x1000).is_some());
+    let mapped_frames = [
+        addr_space.translate(vaddr).unwrap().as_usize(),
+        addr_space.translate(vaddr + 0x1000).unwrap().as_usize(),
+    ];
 
     let before_unmap_deallocs = DEALLOC_COUNT.load(Ordering::SeqCst);
 
@@ -255,6 +285,12 @@ fn test_unmap() {
     // Verify frames were deallocated
     let after_unmap_deallocs = DEALLOC_COUNT.load(Ordering::SeqCst);
     assert!(after_unmap_deallocs > before_unmap_deallocs);
+    let deallocated_frames = DEALLOCATED_FRAMES.lock().unwrap().clone();
+    assert!(
+        mapped_frames
+            .iter()
+            .all(|frame| deallocated_frames.contains(frame))
+    );
 }
 
 #[test]
@@ -281,7 +317,7 @@ fn test_clear() {
     let before_clear_deallocs = DEALLOC_COUNT.load(Ordering::SeqCst);
 
     // Clear all mappings
-    addr_space.clear();
+    addr_space.clear().unwrap();
 
     // Verify all mappings are removed
     assert!(addr_space.translate(vaddr1).is_none());
@@ -367,6 +403,17 @@ fn test_translated_byte_buffer() {
             .translated_byte_buffer(unmapped_vaddr, 0x100)
             .is_none()
     );
+}
+
+#[test]
+fn translated_byte_buffer_rejects_a_lazy_unpopulated_mapping() {
+    let _guard = mock_hal_test();
+    let (mut addr_space, base, _size) = setup_test_addr_space();
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+
+    addr_space.map_alloc(base, 0x1000, flags, false).unwrap();
+
+    assert!(addr_space.translated_byte_buffer(base, 0x100).is_none());
 }
 
 #[test]

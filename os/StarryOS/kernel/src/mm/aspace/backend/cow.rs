@@ -1,121 +1,161 @@
 use alloc::{
-    collections::BTreeMap,
     string::{String, ToString},
     sync::Arc,
 };
-use core::{cell::Cell, slice};
+use core::slice;
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FileBackend;
 use ax_kspin::SpinNoIrq;
-use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange, align_down_4k};
+use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+#[cfg(axtest)]
+use ax_runtime::hal::paging::PageTable;
 use ax_runtime::hal::{
     mem::phys_to_virt,
     paging::{MappingFlags, PageSize, PageTableCursor, PagingError},
 };
 use ax_sync::Mutex;
-
-use super::{
-    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
-    PopulateCallback, RssKind, alloc_frame, dealloc_frame, pages_in,
+use hashbrown::HashMap;
+use starry_mm::{
+    CowFrameReferences, CowRelease, PageInitialization, PrivateFileMapping, VmFile, VmFileInfo,
 };
 
-struct FrameRefCnt {
-    count: u8,
-}
+use super::{
+    AddrSpace, Backend, BackendFileInfo, BackendOps, MemoryAccounting, PopulateCallback, RssKind,
+    alloc_frame, dealloc_frame, pages_in,
+};
 
-impl FrameRefCnt {
-    fn drop_frame(&mut self, paddr: PhysAddr, page_size: PageSize) {
-        assert!(self.count > 0, "dropping unreferenced frame");
-        self.count -= 1;
-        if self.count == 0 {
-            FRAME_TABLE.lock().remove_frame(paddr);
-            dealloc_frame(paddr, page_size);
-        }
+const FILE_READAHEAD_PAGES: usize = 16;
+
+struct KernelVmFile(ax_fs_ng::vfs::FileBackend);
+
+impl VmFile for KernelVmFile {
+    fn size_bytes(&self) -> AxResult<u64> {
+        self.0.len()
+    }
+
+    fn read_at(&self, buffer: &mut [u8], offset: u64) -> AxResult<usize> {
+        self.0.read_at(&mut &mut *buffer, offset)
+    }
+
+    fn info(&self) -> AxResult<VmFileInfo> {
+        let location = self.0.location();
+        Ok(VmFileInfo {
+            path: location.absolute_path()?.to_string(),
+            inode: location.inode(),
+            device: location.metadata()?.device,
+        })
     }
 }
 
-struct FrameTableRefCount {
-    table: BTreeMap<PhysAddr, Arc<SpinNoIrq<FrameRefCnt>>>,
+fn release_frame(paddr: PhysAddr, page_size: PageSize) {
+    let release = FRAME_TABLE
+        .lock()
+        .release(paddr)
+        .expect("releasing a registered copy-on-write frame");
+    if release == CowRelease::LastReference {
+        dealloc_frame(paddr, page_size);
+    }
 }
 
-impl FrameTableRefCount {
-    const INITIAL_CNT: u8 = 1;
+struct CowFrameState {
+    references: CowFrameReferences,
+    rss_kind: RssKind,
+}
 
+struct CowFrameTable {
+    table: Option<HashMap<usize, CowFrameState>>,
+}
+
+impl CowFrameTable {
     const fn new() -> Self {
-        Self {
-            table: BTreeMap::new(),
+        Self { table: None }
+    }
+
+    fn kind(&self, paddr: PhysAddr) -> Option<RssKind> {
+        self.table
+            .as_ref()?
+            .get(&paddr.as_usize())
+            .map(|state| state.rss_kind)
+    }
+
+    fn count(&self, paddr: PhysAddr) -> Option<u32> {
+        self.table
+            .as_ref()?
+            .get(&paddr.as_usize())
+            .map(|state| state.references.count())
+    }
+
+    fn init_frame(&mut self, paddr: PhysAddr, rss_kind: RssKind) -> AxResult {
+        let table = self.table.get_or_insert_with(HashMap::new);
+        let key = paddr.as_usize();
+        if table.contains_key(&key) {
+            return Err(AxError::BadState);
         }
-    }
-
-    fn get_frame_ref(&mut self, paddr: PhysAddr) -> Option<Arc<SpinNoIrq<FrameRefCnt>>> {
-        self.table.get(&paddr).cloned()
-    }
-
-    fn init_frame(&mut self, paddr: PhysAddr) {
-        assert!(
-            !self.table.contains_key(&paddr),
-            "initializing already referenced frame"
+        table.try_reserve(1).map_err(|_| AxError::NoMemory)?;
+        table.insert(
+            key,
+            CowFrameState {
+                references: CowFrameReferences::new(),
+                rss_kind,
+            },
         );
-        self.table.insert(
-            paddr,
-            Arc::new(SpinNoIrq::new(FrameRefCnt {
-                count: Self::INITIAL_CNT,
-            })),
-        );
+        Ok(())
     }
 
-    fn remove_frame(&mut self, paddr: PhysAddr) {
-        assert!(
-            self.table.contains_key(&paddr),
-            "removing unreferenced frame"
-        );
-        self.table.remove(&paddr);
+    fn try_retain(&mut self, paddr: PhysAddr) -> AxResult {
+        self.table
+            .as_mut()
+            .and_then(|table| table.get_mut(&paddr.as_usize()))
+            .ok_or(AxError::BadAddress)?
+            .references
+            .try_add()
+            .map_err(|_| AxError::NoMemory)
     }
-}
 
-static FRAME_TABLE: SpinNoIrq<FrameTableRefCount> = SpinNoIrq::new(FrameTableRefCount::new());
-
-fn cow_file_max_read_len(
-    file_len: u64,
-    file_end: Option<u64>,
-    file_read_offset: u64,
-    available: usize,
-) -> AxResult<usize> {
-    let effective_end = match file_end {
-        Some(end) => end,
-        None => {
-            if file_read_offset >= file_len {
-                return Err(AxError::BadAddress);
-            }
-            file_len
+    fn release(&mut self, paddr: PhysAddr) -> Option<CowRelease> {
+        let table = self.table.as_mut()?;
+        let key = paddr.as_usize();
+        let release = table.get_mut(&key)?.references.release();
+        if release == CowRelease::LastReference {
+            table.remove(&key);
         }
-    };
-    Ok(effective_end
-        .saturating_sub(file_read_offset)
-        .min(available as u64) as usize)
+        Some(release)
+    }
 }
 
-fn cow_file_max_read(
-    file: &FileBackend,
-    file_end: Option<u64>,
-    file_read_offset: u64,
-    available: usize,
-) -> AxResult<usize> {
-    let file_len = if file_end.is_none() { file.len()? } else { 0 };
-    cow_file_max_read_len(file_len, file_end, file_read_offset, available)
-}
+static FRAME_TABLE: SpinNoIrq<CowFrameTable> = SpinNoIrq::new(CowFrameTable::new());
 
 #[cfg(axtest)]
-pub(crate) fn private_mmap_eof_check_for_test() -> bool {
-    matches!(
-        cow_file_max_read_len(4096, None, 4096, 4096),
-        Err(AxError::BadAddress)
-    ) && matches!(cow_file_max_read_len(4096, None, 2048, 4096), Ok(2048))
-        && matches!(
-            cow_file_max_read_len(4096, Some(8192), 4096, 4096),
-            Ok(4096)
+pub(crate) fn fault_accounting_failure_rolls_back_for_test() -> bool {
+    let Ok(mut page_table) = PageTable::try_new() else {
+        return false;
+    };
+    let vaddr = VirtAddr::from(0x20_0000);
+    let backend = CowBackend {
+        start: vaddr,
+        size: PageSize::Size4K,
+        file: None,
+        name: None,
+        shared: false,
+    };
+    let accounting = MemoryAccounting::new();
+    accounting.set_resident_pages_for_test(RssKind::Anon, u64::MAX - 1);
+    let flags = MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER;
+    let result = backend.alloc_pages_individually(
+        &[vaddr, vaddr + PAGE_SIZE_4K],
+        flags,
+        MappingFlags::READ,
+        Some(&accounting),
+        &mut page_table.cursor(),
+    );
+    let mappings_removed = [vaddr, vaddr + PAGE_SIZE_4K].into_iter().all(|address| {
+        matches!(
+            page_table.cursor().query(address),
+            Err(PagingError::NotMapped)
         )
+    });
+    result.is_err() && mappings_removed && accounting.rss_anon_pages() == u64::MAX - 1
 }
 
 /// Copy-on-write mapping backend.
@@ -124,13 +164,9 @@ pub(crate) fn private_mmap_eof_check_for_test() -> bool {
 pub struct CowBackend {
     start: VirtAddr,
     size: PageSize,
-    file: Option<(FileBackend, VirtAddr, u64, Option<u64>)>,
+    file: Option<PrivateFileMapping>,
     name: Option<String>,
     shared: bool,
-    /// True after this address space upgrades the mapping to writable via
-    /// `mprotect(+W)` or a writable `mmap` (per-aspace; fork inherits via
-    /// [`Clone`]).
-    write_upgraded: Cell<bool>,
 }
 
 impl Clone for CowBackend {
@@ -141,7 +177,6 @@ impl Clone for CowBackend {
             file: self.file.clone(),
             name: self.name.clone(),
             shared: self.shared,
-            write_upgraded: Cell::new(self.write_upgraded.get()),
         }
     }
 }
@@ -158,7 +193,6 @@ impl CowBackend {
             file: self.file.clone(),
             name: self.name.clone(),
             shared: self.shared,
-            write_upgraded: Cell::new(self.write_upgraded.get()),
         }
     }
 
@@ -210,29 +244,19 @@ impl CowBackend {
     }
 
     fn deinit_frame(&self, paddr: PhysAddr) {
-        FRAME_TABLE.lock().remove_frame(paddr);
-        dealloc_frame(paddr, self.size);
+        release_frame(paddr, self.size);
     }
 
-    /// File→Anon RSS after a private mapping write fault.
-    fn reclassify_or_adopt_cow_write(&self, acct: &MemoryAccounting, vaddr: VirtAddr) {
-        let page_vaddr = vaddr.align_down(self.size);
-        let pre_kind = acct.charge_kind(page_vaddr);
-        if acct.cow_file_write_to_anon(page_vaddr) {
-            return;
+    fn alloc_new_frame(
+        &self,
+        initialization: PageInitialization,
+        rss_kind: RssKind,
+    ) -> AxResult<PhysAddr> {
+        let frame = alloc_frame(initialization, self.size)?;
+        if let Err(error) = FRAME_TABLE.lock().init_frame(frame, rss_kind) {
+            dealloc_frame(frame, self.size);
+            return Err(error);
         }
-        if page_vaddr != vaddr && acct.cow_file_write_to_anon(vaddr) {
-            return;
-        }
-        let post_kind = acct.charge_kind(page_vaddr);
-        warn!(
-            "COW write at {vaddr:?} could not reclassify RSS (pre={pre_kind:?} post={post_kind:?})"
-        );
-    }
-
-    fn alloc_new_frame(&self, zeroed: bool) -> AxResult<PhysAddr> {
-        let frame = alloc_frame(zeroed, self.size)?;
-        FRAME_TABLE.lock().init_frame(frame);
         Ok(frame)
     }
 
@@ -243,42 +267,15 @@ impl CowBackend {
         access_flags: MappingFlags,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
-    ) -> AxResult {
+    ) -> AxResult<PhysAddr> {
         let kind = self.rss_kind_for_fault(access_flags);
-        let frame = self.alloc_new_frame(true)?;
+        let frame = self.alloc_new_frame(PageInitialization::Zeroed, kind)?;
 
-        if let Some((file, file_vaddr_base, file_start, file_end)) = &self.file {
+        if let Some(file_mapping) = &self.file {
             let buf = unsafe {
                 slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), self.size as _)
             };
-            // vaddr can be smaller than file_vaddr_base (at most 1 page) due to
-            // non-aligned mappings; compute page-internal write offset accordingly.
-            // The mapping invariant is: a virtual address `V` corresponds to
-            // file offset `file_start + (V - file_vaddr_base)`. The file-backed
-            // bytes of this page begin at buf[start] (= virtual address
-            // `file_vaddr_base` when the page starts below it, i.e. the
-            // unaligned first page), which therefore reads from `file_start`.
-            // `saturating_sub` yields exactly that: 0 when vaddr < file_vaddr_base
-            // (read from file_start) and the positive delta otherwise. Do NOT
-            // subtract the gap here — doing so reads the segment's bytes from
-            // the wrong offset and corrupts e.g. the dynamic linker's
-            // .dynamic/GOT, making ld-musl jump to a null pointer.
-            let start = file_vaddr_base.as_usize().saturating_sub(vaddr.as_usize());
-            assert!(start < self.size as _);
-
-            let file_read_offset =
-                *file_start + vaddr.as_usize().saturating_sub(file_vaddr_base.as_usize()) as u64;
-            let max_read =
-                match cow_file_max_read(file, *file_end, file_read_offset, buf.len() - start) {
-                    Ok(max_read) => max_read,
-                    Err(err) => {
-                        self.deinit_frame(frame);
-                        return Err(err);
-                    }
-                };
-
-            if let Err(err) = file.read_at(&mut &mut buf[start..start + max_read], file_read_offset)
-            {
+            if let Err(err) = file_mapping.read_page(vaddr, buf) {
                 self.deinit_frame(frame);
                 return Err(err);
             }
@@ -288,10 +285,16 @@ impl CowBackend {
             self.deinit_frame(frame);
             return Err(err.into());
         }
-        if let Some(acct) = acct {
-            acct.record_charge(vaddr, kind)?;
+        if let Some(acct) = acct
+            && let Err(error) = acct.inc(kind, 1)
+        {
+            if pt.unmap(vaddr).is_err() {
+                return Err(AxError::BadState);
+            }
+            self.deinit_frame(frame);
+            return Err(error);
         }
-        Ok(())
+        Ok(frame)
     }
 
     /// Fill a run of consecutive not-mapped FILE-backed pages with a single
@@ -304,43 +307,122 @@ impl CowBackend {
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
     ) -> AxResult<usize> {
-        let Some((file, file_vaddr_base, file_start, file_end)) = &self.file else {
-            for &addr in run {
-                self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
-            }
-            return Ok(run.len());
+        let Some(file_mapping) = &self.file else {
+            return self.alloc_pages_individually(run, flags, access_flags, acct, pt);
         };
         let ps = self.size as usize;
         let v0 = run[0];
-        if v0.as_usize() < file_vaddr_base.as_usize() {
-            for &addr in run {
-                self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
-            }
-            return Ok(run.len());
-        }
-        let n = run.len();
-        let total = n * ps;
-        let file_read_offset = file_start + (v0.as_usize() - file_vaddr_base.as_usize()) as u64;
-        let max_read = cow_file_max_read(file, *file_end, file_read_offset, total)?;
-        let mut buf = alloc::vec![0u8; total];
-        if max_read > 0 {
-            file.read_at(&mut &mut buf[..max_read], file_read_offset)?;
+        if v0.as_usize() < file_mapping.vaddr_base().as_usize() {
+            return self.alloc_pages_individually(run, flags, access_flags, acct, pt);
         }
         let kind = self.rss_kind_for_fault(access_flags);
-        for (k, &addr) in run.iter().enumerate() {
-            let frame = self.alloc_new_frame(false)?;
-            let dst = unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
-            dst.copy_from_slice(&buf[k * ps..(k + 1) * ps]);
-            let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
-            if let Err(err) = pt.map(addr, frame, self.size, pte_flags) {
-                self.deinit_frame(frame);
-                return Err(err.into());
-            }
-            if let Some(acct) = acct {
-                acct.record_charge(addr, kind)?;
+        let mut mapped = alloc::vec::Vec::new();
+        mapped
+            .try_reserve_exact(run.len())
+            .map_err(|_| AxError::NoMemory)?;
+        let mut buffer = alloc::vec::Vec::new();
+        for chunk in run.chunks(FILE_READAHEAD_PAGES) {
+            let bytes = chunk.len().checked_mul(ps).ok_or(AxError::NoMemory)?;
+            buffer.clear();
+            buffer
+                .try_reserve_exact(bytes)
+                .map_err(|_| AxError::NoMemory)?;
+            buffer.resize(bytes, 0);
+            file_mapping.read_run(chunk[0], &mut buffer)?;
+
+            for (index, &addr) in chunk.iter().enumerate() {
+                let frame = match self.alloc_new_frame(PageInitialization::Uninitialized, kind) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        return if self.rollback_fault_run(&mapped, acct, pt) {
+                            Err(error)
+                        } else {
+                            Err(AxError::BadState)
+                        };
+                    }
+                };
+                let dst =
+                    unsafe { slice::from_raw_parts_mut(phys_to_virt(frame).as_mut_ptr(), ps) };
+                dst.copy_from_slice(&buffer[index * ps..(index + 1) * ps]);
+                let pte_flags = self.pte_flags_for_fault_in(flags, access_flags);
+                if let Err(error) = pt.map(addr, frame, self.size, pte_flags) {
+                    self.deinit_frame(frame);
+                    return if self.rollback_fault_run(&mapped, acct, pt) {
+                        Err(error.into())
+                    } else {
+                        Err(AxError::BadState)
+                    };
+                }
+                if let Some(acct) = acct
+                    && let Err(error) = acct.inc(kind, 1)
+                {
+                    let current_rolled_back = if pt.unmap(addr).is_ok() {
+                        self.deinit_frame(frame);
+                        true
+                    } else {
+                        false
+                    };
+                    let previous_rolled_back = self.rollback_fault_run(&mapped, Some(acct), pt);
+                    return if current_rolled_back && previous_rolled_back {
+                        Err(error)
+                    } else {
+                        Err(AxError::BadState)
+                    };
+                }
+                mapped.push((addr, frame));
             }
         }
-        Ok(n)
+        Ok(run.len())
+    }
+
+    fn alloc_pages_individually(
+        &self,
+        run: &[VirtAddr],
+        flags: MappingFlags,
+        access_flags: MappingFlags,
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> AxResult<usize> {
+        let mut mapped = alloc::vec::Vec::new();
+        mapped
+            .try_reserve_exact(run.len())
+            .map_err(|_| AxError::NoMemory)?;
+        for &addr in run {
+            match self.alloc_new_at(addr, flags, access_flags, acct, pt) {
+                Ok(frame) => mapped.push((addr, frame)),
+                Err(error) => {
+                    return if self.rollback_fault_run(&mapped, acct, pt) {
+                        Err(error)
+                    } else {
+                        Err(AxError::BadState)
+                    };
+                }
+            }
+        }
+        Ok(run.len())
+    }
+
+    fn rollback_fault_run(
+        &self,
+        mapped: &[(VirtAddr, PhysAddr)],
+        acct: Option<&MemoryAccounting>,
+        pt: &mut PageTableCursor,
+    ) -> bool {
+        let mut restored = true;
+        for &(vaddr, frame) in mapped.iter().rev() {
+            if pt.unmap(vaddr).is_err() {
+                restored = false;
+                continue;
+            }
+            let kind = FRAME_TABLE.lock().kind(frame);
+            if let (Some(acct), Some(kind)) = (acct, kind)
+                && acct.dec(kind, 1).is_err()
+            {
+                restored = false;
+            }
+            self.deinit_frame(frame);
+        }
+        restored
     }
 
     fn handle_cow_fault(
@@ -352,26 +434,46 @@ impl CowBackend {
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
     ) -> AxResult {
-        let mut frame_table = FRAME_TABLE.lock();
-        let frame = frame_table
-            .get_frame_ref(paddr)
-            .ok_or(AxError::BadAddress)?;
-        drop(frame_table);
-        let mut frame = frame.lock();
-        assert!(frame.count > 0, "invalid frame reference count");
-        debug_assert!(frame.count < u8::MAX, "frame reference count near overflow");
-        match frame.count {
+        let (reference_count, old_kind) = {
+            let table = FRAME_TABLE.lock();
+            (
+                table.count(paddr).ok_or(AxError::BadAddress)?,
+                table.kind(paddr).ok_or(AxError::BadAddress)?,
+            )
+        };
+        match reference_count {
             1 => {
                 pt.protect(vaddr, vma_flags)?;
-                let defer_write =
-                    self.cow_deferred_file_write(vma_flags, pte_flags) && self.write_upgraded.get();
+                let defer_write = self.cow_deferred_file_write(vma_flags, pte_flags);
                 if defer_write && let Some(acct) = acct {
-                    self.reclassify_or_adopt_cow_write(acct, vaddr);
+                    let mut table = FRAME_TABLE.lock();
+                    let Some(state) = table
+                        .table
+                        .as_mut()
+                        .and_then(|frames| frames.get_mut(&paddr.as_usize()))
+                    else {
+                        pt.protect(vaddr, pte_flags)
+                            .map_err(|_| AxError::BadState)?;
+                        return Err(AxError::BadState);
+                    };
+                    if let Err(error) = acct.reclassify(old_kind, RssKind::Anon, 1) {
+                        drop(table);
+                        pt.protect(vaddr, pte_flags)
+                            .map_err(|_| AxError::BadState)?;
+                        return Err(error);
+                    }
+                    state.rss_kind = RssKind::Anon;
                 }
                 return Ok(());
             }
             _ => {
-                let new_frame = self.alloc_new_frame(false)?;
+                let new_kind = if self.file.is_some() {
+                    RssKind::Anon
+                } else {
+                    old_kind
+                };
+                let new_frame =
+                    self.alloc_new_frame(PageInitialization::Uninitialized, new_kind)?;
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         phys_to_virt(paddr).as_ptr(),
@@ -383,68 +485,61 @@ impl CowBackend {
                     self.deinit_frame(new_frame);
                     return Err(err.into());
                 }
-                if self.file.is_some()
-                    && let Some(acct) = acct
+                if let Some(acct) = acct
+                    && let Err(error) = acct.reclassify(old_kind, new_kind, 1)
                 {
-                    self.reclassify_or_adopt_cow_write(acct, vaddr);
+                    let mapping_restored = pt.remap(vaddr, paddr, pte_flags).is_ok();
+                    if mapping_restored {
+                        self.deinit_frame(new_frame);
+                        return Err(error);
+                    }
+                    return Err(AxError::BadState);
                 }
-                frame.drop_frame(paddr, self.size);
+                release_frame(paddr, self.size);
             }
         }
 
         Ok(())
     }
 
-    /// Unmap one resident page and drop its per-VA RSS charge.
-    ///
-    /// Regular munmap / MAP_FIXED / shrink paths only; [`super::AddrSpace::move_pages`]
-    /// migrates PTEs directly and uses [`MemoryAccounting::move_charge`] instead.
+    /// Unmaps one resident page and releases its frame-owned RSS category.
     fn unmap_page(
         &self,
         addr: VirtAddr,
         acct: Option<&MemoryAccounting>,
         pt: &mut PageTableCursor,
     ) -> AxResult {
-        if let Ok((frame, _flags, page_size)) = pt.unmap(addr) {
-            assert_eq!(page_size, self.size);
-            if let Some(acct) = acct {
-                acct.remove_charge(addr);
+        match pt.unmap(addr) {
+            Ok((frame, flags, page_size)) => {
+                assert_eq!(page_size, self.size);
+                let Some(kind) = FRAME_TABLE.lock().kind(frame) else {
+                    pt.map(addr, frame, page_size, flags)
+                        .map_err(|_| AxError::BadState)?;
+                    return Err(AxError::BadState);
+                };
+                if let Some(acct) = acct
+                    && let Err(error) = acct.dec(kind, 1)
+                {
+                    pt.map(addr, frame, page_size, flags)
+                        .map_err(|_| AxError::BadState)?;
+                    return Err(error);
+                }
+                release_frame(frame, self.size);
             }
-            let frame_ref = FRAME_TABLE
-                .lock()
-                .get_frame_ref(frame)
-                .ok_or(AxError::BadAddress)?;
-            let mut frame_ref = frame_ref.lock();
-            frame_ref.drop_frame(frame, self.size);
+            Err(PagingError::NotMapped) => {}
+            Err(error) => return Err(error.into()),
         }
         Ok(())
     }
 
     pub fn file_info(&self) -> AxResult<BackendFileInfo> {
-        let loc = self
-            .file
-            .as_ref()
-            .map(|(file, file_vaddr_base, file_start, ..)| {
-                (file.location(), *file_vaddr_base, *file_start)
-            });
-        if let Some((loc, file_vaddr_base, file_start)) = loc {
-            let path = loc.absolute_path().map(|pb| pb.to_string())?;
-            let inode = loc.inode();
-            let dev = loc.metadata()?.device;
-            // Same invariant as `alloc_new_at`: a virtual address maps to
-            // `file_start + (vaddr - file_vaddr_base)`, clamped to file_start
-            // for the unaligned first page (where self.start < file_vaddr_base).
-            let offset = file_start
-                + self
-                    .start
-                    .as_usize()
-                    .saturating_sub(file_vaddr_base.as_usize()) as u64;
-            let offset = align_down_4k(offset as usize) as u64;
+        if let Some(mapping) = &self.file {
+            let info = mapping.info(self.start)?;
             return Ok(BackendFileInfo {
-                path,
-                offset: Some(offset),
-                inode: Some(inode),
-                dev: Some(dev),
+                path: info.file.path,
+                offset: Some(info.offset),
+                inode: Some(info.file.inode),
+                dev: Some(info.file.device),
                 shared: self.shared,
             });
         }
@@ -474,21 +569,6 @@ impl BackendOps for CowBackend {
         _pt: &mut PageTableCursor,
     ) -> AxResult {
         debug!("Cow::map: {range:?} {flags:?}",);
-        if self.file.is_some() && flags.contains(MappingFlags::WRITE) {
-            self.write_upgraded.set(true);
-        }
-        Ok(())
-    }
-
-    fn on_protect(
-        &self,
-        _range: VirtAddrRange,
-        new_flags: MappingFlags,
-        _pt: &mut PageTableCursor,
-    ) -> AxResult {
-        if self.file.is_some() && new_flags.contains(MappingFlags::WRITE) {
-            self.write_upgraded.set(true);
-        }
         Ok(())
     }
 
@@ -514,13 +594,17 @@ impl BackendOps for CowBackend {
         pt: &mut PageTableCursor,
     ) -> AxResult<(usize, Option<PopulateCallback>)> {
         let mut pages = 0;
-        // Batch consecutive not-mapped FILE-backed pages into one readahead read.
-        let addrs: alloc::vec::Vec<VirtAddr> = pages_in(range, self.size)?.collect();
-        let mut i = 0;
-        while i < addrs.len() {
-            let addr = addrs[i];
+        let mut file_run = alloc::vec::Vec::new();
+        file_run
+            .try_reserve_exact(FILE_READAHEAD_PAGES)
+            .map_err(|_| AxError::NoMemory)?;
+        for addr in pages_in(range, self.size)? {
             match pt.query(addr) {
                 Ok((paddr, page_flags, page_size)) => {
+                    if !file_run.is_empty() {
+                        pages += self.alloc_file_run(&file_run, flags, access_flags, acct, pt)?;
+                        file_run.clear();
+                    }
                     assert_eq!(self.size, page_size);
                     if access_flags.contains(MappingFlags::WRITE)
                         && !page_flags.contains(MappingFlags::WRITE)
@@ -530,31 +614,25 @@ impl BackendOps for CowBackend {
                     } else if page_flags.contains(access_flags) {
                         pages += 1;
                     }
-                    i += 1;
                 }
                 Err(PagingError::NotMapped) => {
                     if self.file.is_some() {
-                        let run_start = i;
-                        while i < addrs.len()
-                            && matches!(pt.query(addrs[i]), Err(PagingError::NotMapped))
-                        {
-                            i += 1;
+                        file_run.push(addr);
+                        if file_run.len() == FILE_READAHEAD_PAGES {
+                            pages +=
+                                self.alloc_file_run(&file_run, flags, access_flags, acct, pt)?;
+                            file_run.clear();
                         }
-                        pages += self.alloc_file_run(
-                            &addrs[run_start..i],
-                            flags,
-                            access_flags,
-                            acct,
-                            pt,
-                        )?;
                     } else {
                         self.alloc_new_at(addr, flags, access_flags, acct, pt)?;
                         pages += 1;
-                        i += 1;
                     }
                 }
                 Err(_) => return Err(AxError::BadAddress),
             }
+        }
+        if !file_run.is_empty() {
+            pages += self.alloc_file_run(&file_run, flags, access_flags, acct, pt)?;
         }
         Ok((pages, None))
     }
@@ -566,36 +644,109 @@ impl BackendOps for CowBackend {
         old_pt: &mut PageTableCursor,
         new_pt: &mut PageTableCursor,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
-        acct: CloneMapAccounting<'_>,
+        child_accounting: Option<&MemoryAccounting>,
     ) -> AxResult<Backend> {
+        struct ClonePagePlan {
+            vaddr: VirtAddr,
+            paddr: PhysAddr,
+            old_flags: MappingFlags,
+            rss_kind: RssKind,
+        }
+
+        fn rollback(
+            pages: &[ClonePagePlan],
+            old_pt: &mut PageTableCursor,
+            new_pt: &mut PageTableCursor,
+            child: Option<&MemoryAccounting>,
+            page_size: PageSize,
+        ) -> AxResult<()> {
+            let mut rollback_failed = false;
+            for page in pages.iter().rev() {
+                if new_pt.unmap(page.vaddr).is_ok() {
+                    if child.is_some_and(|accounting| accounting.dec(page.rss_kind, 1).is_err()) {
+                        rollback_failed = true;
+                    }
+                    release_frame(page.paddr, page_size);
+                } else {
+                    rollback_failed = true;
+                }
+                if old_pt.protect(page.vaddr, page.old_flags).is_err() {
+                    rollback_failed = true;
+                }
+            }
+            if rollback_failed {
+                Err(AxError::BadState)
+            } else {
+                Ok(())
+            }
+        }
+
         let cow_flags = flags - MappingFlags::WRITE;
+        let mut plans = alloc::vec::Vec::new();
+        plans
+            .try_reserve_exact(range.size() / usize::from(self.size))
+            .map_err(|_| AxError::NoMemory)?;
 
         for vaddr in pages_in(range, self.size)? {
             match old_pt.query(vaddr) {
-                Ok((paddr, _pte_flags, page_size)) => {
+                Ok((paddr, pte_flags, page_size)) => {
                     assert_eq!(page_size, self.size);
-                    let frame = FRAME_TABLE
-                        .lock()
-                        .get_frame_ref(paddr)
-                        .ok_or(AxError::BadAddress)?;
-                    let mut frame = frame.lock();
-                    assert!(frame.count > 0, "referencing unreferenced frame");
-                    frame.count += 1;
-                    if frame.count == u8::MAX {
-                        warn!("frame reference count overflow");
-                        return Err(AxError::BadAddress);
-                    }
-                    old_pt.protect(vaddr, cow_flags)?;
-                    new_pt.map(vaddr, paddr, self.size, cow_flags)?;
-                    if let (Some(parent), Some(child)) = (acct.parent, acct.child)
-                        && let Some(_kind) = parent.charge_kind(vaddr)
-                    {
-                        child.copy_charge_from(parent, vaddr)?;
-                    }
+                    let table = FRAME_TABLE.lock();
+                    let count = table.count(paddr).ok_or(AxError::BadAddress)?;
+                    count.checked_add(1).ok_or(AxError::NoMemory)?;
+                    let rss_kind = table.kind(paddr).ok_or(AxError::BadAddress)?;
+                    plans.push(ClonePagePlan {
+                        vaddr,
+                        paddr,
+                        old_flags: pte_flags,
+                        rss_kind,
+                    });
                 }
                 Err(PagingError::NotMapped) => {}
                 Err(_) => return Err(AxError::BadAddress),
             };
+        }
+
+        let mut committed = alloc::vec::Vec::new();
+        committed
+            .try_reserve_exact(plans.len())
+            .map_err(|_| AxError::NoMemory)?;
+        for plan in plans {
+            if FRAME_TABLE.lock().try_retain(plan.paddr).is_err() {
+                rollback(&committed, old_pt, new_pt, child_accounting, self.size)?;
+                return Err(AxError::NoMemory);
+            }
+            if let Err(error) = old_pt.protect(plan.vaddr, cow_flags) {
+                release_frame(plan.paddr, self.size);
+                rollback(&committed, old_pt, new_pt, child_accounting, self.size)?;
+                return Err(error.into());
+            }
+            if let Err(error) = new_pt.map(plan.vaddr, plan.paddr, self.size, cow_flags) {
+                let parent_restored = old_pt.protect(plan.vaddr, plan.old_flags).is_ok();
+                release_frame(plan.paddr, self.size);
+                rollback(&committed, old_pt, new_pt, child_accounting, self.size)?;
+                return if parent_restored {
+                    Err(error.into())
+                } else {
+                    Err(AxError::BadState)
+                };
+            }
+            if let Some(child) = child_accounting
+                && let Err(error) = child.inc(plan.rss_kind, 1)
+            {
+                let child_unmapped = new_pt.unmap(plan.vaddr).is_ok();
+                let parent_restored = old_pt.protect(plan.vaddr, plan.old_flags).is_ok();
+                if child_unmapped {
+                    release_frame(plan.paddr, self.size);
+                }
+                rollback(&committed, old_pt, new_pt, child_accounting, self.size)?;
+                return if child_unmapped && parent_restored {
+                    Err(error)
+                } else {
+                    Err(AxError::BadState)
+                };
+            }
+            committed.push(plan);
         }
         Ok(Backend::Cow(self.clone()))
     }
@@ -609,13 +760,6 @@ impl BackendOps for CowBackend {
         right.start = self.start + align_diff;
         Some(Backend::Cow(right))
     }
-
-    fn shrink_left(&mut self, shrink_size: usize) {
-        assert!(shrink_size.is_multiple_of(PAGE_SIZE_4K));
-        self.start += shrink_size;
-    }
-
-    fn shrink_right(&mut self, _shrink_size: usize) {}
 }
 
 impl Backend {
@@ -630,10 +774,14 @@ impl Backend {
         Self::Cow(CowBackend {
             start: start.align_down_4k(),
             size,
-            file: Some((file, start, file_start, file_end)),
+            file: Some(PrivateFileMapping::new(
+                Arc::new(KernelVmFile(file)),
+                start,
+                file_start,
+                file_end,
+            )),
             name: None,
             shared,
-            write_upgraded: Cell::new(false),
         })
     }
 
@@ -644,7 +792,6 @@ impl Backend {
             file: None,
             name: Some(name.to_string()),
             shared: false,
-            write_upgraded: Cell::new(false),
         })
     }
 }

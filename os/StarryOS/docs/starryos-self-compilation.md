@@ -28,21 +28,13 @@
 
 **关联**: 无此修复，cargo 在执行 build script 时会因子进程挂起而永远等待，自编译无法启动。
 
-### PR #804 — 页回收
+### 页缓存有界回收
 
 **现象**: 编译 `syn`、`proc-macro2` 等大型 crate 时 OOM panic。
 
 **根因**: 8GB 物理内存下，cargo build 会产生大量文件缓存页面（源码、中间产物）。当可用内存不足时，没有机制回收不再使用的干净文件页面，导致帧分配器返回 `NoMemory`。
 
-**修复文件**:
-| 文件 | 变更 |
-|------|------|
-| `axalloc/src/lib.rs` | 注册 `page_cache_reclaim` 回调，分配失败时尝试回收 |
-| `axalloc/src/buddy_slab.rs` | 分配重试逻辑（最多 4 次），每次失败后触发回收 |
-| `axalloc/src/default_impl.rs` | 同上 |
-| `axfs-ng/src/highlevel/file.rs` | LRU 页面缓存驱逐：回收干净的文件支持页面 |
-| `axsync/src/mutex.rs` | 移除 `try_lock` 路径中的 `might_sleep()`（try_lock 是单次 CAS，永不应阻塞） |
-| `entry.rs` | 启动时注册回收回调 |
+**当前实现**：`ax-alloc` 分配失败立即返回 `NoMemory`；Starry VM fault/populate 外层最多调用一次 `ax-fs-ng::page_cache_reclaim` 并重试一次。回收只驱逐有后备存储的干净页，且单次扫描有固定上限。
 
 **关联**: 无此修复，`syn` crate（编译第 7/276）会因 OOM 而 panic。
 
@@ -56,7 +48,7 @@
 
 **修复**: RISC-V QEMU 默认构建改走 `axplat-dyn`，`axplat-dyn/src/mem.rs` 的 `phys_ram_ranges()` 从 `somehal::mem::memory_map()` 动态读取 Free 区域。
 
-### 2. Bitmap 容量溢出
+### 2. 旧位图容量上限
 
 **现象**: 修改 axconfig 为 8G 后，内核 panic:
 
@@ -64,15 +56,7 @@
 bitmap capacity exceeded: need 3145728 pages but CAP is 1048576
 ```
 
-**根因**: 默认 `page-alloc-4g` 使用 `BitAlloc1M`（1M bits = 4GB 最大容量）。8GB 需要 2M pages > 1M CAP。
-
-**修复** (`os/arceos/modules/axalloc/Cargo.toml`):
-```toml
-# Before
-default = ["tlsf", "ax-allocator/page-alloc-4g"]
-# After
-default = ["tlsf", "ax-allocator/page-alloc-64g"]  # 16M bits = 64GB
-```
+**当前实现**：运行时统一使用 Buddy 页分配，不再存在编译期固定位图容量或容量 feature；所有 Free 内存区域均由启动阶段加入 `ax-alloc`。
 
 ### 3. TMPFS 挂载失败
 

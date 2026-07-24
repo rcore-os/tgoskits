@@ -373,14 +373,14 @@ impl TpuDevice {
             "[TPU] dmabuf info: handle={}, size={}, paddr=0x{:x}",
             buffer.handle.as_u32(),
             buffer.size,
-            buffer.dma_info.bus_addr.as_u64()
+            buffer.dma_addr()
         );
 
         let task = TpuTask {
             tid: ax_task::current().id().as_u64(),
             seq_no: submit_arg.seq_no,
-            vaddr: buffer.dma_info.cpu_addr.as_ptr() as usize,
-            paddr: buffer.dma_info.bus_addr.as_u64(),
+            vaddr: buffer.cpu_addr(),
+            paddr: buffer.dma_addr(),
             _buffer: buffer,
             ret: 0,
         };
@@ -456,7 +456,7 @@ impl TpuDevice {
         let fd = arg as i32;
         debug!("TPU dmabuf flush fd: {}", fd);
         let buffer = self.lookup_ion_buffer(fd)?;
-        let paddr = buffer.dma_info.bus_addr.as_u64();
+        let paddr = buffer.dma_addr();
         let size = buffer.size as u64;
         self.hw.cache_flush_paddr(paddr, size)?;
         debug!("Flushed buffer: paddr=0x{:x}, size={}", paddr, size);
@@ -468,7 +468,7 @@ impl TpuDevice {
         let fd = arg as i32;
         debug!("TPU dmabuf invalidate fd: {}", fd);
         let buffer = self.lookup_ion_buffer(fd)?;
-        let paddr = buffer.dma_info.bus_addr.as_u64();
+        let paddr = buffer.dma_addr();
         let size = buffer.size as u64;
         self.hw.cache_invalidate_paddr(paddr, size)?;
         Ok(0)

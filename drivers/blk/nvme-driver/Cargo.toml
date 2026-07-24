@@ -12,6 +12,7 @@ version = "0.7.3"
 
 [dependencies]
 dma-api.workspace = true
+bytemuck.workspace = true
 log = "0.4"
 mmio-api.workspace = true
 mbarrier = "0.1"

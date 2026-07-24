@@ -85,7 +85,7 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 
 | 模块 | 典型 feature | 作用 |
 | --- | --- | --- |
-| `ax-alloc` | `alloc` | 全局内存分配器（支持 TLSF、buddy-slab 等策略） |
+| `ax-alloc` | `alloc` | 统一运行时分配入口（Buddy 页分配与 per-CPU Slab） |
 | `ax-mm` | `paging` | 地址空间与页表管理 |
 | `ax-task` | `multitask`、`smp` | 任务创建、调度（FIFO/RR/CFS）、sleep、wait queue |
 | `ax-sync` | `multitask` | mutex、信号量等同步原语 |
@@ -95,7 +95,7 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | `ax-net` | `net` | 统一网络栈（TCP/UDP/raw/Unix/vsock/DNS/DHCP，基于 smoltcp） |
 | `ax-display` | `display` | 图形显示（帧缓冲） |
 | `ax-input` | `input` | 输入设备管理 |
-| `ax-dma` | `dma` | DMA 内存分配与管理（依赖 `paging`） |
+| `dma-api` | `dma` | DMA 内存分配与管理（依赖 `paging`） |
 | `ax-ipi` | `ipi` | 处理器间中断管理 |
 
 ### 模块总览
@@ -115,7 +115,7 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | `ax-net` | `net/ax-net` | 统一网络栈、socket 抽象 | `rd-net`、`rdif-vsock`、`smoltcp` |
 | `ax-log` | `modules/axlog` | 多级日志与格式化输出 | 所有模块 |
 | `ax-fs-ng` | `modules/axfs-ng` | 下一代文件系统 | `ax-driver` |
-| `ax-dma` | `modules/axdma` | DMA 内存分配与管理 | `ax-runtime`、`ax-mm` |
+| `dma-api` | `modules/axdma` | DMA 内存分配与管理 | `ax-runtime`、`ax-mm` |
 | `ax-ipi` | `modules/axipi` | 处理器间中断管理 | `ax-hal` |
 | `ax-input` | `modules/axinput` | 输入设备管理与事件分发 | `ax-driver` |
 | `ax-display` | `modules/axdisplay` | 图形显示（帧缓冲） | `ax-driver` |

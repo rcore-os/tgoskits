@@ -46,8 +46,8 @@ pub fn fcntl_setpipe_size_returns_capacity() -> bool {
     super::syscall::fcntl_setpipe_size_returns_capacity_for_test()
 }
 
-pub fn private_mmap_rejects_fault_at_file_eof() -> bool {
-    super::mm::private_mmap_eof_check_for_test()
+pub fn cow_fault_accounting_failure_rolls_back() -> bool {
+    super::mm::fault_accounting_failure_rolls_back_for_test()
 }
 
 pub fn concurrent_epoll_reverse_add_is_serialized() -> bool {

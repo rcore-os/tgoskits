@@ -34,6 +34,15 @@ register_bitfields![u64,
 #[derive(Clone, Copy)]
 pub struct Entry(u64);
 
+pub(crate) struct MemAttrLayout;
+
+impl MemAttrLayout {
+    pub(crate) const DEVICE_INDEX: u64 = 0;
+    pub(crate) const NORMAL_INDEX: u64 = 1;
+    pub(crate) const NORMAL_NON_CACHEABLE_INDEX: u64 = 2;
+    pub(crate) const MAIR_VALUE: u64 = 0x44ff04;
+}
+
 impl Entry {
     fn as_typed(&self) -> &ReadWrite<u64, PTE::Register> {
         unsafe { &*(self as *const Self as *const ReadWrite<u64, PTE::Register>) }
@@ -58,7 +67,7 @@ impl PageTableEntry for Entry {
             val += PTE::AF::SET;
         }
 
-        val += PTE::PHYS_ADDR.val((config.paddr.raw() as u64) >> 12);
+        val += PTE::PHYS_ADDR.val((config.paddr.as_usize() as u64) >> 12);
 
         // 设置大页标志（NON_BLOCK=0 表示大页）
         if !config.huge {
@@ -106,7 +115,7 @@ impl PageTableEntry for Entry {
         // 设置内存属性
         match config.mem_attr {
             MemAttributes::Device => {
-                val += PTE::MAIR.val(0) + PTE::SHAREABLE::OUTER;
+                val += PTE::MAIR.val(MemAttrLayout::DEVICE_INDEX) + PTE::SHAREABLE::OUTER;
             }
             MemAttributes::Normal | MemAttributes::PerCpu => {
                 // CPU-local areas have a second virtual alias, but they remain
@@ -114,10 +123,11 @@ impl PageTableEntry for Entry {
                 // and diagnostic paths access another CPU's area directly.
                 // Both aliases therefore need the exact same cacheability and
                 // shareability attributes.
-                val += PTE::MAIR.val(1) + PTE::SHAREABLE::INNER;
+                val += PTE::MAIR.val(MemAttrLayout::NORMAL_INDEX) + PTE::SHAREABLE::INNER;
             }
             MemAttributes::Uncached => {
-                val += PTE::MAIR.val(2) + PTE::SHAREABLE::OUTER;
+                val += PTE::MAIR.val(MemAttrLayout::NORMAL_NON_CACHEABLE_INDEX)
+                    + PTE::SHAREABLE::OUTER;
             }
         }
         entry.as_typed().write(val);
@@ -154,13 +164,11 @@ impl PageTableEntry for Entry {
             global: !pte.is_set(PTE::NG),
             is_dir,
             huge: !pte.is_set(PTE::NON_BLOCK),
-            mem_attr: {
-                match pte.read(PTE::MAIR) {
-                    0 => MemAttributes::Device,
-                    1 => MemAttributes::Normal,
-                    2 => MemAttributes::Uncached,
-                    _ => MemAttributes::Normal,
-                }
+            mem_attr: match pte.read(PTE::MAIR) {
+                MemAttrLayout::DEVICE_INDEX => MemAttributes::Device,
+                MemAttrLayout::NORMAL_INDEX => MemAttributes::Normal,
+                MemAttrLayout::NORMAL_NON_CACHEABLE_INDEX => MemAttributes::Uncached,
+                _ => MemAttributes::Normal,
             },
         }
     }

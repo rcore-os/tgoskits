@@ -81,7 +81,7 @@ pub fn flush_tlb(vaddr: Option<VirtAddr>) {
     match vaddr {
         Some(addr) => {
             // VAE2IS requires (asid, va), TTBR0_EL2 doesn't have ASID field, so use 0
-            tlbi(VAE2IS::new(0, addr.raw()));
+            tlbi(VAE2IS::new(0, addr.as_usize()));
         }
         None => {
             tlbi(ALLE2);
@@ -107,19 +107,7 @@ pub fn setup_table_regs() {
             + HCR_EL2::TSC::EnableTrapEl1SmcToEl2,
     );
 
-    // Device-nGnRE
-    let attr0 = MAIR_EL2::Attr0_Device::nonGathering_nonReordering_EarlyWriteAck;
-    // Normal Write-Back
-    let attr1 = MAIR_EL2::Attr1_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc
-        + MAIR_EL2::Attr1_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc;
-    // No cache
-    let attr2 =
-        MAIR_EL2::Attr2_Normal_Inner::NonCacheable + MAIR_EL2::Attr2_Normal_Outer::NonCacheable;
-    // WriteThrough
-    let attr3 = MAIR_EL2::Attr3_Normal_Inner::WriteThrough_Transient_WriteAlloc
-        + MAIR_EL2::Attr3_Normal_Outer::WriteThrough_Transient_WriteAlloc;
-
-    MAIR_EL2.write(attr0 + attr1 + attr2 + attr3);
+    MAIR_EL2.set(crate::arch::paging::MemAttrLayout::MAIR_VALUE);
 
     // Enable TTBR0 walks, page size = 4K, vaddr size = 48 bits, paddr size = 40 bits.
     const VADDR_SIZE: u64 = 48;

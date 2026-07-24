@@ -1,6 +1,6 @@
-use core::{marker::PhantomData, ptr::NonNull};
+use core::{alloc::Layout, marker::PhantomData, num::NonZeroUsize, ptr::NonNull};
 
-use ax_alloc::{UsageKind, global_allocator};
+use dma_api::{DmaAllocHandle, DmaDirection, DmaMapHandle};
 #[cfg(feature = "virtio-net")]
 use virtio_drivers::Error as VirtIoError;
 use virtio_drivers::{
@@ -23,6 +23,21 @@ pub const MMIO_DEVICE_NAME: &str = "virtio-mmio";
 
 pub struct VirtIoHalImpl(PhantomData<()>);
 
+const VIRTIO_DMA_MASK: u64 = u64::MAX;
+const VIRTIO_DMA_ALIGN: usize = 0x1000;
+
+fn virtio_direction(direction: BufferDirection) -> DmaDirection {
+    match direction {
+        BufferDirection::DriverToDevice => DmaDirection::ToDevice,
+        BufferDirection::DeviceToDriver => DmaDirection::FromDevice,
+        BufferDirection::Both => DmaDirection::Bidirectional,
+    }
+}
+
+fn page_layout(pages: usize) -> Option<Layout> {
+    Layout::from_size_align(pages.checked_mul(VIRTIO_DMA_ALIGN)?, VIRTIO_DMA_ALIGN).ok()
+}
+
 pub const fn has_static_mmio_drivers() -> bool {
     cfg!(any(
         feature = "virtio-blk",
@@ -33,36 +48,100 @@ pub const fn has_static_mmio_drivers() -> bool {
     ))
 }
 
+// SAFETY: every allocation and mapping is paired with the corresponding
+// consume-on-release DMA token, and MMIO pointers come from the platform iomap
+// capability for the exact range requested by the VirtIO transport.
 unsafe impl VirtIoHal for VirtIoHalImpl {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (VirtIoPhysAddr, NonNull<u8>) {
-        let Ok(vaddr) = global_allocator().alloc_pages(pages, 0x1000, UsageKind::Dma) else {
+        let Some(layout) = page_layout(pages) else {
             return (0, NonNull::dangling());
         };
+        let device = axklib::dma::device_with_mask(VIRTIO_DMA_MASK);
+        let Ok(handle) = (unsafe { device.alloc_coherent(layout) }) else {
+            return (0, NonNull::dangling());
+        };
+        // SAFETY: `handle` uniquely owns a writable allocation of `layout`.
         unsafe {
-            core::ptr::write_bytes(vaddr as *mut u8, 0, pages * 0x1000);
+            handle.as_ptr().write_bytes(0, layout.size());
         }
-        let paddr = axklib::mem::virt_to_phys(vaddr.into()).as_usize() as VirtIoPhysAddr;
-        let ptr = NonNull::new(vaddr as _).expect("DMA allocator returned null");
-        (paddr, ptr)
+        let dma_addr = handle.dma_addr().as_u64() as VirtIoPhysAddr;
+        let cpu_addr = handle.as_ptr();
+        // The VirtIO HAL transfers this allocation as the raw tuple consumed
+        // by `dma_dealloc`; the callback contract preserves unique ownership.
+        (dma_addr, cpu_addr)
     }
 
-    unsafe fn dma_dealloc(_paddr: VirtIoPhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
-        global_allocator().dealloc_pages(vaddr.as_ptr() as usize, pages, UsageKind::Dma);
+    /// # Safety
+    ///
+    /// The arguments must be the unchanged values returned by [`Self::dma_alloc`].
+    unsafe fn dma_dealloc(paddr: VirtIoPhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
+        let Some(layout) = page_layout(pages) else {
+            return -1;
+        };
+        // SAFETY: the VirtIO HAL requires these to be the unchanged values
+        // returned by `dma_alloc`, so the raw tuple reconstructs its token.
+        let handle = unsafe { DmaAllocHandle::new(vaddr, paddr.into(), layout) };
+        unsafe { axklib::dma::device_with_mask(VIRTIO_DMA_MASK).dealloc_coherent(handle) };
         0
     }
 
+    /// # Safety
+    ///
+    /// The physical range must describe the calling VirtIO device's MMIO BAR.
     unsafe fn mmio_phys_to_virt(paddr: VirtIoPhysAddr, size: usize) -> NonNull<u8> {
         axklib::mmio::ioremap_raw((paddr as usize).into(), size)
             .map(|mmio| mmio.as_nonnull_ptr())
             .expect("failed to map VirtIO MMIO")
     }
 
-    unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> VirtIoPhysAddr {
-        let vaddr = buffer.as_ptr() as *mut u8 as usize;
-        axklib::mem::virt_to_phys(vaddr.into()).as_usize() as VirtIoPhysAddr
+    /// # Safety
+    ///
+    /// `buffer` must remain live and obey the requested DMA ownership direction
+    /// until [`Self::unshare`] is called with the same range.
+    unsafe fn share(buffer: NonNull<[u8]>, direction: BufferDirection) -> VirtIoPhysAddr {
+        let size = buffer.len();
+        let Some(size) = NonZeroUsize::new(size) else {
+            return 0;
+        };
+        let cpu_addr = NonNull::new(buffer.as_ptr() as *mut u8).expect("non-empty DMA buffer");
+        let direction = virtio_direction(direction);
+        // SAFETY: the VirtIO Hal contract keeps `buffer` live until unshare.
+        let handle = unsafe {
+            axklib::dma::device_with_mask(VIRTIO_DMA_MASK)
+                .map_streaming(cpu_addr, size, 1, direction)
+                .expect("failed to map VirtIO DMA buffer")
+        };
+        axklib::dma::device_with_mask(VIRTIO_DMA_MASK).sync_map_for_device(
+            &handle,
+            0,
+            size.get(),
+            direction,
+        );
+        let dma_addr = handle.dma_addr().as_u64() as VirtIoPhysAddr;
+        // `unshare` receives the same buffer, direction, and device address,
+        // which form the raw ownership token for this identity mapping.
+        dma_addr
     }
 
-    unsafe fn unshare(_paddr: VirtIoPhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {
+    /// # Safety
+    ///
+    /// The arguments must identify a live mapping created by [`Self::share`]
+    /// and must not have been unmapped previously.
+    unsafe fn unshare(paddr: VirtIoPhysAddr, buffer: NonNull<[u8]>, direction: BufferDirection) {
+        let size = buffer.len();
+        let Some(nonzero_size) = NonZeroUsize::new(size) else {
+            return;
+        };
+        let cpu_addr = NonNull::new(buffer.as_ptr() as *mut u8).expect("non-empty DMA buffer");
+        let layout = Layout::from_size_align(size, 1).expect("valid VirtIO buffer layout");
+        let direction = virtio_direction(direction);
+        // VIRTIO_DMA_MASK accepts every physical address, so this adapter
+        // cannot create a bounce allocation. The callback tuple therefore
+        // contains all state required to reconstruct the mapping token.
+        let handle = unsafe { DmaMapHandle::new(cpu_addr, paddr.into(), layout, None) };
+        let device = axklib::dma::device_with_mask(VIRTIO_DMA_MASK);
+        device.sync_map_for_cpu(&handle, 0, nonzero_size.get(), direction);
+        unsafe { device.unmap_streaming(handle) };
     }
 }
 

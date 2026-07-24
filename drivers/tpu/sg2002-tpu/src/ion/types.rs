@@ -1,12 +1,8 @@
 //! Ion 驱动数据结构定义
 
-use core::{
-    alloc::Layout,
-    sync::atomic::{AtomicU32, Ordering},
-};
+use core::sync::atomic::{AtomicU32, Ordering};
 
-use ax_dma::DMAInfo;
-use ax_memory_addr::PAGE_SIZE_4K;
+use dma_api::CoherentArray;
 
 /// Ion 堆类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,48 +52,34 @@ impl IonHandle {
 }
 
 /// Ion 缓冲区信息
-#[derive(Debug)]
 pub struct IonBuffer {
     /// 缓冲区句柄
     pub handle: IonHandle,
-    /// DMA 信息（包含虚拟地址和总线地址）
-    pub dma_info: DMAInfo,
+    /// DMA coherent allocation owned for the lifetime of this buffer.
+    dma: CoherentArray<u8>,
     /// 缓冲区大小
     pub size: usize,
 }
 
 impl IonBuffer {
-    pub fn new(dma_info: DMAInfo, size: usize) -> Self {
+    pub fn new(dma: CoherentArray<u8>, size: usize) -> Self {
         Self {
             handle: IonHandle::new(),
-            dma_info,
+            dma,
             size,
         }
     }
-}
 
-impl Drop for IonBuffer {
-    fn drop(&mut self) {
-        // 最后一个 `Arc<IonBuffer>` 被释放时，物理页才交还给 DMA 分配器，
-        // 以避免 fd / mmap 还存活时交还后被另一路 DMA 者重复占用。
-        match Layout::from_size_align(self.size, PAGE_SIZE_4K) {
-            Ok(layout) => unsafe {
-                ax_dma::dealloc_coherent_pages(self.dma_info, layout);
-            },
-            Err(err) => {
-                error!(
-                    "IonBuffer drop: invalid layout (size={}, align={}): {:?}",
-                    self.size, PAGE_SIZE_4K, err
-                );
-            }
-        }
+    /// Returns the device-visible base address.
+    pub fn dma_addr(&self) -> u64 {
+        self.dma.dma_addr().as_u64()
+    }
+
+    /// Returns the kernel virtual base address.
+    pub fn cpu_addr(&self) -> usize {
+        self.dma.as_ptr().as_ptr() as usize
     }
 }
-
-// 手动实现 Send 和 Sync，因为 DMAInfo 中的 NonNull<u8> 默认不实现 Sync
-// 但是在我们的使用场景中，DMA 内存地址是安全的，可以在线程间共享
-unsafe impl Send for IonBuffer {}
-unsafe impl Sync for IonBuffer {}
 
 /// Ion 分配请求
 #[derive(Debug, Clone, Copy)]

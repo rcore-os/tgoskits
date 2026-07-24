@@ -7,6 +7,33 @@ use dma_api::{
 };
 use mbarrier::mb;
 
+/// Move-only metadata required to release DMA pages.
+///
+/// ```compile_fail
+/// use axklib::dma::DmaPageAllocation;
+///
+/// fn require_copy<T: Copy>() {}
+/// require_copy::<DmaPageAllocation>();
+/// ```
+#[repr(C)]
+#[derive(Debug)]
+pub struct DmaPageAllocation {
+    addr: VirtAddr,
+    num_pages: usize,
+}
+
+impl DmaPageAllocation {
+    /// Creates release metadata for pages returned by the platform allocator.
+    pub const fn new(addr: VirtAddr, num_pages: usize) -> Self {
+        Self { addr, num_pages }
+    }
+
+    /// Consumes the allocation metadata and returns its release parameters.
+    pub const fn into_parts(self) -> (VirtAddr, usize) {
+        (self.addr, self.num_pages)
+    }
+}
+
 pub struct KlibDma;
 
 static DMA: KlibDma = KlibDma;
@@ -43,10 +70,7 @@ impl DmaPages {
     /// `dma_alloc_pages` is expected to honor `addr_mask` and the requested
     /// alignment. The checks below are defensive validation so a bad platform
     /// allocator fails before the buffer is handed to a device.
-    unsafe fn alloc_for_layout(
-        constraints: DmaConstraints,
-        layout: Layout,
-    ) -> Result<Self, DmaError> {
+    fn alloc_for_layout(constraints: DmaConstraints, layout: Layout) -> Result<Self, DmaError> {
         if layout.size() == 0 {
             return Ok(Self {
                 cpu_addr: NonNull::dangling(),
@@ -57,20 +81,25 @@ impl DmaPages {
 
         let num_pages = Self::layout_pages(layout);
         let align = Self::layout_align(layout, constraints);
-        let cpu_vaddr = crate::klib::dma_alloc_pages(constraints.addr_mask, num_pages, align)
+        let allocation = crate::klib::dma_alloc_pages(constraints.addr_mask, num_pages, align)
             .map_err(|_| DmaError::NoMemory)?;
+        let (cpu_vaddr, allocated_pages) = allocation.into_parts();
+        if allocated_pages != num_pages {
+            crate::klib::dma_dealloc_pages(DmaPageAllocation::new(cpu_vaddr, allocated_pages));
+            return Err(DmaError::NoMemory);
+        }
         let cpu_addr = NonNull::new(cpu_vaddr.as_mut_ptr()).ok_or(DmaError::NoMemory)?;
         let dma_addr = dma_addr_from_vaddr(cpu_vaddr);
 
         if !dma_range_fits_mask(dma_addr, layout.size(), constraints.addr_mask) {
-            unsafe { Self::dealloc_pages(cpu_addr, num_pages) };
+            Self::dealloc_pages(cpu_addr, num_pages);
             return Err(DmaError::DmaMaskNotMatch {
                 addr: dma_addr.into(),
                 mask: constraints.addr_mask,
             });
         }
         if !dma_addr_is_aligned(dma_addr, constraints.align.max(layout.align())) {
-            unsafe { Self::dealloc_pages(cpu_addr, num_pages) };
+            Self::dealloc_pages(cpu_addr, num_pages);
             return Err(DmaError::AlignMismatch {
                 required: constraints.align.max(layout.align()),
                 address: dma_addr.into(),
@@ -84,11 +113,14 @@ impl DmaPages {
         })
     }
 
-    unsafe fn dealloc_pages(cpu_addr: NonNull<u8>, num_pages: usize) {
+    fn dealloc_pages(cpu_addr: NonNull<u8>, num_pages: usize) {
         if num_pages == 0 {
             return;
         }
-        crate::klib::dma_dealloc_pages(VirtAddr::from_usize(cpu_addr.as_ptr() as usize), num_pages);
+        crate::klib::dma_dealloc_pages(DmaPageAllocation::new(
+            VirtAddr::from_usize(cpu_addr.as_ptr() as usize),
+            num_pages,
+        ));
     }
 }
 
@@ -104,6 +136,8 @@ impl CoherentDmaPolicy {
         let start = VirtAddr::from_usize(pages.cpu_addr.as_ptr() as usize).align_down_4k();
         crate::klib::mem_make_dma_coherent_uncached(start, range_size)
             .map_err(|_| DmaError::NoMemory)?;
+        // SAFETY: `pages` owns a writable allocation covering `layout`, and
+        // cacheability was changed before the bytes become device-visible.
         unsafe {
             pages.cpu_addr.as_ptr().write_bytes(0, layout.size());
         }
@@ -131,13 +165,14 @@ impl DmaOp for KlibDma {
         constraints: DmaConstraints,
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
-        let pages = unsafe { DmaPages::alloc_for_layout(constraints, layout).ok()? };
+        let pages = DmaPages::alloc_for_layout(constraints, layout).ok()?;
+        // SAFETY: `pages` owns the live allocation described by `layout`.
         Some(unsafe { DmaAllocHandle::new(pages.cpu_addr, pages.dma_addr.into(), layout) })
     }
 
     unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
         let num_pages = DmaPages::layout_pages(handle.layout());
-        unsafe { DmaPages::dealloc_pages(handle.as_ptr(), num_pages) };
+        DmaPages::dealloc_pages(handle.as_ptr(), num_pages);
     }
 
     unsafe fn alloc_coherent(
@@ -145,21 +180,21 @@ impl DmaOp for KlibDma {
         constraints: DmaConstraints,
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
-        let pages = unsafe { DmaPages::alloc_for_layout(constraints, layout).ok()? };
+        let pages = DmaPages::alloc_for_layout(constraints, layout).ok()?;
         if CoherentDmaPolicy::make_uncached(&pages, layout).is_err() {
-            unsafe { DmaPages::dealloc_pages(pages.cpu_addr, pages.num_pages) };
+            DmaPages::dealloc_pages(pages.cpu_addr, pages.num_pages);
             return None;
         }
 
+        // SAFETY: `pages` owns the live uncached allocation described by `layout`.
         Some(unsafe { DmaAllocHandle::new(pages.cpu_addr, pages.dma_addr.into(), layout) })
     }
 
     unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
         let num_pages = DmaPages::layout_pages(handle.layout());
-        if CoherentDmaPolicy::restore_cached(handle.as_ptr(), num_pages).is_err() {
-            return;
-        }
-        unsafe { DmaPages::dealloc_pages(handle.as_ptr(), num_pages) };
+        CoherentDmaPolicy::restore_cached(handle.as_ptr(), num_pages)
+            .expect("DMA pages must regain their cached mapping before release");
+        DmaPages::dealloc_pages(handle.as_ptr(), num_pages);
     }
 
     unsafe fn map_streaming(
@@ -176,10 +211,14 @@ impl DmaOp for KlibDma {
         if dma_range_fits_mask(dma_addr, size.get(), constraints.addr_mask)
             && dma_addr_is_aligned(dma_addr, align)
         {
+            // SAFETY: the caller keeps `addr` live for the mapping lifetime;
+            // the checked identity address satisfies the device constraints.
             return Ok(unsafe { DmaMapHandle::new(addr, dma_addr.into(), layout, None) });
         }
 
-        let map_pages = unsafe { DmaPages::alloc_for_layout(constraints, layout)? };
+        let map_pages = DmaPages::alloc_for_layout(constraints, layout)?;
+        // SAFETY: the caller-owned address stays live, and `map_pages` owns the
+        // bounce allocation recorded in this consume-on-unmap token.
         Ok(unsafe {
             DmaMapHandle::new(
                 addr,
@@ -193,7 +232,7 @@ impl DmaOp for KlibDma {
     unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
         if let Some(map_virt) = handle.bounce_ptr() {
             let num_pages = DmaPages::layout_pages(handle.layout());
-            unsafe { DmaPages::dealloc_pages(map_virt, num_pages) };
+            DmaPages::dealloc_pages(map_virt, num_pages);
         }
     }
 

@@ -145,7 +145,7 @@ impl ptg::PageTableEntry for A64PTEHV {
         if !config.is_dir || !config.huge {
             attr |= DescriptorAttr::NON_BLOCK;
         }
-        Self(attr.bits() | (config.paddr.raw() as u64 & Self::PHYS_ADDR_MASK))
+        Self(attr.bits() | (config.paddr.as_usize() as u64 & Self::PHYS_ADDR_MASK))
     }
 
     fn to_config(&self, is_dir: bool) -> ptg::PteConfig {
@@ -155,7 +155,7 @@ impl ptg::PageTableEntry for A64PTEHV {
         let huge = is_dir && valid && !non_block;
         let mapping_flags = MappingFlags::from(attr);
         ptg::PteConfig {
-            paddr: ptg::PhysAddr::new(self.paddr().as_usize()),
+            paddr: ptg::PhysAddr::from_usize(self.paddr().as_usize()),
             valid,
             read: mapping_flags.contains(MappingFlags::READ),
             writable: mapping_flags.contains(MappingFlags::WRITE),
@@ -206,7 +206,7 @@ impl ptg::TableMeta for A64HVPagingMetaDataL3 {
         // current EL2 context; they do not dereference memory.
         unsafe {
             if let Some(vaddr) = vaddr {
-                asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) vaddr.raw())
+                asm!("tlbi vae2is, {}; dsb sy; isb", in(reg) vaddr.as_usize())
             } else {
                 asm!("tlbi alle2is; dsb sy; isb")
             }

@@ -21,29 +21,39 @@ mod file;
 mod linear;
 mod shared;
 
+use starry_mm::{CommitKind, MemoryAccounting, PageInitialization, PageSource};
+pub use starry_mm::{RssKind, SharedPages};
+
 #[cfg(axtest)]
-pub(crate) use self::cow::private_mmap_eof_check_for_test;
-pub use self::shared::SharedPages;
-pub use super::accounting::RssKind;
-use super::{
-    AddrSpace,
-    accounting::{CloneMapAccounting, MemoryAccounting},
-};
+pub(crate) use self::cow::fault_accounting_failure_rolls_back_for_test;
+use super::AddrSpace;
 
 fn divide_page(size: usize, page_size: PageSize) -> usize {
     assert!(page_size.is_aligned(size), "unaligned");
     size >> (page_size as usize).trailing_zeros()
 }
 
-pub(crate) fn alloc_frame(zeroed: bool, size: PageSize) -> AxResult<PhysAddr> {
+pub(crate) fn alloc_frame(
+    initialization: PageInitialization,
+    size: PageSize,
+) -> AxResult<PhysAddr> {
     let page_size = size as usize;
     let num_pages = page_size / PAGE_SIZE_4K;
     let vaddr = VirtAddr::from(
         global_allocator()
-            .alloc_pages(num_pages, page_size, UsageKind::VirtMem)
+            .alloc_pages(
+                ax_alloc::PageRequest {
+                    count: num_pages,
+                    align: page_size,
+                    zone: ax_alloc::MemoryZone::Normal,
+                },
+                UsageKind::VirtMem,
+            )
             .map_err(|_| AxError::NoMemory)?,
     );
-    if zeroed {
+    if initialization == PageInitialization::Zeroed {
+        // SAFETY: the allocator returned exclusive ownership of `page_size`
+        // writable bytes beginning at `vaddr`.
         unsafe { core::ptr::write_bytes(vaddr.as_mut_ptr(), 0, page_size) };
     }
     let paddr = virt_to_phys(vaddr);
@@ -55,14 +65,52 @@ pub(crate) fn dealloc_frame(frame: PhysAddr, align: PageSize) {
     let vaddr = phys_to_virt(frame);
     let page_size: usize = align.into();
     let num_pages = page_size / PAGE_SIZE_4K;
-    global_allocator().dealloc_pages(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
+    // SAFETY: VM backends transfer only exclusive frames returned by
+    // alloc_frame and preserve their page-size-derived request metadata.
+    unsafe {
+        global_allocator().dealloc_pages(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
+    }
 }
 
-fn pages_in(range: VirtAddrRange, align: PageSize) -> AxResult<DynPageIter<VirtAddr>> {
+struct RuntimePageSource;
+
+impl PageSource for RuntimePageSource {
+    fn alloc_page(&self, initialization: PageInitialization, size: PageSize) -> AxResult<PhysAddr> {
+        alloc_frame(initialization, size)
+    }
+
+    fn dealloc_page(&self, paddr: PhysAddr, size: PageSize) {
+        dealloc_frame(paddr, size);
+    }
+}
+
+static RUNTIME_PAGE_SOURCE: RuntimePageSource = RuntimePageSource;
+
+pub(crate) const fn runtime_page_source() -> &'static dyn PageSource {
+    &RUNTIME_PAGE_SOURCE
+}
+
+pub(super) fn pages_in(range: VirtAddrRange, align: PageSize) -> AxResult<DynPageIter<VirtAddr>> {
     DynPageIter::new(range.start, range.end, align as usize).ok_or(AxError::InvalidInput)
 }
 
-type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
+pub(super) type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
+
+/// Page-table and resident accounting state updated together by Starry mapping backends.
+#[doc(hidden)]
+pub struct AddressSpacePageTable {
+    pub(super) table: PageTable,
+    pub(super) accounting: MemoryAccounting,
+}
+
+impl AddressSpacePageTable {
+    pub(super) fn try_new() -> AxResult<Self> {
+        Ok(Self {
+            table: PageTable::try_new().map_err(|_| AxError::NoMemory)?,
+            accounting: MemoryAccounting::new(),
+        })
+    }
+}
 
 #[enum_dispatch]
 pub trait BackendOps {
@@ -125,7 +173,7 @@ pub trait BackendOps {
         old_pt: &mut PageTableCursor,
         new_pt: &mut PageTableCursor,
         new_aspace: &Arc<Mutex<AddrSpace>>,
-        acct: CloneMapAccounting<'_>,
+        child_accounting: Option<&MemoryAccounting>,
     ) -> AxResult<Backend>;
 
     /// Splits the backend into two at the given position, and returns the backend for the upper part.
@@ -135,12 +183,6 @@ pub trait BackendOps {
     /// Returns `None` if the given position is not in the memory area, or one
     /// of the parts is empty after splitting.
     fn split(&mut self, align_diff: usize) -> Option<Backend>;
-
-    /// Shrinks the backend from the left by the given size.
-    fn shrink_left(&mut self, _shrink_size: usize);
-
-    /// Shrinks the backend from the right by the given size.
-    fn shrink_right(&mut self, _shrink_size: usize);
 }
 
 /// A unified enum type for different memory mapping backends.
@@ -162,6 +204,17 @@ pub struct BackendFileInfo {
 }
 
 impl Backend {
+    /// Returns the committed bytes represented by this backend and VMA flags.
+    pub fn accounted_bytes(&self, flags: MappingFlags, bytes: usize) -> u64 {
+        let kind = match self {
+            Self::Linear(_) | Self::File(_) => CommitKind::Unaccounted,
+            Self::Cow(backend) if backend.is_anonymous() => CommitKind::PrivateAnonymous,
+            Self::Cow(_) => CommitKind::PrivateFile,
+            Self::Shared(_) => CommitKind::Unaccounted,
+        };
+        kind.accounted_bytes(flags.contains(MappingFlags::WRITE), bytes as u64)
+    }
+
     /// Returns the file information if this is a file-backed mapping, or `None` otherwise.
     ///
     /// The returned tuple contains the file name, offset, inode and whether the mapping is shared.
@@ -212,24 +265,36 @@ impl Backend {
 impl MappingBackend for Backend {
     type Addr = VirtAddr;
     type Flags = MappingFlags;
-    type PageTable = PageTable;
+    type PageTable = AddressSpacePageTable;
 
-    fn map(&self, start: VirtAddr, size: usize, flags: MappingFlags, pt: &mut PageTable) -> bool {
+    fn map(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
+        pt: &mut AddressSpacePageTable,
+    ) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
-        let acct = super::accounting::bridge_rss_accounting();
-        if let Err(err) = BackendOps::map(self, range, flags, acct, &mut pt.cursor()) {
-            warn!("Failed to map area: {:?}", err);
+        if let Err(error) = BackendOps::map(
+            self,
+            range,
+            flags,
+            Some(&pt.accounting),
+            &mut pt.table.cursor(),
+        ) {
+            warn!("Failed to map area: {error:?}");
             false
         } else {
             true
         }
     }
 
-    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
+    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut AddressSpacePageTable) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
-        let acct = super::accounting::bridge_rss_accounting();
-        if let Err(err) = BackendOps::unmap(self, range, acct, &mut pt.cursor()) {
-            warn!("Failed to unmap area: {:?}", err);
+        if let Err(error) =
+            BackendOps::unmap(self, range, Some(&pt.accounting), &mut pt.table.cursor())
+        {
+            warn!("Failed to unmap area: {error:?}");
             false
         } else {
             true
@@ -238,19 +303,19 @@ impl MappingBackend for Backend {
 
     fn protect(
         &self,
-        start: Self::Addr,
+        start: VirtAddr,
         size: usize,
-        new_flags: Self::Flags,
-        pt: &mut Self::PageTable,
+        new_flags: MappingFlags,
+        pt: &mut AddressSpacePageTable,
     ) -> bool {
         let range = VirtAddrRange::from_start_size(start, size);
-        let mut cursor = pt.cursor();
-        if let Err(err) = BackendOps::on_protect(self, range, new_flags, &mut cursor) {
-            warn!("Failed to protect area: {:?}", err);
+        let mut cursor = pt.table.cursor();
+        if let Err(error) = BackendOps::on_protect(self, range, new_flags, &mut cursor) {
+            warn!("Failed to protect area: {error:?}");
             return false;
         }
         let pte_flags = match self {
-            Backend::Cow(c) => c.pte_flags_for_protect(new_flags),
+            Backend::Cow(cow) => cow.pte_flags_for_protect(new_flags),
             _ => new_flags,
         };
         cursor.protect_region(start, size, pte_flags).is_ok()
@@ -258,13 +323,5 @@ impl MappingBackend for Backend {
 
     fn split(&mut self, align_diff: usize) -> Option<Self> {
         BackendOps::split(self, align_diff)
-    }
-
-    fn shrink_left(&mut self, shrink_size: usize) {
-        BackendOps::shrink_left(self, shrink_size)
-    }
-
-    fn shrink_right(&mut self, shrink_size: usize) {
-        BackendOps::shrink_right(self, shrink_size)
     }
 }

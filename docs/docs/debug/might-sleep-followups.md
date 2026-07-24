@@ -203,7 +203,7 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 
 ## MS-5：增加 `might_alloc()` 注解
 
-页分配失败后可能触发 page cache reclaim，例如 `axalloc` 的 `alloc_pages()` 会在失败后调用 `try_page_reclaim()`。这类路径不一定立即睡眠，但可能进入文件系统、page cache、回调和释放路径。
+底层 `ax-alloc` 分配失败会立即返回，不触发 page cache reclaim。StarryOS 仅在允许睡眠的外层路径显式执行一次有界 clean-page reclaim，并最多重试一次分配；这类外层路径可能进入文件系统、page cache、回调和释放逻辑。
 
 `might_alloc()` 的含义：
 
@@ -213,9 +213,9 @@ Starry 用户内存访问和 page fault slow path 目前直接调用 `might_slee
 
 建议先只覆盖“可能进入复杂 reclaim 的页分配”：
 
-- `os/arceos/modules/axalloc/src/buddy_slab.rs`
-- `os/arceos/modules/axalloc/src/tlsf_impl.rs`
-- `os/arceos/modules/axfs-ng/src/file/page.rs`
+- `memory/starry-mm/src/fault.rs` 的有界回收决策；
+- `os/StarryOS/kernel/src/mm/aspace/mod.rs` 的 page-cache adapter；
+- `os/arceos/modules/axfs-ng/src/file/page.rs` 的文件页分配路径。
 
 已确认方向：
 

@@ -31,7 +31,7 @@ impl IonDevice {
     /// 创建 Ion 设备
     pub fn new() -> Self {
         Self {
-            heap_manager: IonHeapManager::new(),
+            heap_manager: IonHeapManager::new(axklib::dma::device_with_mask(u32::MAX as u64)),
             buffer_manager: global_ion_buffer_manager(),
         }
     }
@@ -80,7 +80,7 @@ impl IonDevice {
 
         // 创建 IonBufferFile 并在 fd 表中保有另一份强引用：
         // 只要 fd 未关闭，物理页就不会被归还。
-        let phys_addr = buffer.dma_info.bus_addr.as_u64() as usize;
+        let phys_addr = buffer.dma_addr() as usize;
         let handle = buffer.handle.as_u32();
         let ion_file = IonBufferFile::new(buffer.clone());
         let fd = add_file_like(alloc::sync::Arc::new(ion_file), false)
@@ -280,7 +280,7 @@ impl DeviceOps for IonDevice {
         match self.buffer_manager.get_buffer(handle) {
             Ok(buffer) => {
                 // 获取缓冲区的物理地址
-                let phys_addr = buffer.dma_info.bus_addr.as_u64() as usize;
+                let phys_addr = buffer.dma_addr() as usize;
                 let size = buffer.size;
 
                 debug!(

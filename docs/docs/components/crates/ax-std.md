@@ -12,7 +12,7 @@
 - 目录角色：ArceOS 用户库层
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`alloc-buddy`、`alloc-level-1`、`alloc-slab`、`alloc-tlsf`、`bus-mmio`、`bus-pci`、`display`、`dma` 等能力 feature 控制编译期能力装配；平台实现固定由 `axplat-dyn` 运行时发现。
+- feature 视角：主要通过 `alloc`、`paging`、`bus-mmio`、`bus-pci`、`display` 等能力 feature 控制编译期能力装配；平台实现由 `axplat-dyn` 发现。
 - 关键数据结构：可直接观察到的关键数据结构/对象包括 `Instant`、`Result`、`Output`。
 
 ### 模块结构
@@ -67,11 +67,11 @@ graph LR
 - `ax-arm-pl031`
 - `axaddrspace`
 - `ax-alloc`
-- `ax-allocator`
+- `buddy-slab-allocator`
 - `axbacktrace`
 - `ax-cpu`
 - `ax-display`
-- `ax-dma`
+- `dma-api`
 - 另外还有 `60` 个同类项未在此展开
 
 ### 3.3 被依赖情况

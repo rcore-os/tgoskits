@@ -1,13 +1,13 @@
-//! Mock implementations for testing
+//! Mock implementations for testing.
 //!
-//! This module provides mock implementations used in tests for the page-table-generic crate.
+//! Mock implementations used by the shared page-table core tests.
 #![cfg(not(target_os = "none"))]
 
 use std::vec::Vec;
 
 use page_table_generic::*;
 
-mod mocks;
+pub mod mocks;
 
 use mocks::*;
 
@@ -28,7 +28,7 @@ fn test_pte() {
     assert_eq!(want.to_config(false).paddr, addr);
 }
 
-fn test_high<T: TableMeta, A: FrameAllocator>(
+fn test_high<T: TableMeta, A: PageFrameProvider>(
     pte: PteConfig,
     alloc: A,
     test_vaddr: VirtAddr,
@@ -41,7 +41,7 @@ fn test_high<T: TableMeta, A: FrameAllocator>(
     println!("table page size: {:#x}", T::PAGE_SIZE);
     println!("valid bits: {}", pg.valid_bits());
     println!("=== {test_name} 映前状态 - walk_all (遍历所有项) ===");
-    for p in pg.walk(VirtAddr::new(0), VirtAddr::new(usize::MAX)) {
+    for p in pg.walk(VirtAddr::from_usize(0), VirtAddr::from_usize(usize::MAX)) {
         println!(
             "l: {}, va: {:?}, pte: {:?}, final: {}",
             p.level, p.vaddr, p.pte, p.is_final_mapping
@@ -75,7 +75,7 @@ fn test_high<T: TableMeta, A: FrameAllocator>(
         "\n=== {} 映后状态 - 显示完整层次（所有有效项） ===",
         test_name
     );
-    for p in pg.walk(VirtAddr::new(0), VirtAddr::new(usize::MAX)) {
+    for p in pg.walk(VirtAddr::from_usize(0), VirtAddr::from_usize(usize::MAX)) {
         println!(
             "l: {}, va: {:?}, c: PTE PA: {:?} Block: {}, Final: {}",
             p.level,
@@ -91,7 +91,10 @@ fn test_high<T: TableMeta, A: FrameAllocator>(
     // === 严格的地址和属性验证 ===
 
     // 验证虚拟地址：映射从指定地址开始的0x2000字节（2个4KB页面）
-    let expected_vaddrs = [test_vaddr, VirtAddr::new(test_vaddr.raw() + 0x1000)];
+    let expected_vaddrs = [
+        test_vaddr,
+        VirtAddr::from_usize(test_vaddr.as_usize() + 0x1000),
+    ];
 
     // 验证虚拟地址映射正确
     for (i, (vaddr, pte, level)) in valid_entries.iter().enumerate() {
@@ -127,7 +130,7 @@ fn test_high<T: TableMeta, A: FrameAllocator>(
         // 注意：由于内存分配的随机性，我们只验证物理地址的偏移部分
         // 实际的物理基地址可能不同，但偏移应该是固定的
         let actual_paddr = pte.to_config(false).paddr;
-        let actual_offset = actual_paddr.raw() % 0x1000; // 页内偏移
+        let actual_offset = actual_paddr.as_usize() % 0x1000; // 页内偏移
         assert_eq!(
             actual_offset, 0,
             "{} 页内偏移应该是0，实际是 {actual_offset:?}",
@@ -138,7 +141,9 @@ fn test_high<T: TableMeta, A: FrameAllocator>(
         if i > 0 {
             let prev_pte = &valid_entries[i - 1].1;
             let prev_paddr = prev_pte.to_config(false).paddr;
-            let addr_diff = actual_paddr.raw().saturating_sub(prev_paddr.raw());
+            let addr_diff = actual_paddr
+                .as_usize()
+                .saturating_sub(prev_paddr.as_usize());
             assert_eq!(
                 addr_diff, 0x1000,
                 "{} 相邻页面物理地址应该相差0x1000，实际相差 {addr_diff:?}",
@@ -219,7 +224,7 @@ fn test_new_l5() {
     );
 }
 
-fn test_huge<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
+fn test_huge<T: TableMeta, A: PageFrameProvider>(pte: PteConfig, alloc: A) {
     let mut pg = PageTable::<T, A>::new(alloc).unwrap();
 
     pg.map(&MapConfig {
@@ -238,7 +243,7 @@ fn test_huge<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
     let mut normal_pages = 0;
     let mut mappings = Vec::new();
 
-    for p in pg.walk(VirtAddr::new(0), VirtAddr::new(usize::MAX)) {
+    for p in pg.walk(VirtAddr::from_usize(0), VirtAddr::from_usize(usize::MAX)) {
         println!(
             "l: {}, va: {:?}, c: PTE PA: {:?} Block: {}, Final: {}",
             p.level,
@@ -250,8 +255,8 @@ fn test_huge<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
 
         if p.is_final_mapping {
             mappings.push((
-                p.vaddr.raw(),
-                p.pte.to_config(false).paddr.raw(),
+                p.vaddr.as_usize(),
+                p.pte.to_config(false).paddr.as_usize(),
                 p.pte.to_config(false).huge,
                 p.level,
             ));
@@ -271,6 +276,7 @@ fn test_huge<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
         "应该至少有1个大页映射，实际有{}",
         huge_pages
     );
+    assert_eq!(normal_pages, 3);
 
     // 验证2MB大页映射（从地址0开始）
     let huge_page = mappings
@@ -301,7 +307,7 @@ fn test_huge<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
     assert!(has_full_coverage, "映射应该覆盖到地址{:#x}", end_vaddr);
 }
 
-fn test_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
+fn test_huge_not_align<T: TableMeta, A: PageFrameProvider>(pte: PteConfig, alloc: A) {
     let mut pg = PageTable::<T, A>::new(alloc).unwrap();
 
     let addr = 2 * MB - 0x1000usize;
@@ -322,7 +328,7 @@ fn test_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A
     let mut normal_pages = 0;
     let mut mappings = Vec::new();
 
-    for p in pg.walk(VirtAddr::new(0), VirtAddr::new(usize::MAX)) {
+    for p in pg.walk(VirtAddr::from_usize(0), VirtAddr::from_usize(usize::MAX)) {
         println!(
             "l: {}, va: {:?}, c: PTE PA: {:?} Block: {}, Final: {}",
             p.level,
@@ -334,8 +340,8 @@ fn test_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A
 
         if p.is_final_mapping {
             mappings.push((
-                p.vaddr.raw(),
-                p.pte.to_config(false).paddr.raw(),
+                p.vaddr.as_usize(),
+                p.pte.to_config(false).paddr.as_usize(),
                 p.pte.to_config(false).huge,
                 p.level,
             ));
@@ -404,7 +410,7 @@ fn test_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A
     );
 }
 
-fn test_high_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
+fn test_high_huge_not_align<T: TableMeta, A: PageFrameProvider>(pte: PteConfig, alloc: A) {
     let mut pg = PageTable::<T, A>::new(alloc).unwrap();
 
     // 注意:在48位虚拟地址空间中,0xffffffff80000000 会被截断为 0x0000ffff80000000
@@ -450,7 +456,7 @@ fn test_high_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, all
     let mut normal_pages = 0;
     let mut mappings = Vec::new();
 
-    for p in pg.walk(VirtAddr::new(0), VirtAddr::new(usize::MAX)) {
+    for p in pg.walk(VirtAddr::from_usize(0), VirtAddr::from_usize(usize::MAX)) {
         println!(
             "l: {}, va: {:?}, c: PTE PA: {:?} Block: {}, Final: {}",
             p.level,
@@ -462,8 +468,8 @@ fn test_high_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, all
 
         if p.is_final_mapping {
             mappings.push((
-                p.vaddr.raw(),
-                p.pte.to_config(false).paddr.raw(),
+                p.vaddr.as_usize(),
+                p.pte.to_config(false).paddr.as_usize(),
                 p.pte.to_config(false).huge,
                 p.level,
             ));
@@ -526,7 +532,7 @@ fn test_high_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, all
     );
 
     // 验证物理地址映射正确
-    if let Some((first_va, first_pa, ..)) = mappings.iter().find(|(va, ..)| *va == start_addr) {
+    if let Some((_, first_pa, ..)) = mappings.iter().find(|(va, ..)| *va == start_addr) {
         assert_eq!(
             *first_pa, paddr,
             "第一个页面的物理地址应该是{:#x},实际是{:#x}",
@@ -534,13 +540,12 @@ fn test_high_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, all
         );
 
         // 验证后续页面的物理地址连续
-        let mut expected_pa = paddr;
         for (va, pa, ..) in mappings
             .iter()
             .filter(|(va, ..)| *va >= start_addr && *va < end_addr)
         {
             let expected_offset = (va - start_addr) / T::PAGE_SIZE;
-            expected_pa = paddr + expected_offset * T::PAGE_SIZE;
+            let expected_pa = paddr + expected_offset * T::PAGE_SIZE;
             assert_eq!(
                 *pa, expected_pa,
                 "虚拟地址{:#x}的物理地址应该是{:#x},实际是{:#x}",
@@ -563,17 +568,17 @@ fn test_high_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, all
     );
     if let Ok((trans_pa, trans_pte)) = translate_start {
         assert_eq!(
-            trans_pa.raw(),
+            trans_pa.as_usize(),
             paddr,
             "起始地址 {:#x} 应该翻译为物理地址 {:#x}，实际为 {:#x}",
             start_addr,
             paddr,
-            trans_pa.raw()
+            trans_pa.as_usize()
         );
         println!(
             "✓ 起始地址翻译正确: VA {:#x} -> PA {:#x}, Huge={}",
             start_addr,
-            trans_pa.raw(),
+            trans_pa.as_usize(),
             trans_pte.to_config(false).huge
         );
     }
@@ -589,17 +594,17 @@ fn test_high_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, all
     );
     if let Ok((trans_pa, trans_pte)) = translate_mid {
         assert_eq!(
-            trans_pa.raw(),
+            trans_pa.as_usize(),
             expected_mid_pa,
             "中间地址 {:#x} 应该翻译为物理地址 {:#x}，实际为 {:#x}",
             mid_addr,
             expected_mid_pa,
-            trans_pa.raw()
+            trans_pa.as_usize()
         );
         println!(
             "✓ 中间地址翻译正确: VA {:#x} -> PA {:#x}, Huge={}",
             mid_addr,
-            trans_pa.raw(),
+            trans_pa.as_usize(),
             trans_pte.to_config(false).huge
         );
     }
@@ -615,17 +620,17 @@ fn test_high_huge_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, all
     );
     if let Ok((trans_pa, trans_pte)) = translate_last {
         assert_eq!(
-            trans_pa.raw(),
+            trans_pa.as_usize(),
             expected_last_pa,
             "结束地址 {:#x} 应该翻译为物理地址 {:#x}，实际为 {:#x}",
             last_addr,
             expected_last_pa,
-            trans_pa.raw()
+            trans_pa.as_usize()
         );
         println!(
             "✓ 结束地址翻译正确: VA {:#x} -> PA {:#x}, Huge={}",
             last_addr,
-            trans_pa.raw(),
+            trans_pa.as_usize(),
             trans_pte.to_config(false).huge
         );
     }
@@ -663,7 +668,7 @@ fn test_huge_not_align_l4() {
     test_huge_not_align::<T4kL4, Fram4k>(PteImpl::user_mode_config(), Fram4k);
 }
 
-fn test_huge_big<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
+fn test_huge_big<T: TableMeta, A: PageFrameProvider>(pte: PteConfig, alloc: A) {
     let mut pg = PageTable::<T, A>::new(alloc).unwrap();
 
     pg.map(&MapConfig {
@@ -692,7 +697,7 @@ fn test_huge_big<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
     let mut normal_pages = 0;
     let mut mappings = Vec::new();
 
-    for p in pg.walk(VirtAddr::new(0), VirtAddr::new(usize::MAX)) {
+    for p in pg.walk(VirtAddr::from_usize(0), VirtAddr::from_usize(usize::MAX)) {
         println!(
             "l: {}, va: {:?}, c: PTE PA: {:?} Block: {}, Final: {}",
             p.level,
@@ -704,8 +709,8 @@ fn test_huge_big<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
 
         if p.is_final_mapping {
             mappings.push((
-                p.vaddr.raw(),
-                p.pte.to_config(false).paddr.raw(),
+                p.vaddr.as_usize(),
+                p.pte.to_config(false).paddr.as_usize(),
                 p.pte.to_config(false).huge,
                 p.level,
             ));
@@ -796,7 +801,7 @@ fn test_v_p_not_align_l3() {
     test_v_p_not_align::<T4kL3, Fram4k>(PteImpl::user_mode_config(), Fram4k);
 }
 
-fn test_v_p_not_align<T: TableMeta, A: FrameAllocator>(pte: PteConfig, alloc: A) {
+fn test_v_p_not_align<T: TableMeta, A: PageFrameProvider>(pte: PteConfig, alloc: A) {
     let _ = env_logger::builder()
         .is_test(true)
         .filter_level(log::LevelFilter::Trace)
@@ -977,7 +982,7 @@ fn test_unmap_partial_mapping() {
     let mut remaining_mappings = Vec::new();
     for p in pg.walk_valid() {
         println!("l: {}, va: {:?}, pte: {:?}", p.level, p.vaddr, p.pte);
-        remaining_mappings.push(p.vaddr.raw());
+        remaining_mappings.push(p.vaddr.as_usize());
     }
 
     // 验证剩余映射
@@ -1067,7 +1072,7 @@ fn test_unmap_error_cases() {
     assert!(result.is_err(), "大小不对齐应该返回错误");
 
     // 测试地址溢出
-    let overflow_vaddr = VirtAddr::new(usize::MAX - 0xFFF);
+    let overflow_vaddr = VirtAddr::from_usize(usize::MAX - 0xFFF);
     let result = pg.unmap(overflow_vaddr, 0x2000);
     assert!(result.is_err(), "地址溢出应该返回错误");
 

@@ -131,7 +131,7 @@ impl TableMeta for Generic {
     /// 刷新 TLB
     fn flush(vaddr: Option<VirtAddr>) {
         match vaddr {
-            Some(va) => local_flush_tlb_page(va.raw()),
+            Some(va) => local_flush_tlb_page(va.as_usize()),
             None => local_flush_tlb_all(),
         }
     }
@@ -164,7 +164,7 @@ pub fn relocate_kernel_to_vm_code() -> ! {
 
     table
         .map(&MapConfig {
-            vaddr: v_start.into(),
+            vaddr: VirtAddr::from_usize(v_start as usize),
             paddr: k_start.into(),
             size,
             pte,
@@ -176,7 +176,10 @@ pub fn relocate_kernel_to_vm_code() -> ! {
     let tb_addr = table.root_paddr();
     crate::mem::mmu::set_boot_table(table);
 
-    println!("Boot page table at physical address: {:#x}", tb_addr.raw());
+    println!(
+        "Boot page table at physical address: {:#x}",
+        tb_addr.as_usize()
+    );
 
     // Use physical address to avoid virtual address mapping issues
     let mmu_entry_phys = to_phys(super::entry::mmu_entry as *const () as usize);

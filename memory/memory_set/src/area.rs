@@ -119,8 +119,9 @@ impl<B: MappingBackend> MemoryArea<B> {
         page_table: &mut B::PageTable,
     ) -> MappingResult {
         self.backend
-            .protect(self.start(), self.size(), new_flags, page_table);
-        Ok(())
+            .protect(self.start(), self.size(), new_flags, page_table)
+            .then_some(())
+            .ok_or(MappingError::BadState)
     }
 
     /// Shrinks the memory area at the left side.

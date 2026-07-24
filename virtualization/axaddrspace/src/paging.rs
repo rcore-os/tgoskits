@@ -1,34 +1,7 @@
-use ax_memory_addr::{PhysAddr, VirtAddr};
+use ax_memory_addr::{PageSize, PhysAddr, VirtAddr};
 use axvm_types::{GuestPhysAddr, MappingFlags};
 
 use crate::AddrSpaceResult;
-
-/// Page size selected by a nested page table mapping.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(usize)]
-pub enum PageSize {
-    /// 4 KiB page.
-    Size4K = 0x1000,
-    /// 1 MiB block.
-    Size1M = 0x10_0000,
-    /// 2 MiB block.
-    Size2M = 0x20_0000,
-    /// 1 GiB block.
-    Size1G = 0x4000_0000,
-}
-
-impl PageSize {
-    /// Returns whether this page size is larger than the base 4 KiB page.
-    pub const fn is_huge(self) -> bool {
-        !matches!(self, Self::Size4K)
-    }
-}
-
-impl From<PageSize> for usize {
-    fn from(size: PageSize) -> usize {
-        size as usize
-    }
-}
 
 /// Common nested page table operations required by the generic address-space
 /// manager.

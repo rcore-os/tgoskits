@@ -10,6 +10,12 @@ type MockPageTable = [MockFlags; MAX_ADDR];
 #[derive(Clone)]
 struct MockBackend;
 
+#[derive(Clone)]
+struct FailingBackend {
+    fail_unmap: bool,
+    fail_protect: bool,
+}
+
 type MockMemorySet = MemorySet<MockBackend>;
 
 impl MappingBackend for MockBackend {
@@ -60,6 +66,34 @@ impl MappingBackend for MockBackend {
     fn shrink_left(&mut self, _shrink_size: usize) {}
 
     fn shrink_right(&mut self, _shrink_size: usize) {}
+}
+
+impl MappingBackend for FailingBackend {
+    type Addr = VirtAddr;
+    type Flags = MockFlags;
+    type PageTable = MockPageTable;
+
+    fn map(&self, start: VirtAddr, size: usize, flags: MockFlags, pt: &mut MockPageTable) -> bool {
+        MockBackend.map(start, size, flags, pt)
+    }
+
+    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut MockPageTable) -> bool {
+        !self.fail_unmap && MockBackend.unmap(start, size, pt)
+    }
+
+    fn protect(
+        &self,
+        start: VirtAddr,
+        size: usize,
+        new_flags: MockFlags,
+        pt: &mut MockPageTable,
+    ) -> bool {
+        !self.fail_protect && MockBackend.protect(start, size, new_flags, pt)
+    }
+
+    fn split(&mut self, _align_diff: usize) -> Option<Self> {
+        Some(self.clone())
+    }
 }
 
 macro_rules! assert_ok {
@@ -329,6 +363,141 @@ fn test_protect() {
     for &e in &pt[0..MAX_ADDR] {
         assert_eq!(e, 0);
     }
+}
+
+#[test]
+fn protect_failure_preserves_area_metadata() {
+    let mut set = MemorySet::new();
+    let mut pt = [0; MAX_ADDR];
+    let backend = FailingBackend {
+        fail_unmap: false,
+        fail_protect: true,
+    };
+    set.map(
+        MemoryArea::new(0x1000.into(), 0x1000, 1, backend),
+        &mut pt,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(
+        set.protect(0x1000.into(), 0x1000, |_| Some(2), &mut pt),
+        Err(MappingError::BadState)
+    );
+    assert_eq!(set.find(0x1000.into()).unwrap().flags(), 1);
+    assert!(pt[0x1000..0x2000].iter().all(|&flags| flags == 1));
+}
+
+#[test]
+fn empty_protect_range_is_a_no_op() {
+    let mut set = MockMemorySet::new();
+    let mut pt = [0; MAX_ADDR];
+    set.map(
+        MemoryArea::new(0x1000.into(), 0x1000, 1, MockBackend),
+        &mut pt,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(set.protect(0x1800.into(), 0, |_| Some(2), &mut pt), Ok(()));
+    assert_eq!(
+        set.find(0x1000.into()).unwrap().va_range(),
+        va_range!(0x1000..0x2000)
+    );
+    assert!(pt[0x1000..0x2000].iter().all(|&flags| flags == 1));
+}
+
+#[test]
+fn unmap_failure_returns_error_without_removing_area() {
+    let mut set = MemorySet::new();
+    let mut pt = [0; MAX_ADDR];
+    let backend = FailingBackend {
+        fail_unmap: true,
+        fail_protect: false,
+    };
+    set.map(
+        MemoryArea::new(0x1000.into(), 0x1000, 1, backend),
+        &mut pt,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(
+        set.unmap(0x1000.into(), 0x1000, &mut pt),
+        Err(MappingError::BadState)
+    );
+    assert_eq!(
+        set.find(0x1000.into()).unwrap().va_range(),
+        va_range!(0x1000..0x2000)
+    );
+    assert!(pt[0x1000..0x2000].iter().all(|&flags| flags == 1));
+}
+
+#[test]
+fn middle_unmap_failure_preserves_original_area() {
+    let mut set = MemorySet::new();
+    let mut pt = [0; MAX_ADDR];
+    let backend = FailingBackend {
+        fail_unmap: true,
+        fail_protect: false,
+    };
+    set.map(
+        MemoryArea::new(0x1000.into(), 0x3000, 1, backend),
+        &mut pt,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(
+        set.unmap(0x2000.into(), 0x1000, &mut pt),
+        Err(MappingError::BadState)
+    );
+    assert_eq!(set.len(), 1);
+    assert_eq!(
+        set.find(0x1000.into()).unwrap().va_range(),
+        va_range!(0x1000..0x4000)
+    );
+    assert!(pt[0x1000..0x4000].iter().all(|&flags| flags == 1));
+}
+
+#[test]
+fn clear_failure_removes_only_successfully_unmapped_prefix() {
+    let mut set = MemorySet::new();
+    let mut pt = [0; MAX_ADDR];
+    set.map(
+        MemoryArea::new(
+            0x1000.into(),
+            0x1000,
+            1,
+            FailingBackend {
+                fail_unmap: false,
+                fail_protect: false,
+            },
+        ),
+        &mut pt,
+        false,
+    )
+    .unwrap();
+    set.map(
+        MemoryArea::new(
+            0x3000.into(),
+            0x1000,
+            1,
+            FailingBackend {
+                fail_unmap: true,
+                fail_protect: false,
+            },
+        ),
+        &mut pt,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(set.clear(&mut pt), Err(MappingError::BadState));
+    assert!(set.find(0x1000.into()).is_none());
+    assert!(set.find(0x3000.into()).is_some());
+    assert!(pt[0x1000..0x2000].iter().all(|&flags| flags == 0));
+    assert!(pt[0x3000..0x4000].iter().all(|&flags| flags == 1));
 }
 
 #[test]

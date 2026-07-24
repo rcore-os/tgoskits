@@ -1,10 +1,18 @@
-//! 针对发现的bug的回归测试
+//! Regression tests for fixed page-table bugs.
 //!
 //! 这个测试文件专门用于验证修复的问题不会再次出现
 
 use page_table_generic::*;
-mod mocks;
+pub mod mocks;
 use mocks::*;
+
+#[test]
+fn level_size_rejects_invalid_levels_without_panicking() {
+    assert_eq!(level_size::<T4kL4>(0), None);
+    assert_eq!(level_size::<T4kL4>(5), None);
+    assert_eq!(level_size::<T4kL4>(1), Some(4 * KB));
+    assert_eq!(level_size::<T4kL4>(2), Some(2 * MB));
+}
 
 /// 测试大页偏移计算
 ///
@@ -43,12 +51,12 @@ fn test_huge_page_offset_calculation() {
 
         assert!(pte.to_config(false).huge, "应该是大页映射");
         assert_eq!(
-            translated_paddr.raw(),
+            translated_paddr.as_usize(),
             expected_paddr,
             "大页偏移计算错误: vaddr={:#x}, expected={:#x}, got={:#x}",
             test_vaddr,
             expected_paddr,
-            translated_paddr.raw()
+            translated_paddr.as_usize()
         );
     }
 
@@ -91,13 +99,21 @@ fn test_multi_level_huge_pages() {
     // 测试Level 2大页的翻译
     let (paddr, pte) = pg.translate((vaddr1 + 0x80000).into()).unwrap();
     if pte.to_config(false).huge {
-        assert_eq!(paddr.raw(), paddr1 + 0x80000, "Level 2大页偏移计算错误");
+        assert_eq!(
+            paddr.as_usize(),
+            paddr1 + 0x80000,
+            "Level 2大页偏移计算错误"
+        );
     }
 
     // 测试Level 3大页的翻译
     let (paddr, pte) = pg.translate((vaddr2 + 16 * MB).into()).unwrap();
     if pte.to_config(false).huge {
-        assert_eq!(paddr.raw(), paddr2 + 16 * MB, "Level 3大页偏移计算错误");
+        assert_eq!(
+            paddr.as_usize(),
+            paddr2 + 16 * MB,
+            "Level 3大页偏移计算错误"
+        );
     }
 
     println!("✅ 多级别大页测试通过！");
@@ -112,8 +128,8 @@ fn test_walk_address_comparison() {
     let pg = PageTable::<T4kL4, Fram4k>::new(Fram4k).unwrap();
 
     // 测试空页表遍历
-    let start = VirtAddr::new(0x1000);
-    let end = VirtAddr::new(0x2000);
+    let start = VirtAddr::from_usize(0x1000);
+    let end = VirtAddr::from_usize(0x2000);
 
     // 正常范围
     let count1 = pg.walk(start, end).count();
@@ -212,44 +228,6 @@ fn test_unmap_mixed_entries() {
     println!("✅ 混合条目取消映射测试通过！");
 }
 
-/// 测试MemConfig的正确实现
-///
-/// Bug描述：PteImpl没有实现set_mem_config和mem_config方法
-#[test]
-fn test_mem_config_implementation() {
-    let mut pte = PteImpl::new();
-    pte = PteImpl::from_config(PteConfig {
-        valid: true,
-        ..pte.to_config(false)
-    });
-
-    // 测试设置和获取MemConfig
-    let config = MemConfig {
-        access: AccessFlags::READ | AccessFlags::WRITE | AccessFlags::EXECUTE,
-        attrs: MemAttributes::Normal,
-    };
-
-    pte.set_mem_config(config);
-    let retrieved = pte.mem_config();
-
-    assert_eq!(retrieved.access, config.access, "访问权限应该匹配");
-    assert_eq!(retrieved.attrs, config.attrs, "内存属性应该匹配");
-
-    // 测试不同的配置
-    let config2 = MemConfig {
-        access: AccessFlags::READ,
-        attrs: MemAttributes::Device,
-    };
-
-    pte.set_mem_config(config2);
-    let retrieved2 = pte.mem_config();
-
-    assert_eq!(retrieved2.access, config2.access, "只读权限应该匹配");
-    assert_eq!(retrieved2.attrs, config2.attrs, "设备属性应该匹配");
-
-    println!("✅ MemConfig实现测试通过！");
-}
-
 /// 测试边界情况：地址溢出检查
 ///
 /// 验证在映射和取消映射时正确处理地址溢出情况
@@ -273,7 +251,7 @@ fn test_address_overflow_handling() {
         // 可能是AddressOverflow或AlignmentError
         assert!(
             matches!(e, PagingError::AddressOverflow { .. })
-                || matches!(e, PagingError::AlignmentError { .. }),
+                || matches!(e, PagingError::NotAligned),
             "应该返回AddressOverflow或AlignmentError错误，实际: {:?}",
             e
         );
@@ -307,10 +285,10 @@ fn test_deep_hierarchy() {
 
     // 测试翻译
     let (paddr, _) = pg.translate(deep_vaddr.into()).unwrap();
-    assert_eq!(paddr.raw(), 0x1000, "深层地址翻译应该正确");
+    assert_eq!(paddr.as_usize(), 0x1000, "深层地址翻译应该正确");
 
     let (paddr2, _) = pg.translate((deep_vaddr + 0x1000).into()).unwrap();
-    assert_eq!(paddr2.raw(), 0x2000, "深层地址偏移翻译应该正确");
+    assert_eq!(paddr2.as_usize(), 0x2000, "深层地址偏移翻译应该正确");
 
     // 测试取消映射
     pg.unmap(deep_vaddr.into(), 0x2000).unwrap();
@@ -351,7 +329,7 @@ fn test_mixed_huge_and_normal_pages() {
     // 验证大页翻译
     let (paddr1, pte1) = pg.translate(0x100000.into()).unwrap();
     if pte1.to_config(false).huge {
-        assert_eq!(paddr1.raw(), 0x100000, "大页偏移应该正确");
+        assert_eq!(paddr1.as_usize(), 0x100000, "大页偏移应该正确");
     }
 
     // 验证普通页翻译
@@ -360,7 +338,7 @@ fn test_mixed_huge_and_normal_pages() {
         !pte2.to_config(false).huge || pte2.to_config(false).huge,
         "可能是大页或普通页"
     );
-    assert_eq!(paddr2.raw(), 2 * MB + 0x1000, "普通页偏移应该正确");
+    assert_eq!(paddr2.as_usize(), 2 * MB + 0x1000, "普通页偏移应该正确");
 
     println!("✅ 混合大页和普通页测试通过！");
 }

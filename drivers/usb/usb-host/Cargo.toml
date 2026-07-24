@@ -22,6 +22,7 @@ crossbeam-skiplist = {version = "0.1", features = [
   "alloc",
 ], default-features = false}
 dma-api = {workspace = true}
+bytemuck.workspace = true
 
 anyhow = {version = "1", default-features = false}
 enum_dispatch = "0.3"

@@ -45,6 +45,9 @@ lazy_static! {
     /// Global mutex to enforce serial execution for tests that modify shared state.
     /// This ensures test isolation and prevents race conditions between tests.
     pub static ref TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Physical frames returned through the mock deallocation capability.
+    pub static ref DEALLOCATED_FRAMES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 }
 
 /// Counter to track the number of allocations. (Added from Chen Hong's code)
@@ -80,7 +83,7 @@ impl MockHal {
     pub fn mock_phys_to_virt(paddr: PhysAddr) -> VirtAddr {
         let paddr_usize = paddr.as_usize();
         assert!(
-            paddr_usize >= BASE_PADDR && paddr_usize < BASE_PADDR + MEMORY_LEN,
+            (BASE_PADDR..BASE_PADDR + MEMORY_LEN).contains(&paddr_usize),
             "Physical address {:#x} out of bounds",
             paddr_usize
         );
@@ -95,6 +98,7 @@ impl MockHal {
         ALLOC_SHOULD_FAIL.store(false, Ordering::SeqCst);
         ALLOC_COUNT.store(0, Ordering::SeqCst);
         DEALLOC_COUNT.store(0, Ordering::SeqCst);
+        DEALLOCATED_FRAMES.lock().unwrap().clear();
         // Lock and clear the simulated memory.
         MEMORY.lock().unwrap().0.fill(0); // Fill with zeros to clear any previous test data.
     }

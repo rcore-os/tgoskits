@@ -90,14 +90,24 @@ pub(crate) fn save_fdt() {
     };
     let size = slice.len();
 
-    let fdt_buff = unsafe {
-        crate::mem::ram::alloc(core::alloc::Layout::from_size_align(size, 8).unwrap()).unwrap()
-    };
+    let fdt_buff = crate::mem::ram::alloc(
+        core::alloc::Layout::from_size_align(size, 8).expect("FDT allocation alignment is valid"),
+    )
+    .expect("early RAM must have space for the validated FDT");
 
     unsafe {
         core::ptr::copy_nonoverlapping(slice.as_ptr(), phys_to_virt(fdt_buff), size);
         FDT_ADDR = fdt_buff;
     }
+}
+
+/// Returns the validated firmware device-tree size copied into early RAM.
+pub(crate) fn copy_size() -> usize {
+    let Some(src) = fdt_addr() else {
+        return 0;
+    };
+    // SAFETY: the firmware FDT remains readable until `save_fdt` copies it.
+    unsafe { validated_fdt_slice(src) }.map_or(0, <[u8]>::len)
 }
 
 /// # Safety

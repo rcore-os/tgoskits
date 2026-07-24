@@ -1,4 +1,4 @@
-//! LoongArch64 页表映射场景模拟测试
+//! LoongArch64 page-table mapping simulation.
 //!
 //! 模拟 LoongArch64 启动时的内核代码段映射场景，用于调试死循环问题
 
@@ -6,7 +6,7 @@
 
 use page_table_generic::*;
 
-mod mocks;
+pub mod mocks;
 use mocks::*;
 
 /// LoongArch64 Generic 配置的 Mock 实现
@@ -102,13 +102,13 @@ fn test_loongarch64_kernel_code_mapping() {
     println!(
         "起始地址翻译: VA={:#x} -> PA={:#x}, Huge={}, Valid={}",
         kernel_virt_start,
-        translated_paddr.raw(),
+        translated_paddr.as_usize(),
         pte.to_config(false).huge,
         pte.to_config(false).valid
     );
 
     assert_eq!(
-        translated_paddr.raw(),
+        translated_paddr.as_usize(),
         kernel_phys_start,
         "物理地址应该匹配"
     );
@@ -213,7 +213,7 @@ fn test_loongarch64_boundary_conditions() {
             println!(
                 "  VA={:#x} -> PA={:#x}, Huge={}, Valid={}",
                 base_vaddr,
-                pa.raw(),
+                pa.as_usize(),
                 pte.to_config(false).huge,
                 pte.to_config(false).valid
             );
@@ -286,7 +286,7 @@ fn test_loongarch64_multi_range_mapping() {
         // 验证物理地址正确
         if let Ok((pa, _)) = pg.translate(vaddr.into()) {
             let expected_paddr = base_paddr + i * 2 * MB;
-            assert_eq!(pa.raw(), expected_paddr, "段 {} 的物理地址不匹配", i);
+            assert_eq!(pa.as_usize(), expected_paddr, "段 {} 的物理地址不匹配", i);
         }
     }
 

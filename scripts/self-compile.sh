@@ -159,12 +159,6 @@ echo "[self-compile] ARG ARCH=${ARCH} TARGET=${TARGET} SMP=${SMP} CARGO_BUILD_JO
 	echo "[self-compile] Filtering workspace for ${ARCH}..."
 	/usr/bin/filter-workspace.sh "${ARCH}" Cargo.toml
 
-# Patch axalloc to 64G capacity
-echo "[self-compile] Patching page allocator to 64G..."
-if [ -f os/arceos/modules/axalloc/Cargo.toml ] && [ -s os/arceos/modules/axalloc/Cargo.toml ]; then
-    sed -i '/^default = /s|page-alloc-4g|page-alloc-64g|g' os/arceos/modules/axalloc/Cargo.toml
-fi
-
 export RUSTFLAGS="-Ccodegen-units=16 -Copt-level=0 -Cincremental=false -Clink-arg=-Tlinker.x -Clink-arg=-no-pie -Clink-arg=-znostart-stop-gc"
 echo "[self-compile] Rustc version: \$(rustc --version 2>/dev/null || echo 'unknown')"
 echo "[self-compile] Cargo version: \$(cargo --version 2>/dev/null || echo 'unknown')"
@@ -216,13 +210,6 @@ LINKER_X="$KERNEL_DIR2/linker.x"
 if [ -n "$LINKER_X" ] && [ -f "$LINKER_X" ]; then
     sudo cp "$LINKER_X" "$MNT_DIR/opt/starryos/linker.x"
     info "linker.x injected"
-fi
-
-# Inject axalloc Cargo.toml (may have been removed by e2fsck on prior runs)
-HOST_AXALLOC_CARGO="$REPO_ROOT/os/arceos/modules/axalloc/Cargo.toml"
-if [ -f "$HOST_AXALLOC_CARGO" ]; then
-    sudo cp "$HOST_AXALLOC_CARGO" "$MNT_DIR/opt/starryos/os/arceos/modules/axalloc/Cargo.toml"
-    info "axalloc Cargo.toml injected"
 fi
 
 # Inject filter-workspace.sh (deduplicated arch-members filtering)

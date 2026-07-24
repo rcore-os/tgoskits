@@ -3,7 +3,7 @@
 > 路径：`os/arceos/api/arceos_posix_api`
 > 类型：库 crate
 > 分层：ArceOS 层 / ArceOS 公共 API/feature 聚合层
-> 版本：`0.5.0`
+> 版本：`0.5.29`
 > 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
 
 `ax-posix-api` 的核心定位是：POSIX-compatible APIs for ArceOS modules
@@ -36,41 +36,47 @@ graph LR
     current --> ax-alloc["ax-alloc"]
     current --> ax_errno["ax-errno"]
     current --> ax-runtime["ax-runtime"]
-    current --> ax-fs["ax-fs"]
+    current --> ax_fs_ng["ax-fs-ng"]
     current --> ax-hal["ax-hal"]
-    current --> axio["ax-io"]
+    current --> ax_io["ax-io"]
+    current --> ax_kspin["ax-kspin"]
     current --> ax-log["ax-log"]
+    current --> ax_sync["ax-sync"]
+    current --> axpoll["axpoll"]
     ax_libc["ax-libc"] --> current
+    ax_std["ax-std"] --> current
 ```
 
 ### 直接依赖
 - `ax-alloc`
 - `ax-errno`
 - `ax-runtime`
-- `ax-fs`
+- `ax-fs-ng`
 - `ax-hal`
-- `axio`
+- `ax-io`
+- `ax-kspin`
 - `ax-log`
 - `ax-net`
-- `ax-runtime`
 - `ax-sync`
 - `ax-task`
-- 另外还有 `1` 个同类项未在此展开
+- `axpoll`
+- `scope-local`
 
 ### 间接依赖
 - `ax-arm-pl031`
 - `axaddrspace`
-- `ax-allocator`
+- `buddy-slab-allocator`
 - `axbacktrace`
 - `ax-cpu`
 - `ax-display`
-- `ax-dma`
+- `dma-api`
 - `ax-driver`
 - `rdrive`
 - 另外还有 `52` 个同类项未在此展开
 
 ### 3.3 被依赖情况
 - `ax-libc`
+- `ax-std`
 
 ### 被依赖情况
 - 当前未发现更多间接消费者，或该 crate 主要作为终端入口使用。

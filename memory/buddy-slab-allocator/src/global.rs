@@ -8,7 +8,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ax_kspin::SpinRaw as SpinMutex;
+use ax_kspin::SpinNoIrq as SpinMutex;
 
 use crate::{
     align_up,
@@ -327,5 +327,18 @@ unsafe impl<const PAGE_SIZE: usize> GlobalAlloc for GlobalAllocator<PAGE_SIZE> {
             }
             new_ptr
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn buddy_lock_disables_local_irqs() {
+        fn require_irq_safe_lock<T>(_: &ax_kspin::SpinNoIrq<T>) {}
+
+        let allocator = GlobalAllocator::<0x1000>::new();
+        require_irq_safe_lock(&allocator.buddy);
     }
 }

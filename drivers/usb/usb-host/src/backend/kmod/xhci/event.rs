@@ -8,7 +8,7 @@ use super::ring::{Ring, TRBS_PER_SEGMENT};
 use crate::{err::*, osal::Kernel};
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 pub struct EventRingSte {
     pub addr: u64,
     pub size: u16,

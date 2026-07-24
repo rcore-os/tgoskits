@@ -14,7 +14,7 @@ use crate::{
 };
 
 mod cpu_iter;
-mod layout;
+pub(crate) mod layout;
 
 static mut CPU_AREA_REGION_START: usize = 0;
 static mut CPU_AREA_REGION_END: usize = 0;
@@ -462,12 +462,11 @@ pub(crate) fn cpu_area_region() -> core::ops::Range<usize> {
 }
 
 fn allocate_cpu_area_region(layout: Layout) -> usize {
-    unsafe { crate::mem::ram::flush_to_memory_map(MemoryType::Reserved) };
+    crate::mem::ram::flush_to_memory_map(MemoryType::Reserved);
 
-    let physical_base = unsafe {
-        crate::mem::ram::alloc_and_flush_to_memory_map(layout, MemoryType::PerCpuData)
-            .expect("validated per-CPU allocation must fit available boot memory")
-    };
+    let physical_base = crate::mem::ram::alloc(layout)
+        .expect("validated per-CPU allocation must fit available boot memory");
+    crate::mem::ram::flush_to_memory_map(MemoryType::PerCpuData);
     // SAFETY: the early bump allocator uniquely owns this complete allocation,
     // and the existing early physical mapping makes it writable. Clearing raw
     // storage prevents stale firmware bytes from being mistaken for values;

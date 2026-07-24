@@ -12,6 +12,7 @@ repository.workspace = true
 [dependencies]
 ax-kspin.workspace = true
 dma-api.workspace = true
+bytemuck.workspace = true
 log.workspace = true
 mmio-api.workspace = true
 rdif-eth.workspace = true

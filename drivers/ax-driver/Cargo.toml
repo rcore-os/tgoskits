@@ -24,7 +24,7 @@ vsock = ["dep:ax-errno", "dep:rdif-vsock"]
 rtc = []
 pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 
-virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
+virtio-core = ["dep:ax-kspin", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
 virtio-blk = ["block", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-net = ["net", "virtio", "pci", "dep:ax-kernel-guard"]
@@ -44,7 +44,7 @@ cvsd = [
     "dep:sdmmc-protocol",
     "sdmmc-protocol/rdif",
 ]
-fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
+fxmac = ["net", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
 aic8800-wifi = [
@@ -142,7 +142,6 @@ pci-list-devices = ["list-pci-devices"]
 aic8800 = { workspace = true, optional = true }
 anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
-ax-alloc = { workspace = true, optional = true }
 ax-crate-interface = { workspace = true, optional = true }
 ax-errno = { workspace = true, optional = true }
 ax-kernel-guard = { workspace = true, optional = true }

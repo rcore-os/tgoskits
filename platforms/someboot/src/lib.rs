@@ -64,6 +64,14 @@ pub trait ArchTrait {
     type P: TableMeta;
     type Console: console::ArchConsoleOps;
 
+    /// Exclusive physical-address limit for objects allocated before the
+    /// runtime allocator is available.
+    const EARLY_RAM_END_EXCLUSIVE: usize = usize::MAX;
+
+    /// Architecture-owned physical range that early firmware maps may still
+    /// describe as usable RAM.
+    const EARLY_RESERVED_RANGE: Option<core::ops::Range<usize>> = None;
+
     fn _va(paddr: usize) -> *mut u8;
     fn _io(paddr: usize) -> *mut u8 {
         Self::_va(paddr)

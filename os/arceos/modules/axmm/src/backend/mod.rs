@@ -24,7 +24,7 @@ pub enum Backend {
     /// address `vaddr` is mapped to the physical address `vaddr - pa_va_offset`.
     Linear {
         /// `vaddr - paddr`.
-        pa_va_offset: usize,
+        pa_va_offset: i128,
     },
     /// Allocation mapping backend.
     ///

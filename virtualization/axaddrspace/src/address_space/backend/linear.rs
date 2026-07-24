@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use ax_memory_addr::PhysAddr;
+use ax_memory_addr::{MemoryAddr, PhysAddr};
 use axvm_types::{GuestPhysAddr, MappingFlags};
 
 use super::Backend;
@@ -24,7 +24,7 @@ impl<Npt: NestedPageTableOps> Backend<Npt> {
         Self::Linear { pa_to_va_delta }
     }
 
-    fn linear_paddr(vaddr: GuestPhysAddr, pa_to_va_delta: i128) -> Option<PhysAddr> {
+    pub(super) fn linear_paddr(vaddr: GuestPhysAddr, pa_to_va_delta: i128) -> Option<PhysAddr> {
         let paddr = (vaddr.as_usize() as i128).checked_sub(pa_to_va_delta)?;
         usize::try_from(paddr).ok().map(PhysAddr::from)
     }
@@ -40,12 +40,18 @@ impl<Npt: NestedPageTableOps> Backend<Npt> {
         let Some(pa_start) = Self::linear_paddr(start, pa_to_va_delta) else {
             return false;
         };
+        let Some(pa_end) = start
+            .checked_add(size)
+            .and_then(|end| Self::linear_paddr(end, pa_to_va_delta))
+        else {
+            return false;
+        };
         debug!(
             "map_linear: [{:#x}, {:#x}) -> [{:#x}, {:#x}) {:?}",
             start,
             start + size,
             pa_start,
-            pa_start + size,
+            pa_end,
             flags
         );
         let allow_huge = true;
@@ -53,7 +59,7 @@ impl<Npt: NestedPageTableOps> Backend<Npt> {
             start,
             |va| {
                 Self::linear_paddr(va, pa_to_va_delta)
-                    .expect("linear mapping physical address underflow")
+                    .expect("linear mapping range must be validated during prepare")
             },
             size,
             flags,

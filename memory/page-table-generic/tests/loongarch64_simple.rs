@@ -1,4 +1,4 @@
-//! LoongArch64 页表映射场景模拟测试（简化版）
+//! Simplified LoongArch64 page-table mapping simulation.
 //!
 //! 模拟 LoongArch64 启动时的内核代码段映射场景
 
@@ -6,7 +6,7 @@
 
 use page_table_generic::*;
 
-mod mocks;
+pub mod mocks;
 
 /// LoongArch64 Generic 配置的 Mock 实现
 #[derive(Debug, Clone, Copy)]
@@ -75,12 +75,12 @@ fn test_loongarch64_kernel_code_mapping() {
     println!(
         "起始地址翻译: VA={:#x} -> PA={:#x}, Huge={}",
         kernel_virt_start,
-        translated_paddr.raw(),
+        translated_paddr.as_usize(),
         pte.to_config(false).huge
     );
 
     assert_eq!(
-        translated_paddr.raw(),
+        translated_paddr.as_usize(),
         kernel_phys_start,
         "物理地址应该匹配"
     );

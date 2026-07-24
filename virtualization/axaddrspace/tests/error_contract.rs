@@ -29,6 +29,10 @@ fn mapping_errors_convert_with_from() {
         AddrSpaceError::from(MappingError::BadState),
         AddrSpaceError::MappingState
     );
+    assert_eq!(
+        AddrSpaceError::from(MappingError::NoMemory),
+        AddrSpaceError::NoMemory
+    );
 }
 
 #[test]

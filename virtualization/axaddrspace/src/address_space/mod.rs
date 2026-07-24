@@ -146,8 +146,9 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
     }
 
     /// Removes all mappings in the address space.
-    pub fn clear(&mut self) {
-        self.areas.clear(&mut self.pt).unwrap();
+    pub fn clear(&mut self) -> AddrSpaceResult {
+        self.areas.clear(&mut self.pt)?;
+        Ok(())
     }
 
     /// Handles a page fault at the given address.
@@ -200,17 +201,16 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
             return None;
         }
         if let Some(area) = self.areas.find(vaddr) {
-            if len > area.size() {
+            let end = vaddr.checked_add(len)?;
+            if end > area.end() {
                 warn!(
-                    "AddrSpace translated_byte_buffer len {:#x} exceeds area length {:#x}",
-                    len,
-                    area.size()
+                    "AddrSpace translated_byte_buffer range {vaddr:?}..{end:?} exceeds area {:?}",
+                    area.va_range()
                 );
                 return None;
             }
 
             let mut start = vaddr;
-            let end = start + len;
 
             debug!(
                 "start {:?} end {:?} area size {:#x}",
@@ -221,7 +221,7 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
 
             let mut v = Vec::new();
             while start < end {
-                let (start_paddr, _, page_size) = self.page_table().query(start).unwrap();
+                let (start_paddr, _, page_size) = self.page_table().query(start).ok()?;
                 let mut end_va = start.align_down(page_size) + page_size.into();
                 end_va = end_va.min(end);
 
@@ -304,6 +304,8 @@ impl<Npt: NestedPageTableOps> fmt::Debug for AddrSpace<Npt> {
 
 impl<Npt: NestedPageTableOps> Drop for AddrSpace<Npt> {
     fn drop(&mut self) {
-        self.clear();
+        if let Err(error) = self.clear() {
+            log::error!("failed to clear guest address space during drop: {error}");
+        }
     }
 }

@@ -720,13 +720,13 @@ pub fn sys_sysinfo(info: *mut sysinfo) -> AxResult<isize> {
     let mut kinfo: sysinfo = unsafe { core::mem::zeroed() };
 
     let total = ax_runtime::hal::mem::total_ram_size();
-    let usages = ax_alloc::global_allocator().usages();
-    let used = usages.get(ax_alloc::UsageKind::RustHeap)
-        + usages.get(ax_alloc::UsageKind::VirtMem)
-        + usages.get(ax_alloc::UsageKind::PageCache)
-        + usages.get(ax_alloc::UsageKind::PageTable)
-        + usages.get(ax_alloc::UsageKind::Dma)
-        + usages.get(ax_alloc::UsageKind::Global);
+    let stats = ax_alloc::global_allocator().stats();
+    let used = stats.usage(ax_alloc::UsageKind::RustHeap)
+        + stats.usage(ax_alloc::UsageKind::VirtMem)
+        + stats.usage(ax_alloc::UsageKind::PageCache)
+        + stats.usage(ax_alloc::UsageKind::PageTable)
+        + stats.usage(ax_alloc::UsageKind::Dma)
+        + stats.usage(ax_alloc::UsageKind::Global);
     let free = total.saturating_sub(used);
     let uptime = ax_runtime::hal::time::monotonic_time();
 

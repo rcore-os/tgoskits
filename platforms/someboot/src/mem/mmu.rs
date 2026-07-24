@@ -15,7 +15,7 @@ pub(crate) fn new_boot_table() -> ArchPageTable<Ram> {
     ArchPageTable::<Ram>::new(Ram).unwrap()
 }
 
-pub fn new_page_table<A: page_table_generic::FrameAllocator>(
+pub fn new_page_table<A: page_table_generic::PageFrameProvider>(
     allocator: A,
 ) -> Result<ArchPageTable<A>, PagingError> {
     ArchPageTable::<A>::new(allocator)
@@ -49,7 +49,7 @@ pub(crate) fn is_kernel_relocated() -> bool {
 }
 
 pub trait PageTableOp {
-    /// 映射虚拟地址范围到物理地址范围
+    /// Maps a virtual-address range to a physical-address range.
     fn map(&mut self, config: &page_table_generic::MapConfig) -> PagingResult;
 
     fn unmap(&mut self, start_vaddr: page_table_generic::VirtAddr, size: usize)

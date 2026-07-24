@@ -280,7 +280,7 @@ impl BlockRequest {
 }
 
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IdmacDesc {
     des0: u32,
     des1: u32,
@@ -1459,7 +1459,8 @@ fn map_dma_error(err: dma_api::DmaError, phase: Phase) -> Error {
         | dma_api::DmaError::SegmentTooLarge { .. }
         | dma_api::DmaError::BoundaryCross { .. }
         | dma_api::DmaError::NullPointer
-        | dma_api::DmaError::ZeroSizedBuffer => Error::InvalidArgument,
+        | dma_api::DmaError::ZeroSizedBuffer
+        | dma_api::DmaError::Unsupported { .. } => Error::InvalidArgument,
     }
 }
 

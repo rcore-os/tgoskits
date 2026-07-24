@@ -23,5 +23,3 @@ trait-ffi = "0.2"
 
 [features]
 default = []
-tlsf = ["ax-alloc/tlsf"]
-buddy-slab = ["ax-alloc/buddy-slab"]

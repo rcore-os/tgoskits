@@ -69,6 +69,8 @@ sequenceDiagram
 
 ## Features
 
+- `smp` enables the spin-lock state required by concurrent CPUs; single-core builds leave it disabled.
+
 - Buddy page allocation with splitting and merging
 - Dynamic hot-add of managed regions via `add_region`
 - Slab allocation for 9 size classes: `8..=2048`

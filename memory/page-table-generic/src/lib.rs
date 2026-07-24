@@ -1,120 +1,63 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
-use core::fmt::Debug;
+//! Architecture-neutral page-table traversal and frame-provider contracts.
 
-mod def;
-pub mod frame;
+mod common;
+mod frame;
 mod map;
 mod table;
 mod walk;
 
-pub use def::*;
+pub use common::*;
 pub use frame::Frame;
 pub use map::*;
 pub use table::*;
 pub use walk::*;
 
+/// Result type returned by page-table operations.
 pub type PagingResult<T = ()> = Result<T, PagingError>;
 
-pub trait FrameAllocator: Clone + Sync + Send + 'static {
-    fn alloc_frame(&self) -> Option<PhysAddr>;
-
-    fn dealloc_frame(&self, frame: PhysAddr);
-
-    fn phys_to_virt(&self, paddr: PhysAddr) -> *mut u8;
-
-    fn alloc_frames(&self, frames: usize, _align: usize) -> Option<PhysAddr> {
-        if frames == 1 {
-            self.alloc_frame()
-        } else {
-            None
-        }
-    }
-
-    fn dealloc_frames(&self, start: PhysAddr, frames: usize, frame_size: usize) {
-        if frames == 1 {
-            self.dealloc_frame(start);
-            return;
-        }
-        for i in 0..frames {
-            self.dealloc_frame(PhysAddr::new(start.raw() + i * frame_size));
-        }
-    }
-}
-
+/// Describes the geometry and entry representation of a page table.
 pub trait TableMeta: Sync + Send + Clone + Copy + 'static {
+    /// Hardware page-table entry type.
     type P: PageTableEntry;
 
-    /// 页面大小（支持4KB、16KB、64KB等）
+    /// Base page size used by this page-table geometry.
     const PAGE_SIZE: usize;
 
-    /// 各级索引位数数组，从最高级到最低级
+    /// Index width of each level, ordered from root to leaf.
     const LEVEL_BITS: &[usize];
 
-    /// 大页最高支持的级别
+    /// Highest level that may contain a block mapping.
     const MAX_BLOCK_LEVEL: usize;
 
-    /// Whether addresses must fit the address width described by [`LEVEL_BITS`].
+    /// Whether addresses must fit the width described by [`Self::LEVEL_BITS`].
     const STRICT_ADDRESS_WIDTH: bool = false;
 
-    /// 刷新TLB
+    /// Invalidates translations affected by a page-table update.
     fn flush(vaddr: Option<VirtAddr>);
 }
 
-pub trait PageTableEntry: Debug + Sync + Send + Clone + Copy + Sized + 'static {
-    /// 从 PteConfig 创建页表项
-    ///
-    /// # 参数
-    /// - `config`: 包含所有页表项配置的结构
-    ///
-    /// # 返回
-    /// 新的页表项实例
+/// Returns the mapping size represented by `level` for a table geometry.
+pub fn level_size<T: TableMeta>(level: usize) -> Option<usize> {
+    if level == 0 || level > T::LEVEL_BITS.len() {
+        return None;
+    }
+    let shift = T::LEVEL_BITS
+        .iter()
+        .skip(T::LEVEL_BITS.len() - level + 1)
+        .try_fold(0usize, |sum, &bits| sum.checked_add(bits))?;
+    T::PAGE_SIZE.checked_shl(u32::try_from(shift).ok()?)
+}
+
+/// Hardware entry operations required by the generic walker.
+pub trait PageTableEntry: core::fmt::Debug + Sync + Send + Clone + Copy + Sized + 'static {
+    /// Encodes a generic page-table entry configuration.
     fn from_config(config: PteConfig) -> Self;
 
-    /// 将页表项转换为 PteConfig
-    ///
-    /// # 参数
-    /// - `is_dir`: 是否为目录项（影响物理地址布局解析）
-    ///   - true: 目录项（可能包含大页映射或子页表指针）
-    ///   - false: 页表项（叶子级别，基本页映射）
-    ///
-    /// # 返回
-    /// 包含当前页表项所有状态的 PteConfig
+    /// Decodes this entry using `is_dir` to select directory semantics.
     fn to_config(&self, is_dir: bool) -> PteConfig;
 
+    /// Returns whether the hardware entry is valid.
     fn valid(&self) -> bool;
-}
-
-pub trait PageTableOp: Send + 'static {
-    fn addr(&self) -> PhysAddr;
-    fn map(&mut self, config: &MapConfig) -> PagingResult;
-    fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> Result<(), PagingError>;
-}
-
-impl<T: TableMeta, A: FrameAllocator> PageTableOp for PageTable<T, A> {
-    fn addr(&self) -> PhysAddr {
-        self.root_paddr()
-    }
-
-    fn map(&mut self, config: &MapConfig) -> PagingResult {
-        PageTableRef::map(self, config)
-    }
-
-    fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> PagingResult {
-        PageTableRef::unmap(self, virt_start, size)
-    }
-}
-
-impl<T: TableMeta, A: FrameAllocator> PageTableOp for PageTableRef<T, A> {
-    fn addr(&self) -> PhysAddr {
-        self.root_paddr()
-    }
-
-    fn map(&mut self, config: &MapConfig) -> PagingResult {
-        self.map(config)
-    }
-
-    fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> Result<(), PagingError> {
-        self.unmap(virt_start, size)
-    }
 }

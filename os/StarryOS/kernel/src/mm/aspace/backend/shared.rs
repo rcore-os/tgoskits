@@ -1,86 +1,13 @@
-use alloc::{sync::Arc, vec::Vec};
-use core::{any::Any, ops::Deref};
+use alloc::sync::Arc;
 
 use ax_errno::AxResult;
-use ax_memory_addr::{MemoryAddr, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_memory_addr::{MemoryAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_sync::Mutex;
+use starry_mm::SharedPages;
 
-use super::{
-    AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, alloc_frame,
-    dealloc_frame, divide_page, pages_in,
-};
+use super::{AddrSpace, Backend, BackendOps, MemoryAccounting, RssKind, divide_page, pages_in};
 
-enum SharedPagesOwner {
-    Allocated,
-    Borrowed(Option<Arc<dyn Any + Send + Sync>>),
-}
-
-pub struct SharedPages {
-    phys_pages: Vec<PhysAddr>,
-    pub size: PageSize,
-    owner: SharedPagesOwner,
-}
-impl SharedPages {
-    pub fn new(size: usize, page_size: PageSize) -> AxResult<Self> {
-        let num_pages = divide_page(size, page_size);
-        let mut result = Self {
-            phys_pages: Vec::with_capacity(num_pages),
-            size: page_size,
-            owner: SharedPagesOwner::Allocated,
-        };
-        for _ in 0..num_pages {
-            result.phys_pages.push(alloc_frame(true, page_size)?);
-        }
-        Ok(result)
-    }
-
-    pub fn borrowed(
-        phys_pages: Vec<PhysAddr>,
-        page_size: PageSize,
-        retain: Option<Arc<dyn Any + Send + Sync>>,
-    ) -> AxResult<Self> {
-        if phys_pages.is_empty() {
-            return Err(ax_errno::AxError::InvalidInput);
-        }
-        Ok(Self {
-            phys_pages,
-            size: page_size,
-            owner: SharedPagesOwner::Borrowed(retain),
-        })
-    }
-
-    pub fn len(&self) -> usize {
-        self.phys_pages.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.phys_pages.is_empty()
-    }
-}
-
-impl Deref for SharedPages {
-    type Target = [PhysAddr];
-
-    fn deref(&self) -> &Self::Target {
-        &self.phys_pages
-    }
-}
-
-impl Drop for SharedPages {
-    fn drop(&mut self) {
-        match &self.owner {
-            SharedPagesOwner::Allocated => {
-                for frame in &self.phys_pages {
-                    dealloc_frame(*frame, self.size);
-                }
-            }
-            SharedPagesOwner::Borrowed(_retain) => {}
-        }
-    }
-}
-
-// FIXME: This implementation does not allow map or unmap partial ranges.
 #[derive(Clone)]
 pub struct SharedBackend {
     start: VirtAddr,
@@ -100,17 +27,11 @@ impl SharedBackend {
             page_offset: self.page_offset,
         }
     }
-
-    fn pages_starting_from(&self, start: VirtAddr) -> &[PhysAddr] {
-        debug_assert!(start.is_aligned(self.pages.size));
-        let start_index = self.page_offset + divide_page(start - self.start, self.pages.size);
-        &self.pages[start_index..]
-    }
 }
 
 impl BackendOps for SharedBackend {
     fn page_size(&self) -> PageSize {
-        self.pages.size
+        self.pages.page_size()
     }
 
     fn map(
@@ -121,13 +42,20 @@ impl BackendOps for SharedBackend {
         pt: &mut PageTableCursor,
     ) -> AxResult {
         debug!("Shared::map: {:?} {:?}", range, flags);
+        debug_assert!(range.start.is_aligned(self.pages.page_size()));
+        let start_index =
+            self.page_offset + divide_page(range.start - self.start, self.pages.page_size());
         for (vaddr, paddr) in
-            pages_in(range, self.pages.size)?.zip(self.pages_starting_from(range.start))
+            pages_in(range, self.pages.page_size())?.zip(&self.pages[start_index..])
         {
             let newly_mapped = pt.query(vaddr).is_err();
-            pt.map(vaddr, *paddr, self.pages.size, flags)?;
-            if newly_mapped && let Some(acct) = acct {
-                acct.inc(RssKind::Shmem, 1);
+            pt.map(vaddr, *paddr, self.pages.page_size(), flags)?;
+            if newly_mapped
+                && let Some(acct) = acct
+                && let Err(error) = acct.inc(RssKind::Shmem, 1)
+            {
+                pt.unmap(vaddr).map_err(|_| ax_errno::AxError::BadState)?;
+                return Err(error);
             }
         }
         Ok(())
@@ -140,12 +68,16 @@ impl BackendOps for SharedBackend {
         pt: &mut PageTableCursor,
     ) -> AxResult {
         debug!("Shared::unmap: {:?}", range);
-        for vaddr in pages_in(range, self.pages.size)? {
+        for vaddr in pages_in(range, self.pages.page_size())? {
             match pt.unmap(vaddr) {
-                Ok((_, _, page_size)) => {
-                    debug_assert_eq!(page_size, self.pages.size);
-                    if let Some(acct) = acct {
-                        acct.dec(RssKind::Shmem, 1);
+                Ok((paddr, flags, page_size)) => {
+                    debug_assert_eq!(page_size, self.pages.page_size());
+                    if let Some(acct) = acct
+                        && let Err(error) = acct.dec(RssKind::Shmem, 1)
+                    {
+                        pt.map(vaddr, paddr, page_size, flags)
+                            .map_err(|_| ax_errno::AxError::BadState)?;
+                        return Err(error);
                     }
                 }
                 Err(PagingError::NotMapped) => {}
@@ -162,7 +94,7 @@ impl BackendOps for SharedBackend {
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
-        _acct: CloneMapAccounting<'_>,
+        _child_accounting: Option<&MemoryAccounting>,
     ) -> AxResult<Backend> {
         Ok(Backend::Shared(self.clone()))
     }
@@ -174,16 +106,9 @@ impl BackendOps for SharedBackend {
         Some(Backend::Shared(SharedBackend {
             start: self.start + align_diff,
             pages: self.pages.clone(),
-            page_offset: self.page_offset + divide_page(align_diff, self.pages.size),
+            page_offset: self.page_offset + divide_page(align_diff, self.pages.page_size()),
         }))
     }
-
-    fn shrink_left(&mut self, shrink_size: usize) {
-        self.start += shrink_size;
-        self.page_offset += divide_page(shrink_size, self.pages.size);
-    }
-
-    fn shrink_right(&mut self, _shrink_size: usize) {}
 }
 
 impl Backend {

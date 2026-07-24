@@ -4,7 +4,10 @@ use core::ptr::NonNull;
 use std::{
     alloc::{Layout, alloc, dealloc},
     cell::Cell,
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{
+        Mutex, MutexGuard, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use buddy_slab_allocator::{
@@ -19,9 +22,10 @@ thread_local! {
 
 const TEST_PAGE_SIZE: usize = 0x1000;
 const MAX_TEST_CPUS: usize = 64;
+static PHYSICAL_OFFSET: AtomicUsize = AtomicUsize::new(0);
 
 fn lowmem_map(vaddr: usize) -> usize {
-    vaddr & 0x0FFF_FFFF
+    (vaddr & 0x0FFF_FFFF) + PHYSICAL_OFFSET.load(Ordering::Relaxed)
 }
 
 pub struct GlobalTestContext {
@@ -39,6 +43,7 @@ fn global_test_lock() -> &'static Mutex<()> {
 
 impl Drop for GlobalTestContext {
     fn drop(&mut self) {
+        PHYSICAL_OFFSET.store(0, Ordering::Relaxed);
         __reset_global_allocator_singleton_for_tests();
     }
 }
@@ -92,6 +97,10 @@ fn test_slab_pool() -> &'static dyn SlabPoolTrait {
 
 pub fn set_current_cpu(cpu: usize) {
     CURRENT_CPU.with(|slot| slot.set(cpu));
+}
+
+pub fn set_physical_offset(offset: usize) {
+    PHYSICAL_OFFSET.store(offset, Ordering::Relaxed);
 }
 
 pub fn seeded_rng(seed: u64) -> StdRng {

@@ -1,0 +1,17 @@
+[package]
+name = "starry-mm"
+version = "0.1.0"
+edition.workspace = true
+description = "Linux virtual-memory policy for StarryOS"
+repository.workspace = true
+license.workspace = true
+
+[features]
+default = []
+axtest = []
+
+[dependencies]
+ax-errno.workspace = true
+ax-memory-addr.workspace = true
+log.workspace = true
+thiserror = { workspace = true, default-features = false }

@@ -28,7 +28,9 @@ irq = [
 multitask = ["ax-task/multitask"]
 paging = ["ax-hal/paging", "dep:ax-mm"]
 rtc = ["ax-hal/rtc", "ax-driver/rtc"]
-smp = ["ax-hal/smp", "ax-task?/smp"]
+# SMP kernels need synchronous cross-CPU execution for TLB shootdown on
+# architectures whose invalidation instructions are local to one CPU.
+smp = ["ipi", "ax-hal/smp", "ax-task?/smp"]
 uspace = ["ax-hal/uspace", "ax-task?/uspace"]
 lockdep = ["ax-fs-ng?/lockdep"]
 stack-guard-page = ["ipi", "multitask", "paging", "ax-task?/stack-guard-page"]

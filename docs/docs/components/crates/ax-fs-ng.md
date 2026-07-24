@@ -3,7 +3,7 @@
 > 路径：`os/arceos/modules/axfs-ng`
 > 类型：库 crate
 > 分层：ArceOS 层 / ArceOS 内核模块
-> 版本：`0.5.0`
+> 版本：`0.8.4`
 > 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
 
 `ax-fs-ng` 的核心定位是：ArceOS filesystem module
@@ -32,46 +32,44 @@
 ```mermaid
 graph LR
     current["ax-fs-ng"]
-    current --> ax-alloc["ax-alloc"]
-    current --> ax-driver["ax-driver"]
     current --> ax_errno["ax-errno"]
     current --> axfs_ng_vfs["axfs-ng-vfs"]
-    current --> ax-hal["ax-hal"]
-    current --> axio["ax-io"]
-    current --> axpoll["axpoll"]
+    current --> ax_io["ax-io"]
     current --> ax-sync["ax-sync"]
-    arceos_feature["ax-runtime"] --> current
-    ax_net["ax-net"] --> current
+    current --> ax_kspin["ax-kspin"]
+    current --> dma_api["dma-api"]
+    current --> irq_framework["irq-framework"]
+    current --> rdif_block["rdif-block"]
+    current --> scope_local["scope-local"]
+    ax_api["ax-api"] --> current
+    ax_posix_api["ax-posix-api"] --> current
     ax_runtime["ax-runtime"] --> current
     starry_kernel["starry-kernel"] --> current
 ```
 
 ### 直接依赖
-- `ax-alloc`
-- `ax-driver`
 - `ax-errno`
 - `axfs-ng-vfs`
-- `ax-hal`
-- `axio`
-- `axpoll`
+- `ax-io`
 - `ax-sync`
 - `ax-kspin`
+- `dma-api`
+- `irq-framework`
+- `rdif-block`
 - `scope-local`
 
 ### 间接依赖
 - `ax-arm-pl031`
 - `axaddrspace`
-- `ax-allocator`
+- `buddy-slab-allocator`
 - `axbacktrace`
 - `ax-cpu`
-- `ax-dma`
 - `rdrive`
-- `rdif-block`
 - 另外还有 `37` 个同类项未在此展开
 
 ### 3.3 被依赖情况
-- `ax-runtime`
-- `ax-net`
+- `ax-api`
+- `ax-posix-api`
 - `ax-runtime`
 - `starry-kernel`
 
@@ -97,10 +95,10 @@ graph LR
 - `intrusive-collections`
 - `log`
 - `lru`
-- `lwext4_rust`
+- `rsext4`
 - `slab`
 - `spin`
-- `starry-fat`
+- `starry-fatfs`
 
 ## 开发指南
 ### 接入方式

@@ -51,7 +51,7 @@ register_bitfields! [
 ];
 
 #[repr(transparent)]
-#[derive(Clone, Copy)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy)]
 pub struct NvmeSubmission([u8; 64]);
 
 pub trait Submission {
@@ -229,7 +229,7 @@ impl Submission for CommandSet {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Debug, Copy, Clone, Default)]
 pub(crate) struct NvmeCompletion {
     pub result: u64,
     pub sq_head: u16,
@@ -239,7 +239,7 @@ pub(crate) struct NvmeCompletion {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Debug, Copy, Clone, Default)]
 pub(crate) struct CompletionStatus(pub u16);
 
 impl CompletionStatus {

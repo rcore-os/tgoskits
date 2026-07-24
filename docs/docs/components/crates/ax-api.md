@@ -3,7 +3,7 @@
 > 路径：`os/arceos/api/arceos_api`
 > 类型：库 crate
 > 分层：ArceOS 层 / ArceOS 公共 API/feature 聚合层
-> 版本：`0.5.0`
+> 版本：`0.7.4`
 > 文档依据：当前仓库源码、`Cargo.toml` 与 未检测到 crate 层 README
 
 `ax-api` 的核心定位是：Public APIs and types for ArceOS modules
@@ -12,8 +12,8 @@
 - 目录角色：ArceOS 公共 API/feature 聚合层
 - crate 形态：库 crate
 - 工作区位置：子工作区 `os/arceos`
-- feature 视角：主要通过 `alloc`、`display`、`dma`、`dummy-if-not-enabled`、`fs`、`ipi`、`irq`、`multitask`、`net`、`paging` 控制编译期能力装配。
-- 关键数据结构：可直接观察到的关键数据结构/对象包括 `AxTimeValue`、`DMAInfo`、`AxTaskHandle`、`AxWaitQueueHandle`。
+- feature 视角：主要通过 `alloc`、`display`、`dummy-if-not-enabled`、`fs`、`ipi`、`irq`、`multitask`、`net`、`paging` 控制编译期能力装配。
+- 关键数据结构：可直接观察到的关键数据结构/对象包括 `AxTimeValue`、`AxTaskHandle`、`AxWaitQueueHandle`。
 
 ### 模块结构
 - `macros`：内部子模块
@@ -24,9 +24,9 @@
 
 ## 核心功能
 - 功能定位：Public APIs and types for ArceOS modules
-- 对外接口：从源码可见的主要公开入口包括 `ax_get_cpu_num`、`ax_terminate`、`ax_monotonic_time`、`ax_wall_time`、`ax_alloc`、`ax_dealloc`、`ax_alloc_coherent`、`ax_dealloc_coherent`。
+- 对外接口：从源码可见的主要公开入口包括 `ax_get_cpu_num`、`ax_terminate`、`ax_monotonic_time`、`ax_wall_time`、`ax_alloc`、`ax_dealloc`。
 - 典型使用场景：主要作为仓库中的专用支撑 crate 被上层组件调用。
-- 关键调用链示例：按当前源码布局，常见入口/初始化链可概括为 `ax_alloc()` -> `ax_alloc_coherent()` -> `ax_spawn()` -> `ax_open_file()` -> `ax_open_dir()` -> ...。
+- 调用边界：各 API 域彼此独立，由 `imp` 模块分别转发到对应的 ArceOS 组件，不构造跨领域的伪调用链。
 
 ## 依赖关系
 ```mermaid
@@ -34,32 +34,32 @@ graph LR
     current["ax-api"]
     current --> ax-alloc["ax-alloc"]
     current --> ax-display["ax-display"]
-    current --> ax_dma["ax-dma"]
-    current --> ax-driver["ax-driver"]
     current --> ax_errno["ax-errno"]
     current --> ax-runtime["ax-runtime"]
-    current --> ax-fs["ax-fs"]
+    current --> ax-fs-ng["ax-fs-ng"]
     ax_std["ax-std"] --> current
 ```
 
 ### 直接依赖
 - `ax-alloc`
 - `ax-display`
-- `ax-dma`
-- `ax-driver`
 - `ax-errno`
 - `ax-runtime`
-- `ax-fs`
+- `ax-fs-ng`
 - `ax-hal`
-- `axio`
+- `ax-io`
 - `ax-ipi`
 - `ax-log`
-- 另外还有 `5` 个同类项未在此展开
+- `ax-mm`
+- `ax-net`
+- `axpoll`
+- `ax-sync`
+- `ax-task`
 
 ### 间接依赖
 - `ax-arm-pl031`
 - `axaddrspace`
-- `ax-allocator`
+- `buddy-slab-allocator`
 - `axbacktrace`
 - `ax-cpu`
 - `rdrive`
@@ -105,7 +105,7 @@ ax-api = { workspace = true }
 3. 在最小消费者路径上验证公开 API、错误分支与资源回收行为。
 
 ### API 使用
-- 优先关注函数入口：`ax_get_cpu_num`、`ax_terminate`、`ax_monotonic_time`、`ax_wall_time`、`ax_alloc`、`ax_dealloc`、`ax_alloc_coherent`、`ax_dealloc_coherent` 等（另有 60 项）。
+- 优先关注函数入口：`ax_get_cpu_num`、`ax_terminate`、`ax_monotonic_time`、`ax_wall_time`、`ax_alloc`、`ax_dealloc` 等。
 
 ## 测试
 ### 测试覆盖

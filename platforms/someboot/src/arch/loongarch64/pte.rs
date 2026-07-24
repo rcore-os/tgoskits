@@ -173,7 +173,7 @@ impl Entry {
         };
 
         // 设置物理地址
-        let ppn = (config.paddr.raw() as u64) >> 12;
+        let ppn = (config.paddr.as_usize() as u64) >> 12;
         val += PTE_DIR::PHYS_ADDR.val(ppn);
 
         if config.global {
@@ -191,7 +191,7 @@ impl Entry {
     }
 
     fn from_dir(config: page_table_generic::PteConfig) -> u64 {
-        let paddr = config.paddr.raw();
+        let paddr = config.paddr.as_usize();
         PTE_DIR::PHYS_ADDR.val((paddr >> 12) as u64).value
     }
 
@@ -224,7 +224,7 @@ impl Entry {
         };
 
         // 设置物理地址
-        let ppn = (config.paddr.raw() as u64) >> 12;
+        let ppn = (config.paddr.as_usize() as u64) >> 12;
         val += PTE::PHYS_ADDR.val(ppn);
 
         // 设置全局标志（页表项使用 G 位，bit 6）
@@ -297,7 +297,7 @@ impl PageTableEntry for Entry {
         };
 
         page_table_generic::PteConfig {
-            paddr: paddr.into(),
+            paddr: (paddr as usize).into(),
             valid,
             read: valid, // LoongArch64: 假设有效项可读
             writable: self.as_base().is_set(PTE::WRITE),

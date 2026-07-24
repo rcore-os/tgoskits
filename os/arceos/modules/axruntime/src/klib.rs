@@ -16,7 +16,7 @@ use core::time::Duration;
 use ax_memory_addr::MemoryAddr;
 use axklib::{
     AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuId, IrqCpuMask, IrqError,
-    IrqHandle, IrqId, Klib, PhysAddr, VirtAddr, impl_trait,
+    IrqHandle, IrqId, Klib, PhysAddr, VirtAddr, dma::DmaPageAllocation, impl_trait,
 };
 
 struct KlibImpl;
@@ -134,29 +134,38 @@ impl_trait! {
             }
         }
 
-        fn dma_alloc_pages(dma_mask: u64, num_pages: usize, align: usize) -> AxResult<VirtAddr> {
-            let addr = if dma_mask <= u32::MAX as u64 {
-                ax_alloc::global_allocator().alloc_dma32_pages(
-                    num_pages,
-                    align,
-                    ax_alloc::UsageKind::Dma,
-                )
+        fn dma_alloc_pages(
+            dma_mask: u64,
+            num_pages: usize,
+            align: usize,
+        ) -> AxResult<DmaPageAllocation> {
+            let allocator_zone = if dma_mask <= u32::MAX as u64 {
+                ax_alloc::MemoryZone::Dma32
             } else {
-                ax_alloc::global_allocator().alloc_pages(
-                    num_pages,
+                ax_alloc::MemoryZone::Normal
+            };
+            let addr = ax_alloc::global_allocator().alloc_pages(
+                ax_alloc::PageRequest {
+                    count: num_pages,
                     align,
-                    ax_alloc::UsageKind::Dma,
-                )
-            }?;
-            Ok(VirtAddr::from(addr))
+                    zone: allocator_zone,
+                },
+                ax_alloc::UsageKind::Dma,
+            )?;
+            Ok(DmaPageAllocation::new(VirtAddr::from(addr), num_pages))
         }
 
-        fn dma_dealloc_pages(addr: VirtAddr, num_pages: usize) {
-            ax_alloc::global_allocator().dealloc_pages(
-                addr.as_usize(),
-                num_pages,
-                ax_alloc::UsageKind::Dma,
-            );
+        fn dma_dealloc_pages(allocation: DmaPageAllocation) {
+            let (addr, num_pages) = allocation.into_parts();
+            // SAFETY: consuming DmaPageAllocation proves unique ownership and
+            // returns the unchanged address, count, and source zone.
+            unsafe {
+                ax_alloc::global_allocator().dealloc_pages(
+                    addr.as_usize(),
+                    num_pages,
+                    ax_alloc::UsageKind::Dma,
+                );
+            }
         }
 
         /// Busy-wait for the given duration by calling into `ax-hal`.

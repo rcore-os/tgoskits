@@ -90,6 +90,7 @@ pub fn kernel_page_table_root() -> PhysAddr {
 /// fine-grained kernel page table.
 pub fn init_memory_management() {
     info!("Initialize virtual memory management...");
+    ax_hal::paging::validate_smp_invalidation();
 
     let kernel_aspace = new_kernel_aspace().expect("failed to initialize kernel address space");
     debug!("kernel address space init OK: {kernel_aspace:#x?}");
@@ -116,25 +117,17 @@ pub fn iomap(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
     addr.as_usize()
         .checked_add(size)
         .ok_or(AxError::InvalidInput)?;
-    match ax_hal::mem::prepare_iomap(addr, size, IomapAttrs::DEVICE).map_err(map_iomap_error)? {
+    let decision =
+        ax_hal::mem::prepare_iomap(addr, size, IomapAttrs::DEVICE).map_err(
+            |error| match error {
+                IomapError::InvalidInput => AxError::InvalidInput,
+                IomapError::Unsupported => AxError::Unsupported,
+            },
+        )?;
+    match decision {
         IomapDecision::Mapped(vaddr) => Ok(vaddr),
         IomapDecision::UseGeneric(paddr) => iomap_generic(paddr, size),
     }
-}
-
-fn map_iomap_error(err: IomapError) -> AxError {
-    match err {
-        IomapError::InvalidInput => AxError::InvalidInput,
-        IomapError::Unsupported => AxError::Unsupported,
-    }
-}
-
-fn checked_align_up_4k(addr: usize) -> AxResult<PhysAddr> {
-    let aligned = addr
-        .checked_add(PAGE_SIZE_4K - 1)
-        .ok_or(AxError::InvalidInput)?
-        & !(PAGE_SIZE_4K - 1);
-    Ok(PhysAddr::from_usize(aligned))
 }
 
 fn iomap_generic(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
@@ -146,7 +139,11 @@ fn iomap_generic(addr: PhysAddr, size: usize) -> AxResult<VirtAddr> {
 
     let virt_aligned = virt.align_down_4k();
     let addr_aligned = addr.align_down_4k();
-    let size_aligned = checked_align_up_4k(end)? - addr_aligned;
+    let end_aligned = end
+        .checked_add(PAGE_SIZE_4K - 1)
+        .ok_or(AxError::InvalidInput)?
+        & !(PAGE_SIZE_4K - 1);
+    let size_aligned = PhysAddr::from_usize(end_aligned) - addr_aligned;
     let offset = addr - addr_aligned;
 
     let flags = MappingFlags::DEVICE | MappingFlags::READ | MappingFlags::WRITE;

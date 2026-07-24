@@ -1,8 +1,9 @@
 //! Helper functions to initialize the CPU states on systems bootstrapping.
 
 use ax_memory_addr::PhysAddr;
-use ax_page_table_multiarch::loongarch64::LA64MetaData;
 use loongArch64::register::{MemoryAccessType, crmd, stlbps, tlbidx, tlbrehi, tlbrentry};
+
+use crate::paging::loongarch64::{LA64MetaData, LA64TlbInvalidator};
 
 /// Initializes TLB and MMU related registers on the current CPU.
 ///
@@ -26,7 +27,10 @@ pub fn init_mmu(root_paddr: PhysAddr, phys_virt_offset: usize) {
 
     // Configure page table walking
     unsafe {
-        crate::asm::write_pwc(LA64MetaData::PWCL_VALUE, LA64MetaData::PWCH_VALUE);
+        crate::asm::write_pwc(
+            LA64MetaData::<LA64TlbInvalidator>::PWCL_VALUE,
+            LA64MetaData::<LA64TlbInvalidator>::PWCH_VALUE,
+        );
         crate::asm::write_kernel_page_table(root_paddr);
         crate::asm::write_user_page_table(pa!(0));
     }

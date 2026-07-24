@@ -33,11 +33,11 @@ impl_trait! {
             _dma_mask: u64,
             _num_pages: usize,
             _align: usize,
-        ) -> AxResult<VirtAddr> {
+        ) -> AxResult<axklib::dma::DmaPageAllocation> {
             Err(AxError::Unsupported)
         }
 
-        fn dma_dealloc_pages(_addr: VirtAddr, _num_pages: usize) {}
+        fn dma_dealloc_pages(_allocation: axklib::dma::DmaPageAllocation) {}
 
         fn time_busy_wait(_dur: core::time::Duration) {}
 

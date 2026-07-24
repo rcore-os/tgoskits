@@ -554,7 +554,7 @@ impl ElfLoader {
             }
         }
 
-        uspace.clear();
+        uspace.clear()?;
         map_trampoline(uspace)?;
 
         let entry = self.0.front().unwrap();

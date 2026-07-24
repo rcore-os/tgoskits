@@ -1,4 +1,4 @@
-use dma_api::{ContiguousArray, DeviceDma, DmaDirection};
+use dma_api::{ContiguousArray, DeviceDma, DmaDirection, DmaPod};
 
 use super::super::def::*;
 use crate::{
@@ -7,7 +7,7 @@ use crate::{
     op::{Operation, OperationTrait, Precision},
 };
 
-pub struct MatMul<T: Sized + Copy, O: Sized + Copy> {
+pub struct MatMul<T: DmaPod, O: DmaPod> {
     m: u16,
     k: u16,
     n: u16,
@@ -16,7 +16,7 @@ pub struct MatMul<T: Sized + Copy, O: Sized + Copy> {
     output: ContiguousArray<O>,
 }
 
-impl<T: Sized + Copy, O: Sized + Copy> MatMul<T, O> {
+impl<T: DmaPod, O: DmaPod> MatMul<T, O> {
     pub fn new(dma: &DeviceDma, m: usize, k: usize, n: usize) -> Self {
         Self {
             m: m as _,
@@ -309,14 +309,13 @@ impl OperationTrait for MatMul<i8, i32> {
         } else {
             fd_banks + 1
         };
-        let weight_banks;
-        if (fd_banks) > NPU_CBUF_BANKS - 1 {
+        let weight_banks = if fd_banks > NPU_CBUF_BANKS - 1 {
             panic!("Input feature data size exceed cbuf size");
         } else if cna_desc.weight_bytes_per_kernel <= NPU_CBUF_BANK_SIZE as u32 {
-            weight_banks = NPU_CBUF_BANKS as u32 - fd_banks as u32;
+            NPU_CBUF_BANKS as u32 - fd_banks as u32
         } else {
             panic!("Weight data size exceed cbuf size");
-        }
+        };
 
         cna_desc.weight_bank = weight_banks as _;
         cna_desc.data_bank = fd_banks as _;

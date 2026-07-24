@@ -30,27 +30,37 @@ pub fn init_memory_map() -> Option<()> {
         let Some(region) = normalize_region(reserved.address, reserved.size) else {
             continue;
         };
-        add_memory_descriptor(MemoryDescriptor::new_aligned(
+        let descriptor = MemoryDescriptor::new_aligned(
             region.start,
             region.end - region.start,
             MemoryType::Reserved,
             PAGE_SIZE,
-        ))
-        .unwrap();
+        )
+        .expect("FDT reserved-memory descriptor must have a valid aligned range");
+        add_memory_descriptor(descriptor).unwrap_or_else(|error| {
+            panic!("failed to add FDT memory reservation {region:#x?}: {error}")
+        });
     }
 
     for reserved in fdt.reserved_memory() {
-        if let Some(mut itr) = reserved.reg()
-            && let Some(reg) = itr.next()
-            && let Some(size) = reg.size
-            && let Some(region) = normalize_region(reg.address, size)
-        {
+        let Some(regions) = reserved.reg() else {
+            continue;
+        };
+        for reg in regions {
+            let Some(size) = reg.size else {
+                continue;
+            };
+            let Some(region) = normalize_region(reg.address, size) else {
+                continue;
+            };
             add_memory_descriptor(MemoryDescriptor {
                 physical_start: region.start,
                 size_in_bytes: region.end - region.start,
                 memory_type: MemoryType::Reserved,
             })
-            .unwrap();
+            .unwrap_or_else(|error| {
+                panic!("failed to reserve FDT memory region {region:#x?}: {error}")
+            });
         }
     }
 
@@ -63,7 +73,8 @@ pub fn memories() -> impl Iterator<Item = Range<usize>> {
         for memory in fdt.memory() {
             for region in memory.regions() {
                 if let Some(region) = normalize_region(region.address, region.size) {
-                    res.push(region).ok();
+                    res.push(region)
+                        .expect("FDT contains more than 128 usable memory regions");
                 }
             }
         }
