@@ -26,16 +26,9 @@ sidebar_label: "启动内存"
 
 ### 1.1 U-Boot 与 设备树二进制对象 契约
 
-U-Boot 通常通过架构规定的入口寄存器传入 设备树二进制对象 指针；`someboot` 的架构入口保存并验证该地址，随后由 `platforms/someboot/src/fdt/` 解析。Rust 内存管理接收的是一份设备树，而不是固件预先整理好的单段 heap。
+U-Boot 或 OpenSBI 通过架构启动协议传入设备树二进制对象指针，UEFI 路径则提供 memory map。`someboot` 的架构入口只保存和规范化固件参数，随后分别交给 `platforms/someboot/src/fdt/` 或 `efi_stub/memmap.rs`；各架构的寄存器、页表切换和地址规则集中在 1.4 节。
 
-| 架构路径 | 设备树二进制对象 入口事实 | 后续使用 |
-| --- | --- | --- |
-| AArch64 | 启动参数寄存器中的 扁平设备树 地址 | `someboot` early entry 保存后交给 扁平设备树 parser |
-| RISC-V | SBI/U-Boot 约定的 设备树二进制对象 参数 | early entry 保存，物理地址按架构规则规范化 |
-| LoongArch64 | UHI/U-Boot 参数或平台启动协议 | entry 解析后形成统一 扁平设备树 base |
-| x86_64 | 平台固件/动态平台描述 | 最终仍转换为统一内存描述符输入 |
-
-入口差异止于平台层。内存图建立后，后续代码只处理 `usize` 物理范围和 `MemoryType`，不会把 U-Boot 私有结构带入 `ax-alloc`。
+固件私有结构不会进入 `ax-alloc`。完成解析后，公共路径只处理物理半开区间和 `MemoryType`，因此设备树、UEFI 与动态平台可以共用后续裁剪和交接算法。
 
 ### 1.2 多段 RAM 扫描
 
@@ -319,8 +312,6 @@ MemoryDescriptor[]
 
 启动内存追求确定性和低复杂度，因此没有动态扩容或复杂物理内存重排。平台配置必须在进入运行时前满足这些固定边界。
 
-### 6.1 容量与连续性限制
-
 当前代码中需要重点监控的硬限制如下。它们不影响正常的少量 RAM bank，但会决定复杂服务器级固件描述是否可直接使用。
 
 | 限制 | 当前值或行为 | 影响 |
@@ -334,23 +325,6 @@ MemoryDescriptor[]
 | Buddy contiguous allocation | 单 section 内完成 | 不能跨物理 hole 拼接连续页 |
 
 这些限制不应通过引入通用非统一内存访问、compaction 或页迁移框架解决。若具体平台超过固定容量，应先提高有依据的常量或压缩平台描述符；对应验收方法见[内存管理测试与验收](./testing.md)。
-
-### 6.2 源码检查点
-
-修改启动内存时必须同时检查区间不重叠、冻结后不可分配和多段 RAM 全部交接。下面的源码是该路径的主要审计入口。
-
-| 源码 | 审计重点 |
-| --- | --- |
-| `platforms/someboot/src/fdt/memory.rs` | 所有 RAM bank、reservation 和地址规范化 |
-| `components/kernutil/src/memory.rs` | transactional `merge_add` 与 fixed capacity |
-| `platforms/someboot/src/mem/mod.rs` | KImage、early range 选择、freeze 与最终 map |
-| `platforms/someboot/src/mem/ram.rs` | checked bump 状态机与 boot provider |
-| `platforms/someboot/src/smp/` | 全 CPU metadata/stack/data 预分配 |
-| `platforms/axplat-dyn/src/mem.rs` | 平台固定容量转换 |
-| `os/arceos/modules/axhal/src/mem.rs` | reserved subtraction 与页对齐 |
-| `os/arceos/modules/axruntime/src/lib.rs` | 最大初始段与其余 section 的交接 |
-
-这些文件共同维护“所有固件 RAM 被分类、全部启动占用被扣除、剩余 Free 段只交接一次”的不变量。确定性输入和板级检查项集中在[内存管理测试与验收](./testing.md)。
 
 ## 7. 地址处理实例
 

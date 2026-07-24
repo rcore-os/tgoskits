@@ -115,14 +115,7 @@ pub const fn slab_pages(self, page_size: usize) -> usize {
 
 超过 Slab 上限的 byte allocation 被向上取整为 4 KiB 页数，由 Buddy 直接完成。它仍以请求的 `Layout` 通过 `GlobalAlloc` 对称释放，不应和显式页 API 混用。
 
-| 路径 | 锁与并发行为 | 统计分类 |
-| --- | --- | --- |
-| 本 CPU Slab alloc/free | CPU-local `SpinNoIrq<SlabAllocator>` | `Normal × RustHeap` |
-| Slab 扩容/归还 | 短时进入全局 `SpinNoIrq<BuddyAllocator>` | `Normal × RustHeap` 的请求字节数 |
-| 跨 CPU Slab free | CAS 压入 owner slab page 的 remote-free stack | 释放仍归原 byte allocation |
-| 大对象 alloc/free | 全局 `SpinNoIrq<BuddyAllocator>` | `Normal × RustHeap` |
-
-Remote free 不是单独 allocator 或固定容量 manager。释放对象自身保存链表节点，owner CPU 在后续分配或回收 Slab 时通过 Acquire/Release 操作 drain 该栈。
+本 CPU 命中、Slab 扩容、跨 CPU 释放和大对象路径都计入 `Normal × RustHeap`。跨 CPU 释放只把对象发布给原 owner CPU，不直接操作 Buddy；锁类型、禁止抢占范围、remote-free 原子顺序和锁顺序统一在[内存管理锁与并发](./concurrency.md#3-运行时分配器)维护。
 
 ## 3. 显式页接口
 
@@ -270,41 +263,11 @@ Buddy、Slab、统计和所有权代码在 x86_64、AArch64、RISC-V 64 与 Loon
 
 这些差异不会产生四套 allocator。若物理地址转换错误，Dma32 筛选和 section metadata 地址都会错误，应修复平台转换，而不是在 Buddy 中增加架构条件分支。
 
-## 6. 源码入口
-
-allocator 的公共契约、实现和底层算法分属三个集中位置。修改时应保持公共类型不泄露底层 Buddy/Slab 内部结构。
-
-### 6.1 公共接口文件
-
-下面的文件决定消费者可见行为。API 或 feature 改动必须同步更新对应组件文档。
-
-| 源码 | 关键内容 |
-| --- | --- |
-| `memory/ax-alloc/src/lib.rs` | zone、request、usage、source、stats、typed error |
-| `memory/ax-alloc/src/page.rs` | `GlobalPage` 和 Drop |
-| `memory/ax-alloc/src/buddy_slab.rs` | 公共 wrapper、统计、per-CPU Slab 接线 |
-
-上层 crate 应依赖 `ax-alloc`，不应直接依赖 `buddy-slab-allocator` 的 `BuddyAllocator`、`SlabAllocator` 或 metadata 类型。
-
-### 6.2 底层实现文件
-
-底层 crate 负责 allocator 算法，不负责 OS policy。性能回归通常应先定位是 Buddy、Slab 还是平台内存交接问题。
-
-| 源码 | 关键内容 |
-| --- | --- |
-| `memory/buddy-slab-allocator/src/global.rs` | Buddy + Slab 选择、section 添加、large alloc |
-| `memory/buddy-slab-allocator/src/buddy/mod.rs` | 多 section Buddy、lowmem filter、合并与拆分 |
-| `memory/buddy-slab-allocator/src/slab/size_class.rs` | 九个固定 size class |
-| `memory/buddy-slab-allocator/src/slab/page.rs` | bitmap、owner CPU、remote-free CAS stack |
-| `memory/buddy-slab-allocator/src/slab/cache.rs` | partial/full Slab 和 remote drain |
-
-默认优化顺序是先预分配固定池、减少 实时/中断请求动态分配并测量 Buddy 锁，再决定是否需要有限的 per-CPU order-0 cache。当前实现没有该 page cache，也不应在没有基准证据时添加。
-
-## 7. 分配计算实例
+## 6. 分配计算实例
 
 运行时分配器的可用容量、内部碎片和地址约束都可以从输入 region 与 `PageRequest` 直接计算。下面的实例对应 `buddy-slab-allocator` 当前 4 KiB page、2 MiB managed-heap 对齐和固定 size class 实现。
 
-### 7.1 区段前缀计算
+### 6.1 区段前缀计算
 
 在 64-bit 目标上，假设平台交接一个完整的 `0x4000_0000..0x4400_0000` 64 MiB region。当前 `BuddySection` 为 8 字节对齐，`PageMeta` 由编译期断言固定为 12 字节；`compute_region_layout_with_heap_align()` 用二分搜索求 metadata 与 managed pages 同时可容纳的最大页数。
 
@@ -334,7 +297,7 @@ while low < high {
 
 这个二分过程位于 `BuddySection::compute_region_layout_with_heap_align()`。它先验证 region 末地址和 metadata 乘法不溢出，再保证最终 `managed_heap_start + managed_heap_size` 不超过原 region。
 
-### 7.2 连续页请求取整
+### 6.2 连续页请求取整
 
 Buddy 按 order 分配，`count` 不是 2 的幂时会提升到 `count.next_power_of_two()`。例如请求 3 个连续页、8 KiB 对齐时，算法实际寻找 order 2 的 4 页 block。
 
@@ -358,7 +321,7 @@ cost:    Buddy占用四页，产生一页内部碎片
 
 高阶连续请求频繁出现时，优先检查设备或 Guest 接口是否真正要求物理连续；不要求连续的对象应保存页列表，而不是扩大 Buddy 或加入 compaction。
 
-### 7.3 小对象选择实例
+### 6.3 小对象选择实例
 
 byte allocation 先比较 `Layout::size()` 和 `Layout::align()` 是否都不超过 2048。size class 取能够覆盖 layout 的最小固定档，首次缺页才进入 Buddy。
 
@@ -387,7 +350,7 @@ match pool.alloc(layout)? {
 
 这里两次获取 Buddy 锁是有意缩短临界区；`pool.add_slab()` 不在全局 Buddy lock 内执行。首次 class 扩容仍可能失败，所以中断请求/实时 路径不能把“per-CPU Slab”误解为无条件、无界延迟的固定池。
 
-### 7.4 地址约束与所有权
+### 6.4 地址约束与所有权
 
 一个 32-bit DMA 设备申请 16 KiB、16 KiB 对齐 buffer 时，runtime adapter 构造 `PageRequest { count: 4, align: 0x4000, zone: Dma32 }` 并使用 `UsageKind::Dma`。Buddy 只接受最后一个 byte 仍低于 `0x1_0000_0000` 的 block。
 

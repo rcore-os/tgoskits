@@ -94,22 +94,7 @@ alloc_pages
 
 ### 3.2 每 CPU Slab 与禁止抢占
 
-字节分配在 `ax-alloc/src/buddy_slab.rs` 中先创建 `NoPreempt` guard，再通过 `with_cpu_pin` 获取当前 CPU 的 Slab。guard 覆盖整个上游操作，包括 Slab miss 后申请 Buddy backing 页的过程，防止任务在持有 CPU-local 指针时迁移。
-
-```rust
-pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
-    let _guard = NoPreempt::new();
-    let result = self.inner.alloc(layout).map_err(crate::AllocError::from);
-    if result.is_ok() {
-        self.stats.alloc(
-            AllocationSource::Normal,
-            UsageKind::RustHeap,
-            layout.size(),
-        );
-    }
-    result
-}
-```
+字节分配在 `ax-alloc/src/buddy_slab.rs` 中先创建 `NoPreempt` guard，再通过 `with_cpu_pin` 获取当前 CPU 的 Slab。具体 allocation 代码只在[运行时页与堆分配器](./runtime-allocator.md#33-页所有权)展示；本章只定义并发条件：guard 必须覆盖 Slab lookup、可能发生的 Buddy backing allocation 和统计更新，防止任务持有 CPU-local 指针时迁移。
 
 锁顺序是“固定当前 CPU → 本 CPU Slab → 必要时短时 Buddy”。Buddy 实现不反向获取某个 CPU 的 Slab 锁；这样避免 `Buddy → Slab` 与 `Slab → Buddy` 形成环。
 

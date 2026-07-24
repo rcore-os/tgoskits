@@ -371,19 +371,7 @@ flowchart LR
 
 ### 8.2 页帧来源交接
 
-`PageFrameProvider` 的核心接口只暴露 frame allocation、释放和物理到虚拟转换。页表算法既不知道 `MemoryZone`，也不知道 boot bump 或 Guest owner。
-
-```rust
-pub trait PageFrameProvider: Clone + Sync + Send + 'static {
-    const FRAME_SIZE: usize = PAGE_SIZE_4K;
-
-    fn alloc_frame(&self) -> Option<PhysAddr>;
-    fn dealloc_frame(&self, paddr: PhysAddr);
-    fn alloc_frames(&self, count: usize, align: usize) -> Option<PhysAddr>;
-    fn dealloc_frames(&self, start: PhysAddr, count: usize);
-    fn phys_to_virt(&self, paddr: PhysAddr) -> VirtAddr;
-}
-```
+`PageFrameProvider` 的接口已在 2.1 节定义，本节只比较不同实现的所有权结果。页表算法既不知道 `MemoryZone`，也不知道 boot bump 或 Guest owner。
 
 三个典型 provider 对同一个“需要一页 L1 table”的请求有不同所有权结果。
 

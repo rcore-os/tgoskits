@@ -42,16 +42,9 @@ metadata-only 方法只用于已经由专用路径移动或分离页表项的调
 
 ### 1.3 架构边界
 
-`MemorySet` 的区间计划和事务协议不包含架构分支。架构差异由 backend 使用的页表类型、页尺寸和 `TlbInvalidator` 注入；同一个跨虚拟内存区域操作在四个架构上必须具有相同的全成或回滚语义。
+`MemorySet` 的区间计划和事务协议不包含架构分支。架构差异由 backend 使用的页表类型、实际 `PageSize` 和 `TlbInvalidator` 注入；x86_64、RISC-V 与 LoongArch64 的本地失效需要上层远程协调，AArch64 则保持硬件广播要求的屏障顺序。完整页表几何和失效指令见[多架构内存实现](./architecture-support.md)。
 
-| 架构 | 常用第一阶段几何 | 地址转换缓存失效 | 对事务层的影响 |
-| --- | --- | --- | --- |
-| x86_64 | 4 级、4 KiB/2 MiB/1 GiB | 默认本地，远端由处理器间中断 | finalize 前等待远端失效后才能释放旧页 |
-| AArch64 | 4 级、page/block descriptor | inner-shareable 硬件广播 | commit 保持 DSB/TLBI/DSB/ISB 顺序 |
-| RISC-V 64 | Sv39 或 Sv48 | 默认本地 `sfence.vma` | 多 hart 地址空间由上层发送远程 fence |
-| LoongArch64 | 4 级、PGDL/PGDH | 默认本地 `invtlb` | 用户/内核半区选择正确页表根并远端失效 |
-
-事务层不能假定所有旧映射都是 4 KiB。backend 保存 undo 状态时应使用 `query()` 返回的实际页尺寸，避免把大页展开为数百万条基础页快照。
+无论使用哪种架构，跨虚拟内存区域操作都必须全成或回滚。backend 保存 undo 状态时使用 `query()` 返回的实际页尺寸，不能假定全部旧映射都是 4 KiB，也不能把大页展开为数百万条基础页快照。
 
 ## 2. 映射后端协议
 
@@ -273,6 +266,8 @@ Starry backend 的 `commit()` 允许具体 backend 返回 `AxError`，但在向 
 公共容器和三个策略消费者共同构成当前地址空间实现。修改 `MappingBackend` trait 时必须逐个迁移实现，不得通过 alias 或 wrapper 引入第二事务协议；完整故障注入矩阵集中在[内存管理测试与验收](./testing.md)。
 
 ### 8.1 源码检查点
+
+事务容器、三类 backend 和页表 owner 分布在下列文件中。修改 trait 时应沿该清单检查每个实现是否仍保持相同 prepare、commit、rollback 和 finalize 契约。
 
 | 源码 | 审计重点 |
 | --- | --- |

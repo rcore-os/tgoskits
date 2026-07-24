@@ -45,16 +45,9 @@ flowchart TB
 
 ### 1.3 架构差异
 
-栈的 owner 与分配来源跨架构一致，差异集中在入口汇编使用的栈寄存器、内核虚拟窗口和 guard page 的远程失效方式。
+栈的 owner 与分配来源跨架构一致，架构入口仅负责把栈顶写入本架构栈寄存器并跳转：x86_64 使用 `rsp`，AArch64 和 RISC-V 使用 `sp`，LoongArch64 使用 `$sp`。启动 entry 必须在进入 Rust 前满足相应调用约定的栈对齐，栈 owner 不保存架构私有寄存器状态。
 
-| 架构 | 切换栈的入口行为 | 启动栈地址 | guard page 解除映射后的失效 |
-| --- | --- | --- | --- |
-| x86_64 | 写 `rsp`、清零 `rbp` 后跳转 | 重定位前可使用恒等地址，最终使用内核/per-CPU 窗口 | 默认本地失效，多 CPU 由处理器间中断补齐 |
-| AArch64 | 写 `sp` 后 `br` 到入口 | RAM 经 `PAGE_OFFSET`，每 CPU 区有独立高地址偏移 | inner-shareable TLBI 硬件广播 |
-| RISC-V 64 | 写 `sp` 后 `jr` 到入口 | 线性映射或重定位后的 per-CPU 窗口 | 默认 `sfence.vma` 仅本地，多 hart 远程 fence |
-| LoongArch64 | 写 `$sp` 后跳转 | 直接映射窗口规范化后的内核地址 | 默认 `invtlb` 仅本地，多 CPU 由上层协调 |
-
-各架构的启动 entry 必须在进入 Rust 前满足栈对齐约定。栈 owner 不保存架构私有寄存器状态；页表与失效差异通过地址空间和 `TlbInvalidator` 处理。
+Guard page 的区别来自地址转换缓存失效：AArch64 使用 inner-shareable 硬件广播，x86_64、RISC-V 和 LoongArch64 的默认实现只处理本地 CPU，需要上层远程失效。地址窗口和指令细节统一见[多架构内存实现](./architecture-support.md)，本章后续只说明栈特有的 owner 和 guard 时序。
 
 ## 2. CPU0 启动栈
 
