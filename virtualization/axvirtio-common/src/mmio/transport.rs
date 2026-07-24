@@ -1,5 +1,5 @@
 /// MMIO transport layer utilities
-use axaddrspace::{GuestPhysAddr, device::AccessWidth};
+use axvm_types::{AccessWidth, GuestPhysAddr};
 
 use crate::{VIRTIO_MMIO_CONFIG_OFFSET, VirtioResult, error::VirtioError};
 

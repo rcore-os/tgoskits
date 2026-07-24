@@ -1,7 +1,9 @@
 mod device;
 use alloc::sync::Arc;
-use axaddrspace::{GuestMemoryAccessor, GuestPhysAddr};
+
+use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::{VirtioError, VirtioResult};
+use axvm_types::GuestPhysAddr;
 pub use device::VirtioMmioBlockDevice;
 
 /// VirtIO block request header structure

@@ -1,5 +1,6 @@
+use axvm_types::GuestPhysAddr;
+
 use crate::{VirtioDeviceID, constants::*};
-use axaddrspace::GuestPhysAddr;
 /// Configuration for VirtIO devices with device index mapping
 #[derive(Debug, Clone)]
 pub struct VirtioConfig {

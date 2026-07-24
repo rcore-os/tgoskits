@@ -3,15 +3,15 @@
 //! This module contains tests for the VirtIO block device implementation,
 //! including backend operations, configuration, request types, and MMIO device.
 
-use axaddrspace::{GuestMemoryAccessor, GuestPhysAddr};
-use axerrno::AxError;
-use axvirtio_blk::{BlockBackend, VirtioBlockConfig, VirtioMmioBlockDevice, VirtioResult};
-use memory_addr::PhysAddr;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
-// Alias to match the trait's expected error type
-type AxErrorKind = AxError;
+use ax_memory_addr::PhysAddr;
+use axaddrspace::{AddrSpaceError, AddrSpaceResult, GuestMemoryAccessor};
+use axvirtio_blk::{BlockBackend, VirtioBlockConfig, VirtioMmioBlockDevice, VirtioResult};
+use axvm_types::GuestPhysAddr;
 
 // ============================================================================
 // Mock Implementations
@@ -79,7 +79,7 @@ impl BlockBackend for MockBlockBackend {
         }
 
         // Validate sector range
-        let sectors_needed = (buffer.len() + self.sector_size - 1) / self.sector_size;
+        let sectors_needed = buffer.len().div_ceil(self.sector_size);
         if sector + sectors_needed as u64 > self.capacity {
             return Err(axvirtio_blk::VirtioError::InvalidSector);
         }
@@ -117,7 +117,7 @@ impl BlockBackend for MockBlockBackend {
         }
 
         // Validate sector range
-        let sectors_needed = (buffer.len() + self.sector_size - 1) / self.sector_size;
+        let sectors_needed = buffer.len().div_ceil(self.sector_size);
         if sector + sectors_needed as u64 > self.capacity {
             return Err(axvirtio_blk::VirtioError::InvalidSector);
         }
@@ -205,25 +205,29 @@ impl GuestMemoryAccessor for MockGuestMemoryAccessor {
         }
     }
 
-    fn read_buffer(&self, guest_addr: GuestPhysAddr, buffer: &mut [u8]) -> Result<(), AxErrorKind> {
+    fn read_buffer(&self, guest_addr: GuestPhysAddr, buffer: &mut [u8]) -> AddrSpaceResult<()> {
         let offset = guest_addr.as_usize();
         let memory = self.memory.read().unwrap();
         if offset + buffer.len() <= memory.len() {
             buffer.copy_from_slice(&memory[offset..offset + buffer.len()]);
             Ok(())
         } else {
-            Err(AxErrorKind::InvalidInput)
+            Err(AddrSpaceError::Unmapped {
+                address: guest_addr,
+            })
         }
     }
 
-    fn write_buffer(&self, guest_addr: GuestPhysAddr, buffer: &[u8]) -> Result<(), AxErrorKind> {
+    fn write_buffer(&self, guest_addr: GuestPhysAddr, buffer: &[u8]) -> AddrSpaceResult<()> {
         let offset = guest_addr.as_usize();
         let mut memory = self.memory.write().unwrap();
         if offset + buffer.len() <= memory.len() {
             memory[offset..offset + buffer.len()].copy_from_slice(buffer);
             Ok(())
         } else {
-            Err(AxErrorKind::InvalidInput)
+            Err(AddrSpaceError::Unmapped {
+                address: guest_addr,
+            })
         }
     }
 }
@@ -493,8 +497,9 @@ mod memory_accessor_tests {
 // ============================================================================
 
 mod mmio_device_tests {
+    use axvm_types::AccessWidth;
+
     use super::*;
-    use axaddrspace::device::AccessWidth;
 
     const VIRTIO_MMIO_MAGIC_VALUE: u32 = 0x000;
     const VIRTIO_MMIO_VERSION: u32 = 0x004;
@@ -698,8 +703,9 @@ mod mmio_device_tests {
 // ============================================================================
 
 mod integration_tests {
+    use axvm_types::AccessWidth;
+
     use super::*;
-    use axaddrspace::device::AccessWidth;
 
     /// Simulates a simple driver initialization sequence
     #[test]
@@ -713,7 +719,7 @@ mod integration_tests {
             VirtioMmioBlockDevice::new(base_ipa, 0x200, backend, config, accessor).unwrap();
 
         // Step 1: Verify magic value
-        let magic_addr = GuestPhysAddr::from(base_ipa.as_usize() + 0x000);
+        let magic_addr = base_ipa;
         let magic = device.mmio_read(magic_addr, AccessWidth::Dword).unwrap();
         assert_eq!(magic as u32, 0x74726976);
 

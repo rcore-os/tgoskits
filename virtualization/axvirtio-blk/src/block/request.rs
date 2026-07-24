@@ -1,8 +1,10 @@
-use crate::backend::BlockBackend;
-use crate::constants::*;
 use alloc::{sync::Arc, vec::Vec};
-use axaddrspace::{GuestMemoryAccessor, GuestPhysAddr};
+
+use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::{VirtioError, VirtioResult};
+use axvm_types::GuestPhysAddr;
+
+use crate::{backend::BlockBackend, constants::*};
 
 /// Block request types
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,9 +58,9 @@ pub enum DataSource {
 #[derive(Debug, Clone, Copy)]
 pub enum BlockRequestResult {
     /// Request completed successfully
-    Ok = VIRTIO_BLK_S_OK,
+    Ok          = VIRTIO_BLK_S_OK,
     /// I/O error occurred
-    IoError = VIRTIO_BLK_S_IOERR,
+    IoError     = VIRTIO_BLK_S_IOERR,
     /// Unsupported request type
     Unsupported = VIRTIO_BLK_S_UNSUPP,
 }

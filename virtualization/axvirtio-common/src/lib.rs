@@ -23,9 +23,8 @@ pub mod queue;
 
 /// Re-export commonly used types
 pub use config::VirtioConfig;
+/// Re-export commonly used constants
+pub use constants::*;
 pub use device_type::VirtioDeviceID;
 pub use error::{VirtioError, VirtioResult};
 pub use queue::VirtioQueue;
-
-/// Re-export commonly used constants
-pub use constants::*;

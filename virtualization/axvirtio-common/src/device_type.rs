@@ -12,7 +12,7 @@ pub enum VirtioDeviceID {
     Network = 1,
 
     /// Block device
-    Block = 2,
+    Block   = 2,
 
     /// Console device
     Console = 3,

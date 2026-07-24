@@ -1,8 +1,13 @@
-use crate::error::{VirtioError, VirtioResult};
-use crate::{VirtioDeviceID, constants::*};
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use axaddrspace::{GuestMemoryAccessor, GuestPhysAddr};
+use alloc::{sync::Arc, vec::Vec};
+
+use axaddrspace::GuestMemoryAccessor;
+use axvm_types::GuestPhysAddr;
+
+use crate::{
+    VirtioDeviceID,
+    constants::*,
+    error::{VirtioError, VirtioResult},
+};
 
 /// VirtIO queue descriptor structure.
 ///
@@ -303,9 +308,11 @@ impl<T: GuestMemoryAccessor + Clone> DescriptorTable<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec;
-    use memory_addr::PhysAddr;
+
+    use ax_memory_addr::PhysAddr;
+
+    use super::*;
 
     #[derive(Clone)]
     struct TestTranslator {

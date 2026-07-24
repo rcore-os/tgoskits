@@ -1,16 +1,18 @@
 use alloc::{sync::Arc, vec::Vec};
-use axaddrspace::GuestMemoryAccessor;
-use axaddrspace::{GuestPhysAddr, device::AccessWidth};
 
-use axvirtio_common::mmio::transport;
+use axaddrspace::GuestMemoryAccessor;
+use axvirtio_common::{
+    VirtioConfig, VirtioDeviceID, VirtioError, VirtioQueue, VirtioResult, mmio::transport,
+};
+use axvm_types::{AccessWidth, GuestPhysAddr};
 use spin::Mutex;
 
-use crate::block::BlockRequest;
-use crate::block::config::VirtioBlockConfig;
-use crate::block::request::BlockRequestResult;
-use crate::constants::*;
-use crate::{backend::BlockBackend, mmio::VirtioBlockHeader};
-use axvirtio_common::{VirtioConfig, VirtioDeviceID, VirtioError, VirtioQueue, VirtioResult};
+use crate::{
+    backend::BlockBackend,
+    block::{BlockRequest, config::VirtioBlockConfig, request::BlockRequestResult},
+    constants::*,
+    mmio::VirtioBlockHeader,
+};
 
 /// VirtIO MMIO Block Device
 ///
@@ -750,8 +752,8 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
 
         // Read from block device configuration based on VirtIO specification layout
         let value = match offset {
-            VIRTIO_BLK_CFG_CAPACITY_LOW => self.block_config.capacity as u32, // capacity (low 32 bits)
-            VIRTIO_BLK_CFG_CAPACITY_HIGH => (self.block_config.capacity >> 32) as u32, // capacity (high 32 bits)
+            VIRTIO_BLK_CFG_CAPACITY_LOW => self.block_config.capacity as u32, /* capacity (low 32 bits) */
+            VIRTIO_BLK_CFG_CAPACITY_HIGH => (self.block_config.capacity >> 32) as u32, /* capacity (high 32 bits) */
             VIRTIO_BLK_CFG_SIZE_MAX => self.block_config.size_max,                     // size_max
             VIRTIO_BLK_CFG_SEG_MAX => self.block_config.seg_max,                       // seg_max
             VIRTIO_BLK_CFG_GEOMETRY => {
@@ -761,8 +763,8 @@ impl<B: BlockBackend, T: GuestMemoryAccessor + Clone> VirtioMmioBlockDevice<B, T
                     | ((self.block_config.sectors as u32) << 24)
             }
             VIRTIO_BLK_CFG_BLK_SIZE => self.block_config.blk_size, // blk_size
-            VIRTIO_BLK_CFG_PHYSICAL_BLOCK_EXP => self.block_config.physical_block_exp as u32, // physical_block_exp
-            VIRTIO_BLK_CFG_ALIGNMENT_OFFSET => self.block_config.alignment_offset as u32, // alignment_offset
+            VIRTIO_BLK_CFG_PHYSICAL_BLOCK_EXP => self.block_config.physical_block_exp as u32, /* physical_block_exp */
+            VIRTIO_BLK_CFG_ALIGNMENT_OFFSET => self.block_config.alignment_offset as u32, /* alignment_offset */
             VIRTIO_BLK_CFG_MIN_IO_SIZE => self.block_config.min_io_size as u32, // min_io_size
             VIRTIO_BLK_CFG_OPT_IO_SIZE => self.block_config.opt_io_size,        // opt_io_size
             _ => {

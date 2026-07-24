@@ -2,7 +2,11 @@ mod available;
 mod descriptor;
 mod used;
 
+use alloc::{sync::Arc, vec::Vec};
+
 pub use available::{AvailableRing, VirtQueueAvail};
+use axaddrspace::GuestMemoryAccessor;
+use axvm_types::GuestPhysAddr;
 pub use descriptor::{DescriptorTable, VirtQueueDesc};
 use log::trace;
 pub use used::{UsedRing, VirtQueueUsed, VirtqUsedElem};
@@ -11,8 +15,6 @@ use crate::{
     VirtioDeviceID,
     error::{VirtioError, VirtioResult},
 };
-use alloc::{sync::Arc, vec::Vec};
-use axaddrspace::{GuestMemoryAccessor, GuestPhysAddr};
 
 /// VirtIO queue implementation
 #[derive(Debug, Clone)]
@@ -243,7 +245,7 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
         &self,
         head_index: u16,
         device_type: VirtioDeviceID,
-    ) -> VirtioResult<Vec<(axaddrspace::GuestPhysAddr, usize, bool)>> {
+    ) -> VirtioResult<Vec<(GuestPhysAddr, usize, bool)>> {
         if let Some(ref desc_table) = self.desc_table {
             desc_table.get_data_buffers(head_index, device_type)
         } else {
@@ -252,7 +254,7 @@ impl<T: GuestMemoryAccessor + Clone> VirtioQueue<T> {
     }
 
     /// Get status address from descriptor chain
-    pub fn get_status_addr(&self, head_index: u16) -> VirtioResult<axaddrspace::GuestPhysAddr> {
+    pub fn get_status_addr(&self, head_index: u16) -> VirtioResult<GuestPhysAddr> {
         if let Some(ref desc_table) = self.desc_table {
             desc_table.get_status_addr(head_index)
         } else {

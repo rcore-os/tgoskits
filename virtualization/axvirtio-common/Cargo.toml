@@ -1,21 +1,19 @@
 [package]
 name = "axvirtio-common"
-version.workspace = true
-authors.workspace = true
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
+version = "0.1.0"
 edition.workspace = true
+authors = ["Debin <luodeb@outlook.com>"]
+license.workspace = true
+repository.workspace = true
 description = "Common types, traits, and utilities for VirtIO device implementations"
 keywords = ["virtio", "hypervisor", "no_std", "arceos"]
 categories = ["no-std", "embedded", "hardware-support"]
-readme = "../README.md"
 
 [dependencies]
-axaddrspace = { workspace = true }
-memory_addr = "0.4.0"
-spin = "0.10.0"
-log = "0.4"
+axaddrspace.workspace = true
+axvm-types.workspace = true
+spin.workspace = true
+log.workspace = true
 
-[features]
-default = []
+[dev-dependencies]
+ax-memory-addr.workspace = true

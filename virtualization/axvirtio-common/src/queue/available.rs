@@ -1,8 +1,12 @@
-use crate::constants::*;
-use crate::error::{VirtioError, VirtioResult};
 use alloc::sync::Arc;
+
 use axaddrspace::GuestMemoryAccessor;
-use axaddrspace::GuestPhysAddr;
+use axvm_types::GuestPhysAddr;
+
+use crate::{
+    constants::*,
+    error::{VirtioError, VirtioResult},
+};
 
 /// VirtIO available ring header structure.
 ///
