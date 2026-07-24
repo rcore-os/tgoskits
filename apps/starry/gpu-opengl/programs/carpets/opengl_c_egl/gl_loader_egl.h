@@ -1,0 +1,42 @@
+// GL 4.3 compute entry-point loader via eglGetProcAddress (desktop GL through EGL, no GLEW).
+// libGL exports only up to GL 1.2 symbols directly; the compute-shader / SSBO / dispatch
+// entry points must be resolved at runtime from the current EGL desktop-GL context.
+#ifndef GL_LOADER_EGL_H
+#define GL_LOADER_EGL_H
+#include <EGL/egl.h>
+#include <GL/glcorearb.h>
+#define GLPROCS(X) \
+  X(PFNGLCREATESHADERPROC,glCreateShader) X(PFNGLSHADERSOURCEPROC,glShaderSource) \
+  X(PFNGLCOMPILESHADERPROC,glCompileShader) X(PFNGLGETSHADERIVPROC,glGetShaderiv) \
+  X(PFNGLGETSHADERINFOLOGPROC,glGetShaderInfoLog) X(PFNGLCREATEPROGRAMPROC,glCreateProgram) \
+  X(PFNGLATTACHSHADERPROC,glAttachShader) X(PFNGLLINKPROGRAMPROC,glLinkProgram) \
+  X(PFNGLGETPROGRAMIVPROC,glGetProgramiv) X(PFNGLGETPROGRAMINFOLOGPROC,glGetProgramInfoLog) \
+  X(PFNGLUSEPROGRAMPROC,glUseProgram) \
+  X(PFNGLDELETESHADERPROC,glDeleteShader) X(PFNGLDELETEPROGRAMPROC,glDeleteProgram) \
+  X(PFNGLGENBUFFERSPROC,glGenBuffers) X(PFNGLBINDBUFFERPROC,glBindBuffer) \
+  X(PFNGLBUFFERDATAPROC,glBufferData) X(PFNGLBUFFERSUBDATAPROC,glBufferSubData) \
+  X(PFNGLBINDBUFFERBASEPROC,glBindBufferBase) X(PFNGLMAPBUFFERRANGEPROC,glMapBufferRange) \
+  X(PFNGLUNMAPBUFFERPROC,glUnmapBuffer) X(PFNGLGETBUFFERSUBDATAPROC,glGetBufferSubData) \
+  X(PFNGLDELETEBUFFERSPROC,glDeleteBuffers) X(PFNGLDISPATCHCOMPUTEPROC,glDispatchCompute) \
+  X(PFNGLMEMORYBARRIERPROC,glMemoryBarrier) X(PFNGLGETUNIFORMLOCATIONPROC,glGetUniformLocation) \
+  X(PFNGLUNIFORM1FPROC,glUniform1f) X(PFNGLUNIFORM1UIPROC,glUniform1ui) \
+  X(PFNGLGETINTEGERI_VPROC,glGetIntegeri_v) X(PFNGLBINDBUFFERRANGEPROC,glBindBufferRange) \
+  X(PFNGLCOPYBUFFERSUBDATAPROC,glCopyBufferSubData) X(PFNGLCLEARBUFFERDATAPROC,glClearBufferData) \
+  X(PFNGLGETBUFFERPARAMETERIVPROC,glGetBufferParameteriv) X(PFNGLSHADERSTORAGEBLOCKBINDINGPROC,glShaderStorageBlockBinding) \
+  X(PFNGLGETPROGRAMRESOURCEINDEXPROC,glGetProgramResourceIndex) X(PFNGLGETPROGRAMINTERFACEIVPROC,glGetProgramInterfaceiv) \
+  X(PFNGLGETPROGRAMRESOURCEIVPROC,glGetProgramResourceiv) X(PFNGLGETPROGRAMRESOURCENAMEPROC,glGetProgramResourceName) \
+  X(PFNGLDISPATCHCOMPUTEINDIRECTPROC,glDispatchComputeIndirect) X(PFNGLBUFFERSTORAGEPROC,glBufferStorage) \
+  X(PFNGLFLUSHMAPPEDBUFFERRANGEPROC,glFlushMappedBufferRange) \
+  X(PFNGLFENCESYNCPROC,glFenceSync) X(PFNGLCLIENTWAITSYNCPROC,glClientWaitSync) \
+  X(PFNGLWAITSYNCPROC,glWaitSync) X(PFNGLDELETESYNCPROC,glDeleteSync) X(PFNGLGETSYNCIVPROC,glGetSynciv) \
+  X(PFNGLGENQUERIESPROC,glGenQueries) X(PFNGLDELETEQUERIESPROC,glDeleteQueries) \
+  X(PFNGLQUERYCOUNTERPROC,glQueryCounter) X(PFNGLGETQUERYOBJECTUI64VPROC,glGetQueryObjectui64v) \
+  X(PFNGLGETQUERYOBJECTIVPROC,glGetQueryObjectiv) X(PFNGLGETINTEGER64VPROC,glGetInteger64v) \
+  X(PFNGLGETUNIFORMFVPROC,glGetUniformfv)
+#define DECL(t,n) static t n;
+GLPROCS(DECL)
+static int gl_load(void){ int ok=1;
+#define LOAD(t,n) n=(t)eglGetProcAddress(#n); if(!n) ok=0;
+  GLPROCS(LOAD)
+  return ok; }
+#endif

@@ -1,0 +1,19 @@
+# gpu-opengl x86_64 - desktop-OpenGL compute carpet on Mesa llvmpipe (the CPU software GL driver over
+# the LLVM JIT, reached through surfaceless EGL). Provisioned from Alpine edge as musl packages
+# (mesa-gl + mesa-egl + mesa-dri-gallium); no host GPU. -cpu Haswell exposes AVX2 + XSAVE to userspace
+# (llvmpipe's LLVM JIT dispatches to AVX2); the kernel CR4.OSXSAVE + XCR0 enable lives in dev. -smp 1:
+# single vCPU, so llvmpipe runs every workgroup on one thread. 4096M: the llvmpipe LLVM JIT + device
+# buffers are heap-heavy.
+args = [
+    "-nographic", "-cpu", "Haswell", "-m", "4096M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-x86_64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = false
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 9000
