@@ -5,6 +5,10 @@ use rdrive::probe::OnProbeError;
 mod cmos;
 #[cfg(axtest)]
 pub(crate) use self::cmos::cmos_register_constants_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::cmos::cmos_io_struct_and_constants_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::cmos::cmos_register_edge_cases_hold_for_test;
 #[cfg(any(test, target_arch = "x86_64"))]
 mod cmos_decode;
 #[cfg(any(

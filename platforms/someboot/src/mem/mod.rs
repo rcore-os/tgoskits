@@ -301,3 +301,28 @@ mod tests {
         assert_eq!(cache_line_range(usize::MAX, 2, 64), None);
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn mem_constants_and_types_hold_for_test() -> bool {
+    // Test memory constants
+    assert_eq!(KB, 1024);
+    assert_eq!(MB, 1024 * 1024);
+    assert_eq!(GB, 1024 * 1024 * 1024);
+    assert_eq!(KIMAGE_MAP_ALIGN, 2 * MB);
+    
+    // Test MemoryMap capacity
+    assert_eq!(MEMORY_MAP_CAPACITY, 512);
+    
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) fn mem_byte_unit_types_hold_for_test() -> bool {
+    // Test byte_unit types exist
+    use byte_unit::{Byte, UnitType};
+    
+    // Test that Byte can be created
+    let _byte = Byte::from_u64(1024);
+    
+    true
+}

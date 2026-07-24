@@ -133,3 +133,15 @@ pub fn memory_addr_page_size_constants_hold() -> bool {
     
     true
 }
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub fn memory_addr_align_4k_helpers_hold() -> bool {
+    // Test 4K-specific alignment helpers
+    assert!(align_down_4k(0x12345) == 0x12000);
+    assert!(align_up_4k(0x12345) == 0x13000);
+    assert!(align_offset_4k(0x12345) == 0x345);
+    assert!(is_aligned_4k(0x12000));
+    assert!(!is_aligned_4k(0x12001));
+    
+    true
+}

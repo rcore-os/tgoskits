@@ -388,3 +388,35 @@ fn ax_net_device_defaults_report_no_deferred_work_or_readiness() {
     ax_assert_eq!(entry.ip_addr, [192, 168, 1, 1]);
     ax_assert_eq!(entry.device, "eth0");
 }
+
+#[axtest]
+fn ax_net_interface_flags_hold() {
+    use crate::InterfaceFlags;
+    
+    let flags = InterfaceFlags::empty();
+    ax_assert!(flags.is_empty());
+    
+    let up = InterfaceFlags::UP;
+    ax_assert!(!up.is_empty());
+    
+    let combined = up | InterfaceFlags::RUNNING;
+    ax_assert!(combined.contains(InterfaceFlags::UP));
+    ax_assert!(combined.contains(InterfaceFlags::RUNNING));
+}
+
+#[axtest]
+fn ax_net_route_info_hold() {
+    use crate::RouteInfo;
+    
+    // Test RouteInfo construction
+    let route = RouteInfo {
+        filter: IpCidr::Ipv4(Ipv4Cidr::new(Ipv4Address::new(192, 168, 1, 0), 24)),
+        via: Some(IpAddress::Ipv4(Ipv4Address::new(192, 168, 1, 1))),
+        interface_id: InterfaceId::new(1),
+        source: IpAddress::Ipv4(Ipv4Address::new(10, 0, 0, 1)),
+        metric: 100,
+    };
+    
+    ax_assert_eq!(route.metric, 100);
+    ax_assert_eq!(route.interface_id.get(), 1);
+}

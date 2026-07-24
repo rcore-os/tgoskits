@@ -244,3 +244,6 @@ pub(crate) fn bpf_unknown_command_is_invalid_for_test() -> bool {
 
 #[cfg(axtest)]
 pub(crate) use self::error::bpf_error_adapter_rules_hold_for_test;
+
+#[cfg(axtest)]
+pub(crate) use self::error::bpf_error_more_variants_and_edge_cases_hold_for_test;

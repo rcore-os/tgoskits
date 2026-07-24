@@ -296,3 +296,6 @@ impl<const PAGE_SIZE: usize, const N: usize> SlabPoolTrait for StaticSlabPool<PA
         &self.slabs[cpu_idx]
     }
 }
+
+#[cfg(axtest)]
+pub(crate) use page::slab_page_constants_and_header_helpers_hold_for_test;

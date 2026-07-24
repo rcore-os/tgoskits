@@ -5,6 +5,9 @@ pub mod sync;
 pub mod task;
 pub mod time;
 
+#[cfg(axtest)]
+pub(crate) use self::irq::block_irq_outcome_and_ready_hold_for_test;
+
 pub use dma::{dma_op, has_dma_op, install_dma_op};
 pub use irq::{
     BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, has_irq_registrar,

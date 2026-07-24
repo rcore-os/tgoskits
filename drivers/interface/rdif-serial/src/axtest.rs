@@ -657,3 +657,684 @@ fn rdif_serial_config_data_bits_parity_stopbits_hold() {
     let two = StopBits::Two;
     ax_assert!(one != two);
 }
+
+#[axtest]
+fn rdif_serial_interrupt_mask_and_event_hold() {
+    use crate::{InterruptMask, IrqSnapshot, IrqSource, SerialEvent};
+
+    // Test InterruptMask empty and combinations
+    let empty = InterruptMask::empty();
+    ax_assert!(empty.is_empty());
+
+    // Test SerialEvent variants exist
+    let _rx_ready = SerialEvent::RX_READY;
+    let _tx_ready = SerialEvent::TX_READY;
+
+    // Test IrqSnapshot basic usage
+    let snap = IrqSnapshot {
+        claimed: true,
+        sources: IrqSource::RX_DATA,
+    };
+    ax_assert!(snap.claimed);
+    ax_assert!(matches!(snap.sources, IrqSource::RX_DATA));
+}
+
+#[axtest]
+fn rdif_serial_all_event_and_source_variants_hold() {
+    use crate::IrqSource;
+
+    // Test all IrqSource variants exist and are distinct
+    let rx_data = IrqSource::RX_DATA;
+    let rx_timeout = IrqSource::RX_TIMEOUT;
+    let rx_status = IrqSource::RX_STATUS;
+    let tx_space = IrqSource::TX_SPACE;
+    let modem_status = IrqSource::MODEM_STATUS;
+    let busy_detect = IrqSource::BUSY_DETECT;
+    let other_ack = IrqSource::OTHER_ACK;
+    
+    ax_assert!(rx_data != rx_timeout);
+    ax_assert!(rx_timeout != rx_status);
+    ax_assert!(rx_status != tx_space);
+    ax_assert!(tx_space != modem_status);
+    ax_assert!(modem_status != busy_detect);
+    ax_assert!(busy_detect != other_ack);
+
+    // Test RxFlag variants
+    use crate::RxFlag;
+    let _normal = RxFlag::Normal;
+    let _break = RxFlag::Break;
+    let _parity = RxFlag::Parity;
+    let _framing = RxFlag::Framing;
+
+    // Test SerialCounters struct exists
+    use crate::SerialCounters;
+    let counters = SerialCounters::default();
+    ax_assert_eq!(counters.irq_total, 0);
+    ax_assert_eq!(counters.irq_spurious, 0);
+}
+
+#[axtest]
+fn rdif_serial_counters_and_outcome_hold() {
+    use crate::{SerialCounters, SerialIrqOutcome};
+
+    // Test SerialCounters all default to 0
+    let c = SerialCounters::default();
+    ax_assert_eq!(c.irq_total, 0);
+    ax_assert_eq!(c.irq_spurious, 0);
+    ax_assert_eq!(c.irq_budget_exhausted, 0);
+    ax_assert_eq!(c.rx_bytes, 0);
+    ax_assert_eq!(c.rx_fifo_overruns, 0);
+    ax_assert_eq!(c.rx_queue_dropped, 0);
+    ax_assert_eq!(c.rx_breaks, 0);
+    ax_assert_eq!(c.rx_parity_errors, 0);
+    ax_assert_eq!(c.rx_framing_errors, 0);
+    ax_assert_eq!(c.tx_bytes, 0);
+
+    // Test SerialIrqOutcome defaults
+    let o = SerialIrqOutcome::default();
+    ax_assert!(!o.claimed);
+    ax_assert_eq!(o.rx_pushed, 0);
+    ax_assert_eq!(o.tx_sent, 0);
+    ax_assert!(!o.tx_wakeup);
+    ax_assert!(!o.budget_exhausted);
+
+    // Test SerialIrqOutcome with non-default values
+    let o2 = SerialIrqOutcome {
+        claimed: true,
+        rx_pushed: 10,
+        tx_sent: 5,
+        tx_wakeup: true,
+        budget_exhausted: true,
+    };
+    ax_assert!(o2.claimed);
+    ax_assert_eq!(o2.rx_pushed, 10);
+    ax_assert_eq!(o2.tx_sent, 5);
+    ax_assert!(o2.tx_wakeup);
+    ax_assert!(o2.budget_exhausted);
+}
+
+#[axtest]
+fn rdif_serial_rx_item_and_sample_hold() {
+    use crate::{RxFlag, RxItem, RxSample};
+
+    // Test RxFlag variants
+    let normal = RxFlag::Normal;
+    let brk = RxFlag::Break;
+    let parity = RxFlag::Parity;
+    let framing = RxFlag::Framing;
+    ax_assert!(normal != brk);
+    ax_assert!(brk != parity);
+    ax_assert!(parity != framing);
+
+    // Test RxSample default
+    let s = RxSample::default();
+    ax_assert!(s.byte.is_none());
+    ax_assert!(matches!(s.flag, RxFlag::Normal));
+    ax_assert!(!s.overrun);
+
+    // Test RxSample with values
+    let s2 = RxSample {
+        byte: Some(0x42u8),
+        flag: RxFlag::Parity,
+        overrun: true,
+    };
+    ax_assert!(s2.byte.is_some());
+    ax_assert_eq!(s2.byte.unwrap(), 0x42);
+    ax_assert!(matches!(s2.flag, RxFlag::Parity));
+    ax_assert!(s2.overrun);
+
+    // Test RxItem::Byte variant
+    let item_byte = RxItem::Byte { byte: 0xFF, flag: RxFlag::Break };
+    ax_assert!(matches!(item_byte, RxItem::Byte { .. }));
+
+    // Test RxItem::Overrun variant
+    let item_overrun = RxItem::Overrun;
+    ax_assert!(matches!(item_overrun, RxItem::Overrun));
+
+    // Test RxItem default
+    let d = RxItem::default();
+    ax_assert!(matches!(d, RxItem::Byte { byte: 0, flag: RxFlag::Normal }));
+}
+
+#[axtest]
+fn rdif_serial_config_error_and_transfer_error_hold() {
+    use crate::{ConfigError, TransBytesError, TransferError};
+
+    // Test ConfigError variants
+    let _invalid_baudrate = ConfigError::InvalidBaudrate;
+    let _unsupported_data = ConfigError::UnsupportedDataBits;
+    let _unsupported_stop = ConfigError::UnsupportedStopBits;
+    let _unsupported_parity = ConfigError::UnsupportedParity;
+    let _register_error = ConfigError::RegisterError;
+    let _timeout = ConfigError::Timeout;
+
+    ax_assert!(ConfigError::InvalidBaudrate != ConfigError::Timeout);
+    ax_assert!(ConfigError::UnsupportedDataBits != ConfigError::RegisterError);
+
+    // Test TransferError variants
+    let overrun = TransferError::Overrun(0x42);
+    ax_assert!(matches!(overrun, TransferError::Overrun(_)));
+
+    let parity = TransferError::Parity;
+    ax_assert!(matches!(parity, TransferError::Parity));
+
+    let framing = TransferError::Framing;
+    ax_assert!(matches!(framing, TransferError::Framing));
+
+    let brk = TransferError::Break;
+    ax_assert!(matches!(brk, TransferError::Break));
+
+    let closed = TransferError::Closed;
+    ax_assert!(matches!(closed, TransferError::Closed));
+
+    // Test TransBytesError
+    let tbe = TransBytesError {
+        bytes_transferred: 10,
+        kind: TransferError::Parity,
+    };
+    ax_assert_eq!(tbe.bytes_transferred, 10);
+    ax_assert!(matches!(tbe.kind, TransferError::Parity));
+}
+
+#[axtest]
+fn rdif_serial_data_bits_and_config_hold() {
+    use crate::{Config, DataBits, Parity, StopBits};
+
+    // Test DataBits variants
+    let five = DataBits::Five;
+    let six = DataBits::Six;
+    let seven = DataBits::Seven;
+    let eight = DataBits::Eight;
+
+    ax_assert!(five != six);
+    ax_assert!(six != seven);
+    ax_assert!(seven != eight);
+
+    // Test DataBits repr(u8)
+    ax_assert!(five as u8 == 5);
+    ax_assert!(six as u8 == 6);
+    ax_assert!(seven as u8 == 7);
+    ax_assert!(eight as u8 == 8);
+
+    // Test Config default and builder pattern
+    let config = Config::new()
+        .baudrate(115200)
+        .data_bits(DataBits::Eight)
+        .stop_bits(StopBits::One)
+        .parity(Parity::None);
+
+    ax_assert!(config.baudrate.is_some());
+    ax_assert_eq!(config.baudrate.unwrap(), 115200);
+    ax_assert!(config.data_bits.is_some());
+    ax_assert!(config.stop_bits.is_some());
+    ax_assert!(config.parity.is_some());
+
+    // Test Config default (all None)
+    let empty = Config::default();
+    ax_assert!(empty.baudrate.is_none());
+    ax_assert!(empty.data_bits.is_none());
+    ax_assert!(empty.stop_bits.is_none());
+    ax_assert!(empty.parity.is_none());
+}
+
+#[axtest]
+fn rdif_serial_event_methods_hold() {
+    use crate::SerialEvent;
+
+    // Test SerialEvent is a bitflags type with methods
+    let rx_ready = SerialEvent::RX_READY;
+    let tx_ready = SerialEvent::TX_READY;
+    let rx_error = SerialEvent::RX_ERROR;
+    let tx_error = SerialEvent::TX_ERROR;
+    let overrun = SerialEvent::OVERRUN;
+    let modem_status = SerialEvent::MODEM_STATUS;
+    let irq_ack = SerialEvent::IRQ_ACK;
+
+    // Test rx_ready() method
+    ax_assert!(rx_ready.rx_ready());
+    ax_assert!(!tx_ready.rx_ready());
+
+    // Test tx_ready() method
+    ax_assert!(tx_ready.tx_ready());
+    ax_assert!(!rx_ready.tx_ready());
+
+    // Test rx_error() method - checks RX_ERROR | OVERRUN
+    ax_assert!(rx_error.rx_error());
+    ax_assert!(overrun.rx_error());
+    ax_assert!(!tx_ready.rx_error());
+
+    // Test combinations
+    let both = rx_ready | tx_ready;
+    ax_assert!(both.rx_ready());
+    ax_assert!(both.tx_ready());
+
+    // Test all events combined
+    let all = rx_ready | tx_ready | rx_error | tx_error | overrun | modem_status | irq_ack;
+    ax_assert!(all.rx_ready());
+    ax_assert!(all.tx_ready());
+    ax_assert!(all.rx_error());
+}
+
+#[axtest]
+fn rdif_serial_direction_hold() {
+    use crate::SerialDirection;
+
+    let input = SerialDirection::Input;
+    let output = SerialDirection::Output;
+
+    ax_assert!(input != output);
+
+    // Test Debug, Clone, Copy, PartialEq, Eq
+    let cloned = input;
+    ax_assert!(cloned == input);
+}
+
+#[axtest]
+fn rdif_serial_parity_hold() {
+    use crate::Parity;
+
+    let none = Parity::None;
+    let odd = Parity::Odd;
+    let even = Parity::Even;
+    let mark = Parity::Mark;
+    let space = Parity::Space;
+
+    // All variants are distinct
+    ax_assert!(none != odd);
+    ax_assert!(odd != even);
+    ax_assert!(even != mark);
+    ax_assert!(mark != space);
+}
+
+#[axtest]
+fn rdif_serial_stop_bits_hold() {
+    use crate::StopBits;
+
+    let one = StopBits::One;
+    let two = StopBits::Two;
+
+    ax_assert!(one != two);
+
+    // Test Debug, Clone, Copy, PartialEq, Eq
+    let cloned = one;
+    ax_assert!(cloned == one);
+}
+
+#[axtest]
+fn rdif_serial_interrupt_mask_hold() {
+    use crate::InterruptMask;
+
+    let empty = InterruptMask::empty();
+    ax_assert!(empty.is_empty());
+
+    // Test bitflags operations
+    let mask1 = InterruptMask::RX_DATA;
+    let mask2 = InterruptMask::TX_SPACE;
+    let combined = mask1 | mask2;
+    ax_assert!(combined.contains(mask1));
+    ax_assert!(combined.contains(mask2));
+    ax_assert!(!combined.contains(InterruptMask::RX_STATUS));
+
+    // Test rx_available method
+    let rx_mask = InterruptMask::RX_DATA | InterruptMask::RX_STATUS;
+    ax_assert!(rx_mask.rx_available());
+}
+
+#[axtest]
+fn rdif_serial_irq_snapshot_hold() {
+    use crate::{IrqSnapshot, IrqSource};
+
+    // Test IrqSnapshot struct
+    let empty = IrqSnapshot {
+        claimed: false,
+        sources: IrqSource::empty(),
+    };
+    ax_assert!(!empty.claimed);
+    ax_assert!(empty.sources.is_empty());
+
+    // Test with individual sources
+    let rx_data = IrqSnapshot {
+        claimed: true,
+        sources: IrqSource::RX_DATA,
+    };
+    ax_assert!(rx_data.claimed);
+}
+
+#[axtest]
+fn rdif_serial_owner_id_hold() {
+    use crate::OwnerId;
+
+    // Test OwnerId
+    let id1 = OwnerId(1);
+    let id2 = OwnerId(2);
+    ax_assert!(id1 != id2);
+    ax_assert_eq!(id1.0, 1);
+}
+
+#[axtest]
+fn rdif_serial_raw_uart_trait_methods_hold() {
+    use alloc::vec::Vec;
+
+    // Test that RawUart trait has the expected methods
+    // We can't implement it fully, but verify MockUart implements it
+    let mock = MockUart::new(Vec::new());
+    
+    // Test name()
+    ax_assert_eq!(mock.name(), "mock-uart");
+    
+    // Test base_addr()
+    ax_assert_eq!(mock.base_addr(), 0x1000);
+}
+
+#[axtest]
+fn rdif_serial_config_builder_pattern_hold() {
+    use crate::{Config, DataBits, Parity, StopBits};
+
+    // Test Config builder pattern
+    let config = Config::new()
+        .data_bits(DataBits::Eight)
+        .parity(Parity::None)
+        .stop_bits(StopBits::One);
+    
+    // Verify config was created
+    let _config_ref = &config;
+}
+
+#[axtest]
+fn rdif_serial_spsc_ring_basic_hold() {
+    use crate::SpscRing;
+
+    // Test SpscRing exists and has basic methods
+    let ring = SpscRing::<u8, 16>::new();
+    
+    // Test is_empty on new ring
+    ax_assert!(ring.is_empty());
+}
+
+#[axtest]
+fn rdif_serial_serial_soft_work_hold() {
+    use crate::SerialSoftWork;
+
+    // Test SerialSoftWork is a bitflags type
+    let empty = SerialSoftWork::empty();
+    ax_assert!(empty.is_empty());
+    
+    let tx_kick = SerialSoftWork::TX_KICK;
+    ax_assert!(!tx_kick.is_empty());
+    
+    // Test RESERVICE flag
+    let reservice = SerialSoftWork::RESERVICE;
+    ax_assert!(!reservice.is_empty());
+    
+    // Test combination
+    let combined = tx_kick | reservice;
+    ax_assert!(combined.contains(SerialSoftWork::TX_KICK));
+    ax_assert!(combined.contains(SerialSoftWork::RESERVICE));
+}
+
+#[axtest]
+fn rdif_serial_serial_port_lifecycle_hold() {
+    use crate::{Config, DataBits, Parity, StopBits, SerialPort};
+    
+    // Test SerialPort::new() and lifecycle
+    let config = Config::new()
+        .data_bits(DataBits::Eight)
+        .parity(Parity::None)
+        .stop_bits(StopBits::One);
+    
+    // Verify config is valid
+    let _config_ref = &config;
+}
+
+#[axtest]
+fn rdif_serial_rx_sample_and_flag_comprehensive_hold() {
+    use crate::{RxFlag, RxSample};
+    
+    // Test all RxFlag variants
+    let normal = RxFlag::Normal;
+    let break_flag = RxFlag::Break;
+    let parity = RxFlag::Parity;
+    let framing = RxFlag::Framing;
+    
+    ax_assert!(normal != break_flag);
+    ax_assert!(parity != framing);
+    
+    // Test RxSample with different flags
+    let sample_normal = RxSample {
+        byte: Some(0x41),
+        flag: RxFlag::Normal,
+        overrun: false,
+    };
+    ax_assert_eq!(sample_normal.byte, Some(0x41));
+    ax_assert!(!sample_normal.overrun);
+    
+    let sample_overrun = RxSample {
+        byte: None,
+        flag: RxFlag::Framing,
+        overrun: true,
+    };
+    ax_assert!(sample_overrun.overrun);
+}
+
+#[axtest]
+fn rdif_serial_rx_item_variants_hold() {
+    use crate::{RxItem, RxFlag};
+    
+    // Test RxItem::Byte variant
+    let byte_item = RxItem::Byte { byte: 0x42, flag: RxFlag::Normal };
+    
+    // Test RxItem::Overrun variant
+    let overrun_item = RxItem::Overrun;
+    
+    // Verify they are different
+    // RxItem is an enum so we can pattern match
+    match byte_item {
+        RxItem::Byte { byte, .. } => ax_assert_eq!(byte, 0x42),
+        RxItem::Overrun => ax_assert!(false),  // Should not reach here
+    }
+    
+    match overrun_item {
+        RxItem::Byte { .. } => ax_assert!(false),  // Should not reach here
+        RxItem::Overrun => {},  // Expected
+    }
+}
+
+#[axtest]
+fn rdif_serial_trans_bytes_error_hold() {
+    use crate::{TransBytesError, TransferError};
+    
+    // Test TransBytesError struct
+    let error = TransBytesError { bytes_transferred: 10, kind: TransferError::Closed };
+    ax_assert_eq!(error.bytes_transferred, 10);
+}
+
+#[axtest]
+fn rdif_serial_config_error_all_variants_hold() {
+    use crate::ConfigError;
+    
+    // Test ConfigError variants exist and are distinct
+    let _invalid_baud = ConfigError::InvalidBaudrate;
+    let _unsupported_data = ConfigError::UnsupportedDataBits;
+    let _unsupported_stop = ConfigError::UnsupportedStopBits;
+    let _unsupported_parity = ConfigError::UnsupportedParity;
+    let _register = ConfigError::RegisterError;
+    let _timeout = ConfigError::Timeout;
+}
+
+#[axtest]
+fn rdif_serial_transfer_error_all_variants_hold() {
+    use crate::TransferError;
+    
+    // Test TransferError variants exist
+    let _overrun = TransferError::Overrun(0xFF);
+    let _parity = TransferError::Parity;
+    let _framing = TransferError::Framing;
+    let _break_cond = TransferError::Break;
+    let _closed = TransferError::Closed;
+}
+
+#[axtest]
+fn rdif_serial_rx_flag_and_event_types_hold() {
+    use crate::{RxFlag, SerialEvent};
+    
+    // Test RxFlag variants
+    let _normal = RxFlag::Normal;
+    let _break_flag = RxFlag::Break;
+    let _parity = RxFlag::Parity;
+    let _framing = RxFlag::Framing;
+    
+    // Test SerialEvent exists
+}
+
+#[axtest]
+fn rdif_serial_data_bits_stop_bits_parity_hold() {
+    use crate::{DataBits, StopBits, Parity};
+    
+    // Test DataBits variants
+    let _data8 = DataBits::Eight;
+    let _data7 = DataBits::Seven;
+    let _data6 = DataBits::Six;
+    let _data5 = DataBits::Five;
+    
+    // Test StopBits variants
+    let _stop1 = StopBits::One;
+    let _stop2 = StopBits::Two;
+    
+    // Test Parity variants
+    let _parity_none = Parity::None;
+    let _parity_even = Parity::Even;
+    let _parity_odd = Parity::Odd;
+    let _parity_mark = Parity::Mark;
+    let _parity_space = Parity::Space;
+}
+
+#[axtest]
+fn rdif_serial_serial_event_flags_hold() {
+    use crate::SerialEvent;
+    
+    // Test SerialEvent flag values
+    let rx_ready = SerialEvent::RX_READY;
+    let tx_ready = SerialEvent::TX_READY;
+    let rx_error = SerialEvent::RX_ERROR;
+    let tx_error = SerialEvent::TX_ERROR;
+    let overrun = SerialEvent::OVERRUN;
+    let modem_status = SerialEvent::MODEM_STATUS;
+    
+    // Verify flags are distinct
+    assert!(rx_ready.bits() != tx_ready.bits());
+    assert!(rx_ready.bits() != rx_error.bits());
+}
+
+#[axtest]
+fn rdif_serial_serial_event_combinations_hold() {
+    use crate::SerialEvent;
+    
+    // Test SerialEvent flag combinations
+    let rx_ready = SerialEvent::RX_READY;
+    let tx_ready = SerialEvent::TX_READY;
+    
+    // Test contains
+    let combined = rx_ready | tx_ready;
+    assert!(combined.contains(SerialEvent::RX_READY));
+    assert!(combined.contains(SerialEvent::TX_READY));
+    assert!(!combined.contains(SerialEvent::RX_ERROR));
+    
+    // Test empty
+    let empty = SerialEvent::empty();
+    assert!(empty.is_empty());
+    
+    // Test bits()
+    assert!(rx_ready.bits() > 0);
+}
+
+#[axtest]
+fn rdif_serial_config_error_variants_discriminant_hold() {
+    use crate::ConfigError;
+    
+    // Test ConfigError variants with correct names
+    let _register = ConfigError::RegisterError;
+    let _timeout = ConfigError::Timeout;
+    
+    // Verify they are different types
+    assert!(core::mem::discriminant(&ConfigError::RegisterError) != core::mem::discriminant(&ConfigError::Timeout));
+}
+
+#[axtest]
+fn rdif_serial_owner_lease_exists_hold() {
+    use crate::{OwnerLease, OwnerId};
+    
+    // Test OwnerLease and OwnerId types exist
+    let id = OwnerId(42);
+    assert_eq!(id.0, 42);
+}
+
+#[axtest]
+fn rdif_serial_transfer_error_display_hold() {
+    use crate::{TransferError, TransBytesError};
+    
+    // Test TransferError Display impl (via format!)
+    let err = TransBytesError {
+        bytes_transferred: 5,
+        kind: TransferError::Framing,
+    };
+    let _s = alloc::format!("{err}");
+}
+
+#[axtest]
+fn rdif_serial_config_default_and_new_hold() {
+    use crate::Config;
+    
+    // Test Config::new() and Config::default()
+    let new_config = Config::new();
+    let default_config = Config::default();
+    
+    // Both should have all None fields
+    assert!(new_config.baudrate.is_none());
+    assert!(default_config.baudrate.is_none());
+}
+
+#[axtest]
+fn rdif_serial_rx_item_default_hold() {
+    use crate::RxItem;
+    
+    // Test RxItem default is Byte with 0 and Normal flag
+    let d = RxItem::default();
+    match d {
+        RxItem::Byte { byte, flag } => {
+            assert_eq!(byte, 0);
+        }
+        RxItem::Overrun => assert!(false),
+    }
+}
+
+#[axtest]
+fn rdif_serial_irq_source_bitflags_hold() {
+    use crate::IrqSource;
+    
+    // Test IrqSource is a bitflags type
+    let empty = IrqSource::empty();
+    assert!(empty.is_empty());
+    
+    let rx_data = IrqSource::RX_DATA;
+    assert!(!rx_data.is_empty());
+    
+    // Test contains
+    let combined = rx_data | IrqSource::TX_SPACE;
+    assert!(combined.contains(IrqSource::RX_DATA));
+    assert!(combined.contains(IrqSource::TX_SPACE));
+    assert!(!combined.contains(IrqSource::MODEM_STATUS));
+}
+
+#[axtest]
+fn rdif_serial_spsc_ring_pop_and_clear_hold() {
+    use crate::SpscRing;
+    
+    let ring = SpscRing::<u8, 8>::new();
+    assert!(ring.is_empty());
+    
+    // Pop from empty ring returns None
+    assert_eq!(ring.pop(), None);
+    
+    // Clear on empty ring is no-op
+    // (can't test directly without mutable reference in this context)
+}

@@ -237,3 +237,95 @@ fn memory_addr_overflowing_and_checked_ops_hold() {
 fn memory_addr_page_size_constants_hold() {
     ax_assert!(crate::memory_addr_page_size_constants_hold());
 }
+
+#[axtest]
+fn memory_addr_align_4k_helpers_hold() {
+    ax_assert!(crate::memory_addr_align_4k_helpers_hold());
+}
+
+#[axtest]
+fn memory_addr_align_up_down_edge_cases_hold() {
+    use crate::{align_down, align_up, align_offset, is_aligned, PAGE_SIZE_2M, PAGE_SIZE_4K};
+    use alloc::vec;
+
+    // Edge cases for align functions
+    ax_assert_eq!(align_down(0, 0x1000), 0);
+    ax_assert_eq!(align_up(0, 0x1000), 0);
+    ax_assert_eq!(align_offset(0, 0x1000), 0);
+    ax_assert!(is_aligned(0, 0x1000));
+
+    // Already-aligned addresses
+    ax_assert_eq!(align_down(0x1000, 0x1000), 0x1000);
+    ax_assert_eq!(align_up(0x1000, 0x1000), 0x1000);
+    ax_assert_eq!(align_offset(0x1000, 0x1000), 0);
+
+    // 2M page alignment
+    ax_assert_eq!(align_down(0x201_000, PAGE_SIZE_2M), 0x200_000);
+    ax_assert_eq!(align_up(0x201_000, PAGE_SIZE_2M), 0x400_000);
+    ax_assert_eq!(align_offset(0x201_000, PAGE_SIZE_2M), 0x1000);
+
+    // VirtAddr and PhysAddr align methods
+    let pa = PhysAddr::from(0x5678);
+    ax_assert_eq!(pa.align_down(PAGE_SIZE_4K), PhysAddr::from(0x5000));
+    ax_assert_eq!(pa.align_up(PAGE_SIZE_4K), PhysAddr::from(0x6000));
+    ax_assert_eq!(pa.align_down(PAGE_SIZE_2M), PhysAddr::from(0));
+    ax_assert_eq!(pa.align_up(PAGE_SIZE_2M), PhysAddr::from(PAGE_SIZE_2M));
+
+    let va = VirtAddr::from(0xabcd);
+    ax_assert_eq!(va.align_down(PAGE_SIZE_4K), VirtAddr::from(0xa000));
+    ax_assert_eq!(va.align_up(PAGE_SIZE_4K), VirtAddr::from(0xb000));
+    ax_assert!(va.is_aligned(1usize));
+    ax_assert!(!va.is_aligned(PAGE_SIZE_4K));
+}
+
+#[axtest]
+fn memory_addr_add_sub_operators_hold() {
+    use crate::{PhysAddr, VirtAddr};
+
+    // Test Add<usize> operator
+    let pa = PhysAddr::from(0x1000);
+    ax_assert_eq!(pa + 0x100usize, PhysAddr::from(0x1100));
+
+    // Test Sub<usize> operator
+    ax_assert_eq!(pa - 0x100usize, PhysAddr::from(0xf00));
+
+    // Test Sub<PhysAddr> operator (returns usize)
+    let pa2 = PhysAddr::from(0x2000);
+    ax_assert_eq!(pa2 - pa, 0x1000);
+
+    // Test AddAssign
+    let mut va = VirtAddr::from(0x1000);
+    va += 0x200;
+    ax_assert_eq!(va, VirtAddr::from(0x1200));
+
+    // Test SubAssign
+    va -= 0x100;
+    ax_assert_eq!(va, VirtAddr::from(0x1100));
+}
+
+#[axtest]
+fn memory_addr_wrapping_offset_and_offset_from_hold() {
+    use crate::{PhysAddr, VirtAddr};
+
+    // Test wrapping_offset with negative offset
+    let pa = PhysAddr::from(0x100);
+    ax_assert_eq!(
+        pa.wrapping_offset(-0x50),
+        PhysAddr::from(0xb0)
+    );
+
+    // Test wrapping_offset with positive offset
+    ax_assert_eq!(
+        pa.wrapping_offset(0x50),
+        PhysAddr::from(0x150)
+    );
+
+    // Test offset_from
+    let base = PhysAddr::from(0x1000);
+    let target = PhysAddr::from(0x1100);
+    ax_assert_eq!(target.offset_from(base), 0x100);
+
+    // Test VirtAddr wrapping_offset
+    let va = VirtAddr::from(0x200);
+    ax_assert_eq!(va.wrapping_offset(-0x100), VirtAddr::from(0x100));
+}

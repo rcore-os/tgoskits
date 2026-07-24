@@ -5546,6 +5546,7 @@ dependencies = [
 name = "pcie"
 version = "0.6.7"
 dependencies = [
+ "axtest",
  "bit_field",
  "bitflags 2.13.1",
  "fdt-edit",

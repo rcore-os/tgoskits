@@ -78,3 +78,23 @@ fn scope_local_active_scope_switching_rules_hold() {
 fn scope_local_boxed_layout_rules_hold() {
     ax_assert!(crate::boxed::boxed_layout_rules_hold_for_test());
 }
+
+#[axtest]
+fn scope_local_boxed_layout_more_edge_cases_hold() {
+    ax_assert!(crate::boxed::boxed_layout_more_edge_cases_hold_for_test());
+}
+
+#[axtest]
+fn scope_local_boxed_layout_comprehensive_hold() {
+    ax_assert!(crate::boxed::boxed_layout_comprehensive_hold_for_test());
+}
+
+#[axtest]
+fn scope_local_boxed_header_size_and_alignment_hold() {
+    ax_assert!(crate::boxed::boxed_header_size_and_alignment_hold_for_test());
+}
+
+#[axtest]
+fn scope_local_boxed_layout_alignment_edge_cases_hold() {
+    ax_assert!(crate::boxed::boxed_layout_alignment_edge_cases_hold_for_test());
+}

@@ -121,3 +121,50 @@ pub(crate) fn cmos_register_constants_hold_for_test() -> bool {
     
     true
 }
+
+#[cfg(axtest)]
+pub(crate) fn cmos_io_struct_and_constants_hold_for_test() -> bool {
+    // Test X86CmosIo::new creates a valid struct
+    let io = X86CmosIo::new(0x70);
+    assert!(io.index_port == 0x70);
+    
+    let io2 = X86CmosIo::new(0x72);
+    assert!(io2.index_port == 0x72);
+    
+    // Verify REG_A_UIP is bit 7 of REG_A
+    assert!(REG_A_UIP == (1 << 7));
+    
+    // Register address ordering
+    assert!(REG_SECONDS < REG_MINUTES);
+    assert!(REG_MINUTES < REG_HOURS);
+    assert!(REG_HOURS < REG_DAY_OF_MONTH);
+    assert!(REG_DAY_OF_MONTH < REG_MONTH);
+    assert!(REG_MONTH < REG_YEAR);
+    assert!(REG_YEAR < REG_CENTURY);
+    
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) fn cmos_register_edge_cases_hold_for_test() -> bool {
+    // Test specific register values
+    assert_eq!(REG_SECONDS, 0x00);
+    assert_eq!(REG_MINUTES, 0x02);
+    assert_eq!(REG_HOURS, 0x04);
+    assert_eq!(REG_DAY_OF_MONTH, 0x07);
+    assert_eq!(REG_MONTH, 0x08);
+    assert_eq!(REG_YEAR, 0x09);
+    assert_eq!(REG_CENTURY, 0x32);
+    assert_eq!(REG_B, 0x0b);
+    assert_eq!(REG_A, 0x0a);
+    
+    // Test that register addresses are reasonable (0-127 for CMOS)
+    assert!(REG_SECONDS <= 127);
+    assert!(REG_CENTURY <= 127);
+    
+    // Test REG_A_UIP is the high bit
+    assert!(REG_A_UIP == 0x80);
+    assert!(REG_A_UIP > REG_A);
+    
+    true
+}

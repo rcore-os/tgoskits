@@ -12,6 +12,11 @@ fn bpf_error_adapter_rules_hold() {
 }
 
 #[axtest]
+fn bpf_error_more_variants_and_edge_cases_hold() {
+    ax_assert!(axtest_exports::bpf_error_more_variants_and_edge_cases_hold());
+}
+
+#[axtest]
 fn posix_timer_clock_validation_rules_hold() {
     ax_assert!(axtest_exports::posix_timer_clock_validation_rules_hold());
 }
@@ -288,4 +293,9 @@ fn seccomp_bpf_constants_hold() {
 #[axtest]
 fn rss_kind_and_accounting_rules_hold() {
     ax_assert!(axtest_exports::rss_kind_and_accounting_rules_hold());
+}
+
+#[axtest]
+fn accounting_rss_kind_debug_and_default_hold() {
+    ax_assert!(axtest_exports::accounting_rss_kind_debug_and_default_hold());
 }

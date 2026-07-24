@@ -358,3 +358,12 @@ mod tests {
         );
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn pci_constants_hold_for_test() -> bool {
+    // Test PCI constants
+    assert_eq!(MAX_DEVICE, 31);
+    assert_eq!(MAX_FUNCTION, 7);
+    
+    true
+}

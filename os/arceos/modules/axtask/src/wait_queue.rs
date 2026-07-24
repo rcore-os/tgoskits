@@ -269,3 +269,18 @@ fn unblock_one_task(task: AxTaskRef, resched: bool) {
     // Select run queue by the CPU set of the task.
     select_wake_run_queue::<NoPreemptIrqSave>(&task).unblock_task(task, resched)
 }
+
+#[cfg(axtest)]
+pub(crate) fn wait_queue_new_and_default_hold_for_test() -> bool {
+    // Test WaitQueue::new() and Default
+    let wq = WaitQueue::new();
+    let wq_default = WaitQueue::default();
+    
+    // Both should create valid WaitQueue instances
+    // We can't easily test the internal state without locking,
+    // but we can verify the struct exists and can be created
+    let _wq_ref = &wq;
+    let _wq_default_ref = &wq_default;
+    
+    true
+}

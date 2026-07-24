@@ -40,3 +40,41 @@ pub(crate) fn bpf_error_adapter_rules_hold_for_test() -> bool {
 
     r1_matches && r2_matches && ok_ok && err_is_perm
 }
+
+#[cfg(axtest)]
+pub(crate) fn bpf_error_more_variants_and_edge_cases_hold_for_test() -> bool {
+    // Test more BpfError variants mapping through bpf_err_to_ax
+    let e2big: AxError = bpf_err_to_ax(kbpf_basic::BpfError::E2BIG);
+    assert!(e2big == AxError::from(ax_errno::LinuxError::E2BIG));
+
+    let enoent: AxError = bpf_err_to_ax(kbpf_basic::BpfError::ENOENT);
+    assert!(enoent == AxError::from(ax_errno::LinuxError::ENOENT));
+
+    let einval: AxError = bpf_err_to_ax(kbpf_basic::BpfError::EINVAL);
+    assert!(einval == AxError::from(ax_errno::LinuxError::EINVAL));
+
+    // Test BpfResultExt with different types
+    let ok_u8: kbpf_basic::BpfResult<u8> = Ok(255u8);
+    assert!(ok_u8.into_ax_result().unwrap() == 255);
+
+    let ok_i64: kbpf_basic::BpfResult<i64> = Ok(-1i64);
+    assert!(ok_i64.into_ax_result().unwrap() == -1);
+
+    let ok_unit: kbpf_basic::BpfResult<()> = Ok(());
+    assert!(ok_unit.into_ax_result().is_ok());
+
+    // More error variants
+    let eacces: AxError = bpf_err_to_ax(kbpf_basic::BpfError::EACCES);
+    assert!(eacces == AxError::from(ax_errno::LinuxError::EACCES));
+
+    let efault: AxError = bpf_err_to_ax(kbpf_basic::BpfError::EFAULT);
+    assert!(efault == AxError::from(ax_errno::LinuxError::EFAULT));
+
+    let enomem: AxError = bpf_err_to_ax(kbpf_basic::BpfError::ENOMEM);
+    assert!(enomem == AxError::from(ax_errno::LinuxError::ENOMEM));
+
+    let nosys: AxError = bpf_err_to_ax(kbpf_basic::BpfError::ENOSYS);
+    assert!(nosys == AxError::from(ax_errno::LinuxError::ENOSYS));
+
+    true
+}

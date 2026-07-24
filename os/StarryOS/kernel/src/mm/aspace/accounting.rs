@@ -527,3 +527,26 @@ pub(crate) fn rss_kind_and_accounting_rules_hold_for_test() -> bool {
     
     true
 }
+
+#[cfg(axtest)]
+pub(crate) fn accounting_rss_kind_debug_and_default_hold_for_test() -> bool {
+    // Test MemoryAccounting default trait
+    let acc_default = MemoryAccounting::default();
+    assert_eq!(acc_default.rss_anon_pages(), 0);
+    assert_eq!(acc_default.rss_file_pages(), 0);
+    assert_eq!(acc_default.rss_shmem_pages(), 0);
+    assert_eq!(acc_default.rss_total_pages(), 0);
+    
+    // Test individual rss getters
+    let acc_new = MemoryAccounting::new();
+    assert_eq!(acc_new.rss_anon_pages(), 0);
+    assert_eq!(acc_new.rss_file_pages(), 0);
+    assert_eq!(acc_new.rss_shmem_pages(), 0);
+    
+    // Test RssKind Copy trait
+    let anon = RssKind::Anon;
+    let copied = anon;
+    assert_eq!(anon, copied);
+    
+    true
+}

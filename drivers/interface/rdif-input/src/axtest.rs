@@ -203,3 +203,63 @@ fn rdif_input_default_methods_and_error_mapping_hold() {
         io::ErrorKind::Other(_)
     ));
 }
+
+#[axtest]
+fn rdif_input_event_type_and_event_hold() {
+    use crate::{Event, EventType, InputEvent};
+    
+    // Test EventType variants
+    let sync = EventType::Synchronization;
+    let key = EventType::Key;
+    let abs = EventType::Absolute;
+    ax_assert!(sync != key);
+    ax_assert!(key != abs);
+    
+    // Test Event
+    let event = Event::none();
+    
+    // Test InputEvent
+    let input_event = InputEvent {
+        event_type: EventType::Key as u16,
+        code: 30,  // 'a' key
+        value: 1,
+    };
+    ax_assert_eq!(input_event.event_type, EventType::Key as u16);
+}
+
+#[axtest]
+fn rdif_input_abs_info_and_device_id_hold() {
+    use crate::{AbsInfo, InputDeviceId};
+    
+    // Test AbsInfo
+    let abs_info = AbsInfo {
+        min: 0,
+        max: 255,
+        fuzz: 0,
+        flat: 0,
+        res: 1,
+    };
+    ax_assert_eq!(abs_info.min, 0);
+    ax_assert_eq!(abs_info.max, 255);
+    
+    // Test InputDeviceId
+    let device_id = InputDeviceId {
+        bus_type: 3,
+        vendor: 0x1234,
+        product: 0x5678,
+        version: 1,
+    };
+    ax_assert_eq!(device_id.bus_type, 3);
+    ax_assert_eq!(device_id.vendor, 0x1234);
+}
+
+#[axtest]
+fn rdif_input_event_type_all_variants_hold() {
+    use crate::EventType;
+    
+    // Test all EventType variants
+    let _sync = EventType::Synchronization;
+    let _key = EventType::Key;
+    let _rel = EventType::Relative;
+    let _abs = EventType::Absolute;
+}

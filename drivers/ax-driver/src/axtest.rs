@@ -123,3 +123,15 @@ fn ax_driver_error_conversions_preserve_driver_and_probe_categories() {
 fn ax_driver_cmos_register_constants_hold() {
     ax_assert!(crate::time::cmos_register_constants_hold_for_test());
 }
+
+#[cfg(target_arch = "x86_64")]
+#[axtest]
+fn ax_driver_cmos_io_struct_and_constants_hold() {
+    ax_assert!(crate::time::cmos_io_struct_and_constants_hold_for_test());
+}
+
+#[cfg(target_arch = "x86_64")]
+#[axtest]
+fn ax_driver_cmos_register_edge_cases_hold() {
+    ax_assert!(crate::time::cmos_register_edge_cases_hold_for_test());
+}

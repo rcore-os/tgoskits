@@ -194,3 +194,77 @@ fn rdif_msi_type_constants_hold() {
     let prov = MsiProviderId(99);
     ax_assert_eq!(prov.0, 99);
 }
+
+#[axtest]
+fn rdif_msi_request_and_interface_default_hold() {
+    use crate::{Interface, IrqError, MsiRequest};
+
+    // Test MsiRequest::new with default affinity
+    let request = MsiRequest::new(MsiDeviceId(1), 4);
+    ax_assert_eq!(request.device, MsiDeviceId(1));
+    ax_assert_eq!(request.vector_count, 4);
+    // Default affinity is Any
+    match request.affinity {
+        IrqAffinity::Any => {}
+        _ => panic!("Expected Any affinity"),
+    }
+
+    // Test MsiRequest::new with custom affinity
+    let custom = MsiRequest::new(MsiDeviceId(2), 8).affinity(IrqAffinity::Fixed(CpuId(3)));
+    ax_assert_eq!(custom.device, MsiDeviceId(2));
+    ax_assert_eq!(custom.vector_count, 8);
+    match custom.affinity {
+        IrqAffinity::Fixed(cpu) => ax_assert_eq!(cpu, CpuId(3)),
+        _ => panic!("Expected Fixed affinity"),
+    }
+
+    // Test Interface trait default implementations return Unsupported
+    struct MinimalMsi;
+    impl DriverGeneric for MinimalMsi {
+        fn name(&self) -> &str { "minimal-msi" }
+    }
+    impl Interface for MinimalMsi {
+        fn allocate_vectors(&mut self, _request: &MsiRequest) -> Result<Vec<MsiVector>, IrqError> {
+            Ok(Vec::new())
+        }
+        fn compose_message(&self, _vector: &MsiVector) -> Result<MsiMessage, IrqError> {
+            Ok(MsiMessage::new(0, 0))
+        }
+        fn free_vectors(&mut self, _allocation: MsiAllocation) -> Result<(), IrqError> {
+            Ok(())
+        }
+    }
+
+    let mut minimal = MinimalMsi;
+    let vector = MsiVector::new(MsiVectorIndex(0), MsiEventId(0), IrqId::new(IrqDomainId(0), irq_framework::HwIrq(0)));
+    ax_assert!(minimal.set_vector_enabled(&vector, true) == Err(IrqError::Unsupported));
+    ax_assert!(minimal.set_vector_affinity(&vector, IrqAffinity::Any) == Err(IrqError::Unsupported));
+}
+
+#[axtest]
+fn rdif_msi_message_and_allocation_hold() {
+    use crate::{MsiAllocation, MsiDeviceId, MsiMessage, MsiProviderId, MsiVector, MsiVectorIndex, MsiEventId};
+
+    // Test MsiMessage fields
+    let msg = MsiMessage::new(0xfee0_0000, 0x1234);
+    ax_assert_eq!(msg.address, 0xfee0_0000);
+    ax_assert_eq!(msg.data, 0x1234);
+
+    // Test MsiVector fields
+    let vector = MsiVector::new(
+        MsiVectorIndex(5),
+        MsiEventId(42),
+        IrqId::new(IrqDomainId(1), irq_framework::HwIrq(7)),
+    );
+    ax_assert_eq!(vector.index.0, 5);
+    ax_assert_eq!(vector.event.0, 42);
+
+    // Test MsiAllocation with actual constructor
+    let alloc = MsiAllocation::new(
+        MsiProviderId(2),
+        MsiDeviceId(1),
+        alloc::vec![MsiVector::new(MsiVectorIndex(10), MsiEventId(0), IrqId::new(IrqDomainId(0), irq_framework::HwIrq(0)))].into_boxed_slice(),
+    );
+    ax_assert_eq!(alloc.provider().0, 2);
+    ax_assert_eq!(alloc.device.0, 1);
+}

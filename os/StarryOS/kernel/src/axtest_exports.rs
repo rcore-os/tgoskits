@@ -143,6 +143,10 @@ pub fn rss_kind_and_accounting_rules_hold() -> bool {
     super::mm::rss_kind_and_accounting_rules_hold_for_test()
 }
 
+pub fn accounting_rss_kind_debug_and_default_hold() -> bool {
+    super::mm::accounting_rss_kind_debug_and_default_hold_for_test()
+}
+
 pub fn process_vm_stat_watermarks_hold() -> bool {
     super::mm::process_vm_stat_watermarks_hold_for_test()
 }
@@ -231,6 +235,10 @@ pub fn bpf_error_adapter_rules_hold() -> bool {
     super::ebpf::bpf_error_adapter_rules_hold_for_test()
 }
 
+pub fn bpf_error_more_variants_and_edge_cases_hold() -> bool {
+    super::ebpf::bpf_error_more_variants_and_edge_cases_hold_for_test()
+}
+
 pub fn pipe_resize_rounding_and_state_rules_hold() -> bool {
     super::file::pipe_resize_rounding_and_state_rules_hold_for_test()
 }
@@ -257,6 +265,38 @@ pub fn seccomp_filter_construction_rules_hold() -> bool {
 
 pub fn push_topology_item_preserves_order_and_grows_capacity() -> bool {
     super::file::push_topology_item_preserves_order_and_grows_capacity()
+}
+
+pub fn epoll_edge_id_and_constants_hold() -> bool {
+    super::file::epoll_edge_id_and_constants_hold_for_test()
+}
+
+pub fn epoll_topology_struct_and_methods_hold() -> bool {
+    super::file::epoll_topology_struct_and_methods_hold_for_test()
+}
+
+pub fn epoll_topology_direction_and_scan_hold() -> bool {
+    super::file::epoll_topology_direction_and_scan_hold_for_test()
+}
+
+pub fn epoll_edge_id_clone_copy_partial_eq_hold() -> bool {
+    super::file::epoll_edge_id_clone_copy_partial_eq_hold_for_test()
+}
+
+pub fn epoll_topology_static_constants_hold() -> bool {
+    super::file::epoll_topology_static_constants_hold_for_test()
+}
+
+pub fn epoll_topology_link_clone_hold() -> bool {
+    super::file::epoll_topology_link_clone_hold_for_test()
+}
+
+pub fn epoll_topology_vec_and_reserve_hold() -> bool {
+    super::file::epoll_topology_vec_and_reserve_hold_for_test()
+}
+
+pub fn epoll_arc_operations_hold() -> bool {
+    super::file::epoll_arc_operations_hold_for_test()
 }
 
 pub fn dummy_stat_fs_fields_match_expected_defaults() -> bool {
@@ -425,4 +465,8 @@ pub fn net_io_constants_hold() -> bool {
 
 pub fn net_socket_constants_hold() -> bool {
     super::syscall::net_socket_constants_hold_for_test()
+}
+
+pub fn buddy_slab_page_constants_and_header_helpers_hold() -> bool {
+    super::buddy_slab_page_constants_and_header_helpers_hold_for_test()
 }
