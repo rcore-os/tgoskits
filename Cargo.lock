@@ -1284,7 +1284,9 @@ dependencies = [
 name = "axfs-ng-vfs"
 version = "0.5.5"
 dependencies = [
+ "ax-crate-interface",
  "ax-errno 0.6.1",
+ "ax-kernel-guard",
  "ax-kspin",
  "bitflags 2.13.0",
  "cfg-if",
