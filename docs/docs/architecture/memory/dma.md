@@ -1,5 +1,5 @@
 ---
-sidebar_position: 8
+sidebar_position: 11
 sidebar_label: "DMA 内存"
 ---
 
@@ -42,6 +42,19 @@ flowchart TB
 ```
 
 当前 `KlibDma` 使用 `virt_to_phys` 得到 device address，表示输入输出内存管理单元-bypass/identity 路径。`DmaDomainId::identity()` 明确这是兼容 domain，不代表已经实现 device-specific 输入输出内存管理单元 isolation。
+
+### 1.3 架构差异
+
+`dma-api` 的类型和 ownership 在各架构相同，平台 adapter 负责处理物理地址转换、缓存一致性和设备内存属性。驱动不得根据 `target_arch` 自行跳过 cache transition。
+
+| 架构 | identity DMA 地址来源 | cache 处理 | coherent/uncached 页属性 |
+| --- | --- | --- | --- |
+| x86_64 | 去除内核物理线性映射偏移 | 常见平台为硬件一致，仍由 capability 决定 | 页表禁用缓存/写穿透位 |
+| AArch64 | 区分镜像、每 CPU 区和普通线性映射后取物理地址 | 显式 clean、invalidate 和数据同步屏障 | `MAIR_ELx` 的 Normal/Non-cacheable/Device 槽位 |
+| RISC-V 64 | 按重定位和 `PAGE_OFFSET` 反向转换 | 由具体 cache controller/platform capability 决定 | 标准实现与处理器扩展能力分开 |
+| LoongArch64 | `addrspace::to_phys()` 去除直接映射窗口编码 | 当前平台至少执行数据屏障 | 页表项 Memory Access Type（内存访问类型，MAT） |
+
+Dma32 始终按转换后的物理地址末端检查 4 GiB 上限。虚拟地址低于 4 GiB 不代表设备可达，带直接映射窗口高位的虚拟地址也不代表物理地址超限。
 
 ## 2. 设备约束
 
@@ -276,30 +289,13 @@ flowchart LR
 
 同一 owner 模型适用于 RGA、JPEG 和 NPU import，避免每个设备建立自己的 DMA facade 或手工引用计数。
 
-## 8. 验证与源码入口
+## 8. 源码入口
 
-DMA 错误往往表现为静默数据损坏，因此测试必须同时覆盖类型、constraint、cache transition、ownership 和异常 teardown。
+下面的文件构成 DMA 从公共能力到系统 fd 的完整路径。完整的类型、约束、缓存转换、所有权和异常 teardown 用例集中在[内存管理测试与验收](./testing.md)。
 
-### 8.1 必测一致性
+### 8.1 源码检查点
 
-`dma-api` 已包含 compile-fail 文档测试和 tracking backend 单元测试。新增能力应继续使用确定性 backend 记录每次 alloc/free/map/unmap/sync。
-
-| 测试 | 证明内容 |
-| --- | --- |
-| 非法 reference 类型不满足 `DmaPod` | typed buffer 不接受引用/owner |
-| handle 不满足 `Copy` | token 不能重复 free/unmap |
-| 资源获取即初始化 owner Drop 计数为 1 | backend token 只消费一次 |
-| backend 地址超出 mask | 验证失败并先释放 token |
-| boundary/segment/alignment | constraint 错误是 typed error |
-| streaming bounce copy-in/out | direction 与 sync 顺序正确 |
-| explicit domain survives constraints | `with_constraints` 不丢 domain |
-| in-flight timeout/quarantine | backing 不在硬件访问时重用 |
-
-硬件测试还需验证 descriptor/ring 在中断请求前预分配、completion 不触发通用 heap，以及 device reset 后确实 quiesce 才完成 in-flight owner。
-
-### 8.2 源码检查点
-
-下面的文件构成 DMA 从公共能力到系统 fd 的完整路径。unsafe 修改必须遵循 `book/guideline/code-quality.md` 的 Safety contract 要求。
+Unsafe 修改必须遵循 `book/guideline/code-quality.md` 的 Safety contract 要求。
 
 | 源码 | 审计重点 |
 | --- | --- |

@@ -1,5 +1,5 @@
 ---
-sidebar_position: 5
+sidebar_position: 7
 sidebar_label: "页表核心"
 ---
 
@@ -82,7 +82,7 @@ pub trait PageFrameProvider: Clone + Sync + Send + 'static {
 
 上层在 OS 边界把 `PagingError` 转为 `AxError` 或领域错误。页表实现不直接返回 Linux errno，也不记录虚拟内存区域 metadata。
 
-`PteConfig` 是与架构位编码无关的中性描述，所有 flexible engine（boot 与 Stage-2）都通过它表达“页表项应该是什么样”。该结构便于测试时按字段比较编码前后是否一致，避免直接读架构相关 bitfield。
+`PteConfig` 是与架构位编码无关的中性描述，所有 flexible engine（boot 与 Stage-2）都通过它表达“页表项应该是什么样”。该结构允许调用方按字段比较编码前后的语义，避免直接读取架构相关 bitfield。
 
 ```rust
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,7 +327,7 @@ ArceOS/Starry production tree 不应出现 `stage2`，Axvisor 也不应为普通
 
 ### 7.2 源码检查点
 
-以下文件覆盖统一页表的关键一致性条件。架构改动应配合 entry round-trip、map/query/unmap 和地址转换后备缓冲区 scope 测试。
+以下文件覆盖统一页表的关键一致性条件。对应的 entry round-trip、map/query/unmap 和地址转换后备缓冲区 scope 用例集中在[内存管理测试与验收](./testing.md)。
 
 | 源码 | 审计重点 |
 | --- | --- |
@@ -339,7 +339,7 @@ ArceOS/Starry production tree 不应出现 `stage2`，Axvisor 也不应为普通
 | `os/arceos/modules/axhal/src/paging.rs` | runtime provider 与 多核 capability check |
 | `platforms/someboot/src/arch/*/paging*` | boot geometry、provider 和启用时序 |
 
-错误注入应覆盖 frame allocation 在各层失败、huge mapping 下继续下钻、地址宽度 overflow、已有 mapping conflict、部分 subtree 回收以及 cursor Drop 的 flush 行为。
+页帧分配失败、huge mapping 下继续下钻、地址宽度 overflow、已有 mapping conflict、部分 subtree 回收以及 cursor Drop flush 的验收项见[内存管理测试与验收](./testing.md)。
 
 ## 8. 地址翻译实例
 

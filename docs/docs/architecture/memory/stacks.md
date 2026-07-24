@@ -1,5 +1,5 @@
 ---
-sidebar_position: 4
+sidebar_position: 6
 sidebar_label: "栈管理"
 ---
 
@@ -42,6 +42,19 @@ flowchart TB
 ```
 
 普通任务栈默认 256 KiB，超过 2048 B Slab 上限，因此 plain 模式最终由 Buddy 提供大对象页。启用 guard page 后则直接使用显式连续页 API。
+
+### 1.3 架构差异
+
+栈的 owner 与分配来源跨架构一致，差异集中在入口汇编使用的栈寄存器、内核虚拟窗口和 guard page 的远程失效方式。
+
+| 架构 | 切换栈的入口行为 | 启动栈地址 | guard page 解除映射后的失效 |
+| --- | --- | --- | --- |
+| x86_64 | 写 `rsp`、清零 `rbp` 后跳转 | 重定位前可使用恒等地址，最终使用内核/per-CPU 窗口 | 默认本地失效，多 CPU 由处理器间中断补齐 |
+| AArch64 | 写 `sp` 后 `br` 到入口 | RAM 经 `PAGE_OFFSET`，每 CPU 区有独立高地址偏移 | inner-shareable TLBI 硬件广播 |
+| RISC-V 64 | 写 `sp` 后 `jr` 到入口 | 线性映射或重定位后的 per-CPU 窗口 | 默认 `sfence.vma` 仅本地，多 hart 远程 fence |
+| LoongArch64 | 写 `$sp` 后跳转 | 直接映射窗口规范化后的内核地址 | 默认 `invtlb` 仅本地，多 CPU 由上层协调 |
+
+各架构的启动 entry 必须在进入 Rust 前满足栈对齐约定。栈 owner 不保存架构私有寄存器状态；页表与失效差异通过地址空间和 `TlbInvalidator` 处理。
 
 ## 2. CPU0 启动栈
 
@@ -205,11 +218,11 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 | API exposed task stack | `0x40000` | `arceos_api` / `arceos_posix_api` config |
 | user pthread compatibility default | 2 MiB | `os/arceos/ulib/axstd/src/os/libc_compat.rs` |
 
-修改一个默认值后应验证生成的 build info、公开 API 和实际 task creation 参数，避免文档或 resource limit 仍报告旧值。
+修改一个默认值时必须同步生成的 build info、公开 API 和实际 task creation 参数，避免文档或 resource limit 仍报告旧值。
 
 ### 7.2 源码检查点
 
-下面的文件覆盖 stack 从静态布局到释放的完整生命周期。测试应同时覆盖 owner 类型、canary 和 guard shootdown。
+下面的文件覆盖 stack 从静态布局到释放的完整生命周期。owner 类型、canary 和 guard shootdown 的用例集中在[内存管理测试与验收](./testing.md)。
 
 | 源码 | 审计重点 |
 | --- | --- |
@@ -221,7 +234,7 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 | `os/arceos/modules/axtask/src/task.rs` | plain/guarded/borrowed Drop 与地址转换后备缓冲区 flush |
 | `memory/starry-mm/src/stats.rs` | 用户 stack 虚拟内存区域统计分类 |
 
-验收时应记录每 CPU 固定 stack 总开销、最大 task 数乘以配置栈大小、guard page 的额外一页以及 Starry 用户 stack 的虚拟内存大小/常驻内存集大小差异。
+容量计算应包含每 CPU 固定 stack 总开销、最大 task 数乘以配置栈大小、guard page 的额外一页以及 Starry 用户 stack 的虚拟内存大小/常驻内存集大小差异。
 
 ## 8. 栈布局实例
 
@@ -229,7 +242,7 @@ Starry 用户栈属于用户虚拟地址空间，不是 `TaskStack`。loader 和
 
 ### 8.1 四 CPU 启动区
 
-`platforms/someboot/src/smp/layout.rs` 的确定性测试使用 data=128 B、metadata=64 B、stack=4096 B、page/region alignment=4096 B。对四个 CPU，计算结果是 metadata offset 128、stack offset 4096、stride 8192、总 allocation 32768 B。
+以 data=128 B、metadata=64 B、stack=4096 B、page/region alignment=4096 B 为例，对四个 CPU，计算结果是 metadata offset 128、stack offset 4096、stride 8192、总 allocation 32768 B。
 
 ```rust
 let metadata_end = meta_offset.checked_add(metadata_size)?;

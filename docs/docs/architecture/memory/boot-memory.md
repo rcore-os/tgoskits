@@ -1,5 +1,5 @@
 ---
-sidebar_position: 2
+sidebar_position: 4
 sidebar_label: "启动内存"
 ---
 
@@ -10,6 +10,19 @@ sidebar_label: "启动内存"
 ## 1. 固件输入
 
 固件输入是硬件事实来源，不是运行期 allocator。启动路径必须在没有堆、没有调度器且页表可能尚未建立的条件下完成解析。
+
+启动内存的主要源码入口如下。入口代码只保存固件参数；内存图、early allocator 和交接分别由独立模块维护，避免架构汇编直接操作运行时 Buddy。
+
+| 阶段 | 源码 | 发布的结果 |
+| --- | --- | --- |
+| 架构入口 | `platforms/someboot/src/arch/*/entry.rs` | 固件参数、当前 CPU 标识和初始执行环境 |
+| 设备树 RAM | `platforms/someboot/src/fdt/memory.rs` | 全部 RAM bank、reservation block、`/reserved-memory` |
+| UEFI RAM | `platforms/someboot/src/efi_stub/memmap.rs` | 归一后的 Free、Reserved 与 MMIO 描述符 |
+| 区间容器 | `components/kernutil/src/memory.rs` | 固定容量、事务式覆盖的 `MemoryDescriptor[]` |
+| early allocator | `platforms/someboot/src/mem/ram.rs` | `Uninitialized/Active/Frozen` checked bump |
+| 启动编排 | `platforms/someboot/src/mem/mod.rs` | KImage、架构保留区、已用 early 前缀和冻结后的 map |
+| 每 CPU 对象 | `platforms/someboot/src/smp/` | 全部 CPU 的 metadata、boot stack 和 linker data |
+| 运行时交接 | `axplat-dyn` → `axhal` → `axruntime` | 多个独立 Buddy section 和 CPU-local Slab |
 
 ### 1.1 U-Boot 与 设备树二进制对象 契约
 
@@ -37,6 +50,57 @@ for memory in fdt.memory() {
 ```
 
 `normalize_region()` 使用 checked addition 计算末地址，并调用架构的 `canonicalize_paddr()` 规范化物理地址。零长度或溢出的 region 被忽略，合法 region 不需要相邻或连续。
+
+### 1.3 完整启动流程
+
+下图覆盖从固件入口到第一个普通运行时 allocation 的完整流程。每个菱形表示可能改变内存资格或启动地址限制的决策，任何被标记为保留或设备的区间都不会进入 `ax-alloc`。
+
+```mermaid
+flowchart TD
+    E["架构入口保存固件参数"] --> I{"启动协议"}
+    I -->|"UEFI"| U["遍历 UEFI memory map"]
+    I -->|"U-Boot / OpenSBI"| F["解析 DTB memory nodes"]
+    U --> N["规范化物理范围和类型"]
+    F --> N
+    F --> R["解析 reservation block 与 /reserved-memory"]
+    N --> M["MemoryMapExt::merge_add"]
+    R --> M
+    K["内核镜像范围"] --> M
+    A["架构早期保留区"] --> M
+    M --> C{"选择最大合法 Free 子区间"}
+    C -->|"x86_64"| L["候选末端裁剪到 4 GiB"]
+    C -->|"其他架构"| B["ram::init 进入 Active"]
+    L --> B
+    B --> P["分配 boot 页表"]
+    P --> D["保存 DTB / 固件数据"]
+    D --> S["一次性分配全部 CPU area 和 boot stack"]
+    S --> Q["建立并切换最终启动页表"]
+    Q --> X["flush_to_memory_map 发布分类前缀"]
+    X --> Z["memory_map_setup 发布剩余已用范围"]
+    Z --> FR["ram::freeze 进入 Frozen"]
+    FR --> PL["axplat-dyn 转换 Free / Reserved / MMIO"]
+    PL --> H["ax-hal 扣除保留区并按 4 KiB 对齐"]
+    H --> G["axruntime 选择最大 Free region"]
+    G --> GI["ax_alloc::global_init"]
+    GI --> GA["其余 region 调用 global_add_memory"]
+    GA --> PS["CPU0 调用 init_percpu_slab"]
+    PS --> RUN["允许普通运行时 allocation"]
+```
+
+这条流程没有“把所有 RAM 拼成一个大堆”的步骤。early bump 只选择一个物理连续子区间；运行时则把每个剩余 `Free` 区间登记为独立 Buddy section。
+
+### 1.4 架构差异
+
+固件输入、地址规范化和页表切换由架构层实现，内存描述符合并与运行时交接保持一致。下表给出影响启动内存结果的差异。
+
+| 架构 | 固件与 RAM 输入 | early arena 限制 | 页表切换 | 地址处理 |
+| --- | --- | --- | --- | --- |
+| x86_64 | 主要来自 UEFI/动态平台描述 | 页表根必须在 4 GiB 以下，供应用处理器 32 位 trampoline 装载 | 写 `CR3` 并失效本地翻译 | 重定位前恒等，之后使用 `PHYS_VIRT_OFFSET` |
+| AArch64 | UEFI 或 U-Boot 传入设备树 | 选择最大合法 Free 段，无 4 GiB trampoline 限制 | 设置 EL1/EL2 translation registers、MAIR 和 TLBI | RAM 使用 `PAGE_OFFSET`，每 CPU 区有额外窗口 |
+| RISC-V 64 | OpenSBI/U-Boot 传入设备树 | 选择最大合法 Free 段 | 写 Sv39 `satp` 并执行 `sfence.vma` | 重定位配置下区分镜像、每 CPU 区和线性映射 |
+| LoongArch64 | UEFI 或设备树 | 选择最大合法 Free 段 | 写 `PGDH/PGDL`、ASID，执行 `invtlb` 与屏障 | 先移除直接映射窗口高位；RAM 与 MMIO 使用不同窗口 |
+
+更完整的页表项、缓存属性和多 CPU 失效差异见[多架构内存实现](./architecture-support.md)。
 
 ## 2. 启动内存图
 
@@ -253,7 +317,7 @@ MemoryDescriptor[]
 
 ## 6. 当前约束
 
-启动内存追求确定性和低复杂度，因此没有动态扩容或复杂物理内存重排。平台配置与测试必须覆盖这些固定边界。
+启动内存追求确定性和低复杂度，因此没有动态扩容或复杂物理内存重排。平台配置必须在进入运行时前满足这些固定边界。
 
 ### 6.1 容量与连续性限制
 
@@ -269,9 +333,9 @@ MemoryDescriptor[]
 | early bump arena | 最大的非空有效且满足架构启动地址约束的 Free range | 不跨物理 hole；x86_64 位于 4 GiB 以下；容量不足由实际分配报告 |
 | Buddy contiguous allocation | 单 section 内完成 | 不能跨物理 hole 拼接连续页 |
 
-这些限制应通过板级启动测试验证，而不是通过引入通用非统一内存访问、compaction 或页迁移框架解决。若具体平台超过固定容量，应先提高有依据的常量或压缩平台描述符。
+这些限制不应通过引入通用非统一内存访问、compaction 或页迁移框架解决。若具体平台超过固定容量，应先提高有依据的常量或压缩平台描述符；对应验收方法见[内存管理测试与验收](./testing.md)。
 
-### 6.2 维护检查点
+### 6.2 源码检查点
 
 修改启动内存时必须同时检查区间不重叠、冻结后不可分配和多段 RAM 全部交接。下面的源码是该路径的主要审计入口。
 
@@ -286,7 +350,7 @@ MemoryDescriptor[]
 | `os/arceos/modules/axhal/src/mem.rs` | reserved subtraction 与页对齐 |
 | `os/arceos/modules/axruntime/src/lib.rs` | 最大初始段与其余 section 的交接 |
 
-任何修改都应至少构造“两段 RAM、中间有保留洞、early bump 位于其中一段”的确定性用例，并验证最终 Buddy 可见总页数与输入减去全部保留范围一致。x86_64 还必须覆盖“低于 4 GiB 的可用段小于高端 RAM 段”的输入，断言 early arena 仍位于 4 GiB 以下且高端段未从最终 Free 列表丢失。
+这些文件共同维护“所有固件 RAM 被分类、全部启动占用被扣除、剩余 Free 段只交接一次”的不变量。确定性输入和板级检查项集中在[内存管理测试与验收](./testing.md)。
 
 ## 7. 地址处理实例
 

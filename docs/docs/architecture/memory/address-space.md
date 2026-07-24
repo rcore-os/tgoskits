@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 8
 sidebar_label: "地址空间事务"
 ---
 
@@ -39,6 +39,19 @@ sidebar_label: "地址空间事务"
 | `clear` | 变为空 map | unmap 全部 area |
 
 metadata-only 方法只用于已经由专用路径移动或分离页表项的调用方。普通消费者必须使用带 page table 的事务入口。
+
+### 1.3 架构边界
+
+`MemorySet` 的区间计划和事务协议不包含架构分支。架构差异由 backend 使用的页表类型、页尺寸和 `TlbInvalidator` 注入；同一个跨虚拟内存区域操作在四个架构上必须具有相同的全成或回滚语义。
+
+| 架构 | 常用第一阶段几何 | 地址转换缓存失效 | 对事务层的影响 |
+| --- | --- | --- | --- |
+| x86_64 | 4 级、4 KiB/2 MiB/1 GiB | 默认本地，远端由处理器间中断 | finalize 前等待远端失效后才能释放旧页 |
+| AArch64 | 4 级、page/block descriptor | inner-shareable 硬件广播 | commit 保持 DSB/TLBI/DSB/ISB 顺序 |
+| RISC-V 64 | Sv39 或 Sv48 | 默认本地 `sfence.vma` | 多 hart 地址空间由上层发送远程 fence |
+| LoongArch64 | 4 级、PGDL/PGDH | 默认本地 `invtlb` | 用户/内核半区选择正确页表根并远端失效 |
+
+事务层不能假定所有旧映射都是 4 KiB。backend 保存 undo 状态时应使用 `query()` 返回的实际页尺寸，避免把大页展开为数百万条基础页快照。
 
 ## 2. 映射后端协议
 
@@ -255,38 +268,17 @@ Starry backend 的 `commit()` 允许具体 backend 返回 `AxError`，但在向 
 
 `RssAccountingGuard` 通过当前执行 scope 把 owning `MemoryAccounting` 暴露给通用 backend bridge。它依赖 AddrSpace lock 的外部一致性条件，不是跨线程全局常驻内存集大小 registry。
 
-## 8. 测试与源码入口
+## 8. 源码入口
 
-事务正确性必须用可控的中间失败验证，而不是只测试成功路径。mock backend 应能指定第几个 map/unmap/protect commit 失败。
+公共容器和三个策略消费者共同构成当前地址空间实现。修改 `MappingBackend` trait 时必须逐个迁移实现，不得通过 alias 或 wrapper 引入第二事务协议；完整故障注入矩阵集中在[内存管理测试与验收](./testing.md)。
 
-### 8.1 必测故障
-
-以下故障应比较操作前后的完整虚拟内存区域列表和模拟页表项数组。只检查返回错误不足以证明回滚正确。
-
-| 故障 | 必须保持的一致性 |
-| --- | --- |
-| plan Vec reserve 失败 | live metadata 与页表项不变 |
-| 第 N 个 prepare 失败 | 前 N-1 个 plan 全部 abort，页表项不变 |
-| 第 N 个 commit 失败 | 本 operation 自恢复，先前 states reverse rollback |
-| 多虚拟内存区域 unmap 中间失败 | 所有原页表项、area range 和 owner 恢复 |
-| protect 中间失败 | actual/reported flags 与页表项一致回到旧值 |
-| 12 GiB Linear Map prepare | plan 内存不随 4 KiB 页数增长，不申请逐页旧映射快照 |
-| 大范围 Map 中途页表分配失败 | 已安装前缀被删除，metadata 不发布，物理页所有权不泄漏 |
-| 大范围 Unmap/Protect reserve 失败 | 在修改首个页表项前返回 `NoMemory`，原映射保持不变 |
-| rollback 自身失败 | 返回 `BadState`，不得伪报原错误可恢复 |
-
-还应覆盖 area 中间 split、左右边界、replace span、empty range、address overflow、huge 页表项与 base-page backend 冲突。
-
-### 8.2 源码检查点
-
-公共容器和三个策略消费者共同构成当前地址空间实现。修改 `MappingBackend` trait 时必须逐个迁移实现，不得通过 alias 或 wrapper 引入第二事务协议。
+### 8.1 源码检查点
 
 | 源码 | 审计重点 |
 | --- | --- |
 | `memory/memory_set/src/backend.rs` | hook contract 与 operation undo data |
 | `memory/memory_set/src/set.rs` | affected-range metadata plan、vector reserve、reverse rollback |
 | `memory/memory_set/src/area.rs` | split/shrink 与 actual/reported flags |
-| `memory/memory_set/src/tests.rs` | deterministic fault injection |
 | `os/arceos/modules/axmm/src/backend/` | Stage-1 frame ownership与 lazy fault |
 | `virtualization/axaddrspace/src/address_space/backend/` | Guest RAM ownership 与 嵌套页表 rollback |
 | `os/StarryOS/kernel/src/mm/aspace/backend/` | 写时复制 hold、常驻内存集大小和 file/shared restore |
