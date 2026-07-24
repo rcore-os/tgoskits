@@ -1,8 +1,9 @@
+# Block storage is unsupported until the CV181x SDHCI driver is migrated to
+# the IRQ-driven block runtime.
 features = [
   "starry-kernel/sg2002",
   "starry-kernel/sg2002-cvi-usb-camera",
   "axplat-dyn/thead-mae",
-  "ax-driver/cvsd",
   "ax-driver/serial",
   "ax-driver/sg2002-dwc2",
 ]

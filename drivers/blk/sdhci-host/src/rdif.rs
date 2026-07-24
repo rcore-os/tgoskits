@@ -1,17 +1,17 @@
-//! RDIF block-device adapter for [`Sdhci`].
+//! Owned-DMA, IRQ-driven block adapter for [`Sdhci`].
 
 use dma_api::DeviceDma;
 pub use rdif_block::{
-    BInterface, BIrqHandler, BOwnedQueue, BQueue, BlkError, IQueue, IQueueOwned, Interface,
-    OwnedRequest, PollError, QueueHandle, Request, RequestId as RdifRequestId,
-    RequestPoll as OwnedRequestPoll, RequestStatus, SubmitError,
+    BlkError, BlockController, CompletedRequest, ControllerEvent, ControllerState,
+    ControllerUpdate, HardIrqHandler, HardwareQueue, OwnedRequest, QueueInfo, QueueLimits,
+    RequestFlags, RequestId as RdifRequestId, RequestOp, SubmitError,
 };
 #[cfg(test)]
 use sdmmc_protocol::rdif::config as protocol_rdif_config;
 pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
 use sdmmc_protocol::sdio::{card::SdioSdmmc, host2::SdioHost2Adapter};
 
-use crate::{ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE, Sdhci};
+use crate::{ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE, DWC_MSHC_ADMA_BOUNDARY, Sdhci};
 
 pub fn device(
     card: SdioSdmmc<SdioHost2Adapter<Sdhci>>,
@@ -20,23 +20,19 @@ pub fn device(
     BlockDevice::new(card, config)
 }
 
-pub fn dma_config(
-    name: &'static str,
-    capacity_blocks: u64,
-    irq_driven: bool,
-    dma: DeviceDma,
-) -> BlockConfig {
-    BlockConfig::dma(name, capacity_blocks, irq_driven, dma)
-        .with_max_blocks_per_request(ADMA2_MAX_BLOCKS)
-        .with_max_segment_size(ADMA2_MAX_TRANSFER_SIZE)
+pub fn initializing_device(
+    card: SdioSdmmc<SdioHost2Adapter<Sdhci>>,
+    config: BlockConfig,
+    preference: sdmmc_protocol::sdio::init::CardInitPreference,
+) -> BlockDevice<SdioHost2Adapter<Sdhci>> {
+    BlockDevice::new_initializing(card, config, preference)
 }
 
-pub const fn fifo_config(
-    name: &'static str,
-    capacity_blocks: u64,
-    irq_driven: bool,
-) -> BlockConfig {
-    BlockConfig::fifo(name, capacity_blocks, irq_driven)
+pub fn dma_config(name: &'static str, capacity_blocks: u64, dma: DeviceDma) -> BlockConfig {
+    BlockConfig::dma(name, capacity_blocks, dma)
+        .with_max_blocks_per_request(ADMA2_MAX_BLOCKS)
+        .with_max_segment_size(ADMA2_MAX_TRANSFER_SIZE)
+        .with_segment_boundary(DWC_MSHC_ADMA_BOUNDARY)
 }
 
 #[cfg(test)]
@@ -44,27 +40,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fifo_config_keeps_one_block_limits() {
-        let config = fifo_config("sdhci", 16, true);
-        let limits = protocol_rdif_config::queue_limits(&config, config.dma_mask);
-
-        assert_eq!(limits.max_blocks_per_request, 1);
-        assert_eq!(limits.max_segment_size, protocol_rdif_config::BLOCK_SIZE);
-        assert!(!config.uses_dma());
-    }
-
-    #[test]
     fn dma_config_advertises_adma_window() {
         let config = dma_config(
             "sdhci",
             16,
-            true,
             dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA),
         );
         let limits = protocol_rdif_config::queue_limits(&config, config.dma_mask);
 
         assert_eq!(limits.max_blocks_per_request, ADMA2_MAX_BLOCKS);
         assert_eq!(limits.max_segment_size, ADMA2_MAX_TRANSFER_SIZE);
+        assert_eq!(limits.segment_boundary, Some(DWC_MSHC_ADMA_BOUNDARY));
+        assert_eq!(limits.max_inflight, 1);
         assert!(config.uses_dma());
     }
 

@@ -350,6 +350,9 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(all(feature = "irq", feature = "ipi"))]
     ax_ipi::wait_for_all_cpus_ready();
 
+    #[cfg(all(feature = "smp", feature = "ipi"))]
+    fs::online_smp();
+
     ax_app_entry();
 
     #[cfg(feature = "multitask")]
@@ -555,6 +558,6 @@ fn init_tls() {
 mod tests {
     #[test]
     fn fs_init_accepts_bootargs_without_fs_feature() {
-        crate::fs::init(Some("root=/dev/vda"));
+        crate::fs::init(Some("root=/dev/nvme0n1"));
     }
 }

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.12.0...rdif-block-v0.13.0) - 2026-07-24
+
+### Changed
+
+- Add ordered DMA-owning request batches with explicit partial acceptance and accepted-ID publication.
+- Require a separate queue commit after every non-empty batch so native drivers can publish multiple descriptors with one hardware doorbell.
+- Add `max_submit_batch` to the mandatory hardware queue limits.
+
+## [0.12.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.11.2...rdif-block-v0.12.0) - 2026-07-23
+
+### Changed
+
+- Replace submit/poll queues with DMA-owning `BlockController`, `HardwareQueue`, and boxed hard-IRQ acknowledgement contracts.
+- Make DMA masks, alignments, segment limits, boundaries, and queue depth explicit and mandatory at both planning and submission boundaries.
+
+### Removed
+
+- Remove legacy queue handles, completion polling, cancellation/status APIs, and software-only request flags.
+
 ## [0.11.2](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.11.1...rdif-block-v0.11.2) - 2026-07-08
 
 ### Other

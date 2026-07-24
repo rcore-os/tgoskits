@@ -12,11 +12,12 @@
 //!   4-bit / 8-bit bus, default-speed and high-speed clocking, 32-bit response
 //!   slots, 136-bit R2 reconstruction, software reset / clock setup.
 //! - **Out of scope (for now)**: 64-bit ADMA2, HS200 / SDR50 / SDR104
-//!   clocking, tuning (CMD19 / CMD21), eMMC-specific commands beyond normal
-//!   block I/O. 1.8 V signaling is wired up at the register level but is
-//!   gated behind [`Sdhci::enable_1v8_signaling`] — platforms that haven't
-//!   plumbed the IO-rail regulator MUST leave it off so the protocol
-//!   layer falls back instead of corrupting transfers.
+//!   clocking, and tuning (CMD19 / CMD21). Protocol data commands, including
+//!   eMMC `SEND_EXT_CSD`, use the same ADMA2 path as normal block I/O. 1.8 V
+//!   signaling is wired up at the register level but is gated behind
+//!   [`Sdhci::enable_1v8_signaling`] — platforms that haven't plumbed the
+//!   IO-rail regulator MUST leave it off so the protocol layer falls back
+//!   instead of corrupting transfers.
 //!
 //! # Usage
 //!
@@ -92,9 +93,9 @@ mod regs;
 
 pub use dma::{
     ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE, BlockRequest,
-    BlockRequestSlot, RequestId,
+    BlockRequestSlot, DWC_MSHC_ADMA_BOUNDARY, RequestId,
 };
-pub use host::{HostClock, HostResetHook, HostTimer, Sdhci};
+pub use host::{BlockTransferPolicy, HostClock, HostResetHook, HostTimer, Sdhci};
 pub use sdmmc_protocol::block::{
     BlockBufferConfig, BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode,
     BlockTransferState,
@@ -565,6 +566,10 @@ impl SdioIrqHost for Sdhci {
     fn irq_handle(&mut self) -> Self::IrqHandle {
         Sdhci::irq_endpoint(self)
     }
+
+    fn progress_wait_kind(&self) -> sdmmc_protocol::sdio::HostProgressWait {
+        Sdhci::progress_wait_kind(self)
+    }
 }
 
 impl sdio_host2::SdioHost for Sdhci {
@@ -679,28 +684,29 @@ impl sdio_host2::SdioHost for Sdhci {
         let sdio_host2::DataBuffer::Dma(buffer) = phase.buffer else {
             unreachable!("checked for DMA data buffer above")
         };
+        let protocol_direction = match phase.direction {
+            sdio_host2::DataDirection::Read => DataDirection::Read,
+            sdio_host2::DataDirection::Write => DataDirection::Write,
+            _ => {
+                self.finish_host2_request(host2_id);
+                let data = sdio_host2::DataPhase {
+                    direction: phase.direction,
+                    block_size: phase.block_size,
+                    block_count: phase.block_count,
+                    buffer: sdio_host2::DataBuffer::Dma(buffer),
+                };
+                return Err(sdio_host2::SubmitTransactionError::new(
+                    sdio_host2::Error::Unsupported,
+                    sdio_host2::Transaction::with_data(transaction.command, data),
+                ));
+            }
+        };
         if !should_try_dma(
             &transaction.command,
             block_size,
             block_count,
             buffer.len().get(),
-            match phase.direction {
-                sdio_host2::DataDirection::Read => DataDirection::Read,
-                sdio_host2::DataDirection::Write => DataDirection::Write,
-                _ => {
-                    self.finish_host2_request(host2_id);
-                    let data = sdio_host2::DataPhase {
-                        direction: phase.direction,
-                        block_size: phase.block_size,
-                        block_count: phase.block_count,
-                        buffer: sdio_host2::DataBuffer::Dma(buffer),
-                    };
-                    return Err(sdio_host2::SubmitTransactionError::new(
-                        sdio_host2::Error::Unsupported,
-                        sdio_host2::Transaction::with_data(transaction.command, data),
-                    ));
-                }
-            },
+            protocol_direction,
         ) {
             self.finish_host2_request(host2_id);
             let tx = sdio_host2::Transaction::with_data(
@@ -731,21 +737,15 @@ impl sdio_host2::SdioHost for Sdhci {
             ));
         };
         let mut slot = BlockRequestSlot::default();
-        let submit = match phase.direction {
-            sdio_host2::DataDirection::Read => self.submit_prepared_read_blocks(
-                transaction.command.argument,
-                buffer,
-                &dma,
-                &mut slot,
-            ),
-            sdio_host2::DataDirection::Write => self.submit_prepared_write_blocks(
-                transaction.command.argument,
-                buffer,
-                &dma,
-                &mut slot,
-            ),
-            _ => unreachable!("unsupported direction returned before submit"),
-        };
+        let submit = self.submit_prepared_adma2_data_request(
+            &transaction.command,
+            buffer,
+            block_size,
+            block_count,
+            protocol_direction,
+            &dma,
+            &mut slot,
+        );
         match submit {
             Ok(request) => {
                 let id = request.id();
@@ -1542,26 +1542,41 @@ fn submit_read_with_dma_fifo_fallback(
     block_count: u32,
     slot: &mut BlockRequestSlot,
 ) -> Result<BlockRequest, Error> {
-    if should_try_dma(cmd, block_size, block_count, len, DataDirection::Read)
-        && let Some(dma) = host.dma.clone()
-    {
-        match host.submit_read_blocks(
-            cmd.argument,
-            buffer,
-            NonZeroUsize::new(len).ok_or(Error::InvalidArgument)?,
-            Some(&dma),
-            BlockTransferMode::Dma,
-            slot,
-        ) {
-            Ok(request) => {
-                log_adma_path_once("read");
-                return Ok(request);
+    match select_block_data_path(
+        host.block_transfer_policy,
+        host.dma.is_some(),
+        cmd,
+        block_size,
+        block_count,
+        len,
+        DataDirection::Read,
+    )? {
+        SelectedDataPath::Adma2 => {
+            let dma = host.dma.clone().ok_or(Error::UnsupportedCommand)?;
+            match host.submit_adma2_data_request(
+                cmd,
+                buffer,
+                len,
+                block_size,
+                block_count,
+                DataDirection::Read,
+                &dma,
+                slot,
+            ) {
+                Ok(request) => {
+                    log_adma_path_once("read");
+                    return Ok(request);
+                }
+                Err(err)
+                    if host.block_transfer_policy == BlockTransferPolicy::PreferAdma2
+                        && can_fallback_to_fifo(err) =>
+                {
+                    log_adma_fallback_once("read", err);
+                }
+                Err(err) => return Err(err),
             }
-            Err(err) if can_fallback_to_fifo(err) => {
-                log_adma_fallback_once("read", err);
-            }
-            Err(err) => return Err(err),
         }
+        SelectedDataPath::Fifo => {}
     }
 
     host.submit_fifo_data_request(
@@ -1584,26 +1599,41 @@ fn submit_write_with_dma_fifo_fallback(
     block_count: u32,
     slot: &mut BlockRequestSlot,
 ) -> Result<BlockRequest, Error> {
-    if should_try_dma(cmd, block_size, block_count, len, DataDirection::Write)
-        && let Some(dma) = host.dma.clone()
-    {
-        match host.submit_write_blocks(
-            cmd.argument,
-            buffer,
-            NonZeroUsize::new(len).ok_or(Error::InvalidArgument)?,
-            Some(&dma),
-            BlockTransferMode::Dma,
-            slot,
-        ) {
-            Ok(request) => {
-                log_adma_path_once("write");
-                return Ok(request);
+    match select_block_data_path(
+        host.block_transfer_policy,
+        host.dma.is_some(),
+        cmd,
+        block_size,
+        block_count,
+        len,
+        DataDirection::Write,
+    )? {
+        SelectedDataPath::Adma2 => {
+            let dma = host.dma.clone().ok_or(Error::UnsupportedCommand)?;
+            match host.submit_adma2_data_request(
+                cmd,
+                buffer,
+                len,
+                block_size,
+                block_count,
+                DataDirection::Write,
+                &dma,
+                slot,
+            ) {
+                Ok(request) => {
+                    log_adma_path_once("write");
+                    return Ok(request);
+                }
+                Err(err)
+                    if host.block_transfer_policy == BlockTransferPolicy::PreferAdma2
+                        && can_fallback_to_fifo(err) =>
+                {
+                    log_adma_fallback_once("write", err);
+                }
+                Err(err) => return Err(err),
             }
-            Err(err) if can_fallback_to_fifo(err) => {
-                log_adma_fallback_once("write", err);
-            }
-            Err(err) => return Err(err),
         }
+        SelectedDataPath::Fifo => {}
     }
 
     host.submit_fifo_data_request(
@@ -1617,19 +1647,47 @@ fn submit_write_with_dma_fifo_fallback(
     )
 }
 
-fn should_try_dma(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectedDataPath {
+    Adma2,
+    Fifo,
+}
+
+fn select_block_data_path(
+    policy: BlockTransferPolicy,
+    dma_available: bool,
     cmd: &Command,
     block_size: u32,
     block_count: u32,
     len: usize,
     direction: DataDirection,
+) -> Result<SelectedDataPath, Error> {
+    let dma_compatible = should_try_dma(cmd, block_size, block_count, len, direction);
+    match (policy, dma_compatible, dma_available) {
+        (_, true, true) => Ok(SelectedDataPath::Adma2),
+        (BlockTransferPolicy::PreferAdma2, ..) => Ok(SelectedDataPath::Fifo),
+        (BlockTransferPolicy::RequireAdma2, false, _) => Err(Error::InvalidArgument),
+        (BlockTransferPolicy::RequireAdma2, true, false) => Err(Error::UnsupportedCommand),
+    }
+}
+
+fn should_try_dma(
+    _cmd: &Command,
+    block_size: u32,
+    block_count: u32,
+    len: usize,
+    direction: DataDirection,
 ) -> bool {
-    block_size == 512
-        && len == block_count as usize * 512
-        && matches!(
-            (direction, cmd.index),
-            (DataDirection::Read, 17 | 18) | (DataDirection::Write, 24 | 25)
-        )
+    block_size != 0
+        && block_size <= 0x0fff
+        && block_count != 0
+        && block_count <= u16::MAX.into()
+        && usize::try_from(block_size).ok().and_then(|size| {
+            usize::try_from(block_count)
+                .ok()
+                .and_then(|count| size.checked_mul(count))
+        }) == Some(len)
+        && matches!(direction, DataDirection::Read | DataDirection::Write)
 }
 
 fn can_fallback_to_fifo(err: Error) -> bool {
@@ -1842,6 +1900,40 @@ mod tests {
         assert_eq!(dma.block_size.get(), 512);
         assert_eq!(dma.align, 512);
         assert_eq!(dma.dma_mask, Some(u32::MAX as u64));
+    }
+
+    #[test]
+    fn required_adma2_policy_rejects_fifo_fallback_without_dma() {
+        #[repr(align(4))]
+        struct FakeRegs([u8; 0x100]);
+
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.set_block_transfer_policy(BlockTransferPolicy::RequireAdma2);
+        let mut buffer = [0_u8; 512];
+        let command = Command::new(17, 0, ResponseType::R1);
+
+        assert!(matches!(
+            <Sdhci as ProtocolSdioHost>::submit_read_data(&mut host, &command, &mut buffer, 512, 1,),
+            Err(Error::UnsupportedCommand)
+        ));
+    }
+
+    #[test]
+    fn required_adma2_policy_accepts_mmc_ext_csd_data_command() {
+        assert_eq!(
+            select_block_data_path(
+                BlockTransferPolicy::RequireAdma2,
+                true,
+                &sdmmc_protocol::cmd::CMD8_MMC,
+                512,
+                1,
+                512,
+                DataDirection::Read,
+            ),
+            Ok(SelectedDataPath::Adma2)
+        );
     }
 
     #[test]

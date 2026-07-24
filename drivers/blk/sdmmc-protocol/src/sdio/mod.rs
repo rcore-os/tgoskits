@@ -16,14 +16,17 @@ pub use card::{
     SdioStatusRequest, SwitchFunctionRequest,
 };
 pub use host::{
-    BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
-    SDMMC_BLOCK_QUEUE_ID, SdioBusOp, SdioHost, SdioIrqHandle, SdioIrqHost, SignalVoltage,
-    block_queue_ready_from_host_event, poll_ready_bus_op, submit_ready_bus_op,
+    BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, HostProgressWait,
+    ReadyBusRequest, SDMMC_BLOCK_QUEUE_ID, SdioBusOp, SdioHost, SdioIrqHandle, SdioIrqHost,
+    SignalVoltage, block_queue_ready_from_host_event, poll_ready_bus_op, submit_ready_bus_op,
 };
 #[cfg(test)]
 use host2::SDIO_HOST2_COMPAT_POLL_LIMIT;
 pub use host2::{SdioHost2Adapter, SdioHost2BusRequest, SdioHost2DataRequest, SdioHost2Irq};
-pub use init::{CardInitPreference, MmcSwitchRequest, SdioInitRequest, SdioInitScratch};
+pub use init::{
+    CardInitPreference, MmcSwitchRequest, OwnedSdioInitRequest, SdioInitRequest, SdioInitScratch,
+    SdioInitWait,
+};
 #[cfg(test)]
 use init::{MmcSwitchTiming, SdioInitState, SdioInitTiming, sd_acmd6_arg};
 

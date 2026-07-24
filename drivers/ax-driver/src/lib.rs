@@ -84,7 +84,6 @@ pub mod serial;
 #[cfg(any(
     feature = "rockchip-soc",
     feature = "rockchip-pm",
-    feature = "rockchip-dwmmc",
     feature = "starfive-soc"
 ))]
 pub mod soc;

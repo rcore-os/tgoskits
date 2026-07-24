@@ -1,6 +1,6 @@
 [package]
 name = "ax-fs-ng"
-version = "0.8.5"
+version = "0.9.0"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>"]
@@ -11,7 +11,7 @@ license.workspace = true
 axtest = []
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
-vfs = []
+vfs = ["ax-sync/multitask"]
 lockdep = ["axfs-ng-vfs/lockdep"]
 
 [lints.rust]

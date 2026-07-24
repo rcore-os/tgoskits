@@ -245,7 +245,6 @@ target = "riscv64gc-unknown-none-elf"
 features = [
   "starry-kernel/sg2002",
   "axplat-dyn/thead-mae",
-  "ax-driver/cvsd",
   "ax-driver/serial",
 ]
 log = "Info"

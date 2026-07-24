@@ -59,7 +59,7 @@ run_provision_qemu() {
             -nographic \
             -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65 \
             -drive "id=disk0,if=none,format=raw,file=$ROOTFS_APP" \
-            -append "root=/dev/sda console=ttyS0" \
+            -append "root=/dev/nvme0n1 console=ttyS0" \
             -kernel "$KERNEL" \
             <"$input_fifo" 2>&1 | tee "$provision_log"
     ) &
@@ -333,7 +333,7 @@ QEMU_ARGS+=("${DISPLAY_ARGS[@]}")
     -device virtio-mouse-pci
     -device nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65
     -drive "id=disk0,if=none,format=raw,file=$ROOTFS_APP"
-    -append "root=/dev/sda console=ttyS0"
+    -append "root=/dev/nvme0n1 console=ttyS0"
 )
 if [ "$USE_COCOA" != false ]; then
     QEMU_ARGS+=(-serial stdio)

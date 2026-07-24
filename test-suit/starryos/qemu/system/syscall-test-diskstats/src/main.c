@@ -18,7 +18,7 @@
  *   weighted_ms"。扇区固定 512 字节。
  *
  * 断言:
- *   1. /proc/diskstats 存在, 含 vda 设备行, 字段数 >= 14。
+ *   1. /proc/diskstats 存在, 含 nvme0n1 设备行, 字段数 >= 14。
  *   2. reads / sectors_read > 0: 启动挂载 ext4 已产生真实块读, 证明读计数已接线
  *      且非硬编码假值。
  *   3. 写文件 + fsync 强制回写后, writes / sectors_written 真增长; reads /
@@ -30,11 +30,11 @@
 /*
  * diskstats 令牌 0-based 下标 (Linux 14 列布局):
  *   name=2 reads=3 sectors_read=5 writes=7 sectors_written=9
- * 读取 vda 行, 返回该行令牌数; 令牌数 >= 14 时把
+ * 读取 nvme0n1 行, 返回该行令牌数; 令牌数 >= 14 时把
  * [reads, sectors_read, writes, sectors_written] 填入 out。
- * 无 vda 行返回 -1, 文件打不开返回 -2。
+ * 无 nvme0n1 行返回 -1, 文件打不开返回 -2。
  */
-static int read_vda(unsigned long long out[4])
+static int read_nvme(unsigned long long out[4])
 {
     FILE *f = fopen(DISKSTATS_PATH, "r");
     if (!f)
@@ -46,7 +46,7 @@ static int read_vda(unsigned long long out[4])
         int n = 0;
         for (char *p = strtok(line, " \t\n"); p && n < 32; p = strtok(NULL, " \t\n"))
             toks[n++] = p;
-        if (n >= 3 && strcmp(toks[2], "vda") == 0) {
+        if (n >= 3 && strcmp(toks[2], "nvme0n1") == 0) {
             nfields = n;
             if (n >= 14) {
                 out[0] = strtoull(toks[3], NULL, 10);
@@ -109,17 +109,17 @@ int main(void)
     char msg[192];
 
     unsigned long long s0[4] = {0, 0, 0, 0};
-    int nf = read_vda(s0);
+    int nf = read_nvme(s0);
 
     CHECK(nf != -2, "/proc/diskstats 可打开");
-    CHECK(nf >= 0, "/proc/diskstats 含 vda 设备行");
-    snprintf(msg, sizeof msg, "vda 行字段数 >= 14 (实际 %d)", nf);
+    CHECK(nf >= 0, "/proc/diskstats 含 nvme0n1 设备行");
+    snprintf(msg, sizeof msg, "nvme0n1 行字段数 >= 14 (实际 %d)", nf);
     CHECK(nf >= 14, msg);
 
     /* 启动挂载 ext4 必然产生块读 -> 证明 read 计数已接线且非造假。*/
-    snprintf(msg, sizeof msg, "vda reads > 0 (启动块读, 实际 %llu)", s0[0]);
+    snprintf(msg, sizeof msg, "nvme0n1 reads > 0 (启动块读, 实际 %llu)", s0[0]);
     CHECK(s0[0] > 0, msg);
-    snprintf(msg, sizeof msg, "vda sectors_read > 0 (实际 %llu)", s0[1]);
+    snprintf(msg, sizeof msg, "nvme0n1 sectors_read > 0 (实际 %llu)", s0[1]);
     CHECK(s0[1] > 0, msg);
 
     /* 写文件 + fsync 强制回写 -> writes / sectors_written 必须真增长。*/
@@ -134,8 +134,8 @@ int main(void)
         unlink(path);
 
         unsigned long long s1[4] = {0, 0, 0, 0};
-        int nf1 = read_vda(s1);
-        CHECK(nf1 >= 14, "写后再读 /proc/diskstats vda 行完整");
+        int nf1 = read_nvme(s1);
+        CHECK(nf1 >= 14, "写后再读 /proc/diskstats nvme0n1 行完整");
 
         snprintf(msg, sizeof msg, "写+fsync 后 writes 增长 (%llu -> %llu)", s0[2], s1[2]);
         CHECK(s1[2] > s0[2], msg);

@@ -11,28 +11,24 @@ mod drm;
 #[cfg(feature = "input")]
 pub mod event;
 mod fb;
+#[cfg(feature = "sg2002")]
+pub mod ion;
 mod kmsg;
 #[cfg(feature = "k230-kpu")]
 mod kpu;
 #[cfg(feature = "dev-log")]
 mod log;
 mod r#loop;
-#[cfg(feature = "ext4")]
-mod loop_block;
-#[cfg(feature = "jpeg")]
-mod mpp_service;
-#[cfg(feature = "rga")]
-pub(crate) mod rga;
-#[cfg(feature = "ext4")]
-pub use r#loop::LoopDevice;
-#[cfg(feature = "sg2002")]
-pub mod ion;
 #[cfg(feature = "memtrack")]
 mod memtrack;
+#[cfg(feature = "jpeg")]
+mod mpp_service;
 #[cfg(feature = "sg2002")]
 mod pinmux;
 #[cfg(any(feature = "sg2002", feature = "rk3588-pwm"))]
 pub(super) mod pwm;
+#[cfg(feature = "rga")]
+pub(crate) mod rga;
 mod rtc;
 #[cfg(feature = "sg2002")]
 pub mod tpu;
@@ -470,7 +466,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // st_rdev) can find it. The root mount is the first mount, so its
     // `DEVICE_COUNTER` id is 1 (== `DeviceId::new(0, 1).0`).
     root.add(
-        "vda",
+        ax_fs_ng::root::root_block_identity().name,
         Device::new(
             fs.clone(),
             NodeType::BlockDevice,

@@ -1,5 +1,7 @@
 //! SD/MMC card initialization state machine.
 
+use alloc::boxed::Box;
+
 use log::{debug, info, warn};
 
 use super::{
@@ -267,6 +269,18 @@ pub struct SdioInitRequest<'a, H: SdioHost + 'a> {
     pub(super) _scratch: core::marker::PhantomData<&'a mut SdioInitScratch>,
 }
 
+/// Runtime condition required before an initialization request may advance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdioInitWait {
+    /// Only register state or protocol bookkeeping remains; the owner may
+    /// retry in task context under its unified initialization deadline.
+    Register,
+    /// A command, data transfer, or tuning transaction is in flight. The
+    /// owner must not call `poll_init_request` again until a device IRQ was
+    /// acknowledged.
+    Irq,
+}
+
 impl<'a, H: SdioHost + 'a> SdioInitRequest<'a, H> {
     pub(super) fn new(preference: CardInitPreference, scratch: &'a mut SdioInitScratch) -> Self {
         Self {
@@ -312,6 +326,87 @@ impl<'a, H: SdioHost + 'a> SdioInitRequest<'a, H> {
         self.needs_pace = false;
         needs_pace
     }
+
+    /// Returns the event that must precede the next state-machine step.
+    ///
+    /// This deliberately classifies controller reset, clock, voltage, and
+    /// bus-width transitions as register work. Every command/data state is
+    /// classified as IRQ work, including MMC switch/status transactions.
+    pub const fn wait_kind(&self) -> SdioInitWait {
+        match self.state {
+            SdioInitState::ResetHost
+            | SdioInitState::PollResetHost
+            | SdioInitState::PowerOn
+            | SdioInitState::PollPowerOn
+            | SdioInitState::ResetVoltage
+            | SdioInitState::PollResetVoltage
+            | SdioInitState::ResetBusWidth
+            | SdioInitState::ResetClock
+            | SdioInitState::PostIdentificationClockDelay
+            | SdioInitState::SubmitCmd0
+            | SdioInitState::PollSdHostBusWidth
+            | SdioInitState::FinishCardSetup
+            | SdioInitState::PollSdDefaultClock
+            | SdioInitState::PollMmcHostBusWidth
+            | SdioInitState::PrepareMmcSpeed
+            | SdioInitState::PollMmcHs200VoltageSwitch
+            | SdioInitState::PollMmcHs200Clock
+            | SdioInitState::PollMmcHighSpeedClock
+            | SdioInitState::PrepareSdSpeed
+            | SdioInitState::PollSdSignalVoltage
+            | SdioInitState::PollSdClock
+            | SdioInitState::Complete => SdioInitWait::Register,
+            _ => SdioInitWait::Irq,
+        }
+    }
+}
+
+/// Heap-stable initialization request that owns its scratch DMA buffers.
+///
+/// The request field is declared before `scratch` so Rust drops every
+/// in-flight host request before freeing the backing buffers it may reference.
+pub struct OwnedSdioInitRequest<H: SdioHost + 'static> {
+    request: SdioInitRequest<'static, H>,
+    _scratch: Box<SdioInitScratch>,
+}
+
+impl<H: SdioHost + 'static> OwnedSdioInitRequest<H> {
+    pub fn new(preference: CardInitPreference) -> Self {
+        let mut scratch = Box::new(SdioInitScratch::new());
+        let scratch_ptr = core::ptr::from_mut::<SdioInitScratch>(&mut *scratch);
+        // SAFETY: `scratch` owns a stable heap allocation. The request is
+        // never exposed independently, and field drop order destroys it
+        // before `scratch`, so all embedded scratch pointers remain valid.
+        let scratch_ref = unsafe { &mut *scratch_ptr };
+        let request = SdioInitRequest::new(preference, scratch_ref);
+        Self {
+            request,
+            _scratch: scratch,
+        }
+    }
+
+    pub fn request_mut(&mut self) -> &mut SdioInitRequest<'static, H> {
+        &mut self.request
+    }
+
+    pub const fn wait_kind(&self) -> SdioInitWait {
+        self.request.wait_kind()
+    }
+
+    pub fn take_needs_pace(&mut self) -> bool {
+        self.request.take_needs_pace()
+    }
+}
+
+// SAFETY: the wrapper has exclusive ownership of the request and its
+// heap-stable scratch. Host request and bus request values are the only
+// driver-specific state that crosses the task boundary.
+unsafe impl<H> Send for OwnedSdioInitRequest<H>
+where
+    H: SdioHost + Send + 'static,
+    H::DataRequest<'static>: Send,
+    H::BusRequest: Send,
+{
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

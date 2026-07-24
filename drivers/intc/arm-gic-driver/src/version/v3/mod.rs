@@ -439,6 +439,29 @@ impl Gic {
         }
     }
 
+    pub fn collection_target_for_affinity(
+        &self,
+        gicr_phys_base: u64,
+        use_physical_target: bool,
+        affinity: Affinity,
+    ) -> Option<u64> {
+        let affinity = affinity.affinity();
+        self.rd_slice()
+            .iter()
+            .enumerate()
+            .find_map(|(index, redistributor)| {
+                let redistributor = unsafe { redistributor.as_ref() };
+                if redistributor.lpi.get_affinity() != affinity {
+                    return None;
+                }
+                if use_physical_target {
+                    Some(gicr_phys_base + (index * core::mem::size_of::<RedistributorV3>()) as u64)
+                } else {
+                    Some(u64::from(redistributor.lpi.processor_number()) << 16)
+                }
+            })
+    }
+
     pub fn init_lpi_tables(
         &self,
         property_table_phys: u64,

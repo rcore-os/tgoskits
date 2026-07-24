@@ -229,7 +229,7 @@ SG2002 路径需要 someboot 完成固件交接，并由板级支持、串口和
 | 板级支持 | `starry-kernel`、`sg200x-bsp` | `starry-kernel` feature `sg2002` | 提供 SG2002 板级设备和用户态支持 |
 | 驱动发现 | `rdrive`、`ax-driver` | `drivers/ax-driver/` | 根据 FDT 探测并注册板载设备 |
 | 串口 | `ax-driver`、`some-serial`、`rdif-serial` | `ax-driver` feature `serial` | 注册运行期硬件控制台和 TTY |
-| SD 卡 | `ax-driver`、`cv181x-sdhci`、`sdmmc-protocol`、`rdif-block` | `ax-driver` feature `cvsd` | 初始化 SD 卡并向文件系统提供 block device |
+| OrangePi 5 Plus eMMC | `ax-driver`、`sdhci-host`、`sdmmc-protocol`、`rdif-block` | `ax-driver` feature `rockchip-sdhci` | 使用 RK3588 DWCMSHC、ADMA2 和 IRQ 驱动的 block runtime；其他板卡块设备尚未迁移 |
 | 根文件系统 | `ax-fs-ng`、`rsext4` | — | 挂载 `/dev/mmcblk0p2` 上的 ext4 rootfs |
 
 板卡构建配置位于 `os/StarryOS/configs/board/licheerv-nano-sg2002.toml`。其中 `cvsd` feature 会启用 CV181x SDHCI、SD/MMC 协议和块设备接口，`sg2002` feature 提供 StarryOS 所需的 SG2002 板级支持。

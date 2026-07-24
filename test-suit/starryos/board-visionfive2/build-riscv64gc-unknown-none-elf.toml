@@ -1,9 +1,9 @@
 # Build-time config template for StarryOS on VisionFive2.
+# Block cases are unsupported until JH7110 DWMMC migrates to the IRQ runtime.
 target = "riscv64gc-unknown-none-elf"
 features = [
   "ax-runtime/rtc",
   "ax-driver/rtc",
   "ax-driver/serial",
-  "ax-driver/starfive-jh7110-dwmmc",
 ]
 log = "Info"

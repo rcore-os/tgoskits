@@ -10,11 +10,10 @@ categories = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
 sdhci-host = { workspace = true, default-features = false }
-sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio", "rdif"] }
+sdmmc-protocol = { workspace = true, default-features = false, features = ["sdio"] }
 sdio-host2.workspace = true
 dma-api.workspace = true
 mmio-api.workspace = true
-rdif-block.workspace = true
 
 [features]
 default = []

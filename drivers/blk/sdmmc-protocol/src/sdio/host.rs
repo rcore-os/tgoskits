@@ -82,15 +82,34 @@ pub trait SdioIrqHandle: Send + 'static {
     fn handle_irq(&mut self) -> Self::Event;
 }
 
+/// Source required for the host controller's next progress step.
+///
+/// A host may report [`Self::Register`] only for a phase that has no further
+/// completion IRQ, such as command-inhibit clearing before issue or DAT0 busy
+/// release after an acknowledged R1b command-complete event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostProgressWait {
+    /// A fresh acknowledged hardware IRQ must precede the next step.
+    Irq,
+    /// Register state alone can advance the current controller sub-state.
+    Register,
+}
+
 /// Optional IRQ-capable extension of [`SdioHost`].
 ///
-/// The normal data path remains the submit/poll methods on [`SdioHost`].
+/// The normal data path remains the asynchronous state machine on [`SdioHost`].
 /// IRQ support only gives OS glue an owned top-half endpoint that clears the
-/// device-side source and records status for later task-context polling.
+/// device-side source and records status for later maintenance-thread handling.
 pub trait SdioIrqHost: SdioHost {
     type IrqHandle: SdioIrqHandle<Event = Self::Event>;
 
     fn irq_handle(&mut self) -> Self::IrqHandle;
+
+    /// Reports whether controller-local register state can advance the active
+    /// operation without another IRQ.
+    fn progress_wait_kind(&self) -> HostProgressWait {
+        HostProgressWait::Irq
+    }
 }
 
 /// Queue identifier used by SD/MMC block adapters.
@@ -100,8 +119,8 @@ pub const SDMMC_BLOCK_QUEUE_ID: usize = 0;
 ///
 /// SD/MMC adapters expose one rdif block queue per controller in this
 /// workspace, so any non-empty host event is a stable "queue 0 may progress"
-/// signal. Request completion still happens only when task context calls
-/// `poll_request()`.
+/// signal. Request completion still happens only when the bound maintenance
+/// thread advances the protocol state after consuming that IRQ event.
 pub fn block_queue_ready_from_host_event(event: &impl HostEvent) -> Option<usize> {
     match event.kind() {
         HostEventKind::None => None,

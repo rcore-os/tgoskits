@@ -439,21 +439,16 @@ fn render_proc_net_snmp() -> String {
     buf
 }
 
-/// Block-device major reported for the root virtio-blk disk (`vda`) in
-/// `/proc/diskstats`. Linux assigns virtio-blk a dynamic major through
-/// `register_blkdev(0, "virtblk")`; 254 is the value the single-disk guest
-/// consistently observes.
-const VIRTBLK_MAJOR: u32 = 254;
-
 fn render_diskstats() -> String {
     // 14-field Linux /proc/diskstats layout, one line per block device. Only the
-    // root virtio-blk device ("vda", minor 0) is backed by the block runtime, so
-    // only its request/sector counters are real; the timing and in-flight fields
-    // have no source and stay zero.
+    // selected root device is backed by the block runtime, so only its
+    // request/sector counters are real; timing and in-flight fields have no
+    // source and stay zero.
+    let identity = ax_fs_ng::root::root_block_identity();
     let (reads, sectors_read, writes, sectors_written) = ax_fs_ng::block_io_stats();
     format!(
-        "{VIRTBLK_MAJOR}       0 vda {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 \
-         0 0\n"
+        "{}       {} {} {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 0 0\n",
+        identity.major, identity.minor, identity.name
     )
 }
 

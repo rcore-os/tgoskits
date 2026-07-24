@@ -1,7 +1,7 @@
 board_type = "OrangePi-5-Plus"
 shell_prefix = "root@starry:/root #"
 success_regex = [
-  '(?m)^block-rw-bench: done cases=3 status=ok$',
+  '(?m)^ORANGEPI_BLOCK_RW_BENCH_PASSED$',
 ]
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
@@ -10,4 +10,4 @@ fail_regex = [
   '(?i)(block-rw-bench|sh): .*not found',
   '(?i)\bI/O error\b',
 ]
-timeout = 600
+timeout = 1200

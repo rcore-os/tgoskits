@@ -8,17 +8,20 @@ use rdif_block::{
 };
 
 use crate::{
-    BlockPoll, BlockRequestId, DataCommandPoll, Error,
+    BlockPoll, BlockRequestId, DataCommandPoll, Error, OperationPoll,
     rdif::config::{BLOCK_SIZE, map_dev_err_to_blk_err},
     sdio::{
-        host::{SdioHost, SdioIrqHost},
+        card::{CardInfo, SdioSdmmc},
+        host::{HostProgressWait, SdioHost, SdioIrqHost},
         host2::{SdioHost2Adapter, SdioHost2DataRequest, SdioHost2Irq},
+        init::{CardInitPreference, OwnedSdioInitRequest, SdioInitWait},
     },
 };
 
 pub trait BlockHost: SdioIrqHost + Send + 'static {
     type Request: Send + 'static;
     type Slot: Default + Send + 'static;
+    type InitRequest: Send + 'static;
 
     fn submit_read_request(
         &mut self,
@@ -78,6 +81,26 @@ pub trait BlockHost: SdioIrqHost + Send + 'static {
     fn take_completed_dma(_slot: &mut Self::Slot) -> Option<CompletedDma> {
         None
     }
+
+    fn begin_card_init(
+        card: &mut SdioSdmmc<Self>,
+        preference: CardInitPreference,
+    ) -> Result<Self::InitRequest, Error>
+    where
+        Self: Sized;
+
+    fn advance_card_init(
+        card: &mut SdioSdmmc<Self>,
+        request: &mut Self::InitRequest,
+    ) -> Result<OperationPoll<CardInfo>, Error>
+    where
+        Self: Sized;
+
+    fn init_wait_kind(card: &SdioSdmmc<Self>, request: &Self::InitRequest) -> SdioInitWait
+    where
+        Self: Sized;
+
+    fn take_init_needs_pace(request: &mut Self::InitRequest) -> bool;
 }
 
 pub struct OwnedBlockSubmitError {
@@ -123,9 +146,11 @@ impl<H> BlockHost for SdioHost2Adapter<H>
 where
     H: SdioHost2Irq + Send + 'static,
     H::TransactionRequest<'static>: Send,
+    H::BusRequest: Send,
 {
     type Request = ProtocolBlockRequest<'static, H>;
     type Slot = ProtocolBlockSlot;
+    type InitRequest = OwnedSdioInitRequest<Self>;
 
     fn submit_read_request(
         &mut self,
@@ -226,6 +251,31 @@ where
 
     fn take_completed_dma(slot: &mut Self::Slot) -> Option<CompletedDma> {
         slot.completed_dma.take()
+    }
+
+    fn begin_card_init(
+        _card: &mut SdioSdmmc<Self>,
+        preference: CardInitPreference,
+    ) -> Result<Self::InitRequest, Error> {
+        Ok(OwnedSdioInitRequest::new(preference))
+    }
+
+    fn advance_card_init(
+        card: &mut SdioSdmmc<Self>,
+        request: &mut Self::InitRequest,
+    ) -> Result<OperationPoll<CardInfo>, Error> {
+        card.poll_init_request(request.request_mut())
+    }
+
+    fn init_wait_kind(card: &SdioSdmmc<Self>, request: &Self::InitRequest) -> SdioInitWait {
+        match (request.wait_kind(), card.host().progress_wait_kind()) {
+            (SdioInitWait::Irq, HostProgressWait::Register) => SdioInitWait::Register,
+            (protocol, _) => protocol,
+        }
+    }
+
+    fn take_init_needs_pace(request: &mut Self::InitRequest) -> bool {
+        request.take_needs_pace()
     }
 }
 

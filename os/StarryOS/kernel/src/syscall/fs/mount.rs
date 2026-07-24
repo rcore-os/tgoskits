@@ -330,69 +330,17 @@ fn mount_source(source: &str) -> &str {
 }
 
 #[cfg(feature = "ext4")]
-fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
-    use alloc::{boxed::Box, sync::Arc};
-
-    let fs_context = ax_fs_ng::vfs::current_fs_context();
-    let ctx = fs_context.lock();
-
-    // Resolve source device path (e.g., "/dev/loop0") to a block device
-    let source_loc = ctx.resolve(source)?;
-    let device = source_loc
-        .entry()
-        .downcast::<crate::pseudofs::Device>()
-        .map_err(|_| {
-            warn!("mount_ext4: {:?} is not a device", source);
-            AxError::NoSuchDevice
-        })?;
-    let loop_dev = device
-        .inner()
-        .as_any()
-        .downcast_ref::<crate::pseudofs::dev::LoopDevice>()
-        .ok_or_else(|| {
-            warn!("mount_ext4: {:?} is not a loop device", source);
-            AxError::NoSuchDevice
-        })?;
-    let handle = loop_dev.block_handle().inspect_err(|e| {
-        warn!("mount_ext4: loop device block handle failed: {:?}", e);
-    })?;
-
-    let num_blocks = handle.device_info().num_blocks;
-    let region = ax_fs_ng::BlockRegion::from_num_blocks(num_blocks);
-
-    // Create ext4 filesystem from the native block runtime handle
-    let fs = ax_fs_ng::vfs::new_filesystem_from_handle(handle, region).map_err(|e| {
-        warn!("mount_ext4: failed to create ext4 filesystem: {:?}", e);
-        AxError::Io
-    })?;
-
-    // Mount at the target location
-    let target_loc = ctx.resolve(target)?;
-    let mountpoint = target_loc.mount_with_source(&fs, source).map_err(|e| {
-        warn!("mount_ext4: failed to mount at {:?}: {:?}", target, e);
-        AxError::Io
-    })?;
-    mountpoint.set_readonly(readonly);
-
-    // Store a writeback callback in the mount root's user_data so that
-    // sys_umount2 can flush the loop device's block cache to the backing
-    // file after the filesystem is unmounted.
-    let ops: Arc<dyn crate::pseudofs::DeviceOps> = device.inner().clone();
-    {
-        let mount_root = ctx.resolve(target)?;
-        mount_root.user_data().insert(Box::new(move || {
-            if let Some(ld) = ops
-                .as_any()
-                .downcast_ref::<crate::pseudofs::dev::LoopDevice>()
-            {
-                ld.flush_cache_to_file()
-            } else {
-                Ok(())
-            }
-        }) as Box<dyn Fn() -> AxResult<()> + Send + Sync>);
-    }
-
-    Ok(())
+fn mount_ext4(source: &str, _target: &str, _readonly: bool) -> AxResult<()> {
+    // The old loop-backed ext4 adapter implemented the removed synchronous
+    // polling queue API. Keep its source for the later virtual-device
+    // migration, but do not expose it through mount(2) as an IRQ-capable
+    // device. Linux uses ENODEV when the requested filesystem/device backend
+    // is not available in the running kernel.
+    warn!(
+        "mount_ext4: block backend for source {:?} has not been migrated",
+        source
+    );
+    Err(AxError::NoSuchDevice)
 }
 
 pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {

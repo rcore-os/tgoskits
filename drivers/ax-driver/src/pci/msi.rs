@@ -93,6 +93,12 @@ impl PciIrqLease {
                 }
             }
             endpoint.set_msix_enabled(true).map_err(msix_probe_error)?;
+            // Every table entry is still masked. Clear the function-wide mask
+            // now so the IRQ runtime can enable individual sources only after
+            // their hard handlers have been registered.
+            endpoint
+                .set_msix_function_mask(false)
+                .map_err(msix_probe_error)?;
 
             Ok(Self {
                 provider: target.provider,
@@ -132,16 +138,77 @@ impl PciIrqLease {
             && let Ok(mut provider) = provider.lock()
         {
             for vector in allocation.vectors() {
+                let Ok(message) = provider.compose_message(vector) else {
+                    warn!(
+                        "failed to compose MSI-X message while enabling vector {:?}",
+                        vector.index
+                    );
+                    continue;
+                };
+                if let Err(err) = self.table.program_masked(vector.index.0, message) {
+                    warn!(
+                        "failed to program MSI-X table entry {:?}: {err}",
+                        vector.index
+                    );
+                    continue;
+                }
                 if let Err(err) = provider.set_vector_enabled(vector, true) {
                     warn!("failed to enable MSI vector {:?}: {err:?}", vector.index);
+                    continue;
                 }
                 if let Err(err) = self.table.unmask(vector.index.0) {
+                    let _ = provider.set_vector_enabled(vector, false);
                     warn!(
                         "failed to unmask MSI-X table entry {:?}: {err}",
                         vector.index
                     );
                 }
             }
+        }
+    }
+
+    pub fn enable_source(&self, source_id: usize) {
+        let Ok(source_id) = u16::try_from(source_id) else {
+            warn!("MSI-X source id {source_id} is outside the vector index range");
+            return;
+        };
+        let Some(vector) = self
+            .vectors()
+            .iter()
+            .find(|vector| vector.index.0 == source_id)
+        else {
+            warn!("MSI-X source id {source_id} is not owned by this allocation");
+            return;
+        };
+        let Ok(provider) = rdrive::get::<Msi>(self.provider) else {
+            warn!("failed to find MSI provider while enabling vector {source_id}");
+            return;
+        };
+        let Ok(mut provider) = provider.lock() else {
+            warn!("failed to lock MSI provider while enabling vector {source_id}");
+            return;
+        };
+        let Ok(message) = provider.compose_message(vector) else {
+            warn!("failed to compose MSI-X message while enabling vector {source_id}");
+            return;
+        };
+        if let Err(err) = self.table.program_masked(vector.index.0, message) {
+            warn!(
+                "failed to program MSI-X table entry {:?}: {err}",
+                vector.index
+            );
+            return;
+        }
+        if let Err(err) = provider.set_vector_enabled(vector, true) {
+            warn!("failed to enable MSI vector {:?}: {err:?}", vector.index);
+            return;
+        }
+        if let Err(err) = self.table.unmask(vector.index.0) {
+            let _ = provider.set_vector_enabled(vector, false);
+            warn!(
+                "failed to unmask MSI-X table entry {:?}: {err}",
+                vector.index
+            );
         }
     }
 
@@ -181,6 +248,10 @@ impl crate::IrqBindingLease for PciIrqLease {
         self.enable();
     }
 
+    fn enable_binding_source(&self, source_id: usize) {
+        self.enable_source(source_id);
+    }
+
     fn disable_binding_irq(&self) {
         self.disable();
     }
@@ -211,9 +282,7 @@ fn binding_info_from_msi_vectors(vectors: &[rdif_msi::MsiVector]) -> BindingInfo
 pub fn msi_target_for_endpoint(info: PciInfo) -> Result<PciMsiTarget, OnProbeError> {
     match dynamic_msi_source() {
         Some(DynamicMsiSource::Fdt) => fdt_msi_target_for_endpoint(info),
-        Some(DynamicMsiSource::Acpi) => Err(OnProbeError::Unsupported(
-            "ACPI IORT PCI MSI routing is not implemented",
-        )),
+        Some(DynamicMsiSource::Acpi) => acpi_msi_target_for_endpoint(info),
         None => Err(OnProbeError::Unsupported(
             "PCI MSI routing requires FDT msi-parent/msi-map or ACPI IORT",
         )),
@@ -234,6 +303,23 @@ fn dynamic_msi_source() -> Option<DynamicMsiSource> {
     } else {
         None
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn acpi_msi_target_for_endpoint(info: PciInfo) -> Result<PciMsiTarget, OnProbeError> {
+    let provider = rdrive::get_one::<Msi>()
+        .ok_or_else(|| OnProbeError::other("x86 local APIC MSI provider is not registered"))?;
+    Ok(PciMsiTarget {
+        provider: provider.descriptor().device_id(),
+        device: MsiDeviceId(pci_requester_id(info.address)),
+    })
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn acpi_msi_target_for_endpoint(_info: PciInfo) -> Result<PciMsiTarget, OnProbeError> {
+    Err(OnProbeError::Unsupported(
+        "ACPI IORT PCI MSI routing is not implemented",
+    ))
 }
 
 fn fdt_msi_target_for_endpoint(info: PciInfo) -> Result<PciMsiTarget, OnProbeError> {

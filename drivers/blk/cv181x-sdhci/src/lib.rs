@@ -1,8 +1,9 @@
 //! CV181x/SG2002 SD-card host wrapper for the generic SDHCI backend.
 //!
 //! This crate owns only the Cvitek-specific top/pinmux/PHY programming around
-//! the controller. Command, data, interrupt-status caching, and RDIF queue
-//! semantics are delegated to [`sdhci_host::Sdhci`].
+//! the controller. Command, data, and interrupt-status caching are delegated
+//! to [`sdhci_host::Sdhci`]. Its block-runtime adapter is intentionally absent
+//! until this controller is migrated to the IRQ-only queue contract.
 
 #![no_std]
 
@@ -11,8 +12,6 @@ use core::ptr::NonNull;
 use sdhci_host::Sdhci;
 use sdio_host2::{BusWidth, ClockHz, ClockSpeed, RequestPoll, SignalVoltage};
 use sdmmc_protocol::{Error as ProtocolError, sdio::host2::SdioHost2Irq};
-
-pub mod rdif;
 
 const DEFAULT_SRC_FREQUENCY_HZ: u32 = 375_000_000;
 const DEFAULT_MIN_FREQUENCY_HZ: u32 = 400_000;

@@ -68,7 +68,7 @@ fs = [
     "ax-api/fs",
     "ax-posix-api/fs",
     "ax-runtime/fs",
-    "ax-driver/virtio-blk",
+    "ax-driver/nvme",
     "fd",
 ]
 ext4fs = ["fs", "ax-runtime/ext4fs"]
@@ -90,7 +90,7 @@ dns = ["net"]
 fd = ["ax-posix-api/fd", "ax-posix-api/poll"]
 
 # Driver feature forwards used by std-aware apps that depend on `axstd` directly.
-virtio-blk = ["ax-driver/virtio-blk"]
+nvme = ["ax-driver/nvme"]
 virtio-net = ["ax-driver/virtio-net"]
 virtio-gpu = ["ax-driver/virtio-gpu"]
 virtio-input = ["ax-driver/virtio-input"]

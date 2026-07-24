@@ -1,339 +1,375 @@
-use alloc::{sync::Arc, vec::Vec};
-use core::{num::NonZeroUsize, ptr::NonNull};
+use alloc::sync::Arc;
+use core::hint::spin_loop;
 
-use log::warn;
-use rdif_block::{BlkError, IQueue, Request, RequestId, RequestStatus};
-
-use crate::{
-    BlockPoll, BlockRequestId,
-    rdif::{
-        config::{
-            BLOCK_SIZE, block_addr_for_card, device_info, map_dev_err_to_blk_err, queue_limits,
-            should_split_fifo_request,
-        },
-        device::BlockControl,
-        host::BlockHost,
-        split::{SplitDirection, SplitTransfer},
-    },
-    sdio::SdioSdmmc,
+use log::{info, warn};
+use rdif_block::{
+    BatchSubmitDisposition, BatchSubmitResult, BlkError, CompletedRequest, CompletionSink,
+    HardwareQueue, OwnedRequest, OwnedRequestBatch, QueueInfo, RequestId, RequestOp,
+    SubmissionSink, SubmitError, validate_owned_request,
 };
 
+use crate::{
+    BlockPoll, BlockRequestId, OperationPoll,
+    rdif::{
+        config::{block_addr_for_card, device_info, map_dev_err_to_blk_err, queue_limits},
+        device::BlockInitStatus,
+        host::BlockHost,
+    },
+    sdio::{
+        card::{CardKind, SdioSdmmc},
+        host::SdioHost,
+        init::{CardInitPreference, MmcSwitchRequest, SdioInitWait},
+    },
+};
+
+const MMC_SWITCH_WRITE_BYTE: u8 = 0b11;
+const MMC_EXT_CSD_FLUSH_CACHE: u8 = 32;
+const MMC_FLUSH_CACHE_TRIGGER: u8 = 1;
+const INIT_DEADLINE_MS: u64 = 5_000;
+const INIT_PACE_MS: u64 = 10;
+const INIT_FALLBACK_SPIN_LIMIT: usize = 10_000_000;
+
+/// Queue state exclusively owned by one block runtime maintenance task.
 pub struct BlockQueue<H>
 where
     H: BlockHost,
 {
-    pub(super) control: Arc<BlockControl<H>>,
-    pub(super) id: usize,
-    pub(super) slot: H::Slot,
-    pub(super) pending: Option<H::Request>,
-    pub(super) split_transfer: Option<SplitTransfer>,
-    pub(super) completed: Vec<RequestId>,
-    pub(super) completed_owned: Vec<rdif_block::CompletedRequest>,
+    card: SdioSdmmc<H>,
+    config: super::config::BlockConfig,
+    id: usize,
+    slot: H::Slot,
+    pending: Option<H::Request>,
+    pending_id: Option<RequestId>,
+    flush: Option<(RequestId, MmcSwitchRequest)>,
+    next_flush_id: usize,
+    completion_irq_enabled: bool,
+    init_request: Option<H::InitRequest>,
+    init_status: Option<Arc<BlockInitStatus>>,
+    init_started_ms: Option<u64>,
+    init_spins: usize,
+    supports_flush: bool,
 }
 
 impl<H> BlockQueue<H>
 where
     H: BlockHost,
 {
-    pub(super) fn new(control: Arc<BlockControl<H>>, id: usize) -> Self {
+    pub(super) fn new(card: SdioSdmmc<H>, config: super::config::BlockConfig, id: usize) -> Self {
+        let supports_flush = queue_supports_flush(card.kind(), None);
         Self {
-            control,
+            card,
+            config,
             id,
             slot: H::Slot::default(),
             pending: None,
-            split_transfer: None,
-            completed: Vec::new(),
-            completed_owned: Vec::new(),
+            pending_id: None,
+            flush: None,
+            next_flush_id: usize::MAX / 2,
+            completion_irq_enabled: false,
+            init_request: None,
+            init_status: None,
+            init_started_ms: None,
+            init_spins: 0,
+            supports_flush,
         }
     }
 
-    pub(super) fn queue_info(&self) -> rdif_block::QueueInfo {
-        rdif_block::IQueue::info(self)
+    pub(super) fn new_initializing(
+        card: SdioSdmmc<H>,
+        config: super::config::BlockConfig,
+        id: usize,
+        preference: CardInitPreference,
+        init_status: Arc<BlockInitStatus>,
+    ) -> Result<Self, BlkError> {
+        let mut queue = Self::new(card, config, id);
+        queue.supports_flush = queue_supports_flush(queue.card.kind(), Some(preference));
+        queue.init_status = Some(init_status);
+        queue.ensure_completion_irq()?;
+        queue.init_started_ms = queue.card.host().now_ms();
+        queue.init_request =
+            Some(H::begin_card_init(&mut queue.card, preference).map_err(map_dev_err_to_blk_err)?);
+        queue.advance_initialization()?;
+        Ok(queue)
     }
 
-    fn submit_request_inner(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
-        rdif_block::validate_request(self.queue_info(), &request)?;
-        self.reap_pending_request()?;
-        let raw = self.control.raw.clone();
-        raw.with_mut(|raw| {
-            let start_block = block_addr_for_card(request.lba, raw.is_high_capacity())?;
-            let buffer = request
-                .segments
-                .first()
-                .copied()
-                .ok_or(BlkError::InvalidRequest)?;
-            if !buffer.len().is_multiple_of(BLOCK_SIZE) {
-                return Err(BlkError::Other("buffer is not block aligned"));
-            }
-            let ptr = NonNull::new(buffer.virt).ok_or(BlkError::Other("buffer pointer is null"))?;
-            let size = NonZeroUsize::new(buffer.len()).ok_or(BlkError::Other("buffer is empty"))?;
-            let dma = self.control.config.dma.as_ref();
-            let id = match request.op {
-                rdif_block::RequestOp::Read
-                    if should_split_fifo_request(dma, request.block_count) =>
-                {
-                    self.submit_split_transfer(
-                        raw,
-                        SplitDirection::Read,
-                        start_block,
-                        ptr,
-                        request.block_count,
-                        raw.is_high_capacity(),
-                    )?
+    fn queue_info(&self) -> QueueInfo {
+        let mut limits = queue_limits(&self.config, self.config.dma_mask);
+        limits.supports_flush = self.supports_flush;
+        QueueInfo {
+            id: self.id,
+            device: device_info(&self.config),
+            limits,
+        }
+    }
+
+    fn ensure_completion_irq(&mut self) -> Result<(), BlkError> {
+        if self.completion_irq_enabled {
+            return Ok(());
+        }
+        SdioHost::enable_completion_irq(self.card.host_mut()).map_err(map_dev_err_to_blk_err)?;
+        if !self.card.host().completion_irq_enabled() {
+            return Err(BlkError::NotSupported);
+        }
+        self.completion_irq_enabled = true;
+        Ok(())
+    }
+
+    fn init_deadline_expired(&self) -> bool {
+        match (self.init_started_ms, self.card.host().now_ms()) {
+            (Some(started), Some(now)) => now.saturating_sub(started) >= INIT_DEADLINE_MS,
+            _ => self.init_spins >= INIT_FALLBACK_SPIN_LIMIT,
+        }
+    }
+
+    fn pace_initialization(&mut self) -> Result<(), BlkError> {
+        if let Some(started) = self.card.host().now_ms() {
+            while self
+                .card
+                .host()
+                .now_ms()
+                .is_some_and(|now| now.saturating_sub(started) < INIT_PACE_MS)
+            {
+                if self.init_deadline_expired() {
+                    return Err(BlkError::TimedOut);
                 }
-                rdif_block::RequestOp::Write
-                    if should_split_fifo_request(dma, request.block_count) =>
-                {
-                    self.submit_split_transfer(
-                        raw,
-                        SplitDirection::Write,
-                        start_block,
-                        ptr,
-                        request.block_count,
-                        raw.is_high_capacity(),
-                    )?
-                }
-                rdif_block::RequestOp::Read => {
-                    let id = H::submit_read_request(
-                        raw.host_mut(),
-                        start_block,
-                        ptr,
-                        size,
-                        dma,
-                        &mut self.slot,
-                        &mut self.pending,
-                    )?;
-                    RequestId::new(usize::from(id))
-                }
-                rdif_block::RequestOp::Write => H::submit_write_request(
-                    raw.host_mut(),
-                    start_block,
-                    ptr,
-                    size,
-                    dma,
-                    &mut self.slot,
-                    &mut self.pending,
-                )
-                .map(|id| RequestId::new(usize::from(id)))?,
-                rdif_block::RequestOp::Flush
-                | rdif_block::RequestOp::Discard
-                | rdif_block::RequestOp::WriteZeroes => return Err(BlkError::NotSupported),
-            };
-            Ok(id)
-        })
-    }
-
-    pub(super) fn poll_request_inner(
-        &mut self,
-        request: RequestId,
-    ) -> Result<RequestStatus, BlkError> {
-        if let Some(index) = self.completed.iter().position(|id| *id == request) {
-            self.completed.swap_remove(index);
-            return Ok(RequestStatus::Complete);
-        }
-        if self
-            .split_transfer
-            .as_ref()
-            .is_some_and(|split| split.public_id != request)
-        {
-            return Ok(RequestStatus::Pending);
-        }
-        if self.split_transfer.is_some() {
-            return self.poll_split_transfer(request);
-        }
-        self.poll_direct_request(request)
-    }
-
-    fn poll_direct_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
-        self.poll_host_request(BlockRequestId::new(usize::from(request)))
-    }
-
-    fn poll_host_request(&mut self, request: BlockRequestId) -> Result<RequestStatus, BlkError> {
-        let raw = self.control.raw.clone();
-        match raw.with_mut(|raw| {
-            H::poll_block_request(raw.host_mut(), &mut self.pending, request, &mut self.slot)
-        }) {
-            Ok(BlockPoll::Complete) => Ok(RequestStatus::Complete),
-            Ok(BlockPoll::Pending) => Ok(RequestStatus::Pending),
-            Err(err) => Err(map_dev_err_to_blk_err(err)),
-        }
-    }
-
-    fn submit_split_transfer(
-        &mut self,
-        raw: &mut SdioSdmmc<H>,
-        direction: SplitDirection,
-        start_block: u32,
-        buffer: NonNull<u8>,
-        block_count: u32,
-        high_capacity: bool,
-    ) -> Result<RequestId, BlkError> {
-        if self.pending.is_some() || self.split_transfer.is_some() {
-            return Err(BlkError::Retry);
-        }
-        let id = self.submit_split_child(raw, direction, start_block, buffer)?;
-        let public_id = RequestId::new(usize::from(id));
-        let block_addr_step = if high_capacity { 1 } else { BLOCK_SIZE as u32 };
-        let remaining_blocks = block_count - 1;
-        let next_card_block = if remaining_blocks == 0 {
-            start_block
-        } else {
-            start_block
-                .checked_add(block_addr_step)
-                .ok_or(BlkError::InvalidRequest)?
-        };
-        self.split_transfer = Some(SplitTransfer {
-            direction,
-            public_id,
-            next_card_block,
-            block_addr_step,
-            buffer_addr: buffer.as_ptr() as usize,
-            next_offset: BLOCK_SIZE,
-            remaining_blocks,
-        });
-        Ok(public_id)
-    }
-
-    fn submit_split_child(
-        &mut self,
-        raw: &mut SdioSdmmc<H>,
-        direction: SplitDirection,
-        card_block: u32,
-        buffer: NonNull<u8>,
-    ) -> Result<BlockRequestId, BlkError> {
-        let block_size = NonZeroUsize::new(BLOCK_SIZE).ok_or(BlkError::InvalidRequest)?;
-        match direction {
-            SplitDirection::Read => H::submit_read_request(
-                raw.host_mut(),
-                card_block,
-                buffer,
-                block_size,
-                None,
-                &mut self.slot,
-                &mut self.pending,
-            ),
-            SplitDirection::Write => H::submit_write_request(
-                raw.host_mut(),
-                card_block,
-                buffer,
-                block_size,
-                None,
-                &mut self.slot,
-                &mut self.pending,
-            ),
-        }
-    }
-
-    fn poll_split_transfer(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
-        let child = self.pending_id().ok_or(BlkError::InvalidRequest)?;
-        let status = match self.poll_host_request(child) {
-            Ok(status) => status,
-            Err(err) => {
-                self.split_transfer = None;
-                return Err(err);
+                spin_loop();
             }
+            return Ok(());
+        }
+        for _ in 0..10_000 {
+            spin_loop();
+        }
+        Ok(())
+    }
+
+    /// Advances register-only init work until the protocol submits a command
+    /// or data transaction. Calls reached from `drain_completions` have
+    /// consumed one acknowledged IRQ before entering this method.
+    fn advance_initialization(&mut self) -> Result<bool, BlkError> {
+        let Some(mut request) = self.init_request.take() else {
+            return Ok(true);
         };
-        match status {
-            RequestStatus::Pending => Ok(RequestStatus::Pending),
-            RequestStatus::Complete => self.advance_split_transfer(request),
-        }
-    }
-
-    fn advance_split_transfer(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
-        if self
-            .split_transfer
-            .as_ref()
-            .is_none_or(|split| split.remaining_blocks == 0)
-        {
-            self.split_transfer = None;
-            return Ok(RequestStatus::Complete);
-        }
-
-        let mut split = self.split_transfer.take().ok_or(BlkError::InvalidRequest)?;
-        if split.public_id != request {
-            self.split_transfer = Some(split);
-            return Ok(RequestStatus::Pending);
-        }
-        let ptr = split
-            .buffer_addr
-            .checked_add(split.next_offset)
-            .and_then(|addr| NonNull::new(addr as *mut u8))
-            .ok_or(BlkError::Other("buffer pointer is null"))?;
-        let raw = self.control.raw.clone();
-        let submit = raw.with_mut(|raw| {
-            self.submit_split_child(raw, split.direction, split.next_card_block, ptr)
-        });
-        submit?;
-        split.remaining_blocks -= 1;
-        split.next_offset += BLOCK_SIZE;
-        if split.remaining_blocks > 0 {
-            split.next_card_block = split
-                .next_card_block
-                .checked_add(split.block_addr_step)
-                .ok_or(BlkError::InvalidRequest)?;
-        }
-        self.split_transfer = Some(split);
-        Ok(RequestStatus::Pending)
-    }
-
-    fn pending_id(&self) -> Option<BlockRequestId> {
-        self.pending.as_ref().map(H::request_id)
-    }
-
-    fn active_request_id(&self) -> Option<RequestId> {
-        self.split_transfer
-            .as_ref()
-            .map(|split| split.public_id)
-            .or_else(|| {
-                self.pending
-                    .as_ref()
-                    .map(|pending| RequestId::new(usize::from(H::request_id(pending))))
-            })
-    }
-
-    fn reap_pending_request(&mut self) -> Result<RequestStatus, BlkError> {
-        let Some(active) = self.active_request_id() else {
-            return Ok(RequestStatus::Complete);
-        };
-        match self.poll_request_inner(active) {
-            Ok(RequestStatus::Complete) => {
-                self.completed.push(active);
-                Ok(RequestStatus::Complete)
+        loop {
+            if self.init_deadline_expired() {
+                if let Some(status) = &self.init_status {
+                    status.mark_failed();
+                }
+                return Err(BlkError::TimedOut);
             }
-            Ok(RequestStatus::Pending) => Err(BlkError::Retry),
-            Err(err) => Err(err),
-        }
-    }
-}
-
-impl<H> Drop for BlockQueue<H>
-where
-    H: BlockHost,
-{
-    fn drop(&mut self) {
-        if self.pending.is_some() {
-            let raw = self.control.raw.clone();
-            raw.with_mut(|raw| {
-                if let Err(err) =
-                    H::abort_request(raw.host_mut(), &mut self.pending, &mut self.slot)
-                {
-                    warn!(
-                        "sdmmc rdif: abort pending request on queue drop reported recovery error: \
-                         {err:?}"
+            self.init_spins = self.init_spins.saturating_add(1);
+            match H::advance_card_init(&mut self.card, &mut request) {
+                Ok(OperationPoll::Pending) => {
+                    if H::take_init_needs_pace(&mut request) {
+                        if let Err(error) = self.pace_initialization() {
+                            if let Some(status) = &self.init_status {
+                                status.mark_failed();
+                            }
+                            return Err(error);
+                        }
+                    }
+                    if H::init_wait_kind(&self.card, &request) == SdioInitWait::Irq {
+                        self.init_request = Some(request);
+                        return Ok(false);
+                    }
+                    spin_loop();
+                }
+                Ok(OperationPoll::Complete(info)) => {
+                    let Some(capacity_blocks) =
+                        info.capacity_blocks.filter(|capacity| *capacity != 0)
+                    else {
+                        if let Some(status) = &self.init_status {
+                            status.mark_failed();
+                        }
+                        return Err(BlkError::Io);
+                    };
+                    self.config.capacity_blocks = capacity_blocks;
+                    if let Some(status) = &self.init_status {
+                        status.mark_ready(capacity_blocks);
+                    }
+                    info!(
+                        "sdmmc block init complete: kind={:?} high_capacity={} rca={} \
+                         capacity_blocks={}",
+                        info.kind, info.high_capacity, info.rca, capacity_blocks
                     );
-                    self.pending = None;
+                    return Ok(true);
                 }
-            });
+                Err(error) => {
+                    if let Some(status) = &self.init_status {
+                        status.mark_failed();
+                    }
+                    return Err(map_dev_err_to_blk_err(error));
+                }
+            }
         }
-        self.split_transfer = None;
-        self.control.release_queue();
+    }
+
+    fn submit_data(&mut self, mut request: OwnedRequest) -> Result<RequestId, SubmitError> {
+        let op = request.op;
+        let lba = request.lba;
+        let block_count = request.block_count;
+        let flags = request.flags;
+        let Some(buffer) = request.data.take() else {
+            return Err(SubmitError::new(BlkError::InvalidRequest, request));
+        };
+        let start_block = match block_addr_for_card(lba, self.card.is_high_capacity()) {
+            Ok(start_block) => start_block,
+            Err(error) => {
+                request.data = Some(buffer);
+                return Err(SubmitError::new(error, request));
+            }
+        };
+        let submit = match op {
+            RequestOp::Read => H::submit_owned_read_request(
+                self.card.host_mut(),
+                start_block,
+                buffer,
+                &mut self.slot,
+                &mut self.pending,
+            ),
+            RequestOp::Write => H::submit_owned_write_request(
+                self.card.host_mut(),
+                start_block,
+                buffer,
+                &mut self.slot,
+                &mut self.pending,
+            ),
+            _ => unreachable!(),
+        };
+        match submit {
+            Ok(id) => {
+                let id = RequestId::new(usize::from(id));
+                self.pending_id = Some(id);
+                Ok(id)
+            }
+            Err(error) => {
+                let (error, buffer) = error.into_parts();
+                Err(SubmitError::new(
+                    error,
+                    OwnedRequest {
+                        op,
+                        lba,
+                        block_count,
+                        data: Some(buffer),
+                        flags,
+                    },
+                ))
+            }
+        }
+    }
+
+    fn submit_flush(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError> {
+        if self.card.kind() != CardKind::Mmc {
+            return Err(SubmitError::new(BlkError::NotSupported, request));
+        }
+        let id = RequestId::new(self.next_flush_id);
+        self.next_flush_id = self.next_flush_id.wrapping_add(1);
+        match self.card.submit_mmc_switch(
+            MMC_SWITCH_WRITE_BYTE,
+            MMC_EXT_CSD_FLUSH_CACHE,
+            MMC_FLUSH_CACHE_TRIGGER,
+        ) {
+            Ok(flush) => {
+                self.flush = Some((id, flush));
+                Ok(id)
+            }
+            Err(error) => {
+                warn!("sdmmc flush submit failed: {error}");
+                Err(SubmitError::new(map_dev_err_to_blk_err(error), request))
+            }
+        }
+    }
+
+    fn submit_one(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError> {
+        if self.init_request.is_some() {
+            return Err(SubmitError::new(BlkError::Retry, request));
+        }
+        if let Err(error) = validate_owned_request(self.queue_info(), &request) {
+            return Err(SubmitError::new(error, request));
+        }
+        if self.pending.is_some() || self.flush.is_some() {
+            return Err(SubmitError::new(BlkError::Retry, request));
+        }
+        if let Err(error) = self.ensure_completion_irq() {
+            return Err(SubmitError::new(error, request));
+        }
+        match request.op {
+            RequestOp::Read | RequestOp::Write => self.submit_data(request),
+            RequestOp::Flush => self.submit_flush(request),
+        }
+    }
+
+    fn drain_data(&mut self, sink: &mut dyn CompletionSink) {
+        let Some(id) = self.pending_id else {
+            return;
+        };
+        let result = H::poll_block_request(
+            self.card.host_mut(),
+            &mut self.pending,
+            BlockRequestId::new(usize::from(id)),
+            &mut self.slot,
+        );
+        match result {
+            Ok(BlockPoll::Pending) => {}
+            Ok(BlockPoll::Complete) => {
+                self.pending_id = None;
+                let data = H::take_completed_dma(&mut self.slot);
+                sink.complete(CompletedRequest::new(id, Ok(()), data));
+            }
+            Err(error) => {
+                let abort =
+                    H::abort_request(self.card.host_mut(), &mut self.pending, &mut self.slot);
+                self.pending_id = None;
+                let data = H::take_completed_dma(&mut self.slot);
+                warn!("sdmmc data request {id:?} failed: {error}; abort={abort:?}");
+                let error = abort.err().unwrap_or(error);
+                sink.complete(CompletedRequest::new(
+                    id,
+                    Err(map_dev_err_to_blk_err(error)),
+                    data,
+                ));
+            }
+        }
+    }
+
+    fn drain_flush(&mut self, sink: &mut dyn CompletionSink) {
+        let Some((id, mut request)) = self.flush.take() else {
+            return;
+        };
+        match self.card.poll_mmc_switch_request(&mut request) {
+            Ok(OperationPoll::Pending) => self.flush = Some((id, request)),
+            Ok(OperationPoll::Complete(())) => {
+                sink.complete(CompletedRequest::new(id, Ok(()), None));
+            }
+            Err(error) => {
+                warn!("sdmmc flush request {id:?} failed: {error}");
+                sink.complete(CompletedRequest::new(
+                    id,
+                    Err(map_dev_err_to_blk_err(error)),
+                    None,
+                ));
+            }
+        }
     }
 }
 
-// SAFETY: `BlockQueue` owns one pending request slot. The concrete host
-// request object owns any borrowed request segment until task-side poll
-// reports completion or error.
-unsafe impl<H> IQueue for BlockQueue<H>
+fn queue_supports_flush(card_kind: CardKind, init_preference: Option<CardInitPreference>) -> bool {
+    card_kind == CardKind::Mmc || matches!(init_preference, Some(CardInitPreference::MmcFirst))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mmc_first_queue_advertises_flush_before_card_detection() {
+        assert!(queue_supports_flush(
+            CardKind::Sd,
+            Some(CardInitPreference::MmcFirst),
+        ));
+    }
+}
+
+impl<H> HardwareQueue for BlockQueue<H>
 where
     H: BlockHost,
 {
@@ -341,19 +377,74 @@ where
         self.id
     }
 
-    fn info(&self) -> rdif_block::QueueInfo {
-        rdif_block::QueueInfo {
-            id: self.id,
-            device: device_info(&self.control.config),
-            limits: queue_limits(&self.control.config, self.control.config.dma_mask),
+    fn info(&self) -> QueueInfo {
+        self.queue_info()
+    }
+
+    fn submit_batch_owned(
+        &mut self,
+        requests: &mut OwnedRequestBatch,
+        sink: &mut dyn SubmissionSink,
+    ) -> BatchSubmitResult {
+        let Some(request) = requests.pop_front() else {
+            return BatchSubmitResult::new(0, BatchSubmitDisposition::Continue);
+        };
+        match self.submit_one(request) {
+            Ok(id) => {
+                sink.accepted(id);
+                BatchSubmitResult::new(1, BatchSubmitDisposition::Continue)
+            }
+            Err(error) => {
+                let disposition = if error.error == BlkError::Retry {
+                    BatchSubmitDisposition::QueueFull
+                } else {
+                    BatchSubmitDisposition::Fatal(error.error)
+                };
+                requests.push_front(error.into_request());
+                BatchSubmitResult::new(0, disposition)
+            }
         }
     }
 
-    fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
-        self.submit_request_inner(request)
+    fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        // DWCMSHC owns only one in-flight request and the host submit primitive
+        // starts it immediately, so there is no separate doorbell to publish.
+        Ok(())
     }
 
-    fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
-        self.poll_request_inner(request)
+    fn drain_completions(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        if self.init_request.is_some() {
+            self.advance_initialization()?;
+            return Ok(());
+        }
+        self.drain_data(sink);
+        self.drain_flush(sink);
+        Ok(())
+    }
+
+    fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        if self.completion_irq_enabled {
+            let _ = SdioHost::disable_completion_irq(self.card.host_mut());
+            self.completion_irq_enabled = false;
+        }
+        if self.init_request.take().is_some()
+            && let Some(status) = &self.init_status
+        {
+            status.mark_failed();
+        }
+        if let Some(id) = self.pending_id.take() {
+            let result = H::abort_request(self.card.host_mut(), &mut self.pending, &mut self.slot)
+                .map_err(map_dev_err_to_blk_err);
+            let data = H::take_completed_dma(&mut self.slot);
+            sink.complete(CompletedRequest::new(
+                id,
+                result.and(Err(BlkError::Io)),
+                data,
+            ));
+        }
+        if let Some((id, _)) = self.flush.take() {
+            sink.complete(CompletedRequest::new(id, Err(BlkError::Io), None));
+        }
+        Ok(())
     }
 }

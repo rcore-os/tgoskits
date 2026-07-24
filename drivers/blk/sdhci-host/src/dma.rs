@@ -81,7 +81,7 @@ const BLOCK_SIZE: usize = 512;
 pub const ADMA2_MAX_TRANSFER_SIZE: usize =
     (ADMA2_DESC_COUNT * ADMA2_MAX_PER_DESC / BLOCK_SIZE) * BLOCK_SIZE;
 pub const ADMA2_MAX_BLOCKS: u32 = (ADMA2_MAX_TRANSFER_SIZE / BLOCK_SIZE) as u32;
-const DWC_MSHC_ADMA_BOUNDARY: u64 = 128 * 1024 * 1024;
+pub const DWC_MSHC_ADMA_BOUNDARY: usize = 128 * 1024 * 1024;
 
 pub type RequestId = BlockRequestId;
 
@@ -344,7 +344,8 @@ pub(crate) fn build_descriptors(
         if written >= ADMA2_DESC_COUNT {
             return Err(Error::Misaligned);
         }
-        let boundary_room = DWC_MSHC_ADMA_BOUNDARY - ((base + offset) % DWC_MSHC_ADMA_BOUNDARY);
+        let boundary = DWC_MSHC_ADMA_BOUNDARY as u64;
+        let boundary_room = boundary - ((base + offset) % boundary);
         let chunk = remaining
             .min(ADMA2_MAX_PER_DESC)
             .min(boundary_room as usize);
@@ -471,6 +472,78 @@ impl Sdhci {
             Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
         };
         match self.build_prepared_dma_write_request(start_block, buffer, dma, id) {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn submit_adma2_data_request(
+        &mut self,
+        cmd: &Command,
+        buffer: NonNull<u8>,
+        len: usize,
+        block_size: u32,
+        block_count: u32,
+        direction: DataDirection,
+        dma: &DeviceDma,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, Error> {
+        self.check_not_poisoned()?;
+        let transfer_direction = block_transfer_direction(direction)?;
+        let id = slot.start(BlockTransferMode::Dma, transfer_direction)?;
+        match self.build_bounce_adma2_data_request(
+            cmd,
+            buffer,
+            len,
+            block_size,
+            block_count,
+            direction,
+            dma,
+            id,
+        ) {
+            Ok(request) => Ok(request),
+            Err(err) => {
+                let _ = slot.complete(id);
+                Err(err)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn submit_prepared_adma2_data_request(
+        &mut self,
+        cmd: &Command,
+        buffer: PreparedDma,
+        block_size: u32,
+        block_count: u32,
+        direction: DataDirection,
+        dma: &DeviceDma,
+        slot: &mut BlockRequestSlot,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if let Err(err) = self.check_not_poisoned() {
+            return Err(PreparedDmaSubmitError::new(err, buffer));
+        }
+        let transfer_direction = match block_transfer_direction(direction) {
+            Ok(direction) => direction,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        let id = match slot.start(BlockTransferMode::Dma, transfer_direction) {
+            Ok(id) => id,
+            Err(err) => return Err(PreparedDmaSubmitError::new(err, buffer)),
+        };
+        match self.build_prepared_adma2_data_request(
+            cmd,
+            buffer,
+            block_size,
+            block_count,
+            direction,
+            dma,
+            id,
+        ) {
             Ok(request) => Ok(request),
             Err(err) => {
                 let _ = slot.complete(id);
@@ -688,6 +761,191 @@ impl Sdhci {
                 stage: BlockRequestStage::Command,
                 stop_after_complete: block_count > 1,
                 response: None,
+            },
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_bounce_adma2_data_request(
+        &mut self,
+        cmd: &Command,
+        cpu_buffer: NonNull<u8>,
+        len: usize,
+        block_size: u32,
+        block_count: u32,
+        direction: DataDirection,
+        dma: &DeviceDma,
+        id: RequestId,
+    ) -> Result<BlockRequest, Error> {
+        if !self.supports_adma2() {
+            return Err(Error::UnsupportedCommand);
+        }
+        let size = validate_adma2_data_shape(block_size, block_count, len)?;
+        let alignment = usize::try_from(block_size)
+            .ok()
+            .and_then(|value| value.checked_next_power_of_two())
+            .ok_or(Error::InvalidArgument)?;
+        let (buffer, phase, dma_addr) = match direction {
+            DataDirection::Read => {
+                let backing =
+                    CpuDmaBuffer::new_zero(dma, size, alignment, DmaDirection::FromDevice)
+                        .map_err(map_dma_error)?;
+                let dma_addr = backing.dma_addr().as_u64();
+                let in_flight = unsafe { backing.prepare_for_device().into_in_flight() };
+                (
+                    DmaRequestBuffer::Bounce {
+                        buffer: in_flight,
+                        readback: Some((cpu_buffer, len)),
+                    },
+                    Phase::DataRead,
+                    dma_addr,
+                )
+            }
+            DataDirection::Write => {
+                let mut backing =
+                    CpuDmaBuffer::new_zero(dma, size, alignment, DmaDirection::ToDevice)
+                        .map_err(map_dma_error)?;
+                backing.copy_to_device_from_slice(unsafe {
+                    core::slice::from_raw_parts(cpu_buffer.as_ptr(), len)
+                });
+                let dma_addr = backing.dma_addr().as_u64();
+                let in_flight = unsafe { backing.prepare_for_device().into_in_flight() };
+                (
+                    DmaRequestBuffer::Bounce {
+                        buffer: in_flight,
+                        readback: None,
+                    },
+                    Phase::DataWrite,
+                    dma_addr,
+                )
+            }
+            DataDirection::None => return Err(Error::InvalidArgument),
+            _ => return Err(Error::InvalidArgument),
+        };
+        let mut desc = dma
+            .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
+            .map_err(map_dma_error)?;
+        self.submit_adma2_data_mapped(
+            cmd,
+            block_size,
+            block_count,
+            dma_addr,
+            len,
+            &mut desc,
+            direction,
+            phase,
+        )?;
+        Ok(BlockRequest {
+            inner: match direction {
+                DataDirection::Read => BlockRequestKind::Read {
+                    id,
+                    buffer,
+                    _desc: desc,
+                    cmd_index: cmd.index,
+                    phase,
+                    stage: BlockRequestStage::Command,
+                    stop_after_complete: command_needs_stop(cmd, block_count),
+                    response: None,
+                },
+                DataDirection::Write => BlockRequestKind::Write {
+                    id,
+                    buffer,
+                    _desc: desc,
+                    cmd_index: cmd.index,
+                    phase,
+                    stage: BlockRequestStage::Command,
+                    stop_after_complete: command_needs_stop(cmd, block_count),
+                    response: None,
+                },
+                DataDirection::None => unreachable!("direction validated before DMA setup"),
+                _ => unreachable!("direction validated before DMA setup"),
+            },
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_prepared_adma2_data_request(
+        &mut self,
+        cmd: &Command,
+        buffer: PreparedDma,
+        block_size: u32,
+        block_count: u32,
+        direction: DataDirection,
+        dma: &DeviceDma,
+        id: RequestId,
+    ) -> Result<BlockRequest, PreparedDmaSubmitError> {
+        if !self.supports_adma2() {
+            return Err(PreparedDmaSubmitError::new(
+                Error::UnsupportedCommand,
+                buffer,
+            ));
+        }
+        let expected_direction = match direction {
+            DataDirection::Read => DmaDirection::FromDevice,
+            DataDirection::Write => DmaDirection::ToDevice,
+            DataDirection::None => {
+                return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+            }
+            _ => {
+                return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+            }
+        };
+        if buffer.direction() != expected_direction || buffer.domain_id() != dma.domain_id() {
+            return Err(PreparedDmaSubmitError::new(Error::InvalidArgument, buffer));
+        }
+        let len = buffer.len().get();
+        if let Err(err) = validate_adma2_data_shape(block_size, block_count, len) {
+            return Err(PreparedDmaSubmitError::new(err, buffer));
+        }
+        let phase = match direction {
+            DataDirection::Read => Phase::DataRead,
+            DataDirection::Write => Phase::DataWrite,
+            DataDirection::None => unreachable!("direction validated above"),
+            _ => unreachable!("direction validated above"),
+        };
+        let mut desc = match dma
+            .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
+        {
+            Ok(desc) => desc,
+            Err(err) => return Err(PreparedDmaSubmitError::new(map_dma_error(err), buffer)),
+        };
+        if let Err(err) = self.submit_adma2_data_mapped(
+            cmd,
+            block_size,
+            block_count,
+            buffer.dma_addr().as_u64(),
+            len,
+            &mut desc,
+            direction,
+            phase,
+        ) {
+            return Err(PreparedDmaSubmitError::new(err, buffer));
+        }
+        let buffer = DmaRequestBuffer::Owned(unsafe { buffer.into_in_flight() });
+        Ok(BlockRequest {
+            inner: match direction {
+                DataDirection::Read => BlockRequestKind::Read {
+                    id,
+                    buffer,
+                    _desc: desc,
+                    cmd_index: cmd.index,
+                    phase,
+                    stage: BlockRequestStage::Command,
+                    stop_after_complete: command_needs_stop(cmd, block_count),
+                    response: None,
+                },
+                DataDirection::Write => BlockRequestKind::Write {
+                    id,
+                    buffer,
+                    _desc: desc,
+                    cmd_index: cmd.index,
+                    phase,
+                    stage: BlockRequestStage::Command,
+                    stop_after_complete: command_needs_stop(cmd, block_count),
+                    response: None,
+                },
+                DataDirection::None => unreachable!("direction validated above"),
+                _ => unreachable!("direction validated above"),
             },
         })
     }
@@ -969,12 +1227,34 @@ impl Sdhci {
         direction: DataDirection,
         phase: Phase,
     ) -> Result<(), Error> {
-        if block_count == 0 {
-            return Err(Error::InvalidArgument);
-        }
         let byte_count = block_count
             .checked_mul(BLOCK_SIZE as u32)
             .ok_or(Error::InvalidArgument)? as usize;
+        self.submit_adma2_data_mapped(
+            cmd,
+            BLOCK_SIZE as u32,
+            block_count,
+            buffer_dma,
+            byte_count,
+            desc,
+            direction,
+            phase,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn submit_adma2_data_mapped(
+        &mut self,
+        cmd: &Command,
+        block_size: u32,
+        block_count: u32,
+        buffer_dma: u64,
+        byte_count: usize,
+        desc: &mut CoherentArray<Adma2Desc32>,
+        direction: DataDirection,
+        phase: Phase,
+    ) -> Result<(), Error> {
+        validate_adma2_data_shape(block_size, block_count, byte_count)?;
         build_descriptors_into_dma(desc, buffer_dma, byte_count, phase)?;
 
         let desc_bus = desc.dma_addr().as_u64();
@@ -987,7 +1267,7 @@ impl Sdhci {
 
         self.pending_data = Some(PendingData {
             direction,
-            block_size: BLOCK_SIZE as u32,
+            block_size,
             block_count,
         });
         self.use_dma = true;
@@ -1510,6 +1790,41 @@ fn dma_write_block_count(size: NonZeroUsize) -> Result<u32, Error> {
     dma_read_block_count(size)
 }
 
+fn block_transfer_direction(direction: DataDirection) -> Result<BlockTransferDirection, Error> {
+    match direction {
+        DataDirection::Read => Ok(BlockTransferDirection::Read),
+        DataDirection::Write => Ok(BlockTransferDirection::Write),
+        DataDirection::None => Err(Error::InvalidArgument),
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+fn validate_adma2_data_shape(
+    block_size: u32,
+    block_count: u32,
+    len: usize,
+) -> Result<NonZeroUsize, Error> {
+    if block_size == 0 || block_size > 0x0fff || block_count == 0 || block_count > u16::MAX.into() {
+        return Err(Error::InvalidArgument);
+    }
+    let expected_len = usize::try_from(block_size)
+        .ok()
+        .and_then(|size| {
+            usize::try_from(block_count)
+                .ok()
+                .and_then(|count| size.checked_mul(count))
+        })
+        .ok_or(Error::InvalidArgument)?;
+    if len != expected_len {
+        return Err(Error::InvalidArgument);
+    }
+    NonZeroUsize::new(len).ok_or(Error::InvalidArgument)
+}
+
+fn command_needs_stop(cmd: &Command, block_count: u32) -> bool {
+    block_count > 1 && matches!(cmd.index, 18 | 25)
+}
+
 fn map_dma_error(err: dma_api::DmaError) -> Error {
     match err {
         dma_api::DmaError::NoMemory => Error::BusError(ErrorContext::new(Phase::DataRead)),
@@ -1574,7 +1889,7 @@ mod tests {
     #[test]
     fn splits_at_dwcmshc_128m_boundary() {
         let mut table = empty_table();
-        let base = DWC_MSHC_ADMA_BOUNDARY - 1024;
+        let base = DWC_MSHC_ADMA_BOUNDARY as u64 - 1024;
         let n = build_descriptors(&mut table, base, 4096, Phase::DataRead).unwrap();
 
         assert_eq!(n, 2);

@@ -237,29 +237,6 @@ impl SdioHost2Irq for Jh7110DwMmc {
     }
 }
 
-pub mod rdif {
-    pub use rdif_block::{
-        BInterface, BIrqHandler, BOwnedQueue, BQueue, BlkError, IQueue, IQueueOwned, Interface,
-        OwnedRequest, PollError, QueueHandle, Request, RequestId as RdifRequestId,
-        RequestPoll as OwnedRequestPoll, RequestStatus, SubmitError,
-    };
-    pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
-    use sdmmc_protocol::sdio::{card::SdioSdmmc, host2::SdioHost2Adapter};
-
-    use crate::{DEVICE_NAME, Jh7110DwMmc};
-
-    pub fn device(
-        card: SdioSdmmc<SdioHost2Adapter<Jh7110DwMmc>>,
-        config: BlockConfig,
-    ) -> BlockDevice<SdioHost2Adapter<Jh7110DwMmc>> {
-        BlockDevice::new(card, config)
-    }
-
-    pub const fn fifo_config(capacity_blocks: u64, irq_driven: bool) -> BlockConfig {
-        BlockConfig::fifo(DEVICE_NAME, capacity_blocks, irq_driven)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use core::ptr::NonNull;
@@ -327,15 +304,5 @@ mod tests {
         assert!(host.completion_irq_enabled());
         host.disable_completion_irq().unwrap();
         assert!(!host.completion_irq_enabled());
-    }
-
-    #[test]
-    fn rdif_fifo_config_is_irq_driven_without_dma() {
-        let config = rdif::fifo_config(16, true);
-
-        assert_eq!(config.name, DEVICE_NAME);
-        assert_eq!(config.capacity_blocks, 16);
-        assert!(config.irq_driven);
-        assert!(!config.uses_dma());
     }
 }

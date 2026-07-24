@@ -12,7 +12,8 @@ Feature 的职责从“选择 `ax-driver` 子模块和单个 Ax*Device 类型”
 | 旧 feature 语义 | 新 feature 语义 |
 | --- | --- |
 | `ax-driver` | 启用宿主设备 probe 主线，即 `rdrive` |
-| `virtio-blk` / `virtio-net` | 链接 VirtIO probe 和对应 `rdif-block` / `rdif-eth` 注册 |
+| `nvme` | 链接 PCI NVMe probe、`rdif-block` 控制器和 IRQ-driven block runtime |
+| `virtio-net` | 链接 VirtIO probe 和 `rdif-eth` 注册 |
 | `virtio-gpu` | 链接 `rdif-display` / `rd-display` probe |
 | `virtio-input` | 链接 `rdif-input` / `rd-input` probe |
 | `virtio-socket` | 链接 `rdif-vsock` / `rd-vsock` probe |
@@ -42,7 +43,6 @@ VirtIO feature 组合能力边界和 PCI transport：
 
 | feature | 组合 |
 | --- | --- |
-| `virtio-blk` | `block` + `virtio` + `pci` |
 | `virtio-net` | `net` + `virtio` + `pci` |
 | `virtio-gpu` | `display` + `virtio` + `pci` |
 | `virtio-input` | `input` + `virtio` + `pci` |
@@ -52,12 +52,8 @@ VirtIO feature 组合能力边界和 PCI transport：
 
 | feature | driver core |
 | --- | --- |
-| `ramdisk` | `ramdisk` |
 | `nvme` | `nvme-driver` |
 | `rockchip-sdhci` | `sdhci-host` + `sdmmc-protocol` |
-| `rockchip-dwmmc` | `dwmmc-host` + `sdmmc-protocol` |
-| `phytium-mci` | `phytium-mci-host` + `sdmmc-protocol` |
-| `k230-sdhci` | `sdhci-host` + `sdmmc-protocol` |
 | `fxmac` | `fxmac_rs` |
 | `intel-net` | `eth-intel` |
 | `realtek-rtl8125` | `realtek-rtl8125` |
@@ -68,6 +64,11 @@ VirtIO feature 组合能力边界和 PCI transport：
 | `rk3588-pcie` | `rk3588-pci` |
 | `rk3588-pwm` | `rockchip-pwm` + `rdif-pwm` |
 | `rockchip-dwc-xhci` | `crab-usb` + Rockchip SoC |
+
+块设备第一阶段只公开 `nvme` 和 RK3588 `rockchip-sdhci`。ramdisk、AHCI、
+VirtIO block 以及其他 SD/MMC driver core 的源码可以保留，但在迁移到拥有 DMA
+生命周期、IRQ-only 的 `BlockController`/`HardwareQueue` 合同前没有公开 feature 或
+注册入口。
 | `xhci-mmio` / `xhci-pci` | `crab-usb` + MMIO/PCI transport |
 
 ## 配置原则

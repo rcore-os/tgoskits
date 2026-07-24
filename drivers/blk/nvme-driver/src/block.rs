@@ -1,236 +1,232 @@
-use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     any::Any,
-    cell::UnsafeCell,
-    hint::spin_loop,
-    sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
-use dma_api::CoherentArray;
+use dma_api::{CoherentArray, InFlightDma};
 use log::warn;
 use rdif_block::{
-    BlkError, CompletionSink, DeviceInfo, DriverGeneric, Event, IQueue, IdList, Interface,
-    IrqHandler, IrqSourceInfo, IrqSourceList, QueueInfo, QueueLimits, Request, RequestFlags,
-    RequestId, RequestOp, RequestStatus, validate_request,
+    BatchSubmitDisposition, BatchSubmitResult, BlkError, BlockController, CompletedRequest,
+    CompletionSink, ControlEvent, ControllerEvent, ControllerState, ControllerUpdate, DeviceInfo,
+    DriverGeneric, HardIrqHandler, HardwareQueue, IrqAck, IrqEndpoint, IrqQueueMask, OwnedRequest,
+    OwnedRequestBatch, QueueInfo, QueueLimits, RequestFlags, RequestId, RequestOp, SubmissionSink,
+    validate_owned_request,
 };
 
 use crate::{
     Namespace, Nvme,
     err::{Error as NvmeError, Result as NvmeResult},
-    queue::{CommandSet, NvmeCompletion, NvmeQueue as HardwareQueue},
+    nvme::NvmeInitProgress,
+    queue::{CommandSet, NvmeCompletion, NvmeQueue},
+    registers::NvmeReg,
 };
 
 const MAX_PRP_LIST_PAGES: usize = 1;
 const DEFAULT_QUEUE_DEPTH: usize = 64;
+const CONTROL_EVENT_ADMIN: u64 = 1;
 
-struct NvmeBlockInner {
-    nvme: Nvme,
-    namespace: Namespace,
+/// Fixed PCI INTx source test used before acknowledging a shared legacy line.
+///
+/// Implementations must be allocation-free and IRQ-safe. They may only inspect
+/// the bound device's pre-resolved PCI configuration state.
+pub trait NvmeIntxSource: Send + Sync + 'static {
+    /// Returns whether this NVMe function currently asserts its INTx source.
+    fn is_asserted(&self) -> bool;
 }
 
+/// Interrupt-driven NVMe controller exposed through `rdif-block`.
 pub struct NvmeBlockDriver {
     name: &'static str,
-    inner: Arc<NvmeBlockOwner>,
+    nvme: Nvme,
+    namespace: Option<Namespace>,
     queue_depth: usize,
-}
-
-struct NvmeBlockOwner {
-    inner: UnsafeCell<NvmeBlockInner>,
-    queues: UnsafeCell<Vec<Arc<NvmeQueueCore>>>,
-    next_queue_id: AtomicUsize,
-    created_queue_bits: AtomicU64,
-    irq_enabled: AtomicBool,
-    irq_handler_taken_bits: AtomicU64,
-    irq_supported: bool,
-    msix_interrupts: bool,
-    interrupt_vectors: Vec<u16>,
+    bootstrap_target: usize,
+    next_queue_id: usize,
+    initialization_started: bool,
+    ready: bool,
+    stopped: bool,
+    intx_source: Option<Arc<dyn NvmeIntxSource>>,
 }
 
 impl NvmeBlockDriver {
-    pub fn from_nvme(mut nvme: Nvme) -> NvmeResult<Self> {
-        let namespace = nvme
-            .namespace_list()?
-            .into_iter()
-            .next()
-            .ok_or(NvmeError::Unknown("no active namespace found"))?;
-
-        Ok(Self::with_namespace("nvme", nvme, namespace))
+    /// Creates an interrupt-driven controller whose namespace is discovered by
+    /// the controller maintenance task.
+    pub fn from_nvme(nvme: Nvme) -> Self {
+        Self::from_nvme_with_queue_depth(nvme, DEFAULT_QUEUE_DEPTH)
     }
 
-    pub fn from_nvme_with_queue_depth(mut nvme: Nvme, queue_depth: usize) -> NvmeResult<Self> {
-        let namespace = nvme
-            .namespace_list()?
-            .into_iter()
-            .next()
-            .ok_or(NvmeError::Unknown("no active namespace found"))?;
-
-        Ok(Self::with_namespace_and_queue_depth(
-            "nvme",
-            nvme,
-            namespace,
-            queue_depth,
-        ))
-    }
-
-    pub fn with_namespace(name: &'static str, nvme: Nvme, namespace: Namespace) -> Self {
-        Self::with_namespace_and_queue_depth(name, nvme, namespace, DEFAULT_QUEUE_DEPTH)
-    }
-
-    pub fn with_namespace_and_queue_depth(
-        name: &'static str,
-        nvme: Nvme,
-        namespace: Namespace,
-        queue_depth: usize,
-    ) -> Self {
-        let irq_supported = nvme.io_queue_interrupts_enabled();
-        let msix_interrupts = nvme.msix_interrupts_enabled();
-        let interrupt_vectors = nvme.interrupt_vectors().to_vec();
+    /// Creates a block controller with an explicit runtime queue depth.
+    pub fn from_nvme_with_queue_depth(nvme: Nvme, queue_depth: usize) -> Self {
         Self {
-            name,
-            inner: Arc::new(NvmeBlockOwner {
-                inner: UnsafeCell::new(NvmeBlockInner { nvme, namespace }),
-                queues: UnsafeCell::new(Vec::new()),
-                next_queue_id: AtomicUsize::new(0),
-                created_queue_bits: AtomicU64::new(0),
-                irq_enabled: AtomicBool::new(false),
-                irq_handler_taken_bits: AtomicU64::new(0),
-                irq_supported,
-                msix_interrupts,
-                interrupt_vectors,
-            }),
+            name: "nvme",
+            nvme,
+            namespace: None,
             queue_depth: queue_depth.max(1),
+            bootstrap_target: 0,
+            next_queue_id: 0,
+            initialization_started: false,
+            ready: false,
+            stopped: false,
+            intx_source: None,
         }
     }
 
-    pub fn namespace(&self) -> Namespace {
-        self.inner.with_mut(|inner| inner.namespace)
-    }
-
-    pub fn into_interface(self) -> Self {
+    /// Installs the pre-resolved PCI INTx source test for legacy single-queue
+    /// mode.
+    pub fn with_intx_source(mut self, source: impl NvmeIntxSource) -> Self {
+        self.intx_source = Some(Arc::new(source));
         self
     }
 
-    fn device_info_for(&self) -> DeviceInfo {
-        self.inner
-            .with_mut(|inner| device_info(self.name, inner.namespace))
+    fn initial_state(progress: &NvmeInitProgress) -> ControllerState {
+        match progress {
+            NvmeInitProgress::RegisterPending => ControllerState::RegisterPending,
+            NvmeInitProgress::WaitingForIrq => ControllerState::WaitingForIrq,
+            NvmeInitProgress::Ready(_) => ControllerState::Ready,
+        }
     }
 
-    fn limits_for(&self) -> QueueLimits {
-        self.inner.with_mut(|inner| {
-            limits(
-                inner.nvme.dma_mask(),
-                inner.nvme.page_size(),
-                inner.nvme.max_transfer_bytes(),
-                inner.namespace,
-                self.queue_depth,
-            )
-        })
-    }
-}
-
-// SAFETY: RDIF queue ownership removes task-side sharing of an IO queue. IRQ
-// sharing is mediated by per-queue `NvmeQueueCore` claim guards, and the owner
-// keeps the controller and MMIO mapping alive until all queues are dropped.
-unsafe impl Send for NvmeBlockOwner {}
-
-// SAFETY: Mutable controller access is scoped through `with_mut` during queue
-// creation and namespace queries. The queue registry is populated before the
-// IRQ handler is taken and then read-only for the handler lifetime.
-unsafe impl Sync for NvmeBlockOwner {}
-
-impl NvmeBlockOwner {
-    fn with_mut<R>(&self, f: impl FnOnce(&mut NvmeBlockInner) -> R) -> R {
-        let inner = unsafe { &mut *self.inner.get() };
-        f(inner)
-    }
-
-    fn register_queue(&self, queue: Arc<NvmeQueueCore>) {
-        let queues = unsafe { &mut *self.queues.get() };
-        queues.push(queue);
+    fn apply_initialization_progress(
+        &mut self,
+        progress: NvmeInitProgress,
+    ) -> Result<ControllerUpdate, BlkError> {
+        match progress {
+            NvmeInitProgress::RegisterPending => {
+                Ok(ControllerUpdate::state(ControllerState::RegisterPending))
+            }
+            NvmeInitProgress::WaitingForIrq => {
+                Ok(ControllerUpdate::state(ControllerState::WaitingForIrq))
+            }
+            NvmeInitProgress::Ready(namespace) => {
+                if namespace.lba_size == 0
+                    || namespace.lba_count == 0
+                    || namespace.metadata_size != 0
+                {
+                    return Err(BlkError::NotSupported);
+                }
+                self.namespace = Some(namespace);
+                self.ready = true;
+                let info = device_info(self.name, namespace);
+                Ok(self
+                    .create_resources(self.bootstrap_target)?
+                    .with_device_info(info))
+            }
+        }
     }
 
-    fn queues(&self) -> &[Arc<NvmeQueueCore>] {
-        unsafe { &*self.queues.get() }
-    }
-
-    fn source_queue_bits(&self, source_id: usize, queue_bits: u64) -> u64 {
-        source_queue_bits(
-            self.msix_interrupts,
-            &self.interrupt_vectors,
+    fn admin_irq_endpoint(&self) -> IrqEndpoint {
+        let source_id = self.nvme.admin_interrupt_source();
+        IrqEndpoint::new(
             source_id,
-            queue_bits,
+            0,
+            Box::new(NvmeAdminIrqHandler {
+                registers: self.nvme.register_ptr(),
+                source_id,
+                intx: !self.nvme.msix_interrupts_enabled(),
+                io_ready: self.nvme.intx_io_ready(),
+                intx_source: self.intx_source.clone(),
+            }),
         )
     }
 
-    fn irq_sources_from_queue_bits(&self, queue_bits: u64) -> IrqSourceList {
-        irq_sources_from_queue_bits(self.msix_interrupts, &self.interrupt_vectors, queue_bits)
-    }
-
-    fn unique_interrupt_vectors(&self) -> Vec<u16> {
-        unique_interrupt_vectors(&self.interrupt_vectors)
-    }
-}
-
-fn vector_for_queue(msix_interrupts: bool, vectors: &[u16], queue_id: usize) -> Option<u16> {
-    if msix_interrupts {
-        vectors.get(queue_id).copied()
-    } else {
-        Some(0)
-    }
-}
-
-fn source_queue_bits(
-    msix_interrupts: bool,
-    vectors: &[u16],
-    source_id: usize,
-    queue_bits: u64,
-) -> u64 {
-    if !msix_interrupts {
-        return if source_id == 0 { queue_bits } else { 0 };
-    }
-
-    let mut bits = 0;
-    for queue_id in 0..u64::BITS as usize {
-        if queue_bits & (1 << queue_id) == 0 {
-            continue;
+    fn create_resources(&mut self, target_queues: usize) -> Result<ControllerUpdate, BlkError> {
+        if self.stopped || !self.ready || target_queues == 0 {
+            return Err(BlkError::NotSupported);
         }
-        if vector_for_queue(msix_interrupts, vectors, queue_id) == Some(source_id as u16) {
-            bits |= 1 << queue_id;
-        }
-    }
-    bits
-}
 
-fn irq_sources_from_queue_bits(
-    msix_interrupts: bool,
-    vectors: &[u16],
-    queue_bits: u64,
-) -> IrqSourceList {
-    if !msix_interrupts {
-        return vec![IrqSourceInfo::legacy(IdList::from_bits(queue_bits))];
+        let target_queues = target_queues.min(self.max_io_queues());
+        let mut queues: Vec<Box<dyn HardwareQueue>> = Vec::new();
+        let mut endpoints = Vec::new();
+        while self.next_queue_id < target_queues {
+            let queue_id = self.next_queue_id;
+            let queue = self.take_hardware_queue(queue_id)?;
+            let endpoint = self.irq_endpoint(queue_id)?;
+            self.next_queue_id += 1;
+            queues.push(Box::new(queue));
+            endpoints.push(endpoint);
+        }
+        Ok(ControllerUpdate::with_resources(
+            ControllerState::Ready,
+            queues,
+            endpoints,
+        ))
     }
 
-    let mut sources = Vec::new();
-    for vector in unique_interrupt_vectors(vectors) {
-        let queues = source_queue_bits(msix_interrupts, vectors, usize::from(vector), queue_bits);
-        if queues != 0 {
-            sources.push(IrqSourceInfo::new(
-                usize::from(vector),
-                IdList::from_bits(queues),
-            ));
-        }
+    fn take_hardware_queue(&mut self, queue_id: usize) -> Result<NvmeBlockQueue, BlkError> {
+        let namespace = self.namespace.ok_or(BlkError::InvalidRequest)?;
+        let queue = self
+            .nvme
+            .take_io_queue(queue_id)
+            .ok_or(BlkError::NotSupported)?;
+        let depth = self.queue_depth.min(queue.depth().saturating_sub(1).max(1));
+        let prp_lists = alloc_prp_lists(&self.nvme, depth).map_err(nvme_error_to_block)?;
+        Ok(NvmeBlockQueue::new(
+            queue_id,
+            depth,
+            self.name,
+            namespace,
+            self.nvme.dma_mask(),
+            self.nvme.page_size(),
+            self.nvme.max_transfer_bytes(),
+            queue,
+            prp_lists,
+        ))
     }
-    sources
-}
 
-fn unique_interrupt_vectors(vectors: &[u16]) -> Vec<u16> {
-    let mut unique = Vec::new();
-    for vector in vectors {
-        if !unique.contains(vector) {
-            unique.push(*vector);
+    fn irq_endpoint(&self, queue_id: usize) -> Result<IrqEndpoint, BlkError> {
+        let source_id = self
+            .nvme
+            .interrupt_source_for_io_queue(queue_id)
+            .ok_or(BlkError::NotSupported)?;
+        let queue_mask = IrqQueueMask::from_queue(queue_id);
+        if queue_mask.is_empty() {
+            return Err(BlkError::InvalidRequest);
         }
+        let handler = NvmeBlockIrqHandler {
+            registers: self.nvme.register_ptr(),
+            source_id,
+            queues: queue_mask,
+            intx: !self.nvme.msix_interrupts_enabled(),
+            io_ready: self.nvme.intx_io_ready(),
+            intx_source: self.intx_source.clone(),
+        };
+        Ok(IrqEndpoint::new(
+            source_id,
+            queue_mask.bits(),
+            Box::new(handler),
+        ))
     }
-    unique
+
+    fn rearm_source(&mut self, source_id: usize) -> Result<(), BlkError> {
+        if !self.initialization_started || self.stopped {
+            return Err(BlkError::InvalidRequest);
+        }
+        self.nvme
+            .unmask_interrupt_source(source_id)
+            .map_err(nvme_error_to_block)
+    }
+
+    fn stop_controller(&mut self) -> Result<ControllerUpdate, BlkError> {
+        if !self.stopped {
+            self.nvme.mask_all_interrupt_sources();
+            self.nvme.shutdown();
+            self.stopped = true;
+        }
+        Ok(ControllerUpdate::state(ControllerState::Shutdown))
+    }
+
+    fn quiesce_interrupts(&mut self) -> ControllerUpdate {
+        self.nvme.mask_all_interrupt_sources();
+        ControllerUpdate::state(if self.stopped {
+            ControllerState::Shutdown
+        } else if self.ready {
+            ControllerState::Ready
+        } else {
+            ControllerState::WaitingForIrq
+        })
+    }
 }
 
 impl DriverGeneric for NvmeBlockDriver {
@@ -247,141 +243,163 @@ impl DriverGeneric for NvmeBlockDriver {
     }
 }
 
-impl Interface for NvmeBlockDriver {
+impl BlockController for NvmeBlockDriver {
     fn device_info(&self) -> DeviceInfo {
-        self.device_info_for()
+        self.namespace.map_or_else(
+            || DeviceInfo {
+                name: Some(self.name),
+                model: Some("nvme"),
+                ..DeviceInfo::new(0, 512)
+            },
+            |namespace| device_info(self.name, namespace),
+        )
     }
 
-    fn queue_limits(&self) -> QueueLimits {
-        self.limits_for()
+    fn max_io_queues(&self) -> usize {
+        self.nvme
+            .configured_io_queue_count()
+            .min(self.nvme.available_io_interrupt_sources())
+            .min(u64::BITS as usize)
     }
 
-    fn create_queue(&mut self) -> Option<Box<dyn IQueue>> {
-        let id = self.inner.next_queue_id.fetch_add(1, Ordering::Relaxed);
-        if id >= u64::BITS as usize {
-            return None;
-        }
-
-        let queue = self.inner.with_mut(|inner| {
-            let queue = inner.nvme.take_io_queue(id)?;
-            let depth = self.queue_depth.min(queue.depth().saturating_sub(1).max(1));
-            let prp_lists = alloc_prp_lists(&inner.nvme, depth).ok()?;
-            Some(NvmeQueueCore::new(
-                id,
-                depth,
-                self.name,
-                inner.namespace,
-                inner.nvme.dma_mask(),
-                inner.nvme.page_size(),
-                inner.nvme.max_transfer_bytes(),
-                queue,
-                prp_lists,
-            ))
-        })?;
-
-        self.inner.register_queue(queue.clone());
-        self.inner
-            .created_queue_bits
-            .fetch_or(1 << id, Ordering::Release);
-        Some(Box::new(NvmeBlockQueue { core: queue }))
-    }
-
-    fn enable_irq(&self) {
-        if !self.inner.irq_supported {
-            return;
-        }
-        self.inner.with_mut(|inner| {
-            for vector in self.inner.unique_interrupt_vectors() {
-                inner.nvme.unmask_interrupt_vector(u32::from(vector));
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { target_queues } => {
+                if self.initialization_started || target_queues == 0 {
+                    return Err(BlkError::InvalidRequest);
+                }
+                if !self.nvme.msix_interrupts_enabled() && self.intx_source.is_none() {
+                    return Err(BlkError::NotSupported);
+                }
+                self.bootstrap_target = target_queues.min(self.max_io_queues());
+                if self.bootstrap_target == 0 {
+                    return Err(BlkError::NotSupported);
+                }
+                self.initialization_started = true;
+                let progress = self
+                    .nvme
+                    .start_initialization()
+                    .map_err(nvme_error_to_block)?;
+                Ok(ControllerUpdate::with_resources(
+                    Self::initial_state(&progress),
+                    Vec::new(),
+                    Vec::from([self.admin_irq_endpoint()]),
+                ))
             }
-        });
-        self.inner.irq_enabled.store(true, Ordering::Release);
-    }
-
-    fn disable_irq(&self) {
-        if !self.inner.irq_supported {
-            return;
-        }
-        self.inner.with_mut(|inner| {
-            for vector in self.inner.unique_interrupt_vectors() {
-                inner.nvme.mask_interrupt_vector(u32::from(vector));
+            ControllerEvent::OnlineSmp { target_queues } => {
+                if !self.ready {
+                    return Err(BlkError::InvalidRequest);
+                }
+                self.create_resources(target_queues)
             }
-        });
-        self.inner.irq_enabled.store(false, Ordering::Release);
+            ControllerEvent::Irq(control) => {
+                if control.source_id() != self.nvme.admin_interrupt_source()
+                    || control.bits() & CONTROL_EVENT_ADMIN == 0
+                {
+                    return Ok(ControllerUpdate::state(if self.ready {
+                        ControllerState::Ready
+                    } else {
+                        ControllerState::WaitingForIrq
+                    }));
+                }
+                let progress = self.nvme.handle_admin_irq().map_err(nvme_error_to_block)?;
+                self.apply_initialization_progress(progress)
+            }
+            ControllerEvent::RegisterRetry => {
+                let progress = self
+                    .nvme
+                    .retry_initialization()
+                    .map_err(nvme_error_to_block)?;
+                self.apply_initialization_progress(progress)
+            }
+            ControllerEvent::Rearm { source_id } => {
+                self.rearm_source(source_id)?;
+                Ok(ControllerUpdate::state(ControllerState::Ready))
+            }
+            ControllerEvent::QuiesceIrqs => Ok(self.quiesce_interrupts()),
+            ControllerEvent::Watchdog { .. } => self.stop_controller(),
+            ControllerEvent::Shutdown => self.stop_controller(),
+        }
     }
+}
 
-    fn is_irq_enabled(&self) -> bool {
-        self.inner.irq_supported && self.inner.irq_enabled.load(Ordering::Acquire)
-    }
+fn nvme_error_to_block(_error: NvmeError) -> BlkError {
+    BlkError::Io
+}
 
-    fn irq_sources(&self) -> IrqSourceList {
-        let queue_bits = self.inner.created_queue_bits.load(Ordering::Acquire);
-        if !self.inner.irq_supported || queue_bits == 0 {
-            return Vec::new();
-        }
-        self.inner.irq_sources_from_queue_bits(queue_bits)
-    }
+struct NvmeAdminIrqHandler {
+    registers: NonNull<NvmeReg>,
+    source_id: usize,
+    intx: bool,
+    io_ready: Arc<AtomicBool>,
+    intx_source: Option<Arc<dyn NvmeIntxSource>>,
+}
 
-    fn take_irq_handler(&mut self, source_id: usize) -> Option<Box<dyn IrqHandler>> {
-        if !self.inner.irq_supported || source_id >= u64::BITS as usize {
-            return None;
+// SAFETY: The registration token is destroyed before the controller MMIO
+// mapping. The handler accesses only fixed controller registers and an atomic
+// phase flag; it cannot reach a queue, allocator, registry, filesystem, or
+// scheduler object.
+unsafe impl Send for NvmeAdminIrqHandler {}
+
+impl HardIrqHandler for NvmeAdminIrqHandler {
+    fn ack(&mut self) -> IrqAck {
+        if self.intx {
+            let asserted = self
+                .intx_source
+                .as_ref()
+                .is_some_and(|source| source.is_asserted());
+            if !asserted || self.io_ready.load(Ordering::Acquire) {
+                return IrqAck::spurious(self.source_id);
+            }
         }
-        let queue_bits = self.inner.source_queue_bits(
-            source_id,
-            self.inner.created_queue_bits.load(Ordering::Acquire),
-        );
-        if queue_bits == 0 {
-            return None;
+        let control = ControlEvent::new(self.source_id, CONTROL_EVENT_ADMIN);
+        if self.intx {
+            let registers = unsafe { self.registers.as_ref() };
+            registers.mask_interrupt_vector(0);
+            IrqAck::masked_needs_rearm(IrqQueueMask::none(), control)
+        } else {
+            IrqAck::cleared(IrqQueueMask::none(), control)
         }
-        let bit = 1_u64 << source_id;
-        if self
-            .inner
-            .irq_handler_taken_bits
-            .fetch_or(bit, Ordering::AcqRel)
-            & bit
-            != 0
-        {
-            return None;
-        }
-        Some(Box::new(NvmeBlockIrqHandler {
-            owner: self.inner.clone(),
-            source_id,
-        }))
     }
 }
 
 struct NvmeBlockIrqHandler {
-    owner: Arc<NvmeBlockOwner>,
+    registers: NonNull<NvmeReg>,
     source_id: usize,
+    queues: IrqQueueMask,
+    intx: bool,
+    io_ready: Arc<AtomicBool>,
+    intx_source: Option<Arc<dyn NvmeIntxSource>>,
 }
 
-impl IrqHandler for NvmeBlockIrqHandler {
-    fn handle_irq(&mut self) -> Event {
-        if !self.owner.irq_enabled.load(Ordering::Acquire) {
-            return Event::none();
-        }
-        let mut event = Event::none();
-        let source_queue_bits = self.owner.source_queue_bits(
-            self.source_id,
-            self.owner.created_queue_bits.load(Ordering::Acquire),
-        );
-        for queue in self.owner.queues() {
-            if source_queue_bits & (1 << queue.id()) == 0 {
-                continue;
-            }
-            if queue.drain_irq_completions() {
-                event.push_queue(queue.id());
+// SAFETY: The registration token is destroyed before the controller MMIO
+// mapping. The handler only performs fixed volatile register writes and owns no
+// queue, allocator, registry, filesystem, or scheduler object.
+unsafe impl Send for NvmeBlockIrqHandler {}
+
+impl HardIrqHandler for NvmeBlockIrqHandler {
+    fn ack(&mut self) -> IrqAck {
+        if self.intx {
+            let asserted = self
+                .intx_source
+                .as_ref()
+                .is_some_and(|source| source.is_asserted());
+            if !asserted || !self.io_ready.load(Ordering::Acquire) {
+                return IrqAck::spurious(self.source_id);
             }
         }
-        event
+        let control = ControlEvent::new(self.source_id, 0);
+        if self.intx {
+            let registers = unsafe { self.registers.as_ref() };
+            registers.mask_interrupt_vector(0);
+            IrqAck::masked_needs_rearm(self.queues, control)
+        } else {
+            IrqAck::cleared(self.queues, control)
+        }
     }
 }
 
 struct NvmeBlockQueue {
-    core: Arc<NvmeQueueCore>,
-}
-
-struct NvmeQueueCore {
     id: usize,
     name: &'static str,
     namespace: Namespace,
@@ -389,11 +407,8 @@ struct NvmeQueueCore {
     page_size: usize,
     max_transfer_bytes: Option<usize>,
     depth: usize,
-    queue: UnsafeCell<HardwareQueue>,
-    state: UnsafeCell<NvmeQueueState>,
-    completion_cache: CompletionCache,
-    state_claimed: AtomicBool,
-    cq_claimed: AtomicBool,
+    queue: NvmeQueue,
+    state: NvmeQueueState,
 }
 
 struct NvmeQueueState {
@@ -403,40 +418,9 @@ struct NvmeQueueState {
 }
 
 struct RequestSlot {
-    state: SlotState,
+    pending: bool,
     prp_list: Option<CoherentArray<u64>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SlotState {
-    Free,
-    Pending,
-    Complete,
-    Failed,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CachedCompletion {
-    cid: usize,
-    status: CompletionStatus,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CompletionStatus {
-    success: bool,
-    raw_status: u16,
-    result: u64,
-}
-
-struct CompletionCache {
-    entries: Vec<CompletionCacheEntry>,
-}
-
-struct CompletionCacheEntry {
-    ready: AtomicBool,
-    success: AtomicBool,
-    raw_status: AtomicU16,
-    result: AtomicU64,
+    dma: Option<InFlightDma>,
 }
 
 struct PrpMapping {
@@ -445,7 +429,7 @@ struct PrpMapping {
     prp_list: Option<CoherentArray<u64>>,
 }
 
-impl NvmeQueueCore {
+impl NvmeBlockQueue {
     #[allow(clippy::too_many_arguments)]
     fn new(
         id: usize,
@@ -455,17 +439,16 @@ impl NvmeQueueCore {
         dma_mask: u64,
         page_size: usize,
         max_transfer_bytes: Option<usize>,
-        queue: HardwareQueue,
+        queue: NvmeQueue,
         prp_lists: Vec<CoherentArray<u64>>,
-    ) -> Arc<Self> {
+    ) -> Self {
         let mut slots = Vec::with_capacity(depth + 1);
         slots.resize_with(depth + 1, || RequestSlot {
-            state: SlotState::Free,
+            pending: false,
             prp_list: None,
+            dma: None,
         });
-        let free_cids = (1..=depth).rev().collect();
-
-        Arc::new(Self {
+        Self {
             id,
             name,
             namespace,
@@ -473,20 +456,13 @@ impl NvmeQueueCore {
             page_size,
             max_transfer_bytes,
             depth,
-            queue: UnsafeCell::new(queue),
-            state: UnsafeCell::new(NvmeQueueState {
+            queue,
+            state: NvmeQueueState {
                 slots,
-                free_cids,
+                free_cids: (1..=depth).rev().collect(),
                 free_prp_lists: prp_lists,
-            }),
-            completion_cache: CompletionCache::new(depth + 1),
-            state_claimed: AtomicBool::new(false),
-            cq_claimed: AtomicBool::new(false),
-        })
-    }
-
-    const fn id(&self) -> usize {
-        self.id
+            },
+        }
     }
 
     fn queue_info(&self) -> QueueInfo {
@@ -503,94 +479,174 @@ impl NvmeQueueCore {
         }
     }
 
-    fn with_claim<R>(&self, f: impl FnOnce(&mut NvmeQueueState) -> R) -> R {
-        while self
-            .state_claimed
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            spin_loop();
+    fn complete_one(&mut self, completion: NvmeCompletion, sink: &mut dyn CompletionSink) {
+        let cid = usize::from(completion.command_id);
+        let Some(slot) = self.state.slots.get_mut(cid) else {
+            warn!(
+                "nvme queue {} returned out-of-range command id {}",
+                self.id, cid
+            );
+            return;
+        };
+        if !slot.pending {
+            warn!(
+                "nvme queue {} returned completion for free command id {}",
+                self.id, cid
+            );
+            return;
         }
-        let state = unsafe { &mut *self.state.get() };
-        let result = f(state);
-        self.state_claimed.store(false, Ordering::Release);
-        result
-    }
 
-    fn with_cq_claim<R>(&self, f: impl FnOnce(&HardwareQueue) -> R) -> R {
-        while self
-            .cq_claimed
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            spin_loop();
+        let result = if completion.status.is_success() {
+            Ok(())
+        } else {
+            warn!(
+                "nvme queue {} request {} failed: status={:#x}, result={:#x}",
+                self.id, cid, completion.status.0, completion.result
+            );
+            Err(BlkError::Io)
+        };
+        let dma = slot.dma.take().map(|dma| {
+            // SAFETY: consuming a CQ entry and advancing the CQ head is the
+            // controller's terminal ownership handoff for this command id.
+            unsafe { dma.complete_after_quiesce() }
+        });
+        if let Some(prp_list) = slot.prp_list.take() {
+            self.state.free_prp_lists.push(prp_list);
         }
-        let queue = unsafe { &*self.queue.get() };
-        let result = f(queue);
-        self.cq_claimed.store(false, Ordering::Release);
-        result
+        slot.pending = false;
+        self.state.free_cids.push(cid);
+        sink.complete(CompletedRequest::new(RequestId::new(cid), result, dma));
     }
 
-    fn try_with_cq_claim<R>(&self, f: impl FnOnce(&HardwareQueue) -> R) -> Option<R> {
-        if self
-            .cq_claimed
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            return None;
+    fn stage_next(&mut self, requests: &mut OwnedRequestBatch) -> Result<RequestId, BlkError> {
+        let Some(mut request) = requests.pop_front() else {
+            return Err(BlkError::InvalidRequest);
+        };
+        if let Err(error) = validate_owned_request(self.queue_info(), &request) {
+            requests.push_front(request);
+            return Err(error);
         }
-        let queue = unsafe { &*self.queue.get() };
-        let result = f(queue);
-        self.cq_claimed.store(false, Ordering::Release);
-        Some(result)
-    }
 
-    fn drain_irq_completions(&self) -> bool {
-        self.try_with_cq_claim(|queue| {
-            drain_hardware_completions_to_cache(queue, &self.completion_cache)
-        })
-        .unwrap_or(true)
-    }
+        let Some(cid) = self.state.free_cids.pop() else {
+            requests.push_front(request);
+            return Err(BlkError::Retry);
+        };
+        let mapping = match self
+            .state
+            .build_command(self.namespace, self.page_size, cid, &request)
+        {
+            Ok(mapping) => mapping,
+            Err(error) => {
+                self.state.free_cids.push(cid);
+                requests.push_front(request);
+                return Err(error);
+            }
+        };
 
-    fn drain_completions(&self) -> bool {
-        self.with_cq_claim(|queue| {
-            drain_hardware_completions_to_cache(queue, &self.completion_cache)
-        })
+        let dma = request.data.take().map(|dma| {
+            // SAFETY: the backing is installed in the command slot before the
+            // batch commit transfers ownership to the controller.
+            unsafe { dma.into_in_flight() }
+        });
+        let slot = &mut self.state.slots[cid];
+        slot.pending = true;
+        slot.prp_list = mapping.prp_list;
+        slot.dma = dma;
+        self.queue.stage_io_data(mapping.command);
+        Ok(RequestId::new(cid))
     }
 }
 
-// SAFETY: Slot, CID, and completion-cache access is serialized through
-// `state_claimed`; hardware CQ access is serialized through `cq_claimed`. SQ
-// submission is only driven by the single RDIF queue owner. The MMIO mapping
-// and DMA buffers outlive this core through the owner/interface lifetime.
-unsafe impl Send for NvmeQueueCore {}
+impl HardwareQueue for NvmeBlockQueue {
+    fn id(&self) -> usize {
+        self.id
+    }
 
-// SAFETY: Shared references are used by task context and hard IRQ context, but
-// shared mutable state is guarded as described in the `Send` impl.
-unsafe impl Sync for NvmeQueueCore {}
+    fn info(&self) -> QueueInfo {
+        self.queue_info()
+    }
+
+    fn submit_batch_owned(
+        &mut self,
+        requests: &mut OwnedRequestBatch,
+        sink: &mut dyn SubmissionSink,
+    ) -> BatchSubmitResult {
+        let mut accepted = 0;
+        let limit = self.queue_info().limits.max_submit_batch;
+        while accepted < limit && !requests.is_empty() {
+            match self.stage_next(requests) {
+                Ok(id) => {
+                    sink.accepted(id);
+                    accepted += 1;
+                }
+                Err(BlkError::Retry) => {
+                    return BatchSubmitResult::new(accepted, BatchSubmitDisposition::QueueFull);
+                }
+                Err(error) => {
+                    return BatchSubmitResult::new(accepted, BatchSubmitDisposition::Fatal(error));
+                }
+            }
+        }
+        BatchSubmitResult::new(accepted, BatchSubmitDisposition::Continue)
+    }
+
+    fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        self.queue.commit_io_submissions();
+        Ok(())
+    }
+
+    fn drain_completions(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        let mut drained = false;
+        while let Some(completion) = self.queue.take_completion_after_irq() {
+            drained = true;
+            self.complete_one(completion, sink);
+        }
+        if drained {
+            self.queue.commit_completion_head();
+        }
+        Ok(())
+    }
+
+    fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        for cid in 1..self.state.slots.len() {
+            let slot = &mut self.state.slots[cid];
+            if !slot.pending {
+                continue;
+            }
+            if let Some(dma) = slot.dma.take() {
+                // `QuarantinedDma` deliberately leaks its backing when it
+                // leaves scope. Keep the typed value visible here so teardown
+                // cannot accidentally look like a normal DMA completion.
+                let _quarantined = dma.quarantine();
+            }
+            if let Some(prp_list) = slot.prp_list.take() {
+                self.state.free_prp_lists.push(prp_list);
+            }
+            slot.pending = false;
+            sink.complete(CompletedRequest::new(
+                RequestId::new(cid),
+                Err(BlkError::Io),
+                None,
+            ));
+        }
+        self.state.free_cids = (1..=self.depth).rev().collect();
+        Ok(())
+    }
+}
+
+struct BuiltCommand {
+    command: CommandSet,
+    prp_list: Option<CoherentArray<u64>>,
+}
 
 impl NvmeQueueState {
-    fn alloc_cid(&mut self) -> Result<usize, BlkError> {
-        self.free_cids.pop().ok_or(BlkError::Retry)
-    }
-
-    fn free_cid(&mut self, cid: usize) {
-        if cid < self.slots.len() {
-            if let Some(prp_list) = self.slots[cid].prp_list.take() {
-                self.free_prp_lists.push(prp_list);
-            }
-            self.slots[cid].state = SlotState::Free;
-            self.free_cids.push(cid);
-        }
-    }
-
     fn build_command(
         &mut self,
         namespace: Namespace,
         page_size: usize,
         cid: usize,
-        request: &Request<'_>,
-    ) -> Result<CommandSet, BlkError> {
+        request: &OwnedRequest,
+    ) -> Result<BuiltCommand, BlkError> {
         let cid = u16::try_from(cid).map_err(|_| BlkError::InvalidRequest)?;
         match request.op {
             RequestOp::Read | RequestOp::Write => {
@@ -614,22 +670,27 @@ impl NvmeQueueState {
                     ),
                     _ => unreachable!(),
                 };
-                self.slots[usize::from(cid)].prp_list = prp.prp_list;
-                Ok(command)
+                Ok(BuiltCommand {
+                    command,
+                    prp_list: prp.prp_list,
+                })
             }
-            RequestOp::Flush => Ok(CommandSet::nvm_cmd_flush_with_cid(namespace.id, cid)),
-            RequestOp::Discard | RequestOp::WriteZeroes => Err(BlkError::NotSupported),
+            RequestOp::Flush => Ok(BuiltCommand {
+                command: CommandSet::nvm_cmd_flush_with_cid(namespace.id, cid),
+                prp_list: None,
+            }),
         }
     }
 
     fn build_prp_mapping(
         &mut self,
         page_size: usize,
-        request: &Request<'_>,
+        request: &OwnedRequest,
     ) -> Result<PrpMapping, BlkError> {
+        let data = request.data.as_ref().ok_or(BlkError::InvalidRequest)?;
         let mut prps = PrpPageAccumulator::new();
-        for segment in request.segments.iter() {
-            prps.push_segment(segment.bus, segment.len, page_size)?;
+        for segment in data.segments() {
+            prps.push_segment(segment.addr.as_u64(), segment.len.get(), page_size)?;
         }
         let pages = prps.into_pages();
         let prp1 = *pages.first().ok_or(BlkError::InvalidRequest)?;
@@ -660,187 +721,6 @@ impl NvmeQueueState {
             prp1,
             prp2,
             prp_list: None,
-        })
-    }
-
-    fn consume_cached_completions(&mut self, queue_id: usize, cache: &CompletionCache) -> usize {
-        cache.drain_into_slots(queue_id, &mut self.slots)
-    }
-}
-
-fn drain_hardware_completions_to_cache(queue: &HardwareQueue, cache: &CompletionCache) -> bool {
-    let mut completed = false;
-    while let Some(completion) = queue.poll_completion() {
-        cache.record(CachedCompletion::from(completion));
-        completed = true;
-    }
-    completed
-}
-
-impl CompletionCache {
-    fn new(capacity: usize) -> Self {
-        let mut entries = Vec::with_capacity(capacity);
-        entries.resize_with(capacity, CompletionCacheEntry::new);
-        Self { entries }
-    }
-
-    fn record(&self, completion: CachedCompletion) {
-        let Some(entry) = self.entries.get(completion.cid) else {
-            return;
-        };
-        entry
-            .success
-            .store(completion.status.success, Ordering::Relaxed);
-        entry
-            .raw_status
-            .store(completion.status.raw_status, Ordering::Relaxed);
-        entry
-            .result
-            .store(completion.status.result, Ordering::Relaxed);
-        entry.ready.store(true, Ordering::Release);
-    }
-
-    fn drain_into_slots(&self, queue_id: usize, slots: &mut [RequestSlot]) -> usize {
-        let mut consumed = 0;
-        for (cid, entry) in self.entries.iter().enumerate() {
-            if !entry.ready.swap(false, Ordering::AcqRel) {
-                continue;
-            }
-            let Some(slot) = slots.get_mut(cid) else {
-                continue;
-            };
-            let status = CompletionStatus {
-                success: entry.success.load(Ordering::Relaxed),
-                raw_status: entry.raw_status.load(Ordering::Relaxed),
-                result: entry.result.load(Ordering::Relaxed),
-            };
-            slot.state = if status.success {
-                SlotState::Complete
-            } else {
-                warn!(
-                    "nvme queue {} request {} failed: status={:#x}, result={:#x}",
-                    queue_id, cid, status.raw_status, status.result
-                );
-                SlotState::Failed
-            };
-            consumed += 1;
-        }
-        consumed
-    }
-}
-
-impl CompletionCacheEntry {
-    fn new() -> Self {
-        Self {
-            ready: AtomicBool::new(false),
-            success: AtomicBool::new(false),
-            raw_status: AtomicU16::new(0),
-            result: AtomicU64::new(0),
-        }
-    }
-}
-
-impl From<NvmeCompletion> for CachedCompletion {
-    fn from(completion: NvmeCompletion) -> Self {
-        Self {
-            cid: usize::from(completion.command_id),
-            status: CompletionStatus {
-                success: completion.status.is_success(),
-                raw_status: completion.status.0,
-                result: completion.result,
-            },
-        }
-    }
-}
-
-// SAFETY: NVMe queues may access submitted request DMA segments until the
-// matching completion is reclaimed by `poll_request`. Slots are freed only
-// after completion/error, and no segment pointers are accessed after that.
-unsafe impl IQueue for NvmeBlockQueue {
-    fn id(&self) -> usize {
-        self.core.id()
-    }
-
-    fn info(&self) -> QueueInfo {
-        self.core.queue_info()
-    }
-
-    fn submit_request(&mut self, request: Request<'_>) -> Result<RequestId, BlkError> {
-        let info = self.core.queue_info();
-        validate_request(info, &request)?;
-        let namespace = self.core.namespace;
-        let page_size = self.core.page_size;
-        let queue_id = self.core.id();
-
-        self.core.drain_completions();
-        self.core.with_claim(|state| {
-            state.consume_cached_completions(queue_id, &self.core.completion_cache);
-
-            let cid = state.alloc_cid()?;
-            let command = match state.build_command(namespace, page_size, cid, &request) {
-                Ok(command) => command,
-                Err(err) => {
-                    state.free_cid(cid);
-                    return Err(err);
-                }
-            };
-            state.slots[cid].state = SlotState::Pending;
-            let queue = unsafe { &*self.core.queue.get() };
-            queue.submit_io_data(command);
-            Ok(RequestId::new(cid))
-        })
-    }
-
-    fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
-        let queue_id = self.core.id();
-        self.core.drain_completions();
-        self.core.with_claim(|state| {
-            state.consume_cached_completions(queue_id, &self.core.completion_cache);
-
-            let cid = usize::from(request);
-            match state.slots.get(cid).map(|slot| slot.state) {
-                Some(SlotState::Pending) => Ok(RequestStatus::Pending),
-                Some(SlotState::Complete) => {
-                    state.free_cid(cid);
-                    Ok(RequestStatus::Complete)
-                }
-                Some(SlotState::Failed) => {
-                    state.free_cid(cid);
-                    Err(BlkError::Io)
-                }
-                Some(SlotState::Free) | None => Err(BlkError::InvalidRequest),
-            }
-        })
-    }
-
-    fn poll_completions(
-        &mut self,
-        requests: &[RequestId],
-        sink: &mut dyn CompletionSink,
-    ) -> Result<(), BlkError> {
-        let queue_id = self.core.id();
-        self.core.drain_completions();
-        self.core.with_claim(|state| {
-            state.consume_cached_completions(queue_id, &self.core.completion_cache);
-
-            for &request in requests {
-                let cid = usize::from(request);
-                match state.slots.get(cid).map(|slot| slot.state) {
-                    Some(SlotState::Pending) => {}
-                    Some(SlotState::Complete) => {
-                        state.free_cid(cid);
-                        sink.complete(request, Ok(()));
-                    }
-                    Some(SlotState::Failed) => {
-                        state.free_cid(cid);
-                        sink.complete(request, Err(BlkError::Io));
-                    }
-                    Some(SlotState::Free) | None => {
-                        sink.complete(request, Err(BlkError::InvalidRequest))
-                    }
-                }
-            }
-            Ok(())
         })
     }
 }
@@ -893,7 +773,6 @@ impl PrpPageAccumulator {
             cursor = chunk_end;
             self.last_end = Some(cursor);
         }
-
         Ok(())
     }
 
@@ -903,7 +782,6 @@ impl PrpPageAccumulator {
             return Ok(());
         };
         let current_page_end = self.current_page_end.ok_or(BlkError::InvalidRequest)?;
-
         if cursor < last_end {
             return Err(BlkError::InvalidRequest);
         }
@@ -946,7 +824,6 @@ fn limits(
     max_inflight: usize,
 ) -> QueueLimits {
     let lba_size = namespace.lba_size.max(1);
-    let dma_alignment = page_size.max(lba_size);
     let prp_entries = page_size / core::mem::size_of::<u64>();
     let prp_capacity_bytes = page_size.saturating_mul(prp_entries + 1);
     let max_bytes = controller_max_transfer_bytes
@@ -963,65 +840,26 @@ fn limits(
     QueueLimits {
         dma_mask,
         dma_domain: dma_api::DmaDomainId::legacy_global(),
-        dma_alignment,
+        dma_alignment: lba_size,
+        dma_length_alignment: lba_size,
+        segment_boundary: None,
         max_inflight: max_inflight.max(1),
+        max_submit_batch: max_inflight.max(1),
         max_blocks_per_request: max_blocks,
-        max_segments: prp_entries + 1,
+        max_segments: 1,
         max_segment_size: max_bytes,
         supported_flags: RequestFlags::NONE,
-        // Do not advertise flush until the driver plumbs a reliable capability
-        // check from Identify/Feature data. Some QEMU NVMe backends reject the
-        // Flush command with "Invalid Field", which must not surface as fsync
-        // I/O errors.
-        supports_flush: false,
-        supports_discard: false,
-        supports_write_zeroes: false,
+        supports_flush: true,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CachedCompletion, CompletionCache, CompletionStatus, PrpPageAccumulator, RequestSlot,
-        SlotState, irq_sources_from_queue_bits, limits, source_queue_bits,
-    };
+    use super::{PrpPageAccumulator, limits};
     use crate::Namespace;
 
     #[test]
-    fn queue_limits_align_dma_to_nvme_page_size() {
-        let namespace = Namespace {
-            id: 1,
-            lba_size: 512,
-            lba_count: 1024,
-            metadata_size: 0,
-        };
-        let limits = limits(u64::MAX, 4096, None, namespace, 8);
-
-        assert_eq!(limits.dma_alignment, 4096);
-        assert_eq!(limits.max_segments, 513);
-        assert_eq!(limits.max_segment_size, 4096 * 513);
-        assert!(limits.max_blocks_per_request >= 8);
-        assert!(!limits.supports_flush);
-    }
-
-    #[test]
-    fn queue_limits_keep_prp_capacity_tied_to_controller_page() {
-        let namespace = Namespace {
-            id: 1,
-            lba_size: 8192,
-            lba_count: 1024,
-            metadata_size: 0,
-        };
-        let limits = limits(u64::MAX, 4096, None, namespace, 8);
-
-        assert_eq!(limits.dma_alignment, 8192);
-        assert_eq!(limits.max_segments, 513);
-        assert_eq!(limits.max_segment_size, 8192 * 256);
-        assert_eq!(limits.max_blocks_per_request, 256);
-    }
-
-    #[test]
-    fn queue_limits_respect_controller_transfer_limit() {
+    fn queue_limits_enforce_lba_alignment_and_controller_transfer_limit() {
         let namespace = Namespace {
             id: 1,
             lba_size: 512,
@@ -1030,32 +868,13 @@ mod tests {
         };
         let limits = limits(u64::MAX, 4096, Some(512 * 1024), namespace, 8);
 
+        assert_eq!(limits.dma_alignment, 512);
+        assert_eq!(limits.dma_length_alignment, 512);
         assert_eq!(limits.max_blocks_per_request, 1024);
         assert_eq!(limits.max_segment_size, 512 * 1024);
-    }
-
-    #[test]
-    fn legacy_irq_source_covers_all_created_queues() {
-        let sources = irq_sources_from_queue_bits(false, &[], 0b1011);
-
-        assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].id, 0);
-        assert_eq!(sources[0].queues.bits(), 0b1011);
-        assert_eq!(source_queue_bits(false, &[], 0, 0b1011), 0b1011);
-        assert_eq!(source_queue_bits(false, &[], 1, 0b1011), 0);
-    }
-
-    #[test]
-    fn msix_irq_sources_group_queues_by_vector() {
-        let vectors = [4, 5, 4];
-        let sources = irq_sources_from_queue_bits(true, &vectors, 0b111);
-
-        assert_eq!(sources.len(), 2);
-        assert_eq!(sources[0].id, 4);
-        assert_eq!(sources[0].queues.bits(), 0b101);
-        assert_eq!(sources[1].id, 5);
-        assert_eq!(sources[1].queues.bits(), 0b010);
-        assert_eq!(source_queue_bits(true, &vectors, 4, 0b111), 0b101);
+        assert_eq!(limits.max_segments, 1);
+        assert_eq!(limits.max_submit_batch, 8);
+        assert!(limits.supports_flush);
     }
 
     #[test]
@@ -1085,76 +904,5 @@ mod tests {
         pages.push_segment(0x1000, 2048, 4096).unwrap();
 
         assert!(pages.push_segment(0x2800, 512, 4096).is_err());
-    }
-
-    #[test]
-    fn cached_completion_does_not_complete_slot_until_task_consumes_it() {
-        let cache = CompletionCache::new(4);
-        let mut slots = test_slots(4);
-        slots[2].state = SlotState::Pending;
-
-        cache.record(CachedCompletion::success(2));
-
-        assert_eq!(slots[2].state, SlotState::Pending);
-        assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
-        assert_eq!(slots[2].state, SlotState::Complete);
-    }
-
-    #[test]
-    fn cached_failed_completion_marks_slot_failed_in_task_context() {
-        let cache = CompletionCache::new(4);
-        let mut slots = test_slots(4);
-        slots[3].state = SlotState::Pending;
-
-        cache.record(CachedCompletion::failed(3, 0x4002));
-
-        assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
-        assert_eq!(slots[3].state, SlotState::Failed);
-    }
-
-    #[test]
-    fn cached_completion_is_consumed_once() {
-        let cache = CompletionCache::new(2);
-        let mut slots = test_slots(2);
-        slots[1].state = SlotState::Pending;
-
-        cache.record(CachedCompletion::success(1));
-
-        assert_eq!(cache.drain_into_slots(0, &mut slots), 1);
-        assert_eq!(cache.drain_into_slots(0, &mut slots), 0);
-        assert_eq!(slots[1].state, SlotState::Complete);
-    }
-
-    fn test_slots(count: usize) -> alloc::vec::Vec<RequestSlot> {
-        (0..count)
-            .map(|_| RequestSlot {
-                state: SlotState::Free,
-                prp_list: None,
-            })
-            .collect()
-    }
-
-    impl CachedCompletion {
-        const fn success(cid: usize) -> Self {
-            Self {
-                cid,
-                status: CompletionStatus {
-                    success: true,
-                    raw_status: 0,
-                    result: 0,
-                },
-            }
-        }
-
-        const fn failed(cid: usize, raw_status: u16) -> Self {
-            Self {
-                cid,
-                status: CompletionStatus {
-                    success: false,
-                    raw_status,
-                    result: 0,
-                },
-            }
-        }
     }
 }

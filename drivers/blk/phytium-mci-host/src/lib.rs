@@ -27,7 +27,6 @@ use core::{marker::PhantomData, num::NonZeroUsize, ptr::NonNull};
 mod command;
 mod dma;
 mod host;
-pub mod rdif;
 mod regs;
 mod timing;
 

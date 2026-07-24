@@ -242,6 +242,12 @@ mod tests {
                 Err(AxError::Unsupported)
             }
 
+            fn dma_cache_clean(_addr: VirtAddr, _size: usize) {}
+
+            fn dma_cache_invalidate(_addr: VirtAddr, _size: usize) {}
+
+            fn dma_cache_clean_invalidate(_addr: VirtAddr, _size: usize) {}
+
             fn dma_alloc_pages(
                 _dma_mask: u64,
                 _num_pages: usize,

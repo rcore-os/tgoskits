@@ -20,7 +20,7 @@ args = [
     "-netdev",
     "user,id=net0",
     "-append",
-    "root=/dev/sda",
+    "root=/dev/nvme0n1",
     "-snapshot",
 ]
 

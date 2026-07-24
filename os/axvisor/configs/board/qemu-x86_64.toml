@@ -1,5 +1,5 @@
 features = [
-    "ax-driver/virtio-blk",
+    "ax-driver/nvme",
     "fs",
     # Capturing a backtrace is an expensive runtime operation.
     # Enable "backtrace" and [env] BACKTRACE = "y" below to

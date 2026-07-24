@@ -147,12 +147,7 @@ impl Sdhci {
             };
             log::debug!("sdhci: CMD{} response {:?}", cmd.index, response);
             if matches!(cmd.response, ResponseType::R1b) {
-                self.command_state = CommandState::WaitingBusy {
-                    cmd,
-                    response,
-                    polls: 0,
-                };
-                return Ok(CommandPoll::Pending);
+                return self.poll_r1b_busy(cmd, response, 0);
             }
             self.command_state = CommandState::Complete { response };
             Ok(CommandPoll::Complete)
@@ -249,6 +244,19 @@ impl Sdhci {
         }
 
         (normal_hw, error_hw)
+    }
+
+    /// Reports whether the active command can advance from register state
+    /// alone after its preceding IRQ has been consumed.
+    pub(crate) fn progress_wait_kind(&self) -> sdmmc_protocol::sdio::host::HostProgressWait {
+        use sdmmc_protocol::sdio::host::HostProgressWait;
+
+        match self.command_state {
+            CommandState::WaitingInhibit { .. } | CommandState::WaitingBusy { .. } => {
+                HostProgressWait::Register
+            }
+            _ => HostProgressWait::Irq,
+        }
     }
 
     pub fn take_command_response(&mut self) -> Result<Response, Error> {
@@ -609,7 +617,11 @@ fn read_r2(host: &Sdhci) -> [u8; 16] {
 mod tests {
     use core::ptr::NonNull;
 
-    use sdmmc_protocol::{DataDirection, cmd::cmd17, sdio::host::SdioIrqHandle};
+    use sdmmc_protocol::{
+        DataDirection,
+        cmd::{cmd7, cmd17},
+        sdio::host::SdioIrqHandle,
+    };
 
     use super::*;
 
@@ -730,6 +742,52 @@ mod tests {
             0,
             "IRQ handler must cache completion status for the active generation"
         );
+    }
+
+    #[test]
+    fn r1b_command_completes_when_dat0_is_already_released_at_command_irq() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.enable_completion_irq();
+
+        host.submit_command(&cmd7(1)).unwrap();
+        host.write_u32(REG_PRESENT_STATE, PRESENT_DAT0_LINE_SIGNAL_LEVEL);
+        host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
+        let mut irq = host.irq_endpoint();
+        assert_eq!(irq.handle_irq(), crate::Event::CommandComplete);
+
+        assert!(matches!(
+            host.poll_command_response(),
+            Ok(CommandResponsePoll::Complete(Response::R1b(_)))
+        ));
+    }
+
+    #[test]
+    fn r1b_busy_release_is_register_progress_after_command_irq() {
+        let mut regs = FakeRegs([0; 0x100]);
+        let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+        let mut host = unsafe { Sdhci::new(base) };
+        host.enable_completion_irq();
+
+        host.submit_command(&cmd7(1)).unwrap();
+        host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
+        let mut irq = host.irq_endpoint();
+        assert_eq!(irq.handle_irq(), crate::Event::CommandComplete);
+        assert!(matches!(
+            host.poll_command_response(),
+            Ok(CommandResponsePoll::Pending)
+        ));
+        assert_eq!(
+            host.progress_wait_kind(),
+            sdmmc_protocol::sdio::HostProgressWait::Register
+        );
+
+        host.write_u32(REG_PRESENT_STATE, PRESENT_DAT0_LINE_SIGNAL_LEVEL);
+        assert!(matches!(
+            host.poll_command_response(),
+            Ok(CommandResponsePoll::Complete(Response::R1b(_)))
+        ));
     }
 
     #[test]

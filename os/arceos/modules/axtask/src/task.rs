@@ -591,6 +591,15 @@ impl TaskInner {
     #[cfg(feature = "preempt")]
     pub(crate) fn enable_preempt(&self, resched: bool) {
         if self.preempt_disable_count.fetch_sub(1, Ordering::Release) == 1 && resched {
+            // Keep local IRQs masked until the preemption check has completely
+            // unwound. A device IRQ may wake a pinned maintenance task and
+            // immediately become pending again when that task rearms the
+            // source. If IRQs are restored by the scheduler's inner guard
+            // before this frame returns, every pending IRQ can recursively
+            // enter another preemption check on the interrupted task's stack.
+            // The outer IRQ guard turns that chain into successive IRQ exits
+            // instead of unbounded scheduler-stack growth.
+            let _irq_guard = ax_kernel_guard::IrqSave::new();
             // If current task is pending to be preempted, do rescheduling.
             Self::current_check_preempt_pending();
         }

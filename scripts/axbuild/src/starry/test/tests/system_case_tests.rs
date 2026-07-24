@@ -223,6 +223,31 @@ fn qemu_system_case_has_riscv64_runtime_config() {
 }
 
 #[test]
+fn mountinfo_root_source_tracks_the_nvme_qemu_root_disk() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let system_dir = workspace_root.join("test-suit/starryos/qemu/system");
+    let source_path = system_dir.join("syscall-test-mountinfo/src/main.c");
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
+
+    assert!(
+        source.contains("#define ROOT_MOUNT_SOURCE \"/dev/nvme0n1\""),
+        "{} must expect the NVMe root device exposed by every Starry QEMU system config",
+        source_path.display()
+    );
+
+    for arch in ["aarch64", "loongarch64", "riscv64", "x86_64"] {
+        let config_path = system_dir.join(format!("qemu-{arch}.toml"));
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert!(
+            content.contains("\"nvme,") && !content.contains("virtio-blk"),
+            "{} must attach the Starry rootfs through NVMe",
+            config_path.display()
+        );
+    }
+}
+
+#[test]
 fn qemu_affinity_flaky_arches_are_filtered() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let cases = [

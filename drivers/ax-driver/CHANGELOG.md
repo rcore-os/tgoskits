@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.1...ax-driver-v0.13.0) - 2026-07-24
+
+### Changed
+
+- Bind NVMe admin and I/O vectors independently and enable each MSI-X source only after its non-reentrant handler is installed.
+- Keep only NVMe and RK3588 DWCMSHC eMMC block registration paths during the blk-mq migration.
+
+### Removed
+
+- Remove public registration features for virtio-blk, ramdisk, AHCI, and unmigrated SD/MMC controllers.
+
 ## [0.12.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.0...ax-driver-v0.12.1) - 2026-07-23
 
 ### Added

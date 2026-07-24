@@ -5,7 +5,7 @@
 # machine-readable --stdout-json path. This proves glances reads StarryOS /proc correctly, not just
 # "it didn't crash". It also asserts the psutil plugins backed by the newer procfs sources --
 # network (/proc/net/dev), diskio (/proc/diskstats) and fs (/proc/mounts + statfs) -- return real,
-# non-empty stats: the loopback interface with a byte counter, the root virtio-blk disk "vda", and
+# non-empty stats: the loopback interface with a byte counter, the root NVMe disk "nvme0n1", and
 # the ext4 root filesystem with a non-zero size. These are the same three left-sidebar sections the
 # curses TUI carpet renders.
 #
@@ -149,20 +149,20 @@ def main():
           "lo has a non-zero cumulative byte counter (bytes_all_gauge > 0): %r"
           % (lo.get("bytes_all_gauge") if lo else None))
 
-    # diskio: /proc/diskstats -> the root virtio-blk disk 'vda' with cumulative read counters.
+    # diskio: /proc/diskstats -> the root NVMe disk 'nvme0n1' with cumulative read counters.
     dio = parse_list("diskio")
     check(isinstance(dio, list) and len(dio) > 0, "diskio plugin returns a non-empty disk list")
     disks = {d.get("disk_name") for d in dio} if dio else set()
     print("  diskio disks: %s" % sorted(x for x in disks if x))
-    vda = next((d for d in (dio or []) if d.get("disk_name") == "vda"), None)
-    check(vda is not None, "diskio plugin exposes the 'vda' root disk (from /proc/diskstats)")
+    nvme0n1 = next((d for d in (dio or []) if d.get("disk_name") == "nvme0n1"), None)
+    check(nvme0n1 is not None, "diskio plugin exposes the 'nvme0n1' root disk (from /proc/diskstats)")
     # glances flags the diskio byte/count fields rate=True: the cumulative /proc/diskstats counter is
     # carried in `<field>_gauge`, while the bare `<field>` is only the delta since the previous
     # refresh (legitimately 0 when no I/O lands in the sub-second sampling window). The boot-reads
     # proof is the cumulative gauge -- the diskio analogue of the network plugin's bytes_all_gauge.
-    read_bytes = int(vda.get("read_bytes_gauge", vda.get("read_bytes", 0))) if vda else 0
+    read_bytes = int(nvme0n1.get("read_bytes_gauge", nvme0n1.get("read_bytes", 0))) if nvme0n1 else 0
     check(read_bytes > 0,
-          "vda has non-zero cumulative read_bytes (boot reads): %r" % (read_bytes if vda else None))
+          "nvme0n1 has non-zero cumulative read_bytes (boot reads): %r" % (read_bytes if nvme0n1 else None))
 
     # fs: /proc/mounts + statfs -> the ext4 root filesystem with a real total size.
     fs = parse_list("fs")

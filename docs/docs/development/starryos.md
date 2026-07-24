@@ -434,7 +434,7 @@ env = {AX_IP = "10.0.2.15", AX_GW = "10.0.2.2"}
 features = [
   "ax-runtime/rtc",
   "ax-driver/serial",
-  "ax-driver/virtio-blk",
+  "ax-driver/nvme",
   "ax-driver/virtio-net",
 ]
 log = "Warn"

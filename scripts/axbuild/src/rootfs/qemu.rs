@@ -15,11 +15,6 @@ use ostool::run::qemu::QemuConfig;
 
 const DEFAULT_ROOTFS_WIRING: RootfsQemuWiring = RootfsQemuWiring {
     disk_id: "disk0",
-    block_devices: &[
-        "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
-        "virtio-blk-pci,drive=disk0",
-        "virtio-blk-device,drive=disk0",
-    ],
     default_block_device: "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
     netdev_id: "net0",
     net_devices: &[
@@ -32,7 +27,6 @@ const DEFAULT_ROOTFS_WIRING: RootfsQemuWiring = RootfsQemuWiring {
 #[derive(Debug, Clone, Copy)]
 struct RootfsQemuWiring {
     disk_id: &'static str,
-    block_devices: &'static [&'static str],
     default_block_device: &'static str,
     netdev_id: &'static str,
     net_devices: &'static [&'static str],
@@ -53,7 +47,9 @@ impl RootfsQemuWiring {
     }
 
     fn block_device_matches(self, value: &str) -> bool {
-        self.block_devices.contains(&value)
+        let mut parts = value.split(',');
+        parts.next() == Some("nvme")
+            && parts.any(|part| part.strip_prefix("drive=") == Some(self.disk_id))
     }
 
     fn net_device_matches(self, value: &str) -> bool {
@@ -76,7 +72,7 @@ impl RootfsQemuWiring {
 pub(crate) enum RootfsPatchMode {
     /// Only replace or insert the `disk0` drive argument.
     ReplaceDriveOnly,
-    /// Ensure a complete disk, block device, and user network baseline.
+    /// Ensure a complete disk + NVMe device + user network baseline.
     EnsureDiskBootNet,
 }
 
@@ -378,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_drive_only_accepts_mmio_block_device() {
+    fn replace_drive_only_accepts_nvme_block_device() {
         let rootfs = Path::new("/tmp/rootfs.img");
         let mut qemu = QemuConfig {
             args: vec![
@@ -402,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_disk_boot_net_preserves_existing_mmio_devices() {
+    fn ensure_disk_boot_net_preserves_existing_nvme_device() {
         let rootfs = Path::new("/tmp/new-rootfs.img");
         let mut qemu = QemuConfig {
             args: vec![

@@ -17,8 +17,8 @@ use log::{debug, warn};
 use super::{
     card::SdioSdmmc,
     host::{
-        BusWidth, ClockSpeed, HostEvent, SdioBusOp, SdioHost, SdioIrqHandle, SdioIrqHost,
-        SignalVoltage,
+        BusWidth, ClockSpeed, HostEvent, HostProgressWait, SdioBusOp, SdioHost, SdioIrqHandle,
+        SdioIrqHost, SignalVoltage,
     },
 };
 use crate::{
@@ -75,6 +75,10 @@ pub trait SdioHost2Irq: sdio_host2::SdioHost {
     }
 
     fn irq_handle(&mut self) -> Self::IrqHandle;
+
+    fn progress_wait_kind(&self) -> HostProgressWait {
+        HostProgressWait::Irq
+    }
 }
 
 impl<T> SdioHost2Irq for T
@@ -98,6 +102,10 @@ where
 
     fn irq_handle(&mut self) -> Self::IrqHandle {
         SdioIrqHost::irq_handle(self)
+    }
+
+    fn progress_wait_kind(&self) -> HostProgressWait {
+        SdioIrqHost::progress_wait_kind(self)
     }
 }
 
@@ -526,6 +534,10 @@ impl<H: SdioHost2Irq + 'static> SdioIrqHost for SdioHost2Adapter<H> {
 
     fn irq_handle(&mut self) -> Self::IrqHandle {
         self.core.with_mut(|host| host.irq_handle())
+    }
+
+    fn progress_wait_kind(&self) -> HostProgressWait {
+        self.core.with_ref(|host| host.progress_wait_kind())
     }
 }
 

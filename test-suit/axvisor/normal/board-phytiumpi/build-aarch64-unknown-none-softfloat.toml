@@ -1,6 +1,7 @@
+# Block storage is intentionally unsupported until Phytium MCI is migrated to
+# the IRQ-driven HardwareQueue contract.
 features = [
     "fs",
-    "phytium-mci",
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"

@@ -1,51 +1,79 @@
 use alloc::{boxed::Box, string::String};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use ax_errno::AxResult;
+use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinRwLock as RwLock;
-use irq_framework::{IrqContext, IrqId};
+use irq_framework::IrqId;
 
 use crate::block::runtime::BlockIrqAction;
 
+/// Result returned from the runtime-independent hard IRQ action.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockIrqOutcome {
+    /// The device did not assert this shared interrupt.
+    Unhandled,
+    /// The device source was acknowledged without publishing deferred work.
     Handled,
+    /// The source was acknowledged and a maintenance task was activated.
     Wake,
 }
 
-pub trait BlockIrqRegistration: Send + Sync {}
+/// Owned IRQ registration and boxed hard-handler lifetime token.
+pub trait BlockIrqRegistration: Send + Sync {
+    /// Enables the registered action after all runtime state is published.
+    fn enable(&self) -> AxResult;
 
+    /// Disables the action and waits for every in-flight callback to return.
+    fn disable_and_synchronize(&self) -> AxResult;
+}
+
+/// Registers fixed-affinity non-reentrant block hard IRQ actions.
 pub trait BlockIrqRegistrar: Send + Sync {
-    fn register_shared(
+    /// Registers an action disabled on the requested CPU.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the IRQ cannot be registered with
+    /// `NonReentrant`, `AutoEnable::No`, and fixed affinity.
+    fn register(
         &self,
         name: String,
         irq: IrqId,
-        action: Box<dyn FnMut(IrqContext) -> BlockIrqOutcome + Send + 'static>,
+        cpu: usize,
+        action: BlockIrqAction,
     ) -> AxResult<Box<dyn BlockIrqRegistration>>;
 }
 
 static IRQ_REGISTRAR: RwLock<Option<&'static dyn BlockIrqRegistrar>> = RwLock::new(None);
 static IRQ_READY: AtomicBool = AtomicBool::new(false);
 
+/// Installs the runtime IRQ registrar.
 pub fn set_irq_registrar(registrar: &'static dyn BlockIrqRegistrar) {
     *IRQ_REGISTRAR.write() = Some(registrar);
     IRQ_READY.store(true, Ordering::Release);
 }
 
-pub fn register_shared_block_irq(
+/// Registers one fixed-affinity block IRQ action.
+///
+/// # Errors
+///
+/// Returns [`AxError::BadState`] before the runtime installs an IRQ registrar,
+/// or propagates registration failures.
+pub fn register_block_irq(
     name: String,
     irq: IrqId,
+    cpu: usize,
     action: BlockIrqAction,
 ) -> AxResult<Box<dyn BlockIrqRegistration>> {
-    let registrar = IRQ_REGISTRAR
+    IRQ_REGISTRAR
         .read()
         .as_ref()
         .copied()
-        .ok_or(ax_errno::AxError::BadState)?;
-    let mut action = action;
-    registrar.register_shared(name, irq, Box::new(move |_ctx| action.run()))
+        .ok_or(AxError::BadState)?
+        .register(name, irq, cpu, action)
 }
 
+/// Returns whether an IRQ registrar is installed.
 pub fn has_irq_registrar() -> bool {
     IRQ_READY.load(Ordering::Acquire)
 }

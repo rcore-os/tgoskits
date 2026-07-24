@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.12.1"
+version = "0.13.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -27,24 +27,13 @@ pinctrl = ["dep:rdif-pinctrl", "rdif-pinctrl/fdt"]
 
 virtio-core = ["dep:ax-alloc", "dep:virtio-drivers", "virtio-drivers/alloc"]
 virtio = ["virtio-core"]
-virtio-blk = ["block", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-net = ["net", "virtio", "pci", "dep:ax-kernel-guard"]
 virtio-gpu = ["display", "virtio", "pci"]
 virtio-input = ["input", "virtio", "pci"]
 virtio-socket = ["vsock", "virtio", "pci"]
 
-ramdisk = ["block", "dep:ramdisk"]
-bcm2835-sdhci = ["block", "dep:bcm2835-sdhci"]
-ahci = ["block", "pci", "dep:simple-ahci"]
-ls2k1000-ahci = ["block", "dep:simple-ahci"]
 ls2k1000-gmac = ["net", "dep:ax-kspin"]
 nvme = ["block", "pci", "dep:nvme-driver"]
-cvsd = [
-    "block",
-    "dep:cv181x-sdhci",
-    "dep:sdmmc-protocol",
-    "sdmmc-protocol/rdif",
-]
 fxmac = ["net", "dep:ax-alloc", "dep:ax-crate-interface", "dep:fxmac_rs"]
 intel-net = ["net", "pci", "dep:eth-intel"]
 realtek-rtl8125 = ["net", "pci", "dep:realtek-rtl8125"]
@@ -79,38 +68,6 @@ rockchip-sdhci = [
     "dep:sdhci-host",
     "dep:sdmmc-protocol",
     "sdmmc-protocol/rdif",
-]
-phytium-mci = [
-    "block",
-    "dep:ax-kspin",
-    "dep:phytium-mci-host",
-    "dep:sdmmc-protocol",
-    "sdmmc-protocol/rdif",
-]
-k230-sdhci = [
-    "block",
-    "dep:sdhci-host",
-    "dep:sdmmc-protocol",
-    "sdmmc-protocol/rdif",
-]
-rockchip-dwmmc = [
-    "block",
-    "rockchip-pm",
-    "rockchip-soc",
-    "dep:arm-scmi-rs",
-    "dep:ax-kspin",
-    "dep:dwmmc-host",
-    "dep:rdif-clk",
-    "dep:sdmmc-protocol",
-    "sdmmc-protocol/rdif",
-]
-starfive-jh7110-dwmmc = [
-    "block",
-    "starfive-soc",
-    "dep:sdmmc-protocol",
-    "dep:starfive-jh7110-dwmmc",
-    "sdmmc-protocol/rdif",
-    "sdmmc-protocol/sdio",
 ]
 starfive-soc = [
     "dep:rdif-clk",
@@ -156,11 +113,8 @@ ax-errno = { workspace = true, optional = true }
 ax-kernel-guard = { workspace = true, optional = true }
 ax-kspin = { workspace = true, optional = true }
 axklib.workspace = true
-bcm2835-sdhci = { workspace = true, optional = true }
 crab-usb = { workspace = true, optional = true }
-cv181x-sdhci = { workspace = true, optional = true }
 dma-api.workspace = true
-dwmmc-host = { workspace = true, optional = true }
 eth-intel = { workspace = true, optional = true }
 fdt-edit = { workspace = true }
 fxmac_rs = { workspace = true, optional = true }
@@ -170,7 +124,6 @@ log.workspace = true
 mmio-api.workspace = true
 nvme-driver = { workspace = true, optional = true }
 pcie = { workspace = true, optional = true }
-ramdisk = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdif-block = { workspace = true, optional = true }
 rdif-clk = { workspace = true, optional = true }
@@ -195,16 +148,13 @@ rockchip-rga = { workspace = true, optional = true }
 rockchip-jpeg = { workspace = true, optional = true }
 rockchip-pm = { workspace = true, optional = true }
 rockchip-soc = { workspace = true, optional = true }
-phytium-mci-host = { workspace = true, optional = true }
 sdhci-host = { workspace = true, optional = true }
 sdhci-cv1800 = { workspace = true, optional = true }
 sdio-host = { workspace = true, optional = true }
 sdmmc-protocol = { workspace = true, default-features = false, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
-simple-ahci = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
-starfive-jh7110-dwmmc = { workspace = true, optional = true }
 tock-registers = { workspace = true, optional = true }
 virtio-drivers = { workspace = true, optional = true }
 

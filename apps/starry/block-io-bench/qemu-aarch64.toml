@@ -1,0 +1,34 @@
+args = [
+    "-nographic",
+    "-machine",
+    "virt,gic-version=3,its=on",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-smp",
+    "4",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img,snapshot=on",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/block-io-bench.sh"
+success_regex = [
+    "(?m)^BLOCK_BENCH_APP_PASSED\\s*$",
+]
+fail_regex = [
+    "(?i)\\bpanic(?:ked)?\\b",
+    "(?i)segmentation fault",
+    "(?i)kernel panic",
+    "(?i)panicked at",
+    "(?m)^BLOCK_BENCH_APP_FAILED\\s*$",
+]
+timeout = 900

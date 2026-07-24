@@ -44,6 +44,7 @@ const INVALID_IRQ_DOMAIN: u16 = u16::MAX;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IrqDomainKind {
     X86IoApic,
+    X86Msi,
     AArch64Gic,
     RiscvPlic,
     LoongArchEioIntc,
@@ -75,6 +76,7 @@ const _: fn(&IrqRouteMutex<Vec<IrqRoute>>) = |lock| {
     let _: &ax_kspin::SpinNoIrq<Vec<IrqRoute>> = lock;
 };
 static X86_IOAPIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
+static X86_MSI_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static AARCH64_GIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static RISCV_PLIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static LOONGARCH_EIOINTC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
@@ -139,14 +141,12 @@ fn register_domain(
             if domain_slot(kind).is_none() {
                 return Err(IrqError::Unsupported);
             }
-            if let Some(domain) = domains
-                .iter()
-                .find(|domain| domain.owner == owner && domain.parent.is_none())
-            {
-                return if domain.kind == kind {
-                    Ok(domain.id)
-                } else {
-                    Err(IrqError::Busy)
+            if let Some(domain) = domains.iter().find(|domain| {
+                domain.owner == owner && domain.parent.is_none() && domain.kind == kind
+            }) {
+                return match preferred {
+                    Some(preferred) if preferred != domain.id => Err(IrqError::Busy),
+                    _ => Ok(domain.id),
                 };
             }
 
@@ -187,6 +187,7 @@ fn register_domain(
 fn domain_slot(kind: IrqDomainKind) -> Option<&'static AtomicU16> {
     match kind {
         IrqDomainKind::X86IoApic => Some(&X86_IOAPIC_DOMAIN_SLOT),
+        IrqDomainKind::X86Msi => Some(&X86_MSI_DOMAIN_SLOT),
         IrqDomainKind::AArch64Gic => Some(&AARCH64_GIC_DOMAIN_SLOT),
         IrqDomainKind::RiscvPlic => Some(&RISCV_PLIC_DOMAIN_SLOT),
         IrqDomainKind::LoongArchEioIntc => Some(&LOONGARCH_EIOINTC_DOMAIN_SLOT),
@@ -528,6 +529,7 @@ mod tests {
         IRQ_ROUTES.lock().clear();
         for kind in [
             IrqDomainKind::X86IoApic,
+            IrqDomainKind::X86Msi,
             IrqDomainKind::AArch64Gic,
             IrqDomainKind::RiscvPlic,
             IrqDomainKind::LoongArchEioIntc,
@@ -593,6 +595,23 @@ mod tests {
             alloc_irq_domain(owner_b, IrqDomainKind::AArch64Gic),
             Err(IrqError::Unsupported)
         );
+    }
+
+    #[test]
+    fn one_device_can_publish_distinct_root_irq_capabilities() {
+        let _guard = TEST_LOCK.lock();
+        reset_domains();
+
+        let owner = DeviceId::new();
+        let ioapic = alloc_irq_domain(owner, IrqDomainKind::X86IoApic).unwrap();
+        let msi = alloc_irq_domain(owner, IrqDomainKind::X86Msi).unwrap();
+
+        assert_ne!(ioapic, msi);
+        assert_eq!(
+            alloc_irq_domain(owner, IrqDomainKind::X86IoApic),
+            Ok(ioapic)
+        );
+        assert_eq!(alloc_irq_domain(owner, IrqDomainKind::X86Msi), Ok(msi));
     }
 
     #[test]

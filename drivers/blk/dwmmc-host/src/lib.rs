@@ -66,7 +66,6 @@ use log::warn;
 mod command;
 mod dma;
 mod host;
-pub mod rdif;
 mod regs;
 
 pub use sdmmc_protocol::block::{

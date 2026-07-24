@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Add an explicit block-transfer policy so RK3588 DWCMSHC can require ADMA2
+  and reject every FIFO fallback.
+
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.4.1...sdhci-host-v0.4.2) - 2026-07-23
 
 ### Other

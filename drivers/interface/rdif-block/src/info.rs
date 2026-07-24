@@ -29,15 +29,20 @@ impl DeviceInfo {
 pub struct QueueLimits {
     pub dma_mask: u64,
     pub dma_domain: DmaDomainId,
+    /// Required alignment of every device-visible segment start address.
     pub dma_alignment: usize,
+    /// Required alignment of every device-visible segment length.
+    pub dma_length_alignment: usize,
+    /// Optional power-of-two boundary that one segment must not cross.
+    pub segment_boundary: Option<usize>,
     pub max_inflight: usize,
+    /// Maximum requests one native queue operation may stage before commit.
+    pub max_submit_batch: usize,
     pub max_blocks_per_request: u32,
     pub max_segments: usize,
     pub max_segment_size: usize,
     pub supported_flags: RequestFlags,
     pub supports_flush: bool,
-    pub supports_discard: bool,
-    pub supports_write_zeroes: bool,
 }
 
 impl QueueLimits {
@@ -46,14 +51,15 @@ impl QueueLimits {
             dma_mask,
             dma_domain: DmaDomainId::legacy_global(),
             dma_alignment: logical_block_size,
+            dma_length_alignment: logical_block_size,
+            segment_boundary: None,
             max_inflight: 1,
+            max_submit_batch: 1,
             max_blocks_per_request: 1,
             max_segments: 1,
             max_segment_size: logical_block_size,
             supported_flags: RequestFlags::NONE,
             supports_flush: false,
-            supports_discard: false,
-            supports_write_zeroes: false,
         }
     }
 }

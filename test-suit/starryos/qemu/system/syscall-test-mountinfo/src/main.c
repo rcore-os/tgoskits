@@ -31,7 +31,7 @@
 
 #define MOUNTINFO_PATH "/proc/self/mountinfo"
 #define MOUNTS_PATH "/proc/self/mounts"
-#define ROOT_MOUNT_SOURCE "/dev/vda"
+#define ROOT_MOUNT_SOURCE "/dev/nvme0n1"
 #define SOURCE_TEST_DIR "/mountinfo_source"
 #define SOURCE_TEST_NAME "mountinfo-source"
 

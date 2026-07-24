@@ -3,13 +3,29 @@
 `block-io-bench` is an operator-facing StarryOS QEMU app for collecting simple
 filesystem read/write throughput numbers from the current root block device.
 
-Run it with:
+Run the same NVMe-backed workload on every supported QEMU architecture with:
 
 ```bash
 cargo xtask starry app qemu -t block-io-bench --arch x86_64
+cargo xtask starry app qemu -t block-io-bench --arch aarch64
+cargo xtask starry app qemu -t block-io-bench --arch riscv64
+cargo xtask starry app qemu -t block-io-bench --arch loongarch64
 ```
 
-To compare the same workload through the NVMe QEMU device model, run:
+The x86_64 SMP matrix uses the same image, NVMe topology, and workload:
+
+```bash
+for cpus in 1 2 4; do
+  cargo xtask starry app qemu \
+    -t block-io-bench \
+    --arch x86_64 \
+    --qemu-config "qemu-x86_64-smp${cpus}.toml"
+done
+cargo xtask starry app qemu -t block-io-bench --arch x86_64
+```
+
+To exercise the explicit single-queue INTx fallback with the same workload,
+run:
 
 ```bash
 cargo xtask starry app qemu \
@@ -44,8 +60,12 @@ BLOCK_BENCH_PATH=/root/custom-block-io-bench \
 /usr/bin/block-io-bench.sh
 ```
 
-The default `qemu-x86_64.toml` uses `virtio-blk-pci`; the
-`qemu-x86_64-nvme.toml` variant uses `nvme,serial=starry-block-io-bench` and
-sets `BLOCK_BENCH_FSYNC=0`, because the current QEMU NVMe path reports an I/O
-error for the app's per-round `fsync` flush. The `BLOCK_BENCH_CONFIG` line
-includes `fsync=...` so comparison logs keep this difference explicit.
+Every architecture uses NVMe with 64 I/O queue pairs and 65 MSI-X vectors.
+x86_64 boots eight CPUs; aarch64, riscv64, and loongarch64 boot four. After SMP
+startup, x86_64 and aarch64 report one MSI-X hctx and fixed-affinity I/O vector
+per online CPU. The current RISC-V FDT PCI host and LoongArch ACPI IORT paths do
+not provide MSI routing, so those architectures select a fixed single-queue
+INTx mode during initialization. The `qemu-x86_64-nvme.toml` variant advertises
+`msix_qsize=1`; the driver must reject incomplete MSI-X resources, unwind them,
+and select the same single-queue INTx mask/drain/rearm path. All cases keep
+`fsync` enabled and attach the rootfs with a per-drive snapshot.

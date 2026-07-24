@@ -8,8 +8,6 @@ use virtio_drivers::{
     transport::{DeviceType, Transport, mmio::MmioTransport},
 };
 
-#[cfg(feature = "virtio-blk")]
-pub mod block;
 #[cfg(feature = "virtio-gpu")]
 pub mod display;
 #[cfg(feature = "virtio-input")]
@@ -25,7 +23,6 @@ pub struct VirtIoHalImpl(PhantomData<()>);
 
 pub const fn has_static_mmio_drivers() -> bool {
     cfg!(any(
-        feature = "virtio-blk",
         feature = "virtio-net",
         feature = "virtio-gpu",
         feature = "virtio-input",
@@ -100,7 +97,6 @@ pub fn register_static_mmio(
 }
 
 #[cfg(any(
-    feature = "virtio-blk",
     feature = "virtio-net",
     feature = "virtio-gpu",
     feature = "virtio-input",
@@ -112,8 +108,6 @@ pub fn register_static_transport<T: Transport + 'static>(
     transport: T,
 ) -> Result<(), rdrive::probe::OnProbeError> {
     match ty {
-        #[cfg(feature = "virtio-blk")]
-        DeviceType::Block => block::register_transport(plat_dev, transport),
         #[cfg(feature = "virtio-net")]
         DeviceType::Network => net::register_transport(plat_dev, transport),
         #[cfg(feature = "virtio-gpu")]
@@ -127,7 +121,6 @@ pub fn register_static_transport<T: Transport + 'static>(
 }
 
 #[cfg(not(any(
-    feature = "virtio-blk",
     feature = "virtio-net",
     feature = "virtio-gpu",
     feature = "virtio-input",

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.5...ax-fs-ng-v0.9.0) - 2026-07-24
+
+### Changed
+
+- Replace the compatibility block runtime with per-CPU bounded submission channels and one pinned maintenance task per hardware queue.
+- Make filesystem reads, writes, and flushes blocking wrappers over one-shot completion subscriptions.
+- Expand hardware queues only after scheduler, IPI, and local IRQ startup completes on every CPU.
+- Aggregate single and grouped channel submissions into bounded hardware batches while preserving partial acceptance and flush ordering.
+
+### Removed
+
+- Remove synchronous polling, timer repoll fallback, task-ID wakeups, and the duplicate `block_runtime` module.
+
 ## [0.8.5](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.4...ax-fs-ng-v0.8.5) - 2026-07-23
 
 ### Added

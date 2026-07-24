@@ -1,31 +1,24 @@
 use crate::io;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum BlkError {
+    #[error("operation not supported")]
     NotSupported,
+    #[error("operation should be retried")]
     Retry,
+    #[error("insufficient memory")]
     NoMemory,
+    #[error("invalid block index: {0}")]
     InvalidBlockIndex(u64),
+    #[error("invalid block request")]
     InvalidRequest,
+    #[error("block I/O timed out")]
+    TimedOut,
+    #[error("block I/O error")]
     Io,
+    #[error("{0}")]
     Other(&'static str),
 }
-
-impl core::fmt::Display for BlkError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            BlkError::NotSupported => f.write_str("operation not supported"),
-            BlkError::Retry => f.write_str("operation should be retried"),
-            BlkError::NoMemory => f.write_str("insufficient memory"),
-            BlkError::InvalidBlockIndex(index) => write!(f, "invalid block index: {index}"),
-            BlkError::InvalidRequest => f.write_str("invalid block request"),
-            BlkError::Io => f.write_str("block I/O error"),
-            BlkError::Other(msg) => f.write_str(msg),
-        }
-    }
-}
-
-impl core::error::Error for BlkError {}
 
 impl From<BlkError> for io::ErrorKind {
     fn from(value: BlkError) -> Self {
@@ -37,6 +30,7 @@ impl From<BlkError> for io::ErrorKind {
             BlkError::InvalidRequest => io::ErrorKind::InvalidParameter {
                 name: "block request",
             },
+            BlkError::TimedOut => io::ErrorKind::TimedOut,
             BlkError::Io => io::ErrorKind::Other("block I/O error".into()),
             BlkError::Other(msg) => io::ErrorKind::Other(msg.into()),
         }

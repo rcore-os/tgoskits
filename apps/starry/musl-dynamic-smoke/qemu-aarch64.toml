@@ -6,7 +6,7 @@ args = [
     "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-musl-dynamic-smoke.img",
     "-device", "virtio-net-pci,netdev=net0",
     "-netdev", "user,id=net0",
-    "-append", "root=/dev/sda",
+    "-append", "root=/dev/nvme0n1",
 ]
 uefi = false
 to_bin = true

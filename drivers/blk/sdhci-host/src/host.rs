@@ -21,6 +21,20 @@ pub(crate) struct PendingData {
     pub block_count: u32,
 }
 
+/// Policy for selecting the SDHCI block-data transport.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlockTransferPolicy {
+    /// Prefer ADMA2 for compatible requests and retain FIFO for diagnostics
+    /// and legacy non-RDIF users.
+    #[default]
+    PreferAdma2,
+    /// Require every normal block-data request to use ADMA2.
+    ///
+    /// Missing DMA capability, incompatible request shape, or ADMA2 setup
+    /// failure is reported to the caller instead of falling back to FIFO.
+    RequireAdma2,
+}
+
 /// Generic SD Host Controller (SDHCI) backend.
 ///
 /// Owns the MMIO base address of one host controller instance and
@@ -227,6 +241,8 @@ pub struct Sdhci {
     /// register with `DMA_ENABLE`. Set by the ADMA2 wrapper just before it
     /// fires off a command; default `false` keeps the FIFO path active.
     pub(crate) use_dma: bool,
+    /// Selects whether normal block-data requests may fall back to FIFO.
+    pub(crate) block_transfer_policy: BlockTransferPolicy,
     /// Optional CRU-side clock callback. When set, the `SdioHost::set_clock`
     /// impl will route requests to this hook (and program the controller
     /// for 1:1 passthrough) instead of using the internal 10-bit divider.
@@ -271,6 +287,7 @@ impl Sdhci {
             command_state: CommandState::Idle,
             pending_data: None,
             use_dma: false,
+            block_transfer_policy: BlockTransferPolicy::PreferAdma2,
             ext_clock: None,
             reset_hook: None,
             timer: None,
@@ -390,11 +407,22 @@ impl Sdhci {
     /// Install a DMA capability used by the high-level data-transfer hooks.
     ///
     /// Once installed, `SdioHost::submit_read_data` and
-    /// `SdioHost::submit_write_data` try ADMA2 first for 512-byte block I/O
-    /// and fall back to the FIFO state machine if ADMA2 cannot be used.
+    /// `SdioHost::submit_write_data` can use ADMA2 for compatible block I/O.
+    /// The configured [`BlockTransferPolicy`] decides whether FIFO fallback is
+    /// allowed.
     pub fn set_dma(&mut self, dma: DeviceDma) {
         self.dma_mask = dma.dma_mask();
         self.dma = Some(dma);
+    }
+
+    /// Selects whether block-data requests may fall back from ADMA2 to FIFO.
+    pub fn set_block_transfer_policy(&mut self, policy: BlockTransferPolicy) {
+        self.block_transfer_policy = policy;
+    }
+
+    /// Returns the active block-data transport policy.
+    pub const fn block_transfer_policy(&self) -> BlockTransferPolicy {
+        self.block_transfer_policy
     }
 
     pub(crate) fn check_not_poisoned(&self) -> Result<(), Error> {

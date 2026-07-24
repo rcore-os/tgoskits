@@ -4,7 +4,7 @@ log = "Warn"
 features = [
     "ax-runtime/display",
     "axplat-dyn/efi",
-    "ax-driver/virtio-blk",
+    "ax-driver/nvme",
     "ax-driver/virtio-net",
     "ax-driver/virtio-input",
     "ax-driver/virtio-gpu",

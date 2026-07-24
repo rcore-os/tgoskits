@@ -179,7 +179,7 @@ echo "BUILD_START"
 		# Direct output to serial console (TTY = line-buffered cargo)
 		cargo build --ignore-rust-version -p starryos \
 		            --target ${TARGET} \
-		            --features qemu,ax-driver/virtio-blk,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket \
+		            --features qemu,ax-driver/nvme,ax-driver/virtio-net,ax-driver/virtio-gpu,ax-driver/virtio-input,ax-driver/virtio-socket \
 		            --offline
 		BUILD_RC=\$?
 		kill \$HEARTBEAT_PID 2>/dev/null || true

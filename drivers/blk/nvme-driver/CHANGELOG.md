@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.3...nvme-driver-v0.8.0) - 2026-07-24
+
+### Changed
+
+- Move controller enable, Identify, queue creation, and namespace discovery to an IRQ-driven admin state machine.
+- Give each I/O queue one task owner and one fixed MSI-X vector; retain only explicit single-queue INTx fallback.
+- Stage each accepted I/O batch into the SQ and publish it with one tail doorbell; drain each IRQ batch before publishing one CQ head update.
+
+### Removed
+
+- Remove synchronous admin helpers, CQ polling, polling configuration, and unbounded register spins.
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.2...nvme-driver-v0.7.3) - 2026-07-23
 
 ### Other

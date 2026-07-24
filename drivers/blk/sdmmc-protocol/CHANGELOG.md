@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Implement the owned hardware batch contract with a native batch size and
+  queue depth of one for IRQ-driven SD/MMC hosts.
+
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.4.1...sdmmc-protocol-v0.4.2) - 2026-07-23
 
 ### Other
