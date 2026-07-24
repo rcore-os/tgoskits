@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7](https://github.com/rcore-os/tgoskits/compare/ax-display-v0.6.6...ax-display-v0.6.7) - 2026-07-24
+
+### Other
+
+- updated the following local packages: ax-sync
+
 ## [0.6.6](https://github.com/rcore-os/tgoskits/compare/ax-display-v0.6.5...ax-display-v0.6.6) - 2026-07-23
 
 ### Other

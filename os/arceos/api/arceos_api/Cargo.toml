@@ -1,6 +1,6 @@
 [package]
 name = "ax-api"
-version = "0.7.5"
+version = "0.7.6"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>"]
