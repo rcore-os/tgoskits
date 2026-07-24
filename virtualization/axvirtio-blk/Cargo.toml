@@ -1,0 +1,25 @@
+[package]
+name = "axvirtio-blk"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+description = "VirtIO block device implementation with MMIO transport for hypervisors"
+keywords = ["virtio", "block", "hypervisor", "no_std", "arceos"]
+categories = ["no-std", "embedded", "hardware-support"]
+readme = "README.md"
+
+[features]
+default = []
+
+[dependencies]
+axvirtio-common = { workspace = true }
+axaddrspace = { workspace = true }
+memory_addr = "0.4.0"
+spin = "0.9"
+log = "0.4"
+
+[dev-dependencies]
+axerrno = "0.1.0"
