@@ -835,7 +835,7 @@ mod tests {
         )
         .unwrap();
         let chunk = planner.plan(0, 512).unwrap().next().unwrap();
-        let dma = DeviceDma::new(DmaDomainId::identity(), u64::MAX, &VEC_DMA_OP);
+        let dma = DeviceDma::new(DmaDomainId::legacy_global(), u64::MAX, &VEC_DMA_OP);
         let guard =
             DmaBufferGuard::new(&dma, 512, 1, dma_api::DmaDirection::FromDevice, chunk, None)
                 .unwrap();

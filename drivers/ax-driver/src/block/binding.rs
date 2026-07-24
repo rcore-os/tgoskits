@@ -1241,7 +1241,7 @@ mod tests {
             queues: BlockQueueLock::new(BlockQueues {
                 queue: RuntimeQueue::Legacy(queue),
                 pool: BlockBufferPool {
-                    dma: DeviceDma::new_identity(u64::MAX, dma),
+                    dma: DeviceDma::new_legacy(u64::MAX, dma),
                     planner,
                     size: layout.size(),
                     align: layout.align(),
@@ -1269,7 +1269,7 @@ mod tests {
         let log = Box::leak(Box::<RequestLog>::default());
         let limits = QueueLimits {
             dma_mask: u64::MAX,
-            dma_domain: dma_api::DmaDomainId::identity(),
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 4096,
             max_inflight: 1,
             max_blocks_per_request: 8,
@@ -1319,7 +1319,7 @@ mod tests {
         let log = Box::leak(Box::<RequestLog>::default());
         let limits = QueueLimits {
             dma_mask: u64::MAX,
-            dma_domain: dma_api::DmaDomainId::identity(),
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 4096,
             max_inflight: 1,
             max_blocks_per_request: 8,
@@ -1377,7 +1377,7 @@ mod tests {
         let log = Box::leak(Box::<RequestLog>::default());
         let limits = QueueLimits {
             dma_mask: u64::MAX,
-            dma_domain: dma_api::DmaDomainId::identity(),
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 4096,
             max_inflight: 1,
             max_blocks_per_request: 8,
@@ -1395,7 +1395,7 @@ mod tests {
         let mut queues = BlockQueues {
             queue: RuntimeQueue::Owned(queue),
             pool: BlockBufferPool {
-                dma: DeviceDma::new_identity(u64::MAX, dma),
+                dma: DeviceDma::new_legacy(u64::MAX, dma),
                 planner,
                 size: layout.size(),
                 align: layout.align(),
@@ -1445,7 +1445,7 @@ mod tests {
             },
             limits: QueueLimits {
                 dma_mask: u64::MAX,
-                dma_domain: dma_api::DmaDomainId::identity(),
+                dma_domain: dma_api::DmaDomainId::legacy_global(),
                 dma_alignment: 4096,
                 max_inflight: 1,
                 max_blocks_per_request: 4096,
@@ -1488,7 +1488,7 @@ mod tests {
             },
             limits: QueueLimits {
                 dma_mask: u64::MAX,
-                dma_domain: dma_api::DmaDomainId::identity(),
+                dma_domain: dma_api::DmaDomainId::legacy_global(),
                 dma_alignment: 4096,
                 max_inflight: 1,
                 max_blocks_per_request: u32::MAX,
@@ -1513,7 +1513,7 @@ mod tests {
         let log = Box::leak(Box::<RequestLog>::default());
         let limits = QueueLimits {
             dma_mask: u64::MAX,
-            dma_domain: dma_api::DmaDomainId::identity(),
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_alignment: 4096,
             max_inflight: 1,
             max_blocks_per_request: 8,

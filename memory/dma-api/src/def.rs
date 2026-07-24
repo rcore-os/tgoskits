@@ -61,18 +61,13 @@ impl DmaDomainId {
         Self(id)
     }
 
-    /// Identity/bypass translation domain used when device addresses equal
-    /// physical addresses. Value one is reserved for this domain.
-    pub const fn identity() -> Self {
+    /// Compatibility domain for callers without device-specific translation.
+    pub const fn legacy_global() -> Self {
         Self(NonZeroU64::MIN)
     }
 
-    /// Creates a device-specific domain identifier.
-    pub const fn from_raw(id: u64) -> Option<Self> {
-        match NonZeroU64::new(id) {
-            Some(id) if id.get() != Self::identity().get().get() => Some(Self(id)),
-            _ => None,
-        }
+    pub fn from_raw(id: u64) -> Self {
+        Self(NonZeroU64::new(id).unwrap_or(NonZeroU64::MIN))
     }
 
     pub const fn get(self) -> NonZeroU64 {
@@ -150,11 +145,6 @@ pub enum DmaError {
     ZeroSizedBuffer,
     #[error("DMA operation is not supported: {operation}")]
     Unsupported { operation: &'static str },
-    #[error("DMA domain mismatch: expected {expected:?}, got {actual:?}")]
-    DomainMismatch {
-        expected: DmaDomainId,
-        actual: DmaDomainId,
-    },
 }
 
 /// Marker for plain data that can be safely stored in typed DMA buffers.

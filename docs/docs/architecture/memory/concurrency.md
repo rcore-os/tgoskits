@@ -18,7 +18,7 @@ sidebar_label: "锁与并发"
 | 执行上下文 | 可使用的同步 | 可进入的内存路径 | 禁止行为 |
 | --- | --- | --- | --- |
 | 单核 early boot | `SpinRaw`，依赖引导核独占 | 固定容量内存图、checked bump、boot 页表 | 调度等待、回收、文件系统调用 |
-| 普通内核线程 | 禁止中断/禁止抢占自旋锁，或操作系统 Mutex | Slab、Buddy、地址空间事务、缺页 | 持 allocator 锁调用文件系统或回收 |
+| 普通内核线程 | 禁止中断/禁止抢占自旋锁，或操作系统 Mutex | Slab、Buddy、地址空间操作、缺页 | 持 allocator 锁调用文件系统或回收 |
 | 硬中断 | 已预分配对象、固定 ring、极短禁止中断锁 | 驱动已有 descriptor 的状态转换 | 通用堆、Buddy、Slab 扩容、阻塞 Mutex |
 | bottom half | 由具体运行时约束决定 | 已预留资源、无阻塞短路径 | 无界 reclaim、持自旋锁等待 I/O |
 | 硬实时临界区 | 固定容量池或启动期预留资源 | 常数上界的本地状态转换 | Buddy、通用 Slab miss、动态虚拟映射 |
@@ -36,11 +36,11 @@ sidebar_label: "锁与并发"
 | `SpinNoIrq<BuddyAllocator>` | `buddy-slab-allocator/src/global.rs` | 全部 Buddy section、free lists 和 page metadata | 临界区内不调用上层策略或回收 |
 | `SpinNoIrq<SlabAllocator>` | `ax-alloc/src/buddy_slab.rs` | 当前 CPU 的 Slab cache | 调用期间同时持有 `NoPreempt` |
 | remote-free atomics | `buddy-slab-allocator/src/slab/page.rs` | 跨 CPU 归还的 object 链 | 释放者只发布节点，owner CPU drain |
-| `AtomicUsize` 统计矩阵 | `ax-alloc/src/lib.rs` | source × usage 字节计数 | Relaxed，仅统计，不发布资源 |
+| `AtomicUsize` 用途计数 | `ax-alloc/src/lib.rs` | feature-gated `UsageKind` 字节计数 | Relaxed，仅统计，不发布资源 |
 | `SpinNoIrq<AddrSpace>` | `axmm/src/lib.rs` | ArceOS 内核地址空间 | 不在锁内执行可睡眠 I/O |
-| `Mutex<AddrSpace>` | Starry `kernel/src/mm/aspace` | 单个进程地址空间、虚拟内存区域与页表事务 | fault、map、clone 通过同一 owner 串行化 |
+| `Mutex<AddrSpace>` | Starry `kernel/src/mm/aspace` | 单个进程地址空间、虚拟内存区域与页表 | fault、map、clone 通过同一 owner 串行化 |
 | `SpinNoIrq<Machine<...>>` | `axvm/src/vm/mod.rs` | AxVM 生命周期资源、`axaddrspace` 与嵌套页表 | map、fault、客户机访问和 clear 均在同一虚拟机 owner 下执行 |
-| `AtomicU64` 汇总计数 | `starry-mm/src/accounting.rs` | 单地址空间匿名页、文件页、共享内存页和峰值 | 映射事务由地址空间锁串行化；原子只提供无锁统计快照 |
+| `AtomicU64` 汇总计数 | `starry-mm/src/accounting.rs` | 单地址空间匿名页、文件页、共享内存页和峰值 | 映射操作由地址空间锁串行化；原子只提供无锁统计快照 |
 | `SpinNoIrq<CowFrameTable>` | Starry 写时复制 backend | 写时复制物理页索引、引用计数和分类 | 不在表锁内执行外部 I/O；归还物理页前释放表锁 |
 | `AtomicU64/AtomicI64` | `starry-mm` policy/stat | commit、RSS/VSS 与峰值 | 原子顺序按 admission 或统计语义选择 |
 
@@ -121,7 +121,7 @@ sequenceDiagram
 
 ### 3.4 统计原子
 
-`AllocatorCounters` 的每个 source × usage bucket 使用 `AtomicUsize` Relaxed 操作。计数不决定页是否可访问、不发布 owner，也不参与释放正确性，所以无需用其建立线程间 happens-before。资源发布由锁、remote-free 原子和上层所有权协议承担。
+启用 `stats` feature 后，`AllocatorCounters` 的每个 usage bucket 使用 `AtomicUsize` Relaxed 操作。计数不决定页是否可访问、不发布 owner，也不参与释放正确性，所以无需用其建立线程间 happens-before。资源发布由锁、remote-free 原子和上层所有权协议承担。
 
 ## 4. 页表与地址空间
 
@@ -129,16 +129,16 @@ sequenceDiagram
 
 ### 4.1 外层所有权
 
-不同消费者采用不同外层同步，但都必须在事务 `prepare` 到 `finalize` 期间保持地址空间独占。
+不同消费者采用不同外层同步，但都必须在一次页表与虚拟区域状态变更期间保持地址空间独占。
 
-| 消费者 | 外层 owner | 事务期间的要求 |
+| 消费者 | 外层 owner | 操作期间的要求 |
 | --- | --- | --- |
 | ArceOS kernel | `SpinNoIrq<AddrSpace>` | 不睡眠、不调用文件系统，完成 map/unmap/protect 后释放 |
 | ArceOS user address space | 由进程/调用链持有可变访问 | 不允许另一个线程并发修改同一实例 |
 | StarryOS process | `Arc<Mutex<AddrSpace>>` | 虚拟内存区域、页表和记账作为一个状态转换提交 |
 | Axvisor guest | `SpinNoIrq<Machine<AxVMResources, ...>>` | 客户机映射修改、缺页和内存访问由同一虚拟机 owner 串行化；销毁前停止虚拟处理器 |
 
-`prepare` 可以预留内存、检查全部区间并生成 undo 数据；`commit` 不应调用不可控外部代码。若 backend 无法提供不可失败 commit，失败路径必须在仍持外层地址空间 owner 时逆序 rollback。Axvisor 的具体锁闭包和 slice 生命周期见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md#7-锁并发与安全边界)。
+`ax-memory-set` 不提供通用 undo 日志。单个 backend 必须清理本次 map 新建的资源；需要专用恢复的写时复制 clone、页连续填充或页表移动由 Starry 策略层维护局部记录。Axvisor 的具体锁闭包和 slice 生命周期见[Axvisor 客户机地址空间设计与实现](./axaddrspace.md#7-锁并发与安全边界)。
 
 ### 4.2 地址转换缓存失效
 
@@ -164,7 +164,7 @@ StarryOS 的缺页、映射和进程克隆涉及可睡眠对象，因此以 `Arc
 
 持有 `AddrSpace` Mutex 时可以修改虚拟内存区域和页表，但应避免等待文件 I/O。文件后端把自身状态放在单独 Mutex 中，listener 在不能立即取得地址空间锁时使用 `try_lock()` 避免锁顺序反转。
 
-需要访问页缓存或文件系统的 prepare/fault 路径应先取得外部数据，再重新验证地址空间状态并提交。不能长期同时持有文件对象锁和地址空间锁。
+需要访问页缓存或文件系统的 fault 路径应先取得外部数据，再重新验证地址空间状态并提交。不能长期同时持有文件对象锁和地址空间锁。
 
 ### 5.2 写时复制帧表
 

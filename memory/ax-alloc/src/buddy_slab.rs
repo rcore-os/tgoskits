@@ -15,10 +15,9 @@ use buddy_slab_allocator::{
 };
 use log::{debug, info};
 
-use super::{
-    AllocResult, AllocationSource, AllocatorCounters, AllocatorStats, MemoryZone, PageRelease,
-    PageRequest, UsageKind,
-};
+use super::{AllocResult, MemoryZone, PageRequest, UsageKind};
+#[cfg(feature = "stats")]
+use super::{AllocatorCounters, AllocatorStats};
 
 /// The global allocator instance for buddy-slab mode.
 #[cfg_attr(
@@ -132,6 +131,7 @@ fn virt_to_phys(vaddr: usize) -> usize {
 /// Runtime allocator backed by Buddy pages and per-CPU Slab caches.
 pub struct GlobalAllocator {
     inner: InnerAllocator<PAGE_SIZE>,
+    #[cfg(feature = "stats")]
     stats: AllocatorCounters,
 }
 
@@ -146,6 +146,7 @@ impl GlobalAllocator {
     pub const fn new() -> Self {
         Self {
             inner: InnerAllocator::<PAGE_SIZE>::new(),
+            #[cfg(feature = "stats")]
             stats: AllocatorCounters::new(),
         }
     }
@@ -188,9 +189,9 @@ impl GlobalAllocator {
         // task on that CPU until the complete upstream operation finishes.
         let _guard = NoPreempt::new();
         let result = self.inner.alloc(layout).map_err(crate::AllocError::from);
+        #[cfg(feature = "stats")]
         if result.is_ok() {
-            self.stats
-                .alloc(AllocationSource::Normal, UsageKind::RustHeap, layout.size());
+            self.stats.alloc(UsageKind::RustHeap, layout.size());
         }
         result
     }
@@ -201,14 +202,14 @@ impl GlobalAllocator {
         // the current CPU. Prevent migration until that routing completes.
         let _guard = NoPreempt::new();
         unsafe { self.inner.dealloc(pos, layout) };
-        self.stats
-            .dealloc(AllocationSource::Normal, UsageKind::RustHeap, layout.size());
+        #[cfg(feature = "stats")]
+        self.stats.dealloc(UsageKind::RustHeap, layout.size());
     }
 
     /// Allocates contiguous pages.
     #[doc(hidden)]
-    pub fn allocate_pages_raw(&self, request: PageRequest, kind: UsageKind) -> AllocResult<usize> {
-        let bytes = request
+    pub fn allocate_pages_raw(&self, request: PageRequest, _kind: UsageKind) -> AllocResult<usize> {
+        let _bytes = request
             .count
             .checked_mul(PAGE_SIZE)
             .ok_or(crate::AllocError::InvalidParam)?;
@@ -220,26 +221,26 @@ impl GlobalAllocator {
             MemoryZone::Dma32 => self.inner.alloc_pages_lowmem(request.count, request.align),
         };
         let addr = result.map_err(crate::AllocError::from)?;
-        self.stats.alloc(request.zone.into(), kind, bytes);
+        #[cfg(feature = "stats")]
+        self.stats.alloc(_kind, _bytes);
         Ok(addr)
     }
 
-    /// Gives back pages to their source zone.
+    /// Gives back a contiguous page allocation.
     ///
     /// # Safety
     ///
     /// `pos` must identify a live allocation returned by
-    /// [`Self::allocate_pages_raw`] with the original page count, source zone,
-    /// and `kind` recorded in `release`.
+    /// [`Self::allocate_pages_raw`] with the original page count and `kind`.
     /// The allocation must not be accessed or released again after this call.
     #[doc(hidden)]
-    pub unsafe fn deallocate_pages_raw(&self, pos: usize, release: PageRelease, kind: UsageKind) {
-        let bytes = release
-            .count
+    pub unsafe fn deallocate_pages_raw(&self, pos: usize, count: usize, _kind: UsageKind) {
+        let _bytes = count
             .checked_mul(PAGE_SIZE)
             .expect("a live page allocation has a validated byte size");
-        self.inner.dealloc_pages(pos, release.count);
-        self.stats.dealloc(release.zone.into(), kind, bytes);
+        self.inner.dealloc_pages(pos, count);
+        #[cfg(feature = "stats")]
+        self.stats.dealloc(_kind, _bytes);
     }
 
     /// Returns the number of allocated bytes in the allocator backend.
@@ -265,6 +266,7 @@ impl GlobalAllocator {
     }
 
     /// Returns an allocation statistics snapshot.
+    #[cfg(feature = "stats")]
     pub fn stats(&self) -> AllocatorStats {
         self.stats.snapshot()
     }

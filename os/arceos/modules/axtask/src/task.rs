@@ -977,10 +977,7 @@ impl Drop for TaskStack {
                 unsafe {
                     ax_alloc::global_allocator().deallocate_pages_raw(
                         self.guard_bottom().as_usize(),
-                        ax_alloc::PageRelease {
-                            count: self.alloc_pages,
-                            zone: ax_alloc::MemoryZone::Normal,
-                        },
+                        self.alloc_pages,
                         ax_alloc::UsageKind::Global,
                     );
                 }

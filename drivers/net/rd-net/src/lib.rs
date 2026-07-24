@@ -247,7 +247,7 @@ fn make_pool(
 ) -> Result<ContiguousBufferPool, NetError> {
     let layout = Layout::from_size_align(config.buf_size, config.align.max(1))
         .map_err(|_| other_error("invalid queue layout"))?;
-    let dma = DeviceDma::new_identity(config.dma_mask, dma_op);
+    let dma = DeviceDma::new_legacy(config.dma_mask, dma_op);
     Ok(dma.contiguous_buffer_pool(layout, direction, config.ring_size))
 }
 

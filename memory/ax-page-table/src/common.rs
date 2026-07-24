@@ -128,16 +128,6 @@ pub enum PagingError {
     InvalidRange { details: &'static str },
 }
 
-bitflags::bitflags! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct AccessFlags: usize {
-        const READ = 1;
-        const WRITE = 1<<2;
-        const EXECUTE = 1<<3;
-        const LOWER = 1<<4;
-    }
-}
-
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MemAttributes {
     #[default]
@@ -145,42 +135,6 @@ pub enum MemAttributes {
     PerCpu,
     Device,
     Uncached,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MemConfig {
-    pub access: AccessFlags,
-    pub attrs: MemAttributes,
-}
-
-impl core::fmt::Display for MemConfig {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{}{}{}{}|{:?}",
-            if self.access.contains(AccessFlags::READ) {
-                "R"
-            } else {
-                "-"
-            },
-            if self.access.contains(AccessFlags::WRITE) {
-                "W"
-            } else {
-                "-"
-            },
-            if self.access.contains(AccessFlags::EXECUTE) {
-                "X"
-            } else {
-                "-"
-            },
-            if self.access.contains(AccessFlags::LOWER) {
-                "L"
-            } else {
-                "-"
-            },
-            self.attrs
-        )
-    }
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]

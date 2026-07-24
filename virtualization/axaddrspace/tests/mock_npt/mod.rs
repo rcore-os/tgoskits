@@ -8,8 +8,8 @@ use axvm_types::GuestPhysAddr;
 use ptg::PageTableEntry;
 
 use crate::test_utils::{
-    ALLOC_COUNT, ALLOC_SHOULD_FAIL, BASE_PADDR, DEALLOC_COUNT, MEMORY_LEN, MockHal, NEXT_PADDR,
-    UNMAP_FAIL_ADDRESS,
+    ALLOC_COUNT, ALLOC_SHOULD_FAIL, BASE_PADDR, DEALLOC_COUNT, DEALLOCATED_FRAMES, MEMORY_LEN,
+    MockHal, NEXT_PADDR,
 };
 
 fn mock_alloc_frame() -> Option<PhysAddr> {
@@ -25,7 +25,8 @@ fn mock_alloc_frame() -> Option<PhysAddr> {
     Some(PhysAddr::from_usize(paddr))
 }
 
-fn mock_dealloc_frame(_paddr: PhysAddr) {
+fn mock_dealloc_frame(paddr: PhysAddr) {
+    DEALLOCATED_FRAMES.lock().unwrap().push(paddr.as_usize());
     DEALLOC_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
@@ -223,9 +224,6 @@ impl NestedPageTableOps for MockNestedPageTable {
         &mut self,
         vaddr: GuestPhysAddr,
     ) -> AddrSpaceResult<(PhysAddr, MappingFlags, PageSize)> {
-        if UNMAP_FAIL_ADDRESS.load(Ordering::SeqCst) == vaddr.as_usize() {
-            return Err(AddrSpaceError::MappingState);
-        }
         let (paddr, flags, page_size) = self.query(vaddr)?;
         self.inner
             .unmap(

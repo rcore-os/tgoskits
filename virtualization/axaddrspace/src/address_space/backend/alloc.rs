@@ -89,10 +89,9 @@ impl<Npt: NestedPageTableOps> Backend<Npt> {
         for addr in PageIter4K::new(start, end).expect("prepared unmap range must be 4-KiB aligned")
         {
             match pt.unmap(addr) {
-                Ok((_frame, _, page_size)) => {
+                Ok((frame, _, page_size)) => {
                     debug_assert_eq!(page_size, PageSize::Size4K);
-                    // Keep the frame owned until the complete MemorySet
-                    // transaction commits. The backend finalizer releases it.
+                    pt.dealloc_frame(frame);
                 }
                 Err(crate::AddrSpaceError::Unmapped { .. }) => {}
                 Err(_) => return false,

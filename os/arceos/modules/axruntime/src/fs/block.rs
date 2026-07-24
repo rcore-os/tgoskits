@@ -38,14 +38,7 @@ impl FsPageProvider for RuntimePageProvider {
         // SAFETY: consuming FsPage transfers the unique page returned by this
         // allocator with the same single-page request and usage.
         unsafe {
-            ax_alloc::global_allocator().deallocate_pages_raw(
-                page.addr(),
-                ax_alloc::PageRelease {
-                    count: 1,
-                    zone: ax_alloc::MemoryZone::Normal,
-                },
-                UsageKind::PageCache,
-            );
+            ax_alloc::global_allocator().deallocate_pages_raw(page.addr(), 1, UsageKind::PageCache);
         }
     }
 

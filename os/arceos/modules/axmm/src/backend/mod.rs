@@ -1,14 +1,11 @@
 //! Memory mapping backends.
 
-use ::alloc::vec::Vec;
-use ax_hal::paging::{MappingFlags, PageSize, PageTable, PagingError};
-use ax_memory_addr::{MemoryAddr, PageIter4K, PhysAddr, VirtAddr};
-use ax_memory_set::{MappingBackend, MappingError, MappingOperation, MappingResult};
+use ax_hal::paging::{MappingFlags, PageTable};
+use ax_memory_addr::VirtAddr;
+use ax_memory_set::MappingBackend;
 
 mod alloc;
 mod linear;
-
-use self::alloc::dealloc_frame;
 
 /// A unified enum type for different memory mapping backends.
 ///
@@ -41,188 +38,52 @@ pub enum Backend {
     },
 }
 
-#[derive(Clone, Copy)]
-struct SavedMapping {
-    vaddr: VirtAddr,
-    paddr: PhysAddr,
-    flags: MappingFlags,
-}
-
-#[doc(hidden)]
-pub struct BackendTransaction {
-    operation: MappingOperation<VirtAddr, MappingFlags>,
-    previous: Vec<SavedMapping>,
-}
-
 impl MappingBackend for Backend {
     type Addr = VirtAddr;
     type Flags = MappingFlags;
     type PageTable = PageTable;
-    type MappingPlan = BackendTransaction;
-    type CommitState = BackendTransaction;
+    fn map(&self, start: VirtAddr, size: usize, flags: MappingFlags, pt: &mut PageTable) -> bool {
+        match *self {
+            Self::Linear { pa_va_offset } => self.map_linear(start, size, flags, pt, pa_va_offset),
+            Self::Alloc { populate } => self.map_alloc(start, size, flags, pt, populate),
+        }
+    }
 
-    fn prepare(
+    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut PageTable) -> bool {
+        match *self {
+            Self::Linear { pa_va_offset } => self.unmap_linear(start, size, pt, pa_va_offset),
+            Self::Alloc { populate } => self.unmap_alloc(start, size, pt, populate),
+        }
+    }
+
+    fn protect(
         &self,
-        operation: MappingOperation<VirtAddr, MappingFlags>,
-        pt: &mut PageTable,
-    ) -> MappingResult<Self::MappingPlan> {
-        let (start, size) = operation.range();
-        let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
-        let mut previous = Vec::new();
-        let mut contains_unmapped = false;
-        if !matches!(operation, MappingOperation::Map { .. }) {
-            let pages = PageIter4K::new(start, end).ok_or(MappingError::InvalidParam)?;
-            for vaddr in pages {
-                match pt.query(vaddr) {
-                    Ok((paddr, flags, PageSize::Size4K)) => {
-                        previous
-                            .try_reserve(1)
-                            .map_err(|_| MappingError::NoMemory)?;
-                        previous.push(SavedMapping {
-                            vaddr,
-                            paddr,
-                            flags,
-                        });
-                    }
-                    Ok((..)) => return Err(MappingError::BadState),
-                    Err(PagingError::NotMapped) => contains_unmapped = true,
-                    Err(_) => return Err(MappingError::BadState),
-                }
-            }
-        }
-        if let (Self::Linear { pa_va_offset }, MappingOperation::Map { start, size, .. }) =
-            (self, operation)
-        {
-            let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
-            if Self::linear_paddr(start, *pa_va_offset).is_none()
-                || Self::linear_paddr(end, *pa_va_offset).is_none()
-            {
-                return Err(MappingError::InvalidParam);
-            }
-        }
-        if matches!(self, Self::Linear { .. })
-            && matches!(operation, MappingOperation::Unmap { .. })
-            && contains_unmapped
-        {
-            return Err(MappingError::BadState);
-        }
-        Ok(BackendTransaction {
-            operation,
-            previous,
-        })
-    }
-
-    fn abort(&self, _plan: Self::MappingPlan, _pt: &mut PageTable) {}
-
-    fn commit(
-        &self,
-        plan: Self::MappingPlan,
-        pt: &mut PageTable,
-    ) -> MappingResult<Self::CommitState> {
-        if self.apply(plan.operation, pt) {
-            Ok(plan)
-        } else if matches!(plan.operation, MappingOperation::Map { .. }) {
-            // Every map implementation removes its own partial mappings before
-            // reporting failure, while preserving any colliding old mapping.
-            Err(MappingError::BadState)
-        } else {
-            self.rollback(plan, pt)?;
-            Err(MappingError::BadState)
-        }
-    }
-
-    fn rollback(&self, state: Self::CommitState, pt: &mut PageTable) -> MappingResult {
-        match state.operation {
-            MappingOperation::Map { .. } => {
-                let (start, size) = state.operation.range();
-                let end = start.checked_add(size).ok_or(MappingError::BadState)?;
-                for vaddr in PageIter4K::new(start, end).ok_or(MappingError::BadState)? {
-                    match pt.cursor().unmap(vaddr) {
-                        Ok((frame, _, PageSize::Size4K)) => {
-                            if matches!(self, Self::Alloc { .. }) {
-                                dealloc_frame(frame);
-                            }
-                        }
-                        Ok(_) | Err(PagingError::NotMapped) => {}
-                        Err(_) => return Err(MappingError::BadState),
-                    }
-                }
-            }
-            MappingOperation::Unmap { .. } => {
-                for saved in state.previous {
-                    match pt.query(saved.vaddr) {
-                        Err(PagingError::NotMapped) => pt
-                            .cursor()
-                            .map(saved.vaddr, saved.paddr, PageSize::Size4K, saved.flags)
-                            .map_err(|_| MappingError::BadState)?,
-                        Ok((paddr, flags, PageSize::Size4K))
-                            if paddr == saved.paddr && flags == saved.flags => {}
-                        _ => return Err(MappingError::BadState),
-                    }
-                }
-            }
-            MappingOperation::Protect { .. } => {
-                for saved in state.previous {
-                    pt.cursor()
-                        .protect(saved.vaddr, saved.flags)
-                        .map_err(|_| MappingError::BadState)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn finalize(&self, state: Self::CommitState, _pt: &mut PageTable) {
-        if matches!(self, Self::Alloc { .. })
-            && matches!(state.operation, MappingOperation::Unmap { .. })
-        {
-            for saved in state.previous {
-                dealloc_frame(saved.paddr);
-            }
-        }
+        start: Self::Addr,
+        size: usize,
+        new_flags: Self::Flags,
+        page_table: &mut Self::PageTable,
+    ) -> bool {
+        page_table
+            .cursor()
+            .protect_region(start, size, new_flags)
+            .is_ok()
     }
 
     fn split(&mut self, _align_diff: usize) -> Option<Self> {
         // backend can be trivially split since it does not have any state.
         Some(self.clone())
     }
+
+    fn shrink_left(&mut self, _shrink_size: usize) {
+        // backend can be trivially shrunk since it does not have any state.
+    }
+
+    fn shrink_right(&mut self, _shrink_size: usize) {
+        // backend can be trivially shrunk since it does not have any state.
+    }
 }
 
 impl Backend {
-    fn apply(
-        &self,
-        operation: MappingOperation<VirtAddr, MappingFlags>,
-        page_table: &mut PageTable,
-    ) -> bool {
-        match operation {
-            MappingOperation::Map {
-                start, size, flags, ..
-            } => match *self {
-                Self::Linear { pa_va_offset } => {
-                    self.map_linear(start, size, flags, page_table, pa_va_offset)
-                }
-                Self::Alloc { populate } => {
-                    self.map_alloc(start, size, flags, page_table, populate)
-                }
-            },
-            MappingOperation::Unmap { start, size, .. } => match *self {
-                Self::Linear { pa_va_offset } => {
-                    self.unmap_linear(start, size, page_table, pa_va_offset)
-                }
-                Self::Alloc { populate } => self.unmap_alloc(start, size, page_table, populate),
-            },
-            MappingOperation::Protect {
-                start,
-                size,
-                new_flags,
-                ..
-            } => page_table
-                .cursor()
-                .protect_region(start, size, new_flags)
-                .is_ok(),
-        }
-    }
-
     pub(crate) fn handle_page_fault(
         &self,
         vaddr: VirtAddr,

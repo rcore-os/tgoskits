@@ -6,10 +6,7 @@ use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingErr
 use ax_sync::Mutex;
 use starry_mm::SharedPages;
 
-use super::{
-    AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, RssKind, divide_page,
-    pages_in,
-};
+use super::{AddrSpace, Backend, BackendOps, MemoryAccounting, RssKind, divide_page, pages_in};
 
 #[derive(Clone)]
 pub struct SharedBackend {
@@ -97,7 +94,7 @@ impl BackendOps for SharedBackend {
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
-        _acct: CloneMapAccounting<'_>,
+        _child_accounting: Option<&MemoryAccounting>,
     ) -> AxResult<Backend> {
         Ok(Backend::Shared(self.clone()))
     }

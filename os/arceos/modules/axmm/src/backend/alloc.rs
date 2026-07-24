@@ -1,4 +1,4 @@
-use ax_alloc::{MemoryZone, PageRelease, PageRequest, UsageKind, global_allocator};
+use ax_alloc::{MemoryZone, PageRequest, UsageKind, global_allocator};
 use ax_hal::{
     mem::{phys_to_virt, virt_to_phys},
     paging::{MappingFlags, PageSize, PageTable},
@@ -32,14 +32,7 @@ pub(super) fn dealloc_frame(frame: PhysAddr) {
     // SAFETY: allocated mappings call this exactly once for a frame returned
     // by alloc_frame with the same single-page request and usage.
     unsafe {
-        global_allocator().deallocate_pages_raw(
-            vaddr.as_usize(),
-            PageRelease {
-                count: 1,
-                zone: MemoryZone::Normal,
-            },
-            UsageKind::VirtMem,
-        );
+        global_allocator().deallocate_pages_raw(vaddr.as_usize(), 1, UsageKind::VirtMem);
     }
 }
 
@@ -120,11 +113,10 @@ impl Backend {
         for addr in PageIter4K::new(start, end).expect("prepared unmap range must be 4-KiB aligned")
         {
             match pt.cursor().unmap(addr) {
-                Ok((_frame, _, page_size)) => {
+                Ok((frame, _, page_size)) => {
                     debug_assert_eq!(page_size, PageSize::Size4K);
-                    // Physical ownership is retained until the whole MemorySet
-                    // transaction succeeds. `Backend::finalize` releases it;
-                    // rollback maps this exact frame again.
+                    // TLB flush is handled automatically when cursor is dropped.
+                    dealloc_frame(frame);
                 }
                 Err(ax_hal::paging::PagingError::NotMapped) => {}
                 Err(_) => return false,

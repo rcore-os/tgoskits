@@ -1,6 +1,6 @@
 //! Page table manipulation.
 
-use ax_alloc::{MemoryZone, PageRelease, PageRequest, UsageKind, global_allocator};
+use ax_alloc::{MemoryZone, PageRequest, UsageKind, global_allocator};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
 use ax_page_table::stage1::PageFrameProvider;
 #[doc(no_inline)]
@@ -98,10 +98,7 @@ impl PageFrameProvider for PagingHandlerImpl {
         unsafe {
             global_allocator().deallocate_pages_raw(
                 phys_to_virt(paddr).as_usize(),
-                PageRelease {
-                    count: num,
-                    zone: MemoryZone::Normal,
-                },
+                num,
                 UsageKind::PageTable,
             );
         }

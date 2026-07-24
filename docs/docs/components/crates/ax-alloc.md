@@ -68,18 +68,15 @@ pub fn alloc_pages(
 
 ### `GlobalPage`
 
-`GlobalPage` 保存分配地址、原始 `PageRequest` 和 `UsageKind`。对象 Drop 时按照原 zone 和用途归还页面，避免调用方重新推导释放参数。
+`GlobalPage` 保存分配地址、页数和 `UsageKind`。对象 Drop 时根据地址找到对应 Buddy section，并按照原用途更新可选统计；`zone` 和对齐只用于分配筛选，不属于释放参数。
 
-页表 provider、任务栈和必须适配分离式 alloc/free trait 的边界可以使用内部 raw pair；raw 释放是 `unsafe`，adapter 必须证明地址仍由自己唯一持有、请求和用途未改变且只释放一次。普通调用方应使用 `GlobalPage`。
+页表 provider、任务栈和必须适配分离式 alloc/free trait 的边界可以使用内部 raw pair；raw 释放是 `unsafe`，adapter 必须证明地址仍由自己唯一持有、页数和用途未改变且只释放一次。普通调用方应使用 `GlobalPage`。
 
 ### `AllocatorStats`
 
-统计只保存一张 `AllocationSource × UsageKind` 计数表：
+启用 `stats` feature 后，统计只保存一张按 `UsageKind` 索引的计数表，分类包括 Rust 堆、虚拟内存、page cache、页表、DMA 和通用页对象。`Normal` 与 `Dma32` 共享 Buddy section，因此地址区域不作为统计维度。
 
-- source：`Normal`、`Dma32`；
-- usage：Rust 堆、虚拟内存、page cache、页表、DMA 和通用页对象。
-
-底层每个 bucket 使用一个 Relaxed 原子计数，每次 alloc/free 只更新一个 bucket，不使用统计全局锁串行化 Slab 命中。`stats()` 返回快照；`source()`、`usage()` 和 `total()` 从快照计算，不维护第二份可漂移的统计状态。
+底层每个 bucket 使用一个 Relaxed 原子计数，每次 alloc/free 只更新一个 bucket，不使用统计全局锁串行化 Slab 命中。`stats()` 返回快照；`usage()` 和 `total()` 从快照计算，不维护第二份可漂移的统计状态。关闭 feature 后计数原子和更新分支均不进入镜像。
 
 ## 后端和并发
 
@@ -100,6 +97,7 @@ pub fn alloc_pages(
 | `global-allocator` | 注册 crate 提供的全局堆分配器 |
 | `smp` | 启用多核锁和 per-CPU Slab 路径 |
 | `tracking` | 记录堆分配布局、代次和回溯 |
+| `stats` | 启用按用途计数与诊断快照 |
 
 `embedded-default`、`starry` 和 `hypervisor` 是系统配置组合，不是 `ax-alloc` feature 名称。
 

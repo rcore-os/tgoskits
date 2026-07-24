@@ -44,7 +44,7 @@ impl QueueLimits {
     pub const fn simple(logical_block_size: usize, dma_mask: u64) -> Self {
         Self {
             dma_mask,
-            dma_domain: DmaDomainId::identity(),
+            dma_domain: DmaDomainId::legacy_global(),
             dma_alignment: logical_block_size,
             max_inflight: 1,
             max_blocks_per_request: 1,

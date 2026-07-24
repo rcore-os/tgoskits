@@ -134,10 +134,7 @@ impl Drop for RingMemory {
         unsafe {
             global_allocator().deallocate_pages_raw(
                 self.vaddr.as_usize(),
-                ax_alloc::PageRelease {
-                    count: self.pages,
-                    zone: ax_alloc::MemoryZone::Normal,
-                },
+                self.pages,
                 UsageKind::VirtMem,
             );
         }

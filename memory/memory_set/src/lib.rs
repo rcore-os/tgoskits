@@ -10,11 +10,7 @@ mod set;
 #[cfg(test)]
 mod tests;
 
-pub use self::{
-    area::MemoryArea,
-    backend::{MapPrecondition, MappingBackend, MappingOperation},
-    set::MemorySet,
-};
+pub use self::{area::MemoryArea, backend::MappingBackend, set::MemorySet};
 
 /// Error type for memory mapping operations.
 #[derive(Debug, Eq, PartialEq, thiserror::Error)]
@@ -25,8 +21,8 @@ pub enum MappingError {
     /// The given range overlaps with an existing mapping.
     #[error("mapping overlaps an existing mapping")]
     AlreadyExists,
-    /// The backend could not reserve memory required by the transaction.
-    #[error("mapping transaction is out of memory")]
+    /// The mapping operation could not allocate required metadata or pages.
+    #[error("mapping operation is out of memory")]
     NoMemory,
     /// The backend page table is in a bad state.
     #[error("mapping backend is in a bad state")]

@@ -3,18 +3,15 @@ use alloc::{
     boxed::Box,
     string::{String, ToString},
     sync::Arc,
-    vec::Vec,
 };
 
 use ax_alloc::{UsageKind, global_allocator};
 use ax_errno::{AxError, AxResult};
-use ax_memory_addr::{DynPageIter, MemoryAddr, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
-use ax_memory_set::{
-    MapPrecondition, MappingBackend, MappingError, MappingOperation, MappingResult,
-};
+use ax_memory_addr::{DynPageIter, PAGE_SIZE_4K, PhysAddr, VirtAddr, VirtAddrRange};
+use ax_memory_set::MappingBackend;
 use ax_runtime::hal::{
     mem::{phys_to_virt, virt_to_phys},
-    paging::{MappingFlags, PageSize, PageTable, PageTableCursor, PagingError},
+    paging::{MappingFlags, PageSize, PageTable, PageTableCursor},
 };
 use ax_sync::Mutex;
 use enum_dispatch::enum_dispatch;
@@ -24,7 +21,7 @@ mod file;
 mod linear;
 mod shared;
 
-use starry_mm::{CloneMapAccounting, CommitKind, MemoryAccounting, PageInitialization, PageSource};
+use starry_mm::{CommitKind, MemoryAccounting, PageInitialization, PageSource};
 pub use starry_mm::{RssKind, SharedPages};
 
 #[cfg(axtest)]
@@ -71,14 +68,7 @@ pub(crate) fn dealloc_frame(frame: PhysAddr, align: PageSize) {
     // SAFETY: VM backends transfer only exclusive frames returned by
     // alloc_frame and preserve their page-size-derived request metadata.
     unsafe {
-        global_allocator().deallocate_pages_raw(
-            vaddr.as_usize(),
-            ax_alloc::PageRelease {
-                count: num_pages,
-                zone: ax_alloc::MemoryZone::Normal,
-            },
-            UsageKind::VirtMem,
-        );
+        global_allocator().deallocate_pages_raw(vaddr.as_usize(), num_pages, UsageKind::VirtMem);
     }
 }
 
@@ -106,7 +96,7 @@ pub(super) fn pages_in(range: VirtAddrRange, align: PageSize) -> AxResult<DynPag
 
 pub(super) type PopulateCallback = Box<dyn FnOnce(&mut AddrSpace)>;
 
-/// Page-table state and resident accounting committed by one address-space transaction.
+/// Page-table and resident accounting state updated together by Starry mapping backends.
 #[doc(hidden)]
 pub struct AddressSpacePageTable {
     pub(super) table: PageTable,
@@ -183,7 +173,7 @@ pub trait BackendOps {
         old_pt: &mut PageTableCursor,
         new_pt: &mut PageTableCursor,
         new_aspace: &Arc<Mutex<AddrSpace>>,
-        acct: CloneMapAccounting<'_>,
+        child_accounting: Option<&MemoryAccounting>,
     ) -> AxResult<Backend>;
 
     /// Splits the backend into two at the given position, and returns the backend for the upper part.
@@ -273,288 +263,66 @@ impl Backend {
     }
 }
 
-#[derive(Clone, Copy)]
-struct SavedMapping {
-    vaddr: VirtAddr,
-    paddr: PhysAddr,
-    flags: MappingFlags,
-    page_size: PageSize,
-    rss_kind: Option<RssKind>,
-    cow_hold: bool,
-}
-
-#[doc(hidden)]
-pub struct BackendTransaction {
-    operation: MappingOperation<VirtAddr, MappingFlags>,
-    previous: Vec<SavedMapping>,
-}
-
 impl MappingBackend for Backend {
     type Addr = VirtAddr;
     type Flags = MappingFlags;
     type PageTable = AddressSpacePageTable;
-    type MappingPlan = BackendTransaction;
-    type CommitState = BackendTransaction;
 
-    fn prepare(
+    fn map(
         &self,
-        operation: MappingOperation<VirtAddr, MappingFlags>,
+        start: VirtAddr,
+        size: usize,
+        flags: MappingFlags,
         pt: &mut AddressSpacePageTable,
-    ) -> MappingResult<Self::MappingPlan> {
-        self.validate_operation(operation)?;
-        let (start, size) = operation.range();
-        let end = start.checked_add(size).ok_or(MappingError::InvalidParam)?;
-        let range = VirtAddrRange::new(start, end);
-        let page_size = self.page_size();
-        let mut previous = Vec::new();
-        let mut contains_unmapped = false;
-        let pages = pages_in(range, page_size).map_err(map_ax_error)?;
-        for vaddr in pages {
-            match pt.table.cursor().query(vaddr) {
-                Ok((paddr, flags, actual_size)) if actual_size == page_size => {
-                    if matches!(
-                        operation,
-                        MappingOperation::Map {
-                            precondition: MapPrecondition::Vacant,
-                            ..
-                        }
-                    ) {
-                        self.release_holds(&previous);
-                        return Err(MappingError::AlreadyExists);
-                    }
-                    if !matches!(operation, MappingOperation::Map { .. })
-                        && previous.try_reserve(1).is_err()
-                    {
-                        self.release_holds(&previous);
-                        return Err(MappingError::NoMemory);
-                    }
-                    let cow_hold = matches!(operation, MappingOperation::Unmap { .. })
-                        && matches!(self, Self::Cow(_));
-                    if cow_hold && let Err(error) = cow::retain_frame_for_transaction(paddr) {
-                        self.release_holds(&previous);
-                        return Err(map_ax_error(error));
-                    }
-                    if !matches!(operation, MappingOperation::Map { .. }) {
-                        previous.push(SavedMapping {
-                            vaddr,
-                            paddr,
-                            flags,
-                            page_size: actual_size,
-                            rss_kind: self.rss_kind_before_unmap(paddr),
-                            cow_hold,
-                        });
-                    }
-                }
-                Ok(_) => {
-                    self.release_holds(&previous);
-                    return Err(MappingError::BadState);
-                }
-                Err(PagingError::NotMapped) => contains_unmapped = true,
-                Err(_) => {
-                    self.release_holds(&previous);
-                    return Err(MappingError::BadState);
-                }
-            }
+    ) -> bool {
+        let range = VirtAddrRange::from_start_size(start, size);
+        if let Err(error) = BackendOps::map(
+            self,
+            range,
+            flags,
+            Some(&pt.accounting),
+            &mut pt.table.cursor(),
+        ) {
+            warn!("Failed to map area: {error:?}");
+            false
+        } else {
+            true
         }
+    }
 
-        if matches!(self, Self::Linear { .. })
-            && matches!(operation, MappingOperation::Unmap { .. })
-            && contains_unmapped
+    fn unmap(&self, start: VirtAddr, size: usize, pt: &mut AddressSpacePageTable) -> bool {
+        let range = VirtAddrRange::from_start_size(start, size);
+        if let Err(error) =
+            BackendOps::unmap(self, range, Some(&pt.accounting), &mut pt.table.cursor())
         {
-            self.release_holds(&previous);
-            return Err(MappingError::BadState);
+            warn!("Failed to unmap area: {error:?}");
+            false
+        } else {
+            true
         }
-        Ok(BackendTransaction {
-            operation,
-            previous,
-        })
     }
 
-    fn abort(&self, plan: Self::MappingPlan, _pt: &mut AddressSpacePageTable) {
-        self.release_holds(&plan.previous);
-    }
-
-    fn commit(
+    fn protect(
         &self,
-        plan: Self::MappingPlan,
+        start: VirtAddr,
+        size: usize,
+        new_flags: MappingFlags,
         pt: &mut AddressSpacePageTable,
-    ) -> MappingResult<Self::CommitState> {
-        match self.apply(plan.operation, pt) {
-            Ok(()) => Ok(plan),
-            Err(error) => {
-                warn!("Failed to commit memory mapping operation: {error:?}");
-                let original = map_ax_error(error);
-                self.restore(plan, pt).map_err(|restore_error| {
-                    warn!("Failed to restore a partially committed operation: {restore_error:?}");
-                    MappingError::BadState
-                })?;
-                Err(original)
-            }
+    ) -> bool {
+        let range = VirtAddrRange::from_start_size(start, size);
+        let mut cursor = pt.table.cursor();
+        if let Err(error) = BackendOps::on_protect(self, range, new_flags, &mut cursor) {
+            warn!("Failed to protect area: {error:?}");
+            return false;
         }
-    }
-
-    fn rollback(&self, state: Self::CommitState, pt: &mut Self::PageTable) -> MappingResult {
-        self.restore(state, pt).map_err(|error| {
-            warn!("Failed to roll back memory mapping operation: {error:?}");
-            MappingError::BadState
-        })
-    }
-
-    fn finalize(&self, state: Self::CommitState, _pt: &mut AddressSpacePageTable) {
-        self.release_holds(&state.previous);
+        let pte_flags = match self {
+            Backend::Cow(cow) => cow.pte_flags_for_protect(new_flags),
+            _ => new_flags,
+        };
+        cursor.protect_region(start, size, pte_flags).is_ok()
     }
 
     fn split(&mut self, align_diff: usize) -> Option<Self> {
         BackendOps::split(self, align_diff)
-    }
-}
-
-impl Backend {
-    fn validate_operation(
-        &self,
-        operation: MappingOperation<VirtAddr, MappingFlags>,
-    ) -> MappingResult {
-        let (start, size) = operation.range();
-        let page_size = usize::from(self.page_size());
-        start.checked_add(size).ok_or(MappingError::InvalidParam)?;
-        if !start.as_usize().is_multiple_of(page_size) || !size.is_multiple_of(page_size) {
-            return Err(MappingError::InvalidParam);
-        }
-        let requested_flags = match operation {
-            MappingOperation::Map { flags, .. } => Some(flags),
-            MappingOperation::Protect { new_flags, .. } => Some(new_flags),
-            MappingOperation::Unmap { .. } => None,
-        };
-        if let (Self::File(file), Some(flags)) = (self, requested_flags) {
-            file.check_flags(flags).map_err(map_ax_error)?;
-        }
-        Ok(())
-    }
-
-    fn rss_kind_before_unmap(&self, paddr: PhysAddr) -> Option<RssKind> {
-        match self {
-            Self::Cow(_) => cow::frame_kind(paddr),
-            Self::Shared(_) => Some(RssKind::Shmem),
-            Self::File(file) => Some(file.rss_kind()),
-            Self::Linear(_) => None,
-        }
-    }
-
-    fn release_holds(&self, mappings: &[SavedMapping]) {
-        for saved in mappings.iter().filter(|saved| saved.cow_hold) {
-            cow::release_transaction_frame(saved.paddr, saved.page_size);
-        }
-    }
-
-    fn restore(&self, state: BackendTransaction, pt: &mut AddressSpacePageTable) -> AxResult {
-        match state.operation {
-            MappingOperation::Map { start, size, .. } => {
-                let range = VirtAddrRange::from_start_size(start, size);
-                BackendOps::unmap(self, range, Some(&pt.accounting), &mut pt.table.cursor())?;
-            }
-            MappingOperation::Unmap { .. } => {
-                for saved in state.previous {
-                    let current = {
-                        let cursor = pt.table.cursor();
-                        cursor.query(saved.vaddr)
-                    };
-                    match current {
-                        Ok((paddr, flags, page_size))
-                            if paddr == saved.paddr
-                                && flags == saved.flags
-                                && page_size == saved.page_size =>
-                        {
-                            if saved.cow_hold {
-                                cow::release_transaction_frame(saved.paddr, saved.page_size);
-                            }
-                        }
-                        Err(PagingError::NotMapped) => {
-                            pt.table.cursor().map(
-                                saved.vaddr,
-                                saved.paddr,
-                                saved.page_size,
-                                saved.flags,
-                            )?;
-                            if let Some(kind) = saved.rss_kind {
-                                pt.accounting.inc(kind, 1)?;
-                            }
-                            // A retained COW reference now belongs to the
-                            // restored mapping and must not be released.
-                        }
-                        _ => return Err(AxError::BadState),
-                    }
-                }
-            }
-            MappingOperation::Protect { .. } => {
-                for saved in state.previous {
-                    let restored = {
-                        let mut cursor = pt.table.cursor();
-                        cursor.protect(saved.vaddr, saved.flags)
-                    };
-                    match restored {
-                        Ok(page_size) if page_size == saved.page_size => {}
-                        Err(PagingError::NotMapped) => {
-                            pt.table.cursor().map(
-                                saved.vaddr,
-                                saved.paddr,
-                                saved.page_size,
-                                saved.flags,
-                            )?;
-                        }
-                        _ => return Err(AxError::BadState),
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn apply(
-        &self,
-        operation: MappingOperation<VirtAddr, MappingFlags>,
-        pt: &mut AddressSpacePageTable,
-    ) -> AxResult {
-        match operation {
-            MappingOperation::Map {
-                start, size, flags, ..
-            } => {
-                let range = VirtAddrRange::from_start_size(start, size);
-                BackendOps::map(
-                    self,
-                    range,
-                    flags,
-                    Some(&pt.accounting),
-                    &mut pt.table.cursor(),
-                )
-            }
-            MappingOperation::Unmap { start, size, .. } => {
-                let range = VirtAddrRange::from_start_size(start, size);
-                BackendOps::unmap(self, range, Some(&pt.accounting), &mut pt.table.cursor())
-            }
-            MappingOperation::Protect {
-                start,
-                size,
-                new_flags,
-                ..
-            } => {
-                let range = VirtAddrRange::from_start_size(start, size);
-                let mut cursor = pt.table.cursor();
-                BackendOps::on_protect(self, range, new_flags, &mut cursor)?;
-                let pte_flags = match self {
-                    Backend::Cow(c) => c.pte_flags_for_protect(new_flags),
-                    _ => new_flags,
-                };
-                cursor.protect_region(start, size, pte_flags)?;
-                Ok(())
-            }
-        }
-    }
-}
-
-fn map_ax_error(error: AxError) -> MappingError {
-    match error {
-        AxError::NoMemory => MappingError::NoMemory,
-        AxError::InvalidInput => MappingError::InvalidParam,
-        _ => MappingError::BadState,
     }
 }

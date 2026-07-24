@@ -39,8 +39,8 @@ impl DeviceDma {
         }
     }
 
-    pub fn new_identity(dma_mask: u64, op: &'static dyn DmaOp) -> Self {
-        Self::new(DmaDomainId::identity(), dma_mask, op)
+    pub fn new_legacy(dma_mask: u64, op: &'static dyn DmaOp) -> Self {
+        Self::new(DmaDomainId::legacy_global(), dma_mask, op)
     }
 
     pub fn with_constraints(&self, constraints: DmaConstraints) -> Self {
@@ -61,18 +61,6 @@ impl DeviceDma {
 
     pub fn domain_id(&self) -> DmaDomainId {
         self.domain
-    }
-
-    /// Verifies that an imported DMA resource belongs to this device domain.
-    pub fn validate_domain(&self, actual: DmaDomainId) -> Result<(), DmaError> {
-        if actual == self.domain {
-            Ok(())
-        } else {
-            Err(DmaError::DomainMismatch {
-                expected: self.domain,
-                actual,
-            })
-        }
     }
 
     pub fn flush(&self, addr: NonNull<u8>, size: usize) {

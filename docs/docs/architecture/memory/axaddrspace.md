@@ -5,11 +5,11 @@ sidebar_label: "客户机地址空间"
 
 # Axvisor 客户机地址空间设计与实现
 
-`virtualization/axaddrspace` 管理 Guest Physical Address（客户机物理地址，GPA）范围、客户机 RAM 后备页策略和第二阶段地址映射事务。它位于通用虚拟内存区域事务与具体架构嵌套页表之间，不管理客户机进程虚拟地址，也不替代宿主 ArceOS 的第一阶段地址空间。
+`virtualization/axaddrspace` 管理 Guest Physical Address（客户机物理地址，GPA）范围、客户机 RAM 后备页策略和第二阶段地址映射。它位于通用虚拟内存区域容器与具体架构嵌套页表之间，不管理客户机进程虚拟地址，也不替代宿主 ArceOS 的第一阶段地址空间。
 
 ## 1. 组件边界
 
-`axaddrspace` 是 Axvisor 的客户机内存策略层。通用区间事务由 `ax-memory-set` 提供，具体页表项格式与遍历由 `ax-page-table::stage2` 提供，宿主页来源与架构适配由 `axvm` 注入。
+`axaddrspace` 是 Axvisor 的客户机内存策略层。虚拟区域查找、拆分与收缩由 `ax-memory-set` 提供，具体页表项格式与遍历由 `ax-page-table::stage2` 提供，宿主页来源与架构适配由 `axvm` 注入。
 
 ### 1.1 职责划分
 
@@ -18,7 +18,7 @@ sidebar_label: "客户机地址空间"
 | 能力 | 负责组件 | `axaddrspace` 的边界 |
 | --- | --- | --- |
 | GPA 类型与映射权限 | `axvm-types` | 直接复用，不重复定义地址类型或 flags |
-| 地址区间集合与事务 | `ax-memory-set` | 以 `Backend<Npt>` 实现 `MappingBackend` |
+| 地址区间集合 | `ax-memory-set` | 以 `Backend<Npt>` 实现直接 `MappingBackend` 操作 |
 | 客户机 RAM 策略 | `axaddrspace` | 区分外部线性内存与自身分配后备页 |
 | 第二阶段页表机制 | `ax-page-table::stage2` | 仅通过 `NestedPageTableOps` 使用 |
 | 宿主页分配与地址转换 | `axvm::HostPagingHandler` | 由页表适配器注入，不直接依赖 `ax-alloc` |
@@ -39,7 +39,7 @@ flowchart TB
 
     subgraph Mechanism["公共机制"]
         TYPES["axvm-types\nGPA + MappingFlags"]
-        SET["ax-memory-set\n区间事务"]
+        SET["ax-memory-set\n虚拟区域容器"]
     end
 
     subgraph Integration["AxVM 组合层"]
@@ -101,7 +101,7 @@ pub struct AddrSpace<Npt: NestedPageTableOps> {
 | 字段 | 所有权 | 不变量 |
 | --- | --- | --- |
 | `va_range` | `AddrSpace` | 所有公开 map/unmap 请求必须完全落在半开区间内 |
-| `areas` | `AddrSpace` | 区域不重叠；元数据与第二阶段页表事务一致 |
+| `areas` | `AddrSpace` | 区域不重叠；每次成功 backend 操作后更新元数据 |
 | `pt` | `AddrSpace` | 页表根、子页表页和查询能力由具体 `Npt` 管理 |
 
 `new_empty(page_table, base, size)` 使用 checked addition 验证总范围。它接收已经构造完成的页表，而不是只接收层数后在内部选择架构实现。
@@ -114,7 +114,7 @@ pub struct AddrSpace<Npt: NestedPageTableOps> {
 | --- | --- | --- |
 | `map_linear` | GPA、已知 HPA、长度、权限 | 建立固定偏移的第二阶段映射 |
 | `map_alloc` | GPA、长度、权限、是否立即填充 | 建立由 adapter 分配宿主页的区域 |
-| `unmap` | GPA 与长度 | 事务化移除相交区域和页表项 |
+| `unmap` | GPA 与长度 | 直接移除相交区域和页表项 |
 | `clear` | 无 | 清空全部区域；用于重置和销毁 |
 | `handle_page_fault` | fault GPA 与访问权限 | 为懒分配区域补一个基础页 |
 | `translate` | GPA | 查询 HPA，不建立新映射 |
@@ -125,7 +125,7 @@ pub struct AddrSpace<Npt: NestedPageTableOps> {
 
 ## 3. 后端与内存所有权
 
-`Backend<Npt>` 只有 `Linear` 和 `Alloc` 两种。两者使用相同区间事务，但后备内存的 owner 和解除映射后的动作完全不同。
+`Backend<Npt>` 只有 `Linear` 和 `Alloc` 两种。两者使用相同虚拟区域容器，但后备内存的 owner 和解除映射后的动作完全不同。
 
 ### 3.1 线性映射
 
@@ -162,62 +162,39 @@ self.areas.map(area, &mut self.pt, false)?;
 
 ### 3.3 所有权转移
 
-解除映射与释放内存必须分开判断。只有 `Alloc` 获得的 frame 才由 backend 在完整事务成功后释放。
+解除映射与释放内存必须分开判断。只有 `Alloc` 获得的 frame 才由 backend 在页表项成功移除后释放。
 
 | 资源 | 创建者 | 映射期间 owner | 解除映射或销毁 |
 | --- | --- | --- | --- |
 | Linear 后备 RAM | AxVM、平台或外部调用方 | 外部 owner | 仅删除页表项，外部 owner 释放 |
-| Alloc 后备页 | `NestedPageTableOps::alloc_frame` | `Backend::Alloc` | 事务 `finalize` 调用 `dealloc_frame` |
+| Alloc 后备页 | `NestedPageTableOps::alloc_frame` | `Backend::Alloc` | `unmap_alloc` 调用 `dealloc_frame` |
 | 第二阶段根和子页表页 | 具体 `Npt` | 嵌套页表对象 | `Npt` 析构时由同一 frame provider 释放 |
-| 地址区域元数据 | `MemorySet` | `AddrSpace` | unmap/clear 事务发布新元数据后删除 |
+| 地址区域元数据 | `MemorySet` | `AddrSpace` | backend 操作成功后删除或拆分 |
 | 设备模拟缓冲区 | 设备模型或 DMA owner | 对应设备对象 | 不由 Guest RAM backend 隐式释放 |
 
-分配型 unmap 在清除单个页表项时不会立即释放 frame。旧映射被保存在事务状态中，只有全部区域成功提交后，`finalize()` 才归还物理页；失败回滚仍可重新安装原映射。
+分配型 unmap 对每个存在的 4 KiB 页表项执行 `unmap`，成功后立即调用 `dealloc_frame`。它先扫描并拒绝大页，避免把大页首项删除后再发现释放粒度不匹配。公共层不保存逐页撤销日志，因此跨多个区域的后续失败不会恢复已经成功删除的前缀。
 
-## 4. 映射事务与缺页
+## 4. 直接映射与缺页
 
-`axaddrspace::Backend<Npt>` 实现 `ax_memory_set::MappingBackend`。区间拆分、操作排序和元数据发布由 `MemorySet` 统一完成，本章只说明客户机后端保存的恢复信息和物理页释放规则；通用协议见[虚拟内存区域与页表事务](./address-space.md)。
+`axaddrspace::Backend<Npt>` 实现 `ax_memory_set::MappingBackend`。`MemorySet` 负责区域重叠检查和边界拆分，backend 直接调用 `NestedPageTableOps`。公共路径没有 `MappingPlan`、逐页快照或 finalize 阶段。
 
-### 4.1 事务状态
-
-`virtualization/axaddrspace/src/address_space/backend/mod.rs` 按页表查询返回的实际页尺寸保存旧映射。大页映射只保存一个大页记录，不会无条件展开成 4 KiB 项。
-
-```rust
-#[derive(Clone, Copy)]
-struct SavedMapping {
-    vaddr: GuestPhysAddr,
-    paddr: PhysAddr,
-    flags: MappingFlags,
-    page_size: PageSize,
-}
-
-pub struct BackendTransaction {
-    operation: MappingOperation<GuestPhysAddr, MappingFlags>,
-    previous: Vec<SavedMapping>,
-}
-```
-
-`prepare()` 从操作起点遍历到终点：已映射范围按查询到的 `PageSize` 前进并记录；未映射范围按 4 KiB 前进但不写入 `previous`。若操作边界切入现有大页中部，或查询到的映射超过操作终点，则返回 `MappingState`，避免误删整个大页。
-
-### 4.2 提交与恢复
-
-客户机后端遵循 prepare、commit、rollback、finalize 四阶段。图中“释放旧 frame”只适用于 `Alloc` 的成功 unmap。
+### 4.1 映射调用
 
 ```mermaid
 flowchart TB
-    Request["MemorySet 生成 Map / Unmap / Protect"] --> Prepare["prepare\n查询旧映射并预留 previous"]
-    Prepare -->|"失败"| Abort["abort\n释放未提交临时状态"]
-    Prepare -->|"成功"| Commit["commit\n修改第二阶段页表"]
-    Commit -->|"本操作失败"| SelfRollback["恢复本操作的部分修改"]
-    SelfRollback --> Error["返回 MappingState"]
-    Commit -->|"成功"| Publish["MemorySet 发布区域元数据"]
-    Publish --> Finalize["finalize\n成功 unmap 后释放 Alloc frame"]
-    LaterFailure["后续区域提交失败"] --> Rollback["按相反顺序恢复 previous"]
+    Request["AddrSpace map/unmap"] --> Validate["验证 GPA 范围和 4 KiB 对齐"]
+    Validate --> Area["MemorySet 查找或拆分 MemoryArea"]
+    Area --> Backend["Backend::map / unmap"]
+    Backend --> NPT["NestedPageTableOps 范围或单页操作"]
+    NPT -->|"成功"| Metadata["插入、删除或收缩区域元数据"]
+    NPT -->|"失败"| Error["返回 MappingState"]
 ```
 
-Map 使用 `MapPrecondition::Vacant` 时，`prepare()` 发现任一旧映射即返回 `AlreadyMapped`。Linear unmap 要求目标范围没有空洞；Alloc unmap 允许懒分配区域中存在尚未填充的页，但会拒绝在按基础页释放的路径中遇到大页。
+`Linear` map 直接调用 `map_region(..., allow_huge = true)`，不为目标范围建立软件页快照。`Alloc { populate: true }` 按 4 KiB 页分配；若中途失败，仅逆序清理本次 map 已安装的前缀。`Alloc` unmap 允许懒分配区域内存在空洞，但会先拒绝任何大页，再删除实际存在的基础页并立即释放 frame。
 
-大范围空闲 Map 的 `previous` 保持为空，因此临时内存不随 4 KiB 页数增长；当前 `prepare()` 仍会按 4 KiB 查询整个空范围，时间复杂度仍与基础页数相关。不能把“消除逐页快照内存”误写为“prepare 已是常数时间”。
+### 4.2 失败边界
+
+单个分配型 map 保证失败时清理本次新建的前缀。跨多个 `MemoryArea` 的 unmap/clear 不提供全成或回滚：后续 backend 失败时，前面已经删除的页表项和 frame 不会恢复。AxVM 当前生产布局主要使用经过预验证的 Linear 映射，并在停止虚拟处理器后销毁；如果未来需要面向不可信动态请求的原子客户机重映射，应在 AxVM 策略层增加专用预检，而不是恢复通用逐页快照。
 
 ### 4.3 懒分配缺页
 
@@ -250,7 +227,7 @@ if pt.remap(vaddr, frame, orig_flags) {
 | 页表身份 | `root_paddr()`、`levels()` | 创建虚拟处理器硬件配置 |
 | 宿主页能力 | `alloc_frame()`、`dealloc_frame()`、`phys_to_virt()` | Alloc 后备页与宿主访问 |
 | 单项操作 | `map()`、`unmap()`、`remap()`、`query()` | 缺页、恢复和地址翻译 |
-| 范围操作 | `map_region()`、`unmap_region()`、`protect_region()` | Linear 映射与事务提交 |
+| 范围操作 | `map_region()`、`unmap_region()`、`protect_region()` | Linear 范围映射与权限修改 |
 
 `PageSize` 当前表达 4 KiB、1 MiB、2 MiB 和 1 GiB。adapter 根据页表查询得到的层级和大页位转换尺寸，backend 回滚时使用实际尺寸，不自行推断架构几何。
 
@@ -324,7 +301,7 @@ sequenceDiagram
     Layout-->>VM: validated non-overlapping mappings
     loop each mapping
         VM->>AS: map_linear(GPA, HPA, size, flags)
-        AS->>NPT: transactional map_region
+        AS->>NPT: direct map_region
         NPT-->>AS: success or typed error
     end
     VM->>VM: publish address_layout
@@ -379,18 +356,18 @@ where
 }
 ```
 
-`map_region()`、`unmap_region()`、缺页处理和客户机内存读写均通过 `with_resources()` 或 `with_resources_mut()` 执行。事务从 prepare 到 finalize 期间锁不会释放，另一个虚拟处理器或设备处理路径不能并发修改同一页表。
+`map_region()`、`unmap_region()`、缺页处理和客户机内存读写均通过 `with_resources()` 或 `with_resources_mut()` 执行。单次区域操作期间锁不会释放，另一个虚拟处理器或设备处理路径不能并发修改同一页表。
 
 ### 7.2 禁止中断临界区
 
-`SpinNoIrq` 表示地址空间操作期间本 CPU 中断关闭。页表遍历、事务快照预留和宿主页分配都可能发生在该临界区，因此它保证一致性但不保证硬实时延迟。
+`SpinNoIrq` 表示地址空间操作期间本 CPU 中断关闭。页表遍历、页表页建立和宿主页分配都可能发生在该临界区，因此它保证一致性但不保证硬实时延迟。
 
 | 路径 | 临界区内可能发生的工作 | 约束 |
 | --- | --- | --- |
 | Linear map | 区间查询、页表页分配、大范围页表建立 | 不执行文件系统或回收 callback |
 | Alloc populate | 每个 4 KiB 页分配和映射 | 不用于硬实时路径；失败立即回滚 |
 | Alloc fault | 一个 frame 分配与 remap | 不阻塞、不内部重试 |
-| unmap/clear | 保存旧映射、失效翻译、延后释放 | 虚拟处理器必须已停止或与更新同步 |
+| unmap/clear | 删除映射、失效翻译、释放 Alloc frame | 虚拟处理器必须已停止或与更新同步 |
 | guest buffer access | 查询页表并复制数据 | slice 不得逃逸出锁保护的闭包 |
 
 完整锁顺序和禁止组合只在[内存管理锁与并发](./concurrency.md)维护。该组件不得在持有分配器内部锁时反向获取虚拟机 `machine` 锁。
@@ -463,13 +440,13 @@ guest writes GPA 0x4000_1234
     -> page table: unmapped, mapped, unmapped, unmapped
 ```
 
-随后 `unmap(0x4000_0000, 0x4000)` 允许三个页仍未映射，只保存并移除实际存在的第二个页；事务全部成功后仅释放该 frame。
+随后 `unmap(0x4000_0000, 0x4000)` 允许三个页仍未映射，只移除实际存在的第二个页，并立即释放该 frame。
 
-### 8.3 大页回滚
+### 8.3 大范围 Linear 映射
 
-假设 Linear 区域 `[0, 128 MiB)` 已由 64 个 2 MiB block 映射。`prepare()` 每次 `query()` 得到 `PageSize::Size2M`，因此 `previous` 只保存 64 项。
+假设 Linear 区域 `[0, 128 MiB)` 满足 2 MiB 对齐与连续性，页表核心可以建立 64 个 2 MiB block。`ax-memory-set` 只保存一个 `MemoryArea`，不会为 32,768 个基础页构造软件记录。
 
-若操作范围从 `0x1000` 开始，它落在首个 2 MiB block 中部。当前 backend 返回 `MappingState`，不会删除整个 block，也不会静默把它拆成 512 个基础页。局部修改需要页表层先提供可回滚的大页拆分能力。
+若后续操作范围从 `0x1000` 开始并切入首个 2 MiB block 中部，能否拆分由具体 `NestedPageTableOps` 决定。`axaddrspace` 不维护逐页恢复日志，也不应把不支持的局部大页修改伪装成成功。
 
 ## 9. 源码定位与修改边界
 
@@ -482,7 +459,7 @@ guest writes GPA 0x4000_1234
 | 源码 | 维护内容 |
 | --- | --- |
 | `virtualization/axaddrspace/src/address_space/mod.rs` | `AddrSpace` 状态、范围验证、公共 map/unmap/fault/query |
-| `virtualization/axaddrspace/src/address_space/backend/mod.rs` | 事务状态、prepare/commit/rollback/finalize |
+| `virtualization/axaddrspace/src/address_space/backend/mod.rs` | `Linear`/`Alloc` dispatch 与 `MappingBackend` 适配 |
 | `virtualization/axaddrspace/src/address_space/backend/linear.rs` | 固定偏移换算与 Linear 范围操作 |
 | `virtualization/axaddrspace/src/address_space/backend/alloc.rs` | eager/lazy frame 分配、缺页和失败清理 |
 | `virtualization/axaddrspace/src/paging.rs` | `NestedPageTableOps` 与 `PageSize` |
@@ -493,7 +470,7 @@ guest writes GPA 0x4000_1234
 | `virtualization/axvm/src/vm/prepare/address_space.rs` | 生产客户机布局到 Linear 映射的接线 |
 | `virtualization/axvm/src/vm/mod.rs` | 外层锁、内存访问和销毁顺序 |
 
-确定性事务、巨大 Linear 映射、frame 释放和各架构构建的验证矩阵统一放在[内存管理测试与验收](./testing.md)，本章不复制测试命令和用例表。
+巨大 Linear 映射、frame 释放和各架构构建的验证矩阵统一放在[内存管理测试与验收](./testing.md)，本章不复制测试命令和用例表。
 
 ### 9.2 明确不负责的能力
 

@@ -155,7 +155,7 @@ pub struct CommitCharge<'a> {
 }
 
 impl CommitCharge<'_> {
-    /// Retains this charge after the transaction commits.
+    /// Retains this charge after the address-space update succeeds.
     pub fn retain(mut self) -> u64 {
         let bytes = self.bytes;
         self.bytes = 0;
@@ -271,7 +271,7 @@ pub enum CommitDelta {
 }
 
 impl CommitDelta {
-    /// Applies the prepared delta after the VMA/PTE transaction commits.
+    /// Applies the prepared delta after the VMA/PTE update succeeds.
     pub fn commit(self, ledger: &mut AddressSpaceCommit) {
         match self {
             Self::Unchanged => {}

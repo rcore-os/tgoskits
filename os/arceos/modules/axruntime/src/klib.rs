@@ -16,9 +16,7 @@ use core::time::Duration;
 use ax_memory_addr::MemoryAddr;
 use axklib::{
     AxError, AxResult, BoxedIrqHandler, ConcurrentBoxedIrqHandler, IrqCpuId, IrqCpuMask, IrqError,
-    IrqHandle, IrqId, Klib, PhysAddr, VirtAddr,
-    dma::{DmaPageAllocation, DmaPageZone},
-    impl_trait,
+    IrqHandle, IrqId, Klib, PhysAddr, VirtAddr, dma::DmaPageAllocation, impl_trait,
 };
 
 struct KlibImpl;
@@ -141,10 +139,10 @@ impl_trait! {
             num_pages: usize,
             align: usize,
         ) -> AxResult<DmaPageAllocation> {
-            let (dma_zone, allocator_zone) = if dma_mask <= u32::MAX as u64 {
-                (DmaPageZone::Dma32, ax_alloc::MemoryZone::Dma32)
+            let allocator_zone = if dma_mask <= u32::MAX as u64 {
+                ax_alloc::MemoryZone::Dma32
             } else {
-                (DmaPageZone::Normal, ax_alloc::MemoryZone::Normal)
+                ax_alloc::MemoryZone::Normal
             };
             let addr = ax_alloc::global_allocator().allocate_pages_raw(
                 ax_alloc::PageRequest {
@@ -154,27 +152,17 @@ impl_trait! {
                 },
                 ax_alloc::UsageKind::Dma,
             )?;
-            Ok(DmaPageAllocation::new(
-                VirtAddr::from(addr),
-                num_pages,
-                dma_zone,
-            ))
+            Ok(DmaPageAllocation::new(VirtAddr::from(addr), num_pages))
         }
 
         fn dma_dealloc_pages(allocation: DmaPageAllocation) {
-            let (addr, num_pages, zone) = allocation.into_parts();
+            let (addr, num_pages) = allocation.into_parts();
             // SAFETY: consuming DmaPageAllocation proves unique ownership and
             // returns the unchanged address, count, and source zone.
             unsafe {
                 ax_alloc::global_allocator().deallocate_pages_raw(
                     addr.as_usize(),
-                    ax_alloc::PageRelease {
-                        count: num_pages,
-                        zone: match zone {
-                            DmaPageZone::Normal => ax_alloc::MemoryZone::Normal,
-                            DmaPageZone::Dma32 => ax_alloc::MemoryZone::Dma32,
-                        },
-                    },
+                    num_pages,
                     ax_alloc::UsageKind::Dma,
                 );
             }

@@ -5,7 +5,7 @@ use ax_memory_addr::{PhysAddr, VirtAddr, VirtAddrRange};
 use ax_runtime::hal::paging::{MappingFlags, PageSize, PageTableCursor, PagingError};
 use ax_sync::Mutex;
 
-use super::{AddrSpace, Backend, BackendOps, CloneMapAccounting, MemoryAccounting, pages_in};
+use super::{AddrSpace, Backend, BackendOps, MemoryAccounting, pages_in};
 
 /// Linear mapping backend.
 ///
@@ -92,7 +92,7 @@ impl BackendOps for LinearBackend {
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
-        _acct: CloneMapAccounting<'_>,
+        _child_accounting: Option<&MemoryAccounting>,
     ) -> AxResult<Backend> {
         Ok(Backend::Linear(self.clone()))
     }

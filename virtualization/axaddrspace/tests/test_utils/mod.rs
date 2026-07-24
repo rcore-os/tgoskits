@@ -45,6 +45,9 @@ lazy_static! {
     /// Global mutex to enforce serial execution for tests that modify shared state.
     /// This ensures test isolation and prevents race conditions between tests.
     pub static ref TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Physical frames returned through the mock deallocation capability.
+    pub static ref DEALLOCATED_FRAMES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 }
 
 /// Counter to track the number of allocations. (Added from Chen Hong's code)
@@ -55,9 +58,6 @@ pub static DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Flag to simulate memory allocation failures for testing error handling.
 pub static ALLOC_SHOULD_FAIL: AtomicBool = AtomicBool::new(false);
-
-/// Guest address whose unmap operation should fail, or `usize::MAX` when disabled.
-pub static UNMAP_FAIL_ADDRESS: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 #[derive(Debug)]
 /// A mock paging handler for testing purposes.
@@ -83,7 +83,7 @@ impl MockHal {
     pub fn mock_phys_to_virt(paddr: PhysAddr) -> VirtAddr {
         let paddr_usize = paddr.as_usize();
         assert!(
-            paddr_usize >= BASE_PADDR && paddr_usize < BASE_PADDR + MEMORY_LEN,
+            (BASE_PADDR..BASE_PADDR + MEMORY_LEN).contains(&paddr_usize),
             "Physical address {:#x} out of bounds",
             paddr_usize
         );
@@ -96,9 +96,9 @@ impl MockHal {
     pub fn reset_state() {
         NEXT_PADDR.store(BASE_PADDR, Ordering::SeqCst);
         ALLOC_SHOULD_FAIL.store(false, Ordering::SeqCst);
-        UNMAP_FAIL_ADDRESS.store(usize::MAX, Ordering::SeqCst);
         ALLOC_COUNT.store(0, Ordering::SeqCst);
         DEALLOC_COUNT.store(0, Ordering::SeqCst);
+        DEALLOCATED_FRAMES.lock().unwrap().clear();
         // Lock and clear the simulated memory.
         MEMORY.lock().unwrap().0.fill(0); // Fill with zeros to clear any previous test data.
     }

@@ -18,7 +18,7 @@ struct Descriptor {
 fn new_tracking_device() -> (DeviceDma, &'static TrackingDmaOp) {
     let tracker = Box::new(TrackingDmaOp::new());
     let tracker = Box::leak(tracker);
-    (DeviceDma::new_identity(u64::MAX, tracker), tracker)
+    (DeviceDma::new_legacy(u64::MAX, tracker), tracker)
 }
 
 #[test]
@@ -167,7 +167,7 @@ fn contiguous_box_supports_cpu_sync() {
 fn streaming_map_has_explicit_device_and_cpu_sync() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0x4000));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_identity(u64::MAX, tracker);
+    let dev = DeviceDma::new_legacy(u64::MAX, tracker);
     let mut backing = [0u8; 128];
     let map = dev
         .map_streaming_slice(&mut backing, 64, DmaDirection::Bidirectional)
@@ -192,7 +192,7 @@ fn streaming_map_has_explicit_device_and_cpu_sync() {
 fn streaming_map_for_device_syncs_after_mapping() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0x4000));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_identity(u64::MAX, tracker);
+    let dev = DeviceDma::new_legacy(u64::MAX, tracker);
     let mut backing = [0u8; 128];
 
     tracker.clear();
@@ -217,7 +217,7 @@ fn streaming_map_for_device_syncs_after_mapping() {
 fn streaming_write_for_device_syncs_after_cpu_write() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0x4000));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_identity(u64::MAX, tracker);
+    let dev = DeviceDma::new_legacy(u64::MAX, tracker);
     let mut backing = [0u8; 16];
     let mut map = dev
         .map_streaming_slice(&mut backing, 4, DmaDirection::ToDevice)
@@ -242,7 +242,7 @@ fn streaming_write_for_device_syncs_after_cpu_write() {
 fn streaming_read_from_device_syncs_before_cpu_read_and_copies_bounce_buffer() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0x80));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_identity(0xff, tracker);
+    let dev = DeviceDma::new_legacy(0xff, tracker);
     let mut backing = [1u8; 16];
     let map = dev
         .map_streaming_slice(&mut backing, 16, DmaDirection::FromDevice)
@@ -276,7 +276,7 @@ fn streaming_read_from_device_syncs_before_cpu_read_and_copies_bounce_buffer() {
 fn streaming_bounce_buffer_copies_back_on_cpu_sync() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0x80));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_identity(0xff, tracker);
+    let dev = DeviceDma::new_legacy(0xff, tracker);
     let mut backing = [1u8; 16];
     let map = dev
         .map_streaming_slice(&mut backing, 16, DmaDirection::FromDevice)
@@ -378,7 +378,7 @@ fn allocation_rejects_backend_address_outside_mask() {
 fn explicit_dma_domain_survives_constraint_updates() {
     let tracker = Box::new(TrackingDmaOp::new());
     let tracker = Box::leak(tracker);
-    let domain = DmaDomainId::from_raw(0x42).unwrap();
+    let domain = DmaDomainId::from_raw(0x42);
     let dev = DeviceDma::new(domain, u64::MAX, tracker);
 
     assert_eq!(dev.domain_id(), domain);
@@ -390,29 +390,10 @@ fn explicit_dma_domain_survives_constraint_updates() {
 }
 
 #[test]
-fn raw_domain_rejects_reserved_identifiers() {
-    assert_eq!(DmaDomainId::from_raw(0), None);
-    assert_eq!(DmaDomainId::from_raw(1), None);
-}
-
-#[test]
-fn device_rejects_import_from_another_domain() {
-    let expected = DmaDomainId::from_raw(0x42).unwrap();
-    let actual = DmaDomainId::from_raw(0x43).unwrap();
-    let tracker = Box::leak(Box::new(TrackingDmaOp::new()));
-    let dev = DeviceDma::new(expected, u64::MAX, tracker);
-
-    assert_eq!(
-        dev.validate_domain(actual),
-        Err(DmaError::DomainMismatch { expected, actual })
-    );
-}
-
-#[test]
 fn low_32bit_allocations_are_validated() {
     let tracker = Box::new(TrackingDmaOp::new().with_next_dma_addr(0xffff_f000));
     let tracker = Box::leak(tracker);
-    let dev = DeviceDma::new_identity(u32::MAX as u64, tracker);
+    let dev = DeviceDma::new_legacy(u32::MAX as u64, tracker);
     let buff = dev
         .contiguous_array_zero_with_align::<u8>(0x1000, 0x1000, DmaDirection::ToDevice)
         .unwrap();

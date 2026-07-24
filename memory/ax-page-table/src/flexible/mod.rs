@@ -58,38 +58,3 @@ pub trait PageTableEntry: Debug + Sync + Send + Clone + Copy + Sized + 'static {
     /// Returns whether the hardware entry is valid.
     fn valid(&self) -> bool;
 }
-
-/// Type-erased operations used by boot and guest page-table owners.
-pub trait PageTableOp: Send + 'static {
-    fn addr(&self) -> PhysAddr;
-    fn map(&mut self, config: &MapConfig) -> PagingResult;
-    fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> Result<(), PagingError>;
-}
-
-impl<T: TableMeta, A: PageFrameProvider> PageTableOp for PageTable<T, A> {
-    fn addr(&self) -> PhysAddr {
-        self.root_paddr()
-    }
-
-    fn map(&mut self, config: &MapConfig) -> PagingResult {
-        PageTableRef::map(self, config)
-    }
-
-    fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> PagingResult {
-        PageTableRef::unmap(self, virt_start, size)
-    }
-}
-
-impl<T: TableMeta, A: PageFrameProvider> PageTableOp for PageTableRef<T, A> {
-    fn addr(&self) -> PhysAddr {
-        self.root_paddr()
-    }
-
-    fn map(&mut self, config: &MapConfig) -> PagingResult {
-        self.map(config)
-    }
-
-    fn unmap(&mut self, virt_start: VirtAddr, size: usize) -> Result<(), PagingError> {
-        self.unmap(virt_start, size)
-    }
-}

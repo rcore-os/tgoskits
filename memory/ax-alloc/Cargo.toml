@@ -11,6 +11,7 @@ license.workspace = true
 default = []
 global-allocator = []
 smp = ["ax-kspin/smp", "ax-plat/smp", "buddy-slab-allocator/smp"]
+stats = []
 tracking = ["dep:axbacktrace"]
 
 [package.metadata.docs.rs]

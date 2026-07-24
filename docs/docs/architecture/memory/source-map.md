@@ -22,7 +22,7 @@ sidebar_label: "源码结构"
 | `memory/ax-alloc/` | `ax-alloc` | 运行时页、内核堆、全局分配器和统计 | `global_init()`、`global_add_memory()`、`alloc_pages()` |
 | `memory/buddy-slab-allocator/` | `buddy-slab-allocator` | 多段 Buddy 与每 CPU Slab 算法 | `GlobalAllocator`，仅供 `ax-alloc` 集成 |
 | `memory/ax-page-table/` | `ax-page-table` | 页表项、第一阶段、第二阶段和启动页表机制 | `PageFrameProvider`、`TlbInvalidator`、`PageTable64` |
-| `memory/memory_set/` | `ax-memory-set` | 虚拟内存区域集合和映射事务 | `MemorySet`、`MemoryArea`、`MappingBackend` |
+| `memory/memory_set/` | `ax-memory-set` | 虚拟内存区域集合和直接 backend 操作 | `MemorySet`、`MemoryArea`、`MappingBackend` |
 | `memory/starry-mm/` | `starry-mm` | Linux 兼容记账、提交策略和缺页能力边界 | `MemoryAccounting`、`AddressSpaceCommit`、`FaultOutcome` |
 | `memory/dma-api/` | `dma-api` | DMA 设备约束和资源所有权 | `DeviceDma`、`DmaAllocation`、`DmaMapping` |
 | `memory/mmio-api/` | `mmio-api` | 内存映射输入输出能力和易失性访问 | `Mmio`、`MmioRaw`、`MmioOp` |
@@ -148,7 +148,7 @@ firmware entry
 | --- | --- | --- |
 | Rust 小对象 | `GlobalAlloc::alloc()` → `ax-alloc` → 当前 CPU Slab | 同一布局进入 Slab；跨 CPU 释放排入 owner 的 remote-free 链 |
 | Rust 大对象 | `GlobalAlloc::alloc()` → `ax-alloc` → Buddy | 根据原 `Layout` 归还 Buddy |
-| 显式页 | `alloc_pages(PageRequest, UsageKind)` → Buddy section | `GlobalPage::drop()` 使用保存的 request 和 usage 归还 |
+| 显式页 | `alloc_pages(PageRequest, UsageKind)` → Buddy section | `GlobalPage::drop()` 使用保存的页数和用途归还 |
 | 页表页 | 策略层 provider → `ax-alloc` | 页表销毁时由同一 provider 释放 |
 | Starry 匿名页 | 缺页 backend → `ax-alloc` → 页表映射 → RSS 记账 | 解除页表映射、撤销记账、最后归还物理页 |
 | 客户机 RAM | `axaddrspace` backend → `ax-alloc` → 第二阶段页表 | 客户机解除映射或虚拟机销毁 |

@@ -41,7 +41,7 @@ impl BlockConfig {
             name,
             capacity_blocks,
             dma_mask: DEFAULT_DMA_MASK,
-            dma_domain: dma_api::DmaDomainId::identity(),
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             max_blocks_per_request: 1,
             max_segment_size: BLOCK_SIZE,
             irq_driven,

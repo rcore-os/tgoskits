@@ -1,14 +1,14 @@
 # `axaddrspace`
 
-`axaddrspace` 是位于 `virtualization/axaddrspace` 的 `no_std` 库 crate，当前版本为 `0.5.17`。它管理 Guest Physical Address（客户机物理地址，GPA）区域、客户机 RAM 后端和第二阶段映射事务，但不选择具体架构页表，也不直接依赖生产环境的宿主页分配器。
+`axaddrspace` 是位于 `virtualization/axaddrspace` 的 `no_std` 库 crate，当前版本为 `0.5.17`。它管理 Guest Physical Address（客户机物理地址，GPA）区域、客户机 RAM 后端和第二阶段映射，但不选择具体架构页表，也不直接依赖生产环境的宿主页分配器。
 
 ## 1. 组件索引
 
-本页只记录 crate 的稳定边界和源码入口。后端算法、事务恢复、架构适配、锁和生命周期由架构文档统一维护，避免组件目录复制另一套实现说明。
+本页只记录 crate 的稳定边界和源码入口。后端算法、直接映射语义、架构适配、锁和生命周期由架构文档统一维护，避免组件目录复制另一套实现说明。
 
 ### 1.1 定位与依赖
 
-生产依赖由地址类型、区间事务和基础支持库组成。`ax-page-table` 只作为开发依赖验证适配器，生产环境由 `axvm` 组合具体页表和 `axaddrspace`。
+生产依赖由地址类型、虚拟区域容器和基础支持库组成。`ax-page-table` 只作为开发依赖验证适配器，生产环境由 `axvm` 组合具体页表和 `axaddrspace`。
 
 | 项目 | 内容 |
 | --- | --- |
@@ -41,12 +41,12 @@
 
 ### 2.1 组件实现
 
-客户机地址空间的字段、Linear/Alloc 所有权、事务回滚、懒分配缺页、四种架构 adapter、AxVM 外层锁、不安全 slice 前置条件和销毁顺序见[Axvisor 客户机地址空间设计与实现](../../architecture/memory/axaddrspace.md)。
+客户机地址空间的字段、Linear/Alloc 所有权、单次 map 失败清理、懒分配缺页、四种架构 adapter、AxVM 外层锁、不安全 slice 前置条件和销毁顺序见[Axvisor 客户机地址空间设计与实现](../../architecture/memory/axaddrspace.md)。
 
-通用 `MemorySet` 的 prepare、commit、rollback 和 finalize 协议见[虚拟内存区域与页表事务](../../architecture/memory/address-space.md)，页表遍历和页表项机制见[统一页表核心](../../architecture/memory/page-table.md)。
+通用 `MemorySet` 的 `BTreeMap` 区域管理与直接 backend 协议见[虚拟内存区域管理](../../architecture/memory/address-space.md)，页表遍历和页表项机制见[统一页表核心](../../architecture/memory/page-table.md)。
 
 ### 2.2 验证与集成
 
-确定性事务、frame 释放、巨大 Linear 映射和各架构构建要求见[内存管理测试与验收](../../architecture/memory/testing.md)。ArceOS、StarryOS 与 Axvisor 的整体接线见[系统内存集成](../../architecture/memory/integration.md)。
+frame 释放、巨大 Linear 映射和各架构构建要求见[内存管理测试与验收](../../architecture/memory/testing.md)。ArceOS、StarryOS 与 Axvisor 的整体接线见[系统内存集成](../../architecture/memory/integration.md)。
 
 修改 `NestedPageTableOps` 或 `MappingBackend` 时，必须同时检查 `virtualization/axvm/src/npt.rs`、四个架构适配器和 `ax-memory-set` 的全部实现，不能通过旧 trait alias 或转发模块保留双协议。

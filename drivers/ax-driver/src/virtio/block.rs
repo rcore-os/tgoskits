@@ -198,7 +198,7 @@ impl<T: Transport + 'static> rdif_block::Interface for BlockDevice<T> {
 
     fn queue_limits(&self) -> rdif_block::QueueLimits {
         rdif_block::QueueLimits {
-            dma_domain: dma_api::DmaDomainId::identity(),
+            dma_domain: dma_api::DmaDomainId::legacy_global(),
             dma_mask: u64::MAX,
             dma_alignment: 0x1000,
             max_inflight: 1,
@@ -288,7 +288,7 @@ unsafe impl<T: Transport + 'static> rdif_block::IQueue for BlockQueue<T> {
                 ..rdif_block::DeviceInfo::new(blocks, SECTOR_SIZE)
             },
             limits: rdif_block::QueueLimits {
-                dma_domain: dma_api::DmaDomainId::identity(),
+                dma_domain: dma_api::DmaDomainId::legacy_global(),
                 dma_mask: u64::MAX,
                 dma_alignment: 0x1000,
                 max_inflight: 1,

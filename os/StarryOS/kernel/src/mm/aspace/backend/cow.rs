@@ -21,8 +21,8 @@ use starry_mm::{
 };
 
 use super::{
-    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
-    PopulateCallback, RssKind, alloc_frame, dealloc_frame, pages_in,
+    AddrSpace, Backend, BackendFileInfo, BackendOps, MemoryAccounting, PopulateCallback, RssKind,
+    alloc_frame, dealloc_frame, pages_in,
 };
 
 const FILE_READAHEAD_PAGES: usize = 16;
@@ -56,18 +56,6 @@ fn release_frame(paddr: PhysAddr, page_size: PageSize) {
     if release == CowRelease::LastReference {
         dealloc_frame(paddr, page_size);
     }
-}
-
-pub(super) fn retain_frame_for_transaction(paddr: PhysAddr) -> AxResult<()> {
-    FRAME_TABLE.lock().try_retain(paddr)
-}
-
-pub(super) fn release_transaction_frame(paddr: PhysAddr, page_size: PageSize) {
-    release_frame(paddr, page_size);
-}
-
-pub(super) fn frame_kind(paddr: PhysAddr) -> Option<RssKind> {
-    FRAME_TABLE.lock().kind(paddr)
 }
 
 struct CowFrameState {
@@ -656,7 +644,7 @@ impl BackendOps for CowBackend {
         old_pt: &mut PageTableCursor,
         new_pt: &mut PageTableCursor,
         _new_aspace: &Arc<Mutex<AddrSpace>>,
-        acct: CloneMapAccounting<'_>,
+        child_accounting: Option<&MemoryAccounting>,
     ) -> AxResult<Backend> {
         struct ClonePagePlan {
             vaddr: VirtAddr,
@@ -725,25 +713,25 @@ impl BackendOps for CowBackend {
             .map_err(|_| AxError::NoMemory)?;
         for plan in plans {
             if FRAME_TABLE.lock().try_retain(plan.paddr).is_err() {
-                rollback(&committed, old_pt, new_pt, acct.child, self.size)?;
+                rollback(&committed, old_pt, new_pt, child_accounting, self.size)?;
                 return Err(AxError::NoMemory);
             }
             if let Err(error) = old_pt.protect(plan.vaddr, cow_flags) {
                 release_frame(plan.paddr, self.size);
-                rollback(&committed, old_pt, new_pt, acct.child, self.size)?;
+                rollback(&committed, old_pt, new_pt, child_accounting, self.size)?;
                 return Err(error.into());
             }
             if let Err(error) = new_pt.map(plan.vaddr, plan.paddr, self.size, cow_flags) {
                 let parent_restored = old_pt.protect(plan.vaddr, plan.old_flags).is_ok();
                 release_frame(plan.paddr, self.size);
-                rollback(&committed, old_pt, new_pt, acct.child, self.size)?;
+                rollback(&committed, old_pt, new_pt, child_accounting, self.size)?;
                 return if parent_restored {
                     Err(error.into())
                 } else {
                     Err(AxError::BadState)
                 };
             }
-            if let Some(child) = acct.child
+            if let Some(child) = child_accounting
                 && let Err(error) = child.inc(plan.rss_kind, 1)
             {
                 let child_unmapped = new_pt.unmap(plan.vaddr).is_ok();
@@ -751,7 +739,7 @@ impl BackendOps for CowBackend {
                 if child_unmapped {
                     release_frame(plan.paddr, self.size);
                 }
-                rollback(&committed, old_pt, new_pt, acct.child, self.size)?;
+                rollback(&committed, old_pt, new_pt, child_accounting, self.size)?;
                 return if child_unmapped && parent_restored {
                     Err(error)
                 } else {

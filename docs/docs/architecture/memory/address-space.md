@@ -1,401 +1,280 @@
 ---
 sidebar_position: 8
-sidebar_label: "地址空间事务"
+sidebar_label: "地址空间"
 ---
 
-# 虚拟内存区域与页表事务
+# 虚拟内存区域与地址空间
 
-`ax-memory-set` 管理按起始地址排序的 `MemoryArea`，并把具体页表操作交给 `MappingBackend`。Virtual Memory Area（虚拟内存区域，VMA）描述连续虚拟范围及其策略，Page Table Entry（页表项，PTE）保存实际地址翻译；map、replace、unmap、protect 和 clear 都先规划区域元数据与后端操作，再通过 prepare、commit、rollback 和 finalize 协议保证跨多个区域的变更全成或回滚。
+`ax-memory-set` 提供与操作系统策略无关的 Virtual Memory Area（虚拟内存区域）集合。它保存连续虚拟范围、权限和 backend，不拥有物理页分配器，也不实现 Linux 系统调用级事务。
 
-## 1. 数据模型
+ArceOS、StarryOS 和 Axvisor 分别在 `ax-mm`、StarryOS kernel 与 `axaddrspace` 中实现自己的物理页、文件映射、写时复制和客户机内存策略。
 
-地址空间层把连续虚拟范围的 metadata 与页表实现分离。它不要求一个地址空间内所有 area 使用同一种物理页来源，但 backend 类型由上层 enum 统一。
+## 1. 组件边界
 
-### 1.1 内存区域
+```text
+                         ax-memory-set
+                MemoryArea + MemorySet + MappingBackend
+                    /                |                 \
+                   /                 |                  \
+              ax-mm        StarryOS kernel/aspace     axaddrspace
+          内核虚拟地址       Linux 进程虚拟地址       客户机物理地址
+                 \                  |                  /
+                  \                 |                 /
+                       各自页表实现与页帧所有权
+```
 
-`MemoryArea<B>` 保存虚拟地址 range、实际 backend/页表项 flags、对外报告 flags 和 backend。`reported_flags` 允许 Starry 在写时复制等场景中区分页表实际权限与 `/proc`/syscall 可见权限。
-
-| 字段/方法 | 语义 |
-| --- | --- |
-| `va_range()` | 半开区间 `[start, end)` |
-| `flags()` | backend 和页表项实际使用的 flags |
-| `reported_flags()` | introspection 和用户语义报告值 |
-| `backend()` | 该 area 的物理映射策略 |
-| `split()` / shrink helpers | 只修改 planned metadata，不直接改页表项 |
-
-同一 `MemoryArea` 内 flags 和 backend 语义保持一致。protect 或 unmap 穿过 area 边界时，元数据计划只克隆相交 area，并预先 split 成 remove/insert 差量；无关虚拟内存区域不参与规划。
-
-### 1.2 区域集合
-
-`MemorySet<B>` 使用按 area start 排序的紧凑 `Vec<MemoryArea<B>>`。containment、overlap 和 page-fault 查找通过 `partition_point` 或 binary search 定位前驱，保持 O(log n)；free-area 搜索从 hint 对应的二分位置开始扫描 gaps。虚拟内存区域插入、删除和 split 为 O(n)，但这些操作不在 page-fault 热路径。选择该表示是为了让 `try_reserve` 在 backend commit 前可靠预留最终容量，避免为树节点再引入 allocator 或不可恢复的提交后分配。
-
-| 操作 | metadata 目标 | backend 目标 |
+| 组件 | 保存的状态 | 不承担的职责 |
 | --- | --- | --- |
-| `map` | 插入新 area，可选替换 overlap | map 新范围，必要时先 unmap overlap |
-| `map_metadata` | 发布已经由专用事务安装的 area | 不修改页表项；失败时专用事务负责撤销 owner |
-| `replace` | 替换指定 span 内全部 area | 同一事务 unmap old + map new |
-| `unmap` | 删除、截短或 split areas | unmap 每个相交子范围 |
-| `protect` | split 并更新 actual/reported flags | protect 每个相交子范围 |
-| `clear` | 变为空 map | unmap 全部 area |
+| `ax-memory-set` | 有序虚拟内存区域、实际权限、报告权限、backend | 物理页分配、回收、跨核页表刷新、Linux 记账 |
+| `ax-mm` | ArceOS 内核页表、线性映射和按需分配映射 | 文件虚拟内存、写时复制、客户机第二阶段策略 |
+| StarryOS `AddrSpace` | 进程页表、常驻页统计、commit accounting、Linux 虚拟内存区域策略 | 通用 allocator 和架构页表项编码 |
+| `axaddrspace` | 客户机物理地址范围、线性或分配型客户机 RAM backend | Linux 虚拟内存区域、宿主内核 iomap |
+| `ax-page-table` | 页表项、遍历、映射、权限修改和失效能力 | 虚拟内存区域策略和物理页回收策略 |
 
-metadata-only 方法只用于已经由专用路径移动或分离页表项的调用方。普通消费者必须使用带 page table 的事务入口。
+## 2. 数据模型
 
-### 1.3 架构边界
+### 2.1 MemoryArea
 
-`MemorySet` 的区间计划和事务协议不包含架构分支。架构差异由 backend 使用的页表类型、实际 `PageSize` 和 `TlbInvalidator` 注入；x86_64、RISC-V 与 LoongArch64 的本地失效需要上层远程协调，AArch64 则保持硬件广播要求的屏障顺序。完整页表几何和失效指令见[多架构内存实现](./architecture-support.md)。
+源码：`memory/memory_set/src/area.rs`。
 
-无论使用哪种架构，跨虚拟内存区域操作都必须全成或回滚。backend 保存 undo 状态时使用 `query()` 返回的实际页尺寸，不能假定全部旧映射都是 4 KiB，也不能把大页展开为数百万条基础页快照。
+`MemoryArea<B>` 描述一个半开区间 `[start, end)`：
 
-## 2. 映射后端协议
+```rust
+pub struct MemoryArea<B: MappingBackend> {
+    va_range: AddrRange<B::Addr>,
+    flags: B::Flags,
+    reported_flags: B::Flags,
+    backend: B,
+}
+```
 
-`MappingBackend` 是小型能力边界。它允许 backend 在 prepare 阶段预留资源，在 commit 失败时恢复自身的部分修改，并向外层提供撤销已成功操作所需的状态。
+| 字段 | 含义 |
+| --- | --- |
+| `va_range` | 连续虚拟地址范围 |
+| `flags` | backend 和页表实际使用的权限 |
+| `reported_flags` | StarryOS 等上层向用户报告的权限 |
+| `backend` | 线性映射、分配映射、写时复制、文件映射等策略 |
 
-### 2.1 操作计划
+实际权限和报告权限分离是为了支持写时复制。父子页表项可以暂时移除写权限，而 `/proc` 和 Linux 虚拟内存语义仍报告原始可写属性。
 
-`MappingOperation` 只有 Map、Unmap 和 Protect 三种。Map 携带 `MapPrecondition::Vacant` 或 `Replacing`；后者表示旧页表项将由同一事务中更早的 unmap operation 删除。Unmap 记录 old flags，Protect 同时记录 old/new flags，为 rollback 提供明确输入。
+`split(pos)` 只在 `start < pos < end` 时成功。它同时调用 backend 的 `split(align_diff)`，因此范围元数据和 backend 内部偏移不会分离。
 
-该前置条件不能用“prepare 时看到旧页表项就一律冲突”代替。重叠 map/replace 会在任何 commit 前同时 prepare old unmap 和 new map；`Replacing` 允许 new backend 验证共存条件并预留资源，同时仍由提交顺序保证先 unmap、后 map。backend 是否需要观察旧页表项取决于自身实现。普通新映射必须使用 `Vacant`，发现未登记页表项时返回 `AlreadyExists`。
+### 2.2 MemorySet
+
+源码：`memory/memory_set/src/set.rs`。
+
+```rust
+pub struct MemorySet<B: MappingBackend> {
+    areas: BTreeMap<B::Addr, MemoryArea<B>>,
+}
+```
+
+键是虚拟内存区域起始地址。核心复杂度如下：
+
+| 操作 | 复杂度 | 说明 |
+| --- | --- | --- |
+| `find(addr)` | O(log n) | 查找最后一个不大于地址的起点，再检查 containment |
+| `overlaps(range)` | O(log n) | 只检查前驱和第一个后继 |
+| 插入/删除 | O(log n) | 不移动其他虚拟内存区域 |
+| `find_free_area` | O(log n + k) | 从 hint 前驱开始扫描后续 gap |
+| 跨区域 unmap/protect | O(k log n) 或 O(n) | k 为受影响区域数量 |
+
+当前实现保留 `BTreeMap`。没有代表性 StarryOS 多虚拟内存区域基准前，不用排序 `Vec` 替换它，也不为了预留树节点引入第二套元数据 allocator。
+
+## 3. MappingBackend
+
+源码：`memory/memory_set/src/backend.rs`。
 
 ```rust
 pub trait MappingBackend: Clone {
     type Addr: MemoryAddr;
     type Flags: Copy;
     type PageTable;
-    type MappingPlan;
-    type CommitState;
 
-    fn prepare(...) -> MappingResult<Self::MappingPlan>;
-    fn abort(&self, plan: Self::MappingPlan, page_table: &mut Self::PageTable);
-    fn commit(...) -> MappingResult<Self::CommitState>;
-    fn rollback(...) -> MappingResult;
-    fn finalize(&self, state: Self::CommitState, page_table: &mut Self::PageTable);
+    fn map(
+        &self,
+        start: Self::Addr,
+        size: usize,
+        flags: Self::Flags,
+        page_table: &mut Self::PageTable,
+    ) -> bool;
+
+    fn unmap(
+        &self,
+        start: Self::Addr,
+        size: usize,
+        page_table: &mut Self::PageTable,
+    ) -> bool;
+
+    fn protect(
+        &self,
+        start: Self::Addr,
+        size: usize,
+        new_flags: Self::Flags,
+        page_table: &mut Self::PageTable,
+    ) -> bool;
+
+    fn split(&mut self, align_diff: usize) -> Option<Self>;
 }
 ```
 
-`prepare()` 不得修改可观察 mapping 或 backend 状态。它可以分配 metadata、检查操作所需的页表状态、保留写时复制引用或预留后续 commit 所需资源；未提交 plan 必须交给 `abort()`。检查粒度由操作决定，不要求 Map 为范围内每个 4 KiB 页保存旧映射。
+该 trait 是直接页表操作边界，不是事务框架。公共层不定义：
 
-### 2.2 提交状态
+- `MappingOperation`；
+- `MapPrecondition`；
+- `MappingPlan` 或 `CommitState`；
+- `prepare/abort/commit/rollback/finalize`；
+- 通用逐页 `SavedMapping`。
 
-`commit()` 若可能失败，必须在返回错误前撤销本次 operation 的部分修改。外层只负责 rollback 更早已经完整成功的 operation。
+这样 ArceOS 和 Axvisor 的普通映射不会因为 Linux 系统调用级回滚语义创建动态数组或扫描整个旧映射。
 
-| Hook | 调用时机 | 所有权责任 |
-| --- | --- | --- |
-| `prepare` | 所有页表项/虚拟内存区域变更之前 | 建立 plan，失败时不留可见状态 |
-| `abort` | plan 未进入 commit | 释放预留资源和临时 reference |
-| `commit` | 全部 plan 成功后依次执行 | 返回完整 undo state；自恢复局部失败 |
-| `rollback` | 后续 operation 失败 | 恢复先前 mapping、flags 和 accounting |
-| `finalize` | 全部 operation 成功 | 释放不再需要的旧页或临时 hold |
+当前 trait 仍使用 `bool` 表示 backend 成败。公共 `MemorySet` 把失败转换为 `MappingError::BadState`。这是保留原接口以控制修改范围的明确限制；需要细分 `NoMemory`、参数错误和页表损坏时，应先证明所有调用方都能稳定处理这些错误，再单独修改接口。
 
-例如 allocation-backed unmap 不能在单个页表项清除后立即释放 frame，因为后续虚拟内存区域可能失败。它保留旧 frame 到整个事务成功，再由 `finalize()` 释放。
+## 4. 映射流程
 
-## 3. 区域事务流程
-
-`MemorySet::execute()` 为 plan 和 commit state Vec 预留精确容量，`execute_with_metadata()` 还在进入 backend prepare 前预留 live 虚拟内存区域 Vec 的最终容量，避免事务中途因为容器扩容失败而无法记录 undo 或发布 metadata。metadata split 与 flags 更新在只包含相交虚拟内存区域的 `MetadataPlan` 中完成。
-
-### 3.1 准备与提交
-
-完整流程先准备所有 backend operation，再提交页表项/backend，最后才替换 live metadata。下图展示失败分支。
-
-```mermaid
-flowchart TB
-    Input["requested map/unmap/protect"] --> Select["select intersecting areas"]
-    Select --> PlanMeta["clone affected areas; prepare remove/insert delta"]
-    PlanMeta --> Reserve["reserve plan/state vectors + final 虚拟内存区域 capacity"]
-    Reserve --> Prepare["prepare every backend operation"]
-    Prepare -->|"prepare fails"| Abort["abort prepared plans in reverse"]
-    Prepare -->|"all prepared"| Commit["commit operations in order"]
-    Commit -->|"one fails"| AbortRest["abort remaining plans"]
-    AbortRest --> Rollback["rollback committed states in reverse"]
-    Commit -->|"all succeed"| Publish["apply allocation-free metadata delta"]
-    Publish --> Finalize["finalize deferred resources"]
-```
-
-live metadata 容量在 backend prepare 前预留，差量只在全部 backend commit 成功后应用，随后才 finalize 旧资源。因此页表项/backend 失败不会留下已 split 但未映射的虚拟内存区域，metadata 发布不会再分配，也不会为一次局部操作复制整个地址空间。
-
-### 3.2 回滚失败
-
-如果任一 backend rollback 返回错误，`MemorySet` 返回 `MappingError::BadState`，因为无法再承诺原状态完整恢复。该错误应被视为地址空间一致性故障。
-
-| `MappingError` | 含义 | 常见来源 |
-| --- | --- | --- |
-| `InvalidParam` | range、size 或 alignment 无效 | overflow、空或非页对齐 backend 请求 |
-| `AlreadyExists` | mapping overlap 或现有页表项 | map 未允许替换 |
-| `NoMemory` | plan、metadata 或 backend reserve 失败 | `try_reserve`、frame allocation |
-| `BadState` | 页表层级、undo 或 backend 状态不一致 | huge 页表项、rollback failure、unexpected mapping |
-
-调用方不能在 `BadState` 后继续假定局部范围可用。内核策略应停止相关地址空间或进入明确故障路径，而不是忽略错误。
-
-## 4. 区间操作
-
-区间操作必须同时覆盖所有相交虚拟内存区域，不能只处理第一个 area。metadata planner 根据 range 与 area 的相对位置选择删除、左/右收缩或中间 split。
-
-### 4.1 删除与替换
-
-`unmap_operations()` 为每个相交 area 生成精确交集范围。`unmap_metadata()` 在 planned map 上移除完全包含项，并处理左右边界和中间洞。
-
-| 相对位置 | metadata 结果 |
-| --- | --- |
-| unmap 覆盖完整 area | 删除 area |
-| unmap 截掉左侧 | start 前移，backend `shrink_left` |
-| unmap 截掉右侧 | end 前移，backend `shrink_right` |
-| unmap 位于 area 中间 | split 成 left/right 两个 area |
-| replace span 包含新 area | 先计划删除整个 span，再插入经验证的新 area |
-
-`replace()` 适合设备 mapping 小于用户请求 replacement span 的情况：整个请求 span 被移除，但只安装经过验证的设备范围。
-
-### 4.2 权限与报告标志
-
-`protect_with_reported_flags()` 在局部 metadata plan 中将每个相交 area 按边界 split，并为中间片段生成 Protect operation。actual flags 与 reported flags 在同一次 metadata publish 中更新。
-
-| 场景 | 页表项/backend flags | reported flags |
-| --- | --- | --- |
-| 普通 ArceOS protect | new flags | 与 new flags 相同 |
-| Starry 写时复制 writable 虚拟内存区域 | backend 可保持只读以触发写时复制 | 对用户报告 writable |
-| 不需要修改的 area | 不生成 operation | metadata 保持原值 |
-
-这一分离避免 `/proc/maps` 或 syscall 查询把写时复制页表暂时只读误报成虚拟内存区域不可写，同时保持 hardware enforcement 正确。
-
-## 5. ArceOS 地址空间
-
-`os/arceos/modules/axmm` 是 ArceOS 的 Stage-1 策略层。它组合 `ax-memory-set`、`ax-page-table::stage1` 和 `ax-alloc`，不再实现第二套通用虚拟内存区域容器。
-
-### 5.1 映射后端
-
-`axmm::Backend` 当前包含 Linear 和 Alloc。`BackendTransaction` 对 Map 只保存操作和空的 `previous` 向量；Unmap 与 Protect 才逐 4 KiB 页查询并保存旧映射。这样新建大范围 Map 的准备阶段临时内存与页数无关，同时保留删除和改权限所需的恢复数据。
-
-| Backend | Map 行为 | Fault 行为 | Unmap ownership |
-| --- | --- | --- | --- |
-| `Linear { pa_va_offset }` | 虚拟地址通过有符号固定 offset 映射已知物理地址 | 不处理 fault | 只移除页表项，不释放物理 RAM |
-| `Alloc { populate: true }` | 立即逐页申请并清零 | 不应 fault | finalize 后释放旧 frame |
-| `Alloc { populate: false }` | 建立 empty entry | fault 时申请、清零并 remap | finalize 后释放已存在 frame |
-
-Alloc frame 使用 `MemoryZone::Normal × UsageKind::VirtMem`。populate 中途失败时 backend 自己 unmap 并释放已完成页面，满足单 operation commit 失败自恢复要求。
-
-### 5.2 内核映射
-
-`ax-mm::AddrSpace` 拥有 `MemorySet<Backend>` 和 Stage-1 page table，提供 map_linear、map_alloc、unmap、protect、query 和 page-fault 接口。`kernel_aspace()` 使用 `SpinNoIrq` 保护全局 kernel 地址空间。
-
-| 公共入口 | 用途 |
-| --- | --- |
-| `new_kernel_aspace()` | 从平台 kernel mappings 建立内核地址空间 |
-| `new_user_aspace(base, size)` | 创建 ArceOS 用户地址空间 |
-| `init_memory_management()` | 验证 多核 地址转换后备缓冲区 capability，建立/激活 kernel space |
-| `iomap(paddr, size)` | 为 MMIO 寻找虚拟地址并创建 device mapping |
-
-MMIO 的 Linear backend 不拥有设备物理区。unmap 只释放虚拟地址/页表项，不能调用 `ax-alloc` 释放对应物理地址。
-
-### 5.3 大范围映射成本
-
-以 12 GiB 线性映射为例，基础页数量为 `12 GiB / 4 KiB = 3,145,728`。旧实现为 Map 预留同样数量的 `Option<SavedMapping>`，在 x86_64 上约消耗 96 MiB 临时堆，可能在页表提交前直接返回 `NoMemory`。当前实现不再为 Map 建立这份逐页快照。
-
-| 阶段 | 旧 Map 实现 | 当前 Map 实现 | 当前剩余成本 |
-| --- | --- | --- | --- |
-| `prepare` | 逐 4 KiB 页保存旧映射，O(页数) 临时内存 | 验证范围和物理地址换算，O(1) 额外内存 | 不再因快照耗尽堆 |
-| `commit` | 逐页建立映射 | 逐页建立映射，局部失败时自行删除已建前缀 | `map_linear()` 当前禁止大页，仍是 O(页数) |
-| 外层 rollback | 根据逐页快照恢复 | 对已成功 Map 的范围逐页 unmap | 不需要保存旧页表项，但回滚时间仍是 O(页数) |
-| 页表存储 | 4 KiB 叶子项 | 4 KiB 叶子项 | 约 24 MiB 叶子页表页，不含上级页表 |
-
-Map 的局部失败由 `Linear::map` 或 `Alloc::map` 在返回错误前删除已安装前缀，外层只回滚更早完整成功的 operation。成功的 Map 若因后续 operation 失败而需要撤销，`rollback()` 根据范围重新遍历页表，不依赖预先保存的空映射。
-
-Unmap 和 Protect 的语义不同：它们必须恢复原物理地址、权限和页大小，因此当前仍按基础页保存 `previous`，临时内存为 O(页数)，并拒绝无法按基础页恢复的巨页表项。对超大范围执行这两类操作前必须评估容量；后续优化应保存连续运行段或页表游标级撤销信息，并继续保证提交后不分配、失败时全量恢复，不能简单删除恢复数据。
-
-## 6. Axvisor 客户机地址空间
-
-`virtualization/axaddrspace` 将同一事务容器用于 Guest Physical Address（客户机物理地址，GPA）空间，并通过 `NestedPageTableOps` 适配具体架构的第二阶段或嵌套页表。它复用本章定义的通用 prepare、commit、rollback 和 finalize 协议，但客户机 RAM 所有权、缺页填充、架构 adapter、AxVM 外层锁与销毁顺序属于独立策略。
-
-这些客户机专属内容统一在[Axvisor 客户机地址空间设计与实现](./axaddrspace.md)维护。本章不再重复 Linear/Alloc 后端、实际页尺寸快照和 Guest RAM 生命周期，避免事务协议与系统策略出现两份说明。
-
-## 7. Starry 后端接入
-
-Starry kernel 的 backend 比 ArceOS 多出 Cow、Shared 和 File，并把常驻内存集大小与写时复制保留引用纳入同一事务。具体 Linux 虚拟内存策略在 [StarryOS 内存](./starry-mm.md) 中说明。
-
-### 7.1 准备内容
-
-`os/StarryOS/kernel/src/mm/aspace/backend/mod.rs` 的 `prepare()` 先验证 backend page size 和 file flags，再保存旧 mapping、page size、常驻内存集大小 kind，并为即将 unmap 的写时复制 frame 获取 transaction hold。
-
-| 保存内容 | Rollback 用途 |
-| --- | --- |
-| 虚拟地址、物理地址、flags、page size | 恢复原页表项 |
-| `rss_kind` | 恢复 Anon/File/Shmem 计数 |
-| `cow_hold` | 防止 unmap 后 frame 在事务完成前释放 |
-| operation | 选择 map/unmap/protect 恢复路径 |
-
-任何 prepare 错误都会释放已经取得的写时复制 holds。未提交 plan 的 `abort()` 也执行相同释放。
-
-### 7.2 提交恢复
-
-Starry backend 的 `commit()` 允许具体 backend 返回 `AxError`，但在向 `MemorySet` 返回失败前调用 `restore(plan, pt)`。更早成功的虚拟内存区域 operation 再由外层 reverse rollback。
-
-| 阶段 | 常驻内存集大小/写时复制行为 |
-| --- | --- |
-| map 成功 | backend 在页表项成功后按唯一页面分类增加汇总计数 |
-| unmap prepare | 保存常驻内存集大小 kind，写时复制 frame 增加 hold |
-| transaction rollback | 恢复页表项与汇总计数，转移或释放 hold |
-| transaction finalize | 释放只用于 undo 的 hold，完成旧 owner 回收 |
-
-Starry 的 `AddressSpacePageTable` 同时持有页表和 `MemoryAccounting`。backend transaction 从该显式对象取得两者，避免通过 scope-local 原始指针传递隐藏依赖，同时不修改 ArceOS 和 Axvisor 的通用 `MappingBackend` 接口。
-
-## 8. 源码入口
-
-公共容器和三个策略消费者共同构成当前地址空间实现。修改 `MappingBackend` trait 时必须逐个迁移实现，不得通过 alias 或 wrapper 引入第二事务协议；完整故障注入矩阵集中在[内存管理测试与验收](./testing.md)。
-
-### 8.1 源码检查点
-
-事务容器、三类 backend 和页表 owner 分布在下列文件中。修改 trait 时应沿该清单检查每个实现是否仍保持相同 prepare、commit、rollback 和 finalize 契约。
-
-| 源码 | 审计重点 |
-| --- | --- |
-| `memory/memory_set/src/backend.rs` | hook contract 与 operation undo data |
-| `memory/memory_set/src/set.rs` | affected-range metadata plan、vector reserve、reverse rollback |
-| `memory/memory_set/src/area.rs` | split/shrink 与 actual/reported flags |
-| `os/arceos/modules/axmm/src/backend/` | Stage-1 frame ownership与 lazy fault |
-| `virtualization/axaddrspace/src/address_space/backend/` | Guest RAM ownership 与 嵌套页表 rollback |
-| `os/StarryOS/kernel/src/mm/aspace/backend/` | 写时复制 hold、常驻内存集大小和 file/shared restore |
-
-新增 backend 前必须先定义它在 prepare 时能验证和预留什么、commit 局部失败如何自恢复、rollback 保存什么、finalize 释放什么。无法回答四个问题的 backend 不能接入 `MemorySet`。
-
-## 9. 事务实例
-
-地址空间事务需要同时观察虚拟内存区域 Vec、页表项和 backend owner。下面用两个虚拟内存区域的跨区间 unmap 展示 `plan_unmap()`、`execute()` 和 metadata 发布的精确输入输出。
-
-### 9.1 跨区域删除
-
-初始地址空间包含 A=`[0x1000, 0x5000)`、B=`[0x8000, 0xa000)`，中间 `[0x5000, 0x8000)` 没有映射。请求 `unmap(0x3000, 0x6000)` 对应目标 `[0x3000, 0x9000)`。
+### 4.1 新建映射
 
 ```text
-before
-0x1000          0x3000          0x5000          0x8000  0x9000  0xa000
-|----- keep -----|---- remove A ---|--- hole -----|remove B| keep B |
-
-metadata remove: [0x1000, 0x8000]
-metadata insert: A-left [0x1000, 0x3000), B-right [0x9000, 0xa000)
-backend ops:     unmap [0x3000, 0x5000), unmap [0x8000, 0x9000)
+MemorySet::map(area)
+  │
+  ├─ 检查空范围
+  ├─ 检查与已有区域是否重叠
+  │    ├─ 不允许覆盖：返回 AlreadyExists
+  │    └─ 允许覆盖：先执行 unmap
+  ├─ area.map_area()
+  │    └─ backend.map()
+  └─ backend 成功后插入 BTreeMap
 ```
 
-`affected_area_starts()` 先用 `partition_point()` 找到第一个 start 不小于 range start 的位置，再检查前驱 A 是否跨过 range start。它不扫描 `[0x5000, 0x8000)` 的 hole，也不会为 hole 创建虚假 backend operation。
+不重叠映射不会构造操作计划或撤销日志。backend 必须保证单次 map 中途失败时清理本次已经建立的前缀。
 
-```rust
-let first_in_range = self
-    .areas
-    .partition_point(|area| area.start() < range.start);
-let preceding = first_in_range
-    .checked_sub(1)
-    .and_then(|index| self.areas.get(index))
-    .filter(|area| area.end() > range.start)
-    .map(MemoryArea::start);
-```
+例如 `ax-mm` 的 allocation backend 在 `populate=true` 时逐页分配。任一页帧申请或页表写入失败后，`rollback_alloc_mapping` 只遍历本次已安装页面并释放对应页帧。
 
-若两个 backend commit 都成功，metadata 发布后 live Vec 只剩 `[0x1000, 0x3000)` 和 `[0x9000, 0xa000)`。旧 frame 或临时写时复制 hold 在 Vec 发布后由两个 `finalize()` 释放。
+### 4.2 解除映射
 
-### 9.2 中间失败回滚
-
-延续 9.1，假设 A 的 commit 已经清除两个页表项并返回 `CommitStateA`，B 的 commit 在修改第一个页表项时失败。B backend 必须先恢复自己的部分修改再返回错误；`MemorySet::execute()` 随后逆序 rollback 已完整提交的 A。
-
-```mermaid
-sequenceDiagram
-    participant Set as MemorySet
-    participant A as Backend A
-    participant B as Backend B
-    participant Meta as live 虚拟内存区域 Vec
-
-    Set->>A: prepare(unmap A)
-    A-->>Set: plan A
-    Set->>B: prepare(unmap B)
-    B-->>Set: plan B
-    Set->>A: commit(plan A)
-    A-->>Set: CommitState A
-    Set->>B: commit(plan B)
-    B->>B: restore partial 页表项 change
-    B-->>Set: error
-    Set->>A: rollback(CommitState A)
-    Note over Meta: metadata plan未发布，仍为原A/B
-```
-
-只有所有 commit 成功时 `execute()` 才返回 committed states。失败分支会继续尝试所有前序 rollback；其中任一 rollback 失败时最终返回 `MappingError::BadState`，因为此时不能再承诺地址空间已经恢复。
-
-下面是 `MemorySet::execute()` 失败分支的核心实现，对应 `memory/memory_set/src/set.rs`。`prepared.into_iter().rev()` 保证 plan abort 与 already-committed state rollback 都按逆序执行；显式 `rollback_failed` 标志避免遇到第一个 rollback 错误就提前返回，使每个已 commit 的 operation 都至少有一次恢复机会。
-
-```rust
-while let Some((backend, plan)) = prepared.next() {
-    match backend.commit(plan, page_table) {
-        Ok(state) => committed.push((backend, state)),
-        Err(error) => {
-            for (backend, plan) in prepared.rev() {
-                backend.abort(plan, page_table);
-            }
-            let mut rollback_failed = false;
-            for (backend, state) in committed.into_iter().rev() {
-                if backend.rollback(state, page_table).is_err() {
-                    rollback_failed = true;
-                }
-            }
-            return Err(if rollback_failed {
-                MappingError::BadState
-            } else {
-                error
-            });
-        }
-    }
-}
-```
-
-`abort()` 与 `rollback()` 的区别在于：`abort()` 处理尚未进入 commit 的 plan，它只释放预留资源；`rollback()` 处理已经 commit 但后续失败的 operation，它需要恢复可见页表项和 backend owner。两者都不能抛出新的 mapping 变更，否则就会破坏 abort/rollback 自身需要保持的一致性。
-
-```rust
-for (backend, state) in committed.into_iter().rev() {
-    if backend.rollback(state, page_table).is_err() {
-        rollback_failed = true;
-    }
-}
-return Err(if rollback_failed {
-    MappingError::BadState
-} else {
-    error
-});
-```
-
-该循环不能使用遇到首个错误就提前返回的写法，否则更早的 mapping 将永远没有机会恢复。
-
-### 9.3 元数据容量失败
-
-成功结果从两个虚拟内存区域变为两个虚拟内存区域，本例不需要扩大 live Vec；如果 protect 一个虚拟内存区域中间范围，单个虚拟内存区域会 split 为三个，final length 增加两个。`MetadataPlan::reserve()` 在任何 backend prepare 之前计算最终长度并调用 `try_reserve()`。
-
-```rust
-let final_len = areas
-    .len()
-    .checked_sub(self.remove.len())
-    .and_then(|len| len.checked_add(self.insert.len()))
-    .ok_or(MappingError::BadState)?;
-areas
-    .try_reserve(final_len.saturating_sub(areas.len()))
-    .map_err(|_| MappingError::NoMemory)
-```
-
-假设初始只有 `[0x1000, 0x7000)` RW，对 `[0x3000, 0x5000)` 执行只读 protect，计划是 remove 1、insert 3，final length 从 1 变为 3。若 `try_reserve(2)` 失败，页表项、actual flags、reported flags 和原虚拟内存区域均保持不变。
-
-| 成功后的虚拟内存区域 | actual flags | reported flags |
-| --- | --- | --- |
-| `[0x1000, 0x3000)` | RW | RW |
-| `[0x3000, 0x5000)` | R | 由上层 closure 决定，普通 protect 为 R |
-| `[0x5000, 0x7000)` | RW | RW |
-
-排序 Vec 的 insertion 会移动元素，但已预留容量后不再分配。page-fault `find()` 仍通过 `partition_point(area.start() <= addr)` 查前驱，保持 O(log n)。
-
-### 9.4 重叠替换
-
-`map(area, unmap_overlap=true)` 和 `replace()` 会把旧 unmap operations 放在新 map operation 之前，并把新 map 标记为 `MapPrecondition::Replacing`。这允许 prepare 阶段看到尚未删除的旧页表项，同时要求 commit 顺序先撤旧、后建新。
+`unmap(start, size)` 按三类相交方式处理：
 
 ```text
-old VMAs: [0x1000,0x4000) A, [0x4000,0x8000) B
-replace:  [0x2000,0x7000) C
-
-operations:
-1. unmap A [0x2000,0x4000)
-2. unmap B [0x4000,0x7000)
-3. map C   [0x2000,0x7000), precondition=Replacing
-
-success metadata:
-[0x1000,0x2000) A, [0x2000,0x7000) C, [0x7000,0x8000) B
+原区域完全位于目标范围：调用 unmap_area 后删除
+目标切除区域尾部：       shrink_right
+目标切除区域头部：       shrink_left
+目标位于区域中间：       split + shrink_right
 ```
 
-新 map commit 失败时，C backend 先撤销本次部分映射，外层再恢复 B、A。旧 owner 只有在 C 成功、metadata 已发布后才进入 finalize；这避免 new mapping 失败后旧 frame 已被释放。
+`shrink_left` 和 `shrink_right` 先调用 backend unmap，成功后才修改该区域的边界和 backend 偏移。
+
+跨多个虚拟内存区域的直接 unmap 不是公共事务。前面区域已经成功解除后，后续 backend 失败不会由 `ax-memory-set` 建立逐页日志恢复。调用方不得把低层直接接口描述为全成或回滚。
+
+### 4.3 权限修改
+
+`protect_with_reported_flags` 遍历相交区域，并按需要把一个区域拆成左、中、右三部分。中间部分调用 backend `protect`，随后更新实际权限和报告权限。
+
+StarryOS 写时复制 backend 可以把页表实际写权限清除，同时保留对用户报告的可写权限。
+
+### 4.4 metadata-only 操作
+
+| API | 用途 |
+| --- | --- |
+| `map_metadata` | 页表项和 owner 已由专用流程建立后发布新区域 |
+| `unmap_metadata` | 页表项已移动或分离后只删除区域描述 |
+| `replace_area_metadata` | 在已有区域内部替换一段描述而不修改页表 |
+
+StarryOS fork 的写时复制流程先建立 child 页表项、引用计数和常驻页统计，然后调用 `map_metadata`。如果元数据发布失败，StarryOS 专用回滚逻辑撤销 child 页表项和引用；公共组件不重复保存同一份撤销状态。
+
+## 5. 覆盖映射和原子性边界
+
+`MemorySet::replace` 验证新区域位于 replacement range 内，然后直接执行：
+
+```rust
+self.unmap(replace_range.start, replace_range.size(), page_table)?;
+self.map(area, page_table, false)
+```
+
+因此新 map 失败时，已经解除的旧范围不会由公共层自动恢复。该接口只适合：
+
+- 上层已经保存专用恢复信息；
+- 失败后允许调用方重建映射；
+- 不要求 Linux 系统调用原子性的内部路径。
+
+StarryOS 的 `AddrSpace` 在调用低层操作前负责地址范围、`RLIMIT_AS`、commit delta、文件映射状态和页表移动预检。写时复制 clone 和 mremap 分别维护自己的有限回滚记录，不把通用逐页快照施加给所有地址空间消费者。
+
+普通跨区域 unmap/protect 当前不承诺 all-or-nothing。这一限制必须保留在设计、测试和错误报告中，不能仅通过文档声称已经具备事务保证。
+
+## 6. 12 GiB 映射示例
+
+12 GiB 范围包含：
+
+```text
+12 GiB / 4 KiB = 3,145,728 个基础页
+```
+
+旧五阶段实现曾在 prepare 阶段为每个页表项保存 `SavedMapping`，即使操作只需要建立线性映射，也可能先消耗数十至上百 MiB 临时堆。
+
+当前直接实现：
+
+```text
+MemoryArea 元数据：1 项
+通用操作计划：    0 项
+通用页表快照：    0 项
+backend 额外状态：常数
+页表建立时间：    由实际页表映射粒度决定
+```
+
+大范围映射不再因为通用事务快照在真正写页表前返回 `NoMemory`。如果架构和 backend 支持大页，页表层可以选择大页；`ax-memory-set` 不展开或复制页表项。
+
+## 7. 三类消费者
+
+### 7.1 ArceOS ax-mm
+
+`os/arceos/modules/axmm/src/backend/` 提供：
+
+- `Linear`：虚拟地址按固定差值换算为物理地址；
+- `Alloc`：立即填充或缺页时分配物理页。
+
+页帧使用 `MemoryZone::Normal` 和 `UsageKind::VirtMem`。释放时传回原页数和用途，不需要保存 zone。
+
+### 7.2 StarryOS
+
+`os/StarryOS/kernel/src/mm/aspace/` 保留 Linux 专属状态：
+
+- 写时复制；
+- anonymous、file、shared mapping；
+- 常驻内存集大小和虚拟内存大小；
+- commit accounting；
+- mremap、fork 和缺页恢复；
+- signal/errno 转换。
+
+`AddressSpacePageTable` 把具体页表和 `MemoryAccounting` 交给同一次 backend 调用。这个结构体维护“页表变化必须同步更新常驻页统计”的 StarryOS 不变量，不是通用事务 plan。
+
+### 7.3 Axvisor axaddrspace
+
+`virtualization/axaddrspace/src/address_space/backend/` 使用 `GuestPhysAddr` 和 `NestedPageTableOps`。Linear backend 映射外部客户机 RAM，Alloc backend 按需取得宿主页帧。
+
+客户机生命周期、第二阶段页表失效和设备 DMA 停止顺序由 AxVM 管理，不进入 `ax-memory-set`。
+
+## 8. 锁与并发
+
+`MemorySet` 自身不包含锁。所有修改要求调用方持有地址空间锁：
+
+| 消费者 | 外层同步 |
+| --- | --- |
+| ArceOS kernel address space | `kernel_aspace()` 外层锁 |
+| StarryOS process address space | `Arc<Mutex<AddrSpace>>` |
+| Axvisor guest address space | VM/地址空间所有者的外层锁 |
+
+锁内可能执行页表操作和页帧分配，因此不能从硬中断上下文调用，也不能在持锁期间执行虚拟文件系统回调或不可控回收。
+
+跨 CPU Translation Lookaside Buffer（地址转换后备缓冲区）失效由页表和操作系统层协调，不由 `MemorySet` 发起。AArch64 硬件广播和其他架构的处理器间中断路径见[多架构内存实现](./architecture-support.md)。
+
+## 9. 源码索引
+
+| 文件 | 内容 |
+| --- | --- |
+| `memory/memory_set/src/area.rs` | 虚拟内存区域、权限和 split/shrink/grow |
+| `memory/memory_set/src/set.rs` | `BTreeMap` 索引和 map/unmap/protect |
+| `memory/memory_set/src/backend.rs` | 直接 backend 能力边界 |
+| `os/arceos/modules/axmm/src/backend/` | ArceOS Linear/Alloc backend |
+| `os/StarryOS/kernel/src/mm/aspace/` | StarryOS Linux 虚拟内存策略和专用恢复 |
+| `virtualization/axaddrspace/src/address_space/` | 客户机地址空间策略 |
+
+测试和验收命令统一见[内存管理测试与验收](./testing.md)。

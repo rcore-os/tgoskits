@@ -1460,8 +1460,7 @@ fn map_dma_error(err: dma_api::DmaError, phase: Phase) -> Error {
         | dma_api::DmaError::BoundaryCross { .. }
         | dma_api::DmaError::NullPointer
         | dma_api::DmaError::ZeroSizedBuffer
-        | dma_api::DmaError::Unsupported { .. }
-        | dma_api::DmaError::DomainMismatch { .. } => Error::InvalidArgument,
+        | dma_api::DmaError::Unsupported { .. } => Error::InvalidArgument,
     }
 }
 

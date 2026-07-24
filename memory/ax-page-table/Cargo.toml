@@ -8,23 +8,22 @@ license.workspace = true
 
 [features]
 default = []
-stage1 = []
-stage2 = []
-boot = []
+stage1 = ["dep:arrayvec", "dep:log"]
+stage2 = ["dep:heapless"]
+boot = ["dep:heapless"]
 ax-errno = ["stage1", "dep:ax-errno"]
 copy-from = ["stage1", "dep:bitmaps"]
 arm-el2 = []
 xuantie-c9xx = []
 
 [dependencies]
-arrayvec = { version = "0.7", default-features = false }
+arrayvec = { version = "0.7", default-features = false, optional = true }
 ax-errno = { workspace = true, optional = true }
 ax-memory-addr.workspace = true
 bitflags = "2.9"
 bitmaps = { version = "3.2", default-features = false, optional = true }
-heapless = "0.9"
-log = "0.4"
-num-align = "0.1"
+heapless = { version = "0.9", optional = true }
+log = { version = "0.4", optional = true }
 thiserror = { version = "2", default-features = false }
 
 [target.'cfg(any(target_arch = "x86_64", doc, docsrs))'.dependencies]

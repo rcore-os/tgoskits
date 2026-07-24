@@ -920,7 +920,6 @@ dependencies = [
  "env_logger",
  "heapless",
  "log",
- "num-align",
  "rand 0.10.2",
  "riscv",
  "thiserror 2.0.19",

@@ -131,10 +131,7 @@ impl Drop for KmodMemSection {
                 unsafe {
                     global_allocator().deallocate_pages_raw(
                         self.vaddr.as_usize(),
-                        ax_alloc::PageRelease {
-                            count: self.num_pages,
-                            zone: ax_alloc::MemoryZone::Normal,
-                        },
+                        self.num_pages,
                         UsageKind::VirtMem,
                     );
                 }

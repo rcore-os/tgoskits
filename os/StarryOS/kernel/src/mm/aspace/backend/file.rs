@@ -15,8 +15,8 @@ use axfs_ng_vfs::Location;
 use weak_map::StrongRef;
 
 use super::{
-    AddrSpace, Backend, BackendFileInfo, BackendOps, CloneMapAccounting, MemoryAccounting,
-    PopulateCallback, RssKind, pages_in,
+    AddrSpace, Backend, BackendFileInfo, BackendOps, MemoryAccounting, PopulateCallback, RssKind,
+    pages_in,
 };
 use crate::mm::flush_tlb_range_sync;
 
@@ -465,7 +465,7 @@ impl BackendOps for FileBackend {
         _old_pt: &mut PageTableCursor,
         _new_pt: &mut PageTableCursor,
         new_aspace: &Arc<Mutex<AddrSpace>>,
-        _acct: CloneMapAccounting<'_>,
+        _child_accounting: Option<&MemoryAccounting>,
     ) -> AxResult<Backend> {
         let start = self.0.file_data.lock().start;
         Ok(Backend::File(self.with_start(start, new_aspace)))

@@ -149,11 +149,6 @@ impl MemoryAccounting {
     }
 }
 
-/// Child resident accounting used while cloning page-table mappings.
-pub struct CloneMapAccounting<'a> {
-    pub child: Option<&'a MemoryAccounting>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

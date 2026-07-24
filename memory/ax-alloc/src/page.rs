@@ -1,7 +1,7 @@
 use ax_errno::AxResult;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
-use crate::{MemoryZone, PAGE_SIZE, PageRelease, PageRequest, UsageKind, global_allocator};
+use crate::{MemoryZone, PAGE_SIZE, PageRequest, UsageKind, global_allocator};
 
 /// A RAII wrapper of contiguous 4K-sized pages.
 ///
@@ -9,7 +9,7 @@ use crate::{MemoryZone, PAGE_SIZE, PageRelease, PageRequest, UsageKind, global_a
 #[derive(Debug)]
 pub struct GlobalPage {
     start_vaddr: VirtAddr,
-    request: PageRequest,
+    num_pages: usize,
     usage: UsageKind,
 }
 
@@ -18,7 +18,7 @@ impl GlobalPage {
         let vaddr = global_allocator().allocate_pages_raw(request, usage)?;
         Ok(Self {
             start_vaddr: vaddr.into(),
-            request,
+            num_pages: request.count,
             usage,
         })
     }
@@ -71,12 +71,7 @@ impl GlobalPage {
 
     /// Get the total size (in bytes) of these page(s).
     pub fn size(&self) -> usize {
-        self.request.count * PAGE_SIZE
-    }
-
-    /// Returns the source zone of this allocation.
-    pub const fn zone(&self) -> MemoryZone {
-        self.request.zone
+        self.num_pages * PAGE_SIZE
     }
 
     /// Returns the allocation usage classification.
@@ -123,12 +118,12 @@ impl GlobalPage {
 
 impl Drop for GlobalPage {
     fn drop(&mut self) {
-        // SAFETY: this owner stores the unchanged request and usage associated
-        // with the live allocation, and Drop runs exactly once.
+        // SAFETY: this owner stores the page count and usage associated with
+        // the live allocation, and Drop runs exactly once.
         unsafe {
             global_allocator().deallocate_pages_raw(
                 self.start_vaddr.into(),
-                PageRelease::from(self.request),
+                self.num_pages,
                 self.usage,
             );
         }

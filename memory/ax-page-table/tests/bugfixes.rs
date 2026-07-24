@@ -230,44 +230,6 @@ fn test_unmap_mixed_entries() {
     println!("✅ 混合条目取消映射测试通过！");
 }
 
-/// 测试MemConfig的正确实现
-///
-/// Bug描述：PteImpl没有实现set_mem_config和mem_config方法
-#[test]
-fn test_mem_config_implementation() {
-    let mut pte = PteImpl::new();
-    pte = PteImpl::from_config(PteConfig {
-        valid: true,
-        ..pte.to_config(false)
-    });
-
-    // 测试设置和获取MemConfig
-    let config = MemConfig {
-        access: AccessFlags::READ | AccessFlags::WRITE | AccessFlags::EXECUTE,
-        attrs: MemAttributes::Normal,
-    };
-
-    pte.set_mem_config(config);
-    let retrieved = pte.mem_config();
-
-    assert_eq!(retrieved.access, config.access, "访问权限应该匹配");
-    assert_eq!(retrieved.attrs, config.attrs, "内存属性应该匹配");
-
-    // 测试不同的配置
-    let config2 = MemConfig {
-        access: AccessFlags::READ,
-        attrs: MemAttributes::Device,
-    };
-
-    pte.set_mem_config(config2);
-    let retrieved2 = pte.mem_config();
-
-    assert_eq!(retrieved2.access, config2.access, "只读权限应该匹配");
-    assert_eq!(retrieved2.attrs, config2.attrs, "设备属性应该匹配");
-
-    println!("✅ MemConfig实现测试通过！");
-}
-
 /// 测试边界情况：地址溢出检查
 ///
 /// 验证在映射和取消映射时正确处理地址溢出情况

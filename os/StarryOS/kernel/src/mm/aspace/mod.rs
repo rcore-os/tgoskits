@@ -21,7 +21,7 @@ use crate::mm::ProcessVmStat;
 
 mod backend;
 
-pub use starry_mm::{CloneMapAccounting, MemoryAccounting};
+pub use starry_mm::MemoryAccounting;
 
 pub use self::backend::*;
 
@@ -878,9 +878,7 @@ impl AddrSpace {
                         &mut self_modify,
                         &mut child_cursor,
                         &new_aspace_clone,
-                        CloneMapAccounting {
-                            child: Some(accounting),
-                        },
+                        Some(accounting),
                     )?;
                     drop(child_cursor);
                     backend

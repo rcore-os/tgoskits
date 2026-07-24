@@ -7,34 +7,7 @@ use dma_api::{
 };
 use mbarrier::mb;
 
-/// Physical memory zone that supplied a DMA page allocation.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DmaPageZone {
-    /// General-purpose physical memory.
-    Normal,
-    /// Physical memory addressable with a 32-bit DMA mask.
-    Dma32,
-}
-
-impl DmaPageZone {
-    const fn backend_token(self) -> usize {
-        match self {
-            Self::Normal => 0,
-            Self::Dma32 => 1,
-        }
-    }
-
-    fn from_backend_token(token: usize) -> Self {
-        match token {
-            0 => Self::Normal,
-            1 => Self::Dma32,
-            _ => unreachable!("KlibDma emitted an invalid DMA page zone token"),
-        }
-    }
-}
-
-/// Move-only metadata required to release DMA pages to their source zone.
+/// Move-only metadata required to release DMA pages.
 ///
 /// ```compile_fail
 /// use axklib::dma::DmaPageAllocation;
@@ -47,22 +20,17 @@ impl DmaPageZone {
 pub struct DmaPageAllocation {
     addr: VirtAddr,
     num_pages: usize,
-    zone: DmaPageZone,
 }
 
 impl DmaPageAllocation {
     /// Creates release metadata for pages returned by the platform allocator.
-    pub const fn new(addr: VirtAddr, num_pages: usize, zone: DmaPageZone) -> Self {
-        Self {
-            addr,
-            num_pages,
-            zone,
-        }
+    pub const fn new(addr: VirtAddr, num_pages: usize) -> Self {
+        Self { addr, num_pages }
     }
 
     /// Consumes the allocation metadata and returns its release parameters.
-    pub const fn into_parts(self) -> (VirtAddr, usize, DmaPageZone) {
-        (self.addr, self.num_pages, self.zone)
+    pub const fn into_parts(self) -> (VirtAddr, usize) {
+        (self.addr, self.num_pages)
     }
 }
 
@@ -75,7 +43,7 @@ pub fn op() -> &'static KlibDma {
 }
 
 pub const fn domain_id() -> DmaDomainId {
-    DmaDomainId::identity()
+    DmaDomainId::legacy_global()
 }
 
 pub fn device_with_mask(dma_mask: u64) -> DeviceDma {
@@ -86,7 +54,6 @@ struct DmaPages {
     cpu_addr: NonNull<u8>,
     dma_addr: u64,
     num_pages: usize,
-    zone: DmaPageZone,
 }
 
 impl DmaPages {
@@ -109,11 +76,6 @@ impl DmaPages {
                 cpu_addr: NonNull::dangling(),
                 dma_addr: 0,
                 num_pages: 0,
-                zone: if constraints.addr_mask <= u32::MAX as u64 {
-                    DmaPageZone::Dma32
-                } else {
-                    DmaPageZone::Normal
-                },
             });
         }
 
@@ -121,27 +83,23 @@ impl DmaPages {
         let align = Self::layout_align(layout, constraints);
         let allocation = crate::klib::dma_alloc_pages(constraints.addr_mask, num_pages, align)
             .map_err(|_| DmaError::NoMemory)?;
-        let (cpu_vaddr, allocated_pages, zone) = allocation.into_parts();
+        let (cpu_vaddr, allocated_pages) = allocation.into_parts();
         if allocated_pages != num_pages {
-            crate::klib::dma_dealloc_pages(DmaPageAllocation::new(
-                cpu_vaddr,
-                allocated_pages,
-                zone,
-            ));
+            crate::klib::dma_dealloc_pages(DmaPageAllocation::new(cpu_vaddr, allocated_pages));
             return Err(DmaError::NoMemory);
         }
         let cpu_addr = NonNull::new(cpu_vaddr.as_mut_ptr()).ok_or(DmaError::NoMemory)?;
         let dma_addr = dma_addr_from_vaddr(cpu_vaddr);
 
         if !dma_range_fits_mask(dma_addr, layout.size(), constraints.addr_mask) {
-            Self::dealloc_pages(cpu_addr, num_pages, zone);
+            Self::dealloc_pages(cpu_addr, num_pages);
             return Err(DmaError::DmaMaskNotMatch {
                 addr: dma_addr.into(),
                 mask: constraints.addr_mask,
             });
         }
         if !dma_addr_is_aligned(dma_addr, constraints.align.max(layout.align())) {
-            Self::dealloc_pages(cpu_addr, num_pages, zone);
+            Self::dealloc_pages(cpu_addr, num_pages);
             return Err(DmaError::AlignMismatch {
                 required: constraints.align.max(layout.align()),
                 address: dma_addr.into(),
@@ -152,18 +110,16 @@ impl DmaPages {
             cpu_addr,
             dma_addr,
             num_pages,
-            zone,
         })
     }
 
-    fn dealloc_pages(cpu_addr: NonNull<u8>, num_pages: usize, zone: DmaPageZone) {
+    fn dealloc_pages(cpu_addr: NonNull<u8>, num_pages: usize) {
         if num_pages == 0 {
             return;
         }
         crate::klib::dma_dealloc_pages(DmaPageAllocation::new(
             VirtAddr::from_usize(cpu_addr.as_ptr() as usize),
             num_pages,
-            zone,
         ));
     }
 }
@@ -210,25 +166,13 @@ impl DmaOp for KlibDma {
         layout: Layout,
     ) -> Option<DmaAllocHandle> {
         let pages = DmaPages::alloc_for_layout(constraints, layout).ok()?;
-        // SAFETY: `pages` owns the live allocation and preserves its source
-        // zone in the opaque token consumed by this backend.
-        Some(unsafe {
-            DmaAllocHandle::new_with_backend_token(
-                pages.cpu_addr,
-                pages.dma_addr.into(),
-                layout,
-                pages.zone.backend_token(),
-            )
-        })
+        // SAFETY: `pages` owns the live allocation described by `layout`.
+        Some(unsafe { DmaAllocHandle::new(pages.cpu_addr, pages.dma_addr.into(), layout) })
     }
 
     unsafe fn dealloc_contiguous(&self, handle: DmaAllocHandle) {
         let num_pages = DmaPages::layout_pages(handle.layout());
-        DmaPages::dealloc_pages(
-            handle.as_ptr(),
-            num_pages,
-            DmaPageZone::from_backend_token(handle.backend_token()),
-        );
+        DmaPages::dealloc_pages(handle.as_ptr(), num_pages);
     }
 
     unsafe fn alloc_coherent(
@@ -238,31 +182,19 @@ impl DmaOp for KlibDma {
     ) -> Option<DmaAllocHandle> {
         let pages = DmaPages::alloc_for_layout(constraints, layout).ok()?;
         if CoherentDmaPolicy::make_uncached(&pages, layout).is_err() {
-            DmaPages::dealloc_pages(pages.cpu_addr, pages.num_pages, pages.zone);
+            DmaPages::dealloc_pages(pages.cpu_addr, pages.num_pages);
             return None;
         }
 
-        // SAFETY: `pages` owns the live uncached allocation and preserves its
-        // source zone in the opaque token consumed by this backend.
-        Some(unsafe {
-            DmaAllocHandle::new_with_backend_token(
-                pages.cpu_addr,
-                pages.dma_addr.into(),
-                layout,
-                pages.zone.backend_token(),
-            )
-        })
+        // SAFETY: `pages` owns the live uncached allocation described by `layout`.
+        Some(unsafe { DmaAllocHandle::new(pages.cpu_addr, pages.dma_addr.into(), layout) })
     }
 
     unsafe fn dealloc_coherent(&self, handle: DmaAllocHandle) {
         let num_pages = DmaPages::layout_pages(handle.layout());
         CoherentDmaPolicy::restore_cached(handle.as_ptr(), num_pages)
             .expect("DMA pages must regain their cached mapping before release");
-        DmaPages::dealloc_pages(
-            handle.as_ptr(),
-            num_pages,
-            DmaPageZone::from_backend_token(handle.backend_token()),
-        );
+        DmaPages::dealloc_pages(handle.as_ptr(), num_pages);
     }
 
     unsafe fn map_streaming(
@@ -288,12 +220,11 @@ impl DmaOp for KlibDma {
         // SAFETY: the caller-owned address stays live, and `map_pages` owns the
         // bounce allocation recorded in this consume-on-unmap token.
         Ok(unsafe {
-            DmaMapHandle::new_with_backend_token(
+            DmaMapHandle::new(
                 addr,
                 map_pages.dma_addr.into(),
                 layout,
                 Some(map_pages.cpu_addr),
-                map_pages.zone.backend_token(),
             )
         })
     }
@@ -301,11 +232,7 @@ impl DmaOp for KlibDma {
     unsafe fn unmap_streaming(&self, handle: DmaMapHandle) {
         if let Some(map_virt) = handle.bounce_ptr() {
             let num_pages = DmaPages::layout_pages(handle.layout());
-            DmaPages::dealloc_pages(
-                map_virt,
-                num_pages,
-                DmaPageZone::from_backend_token(handle.backend_token()),
-            );
+            DmaPages::dealloc_pages(map_virt, num_pages);
         }
     }
 

@@ -118,7 +118,7 @@ fn irq_handler_does_not_enter_shared_card_core() {
 
 #[test]
 fn dma_config_exposes_one_owned_queue_while_handle_is_live() {
-    let dma = DeviceDma::new_identity(u32::MAX as u64, &TEST_DMA);
+    let dma = DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA);
     let mut device = BlockDevice::new(
         SdioSdmmc::new(MockHost::default()),
         BlockConfig::dma("mock-sd", 8, false, dma),
@@ -263,7 +263,7 @@ fn unsupported_ops_are_rejected() {
 
 #[test]
 fn owned_dma_submit_error_returns_original_buffer() {
-    let dma = DeviceDma::new_identity(u64::MAX, &TEST_DMA);
+    let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
     let control = block_control(BlockConfig::dma("mock-sd", 8, false, dma));
     let raw = control.raw.clone();
     raw.with_mut(|raw| {
@@ -292,7 +292,7 @@ fn owned_dma_submit_error_returns_original_buffer() {
 
 #[test]
 fn owned_dma_completion_is_returned_once() {
-    let dma = DeviceDma::new_identity(u64::MAX, &TEST_DMA);
+    let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
     let mut queue =
         BlockQueue::<MockHost>::new(block_control(BlockConfig::dma("mock-sd", 8, false, dma)), 0);
     let request = OwnedRequest {
@@ -819,7 +819,7 @@ impl MockHost {
 }
 
 fn prepared_dma(size: usize, direction: dma_api::DmaDirection) -> PreparedDma {
-    let dma = DeviceDma::new_identity(u64::MAX, &TEST_DMA);
+    let dma = DeviceDma::new_legacy(u64::MAX, &TEST_DMA);
     dma_api::CpuDmaBuffer::new_zero(
         &dma,
         NonZeroUsize::new(size).expect("test DMA allocation must be non-zero"),

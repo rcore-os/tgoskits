@@ -48,7 +48,7 @@
 //! use sdhci_host::{BlockRequestSlot, BlockTransferMode, RequestId, Sdhci};
 //!
 //! # use platform::DmaImpl;
-//! let dma = DeviceDma::new_identity(u32::MAX as u64, &DmaImpl);
+//! let dma = DeviceDma::new_legacy(u32::MAX as u64, &DmaImpl);
 //! let mut host = unsafe { Sdhci::new_from_addr(0xFE31_0000) };
 //! let mut block = [0u8; 512];
 //! let ptr = NonNull::new(block.as_mut_ptr()).unwrap();

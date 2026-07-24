@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+#[cfg(feature = "stats")]
 use core::{
     fmt,
     sync::atomic::{AtomicUsize, Ordering},
@@ -65,114 +66,55 @@ pub struct PageRequest {
     pub zone: MemoryZone,
 }
 
-/// Metadata required to return a contiguous page allocation to its source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PageRelease {
-    /// Number of 4-KiB pages in the original allocation.
-    pub count: usize,
-    /// Physical memory zone that supplied the allocation.
-    pub zone: MemoryZone,
-}
-
-impl From<PageRequest> for PageRelease {
-    fn from(request: PageRequest) -> Self {
-        Self {
-            count: request.count,
-            zone: request.zone,
-        }
-    }
-}
-
-/// Source used to satisfy an allocation.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, VariantArray)]
-pub enum AllocationSource {
-    /// General-purpose buddy allocator.
-    Normal,
-    /// Low-memory buddy allocator.
-    Dma32,
-}
-
-impl From<MemoryZone> for AllocationSource {
-    fn from(zone: MemoryZone) -> Self {
-        match zone {
-            MemoryZone::Normal => Self::Normal,
-            MemoryZone::Dma32 => Self::Dma32,
-        }
-    }
-}
-
-/// Snapshot of allocation counters by source and usage.
+/// Snapshot of allocation counters by usage.
+#[cfg(feature = "stats")]
 #[derive(Clone, Copy)]
-pub struct AllocatorStats([[usize; UsageKind::VARIANTS.len()]; AllocationSource::VARIANTS.len()]);
+pub struct AllocatorStats([usize; UsageKind::VARIANTS.len()]);
 
+#[cfg(feature = "stats")]
 impl AllocatorStats {
     const fn new() -> Self {
-        Self([[0; UsageKind::VARIANTS.len()]; AllocationSource::VARIANTS.len()])
+        Self([0; UsageKind::VARIANTS.len()])
     }
 
-    /// Returns bytes attributed to one allocation source and usage kind.
-    pub fn source_usage(&self, source: AllocationSource, kind: UsageKind) -> usize {
-        self.0[source as usize][kind as usize]
-    }
-
-    /// Returns bytes attributed to a usage kind across all sources.
+    /// Returns bytes attributed to a usage kind.
     pub fn usage(&self, kind: UsageKind) -> usize {
-        AllocationSource::VARIANTS
-            .iter()
-            .map(|&source| self.source_usage(source, kind))
-            .sum()
-    }
-
-    /// Returns bytes attributed to one allocation source across all usages.
-    pub fn source(&self, source: AllocationSource) -> usize {
-        UsageKind::VARIANTS
-            .iter()
-            .map(|&kind| self.source_usage(source, kind))
-            .sum()
+        self.0[kind as usize]
     }
 
     /// Returns all currently attributed allocation bytes.
     pub fn total(&self) -> usize {
-        AllocationSource::VARIANTS
-            .iter()
-            .map(|&source| self.source(source))
-            .sum()
+        self.0.iter().sum()
     }
 }
 
-struct AllocatorCounters(
-    [[AtomicUsize; UsageKind::VARIANTS.len()]; AllocationSource::VARIANTS.len()],
-);
+#[cfg(feature = "stats")]
+struct AllocatorCounters([AtomicUsize; UsageKind::VARIANTS.len()]);
 
+#[cfg(feature = "stats")]
 impl AllocatorCounters {
     const fn new() -> Self {
-        Self(
-            [const { [const { AtomicUsize::new(0) }; UsageKind::VARIANTS.len()] };
-                AllocationSource::VARIANTS.len()],
-        )
+        Self([const { AtomicUsize::new(0) }; UsageKind::VARIANTS.len()])
     }
 
-    fn alloc(&self, source: AllocationSource, kind: UsageKind, size: usize) {
-        self.0[source as usize][kind as usize].fetch_add(size, Ordering::Relaxed);
+    fn alloc(&self, kind: UsageKind, size: usize) {
+        self.0[kind as usize].fetch_add(size, Ordering::Relaxed);
     }
 
-    fn dealloc(&self, source: AllocationSource, kind: UsageKind, size: usize) {
-        self.0[source as usize][kind as usize].fetch_sub(size, Ordering::Relaxed);
+    fn dealloc(&self, kind: UsageKind, size: usize) {
+        self.0[kind as usize].fetch_sub(size, Ordering::Relaxed);
     }
 
     fn snapshot(&self) -> AllocatorStats {
         let mut snapshot = AllocatorStats::new();
-        for &source in AllocationSource::VARIANTS {
-            for &kind in UsageKind::VARIANTS {
-                snapshot.0[source as usize][kind as usize] =
-                    self.0[source as usize][kind as usize].load(Ordering::Relaxed);
-            }
+        for &kind in UsageKind::VARIANTS {
+            snapshot.0[kind as usize] = self.0[kind as usize].load(Ordering::Relaxed);
         }
         snapshot
     }
 }
 
+#[cfg(feature = "stats")]
 impl fmt::Debug for AllocatorStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_struct("AllocatorStats");
@@ -235,43 +177,23 @@ pub fn alloc_pages(request: PageRequest, usage: UsageKind) -> AllocResult<Global
     GlobalPage::allocate(request, usage)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "stats"))]
 mod tests {
     use super::*;
 
     #[test]
-    fn allocator_stats_views_use_the_same_source_usage_buckets() {
+    fn allocator_stats_use_one_usage_table() {
         let counters = AllocatorCounters::new();
-        counters.alloc(AllocationSource::Normal, UsageKind::RustHeap, 128);
-        counters.alloc(AllocationSource::Normal, UsageKind::PageTable, 4096);
-        counters.alloc(AllocationSource::Dma32, UsageKind::Dma, 8192);
+        counters.alloc(UsageKind::RustHeap, 128);
+        counters.alloc(UsageKind::PageTable, 4096);
+        counters.alloc(UsageKind::Dma, 8192);
 
         let snapshot = counters.snapshot();
-        assert_eq!(
-            snapshot.source_usage(AllocationSource::Normal, UsageKind::RustHeap),
-            128
-        );
+        assert_eq!(snapshot.usage(UsageKind::RustHeap), 128);
         assert_eq!(snapshot.usage(UsageKind::Dma), 8192);
-        assert_eq!(snapshot.source(AllocationSource::Normal), 4224);
         assert_eq!(snapshot.total(), 12_416);
 
-        counters.dealloc(AllocationSource::Normal, UsageKind::RustHeap, 128);
+        counters.dealloc(UsageKind::RustHeap, 128);
         assert_eq!(counters.snapshot().total(), 12_288);
-    }
-    #[test]
-    fn page_release_keeps_only_the_metadata_required_by_deallocation() {
-        let request = PageRequest {
-            count: 4,
-            align: 0x20_0000,
-            zone: MemoryZone::Dma32,
-        };
-
-        assert_eq!(
-            PageRelease::from(request),
-            PageRelease {
-                count: 4,
-                zone: MemoryZone::Dma32,
-            }
-        );
     }
 }

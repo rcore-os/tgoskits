@@ -29,8 +29,8 @@ flowchart TB
 
 | 源码 | 关键实现 | 主要不变量 |
 | --- | --- | --- |
-| `memory/ax-alloc/src/lib.rs` | `MemoryZone`、`PageRequest`、`UsageKind`、统计矩阵与 typed error | 一个公共入口、一个统计事实源 |
-| `memory/ax-alloc/src/page.rs` | `GlobalPage`、连续页 slice、Drop | owner 保存原 request 和 usage，恰好释放一次 |
+| `memory/ax-alloc/src/lib.rs` | `MemoryZone`、`PageRequest`、`UsageKind`、可选统计与 typed error | 一个公共入口、一个统计事实源 |
+| `memory/ax-alloc/src/page.rs` | `GlobalPage`、连续页 slice、Drop | owner 保存页数和用途，恰好释放一次 |
 | `memory/ax-alloc/src/buddy_slab.rs` | `GlobalAlloc`、raw page adapter、每 CPU Slab | byte 路径固定 CPU；NoMemory 不触发回调 |
 | `memory/ax-alloc/src/tracking.rs` | 可选 allocation tracking | 仅 tracking feature；不改变生产所有权 |
 | `memory/buddy-slab-allocator/src/global.rs` | 小对象/大对象路由、Buddy 锁、section 添加 | Buddy 是唯一页源 |
@@ -115,7 +115,7 @@ pub const fn slab_pages(self, page_size: usize) -> usize {
 
 超过 Slab 上限的 byte allocation 被向上取整为 4 KiB 页数，由 Buddy 直接完成。它仍以请求的 `Layout` 通过 `GlobalAlloc` 对称释放，不应和显式页 API 混用。
 
-本 CPU 命中、Slab 扩容、跨 CPU 释放和大对象路径都计入 `Normal × RustHeap`。跨 CPU 释放只把对象发布给原 owner CPU，不直接操作 Buddy；锁类型、禁止抢占范围、remote-free 原子顺序和锁顺序统一在[内存管理锁与并发](./concurrency.md#3-运行时分配器)维护。
+启用 `stats` feature 后，本 CPU 命中、Slab 扩容、跨 CPU 释放和大对象路径都计入 `RustHeap`。跨 CPU 释放只把对象发布给原 owner CPU，不直接操作 Buddy；锁类型、禁止抢占范围、remote-free 原子顺序和锁顺序统一在[内存管理锁与并发](./concurrency.md#3-运行时分配器)维护。
 
 ## 3. 显式页接口
 
@@ -129,11 +129,6 @@ pub const fn slab_pages(self, page_size: usize) -> usize {
 pub struct PageRequest {
     pub count: usize,
     pub align: usize,
-    pub zone: MemoryZone,
-}
-
-pub struct PageRelease {
-    pub count: usize,
     pub zone: MemoryZone,
 }
 
@@ -158,7 +153,7 @@ pub fn alloc_pages(
 
 ### 3.3 页所有权
 
-`GlobalPage` 保存 `start_vaddr`、原始 `PageRequest` 和 `UsageKind`。它不实现复制，Drop 根据原 zone 和 usage 返回 Buddy。
+`GlobalPage` 保存 `start_vaddr`、页数和 `UsageKind`。它不实现复制，Drop 根据地址找到对应 Buddy section，并用原用途更新可选统计。
 
 | 方法 | 行为 | 所有权影响 |
 | --- | --- | --- |
@@ -170,7 +165,7 @@ pub fn alloc_pages(
 
 需要把页交给页表项或外部对象长期持有的代码必须明确转移或封装生命周期。不能丢弃 `GlobalPage` 后继续使用其地址，否则 Drop 已经把页返回 allocator。
 
-`Drop` 实现是 owner 协议的执行点。它从构造时记录的 `request` 派生只包含 `count` 和 `zone` 的 `PageRelease`，再连同 `usage` 传回 deallocator；分配时的对齐只影响地址选择，释放 Buddy block 时不参与计算。`deallocate_pages_raw()` 标记为 `unsafe` 是因为它要求调用方保证地址确实来自对称的 `allocate_pages_raw()`，并保持原页数、来源区域和用途。
+`Drop` 实现是 owner 协议的执行点。它把构造时记录的页数和用途传回 deallocator；分配时的对齐与地址区域只影响地址选择，释放 Buddy block 时不参与计算。`deallocate_pages_raw()` 标记为 `unsafe` 是因为它要求调用方保证地址确实来自对称的 `allocate_pages_raw()`，并保持原页数和用途。
 
 ```rust
 impl Drop for GlobalPage {
@@ -180,7 +175,7 @@ impl Drop for GlobalPage {
         unsafe {
             global_allocator().deallocate_pages_raw(
                 self.start_vaddr.into(),
-                PageRelease::from(self.request),
+                self.num_pages,
                 self.usage,
             );
         }
@@ -196,9 +191,10 @@ pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
     // task on that CPU until the complete upstream operation finishes.
     let _guard = NoPreempt::new();
     let result = self.inner.alloc(layout).map_err(crate::AllocError::from);
+    #[cfg(feature = "stats")]
     if result.is_ok() {
         self.stats
-            .alloc(AllocationSource::Normal, UsageKind::RustHeap, layout.size());
+            .alloc(UsageKind::RustHeap, layout.size());
     }
     result
 }
@@ -210,17 +206,16 @@ pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
 
 统计和错误都集中在 `ax-alloc`，消费者不应维护第二份 allocator usage truth。procfs、sysinfo 或诊断接口应从快照派生展示值。
 
-### 4.1 单一统计矩阵
+### 4.1 单一用途统计表
 
-`AllocatorStats` 是 `AllocationSource × UsageKind` 的二维字节计数表。每次成功 allocation 只增加一个 bucket，释放只减少原 bucket。
+`AllocatorStats` 只在启用 `stats` feature 时存在，并保存一张按 `UsageKind` 索引的字节计数表。每次成功 allocation 只增加一个 bucket，释放只减少原 bucket；关闭 feature 后计数原子和热路径更新均不进入镜像。
 
-| 维度 | 当前枚举 | 含义 |
+| 数据 | 当前枚举或接口 | 含义 |
 | --- | --- | --- |
-| `AllocationSource` | `Normal`、`Dma32` | 请求由哪种物理地址约束满足 |
 | `UsageKind` | `RustHeap`、`VirtMem`、`PageCache`、`PageTable`、`Dma`、`Global` | allocation 的逻辑用途 |
 | backend occupancy | `used_bytes()` / `available_bytes()` | Buddy 页级占用，不等于请求 layout 精确和 |
 
-每个底层 bucket 使用一个 Relaxed 原子计数；一次分配只写对应 bucket，不再用统计全局锁串行化 per-CPU Slab 命中。`stats()` 读取这些 bucket 生成值快照，`source()`、`usage()` 和 `total()` 都从快照聚合。展示代码不应在读取后反向修改 allocator 状态，也不应把 Dma32 计数误解为静态分区大小。
+每个 bucket 使用一个 Relaxed 原子计数；一次分配只写对应 bucket，不用统计全局锁串行化 per-CPU Slab 命中。`stats()` 读取这些 bucket 生成值快照，`usage()` 和 `total()` 从快照聚合。地址区域不是 allocation 来源统计维度，因为 `Normal` 与 `Dma32` 当前共享 Buddy section，后者只是地址筛选条件。
 
 ### 4.2 立即失败
 
@@ -368,7 +363,7 @@ let request = PageRequest {
 let pages = ax_alloc::alloc_pages(request, UsageKind::Dma)?;
 ```
 
-假设返回物理地址 `0xffff_c000`，16 KiB 范围正好结束于 `0x1_0000_0000`，仍满足 32-bit mask；若起点为 `0xffff_d000`，末端越界，lowmem path 必须继续扫描或返回 `NoMemory`。`GlobalPage` 保存原 request 与 usage，Drop 不需要调用方重新传递 `_dma32` 一类布尔值。
+假设返回物理地址 `0xffff_c000`，16 KiB 范围正好结束于 `0x1_0000_0000`，仍满足 32-bit mask；若起点为 `0xffff_d000`，末端越界，lowmem path 必须继续扫描或返回 `NoMemory`。`GlobalPage` 保存页数与用途，Drop 根据地址定位 Buddy section，不需要调用方重新传递 `_dma32` 一类布尔值。
 
 ```mermaid
 stateDiagram-v2
@@ -379,4 +374,4 @@ stateDiagram-v2
     Owned --> Free: GlobalPage Drop
 ```
 
-如果调用方需要把页面交给另一个长期 owner，必须由那个 owner保存完整释放元数据或接管 `GlobalPage`；只拷贝地址后让 `GlobalPage` 提前 Drop 会形成悬空页表项或 DMA 地址。
+如果调用方需要把页面交给另一个长期 owner，必须由那个 owner 保存地址、页数和用途，或直接接管 `GlobalPage`；只拷贝地址后让 `GlobalPage` 提前 Drop 会形成悬空页表项或 DMA 地址。
