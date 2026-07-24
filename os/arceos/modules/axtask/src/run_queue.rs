@@ -303,7 +303,15 @@ fn force_remote_reschedule(cpu_id: usize) {
     });
 }
 
+// The coalescing kick: only sends the reschedule IPI if one is not already
+// pending for the target. Every production task-placement site (`add_task`,
+// `unblock_task`, the deferred wake in `clear_prev_task_on_cpu`) now uses
+// `force_kick_remote_cpu` instead, because a coalesced kick can be dropped for a
+// task that must make progress (see those sites). This is retained as the tested
+// primitive underlying the pending-bit coalescing; hence `allow(dead_code)` for
+// the non-test kernel build where it currently has no caller.
 #[cfg(all(feature = "smp", feature = "ipi"))]
+#[cfg_attr(not(all(test, feature = "host-test")), allow(dead_code))]
 fn kick_remote_cpu(cpu_id: usize) {
     if cpu_id != this_cpu_id() {
         // axruntime's IPI handler only drains ax-ipi callbacks. A bare hardware
@@ -1343,9 +1351,14 @@ pub(crate) unsafe fn clear_prev_task_on_cpu() {
             .put_prev_task(task, false);
         if target != this_cpu_id() {
             // Remote target: ask that CPU to reschedule so it picks the task up
-            // (and wakes if it is idle in `wait_for_irqs`).
+            // (and wakes if it is idle in `wait_for_irqs`). This is a deferred wake
+            // the waker could not deliver (it saw us still `on_cpu`), so the target
+            // MUST make progress — force the kick past the coalescing bit, like
+            // `migrate_entry`/`add_task`/`unblock_task`. A coalesced (dropped) kick
+            // here strands e.g. a futex/clone wake on an idle remote CPU
+            // indefinitely (the riscv64 SMP `test-futex-clone-thread` hang).
             #[cfg(feature = "ipi")]
-            kick_remote_cpu(target);
+            force_kick_remote_cpu(target);
         } else {
             // Local target: `kick_remote_cpu(self)` is a no-op, so the reschedule
             // the remote waker's IPI used to deliver here would be lost — the
