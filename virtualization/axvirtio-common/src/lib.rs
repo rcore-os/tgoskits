@@ -27,4 +27,4 @@ pub use config::VirtioConfig;
 pub use constants::*;
 pub use device_type::VirtioDeviceID;
 pub use error::{VirtioError, VirtioResult};
-pub use queue::VirtioQueue;
+pub use queue::{DescriptorChain, VirtioQueue};

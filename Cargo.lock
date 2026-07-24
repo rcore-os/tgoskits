@@ -1617,6 +1617,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "axvirtio-net"
+version = "0.1.0"
+dependencies = [
+ "ax-memory-addr",
+ "axaddrspace",
+ "axvirtio-common",
+ "axvm-types",
+ "log",
+ "spin",
+]
+
+[[package]]
 name = "axvisor"
 version = "0.5.22"
 dependencies = [
