@@ -93,6 +93,8 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     );
 
     let host = unsafe { Cv181xSdhci::new(Cv181xMmio::new(core, syscon), config) };
+    // PIO mode: no ADMA2, no IRQ. Uses FIFO polling for data transfer.
+    // This avoids DMA bounce-buffer overhead and IRQ completion complexity.
     let mut card = SdioSdmmc::new_host2(host);
     card.set_sd_uhs_selection_enabled(false);
 
@@ -280,7 +282,10 @@ fn is_absent_card_init_error(err: Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use sdmmc_protocol::error::ErrorContext;
+    use core::{num::NonZeroUsize, ptr::NonNull};
+
+    use dma_api::{DmaAllocHandle, DmaConstraints, DmaDirection, DmaMapHandle, DmaOp};
+    use sdmmc_protocol::{error::ErrorContext, rdif as protocol_rdif};
 
     use super::*;
 
@@ -299,12 +304,56 @@ mod tests {
     }
 
     #[test]
-    fn cvsd_block_io_uses_irq_driven_sdmmc_rdif_fifo_config() {
+    fn cvsd_block_io_uses_fifo_polling_config() {
         let config = cvsd_block_config(8);
+        let limits = protocol_rdif::queue_limits(&config, config.dma_mask);
 
         assert_eq!(config.name, DEVICE_NAME);
         assert_eq!(config.capacity_blocks, 8);
         assert!(!config.uses_dma());
-        assert!(config.irq_driven);
+        assert!(!config.irq_driven);
+        assert_eq!(limits.max_blocks_per_request, 1);
+        assert_eq!(limits.max_segment_size, protocol_rdif::BLOCK_SIZE);
+    }
+
+    struct TestDma;
+    static TEST_DMA: TestDma = TestDma;
+
+    impl DmaOp for TestDma {
+        fn page_size(&self) -> usize {
+            protocol_rdif::BLOCK_SIZE
+        }
+
+        unsafe fn alloc_contiguous(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: core::alloc::Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_contiguous(&self, _handle: DmaAllocHandle) {}
+
+        unsafe fn alloc_coherent(
+            &self,
+            _constraints: DmaConstraints,
+            _layout: core::alloc::Layout,
+        ) -> Option<DmaAllocHandle> {
+            None
+        }
+
+        unsafe fn dealloc_coherent(&self, _handle: DmaAllocHandle) {}
+
+        unsafe fn map_streaming(
+            &self,
+            _constraints: DmaConstraints,
+            _addr: NonNull<u8>,
+            _size: NonZeroUsize,
+            _direction: DmaDirection,
+        ) -> Result<DmaMapHandle, dma_api::DmaError> {
+            Err(dma_api::DmaError::NoMemory)
+        }
+
+        unsafe fn unmap_streaming(&self, _handle: DmaMapHandle) {}
     }
 }

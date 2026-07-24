@@ -45,9 +45,20 @@ pub const DEFAULT_INODE_SIZE: u16 = 256;
 /// and group descriptors.
 pub const USE_MULTILEVEL_CACHE: bool = cfg!(feature = "USE_MULTILEVEL_CACHE");
 /// Maximum number of inode-table cache entries.
-pub const INODE_CACHE_MAX: usize = 128;
+///
+/// Sized so that, with sibling population on block load, a burst of file
+/// creations (each dirtying a fresh inode) fits without evicting still-needed
+/// inodes — 256 entries ≈ 16 inode-table blocks worth of inodes at 256-byte
+/// inodes. Bumped from 128 to avoid LRU churn during bulk file creation.
+pub const INODE_CACHE_MAX: usize = 256;
 /// Maximum number of data-block cache entries.
-pub const DATABLOCK_CACHE_MAX: usize = 128;
+///
+/// Sized to hold ~1 MiB of dirty data (256 × 4 KiB) so that a typical small-
+/// write workload (e.g. 4 KiB appends) accumulates contiguous dirty blocks in
+/// the cache and is flushed as a handful of multi-block writes by `flush_all`,
+/// rather than one device IOP per block. On a low-IOPS device this is the
+/// difference between ~256 write IOPs/MiB and ~3 write IOPs/MiB.
+pub const DATABLOCK_CACHE_MAX: usize = 256;
 /// Maximum number of bitmap cache entries.
 pub const BITMAP_CACHE_MAX: usize = 128;
 

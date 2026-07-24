@@ -24,7 +24,7 @@ use crate::os::{
     BlockIrqOutcome, BlockIrqRegistration, current_task_id, dma_op, notify_drain,
     notify_drain_from_irq, notify_waiters, register_shared_block_irq, spawn_task,
     sync::IrqMutex as SpinNoIrq, task_can_block, task_wait_timeout, task_yield,
-    wait_for_drain_notification, wake_task,
+    wait_for_drain_notification_timeout, wake_task,
 };
 
 const DEFAULT_MAX_TRANSFER_BYTES: usize = 1024 * 1024;
@@ -577,6 +577,21 @@ impl BlockDeviceHandle {
         self.with_drain(|| {
             let mut poller = DeviceRequestPoller { device: self };
             CompletionDrain::new(&self.pending, &mut poller).drain_hint(hint)
+        })
+    }
+
+    /// Re-poll *every* currently-pending request, regardless of whether a
+    /// driver event was recorded for it. `drain_events` only polls requests
+    /// whose completion IRQ produced a recorded bridge event; if that event
+    /// was dropped a request is never re-polled and the submitter deadlocks.
+    pub fn drain_all_pending(&self) -> usize {
+        self.with_drain(|| {
+            let keys = self.pending.lock().active_keys();
+            if keys.is_empty() {
+                return 0;
+            }
+            let mut poller = DeviceRequestPoller { device: self };
+            CompletionDrain::new(&self.pending, &mut poller).poll_keys(&keys)
         })
     }
 
@@ -1457,7 +1472,12 @@ fn spawn_block_drain_task(runtime: Arc<BlockRuntime>) {
             Box::new(move || {
                 loop {
                     if !block_drain_has_pending() {
-                        wait_for_drain_notification();
+                        let notified = wait_for_drain_notification_timeout(
+                            core::time::Duration::from_millis(10),
+                        );
+                        if !notified {
+                            BLOCK_DRAIN_FULL_SCAN.store(true, Ordering::Release);
+                        }
                     }
                     if !block_drain_has_pending() {
                         continue;
@@ -1466,6 +1486,7 @@ fn spawn_block_drain_task(runtime: Arc<BlockRuntime>) {
                     for (device_index, device) in runtime.devices().iter().enumerate() {
                         if drain_selection_contains(selection, device_index) {
                             device.drain_events();
+                            device.drain_all_pending();
                         }
                     }
                 }

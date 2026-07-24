@@ -573,6 +573,33 @@ fn write_full_block_run<B: BlockDevice>(
     let src_end = src_off
         .checked_add(byte_len)
         .ok_or_else(|| Ext4Error::from(Errno::EOVERFLOW))?;
+
+    // Small full-block runs are deferred into the data-block cache as dirty
+    // entries (write-back) instead of writing through immediately. Consecutive
+    // small appends (the common small-write case — 4 KiB .. 64 KiB at a time)
+    // then accumulate as contiguous dirty blocks and are flushed as a handful
+    // of multi-block writes by `flush_all`/eviction, instead of one device IOP
+    // per call. This is the dominant write win on low-IOPS devices.
+    //
+    // The threshold covers the common small-write sizes (up to 64 KiB = 16
+    // blocks). Larger runs stay on the write-through `write_run` path: a single
+    // call writing N≥17 full blocks is already one multi-block IOP and is kept
+    // optimal rather than being split into N cache entries. A deferred run is
+    // flushed at umount as one coalesced multi-block write, so single-call
+    // cost is unchanged — write-back only adds value across multiple calls.
+    const WRITEBACK_MAX_RUN: u32 = 16;
+    if block_count <= WRITEBACK_MAX_RUN {
+        let bs = BLOCK_SIZE;
+        for off in 0..block_count {
+            let phys = start_phys.checked_add(off)?;
+            let src_start = src_off + off as usize * bs;
+            let slice = &data[src_start..src_start + bs];
+            fs.datablock_cache
+                .modify_new(device, phys, |blk| blk.copy_from_slice(slice))?;
+        }
+        return Ok(());
+    }
+
     fs.datablock_cache
         .write_run(device, start_phys, block_count, &data[src_off..src_end])
 }

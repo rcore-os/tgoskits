@@ -34,6 +34,11 @@ pub trait BlockTaskOps: Send + Sync {
     fn wait_for_drain_notification(&self) {
         self.task_wait();
     }
+    fn wait_for_drain_notification_timeout(&self, dur: Duration) -> bool {
+        let _ = dur;
+        self.wait_for_drain_notification();
+        true
+    }
     fn spawn(&self, _name: String, _f: Box<dyn FnOnce() + Send + 'static>) {}
 }
 
@@ -113,6 +118,10 @@ pub fn wait_for_drain_notification() {
     } else {
         core::hint::spin_loop();
     }
+}
+
+pub fn wait_for_drain_notification_timeout(dur: Duration) -> bool {
+    task_ops().is_some_and(|ops| ops.wait_for_drain_notification_timeout(dur))
 }
 
 pub fn spawn_task(name: String, f: Box<dyn FnOnce() + Send + 'static>) {

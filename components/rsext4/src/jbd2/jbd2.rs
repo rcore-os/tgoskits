@@ -20,6 +20,30 @@ use crate::{
     metadata::Ext4InodeMetadataUpdate,
 };
 
+/// Zeroes a list of blocks, coalescing contiguous runs into multi-block
+/// `zero_blocks` calls. Used during mkfs to initialize the journal area in a
+/// handful of device I/Os instead of one per block.
+fn zero_block_list<B: BlockDevice>(
+    block_dev: &mut Jbd2Dev<B>,
+    blocks: &[AbsoluteBN],
+) -> Ext4Result<()> {
+    let mut iter = blocks.iter().copied();
+    let Some(mut run_start) = iter.next() else {
+        return Ok(());
+    };
+    let mut run_len: u32 = 1;
+    for b in iter {
+        if b == run_start.checked_add(run_len)? {
+            run_len += 1;
+        } else {
+            block_dev.zero_blocks(run_start, run_len)?;
+            run_start = b;
+            run_len = 1;
+        }
+    }
+    block_dev.zero_blocks(run_start, run_len)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ReplayTag {
     block: AbsoluteBN,
@@ -896,10 +920,11 @@ pub fn create_journal_entry<B: BlockDevice>(
 
     // Ensure journal area starts clean: otherwise old image contents could look like valid
     // descriptor/commit blocks and replay would corrupt filesystem metadata.
-    let zero = [0u8; BLOCK_SIZE];
-    for &b in free_block.iter() {
-        block_dev.write_blocks(&zero, b, 1, true)?;
-    }
+    //
+    // The allocated blocks are usually one contiguous run; coalesce contiguous
+    // sub-runs and zero each in multi-block writes so we issue O(runs × chunks)
+    // device I/Os instead of one per block (4096 → ~16 on a 100 MiB fs).
+    zero_block_list(block_dev, &free_block)?;
     // Build the journal inode metadata and map the allocated journal blocks.
     let mut jour_inode = Ext4Inode::empty_for_reuse(fs.default_inode_extra_isize());
     jour_inode.i_links_count = 1;

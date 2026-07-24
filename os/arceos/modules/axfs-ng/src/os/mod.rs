@@ -16,7 +16,8 @@ pub use memory::{
 pub use task::{
     BlockTaskOps, current_task_id, has_task_ops, notify_drain, notify_drain_from_irq,
     notify_waiters, set_task_ops, spawn_task, task_can_block, task_wait, task_wait_timeout,
-    task_wait_until, task_yield, wait_for_drain_notification, wake_task,
+    task_wait_until, task_yield, wait_for_drain_notification, wait_for_drain_notification_timeout,
+    wake_task,
 };
 pub use time::{BlockTimeProvider, has_time_provider, set_time_provider, wall_time};
 
