@@ -56,7 +56,9 @@ impl RootfsQemuWiring {
     }
 
     fn net_device_matches(self, value: &str) -> bool {
-        self.net_devices.contains(&value)
+        self.net_devices
+            .iter()
+            .any(|dev| value == *dev || value.starts_with(&format!("{},", dev)))
     }
 
     fn netdev_arg(self) -> String {

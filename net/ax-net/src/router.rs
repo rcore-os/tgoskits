@@ -327,6 +327,21 @@ impl DeviceHandle {
     /// `rx_packets` is incremented for every call regardless of `len`. Callers
     /// must ensure `len > 0` when counting a real reception; a zero `len` only
     /// makes sense for testing or diagnostic paths.
+    ///
+    /// Kept out-of-line (`#[inline(never)]`) so that eBPF kprobe-based
+    /// observers (e.g. `net_stats`) can attach to this function and see every
+    /// increment of the RX byte/packet counters at a stable symbol.
+    ///
+    /// # Performance note
+    ///
+    /// `#[inline(never)]` adds a call/ret boundary (~2 instructions) around
+    /// two `fetch_add` operations that would otherwise be inlined directly
+    /// into each call site. At the current target throughput (< 100K packets
+    /// per second) the overhead is negligible. If higher throughput becomes a
+    /// concern, consider feature-gating the annotation behind an
+    /// `ebpf_observability` cfg flag so production builds can opt into full
+    /// inlining.
+    #[inline(never)]
     fn count_rx(&self, len: usize) {
         // Relaxed ordering is sufficient: fetch_add provides atomic RMW that
         // guarantees no lost updates even with concurrent writers (device
@@ -341,6 +356,21 @@ impl DeviceHandle {
     ///
     /// `tx_packets` is incremented for every call regardless of `len`. Callers
     /// must ensure `len > 0` when counting a real transmission.
+    ///
+    /// Kept out-of-line (`#[inline(never)]`) so that eBPF kprobe-based
+    /// observers (e.g. `net_stats`) can attach to this function and see every
+    /// increment of the TX byte/packet counters at a stable symbol.
+    ///
+    /// # Performance note
+    ///
+    /// `#[inline(never)]` adds a call/ret boundary (~2 instructions) around
+    /// two `fetch_add` operations that would otherwise be inlined directly
+    /// into each call site. At the current target throughput (< 100K packets
+    /// per second) the overhead is negligible. If higher throughput becomes a
+    /// concern, consider feature-gating the annotation behind an
+    /// `ebpf_observability` cfg flag so production builds can opt into full
+    /// inlining.
+    #[inline(never)]
     fn count_tx(&self, len: usize) {
         self.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);
         self.tx_packets.fetch_add(1, Ordering::Relaxed);
