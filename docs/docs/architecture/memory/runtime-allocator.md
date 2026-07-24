@@ -54,6 +54,26 @@ flowchart LR
 
 当本 CPU 对应 class 没有对象时，Slab 返回 `NeedsSlab`，全局实现从 Buddy 申请 backing pages、标记 `PageFlags::Slab`，再交给本 CPU class。空 Slab 可以将 backing pages 返回 Buddy。
 
+`slab_pages()` 在 `memory/buddy-slab-allocator/src/slab/size_class.rs` 内用三档分支决定单个 Slab 的 backing 页数：8–256 B 用 1 页，512–1024 B 用 2 页，2048 B 最多 4 页。该公式在编译期可推导，避免运行期动态决定 backing 大小。
+
+```rust
+pub const fn slab_pages(self, page_size: usize) -> usize {
+    let obj_size = self.size();
+    if obj_size <= 256 {
+        1
+    } else if obj_size <= 1024 {
+        2
+    } else {
+        // 2048-byte objects: 4 pages → header + room for objects
+        let v = 16 * page_size / (obj_size * 8);
+        let v = if v < 4 { v } else { 4 };
+        if v < 1 { 1 } else { v }
+    }
+}
+```
+
+`SizeClass::from_layout()` 取 `size.max(align)` 选择最小可容纳 class；若结果超过 2048 B 上限，byte allocation 路径直接退化为 Buddy 大对象。该选择发生在持锁临界区之外，由调用方提前判断。
+
 ### 2.2 大对象与跨 CPU释放
 
 超过 Slab 上限的 byte allocation 被向上取整为 4 KiB 页数，由 Buddy 直接完成。它仍以请求的 `Layout` 通过 `GlobalAlloc` 对称释放，不应和显式页 API 混用。
@@ -114,6 +134,42 @@ pub fn alloc_pages(
 | `Drop::drop()` | 按 zone 和 usage 归还 | owner 生命周期结束 |
 
 需要把页交给页表项或外部对象长期持有的代码必须明确转移或封装生命周期。不能丢弃 `GlobalPage` 后继续使用其地址，否则 Drop 已经把页返回 allocator。
+
+`Drop` 实现是 owner 协议的执行点，它把构造时记录的 `request` 与 `usage` 原样传回 deallocator，不需要调用方重新传递 zone 或 usage 信息。`deallocate_pages_raw()` 标记为 `unsafe` 是因为它要求调用方保证地址确实来自对称的 `allocate_pages_raw()`。
+
+```rust
+impl Drop for GlobalPage {
+    fn drop(&mut self) {
+        // SAFETY: this owner stores the unchanged request and usage associated
+        // with the live allocation, and Drop runs exactly once.
+        unsafe {
+            global_allocator().deallocate_pages_raw(
+                self.start_vaddr.into(),
+                self.request,
+                self.usage,
+            );
+        }
+    }
+}
+```
+
+字节分配 `GlobalAllocator::alloc()` 与 `dealloc()` 在进入 Slab/Buddy 前获取 `NoPreempt` 守卫，并在守卫作用域结束前完成所有 upstream 操作。`NoPreempt` 防止任务在持有 per-CPU Slab 引用期间被调度到其他 CPU；remote free 与本 CPU free 的路由也由该守卫保护。
+
+```rust
+pub fn alloc(&self, layout: Layout) -> AllocResult<NonNull<u8>> {
+    // Slab lookup obtains a pointer to the current CPU's cache. Keep the
+    // task on that CPU until the complete upstream operation finishes.
+    let _guard = NoPreempt::new();
+    let result = self.inner.alloc(layout).map_err(crate::AllocError::from);
+    if result.is_ok() {
+        self.stats
+            .alloc(AllocationSource::Normal, UsageKind::RustHeap, layout.size());
+    }
+    result
+}
+```
+
+`_guard` 的作用域与单次 alloc 同步，因此即使 Slab miss 触发短时获取全局 Buddy 锁，`NoPreempt` 仍能保证 task 不会在锁内迁移 CPU。该约束是 `current_percpu_slab()` 通过 `ax_percpu::with_cpu_pin` 拿到本 CPU pointer 的安全前提。
 
 ## 4. 统计与失败语义
 

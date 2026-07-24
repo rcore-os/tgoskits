@@ -82,6 +82,56 @@ pub trait PageFrameProvider: Clone + Sync + Send + 'static {
 
 上层在 OS 边界把 `PagingError` 转为 `AxError` 或领域错误。页表实现不直接返回 Linux errno，也不记录虚拟内存区域 metadata。
 
+`PteConfig` 是与架构位编码无关的中性描述，所有 flexible engine（boot 与 Stage-2）都通过它表达“页表项应该是什么样”。该结构便于测试时按字段比较编码前后是否一致，避免直接读架构相关 bitfield。
+
+```rust
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PteConfig {
+    pub paddr: PhysAddr,
+    pub valid: bool,
+    pub read: bool,
+    pub writable: bool,
+    pub executable: bool,
+    pub lower: bool,
+    pub dirty: bool,
+    pub global: bool,
+    pub is_dir: bool,
+    pub huge: bool,
+    pub mem_attr: MemAttributes,
+}
+```
+
+`AccessFlags`、`MemAttributes` 与 `MemConfig` 共同描述一次映射的访问与内存属性。`MemConfig` 的 `Display` 实现按 `RWXL|Attr` 格式输出，便于在调试日志和 `/proc` 风格输出中一致展示。
+
+```rust
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct AccessFlags: usize {
+        const READ = 1;
+        const WRITE = 1<<2;
+        const EXECUTE = 1<<3;
+        const LOWER = 1<<4;
+    }
+}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MemAttributes {
+    #[default]
+    Normal,
+    PerCpu,
+    Device,
+    Uncached,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemConfig {
+    pub access: AccessFlags,
+    pub attrs: MemAttributes,
+}
+```
+
+`bitflags!` 而不是 enum 让 `AccessFlags` 可以表达“可读可写但不可执行”这类组合；`MemAttributes` 保留为 enum 是因为一次映射只能落在 Normal、PerCpu、Device 或 Uncached 之一。AArch64 的 `AttrIndx` 选择由 `entry::arch::aarch64::A64PTE` 根据 `MemAttributes` 完成，把架构细节隔离在 entry 层。
+
 ## 3. 主机页表
 
 Stage-1 面向 Host CPU 地址空间，按 pointer width 选择 `PageTable32` 或 `PageTable64`。架构 metadata 决定层数、物理/虚拟地址宽度、地址类型和地址转换后备缓冲区 invalidator。
@@ -208,6 +258,18 @@ pub trait TableMeta: Sync + Send + Clone + Copy + 'static {
 ```
 
 `MapConfig` 提供虚拟地址、物理地址、size、页表项 template、`allow_huge` 和 `flush`。递归 mapper 只有在 level、剩余大小及虚拟地址/物理地址对齐都满足时才创建 block mapping。
+
+`PageTable<T, A>` 与 `PageTableRef<T, A>` 通过常量泛型 `T: TableMeta` 描述几何，使同一份递归 mapper 代码可同时服务 Stage-2 与 boot。下表列出当前每个 TableMeta 决定的不变量；具体架构在 `stage2` 或 `boot` feature 下提供这些常量。
+
+| `TableMeta` 常量 | 含义 | 决定的行为 |
+| --- | --- | --- |
+| `PAGE_SIZE` | base page 字节数 | leaf entry 的最小粒度 |
+| `LEVEL_BITS: &[usize]` | 每级 index 位数（root 在前） | 计算每级 table 大小和 mapping size |
+| `MAX_BLOCK_LEVEL` | 允许 block/huge mapping 的最深 level | 控制递归何时停在 block entry |
+| `STRICT_ADDRESS_WIDTH` | 是否严格拒绝超宽地址 | 影响 `vaddr_is_valid()` 行为 |
+| `flush(vaddr)` | flush callback | 由架构 invalidator 实现 |
+
+`TableMeta::flush()` 的默认实现可以是空操作；AArch64 hardware-broadcast 与 x86/RISC-V/LoongArch local-only 的差异由具体 adapter 注入，flexible engine 本身不区分架构。
 
 ### 6.2 所有权差异
 

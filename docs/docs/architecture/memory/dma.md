@@ -13,7 +13,7 @@ DMA 不是独立物理 allocator。底层页仍由 `ax-alloc` 管理，`dma-api`
 
 ### 1.1 组件职责
 
-当前 DMA 主线只有能力层和平台 adapter，不保留已删除的 DMA facade 或裸元数据手工释放模型。
+当前 DMA 主线只有能力层（`dma-api`）和平台 adapter（`axklib::dma`）。驱动通过 `DeviceDma` 表达约束、通过 RAII owner 管理生命周期，平台 adapter 负责把能力接到 `ax-alloc`、页表属性和平台缓存维护。
 
 | 组件 | 职责 | 禁止承担的职责 |
 | --- | --- | --- |
@@ -72,6 +72,31 @@ flowchart TB
 | `axklib::dma::device_with_mask(mask)` | 当前 runtime adapter 的 identity/bypass domain |
 
 真正输入输出内存管理单元支持需要 domain-specific map/unmap、输入输出虚拟地址 ownership、device attach/detach 和输入输出地址转换后备缓冲区 invalidation。未实现的平台不能仅换一个 domain id 就声称完成隔离。
+
+`DmaDomainId` 内部使用 `NonZeroU64`，因此 `Option<DmaDomainId>` 与 `usize` 等宽。`identity()` 保留为常量 `1`，`from_raw()` 拒绝 `0` 与已保留的 `1`，避免调用方误用 identity domain 作为 device-specific id。
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DmaDomainId(NonZeroU64);
+
+impl DmaDomainId {
+    /// Identity/bypass translation domain. Value one is reserved for this domain.
+    pub const fn identity() -> Self {
+        Self(NonZeroU64::MIN)
+    }
+
+    /// Creates a device-specific domain identifier. Rejects zero and the
+    /// reserved identity value.
+    pub const fn from_raw(id: u64) -> Option<Self> {
+        match NonZeroU64::new(id) {
+            Some(id) if id.get() != Self::identity().get().get() => Some(Self(id)),
+            _ => None,
+        }
+    }
+}
+```
+
+`DmaConstraints` 是 plain struct，调用方通过 builder-style `with_align()` / `with_boundary()` / `with_max_segment_size()` 链式补充约束。`boundary` 与 `max_segment_size` 都是 `Option<usize>`：`None` 表示“无对应约束”，`Some(b)` 表示“DMA 起止必须落在同一 `b` 字节窗口内”或“单个 segment 不得超过 `b` 字节”。
 
 ## 3. 类型安全
 
@@ -145,6 +170,32 @@ CPU accessor 本身不会自动 sync cache。高层 `write_for_device()` 和 `re
 | `DmaPageAllocation` | runtime `dma_alloc_pages` | runtime `dma_dealloc_pages(allocation)` |
 
 查询方法只借用 token，free/unmap 按值消费。opaque backend token 当前由 `axklib` 编码 `Normal` 或 `Dma32` 来源，释放时恢复原 zone，无需额外 bool 参数。
+
+`DmaAllocHandle` 的字段对 backend 可见（`pub(crate)`），但对外只暴露查询方法。两个 unsafe 构造函数把“调用方证明 cpu_addr/dma_addr 关系”的责任集中在创建点，避免后续每次访问都重复验证。
+
+```rust
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct DmaAllocHandle {
+    pub(crate) cpu_addr: NonNull<u8>,
+    pub(crate) dma_addr: DmaAddr,
+    pub(crate) layout: Layout,
+    pub(crate) backend_token: usize,
+}
+
+/// Backend mapping token with consume-on-unmap ownership.
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct DmaMapHandle {
+    pub(crate) cpu_addr: NonNull<u8>,
+    pub(crate) dma_addr: DmaAddr,
+    pub(crate) layout: Layout,
+    pub(crate) bounce_ptr: Option<NonNull<u8>>,
+    pub(crate) backend_token: usize,
+}
+```
+
+`DmaMapHandle::bounce_ptr` 为 `Some` 时表示原 buffer 不满足 DMA 约束，backend 已经分配了符合 mask 的 bounce page 并把 DMA 地址指向 bounce。释放时 bounce 与 handle 一并按值消费。`backend_token` 由具体 backend 解释，`axklib::dma` 在该字段编码 `DmaPageZone`，使 dealloc 能恢复原 zone 而无需额外参数。
+
+`dma-api` 通过 doc-test 强制这些 token 不能复制：把 `require_copy::<DmaAllocHandle>()` 写在 compile_fail 代码块中，使任何意外添加 `Copy`/`Clone` 的实现都会被 doc-test 拦截。
 
 ### 5.2 异步所有权状态
 

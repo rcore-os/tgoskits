@@ -57,6 +57,23 @@ for memory in fdt.memory() {
 
 `Mmio` 不因为存在物理地址就属于 RAM。MMIO 映射只建立虚拟地址/页表项，不得把设备窗口加入 Buddy，也不得在 unmap 时释放其物理区。
 
+`MemoryType` 在 `components/kernutil/src/memory.rs` 中定义，公共枚举值就是上面六类。`Free` 是默认值，便于 `heapless::Vec::new()` 等构造路径在未显式赋类型时落到不可分配状态，而非隐式可分配状态。
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MemoryType {
+    #[default]
+    Free,
+    Ram,
+    KImage,
+    Reserved,
+    Mmio,
+    PerCpuData,
+}
+```
+
+`MemoryDescriptor` 只保存 `physical_start`、`size_in_bytes` 和 `memory_type` 三个字段；它不持有 allocator 私有 metadata，也不携带 owner 指针。所有重叠检测、对齐与 conflict 判定都由外层 `MemoryMapExt::merge_add()` 在固定容量 `heapless::Vec` 上完成。
+
 ### 2.2 区间合并与冲突
 
 `MemoryMapExt::merge_add()` 先克隆当前固定容量 map，在副本上执行 split、insert 和同类型合并，成功后才替换原 map。这使 capacity、alignment、range overflow 或冲突错误不会留下半修改状态。
@@ -101,6 +118,35 @@ flowchart LR
 | `Frozen` | 禁止继续分配 | `memory_map_setup()` 调用 `ram::freeze()` |
 
 Bump 的所有地址计算使用 checked arithmetic。`ram::used_range()` 在冻结前被作为 `Reserved` 加回内存图，因此 arena 中未使用的尾部仍可保持 `Free`，已使用前缀不会被运行时重复分配。
+
+`RamAllocatorState` 是一个三态显式状态机，定义在 `platforms/someboot/src/mem/ram.rs`。`Active` 携带 `used_start`、`end` 与 `current` 三个字段，使 `used_range()` 能在 flush 时把已用前缀切出未用尾部。
+
+```rust
+#[derive(Clone, Copy)]
+enum RamAllocatorState {
+    Uninitialized,
+    Active {
+        used_start: usize,
+        end: usize,
+        current: usize,
+    },
+    Frozen,
+}
+```
+
+状态转换严格单向，没有从 `Frozen` 回到 `Active` 的 thaw 路径。下图展示三个状态、它们的入口动作和退出条件。
+
+```mermaid
+stateDiagram-v2
+    [*] --> Uninitialized: static init
+    Uninitialized --> Active: ram::init(free_range)
+    Active --> Active: alloc(Layout) advances current
+    Active --> Active: flush_to_memory_map(kind) publishes used prefix
+    Active --> Frozen: memory_map_setup() calls ram::freeze()
+    Frozen --> [*]: runtime allocator takes over
+```
+
+`alloc()` 在非 `Active` 状态下直接返回 `None`，因此冻结后再次调用 early provider 只会得到分配失败，而不是默默回退到其他来源。该单向语义是 boot/runtime 边界的安全保证。
 
 ## 4. 启动对象
 

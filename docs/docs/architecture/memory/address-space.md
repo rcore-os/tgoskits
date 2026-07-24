@@ -259,7 +259,7 @@ Starry backend 的 `commit()` 允许具体 backend 返回 `AxError`，但在向 
 
 ### 8.2 源码检查点
 
-公共容器和三个策略消费者共同构成当前地址空间实现。修改 trait 时必须逐个迁移，不能保留旧 compatibility shim。
+公共容器和三个策略消费者共同构成当前地址空间实现。修改 `MappingBackend` trait 时必须逐个迁移实现，不得通过 alias 或 wrapper 引入第二事务协议。
 
 | 源码 | 审计重点 |
 | --- | --- |
@@ -331,6 +331,34 @@ sequenceDiagram
 ```
 
 只有所有 commit 成功时 `execute()` 才返回 committed states。失败分支会继续尝试所有前序 rollback；其中任一 rollback 失败时最终返回 `MappingError::BadState`，因为此时不能再承诺地址空间已经恢复。
+
+下面是 `MemorySet::execute()` 失败分支的核心实现，对应 `memory/memory_set/src/set.rs`。`prepared.into_iter().rev()` 保证 plan abort 与 already-committed state rollback 都按逆序执行；显式 `rollback_failed` 标志避免遇到第一个 rollback 错误就提前返回，使每个已 commit 的 operation 都至少有一次恢复机会。
+
+```rust
+while let Some((backend, plan)) = prepared.next() {
+    match backend.commit(plan, page_table) {
+        Ok(state) => committed.push((backend, state)),
+        Err(error) => {
+            for (backend, plan) in prepared.rev() {
+                backend.abort(plan, page_table);
+            }
+            let mut rollback_failed = false;
+            for (backend, state) in committed.into_iter().rev() {
+                if backend.rollback(state, page_table).is_err() {
+                    rollback_failed = true;
+                }
+            }
+            return Err(if rollback_failed {
+                MappingError::BadState
+            } else {
+                error
+            });
+        }
+    }
+}
+```
+
+`abort()` 与 `rollback()` 的区别在于：`abort()` 处理尚未进入 commit 的 plan，它只释放预留资源；`rollback()` 处理已经 commit 但后续失败的 operation，它需要恢复可见页表项和 backend owner。两者都不能抛出新的 mapping 变更，否则就会破坏 abort/rollback 自身的不变量。
 
 ```rust
 for (backend, state) in committed.into_iter().rev() {
