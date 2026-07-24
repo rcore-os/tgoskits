@@ -9,6 +9,7 @@ license.workspace = true
 
 [features]
 std = ["dep:chrono"]
+kmsg = []
 default = []
 
 [dependencies]

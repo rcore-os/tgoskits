@@ -56,6 +56,9 @@ use ax_crate_interface::call_interface;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 pub use log::{debug, error, info, trace, warn};
 
+#[cfg(all(feature = "kmsg", not(feature = "std")))]
+pub mod ring;
+
 /// Prints to the console.
 ///
 /// Equivalent to the [`ax_println!`] macro except that a newline is not printed at
