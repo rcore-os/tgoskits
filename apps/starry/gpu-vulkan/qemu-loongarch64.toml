@@ -1,0 +1,21 @@
+# gpu-vulkan loongarch64 - Vulkan compute carpet on Mesa lavapipe (the CPU software Vulkan driver,
+# over the llvmpipe LLVM JIT). Provisioned from Alpine edge as musl packages (mesa-vulkan-swrast +
+# vulkan-loader), which Alpine builds for loongarch64, so the C/C++ carpets run on-target; no host GPU.
+# Platform: dynamic (axplat-dyn) - build-loongarch64*.toml carries ax-driver/serial and does not
+# opt out of dynamic platform mode; the retired static LoongArch path lacked the serial console
+# binding ("/dev/console has no serial TTY binding" -> 7.88s early exit). uefi=false / to_bin=true is
+# the dynamic platform's raw-binary boot path. -smp 1: single vCPU, so lavapipe runs every workgroup
+# on one thread. 4096M: the llvmpipe LLVM JIT + device buffers are heap-heavy.
+args = [
+    "-machine", "virt", "-cpu", "la464", "-nographic", "-m", "4096M", "-smp", "1",
+    "-device", "virtio-blk-pci,drive=disk0",
+    "-drive", "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-loongarch64-alpine.img",
+    "-device", "virtio-net-pci,netdev=net0", "-netdev", "user,id=net0",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "sh /usr/bin/run_all.sh"
+success_regex = ['(?m)^TEST PASSED\s*$']
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?m)^TEST FAILED\s*$']
+timeout = 18000
