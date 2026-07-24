@@ -60,11 +60,10 @@ fn align_up(val: usize, align: usize) -> usize {
 /// 启动 wifi-rx 线程
 pub fn start(bus: Arc<WifiBus>) {
     log::debug!("[wifi-rx] thread starting");
-    // RX poll kicker 仅 DC/DW 启用(与 TX kicker 对称)。D80/8801 走 upstream/dev
-    // 的纯事件(ISR)驱动路径,不启动周期 kicker。
-    if bus.transport.is_dual_pipe() {
-        start_rx_poll_kicker(bus.clone());
-    }
+    // RX poll kicker: D80/8801 的 ISR 驱动路径不可靠（PLIC IRQ 在 probe 阶段
+    // 未使能，固件响应在 TX->RX 的单次 wake 之后才到达时 RX 线程无人唤醒），
+    // 用 10ms kicker 兜底保证轮询响应和异步入站帧不丢失。
+    start_rx_poll_kicker(bus.clone());
     crate::runtime::runtime().spawn_poll_task(
         "wifi-rx",
         alloc::boxed::Box::new(move |cx| {
