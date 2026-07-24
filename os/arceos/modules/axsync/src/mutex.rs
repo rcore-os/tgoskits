@@ -129,8 +129,13 @@ unsafe impl lock_api::RawMutex for RawMutex {
         );
         #[cfg(feature = "lockdep")]
         crate::lockdep::release(self);
-        self.owner_id.store(0, Ordering::Release);
-        self.wq.notify_one(true);
+        // Transfer ownership directly to the next waiter while the WQ lock is
+        // held, before the task is made runnable, so no concurrent CAS can
+        // steal the lock in the window between the owner_id clear and the
+        // wake. When the queue is empty, waiter_id==0 and owner_id is cleared.
+        self.wq.notify_one_with(true, |waiter_id| {
+            self.owner_id.store(waiter_id, Ordering::Release);
+        });
     }
 
     #[inline(always)]
@@ -166,16 +171,23 @@ impl RawMutex {
                         owner_id, current_id,
                         "Thread({current_id}) tried to acquire mutex it already owns.",
                     );
-                    // Wait until the lock is released. The woken waiter
-                    // competes through the normal CAS path, avoiding a state
-                    // where the owner id names a task that has not returned a
-                    // guard yet.
+                    // Block until:
+                    //   (a) unlock() directly hands us ownership via
+                    //       notify_one_with(), OR
+                    //   (b) the lock is transiently free (handles the race
+                    //       where notify_one_with fires with an empty WQ —
+                    //       owner_id becomes 0 — BEFORE this task enters the
+                    //       queue; without (b) the task sleeps with no waker).
+                    // Starvation from (b) is impossible: once this task is in
+                    // the WQ, unlock()'s notify_one_with() sets
+                    // owner_id=current_id before making us runnable, so
+                    // concurrent CAS by the poll loop cannot steal the lock.
                     self.wq
                         .wait_until(|| self.is_owner(current_id) || !self.is_locked_inner());
-                    // This check is necessary: some newcomers may race with a wakened one.
                     if self.is_owner(current_id) {
                         break;
                     }
+                    // Lock is free (race window case): retry CAS in outer loop.
                 }
             }
         }

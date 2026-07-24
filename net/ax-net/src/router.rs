@@ -290,6 +290,13 @@ struct DeviceHandle {
     tx_packets: AtomicU64,
     tx_errors: AtomicU64,
     tx_dropped: AtomicU64,
+    /// Set when the interface is removed. The RX/TX workers observe it and
+    /// return, so a closed non-persistent TUN device leaves no worker running.
+    stopped: AtomicBool,
+    /// Handles of the spawned RX/TX worker tasks. `stop()` joins them so the
+    /// data path is fully quiesced before the device's router slot is freed or
+    /// reused (Linux tun_detach: napi_disable + synchronize_net).
+    workers: Mutex<Vec<ax_task::AxTaskRef>>,
 }
 
 impl DeviceHandle {
@@ -319,7 +326,32 @@ impl DeviceHandle {
             tx_packets: AtomicU64::new(0),
             tx_errors: AtomicU64::new(0),
             tx_dropped: AtomicU64::new(0),
+            stopped: AtomicBool::new(false),
+            workers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Signals the RX/TX workers to exit and wakes them so they observe it
+    /// promptly (both may be parked in their wait queues).
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.rx_ready.store(true, Ordering::Release);
+        self.rx_wake.notify_one(true);
+        self.tx_wake.notify_one(true);
+        // Quiesce the data path before the caller frees or reuses this device's
+        // router slot, mirroring Linux tun_detach (napi_disable +
+        // synchronize_net): wait for the RX/TX workers to observe `stopped` and
+        // fully exit, so no stale worker can keep touching shared state (router
+        // queues, device wakers, the smoltcp service) once the slot is recreated
+        // by a subsequent TUNSETIFF. The workers take no sleeping lock that this
+        // path holds, so the join cannot deadlock.
+        for worker in core::mem::take(&mut *self.workers.lock()) {
+            worker.join();
+        }
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
     }
 
     /// Records `len` bytes received on this interface.
@@ -605,6 +637,26 @@ impl RouteTable {
         });
     }
 
+    /// Removes the first route matching a destination prefix (and optional
+    /// gateway) on one interface, as requested by `SIOCDELRT`. Returns whether
+    /// a matching route was found.
+    pub fn remove_matching_rule(
+        &mut self,
+        filter: IpCidr,
+        via: Option<IpAddress>,
+        interface_id: InterfaceId,
+    ) -> bool {
+        let before = self.rules.len();
+        if let Some(pos) = self.rules.iter().position(|rule| {
+            rule.interface_id == interface_id
+                && rule.filter == filter
+                && (via.is_none() || rule.via == via)
+        }) {
+            self.rules.remove(pos);
+        }
+        self.rules.len() != before
+    }
+
     /// Atomically replaces IPv4 routes owned by one interface.
     pub fn replace_ipv4_rules_for_interface(
         &mut self,
@@ -628,7 +680,12 @@ pub struct Router {
     rx_buffer: RouterPacketBuffer,
     tx_buffer: RouterPacketBuffer,
     queues: Arc<RouterQueues>,
-    devices: Vec<Arc<DeviceHandle>>,
+    /// Concrete devices indexed by router device index. A slot becomes `None`
+    /// when its interface is removed; the index is never reused for a different
+    /// interface within a live route rule's lifetime, so `Rule::dev` stays valid
+    /// (a recreated interface takes a fresh slot). Tombstoning instead of
+    /// removing keeps every later slot's index stable.
+    devices: Vec<Option<Arc<DeviceHandle>>>,
     table: SharedRouteTable,
 }
 impl Router {
@@ -659,29 +716,66 @@ impl Router {
         self.table.write().add_rule(rule);
     }
 
+    /// Removes a route matching a destination prefix (and optional gateway) on
+    /// one interface. Returns whether a route was removed.
+    pub fn remove_rule(
+        &mut self,
+        filter: IpCidr,
+        via: Option<IpAddress>,
+        interface_id: InterfaceId,
+    ) -> bool {
+        self.table
+            .write()
+            .remove_matching_rule(filter, via, interface_id)
+    }
+
     /// Registers a concrete device and returns its router device index.
     pub fn add_device(&mut self, interface_id: InterfaceId, device: Box<dyn Device>) -> usize {
-        self.devices
-            .push(DeviceHandle::new(interface_id, device, &self.queues));
-        self.devices.len() - 1
+        let handle = DeviceHandle::new(interface_id, device, &self.queues);
+        // Reuse a tombstoned slot if one is free so the device vector does not
+        // grow without bound across close/recreate cycles; otherwise append.
+        if let Some(dev) = self.devices.iter().position(Option::is_none) {
+            self.devices[dev] = Some(handle);
+            dev
+        } else {
+            self.devices.push(Some(handle));
+            self.devices.len() - 1
+        }
+    }
+
+    /// Removes the device backing an interface: stops its RX/TX workers and
+    /// tombstones its slot. Later slot indices stay stable so live `Rule::dev`
+    /// references remain valid, matching Linux fully unregistering a closed
+    /// non-persistent tun device (`tun_detach_all`).
+    pub fn remove_device(&mut self, interface_id: InterfaceId) {
+        if let Some(dev) = self.device_index_for_interface_id(interface_id)
+            && let Some(handle) = self.devices[dev].take()
+        {
+            handle.stop();
+        }
     }
 
     /// Returns the public interface id for a router device index.
     pub fn interface_id_for_dev(&self, dev: usize) -> Option<InterfaceId> {
-        self.devices.get(dev).map(|device| device.interface_id)
+        self.devices
+            .get(dev)
+            .and_then(|slot| slot.as_ref())
+            .map(|device| device.interface_id)
     }
 
-    /// Finds the router device index for a public interface id.
+    /// Finds the router device index for a public interface id (live slots only).
     pub fn device_index_for_interface_id(&self, interface_id: InterfaceId) -> Option<usize> {
-        self.devices
-            .iter()
-            .position(|device| device.interface_id == interface_id)
+        self.devices.iter().position(|slot| {
+            slot.as_ref()
+                .is_some_and(|device| device.interface_id == interface_id)
+        })
     }
 
     /// Returns names of all registered devices.
     pub fn device_names(&self) -> Vec<String> {
         self.devices
             .iter()
+            .flatten()
             .map(|device| device.name.clone())
             .collect()
     }
@@ -707,7 +801,7 @@ impl Router {
     }
 
     fn start_device_tx_worker(&self, dev: usize) {
-        let Some(device) = self.devices.get(dev) else {
+        let Some(device) = self.devices.get(dev).and_then(|slot| slot.as_ref()) else {
             return;
         };
         // Skip loopback: it uses fast path (no worker needed)
@@ -716,11 +810,13 @@ impl Router {
         }
         let device = device.clone();
         let name = format!("{}-tx", device.name);
-        ax_task::spawn_with_name(move || device_tx_worker(device), name);
+        let owner = device.clone();
+        let handle = ax_task::spawn_with_name(move || device_tx_worker(device), name);
+        owner.workers.lock().push(handle);
     }
 
     fn start_device_rx_worker(&self, dev: usize) {
-        let Some(device) = self.devices.get(dev) else {
+        let Some(device) = self.devices.get(dev).and_then(|slot| slot.as_ref()) else {
             return;
         };
         // Skip loopback: packets injected directly in dispatch
@@ -729,12 +825,16 @@ impl Router {
         }
         let device = device.clone();
         let name = format!("{}-rx", device.name);
-        ax_task::spawn_with_name(move || device_rx_worker(device), name);
+        let owner = device.clone();
+        let handle = ax_task::spawn_with_name(move || device_rx_worker(device), name);
+        owner.workers.lock().push(handle);
     }
 
     /// Finds the index of a device by its interface name (e.g. `"wlan0"`).
     pub fn device_index(&self, name: &str) -> Option<usize> {
-        self.devices.iter().position(|device| device.name == name)
+        self.devices
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(|device| device.name == name))
     }
 
     /// Applies an IPv4 address/gateway update to one device and its routes.
@@ -761,7 +861,12 @@ impl Router {
         address: Option<Ipv4Cidr>,
         gateway: Option<IpAddress>,
     ) -> Vec<Rule> {
-        self.devices[dev].inner.lock().set_ipv4_addr(address);
+        self.devices[dev]
+            .as_ref()
+            .expect("ipv4_rules on a live device")
+            .inner
+            .lock()
+            .set_ipv4_addr(address);
 
         let mut rules = Vec::new();
         if let Some(address) = address {
@@ -812,6 +917,7 @@ impl Router {
                 if let Some(dev) = self
                     .devices
                     .iter()
+                    .flatten()
                     .find(|d| d.interface_id == packet.interface_id)
                 {
                     dev.count_rx_dropped(1);
@@ -832,7 +938,9 @@ impl Router {
         packet: &[u8],
         _timestamp: Instant,
     ) -> bool {
-        let device = &self.devices[dev];
+        let device = self.devices[dev]
+            .as_ref()
+            .expect("send_on_device on a live device");
         if device.interface_id == InterfaceId::LOOPBACK {
             // Loopback traffic is transmitted and received on the same
             // interface.  Count only after successful injection so that
@@ -858,7 +966,7 @@ impl Router {
     /// Collects ARP/neighbor entries from all devices.
     pub fn arp_entries(&self, timestamp: Instant) -> Vec<ArpEntry> {
         let mut entries = Vec::new();
-        for device in &self.devices {
+        for device in self.devices.iter().flatten() {
             entries.extend(device.inner.lock().arp_entries(timestamp));
         }
         entries
@@ -866,12 +974,16 @@ impl Router {
 
     /// Returns a per-interface snapshot of RX/TX byte and packet counters.
     pub fn net_dev_stats(&self) -> Vec<NetDevStats> {
-        self.devices.iter().map(|device| device.stats()).collect()
+        self.devices
+            .iter()
+            .flatten()
+            .map(|device| device.stats())
+            .collect()
     }
 
     /// Registers a global device-readiness waker for all devices.
     pub fn register_device_waker(&self, waker: &core::task::Waker) {
-        for device in &self.devices {
+        for device in self.devices.iter().flatten() {
             register_device_poll(device, &device.rx_waker);
             register_device_poll(device, waker);
         }
@@ -879,7 +991,7 @@ impl Router {
 
     /// Forces all device RX workers to re-check their devices.
     pub fn wake_all_devices(&self) {
-        for device in &self.devices {
+        for device in self.devices.iter().flatten() {
             wake_device_poll(device);
             device.wake_rx();
         }
@@ -887,7 +999,7 @@ impl Router {
 
     /// Registers a waker for devices allowed by a socket's binding.
     pub fn register_waker(&self, binding: DeviceBinding, waker: &core::task::Waker) {
-        for device in &self.devices {
+        for device in self.devices.iter().flatten() {
             if binding.bound_if.is_none_or(|id| id == device.interface_id) {
                 register_device_poll(device, &device.rx_waker);
                 register_device_poll(device, waker);
@@ -955,12 +1067,12 @@ impl Router {
 }
 
 fn dispatch_link_local_fanout(
-    devices: &[Arc<DeviceHandle>],
+    devices: &[Option<Arc<DeviceHandle>>],
     dst_addr: IpAddress,
     packet: &[u8],
 ) -> bool {
     let mut poll_next = false;
-    for dev in devices {
+    for dev in devices.iter().flatten() {
         if dev.interface_id != InterfaceId::LOOPBACK {
             poll_next |= dev.enqueue_tx(dst_addr, packet);
         }
@@ -970,7 +1082,7 @@ fn dispatch_link_local_fanout(
 
 fn dispatch_unicast_packet(
     rx_buffer: &mut RouterPacketBuffer,
-    devices: &[Arc<DeviceHandle>],
+    devices: &[Option<Arc<DeviceHandle>>],
     table: &SharedRouteTable,
     src_addr: IpAddress,
     dst_addr: IpAddress,
@@ -991,7 +1103,10 @@ fn dispatch_unicast_packet(
         return false;
     };
 
-    let dev = &devices[route.dev];
+    let Some(dev) = devices.get(route.dev).and_then(|slot| slot.as_ref()) else {
+        warn!("Route references a removed device slot {}", route.dev);
+        return false;
+    };
     if dev.interface_id == InterfaceId::LOOPBACK {
         // Loopback packets are copied directly from the TX buffer into the RX
         // buffer, bypassing per-device workers and the shared RX queue. Count
@@ -1063,6 +1178,9 @@ fn inject_loopback_rx(
 /// Dedicated worker that drains one device's TX queue.
 fn device_tx_worker(device: Arc<DeviceHandle>) {
     loop {
+        if device.is_stopped() {
+            return;
+        }
         if let Some(packet) = device.tx_queue.pop() {
             {
                 let mut inner = device.inner.lock();
@@ -1080,7 +1198,9 @@ fn device_tx_worker(device: Arc<DeviceHandle>) {
             // pending_packets and sent later in process_arp() where their frame
             // lengths flow through deferred_tx_frame_lens → drain_deferred_tx().
         } else {
-            device.tx_wake.wait_until(|| !device.tx_queue.is_empty());
+            device
+                .tx_wake
+                .wait_until(|| !device.tx_queue.is_empty() || device.is_stopped());
         }
     }
 }
@@ -1099,6 +1219,9 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
         VecDeque::with_capacity(DEVICE_RX_WORKER_BATCH);
 
     loop {
+        if device.is_stopped() {
+            return;
+        }
         let mut received = false;
         {
             let mut device_inner = device.inner.lock();
@@ -1164,7 +1287,9 @@ fn device_rx_worker(device: Arc<DeviceHandle>) {
             if !local_batch.is_empty() {
                 panic!("drain_local_batch_step returned Ok but local_batch is not empty");
             }
-            crate::request_poll();
+            if received {
+                crate::request_poll();
+            }
         }
 
         if !received && local_batch.is_empty() {

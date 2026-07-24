@@ -58,6 +58,18 @@ impl InterfaceId {
 pub enum InterfaceKind {
     Loopback,
     Ethernet,
+    /// Layer-3 TUN device: userspace exchanges bare IP packets via a char fd.
+    Tun,
+    /// Layer-2 TAP device: userspace exchanges Ethernet frames.
+    Tap,
+}
+
+impl InterfaceKind {
+    /// Whether the interface exchanges packets with a userspace `/dev/net/tun`
+    /// file descriptor rather than a hardware NIC.
+    pub fn is_tuntap(self) -> bool {
+        matches!(self, Self::Tun | Self::Tap)
+    }
 }
 
 bitflags::bitflags! {
@@ -69,6 +81,12 @@ bitflags::bitflags! {
         const LOOPBACK = 1 << 2;
         const BROADCAST = 1 << 3;
         const MULTICAST = 1 << 4;
+        /// Point-to-point link (Linux `IFF_POINTOPOINT`). Set on TUN devices
+        /// which have no link-layer header and communicate with a single peer.
+        const POINTOPOINT = 1 << 5;
+        /// ARP disabled (Linux `IFF_NOARP`). Set on TUN devices because layer-3
+        /// IP-only interfaces do not use link-layer address resolution.
+        const NOARP = 1 << 6;
     }
 }
 

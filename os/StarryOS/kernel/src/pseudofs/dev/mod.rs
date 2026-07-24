@@ -21,6 +21,12 @@ mod r#loop;
 mod loop_block;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
+mod net;
+#[cfg(axtest)]
+pub(crate) use net::{
+    tun_rollback_destroys_created_device_for_test, tun_rollback_detaches_existing_device_for_test,
+    tun_rollback_on_concurrent_close_for_test,
+};
 #[cfg(feature = "rga")]
 pub(crate) mod rga;
 #[cfg(feature = "ext4")]
@@ -604,6 +610,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     root.add(
         "mqueue",
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+    );
+    root.add(
+        "net",
+        SimpleDir::new_maker(fs.clone(), Arc::new(net::net_dir(fs.clone()))),
     );
     {
         let mut bus_dir = DirMapping::new();

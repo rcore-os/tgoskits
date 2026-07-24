@@ -85,9 +85,9 @@ use crate::{
         InterfaceKind, Ipv4InterfaceConfig, RouteInfo,
     },
     consts::STANDARD_MTU,
-    device::{ArpEntry, EthernetDevice},
+    device::{ArpEntry, EthernetDevice, TunDevice, TunShared, create_tap},
     dhcp_server::{DhcpServer, parse_dhcp_packet},
-    router::{NetDevStats, RouteDecision, Router, SharedRouteTable},
+    router::{NetDevStats, RouteDecision, Router, Rule, SharedRouteTable},
 };
 
 fn now() -> Instant {
@@ -281,6 +281,16 @@ impl NetControl {
             .write()
             .replace_ipv4_rules_for_interface(interface.id, routes);
         self.state.write().interfaces.push(interface);
+    }
+
+    fn remove_interface(&self, interface_id: InterfaceId) {
+        self.routes
+            .write()
+            .remove_ipv4_rules_for_interface(interface_id);
+        self.state
+            .write()
+            .interfaces
+            .retain(|interface| interface.id != interface_id);
     }
 
     fn allocate_interface_id(&self) -> InterfaceId {
@@ -588,6 +598,179 @@ impl Service {
         dev
     }
 
+    /// Creates a TUN (layer-3) or TAP (layer-2) interface driven by a
+    /// `/dev/net/tun` file descriptor.
+    ///
+    /// The interface starts administratively down with no address, matching
+    /// Linux: userspace must assign an address (`SIOCSIFADDR`) and bring it up
+    /// (`SIOCSIFFLAGS`) before it carries traffic. The returned [`TunShared`] is
+    /// the handle the char device retains to move packets in and out.
+    pub fn create_tun(&mut self, name: String, kind: InterfaceKind) -> AxResult<Arc<TunShared>> {
+        if !kind.is_tuntap() {
+            return Err(AxError::InvalidInput);
+        }
+        // Name allocation mirrors Linux's alloc_netdev: an empty name or a name
+        // ending with `%d` (the conventional template) triggers auto-numbering.
+        // Linux defaults to "tun%d"/"tap%d" when ifr_name is empty, and passes
+        // the template to alloc_netdev which replaces `%d` with the first free
+        // integer. `create_tun` holds the service lock throughout, so the scan
+        // is atomic: concurrent empty-name creates receive distinct names.
+        let name = if name.is_empty() || name.ends_with("%d") {
+            let prefix = if name.is_empty() {
+                if kind == InterfaceKind::Tap {
+                    "tap"
+                } else {
+                    "tun"
+                }
+            } else {
+                name.trim_end_matches("%d")
+            };
+            (0..)
+                .map(|n| alloc::format!("{prefix}{n}"))
+                .find(|candidate| !self.control.contains_interface_name(candidate))
+                .expect("an unused tun/tap name always exists in an unbounded index space")
+        } else {
+            if self.control.contains_interface_name(&name) {
+                return Err(AxError::AlreadyExists);
+            }
+            name
+        };
+
+        let interface_id = self.control.allocate_interface_id();
+        let metric = 100;
+        let (dev, shared, mac, flags) = if kind == InterfaceKind::Tap {
+            // A TAP is an Ethernet-medium device: it owns a link-layer address
+            // and, like `ether_setup` in Linux, advertises broadcast and
+            // multicast. It still starts administratively down until IFF_UP.
+            let mac = tap_mac(interface_id);
+            let (device, shared) = create_tap(name.clone(), mac.0);
+            let dev = self.router.add_device(interface_id, Box::new(device));
+            (
+                dev,
+                shared,
+                Some(mac),
+                InterfaceFlags::BROADCAST | InterfaceFlags::MULTICAST,
+            )
+        } else {
+            // A layer-3 TUN is a point-to-point, ARP-less IP tunnel. Linux
+            // tun_net_initialize sets IFF_POINTOPOINT | IFF_NOARP | IFF_MULTICAST
+            // for the IFF_TUN case. It starts administratively down; IFF_UP is
+            // set by userspace via SIOCSIFFLAGS.
+            let (device, shared) = TunDevice::new(name.clone());
+            let dev = self.router.add_device(interface_id, Box::new(device));
+            (
+                dev,
+                shared,
+                None,
+                InterfaceFlags::POINTOPOINT | InterfaceFlags::NOARP | InterfaceFlags::MULTICAST,
+            )
+        };
+        // No IPv4 yet, so no routes are installed at creation time.
+        self.control.add_interface(
+            NetInterface {
+                id: interface_id,
+                name,
+                kind,
+                mac,
+                ipv4: None,
+                gateway: None,
+                mtu: STANDARD_MTU,
+                metric,
+                flags,
+            },
+            Vec::new(),
+        );
+        self.router.start_device_workers(dev);
+        Ok(shared)
+    }
+
+    /// Replaces the administrative flags of an interface (`SIOCSIFFLAGS`).
+    ///
+    /// Only `UP` and `RUNNING` are honored; the intrinsic `LOOPBACK`,
+    /// `BROADCAST`, and `MULTICAST` bits reflect the device kind and are
+    /// preserved. Route selection consults `UP`, so toggling it is what makes an
+    /// interface start or stop carrying traffic.
+    pub fn set_interface_flags(&mut self, interface_id: InterfaceId, up: bool) -> AxResult {
+        let mut state = self.control.state.write();
+        let interface = state
+            .interfaces
+            .iter_mut()
+            .find(|interface| interface.id == interface_id)
+            .ok_or(AxError::NoSuchDevice)?;
+        interface.flags.set(InterfaceFlags::UP, up);
+        interface.flags.set(InterfaceFlags::RUNNING, up);
+        Ok(())
+    }
+
+    /// Adds a static IPv4 route (`SIOCADDRT`).
+    ///
+    /// `via` of `None` marks a directly connected prefix. The source address is
+    /// taken from the egress interface's configured IPv4, so the interface must
+    /// have an address first.
+    pub fn add_route(
+        &mut self,
+        interface_id: InterfaceId,
+        destination: Ipv4Cidr,
+        via: Option<Ipv4Address>,
+    ) -> AxResult {
+        let dev = self
+            .router
+            .device_index_for_interface_id(interface_id)
+            .ok_or(AxError::NoSuchDevice)?;
+        let interface = self.interface_for_dev(dev).ok_or(AxError::NoSuchDevice)?;
+        let source = interface
+            .ipv4
+            .ok_or(AxError::NoSuchDeviceOrAddress)?
+            .address();
+        self.router.add_rule(Rule::new(
+            destination.into(),
+            via.map(IpAddress::Ipv4),
+            dev,
+            interface_id,
+            source.into(),
+            interface.metric,
+        ));
+        Ok(())
+    }
+
+    /// Removes a static IPv4 route (`SIOCDELRT`).
+    pub fn del_route(
+        &mut self,
+        interface_id: InterfaceId,
+        destination: Ipv4Cidr,
+        via: Option<Ipv4Address>,
+    ) -> AxResult {
+        self.router
+            .device_index_for_interface_id(interface_id)
+            .ok_or(AxError::NoSuchDevice)?;
+        if self
+            .router
+            .remove_rule(destination.into(), via.map(IpAddress::Ipv4), interface_id)
+        {
+            Ok(())
+        } else {
+            Err(AxError::NotFound)
+        }
+    }
+
+    /// Removes a TUN/TAP interface from the control plane, drops its routes, and
+    /// tears down its router device.
+    ///
+    /// `remove_interface` first drops the interface's route rules, so no live
+    /// rule references the device index afterward; `router.remove_device` then
+    /// stops the device's RX/TX workers and tombstones its slot (leaving later
+    /// indices stable). A subsequently recreated interface takes a fresh slot,
+    /// so a close/recreate cycle neither collides with a stale device nor leaks
+    /// workers.
+    pub fn remove_tun_interface(&mut self, name: &str) {
+        let Some(info) = self.control.interface_by_name(name) else {
+            return;
+        };
+        Self::set_interface_ipv4(&mut self.iface, info.ipv4.map(|c| c.address), None);
+        self.control.remove_interface(info.id);
+        self.router.remove_device(info.id);
+    }
+
     pub fn enable_dhcp(
         &mut self,
         interface_id: InterfaceId,
@@ -657,7 +840,9 @@ impl Service {
             .device_index_for_interface_id(interface_id)
             .ok_or(AxError::NoSuchDevice)?;
         let interface = self.interface_for_dev(dev).ok_or(AxError::NoSuchDevice)?;
-        if interface.kind != InterfaceKind::Ethernet {
+        // Ethernet and TUN/TAP interfaces accept a runtime address; loopback's
+        // address is fixed.
+        if interface.kind == InterfaceKind::Loopback {
             return Err(AxError::OperationNotSupported);
         }
         if interface.ipv4.is_some() {
@@ -1125,6 +1310,17 @@ fn build_dhcp_packet(
     );
 
     buffer
+}
+
+/// Derives a stable link-layer address for a TAP interface.
+///
+/// Linux assigns a random address in `tap_setup`; a deterministic one keyed on
+/// the interface id is equally valid and keeps `SIOCGIFHWADDR` reproducible. The
+/// first octet forces the locally-administered bit and clears the multicast bit,
+/// so the result is always a valid locally-administered unicast MAC.
+fn tap_mac(interface_id: InterfaceId) -> EthernetAddress {
+    let id = interface_id.get().to_be_bytes();
+    EthernetAddress([0x02, 0x00, id[0], id[1], id[2], id[3]])
 }
 
 #[cfg(test)]

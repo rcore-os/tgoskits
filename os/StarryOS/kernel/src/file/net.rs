@@ -20,11 +20,12 @@ use ax_net::{
 use ax_task::current;
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
-    general::{CAP_NET_ADMIN, O_RDWR, S_IFSOCK},
+    general::{O_RDWR, S_IFSOCK},
     ioctl::{
-        FIONREAD, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR, SIOCGIFFLAGS,
-        SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNETMASK,
-        SIOCGIFTXQLEN, SIOCSIFFLAGS,
+        FIONREAD, SIOCADDRT, SIOCDELRT, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF, SIOCGIFDSTADDR,
+        SIOCGIFFLAGS, SIOCGIFHWADDR, SIOCGIFINDEX, SIOCGIFMAP, SIOCGIFMETRIC, SIOCGIFMTU,
+        SIOCGIFNAME, SIOCGIFNETMASK, SIOCGIFTXQLEN, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMTU,
+        SIOCSIFNETMASK,
     },
     net::{AF_INET, ifreq},
 };
@@ -39,9 +40,13 @@ use crate::{
 
 pub(super) const ARPHRD_ETHER: u16 = 1;
 pub(super) const ARPHRD_LOOPBACK: u16 = 772;
+/// `ARPHRD_NONE`: no link-layer header, as reported by a layer-3 TUN device.
+pub(super) const ARPHRD_NONE: u16 = 0xFFFE;
 const IFF_UP: i16 = 0x0001;
 const IFF_BROADCAST: i16 = 0x0002;
 const IFF_LOOPBACK: i16 = 0x0008;
+const IFF_POINTOPOINT: i16 = 0x0010;
+const IFF_NOARP: i16 = 0x0080;
 const IFF_RUNNING: i16 = 0x0040;
 const IFF_MULTICAST: i16 = 0x1000;
 const IFREQ_NAME_LEN: usize = 16;
@@ -51,6 +56,18 @@ const IFREQ_COMPAT_LEN: usize = 40;
 const SIOCETHTOOL: u32 = 0x8946;
 const IFCONF_LEN_OFFSET: usize = 0;
 const IFCONF_BUF_OFFSET: usize = 8;
+
+/// Prefix used by `SIOCSIFADDR` before a netmask is supplied. A `/24` matches
+/// the common private-subnet convention and can be refined by `SIOCSIFNETMASK`.
+const DEFAULT_IPV4_PREFIX: u8 = 24;
+
+// Field offsets inside `struct rtentry` on 64-bit Linux. Each embedded
+// `sockaddr` places `sin_addr` four bytes past its `sin_family`, so the address
+// offset is the sockaddr offset plus four.
+const RT_DST_ADDR_OFFSET: usize = 8; // rt_dst sockaddr at 8
+const RT_GATEWAY_ADDR_OFFSET: usize = 24; // rt_gateway sockaddr at 24
+const RT_GENMASK_ADDR_OFFSET: usize = 40; // rt_genmask sockaddr at 40
+const RT_DEV_PTR_OFFSET: usize = 88; // char *rt_dev
 
 pub struct Socket {
     inner: SocketInner,
@@ -123,6 +140,14 @@ fn read_ifreq_flags(arg: usize) -> AxResult<i16> {
     )?))
 }
 
+fn write_ifreq_name(arg: usize, name: &str) -> AxResult<()> {
+    let mut buf = [0u8; IFREQ_NAME_LEN];
+    let bytes = name.as_bytes();
+    let len = bytes.len().min(IFREQ_NAME_LEN - 1);
+    buf[..len].copy_from_slice(&bytes[..len]);
+    Ok(vm_write_slice(arg as *mut u8, &buf)?)
+}
+
 fn sockaddr_in_bytes(ip: [u8; 4]) -> [u8; 16] {
     let mut addr = [0; 16];
     addr[..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
@@ -161,6 +186,35 @@ fn ipv4_netmask(prefix_len: u8) -> [u8; 4] {
     (!0u32 << (32 - prefix_len)).to_be_bytes()
 }
 
+/// Reads a `sockaddr_in` embedded in an `ifreq`/`rtentry` and returns its
+/// IPv4 address, rejecting a non-`AF_INET` family the way Linux does.
+///
+/// `offset` is the byte offset of the `sockaddr` within the ioctl argument
+/// struct; `sin_family` is at `offset` and `sin_addr` at `offset + 4`.
+fn read_sockaddr_ipv4(arg: usize, offset: usize) -> AxResult<core::net::Ipv4Addr> {
+    let family = u16::from_ne_bytes(read_user_bytes::<2>((arg + offset) as *const u8)?);
+    if family != AF_INET as u16 {
+        return Err(AxError::InvalidInput);
+    }
+    let octets = read_user_bytes::<4>((arg + offset + 4) as *const u8)?;
+    Ok(core::net::Ipv4Addr::from(octets))
+}
+
+/// Converts a contiguous IPv4 netmask into a CIDR prefix length, rejecting a
+/// non-contiguous mask.
+fn prefix_from_netmask(mask: core::net::Ipv4Addr) -> AxResult<u8> {
+    let bits = u32::from_be_bytes(mask.octets());
+    let ones = bits.leading_ones();
+    // A valid mask is a run of 1s followed by 0s: reconstructing it from the
+    // count must reproduce the original.
+    let rebuilt = if ones == 0 { 0 } else { !0u32 << (32 - ones) };
+    if rebuilt == bits {
+        Ok(ones as u8)
+    } else {
+        Err(AxError::InvalidInput)
+    }
+}
+
 fn ipv4_broadcast(config: ax_net::Ipv4InterfaceConfig) -> [u8; 4] {
     let ip = u32::from_be_bytes(config.address.address().octets());
     let mask = u32::from_be_bytes(ipv4_netmask(config.address.prefix_len()));
@@ -183,6 +237,12 @@ fn linux_flags(info: &InterfaceInfo) -> i16 {
     }
     if info.flags.contains(InterfaceFlags::MULTICAST) {
         flags |= IFF_MULTICAST;
+    }
+    if info.flags.contains(InterfaceFlags::POINTOPOINT) {
+        flags |= IFF_POINTOPOINT;
+    }
+    if info.flags.contains(InterfaceFlags::NOARP) {
+        flags |= IFF_NOARP;
     }
     flags
 }
@@ -214,6 +274,55 @@ fn write_ifconf(arg: usize) -> AxResult<()> {
         len = ((interfaces.len() * IFREQ_COMPAT_LEN) as i32).to_ne_bytes();
     }
     vm_write_slice((arg + IFCONF_LEN_OFFSET) as *mut u8, &len)?;
+    Ok(())
+}
+
+/// Reads the NUL-terminated interface name pointed to by `rt_dev`.
+fn read_route_device(arg: usize) -> AxResult<Option<alloc::string::String>> {
+    let ptr = usize::from_ne_bytes(read_user_bytes::<{ core::mem::size_of::<usize>() }>(
+        (arg + RT_DEV_PTR_OFFSET) as *const u8,
+    )?);
+    if ptr == 0 {
+        return Ok(None);
+    }
+    // The device name is at most IFNAMSIZ bytes; read the fixed window and stop
+    // at the first NUL.
+    let bytes = read_user_bytes::<IFREQ_NAME_LEN>(ptr as *const u8)?;
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    core::str::from_utf8(&bytes[..end])
+        .map(|s| Some(s.to_owned()))
+        .map_err(|_| AxError::InvalidInput)
+}
+
+/// Handles `SIOCADDRT`/`SIOCDELRT` by parsing a `struct rtentry` and installing
+/// or removing an IPv4 route on the interface named by `rt_dev`.
+fn write_route(arg: usize, add: bool) -> AxResult<()> {
+    let dst = read_sockaddr_ipv4(arg, RT_DST_ADDR_OFFSET)?;
+    // A non-AF_INET gateway sockaddr (family AF_UNSPEC / 0) means a directly
+    // connected route; EFAULT from a bad user pointer must still propagate.
+    let gateway = match read_sockaddr_ipv4(arg, RT_GATEWAY_ADDR_OFFSET) {
+        Ok(ip) => Some(ip),
+        Err(AxError::InvalidInput) => None,
+        Err(e) => return Err(e),
+    };
+    // Netmask family is often left unset (AF_UNSPEC = default route /0); EFAULT
+    // propagates, other parse failures default to a /0 prefix.
+    let prefix = match read_sockaddr_ipv4(arg, RT_GENMASK_ADDR_OFFSET) {
+        Ok(mask) => prefix_from_netmask(mask)?,
+        Err(AxError::InvalidInput) => 0,
+        Err(e) => return Err(e),
+    };
+
+    let device = read_route_device(arg)?.ok_or(AxError::NoSuchDevice)?;
+    let info = ax_net::interface_by_name(&device)
+        .filter(|info| in_root_net_ns() || info.kind == InterfaceKind::Loopback)
+        .ok_or(AxError::NoSuchDevice)?;
+
+    if add {
+        ax_net::add_route(info.id, dst, prefix, gateway)?;
+    } else {
+        ax_net::del_route(info.id, dst, prefix, gateway)?;
+    }
     Ok(())
 }
 
@@ -285,6 +394,18 @@ impl FileLike for Socket {
     }
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
+        // Mutating network ioctls change global interface/route state and require
+        // CAP_NET_ADMIN, matching Linux (`devinet_ioctl` gates SIOCSIF*
+        // address/netmask/flags/mtu and `ip_rt_ioctl` gates SIOCADDRT/SIOCDELRT on
+        // CAP_NET_ADMIN). Query ioctls (SIOCGIF*, FIONREAD, ...) stay available to
+        // unprivileged callers.
+        if matches!(
+            cmd,
+            SIOCSIFADDR | SIOCSIFNETMASK | SIOCSIFFLAGS | SIOCSIFMTU | SIOCADDRT | SIOCDELRT
+        ) && !current().as_thread().cred().has_cap_net_admin()
+        {
+            return Err(AxError::OperationNotPermitted);
+        }
         match cmd {
             FIONREAD => {
                 let available = self.inner.recv_available()?.min(c_int::MAX as usize) as c_int;
@@ -294,15 +415,6 @@ impl FileLike for Socket {
             SIOCGIFFLAGS => {
                 let info = read_ifreq_interface(arg)?;
                 write_ifreq_data(arg, &linux_flags(&info).to_ne_bytes())?;
-            }
-            SIOCSIFFLAGS => {
-                let info = read_ifreq_interface(arg)?;
-                if !current().as_thread().cred().has_cap(CAP_NET_ADMIN) {
-                    return Err(AxError::OperationNotPermitted);
-                }
-                if read_ifreq_flags(arg)? != linux_flags(&info) {
-                    return Err(AxError::OperationNotSupported);
-                }
             }
             SIOCGIFADDR => {
                 let info = read_ifreq_interface(arg)?;
@@ -336,11 +448,14 @@ impl FileLike for Socket {
             SIOCGIFHWADDR => {
                 let info = read_ifreq_interface(arg)?;
                 match info.kind {
-                    InterfaceKind::Ethernet => {
+                    InterfaceKind::Ethernet | InterfaceKind::Tap => {
                         let mac = info.mac.ok_or(AxError::NoSuchDevice)?;
                         write_ifreq_hwaddr(arg, ARPHRD_ETHER, &mac.0)?
                     }
                     InterfaceKind::Loopback => write_ifreq_hwaddr(arg, ARPHRD_LOOPBACK, &[])?,
+                    // A layer-3 TUN has no link-layer address; Linux reports
+                    // ARPHRD_NONE with an all-zero hardware address.
+                    InterfaceKind::Tun => write_ifreq_hwaddr(arg, ARPHRD_NONE, &[])?,
                 }
             }
             SIOCGIFMTU => {
@@ -364,6 +479,57 @@ impl FileLike for Socket {
                 let idx = read_ifreq_interface(arg)?.id.get() as i32;
                 write_ifreq_data(arg, &idx.to_ne_bytes())?;
             }
+            SIOCGIFNAME => {
+                // Reverse of SIOCGIFINDEX: resolve the interface by the caller-supplied
+                // ifr_ifindex and write its name back into ifr_name. dnsmasq's indextoname()
+                // drives this during interface enumeration.
+                let idx = i32::from_ne_bytes(read_user_bytes::<4>(
+                    (arg + IFREQ_DATA_OFFSET) as *const u8,
+                )?);
+                let id = InterfaceId::from_linux_ifindex(idx).ok_or(AxError::NoSuchDevice)?;
+                let info = visible_interface_by_id(id)?;
+                write_ifreq_name(arg, &info.name)?;
+            }
+            SIOCSIFADDR => {
+                // Assign an IPv4 address. Linux derives the prefix from the
+                // interface's current netmask, defaulting to the class mask;
+                // StarryOS keeps a single address per interface, so a /24 is a
+                // sensible default that `SIOCSIFNETMASK` cannot yet refine.
+                let info = read_ifreq_interface(arg)?;
+                let ip = read_sockaddr_ipv4(arg, IFREQ_DATA_OFFSET)?;
+                ax_net::set_interface_ipv4(info.id, ip, DEFAULT_IPV4_PREFIX)?;
+            }
+            SIOCSIFNETMASK => {
+                // Re-apply the address under the requested prefix. Userspace
+                // tools issue SIOCSIFADDR then SIOCSIFNETMASK; the second call
+                // adjusts the connected route to the intended CIDR.
+                let info = read_ifreq_interface(arg)?;
+                let mask = read_sockaddr_ipv4(arg, IFREQ_DATA_OFFSET)?;
+                let prefix = prefix_from_netmask(mask)?;
+                let address = interface_ipv4(&info)?.address;
+                let ip = core::net::Ipv4Addr::from(address.address().octets());
+                ax_net::remove_interface_ipv4(info.id, ip, address.prefix_len())?;
+                ax_net::set_interface_ipv4(info.id, ip, prefix)?;
+            }
+            SIOCSIFFLAGS => {
+                let info = read_ifreq_interface(arg)?;
+                let flags = read_ifreq_flags(arg)?;
+                ax_net::set_interface_flags(info.id, flags & IFF_UP != 0)?;
+            }
+            SIOCSIFMTU => {
+                // The single IP-medium router MTU is fixed; accept a request to
+                // set it to the current value and reject a different one so a
+                // caller cannot silently believe a larger MTU took effect.
+                let info = read_ifreq_interface(arg)?;
+                let requested = i32::from_ne_bytes(read_user_bytes::<4>(
+                    (arg + IFREQ_DATA_OFFSET) as *const u8,
+                )?);
+                if requested != info.mtu as i32 {
+                    return Err(AxError::InvalidInput);
+                }
+            }
+            SIOCADDRT => write_route(arg, true)?,
+            SIOCDELRT => write_route(arg, false)?,
             // Link speed/duplex query. No PHY is emulated, so report "not supported" the way a
             // virtual NIC (loopback, tun/tap) does. Tools like psutil's net_if_stats() treat
             // EOPNOTSUPP as "no ethtool" and degrade gracefully; any other errno makes them abort

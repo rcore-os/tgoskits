@@ -8,9 +8,9 @@
 use alloc::sync::Arc;
 
 use linux_raw_sys::general::{
-    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID, CAP_SETPCAP,
-    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RAWIO,
-    CAP_SYS_RESOURCE,
+    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_ADMIN, CAP_NET_RAW, CAP_SETGID,
+    CAP_SETPCAP, CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE,
+    CAP_SYS_RAWIO, CAP_SYS_RESOURCE,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -165,6 +165,13 @@ impl Cred {
     /// (equivalent to `CAP_NET_RAW`).
     pub fn has_cap_net_raw(&self) -> bool {
         self.has_cap(CAP_NET_RAW)
+    }
+
+    /// Check whether this credential may perform network administration -
+    /// configuring interfaces, routes and addresses, and creating or attaching
+    /// TUN/TAP devices (equivalent to `CAP_NET_ADMIN`).
+    pub fn has_cap_net_admin(&self) -> bool {
+        self.has_cap(CAP_NET_ADMIN)
     }
 
     /// Check whether this credential may raise scheduling priority

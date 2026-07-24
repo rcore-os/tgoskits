@@ -129,6 +129,12 @@ pub struct EthernetDevice {
     neighbors: HashMap<IpAddress, Neighbor>,
     pending_neighbors: HashMap<IpAddress, PendingNeighbor>,
     ip: Option<Ipv4Cidr>,
+    /// When `true`, frames with any destination MAC are accepted. Linux TAP
+    /// devices are implicitly promiscuous: `tun_get_user` injects frames
+    /// directly into the network stack via `netif_rx` without filtering by
+    /// destination MAC. Setting this flag reproduces that behavior and allows
+    /// a TAP to receive frames addressed to a peer MAC (e.g. bridging or VPN).
+    promiscuous: bool,
 
     pending_packets: PacketBuffer<'static, IpAddress>,
     /// Individual L2 frame lengths of packets transmitted on a side path
@@ -183,7 +189,7 @@ impl EthernetDevice {
 
     /// Creates an Ethernet adapter driven by the shared IRQ/poll path.
     pub fn new(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
-        Self::new_inner(name, inner, ip, false)
+        Self::new_inner(name, inner, ip, false, Arc::new(PollSet::new()))
     }
 
     /// Like [`new`](Self::new) but for a device whose RX readiness arrives
@@ -191,7 +197,21 @@ impl EthernetDevice {
     /// IRQ framework. Such a device has no IRQ registration, so `register_waker`
     /// must still arm `poll_ready` for it.
     pub fn new_oob_rx(name: String, inner: Box<dyn EthernetDriver>, ip: Option<Ipv4Cidr>) -> Self {
-        Self::new_inner(name, inner, ip, true)
+        Self::new_inner(name, inner, ip, true, Arc::new(PollSet::new()))
+    }
+
+    /// Like [`new_oob_rx`](Self::new_oob_rx) but adopts an externally owned poll
+    /// set as the device readiness signal instead of creating a private one. A
+    /// TAP device passes the `TunShared` poll set so that a `write(2)` on the
+    /// char fd - which wakes that set - drives this device's RX worker, while
+    /// stack-produced frames wake the same set to unblock a `read(2)`.
+    pub fn new_oob_rx_with_poll_set(
+        name: String,
+        inner: Box<dyn EthernetDriver>,
+        ip: Option<Ipv4Cidr>,
+        poll_ready: Arc<PollSet>,
+    ) -> Self {
+        Self::new_inner(name, inner, ip, true, poll_ready)
     }
 
     fn new_inner(
@@ -199,6 +219,7 @@ impl EthernetDevice {
         mut inner: Box<dyn EthernetDriver>,
         ip: Option<Ipv4Cidr>,
         oob_rx: bool,
+        poll_ready: Arc<PollSet>,
     ) -> Self {
         let irq = inner.irq_id();
         let registrar = irq.and_then(|_| ETHERNET_IRQ_REGISTRAR.get().copied());
@@ -208,7 +229,7 @@ impl EthernetDevice {
             irq_registration: spin::Once::new(),
             oob_rx,
             driver: SpinNoIrq::new(inner),
-            poll_ready: Arc::new(PollSet::new()),
+            poll_ready,
         });
         let pending_packets = PacketBuffer::new(
             vec![PacketMetadata::EMPTY; ETHERNET_MAX_PENDING_PACKETS],
@@ -255,6 +276,7 @@ impl EthernetDevice {
             neighbors: HashMap::new(),
             pending_neighbors: HashMap::new(),
             ip,
+            promiscuous: false,
 
             pending_packets,
             deferred_tx_frame_lens: Vec::new(),
@@ -264,6 +286,13 @@ impl EthernetDevice {
             deferred_rx_errors: 0,
             deferred_rx_drops: 0,
         }
+    }
+
+    /// Enables or disables promiscuous mode. When enabled, frames with any
+    /// destination MAC are accepted, matching Linux TAP behavior where
+    /// `tun_get_user` calls `netif_rx` without MAC filtering.
+    pub fn set_promiscuous(&mut self, promiscuous: bool) {
+        self.promiscuous = promiscuous;
     }
 
     #[inline]
@@ -350,7 +379,8 @@ impl EthernetDevice {
             return 0;
         };
 
-        if !repr.dst_addr.is_broadcast()
+        if !self.promiscuous
+            && !repr.dst_addr.is_broadcast()
             && repr.dst_addr != EMPTY_MAC
             && repr.dst_addr != self.hardware_address()
         {
