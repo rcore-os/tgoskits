@@ -452,11 +452,20 @@ pub trait VmArchVcpuOps: Sized {
     /// Injects an interrupt into the vCPU.
     fn inject_interrupt(&mut self, vector: usize) -> VmBackendResult;
     /// Injects an interrupt with trigger-mode metadata.
+    ///
+    /// The compatibility default delegates edge-triggered interrupts to
+    /// [`Self::inject_interrupt`]. Backends must override this method to
+    /// support level-triggered injection.
     fn inject_interrupt_with_trigger(
         &mut self,
         vector: usize,
         trigger: InterruptTriggerMode,
-    ) -> VmBackendResult;
+    ) -> VmBackendResult {
+        match trigger {
+            InterruptTriggerMode::EdgeTriggered => self.inject_interrupt(vector),
+            InterruptTriggerMode::LevelTriggered => Err(VmBackendError::Unsupported),
+        }
+    }
     /// Processes a guest EOI and returns an external EOI vector when needed.
     fn handle_eoi(&mut self) -> Option<u8> {
         None
