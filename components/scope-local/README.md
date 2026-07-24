@@ -55,7 +55,8 @@ cargo doc --no-deps
 caller's ordinary context. Pinned access only reads an already initialized
 scope and never allocates or invokes an item initializer. The first unpinned
 access to the global scope initializes it before entering the pinned section;
-recursive access from an initializer fails immediately with a diagnostic.
+recursive access from the initializing execution context fails immediately
+with a diagnostic, while competing contexts wait for the published scope.
 
 ### Example
 

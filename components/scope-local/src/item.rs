@@ -82,6 +82,7 @@ impl<T: Send + Sync + 'static> LocalItem<T> {
     /// The higher-ranked closure prevents a reference into per-CPU-selected
     /// storage from escaping after preemption is re-enabled. The first global
     /// access initializes the global scope before entering the pinned access.
+    /// Concurrent first access waits for that initialization to be published.
     pub fn with<R>(&self, operation: impl for<'access> FnOnce(&'access T) -> R) -> R {
         let mut operation = Some(operation);
         loop {

@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use ax_kernel_guard::NoPreempt;
@@ -54,28 +54,31 @@ impl Default for Scope {
 }
 
 static GLOBAL_SCOPE: Once<Scope> = Once::new();
-static GLOBAL_SCOPE_STATE: AtomicU8 = AtomicU8::new(GlobalScopeState::Uninitialized as u8);
+static GLOBAL_SCOPE_STATE: AtomicUsize = AtomicUsize::new(GlobalScopeState::Uninitialized as usize);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(u8)]
+#[repr(usize)]
 enum GlobalScopeState {
     Uninitialized,
-    Initializing,
     Ready,
 }
 
 struct GlobalInitialization {
+    owner_context: usize,
     published: bool,
 }
 
 impl GlobalInitialization {
-    fn begin() -> Self {
-        Self { published: false }
+    fn begin(owner_context: usize) -> Self {
+        Self {
+            owner_context,
+            published: false,
+        }
     }
 
     fn publish(mut self, scope: Scope) {
         GLOBAL_SCOPE.call_once(|| scope);
-        GLOBAL_SCOPE_STATE.store(GlobalScopeState::Ready as u8, Ordering::Release);
+        GLOBAL_SCOPE_STATE.store(GlobalScopeState::Ready as usize, Ordering::Release);
         self.published = true;
     }
 }
@@ -83,7 +86,12 @@ impl GlobalInitialization {
 impl Drop for GlobalInitialization {
     fn drop(&mut self) {
         if !self.published {
-            GLOBAL_SCOPE_STATE.store(GlobalScopeState::Uninitialized as u8, Ordering::Release);
+            let _ = GLOBAL_SCOPE_STATE.compare_exchange(
+                self.owner_context,
+                GlobalScopeState::Uninitialized as usize,
+                Ordering::Release,
+                Ordering::Relaxed,
+            );
         }
     }
 }
@@ -178,29 +186,47 @@ impl ActiveScope {
     }
 
     pub(crate) fn initialize_global() {
+        let owner_context = current_context_identity();
         loop {
             match GLOBAL_SCOPE_STATE.load(Ordering::Acquire) {
-                state if state == GlobalScopeState::Ready as u8 => return,
-                state if state == GlobalScopeState::Initializing as u8 => {
+                state if state == GlobalScopeState::Ready as usize => return,
+                state if state == owner_context => {
                     panic!("scope-local global scope initialization is already in progress")
                 }
-                state if state == GlobalScopeState::Uninitialized as u8 => {
+                state if state == GlobalScopeState::Uninitialized as usize => {
                     if GLOBAL_SCOPE_STATE
                         .compare_exchange(
-                            GlobalScopeState::Uninitialized as u8,
-                            GlobalScopeState::Initializing as u8,
+                            GlobalScopeState::Uninitialized as usize,
+                            owner_context,
                             Ordering::AcqRel,
                             Ordering::Acquire,
                         )
                         .is_ok()
                     {
-                        let initialization = GlobalInitialization::begin();
+                        let initialization = GlobalInitialization::begin(owner_context);
                         initialization.publish(Scope::new());
                         return;
                     }
                 }
-                _ => panic!("scope-local global scope has an invalid initialization state"),
+                _ => core::hint::spin_loop(),
             }
         }
     }
+}
+
+fn current_context_identity() -> usize {
+    let _guard = NoPreempt::new();
+    // SAFETY: the guard keeps the current thread header stable while its opaque
+    // identity is acquired. The header itself is pinned for the task lifetime,
+    // so this identity remains valid if the task later migrates during an
+    // initializer.
+    let context = unsafe {
+        ax_percpu::with_cpu_pin(|pin| pin.area().runtime_anchor().current_thread_raw())
+            .expect("scope-local access requires an installed CPU area")
+    };
+    assert!(
+        context > GlobalScopeState::Ready as usize,
+        "scope-local initialization requires a valid current context"
+    );
+    context
 }
