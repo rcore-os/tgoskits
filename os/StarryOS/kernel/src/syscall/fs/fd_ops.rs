@@ -821,11 +821,11 @@ pub(crate) fn fd_ops_flags_to_options_rules_hold_for_test() -> bool {
     let _options = flags_to_options(O_RDONLY as i32, 0o644, (1000, 1000));
     let _options = flags_to_options(O_WRONLY as i32, 0o644, (1000, 1000));
     let _options = flags_to_options(O_RDWR as i32, 0o644, (1000, 1000));
-    
+
     // Test with various flag combinations
     let _options = flags_to_options((O_WRONLY | O_APPEND | O_CREAT) as i32, 0o644, (1000, 1000));
     let _options = flags_to_options((O_RDWR | O_CREAT | O_TRUNC) as i32, 0o644, (1000, 1000));
     let _options = flags_to_options((O_RDONLY | O_PATH) as i32, 0o644, (1000, 1000));
-    
+
     true
 }

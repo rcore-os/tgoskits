@@ -39,12 +39,12 @@ pub(crate) fn ctl_ioctl_constants_hold_for_test() -> bool {
     // Verify ioctl command constants
     assert!(FIOCLEX == 0x5451);
     assert!(FIONCLEX == 0x5450);
-    
+
     // FIONBIO and FIOASYNC from linux_raw_sys
-    use linux_raw_sys::ioctl::{FIONBIO, FIOASYNC};
+    use linux_raw_sys::ioctl::{FIOASYNC, FIONBIO};
     assert!(FIONBIO == 0x5421);
     assert!(FIOASYNC == 0x5452);
-    
+
     true
 }
 

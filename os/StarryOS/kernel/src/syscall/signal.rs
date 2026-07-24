@@ -403,7 +403,7 @@ pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxRe
 pub(crate) fn signal_sigset_size_and_signo_validation_rules_hold_for_test() -> bool {
     use core::mem::size_of;
 
-    use starry_signal::{SignalSet, Signo};
+    use starry_signal::SignalSet;
 
     // check_sigset_size: only accepts exact size of SignalSet.
     let correct_size = size_of::<SignalSet>();
@@ -426,20 +426,21 @@ pub(crate) fn signal_sigset_size_and_signo_validation_rules_hold_for_test() -> b
 #[cfg(axtest)]
 pub(crate) fn signal_sigset_and_signo_validation_rules_hold_for_test() -> bool {
     use core::mem::size_of;
-    use starry_signal::{SignalSet, Signo};
-    
+
+    use starry_signal::SignalSet;
+
     // Test check_sigset_size
     let correct_size = size_of::<SignalSet>();
     assert!(check_sigset_size(correct_size).is_ok());
     assert!(check_sigset_size(correct_size - 1).is_err());
     assert!(check_sigset_size(correct_size + 1).is_err());
     assert!(check_sigset_size(0).is_err());
-    
+
     // Test parse_signo
     assert!(parse_signo(1).is_ok()); // SIGHUP
     assert!(parse_signo(9).is_ok()); // SIGKILL
     assert!(parse_signo(0).is_err()); // Invalid signo
     assert!(parse_signo(255).is_err()); // Out of range
-    
+
     true
 }

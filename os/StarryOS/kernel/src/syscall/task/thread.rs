@@ -134,13 +134,13 @@ pub(crate) fn thread_arch_prctl_code_rules_hold_for_test() -> bool {
         assert!(ArchPrctlCode::GetGs as i32 == 0x1004);
         assert!(ArchPrctlCode::GetCpuid as i32 == 0x1011);
         assert!(ArchPrctlCode::SetCpuid as i32 == 0x1012);
-        
+
         // Test TryFromPrimitive
         use num_enum::TryFromPrimitive;
         assert!(ArchPrctlCode::try_from_primitive(0x1001).is_ok());
         assert!(ArchPrctlCode::try_from_primitive(0x1002).is_ok());
         assert!(ArchPrctlCode::try_from_primitive(0xFFFF).is_err());
     }
-    
+
     true
 }

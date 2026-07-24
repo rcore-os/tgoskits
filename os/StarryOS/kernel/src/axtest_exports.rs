@@ -455,8 +455,8 @@ pub fn ctl_ioctl_constants_hold() -> bool {
     super::syscall::ctl_ioctl_constants_hold_for_test()
 }
 
-pub fn net_optNormalization_rules_hold() -> bool {
-    super::syscall::net_optNormalization_rules_hold_for_test()
+pub fn net_opt_normalization_rules_hold() -> bool {
+    super::syscall::net_opt_normalization_rules_hold_for_test()
 }
 
 pub fn net_io_constants_hold() -> bool {
@@ -465,8 +465,4 @@ pub fn net_io_constants_hold() -> bool {
 
 pub fn net_socket_constants_hold() -> bool {
     super::syscall::net_socket_constants_hold_for_test()
-}
-
-pub fn buddy_slab_page_constants_and_header_helpers_hold() -> bool {
-    super::buddy_slab_page_constants_and_header_helpers_hold_for_test()
 }

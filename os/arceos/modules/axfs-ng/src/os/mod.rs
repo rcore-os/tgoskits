@@ -5,9 +5,6 @@ pub mod sync;
 pub mod task;
 pub mod time;
 
-#[cfg(axtest)]
-pub(crate) use self::irq::block_irq_outcome_and_ready_hold_for_test;
-
 pub use dma::{dma_op, has_dma_op, install_dma_op};
 pub use irq::{
     BlockIrqOutcome, BlockIrqRegistrar, BlockIrqRegistration, has_irq_registrar,
@@ -22,6 +19,9 @@ pub use task::{
     task_wait_until, task_yield, wait_for_drain_notification, wake_task,
 };
 pub use time::{BlockTimeProvider, has_time_provider, set_time_provider, wall_time};
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) use self::irq::block_irq_outcome_and_ready_hold_for_test;
 
 /// Installs all OS capabilities used by ax-fs-ng.
 pub fn install(

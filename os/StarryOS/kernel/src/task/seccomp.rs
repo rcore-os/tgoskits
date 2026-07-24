@@ -720,7 +720,7 @@ pub(crate) fn seccomp_bpf_constants_hold_for_test() -> bool {
     // BPF limits
     assert!(BPF_MAXINSNS == 4096);
     assert!(BPF_MEMWORDS == 16);
-    
+
     // BPF class constants
     assert!(BPF_CLASS_MASK == 0x07);
     assert!(BPF_LD == 0x00);
@@ -731,19 +731,19 @@ pub(crate) fn seccomp_bpf_constants_hold_for_test() -> bool {
     assert!(BPF_JMP == 0x05);
     assert!(BPF_RET == 0x06);
     assert!(BPF_MISC == 0x07);
-    
+
     // BPF size constants
     assert!(BPF_SIZE_MASK == 0x18);
     assert!(BPF_W == 0x00);
     assert!(BPF_H == 0x08);
     assert!(BPF_B == 0x10);
-    
+
     // BPF mode constants
     assert!(BPF_MODE_MASK == 0xe0);
     assert!(BPF_IMM == 0x00);
     assert!(BPF_ABS == 0x20);
     assert!(BPF_MEM == 0x60);
     assert!(BPF_LEN == 0x80);
-    
+
     true
 }

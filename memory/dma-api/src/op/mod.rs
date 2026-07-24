@@ -198,27 +198,27 @@ pub trait DmaOp: Sync + Send + 'static {
 pub(crate) fn dma_op_direction_matching_hold_for_test() -> bool {
     // Test that DmaDirection variants work correctly for sync operations
     use crate::DmaDirection;
-    
+
     let to_device = DmaDirection::ToDevice;
     let from_device = DmaDirection::FromDevice;
     let bidirectional = DmaDirection::Bidirectional;
-    
+
     // Verify all directions are distinct
     assert!(to_device != from_device);
     assert!(from_device != bidirectional);
     assert!(to_device != bidirectional);
-    
+
     true
 }
 
 #[cfg(axtest)]
 pub(crate) fn dma_op_constraints_and_error_types_hold_for_test() -> bool {
     // Test DmaConstraints and DmaError types
-    use crate::{DmaConstraints, DmaError};
-    
+    use crate::DmaError;
+
     // Test DmaError variants exist
     let _no_memory = DmaError::NoMemory;
-    
+
     true
 }
 
@@ -226,26 +226,50 @@ pub(crate) fn dma_op_constraints_and_error_types_hold_for_test() -> bool {
 pub(crate) fn dma_op_sync_direction_branches_hold_for_test() -> bool {
     // Test that all DmaDirection branches are covered in sync logic
     use crate::DmaDirection;
-    
+
     // Test ToDevice matches
     assert!(matches!(DmaDirection::ToDevice, DmaDirection::ToDevice));
     assert!(!matches!(DmaDirection::ToDevice, DmaDirection::FromDevice));
-    assert!(!matches!(DmaDirection::ToDevice, DmaDirection::Bidirectional));
-    
+    assert!(!matches!(
+        DmaDirection::ToDevice,
+        DmaDirection::Bidirectional
+    ));
+
     // Test FromDevice matches
     assert!(matches!(DmaDirection::FromDevice, DmaDirection::FromDevice));
     assert!(!matches!(DmaDirection::FromDevice, DmaDirection::ToDevice));
-    assert!(!matches!(DmaDirection::FromDevice, DmaDirection::Bidirectional));
-    
+    assert!(!matches!(
+        DmaDirection::FromDevice,
+        DmaDirection::Bidirectional
+    ));
+
     // Test Bidirectional matches both
-    assert!(matches!(DmaDirection::Bidirectional, DmaDirection::Bidirectional));
-    assert!(!matches!(DmaDirection::Bidirectional, DmaDirection::ToDevice));
-    assert!(!matches!(DmaDirection::Bidirectional, DmaDirection::FromDevice));
-    
+    assert!(matches!(
+        DmaDirection::Bidirectional,
+        DmaDirection::Bidirectional
+    ));
+    assert!(!matches!(
+        DmaDirection::Bidirectional,
+        DmaDirection::ToDevice
+    ));
+    assert!(!matches!(
+        DmaDirection::Bidirectional,
+        DmaDirection::FromDevice
+    ));
+
     // Test combined patterns
-    assert!(matches!(DmaDirection::ToDevice, DmaDirection::ToDevice | DmaDirection::Bidirectional));
-    assert!(!matches!(DmaDirection::FromDevice, DmaDirection::ToDevice | DmaDirection::Bidirectional));
-    assert!(matches!(DmaDirection::Bidirectional, DmaDirection::ToDevice | DmaDirection::Bidirectional));
-    
+    assert!(matches!(
+        DmaDirection::ToDevice,
+        DmaDirection::ToDevice | DmaDirection::Bidirectional
+    ));
+    assert!(!matches!(
+        DmaDirection::FromDevice,
+        DmaDirection::ToDevice | DmaDirection::Bidirectional
+    ));
+    assert!(matches!(
+        DmaDirection::Bidirectional,
+        DmaDirection::ToDevice | DmaDirection::Bidirectional
+    ));
+
     true
 }

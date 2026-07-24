@@ -1034,11 +1034,11 @@ pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
 
     // validate_syslog_read_args: null buf or len > i32::MAX is invalid.
     && validate_syslog_read_args(core::ptr::null_mut(), 0).is_err()
-    && validate_syslog_read_args(core::ptr::null_mut::<i8>(), 100).is_err()
-    && validate_syslog_read_args(0x1 as *mut i8, 0).is_ok()  // non-null, len=0 is ok
+    && validate_syslog_read_args(core::ptr::null_mut::<c_char>(), 100).is_err()
+    && validate_syslog_read_args(0x1 as *mut c_char, 0).is_ok()  // non-null, len=0 is ok
     && {
-        let dummy = &mut 0i8;
-        let ptr: *mut i8 = dummy;
+        let mut dummy: c_char = 0;
+        let ptr: *mut c_char = &mut dummy;
         validate_syslog_read_args(ptr, i32::MAX as usize).is_ok()
         && validate_syslog_read_args(ptr, (i32::MAX as usize) + 1).is_err()
     }
@@ -1047,27 +1047,29 @@ pub(crate) fn uid_valid_and_syslog_validation_rules_hold_for_test() -> bool {
 #[cfg(axtest)]
 pub(crate) fn sys_constants_and_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{GRND_INSECURE, GRND_NONBLOCK, GRND_RANDOM};
-    
+
     // Test NOCHG sentinel value
     assert!(NOCHG == u32::MAX);
-    
+
     // Test getrandom flags
     let valid_flags = 0u32;
     assert!(valid_flags & !(GRND_NONBLOCK as u32 | GRND_INSECURE as u32 | GRND_RANDOM as u32) == 0);
-    
+
     let nonblock_only = GRND_NONBLOCK as u32;
-    assert!(nonblock_only & !(GRND_NONBLOCK as u32 | GRND_INSECURE as u32 | GRND_RANDOM as u32) == 0);
-    
+    assert!(
+        nonblock_only & !(GRND_NONBLOCK as u32 | GRND_INSECURE as u32 | GRND_RANDOM as u32) == 0
+    );
+
     // Test seccomp constants
     assert!(SECCOMP_SET_MODE_STRICT == 0);
     assert!(SECCOMP_SET_MODE_FILTER == 1);
     assert!(SECCOMP_GET_ACTION_AVAIL == 2);
-    
+
     // Test seccomp filter flags
     assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_TSYNC != 0);
     assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_LOG != 0);
     assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_SPEC_ALLOW != 0);
     assert!(SECCOMP_ALLOWED_FLAGS & SECCOMP_FILTER_FLAG_TSYNC_ESRCH != 0);
-    
+
     true
 }

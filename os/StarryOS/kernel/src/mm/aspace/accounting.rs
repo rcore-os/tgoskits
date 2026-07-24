@@ -508,23 +508,23 @@ pub(crate) fn rss_kind_and_accounting_rules_hold_for_test() -> bool {
     let anon = RssKind::Anon;
     let file = RssKind::File;
     let shmem = RssKind::Shmem;
-    
+
     // PartialEq
     assert!(anon == RssKind::Anon);
     assert!(anon != file);
     assert!(file != shmem);
-    
+
     // Clone
     let anon2 = anon.clone();
     assert!(anon2 == anon);
-    
+
     // Default MemoryAccounting has zero counters
     let acc = MemoryAccounting::new();
     let (a, f, s) = acc.snapshot_resident_charges();
     assert!(a == 0);
     assert!(f == 0);
     assert!(s == 0);
-    
+
     true
 }
 
@@ -536,17 +536,17 @@ pub(crate) fn accounting_rss_kind_debug_and_default_hold_for_test() -> bool {
     assert_eq!(acc_default.rss_file_pages(), 0);
     assert_eq!(acc_default.rss_shmem_pages(), 0);
     assert_eq!(acc_default.rss_total_pages(), 0);
-    
+
     // Test individual rss getters
     let acc_new = MemoryAccounting::new();
     assert_eq!(acc_new.rss_anon_pages(), 0);
     assert_eq!(acc_new.rss_file_pages(), 0);
     assert_eq!(acc_new.rss_shmem_pages(), 0);
-    
+
     // Test RssKind Copy trait
     let anon = RssKind::Anon;
     let copied = anon;
     assert_eq!(anon, copied);
-    
+
     true
 }

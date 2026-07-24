@@ -42,11 +42,11 @@ pub use self::{
 };
 #[cfg(axtest)]
 pub(crate) use self::{
+    ops::decode_wait_status_rules_hold_for_test,
     posix_timer::posix_timer_clock_validation_rules_hold_for_test,
-    timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
     seccomp::seccomp_action_and_precedence_rules_hold_for_test,
     seccomp::seccomp_bpf_constants_hold_for_test,
-    ops::decode_wait_status_rules_hold_for_test,
+    timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

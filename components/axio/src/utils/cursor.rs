@@ -457,6 +457,7 @@ pub(crate) fn cursor_split_and_clone_hold_for_test() -> bool {
 #[cfg(axtest)]
 pub(crate) fn cursor_seek_from_variants_hold_for_test() -> bool {
     use alloc::vec;
+
     use crate::{Cursor, Seek, SeekFrom};
 
     let mut cursor = Cursor::new(vec![1, 2, 3, 4, 5]);
@@ -522,11 +523,12 @@ pub(crate) fn cursor_split_mut_and_write_hold_for_test() -> bool {
 #[cfg(axtest)]
 pub(crate) fn cursor_buf_read_impl_hold_for_test() -> bool {
     use alloc::vec;
+
     use crate::{BufRead, Cursor};
 
     // Test BufRead impl for Cursor
     let mut cursor = Cursor::new(vec![1, 2, 3, 4, 5]);
-    
+
     // Test fill_buf
     let buf = cursor.fill_buf().unwrap();
     assert_eq!(buf, &[1, 2, 3, 4, 5]);
@@ -545,6 +547,7 @@ pub(crate) fn cursor_buf_read_impl_hold_for_test() -> bool {
 #[cfg(axtest)]
 pub(crate) fn cursor_write_box_array_and_fixed_size_hold_for_test() -> bool {
     use alloc::boxed::Box;
+
     use crate::{Cursor, Write};
 
     // Test Write impl for Cursor<Box<[u8]>>
@@ -557,7 +560,7 @@ pub(crate) fn cursor_write_box_array_and_fixed_size_hold_for_test() -> bool {
     let mut cursor = Cursor::new([0u8; 8]);
     cursor.write_all(&[4, 5, 6, 7]).unwrap();
     assert_eq!(cursor.position(), 4);
-    
+
     // Test flush (should always succeed)
     let mut cursor = Cursor::new([0u8; 4]);
     cursor.flush().unwrap();

@@ -1,7 +1,5 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
-#![feature(core_io)]
-#![feature(core_io_borrowed_buf)]
 
 extern crate alloc;
 
@@ -18,6 +16,7 @@ use ax_page_table_entry as _;
 use ax_std as _;
 use axfs_ng_vfs as _;
 use axpoll as _;
+use buddy_slab_allocator as _;
 use dma_api as _;
 use irq_framework as _;
 use kernutil as _;

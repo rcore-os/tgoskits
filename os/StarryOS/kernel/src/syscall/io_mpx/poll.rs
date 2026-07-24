@@ -197,8 +197,6 @@ pub fn sys_ppoll(
 
 #[cfg(axtest)]
 pub(crate) fn poll_nfds_validation_rules_hold_for_test() -> bool {
-    use linux_raw_sys::general::RLIMIT_NOFILE;
-
     // Test nfds validation logic
     // nfds must be <= RLIMIT_NOFILE current limit
     let valid_nfds = 0usize;

@@ -129,17 +129,17 @@ impl Debug for PciHeaderBase {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) fn pci_config_space_enum_hold_for_test() -> bool {
     // Test PciConfigSpace enum variants exist
     // We can't construct them without hardware, but verify type works
     let _option: Option<PciConfigSpace> = None;
     assert!(_option.is_none());
-    
+
     true
 }
 
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) fn pci_revision_and_class_comprehensive_hold_for_test() -> bool {
     // Test RevisionAndClass with all zero values
     let zero = RevisionAndClass {
@@ -152,7 +152,7 @@ pub(crate) fn pci_revision_and_class_comprehensive_hold_for_test() -> bool {
     assert_eq!(zero.base_class, 0);
     assert_eq!(zero.sub_class, 0);
     assert_eq!(zero.interface, 0);
-    
+
     // Test RevisionAndClass with max u8 values
     let max = RevisionAndClass {
         revision_id: 255,
@@ -162,14 +162,14 @@ pub(crate) fn pci_revision_and_class_comprehensive_hold_for_test() -> bool {
     };
     assert_eq!(max.revision_id, 255);
     assert_eq!(max.base_class, 255);
-    
+
     true
 }
 
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) fn pci_config_space_enum_variants_hold_for_test() -> bool {
     // Test PciConfigSpace enum variants exist
     // We can't construct them without real PCI data, but verify the type exists
-    
+
     true
 }

@@ -121,7 +121,7 @@ pub(crate) fn rseq_validation_rules_hold_for_test() -> bool {
     assert!(result.is_err());
 
     // Valid flags (0 and RSEQ_FLAG_UNREGISTER) should pass address validation
-    let result = validate_rseq_args(addr, RSEQ_AREA_SIZE, 0);
+    let _result = validate_rseq_args(addr, RSEQ_AREA_SIZE, 0);
     // Note: will fail on alignment check for non-aligned address
 
     // Aligned address should work

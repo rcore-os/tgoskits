@@ -122,7 +122,7 @@ pub fn memory_addr_page_size_constants_hold() -> bool {
     assert!(PAGE_SIZE_4K == 4096);
     assert!(PAGE_SIZE_2M == 2097152);
     assert!(PAGE_SIZE_1G == 1073741824);
-    
+
     // align_down and align_up basic tests
     assert!(align_down(0, 4096) == 0);
     assert!(align_up(0, 4096) == 0);
@@ -130,7 +130,7 @@ pub fn memory_addr_page_size_constants_hold() -> bool {
     assert!(align_up(4096, 4096) == 4096);
     assert!(align_down(4097, 4096) == 4096);
     assert!(align_up(4097, 4096) == 8192);
-    
+
     true
 }
 
@@ -142,6 +142,6 @@ pub fn memory_addr_align_4k_helpers_hold() -> bool {
     assert!(align_offset_4k(0x12345) == 0x345);
     assert!(is_aligned_4k(0x12000));
     assert!(!is_aligned_4k(0x12001));
-    
+
     true
 }

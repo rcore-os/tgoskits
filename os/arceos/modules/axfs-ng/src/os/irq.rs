@@ -50,19 +50,19 @@ pub fn has_irq_registrar() -> bool {
     IRQ_READY.load(Ordering::Acquire)
 }
 
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) fn block_irq_outcome_and_ready_hold_for_test() -> bool {
     // Test BlockIrqOutcome variants
     let handled = BlockIrqOutcome::Handled;
     let wake = BlockIrqOutcome::Wake;
-    
+
     assert!(handled != wake);
-    
+
     // Test Clone, Copy, Debug, Eq, PartialEq
     let _cloned = handled;
-    
+
     // Test has_irq_registrar returns false initially (no registrar set)
     assert!(!has_irq_registrar());
-    
+
     true
 }

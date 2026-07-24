@@ -23,6 +23,9 @@ pub use slab::{
     SlabPoolDeallocResult, SlabPoolTrait, SlabTrait, StaticSlabPool,
 };
 
+#[cfg(all(axtest, feature = "axtest"))]
+mod axtest;
+
 pub mod global;
 #[doc(hidden)]
 pub use global::__reset_global_allocator_singleton_for_tests;

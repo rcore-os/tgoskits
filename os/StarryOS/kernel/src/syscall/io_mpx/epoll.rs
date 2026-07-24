@@ -263,9 +263,8 @@ pub fn sys_epoll_pwait2(
 #[cfg(axtest)]
 pub(crate) fn epoll_validation_rules_hold_for_test() -> bool {
     use core::mem::size_of;
-    use linux_raw_sys::general::{
-        EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD,
-    };
+
+    use linux_raw_sys::general::{EPOLL_CLOEXEC, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
 
     // Test EP_MAX_EVENTS calculation
     let ep_max_events = i32::MAX as usize / size_of::<linux_raw_sys::general::epoll_event>();

@@ -150,8 +150,6 @@ pub(crate) fn process_vm_stat_watermarks_hold_for_test() -> bool {
 
 #[cfg(axtest)]
 pub(crate) fn process_vm_stat_edge_cases_hold_for_test() -> bool {
-    use core::sync::atomic::Ordering;
-
     // Initial state: all zeros.
     let stat = ProcessVmStat::new();
     let init_ok = stat.vss_pages() == 0 && stat.peak_vss_pages() == 0 && stat.peak_rss_pages() == 0;

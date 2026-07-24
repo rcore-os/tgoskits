@@ -60,6 +60,9 @@ stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = []
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
+
 [dependencies]
 ax-alloc = { workspace = true }
 ax-crate-interface.workspace = true
@@ -221,10 +224,11 @@ rdrive = { workspace = true, features = ["axtest"] }
 rsext4 = { workspace = true, features = ["axtest"] }
 scope-local = { workspace = true, features = ["axtest"] }
 ax-page-table-entry = { workspace = true, features = ["axtest"] }
+buddy-slab-allocator = { workspace = true, features = ["axtest"] }
 
 [[test]]
-name = "coverage"
-path = "tests/coverage.rs"
+name = "axtest_kernel"
+path = "tests/axtest_kernel.rs"
 harness = false
 required-features = ["axtest"]
 

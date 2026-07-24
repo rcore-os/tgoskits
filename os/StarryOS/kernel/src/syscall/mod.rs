@@ -1043,14 +1043,14 @@ pub(crate) fn syscall_signal_restart_rules_hold_for_test() -> bool {
 }
 
 #[cfg(axtest)]
-pub(crate) use self::signal::signal_sigset_and_signo_validation_rules_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::time::time_clock_id_validation_rules_hold_for_test;
-#[cfg(axtest)]
-pub(crate) use self::resources::resources_rlimit_validation_rules_hold_for_test;
+pub(crate) use self::ipc::ipc_permission_and_constants_rules_hold_for_test;
 #[cfg(axtest)]
 pub(crate) use self::kmod::kmod_flags_validation_rules_hold_for_test;
 #[cfg(axtest)]
+pub(crate) use self::resources::resources_rlimit_validation_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::signal::signal_sigset_and_signo_validation_rules_hold_for_test;
+#[cfg(axtest)]
 pub(crate) use self::sys::sys_constants_and_validation_rules_hold_for_test;
 #[cfg(axtest)]
-pub(crate) use self::ipc::ipc_permission_and_constants_rules_hold_for_test;
+pub(crate) use self::time::time_clock_id_validation_rules_hold_for_test;

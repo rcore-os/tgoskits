@@ -57,7 +57,7 @@ fn pcie_config_revision_and_class_variants_hold() {
     // Test common PCI class codes
     let storage = RevisionAndClass {
         revision_id: 1,
-        base_class: 0x01,  // Mass storage controller
+        base_class: 0x01, // Mass storage controller
         sub_class: 0x00,  // SCSI
         interface: 0x00,
     };
@@ -65,7 +65,7 @@ fn pcie_config_revision_and_class_variants_hold() {
 
     let network = RevisionAndClass {
         revision_id: 2,
-        base_class: 0x02,  // Network controller
+        base_class: 0x02, // Network controller
         sub_class: 0x00,  // Ethernet
         interface: 0x00,
     };
@@ -73,7 +73,7 @@ fn pcie_config_revision_and_class_variants_hold() {
 
     let display = RevisionAndClass {
         revision_id: 3,
-        base_class: 0x03,  // Display controller
+        base_class: 0x03, // Display controller
         sub_class: 0x00,  // VGA
         interface: 0x00,
     };
@@ -87,9 +87,9 @@ fn pcie_config_space_enum_variants_hold() {
     // Test that PciConfigSpace is an enum (we can't construct variants without
     // actual PCI hardware, but we can verify the type exists and Debug is derived)
     // The enum has variants: PciPciBridge, Endpoint, CardBusBridge, Unknown
-    
-    // Verify Debug is implemented (derived)
-    // We can't construct instances without real hardware, but the type exists
+
+    // Verify Debug is implemented (derived).
+    // We can't construct instances without real hardware, but the type exists.
     let _type_check: Option<PciConfigSpace> = None;
     ax_assert!(_type_check.is_none());
 }
@@ -105,12 +105,11 @@ fn pcie_revision_and_class_comprehensive_hold() {
 }
 
 #[axtest]
-fn pcie_config_space_enum_variants_hold() {
+fn pcie_config_space_enum_helpers_hold() {
     ax_assert!(crate::types::config::pci_config_space_enum_variants_hold_for_test());
 }
 
 #[axtest]
 fn pci_constants_hold() {
     ax_assert!(crate::pci_constants_hold_for_test());
-}
 }

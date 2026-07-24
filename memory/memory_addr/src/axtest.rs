@@ -211,14 +211,20 @@ fn memory_addr_overflowing_and_checked_ops_hold() {
     ax_assert!(overflow);
 
     // checked_sub
-    ax_assert_eq!(PhysAddr::from(0x100).checked_sub(0x50), Some(PhysAddr::from(0xb0)));
+    ax_assert_eq!(
+        PhysAddr::from(0x100).checked_sub(0x50),
+        Some(PhysAddr::from(0xb0))
+    );
     ax_assert_eq!(PhysAddr::from(0x50).checked_sub(0x100), None);
 
     // sub_addr
     ax_assert_eq!(PhysAddr::from(0x200).sub_addr(PhysAddr::from(0x100)), 0x100);
 
     // wrapping_sub_addr
-    ax_assert_eq!(VirtAddr::from(0x100).wrapping_sub_addr(VirtAddr::from(0x200)), usize::MAX - 0xff);
+    ax_assert_eq!(
+        VirtAddr::from(0x100).wrapping_sub_addr(VirtAddr::from(0x200)),
+        usize::MAX - 0xff
+    );
 
     // overflowing_sub_addr
     let (diff, ovf) = VirtAddr::from(0x300).overflowing_sub_addr(VirtAddr::from(0x100));
@@ -229,8 +235,14 @@ fn memory_addr_overflowing_and_checked_ops_hold() {
     ax_assert!(ovf);
 
     // checked_sub_addr
-    ax_assert_eq!(VirtAddr::from(0x300).checked_sub_addr(VirtAddr::from(0x100)), Some(0x200));
-    ax_assert_eq!(VirtAddr::from(0x100).checked_sub_addr(VirtAddr::from(0x300)), None);
+    ax_assert_eq!(
+        VirtAddr::from(0x300).checked_sub_addr(VirtAddr::from(0x100)),
+        Some(0x200)
+    );
+    ax_assert_eq!(
+        VirtAddr::from(0x100).checked_sub_addr(VirtAddr::from(0x300)),
+        None
+    );
 }
 
 #[axtest]
@@ -245,8 +257,7 @@ fn memory_addr_align_4k_helpers_hold() {
 
 #[axtest]
 fn memory_addr_align_up_down_edge_cases_hold() {
-    use crate::{align_down, align_up, align_offset, is_aligned, PAGE_SIZE_2M, PAGE_SIZE_4K};
-    use alloc::vec;
+    use crate::{PAGE_SIZE_2M, PAGE_SIZE_4K, align_down, align_offset, align_up, is_aligned};
 
     // Edge cases for align functions
     ax_assert_eq!(align_down(0, 0x1000), 0);
@@ -309,16 +320,10 @@ fn memory_addr_wrapping_offset_and_offset_from_hold() {
 
     // Test wrapping_offset with negative offset
     let pa = PhysAddr::from(0x100);
-    ax_assert_eq!(
-        pa.wrapping_offset(-0x50),
-        PhysAddr::from(0xb0)
-    );
+    ax_assert_eq!(pa.wrapping_offset(-0x50), PhysAddr::from(0xb0));
 
     // Test wrapping_offset with positive offset
-    ax_assert_eq!(
-        pa.wrapping_offset(0x50),
-        PhysAddr::from(0x150)
-    );
+    ax_assert_eq!(pa.wrapping_offset(0x50), PhysAddr::from(0x150));
 
     // Test offset_from
     let base = PhysAddr::from(0x1000);

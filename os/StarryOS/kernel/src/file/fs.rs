@@ -354,8 +354,9 @@ impl Pollable for Directory {
 }
 #[cfg(axtest)]
 pub(crate) fn metadata_to_kstat_conversion_rules_hold_for_test() -> bool {
-    use axfs_ng_vfs::{Metadata, DeviceId};
     use core::time::Duration;
+
+    use axfs_ng_vfs::{DeviceId, Metadata};
 
     // Create a Metadata with known values.
     let meta = Metadata {

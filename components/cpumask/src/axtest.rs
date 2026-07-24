@@ -197,7 +197,7 @@ fn cpumask_iterator_clone_debug_and_empty_crossing_rules_hold() {
 
     let mask = CpuMask::<16>::from_raw_bits(0b1000_0000_0000_0001);
     let mut iter = (&mask).into_iter();
-    
+
     // Test basic iteration
     ax_assert_eq!(iter.next(), Some(0));
     ax_assert_eq!(iter.next(), Some(15));
@@ -205,7 +205,7 @@ fn cpumask_iterator_clone_debug_and_empty_crossing_rules_hold() {
 
     // Test clone
     let mask2 = CpuMask::<16>::from_raw_bits(0b1000_0000_0000_0001);
-    let mut iter2 = (&mask2).into_iter();
+    let iter2 = (&mask2).into_iter();
     let _cloned = iter2.clone();
 
     // Test empty mask

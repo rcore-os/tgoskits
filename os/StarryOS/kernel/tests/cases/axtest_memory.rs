@@ -45,8 +45,3 @@ fn stats_classify_and_accumulate_rules_hold() {
 fn accounting_edge_cases_and_snapshot_rules_hold() {
     ax_assert!(axtest_exports::accounting_edge_cases_and_snapshot_rules_hold());
 }
-
-#[axtest]
-fn buddy_slab_page_constants_and_header_helpers_hold() {
-    ax_assert!(axtest_exports::buddy_slab_page_constants_and_header_helpers_hold());
-}

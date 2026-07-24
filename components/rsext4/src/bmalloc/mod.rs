@@ -315,7 +315,7 @@ pub(crate) fn bmalloc_type_conversions_and_validation_rules_hold_for_test() -> b
     assert!(abs.as_usize().unwrap() == 1000);
     let added = abs.checked_add(50).unwrap();
     assert!(added.raw() == 1050);
-    
+
     // AbsoluteBN overflow
     let big = AbsoluteBN::new(u64::from(u32::MAX) + 1);
     assert!(big.to_u32().is_err());
@@ -331,16 +331,16 @@ pub(crate) fn bmalloc_type_conversions_and_validation_rules_hold_for_test() -> b
     assert!(ino.raw() == 100);
     assert!(ino.as_u64() == 100);
     assert!(ino.as_usize().unwrap() == 100);
-    
+
     // InodeNumber::from_u64 overflow
     assert!(InodeNumber::from_u64(u64::from(u32::MAX) + 1).is_err());
-    
+
     // InodeNumber::to_group
     let ino = InodeNumber::new(5000).unwrap();
     let (group, idx) = ino.to_group(1000).unwrap();
     assert!(group.raw() == 4); // (5000-1)/1000 = 4
     assert!(idx.raw() == 999); // (5000-1)%1000 = 999
-    
+
     // InodeNumber::to_group with zero inodes_per_group fails
     assert!(InodeNumber::new(1).unwrap().to_group(0).is_err());
 
@@ -354,10 +354,10 @@ pub(crate) fn bmalloc_type_conversions_and_validation_rules_hold_for_test() -> b
     let (g, r) = abs_bn.to_group(1, 100).unwrap();
     assert!(g.raw() == 4); // (500-1)/100 = 4
     assert!(r.raw() == 99); // (500-1)%100 = 99
-    
+
     // AbsoluteBN::to_group with zero blocks_per_group fails
     assert!(AbsoluteBN::new(100).to_group(1, 0).is_err());
-    
+
     // AbsoluteBN::below first_data_block fails
     assert!(AbsoluteBN::new(0).to_group(10, 100).is_err());
 

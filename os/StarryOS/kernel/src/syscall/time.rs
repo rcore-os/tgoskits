@@ -279,11 +279,10 @@ pub fn sys_timer_delete(timerid: __kernel_timer_t) -> AxResult<isize> {
 #[cfg(axtest)]
 pub(crate) fn time_clock_id_validation_rules_hold_for_test() -> bool {
     use linux_raw_sys::general::{
-        CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE,
-        CLOCK_MONOTONIC_RAW, CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME,
-        CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,
+        CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
+        CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,
     };
-    
+
     // Test valid clock IDs for clock_gettime
     let valid_clocks = [
         CLOCK_REALTIME as u32,
@@ -295,16 +294,16 @@ pub(crate) fn time_clock_id_validation_rules_hold_for_test() -> bool {
         CLOCK_PROCESS_CPUTIME_ID as u32,
         CLOCK_THREAD_CPUTIME_ID as u32,
     ];
-    
+
     // All these should be valid (non-zero to distinguish from invalid)
     for &clock in &valid_clocks {
         assert!(clock > 0 || clock == 0); // Just verify they're valid constants
     }
-    
+
     // Test that invalid clock IDs would be rejected
     // Clock ID 999 should be invalid
     assert!(999u32 != CLOCK_REALTIME as u32);
     assert!(999u32 != CLOCK_MONOTONIC as u32);
-    
+
     true
 }

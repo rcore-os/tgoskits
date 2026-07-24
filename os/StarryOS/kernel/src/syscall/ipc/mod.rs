@@ -86,7 +86,7 @@ pub(crate) fn ipc_permission_and_constants_rules_hold_for_test() -> bool {
     assert!(IPC_PRIVATE == 0);
     assert!(IPC_CREAT == 0o1000);
     assert!(IPC_EXCL == 0o2000);
-    
+
     // Test has_ipc_permission logic
     let perm = IpcPerm {
         key: 0,
@@ -100,23 +100,23 @@ pub(crate) fn ipc_permission_and_constants_rules_hold_for_test() -> bool {
         unused0: 0,
         unused1: 0,
     };
-    
+
     // Root user should have all permissions
     assert!(has_ipc_permission(&perm, 0, 0, false));
     assert!(has_ipc_permission(&perm, 0, 0, true));
-    
+
     // Owner with read permission
     assert!(has_ipc_permission(&perm, 1000, 1000, false));
-    
+
     // Owner with write permission (mode is 0o644, owner has write)
     assert!(has_ipc_permission(&perm, 1000, 1000, true));
-    
+
     // Other user with read permission
     assert!(has_ipc_permission(&perm, 2000, 2000, false));
-    
+
     // Other user without write permission (mode is 0o644, other has only read)
     assert!(!has_ipc_permission(&perm, 2000, 2000, true));
-    
+
     // Test with read-only mode for owner
     let perm_readonly = IpcPerm {
         key: 0,
@@ -130,10 +130,10 @@ pub(crate) fn ipc_permission_and_constants_rules_hold_for_test() -> bool {
         unused0: 0,
         unused1: 0,
     };
-    
+
     // Owner without write permission
     assert!(has_ipc_permission(&perm_readonly, 1000, 1000, false));
     assert!(!has_ipc_permission(&perm_readonly, 1000, 1000, true));
-    
+
     true
 }

@@ -272,8 +272,8 @@ fn ctl_ioctl_constants_hold() {
 }
 
 #[axtest]
-fn net_optNormalization_rules_hold() {
-    ax_assert!(axtest_exports::net_optNormalization_rules_hold());
+fn net_opt_normalization_rules_hold() {
+    ax_assert!(axtest_exports::net_opt_normalization_rules_hold());
 }
 #[axtest]
 fn net_io_constants_hold() {

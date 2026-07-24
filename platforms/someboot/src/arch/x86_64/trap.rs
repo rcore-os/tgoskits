@@ -581,12 +581,12 @@ pub fn set_cr3(addr: PhysAddr) {
     }
 }
 
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) fn trap_constants_and_structs_hold_for_test() -> bool {
     // Test IA32_EFER constants
     assert!(IA32_EFER == 0xc000_0080);
     assert!(IA32_EFER_NXE == (1 << 11));
-    
+
     // Test LAPIC register addresses
     assert!(LAPIC_REG_EOI == 0x0b0);
     assert!(LAPIC_REG_SVR == 0x0f0);
@@ -594,22 +594,22 @@ pub(crate) fn trap_constants_and_structs_hold_for_test() -> bool {
     assert!(LAPIC_REG_TIMER_INIT_COUNT == 0x380);
     assert!(LAPIC_REG_TIMER_CUR_COUNT == 0x390);
     assert!(LAPIC_REG_TIMER_DIV == 0x3e0);
-    
+
     // Test LAPIC bit constants
     assert!(LAPIC_LVT_MASKED == (1 << 16));
     assert!(LAPIC_LVT_TIMER_TSC_DEADLINE == (1 << 18));
     assert!(LAPIC_SVR_ENABLE == (1 << 8));
-    
+
     // Test LAPIC base mask
     assert!(LAPIC_BASE_MASK == 0xffff_f000);
-    
+
     // Test APIC base enable bits
     assert!(IA32_APIC_BASE_ENABLE == (1 << 11));
     assert!(IA32_APIC_BASE_X2APIC_ENABLE == (1 << 10));
-    
+
     // Test timer divide constant
     assert!(LAPIC_TIMER_DIVIDE_BY_16 == 0b0011);
-    
+
     // Test x2APIC register addresses
     assert!(IA32_X2APIC_EOI == 0x80b);
     assert!(IA32_X2APIC_SIVR == 0x80f);
@@ -617,48 +617,48 @@ pub(crate) fn trap_constants_and_structs_hold_for_test() -> bool {
     assert!(IA32_X2APIC_INIT_COUNT == 0x838);
     assert!(IA32_X2APIC_CUR_COUNT == 0x839);
     assert!(IA32_X2APIC_DIV_CONF == 0x83e);
-    
+
     true
 }
 
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) fn pit_and_tsc_constants_hold_for_test() -> bool {
     // Test PIT port addresses
     assert!(PIT_CHANNEL2_PORT == 0x42);
     assert!(PIT_COMMAND_PORT == 0x43);
     assert!(PIT_CONTROL_PORT == 0x61);
-    
+
     // Test PIT bit constants
     assert!(PIT_CHANNEL2_GATE == 0x01);
     assert!(PIT_SPEAKER_ENABLE == 0x02);
     assert!(PIT_CHANNEL2_OUT == 0x20);
     assert!(PIT_MODE0_CHANNEL2 == 0xb0);
-    
+
     // Test TSC calibration constants
     assert!(PIT_TICK_RATE_HZ == 1_193_182);
     assert!(TSC_PIT_CALIBRATION_MS == 50);
     assert!(TSC_PIT_MAX_POLL_COUNT == 5_000_000);
-    
+
     // Test TSC frequency bounds
     assert!(MIN_VALID_TSC_FREQ_HZ == 10_000_000);
     assert!(MAX_VALID_TSC_FREQ_HZ == 10_000_000_000);
-    
+
     true
 }
 
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) fn trap_idt_and_gate_constants_hold_for_test() -> bool {
     // Test IDT-related constants if they exist
     // Test that trap handler functions exist
-    
+
     true
 }
 
-#[cfg(axtest)]
+#[cfg(all(axtest, feature = "axtest"))]
 pub(crate) fn trap_msr_and_efer_constants_hold_for_test() -> bool {
     // Test MSR and EFER constants
     assert!(IA32_EFER == 0xc000_0080);
     assert!(IA32_EFER_NXE == (1 << 11));
-    
+
     true
 }

@@ -10,6 +10,7 @@ categories = ["os", "no-std"]
 license = "Apache-2.0"
 
 [features]
+axtest = []
 # To use in the multi-core environment
 smp = []
 host-test = ["ax-kernel-guard/host-test"]

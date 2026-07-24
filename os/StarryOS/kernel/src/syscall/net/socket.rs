@@ -310,17 +310,17 @@ pub(crate) fn net_socket_constants_hold_for_test() -> bool {
     assert!(AF_PACKET == 17);
     #[cfg(feature = "vsock")]
     assert!(AF_VSOCK == 40);
-    
+
     // Socket type constants
     assert!(SOCK_STREAM == 1);
     assert!(SOCK_DGRAM == 2);
     assert!(SOCK_RAW == 3);
     assert!(SOCK_SEQPACKET == 5);
-    
+
     // Shutdown constants
     assert!(SHUT_RD == 0);
     assert!(SHUT_WR == 1);
     assert!(SHUT_RDWR == 2);
-    
+
     true
 }

@@ -240,6 +240,7 @@ impl<I: Write + ?Sized> BufferedWriterSpec for BufWriter<I> {
 }
 
 #[cfg(axtest)]
+/// Checks copy buffer constants used by axtest coverage.
 pub fn copy_constants_hold_for_test() -> bool {
     // DEFAULT_BUF_SIZE constant
     assert!(DEFAULT_BUF_SIZE == 2048);
@@ -249,6 +250,7 @@ pub fn copy_constants_hold_for_test() -> bool {
 }
 
 #[cfg(axtest)]
+/// Checks buffered-reader copy assumptions used by axtest coverage.
 pub fn copy_buffered_reader_spec_hold_for_test() -> bool {
     // Test BufferedReaderSpec trait methods exist
     // The trait is tested through the copy function but we verify constants here
@@ -257,6 +259,7 @@ pub fn copy_buffered_reader_spec_hold_for_test() -> bool {
 }
 
 #[cfg(axtest)]
+/// Checks byte-slice copy assumptions used by axtest coverage.
 pub fn copy_slice_specialization_hold_for_test() -> bool {
     // Test that &[u8] specialization for BufferedReaderSpec exists
     // This specialization is used when copying from a byte slice

@@ -375,7 +375,7 @@ fn expand_tests_module(
             }
 
             fn __axtest_wait_for_coverage_extraction() {
-                const WAIT_NANOS: u64 = 5_000_000_000;
+                const WAIT_NANOS: u64 = 30_000_000_000;
                 let start = ax_hal::time::wall_time_nanos();
                 while ax_hal::time::wall_time_nanos().saturating_sub(start) < WAIT_NANOS {
                     core::hint::spin_loop();

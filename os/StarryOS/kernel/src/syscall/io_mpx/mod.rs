@@ -24,8 +24,8 @@ impl Pollable for FdPollSet {
 }
 
 #[cfg(axtest)]
-pub(crate) use self::select::select_fd_set_and_validation_rules_hold_for_test;
+pub(crate) use self::epoll::epoll_validation_rules_hold_for_test;
 #[cfg(axtest)]
 pub(crate) use self::poll::poll_nfds_validation_rules_hold_for_test;
 #[cfg(axtest)]
-pub(crate) use self::epoll::epoll_validation_rules_hold_for_test;
+pub(crate) use self::select::select_fd_set_and_validation_rules_hold_for_test;

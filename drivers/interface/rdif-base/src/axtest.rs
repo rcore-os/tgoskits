@@ -148,7 +148,7 @@ fn rdif_base_error_kind_variants_hold() {
         ErrorKind::OutOfMemory,
         ErrorKind::InvalidParameter { name: "test" },
     ];
-    
+
     // Just verify they can be created and matched
     for kind in &kinds {
         match kind {
@@ -168,7 +168,10 @@ fn rdif_base_error_kind_variants_hold() {
 
 #[axtest]
 fn rdif_base_read_write_trait_dispatch_hold() {
-    use crate::{DriverGeneric, io::{Error, ErrorKind, Read, Write}};
+    use crate::{
+        DriverGeneric,
+        io::{Error, Read, Write},
+    };
 
     struct TestBackend {
         data: Vec<u8>,
@@ -208,11 +211,11 @@ fn rdif_base_read_write_trait_dispatch_hold() {
 
     // Test read
     let mut buf = [0; 5];
-    backend.read(&mut buf);
+    let _ = backend.read(&mut buf);
     ax_assert_eq!(&buf, b"hello");
 
     // Test write
-    backend.write(b" world");
+    let _ = backend.write(b" world");
     ax_assert_eq!(backend.data, b"hello world");
 }
 
@@ -221,10 +224,16 @@ fn rdif_base_error_conversion_and_chaining_hold() {
     use crate::io::{Error, ErrorKind};
 
     // Test error creation with different kinds
-    let err1 = Error { kind: ErrorKind::InvalidData, success_pos: 0 };
+    let err1 = Error {
+        kind: ErrorKind::InvalidData,
+        success_pos: 0,
+    };
     ax_assert!(matches!(err1.kind, ErrorKind::InvalidData));
 
-    let err2 = Error { kind: ErrorKind::TimedOut, success_pos: 0 };
+    let err2 = Error {
+        kind: ErrorKind::TimedOut,
+        success_pos: 0,
+    };
     ax_assert!(matches!(err2.kind, ErrorKind::TimedOut));
 
     // Test error with success position
@@ -235,7 +244,10 @@ fn rdif_base_error_conversion_and_chaining_hold() {
     ax_assert_eq!(err3.success_pos, 5);
 
     // Test Other variant
-    let inner = Error { kind: ErrorKind::WriteZero, success_pos: 0 };
+    let inner = Error {
+        kind: ErrorKind::WriteZero,
+        success_pos: 0,
+    };
     let outer = ErrorKind::Other(Box::new(inner));
     ax_assert!(matches!(outer, ErrorKind::Other(_)));
 }
@@ -251,7 +263,10 @@ fn rdif_base_seek_and_io_traits_hold() {
 
     impl VecWriter {
         fn new() -> Self {
-            Self { data: Vec::new(), pos: 0 }
+            Self {
+                data: Vec::new(),
+                pos: 0,
+            }
         }
     }
 
@@ -314,7 +329,9 @@ fn rdif_base_driver_generic_name_and_any_hold() {
         }
     }
 
-    let mut backend = NamedBackend { name_str: "test-driver" };
+    let mut backend = NamedBackend {
+        name_str: "test-driver",
+    };
     ax_assert_eq!(backend.name(), "test-driver");
     ax_assert!(backend.raw_any().is_none());
     ax_assert!(backend.raw_any_mut().is_none());
@@ -322,7 +339,7 @@ fn rdif_base_driver_generic_name_and_any_hold() {
 
 #[axtest]
 fn rdif_base_io_read_empty_and_partial_hold() {
-    use crate::io::{Error, ErrorKind, Read};
+    use crate::io::{Error, Read};
 
     // Test reading from empty source
     struct EmptyReader;
@@ -354,7 +371,10 @@ fn rdif_base_io_read_empty_and_partial_hold() {
         }
     }
 
-    let mut partial = PartialReader { data: b"hi", pos: 0 };
+    let mut partial = PartialReader {
+        data: b"hi",
+        pos: 0,
+    };
     let mut buf2 = [0u8; 10];
     partial.read(&mut buf2).unwrap();
     ax_assert_eq!(&buf2[..2], b"hi");
@@ -362,7 +382,7 @@ fn rdif_base_io_read_empty_and_partial_hold() {
 
 #[axtest]
 fn rdif_base_io_write_multiple_calls_hold() {
-    use crate::io::{Error, ErrorKind, Write};
+    use crate::io::{Error, Write};
 
     // Test multiple write calls accumulate correctly
     struct AccumulatingWriter {

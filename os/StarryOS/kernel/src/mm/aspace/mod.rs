@@ -25,9 +25,9 @@ mod backend;
 #[cfg(axtest)]
 pub(crate) use self::accounting::accounting_edge_cases_and_snapshot_rules_hold_for_test;
 #[cfg(axtest)]
-pub(crate) use self::accounting::rss_kind_and_accounting_rules_hold_for_test;
-#[cfg(axtest)]
 pub(crate) use self::accounting::accounting_rss_kind_debug_and_default_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::accounting::rss_kind_and_accounting_rules_hold_for_test;
 pub use self::{
     accounting::{CloneMapAccounting, MemoryAccounting, RssAccountingGuard},
     backend::*,

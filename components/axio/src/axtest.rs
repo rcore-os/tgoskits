@@ -1397,7 +1397,7 @@ fn axio_error_kind_variants_and_display_hold() {
         // Just verify they can be created and formatted
         let _formatted = format!("{error}");
     }
-    
+
     // Test Error::canonicalize behavior
     ax_assert_eq!(Error::Interrupted.canonicalize(), Error::Interrupted);
     ax_assert_eq!(Error::UnexpectedEof.canonicalize(), Error::UnexpectedEof);
@@ -1405,7 +1405,7 @@ fn axio_error_kind_variants_and_display_hold() {
 
 #[axtest]
 fn axio_bufread_lines_and_split_hold() {
-    use ax_io::{BufRead, Error, Read};
+    use ax_io::{BufRead, Error};
 
     let data = b"line1\nline2\nline3";
     let mut cursor = ax_io::Cursor::new(data.to_vec());
@@ -1429,16 +1429,12 @@ fn axio_bufread_lines_and_split_hold() {
 
     // Test split with small buffer
     let data2 = b"a b c";
-    let mut cursor2 = ax_io::Cursor::new(data2.to_vec());
+    let cursor2 = ax_io::Cursor::new(data2.to_vec());
     let mut parts: Vec<String> = Vec::new();
     for result in cursor2.split(b' ') {
         match result {
             Ok(chunk) => {
-                parts.push(
-                    alloc::str::from_utf8(&chunk)
-                        .unwrap_or("")
-                        .to_string(),
-                );
+                parts.push(alloc::str::from_utf8(&chunk).unwrap_or("").to_string());
             }
             Err(_) => break,
         }
@@ -1478,10 +1474,14 @@ fn axio_cursor_write_box_array_and_fixed_size_hold() {
 
 #[axtest]
 fn axio_read_default_read_exact_short_reads_hold() {
-    use crate::{Read, Error, default_read_exact};
+    use crate::{Error, Read, default_read_exact};
 
     // Test a reader that returns short reads
-    struct ShortReader { data: Vec<u8>, pos: usize, chunk: usize }
+    struct ShortReader {
+        data: Vec<u8>,
+        pos: usize,
+        chunk: usize,
+    }
     impl Read for ShortReader {
         fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
             if self.pos >= self.data.len() {
@@ -1495,7 +1495,11 @@ fn axio_read_default_read_exact_short_reads_hold() {
         }
     }
 
-    let mut reader = ShortReader { data: b"hello world".to_vec(), pos: 0, chunk: 3 };
+    let mut reader = ShortReader {
+        data: b"hello world".to_vec(),
+        pos: 0,
+        chunk: 3,
+    };
     let mut buf = [0u8; 11];
     let result = default_read_exact(&mut reader, &mut buf);
     ax_assert!(result.is_ok());
@@ -1504,7 +1508,7 @@ fn axio_read_default_read_exact_short_reads_hold() {
 
 #[axtest]
 fn axio_read_default_read_exact_eof_hold() {
-    use crate::{Read, Error, default_read_exact};
+    use crate::{Error, Read, default_read_exact};
 
     // Test that EOF before filling buffer returns UnexpectedEof
     struct EofReader;
@@ -1537,17 +1541,17 @@ fn axio_read_default_read_exact_eof_hold_from_mod() {
 
 #[axtest]
 fn axio_chain_struct_basic_hold() {
-    use crate::{Read, Chain, Error};
-    
+    use crate::{Chain, Read};
+
     // Test Chain struct chains two readers
     let data1: &[u8] = b"hello";
     let data2: &[u8] = b" world";
     let mut chain = Chain::new(data1, data2);
-    
+
     // Read first part from data1
     let mut buf = [0u8; 11];
     let n = chain.read(&mut buf).unwrap();
-    
+
     // Chain should read from both readers
     ax_assert!(n > 0);
 }
@@ -1555,7 +1559,7 @@ fn axio_chain_struct_basic_hold() {
 #[axtest]
 fn axio_error_variants_hold() {
     use crate::Error;
-    
+
     // Test Error variants exist
     let _unexpected_eof = Error::UnexpectedEof;
     let _interrupted = Error::Interrupted;
@@ -1579,11 +1583,11 @@ fn axio_read_bufread_has_data_left_from_mod() {
 #[axtest]
 fn axio_error_all_variants_hold() {
     use crate::Error;
-    
+
     // Test all Error variants exist
     let _unexpected_eof = Error::UnexpectedEof;
     let _interrupted = Error::Interrupted;
-    
+
     // Test Error::canonicalize()
     let eof = Error::UnexpectedEof;
     assert!(eof.canonicalize() == Error::UnexpectedEof);
@@ -1592,7 +1596,7 @@ fn axio_error_all_variants_hold() {
 #[axtest]
 fn axio_seek_from_all_variants_hold() {
     use crate::SeekFrom;
-    
+
     // Test SeekFrom variants
     let _start = SeekFrom::Start(0);
     let _end = SeekFrom::End(0);
@@ -1602,8 +1606,8 @@ fn axio_seek_from_all_variants_hold() {
 
 #[axtest]
 fn axio_io_bytes_trait_hold() {
-    use crate::{Read, Write, BufRead};
-    
+    use crate::{BufRead, Read, Write};
+
     // Test that Read, Write, BufRead traits exist
     fn _assert_read<R: Read>() {}
     fn _assert_write<W: Write>() {}

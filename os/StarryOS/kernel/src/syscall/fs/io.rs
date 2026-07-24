@@ -1020,7 +1020,6 @@ pub(crate) fn io_rwf_flags_validation_rules_hold_for_test() -> bool {
 
 #[cfg(axtest)]
 pub(crate) fn io_offset_from_hilo_rules_hold_for_test() -> bool {
-    use linux_raw_sys::general::__kernel_off_t;
     // Test offset_from_hilo function
     // On 64-bit, offset_from_hilo should return pos_l directly
     let result = offset_from_hilo(1000, 0);

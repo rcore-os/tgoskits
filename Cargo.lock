@@ -1802,6 +1802,7 @@ name = "buddy-slab-allocator"
 version = "0.4.6"
 dependencies = [
  "ax-kspin",
+ "axtest",
  "divan",
  "log",
  "rand 0.10.2",
@@ -7775,6 +7776,7 @@ dependencies = [
  "axtest",
  "bitflags 2.13.1",
  "bitmaps",
+ "buddy-slab-allocator",
  "bytemuck",
  "cfg-if",
  "chrono",
