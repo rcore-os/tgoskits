@@ -37,7 +37,14 @@ name = "global_allocator"
 
 [dependencies]
 ax-kspin = { workspace = true }
+axtest = { workspace = true, optional = true }
 log = "0.4"
+
+[features]
+axtest = ["dep:axtest"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dev-dependencies]
 divan = "0.1.21"

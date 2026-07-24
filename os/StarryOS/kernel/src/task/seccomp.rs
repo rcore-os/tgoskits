@@ -441,3 +441,309 @@ pub fn seccomp_errno(errno: u16) -> usize {
         -(errno as i32) as usize
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn seccomp_filter_rules_hold_for_test() -> bool {
+    let allow = SockFilter {
+        code: BPF_RET,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ALLOW,
+    };
+    let errno = SockFilter {
+        code: BPF_RET,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ERRNO | 13,
+    };
+    let data = SeccompData {
+        nr: Sysno::read as i32,
+        arch: AUDIT_ARCH,
+        instruction_pointer: 0x1234_5678_9abc_def0,
+        args: [0x1122_3344_5566_7788, 1, 2, 3, 4, 5],
+    };
+    let syscall_errno_filter = SeccompFilter::new(alloc::vec![
+        SockFilter {
+            code: BPF_LD | BPF_W | BPF_ABS,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        SockFilter {
+            code: BPF_JMP | BPF_JEQ,
+            jt: 0,
+            jf: 1,
+            k: Sysno::read as u32,
+        },
+        errno,
+        allow,
+    ]);
+    let alu_filter = SeccompFilter::new(alloc::vec![
+        SockFilter {
+            code: BPF_LD | BPF_W | BPF_IMM,
+            jt: 0,
+            jf: 0,
+            k: 7,
+        },
+        SockFilter {
+            code: BPF_ST,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        SockFilter {
+            code: BPF_LDX | BPF_W | BPF_MEM,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        SockFilter {
+            code: BPF_ALU | BPF_ADD | BPF_X,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        SockFilter {
+            code: BPF_ALU | BPF_MOD,
+            jt: 0,
+            jf: 0,
+            k: 5,
+        },
+        SockFilter {
+            code: BPF_MISC | BPF_TAX,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        SockFilter {
+            code: BPF_RET | BPF_X,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+    ]);
+    let invalid_div_filter = SeccompFilter::new(alloc::vec![
+        SockFilter {
+            code: BPF_LD | BPF_W | BPF_IMM,
+            jt: 0,
+            jf: 0,
+            k: 1,
+        },
+        SockFilter {
+            code: BPF_ALU | BPF_DIV,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+    ]);
+
+    SeccompFilter::new(alloc::vec![]).is_err()
+        && strict_decision(Sysno::read as usize) == SeccompDecision::Allow
+        && strict_decision(Sysno::openat as usize) == SeccompDecision::KillProcess
+        // Cover every strict_decision branch (exit/exit_group/rt_sigreturn allow).
+        && strict_decision(Sysno::write as usize) == SeccompDecision::Allow
+        && strict_decision(Sysno::exit as usize) == SeccompDecision::Allow
+        && strict_decision(Sysno::exit_group as usize) == SeccompDecision::Allow
+        && strict_decision(Sysno::rt_sigreturn as usize) == SeccompDecision::Allow
+        // Cover every action_to_decision arm.
+        && action_to_decision(SECCOMP_RET_ALLOW) == SeccompDecision::Allow
+        && action_to_decision(SECCOMP_RET_LOG) == SeccompDecision::Allow
+        && action_to_decision(SECCOMP_RET_ERRNO | 9) == SeccompDecision::Errno(9)
+        && action_to_decision(SECCOMP_RET_KILL_PROCESS) == SeccompDecision::KillProcess
+        && action_to_decision(SECCOMP_RET_KILL_THREAD) == SeccompDecision::KillThread
+        && action_to_decision(SECCOMP_RET_TRAP) == SeccompDecision::UnsupportedAction
+        && action_to_decision(SECCOMP_RET_TRACE) == SeccompDecision::UnsupportedAction
+        && action_to_decision(0xffff_ffff) == SeccompDecision::KillProcess
+        && action_precedence(SECCOMP_RET_KILL_PROCESS) > action_precedence(SECCOMP_RET_ERRNO)
+        && action_precedence(SECCOMP_RET_KILL_THREAD) > action_precedence(SECCOMP_RET_TRAP)
+        && action_precedence(SECCOMP_RET_TRAP) > action_precedence(SECCOMP_RET_ERRNO)
+        && action_precedence(SECCOMP_RET_ERRNO) > action_precedence(SECCOMP_RET_TRACE)
+        && action_precedence(SECCOMP_RET_TRACE) > action_precedence(SECCOMP_RET_LOG)
+        && action_precedence(SECCOMP_RET_LOG) > action_precedence(SECCOMP_RET_ALLOW)
+        // Cover jump_rhs both BPF_X (use register) and non-BPF_X (use k) arms.
+        && jump_rhs(
+            SockFilter {
+                code: BPF_JMP | BPF_JEQ | BPF_X,
+                k: 99,
+                ..allow
+            },
+            7,
+        ) == 7
+        && jump_rhs(
+            SockFilter {
+                code: BPF_JMP | BPF_JEQ,
+                k: 99,
+                ..allow
+            },
+            7,
+        ) == 99
+        && jump_target(
+            3,
+            SockFilter {
+                jt: 2,
+                jf: 4,
+                ..allow
+            },
+            true,
+        ) == Some(5)
+        && jump_target(
+            3,
+            SockFilter {
+                jt: 2,
+                jf: 4,
+                ..allow
+            },
+            false,
+        ) == Some(7)
+        && load_seccomp_data(&data, 0, BPF_W) == Some(Sysno::read as u32)
+        && load_seccomp_data(&data, 4, BPF_W) == Some(AUDIT_ARCH)
+        && load_seccomp_data(&data, 8, BPF_W) == Some(0x9abc_def0)
+        && load_seccomp_data(&data, 12, BPF_W) == Some(0x1234_5678)
+        && load_seccomp_data(&data, 16, BPF_W) == Some(0x5566_7788)
+        && load_seccomp_data(&data, 20, BPF_W) == Some(0x1122_3344)
+        && load_seccomp_data(&data, 24, BPF_W) == Some(1)
+        && load_seccomp_data(&data, 48, BPF_W) == Some(4)
+        && load_seccomp_data(&data, 52, BPF_W) == Some(0)
+        && load_seccomp_data(&data, 16, BPF_H) == Some(0x7788)
+        && load_seccomp_data(&data, 16, BPF_B) == Some(0x88)
+        // Unknown size code (none of BPF_W=0, BPF_H=0x08, BPF_B=0x10) returns None.
+        && load_seccomp_data(&data, 0, 0x20).is_none()
+        // Unknown offset returns None.
+        && load_seccomp_data(&data, 64, BPF_W).is_none()
+        && syscall_errno_filter
+            .as_ref()
+            .is_ok_and(|filter| filter.execute(&data) == (SECCOMP_RET_ERRNO | 13))
+        && alu_filter
+            .as_ref()
+            .is_ok_and(|filter| filter.execute(&data) == 4)
+        && invalid_div_filter
+            .as_ref()
+            .is_ok_and(|filter| filter.execute(&data) == SECCOMP_RET_KILL_THREAD)
+        && seccomp_errno(0) == 0
+        && seccomp_errno(13) == (-13i32 as usize)
+}
+
+#[cfg(axtest)]
+pub(crate) fn seccomp_filter_construction_rules_hold_for_test() -> bool {
+    use alloc::vec;
+
+    // Empty instruction list is rejected.
+    SeccompFilter::new(vec![]).is_err()
+        // A single return-instruction filter is accepted.
+        && SeccompFilter::new(vec![SockFilter {
+            code: BPF_RET,
+            jt: 0,
+            jf: 0,
+            k: SECCOMP_RET_ALLOW,
+        }])
+        .is_ok()
+        // Exactly BPF_MAXINSNS instructions is the boundary and is accepted.
+        && SeccompFilter::new(vec![
+            SockFilter {
+                code: BPF_RET,
+                jt: 0,
+                jf: 0,
+                k: SECCOMP_RET_ALLOW,
+            };
+            BPF_MAXINSNS
+        ])
+        .is_ok()
+        // One instruction above BPF_MAXINSNS is rejected.
+        && SeccompFilter::new(vec![
+            SockFilter {
+                code: BPF_RET,
+                jt: 0,
+                jf: 0,
+                k: SECCOMP_RET_ALLOW,
+            };
+            BPF_MAXINSNS + 1
+        ])
+        .is_err()
+}
+
+#[cfg(axtest)]
+pub(crate) fn seccomp_action_and_precedence_rules_hold_for_test() -> bool {
+    // action_to_decision: converts raw seccomp return to decision.
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_ALLOW),
+        SeccompDecision::Allow
+    ));
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_LOG),
+        SeccompDecision::Allow
+    ));
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_ERRNO | 1),
+        SeccompDecision::Errno(1)
+    ));
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_KILL_PROCESS),
+        SeccompDecision::KillProcess
+    ));
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_KILL_THREAD),
+        SeccompDecision::KillThread
+    ));
+    assert!(matches!(
+        action_to_decision(SECCOMP_RET_TRAP),
+        SeccompDecision::UnsupportedAction
+    ));
+
+    // action_precedence: KILL_PROCESS has highest precedence (7).
+    assert!(action_precedence(SECCOMP_RET_KILL_PROCESS) == 7);
+    assert!(action_precedence(SECCOMP_RET_KILL_THREAD) == 6);
+    assert!(action_precedence(SECCOMP_RET_ERRNO) == 4);
+    assert!(action_precedence(SECCOMP_RET_ALLOW) == 1);
+
+    // jump_rhs: selects RHS operand based on BPF_SRC_MASK.
+    let insn_k = SockFilter {
+        code: BPF_JEQ, // immediate mode
+        jt: 0,
+        jf: 0,
+        k: 42,
+    };
+    assert!(jump_rhs(insn_k, 100) == 42);
+
+    let insn_x = SockFilter {
+        code: BPF_JEQ | BPF_X, // X register mode
+        jt: 0,
+        jf: 0,
+        k: 0,
+    };
+    assert!(jump_rhs(insn_x, 100) == 100);
+
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) fn seccomp_bpf_constants_hold_for_test() -> bool {
+    // BPF limits
+    assert!(BPF_MAXINSNS == 4096);
+    assert!(BPF_MEMWORDS == 16);
+
+    // BPF class constants
+    assert!(BPF_CLASS_MASK == 0x07);
+    assert!(BPF_LD == 0x00);
+    assert!(BPF_LDX == 0x01);
+    assert!(BPF_ST == 0x02);
+    assert!(BPF_STX == 0x03);
+    assert!(BPF_ALU == 0x04);
+    assert!(BPF_JMP == 0x05);
+    assert!(BPF_RET == 0x06);
+    assert!(BPF_MISC == 0x07);
+
+    // BPF size constants
+    assert!(BPF_SIZE_MASK == 0x18);
+    assert!(BPF_W == 0x00);
+    assert!(BPF_H == 0x08);
+    assert!(BPF_B == 0x10);
+
+    // BPF mode constants
+    assert!(BPF_MODE_MASK == 0xe0);
+    assert!(BPF_IMM == 0x00);
+    assert!(BPF_ABS == 0x20);
+    assert!(BPF_MEM == 0x60);
+    assert!(BPF_LEN == 0x80);
+
+    true
+}

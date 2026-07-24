@@ -1,9 +1,16 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
+#[cfg(all(axtest, feature = "axtest"))]
+extern crate alloc;
+
 use core::fmt;
 
 use strum::EnumCount;
+
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for error mappings and conversions.
+pub mod axtest;
 
 mod linux_errno {
     include!(concat!(env!("OUT_DIR"), "/linux_errno.rs"));

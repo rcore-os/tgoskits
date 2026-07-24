@@ -63,6 +63,11 @@ impl RequestFlags {
         self.0
     }
 
+    #[cfg(all(axtest, feature = "axtest"))]
+    pub(crate) const fn from_bits_for_test(bits: u32) -> Self {
+        Self(bits)
+    }
+
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }

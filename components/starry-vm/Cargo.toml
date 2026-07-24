@@ -12,6 +12,9 @@ license = "Apache-2.0"
 default = ["alloc"]
 alloc = []
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [dependencies]
 ax-errno = { workspace = true }
 bytemuck = { version = "1.24", features = [

@@ -790,3 +790,51 @@ impl Epoll {
         }
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn epoll_event_matching_rules_hold_for_test() -> bool {
+    use axpoll::IoEvents as E;
+
+    // No overlap between current and interested (and no ALWAYS_POLL bits in
+    // current) yields the empty set.
+    let no_overlap = match_ready_events(E::OUT, E::IN);
+    !no_overlap.contains(E::IN) && !no_overlap.contains(E::OUT)
+        // Always-poll bits (ERR/HUP) in current are forwarded regardless of
+        // the caller's interest mask.
+        && match_ready_events(E::HUP, E::OUT).contains(E::HUP)
+        && match_ready_events(E::ERR, E::empty()).contains(E::ERR)
+        // HUP forces IN even when the caller is not interested in IN, so that
+        // pipes report EOF on EPOLLHUP-only subscriptions.
+        && (match_ready_events(E::HUP, E::OUT).contains(E::IN))
+        // HUP combining with interested IN yields both IN and HUP.
+        && {
+            let m = match_ready_events(E::HUP | E::IN, E::IN);
+            m.contains(E::IN) && m.contains(E::HUP)
+        }
+        // Interested IN with current IN matches.
+        && match_ready_events(E::IN, E::IN).contains(E::IN)
+        // register_events merges interested with ALWAYS_POLL.
+        && (register_events(E::IN).contains(E::IN) && register_events(E::IN).contains(E::ALWAYS_POLL))
+        && (register_events(E::empty()).contains(E::ALWAYS_POLL) && !register_events(E::empty()).contains(E::IN))
+        // TriggerMode transitions: Level always notifies; Edge always notifies;
+        // OneShot notifies once and then goes silent until restored.
+        && matches!(TriggerMode::from_flags(EpollFlags::empty()), TriggerMode::Level)
+        && matches!(TriggerMode::from_flags(EpollFlags::EDGE_TRIGGER), TriggerMode::Edge)
+        && matches!(
+            TriggerMode::from_flags(EpollFlags::ONESHOT),
+            TriggerMode::OneShot { fired: false }
+        )
+        // should_notify: LT always true; Edge always true; OneShot true once.
+        && TriggerMode::Level.should_notify().0
+        && TriggerMode::Edge.should_notify().0
+        && {
+            let (first, new) = TriggerMode::OneShot { fired: false }.should_notify();
+            let (second, _) = new.should_notify();
+            first && !second
+        }
+        // is_enabled: LT and Edge always enabled; OneShot enabled only before fired.
+        && TriggerMode::Level.is_enabled()
+        && TriggerMode::Edge.is_enabled()
+        && TriggerMode::OneShot { fired: false }.is_enabled()
+        && !TriggerMode::OneShot { fired: true }.is_enabled()
+}

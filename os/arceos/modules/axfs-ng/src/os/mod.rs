@@ -20,6 +20,9 @@ pub use task::{
 };
 pub use time::{BlockTimeProvider, has_time_provider, set_time_provider, wall_time};
 
+#[cfg(all(axtest, feature = "axtest"))]
+pub(crate) use self::irq::block_irq_outcome_and_ready_hold_for_test;
+
 /// Installs all OS capabilities used by ax-fs-ng.
 pub fn install(
     time_provider: &'static dyn time::BlockTimeProvider,

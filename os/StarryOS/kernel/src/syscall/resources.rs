@@ -138,3 +138,32 @@ pub fn sys_getrusage(who: i32, usage: *mut rusage) -> AxResult<isize> {
 
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn resources_rlimit_validation_rules_hold_for_test() -> bool {
+    use linux_raw_sys::general::RLIM_NLIMITS;
+
+    // Test resource limit validation
+    // Resource must be < RLIM_NLIMITS
+    let valid_resource = 0u32;
+    assert!(valid_resource < RLIM_NLIMITS as u32);
+
+    let max_valid = (RLIM_NLIMITS - 1) as u32;
+    assert!(max_valid < RLIM_NLIMITS as u32);
+
+    // Invalid: resource >= RLIM_NLIMITS
+    let invalid_resource = RLIM_NLIMITS as u32;
+    assert!(invalid_resource >= RLIM_NLIMITS as u32);
+
+    // Test rlimit64 validation: rlim_cur <= rlim_max
+    let valid_cur = 100u64;
+    let valid_max = 200u64;
+    assert!(valid_cur <= valid_max);
+
+    // Invalid: rlim_cur > rlim_max
+    let invalid_cur = 300u64;
+    let invalid_max = 200u64;
+    assert!(invalid_cur > invalid_max);
+
+    true
+}

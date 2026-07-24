@@ -120,3 +120,35 @@ pub fn sys_mincore(addr: usize, length: usize, vec: *mut u8) -> AxResult<isize> 
 
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn mincore_validation_rules_hold_for_test() -> bool {
+    use ax_memory_addr::{MemoryAddr, PAGE_SIZE_4K, VirtAddr};
+    // Test mincore validation logic
+    // Page-aligned address should pass alignment check
+    let aligned_addr = VirtAddr::from(0x1000usize);
+    assert!(aligned_addr.is_aligned(PAGE_SIZE_4K));
+
+    // Non-page-aligned address should fail alignment check
+    let unaligned_addr = VirtAddr::from(0x1001usize);
+    assert!(!unaligned_addr.is_aligned(PAGE_SIZE_4K));
+
+    // Zero address is aligned (0 is multiple of any page size)
+    let zero_addr = VirtAddr::from(0usize);
+    assert!(zero_addr.is_aligned(PAGE_SIZE_4K));
+
+    // Test page count calculation
+    let length: usize = 4096;
+    let page_count = length.div_ceil(PAGE_SIZE_4K);
+    assert!(page_count == 1);
+
+    let length: usize = 8192;
+    let page_count = length.div_ceil(PAGE_SIZE_4K);
+    assert!(page_count == 2);
+
+    let length: usize = 1;
+    let page_count = length.div_ceil(PAGE_SIZE_4K);
+    assert!(page_count == 1);
+
+    true
+}

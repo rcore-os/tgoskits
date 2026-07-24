@@ -539,6 +539,91 @@ pub fn sys_vfork(uctx: &UserContext) -> AxResult<isize> {
     sys_clone(uctx, flags, 0, 0, 0, 0)
 }
 
+#[cfg(axtest)]
+pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
+    let parent_signal_allowed = CloneArgs {
+        flags: CloneFlags::PARENT,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok();
+    let thread_signal_rejected = CloneArgs {
+        flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let sighand_without_vm_rejected = CloneArgs {
+        flags: CloneFlags::SIGHAND,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let newns_with_fs_rejected = CloneArgs {
+        flags: CloneFlags::NEWNS | CloneFlags::FS,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    // Cover the remaining validation arms to keep the full state machine under
+    // axtest coverage (the host `#[cfg(test)]` mod below mirrors these but does
+    // not execute during the kernel coverage run).
+    let thread_without_vm_sighand_rejected = CloneArgs {
+        flags: CloneFlags::THREAD,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let vfork_with_thread_rejected = CloneArgs {
+        flags: CloneFlags::VFORK | CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let pidfd_with_detached_rejected = CloneArgs {
+        flags: CloneFlags::PIDFD | CloneFlags::DETACHED,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    let newcgroup_rejected = CloneArgs {
+        flags: CloneFlags::NEWCGROUP,
+        ..Default::default()
+    }
+    .validate()
+    .is_err();
+    // Empty flags + no exit signal is the minimal valid configuration.
+    let minimal_valid = CloneArgs {
+        flags: CloneFlags::empty(),
+        exit_signal: 0,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok();
+    // A plain thread clone with VM|SIGHAND and no exit signal is the canonical
+    // valid pthread spawn configuration.
+    let thread_valid = CloneArgs {
+        flags: CloneFlags::THREAD | CloneFlags::VM | CloneFlags::SIGHAND,
+        exit_signal: 0,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok();
+
+    parent_signal_allowed
+        && thread_signal_rejected
+        && sighand_without_vm_rejected
+        && newns_with_fs_rejected
+        && thread_without_vm_sighand_rejected
+        && vfork_with_thread_rejected
+        && pidfd_with_detached_rejected
+        && newcgroup_rejected
+        && minimal_valid
+        && thread_valid
+}
+
 #[cfg(test)]
 mod tests {
     use linux_raw_sys::general::SIGCHLD;

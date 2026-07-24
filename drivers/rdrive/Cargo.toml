@@ -11,6 +11,7 @@ version = "0.23.7"
 
 [dependencies]
 acpi = "6.1.1"
+axtest = { workspace = true, optional = true }
 ax-kspin = { workspace = true }
 fdt-edit.workspace = true
 fdt-raw.workspace = true
@@ -32,3 +33,9 @@ rdif-pcie = { workspace = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86.workspace = true
+
+[features]
+axtest = ["dep:axtest"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

@@ -1,62 +1,54 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
 
+extern crate alloc;
+
+use ax_cpumask as _;
+use ax_driver as _;
+use ax_errno as _;
+use ax_io as _;
+use ax_kernel_guard as _;
+use ax_lazyinit as _;
+use ax_memory_addr as _;
+use ax_memory_set as _;
+use ax_net as _;
+use ax_page_table_entry as _;
 use ax_std as _;
-use starry_kernel::axtest_exports;
+use axfs_ng_vfs as _;
+use axpoll as _;
+use buddy_slab_allocator as _;
+use dma_api as _;
+use irq_framework as _;
+use kernutil as _;
+use mmio_api as _;
+use rdif_base as _;
+use rdif_block as _;
+use rdif_def as _;
+use rdif_display as _;
+use rdif_eth as _;
+use rdif_input as _;
+use rdif_intc as _;
+use rdif_msi as _;
+use rdif_pcie as _;
+use rdif_pinctrl as _;
+use rdif_power as _;
+use rdif_reset as _;
+use rdif_serial as _;
+use rdif_vsock as _;
+use rdrive as _;
+use rsext4 as _;
+use scope_local as _;
+
+#[path = "cases/axtest_fs.rs"]
+mod axtest_fs;
+#[path = "cases/axtest_memory.rs"]
+mod axtest_memory;
+#[path = "cases/axtest_runtime.rs"]
+mod axtest_runtime;
+#[path = "cases/axtest_starry_vm.rs"]
+mod axtest_starry_vm;
+#[path = "cases/axtest_syscall.rs"]
+mod axtest_syscall;
 
 #[axtest::tests]
-mod tests {
-    use axtest::prelude::*;
-
-    use super::axtest_exports;
-
-    #[test]
-    fn user_stack_layout_is_inside_user_space() {
-        ax_assert!(axtest_exports::user_space_base() < axtest_exports::user_stack_top());
-        ax_assert!(axtest_exports::user_stack_size() > 0);
-        ax_assert!(
-            axtest_exports::user_stack_top()
-                <= axtest_exports::user_space_base() + axtest_exports::user_space_size()
-        );
-    }
-
-    #[test]
-    fn signal_trampoline_is_page_aligned() {
-        ax_assert_eq!(axtest_exports::signal_trampoline() & 0xfff, 0);
-    }
-
-    #[test]
-    fn timespec_rejects_invalid_nsec() {
-        ax_assert!(axtest_exports::invalid_timespec_is_rejected());
-    }
-
-    #[test]
-    fn random_write_mixes_entropy() {
-        ax_assert!(axtest_exports::random_write_mixes_entropy());
-    }
-
-    #[test]
-    fn pipe_peer_close_with_multiple_readers_is_visible() {
-        ax_assert!(axtest_exports::pipe_peer_close_with_multiple_readers_is_visible());
-    }
-
-    #[test]
-    fn pipe_resize_rejects_oversized_pipe() {
-        ax_assert!(axtest_exports::pipe_resize_rejects_oversized_pipe());
-    }
-
-    #[test]
-    fn fcntl_setpipe_size_returns_capacity() {
-        ax_assert!(axtest_exports::fcntl_setpipe_size_returns_capacity());
-    }
-
-    #[test]
-    fn private_mmap_rejects_fault_at_file_eof() {
-        ax_assert!(axtest_exports::private_mmap_rejects_fault_at_file_eof());
-    }
-
-    #[test]
-    fn concurrent_epoll_reverse_add_is_serialized() {
-        ax_assert!(axtest_exports::concurrent_epoll_reverse_add_is_serialized());
-    }
-}
+mod tests {}

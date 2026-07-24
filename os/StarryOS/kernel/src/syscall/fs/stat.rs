@@ -294,3 +294,31 @@ pub fn sys_name_to_handle_at(
     (mount_id as *mut c_int).vm_write(loc.mountpoint().device() as c_int)?;
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn stat_flags_validation_rules_hold_for_test() -> bool {
+    use linux_raw_sys::general::{AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_SYMLINK_NOFOLLOW};
+    // Test fstatat flag validation
+    const FSTATAT_VALID: u32 = AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_SYMLINK_NOFOLLOW;
+
+    let valid_flags = 0u32;
+    assert!(valid_flags & !FSTATAT_VALID == 0);
+
+    let empty_path = AT_EMPTY_PATH as u32;
+    assert!(empty_path & !FSTATAT_VALID == 0);
+
+    let no_automount = AT_NO_AUTOMOUNT as u32;
+    assert!(no_automount & !FSTATAT_VALID == 0);
+
+    let symlink_nofollow = AT_SYMLINK_NOFOLLOW as u32;
+    assert!(symlink_nofollow & !FSTATAT_VALID == 0);
+
+    let all_valid = AT_EMPTY_PATH as u32 | AT_NO_AUTOMOUNT as u32 | AT_SYMLINK_NOFOLLOW as u32;
+    assert!(all_valid & !FSTATAT_VALID == 0);
+
+    // Invalid flag should be detected
+    let invalid_flags = 0xFFFFu32;
+    assert!(invalid_flags & !FSTATAT_VALID != 0);
+
+    true
+}

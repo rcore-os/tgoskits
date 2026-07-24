@@ -311,6 +311,46 @@ pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
     }
 
     baseline_next != mixed_next
+        && splitmix64_determinism_rules_hold()
+        && fold_seed_word_xors_into_byte_indices()
+}
+
+#[cfg(axtest)]
+fn splitmix64_determinism_rules_hold() -> bool {
+    // splitmix64 is a pure bijection: the same input always yields the same
+    // 64-bit output (deterministic PRNG), and distinct inputs yield distinct
+    // outputs (no fixed-point within a small sample).
+    let a = splitmix64(0);
+    let b = splitmix64(1);
+    let c = splitmix64(0xffff_ffff_ffff_ffff);
+    a == splitmix64(0)
+        && b == splitmix64(1)
+        && c == splitmix64(0xffff_ffff_ffff_ffff)
+        && a != b
+        && b != c
+        && a != c
+}
+
+#[cfg(axtest)]
+fn fold_seed_word_xors_into_byte_indices() -> bool {
+    // fold_seed_word XORs splitmix64(word) into seed[idx*4 % 32]. Repeatedly
+    // folding the same word twice must cancel out (XOR is its own inverse).
+    let mut seed = [0u8; 32];
+    let snapshot_before = seed;
+    fold_seed_word(&mut seed, 0x1234_5678_9abc_def0);
+    let mutated = seed;
+    // Folding again with the same word must restore the original bytes.
+    fold_seed_word(&mut seed, 0x1234_5678_9abc_def0);
+    let cancelled = seed == snapshot_before;
+    // The mutated seed must be different from the all-zero baseline at least at
+    // one byte (proves fold_seed_word actually wrote something).
+    let mutated_differs_from_zero = mutated.iter().any(|byte| *byte != 0);
+    // Folding word 0 affects byte indices {0, 4, 8, 12, 16, 20, 24, 28}.
+    let affected_indices = [0, 4, 8, 12, 16, 20, 24, 28];
+    let affected_bytes_differ = affected_indices
+        .iter()
+        .any(|&idx| mutated.get(idx).copied() != snapshot_before.get(idx).copied());
+    cancelled && mutated_differs_from_zero && affected_bytes_differ
 }
 
 struct Full;

@@ -12,6 +12,9 @@ pub use rdif_base::{DriverGeneric, KError};
 pub mod addr_alloc;
 mod bar_alloc;
 
+#[cfg(all(axtest, feature = "axtest"))]
+pub mod axtest;
+
 pub use bar_alloc::SimpleBarAllocator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

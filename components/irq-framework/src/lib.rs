@@ -8,6 +8,10 @@ mod lock;
 mod registry;
 mod types;
 
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for IRQ registration and dispatch rules.
+pub mod axtest;
+
 pub use registry::Registry;
 pub use types::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,

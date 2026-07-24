@@ -10,6 +10,7 @@ categories = ["os", "no-std"]
 license = "Apache-2.0"
 
 [features]
+axtest = []
 # To use in the multi-core environment
 smp = []
 host-test = ["ax-kernel-guard/host-test"]
@@ -17,6 +18,9 @@ lockdep = ["dep:ax-lockdep"]
 # Expose raw spin locks implementing `lock_api::RawMutex`.
 lock_api = ["dep:lock_api"]
 default = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
 cfg-if = "1.0"

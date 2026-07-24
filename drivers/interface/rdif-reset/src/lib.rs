@@ -5,6 +5,10 @@ extern crate alloc;
 use rdif_base::def_driver;
 pub use rdif_base::{DriverGeneric, custom_type};
 
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for reset ids and default reset sequencing.
+pub mod axtest;
+
 custom_type!(
     #[doc = "Reset signal id"],
     ResetId, u64, "{:#x}");

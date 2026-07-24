@@ -43,11 +43,36 @@ use linux_raw_sys::general::{
 use starry_process::Pid;
 
 #[cfg(axtest)]
+pub(crate) use self::epoll::epoll_event_matching_rules_hold_for_test;
+#[cfg(axtest)]
 pub(crate) use self::epoll_axtest::concurrent_reverse_add_is_serialized_for_test;
 #[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_arc_operations_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_edge_id_and_constants_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_edge_id_clone_copy_partial_eq_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_topology_direction_and_scan_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_topology_link_clone_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_topology_static_constants_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_topology_struct_and_methods_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::epoll_topology_vec_and_reserve_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::epoll_topology::push_topology_item_preserves_order_and_grows_capacity;
+#[cfg(axtest)]
+pub(crate) use self::fs::metadata_to_kstat_conversion_rules_hold_for_test;
+#[cfg(axtest)]
 pub(crate) use self::pipe::{
-    peer_close_with_multiple_readers_is_visible_for_test, resize_rejects_oversized_pipe_for_test,
+    peer_close_with_multiple_readers_is_visible_for_test,
+    pipe_resize_rounding_and_state_rules_hold_for_test, resize_rejects_oversized_pipe_for_test,
 };
+#[cfg(axtest)]
+pub(crate) use self::wext::is_wext_ioctl_validation_rules_hold_for_test;
 pub use self::{
     fs::{Directory, File, ResolveAtResult, resolve_at, with_fs},
     io_uring::IoUring,

@@ -1007,3 +1007,50 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         uctx.set_retval(new_retval);
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn task_clone_validation_rules_hold_for_test() -> bool {
+    task::clone_validation_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
+    task::capability_data_conversion_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn pipe_size_rounding_and_rejection_rules_hold_for_test() -> bool {
+    // fd_ops is re-exported via `pub use self::fs::*`, so the helper is
+    // accessible directly through the fs module.
+    fs::pipe_size_rounding_and_rejection_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn membarrier_validation_rules_hold_for_test() -> bool {
+    sync::membarrier_validation_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn syscall_signal_restart_rules_hold_for_test() -> bool {
+    // syscall_allows_signal_restart: returns false only for msgsnd and msgrcv.
+    use syscalls::Sysno;
+    assert!(syscall_allows_signal_restart(0)); // invalid syscall → true
+    assert!(syscall_allows_signal_restart(Sysno::read as usize)); // read → true
+    assert!(syscall_allows_signal_restart(Sysno::write as usize)); // write → true
+    assert!(!syscall_allows_signal_restart(Sysno::msgsnd as usize)); // msgsnd → false
+    assert!(!syscall_allows_signal_restart(Sysno::msgrcv as usize)); // msgrcv → false
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) use self::ipc::ipc_permission_and_constants_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::kmod::kmod_flags_validation_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::resources::resources_rlimit_validation_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::signal::signal_sigset_and_signo_validation_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::sys::sys_constants_and_validation_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::time::time_clock_id_validation_rules_hold_for_test;

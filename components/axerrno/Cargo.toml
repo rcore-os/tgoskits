@@ -10,8 +10,15 @@ categories = ["no-std", "os"]
 license = "Apache-2.0"
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 log = "0.4"
 strum = { version = "0.27.2", default-features = false, features = ["derive"] }
 
+[features]
+axtest = ["dep:axtest"]
+
 [build-dependencies]
 quote = "1.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
