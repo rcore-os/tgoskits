@@ -269,6 +269,7 @@ impl Starry {
             if qemu.uefi {
                 qemu::apply_drive_snapshot_without_global_snapshot(&mut qemu);
             }
+            qemu::apply_timeout_scale(&mut qemu);
             println!("  prepare assets: 0ns (pipeline=plain, cache=miss)");
             println!(
                 "  qemu config: {} (timeout={})",
@@ -319,6 +320,7 @@ impl Starry {
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        qemu::apply_timeout_scale(&mut qemu);
         println!(
             "  prepare assets: {:.2?} (pipeline={}, cache={})",
             prepare_started.elapsed(),

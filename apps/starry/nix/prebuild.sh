@@ -5,7 +5,9 @@ app_dir="${STARRY_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 base_rootfs="${STARRY_ROOTFS:-${STARRY_BASE_ROOTFS:-}}"
 staging_root="${STARRY_STAGING_ROOT:-}"
 overlay_dir="${STARRY_OVERLAY_DIR:-}"
-apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/nix-apk-cache"
+nix_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/nixpkgs-cache"
+apk_cache="${STARRY_WORKSPACE:-$(cd "$app_dir/../../.." && pwd)}/target/nix-apk-cache/${STARRY_ARCH:-x86_64}"
+qemu_runner=""
 
 require_env() {
     local name="$1"
@@ -16,15 +18,14 @@ require_env() {
     fi
 }
 
-# Map STARRY_ARCH to the correct qemu-user-static binary.
-# Defaults to qemu-x86_64-static when STARRY_ARCH is unset or empty
-# (the prebuild runs on the host, and x86_64 is the most common host).
-qemu_user_static_binary() {
+# Map STARRY_ARCH to the matching qemu-user binary. The prebuild runs on the
+# host but installs Alpine packages into the target rootfs.
+qemu_user_binary_names() {
     case "${STARRY_ARCH:-x86_64}" in
-        x86_64)      echo "qemu-x86_64-static" ;;
-        aarch64)     echo "qemu-aarch64-static" ;;
-        riscv64)     echo "qemu-riscv64-static" ;;
-        loongarch64) echo "qemu-loongarch64-static" ;;
+        x86_64)      printf '%s\n' qemu-x86_64-static qemu-x86_64 ;;
+        aarch64)     printf '%s\n' qemu-aarch64-static qemu-aarch64 ;;
+        riscv64)     printf '%s\n' qemu-riscv64-static qemu-riscv64 ;;
+        loongarch64) printf '%s\n' qemu-loongarch64-static qemu-loongarch64 ;;
         *)
             echo "error: unsupported STARRY_ARCH '${STARRY_ARCH}' for nix prebuild" >&2
             exit 1
@@ -32,13 +33,43 @@ qemu_user_static_binary() {
     esac
 }
 
+find_qemu_runner() {
+    local candidate
+
+    while IFS= read -r candidate; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            qemu_runner="$(command -v "$candidate")"
+            return
+        fi
+    done < <(qemu_user_binary_names)
+
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "installing missing host package: qemu-user-static"
+        apt-get update
+        apt-get install -y --no-install-recommends qemu-user-static
+        while IFS= read -r candidate; do
+            if command -v "$candidate" >/dev/null 2>&1; then
+                qemu_runner="$(command -v "$candidate")"
+                return
+            fi
+        done < <(qemu_user_binary_names)
+    fi
+
+    echo "error: missing qemu-user runner for ${STARRY_ARCH:-x86_64}" >&2
+    exit 1
+}
+
 ensure_host_packages() {
     local missing=()
 
-    command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
     command -v install >/dev/null 2>&1 || missing+=(coreutils)
-    command -v readelf >/dev/null 2>&1 || missing+=(binutils)
-    command -v "$(qemu_user_static_binary)" >/dev/null 2>&1 || missing+=(qemu-user-static)
+    command -v curl >/dev/null 2>&1 || missing+=(curl)
+    command -v debugfs >/dev/null 2>&1 || missing+=(e2fsprogs)
+    command -v e2fsck >/dev/null 2>&1 || missing+=(e2fsprogs)
+    command -v resize2fs >/dev/null 2>&1 || missing+=(e2fsprogs)
+    command -v realpath >/dev/null 2>&1 || missing+=(coreutils)
+    command -v sha256sum >/dev/null 2>&1 || missing+=(coreutils)
+    command -v tar >/dev/null 2>&1 || missing+=(tar)
 
     if [[ ${#missing[@]} -eq 0 ]]; then
         return
@@ -54,139 +85,227 @@ ensure_host_packages() {
     apt-get install -y --no-install-recommends "${missing[@]}"
 }
 
+prepare_nix_conf() {
+    mkdir -p "$overlay_dir/etc/nix"
+    cat > "$overlay_dir/etc/nix/nix.conf" <<NIXCONF
+sandbox = false
+build-users-group =
+substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://cache.nixos.org
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+NIXCONF
+    echo "nix.conf prepared"
+}
+
 extract_base_rootfs() {
-    debugfs -R "rdump / $staging_root" "$base_rootfs"
+    rm -rf "$staging_root"
+    mkdir -p "$staging_root"
+    debugfs -R "rdump / $staging_root" "$base_rootfs" >/dev/null 2>&1
+    if [[ ! -x "$staging_root/sbin/apk" ]]; then
+        echo "error: staging root is missing guest apk: $staging_root/sbin/apk" >&2
+        exit 1
+    fi
+}
+
+relativize_staging_absolute_symlinks() {
+    local link
+    local target
+    local absolute_target
+    local relative_target
+
+    while IFS= read -r -d '' link; do
+        target="$(readlink "$link")"
+        case "$target" in
+            /*) ;;
+            *) continue ;;
+        esac
+
+        absolute_target="$staging_root${target}"
+        if [[ ! -e "$absolute_target" && ! -L "$absolute_target" ]]; then
+            continue
+        fi
+
+        relative_target="$(
+            realpath --relative-to="$(dirname "$link")" --canonicalize-missing "$absolute_target"
+        )"
+        ln -sfn "$relative_target" "$link"
+    done < <(find "$staging_root" -type l -print0)
+}
+
+run_guest_apk_with_retry() {
+    local attempt
+    local max_attempts=4
+
+    for attempt in $(seq 1 "$max_attempts"); do
+        if env -u LD_LIBRARY_PATH \
+            QEMU_LD_PREFIX="$staging_root" \
+            "$qemu_runner" -L "$staging_root" "$staging_root/sbin/apk" "$@"; then
+            return 0
+        fi
+
+        if [[ "$attempt" -eq "$max_attempts" ]]; then
+            return 1
+        fi
+
+        echo "apk command failed, retrying ($attempt/$max_attempts)..." >&2
+        sleep $((attempt * 3))
+    done
 }
 
 install_nix_package() {
+    mkdir -p "$apk_cache"
     if [[ -f /etc/resolv.conf ]]; then
         cp /etc/resolv.conf "$staging_root/etc/resolv.conf"
     fi
 
-    mkdir -p "$apk_cache"
-    QEMU_LD_PREFIX="$staging_root" \
-    LD_LIBRARY_PATH="$staging_root/lib:$staging_root/usr/lib" \
-        $(qemu_user_static_binary) -L "$staging_root" \
-            "$staging_root/sbin/apk" \
-            --root "$staging_root" \
-            --repositories-file "$staging_root/etc/apk/repositories" \
-            --keys-dir "$staging_root/etc/apk/keys" \
-            --cache-dir "$apk_cache" \
-            --update-cache \
-            --no-progress \
-            --no-scripts \
-            add nix
+    echo "installing Alpine-packaged Nix into staging root via $qemu_runner"
+    run_guest_apk_with_retry \
+        --root "$staging_root" \
+        --repositories-file "$staging_root/etc/apk/repositories" \
+        --keys-dir "$staging_root/etc/apk/keys" \
+        --cache-dir "$apk_cache" \
+        --update-cache \
+        --timeout 60 \
+        --no-interactive \
+        --force-no-chroot \
+        --scripts=no \
+        add nix
 
-    mkdir -p "$staging_root/etc/nix"
-    cat > "$staging_root/etc/nix/nix.conf" <<'NIXCONF'
-sandbox = false
-build-users-group =
-# sandbox = false is required because StarryOS does not yet support
-# unshare(CLONE_NEWNS).  Without it, builtins.fetchTarball fails in its
-# download thread with "unsharing filesystem state: Invalid argument".
-# Flip to sandbox = true once mount namespace isolation is available.
-NIXCONF
-
-    echo "Nix installed from Alpine apk"
-}
-
-# The official Nix tarball path is intentionally left disabled.
-#
-# It installs Nix as a /nix/store closure with many symlinks.  The current
-# debugfs overlay injector accepts only regular files and directories, so
-# preserving symlinks fails injection.  Dereferencing the full closure is not
-# reliable either because the official closure currently contains at least one
-# broken symlink (for example libgcc_s.so in the GCC lib output), causing a
-# plain `cp -aL` or tar dereference copy to fail or skip files unpredictably.
-# Use Alpine's `apk add nix` path above until the overlay injector supports
-# symlinks or the tarball closure is copied through a Nix-aware path.
-#
-# install_nix_from_official_tarball() {
-#     local nix_ver="2.31.5"
-#     local nix_url="https://releases.nixos.org/nix/nix-${nix_ver}/nix-${nix_ver}-x86_64-linux.tar.xz"
-#     ...
-# }
-
-copy_file_to_overlay() {
-    local guest_path="$1"
-    local mode="$2"
-    local source="$staging_root${guest_path}"
-    local target="$overlay_dir${guest_path}"
-
-    if [[ ! -e "$source" ]]; then
-        echo "error: missing guest file after Nix package install: $guest_path" >&2
+    if [[ ! -x "$staging_root/usr/bin/nix" ]]; then
+        echo "error: apk add nix did not produce /usr/bin/nix" >&2
         exit 1
     fi
+    copy_nix_closure_to_overlay
+    verify_nix_overlay
+}
 
-    if [[ -L "$source" ]]; then
-        source="$(readlink -f "$source")"
+copy_nix_closure_to_overlay() {
+    local package
+
+    while IFS= read -r package; do
+        copy_package_files_to_overlay "$package"
+    done < <(
+        "$qemu_runner" -L "$staging_root" "$staging_root/sbin/apk" \
+            --root "$staging_root" \
+            --cache-dir "$apk_cache" \
+            info --recursive --format json nix |
+            sed -n 's/^[[:space:]]*"name": "\(.*\)",$/\1/p'
+    )
+
+    copy_path_to_overlay /etc/apk/world
+    copy_path_to_overlay /lib/apk/db/installed
+}
+
+verify_nix_overlay() {
+    local path
+
+    for path in \
+        /usr/bin/nix \
+        /usr/lib/libnixutil.so \
+        /usr/lib/libnixstore.so \
+        /usr/lib/libnixexpr.so \
+        /usr/lib/libgc.so.1 \
+        /usr/lib/libarchive.so.13 \
+        /usr/lib/libsqlite3.so.0; do
+        if [[ ! -e "$overlay_dir/${path#/}" && ! -L "$overlay_dir/${path#/}" ]]; then
+            echo "error: Nix overlay is missing $path" >&2
+            exit 1
+        fi
+    done
+
+    echo "Nix package closure copied into overlay"
+}
+
+copy_package_files_to_overlay() {
+    local package="$1"
+    local listed_path
+
+    while IFS= read -r listed_path; do
+        case "$listed_path" in
+            bin/*|etc/*|lib/*|sbin/*|usr/*|var/*|nix/*)
+                copy_path_to_overlay "/$listed_path"
+                ;;
+        esac
+    done < <(
+        "$qemu_runner" -L "$staging_root" "$staging_root/sbin/apk" \
+            --root "$staging_root" \
+            --cache-dir "$apk_cache" \
+            info -L "$package"
+    )
+}
+
+copy_path_to_overlay() {
+    local guest_path="$1"
+    local relative="${guest_path#/}"
+    local source="$staging_root/$relative"
+    local target="$overlay_dir/$relative"
+
+    if [[ ! -e "$source" && ! -L "$source" ]]; then
+        return
     fi
 
-    install -Dm"$mode" "$source" "$target"
+    if [[ -d "$source" && ! -L "$source" ]]; then
+        mkdir -p "$target"
+    elif [[ -L "$source" ]]; then
+        mkdir -p "$(dirname "$target")"
+        ln -sfn "$(readlink "$source")" "$target"
+    else
+        mkdir -p "$(dirname "$target")"
+        cp -a "$source" "$target"
+    fi
 }
 
-find_library_path() {
-    local library="$1"
-    local dir
+prepare_nixpkgs_tarball() {
+    local rev="714a5f8c4ead6b31148d829288440ed033ccc041"
+    local sha256="96009df77ed2339619ddc93fd99e7a2aeea13299bc5e0620314b6e475e015b36"
+    local archive="$nix_cache/nixpkgs-$rev.tar.gz"
+    local url="https://github.com/NixOS/nixpkgs/archive/$rev.tar.gz"
 
-    for dir in lib usr/lib usr/local/lib; do
-        if [[ -e "$staging_root/$dir/$library" ]]; then
-            printf '/%s/%s\n' "$dir" "$library"
-            return 0
-        fi
-    done
+    mkdir -p "$nix_cache"
+    if [[ ! -f "$archive" ]] || ! echo "$sha256  $archive" | sha256sum -c - >/dev/null 2>&1; then
+        curl --fail --location --retry 3 --output "$archive.tmp" "$url"
+        echo "$sha256  $archive.tmp" | sha256sum -c -
+        mv "$archive.tmp" "$archive"
+    fi
 
-    return 1
-}
-
-copy_runtime_dependencies() {
-    local pending=("$@")
-    local seen=" "
-    local guest_path library
-
-    while [[ ${#pending[@]} -gt 0 ]]; do
-        guest_path="${pending[0]}"
-        pending=("${pending[@]:1}")
-
-        if [[ "$seen" == *" $guest_path "* ]]; then
-            continue
-        fi
-        seen+="$guest_path "
-
-        if [[ -x "$staging_root$guest_path" ]]; then
-            copy_file_to_overlay "$guest_path" 0755
-        else
-            copy_file_to_overlay "$guest_path" 0644
-        fi
-
-        while IFS= read -r library; do
-            local library_path
-            if ! library_path="$(find_library_path "$library")"; then
-                continue
-            fi
-            pending+=("$library_path")
-        done < <(
-            readelf -d "$staging_root$guest_path" 2>/dev/null |
-                sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p'
-        )
-    done
+    rm -rf "$overlay_dir/opt/nixpkgs"
+    mkdir -p "$overlay_dir/opt/nixpkgs"
+    tar -xzf "$archive" --strip-components=1 -C "$overlay_dir/opt/nixpkgs"
+    echo "nixpkgs $rev source prepared"
 }
 
 populate_overlay() {
-    copy_runtime_dependencies /usr/bin/nix
-
-    install -Dm0644 "$staging_root/etc/nix/nix.conf" "$overlay_dir/etc/nix/nix.conf"
-
-    mkdir -p "$overlay_dir/nix/store"
-
     # Install test scripts.
-    # NOTE: nix.sh (sandbox test) is intentionally NOT injected — sandbox
-    # requires mount namespace isolation not yet available in StarryOS.
-    # The nix binary must be kept as /usr/bin/nix (already copied above).
     install -Dm0755 "$app_dir/nix-nosandbox.sh" "$overlay_dir/usr/bin/nix-nosandbox"
+    install -Dm0755 "$app_dir/nix-nixpkgs.sh" "$overlay_dir/usr/bin/nix-nixpkgs"
+    install -Dm0755 "$app_dir/nix.sh" "$overlay_dir/usr/bin/nix-sandbox"
     install -Dm0755 "$app_dir/test_nix.sh" "$overlay_dir/usr/bin/test_nix.sh"
 
+    # The pinned source tree is injected by prepare_nixpkgs_tarball. Keeping
+    # extraction host-side avoids Nix's metadata-heavy Git-cache import on the
+    # guest filesystem while still exercising nixpkgs evaluation and builds.
+
     echo "overlay populated"
+}
+
+# Resize the rootfs ext4 image so it can hold the full nixpkgs stdenv closure
+# (~393 MiB unpacked) plus the nixpkgs source tree (~322 MiB) and NAR download
+# overhead. The default tgosimages rootfs is 3 GiB which overflows during
+# stdenv substitution. 8 GiB leaves ~5 GiB free after the base system + overlay.
+resize_rootfs() {
+    local img="$base_rootfs"
+    local target_mib=8192
+    local current_size
+    current_size=$(stat -c %s "$img" 2>/dev/null || echo 0)
+    local target_bytes=$((target_mib * 1024 * 1024))
+    if [[ "$current_size" -ge "$target_bytes" ]]; then
+        echo "rootfs already >= ${target_mib} MiB ($current_size bytes), skip resize"
+        return 0
+    fi
+    echo "resizing rootfs from $current_size to ${target_mib} MiB"
+    truncate -s "${target_mib}M" "$img"
+    e2fsck -fy "$img" >/dev/null 2>&1 || true
+    resize2fs "$img" >/dev/null 2>&1
+    echo "rootfs resized to ${target_mib} MiB"
 }
 
 require_env STARRY_ROOTFS "$base_rootfs"
@@ -194,8 +313,17 @@ require_env STARRY_STAGING_ROOT "$staging_root"
 require_env STARRY_OVERLAY_DIR "$overlay_dir"
 
 ensure_host_packages
+find_qemu_runner
 extract_base_rootfs
+relativize_staging_absolute_symlinks
 install_nix_package
+prepare_nix_conf
+if [[ "${STARRY_NIX_SKIP_NIXPKGS:-0}" == "1" ]]; then
+    echo "skipping nixpkgs source injection for sandbox diagnostics"
+else
+    resize_rootfs
+    prepare_nixpkgs_tarball
+fi
 populate_overlay
 
 echo "nix prebuild complete"

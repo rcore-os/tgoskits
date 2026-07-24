@@ -9,8 +9,8 @@ use ax_task::current;
 use axnsproxy::NsProxy;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
-    CLONE_FILES, CLONE_FS, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER,
-    CLONE_NEWUTS,
+    CLONE_FILES, CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID,
+    CLONE_NEWUSER, CLONE_NEWUTS,
 };
 
 use crate::{
@@ -18,8 +18,13 @@ use crate::{
     task::{AX_FILE_LIMIT, AsThread, Thread, get_task},
 };
 
-const UNSHARE_NAMESPACE_FLAGS: u32 =
-    CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWIPC | CLONE_NEWUSER;
+const UNSHARE_NAMESPACE_FLAGS: u32 = CLONE_NEWUTS
+    | CLONE_NEWPID
+    | CLONE_NEWNS
+    | CLONE_NEWNET
+    | CLONE_NEWIPC
+    | CLONE_NEWUSER
+    | CLONE_NEWCGROUP;
 
 const SUPPORTED_NS_FLAGS: u32 = UNSHARE_NAMESPACE_FLAGS | CLONE_FS | CLONE_FILES;
 
@@ -58,6 +63,9 @@ impl PreparedUnshare {
             }
             if flags & CLONE_NEWUSER != 0 {
                 nsproxy.unshare_user();
+            }
+            if flags & CLONE_NEWCGROUP != 0 {
+                nsproxy.unshare_cgroup();
             }
         }
 
@@ -206,6 +214,7 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
         }
         NsFd::Pid(ns) => nsproxy.set_ns_pid(ns.clone()),
         NsFd::Net(ns) => nsproxy.set_ns_net(ns.clone()),
+        NsFd::Cgroup(ns) => nsproxy.set_ns_cgroup(ns.clone()),
         NsFd::User(ns) => {
             // Multi-threaded process cannot change user namespace.
             let thread_count = proc_data.proc.threads().len();
@@ -300,6 +309,9 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     }
     if nstype & CLONE_NEWUSER != 0 {
         nsproxy.set_ns_user(target_nsproxy.user_ns);
+    }
+    if nstype & CLONE_NEWCGROUP != 0 {
+        nsproxy.set_ns_cgroup(target_nsproxy.cgroup_ns);
     }
 
     debug!(

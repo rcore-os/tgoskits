@@ -8,7 +8,7 @@ use ax_task::current;
 use crate::{
     file::{Directory, FD_TABLE, File, FileLike},
     mm::vm_load_string,
-    pseudofs::{MemoryFs, overlay::OverlayOptions},
+    pseudofs::{MemoryFs, dev::new_devptsfs, overlay::OverlayOptions},
     task::{AsThread, tasks},
 };
 
@@ -209,10 +209,19 @@ pub fn sys_mount(
     }
 
     match fs_type.as_str() {
-        "proc" | "sysfs" | "devtmpfs" | "devpts" | "tmpfs" => {
+        "proc" | "sysfs" | "devtmpfs" | "tmpfs" => {
             let fs = MemoryFs::new();
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            if (flags & MS_RDONLY) != 0 {
+                mp.set_readonly(true);
+            }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
+        }
+        "devpts" => {
+            let fs = new_devptsfs();
+            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let mp = target.mount(&fs)?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }

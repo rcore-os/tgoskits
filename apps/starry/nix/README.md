@@ -1,112 +1,180 @@
 # Starry Nix App
 
 This case runs a minimal Nix smoke test inside StarryOS through the app runner.
-A prebuilt Nix is injected into the Alpine rootfs; the guest evaluates a Nix
-expression and verifies a store-path write, covering the
-install→startup→evaluate→artifact chain.
+Nix is installed from the Alpine community repository during the host-side
+prebuild/rootfs injection step and then run in single-user mode inside the
+guest. The guest verifies the prebuilt Nix binary, evaluates a Nix expression,
+and verifies a store-path write, covering the install→startup→evaluate→artifact
+chain without a guest-time apk fetch.
 
 ```bash
 cargo xtask starry app qemu -t nix --arch x86_64
 cargo xtask starry app qemu -t nix --arch aarch64
 ```
 
-## No-Sandbox Only
+## Nixpkgs Package-Manager Phase (default path)
 
-Sandboxed `nix-build` is not yet enabled. Nix requires mount namespace
-isolation to activate the build sandbox, and StarryOS mount namespace support is
-still incomplete. Without working `unshare(CLONE_NEWNS)`, Nix prints:
+The nix app test runs **three** phases on every invocation:
 
-> auto-disabling sandboxing because the prerequisite namespaces are not
-> available
+1. `nix-nosandbox` — `builtins.toFile` store-path write (CI gate since 002)
+2. `nix-sandbox` — runs a minimal local derivation with substitution disabled
+   and verifies that Nix kept sandbox isolation enabled
+3. `nix-nixpkgs` — imports pinned nixpkgs, evaluates its `hello` derivation,
+   realizes it, and runs `hello` (activated by 003)
 
-and silently falls back to unsandboxed mode. Running the sandbox variant as-is
-would produce a **false PASS** — the build succeeds, but the claimed
-sandboxed-build behaviour was never exercised.
+The nosandbox and nixpkgs phases run with sandboxing disabled:
+`nix-nixpkgs.sh` passes `--option sandbox false`, while `nix-nosandbox.sh` uses
+the `sandbox = false` setting in `nix.conf`. The nixpkgs phase tests nixpkgs as
+a package manager: it imports `/opt/nixpkgs`, evaluates a package derivation,
+realizes it with binary substitution allowed, and executes the resulting program.
+In the default path, Nix may substitute both `stdenv` and `hello` from
+`cache.nixos.org`; it does not claim that `hello` is compiled locally.
 
-Per the [discussion](https://github.com/rcore-os/tgoskits/pull/1125#issuecomment-4639168301)
-on PR #1125: the teacher advised small-step iteration and submitting
-no-sandbox first. The current version uses `builtins.toFile` for store-path
-creation, which verifies Nix evaluation and store writes without depending on
-the builder communication protocol (socketpair).  Full `builtins.derivation`
-builder workflow is deferred until the builder protocol (Nix socketpair hook)
-is working on StarryOS — currently blocked by a poll notification gap in the
-IRQ-safe deferred notification layer.
+### Nix version and source
 
-For now `test_nix.sh` intentionally skips the sandbox test and only runs
-`nix-nosandbox`, which passes `--option sandbox false` explicitly so the result
-honestly reflects the exercised code path. The sandbox test (`nix.sh`) will be
-connected once mount namespace isolation is available in StarryOS.
+The default path tests the **Alpine-packaged Nix** installed by `prebuild.sh`
+with the target rootfs apk before StarryOS boots. Alpine v3.23 community
+provides `nix 2.31.5-r0`. The Nix package manager itself may then evaluate
+expressions and import nixpkgs at its own version, independent of the
+apk-provided binary. This app path does **not** cover installation via the
+upstream Nix binary installer from `releases.nixos.org`.
+
+### Local source builds are optional
+
+The default CI path intentionally does not use `--no-substitute`. Downloading
+or building the nixpkgs `stdenv` closure before a local source build is slow,
+so the standard test uses the prebuilt binary-cache closure first. Local source
+builds remain supported when no matching substitute is available, but they are
+an optional capability rather than a required CI assertion.
+
+### Sandbox configuration
+
+The host prebuild generates `sandbox = false` in `nix.conf`. The app scripts set
+`NIX_REMOTE=local` so store operations use the guest rootfs directly instead of
+expecting a daemon socket. The `nix-sandbox` phase changes the sandbox setting
+to `sandbox = true`, runs `nix-build --no-substitute --option sandbox true`, and
+rejects logs that report sandbox auto-disable. The later nixpkgs phase passes an
+explicit `--option sandbox false`.
 
 ## Test Content
 
 | Script | Mode | Runs? |
 |--------|------|-------|
 | `nix-nosandbox` | `builtins.toFile` store-path write (no builder) | ✅ CI |
-| `nix` | `nix-build --option sandbox true` (full derivation builder) | ❌ blocked (mount ns + socketpair) |
+| `nix-nixpkgs` | nixpkgs import/evaluation, substitution-allowed realization, and `hello` execution | ✅ CI (003) |
+| `nix-sandbox` | minimal local derivation with `--no-substitute --option sandbox true` | ✅ CI |
 
-`test_nix.sh` runs only the `nix-nosandbox` phase. The sandbox test (`nix.sh`)
-is blocked until mount namespace isolation is ready.
+`prebuild.sh` installs Nix into the app rootfs before boot. `test_nix.sh` then
+verifies `nix --version`, runs `nix-nosandbox`, `nix-sandbox`, then
+`nix-nixpkgs`. On x86_64 the sandbox script first runs the same builder with
+`sandbox = false` to separate general builder failures from sandbox-specific
+failures.
 
-nixpkgs / `stdenv.mkDerivation` testing is tracked on a separate branch and is
-intentionally not part of this smoke test; it requires mount namespace
-isolation and a working `builtins.fetchTarball` download path that StarryOS
-does not yet provide.
+### nixpkgs pin
+
+The host prebuild downloads an immutable nixpkgs commit archive, verifies its
+SHA256, and injects the extracted source tree at `/opt/nixpkgs`. The guest
+imports that path directly. This avoids Nix's Git-cache tarball import, whose
+metadata-heavy writes can exhaust the StarryOS test window before evaluation
+starts.
+
+- Commit: `714a5f8c4ead6b31148d829288440ed033ccc041` (`release-26.05`)
+- Archive SHA256: `96009df77ed2339619ddc93fd99e7a2aeea13299bc5e0620314b6e475e015b36`
+- Pin location: `prebuild.sh`
+
+To update the pin, download the new immutable commit archive and update both
+the commit and SHA256 in `prebuild.sh`:
+
+```bash
+curl -L -o nixpkgs.tar.gz https://github.com/NixOS/nixpkgs/archive/<commit>.tar.gz
+sha256sum nixpkgs.tar.gz
+```
+
+Binary substitution is allowed by default (FR-003). This makes the standard
+test reproducible without requiring a slow local `stdenv` download or source
+build; it does not prove that a local `buildPhase` ran.
+
+- Install Nix during prebuild/rootfs injection → `nix --version` gate → store-path write via `builtins.toFile`
+- nixpkgs: import `/opt/nixpkgs` → evaluate `hello` → realize it with substitution allowed → verify `hello` output
+- Build log `.lock` / `.drv` files exercise the rsext4 open-unlink lifecycle
 
 ## Kernel Regression Tests
 
 Kernel-level semantics (pipe poll, pidfd, rsext4 open-unlink, mount namespace
-isolation, etc.) are covered separately by the **qemu-smp1/system** grouped suite:
+isolation, etc.) are covered separately by the unified **qemu/system** grouped
+suite. The legacy SMP-specific split has been removed from the active runner
+layout; the system configs now run with `-smp 4`.
 
 ```bash
-cargo xtask starry test qemu --arch x86_64 -c qemu-smp1/system
-cargo xtask starry test qemu --arch aarch64 -c qemu-smp1/system
+cargo xtask starry test qemu --arch x86_64 -c qemu/system
+cargo xtask starry test qemu --arch aarch64 -c qemu/system
 ```
 
 These C-language regression tests were migrated from the former
 `test-nix-prereqs` case and now live alongside other kernel regression tests
 under the unified system grouped suite.
-See `test-suit/starryos/qemu-smp1/system/`.
+See `test-suit/starryos/qemu/system/`.
+
+## Nix Sandbox System Regression Subcases (003)
+
+The Nix sandbox debug regressions were migrated from the former
+`qemu/nix-sandbox-debug` grouped suite into the unified `qemu/system` suite.
+They are CI-tracked system subcases under `test-suit/starryos/qemu/system/`.
+These tests run under `sandbox=off` (they do **not** exercise the nix sandbox
+builder directly); they verify kernel semantics that the nix sandbox path
+depends on.
+
+```bash
+cargo xtask starry test qemu --arch x86_64 -c qemu/system
+cargo xtask starry test qemu --arch x86_64 -c qemu/test-mountinfo
+```
+
+The grouped system runner emits `STARRY_GROUPED_TESTS_PASSED` on success.
+Each test binary lives under `/usr/bin/starry-test-suit/` in the guest rootfs
+and prints its own `<NAME>_PASSED` marker.
+
+### Covered semantics
+
+| Test | Kernel area | Marker |
+|------|-------------|--------|
+| `test-mountinfo` | `/proc/<pid>/mountinfo` Linux-compatible format and dynamic mounts | `TEST_MOUNTINFO_PASSED` |
+| `test-nix-builder-init` | Nix builder initialization syscall sequence | `TEST_NIX_BUILDER_INIT_PASSED` |
+| `test-nix-builder-exec` | Nix builder exec path | `TEST_NIX_BUILDER_EXEC_PASSED` |
+| `test-nix-clone-parent` | `CLONE_PARENT` behavior used by Nix builder spawning | `TEST_NIX_CLONE_PARENT_PASSED` |
+| `test-per-ns-mounts` | Per-mount-namespace mount visibility (`CLONE_NEWNS`) | `TEST_PER_NS_MOUNTS_PASSED` |
+| `test-remount-flags` | `mount(MS_REMOUNT|MS_NOSUID)` reflected in mountinfo options | `TEST_REMOUNT_FLAGS_PASSED` |
+| `test-mount-bind` | `mount --bind` and `--rbind` semantics | `TEST_MOUNT_BIND_PASSED` |
+| `test-mount-propagation` | Shared peer group unmount propagation | `TEST_MOUNT_PROPAGATION_PASSED` |
+| `test-pivot-root` | resolved-location `pivot_root(".", "old")` and old-root detach | `TEST_PIVOT_ROOT_PASSED` |
+| `test-pivot-root-namespace` | private mount-namespace pivot does not change the parent namespace | `TEST_PIVOT_ROOT_NAMESPACE_PASSED` |
+| `test-cgroup-ns` | `unshare`/`clone`/`setns` for `CLONE_NEWCGROUP` + `/proc/self/ns/cgroup` | `TEST_CGROUP_NS_PASSED` |
+| `test-max-ns-entries` | All seven `/proc/sys/user/max_*_namespaces` files | `TEST_MAX_NS_ENTRIES_PASSED` |
+| `test-proc-environ` | `/proc/<pid>/environ` NUL-separated envp | `TEST_PROC_ENVIRON_PASSED` |
+| `test-proc-root-cwd` | `/proc/<pid>/root` and `/proc/<pid>/cwd` symlinks track `chdir`/`chroot` | `TEST_PROC_ROOT_CWD_PASSED` |
+| `test-nix-namespace-exec` | Nix namespace exec path | `TEST_NIX_NAMESPACE_EXEC_PASSED` |
+| `test-nixpkgs-first-divergence` | First-divergence diagnostics for the nixpkgs execution path | `TEST_NIXPKGS_FIRST_DIVERGENCE_PASSED` |
 
 ## File Structure
 
 ```
 apps/starry/nix/
-├── prebuild.sh          # apk add nix into staging rootfs
-├── nix.sh               # sandbox-enabled nix-build (blocked, not CI)
-├── nix-nosandbox.sh     # builtins.toFile store-path write (CI gate)
-├── test_nix.sh          # nosandbox only
+├── prebuild.sh                  # generate nix.conf and inject pinned nixpkgs source
+├── nix.sh                       # sandbox-enabled local derivation build
+├── nix-nosandbox.sh             # builtins.toFile (CI gate, ~30s)
+├── nix-nixpkgs.sh               # nixpkgs realization and hello execution (CI gate)
+├── test_nix.sh                  # prebuilt nix + nosandbox + sandbox + nixpkgs phases
 ├── build-x86_64-unknown-none.toml
 ├── build-aarch64-unknown-none-softfloat.toml
-├── qemu-x86_64.toml     # 1200s timeout, shell_init_cmd=test_nix.sh
+├── qemu-x86_64.toml             # 1800s timeout, shell_init_cmd=test_nix.sh
+├── qemu-x86_64-shell.toml       # interactive shell
 ├── qemu-aarch64.toml
-└── README.md            # this file
+└── README.md                    # this file
 ```
 
 ## Dependencies
 
-- Nix 2.31.5 (prebuilt via `apk add nix` in `prebuild.sh`)
-- Alpine musl shared libraries (libc, libcrypto, libcurl, libgit2, libseccomp,
-  libsodium, libsqlite3, libssh2, etc.)
-- Guest network access during prebuild only (Nix is injected into rootfs; no
-  network required at QEMU runtime)
-
-## aarch64 Verification
-
-`prebuild.sh` selects the correct `qemu-*-static` binary by `STARRY_ARCH`.
-Both architectures have been verified end-to-end in the CI container:
-
-```bash
-# x86_64
-podman run --rm \
-  -v "$(pwd)":/workspace -w /workspace \
-  ghcr.io/rcore-os/tgoskits-container:latest \
-  cargo xtask starry app qemu -t nix --arch x86_64
-# → NIX_NOSANDBOX_COMPLETE
-
-# aarch64
-podman run --rm \
-  -v "$(pwd)":/workspace -w /workspace \
-  ghcr.io/rcore-os/tgoskits-container:latest \
-  cargo xtask starry app qemu -t nix --arch aarch64
-# → NIX_NOSANDBOX_COMPLETE
-```
+- Nix installed into the app rootfs during prebuild with Alpine v3.23 community
+  `nix 2.31.5-r0`
+- Host network access to GitHub during prebuild (nixpkgs source archive)
+- Guest network access to `cache.nixos.org` for substitution-allowed nixpkgs
+  derivations (FR-003)

@@ -1,11 +1,15 @@
 #!/bin/sh
 set -eu
 
-# Create symlinks that can't be stored in the overlay.
-for cmd in build channel collect-garbage copy-closure env hash \
-           instantiate prefetch-url shell store; do
-    ln -sf nix /usr/bin/nix-$cmd 2>/dev/null || true
-done
+echo "=== nix-prebuilt ==="
+if ! command -v nix >/dev/null 2>&1 || [ ! -x /usr/bin/nix ]; then
+    echo "prebuilt Nix is missing from the app rootfs"
+    echo "NIX_INSTALL_TEST_FAILED"
+    exit 1
+fi
+
+nix --version
+echo "NIX_INSTALL_TEST_PASSED"
 
 echo "=== nix-nosandbox ==="
 if /usr/bin/nix-nosandbox; then
@@ -15,4 +19,20 @@ else
     exit 1
 fi
 
-echo "NIX_NOSANDBOX_COMPLETE"
+echo "=== nix-sandbox ==="
+if /usr/bin/nix-sandbox; then
+    echo "NIX_SANDBOX_TEST_PASSED"
+else
+    echo "NIX_SANDBOX_TEST_FAILED"
+    exit 1
+fi
+
+echo "=== nix-nixpkgs ==="
+if /usr/bin/nix-nixpkgs; then
+    echo "NIX_NIXPKGS_TEST_PASSED"
+else
+    echo "NIX_NIXPKGS_TEST_FAILED"
+    exit 1
+fi
+
+echo "NIX_APP_TESTS_PASSED"
