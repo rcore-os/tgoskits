@@ -14,6 +14,8 @@ ax-percpu.workspace = true
 spin = { workspace = true }
 
 [dev-dependencies]
+ax-crate-interface.workspace = true
+ax-kernel-guard = { workspace = true, features = ["preempt"] }
 ctor = "0.6"
 cpu-local = { workspace = true, features = ["host-test"] }
 ax-percpu = { workspace = true, features = ["host-test"] }

@@ -7063,6 +7063,7 @@ dependencies = [
 name = "scope-local"
 version = "0.4.3"
 dependencies = [
+ "ax-crate-interface",
  "ax-kernel-guard",
  "ax-percpu",
  "cpu-local",
