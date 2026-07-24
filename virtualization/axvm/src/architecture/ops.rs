@@ -7,7 +7,7 @@ use axaddrspace::NestedPageTableOps;
 use axvm_types::{VmArchPerCpuOps, VmArchVcpuOps, VmVcpuState};
 
 use super::{BoundVcpuExit, VcpuRunAction};
-use crate::{AxVmResult, ax_err};
+use crate::{AxVmResult, ax_err, irq::model::PendingVcpuInterrupt};
 
 pub(crate) trait ArchOps {
     type VCpu: VmArchVcpuOps;
@@ -72,6 +72,22 @@ pub(crate) trait ArchOps {
         }
     }
 
+    /// Injects a pending `PendingVcpuInterrupt` into the target vCPU.
+    ///
+    /// Called in the **target vCPU's run loop** so that accesses to banked
+    /// system registers (GIC LR, x86 vLAPIC, etc.) happen on the correct
+    /// physical CPU.
+    ///
+    /// The default implementation calls `vcpu.inject_interrupt(interrupt.id.0
+    /// as usize)`, matching the `Normal` branch of the legacy
+    /// `inject_pending_interrupt`.
+    fn inject_vcpu_interrupt(
+        vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
+        interrupt: PendingVcpuInterrupt,
+    ) -> AxVmResult {
+        vcpu.inject_interrupt(interrupt.id.0 as usize)
+    }
+
     fn after_external_interrupt(
         _vm: &crate::AxVMRef,
         _vcpu: &crate::vm::AxVCpuRef<Self::VCpu>,
@@ -121,6 +137,32 @@ pub(crate) trait ArchOps {
         let run_result = vcpu.with_current_cpu_set(|| -> AxVmResult<_> {
             loop {
                 crate::runtime::vcpus::inject_pending_interrupts::<Self>(vm.id(), vcpu_id, vcpu);
+
+                // New path: drain the architecture-router dispatcher.
+                let new_interrupts =
+                    match vm.with_runtime(|rt| Ok(rt.irq_dispatcher().drain(vcpu_id))) {
+                        Ok(interrupts) => interrupts,
+                        Err(err) => {
+                            warn!(
+                                "VM[{}] VCpu[{}] cannot drain new interrupt dispatcher: {:?}",
+                                vm.id(),
+                                vcpu_id,
+                                err
+                            );
+                            Vec::new()
+                        }
+                    };
+                for interrupt in new_interrupts {
+                    if let Err(err) = Self::inject_vcpu_interrupt(vcpu, interrupt) {
+                        warn!(
+                            "VM[{}] VCpu[{}] failed to inject interrupt {:?}: {:?}",
+                            vm.id(),
+                            vcpu_id,
+                            interrupt,
+                            err
+                        );
+                    }
+                }
 
                 let exit = vcpu.run()?;
                 trace!("{exit:#x?}");

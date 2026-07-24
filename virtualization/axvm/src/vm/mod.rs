@@ -213,7 +213,7 @@ impl VmRuntimeHandle {
     /// inside the `SpinNoIrq` critical section is safe.  Merging enqueue +
     /// notify + IPI into a single lock acquisition eliminates the enqueue→notify
     /// race window present in the old two-`with_runtime` code.
-    #[allow(dead_code, reason = "wired in PR 1c / module 2+")]
+    #[allow(dead_code, reason = "wired in module 2+")]
     pub(crate) fn dispatch_vcpu_interrupt(
         &self,
         vcpu_id: usize,
@@ -228,11 +228,8 @@ impl VmRuntimeHandle {
         Ok(())
     }
 
-    /// Returns a reference to the new interrupt dispatcher.
-    ///
-    /// Called by the vCPU run loop (PR 1c) to drain pending interrupts before
+    /// Called by the vCPU run loop to drain pending interrupts before
     /// entering the guest.
-    #[allow(dead_code, reason = "wired in PR 1c")]
     pub(crate) fn irq_dispatcher(&self) -> &VcpuIrqDispatcher {
         &self.irq_dispatcher
     }

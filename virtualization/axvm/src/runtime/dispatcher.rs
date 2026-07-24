@@ -114,7 +114,6 @@ impl VcpuIrqDispatcher {
     /// The caller (vCPU run loop) runs on the target pCPU and injects each
     /// returned interrupt through the architecture-specific vCPU injection
     /// path before entering the guest.
-    #[allow(dead_code, reason = "wired in PR 1c")]
     pub fn drain(&self, vcpu_id: usize) -> Vec<PendingVcpuInterrupt> {
         self.queue.drain(vcpu_id)
     }
