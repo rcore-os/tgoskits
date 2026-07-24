@@ -7,11 +7,8 @@ keywords = ["os", "driver"]
 license = "MIT"
 name = "rdif-serial"
 repository.workspace = true
-version = "0.9.0"
+version = "0.9.1"
 
 [dependencies]
 bitflags = "2.8"
-futures = {version = "0.3", default-features = false, features = ["alloc"]}
-rdif-base = {workspace = true}
 thiserror = {version = "2", default-features = false}
-heapless = "0.9"

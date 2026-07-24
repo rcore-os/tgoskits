@@ -952,7 +952,12 @@ pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> AxResult<isize> {
                 sync_seccomp_to_thread_group();
             }
         }
-        SECCOMP_GET_ACTION_AVAIL => return seccomp_action_available(args),
+        SECCOMP_GET_ACTION_AVAIL => {
+            if flags != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            return seccomp_action_available(args);
+        }
         _ => return Err(AxError::InvalidInput),
     }
 

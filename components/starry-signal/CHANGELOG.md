@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.11](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.10...starry-signal-v0.8.11) - 2026-07-23
+
+### Added
+
+- *(starry-kernel)* implement POSIX message queues (mq_*) ([#1564](https://github.com/rcore-os/tgoskits/pull/1564))
+
 ## [0.8.10](https://github.com/rcore-os/tgoskits/compare/starry-signal-v0.8.9...starry-signal-v0.8.10) - 2026-07-08
 
 ### Other
