@@ -134,6 +134,12 @@ rockchip-soc = [
     "dep:rdif-reset",
     "dep:rockchip-soc",
 ]
+# RK3588 fixed-OPP-at-boot CPU DVFS (voltage-free rung): raises the CPU cluster
+# clocks via the SCMI seam at probe time. Board-only policy; keep it opt-in.
+rk3588-cpufreq = [
+    "rockchip-soc",
+    "dep:arm-scmi-rs",
+]
 rockchip-pm = ["rockchip-soc", "dep:rdif-power", "dep:rockchip-pm"]
 list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]

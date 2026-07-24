@@ -95,6 +95,44 @@ pub mod usb;
 #[cfg(virtio_dev)]
 pub mod virtio;
 
+/// RK3588 CPU DVFS ondemand governor, exposed as a stable, arch-neutral entry
+/// the kernel can drive from a periodic task without knowing the SoC specifics.
+///
+/// The governor's *policy + apply* live in the (arch-specific) cpufreq driver,
+/// but its *loop* — sleeping between samples and reading the per-CPU busy
+/// counters — cannot live in this crate: ax-driver sits below ax-task/ax-hal in
+/// the dependency graph, so spawning a task here would be a cyclic dependency.
+/// The kernel therefore owns the loop and calls [`cpufreq::governor_poll`] each
+/// tick. When the DVFS feature is off these are no-ops so callers stay generic.
+pub mod cpufreq {
+    #[cfg(feature = "rk3588-cpufreq")]
+    pub use crate::soc::rockchip::cpufreq::{
+        calibrate_cluster, calibrate_wanted, governor_period_ms, governor_poll, governor_wanted,
+    };
+
+    /// Feature-off stub: no governor, so the kernel never spawns its task.
+    #[cfg(not(feature = "rk3588-cpufreq"))]
+    pub fn governor_wanted() -> bool {
+        false
+    }
+    /// Feature-off stub.
+    #[cfg(not(feature = "rk3588-cpufreq"))]
+    pub fn governor_period_ms() -> u64 {
+        100
+    }
+    /// Feature-off stub.
+    #[cfg(not(feature = "rk3588-cpufreq"))]
+    pub fn governor_poll(_busy: &[u64]) {}
+    /// Feature-off stub: no calibration.
+    #[cfg(not(feature = "rk3588-cpufreq"))]
+    pub fn calibrate_wanted() -> bool {
+        false
+    }
+    /// Feature-off stub.
+    #[cfg(not(feature = "rk3588-cpufreq"))]
+    pub fn calibrate_cluster(_cluster_idx: usize, _intended_cpu: usize) {}
+}
+
 #[cfg(feature = "pci")]
 pub use binding_info::PciIrqRequirement;
 pub use binding_info::{BindingInfo, BindingIrq, BindingIrqBinding, BindingIrqSource, FdtIrqSpec};
