@@ -63,6 +63,7 @@ members = [
     "virtualization/test_crates/virtualization-tests",
     "components/percpu/percpu",
     "components/percpu/percpu_macros",
+    "components/printk",
 
     "drivers/ax-driver",
     "drivers/blk/*",
@@ -166,6 +167,7 @@ ax-linked-list-r4l = { version = "0.5.6", path = "components/linked_list_r4l" }
 ax-log = { version = "0.5.18", path = "os/arceos/modules/axlog" }
 ax-memory-addr = { version = "0.6.9", path = "memory/memory_addr" }
 ax-memory-set = { version = "0.6.12", path = "memory/memory_set" }
+ax-printk = { version = "0.1.0", path = "components/printk" }
 axpanic = { version = "0.1.1", path = "components/axpanic" }
 ax-mm = { version = "0.5.29", path = "os/arceos/modules/axmm" }
 ax-net = { version = "0.12.5", path = "net/ax-net" }
