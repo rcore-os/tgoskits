@@ -3,51 +3,72 @@
 > higress standalone gateway (Envoy data plane, static bootstrap) on StarryOS
 
 higress is a cloud-native API gateway whose data plane is Envoy. In standalone
-mode it runs the stock Envoy binary against a static bootstrap (no xDS control
-plane), so a single process provides the gateway functionality. This app runs
-the official Envoy release directly on StarryOS as a glibc dynamic ELF and
+mode it runs the Envoy binary against a static bootstrap (no xDS control plane),
+so a single process provides the gateway functionality. This app runs Envoy
+1.38.3 directly on StarryOS as a dynamic ELF on all four architectures and
 asserts the full documented gateway data path end to end (65 assertions).
 
 ## 架构矩阵
 
-| 架构 | Envoy release | 状态 |
-|------|---------------|------|
-| x86_64 | `envoy-1.38.3-linux-x86_64` | A 档，实跑 65/65 |
-| aarch64 | `envoy-1.38.3-linux-aarch_64` | A 档，实跑 65/65 |
-| riscv64 | 无 | 上游 Envoy 无 riscv64 端口 |
-| loongarch64 | 无 | 上游 Envoy 无 loongarch64 端口 |
+| 架构 | Envoy 1.38.3 | 状态 |
+|------|--------------|------|
+| x86_64 | 官方 release `envoy-1.38.3-linux-x86_64` (glibc) | A 档，实跑 65/65 |
+| aarch64 | 官方 release `envoy-1.38.3-linux-aarch_64` (glibc) | A 档，实跑 65/65 |
+| riscv64 | 源码建 (clang-18 + musl cross, lld) | A 档，实跑 65/65 (musl-dynamic ELF，同 x86/aa 走同一 `run-higress.sh`) |
+| loongarch64 | 源码建 (clang-18 + musl cross, lld) | A 档，实跑 65/65 (musl-dynamic ELF，同 x86/aa 走同一 `run-higress.sh`) |
 
 Envoy ships prebuilt binaries only for glibc x86_64 + aarch64
-(`github.com/envoyproxy/envoy/releases`). Upstream has no riscv64 / loongarch64
-port and no musl build, so those two architectures are out of scope here - this
-is an upstream ecosystem gap, not a StarryOS limitation. A source Bazel port to
-those targets is a separate long-horizon effort.
+(`github.com/envoyproxy/envoy/releases`), so those two run the stock release ELF.
+Upstream has no riscv64 / loongarch64 build, so for those two `prebuild.sh`
+source-builds the same Envoy 1.38.3 from the pinned source tag with clang-18
+against a musl cross sysroot, linked with lld - see
+`assets/build-envoy-rvloong.sh`. The build keeps only the data-plane extensions
+the carpet exercises (HTTP connection manager, router, local rate limit, static
+clusters, BoringSSL TLS) and drops the families that need a per-arch runtime with
+no rv64/loong64 port (V8/wasm, LuaJIT, the Go filter, the Rust dynamic-modules /
+Hickory resolver, the datadog / opentelemetry tracers). The output is a
+musl-dynamic ELF; the build is cached under `HIGRESS_CACHE` so it runs once.
 
-Envoy binaries are pinned by version + SHA256 in `prebuild.sh`:
+x86_64 / aarch64 downloads are pinned by version + SHA256 in `prebuild.sh`:
 
 | 架构 | SHA256 |
 |------|--------|
 | x86_64 | `affffb8d08a14fdc375b1f7dd8d0f3004eacdf51ce07f5636d7e168a01c6b373` |
 | aarch64 | `eff9766ce1a7af71c38a6d4587367621753049ae3df1bde5b6b9e695752f3167` |
 
+riscv64 / loongarch64 are reproducible from the pinned Envoy 1.38.3 source tag
+(there is no upstream binary to SHA-pin); `assets/build-envoy-rvloong.sh` fetches
+and patches that tag deterministically.
+
 ## 运行方式
 
-StarryOS loads the glibc dynamic Envoy ELF through PT_INTERP, the same mechanism
-proven by `apps/starry/glibc-dynamic-smoke`. `prebuild.sh` reads the interpreter
-and NEEDED sonames straight from the Envoy binary and stages them from the arch's
-`<arch>-linux-gnu` cross sysroot into the overlay:
+StarryOS loads the dynamic Envoy ELF through PT_INTERP, the same mechanism proven
+by `apps/starry/glibc-dynamic-smoke` (glibc) and the Alpine musl base (musl).
+`prebuild.sh` reads the interpreter and NEEDED sonames straight from the Envoy
+binary and stages them into the overlay - the glibc loader + libs from the arch's
+`<arch>-linux-gnu` cross sysroot for x86_64/aarch64, or the C++ runtime from the
+musl cross sysroot for riscv64/loongarch64 (the musl libc + loader are the Alpine
+base itself):
 
-| 架构 | INTERP | NEEDED |
-|------|--------|--------|
-| x86_64 | `/lib64/ld-linux-x86-64.so.2` | libc/libm/librt/libdl/libpthread |
-| aarch64 | `/lib/ld-linux-aarch64.so.1` | libc/libm/librt/libdl/libpthread |
+| 架构 | INTERP | 额外 staged 运行库 |
+|------|--------|--------------------|
+| x86_64 | `/lib64/ld-linux-x86-64.so.2` | glibc loader + libc/libm/librt/libdl/libpthread |
+| aarch64 | `/lib/ld-linux-aarch64.so.1` | glibc loader + libc/libm/librt/libdl/libpthread |
+| riscv64 | `/lib/ld-musl-riscv64.so.1` (Alpine base) | libstdc++.so.6 + libgcc_s.so.1 |
+| loongarch64 | `/lib/ld-musl-loongarch64.so.1` (Alpine base) | libstdc++.so.6 + libgcc_s.so.1 |
 
-Envoy 1.38.3 statically links BoringSSL and libstdc++, so TLS works without any
-extra runtime library (max symbol requirement is GLIBC_2.30).
+The official x86_64/aarch64 Envoy statically links BoringSSL and libstdc++, so on
+glibc no extra C++ runtime is staged (max symbol requirement is GLIBC_2.30). The
+riscv64/loongarch64 source build links libstdc++ dynamically (GCC's static
+libstdc++.a carries .eh_frame relocations into discarded COMDAT sections that lld
+rejects), so `prebuild.sh` stages `libstdc++.so.6` + `libgcc_s.so.1` from the musl
+cross sysroot; BoringSSL is still statically linked into the Envoy binary.
 
 ```bash
 cargo xtask starry app qemu -t higress --arch x86_64
 cargo xtask starry app qemu -t higress --arch aarch64
+cargo xtask starry app qemu -t higress --arch riscv64
+cargo xtask starry app qemu -t higress --arch loongarch64
 ```
 
 ### 自包含的上游 / 客户端（不依赖 guest 网络）
