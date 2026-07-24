@@ -39,6 +39,11 @@ pub trait FilesystemOps: Send + Sync {
     fn flush(&self) -> VfsResult<()> {
         Ok(())
     }
+
+    /// Flushes and shuts down the filesystem before its backing device becomes unavailable.
+    fn shutdown(&self) -> VfsResult<()> {
+        self.flush()
+    }
 }
 
 #[derive(Clone)]
@@ -55,6 +60,8 @@ impl Filesystem {
     pub fn root_dir(&self) -> DirEntry;
 
     pub fn stat(&self) -> VfsResult<StatFs>;
+
+    pub fn shutdown(&self) -> VfsResult<()>;
 }
 
 impl Filesystem {

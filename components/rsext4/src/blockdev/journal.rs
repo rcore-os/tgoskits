@@ -30,12 +30,21 @@ mod tests {
 
     struct MemBlockDev {
         data: Vec<u8>,
+        fail_flush: bool,
     }
 
     impl MemBlockDev {
         fn new(blocks: usize) -> Self {
             Self {
                 data: vec![0; blocks * BLOCK_SIZE],
+                fail_flush: false,
+            }
+        }
+
+        fn with_failing_flush(blocks: usize) -> Self {
+            Self {
+                data: vec![0; blocks * BLOCK_SIZE],
+                fail_flush: true,
             }
         }
     }
@@ -69,6 +78,14 @@ mod tests {
 
         fn block_size(&self) -> u32 {
             BLOCK_SIZE as u32
+        }
+
+        fn flush(&mut self) -> Ext4Result<()> {
+            if self.fail_flush {
+                Err(Ext4Error::io())
+            } else {
+                Ok(())
+            }
         }
 
         fn current_time(&self) -> Ext4Result<Ext4Timestamp> {
@@ -114,6 +131,20 @@ mod tests {
             .expect("bulk read pending metadata");
 
         assert_eq!(observed, pending);
+    }
+
+    #[test]
+    fn umount_commit_propagates_device_flush_failure() {
+        let mut dev = Jbd2Dev::initial_jbd2dev(0, MemBlockDev::with_failing_flush(256), true);
+        dev.set_journal_superblock(JournalSuperBllockS::default(), AbsoluteBN::new(128));
+        dev.write_block(AbsoluteBN::new(10), true)
+            .expect("queue metadata update");
+
+        let error = dev
+            .umount_commit()
+            .expect_err("unmount commit must propagate the device error");
+
+        assert_eq!(error, Ext4Error::io());
     }
 }
 
@@ -253,24 +284,22 @@ impl<B: BlockDevice> Jbd2Dev<B> {
     }
 
     /// Commits all buffered journal transactions during unmount.
-    pub fn umount_commit(&mut self) {
+    pub fn umount_commit(&mut self) -> Ext4Result<()> {
         if !self.journal_use {
             trace!("Journal disabled, skip commit");
-            return;
+            return Ok(());
         }
 
         if let Some(system) = self.system.as_mut() {
             let committed = system
-                .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)
-                .expect("journal transaction commit failed");
+                .commit_transaction_with_mapping(self.inner.device_mut(), &self.journal_blocks)?;
             if committed {
-                self.inner
-                    .invalidate_cache()
-                    .expect("invalidate_cache failed during umount commit");
+                self.inner.invalidate_cache()?;
             }
         } else {
             trace!("Journal enabled but system uninitialized, skip commit");
         }
+        Ok(())
     }
 
     /// Writes the current internal block buffer.

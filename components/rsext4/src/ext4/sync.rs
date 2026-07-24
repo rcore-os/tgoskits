@@ -37,7 +37,7 @@ impl Ext4FileSystem {
 
         // Commit the journal transaction so all queued metadata (including
         // the superblock with s_state = VALID_FS) is checkpointed to disk.
-        block_dev.umount_commit();
+        block_dev.umount_commit()?;
 
         self.mounted = false;
         info!("Filesystem unmounted cleanly");

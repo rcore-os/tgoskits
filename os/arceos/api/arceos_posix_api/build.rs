@@ -133,10 +133,16 @@ typedef struct {{
             }
         }
 
-        // Remove the "-softfloat" suffix for some targets.
-        if let Some(llvm_target) = target.strip_suffix("-softfloat") {
-            builder = builder.clang_arg(format!("--target={llvm_target}"));
-        }
+        // Bindgen otherwise uses the host architecture and can emit host ABI
+        // constants and layouts while cross-compiling. Clang target triples
+        // do not encode the RISC-V ISA extension suffix used by Rust targets.
+        let llvm_target = target.strip_suffix("-softfloat").unwrap_or(&target);
+        let llvm_target = if let Some(suffix) = llvm_target.strip_prefix("riscv64gc-") {
+            format!("riscv64-{suffix}")
+        } else {
+            llvm_target.to_owned()
+        };
+        builder = builder.clang_arg(format!("--target={llvm_target}"));
 
         for ty in allow_types {
             builder = builder.allowlist_type(ty);
