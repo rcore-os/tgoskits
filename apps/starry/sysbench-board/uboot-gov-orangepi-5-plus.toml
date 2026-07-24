@@ -1,0 +1,19 @@
+# Server-less U-Boot boot config for the ONDEMAND-GOVERNOR board validation.
+# Same as uboot-orangepi-5-plus.toml but runs the governor harness instead of the
+# sysbench matrix, so the serial capture carries the kernel's `gov:` OPP-transition
+# lines interleaved with per-cluster cpuprobe ips.
+#   cargo xtask starry uboot -c build-aarch64-...toml --uboot-config this
+# The harness arg (threads) picks the PSU-stress level: 2 = ramped/light first.
+serial = "/dev/cu.usbserial-AQ03MLX2"
+baud_rate = "1500000"
+dtb_file = "os/StarryOS/configs/board/orangepi-5-plus.dtb"
+
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = "test -x /usr/local/bin/starry-gov-harness.sh || { echo SYSBENCH_MISSING; exit 1; }; sh /usr/local/bin/starry-gov-harness.sh 2"
+success_regex = ["(?m)^GOV_HARNESS_DONE\\s*$"]
+fail_regex = [
+  "panicked at",
+  '(?m)^SYSBENCH_MISSING\s*$',
+  "(?i)error while loading shared libraries",
+]
+timeout = 1800

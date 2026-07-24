@@ -1,0 +1,4 @@
+# build artifacts (regenerate with build-harness.sh)
+cpuprobe
+membw
+*.out

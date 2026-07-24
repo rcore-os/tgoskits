@@ -202,6 +202,19 @@ pub fn next_timer_deadline_nanos() -> Option<u64> {
     crate::timers::next_deadline_nanos()
 }
 
+/// Scheduler ticks CPU `cpu` has spent running a non-idle task since boot.
+///
+/// This is the load metric for an ondemand cpufreq governor: a monotonic per-CPU
+/// counter bumped once per timer tick when the CPU is not idle. Sample the delta
+/// over a window and divide by the elapsed ticks to get the busy fraction. Returns
+/// 0 for an out-of-range `cpu`. Requires the `irq` feature to actually advance
+/// (the counter only moves inside the timer tick).
+pub fn cpu_busy_ticks(cpu: usize) -> u64 {
+    crate::run_queue::BUSY_TICKS
+        .get(cpu)
+        .map_or(0, |t| t.load(core::sync::atomic::Ordering::Relaxed))
+}
+
 #[cfg(feature = "irq")]
 #[doc(hidden)]
 pub fn note_programmed_timer_deadline_nanos(deadline_nanos: u64) {
