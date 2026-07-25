@@ -24,13 +24,20 @@ It is **fail-safe**: if either PMIC bus does not come up at boot, `GOV_READY` st
 
 ## Enable and build
 
-The feature is wired into the Orange Pi 5 Plus board config
-(`os/StarryOS/configs/board/orangepi-5-plus.toml`), so the standard board
-build/test entry enables it:
+The feature is enabled in both Orange Pi 5 Plus build configs:
 
-```bash
-cargo xtask starry test board --board orangepi-5-plus
-```
+- `test-suit/starryos/board-orangepi-5-plus/build-aarch64-unknown-none-softfloat.toml`
+  — the config the **board CI runner** actually builds, so the standard board
+  test entry compiles, boots and runs the governor on real hardware:
+
+  ```bash
+  cargo xtask starry test board --board orangepi-5-plus
+  ```
+
+  Every case there boots this kernel; a governor-induced boot panic/hang trips the
+  cases' `panic` fail-regex, so the board CI regression-guards the feature.
+- `os/StarryOS/configs/board/orangepi-5-plus.toml` — the general board build
+  template (for a full-board `max_cpu_num` build outside CI).
 
 To enable it in a custom build, add `"ax-driver/rk3588-cpufreq"` to that config's
 `features` list.
