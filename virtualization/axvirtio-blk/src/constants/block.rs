@@ -92,9 +92,6 @@ pub const SECTOR_SIZE: u32 = 512;
 /// Default capacity in sectors (1MB = 2048 sectors)
 pub const DEFAULT_CAPACITY_SECTORS: u64 = 64 * 2048;
 
-/// Default number of queues for block device
-pub const DEFAULT_NUM_QUEUES: u16 = 1;
-
 // ============================================================================
 // Block Device Configuration Defaults
 // ============================================================================
