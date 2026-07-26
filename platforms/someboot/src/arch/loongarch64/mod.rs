@@ -111,7 +111,20 @@ impl ArchTrait for Arch {
     }
 
     fn systimer_irq_enable() {
+        use loongArch64::register::ecfg::{self, LineBasedInterrupt};
+        // Enable BOTH the timer counter (TCFG.EN) and this CPU's timer interrupt
+        // LINE (ECFG.LIE bit 11 = TI; ECFG is a per-CPU CSR). `enable_timer_irq`
+        // /`init_timer` runs on EVERY CPU (primary and secondaries), so enabling
+        // the line here makes each secondary actually take its timer interrupt.
+        // Previously only the timer counter was enabled and the ECFG.LIE line was
+        // left to a BSP-only `request_percpu_irq`, which never reaches secondaries
+        // — so a secondary's timer counted but the CPU never took the interrupt,
+        // and an idle secondary never woke from `wait_for_irqs`. That stranded any
+        // task placed on an idle secondary (e.g. by SMP round-robin spawn
+        // placement), hanging its waiter — the loongarch smp4 regression.
+        const TI_LINE: usize = 11; // register::irq::TI
         tcfg::set_en(true);
+        ecfg::set_lie(ecfg::read().lie() | LineBasedInterrupt::from_bits_retain(1 << TI_LINE));
     }
 
     fn systimer_irq_disable() {
