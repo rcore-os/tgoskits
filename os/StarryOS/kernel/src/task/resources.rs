@@ -2,10 +2,17 @@
 
 use core::ops::{Index, IndexMut};
 
-use linux_raw_sys::general::{RLIM_NLIMITS, RLIMIT_DATA, RLIMIT_NOFILE, RLIMIT_STACK};
+use linux_raw_sys::general::{
+    RLIM_NLIMITS, RLIMIT_DATA, RLIMIT_MSGQUEUE, RLIMIT_NOFILE, RLIMIT_STACK,
+};
 
 /// The maximum number of open files
 pub const AX_FILE_LIMIT: usize = 1024;
+
+/// Default (and hard) `RLIMIT_MSGQUEUE`: the per-user byte ceiling on POSIX
+/// message queues, matching Linux `MQ_BYTES_MAX` (`include/uapi/linux/mqueue.h`,
+/// 819200) as seeded by `INIT_RLIMITS`.
+pub const MQ_BYTES_MAX: u64 = 819200;
 
 /// The limit for a specific resource
 #[derive(Default)]
@@ -49,6 +56,11 @@ impl Default for Rlimits {
         result[RLIMIT_NOFILE] = (AX_FILE_LIMIT as u64).into();
         // Linux default: RLIMIT_DATA is unlimited
         result[RLIMIT_DATA] = Rlimit::new(u64::MAX, u64::MAX);
+        // Linux `INIT_RLIMITS` seeds RLIMIT_MSGQUEUE with MQ_BYTES_MAX
+        // (`include/asm-generic/resource.h`, `include/uapi/linux/mqueue.h`):
+        // the per-user ceiling on bytes held across all that user's POSIX
+        // message queues. mq_open charges the queue's mq_bytes against it.
+        result[RLIMIT_MSGQUEUE] = Rlimit::new(MQ_BYTES_MAX, MQ_BYTES_MAX);
         result
     }
 }

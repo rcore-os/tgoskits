@@ -1,7 +1,14 @@
-use core::arch::naked_asm;
+use core::{
+    arch::naked_asm,
+    mem::{align_of, offset_of, size_of},
+    ptr::NonNull,
+};
 
 use ax_memory_addr::VirtAddr;
+use cpu_local::{CurrentThreadHeader, PreparedThreadSwitch};
 use riscv::register::sstatus::{self, FS};
+
+use crate::{KernelTlsBase, TaskLocalState};
 
 /// General registers of RISC-V.
 #[allow(missing_docs)]
@@ -97,6 +104,16 @@ impl FpState {
             // after saving, we set the FP state to clean
             self.fs = FS::Clean;
         }
+
+        // FS gates every floating-point instruction. Bootstrap and kernel
+        // contexts may legitimately leave it Off, so make register restore
+        // legal before executing the first FP instruction. The task-owned
+        // state is published only after the register image is complete.
+        if matches!(next_fp_state.fs, FS::Clean | FS::Initial) {
+            // SAFETY: the scheduler calls this handoff with IRQs disabled and
+            // preemption pinned; sstatus changes only the current hart.
+            unsafe { sstatus::set_fs(FS::Dirty) };
+        }
         // restore the next task's FP state
         match next_fp_state.fs {
             FS::Clean => next_fp_state.restore(), /* the next task's FP state is clean, we should restore it */
@@ -104,7 +121,9 @@ impl FpState {
             FS::Off => {}                         // do nothing
             FS::Dirty => unreachable!("FP state of the next task should not be dirty"),
         }
-        unsafe { sstatus::set_fs(next_fp_state.fs) }; // set the FP state to the next task's FP state
+        // SAFETY: the same IRQ-disabled, CPU-pinned handoff still owns this
+        // hart, and every FS variant is a valid architectural encoding.
+        unsafe { sstatus::set_fs(next_fp_state.fs) };
     }
 }
 
@@ -131,6 +150,14 @@ impl Default for TrapFrame {
 }
 
 impl TrapFrame {
+    /// Returns the privilege domain represented by this register image.
+    pub fn origin(&self) -> crate::TrapOrigin {
+        match self.sstatus.spp() {
+            sstatus::SPP::Supervisor => crate::TrapOrigin::Kernel,
+            sstatus::SPP::User => crate::TrapOrigin::User,
+        }
+    }
+
     /// Gets the 0th syscall argument.
     pub const fn arg0(&self) -> usize {
         self.regs.a0
@@ -283,69 +310,98 @@ pub struct TaskContext {
     pub s9: usize,
     pub s10: usize,
     pub s11: usize,
-    /// Thread Pointer
-    pub tp: usize,
-    /// The `satp` register value, i.e., the page table root.
+    /// Architecture-neutral current-header and kernel-TLS switch state.
+    task_local: TaskLocalState,
+    /// The `satp` value restored for this task's userspace address space.
     #[cfg(feature = "uspace")]
-    pub satp: ax_memory_addr::PhysAddr,
+    page_table_root: ax_memory_addr::PhysAddr,
     #[cfg(feature = "fp-simd")]
     pub fp_state: FpState,
 }
 
+// RISC-V load/store macros accept a machine-word index. Derive every index
+// from this C layout and prove the TLS newtype has exactly one register word.
+const _: () = {
+    assert!(size_of::<KernelTlsBase>() == size_of::<usize>());
+    assert!(align_of::<KernelTlsBase>() == align_of::<usize>());
+    assert!(offset_of!(TaskContext, ra) == 0);
+    assert!(offset_of!(TaskContext, sp) == offset_of!(TaskContext, ra) + size_of::<usize>());
+    assert!(offset_of!(TaskContext, task_local) % size_of::<usize>() == 0);
+};
+
 impl TaskContext {
     /// Creates a dummy context for a new task.
     ///
-    /// Note the context is not initialized, it will be filled by [`switch_to`]
-    /// (for initial tasks) and [`init`] (for regular tasks) methods.
+    /// Note the context is not initialized, it will be filled by
+    /// [`switch_to_prepared`](Self::switch_to_prepared) (for initial tasks) and [`init`]
+    /// (for regular tasks) methods.
     ///
     /// [`init`]: TaskContext::init
-    /// [`switch_to`]: TaskContext::switch_to
     pub fn new() -> Self {
         Self {
             #[cfg(feature = "uspace")]
-            satp: crate::asm::read_kernel_page_table(),
-            ..Default::default()
+            page_table_root: crate::asm::read_kernel_page_table(),
+            ..Self::default()
         }
     }
 
     /// Initializes the context for a new task, with the given entry point and
     /// kernel stack.
-    pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, tls_area: VirtAddr) {
+    pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, tls_area: KernelTlsBase) {
         self.sp = kstack_top.as_usize();
         self.ra = entry;
-        self.tp = tls_area.as_usize();
+        self.task_local.set_kernel_tls(tls_area);
     }
 
-    /// Changes the page table root in this context.
-    ///
-    /// The hardware register for page table root (`satp` for riscv64) will be
-    /// updated to the next task's after [`Self::switch_to`].
+    /// Sets the pinned task-owned current-thread header.
+    pub fn set_current_header(&mut self, header: NonNull<CurrentThreadHeader>) {
+        self.task_local.set_current_header(header);
+    }
+
+    /// Returns the configured task-owned current-thread header.
+    pub const fn current_header(&self) -> Option<NonNull<CurrentThreadHeader>> {
+        self.task_local.current_header()
+    }
+
+    /// Changes the page table root restored for this task.
     #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, satp: ax_memory_addr::PhysAddr) {
-        self.satp = satp;
+    pub fn set_page_table_root(&mut self, page_table_root: ax_memory_addr::PhysAddr) {
+        self.page_table_root = page_table_root;
     }
 
-    /// Switches to another task.
-    ///
-    /// It first saves the current task's context from CPU to this place, and then
-    /// restores the next task's context from `next_ctx` to CPU.
-    pub fn switch_to(&mut self, next_ctx: &Self) {
-        #[cfg(feature = "tls")]
-        {
-            self.tp = crate::asm::read_thread_pointer();
-            unsafe { crate::asm::write_thread_pointer(next_ctx.tp) };
-        }
-        #[cfg(feature = "uspace")]
-        if self.satp != next_ctx.satp {
-            unsafe { crate::asm::write_user_page_table(next_ctx.satp) };
-            crate::asm::flush_tlb(None); // currently flush the entire TLB
-        }
+    /// Completes FP/SIMD work before current-thread publication.
+    pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
         {
-            self.fp_state.switch_to(&next_ctx.fp_state);
+            self.fp_state.switch_to(&_next_ctx.fp_state);
         }
+        #[cfg(feature = "uspace")]
+        if self.page_table_root != _next_ctx.page_table_root {
+            // SAFETY: the scheduler owns both contexts with IRQs disabled.
+            unsafe { crate::asm::write_user_page_table(_next_ctx.page_table_root) };
+            crate::asm::flush_tlb(None);
+        }
+    }
 
-        unsafe { context_switch(self, next_ctx) }
+    /// Performs only the final GPR/current/TLS transfer.
+    ///
+    /// # Safety
+    ///
+    /// Scheduling must be serialized, FP state prepared, and the next current
+    /// header published. No fallible Rust work may follow before this call.
+    #[inline(always)]
+    pub unsafe fn switch_to_prepared(
+        &mut self,
+        next_ctx: &Self,
+        prepared: PreparedThreadSwitch<'_>,
+    ) {
+        assert_eq!(
+            next_ctx.current_header(),
+            Some(prepared.next_header()),
+            "prepared switch token must belong to the next task context",
+        );
+        unsafe { prepared.commit() };
+        unsafe { context_switch_raw(self, next_ctx) }
     }
 }
 
@@ -386,43 +442,122 @@ unsafe extern "C" fn clear_fp_registers() {
     )
 }
 
+#[cfg(feature = "tls")]
 #[unsafe(naked)]
-unsafe extern "C" fn context_switch(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(
         include_asm_macros!(),
         "
         // save old context (callee-saved registers)
-        STR     ra, a0, 0
-        STR     sp, a0, 1
-        STR     s0, a0, 2
-        STR     s1, a0, 3
-        STR     s2, a0, 4
-        STR     s3, a0, 5
-        STR     s4, a0, 6
-        STR     s5, a0, 7
-        STR     s6, a0, 8
-        STR     s7, a0, 9
-        STR     s8, a0, 10
-        STR     s9, a0, 11
-        STR     s10, a0, 12
-        STR     s11, a0, 13
+        STR     ra, a0, {ra_index}
+        STR     sp, a0, {sp_index}
+        STR     s0, a0, {s0_index}
+        STR     s1, a0, {s1_index}
+        STR     s2, a0, {s2_index}
+        STR     s3, a0, {s3_index}
+        STR     s4, a0, {s4_index}
+        STR     s5, a0, {s5_index}
+        STR     s6, a0, {s6_index}
+        STR     s7, a0, {s7_index}
+        STR     s8, a0, {s8_index}
+        STR     s9, a0, {s9_index}
+        STR     s10, a0, {s10_index}
+        STR     s11, a0, {s11_index}
+        STR     tp, a0, {kernel_tls_index}
 
         // restore new context
-        LDR     s11, a1, 13
-        LDR     s10, a1, 12
-        LDR     s9, a1, 11
-        LDR     s8, a1, 10
-        LDR     s7, a1, 9
-        LDR     s6, a1, 8
-        LDR     s5, a1, 7
-        LDR     s4, a1, 6
-        LDR     s3, a1, 5
-        LDR     s2, a1, 4
-        LDR     s1, a1, 3
-        LDR     s0, a1, 2
-        LDR     sp, a1, 1
-        LDR     ra, a1, 0
+        LDR     s11, a1, {s11_index}
+        LDR     s10, a1, {s10_index}
+        LDR     s9, a1, {s9_index}
+        LDR     s8, a1, {s8_index}
+        LDR     s7, a1, {s7_index}
+        LDR     s6, a1, {s6_index}
+        LDR     s5, a1, {s5_index}
+        LDR     s4, a1, {s4_index}
+        LDR     s3, a1, {s3_index}
+        LDR     s2, a1, {s2_index}
+        LDR     s1, a1, {s1_index}
+        LDR     s0, a1, {s0_index}
+        LDR     sp, a1, {sp_index}
+        LDR     tp, a1, {kernel_tls_index}
+        LDR     ra, a1, {ra_index}
 
         ret",
+        ra_index = const offset_of!(TaskContext, ra) / size_of::<usize>(),
+        sp_index = const offset_of!(TaskContext, sp) / size_of::<usize>(),
+        s0_index = const offset_of!(TaskContext, s0) / size_of::<usize>(),
+        s1_index = const offset_of!(TaskContext, s1) / size_of::<usize>(),
+        s2_index = const offset_of!(TaskContext, s2) / size_of::<usize>(),
+        s3_index = const offset_of!(TaskContext, s3) / size_of::<usize>(),
+        s4_index = const offset_of!(TaskContext, s4) / size_of::<usize>(),
+        s5_index = const offset_of!(TaskContext, s5) / size_of::<usize>(),
+        s6_index = const offset_of!(TaskContext, s6) / size_of::<usize>(),
+        s7_index = const offset_of!(TaskContext, s7) / size_of::<usize>(),
+        s8_index = const offset_of!(TaskContext, s8) / size_of::<usize>(),
+        s9_index = const offset_of!(TaskContext, s9) / size_of::<usize>(),
+        s10_index = const offset_of!(TaskContext, s10) / size_of::<usize>(),
+        s11_index = const offset_of!(TaskContext, s11) / size_of::<usize>(),
+        kernel_tls_index = const (offset_of!(TaskContext, task_local)
+            + offset_of!(TaskLocalState, kernel_tls)) / size_of::<usize>(),
+    )
+}
+
+#[cfg(not(feature = "tls"))]
+#[unsafe(naked)]
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+    naked_asm!(
+        include_asm_macros!(),
+        "
+        // Save old context. CPU-owned sscratch and task-owned tp are not
+        // folded into the generic callee-saved register image.
+        STR     ra, a0, {ra_index}
+        STR     sp, a0, {sp_index}
+        STR     s0, a0, {s0_index}
+        STR     s1, a0, {s1_index}
+        STR     s2, a0, {s2_index}
+        STR     s3, a0, {s3_index}
+        STR     s4, a0, {s4_index}
+        STR     s5, a0, {s5_index}
+        STR     s6, a0, {s6_index}
+        STR     s7, a0, {s7_index}
+        STR     s8, a0, {s8_index}
+        STR     s9, a0, {s9_index}
+        STR     s10, a0, {s10_index}
+        STR     s11, a0, {s11_index}
+
+        // Restore all next state, then make tp current immediately before the
+        // direct return into the next task. gp remains the psABI global pointer.
+        LDR     s11, a1, {s11_index}
+        LDR     s10, a1, {s10_index}
+        LDR     s9, a1, {s9_index}
+        LDR     s8, a1, {s8_index}
+        LDR     s7, a1, {s7_index}
+        LDR     s6, a1, {s6_index}
+        LDR     s5, a1, {s5_index}
+        LDR     s4, a1, {s4_index}
+        LDR     s3, a1, {s3_index}
+        LDR     s2, a1, {s2_index}
+        LDR     s1, a1, {s1_index}
+        LDR     s0, a1, {s0_index}
+        LDR     sp, a1, {sp_index}
+        LDR     tp, a1, {current_header_index}
+        LDR     ra, a1, {ra_index}
+        ret",
+        ra_index = const offset_of!(TaskContext, ra) / size_of::<usize>(),
+        sp_index = const offset_of!(TaskContext, sp) / size_of::<usize>(),
+        s0_index = const offset_of!(TaskContext, s0) / size_of::<usize>(),
+        s1_index = const offset_of!(TaskContext, s1) / size_of::<usize>(),
+        s2_index = const offset_of!(TaskContext, s2) / size_of::<usize>(),
+        s3_index = const offset_of!(TaskContext, s3) / size_of::<usize>(),
+        s4_index = const offset_of!(TaskContext, s4) / size_of::<usize>(),
+        s5_index = const offset_of!(TaskContext, s5) / size_of::<usize>(),
+        s6_index = const offset_of!(TaskContext, s6) / size_of::<usize>(),
+        s7_index = const offset_of!(TaskContext, s7) / size_of::<usize>(),
+        s8_index = const offset_of!(TaskContext, s8) / size_of::<usize>(),
+        s9_index = const offset_of!(TaskContext, s9) / size_of::<usize>(),
+        s10_index = const offset_of!(TaskContext, s10) / size_of::<usize>(),
+        s11_index = const offset_of!(TaskContext, s11) / size_of::<usize>(),
+        current_header_index = const (offset_of!(TaskContext, task_local)
+            + offset_of!(TaskLocalState, current_header)) / size_of::<usize>(),
     )
 }

@@ -12,7 +12,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
 use ax_task::{current, future::block_on, yield_now};
@@ -24,7 +23,7 @@ use starry_vm::vm_load_until_nul;
 
 use crate::{
     config::USER_HEAP_BASE,
-    file::{FD_TABLE, ResolveAtResult, memfd::Memfd, resolve_at},
+    file::{ResolveAtResult, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
     task::{AsThread, rebind_task_tid, zap_thread},
 };
@@ -36,7 +35,7 @@ pub fn sys_execve(
     envp: *const *const c_char,
 ) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    let loc = FS_CONTEXT.lock().resolve(&path)?;
+    let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?;
     do_execve(uctx, loc, path, argv, envp)
 }
 
@@ -191,7 +190,9 @@ fn do_execve(
                 // not by the kernel. This is a pragmatic workaround until
                 // musl's execvp or busybox's ENOEXEC handling is available.
                 let shell_path = "/bin/sh";
-                let shell_loc = FS_CONTEXT.lock().resolve(shell_path)?;
+                let shell_loc = ax_fs_ng::vfs::current_fs_context()
+                    .lock()
+                    .resolve(shell_path)?;
                 new_name = shell_loc.name().to_string();
                 new_exe_path = shell_loc.absolute_path()?.to_string();
                 args = iter::once(String::from(shell_path))
@@ -276,8 +277,9 @@ fn do_execve(
     // between our snapshot and its own exit, leaking those fds into the new
     // image. Once all siblings are reaped, the snapshot reflects the final
     // post-quiescence table. The close pass below runs under the same
-    // `FD_TABLE.write()` guard so no new fds appear between scan and close.
-    let mut fd_table = FD_TABLE.write();
+    // `crate::file::current_fd_table().write()` guard so no new fds appear between scan and close.
+    let current_fd_table = crate::file::current_fd_table();
+    let mut fd_table = current_fd_table.write();
     let cloexec_fds: Vec<_> = fd_table
         .ids()
         .filter(|it| fd_table.get(*it).unwrap().cloexec)

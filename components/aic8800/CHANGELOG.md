@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.4...aic8800-v0.2.5) - 2026-07-23
+
+### Other
+
+- *(axbuild)* 将构建与启动能力收敛到显式配置 ([#1620](https://github.com/rcore-os/tgoskits/pull/1620))
+
 ## [0.2.4](https://github.com/rcore-os/tgoskits/compare/aic8800-v0.2.3...aic8800-v0.2.4) - 2026-07-08
 
 ### Other

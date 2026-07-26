@@ -12,7 +12,7 @@ ax-std = ["dep:ax-hal", "dep:ax-runtime", "dep:ax-std", "ax-runtime/irq"]
 ax-driver.workspace = true
 ax-hal = { workspace = true, optional = true }
 ax-runtime = { workspace = true, optional = true }
-ax-std = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true, features = ["default"] }
 ax-task.workspace = true
 axplat-dyn.workspace = true
 axtest.workspace = true

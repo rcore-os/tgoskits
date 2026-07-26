@@ -24,6 +24,11 @@ pub use self::{
 use crate::task::{AsThread, SeccompDecision, do_exit, seccomp_errno};
 
 pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
+    // Per signal(7), only the System V message-queue blocking calls (msgsnd /
+    // msgrcv) are never restarted even with SA_RESTART. The POSIX message-queue
+    // calls (mq_send / mq_receive / mq_timedsend / mq_timedreceive) ARE in the
+    // SA_RESTART-restartable set, so they must not be listed here or a handler
+    // installed with SA_RESTART would wrongly see EINTR.
     !matches!(Sysno::new(sysno), Some(Sysno::msgsnd | Sysno::msgrcv))
 }
 
@@ -835,6 +840,33 @@ pub fn handle_syscall(uctx: &mut UserContext) {
             uctx.arg4() as _,
         ),
         Sysno::msgctl => sys_msgctl(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
+
+        // POSIX message queues
+        Sysno::mq_open => sys_mq_open(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
+        Sysno::mq_unlink => sys_mq_unlink(uctx.arg0() as _),
+        Sysno::mq_timedsend => sys_mq_timedsend(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::mq_timedreceive => sys_mq_timedreceive(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::mq_notify => sys_mq_notify(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::mq_getsetattr => {
+            sys_mq_getsetattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
+        }
 
         // shm
         Sysno::shmget => sys_shmget(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),

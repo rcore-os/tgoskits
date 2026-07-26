@@ -110,6 +110,7 @@ push 到 `main` / `dev` 时强制运行 CI 检查。若非 `main` / `dev` 分支
 | Test axvisor self-hosted x86_64(vmx) UEFI | `self-hosted linux intel kvm` | 否 | 无 | 安装/定位 OVMF，生成 nimbos UEFI VM config，并运行 `cargo xtask axvisor test qemu --arch x86_64 --test-group uefi --test-case qemu-nimbos`；仅 `rcore-os` 仓库触发 |
 | Test axloader HTTP smoke | `self-hosted linux intel kvm` | 否 | 无 | 安装 `x86_64-unknown-uefi` target 与 OVMF，运行 `cargo axloader test qemu --target x86_64-unknown-uefi`；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted board orangepi-5-plus-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board orangepi-5-plus-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
+| Test axvisor self-hosted board orangepi-5-plus-starry | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board orangepi-5-plus-starry`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted board roc-rk3568-pc-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board roc-rk3568-pc-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test axvisor self-hosted board phytiumpi-linux | `self-hosted linux board` | 否 | 无 | `cargo xtask axvisor test board --board phytiumpi-linux`；物理板卡；仅 `rcore-os` 仓库触发 |
 | Test starry self-hosted board orangepi-5-plus | `self-hosted linux board` | 否 | 无 | `cargo xtask starry test board --board orangepi-5-plus`；物理板卡；仅 `rcore-os` 仓库触发 |

@@ -102,7 +102,10 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
     let fd_entry = if is_current {
         // Use the calling thread's live fd table, including any table installed
         // by unshare(CLONE_FILES) or close_range(CLOSE_RANGE_UNSHARE).
-        FD_TABLE.read().get(target_fd as usize).cloned()
+        crate::file::current_fd_table()
+            .read()
+            .get(target_fd as usize)
+            .cloned()
     } else {
         let task = get_task(proc_data.proc.pid())?;
         FD_TABLE

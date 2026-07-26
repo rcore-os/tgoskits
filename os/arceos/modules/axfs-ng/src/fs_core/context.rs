@@ -102,6 +102,14 @@ impl MountNamespace {
         &self.root_mount
     }
 
+    /// Walk the mount tree of this namespace, returning `(mount_id,
+    /// parent_id, mountpoint)` tuples in DFS order.
+    ///
+    /// Delegates to [`Mountpoint::walk_tree`] on the root mount.
+    pub fn walk_tree(&self) -> Vec<(u64, u64, Arc<Mountpoint>)> {
+        self.root_mount.walk_tree()
+    }
+
     fn clone_namespace(&self) -> Arc<Self> {
         Arc::new(Self::new(self.root_mount.clone_tree()))
     }
@@ -130,6 +138,14 @@ scope_local::scope_local! {
         register_fs_context(&ctx);
         ctx
     };
+}
+
+/// Returns an owned reference to the filesystem context of the active scope.
+///
+/// CPU pinning ends after the `Arc` clone, before callers acquire the
+/// potentially sleepable filesystem lock.
+pub fn current_fs_context() -> Arc<Mutex<FsContext>> {
+    FS_CONTEXT.clone_current()
 }
 
 /// A single entry returned by [`FsContext::read_dir`].
@@ -323,6 +339,59 @@ impl FsContext {
             Some(name) => dir.lookup_no_follow(name),
             None => Ok(dir),
         }
+    }
+
+    /// Resolves a relative path's parent without following intermediate
+    /// symbolic links or allowing the walk to escape above `current_dir`.
+    ///
+    /// This provides the path-walk guarantees required by Linux openat2's
+    /// `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` combination.
+    pub fn resolve_parent_beneath_no_symlinks<'a>(
+        &self,
+        path: &'a Path,
+    ) -> VfsResult<(Location, Cow<'a, str>)> {
+        let mut components = path.components().peekable();
+        let mut dir = self.current_dir.clone();
+        let mut depth = 0usize;
+
+        while let Some(component) = components.next() {
+            let is_last = components.peek().is_none();
+            match component {
+                Component::RootDir => return Err(VfsError::CrossesDevices),
+                Component::CurDir if is_last => {
+                    if let Some(parent) = dir.parent() {
+                        return Ok((parent, dir.name().into_owned().into()));
+                    }
+                    return Ok((dir, Cow::Borrowed(".")));
+                }
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if depth == 0 {
+                        return Err(VfsError::CrossesDevices);
+                    }
+                    dir = dir.parent().ok_or(VfsError::CrossesDevices)?;
+                    depth -= 1;
+                    if is_last {
+                        if let Some(parent) = dir.parent() {
+                            return Ok((parent, dir.name().into_owned().into()));
+                        }
+                        return Ok((dir, Cow::Borrowed(".")));
+                    }
+                }
+                Component::Normal(name) if is_last => return Ok((dir, Cow::Borrowed(name))),
+                Component::Normal(name) => {
+                    let next = dir.lookup_no_follow(name)?;
+                    if next.node_type() == NodeType::Symlink {
+                        return Err(VfsError::FilesystemLoop);
+                    }
+                    next.check_is_dir()?;
+                    dir = next;
+                    depth += 1;
+                }
+            }
+        }
+
+        Err(VfsError::NotFound)
     }
 
     /// Taking current node as root directory, resolves a path starting from
@@ -540,7 +609,11 @@ impl FsContext {
     ///
     /// This avoids incorrectly updating tasks that have chroot'd into a
     /// subdirectory of the old root (same mountpoint, different dentry).
-    pub fn propagate_pivot_root(old_root: &Location, new_root: &Location) {
+    pub fn propagate_pivot_root(
+        #[cfg(feature = "vfs")] mount_namespace: &Arc<MountNamespace>,
+        old_root: &Location,
+        new_root: &Location,
+    ) {
         // 1. Collect strong references while holding the registry lock, then
         //    release it so we never nest two Mutex guards.
         let refs: Vec<Arc<Mutex<FsContext>>> = {
@@ -553,6 +626,10 @@ impl FsContext {
         //    Linux chroot_fs_refs().
         for ctx_arc in refs {
             let mut ctx = ctx_arc.lock();
+            #[cfg(feature = "vfs")]
+            if !Arc::ptr_eq(ctx.mount_namespace(), mount_namespace) {
+                continue;
+            }
 
             let update_root = old_root.ptr_eq(&ctx.root_dir);
             let update_cwd = old_root.ptr_eq(&ctx.current_dir);

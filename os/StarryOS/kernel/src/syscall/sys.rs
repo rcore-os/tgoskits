@@ -2,7 +2,6 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use core::{ffi::c_char, mem::MaybeUninit};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_sync::Mutex;
 use ax_task::current;
 use linux_raw_sys::{
@@ -865,7 +864,7 @@ pub fn sys_getrandom(buf: *mut u8, len: usize, flags: u32) -> AxResult<isize> {
         "/dev/urandom"
     };
 
-    let f = FS_CONTEXT.lock().resolve(path)?;
+    let f = ax_fs_ng::vfs::current_fs_context().lock().resolve(path)?;
     let mut kbuf = vec![0; len];
     let len = f.entry().as_file()?.read_at(&mut kbuf, 0)?;
 
@@ -953,7 +952,12 @@ pub fn sys_seccomp(op: u32, flags: u32, args: *const ()) -> AxResult<isize> {
                 sync_seccomp_to_thread_group();
             }
         }
-        SECCOMP_GET_ACTION_AVAIL => return seccomp_action_available(args),
+        SECCOMP_GET_ACTION_AVAIL => {
+            if flags != 0 {
+                return Err(AxError::InvalidInput);
+            }
+            return seccomp_action_available(args);
+        }
         _ => return Err(AxError::InvalidInput),
     }
 

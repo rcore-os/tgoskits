@@ -321,15 +321,23 @@ if propagation != 0 {
     if !target.is_root_of_mount() {
         return Err(AxError::InvalidInput);
     }
-    let mountpoint = target.mountpoint();
-    if (propagation & MS_PRIVATE) != 0 {
-        mountpoint.set_private();
-    } else if (propagation & MS_SHARED) != 0 {
-        mountpoint.set_shared();
-    } else if (propagation & MS_SLAVE) != 0 {
-        mountpoint.set_slave();
-    } else if (propagation & MS_UNBINDABLE) != 0 {
-        mountpoint.set_unbindable();
+    let mountpoint = target.mountpoint().clone();
+    if (flags & MS_REC) != 0 {
+        match propagation {
+            MS_SHARED => mountpoint.set_shared_recursive(),
+            MS_PRIVATE => mountpoint.set_private_recursive(),
+            MS_SLAVE => mountpoint.set_slave_recursive(),
+            MS_UNBINDABLE => mountpoint.set_unbindable_recursive(),
+            _ => {}
+        }
+    } else {
+        match propagation {
+            MS_SHARED => mountpoint.set_shared(),
+            MS_PRIVATE => mountpoint.set_private(),
+            MS_SLAVE => mountpoint.set_slave(),
+            MS_UNBINDABLE => mountpoint.set_unbindable(),
+            _ => {}
+        }
     }
     return Ok(0);
 }
@@ -340,6 +348,7 @@ if propagation != 0 {
 - `count_ones() > 1` 对应 Linux 的“多个 propagation type flags 同时出现是 `EINVAL`”
 - `flags & !allowed != 0` 对应 Linux 的“propagation type flags 只能和 `MS_REC` / `MS_SILENT` 共存”
 - propagation-only 调用仍然不新建 fs，而是修改已有 mountpoint 的传播属性
+- 未指定 `MS_REC` 时只修改目标 mountpoint；指定后在同一个 topology mutation 临界区内按目标优先顺序修改整棵子挂载树
 - 传播状态现在是 mountpoint 级别的，而不是底层 inode 级别的
 
 ## 5.3 `axfs-ng-vfs::Mountpoint`：把 mountpoint 当成 mount 语义状态承载体

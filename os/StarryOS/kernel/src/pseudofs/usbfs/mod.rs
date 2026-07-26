@@ -1342,6 +1342,14 @@ impl FileLike for UsbDeviceFile {
                 self.claim_interface(set.interface as u8, set.altsetting as u8, true)
             }
             descriptor::USBDEVFS_SETCONFIGURATION => self.set_configuration_ioctl(arg),
+            descriptor::USBDEVFS_CLEAR_HALT => {
+                let endpoint = descriptor::read_usbdevfs_u32(arg)?;
+                if endpoint > u8::MAX as u32 {
+                    return Err(AxError::InvalidInput);
+                }
+                self.with_live_lease(|lease| lease.clear_halt(endpoint as u8))?;
+                Ok(0)
+            }
             descriptor::USBDEVFS_IOCTL => self.kernel_driver_ioctl(arg),
             descriptor::USBDEVFS_DISCONNECT | descriptor::USBDEVFS_CONNECT => Ok(0),
             descriptor::USBDEVFS_DISCONNECT_CLAIM => self.disconnect_claim_ioctl(arg),
@@ -1398,6 +1406,17 @@ impl Drop for UsbDeviceFile {
     fn drop(&mut self) {
         self.urb_worker.close();
         let lease = self.lease.lock().take();
+        if let Some(lease) = lease.as_ref() {
+            let interfaces = self
+                .claimed_interfaces
+                .lock()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            for interface in interfaces {
+                let _ = lease.release_interface(interface);
+            }
+        }
         let submitted = self.drain_all_submitted_urbs();
         self.pending_urbs.lock().clear();
         if submitted.is_empty() {

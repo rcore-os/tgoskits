@@ -40,8 +40,11 @@ struct PreparedUnshare {
 
 impl PreparedUnshare {
     fn prepare(flags: u32, thread: &Thread) -> AxResult<Self> {
-        let file_table =
-            (flags & CLONE_FILES != 0).then(|| Arc::new(SpinRwLock::new(FD_TABLE.read().clone())));
+        let file_table = (flags & CLONE_FILES != 0).then(|| {
+            Arc::new(SpinRwLock::new(
+                crate::file::current_fd_table().read().clone(),
+            ))
+        });
 
         let mut nsproxy = (flags & UNSHARE_NAMESPACE_FLAGS != 0)
             .then(|| thread.proc_data.nsproxy.lock().clone_for_unshare());
@@ -68,7 +71,7 @@ impl PreparedUnshare {
 
         let want_mount_namespace = flags & CLONE_NEWNS != 0;
         let fs_context = if want_mount_namespace || flags & CLONE_FS != 0 {
-            let mut fs_context = FS_CONTEXT.lock().clone();
+            let mut fs_context = ax_fs_ng::vfs::current_fs_context().lock().clone();
             if want_mount_namespace {
                 fs_context.unshare_mount_namespace()?;
                 if let Some(nsproxy) = &mut nsproxy {
@@ -204,7 +207,9 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
         NsFd::Ipc(ns) => nsproxy.set_ns_ipc(ns.clone()),
         NsFd::Mnt { ns, fs_ns } => {
             drop(nsproxy);
-            FS_CONTEXT.lock().set_mount_namespace(fs_ns.clone())?;
+            ax_fs_ng::vfs::current_fs_context()
+                .lock()
+                .set_mount_namespace(fs_ns.clone())?;
             proc_data.nsproxy.lock().set_ns_mnt(ns.clone());
         }
         NsFd::Pid(ns) => nsproxy.set_ns_pid(ns.clone()),
@@ -290,7 +295,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     }
     if nstype & CLONE_NEWNS != 0 {
         drop(nsproxy);
-        FS_CONTEXT
+        ax_fs_ng::vfs::current_fs_context()
             .lock()
             .set_mount_namespace(target_mnt_fs_ns.expect("target mount namespace captured"))?;
         nsproxy = proc_data.nsproxy.lock();

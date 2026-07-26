@@ -145,6 +145,9 @@ pub fn with_current_lockdep_stack<R>(f: impl FnOnce(&mut HeldLockStack) -> R) ->
 pub fn init_scheduler() {
     info!("Initialize scheduling...");
 
+    #[cfg(feature = "host-test")]
+    ax_hal::percpu::initialize_host_test_cpu();
+
     // Initialize the run queue.
     crate::run_queue::init();
 

@@ -10,7 +10,7 @@ use kernutil::memory::{MemoryDescriptor, MemoryType};
 #[cfg(target_arch = "x86_64")]
 use some_serial::ns16550::Port;
 use some_serial::{
-    RawUart, SerialEvent, TransferError,
+    PollingUart, SerialEvent, TransferError,
     ns16550::{self, Mmio, Ns16550},
     pl011,
 };
@@ -293,7 +293,7 @@ impl EarlySerial {
             event & (SerialEvent::RX_READY | SerialEvent::RX_ERROR | SerialEvent::OVERRUN);
     }
 
-    fn with_raw<R>(&mut self, f: impl FnOnce(&mut dyn RawUart) -> R) -> R {
+    fn with_raw<R>(&mut self, f: impl FnOnce(&mut dyn PollingUart) -> R) -> R {
         match &mut self.raw {
             EarlySerialRaw::Ns16550Mmio(serial) => f(serial),
             #[cfg(target_arch = "x86_64")]

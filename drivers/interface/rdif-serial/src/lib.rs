@@ -1,73 +1,31 @@
-//! Portable interrupt-driven serial runtime primitives.
+//! Portable UART capability boundary.
 //!
-//! The reusable stack is intentionally split by synchronization ownership:
-//! raw UART drivers expose only register-level operations, `TxQueue` and
-//! `RxQueue` own independent lock-free software queues, `SerialPort` owns the
-//! task/worker control path, and `SerialIrqHandler` is the IRQ-only endpoint.
-//!
-//! OS glue must route hardware IRQs and control/service calls to the configured
-//! owner CPU and pass an `OwnerLease`. Task context drains `RxItem`s and
-//! enqueues TX bytes through the queues, while worker context uses `SerialPort`
-//! for bounded soft service. Neither TX nor RX queues poll the shared UART
-//! IRQ/status register to rediscover readiness. This keeps the fast path bounded
-//! and leaves wakeups, wait queues, poll sets, and line discipline processing to
-//! OS-specific layers above this crate.
+//! This crate contains no software queues, task policy, IRQ registration, or
+//! OS wakeups. Concrete drivers split into one task-owned data/control endpoint
+//! and one IRQ-owned event endpoint; the consuming runtime owns all buffering
+//! and scheduling policy.
 
 #![no_std]
 
-extern crate alloc;
-
-use core::fmt::Display;
-
-use bitflags::bitflags;
-pub use rdif_base::{DriverGeneric, KError};
-
-mod queue;
 mod raw;
-#[path = "core.rs"]
-mod serial_core;
 mod types;
 
-pub use self::{queue::*, raw::*, serial_core::*, types::*};
+pub use self::{raw::*, types::*};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigError {
+    #[error("invalid baud rate")]
     InvalidBaudrate,
+    #[error("unsupported data bits")]
     UnsupportedDataBits,
+    #[error("unsupported stop bits")]
     UnsupportedStopBits,
+    #[error("unsupported parity")]
     UnsupportedParity,
+    #[error("UART register access failed")]
     RegisterError,
+    #[error("UART operation timed out")]
     Timeout,
-}
-
-#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TransBytesError {
-    pub bytes_transferred: usize,
-    pub kind: TransferError,
-}
-
-impl Display for TransBytesError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "Transfer error after transferring {} bytes: {}",
-            self.bytes_transferred, self.kind
-        )
-    }
-}
-
-#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransferError {
-    #[error("Data overrun by `{0:#x}`")]
-    Overrun(u8),
-    #[error("Parity error")]
-    Parity,
-    #[error("Framing error")]
-    Framing,
-    #[error("Break condition")]
-    Break,
-    #[error("Serial closed")]
-    Closed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,43 +53,6 @@ pub enum Parity {
     Space,
 }
 
-bitflags! {
-    /// Polling-only serial events for direct raw users such as someboot.
-    ///
-    /// Runtime `SerialIrqHandler` does not use this high-level snapshot type;
-    /// it uses `IrqSnapshot`, `RxSample`, and TX/RX software FIFOs instead.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct SerialEvent: u32 {
-        const RX_READY = 0x01;
-        const TX_READY = 0x02;
-        const RX_ERROR = 0x04;
-        const TX_ERROR = 0x08;
-        const OVERRUN = 0x10;
-        const MODEM_STATUS = 0x20;
-        const IRQ_ACK = 0x40;
-    }
-}
-
-impl SerialEvent {
-    pub fn rx_ready(&self) -> bool {
-        self.contains(Self::RX_READY)
-    }
-
-    pub fn tx_ready(&self) -> bool {
-        self.contains(Self::TX_READY)
-    }
-
-    pub fn rx_error(&self) -> bool {
-        self.intersects(Self::RX_ERROR | Self::OVERRUN)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SerialDirection {
-    Input,
-    Output,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub baudrate: Option<u32>,
@@ -141,41 +62,32 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self {
+            baudrate: None,
+            data_bits: None,
+            stop_bits: None,
+            parity: None,
+        }
     }
 
-    pub fn baudrate(mut self, baudrate: u32) -> Self {
+    pub const fn baudrate(mut self, baudrate: u32) -> Self {
         self.baudrate = Some(baudrate);
         self
     }
 
-    pub fn data_bits(mut self, data_bits: DataBits) -> Self {
+    pub const fn data_bits(mut self, data_bits: DataBits) -> Self {
         self.data_bits = Some(data_bits);
         self
     }
 
-    pub fn stop_bits(mut self, stop_bits: StopBits) -> Self {
+    pub const fn stop_bits(mut self, stop_bits: StopBits) -> Self {
         self.stop_bits = Some(stop_bits);
         self
     }
 
-    pub fn parity(mut self, parity: Parity) -> Self {
+    pub const fn parity(mut self, parity: Parity) -> Self {
         self.parity = Some(parity);
         self
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serial_event_reports_readiness_and_errors() {
-        let event = SerialEvent::RX_READY | SerialEvent::OVERRUN;
-
-        assert!(event.rx_ready());
-        assert!(!event.tx_ready());
-        assert!(event.rx_error());
     }
 }

@@ -6,9 +6,9 @@ use std::{
 
 use futures::task::AtomicWaker;
 use libusb1_sys::{
-    libusb_cancel_transfer, libusb_control_transfer_get_data, libusb_fill_bulk_transfer,
-    libusb_fill_control_setup, libusb_fill_control_transfer, libusb_fill_iso_transfer,
-    libusb_submit_transfer, libusb_transfer,
+    libusb_cancel_transfer, libusb_clear_halt, libusb_control_transfer_get_data,
+    libusb_fill_bulk_transfer, libusb_fill_control_setup, libusb_fill_control_transfer,
+    libusb_fill_iso_transfer, libusb_submit_transfer, libusb_transfer,
 };
 use log::trace;
 use usb_if::{
@@ -19,7 +19,7 @@ use usb_if::{
 
 use super::{device::DeviceHandle, err::transfer_status_to_result};
 use crate::backend::ty::{
-    ep::{EndpointOp, transfer_to_completion},
+    ep::{EndpointOp, EndpointResetFuture, transfer_to_completion},
     transfer::{Transfer, TransferKind},
 };
 
@@ -247,6 +247,22 @@ impl EndpointOp for EndpointImpl {
                 "Failed to cancel transfer: libusb error {res}"
             )))
         }
+    }
+
+    fn reset(&mut self) -> EndpointResetFuture {
+        let result = if self.transfers.is_empty() {
+            let status = unsafe { libusb_clear_halt(self.dev.raw(), self.address) };
+            if status == libusb1_sys::constants::LIBUSB_SUCCESS {
+                Ok(())
+            } else {
+                Err(TransferError::Other(anyhow!(
+                    "Failed to reset endpoint: libusb error {status}"
+                )))
+            }
+        } else {
+            Err(TransferError::QueueFull)
+        };
+        Box::pin(async move { result })
     }
 }
 

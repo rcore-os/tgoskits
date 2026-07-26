@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.12.0"
+version = "0.12.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -62,8 +62,6 @@ xhci-mmio = ["usb"]
 xhci-pci = ["usb", "pci"]
 serial = [
     "dep:ax-errno",
-    "dep:ax-kernel-guard",
-    "dep:ax-kspin",
     "dep:rdif-serial",
     "dep:some-serial",
 ]

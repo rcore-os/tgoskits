@@ -1,0 +1,44 @@
+# VM base information.
+[base]
+id = 1
+name = "starry"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [0x00]
+
+# StarryOS is an AArch64 Image and receives the generated guest DTB in x0.
+[kernel]
+entry_point = 0x4008_0000
+image_location = "fs"
+kernel_load_addr = 0x4008_0000
+kernel_path = "/guest/starry/orangepi-5-plus"
+dtb_load_addr = 0x4000_0000
+
+# Keep a fixed 256 MiB region below 4 GiB for the kernel and DMA32 devices,
+# while allowing ordinary allocations to use the 2 GiB high-memory region.
+memory_regions = [
+    [0x4000_0000, 0x1000_0000, 0x7, 2],
+    [0x2_4000_0000, 0x8000_0000, 0x7, 1],
+]
+
+[devices]
+interrupt_mode = "passthrough"
+
+emu_devices = [
+    ["gppt-gicd", 0xfe60_0000, 0x1_0000, 0, 0x21, []],
+    ["gppt-gicr", 0xfe68_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0]],
+]
+
+passthrough_devices = [
+    ["/"],
+]
+
+passthrough_addresses = []
+
+excluded_devices = [
+    ["/pcie@fe150000"],
+    ["/pcie@fe160000"],
+    ["/pcie@fe170000"],
+    ["/pcie@fe180000"],
+    ["/pcie@fe190000"],
+]

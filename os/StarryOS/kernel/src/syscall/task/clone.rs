@@ -334,23 +334,27 @@ impl CloneArgs {
         };
 
         let mut scope = Scope::new();
+        let current_fd_table = crate::file::current_fd_table();
         if flags.contains(CloneFlags::FILES) {
             // Synchronize with close_all_fds: holding a read lock ensures
             // close_all_fds either observes our strong-count increment or
             // blocks until the new thread has installed the shared Arc.
-            let _guard = FD_TABLE.read();
-            FD_TABLE.scope_mut(&mut scope).clone_from(&FD_TABLE);
+            let _guard = current_fd_table.read();
+            FD_TABLE.scope_mut(&mut scope).clone_from(&current_fd_table);
         } else {
             FD_TABLE
                 .scope_mut(&mut scope)
                 .write()
-                .clone_from(&FD_TABLE.read());
+                .clone_from(&current_fd_table.read());
         }
 
+        let current_fs_context = ax_fs_ng::vfs::current_fs_context();
         if flags.contains(CloneFlags::FS) {
-            FS_CONTEXT.scope_mut(&mut scope).clone_from(&FS_CONTEXT);
+            FS_CONTEXT
+                .scope_mut(&mut scope)
+                .clone_from(&current_fs_context);
         } else {
-            let mut fs_context = FS_CONTEXT.lock().clone();
+            let mut fs_context = current_fs_context.lock().clone();
             if flags.contains(CloneFlags::NEWNS) {
                 fs_context.unshare_mount_namespace()?;
             }

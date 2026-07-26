@@ -5,6 +5,9 @@ use core::arch::asm;
 use aarch64_cpu::{asm::barrier, registers::*};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
+#[cfg(feature = "tls")]
+use crate::KernelTlsBase;
+
 /// Allows the current CPU to respond to interrupts.
 ///
 /// In AArch64, it unmasks IRQs by clearing the I bit in the `DAIF` register.
@@ -230,15 +233,16 @@ pub unsafe fn write_exception_vector_base(vbar: usize) {
     VBAR_EL2.set(vbar as _);
 }
 
-/// Reads the thread pointer of the current CPU (`TPIDR_EL0`).
+/// Reads the current kernel task's TLS base (`TPIDR_EL0`).
 ///
 /// It is used to implement TLS (Thread Local Storage).
 #[inline]
-pub fn read_thread_pointer() -> usize {
-    TPIDR_EL0.get() as usize
+#[cfg(feature = "tls")]
+pub fn read_thread_pointer() -> KernelTlsBase {
+    KernelTlsBase::new(TPIDR_EL0.get() as usize)
 }
 
-/// Writes the thread pointer of the current CPU (`TPIDR_EL0`).
+/// Writes the current kernel task's TLS base (`TPIDR_EL0`).
 ///
 /// It is used to implement TLS (Thread Local Storage).
 ///
@@ -246,8 +250,9 @@ pub fn read_thread_pointer() -> usize {
 ///
 /// This function is unsafe as it changes the current CPU states.
 #[inline]
-pub unsafe fn write_thread_pointer(tpidr_el0: usize) {
-    TPIDR_EL0.set(tpidr_el0 as _)
+#[cfg(feature = "tls")]
+pub unsafe fn write_thread_pointer(kernel_tls: KernelTlsBase) {
+    TPIDR_EL0.set(kernel_tls.as_usize() as _)
 }
 
 /// Enable FP/SIMD instructions by setting the `FPEN` field in `CPACR_EL1`.

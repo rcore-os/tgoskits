@@ -10,4 +10,4 @@ default = ["arceos"]
 arceos = ["dep:ax-std", "ax-std/arceos", "ax-std/fs"]
 
 [dependencies]
-ax-std = { workspace = true, optional = true }
+ax-std = { workspace = true, optional = true, features = ["default"] }

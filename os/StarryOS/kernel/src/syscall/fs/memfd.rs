@@ -2,7 +2,7 @@ use alloc::{string::String, sync::Arc};
 use core::ffi::c_char;
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FS_CONTEXT, OpenOptions};
+use ax_fs_ng::vfs::OpenOptions;
 use ax_task::current;
 use linux_raw_sys::general::{MFD_CLOEXEC, O_RDWR};
 
@@ -64,7 +64,8 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
     };
     let tmpfs = tmpfs.ok_or(AxError::NotFound)?;
 
-    let fs = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let fs = fs_context.lock();
     let mountpoint = fs.resolve(mount_path)?.mountpoint().clone();
     let cred = current().as_thread().cred();
     let entry = tmpfs.create_anonymous_file(
@@ -88,7 +89,10 @@ pub fn sys_memfd_create(name: *const c_char, flags: u32) -> AxResult<isize> {
 }
 
 fn fs_has_dir(path: &str) -> bool {
-    FS_CONTEXT.lock().resolve(path).is_ok()
+    ax_fs_ng::vfs::current_fs_context()
+        .lock()
+        .resolve(path)
+        .is_ok()
 }
 
 fn memfd_from_file_like(file_like: &Arc<dyn FileLike>) -> Option<Arc<Memfd>> {

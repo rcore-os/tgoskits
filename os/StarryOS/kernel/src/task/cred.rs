@@ -179,6 +179,12 @@ impl Cred {
         self.has_cap(CAP_SYS_RESOURCE)
     }
 
+    /// Check whether this credential may bypass file read/write/execute
+    /// permission checks (equivalent to `CAP_DAC_OVERRIDE`).
+    pub fn has_cap_dac_override(&self) -> bool {
+        self.has_cap(CAP_DAC_OVERRIDE)
+    }
+
     /// Check whether this credential may perform broad system administration
     /// operations (equivalent to `CAP_SYS_ADMIN`).
     pub fn has_cap_sys_admin(&self) -> bool {
@@ -216,12 +222,6 @@ impl Cred {
     /// ownership (equivalent to `CAP_CHOWN`).
     pub fn has_cap_chown(&self) -> bool {
         self.has_cap(CAP_CHOWN)
-    }
-
-    /// Check whether this credential may bypass filesystem DAC checks
-    /// (equivalent to `CAP_DAC_OVERRIDE`).
-    pub fn has_cap_dac_override(&self) -> bool {
-        self.has_cap(CAP_DAC_OVERRIDE)
     }
 
     /// Check whether this credential has the privilege to bypass file

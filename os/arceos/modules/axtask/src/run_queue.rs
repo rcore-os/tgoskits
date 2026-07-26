@@ -1,11 +1,9 @@
 use alloc::{collections::VecDeque, sync::Arc};
-use core::mem::MaybeUninit;
-#[cfg(feature = "smp")]
-use core::ptr::NonNull;
 #[cfg(all(feature = "smp", feature = "ipi"))]
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::{mem::MaybeUninit, ops::Deref, ptr::NonNull};
 
-use ax_hal::percpu::this_cpu_id;
+use ax_hal::percpu::{PreviousThreadBinding, this_cpu_id};
 use ax_kernel_guard::BaseGuard;
 use ax_kspin::{SpinNoIrqGuard, SpinRaw};
 use ax_lazyinit::LazyInit;
@@ -17,6 +15,11 @@ use crate::{
     task::{CurrentTask, TASK_STACK_ALIGN, TaskStack, TaskState},
     wait_queue::WaitQueueGuard,
 };
+
+struct PreviousTask {
+    task: NonNull<crate::AxTask>,
+    binding: PreviousThreadBinding,
+}
 
 macro_rules! percpu_static {
     ($(
@@ -36,12 +39,11 @@ percpu_static! {
     EXITED_TASKS: VecDeque<AxTaskRef> = VecDeque::new(),
     WAIT_FOR_EXIT: WaitQueue = WaitQueue::new(),
     IDLE_TASK: LazyInit<AxTaskRef> = LazyInit::new(),
-    /// Stores a raw pointer to the previous task running on this CPU.
-    /// The pointer is valid only within the window between `switch_to` storing it
-    /// and `clear_prev_task_on_cpu` consuming it — both in the same non-preemptible
-    /// call chain, so the task cannot be freed while the pointer is held.
-    #[cfg(feature = "smp")]
-    PREV_TASK: Option<NonNull<crate::AxTask>> = None,
+    /// Stores the previous task and the exact CPU-binding epoch withdrawn by
+    /// the incoming switch tail. The raw pointer is valid only between
+    /// `switch_to` and `clear_prev_task_on_cpu`: the scheduler retains an Arc
+    /// throughout that non-preemptible handoff.
+    PREV_TASK: Option<PreviousTask> = None,
 }
 
 /// An array of references to run queues, one for each CPU, indexed by cpu_id.
@@ -53,10 +55,10 @@ percpu_static! {
 /// Access to this variable is marked as `unsafe` because it contains `MaybeUninit` references,
 /// which require careful handling to avoid undefined behavior. The array should be fully
 /// initialized before being accessed to ensure safe usage.
-static mut RUN_QUEUES: [MaybeUninit<&'static mut AxRunQueue>; crate::build_info::CPU_CAPACITY] =
+static mut RUN_QUEUES: [MaybeUninit<NonNull<AxRunQueue>>; crate::build_info::CPU_CAPACITY] =
     [ARRAY_REPEAT_VALUE; crate::build_info::CPU_CAPACITY];
 #[allow(clippy::declare_interior_mutable_const)] // It's ok because it's used only for initialization `RUN_QUEUES`.
-const ARRAY_REPEAT_VALUE: MaybeUninit<&'static mut AxRunQueue> = MaybeUninit::uninit();
+const ARRAY_REPEAT_VALUE: MaybeUninit<NonNull<AxRunQueue>> = MaybeUninit::uninit();
 
 #[cfg(not(feature = "host-test"))]
 fn main_task_stack() -> TaskStack {
@@ -69,23 +71,14 @@ fn main_task_stack() -> TaskStack {
     TaskStack::alloc(crate::default_task_stack_size())
 }
 
-/// Returns a reference to the current run queue in [`CurrentRunQueueRef`].
-///
-/// ## Safety
-///
-/// This function returns a static reference to the current run queue, which
-/// is inherently unsafe. It assumes that the `RUN_QUEUE` has been properly
-/// initialized and is not accessed concurrently in a way that could cause
-/// data races or undefined behavior.
-///
-/// ## Returns
-///
-/// * [`CurrentRunQueueRef`] - a static reference to the current [`AxRunQueue`].
+/// Acquires guarded access to the current run queue.
 #[inline(always)]
-pub(crate) fn current_run_queue<G: BaseGuard>() -> CurrentRunQueueRef<'static, G> {
+pub(crate) fn current_run_queue<G: BaseGuard>() -> CurrentRunQueueRef<G> {
     let irq_state = G::acquire();
     CurrentRunQueueRef {
-        inner: unsafe { RUN_QUEUE.current_ref_mut_raw() },
+        // SAFETY: the acquired guard supplies the scheduler's exclusive local
+        // CPU access for the complete CurrentRunQueueRef lifetime.
+        inner: unsafe { RunQueueAccess::new(current_run_queue_pointer()) },
         current_task: crate::current(),
         state: irq_state,
         _phantom: core::marker::PhantomData,
@@ -128,7 +121,7 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
     }
 }
 
-/// Retrieves a `'static` reference to the run queue corresponding to the given index.
+/// Retrieves the permanent pointer to a run queue by logical CPU index.
 ///
 /// This function asserts that the provided index is within the range of available CPUs
 /// and returns a reference to the corresponding run queue.
@@ -139,15 +132,37 @@ fn select_run_queue_index(cpumask: AxCpuMask) -> usize {
 ///
 /// ## Returns
 ///
-/// A reference to the `AxRunQueue` corresponding to the provided index.
-///
 /// ## Panics
 ///
 /// This function will panic if the index is out of bounds.
 #[cfg(feature = "smp")]
 #[inline]
-fn get_run_queue(index: usize) -> &'static mut AxRunQueue {
-    unsafe { RUN_QUEUES[index].assume_init_mut() }
+fn get_run_queue(index: usize) -> RunQueueAccess {
+    // SAFETY: scheduler initialization publishes one permanent pointer for
+    // every online CPU before remote scheduling can select it. Callers retain
+    // their guard and serialize scheduler state through the embedded lock.
+    unsafe { RunQueueAccess::new(RUN_QUEUES[index].assume_init()) }
+}
+
+/// Resolves the initialized local run-queue pointer under a scheduler guard.
+///
+/// # Safety
+///
+/// The caller must keep migration, IRQ/re-entry, and conflicting local access
+/// excluded while the returned pointer is dereferenced.
+unsafe fn current_run_queue_pointer() -> NonNull<AxRunQueue> {
+    // SAFETY: the caller provides the guard required by both scoped tokens.
+    unsafe {
+        ax_hal::percpu::with_cpu_pin(|pin| {
+            ax_hal::percpu::with_exclusive_cpu(pin, |_exclusive| {
+                let mut slot = RUN_QUEUE.current_ptr(pin);
+                // SAFETY: scheduler bootstrap initialized this LazyInit before
+                // any CurrentRunQueueRef can be constructed.
+                NonNull::from(slot.as_mut().get_mut_unchecked())
+            })
+        })
+    }
+    .expect("run queue access requires an installed CPU-local area")
 }
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
@@ -248,7 +263,7 @@ fn force_remote_reschedule(cpu_id: usize) {
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
 fn kick_remote_cpu(cpu_id: usize) {
-    if cpu_id != this_cpu_id() {
+    if is_remote_cpu(cpu_id) {
         // axruntime's IPI handler only drains ax-ipi callbacks. A bare hardware
         // IPI can wake an idle CPU, but it does not ask a running remote CPU to
         // reschedule after a task is queued there.
@@ -258,17 +273,34 @@ fn kick_remote_cpu(cpu_id: usize) {
 
 #[cfg(all(feature = "smp", feature = "ipi"))]
 fn force_kick_remote_cpu(cpu_id: usize) {
-    if cpu_id != this_cpu_id() {
+    if is_remote_cpu(cpu_id) {
         force_remote_reschedule(cpu_id);
     }
+}
+
+#[cfg(all(
+    feature = "smp",
+    feature = "ipi",
+    not(all(test, feature = "host-test"))
+))]
+fn is_remote_cpu(cpu_id: usize) -> bool {
+    cpu_id != this_cpu_id()
+}
+
+#[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
+fn is_remote_cpu(cpu_id: usize) -> bool {
+    // The host scheduler models CPU zero. Avoid installing that same modeled
+    // CPU on this independent test-harness thread while the scheduler worker
+    // is actively publishing its current task.
+    cpu_id != 0
 }
 
 #[cfg(all(test, feature = "smp", feature = "ipi", feature = "host-test"))]
 mod tests {
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    // Host-test mode collapses per-CPU state into process-global statics, so
-    // keep the shared pending/count assertions in one test.
+    // Host-test mode collapses the pending/count state into process-global
+    // atomics, so keep their assertions in one test.
     #[test]
     fn remote_reschedule_request_is_coalesced_and_forced() {
         const REMOTE_CPU: usize = 1;
@@ -381,11 +413,11 @@ mod tests {
 #[cfg(all(test, feature = "sched-rr", feature = "host-test"))]
 mod rr_tests {
     use alloc::{string::String, sync::Arc};
-    use core::marker::PhantomData;
+    use core::{marker::PhantomData, ptr::NonNull};
 
     use ax_sched::BaseScheduler;
 
-    use super::{AxRunQueue, AxRunQueueRef, Scheduler, SpinRaw, TaskInner};
+    use super::{AxRunQueue, AxRunQueueRef, RunQueueAccess, Scheduler, SpinRaw, TaskInner};
     use crate::task::TaskState;
 
     fn new_test_task(name: &str, state: TaskState) -> crate::AxTaskRef {
@@ -397,6 +429,7 @@ mod rr_tests {
 
     #[test]
     fn unblock_resched_does_not_front_insert_rr_task() {
+        ax_hal::percpu::initialize_host_test_cpu();
         let mut run_queue = AxRunQueue {
             cpu_id: 1,
             scheduler: SpinRaw::new(Scheduler::new()),
@@ -407,7 +440,8 @@ mod rr_tests {
         run_queue.scheduler.lock().add_task(queued.clone());
         {
             let mut run_queue_ref = AxRunQueueRef::<ax_kernel_guard::NoOp> {
-                inner: &mut run_queue,
+                // SAFETY: the stack run queue outlives this guarded test handle.
+                inner: unsafe { RunQueueAccess::new(NonNull::from(&mut run_queue)) },
                 state: (),
                 _phantom: PhantomData,
             };
@@ -434,21 +468,22 @@ mod rr_tests {
 ///
 /// ## Returns
 ///
-/// * [`AxRunQueueRef`] - a static reference to the selected [`AxRunQueue`] (current or remote).
+/// * [`AxRunQueueRef`] - guarded access to the selected current or remote run queue.
 ///
 /// ## TODO
 ///
 /// 1. Implement better load balancing across CPUs for more efficient task distribution.
 /// 2. Use a more generic load balancing algorithm that can be customized or replaced.
 #[inline]
-pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<'static, G> {
+pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<G> {
     let irq_state = G::acquire();
     #[cfg(not(feature = "smp"))]
     {
         let _ = task;
         // When SMP is disabled, all tasks are scheduled on the same global run queue.
         AxRunQueueRef {
-            inner: unsafe { RUN_QUEUE.current_ref_mut_raw() },
+            // SAFETY: `irq_state` retains G's exclusive scheduler guard.
+            inner: unsafe { RunQueueAccess::new(current_run_queue_pointer()) },
             state: irq_state,
             _phantom: core::marker::PhantomData,
         }
@@ -478,13 +513,14 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
 /// falling back to the task's previous CPU or the normal selector if affinity
 /// requires it.
 #[inline]
-pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<'static, G> {
+pub(crate) fn select_wake_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<G> {
     let irq_state = G::acquire();
     #[cfg(not(feature = "smp"))]
     {
         let _ = task;
         AxRunQueueRef {
-            inner: unsafe { RUN_QUEUE.current_ref_mut_raw() },
+            // SAFETY: `irq_state` retains G's exclusive scheduler guard.
+            inner: unsafe { RunQueueAccess::new(current_run_queue_pointer()) },
             state: irq_state,
             _phantom: core::marker::PhantomData,
         }
@@ -519,6 +555,31 @@ pub(crate) struct AxRunQueue {
     scheduler: SpinRaw<Scheduler>,
 }
 
+/// Permanent run-queue pointer whose references remain scoped to this handle.
+struct RunQueueAccess(NonNull<AxRunQueue>);
+
+impl RunQueueAccess {
+    /// Creates guarded access from an initialized permanent pointer.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must remain live while this handle exists. The surrounding
+    /// scheduler guard and the embedded scheduler lock must serialize access.
+    unsafe fn new(pointer: NonNull<AxRunQueue>) -> Self {
+        Self(pointer)
+    }
+}
+
+impl Deref for RunQueueAccess {
+    type Target = AxRunQueue;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: construction requires a live permanent pointer; the returned
+        // shared borrow cannot outlive this guarded handle.
+        unsafe { self.0.as_ref() }
+    }
+}
+
 /// A reference to the run queue with specific guard.
 ///
 /// Note:
@@ -526,13 +587,13 @@ pub(crate) struct AxRunQueue {
 /// or a remote CPU, which is used to add tasks to the run queue or unblock tasks.
 /// If you want to perform scheduling operations on the current run queue,
 /// see [`CurrentRunQueueRef`].
-pub(crate) struct AxRunQueueRef<'a, G: BaseGuard> {
-    inner: &'a mut AxRunQueue,
+pub(crate) struct AxRunQueueRef<G: BaseGuard> {
+    inner: RunQueueAccess,
     state: G::State,
     _phantom: core::marker::PhantomData<G>,
 }
 
-impl<G: BaseGuard> Drop for AxRunQueueRef<'_, G> {
+impl<G: BaseGuard> Drop for AxRunQueueRef<G> {
     fn drop(&mut self) {
         G::release(self.state);
     }
@@ -543,21 +604,21 @@ impl<G: BaseGuard> Drop for AxRunQueueRef<'_, G> {
 /// Note:
 /// [`CurrentRunQueueRef`] is used to get a reference to the run queue on current CPU,
 /// in which scheduling operations can be performed.
-pub(crate) struct CurrentRunQueueRef<'a, G: BaseGuard> {
-    inner: &'a mut AxRunQueue,
+pub(crate) struct CurrentRunQueueRef<G: BaseGuard> {
+    inner: RunQueueAccess,
     current_task: CurrentTask,
     state: G::State,
     _phantom: core::marker::PhantomData<G>,
 }
 
-impl<G: BaseGuard> Drop for CurrentRunQueueRef<'_, G> {
+impl<G: BaseGuard> Drop for CurrentRunQueueRef<G> {
     fn drop(&mut self) {
         G::release(self.state);
     }
 }
 
 /// Management operations for run queue, including adding tasks, unblocking tasks, etc.
-impl<G: BaseGuard> AxRunQueueRef<'_, G> {
+impl<G: BaseGuard> AxRunQueueRef<G> {
     /// Adds a task to the scheduler.
     ///
     /// This function is used to add a new task to the scheduler.
@@ -610,7 +671,7 @@ impl<G: BaseGuard> AxRunQueueRef<'_, G> {
 }
 
 /// Core functions of run queue.
-impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
+impl<G: BaseGuard> CurrentRunQueueRef<G> {
     /// Unblock one task by inserting it into the current CPU's run queue.
     ///
     /// See [`AxRunQueueRef::unblock_task`] for the state-transition details.
@@ -779,11 +840,16 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
         assert!(curr.is_running(), "task is not running: {:?}", curr.state());
         assert!(!curr.is_idle());
         if curr.is_init() {
-            // Safety: it is called from `current_run_queue::<NoPreemptIrqSave>().exit_current(exit_code)`,
-            // which disabled IRQs and preemption.
+            // SAFETY: CurrentRunQueueRef's guard disables migration and local
+            // IRQ/re-entry for this complete mutation.
             unsafe {
-                EXITED_TASKS.current_ref_mut_raw().clear();
+                ax_hal::percpu::with_cpu_pin(|pin| {
+                    ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                        EXITED_TASKS.with_current_mut(exclusive, VecDeque::clear)
+                    })
+                })
             }
+            .expect("task exit requires an installed CPU-local area");
             ax_hal::power::system_off();
         } else {
             curr.set_state(TaskState::Exited);
@@ -791,14 +857,19 @@ impl<G: BaseGuard> CurrentRunQueueRef<'_, G> {
             // Notify the joiner task.
             curr.notify_exit(exit_code);
 
-            // Safety: it is called from `current_run_queue::<NoPreemptIrqSave>().exit_current(exit_code)`,
-            // which disabled IRQs and preemption.
+            // SAFETY: CurrentRunQueueRef's guard disables migration and local
+            // IRQ/re-entry for both mutations.
             unsafe {
-                // Push current task to the `EXITED_TASKS` list, which will be consumed by the GC task.
-                EXITED_TASKS.current_ref_mut_raw().push_back(curr.clone());
-                // Wake up the GC task to drop the exited tasks.
-                WAIT_FOR_EXIT.current_ref_mut_raw().notify_one(false);
+                ax_hal::percpu::with_cpu_pin(|pin| {
+                    ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                        // Push current task to the list consumed by the GC task.
+                        EXITED_TASKS
+                            .with_current_mut(exclusive, |tasks| tasks.push_back(curr.clone()));
+                        WAIT_FOR_EXIT.with_current_mut(exclusive, |wait| wait.notify_one(false));
+                    })
+                })
             }
+            .expect("task exit requires an installed CPU-local area");
 
             // Schedule to next task.
             self.inner.resched();
@@ -930,7 +1001,7 @@ impl AxRunQueue {
     /// Returns `true` if the target task is put into this run queue successfully,
     /// otherwise `false`.
     fn put_task_with_state(
-        &mut self,
+        &self,
         task: AxTaskRef,
         current_state: TaskState,
         preempt: bool,
@@ -989,15 +1060,19 @@ impl AxRunQueue {
 
     /// Core reschedule subroutine.
     /// Pick the next task to run and switch to it.
-    fn resched(&mut self) {
-        let next = self
-            .scheduler
-            .lock()
-            .pick_next_task()
-            .unwrap_or_else(|| unsafe {
-                // Safety: IRQs must be disabled at this time.
-                IDLE_TASK.current_ref_raw().get_unchecked().clone()
-            });
+    fn resched(&self) {
+        let next = self.scheduler.lock().pick_next_task().unwrap_or_else(|| {
+            // SAFETY: the current run-queue guard prevents migration while
+            // resolving this CPU's initialized idle task.
+            unsafe {
+                ax_hal::percpu::with_cpu_pin(|pin| {
+                    IDLE_TASK.with_current(pin, |idle| {
+                        idle.get().expect("idle task must be initialized").clone()
+                    })
+                })
+            }
+            .expect("reschedule requires an installed CPU-local area")
+        });
         assert!(
             next.is_ready(),
             "next {} is not ready: {:?}",
@@ -1007,7 +1082,7 @@ impl AxRunQueue {
         self.switch_to(crate::current(), next);
     }
 
-    fn switch_to(&mut self, prev_task: CurrentTask, next_task: AxTaskRef) {
+    fn switch_to(&self, prev_task: CurrentTask, next_task: AxTaskRef) {
         // Make sure that IRQs are disabled by kernel guard or other means.
         #[cfg(all(feature = "irq", not(feature = "host-test")))]
         assert!(
@@ -1060,27 +1135,43 @@ impl AxRunQueue {
             let prev_ctx_ptr = prev_task.ctx_mut_ptr();
             let next_ctx_ptr = next_task.ctx_mut_ptr();
 
-            // Store a raw pointer to prev_task in PREV_TASK.
-            // Safety: prev_task is alive (Arc held on caller's stack) and will
-            // remain so through clear_prev_task_on_cpu() below.
-            #[cfg(feature = "smp")]
-            {
-                *PREV_TASK.current_ref_mut_raw() =
-                    Some(NonNull::new(Arc::as_ptr(&prev_task) as *mut _).unwrap());
-            }
+            // The enclosing run-queue guard has already disabled migration and
+            // local IRQs for the complete switch lifetime.
+            let prev_header_pointer = prev_task.current_header().as_non_null();
+            let next_header_pointer = next_task.current_header().as_non_null();
+            ax_hal::percpu::with_cpu_pin(|pin| {
+                // SAFETY: both Arc allocations remain alive across the raw
+                // switch; the header fields are permanently pinned within them.
+                let prev_header = core::pin::Pin::new_unchecked(prev_header_pointer.as_ref());
+                let next_header = core::pin::Pin::new_unchecked(next_header_pointer.as_ref());
+                let (prepared, previous_binding) =
+                    ax_hal::percpu::prepare_thread_switch(pin, prev_header, next_header)
+                        .expect("scheduler thread switch must validate before publication");
 
-            // The strong reference count of `prev_task` will be decremented by 1,
-            // but won't be dropped until `gc_entry()` is called.
-            assert!(Arc::strong_count(&prev_task) > 1);
-            assert!(Arc::strong_count(&next_task) >= 1);
+                // FP, address-space, Arc, and PREV_TASK work all remain before
+                // the prepared token's one-way commit.
+                (*prev_ctx_ptr).prepare_switch_to(&*next_ctx_ptr);
+                ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                    PREV_TASK.with_current_mut(exclusive, |slot| {
+                        *slot = Some(PreviousTask {
+                            task: NonNull::new(Arc::as_ptr(&prev_task) as *mut _).unwrap(),
+                            binding: previous_binding,
+                        });
+                    });
+                });
 
-            CurrentTask::set_current(prev_task, next_task);
+                assert!(Arc::strong_count(&prev_task) > 1);
+                assert!(Arc::strong_count(&next_task) >= 1);
+                CurrentTask::set_current(prev_task, next_task);
 
-            (*prev_ctx_ptr).switch_to(&*next_ctx_ptr);
+                // switch_to_prepared consumes the only commit capability and
+                // enters naked assembly immediately after anchor publication.
+                (*prev_ctx_ptr).switch_to_prepared(&*next_ctx_ptr, prepared);
+            })
+            .expect("scheduler switch requires an installed CPU-local area");
 
-            // The current task is now **next_task** on this CPU, so clear `prev_task.on_cpu`
-            // to indicate that it has finished its scheduling process and no longer running on this CPU.
-            #[cfg(feature = "smp")]
+            // Execution resumes here as the incoming task. Withdraw the exact
+            // previous binding before making that task runnable elsewhere.
             clear_prev_task_on_cpu();
         }
     }
@@ -1089,10 +1180,33 @@ impl AxRunQueue {
 fn gc_entry() {
     loop {
         // Drop all exited tasks and recycle resources.
-        let n = EXITED_TASKS.with_current(|exited_tasks| exited_tasks.len());
+        let n = {
+            let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+            // SAFETY: the guard prevents migration and IRQ re-entry, and the
+            // closure does not let the per-CPU borrow escape.
+            unsafe {
+                ax_hal::percpu::with_cpu_pin(|pin| {
+                    ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                        EXITED_TASKS.with_current_mut(exclusive, |tasks| tasks.len())
+                    })
+                })
+            }
+            .expect("GC requires an installed CPU-local area")
+        };
         for _ in 0..n {
             // Do not do the slow drops in the critical section.
-            let task = EXITED_TASKS.with_current(|exited_tasks| exited_tasks.pop_front());
+            let task = {
+                let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+                // SAFETY: the guard prevents migration and IRQ re-entry.
+                unsafe {
+                    ax_hal::percpu::with_cpu_pin(|pin| {
+                        ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                            EXITED_TASKS.with_current_mut(exclusive, |tasks| tasks.pop_front())
+                        })
+                    })
+                }
+                .expect("GC requires an installed CPU-local area")
+            };
             if let Some(task) = task {
                 if Arc::strong_count(&task) == 1 {
                     // If I'm the last holder of the task, drop it immediately.
@@ -1100,7 +1214,17 @@ fn gc_entry() {
                 } else {
                     // Otherwise (e.g, `switch_to` is not completed, held by the
                     // joiner, etc), push it back and wait for them to drop first.
-                    EXITED_TASKS.with_current(|exited_tasks| exited_tasks.push_back(task));
+                    let _guard = ax_kernel_guard::NoPreemptIrqSave::new();
+                    // SAFETY: the guard prevents migration and IRQ re-entry.
+                    unsafe {
+                        ax_hal::percpu::with_cpu_pin(|pin| {
+                            ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                                EXITED_TASKS
+                                    .with_current_mut(exclusive, |tasks| tasks.push_back(task))
+                            })
+                        })
+                    }
+                    .expect("GC requires an installed CPU-local area");
                 }
             }
         }
@@ -1108,19 +1232,23 @@ fn gc_entry() {
         // 1. Yield CPU to allow other tasks to complete `switch_to` and drop references
         // 2. Handle the race condition where `notify_one` is called before the GC task enters wait,
         //    causing the notification to be lost.
-        // Note: we cannot block current task with preemption disabled,
-        // use `current_ref_raw` to get the `WAIT_FOR_EXIT`'s reference here to avoid the use of `NoPreemptGuard`.
-        // Since gc task is pinned to the current CPU, there is no effect if the gc task is preempted during the process.
+        // The GC task's affinity pins it to this CPU across the blocking wait;
+        // WaitQueue is internally synchronized, so IRQ and other tasks may use
+        // shared access while this callback is suspended.
         #[cfg(feature = "irq")]
         unsafe {
-            let _timeout = WAIT_FOR_EXIT
-                .current_ref_raw()
-                .wait_timeout(core::time::Duration::from_millis(100));
+            ax_hal::percpu::with_cpu_pin(|pin| {
+                WAIT_FOR_EXIT.with_current(pin, |wait| {
+                    let _timeout = wait.wait_timeout(core::time::Duration::from_millis(100));
+                })
+            })
         }
+        .expect("GC wait requires an installed CPU-local area");
         #[cfg(not(feature = "irq"))]
         unsafe {
-            WAIT_FOR_EXIT.current_ref_raw().wait();
+            ax_hal::percpu::with_cpu_pin(|pin| WAIT_FOR_EXIT.with_current(pin, WaitQueue::wait))
         }
+        .expect("GC wait requires an installed CPU-local area");
     }
 }
 
@@ -1145,20 +1273,31 @@ pub(crate) fn migrate_entry(migrated_task: AxTaskRef) {
 
 /// Clear the `on_cpu` field of the previous task running on this CPU, then
 /// complete any cross-core wake that was deferred while it was still `on_cpu`.
-#[cfg(feature = "smp")]
 pub(crate) unsafe fn clear_prev_task_on_cpu() {
-    let prev = unsafe { PREV_TASK.current_ref_mut_raw() }
-        .take()
-        .expect("PREV_TASK should have been set by switch_to");
+    let previous = unsafe {
+        ax_hal::percpu::with_cpu_pin(|pin| {
+            ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                PREV_TASK.with_current_mut(exclusive, Option::take)
+            })
+        })
+    }
+    .expect("incoming switch tail requires an installed CPU-local area")
+    .expect("PREV_TASK should have been set by switch_to");
     // Safety: prev_task's Arc is still alive on the caller's stack at this point
     // (switch_to has not yet returned), so the pointer is valid.
-    let prev = unsafe { prev.as_ref() };
+    let prev = unsafe { previous.task.as_ref() };
+    // SAFETY: current publication and architecture registers already identify
+    // the incoming task, and this is the sole owner of the recorded epoch.
+    unsafe { previous.binding.finish(prev.current_header()) }
+        .expect("incoming switch tail must withdraw prev_task CPU binding");
     // Publish that the context is fully saved. The SeqCst store pairs with the
     // waker's `on_cpu()`/`take_wake()` handshake in `put_task_with_state`.
+    #[cfg(feature = "smp")]
     prev.set_on_cpu(false);
     // Drain a wake that raced our switch-out. `take_wake` is the single arbiter:
     // if the waker did not reclaim it (it saw `on_cpu` still true), we get the
     // owned reference and enqueue it now that the context is saved.
+    #[cfg(feature = "smp")]
     if let Some(task) = prev.take_wake() {
         let target = task.cpu_id() as usize;
         // Leaf lock: `resched()` already dropped this CPU's scheduler lock before
@@ -1202,20 +1341,41 @@ pub(crate) fn init() {
     let idle_task = TaskInner::new(|| crate::run_idle(), "idle".into(), idle_task_stack_size);
     // idle task should be pinned to the current CPU.
     idle_task.set_cpumask(AxCpuMask::one_shot(cpu_id));
-    IDLE_TASK.with_current(|i| {
-        i.init_once(idle_task.into_arc());
-    });
+    // SAFETY: scheduler bootstrap runs before this CPU can schedule or accept
+    // interrupts, and each callback keeps its mutable borrow local.
+    unsafe {
+        ax_hal::percpu::with_cpu_pin(|pin| {
+            ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                IDLE_TASK.with_current_mut(exclusive, |idle| {
+                    idle.init_once(idle_task.into_arc());
+                })
+            })
+        })
+    }
+    .expect("scheduler bootstrap requires an installed CPU-local area");
 
     // Put the subsequent execution into the `main` task.
     let main_task = TaskInner::new_init("main".into(), main_task_stack()).into_arc();
     main_task.set_state(TaskState::Running);
     unsafe { CurrentTask::init_current(main_task) }
 
-    RUN_QUEUE.with_current(|rq| {
-        rq.init_once(AxRunQueue::new(cpu_id));
-    });
+    let run_queue = unsafe {
+        ax_hal::percpu::with_cpu_pin(|pin| {
+            ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                RUN_QUEUE.with_current_mut(exclusive, |run_queue| {
+                    run_queue.init_once(AxRunQueue::new(cpu_id));
+                    NonNull::from(
+                        run_queue
+                            .get_mut()
+                            .expect("run queue must be initialized during bootstrap"),
+                    )
+                })
+            })
+        })
+    }
+    .expect("scheduler bootstrap requires an installed CPU-local area");
     unsafe {
-        RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
+        RUN_QUEUES[cpu_id].write(run_queue);
     }
 }
 
@@ -1229,15 +1389,36 @@ pub(crate) fn init_secondary(stack_ptr: VirtAddr, stack_size: usize) {
     )
     .into_arc();
     idle_task.set_state(TaskState::Running);
-    IDLE_TASK.with_current(|i| {
-        i.init_once(idle_task.clone());
-    });
+    // SAFETY: the secondary CPU remains offline and IRQ-disabled throughout
+    // its scheduler initialization.
+    unsafe {
+        ax_hal::percpu::with_cpu_pin(|pin| {
+            ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                IDLE_TASK.with_current_mut(exclusive, |idle| {
+                    idle.init_once(idle_task.clone());
+                })
+            })
+        })
+    }
+    .expect("secondary scheduler bootstrap requires an installed CPU-local area");
     unsafe { CurrentTask::init_current(idle_task) }
 
-    RUN_QUEUE.with_current(|rq| {
-        rq.init_once(AxRunQueue::new(cpu_id));
-    });
+    let run_queue = unsafe {
+        ax_hal::percpu::with_cpu_pin(|pin| {
+            ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                RUN_QUEUE.with_current_mut(exclusive, |run_queue| {
+                    run_queue.init_once(AxRunQueue::new(cpu_id));
+                    NonNull::from(
+                        run_queue
+                            .get_mut()
+                            .expect("secondary run queue must be initialized"),
+                    )
+                })
+            })
+        })
+    }
+    .expect("secondary scheduler bootstrap requires an installed CPU-local area");
     unsafe {
-        RUN_QUEUES[cpu_id].write(RUN_QUEUE.current_ref_mut_raw());
+        RUN_QUEUES[cpu_id].write(run_queue);
     }
 }

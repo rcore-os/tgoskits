@@ -278,6 +278,10 @@ macro_rules! call_dispatch {
             (PROTO_IP, IP_TTL) => Ttl as Int<u8>,
             (PROTO_IP, linux_raw_sys::net::IP_RECVTOS) => RecvTos as IntBool,
             (PROTO_IP, IP_RECVERR) => RecvErr as IntBool,  // TODO: hardcoded false, no errqueue support
+            // Path-MTU discovery mode is stored for ABI compatibility (dnsmasq TFTP sets
+            // IP_PMTUDISC_DONT on its transfer socket and aborts the transfer if the call fails);
+            // smoltcp does not model path-MTU discovery, so it has no wire effect.
+            (PROTO_IP, linux_raw_sys::net::IP_MTU_DISCOVER) => IpMtuDiscover as Int<u8>,
             // ---- Not yet implemented (add as needed) ----
             // (SOL_SOCKET, SO_LINGER) => ...,         // TODO: needs close() linger semantics
             // (SOL_SOCKET, SO_RCVLOWAT) => ...,       // TODO: needs kernel support

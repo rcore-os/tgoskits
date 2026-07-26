@@ -1,6 +1,14 @@
-use core::{arch::naked_asm, fmt};
+use core::{
+    arch::naked_asm,
+    fmt,
+    mem::{align_of, offset_of, size_of},
+    ptr::NonNull,
+};
 
 use ax_memory_addr::VirtAddr;
+use cpu_local::{CurrentThreadHeader, PreparedThreadSwitch};
+
+use crate::{KernelTlsBase, TaskLocalState};
 
 /// Saved registers when a trap (interrupt or exception) occurs.
 #[allow(missing_docs)]
@@ -36,6 +44,15 @@ pub struct TrapFrame {
 }
 
 impl TrapFrame {
+    /// Returns the privilege domain represented by this register image.
+    pub const fn origin(&self) -> crate::TrapOrigin {
+        if self.cs & 0b11 == 0 {
+            crate::TrapOrigin::Kernel
+        } else {
+            crate::TrapOrigin::User
+        }
+    }
+
     /// Gets the 0th syscall argument.
     pub const fn arg0(&self) -> usize {
         self.rdi as _
@@ -234,10 +251,20 @@ impl ExtendedState {
     /// (`CR4.OSXSAVE`), which is the single source of truth for whether
     /// XSAVE/XRSTOR (and reading `XCR0` via `XGETBV`) are safe to use.
     #[inline]
+    #[cfg(not(feature = "host-test"))]
     fn xsave_enabled() -> bool {
         // SAFETY: reading CR4 from ring 0 is always well-defined.
         let cr4 = unsafe { x86::controlregs::cr4() };
         cr4.contains(x86::controlregs::Cr4::CR4_ENABLE_OS_XSAVE)
+    }
+
+    /// Host scheduler tests execute at ring 3 and therefore cannot inspect
+    /// CR4. FXSAVE/FXRSTOR remain available and cover the state exercised by
+    /// the test fixture without changing the kernel's XSAVE policy.
+    #[inline]
+    #[cfg(feature = "host-test")]
+    fn xsave_enabled() -> bool {
+        false
     }
 
     /// The set of state components to save/restore, i.e. the `XCR0` mask the
@@ -334,37 +361,48 @@ impl fmt::Debug for ExtendedState {
 ///
 /// [`rsp`]: TaskContext::rsp
 /// [`kstack_top`]: TaskContext::kstack_top
+#[repr(C)]
 #[derive(Debug)]
 pub struct TaskContext {
     /// The kernel stack top of the task.
-    pub kstack_top: VirtAddr,
+    kstack_top: VirtAddr,
     /// `RSP` after all callee-saved registers are pushed.
-    pub rsp: u64,
-    /// Thread pointer (FS segment base address)
-    pub fs_base: usize,
+    rsp: u64,
+    /// Architecture-neutral current-header and kernel-TLS switch state.
+    task_local: TaskLocalState,
+    /// The `CR3` value restored for this task's userspace address space.
+    #[cfg(feature = "uspace")]
+    page_table_root: ax_memory_addr::PhysAddr,
     /// Extended states, i.e., FP/SIMD states.
     #[cfg(feature = "fp-simd")]
-    pub ext_state: ExtendedState,
-    /// The `CR3` register value, i.e., the page table root.
-    #[cfg(feature = "uspace")]
-    pub cr3: ax_memory_addr::PhysAddr,
+    ext_state: ExtendedState,
 }
+
+// The naked switch loads these fields with machine-word instructions. Keep the
+// representation and adjacency assumptions executable as compile-time checks.
+const _: () = {
+    assert!(size_of::<KernelTlsBase>() == size_of::<usize>());
+    assert!(align_of::<KernelTlsBase>() == align_of::<usize>());
+    assert!(offset_of!(TaskContext, kstack_top) == 0);
+    assert!(offset_of!(TaskContext, rsp) == size_of::<VirtAddr>());
+    assert!(offset_of!(TaskContext, task_local) == offset_of!(TaskContext, rsp) + size_of::<u64>());
+};
 
 impl TaskContext {
     /// Creates a dummy context for a new task.
     ///
-    /// Note the context is not initialized, it will be filled by [`switch_to`]
-    /// (for initial tasks) and [`init`] (for regular tasks) methods.
+    /// Note the context is not initialized, it will be filled by
+    /// [`switch_to_prepared`](Self::switch_to_prepared) (for initial tasks) and [`init`]
+    /// (for regular tasks) methods.
     ///
     /// [`init`]: TaskContext::init
-    /// [`switch_to`]: TaskContext::switch_to
     pub fn new() -> Self {
         Self {
             kstack_top: va!(0),
             rsp: 0,
-            fs_base: 0,
+            task_local: TaskLocalState::new(),
             #[cfg(feature = "uspace")]
-            cr3: crate::asm::read_kernel_page_table(),
+            page_table_root: crate::asm::read_kernel_page_table(),
             #[cfg(feature = "fp-simd")]
             ext_state: ExtendedState::default(),
         }
@@ -372,7 +410,7 @@ impl TaskContext {
 
     /// Initializes the context for a new task, with the given entry point and
     /// kernel stack.
-    pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, tls_area: VirtAddr) {
+    pub fn init(&mut self, entry: usize, kstack_top: VirtAddr, kernel_tls: KernelTlsBase) {
         unsafe {
             // x86_64 calling convention: the stack must be 16-byte aligned before
             // calling a function. That means when entering a new task (`ret` in `context_switch`
@@ -389,46 +427,67 @@ impl TaskContext {
             self.rsp = frame_ptr as u64;
         }
         self.kstack_top = kstack_top;
-        self.fs_base = tls_area.as_usize();
+        self.task_local.set_kernel_tls(kernel_tls);
     }
 
-    /// Changes the page table root in this context.
-    ///
-    /// The hardware register for page table root (`CR3` for x86) will be
-    /// updated to the next task's after [`Self::switch_to`].
+    /// Sets the pinned task-owned current-thread header restored by the raw
+    /// switch tail in LinuxCurrent images.
+    pub fn set_current_header(&mut self, header: NonNull<CurrentThreadHeader>) {
+        self.task_local.set_current_header(header);
+    }
+
+    /// Returns the configured task-owned current-thread header.
+    pub const fn current_header(&self) -> Option<NonNull<CurrentThreadHeader>> {
+        self.task_local.current_header()
+    }
+
+    /// Changes the page table root restored for this task.
     #[cfg(feature = "uspace")]
-    pub fn set_page_table_root(&mut self, cr3: ax_memory_addr::PhysAddr) {
-        self.cr3 = cr3;
+    pub fn set_page_table_root(&mut self, page_table_root: ax_memory_addr::PhysAddr) {
+        self.page_table_root = page_table_root;
     }
 
-    /// Switches to another task.
-    ///
-    /// It first saves the current task's context from CPU to this place, and then
-    /// restores the next task's context from `next_ctx` to CPU.
-    pub fn switch_to(&mut self, next_ctx: &Self) {
+    /// Completes every helper operation that must precede current publication.
+    pub fn prepare_switch_to(&mut self, _next_ctx: &Self) {
         #[cfg(feature = "fp-simd")]
         {
             self.ext_state.save();
-            next_ctx.ext_state.restore();
-        }
-        #[cfg(feature = "tls")]
-        unsafe {
-            self.fs_base = crate::asm::read_thread_pointer();
-            crate::asm::write_thread_pointer(next_ctx.fs_base);
+            _next_ctx.ext_state.restore();
         }
         #[cfg(feature = "uspace")]
-        unsafe {
-            if next_ctx.cr3 != self.cr3 {
-                crate::asm::write_user_page_table(next_ctx.cr3);
-                // writing to CR3 has flushed the TLB
-            }
+        if self.page_table_root != _next_ctx.page_table_root {
+            // SAFETY: the scheduler owns both contexts with IRQs disabled.
+            unsafe { crate::asm::write_user_page_table(_next_ctx.page_table_root) };
+            // Writing CR3 flushes the non-global TLB entries.
         }
-        unsafe { context_switch(&mut self.rsp, &next_ctx.rsp) }
+    }
+
+    /// Commits current-thread publication and performs the raw transfer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have serialized scheduling, prepared FP/SIMD state, and
+    /// `prepared` must belong to `next_ctx`. No fallible Rust work may be
+    /// placed between its commit and the naked switch tail.
+    #[inline(always)]
+    pub unsafe fn switch_to_prepared(
+        &mut self,
+        next_ctx: &Self,
+        prepared: PreparedThreadSwitch<'_>,
+    ) {
+        assert_eq!(
+            next_ctx.current_header(),
+            Some(prepared.next_header()),
+            "prepared switch token must belong to the next task context",
+        );
+        unsafe { prepared.commit() };
+        unsafe { context_switch_raw(self, next_ctx) }
     }
 }
 
+#[cfg(feature = "tls")]
 #[unsafe(naked)]
-unsafe extern "C" fn context_switch(_current_stack: &mut u64, _next_stack: &u64) {
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
     naked_asm!(
         "
         .code64
@@ -438,9 +497,21 @@ unsafe extern "C" fn context_switch(_current_stack: &mut u64, _next_stack: &u64)
         push    r13
         push    r14
         push    r15
-        mov     [rdi], rsp
+        mov     [rdi + {rsp_offset}], rsp
 
-        mov     rsp, [rsi]
+        // Save and restore task TLS only after all Rust helpers have finished.
+        mov     ecx, {fs_base_msr}
+        rdmsr
+        shl     rdx, 32
+        or      rax, rdx
+        mov     [rdi + {kernel_tls_offset}], rax
+        mov     rax, [rsi + {kernel_tls_offset}]
+        mov     rdx, rax
+        shr     rdx, 32
+        mov     ecx, {fs_base_msr}
+        wrmsr
+
+        mov     rsp, [rsi + {rsp_offset}]
         pop     r15
         pop     r14
         pop     r13
@@ -448,5 +519,37 @@ unsafe extern "C" fn context_switch(_current_stack: &mut u64, _next_stack: &u64)
         pop     rbx
         pop     rbp
         ret",
+        rsp_offset = const offset_of!(TaskContext, rsp),
+        kernel_tls_offset = const offset_of!(TaskContext, task_local)
+            + offset_of!(TaskLocalState, kernel_tls),
+        fs_base_msr = const 0xc000_0100_u32,
+    )
+}
+
+#[cfg(not(feature = "tls"))]
+#[unsafe(naked)]
+unsafe extern "C" fn context_switch_raw(_current_task: &mut TaskContext, _next_task: &TaskContext) {
+    naked_asm!(
+        "
+        .code64
+        push    rbp
+        push    rbx
+        push    r12
+        push    r13
+        push    r14
+        push    r15
+        mov     [rdi + {rsp_offset}], rsp
+
+        // LinuxCurrent uses the already-published kernel GS slot. FS remains
+        // userspace-owned and must not be touched by a kernel task switch.
+        mov     rsp, [rsi + {rsp_offset}]
+        pop     r15
+        pop     r14
+        pop     r13
+        pop     r12
+        pop     rbx
+        pop     rbp
+        ret",
+        rsp_offset = const offset_of!(TaskContext, rsp),
     )
 }

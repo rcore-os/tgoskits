@@ -2298,6 +2298,20 @@ impl crate::backend::ty::ep::EndpointOp for Dwc2Endpoint {
         self.channel_completions.publish(self.channel, HCINT_CHHLTD);
         Ok(())
     }
+
+    fn reset(&mut self) -> crate::backend::ty::ep::EndpointResetFuture {
+        let result = if self.active.is_some() || self.completed.is_some() {
+            Err(TransferError::QueueFull)
+        } else {
+            let _guard = self.channel_gate.lock();
+            self.channel_completions.clear(self.channel);
+            self.regs
+                .channel_write32(self.channel, HCINT, HCINT_ALL_W1C);
+            self.data_toggle = DataToggle::data0();
+            Ok(())
+        };
+        Box::pin(async move { result })
+    }
 }
 
 fn successful_packet_count(actual: usize, requested: usize, max_packet_size: u16) -> u32 {

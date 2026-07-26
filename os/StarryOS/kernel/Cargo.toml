@@ -1,6 +1,6 @@
 [package]
 name = "starry-kernel"
-version = "0.7.4"
+version = "0.7.5"
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
@@ -55,6 +55,7 @@ sg2002-cvi-usb-camera = [
     "dep:dma-api",
     "dep:sg200x-jpu",
 ]
+smp = ["ax-std/smp"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = []
@@ -71,7 +72,7 @@ ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
 ax-net = { workspace = true }
-ax-driver = { workspace = true, features = ["serial", "usb"] }
+ax-driver = { workspace = true, features = ["usb"] }
 axklib = { workspace = true, optional = true }
 axplat-dyn.workspace = true
 ax-runtime = { workspace = true, features = [
@@ -81,6 +82,7 @@ ax-runtime = { workspace = true, features = [
     "rtc",
     "ext4fs",
     "net",
+    "serial",
 ] }
 ax-sync = { workspace = true, features = ["multitask"] }
 ax-task = { workspace = true, features = [
@@ -176,7 +178,14 @@ rbpf = { version = "0.4", default-features = false }
 [dev-dependencies]
 axtest.workspace = true
 ax-hal.workspace = true
-ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq", "std-compat"] }
+ax-std = { workspace = true, default-features = false, features = [
+    "alloc",
+    "fd",
+    "ext-ld",
+    "fs",
+    "multitask",
+    "irq",
+] }
 
 [[test]]
 name = "axtest_kernel"

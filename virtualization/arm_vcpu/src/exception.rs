@@ -59,6 +59,8 @@ core::arch::global_asm!(
     exception_sync = const EXCEPTION_SYNC,
     exception_irq = const EXCEPTION_IRQ,
     trap_frame_size = const crate::ARM_VCPU_TRAP_FRAME_SIZE,
+    guest_tpidr_el0_offset = const crate::vcpu::ARM_VCPU_GUEST_TPIDR_EL0_OFFSET,
+    host_tpidr_el0_offset = const crate::vcpu::ARM_VCPU_HOST_TPIDR_EL0_OFFSET,
 );
 
 /// Handles synchronous exceptions that occur during the execution of a guest VM.

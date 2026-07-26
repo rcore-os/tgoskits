@@ -12,9 +12,9 @@ register_bitfields![u64,
         AP_RO OFFSET(7) NUMBITS(1) [],
         SHAREABLE OFFSET(8) NUMBITS(2) [
             NON = 0b00,
-            INNER = 0b01,
+            RESERVED = 0b01,
             OUTER = 0b10,
-            RESERVED = 0b11
+            INNER = 0b11
         ],
         AF OFFSET(10) NUMBITS(1) [],
         NG OFFSET(11) NUMBITS(1) [],
@@ -109,12 +109,12 @@ impl PageTableEntry for Entry {
                 val += PTE::MAIR.val(0) + PTE::SHAREABLE::OUTER;
             }
             MemAttributes::Normal | MemAttributes::PerCpu => {
-                val += PTE::MAIR.val(1);
-                if matches!(config.mem_attr, MemAttributes::PerCpu) {
-                    val += PTE::SHAREABLE::NON;
-                } else {
-                    val += PTE::SHAREABLE::OUTER;
-                }
+                // CPU-local areas have a second virtual alias, but they remain
+                // ordinary coherent RAM: remote wake, migration, allocator,
+                // and diagnostic paths access another CPU's area directly.
+                // Both aliases therefore need the exact same cacheability and
+                // shareability attributes.
+                val += PTE::MAIR.val(1) + PTE::SHAREABLE::INNER;
             }
             MemAttributes::Uncached => {
                 val += PTE::MAIR.val(2) + PTE::SHAREABLE::OUTER;
@@ -155,19 +155,12 @@ impl PageTableEntry for Entry {
             is_dir,
             huge: !pte.is_set(PTE::NON_BLOCK),
             mem_attr: {
-                let mut attr = match pte.read(PTE::MAIR) {
+                match pte.read(PTE::MAIR) {
                     0 => MemAttributes::Device,
                     1 => MemAttributes::Normal,
                     2 => MemAttributes::Uncached,
                     _ => MemAttributes::Normal,
-                };
-
-                match pte.read_as_enum(PTE::SHAREABLE) {
-                    Some(PTE::SHAREABLE::Value::OUTER) => {}
-                    _ => attr = MemAttributes::PerCpu,
                 }
-
-                attr
             },
         }
     }

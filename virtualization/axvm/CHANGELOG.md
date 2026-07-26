@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.24](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.23...axvm-v0.5.24) - 2026-07-23
+
+### Added
+
+- *(axvm)* add virtual interrupt model types and per-vCPU dispatch queue ([#1661](https://github.com/rcore-os/tgoskits/pull/1661))
+- *(axdevice)* register exclusive IRQ line resources ([#1630](https://github.com/rcore-os/tgoskits/pull/1630))
+- *(axvisor)* Enhance AxLoader and Asus NUC15CRH support with fixes ([#1555](https://github.com/rcore-os/tgoskits/pull/1555))
+
+### Other
+
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+- *(x86_vcpu)* select VMX/SVM backend at runtime from CPUID, rem… ([#1629](https://github.com/rcore-os/tgoskits/pull/1629))
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+- *(axhvc)* introduce hypercall errors ([#1599](https://github.com/rcore-os/tgoskits/pull/1599))
+- *(axvmconfig)* introduce configuration errors ([#1597](https://github.com/rcore-os/tgoskits/pull/1597))
+- *(axdevice)* replace errno contracts ([#1595](https://github.com/rcore-os/tgoskits/pull/1595))
+- *(axaddrspace)* introduce typed errors ([#1592](https://github.com/rcore-os/tgoskits/pull/1592))
+- *(axvm-types)* introduce backend errors ([#1591](https://github.com/rcore-os/tgoskits/pull/1591))
+- *(axvm)* introduce typed domain errors ([#1590](https://github.com/rcore-os/tgoskits/pull/1590))
+- *(axvm)* consolidate architecture-specific code ([#1562](https://github.com/rcore-os/tgoskits/pull/1562))
+
 ## [0.5.23](https://github.com/rcore-os/tgoskits/compare/axvm-v0.5.22...axvm-v0.5.23) - 2026-07-10
 
 ### Other

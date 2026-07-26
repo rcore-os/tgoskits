@@ -73,5 +73,9 @@ passthrough_addresses = [
 
 # Devices that are not desired to be passed through to the guest
 excluded_devices = [
-   # ["/gic-v3"],
+    #["/pcie@fe150000"],
+    #["/pcie@fe160000"],
+    #["/pcie@fe170000"],
+    #["/pcie@fe180000"],
+    #["/pcie@fe190000"],
 ]

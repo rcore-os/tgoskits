@@ -15,7 +15,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_fs_ng::vfs::FS_CONTEXT;
+use ax_fs_ng::vfs::{FS_CONTEXT, current_fs_context};
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 #[cfg(target_arch = "aarch64")]
@@ -455,49 +455,6 @@ fn render_diskstats() -> String {
         "{VIRTBLK_MAJOR}       0 vda {reads} 0 {sectors_read} 0 {writes} 0 {sectors_written} 0 0 \
          0 0\n"
     )
-}
-
-fn render_mounts() -> String {
-    // Root filesystem plus the pseudo-filesystems mounted unconditionally by
-    // `pseudofs::mount_all()` at boot. The root fs type is read live from the
-    // mount table; the pseudo mounts are fixed. Dynamic user mounts are not
-    // enumerated here because the VFS does not expose a public mount-tree
-    // walker, so third-party mounts made via mount(2) are absent.
-    let root_fstype = {
-        let ctx = FS_CONTEXT.lock();
-        ctx.root_dir().filesystem().name().to_string()
-    };
-    let mut buf = format!("/dev/vda / {root_fstype} rw,relatime 0 0\n");
-    buf.push_str("devtmpfs /dev devtmpfs rw,nosuid,relatime 0 0\n");
-    buf.push_str("tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n");
-    buf.push_str("tmpfs /tmp tmpfs rw,nosuid,nodev 0 0\n");
-    buf.push_str("proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n");
-    buf.push_str("sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n");
-    buf.push_str("debugfs /sys/kernel/debug debugfs rw,nosuid,nodev,noexec,relatime 0 0\n");
-    buf
-}
-
-fn render_mountinfo() -> String {
-    // /proc/<pid>/mountinfo (Linux fs/proc_namespace.c show_mountinfo layout):
-    //   id parent major:minor root mount_point options [optional-fields] - fstype source super_opts
-    // Same mount set as render_mounts(): the root fs type is read live; the pseudo mounts are the
-    // fixed boot set. No optional propagation fields are emitted, so the "-" separator immediately
-    // precedes the fs type. Tools such as node_exporter's filesystem collector and findmnt read
-    // this file (in preference to /proc/mounts) to discover mount points before statfs().
-    let root_fstype = {
-        let ctx = FS_CONTEXT.lock();
-        ctx.root_dir().filesystem().name().to_string()
-    };
-    let mut buf = format!("21 20 {VIRTBLK_MAJOR}:0 / / rw,relatime - {root_fstype} /dev/vda rw\n");
-    buf.push_str("22 21 0:5 / /dev rw,nosuid,relatime - devtmpfs devtmpfs rw\n");
-    buf.push_str("23 22 0:16 / /dev/shm rw,nosuid,nodev - tmpfs tmpfs rw\n");
-    buf.push_str("24 21 0:17 / /tmp rw,nosuid,nodev - tmpfs tmpfs rw\n");
-    buf.push_str("25 21 0:18 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n");
-    buf.push_str("26 21 0:19 / /sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw\n");
-    buf.push_str(
-        "27 26 0:20 / /sys/kernel/debug rw,nosuid,nodev,noexec,relatime - debugfs debugfs rw\n",
-    );
-    buf
 }
 
 fn render_proc_bus_usb_devices() -> String {
@@ -1379,8 +1336,30 @@ impl SimpleDirOps for ThreadDir {
             )
             .into(),
             "auxv" => SimpleFile::new_regular(fs, move || Ok(render_thread_auxv(&task))).into(),
-            "mounts" => SimpleFile::new_regular(fs, move || Ok(render_mounts())).into(),
-            "mountinfo" => SimpleFile::new_regular(fs, move || Ok(render_mountinfo())).into(),
+            "mounts" => {
+                let task = self.task.clone();
+                SimpleFile::new_regular(fs, move || {
+                    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+                    let scope = task.as_thread().scope.read();
+                    let ctx_arc = FS_CONTEXT.scope(&scope).clone();
+                    drop(scope);
+                    let ctx = ctx_arc.lock();
+                    Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
+                })
+                .into()
+            }
+            "mountinfo" => {
+                let task = self.task.clone();
+                SimpleFile::new_regular(fs, move || {
+                    let task = task.upgrade().ok_or(VfsError::NotFound)?;
+                    let scope = task.as_thread().scope.read();
+                    let ctx_arc = FS_CONTEXT.scope(&scope).clone();
+                    drop(scope);
+                    let ctx = ctx_arc.lock();
+                    Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
+                })
+                .into()
+            }
             "cmdline" => SimpleFile::new_regular(fs, move || {
                 let cmdline = task.as_thread().proc_data.cmdline.read();
                 let mut buf = Vec::new();
@@ -1395,11 +1374,17 @@ impl SimpleDirOps for ThreadDir {
                 fs,
                 RwFile::new(move |req| match req {
                     SimpleFileOperation::Read => {
-                        let mut bytes = vec![0; 16];
+                        // `/proc/<pid>/comm` must return only the name plus one
+                        // trailing newline, with no NUL padding: musl's
+                        // pthread_getname_np() reads the file into a 16-byte buffer
+                        // and strips just the final byte, so any padding would leave
+                        // the newline inside the read-back name and break Envoy's
+                        // thread setName() round-trip assertion.
                         let name = task.name();
                         let copy_len = name.len().min(15);
-                        bytes[..copy_len].copy_from_slice(&name.as_bytes()[..copy_len]);
-                        bytes[copy_len] = b'\n';
+                        let mut bytes = Vec::with_capacity(copy_len + 1);
+                        bytes.extend_from_slice(&name.as_bytes()[..copy_len]);
+                        bytes.push(b'\n');
                         Ok(Some(bytes))
                     }
                     SimpleFileOperation::Write(data) => {
@@ -1658,11 +1643,71 @@ impl SimpleDirOps for ProcFsHandler {
     }
 }
 
+/// Build a writable `/proc/sys/fs/mqueue/*` tunable file over a live atomic.
+/// Reads render the current value; writes parse a decimal integer, clamp it to
+/// `[min, max]` (as `proc_dointvec_minmax` in ipc/mq_sysctl.c does — an
+/// out-of-range value is rejected with `EINVAL`) and store it, so the next
+/// `mq_open` sees the change.
+///
+/// These files are owned by the ipc-namespace root (uid 0) and mode `0644`, and
+/// Linux gates writes through `mq_permissions` (ipc/mq_sysctl.c:92): only the
+/// owning root gets the write bit, everyone else sees the file read-only. Raising
+/// `msg_max`/`msgsize_max` toward the hard ceiling is a system-wide resource
+/// change, so the faithful capability is `CAP_SYS_RESOURCE`. Reads stay open to
+/// all; an unprivileged write is rejected with `EPERM`.
+fn mq_sysctl_file(
+    fs: &Arc<SimpleFs>,
+    cell: &'static core::sync::atomic::AtomicUsize,
+    min: usize,
+    max: usize,
+) -> Arc<SimpleFile> {
+    SimpleFile::new_regular(
+        fs.clone(),
+        RwFile::new(move |req| match req {
+            SimpleFileOperation::Read => Ok(Some(
+                format!("{}\n", cell.load(Ordering::Relaxed)).into_bytes(),
+            )),
+            SimpleFileOperation::Write(data) => {
+                // A truncating open (`fopen(path, "w")`) writes an empty buffer
+                // first; treat it as a no-op rather than a parse error, the way
+                // the other writable procfs files here do. Gate the no-op too so
+                // a truncating open by an unprivileged writer still fails cleanly.
+                if !current().as_thread().cred().has_cap_sys_resource() {
+                    return Err(VfsError::OperationNotPermitted);
+                }
+                let text = core::str::from_utf8(data).map_err(|_| VfsError::InvalidInput)?;
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    return Ok(None);
+                }
+                let value: usize = trimmed.parse().map_err(|_| VfsError::InvalidInput)?;
+                if value < min || value > max {
+                    return Err(VfsError::InvalidInput);
+                }
+                cell.store(value, Ordering::Relaxed);
+                Ok(None)
+            }
+        }),
+    )
+}
+
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
     root.add(
         "mounts",
-        SimpleFile::new_regular(fs.clone(), || Ok(render_mounts())),
+        SimpleFile::new_regular(fs.clone(), || {
+            let fs_context = current_fs_context();
+            let ctx = fs_context.lock();
+            Ok(crate::pseudofs::proc_mountinfo::render_mounts(&ctx))
+        }),
+    );
+    root.add(
+        "mountinfo",
+        SimpleFile::new_regular(fs.clone(), || {
+            let fs_context = current_fs_context();
+            let ctx = fs_context.lock();
+            Ok(crate::pseudofs::proc_mountinfo::render_mountinfo(&ctx))
+        }),
     );
     // /proc/filesystems — list of registered filesystem types. Tools like
     // `mount`/`findmnt` and some container runtimes read it to decide what they
@@ -1827,6 +1872,60 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
                 "nr_open",
                 SimpleFile::new_regular(fs.clone(), || Ok("1048576\n")),
             );
+            // /proc/sys/fs/mqueue/{queues_max,msg_max,msgsize_max,
+            // msg_default,msgsize_default} — the writable POSIX message-queue
+            // tunables Linux registers in ipc/mq_sysctl.c. Reads return the
+            // live value; writes clamp to the same [min,max] the kernel
+            // enforces and take effect on the next mq_open.
+            fs_sys.add("mqueue", {
+                let mut mqueue = DirMapping::new();
+                mqueue.add(
+                    "queues_max",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_QUEUES_MAX,
+                        0,
+                        i32::MAX as usize,
+                    ),
+                );
+                mqueue.add(
+                    "msg_max",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSG_MAX,
+                        crate::ipc::mqueue::MQ_MIN_MSG_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSG_MAX,
+                    ),
+                );
+                mqueue.add(
+                    "msgsize_max",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSGSIZE_MAX,
+                        crate::ipc::mqueue::MQ_MIN_MSGSIZE_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSGSIZE_MAX,
+                    ),
+                );
+                mqueue.add(
+                    "msg_default",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSG_DEFAULT,
+                        crate::ipc::mqueue::MQ_MIN_MSG_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSG_MAX,
+                    ),
+                );
+                mqueue.add(
+                    "msgsize_default",
+                    mq_sysctl_file(
+                        &fs,
+                        &crate::ipc::mqueue::MQ_MSGSIZE_DEFAULT,
+                        crate::ipc::mqueue::MQ_MIN_MSGSIZE_MAX,
+                        crate::ipc::mqueue::MQ_HARD_MSGSIZE_MAX,
+                    ),
+                );
+                SimpleDir::new_maker(fs.clone(), Arc::new(mqueue))
+            });
             SimpleDir::new_maker(fs.clone(), Arc::new(fs_sys))
         });
 

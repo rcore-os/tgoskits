@@ -337,7 +337,9 @@ pub struct RssAccountingGuard<'a> {
 
 impl<'a> RssAccountingGuard<'a> {
     pub fn enter(acct: &'a MemoryAccounting) -> Self {
-        let prev = RSS_ACCOUNTING.swap(acct as *const MemoryAccounting as usize, Ordering::Relaxed);
+        let prev = RSS_ACCOUNTING.with(|current| {
+            current.swap(acct as *const MemoryAccounting as usize, Ordering::Relaxed)
+        });
         Self {
             prev,
             _not_send: core::marker::PhantomData,
@@ -347,13 +349,13 @@ impl<'a> RssAccountingGuard<'a> {
 
 impl Drop for RssAccountingGuard<'_> {
     fn drop(&mut self) {
-        RSS_ACCOUNTING.store(self.prev, Ordering::Relaxed);
+        RSS_ACCOUNTING.with(|current| current.store(self.prev, Ordering::Relaxed));
     }
 }
 
 /// Used only from `backend/mod.rs` `MappingBackend` bridge.
 pub(crate) fn bridge_rss_accounting() -> Option<&'static MemoryAccounting> {
-    let ptr = RSS_ACCOUNTING.load(Ordering::Relaxed);
+    let ptr = RSS_ACCOUNTING.with(|current| current.load(Ordering::Relaxed));
     if ptr == 0 {
         None
     } else {
