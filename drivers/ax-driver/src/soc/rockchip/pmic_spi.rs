@@ -81,17 +81,23 @@
 //! pmic_spi::set_uv_stepped(675_000);         // down-only to the OPP nominal
 //! ```
 
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
-// PMIC access is slow (SPI register reads/writes that busy-wait on hardware), so
-// the lock is held across the whole transaction. Use `SpinNoPreempt`, not
-// `SpinNoIrq`: it keeps local IRQs ENABLED during the poll (so IRQ latency is not
-// held hostage to a millisecond SPI transaction) while still disabling preemption
-// so no task switch can interleave mid-transaction and corrupt the register
-// sequence. This is sound because the lock is NEVER taken from an interrupt
-// handler — every caller (`init`/`get_uv`/`set_uv*`/`force_write_dcdc2`) runs in
-// the boot probe or the sleepable `cpufreq` governor task, so an IRQ arriving
-// mid-transaction can never re-enter and self-deadlock.
+// PMIC access is slow: an SPI register read/write busy-waits on the controller
+// (~20 ms per transfer). Serialisation must NOT disable preemption across that
+// poll, or the caller would stall task-switching on its CPU for the whole
+// transaction (the scheduling-starvation risk raised in review). So the slow
+// transactions are guarded by a non-preempt-disabling bus-ownership flag
+// (`BUS_BUSY` / [`BusGuard`]); the `SpinNoPreempt` `Mutex` below is used ONLY to
+// store the controller handle (`init`) or clone it out (`BusGuard::claim`) — a
+// microsecond window that never spans a poll. Ownership is single-caller by
+// construction (the A55 rail is programmed once at boot; the ring-only governor
+// issues no dynamic A55 write), so `BusGuard::claim` bails on the never-expected
+// contended case rather than spinning. `SpinNoPreempt` (not `SpinNoIrq`) keeps
+// IRQs enabled; the lock is never taken from an interrupt handler.
 use ax_kspin::SpinNoPreempt as Mutex;
 use log::{info, warn};
 use rdif_pinctrl::PinctrlDevice;
@@ -262,16 +268,72 @@ const STEP_SETTLE_US: u64 = 150;
 // ---------------------------------------------------------------------------
 
 /// A mapped, initialized SPI2 controller bound to the RK806.
+#[derive(Clone)]
 struct Rk806Spi {
     base: *mut u8,
 }
 
-// The controller is reached only through `PMIC` (a `SpinNoPreempt` mutex), which
-// serializes all access; the MMIO mapping is stable for the kernel lifetime.
+// The controller handle is only ever stored/cloned under `PMIC` (a microsecond
+// `SpinNoPreempt` window) and used while its owner holds `BUS_BUSY`; the MMIO
+// mapping is stable for the kernel lifetime.
 unsafe impl Send for Rk806Spi {}
 
-/// Global RK806/SPI2 handle, populated once by [`init`].
+/// Global RK806/SPI2 handle, populated once by [`init`]. The `SpinNoPreempt`
+/// mutex is held only to store the handle or clone it out ([`BusGuard::claim`]),
+/// never across an SPI poll.
 static PMIC: Mutex<Option<Rk806Spi>> = Mutex::new(None);
+
+/// Non-preempt-disabling bus-ownership flag for the slow RK806 SPI transactions
+/// (`rk806_read`/`rk806_write` poll the controller, ~20 ms per transfer). Holding
+/// it does not disable preemption, so a transfer can be preempted and never
+/// starves the scheduler on that CPU (the review concern). Single-caller by
+/// construction (the A55 rail is programmed once at boot by `align_rail_voltages`;
+/// the ring-only governor never issues a dynamic A55 voltage write), so
+/// [`BusGuard::claim`] takes ownership without blocking and bails on the
+/// never-expected contended case instead of spinning.
+static BUS_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// RAII ownership of the RK806 SPI bus for one transaction. Carries a clone of
+/// the controller handle so the poll runs with no `SpinNoPreempt` guard held;
+/// releases ownership on drop.
+struct BusGuard {
+    dev: Rk806Spi,
+}
+
+impl BusGuard {
+    /// Take bus ownership without blocking, then clone the handle out under a
+    /// microsecond `PMIC` lock. `None` if uninitialised or already owned.
+    fn claim() -> Option<Self> {
+        if BUS_BUSY
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            warn!("pmic_spi: bus already in use; skipping this transaction");
+            return None;
+        }
+        let handle = PMIC.lock().as_ref().cloned();
+        match handle {
+            Some(dev) => Some(Self { dev }),
+            None => {
+                BUS_BUSY.store(false, Ordering::Release);
+                None
+            }
+        }
+    }
+}
+
+impl Drop for BusGuard {
+    fn drop(&mut self) {
+        BUS_BUSY.store(false, Ordering::Release);
+    }
+}
+
+impl core::ops::Deref for BusGuard {
+    type Target = Rk806Spi;
+    fn deref(&self) -> &Rk806Spi {
+        &self.dev
+    }
+}
 
 impl Rk806Spi {
     #[inline]
@@ -780,9 +842,8 @@ pub fn init() -> bool {
 /// Read the current `vdd_cpu_lit` (A55 rail) voltage in microvolts, or `None`
 /// if the controller is not initialized or the SPI read timed out.
 pub fn get_uv() -> Option<u32> {
-    let guard = PMIC.lock();
-    let dev = guard.as_ref()?;
-    let sel = dev.rk806_read(RK806_BUCK2_ON_VSEL)?;
+    let bus = BusGuard::claim()?;
+    let sel = bus.rk806_read(RK806_BUCK2_ON_VSEL)?;
     let uv = vsel_to_uv(sel);
     info!("pmic_spi: A55 vdd_cpu_lit = {uv} uV (buck2 vsel {sel:#04x})");
     Some(uv)
@@ -800,11 +861,11 @@ pub fn get_uv() -> Option<u32> {
 // not call it.
 #[allow(dead_code)]
 pub fn set_uv(target_uv: u32) -> bool {
-    let guard = PMIC.lock();
-    let Some(dev) = guard.as_ref() else {
-        warn!("pmic_spi: set_uv before init; ignored");
+    let Some(bus) = BusGuard::claim() else {
+        warn!("pmic_spi: set_uv before init or busy; ignored");
         return false;
     };
+    let dev = &*bus;
     let Some(boot_sel) = dev.rk806_read(RK806_BUCK2_ON_VSEL) else {
         warn!("pmic_spi: set_uv could not read boot voltage; leaving rail untouched");
         return false;
@@ -823,11 +884,12 @@ pub fn set_uv(target_uv: u32) -> bool {
 /// is an accepted no-op (`true`). Any read-back mismatch aborts mid-descent and
 /// returns `false`, leaving the last verified selector in place.
 pub fn set_uv_stepped(target_uv: u32) -> bool {
-    let guard = PMIC.lock();
-    let Some(dev) = guard.as_ref() else {
-        warn!("pmic_spi: set_uv_stepped before init; ignored");
+    // One claim for the whole stepped transaction (read + step writes).
+    let Some(bus) = BusGuard::claim() else {
+        warn!("pmic_spi: set_uv_stepped before init or busy; ignored");
         return false;
     };
+    let dev = &*bus;
     let Some(cur_sel) = dev.rk806_read(RK806_BUCK2_ON_VSEL) else {
         warn!("pmic_spi: set_uv_stepped could not read current voltage; leaving rail untouched");
         return false;
@@ -879,11 +941,11 @@ pub fn force_write_dcdc2(target_uv: u32) -> bool {
         );
         return false;
     }
-    let guard = PMIC.lock();
-    let Some(dev) = guard.as_ref() else {
-        warn!("pmic_spi: force_write_dcdc2 before init; ignored");
+    let Some(bus) = BusGuard::claim() else {
+        warn!("pmic_spi: force_write_dcdc2 before init or busy; ignored");
         return false;
     };
+    let dev = &*bus;
     let Some(sel) = uv_to_vsel(target_uv) else {
         warn!("pmic_spi: force_write_dcdc2 target {target_uv} uV not encodable");
         return false;

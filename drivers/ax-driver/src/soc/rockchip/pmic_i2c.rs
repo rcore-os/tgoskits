@@ -54,17 +54,24 @@
 //! `di->vsel_min = 500000`, `di->vsel_step = 6250` → `V = 500000 + code·6250`
 //! µV, i.e. `0x1c → 675 mV`, `0x30 → 800 mV`.
 
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
-// PMIC access is slow (register reads/writes that busy-wait on I2C hardware), so
-// the lock is held across the whole transaction. Use `SpinNoPreempt`, not
-// `SpinNoIrq`: it keeps local IRQs ENABLED during the poll (so IRQ latency is not
-// held hostage to a millisecond PMIC transaction) while still disabling preemption
-// so no task switch can interleave mid-transaction and corrupt the register
-// sequence. This is sound because the lock is NEVER taken from an interrupt
-// handler — every caller (`init`/`get_uv`/`set_uv*`) runs in the boot probe or the
-// sleepable `cpufreq` governor task, so an IRQ arriving mid-transaction can never
-// re-enter and self-deadlock.
+// PMIC access is slow: a register read/write busy-waits on the I2C hardware
+// (`wait_ipd`, ~100 ms budget, longer if the bus is dead). Serialisation must NOT
+// disable preemption across that poll, or the `cpufreq` governor task would stall
+// task-switching on its CPU for the whole transaction (a scheduling-starvation
+// risk when the bus misbehaves). So the slow chip transactions are guarded by a
+// non-preempt-disabling bus-ownership flag (`BUS_BUSY` / [`BusGuard`]) and the
+// `SpinNoPreempt` `Mutex` below is used ONLY to store the controller handle
+// (`init`) or clone it out (`BusGuard::claim`) — a microsecond-scale window that
+// never spans a poll. Ownership is single-caller by construction (one governor
+// task; `init` runs before it), so `BusGuard::claim` takes ownership without
+// blocking and bails on the (never-expected) contended case rather than spinning.
+// `SpinNoPreempt` (not `SpinNoIrq`) keeps local IRQs enabled; the lock is never
+// taken from an interrupt handler, so no re-entrant self-deadlock is possible.
 use ax_kspin::SpinNoPreempt as Mutex;
 use log::{info, warn};
 use mmio_api::{MmioAddr, MmioRaw};
@@ -229,6 +236,7 @@ enum I2cErr {
     Timeout,
 }
 
+#[derive(Clone)]
 struct Rk3xI2c {
     mmio: MmioRaw,
 }
@@ -403,7 +411,70 @@ impl Rk3xI2c {
 // Public API — single global PMIC bus (mapped once)
 // ---------------------------------------------------------------------------
 
+/// Storage for the initialised controller handle. The `SpinNoPreempt` mutex is
+/// held only for the microsecond-scale window that stores it (`init`) or clones
+/// it out ([`BusGuard::claim`]) — NEVER across a hardware poll.
 static CONTROLLER: Mutex<Option<Rk3xI2c>> = Mutex::new(None);
+
+/// Bus-ownership flag for the slow chip transactions. Unlike a `SpinNoPreempt`
+/// guard, holding it does NOT disable preemption, so a `wait_ipd` poll (~100 ms
+/// budget, longer if the bus is dead) can be preempted and never starves the
+/// scheduler on that CPU — the blocking concern raised in review.
+///
+/// Concurrency protocol: the PMIC bus has exactly one steady-state caller, the
+/// single `cpufreq` governor task, and `init` runs once at boot before that task
+/// exists — so contention does not occur by construction. The flag makes that
+/// explicit and safe: [`BusGuard::claim`] tries to take ownership without
+/// blocking and *bails* (returns `None` → the caller's safe no-op) if a
+/// transaction is somehow already in flight, rather than spinning. A transaction
+/// preempted mid-poll simply holds ownership across the gap; the hardware
+/// transaction keeps running and resuming the status poll is idempotent.
+static BUS_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// RAII ownership of the PMIC bus for one (possibly multi-step) transaction.
+/// Carries a clone of the controller handle so the slow poll runs with no
+/// `SpinNoPreempt` guard held. Releases ownership on drop.
+struct BusGuard {
+    i2c: Rk3xI2c,
+}
+
+impl BusGuard {
+    /// Take exclusive bus ownership without blocking, then clone the controller
+    /// handle out under a microsecond-scale `CONTROLLER` lock. Returns `None`
+    /// if the bus is uninitialised or already owned (see the protocol note on
+    /// [`BUS_BUSY`]); in both cases the caller falls back to its safe no-op.
+    fn claim() -> Option<Self> {
+        if BUS_BUSY
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            warn!("pmic_i2c: bus already in use; skipping this transaction");
+            return None;
+        }
+        // Brief preempt-disabled window: just clone the handle out, no poll.
+        let handle = CONTROLLER.lock().as_ref().cloned();
+        match handle {
+            Some(i2c) => Some(Self { i2c }),
+            None => {
+                BUS_BUSY.store(false, Ordering::Release);
+                None
+            }
+        }
+    }
+}
+
+impl Drop for BusGuard {
+    fn drop(&mut self) {
+        BUS_BUSY.store(false, Ordering::Release);
+    }
+}
+
+impl core::ops::Deref for BusGuard {
+    type Target = Rk3xI2c;
+    fn deref(&self) -> &Rk3xI2c {
+        &self.i2c
+    }
+}
 
 /// Ungate the i2c0 PCLK + functional clock in the PMU CRU so the controller can
 /// generate SCL. Idempotent — the Rockchip CRU gate registers are write-masked
@@ -569,9 +640,9 @@ pub fn init() -> bool {
 /// or [`RK8603_BIG1_ADDR`]. `None` if the bus is uninitialised or the read
 /// fails.
 pub fn get_uv(chip: u8) -> Option<u32> {
-    let guard = CONTROLLER.lock();
-    let i2c = guard.as_ref()?;
-    let vsel = i2c.read_reg(chip, VSEL_REG)?;
+    // Bus ownership (not a preempt-disabling lock) is held across the poll below.
+    let bus = BusGuard::claim()?;
+    let vsel = bus.read_reg(chip, VSEL_REG)?;
     Some(vsel_to_uv(vsel & VSEL_MASK))
 }
 
@@ -594,12 +665,11 @@ pub fn set_uv(chip: u8, target_uv: u32) -> bool {
         warn!("pmic_i2c: {target_uv} uV is not an exact VSEL step; refusing");
         return false;
     };
-    let guard = CONTROLLER.lock();
-    let Some(i2c) = guard.as_ref() else {
-        warn!("pmic_i2c: not initialised; refusing set");
+    let Some(bus) = BusGuard::claim() else {
+        warn!("pmic_i2c: not initialised or busy; refusing set");
         return false;
     };
-    i2c.set_vsel_verify(chip, vsel)
+    bus.set_vsel_verify(chip, vsel)
 }
 
 /// Safely lower a rail to `target_uv` by stepping **down** in ≤25 mV (4-LSB)
@@ -625,13 +695,14 @@ pub fn set_uv_stepped(chip: u8, target_uv: u32) -> bool {
         return false;
     };
 
-    let guard = CONTROLLER.lock();
-    let Some(i2c) = guard.as_ref() else {
-        warn!("pmic_i2c: not initialised; refusing step");
+    // One bus claim for the whole stepped transaction (read + the step writes),
+    // so it stays atomic w.r.t. other callers while never disabling preemption.
+    let Some(bus) = BusGuard::claim() else {
+        warn!("pmic_i2c: not initialised or busy; refusing step");
         return false;
     };
 
-    let Some(cur_vsel) = i2c.read_reg(chip, VSEL_REG).map(|v| v & VSEL_MASK) else {
+    let Some(cur_vsel) = bus.read_reg(chip, VSEL_REG).map(|v| v & VSEL_MASK) else {
         warn!("pmic_i2c: chip {chip:#x} current VSEL read failed; refusing step");
         return false;
     };
@@ -651,7 +722,7 @@ pub fn set_uv_stepped(chip: u8, target_uv: u32) -> bool {
     let mut v = cur_vsel;
     while v > target_vsel {
         let next = v.saturating_sub(STEP_LSB).max(target_vsel);
-        if !i2c.set_vsel_verify(chip, next) {
+        if !bus.set_vsel_verify(chip, next) {
             warn!(
                 "pmic_i2c: chip {chip:#x} step to VSEL {next:#x} ({} uV) failed; aborting at {} uV",
                 vsel_to_uv(next),
