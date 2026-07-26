@@ -2,7 +2,7 @@ use anyhow::{Context, bail};
 use cargo_metadata::Metadata;
 use ostool::build::config::Cargo;
 
-use super::info::load_build_config_with_makefile_features;
+use super::{ArceosBuildInfo, info::load_build_config_with_makefile_features};
 use crate::{build, context::ResolvedBuildRequest};
 
 pub(crate) fn load_cargo_config(request: &ResolvedBuildRequest) -> anyhow::Result<Cargo> {
@@ -39,14 +39,9 @@ pub(crate) fn load_direct_guest_cargo_config(
     let metadata =
         build::cached_workspace_metadata().context("failed to load workspace metadata")?;
     let makefile_features = build::makefile_features_from_env();
-    let mut build_info = load_build_config_with_makefile_features_and_metadata(
-        request,
-        &makefile_features,
-        Some(metadata),
-    )?
-    .build_info;
+    let mut build_info =
+        load_build_config_with_makefile_features(request, &makefile_features)?.build_info;
     build_info.validated_max_cpu_num()?;
-    build_info.resolve_features_with_metadata(&request.package, &request.target, metadata);
     remove_undeclared_package_features(&mut build_info.features, &request.package, metadata);
     enable_arceos_feature_if_declared(&mut build_info.features, &request.package, metadata);
     let mut rustflags =
