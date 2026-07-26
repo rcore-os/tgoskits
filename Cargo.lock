@@ -1205,6 +1205,7 @@ version = "0.4.6"
 dependencies = [
  "addr2line 0.26.1",
  "axpanic",
+ "axtest",
  "cfg-if",
  "gimli 0.33.0",
  "log",
