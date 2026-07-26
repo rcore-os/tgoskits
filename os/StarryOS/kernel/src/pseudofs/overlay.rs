@@ -19,13 +19,13 @@ use alloc::{
 use core::{any::Any, task::Context};
 
 use ax_fs_ng::vfs::OpenOptions;
+use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, FsIoEvents, FsPollable, Location, Metadata, MetadataUpdate, NodeFlags, NodeOps,
     NodePermission, NodeType, Reference, StatFs, VfsError, VfsResult, WeakDirEntry,
 };
-use spin::Once;
 
 use crate::pseudofs::dummy_stat_fs;
 
@@ -66,7 +66,7 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         lower_dirs: options.lower_dirs,
         upper_dir: options.upper_dir,
         _work_dir: options.work_dir,
-        root: Once::new(),
+        root: SpinNoIrq::new(None),
     });
     let root = OverlayDir::entry(
         fs.clone(),
@@ -75,7 +75,7 @@ pub fn new_overlayfs(options: OverlayOptions) -> VfsResult<Filesystem> {
         Vec::new(),
         None,
     );
-    fs.root.call_once(|| root);
+    *fs.root.lock() = Some(root);
     Ok(Filesystem::new(fs))
 }
 
@@ -113,7 +113,8 @@ struct OverlayFs {
     lower_dirs: Vec<Location>,
     upper_dir: Option<Location>,
     _work_dir: Option<Location>,
-    root: Once<DirEntry>,
+    // root_dir() may be called from VFS mount paths with preemption disabled.
+    root: SpinNoIrq<Option<DirEntry>>,
 }
 
 impl FilesystemOps for OverlayFs {
@@ -122,7 +123,7 @@ impl FilesystemOps for OverlayFs {
     }
 
     fn root_dir(&self) -> DirEntry {
-        self.root.get().cloned().unwrap()
+        self.root.lock().clone().unwrap()
     }
 
     fn stat(&self) -> VfsResult<StatFs> {

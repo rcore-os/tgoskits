@@ -1,7 +1,7 @@
 [package]
 name = "ax-percpu-macros"
 description = "Macros to define and access a per-CPU data structure"
-version = "0.4.10"
+version = "0.4.11"
 repository = "https://github.com/rcore-os/tgoskits"
 edition.workspace = true
 authors = ["Yuekai Jia <equation618@gmail.com>", "hky1999 <976929993@qq.com>", "Su Mingxian <aarkegz@gmail.com>", "yufeng <321353225@qq.com>"]

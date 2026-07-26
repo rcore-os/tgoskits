@@ -1,6 +1,6 @@
 [package]
 name = "starry-signal"
-version = "0.8.10"
+version = "0.8.11"
 edition.workspace = true
 authors = ["Mivik <mivikq@gmail.com>", "朝倉水希 <asakuramizu111@gmail.com>"]
 description = "Signal management library for Starry OS"

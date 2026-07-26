@@ -14,7 +14,11 @@
 
 #[cfg(all(
     feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
+    any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
+    )
 ))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -38,7 +42,11 @@ use axvmconfig::{AxVMCrateConfig, VMType};
 
 #[cfg(all(
     feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
+    any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
+    )
 ))]
 static HOST_FILESYSTEM_RELEASE_REQUIRED: AtomicBool = AtomicBool::new(false);
 
@@ -113,7 +121,11 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
 
     #[cfg(all(
         feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
+        any(
+            target_arch = "aarch64",
+            target_arch = "x86_64",
+            target_arch = "loongarch64"
+        )
     ))]
     let release_host_filesystem = vm_config_needs_host_filesystem_release(&vm_create_config);
 
@@ -163,7 +175,11 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
 
     #[cfg(all(
         feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
+        any(
+            target_arch = "aarch64",
+            target_arch = "x86_64",
+            target_arch = "loongarch64"
+        )
     ))]
     if release_host_filesystem {
         #[cfg(target_arch = "x86_64")]
@@ -217,7 +233,11 @@ fn sync_axvm_config_from_crate_config(vm_config: &mut AxVMConfig, cfg: &AxVMCrat
 
 #[cfg(all(
     feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
+    any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
+    )
 ))]
 fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
     config.kernel.image_location.as_deref() == Some("fs")
@@ -228,7 +248,11 @@ fn vm_config_needs_host_filesystem_release(config: &AxVMCrateConfig) -> bool {
 
 #[cfg(all(
     feature = "fs",
-    any(target_arch = "x86_64", target_arch = "loongarch64")
+    any(
+        target_arch = "aarch64",
+        target_arch = "x86_64",
+        target_arch = "loongarch64"
+    )
 ))]
 pub fn host_filesystem_release_required() -> bool {
     HOST_FILESYSTEM_RELEASE_REQUIRED.load(Ordering::Acquire)

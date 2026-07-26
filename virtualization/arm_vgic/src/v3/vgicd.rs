@@ -164,6 +164,10 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             reg if GICD_IGRPMODR_RANGE.contains(&reg) => {
                 self.irq_masked_read(reg, reg & 0x7f, 0, width, false)
             }
+            reg if GICD_NSACR_RANGE.contains(&reg) => {
+                // Guests run in the non-secure state, where GICD_NSACR is RAZ/WI.
+                Ok(0)
+            }
             reg if GICD_ICFGR_RANGE.contains(&reg) => {
                 self.irq_masked_read(reg, reg & 0xff, 1, width, false)
             }
@@ -235,6 +239,10 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicD {
             }
             reg if GICD_IGRPMODR_RANGE.contains(&reg) => {
                 self.irq_masked_write(reg, reg & 0x7f, 0, width, false, val)
+            }
+            reg if GICD_NSACR_RANGE.contains(&reg) => {
+                // Guests run in the non-secure state, where GICD_NSACR is RAZ/WI.
+                Ok(())
             }
             reg if GICD_ICFGR_RANGE.contains(&reg) => {
                 self.irq_masked_write(reg, reg & 0xff, 1, width, false, val)

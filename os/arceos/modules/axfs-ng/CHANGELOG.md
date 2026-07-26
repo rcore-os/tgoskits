@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.4...ax-fs-ng-v0.8.5) - 2026-07-23
+
+### Added
+
+- *(starry)* complete mount tree semantics ([#1644](https://github.com/rcore-os/tgoskits/pull/1644))
+- *(starry)* run x86_64 self-build through the Starry app ([#1076](https://github.com/rcore-os/tgoskits/pull/1076))
+
+### Fixed
+
+- *(starry)* support Nix openat2 resolve flags ([#1637](https://github.com/rcore-os/tgoskits/pull/1637))
+
+### Other
+
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.3...ax-fs-ng-v0.8.4) - 2026-07-10
 
 ### Other

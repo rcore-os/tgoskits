@@ -90,7 +90,11 @@ impl AxvmManager {
 
     #[cfg(all(
         feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
+        any(
+            target_arch = "aarch64",
+            target_arch = "x86_64",
+            target_arch = "loongarch64"
+        )
     ))]
     fn release_host_filesystem_for_guest_passthrough(&self) {
         if !crate::config::host_filesystem_release_required() {
@@ -107,7 +111,11 @@ impl AxvmManager {
 
     #[cfg(not(all(
         feature = "fs",
-        any(target_arch = "x86_64", target_arch = "loongarch64")
+        any(
+            target_arch = "aarch64",
+            target_arch = "x86_64",
+            target_arch = "loongarch64"
+        )
     )))]
     fn release_host_filesystem_for_guest_passthrough(&self) {}
 

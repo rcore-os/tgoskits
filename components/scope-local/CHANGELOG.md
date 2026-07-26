@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.2...scope-local-v0.4.3) - 2026-07-23
+
+### Other
+
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.1...scope-local-v0.4.2) - 2026-07-07
 
 ### Other

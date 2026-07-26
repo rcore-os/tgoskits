@@ -1,5 +1,8 @@
-use alloc::alloc::{alloc, dealloc, handle_alloc_error};
-use core::{alloc::Layout, iter::zip, mem::MaybeUninit, ptr::NonNull};
+use alloc::{boxed::Box, vec::Vec};
+use core::{
+    ptr::NonNull,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use ax_kernel_guard::NoPreempt;
 use ax_percpu::CpuPin;
@@ -12,47 +15,35 @@ use crate::{
 
 /// A scope is a collection of items.
 pub struct Scope {
-    ptr: NonNull<ItemSlot>,
+    items: Box<[ItemBox]>,
 }
 
-unsafe impl Send for Scope {}
-unsafe impl Sync for Scope {}
-
 impl Scope {
-    fn len() -> usize {
-        Registry.len()
-    }
-
-    fn layout() -> Layout {
-        Layout::array::<ItemSlot>(Self::len()).unwrap()
-    }
-
-    /// Create a new namespace with all resources initialized as their default
-    /// value.
+    /// Creates a new namespace and eagerly initializes every registered item.
+    ///
+    /// Initializers run in the caller's ordinary context. Once this function
+    /// returns, pinned access to the scope performs no allocation or lazy
+    /// initialization.
     pub fn new() -> Self {
-        let layout = Self::layout();
-        let ptr = NonNull::new(unsafe { alloc(layout) })
-            .unwrap_or_else(|| handle_alloc_error(layout))
-            .cast();
-
-        let slice = unsafe {
-            core::slice::from_raw_parts_mut(ptr.cast::<MaybeUninit<_>>().as_ptr(), Registry.len())
-        };
-        for (item, d) in zip(&*Registry, slice) {
-            d.write(ItemSlot::new(item));
-        }
-
-        Self { ptr }
+        let items = Registry
+            .iter()
+            .map(ItemBox::new)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self { items }
     }
 
     pub(crate) fn get(&self, item: &'static Item) -> &ItemBox {
-        let index = item.index();
-        unsafe { self.ptr.add(index).as_ref() }.get()
+        &self.items[item.index()]
     }
 
     pub(crate) fn get_mut(&mut self, item: &'static Item) -> &mut ItemBox {
-        let index = item.index();
-        unsafe { self.ptr.add(index).as_mut() }.get_mut()
+        &mut self.items[item.index()]
+    }
+
+    fn items_ptr(&self) -> NonNull<ItemBox> {
+        NonNull::new(self.items.as_ptr().cast_mut())
+            .expect("scope-local registry must contain the accessed item")
     }
 }
 
@@ -62,49 +53,48 @@ impl Default for Scope {
     }
 }
 
-impl Drop for Scope {
-    fn drop(&mut self) {
-        let ptr = NonNull::slice_from_raw_parts(self.ptr, Self::len());
-        unsafe {
-            ptr.drop_in_place();
-            dealloc(self.ptr.cast().as_ptr(), Self::layout());
-        }
-    }
-}
-
-struct ItemSlot {
-    item: &'static Item,
-    value: Once<ItemBox>,
-}
-
-impl ItemSlot {
-    fn new(item: &'static Item) -> Self {
-        Self {
-            item,
-            value: Once::new(),
-        }
-    }
-
-    fn get(&self) -> &ItemBox {
-        self.value.call_once(|| ItemBox::new(self.item))
-    }
-
-    fn get_mut(&mut self) -> &mut ItemBox {
-        if !self.value.is_completed() {
-            let item = self.item;
-            self.value.call_once(|| ItemBox::new(item));
-        }
-        self.value
-            .get_mut()
-            .expect("scope-local item must be initialized")
-    }
-
-    fn try_get(&self) -> Option<&ItemBox> {
-        self.value.get()
-    }
-}
-
 static GLOBAL_SCOPE: Once<Scope> = Once::new();
+static GLOBAL_SCOPE_STATE: AtomicUsize = AtomicUsize::new(GlobalScopeState::Uninitialized as usize);
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+#[repr(usize)]
+enum GlobalScopeState {
+    Uninitialized,
+    Ready,
+}
+
+struct GlobalInitialization {
+    owner_context: usize,
+    published: bool,
+}
+
+impl GlobalInitialization {
+    fn begin(owner_context: usize) -> Self {
+        Self {
+            owner_context,
+            published: false,
+        }
+    }
+
+    fn publish(mut self, scope: Scope) {
+        GLOBAL_SCOPE.call_once(|| scope);
+        GLOBAL_SCOPE_STATE.store(GlobalScopeState::Ready as usize, Ordering::Release);
+        self.published = true;
+    }
+}
+
+impl Drop for GlobalInitialization {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = GLOBAL_SCOPE_STATE.compare_exchange(
+                self.owner_context,
+                GlobalScopeState::Uninitialized as usize,
+                Ordering::Release,
+                Ordering::Relaxed,
+            );
+        }
+    }
+}
 
 #[ax_percpu::def_percpu]
 pub(crate) static ACTIVE_SCOPE_PTR: usize = 0;
@@ -136,7 +126,7 @@ impl ActiveScope {
     ///
     /// `scope` must remain alive until a later pinned replacement or reset.
     pub unsafe fn set_pinned(scope: &Scope, pin: &CpuPin<'_>) {
-        ACTIVE_SCOPE_PTR.write_current(pin, scope.ptr.addr().get());
+        ACTIVE_SCOPE_PTR.write_current(pin, scope.items_ptr().addr().get());
     }
 
     /// Set the active scope to the global scope.
@@ -175,11 +165,9 @@ impl ActiveScope {
         pin: &CpuPin<'_>,
         operation: impl for<'access> FnOnce(&'access ItemBox) -> R,
     ) -> R {
-        let ptr = ACTIVE_SCOPE_PTR.read_current(pin);
-        let ptr = NonNull::new(ptr as *mut ItemSlot)
-            .unwrap_or_else(|| GLOBAL_SCOPE.call_once(Scope::new).ptr);
-        let index = item.index();
-        operation(unsafe { ptr.add(index).as_ref() }.get())
+        Self::try_with_item(item, pin, operation).expect(
+            "scope-local global scope is not initialized; use LocalItem::with before pinned access",
+        )
     }
 
     pub(crate) fn try_with_item<R>(
@@ -188,12 +176,57 @@ impl ActiveScope {
         operation: impl for<'access> FnOnce(&'access ItemBox) -> R,
     ) -> Option<R> {
         let ptr = ACTIVE_SCOPE_PTR.read_current(pin);
-        let ptr = if ptr == 0 {
-            GLOBAL_SCOPE.get()?.ptr
+        let items = if ptr == 0 {
+            GLOBAL_SCOPE.get()?.items_ptr()
         } else {
-            NonNull::new(ptr as *mut ItemSlot)?
+            NonNull::new(ptr as *mut ItemBox)?
         };
         let index = item.index();
-        Some(operation(unsafe { ptr.add(index).as_ref() }.try_get()?))
+        Some(operation(unsafe { items.add(index).as_ref() }))
     }
+
+    pub(crate) fn initialize_global() {
+        let owner_context = current_context_identity();
+        loop {
+            match GLOBAL_SCOPE_STATE.load(Ordering::Acquire) {
+                state if state == GlobalScopeState::Ready as usize => return,
+                state if state == owner_context => {
+                    panic!("scope-local global scope initialization is already in progress")
+                }
+                state if state == GlobalScopeState::Uninitialized as usize => {
+                    if GLOBAL_SCOPE_STATE
+                        .compare_exchange(
+                            GlobalScopeState::Uninitialized as usize,
+                            owner_context,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        let initialization = GlobalInitialization::begin(owner_context);
+                        initialization.publish(Scope::new());
+                        return;
+                    }
+                }
+                _ => core::hint::spin_loop(),
+            }
+        }
+    }
+}
+
+fn current_context_identity() -> usize {
+    let _guard = NoPreempt::new();
+    // SAFETY: the guard keeps the current thread header stable while its opaque
+    // identity is acquired. The header itself is pinned for the task lifetime,
+    // so this identity remains valid if the task later migrates during an
+    // initializer.
+    let context = unsafe {
+        ax_percpu::with_cpu_pin(|pin| pin.area().runtime_anchor().current_thread_raw())
+            .expect("scope-local access requires an installed CPU area")
+    };
+    assert!(
+        context > GlobalScopeState::Ready as usize,
+        "scope-local initialization requires a valid current context"
+    );
+    context
 }

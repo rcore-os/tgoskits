@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4](https://github.com/rcore-os/tgoskits/compare/usb-if-v0.7.3...usb-if-v0.7.4) - 2026-07-23
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.7.3](https://github.com/rcore-os/tgoskits/compare/usb-if-v0.7.2...usb-if-v0.7.3) - 2026-07-07
 
 ### Other
