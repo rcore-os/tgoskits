@@ -99,6 +99,34 @@ impl ThreadSignalManager {
             .or_else(|| self.proc.dequeue_signal(mask))
     }
 
+    /// Selects the next signal to deliver, giving a synchronous fault priority
+    /// over any other pending signal.
+    ///
+    /// Mirrors Linux `get_signal` (kernel/signal.c), which calls
+    /// `dequeue_synchronous_signal` before the normal `dequeue_signal`: an
+    /// instruction-generated fault (`SIGSEGV`/`SIGBUS`/`SIGILL`/`SIGTRAP`/
+    /// `SIGFPE`/`SIGSYS` with `si_code > SI_USER`) is delivered ahead of a
+    /// concurrently-pending, possibly lower-numbered, asynchronous signal
+    /// (e.g. `SIGUSR1`). This is intentionally scoped to the delivery path only;
+    /// `dequeue_signal` (used by `rt_sigtimedwait`/`sigwaitinfo`) keeps plain
+    /// lowest-numbered ordering, matching Linux where `dequeue_synchronous_signal`
+    /// is never called from the sigwait dequeue.
+    fn dequeue_deliverable(&self, mask: &SignalSet) -> Option<SignalInfo> {
+        if let Some(sig) = self.pending.lock().dequeue_synchronous_signal(mask) {
+            return Some(sig);
+        }
+        if let Some(sig) = self.proc.dequeue_synchronous_signal(mask) {
+            return Some(sig);
+        }
+        if let Some(sig) = self.pending.lock().dequeue_signal(mask) {
+            return Some(sig);
+        }
+        // The thread-level queue is now drained; mirror the fast-path bookkeeping
+        // before falling back to the shared process-level queue.
+        self.possibly_has_signal.store(false, Ordering::Release);
+        self.proc.dequeue_signal(mask)
+    }
+
     pub fn process(&self) -> &Arc<ProcessSignalManager> {
         &self.proc
     }
@@ -239,13 +267,7 @@ impl ThreadSignalManager {
         drop(blocked);
 
         loop {
-            let sig = match self.pending.lock().dequeue_signal(&mask) {
-                Some(sig) => Some(sig),
-                None => {
-                    self.possibly_has_signal.store(false, Ordering::Release);
-                    self.proc.dequeue_signal(&mask)
-                }
-            }?;
+            let sig = self.dequeue_deliverable(&mask)?;
             let (restartable, prepared) = self.prepare_signal(restore_blocked, &sig);
             match prepared {
                 PreparedSignal::Ignore => continue,
