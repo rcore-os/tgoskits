@@ -616,7 +616,28 @@ pub(crate) fn select_run_queue<G: BaseGuard>(task: &AxTaskRef) -> AxRunQueueRef<
         // process's threads on the boot core (flat multi-core scaling). Wakeups
         // still prefer the waking/last CPU for cache warmth; see
         // `select_wake_run_queue`.
+        //
+        // loongarch64 EXCEPTION: task execution on a secondary CPU is currently
+        // unstable on this platform — an idle secondary does not reliably wake for
+        // a placed task, and once woken a task can take an unrecognised exception
+        // (`Unhandled trap Unknown`). That is a loongarch secondary bring-up / IRQ
+        // gap, not a scheduler bug, but until it is fixed, spreading a fresh task
+        // to a loongarch secondary hangs or traps its waiter (the smp4
+        // `tty-console-input-burst` regression). So on loongarch keep new-task
+        // placement on the current CPU (the pre-distribution behaviour); wakeups
+        // still redistribute via `select_wake_run_queue`. Other arches
+        // (aarch64/riscv64/x86_64) use the full round-robin distribution.
+        #[cfg(not(target_arch = "loongarch64"))]
         let index = select_run_queue_index(task.cpumask());
+        #[cfg(target_arch = "loongarch64")]
+        let index = {
+            let current_cpu = this_cpu_id();
+            if task.cpumask().get(current_cpu) {
+                current_cpu
+            } else {
+                select_run_queue_index(task.cpumask())
+            }
+        };
         AxRunQueueRef {
             inner: get_run_queue(index),
             state: irq_state,
