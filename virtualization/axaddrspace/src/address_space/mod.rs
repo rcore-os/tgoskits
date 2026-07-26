@@ -239,22 +239,41 @@ impl<Npt: NestedPageTableOps> AddrSpace<Npt> {
         }
     }
 
-    /// Translates the given `VirtAddr` into `PhysAddr`,
-    /// and returns the size of the `MemoryArea` corresponding to the target vaddr.
+    /// Translates the given `VirtAddr` into `PhysAddr`, and returns the number
+    /// of bytes that remain accessible from `vaddr` up to the end of the
+    /// containing memory area.
     ///
     /// Returns `None` if the virtual address is out of range or not mapped.
+    ///
+    /// The returned limit is the *remaining* length from `vaddr` to the area
+    /// end, not the whole area size. Reporting the whole area size overstates
+    /// the accessible range for accesses that begin in the middle of an area.
+    /// For linearly-mapped (identity/offset) areas this remaining length is also
+    /// the physically-contiguous run; alloc-backed areas may be physically
+    /// discontiguous across pages, so callers that need a physically-contiguous
+    /// span must re-query after consuming the returned limit.
     pub fn translate_and_get_limit(&self, vaddr: GuestPhysAddr) -> Option<(PhysAddr, usize)> {
         if !self.va_range.contains(vaddr) {
             return None;
         }
-        if let Some(area) = self.areas.find(vaddr) {
-            self.pt
-                .query(vaddr)
-                .map(|(phys_addr, ..)| (phys_addr, area.size()))
-                .ok()
-        } else {
-            None
-        }
+        let area = self.areas.find(vaddr)?;
+        // `areas.find` returns the area whose `[start, end)` range contains
+        // `vaddr`, so `end > vaddr` and the subtraction cannot underflow.
+        let area_remaining = area.end().as_usize() - vaddr.as_usize();
+        let (phys_addr, _flags, page_size) = self.pt.query(vaddr).ok()?;
+        // The physically-contiguous run ends at the current translation block
+        // (page or block descriptor) boundary: alloc-backed areas may map
+        // discontiguous physical pages, so reporting the whole area would let a
+        // caller treat a single contiguous HPA span that crosses a physical
+        // discontinuity. Bound the limit to both the area end and the current
+        // block. Callers that need a longer span must re-query after consuming
+        // the returned limit (the trait's default buffer accessors do exactly
+        // this).
+        let page_bytes: usize = page_size.into();
+        let page_offset = vaddr.as_usize() & (page_bytes - 1);
+        let block_remaining = page_bytes - page_offset;
+        let limit = area_remaining.min(block_remaining);
+        Some((phys_addr, limit))
     }
 }
 

@@ -1,0 +1,6 @@
+# Manual public-network acceptance guest for the AxVisor TAP/NAT uplink.
+env = { AXVIRTIO_TEST_HOST = "www.baidu.com", AXVIRTIO_TEST_PORT = "80", AXVIRTIO_TEST_PATH = "/", AXVIRTIO_EXPECT_TOKEN = "" }
+features = ["net", "dns", "multitask", "ax-driver/virtio-net"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+max_cpu_num = 1

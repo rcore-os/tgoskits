@@ -1,0 +1,6 @@
+# DHCP/DNS/TCP/HTTP guest for the isolated TAP/NAT acceptance topology.
+env = { AXVIRTIO_TEST_HOST = "axvirtio.test", AXVIRTIO_TEST_PORT = "18080", AXVIRTIO_TEST_PATH = "/AXVIRTIO_NET_TAP_OK", AXVIRTIO_EXPECT_TOKEN = "AXVIRTIO_NET_TAP_OK" }
+features = ["net", "dns", "multitask", "ax-driver/virtio-net"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+max_cpu_num = 1

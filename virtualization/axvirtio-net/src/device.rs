@@ -30,7 +30,11 @@ pub enum DeviceEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RxOutcome {
     /// The frame was written into a guest buffer.
-    Delivered { frame_len: usize },
+    Delivered {
+        frame_len: usize,
+        /// Whether the used-ring update requires a guest interrupt.
+        notify: bool,
+    },
     /// No guest RX buffer was available; the VMM decides whether to
     /// cache/retry/drop. This is flow control, not an error.
     NoGuestBuffer,
@@ -153,6 +157,9 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
             MmioWriteAction::QueueNotified(idx) => {
                 if idx == TX_QUEUE_INDEX {
                     Ok(self.handle_tx_notify())
+                } else if idx == RX_QUEUE_INDEX {
+                    self.backend.rx_queue_notified();
+                    Ok(DeviceEvent::None)
                 } else {
                     Ok(DeviceEvent::None)
                 }
@@ -219,7 +226,8 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
                 .map_err(|_| NetError::GuestMemoryFault)?;
         }
 
-        if buf.len() < VirtioNetHdr::SIZE {
+        let header_len = self.header_len();
+        if buf.len() < header_len {
             return Err(NetError::InvalidDescriptor);
         }
         let hdr = VirtioNetHdr::from_le_bytes(&buf).ok_or(NetError::InvalidDescriptor)?;
@@ -228,7 +236,7 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
         }
 
         // Payload is everything after the header; the header is not transmitted.
-        let frame = &buf[VirtioNetHdr::SIZE..];
+        let frame = &buf[header_len..];
         self.backend.transmit(frame)?;
 
         let notify = tx.complete(head, 0)?;
@@ -247,7 +255,8 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
             return Err(NetError::FrameTooLarge);
         }
 
-        let needed = VirtioNetHdr::SIZE + frame.len();
+        let header_len = self.header_len();
+        let needed = header_len + frame.len();
         let mut queues = self.state.queues_lock();
         let Some(rx) = queues.get_mut(RX_QUEUE_INDEX as usize) else {
             return Err(NetError::NotReady);
@@ -278,7 +287,7 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
 
         // All checks passed: consume the head and write header + frame.
         rx.update_last_avail_idx(last.wrapping_add(1));
-        self.write_rx_payload(&chain, frame)?;
+        self.write_rx_payload(&chain, header_len, frame)?;
 
         let notify = rx.complete(head, needed as u32).map_err(NetError::from)?;
         if notify {
@@ -286,14 +295,20 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
         }
         Ok(RxOutcome::Delivered {
             frame_len: frame.len(),
+            notify,
         })
     }
 
     /// Write a zero `virtio_net_hdr` followed by `frame` across the chain's
     /// writable descriptors, in order.
-    fn write_rx_payload(&self, chain: &DescriptorChain, frame: &[u8]) -> Result<(), NetError> {
-        let mut output: Vec<u8> = Vec::with_capacity(VirtioNetHdr::SIZE + frame.len());
-        output.resize(VirtioNetHdr::SIZE, 0); // zero header
+    fn write_rx_payload(
+        &self,
+        chain: &DescriptorChain,
+        header_len: usize,
+        frame: &[u8],
+    ) -> Result<(), NetError> {
+        let mut output: Vec<u8> = Vec::with_capacity(header_len + frame.len());
+        output.resize(header_len, 0); // zero header
         output.extend_from_slice(frame);
 
         let mut off = 0usize;
@@ -308,6 +323,14 @@ impl<B: NetworkBackend, T: GuestMemoryAccessor + Clone> VirtioMmioNetDevice<B, T
             off += n;
         }
         Ok(())
+    }
+
+    fn header_len(&self) -> usize {
+        if self.state.driver_features() & vc::VIRTIO_F_VERSION_1 != 0 {
+            VIRTIO_NET_HDR_VERSION_1_SIZE
+        } else {
+            VirtioNetHdr::SIZE
+        }
     }
 
     /// Reset the device (clears transport state and queues; keeps MAC/MTU and

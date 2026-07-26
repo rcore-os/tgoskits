@@ -118,7 +118,69 @@ fn register_unix_namespace() {
 
 #[cfg(feature = "net")]
 fn parse_network_config() -> ax_net::NetworkConfig {
-    ax_net::NetworkConfig::default()
+    let Some(ip) = option_env!("AX_IP") else {
+        return ax_net::NetworkConfig::default();
+    };
+    static_network_config(
+        ip,
+        option_env!("AX_GW").unwrap_or("0.0.0.0"),
+        option_env!("AX_NET_DEV").unwrap_or("virtio-net"),
+    )
+}
+
+#[cfg(feature = "net")]
+fn static_network_config(ip_cidr: &str, gateway: &str, driver_name: &str) -> ax_net::NetworkConfig {
+    use core::{net::Ipv4Addr, str::FromStr};
+
+    let (ip, prefix_len) = ip_cidr
+        .split_once('/')
+        .map_or((ip_cidr, 24), |(ip, prefix)| {
+            let prefix = prefix
+                .parse::<u8>()
+                .unwrap_or_else(|_| panic!("invalid AX_IP prefix `{prefix}`"));
+            (ip, prefix)
+        });
+    let ip = Ipv4Addr::from_str(ip).unwrap_or_else(|_| panic!("invalid AX_IP `{ip_cidr}`"));
+    let gateway =
+        Ipv4Addr::from_str(gateway).unwrap_or_else(|_| panic!("invalid AX_GW `{gateway}`"));
+
+    ax_net::NetworkConfig {
+        interfaces: alloc::vec![ax_net::InterfaceConfig {
+            name: alloc::string::String::from("eth0"),
+            match_by: ax_net::InterfaceMatcher::ByDriverName(alloc::string::String::from(
+                driver_name,
+            )),
+            static_ip: Some(ax_net::StaticIpConfig {
+                ip,
+                prefix_len,
+                gateway,
+            }),
+            dhcp: false,
+            metric: 100,
+            dns_servers: alloc::vec::Vec::new(),
+        }],
+        default_dns_servers: alloc::vec::Vec::new(),
+    }
+}
+
+#[cfg(all(test, feature = "net"))]
+mod network_config_tests {
+    use super::*;
+
+    #[test]
+    fn static_config_is_applied_before_network_initialization() {
+        let config = static_network_config("10.0.0.2/24", "0.0.0.0", "virtio-net");
+        let interface = &config.interfaces[0];
+        let static_ip = interface.static_ip.as_ref().unwrap();
+
+        assert!(!interface.dhcp);
+        assert_eq!(static_ip.ip.octets(), [10, 0, 0, 2]);
+        assert_eq!(static_ip.prefix_len, 24);
+        assert!(matches!(
+            &interface.match_by,
+            ax_net::InterfaceMatcher::ByDriverName(name) if name == "virtio-net"
+        ));
+    }
 }
 
 /// A wireless device that registers *after* `init_network`: its already-wrapped

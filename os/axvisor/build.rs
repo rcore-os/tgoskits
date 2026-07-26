@@ -121,6 +121,16 @@ fn write_tokens(out_file: &mut fs::File, tokens: proc_macro2::TokenStream) -> an
 
 // Convert relative path to absolute path
 fn convert_to_absolute(configs_path: impl AsRef<Path>, path: &str) -> PathBuf {
+    if let Some(workspace_path) = path.strip_prefix("${workspace}/") {
+        let manifest_dir = PathBuf::from(
+            env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"),
+        );
+        let workspace = manifest_dir
+            .parent()
+            .and_then(Path::parent)
+            .expect("AxVisor manifest must be under the workspace root");
+        return workspace.join(workspace_path);
+    }
     let path = Path::new(path);
     let configs_path = configs_path
         .as_ref()

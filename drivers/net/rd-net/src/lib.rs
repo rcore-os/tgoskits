@@ -347,6 +347,15 @@ impl TxQueue {
         self.config.buf_size
     }
 
+    /// Reclaims up to `limit` completed transmit buffers.
+    ///
+    /// Runtimes should call this after a TX IRQ/readiness edge even when no new
+    /// packet is waiting, so DMA buffers do not remain owned by the device
+    /// until the next transmission.
+    pub fn reclaim_completed(&mut self, limit: usize) -> Result<usize, NetError> {
+        self.reclaim_bounded(limit)
+    }
+
     pub fn prepare_send<R>(
         &mut self,
         len: usize,

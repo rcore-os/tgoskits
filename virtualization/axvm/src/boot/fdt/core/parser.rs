@@ -395,6 +395,7 @@ pub fn set_phys_cpu_sets(
     let policy = super::selected_guest_fdt_policy();
     let (new_phys_cpu_sets, guest_phys_cpu_ids) = resolve_phys_cpu_sets(
         phys_cpu_ids,
+        crate_config.base.phys_cpu_sets.as_deref(),
         &cpu_nodes_info,
         (policy.host_cpu_count)(),
         policy.resolve_cpu_index,
@@ -408,6 +409,7 @@ pub fn set_phys_cpu_sets(
 
 fn resolve_phys_cpu_sets(
     phys_cpu_ids: &[usize],
+    configured_sets: Option<&[usize]>,
     cpu_nodes: &[(usize, usize)],
     host_cpu_count: usize,
     mut resolve_cpu_index: impl FnMut(usize) -> Option<usize>,
@@ -453,11 +455,23 @@ fn resolve_phys_cpu_sets(
             ));
         };
 
+        let cpu_mask = selected_cpu_mask(configured_sets, cpu_sets.len(), cpu_mask);
         cpu_sets.push(cpu_mask);
         guest_cpu_ids.push(hardware_cpu_id);
     }
 
     Ok((cpu_sets, guest_cpu_ids))
+}
+
+fn selected_cpu_mask(
+    configured_sets: Option<&[usize]>,
+    vcpu_id: usize,
+    derived_mask: usize,
+) -> usize {
+    configured_sets
+        .and_then(|sets| sets.get(vcpu_id))
+        .copied()
+        .unwrap_or(derived_mask)
 }
 
 fn add_device_address_config(
@@ -735,7 +749,7 @@ mod tests {
         let runtime_indices_by_hardware_id = [1, 2, 3, 0];
 
         let (cpu_sets, guest_cpu_ids) =
-            resolve_phys_cpu_sets(&[0], &cpu_nodes, 4, |hardware_cpu_id| {
+            resolve_phys_cpu_sets(&[0], None, &cpu_nodes, 4, |hardware_cpu_id| {
                 runtime_indices_by_hardware_id.get(hardware_cpu_id).copied()
             })
             .unwrap();
@@ -746,7 +760,7 @@ mod tests {
 
     #[test]
     fn phys_cpu_set_rejects_cpu_missing_from_runtime_topology() {
-        let error = resolve_phys_cpu_sets(&[3], &[(3, 3)], 4, |_| None).unwrap_err();
+        let error = resolve_phys_cpu_sets(&[3], None, &[(3, 3)], 4, |_| None).unwrap_err();
 
         assert!(
             error
@@ -758,7 +772,9 @@ mod tests {
     #[test]
     fn phys_cpu_set_rejects_logical_index_outside_affinity_mask() {
         let error =
-            resolve_phys_cpu_sets(&[3], &[(3, 3)], usize::MAX, |_| Some(usize::BITS as usize))
+            resolve_phys_cpu_sets(&[3], None, &[(3, 3)], usize::MAX, |_| {
+                Some(usize::BITS as usize)
+            })
                 .unwrap_err();
 
         assert!(
@@ -770,9 +786,18 @@ mod tests {
 
     #[test]
     fn phys_cpu_set_rejects_logical_index_outside_usable_host_cpus() {
-        let error = resolve_phys_cpu_sets(&[3], &[(3, 3)], 4, |_| Some(4)).unwrap_err();
+        let error = resolve_phys_cpu_sets(&[3], None, &[(3, 3)], 4, |_| Some(4)).unwrap_err();
 
         assert!(error.to_string().contains("outside the 4 usable host CPUs"));
+    }
+
+    #[test]
+    fn explicit_cpu_set_overrides_mask_derived_from_guest_cpu_id() {
+        let (cpu_sets, guest_cpu_ids) =
+            resolve_phys_cpu_sets(&[0], Some(&[0b10]), &[(0, 0)], 4, |_| Some(0)).unwrap();
+
+        assert_eq!(cpu_sets, vec![0b10]);
+        assert_eq!(guest_cpu_ids, vec![0]);
     }
 
     #[test]

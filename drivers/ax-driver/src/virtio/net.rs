@@ -21,6 +21,7 @@ use virtio_drivers::{
 #[cfg(feature = "pci")]
 use crate::{PciIrqRequirement, binding_info_from_pci};
 use crate::{
+    binding_info_from_fdt,
     net::PlatformDeviceNet,
     virtio::{self, VirtIoHalImpl, VirtIoTransport},
 };
@@ -35,6 +36,19 @@ crate::model_register!(
     priority: ProbePriority::DEFAULT,
     probe_kinds: &[ProbeKind::Pci {
         on_probe: probe_pci,
+    }],
+);
+
+// VirtIO MMIO net: probe virtio,mmio nodes from the guest device tree (e.g. the
+// AxVisor-emulated net device). Mirrors the block driver's FDT probe.
+#[cfg(feature = "virtio-net")]
+crate::model_register!(
+    name: "VirtIO MMIO Net",
+    level: ProbeLevel::PostKernel,
+    priority: ProbePriority::DEFAULT,
+    probe_kinds: &[ProbeKind::Fdt {
+        compatibles: &["virtio,mmio"],
+        on_probe: probe_fdt,
     }],
 );
 
@@ -152,21 +166,16 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
     }
 
     fn handle_irq(&self) -> Event {
-        let queue_interrupt = self
-            .try_with_irq(|inner| {
-                self.irq_ack_pending.store(false, Ordering::Release);
-                inner
-                    .raw
-                    .ack_interrupt()
-                    .contains(InterruptStatus::QUEUE_INTERRUPT)
-            })
-            .unwrap_or_else(|| {
-                self.irq_ack_pending.store(true, Ordering::Release);
-                // The task-side owner will acknowledge the transport before
-                // and after its queue operation. Without an IRQ status snapshot
-                // we must not publish a queue event from a shared interrupt.
-                false
-            });
+        let queue_interrupt = match self.try_with_irq(|inner| {
+            self.irq_ack_pending.store(false, Ordering::Release);
+            inner
+                .raw
+                .ack_interrupt()
+                .contains(InterruptStatus::QUEUE_INTERRUPT)
+        }) {
+            Some(queue_interrupt) => queue_interrupt,
+            None => return deferred_irq_event(&self.irq_ack_pending),
+        };
 
         if !queue_interrupt {
             return Event::none();
@@ -183,6 +192,18 @@ impl<T: VirtIoTransport> VirtioNetInnerCell<T> {
             let _ = inner.raw.ack_interrupt();
         }
     }
+}
+
+fn deferred_irq_event(irq_ack_pending: &AtomicBool) -> Event {
+    irq_ack_pending.store(true, Ordering::Release);
+    // The task-side owner will acknowledge the transport after its queue
+    // operation. Conservatively schedule both queues because the destructive
+    // status snapshot was unavailable; otherwise a fast RX completion can be
+    // acknowledged without ever waking its deferred worker.
+    let mut event = Event::none();
+    event.tx_queue.insert(0);
+    event.rx_queue.insert(0);
+    event
 }
 
 struct VirtioNetAccessGuard<'a>(&'a AtomicBool);
@@ -372,6 +393,23 @@ fn probe_pci(mut probe: rdrive::probe::pci::ProbePci<'_>) -> Result<(), OnProbeE
     register_pci_transport(probe, transport)
 }
 
+/// FDT probe for a virtio-mmio net device: read the transport from the MMIO
+/// window described by the device tree node, reject non-network virtio devices,
+/// bind the IRQ from the FDT interrupts specifier, and register the NIC.
+#[cfg(feature = "virtio-net")]
+fn probe_fdt(probe: rdrive::register::ProbeFdt<'_>) -> Result<(), OnProbeError> {
+    let (info, plat_dev) = probe.into_parts();
+    let binding_info = binding_info_from_fdt(&info)?;
+    let (device_type, transport) = crate::virtio::probe_fdt_mmio_device(&info)?;
+    if device_type != DeviceType::Network {
+        return Err(OnProbeError::NotMatch);
+    }
+    let net = make_net(transport)?;
+    let irq = plat_dev.register_net_with_info("virtio-net", net, binding_info);
+    log::info!("registered virtio network device (mmio) irq={irq:?}");
+    Ok(())
+}
+
 pub fn register_transport<T: Transport + 'static>(
     plat_dev: PlatformDevice,
     transport: T,
@@ -421,7 +459,7 @@ mod tests {
 
     use core::sync::atomic::{AtomicBool, Ordering};
 
-    use super::VirtioNetAccessGuard;
+    use super::{VirtioNetAccessGuard, deferred_irq_event};
 
     #[test]
     fn irq_access_returns_none_when_task_access_is_active() {
@@ -434,19 +472,16 @@ mod tests {
     }
 
     #[test]
-    fn skipped_irq_access_records_pending_ack_without_queue_event() {
+    fn skipped_irq_access_records_pending_ack_and_queue_readiness() {
         let access_active = AtomicBool::new(false);
         let irq_ack_pending = AtomicBool::new(false);
         let task_guard = VirtioNetAccessGuard::enter_task(&access_active);
 
-        let queue_interrupt = if VirtioNetAccessGuard::try_enter_irq(&access_active).is_none() {
-            irq_ack_pending.store(true, Ordering::Release);
-            false
-        } else {
-            true
-        };
+        assert!(VirtioNetAccessGuard::try_enter_irq(&access_active).is_none());
+        let event = deferred_irq_event(&irq_ack_pending);
 
-        assert!(!queue_interrupt);
+        assert_eq!(event.tx_queue.iter().collect::<std::vec::Vec<_>>(), [0]);
+        assert_eq!(event.rx_queue.iter().collect::<std::vec::Vec<_>>(), [0]);
         assert!(irq_ack_pending.load(Ordering::Acquire));
         drop(task_guard);
         assert!(VirtioNetAccessGuard::try_enter_irq(&access_active).is_some());

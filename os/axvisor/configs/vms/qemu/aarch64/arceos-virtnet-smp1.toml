@@ -1,0 +1,52 @@
+# ArceOS guest with an AxVisor-emulated virtio-mmio net device (smoke test).
+#
+# Single vCPU, emulated IRQ mode. The guest GIC is provided via GPPT
+# (gppt-gicd / gppt-gicr); the deterministic virtio-net MMIO device is the
+# third emu_device. Its `cfg_list` carries exactly the 6 guest MAC octets
+# (plan section 0). The virtio_mmio DTB node is generated at runtime from this
+# emu_device row by axvm's FDT patcher (plan section 4); the SPI (irq_id 65,
+# i.e. SPI 33) is delivered through the VM-local queued IRQ sink.
+#
+# The deterministic virtual peer answers ARP for 10.0.0.1 and echoes UDP to
+# port 4433; the guest smoke app sends from 10.0.0.2 (see
+# os/axvisor/src/virtio_net/config.rs for the shared constants).
+
+[base]
+id = 1
+name = "arceos-virtnet-qemu"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-virtnet-echo.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 1], # System RAM 1G MAP_IDENTICAL
+]
+
+[devices]
+interrupt_mode = "emulated"
+passthrough_devices = [
+  ["/psci"],
+  ["/pl011@9000000"],
+  ["/intc@8000000"],
+  ["/timer"],
+  ["/aliases"],
+  ["/chosen"],
+]
+passthrough_addresses = []
+excluded_devices = [
+  ["/pcie@10000000"],
+]
+emu_devices = [
+  # Guest GIC via GPPT (1 vCPU, redistributor stride 0x2_0000, starts at pcpu 0).
+  ["gppt-gicd", 0x0800_0000, 0x1_0000, 0, 0x21, []],
+  ["gppt-gicr", 0x080a_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0]],
+  # Deterministic virtio-mmio net: base 0x0a00_0000, len 0x200, SPI irq 65,
+  # guest MAC 52:54:00:12:34:56.
+  ["virtnet0", 0x0a20_0000, 0x200, 65, 0xE2, [0x52, 0x54, 0x00, 0x12, 0x34, 0x56]],
+]

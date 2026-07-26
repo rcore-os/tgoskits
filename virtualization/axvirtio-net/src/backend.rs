@@ -14,4 +14,11 @@ use crate::error::NetworkBackendError;
 pub trait NetworkBackend: Send + Sync {
     /// Transmit a complete L2 frame (no `virtio_net_hdr`) to the host network.
     fn transmit(&self, frame: &[u8]) -> Result<(), NetworkBackendError>;
+
+    /// Notifies the asynchronous backend that the guest kicked its RX queue.
+    ///
+    /// Backends that retained a frame because no guest RX buffer was available
+    /// use this readiness edge to retry from deferred context. The default is a
+    /// no-op for transmit-only backends.
+    fn rx_queue_notified(&self) {}
 }

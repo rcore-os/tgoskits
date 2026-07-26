@@ -22,6 +22,7 @@
 ))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use alloc::sync::Arc;
 use anyhow::{Context, Result, bail};
 #[cfg(all(feature = "fs", target_arch = "x86_64"))]
 use axvm::InterruptTriggerMode;
@@ -38,6 +39,7 @@ use axvm::{
 };
 #[cfg(feature = "fs")]
 use axvm::{AxVmError, AxVmResult};
+use axvm_types::{EmulatedDeviceType, VMInterruptMode};
 use axvmconfig::{AxVMCrateConfig, VMType};
 
 #[cfg(all(
@@ -137,6 +139,8 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     }
 
     let mut vm_config = build_axvm_config(&vm_create_config);
+    // Computed before `vm_create_config` is moved into `prepare_guest_boot`.
+    let manages_virtio_net = vm_create_config_uses_virtio_net(&vm_create_config);
     let prepared_boot = prepare_guest_boot(&mut vm_config, vm_create_config, &image_provider)
         .with_context(|| format!("prepare boot resources for VM[{configured_vm_id}]"))?;
     let prepared_config = prepared_boot.config();
@@ -164,12 +168,31 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
         .load_images(main_mem, vm.clone(), &image_provider)
         .with_context(|| format!("load boot images for VM[{vm_id}]"))?;
 
+    // If this VM brings a virtio-net MMIO device in emulated IRQ mode, install
+    // the AxVisor prepare profile so `prepare` (and reset / stopped-start) build
+    // the device factory and VM-local IRQ fabric from the glue instead of the
+    // empty default registry. Passthrough/no-net VMs keep the default path.
+    if manages_virtio_net {
+        let profile = Arc::new(crate::virtio_net::VirtioNetPrepareProfile::new(
+            Arc::downgrade(&vm),
+        ));
+        vm.install_prepare_profile(profile);
+    }
+
     vm.prepare()
         .with_context(|| format!("prepare devices and vCPUs for VM[{vm_id}]"))?;
 
     // Keep the local `Arc` for architecture-specific post-registration setup.
     if !axvm::register_vm(vm.clone()) {
         bail!("register VM[{vm_id}]: a VM with this ID already exists");
+    }
+
+    // With the VM (and its prepared devices) registered, start the virtio-net RX
+    // worker. It discovers the adapter by downcasting from the device registry.
+    if manages_virtio_net {
+        if let Some(registered_vm) = axvm::get_vm_by_id(vm_id) {
+            crate::virtio_net::start_workers_for_vm(&registered_vm);
+        }
     }
     #[cfg(target_arch = "loongarch64")]
     crate::manager::register_loongarch_passthrough_irq_routes(vm_id);
@@ -189,6 +212,18 @@ pub fn init_guest_vm(raw_cfg: &str) -> Result<usize> {
     }
 
     Ok(vm_id)
+}
+
+/// Returns whether `cfg` describes an emulated-IRQ VM that owns at least one
+/// virtio-net MMIO device, i.e. whether the AxVisor virtio-net glue should
+/// install its prepare profile and start an RX worker for this VM.
+fn vm_create_config_uses_virtio_net(cfg: &AxVMCrateConfig) -> bool {
+    cfg.devices.interrupt_mode == VMInterruptMode::Emulated
+        && cfg
+            .devices
+            .emu_devices
+            .iter()
+            .any(|dev| matches!(dev.emu_type, EmulatedDeviceType::VirtioNet))
 }
 
 pub(crate) fn build_axvm_config(cfg: &AxVMCrateConfig) -> AxVMConfig {

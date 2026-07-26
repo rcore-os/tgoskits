@@ -27,6 +27,7 @@ mod arch;
 mod architecture;
 pub mod boot;
 mod error;
+pub mod guest_memory;
 mod host;
 pub mod irq;
 pub mod layout;
@@ -58,11 +59,16 @@ pub use axvm_types::{
 };
 pub use error::{AxVmError, AxVmResult};
 pub(crate) use error::{ax_err, ax_err_type};
+pub use guest_memory::AxvmGuestMemoryAccessor;
+pub use host::worker::{
+    WorkerTask, WorkerWaitQueue, host_cpu_count, spawn_worker_task,
+    spawn_worker_task_with_affinity, yield_now,
+};
 pub(crate) use host::{
     paging::HostPagingHandler,
     task::{AxTaskExt, AxTaskRef, TaskInner, WaitQueue, WaitQueueHandle as HostWaitQueueHandle},
 };
-pub use irq::InterruptFabric;
+pub use irq::{InterruptFabric, VmQueuedIrqSink};
 pub use lifecycle::{StopReason, VmStatus};
 pub use manager::{
     AxvmRuntime, current_vcpu_id, current_vm_id, get_vm_by_id, get_vm_list,
@@ -71,6 +77,7 @@ pub use manager::{
 pub(crate) use task::{AsVCpuTask, VCpuTask};
 pub use vm::{
     AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot,
+    prepare::PrepareProfile,
 };
 
 /// The architecture-independent per-CPU type.

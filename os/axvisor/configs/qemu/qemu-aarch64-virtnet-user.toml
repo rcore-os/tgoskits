@@ -1,0 +1,13 @@
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4",
+  "-m", "8g",
+  "-device", "virtio-net-device,netdev=axv_uplink,mac=52:54:00:aa:bb:01",
+  "-netdev", "user,id=axv_uplink",
+]
+fail_regex = ["VM_UPLINK_FAIL"]
+success_regex = ["VM_HTTP_PASS"]
+to_bin = true
+uefi = false

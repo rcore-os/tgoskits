@@ -1,0 +1,5 @@
+# AxVisor board profile with a host-facing virtio-net device and no filesystem.
+features = ["ax-driver/virtio-net"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+vm_configs = []

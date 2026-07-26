@@ -122,6 +122,11 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 ## SMP Bring-Up Rules
 
 1. Discover enabled CPUs from firmware data and keep firmware IDs separate from logical CPU IDs.
+   For an Axvisor AArch64 guest that must retain a guest-visible MPIDR while
+   running on another host CPU, keep `phys_cpu_ids` as the guest CPU identity
+   and provide an explicit `phys_cpu_sets` affinity mask. Guest FDT enrichment
+   preserves an explicit mask and only derives one from the host FDT when the
+   mask is omitted.
 2. Bound-check CPU indices and avoid assuming hart/apic/mpidr/cpuid values are dense.
 3. Prepare one boot argument block per secondary CPU with stack, page table, kernel entry, typed per-CPU area, and logical ID.
 4. Flush boot arguments and page tables before `cpu_on`.

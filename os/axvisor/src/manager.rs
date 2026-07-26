@@ -48,11 +48,19 @@ impl AxvmManager {
 
     /// Start a VM by ID.
     pub fn start_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::start_vm(vm_id).with_context(|| format!("start VM[{vm_id}]"))
+        // A stopped VM is re-prepared (new generation) by `AxVM::start`; restart
+        // the virtio-net RX worker for the new device generation so the RX path
+        // is restored instead of left dormant (TAP plan §2.4).
+        AxvmRuntime::start_vm(vm_id).with_context(|| format!("start VM[{vm_id}]"))?;
+        if let Some(vm) = axvm::get_vm_by_id(vm_id) {
+            crate::virtio_net::start_workers_for_vm(&vm);
+        }
+        Ok(())
     }
 
     /// Stop a VM by ID.
     pub fn stop_vm(vm_id: VMId) -> Result<()> {
+        crate::virtio_net::stop_workers_for_vm(vm_id);
         AxvmRuntime::stop_vm(vm_id).with_context(|| format!("stop VM[{vm_id}]"))
     }
 
@@ -63,11 +71,19 @@ impl AxvmManager {
 
     /// Reset a VM by ID.
     pub fn reset_vm(vm_id: VMId) -> Result<()> {
-        AxvmRuntime::reset_vm(vm_id).with_context(|| format!("reset VM[{vm_id}]"))
+        // Cancel the RX worker before reset drops the current device generation,
+        // then start a fresh worker once reset has re-prepared the glue.
+        crate::virtio_net::stop_workers_for_vm(vm_id);
+        AxvmRuntime::reset_vm(vm_id).with_context(|| format!("reset VM[{vm_id}]"))?;
+        if let Some(vm) = axvm::get_vm_by_id(vm_id) {
+            crate::virtio_net::start_workers_for_vm(&vm);
+        }
+        Ok(())
     }
 
     /// Remove a VM by ID.
     pub fn remove_vm(vm_id: VMId) -> Option<AxVMRef> {
+        crate::virtio_net::stop_workers_for_vm(vm_id);
         #[cfg(target_arch = "loongarch64")]
         unregister_loongarch_passthrough_irq_routes(vm_id);
         AxvmRuntime::remove_vm(vm_id)

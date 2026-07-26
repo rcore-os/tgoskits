@@ -406,58 +406,66 @@ mod tests {
 
     #[test]
     fn allows_same_port_on_distinct_specific_addresses() {
-        let table = ListenTable::new();
-        let first = endpoint(Some(Ipv4Address::new(192, 0, 2, 10)), 8080);
-        let second = endpoint(Some(Ipv4Address::new(198, 51, 100, 20)), 8080);
+        crate::test_support::run_in_network_test(|| {
+            let table = ListenTable::new();
+            let first = endpoint(Some(Ipv4Address::new(192, 0, 2, 10)), 8080);
+            let second = endpoint(Some(Ipv4Address::new(198, 51, 100, 20)), 8080);
 
-        assert!(table.can_listen(first));
-        table.listen(first, 16, false).unwrap();
-        assert!(table.can_listen(second));
-        table.listen(second, 16, false).unwrap();
+            assert!(table.can_listen(first));
+            table.listen(first, 16, false).unwrap();
+            assert!(table.can_listen(second));
+            table.listen(second, 16, false).unwrap();
 
-        table.unlisten(first);
-        assert!(table.can_listen(first));
-        assert!(!table.can_listen(second));
+            table.unlisten(first);
+            assert!(table.can_listen(first));
+            assert!(!table.can_listen(second));
+        });
     }
 
     #[test]
     fn wildcard_listener_conflicts_with_specific_addresses() {
-        let table = ListenTable::new();
-        let wildcard = endpoint(None, 8081);
-        let specific = endpoint(Some(Ipv4Address::new(192, 0, 2, 10)), 8081);
+        crate::test_support::run_in_network_test(|| {
+            let table = ListenTable::new();
+            let wildcard = endpoint(None, 8081);
+            let specific = endpoint(Some(Ipv4Address::new(192, 0, 2, 10)), 8081);
 
-        table.listen(wildcard, 16, false).unwrap();
+            table.listen(wildcard, 16, false).unwrap();
 
-        assert!(!table.can_listen(specific));
-        assert_eq!(table.listen(specific, 16, false), Err(AxError::AddrInUse));
+            assert!(!table.can_listen(specific));
+            assert_eq!(table.listen(specific, 16, false), Err(AxError::AddrInUse));
+        });
     }
 
     #[test]
     fn reuseport_group_shares_a_listen_endpoint() {
-        let table = ListenTable::new();
-        let ep = endpoint(Some(Ipv4Address::new(127, 0, 0, 1)), 8082);
+        crate::test_support::run_in_network_test(|| {
+            let table = ListenTable::new();
+            let ep = endpoint(Some(Ipv4Address::new(127, 0, 0, 1)), 8082);
 
-        // Several SO_REUSEPORT listeners join the same endpoint.
-        table.listen(ep, 16, true).unwrap();
-        table.listen(ep, 16, true).unwrap();
+            // Several SO_REUSEPORT listeners join the same endpoint.
+            table.listen(ep, 16, true).unwrap();
+            table.listen(ep, 16, true).unwrap();
 
-        // A plain listener cannot join a reuseport group.
-        assert_eq!(table.listen(ep, 16, false), Err(AxError::AddrInUse));
+            // A plain listener cannot join a reuseport group.
+            assert_eq!(table.listen(ep, 16, false), Err(AxError::AddrInUse));
 
-        // Each close removes one group member; the port frees on the last leave.
-        table.unlisten(ep);
-        assert_eq!(table.listen(ep, 16, false), Err(AxError::AddrInUse));
-        table.unlisten(ep);
-        assert!(table.can_listen(ep));
+            // Each close removes one group member; the port frees on the last leave.
+            table.unlisten(ep);
+            assert_eq!(table.listen(ep, 16, false), Err(AxError::AddrInUse));
+            table.unlisten(ep);
+            assert!(table.can_listen(ep));
+        });
     }
 
     #[test]
     fn plain_listener_rejects_reuseport_join() {
-        let table = ListenTable::new();
-        let ep = endpoint(Some(Ipv4Address::new(127, 0, 0, 1)), 8083);
+        crate::test_support::run_in_network_test(|| {
+            let table = ListenTable::new();
+            let ep = endpoint(Some(Ipv4Address::new(127, 0, 0, 1)), 8083);
 
-        // The first owner is plain, so even a reuseport listener still conflicts.
-        table.listen(ep, 16, false).unwrap();
-        assert_eq!(table.listen(ep, 16, true), Err(AxError::AddrInUse));
+            // The first owner is plain, so even a reuseport listener still conflicts.
+            table.listen(ep, 16, false).unwrap();
+            assert_eq!(table.listen(ep, 16, true), Err(AxError::AddrInUse));
+        });
     }
 }

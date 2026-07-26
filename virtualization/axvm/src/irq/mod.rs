@@ -22,6 +22,10 @@ use axvm_types::VMInterruptMode;
 
 use crate::{AxVmResult, ax_err};
 
+mod queued_sink;
+
+pub use queued_sink::VmQueuedIrqSink;
+
 /// Host platform hook for registering the RISC-V physical IRQ injector.
 #[ax_crate_interface::def_interface]
 pub trait RiscvPlatformIrqInjectorIf {

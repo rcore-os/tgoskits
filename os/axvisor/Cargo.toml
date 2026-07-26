@@ -85,8 +85,17 @@ ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false, features = ["tls"] }
 axvmconfig = { workspace = true, default-features = false }
+axvm-types = { workspace = true }
+# Device emulation framework + virtio-net MMIO device model (AxVisor glue only).
+axdevice = { workspace = true }
+axdevice_base = { workspace = true }
+axvirtio-net = { workspace = true }
+axvirtio-switch = { workspace = true }
+ax-runtime = { workspace = true, features = ["irq"] }
+rd-net.workspace = true
+rdrive.workspace = true
 # System independent crates provided by ArceOS
-ax-driver.workspace = true
+ax-driver = { workspace = true, features = ["net"] }
 axplat-dyn.workspace = true
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]

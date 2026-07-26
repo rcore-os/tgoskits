@@ -1,0 +1,17 @@
+[package]
+name = "axvirtio-switch"
+version = "0.1.0"
+edition.workspace = true
+authors = ["AxVisor virtio-net multi-guest switch"]
+license.workspace = true
+repository.workspace = true
+description = "Pure layer-2 virtual switch core for AxVisor's shared virtio-net uplink"
+publish = false
+keywords = ["virtio", "net", "switch", "hypervisor", "no_std"]
+categories = ["no-std", "embedded", "network-programming"]
+
+[features]
+default = []
+
+[dependencies]
+spin = { workspace = true, features = ["mutex", "spin_mutex"] }

@@ -579,6 +579,8 @@ pub struct AxVM {
     name: String,
     machine: Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
     pending_fw_cfg_payload: Mutex<Option<PendingFwCfgPayload>>,
+    prepare_generation: core::sync::atomic::AtomicUsize,
+    prepare_profile: Mutex<Option<Arc<dyn prepare::PrepareProfile>>>,
 }
 
 impl AxVM {
@@ -599,6 +601,8 @@ impl AxVM {
             name,
             machine: Mutex::new(Machine::Ready(resources)),
             pending_fw_cfg_payload: Mutex::new(None),
+            prepare_generation: core::sync::atomic::AtomicUsize::new(0),
+            prepare_profile: Mutex::new(None),
         });
 
         info!("VM created: id={}", result.id());
@@ -626,6 +630,40 @@ impl AxVM {
     pub fn interrupt_mode(&self) -> VMInterruptMode {
         self.with_resources(|resources| Ok(resources.config.interrupt_mode()))
             .unwrap_or(VMInterruptMode::NoIrq)
+    }
+
+    /// Returns the current prepare generation.
+    ///
+    /// Each successful [`Self::prepare`] bumps the generation. IRQ sinks and
+    /// RX workers stamp themselves with the generation they were created for so
+    /// they can detect that the VM has been re-prepared beneath them and refuse
+    /// to inject into a newer generation.
+    pub fn prepare_generation(&self) -> usize {
+        self.prepare_generation
+            .load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Advances the prepare generation and returns the new value.
+    fn next_prepare_generation(&self) -> usize {
+        self.prepare_generation
+            .fetch_add(1, core::sync::atomic::Ordering::AcqRel)
+            + 1
+    }
+
+    /// Returns the installed prepare profile, if any.
+    fn installed_profile(&self) -> Option<Arc<dyn prepare::PrepareProfile>> {
+        self.prepare_profile.lock().clone()
+    }
+
+    /// Installs a prepare profile so subsequent prepares (including reset and
+    /// stopped-start) rebuild the device factories and interrupt fabric from the
+    /// profile instead of the empty default registry.
+    ///
+    /// Must be called before the first [`Self::prepare`]. The profile holds no
+    /// strong reference to the VM (it stores a [`Weak`](alloc::sync::Weak)), so
+    /// it cannot create an `AxVM -> profile -> AxVM` cycle.
+    pub fn install_prepare_profile(&self, profile: Arc<dyn prepare::PrepareProfile>) {
+        *self.prepare_profile.lock() = Some(profile);
     }
 
     fn with_resources<F, R>(&self, f: F) -> AxVmResult<R>
@@ -867,7 +905,11 @@ impl AxVM {
     }
 
     pub(crate) fn finish_stop(&self) -> AxVmResult {
-        self.machine.lock().finish_stop()
+        self.machine.lock().finish_stop()?;
+        if let Some(profile) = self.installed_profile() {
+            profile.on_stopped();
+        }
+        Ok(())
     }
 
     fn wait_until_stopped(&self) -> AxVmResult {
@@ -1300,6 +1342,23 @@ impl AxVM {
 
             write_guest_bytes_to_chunks(chunks.as_mut_slice(), data)
         })
+    }
+
+    /// Translates a guest physical address to a host physical address and
+    /// returns the remaining accessible length within the containing guest
+    /// memory area.
+    ///
+    /// Returns `None` when the address is unmapped or the VM resources are not
+    /// yet initialized. Unlike a raw stage-2 root walker, this consults the
+    /// VM-owned address space under the resource lock, so it stays consistent
+    /// with dynamic stage-2 map/unmap.
+    pub fn translate_guest_phys_addr(
+        &self,
+        gpa: GuestPhysAddr,
+    ) -> Option<(ax_memory_addr::PhysAddr, usize)> {
+        self.with_resources(|resources| Ok(resources.address_space.translate_and_get_limit(gpa)))
+            .ok()
+            .flatten()
     }
 
     /// Allocates an IVC channel for inter-VM communication region.

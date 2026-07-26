@@ -31,6 +31,11 @@ impl PlatformNetDevice {
         Some((self.net.take()?, self.name, self.info.irq_cloned()))
     }
 
+    /// Returns the MAC address without consuming the registered network device.
+    pub fn mac_address(&self) -> Option<[u8; 6]> {
+        self.net.as_ref().map(rd_net::Net::mac_address)
+    }
+
     pub fn binding_info(&self) -> &BindingInfo {
         &self.info
     }

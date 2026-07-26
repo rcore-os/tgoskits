@@ -1,0 +1,37 @@
+[base]
+id = 1
+name = "arceos-virtnet-uplink-qemu"
+vm_type = 1
+cpu_num = 1
+phys_cpu_ids = [0]
+
+[kernel]
+entry_point = 0x8020_0000
+image_location = "memory"
+kernel_path = "${workspace}/target/aarch64-unknown-linux-musl/release/arceos-virtnet-uplink.bin"
+kernel_load_addr = 0x8020_0000
+dtb_load_addr = 0x8000_0000
+memory_regions = [
+  [0x8000_0000, 0x4000_0000, 0x7, 1],
+]
+
+[devices]
+interrupt_mode = "emulated"
+passthrough_devices = [
+  ["/psci"],
+  ["/pl011@9000000"],
+  ["/intc@8000000"],
+  ["/timer"],
+  ["/aliases"],
+  ["/chosen"],
+]
+passthrough_addresses = []
+excluded_devices = []
+emu_devices = [
+  ["gppt-gicd", 0x0800_0000, 0x1_0000, 0, 0x21, []],
+  ["gppt-gicr", 0x080a_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0]],
+  # guest MAC, raw-uplink mode=1, host NIC MAC.
+  ["virtnet0", 0x0a20_0000, 0x200, 65, 0xE2,
+   [0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 1,
+    0x52, 0x54, 0x00, 0xaa, 0xbb, 0x01]],
+]

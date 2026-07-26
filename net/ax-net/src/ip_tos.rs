@@ -206,31 +206,33 @@ mod tests {
 
     #[test]
     fn exact_policy_takes_precedence_over_listener_policy() {
-        let local = IpEndpoint {
-            addr: IpAddress::Ipv4(Ipv4Address::new(192, 0, 2, 10)),
-            port: 41001,
-        };
-        let remote = IpEndpoint {
-            addr: IpAddress::Ipv4(Ipv4Address::new(198, 51, 100, 20)),
-            port: 22,
-        };
-        let listener = EgressIpTosKey::listener(
-            IpProtocol::Tcp,
-            IpListenEndpoint {
-                addr: None,
-                port: local.port,
-            },
-        )
-        .unwrap();
-        let exact = EgressIpTosKey::exact(IpProtocol::Tcp, local, remote).unwrap();
+        crate::test_support::run_in_network_test(|| {
+            let local = IpEndpoint {
+                addr: IpAddress::Ipv4(Ipv4Address::new(192, 0, 2, 10)),
+                port: 41001,
+            };
+            let remote = IpEndpoint {
+                addr: IpAddress::Ipv4(Ipv4Address::new(198, 51, 100, 20)),
+                port: 22,
+            };
+            let listener = EgressIpTosKey::listener(
+                IpProtocol::Tcp,
+                IpListenEndpoint {
+                    addr: None,
+                    port: local.port,
+                },
+            )
+            .unwrap();
+            let exact = EgressIpTosKey::exact(IpProtocol::Tcp, local, remote).unwrap();
 
-        set_egress_ip_tos(listener, 0x10);
-        set_egress_ip_tos(exact, 0x48);
-        assert_eq!(egress_ip_tos(IpProtocol::Tcp, local, remote), 0x48);
+            set_egress_ip_tos(listener, 0x10);
+            set_egress_ip_tos(exact, 0x48);
+            assert_eq!(egress_ip_tos(IpProtocol::Tcp, local, remote), 0x48);
 
-        clear_egress_ip_tos(exact);
-        assert_eq!(egress_ip_tos(IpProtocol::Tcp, local, remote), 0x10);
-        clear_egress_ip_tos(listener);
+            clear_egress_ip_tos(exact);
+            assert_eq!(egress_ip_tos(IpProtocol::Tcp, local, remote), 0x10);
+            clear_egress_ip_tos(listener);
+        });
     }
 
     #[test]

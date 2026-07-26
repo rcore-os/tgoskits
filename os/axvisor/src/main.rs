@@ -35,6 +35,7 @@ mod manager;
 #[cfg(target_arch = "riscv64")]
 mod platform_irq;
 mod shell;
+mod virtio_net;
 
 /// Axvisor kernel entry point.
 ///

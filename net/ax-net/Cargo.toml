@@ -20,7 +20,7 @@ ax-hal = { workspace = true }
 ax-io = { workspace = true }
 ax-kspin = { workspace = true }
 axpoll = { workspace = true }
-ax-sync = { workspace = true }
+ax-sync = { workspace = true, features = ["multitask"] }
 ax-task = { workspace = true, features = ["irq", "multitask"] }
 bitflags = "2.9"
 cfg-if = { workspace = true }

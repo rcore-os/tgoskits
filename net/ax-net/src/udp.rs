@@ -662,92 +662,95 @@ mod tests {
 
     use super::*;
     use crate::test_support::{
-        LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
+        LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, run_in_network_test,
     };
 
     #[test]
     fn connect_preserves_bound_interface() {
-        let _guard = network_test_guard();
-        init_split_route_network();
+        run_in_network_test(|| {
+            init_split_route_network();
 
-        let socket = UdpSocket::new();
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
-            .unwrap();
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(LOCAL_IF)
-            }
-        );
+            let socket = UdpSocket::new();
+            socket
+                .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
+                .unwrap();
+            assert_eq!(
+                socket.general.device_binding(),
+                DeviceBinding {
+                    bound_if: Some(LOCAL_IF)
+                }
+            );
 
-        // Connect to different network - should NOT change interface binding
-        // because we're bound to a specific local address
-        socket
-            .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
-            .unwrap();
+            // Connect to different network - should NOT change interface binding
+            // because we're bound to a specific local address
+            socket
+                .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
+                .unwrap();
 
-        // Interface binding should remain LOCAL_IF (not changed to PEER_IF)
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(LOCAL_IF)
-            }
-        );
+            // Interface binding should remain LOCAL_IF (not changed to PEER_IF)
+            assert_eq!(
+                socket.general.device_binding(),
+                DeviceBinding {
+                    bound_if: Some(LOCAL_IF)
+                }
+            );
+        });
     }
 
     #[test]
     fn connect_uses_peer_route_when_unbound() {
-        let _guard = network_test_guard();
-        init_split_route_network();
+        run_in_network_test(|| {
+            init_split_route_network();
 
-        let socket = UdpSocket::new();
+            let socket = UdpSocket::new();
 
-        // Bind to 0.0.0.0 (unspecified) - interface should be determined by route
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-            )))
-            .unwrap();
+            // Bind to 0.0.0.0 (unspecified) - interface should be determined by route
+            socket
+                .bind(SocketAddrEx::Ip(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    0,
+                )))
+                .unwrap();
 
-        socket
-            .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
-            .unwrap();
+            socket
+                .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
+                .unwrap();
 
-        // Interface binding should use route decision (PEER_IF)
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(PEER_IF)
-            }
-        );
+            // Interface binding should use route decision (PEER_IF)
+            assert_eq!(
+                socket.general.device_binding(),
+                DeviceBinding {
+                    bound_if: Some(PEER_IF)
+                }
+            );
+        });
     }
 
     #[test]
     fn connect_rejects_unroutable_bound_device() {
-        let _guard = network_test_guard();
-        init_split_route_network();
+        run_in_network_test(|| {
+            init_split_route_network();
 
-        let socket = UdpSocket::new();
-        socket.bind_device(LOCAL_IF).unwrap();
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-            )))
-            .unwrap();
-
-        assert!(
+            let socket = UdpSocket::new();
+            socket.bind_device(LOCAL_IF).unwrap();
             socket
-                .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
-                .is_err()
-        );
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(LOCAL_IF)
-            }
-        );
+                .bind(SocketAddrEx::Ip(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    0,
+                )))
+                .unwrap();
+
+            assert!(
+                socket
+                    .connect(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(PEER_ADDR), 53)))
+                    .is_err()
+            );
+            assert_eq!(
+                socket.general.device_binding(),
+                DeviceBinding {
+                    bound_if: Some(LOCAL_IF)
+                }
+            );
+        });
     }
 }

@@ -10,8 +10,8 @@
 //! - VirtIO 1.x MMIO transport, device ID `1` (network).
 //! - Split virtqueue with one RX/TX queue pair.
 //! - Features: `VIRTIO_F_VERSION_1`, `VIRTIO_NET_F_MAC`, `VIRTIO_NET_F_STATUS`.
-//! - Basic `virtio_net_hdr` (10 bytes, no mergeable buffers); RX writes a zero
-//!   header, TX rejects any requested offload.
+//! - Legacy 10-byte and modern 12-byte `virtio_net_hdr` layouts; RX writes a
+//!   zero header and TX rejects any requested offload.
 //! - Explicit host-driven RX via [`VirtioMmioNetDevice::receive_frame`].
 //!
 //! Out of scope: control queue, multiqueue, mergeable buffers, indirect

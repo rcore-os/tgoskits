@@ -1,0 +1,8 @@
+# ArceOS guest #2 for the dual-guest shared-uplink QEMU user-network smoke.
+# Tagged `VM2` so its result lines (`VM2_DHCP_PASS`, `VM2_HTTP_PASS`, ...) are
+# distinguishable from guest #1 in the combined AxVisor log.
+env = { AXVIRTIO_VM_TAG = "VM2", AXVIRTIO_TEST_HOST = "example.com", AXVIRTIO_TEST_PORT = "80", AXVIRTIO_TEST_PATH = "/", AXVIRTIO_EXPECT_TOKEN = "", AXVIRTIO_LOCAL_ROLE = "client", AXVIRTIO_LOCAL_PEER_IPV4 = "auto", AXVIRTIO_LOCAL_PORT = "5001", AXVIRTIO_LOCAL_TEST_BYTES = "1048576" }
+features = ["net", "dns", "multitask", "ax-driver/virtio-net"]
+log = "Info"
+target = "aarch64-unknown-none-softfloat"
+max_cpu_num = 1

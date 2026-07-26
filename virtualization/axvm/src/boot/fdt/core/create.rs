@@ -46,6 +46,8 @@ pub fn create_guest_fdt(
             phys_cpu_ids,
         )
     })?;
+    // Emulated-device nodes are added by the common runtime patch after this
+    // generated tree and developer-provided DTBs enter the same pipeline.
     Ok(guest_tree.finish())
 }
 
@@ -216,6 +218,14 @@ pub fn patch_guest_fdt_for_runtime(
     {
         tree.patch_chosen(initrd_start_size)?;
     }
+    let virtio_mmio_specs: Vec<(u64, u64, usize)> = crate_config
+        .devices
+        .emu_devices
+        .iter()
+        .filter(|dev| matches!(dev.emu_type, axvm_types::EmulatedDeviceType::VirtioNet))
+        .map(|dev| (dev.base_gpa as u64, dev.length as u64, dev.irq_id))
+        .collect();
+    tree.add_virtio_mmio_nodes(&virtio_mmio_specs)?;
     Ok(tree.finish())
 }
 
@@ -292,6 +302,46 @@ mod tests {
         fdt
     }
 
+    fn fdt_with_gic() -> Fdt {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+        let gic = fdt.add_node(root, Node::new("intc@8000000"));
+        let mut compatible = Property::new("compatible", alloc::vec![]);
+        compatible.set_string("arm,gic-v3");
+        fdt.node_mut(gic).unwrap().set_property(compatible);
+        fdt.node_mut(gic)
+            .unwrap()
+            .set_property(prop_u32("#interrupt-cells", 3));
+        fdt.node_mut(gic)
+            .unwrap()
+            .set_property(Property::new("interrupt-controller", alloc::vec![]));
+        fdt.node_mut(gic)
+            .unwrap()
+            .set_property(prop_u32("phandle", 1));
+        fdt
+    }
+
+    fn config_with_virtio_net() -> AxVMCrateConfig {
+        let mut cfg = AxVMCrateConfig::default();
+        cfg.devices
+            .emu_devices
+            .push(axvm_types::EmulatedDeviceConfig {
+                name: alloc::string::String::from("virtnet0"),
+                base_gpa: 0x0a20_0000,
+                length: 0x200,
+                irq_id: 65,
+                emu_type: axvm_types::EmulatedDeviceType::VirtioNet,
+                cfg_list: alloc::vec![0x52, 0x54, 0, 0x12, 0x34, 0x56],
+            });
+        cfg
+    }
+
     #[test]
     fn cpu_node_selection_uses_node_id_when_reg_differs() {
         let fdt = test_fdt("cpu@0=200\ncpu@100=0\ncpu@101=100");
@@ -364,6 +414,19 @@ mod tests {
         let reparsed = Fdt::from_bytes(&patched).unwrap();
 
         assert!(reparsed.get_by_path_id("/chosen").is_some());
+    }
+
+    #[test]
+    fn runtime_patch_adds_configured_virtio_mmio_node() {
+        let fdt = fdt_with_gic();
+        let dtb = fdt.encode().as_ref().to_vec();
+
+        let patched =
+            super::patch_guest_fdt_for_runtime(&dtb, &[], &config_with_virtio_net(), None, false)
+                .unwrap();
+        let reparsed = Fdt::from_bytes(&patched).unwrap();
+
+        assert!(reparsed.get_by_path_id("/virtio_mmio@a200000").is_some());
     }
 
     #[test]

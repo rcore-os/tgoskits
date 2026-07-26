@@ -1134,7 +1134,7 @@ mod tests {
     use crate::{
         options::{Configurable, GetSocketOption, SetSocketOption, TcpState},
         test_support::{
-            LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, network_test_guard,
+            LOCAL_ADDR, LOCAL_IF, PEER_ADDR, PEER_IF, init_split_route_network, run_in_network_test,
         },
     };
 
@@ -1183,159 +1183,163 @@ mod tests {
 
     #[test]
     fn tcp_info_reports_default_socket_metrics() {
-        let _guard = network_test_guard();
-        init_split_route_network();
+        run_in_network_test(|| {
+            init_split_route_network();
 
-        let socket = TcpSocket::new();
-        let mut info = TcpInfo::default();
+            let socket = TcpSocket::new();
+            let mut info = TcpInfo::default();
 
-        socket
-            .get_option(GetSocketOption::TcpInfo(&mut info))
-            .unwrap();
+            socket
+                .get_option(GetSocketOption::TcpInfo(&mut info))
+                .unwrap();
 
-        assert_eq!(info.state, TcpState::Closed);
-        assert_eq!(info.snd_mss, TCP_INFO_DEFAULT_MSS);
-        assert_eq!(info.rcv_mss, TCP_INFO_DEFAULT_MSS);
-        assert_eq!(info.pmtu, TCP_INFO_DEFAULT_PMTU);
-        assert_eq!(info.notsent_bytes, 0);
-        assert_eq!(info.snd_wnd, 0);
-        assert_eq!(info.snd_cwnd, 0);
-        assert_eq!(info.rcv_space, 0);
-        assert_eq!(info.rcv_wnd, 0);
+            assert_eq!(info.state, TcpState::Closed);
+            assert_eq!(info.snd_mss, TCP_INFO_DEFAULT_MSS);
+            assert_eq!(info.rcv_mss, TCP_INFO_DEFAULT_MSS);
+            assert_eq!(info.pmtu, TCP_INFO_DEFAULT_PMTU);
+            assert_eq!(info.notsent_bytes, 0);
+            assert_eq!(info.snd_wnd, 0);
+            assert_eq!(info.snd_cwnd, 0);
+            assert_eq!(info.rcv_space, 0);
+            assert_eq!(info.rcv_wnd, 0);
+        });
     }
 
     #[test]
     fn connect_preserves_bound_interface() {
-        let _guard = network_test_guard();
-        init_split_route_network();
+        run_in_network_test(|| {
+            init_split_route_network();
 
-        let socket = TcpSocket::new();
-        let nonblocking = true;
-        socket
-            .set_option(SetSocketOption::NonBlocking(&nonblocking))
-            .unwrap();
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
-            .unwrap();
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(LOCAL_IF)
-            }
-        );
+            let socket = TcpSocket::new();
+            let nonblocking = true;
+            socket
+                .set_option(SetSocketOption::NonBlocking(&nonblocking))
+                .unwrap();
+            socket
+                .bind(SocketAddrEx::Ip(SocketAddr::new(IpAddr::V4(LOCAL_ADDR), 0)))
+                .unwrap();
+            assert_eq!(
+                socket.general.device_binding(),
+                DeviceBinding {
+                    bound_if: Some(LOCAL_IF)
+                }
+            );
 
-        // Connect to different network - should NOT change interface binding
-        // because we're bound to a specific local address
-        socket
-            .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
-            .unwrap();
+            // Connect to different network - should NOT change interface binding
+            // because we're bound to a specific local address
+            socket
+                .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
+                .unwrap();
 
-        // Interface binding should remain LOCAL_IF (not changed to PEER_IF)
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(LOCAL_IF)
-            }
-        );
+            // Interface binding should remain LOCAL_IF (not changed to PEER_IF)
+            assert_eq!(
+                socket.general.device_binding(),
+                DeviceBinding {
+                    bound_if: Some(LOCAL_IF)
+                }
+            );
+        });
     }
 
     #[test]
     fn connect_uses_peer_route_when_unbound() {
-        let _guard = network_test_guard();
-        init_split_route_network();
+        run_in_network_test(|| {
+            init_split_route_network();
 
-        let socket = TcpSocket::new();
-        let nonblocking = true;
-        socket
-            .set_option(SetSocketOption::NonBlocking(&nonblocking))
-            .unwrap();
+            let socket = TcpSocket::new();
+            let nonblocking = true;
+            socket
+                .set_option(SetSocketOption::NonBlocking(&nonblocking))
+                .unwrap();
 
-        // Bind to 0.0.0.0 (unspecified) - interface should be determined by route
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-            )))
-            .unwrap();
+            // Bind to 0.0.0.0 (unspecified) - interface should be determined by route
+            socket
+                .bind(SocketAddrEx::Ip(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    0,
+                )))
+                .unwrap();
 
-        socket
-            .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
-            .unwrap();
+            socket
+                .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
+                .unwrap();
 
-        // Interface binding should use route decision (PEER_IF)
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(PEER_IF)
-            }
-        );
+            // Interface binding should use route decision (PEER_IF)
+            assert_eq!(
+                socket.general.device_binding(),
+                DeviceBinding {
+                    bound_if: Some(PEER_IF)
+                }
+            );
+        });
     }
 
     #[test]
     fn connect_rejects_unroutable_bound_device() {
-        let _guard = network_test_guard();
-        init_split_route_network();
+        run_in_network_test(|| {
+            init_split_route_network();
 
-        let socket = TcpSocket::new();
-        let nonblocking = true;
-        socket
-            .set_option(SetSocketOption::NonBlocking(&nonblocking))
-            .unwrap();
-        socket.bind_device(LOCAL_IF).unwrap();
-        socket
-            .bind(SocketAddrEx::Ip(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                0,
-            )))
-            .unwrap();
-
-        assert!(
+            let socket = TcpSocket::new();
+            let nonblocking = true;
             socket
-                .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
-                .is_err()
-        );
-        assert_eq!(
-            socket.general.device_binding(),
-            DeviceBinding {
-                bound_if: Some(LOCAL_IF)
-            }
-        );
+                .set_option(SetSocketOption::NonBlocking(&nonblocking))
+                .unwrap();
+            socket.bind_device(LOCAL_IF).unwrap();
+            socket
+                .bind(SocketAddrEx::Ip(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    0,
+                )))
+                .unwrap();
+
+            assert!(
+                socket
+                    .start_connect(SocketAddr::new(IpAddr::V4(PEER_ADDR), 80))
+                    .is_err()
+            );
+            assert_eq!(
+                socket.general.device_binding(),
+                DeviceBinding {
+                    bound_if: Some(LOCAL_IF)
+                }
+            );
+        });
     }
 
     #[test]
     fn reuseport_group_shares_a_port_while_plain_binders_conflict() {
-        let _guard = network_test_guard();
+        run_in_network_test(|| {
+            let endpoint = IpListenEndpoint {
+                addr: None,
+                port: 0xB70F,
+            };
 
-        let endpoint = IpListenEndpoint {
-            addr: None,
-            port: 0xB70F,
-        };
+            // A plain binder owns the port exclusively.
+            register_tcp_bound(endpoint, false).unwrap();
+            assert_eq!(
+                register_tcp_bound(endpoint, false).unwrap_err(),
+                AxError::AddrInUse
+            );
+            // SO_REUSEPORT cannot join a group started by a non-reuseport owner.
+            assert_eq!(
+                register_tcp_bound(endpoint, true).unwrap_err(),
+                AxError::AddrInUse
+            );
+            unregister_tcp_bound(endpoint);
 
-        // A plain binder owns the port exclusively.
-        register_tcp_bound(endpoint, false).unwrap();
-        assert_eq!(
-            register_tcp_bound(endpoint, false).unwrap_err(),
-            AxError::AddrInUse
-        );
-        // SO_REUSEPORT cannot join a group started by a non-reuseport owner.
-        assert_eq!(
-            register_tcp_bound(endpoint, true).unwrap_err(),
-            AxError::AddrInUse
-        );
-        unregister_tcp_bound(endpoint);
+            // Two reuseport binders share the port, mirroring Linux's group model.
+            register_tcp_bound(endpoint, true).unwrap();
+            register_tcp_bound(endpoint, true).unwrap();
+            // A plain binder still cannot steal a reuseport-owned port.
+            assert_eq!(
+                register_tcp_bound(endpoint, false).unwrap_err(),
+                AxError::AddrInUse
+            );
 
-        // Two reuseport binders share the port, mirroring Linux's group model.
-        register_tcp_bound(endpoint, true).unwrap();
-        register_tcp_bound(endpoint, true).unwrap();
-        // A plain binder still cannot steal a reuseport-owned port.
-        assert_eq!(
-            register_tcp_bound(endpoint, false).unwrap_err(),
-            AxError::AddrInUse
-        );
-
-        // Each unregister drops exactly one group member.
-        unregister_tcp_bound(endpoint);
-        unregister_tcp_bound(endpoint);
-        assert!(!TCP_BOUND_PORTS.lock().contains_key(&endpoint.port));
+            // Each unregister drops exactly one group member.
+            unregister_tcp_bound(endpoint);
+            unregister_tcp_bound(endpoint);
+            assert!(!TCP_BOUND_PORTS.lock().contains_key(&endpoint.port));
+        });
     }
 }

@@ -1,0 +1,15 @@
+# QEMU run config for the deterministic virtio-net UDP-echo regression.
+# No host network device and no disk: the echo peer lives entirely inside
+# AxVisor, so the run terminates on the guest's `UDP_ECHO_PASS` marker.
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4",
+  "-m", "8g",
+]
+fail_regex = ["UDP_ECHO_MISMATCH"]
+success_regex = ["UDP_ECHO_PASS"]
+timeout = 30
+to_bin = true
+uefi = false

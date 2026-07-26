@@ -7,10 +7,41 @@ pub(crate) mod vcpus;
 use alloc::{format, sync::Arc};
 
 use axdevice::{DeviceFactoryRegistry, FwCfgPayloadFactory, register_builtin_factories};
+use axvm_types::VMInterruptMode;
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
 use crate::{AxVmResult, ax_err, ax_err_type, irq::InterruptFabric};
+
+/// Rebuilds the per-VM device factory registry and interrupt fabric for one
+/// prepare generation.
+///
+/// The host hypervisor glue (AxVisor) implements this trait and installs it on
+/// the VM via [`AxVM::install_prepare_profile`] before the first prepare. The
+/// axvm core owns only the generic capability; the concrete virtio-net factory,
+/// echo backend and RX worker live in the OS glue.
+///
+/// Storing the profile on the VM (rather than rebuilding from a global slot) is
+/// what makes [`AxVM::reset`] and stopped-start re-prepare with the same glue
+/// instead of falling back to the empty default factory registry: both paths go
+/// through [`AxVM::prepare`], which consults the installed profile.
+pub trait PrepareProfile: Send + Sync {
+    /// The interrupt mode the built fabrics target.
+    fn interrupt_mode(&self) -> VMInterruptMode;
+
+    /// Builds a fresh factory registry and interrupt fabric for `generation`.
+    ///
+    /// `generation` is the new [`AxVM::prepare_generation`] for this prepare;
+    /// the fabric's IRQ sink must be stamped with it so stale sinks can be
+    /// rejected after a later re-prepare.
+    fn build(&self, generation: usize) -> AxVmResult<(DeviceFactoryRegistry, InterruptFabric)>;
+
+    /// Releases profile-owned runtime resources after the VM reaches `Stopped`.
+    ///
+    /// AxVM calls this after dropping its lifecycle lock, so implementations may
+    /// wake and join workers that query VM state while exiting.
+    fn on_stopped(&self) {}
+}
 
 pub(crate) enum VmInitRequest<'a> {
     Default,
@@ -63,6 +94,12 @@ impl PreparedVm {
 impl AxVM {
     /// Sets up the VM before booting.
     pub fn prepare(self: &Arc<Self>) -> AxVmResult {
+        if let Some(profile) = self.installed_profile() {
+            let generation = self.next_prepare_generation();
+            let (factories, fabric) = profile.build(generation)?;
+            return self.prepare_with_factories(&factories, fabric);
+        }
+        self.next_prepare_generation();
         crate::arch::CurrentArch::init_vm(self, VmInitRequest::Default)
     }
 

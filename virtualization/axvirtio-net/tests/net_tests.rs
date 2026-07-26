@@ -8,13 +8,14 @@ use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::constants as vc;
 use axvirtio_net::{
     DeviceEvent, LinkStatus, NetError, NetworkBackend, NetworkBackendError, RxOutcome,
-    VirtioMmioNetDevice, VirtioNetConfig, VirtioNetHdr,
+    VirtioMmioNetDevice, VirtioNetConfig,
 };
 use axvm_types::{AccessWidth, GuestPhysAddr};
 
 const BASE_IPA: usize = 0x0a00_0000;
 const REGION_LEN: usize = 0x200;
 const DEFAULT_QSIZE: u16 = 4;
+const NEGOTIATED_HEADER_SIZE: usize = axvirtio_net::VIRTIO_NET_HDR_VERSION_1_SIZE;
 
 /// Mock guest memory: flat backing buffer, guest phys -> real host pointer.
 #[derive(Clone)]
@@ -356,14 +357,14 @@ fn tx_header_split_from_payload_across_descriptors() {
     let h = Harness::new();
     h.bring_up();
 
-    // TX chain: desc0 readable = 10-byte header, desc1 readable = payload.
+    // TX chain: desc0 readable = modern header, desc1 readable = payload.
     let payload = [0xde, 0xad, 0xbe, 0xef, 0xc0, 0xfe];
-    let hdr_bytes = [0u8; VirtioNetHdr::SIZE];
+    let hdr_bytes = [0u8; NEGOTIATED_HEADER_SIZE];
     h.write_desc(
         h.tx_desc,
         0,
         h.tx_desc + 0x100,
-        VirtioNetHdr::SIZE as u32,
+        NEGOTIATED_HEADER_SIZE as u32,
         vc::VIRTQ_DESC_F_NEXT,
         1,
     );
@@ -387,18 +388,38 @@ fn tx_header_split_from_payload_across_descriptors() {
 }
 
 #[test]
+fn tx_version_1_header_is_not_forwarded_as_frame_data() {
+    let h = Harness::new();
+    h.bring_up();
+
+    // virtio-drivers uses the 12-byte modern header after negotiating
+    // VIRTIO_F_VERSION_1, including the trailing num_buffers field.
+    let payload = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x52, 0x54];
+    let mut combined = vec![0u8; NEGOTIATED_HEADER_SIZE];
+    combined.extend_from_slice(&payload);
+    h.write_desc(h.tx_desc, 0, h.tx_desc + 0x300, combined.len() as u32, 0, 0);
+    h.mem.put(h.tx_desc + 0x300, &combined);
+    h.set_avail(h.tx_avail, 0, 0, 1);
+
+    let _ = h.w(vc::VIRTIO_MMIO_QUEUE_NOTIFY, 1);
+
+    let frames = h.backend.frames.lock().unwrap();
+    assert_eq!(frames.as_slice(), &[payload.as_slice()]);
+}
+
+#[test]
 fn tx_unsupported_offload_is_rejected_without_backend_call() {
     let h = Harness::new();
     h.bring_up();
 
     // Header with a non-zero gso_type requests an unsupported offload.
-    let mut hdr_bytes = [0u8; VirtioNetHdr::SIZE];
+    let mut hdr_bytes = [0u8; NEGOTIATED_HEADER_SIZE];
     hdr_bytes[1] = 1; // gso_type != NONE
     h.write_desc(
         h.tx_desc,
         0,
         h.tx_desc + 0x100,
-        VirtioNetHdr::SIZE as u32,
+        NEGOTIATED_HEADER_SIZE as u32,
         0,
         0,
     );
@@ -441,7 +462,7 @@ fn tx_backend_error_still_completes_used() {
     h.backend.fail_next();
 
     let payload = [0xff; 4];
-    let mut combined = vec![0u8; VirtioNetHdr::SIZE];
+    let mut combined = vec![0u8; NEGOTIATED_HEADER_SIZE];
     combined.extend_from_slice(&payload);
     h.write_desc(h.tx_desc, 0, h.tx_desc + 0x300, combined.len() as u32, 0, 0);
     h.mem.put(h.tx_desc + 0x300, &combined);
@@ -480,7 +501,7 @@ fn rx_delivers_header_plus_frame() {
         h.rx_desc,
         0,
         h.rx_desc + 0x100,
-        (VirtioNetHdr::SIZE + frame.len()) as u32,
+        (NEGOTIATED_HEADER_SIZE + frame.len()) as u32,
         vc::VIRTQ_DESC_F_WRITE,
         0,
     );
@@ -490,22 +511,53 @@ fn rx_delivers_header_plus_frame() {
     assert_eq!(
         outcome,
         RxOutcome::Delivered {
-            frame_len: frame.len()
+            frame_len: frame.len(),
+            notify: true,
         }
     );
 
     // Guest memory: 10 zero header bytes followed by the frame.
     let got = h
         .mem
-        .peek(h.rx_desc + 0x100, VirtioNetHdr::SIZE + frame.len());
-    assert!(got[..VirtioNetHdr::SIZE].iter().all(|&b| b == 0));
-    assert_eq!(&got[VirtioNetHdr::SIZE..], &frame[..]);
+        .peek(h.rx_desc + 0x100, NEGOTIATED_HEADER_SIZE + frame.len());
+    assert!(got[..NEGOTIATED_HEADER_SIZE].iter().all(|&b| b == 0));
+    assert_eq!(&got[NEGOTIATED_HEADER_SIZE..], &frame[..]);
 
     // Used: written length is header + frame, and an interrupt is pending.
     let (id, len) = h.used_elem(h.rx_used, 0);
     assert_eq!(id, 0);
-    assert_eq!(len as usize, VirtioNetHdr::SIZE + frame.len());
+    assert_eq!(len as usize, NEGOTIATED_HEADER_SIZE + frame.len());
     assert!(h.r(vc::VIRTIO_MMIO_INTERRUPT_STATUS) & vc::VIRTIO_MMIO_INT_VRING != 0);
+}
+
+#[test]
+fn rx_no_interrupt_flag_is_reported_to_runtime() {
+    let h = Harness::new();
+    h.bring_up();
+    let frame = [0xaa, 0xbb, 0xcc, 0xdd];
+    h.write_desc(
+        h.rx_desc,
+        0,
+        h.rx_desc + 0x100,
+        (NEGOTIATED_HEADER_SIZE + frame.len()) as u32,
+        vc::VIRTQ_DESC_F_WRITE,
+        0,
+    );
+    h.set_avail(h.rx_avail, 0, 0, 1);
+    h.mem
+        .put(h.rx_avail, &vc::VIRTQ_AVAIL_F_NO_INTERRUPT.to_le_bytes());
+
+    let outcome = h.device.receive_frame(&frame).unwrap();
+
+    assert_eq!(
+        outcome,
+        RxOutcome::Delivered {
+            frame_len: frame.len(),
+            notify: false,
+        }
+    );
+    assert_eq!(h.used_idx(h.rx_used), 1);
+    assert_eq!(h.r(vc::VIRTIO_MMIO_INTERRUPT_STATUS), 0);
 }
 
 #[test]
@@ -518,7 +570,7 @@ fn rx_too_small_buffer_does_not_advance_ring() {
         h.rx_desc,
         0,
         h.rx_desc + 0x100,
-        (VirtioNetHdr::SIZE + frame.len() - 1) as u32,
+        (NEGOTIATED_HEADER_SIZE + frame.len() - 1) as u32,
         vc::VIRTQ_DESC_F_WRITE,
         0,
     );
@@ -564,7 +616,7 @@ fn end_to_end_guest_tx_rx_ack_reset() {
 
     // 8-9. TX: submit a frame and notify queue 1.
     let payload = [1, 2, 3, 4, 5, 6, 7, 8];
-    let hdr = [0u8; VirtioNetHdr::SIZE];
+    let hdr = [0u8; NEGOTIATED_HEADER_SIZE];
     let mut combined = Vec::new();
     combined.extend_from_slice(&hdr);
     combined.extend_from_slice(&payload);
@@ -591,7 +643,7 @@ fn end_to_end_guest_tx_rx_ack_reset() {
         h.rx_desc,
         0,
         h.rx_desc + 0x300,
-        (VirtioNetHdr::SIZE + rx_frame.len()) as u32,
+        (NEGOTIATED_HEADER_SIZE + rx_frame.len()) as u32,
         vc::VIRTQ_DESC_F_WRITE,
         0,
     );
@@ -600,13 +652,14 @@ fn end_to_end_guest_tx_rx_ack_reset() {
     assert_eq!(
         outcome,
         RxOutcome::Delivered {
-            frame_len: rx_frame.len()
+            frame_len: rx_frame.len(),
+            notify: true,
         }
     );
     let got = h
         .mem
-        .peek(h.rx_desc + 0x300, VirtioNetHdr::SIZE + rx_frame.len());
-    assert_eq!(&got[VirtioNetHdr::SIZE..], &rx_frame[..]);
+        .peek(h.rx_desc + 0x300, NEGOTIATED_HEADER_SIZE + rx_frame.len());
+    assert_eq!(&got[NEGOTIATED_HEADER_SIZE..], &rx_frame[..]);
     assert!(h.r(vc::VIRTIO_MMIO_INTERRUPT_STATUS) & vc::VIRTIO_MMIO_INT_VRING != 0);
 
     // 13. Reset.

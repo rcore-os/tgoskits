@@ -107,6 +107,57 @@ fn test_map_linear_allows_hpa_above_gpa() {
 }
 
 #[test]
+fn test_translate_and_get_limit_returns_remaining_to_area_end() {
+    let _guard = mock_hal_test();
+    // translate_and_get_limit must report the physically-contiguous run from the
+    // queried address, bounded by BOTH the area end AND the current page
+    // translation block. Alloc-backed areas may map discontiguous physical
+    // pages, so the whole area is never reported as one contiguous span; the
+    // limit is page-granular (4K here).
+    let (mut addr_space, _base, _size) = setup_test_addr_space();
+    let vaddr = GuestPhysAddr::from_usize(0x18000);
+    let paddr = PhysAddr::from_usize(0x10000);
+    let map_linear_size = 0x8000; // 32KB
+    let flags = MappingFlags::READ | MappingFlags::WRITE;
+
+    addr_space
+        .map_linear(vaddr, paddr, map_linear_size, flags)
+        .unwrap();
+
+    // At a page-aligned area start the limit is one 4K page.
+    let (phys, limit) = addr_space.translate_and_get_limit(vaddr).unwrap();
+    assert_eq!(phys, paddr);
+    assert_eq!(limit, 0x1000);
+
+    // Page-aligned mid-area: a full 4K page remains in the block.
+    let mid_offset = 0x3000;
+    let (phys_mid, limit_mid) = addr_space
+        .translate_and_get_limit(vaddr + mid_offset)
+        .unwrap();
+    assert_eq!(phys_mid, paddr + mid_offset);
+    assert_eq!(limit_mid, 0x1000);
+
+    // One byte into a page: the block run shrinks by that byte.
+    let (phys_off, limit_off) = addr_space.translate_and_get_limit(vaddr + 0x3001).unwrap();
+    assert_eq!(phys_off, paddr + 0x3001);
+    assert_eq!(limit_off, 0xFFF);
+
+    // One byte before the area end: limit is exactly 1.
+    let (phys_last, limit_last) = addr_space
+        .translate_and_get_limit(vaddr + (map_linear_size - 1))
+        .unwrap();
+    assert_eq!(phys_last, paddr + (map_linear_size - 1));
+    assert_eq!(limit_last, 1);
+
+    // Just past the area end is unmapped.
+    assert!(
+        addr_space
+            .translate_and_get_limit(vaddr + map_linear_size)
+            .is_none()
+    );
+}
+
+#[test]
 fn test_map_linear_rejects_physical_range_overflow() {
     let _guard = mock_hal_test();
     let (mut addr_space, _base, _size) = setup_test_addr_space();
@@ -382,10 +433,12 @@ fn test_translate_and_get_limit() {
         .map_alloc(vaddr, map_alloc_size, flags, true)
         .unwrap();
 
-    // Verify translation and area size retrieval
-    let (paddr, area_size) = addr_space.translate_and_get_limit(vaddr).unwrap();
+    // Verify translation and limit retrieval. The limit is page-granular
+    // (alloc-backed areas may map discontiguous physical pages), so at a
+    // page-aligned start it is one 4K page, not the whole area.
+    let (paddr, limit) = addr_space.translate_and_get_limit(vaddr).unwrap();
     assert!(paddr.as_usize() >= BASE_PADDR && paddr.as_usize() < BASE_PADDR + MEMORY_LEN);
-    assert_eq!(area_size, map_alloc_size);
+    assert_eq!(limit, 0x1000);
 
     // Verify unmapped address returns None
     let unmapped_vaddr = GuestPhysAddr::from_usize(0x1E000);

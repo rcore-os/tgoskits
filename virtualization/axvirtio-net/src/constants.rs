@@ -38,8 +38,14 @@ pub const VIRTIO_NET_S_ANNOUNCE: u16 = 2;
 /// `gso_type` value meaning "no GSO".
 pub const VIRTIO_NET_HDR_GSO_NONE: u8 = 0;
 
-/// Size of the base `virtio_net_hdr` (no mergeable buffers in the first version).
+/// Size of the legacy `virtio_net_hdr` without the trailing `num_buffers` field.
 pub const VIRTIO_NET_HDR_SIZE: usize = 10;
+
+/// Size of the modern `virtio_net_hdr` used with `VIRTIO_F_VERSION_1`.
+///
+/// The final two bytes hold `num_buffers`. The current single-buffer device
+/// does not negotiate `VIRTIO_NET_F_MRG_RXBUF`, so they remain zero.
+pub const VIRTIO_NET_HDR_VERSION_1_SIZE: usize = 12;
 
 // --- Config space layout (relative to VIRTIO_MMIO_CONFIG_OFFSET = 0x100) ---
 

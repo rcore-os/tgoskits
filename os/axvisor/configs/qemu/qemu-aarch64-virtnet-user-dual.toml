@@ -1,0 +1,19 @@
+# Dual-guest AxVisor virtio-net shared-uplink smoke over QEMU user networking.
+#
+# Two ArceOS guests share one host virtio-net uplink (mac 52:54:00:aa:bb:01)
+# through the AxVisor VirtualSwitch. The final marker is emitted only after VM2
+# sends 1 MiB to VM1 and validates VM1's byte-count/checksum acknowledgement.
+args = [
+  "-nographic",
+  "-cpu", "cortex-a72",
+  "-machine", "virt,virtualization=on,gic-version=3",
+  "-smp", "4",
+  "-m", "8g",
+  "-device", "virtio-net-device,netdev=axv_uplink,mac=52:54:00:aa:bb:01",
+  "-netdev", "user,id=axv_uplink",
+]
+fail_regex = ["VM1_UPLINK_FAIL", "VM2_UPLINK_FAIL", "(?i)panic"]
+success_regex = ["VM2_LOCAL_RATE_PASS"]
+timeout = 60
+to_bin = true
+uefi = false

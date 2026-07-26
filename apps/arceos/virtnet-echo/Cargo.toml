@@ -1,0 +1,20 @@
+[package]
+name = "arceos-virtnet-echo"
+version = "0.1.0"
+edition.workspace = true
+authors = ["AxVisor virtio-net smoke test"]
+publish = false
+
+[features]
+default = []
+arceos = ["dep:ax-std", "ax-std/net"]
+
+[dependencies]
+ax-std = { workspace = true, optional = true }
+# Direct access to the ArceOS net stack so the smoke app can assign a fixed IPv4
+# address to the probed virtio-net interface (the deterministic echo peer does
+# not run DHCP). ax_std::net exposes only sockets, not interface configuration.
+ax-net = { workspace = true }
+
+[package.metadata.axstd]
+features = ["log-level-info"]

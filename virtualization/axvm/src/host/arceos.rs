@@ -111,6 +111,10 @@ pub(crate) fn cpu_mask_from_raw_bits(bits: usize) -> api::task::AxCpuMask {
     api::task::AxCpuMask::from_raw_bits(bits)
 }
 
+pub(crate) fn host_cpu_count() -> usize {
+    modules::ax_hal::cpu_num()
+}
+
 pub(crate) type ArceOsCpuMask = api::task::AxCpuMask;
 pub(crate) type ArceOsAxTaskExt = modules::ax_task::AxTaskExt;
 pub(crate) type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
