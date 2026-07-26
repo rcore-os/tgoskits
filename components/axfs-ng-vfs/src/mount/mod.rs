@@ -275,7 +275,7 @@ impl Mountpoint {
             .store(source.mountpoint.mount_flags(), Ordering::Release);
         if recursive {
             let mut clones = Vec::new();
-            Self::clone_children_from(&source.mountpoint, &result, true, &mut clones);
+            Self::clone_children_from(&source.mountpoint, &result, true, Some(source), &mut clones);
             Self::rebuild_cloned_relations(&clones);
         }
         result
@@ -308,6 +308,7 @@ impl Mountpoint {
         source: &Arc<Self>,
         target: &Arc<Self>,
         skip_unbindable: bool,
+        within: Option<&Location>,
         clones: &mut Vec<(Arc<Self>, Arc<Self>)>,
     ) {
         let children: Vec<_> = source
@@ -315,7 +316,14 @@ impl Mountpoint {
             .lock()
             .iter()
             .map(|(key, child)| (key.clone(), child.clone()))
-            .filter(|(_, child)| !(skip_unbindable && child.is_unbindable()))
+            .filter(|(_, child)| {
+                !(skip_unbindable && child.is_unbindable())
+                    && within.is_none_or(|ancestor| {
+                        child
+                            .location()
+                            .is_some_and(|location| location.is_descendant_of(ancestor))
+                    })
+            })
             .collect();
 
         let mut target_children = target.children.lock();
@@ -327,7 +335,7 @@ impl Mountpoint {
                 .map(|loc| Location::new(target.clone(), loc.entry.clone()));
             let cloned = Self::clone_shallow(&child, location);
             clones.push((child.clone(), cloned.clone()));
-            Self::clone_children_from(&child, &cloned, skip_unbindable, clones);
+            Self::clone_children_from(&child, &cloned, skip_unbindable, None, clones);
             target_children.insert(key, cloned);
         }
     }
@@ -335,7 +343,7 @@ impl Mountpoint {
     fn clone_tree_locked(self: &Arc<Self>, skip_unbindable: bool) -> Arc<Self> {
         let result = Self::clone_shallow(self, None);
         let mut clones = vec![(self.clone(), result.clone())];
-        Self::clone_children_from(self, &result, skip_unbindable, &mut clones);
+        Self::clone_children_from(self, &result, skip_unbindable, None, &mut clones);
         Self::rebuild_cloned_relations(&clones);
         result
     }
@@ -1103,6 +1111,32 @@ mod tests {
 
         let cloned = root.clone_tree();
         assert_eq!(cloned.source(), "/dev/vda");
+    }
+
+    #[test]
+    fn recursive_bind_clones_only_mounts_below_source() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let root_loc = root.root_location();
+        let source_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "source");
+        let source = Location::new(root.clone(), source_entry.clone());
+        let source_child_entry = make_child_dir_entry(Some(source_entry), "child");
+        let source_child = Location::new(root.clone(), source_child_entry.clone());
+        let sibling_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "sibling");
+        let sibling = Location::new(root.clone(), sibling_entry.clone());
+        let target_entry = make_child_dir_entry(Some(root_loc.entry().clone()), "target");
+        let target = Location::new(root.clone(), target_entry);
+
+        source_child.mount(&mock_filesystem()).unwrap();
+        sibling.mount(&mock_filesystem()).unwrap();
+        let bound = target.bind_mount(&source, true).unwrap();
+
+        let children = bound.children();
+        assert_eq!(children.len(), 1);
+        let location = children[0].location().unwrap();
+        assert!(Arc::ptr_eq(location.mountpoint(), &bound));
+        assert!(location.entry().ptr_eq(&source_child_entry));
+        assert!(!location.entry().ptr_eq(&sibling_entry));
     }
 
     #[test]
