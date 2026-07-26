@@ -585,6 +585,11 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
     if process.exit_thread(thr.tid(), exit_code) {
+        if let Err(error) = crate::cgroup::exit_process(process.pid() as u32) {
+            warn!("failed to release cgroup membership: {error}");
+        }
+        thr.proc_data.nsproxy.lock().release_cgroup_namespace();
+
         // AIO contexts pin the process address space and may have worker tasks
         // waiting on outstanding requests. Tear them down before releasing the
         // process address-space slot.

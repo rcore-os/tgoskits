@@ -195,6 +195,9 @@ pub struct Mountpoint {
     slaves: Mutex<Vec<Weak<Self>>>,
     /// Shared masters that this slave receives propagation events from.
     masters: Mutex<Vec<Weak<Self>>>,
+    /// Resource ownership tied to the active mount rather than the cached
+    /// lifetime of this mountpoint object.
+    lifetime_guard: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
 impl Mountpoint {
@@ -228,6 +231,7 @@ impl Mountpoint {
             peers: Mutex::default(),
             slaves: Mutex::default(),
             masters: Mutex::default(),
+            lifetime_guard: Mutex::new(None),
         })
     }
 
@@ -273,6 +277,7 @@ impl Mountpoint {
         result
             .mount_flags
             .store(source.mountpoint.mount_flags(), Ordering::Release);
+        *result.lifetime_guard.lock() = source.mountpoint.lifetime_guard.lock().clone();
         if recursive {
             let mut clones = Vec::new();
             Self::clone_children_from(&source.mountpoint, &result, true, &mut clones);
@@ -301,6 +306,7 @@ impl Mountpoint {
         result
             .expired
             .store(source.expired.load(Ordering::Acquire), Ordering::Release);
+        *result.lifetime_guard.lock() = source.lifetime_guard.lock().clone();
         result
     }
 
@@ -459,6 +465,14 @@ impl Mountpoint {
 
     pub fn mount_id(&self) -> u64 {
         self.mount_id
+    }
+
+    /// Keep a resource alive while this mountpoint remains attached.
+    pub fn set_lifetime_guard<T>(&self, guard: Arc<T>)
+    where
+        T: Any + Send + Sync,
+    {
+        *self.lifetime_guard.lock() = Some(guard);
     }
 
     pub fn peer_group_id(&self) -> u64 {
@@ -1004,7 +1018,11 @@ impl FsPollable for Location {
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
-    use core::{any::Any, cell::Cell};
+    use core::{
+        any::Any,
+        cell::Cell,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
     use crate::StatFs;
@@ -1036,6 +1054,13 @@ mod tests {
     struct MockFs;
     struct ContextCheckingFs;
     struct MockNode;
+    struct LifetimeGuard(Arc<AtomicUsize>);
+
+    impl Drop for LifetimeGuard {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     static MOCK_FS: MockFs = MockFs;
 
@@ -1457,6 +1482,27 @@ mod tests {
             root.children.lock().contains_key(&neighbor_entry.key()),
             "neighbor should remain — no propagation without peer group"
         );
+    }
+
+    #[test]
+    fn detach_releases_lifetime_guard_before_mountpoint_drop() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        let entry = make_dir_entry("guarded");
+        let mountpoint = Mountpoint::new_with_root(
+            entry.clone(),
+            Some(Location::new(root.clone(), entry.clone())),
+            root.device() + 1,
+        );
+        root.children.lock().insert(entry.key(), mountpoint.clone());
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        mountpoint.set_lifetime_guard(Arc::new(LifetimeGuard(drops.clone())));
+
+        mountpoint.detach().expect("detach succeeds");
+
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert!(mountpoint.location().is_none());
     }
 
     #[test]

@@ -583,6 +583,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-cgroup"
+version = "0.1.0"
+dependencies = [
+ "ax-kspin",
+ "ax-lazyinit",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ax-cpu"
 version = "0.8.4"
 dependencies = [
@@ -1332,6 +1341,7 @@ dependencies = [
 name = "axnsproxy"
 version = "0.3.2"
 dependencies = [
+ "ax-cgroup",
  "ax-errno 0.6.1",
  "ax-kspin",
  "linux-raw-sys 0.12.1",
@@ -7669,6 +7679,7 @@ name = "starry-kernel"
 version = "0.7.5"
 dependencies = [
  "ax-alloc",
+ "ax-cgroup",
  "ax-cpu",
  "ax-crate-interface",
  "ax-display",

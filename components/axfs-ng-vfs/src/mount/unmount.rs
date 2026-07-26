@@ -94,6 +94,7 @@ impl UnmountPlan {
         }
         for target in &self.targets {
             target.mountpoint.leave_propagation_relations_locked();
+            target.mountpoint.lifetime_guard.lock().take();
         }
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         Ok(())

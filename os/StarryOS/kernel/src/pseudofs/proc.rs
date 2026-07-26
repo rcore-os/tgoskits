@@ -1570,7 +1570,21 @@ impl SimpleDirOps for ThreadDir {
                 }),
             )
             .into(),
-            "cgroup" => SimpleFile::new_regular(fs, move || Ok("0::/\n")).into(),
+            "cgroup" => SimpleFile::new_regular(fs, move || {
+                let reader = current();
+                let reader_cgroup_ns = reader
+                    .as_thread()
+                    .proc_data
+                    .nsproxy
+                    .lock()
+                    .cgroup_ns
+                    .clone();
+                let reader_root = reader_cgroup_ns.lock().root();
+                let target_membership = task.as_thread().proc_data.cgroup.read().clone();
+                let path = crate::cgroup::relative_path(&reader_root, &target_membership);
+                Ok(format!("0::{path}\n"))
+            })
+            .into(),
             "ns" => SimpleDir::new_maker(
                 fs.clone(),
                 Arc::new(NsDir {

@@ -207,6 +207,9 @@ impl CloneArgs {
         let curr = current();
         let curr_thread = curr.as_thread();
         let old_proc_data = &curr_thread.proc_data;
+        if flags.contains(CloneFlags::NEWCGROUP) && !curr_thread.cred().has_cap_sys_admin() {
+            return Err(AxError::OperationNotPermitted);
+        }
 
         let mut new_task = new_user_task(&curr.name(), new_uctx, set_child_tid);
         #[cfg(target_arch = "riscv64")]
@@ -275,6 +278,8 @@ impl CloneArgs {
             );
             proc_data.set_umask(old_proc_data.umask());
             proc_data.set_nice(old_proc_data.nice());
+            let inherited_cgroup = old_proc_data.cgroup.read().clone();
+            *proc_data.cgroup.write() = inherited_cgroup.clone();
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
@@ -310,7 +315,7 @@ impl CloneArgs {
                 new_nsproxy.unshare_user();
             }
             if flags.contains(CloneFlags::NEWCGROUP) {
-                new_nsproxy.unshare_cgroup();
+                new_nsproxy.unshare_cgroup(inherited_cgroup);
             }
 
             // Consume a pending child PID namespace prepared by
@@ -425,6 +430,18 @@ impl CloneArgs {
                 new_proc_data.set_ptrace_attached();
             }
             new_proc_data.set_ptrace_stop(tid, starry_signal::Signo::SIGSTOP, &new_uctx);
+        }
+
+        let mut cgroup_guard = if flags.contains(CloneFlags::THREAD) {
+            None
+        } else {
+            Some(
+                crate::cgroup::begin_fork(new_proc_data.cgroup.read().clone(), tid as u32)
+                    .map_err(crate::cgroup::cgroup_error)?,
+            )
+        };
+        if let Some(guard) = &mut cgroup_guard {
+            guard.commit();
         }
 
         let task = spawn_task(new_task);

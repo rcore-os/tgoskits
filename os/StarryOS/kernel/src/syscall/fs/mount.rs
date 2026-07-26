@@ -219,9 +219,16 @@ pub fn sys_mount(
             mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         "cgroup2" => {
-            let fs = crate::pseudofs::cgroup::new_cgroup2fs();
+            let (cgroup_root, cgroup_root_pin) = {
+                let task = current();
+                let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                let namespace = nsproxy.cgroup_ns.lock();
+                (namespace.root(), namespace.pin_root())
+            };
+            let fs = crate::pseudofs::cgroup::new_cgroup2fs(cgroup_root);
             let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
             let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            mp.set_lifetime_guard(Arc::new(cgroup_root_pin));
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
