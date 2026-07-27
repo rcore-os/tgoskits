@@ -123,9 +123,14 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let fs_context = ax_fs_ng::vfs::current_fs_context();
     let cx = fs_context.lock();
-    cx.root_dir()
-        .unmount_all()
-        .expect("Failed to unmount all filesystems");
+    // Best-effort teardown, matching Linux's shutdown path. A process that exited while
+    // holding a mount namespace (bind mounts, pivot_root) can leave the mount tree in a
+    // state `unmount_all` rejects; at shutdown that must be logged, not turned into a
+    // kernel panic that fails an otherwise clean run. The rootfs flush below is what
+    // matters for on-disk integrity.
+    if let Err(err) = cx.root_dir().unmount_all() {
+        warn!("shutdown: unmount_all failed (best-effort): {err:?}");
+    }
     cx.root_dir()
         .filesystem()
         .flush()

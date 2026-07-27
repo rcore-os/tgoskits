@@ -1194,6 +1194,22 @@ mod tests {
         target.mount(&mounted).expect("mount succeeds");
     }
 
+    /// The global root is unattached (its mount `location` is `None`), so the
+    /// final `self.unmount()` inside `unmount_all()` is rejected as a root
+    /// unmount and the whole call returns `Err(InvalidInput)` - unconditionally,
+    /// for any root, with or without extra mounts. The kernel shutdown path
+    /// relies on this being non-fatal (best-effort log-and-continue) rather than
+    /// panicking, which is what the shutdown-teardown fix depends on.
+    #[test]
+    fn unmount_all_on_root_returns_invalid_input() {
+        let fs = mock_filesystem();
+        let root = Mountpoint::new_root(&fs);
+        assert!(matches!(
+            root.root_location().unmount_all(),
+            Err(VfsError::InvalidInput)
+        ));
+    }
+
     #[test]
     fn bind_and_namespace_clone_preserve_mount_source() {
         let fs = mock_filesystem();
