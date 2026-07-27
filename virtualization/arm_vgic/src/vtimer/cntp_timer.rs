@@ -14,12 +14,18 @@ const CNTP_CTL_ISTATUS: u32 = 1 << 2;
 const CNTP_PPI: u8 = 30;
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const TIMER_TOKEN_NONE: usize = usize::MAX;
+#[cfg(target_arch = "aarch64")]
+const TARGET_NONE: usize = usize::MAX;
 
 pub(super) struct CntpTimerState {
     cval: AtomicU64,
     ctl: AtomicU32,
     generation: AtomicU64,
     timer_token: AtomicUsize,
+    #[cfg(target_arch = "aarch64")]
+    target_vm_id: AtomicUsize,
+    #[cfg(target_arch = "aarch64")]
+    target_vcpu_id: AtomicUsize,
 }
 
 impl CntpTimerState {
@@ -29,6 +35,10 @@ impl CntpTimerState {
             ctl: AtomicU32::new(0),
             generation: AtomicU64::new(0),
             timer_token: AtomicUsize::new(TIMER_TOKEN_NONE),
+            #[cfg(target_arch = "aarch64")]
+            target_vm_id: AtomicUsize::new(TARGET_NONE),
+            #[cfg(target_arch = "aarch64")]
+            target_vcpu_id: AtomicUsize::new(TARGET_NONE),
         }
     }
 
@@ -82,6 +92,20 @@ impl CntpTimerState {
 
     #[cfg(target_arch = "aarch64")]
     fn rearm(self: &Arc<Self>) {
+        self.rearm_with_target(Some((host::current_vm_id(), host::current_vcpu_id())));
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn rearm_existing_target(self: &Arc<Self>) {
+        self.rearm_with_target(None);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn rearm_with_target(self: &Arc<Self>, target: Option<(usize, usize)>) {
+        if let Some((vm_id, vcpu_id)) = target {
+            self.target_vm_id.store(vm_id, Ordering::Release);
+            self.target_vcpu_id.store(vcpu_id, Ordering::Release);
+        }
         let generation = self
             .generation
             .fetch_add(1, Ordering::AcqRel)
@@ -89,6 +113,12 @@ impl CntpTimerState {
         self.cancel_pending_timer();
         let ctl = self.ctl.load(Ordering::Acquire);
         if ctl & CNTP_CTL_ENABLE == 0 || ctl & CNTP_CTL_IMASK != 0 {
+            return;
+        }
+
+        let target_vm_id = self.target_vm_id.load(Ordering::Acquire);
+        let target_vcpu_id = self.target_vcpu_id.load(Ordering::Acquire);
+        if target_vm_id == TARGET_NONE || target_vcpu_id == TARGET_NONE {
             return;
         }
 
@@ -132,11 +162,16 @@ impl CntpTimerState {
         }
 
         if counter_ticks() < self.cval.load(Ordering::Acquire) {
-            self.rearm();
+            self.rearm_existing_target();
             return;
         }
 
-        crate::api_reexp::hardware_inject_virtual_interrupt(CNTP_PPI);
+        let target_vm_id = self.target_vm_id.load(Ordering::Acquire);
+        let target_vcpu_id = self.target_vcpu_id.load(Ordering::Acquire);
+        if target_vm_id == TARGET_NONE || target_vcpu_id == TARGET_NONE {
+            return;
+        }
+        host::queue_virtual_interrupt(target_vm_id, target_vcpu_id, CNTP_PPI);
     }
 }
 
