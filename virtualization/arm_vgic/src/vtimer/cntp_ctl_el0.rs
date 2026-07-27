@@ -12,12 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+extern crate alloc;
+
+use alloc::sync::Arc;
+
 use aarch64_sysreg::SystemRegType;
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType, SysRegAddr,
     SysRegAddrRange,
 };
-use log::info;
+use log::debug;
+
+use crate::vtimer::{VtimerBackend, VtimerState};
 
 impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {
     fn emu_type(&self) -> EmuDeviceType {
@@ -36,7 +42,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {
         _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
         _width: AccessWidth,
     ) -> DeviceResult<usize> {
-        Ok(0)
+        Ok(self.state.control(self.backend.current_time_nanos()) as usize)
     }
 
     fn handle_write(
@@ -45,7 +51,8 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {
         _width: AccessWidth,
         val: usize,
     ) -> DeviceResult {
-        info!("Write to emulator register: {addr:?}, value: {val}");
+        debug!("Write to virtual timer register: {addr:?}, value: {val}");
+        self.state.write_control(val as u32, self.backend.as_ref());
         Ok(())
     }
 }
@@ -53,16 +60,14 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {
 /// System register emulation for CNTP_CTL_EL0.
 ///
 /// Provides virtualization support for the physical timer control register.
-#[derive(Default)]
 pub struct SysCntpCtlEl0 {
-    // Fields
+    state: Arc<VtimerState>,
+    backend: Arc<dyn VtimerBackend>,
 }
 
 impl SysCntpCtlEl0 {
     /// Creates a new CNTP_CTL_EL0 register emulator.
-    pub fn new() -> Self {
-        Self {
-            // Initialize fields
-        }
+    pub fn new(state: Arc<VtimerState>, backend: Arc<dyn VtimerBackend>) -> Self {
+        Self { state, backend }
     }
 }

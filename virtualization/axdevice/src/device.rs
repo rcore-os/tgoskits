@@ -14,10 +14,6 @@
 
 use alloc::{collections::BTreeMap, format, sync::Arc, vec::Vec};
 
-#[cfg(target_arch = "aarch64")]
-use arm_vgic::Vgic;
-#[cfg(target_arch = "aarch64")]
-use ax_memory_addr::PhysAddr;
 #[cfg(target_arch = "riscv64")]
 use axdevice_base::MmioDeviceAdapter;
 use axdevice_base::{
@@ -33,8 +29,6 @@ use crate::{
     DeviceManagerError, DeviceManagerResult, DeviceServices, GuestRangeAllocatorKey,
     PollableDeviceOps,
 };
-#[cfg(target_arch = "loongarch64")]
-use crate::{LoongArchPchPic, PchPicOutputEvent};
 
 #[inline]
 #[allow(dead_code)]
@@ -110,9 +104,6 @@ pub struct DeviceRuntime {
     /// The grant is intentionally narrow: it is supplied only by the VM's MMIO
     /// write path and exists only for the duration of that one access.
     dma_devices: Vec<DeviceId>,
-    /// LoongArch PCH-PIC — kept for type-specific access.
-    #[cfg(target_arch = "loongarch64")]
-    loongarch_pch_pic: Option<Arc<LoongArchPchPic>>,
 }
 
 /// Compatibility name for the per-VM [`DeviceRuntime`].
@@ -179,8 +170,6 @@ impl DeviceRuntime {
             lifecycle_devices: Vec::new(),
             services: DeviceServices::new(),
             dma_devices: Vec::new(),
-            #[cfg(target_arch = "loongarch64")]
-            loongarch_pch_pic: None,
         }
     }
 
@@ -229,15 +218,7 @@ impl DeviceRuntime {
     }
 
     fn is_legacy_fallback(device_type: EmulatedDeviceType) -> bool {
-        matches!(
-            device_type,
-            EmulatedDeviceType::InterruptController
-                | EmulatedDeviceType::GPPTRedistributor
-                | EmulatedDeviceType::GPPTDistributor
-                | EmulatedDeviceType::GPPTITS
-                | EmulatedDeviceType::FwCfg
-                | EmulatedDeviceType::LoongArchPchPic
-        )
+        matches!(device_type, EmulatedDeviceType::FwCfg)
     }
 
     fn construction_owner(
@@ -267,7 +248,7 @@ impl DeviceRuntime {
         }
     }
 
-    #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+    #[cfg(target_arch = "riscv64")]
     fn config_argument(
         config: &EmulatedDeviceConfig,
         index: usize,
@@ -288,116 +269,6 @@ impl DeviceRuntime {
         let _ = this;
         for config in emu_configs {
             match config.emu_type {
-                EmulatedDeviceType::InterruptController => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        #[allow(clippy::arc_with_non_send_sync)]
-                        this.register(
-                            MmioDeviceAdapter::from_arc(Arc::new(Vgic::new())) as Arc<dyn Device>
-                        )?;
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTRedistributor => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        const GPPT_GICR_ARGS: &str = "three arguments (cpu_num, stride, pcpu_id)";
-
-                        let cpu_num = Self::config_argument(config, 0, GPPT_GICR_ARGS)?;
-                        let stride = Self::config_argument(config, 1, GPPT_GICR_ARGS)?;
-                        let pcpu_id = Self::config_argument(config, 2, GPPT_GICR_ARGS)?;
-
-                        for i in 0..cpu_num {
-                            let addr = config.base_gpa + i * stride;
-                            let size = config.length;
-                            #[allow(clippy::arc_with_non_send_sync)]
-                            this.register(MmioDeviceAdapter::from_arc(Arc::new(
-                                arm_vgic::v3::vgicr::VGicR::new(
-                                    addr.into(),
-                                    Some(size),
-                                    pcpu_id + i,
-                                ),
-                            )) as Arc<dyn Device>)?;
-
-                            info!(
-                                "GPPT Redistributor initialized for vCPU {i} with base GPA \
-                                 {addr:#x} and length {size:#x}"
-                            );
-                        }
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTDistributor => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        #[allow(clippy::arc_with_non_send_sync)]
-                        this.register(MmioDeviceAdapter::from_arc(Arc::new(
-                            arm_vgic::v3::vgicd::VGicD::new(
-                                config.base_gpa.into(),
-                                Some(config.length),
-                            ),
-                        )) as Arc<dyn Device>)?;
-
-                        info!(
-                            "GPPT Distributor initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length
-                        );
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTITS => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        let host_gits_base =
-                            Self::config_argument(config, 0, "one argument (host_gits_base)")
-                                .map(PhysAddr::from_usize)?;
-
-                        #[allow(clippy::arc_with_non_send_sync)]
-                        this.register(MmioDeviceAdapter::from_arc(Arc::new(
-                            arm_vgic::v3::gits::Gits::new(
-                                config.base_gpa.into(),
-                                Some(config.length),
-                                host_gits_base,
-                                false,
-                            ),
-                        )) as Arc<dyn Device>)?;
-
-                        info!(
-                            "GPPT ITS initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}, host GITS base {host_gits_base:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length,
-                            host_gits_base = host_gits_base
-                        );
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
                 EmulatedDeviceType::PPPTGlobal => {
                     #[cfg(target_arch = "riscv64")]
                     {
@@ -425,27 +296,6 @@ impl DeviceRuntime {
                         );
                     }
                     #[cfg(not(target_arch = "riscv64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::LoongArchPchPic => {
-                    #[cfg(target_arch = "loongarch64")]
-                    {
-                        let pch_pic =
-                            Arc::new(LoongArchPchPic::new(config.base_gpa.into(), config.length));
-                        this.register(MmioDeviceAdapter::from_arc(pch_pic.clone())
-                            as Arc<dyn Device + Send + Sync + 'static>)?;
-                        this.loongarch_pch_pic = Some(pch_pic);
-                        info!(
-                            "LoongArch PCH-PIC initialized with base GPA {:#x} and length {:#x}",
-                            config.base_gpa, config.length
-                        );
-                    }
-                    #[cfg(not(target_arch = "loongarch64"))]
                     {
                         warn!(
                             "emu type: {} is not supported on this platform",
@@ -905,22 +755,6 @@ impl DeviceRuntime {
             lifecycle.resume()?;
         }
         Ok(())
-    }
-
-    /// Assert a LoongArch PCH-PIC input and return the routed EIOINTC vector.
-    #[cfg(target_arch = "loongarch64")]
-    pub fn loongarch_pch_pic_assert_irq(&self, irq: usize) -> Option<Option<usize>> {
-        self.loongarch_pch_pic
-            .as_ref()
-            .map(|pch_pic| pch_pic.set_irq_level(irq, true))
-    }
-
-    /// Drains LoongArch PCH-PIC output-line events generated by MMIO writes.
-    #[cfg(target_arch = "loongarch64")]
-    pub fn drain_loongarch_pch_pic_events(&self, f: impl FnMut(PchPicOutputEvent)) {
-        if let Some(pch_pic) = &self.loongarch_pch_pic {
-            pch_pic.drain_output_events(f);
-        }
     }
 
     // ─── Find helpers ───────────────────────────────────────────────

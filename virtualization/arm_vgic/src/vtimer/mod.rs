@@ -14,9 +14,13 @@
 
 extern crate alloc;
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+use core::time::Duration;
 
+use ax_kspin::SpinNoIrq;
 use axdevice_base::BaseSysRegDeviceOps;
+
+use crate::host;
 
 mod cntp_ctl_el0;
 pub use cntp_ctl_el0::SysCntpCtlEl0;
@@ -27,11 +31,334 @@ pub use cntpct_el0::SysCntpctEl0;
 mod cntp_tval_el0;
 pub use cntp_tval_el0::SysCntpTvalEl0;
 
+/// The PPI used by the ARM physical virtual timer.
+pub const VIRTUAL_TIMER_IRQ: u8 = 30;
+
+/// VM execution target captured when a guest programs its virtual timer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VtimerTarget {
+    vm_id: usize,
+    vcpu_id: usize,
+}
+
+impl VtimerTarget {
+    /// Creates a VM-local timer delivery target.
+    pub const fn new(vm_id: usize, vcpu_id: usize) -> Self {
+        Self { vm_id, vcpu_id }
+    }
+
+    /// Returns the owning VM ID.
+    pub const fn vm_id(self) -> usize {
+        self.vm_id
+    }
+
+    /// Returns the owning vCPU ID.
+    pub const fn vcpu_id(self) -> usize {
+        self.vcpu_id
+    }
+}
+
+/// Host operations used by one VM-local virtual timer instance.
+///
+/// The timer register devices keep all guest-visible state in [`VtimerState`]
+/// and use this narrow port only for time, scheduling and interrupt delivery.
+/// That keeps the register emulation testable and prevents it from reaching
+/// into a VM runtime directly.
+pub trait VtimerBackend: Send + Sync {
+    /// Returns the current monotonic time in nanoseconds.
+    fn current_time_nanos(&self) -> u64;
+
+    /// Schedules one callback and returns its cancellation token.
+    fn register_timer(
+        &self,
+        deadline: Duration,
+        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+    ) -> usize;
+
+    /// Cancels a callback that has not fired yet.
+    fn cancel_timer(&self, token: usize);
+
+    /// Captures the VM and vCPU that program a timer deadline.
+    fn current_target(&self) -> VtimerTarget;
+
+    /// Delivers a virtual interrupt to a previously captured VM vCPU.
+    fn inject_virtual_interrupt(&self, target: VtimerTarget, vector: u8);
+}
+
+/// Default backend that forwards timer operations to the ARM VGIC host port.
+///
+/// A separate value is created for every VM vtimer bundle.  The host callback
+/// still owns the CPU-local timer wheel and interrupt-entry mechanics.
+#[derive(Default)]
+pub struct HostVtimerBackend;
+
+impl VtimerBackend for HostVtimerBackend {
+    fn current_time_nanos(&self) -> u64 {
+        host::current_time_nanos()
+    }
+
+    fn register_timer(
+        &self,
+        deadline: Duration,
+        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+    ) -> usize {
+        host::register_timer(deadline, callback)
+    }
+
+    fn cancel_timer(&self, token: usize) {
+        host::cancel_timer(token);
+    }
+
+    fn current_target(&self) -> VtimerTarget {
+        VtimerTarget::new(host::current_vm_id(), host::current_vcpu_id())
+    }
+
+    fn inject_virtual_interrupt(&self, target: VtimerTarget, vector: u8) {
+        host::inject_vm_vcpu_interrupt(target.vm_id(), target.vcpu_id(), vector);
+    }
+}
+
+#[derive(Default)]
+struct VtimerRegisters {
+    control: u32,
+    deadline_ns: Option<u64>,
+    timer_token: Option<usize>,
+    expired: bool,
+    generation: u64,
+    suspended_remaining_ns: Option<u64>,
+}
+
+/// Shared guest-visible state for the CNT* register devices of one VM.
+pub struct VtimerState {
+    registers: SpinNoIrq<VtimerRegisters>,
+}
+
+impl VtimerState {
+    /// Creates a stopped virtual timer.
+    pub fn new() -> Self {
+        Self {
+            registers: SpinNoIrq::new(VtimerRegisters::default()),
+        }
+    }
+
+    /// Returns the current CNTP_CTL_EL0 value, including the computed status bit.
+    pub fn control(&self, now_ns: u64) -> u32 {
+        let registers = self.registers.lock();
+        let expired = registers.expired
+            || registers
+                .deadline_ns
+                .is_some_and(|deadline| deadline <= now_ns);
+        (registers.control & 0b11) | (u32::from(expired) << 2)
+    }
+
+    /// Updates the writable CNTP_CTL_EL0 enable and mask bits.
+    pub fn write_control(&self, value: u32, backend: &dyn VtimerBackend) {
+        let inject = {
+            let mut registers = self.registers.lock();
+            registers.control = value & 0b11;
+            registers.expired && Self::interrupt_enabled(&registers)
+        };
+        if inject {
+            backend.inject_virtual_interrupt(backend.current_target(), VIRTUAL_TIMER_IRQ);
+        }
+    }
+
+    /// Returns the remaining timer value in nanoseconds.
+    pub fn timer_value(&self, now_ns: u64) -> u64 {
+        self.registers
+            .lock()
+            .deadline_ns
+            .map(|deadline| deadline.saturating_sub(now_ns))
+            .unwrap_or(0)
+    }
+
+    /// Starts (or restarts) the timer with a relative value in nanoseconds.
+    pub fn write_timer_value(self: &Arc<Self>, value_ns: u64, backend: Arc<dyn VtimerBackend>) {
+        let now_ns = backend.current_time_nanos();
+        let target = backend.current_target();
+        let deadline_ns = now_ns.saturating_add(value_ns);
+        let (previous_token, generation) = {
+            let mut registers = self.registers.lock();
+            registers.deadline_ns = Some(deadline_ns);
+            registers.expired = false;
+            registers.generation = registers.generation.wrapping_add(1);
+            registers.suspended_remaining_ns = None;
+            (registers.timer_token.take(), registers.generation)
+        };
+        if let Some(token) = previous_token {
+            backend.cancel_timer(token);
+        }
+
+        let state = Arc::clone(self);
+        let callback_backend = Arc::clone(&backend);
+        let token = backend.register_timer(
+            Duration::from_nanos(deadline_ns),
+            Box::new(move |_| state.expire(generation, target, callback_backend)),
+        );
+        let mut registers = self.registers.lock();
+        if registers.generation == generation && !registers.expired {
+            registers.timer_token = Some(token);
+        }
+    }
+
+    /// Stops a pending host timer and preserves its remaining guest-visible time.
+    pub fn suspend(&self, backend: &dyn VtimerBackend) {
+        let now_ns = backend.current_time_nanos();
+        let token = {
+            let mut registers = self.registers.lock();
+            if !registers.expired && registers.suspended_remaining_ns.is_none() {
+                registers.suspended_remaining_ns = registers
+                    .deadline_ns
+                    .map(|deadline| deadline.saturating_sub(now_ns));
+            }
+            registers.deadline_ns = None;
+            registers.timer_token.take()
+        };
+        if let Some(token) = token {
+            backend.cancel_timer(token);
+        }
+    }
+
+    /// Restarts a timer that was paused by [`Self::suspend`].
+    pub fn resume(self: &Arc<Self>, backend: Arc<dyn VtimerBackend>) {
+        let remaining = self.registers.lock().suspended_remaining_ns.take();
+        if let Some(remaining) = remaining {
+            self.write_timer_value(remaining, backend);
+        }
+    }
+
+    /// Cancels pending work and restores the timer's power-on state.
+    pub fn reset(&self, backend: &dyn VtimerBackend) {
+        let token = {
+            let mut registers = self.registers.lock();
+            let token = registers.timer_token.take();
+            *registers = VtimerRegisters::default();
+            token
+        };
+        if let Some(token) = token {
+            backend.cancel_timer(token);
+        }
+    }
+
+    fn expire(&self, generation: u64, target: VtimerTarget, backend: Arc<dyn VtimerBackend>) {
+        let inject = {
+            let mut registers = self.registers.lock();
+            if generation != registers.generation {
+                return;
+            }
+            registers.timer_token = None;
+            registers.expired = true;
+            Self::interrupt_enabled(&registers)
+        };
+        if inject {
+            backend.inject_virtual_interrupt(target, VIRTUAL_TIMER_IRQ);
+        }
+    }
+
+    fn interrupt_enabled(registers: &VtimerRegisters) -> bool {
+        registers.control & 0b11 == 0b1
+    }
+}
+
+impl Default for VtimerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Create a collection of system register devices.
 pub fn get_sysreg_device() -> Vec<Arc<dyn BaseSysRegDeviceOps>> {
+    let backend: Arc<dyn VtimerBackend> = Arc::new(HostVtimerBackend);
+    let state = Arc::new(VtimerState::new());
     vec![
-        Arc::new(SysCntpCtlEl0::new()),
-        Arc::new(SysCntpctEl0::new()),
-        Arc::new(SysCntpTvalEl0::new()),
+        Arc::new(SysCntpCtlEl0::new(Arc::clone(&state), Arc::clone(&backend))),
+        Arc::new(SysCntpctEl0::new(Arc::clone(&backend))),
+        Arc::new(SysCntpTvalEl0::new(state, backend)),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{boxed::Box, sync::Arc, vec::Vec};
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
+
+    use ax_kspin::SpinNoIrq;
+
+    use super::{VIRTUAL_TIMER_IRQ, VtimerBackend, VtimerState, VtimerTarget};
+
+    struct TestBackend {
+        now_ns: u64,
+        next_token: AtomicUsize,
+        cancelled: SpinNoIrq<Vec<usize>>,
+        injected: SpinNoIrq<Vec<(VtimerTarget, u8)>>,
+    }
+
+    impl TestBackend {
+        fn new(now_ns: u64) -> Self {
+            Self {
+                now_ns,
+                next_token: AtomicUsize::new(1),
+                cancelled: SpinNoIrq::new(Vec::new()),
+                injected: SpinNoIrq::new(Vec::new()),
+            }
+        }
+    }
+
+    impl VtimerBackend for TestBackend {
+        fn current_time_nanos(&self) -> u64 {
+            self.now_ns
+        }
+
+        fn register_timer(
+            &self,
+            _deadline: Duration,
+            _callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+        ) -> usize {
+            self.next_token.fetch_add(1, Ordering::Relaxed)
+        }
+
+        fn cancel_timer(&self, token: usize) {
+            self.cancelled.lock().push(token);
+        }
+
+        fn current_target(&self) -> VtimerTarget {
+            VtimerTarget::new(7, 3)
+        }
+
+        fn inject_virtual_interrupt(&self, target: VtimerTarget, vector: u8) {
+            self.injected.lock().push((target, vector));
+        }
+    }
+
+    #[test]
+    fn expired_timer_is_injected_when_enabled_and_unmasked() {
+        let concrete_backend = Arc::new(TestBackend::new(100));
+        let backend: Arc<dyn VtimerBackend> = concrete_backend.clone();
+        let state = Arc::new(VtimerState::new());
+        state.write_control(1, backend.as_ref());
+        state.write_timer_value(20, Arc::clone(&backend));
+        state.expire(1, VtimerTarget::new(7, 3), Arc::clone(&backend));
+
+        assert_eq!(state.control(120), 0b101);
+        assert_eq!(
+            *concrete_backend.injected.lock(),
+            [(VtimerTarget::new(7, 3), VIRTUAL_TIMER_IRQ)]
+        );
+    }
+
+    #[test]
+    fn stale_timer_callback_cannot_expire_a_restarted_timer() {
+        let concrete_backend = Arc::new(TestBackend::new(100));
+        let backend: Arc<dyn VtimerBackend> = concrete_backend.clone();
+        let state = Arc::new(VtimerState::new());
+        state.write_timer_value(20, Arc::clone(&backend));
+        state.write_timer_value(30, Arc::clone(&backend));
+        state.expire(1, VtimerTarget::new(7, 3), Arc::clone(&backend));
+
+        assert_eq!(state.control(120), 0);
+        assert_eq!(*concrete_backend.cancelled.lock(), [1]);
+    }
 }

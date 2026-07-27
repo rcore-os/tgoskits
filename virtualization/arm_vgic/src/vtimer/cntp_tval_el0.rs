@@ -14,17 +14,16 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-use core::time::Duration;
+use alloc::sync::Arc;
 
 use aarch64_sysreg::SystemRegType;
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType, SysRegAddr,
     SysRegAddrRange,
 };
-use log::info;
+use log::debug;
 
-use crate::host;
+use crate::vtimer::{VtimerBackend, VtimerState};
 
 impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
     fn emu_type(&self) -> EmuDeviceType {
@@ -43,7 +42,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
         _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
         _width: AccessWidth,
     ) -> DeviceResult<usize> {
-        todo!()
+        Ok(self.state.timer_value(self.backend.current_time_nanos()) as usize)
     }
 
     fn handle_write(
@@ -52,15 +51,9 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
         _width: AccessWidth,
         val: usize,
     ) -> DeviceResult {
-        info!("Write to emulator register: {addr:?}, value: {val}");
-        let now = host::current_time_nanos();
-        info!("Current time: {}, deadline: {}", now, now + val as u64);
-        host::register_timer(
-            Duration::from_nanos(now + val as u64),
-            Box::new(|_| {
-                crate::api_reexp::hardware_inject_virtual_interrupt(30);
-            }),
-        );
+        debug!("Write to virtual timer register: {addr:?}, value: {val}");
+        self.state
+            .write_timer_value(val as u64, Arc::clone(&self.backend));
         Ok(())
     }
 }
@@ -68,16 +61,14 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
 /// System register emulation for CNTP_TVAL_EL0.
 ///
 /// Provides virtualization support for the physical timer value register.
-#[derive(Default)]
 pub struct SysCntpTvalEl0 {
-    // Fields
+    state: Arc<VtimerState>,
+    backend: Arc<dyn VtimerBackend>,
 }
 
 impl SysCntpTvalEl0 {
     /// Creates a new CNTP_TVAL_EL0 register emulator.
-    pub fn new() -> Self {
-        Self {
-            // Initialize fields
-        }
+    pub fn new(state: Arc<VtimerState>, backend: Arc<dyn VtimerBackend>) -> Self {
+        Self { state, backend }
     }
 }

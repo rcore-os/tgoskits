@@ -1,32 +1,13 @@
-use ax_crate_interface::impl_interface;
-use ax_memory_addr::{PhysAddr, VirtAddr};
 use axdevice_base::{AccessWidth, BaseDeviceOps};
 use axvm_types::GuestPhysAddr;
 use riscv_vplic::{
     PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE,
     PLIC_ENABLE_OFFSET, PLIC_ENABLE_STRIDE, PLIC_NUM_SOURCES, PLIC_PENDING_OFFSET,
-    PLIC_PRIORITY_OFFSET, VPlicGlobal, VplicError, host::RiscvVplicHostIf,
+    PLIC_PRIORITY_OFFSET, VPlicGlobal, VplicError,
 };
 
 const HOST_PLIC_BASE: usize = 0x0c00_0000;
 const HOST_PLIC_SIZE: usize = 0x40_0000;
-
-#[repr(align(8))]
-struct AlignedHostPlic([u8; HOST_PLIC_SIZE]);
-
-static mut HOST_PLIC: AlignedHostPlic = AlignedHostPlic([0; HOST_PLIC_SIZE]);
-
-struct TestRiscvVplicHostIf;
-
-#[impl_interface]
-impl RiscvVplicHostIf for TestRiscvVplicHostIf {
-    fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
-        let offset = paddr.as_usize() - HOST_PLIC_BASE;
-        assert!(offset < HOST_PLIC_SIZE);
-        let base = unsafe { core::ptr::addr_of_mut!(HOST_PLIC.0).cast::<u8>() };
-        VirtAddr::from(unsafe { base.add(offset) } as usize)
-    }
-}
 
 /// Calculate minimum required size for VPlicGlobal with given contexts
 fn calculate_min_size(contexts_num: usize) -> usize {

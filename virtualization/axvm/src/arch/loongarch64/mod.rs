@@ -249,25 +249,33 @@ fn loongarch_external_irq_vector(
     _physical_irq: usize,
 ) -> Option<usize> {
     let devices = vm.get_devices().ok()?;
-    match devices.loongarch_pch_pic_assert_irq(fallback_vector) {
-        Some(Some(vector)) => Some(vector),
-        Some(None) => None,
-        None => Some(fallback_vector),
-    }
+    devices
+        .services()
+        .require::<axdevice::PchPicOutputPortKey>()
+        .ok()
+        .map_or(Some(fallback_vector), |port| {
+            port.set_input_level(fallback_vector, true)
+        })
 }
 
 fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
     let Ok(devices) = vm.get_devices() else {
         return;
     };
-    devices.drain_loongarch_pch_pic_events(|event| {
+    let Ok(port) = devices
+        .services()
+        .require::<axdevice::PchPicOutputPortKey>()
+    else {
+        return;
+    };
+    while let Some(event) = port.take_output_event() {
         if !event.asserted {
             trace!(
                 "LoongArch VM[{}] PCH-PIC deassert event for EIOINTC vector {}",
                 vm.id(),
                 event.vector
             );
-            return;
+            continue;
         }
         if let Err(err) = crate::manager::inject_vm_vcpu_interrupt(vm.id(), 0, event.vector) {
             warn!(
@@ -276,7 +284,7 @@ fn drain_loongarch_pch_pic_events(vm: &crate::AxVMRef) {
                 event.vector
             );
         }
-    });
+    }
 }
 
 struct AxvmLoongArchHostOps;

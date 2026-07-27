@@ -12,13 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use aarch64_cpu::registers::{CNTPCT_EL0, Readable};
+extern crate alloc;
+
+use alloc::sync::Arc;
+
 use aarch64_sysreg::SystemRegType;
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType, SysRegAddr,
     SysRegAddrRange,
 };
-use log::info;
+use log::debug;
+
+use crate::vtimer::VtimerBackend;
 
 impl BaseDeviceOps<SysRegAddrRange> for SysCntpctEl0 {
     fn emu_type(&self) -> EmuDeviceType {
@@ -37,7 +42,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpctEl0 {
         _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
         _width: AccessWidth,
     ) -> DeviceResult<usize> {
-        Ok(CNTPCT_EL0.get() as usize)
+        Ok(self.backend.current_time_nanos() as usize)
     }
 
     fn handle_write(
@@ -46,7 +51,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpctEl0 {
         _width: AccessWidth,
         val: usize,
     ) -> DeviceResult {
-        info!("Write to emulator register: {addr:?}, value: {val}");
+        debug!("Write to read-only virtual counter register: {addr:?}, value: {val}");
         Ok(())
     }
 }
@@ -54,16 +59,13 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpctEl0 {
 /// System register emulation for CNTPCT_EL0.
 ///
 /// Provides virtualization support for the physical counter register.
-#[derive(Default)]
 pub struct SysCntpctEl0 {
-    // Fields
+    backend: Arc<dyn VtimerBackend>,
 }
 
 impl SysCntpctEl0 {
     /// Creates a new CNTPCT_EL0 register emulator.
-    pub fn new() -> Self {
-        Self {
-            // Initialize fields
-        }
+    pub fn new(backend: Arc<dyn VtimerBackend>) -> Self {
+        Self { backend }
     }
 }

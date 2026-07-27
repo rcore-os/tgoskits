@@ -3,10 +3,14 @@
 //! Implements the `BaseDeviceOps` trait for MMIO read/write handling.
 
 use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType};
-use axvm_types::{GuestPhysAddrRange, HostPhysAddr};
+use axvm_types::GuestPhysAddrRange;
+#[cfg(target_arch = "riscv64")]
+use axvm_types::HostPhysAddr;
 use bitmaps::Bitmap;
 
-use crate::{VplicError, VplicResult, consts::*, utils::*, vplic::VPlicGlobal};
+#[cfg(target_arch = "riscv64")]
+use crate::utils::perform_mmio_write;
+use crate::{VplicError, VplicResult, consts::*, vplic::VPlicGlobal};
 
 #[cfg(target_arch = "riscv64")]
 const VCAUSE_INTERRUPT_BIT: usize = 1usize << (usize::BITS - 1);
@@ -15,6 +19,24 @@ const VCAUSE_VS_TIMER: usize = VCAUSE_INTERRUPT_BIT | 5;
 const PLIC_PENDING_WORDS: usize = PLIC_NUM_SOURCES / 32;
 
 impl VPlicGlobal {
+    /// Mirrors only host-route configuration that is required for a physical
+    /// source to reach the hypervisor. Guest-visible state remains private.
+    #[cfg(target_arch = "riscv64")]
+    fn mirror_host_route_write(&self, reg: usize, width: AccessWidth, value: usize) -> VplicResult {
+        let host_addr = HostPhysAddr::from_usize(self.host_plic_addr.as_usize() + reg);
+        perform_mmio_write(host_addr, width, value)
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    fn mirror_host_route_write(
+        &self,
+        _reg: usize,
+        _width: AccessWidth,
+        _value: usize,
+    ) -> VplicResult {
+        Ok(())
+    }
+
     fn validate_irq_id(irq_id: usize) -> VplicResult {
         if irq_id == 0 || irq_id >= PLIC_NUM_SOURCES {
             return Err(VplicError::InvalidSource {
@@ -63,35 +85,20 @@ impl VPlicGlobal {
         Ok(self.pending_irqs.lock().get(irq_id))
     }
 
-    /// Reads the priority of an interrupt source from the host PLIC.
+    /// Reads the priority programmed by this guest.
     fn irq_priority(&self, irq_id: usize) -> VplicResult<u32> {
-        let addr = HostPhysAddr::from_usize(
-            self.host_plic_addr.as_usize() + PLIC_PRIORITY_OFFSET + irq_id * 4,
-        );
-        Ok(perform_mmio_read(addr, AccessWidth::Dword)? as u32)
+        Ok(self.registers.lock().priorities[irq_id])
     }
 
     /// Reads the priority threshold configured for a PLIC context.
     #[cfg(target_arch = "riscv64")]
     fn context_threshold(&self, context_id: usize) -> VplicResult<u32> {
-        let addr = HostPhysAddr::from_usize(
-            self.host_plic_addr.as_usize()
-                + PLIC_CONTEXT_CTRL_OFFSET
-                + context_id * PLIC_CONTEXT_STRIDE
-                + PLIC_CONTEXT_THRESHOLD_OFFSET,
-        );
-        Ok(perform_mmio_read(addr, AccessWidth::Dword)? as u32)
+        Ok(self.registers.lock().thresholds[context_id])
     }
 
     /// Reads one enable register word for a PLIC context.
     fn context_enable_mask(&self, context_id: usize, reg_index: usize) -> VplicResult<u32> {
-        let addr = HostPhysAddr::from_usize(
-            self.host_plic_addr.as_usize()
-                + PLIC_ENABLE_OFFSET
-                + context_id * PLIC_ENABLE_STRIDE
-                + reg_index * 4,
-        );
-        Ok(perform_mmio_read(addr, AccessWidth::Dword)? as u32)
+        Ok(self.registers.lock().enable_masks[context_id][reg_index])
     }
 
     /// Returns pending interrupts that are not currently in service.
@@ -244,11 +251,12 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                 });
             }
             let reg = addr - self.addr;
-            let host_addr = HostPhysAddr::from_usize(reg + self.host_plic_addr.as_usize());
             // info!("vPlicGlobal read reg {reg:#x} width {width:?}");
             match reg {
                 // priority
-                PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => perform_mmio_read(host_addr, width),
+                PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => {
+                    Ok(self.registers.lock().priorities[reg / 4] as usize)
+                }
                 // pending
                 PLIC_PENDING_OFFSET..PLIC_ENABLE_OFFSET => {
                     let reg_index = (reg - PLIC_PENDING_OFFSET) / 4;
@@ -269,14 +277,31 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                     Ok(val as usize)
                 }
                 // enable
-                PLIC_ENABLE_OFFSET..PLIC_CONTEXT_CTRL_OFFSET => perform_mmio_read(host_addr, width),
+                PLIC_ENABLE_OFFSET..PLIC_CONTEXT_CTRL_OFFSET => {
+                    let context_id = (reg - PLIC_ENABLE_OFFSET) / PLIC_ENABLE_STRIDE;
+                    let reg_index = ((reg - PLIC_ENABLE_OFFSET) % PLIC_ENABLE_STRIDE) / 4;
+                    if context_id >= self.contexts_num || reg_index >= PLIC_PENDING_WORDS {
+                        return Err(VplicError::InvalidContext {
+                            context: context_id,
+                            contexts: self.contexts_num,
+                        });
+                    }
+                    Ok(self.registers.lock().enable_masks[context_id][reg_index] as usize)
+                }
                 // threshold
                 offset
                     if offset >= PLIC_CONTEXT_CTRL_OFFSET
                         && (offset - PLIC_CONTEXT_CTRL_OFFSET)
                             .is_multiple_of(PLIC_CONTEXT_STRIDE) =>
                 {
-                    perform_mmio_read(host_addr, width)
+                    let context_id = (offset - PLIC_CONTEXT_CTRL_OFFSET) / PLIC_CONTEXT_STRIDE;
+                    if context_id >= self.contexts_num {
+                        return Err(VplicError::InvalidContext {
+                            context: context_id,
+                            contexts: self.contexts_num,
+                        });
+                    }
+                    Ok(self.registers.lock().thresholds[context_id] as usize)
                 }
                 // claim/complete
                 offset
@@ -331,12 +356,12 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                 });
             }
             let reg = addr - self.addr;
-            let host_addr = HostPhysAddr::from_usize(reg + self.host_plic_addr.as_usize());
             // info!("vPlicGlobal write reg {reg:#x} width {width:?} val {val:#x}");
             match reg {
                 // priority
                 PLIC_PRIORITY_OFFSET..PLIC_PENDING_OFFSET => {
-                    perform_mmio_write(host_addr, width, val)?;
+                    self.registers.lock().priorities[reg / 4] = val as u32;
+                    self.mirror_host_route_write(reg, width, val)?;
                     self.sync_all_guest_contexts_vseip()
                 }
                 // pending (Here is uesd for hyperivosr to inject pending IRQs, later should move it to a separate interface)
@@ -362,14 +387,16 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                 }
                 // enable
                 PLIC_ENABLE_OFFSET..PLIC_CONTEXT_CTRL_OFFSET => {
-                    perform_mmio_write(host_addr, width, val)?;
                     let context_id = (reg - PLIC_ENABLE_OFFSET) / PLIC_ENABLE_STRIDE;
-                    if context_id >= self.contexts_num {
+                    let reg_index = ((reg - PLIC_ENABLE_OFFSET) % PLIC_ENABLE_STRIDE) / 4;
+                    if context_id >= self.contexts_num || reg_index >= PLIC_PENDING_WORDS {
                         return Err(VplicError::InvalidContext {
                             context: context_id,
                             contexts: self.contexts_num,
                         });
                     }
+                    self.registers.lock().enable_masks[context_id][reg_index] = val as u32;
+                    self.mirror_host_route_write(reg, width, val)?;
                     // A mask update can instantly expose or hide already-pending IRQs.
                     self.sync_vseip(context_id)
                 }
@@ -386,7 +413,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                             contexts: self.contexts_num,
                         });
                     }
-                    perform_mmio_write(host_addr, width, val)?;
+                    self.registers.lock().thresholds[context_id] = val as u32;
+                    self.mirror_host_route_write(reg, width, val)?;
                     // Threshold changes must be reflected on the hart line immediately.
                     self.sync_vseip(context_id)
                 }
@@ -419,9 +447,8 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
                         return self.sync_vseip(context_id);
                     }
 
-                    // Write host PLIC.
-                    perform_mmio_write(host_addr, width, irq_id)?;
-                    // Clear the active bit only after the completion is accepted.
+                    // Completion belongs to the virtual controller. Forwarding it
+                    // to the host PLIC would corrupt the host IRQ lifecycle.
                     active_irqs.set(irq_id, false);
                     drop(active_irqs);
                     self.sync_vseip(context_id)

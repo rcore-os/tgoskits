@@ -1,9 +1,16 @@
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult, EmuDeviceType};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
+use axdevice_base::{
+    AccessWidth, BaseDeviceOps, Device, DeviceResult, EmuDeviceType, MmioDeviceAdapter,
+};
+use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr, GuestPhysAddrRange};
 
+use crate::{
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerResult, DeviceRegistration,
+    ServiceCardinality, ServiceKey,
+};
 const PCH_PIC_INT_ID_LO: usize = 0x000;
 const PCH_PIC_INT_ID_HI: usize = 0x004;
 const PCH_PIC_INT_MASK_LO: usize = 0x020;
@@ -88,6 +95,29 @@ pub struct PchPicOutputEvent {
     pub asserted: bool,
 }
 
+/// Architecture port through which LoongArch consumes PCH-PIC output.
+///
+/// The guest-visible PCH-PIC remains a normal MMIO device.  This narrow port
+/// is only for the architecture to feed physical IRQs into it and to drain
+/// output vectors produced by guest MMIO configuration.
+pub trait PchPicOutputPort: Send + Sync {
+    /// Updates one PCH-PIC input level and returns the routed EIOINTC vector.
+    fn set_input_level(&self, irq: usize, asserted: bool) -> Option<usize>;
+
+    /// Takes the next output event produced by the PCH-PIC.
+    fn take_output_event(&self) -> Option<PchPicOutputEvent>;
+}
+
+/// Type key for the VM-local LoongArch PCH-PIC output port.
+pub struct PchPicOutputPortKey;
+
+impl ServiceKey for PchPicOutputPortKey {
+    type Service = dyn PchPicOutputPort;
+
+    const NAME: &'static str = "loongarch-pch-pic-output-port";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
 /// Minimal LS7A PCH-PIC model for LoongArch QEMU virt guests.
 ///
 /// Linux configures this irqchip through ACPI even when the backing PCI devices
@@ -151,6 +181,42 @@ impl LoongArchPchPic {
                 None => return,
             }
         }
+    }
+
+    fn take_output_event(&self) -> Option<PchPicOutputEvent> {
+        let mut state = self.state.lock();
+        pop_output_event(&mut state)
+    }
+}
+
+impl PchPicOutputPort for LoongArchPchPic {
+    fn set_input_level(&self, irq: usize, asserted: bool) -> Option<usize> {
+        self.set_irq_level(irq, asserted)
+    }
+
+    fn take_output_event(&self) -> Option<PchPicOutputEvent> {
+        self.take_output_event()
+    }
+}
+
+/// Factory for the guest-visible LoongArch PCH-PIC contribution.
+pub struct LoongArchPchPicFactory;
+
+impl DeviceFactory for LoongArchPchPicFactory {
+    fn device_type(&self) -> EmuDeviceType {
+        EmuDeviceType::LoongArchPchPic
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        let pic = Arc::new(LoongArchPchPic::new(config.base_gpa.into(), config.length));
+        let device: Arc<dyn Device> = MmioDeviceAdapter::from_arc(pic.clone());
+        let output: Arc<dyn PchPicOutputPort> = pic;
+        DeviceBundle::from_registration(DeviceRegistration::Device(device))
+            .with_service::<PchPicOutputPortKey>(output)
     }
 }
 

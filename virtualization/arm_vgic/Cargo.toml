@@ -19,6 +19,7 @@ targets = ["aarch64-unknown-none-softfloat"]
 
 [features]
 default = []
+host-test = ["ax-kspin/host-test"]
 vgicv3 = []
 
 [dependencies]

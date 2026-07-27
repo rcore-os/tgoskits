@@ -20,6 +20,35 @@ pub(crate) enum VmInitRequest<'a> {
     },
 }
 
+/// The architecture-owned inputs to the common device preparation path.
+///
+/// Every default VM creation path must produce this object before calling
+/// [`complete_vm_init`].  It keeps factory registration and interrupt-fabric
+/// selection together, so an architecture cannot accidentally construct
+/// devices with a fabric different from the one that resolved their IRQs.
+pub(crate) struct ArchDeviceBootstrap {
+    factories: DeviceFactoryRegistry,
+    interrupt_fabric: InterruptFabric,
+}
+
+impl ArchDeviceBootstrap {
+    /// Creates one complete architecture device bootstrap result.
+    pub(crate) const fn new(
+        factories: DeviceFactoryRegistry,
+        interrupt_fabric: InterruptFabric,
+    ) -> Self {
+        Self {
+            factories,
+            interrupt_fabric,
+        }
+    }
+
+    /// Splits the bootstrap result for the common preparation path.
+    pub(crate) fn into_parts(self) -> (DeviceFactoryRegistry, InterruptFabric) {
+        (self.factories, self.interrupt_fabric)
+    }
+}
+
 pub(crate) struct PreparedVm {
     vcpus: PreparedVcpus,
     devices: PreparedDevices,

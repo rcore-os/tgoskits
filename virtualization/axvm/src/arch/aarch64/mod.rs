@@ -425,12 +425,23 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
         crate::current_vcpu_id().expect("current AArch64 vCPU is not set")
     }
 
+    fn current_vm_id() -> usize {
+        crate::current_vm_id().expect("current AArch64 VM is not set")
+    }
+
     fn current_time_nanos() -> u64 {
         default_host().monotonic_time().as_nanos() as u64
     }
 
-    fn register_timer(deadline: Duration, callback: Box<dyn FnOnce(Duration) + Send + 'static>) {
-        let _ = crate::timer::register_timer(deadline.as_nanos() as u64, callback);
+    fn register_timer(
+        deadline: Duration,
+        callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+    ) -> usize {
+        crate::timer::register_timer(deadline.as_nanos() as u64, callback)
+    }
+
+    fn cancel_timer(token: usize) {
+        crate::timer::cancel_timer(token);
     }
 
     fn read_vgicd_iidr() -> u32 {
@@ -451,5 +462,14 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
 
     fn hardware_inject_virtual_interrupt(vector: u8) {
         gic::inject_interrupt(vector as usize);
+    }
+
+    fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: u8) {
+        if let Err(error) = crate::manager::inject_vm_vcpu_interrupt(vm_id, vcpu_id, vector as _) {
+            warn!(
+                "failed to inject AArch64 virtual timer interrupt {vector:#x} into VM[{vm_id}] \
+                 VCpu[{vcpu_id}]: {error:?}"
+            );
+        }
     }
 }

@@ -41,7 +41,10 @@ mod service;
 mod x86;
 
 #[cfg(target_arch = "aarch64")]
-pub use adapter::create_vtimer_devices;
+pub use adapter::{
+    Aarch64VtimerBackendKey, Aarch64VtimerFactory, InterruptInjectionPort,
+    InterruptInjectionPortKey,
+};
 pub use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Device,
     MmioDeviceAdapter, Port, PortDeviceAdapter, SysRegAddr, SysRegDeviceAdapter,
@@ -59,7 +62,10 @@ pub use fw_cfg::{
     FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion, FwCfgSerialConfig,
 };
 #[cfg(target_arch = "loongarch64")]
-pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
+pub use loongarch_pch_pic::{
+    LoongArchPchPic, LoongArchPchPicFactory, PchPicOutputEvent, PchPicOutputPort,
+    PchPicOutputPortKey,
+};
 pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey};
 pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, PollableDeviceOps};
 pub use service::{DeviceServices, ServiceCardinality, ServiceKey};

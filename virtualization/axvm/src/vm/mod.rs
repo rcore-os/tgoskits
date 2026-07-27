@@ -391,6 +391,11 @@ impl AxVMResources {
     }
 
     fn reset_transient_resources(&mut self) -> AxVmResult {
+        if let Some(devices) = self.devices.take() {
+            devices
+                .reset_lifecycle_devices()
+                .map_err(|error| AxVmError::device("reset device lifecycle", error))?;
+        }
         let memory_regions = self.memory_regions.clone();
         self.address_space.clear();
         for region in &memory_regions {
@@ -409,7 +414,6 @@ impl AxVMResources {
                 })?;
         }
         self.vcpu_list = None;
-        self.devices = None;
         self.interrupt_fabric = None;
         self.address_layout = None;
         Ok(())
@@ -725,12 +729,34 @@ impl AxVM {
 
     /// Pauses a running VM.
     pub fn pause(&self) -> AxVmResult {
-        self.machine.lock().pause()
+        let mut machine = self.machine.lock();
+        if machine.status() != VmStatus::Running {
+            return machine.pause();
+        }
+        let devices = machine
+            .resources()
+            .expect("running VM must retain resources")
+            .devices()?;
+        devices
+            .suspend_lifecycle_devices()
+            .map_err(|error| AxVmError::device("suspend device lifecycle", error))?;
+        machine.pause()
     }
 
     /// Resumes a paused VM.
     pub fn resume(&self) -> AxVmResult {
-        self.machine.lock().resume()
+        let mut machine = self.machine.lock();
+        if machine.status() != VmStatus::Paused {
+            return machine.resume();
+        }
+        let devices = machine
+            .resources()
+            .expect("paused VM must retain resources")
+            .devices()?;
+        devices
+            .resume_lifecycle_devices()
+            .map_err(|error| AxVmError::device("resume device lifecycle", error))?;
+        machine.resume()
     }
 
     /// Requests a stop. Running vCPUs observe the Stopping state and exit.
@@ -1334,14 +1360,24 @@ impl AxVM {
         }
         self.machine.lock().destroy_with(|resources| {
             if let Some(mut resources) = resources {
-                Self::cleanup_resource_set(vm_id, &mut resources);
+                Self::cleanup_resource_set(vm_id, &mut resources)?;
             }
             Ok(())
         })
     }
 
-    fn cleanup_resource_set(vm_id: usize, resources: &mut AxVMResources) {
+    fn cleanup_resource_set(vm_id: usize, resources: &mut AxVMResources) -> AxVmResult {
         info!("Cleaning up VM[{vm_id}] resources...");
+
+        if let Some(devices) = resources.devices.take() {
+            devices.reset_lifecycle_devices().map_err(|error| {
+                AxVmError::device("reset device lifecycle during destroy", error)
+            })?;
+            debug!(
+                "VM[{vm_id}] devices cleanup: {} device(s)",
+                devices.devices().count()
+            );
+        }
 
         let regions_to_cleanup = resources.memory_regions.clone();
         for region in &regions_to_cleanup {
@@ -1381,16 +1417,11 @@ impl AxVM {
         resources.memory_regions.clear();
         resources.address_space.clear();
 
-        if let Some(devices) = resources.devices.take() {
-            debug!(
-                "VM[{vm_id}] devices cleanup: {} device(s)",
-                devices.devices().count()
-            );
-        }
         resources.vcpu_list = None;
         resources.interrupt_fabric = None;
 
         info!("VM[{vm_id}] resources cleanup completed");
+        Ok(())
     }
 }
 

@@ -18,7 +18,7 @@ use crate::{
     vm::{
         AxVM, AxVMResources,
         prepare::{
-            PreparedVm, VmInitRequest,
+            ArchDeviceBootstrap, PreparedVm, VmInitRequest,
             address_space::{guest_owned_regions, map_guest_address_space},
             complete_vm_init, default_device_factories,
             devices::PreparedDevices,
@@ -48,9 +48,7 @@ impl X86_64Arch {
     pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
-                let mut factories = default_device_factories()?;
-                super::register_device_factories(&mut factories)?;
-                let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
+                let (factories, interrupt_fabric) = prepare_device_bootstrap(vm)?.into_parts();
                 init_vm_with(vm, &factories, interrupt_fabric)
             }
             VmInitRequest::Provided {
@@ -59,6 +57,15 @@ impl X86_64Arch {
             } => init_vm_with(vm, factories, interrupt_fabric),
         }
     }
+}
+
+fn prepare_device_bootstrap(vm: &AxVM) -> AxVmResult<ArchDeviceBootstrap> {
+    let mut factories = default_device_factories()?;
+    super::register_device_factories(&mut factories)?;
+    Ok(ArchDeviceBootstrap::new(
+        factories,
+        crate::InterruptFabric::new(vm.interrupt_mode()),
+    ))
 }
 
 fn init_vm_with(
