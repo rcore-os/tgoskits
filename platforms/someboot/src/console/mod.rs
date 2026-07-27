@@ -2,7 +2,7 @@ use core::{
     cell::UnsafeCell,
     fmt::Write,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
 
 use byte_unit::{Byte, UnitType};
@@ -71,6 +71,9 @@ pub fn _print(args: core::fmt::Arguments) {
 
 pub fn _write_bytes(bytes: &[u8]) -> usize {
     if runtime_output_claimed() {
+        if let Some(f) = runtime_write_fn() {
+            f(bytes);
+        }
         return bytes.len();
     }
     con().write_bytes(bytes)
@@ -183,6 +186,25 @@ impl Con for NoCon {
 
 static mut CON: &dyn Con = &NoCon;
 static RUNTIME_OUTPUT_CLAIMED: AtomicBool = AtomicBool::new(false);
+
+type WriteBytesFn = fn(&[u8]);
+static RUNTIME_WRITE_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Registers a callback that receives console bytes after the runtime has
+/// claimed output ownership.  Called once during serial console bind.
+pub fn set_runtime_write_fn(f: WriteBytesFn) {
+    RUNTIME_WRITE_FN.store(f as *mut (), Ordering::Release);
+}
+
+fn runtime_write_fn() -> Option<WriteBytesFn> {
+    let ptr = RUNTIME_WRITE_FN.load(Ordering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: we only store valid function pointers via set_runtime_write_fn.
+        Some(unsafe { core::mem::transmute::<*mut (), WriteBytesFn>(ptr) })
+    }
+}
 
 pub(crate) unsafe fn set_out(v: &'static dyn Con) {
     unsafe {

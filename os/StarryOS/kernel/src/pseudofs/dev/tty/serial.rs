@@ -2,6 +2,7 @@ use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use ax_errno::{AxError, AxResult};
+use ax_kspin::SpinNoIrq;
 use ax_runtime::{
     hal::console::{ConsoleDeviceIdError, ConsoleDeviceIdResult},
     serial::{
@@ -29,6 +30,24 @@ pub type SerialTtyDriver = Tty<SerialReader, SerialWriter>;
 const SERIAL_RX_DRAIN_CHUNK: usize = 256;
 const SERIAL_SYNC_ECHO_LIMIT: usize = 256;
 const SERIAL_DEFAULT_BAUDRATE: u32 = 115_200;
+
+/// Backend reference used by the runtime console write path.
+static CONSOLE_BACKEND: SpinNoIrq<Option<Arc<SerialBackend>>> = SpinNoIrq::new(None);
+
+/// Non-blocking console write that pushes bytes through the runtime UART driver.
+/// Called by `ax_log` after `claim_runtime_output()`.
+fn console_runtime_write(bytes: &[u8]) {
+    let backend = CONSOLE_BACKEND.lock().clone();
+    if let Some(backend) = backend {
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            match backend.tx.try_write(remaining) {
+                Ok(count) if count > 0 => remaining = &remaining[count..],
+                _ => break,
+            }
+        }
+    }
+}
 
 pub struct SerialTtyEntry {
     number: usize,
@@ -144,6 +163,10 @@ pub fn bind_console_to(proc: &Process) -> AxResult<()> {
     {
         entry.backend.ensure_started()?;
         entry.backend.runtime.activate_console_output()?;
+        // Register the runtime write callback BEFORE claiming output so that
+        // no log messages are silently dropped during the handoff.
+        CONSOLE_BACKEND.lock().replace(entry.backend.clone());
+        ax_runtime::hal::console::set_runtime_write_fn(console_runtime_write);
         ax_runtime::hal::console::claim_runtime_output();
         return entry.tty.bind_to(proc);
     }

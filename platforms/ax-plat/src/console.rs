@@ -56,6 +56,12 @@ pub trait ConsoleIf {
     /// runtime-owned device.
     fn claim_runtime_output();
 
+    /// Registers a callback that receives console bytes after the runtime has
+    /// claimed output ownership.  Must be called **before**
+    /// [`claim_runtime_output`](Self::claim_runtime_output) so that no log
+    /// output is silently dropped during the handoff.
+    fn set_runtime_write_fn(f: fn(&[u8]));
+
     /// Returns the IRQ number for the console input interrupt.
     ///
     /// Returns `None` if input interrupt is not supported.

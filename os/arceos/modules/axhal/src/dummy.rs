@@ -48,6 +48,8 @@ impl ConsoleIf for DummyConsole {
 
     fn claim_runtime_output() {}
 
+    fn set_runtime_write_fn(_f: fn(&[u8])) {}
+
     #[cfg(feature = "irq")]
     fn irq_num() -> Option<IrqId> {
         None

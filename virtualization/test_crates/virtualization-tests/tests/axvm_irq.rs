@@ -45,6 +45,8 @@ impl ConsoleIf for TestConsole {
 
     fn claim_runtime_output() {}
 
+    fn set_runtime_write_fn(_f: fn(&[u8])) {}
+
     fn irq_num() -> Option<irq_framework::IrqId> {
         None
     }

@@ -63,6 +63,10 @@ impl ConsoleIf for ConsoleIfImpl {
         somehal::console::claim_runtime_output();
     }
 
+    fn set_runtime_write_fn(f: fn(&[u8])) {
+        somehal::console::set_runtime_write_fn(f);
+    }
+
     /// Returns the IRQ number for the console input interrupt.
     ///
     /// Returns `None` if input interrupt is not supported.
