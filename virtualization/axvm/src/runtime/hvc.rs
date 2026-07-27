@@ -653,14 +653,25 @@ impl HyperCall {
                 let target_vm_id = self.args[2] as usize;
 
                 let route =
-                    ivc::prepare_notify_channel(publisher_vm_id, key, self.vm.id(), target_vm_id)?;
-                let target_vm = crate::get_vm_by_id(route.target_vm_id)
-                    .ok_or_else(|| ax_err_type!(NotFound, "IVC notify target VM does not exist"))?;
-                target_vm.with_runtime(|runtime| {
-                    runtime.notify_all();
-                    Ok(())
+                    ivc::prepare_notify_channel(publisher_vm_id, key, self.vm.id(), target_vm_id)
+                        .map_err(|error| self.operation_error("prepare IVC notify route", error))?;
+                let target_vm = crate::get_vm_by_id(route.target_vm_id).ok_or_else(|| {
+                    HyperCallError::ResourceNotFound {
+                        code: self.code,
+                        resource: format!("VM {}", route.target_vm_id),
+                        detail: "IVC notify target VM does not exist".into(),
+                    }
                 })?;
-                let notify_irq = target_vm.get_devices()?.ivc_notify_irq();
+                target_vm
+                    .with_runtime(|runtime| {
+                        runtime.notify_all();
+                        Ok(())
+                    })
+                    .map_err(|error| self.operation_error("wake IVC notify target VM", error))?;
+                let notify_irq = target_vm
+                    .get_devices()
+                    .map_err(|error| self.operation_error("get IVC notify target devices", error))?
+                    .ivc_notify_irq();
                 if let Some(irq) = notify_irq
                     && let Err(err) = target_vm.pulse_interrupt(irq)
                 {

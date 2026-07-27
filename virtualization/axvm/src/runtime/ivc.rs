@@ -262,7 +262,7 @@ pub fn prepare_notify_channel(
     };
     if !source_can_notify_target {
         return Err(ax_err_type!(
-            PermissionDenied,
+            InvalidInput,
             format!(
                 "VM[{}] cannot notify VM[{}] on IVC channel publisher VM[{}] key {:#x}",
                 source_vm_id, target_vm_id, publisher_vm_id, key
