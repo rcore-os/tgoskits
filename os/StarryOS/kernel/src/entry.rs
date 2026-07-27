@@ -110,11 +110,18 @@ pub fn init(args: &[String], envs: &[String]) {
     info!("Init process exited with code: {exit_code:?}");
 
     let cx = FS_CONTEXT.lock();
-    cx.root_dir()
-        .unmount_all()
-        .expect("Failed to unmount all filesystems");
-    cx.root_dir()
-        .filesystem()
-        .flush()
-        .expect("Failed to flush rootfs");
+    // Best-effort teardown. Like Linux shutdown, a busy/invalid unmount at
+    // shutdown is logged, never a kernel panic: after `test-pivot-root`
+    // reorganizes the shared mount namespace (`propagate_pivot_root` rewrites
+    // every registered `FsContext`'s root, including init's), init's `root_dir`
+    // can transiently not be a mount root, so `unmount_all` returns
+    // `InvalidInput`. Panicking there turned a benign shutdown-time cleanup race
+    // into a hard failure. Always flush the rootfs even if unmount could not
+    // complete, so data stays durable.
+    if let Err(err) = cx.root_dir().unmount_all() {
+        warn!("Failed to unmount all filesystems at shutdown: {err:?}");
+    }
+    if let Err(err) = cx.root_dir().filesystem().flush() {
+        warn!("Failed to flush rootfs at shutdown: {err:?}");
+    }
 }
