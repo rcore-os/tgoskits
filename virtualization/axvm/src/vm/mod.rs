@@ -157,6 +157,13 @@ pub(crate) fn dispatch_vcpu_interrupt_with(
     Ok(())
 }
 
+fn pulse_interrupt_with_snapshot(
+    snapshot: impl FnOnce() -> AxVmResult<InterruptFabric>,
+    irq_id: usize,
+) -> AxVmResult {
+    snapshot()?.pulse(irq_id)
+}
+
 impl VmRuntimeHandle {
     pub(crate) fn new() -> Self {
         Self {
@@ -512,6 +519,26 @@ impl AxVM {
         f(resources)
     }
 
+    /// Snapshots the interrupt backend while validating the VM lifecycle state.
+    ///
+    /// The snapshot pins only the backend capability. A lifecycle change after
+    /// this method returns is observed by the sender when it resolves the
+    /// current runtime.
+    fn interrupt_fabric_snapshot(&self) -> AxVmResult<InterruptFabric> {
+        let machine = self.machine.lock();
+        match machine.status() {
+            VmStatus::Running | VmStatus::Paused => machine
+                .resources()
+                .ok_or_else(|| ax_err_type!(BadState, "VM resources are not available"))?
+                .interrupt_fabric()
+                .cloned(),
+            status => ax_err!(
+                BadState,
+                format!("VM[{}] cannot accept IRQ in {status:?}", self.id())
+            ),
+        }
+    }
+
     pub(crate) fn with_runtime<F, R>(&self, f: F) -> AxVmResult<R>
     where
         F: FnOnce(&Arc<VmRuntimeHandle>) -> AxVmResult<R>,
@@ -766,15 +793,7 @@ impl AxVM {
 
     /// Pulses a prepared VM interrupt fabric line without exposing the fabric.
     pub fn pulse_interrupt(&self, irq_id: usize) -> AxVmResult {
-        match self.status() {
-            VmStatus::Running | VmStatus::Paused => {
-                self.with_resources(|resources| resources.interrupt_fabric()?.pulse(irq_id))
-            }
-            status => ax_err!(
-                BadState,
-                format!("VM[{}] cannot accept IRQ in {status:?}", self.id())
-            ),
-        }
+        pulse_interrupt_with_snapshot(|| self.interrupt_fabric_snapshot(), irq_id)
     }
 
     /// Returns the number of prepared emulated devices.
@@ -1381,6 +1400,8 @@ impl Drop for AxVM {
 mod tests {
     use core::cell::RefCell;
 
+    use axdevice_base::{IrqError, IrqLineId, IrqResult, IrqSink};
+
     use super::*;
 
     #[test]
@@ -1475,5 +1496,88 @@ mod tests {
 
         assert!(matches!(result, Err(AxVmError::ResourceUnavailable { .. })));
         assert_eq!(*events.borrow(), ["enqueue"]);
+    }
+
+    #[test]
+    fn interrupt_pulse_runs_after_snapshot_lock_is_released() {
+        let machine_lock = Arc::new(Mutex::new(()));
+        let sink = Arc::new(TestIrqSink::with_machine_lock(machine_lock.clone()));
+        let fabric = InterruptFabric::with_sink(VMInterruptMode::Emulated, sink.clone()).unwrap();
+
+        pulse_interrupt_with_snapshot(
+            || {
+                let _machine = machine_lock.lock();
+                Ok(fabric.clone())
+            },
+            7,
+        )
+        .unwrap();
+
+        assert_eq!(sink.pulse_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn interrupt_snapshot_failure_does_not_call_sink() {
+        let sink = Arc::new(TestIrqSink::default());
+        let expected = ax_err_type!(BadState, "interrupt snapshot unavailable");
+
+        let result = pulse_interrupt_with_snapshot(|| Err(expected.clone()), 9);
+
+        assert_eq!(result, Err(expected));
+        assert_eq!(sink.pulse_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn interrupt_pulse_propagates_sink_error() {
+        let irq_error = IrqError::Backend {
+            line: IrqLineId(11),
+            operation: "test pulse",
+            detail: "controller rejected interrupt".into(),
+        };
+        let sink = Arc::new(TestIrqSink::with_pulse_error(irq_error.clone()));
+        let fabric = InterruptFabric::with_sink(VMInterruptMode::Emulated, sink).unwrap();
+
+        let result = pulse_interrupt_with_snapshot(|| Ok(fabric.clone()), 11);
+
+        assert_eq!(result, Err(AxVmError::from(irq_error)));
+    }
+
+    #[derive(Default)]
+    struct TestIrqSink {
+        machine_lock: Option<Arc<Mutex<()>>>,
+        pulse_error: Option<IrqError>,
+        pulse_count: AtomicUsize,
+    }
+
+    impl TestIrqSink {
+        fn with_machine_lock(machine_lock: Arc<Mutex<()>>) -> Self {
+            Self {
+                machine_lock: Some(machine_lock),
+                ..Self::default()
+            }
+        }
+
+        fn with_pulse_error(pulse_error: IrqError) -> Self {
+            Self {
+                pulse_error: Some(pulse_error),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl IrqSink for TestIrqSink {
+        fn set_level(&self, _line: IrqLineId, _asserted: bool) -> IrqResult {
+            Ok(())
+        }
+
+        fn pulse(&self, _line: IrqLineId) -> IrqResult {
+            let _machine = self.machine_lock.as_ref().map(|machine_lock| {
+                machine_lock
+                    .try_lock()
+                    .expect("interrupt callback must run without the machine lock")
+            });
+            self.pulse_count.fetch_add(1, Ordering::Relaxed);
+            self.pulse_error.clone().map_or(Ok(()), Err)
+        }
     }
 }
