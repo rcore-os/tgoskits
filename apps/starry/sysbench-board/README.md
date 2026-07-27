@@ -62,9 +62,12 @@ power-on cue, TFTP-vs-loady) live in the board-run notes; the essentials:
    env -u RUSTUP_TOOLCHAIN cargo xtask starry app board \
      -t sysbench-board -b OrangePi-5-Plus --server localhost --port 2999
    ```
-   Success sentinel: `SYSBENCH_BOARD_DONE`. Capture serial to a file and diff the
-   `CPU_THREADS=` / `THREADS_T4` / `MUTEX_T4` / `MEMORY_T4` lines against
-   `linux-baseline.out`.
+   Success sentinel: `SYSBENCH_BOARD_DONE` (a raised failure prints
+   `SYSBENCH_BOARD_FAILED` and exits non-zero). Capture serial to a file and read
+   the harness markers it actually emits: `HS_MX cpu t=1/2/4` (cpu events/s),
+   `HS_MX thr t=4`, `HS_MX mutex t=4`, `HS_MX mem`, and the `HS_MEMSW` memory
+   sweep — compare those against the corresponding Linux numbers from
+   `harness/linux-harness.sh`.
 
 ## Gating risk — multi-core StarryOS boot
 

@@ -18,6 +18,7 @@ success_regex = ["(?m)^SYSBENCH_BOARD_DONE\\s*$"]
 fail_regex = [
   "panicked at",
   '(?m)^SYSBENCH_MISSING\s*$',
+  '(?m)^SYSBENCH_BOARD_FAILED\s*$',
   "(?i)error while loading shared libraries",
 ]
 timeout = 1800

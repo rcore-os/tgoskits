@@ -14,12 +14,15 @@ the calibrated safe max at 850→925/950 mV).
 > (2026-07-20). They are **not reproducible from the config shipped in this PR**:
 > `build-aarch64-unknown-none-softfloat.toml` pins `max_cpu_num = 4` on purpose
 > (the board browns out / smp-8 boot is unproven at 8 cores on the test PSU, see
-> the config header + README "Gating risk"). The submitted `init.sh` therefore
-> schedules `--threads=8` on **4** online cores and reproduces the **SMP-4**
-> scaling curve, not the 8-core numbers. Treat the 8-thread column as an
-> archived result of that specific experimental kernel/config, not as an output
-> of this PR's default workflow. To reproduce the 8-core numbers you must build a
-> (currently unshipped, brownout-risk) `max_cpu_num = 8` kernel.
+> the config header + README "Gating risk"). The 8-thread rows were produced by
+> `harness/sysbench-compare.sh` (a standalone comparison script) on that
+> `max_cpu_num = 8` research kernel. The workflow shipped in *this* PR is
+> different: `init.sh` runs `starry-harness.sh`, whose sysbench matrix goes only up
+> to `--threads=4` (SMP-4) — it emits the `HS_MX cpu t=1/2/4` rows and never
+> schedules 8 threads. Treat the 8-thread column as an archived result of that
+> specific experimental kernel/config, not as an output of this PR's default
+> workflow. To reproduce the 8-core numbers you must build a (currently unshipped,
+> brownout-risk) `max_cpu_num = 8` kernel and run `sysbench-compare.sh`.
 
 ## Results
 

@@ -16,6 +16,11 @@ SB=/usr/bin/sysbench
 CP=/usr/local/bin/cpuprobe
 MB=/usr/local/bin/membw
 PRIME=20000
+# Online CPU count. The shipped kernel pins max_cpu_num=4 (README "Gating risk"),
+# so the per-core loops MUST bound to the actual online CPUs — a hardcoded 0..7
+# would `taskset -c 4..7` onto non-existent CPUs, which fails and (through run_sb)
+# would falsely raise SYSBENCH_BOARD_FAILED on a healthy SMP-4 run.
+NCPU=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 
 test -x "$SB" || { echo SYSBENCH_MISSING; exit 1; }
 echo HARNESS_STARRY_BEGIN
@@ -38,23 +43,30 @@ run_sb() {
 }
 
 echo "== per-core cpuprobe (DIRECT: midr=core-type, mhz_pmc=freq, landed=affinity) =="
-for c in 0 1 2 3 4 5 6 7; do
+c=0
+while [ "$c" -lt "$NCPU" ]; do
   if [ -x "$CP" ]; then
     echo "HS_PC $($CP $c 2>/dev/null | sed 's/^CPUPROBE //')"
   else
     echo "HS_PC req=$c no_cpuprobe"
   fi
+  c=$((c + 1))
 done
 
 echo "== per-core pinned sysbench cpu (does taskset reach faster cores?) =="
-for c in 0 1 2 3 4 5 6 7; do
+c=0
+while [ "$c" -lt "$NCPU" ]; do
   run_sb "psb c=$c" taskset -c $c "$SB" cpu --cpu-max-prime=$PRIME --threads=1 --time=3 run
   ev=$(printf '%s\n' "$OUT" | awk '/events per second/{print $4}')
   echo "HS_PSB c=$c ev=${ev:-NA}"
+  c=$((c + 1))
 done
 
-echo "== per-core membw (isolate the 200x memory gap) =="
+echo "== per-core membw (isolate the memory gap; skips offline cores) =="
+# Probe a low (A55) and, if online, a high (A76) core. On the shipped SMP-4 kernel
+# only cores 0-3 (all A55) are online, so cores >= NCPU are skipped.
 for c in 0 4 7; do
+  [ "$c" -lt "$NCPU" ] || continue
   if [ -x "$MB" ]; then
     echo "HS_PM $($MB $c 128 2>/dev/null | sed 's/^MEMBW //')"
   else
