@@ -57,8 +57,8 @@ fn cleanup() {
     };
 
     assert!(session.upgrade().is_some());
-    assert!(child.exit());
-    assert!(child.reap());
+    child.reparent_children_to(&init_proc());
+    child.retire();
     drop(child);
     assert!(session.upgrade().is_none());
 }
@@ -100,8 +100,8 @@ fn cleanup_groups() {
     let child = init_proc().new_child();
     let (session, _) = child.create_session().unwrap();
 
-    assert!(child.exit());
-    assert!(child.reap());
+    child.reparent_children_to(&init_proc());
+    child.retire();
     drop(child);
 
     assert!(session.process_groups().is_empty());

@@ -5,7 +5,8 @@ use alloc::{
 };
 use core::{
     fmt,
-    sync::atomic::{AtomicBool, AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 
 use ax_kspin::SpinNoIrq;
@@ -19,27 +20,52 @@ pub(crate) struct ThreadGroup {
     pub(crate) threads: BTreeSet<Pid>,
     pub(crate) exit_code: i32,
     pub(crate) group_exited: bool,
+    pub(crate) exited_cpu_time: ProcessCpuTime,
 }
 
-/// The lifetime state of a process identity.
-///
-/// Runtime resources may disappear while a process is a zombie, but its PID
-/// identity remains observable until exactly one waiter reaps it.
-#[repr(u8)]
+/// CPU time accumulated by threads that have exited from a process.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ProcessCpuTime {
+    user: Duration,
+    system: Duration,
+}
+
+impl ProcessCpuTime {
+    /// Creates a process CPU-time value.
+    pub const fn new(user: Duration, system: Duration) -> Self {
+        Self { user, system }
+    }
+
+    /// Returns time spent executing in user mode.
+    pub const fn user(self) -> Duration {
+        self.user
+    }
+
+    /// Returns time spent executing in kernel mode.
+    pub const fn system(self) -> Duration {
+        self.system
+    }
+
+    fn add(&mut self, other: Self) {
+        self.user += other.user;
+        self.system += other.system;
+    }
+}
+
+/// Result of removing one TID from a process thread group.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProcessLifecycle {
-    /// The process still has at least one live thread.
-    Live,
-    /// Every thread exited, but the parent has not consumed the exit status.
-    Zombie,
-    /// A waiter consumed the zombie and retired its PID identity.
-    Reaped,
+pub enum ThreadExit {
+    /// The TID had already left the thread group.
+    AlreadyExited,
+    /// Other threads remain alive.
+    Remaining,
+    /// This was the last thread; the payload is the frozen process CPU time.
+    Last(ProcessCpuTime),
 }
 
 /// A process.
 pub struct Process {
     pid: Pid,
-    lifecycle: AtomicU8,
     is_child_subreaper: AtomicBool,
     pub(crate) tg: SpinNoIrq<ThreadGroup>,
 
@@ -76,16 +102,6 @@ impl Process {
     /// Enables or disables child subreaper behavior for this process.
     pub fn set_child_subreaper(&self, enabled: bool) {
         self.is_child_subreaper.store(enabled, Ordering::Release);
-    }
-
-    /// Returns the current lifetime state of this process identity.
-    pub fn lifecycle(&self) -> ProcessLifecycle {
-        match self.lifecycle.load(Ordering::Acquire) {
-            state if state == ProcessLifecycle::Live as u8 => ProcessLifecycle::Live,
-            state if state == ProcessLifecycle::Zombie as u8 => ProcessLifecycle::Zombie,
-            state if state == ProcessLifecycle::Reaped as u8 => ProcessLifecycle::Reaped,
-            _ => unreachable!("process lifecycle contains an invalid state"),
-        }
     }
 }
 
@@ -192,17 +208,32 @@ impl Process {
         self.tg.lock().threads.insert(tid);
     }
 
-    /// Removes a thread from this [`Process`] and sets the exit code if the
-    /// group has not exited.
+    /// Removes a thread from this [`Process`], records its final CPU time, and
+    /// sets the exit code if the group has not exited.
     ///
-    /// Returns `true` if this was the last thread in the process.
-    pub fn exit_thread(self: &Arc<Self>, tid: Pid, exit_code: i32) -> bool {
+    /// The membership check, CPU-time accumulation, and last-thread decision
+    /// are one transaction under the thread-group lock. Repeating an exit for
+    /// the same TID therefore cannot publish process exit twice or double-count
+    /// its CPU time.
+    pub fn exit_thread(
+        self: &Arc<Self>,
+        tid: Pid,
+        exit_code: i32,
+        cpu_time: ProcessCpuTime,
+    ) -> ThreadExit {
         let mut tg = self.tg.lock();
+        if !tg.threads.remove(&tid) {
+            return ThreadExit::AlreadyExited;
+        }
         if !tg.group_exited {
             tg.exit_code = exit_code;
         }
-        tg.threads.remove(&tid);
-        tg.threads.is_empty()
+        tg.exited_cpu_time.add(cpu_time);
+        if tg.threads.is_empty() {
+            ThreadExit::Last(tg.exited_cpu_time)
+        } else {
+            ThreadExit::Remaining
+        }
     }
 
     /// Get all threads in this [`Process`].
@@ -254,95 +285,36 @@ impl Process {
     }
 }
 
-/// Status & exit
+/// Process relationship transitions
 impl Process {
-    fn orphan_reaper(self: &Arc<Self>) -> Arc<Process> {
-        let init_proc = INIT_PROC.get().unwrap();
-        let mut cursor = self.parent();
-
-        while let Some(proc) = cursor {
-            if Arc::ptr_eq(&proc, init_proc) {
-                break;
-            }
-            if proc.is_child_subreaper() && proc.lifecycle() == ProcessLifecycle::Live {
-                return proc;
-            }
-            cursor = proc.parent();
+    /// Reparents all children to `reaper`.
+    ///
+    /// The caller chooses the live subreaper because liveness belongs to the
+    /// OS PID-identity registry, not to this relationship-only component.
+    pub fn reparent_children_to(self: &Arc<Self>, reaper: &Arc<Process>) {
+        if self.is_init() || Arc::ptr_eq(self, reaper) {
+            return;
         }
 
-        init_proc.clone()
-    }
+        let reaper_parent = Arc::downgrade(reaper);
 
-    /// Returns `true` if the [`Process`] is a zombie process.
-    pub fn is_zombie(&self) -> bool {
-        self.lifecycle() == ProcessLifecycle::Zombie
-    }
-
-    /// Returns `true` if this process identity has been reaped.
-    pub fn is_reaped(&self) -> bool {
-        self.lifecycle() == ProcessLifecycle::Reaped
-    }
-
-    /// Terminates the [`Process`], marking it as a zombie process.
-    ///
-    /// Child processes are inherited by the init process or by the nearest
-    /// subreaper process.
-    ///
-    /// This method does nothing if the [`Process`] is the init process or has
-    /// already left the live state.
-    ///
-    /// Returns `true` only for the caller that performs the transition.
-    #[must_use]
-    pub fn exit(self: &Arc<Self>) -> bool {
-        if self.is_init() {
-            return false;
-        }
-
-        let reaper_proc = self.orphan_reaper();
-        let reaper_parent = Arc::downgrade(&reaper_proc);
-
-        let mut reaper_children = reaper_proc.children.lock();
+        let mut reaper_children = reaper.children.lock();
         let mut children = self.children.lock();
-        if self
-            .lifecycle
-            .compare_exchange(
-                ProcessLifecycle::Live as u8,
-                ProcessLifecycle::Zombie as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return false;
-        }
         for (pid, child) in core::mem::take(&mut *children) {
             *child.parent.lock() = reaper_parent.clone();
             reaper_children.insert(pid, child);
         }
-        true
     }
 
-    /// Reaps a zombie process and retires its parent and process-group links.
+    /// Retires this process's parent and process-group links.
     ///
-    /// Returns `true` only for the caller that performs the transition.
-    #[must_use]
-    pub fn reap(self: &Arc<Self>) -> bool {
+    /// The PID-identity state machine guarantees that exactly one consuming
+    /// waiter calls this method.
+    pub fn retire(self: &Arc<Self>) {
         let parent = self.parent();
         let group = self.group();
         let mut parent_children = parent.as_ref().map(|parent| parent.children.lock());
         let mut group_members = group.processes.lock();
-        if self
-            .lifecycle
-            .compare_exchange(
-                ProcessLifecycle::Zombie as u8,
-                ProcessLifecycle::Reaped as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return false;
-        }
 
         if let Some(children) = parent_children.as_mut()
             && children
@@ -358,7 +330,6 @@ impl Process {
             group_members.remove(&self.pid);
         }
         *self.parent.lock() = Weak::new();
-        true
     }
 }
 
@@ -371,8 +342,7 @@ impl fmt::Debug for Process {
         if tg.group_exited {
             builder.field("group_exited", &tg.group_exited);
         }
-        if self.lifecycle() != ProcessLifecycle::Live {
-            builder.field("lifecycle", &self.lifecycle());
+        if tg.threads.is_empty() {
             builder.field("exit_code", &tg.exit_code);
         }
 
@@ -397,7 +367,6 @@ impl Process {
 
         let process = Arc::new(Process {
             pid,
-            lifecycle: AtomicU8::new(ProcessLifecycle::Live as u8),
             is_child_subreaper: AtomicBool::new(false),
             tg: SpinNoIrq::new(ThreadGroup::default()),
             children: SpinNoIrq::new(StrongMap::new()),
@@ -465,10 +434,11 @@ mod tests {
         let reaper_children = reaper.children.lock();
         let start_exit = StdArc::new(Barrier::new(2));
         let exit_parent = parent.clone();
+        let exit_reaper = reaper.clone();
         let exit_start = start_exit.clone();
         let exit_thread = thread::spawn(move || {
             exit_start.wait();
-            assert!(exit_parent.exit());
+            exit_parent.reparent_children_to(&exit_reaper);
         });
 
         start_exit.wait();

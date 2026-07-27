@@ -11,7 +11,7 @@ use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like},
     syscall::signal::check_kill_permission,
     task::{
-        AsThread, PidFdProcessTarget, get_task, pidfd_process_target, send_signal_to_process,
+        AsThread, get_task, pidfd_process_identity, process_identity, send_signal_to_process,
         send_signal_to_process_group, send_signal_to_thread,
     },
 };
@@ -67,14 +67,18 @@ pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
 
     let fd = if flags.contains(PidFdFlags::THREAD) {
         match get_task(pid) {
-            Ok(task) => PidFd::new_thread(task.as_thread(), pid),
-            Err(AxError::NoSuchProcess) => match pidfd_process_target(pid)? {
-                PidFdProcessTarget::Zombie {
-                    process,
-                    exit_event,
-                } => PidFd::new_exited_thread(process, exit_event),
-                PidFdProcessTarget::Live(_) => return Err(AxError::NoSuchProcess),
-            },
+            Ok(task) => {
+                let identity = process_identity(&task.as_thread().proc_data.proc)
+                    .ok_or(AxError::NoSuchProcess)?;
+                PidFd::new_thread(identity, task.as_thread(), pid)
+            }
+            Err(AxError::NoSuchProcess) => {
+                let identity = pidfd_process_identity(pid)?;
+                if !identity.is_zombie() {
+                    return Err(AxError::NoSuchProcess);
+                }
+                PidFd::new_exited_thread(identity)
+            }
             Err(error) => return Err(error),
         }
     } else {
@@ -84,13 +88,7 @@ pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
         {
             return Err(AxError::NotFound);
         }
-        match pidfd_process_target(pid)? {
-            PidFdProcessTarget::Live(proc_data) => PidFd::new_process(&proc_data),
-            PidFdProcessTarget::Zombie {
-                process,
-                exit_event,
-            } => PidFd::new_exited_process(process, exit_event),
-        }
+        PidFd::new_process(pidfd_process_identity(pid)?)
     };
     if flags.contains(PidFdFlags::NONBLOCK) {
         fd.set_nonblocking(true)?;
@@ -183,7 +181,7 @@ pub fn sys_pidfd_send_signal(
         PidFdSignalScope::Thread => {
             let (process, tid) = pidfd_obj.signal_thread()?;
             check_kill_permission(process.pid())?;
-            if process.is_zombie() {
+            if pidfd_obj.is_zombie() {
                 return Ok(0);
             }
             send_signal_to_thread(Some(target_pid), tid, kinfo)?;

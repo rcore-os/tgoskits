@@ -2,10 +2,10 @@
 
 ## Status
 
-This is a work-in-progress handoff for the Starry process-lifecycle repair.
-The branch intentionally records the current implementation and deterministic
-regression before the wider `ax-task`/`ax-runtime` migration continues. It has
-not been brought to a green build or test state.
+This document records the implemented Starry process-lifecycle repair and its
+deterministic regression evidence. The lifecycle is now owned by one stable PID
+identity state machine; `Process` is limited to thread-group and relationship
+topology.
 
 Base: `origin/dev` at `ee68a61f2`.
 
@@ -74,10 +74,14 @@ Live(Weak<ProcessData>)
 Zombie {
     Arc<Process>,
     Arc<PollSet>,
-    credential and wait metadata
+    credential, wait metadata, and frozen CPU time
 }
         |
-        | exactly one consuming wait removes the matching Arc identity
+        | exactly one consuming wait claims the matching Arc identity
+        v
+Reaping
+        |
+        | retire parent/group topology while the PID remains reserved
         v
 Reaped
 ```
@@ -90,27 +94,42 @@ The lifecycle split is deliberate:
 
 - `ProcessData` owns live runtime resources such as address space and file
   tables;
-- `Process` owns the stable Linux-visible identity and parent/group links;
+- `ProcessIdentity` owns the stable Linux-visible identity and lifecycle;
+- `Process` owns thread-group state and parent/group topology;
 - the PID registry owns either the live weak resource reference or the zombie
   snapshot, never both;
 - `PollSet` follows the stable identity from live construction through zombie
   and reap.
 
-## Current patch
+## Implemented patch
 
-The WIP patch:
+The patch:
 
-- changes `Process` from an `AtomicBool` zombie flag to
-  `Live -> Zombie -> Reaped` atomic transitions;
-- makes reap a unique transition and removes only exact parent/group identities;
+- removes lifecycle flags from `starry-process::Process` and introduces the
+  typed kernel-owned
+  `Live -> Zombie -> Reaping -> Reaped` identity state machine;
+- constructs the stable identity together with `ProcessData`, so clone-created
+  pidfds and later registry publication cannot diverge or publish a failed
+  clone early;
+- makes final thread exit a one-shot operation and atomically accumulates each
+  exiting thread's CPU time under the thread-group lock;
+- freezes credentials, wait metadata, and process CPU time in the zombie
+  snapshot;
+- makes reap a unique claim, credits child CPU time only to the winning waiter,
+  and removes only exact parent/group identities;
+- retains the identity in `Reaping` until topology retirement finishes, so the
+  numeric PID cannot be reused in the middle of cleanup;
 - replaces the separate live and zombie registries with one typed PID registry;
-- resolves `pidfd_open` from one registry lock and retains `Arc<Process>`;
+- resolves `pidfd_open` from one registry lock and retains
+  `Arc<ProcessIdentity>`;
 - shares the original process exit event with pidfds opened after exit;
 - reports `IN | RDNORM` for zombies and `IN | RDNORM | HUP` after reap;
 - wakes `RDNORM` on exit and `HUP` on the unique reap path;
 - copies wait status to userspace before attempting the consuming transition;
-- changes the QEMU case to prove zombie state with
-  `waitid(P_PID, ..., WEXITED | WNOWAIT | WNOHANG)`.
+- keeps `WNOWAIT` observational and makes pidfd waits match an exact PID
+  generation rather than a reused numeric PID;
+- covers leader-before-worker exit, frozen CPU accounting, and concurrent
+  waiter ownership in the QEMU regression.
 
 No driver, scheduler, or `ax-task` API changes belong in this branch.
 
@@ -123,8 +142,9 @@ cargo xtask starry test qemu --arch x86_64 \
   -c qemu/system/syscall-test-pidfd-send-signal
 ```
 
-On unmodified `ee68a61f2` plus only the regression test, the formal runner ended
-with `STARRY_GROUPED_TESTS_FAILED`: 71 assertions passed and 7 failed.
+On unmodified `ee68a61f2` plus only the original pidfd regression, the formal
+runner ended with `STARRY_GROUPED_TESTS_FAILED`: 71 assertions passed and 7
+failed.
 
 The deterministic failures were:
 
@@ -134,28 +154,29 @@ The deterministic failures were:
 - reap did not publish `EPOLLHUP`;
 - post-reap polling/epoll omitted the Linux event mask.
 
-This is fail-first evidence only. The implementation in this branch has not
-been rebuilt or rerun after being copied into the clean branch.
+Two continuation regressions were also proven red against the previous
+implementation:
 
-## Required continuation work
+- `repeated_thread_exit_does_not_report_last_twice` showed that removing an
+  already-removed TID incorrectly reported the last-thread transition again;
+- `qemu/system/syscall-test-waitid-pidfd` ended with 55 passes and one failure
+  because a consumed child contributed no frozen CPU time to its parent.
 
-The next contributor should proceed in this order:
+## Validation evidence
 
-1. run `cargo fmt --all` and resolve syntax/import issues without changing the
-   lifecycle design;
-2. run `cargo xtask clippy --package starry-process`, then
-   `cargo xtask clippy --package starry-kernel`;
-3. rerun the exact QEMU command above and preserve the full formal success or
-   failure marker;
-4. add a host-level concurrent reap test proving only one waiter wins;
-5. audit the lock order around `publish_zombie`: it currently holds the global
-   PID registry while `Process::exit` takes process child locks;
-6. verify CPU-time accounting is snapshotted before live task resources can
-   disappear and credited only by the winning waiter;
-7. add a multi-thread group-leader test matching Linux
-   `delay_group_leader()` readiness;
-8. run the same userspace regression on host Linux and then on all supported
-   Starry architectures.
+- `cargo test -p starry-process`: 27 tests passed;
+- `cargo xtask clippy --package starry-process`: 1/1 check passed;
+- `cargo xtask clippy --package starry-kernel`: 22/22 feature checks passed;
+- the waitid/pidfd userspace test passed on host Linux with 66/66 assertions;
+- `cargo xtask starry test qemu --arch x86_64
+  -c qemu/system/syscall-test-waitid-pidfd`: 66/66 assertions passed and the
+  formal runner emitted `STARRY_GROUPED_TESTS_PASSED`.
+- `cargo xtask starry test qemu --arch x86_64
+  -c qemu/system/syscall-test-pidfd-send-signal`: 78/78 assertions passed,
+  including zombie readiness and post-reap `EPOLLHUP`.
+
+The remaining architecture matrix is delegated to CI; no physical-board path
+is required for this process-lifecycle-only change.
 
 Known adjacent gaps that should remain separate unless needed to make the core
 identity correct:
@@ -165,7 +186,6 @@ identity correct:
 - `pidfd_getfd` still uses a kill-style permission approximation instead of
   Linux `ptrace_may_access(PTRACE_MODE_ATTACH_REALCREDS)`;
 - thread-pidfd `siginfo` self checks need TID/TGID review;
-- early thread-group-leader exit needs explicit delayed-readiness coverage;
 - PID namespaces and allocator reuse need an end-to-end ABA stress test.
 
 ## Syscall impact map

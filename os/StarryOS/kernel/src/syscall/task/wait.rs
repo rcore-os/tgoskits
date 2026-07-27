@@ -17,9 +17,9 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     file::{PidFd, get_file_like},
     task::{
-        AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
-        get_zombie_cred, is_zombie_clone_child, processes, reap_process, traced_zombies_for,
-        wait_on_pollset, zombie_wait_parent_tid,
+        AsThread, JobStatus, ProcessData, ProcessIdentity, decode_wait_status, get_process_data,
+        get_task, get_zombie_cred, is_reaped_process, is_zombie_clone_child, is_zombie_process,
+        processes, reap_process, traced_zombies_for, wait_on_pollset, zombie_wait_parent_tid,
     },
 };
 
@@ -53,7 +53,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 enum WaitTarget {
     /// Wait for any child process
     Any,
@@ -61,6 +61,8 @@ enum WaitTarget {
     Pid(Pid),
     /// Wait for any child process whose process group ID is equal to the value.
     Pgid(Pid),
+    /// Wait for the exact generation referenced by a pidfd.
+    PidFd(Arc<ProcessIdentity>),
 }
 
 impl WaitTarget {
@@ -69,6 +71,7 @@ impl WaitTarget {
             WaitTarget::Any => true,
             WaitTarget::Pid(pid) => child.pid() == *pid,
             WaitTarget::Pgid(pgid) => child.group().pgid() == *pgid,
+            WaitTarget::PidFd(identity) => identity.matches_process(child),
         }
     }
 
@@ -79,6 +82,7 @@ impl WaitTarget {
     fn ptrace_report_pid(&self, child: &Process, data: &ProcessData) -> Pid {
         match self {
             WaitTarget::Pid(pid) if *pid == child.pid() || child.threads().contains(pid) => *pid,
+            WaitTarget::PidFd(identity) => identity.pid(),
             _ => data.ptrace_stop_tid().unwrap_or(child.pid()),
         }
     }
@@ -89,6 +93,7 @@ impl WaitTarget {
                 Some(*pid)
             }
             WaitTarget::Pid(pid) if *pid == child.pid() => Some(*pid),
+            WaitTarget::PidFd(identity) => Some(identity.pid()),
             _ => None,
         }
     }
@@ -105,7 +110,7 @@ fn waitid_pidfd_target(fd: i32) -> AxResult<WaitTarget> {
     let pidfd = get_file_like(fd)?
         .downcast_arc::<PidFd>()
         .map_err(|_| AxError::BadFileDescriptor)?;
-    Ok(WaitTarget::Pid(pidfd.pid()))
+    Ok(WaitTarget::PidFd(pidfd.identity()))
 }
 fn stopped_wait_signo(data: &ProcessData, signo: Signo) -> i32 {
     let event = data.ptrace_event().unwrap_or(0);
@@ -192,7 +197,7 @@ impl WaitChildFilter {
 
 fn waitable_processes(
     proc: &Process,
-    target: WaitTarget,
+    target: &WaitTarget,
     tracer_pid: Pid,
     current_tid: Pid,
     filter: WaitChildFilter,
@@ -254,7 +259,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
 
     let children = waitable_processes(
         proc,
-        target,
+        &target,
         proc.pid(),
         thr.tid(),
         WaitChildFilter::from_waitpid_options(&options),
@@ -284,20 +289,14 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             }
             data.mark_ptrace_stop_reported_for(stop_tid);
             return Ok(Some(wait_pid as _));
-        } else if let Some(child) = children.iter().find(|child| child.is_zombie()) {
+        } else if let Some(child) = children.iter().find(|child| is_zombie_process(child)) {
             // Copy status before claiming the unique reap transition. A failed
             // user write leaves the zombie available for a later retry.
             if let Some(exit_code) = exit_code.nullable() {
                 exit_code.vm_write(child.exit_code())?;
             }
-            if reap_process(child) {
-                for tid in child.threads() {
-                    if let Ok(task) = get_task(tid) {
-                        let thr = task.as_thread();
-                        let (utime, stime) = thr.time.borrow().output();
-                        proc_data.add_child_cpu_time(utime, stime);
-                    }
-                }
+            if let Some(cpu_time) = reap_process(child) {
+                proc_data.add_child_cpu_time(cpu_time.user(), cpu_time.system());
                 return Ok(Some(child.pid() as _));
             }
         }
@@ -330,7 +329,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             }
         }
 
-        if children.iter().all(|child| child.is_reaped()) {
+        if children.iter().all(is_reaped_process) {
             Err(AxError::from(LinuxError::ECHILD))
         } else if options.contains(WaitPidOptions::WNOHANG) {
             Ok(Some(0))
@@ -390,7 +389,7 @@ pub fn sys_waitid(
 
     let children = waitable_processes(
         proc,
-        target,
+        &target,
         proc.pid(),
         thr.tid(),
         WaitChildFilter::from_waitid_options(&options),
@@ -465,7 +464,7 @@ pub fn sys_waitid(
         }
 
         if options.contains(WaitIdOptions::WEXITED)
-            && let Some(child) = children.iter().find(|child| child.is_zombie())
+            && let Some(child) = children.iter().find(|child| is_zombie_process(child))
         {
             let child_pid = child.pid();
             let (code, status) = decode_wait_status(child.exit_code());
@@ -479,19 +478,13 @@ pub fn sys_waitid(
             if options.contains(WaitIdOptions::WNOWAIT) {
                 return Ok(Some(0));
             }
-            if reap_process(child) {
-                for tid in child.threads() {
-                    if let Ok(task) = get_task(tid) {
-                        let thr = task.as_thread();
-                        let (utime, stime) = thr.time.borrow().output();
-                        proc_data.add_child_cpu_time(utime, stime);
-                    }
-                }
+            if let Some(cpu_time) = reap_process(child) {
+                proc_data.add_child_cpu_time(cpu_time.user(), cpu_time.system());
                 return Ok(Some(0));
             }
         }
 
-        if children.iter().all(|child| child.is_reaped()) {
+        if children.iter().all(is_reaped_process) {
             Err(AxError::from(LinuxError::ECHILD))
         } else if options.contains(WaitIdOptions::WNOHANG) {
             if let Some(infop) = infop.nullable() {

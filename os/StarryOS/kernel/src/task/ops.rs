@@ -1,5 +1,4 @@
 use alloc::{
-    collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -9,17 +8,19 @@ use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::time::TimeValue;
 use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
-use axpoll::{IoEvents, PollSet};
+use axpoll::IoEvents;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
-use starry_process::{Pid, Process, ProcessGroup, Session};
+use starry_process::{Pid, ProcessCpuTime, ProcessGroup, Session, ThreadExit};
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 use weak_map::WeakMap;
 
 use super::{
-    AsThread, Cred, FutexKey, ProcessData, Thread, TimerState, futex_table_for_process,
-    send_signal_thread_inner, send_signal_to_process, send_signal_to_thread,
+    AsThread, Cred, FutexKey, ProcessData, Thread, TimerState, ZombieSnapshot,
+    futex_table_for_process, get_process_data, get_zombie_cred, orphan_reaper_for, processes,
+    publish_zombie, register_process_identity, send_signal_thread_inner, send_signal_to_process,
+    send_signal_to_thread,
 };
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
@@ -46,71 +47,6 @@ pub fn decode_wait_status(raw: i32) -> (i32, i32) {
 
 static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());
 
-/// One Linux-visible PID identity from publication through reap.
-enum ProcessIdentityEntry {
-    /// Runtime resources exist and may be upgraded by live-only operations.
-    Live(Weak<ProcessData>),
-    /// Runtime resources exited, but the stable process identity is waitable.
-    Zombie(ZombieEntry),
-}
-
-/// A process identity resolved atomically for `pidfd_open()`.
-pub enum PidFdProcessTarget {
-    /// Runtime resources still exist.
-    Live(Arc<ProcessData>),
-    /// Runtime resources exited, but PID identity and poll state remain.
-    Zombie {
-        /// Stable identity retained through the consuming wait.
-        process: Arc<Process>,
-        /// Event object shared by pidfds opened before and after process exit.
-        exit_event: Arc<PollSet>,
-    },
-}
-
-impl ProcessIdentityEntry {
-    fn live(proc_data: &Arc<ProcessData>) -> Self {
-        Self::Live(Arc::downgrade(proc_data))
-    }
-
-    fn live_data(&self) -> Option<Arc<ProcessData>> {
-        match self {
-            Self::Live(proc_data) => proc_data.upgrade(),
-            Self::Zombie(_) => None,
-        }
-    }
-
-    fn process(&self) -> Option<Arc<Process>> {
-        match self {
-            Self::Live(proc_data) => proc_data.upgrade().map(|data| data.proc.clone()),
-            Self::Zombie(zombie) => Some(zombie.process.clone()),
-        }
-    }
-
-    fn matches_live_data(&self, expected: &Arc<ProcessData>) -> bool {
-        self.live_data()
-            .is_some_and(|registered| Arc::ptr_eq(&registered, expected))
-    }
-}
-
-static PROCESS_TABLE: RwLock<BTreeMap<Pid, ProcessIdentityEntry>> = RwLock::new(BTreeMap::new());
-
-/// Per-zombie data retained until `waitpid()` reaps the process.
-///
-/// - `process`: keeps `getsid`, `getpgid`, `getpriority`, etc. working.
-/// - `cred`: snapshot of the exiting thread's final credentials, used by
-///   `check_kill_permission` when the task has already been GC'd.  On Linux
-///   the `task_struct` (and its `cred`) lives until the zombie is reaped;
-///   we replicate that guarantee here.
-/// - `exit_event`: remains shared by pidfds opened before and after exit.
-struct ZombieEntry {
-    process: Arc<Process>,
-    exit_event: Arc<PollSet>,
-    cred: Arc<Cred>,
-    ptrace_tracer_pid: Option<Pid>,
-    is_clone_child: bool,
-    wait_parent_tid: Pid,
-}
-
 static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
 
 static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap::new());
@@ -122,9 +58,6 @@ static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap:
 #[cfg(feature = "memtrack")]
 pub fn cleanup_task_tables() {
     TASK_TABLE.write().cleanup();
-    PROCESS_TABLE.write().retain(|_, identity| {
-        identity.live_data().is_some() || matches!(identity, ProcessIdentityEntry::Zombie(_))
-    });
     PROCESS_GROUP_TABLE.write().cleanup();
     SESSION_TABLE.write().cleanup();
 }
@@ -144,21 +77,9 @@ pub fn add_task_to_table(task: &AxTaskRef) {
     task_table.insert(tid, task);
     drop(task_table);
 
-    let proc = &proc_data.proc;
-    let pid = proc.pid();
-    let mut process_table = PROCESS_TABLE.write();
-    match process_table.get(&pid) {
-        Some(ProcessIdentityEntry::Live(existing))
-            if existing
-                .upgrade()
-                .is_some_and(|registered| Arc::ptr_eq(&registered, proc_data)) => {}
-        Some(_) => panic!("PID must not be reused before its identity is reaped"),
-        None => {
-            process_table.insert(pid, ProcessIdentityEntry::live(proc_data));
-        }
-    }
-    drop(process_table);
+    register_process_identity(proc_data);
 
+    let proc = &proc_data.proc;
     let pg = proc.group();
     let mut pg_table = PROCESS_GROUP_TABLE.write();
     if pg_table.contains_key(&pg.pgid()) {
@@ -188,148 +109,6 @@ pub fn get_task(tid: Pid) -> AxResult<AxTaskRef> {
     TASK_TABLE.read().get(&tid).ok_or(AxError::NoSuchProcess)
 }
 
-/// Lists all processes.
-pub fn processes() -> Vec<Arc<ProcessData>> {
-    PROCESS_TABLE
-        .read()
-        .values()
-        .filter_map(ProcessIdentityEntry::live_data)
-        .collect()
-}
-
-/// Finds the process with the given PID.
-pub fn get_process_data(pid: Pid) -> AxResult<Arc<ProcessData>> {
-    if pid == 0 {
-        return Ok(current().as_thread().proc_data.clone());
-    }
-    PROCESS_TABLE
-        .read()
-        .get(&pid)
-        .and_then(ProcessIdentityEntry::live_data)
-        .ok_or(AxError::NoSuchProcess)
-}
-
-/// Resolves one stable process identity for `pidfd_open()`.
-///
-/// Live resources and the zombie snapshot are inspected under one registry
-/// lock, preventing a numeric PID reuse from being spliced into an older pidfd.
-pub fn pidfd_process_target(pid: Pid) -> AxResult<PidFdProcessTarget> {
-    let process_table = PROCESS_TABLE.read();
-    match process_table.get(&pid) {
-        Some(ProcessIdentityEntry::Live(proc_data)) => proc_data
-            .upgrade()
-            .map(PidFdProcessTarget::Live)
-            .ok_or(AxError::NoSuchProcess),
-        Some(ProcessIdentityEntry::Zombie(zombie)) => Ok(PidFdProcessTarget::Zombie {
-            process: zombie.process.clone(),
-            exit_event: zombie.exit_event.clone(),
-        }),
-        None => Err(AxError::NoSuchProcess),
-    }
-}
-
-fn publish_zombie(proc_data: &Arc<ProcessData>, zombie: ZombieEntry) -> AxResult<()> {
-    let pid = zombie.process.pid();
-    let mut process_table = PROCESS_TABLE.write();
-    let Some(identity) = process_table.get_mut(&pid) else {
-        return Err(AxError::BadState);
-    };
-    if !identity.matches_live_data(proc_data) || !zombie.process.exit() {
-        return Err(AxError::BadState);
-    }
-    *identity = ProcessIdentityEntry::Zombie(zombie);
-    Ok(())
-}
-
-/// Reaps exactly one matching zombie identity.
-///
-/// Returns `true` only to the waiter that retired the exact process object.
-pub fn reap_process(process: &Arc<Process>) -> bool {
-    let pid = process.pid();
-    let zombie = {
-        let mut process_table = PROCESS_TABLE.write();
-        let matches = process_table.get(&pid).is_some_and(|identity| {
-            matches!(
-                identity,
-                ProcessIdentityEntry::Zombie(zombie)
-                    if Arc::ptr_eq(&zombie.process, process)
-            )
-        });
-        if !matches {
-            return false;
-        }
-
-        let ProcessIdentityEntry::Zombie(zombie) = process_table
-            .remove(&pid)
-            .expect("matching zombie identity must remain registered")
-        else {
-            unreachable!("matching process identity changed while write-locked");
-        };
-        zombie
-    };
-
-    assert!(
-        process.reap(),
-        "registered zombie must perform one reap transition"
-    );
-    unsafe {
-        zombie
-            .exit_event
-            .wake(IoEvents::IN | IoEvents::RDNORM | IoEvents::HUP);
-    }
-    true
-}
-
-/// Returns `true` if `pid` is a zombie (exited but not yet reaped).
-pub fn is_zombie_pid(pid: Pid) -> bool {
-    matches!(
-        PROCESS_TABLE.read().get(&pid),
-        Some(ProcessIdentityEntry::Zombie(_))
-    )
-}
-
-/// Returns the credential snapshot for a zombie PID, or `None` if not a zombie.
-///
-/// Used by `check_kill_permission` to authorise signals to zombies whose
-/// task has already been GC'd.  Mirrors Linux behaviour where `task_struct`
-/// (and its `cred`) lives until the zombie is reaped by `waitpid`.
-pub fn get_zombie_cred(pid: Pid) -> Option<Arc<Cred>> {
-    let process_table = PROCESS_TABLE.read();
-    let ProcessIdentityEntry::Zombie(zombie) = process_table.get(&pid)? else {
-        return None;
-    };
-    Some(zombie.cred.clone())
-}
-
-pub fn is_zombie_clone_child(pid: Pid) -> Option<bool> {
-    let process_table = PROCESS_TABLE.read();
-    let ProcessIdentityEntry::Zombie(zombie) = process_table.get(&pid)? else {
-        return None;
-    };
-    Some(zombie.is_clone_child)
-}
-
-pub fn zombie_wait_parent_tid(pid: Pid) -> Option<Pid> {
-    let process_table = PROCESS_TABLE.read();
-    let ProcessIdentityEntry::Zombie(zombie) = process_table.get(&pid)? else {
-        return None;
-    };
-    Some(zombie.wait_parent_tid)
-}
-
-pub fn traced_zombies_for(tracer_pid: Pid) -> Vec<Arc<Process>> {
-    PROCESS_TABLE
-        .read()
-        .values()
-        .filter_map(|identity| {
-            let ProcessIdentityEntry::Zombie(zombie) = identity else {
-                return None;
-            };
-            (zombie.ptrace_tracer_pid == Some(tracer_pid)).then(|| zombie.process.clone())
-        })
-        .collect()
-}
-
 /// Detach every live tracee that still points at `tracer_pid`.
 ///
 /// A ptrace relationship must not outlive the tracer. Otherwise a tracee can
@@ -349,22 +128,6 @@ pub fn detach_live_tracees_of(tracer_pid: Pid) {
         tracee.clear_ptrace_tracer_pid();
         tracee.set_ptrace_options(0);
     }
-}
-
-/// Finds the process with the given PID.
-///
-/// A zombie process may no longer have live [`ProcessData`] after its last
-/// thread exits, but POSIX process-id queries such as `getpgid(pid)` and
-/// `kill(pid, 0)` must still see it until the parent reaps it.
-pub fn get_process(pid: Pid) -> AxResult<Arc<Process>> {
-    if pid == 0 {
-        return Ok(current().as_thread().proc_data.proc.clone());
-    }
-    PROCESS_TABLE
-        .read()
-        .get(&pid)
-        .and_then(ProcessIdentityEntry::process)
-        .ok_or(AxError::NoSuchProcess)
 }
 
 /// Finds the credentials for a process that may already be a zombie.
@@ -401,12 +164,8 @@ pub fn register_process_group(pg: &Arc<ProcessGroup>) {
 }
 
 fn find_process_group_by_member(pgid: Pid) -> Option<Arc<ProcessGroup>> {
-    for process in PROCESS_TABLE
-        .read()
-        .values()
-        .filter_map(ProcessIdentityEntry::process)
-    {
-        let pg = process.group();
+    for proc_data in processes() {
+        let pg = proc_data.proc.group();
         if pg.pgid() == pgid {
             return Some(pg);
         }
@@ -632,6 +391,9 @@ ktracepoint::define_event_trace!(
 pub fn do_exit(exit_code: i32, group_exit: bool) {
     let curr = current();
     let thr = curr.as_thread();
+    if !thr.begin_exit() {
+        return;
+    }
 
     info!("{} exit with code: {}", curr.id_name(), exit_code);
 
@@ -686,7 +448,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
-    if process.exit_thread(thr.tid(), exit_code) {
+    let (utime, stime) = task_cpu_time(&curr);
+    let thread_exit = process.exit_thread(thr.tid(), exit_code, ProcessCpuTime::new(utime, stime));
+    if let ThreadExit::Last(process_cpu_time) = thread_exit {
         if let Err(error) = crate::cgroup::exit_process(process.pid() as u32) {
             warn!("failed to release cgroup membership: {error}");
         }
@@ -711,27 +475,27 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         crate::syscall::release_pid_locks(process.pid());
         crate::syscall::release_pid_flock_locks(process.pid());
 
-        // Snapshot children BEFORE process.exit() reparents them to init
-        // via mem::take. Otherwise process.children() returns an empty
+        // Snapshot children before reparenting them. Otherwise
+        // process.children() returns an empty
         // list and pdeathsig never reaches the real children.
         let children_snapshot = process.children();
+        let orphan_reaper = orphan_reaper_for(process);
+        process.reparent_children_to(&orphan_reaper);
 
-        // Replace the live resource entry with the zombie snapshot while the
-        // same registry write lock publishes Process::exit(). Readers never
-        // cross a gap between separate live and zombie tables.
+        // Freeze all Linux-visible exit data in the generation-specific PID
+        // identity. This is the sole Live -> Zombie state transition.
         let zombie_cred = thr.cred();
         let ptrace_tracer_pid = thr.proc_data.ptrace_tracer_pid();
         let is_clone_child = thr.proc_data.is_clone_child();
         let wait_parent_tid = thr.proc_data.wait_parent_tid;
         publish_zombie(
             &thr.proc_data,
-            ZombieEntry {
-                process: process.clone(),
-                exit_event: thr.proc_data.exit_event.clone(),
+            ZombieSnapshot {
                 cred: zombie_cred,
                 ptrace_tracer_pid,
                 is_clone_child,
                 wait_parent_tid,
+                cpu_time: process_cpu_time,
             },
         )
         .expect("last process thread must own one live PID identity");
@@ -790,17 +554,14 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                 drop(pid_ns_lock);
                 drop(ns);
 
-                let proc_table = PROCESS_TABLE.read();
-                let victims: Vec<Pid> = proc_table
-                    .values()
-                    .filter_map(ProcessIdentityEntry::live_data)
+                let victims: Vec<Pid> = processes()
+                    .into_iter()
                     .filter(|pd| {
                         pd.proc.pid() != process.pid()
                             && Arc::as_ptr(&pd.nsproxy.lock().pid_ns) as usize == ns_ptr
                     })
                     .map(|pd| pd.proc.pid())
                     .collect();
-                drop(proc_table);
 
                 let sig = SignalInfo::new_kernel(Signo::SIGKILL);
                 for pid in victims {
