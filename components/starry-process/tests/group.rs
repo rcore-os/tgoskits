@@ -58,8 +58,8 @@ fn cleanup() {
     let group = Arc::downgrade(&child.create_group().unwrap());
     assert!(group.upgrade().is_some());
 
-    child.exit();
-    child.free();
+    assert!(child.exit());
+    assert!(child.reap());
     drop(child);
     assert!(group.upgrade().is_none());
 }
@@ -133,8 +133,8 @@ fn cleanup_processes() {
     let parent = init_proc().new_child();
     let group = parent.create_group().unwrap();
 
-    parent.exit();
-    parent.free();
+    assert!(parent.exit());
+    assert!(parent.reap());
     drop(parent);
 
     assert!(group.processes().is_empty());

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use starry_process::init_proc;
+use starry_process::{ProcessLifecycle, init_proc};
 
 mod common;
 use common::ProcessExt;
@@ -17,24 +17,36 @@ fn child() {
 fn exit() {
     let parent = init_proc();
     let child = parent.new_child();
-    child.exit();
+    assert!(child.exit());
     assert!(child.is_zombie());
+    assert_eq!(child.lifecycle(), ProcessLifecycle::Zombie);
     assert!(parent.children().iter().any(|c| Arc::ptr_eq(c, &child)));
 }
 
 #[test]
-#[should_panic]
-fn free_not_zombie() {
-    init_proc().new_child().free();
+fn live_process_cannot_be_reaped() {
+    let child = init_proc().new_child();
+    assert!(!child.reap());
+    assert_eq!(child.lifecycle(), ProcessLifecycle::Live);
 }
 
 #[test]
-fn free() {
+fn reap_is_a_unique_state_transition() {
     let parent = init_proc().new_child();
     let child = parent.new_child();
-    child.exit();
-    child.free();
+    assert!(child.exit());
+    assert!(child.reap());
+    assert!(!child.reap());
+    assert_eq!(child.lifecycle(), ProcessLifecycle::Reaped);
+    assert!(child.parent().is_none());
     assert!(parent.children().is_empty());
+    assert!(
+        !child
+            .group()
+            .processes()
+            .iter()
+            .any(|process| Arc::ptr_eq(process, &child))
+    );
 }
 
 #[test]
@@ -44,7 +56,7 @@ fn reap() {
     let parent = init.new_child();
     let child = parent.new_child();
 
-    parent.exit();
+    assert!(parent.exit());
     assert!(Arc::ptr_eq(&init, &child.parent().unwrap()));
 }
 
@@ -71,7 +83,7 @@ fn reap_to_nearest_child_subreaper() {
     let parent = subreaper.new_child();
     let child = parent.new_child();
 
-    parent.exit();
+    assert!(parent.exit());
 
     assert!(Arc::ptr_eq(&subreaper, &child.parent().unwrap()));
     assert!(subreaper.children().iter().any(|c| Arc::ptr_eq(c, &child)));
@@ -89,7 +101,7 @@ fn reap_to_nearest_nested_child_subreaper() {
     let parent = inner.new_child();
     let child = parent.new_child();
 
-    parent.exit();
+    assert!(parent.exit());
 
     assert!(Arc::ptr_eq(&inner, &child.parent().unwrap()));
 }
@@ -105,10 +117,10 @@ fn exiting_child_subreaper_reparents_to_next_subreaper() {
     let parent = inner.new_child();
     let child = parent.new_child();
 
-    parent.exit();
+    assert!(parent.exit());
     assert!(Arc::ptr_eq(&inner, &child.parent().unwrap()));
 
-    inner.exit();
+    assert!(inner.exit());
     assert!(Arc::ptr_eq(&outer, &child.parent().unwrap()));
 }
 

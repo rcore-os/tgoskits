@@ -18,8 +18,8 @@ use crate::{
     file::{PidFd, get_file_like},
     task::{
         AsThread, JobStatus, ProcessData, decode_wait_status, get_process_data, get_task,
-        get_zombie_cred, is_zombie_clone_child, processes, remove_process, traced_zombies_for,
-        unregister_zombie, wait_on_pollset, zombie_wait_parent_tid,
+        get_zombie_cred, is_zombie_clone_child, processes, reap_process, traced_zombies_for,
+        wait_on_pollset, zombie_wait_parent_tid,
     },
 };
 
@@ -285,25 +285,21 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             data.mark_ptrace_stop_reported_for(stop_tid);
             return Ok(Some(wait_pid as _));
         } else if let Some(child) = children.iter().find(|child| child.is_zombie()) {
-            // Accumulate child's CPU time before freeing.
-            for tid in child.threads() {
-                if let Ok(task) = get_task(tid) {
-                    let thr = task.as_thread();
-                    let (utime, stime) = thr.time.borrow().output();
-                    proc_data.add_child_cpu_time(utime, stime);
-                }
-            }
-            // Copy status to userspace before `free` / `unregister_zombie`. If
-            // `vm_write` fails we must leave the zombie intact so the parent can
-            // retry; freeing first would strand the process and corrupt wait
-            // accounting (Linux also publishes the status byte before full reap).
+            // Copy status before claiming the unique reap transition. A failed
+            // user write leaves the zombie available for a later retry.
             if let Some(exit_code) = exit_code.nullable() {
                 exit_code.vm_write(child.exit_code())?;
             }
-            child.free();
-            remove_process(child.pid());
-            unregister_zombie(child.pid());
-            return Ok(Some(child.pid() as _));
+            if reap_process(child) {
+                for tid in child.threads() {
+                    if let Ok(task) = get_task(tid) {
+                        let thr = task.as_thread();
+                        let (utime, stime) = thr.time.borrow().output();
+                        proc_data.add_child_cpu_time(utime, stime);
+                    }
+                }
+                return Ok(Some(child.pid() as _));
+            }
         }
 
         // Job-control status: a stopped (WUNTRACED) or continued (WCONTINUED)
@@ -334,7 +330,9 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
             }
         }
 
-        if options.contains(WaitPidOptions::WNOHANG) {
+        if children.iter().all(|child| child.is_reaped()) {
+            Err(AxError::from(LinuxError::ECHILD))
+        } else if options.contains(WaitPidOptions::WNOHANG) {
             Ok(Some(0))
         } else {
             Ok(None)
@@ -478,7 +476,10 @@ pub fn sys_waitid(
                 infop.vm_write(siginfo.0)?;
             }
 
-            if !options.contains(WaitIdOptions::WNOWAIT) {
+            if options.contains(WaitIdOptions::WNOWAIT) {
+                return Ok(Some(0));
+            }
+            if reap_process(child) {
                 for tid in child.threads() {
                     if let Ok(task) = get_task(tid) {
                         let thr = task.as_thread();
@@ -486,14 +487,13 @@ pub fn sys_waitid(
                         proc_data.add_child_cpu_time(utime, stime);
                     }
                 }
-                child.free();
-                remove_process(child_pid);
-                unregister_zombie(child_pid);
+                return Ok(Some(0));
             }
-            return Ok(Some(0));
         }
 
-        if options.contains(WaitIdOptions::WNOHANG) {
+        if children.iter().all(|child| child.is_reaped()) {
+            Err(AxError::from(LinuxError::ECHILD))
+        } else if options.contains(WaitIdOptions::WNOHANG) {
             if let Some(infop) = infop.nullable() {
                 let zeroed: linux_raw_sys::general::siginfo = unsafe { core::mem::zeroed() };
                 infop.vm_write(zeroed)?;
