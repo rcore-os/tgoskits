@@ -17,7 +17,7 @@ default = []
 axaddrspace.workspace = true
 axvm-types.workspace = true
 axvirtio-common.workspace = true
-spin = { workspace = true, features = ["mutex", "spin_mutex"] }
+ax-kspin.workspace = true
 log.workspace = true
 
 [dev-dependencies]

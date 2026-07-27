@@ -8,9 +8,9 @@
 
 use alloc::vec::Vec;
 
+use ax_kspin::{SpinNoIrq as Mutex, SpinNoIrqGuard as MutexGuard};
 use axaddrspace::GuestMemoryAccessor;
 use axvm_types::{AccessWidth, GuestPhysAddr};
-use spin::Mutex;
 
 use crate::{VirtioQueue, VirtioResult, constants as vc, error::VirtioError, mmio::transport};
 
@@ -94,7 +94,7 @@ impl<T: GuestMemoryAccessor + Clone> VirtioMmioState<T> {
     }
 
     /// Lock the queue vector for a device data path.
-    pub fn queues_lock(&self) -> spin::MutexGuard<'_, Vec<VirtioQueue<T>>> {
+    pub fn queues_lock(&self) -> MutexGuard<'_, Vec<VirtioQueue<T>>> {
         self.queues.lock()
     }
 

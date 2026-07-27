@@ -2,13 +2,13 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
+use ax_kspin::SpinNoIrq as Mutex;
 use axaddrspace::GuestMemoryAccessor;
 use axvirtio_common::{
     DescriptorChain, MmioReadOutcome, MmioWriteAction, VirtioMmioState, VirtioQueue, VirtioResult,
     constants as vc,
 };
 use axvm_types::{AccessWidth, GuestPhysAddr};
-use spin::Mutex;
 
 use crate::{
     NetError, NetworkBackend, VirtioNetConfig, VirtioNetHdr, config::LinkStatus, constants::*,

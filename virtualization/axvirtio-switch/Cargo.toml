@@ -14,4 +14,4 @@ categories = ["no-std", "embedded", "network-programming"]
 default = []
 
 [dependencies]
-spin = { workspace = true, features = ["mutex", "spin_mutex"] }
+ax-kspin.workspace = true

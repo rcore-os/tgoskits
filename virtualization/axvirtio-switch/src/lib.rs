@@ -21,7 +21,7 @@ extern crate alloc;
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use spin::Mutex;
+use ax_kspin::SpinNoIrq as Mutex;
 
 /// Typed identity of one switch port.
 ///
