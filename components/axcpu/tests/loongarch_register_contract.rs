@@ -10,6 +10,8 @@
 
 const TRAP_MACROS: &str = include_str!("../src/loongarch64/macros.rs");
 const TRAP_ENTRY: &str = include_str!("../src/loongarch64/trap.S");
+const TRAP_HANDLER: &str = include_str!("../src/loongarch64/trap.rs");
+const IRQ_STATE: &str = include_str!("../src/loongarch64/irq.rs");
 const TASK_CONTEXT: &str = include_str!("../src/loongarch64/context.rs");
 const TASK_LOCAL: &str = include_str!("../src/task_local.rs");
 const ARCH_ASM: &str = include_str!("../src/loongarch64/asm.rs");
@@ -166,7 +168,7 @@ fn current_scheduler_installs_address_space_before_the_raw_switch() {
             && TASK_CONTEXT.contains("pub fn set_page_table_root")
             && prepare.contains("write_user_page_table")
             && prepare.contains("flush_tlb"),
-        "the existing axtask model must retain task-owned address-space selection"
+        "the task runtime model must retain task-owned address-space selection"
     );
 
     let raw_switch = section(
@@ -197,5 +199,37 @@ fn raw_tp_access_is_typed_as_task_tls() {
     assert!(
         !ARCH_ASM.contains("thread pointer of the current CPU"),
         "tp documentation must not describe task state as CPU-local state"
+    );
+}
+
+#[test]
+fn idle_wait_atomically_enables_irqs_and_fast_forwards_interrupt_return() {
+    let idle_wait = section(
+        ARCH_ASM,
+        "__axcpu_wait_for_irqs_disabled:",
+        "__axcpu_loongarch_idle_exit:",
+    );
+    assert_in_order(idle_wait, "csrxchg", "idle 0");
+    assert!(
+        ARCH_ASM.contains("__axcpu_loongarch_idle_start:")
+            && ARCH_ASM.contains("__axcpu_loongarch_idle_exit:"),
+        "the trap handler needs stable bounds for the LoongArch idle IRQ window"
+    );
+    assert!(
+        TRAP_HANDLER.contains("fast_forward_idle_interrupt")
+            && TRAP_HANDLER.contains("__axcpu_loongarch_idle_exit"),
+        "an IRQ inside the enable-plus-idle window must resume at idle_exit"
+    );
+}
+
+#[test]
+fn empty_pending_state_is_a_spurious_interrupt_not_an_exception() {
+    assert!(
+        IRQ_STATE.contains("estat.ecode() == 0")
+            && IRQ_STATE.contains("estat.is() == 0")
+            && IRQ_STATE.contains("ecfg::read().vs() == 0")
+            && TRAP_HANDLER.contains("let spurious_interrupt = is_spurious_interrupt(&estat)")
+            && TRAP_HANDLER.contains("Trap::Unknown if spurious_interrupt"),
+        "ecode zero with no pending line is a consumed spurious interrupt"
     );
 }

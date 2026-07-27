@@ -70,14 +70,13 @@ use core::{
 use ax_alloc::GlobalPage;
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::paging::MappingFlags;
-use ax_task::IrqNotify;
 
 use super::{
     hw,
     sampling::{self, SampleSlot},
     sideband::{self, Mmap2Info, SidebandTarget},
 };
-use crate::task::Thread;
+use crate::task::{Thread, future::IrqNotify};
 
 // `PROT_*` / `MAP_*` values for the `prot`/`flags` fields of MMAP2 records.
 const PROT_READ: u32 = 1;
@@ -785,7 +784,7 @@ pub fn on_exec_sideband(thr: &Thread) {
     }
 
     // COMM: the new process name (this hook runs in the exec'd task's context).
-    let curr = ax_task::current();
+    let curr = crate::task::current_user_task();
     let name = curr.name();
     for wt in &targets {
         if wt.comm {

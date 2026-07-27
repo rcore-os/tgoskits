@@ -13,9 +13,8 @@ use ax_errno::{AxError, AxResult, LinuxError};
 use ax_memory_addr::PAGE_SIZE_4K;
 use ax_memory_addr::{MemoryAddr, VirtAddr};
 use ax_runtime::hal::paging::MappingFlags;
-use ax_task::current;
 use starry_process::Pid;
-use starry_signal::Signo;
+use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr, vm_read_slice, vm_write_slice};
 
 #[cfg(any(
@@ -28,7 +27,7 @@ use crate::task::PtraceStopFpData;
 use crate::task::PtraceStopFpData;
 use crate::{
     mm::{AddrSpace, IoVec},
-    task::{AsThread, Cred, ProcessData, get_process_cred, get_process_data, get_task},
+    task::{Cred, ProcessData, current_user_task, get_process_cred, get_process_data, get_task},
 };
 
 const PTRACE_TRACEME: u32 = 0;
@@ -267,7 +266,7 @@ pub fn sys_ptrace(request: u32, pid: usize, addr: usize, data: usize) -> AxResul
 }
 
 fn ptrace_traceme() -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let proc_data = &curr.as_thread().proc_data;
     if proc_data.proc.parent().is_none()
         || proc_data.is_ptrace_traceme()
@@ -295,7 +294,7 @@ fn ptrace_cont(pid: usize, data: usize) -> AxResult<isize> {
     tracee.set_ptrace_singlestep_for(tid, false);
     tracee.set_ptrace_syscall_trace_for(tid, false);
     tracee.resume_ptrace_stop_with_signal_for(tid, signo);
-    ax_task::yield_now();
+    crate::task::yield_now();
     Ok(0)
 }
 
@@ -324,7 +323,7 @@ fn ptrace_singlestep(pid: usize, data: usize) -> AxResult<isize> {
 }
 
 fn ptrace_attach(pid: usize) -> AxResult<isize> {
-    let tracer_pid = current().as_thread().proc_data.proc.pid();
+    let tracer_pid = current_user_task().as_thread().proc_data.proc.pid();
     let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     if tracee_pid == tracer_pid {
         return Err(AxError::from(LinuxError::EPERM));
@@ -404,13 +403,7 @@ fn ptrace_getsiginfo(pid: usize, data: usize) -> AxResult<isize> {
         target_arch = "x86_64"
     ))]
     {
-        let bytes = unsafe {
-            slice::from_raw_parts(
-                (&siginfo.0 as *const linux_raw_sys::general::siginfo_t).cast::<u8>(),
-                size_of::<starry_signal::SignalInfo>(),
-            )
-        };
-        vm_write_slice(data as *mut u8, bytes)?;
+        (data as *mut SignalInfo).vm_write(siginfo)?;
         Ok(0)
     }
 
@@ -439,7 +432,7 @@ fn ptrace_setsiginfo(pid: usize, data: usize) -> AxResult<isize> {
     let (tracee, tid) = ptrace_stopped_tracee_with_tid(pid)?;
     let siginfo = ptrace_read_user_siginfo(data)?;
     let signo = ptrace_siginfo_signo(&siginfo)?;
-    if !tracee.set_ptrace_stop_siginfo_for(tid, signo, starry_signal::SignalInfo(siginfo)) {
+    if !tracee.set_ptrace_stop_siginfo_for(tid, signo, siginfo) {
         return Err(AxError::from(LinuxError::ESRCH));
     }
     Ok(0)
@@ -599,7 +592,7 @@ fn ptrace_setfpregs(pid: usize, data: usize) -> AxResult<isize> {
 }
 
 fn ptrace_seize(pid: usize, _addr: usize) -> AxResult<isize> {
-    let tracer_pid = current().as_thread().proc_data.proc.pid();
+    let tracer_pid = current_user_task().as_thread().proc_data.proc.pid();
     let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
     if tracee_pid == tracer_pid {
         return Err(AxError::from(LinuxError::EPERM));
@@ -869,12 +862,12 @@ fn ptrace_read_user_fpregs(data: usize) -> AxResult<ArchFpRegs> {
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_read_user_siginfo(data: usize) -> AxResult<linux_raw_sys::general::siginfo_t> {
-    let mut siginfo = MaybeUninit::<linux_raw_sys::general::siginfo_t>::uninit();
+fn ptrace_read_user_siginfo(data: usize) -> AxResult<SignalInfo> {
+    let mut siginfo = MaybeUninit::<SignalInfo>::uninit();
     let bytes = unsafe {
         slice::from_raw_parts_mut(
             siginfo.as_mut_ptr().cast::<MaybeUninit<u8>>(),
-            size_of::<linux_raw_sys::general::siginfo_t>(),
+            size_of::<SignalInfo>(),
         )
     };
     starry_vm::vm_read_slice(data as *const u8, bytes)?;
@@ -887,9 +880,8 @@ fn ptrace_read_user_siginfo(data: usize) -> AxResult<linux_raw_sys::general::sig
     target_arch = "loongarch64",
     target_arch = "x86_64"
 ))]
-fn ptrace_siginfo_signo(siginfo: &linux_raw_sys::general::siginfo_t) -> AxResult<Signo> {
-    let signo = unsafe { siginfo.__bindgen_anon_1.__bindgen_anon_1.si_signo };
-    Signo::from_repr(signo as u8).ok_or(AxError::InvalidInput)
+fn ptrace_siginfo_signo(siginfo: &SignalInfo) -> AxResult<Signo> {
+    Signo::from_repr(siginfo.raw_signo() as u8).ok_or(AxError::InvalidInput)
 }
 
 #[cfg(any(
@@ -1065,7 +1057,7 @@ fn process_vm_copy(
 
 fn process_vm_tracee(pid: usize) -> AxResult<Arc<ProcessData>> {
     let tracee_pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
-    let current_pid = current().as_thread().proc_data.proc.pid();
+    let current_pid = current_user_task().as_thread().proc_data.proc.pid();
     if tracee_pid == current_pid {
         get_process_data(tracee_pid).map_err(|_| AxError::from(LinuxError::ESRCH))
     } else {
@@ -1131,7 +1123,7 @@ fn ptrace_stopped_tracee(pid: usize) -> AxResult<Arc<ProcessData>> {
 
 fn ptrace_stopped_tracee_with_tid(pid: usize) -> AxResult<(Arc<ProcessData>, u32)> {
     let pid = Pid::try_from(pid).map_err(|_| AxError::from(LinuxError::ESRCH))?;
-    let tracer_pid = current().as_thread().proc_data.proc.pid();
+    let tracer_pid = current_user_task().as_thread().proc_data.proc.pid();
     let tracee = ptrace_tracee_by_pid_or_tid(pid)?;
     let is_tracer = (tracee.is_ptrace_traceme() || tracee.is_ptrace_attached())
         && tracee
@@ -1804,25 +1796,56 @@ fn ptrace_write_u32_unlocked(aspace: &mut AddrSpace, addr: usize, data: u32) -> 
     Ok(())
 }
 
-pub fn ptrace_notify_clone(parent_pid: Pid, parent_tid: Pid, child_pid: Pid, event: u32) -> bool {
+/// Ptrace clone event whose parent-visible mutation is deferred until commit.
+pub struct PreparedPtraceCloneEvent {
+    parent: Arc<ProcessData>,
+    parent_tid: Pid,
+    child_pid: Pid,
+    event: u32,
+}
+
+impl PreparedPtraceCloneEvent {
+    /// Returns the tracer inherited by a newly forked tracee.
+    pub fn tracer_pid(&self) -> Option<Pid> {
+        self.parent.ptrace_tracer_pid()
+    }
+
+    /// Publishes the clone event after the child is fully registered.
+    pub fn publish(self) {
+        self.parent
+            .set_ptrace_pending_event(self.parent_tid, self.event, self.child_pid as usize);
+    }
+}
+
+/// Validates and prepares a ptrace clone event without mutating parent state.
+pub fn prepare_ptrace_clone_event(
+    parent_pid: Pid,
+    parent_tid: Pid,
+    child_pid: Pid,
+    event: u32,
+) -> Option<PreparedPtraceCloneEvent> {
     let Ok(parent) = get_process_data(parent_pid) else {
-        return false;
+        return None;
     };
     if !parent.is_ptrace_traceme() && !parent.is_ptrace_attached() {
-        return false;
+        return None;
     }
     let options = parent.ptrace_options();
     let option_flag = match event {
         PTRACE_EVENT_FORK => PTRACE_O_TRACEFORK,
         PTRACE_EVENT_VFORK => PTRACE_O_TRACEVFORK,
         PTRACE_EVENT_CLONE => PTRACE_O_TRACECLONE,
-        _ => return false,
+        _ => return None,
     };
     if options & option_flag == 0 {
-        return false;
+        return None;
     }
-    parent.set_ptrace_pending_event(parent_tid, event, child_pid as usize);
-    true
+    Some(PreparedPtraceCloneEvent {
+        parent,
+        parent_tid,
+        child_pid,
+        event,
+    })
 }
 
 pub fn ptrace_notify_exec(tracee_pid: Pid) -> bool {

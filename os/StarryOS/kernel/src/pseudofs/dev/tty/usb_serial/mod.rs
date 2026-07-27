@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet};
 use spin::LazyLock;
 
@@ -47,7 +47,7 @@ struct UsbSerialBackendState {
     // Owns the usbfs lease and claimed interface. Keeping this behind the tty
     // backend, instead of per open file, matches the current static devfs node
     // model and lets the RX/TX workers share one hardware session.
-    session: Mutex<Option<Arc<UsbSerialSession>>>,
+    session: PiMutex<Option<Arc<UsbSerialSession>>>,
     baudrate: AtomicU32,
     started: AtomicBool,
     session_closing: AtomicBool,
@@ -58,7 +58,7 @@ struct UsbSerialBackendState {
     dropped_rx: AtomicUsize,
     input_source: Arc<PollSet>,
     output_source: Arc<PollSet>,
-    output_lock: Mutex<()>,
+    output_lock: PiMutex<()>,
 }
 
 #[derive(Clone)]
@@ -84,7 +84,7 @@ impl UsbSerialTtyDriver {
 fn new_usb_serial_tty(index: usize) -> Arc<UsbSerialTtyDriver> {
     let backend = Arc::new(UsbSerialBackendState {
         index,
-        session: Mutex::new(None),
+        session: PiMutex::new(None),
         baudrate: AtomicU32::new(USB_SERIAL_DEFAULT_BAUDRATE),
         started: AtomicBool::new(false),
         session_closing: AtomicBool::new(false),
@@ -95,7 +95,7 @@ fn new_usb_serial_tty(index: usize) -> Arc<UsbSerialTtyDriver> {
         dropped_rx: AtomicUsize::new(0),
         input_source: Arc::new(PollSet::new()),
         output_source: Arc::new(PollSet::new()),
-        output_lock: Mutex::new(()),
+        output_lock: PiMutex::new(()),
     });
 
     let terminal = Arc::new(Terminal::default());
@@ -384,7 +384,7 @@ impl UsbSerialBackendState {
         }
 
         let backend = self.clone();
-        ax_task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || {
                 let mut buf = [0u8; USB_SERIAL_RX_CHUNK];
                 loop {
@@ -412,7 +412,7 @@ impl UsbSerialBackendState {
                         }
                     };
                     match backend.bulk_in_rx(&session, &mut buf) {
-                        Ok(0) => ax_task::yield_now(),
+                        Ok(0) => crate::task::yield_now(),
                         Ok(actual) => {
                             backend.push_rx(&buf[..actual.min(buf.len())]);
                             if backend.session_closing.load(Ordering::Acquire) {
@@ -445,7 +445,7 @@ impl UsbSerialBackendState {
         }
 
         let backend = self.clone();
-        ax_task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || loop {
                 let result = {
                     let _guard = backend.output_lock.lock();

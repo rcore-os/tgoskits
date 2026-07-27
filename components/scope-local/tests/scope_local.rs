@@ -120,7 +120,9 @@ fn pinned_access_does_not_initialize_an_item() {
         })
     }
     .unwrap();
-    ActiveScope::set_global();
+    // SAFETY: this serialized host test owns the raw activation installed
+    // above and releases it before `scope` is dropped.
+    unsafe { ActiveScope::set_global() };
     assert_eq!(PINNED_INIT_COUNT.load(Ordering::Relaxed), 1);
 }
 
@@ -142,7 +144,8 @@ fn scope() {
     unsafe { ActiveScope::set(&scope) };
     assert_eq!(DATA.with(|value| *value), 42);
 
-    ActiveScope::set_global();
+    // SAFETY: this test owns the raw activation installed above.
+    unsafe { ActiveScope::set_global() };
     assert_eq!(DATA.with(|value| *value), 0);
     assert_eq!(*DATA.scope(&scope), 42);
 }
@@ -203,7 +206,8 @@ fn thread_share_item() {
         unsafe { ActiveScope::set(&scope) };
         assert!(SHARED.with(Arc::strong_count) >= 2);
         assert!(SHARED.with(|shared| Arc::ptr_eq(shared, &global)));
-        ActiveScope::set_global();
+        // SAFETY: this worker owns the raw activation installed above.
+        unsafe { ActiveScope::set_global() };
     })
     .join()
     .unwrap();
@@ -226,7 +230,8 @@ fn thread_share_scope() {
         unsafe { ActiveScope::set(&worker_scope) };
         assert_eq!(SHARED.with(Arc::strong_count), 1);
         assert!(SHARED.with(|shared| Arc::ptr_eq(shared, &SHARED.scope(&worker_scope))));
-        ActiveScope::set_global();
+        // SAFETY: this worker owns the raw activation installed above.
+        unsafe { ActiveScope::set_global() };
     })
     .join()
     .unwrap();
@@ -252,7 +257,8 @@ fn thread_isolation() {
         unsafe { ActiveScope::set(&scope) };
         assert_eq!(DATA.with(|value| *value), cpu_id);
         DATA2.with(|value| value.store(cpu_id, Ordering::Relaxed));
-        ActiveScope::set_global();
+        // SAFETY: this worker owns the raw activation installed above.
+        unsafe { ActiveScope::set_global() };
     })
     .join()
     .unwrap();

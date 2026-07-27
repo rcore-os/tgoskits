@@ -1,9 +1,12 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use core::time::Duration;
 
 use ax_errno::{AxError, AxResult};
+use ax_kernel_guard::NoPreemptIrqSave;
 use axpoll::IoEvents;
-use rdif_serial::{Config, ConfigError, RxErrorFlags, RxFlag, RxSample, SerialEventSet};
+use rdif_serial::{
+    Config, ConfigError, RxErrorFlags, RxFlag, RxSample, SerialEventSet, UartPort, UartRegisterGate,
+};
 
 use super::{
     RuntimeShared, RxItem,
@@ -17,6 +20,8 @@ const TX_BUDGET: usize = 64;
 
 pub(super) struct SerialWorker {
     shared: Arc<RuntimeShared>,
+    port: Box<dyn UartPort>,
+    register_gate: Arc<UartRegisterGate>,
     irq_rx: SpscConsumer<RxSample>,
     rx_output: SpscProducer<RxItem>,
     pending_rx: Option<PendingRx>,
@@ -30,11 +35,15 @@ pub(super) struct SerialWorker {
 impl SerialWorker {
     pub(super) fn new(
         shared: Arc<RuntimeShared>,
+        port: Box<dyn UartPort>,
+        register_gate: Arc<UartRegisterGate>,
         irq_rx: SpscConsumer<RxSample>,
         rx_output: SpscProducer<RxItem>,
     ) -> Self {
         Self {
             shared,
+            port,
+            register_gate,
             irq_rx,
             rx_output,
             pending_rx: None,
@@ -48,8 +57,15 @@ impl SerialWorker {
 
     pub(super) fn run(mut self) {
         loop {
-            self.shared.bridge.notify.drain();
-            let force_service = self.process_control_commands();
+            let register_retry = self.shared.bridge.take_register_retry();
+            if register_retry {
+                // The IRQ endpoint could not acquire the register gate, so the
+                // worker must poll the ordinary port and restore RX masking.
+                // TX submissions remain their own source of truth, while
+                // update_tx_idle below also recovers a missed TX-empty edge.
+                self.pending_rearm |= SerialEventSet::RX;
+            }
+            let force_service = self.process_control_commands() || register_retry;
             let mut events = core::mem::take(&mut self.immediate_events);
 
             if let Some(event) = self.shared.bridge.latch.take() {
@@ -134,9 +150,9 @@ impl SerialWorker {
             }
 
             if self.shared.polling {
-                ax_task::sleep(Duration::from_millis(1));
+                crate::task::sleep(Duration::from_millis(1));
             } else {
-                self.shared.bridge.notify.wait();
+                self.shared.bridge.wait();
             }
         }
     }
@@ -172,15 +188,18 @@ impl SerialWorker {
         if self.shared.started() {
             return Ok(());
         }
-        {
-            let mut port = self.shared.port.lock();
-            port.startup(config).map_err(map_config_error)?;
+        access_port(&self.register_gate, self.port.as_mut(), |port| {
+            port.startup(config)?;
             port.mask_all();
-        }
+            Ok::<(), ConfigError>(())
+        })
+        .ok_or(AxError::ResourceBusy)?
+        .map_err(map_config_error)?;
         if let Err(err) = self.shared.enable_irq() {
-            let mut port = self.shared.port.lock();
-            port.mask_all();
-            port.shutdown();
+            let _ = access_port(&self.register_gate, self.port.as_mut(), |port| {
+                port.mask_all();
+                port.shutdown();
+            });
             return Err(err);
         }
         self.shared.ingress.start_accepting();
@@ -198,11 +217,10 @@ impl SerialWorker {
         self.immediate_events = SerialEventSet::empty();
         self.latched_rx_errors = RxErrorFlags::empty();
         self.port_rx_ready = false;
-        {
-            let mut port = self.shared.port.lock();
+        let _ = access_port(&self.register_gate, self.port.as_mut(), |port| {
             port.mask_all();
             port.shutdown();
-        }
+        });
         self.irq_rx.clear();
         self.pending_rx = None;
     }
@@ -211,11 +229,11 @@ impl SerialWorker {
         if !self.shared.started() {
             return Err(AxError::BadState);
         }
-        let result = {
-            let mut port = self.shared.port.lock();
+        let result = access_port(&self.register_gate, self.port.as_mut(), |port| {
             port.mask_all();
             port.set_config(config).map_err(map_config_error)
-        };
+        })
+        .ok_or(AxError::ResourceBusy)?;
         self.pending_rearm |= SerialEventSet::RX;
         if self.pending_frame.is_some() || self.shared.ingress.has_pending() {
             self.pending_rearm |= SerialEventSet::TX_SPACE;
@@ -231,7 +249,7 @@ impl SerialWorker {
             self.shared.rx_source.wake(IoEvents::ERR | IoEvents::HUP);
             self.shared.tx_source.wake(IoEvents::ERR | IoEvents::HUP);
         }
-        self.shared.tx_progress.notify_all(true);
+        self.shared.tx_progress.notify_all();
     }
 
     fn service_rx(&mut self, path: RxPath) -> RxServiceOutcome {
@@ -247,7 +265,10 @@ impl SerialWorker {
             } else {
                 let next = match path {
                     RxPath::Irq => self.irq_rx.pop(),
-                    RxPath::Port => self.shared.port.lock().read_rx(),
+                    RxPath::Port => access_port(&self.register_gate, self.port.as_mut(), |port| {
+                        port.read_rx()
+                    })
+                    .flatten(),
                 };
                 let Some(sample) = next else {
                     source_drained = true;
@@ -300,14 +321,19 @@ impl SerialWorker {
         }
 
         if path == RxPath::Port && source_drained {
-            let ready = {
-                let mut port = self.shared.port.lock();
-                rearm_drained_rx(
-                    true,
-                    self.shared.polling,
-                    &mut self.pending_rearm,
-                    |sources| port.rearm(sources),
-                )
+            let mut pending_rearm = self.pending_rearm;
+            let ready = access_port(&self.register_gate, self.port.as_mut(), |port| {
+                rearm_drained_rx(true, self.shared.polling, &mut pending_rearm, |sources| {
+                    port.rearm(sources)
+                })
+            });
+            self.pending_rearm = pending_rearm;
+            let Some(ready) = ready else {
+                self.port_rx_ready = true;
+                return RxServiceOutcome {
+                    blocked: true,
+                    budget_exhausted: false,
+                };
             };
             if ready.has_rx() {
                 self.port_rx_ready = true;
@@ -330,7 +356,13 @@ impl SerialWorker {
     fn service_tx(&mut self) -> TxServiceOutcome {
         let mut remaining_budget = TX_BUDGET;
         let mut woke_space = false;
-        let mut port = self.shared.port.lock();
+        let irq_guard = NoPreemptIrqSave::new();
+        let Some(register_guard) = self.register_gate.try_enter() else {
+            return TxServiceOutcome {
+                blocked: true,
+                budget_exhausted: false,
+            };
+        };
 
         while remaining_budget > 0 {
             if self.pending_frame.is_none() {
@@ -344,10 +376,11 @@ impl SerialWorker {
             let cursor = self.pending_frame.as_mut().unwrap();
             let remaining = cursor.remaining();
             let limit = remaining.len().min(remaining_budget);
-            let written = port.write_tx(&remaining[..limit]);
+            let written = self.port.write_tx(&remaining[..limit]);
             if written == 0 {
                 self.pending_rearm |= SerialEventSet::TX_SPACE;
-                drop(port);
+                drop(register_guard);
+                drop(irq_guard);
                 if woke_space {
                     self.shared.publish_tx_space();
                 }
@@ -363,7 +396,8 @@ impl SerialWorker {
                 self.pending_frame = None;
             }
         }
-        drop(port);
+        drop(register_guard);
+        drop(irq_guard);
         if woke_space {
             self.shared.publish_tx_space();
         }
@@ -380,7 +414,10 @@ impl SerialWorker {
         let hardware_idle = if !self.shared.started() {
             true
         } else {
-            self.shared.port.lock().tx_idle()
+            access_port(&self.register_gate, self.port.as_mut(), |port| {
+                port.tx_idle()
+            })
+            .unwrap_or(false)
         };
         if !hardware_idle && !self.shared.polling {
             self.pending_rearm |= SerialEventSet::TX_SPACE;
@@ -406,10 +443,25 @@ impl SerialWorker {
             return;
         }
 
-        let ready = self.shared.port.lock().rearm(sources);
+        let Some(ready) = access_port(&self.register_gate, self.port.as_mut(), |port| {
+            port.rearm(sources)
+        }) else {
+            self.pending_rearm |= sources;
+            return;
+        };
         self.pending_rearm |= ready;
         self.immediate_events |= ready;
     }
+}
+
+fn access_port<R>(
+    gate: &UartRegisterGate,
+    port: &mut dyn UartPort,
+    operation: impl FnOnce(&mut dyn UartPort) -> R,
+) -> Option<R> {
+    let _irq_guard = NoPreemptIrqSave::new();
+    let _register_guard = gate.try_enter()?;
+    Some(operation(port))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

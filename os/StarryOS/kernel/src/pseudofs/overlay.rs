@@ -20,7 +20,7 @@ use core::{any::Any, task::Context};
 
 use ax_fs_ng::vfs::OpenOptions;
 use ax_kspin::SpinNoIrq;
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use axfs_ng_vfs::{
     DeviceId, DirEntry, DirEntrySink, DirNode, DirNodeOps, FileNode, FileNodeOps, Filesystem,
     FilesystemOps, FsIoEvents, FsPollable, Location, Metadata, MetadataUpdate, NodeFlags, NodeOps,
@@ -336,7 +336,7 @@ struct DirentInfo {
 struct OverlayDir {
     fs: Arc<OverlayFs>,
     /// Materialized upper directory for this overlay path, if it exists.
-    upper_dir: Mutex<Option<Location>>,
+    upper_dir: SpinMutex<Option<Location>>,
     /// Lower directories that still participate in this overlay directory.
     lower_dirs: Vec<Location>,
     /// Path from overlay root to this directory, used for deferred copy-up.
@@ -357,7 +357,7 @@ impl OverlayDir {
             |this| {
                 DirNode::new(Arc::new(Self {
                     fs,
-                    upper_dir: Mutex::new(upper_dir),
+                    upper_dir: SpinMutex::new(upper_dir),
                     lower_dirs,
                     path,
                     this: Some(this),
@@ -494,7 +494,7 @@ impl OverlayDir {
                 |this| {
                     DirNode::new(Arc::new(Self {
                         fs,
-                        upper_dir: Mutex::new(upper),
+                        upper_dir: SpinMutex::new(upper),
                         lower_dirs,
                         path,
                         this: Some(this),
@@ -506,7 +506,7 @@ impl OverlayDir {
             Ok(DirEntry::new_file(
                 FileNode::new(Arc::new(OverlayFile {
                     fs: self.fs.clone(),
-                    upper_dir: Mutex::new(self.existing_upper_dir()),
+                    upper_dir: SpinMutex::new(self.existing_upper_dir()),
                     parent_path: self.path.clone(),
                     name: name.to_string(),
                     upper,
@@ -709,7 +709,7 @@ impl DirNodeOps for OverlayDir {
 struct OverlayFile {
     fs: Arc<OverlayFs>,
     /// Materialized upper parent directory, if one exists.
-    upper_dir: Mutex<Option<Location>>,
+    upper_dir: SpinMutex<Option<Location>>,
     /// Parent path from overlay root, used to materialize the upper parent.
     parent_path: Vec<String>,
     name: String,

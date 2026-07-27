@@ -32,7 +32,14 @@ pub struct UserContext {
     pub gs_base: u64,
     /// Kernel FS base saved and restored exclusively by `enter_user`.
     kernel_fs_base: u64,
+    /// Explicitly initializes the tail bytes required by the 16-byte ABI alignment.
+    _reserved: u64,
 }
+
+// SAFETY: `TrapFrame` and every following field are integer-only, the explicit
+// tail word consumes the alignment padding, and the offset assertions below
+// pin that layout.
+unsafe impl bytemuck::NoUninit for UserContext {}
 
 const _: () = {
     // A privilege transition may align TSS.RSP0 down to 16 bytes before
@@ -47,6 +54,8 @@ const _: () = {
     assert!(
         offset_of!(UserContext, kernel_fs_base) == size_of::<TrapFrame>() + 2 * size_of::<u64>()
     );
+    assert!(offset_of!(UserContext, _reserved) == size_of::<TrapFrame>() + 3 * size_of::<u64>());
+    assert!(size_of::<UserContext>() == size_of::<TrapFrame>() + 4 * size_of::<u64>());
 };
 
 impl UserContext {
@@ -67,6 +76,7 @@ impl UserContext {
             fs_base: 0,
             gs_base: 0,
             kernel_fs_base: 0,
+            _reserved: 0,
         }
     }
 

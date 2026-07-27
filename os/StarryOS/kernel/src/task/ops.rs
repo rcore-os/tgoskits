@@ -1,4 +1,5 @@
 use alloc::{
+    collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -7,7 +8,7 @@ use core::ffi::c_long;
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::time::TimeValue;
-use ax_task::{AxTaskRef, TaskInner, WeakAxTaskRef, current};
+use ax_std::os::arceos::task::yield_current_cpu;
 use axpoll::IoEvents;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::ROBUST_LIST_LIMIT;
@@ -17,10 +18,11 @@ use starry_vm::{VmMutPtr, VmPtr};
 use weak_map::WeakMap;
 
 use super::{
-    AsThread, Cred, FutexKey, ProcessData, Thread, TimerState, ZombieSnapshot,
-    futex_table_for_process, get_process_data, get_zombie_cred, orphan_reaper_for, processes,
-    publish_zombie, register_process_identity, send_signal_thread_inner, send_signal_to_process,
-    send_signal_to_thread,
+    AlarmTarget, AlarmToken, Cred, FutexKey, PendingTimerActions, ProcessData, Thread, TimerState,
+    UserTaskRef, WeakUserTaskRef, ZombieSnapshot, current_user_task, futex_table_for_process,
+    get_process_data, get_zombie_cred, orphan_reaper_for, processes, publish_zombie,
+    register_prepared_process_identity, register_process_identity, send_signal_to_process,
+    send_signal_to_thread, unregister_prepared_process_identity,
 };
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
@@ -45,26 +47,54 @@ pub fn decode_wait_status(raw: i32) -> (i32, i32) {
     }
 }
 
-static TASK_TABLE: RwLock<WeakMap<Pid, WeakAxTaskRef>> = RwLock::new(WeakMap::new());
+static TASK_TABLE: RwLock<BTreeMap<Pid, WeakUserTaskRef>> = RwLock::new(BTreeMap::new());
 
 static PROCESS_GROUP_TABLE: RwLock<WeakMap<Pid, Weak<ProcessGroup>>> = RwLock::new(WeakMap::new());
 
 static SESSION_TABLE: RwLock<WeakMap<Pid, Weak<Session>>> = RwLock::new(WeakMap::new());
+
+fn remove_matching_entry<K, V>(
+    entries: &mut BTreeMap<K, V>,
+    key: &K,
+    matches: impl FnOnce(&V) -> bool,
+) -> bool
+where
+    K: Ord,
+{
+    if !entries.get(key).is_some_and(matches) {
+        return false;
+    }
+    entries.remove(key);
+    true
+}
 
 /// Cleanup expired entries in the task tables.
 ///
 /// This function is intended to be used during memory leak analysis to remove
 /// possible noise caused by expired entries in the [`WeakMap`].
 #[cfg(feature = "memtrack")]
-pub fn cleanup_task_tables() {
-    TASK_TABLE.write().cleanup();
+pub fn cleanup_task_tables() -> AxResult<()> {
+    let mut invalid_extension = false;
+    TASK_TABLE.write().retain(|_, task| match task.upgrade() {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(_) => {
+            invalid_extension = true;
+            true
+        }
+    });
     PROCESS_GROUP_TABLE.write().cleanup();
     SESSION_TABLE.write().cleanup();
+    if invalid_extension {
+        Err(AxError::BadState)
+    } else {
+        Ok(())
+    }
 }
 
 /// Add the task, the thread and possibly its process, process group and session
 /// to the corresponding tables.
-pub fn add_task_to_table(task: &AxTaskRef) {
+pub fn add_task_to_table(task: &UserTaskRef) {
     // Key by the user-visible thread tid, not the scheduler `task.id()`. The two
     // are equal for every task except the init process, whose pid/tid is pinned
     // to 1 while its scheduler id stays at whatever the allocator handed out
@@ -74,7 +104,7 @@ pub fn add_task_to_table(task: &AxTaskRef) {
     let tid = task.as_thread().tid() as Pid;
 
     let mut task_table = TASK_TABLE.write();
-    task_table.insert(tid, task);
+    task_table.insert(tid, task.downgrade());
     drop(task_table);
 
     register_process_identity(proc_data);
@@ -96,17 +126,114 @@ pub fn add_task_to_table(task: &AxTaskRef) {
     session_table.insert(session.sid(), &session);
 }
 
+/// Rollback token for a task registered before scheduler publication.
+///
+/// Clone installs Linux-visible identity while the scheduler thread is still
+/// prepared. Dropping this token removes only the matching generation and
+/// process object; [`Self::commit`] transfers ownership to normal exit paths.
+pub struct PreparedTaskRegistration {
+    tid: Pid,
+    scheduler_id: ax_std::os::arceos::task::ThreadId,
+    process: Option<Arc<ProcessData>>,
+    committed: bool,
+}
+
+impl PreparedTaskRegistration {
+    /// Leaves the task and process entries installed for normal lifecycle code.
+    pub fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PreparedTaskRegistration {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+
+        let mut task_table = TASK_TABLE.write();
+        remove_matching_entry(&mut task_table, &self.tid, |task| {
+            task.scheduler_id() == self.scheduler_id
+        });
+        drop(task_table);
+
+        let Some(process) = self.process.as_ref() else {
+            return;
+        };
+        unregister_prepared_process_identity(process);
+    }
+}
+
+/// Registers a prepared task before it becomes runnable.
+///
+/// `new_process` must be true only for a freshly forked process. Existing
+/// process entries belong to the thread group and must never be removed when a
+/// sibling-thread creation rolls back.
+pub fn register_prepared_task(
+    task: &UserTaskRef,
+    new_process: bool,
+) -> AxResult<PreparedTaskRegistration> {
+    let tid = task.as_thread().tid() as Pid;
+    let scheduler_id = task.id();
+    let mut task_table = TASK_TABLE.write();
+    if task_table.contains_key(&tid) {
+        return Err(AxError::BadState);
+    }
+    task_table.insert(tid, task.downgrade());
+    drop(task_table);
+
+    let process = new_process.then(|| task.as_thread().proc_data.clone());
+    if let Some(process) = process.as_ref()
+        && let Err(error) = register_prepared_process_identity(process)
+    {
+        remove_matching_entry(&mut TASK_TABLE.write(), &tid, |registered| {
+            registered.scheduler_id() == scheduler_id
+        });
+        return Err(error);
+    }
+
+    Ok(PreparedTaskRegistration {
+        tid,
+        scheduler_id,
+        process,
+        committed: false,
+    })
+}
+
+/// Detaches a live Linux TID from its scheduler-backed task.
+///
+/// Scheduler resources may remain reachable until deferred task work finishes,
+/// but Linux-visible task lookup must stop at thread exit rather than inherit
+/// that implementation lifetime.
+pub fn remove_task_from_table(tid: Pid) {
+    TASK_TABLE.write().remove(&tid);
+}
+
 /// Lists all tasks.
-pub fn tasks() -> Vec<AxTaskRef> {
-    TASK_TABLE.read().values().collect()
+pub fn tasks() -> AxResult<Vec<UserTaskRef>> {
+    let table = TASK_TABLE.read();
+    let mut tasks = Vec::with_capacity(table.len());
+    for task in table.values() {
+        if let Some(task) = task.upgrade().map_err(|_| AxError::BadState)? {
+            tasks.push(task);
+        }
+    }
+    Ok(tasks)
 }
 
 /// Finds the task with the given TID.
-pub fn get_task(tid: Pid) -> AxResult<AxTaskRef> {
+pub fn get_task(tid: Pid) -> AxResult<UserTaskRef> {
     if tid == 0 {
-        return Ok(current().clone());
+        return Ok(current_user_task());
     }
-    TASK_TABLE.read().get(&tid).ok_or(AxError::NoSuchProcess)
+    let weak = TASK_TABLE
+        .read()
+        .get(&tid)
+        .copied()
+        .ok_or(AxError::NoSuchProcess)?;
+    weak.upgrade()
+        .map_err(|_| AxError::BadState)?
+        .ok_or(AxError::NoSuchProcess)
 }
 
 /// Detach every live tracee that still points at `tracer_pid`.
@@ -133,12 +260,10 @@ pub fn detach_live_tracees_of(tracer_pid: Pid) {
 /// Finds the credentials for a process that may already be a zombie.
 pub fn get_process_cred(pid: Pid) -> AxResult<Arc<Cred>> {
     if pid == 0 {
-        return Ok(current().as_thread().cred());
+        return Ok(current_user_task().as_thread().cred());
     }
-    if let Ok(task) = get_task(pid)
-        && let Some(thr) = task.try_as_thread()
-    {
-        return Ok(thr.cred());
+    if let Ok(task) = get_task(pid) {
+        return Ok(task.as_thread().cred());
     }
     get_zombie_cred(pid).ok_or(AxError::NoSuchProcess)
 }
@@ -180,70 +305,54 @@ pub fn register_session(session: &Arc<Session>) {
     session_table.insert(session.sid(), session);
 }
 
-/// Accumulates CPU time for `task` from a timer-tick IRQ context.
-///
-/// Unlike `poll_timer`, this never emits signals, making it safe to call
-/// from interrupt handlers.
-pub fn tick_cpu_time(task: &TaskInner) {
-    let Some(thr) = task.try_as_thread() else {
-        return;
-    };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // Reentrant borrow means the task is mid-state-transition; skip.
-        return;
-    };
-    time.tick();
-}
-
 /// Returns the accumulated `(utime, stime)` for a task without side effects.
-pub fn task_cpu_time(task: &TaskInner) -> (TimeValue, TimeValue) {
-    let Some(thr) = task.try_as_thread() else {
-        return (TimeValue::ZERO, TimeValue::ZERO);
-    };
-    let Ok(time) = thr.time.try_borrow() else {
-        return (TimeValue::ZERO, TimeValue::ZERO);
-    };
-    time.output()
+pub fn task_cpu_time(task: &UserTaskRef) -> (TimeValue, TimeValue) {
+    task.as_thread().cpu_time.output()
 }
 
-/// Poll the timer
-pub fn poll_timer(task: &TaskInner) {
-    let Some(thr) = task.try_as_thread() else {
-        return;
-    };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // reentrant borrow, likely IRQ
-        return;
-    };
-    let emitter = |signo| {
-        send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    };
-    time.poll(emitter);
+fn apply_process_timer_actions(pid: Pid, pending: PendingTimerActions) {
+    for signo in pending.signals() {
+        let _ = send_signal_to_process(pid, Some(SignalInfo::new_kernel(signo)));
+    }
+    pending.apply_alarms(AlarmTarget::Process(pid));
 }
 
-/// Poll the process-level POSIX timers.
+fn poll_interval_timers(proc_data: &ProcessData, token: Option<&AlarmToken>) {
+    let snapshot = proc_data.cpu_time_snapshot();
+    let pending = {
+        let mut timers = proc_data.interval_timers.lock();
+        match token {
+            Some(token) => timers.poll_for_alarm(snapshot, token),
+            None => timers.poll(snapshot),
+        }
+    };
+    apply_process_timer_actions(proc_data.proc.pid(), pending);
+}
+
+/// Poll process interval timers and POSIX timers.
 pub fn poll_process_timer(pid: Pid) {
     if let Ok(proc_data) = get_process_data(pid) {
+        poll_interval_timers(&proc_data, None);
         proc_data.posix_timers.poll_expired(pid, |sig| {
             let _ = send_signal_to_process(pid, Some(sig));
         });
     }
 }
 
+pub(crate) fn poll_process_timer_for_alarm(pid: Pid, token: &AlarmToken) {
+    if let Ok(proc_data) = get_process_data(pid) {
+        poll_interval_timers(&proc_data, Some(token));
+        proc_data.posix_timers.poll_expired_for(pid, token, |sig| {
+            let _ = send_signal_to_process(pid, Some(sig));
+        });
+    }
+}
+
 /// Sets the timer state.
-pub fn set_timer_state(task: &TaskInner, state: TimerState) {
-    let Some(thr) = task.try_as_thread() else {
-        return;
-    };
-    let Ok(mut time) = thr.time.try_borrow_mut() else {
-        // reentrant borrow, likely IRQ
-        return;
-    };
-    let emitter = |signo| {
-        send_signal_thread_inner(task, thr, SignalInfo::new_kernel(signo));
-    };
-    time.poll(emitter);
-    time.set_state(state);
+pub fn set_timer_state(task: &UserTaskRef, state: TimerState) {
+    let thr = task.as_thread();
+    poll_interval_timers(&thr.proc_data, None);
+    thr.set_cpu_time_state(state);
 }
 
 #[repr(C)]
@@ -348,7 +457,7 @@ pub fn exit_robust_list(thr: &Thread, head: *const RobustListHead) -> AxResult<(
             debug!("robust list: entry limit reached");
             break;
         }
-        ax_task::yield_now();
+        let _decision = yield_current_cpu();
     }
 
     // Process the pending entry that was skipped in the loop
@@ -389,7 +498,7 @@ ktracepoint::define_event_trace!(
 );
 
 pub fn do_exit(exit_code: i32, group_exit: bool) {
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     if !thr.begin_exit() {
         return;
@@ -405,7 +514,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             if tid == thr.tid() {
                 continue;
             }
-            let _ = send_signal_to_thread(None, tid, Some(sig.clone()));
+            let _ = send_signal_to_thread(None, tid, Some(sig));
             let _ = zap_thread(tid);
         }
     }
@@ -435,7 +544,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         if let Some(futex) = guard {
             futex.wq.wake(1, u32::MAX);
         }
-        ax_task::yield_now();
+        let _decision = yield_current_cpu();
     }
 
     let process = &thr.proc_data.proc;
@@ -448,13 +557,31 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // Use the user-visible TID (`thr.tid()`), not the scheduler ID. After
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
+    let is_process_leader = thr.tid() == process.pid();
+    if is_process_leader {
+        // Preserve the leader's Linux priority before scheduler reachability is
+        // removed. A peer may become the last exiting thread immediately after
+        // the thread-group lock is released.
+        thr.proc_data.retire_leader_nice(thr.nice());
+    }
+    thr.account_cpu_time_now();
     let (utime, stime) = task_cpu_time(&curr);
     let thread_exit = process.exit_thread(thr.tid(), exit_code, ProcessCpuTime::new(utime, stime));
+    if !matches!(thread_exit, ThreadExit::Last(_)) {
+        remove_task_from_table(thr.tid());
+    }
+
     if let ThreadExit::Last(process_cpu_time) = thread_exit {
-        if let Err(error) = crate::cgroup::exit_process(process.pid() as u32) {
+        if let Err(error) = crate::cgroup::exit_process(process.pid()) {
             warn!("failed to release cgroup membership: {error}");
         }
         thr.proc_data.nsproxy.lock().release_cgroup_namespace();
+
+        let timer_cancellations = thr.proc_data.interval_timers.lock().cancel_alarms();
+        for cancellation in timer_cancellations {
+            cancellation.apply_cancellation();
+        }
+        thr.proc_data.posix_timers.clear();
 
         // AIO contexts pin the process address space and may have worker tasks
         // waiting on outstanding requests. Tear them down before releasing the
@@ -498,10 +625,23 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // process_slots refcounting — not vm_aspace_shared + clear().
         thr.proc_data.release_aspace_slot_if_needed();
 
+        let zombie_nice = if is_process_leader {
+            thr.nice()
+        } else {
+            thr.proc_data.retired_leader_nice().unwrap_or_else(|| {
+                warn!(
+                    "missing retired leader nice for pid {}, using final thread {}",
+                    process.pid(),
+                    thr.tid()
+                );
+                thr.nice()
+            })
+        };
         publish_zombie(
             &thr.proc_data,
             ZombieSnapshot {
                 cred: zombie_cred,
+                nice: zombie_nice,
                 ptrace_tracer_pid,
                 is_clone_child,
                 wait_parent_tid,
@@ -509,6 +649,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             },
         )
         .expect("last process thread must own one live PID identity");
+        // Linux removes scheduler reachability independently of the stable PID
+        // identity retained for wait and pidfd operations.
+        remove_task_from_table(thr.tid());
         if let Some(parent) = process.parent() {
             if let Some(signo) = thr.proc_data.exit_signal {
                 use starry_signal::Signo;
@@ -540,9 +683,8 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // Send pdeathsig to child processes
         for child in children_snapshot {
             let child_pid = child.pid();
-            if let Ok(child_task) = get_task(child_pid)
-                && let Some(child_thr) = child_task.try_as_thread()
-            {
+            if let Ok(child_task) = get_task(child_pid) {
+                let child_thr = child_task.as_thread();
                 let sig = child_thr.pdeathsig();
                 if sig > 0
                     && let Some(signo) = Signo::from_repr(sig as u8)
@@ -570,12 +712,12 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                         pd.proc.pid() != process.pid()
                             && Arc::as_ptr(&pd.nsproxy.lock().pid_ns) as usize == ns_ptr
                     })
-                    .map(|pd| pd.proc.pid())
+                    .map(|data| data.proc.pid())
                     .collect();
 
                 let sig = SignalInfo::new_kernel(Signo::SIGKILL);
                 for pid in victims {
-                    let _ = send_signal_to_process(pid, Some(sig.clone()));
+                    let _ = send_signal_to_process(pid, Some(sig));
                 }
             }
         }
@@ -610,9 +752,9 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 /// removed from the table). The two updates are not atomic with respect
 /// to each other; a brief window exists where both keys point at the same
 /// task, which is harmless because both lookups resolve to the same task.
-pub fn rebind_task_tid(task: &AxTaskRef, old_tid: Pid, new_tid: Pid) {
+pub fn rebind_task_tid(task: &UserTaskRef, old_tid: Pid, new_tid: Pid) {
     let mut table = TASK_TABLE.write();
-    table.insert(new_tid, task);
+    table.insert(new_tid, task.downgrade());
     table.remove(&old_tid);
 }
 
@@ -628,14 +770,14 @@ pub fn rebind_task_tid(task: &AxTaskRef, old_tid: Pid, new_tid: Pid) {
 /// longer a user thread; callers should treat that as "already reaped".
 pub fn zap_thread(tid: Pid) -> AxResult<()> {
     let task = get_task(tid)?;
-    let thr = task.try_as_thread().ok_or(AxError::OperationNotPermitted)?;
+    let thr = task.as_thread();
     thr.set_exit_request();
-    // `interrupt()` alone is a no-op for a thread parked on a raw `WaitQueue`
-    // (pipe read, futex wait) — no interrupt waker is registered there — so a
-    // SIGKILLed sibling would linger until async GC, deferring `clear()` and
-    // its frame reclaim. `wake_task` force-unblocks the parked thread so it
-    // returns, observes the pending pending exit, and runs `do_exit` synchronously.
-    ax_task::wake_task(&task);
+    // Match Linux's pending-SIGKILL plus signal_wake_up pairing: the
+    // interruption bit is the persistent reason that aborts a future wait,
+    // while interrupt() also publishes the direct scheduler wake needed for
+    // raw WaitQueue sleepers. A bare wake can be consumed before a
+    // LocalExecutor commits to park.
+    task.interrupt();
     Ok(())
 }
 
@@ -665,4 +807,25 @@ pub(crate) fn decode_wait_status_rules_hold_for_test() -> bool {
     assert!(code == CLD_DUMPED as i32 && status == 9);
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::collections::BTreeMap;
+
+    use super::remove_matching_entry;
+
+    #[test]
+    fn rollback_removes_only_the_identity_it_registered() {
+        let mut entries = BTreeMap::from([(7, 11_u64)]);
+
+        assert!(!remove_matching_entry(&mut entries, &7, |identity| {
+            *identity == 10
+        }));
+        assert_eq!(entries.get(&7), Some(&11));
+        assert!(remove_matching_entry(&mut entries, &7, |identity| {
+            *identity == 11
+        }));
+        assert!(!entries.contains_key(&7));
+    }
 }

@@ -137,7 +137,7 @@ fn task_context_owns_kernel_tls_and_preserves_current_address_space_model() {
             && CONTEXT.contains("pub fn set_page_table_root")
             && prepare.contains("write_user_page_table")
             && prepare.contains("flush_tlb"),
-        "the existing axtask model must retain task-owned address-space selection"
+        "the task runtime model must retain task-owned address-space selection"
     );
 
     let raw_switches = CONTEXT

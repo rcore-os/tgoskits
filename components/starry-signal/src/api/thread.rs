@@ -1,8 +1,9 @@
 use alloc::sync::Arc;
 use core::{
     alloc::Layout,
-    mem::offset_of,
+    mem::{offset_of, size_of},
     sync::atomic::{AtomicBool, Ordering},
+    task::Waker,
 };
 
 use ax_cpu::uspace::UserContext;
@@ -16,17 +17,42 @@ use crate::{
     SignalInfo, SignalOSAction, SignalSet, SignalStack, Signo, arch::UContext,
 };
 
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
 struct SignalFrame {
     ucontext: UContext,
     siginfo: SignalInfo,
     uctx: UserContext,
-    used_sigaltstack: bool,
+    used_sigaltstack: u8,
+    _padding: [u8; 15],
 }
+
+// SAFETY: every nested context type implements `NoUninit`, the alternate-stack
+// flag uses a byte rather than `bool`, and the explicit tail array consumes the
+// frame's 16-byte alignment padding.
+unsafe impl bytemuck::NoUninit for SignalFrame {}
+
+const _: () = {
+    assert!(offset_of!(SignalFrame, ucontext) == 0);
+    assert!(offset_of!(SignalFrame, siginfo) == size_of::<UContext>());
+    assert!(offset_of!(SignalFrame, uctx) == size_of::<UContext>() + size_of::<SignalInfo>());
+    assert!(
+        offset_of!(SignalFrame, used_sigaltstack)
+            == size_of::<UContext>() + size_of::<SignalInfo>() + size_of::<UserContext>()
+    );
+    assert!(size_of::<SignalFrame>() == offset_of!(SignalFrame, used_sigaltstack) + 16);
+};
 
 enum PreparedSignal {
     Ignore,
     Action(SignalOSAction),
     Handler(PreparedSignalHandler),
+}
+
+#[derive(Default)]
+struct SigwaitState {
+    set: Option<SignalSet>,
+    waker: Option<Waker>,
 }
 
 struct PreparedSignalHandler {
@@ -55,14 +81,13 @@ pub struct ThreadSignalManager {
 
     possibly_has_signal: AtomicBool,
 
-    /// The set of signals this thread is currently waiting for via
-    /// `rt_sigtimedwait`/`sigwaitinfo`, or `None` if not in a sigwait call.
+    /// The synchronous signal-wait state published by `rt_sigtimedwait`.
     ///
-    /// `ProcessSignalManager::send_signal` checks this to avoid dropping
-    /// a signal via `is_ignore()` when a thread is specifically waiting for it.
-    /// Using the actual wait set (instead of a bare boolean) avoids queuing
-    /// unrelated signals that happen to be default-ignore.
-    pub sigwait_set: SpinNoIrq<Option<SignalSet>>,
+    /// The wait set and future waker share one lock so signal delivery observes
+    /// a coherent registration. The syscall still rechecks pending signals
+    /// after installing the waker, matching Linux's state-publication then
+    /// dequeue-again protocol without coupling this component to a scheduler.
+    sigwait: SpinNoIrq<SigwaitState>,
 }
 
 impl ThreadSignalManager {
@@ -84,7 +109,7 @@ impl ThreadSignalManager {
             stack_active_depth: SpinNoIrq::new(0),
 
             possibly_has_signal: AtomicBool::new(false),
-            sigwait_set: SpinNoIrq::new(None),
+            sigwait: SpinNoIrq::new(SigwaitState::default()),
         });
         proc.children.lock().push((tid, Arc::downgrade(&this)));
         this
@@ -129,6 +154,61 @@ impl ThreadSignalManager {
 
     pub fn process(&self) -> &Arc<ProcessSignalManager> {
         &self.proc
+    }
+
+    /// Publishes the signal set consumed by one synchronous signal wait.
+    pub fn begin_sigwait(&self, set: SignalSet) {
+        let mut state = self.sigwait.lock();
+        debug_assert!(
+            state.set.is_none(),
+            "one thread cannot own nested synchronous signal waits"
+        );
+        state.set = Some(set);
+        state.waker = None;
+    }
+
+    /// Registers the executor waker for the active synchronous signal wait.
+    pub fn register_sigwait_waker(&self, waker: &Waker) {
+        let mut state = self.sigwait.lock();
+        if state.set.is_none() {
+            return;
+        }
+        if state
+            .waker
+            .as_ref()
+            .is_none_or(|current| !current.will_wake(waker))
+        {
+            state.waker = Some(waker.clone());
+        }
+    }
+
+    /// Clears the wait set and executor waker after a synchronous wait.
+    pub fn finish_sigwait(&self) {
+        *self.sigwait.lock() = SigwaitState::default();
+    }
+
+    /// Returns whether this thread synchronously waits for `signo`.
+    pub fn is_sigwait_for(&self, signo: Signo) -> bool {
+        self.sigwait.lock().set.is_some_and(|set| set.has(signo))
+    }
+
+    /// Publishes readiness through the registered future waker.
+    ///
+    /// A direct scheduler wake is insufficient here: if the owner thread is
+    /// still running, that wake may be consumed before its local executor
+    /// commits to sleep. The future waker carries the executor's sticky
+    /// notification bit across that window.
+    pub fn wake_sigwait(&self, signo: Signo) {
+        let waker = {
+            let state = self.sigwait.lock();
+            if !state.set.is_some_and(|set| set.has(signo)) {
+                return;
+            }
+            state.waker.clone()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
     }
 
     fn prepare_signal(
@@ -180,7 +260,7 @@ impl ThreadSignalManager {
                     restartable,
                     PreparedSignal::Handler(PreparedSignalHandler {
                         signo,
-                        siginfo: sig.clone(),
+                        siginfo: *sig,
                         restore_blocked,
                         handler: handler as usize,
                         restorer,
@@ -220,7 +300,8 @@ impl ThreadSignalManager {
                 ucontext: UContext::new(uctx, prepared.restore_blocked),
                 siginfo: prepared.siginfo,
                 uctx: *uctx,
-                used_sigaltstack: uses_sigaltstack,
+                used_sigaltstack: u8::from(uses_sigaltstack),
+                _padding: [0; 15],
             })
             .is_err()
         {
@@ -328,7 +409,7 @@ impl ThreadSignalManager {
         frame.ucontext.mcontext.restore(uctx);
 
         *self.blocked.lock() = frame.ucontext.sigmask;
-        if frame.used_sigaltstack {
+        if frame.used_sigaltstack != 0 {
             self.leave_stack();
         }
         self.possibly_has_signal.store(true, Ordering::Release);
@@ -358,7 +439,7 @@ impl ThreadSignalManager {
         // we must apply the same exemption here as ProcessSignalManager does
         // for the process-level path.
         let blocked = self.signal_blocked(signo);
-        let in_sigwait = self.sigwait_set.lock().is_some_and(|s| s.has(signo));
+        let in_sigwait = self.is_sigwait_for(signo);
         if !blocked && !in_sigwait && actions[signo].is_ignore(signo) {
             return false;
         }
@@ -396,7 +477,7 @@ impl ThreadSignalManager {
 
     /// Gets the signal stack.
     pub fn stack(&self) -> SignalStack {
-        let stack = self.stack.lock().clone();
+        let stack = *self.stack.lock();
         if self.stack_active() {
             stack.on_stack()
         } else {
@@ -432,5 +513,45 @@ impl ThreadSignalManager {
     /// memory that no longer exists once the new aspace replaces the old.
     pub fn reset_stack(&self) {
         *self.stack.lock() = SignalStack::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{sync::Arc, task::Wake};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::api::SignalActions;
+
+    struct CountWake(AtomicUsize);
+
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn sigwait_waker_only_fires_for_the_published_set() {
+        let actions = Arc::new(SpinNoIrq::new(SignalActions::default()));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0));
+        let thread = ThreadSignalManager::new(1, process);
+        let counter = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = Waker::from(counter.clone());
+        let mut set = SignalSet::default();
+        set.add(Signo::SIGCHLD);
+
+        thread.begin_sigwait(set);
+        thread.register_sigwait_waker(&waker);
+        thread.wake_sigwait(Signo::SIGURG);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 0);
+
+        thread.wake_sigwait(Signo::SIGCHLD);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+
+        thread.finish_sigwait();
+        thread.wake_sigwait(Signo::SIGCHLD);
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
     }
 }

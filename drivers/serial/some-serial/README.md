@@ -144,28 +144,45 @@ let mut uart = some_serial::ns16550::Ns16550::new_mmio(
 #### 中断驱动通信
 
 ```rust
-use rdif_serial::{Config, SplitUart as _, UartIrq as _, UartPort as _};
+use rdif_serial::{
+    Config, IrqRxSink, RxSample, SplitUart as _, UartEmergencyTx as _,
+    UartIrq as _, UartPort as _,
+};
 use some_serial::pl011::Pl011;
 
-// 运行时取得两个不可克隆、职责互斥的端点。
+struct BoundedRxPublisher;
+
+impl IrqRxSink for BoundedRxPublisher {
+    fn push(&mut self, sample: RxSample) {
+        // 将 sample 放入预分配的有界 SPSC 队列；满时只记溢出状态。
+        let _ = sample;
+    }
+}
+
+// 运行时取得三个不可克隆、职责互斥的端点。
 let uart = Pl011::new(base_addr, clock_freq);
 let parts = uart.split();
 let mut port = parts.port;
 let mut irq = parts.irq;
+let emergency_tx = parts.emergency_tx;
 port.startup(&Config::new().baudrate(115200)).unwrap();
 
-// IRQ callback 只 ACK/mask 并发布事件，不读写 FIFO。
-if let Some(event) = irq.handle() {
+// IRQ callback 只做有界 FIFO drain、ACK/mask 和事件发布。
+let mut rx = BoundedRxPublisher;
+if let Some(event) = irq.handle(&mut rx) {
     // 维护线程根据 event 通过 port 处理数据，完成后调用 port.rearm(event.rearm)。
 }
+
+// panic 路径只能在取得 OS runtime 的非阻塞寄存器 gate 后调用。
+let _written = emergency_tx.try_write(b"panic\n");
 ```
 
 #### 平台检测与适配
 
 需要运行时动态分发的 rdrive/Starry 路径应在驱动探测层调用 `SplitUart::split()`，并且
-仅在那里把两个端点分别擦除为 `Box<dyn UartPort>` 与 `Box<dyn UartIrq>`。软件队列、
-维护线程、IRQ 注册、wait queue 和 poll source 均由 OS runtime 提供；`some-serial`
-不包含这些调度策略。
+仅在那里把三个端点分别擦除为 `Box<dyn UartPort>`、`Box<dyn UartIrq>` 与
+`Box<dyn UartEmergencyTx>`。软件队列、寄存器 gate、维护线程、IRQ 注册、wait
+queue 和 poll source 均由 OS runtime 提供；`some-serial` 不包含这些调度策略。
 
 ```rust
 use core::ptr::NonNull;
@@ -285,7 +302,8 @@ cargo test --test test --  --show-output --uboot
 ### 添加新驱动支持
 
 1. **创建驱动模块**：在 `src/` 目录下创建新的驱动文件
-2. **拆分运行时端点**：驱动实现 `SplitUart`，数据面实现 `UartPort`，中断面实现 `UartIrq`
+2. **拆分运行时端点**：驱动实现 `SplitUart`，数据面实现 `UartPort`，中断面实现
+   `UartIrq`，紧急输出面实现 `UartEmergencyTx`
 3. **添加测试**：为新驱动编写完整的测试套件
 4. **更新文档**：在 README 中添加驱动说明和使用示例
 5. **提交 PR**：详细描述新驱动的功能和使用方法
@@ -301,7 +319,7 @@ pub struct NewDriver {
 }
 
 impl SplitUart for NewDriver {
-    // 将共享寄存器 core 拆成 task-owned port 与 IRQ-owned endpoint。
+    // 将共享寄存器 core 拆成 task、hard-IRQ 与 emergency-TX 三个端点。
 }
 ```
 

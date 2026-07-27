@@ -1,4 +1,54 @@
+use core::{
+    marker::PhantomData,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
 use crate::{Config, ConfigError, RxSample, SerialEventSet, SerialIrqEvent};
+
+/// Non-blocking exclusion for aliases of one UART register block.
+///
+/// Normal task and IRQ endpoints use same-CPU IRQ exclusion. This additional
+/// gate serializes the cross-CPU emergency endpoint without allowing hard IRQ
+/// or panic paths to wait.
+pub struct UartRegisterGate {
+    active: AtomicBool,
+}
+
+impl UartRegisterGate {
+    pub const fn new() -> Self {
+        Self {
+            active: AtomicBool::new(false),
+        }
+    }
+
+    pub fn try_enter(&self) -> Option<UartRegisterGuard<'_>> {
+        self.active
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| UartRegisterGuard {
+                gate: self,
+                _not_send: PhantomData,
+            })
+    }
+}
+
+impl Default for UartRegisterGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Move-only proof that the caller exclusively owns UART register access.
+pub struct UartRegisterGuard<'a> {
+    gate: &'a UartRegisterGate,
+    _not_send: PhantomData<*mut ()>,
+}
+
+impl Drop for UartRegisterGuard<'_> {
+    fn drop(&mut self) {
+        self.gate.active.store(false, Ordering::Release);
+    }
+}
 
 /// Immutable information reported by a concrete UART before it is split.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8,15 +58,23 @@ pub struct UartInfo {
     pub initial_baudrate: u32,
 }
 
-/// Independently owned task-side and hard-IRQ endpoints.
-pub struct UartParts<P, I> {
+/// Independently owned task, hard-IRQ, and emergency-TX endpoints.
+pub struct UartParts<P, I, E> {
+    /// Task-context data and control endpoint.
     pub port: P,
+    /// Hard-IRQ event and bounded-RX endpoint.
     pub irq: I,
+    /// Panic-only non-blocking transmitter endpoint.
+    pub emergency_tx: E,
 }
 
-impl<P, I> UartParts<P, I> {
-    pub const fn new(port: P, irq: I) -> Self {
-        Self { port, irq }
+impl<P, I, E> UartParts<P, I, E> {
+    pub const fn new(port: P, irq: I, emergency_tx: E) -> Self {
+        Self {
+            port,
+            irq,
+            emergency_tx,
+        }
     }
 }
 
@@ -24,10 +82,11 @@ impl<P, I> UartParts<P, I> {
 pub trait SplitUart: Sized {
     type Port: UartPort;
     type Irq: UartIrq;
+    type EmergencyTx: UartEmergencyTx;
 
     fn runtime_info(&self) -> UartInfo;
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq>;
+    fn split(self) -> UartParts<Self::Port, Self::Irq, Self::EmergencyTx>;
 }
 
 /// UART data/control endpoint owned by one runtime maintenance task.
@@ -79,4 +138,30 @@ pub trait UartIrq: Send + 'static {
     /// implementation may read RX FIFO data only through `rx`; it must never
     /// write TX FIFO data.
     fn handle(&mut self, rx: &mut dyn IrqRxSink) -> Option<SerialIrqEvent>;
+}
+
+/// Panic/emergency-only TX endpoint.
+///
+/// This endpoint deliberately exposes no configuration, interrupt, RX, or
+/// blocking operation. Its required [`UartRegisterGuard`] makes register
+/// serialization part of the API rather than a caller-side convention.
+/// `try_write` performs one bounded pass over the currently available FIFO
+/// capacity and returns immediately.
+pub trait UartEmergencyTx: Send + Sync + 'static {
+    fn try_write(&self, access: &UartRegisterGuard<'_>, bytes: &[u8]) -> usize;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_gate_never_waits_and_releases_on_guard_drop() {
+        let gate = UartRegisterGate::new();
+        let owner = gate.try_enter().expect("first register owner");
+
+        assert!(gate.try_enter().is_none());
+        drop(owner);
+        assert!(gate.try_enter().is_some());
+    }
 }

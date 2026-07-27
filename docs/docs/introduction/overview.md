@@ -129,7 +129,7 @@ tgoskits/
 ├── virtualization/            # VM、vCPU、虚拟中断控制器与虚拟设备
 ├── os/
 │   ├── arceos/                # ArceOS 模块化 unikernel
-│   │   ├── modules/           # 12 个内核模块（axhal, axtask, axmm...）
+│   │   ├── modules/           # 内核模块（axhal, axruntime, axmm...）
 │   │   ├── api/               # API 聚合层（arceos_api, posix_api）
 │   │   ├── ulib/              # 用户态库（axstd, axlibc）
 │   │   └── tools/             # 构建与板级辅助工具
@@ -176,7 +176,7 @@ flowchart LR
     end
     subgraph mods["内核模块"]
         hal["axhal"]
-        task["axtask"]
+        task["ax-runtime::task"]
         mm["axmm"]
         fs["axfs-ng"]
         sync["axsync"]
@@ -190,7 +190,7 @@ flowchart LR
 
 | 层次 | 内容 | 职责 |
 |------|------|------|
-| 内核模块 (`modules/`) | `axhal`, `axtask`, `axmm`, `axfs-ng`, `axsync`, `axlog`, `axruntime` 等 | 硬件抽象、调度、内存管理、文件系统、同步原语与运行时初始化；DMA 能力由 `dma-api` 与 `axklib` 提供 |
+| 内核模块 (`modules/`) | `axhal`, `axruntime`, `axmm`, `axfs-ng`, `axsync`, `axlog` 等 | 硬件抽象、任务 runtime、内存管理、文件系统、同步原语与运行时初始化；DMA 能力由 `dma-api` 与 `axklib` 提供 |
 | API 聚合层 (`api/`) | `arceos_api`, `arceos_posix_api` | 向上提供统一 API 接口与 POSIX 兼容层 |
 | 用户态库 (`ulib/`) | `axstd`, `axlibc` | Rust 标准库子集与 C 库兼容层 |
 

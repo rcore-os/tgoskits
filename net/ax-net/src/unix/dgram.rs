@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use ax_errno::{AxError, AxResult};
 use ax_io::{Read, Write};
 use ax_kspin::SpinRwLock as RwLock;
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 
 use crate::{
@@ -127,7 +127,7 @@ impl SeqBind {
 /// Datagram transport for Unix domain sockets.
 pub struct DgramTransport {
     /// Receiver installed when the socket is bound or paired.
-    data_rx: Mutex<Option<(async_channel::Receiver<Packet>, Arc<PollSet>)>>,
+    data_rx: SpinMutex<Option<(async_channel::Receiver<Packet>, Arc<PollSet>)>>,
     /// Direct peer channel for connected datagram sockets.
     connected: RwLock<Option<Channel>>,
     /// Address reported as sender on outgoing datagrams.
@@ -167,7 +167,7 @@ impl DgramTransport {
 
     fn new_typed(pid: u32, socket_type: i32) -> Self {
         DgramTransport {
-            data_rx: Mutex::new(None),
+            data_rx: SpinMutex::new(None),
             connected: RwLock::new(None),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
             peeked: Mutex::new(None),
@@ -186,7 +186,7 @@ impl DgramTransport {
         socket_type: i32,
     ) -> Self {
         DgramTransport {
-            data_rx: Mutex::new(Some(data_rx)),
+            data_rx: SpinMutex::new(Some(data_rx)),
             connected: RwLock::new(Some(connected)),
             local_addr: RwLock::new(UnixSocketAddr::Unnamed),
             peeked: Mutex::new(None),

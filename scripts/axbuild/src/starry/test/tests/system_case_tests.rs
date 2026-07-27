@@ -168,6 +168,29 @@ fn signal_interrupt_eintr_subcase_bounds_child_wait() {
 }
 
 #[test]
+fn cargo_jobserver_wait_drains_output_after_children_are_reaped() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source_path =
+        workspace_root.join("test-suit/starryos/qemu/system/test-cargo-jobserver-wait/src/main.c");
+    let source = fs::read_to_string(&source_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", source_path.display()));
+
+    assert!(
+        source.contains("build_script_wave_complete(children, reaped)")
+            && source.contains(
+                "while (!build_script_wave_complete(children, reaped) && loops++ < MAX_LOOPS)",
+            ),
+        "{} must keep polling stdout/stderr until both child reaping and pipe EOF complete",
+        source_path.display()
+    );
+    assert!(
+        !source.contains("while (reaped < BUILD_SCRIPT_WAVE && loops++ < MAX_LOOPS)"),
+        "{} must not stop draining pipes merely because waitpid reaped the final child",
+        source_path.display()
+    );
+}
+
+#[test]
 fn tty_console_input_burst_uses_injected_guest_script() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let case_dir = workspace_root.join("test-suit/starryos/qemu/tty-console-input-burst");

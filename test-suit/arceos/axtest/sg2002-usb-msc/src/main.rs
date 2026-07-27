@@ -712,7 +712,7 @@ mod sg2002_usb_msc {
                         sense[12],
                         sense[13]
                     );
-                    ax_task::sleep(Duration::from_millis(100));
+                    ax_runtime::task::sleep(Duration::from_millis(100));
                 }
                 Err(err) => return Err(err),
             }
@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn sg2002_dwc2_usb_msc_read_smoke() -> axtest::AxTestResult {
-        match ax_task::future::block_on(super::sg2002_usb_msc::run()) {
+        match ax_runtime::task::block_on(super::sg2002_usb_msc::run()) {
             Ok(report) => {
                 axtest_println!(
                     "SG2002_DWC2_MSC_REPORT vid={:04x} pid={:04x} vendor=\"{}\" product=\"{}\" \

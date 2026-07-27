@@ -258,6 +258,18 @@ unsafe extern "C" fn x86_trap_handler(raw: *mut RawTrapFrame) {
     }
 }
 
+#[unsafe(no_mangle)]
+unsafe extern "C" fn x86_double_fault_handler(raw: *mut RawTrapFrame) -> ! {
+    let fault_vaddr = unsafe { cr2() };
+    // SAFETY: vector 8 enters through its dedicated IST stack, builds the same
+    // register prefix as every other x86 trap, and never returns or aliases it.
+    let raw = unsafe { &*raw };
+    panic!(
+        "Fatal #DF @ {:#x}, fault_vaddr={:#x}, error_code={:#x}, cs={:#x}, rflags={:#x}",
+        raw.rip, fault_vaddr, raw.error_code, raw.cs, raw.rflags,
+    );
+}
+
 fn vec_to_str(vec: u64) -> &'static str {
     if vec < 32 {
         EXCEPTIONS[vec as usize].mnemonic

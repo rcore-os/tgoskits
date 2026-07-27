@@ -11,8 +11,8 @@ license.workspace = true
 axtest = []
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
-vfs = ["ax-sync/multitask"]
-lockdep = ["axfs-ng-vfs/lockdep"]
+vfs = []
+lockdep = ["axfs-ng-vfs/lockdep", "ax-sync/lockdep"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
@@ -21,7 +21,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 ax-errno = { workspace = true }
 axfs-ng-vfs = { workspace = true }
 ax-io = { workspace = true, features = ["alloc"] }
-ax-sync = { workspace = true }
+ax-sync = { workspace = true, features = ["multitask"] }
 bitflags = "2.10"
 cfg-if = { workspace = true }
 chrono = { workspace = true }
@@ -46,3 +46,8 @@ version = "0.4.1-preview.2"
 default-features = false
 optional = true
 features = ["alloc", "lfn", "log_level_trace", "unicode"]
+
+[dev-dependencies]
+ax-crate-interface.workspace = true
+ax-kernel-guard.workspace = true
+ax-kspin = { workspace = true, features = ["host-test"] }

@@ -247,9 +247,9 @@ fn reports_relaxed_publish_before_task_wake() {
         r#"
 use core::sync::atomic::{AtomicBool, Ordering};
 
-fn demo(flag: &AtomicBool, task: &AxTaskRef) {
+fn demo(flag: &AtomicBool, wake: &ThreadWakeHandle) {
     flag.store(true, Ordering::Relaxed);
-    ax_task::wake_task(task);
+    wake.wake();
 }
 "#,
     );

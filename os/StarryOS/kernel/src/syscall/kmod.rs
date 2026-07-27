@@ -10,16 +10,15 @@ use alloc::vec;
 
 use ax_errno::{AxError, AxResult};
 use ax_io::Read;
-use ax_task::current;
 
 use crate::{
     file::get_file_like,
     mm::{VmBytes, vm_load_string},
-    task::AsThread,
+    task::current_user_task,
 };
 
 fn require_module_privilege() -> AxResult<()> {
-    if current().as_thread().cred().has_cap_sys_module() {
+    if current_user_task().as_thread().cred().has_cap_sys_module() {
         Ok(())
     } else {
         Err(AxError::OperationNotPermitted)

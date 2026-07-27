@@ -10,7 +10,8 @@ mod registers;
 use bitflags::Flags;
 use rdif_serial::{
     Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
-    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartInfo, UartIrq, UartParts, UartPort,
+    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq,
+    UartParts, UartPort, UartRegisterGuard,
 };
 use registers::*;
 
@@ -114,6 +115,26 @@ pub struct Ns16550<T: Kind> {
 pub struct Ns16550Irq<T: Kind> {
     base: T,
     saved_lsr: LineStatusFlags,
+}
+
+/// Restricted non-blocking TX view used only for emergency output.
+pub struct Ns16550EmergencyTx<T: Kind> {
+    base: T,
+}
+
+impl<T: Kind> UartEmergencyTx for Ns16550EmergencyTx<T> {
+    fn try_write(&self, _access: &UartRegisterGuard<'_>, bytes: &[u8]) -> usize {
+        let mut written = 0;
+        for &byte in bytes.iter().take(UART_FIFO_SIZE as usize) {
+            let status: LineStatusFlags = self.base.read_flags(UART_LSR);
+            if !status.contains(LineStatusFlags::TRANSMITTER_HOLDING_EMPTY) {
+                break;
+            }
+            self.base.write_reg(UART_THR, byte);
+            written += 1;
+        }
+        written
+    }
 }
 
 impl<T: Kind> Ns16550Irq<T> {
@@ -302,6 +323,7 @@ impl<T: Kind> UartPort for Ns16550<T> {
 impl<T: Kind> SplitUart for Ns16550<T> {
     type Port = Self;
     type Irq = Ns16550Irq<T>;
+    type EmergencyTx = Ns16550EmergencyTx<T>;
 
     fn runtime_info(&self) -> UartInfo {
         UartInfo {
@@ -311,12 +333,15 @@ impl<T: Kind> SplitUart for Ns16550<T> {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq> {
+    fn split(self) -> UartParts<Self::Port, Self::Irq, Self::EmergencyTx> {
         let irq = Ns16550Irq {
             base: self.base.clone(),
             saved_lsr: LineStatusFlags::empty(),
         };
-        UartParts::new(self, irq)
+        let emergency_tx = Ns16550EmergencyTx {
+            base: self.base.clone(),
+        };
+        UartParts::new(self, irq, emergency_tx)
     }
 }
 
@@ -702,6 +727,8 @@ mod tests {
         vec::Vec,
     };
 
+    use rdif_serial::UartRegisterGate;
+
     use super::*;
 
     static REGS: [AtomicU8; 8] = [const { AtomicU8::new(0) }; 8];
@@ -840,6 +867,31 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct AlwaysReadyTxKind {
+        writes: Arc<AtomicUsize>,
+    }
+
+    impl Kind for AlwaysReadyTxKind {
+        fn read_reg(&self, reg: u8) -> u8 {
+            if reg == UART_LSR {
+                LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits()
+            } else {
+                0
+            }
+        }
+
+        fn write_reg(&self, reg: u8, _val: u8) {
+            if reg == UART_THR {
+                self.writes.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        fn get_base(&self) -> usize {
+            0x3000
+        }
+    }
+
     fn reset_regs() {
         for reg in &REGS {
             reg.store(0, Ordering::SeqCst);
@@ -867,7 +919,7 @@ mod tests {
 
     fn started_parts(
         uart: Ns16550<MockKind>,
-    ) -> UartParts<Ns16550<MockKind>, Ns16550Irq<MockKind>> {
+    ) -> UartParts<Ns16550<MockKind>, Ns16550Irq<MockKind>, Ns16550EmergencyTx<MockKind>> {
         let mut parts = uart.split();
         parts.port.startup(&Config::new()).unwrap();
         parts
@@ -1058,6 +1110,38 @@ mod tests {
                 overrun: false,
             }]
         );
+    }
+
+    #[test]
+    fn emergency_tx_writes_only_the_current_nonblocking_fifo_capacity() {
+        let (_guard, uart) = serial();
+        let parts = uart.split();
+        let gate = UartRegisterGate::new();
+        let access = gate.try_enter().unwrap();
+        REGS[UART_LSR as usize].store(
+            LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
+            Ordering::SeqCst,
+        );
+
+        assert_eq!(parts.emergency_tx.try_write(&access, b"ab"), 1);
+        assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
+        assert_eq!(parts.emergency_tx.try_write(&access, b"b"), 0);
+    }
+
+    #[test]
+    fn emergency_tx_has_a_fixed_write_budget() {
+        let writes = Arc::new(AtomicUsize::new(0));
+        let tx = Ns16550EmergencyTx {
+            base: AlwaysReadyTxKind {
+                writes: writes.clone(),
+            },
+        };
+        let bytes = [b'x'; 17];
+        let gate = UartRegisterGate::new();
+        let access = gate.try_enter().unwrap();
+
+        assert_eq!(tx.try_write(&access, &bytes), 16);
+        assert_eq!(writes.load(Ordering::SeqCst), 16);
     }
 
     #[test]

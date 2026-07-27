@@ -45,7 +45,7 @@ use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddrRange};
 use ax_runtime::hal::{mem::virt_to_phys, time::monotonic_time};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
 use bytemuck::bytes_of;
@@ -317,23 +317,23 @@ struct ModesetState {
 
 pub struct Card0 {
     /// Queue of pending DRM events waiting to be delivered via `read()`.
-    events: Mutex<VecDeque<DrmEventVblank>>,
+    events: PiMutex<VecDeque<DrmEventVblank>>,
     /// Wakes up `poll`-waiters blocked on `read()` when a new event
     /// arrives.
     poll_rx: PollSet,
     /// Monotonically-increasing vblank sequence.
     sequence: AtomicU32,
     /// Current values of all atomic-tunable properties.
-    state: Mutex<ModesetState>,
+    state: PiMutex<ModesetState>,
     /// Legacy `SETCRTC` binding readable via `GETCRTC`. Atomic commits
     /// don't update this — userspace that mixes legacy and atomic gets
     /// the well-defined "legacy state reflects the last SETCRTC"
     /// behavior libdrm expects.
-    legacy_crtc: Mutex<LegacyCrtcState>,
+    legacy_crtc: PiMutex<LegacyCrtcState>,
     /// `CREATE_DUMB`-allocated buffers keyed by handle. Dropping an
     /// entry releases Card0's strong ref on the backing pages; user
     /// mappings hold their own refs via `LinearBackend::retain`.
-    dumbs: Mutex<BTreeMap<u32, DumbBuffer>>,
+    dumbs: PiMutex<BTreeMap<u32, DumbBuffer>>,
     /// Next dumb handle to hand out.
     next_dumb_handle: AtomicU32,
     /// Monotonic counter for the mmap-offset key each `MAP_DUMB`
@@ -342,7 +342,7 @@ pub struct Card0 {
     next_offset: AtomicU64,
     /// `ADDFB2`-registered framebuffer ids, mapped to the dumb handle
     /// they were built over. Cleared on `RMFB`.
-    fbs: Mutex<BTreeMap<u32, Framebuffer>>,
+    fbs: PiMutex<BTreeMap<u32, Framebuffer>>,
     /// Next fb id to hand out.
     next_fb_id: AtomicU32,
     /// User-created `CREATEPROPBLOB` blobs keyed by their blob_id.
@@ -350,27 +350,27 @@ pub struct Card0 {
     /// kernel-owned blobs (e.g. `IN_FORMATS`). Stored behind `Arc`
     /// so committed modeset state (see [`Self::mode_id_blob_ref`]) can
     /// hold its own backing reference past a user `DESTROYPROPBLOB`.
-    blobs: Mutex<BTreeMap<u32, Arc<Vec<u8>>>>,
+    blobs: PiMutex<BTreeMap<u32, Arc<Vec<u8>>>>,
     /// Strong reference to the blob backing the currently-committed
     /// `MODE_ID` property. Linux DRM pins the mode blob from the CRTC
     /// state, so a user `DESTROYPROPBLOB` on the publish handle only
     /// drops the user's reference — `GETPROPBLOB` on the same id keeps
     /// working until a later atomic commit replaces or clears
     /// `MODE_ID`. Cleared/replaced atomically with `state.crtc_mode_id`.
-    mode_id_blob_ref: Mutex<Option<Arc<Vec<u8>>>>,
+    mode_id_blob_ref: PiMutex<Option<Arc<Vec<u8>>>>,
     /// Next blob id to hand out.
     next_blob_id: AtomicU32,
     /// Kernel-owned immutable blobs (e.g. plane `IN_FORMATS`) keyed by
     /// blob_id. Read-only after publish; never freed; DESTROY_BLOB
     /// refuses to remove ids in this table.
-    system_blobs: Mutex<BTreeMap<u32, Arc<Vec<u8>>>>,
+    system_blobs: PiMutex<BTreeMap<u32, Arc<Vec<u8>>>>,
     /// Cached blob_id for the `IN_FORMATS` property. Allocated once
     /// under `system_blobs_init` so concurrent first-callers cannot
     /// each leak their own copy into `system_blobs`.
     in_formats_blob: AtomicU32,
     /// Serializes the lazy initialization of `in_formats_blob` so
     /// only one allocation lands in `system_blobs`.
-    system_blobs_init: Mutex<()>,
+    system_blobs_init: PiMutex<()>,
     /// Registered virtio-gpu IRQ action, when the display backend advertises one.
     irq_handle: spin::Once<ax_runtime::hal::irq::IrqHandle>,
 }
@@ -378,25 +378,25 @@ pub struct Card0 {
 impl Card0 {
     pub fn new() -> Arc<Self> {
         let card = Arc::new(Self {
-            events: Mutex::new(VecDeque::with_capacity(MAX_EVENTS)),
+            events: PiMutex::new(VecDeque::with_capacity(MAX_EVENTS)),
             poll_rx: PollSet::new(),
             sequence: AtomicU32::new(0),
-            state: Mutex::new(ModesetState::default()),
-            legacy_crtc: Mutex::new(LegacyCrtcState::default()),
-            dumbs: Mutex::new(BTreeMap::new()),
+            state: PiMutex::new(ModesetState::default()),
+            legacy_crtc: PiMutex::new(LegacyCrtcState::default()),
+            dumbs: PiMutex::new(BTreeMap::new()),
             next_dumb_handle: AtomicU32::new(FIRST_DUMB_HANDLE),
             // Start at STRIDE rather than 0 so a zero `offset` argument
             // on `mmap` is unambiguous (it means "hasn't called
             // MAP_DUMB yet").
             next_offset: AtomicU64::new(DUMB_BUFFER_OFFSET_STRIDE),
-            fbs: Mutex::new(BTreeMap::new()),
+            fbs: PiMutex::new(BTreeMap::new()),
             next_fb_id: AtomicU32::new(FIRST_FB_ID),
-            blobs: Mutex::new(BTreeMap::new()),
-            mode_id_blob_ref: Mutex::new(None),
+            blobs: PiMutex::new(BTreeMap::new()),
+            mode_id_blob_ref: PiMutex::new(None),
             next_blob_id: AtomicU32::new(FIRST_BLOB_ID),
-            system_blobs: Mutex::new(BTreeMap::new()),
+            system_blobs: PiMutex::new(BTreeMap::new()),
             in_formats_blob: AtomicU32::new(0),
-            system_blobs_init: Mutex::new(()),
+            system_blobs_init: PiMutex::new(()),
             irq_handle: spin::Once::new(),
         });
         card.register_irq();
@@ -475,7 +475,7 @@ fn write_user_string(user_ptr: u64, user_cap: usize, src: &str) -> VfsResult<usi
 
 /// Write up to `cap` `T`s from `src` into `user_ptr`; returns the total
 /// source length.
-fn report_user_array<T: Copy>(user_ptr: u64, cap: u32, src: &[T]) -> VfsResult<u32> {
+fn report_user_array<T: bytemuck::NoUninit>(user_ptr: u64, cap: u32, src: &[T]) -> VfsResult<u32> {
     if user_ptr != 0 {
         let to_write = (cap as usize).min(src.len());
         vm_write_slice(user_ptr as *mut T, &src[..to_write]).map_err(|_| VfsError::BadAddress)?;
@@ -1560,7 +1560,7 @@ impl Card0 {
         const FRAME_PERIOD_NS: u64 = 1_000_000_000 / 60;
         let delay =
             core::time::Duration::from_nanos(FRAME_PERIOD_NS.saturating_mul(wait_count as u64));
-        ax_task::sleep(delay);
+        crate::task::sleep(delay);
         self.sequence.fetch_add(wait_count, Ordering::AcqRel);
 
         let now = monotonic_time();

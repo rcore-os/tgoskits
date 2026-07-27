@@ -7,10 +7,6 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::TimeValue;
-use ax_task::{
-    current, future,
-    future::{block_on, interruptible},
-};
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{POLLNVAL, RLIMIT_NOFILE, pollfd, timespec};
 use starry_signal::SignalSet;
@@ -19,14 +15,18 @@ use starry_vm::{vm_read_slice, vm_write_slice};
 use super::FdPollSet;
 use crate::{
     file::get_file_like,
-    mm::{UserConstPtr, UserPtr, nullable},
+    mm::{UserConstPtr, UserPtr},
     syscall::signal::check_sigset_size,
-    task::{AsThread, with_blocked_signals},
+    task::{
+        current_user_task,
+        future::{self, block_on_user, interruptible_for},
+        with_blocked_signals,
+    },
     time::TimeValueLike,
 };
 
 fn check_nfds_limit(nfds: usize) -> AxResult<()> {
-    let nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+    let nofile = current_user_task().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
     if nfds as u64 > nofile {
         Err(AxError::InvalidInput)
     } else {
@@ -145,7 +145,11 @@ fn do_poll(
             Poll::Pending
         });
 
-        match block_on(interruptible(future::timeout(timeout, wait))) {
+        let task = current_user_task();
+        match block_on_user(
+            &task,
+            interruptible_for(&task, future::timeout(timeout, wait)),
+        ) {
             Ok(Ok(r)) => r,
             Ok(Err(_)) => Ok(0),
             Err(err) => Err(err.into()),
@@ -181,14 +185,23 @@ pub fn sys_ppoll(
     }
     let nfds = nfds.try_into().map_err(|_| AxError::InvalidInput)?;
     let mut poll_fds = read_poll_fds(fds, nfds)?;
-    let timeout = nullable!(timeout.get_as_ref())?
-        .map(|ts| ts.try_into_time_value())
-        .transpose()?;
-    let res = do_poll(
-        &mut poll_fds,
-        timeout,
-        nullable!(sigmask.get_as_ref())?.copied(),
-    )?;
+    let timeout = (if timeout.is_null() {
+        None
+    } else {
+        // SAFETY: timespec contains only signed integer fields; semantic
+        // range validation is performed by try_into_time_value below.
+        Some(unsafe { timeout.read_abi()? })
+    })
+    .map(|ts| ts.try_into_time_value())
+    .transpose()?;
+    let sigmask = if sigmask.is_null() {
+        None
+    } else {
+        // SAFETY: SignalSet is a transparent signal-bit mask; every bit
+        // pattern is valid and unsupported bits are handled by signal logic.
+        Some(unsafe { sigmask.read_abi()? })
+    };
+    let res = do_poll(&mut poll_fds, timeout, sigmask)?;
     if nfds > 0 {
         write_poll_revents(fds, &poll_fds)?;
     }

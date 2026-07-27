@@ -12,11 +12,10 @@ use alloc::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::{SpinNoIrq, SpinRwLock as RwLock};
-use ax_task::current;
 use axpoll::{IoEvents, PollSet};
 use starry_process::{Pid, Process, ProcessCpuTime, init_proc};
 
-use super::{AsThread, Cred, ProcessData};
+use super::{Cred, ProcessData, current_user_task};
 
 /// Generation-specific identity retained by the PID registry and pidfds.
 pub(crate) struct ProcessIdentity {
@@ -41,6 +40,7 @@ impl ProcessIdentityState {
 /// Immutable process-exit data retained until one consuming wait reaps it.
 pub(crate) struct ZombieSnapshot {
     pub(crate) cred: Arc<Cred>,
+    pub(crate) nice: i32,
     pub(crate) ptrace_tracer_pid: Option<Pid>,
     pub(crate) is_clone_child: bool,
     pub(crate) wait_parent_tid: Pid,
@@ -132,18 +132,25 @@ impl ProcessIdentity {
         zombie: ZombieSnapshot,
     ) -> Result<(), ZombieSnapshot> {
         let mut state = self.state.lock();
-        let matches = matches!(
-            &*state,
-            ProcessIdentityState::Live(proc_data)
-                if proc_data
-                    .upgrade()
-                    .is_some_and(|registered| Arc::ptr_eq(&registered, expected))
-        );
-        if !matches {
+        if !Self::state_matches_live_data(&state, expected) {
             return Err(zombie);
         }
         *state = ProcessIdentityState::Zombie(zombie);
         Ok(())
+    }
+
+    fn matches_live_data(&self, expected: &Arc<ProcessData>) -> bool {
+        Self::state_matches_live_data(&self.state.lock(), expected)
+    }
+
+    fn state_matches_live_data(state: &ProcessIdentityState, expected: &Arc<ProcessData>) -> bool {
+        matches!(
+            state,
+            ProcessIdentityState::Live(proc_data)
+                if proc_data
+                    .upgrade()
+                    .is_some_and(|registered| Arc::ptr_eq(&registered, expected))
+        )
     }
 
     fn claim_reap(&self, expected: &Arc<Process>) -> Option<ZombieSnapshot> {
@@ -197,6 +204,35 @@ pub(crate) fn register_process_identity(proc_data: &Arc<ProcessData>) {
     }
 }
 
+/// Registers a freshly prepared process without replacing an existing PID
+/// generation.
+///
+/// Unlike [`register_process_identity`], this reports a collision so clone can
+/// roll back all resources before the scheduler thread becomes runnable.
+pub(crate) fn register_prepared_process_identity(proc_data: &Arc<ProcessData>) -> AxResult<()> {
+    let pid = proc_data.proc.pid();
+    let identity = proc_data.identity();
+    let mut process_table = PROCESS_TABLE.write();
+    if process_table.contains_key(&pid) {
+        return Err(AxError::BadState);
+    }
+    process_table.insert(pid, identity);
+    Ok(())
+}
+
+/// Removes only the still-live identity installed for a failed prepared clone.
+pub(crate) fn unregister_prepared_process_identity(proc_data: &Arc<ProcessData>) {
+    let pid = proc_data.proc.pid();
+    let identity = proc_data.identity();
+    let mut process_table = PROCESS_TABLE.write();
+    let matches = process_table.get(&pid).is_some_and(|registered| {
+        Arc::ptr_eq(registered, &identity) && registered.matches_live_data(proc_data)
+    });
+    if matches {
+        process_table.remove(&pid);
+    }
+}
+
 /// Lists live process runtime resources.
 pub fn processes() -> Vec<Arc<ProcessData>> {
     PROCESS_TABLE
@@ -209,7 +245,7 @@ pub fn processes() -> Vec<Arc<ProcessData>> {
 /// Finds live process runtime resources by PID.
 pub fn get_process_data(pid: Pid) -> AxResult<Arc<ProcessData>> {
     if pid == 0 {
-        return Ok(current().as_thread().proc_data.clone());
+        return Ok(current_user_task().as_thread().proc_data.clone());
     }
     PROCESS_TABLE
         .read()
@@ -338,7 +374,7 @@ pub(crate) fn orphan_reaper_for(process: &Arc<Process>) -> Arc<Process> {
 /// Finds the stable process object for a publicly visible live or zombie PID.
 pub fn get_process(pid: Pid) -> AxResult<Arc<Process>> {
     if pid == 0 {
-        return Ok(current().as_thread().proc_data.proc.clone());
+        return Ok(current_user_task().as_thread().proc_data.proc.clone());
     }
     // Holding the registry read lock through the lifecycle check linearizes
     // lookup against the write-locked Zombie -> Reaping claim.
@@ -355,6 +391,14 @@ pub fn get_zombie_cred(pid: Pid) -> Option<Arc<Cred>> {
         .read()
         .get(&pid)?
         .zombie_snapshot(|zombie| zombie.cred.clone())
+}
+
+/// Returns the thread-group leader's nice value retained for a zombie PID.
+pub fn get_zombie_nice(pid: Pid) -> Option<i32> {
+    PROCESS_TABLE
+        .read()
+        .get(&pid)?
+        .zombie_snapshot(|zombie| zombie.nice)
 }
 
 pub(crate) fn is_zombie_clone_child(pid: Pid) -> Option<bool> {

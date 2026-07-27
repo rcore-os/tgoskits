@@ -83,7 +83,24 @@ pub struct FpuState {
     pub fcc: [u8; 8],
     /// Floating-point Control and Status register
     pub fcsr: u32,
+    /// Explicitly initializes the tail bytes required by the structure alignment.
+    pub _reserved: u32,
 }
+
+// SAFETY: the vector arrays are contiguous integer storage, and the explicit
+// trailing word consumes the only alignment padding.
+unsafe impl bytemuck::NoUninit for FpuState {}
+
+const _: () = {
+    assert!(offset_of!(FpuState, fp) == 0);
+    assert!(offset_of!(FpuState, fp_high) == 256);
+    assert!(offset_of!(FpuState, fp_lasx_hi0) == 512);
+    assert!(offset_of!(FpuState, fp_lasx_hi1) == 768);
+    assert!(offset_of!(FpuState, fcc) == 1024);
+    assert!(offset_of!(FpuState, fcsr) == 1032);
+    assert!(offset_of!(FpuState, _reserved) == 1036);
+    assert!(size_of::<FpuState>() == 1040);
+};
 
 #[cfg(feature = "fp-simd")]
 impl FpuState {

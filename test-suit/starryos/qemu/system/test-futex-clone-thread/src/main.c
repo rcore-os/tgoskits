@@ -26,6 +26,7 @@
 #include "test_framework.h"
 
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <sys/syscall.h>
@@ -251,17 +252,24 @@ static void test_multi_waiter(void)
 #define T3_ROUNDS 20
 
 static _Atomic uint32_t t3_futex;
+static _Atomic int t3_round;
+static _Atomic int t3_wake_error;
 
 static void *t3_waker(void *arg)
 {
     (void)arg;
     for (int i = 0; i < T3_ROUNDS; i++) {
-        /* Wait for main to block on futex */
-        usleep(2000);
-        atomic_store(&t3_futex, 1);
-        futex_wake(&t3_futex, 1);
-        /* Let main process the wakeup */
-        usleep(2000);
+        /*
+         * A delay is not a hand-off: without a round token this worker can
+         * publish the next wake before main resets t3_futex, and main then
+         * erases that wake.  Wait for main to publish this exact round.
+         */
+        while (atomic_load_explicit(&t3_round, memory_order_acquire) != i + 1)
+            sched_yield();
+
+        atomic_store_explicit(&t3_futex, 1, memory_order_release);
+        if (futex_wake(&t3_futex, 1) < 0)
+            atomic_store(&t3_wake_error, 1);
     }
     return NULL;
 }
@@ -269,6 +277,8 @@ static void *t3_waker(void *arg)
 static void test_reverse_wake(void)
 {
     atomic_store(&t3_futex, 1);
+    atomic_store(&t3_round, 0);
+    atomic_store(&t3_wake_error, 0);
 
     pthread_t t;
     CHECK(pthread_create(&t, NULL, t3_waker, NULL) == 0,
@@ -276,8 +286,9 @@ static void test_reverse_wake(void)
 
     int pass = 0;
     for (int i = 0; i < T3_ROUNDS; i++) {
-        atomic_store(&t3_futex, 0);
-        while (atomic_load(&t3_futex) == 0) {
+        atomic_store_explicit(&t3_futex, 0, memory_order_relaxed);
+        atomic_store_explicit(&t3_round, i + 1, memory_order_release);
+        while (atomic_load_explicit(&t3_futex, memory_order_acquire) == 0) {
             long r = futex_wait(&t3_futex, 0);
             if (r < 0 && errno != EAGAIN && errno != EINTR) {
                 printf("  T3 main round %d: %s\n", i, strerror(errno));
@@ -291,6 +302,7 @@ static void test_reverse_wake(void)
     void *ret;
     pthread_join(t, &ret);
     CHECK(ret == NULL, "T3 worker exited cleanly");
+    CHECK(atomic_load(&t3_wake_error) == 0, "T3 worker futex wake calls succeeded");
     CHECK(pass == T3_ROUNDS, "T3 main woken by worker in all 20 rounds");
     printf("  T3 result: main %d/%d rounds woken by worker\n", pass, T3_ROUNDS);
 }

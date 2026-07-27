@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -90,14 +91,19 @@ static void test_pidfd_open_bad_flags(void)
 }
 
 struct thread_tid_sync {
-    volatile pid_t tid;
+    _Atomic pid_t tid;
+    _Atomic int release;
 };
 
 static void *thread_publish_tid(void *arg)
 {
     struct thread_tid_sync *sync = arg;
 
-    sync->tid = (pid_t)syscall(SYS_gettid);
+    atomic_store_explicit(&sync->tid, (pid_t)syscall(SYS_gettid),
+                          memory_order_release);
+    while (!atomic_load_explicit(&sync->release, memory_order_acquire)) {
+        sched_yield();
+    }
     return NULL;
 }
 
@@ -105,26 +111,34 @@ static void test_pidfd_open_thread_tid(void)
 {
     printf("--- pidfd_open 线程 TID ---\n");
 
-    struct thread_tid_sync sync = { .tid = -1 };
+    struct thread_tid_sync sync;
+    atomic_init(&sync.tid, -1);
+    atomic_init(&sync.release, 0);
     pthread_t thread;
 
-    CHECK(pthread_create(&thread, NULL, thread_publish_tid, &sync) == 0,
-          "pthread_create 成功");
+    int create_rc = pthread_create(&thread, NULL, thread_publish_tid, &sync);
+    CHECK(create_rc == 0, "pthread_create 成功");
+    if (create_rc != 0) {
+        return;
+    }
 
-    for (int i = 0; i < 1000000 && sync.tid <= 0; i++) {
+    pid_t tid = -1;
+    for (int i = 0; i < 1000000 && tid <= 0; i++) {
+        tid = atomic_load_explicit(&sync.tid, memory_order_acquire);
         sched_yield();
     }
-    CHECK(sync.tid > 0 && sync.tid != getpid(), "子线程 tid 与 getpid 不同");
+    CHECK(tid > 0 && tid != getpid(), "子线程 tid 与 getpid 不同");
 
-    CHECK_ERR(x_pidfd_open(sync.tid, 0), ENOENT,
+    CHECK_ERR(x_pidfd_open(tid, 0), ENOENT,
               "非 leader 线程 tid 无 PIDFD_THREAD -> ENOENT");
 
-    int pfd = x_pidfd_open(sync.tid, PIDFD_THREAD);
+    int pfd = x_pidfd_open(tid, PIDFD_THREAD);
     CHECK(pfd >= 0, "PIDFD_THREAD 打开子线程 tid 成功");
     if (pfd >= 0) {
         close(pfd);
     }
 
+    atomic_store_explicit(&sync.release, 1, memory_order_release);
     pthread_join(thread, NULL);
 }
 
@@ -155,6 +169,13 @@ static void test_pidfd_open_zombie(void)
     CHECK(pfd >= 0, "reap 前 pidfd_open(zombie child) 成功");
     if (pfd >= 0) {
         close(pfd);
+    }
+
+    int thread_pfd = x_pidfd_open(child, PIDFD_THREAD);
+    CHECK(thread_pfd >= 0,
+          "reap 前 PIDFD_THREAD 打开 zombie leader 成功");
+    if (thread_pfd >= 0) {
+        close(thread_pfd);
     }
 
     int status = 0;

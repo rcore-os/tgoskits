@@ -9,7 +9,7 @@ use ax_runtime::{
         SerialTxSender, StopBits,
     },
 };
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use rdrive::DeviceId as RDriveDeviceId;
 use spin::LazyLock;
 use starry_process::Process;
@@ -59,9 +59,9 @@ struct SerialBackend {
     runtime: SerialRuntimeHandle,
     tx: SerialTxSender,
     rx: SerialRxSubscription,
-    lifecycle_lock: Mutex<()>,
+    lifecycle_lock: PiMutex<()>,
     started: AtomicBool,
-    output_lock: Mutex<()>,
+    output_lock: PiMutex<()>,
 }
 
 struct NoConsole;
@@ -143,8 +143,10 @@ pub fn bind_console_to(proc: &Process) -> AxResult<()> {
         && let Some(entry) = SERIAL_REGISTRY.entries.get(index)
     {
         entry.backend.ensure_started()?;
-        entry.backend.runtime.claim_console_output()?;
-        return entry.tty.bind_to(proc);
+        entry.tty.bind_to(proc)?;
+        entry.backend.runtime.activate_console_output()?;
+        ax_runtime::hal::console::claim_runtime_output();
+        return Ok(());
     }
     Err(AxError::NoSuchDevice)
 }
@@ -234,9 +236,9 @@ fn new_serial_tty(number: usize, runtime: SerialRuntimeHandle) -> AxResult<Seria
         runtime,
         tx,
         rx,
-        lifecycle_lock: Mutex::new(()),
+        lifecycle_lock: PiMutex::new(()),
         started: AtomicBool::new(false),
-        output_lock: Mutex::new(()),
+        output_lock: PiMutex::new(()),
     });
 
     let terminal = Arc::new(Terminal::default());

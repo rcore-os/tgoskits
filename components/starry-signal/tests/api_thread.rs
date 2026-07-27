@@ -166,6 +166,7 @@ fn sigaltstack_reports_active_until_restore() {
     thr.set_stack(SignalStack {
         sp: alt_base,
         flags: 0,
+        __padding: 0,
         size: alt_size,
     });
 

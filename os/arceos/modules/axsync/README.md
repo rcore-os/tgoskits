@@ -7,12 +7,13 @@
 
 ## Primitives
 
-- **Mutex**: A mutual exclusion primitive. With the `multitask` feature, it uses task-aware locking; otherwise it is an alias of `ax_kspin::SpinNoIrq`.
+- **Mutex**: With `multitask`, an urgency-ordered sleeping mutex with targeted ownership handoff. It reports ownership and wait edges to `ax-task`, which owns transitive donation, scheduler requeue, and Deadline donor-budget semantics. Otherwise it is an alias of `ax_kspin::SpinNoIrq`.
 - **spin**: Re-export of the [ax-kspin](https://crates.io/crates/ax-kspin) crate (spinlocks).
 
 ## Features
 
-- `multitask`: Enable multi-threaded support. When enabled, `Mutex` uses blocking that cooperates with the task scheduler; when disabled, `Mutex` is a spinlock.
+- `multitask`: Enable the task scheduler's PI mutex protocol. Short owner and waiter metadata transitions use `ax-kspin`; donation, blocking, handoff, and wake operations run after the metadata lock is released.
+- `lockdep`: Enable sleeping-lock dependency validation in addition to PI.
 
 ## License
 

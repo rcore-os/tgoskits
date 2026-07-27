@@ -27,6 +27,9 @@ pub mod os;
 pub mod root;
 pub mod volume;
 
+#[cfg(test)]
+mod test_runtime;
+
 pub use block::{
     BlockRegion,
     runtime::{

@@ -1,6 +1,9 @@
 //! Structures and functions for user space.
 
-use core::ops::{Deref, DerefMut};
+use core::{
+    mem::size_of,
+    ops::{Deref, DerefMut},
+};
 
 use ax_memory_addr::VirtAddr;
 #[cfg(feature = "fp-simd")]
@@ -20,6 +23,15 @@ use crate::{GeneralRegisters, TrapFrame, trap::PageFaultFlags};
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct UserContext(TrapFrame);
+
+// SAFETY: `TrapFrame` is a contiguous C-layout register image containing only
+// integer-backed register values and has no padding.
+unsafe impl bytemuck::NoUninit for UserContext {}
+
+const _: () = {
+    assert!(size_of::<TrapFrame>() == 34 * size_of::<usize>());
+    assert!(size_of::<UserContext>() == size_of::<TrapFrame>());
+};
 
 impl UserContext {
     /// Creates a new context with the given entry point, user stack pointer,

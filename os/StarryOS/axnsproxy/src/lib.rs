@@ -22,6 +22,14 @@ pub use pid::{PidNamespace, ROOT_PID_NS};
 pub use user::{ROOT_USER_NS, UserNamespace};
 pub use uts::{ROOT_UTS_NS, UtNamespace, build_utsname};
 
+fn restore_if_empty<T>(slot: &mut Option<T>, value: T) -> bool {
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(value);
+    true
+}
+
 /// Aggregates all namespace types for a process.
 ///
 /// `ProcessData` holds a single `SpinNoIrq<NsProxy>` field.  Clone and unshare
@@ -131,6 +139,16 @@ impl NsProxy {
         self.child_pid_ns = Some(Arc::new(SpinNoIrq::new(new_inner)));
     }
 
+    /// Restores a consumed next-child PID namespace if no newer reservation
+    /// has been published in the meantime.
+    #[must_use]
+    pub fn restore_child_pid_ns_if_empty(
+        &mut self,
+        namespace: Arc<SpinNoIrq<PidNamespace>>,
+    ) -> bool {
+        restore_if_empty(&mut self.child_pid_ns, namespace)
+    }
+
     pub fn unshare_net(&mut self) {
         let new_inner = self.net_ns.lock().clone_ns();
         self.net_ns = Arc::new(SpinNoIrq::new(new_inner));
@@ -229,5 +247,26 @@ mod tests {
 
         assert!(Arc::ptr_eq(&nsproxy.cgroup_ns, &ROOT_CGROUP_NS));
         assert_eq!(Arc::strong_count(&exiting_namespace), 1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restore_if_empty;
+
+    #[test]
+    fn pending_pid_namespace_restore_never_overwrites_a_newer_reservation() {
+        let mut slot = Some(2_u64);
+
+        assert!(!restore_if_empty(&mut slot, 1));
+        assert_eq!(slot, Some(2));
+    }
+
+    #[test]
+    fn pending_pid_namespace_restore_fills_an_empty_slot() {
+        let mut slot = None;
+
+        assert!(restore_if_empty(&mut slot, 1_u64));
+        assert_eq!(slot, Some(1));
     }
 }

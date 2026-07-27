@@ -28,10 +28,10 @@ use alloc::{borrow::Cow, sync::Arc};
 use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{AxError, AxResult};
-use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions, current_fs_context};
 use ax_io::prelude::*;
 use ax_kspin::SpinRwLock as RwLock;
-use ax_task::{TaskState, current};
+use ax_std::os::arceos::task::ThreadState;
 use axfs_ng_vfs::DeviceId;
 use axpoll::Pollable;
 use downcast_rs::{DowncastSync, impl_downcast};
@@ -84,7 +84,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::DeviceMmap,
-    task::{AX_FILE_LIMIT, AsThread, tasks},
+    task::{AX_FILE_LIMIT, current_user_task, tasks},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -348,7 +348,7 @@ pub fn fd_is_path(fd: c_int) -> bool {
 
 /// Add a file to the file descriptor table.
 pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> AxResult<c_int> {
-    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+    let max_nofile = current_user_task().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
     let fd_table = current_fd_table();
     let mut table = fd_table.write();
     if table.count() as u64 >= max_nofile {
@@ -369,20 +369,49 @@ pub fn close_file_like(fd: c_int) -> AxResult {
     Err(AxError::BadFileDescriptor)
 }
 
-pub(crate) fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
-    !fd_table_file_refs(file).is_empty()
+/// Closes `fd` only while it still refers to `expected`.
+///
+/// Creation transactions retain the file object and use this identity check
+/// so rollback cannot close an unrelated descriptor that another thread
+/// installed after concurrently closing and reusing the numeric slot.
+pub fn close_file_like_if(fd: c_int, expected: &Arc<dyn FileLike>) -> bool {
+    let fd_table = current_fd_table();
+    let removed = {
+        let mut table = fd_table.write();
+        if !table
+            .get(fd as usize)
+            .is_some_and(|descriptor| Arc::ptr_eq(&descriptor.inner, expected))
+        {
+            return false;
+        }
+        table.remove(fd as usize)
+    };
+    if let Some(descriptor) = removed {
+        release_locks_on_close(descriptor);
+        true
+    } else {
+        false
+    }
 }
 
-pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(Pid, usize)> {
+pub(crate) fn fd_tables_contain_file(file: &Arc<dyn FileLike>) -> bool {
+    !fd_table_file_refs(file)
+        .unwrap_or_else(|error| panic!("failed to inspect task fd tables: {error}"))
+        .is_empty()
+}
+
+pub(crate) fn fd_table_file_refs(
+    file: &Arc<dyn FileLike>,
+) -> AxResult<alloc::vec::Vec<(Pid, usize)>> {
     let mut refs = alloc::vec::Vec::new();
-    for task in tasks() {
-        if task.state() == TaskState::Exited {
+    for task in tasks()? {
+        if task.state() == ThreadState::Exited {
             continue;
         }
-        let thread = task.as_thread();
-        let pid = thread.proc_data.proc.pid();
-        let scope = thread.scope.read();
-        let scoped_fd_table = FD_TABLE.scope(&scope);
+        let pid = task.as_thread().proc_data.proc.pid();
+        let scope = task.as_thread().scope.read();
+        let scoped_fd_table = FD_TABLE.scope_cell(&scope).clone();
+        drop(scope);
         let table = scoped_fd_table.read();
         for id in table.ids() {
             if table.get(id).is_some_and(|fd| Arc::ptr_eq(&fd.inner, file)) {
@@ -390,7 +419,7 @@ pub(crate) fn fd_table_file_refs(file: &Arc<dyn FileLike>) -> alloc::vec::Vec<(P
             }
         }
     }
-    refs
+    Ok(refs)
 }
 
 fn notify_close_write(fd: &FileDescriptor) {
@@ -423,10 +452,10 @@ pub fn release_locks_on_close(fd: FileDescriptor) {
     // all of which funnel through here. This is where an mq descriptor drops a
     // matching `mq_notify` registration (`mqueue_flush_file`).
     fd.inner
-        .on_close(current().as_thread().proc_data.proc.pid());
+        .on_close(current_user_task().as_thread().proc_data.proc.pid());
     notify_close_write(&fd);
     if let Some(k) = key {
-        let pid = current().as_thread().proc_data.proc.pid();
+        let pid = current_user_task().as_thread().proc_data.proc.pid();
         crate::syscall::release_inode_posix_locks(pid, k);
         if !fd_tables_contain_file(&fd.inner) {
             crate::syscall::release_flock_lock(k, &fd.inner);
@@ -459,7 +488,7 @@ pub fn close_all_fds() {
     // CLONE_FILES may share the same fd table across multiple tasks/processes.
     // In that case, an exiting sharer must not clear the whole table, or other
     // live sharers (including the parent) will lose stdout/stderr unexpectedly.
-    // One reference belongs to the scope slot and one is this owned snapshot.
+    // One reference belongs to the scope slot and one is our pinned snapshot.
     if Arc::strong_count(&fd_table) > 2 {
         return;
     }
@@ -481,7 +510,7 @@ pub fn close_all_fds() {
 
 pub fn add_stdio(fd_table: &mut FlattenObjects<FileDescriptor, AX_FILE_LIMIT>) -> AxResult<()> {
     assert_eq!(fd_table.count(), 0);
-    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let fs_context = current_fs_context();
     let cx = fs_context.lock();
     let open = |options: &mut OpenOptions, flags| {
         AxResult::Ok(Arc::new(File::new(

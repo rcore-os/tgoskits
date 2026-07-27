@@ -2,7 +2,7 @@ use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
 use core::mem::size_of;
 
 use axfs_ng_vfs::{DeviceId, VfsResult};
-use bytemuck::AnyBitPattern;
+use bytemuck::{AnyBitPattern, NoUninit};
 use crab_usb::{
     ProbedDevice,
     usb_if::{
@@ -33,7 +33,7 @@ pub(super) struct UsbdevfsCtrlTransfer {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, AnyBitPattern)]
+#[derive(Clone, Copy, Debug, Default, AnyBitPattern, NoUninit)]
 pub(super) struct UsbdevfsConnectInfo {
     pub(super) devnum: u32,
     pub(super) slow: u8,
@@ -57,7 +57,7 @@ pub(super) struct UsbdevfsSetInterface {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, AnyBitPattern)]
+#[derive(Clone, Copy, Debug, AnyBitPattern, NoUninit)]
 pub(super) struct UsbdevfsGetDriver {
     pub(super) interface: u32,
     pub(super) driver: [u8; 256],
@@ -80,7 +80,7 @@ pub(super) struct UsbdevfsDisconnectClaim {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, AnyBitPattern)]
+#[derive(Clone, Copy, Debug, Default, AnyBitPattern, NoUninit)]
 pub(super) struct UsbdevfsIsoPacketDesc {
     pub(super) length: u32,
     pub(super) actual_length: u32,
@@ -88,12 +88,14 @@ pub(super) struct UsbdevfsIsoPacketDesc {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, AnyBitPattern)]
+#[derive(Clone, Copy, Debug, Default, AnyBitPattern, NoUninit)]
 pub(super) struct UsbdevfsUrb {
     pub(super) type_: u8,
     pub(super) endpoint: u8,
+    pub(super) _padding0: [u8; 2],
     pub(super) status: i32,
     pub(super) flags: u32,
+    pub(super) _padding1: u32,
     pub(super) buffer: *mut u8,
     pub(super) buffer_length: i32,
     pub(super) actual_length: i32,

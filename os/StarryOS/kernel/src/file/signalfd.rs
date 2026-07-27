@@ -7,17 +7,16 @@ use core::{
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use ax_task::{
-    current,
-    future::{block_on, poll_io},
-};
 use axpoll::{IoEvents, PollSet, Pollable};
 use starry_signal::{SignalInfo, SignalSet};
 use zerocopy::{Immutable, IntoBytes};
 
 use crate::{
     file::{FileLike, IoDst, IoSrc},
-    task::AsThread,
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io_for},
+    },
 };
 
 /// The size of signalfd_siginfo structure (128 bytes as per Linux
@@ -111,7 +110,7 @@ impl Signalfd {
     /// Check if there are any pending signals matching the mask
     fn has_pending_signals(&self) -> bool {
         let mask = self.mask();
-        let curr = current();
+        let curr = current_user_task();
         let signal = &curr.as_thread().signal;
         let pending = signal.pending();
         !(pending & mask).is_empty()
@@ -120,7 +119,7 @@ impl Signalfd {
     /// Dequeue a signal matching the mask
     fn dequeue_signal(&self) -> Option<SignalInfo> {
         let mask = self.mask();
-        let curr = current();
+        let curr = current_user_task();
         let signal = &curr.as_thread().signal;
         signal.dequeue_signal(&mask)
     }
@@ -132,26 +131,30 @@ impl FileLike for Signalfd {
             return Err(AxError::InvalidInput);
         }
 
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            if let Some(sig_info) = self.dequeue_signal() {
-                // Convert SignalInfo to SignalfdSiginfo
-                let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                if let Some(sig_info) = self.dequeue_signal() {
+                    // Convert SignalInfo to SignalfdSiginfo
+                    let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
 
-                // Write the structure to the destination buffer
-                let bytes = sfd_info.as_bytes();
-                dst.write(bytes)?;
+                    // Write the structure to the destination buffer
+                    let bytes = sfd_info.as_bytes();
+                    dst.write(bytes)?;
 
-                // Wake up other waiters if there are more signals pending
-                if self.has_pending_signals() {
-                    // Remaining pending signals are visible before re-wake.
-                    unsafe { self.poll_rx.wake(IoEvents::IN) };
+                    // Wake up other waiters if there are more signals pending
+                    if self.has_pending_signals() {
+                        // Remaining pending signals are visible before re-wake.
+                        unsafe { self.poll_rx.wake(IoEvents::IN) };
+                    }
+
+                    Ok(SIGNALFD_SIGINFO_SIZE)
+                } else {
+                    Err(AxError::WouldBlock)
                 }
-
-                Ok(SIGNALFD_SIGINFO_SIZE)
-            } else {
-                Err(AxError::WouldBlock)
-            }
-        }))
+            }),
+        )
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {

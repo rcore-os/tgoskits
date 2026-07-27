@@ -3,9 +3,7 @@ use core::{net::Ipv4Addr, time::Duration};
 
 use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
-use ax_net::{
-    CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx, SocketOps,
-};
+use ax_net::{CMsgData, IpCmsg, RecvFlags, RecvOptions, SendFlags, SendOptions, SocketAddrEx};
 use ax_runtime::hal::time::wall_time;
 use linux_raw_sys::{
     general::timespec,
@@ -36,9 +34,44 @@ fn parse_recvmmsg_timeout(timeout: UserConstPtr<timespec>) -> AxResult<Option<Du
     if timeout.is_null() {
         return Ok(None);
     }
-    let ts = timeout.get_as_ref()?;
-    let tv = (*ts).try_into_time_value()?;
+    // SAFETY: timespec contains only signed integer fields; semantic range
+    // validation is performed by try_into_time_value below.
+    let ts = unsafe { timeout.read_abi()? };
+    let tv = ts.try_into_time_value()?;
     Ok(Some(Duration::new(tv.as_secs(), tv.subsec_nanos())))
+}
+
+fn decode_msg_namelen(value: i32) -> AxResult<socklen_t> {
+    value.try_into().map_err(|_| AxError::InvalidInput)
+}
+
+fn encode_msg_namelen(value: socklen_t) -> AxResult<i32> {
+    value.try_into().map_err(|_| AxError::InvalidInput)
+}
+
+fn write_msghdr_outputs(
+    msg: UserPtr<msghdr>,
+    namelen: i32,
+    controllen: usize,
+    flags: u32,
+) -> AxResult<()> {
+    let base = msg.address().as_usize();
+    UserPtr::<i32>::from(base + core::mem::offset_of!(msghdr, msg_namelen)).write(namelen)?;
+    UserPtr::<usize>::from(base + core::mem::offset_of!(msghdr, msg_controllen))
+        .write(controllen)?;
+    UserPtr::<u32>::from(base + core::mem::offset_of!(msghdr, msg_flags)).write(flags)
+}
+
+fn mmsghdr_address(msgvec: UserPtr<mmsghdr>, index: usize) -> AxResult<usize> {
+    index
+        .checked_mul(size_of::<mmsghdr>())
+        .and_then(|offset| msgvec.address().as_usize().checked_add(offset))
+        .ok_or(AxError::InvalidInput)
+}
+
+fn write_mmsghdr_len(msgvec: UserPtr<mmsghdr>, index: usize, len: u32) -> AxResult<()> {
+    let base = mmsghdr_address(msgvec, index)?;
+    UserPtr::<u32>::from(base + core::mem::offset_of!(mmsghdr, msg_len)).write(len)
 }
 
 fn parse_send_cmsgs(control_ptr: usize, control_len: usize) -> AxResult<Vec<CMsgData>> {
@@ -55,7 +88,9 @@ fn parse_send_cmsgs(control_ptr: usize, control_len: usize) -> AxResult<Vec<CMsg
             break;
         }
 
-        let hdr = UserConstPtr::<cmsghdr>::from(ptr).get_as_ref()?;
+        // SAFETY: cmsghdr is an integer-only C ABI record. Every copied bit
+        // pattern is valid; length and level/type semantics are checked below.
+        let hdr = unsafe { UserConstPtr::<cmsghdr>::from(ptr).read_abi()? };
         if hdr.cmsg_len < size_of::<cmsghdr>() || ptr_end - ptr < hdr.cmsg_len {
             return Err(AxError::InvalidInput);
         }
@@ -66,7 +101,7 @@ fn parse_send_cmsgs(control_ptr: usize, control_len: usize) -> AxResult<Vec<CMsg
             return Err(AxError::InvalidInput);
         };
 
-        cmsg.push(Box::new(CMsg::parse(hdr)?) as CMsgData);
+        cmsg.push(Box::new(CMsg::parse(ptr, &hdr)?) as CMsgData);
         ptr = next_ptr;
     }
 
@@ -105,7 +140,7 @@ fn send_impl(
 
         debug!("sys_send <= fd: {fd}, flags: {flags:#x}, addr: {addr:?}");
 
-        let sent = socket.send(
+        let sent = socket.send_from_user(
             &mut src,
             SendOptions {
                 to: addr,
@@ -138,14 +173,16 @@ pub fn sys_sendto(
 }
 
 pub fn sys_sendmsg(fd: i32, msg: UserConstPtr<msghdr>, flags: u32) -> AxResult<isize> {
-    let msg = msg.get_as_ref()?;
+    // SAFETY: msghdr consists of raw addresses and integer lengths/flags.
+    // Every bit pattern is valid before the syscall validates each field.
+    let msg = unsafe { msg.read_abi()? };
     let cmsg = parse_send_cmsgs(msg.msg_control as usize, msg.msg_controllen)?;
     send_impl(
         fd,
         IoVectorBuf::new(msg.msg_iov as *const IoVec, msg.msg_iovlen)?.into_io(),
         flags,
         UserConstPtr::from(msg.msg_name as usize),
-        msg.msg_namelen as socklen_t,
+        decode_msg_namelen(msg.msg_namelen)?,
         cmsg,
     )
 }
@@ -159,7 +196,7 @@ fn recv_impl(
     mut dst: impl Write + IoBufMut,
     flags: u32,
     addr: UserPtr<sockaddr>,
-    addrlen: UserPtr<socklen_t>,
+    addrlen: &mut socklen_t,
     mut cmsg_builder: Option<CMsgBuilder>,
     truncated_out: &mut bool,
     control_truncated_out: &mut bool,
@@ -169,10 +206,7 @@ fn recv_impl(
     if let Ok(packet) = PacketSocket::from_fd(fd) {
         let (recv, from) = packet.recv_packet(&mut dst)?;
         if !addr.is_null() {
-            from.write_to_user(
-                addr.address().as_usize() as *mut sockaddr,
-                addrlen.get_as_mut()?,
-            )?;
+            from.write_to_user(addr.address().as_usize() as *mut sockaddr, addrlen)?;
         }
         if let Some(builder) = cmsg_builder.take() {
             builder.finish();
@@ -197,11 +231,7 @@ fn recv_impl(
             // did not fit (Linux sets it; getifaddrs sizes its buffer from it).
             *truncated_out = truncated;
             if !addr.is_null() {
-                super::addr::write_netlink_addr(
-                    &netlink.kernel_addr(),
-                    addr,
-                    addrlen.get_as_mut()?,
-                )?;
+                super::addr::write_netlink_addr(&netlink.kernel_addr(), addr, addrlen)?;
             }
             if let Some(builder) = cmsg_builder.take() {
                 builder.finish();
@@ -233,7 +263,7 @@ fn recv_impl(
 
     let mut remote_addr =
         (!addr.is_null()).then(|| SocketAddrEx::Ip((Ipv4Addr::UNSPECIFIED, 0).into()));
-    let recv = socket.recv(
+    let recv = socket.recv_to_user(
         &mut dst,
         RecvOptions {
             from: remote_addr.as_mut(),
@@ -245,7 +275,7 @@ fn recv_impl(
 
     if let Some(remote_addr) = remote_addr {
         socket_addr_ex_for_user_name(socket.ip_domain(), remote_addr)
-            .write_to_user(addr, addrlen.get_as_mut()?)?;
+            .write_to_user(addr, addrlen)?;
     }
 
     if let Some(mut builder) = cmsg_builder {
@@ -323,49 +353,65 @@ pub fn sys_recvfrom(
     addr: UserPtr<sockaddr>,
     addrlen: UserPtr<socklen_t>,
 ) -> AxResult<isize> {
-    recv_impl(
+    let mut addrlen_value = if addr.is_null() { 0 } else { addrlen.read()? };
+    let result = recv_impl(
         fd,
         VmBytesMut::new(buf, len),
         flags,
         addr,
-        addrlen,
+        &mut addrlen_value,
         None,
         &mut false,
         &mut false,
-    )
+    );
+    if result.is_ok() && !addr.is_null() {
+        addrlen.write(addrlen_value)?;
+    }
+    result
 }
 
 pub fn sys_recvmsg(fd: i32, msg: UserPtr<msghdr>, flags: u32) -> AxResult<isize> {
-    let msg = msg.get_as_mut()?;
+    // SAFETY: msghdr consists of raw addresses and integer lengths/flags.
+    // Every bit pattern is valid before the syscall validates each field.
+    let mut msg_value = unsafe { msg.read_abi()? };
+    let mut msg_namelen = decode_msg_namelen(msg_value.msg_namelen)?;
     let mut truncated = false;
     let mut control_truncated = false;
     let recv = recv_impl(
         fd,
-        IoVectorBuf::new(msg.msg_iov as *mut IoVec, msg.msg_iovlen)?.into_io(),
+        IoVectorBuf::new(msg_value.msg_iov as *mut IoVec, msg_value.msg_iovlen)?.into_io(),
         flags,
-        UserPtr::from(msg.msg_name as usize),
-        UserPtr::from(&mut msg.msg_namelen as *mut _ as *mut socklen_t),
-        (!msg.msg_control.is_null()).then(|| {
+        UserPtr::from(msg_value.msg_name as usize),
+        &mut msg_namelen,
+        (!msg_value.msg_control.is_null()).then(|| {
             CMsgBuilder::new(
-                UserPtr::from(msg.msg_control as *mut cmsghdr),
-                &mut msg.msg_controllen,
+                UserPtr::from(msg_value.msg_control as *mut cmsghdr),
+                &mut msg_value.msg_controllen,
             )
         }),
         &mut truncated,
         &mut control_truncated,
     );
     // Linux: on success, set msg.msg_flags to indicate truncation etc.
-    if recv.is_ok() {
-        let mut mf = 0;
-        if truncated {
-            mf |= MSG_TRUNC;
+    match recv {
+        Ok(received) => {
+            let mut output_flags = 0;
+            if truncated {
+                output_flags |= MSG_TRUNC;
+            }
+            if control_truncated {
+                output_flags |= MSG_CTRUNC;
+            }
+            write_msghdr_outputs(
+                msg,
+                encode_msg_namelen(msg_namelen)?,
+                msg_value.msg_controllen,
+                output_flags,
+            )?;
+            Ok(received)
         }
-        if control_truncated {
-            mf |= MSG_CTRUNC;
-        }
-        msg.msg_flags = mf;
+        Err(error) => Err(error),
     }
-    recv
 }
 
 /// Send multiple datagrams in one syscall.
@@ -377,9 +423,12 @@ pub fn sys_sendmmsg(fd: i32, msgvec: UserPtr<mmsghdr>, vlen: u32, flags: u32) ->
     // never rejects an over-cap batch with EINVAL.
     let vlen = vlen.min(MMSG_MAX_VLEN);
 
-    let msgvec = msgvec.get_as_mut_slice(vlen as usize)?;
+    let msgvec_ptr = msgvec;
+    // SAFETY: mmsghdr/msghdr contain only raw addresses and integer fields.
+    // Every bit pattern is valid before each message is validated below.
+    let mut msgvec = unsafe { msgvec_ptr.read_abi_slice(vlen as usize)? };
     let mut sent = 0;
-    for msg in msgvec.iter_mut() {
+    for (index, msg) in msgvec.iter_mut().enumerate() {
         let cmsg = parse_send_cmsgs(msg.msg_hdr.msg_control as usize, msg.msg_hdr.msg_controllen)?;
         match send_impl(
             fd,
@@ -387,11 +436,12 @@ pub fn sys_sendmmsg(fd: i32, msgvec: UserPtr<mmsghdr>, vlen: u32, flags: u32) ->
                 .into_io(),
             flags,
             UserConstPtr::from(msg.msg_hdr.msg_name as usize),
-            msg.msg_hdr.msg_namelen as socklen_t,
+            decode_msg_namelen(msg.msg_hdr.msg_namelen)?,
             cmsg,
         ) {
             Ok(n) => {
                 msg.msg_len = n as u32;
+                write_mmsghdr_len(msgvec_ptr, index, msg.msg_len)?;
                 sent += 1;
             }
             Err(e) => {
@@ -429,10 +479,13 @@ pub fn sys_recvmmsg(
     // SO_RCVTIMEO support at the socket layer to fix.
     let deadline = timeout.map(|t| wall_time() + t);
     let _socket = Socket::from_fd(fd)?;
-    let msgvec = msgvec.get_as_mut_slice(vlen as usize)?;
+    let msgvec_ptr = msgvec;
+    // SAFETY: mmsghdr/msghdr contain only raw addresses and integer fields.
+    // Every bit pattern is valid before each message is validated below.
+    let mut msgvec = unsafe { msgvec_ptr.read_abi_slice(vlen as usize)? };
     let mut received = 0;
     let mut flags = flags;
-    for msg in msgvec.iter_mut() {
+    for (index, msg) in msgvec.iter_mut().enumerate() {
         if let Some(deadline) = deadline
             && wall_time() >= deadline
         {
@@ -442,25 +495,43 @@ pub fn sys_recvmmsg(
             break;
         }
 
+        let mut msg_namelen = match decode_msg_namelen(msg.msg_hdr.msg_namelen) {
+            Ok(value) => value,
+            Err(error) if received == 0 => return Err(error),
+            Err(_) => break,
+        };
+        let mut truncated = false;
+        let mut control_truncated = false;
         let recv = recv_impl(
             fd,
             IoVectorBuf::new(msg.msg_hdr.msg_iov as *mut IoVec, msg.msg_hdr.msg_iovlen)?.into_io(),
             flags,
             UserPtr::from(msg.msg_hdr.msg_name as usize),
-            UserPtr::from(&mut msg.msg_hdr.msg_namelen as *mut _ as *mut socklen_t),
+            &mut msg_namelen,
             (!msg.msg_hdr.msg_control.is_null()).then(|| {
                 CMsgBuilder::new(
                     UserPtr::from(msg.msg_hdr.msg_control as *mut cmsghdr),
                     &mut msg.msg_hdr.msg_controllen,
                 )
             }),
-            &mut false,
-            &mut false,
+            &mut truncated,
+            &mut control_truncated,
         );
 
         match recv {
             Ok(n) => {
+                msg.msg_hdr.msg_namelen = encode_msg_namelen(msg_namelen)?;
+                msg.msg_hdr.msg_flags = (if truncated { MSG_TRUNC } else { 0 })
+                    | (if control_truncated { MSG_CTRUNC } else { 0 });
                 msg.msg_len = n as u32;
+                let msg_addr = mmsghdr_address(msgvec_ptr, index)?;
+                write_msghdr_outputs(
+                    UserPtr::from(msg_addr + core::mem::offset_of!(mmsghdr, msg_hdr)),
+                    msg.msg_hdr.msg_namelen,
+                    msg.msg_hdr.msg_controllen,
+                    msg.msg_hdr.msg_flags,
+                )?;
+                write_mmsghdr_len(msgvec_ptr, index, msg.msg_len)?;
                 received += 1;
                 // MSG_WAITFORONE: once a datagram is received, remaining
                 // recvs must not block (Linux do_recvmmsg net/socket.c:3055

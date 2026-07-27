@@ -48,7 +48,7 @@ use core::{
 };
 
 use ax_errno::AxError;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{DeviceId, Filesystem, NodeFlags, NodeType, VfsResult};
 use spin::Once;
 
@@ -196,20 +196,20 @@ impl DeviceOps for Zero {
 }
 
 struct Random {
-    state: Mutex<RandomState>,
+    state: PiMutex<RandomState>,
 }
 
 impl Random {
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(RandomState::new(random_seed())),
+            state: PiMutex::new(RandomState::new(random_seed())),
         }
     }
 
-    #[cfg(any(test, axtest))]
+    #[cfg(axtest)]
     fn new_with_seed_for_test(seed: [u8; 32]) -> Self {
         Self {
-            state: Mutex::new(RandomState::new(seed)),
+            state: PiMutex::new(RandomState::new(seed)),
         }
     }
 }
@@ -232,13 +232,17 @@ impl RandomState {
     }
 
     fn mix_entropy(&mut self, entropy: &[u8]) {
+        self.mix_entropy_at(entropy, time_entropy());
+    }
+
+    fn mix_entropy_at(&mut self, entropy: &[u8], time_entropy: u64) {
         let mut seed = [0; 32];
         self.rng.fill_bytes(&mut seed);
 
         self.reseed_count = self.reseed_count.wrapping_add(1);
         fold_seed_word(&mut seed, entropy.len() as u64);
         fold_seed_word(&mut seed, self.reseed_count);
-        fold_seed_word(&mut seed, time_entropy());
+        fold_seed_word(&mut seed, time_entropy);
 
         for (idx, byte) in entropy.iter().copied().enumerate() {
             let seed_idx = idx % seed.len();
@@ -810,28 +814,22 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceOps, Random};
+    use super::RandomState;
 
     #[test]
     fn random_write_mixes_entropy_into_stream() {
         let seed = *b"0123456789abcdef0123456789abcdef";
-        let baseline = Random::new_with_seed_for_test(seed);
-        let mixed = Random::new_with_seed_for_test(seed);
+        let mut baseline = RandomState::new(seed);
+        let mut mixed = RandomState::new(seed);
         let mut discarded = [0; 32];
         let mut baseline_next = [0; 32];
         let mut mixed_next = [0; 32];
 
-        assert_eq!(
-            baseline.read_at(&mut discarded, 0).unwrap(),
-            discarded.len()
-        );
-        assert_eq!(mixed.read_at(&mut discarded, 0).unwrap(), discarded.len());
-        assert_eq!(mixed.write_at(b"caller entropy", 0).unwrap(), 14);
-        assert_eq!(
-            baseline.read_at(&mut baseline_next, 0).unwrap(),
-            baseline_next.len()
-        );
-        assert_eq!(mixed.read_at(&mut mixed_next, 0).unwrap(), mixed_next.len());
+        baseline.fill_bytes(&mut discarded);
+        mixed.fill_bytes(&mut discarded);
+        mixed.mix_entropy_at(b"caller entropy", 0x1234_5678_9abc_def0);
+        baseline.fill_bytes(&mut baseline_next);
+        mixed.fill_bytes(&mut mixed_next);
 
         assert_ne!(baseline_next, mixed_next);
     }

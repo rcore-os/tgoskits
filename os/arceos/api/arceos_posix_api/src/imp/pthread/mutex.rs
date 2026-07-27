@@ -7,22 +7,22 @@ use core::{
 };
 
 use ax_errno::{LinuxError, LinuxResult};
-use ax_sync::Mutex;
+use ax_sync::{PiMutex, SpinMutex};
 use spin::LazyLock;
 
 use crate::{ctypes, utils::check_null_mut_ptr};
 
 const STATIC_MUTEX_SENTINEL: usize = usize::MAX;
 static STATIC_MUTEX_INIT_LOCK: AtomicBool = AtomicBool::new(false);
-static MUTEXES: LazyLock<Mutex<BTreeMap<usize, ForceSendSync<NonNull<PthreadMutex>>>>> =
-    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+static MUTEXES: LazyLock<SpinMutex<BTreeMap<usize, ForceSendSync<NonNull<PthreadMutex>>>>> =
+    LazyLock::new(|| SpinMutex::new(BTreeMap::new()));
 
 #[repr(C)]
-pub struct PthreadMutex(Mutex<()>);
+pub struct PthreadMutex(PiMutex<()>);
 
 impl PthreadMutex {
     const fn new() -> Self {
-        Self(Mutex::new(()))
+        Self(PiMutex::new(()))
     }
 
     fn lock(&self) -> LinuxResult {

@@ -4,7 +4,7 @@ use core::{any::Any, time::Duration};
 use ax_errno::AxError;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use ax_runtime::hal::{mem::virt_to_phys, time::busy_wait};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{NodeFlags, VfsResult};
 use sg200x_bsp::{
     gpio::{Direction, GPIO, GPIO1_BASE},
@@ -62,7 +62,7 @@ pub const CVI_CAMERA_IOCTL_GET_FRAME: u32 = 3;
 pub const CVI_CAMERA_IOCTL_GET_YUV_FRAME: u32 = 4;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraInfo {
     pub width: u16,
     pub height: u16,
@@ -82,7 +82,7 @@ struct UsbCameraState {
 }
 
 pub struct CviCamera {
-    state: Mutex<UsbCameraState>,
+    state: PiMutex<UsbCameraState>,
     jpu: Arc<CviJpu>,
 }
 
@@ -173,7 +173,7 @@ fn init_usb_camera() -> Result<UsbCameraSession, &'static str> {
     }
     pinmux_usb_vbus_det_gpio_output_prep();
     enable_usb_vbus_gpio();
-    ax_task::sleep(Duration::from_micros(2_000_000));
+    crate::task::sleep(Duration::from_micros(2_000_000));
 
     usb::set_dwc2_base_virt(iomap_usize(DWC2_BASE, REG_MMIO_SIZE));
     usb::set_cv182x_phy_base_virt(iomap_usize(CV182X_USB2_PHY_BASE, REG_MMIO_SIZE));
@@ -337,7 +337,7 @@ impl UsbCameraState {
 impl CviCamera {
     pub fn new(jpu: Arc<CviJpu>) -> Self {
         Self {
-            state: Mutex::new(UsbCameraState::default()),
+            state: PiMutex::new(UsbCameraState::default()),
             jpu,
         }
     }

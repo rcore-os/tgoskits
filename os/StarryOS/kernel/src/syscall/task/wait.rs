@@ -1,10 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_task::{
-    current,
-    future::{block_on, interruptible},
-};
 use bitflags::bitflags;
 use linux_raw_sys::general::{
     __WALL, __WCLONE, __WNOTHREAD, P_ALL, P_PGID, P_PID, P_PIDFD, WCONTINUED, WEXITED, WNOHANG,
@@ -17,9 +13,11 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     file::{PidFd, get_file_like},
     task::{
-        AsThread, JobStatus, ProcessData, ProcessIdentity, decode_wait_status, get_process_data,
-        get_task, get_zombie_cred, is_reaped_process, is_zombie_clone_child, is_zombie_process,
-        processes, reap_process, traced_zombies_for, wait_on_pollset, zombie_wait_parent_tid,
+        JobStatus, ProcessData, ProcessIdentity, current_user_task, decode_wait_status,
+        future::{block_on_user, interruptible_for},
+        get_process_data, get_task, get_zombie_cred, is_reaped_process, is_zombie_clone_child,
+        is_zombie_process, processes, reap_process, traced_zombies_for, wait_on_pollset,
+        zombie_wait_parent_tid,
     },
 };
 
@@ -99,8 +97,26 @@ impl WaitTarget {
     }
 
     fn ptrace_requires_exact_stop(&self, child: &Process) -> bool {
-        matches!(self, WaitTarget::Pid(pid) if *pid != child.pid() && child.threads().contains(pid))
+        matches!(
+            self,
+            WaitTarget::Pid(pid)
+                if ptrace_pid_requires_exact_stop(
+                    *pid,
+                    child.pid(),
+                    child.threads().contains(pid),
+                )
+        )
     }
+}
+
+fn ptrace_pid_requires_exact_stop(
+    target_pid: Pid,
+    process_pid: Pid,
+    target_is_thread: bool,
+) -> bool {
+    // Linux PIDTYPE_PID waits select one task even when that PID is also the
+    // thread-group leader. They never widen an explicit TID into the group.
+    target_pid == process_pid || target_is_thread
 }
 
 fn waitid_pidfd_target(fd: i32) -> AxResult<WaitTarget> {
@@ -243,7 +259,7 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     }
     info!("sys_waitpid <= pid: {pid:?}, options: {options:?}");
 
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let proc = &thr.proc_data.proc;
 
@@ -338,10 +354,40 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
         }
     };
 
-    block_on(interruptible(wait_on_pollset(
-        &proc_data.child_exit_event,
-        || check_children().transpose(),
-    )))?
+    let task = current_user_task();
+    block_on_user(
+        &task,
+        interruptible_for(
+            &task,
+            wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
+        ),
+    )?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_process_pid_requires_exact_ptrace_stop() {
+        let process_pid = 41;
+
+        assert!(ptrace_pid_requires_exact_stop(
+            process_pid,
+            process_pid,
+            false,
+        ));
+    }
+
+    #[test]
+    fn explicit_non_leader_tid_requires_exact_ptrace_stop() {
+        assert!(ptrace_pid_requires_exact_stop(42, 41, true));
+    }
+
+    #[test]
+    fn unrelated_pid_does_not_select_a_ptrace_stop() {
+        assert!(!ptrace_pid_requires_exact_stop(43, 41, false));
+    }
 }
 
 pub fn sys_waitid(
@@ -350,7 +396,7 @@ pub fn sys_waitid(
     infop: *mut linux_raw_sys::general::siginfo,
     options: u32,
 ) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let proc = &thr.proc_data.proc;
 
@@ -424,7 +470,7 @@ pub fn sys_waitid(
                     linux_raw_sys::general::CLD_TRAPPED as i32,
                     stopped_wait_signo(&data, signo),
                 );
-                infop.vm_write(siginfo.0)?;
+                infop.cast::<SignalInfo>().vm_write(siginfo)?;
             }
             if !options.contains(WaitIdOptions::WNOWAIT) {
                 data.mark_ptrace_stop_reported_for(stop_tid);
@@ -453,7 +499,7 @@ pub fn sys_waitid(
                     if let Some(infop) = infop.nullable() {
                         let siginfo =
                             SignalInfo::new_sigchld(child.pid(), child_uid(child), code, status);
-                        infop.vm_write(siginfo.0)?;
+                        infop.cast::<SignalInfo>().vm_write(siginfo)?;
                     }
                     if !options.contains(WaitIdOptions::WNOWAIT) {
                         data.take_job_status_if(want_stopped, want_continued);
@@ -472,7 +518,7 @@ pub fn sys_waitid(
 
             if let Some(infop) = infop.nullable() {
                 let siginfo = SignalInfo::new_sigchld(child_pid, child_uid, code, status);
-                infop.vm_write(siginfo.0)?;
+                infop.cast::<SignalInfo>().vm_write(siginfo)?;
             }
 
             if options.contains(WaitIdOptions::WNOWAIT) {
@@ -488,8 +534,8 @@ pub fn sys_waitid(
             Err(AxError::from(LinuxError::ECHILD))
         } else if options.contains(WaitIdOptions::WNOHANG) {
             if let Some(infop) = infop.nullable() {
-                let zeroed: linux_raw_sys::general::siginfo = unsafe { core::mem::zeroed() };
-                infop.vm_write(zeroed)?;
+                let zeroed = SignalInfo::zeroed();
+                infop.cast::<SignalInfo>().vm_write(zeroed)?;
             }
             Ok(Some(0))
         } else {
@@ -497,8 +543,12 @@ pub fn sys_waitid(
         }
     };
 
-    block_on(interruptible(wait_on_pollset(
-        &proc_data.child_exit_event,
-        || check_children().transpose(),
-    )))?
+    let task = current_user_task();
+    block_on_user(
+        &task,
+        interruptible_for(
+            &task,
+            wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
+        ),
+    )?
 }

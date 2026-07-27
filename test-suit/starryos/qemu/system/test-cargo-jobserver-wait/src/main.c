@@ -706,6 +706,23 @@ static int wait_child_nohang(pid_t pid, int *status)
     return -1;
 }
 
+static int wait_child_blocking(pid_t pid, int *status)
+{
+    for (;;) {
+        pid_t got = waitpid(pid, status, 0);
+        if (got == pid) {
+            return 0;
+        }
+        if (got < 0 && errno == EINTR) {
+            continue;
+        }
+        if (got >= 0) {
+            errno = ECHILD;
+        }
+        return -1;
+    }
+}
+
 static void test_exec_cloexec_error_pipe(void)
 {
     printf("[phase] fork exec + CLOEXEC error pipe\n");
@@ -1014,6 +1031,21 @@ struct build_script_child {
     int err_bytes;
 };
 
+static int build_script_wave_complete(
+    const struct build_script_child children[BUILD_SCRIPT_WAVE],
+    int reaped)
+{
+    if (reaped != BUILD_SCRIPT_WAVE) {
+        return 0;
+    }
+    for (int i = 0; i < BUILD_SCRIPT_WAVE; i++) {
+        if (!children[i].out_eof || !children[i].err_eof) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void close_build_script_child(struct build_script_child *child)
 {
     if (child->out_fd >= 0) {
@@ -1071,7 +1103,7 @@ static void test_build_script_wave(void)
 
     int reaped = 0;
     int loops = 0;
-    while (reaped < BUILD_SCRIPT_WAVE && loops++ < MAX_LOOPS) {
+    while (!build_script_wave_complete(children, reaped) && loops++ < MAX_LOOPS) {
         struct pollfd pfds[BUILD_SCRIPT_WAVE * 2];
         int child_index[BUILD_SCRIPT_WAVE * 2];
         int is_stderr[BUILD_SCRIPT_WAVE * 2];
@@ -1182,7 +1214,7 @@ static void *pthread_spawn_worker(void *arg)
             local_error = rc;
         } else {
             int status = 0;
-            if (wait_child_nohang(pid, &status) != 0) {
+            if (wait_child_blocking(pid, &status) != 0) {
                 local_error = errno;
             } else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
                 local_error = ECHILD;

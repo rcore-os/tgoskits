@@ -2,13 +2,13 @@ use core::mem::{self, MaybeUninit};
 
 use ax_errno::{AxError, AxResult};
 use ax_io::prelude::*;
-use bytemuck::AnyBitPattern;
+use bytemuck::{AnyBitPattern, NoUninit};
 use starry_vm::{VmPtr, vm_read_slice, vm_write_slice};
 
 use super::check_access;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AnyBitPattern)]
+#[derive(Debug, Copy, Clone, AnyBitPattern, NoUninit)]
 pub struct IoVec {
     pub iov_base: *mut u8,
     pub iov_len: isize,

@@ -220,6 +220,7 @@ device-specific drivers.
 - Initialize trap vectors on every CPU, not only the boot CPU.
 - Flush or barrier boot arguments before `cpu_on`; otherwise secondaries can observe stale stack, page table, or per-CPU data.
 - Keep logical CPU ID mapping separate from firmware CPU IDs. LoongArch CPU IDs in firmware data are not guaranteed to be dense array indices.
+- Keep the final scheduler idle handoff atomic. Set `CRMD.IE` immediately before `IDLE`, give that window stable assembly labels, and fast-forward interrupt return to the exit label. An empty `ESTAT` at the return instruction can be a consumed spurious interrupt from this window, not a new exception.
 - Compare ordering with local Linux architecture code when uncertain. For LoongArch, useful topics include DMW setup, CSR write ordering, TLB refill vector, exception entry, SMP boot argument handoff, and cache/TLB barriers.
 
 ## Finding Local Linux Source

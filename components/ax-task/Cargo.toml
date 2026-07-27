@@ -1,0 +1,15 @@
+[package]
+name = "ax-task"
+version = "0.7.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OS-independent IRQ-safe SMP task scheduling core"
+
+[dependencies]
+thiserror.workspace = true
+trait-ffi = "0.2.11"
+
+[dev-dependencies]
+loom.workspace = true

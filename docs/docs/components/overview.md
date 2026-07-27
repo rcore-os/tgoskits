@@ -152,7 +152,7 @@ flowchart TB
 | `arceos-shell` | ArceOS 层 | `apps/arceos/shell` | 1 | 0 | [查看](crates/arceos-shell) |
 | `ax-std` | ArceOS 层 | `os/arceos/ulib/axstd` | 6 | 22 | [查看](crates/ax-std) |
 | `ax-sync` | ArceOS 层 | `os/arceos/modules/axsync` | 2 | 9 | [查看](crates/ax-sync) |
-| `ax-task` | ArceOS 层 | `os/arceos/modules/axtask` | 13 | 8 | [查看](crates/ax-task) |
+| `ax-task` | 组件层 | `components/ax-task` | 2 | 8 | [查看](crates/ax-task) |
 | `axaddrspace` | 组件层 | `virtualization/axaddrspace` | 6 | 12 | [查看](crates/axaddrspace) |
 | `axbacktrace` | 组件层 | `components/axbacktrace` | 0 | 5 | [查看](crates/axbacktrace) |
 | `axbuild` | 工具层 | `scripts/axbuild` | 1 | 3 | [查看](crates/axbuild) |
