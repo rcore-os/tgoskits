@@ -20,6 +20,8 @@ use std::{
     vec::Vec,
 };
 
+use ax_memory_addr::{PAGE_SIZE_4K, align_up_4k};
+
 use crate::{
     AxVmError, AxVmResult, GuestPhysAddr, HostPhysAddr, ax_err_type, host::PagingHandler,
     sync::MutexExt,
@@ -31,7 +33,11 @@ type HostIVCChannel = IVCChannel<crate::HostPagingHandler>;
 
 static IVC_CHANNELS: Mutex<BTreeMap<(usize, usize), HostIVCChannel>> = Mutex::new(BTreeMap::new());
 
-pub const MAX_IVC_CHANNEL_SIZE: usize = 4096;
+/// Maximum size of one IVC channel's shared region.
+///
+/// Requests larger than this are truncated; the hypercall ABI always writes
+/// the actual granted size back to the guest, so guests must check it.
+pub const MAX_IVC_CHANNEL_SIZE: usize = 0x10_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IvcNotifyRoute {
@@ -234,7 +240,7 @@ pub fn prepare_notify_channel(
     source_vm_id: usize,
     target_vm_id: usize,
 ) -> AxVmResult<IvcNotifyRoute> {
-    let channels = IVC_CHANNELS.lock();
+    let channels = IVC_CHANNELS.lock_unpoisoned();
     let channel = channels.get(&(publisher_vm_id, key)).ok_or_else(|| {
         ax_err_type!(
             NotFound,
@@ -355,12 +361,12 @@ impl<H: PagingHandler> std::fmt::Debug for IVCChannel<H> {
 
 impl<H: PagingHandler> Drop for IVCChannel<H> {
     fn drop(&mut self) {
-        // Free the shared region frame when the channel is dropped.
+        // Free the shared region frames when the channel is dropped.
         debug!(
             "Dropping IVCChannel for VM[{}], shared region base: {:?}",
             self.publisher_vm_id, self.shared_region_base
         );
-        H::dealloc_frame(self.shared_region_base);
+        H::dealloc_frames(self.shared_region_base, self.page_count());
     }
 }
 
@@ -371,16 +377,23 @@ impl<H: PagingHandler> IVCChannel<H> {
         shared_region_size: usize,
         base_gpa: GuestPhysAddr,
     ) -> AxVmResult<Self> {
-        // TODO: support larger shared region sizes with alloc_frames API.
-        if shared_region_size > MAX_IVC_CHANNEL_SIZE {
+        let requested_size = align_up_4k(shared_region_size);
+        let shared_region_size = requested_size.min(MAX_IVC_CHANNEL_SIZE);
+        if shared_region_size == 0 {
+            return Err(ax_err_type!(
+                InvalidInput,
+                "IVC channel shared region size must be greater than 0"
+            ));
+        }
+        if shared_region_size < requested_size {
             warn!(
-                "IVC channel requested size {shared_region_size:#x} > {MAX_IVC_CHANNEL_SIZE:#x}; \
-                 truncating to {MAX_IVC_CHANNEL_SIZE:#x} (TODO: support larger sizes)"
+                "IVC channel requested size {requested_size:#x} exceeds \
+                 {MAX_IVC_CHANNEL_SIZE:#x}; truncating to {MAX_IVC_CHANNEL_SIZE:#x}"
             );
         }
-        let shared_region_size = shared_region_size.min(MAX_IVC_CHANNEL_SIZE);
-        let shared_region_base = H::alloc_frame().ok_or(AxVmError::OutOfMemory {
-            operation: "allocate IVC shared region frame",
+        let shared_region_base = H::alloc_frames(shared_region_size / PAGE_SIZE_4K, PAGE_SIZE_4K)
+            .ok_or(AxVmError::OutOfMemory {
+            operation: "allocate IVC shared region frames",
         })?;
 
         let mut channel = IVCChannel {
@@ -416,6 +429,13 @@ impl<H: PagingHandler> IVCChannel<H> {
         self.shared_region_size
     }
 
+    /// Number of 4K frames backing the shared region.
+    ///
+    /// `alloc()` guarantees the size is page-aligned, so this is exact.
+    fn page_count(&self) -> usize {
+        self.shared_region_size / PAGE_SIZE_4K
+    }
+
     pub fn add_subscriber(&mut self, subscriber_vm_id: usize, subscriber_gpa: GuestPhysAddr) {
         self.subscriber_vms.insert(subscriber_vm_id, subscriber_gpa);
     }
@@ -445,5 +465,142 @@ impl<H: PagingHandler> IVCChannel<H> {
 
     pub fn is_unpublished(&self) -> bool {
         self.base_gpa.is_none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::{sync::Mutex, vec::Vec};
+
+    use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, VirtAddr};
+
+    use super::*;
+
+    const TEST_ARENA_SIZE: usize = 8 * 1024 * 1024;
+
+    /// A [`PagingHandler`] backed by a bump allocator over one leaked arena.
+    ///
+    /// The arena address doubles as both host physical and host virtual
+    /// address so that `header_mut()` writes land in real memory. Allocation
+    /// and deallocation calls are recorded for assertions.
+    struct MockPagingHandler;
+
+    static ARENA_OFFSET: AtomicUsize = AtomicUsize::new(0);
+    static ALLOC_FRAMES_CALLS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+    static DEALLOC_FRAME_CALLS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    static DEALLOC_FRAMES_CALLS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
+    fn arena_base() -> usize {
+        static BASE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *BASE.get_or_init(|| {
+            let layout =
+                std::alloc::Layout::from_size_align(TEST_ARENA_SIZE, PAGE_SIZE_4K).unwrap();
+            // Safety: layout has non-zero size; null is checked immediately.
+            let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+            assert!(!ptr.is_null());
+            ptr as usize
+        })
+    }
+
+    fn bump_alloc_pages(num_pages: usize) -> Option<PhysAddr> {
+        let bytes = num_pages * PAGE_SIZE_4K;
+        let offset = ARENA_OFFSET.fetch_add(bytes, Ordering::Relaxed);
+        if offset + bytes > TEST_ARENA_SIZE {
+            return None;
+        }
+        Some(PhysAddr::from_usize(arena_base() + offset))
+    }
+
+    impl PagingHandler for MockPagingHandler {
+        fn alloc_frame() -> Option<PhysAddr> {
+            bump_alloc_pages(1)
+        }
+
+        fn alloc_frames(num: usize, align: usize) -> Option<PhysAddr> {
+            assert!(align <= PAGE_SIZE_4K);
+            ALLOC_FRAMES_CALLS.lock().unwrap().push((num, align));
+            bump_alloc_pages(num)
+        }
+
+        fn dealloc_frame(paddr: PhysAddr) {
+            DEALLOC_FRAME_CALLS.lock().unwrap().push(paddr.as_usize());
+        }
+
+        fn dealloc_frames(paddr: PhysAddr, num: usize) {
+            DEALLOC_FRAMES_CALLS
+                .lock()
+                .unwrap()
+                .push((paddr.as_usize(), num));
+        }
+
+        fn phys_to_virt(paddr: PhysAddr) -> VirtAddr {
+            VirtAddr::from_usize(paddr.as_usize())
+        }
+    }
+
+    #[test]
+    fn allocates_contiguous_frames_for_multi_page_channel() {
+        let channel = IVCChannel::<MockPagingHandler>::alloc(
+            1,
+            0x100,
+            4 * PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_0000),
+        )
+        .unwrap();
+        assert_eq!(channel.size(), 4 * PAGE_SIZE_4K);
+        let base = channel.base_hpa();
+        assert!(
+            ALLOC_FRAMES_CALLS
+                .lock()
+                .unwrap()
+                .contains(&(4, PAGE_SIZE_4K))
+        );
+
+        drop(channel);
+        assert!(
+            DEALLOC_FRAMES_CALLS
+                .lock()
+                .unwrap()
+                .contains(&(base.as_usize(), 4))
+        );
+        assert!(DEALLOC_FRAME_CALLS.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn allocates_single_frame_for_page_sized_channel() {
+        let channel = IVCChannel::<MockPagingHandler>::alloc(
+            1,
+            0x101,
+            PAGE_SIZE_4K,
+            GuestPhysAddr::from_usize(0x7000_1000),
+        )
+        .unwrap();
+        assert_eq!(channel.size(), PAGE_SIZE_4K);
+    }
+
+    #[test]
+    fn truncates_channel_size_to_max() {
+        let channel = IVCChannel::<MockPagingHandler>::alloc(
+            1,
+            0x102,
+            2 * MAX_IVC_CHANNEL_SIZE,
+            GuestPhysAddr::from_usize(0x7000_2000),
+        )
+        .unwrap();
+        assert_eq!(channel.size(), MAX_IVC_CHANNEL_SIZE);
+    }
+
+    #[test]
+    fn rejects_zero_sized_channel() {
+        let result = IVCChannel::<MockPagingHandler>::alloc(
+            1,
+            0x103,
+            0,
+            GuestPhysAddr::from_usize(0x7000_3000),
+        );
+        assert!(result.is_err());
     }
 }

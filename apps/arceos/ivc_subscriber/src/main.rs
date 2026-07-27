@@ -38,7 +38,6 @@ mod subscriber {
 
     mod demo_config {
         pub const CHANNEL_KEY: usize = 0x4956_4301;
-        pub const CHANNEL_SIZE: usize = 4096;
         pub const NOTIFY_IRQ: Option<usize> = Some(60);
         pub const PUBLISHER_VM_ID: usize = 1;
         pub const SUBSCRIBER_VM_ID: usize = 2;
@@ -64,7 +63,7 @@ mod subscriber {
             return;
         }
 
-        let Some(region) = shared_region(shm_base_gpa) else {
+        let Some(region) = shared_region(shm_base_gpa, shm_size) else {
             println!("ivc subscribe failed: map shared page base={shm_base_gpa:#x}");
             return;
         };
@@ -215,12 +214,8 @@ mod subscriber {
         }
     }
 
-    fn shared_region(shm_base_gpa: usize) -> Option<&'static IvcRegion> {
-        let vaddr = ax_mm::iomap(
-            PhysAddr::from_usize(shm_base_gpa),
-            demo_config::CHANNEL_SIZE,
-        )
-        .ok()?;
+    fn shared_region(shm_base_gpa: usize, shm_size: usize) -> Option<&'static IvcRegion> {
+        let vaddr = ax_mm::iomap(PhysAddr::from_usize(shm_base_gpa), shm_size).ok()?;
         unsafe {
             // Axvisor maps the returned GPA to the publisher's shared region.
             // Phase 2 uses atomic ring ownership for subscriber writes.

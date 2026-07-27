@@ -32,7 +32,7 @@ mod publisher {
 
     mod demo_config {
         pub const CHANNEL_KEY: usize = 0x4956_4301;
-        pub const CHANNEL_SIZE: usize = 4096;
+        pub const CHANNEL_SIZE: usize = 0x1_0000;
         pub const NOTIFY_IRQ: Option<usize> = Some(60);
         pub const PUBLISHER_VM_ID: usize = 1;
         pub const SUBSCRIBER_VM_ID: usize = 2;
@@ -62,7 +62,7 @@ mod publisher {
         }
 
         println!("ivc publish ok base={shm_base_gpa:#x} size={shm_size}");
-        let Some(region) = shared_page_mut(shm_base_gpa) else {
+        let Some(region) = shared_page_mut(shm_base_gpa, shm_size) else {
             println!("ivc publish failed: map shared page base={shm_base_gpa:#x}");
             return;
         };
@@ -194,12 +194,8 @@ mod publisher {
         }
     }
 
-    fn shared_page_mut(shm_base_gpa: usize) -> Option<&'static mut IvcRegion> {
-        let vaddr = ax_mm::iomap(
-            PhysAddr::from_usize(shm_base_gpa),
-            demo_config::CHANNEL_SIZE,
-        )
-        .ok()?;
+    fn shared_page_mut(shm_base_gpa: usize, shm_size: usize) -> Option<&'static mut IvcRegion> {
+        let vaddr = ax_mm::iomap(PhysAddr::from_usize(shm_base_gpa), shm_size).ok()?;
         unsafe {
             // Axvisor maps the returned GPA to one exclusive publisher view of
             // the shared region before subscribers can use the phase-2 rings.

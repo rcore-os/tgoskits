@@ -71,7 +71,8 @@ subscriber 通常执行：
 
 # 当前限制
 
-- 区域布局面向当前 4 KiB AxVisor IVC channel。
+- 区域布局可放在一个 4 KiB 页内；AxVisor IVC channel 可以更大（上限为 hypervisor 的
+  `MAX_IVC_CHANNEL_SIZE`），超出部分当前协议暂未使用。
 - ring 是单生产者、单消费者。
 - payload slot 大小固定。
 - OS IRQ 注册和 hypervisor notify hypercall 不属于本 crate。

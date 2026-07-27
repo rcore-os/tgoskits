@@ -90,7 +90,9 @@ polling when an interrupt is missed or not yet wired.
 
 # Current Limits
 
-- The region is designed to fit in the current 4 KiB AxVisor IVC channel.
+- The region layout fits in one 4 KiB page; AxVisor IVC channels may be larger
+  (up to the hypervisor's `MAX_IVC_CHANNEL_SIZE`), and the extra space is
+  currently unused by this protocol.
 - Rings are single-producer/single-consumer.
 - Payload slots are fixed size.
 - OS IRQ registration and hypervisor notification hypercalls are outside this
