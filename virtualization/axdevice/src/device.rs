@@ -60,8 +60,31 @@ struct RangeEntry {
     size: u64,
 }
 
+/// Selects the sole path allowed to construct one emulated device type.
+///
+/// A device type must never be owned by both a registered factory and the
+/// legacy initializer. Keeping the choice explicit makes such configuration
+/// errors fail during VM preparation instead of depending on priority.
+enum DeviceConstructionOwner {
+    /// The device is built through a registered [`DeviceFactory`].
+    Factory,
+    /// The device is built through the temporary legacy initializer.
+    Legacy,
+}
+
 fn ranges_overlap(start: u64, end: u64, other_start: u64, other_end: u64) -> bool {
     start < other_end && other_start < end
+}
+
+fn range_contains_access(base: u64, size: u64, addr: u64, width: AccessWidth) -> bool {
+    let Some(resource_end) = base.checked_add(size) else {
+        return false;
+    };
+    let Some(access_end) = addr.checked_add(width.size() as u64) else {
+        return false;
+    };
+
+    base <= addr && access_end <= resource_end
 }
 
 /// represent A vm own devices
@@ -140,18 +163,13 @@ impl AxVmDevices {
     ) -> DeviceManagerResult<Self> {
         let mut this = Self::empty();
         for config in &config.emu_configs {
-            if factories.get(config.emu_type).is_some() {
-                this.register_factory_device(config, factories, context)?;
-            } else if Self::is_legacy_fallback(config.emu_type) {
-                Self::init(&mut this, core::slice::from_ref(config))?;
-            } else {
-                return Err(DeviceManagerError::Unsupported {
-                    operation: "build emulated device",
-                    detail: format!(
-                        "no factory is registered for emulated device '{}' of type {}",
-                        config.name, config.emu_type
-                    ),
-                });
+            match Self::construction_owner(config.emu_type, factories)? {
+                DeviceConstructionOwner::Factory => {
+                    this.register_factory_device(config, factories, context)?;
+                }
+                DeviceConstructionOwner::Legacy => {
+                    Self::init(&mut this, core::slice::from_ref(config))?;
+                }
             }
         }
         Ok(this)
@@ -181,8 +199,34 @@ impl AxVmDevices {
                 | EmulatedDeviceType::LoongArchPchPic
                 | EmulatedDeviceType::X86IoApic
                 | EmulatedDeviceType::X86Pit
-                | EmulatedDeviceType::PPPTGlobal
         )
+    }
+
+    fn construction_owner(
+        device_type: EmulatedDeviceType,
+        factories: &DeviceFactoryRegistry,
+    ) -> DeviceManagerResult<DeviceConstructionOwner> {
+        match (
+            factories.get(device_type).is_some(),
+            Self::is_legacy_fallback(device_type),
+        ) {
+            (true, false) => Ok(DeviceConstructionOwner::Factory),
+            (false, true) => Ok(DeviceConstructionOwner::Legacy),
+            (true, true) => Err(DeviceManagerError::ResourceConflict {
+                operation: "resolve device construction owner",
+                detail: format!(
+                    "emulated device type {device_type} is registered by both a factory and the \
+                     legacy path"
+                ),
+            }),
+            (false, false) => Err(DeviceManagerError::Unsupported {
+                operation: "build emulated device",
+                detail: format!(
+                    "no factory is registered for emulated device type {device_type}, and no \
+                     legacy path owns it"
+                ),
+            }),
+        }
     }
 
     #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
@@ -832,14 +876,14 @@ impl AxVmDevices {
 
     // ─── Lookup helpers ────────────────────────────────────────────
 
-    fn lookup_mmio(&self, addr: u64) -> Option<usize> {
+    fn lookup_mmio(&self, addr: u64, width: AccessWidth) -> Option<usize> {
         let (&base, entry) = self.mmio_index.range(..=addr).next_back()?;
-        (addr < base.wrapping_add(entry.size)).then_some(entry.slot)
+        range_contains_access(base, entry.size, addr, width).then_some(entry.slot)
     }
 
-    fn lookup_port(&self, addr: u16) -> Option<usize> {
+    fn lookup_port(&self, addr: u16, width: AccessWidth) -> Option<usize> {
         let (&base, entry) = self.port_index.range(..=addr).next_back()?;
-        ((addr as u64) < (base as u64).wrapping_add(entry.size)).then_some(entry.slot)
+        range_contains_access(base as u64, entry.size, addr as u64, width).then_some(entry.slot)
     }
 
     fn lookup_sysreg(&self, addr: u32) -> Option<usize> {
@@ -1205,11 +1249,11 @@ impl DeviceRegistry for AxVmDevices {
 impl BusRouter for AxVmDevices {
     fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
         let idx = match access.kind {
-            BusKind::Mmio => self.lookup_mmio(access.addr),
+            BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
             BusKind::Port => {
                 let port = u16::try_from(access.addr)
                     .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-                self.lookup_port(port)
+                self.lookup_port(port, access.width)
             }
             BusKind::SysReg => {
                 let reg = u32::try_from(access.addr)
@@ -1225,11 +1269,11 @@ impl BusRouter for AxVmDevices {
 
     fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError> {
         let idx = match access.kind {
-            BusKind::Mmio => self.lookup_mmio(access.addr),
+            BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
             BusKind::Port => {
                 let port = u16::try_from(access.addr)
                     .map_err(|_| DeviceError::OutOfRange { addr: access.addr })?;
-                self.lookup_port(port)
+                self.lookup_port(port, access.width)
             }
             BusKind::SysReg => {
                 let reg = u32::try_from(access.addr)
@@ -1250,11 +1294,16 @@ mod tests {
 
     use axdevice_base::{
         AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError,
-        DeviceRegistry, InvalidResourceReason, Port, RegistryError, Resource, SysRegAddr,
+        DeviceRegistry, InterruptTriggerMode, InvalidResourceReason, IrqLine, Port, RegistryError,
+        Resource, SysRegAddr,
     };
-    use axvm_types::GuestPhysAddr;
+    use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
     use super::AxVmDevices;
+    use crate::{
+        AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
+        DeviceManagerResult, DeviceRegistration, IrqResolver,
+    };
 
     struct D {
         resources: alloc::vec::Vec<Resource>,
@@ -1292,6 +1341,36 @@ mod tests {
         }
         fn as_any(&self) -> &dyn Any {
             self
+        }
+    }
+
+    struct EmptyFactory {
+        device_type: EmulatedDeviceType,
+    }
+
+    impl DeviceFactory for EmptyFactory {
+        fn device_type(&self) -> EmulatedDeviceType {
+            self.device_type
+        }
+
+        fn build(
+            &self,
+            _config: &EmulatedDeviceConfig,
+            _context: &DeviceBuildContext<'_>,
+        ) -> DeviceManagerResult<DeviceBundle> {
+            Ok(DeviceBundle::new())
+        }
+    }
+
+    struct UnusedIrqResolver;
+
+    impl IrqResolver for UnusedIrqResolver {
+        fn resolve_irq(
+            &self,
+            _line: usize,
+            _trigger: InterruptTriggerMode,
+        ) -> DeviceManagerResult<IrqLine> {
+            unreachable!("empty factory never resolves an IRQ")
         }
     }
 
@@ -1666,22 +1745,20 @@ mod tests {
     }
 
     #[test]
-    fn test_access_across_resource_boundary() {
-        // Access that starts inside a device's range but with a larger
-        // width still dispatches to the matching device.
+    fn rejects_access_that_crosses_mmio_resource_boundary() {
         let mut m = AxVmDevices::empty();
         m.register(Arc::new(D::new_mmio(0x1000, 0x8, "small")))
             .unwrap();
-        assert!(
+        assert!(matches!(
             m.dispatch(&BusAccess {
                 kind: BusKind::Mmio,
                 is_read: false,
                 addr: 0x1004,
                 width: AccessWidth::Qword,
                 data: 0,
-            })
-            .is_ok()
-        );
+            }),
+            Err(DeviceError::NotFound)
+        ));
         // 0x1008 == base + size — NotFound.
         assert!(matches!(
             m.dispatch(&BusAccess {
@@ -1692,6 +1769,87 @@ mod tests {
                 data: 0
             }),
             Err(DeviceError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn rejects_port_access_that_crosses_resource_boundary() {
+        let mut m = AxVmDevices::empty();
+        m.register(Arc::new(D::new_port(0x80, 2, "small-port")))
+            .unwrap();
+
+        assert!(matches!(
+            m.dispatch(&BusAccess {
+                kind: BusKind::Port,
+                is_read: true,
+                addr: 0x81,
+                width: AccessWidth::Word,
+                data: 0,
+            }),
+            Err(DeviceError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn register_bundle_rolls_back_devices_after_resource_conflict() {
+        let mut devices = AxVmDevices::empty();
+        devices
+            .register(Arc::new(D::new_mmio(0x1000, 0x100, "existing")))
+            .unwrap();
+
+        let bundle = DeviceBundle::from_registration(DeviceRegistration::Device(Arc::new(
+            D::new_mmio(0x2000, 0x100, "first-bundle-device"),
+        )))
+        .with_registration(DeviceRegistration::Device(Arc::new(D::new_mmio(
+            0x1080,
+            0x100,
+            "conflicting-bundle-device",
+        ))));
+
+        assert!(matches!(
+            devices.register_bundle(bundle),
+            Err(crate::DeviceManagerError::Registry(
+                RegistryError::AddressConflict { .. }
+            ))
+        ));
+        assert_eq!(devices.device_count(), 1);
+        assert!(matches!(
+            devices.dispatch(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: true,
+                addr: 0x2000,
+                width: AccessWidth::Dword,
+                data: 0,
+            }),
+            Err(DeviceError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn rejects_device_type_with_factory_and_legacy_owner() {
+        let mut factories = DeviceFactoryRegistry::new();
+        factories
+            .register(Arc::new(EmptyFactory {
+                device_type: EmulatedDeviceType::IVCChannel,
+            }))
+            .unwrap();
+        let context = DeviceBuildContext::new(&UnusedIrqResolver);
+        let config = EmulatedDeviceConfig {
+            name: "ivc".into(),
+            emu_type: EmulatedDeviceType::IVCChannel,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            AxVmDevices::build_with_factories(
+                AxVmDeviceConfig::new(alloc::vec![config]),
+                &factories,
+                &context
+            ),
+            Err(crate::DeviceManagerError::ResourceConflict {
+                operation: "resolve device construction owner",
+                ..
+            })
         ));
     }
 }
