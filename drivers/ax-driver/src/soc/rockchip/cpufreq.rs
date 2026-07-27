@@ -307,16 +307,22 @@ fn align_rail_voltages_to_opp() {
         );
     }
 
-    // Arm the dynamic governor only if both PMIC buses came up, so it never tries
-    // to move a rail it cannot drive. If either failed, every cluster stays on the
-    // boot OPP the SCMI reclock already set (safe: that is the fixed-boot state).
-    if GOVERNOR_ENABLE && a76_ok && a55_ok {
+    // Arm the dynamic governor as long as the A76 I2C rail came up. The governor's
+    // only dynamic PMIC writes are the A76 rails (RK8602/RK8603, read-back verified
+    // over I2C); the A55 is ring-only — it scales solely via its SCMI PVTPLL ring
+    // and the governor never writes the A55 rail (see `Cluster::voltage_managed`).
+    // So a flaky SPI2/RK806 bring-up (a55_ok=false) must NOT disable the fully
+    // working A76 DVFS. When a55_ok is false the one-shot boot alignment above was
+    // skipped, so A55 keeps its boot rail voltage; that only ever OVER-volts the
+    // ring-only A55 rungs (<= 1008 MHz), never undervolts, so ring scaling stays
+    // safe. If the A76 I2C bus itself failed, leave every cluster on the boot OPP
+    // the SCMI reclock already set (the safe fixed-boot state).
+    if GOVERNOR_ENABLE && a76_ok {
         GOV_READY.store(true, Ordering::Release);
-        info!("cpufreq: ondemand governor armed (both PMIC buses up)");
+        info!("cpufreq: ondemand governor armed (A76 I2C up; a55_spi={a55_ok}, A55 ring-only)");
     } else if GOVERNOR_ENABLE {
         warn!(
-            "cpufreq: ondemand governor NOT armed (a76_pmic={a76_ok}, a55_pmic={a55_ok}); \
-             clusters stay on boot OPP"
+            "cpufreq: ondemand governor NOT armed (a76_pmic={a76_ok}); clusters stay on boot OPP"
         );
     }
 }
