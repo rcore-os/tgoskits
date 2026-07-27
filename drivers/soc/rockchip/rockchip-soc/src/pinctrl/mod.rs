@@ -85,6 +85,7 @@ impl PinCtrl {
     pub fn new(ty: SocType, ioc: Mmio, gpio: &[Mmio]) -> Self {
         match ty {
             SocType::Rk3588 => PinCtrl::Rk3588(crate::variants::rk3588::PinCtrl::new(ioc, gpio)),
+            SocType::Rk3576 => panic!("Rk3576 pinctrl is not implemented"),
             SocType::Rk3568 => panic!("RK3568 pinctrl is not implemented"),
         }
     }
