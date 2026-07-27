@@ -699,6 +699,18 @@ static IDX: [AtomicUsize; 3] = [const { AtomicUsize::new(BOOT_OPP_IDX) }; 3];
 /// spuriously pegging every cluster to its top OPP for one window.
 static PRIMED: AtomicBool = AtomicBool::new(false);
 
+/// Monotonic timestamp (ns) of the previous [`governor_poll`], so each poll can
+/// divide the busy-tick delta by the ACTUAL elapsed window rather than a fixed
+/// nominal one. The governor task can be woken late (slow SCMI/PMIC transitions,
+/// scheduling latency under load), which stretches the real window well past
+/// `GOV_PERIOD_MS`; dividing by the nominal window then over-reports load and
+/// would spuriously peg a merely-moderate cluster to its top OPP.
+static LAST_POLL_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Nanoseconds per scheduler tick (`cpu_busy_ticks` unit): TICKS_PER_SEC = 100 in
+/// the kernel, so one tick is 10 ms.
+const NANOS_PER_TICK: u64 = 10_000_000;
+
 /// Whether the dynamic governor should run: enabled at compile time *and* armed
 /// by the voltage lever (both PMIC buses up). The kernel checks this once before
 /// spawning its periodic governor task, so a failed PMIC bring-up leaves every
@@ -756,18 +768,20 @@ pub fn governor_poll(busy: &[u64]) {
         return;
     }
 
-    // The task sleeps `GOV_PERIOD_MS`, so ~`GOV_PERIOD_MS / 10` scheduler ticks
-    // (10 ms/tick, TICKS_PER_SEC = 100) elapse per window. Using the nominal
-    // window needs no clock here; a late wake only under-reports load (busy% is
-    // clamped below), which is safe — it can never spuriously over-scale.
-    const WINDOW_TICKS: u64 = if GOV_PERIOD_MS / 10 == 0 {
-        1
-    } else {
-        GOV_PERIOD_MS / 10
-    };
+    // Measure the ACTUAL window this poll covers, in scheduler ticks, from the
+    // monotonic clock — not the nominal `GOV_PERIOD_MS`. If the governor task woke
+    // late (the common case under load), the real window is longer than nominal and
+    // more busy ticks accumulated; dividing that larger delta by the nominal window
+    // would inflate busy% and spuriously jump a moderate cluster to its top OPP.
+    // Floor at 1 tick so a back-to-back poll (< 10 ms apart) can't divide by zero.
+    let now_nanos = axklib::time::monotonic_nanos();
+    let last_nanos = LAST_POLL_NANOS.swap(now_nanos, Ordering::Relaxed);
+    let window_ticks = (now_nanos.saturating_sub(last_nanos) / NANOS_PER_TICK).max(1);
 
     // First call only establishes the baseline (see `PRIMED`); still walk every
     // cluster below so all `LAST_BUSY` entries are seeded, but make no OPP change.
+    // (On this priming poll `last_nanos == 0` makes `window_ticks` huge, so every
+    // busy% reads ~0 — irrelevant, since the priming poll holds regardless.)
     let priming = !PRIMED.swap(true, Ordering::Relaxed);
 
     for (ci, &cluster) in [Cluster::A55, Cluster::Big0, Cluster::Big1]
@@ -789,8 +803,8 @@ pub fn governor_poll(busy: &[u64]) {
         for cpu in cluster.cpus() {
             let now = busy.get(cpu).copied().unwrap_or(0);
             let last = LAST_BUSY[cpu].swap(now, Ordering::Relaxed);
-            // Per-core busy% = busy_ticks / window_ticks (one core), clamped.
-            let pct = ((now.saturating_sub(last) * 100) / WINDOW_TICKS).min(100);
+            // Per-core busy% = busy_ticks / actual window_ticks (one core), clamped.
+            let pct = ((now.saturating_sub(last) * 100) / window_ticks).min(100);
             if pct > peak_pct {
                 peak_pct = pct;
             }
