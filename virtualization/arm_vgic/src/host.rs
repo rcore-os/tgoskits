@@ -23,19 +23,16 @@ pub trait ArmVgicHostIf {
     /// Return current vCPU ID.
     fn current_vcpu_id() -> usize;
 
-    /// Return the VM ID associated with the current vCPU.
-    fn current_vm_id() -> usize;
-
     /// Current monotonic host time in nanoseconds.
     fn current_time_nanos() -> u64;
 
-    /// Register a timer callback.
+    /// Register a timer callback at an absolute host deadline.
     fn register_timer(
         deadline: Duration,
         callback: Box<dyn FnOnce(Duration) + Send + 'static>,
     ) -> usize;
 
-    /// Cancel a timer callback previously registered by this VM.
+    /// Cancel a previously registered timer callback.
     fn cancel_timer(token: usize);
 
     /// Read VGICD IIDR from host GIC.
@@ -52,9 +49,6 @@ pub trait ArmVgicHostIf {
 
     /// Inject a virtual interrupt.
     fn hardware_inject_virtual_interrupt(vector: u8);
-
-    /// Inject an interrupt into one explicitly selected VM vCPU.
-    fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: u8);
 }
 
 #[cfg(feature = "vgicv3")]
@@ -85,10 +79,6 @@ pub(crate) fn host_cpu_num() -> usize {
 
 pub(crate) fn current_vcpu_id() -> usize {
     ax_crate_interface::call_interface!(ArmVgicHostIf::current_vcpu_id())
-}
-
-pub(crate) fn current_vm_id() -> usize {
-    ax_crate_interface::call_interface!(ArmVgicHostIf::current_vm_id())
 }
 
 pub(crate) fn current_time_nanos() -> u64 {
@@ -124,10 +114,4 @@ pub fn get_host_gicr_base() -> PhysAddr {
 
 pub fn hardware_inject_virtual_interrupt(vector: u8) {
     ax_crate_interface::call_interface!(ArmVgicHostIf::hardware_inject_virtual_interrupt(vector));
-}
-
-pub(crate) fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: u8) {
-    ax_crate_interface::call_interface!(ArmVgicHostIf::inject_vm_vcpu_interrupt(
-        vm_id, vcpu_id, vector
-    ));
 }

@@ -7,80 +7,29 @@
 
 use alloc::sync::Arc;
 
-use arm_vgic::vtimer::{
-    HostVtimerBackend, SysCntpCtlEl0, SysCntpTvalEl0, SysCntpctEl0, VtimerBackend, VtimerState,
-};
+use arm_vgic::vtimer::new_sysreg_devices;
 use axdevice::{
-    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceLifecycle, DeviceManagerResult,
-    DeviceRegistration, ServiceCardinality, ServiceKey,
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerResult, DeviceRegistration,
 };
+use axdevice_base::{Device, SysRegDeviceAdapter};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 /// Factory for the standard AArch64 CNT* virtual-timer sysreg devices.
 pub(crate) struct Aarch64VtimerFactory;
 
-/// Service key for the AArch64 virtual-timer backend.
-pub(crate) struct Aarch64VtimerBackendKey;
-
-impl ServiceKey for Aarch64VtimerBackendKey {
-    type Service = dyn VtimerBackend;
-
-    const NAME: &'static str = "aarch64-vtimer-backend";
-    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
-}
-
-struct VtimerLifecycle {
-    state: Arc<VtimerState>,
-    backend: Arc<dyn VtimerBackend>,
-}
-
-impl DeviceLifecycle for VtimerLifecycle {
-    fn reset(&self) -> DeviceManagerResult {
-        self.state.reset(self.backend.as_ref());
-        Ok(())
-    }
-
-    fn suspend(&self) -> DeviceManagerResult {
-        self.state.suspend(self.backend.as_ref());
-        Ok(())
-    }
-
-    fn resume(&self) -> DeviceManagerResult {
-        self.state.resume(Arc::clone(&self.backend));
-        Ok(())
-    }
-}
-
-impl Drop for VtimerLifecycle {
-    fn drop(&mut self) {
-        self.state.reset(self.backend.as_ref());
-    }
-}
-
 impl Aarch64VtimerFactory {
-    /// Builds the three CNT* system-register device contributions.
+    /// Builds the CNT* system-register device contributions.
     fn build_bundle(&self) -> DeviceManagerResult<DeviceBundle> {
-        let backend: Arc<dyn VtimerBackend> = Arc::new(HostVtimerBackend);
-        let state = Arc::new(VtimerState::new());
-        let lifecycle: Arc<dyn DeviceLifecycle> = Arc::new(VtimerLifecycle {
-            state: Arc::clone(&state),
-            backend: Arc::clone(&backend),
-        });
+        let (cval, ctl, counter, tval) = new_sysreg_devices();
+        let cval: Arc<dyn Device> = Arc::new(SysRegDeviceAdapter::new(cval));
+        let ctl: Arc<dyn Device> = Arc::new(SysRegDeviceAdapter::new(ctl));
+        let counter: Arc<dyn Device> = Arc::new(SysRegDeviceAdapter::new(counter));
+        let tval: Arc<dyn Device> = Arc::new(SysRegDeviceAdapter::new(tval));
 
-        let bundle = DeviceBundle::from_registration(DeviceRegistration::Device(Arc::new(
-            SysCntpCtlEl0::new(Arc::clone(&state), Arc::clone(&backend)),
-        )))
-        .with_registration(DeviceRegistration::Device(Arc::new(SysCntpctEl0::new(
-            Arc::clone(&backend),
-        ))))
-        .with_registration(DeviceRegistration::Device(Arc::new(SysCntpTvalEl0::new(
-            state,
-            Arc::clone(&backend),
-        ))));
-
-        Ok(bundle
-            .with_service::<Aarch64VtimerBackendKey>(backend)?
-            .with_lifecycle(lifecycle))
+        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(cval))
+            .with_registration(DeviceRegistration::Device(ctl))
+            .with_registration(DeviceRegistration::Device(counter))
+            .with_registration(DeviceRegistration::Device(tval)))
     }
 }
 

@@ -18,25 +18,39 @@ use alloc::sync::Arc;
 
 use aarch64_sysreg::SystemRegType;
 use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
-    Resource,
+    AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType, SysRegAddr,
+    SysRegAddrRange,
 };
-use log::debug;
 
-use crate::vtimer::{VtimerBackend, VtimerState};
+use super::cntp_timer::CntpTimerState;
 
-const CNTP_CTL_EL0_ADDR: u32 = SystemRegType::CNTP_CTL_EL0 as u32;
-
-impl SysCntpCtlEl0 {
-    /// Reads CNTP_CTL_EL0.
-    pub fn read_register(&self, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(self.state.control(self.backend.current_time_nanos()) as usize)
+impl BaseDeviceOps<SysRegAddrRange> for SysCntpCtlEl0 {
+    fn emu_type(&self) -> EmuDeviceType {
+        EmuDeviceType::Console
     }
 
-    /// Writes CNTP_CTL_EL0.
-    pub fn write_register(&self, _width: AccessWidth, val: usize) -> DeviceResult {
-        debug!("Write to virtual timer register CNTP_CTL_EL0, value: {val}");
-        self.state.write_control(val as u32, self.backend.as_ref());
+    fn address_range(&self) -> SysRegAddrRange {
+        SysRegAddrRange {
+            start: SysRegAddr::new(SystemRegType::CNTP_CTL_EL0 as usize),
+            end: SysRegAddr::new(SystemRegType::CNTP_CTL_EL0 as usize),
+        }
+    }
+
+    fn handle_read(
+        &self,
+        _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
+        _width: AccessWidth,
+    ) -> DeviceResult<usize> {
+        Ok(self.state.read_ctl() as usize)
+    }
+
+    fn handle_write(
+        &self,
+        _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
+        _width: AccessWidth,
+        val: usize,
+    ) -> DeviceResult {
+        self.state.write_ctl(val as u32);
         Ok(())
     }
 }
@@ -45,50 +59,22 @@ impl SysCntpCtlEl0 {
 ///
 /// Provides virtualization support for the physical timer control register.
 pub struct SysCntpCtlEl0 {
-    state: Arc<VtimerState>,
-    backend: Arc<dyn VtimerBackend>,
-    resources: [Resource; 1],
+    state: Arc<CntpTimerState>,
 }
 
 impl SysCntpCtlEl0 {
     /// Creates a new CNTP_CTL_EL0 register emulator.
-    pub fn new(state: Arc<VtimerState>, backend: Arc<dyn VtimerBackend>) -> Self {
-        Self {
-            state,
-            backend,
-            resources: [Resource::SysReg {
-                addr: CNTP_CTL_EL0_ADDR,
-                count: 1,
-            }],
-        }
+    pub fn new() -> Self {
+        Self::from_state(Arc::new(CntpTimerState::new()))
+    }
+
+    pub(super) fn from_state(state: Arc<CntpTimerState>) -> Self {
+        Self { state }
     }
 }
 
-impl Device for SysCntpCtlEl0 {
-    fn name(&self) -> &str {
-        "aarch64-cntp-ctl-el0"
-    }
-
-    fn resources(&self) -> &[Resource] {
-        &self.resources
-    }
-
-    fn access(
-        &self,
-        access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::SysReg || access.addr != CNTP_CTL_EL0_ADDR as u64 {
-            return Err(DeviceError::OutOfRange { addr: access.addr });
-        }
-        if access.is_read {
-            self.read_register(access.width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                })
-        } else {
-            self.write_register(access.width, access.data as usize)
-                .map(|_| BusResponse::Write)
-        }
+impl Default for SysCntpCtlEl0 {
+    fn default() -> Self {
+        Self::new()
     }
 }

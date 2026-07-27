@@ -91,6 +91,7 @@ pub fn get_vm_config_template(params: VmTemplateParams) -> AxVMCrateConfig {
             address_space_policy: Default::default(), // Virtualized address space by default
             emu_devices: vec![],                      // No emulated devices by default
             passthrough_devices: vec![],              // No passthrough devices by default
+            passthrough_irqs: vec![],                 // No explicit passthrough IRQs by default
             interrupt_mode: Default::default(),       // Use default interrupt mode
             excluded_devices: vec![],                 // No excluded devices by default
             passthrough_addresses: vec![],            // No passthrough addresses by default

@@ -24,15 +24,15 @@ use axdevice_base::{
 
 use super::cntp_timer::CntpTimerState;
 
-impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
+impl BaseDeviceOps<SysRegAddrRange> for SysCntpCvalEl0 {
     fn emu_type(&self) -> EmuDeviceType {
         EmuDeviceType::Console
     }
 
     fn address_range(&self) -> SysRegAddrRange {
         SysRegAddrRange {
-            start: SysRegAddr::new(SystemRegType::CNTP_TVAL_EL0 as usize),
-            end: SysRegAddr::new(SystemRegType::CNTP_TVAL_EL0 as usize),
+            start: SysRegAddr::new(SystemRegType::CNTP_CVAL_EL0 as usize),
+            end: SysRegAddr::new(SystemRegType::CNTP_CVAL_EL0 as usize),
         }
     }
 
@@ -41,7 +41,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
         _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
         _width: AccessWidth,
     ) -> DeviceResult<usize> {
-        Ok(self.state.read_tval() as usize)
+        Ok(self.state.read_cval() as usize)
     }
 
     fn handle_write(
@@ -50,20 +50,22 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
         _width: AccessWidth,
         val: usize,
     ) -> DeviceResult {
-        self.state.write_tval(val as u32);
+        self.state.write_cval(val as u64);
         Ok(())
     }
 }
 
-/// System register emulation for CNTP_TVAL_EL0.
+/// System register emulation for CNTP_CVAL_EL0.
 ///
-/// Provides virtualization support for the physical timer value register.
-pub struct SysCntpTvalEl0 {
+/// CNTP_CVAL_EL0 is banked per processing element. The current AxVisor
+/// vTimer device model is instantiated for a single-vCPU guest, so this
+/// device preserves the guest-visible compare value for that vCPU.
+pub struct SysCntpCvalEl0 {
     state: Arc<CntpTimerState>,
 }
 
-impl SysCntpTvalEl0 {
-    /// Creates a new CNTP_TVAL_EL0 register emulator.
+impl SysCntpCvalEl0 {
+    /// Creates a new CNTP_CVAL_EL0 register emulator.
     pub fn new() -> Self {
         Self::from_state(Arc::new(CntpTimerState::new()))
     }
@@ -73,8 +75,38 @@ impl SysCntpTvalEl0 {
     }
 }
 
-impl Default for SysCntpTvalEl0 {
+impl Default for SysCntpCvalEl0 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exposes_cntp_cval_address() {
+        let device = SysCntpCvalEl0::new();
+        let range = device.address_range();
+
+        assert_eq!(
+            range.start,
+            SysRegAddr::new(SystemRegType::CNTP_CVAL_EL0 as usize)
+        );
+        assert_eq!(range.end, range.start);
+    }
+
+    #[test]
+    fn preserves_guest_visible_value() {
+        let device = SysCntpCvalEl0::new();
+        let addr = SysRegAddr::new(SystemRegType::CNTP_CVAL_EL0 as usize);
+        let value = 0x1234_5678_9abc_def0usize;
+
+        device
+            .handle_write(addr, AccessWidth::Qword, value)
+            .unwrap();
+
+        assert_eq!(device.handle_read(addr, AccessWidth::Qword).unwrap(), value);
     }
 }
