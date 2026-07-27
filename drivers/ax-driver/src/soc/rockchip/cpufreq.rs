@@ -224,13 +224,17 @@ const APPLY_RAIL_VOLTAGE: bool = true;
 const A76_NOMINAL_UV: u32 = 675_000;
 const A55_NOMINAL_UV: u32 = 675_000;
 
-/// One-shot A55 MOSI/write diagnostic (user-authorized). The RK806 read path is
-/// dead (returns a bogus 0x00), so we cannot validate an A55 write by read-back.
-/// This force-writes DCDC2 to the bounded-safe A55 OPP nominal and relies on
-/// cpuprobe observing whether the A55 frequency drops — the only way to learn if
-/// MOSI/writes physically reach the RK806 when reads do not. The write is clamped
-/// to [675 mV, 800 mV] (the A55 boot-safe row) inside the PMIC module.
-const A55_FORCE_WRITE_TEST: bool = true;
+/// One-shot A55 MOSI/write diagnostic — **OFF by default**. The RK806 read path is
+/// dead (returns a bogus 0x00), so an A55 write cannot be validated by read-back.
+/// When enabled this force-writes DCDC2 to the bounded-safe A55 OPP nominal and
+/// relies on cpuprobe observing whether the A55 frequency drops — the only way to
+/// learn if MOSI/writes physically reach the RK806 when reads do not. But that is
+/// an *unconfirmable* A55 rail write, which is exactly the boundary the ring-only
+/// A55 policy exists to avoid (the governor never writes the A55 rail; A55 keeps
+/// its boot voltage, which over-volts every ring <= 1008 MHz). Leave it `false` in
+/// production; flip to `true` only for a deliberate board-side MOSI reachability
+/// probe. The write is clamped to the A55 boot-safe row inside the PMIC module.
+const A55_FORCE_WRITE_TEST: bool = false;
 
 /// Read (and, once validated, lower) the three CPU-cluster rails to their OPP
 /// nominal so the voltage-coupled clock lands on the exact requested frequency.
