@@ -1398,7 +1398,7 @@ impl Drop for AxVM {
 
 #[cfg(test)]
 mod tests {
-    use core::cell::RefCell;
+    use core::{cell::RefCell, sync::atomic::AtomicBool};
 
     use axdevice_base::{IrqError, IrqLineId, IrqResult, IrqSink};
 
@@ -1500,7 +1500,7 @@ mod tests {
 
     #[test]
     fn interrupt_pulse_runs_after_snapshot_lock_is_released() {
-        let machine_lock = Arc::new(Mutex::new(()));
+        let machine_lock = Arc::new(TestMachineLock::default());
         let sink = Arc::new(TestIrqSink::with_machine_lock(machine_lock.clone()));
         let fabric = InterruptFabric::with_sink(VMInterruptMode::Emulated, sink.clone()).unwrap();
 
@@ -1544,13 +1544,13 @@ mod tests {
 
     #[derive(Default)]
     struct TestIrqSink {
-        machine_lock: Option<Arc<Mutex<()>>>,
+        machine_lock: Option<Arc<TestMachineLock>>,
         pulse_error: Option<IrqError>,
         pulse_count: AtomicUsize,
     }
 
     impl TestIrqSink {
-        fn with_machine_lock(machine_lock: Arc<Mutex<()>>) -> Self {
+        fn with_machine_lock(machine_lock: Arc<TestMachineLock>) -> Self {
             Self {
                 machine_lock: Some(machine_lock),
                 ..Self::default()
@@ -1578,6 +1578,34 @@ mod tests {
             });
             self.pulse_count.fetch_add(1, Ordering::Relaxed);
             self.pulse_error.clone().map_or(Ok(()), Err)
+        }
+    }
+
+    #[derive(Default)]
+    struct TestMachineLock {
+        held: AtomicBool,
+    }
+
+    impl TestMachineLock {
+        fn lock(&self) -> TestMachineGuard<'_> {
+            self.try_lock().expect("test machine lock is already held")
+        }
+
+        fn try_lock(&self) -> Option<TestMachineGuard<'_>> {
+            self.held
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .ok()
+                .map(|_| TestMachineGuard { lock: self })
+        }
+    }
+
+    struct TestMachineGuard<'a> {
+        lock: &'a TestMachineLock,
+    }
+
+    impl Drop for TestMachineGuard<'_> {
+        fn drop(&mut self) {
+            self.lock.held.store(false, Ordering::Release);
         }
     }
 }
