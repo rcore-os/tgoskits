@@ -682,6 +682,37 @@ fn apk_package_prebuilds_use_guest_apk_from_staging_root() {
 }
 
 #[test]
+fn nix_qemu_configs_use_dedicated_managed_rootfs() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let app_dir = repo.join("apps/starry/nix");
+
+    for (config_name, arch) in [
+        ("qemu-x86_64.toml", "x86_64"),
+        ("qemu-x86_64-shell.toml", "x86_64"),
+        ("qemu-aarch64.toml", "aarch64"),
+    ] {
+        let config_path = app_dir.join(config_name);
+        let config = fs::read_to_string(&config_path).unwrap();
+
+        assert!(
+            config.contains(&format!("rootfs-{arch}-nix.img")),
+            "{} must use a Nix-specific managed rootfs so its 8 GiB resize cannot mutate the \
+             shared Alpine base image",
+            config_path.display()
+        );
+        assert!(
+            !config.contains(&format!("rootfs-{arch}-alpine.img")),
+            "{} must not pass the shared Alpine base image to the Nix prebuild",
+            config_path.display()
+        );
+    }
+}
+
+#[test]
 fn nix_app_installs_nix_before_guest_boot() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

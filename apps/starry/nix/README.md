@@ -7,6 +7,13 @@ guest. The guest verifies the prebuilt Nix binary, evaluates a Nix expression,
 and verifies a store-path write, covering the install→startup→evaluate→artifact
 chain without a guest-time apk fetch.
 
+The QEMU configs use a Nix-specific managed rootfs
+(`rootfs-<arch>-nix.img`). The app runner initializes that image from the
+shared Alpine base, then `prebuild.sh` grows the Nix-owned copy to 8 GiB. The
+larger image is required for the Nix store, pinned nixpkgs source, and NAR
+download overhead; the shared base image remains unchanged for other app and
+test workflows.
+
 ```bash
 cargo xtask starry app qemu -t nix --arch x86_64
 cargo xtask starry app qemu -t nix --arch aarch64

@@ -289,8 +289,9 @@ populate_overlay() {
 
 # Resize the rootfs ext4 image so it can hold the full nixpkgs stdenv closure
 # (~393 MiB unpacked) plus the nixpkgs source tree (~322 MiB) and NAR download
-# overhead. The default tgosimages rootfs is 3 GiB which overflows during
-# stdenv substitution. 8 GiB leaves ~5 GiB free after the base system + overlay.
+# overhead. The managed Alpine base is too small for stdenv substitution. The
+# QEMU configs select a Nix-specific managed copy, so growing it to 8 GiB
+# provides enough headroom without mutating the shared Alpine base.
 resize_rootfs() {
     local img="$base_rootfs"
     local target_mib=8192
