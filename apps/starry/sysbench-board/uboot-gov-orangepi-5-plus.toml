@@ -14,6 +14,7 @@ success_regex = ["(?m)^GOV_HARNESS_DONE\\s*$"]
 fail_regex = [
   "panicked at",
   '(?m)^SYSBENCH_MISSING\s*$',
+  '(?m)^GOV_HARNESS_FAILED\s*$',
   "(?i)error while loading shared libraries",
 ]
 timeout = 1800

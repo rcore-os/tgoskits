@@ -18,12 +18,21 @@ SB=/usr/bin/sysbench
 CP=/usr/local/bin/cpuprobe
 NT="${1:-2}"
 PRIME=20000
+# Online CPU count, for the per-core probe (the shipped kernel pins max_cpu_num=4).
+NCPU=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 test -x "$SB" || { echo SYSBENCH_MISSING; exit 1; }
 
+# Raised if any sysbench workload exits non-zero. Gates GOV_HARNESS_DONE at the
+# end so a crashed/failed sysbench run is scored as a failure, not a pass — the
+# governor-validation run must never emit its success sentinel after a failure.
+fail=0
+
 probe_all() {
-  # cpuprobe every core; the busy cluster reads its governor-scaled freq.
-  for c in 0 1 2 3 4 5 6 7; do
+  # cpuprobe every online core; the busy cluster reads its governor-scaled freq.
+  c=0
+  while [ "$c" -lt "$NCPU" ]; do
     echo "GH_PC $($CP $c 2>/dev/null | sed 's/^CPUPROBE //')"
+    c=$((c + 1))
   done
 }
 
@@ -47,8 +56,14 @@ sleep 3
 # Phase 4: sustained multicore load. N=2 lights ~one cluster; N=8 lights all —
 # the PSU-stress step. Survival to the sentinel + no board reset == caps held.
 echo "GH_PHASE 4 sysbench cpu threads=$NT time=12 (expect gov step-UP; PSU stress)"
-$SB cpu --cpu-max-prime=$PRIME --threads=$NT --time=12 run 2>/dev/null \
-  | awk '/events per second/{print "GH_SB eps="$4}'
+# Run without a pipe so $? is sysbench's real exit status; awk the metric after.
+sb_out=$($SB cpu --cpu-max-prime=$PRIME --threads=$NT --time=12 run 2>/dev/null)
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "GH_SB_FAIL rc=$rc"
+  fail=1
+fi
+printf '%s\n' "$sb_out" | awk '/events per second/{print "GH_SB eps="$4}'
 
 # Phase 5: settle back to idle; governor should shed frequency again.
 echo "GH_PHASE 5 idle_return 4s (expect gov step-DOWN)"
@@ -57,4 +72,8 @@ echo "GH_FINAL_PROBE"
 probe_all
 
 sync 2>/dev/null
+if [ "$fail" -ne 0 ]; then
+  echo GOV_HARNESS_FAILED
+  exit 1
+fi
 echo GOV_HARNESS_DONE
