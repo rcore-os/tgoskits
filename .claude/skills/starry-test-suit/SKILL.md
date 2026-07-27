@@ -69,7 +69,7 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 
 ## Failure Propagation
 
-- These failure-propagation requirements are for Starry QEMU tests. Board tests continue to use the existing `board-<board>.toml` / board runner flow with `success_regex`, `fail_regex`, and optional `shell_init_cmd`; do not force board cases into the QEMU grouped/C runner structure.
+- These failure-propagation requirements are for Starry QEMU tests. Board tests continue to use the existing `board-<board>.toml` / board runner flow with `success_regex`, `fail_regex`, and optional `shell_init_cmd`; a board case may reuse the C asset builder only to populate its session upload root.
 - Starry QEMU tests must make real failures visible to the runner. Do not print a failure message while still letting `cargo xtask starry test qemu ...` exit successfully.
 - QEMU `success_regex` and `fail_regex` must reliably distinguish the intended pass and fail states. A failure marker such as `STARRY_GROUPED_TEST_FAILED` must be matched by `fail_regex`, and the all-passed marker must only appear after every required subcase has passed.
 - In QEMU grouped/system wrappers, any failing subcase must print the per-subcase failure marker, suppress the grouped all-passed marker, print a grouped failure marker, and return a nonzero result to the outer runner.
@@ -87,6 +87,17 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
 - For grouped cases, keep `test_commands` aligned with installed guest paths and include the grouped success/fail regexes.
 - For `qemu/system` C subcases, install binaries to `usr/bin/starry-test-suit`. Put shared system rootfs preparation in `system/prebuild.sh`, not in subcase-local `prebuild.sh`. If a subcase is arch-specific, generate an explicit skip binary or skip in the program; do not rely on subcase-local `qemu-<arch>.toml` filtering.
 - Board case names and board config names should match the actual board target, such as `board-orangepi-5-plus.toml`.
+- Board cases may declare `session_files` relative to the directory containing
+  `board-<board>.toml`. Keep each path unchanged from local lookup through the
+  session endpoint; do not add aliases or remote names. Use
+  `${sessionFile:<relative-path>}`, `${boardServerIp}`, or
+  `${boardServerHttpBaseUrl}` in `shell_init_cmd` when a board must download a
+  session asset or contact the board-facing server address.
+- A board case with `c/CMakeLists.txt` installs into
+  `target/<target>/board-cases/<case>/runs/<run-id>/upload/`. Every regular
+  installed file is uploaded automatically with the same relative path. Do not
+  list generated files in `session_files`; keep explicit `wget`, `chmod`, and
+  execution commands in `shell_init_cmd` because ostool does not execute them.
 
 ## Validation
 

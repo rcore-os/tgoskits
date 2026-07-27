@@ -64,7 +64,7 @@ fn public_failure_interfaces_name_axvm_result() {
 
     assert!(runtime.contains("pub fn start_vm(vm_id: usize) -> AxVmResult"));
     assert!(vm.contains("pub fn new(config: AxVMConfig) -> AxVmResult<AxVMRef>"));
-    assert!(prepare.contains("pub fn prepare(&self) -> AxVmResult"));
+    assert!(prepare.contains("pub fn prepare(self: &Arc<Self>) -> AxVmResult"));
     assert!(boot.contains("fn read_file(&self, file_name: &str) -> crate::AxVmResult"));
 }
 

@@ -9,7 +9,7 @@ use std::{
 use anyhow::Context;
 use log::info;
 use ostool::{
-    board::{self as ostool_board, RunBoardOptions, config::BoardRunConfig},
+    board::{self as ostool_board, BoardRunRequest, RunBoardOptions, config::BoardRunConfig},
     build::{
         self as ostool_build, CargoQemuRunnerArgs, CargoRunnerKind, CargoUbootRunnerArgs,
         RuntimeArtifactInput,
@@ -359,6 +359,35 @@ impl AppContext {
         result
     }
 
+    pub(crate) async fn board_prepared_elf_with_request(
+        &mut self,
+        elf_path: PathBuf,
+        to_bin: bool,
+        build_config_path: PathBuf,
+        board_request: BoardRunRequest,
+    ) -> anyhow::Result<()> {
+        self.set_build_config_path(build_config_path);
+        let prepare_stage = StageLog::start(format!(
+            "prepare runtime artifact elf={} to_bin={}",
+            elf_path.display(),
+            to_bin
+        ));
+        ostool_build::prepare_runtime_artifact(
+            &mut self.invocation,
+            RuntimeArtifactInput::new(elf_path, to_bin),
+        )?;
+        prepare_stage.done();
+
+        let run_stage = StageLog::start("board run prepared artifact");
+        let result =
+            ostool_board::run_prepared_board_with_request(&mut self.invocation, board_request)
+                .await;
+        if result.is_ok() {
+            run_stage.done();
+        }
+        result
+    }
+
     pub(crate) fn set_debug_mode(&mut self, debug: bool) -> anyhow::Result<()> {
         if self.debug == debug {
             return Ok(());
@@ -442,6 +471,21 @@ impl AppContext {
         }
         Ok(guard)
     }
+}
+
+pub(crate) fn board_run_request(
+    board_config_path: &Path,
+    board_config: BoardRunConfig,
+    options: RunBoardOptions,
+) -> anyhow::Result<BoardRunRequest> {
+    let session_files = board_config.session_files.clone();
+    let config_dir = board_config_path.parent().with_context(|| {
+        format!(
+            "board configuration path `{}` has no parent directory",
+            board_config_path.display()
+        )
+    })?;
+    BoardRunRequest::new(board_config, options).with_session_files(config_dir, &session_files)
 }
 
 struct StageLog {

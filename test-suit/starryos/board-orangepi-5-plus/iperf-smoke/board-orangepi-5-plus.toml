@@ -1,0 +1,35 @@
+board_type = "OrangePi-5-Plus"
+session_files = [
+  "iperf-smoke.sh",
+]
+shell_prefix = "root@starry:/root #"
+shell_init_cmd = '''
+marker=STARRY_IPERF_SMOKE
+url='${sessionFile:iperf-smoke.sh}'
+script=/tmp/iperf-smoke.sh
+network_ready=0
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+  ip_addr_out="$(ip addr show dev eth0 2>&1 || true)"
+  echo "$ip_addr_out"
+  if echo "$ip_addr_out" | grep -q 'inet 192\.168\.1\.'; then
+    network_ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$network_ready" != "1" ]; then
+  false
+elif command -v curl >/dev/null 2>&1; then
+  curl --connect-timeout 10 --max-time 30 -fsSL "$url" -o "$script"
+elif command -v wget >/dev/null 2>&1; then
+  wget -T 30 -O "$script" "$url"
+else
+  false
+fi &&
+chmod +x "$script" &&
+"$script" '${boardServerIp}' 5201 ||
+echo "${marker}_FAILED"
+'''
+success_regex = ["(?m)^STARRY_IPERF_SMOKE_OK\\s*$"]
+fail_regex = ['(?i)\bpanic(?:ked)?\b', '(?i)segmentation fault', '(?i)SIGSEGV', 'exit with code: 139', "(?m)^STARRY_IPERF_SMOKE_FAILED\\s*$"]
+timeout = 240

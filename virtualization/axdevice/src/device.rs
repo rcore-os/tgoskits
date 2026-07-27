@@ -128,6 +128,11 @@ impl AxVmDevices {
     }
 
     /// Builds devices with registered factories and explicit legacy fallbacks.
+    ///
+    /// A registered factory is authoritative and always takes precedence over
+    /// the legacy fallback for the same device type. Factory validation or
+    /// construction errors are returned directly; they never trigger fallback
+    /// construction of a second device.
     pub fn build_with_factories(
         config: AxVmDeviceConfig,
         factories: &DeviceFactoryRegistry,

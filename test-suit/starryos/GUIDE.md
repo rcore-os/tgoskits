@@ -319,12 +319,71 @@ os/StarryOS/configs/board/<board>.toml
 并从该 board build config 读取 target。如果当前 build wrapper 下存在匹配的
 `build-<target>.toml`，则优先使用 test-suit 中的构建配置。
 
+板测需要在运行时下载 case 资产时，可在 typed TOML 配置中声明相对于
+`board-<board>.toml` 所在目录的文件：
+
+```toml
+session_files = [
+  "iperf-smoke.sh",
+  "tools/network/probe.sh",
+]
+```
+
+路径会在分配板卡前完成规范化和边界检查；绝对路径、`..`、符号链接逃逸、重复路径
+和缺失文件都会被拒绝。上传后路径保持不变，不支持 alias 或上传时改名。
+
+`shell_init_cmd` 可使用下列只在活动 board session 内展开的变量：
+
+- `${boardServerIp}`：板端可访问的 ostool-server 地址。
+- `${boardServerHttpBaseUrl}`：板端可访问的 session HTTP 基础 URL。
+- `${sessionFile:<relative-path>}`：对应共享文件的完整下载 URL。
+
+普通 shell 变量（例如 `${HOME}`）保持原样。未解析的 session 保留变量会在上板运行
+前报错；无论上传、展开还是运行失败，xtask 都会释放 session。
+
+板测需要交叉编译并共享 C 程序时，在 case 下增加 `c/CMakeLists.txt`：
+
+```text
+<case>/
+  board-<board>.toml
+  c/
+    CMakeLists.txt
+    prebuild.sh        # 可选
+    src/
+```
+
+xtask 复用 QEMU C case 的 musl staging 和 CMake 工具链，但不会把产物注入 rootfs。
+每次运行会创建并清空独立目录：
+
+```text
+target/<target>/board-cases/<case>/runs/<run-id>/upload/
+```
+
+CMake `install()` 到该 upload root 的所有普通文件都会按原相对路径自动上传，因此构建
+产物不需要再写入 `session_files`。例如 `install(... DESTINATION bin)` 对应
+`${sessionFile:bin/<program>}`。板端下载、赋权和执行仍必须显式写在
+`shell_init_cmd` 中；ostool 不会自动执行上传的程序。upload root 为空、包含符号链接，
+或者手写 `session_files` 与 CMake install 产物同路径时会在分配板卡前报错。
+
 运行示例：
 
 ```bash
 cargo xtask starry test board --board orangepi-5-plus
 cargo xtask starry test board -c board-orangepi-5-plus/pcie-enumerate --board orangepi-5-plus
+cargo xtask starry test board -c iperf-smoke --board orangepi-5-plus --server 10.3.10.194 --port 2999
 ```
+
+`iperf-smoke` 会等待 OrangePi 的 `eth0` 通过 DHCP 获得板测网段地址，再从 session
+HTTP 端点下载同名脚本，并连接 `${boardServerIp}:5201` 执行 2 秒、1 Mbit/s 的
+iperf3 UDP JSON 测试。该用例只验证下载、执行和网络连通性，不设置吞吐门槛；服务端
+需预先运行 iperf3 server。
+
+`board-aka-00-sg2002/usb2-libuvc-init` 提供静态交叉编译固定版本上游 libuvc 的
+C 资产和 `board-aka-00-sg2002.toml.disabled` 配置模板。AKA-00-SG2002 当前没有
+StarryOS 网络设备，无法从 session HTTP URL 下载程序，因此该模板不会被 board
+discovery 或 CI 启用。后续网络可用时移除 `.disabled` 后缀；其
+`shell_init_cmd` 会使用 `wget` 下载程序，并只验证 `uvc_init` / `uvc_exit`，不枚举
+摄像头、不采集帧，也不验证 DWC2 isochronous 传输。
 
 ## 运行命令
 
