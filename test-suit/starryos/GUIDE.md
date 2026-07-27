@@ -341,6 +341,30 @@ session_files = [
 普通 shell 变量（例如 `${HOME}`）保持原样。未解析的 session 保留变量会在上板运行
 前报错；无论上传、展开还是运行失败，xtask 都会释放 session。
 
+板测需要交叉编译并共享 C 程序时，在 case 下增加 `c/CMakeLists.txt`：
+
+```text
+<case>/
+  board-<board>.toml
+  c/
+    CMakeLists.txt
+    prebuild.sh        # 可选
+    src/
+```
+
+xtask 复用 QEMU C case 的 musl staging 和 CMake 工具链，但不会把产物注入 rootfs。
+每次运行会创建并清空独立目录：
+
+```text
+target/<target>/board-cases/<case>/runs/<run-id>/upload/
+```
+
+CMake `install()` 到该 upload root 的所有普通文件都会按原相对路径自动上传，因此构建
+产物不需要再写入 `session_files`。例如 `install(... DESTINATION bin)` 对应
+`${sessionFile:bin/<program>}`。板端下载、赋权和执行仍必须显式写在
+`shell_init_cmd` 中；ostool 不会自动执行上传的程序。upload root 为空、包含符号链接，
+或者手写 `session_files` 与 CMake install 产物同路径时会在分配板卡前报错。
+
 运行示例：
 
 ```bash
@@ -353,6 +377,13 @@ cargo xtask starry test board -c iperf-smoke --board orangepi-5-plus --server 10
 HTTP 端点下载同名脚本，并连接 `${boardServerIp}:5201` 执行 2 秒、1 Mbit/s 的
 iperf3 UDP JSON 测试。该用例只验证下载、执行和网络连通性，不设置吞吐门槛；服务端
 需预先运行 iperf3 server。
+
+`board-aka-00-sg2002/usb2-libuvc-init` 提供静态交叉编译固定版本上游 libuvc 的
+C 资产和 `board-aka-00-sg2002.toml.disabled` 配置模板。AKA-00-SG2002 当前没有
+StarryOS 网络设备，无法从 session HTTP URL 下载程序，因此该模板不会被 board
+discovery 或 CI 启用。后续网络可用时移除 `.disabled` 后缀；其
+`shell_init_cmd` 会使用 `wget` 下载程序，并只验证 `uvc_init` / `uvc_exit`，不枚举
+摄像头、不采集帧，也不验证 DWC2 isochronous 传输。
 
 ## 运行命令
 
