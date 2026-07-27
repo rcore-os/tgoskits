@@ -10,10 +10,12 @@ categories = ["os", "hardware-support", "memory-management", "no-std"]
 license = "Apache-2.0"
 
 [features]
+axtest = ["dep:axtest"]
 arm-el2 = []
 xuantie-c9xx = []
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 bitflags = "2.9"
 ax-memory-addr.workspace = true
 
@@ -26,3 +28,6 @@ x86_64 = { version = "0.15", default-features = false }
 [package.metadata.docs.rs]
 rustc-args = ["--cfg", "docsrs"]
 all-features = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

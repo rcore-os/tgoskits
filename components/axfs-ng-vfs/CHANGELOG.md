@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.5...axfs-ng-vfs-v0.5.6) - 2026-07-23
+
+### Added
+
+- *(starry)* complete mount tree semantics ([#1644](https://github.com/rcore-os/tgoskits/pull/1644))
+
 ## [0.5.5](https://github.com/rcore-os/tgoskits/compare/axfs-ng-vfs-v0.5.4...axfs-ng-vfs-v0.5.5) - 2026-07-08
 
 ### Other

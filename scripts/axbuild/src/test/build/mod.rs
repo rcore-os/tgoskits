@@ -56,7 +56,7 @@ mod rust;
 mod toolchain;
 mod wrappers;
 
-pub(crate) use c::{case_c_source_dir, prepare_c_case_assets_sync};
+pub(crate) use c::{case_c_source_dir, prepare_c_case_assets_sync, prepare_c_case_overlay_sync};
 use c::{
     case_rust_prebuild_script_path, grouped_c_root_project_path,
     grouped_c_subcase_prebuild_script_path, grouped_c_subcase_source_dir,

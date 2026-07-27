@@ -1,6 +1,6 @@
 [package]
 name = "scope-local"
-version = "0.4.2"
+version = "0.4.3"
 edition.workspace = true
 description = "Scope local storage"
 authors = ["朝倉水希 <asakuramizu111@gmail.com>"]
@@ -8,10 +8,21 @@ keywords = ["arceos"]
 repository = "https://github.com/Starry-OS/scope-local"
 license = "Apache-2.0"
 
+[features]
+axtest = ["dep:axtest"]
+
 [dependencies]
-ax-percpu = { workspace = true, features = ["non-zero-vma"] }
+ax-kernel-guard.workspace = true
+ax-percpu.workspace = true
+axtest = { workspace = true, optional = true }
 spin = { workspace = true }
 
 [dev-dependencies]
+ax-crate-interface.workspace = true
+ax-kernel-guard = { workspace = true, features = ["preempt"] }
 ctor = "0.6"
-ax-percpu = { workspace = true, features = ["host-test", "non-zero-vma"] }
+cpu-local = { workspace = true, features = ["host-test"] }
+ax-percpu = { workspace = true, features = ["host-test"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

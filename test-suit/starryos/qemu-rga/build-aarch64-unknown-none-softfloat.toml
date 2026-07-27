@@ -1,0 +1,22 @@
+# Dedicated build wrapper for the `/dev/rga` userspace-ABI regressions. It enables the
+# `rga` feature (which also brings up `/dev/dma_heap`) so the lifecycle subcases can run in
+# QEMU, while the shared `qemu/build-*.toml` stays RGA-free. RGA2 hardware is absent on QEMU
+# virt, so `RGA_BLIT_SYNC` returns ENODEV after the handle resolves — exactly what the
+# regressions assert. aarch64-only: other arches discover no case here.
+features = [
+  "ax-runtime/display",
+  "ax-runtime/rtc",
+  "ax-driver/serial",
+  "ax-driver/nvme",
+  "ax-driver/virtio-net",
+  "ax-driver/virtio-gpu",
+  "ax-driver/virtio-input",
+  "ax-driver/virtio-socket",
+  "ax-driver/xhci-pci",
+  "starry-kernel/input",
+  "starry-kernel/vsock",
+  "rga",
+]
+max_cpu_num = 4
+log = "Warn"
+target = "aarch64-unknown-none-softfloat"

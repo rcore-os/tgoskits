@@ -294,3 +294,72 @@ mod tests {
         assert_eq!(err.code, Errno::EOVERFLOW);
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn bmalloc_type_conversions_and_validation_rules_hold_for_test() -> bool {
+    // BGIndex: new/raw/as_usize
+    let bg = BGIndex::new(42);
+    assert!(bg.raw() == 42);
+    assert!(bg.as_usize().unwrap() == 42);
+
+    // BGIndex::absolute_block
+    let bg = BGIndex::new(2);
+    let rel = RelativeBN::new(10);
+    let abs = bg.absolute_block(rel, 1, 100);
+    assert!(abs.raw() == 2 * 100 + 10 + 1); // group*blocks_per_group + block_in_group + first_data_block
+
+    // AbsoluteBN: new/raw/to_u32/as_usize/checked_add
+    let abs = AbsoluteBN::new(1000);
+    assert!(abs.raw() == 1000);
+    assert!(abs.to_u32().unwrap() == 1000);
+    assert!(abs.as_usize().unwrap() == 1000);
+    let added = abs.checked_add(50).unwrap();
+    assert!(added.raw() == 1050);
+
+    // AbsoluteBN overflow
+    let big = AbsoluteBN::new(u64::from(u32::MAX) + 1);
+    assert!(big.to_u32().is_err());
+
+    // RelativeBN: new/raw/as_usize
+    let rel = RelativeBN::new(7);
+    assert!(rel.raw() == 7);
+    assert!(rel.as_usize().unwrap() == 7);
+
+    // InodeNumber: new rejects zero, from_u64, raw, as_u64, as_usize, to_group
+    assert!(InodeNumber::new(0).is_err());
+    let ino = InodeNumber::new(100).unwrap();
+    assert!(ino.raw() == 100);
+    assert!(ino.as_u64() == 100);
+    assert!(ino.as_usize().unwrap() == 100);
+
+    // InodeNumber::from_u64 overflow
+    assert!(InodeNumber::from_u64(u64::from(u32::MAX) + 1).is_err());
+
+    // InodeNumber::to_group
+    let ino = InodeNumber::new(5000).unwrap();
+    let (group, idx) = ino.to_group(1000).unwrap();
+    assert!(group.raw() == 4); // (5000-1)/1000 = 4
+    assert!(idx.raw() == 999); // (5000-1)%1000 = 999
+
+    // InodeNumber::to_group with zero inodes_per_group fails
+    assert!(InodeNumber::new(1).unwrap().to_group(0).is_err());
+
+    // RelativeInodeIndex: new/raw/as_usize
+    let ri = RelativeInodeIndex::new(33);
+    assert!(ri.raw() == 33);
+    assert!(ri.as_usize().unwrap() == 33);
+
+    // AbsoluteBN::to_group round-trip
+    let abs_bn = AbsoluteBN::new(500);
+    let (g, r) = abs_bn.to_group(1, 100).unwrap();
+    assert!(g.raw() == 4); // (500-1)/100 = 4
+    assert!(r.raw() == 99); // (500-1)%100 = 99
+
+    // AbsoluteBN::to_group with zero blocks_per_group fails
+    assert!(AbsoluteBN::new(100).to_group(1, 0).is_err());
+
+    // AbsoluteBN::below first_data_block fails
+    assert!(AbsoluteBN::new(0).to_group(10, 100).is_err());
+
+    true
+}

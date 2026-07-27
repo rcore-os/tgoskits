@@ -9,12 +9,88 @@ This reference captures project-specific lessons from enabling LoongArch dynamic
 | Target spec | `scripts/targets/**/<triple>.json` | ABI, soft-float, relocation model, linker, panic, std/musl support |
 | Build orchestration | `scripts/axbuild/src/{build.rs,context,test/qemu.rs,*}` | arch to target mapping, features, UEFI mode, QEMU command, rootfs image |
 | Test data | `test-suit/{arceos,starryos,axvisor}/**` | runtime TOML, build TOML, regexes, SMP count, firmware mode |
-| Bootloader | `components/someboot/src/**` | entry ABI, relocation, memory map, paging, trap, SMP, power |
+| Bootloader | `platforms/someboot/src/**` | entry ABI, relocation, memory map, paging, trap, SMP, power |
 | CPU runtime | `components/axcpu/src/<arch>/**` | trap frame layout, context switch, FP/SIMD, user return |
 | Dynamic platform | `platforms/{axplat-dyn,somehal}/**` | runtime memory/IRQ/timer/power facts from firmware |
 | Drivers | `drivers/**`, `patches/virtio-drivers/**` | MMIO/iomap, DMA, PCI command bits, virtio transport |
 
 When a boot failure appears in a high layer, still audit lower-layer contracts. For example, a Starry rootfs failure can be caused by PCI command bits, and an Axvisor hang can be caused by a someboot post-UEFI handoff.
+
+## CPU-local Register Ownership
+
+`cpu-local` is the single owner of host CPU-area, current-thread, and kernel-TLS register
+semantics. `ax-percpu` supplies the typed template/layout/area implementation but must not choose
+an architecture register independently. The two image modes are mutually exclusive at a final
+image boundary:
+
+| Architecture | CPU area | Linux-current image | Unikernel-TLS image |
+| --- | --- | --- | --- |
+| x86_64 | GS base | current header in `CpuRuntimeAnchor` | FS base is task TLS |
+| AArch64 | TPIDR_EL1 at EL1, TPIDR_EL2 at EL2 | SP_EL0 is current | TPIDR_EL0 is task TLS |
+| RISC-V | recover from current header, or sscratch | tp is current and sscratch is zero in kernel Rust | tp is task TLS and sscratch is CPU base |
+| LoongArch | r21, mirrored in KS3 | tp is current | tp is task TLS |
+
+The final ELF owns exactly one `.percpu.template`, one `.percpu.init` descriptor table, and one
+`.percpu.align` table. someboot or another platform allocates the runtime areas dynamically from
+that geometry, initializes every typed object at its final address, freezes the layout, and only
+then binds a CPU. There is no linked runtime alias and the template size must not depend on SMP.
+Linker boundaries use only `__PERCPU_*` and `__CPU_LOCAL_*`; x86 trap entry consumes the relative
+`__CPU_LOCAL_TSS_OFFSET`.
+
+The exact initialized `CpuAreaRef` address is the area identity. One final image has no CPU-local
+ABI version, layout generation, cookie, or provider-trait FFI. A `CpuPin<'scope>` validates the
+live CPU base, prefix self pointer/index, and current header and cannot escape its guard. Atomic
+scalars require migration exclusion; shared `T: Sync` values require the same pin plus their own
+synchronization; mutable local objects require `ExclusiveCpu` after IRQ/re-entry and conflicting
+remote access are excluded. CPU-area construction is permitted only while that CPU is offline and
+the raw destination is exclusively owned.
+
+Context-switch publication follows one ordering: validate the outgoing binding, bind the next
+stable task header, prepare every fallible state transition, commit the architecture register,
+perform the naked switch, and unbind the previous header in the incoming tail. The interrupt-off
+`CpuPin` spans that sequence. An uncommitted prepared token rolls the next binding back, while the
+previous binding epoch rejects a stale incoming tail after task rebinding; that epoch is a runtime
+concurrency guard, not an ABI version. vCPU exits must restore the host register contract before returning
+to host Rust; LoongArch KS4/KS5 remain vCPU scratch and AArch64 must restore host TPIDR_EL0 before
+calling Rust exception handlers.
+
+For boot debugging, verify the typed per-CPU layout is finalized and frozen before CPU binding.
+Check both the architectural register and its defined mirror (RISC-V sscratch or LoongArch KS3)
+on secondaries. A separate current-task per-CPU variable can mask a stale register during normal
+execution and then fail only on traps or vCPU exits, so it is not a valid fallback.
+
+## Final Image Runtime Modes
+
+- Starry uses its original bare target as a `no_std`/`no_main` PIE with
+  `build-std=core,alloc`; SMP remains a compile-time capability, while the runtime CPU limit is
+  configured separately. Its ELF must be `ET_DYN` without `PT_TLS`, `.tdata`, or `.tbss`.
+- Axvisor remains a std/musl PIE and explicitly selects the complete TLS chain down through
+  axruntime, axhal, `cpu-local`, axvm, axplat-dyn, somehal, and someboot. AxVM snapshots the host
+  kernel-TLS value around each guest transition in addition to validating the exact CPU area.
+- ArceOS retains TLS by default. A userspace build owns the same architecture register for
+  Linux-current semantics, so `uspace + tls` is a configuration error.
+- someboot renders TLS and no-TLS linker layouts separately. For relocatable direct images,
+  audit the final ELF at multiple load biases and accept only the architecture's supported
+  relative relocation types.
+
+## AArch64 Axvisor EL2 Checks
+
+- The Axvisor `hv` feature chain must select `ax-cpu/arm-el2` only for AArch64. Keep the chain
+  `ax-hal/hv` -> `axplat-dyn/hv` -> `somehal/hv`; `somehal`'s AArch64-only optional `ax-cpu`
+  dependency owns the `arm-el2` edge. A successful AArch64 compile does not prove that the EL2
+  register implementation was selected, while an unconditional edge would incorrectly enable it
+  for other architectures.
+- If an EL2 image compiles the EL1 page-table path, `ax-mm` can appear to initialize normally while
+  the new root is written to `TTBR1_EL1`. The active `TTBR0_EL2` then remains the someboot table,
+  so the first access to a dynamically mapped device can fault or look like a hang. On PhytiumPi,
+  the characteristic stop is the first GIC distributor read immediately after the rdrive FDT
+  initialization message.
+- Confirm the runtime reports `EL: 2`, inspect the resolved `ax-cpu` feature set for `arm-el2`, and
+  verify that a post-`ioremap` MMIO access succeeds before instrumenting the device driver itself.
+- Axvisor QEMU and board test cases own their CPU-count contract. Test requests must discard an
+  interactive snapshot's `smp` value; otherwise a stale `tmp/axbuild/.axvisor.toml` can silently
+  shrink the host. A Phytium guest assigned to logical CPU 2 will then fall back to CPU 0 and may
+  stop at its first virtual timer interrupt even though the vCPU world switch is correct.
 
 ## Dynamic UEFI Platform Notes
 
@@ -36,8 +112,10 @@ Use this order when auditing an early boot port:
 6. Trap vectors are installed using the address form required by the architecture at that moment.
 7. MMU enable is followed by the required barrier, TLB flush, and an address-basis-safe jump.
 8. Post-MMU console and panic paths are usable.
-9. Per-CPU data and secondary boot stacks are allocated and initialized.
-10. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
+9. The single ELF CPU-local template and descriptor tables are resolved after relocation.
+10. Runtime CPU areas and secondary boot stacks are dynamically allocated; every typed area is
+    initialized once, frozen, and bound through the architecture CPU-local register contract.
+11. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
 
 ## RISC-V FDT SMP Notes
 
@@ -112,6 +190,8 @@ Important details:
 | Secondary CPU silent | `cpu_on` argument, cache flush, stack, per-CPU base, trap setup, logical CPU ID mapping |
 | ArceOS works but Starry fails | rootfs staging, std/musl ABI, console/input feature, tty assumptions, CPR sizing |
 | Starry shell works but grouped tests fail | generated runner path, copied assets, success regex, `shell_init_cmd` versus `test_commands` |
+| AArch64 Axvisor stops at first dynamic MMIO read | missing `ax-cpu/arm-el2`, inactive EL1 page-table root, stale `TTBR0_EL2` boot table |
+| Phytium guest stops after `arch_timer` | inherited board-test SMP limit, vCPU CPU-mask fallback, virtual timer routing |
 | Axvisor build works but QEMU hangs | firmware/OVMF path, LVZ QEMU, guest image/rootfs, dynamic platform memory map, post-UEFI transition |
 | Virtio block missing | PCI command enable, virtio transport, MMIO map, DMA translation, rootfs disk args |
 

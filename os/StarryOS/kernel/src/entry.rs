@@ -3,7 +3,6 @@ use alloc::{
     sync::Arc,
 };
 
-use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::Mutex;
@@ -21,6 +20,8 @@ use crate::{
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
+    crate::cgroup::init();
+
     tracepoint_init().expect("Failed to initialize tracepoints");
 
     crate::ebpf::init_ebpf();
@@ -33,7 +34,7 @@ pub fn init(args: &[String], envs: &[String]) {
 
     ax_alloc::register_page_reclaim_fn(ax_fs_ng::vfs::page_cache_reclaim);
 
-    let loc = FS_CONTEXT
+    let loc = ax_fs_ng::vfs::current_fs_context()
         .lock()
         .resolve(&args[0])
         .expect("Failed to resolve executable path");
@@ -89,6 +90,9 @@ pub fn init(args: &[String], envs: &[String]) {
         pid,
         false,
     );
+    // SAFE-EXPECT: failing to attach init would violate the kernel's process accounting invariant.
+    crate::cgroup::attach_initial_process(pid)
+        .expect("Failed to attach init process to cgroup root");
 
     let mut scope = scope_local::Scope::new();
     crate::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())
@@ -109,7 +113,8 @@ pub fn init(args: &[String], envs: &[String]) {
     let exit_code = task.join();
     info!("Init process exited with code: {exit_code:?}");
 
-    let cx = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let cx = fs_context.lock();
     // Best-effort teardown. Like Linux shutdown, a busy/invalid unmount at
     // shutdown is logged, never a kernel panic: after `test-pivot-root`
     // reorganizes the shared mount namespace (`propagate_pivot_root` rewrites

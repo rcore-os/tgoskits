@@ -172,7 +172,7 @@ static CPU_ID:  usize = 0;
 static IS_BSP:  bool  = false;
 ```
 
-公共函数：`this_cpu_id`、`this_cpu_is_bsp`、`init_primary`、`init_secondary`。`axplat-dyn` 还通过 `ax-percpu/custom-base` feature 让 percpu 基址指向 `somehal` 维护的区域，见 [dynamic.md](dynamic.md)。
+公共函数：`this_cpu_id`、`this_cpu_is_bsp`、`init_primary`、`init_secondary`。动态平台由 someboot 为每个 CPU 分配运行时区域并调用 `ax-percpu` 完成类型化初始化；`axplat-dyn` 进入主核或从核时从冻结布局取得精确 `CpuAreaRef`，并在 CPU offline、IRQ 关闭的边界安装。最终 ELF 只携带一份 `.percpu.template`，不存在链接期运行时区域、版本字段、generation/cookie 或 base callback，见 [dynamic.md](dynamic.md)。
 
 ## 平台选择
 
@@ -207,6 +207,6 @@ AX_PLATFORM_CRATE=axplat_myplat cargo check -p ax-hal --features axplat-myplat
 
 - 平台 crate 实现的是链接期全局接口，不是运行时插件。`ax-crate-interface` 只为每个 `*If` trait 保留一个实现槽。
 - `axplat-dyn` 与另一个外部平台同时进入最终链接时，会因为重复实现 `ax-plat` crate-interface 符号而失败。
-- `smp`、`irq`、`hv`、`uspace` 等能力 feature 必须同时满足平台实现和上层 runtime 的需求。例如 `axplat-dyn` 的 `hv` feature 会同时开启 `somehal/hv` 和 `ax-cpu/arm-el2`。
+- `smp`、`irq`、`hv`、`uspace` 等能力 feature 必须同时满足平台实现和上层 runtime 的需求。例如 `axplat-dyn` 的 `hv` feature 会开启 `somehal/hv`，再由 `somehal` 的 AArch64 目标依赖选择 `ax-cpu/arm-el2`，避免影响其他架构。
 - `AX_PLATFORM_CRATE` 只决定 `ax-hal` 生成哪个 crate 标识符；Cargo 仍需要通过 `ax-hal` 自己的 feature/依赖把该 crate 放进依赖图。
 - `unsafe extern "Rust"` 入口符号的调用方必须确保 `cpu_id`、`arg` 语义与平台宏文档一致：`arg` 通常是 bootloader 传下来的 device tree blob 地址。

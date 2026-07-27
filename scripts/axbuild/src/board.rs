@@ -35,17 +35,16 @@ pub async fn execute(command: Command) -> anyhow::Result<()> {
     match command {
         Command::Ls(server) => {
             let global_config = board::load_board_global_config_with_notice()?;
-            let (server, port) =
-                global_config.resolve_server(server.server.as_deref(), server.port);
-            let boards = board::fetch_board_types(&server, port).await?;
+            let endpoint = global_config.resolve_endpoint(server.server.as_deref(), server.port)?;
+            let boards = board::fetch_board_types_endpoint(endpoint).await?;
             println!("{}", board::render_board_table(&boards));
             Ok(())
         }
         Command::Connect(args) => {
             let global_config = board::load_board_global_config_with_notice()?;
-            let (server, port) =
-                global_config.resolve_server(args.server.server.as_deref(), args.server.port);
-            board::connect_board(&server, port, &args.board_type).await
+            let endpoint =
+                global_config.resolve_endpoint(args.server.server.as_deref(), args.server.port)?;
+            board::connect_board_endpoint(endpoint, &args.board_type).await
         }
         Command::Config => board::config(),
     }

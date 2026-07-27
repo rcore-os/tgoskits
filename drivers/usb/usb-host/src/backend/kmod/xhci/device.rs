@@ -84,7 +84,13 @@ impl Device {
     }
 
     fn new_ep(&mut self, dci: Dci) -> Result<XhciEndpoint> {
-        let ep = XhciEndpoint::new(dci, &self.kernel, self.bell.clone())?;
+        let ep = XhciEndpoint::new(
+            self.id,
+            dci,
+            &self.kernel,
+            self.bell.clone(),
+            self.cmd.clone(),
+        )?;
         self.transfer_result_handler
             .register_queue(self.id.as_u8(), dci.as_u8(), ep.ring());
 

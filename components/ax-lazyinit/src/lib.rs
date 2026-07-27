@@ -1,6 +1,9 @@
 #![cfg_attr(not(test), no_std)]
 #![doc = include_str!("../README.md")]
 
+#[cfg(all(axtest, feature = "axtest"))]
+extern crate alloc;
+
 use core::{
     cell::UnsafeCell,
     fmt,
@@ -9,6 +12,10 @@ use core::{
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicU8, Ordering},
 };
+
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for lazy initialization primitives.
+pub mod axtest;
 
 /// Not initialized yet.
 const UNINIT: u8 = 0;

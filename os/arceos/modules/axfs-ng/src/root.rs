@@ -182,15 +182,16 @@ pub fn init_root(
             .find(|partition| partition.info.index == part_index)
     });
     let description = describe_selection(selected.disk_index, selected_partition_info);
+    let source = bootargs.and_then(root_value).unwrap_or("/dev/vda");
     let region = selected_partition_info.map_or_else(
         || BlockRegion::from_num_blocks(selected.handle.device_info().num_blocks),
         |part| part.info.region,
     );
 
     let root = if let Some(kind) = selected_filesystem_kind(&selected, selected_partition) {
-        init_detected_filesystem(selected.handle.clone(), region, kind, &description)
+        init_detected_filesystem(selected.handle.clone(), region, kind, &description, source)
     } else {
-        init_filesystem(selected.handle.clone(), region, &description)
+        init_filesystem(selected.handle.clone(), region, &description, source)
     };
     mount_additional_partitions(&root, &selected, selected_partition);
 }

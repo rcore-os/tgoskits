@@ -5,12 +5,13 @@ use ax_errno::AxResult;
 use ax_fs_ng::MountNamespace as FsMountNamespace;
 use ax_kspin::SpinNoIrq;
 use axnsproxy::{
-    IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace, PidNamespace, UserNamespace,
-    UtNamespace,
+    CgroupNamespace, IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace, PidNamespace,
+    UserNamespace, UtNamespace,
 };
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
-    CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
+    CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUSER,
+    CLONE_NEWUTS,
 };
 
 use super::FileLike;
@@ -29,6 +30,7 @@ pub enum NsFd {
     Pid(Arc<SpinNoIrq<PidNamespace>>),
     Net(Arc<SpinNoIrq<NetNamespace>>),
     User(Arc<SpinNoIrq<UserNamespace>>),
+    Cgroup(Arc<SpinNoIrq<CgroupNamespace>>),
 }
 
 impl NsFd {
@@ -41,6 +43,7 @@ impl NsFd {
             NsFd::Pid(_) => CLONE_NEWPID,
             NsFd::Net(_) => CLONE_NEWNET,
             NsFd::User(_) => CLONE_NEWUSER,
+            NsFd::Cgroup(_) => CLONE_NEWCGROUP,
         }
     }
 }
@@ -54,6 +57,7 @@ impl FileLike for NsFd {
             NsFd::Pid(_) => "anon_inode:[pid_ns]".into(),
             NsFd::Net(_) => "anon_inode:[net_ns]".into(),
             NsFd::User(_) => "anon_inode:[user_ns]".into(),
+            NsFd::Cgroup(_) => "anon_inode:[cgroup_ns]".into(),
         }
     }
 
@@ -65,6 +69,7 @@ impl FileLike for NsFd {
             NsFd::Pid(ns) => ns.lock().id,
             NsFd::Net(ns) => ns.lock().ns_id,
             NsFd::User(ns) => ns.lock().id,
+            NsFd::Cgroup(ns) => ns.lock().id(),
         };
         Ok(super::Kstat {
             ino,

@@ -1,6 +1,10 @@
 #define _GNU_SOURCE
 #include "test_framework.h"
 #include <ctype.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 /*
  * /proc/<pid>/mountinfo 回归测试。
@@ -20,9 +24,20 @@
  *   2. 文件非空。
  *   3-13. 根挂载点 "/" 的行满足 show_mountinfo 布局的每个字段约束。
  *   14. 伪文件系统挂载可见 (/proc, fstype proc)。
+ *   15-33. 传播类型可选字段 shared:N / master:N 存在/清除回归
+ *          (task 2.6: live optional fields + stale-field removal after
+ *           propagation-type changes and detach)。
  */
 
 #define MOUNTINFO_PATH "/proc/self/mountinfo"
+#define MOUNTS_PATH "/proc/self/mounts"
+#define ROOT_MOUNT_SOURCE "/dev/vda"
+#define SOURCE_TEST_DIR "/mountinfo_source"
+#define SOURCE_TEST_NAME "mountinfo-source"
+
+/* 隔离挂载树路径 — 唯一, 不与根挂载或其他测试的字符串重合。*/
+#define REG26_SRC "/reg26_src"
+#define REG26_BND "/reg26_bnd"
 
 typedef struct {
     int have_line; /* 找到 mount_point == "/" 的行 */
@@ -70,6 +85,117 @@ static void copy_tok(char *dst, size_t cap, const char *src)
         return;
     }
     snprintf(dst, cap, "%s", src);
+}
+
+/* ---- task 2.6 helpers ---- */
+
+/* Read /proc/self/mountinfo into buf. Returns bytes read or -1 on error. */
+static int read_mountinfo_into(char *buf, size_t size)
+{
+    FILE *f = fopen(MOUNTINFO_PATH, "r");
+    if (!f)
+        return -1;
+    size_t n = fread(buf, 1, size - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    return (int)n;
+}
+
+/* Find a mountinfo line whose mount_point (field 5) equals `mp`.
+ * Returns 1 on found (line in `out`), 0 if not found. */
+static int find_line_by_mp(const char *mp, char *out, size_t out_sz)
+{
+    char buf[65536];
+    if (read_mountinfo_into(buf, sizeof buf) < 0)
+        return 0;
+    char *save = buf;
+    char *line;
+    while ((line = strtok_r(save, "\n", &save)) != NULL) {
+        char toks_buf[1024];
+        strncpy(toks_buf, line, sizeof toks_buf - 1);
+        toks_buf[sizeof toks_buf - 1] = '\0';
+        char *toks[64];
+        int n = 0;
+        for (char *p = strtok(toks_buf, " \t"); p && n < 64;
+             p = strtok(NULL, " \t"))
+            toks[n++] = p;
+        if (n > 4 && strcmp(toks[4], mp) == 0) {
+            snprintf(out, out_sz, "%s", line);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int mountinfo_source_by_mp(const char *mp, char *out, size_t out_sz)
+{
+    char line[1024];
+    if (!find_line_by_mp(mp, line, sizeof line))
+        return 0;
+
+    char *tokens[64];
+    int count = 0;
+    for (char *token = strtok(line, " \t"); token && count < 64;
+         token = strtok(NULL, " \t"))
+        tokens[count++] = token;
+
+    for (int i = 0; i + 2 < count; i++) {
+        if (strcmp(tokens[i], "-") == 0) {
+            copy_tok(out, out_sz, tokens[i + 2]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int mounts_source_by_mp(const char *mp, char *out, size_t out_sz)
+{
+    FILE *f = fopen(MOUNTS_PATH, "r");
+    if (!f)
+        return 0;
+
+    char line[1024];
+    int found = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *source = strtok(line, " \t\n");
+        char *mountpoint = strtok(NULL, " \t\n");
+        if (source && mountpoint && strcmp(mountpoint, mp) == 0) {
+            copy_tok(out, out_sz, source);
+            found = 1;
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+/* Check whether a line contains a given optional-field prefix
+ * (e.g. "shared:" or "master:").  0 = absent, 1 = present, -1 = parse error. */
+static int line_has_field(const char *line, const char *prefix)
+{
+    if (!line)
+        return -1;
+    char search[64];
+    snprintf(search, sizeof search, " %s", prefix);
+    return strstr(line, search) != NULL;
+}
+
+/* Extract optional-field numeric ID for prefix (e.g. "shared:" → 37).
+ * Returns 0 if not found, 1 on success (value stored in *id). */
+static int extract_optional_id(const char *line, const char *prefix,
+                               unsigned long *id)
+{
+    if (!line)
+        return 0;
+    char search[64];
+    snprintf(search, sizeof search, " %s", prefix);
+    const char *p = strstr(line, search);
+    if (!p)
+        return 0;
+    p += strlen(search);
+    char *end;
+    *id = strtoul(p, &end, 10);
+    return end != p && *id > 0;
 }
 
 int main(void)
@@ -168,11 +294,119 @@ int main(void)
     snprintf(msg, sizeof msg, "分隔符后 mount source 非空 (\"%s\")", rl.source);
     CHECK(rl.source[0] != '\0', msg);
 
+    snprintf(msg, sizeof msg, "根 mountinfo source == %s (\"%s\")",
+             ROOT_MOUNT_SOURCE, rl.source);
+    CHECK(strcmp(rl.source, ROOT_MOUNT_SOURCE) == 0, msg);
+
+    {
+        char source[160] = "";
+        CHECK(mounts_source_by_mp("/", source, sizeof source),
+              "根挂载存在于 /proc/self/mounts");
+        snprintf(msg, sizeof msg, "根 mounts source == %s (\"%s\")",
+                 ROOT_MOUNT_SOURCE, source);
+        CHECK(strcmp(source, ROOT_MOUNT_SOURCE) == 0, msg);
+    }
+
     snprintf(msg, sizeof msg, "分隔符后 super options 非空 (\"%s\")", rl.super_opts);
     CHECK(rl.super_opts[0] != '\0', msg);
 
     CHECK(proc_found, "含 /proc (fstype proc) 伪文件系统挂载行");
 
-    // 14 = 本文件 CHECK 总数。
-    TEST_DONE(14);
+    mkdir(SOURCE_TEST_DIR, 0755);
+    CHECK(mount(SOURCE_TEST_NAME, SOURCE_TEST_DIR, "tmpfs", 0, NULL) == 0,
+          "mount tmpfs with a source distinct from fstype");
+    {
+        char source[160] = "";
+        CHECK(mountinfo_source_by_mp(SOURCE_TEST_DIR, source, sizeof source),
+              "source test mount exists in mountinfo");
+        snprintf(msg, sizeof msg, "tmpfs mountinfo source == %s (\"%s\")",
+                 SOURCE_TEST_NAME, source);
+        CHECK(strcmp(source, SOURCE_TEST_NAME) == 0, msg);
+
+        source[0] = '\0';
+        CHECK(mounts_source_by_mp(SOURCE_TEST_DIR, source, sizeof source),
+              "source test mount exists in mounts");
+        snprintf(msg, sizeof msg, "tmpfs mounts source == %s (\"%s\")",
+                 SOURCE_TEST_NAME, source);
+        CHECK(strcmp(source, SOURCE_TEST_NAME) == 0, msg);
+    }
+    CHECK(umount(SOURCE_TEST_DIR) == 0, "unmount source test tmpfs");
+
+    /* ================================================================
+     * task 2.6: 传播类型可选字段 shared:N / master:N
+     *         存在/清除回归。
+     *
+     * 流程:
+     *   A) 创建共享挂载 → 断言 shared:N 存在
+     *   B) 创建从属挂载 → 断言 master:N 存在且与源的 shared:N 一致
+     *   C) 从属变私有   → 断言 master: 消失
+     *   D) 共享变私有   → 断言 shared: 消失
+     *   E) detach (umount) → 断言行从 mountinfo 消失
+     * ================================================================ */
+
+    /* ---- A) 创建共享 tmpfs 挂载 ---- */
+    mkdir(REG26_SRC, 0755);
+    CHECK(mount("tmpfs", REG26_SRC, "tmpfs", 0, NULL) == 0,
+          "mount tmpfs on /reg26_src");
+    CHECK(syscall(SYS_mount, NULL, REG26_SRC, NULL, MS_SHARED, NULL) == 0,
+          "MS_SHARED on /reg26_src");
+
+    /* 验证 mountinfo 行含 shared:N, 并记下其值供后续 master:N 比对。*/
+    {
+        char line[1024] = "";
+        CHECK(find_line_by_mp(REG26_SRC, line, sizeof line),
+              "/reg26_src 行存在于 mountinfo");
+        unsigned long src_id = 0;
+        CHECK(extract_optional_id(line, "shared:", &src_id),
+              "/reg26_src 行含 shared:N");
+
+        /* ---- B) 创建从属 bind 挂载 ---- */
+        mkdir(REG26_BND, 0755);
+        CHECK(mount(REG26_SRC, REG26_BND, NULL, MS_BIND, NULL) == 0,
+              "bind mount /reg26_src → /reg26_bnd");
+        CHECK(syscall(SYS_mount, NULL, REG26_BND, NULL, MS_SLAVE, NULL) == 0,
+              "MS_SLAVE on /reg26_bnd");
+
+        char line2[1024] = "";
+        CHECK(find_line_by_mp(REG26_BND, line2, sizeof line2),
+              "/reg26_bnd 行存在于 mountinfo");
+        unsigned long master_id = 0;
+        CHECK(extract_optional_id(line2, "master:", &master_id),
+              "/reg26_bnd 行含 master:N");
+
+        snprintf(msg, sizeof msg,
+                 "master:N (%lu) == 源的 shared:N (%lu)",
+                 master_id, src_id);
+        CHECK(master_id == src_id, msg);
+
+        /* ---- C) 从属变私有 → master: 残留检查 ---- */
+        CHECK(syscall(SYS_mount, NULL, REG26_BND, NULL, MS_PRIVATE, NULL) == 0,
+              "MS_PRIVATE on /reg26_bnd");
+        CHECK(find_line_by_mp(REG26_BND, line, sizeof line),
+              "/reg26_bnd 行在 MS_PRIVATE 后仍存在");
+        CHECK(!line_has_field(line, "master:"),
+              "/reg26_bnd 行在 MS_PRIVATE 后不含 master:");
+
+        /* ---- D) 共享源变私有 → shared: 残留检查 ---- */
+        CHECK(syscall(SYS_mount, NULL, REG26_SRC, NULL, MS_PRIVATE, NULL) == 0,
+              "MS_PRIVATE on /reg26_src");
+        CHECK(find_line_by_mp(REG26_SRC, line, sizeof line),
+              "/reg26_src 行在 MS_PRIVATE 后仍存在");
+        CHECK(!line_has_field(line, "shared:"),
+              "/reg26_src 行在 MS_PRIVATE 后不含 shared:");
+
+        /* ---- E) detach → 行消失 ---- */
+        CHECK(umount(REG26_BND) == 0, "umount /reg26_bnd (detach)");
+        CHECK(!find_line_by_mp(REG26_BND, line, sizeof line),
+              "/reg26_bnd 行在 umount 后消失");
+
+        CHECK(umount(REG26_SRC) == 0, "umount /reg26_src (detach)");
+        CHECK(!find_line_by_mp(REG26_SRC, line, sizeof line),
+              "/reg26_src 行在 umount 后消失");
+
+        rmdir(REG26_BND);
+        rmdir(REG26_SRC);
+    }
+
+    TEST_DONE(42);
 }

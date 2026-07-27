@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.4.1...sdmmc-protocol-v0.4.2) - 2026-07-23
+
+### Other
+
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+
 ## [0.4.1](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.4.0...sdmmc-protocol-v0.4.1) - 2026-07-08
 
 ### Other

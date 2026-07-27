@@ -121,6 +121,32 @@ namespace、fd table、fs context、signal handler、VM 等共享资源必须核
 - StarryOS 中从 dispatch 到状态边界的对应调用链；
 - 每个关键 errno、权限检查和共享关系为何与 Linux 一致。
 
+评审结果总结还必须包含逐 syscall 标准映射表。范围包括本次改动直接修改的
+syscall，以及通过共享 helper、状态对象或错误转换间接受影响的所有 syscall
+入口。每个 syscall 必须独占一行；即使多个入口共享同一实现或标准，也不得合并
+条目、使用“同上”或只在公共脚注中给出链接。未发现问题的 syscall 同样必须列出。
+
+每一行必须包含 syscall 名称、评审结论、对应标准链接和简要依据，并满足：
+
+- 结论明确区分符合、存在问题和无法确认；存在问题时可引用对应 finding；
+- 标准链接直接指向能够支撑本次结论的具体文档页面或章节，或者固定 Linux
+  commit 的 GitHub 源码文件行链接；
+- GitHub 源码链接必须包含完整 commit SHA 和行锚点，不得使用 `master`、`main`
+  等浮动分支，也不得只链接仓库、目录、搜索结果或没有行锚点的源码文件；
+- 如果结论依赖多个标准或调用链位置，在同一行列出全部必要链接；如果同一标准
+  支撑多个 syscall，则在每一行重复该链接；
+- inline comment、finding 详情或其他章节中的通用资料列表不能代替这张逐项表格。
+
+格式示例（只演示总结结构，不代表任何具体 PR 的评审结论）：
+
+| Syscall | 评审结论 | 对应标准 | 简要依据 |
+| --- | --- | --- | --- |
+| `init_module` | 未发现问题（示例） | [`init_module(2)`](https://man7.org/linux/man-pages/man2/init_module.2.html)、[Linux `init_module` 实现](https://github.com/torvalds/linux/blob/248951ddc14de84de3910f9b13f51491a8cd91df/kernel/module/main.c#L3634-L3654) | 已核对权限检查和模块加载入口。 |
+| `finit_module` | 存在问题（示例） | [Linux `finit_module` 实现](https://github.com/torvalds/linux/blob/248951ddc14de84de3910f9b13f51491a8cd91df/kernel/module/main.c#L3799-L3815) | finding 应说明 StarryOS 与该检查顺序的具体差异。 |
+
+逐 syscall 清单或任一标准链接缺失时，评审仍不完整，不得提交 `APPROVE`、
+`REQUEST_CHANGES`，也不得把 no-submit 说明表述为完整的 syscall 评审总结。
+
 “参考 Linux”“与 man page 一致”或“测试通过”都不足以替代上述证据。
 
 ## 5. 测试要求
@@ -153,5 +179,6 @@ namespace、fd table、fs context、signal handler、VM 等共享资源必须核
 7. 回归测试是否直接覆盖原始 ABI，并在错误实现上失败？
 8. 测试是否由项目 runner 实际发现和执行？
 9. 结论是否记录 Linux 版本、权威资料和 Starry 对应调用链？
+10. 评审结果总结是否逐条列出每个直接或间接受影响的 syscall，并为每条提供可追溯的标准链接？
 
 任一关键问题无法回答时，不得仅凭 CI 通过认定 syscall 兼容性正确。

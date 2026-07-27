@@ -585,6 +585,11 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     // a non-leader `execve`'s de_thread the two differ, and the thread
     // group is keyed by the user-visible TID.
     if process.exit_thread(thr.tid(), exit_code) {
+        if let Err(error) = crate::cgroup::exit_process(process.pid() as u32) {
+            warn!("failed to release cgroup membership: {error}");
+        }
+        thr.proc_data.nsproxy.lock().release_cgroup_namespace();
+
         // AIO contexts pin the process address space and may have worker tasks
         // waiting on outstanding requests. Tear them down before releasing the
         // process address-space slot.
@@ -761,7 +766,35 @@ pub fn zap_thread(tid: Pid) -> AxResult<()> {
     // (pipe read, futex wait) — no interrupt waker is registered there — so a
     // SIGKILLed sibling would linger until async GC, deferring `clear()` and
     // its frame reclaim. `wake_task` force-unblocks the parked thread so it
-    // returns, observes the pending exit, and runs `do_exit` synchronously.
+    // returns, observes the pending pending exit, and runs `do_exit` synchronously.
     ax_task::wake_task(&task);
     Ok(())
+}
+
+#[cfg(axtest)]
+pub(crate) fn decode_wait_status_rules_hold_for_test() -> bool {
+    use linux_raw_sys::general::{CLD_DUMPED, CLD_EXITED, CLD_KILLED};
+
+    // Normal exit: raw & 0x7f == 0 → (CLD_EXITED, exit_value).
+    let (code, status) = decode_wait_status(0);
+    assert!(code == CLD_EXITED as i32 && status == 0);
+
+    let (code, status) = decode_wait_status(0x0100); // exit(1)
+    assert!(code == CLD_EXITED as i32 && status == 1);
+
+    let (code, status) = decode_wait_status(0xFF00); // exit(255)
+    assert!(code == CLD_EXITED as i32 && status == 255);
+
+    // Killed by signal (no core dump): (CLD_KILLED, signum).
+    let (code, status) = decode_wait_status(9); // SIGKILL
+    assert!(code == CLD_KILLED as i32 && status == 9);
+
+    let (code, status) = decode_wait_status(11); // SIGSEGV
+    assert!(code == CLD_KILLED as i32 && status == 11);
+
+    // Killed by signal with core dump: (CLD_DUMPED, signum).
+    let (code, status) = decode_wait_status(0x89); // SIGKILL | 0x80
+    assert!(code == CLD_DUMPED as i32 && status == 9);
+
+    true
 }

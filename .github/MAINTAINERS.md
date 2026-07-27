@@ -26,9 +26,9 @@ M: @ZCShou
 R: @ZCShou
 F: .github/
 F: test-suit/
-F: apps/
 F: scripts/
 F: docs/
+F: net/
 K: CI, tests, `test-suit`, QEMU runner, rootfs, distro, `axbuild`, repo maintenance, docs, release, workflow
 
 ## x86 Virtualization, Filesystem, Guest Communication, And Scheduling
@@ -47,6 +47,7 @@ K: `x86_vcpu`, x86_64 virtualization, VMX, SVM, VMCS, VMCB, Linux/UEFI guest boo
 
 M: @YanLien
 R: @YanLien
+F: apps/
 F: drivers/blk/sdmmc-protocol/
 F: drivers/blk/sdhci-host/
 F: drivers/blk/dwmmc-host/
@@ -75,4 +76,5 @@ F: os/arceos/modules/axalloc/
 F: virtualization/axaddrspace/
 F: virtualization/axvm/src/layout.rs
 F: virtualization/x86_vcpu/src/ept.rs
+F: platforms/
 K: memory management, address space, page table, paging, `ax-mm`, `axaddrspace`, `page-table-generic`, `ax-page-table-multiarch`, `ax-page-table-entry`, `ax-memory-set`, `ax-memory-addr`, `axalloc`, `AddrSpace`, `KERNEL_ASPACE`, `PageTable`, `PageTableCursor`, `FrameAllocator`, `PagingHandlerImpl`, `MappingFlags`, `MemRegionFlags`, `Backend::Allocation`, `mmap`, `munmap`, `mprotect`, `brk`, user memory, EPT/NPT, Stage-2, nested page table, `NestedPagingConfig`, GPA/GVA

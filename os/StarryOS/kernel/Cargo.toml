@@ -1,6 +1,6 @@
 [package]
 name = "starry-kernel"
-version = "0.7.4"
+version = "0.7.5"
 edition.workspace = true
 description = "A Linux-compatible OS kernel built on ArceOS unikernel"
 authors = [
@@ -23,6 +23,7 @@ loongarch64-low-va = []
 memtrack = ["axbacktrace/alloc", "ax-alloc/tracking"]
 rknpu = ["ax-driver/rknpu", "dep:ax-dma"]
 jpeg = ["ax-driver/jpeg", "dep:ax-dma"]
+rga = ["ax-driver/rga", "dep:rockchip-rga", "dep:ax-dma"]
 rk3588-pwm = [
     "ax-driver/rk3588-pwm",
     "dep:rdif-pwm",
@@ -54,9 +55,13 @@ sg2002-cvi-usb-camera = [
     "dep:dma-api",
     "dep:sg200x-jpu",
 ]
+smp = ["ax-std/smp"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
 
 [dependencies]
 ax-alloc = { workspace = true }
@@ -70,7 +75,7 @@ ax-lazyinit.workspace = true
 ax-log.workspace = true
 ax-mm.workspace = true
 ax-net = { workspace = true }
-ax-driver = { workspace = true, features = ["serial", "usb"] }
+ax-driver = { workspace = true, features = ["usb"] }
 axklib = { workspace = true, optional = true }
 axplat-dyn.workspace = true
 ax-runtime = { workspace = true, features = [
@@ -80,6 +85,7 @@ ax-runtime = { workspace = true, features = [
     "rtc",
     "ext4fs",
     "net",
+    "serial",
 ] }
 ax-sync = { workspace = true, features = ["multitask"] }
 ax-task = { workspace = true, features = [
@@ -87,8 +93,10 @@ ax-task = { workspace = true, features = [
     "task-ext",
     "tracepoint-hooks",
     "sched-rr",
+    "axtest",
 ] }
 ax-dma = { workspace = true, optional = true }
+rockchip-rga = { workspace = true, optional = true }
 sg2002-tpu = { workspace = true, optional = true }
 k230-kpu = { workspace = true, optional = true }
 crab-usb.workspace = true
@@ -96,6 +104,7 @@ usb-serial.workspace = true
 rdrive.workspace = true
 
 axbacktrace = { workspace = true }
+ax-cgroup = { workspace = true }
 ax-errno = { workspace = true }
 axnsproxy = { workspace = true }
 axfs-ng-vfs = { workspace = true }
@@ -173,8 +182,51 @@ rbpf = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 axtest.workspace = true
+axbacktrace = { workspace = true, features = ["axtest"] }
+ax-cpumask = { workspace = true, features = ["axtest"] }
+ax-driver = { workspace = true, features = ["axtest"] }
 ax-hal.workspace = true
-ax-std = { workspace = true, features = ["ext-ld", "fs", "multitask", "irq"] }
+ax-std = { workspace = true, default-features = false, features = [
+    "alloc",
+    "fd",
+    "ext-ld",
+    "fs",
+    "multitask",
+    "irq",
+] }
+ax-errno = { workspace = true, features = ["axtest"] }
+ax-memory-addr = { workspace = true, features = ["axtest"] }
+ax-memory-set = { workspace = true, features = ["axtest"] }
+axfs-ng-vfs = { workspace = true, features = ["axtest"] }
+ax-io = { workspace = true, features = ["axtest"] }
+ax-kernel-guard = { workspace = true, features = ["axtest"] }
+ax-lazyinit = { workspace = true, features = ["axtest"] }
+ax-net = { workspace = true, features = ["axtest"] }
+axpoll = { workspace = true, features = ["axtest"] }
+dma-api = { workspace = true, features = ["axtest"] }
+irq-framework = { workspace = true, features = ["axtest"] }
+kernutil = { workspace = true, features = ["axtest"] }
+mmio-api = { workspace = true, features = ["axtest"] }
+rdif-base = { workspace = true, features = ["axtest"] }
+rdif-block = { workspace = true, features = ["axtest"] }
+rdif-def = { workspace = true, features = ["axtest"] }
+rdif-display = { workspace = true, features = ["axtest"] }
+rdif-eth = { workspace = true, features = ["axtest"] }
+rdif-input = { workspace = true, features = ["axtest"] }
+rdif-intc = { workspace = true, features = ["axtest"] }
+rdif-msi = { workspace = true, features = ["axtest"] }
+rdif-pcie = { workspace = true, features = ["axtest"] }
+rdif-pinctrl = { workspace = true, features = ["axtest"] }
+rdif-power = { workspace = true, features = ["axtest"] }
+rdif-reset = { workspace = true, features = ["axtest"] }
+rdif-serial = { workspace = true, features = ["axtest"] }
+rdif-vsock = { workspace = true, features = ["axtest"] }
+ranges-ext.workspace = true
+rdrive = { workspace = true, features = ["axtest"] }
+rsext4 = { workspace = true, features = ["axtest"] }
+scope-local = { workspace = true, features = ["axtest"] }
+ax-page-table-entry = { workspace = true, features = ["axtest"] }
+buddy-slab-allocator = { workspace = true, features = ["axtest"] }
 
 [[test]]
 name = "axtest_kernel"

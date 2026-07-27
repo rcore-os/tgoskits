@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     axvisor::{ArgsTestBoard, ArgsTestUboot, Axvisor, build},
-    context::{AxvisorCliArgs, SnapshotPersistence},
+    context::{AxvisorCliArgs, ResolvedAxvisorRequest, SnapshotPersistence},
     test::{board as board_test, qemu as test_qemu},
 };
 
@@ -42,6 +42,7 @@ impl Axvisor {
             explicit_uboot_config.clone(),
             SnapshotPersistence::Discard,
         )?;
+        let request = Self::board_test_request(request);
 
         let cargo = build::load_cargo_config(&request)?;
         let base_uboot = match request.uboot_config.as_deref() {
@@ -142,6 +143,7 @@ impl Axvisor {
                     None,
                     SnapshotPersistence::Discard,
                 )?;
+                let request = Self::board_test_request(request);
                 let cargo = build::load_cargo_config(&request)?;
                 let board_config = self
                     .load_board_config(&cargo, Some(board_test_config.as_path()))
@@ -176,6 +178,13 @@ impl Axvisor {
             }
         }
         run_state.finish()
+    }
+
+    pub(super) fn board_test_request(
+        mut request: ResolvedAxvisorRequest,
+    ) -> ResolvedAxvisorRequest {
+        request.smp = None;
+        request
     }
 }
 

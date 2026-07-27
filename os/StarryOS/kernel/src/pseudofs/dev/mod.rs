@@ -4,8 +4,8 @@ mod card0;
 #[cfg(feature = "rknpu")]
 mod card1;
 // The real contiguous coherent dma-heap is shared by every accelerator that
-// exchanges buffers (JPU / NPU; RGA when its node lands).
-#[cfg(any(feature = "jpeg", feature = "rknpu"))]
+// exchanges buffers (JPU / NPU / RGA).
+#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
 mod dmaheap;
 mod drm;
 #[cfg(feature = "input")]
@@ -21,6 +21,8 @@ mod r#loop;
 mod loop_block;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
+#[cfg(feature = "rga")]
+pub(crate) mod rga;
 #[cfg(feature = "ext4")]
 pub use r#loop::LoopDevice;
 #[cfg(feature = "sg2002")]
@@ -309,6 +311,46 @@ pub(crate) fn random_write_mixes_entropy_for_test() -> bool {
     }
 
     baseline_next != mixed_next
+        && splitmix64_determinism_rules_hold()
+        && fold_seed_word_xors_into_byte_indices()
+}
+
+#[cfg(axtest)]
+fn splitmix64_determinism_rules_hold() -> bool {
+    // splitmix64 is a pure bijection: the same input always yields the same
+    // 64-bit output (deterministic PRNG), and distinct inputs yield distinct
+    // outputs (no fixed-point within a small sample).
+    let a = splitmix64(0);
+    let b = splitmix64(1);
+    let c = splitmix64(0xffff_ffff_ffff_ffff);
+    a == splitmix64(0)
+        && b == splitmix64(1)
+        && c == splitmix64(0xffff_ffff_ffff_ffff)
+        && a != b
+        && b != c
+        && a != c
+}
+
+#[cfg(axtest)]
+fn fold_seed_word_xors_into_byte_indices() -> bool {
+    // fold_seed_word XORs splitmix64(word) into seed[idx*4 % 32]. Repeatedly
+    // folding the same word twice must cancel out (XOR is its own inverse).
+    let mut seed = [0u8; 32];
+    let snapshot_before = seed;
+    fold_seed_word(&mut seed, 0x1234_5678_9abc_def0);
+    let mutated = seed;
+    // Folding again with the same word must restore the original bytes.
+    fold_seed_word(&mut seed, 0x1234_5678_9abc_def0);
+    let cancelled = seed == snapshot_before;
+    // The mutated seed must be different from the all-zero baseline at least at
+    // one byte (proves fold_seed_word actually wrote something).
+    let mutated_differs_from_zero = mutated.iter().any(|byte| *byte != 0);
+    // Folding word 0 affects byte indices {0, 4, 8, 12, 16, 20, 24, 28}.
+    let affected_indices = [0, 4, 8, 12, 16, 20, 24, 28];
+    let affected_bytes_differ = affected_indices
+        .iter()
+        .any(|&idx| mutated.get(idx).copied() != snapshot_before.get(idx).copied());
+    cancelled && mutated_differs_from_zero && affected_bytes_differ
 }
 
 struct Full;
@@ -573,7 +615,7 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // accelerators share buffers from (zero-copy across JPU / NPU / RGA). Every
     // heap name maps to the same allocator. Available under any accelerator
     // feature, not just `jpeg`.
-    #[cfg(any(feature = "jpeg", feature = "rknpu"))]
+    #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
     {
         let mut dma_heap_dir = DirMapping::new();
         for name in dmaheap::HEAP_NAMES {
@@ -596,6 +638,11 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     // This is mounted to a tmpfs in `new_procfs`
     root.add(
         "shm",
+        SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
+    );
+    // Mount point for mqueuefs; `mount_all` mounts it at `/dev/mqueue`.
+    root.add(
+        "mqueue",
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
     );
     {
@@ -628,6 +675,17 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             NodeType::CharacterDevice,
             DeviceId::new(226, 128),
             dri_card0,
+        ),
+    );
+
+    #[cfg(feature = "rga")]
+    root.add(
+        "rga",
+        Device::new(
+            fs.clone(),
+            NodeType::CharacterDevice,
+            DeviceId::new(252, 16), // CONFIRM ON BOARD: real /dev/rga major/minor
+            Arc::new(rga::RgaDevice::new()),
         ),
     );
 

@@ -25,6 +25,7 @@ mod cgroup;
 mod config;
 mod ebpf;
 mod file;
+mod ipc;
 mod kmod;
 pub mod kprobe;
 mod mm;

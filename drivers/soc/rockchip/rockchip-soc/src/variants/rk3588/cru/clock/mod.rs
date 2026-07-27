@@ -257,6 +257,15 @@ clk_id_group!(
 );
 
 // =============================================================================
+// RGA 时钟 ID
+// =============================================================================
+
+// RGA2 bus clocks (gate positions in CLKGATE_CON45, see gate.rs). PR-1 brings up RGA2 only;
+// the RGA3 core clock ids (ACLK_RGA3_0=442/HCLK_RGA3_0=441/CLK_RGA3_0_CORE=443,
+// ACLK_RGA3_1=394/HCLK_RGA3_1=393/CLK_RGA3_1_CORE=395) are deferred with the RGA3 bring-up.
+clk_id_group!(HCLK_RGA2 = 438, ACLK_RGA2 = 439, CLK_RGA2_CORE = 440,);
+
+// =============================================================================
 // GMAC 时钟 ID
 // =============================================================================
 

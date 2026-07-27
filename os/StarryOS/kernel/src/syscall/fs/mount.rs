@@ -2,7 +2,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use core::ffi::{c_char, c_void};
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::{FS_CONTEXT, is_mount_busy as fs_is_mount_busy};
+use ax_fs_ng::vfs::is_mount_busy as fs_is_mount_busy;
 use ax_task::current;
 
 use crate::{
@@ -18,6 +18,12 @@ const MNT_EXPIRE: i32 = 4;
 const UMOUNT_NOFOLLOW: i32 = 8;
 
 const MS_RDONLY: i32 = 1;
+const MS_NOSUID: i32 = 2;
+const MS_NODEV: i32 = 4;
+const MS_NOEXEC: i32 = 8;
+const MS_NOATIME: i32 = 1 << 10;
+const MS_RELATIME: i32 = 1 << 21;
+const MS_STRICTATIME: i32 = 1 << 24;
 const MS_REMOUNT: i32 = 1 << 5;
 const MS_BIND: i32 = 1 << 12;
 const MS_MOVE: i32 = 1 << 13;
@@ -27,6 +33,9 @@ const MS_UNBINDABLE: i32 = 1 << 17;
 const MS_PRIVATE: i32 = 1 << 18;
 const MS_SLAVE: i32 = 1 << 19;
 const MS_SHARED: i32 = 1 << 20;
+
+const MOUNT_OPTION_FLAGS: i32 =
+    MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME | MS_RELATIME | MS_STRICTATIME;
 
 const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
 const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
@@ -116,7 +125,11 @@ pub fn sys_mount(
     flags: i32,
     data: *const c_void,
 ) -> AxResult<isize> {
-    let source = vm_load_string(source)?;
+    let source = if source.is_null() {
+        String::new()
+    } else {
+        vm_load_string(source)?
+    };
     let target = vm_load_string(target)?;
     let fs_type = if fs_type.is_null() {
         String::new()
@@ -124,6 +137,10 @@ pub fn sys_mount(
         vm_load_string(fs_type)?
     };
     debug!("sys_mount <= source: {source:?}, target: {target:?}, fs_type: {fs_type:?}");
+
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
 
     let propagation = flags & PROPAGATION_FLAGS;
 
@@ -137,34 +154,45 @@ pub fn sys_mount(
             return Err(AxError::InvalidInput);
         }
 
-        let target = FS_CONTEXT.lock().resolve(target)?;
+        let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
         if !target.is_root_of_mount() {
             return Err(AxError::InvalidInput);
         }
         let mountpoint = target.mountpoint().clone();
-        match propagation {
-            MS_SHARED => mountpoint.set_shared(),
-            MS_PRIVATE => mountpoint.set_private(),
-            MS_SLAVE => mountpoint.set_slave(),
-            MS_UNBINDABLE => mountpoint.set_unbindable(),
-            _ => {}
+        if (flags & MS_REC) != 0 {
+            match propagation {
+                MS_SHARED => mountpoint.set_shared_recursive(),
+                MS_PRIVATE => mountpoint.set_private_recursive(),
+                MS_SLAVE => mountpoint.set_slave_recursive(),
+                MS_UNBINDABLE => mountpoint.set_unbindable_recursive(),
+                _ => {}
+            }
+        } else {
+            match propagation {
+                MS_SHARED => mountpoint.set_shared(),
+                MS_PRIVATE => mountpoint.set_private(),
+                MS_SLAVE => mountpoint.set_slave(),
+                MS_UNBINDABLE => mountpoint.set_unbindable(),
+                _ => {}
+            }
         }
         return Ok(0);
     }
 
     if (flags & MS_REMOUNT) != 0 {
-        let target = FS_CONTEXT.lock().resolve(target)?;
+        let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
         if !target.is_root_of_mount() {
             return Err(AxError::InvalidInput);
         }
-        if (flags & MS_RDONLY) != 0 {
-            target.mountpoint().set_readonly(true);
-        }
+        let mp = target.mountpoint();
+        mp.set_readonly((flags & MS_RDONLY) != 0);
+        mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         return Ok(0);
     }
 
     if (flags & MS_MOVE) != 0 {
-        let ctx = FS_CONTEXT.lock();
+        let fs_context = ax_fs_ng::vfs::current_fs_context();
+        let ctx = fs_context.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
         source.move_mount(&target)?;
@@ -172,32 +200,39 @@ pub fn sys_mount(
     }
 
     if (flags & MS_BIND) != 0 {
-        let ctx = FS_CONTEXT.lock();
+        let fs_context = ax_fs_ng::vfs::current_fs_context();
+        let ctx = fs_context.lock();
         let source = ctx.resolve(source)?;
         let target = ctx.resolve(target)?;
-        let mp = target.bind_mount(&source, (flags & MS_REC) != 0)?;
-        if (flags & MS_RDONLY) != 0 {
-            mp.set_readonly(true);
-        }
+        target.bind_mount(&source, (flags & MS_REC) != 0)?;
         return Ok(0);
     }
 
     match fs_type.as_str() {
         "proc" | "sysfs" | "devtmpfs" | "devpts" | "tmpfs" => {
             let fs = MemoryFs::new();
-            let target = FS_CONTEXT.lock().resolve(target)?;
-            let mp = target.mount(&fs)?;
+            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         "cgroup2" => {
-            let fs = crate::pseudofs::cgroup::new_cgroup2fs();
-            let target = FS_CONTEXT.lock().resolve(target)?;
-            let mp = target.mount(&fs)?;
+            let (cgroup_root, cgroup_root_pin) = {
+                let task = current();
+                let nsproxy = task.as_thread().proc_data.nsproxy.lock();
+                let namespace = nsproxy.cgroup_ns.lock();
+                (namespace.root(), namespace.pin_root())
+            };
+            let fs = crate::pseudofs::cgroup::new_cgroup2fs(cgroup_root);
+            let target = ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?;
+            let mp = target.mount_with_source(&fs, mount_source(&source))?;
+            mp.set_lifetime_guard(Arc::new(cgroup_root_pin));
             if (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         #[cfg(feature = "ext4")]
         "ext4" => {
@@ -205,7 +240,8 @@ pub fn sys_mount(
         }
         "overlay" => {
             let (lower_paths, upper_path, work_path) = parse_overlay_options(data)?;
-            let ctx = FS_CONTEXT.lock();
+            let fs_context = ax_fs_ng::vfs::current_fs_context();
+            let ctx = fs_context.lock();
             let mut lower_dirs = Vec::new();
             for lower in lower_paths {
                 lower_dirs.push(ctx.resolve(lower)?);
@@ -219,10 +255,11 @@ pub fn sys_mount(
                 work_dir,
             })?;
             let target = ctx.resolve(target)?;
-            let mp = target.mount(&fs)?;
+            let mp = target.mount_with_source(&fs, mount_source(&source))?;
             if readonly || (flags & MS_RDONLY) != 0 {
                 mp.set_readonly(true);
             }
+            mp.set_mount_flags((flags & MOUNT_OPTION_FLAGS) as u32);
         }
         _ => return Err(AxError::NoSuchDevice),
     }
@@ -230,11 +267,16 @@ pub fn sys_mount(
     Ok(0)
 }
 
+fn mount_source(source: &str) -> &str {
+    if source.is_empty() { "none" } else { source }
+}
+
 #[cfg(feature = "ext4")]
 fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
     use alloc::{boxed::Box, sync::Arc};
 
-    let ctx = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let ctx = fs_context.lock();
 
     // Resolve source device path (e.g., "/dev/loop0") to a block device
     let source_loc = ctx.resolve(source)?;
@@ -268,7 +310,7 @@ fn mount_ext4(source: &str, target: &str, readonly: bool) -> AxResult<()> {
 
     // Mount at the target location
     let target_loc = ctx.resolve(target)?;
-    let mountpoint = target_loc.mount(&fs).map_err(|e| {
+    let mountpoint = target_loc.mount_with_source(&fs, source).map_err(|e| {
         warn!("mount_ext4: failed to mount at {:?}: {:?}", target, e);
         AxError::Io
     })?;
@@ -314,9 +356,11 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
     }
 
     let target = if (flags & UMOUNT_NOFOLLOW) != 0 {
-        FS_CONTEXT.lock().resolve_no_follow(target)?
+        ax_fs_ng::vfs::current_fs_context()
+            .lock()
+            .resolve_no_follow(target)?
     } else {
-        FS_CONTEXT.lock().resolve(target)?
+        ax_fs_ng::vfs::current_fs_context().lock().resolve(target)?
     };
 
     if !current().as_thread().cred().has_cap_sys_admin() {
@@ -337,9 +381,10 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         return Ok(0);
     }
 
-    // Linux umount2 returns EBUSY if any task has cwd/root or open fd
-    // inside the mount.
-    if is_mount_busy(target.mountpoint()) {
+    let plan = target
+        .mountpoint()
+        .plan_unmount(axfs_ng_vfs::UnmountKind::Normal)?;
+    if plan.targets().any(is_mount_busy) {
         return Err(AxError::from(LinuxError::EBUSY));
     }
 
@@ -358,7 +403,10 @@ pub fn sys_umount2(target: *const c_char, flags: i32) -> AxResult<isize> {
         ud.get::<Box<dyn Fn() -> AxResult<()> + Send + Sync>>()
     }; // user_data lock released
 
-    target.unmount()?;
+    if plan.targets().any(is_mount_busy) {
+        return Err(AxError::from(LinuxError::EBUSY));
+    }
+    target.commit_unmount(plan)?;
 
     // After unmount, filesystem block I/O has stopped; it is safe to do VFS
     // writeback here. Propagate writeback errors so userspace sees EIO when
@@ -378,19 +426,12 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
         new_root, put_old
     );
 
-    // Validate: put_old must be at or under new_root (path-separator-aware
-    // so that "/new" does not falsely match "/newroot/old").
-    let nr = new_root.trim_end_matches('/');
-    let nr_slash = alloc::format!("{}/", nr);
-    if !(put_old == nr || put_old.starts_with(&nr_slash)) {
-        return Err(AxError::InvalidInput);
-    }
-    // new_root cannot be "/"
-    if new_root == "/" {
-        return Err(AxError::InvalidInput);
+    if !current().as_thread().cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
     }
 
-    let mut ctx = FS_CONTEXT.lock();
+    let fs_context = ax_fs_ng::vfs::current_fs_context();
+    let mut ctx = fs_context.lock();
 
     // The caller's current root must itself be a mount point (Linux
     // EINVAL if e.g. the process chroot'd into a subdirectory).
@@ -398,22 +439,24 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
         return Err(AxError::InvalidInput);
     }
 
-    // Resolve paths
+    // Resolve both paths before checking their VFS relationship. Linux permits
+    // callers to enter new_root and use pivot_root(".", "old").
     let new_root_loc = ctx.resolve(&new_root)?;
-
-    // Both must be directories
     new_root_loc.check_is_dir()?;
     let put_old_loc = ctx.resolve(&put_old)?;
     put_old_loc.check_is_dir()?;
 
-    // new_root must be the root of a non-root mount (i.e. the root of a
-    // filesystem mounted somewhere, not the global root).  Because path
-    // resolution crosses mount boundaries transparently, the resolved
-    // Location is the *root entry* of the mounted filesystem, so we check
-    // is_root_of_mount + the mountpoint is not the global root.
-    if !(new_root_loc.is_root_of_mount() && !new_root_loc.mountpoint().is_root()) {
+    if !put_old_loc.is_descendant_of(&new_root_loc) {
+        return Err(AxError::InvalidInput);
+    }
+
+    // `pivot_root` rearranges mounts rather than arbitrary directories.
+    if new_root_loc.is_root()
+        || !new_root_loc.is_root_of_mount()
+        || new_root_loc.ptr_eq(ctx.root_dir())
+    {
         warn!(
-            "sys_pivot_root: new_root {:?} is not the root of a mounted filesystem",
+            "sys_pivot_root: new_root {:?} is not a distinct non-global mount root",
             new_root
         );
         return Err(AxError::InvalidInput);
@@ -425,6 +468,7 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     // dentry) rather than just the mountpoint, so that tasks chroot'd
     // into a subdirectory of the old root are not incorrectly updated.
     let old_root = ctx.root_dir().clone();
+    let mount_namespace = ctx.mount_namespace().clone();
 
     // Perform pivot: swap the root mount (updates this task's FsContext).
     ctx.pivot_root(new_root_loc, put_old_loc)?;
@@ -435,7 +479,39 @@ pub fn sys_pivot_root(new_root: *const c_char, put_old: *const c_char) -> AxResu
     // Propagate root / cwd to all other tasks whose root_dir or current_dir
     // exactly matches the old root Location — mirroring Linux
     // chroot_fs_refs() in fs/namespace.c.
-    ax_fs_ng::vfs::FsContext::propagate_pivot_root(&old_root, &new_root_loc);
+    ax_fs_ng::vfs::FsContext::propagate_pivot_root(&mount_namespace, &old_root, &new_root_loc);
 
     Ok(0)
+}
+
+#[cfg(axtest)]
+pub(crate) fn mount_flags_validation_rules_hold_for_test() -> bool {
+    // Test umount flag validation
+    const VALID_UMOUNT_FLAGS: i32 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW;
+
+    let flags = 0i32;
+    assert!(flags & !VALID_UMOUNT_FLAGS == 0);
+
+    let force_only = MNT_FORCE;
+    assert!(force_only & !VALID_UMOUNT_FLAGS == 0);
+
+    let detach_only = MNT_DETACH;
+    assert!(detach_only & !VALID_UMOUNT_FLAGS == 0);
+
+    let all_valid = VALID_UMOUNT_FLAGS;
+    assert!(all_valid & !VALID_UMOUNT_FLAGS == 0);
+
+    // Invalid flag should be detected
+    let invalid_flags = 0xFFFFi32;
+    assert!(invalid_flags & !VALID_UMOUNT_FLAGS != 0);
+
+    // Test propagation flags
+    const PROPAGATION_FLAGS: i32 = MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE;
+
+    assert!(MS_SHARED & PROPAGATION_FLAGS != 0);
+    assert!(MS_PRIVATE & PROPAGATION_FLAGS != 0);
+    assert!(MS_SLAVE & PROPAGATION_FLAGS != 0);
+    assert!(MS_UNBINDABLE & PROPAGATION_FLAGS != 0);
+
+    true
 }

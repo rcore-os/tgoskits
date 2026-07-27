@@ -125,6 +125,41 @@ impl SimpleFile {
     pub fn new_regular(fs: Arc<SimpleFs>, ops: impl SimpleFileOps) -> Arc<Self> {
         Self::new(fs, NodeType::RegularFile, ops)
     }
+
+    /// Overwrite the node's stored ownership, permission bits and timestamps.
+    /// Pseudo-filesystems that back a real kernel object (e.g. `/dev/mqueue`,
+    /// whose files carry the owning queue's `i_mode`/`i_uid`/`i_gid` and inode
+    /// times) use this to report those instead of the defaults. The node's
+    /// `size` still comes from the live content length.
+    pub fn set_attrs(
+        &self,
+        mode: NodePermission,
+        uid: u32,
+        gid: u32,
+        atime: core::time::Duration,
+        mtime: core::time::Duration,
+        ctime: core::time::Duration,
+    ) {
+        let mut metadata = self.node.metadata.lock();
+        metadata.mode = mode;
+        metadata.uid = uid;
+        metadata.gid = gid;
+        metadata.atime = atime;
+        metadata.mtime = mtime;
+        metadata.ctime = ctime;
+    }
+
+    /// Report a fixed `st_size` from `stat` instead of the live content length.
+    /// For pseudo files that mirror a kernel object whose inode size is a fixed
+    /// documented width (e.g. `/dev/mqueue/<name>` = `FILENT_SIZE` 80), so
+    /// `stat` matches Linux regardless of the current status-line length.
+    ///
+    /// Stored on the node's metadata because `stat` reads the size through
+    /// [`SimpleFsNode::metadata`], which now honors a non-zero stored size
+    /// instead of always recomputing from the live content length.
+    pub fn set_fixed_size(&self, size: u64) {
+        self.node.metadata.lock().size = size;
+    }
 }
 
 #[inherit_methods(from = "self.node")]

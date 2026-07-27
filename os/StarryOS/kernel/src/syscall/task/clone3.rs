@@ -94,6 +94,100 @@ pub fn sys_clone3(uctx: &UserContext, args: *const u8, size: usize) -> AxResult<
     clone_args.do_clone(uctx)
 }
 
+#[cfg(axtest)]
+pub(crate) fn clone3_validation_rules_hold_for_test() -> bool {
+    use linux_raw_sys::general::{CLONE_DETACHED, CLONE_PARENT, CLONE_THREAD, SIGCHLD};
+
+    let parent_signal_rejected = CloneArgs::try_from(Clone3Args {
+        flags: CLONE_PARENT as u64,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    })
+    .is_err();
+    let thread_signal_rejected = CloneArgs::try_from(Clone3Args {
+        flags: CLONE_THREAD as u64,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    })
+    .is_err();
+    let detached_rejected = CloneArgs::try_from(Clone3Args {
+        flags: CLONE_DETACHED as u64,
+        ..Default::default()
+    })
+    .is_err();
+    let stack_top_is_derived_from_base_and_size = CloneArgs::try_from(Clone3Args {
+        stack: 0x4000,
+        stack_size: 0x2000,
+        ..Default::default()
+    })
+    .is_ok_and(|args| args.stack == 0x6000);
+
+    // Cover the remaining CloneArgs::try_from branches:
+    //   - exit_signal == 0 + THREAD flag is accepted
+    //   - exit_signal == 0 + PARENT flag is accepted
+    //   - stack == 0 yields stack == 0 regardless of stack_size
+    //   - stack > 0 with stack_size == 0 yields stack == args.stack directly
+    let thread_zero_signal_accepted = CloneArgs::try_from(Clone3Args {
+        flags: CLONE_THREAD as u64,
+        exit_signal: 0,
+        ..Default::default()
+    })
+    .is_ok();
+    let parent_zero_signal_accepted = CloneArgs::try_from(Clone3Args {
+        flags: CLONE_PARENT as u64,
+        exit_signal: 0,
+        ..Default::default()
+    })
+    .is_ok();
+    let zero_stack_ignored_size = CloneArgs::try_from(Clone3Args {
+        stack: 0,
+        stack_size: 0x2000,
+        ..Default::default()
+    })
+    .is_ok_and(|args| args.stack == 0);
+    let stack_only_no_size = CloneArgs::try_from(Clone3Args {
+        stack: 0x4000,
+        stack_size: 0,
+        ..Default::default()
+    })
+    .is_ok_and(|args| args.stack == 0x4000);
+    // Plain clone (no flags, exit_signal = 0) is accepted.
+    let plain_clone_accepted = CloneArgs::try_from(Clone3Args::default()).is_ok();
+    // Plain clone with exit_signal SIGCHLD is accepted (matches sys_clone3 PID
+    // inheritance semantics).
+    let plain_clone_sigchld_accepted = CloneArgs::try_from(Clone3Args {
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    })
+    .is_ok();
+    // Auxiliary fields propagate to CloneArgs unchanged.
+    let auxiliary_fields_propagate = CloneArgs::try_from(Clone3Args {
+        tls: 0xdead_beef,
+        parent_tid: 0x1000,
+        child_tid: 0x2000,
+        pidfd: 0x3000,
+        ..Default::default()
+    })
+    .is_ok_and(|args| {
+        args.tls == 0xdead_beef
+            && args.parent_tid == 0x1000
+            && args.child_tid == 0x2000
+            && args.pidfd == 0x3000
+    });
+
+    parent_signal_rejected
+        && thread_signal_rejected
+        && detached_rejected
+        && stack_top_is_derived_from_base_and_size
+        && thread_zero_signal_accepted
+        && parent_zero_signal_accepted
+        && zero_stack_ignored_size
+        && stack_only_no_size
+        && plain_clone_accepted
+        && plain_clone_sigchld_accepted
+        && auxiliary_fields_propagate
+}
+
 #[cfg(test)]
 mod tests {
     use linux_raw_sys::general::{CLONE_PARENT, CLONE_THREAD, SIGCHLD};

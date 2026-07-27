@@ -10,8 +10,10 @@ repository.workspace = true
 version = "0.9.3"
 
 [features]
+axtest = ["dep:axtest"]
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 ax-kspin.workspace = true
 cfg-if.workspace = true
 derive_more.workspace = true
@@ -21,3 +23,6 @@ thiserror.workspace = true
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 aarch64-cpu-ext = "0.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

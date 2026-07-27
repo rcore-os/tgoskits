@@ -1,8 +1,8 @@
 use alloc::collections::VecDeque;
 use core::{
-    arch::asm,
+    arch::naked_asm,
     fmt::{Debug, Formatter, Result as FmtResult},
-    mem::size_of,
+    mem::{offset_of, size_of},
 };
 
 use bit_field::BitField;
@@ -143,6 +143,84 @@ struct PendingEvent {
     level_triggered: bool,
 }
 
+/// Register memory shared with the SVM world-switch assembly.
+///
+/// Guest GPRs occupy the first 128 bytes so the save/restore macros can use
+/// this object as a synthetic stack. The remaining fields are host-owned and
+/// are never installed as guest register state.
+#[repr(C)]
+struct SvmWorldSwitchFrame {
+    guest_regs: GeneralRegisters,
+    host_stack_top: u64,
+    host_rflags: u64,
+    host_vmcb_pa: u64,
+}
+
+impl SvmWorldSwitchFrame {
+    fn new(host_vmcb_pa: u64) -> Self {
+        Self {
+            guest_regs: GeneralRegisters::default(),
+            host_stack_top: 0,
+            host_rflags: 0,
+            host_vmcb_pa,
+        }
+    }
+}
+
+const _: () = {
+    assert!(size_of::<GeneralRegisters>() == 16 * size_of::<u64>());
+    assert!(offset_of!(SvmWorldSwitchFrame, guest_regs) == 0);
+    assert!(offset_of!(SvmWorldSwitchFrame, host_stack_top) == size_of::<GeneralRegisters>());
+    assert!(
+        offset_of!(SvmWorldSwitchFrame, host_rflags)
+            == size_of::<GeneralRegisters>() + size_of::<u64>()
+    );
+    assert!(
+        offset_of!(SvmWorldSwitchFrame, host_vmcb_pa)
+            == size_of::<GeneralRegisters>() + 2 * size_of::<u64>()
+    );
+};
+
+/// Switches from host state to an SVM guest and restores host state on exit.
+///
+/// # Safety
+///
+/// `frame` must point to a live [`SvmWorldSwitchFrame`], both VMCB physical
+/// addresses must remain valid for the entire call, SVM must be enabled on the
+/// current CPU, and GIF must be clear. Guest `VMLOAD` installs guest FS/GS, so
+/// this function must remain a single assembly window with no Rust call before
+/// the host `VMLOAD` completes.
+#[unsafe(naked)]
+unsafe extern "C" fn svm_world_switch(_frame: *mut SvmWorldSwitchFrame, _guest_vmcb_pa: u64) {
+    naked_asm!(
+        "pushfq",
+        "pop qword ptr [rdi + {host_rflags}]",
+        save_regs_no_rax!(),
+        "mov [rdi + {host_stack_top}], rsp",
+        "mov rax, rsi",
+        // Guest FS/GS becomes live here. Nothing may call or return to Rust
+        // until the second VMLOAD restores the host save area.
+        "vmload rax",
+        "sti",
+        "mov rsp, rdi",
+        restore_regs_no_rax!(),
+        "vmrun rax",
+        "cli",
+        "vmsave rax",
+        "mov rax, [rsp + {host_vmcb_from_guest_rsp}]",
+        "vmload rax",
+        save_regs_no_rax!(),
+        "mov rdi, rsp",
+        "mov rsp, [rdi + {host_stack_top}]",
+        restore_regs_no_rax!(),
+        "ret",
+        host_stack_top = const offset_of!(SvmWorldSwitchFrame, host_stack_top),
+        host_rflags = const offset_of!(SvmWorldSwitchFrame, host_rflags),
+        host_vmcb_from_guest_rsp = const offset_of!(SvmWorldSwitchFrame, host_vmcb_pa)
+            - size_of::<GeneralRegisters>(),
+    );
+}
+
 /// Host save area used to restore CPU state touched by SVM VMLOAD/VMSAVE.
 pub struct VmLoadSaveStates<H: X86HostOps> {
     vmcb: VmcbFrame<H>,
@@ -155,16 +233,14 @@ impl<H: X86HostOps> VmLoadSaveStates<H> {
         })
     }
 
-    pub fn save(&mut self) {
+    fn save_host(&mut self) {
         unsafe {
             let _ = super::instructions::vmsave(self.vmcb.phys_addr().as_usize() as u64);
         }
     }
 
-    pub fn load(&self) {
-        unsafe {
-            let _ = super::instructions::vmload(self.vmcb.phys_addr().as_usize() as u64);
-        }
+    fn phys_addr(&self) -> u64 {
+        self.vmcb.phys_addr().as_usize() as u64
     }
 }
 
@@ -172,16 +248,8 @@ impl<H: X86HostOps> VmLoadSaveStates<H> {
 /// permission map.
 #[repr(C)]
 pub struct SvmVcpu<H: X86HostOps> {
-    // The order of `guest_regs`, `host_stack_top`, and `host_rflags` is
-    // mandatory. They must be the first three fields. If you want to change
-    // the order or the type of these fields, you must also change the assembly
-    // in this file.
-    /// Guest general-purpose registers.
-    guest_regs: GeneralRegisters,
-    // Used by `svm_run()` assembly; keep immediately after `guest_regs`.
-    host_stack_top: u64,
-    /// Host RFLAGS captured immediately before VM entry.
-    host_rflags: u64,
+    /// State owned by the no-Rust guest/host handoff.
+    world_switch: SvmWorldSwitchFrame,
 
     // The order of the following fields is not mandatory.
     /// Whether this VCPU has entered the guest at least once.
@@ -210,15 +278,14 @@ pub struct SvmVcpu<H: X86HostOps> {
 
 impl<H: X86HostOps> SvmVcpu<H> {
     fn create(vm_id: usize, vcpu_id: usize) -> X86VcpuResult<Self> {
+        let load_save_states = VmLoadSaveStates::<H>::new()?;
         let vcpu = Self {
-            guest_regs: GeneralRegisters::default(),
-            host_stack_top: 0,
-            host_rflags: 0,
+            world_switch: SvmWorldSwitchFrame::new(load_save_states.phys_addr()),
             launched: false,
             entry: None,
             npt_root: None,
             vmcb: VmcbFrame::<H>::new()?,
-            load_save_states: VmLoadSaveStates::<H>::new()?,
+            load_save_states,
             iopm: IOPm::<H>::passthrough_all()?,
             msrpm: MSRPm::<H>::passthrough_all()?,
             pending_events: VecDeque::with_capacity(8),
@@ -435,11 +502,11 @@ impl<H: X86HostOps> SvmVcpu<H> {
     }
 
     pub fn regs(&self) -> &GeneralRegisters {
-        &self.guest_regs
+        &self.world_switch.guest_regs
     }
 
     pub fn regs_mut(&mut self) -> &mut GeneralRegisters {
-        &mut self.guest_regs
+        &mut self.world_switch.guest_regs
     }
 
     pub fn stack_pointer(&self) -> usize {
@@ -864,8 +931,9 @@ impl<H: X86HostOps> SvmVcpu<H> {
         const XCR_XCR0: u64 = 0;
         const VM_EXIT_INSTR_LEN_XSETBV: u8 = 3;
 
-        let index = self.guest_regs.rcx.get_bits(0..32);
-        let value = self.guest_regs.rdx.get_bits(0..32) << 32 | self.guest_regs.rax.get_bits(0..32);
+        let index = self.world_switch.guest_regs.rcx.get_bits(0..32);
+        let value = self.world_switch.guest_regs.rdx.get_bits(0..32) << 32
+            | self.world_switch.guest_regs.rax.get_bits(0..32);
 
         if index == XCR_XCR0 {
             Xcr0::from_bits(value)
@@ -1079,7 +1147,7 @@ impl<H: X86HostOps> SvmVcpu<H> {
             (_, opcode) if svm_mmio_register_write_opcode(write, opcode, local_apic) => {
                 let reg = ((modrm >> 3) & 0x7) | ((rex & 0x4) << 1);
                 let end = self.skip_modrm_memory_operand(rip, modrm, rex)?;
-                let data = self.guest_regs.get_reg_of_index(reg) as u32 as u64;
+                let data = self.world_switch.guest_regs.get_reg_of_index(reg) as u32 as u64;
                 let exit = self.handle_decoded_npt_mmio_write(addr, data, local_apic)?;
                 Ok(Some((exit, (end.as_usize() - start.as_usize()) as u8)))
             }
@@ -1280,72 +1348,42 @@ impl<H: X86HostOps> SvmVcpu<H> {
         x86_err!(InvalidInput, "failed to translate guest RIP")
     }
 
-    fn before_vmrun(&mut self) {
+    fn prepare_world_switch(&mut self) {
         let rax = self.regs().rax;
         unsafe {
             super::instructions::clgi();
             self.vmcb.as_vmcb().state.rax.set(rax);
         }
-        self.load_save_states.save();
-        unsafe {
-            let _ = super::instructions::vmload(self.vmcb.phys_addr().as_usize() as u64);
-        }
-    }
-
-    fn after_vmrun(&mut self) {
-        unsafe {
-            let _ = super::instructions::vmsave(self.vmcb.phys_addr().as_usize() as u64);
-        }
-        self.load_save_states.load();
-        self.regs_mut().rax = unsafe { self.vmcb.as_vmcb().state.rax.get() };
-        unsafe {
-            super::instructions::stgi();
-        }
+        self.load_save_states.save_host();
     }
 
     /// Enter the guest once with AMD SVM `VMRUN`.
     ///
     /// # Safety
     ///
-    /// The caller must ensure SVM is enabled on the current CPU, the VMCB and
-    /// nested page table referenced by this vCPU are valid, and host state is
-    /// restored after the VM exit before returning to normal Rust execution.
+    /// The caller must ensure SVM is enabled, this vCPU remains bound to the
+    /// non-migrating current CPU, and its VMCB and nested page table are valid.
+    /// This method restores host VMLOAD/VMSAVE state before it returns.
     pub unsafe fn svm_run(&mut self) {
-        let self_addr = self as *mut Self as u64;
-        let vmcb = self.vmcb.phys_addr().as_usize() as u64;
+        let guest_vmcb_pa = self.vmcb.phys_addr().as_usize() as u64;
 
         self.load_guest_xstate();
-        self.before_vmrun();
+        self.prepare_world_switch();
 
-        // Keep the register save/restore sequence adjacent to VMRUN; Rust calls
-        // in this window may clobber the guest registers prepared for entry.
-        // SVM samples host RFLAGS.IF at VMRUN, while GIF remains closed until
-        // after the host state has been restored from the exit path.
+        // SAFETY: `prepare_world_switch` saved the host VMLOAD/VMSAVE state,
+        // CLGI keeps host interrupts from entering the no-Rust window, and
+        // the exclusive borrow keeps the frame and both VMCBs live for the call.
         unsafe {
-            asm!(
-                "pushfq", // save host RFLAGS, including IF
-                "pop qword ptr [rdi + {host_rflags}]",
-                "sti",
-                save_regs_no_rax!(),
-                "mov [rdi + {host_stack_top}], rsp",
-                "mov rsp, rdi",
-                restore_regs_no_rax!(),
-                "vmrun rax",
-                "cli", // keep host IRQs off until host xstate is restored
-                save_regs_no_rax!(),
-                "mov rdi, rsp",
-                "mov rsp, [rdi + {host_stack_top}]",
-                restore_regs_no_rax!(),
-                host_stack_top = const size_of::<GeneralRegisters>(),
-                host_rflags = const size_of::<GeneralRegisters>() + size_of::<u64>(),
-                in("rax") vmcb,
-                in("rdi") self_addr,
-            );
+            svm_world_switch(&mut self.world_switch, guest_vmcb_pa);
         }
 
-        self.after_vmrun();
+        self.regs_mut().rax = unsafe { self.vmcb.as_vmcb().state.rax.get() };
+        // Keep guest XCR0/XSS from becoming observable by a host interrupt.
         self.load_host_xstate();
-        restore_host_interrupt_flag(self.host_rflags);
+        unsafe {
+            super::instructions::stgi();
+        }
+        restore_host_interrupt_flag(self.world_switch.host_rflags);
     }
 }
 

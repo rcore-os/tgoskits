@@ -87,8 +87,7 @@ percpu_static! {
 
 #[allow(dead_code)]
 pub(crate) fn check_timer_events() {
-    // SAFETY: only called in timer::check_events
-    unsafe { TIMER_RUNTIME.current_ref_mut_raw() }.wake();
+    with_current(TimerRuntime::wake);
 }
 
 #[cfg(feature = "irq")]
@@ -97,9 +96,17 @@ pub(crate) fn next_timer_deadline() -> Option<TimeValue> {
 }
 
 fn with_current<R>(f: impl FnOnce(&mut TimerRuntime) -> R) -> R {
-    // FIXME: optimize `ax-percpu` crate! should disable irq and provide more apis
     let _g = ax_kernel_guard::NoPreemptIrqSave::new();
-    f(unsafe { TIMER_RUNTIME.current_ref_mut_raw() })
+    // SAFETY: the guard excludes migration, IRQ/re-entry, and conflicting
+    // access for the complete non-escaping mutable borrow.
+    unsafe {
+        ax_hal::percpu::with_cpu_pin(|pin| {
+            ax_hal::percpu::with_exclusive_cpu(pin, |exclusive| {
+                TIMER_RUNTIME.with_current_mut(exclusive, f)
+            })
+        })
+    }
+    .expect("timer runtime access requires an installed CPU-local area")
 }
 
 /// Future returned by `sleep` and `sleep_until`.

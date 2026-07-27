@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.7.4...ax-api-v0.7.5) - 2026-07-23
+
+### Other
+
+- updated the following local packages: ax-io, ax-alloc, axpoll, ax-hal, ax-ipi, ax-task, ax-fs-ng, ax-net, ax-runtime, ax-mm, ax-sync, ax-display, ax-dma
+
 ## [0.7.4](https://github.com/rcore-os/tgoskits/compare/ax-api-v0.7.3...ax-api-v0.7.4) - 2026-07-10
 
 ### Other

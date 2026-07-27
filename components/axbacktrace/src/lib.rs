@@ -16,6 +16,9 @@ use spin::Once;
 #[cfg(feature = "dwarf")]
 mod dwarf;
 
+#[cfg(all(axtest, feature = "axtest"))]
+mod axtest;
+
 #[cfg(feature = "dwarf")]
 pub use dwarf::{DwarfReader, FrameIter};
 

@@ -140,7 +140,8 @@ jobs:
           fetch-depth: 2
 
       - name: Validate CI source paths
-        run: python3 scripts/test/check_ci_paths.py
+        run: |
+          python3 scripts/test/check_ci_paths.py
 
       - name: Detect CI-relevant changes
         id: filter
@@ -634,19 +635,38 @@ jobs:
             timeout_minutes: 20
             command: |
               rustup target add x86_64-unknown-uefi
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends ovmf
-              UEFI_FIRMWARE=""
-              for candidate in \
-                /usr/share/OVMF/OVMF_CODE_4M.fd \
-                /usr/share/OVMF/OVMF_CODE.fd \
-                /usr/share/ovmf/OVMF.fd \
-                /usr/share/qemu/OVMF.fd; do
-                if [ -f "${candidate}" ]; then
-                  UEFI_FIRMWARE="${candidate}"
-                  break
-                fi
-              done
+              find_uefi_firmware() {
+                for candidate in \
+                  /usr/share/OVMF/OVMF_CODE_4M.fd \
+                  /usr/share/OVMF/OVMF_CODE.fd \
+                  /usr/share/ovmf/OVMF.fd \
+                  /usr/share/qemu/OVMF.fd; do
+                  if [ -f "${candidate}" ]; then
+                    printf '%s\n' "${candidate}"
+                    return 0
+                  fi
+                done
+                return 1
+              }
+              UEFI_FIRMWARE="$(find_uefi_firmware || true)"
+              if [ -z "${UEFI_FIRMWARE}" ]; then
+                # apt against the runner mirrors fails transiently with exit 100
+                # (mirror hiccup / lock); a bare invocation lets a flaky mirror
+                # abort the whole smoke, so retry with backoff before giving up.
+                for attempt in 1 2 3; do
+                  if sudo apt-get update -o Acquire::Retries=3 \
+                    && sudo apt-get install -y --no-install-recommends \
+                         -o Acquire::Retries=3 ovmf; then
+                    break
+                  fi
+                  if [ "${attempt}" -eq 3 ]; then
+                    echo "ERROR: apt-get failed to install OVMF after 3 attempts." >&2
+                    exit 1
+                  fi
+                  sleep "$((attempt * 10))"
+                done
+                UEFI_FIRMWARE="$(find_uefi_firmware || true)"
+              fi
               if [ -z "${UEFI_FIRMWARE}" ]; then
                 echo "ERROR: installed OVMF firmware image was not found under /usr/share." >&2
                 exit 1
@@ -661,6 +681,14 @@ jobs:
             use_container: false
             runs_on: '["self-hosted","linux","board"]'
             command: cargo xtask axvisor test board --board orangepi-5-plus-linux
+            cache_key: ""
+            container_image: ""
+            limit_to_owner: rcore-os
+            main_pr_only: false
+          - name: Test axvisor self-hosted board orangepi-5-plus-starry
+            use_container: false
+            runs_on: '["self-hosted","linux","board"]'
+            command: cargo xtask axvisor test board --board orangepi-5-plus-starry
             cache_key: ""
             container_image: ""
             limit_to_owner: rcore-os

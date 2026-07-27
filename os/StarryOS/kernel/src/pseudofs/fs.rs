@@ -135,7 +135,13 @@ impl NodeOps for SimpleFsNode {
 
     fn metadata(&self) -> VfsResult<Metadata> {
         let mut metadata = self.metadata.lock().clone();
-        metadata.size = self.len()?;
+        // A non-zero stored size is a fixed inode width recorded via
+        // `SimpleFile::set_fixed_size` (e.g. mqueuefs `FILENT_SIZE` = 80, which
+        // Linux `mqueue_get_inode` stamps regardless of the rendered status
+        // line's length); otherwise report the live content length.
+        if metadata.size == 0 {
+            metadata.size = self.len()?;
+        }
         Ok(metadata)
     }
 
@@ -172,4 +178,18 @@ impl NodeOps for SimpleFsNode {
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn dummy_stat_fs_fields_match_expected_defaults_for_test() -> bool {
+    let stat = dummy_stat_fs(0xdead_beef);
+    stat.fs_type == 0xdead_beef
+        && stat.block_size == 512
+        && stat.blocks == 100
+        && stat.blocks_free == 100
+        && stat.blocks_available == 100
+        && stat.file_count == 0
+        && stat.free_file_count == 0
+        && stat.fragment_size == 0
+        && stat.mount_flags == 0
 }

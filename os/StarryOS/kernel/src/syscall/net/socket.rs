@@ -1,7 +1,6 @@
 use alloc::boxed::Box;
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::FS_CONTEXT;
 #[cfg(feature = "vsock")]
 use ax_net::vsock::VsockSocket;
 use ax_net::{
@@ -32,9 +31,16 @@ use crate::{
     task::AsThread,
 };
 
+const SOCK_TYPE_MASK: u32 = 0xf;
+const SOCK_MAX: u32 = 11;
+const SOCK_FLAGS_MASK: u32 = O_NONBLOCK | O_CLOEXEC;
+
 pub fn sys_socket(domain: u32, raw_ty: u32, proto: u32) -> AxResult<isize> {
     debug!("sys_socket <= domain: {domain}, ty: {raw_ty}, proto: {proto}");
-    let ty = raw_ty & 0xFF;
+    let ty = raw_ty & SOCK_TYPE_MASK;
+    if raw_ty & !(SOCK_TYPE_MASK | SOCK_FLAGS_MASK) != 0 || ty >= SOCK_MAX {
+        return Err(AxError::InvalidInput);
+    }
 
     if domain == AF_PACKET {
         if ty != SOCK_DGRAM {
@@ -152,7 +158,7 @@ pub fn sys_bind(fd: i32, addr: UserConstPtr<sockaddr>, addrlen: u32) -> AxResult
     socket.bind(addr)?;
 
     if let Some(path) = unix_path
-        && let Err(err) = FS_CONTEXT
+        && let Err(err) = ax_fs_ng::vfs::current_fs_context()
             .lock()
             .resolve_no_follow(path.as_ref())
             .and_then(|loc| {
@@ -292,4 +298,29 @@ pub fn sys_socketpair(
         sock2.add_to_fd_table(cloexec)?,
     ];
     Ok(0)
+}
+
+#[cfg(axtest)]
+pub(crate) fn net_socket_constants_hold_for_test() -> bool {
+    // Address family constants
+    assert!(AF_INET == 2);
+    assert!(AF_INET6 == 10);
+    assert!(AF_UNIX == 1);
+    assert!(AF_NETLINK == 16);
+    assert!(AF_PACKET == 17);
+    #[cfg(feature = "vsock")]
+    assert!(AF_VSOCK == 40);
+
+    // Socket type constants
+    assert!(SOCK_STREAM == 1);
+    assert!(SOCK_DGRAM == 2);
+    assert!(SOCK_RAW == 3);
+    assert!(SOCK_SEQPACKET == 5);
+
+    // Shutdown constants
+    assert!(SHUT_RD == 0);
+    assert!(SHUT_WR == 1);
+    assert!(SHUT_RDWR == 2);
+
+    true
 }

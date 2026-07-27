@@ -267,3 +267,39 @@ impl PosixTimerTable {
         }
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn posix_timer_clock_validation_rules_hold_for_test() -> bool {
+    use linux_raw_sys::general::{
+        CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW,
+        CLOCK_PROCESS_CPUTIME_ID, CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_THREAD_CPUTIME_ID,
+    };
+
+    // is_supported_timer_clock: only REALTIME, MONOTONIC, BOOTTIME are supported for timer_create.
+    let supported = is_supported_timer_clock(CLOCK_REALTIME)
+        && is_supported_timer_clock(CLOCK_MONOTONIC)
+        && is_supported_timer_clock(CLOCK_BOOTTIME);
+    let unsupported_raw = !is_supported_timer_clock(CLOCK_MONOTONIC_RAW);
+    let unsupported_coarse = !is_supported_timer_clock(CLOCK_MONOTONIC_COARSE);
+    let unsupported_coarse_rt = !is_supported_timer_clock(CLOCK_REALTIME_COARSE);
+    let unknown = !is_supported_timer_clock(999);
+
+    // is_valid_clock: broader set includes RAW/COARSE/CPU-time clocks.
+    let valid_known = is_valid_clock(CLOCK_REALTIME)
+        && is_valid_clock(CLOCK_REALTIME_COARSE)
+        && is_valid_clock(CLOCK_MONOTONIC)
+        && is_valid_clock(CLOCK_MONOTONIC_RAW)
+        && is_valid_clock(CLOCK_MONOTONIC_COARSE)
+        && is_valid_clock(CLOCK_BOOTTIME)
+        && is_valid_clock(CLOCK_PROCESS_CPUTIME_ID)
+        && is_valid_clock(CLOCK_THREAD_CPUTIME_ID);
+    let invalid_unknown = !is_valid_clock(999);
+
+    supported
+        && unsupported_raw
+        && unsupported_coarse
+        && unsupported_coarse_rt
+        && unknown
+        && valid_known
+        && invalid_unknown
+}

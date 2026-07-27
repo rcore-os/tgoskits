@@ -4,7 +4,7 @@ use ax_errno::{AxError, AxResult};
 use ax_io::{Seek, SeekFrom};
 use axfs_ng_vfs::{Metadata, NodePermission, NodeType};
 
-use crate::highlevel::{FS_CONTEXT, File as CoreFile, OpenOptions as CoreOpenOptions};
+use crate::highlevel::{File as CoreFile, OpenOptions as CoreOpenOptions, current_fs_context};
 
 pub type FileType = NodeType;
 pub type FilePerm = NodePermission;
@@ -167,7 +167,8 @@ pub struct File {
 
 impl File {
     pub fn open(path: &str, opts: &OpenOptions) -> AxResult<Self> {
-        let inner = opts.to_core().open(&FS_CONTEXT.lock(), path)?;
+        let fs_context = current_fs_context();
+        let inner = opts.to_core().open(&fs_context.lock(), path)?;
         Ok(Self {
             inner: inner.into_file()?,
         })
@@ -225,7 +226,8 @@ impl Directory {
             return Err(AxError::InvalidInput);
         }
         let entries = {
-            let ctx = FS_CONTEXT.lock();
+            let fs_context = current_fs_context();
+            let ctx = fs_context.lock();
             let mut entries = Vec::new();
             for entry in ctx.read_dir(path)? {
                 let entry = entry?;

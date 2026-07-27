@@ -53,6 +53,11 @@ impl<'a> DeviceBuildContext<'a> {
 }
 
 /// Builds all capabilities contributed by one emulated device type.
+///
+/// A factory that exposes an architecture-owned, pre-created controller must
+/// capture the same shared controller instance and validate that each build
+/// request matches the configuration used to create it, including its MMIO
+/// base, length, and type-specific arguments.
 pub trait DeviceFactory: Send + Sync {
     /// Returns the configuration type handled by this factory.
     fn device_type(&self) -> EmulatedDeviceType;
@@ -66,6 +71,15 @@ pub trait DeviceFactory: Send + Sync {
 }
 
 /// A registry containing at most one factory for each emulated device type.
+///
+/// Registered factories are authoritative for their device type: during
+/// [`AxVmDevices::build_with_factories`](crate::AxVmDevices::build_with_factories),
+/// they take precedence over legacy fallback construction. A factory error is
+/// propagated and never causes a fallback to create another device.
+///
+/// Architectures that pre-create an interrupt controller must first reject
+/// duplicate controller configurations, then register exactly one factory that
+/// captures the shared controller and its validated configuration fingerprint.
 #[derive(Default)]
 pub struct DeviceFactoryRegistry {
     factories: Vec<(EmulatedDeviceType, Arc<dyn DeviceFactory>)>,

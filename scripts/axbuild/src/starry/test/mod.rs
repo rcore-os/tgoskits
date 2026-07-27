@@ -1,6 +1,7 @@
 mod args;
 mod assets;
 mod board;
+mod board_assets;
 mod qemu_discovery;
 mod qemu_run;
 mod suite;

@@ -37,9 +37,10 @@ use crate::{
     boot::{GuestBootDescription, GuestFdtBuilder},
     config::{AxVMConfig, PhysCpuList, VMInterruptMode},
     host::paging::virt_to_phys,
-    irq::InterruptFabric,
+    irq::{InterruptFabric, model::PendingVcpuInterrupt},
     layout::VmAddressLayout,
     lifecycle::{Machine, StopReason, VmStatus},
+    runtime::VcpuIrqDispatcher,
     vcpu::AxVCpu,
 };
 
@@ -141,7 +142,26 @@ pub(crate) struct VmRuntimeHandle {
     wait_queue: crate::WaitQueue,
     vcpu_task_list: Mutex<BTreeMap<usize, crate::AxTaskRef>>,
     pending_interrupts: Mutex<BTreeMap<usize, Vec<PendingInterrupt>>>,
+    irq_dispatcher: VcpuIrqDispatcher,
     running_halting_vcpu_count: AtomicUsize,
+}
+
+pub(crate) fn dispatch_vcpu_interrupt_with(
+    enqueue: impl FnOnce() -> AxVmResult<usize>,
+    notify: impl FnOnce(),
+    send_ipi: impl FnOnce(usize),
+) -> AxVmResult {
+    let pcpu_id = enqueue()?;
+    notify();
+    send_ipi(pcpu_id);
+    Ok(())
+}
+
+fn pulse_interrupt_with_snapshot(
+    snapshot: impl FnOnce() -> AxVmResult<InterruptFabric>,
+    irq_id: usize,
+) -> AxVmResult {
+    snapshot()?.pulse(irq_id)
 }
 
 impl VmRuntimeHandle {
@@ -150,11 +170,14 @@ impl VmRuntimeHandle {
             wait_queue: crate::WaitQueue::new(),
             vcpu_task_list: Mutex::new(BTreeMap::new()),
             pending_interrupts: Mutex::new(BTreeMap::new()),
+            irq_dispatcher: VcpuIrqDispatcher::new(),
             running_halting_vcpu_count: AtomicUsize::new(0),
         }
     }
 
     pub(crate) fn add_vcpu_task(&self, vcpu_id: usize, vcpu_task: crate::AxTaskRef) {
+        self.irq_dispatcher
+            .register_vcpu_task(vcpu_id, vcpu_task.clone());
         self.vcpu_task_list.lock().insert(vcpu_id, vcpu_task);
         self.pending_interrupts.lock().entry(vcpu_id).or_default();
     }
@@ -199,6 +222,35 @@ impl VmRuntimeHandle {
                 physical_irq,
             });
         Ok(task.cpu_id() as usize)
+    }
+
+    /// New delivery path: enqueue → notify → host IPI.
+    ///
+    /// The dispatcher releases its queue lock before this method notifies
+    /// waiters or invokes the host IPI boundary.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "architecture interrupt routers dispatch in later modules"
+        )
+    )]
+    pub(crate) fn dispatch_vcpu_interrupt(
+        &self,
+        vcpu_id: usize,
+        interrupt: PendingVcpuInterrupt,
+    ) -> AxVmResult {
+        dispatch_vcpu_interrupt_with(
+            || self.irq_dispatcher.enqueue(vcpu_id, interrupt),
+            || self.notify_all(),
+            crate::host::task::send_ipi,
+        )
+    }
+
+    /// Called by the vCPU run loop to drain pending interrupts before
+    /// entering the guest.
+    pub(crate) fn irq_dispatcher(&self) -> &VcpuIrqDispatcher {
+        &self.irq_dispatcher
     }
 
     pub(crate) fn drain_pending_interrupts(&self, vcpu_id: usize) -> Vec<PendingInterrupt> {
@@ -467,6 +519,26 @@ impl AxVM {
         f(resources)
     }
 
+    /// Snapshots the interrupt backend while validating the VM lifecycle state.
+    ///
+    /// The snapshot pins only the backend capability. A lifecycle change after
+    /// this method returns is observed by the sender when it resolves the
+    /// current runtime.
+    fn interrupt_fabric_snapshot(&self) -> AxVmResult<InterruptFabric> {
+        let machine = self.machine.lock();
+        match machine.status() {
+            VmStatus::Running | VmStatus::Paused => machine
+                .resources()
+                .ok_or_else(|| ax_err_type!(BadState, "VM resources are not available"))?
+                .interrupt_fabric()
+                .cloned(),
+            status => ax_err!(
+                BadState,
+                format!("VM[{}] cannot accept IRQ in {status:?}", self.id())
+            ),
+        }
+    }
+
     pub(crate) fn with_runtime<F, R>(&self, f: F) -> AxVmResult<R>
     where
         F: FnOnce(&Arc<VmRuntimeHandle>) -> AxVmResult<R>,
@@ -476,6 +548,11 @@ impl AxVM {
             .runtime()
             .ok_or_else(|| ax_err_type!(BadState, "VM runtime is not available"))?;
         f(runtime)
+    }
+
+    pub(crate) fn current_interrupt_runtime(&self) -> AxVmResult<Arc<VmRuntimeHandle>> {
+        let machine = self.machine.lock();
+        Ok(machine.interrupt_runtime()?.clone())
     }
 
     fn take_stopped_runtime(&self) -> Option<Arc<VmRuntimeHandle>> {
@@ -716,15 +793,7 @@ impl AxVM {
 
     /// Pulses a prepared VM interrupt fabric line without exposing the fabric.
     pub fn pulse_interrupt(&self, irq_id: usize) -> AxVmResult {
-        match self.status() {
-            VmStatus::Running | VmStatus::Paused => {
-                self.with_resources(|resources| resources.interrupt_fabric()?.pulse(irq_id))
-            }
-            status => ax_err!(
-                BadState,
-                format!("VM[{}] cannot accept IRQ in {status:?}", self.id())
-            ),
-        }
+        pulse_interrupt_with_snapshot(|| self.interrupt_fabric_snapshot(), irq_id)
     }
 
     /// Returns the number of prepared emulated devices.
@@ -1329,6 +1398,10 @@ impl Drop for AxVM {
 
 #[cfg(test)]
 mod tests {
+    use core::{cell::RefCell, sync::atomic::AtomicBool};
+
+    use axdevice_base::{IrqError, IrqLineId, IrqResult, IrqSink};
+
     use super::*;
 
     #[test]
@@ -1362,5 +1435,177 @@ mod tests {
         write_guest_bytes_to_chunks(&mut chunks, &[]).unwrap();
 
         assert_eq!(chunk, [7, 7]);
+    }
+
+    #[test]
+    fn runtime_dispatch_orders_enqueue_before_notify_and_ipi() {
+        let events = RefCell::new(Vec::new());
+
+        dispatch_vcpu_interrupt_with(
+            || {
+                events.borrow_mut().push("enqueue");
+                Ok(3)
+            },
+            || events.borrow_mut().push("notify"),
+            |cpu_id| {
+                assert_eq!(cpu_id, 3);
+                events.borrow_mut().push("ipi");
+            },
+        )
+        .unwrap();
+
+        assert_eq!(*events.borrow(), ["enqueue", "notify", "ipi"]);
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn runtime_dispatch_releases_queue_lock_before_callbacks() {
+        let dispatcher = VcpuIrqDispatcher::new();
+        dispatcher.register_test_vcpu(0, 3);
+        let interrupt = PendingVcpuInterrupt {
+            id: crate::irq::model::VirtualInterruptId(7),
+            trigger: crate::InterruptTriggerMode::LevelTriggered,
+        };
+        let events = RefCell::new(Vec::new());
+
+        dispatch_vcpu_interrupt_with(
+            || dispatcher.enqueue(0, interrupt),
+            || {
+                assert_eq!(dispatcher.drain(0), alloc::vec![interrupt]);
+                events.borrow_mut().push("notify");
+            },
+            |_| events.borrow_mut().push("ipi"),
+        )
+        .unwrap();
+
+        assert_eq!(*events.borrow(), ["notify", "ipi"]);
+    }
+
+    #[test]
+    fn runtime_dispatch_stops_when_enqueue_fails() {
+        let events = RefCell::new(Vec::new());
+
+        let result = dispatch_vcpu_interrupt_with(
+            || {
+                events.borrow_mut().push("enqueue");
+                Err(ax_err_type!(NotFound, "vCPU task not found"))
+            },
+            || events.borrow_mut().push("notify"),
+            |_| events.borrow_mut().push("ipi"),
+        );
+
+        assert!(matches!(result, Err(AxVmError::ResourceUnavailable { .. })));
+        assert_eq!(*events.borrow(), ["enqueue"]);
+    }
+
+    #[test]
+    fn interrupt_pulse_runs_after_snapshot_lock_is_released() {
+        let machine_lock = Arc::new(TestMachineLock::default());
+        let sink = Arc::new(TestIrqSink::with_machine_lock(machine_lock.clone()));
+        let fabric = InterruptFabric::with_sink(VMInterruptMode::Emulated, sink.clone()).unwrap();
+
+        pulse_interrupt_with_snapshot(
+            || {
+                let _machine = machine_lock.lock();
+                Ok(fabric.clone())
+            },
+            7,
+        )
+        .unwrap();
+
+        assert_eq!(sink.pulse_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn interrupt_snapshot_failure_does_not_call_sink() {
+        let sink = Arc::new(TestIrqSink::default());
+        let expected = ax_err_type!(BadState, "interrupt snapshot unavailable");
+
+        let result = pulse_interrupt_with_snapshot(|| Err(expected.clone()), 9);
+
+        assert_eq!(result, Err(expected));
+        assert_eq!(sink.pulse_count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn interrupt_pulse_propagates_sink_error() {
+        let irq_error = IrqError::Backend {
+            line: IrqLineId(11),
+            operation: "test pulse",
+            detail: "controller rejected interrupt".into(),
+        };
+        let sink = Arc::new(TestIrqSink::with_pulse_error(irq_error.clone()));
+        let fabric = InterruptFabric::with_sink(VMInterruptMode::Emulated, sink).unwrap();
+
+        let result = pulse_interrupt_with_snapshot(|| Ok(fabric.clone()), 11);
+
+        assert_eq!(result, Err(AxVmError::from(irq_error)));
+    }
+
+    #[derive(Default)]
+    struct TestIrqSink {
+        machine_lock: Option<Arc<TestMachineLock>>,
+        pulse_error: Option<IrqError>,
+        pulse_count: AtomicUsize,
+    }
+
+    impl TestIrqSink {
+        fn with_machine_lock(machine_lock: Arc<TestMachineLock>) -> Self {
+            Self {
+                machine_lock: Some(machine_lock),
+                ..Self::default()
+            }
+        }
+
+        fn with_pulse_error(pulse_error: IrqError) -> Self {
+            Self {
+                pulse_error: Some(pulse_error),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl IrqSink for TestIrqSink {
+        fn set_level(&self, _line: IrqLineId, _asserted: bool) -> IrqResult {
+            Ok(())
+        }
+
+        fn pulse(&self, _line: IrqLineId) -> IrqResult {
+            let _machine = self.machine_lock.as_ref().map(|machine_lock| {
+                machine_lock
+                    .try_lock()
+                    .expect("interrupt callback must run without the machine lock")
+            });
+            self.pulse_count.fetch_add(1, Ordering::Relaxed);
+            self.pulse_error.clone().map_or(Ok(()), Err)
+        }
+    }
+
+    #[derive(Default)]
+    struct TestMachineLock {
+        held: AtomicBool,
+    }
+
+    impl TestMachineLock {
+        fn lock(&self) -> TestMachineGuard<'_> {
+            self.try_lock().expect("test machine lock is already held")
+        }
+
+        fn try_lock(&self) -> Option<TestMachineGuard<'_>> {
+            self.held
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .ok()
+                .map(|_| TestMachineGuard { lock: self })
+        }
+    }
+
+    struct TestMachineGuard<'a> {
+        lock: &'a TestMachineLock,
+    }
+
+    impl Drop for TestMachineGuard<'_> {
+        fn drop(&mut self) {
+            self.lock.held.store(false, Ordering::Release);
+        }
     }
 }

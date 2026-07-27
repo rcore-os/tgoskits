@@ -1,6 +1,6 @@
 [package]
 name = "loongarch_vcpu"
-version = "0.5.12"
+version = "0.5.13"
 edition.workspace = true
 authors = ["RCore Team <yuchen@tsinghua.edu.cn>"]
 description = "OS-neutral LoongArch vCPU core"
@@ -13,6 +13,7 @@ license = "Apache-2.0"
 targets = ["loongarch64-unknown-none-softfloat"]
 
 [dependencies]
+cpu-local.workspace = true
 log = "0.4"
 bitflags.workspace = true
 spin = { workspace = true }

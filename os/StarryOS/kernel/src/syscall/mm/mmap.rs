@@ -1121,3 +1121,14 @@ pub fn sys_mlock2(addr: usize, length: usize, flags: u32) -> AxResult<isize> {
     }
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn mmap_capped_device_map_len_rules_hold_for_test() -> bool {
+    // capped_device_map_len: returns min of request and aligned available.
+    let page_size = ax_runtime::hal::paging::PageSize::Size4K;
+    assert!(capped_device_map_len(1000, 4096, page_size) == 1000); // request < available
+    assert!(capped_device_map_len(8192, 4096, page_size) == 4096); // request > available
+    assert!(capped_device_map_len(0, 8192, page_size) == 0); // zero request
+    assert!(capped_device_map_len(5000, 4096, page_size) == 4096); // request > available (aligned)
+    true
+}

@@ -9,7 +9,8 @@ use alloc::sync::Arc;
 
 use linux_raw_sys::general::{
     CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID, CAP_SETPCAP,
-    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RESOURCE,
+    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RAWIO,
+    CAP_SYS_RESOURCE,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -178,6 +179,12 @@ impl Cred {
         self.has_cap(CAP_SYS_RESOURCE)
     }
 
+    /// Check whether this credential may bypass file read/write/execute
+    /// permission checks (equivalent to `CAP_DAC_OVERRIDE`).
+    pub fn has_cap_dac_override(&self) -> bool {
+        self.has_cap(CAP_DAC_OVERRIDE)
+    }
+
     /// Check whether this credential may perform broad system administration
     /// operations (equivalent to `CAP_SYS_ADMIN`).
     pub fn has_cap_sys_admin(&self) -> bool {
@@ -188,6 +195,15 @@ impl Cred {
     /// (equivalent to `CAP_SYS_BOOT`).
     pub fn has_cap_sys_boot(&self) -> bool {
         self.has_cap(CAP_SYS_BOOT)
+    }
+
+    /// Check whether this credential may perform raw I/O — direct access to
+    /// physical memory / device addresses (equivalent to `CAP_SYS_RAWIO`, the
+    /// capability Linux requires for `/dev/mem`-class access). Gates handing a
+    /// raw physical address to a DMA engine, which can otherwise reach arbitrary
+    /// system memory.
+    pub fn has_cap_sys_rawio(&self) -> bool {
+        self.has_cap(CAP_SYS_RAWIO)
     }
 
     /// Check whether this credential may load or unload kernel modules
@@ -206,12 +222,6 @@ impl Cred {
     /// ownership (equivalent to `CAP_CHOWN`).
     pub fn has_cap_chown(&self) -> bool {
         self.has_cap(CAP_CHOWN)
-    }
-
-    /// Check whether this credential may bypass filesystem DAC checks
-    /// (equivalent to `CAP_DAC_OVERRIDE`).
-    pub fn has_cap_dac_override(&self) -> bool {
-        self.has_cap(CAP_DAC_OVERRIDE)
     }
 
     /// Check whether this credential has the privilege to bypass file
@@ -237,4 +247,85 @@ impl Default for Cred {
     fn default() -> Self {
         Self::root()
     }
+}
+
+#[cfg(axtest)]
+pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
+    let root = Cred::root();
+    let mut unprivileged = Cred::unprivileged(1000, 100);
+    let old_root = root.clone();
+    let mut dropped = root.clone();
+    dropped.uid = 1000;
+    dropped.euid = 1000;
+    dropped.suid = 1000;
+    dropped.cap_inheritable = Cred::cap_mask();
+    dropped.cap_ambient = Cred::cap_mask();
+    dropped.apply_id_change_capability_rules(&old_root);
+
+    let old_user = Cred::unprivileged(1000, 100);
+    let mut regained_effective = old_user.clone();
+    regained_effective.euid = 0;
+    regained_effective.cap_permitted = cap_bit(CAP_SETUID) | cap_bit(CAP_SETPCAP);
+    regained_effective.apply_id_change_capability_rules(&old_user);
+
+    unprivileged.fsgid = 200;
+    unprivileged.groups = Arc::from([10, 20].as_slice());
+    unprivileged.cap_permitted = cap_bit(CAP_SETUID);
+    unprivileged.cap_effective = cap_bit(CAP_SETUID) | cap_bit(CAP_SETPCAP);
+    unprivileged.cap_inheritable = !0;
+    unprivileged.cap_ambient = !0;
+    unprivileged.sanitize_capabilities();
+
+    // Exercise every has_cap_* helper at least once on a root credential so
+    // the bit checks are covered. All of these must be true for root.
+    let root_capability_helpers = root.has_cap_setuid()
+        && root.has_cap_setgid()
+        && root.has_cap_net_raw()
+        && root.has_cap_sys_nice()
+        && root.has_cap_sys_resource()
+        && root.has_cap_sys_admin()
+        && root.has_cap_sys_boot()
+        && root.has_cap_sys_rawio()
+        && root.has_cap_sys_module()
+        && root.has_cap_chown()
+        && root.has_cap_dac_override()
+        && root.has_cap_fowner()
+        && root.has_cap_setpcap();
+
+    // euid == 0 grants CAP_SYS_PTRACE under the StarryOS approximation.
+    let root_ptrace = root.has_cap_sys_ptrace();
+
+    // Build a credential with only CAP_NET_RAW effective to confirm the
+    // remaining capability helpers report false for non-root.
+    let mut net_raw_only = Cred::unprivileged(1000, 100);
+    net_raw_only.cap_effective = cap_bit(CAP_NET_RAW);
+    let selective_capability_helpers = net_raw_only.has_cap_net_raw()
+        && !net_raw_only.has_cap_setuid()
+        && !net_raw_only.has_cap_setgid()
+        && !net_raw_only.has_cap_sys_admin()
+        && !net_raw_only.has_cap_sys_boot()
+        && !net_raw_only.has_cap_sys_rawio()
+        && !net_raw_only.has_cap_sys_module()
+        && !net_raw_only.has_cap_sys_nice()
+        && !net_raw_only.has_cap_sys_resource()
+        && !net_raw_only.has_cap_chown()
+        && !net_raw_only.has_cap_dac_override()
+        && !net_raw_only.has_cap_fowner()
+        && !net_raw_only.has_cap_setpcap()
+        && !net_raw_only.has_cap_sys_ptrace();
+
+    // The original root/unprivileged rules must still hold.
+    root_capability_helpers
+        && root_ptrace
+        && !Cred::unprivileged(1000, 100).has_cap_setuid()
+        && selective_capability_helpers
+        && dropped.cap_permitted == 0
+        && dropped.cap_effective == 0
+        && dropped.cap_ambient == 0
+        && regained_effective.cap_effective == regained_effective.cap_permitted
+        && unprivileged.cap_effective == cap_bit(CAP_SETUID)
+        && unprivileged.cap_ambient == unprivileged.cap_permitted & unprivileged.cap_inheritable
+        && unprivileged.in_group(200)
+        && unprivileged.in_group(10)
+        && !unprivileged.in_group(30)
 }

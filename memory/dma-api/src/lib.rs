@@ -15,6 +15,10 @@ mod owned;
 mod pool;
 mod streaming;
 
+#[cfg(all(axtest, feature = "axtest"))]
+/// Coverage tests for DMA buffer and mapping APIs.
+pub mod axtest;
+
 pub use array::*;
 pub use dbox::*;
 pub use def::*;

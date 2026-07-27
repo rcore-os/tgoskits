@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.21](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.20...axbuild-v0.4.21) - 2026-07-23
+
+### Added
+
+- Add HTML report generation and CI coverage tests ([#1627](https://github.com/rcore-os/tgoskits/pull/1627))
+- *(review)* add PR 1631 syscall benchmark guidance ([#1633](https://github.com/rcore-os/tgoskits/pull/1633))
+- *(axbuild)* grade review bench cases with same agent ([#1625](https://github.com/rcore-os/tgoskits/pull/1625))
+- *(axbuild)* add offline agent review benchmark ([#1615](https://github.com/rcore-os/tgoskits/pull/1615))
+- *(arceos)* unify QEMU config layout with StarryOS and Axvisor ([#1613](https://github.com/rcore-os/tgoskits/pull/1613))
+- *(starry)* run x86_64 self-build through the Starry app ([#1076](https://github.com/rcore-os/tgoskits/pull/1076))
+
+### Fixed
+
+- *(axbuild)* disable RISC-V global pointer relaxation ([#1617](https://github.com/rcore-os/tgoskits/pull/1617))
+
+### Other
+
+- *(cpu-local)* extract per-CPU register ownership ([#1662](https://github.com/rcore-os/tgoskits/pull/1662))
+- *(x86_vcpu)* select VMX/SVM backend at runtime from CPUID, rem… ([#1629](https://github.com/rcore-os/tgoskits/pull/1629))
+- *(ci)* update Rust nightly to 2026-07-15 ([#1626](https://github.com/rcore-os/tgoskits/pull/1626))
+- *(axbuild)* 将构建与启动能力收敛到显式配置 ([#1620](https://github.com/rcore-os/tgoskits/pull/1620))
+- *(repo)* update spin to 0.12.2 ([#1619](https://github.com/rcore-os/tgoskits/pull/1619))
+- *(axvmconfig)* introduce configuration errors ([#1597](https://github.com/rcore-os/tgoskits/pull/1597))
+
 ## [0.4.20](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.19...axbuild-v0.4.20) - 2026-07-10
 
 ### Added

@@ -9,7 +9,7 @@ use crate::arch::elx::set_user_table;
 use crate::{
     arch::elx::{flush_tlb, set_kernal_table, setup_sctlr, setup_table_regs},
     console::print_mapping,
-    mem::{__kimage_va, __percpu, __va, MB, PageTableInfo, page_size},
+    mem::{__kimage_va, __va, MB, PageTableInfo, cpu_area_phys_to_virt, page_size},
     smp::PerCpuMeta,
 };
 
@@ -26,8 +26,8 @@ pub fn enable_mmu() -> ! {
     let mmu_entry_phys = super::entry::mmu_entry as *const () as usize;
     println!("MMU Entry point at physical address: {:#x}", mmu_entry_phys);
 
-    let meta = crate::smp::cpu_meta(crate::smp::early_current_cpu_idx()).unwrap();
-    let v_sp = meta.stack_top_virt;
+    let v_sp = crate::smp::primary_stack_top_virtual(crate::smp::early_current_cpu_idx())
+        .expect("primary reserved stack must be addressable before final per-CPU initialization");
     let v_entry = __kimage_va(mmu_entry_phys) as usize;
 
     // Do not touch the debug UART in this final pre-relocation window. Some
@@ -122,19 +122,19 @@ fn setup_page_table() -> anyhow::Result<()> {
         flush: false,
     })?;
 
-    let percpu_range = crate::smp::percpu_range();
+    let cpu_area_region = crate::smp::cpu_area_region();
     print_mapping(
         "PerCpu",
-        __percpu(percpu_range.start) as _,
-        percpu_range.start,
-        percpu_range.len(),
+        cpu_area_phys_to_virt(cpu_area_region.start) as _,
+        cpu_area_region.start,
+        cpu_area_region.len(),
     );
 
     table
         .map(&MapConfig {
-            vaddr: __percpu(percpu_range.start).into(),
-            paddr: percpu_range.start.into(),
-            size: percpu_range.len(),
+            vaddr: cpu_area_phys_to_virt(cpu_area_region.start).into(),
+            paddr: cpu_area_region.start.into(),
+            size: cpu_area_region.len(),
             pte: PteConfig {
                 valid: true,
                 read: true,

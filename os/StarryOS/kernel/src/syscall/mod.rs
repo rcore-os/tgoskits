@@ -24,6 +24,11 @@ pub use self::{
 use crate::task::{AsThread, SeccompDecision, do_exit, seccomp_errno};
 
 pub fn syscall_allows_signal_restart(sysno: usize) -> bool {
+    // Per signal(7), only the System V message-queue blocking calls (msgsnd /
+    // msgrcv) are never restarted even with SA_RESTART. The POSIX message-queue
+    // calls (mq_send / mq_receive / mq_timedsend / mq_timedreceive) ARE in the
+    // SA_RESTART-restartable set, so they must not be listed here or a handler
+    // installed with SA_RESTART would wrongly see EINTR.
     !matches!(Sysno::new(sysno), Some(Sysno::msgsnd | Sysno::msgrcv))
 }
 
@@ -836,6 +841,33 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         ),
         Sysno::msgctl => sys_msgctl(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
 
+        // POSIX message queues
+        Sysno::mq_open => sys_mq_open(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+        ),
+        Sysno::mq_unlink => sys_mq_unlink(uctx.arg0() as _),
+        Sysno::mq_timedsend => sys_mq_timedsend(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::mq_timedreceive => sys_mq_timedreceive(
+            uctx.arg0() as _,
+            uctx.arg1() as _,
+            uctx.arg2() as _,
+            uctx.arg3() as _,
+            uctx.arg4() as _,
+        ),
+        Sysno::mq_notify => sys_mq_notify(uctx.arg0() as _, uctx.arg1() as _),
+        Sysno::mq_getsetattr => {
+            sys_mq_getsetattr(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _)
+        }
+
         // shm
         Sysno::shmget => sys_shmget(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
         Sysno::shmat => sys_shmat(uctx.arg0() as _, uctx.arg1() as _, uctx.arg2() as _),
@@ -975,3 +1007,50 @@ pub fn handle_syscall(uctx: &mut UserContext) {
         uctx.set_retval(new_retval);
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn task_clone_validation_rules_hold_for_test() -> bool {
+    task::clone_validation_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn capability_data_conversion_rules_hold_for_test() -> bool {
+    task::capability_data_conversion_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn pipe_size_rounding_and_rejection_rules_hold_for_test() -> bool {
+    // fd_ops is re-exported via `pub use self::fs::*`, so the helper is
+    // accessible directly through the fs module.
+    fs::pipe_size_rounding_and_rejection_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn membarrier_validation_rules_hold_for_test() -> bool {
+    sync::membarrier_validation_rules_hold_for_test()
+}
+
+#[cfg(axtest)]
+pub(crate) fn syscall_signal_restart_rules_hold_for_test() -> bool {
+    // syscall_allows_signal_restart: returns false only for msgsnd and msgrcv.
+    use syscalls::Sysno;
+    assert!(syscall_allows_signal_restart(0)); // invalid syscall → true
+    assert!(syscall_allows_signal_restart(Sysno::read as usize)); // read → true
+    assert!(syscall_allows_signal_restart(Sysno::write as usize)); // write → true
+    assert!(!syscall_allows_signal_restart(Sysno::msgsnd as usize)); // msgsnd → false
+    assert!(!syscall_allows_signal_restart(Sysno::msgrcv as usize)); // msgrcv → false
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) use self::ipc::ipc_permission_and_constants_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::kmod::kmod_flags_validation_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::resources::resources_rlimit_validation_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::signal::signal_sigset_and_signo_validation_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::sys::sys_constants_and_validation_rules_hold_for_test;
+#[cfg(axtest)]
+pub(crate) use self::time::time_clock_id_validation_rules_hold_for_test;

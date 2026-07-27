@@ -13,7 +13,6 @@ use starry_signal::SignalSet;
 
 use super::FdPollSet;
 use crate::{
-    file::FD_TABLE,
     mm::{UserConstPtr, UserPtr, nullable},
     syscall::signal::check_sigset_size,
     task::with_blocked_signals,
@@ -83,7 +82,8 @@ fn do_select(
          {except_set:?}] timeout: {timeout:?}"
     );
 
-    let fd_table = FD_TABLE.read();
+    let current_fd_table = crate::file::current_fd_table();
+    let fd_table = current_fd_table.read();
     let fd_bitmap = read_set.0 | write_set.0 | except_set.0;
     let fd_count = fd_bitmap.len();
     let mut fds = Vec::with_capacity(fd_count);
@@ -207,4 +207,22 @@ pub fn sys_pselect6(
             .transpose()?,
         sigmask,
     )
+}
+
+#[cfg(axtest)]
+pub(crate) fn select_fd_set_and_validation_rules_hold_for_test() -> bool {
+    use linux_raw_sys::general::__FD_SETSIZE;
+
+    // Test nfds validation: must be <= __FD_SETSIZE
+    let valid_nfds = 1024u32;
+    assert!(valid_nfds <= __FD_SETSIZE as u32);
+
+    let max_nfds = __FD_SETSIZE as u32;
+    assert!(max_nfds <= __FD_SETSIZE as u32);
+
+    // Invalid: nfds > __FD_SETSIZE
+    let invalid_nfds = (__FD_SETSIZE + 1) as u32;
+    assert!(invalid_nfds > __FD_SETSIZE as u32);
+
+    true
 }

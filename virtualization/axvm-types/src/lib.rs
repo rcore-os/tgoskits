@@ -67,8 +67,8 @@ pub type InterruptVector = u8;
 /// Interrupt trigger mode.
 ///
 /// Represents the trigger mode of an interrupt in a platform-neutral way.
-/// Architectures that do not distinguish between edge and level triggering
-/// can ignore this parameter.
+/// Every architecture adapter must explicitly define where this metadata is
+/// consumed, even when its vCPU backend does not distinguish the modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterruptTriggerMode {
     /// Edge-triggered interrupt.
@@ -452,16 +452,19 @@ pub trait VmArchVcpuOps: Sized {
     /// Injects an interrupt into the vCPU.
     fn inject_interrupt(&mut self, vector: usize) -> VmBackendResult;
     /// Injects an interrupt with trigger-mode metadata.
+    ///
+    /// The compatibility default delegates edge-triggered interrupts to
+    /// [`Self::inject_interrupt`]. Backends must override this method to
+    /// support level-triggered injection.
     fn inject_interrupt_with_trigger(
         &mut self,
         vector: usize,
         trigger: InterruptTriggerMode,
     ) -> VmBackendResult {
-        debug_assert!(
-            trigger == InterruptTriggerMode::EdgeTriggered,
-            "level-triggered interrupt injection requires an architecture-specific implementation"
-        );
-        self.inject_interrupt(vector)
+        match trigger {
+            InterruptTriggerMode::EdgeTriggered => self.inject_interrupt(vector),
+            InterruptTriggerMode::LevelTriggered => Err(VmBackendError::Unsupported),
+        }
     }
     /// Processes a guest EOI and returns an external EOI vector when needed.
     fn handle_eoi(&mut self) -> Option<u8> {
@@ -810,6 +813,14 @@ mod tests {
         fn set_gpr(&mut self, _reg: usize, _val: usize) {}
 
         fn inject_interrupt(&mut self, _vector: usize) -> VmBackendResult {
+            Ok(())
+        }
+
+        fn inject_interrupt_with_trigger(
+            &mut self,
+            _vector: usize,
+            _trigger: InterruptTriggerMode,
+        ) -> VmBackendResult {
             Ok(())
         }
 

@@ -34,4 +34,4 @@ rustflags = [
 runner = "cargo osrun"
 
 [alias]
-xtask = "run --bin xtask --"
+xtask = "run --features host-xtask --bin xtask --"

@@ -6,7 +6,9 @@ use ostool::{
 };
 
 use crate::{
-    context::{AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs},
+    context::{
+        AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs, board_run_request,
+    },
     test::{case as qemu_case, host_http::HostHttpServerGuard, qemu},
 };
 
@@ -116,13 +118,14 @@ impl Starry {
             self.prepare_request((&args.build).into(), None, None, SnapshotPersistence::Store)?;
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
-        let board_config = self
+        let (board_config, board_config_path) = self
             .load_board_config(&cargo, args.board_config.as_deref())
             .await?;
         self.run_board_artifact(
             &request,
             cargo,
             board_config,
+            board_config_path,
             RunBoardOptions {
                 board_type: args.board_type,
                 server: args.server,
@@ -368,7 +371,7 @@ impl Starry {
         )?;
         self.app.set_debug_mode(request.debug)?;
         let cargo = build::load_cargo_config(&request)?;
-        let mut board_config = self
+        let (mut board_config, board_config_path) = self
             .load_board_config(&cargo, Some(case.board_config_path.as_path()))
             .await?;
         if board_config.shell_init_cmd.is_none() {
@@ -378,6 +381,7 @@ impl Starry {
             &request,
             cargo,
             board_config,
+            board_config_path,
             RunBoardOptions {
                 board_type: args.board_type,
                 server: args.server,
@@ -454,18 +458,19 @@ impl Starry {
         &mut self,
         cargo: &Cargo,
         board_config_path: Option<&Path>,
-    ) -> anyhow::Result<BoardRunConfig> {
+    ) -> anyhow::Result<(BoardRunConfig, PathBuf)> {
         match board_config_path {
-            Some(path) => {
-                self.app
-                    .read_board_run_config_from_path_for_cargo(cargo, path)
-                    .await
-            }
+            Some(path) => self
+                .app
+                .read_board_run_config_from_path_for_cargo(cargo, path)
+                .await
+                .map(|config| (config, path.to_path_buf())),
             None => {
                 let workspace_root = self.app.workspace_root().to_path_buf();
                 self.app
                     .ensure_board_run_config_in_dir_for_cargo(cargo, &workspace_root)
                     .await
+                    .map(|config| (config, workspace_root.join(".board.toml")))
             }
         }
     }
@@ -507,16 +512,17 @@ impl Starry {
         request: &ResolvedStarryRequest,
         cargo: Cargo,
         board_config: BoardRunConfig,
+        board_config_path: PathBuf,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
         let output = self.build_artifact(request, cargo.clone()).await?;
+        let board_request = board_run_request(&board_config_path, board_config, options)?;
         self.app
-            .board_prepared_elf(
+            .board_prepared_elf_with_request(
                 output.elf_path().to_path_buf(),
                 cargo.to_bin,
                 request.build_info_path.clone(),
-                board_config,
-                options,
+                board_request,
             )
             .await
     }

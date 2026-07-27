@@ -140,6 +140,23 @@ pub struct EthernetDevice {
     /// into the IP buffer, but must still count toward RX statistics.
     /// Drained by the router's RX worker via [`Device::drain_deferred_rx`].
     deferred_rx_frame_lens: Vec<usize>,
+    /// Count of TX errors accumulated during device operations (buffer
+    /// allocation failures, transmit hardware errors). Drained by the
+    /// router's workers via [`Device::drain_deferred_tx_errors`].
+    deferred_tx_errors: u64,
+    /// Count of TX drops accumulated during device operations (pending
+    /// buffer overflow, enqueue failure). Drained by the router's workers
+    /// via [`Device::drain_deferred_tx_drops`].
+    deferred_tx_drops: u64,
+    /// Count of RX errors accumulated during device operations (driver
+    /// receive errors, malformed frames). Drained by the router's workers
+    /// via [`Device::drain_deferred_rx_errors`].
+    deferred_rx_errors: u64,
+    /// Count of RX drops accumulated during device operations (frames with
+    /// unsupported EtherType that were successfully received at L2 but
+    /// cannot be processed by the stack). Drained by the router's workers
+    /// via [`Device::drain_deferred_rx_drops`].
+    deferred_rx_drops: u64,
 }
 
 fn handle_owned_ethernet_irq(handler: &mut dyn EthernetIrqHandler) -> EthernetIrqOutcome {
@@ -242,6 +259,10 @@ impl EthernetDevice {
             pending_packets,
             deferred_tx_frame_lens: Vec::new(),
             deferred_rx_frame_lens: Vec::new(),
+            deferred_tx_errors: 0,
+            deferred_tx_drops: 0,
+            deferred_rx_errors: 0,
+            deferred_rx_drops: 0,
         }
     }
 
@@ -325,6 +346,7 @@ impl EthernetDevice {
         let frame = EthernetFrame::new_unchecked(frame);
         let Ok(repr) = EthernetRepr::parse(&frame) else {
             warn!("Dropping malformed Ethernet frame");
+            self.deferred_rx_errors += 1;
             return 0;
         };
 
@@ -359,11 +381,11 @@ impl EthernetDevice {
                 // Any other EtherType that has already passed the L2 validity
                 // and destination-MAC filter is a good frame the host received
                 // from the device. Per Linux rtnl_link_stats64, rx_packets /
-                // rx_bytes count every good packet received, even one that is
-                // later dropped because its protocol is unsupported by the
-                // stack. Record its length for RX statistics; it is not
-                // enqueued into the IP buffer.
+                // rx_bytes count every good packet received. Linux also
+                // increments rx_dropped (and sometimes rx_nohandler) for the
+                // same frame because the protocol is unsupported by the stack.
                 self.deferred_rx_frame_lens.push(frame_len);
+                self.deferred_rx_drops += 1;
                 0
             }
         }
@@ -372,10 +394,12 @@ impl EthernetDevice {
     fn request_arp(&mut self, target_ip: IpAddress, timestamp: Instant) -> bool {
         let IpAddress::Ipv4(target_ipv4) = target_ip else {
             warn!("IPv6 address ARP is not supported: {}", target_ip);
+            self.deferred_tx_errors += 1;
             return false;
         };
         let Some(ip) = self.ip else {
             warn!("cannot request ARP for {target_ipv4}: ethernet IPv4 is not configured");
+            self.deferred_tx_errors += 1;
             return false;
         };
         info!("{}: requesting ARP for {}", self.name, target_ipv4);
@@ -401,6 +425,7 @@ impl EthernetDevice {
                 "{}: failed to send ARP request for {}",
                 self.name, target_ipv4
             );
+            self.deferred_tx_errors += 1;
             return false;
         }
         // ARP requests are successfully transmitted L2 frames — record
@@ -420,6 +445,7 @@ impl EthernetDevice {
         let Ok(repr) = ArpPacket::new_checked(payload).and_then(|packet| ArpRepr::parse(&packet))
         else {
             warn!("Dropping malformed ARP packet");
+            self.deferred_rx_errors += 1;
             return;
         };
 
@@ -491,6 +517,8 @@ impl EthernetDevice {
                 // their length so the router RX worker can count them in TX stats.
                 if arp_frame_len > 0 {
                     self.deferred_tx_frame_lens.push(arp_frame_len);
+                } else {
+                    self.deferred_tx_errors += 1;
                 }
             }
 
@@ -543,10 +571,15 @@ impl EthernetDevice {
                         );
                         if frame_len > 0 {
                             self.deferred_tx_frame_lens.push(frame_len);
+                        } else {
+                            self.deferred_tx_errors += 1;
                         }
                     }
                     Action::Refresh(payload) => {
                         self.neighbors.remove(&next_hop);
+                        // request_arp() internally increments deferred_tx_errors
+                        // on failure.  Each Refresh triggers independent
+                        // accounting; repeated failures accumulate.
                         let _ = self.request_arp(next_hop, now);
                         kept.push((next_hop, payload));
                     }
@@ -589,6 +622,7 @@ impl Device for EthernetDevice {
                     Err(err) => {
                         if !matches!(err, NetDeviceError::Again) {
                             warn!("receive failed: {:?}", err);
+                            self.deferred_rx_errors += 1;
                         }
                         return 0;
                     }
@@ -604,6 +638,7 @@ impl Device for EthernetDevice {
                 self.handle_frame(rx_buf.packet(), interface_id, buffer, timestamp, snoop);
             if let Err(err) = self.inner.driver.lock().recycle_rx_buffer(&mut *rx_buf) {
                 warn!("recycle_rx_buffer failed: {:?}", err);
+                self.deferred_rx_errors += 1;
             }
             if frame_len > 0 {
                 return frame_len;
@@ -616,25 +651,33 @@ impl Device for EthernetDevice {
             self.ip.and_then(|ip| ip.broadcast()).map(IpAddress::Ipv4) == Some(next_hop);
         if next_hop.is_broadcast() || is_subnet_broadcast {
             let mut inner = self.inner.driver.lock();
-            return Self::send_to(
+            let frame_len = Self::send_to(
                 &mut **inner,
                 EthernetAddress::BROADCAST,
                 packet.len(),
                 |buf| buf.copy_from_slice(packet),
                 EthernetProtocol::Ipv4,
             );
+            if frame_len == 0 {
+                self.deferred_tx_errors += 1;
+            }
+            return frame_len;
         }
 
         let need_request = match self.neighbors.get(&next_hop) {
             Some(neighbor) if neighbor.expires_at > timestamp => {
                 let mut inner = self.inner.driver.lock();
-                return Self::send_to(
+                let frame_len = Self::send_to(
                     &mut **inner,
                     neighbor.hardware_address,
                     packet.len(),
                     |buf| buf.copy_from_slice(packet),
                     EthernetProtocol::Ipv4,
                 );
+                if frame_len == 0 {
+                    self.deferred_tx_errors += 1;
+                }
+                return frame_len;
             }
             Some(_) => {
                 self.neighbors.remove(&next_hop);
@@ -650,6 +693,9 @@ impl Device for EthernetDevice {
                 "{}: ARP request failed for {}, dropping packet",
                 self.name, next_hop
             );
+            // request_arp() internally increments deferred_tx_errors for all
+            // failure modes (hardware send_to failure, IPv6 not supported,
+            // IPv4 not configured), so the caller does not add a second counter.
             return 0;
         }
         if self.pending_packets.is_full() {
@@ -657,10 +703,12 @@ impl Device for EthernetDevice {
                 "{}: Pending packets buffer is full, dropping packet",
                 self.name
             );
+            self.deferred_tx_drops += 1;
             return 0;
         }
         let Ok(dst_buffer) = self.pending_packets.enqueue(packet.len(), next_hop) else {
             warn!("Failed to enqueue packet in pending packets buffer");
+            self.deferred_tx_drops += 1;
             return 0;
         };
         dst_buffer.copy_from_slice(packet);
@@ -673,6 +721,22 @@ impl Device for EthernetDevice {
 
     fn drain_deferred_rx(&mut self) -> Vec<usize> {
         core::mem::take(&mut self.deferred_rx_frame_lens)
+    }
+
+    fn drain_deferred_tx_errors(&mut self) -> u64 {
+        core::mem::take(&mut self.deferred_tx_errors)
+    }
+
+    fn drain_deferred_tx_drops(&mut self) -> u64 {
+        core::mem::take(&mut self.deferred_tx_drops)
+    }
+
+    fn drain_deferred_rx_errors(&mut self) -> u64 {
+        core::mem::take(&mut self.deferred_rx_errors)
+    }
+
+    fn drain_deferred_rx_drops(&mut self) -> u64 {
+        core::mem::take(&mut self.deferred_rx_drops)
     }
 
     fn set_ipv4_addr(&mut self, addr: Option<Ipv4Cidr>) {
@@ -723,7 +787,9 @@ impl Device for EthernetDevice {
 }
 
 #[cfg(test)]
-mod arp_counter_tests {
+/// Unit tests for EthernetDevice counters: ARP, frame-length, and
+/// error/drop paths.
+mod ethernet_counter_tests {
     use alloc::collections::VecDeque;
 
     use smoltcp::wire::{Ipv4Address, Ipv4Cidr};
@@ -768,6 +834,8 @@ mod arp_counter_tests {
         rx_frames: VecDeque<Vec<u8>>,
         /// Frames transmitted through `transmit()`, captured for inspection.
         tx_frames: Vec<Vec<u8>>,
+        /// When set, `alloc_tx_buffer` returns an error.
+        tx_alloc_fail: bool,
     }
 
     impl MockEthernetDriver {
@@ -776,6 +844,7 @@ mod arp_counter_tests {
                 mac,
                 rx_frames: VecDeque::new(),
                 tx_frames: Vec::new(),
+                tx_alloc_fail: false,
             }
         }
 
@@ -802,6 +871,9 @@ mod arp_counter_tests {
         }
 
         fn alloc_tx_buffer(&mut self, size: usize) -> NetDeviceResult<Box<dyn NetTxBuffer>> {
+            if self.tx_alloc_fail {
+                return Err(NetDeviceError::Again);
+            }
             Ok(Box::new(MockTxBuffer {
                 packet: alloc::vec![0; size],
             }))
@@ -1088,9 +1160,11 @@ mod arp_counter_tests {
     // ── Non-ARP frames are counted in drain_deferred_rx ───────────────────
 
     /// Verifies that valid L2 frames with an unknown EtherType (not ARP, not
-    /// IPv4) are still counted in drain_deferred_rx(). Per Linux semantics,
-    /// rx_packets includes all good packets received from the device, even if
-    /// the protocol is unsupported and the frame is later dropped by the stack.
+    /// IPv4) are counted in both drain_deferred_rx() (for rx_packets/rx_bytes)
+    /// and drain_deferred_rx_drops() (for rx_dropped). Per Linux semantics,
+    /// rx_packets includes all good packets received from the device, and
+    /// rx_dropped is also incremented for the same frame because the protocol
+    /// is unsupported by the stack.
     #[test]
     fn unknown_ethertype_frame_is_counted_in_drain_deferred_rx() {
         let mut mock = MockEthernetDriver::new(DEV_MAC);
@@ -1123,6 +1197,11 @@ mod arp_counter_tests {
         // The frame length is recorded in the RX side-channel.
         let rx_lens = device.drain_deferred_rx();
         assert_eq!(rx_lens, &[frame_len]);
+
+        // Also verify that the unsupported EtherType frame is counted as
+        // rx_dropped, matching Linux behaviour for protocol-unsupported frames.
+        let rx_drops = device.drain_deferred_rx_drops();
+        assert_eq!(rx_drops, 1);
     }
 
     // ── ETH_ZLEN boundary test for send_to() wire_len ──────────────────
@@ -1223,5 +1302,95 @@ mod arp_counter_tests {
         // Second drain is idempotent.
         assert!(device.drain_deferred_rx().is_empty());
         assert!(device.drain_deferred_tx().is_empty());
+    }
+
+    // ── Error / drop counter tests ────────────────────────────────────
+
+    #[test]
+    fn malformed_ethernet_frame_counts_rx_errors() {
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        mock.enqueue_rx_frame(alloc::vec![0xFF]); // too short for Ethernet header
+        let mut device = make_test_device(mock);
+        let mut buffer = test_packet_buffer();
+        let ts = Instant::from_millis(0);
+
+        let result = device.recv(InterfaceId::new(1), &mut buffer, ts, &mut |_| {});
+        assert_eq!(result, 0);
+        assert_eq!(device.drain_deferred_rx_errors(), 1);
+        // Drain is idempotent.
+        assert_eq!(device.drain_deferred_rx_errors(), 0);
+    }
+
+    #[test]
+    fn malformed_arp_payload_counts_rx_errors() {
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        // Build a valid Ethernet frame wrapping garbage ARP payload.
+        let eth = EthernetRepr {
+            src_addr: EthernetAddress(REMOTE_MAC),
+            dst_addr: EthernetAddress(DEV_MAC),
+            ethertype: EthernetProtocol::Arp,
+        };
+        let mut frame = alloc::vec![0u8; eth.buffer_len() + 16];
+        let mut eth_frame = EthernetFrame::new_unchecked(&mut frame);
+        eth.emit(&mut eth_frame);
+        // Overwrite ARP payload with garbage that ArpRepr::parse will reject.
+        eth_frame.payload_mut()[..16].fill(0xFF);
+        mock.enqueue_rx_frame(frame);
+
+        let mut device = make_test_device(mock);
+        let mut buffer = test_packet_buffer();
+        let ts = Instant::from_millis(0);
+        let result = device.recv(InterfaceId::new(1), &mut buffer, ts, &mut |_| {});
+        assert_eq!(result, 0);
+        // Malformed ARP → rx_errors.  The outer Ethernet frame was valid
+        // so deferred_rx_frame_lens also records it.
+        assert_eq!(device.drain_deferred_rx_errors(), 1);
+        assert!(!device.drain_deferred_rx().is_empty());
+    }
+
+    #[test]
+    fn pending_buffer_full_counts_tx_drops() {
+        let mock = MockEthernetDriver::new(DEV_MAC);
+        let mut device = make_test_device(mock);
+        let ts = Instant::from_millis(0);
+
+        // Fill the pending buffer — each send to a distinct unknown
+        // neighbour triggers one ARP request and enqueues the packet.
+        // After N fills the buffer the next send increments tx_drops.
+        let base = Ipv4Address::new(10, 0, 0, 100);
+        for i in 0..crate::consts::ETHERNET_MAX_PENDING_PACKETS {
+            let ip = IpAddress::Ipv4(Ipv4Address::from(u32::from(base) + i as u32));
+            let result = device.send(ip, &[0u8; 64], ts);
+            assert_eq!(result, 0, "packet {i} should be queued, not dropped");
+            // Drain deferred TX (ARP requests) so they don't accumulate
+            // and complicate assertions.
+            let _ = device.drain_deferred_tx();
+        }
+
+        // Buffer is full — this send must increment tx_drops.
+        let extra_ip = IpAddress::Ipv4(Ipv4Address::new(10, 0, 1, 1));
+        let result = device.send(extra_ip, &[0u8; 64], ts);
+        assert_eq!(result, 0);
+        assert_eq!(device.drain_deferred_tx_drops(), 1);
+        assert_eq!(device.drain_deferred_tx_drops(), 0);
+    }
+
+    #[test]
+    fn send_to_alloc_failure_counts_tx_errors() {
+        let mut mock = MockEthernetDriver::new(DEV_MAC);
+        mock.tx_alloc_fail = true;
+
+        let mut device = make_test_device(mock);
+        let ts = Instant::from_millis(0);
+
+        // Sending to broadcast path — send_to will fail in alloc_tx_buffer.
+        let broadcast = IpAddress::Ipv4(Ipv4Address::BROADCAST);
+        let result = device.send(broadcast, &[0u8; 64], ts);
+        assert_eq!(result, 0);
+        assert_eq!(device.drain_deferred_tx_errors(), 1);
+        assert_eq!(device.drain_deferred_tx_errors(), 0);
+        // No bytes/packets were counted on failure.
+        let tx_lens = device.drain_deferred_tx();
+        assert!(tx_lens.is_empty());
     }
 }

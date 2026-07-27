@@ -24,14 +24,6 @@ use crate::{
     exception_utils::exception_class_value,
 };
 
-/// Size of the guest trap frame used by the EL2 entry/exit assembly.
-pub const ARM_VCPU_TRAP_FRAME_SIZE: usize = core::mem::size_of::<TrapFrame>();
-/// Offset of [`HostRuntimeContext::stack_top`] within [`ArmVcpu`].
-pub const ARM_VCPU_HOST_STACK_TOP_OFFSET: usize = ARM_VCPU_TRAP_FRAME_SIZE;
-/// Offset of [`HostRuntimeContext::sp_el0`] within [`ArmVcpu`].
-pub const ARM_VCPU_HOST_SP_EL0_OFFSET: usize =
-    ARM_VCPU_HOST_STACK_TOP_OFFSET + core::mem::size_of::<u64>();
-
 /// (v)CPU register state that must be saved or restored when entering/exiting a VM or switching
 /// between VMs.
 #[repr(C)]
@@ -50,6 +42,7 @@ pub struct VmCpuRegisters {
 struct HostRuntimeContext {
     stack_top: u64,
     sp_el0: u64,
+    tpidr_el0: u64,
 }
 
 /// A virtual CPU within a guest.
@@ -65,6 +58,54 @@ pub struct ArmVcpu<H: ArmHostOps> {
     mpidr: u64,
     _host: PhantomData<fn() -> H>,
 }
+
+struct AssemblyLayoutHost;
+
+impl ArmHostOps for AssemblyLayoutHost {
+    fn inject_virtual_interrupt(_vector: u8) -> ArmVcpuResult {
+        Err(crate::ArmVcpuError::BadState)
+    }
+
+    fn fetch_pending_host_irq() -> Option<usize> {
+        None
+    }
+
+    fn handle_current_host_irq() {}
+}
+
+type AssemblyArmVcpu = ArmVcpu<AssemblyLayoutHost>;
+
+/// Size of the guest trap frame used by the EL2 entry/exit assembly.
+pub const ARM_VCPU_TRAP_FRAME_SIZE: usize = core::mem::size_of::<TrapFrame>();
+/// Offset of [`HostRuntimeContext::stack_top`] within [`ArmVcpu`].
+pub const ARM_VCPU_HOST_STACK_TOP_OFFSET: usize = core::mem::offset_of!(AssemblyArmVcpu, host)
+    + core::mem::offset_of!(HostRuntimeContext, stack_top);
+/// Offset of [`HostRuntimeContext::sp_el0`] within [`ArmVcpu`].
+pub const ARM_VCPU_HOST_SP_EL0_OFFSET: usize = core::mem::offset_of!(AssemblyArmVcpu, host)
+    + core::mem::offset_of!(HostRuntimeContext, sp_el0);
+/// Offset of the host task's `TPIDR_EL0` slot within [`ArmVcpu`].
+pub(crate) const ARM_VCPU_HOST_TPIDR_EL0_OFFSET: usize =
+    core::mem::offset_of!(AssemblyArmVcpu, host)
+        + core::mem::offset_of!(HostRuntimeContext, tpidr_el0);
+/// Offset of the guest-owned `TPIDR_EL0` slot within [`ArmVcpu`].
+pub(crate) const ARM_VCPU_GUEST_TPIDR_EL0_OFFSET: usize =
+    core::mem::offset_of!(AssemblyArmVcpu, guest_system_regs)
+        + crate::context_frame::GUEST_TPIDR_EL0_OFFSET;
+
+const _: () = {
+    assert!(core::mem::offset_of!(AssemblyArmVcpu, ctx) == 0);
+    assert!(ARM_VCPU_HOST_STACK_TOP_OFFSET == ARM_VCPU_TRAP_FRAME_SIZE);
+    assert!(
+        ARM_VCPU_HOST_SP_EL0_OFFSET == ARM_VCPU_HOST_STACK_TOP_OFFSET + core::mem::size_of::<u64>()
+    );
+    assert!(
+        ARM_VCPU_HOST_TPIDR_EL0_OFFSET == ARM_VCPU_HOST_SP_EL0_OFFSET + core::mem::size_of::<u64>()
+    );
+    assert!(
+        ARM_VCPU_GUEST_TPIDR_EL0_OFFSET
+            >= ARM_VCPU_HOST_TPIDR_EL0_OFFSET + core::mem::size_of::<u64>()
+    );
+};
 
 /// Configuration for creating a new [`ArmVcpu`].
 #[derive(Clone, Debug, Default)]
@@ -274,12 +315,18 @@ impl<H: ArmHostOps> ArmVcpu<H> {
             "str x9, [x10]",
             "mrs x9, sp_el0",
             "str x9, [x10, #8]",
+            // Save host task TLS before the final assembly window installs the
+            // guest value. No Rust executes with guest TPIDR_EL0 live.
+            "mrs x9, tpidr_el0",
+            "str x9, [x10, {host_tpidr_el0_delta}]",
             // Go to `context_vm_entry` with x0 pointing to `self.host.stack_top`.
             "mov x0, x10",
             "b context_vm_entry",
             // Panic if the control flow comes back here, which should never happen.
             "b {run_guest_panic}",
             host_stack_top_offset = const ARM_VCPU_HOST_STACK_TOP_OFFSET,
+            host_tpidr_el0_delta = const ARM_VCPU_HOST_TPIDR_EL0_OFFSET
+                - ARM_VCPU_HOST_STACK_TOP_OFFSET,
             run_guest_panic = sym Self::run_guest_panic,
         );
     }

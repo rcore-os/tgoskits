@@ -163,6 +163,34 @@ fn checked_in_test_build_vmconfigs_exist() {
 }
 
 #[test]
+fn orangepi_guest_board_cases_use_matching_vm_configs() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    for (board_name, expected_vm_config) in [
+        (
+            "orangepi-5-plus-linux",
+            "os/axvisor/configs/vms/orangepi-5-plus/linux-smp1.toml",
+        ),
+        (
+            "orangepi-5-plus-starry",
+            "os/axvisor/configs/vms/orangepi-5-plus/starry-smp1.toml",
+        ),
+    ] {
+        let groups =
+            discover_board_test_groups(&workspace_root, "normal", None, Some(board_name)).unwrap();
+        assert_eq!(groups.len(), 1, "expected one case for {board_name}");
+
+        let build_config = fs::read_to_string(&groups[0].build_config).unwrap();
+        let build_config: TestBuildConfigVmConfigs = toml::from_str(&build_config).unwrap();
+        assert_eq!(
+            build_config.vm_configs,
+            [PathBuf::from(expected_vm_config)],
+            "{board_name} should select its matching guest VM config"
+        );
+    }
+}
+
+#[test]
 fn nimbos_uefi_case_uses_uefi_host_boot() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let path = workspace_root.join("test-suit/axvisor/uefi/qemu-nimbos/qemu-x86_64.toml");
@@ -307,6 +335,20 @@ fn qemu_test_request_ignores_inherited_smp() {
     request.smp = Some(1);
 
     let request = Axvisor::qemu_test_request(request);
+
+    assert_eq!(request.smp, None);
+}
+
+#[test]
+fn board_test_request_ignores_inherited_smp() {
+    let mut request = axvisor_request(
+        PathBuf::from("/tmp/build-aarch64-unknown-none-softfloat.toml"),
+        "aarch64",
+        "aarch64-unknown-none-softfloat",
+    );
+    request.smp = Some(2);
+
+    let request = Axvisor::board_test_request(request);
 
     assert_eq!(request.smp, None);
 }

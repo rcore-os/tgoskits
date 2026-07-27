@@ -97,3 +97,6 @@ pub type SpinRawRwLockReadGuard<'a, T> = BaseSpinRwLockReadGuard<'a, NoOp, T>;
 
 /// A guard that provides exclusive data access for [`SpinRawRwLock`].
 pub type SpinRawRwLockWriteGuard<'a, T> = BaseSpinRwLockWriteGuard<'a, NoOp, T>;
+
+#[cfg(all(axtest, feature = "axtest"))]
+pub mod axtest;

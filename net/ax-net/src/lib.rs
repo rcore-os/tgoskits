@@ -66,6 +66,9 @@ pub mod unix;
 pub mod vsock;
 mod wrapper;
 
+#[cfg(all(axtest, feature = "axtest"))]
+mod axtest;
+
 use alloc::{
     borrow::ToOwned, boxed::Box, format, string::String, sync::Arc, task::Wake, vec, vec::Vec,
 };
@@ -475,6 +478,18 @@ pub fn request_poll() {
     publish_poll_request(&NET_POLL_REQUESTED, || {
         NET_POLL_WAKE.notify_one(true);
     });
+}
+
+/// Synchronously drive the interface poll until idle.
+///
+/// [`request_poll`] only wakes the poll worker; the actual dispatch happens
+/// later. A socket that is closed in the same breath as its last send would
+/// otherwise be torn down before the worker runs, discarding the datagram still
+/// queued in its TX buffer. Draining egress here mirrors Linux, where a sent
+/// datagram already sits in the peer's receive buffer and `close()` cannot
+/// unsend it. Must not be called while holding `SOCKET_SET.inner`.
+pub(crate) fn flush_egress() {
+    poll_until_idle();
 }
 
 fn publish_poll_request(requested: &AtomicBool, wake: impl FnOnce()) {

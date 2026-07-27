@@ -3,8 +3,8 @@ use alloc::vec::Vec;
 use ax_crate_interface::impl_interface;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axvm_types::{
-    AccessWidth, GuestPhysAddr, MappingFlags, NestedPagingConfig, VCpuId, VMId, VMInterruptMode,
-    VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
+    AccessWidth, GuestPhysAddr, InterruptTriggerMode, MappingFlags, NestedPagingConfig, VCpuId,
+    VMId, VMInterruptMode, VmArchPerCpuOps, VmArchVcpuOps, VmBackendError as BackendError,
     VmBackendResult as BackendResult,
 };
 use riscv_vcpu::{
@@ -326,6 +326,20 @@ impl VmArchVcpuOps for AxvmRiscvVcpu {
 
     fn inject_interrupt(&mut self, vector: usize) -> BackendResult {
         riscv_result(self.0.inject_interrupt(vector))
+    }
+
+    fn inject_interrupt_with_trigger(
+        &mut self,
+        vector: usize,
+        trigger: InterruptTriggerMode,
+    ) -> BackendResult {
+        // The vPLIC Router consumes source trigger semantics before setting a
+        // virtual pending bit. The vCPU injection operation is mode-agnostic.
+        match trigger {
+            InterruptTriggerMode::EdgeTriggered | InterruptTriggerMode::LevelTriggered => {
+                riscv_result(self.0.inject_interrupt(vector))
+            }
+        }
     }
 
     fn set_return_value(&mut self, val: usize) {

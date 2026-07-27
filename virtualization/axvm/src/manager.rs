@@ -12,7 +12,7 @@ use crate::{
     arch::ArchVCpu,
     ax_err,
     host::{HostPlatform, default_host},
-    vcpu::get_current_vcpu,
+    vcpu::with_current_vcpu,
     vm::AxVMRef,
 };
 
@@ -101,20 +101,22 @@ pub(crate) fn inject_vm_vcpu_interrupt(vm_id: VMId, vcpu_id: usize, vector: usiz
 
 /// Return the current VM ID from the vCPU currently executing on this CPU.
 pub fn current_vm_id() -> Option<VMId> {
-    get_current_vcpu::<ArchVCpu>().map(|vcpu| vcpu.vm_id())
+    with_current_vcpu::<ArchVCpu, _>(|vcpu| vcpu.map(|vcpu| vcpu.vm_id()))
 }
 
 /// Return the current vCPU ID from the vCPU currently executing on this CPU.
 pub fn current_vcpu_id() -> Option<usize> {
-    get_current_vcpu::<ArchVCpu>().map(|vcpu| vcpu.id())
+    with_current_vcpu::<ArchVCpu, _>(|vcpu| vcpu.map(|vcpu| vcpu.id()))
 }
 
 /// Inject a virtual interrupt into the vCPU currently executing on this CPU.
 pub fn inject_current_vcpu_interrupt(vector: usize) -> AxVmResult {
-    let vcpu = get_current_vcpu::<ArchVCpu>().ok_or_else(|| {
-        AxVmError::resource_unavailable("current vCPU", "current vCPU is not set")
-    })?;
-    vcpu.inject_interrupt(vector)
+    with_current_vcpu::<ArchVCpu, _>(|vcpu| {
+        let vcpu = vcpu.ok_or_else(|| {
+            AxVmError::resource_unavailable("current vCPU", "current vCPU is not set")
+        })?;
+        vcpu.inject_interrupt(vector)
+    })
 }
 
 impl AxvmRuntime {

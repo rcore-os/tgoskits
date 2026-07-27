@@ -26,7 +26,7 @@ use crate::{
     AxVmError, AxVmResult, StopReason,
     host::{HostMemory, default_host},
     manager,
-    vcpu::get_current_vcpu,
+    vcpu::with_current_vcpu,
 };
 
 pub(crate) mod boot;
@@ -270,9 +270,9 @@ impl X86VlapicHostOps for AxvmX86HostOps {
     }
 
     fn current_vm_id() -> X86VmId {
-        get_current_vcpu::<AxvmX86Vcpu>()
-            .expect("current x86 vCPU is not set")
-            .vm_id()
+        with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| {
+            vcpu.expect("current x86 vCPU is not set").vm_id()
+        })
     }
 
     fn current_vm_vcpu_num() -> usize {
@@ -327,9 +327,10 @@ impl X86HostOps for AxvmX86HostOps {
     }
 
     fn read_guest_u8(paddr: X86GuestPhysAddr) -> X86VcpuResult<u8> {
-        let vcpu = get_current_vcpu::<AxvmX86Vcpu>().ok_or(X86VcpuError::BadState)?;
+        let vm_id = with_current_vcpu::<AxvmX86Vcpu, _>(|vcpu| vcpu.map(|vcpu| vcpu.vm_id()))
+            .ok_or(X86VcpuError::BadState)?;
         let mut byte = [0u8; 1];
-        let result = manager::with_vm(vcpu.vm_id(), |vm| {
+        let result = manager::with_vm(vm_id, |vm| {
             vm.read_from_guest(GuestPhysAddr::from(paddr.as_usize()), &mut byte)
         })
         .ok_or(X86VcpuError::BadState)?;
@@ -403,10 +404,8 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
         trigger: InterruptTriggerMode,
     ) -> BackendResult {
         x86_result(
-            self.0.inject_interrupt_with_trigger(
-                vector,
-                trigger == InterruptTriggerMode::LevelTriggered,
-            ),
+            self.0
+                .inject_interrupt_with_trigger(vector, x86_interrupt_is_level_triggered(trigger)),
         )
     }
 
@@ -416,6 +415,13 @@ impl VmArchVcpuOps for AxvmX86Vcpu {
 
     fn set_return_value(&mut self, val: usize) {
         self.0.set_return_value(val);
+    }
+}
+
+const fn x86_interrupt_is_level_triggered(trigger: InterruptTriggerMode) -> bool {
+    match trigger {
+        InterruptTriggerMode::EdgeTriggered => false,
+        InterruptTriggerMode::LevelTriggered => true,
     }
 }
 
@@ -660,6 +666,16 @@ mod tests {
         );
         assert_eq!(x86_port_to_ax(X86Port::new(0x3f8)).0, 0x3f8);
         assert_eq!(x86_msr_addr_to_ax(X86MsrAddr::new(0x800)).0, 0x800);
+    }
+
+    #[test]
+    fn maps_edge_and_level_triggers_to_x86_backend_modes() {
+        assert!(!x86_interrupt_is_level_triggered(
+            InterruptTriggerMode::EdgeTriggered
+        ));
+        assert!(x86_interrupt_is_level_triggered(
+            InterruptTriggerMode::LevelTriggered
+        ));
     }
 
     #[test]

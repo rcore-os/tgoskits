@@ -5,7 +5,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult, LinuxError};
-use ax_fs_ng::vfs::{FS_CONTEXT, FileBackend, FileFlags, OpenOptions};
+use ax_fs_ng::vfs::{FileBackend, FileFlags, OpenOptions};
 use ax_io::{IoBuf, Read, Seek, SeekFrom};
 use ax_task::current;
 use axfs_ng_vfs::{NodePermission, NodeType};
@@ -208,7 +208,7 @@ pub fn sys_truncate(path: *const c_char, length: __kernel_off_t) -> AxResult<isi
     }
     let file = OpenOptions::new()
         .write(true)
-        .open(&FS_CONTEXT.lock(), &path)?
+        .open(&ax_fs_ng::vfs::current_fs_context().lock(), &path)?
         .into_file()?;
     if (length as u64) > u32::MAX as u64 * 4096 {
         return Err(AxError::from(LinuxError::EFBIG));
@@ -1008,4 +1008,25 @@ pub fn sys_splice(
     let n = do_send(src, dst, len)?;
 
     isize::try_from(n).map_err(|_| AxError::InvalidInput)
+}
+
+#[cfg(axtest)]
+pub(crate) fn io_rwf_flags_validation_rules_hold_for_test() -> bool {
+    // validate_rwf_flags: only flags==0 is accepted.
+    validate_rwf_flags(0).is_ok()
+        && validate_rwf_flags(1).is_err()
+        && validate_rwf_flags(u32::MAX).is_err()
+}
+
+#[cfg(axtest)]
+pub(crate) fn io_offset_from_hilo_rules_hold_for_test() -> bool {
+    // Test offset_from_hilo function
+    // On 64-bit, offset_from_hilo should return pos_l directly
+    let result = offset_from_hilo(1000, 0);
+    assert!(result == 1000);
+
+    let neg_result = offset_from_hilo(-1, 0);
+    assert!(neg_result == -1);
+
+    true
 }

@@ -22,7 +22,32 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 ## Porting Checklist
 
 - **Target and toolchain**: add or verify `scripts/targets` specs, target triple, panic strategy, relocation model, code model, ABI, soft-float setting, musl/std support, linker, objcopy, and `rust-src` availability.
-- **RISC-V per-CPU register contract**: `ax-percpu` reserves `x3`/`gp` as the per-CPU base, so every RISC-V kernel target spec must pass `--no-relax` to the linker. Do not enable global-pointer relaxation or define `__global_pointer$` unless the per-CPU register design changes at the same time.
+- **Kernel runtime mode**: keep the final image contract explicit. Starry is a freestanding
+  `no_std`/`no_main` PIE built with `build-std=core,alloc`, always retains its SMP capability,
+  and must not contain kernel TLS. Axvisor remains a std/musl PIE and explicitly enables TLS.
+  ArceOS enables TLS by default, but configuration must reject `uspace + tls` rather than
+  constructing an image with overlapping register ownership.
+- **CPU-local register ABI**: `cpu-local` owns the register contract and `ax-percpu` owns only
+  typed layout/storage. Do not create a second current-task per-CPU pointer. The active image
+  mode determines the register assignment. The exact initialized `CpuAreaRef` address is the
+  area identity; do not add in-image ABI versions, generation counters, cookies, provider-trait
+  FFI, or raw TP access:
+
+  | Architecture | CPU area | `LinuxCurrent` | `UnikernelTls` |
+  | --- | --- | --- | --- |
+  | x86_64 | GS base | current header in the GS runtime anchor | FS base |
+  | AArch64 | TPIDR_EL1/EL2 | SP_EL0 | TPIDR_EL0 |
+  | RISC-V | current-header backtrace or sscratch | `tp = current`, `sscratch = 0` | `tp = TLS`, `sscratch = CPU base` |
+  | LoongArch | r21 with KS3 mirror | `tp = current` | `tp = TLS` |
+
+  Keep LoongArch KS4/KS5 reserved for vCPU scratch. On RISC-V, `gp` is the ordinary global
+  pointer again; target specs still need `--no-relax` where the PIE relocation model requires
+  it, but must not describe `gp` as CPU-local storage.
+  `CpuPin<'scope>` must be created only through the non-escaping guarded callback after checking
+  the live CPU base, area self pointer/index, and current header. Atomic scalars require migration
+  exclusion; shared `T: Sync` objects also rely on object-owned synchronization; mutable local
+  objects additionally require `ExclusiveCpu` after excluding IRQ/re-entry and conflicting remote
+  access. Scheduler switches keep IRQs off and consume prepared/previous transaction tokens.
 - **Build system**: wire arch/target mapping in `scripts/axbuild`, dynamic platform defaults, feature propagation, kernel format conversion, UEFI/to-bin behavior, rootfs handling, and per-OS test discovery.
 - **QEMU and firmware**: verify QEMU binary, machine type, CPU, SMP count, pflash/OVMF files, serial console, disk/rootfs device, `-snapshot`, debug flags, timeout, and success/fail regexes.
   QEMU `uefi`, `to_bin`, acceleration, CPU feature, and device choices are part of each
@@ -34,13 +59,23 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
   Cargo `vmx` or `svm` feature. Both cases must use the same backend-neutral guest baseline so
   their result isolates the runtime CPUID-selected virtualization path.
 - **someboot arch layer**: implement or audit entry, relocation, BSS clearing, stack setup, memory map parsing, paging, trap vectors, timer, IRQ, power, SMP, and address translation.
+- **CPU-local startup**: the final ELF carries exactly one `.percpu.template` plus
+  `.percpu.init` and `.percpu.align`; it never carries a linked runtime area or compatibility
+  alias. Discover the runtime CPU count, dynamically allocate every final area from that template
+  geometry, construct all typed values once, freeze the layout, then bind each CPU with a
+  `CpuAreaRef` while it is offline; only then may runtime code obtain a scoped `CpuPin`. Register
+  publication must happen only after all fallible preparation succeeds. Dropping an uncommitted
+  prepared-switch token must roll back the next task binding; the incoming tail must consume the
+  previous binding epoch before that task can run elsewhere.
+  AArch64 final aliases need cache maintenance consistent with their shareability attributes;
+  RISC-V secondary boot must initialize `sscratch`; LoongArch must keep r21 and KS3 coherent.
 - **CPU runtime**: update `components/axcpu/src/<arch>` for trap entry, context switch, user/kernel context, syscall return path, FP/SIMD state, and per-CPU assumptions.
 - **Platform bridge**: update `platforms/axplat-dyn`, `platforms/somehal`, platform config, memory regions, IRQ routing, timer source, power operations, and CPU boot operations.
 - **Runtime platform identity**: dynamic platform names should be discovered in `someboot`/`somehal` from firmware data, then exposed through `axplat-dyn` and `ax_plat::platform::platform_name()`. Keep `ax-hal` as a forwarding layer for platform identity, and keep static platforms returning `config::PLATFORM`.
 - **Runtime IRQ ownership**: ArceOS runtime IRQ traps are owned by `ax-cpu` and dispatched through `ax_hal::irq::handle_irq(raw_vector)`, which immediately wraps the CPU trap entry as `TrapVector`. `somehal` must stay OS-free and expose controller transactions through `somehal::irq::begin_irq(raw_vector) -> ActiveIrq`; `ActiveIrq::id()` returns the resolved `IrqId`, and `ActiveIrq` is held while `axplat-dyn` dispatches the IRQ and its `Drop` performs the architecture-specific EOI/complete. Do not reintroduce `_someboot_handle_irq` or `#[somehal::irq_handler]` as runtime dispatch glue.
 - **Runtime IRQ initialization order**: dynamic platforms initialize boot IRQ state through `ax_hal::irq::init_boot_irqs(cpu_id)` before registering runtime IRQ handlers or probing normal devices. `rdrive::ProbeLevel` remains the coarse lifecycle boundary, and `ProbePriority` is the ordering source inside `PreKernel`: clocks first, then interrupt controllers, timer sources, MSI parent controllers, and only later normal early devices. For FDT, same level/priority matches must keep device-tree order; interrupt-controller nodes additionally follow parent-before-child ordering similar to Linux `of_irq_init()`, with sibling controllers preserving DT order. Do not add arch-specific ad hoc probe calls in `axruntime` when a priority barrier can express the same dependency.
 - **Runtime IPI identity**: dynamic platforms expose the runtime IPI IRQ as a typed `IrqId` through `somehal::irq::ipi_irq()`, `axplat-dyn`, and `ax_hal::irq::ipi_irq()`. Do not route dynamic runtime IPI registration through `ax-config`; on RISC-V the IRQ is the flagged supervisor software interrupt cause in the CPU-local domain, not bare PLIC source `1`.
-- **Runtime CPU limits**: treat generated `CPU_CAPACITY`/`SMP` as a build-time capacity for const generics, per-CPU arrays, and linker/percpu layout only. Actual online/usable CPU count must flow through `ax_hal::cpu_num()`, which caps the platform-discovered count by capacity.
+- **Runtime CPU limits**: treat generated `CPU_CAPACITY`/`SMP` as a build-time capacity for const generics and fixed-capacity scheduler structures, never as an instruction to replicate the ELF CPU-local template. Actual online/usable CPU count and dynamic CPU-area allocation must flow from the platform-discovered count, capped by `ax_hal::cpu_num()` where the OS capacity applies.
 - **IRQ namespace rules**: keep CPU trap vectors, platform `IrqId { domain, hwirq }`, firmware sources (`IrqSource::AcpiGsi`, `IrqSource::AcpiGsiRoute`, explicit `IrqSource::ControllerLine`, and driver binding metadata such as `BindingIrqSource::FdtInterrupt`), controller-local hardware lines (`HwIrq`), and guest GSI/vector values in separate namespaces. New runtime IRQ registrations must use `IrqId`, not `usize`; legacy `IrqNumber(raw)` is only for static or still-unmigrated platform boundaries and must live in OS/HAL-facing layers such as `ax-plat`, `ax-hal`, or `axklib`, not `irq-framework` or `somehal`. `irq-framework` owns generic registry, affinity, execution, and boxed callback dispatch semantics; platform rebase work must preserve `BoxedIrqHandler`, `IrqExecution`, and `IrqRequest::new_boxed` while adapting the surrounding platform code to `IrqId`. `LEGACY_IRQ_DOMAIN` and `CPU_LOCAL_IRQ_DOMAIN` remain fixed compatibility domains, while dynamic `somehal` external controller domains such as GIC, PLIC, IOAPIC, EIOINTC, and PCH-PIC are allocated at controller probe time and must be reached through `alloc_irq_domain`, `domain_by_kind`, `domain_by_owner`, or `domain_is_kind`, not by constructing fixed numeric controller domains in dynamic-platform code. Do not derive a host IRQ with arithmetic such as `0x20 + gsi`, `PCI_INTX_VECTOR_BASE + gsi`, or by subtracting a trap-vector base in Axvisor/device code. Resolve firmware/device descriptions with `ax_hal::irq::resolve_irq_source(...)` / platform resolver and register the returned `IrqId`. When ACPI supplies trigger/polarity/controller metadata, carry it as `IrqSource::AcpiGsiRoute` instead of flattening it to a bare `AcpiGsi`, because PCI INTx routes may use a low GSI with non-ISA level/low semantics. Likewise, FDT device bindings should carry the raw interrupt specifier plus its controller owner in `BindingIrqSource::FdtInterrupt` until the OS/platform layer can resolve that owner to a controller domain and configure it; do not expose parentless FDT cells from `irq-framework` or configure a controller in generic driver probe merely to obtain a legacy number. `rdif_intc` controllers must expose fallible `translate_fdt` / `translate_acpi` methods that return controller-local hardware line and trigger metadata; the registering platform allocates or looks up a domain owner entry for the concrete `rdrive::DeviceId`, passes that domain to `rdif_intc::Intc::new(domain, driver)`, and the wrapper combines that domain with the local `HwIrq` before `configure` / `configure_acpi` programs trigger, polarity, vector, or mask state. Platform `irq_set_enable` and `irq_set_affinity` paths must route by the incoming domain's registered owner/kind and return an error on missing controllers, lock failures, unsupported affinity, or backend/type mismatches instead of silently no-oping. Empty, malformed, out-of-range, or unsupported firmware specifiers must return `IrqError` instead of IRQ 0, a base vector, or a guessed legacy number. If an FDT PCI host bridge preconfigures a controller-level legacy INTx route, store that route as a native `BindingIrq` source (plus any temporary raw compatibility value) and let child endpoints reuse it before falling back to PCI `interrupt-map` parsing.
 - **Domain expectations**: x86 LAPIC timer and IOAPIC are distinct domains, so trap vector `0x20` is not `AcpiGsi(0)`. On aarch64, GIC INTID is the `HwIrq` within the GIC domain. On riscv64, PLIC source is the `HwIrq` within the PLIC domain. On loongarch64, EIOINTC and PCH-PIC must remain separate domains. A platform that cannot resolve an `IrqSource` must return `IrqError::Unsupported` instead of guessing a numeric IRQ.
 - **x86 QEMU IRQ contract**: the dynamic x86 path targets modern QEMU `q35` with ACPI/MADT, Local APIC or x2APIC, IOAPIC, and PCI INTx routing. Do not add 8259/PIC fallback, i440fx-specific IRQ assumptions, non-ACPI IRQ probing, raw GSI enable bypasses, or vector arithmetic outside the IOAPIC controller. LAPIC/x2APIC owns timer, IPI, EOI, and spurious handling; `X86IoApicIntc` owns external GSI route state, vector conflict checks, trigger/polarity, mask, and affinity updates through `rdif_intc::Intc`. x2APIC paths must preserve full `u32` APIC IDs for CPU-local operations, while xAPIC and IOAPIC physical destinations must reject APIC IDs that cannot be encoded without truncation.
@@ -61,8 +96,14 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - Establish an early console before risky transitions, then ensure a post-UEFI/post-MMU console path exists without Boot Services.
 - Capture the memory map and kernel image physical range before address translation helpers depend on them.
 - Treat relocated symbols carefully. After relocation or high-half switch, use runtime-safe symbol address helpers instead of raw compile-time addresses.
+- For x86_64 direct PIE boot, apply supported `R_X86_64_RELATIVE` relocations in a naked,
+  RIP-relative entry before executing Rust. The UEFI header may share the head section, but the
+  raw entry symbol is the direct-loader entry and its physical address must remain valid after a
+  load bias.
 - On AArch64, pass EL transition state into the post-relocation entry path when it must be kept in Rust globals; do not write relocatable statics before relocation has been applied.
 - Clear BSS exactly once and after preserving any entry data that lives there.
+- Render separate TLS and no-TLS linker layouts. A no-TLS kernel must reject `.tdata`/`.tbss`
+  inputs and omit `PT_TLS`; a TLS kernel must retain the TLS program header and bootstrap data.
 - On LoongArch OVMF, capture the EFI FDT configuration table as well as ACPI RSDP for firmware-described devices, but do not rediscover RTC in someboot/somehal through those tables. The dynamic UEFI RTC path should first use the UEFI Runtime Service `GetTime`; LS7A RTC nodes such as `loongson,ls7a-rtc` and ACPI `LOON0001` belong to the `ax-driver` fallback path when firmware RTC is unavailable.
 - Allocate and align boot stack, per-CPU areas, secondary stacks, boot arguments, and page tables before enabling SMP.
 - Install trap vectors before enabling interrupts, timer interrupts, MMU faults, or secondary CPU execution.
@@ -81,9 +122,13 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 
 1. Discover enabled CPUs from firmware data and keep firmware IDs separate from logical CPU IDs.
 2. Bound-check CPU indices and avoid assuming hart/apic/mpidr/cpuid values are dense.
-3. Prepare one boot argument block per secondary CPU with stack, page table, kernel entry, per-CPU base, and logical ID.
+3. Prepare one boot argument block per secondary CPU with stack, page table, kernel entry, typed per-CPU area, and logical ID.
 4. Flush boot arguments and page tables before `cpu_on`.
-5. In the secondary path, initialize arch address windows, stack, per-CPU register, page table state, trap vectors, timer, and interrupt state before entering generic secondary code.
+5. In the secondary path, initialize arch address windows, stack, page table state, the
+   architecture CPU-local register contract, trap vectors, timer, and interrupt state before
+   entering generic secondary code. Install the final `CpuAreaRef` while the CPU is offline, then
+   obtain runtime access only through a scoped `CpuPin`; do not publish a raw base and initialize
+   fallible state afterward.
 6. Before the OS per-CPU register is initialized on a secondary CPU, use cached controller fast paths for interrupt and timer setup through `somehal::irq::init_secondary_boot_irqs(cpu_id)`; do not take `rdrive`, IRQ-domain, or generic route locks from that window.
 7. Debug secondary failure with physical-address markers first; serial logging may not work until the secondary has its own mapping and trap state.
 
