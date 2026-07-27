@@ -364,7 +364,7 @@ fn vcpu_run() {
                 }
                 info!("VM[{}] state changed to Stopped", vm_id);
 
-                CurrentArch::on_last_vcpu_exit(vm_id);
+                CurrentArch::on_last_vcpu_exit(&vm);
 
                 sub_running_vm_count(1);
                 crate::host::task::wait_queue_wake(&super::VMM, 1);

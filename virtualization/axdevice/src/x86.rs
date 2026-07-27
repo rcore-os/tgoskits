@@ -9,6 +9,8 @@ use x86_vlapic::{
     X86GuestPhysAddr, X86GuestPhysAddrRange, X86Port, X86PortRange, X86VlapicHostOps,
 };
 
+use crate::{ServiceCardinality, ServiceKey};
+
 /// Type-specific IOAPIC capability used by the x86 interrupt runtime.
 pub trait X86IoApicDeviceOps: Send + Sync {
     /// Return the guest interrupt vector programmed for a GSI.
@@ -31,6 +33,62 @@ pub trait X86PitDeviceOps: Send + Sync {
 pub trait X86SerialDeviceOps: Send + Sync {
     /// Poll host input and return whether COM1 should assert an IRQ.
     fn poll_irq(&self) -> bool;
+}
+
+/// x86 interrupt-controller operations needed by the VM interrupt runtime.
+///
+/// This is an adapter boundary rather than the IOAPIC device type itself:
+/// synthetic and forwarded sources only need to resolve a GSI, assert it, and
+/// process guest EOIs.
+pub trait X86InterruptDomainOps: Send + Sync {
+    /// Returns the guest vector currently programmed for a GSI.
+    fn vector_for_gsi(&self, gsi: usize) -> Option<u8>;
+
+    /// Asserts a GSI and returns an interrupt to inject when it is unmasked.
+    fn assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt>;
+
+    /// Processes a guest local-APIC EOI.
+    fn end_of_interrupt(&self, vector: u8) -> Option<IoApicEoi>;
+}
+
+/// Typed service key for the VM's x86 virtual I/O APIC.
+pub struct X86IoApicServiceKey;
+
+impl ServiceKey for X86IoApicServiceKey {
+    type Service = dyn X86IoApicDeviceOps;
+
+    const NAME: &'static str = "x86-ioapic";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
+/// Typed service key for the VM's x86 interrupt-domain adapter.
+pub struct X86InterruptDomainKey;
+
+impl ServiceKey for X86InterruptDomainKey {
+    type Service = dyn X86InterruptDomainOps;
+
+    const NAME: &'static str = "x86-interrupt-domain";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
+/// Typed service key for the VM's x86 virtual PIT.
+pub struct X86PitServiceKey;
+
+impl ServiceKey for X86PitServiceKey {
+    type Service = dyn X86PitDeviceOps;
+
+    const NAME: &'static str = "x86-pit";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
+
+/// Typed service key for the VM's COM1 serial input capability.
+pub struct X86SerialServiceKey;
+
+impl ServiceKey for X86SerialServiceKey {
+    type Service = dyn X86SerialDeviceOps;
+
+    const NAME: &'static str = "x86-serial-com1";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
 }
 
 /// Unified-device adapter for [`EmulatedIoApic`].

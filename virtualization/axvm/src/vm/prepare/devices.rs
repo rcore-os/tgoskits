@@ -27,8 +27,8 @@ impl PreparedDevices {
         Ok(Self { devices })
     }
 
-    pub(crate) fn register_special_devices(&mut self, vm: &AxVM) -> AxVmResult {
-        vm.add_special_emulated_devices(&mut self.devices)
+    pub(crate) fn register_boot_payload_devices(&mut self, vm: &AxVM) -> AxVmResult {
+        vm.register_boot_payload_devices(&mut self.devices)
     }
 
     pub(crate) const fn devices(&self) -> &AxVmDevices {

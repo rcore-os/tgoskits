@@ -24,8 +24,8 @@ use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
 use axaddrspace::{AddrSpace, NestedPageTableOps};
-use axdevice::{AxVmDevices, DeviceManagerError, FwCfg, FwCfgPlatformConfig};
-use axdevice_base::AccessWidth;
+use axdevice::{AxVmDevices, FwCfgBuildConfig, FwCfgDeviceFactory, FwCfgPlatformConfig};
+use axdevice_base::{AccessWidth, DeviceAccess, DeviceId, DeviceResult};
 use axvm_types::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
 };
@@ -58,6 +58,32 @@ type VCpu = AxVCpu<crate::arch::ArchVCpu>;
 pub(crate) type AxVCpuRef<A = crate::arch::ArchVCpu> = Arc<AxVCpu<A>>;
 /// A reference to a VM.
 pub type AxVMRef = Arc<AxVM>;
+
+struct VmDmaAccess<'a> {
+    vm: &'a AxVM,
+}
+
+impl DeviceAccess for VmDmaAccess<'_> {
+    fn device_id(&self) -> DeviceId {
+        DeviceId::new(0)
+    }
+    fn read_guest_memory(&mut self, addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult {
+        self.vm
+            .read_from_guest(addr, data)
+            .map_err(|error| axdevice_base::DeviceError::Backend {
+                operation: "read guest memory for DMA",
+                detail: alloc::format!("{error}"),
+            })
+    }
+    fn write_guest_memory(&mut self, addr: GuestPhysAddr, data: &[u8]) -> DeviceResult {
+        self.vm
+            .write_to_guest(addr, data)
+            .map_err(|error| axdevice_base::DeviceError::Backend {
+                operation: "write guest memory for DMA",
+                detail: alloc::format!("{error}"),
+            })
+    }
+}
 
 /// Architecture-independent vCPU runtime metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -832,23 +858,27 @@ impl AxVM {
         Ok(())
     }
 
-    fn add_special_emulated_devices(&self, devices: &mut AxVmDevices) -> AxVmResult {
-        if let Some(pending) = self.pending_fw_cfg.lock().take() {
+    /// Registers devices whose typed construction input comes from VM boot
+    /// payloads rather than static emulated-device configuration.
+    fn register_boot_payload_devices(&self, devices: &mut AxVmDevices) -> AxVmResult {
+        let pending = self.pending_fw_cfg.lock();
+        if let Some(pending) = pending.as_ref() {
             debug!(
                 "VM[{}] adding fw_cfg MMIO device at [{:#x},{:#x})",
                 self.id(),
                 pending.base.as_usize(),
                 pending.base.as_usize() + pending.size
             );
-            devices.add_fw_cfg_dev(Arc::new(FwCfg::new(
-                pending.base,
-                pending.size,
-                pending.kernel,
-                pending.initrd,
-                pending.cmdline.as_deref(),
-                pending.cpu_num,
-                pending.platform,
-            )))?;
+            let bundle = FwCfgDeviceFactory::new().build(FwCfgBuildConfig {
+                base: pending.base,
+                size: pending.size,
+                kernel: pending.kernel,
+                initrd: pending.initrd,
+                cmdline: pending.cmdline.as_deref(),
+                cpu_num: pending.cpu_num,
+                platform: pending.platform,
+            })?;
+            devices.register_bundle(bundle)?;
         }
         Ok(())
     }
@@ -860,32 +890,12 @@ impl AxVM {
         data: usize,
     ) -> AxVmResult {
         let devices = self.get_devices()?;
-        if let Some(fw_cfg) = devices.fw_cfg_for_dma_addr(addr) {
-            if let Some(desc_addr) = fw_cfg.write_dma_address(addr, width, data)? {
-                fw_cfg.process_dma(
-                    desc_addr,
-                    |gpa, buffer| {
-                        self.read_from_guest(gpa, buffer).map_err(|error| {
-                            DeviceManagerError::UnexpectedResponse {
-                                operation: "read guest memory for fw_cfg DMA",
-                                detail: alloc::format!("{error}"),
-                            }
-                        })
-                    },
-                    |gpa, buffer| {
-                        self.write_to_guest(gpa, buffer).map_err(|error| {
-                            DeviceManagerError::UnexpectedResponse {
-                                operation: "write guest memory for fw_cfg DMA",
-                                detail: alloc::format!("{error}"),
-                            }
-                        })
-                    },
-                )?;
-            }
-            return Ok(());
+        if devices.mmio_write_needs_guest_memory(addr, width) {
+            let mut memory = VmDmaAccess { vm: self };
+            devices.handle_mmio_write_with_memory(addr, width, data, &mut memory)?;
+        } else {
+            devices.handle_mmio_write(addr, width, data)?;
         }
-
-        devices.handle_mmio_write(addr, width, data)?;
         Ok(())
     }
 

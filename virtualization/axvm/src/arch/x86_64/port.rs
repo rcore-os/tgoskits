@@ -1,8 +1,13 @@
 //! Native x86 host I/O port passthrough devices.
 
+use alloc::sync::Arc;
+
+use axdevice::{DeviceBundle, DeviceRegistration};
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceError, DeviceResult, EmuDeviceType, Port, PortRange,
+    AccessWidth, BaseDeviceOps, DeviceError, DeviceResult, EmuDeviceType, Port, PortDeviceAdapter,
+    PortRange,
 };
+use axvm_types::PassThroughPortConfig;
 
 use crate::{AxVmResult, ax_err};
 
@@ -29,6 +34,34 @@ impl HostPortPassthrough {
 
     fn end(&self) -> Port {
         Port::new(self.base.number() + self.length - 1)
+    }
+}
+
+/// Builds the atomic device contribution for one configured host port range.
+///
+/// Port passthrough is configured separately from `EmulatedDeviceConfig`, so
+/// it is deliberately a local architecture factory rather than a
+/// `DeviceFactory` registry entry. It still enters the runtime through the
+/// same [`DeviceBundle`] transaction as factory-built devices.
+pub(crate) struct HostPortPassthroughFactory {
+    config: PassThroughPortConfig,
+}
+
+impl HostPortPassthroughFactory {
+    /// Creates a factory for one validated-at-build-time port range.
+    pub(crate) const fn new(config: PassThroughPortConfig) -> Self {
+        Self { config }
+    }
+
+    /// Creates the port device contribution.
+    pub(crate) fn build(&self) -> AxVmResult<DeviceBundle> {
+        let passthrough = Arc::new(HostPortPassthrough::new(
+            self.config.base,
+            self.config.length,
+        )?);
+        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
+            PortDeviceAdapter::from_arc(passthrough),
+        )))
     }
 }
 
@@ -113,6 +146,8 @@ unsafe fn outl(port: u16, value: u32) {
 
 #[cfg(test)]
 mod tests {
+    use axdevice::{AxVmDeviceConfig, AxVmDevices};
+
     use super::*;
 
     #[test]
@@ -143,5 +178,25 @@ mod tests {
             dev.handle_write(Port::new(0x6000), AccessWidth::Qword, 0)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn passthrough_port_bundle_registers_through_device_runtime() {
+        let bundle = HostPortPassthroughFactory::new(PassThroughPortConfig {
+            base: 0x6000,
+            length: 0x80,
+        })
+        .build()
+        .unwrap();
+        let mut devices = AxVmDevices::new(AxVmDeviceConfig {
+            emu_configs: alloc::vec![],
+        })
+        .unwrap();
+
+        devices.register_bundle(bundle).unwrap();
+
+        assert!(devices.find_port_dev(Port::new(0x6000)).is_some());
+        assert!(devices.find_port_dev(Port::new(0x607f)).is_some());
+        assert!(devices.find_port_dev(Port::new(0x6080)).is_none());
     }
 }

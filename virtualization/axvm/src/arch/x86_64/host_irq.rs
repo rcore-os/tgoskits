@@ -7,10 +7,12 @@ use ax_std::os::arceos::modules::ax_hal::irq as host_irq;
 
 pub(crate) type IrqContext = host_irq::IrqContext;
 pub(crate) type IrqError = host_irq::IrqError;
+pub(crate) type IrqHandle = host_irq::IrqHandle;
 pub(crate) type IrqId = host_irq::IrqId;
 pub(crate) type IrqReturn = host_irq::IrqReturn;
 pub(crate) type IrqSource = host_irq::IrqSource;
 
+#[cfg(test)]
 pub(crate) fn make_irq_id(domain: u16, hwirq: u32) -> IrqId {
     host_irq::IrqId::new(host_irq::IrqDomainId(domain), host_irq::HwIrq(hwirq))
 }
@@ -20,6 +22,14 @@ pub(crate) fn request_shared_irq(
     handler: impl FnMut(IrqContext) -> IrqReturn + Send + 'static,
 ) -> Result<host_irq::IrqHandle, host_irq::IrqError> {
     host_irq::request_shared_irq(irq, handler)
+}
+
+/// Unregisters a host IRQ action owned by one VM forwarding domain.
+///
+/// `free_irq` first detaches the action and then waits for in-flight handlers,
+/// so no separate synchronization step can leave a new handler window open.
+pub(crate) fn free_shared_irq(handle: host_irq::IrqHandle) -> Result<(), IrqError> {
+    host_irq::free_irq(handle)
 }
 
 #[cfg(test)]

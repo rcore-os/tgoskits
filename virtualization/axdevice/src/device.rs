@@ -18,26 +18,23 @@ use alloc::{collections::BTreeMap, format, sync::Arc, vec::Vec};
 use arm_vgic::Vgic;
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
+#[cfg(target_arch = "riscv64")]
+use axdevice_base::MmioDeviceAdapter;
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
-    DeviceId, DeviceRegistry, InvalidResourceReason, MmioDeviceAdapter, Port, RegistryError,
-    Resource, SysRegAddr,
+    DeviceId, DeviceRegistry, InvalidResourceReason, Port, RegistryError, Resource, SysRegAddr,
 };
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
-#[cfg(target_arch = "x86_64")]
-use x86_vlapic::{IoApicEoi, IoApicInterrupt};
 
 use crate::{
     AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceLifecycle,
-    DeviceManagerError, DeviceManagerResult, DeviceServices, FwCfg, GuestRangeAllocatorKey,
+    DeviceManagerError, DeviceManagerResult, DeviceServices, GuestRangeAllocatorKey,
     PollableDeviceOps,
 };
 #[cfg(target_arch = "loongarch64")]
 use crate::{LoongArchPchPic, PchPicOutputEvent};
-#[cfg(target_arch = "x86_64")]
-use crate::{X86IoApicDeviceOps, X86PitDeviceOps, X86SerialDeviceOps};
 
 #[inline]
 #[allow(dead_code)]
@@ -108,33 +105,65 @@ pub struct DeviceRuntime {
     lifecycle_devices: Vec<Arc<dyn DeviceLifecycle>>,
     /// Typed capabilities contributed during VM preparation.
     services: DeviceServices,
-    /// x86 IOAPIC — kept for type-specific access.
-    #[cfg(target_arch = "x86_64")]
-    x86_ioapic: Option<Arc<dyn X86IoApicDeviceOps>>,
-    /// x86 PIT — kept for type-specific access.
-    #[cfg(target_arch = "x86_64")]
-    x86_pit: Option<Arc<dyn X86PitDeviceOps>>,
-    /// x86 16550 serial port — kept for type-specific access.
-    #[cfg(target_arch = "x86_64")]
-    x86_serial: Option<Arc<dyn X86SerialDeviceOps>>,
+    /// Devices explicitly granted access to guest memory during a routed access.
+    ///
+    /// The grant is intentionally narrow: it is supplied only by the VM's MMIO
+    /// write path and exists only for the duration of that one access.
+    dma_devices: Vec<DeviceId>,
     /// LoongArch PCH-PIC — kept for type-specific access.
     #[cfg(target_arch = "loongarch64")]
     loongarch_pch_pic: Option<Arc<LoongArchPchPic>>,
-    /// QEMU fw_cfg — retained until its DMA access path is migrated.
-    fw_cfg: Option<Arc<FwCfg>>,
 }
 
 /// Compatibility name for the per-VM [`DeviceRuntime`].
 pub type AxVmDevices = DeviceRuntime;
 
 /// Stack-scoped metadata for one routed device access.
-struct RuntimeDeviceAccess {
+struct RuntimeDeviceAccess<'a> {
     device_id: DeviceId,
+    memory: Option<&'a mut dyn DeviceAccess>,
+    dma_allowed: bool,
 }
 
-impl DeviceAccess for RuntimeDeviceAccess {
+impl DeviceAccess for RuntimeDeviceAccess<'_> {
     fn device_id(&self) -> DeviceId {
         self.device_id
+    }
+    fn read_guest_memory(
+        &mut self,
+        addr: GuestPhysAddr,
+        data: &mut [u8],
+    ) -> Result<(), DeviceError> {
+        if !self.dma_allowed {
+            return Err(DeviceError::Unsupported {
+                operation: "read guest memory from device access",
+                detail: "device has no DMA memory grant".into(),
+            });
+        }
+        let memory = self
+            .memory
+            .as_mut()
+            .ok_or_else(|| DeviceError::Unsupported {
+                operation: "read guest memory from device access",
+                detail: "this bus access has no DMA memory port".into(),
+            })?;
+        memory.read_guest_memory(addr, data)
+    }
+    fn write_guest_memory(&mut self, addr: GuestPhysAddr, data: &[u8]) -> Result<(), DeviceError> {
+        if !self.dma_allowed {
+            return Err(DeviceError::Unsupported {
+                operation: "write guest memory from device access",
+                detail: "device has no DMA memory grant".into(),
+            });
+        }
+        let memory = self
+            .memory
+            .as_mut()
+            .ok_or_else(|| DeviceError::Unsupported {
+                operation: "write guest memory from device access",
+                detail: "this bus access has no DMA memory port".into(),
+            })?;
+        memory.write_guest_memory(addr, data)
     }
 }
 
@@ -149,15 +178,9 @@ impl DeviceRuntime {
             pollable_devices: Vec::new(),
             lifecycle_devices: Vec::new(),
             services: DeviceServices::new(),
-            #[cfg(target_arch = "x86_64")]
-            x86_ioapic: None,
-            #[cfg(target_arch = "x86_64")]
-            x86_pit: None,
-            #[cfg(target_arch = "x86_64")]
-            x86_serial: None,
+            dma_devices: Vec::new(),
             #[cfg(target_arch = "loongarch64")]
             loongarch_pch_pic: None,
-            fw_cfg: None,
         }
     }
 
@@ -209,14 +232,11 @@ impl DeviceRuntime {
         matches!(
             device_type,
             EmulatedDeviceType::InterruptController
-                | EmulatedDeviceType::Console
                 | EmulatedDeviceType::GPPTRedistributor
                 | EmulatedDeviceType::GPPTDistributor
                 | EmulatedDeviceType::GPPTITS
                 | EmulatedDeviceType::FwCfg
                 | EmulatedDeviceType::LoongArchPchPic
-                | EmulatedDeviceType::X86IoApic
-                | EmulatedDeviceType::X86Pit
         )
     }
 
@@ -412,45 +432,6 @@ impl DeviceRuntime {
                         );
                     }
                 }
-                EmulatedDeviceType::Console => {
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        debug!("x86 console device registration is owned by AxVM arch adapter");
-                    }
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::X86IoApic => {
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        debug!("x86 IOAPIC device registration is owned by AxVM arch adapter");
-                    }
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::X86Pit => {
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        debug!("x86 PIT device registration is owned by AxVM arch adapter");
-                    }
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
                 EmulatedDeviceType::LoongArchPchPic => {
                     #[cfg(target_arch = "loongarch64")]
                     {
@@ -504,6 +485,21 @@ impl DeviceRuntime {
     /// already-registered devices in this bundle are rolled back via
     /// `pop()` + index-key removal.
     pub fn register_bundle(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
+        if bundle
+            .guest_memory_devices
+            .iter()
+            .any(|index| *index >= bundle.devices.len())
+            || bundle
+                .guest_memory_devices
+                .iter()
+                .enumerate()
+                .any(|(position, index)| bundle.guest_memory_devices[..position].contains(index))
+        {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "register device guest-memory capability",
+                detail: "guest-memory capability must name each bundled device at most once".into(),
+            });
+        }
         for (index, pollable) in bundle.pollable.iter().enumerate() {
             if self
                 .pollable_devices
@@ -539,6 +535,12 @@ impl DeviceRuntime {
                 return Err(error.into());
             }
         }
+        self.dma_devices.extend(
+            bundle
+                .guest_memory_devices
+                .iter()
+                .map(|index| DeviceId::new((saved_len + index) as u32)),
+        );
         self.pollable_devices.extend(bundle.pollable);
         self.lifecycle_devices.extend(bundle.lifecycle);
         self.services.append(bundle.services);
@@ -905,96 +907,6 @@ impl DeviceRuntime {
         Ok(())
     }
 
-    // ─── x86 IOAPIC / PIT / Serial ──────────────────────────────────
-    #[cfg(target_arch = "x86_64")]
-    pub fn x86_ioapic_vector_for_gsi(&self, gsi: usize) -> Option<u8> {
-        self.x86_ioapic
-            .as_ref()
-            .and_then(|ioapic| ioapic.vector_for_gsi(gsi))
-    }
-
-    /// Assert an x86 IOAPIC GSI and return the interrupt to inject.
-    #[cfg(target_arch = "x86_64")]
-    pub fn x86_ioapic_assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt> {
-        self.x86_ioapic
-            .as_ref()
-            .and_then(|ioapic| ioapic.assert_gsi(gsi))
-    }
-
-    /// Broadcast an x86 local APIC EOI to the virtual IOAPIC.
-    #[cfg(target_arch = "x86_64")]
-    pub fn x86_ioapic_end_of_interrupt(&self, vector: u8) -> Option<IoApicEoi> {
-        self.x86_ioapic
-            .as_ref()
-            .and_then(|ioapic| ioapic.end_of_interrupt(vector))
-    }
-
-    /// Consume a pending x86 PIT channel 0 timer tick if the deadline is due.
-    #[cfg(target_arch = "x86_64")]
-    pub fn x86_pit_consume_irq0_if_due(&self, now_ns: u64) -> bool {
-        self.x86_pit
-            .as_ref()
-            .is_some_and(|pit| pit.consume_irq0_if_due(now_ns))
-    }
-
-    /// Poll x86 COM1 and return whether it has a pending RX interrupt.
-    #[cfg(target_arch = "x86_64")]
-    pub fn x86_serial_poll_irq(&self) -> bool {
-        self.x86_serial
-            .as_ref()
-            .is_some_and(|serial| serial.poll_irq())
-    }
-
-    /// Add an x86 IOAPIC device to the generic registry and x86 runtime handle.
-    #[cfg(target_arch = "x86_64")]
-    pub fn add_x86_ioapic_dev<D>(&mut self, dev: Arc<D>) -> DeviceManagerResult
-    where
-        D: Device + X86IoApicDeviceOps + 'static,
-    {
-        self.register(dev.clone() as Arc<dyn Device>)?;
-        self.x86_ioapic = Some(dev);
-        Ok(())
-    }
-
-    /// Add an x86 PIT device to the generic registry and x86 runtime handle.
-    #[cfg(target_arch = "x86_64")]
-    pub fn add_x86_pit_dev<D>(&mut self, dev: Arc<D>) -> DeviceManagerResult
-    where
-        D: Device + X86PitDeviceOps + 'static,
-    {
-        self.register(dev.clone() as Arc<dyn Device>)?;
-        self.x86_pit = Some(dev);
-        Ok(())
-    }
-
-    /// Add an x86 COM1 device to the generic registry and x86 runtime handle.
-    #[cfg(target_arch = "x86_64")]
-    pub fn add_x86_serial_dev<D>(&mut self, dev: Arc<D>) -> DeviceManagerResult
-    where
-        D: Device + X86SerialDeviceOps + 'static,
-    {
-        self.register(dev.clone() as Arc<dyn Device>)?;
-        self.x86_serial = Some(dev);
-        Ok(())
-    }
-
-    /// Add a QEMU fw_cfg MMIO device to the device list.
-    pub fn add_fw_cfg_dev(&mut self, dev: Arc<FwCfg>) -> DeviceManagerResult {
-        self.register(
-            MmioDeviceAdapter::from_arc(dev.clone()) as Arc<dyn Device + Send + Sync + 'static>
-        )?;
-        self.fw_cfg = Some(dev);
-        Ok(())
-    }
-
-    /// Returns the fw_cfg device that owns `addr`, if any.
-    pub fn fw_cfg_for_dma_addr(&self, addr: GuestPhysAddr) -> Option<Arc<FwCfg>> {
-        self.fw_cfg
-            .as_ref()
-            .filter(|fw_cfg| fw_cfg.is_dma_address(addr))
-            .cloned()
-    }
-
     /// Assert a LoongArch PCH-PIC input and return the routed EIOINTC vector.
     #[cfg(target_arch = "loongarch64")]
     pub fn loongarch_pch_pic_assert_irq(&self, irq: usize) -> Option<Option<usize>> {
@@ -1097,7 +1009,8 @@ impl DeviceRuntime {
             width,
             data: val as u64,
         };
-        self.dispatch(&access)
+        let response = self
+            .dispatch(&access)
             .map_err(|source| DeviceManagerError::Access {
                 operation: "write",
                 bus: BusKind::Mmio,
@@ -1105,7 +1018,70 @@ impl DeviceRuntime {
                 width,
                 source,
             })?;
-        Ok(())
+        Self::expect_write_response(response, "write MMIO device")
+    }
+
+    /// Returns whether this complete MMIO write access targets a device that
+    /// declared an access-scoped guest-memory capability.
+    pub fn mmio_write_needs_guest_memory(&self, addr: GuestPhysAddr, width: AccessWidth) -> bool {
+        self.lookup_mmio(addr.as_usize() as u64, width)
+            .map(|index| self.dma_devices.contains(&DeviceId::new(index as u32)))
+            .unwrap_or(false)
+    }
+
+    /// Handles MMIO with a VM-provided, access-scoped guest-memory capability.
+    pub fn handle_mmio_write_with_memory(
+        &self,
+        addr: GuestPhysAddr,
+        width: AccessWidth,
+        val: usize,
+        memory: &mut dyn axdevice_base::DeviceAccess,
+    ) -> DeviceManagerResult {
+        let access = BusAccess {
+            kind: BusKind::Mmio,
+            is_read: false,
+            addr: addr.as_usize() as u64,
+            width,
+            data: val as u64,
+        };
+        let idx =
+            self.lookup_mmio(access.addr, access.width)
+                .ok_or(DeviceManagerError::Access {
+                    operation: "write",
+                    bus: BusKind::Mmio,
+                    addr: access.addr,
+                    width,
+                    source: DeviceError::NotFound,
+                })?;
+        let id = DeviceId::new(idx as u32);
+        let mut context = RuntimeDeviceAccess {
+            device_id: id,
+            memory: Some(memory),
+            dma_allowed: self.dma_devices.contains(&id),
+        };
+        let response = self.devices[idx]
+            .access(&access, &mut context)
+            .map_err(|source| DeviceManagerError::Access {
+                operation: "write",
+                bus: BusKind::Mmio,
+                addr: access.addr,
+                width,
+                source,
+            })?;
+        Self::expect_write_response(response, "write MMIO device")
+    }
+
+    fn expect_write_response(
+        response: BusResponse,
+        operation: &'static str,
+    ) -> DeviceManagerResult {
+        match response {
+            BusResponse::Write => Ok(()),
+            BusResponse::Read { .. } => Err(DeviceManagerError::UnexpectedResponse {
+                operation,
+                detail: "device returned read data for a write request".into(),
+            }),
+        }
     }
 
     /// Handle the system register read by SysRegAddr and data width.
@@ -1256,6 +1232,8 @@ impl BusRouter for DeviceRuntime {
         let device = &self.devices[idx];
         let mut context = RuntimeDeviceAccess {
             device_id: DeviceId::new(idx as u32),
+            memory: None,
+            dma_allowed: false,
         };
         device.access(access, &mut context)
     }
@@ -1298,8 +1276,8 @@ mod tests {
     use super::AxVmDevices;
     use crate::{
         AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
-        DeviceLifecycle, DeviceManagerResult, DeviceRegistration, IrqResolver, ServiceCardinality,
-        ServiceKey, register_builtin_factories,
+        DeviceLifecycle, DeviceManagerError, DeviceManagerResult, DeviceRegistration, IrqResolver,
+        ServiceCardinality, ServiceKey, register_builtin_factories,
     };
 
     struct D {
@@ -1331,6 +1309,49 @@ mod tests {
         resources: alloc::vec::Vec<Resource>,
     }
 
+    struct GuestMemoryRequestDevice {
+        resources: alloc::vec::Vec<Resource>,
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    struct ServiceBackedIoApic {
+        resources: alloc::vec::Vec<Resource>,
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    impl Device for ServiceBackedIoApic {
+        fn name(&self) -> &str {
+            "service-backed-ioapic"
+        }
+
+        fn resources(&self) -> &[Resource] {
+            &self.resources
+        }
+
+        fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {
+            Ok(BusResponse::Read { value: 0 })
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    impl crate::X86IoApicDeviceOps for ServiceBackedIoApic {
+        fn vector_for_gsi(&self, gsi: usize) -> Option<u8> {
+            (gsi == 4).then_some(0x44)
+        }
+
+        fn assert_gsi(&self, _gsi: usize) -> Option<x86_vlapic::IoApicInterrupt> {
+            None
+        }
+
+        fn end_of_interrupt(&self, _vector: u8) -> Option<x86_vlapic::IoApicEoi> {
+            None
+        }
+    }
+
     impl Device for AccessAwareDevice {
         fn name(&self) -> &str {
             "access-aware"
@@ -1351,6 +1372,72 @@ mod tests {
         ) -> Result<BusResponse, DeviceError> {
             assert_eq!(context.device_id(), DeviceId::new(0));
             Ok(BusResponse::Read { value: 0xfeed })
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    impl Device for GuestMemoryRequestDevice {
+        fn name(&self) -> &str {
+            "guest-memory-request"
+        }
+
+        fn resources(&self) -> &[Resource] {
+            &self.resources
+        }
+
+        fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {
+            Err(DeviceError::Internal)
+        }
+
+        fn access(
+            &self,
+            _access: &BusAccess,
+            context: &mut dyn DeviceAccess,
+        ) -> Result<BusResponse, DeviceError> {
+            let mut byte = [0u8; 1];
+            context.read_guest_memory(GuestPhysAddr::from_usize(0), &mut byte)?;
+            Ok(BusResponse::Write)
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    struct TestMemoryPort;
+
+    impl DeviceAccess for TestMemoryPort {
+        fn device_id(&self) -> DeviceId {
+            DeviceId::new(0)
+        }
+
+        fn read_guest_memory(
+            &mut self,
+            _addr: GuestPhysAddr,
+            _data: &mut [u8],
+        ) -> Result<(), DeviceError> {
+            Ok(())
+        }
+    }
+
+    struct ReadOnWriteDevice {
+        resources: alloc::vec::Vec<Resource>,
+    }
+
+    impl Device for ReadOnWriteDevice {
+        fn name(&self) -> &str {
+            "read-on-write"
+        }
+
+        fn resources(&self) -> &[Resource] {
+            &self.resources
+        }
+
+        fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {
+            Ok(BusResponse::Read { value: 0 })
         }
 
         fn as_any(&self) -> &dyn Any {
@@ -1485,6 +1572,107 @@ mod tests {
             }),
             Ok(BusResponse::Read { value: 0xfeed })
         ));
+    }
+
+    #[test]
+    fn memory_port_is_denied_to_devices_without_dma_grant() {
+        let mut devices = AxVmDevices::empty();
+        devices
+            .register(Arc::new(GuestMemoryRequestDevice {
+                resources: alloc::vec![Resource::MmioRange {
+                    base: 0x5000,
+                    size: 0x100,
+                }],
+            }))
+            .unwrap();
+        let mut memory = TestMemoryPort;
+
+        let error = devices
+            .handle_mmio_write_with_memory(
+                GuestPhysAddr::from_usize(0x5000),
+                AccessWidth::Dword,
+                0,
+                &mut memory,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DeviceManagerError::Access {
+                source: DeviceError::Unsupported { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn bundle_declared_memory_device_receives_memory_port() {
+        let mut devices = AxVmDevices::empty();
+        devices
+            .register_bundle(DeviceBundle::new().with_guest_memory_device(Arc::new(
+                GuestMemoryRequestDevice {
+                    resources: alloc::vec![Resource::MmioRange {
+                        base: 0x6000,
+                        size: 0x100,
+                    }],
+                },
+            )))
+            .unwrap();
+        let mut memory = TestMemoryPort;
+
+        devices
+            .handle_mmio_write_with_memory(
+                GuestPhysAddr::from_usize(0x6000),
+                AccessWidth::Dword,
+                0,
+                &mut memory,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn mmio_write_rejects_a_read_response() {
+        let mut devices = AxVmDevices::empty();
+        devices
+            .register(Arc::new(ReadOnWriteDevice {
+                resources: alloc::vec![Resource::MmioRange {
+                    base: 0x7000,
+                    size: 0x100,
+                }],
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            devices.handle_mmio_write(GuestPhysAddr::from_usize(0x7000), AccessWidth::Dword, 0,),
+            Err(DeviceManagerError::UnexpectedResponse { .. })
+        ));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x86_ioapic_registration_publishes_typed_service() {
+        let mut devices = AxVmDevices::empty();
+        let ioapic = Arc::new(ServiceBackedIoApic {
+            resources: alloc::vec![Resource::MmioRange {
+                base: 0xfec0_0000,
+                size: 0x1000,
+            }],
+        });
+        let service: Arc<dyn crate::X86IoApicDeviceOps> = ioapic.clone();
+        let bundle = DeviceBundle::from_registration(DeviceRegistration::Device(ioapic))
+            .with_service::<crate::X86IoApicServiceKey>(service)
+            .unwrap();
+        devices.register_bundle(bundle).unwrap();
+
+        assert_eq!(devices.device_count(), 1);
+        assert_eq!(
+            devices
+                .services()
+                .require::<crate::X86IoApicServiceKey>()
+                .unwrap()
+                .vector_for_gsi(4),
+            Some(0x44)
+        );
     }
 
     #[test]

@@ -1,9 +1,6 @@
 //! x86_64 VM resource creation and initialization.
 
-use alloc::sync::Arc;
-
 use ax_memory_addr::PAGE_SIZE_4K;
-use axdevice_base::{BaseDeviceOps, DeviceRegistry as _, PortDeviceAdapter};
 use axvm_types::{EmulatedDeviceType, MappingFlags, NestedPagingConfig, VmArchVcpuOps};
 use x86_vcpu::{
     X86GuestMemoryRegion, X86GuestPhysAddr, X86HostVirtAddr, X86VcpuCreateConfig,
@@ -51,7 +48,8 @@ impl X86_64Arch {
     pub(crate) fn init_vm(vm: &AxVM, request: VmInitRequest<'_>) -> AxVmResult {
         match request {
             VmInitRequest::Default => {
-                let factories = default_device_factories()?;
+                let mut factories = default_device_factories()?;
+                super::register_device_factories(&mut factories)?;
                 let interrupt_fabric = crate::InterruptFabric::new(vm.interrupt_mode());
                 init_vm_with(vm, &factories, interrupt_fabric)
             }
@@ -73,7 +71,7 @@ fn init_vm_with(
         let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
         let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
         register_arch_devices(resources.config(), &mut devices.devices)?;
-        devices.register_special_devices(vm)?;
+        devices.register_boot_payload_devices(vm)?;
         validate_guest_dtb(resources)?;
 
         let mut owned_regions = guest_owned_regions(resources);
@@ -114,24 +112,15 @@ fn build_vcpu_setup_config(
 
 fn register_arch_devices(config: &AxVMConfig, devices: &mut axdevice::AxVmDevices) -> AxVmResult {
     for port in config.pass_through_ports() {
-        let passthrough = Arc::new(super::port::HostPortPassthrough::new(
-            port.base,
-            port.length,
-        )?);
-        let range = passthrough.address_range();
+        let bundle = super::port::HostPortPassthroughFactory::new(*port).build()?;
         debug!(
             "PT port region: [{:#x}~{:#x}]",
-            range.start.number(),
-            range.end.number(),
+            port.base,
+            port.base as u32 + port.length as u32 - 1,
         );
-        devices
-            .register(PortDeviceAdapter::from_arc(passthrough))
-            .map_err(|err| {
-                ax_err_type!(InvalidInput, alloc::format!("register PT port: {err:?}"))
-            })?;
-    }
-    for device_config in config.emu_devices() {
-        super::register_arch_device(device_config, devices)?;
+        devices.register_bundle(bundle).map_err(|err| {
+            ax_err_type!(InvalidInput, alloc::format!("register PT port: {err:?}"))
+        })?;
     }
     Ok(())
 }

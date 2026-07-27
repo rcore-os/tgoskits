@@ -1,6 +1,6 @@
 //! RISC-V VM resource creation and initialization.
 
-use axvm_types::{NestedPagingConfig, VmArchVcpuOps};
+use axvm_types::{EmulatedDeviceType, NestedPagingConfig, VmArchVcpuOps};
 use riscv_vcpu::RiscvVcpuCreateConfig;
 
 use super::{Riscv64Arch, irq, npt};
@@ -43,9 +43,43 @@ impl Riscv64Arch {
             VmInitRequest::Provided {
                 factories,
                 interrupt_fabric,
-            } => init_vm_with(vm, factories, interrupt_fabric),
+            } => {
+                validate_provided_device_bootstrap(vm, factories, &interrupt_fabric)?;
+                init_vm_with(vm, factories, interrupt_fabric)
+            }
         }
     }
+}
+
+/// Ensures an explicitly supplied RISC-V device plan cannot omit the vPLIC
+/// pieces that the default architecture bootstrap would have supplied.
+fn validate_provided_device_bootstrap(
+    vm: &AxVM,
+    factories: &axdevice::DeviceFactoryRegistry,
+    interrupt_fabric: &crate::InterruptFabric,
+) -> AxVmResult {
+    let has_vplic = vm.with_config(|config| {
+        config
+            .emu_devices()
+            .iter()
+            .any(|device| device.emu_type == EmulatedDeviceType::PPPTGlobal)
+    });
+    if !has_vplic {
+        return Ok(());
+    }
+    if factories.get(EmulatedDeviceType::PPPTGlobal).is_none() {
+        return ax_err!(
+            InvalidInput,
+            "explicit RISC-V device factories must include the virtual PLIC factory"
+        );
+    }
+    if !interrupt_fabric.has_backend() {
+        return ax_err!(
+            InvalidInput,
+            "explicit RISC-V interrupt fabric must include a virtual PLIC backend"
+        );
+    }
+    Ok(())
 }
 
 fn init_vm_with(
@@ -67,7 +101,7 @@ fn init_vm_with(
             })
         })?;
         let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        devices.register_special_devices(vm)?;
+        devices.register_boot_payload_devices(vm)?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);

@@ -13,6 +13,7 @@ readme = "README.md"
 license = "Apache-2.0"
 
 [features]
+host-test = ["ax-kspin/host-test"]
 
 [dependencies]
 log = "0.4"

@@ -1,10 +1,14 @@
-use alloc::{format, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
+use core::{any::Any, cell::RefCell};
 
 use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult, EmuDeviceType};
+use axdevice_base::{
+    AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError,
+    DeviceResult, EmuDeviceType, Resource,
+};
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 
-use crate::{DeviceManagerError, DeviceManagerResult};
+use crate::{DeviceBundle, DeviceManagerError, DeviceManagerResult};
 
 const FW_CFG_SIGNATURE: u16 = 0x00;
 const FW_CFG_ID: u16 = 0x01;
@@ -519,6 +523,151 @@ impl FwCfg {
                 })
             }
         }
+    }
+}
+
+/// Runtime adapter that gives fw_cfg DMA access only to the current bus access.
+pub struct FwCfgDmaDevice {
+    inner: Arc<FwCfg>,
+    name: String,
+    resources: Box<[Resource]>,
+}
+
+/// Runtime image payload used to build one fw_cfg device contribution.
+///
+/// fw_cfg is supplied by the boot loader rather than a static
+/// `EmulatedDeviceConfig`: its kernel, initrd and command-line bytes are VM
+/// image state.  Keeping that input typed prevents it from becoming an
+/// architecture-side registration special case.
+pub struct FwCfgBuildConfig<'a> {
+    /// Guest MMIO base address.
+    pub base: GuestPhysAddr,
+    /// Guest MMIO region size.
+    pub size: usize,
+    /// Kernel image exposed through fw_cfg.
+    pub kernel: &'static [u8],
+    /// Optional initrd image exposed through fw_cfg.
+    pub initrd: Option<&'static [u8]>,
+    /// Optional kernel command line.
+    pub cmdline: Option<&'a str>,
+    /// Number of guest CPUs.
+    pub cpu_num: u16,
+    /// Platform firmware description inputs.
+    pub platform: FwCfgPlatformConfig,
+}
+
+/// Builds fw_cfg as a normal capability-declaring device contribution.
+pub struct FwCfgDeviceFactory;
+
+impl FwCfgDeviceFactory {
+    /// Creates the fw_cfg payload factory.
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Builds the fw_cfg MMIO device and declares its guest-memory need.
+    pub fn build(&self, config: FwCfgBuildConfig<'_>) -> DeviceManagerResult<DeviceBundle> {
+        let fw_cfg = Arc::new(FwCfg::new(
+            config.base,
+            config.size,
+            config.kernel,
+            config.initrd,
+            config.cmdline,
+            config.cpu_num,
+            config.platform,
+        ));
+        Ok(
+            DeviceBundle::new()
+                .with_guest_memory_device(Arc::new(FwCfgDmaDevice::from_arc(fw_cfg))),
+        )
+    }
+}
+
+impl Default for FwCfgDeviceFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FwCfgDmaDevice {
+    pub fn from_arc(inner: Arc<FwCfg>) -> Self {
+        let range = inner.address_range();
+        Self {
+            inner,
+            name: String::from("fw-cfg"),
+            resources: alloc::vec![Resource::MmioRange {
+                base: range.start.as_usize() as u64,
+                size: (range.end.as_usize() - range.start.as_usize()) as u64,
+            }]
+            .into_boxed_slice(),
+        }
+    }
+}
+
+impl Device for FwCfgDmaDevice {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+        let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        if access.is_read {
+            self.inner
+                .handle_read(addr, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.inner
+                .handle_write(addr, access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
+        }
+    }
+    fn access(
+        &self,
+        access: &BusAccess,
+        context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio || access.is_read {
+            return self.handle(access);
+        }
+        let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        if !self.inner.is_dma_address(addr) {
+            return self.handle(access);
+        }
+        let Some(descriptor) = self
+            .inner
+            .write_dma_address(addr, access.width, access.data as usize)
+            .map_err(DeviceError::from)?
+        else {
+            // A 32-bit write of the descriptor's high half only updates the
+            // latch; the low-half write starts the DMA transaction.
+            return Ok(BusResponse::Write);
+        };
+        let context = RefCell::new(context);
+        self.inner
+            .process_dma(
+                descriptor,
+                |gpa, data| {
+                    context
+                        .borrow_mut()
+                        .read_guest_memory(gpa, data)
+                        .map_err(crate::DeviceManagerError::from)
+                },
+                |gpa, data| {
+                    context
+                        .borrow_mut()
+                        .write_guest_memory(gpa, data)
+                        .map_err(crate::DeviceManagerError::from)
+                },
+            )
+            .map_err(DeviceError::from)?;
+        Ok(BusResponse::Write)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -1489,5 +1638,79 @@ mod tests {
     #[test]
     fn dma_rejects_buffer_address_overflow() {
         assert!(validate_dma_buffer(GuestPhysAddr::from_usize(usize::MAX), 2).is_err());
+    }
+
+    #[cfg(feature = "host-test")]
+    struct TestGuestMemory {
+        bytes: Vec<u8>,
+    }
+
+    #[cfg(feature = "host-test")]
+    impl DeviceAccess for TestGuestMemory {
+        fn device_id(&self) -> axdevice_base::DeviceId {
+            axdevice_base::DeviceId::new(0)
+        }
+
+        fn read_guest_memory(&mut self, addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult {
+            let start = addr.as_usize();
+            let end = start
+                .checked_add(data.len())
+                .filter(|end| *end <= self.bytes.len())
+                .ok_or(axdevice_base::DeviceError::OutOfRange { addr: start as u64 })?;
+            data.copy_from_slice(&self.bytes[start..end]);
+            Ok(())
+        }
+
+        fn write_guest_memory(&mut self, addr: GuestPhysAddr, data: &[u8]) -> DeviceResult {
+            let start = addr.as_usize();
+            let end = start
+                .checked_add(data.len())
+                .filter(|end| *end <= self.bytes.len())
+                .ok_or(axdevice_base::DeviceError::OutOfRange { addr: start as u64 })?;
+            self.bytes[start..end].copy_from_slice(data);
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "host-test")]
+    #[test]
+    fn dma_descriptor_uses_the_runtime_granted_memory_port() {
+        const BASE: usize = 0x1000;
+        const DESCRIPTOR: usize = 0x80;
+        const BUFFER: usize = 0x100;
+        let bundle = FwCfgDeviceFactory::new()
+            .build(FwCfgBuildConfig {
+                base: GuestPhysAddr::from_usize(BASE),
+                size: 0x20,
+                kernel: b"kernel",
+                initrd: None,
+                cmdline: None,
+                cpu_num: 1,
+                platform: FwCfgPlatformConfig::default(),
+            })
+            .unwrap();
+        let mut runtime =
+            crate::AxVmDevices::new(crate::AxVmDeviceConfig::new(Vec::new())).unwrap();
+        runtime.register_bundle(bundle).unwrap();
+        let mut memory = TestGuestMemory {
+            bytes: vec![0; 0x200],
+        };
+        let control = FW_CFG_DMA_CTL_SELECT | FW_CFG_DMA_CTL_READ;
+        memory.bytes[DESCRIPTOR..DESCRIPTOR + 4].copy_from_slice(&control.to_be_bytes());
+        memory.bytes[DESCRIPTOR + 4..DESCRIPTOR + 8].copy_from_slice(&4u32.to_be_bytes());
+        memory.bytes[DESCRIPTOR + 8..DESCRIPTOR + 16]
+            .copy_from_slice(&(BUFFER as u64).to_be_bytes());
+
+        runtime
+            .handle_mmio_write_with_memory(
+                GuestPhysAddr::from_usize(BASE + FW_CFG_DMA_OFFSET),
+                AccessWidth::Qword,
+                (DESCRIPTOR as u64).swap_bytes() as usize,
+                &mut memory,
+            )
+            .unwrap();
+
+        assert_eq!(&memory.bytes[BUFFER..BUFFER + 4], b"QEMU");
+        assert_eq!(&memory.bytes[DESCRIPTOR..DESCRIPTOR + 4], &[0, 0, 0, 0]);
     }
 }

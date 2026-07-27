@@ -55,8 +55,8 @@ pub use factory::{
     register_builtin_factories,
 };
 pub use fw_cfg::{
-    FwCfg, FwCfgInterruptConfig, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion,
-    FwCfgSerialConfig,
+    FwCfg, FwCfgBuildConfig, FwCfgDeviceFactory, FwCfgDmaDevice, FwCfgInterruptConfig,
+    FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion, FwCfgSerialConfig,
 };
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
@@ -65,8 +65,9 @@ pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, Pollab
 pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
 #[cfg(target_arch = "x86_64")]
 pub use x86::{
-    X86IoApicDevice, X86IoApicDeviceOps, X86PitDevice, X86PitDeviceOps, X86SerialDeviceOps,
-    X86SerialPortDevice,
+    X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDevice, X86IoApicDeviceOps,
+    X86IoApicServiceKey, X86PitDevice, X86PitDeviceOps, X86PitServiceKey, X86SerialDeviceOps,
+    X86SerialPortDevice, X86SerialServiceKey,
 };
 #[cfg(target_arch = "x86_64")]
 pub use x86_vlapic::IoApicInterrupt;

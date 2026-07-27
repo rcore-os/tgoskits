@@ -586,6 +586,24 @@ pub trait Device: Send + Sync + Any {
 pub trait DeviceAccess {
     /// Returns the identity of the device currently handling this access.
     fn device_id(&self) -> DeviceId;
+
+    /// Reads guest memory on behalf of the currently dispatched device.
+    ///
+    /// This capability is valid only for this access and is denied by default.
+    fn read_guest_memory(&mut self, _addr: GuestPhysAddr, _data: &mut [u8]) -> DeviceResult {
+        Err(DeviceError::Unsupported {
+            operation: "read guest memory from device access",
+            detail: "this bus access has no DMA memory grant".into(),
+        })
+    }
+
+    /// Writes guest memory on behalf of the currently dispatched device.
+    fn write_guest_memory(&mut self, _addr: GuestPhysAddr, _data: &[u8]) -> DeviceResult {
+        Err(DeviceError::Unsupported {
+            operation: "write guest memory from device access",
+            detail: "this bus access has no DMA memory grant".into(),
+        })
+    }
 }
 
 /// Device registration interface — the build-time / management-path half of a

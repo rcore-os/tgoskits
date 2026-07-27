@@ -93,7 +93,11 @@ pub(crate) trait ArchOps {
         crate::check_timer_events();
     }
 
-    fn on_last_vcpu_exit(_vm_id: usize) {}
+    /// Releases architecture runtime state after the VM's last vCPU exits.
+    ///
+    /// The VM reference is required for architecture state that is published
+    /// through VM-local device services rather than indexed in global tables.
+    fn on_last_vcpu_exit(_vm: &crate::AxVMRef) {}
 
     fn after_mmio_write(_vm: &crate::AxVMRef) {}
 

@@ -58,6 +58,8 @@ pub enum DeviceRegistration {
 #[derive(Default)]
 pub struct DeviceBundle {
     pub(crate) devices: Vec<Arc<dyn Device>>,
+    /// Indices of devices that require access-scoped guest-memory capability.
+    pub(crate) guest_memory_devices: Vec<usize>,
     pub(crate) pollable: Vec<Arc<dyn PollableDeviceOps>>,
     pub(crate) lifecycle: Vec<Arc<dyn DeviceLifecycle>>,
     pub(crate) services: DeviceServices,
@@ -68,6 +70,7 @@ impl DeviceBundle {
     pub const fn new() -> Self {
         Self {
             devices: Vec::new(),
+            guest_memory_devices: Vec::new(),
             pollable: Vec::new(),
             lifecycle: Vec::new(),
             services: DeviceServices::new(),
@@ -87,6 +90,22 @@ impl DeviceBundle {
             DeviceRegistration::Device(device) => self.devices.push(device),
             DeviceRegistration::Pollable(device) => self.pollable.push(device),
         }
+    }
+
+    /// Adds a device that requires guest-memory access during a routed access.
+    ///
+    /// This is a declaration, not a memory handle: the runtime assigns the
+    /// final [`axdevice_base::DeviceId`] during registration and injects the
+    /// actual port only for the duration of one eligible bus access.
+    pub fn add_guest_memory_device(&mut self, device: Arc<dyn Device>) {
+        self.guest_memory_devices.push(self.devices.len());
+        self.devices.push(device);
+    }
+
+    /// Adds a guest-memory-capable device and returns the bundle.
+    pub fn with_guest_memory_device(mut self, device: Arc<dyn Device>) -> Self {
+        self.add_guest_memory_device(device);
+        self
     }
 
     /// Adds one capability and returns the bundle for builder-style use.

@@ -68,7 +68,7 @@ fn init_vm_with(
         })?;
         let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
         register_arch_devices(vm, resources.config(), &mut devices.devices)?;
-        devices.register_special_devices(vm)?;
+        devices.register_boot_payload_devices(vm)?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);
