@@ -27,12 +27,14 @@ extern crate alloc;
 extern crate log;
 
 mod adapter;
-mod config;
 mod device;
 mod error;
 mod factory;
 mod fw_cfg;
-#[cfg(target_arch = "loongarch64")]
+// Keep the LoongArch-only implementation out of other production targets, but
+// compile its unit tests on the host so output-port behavior is covered by CI.
+#[cfg(any(target_arch = "loongarch64", test))]
+#[cfg_attr(test, allow(dead_code))]
 mod loongarch_pch_pic;
 mod range_alloc;
 mod registration;
@@ -50,8 +52,7 @@ pub use axdevice_base::{
     MmioDeviceAdapter, Port, PortDeviceAdapter, SysRegAddr, SysRegDeviceAdapter,
 };
 pub use axvm_types::GuestPhysAddr;
-pub use config::AxVmDeviceConfig;
-pub use device::{AxVmDevices, DeviceRuntime};
+pub use device::DeviceRuntime;
 pub use error::{DeviceManagerError, DeviceManagerResult};
 pub use factory::{
     DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,

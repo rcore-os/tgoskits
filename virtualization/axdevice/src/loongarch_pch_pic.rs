@@ -458,15 +458,12 @@ fn update_int_mask(state: &mut PchPicState, val: u32, high: bool) {
         } else {
             newly_masked as u64
         };
-        if let Some(vector) = update_irq(state, mask, false) {
-            push_output_event(
-                state,
-                PchPicOutputEvent {
-                    vector,
-                    asserted: false,
-                },
-            );
-        }
+        // Masking disconnects the PCH source from EIOINTC even if its input
+        // level remains high. Keep `intirr` latched so a later unmask can
+        // assert it again, but retract every output line already in service.
+        let active = state.intisr & mask;
+        state.intisr &= !active;
+        queue_events_for_mask(state, active, false);
     }
 }
 
@@ -556,7 +553,7 @@ fn log_pch_pic_irq(state: &PchPicState, op: &str, irq: usize, level: bool, mask:
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
 
     use super::*;
 
@@ -609,6 +606,42 @@ mod tests {
                 vector: 5,
                 asserted: false
             }]
+        );
+    }
+
+    #[test]
+    fn output_port_preserves_deassert_then_reassert_order() {
+        let pic = LoongArchPchPic::new(GuestPhysAddr::from_usize(0x1000), 0x1000);
+        let irq = 5;
+        let address = GuestPhysAddr::from_usize(0x1000 + PCH_PIC_INT_MASK_LO);
+
+        pic.handle_write(address, AccessWidth::Dword, !(1u32 << irq) as usize)
+            .unwrap();
+        assert_eq!(pic.set_input_level(irq, true), Some(irq));
+
+        // Masking an active level produces a deassert event. Re-enabling the
+        // same still-latched source must queue a later assert, not discard it.
+        pic.handle_write(address, AccessWidth::Dword, usize::MAX)
+            .unwrap();
+        pic.handle_write(address, AccessWidth::Dword, !(1u32 << irq) as usize)
+            .unwrap();
+
+        let mut events = Vec::new();
+        while let Some(event) = PchPicOutputPort::take_output_event(&pic) {
+            events.push(event);
+        }
+        assert_eq!(
+            events,
+            vec![
+                PchPicOutputEvent {
+                    vector: irq,
+                    asserted: false,
+                },
+                PchPicOutputEvent {
+                    vector: irq,
+                    asserted: true,
+                },
+            ]
         );
     }
 }

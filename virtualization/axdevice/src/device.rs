@@ -12,22 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::{collections::BTreeMap, format, sync::Arc, vec::Vec};
-
-#[cfg(target_arch = "riscv64")]
-use axdevice_base::MmioDeviceAdapter;
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
     DeviceId, DeviceRegistry, InvalidResourceReason, Port, RegistryError, Resource, SysRegAddr,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
-#[cfg(target_arch = "riscv64")]
-use riscv_vplic::VPlicGlobal;
+use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr};
 
 use crate::{
-    AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceLifecycle,
-    DeviceManagerError, DeviceManagerResult, DeviceServices, GuestRangeAllocatorKey,
-    PollableDeviceOps,
+    DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceLifecycle, DeviceManagerError,
+    DeviceManagerResult, DeviceServices, GuestRangeAllocatorKey, PollableDeviceOps,
 };
 
 #[inline]
@@ -49,18 +43,6 @@ struct RangeEntry {
     size: u64,
 }
 
-/// Selects the sole path allowed to construct one emulated device type.
-///
-/// A device type must never be owned by both a registered factory and the
-/// legacy initializer. Keeping the choice explicit makes such configuration
-/// errors fail during VM preparation instead of depending on priority.
-enum DeviceConstructionOwner {
-    /// The device is built through a registered [`DeviceFactory`].
-    Factory,
-    /// The device is built through the temporary legacy initializer.
-    Legacy,
-}
-
 fn ranges_overlap(start: u64, end: u64, other_start: u64, other_end: u64) -> bool {
     start < other_end && other_start < end
 }
@@ -80,8 +62,8 @@ fn range_contains_access(base: u64, size: u64, addr: u64, width: AccessWidth) ->
 ///
 /// Construction mutates the registry through [`DeviceRegistry`]. Once shared
 /// with vCPUs, routing is read-only and every access enters through
-/// [`BusRouter::dispatch`]. [`AxVmDevices`] remains a compatibility alias while
-/// architecture and VM callers migrate to this name.
+/// [`BusRouter::dispatch`]. Production construction always uses a factory and
+/// an atomic [`DeviceBundle`] registration.
 pub struct DeviceRuntime {
     /// Registered devices (append-only; index is the DeviceId).
     devices: Vec<Arc<dyn Device>>,
@@ -105,9 +87,6 @@ pub struct DeviceRuntime {
     /// write path and exists only for the duration of that one access.
     dma_devices: Vec<DeviceId>,
 }
-
-/// Compatibility name for the per-VM [`DeviceRuntime`].
-pub type AxVmDevices = DeviceRuntime;
 
 /// Stack-scoped metadata for one routed device access.
 struct RuntimeDeviceAccess<'a> {
@@ -173,35 +152,15 @@ impl DeviceRuntime {
         }
     }
 
-    /// According AxVmDeviceConfig to init the AxVmDevices
-    pub fn new(config: AxVmDeviceConfig) -> DeviceManagerResult<Self> {
-        let mut this = Self::empty();
-
-        Self::init(&mut this, &config.emu_configs)?;
-        Ok(this)
-    }
-
-    /// Builds devices with registered factories and explicit legacy fallbacks.
-    ///
-    /// A registered factory is authoritative and always takes precedence over
-    /// the legacy fallback for the same device type. Factory validation or
-    /// construction errors are returned directly; they never trigger fallback
-    /// construction of a second device.
+    /// Builds all configured devices through registered factories.
     pub fn build_with_factories(
-        config: AxVmDeviceConfig,
+        configs: &[EmulatedDeviceConfig],
         factories: &DeviceFactoryRegistry,
         context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<Self> {
         let mut this = Self::empty();
-        for config in &config.emu_configs {
-            match Self::construction_owner(config.emu_type, factories)? {
-                DeviceConstructionOwner::Factory => {
-                    this.register_factory_device(config, factories, context)?;
-                }
-                DeviceConstructionOwner::Legacy => {
-                    Self::init(&mut this, core::slice::from_ref(config))?;
-                }
-            }
+        for config in configs {
+            this.register_factory_device(config, factories, context)?;
         }
         Ok(this)
     }
@@ -215,106 +174,6 @@ impl DeviceRuntime {
     ) -> DeviceManagerResult {
         let bundle = factories.build(config, context)?;
         self.register_bundle(bundle)
-    }
-
-    fn is_legacy_fallback(device_type: EmulatedDeviceType) -> bool {
-        matches!(device_type, EmulatedDeviceType::FwCfg)
-    }
-
-    fn construction_owner(
-        device_type: EmulatedDeviceType,
-        factories: &DeviceFactoryRegistry,
-    ) -> DeviceManagerResult<DeviceConstructionOwner> {
-        match (
-            factories.get(device_type).is_some(),
-            Self::is_legacy_fallback(device_type),
-        ) {
-            (true, false) => Ok(DeviceConstructionOwner::Factory),
-            (false, true) => Ok(DeviceConstructionOwner::Legacy),
-            (true, true) => Err(DeviceManagerError::ResourceConflict {
-                operation: "resolve device construction owner",
-                detail: format!(
-                    "emulated device type {device_type} is registered by both a factory and the \
-                     legacy path"
-                ),
-            }),
-            (false, false) => Err(DeviceManagerError::Unsupported {
-                operation: "build emulated device",
-                detail: format!(
-                    "no factory is registered for emulated device type {device_type}, and no \
-                     legacy path owns it"
-                ),
-            }),
-        }
-    }
-
-    #[cfg(target_arch = "riscv64")]
-    fn config_argument(
-        config: &EmulatedDeviceConfig,
-        index: usize,
-        expected: &'static str,
-    ) -> DeviceManagerResult<usize> {
-        config
-            .cfg_list
-            .get(index)
-            .copied()
-            .ok_or_else(|| DeviceManagerError::InvalidConfig {
-                operation: "initialize emulated device",
-                detail: format!("device '{}' requires {expected}", config.name),
-            })
-    }
-
-    /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &[EmulatedDeviceConfig]) -> DeviceManagerResult {
-        let _ = this;
-        for config in emu_configs {
-            match config.emu_type {
-                EmulatedDeviceType::PPPTGlobal => {
-                    #[cfg(target_arch = "riscv64")]
-                    {
-                        let context_num =
-                            Self::config_argument(config, 0, "one argument (context_num)")?;
-                        let vplic = VPlicGlobal::new(
-                            config.base_gpa.into(),
-                            Some(config.length),
-                            context_num,
-                        )
-                        .map_err(|error| {
-                            DeviceManagerError::InvalidConfig {
-                                operation: "initialize virtual PLIC",
-                                detail: format!("device '{}': {error}", config.name),
-                            }
-                        })?;
-                        this.register(
-                            MmioDeviceAdapter::from_arc(Arc::new(vplic)) as Arc<dyn Device>
-                        )?;
-                        // PLIC Partial Passthrough Global.
-                        info!(
-                            "Partial PLIC Passthrough Global initialized with base GPA {:#x} and \
-                             length {:#x}",
-                            config.base_gpa, config.length
-                        );
-                    }
-                    #[cfg(not(target_arch = "riscv64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::FwCfg => {
-                    debug!("fw_cfg device is initialized when runtime image payloads are added");
-                }
-                _ => {
-                    warn!(
-                        "Emulated device {}'s type {:?} is not supported yet",
-                        config.name, config.emu_type
-                    );
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Allocates an IVC (Inter-VM Communication) channel of the specified size.

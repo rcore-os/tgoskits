@@ -125,6 +125,7 @@ struct VtimerRegisters {
     timer_token: Option<usize>,
     expired: bool,
     generation: u64,
+    target: Option<VtimerTarget>,
     suspended_remaining_ns: Option<u64>,
 }
 
@@ -156,10 +157,10 @@ impl VtimerState {
         let inject = {
             let mut registers = self.registers.lock();
             registers.control = value & 0b11;
-            registers.expired && Self::interrupt_enabled(&registers)
+            (registers.expired && Self::interrupt_enabled(&registers)).then_some(registers.target)
         };
-        if inject {
-            backend.inject_virtual_interrupt(backend.current_target(), VIRTUAL_TIMER_IRQ);
+        if let Some(Some(target)) = inject {
+            backend.inject_virtual_interrupt(target, VIRTUAL_TIMER_IRQ);
         }
     }
 
@@ -182,6 +183,7 @@ impl VtimerState {
             registers.deadline_ns = Some(deadline_ns);
             registers.expired = false;
             registers.generation = registers.generation.wrapping_add(1);
+            registers.target = Some(target);
             registers.suspended_remaining_ns = None;
             (registers.timer_token.take(), registers.generation)
         };
@@ -211,6 +213,9 @@ impl VtimerState {
                     .deadline_ns
                     .map(|deadline| deadline.saturating_sub(now_ns));
             }
+            // A cancelled callback can race with this operation.  Invalidate it
+            // before releasing the lock, so a paused timer cannot expire.
+            registers.generation = registers.generation.wrapping_add(1);
             registers.deadline_ns = None;
             registers.timer_token.take()
         };
@@ -232,7 +237,13 @@ impl VtimerState {
         let token = {
             let mut registers = self.registers.lock();
             let token = registers.timer_token.take();
+            // Cancellation is not a synchronization point with a callback
+            // already executing on another CPU.  Preserve a distinct
+            // generation across reset so that callback cannot affect a later
+            // re-armed timer.
+            let generation = registers.generation.wrapping_add(1);
             *registers = VtimerRegisters::default();
+            registers.generation = generation;
             token
         };
         if let Some(token) = token {
@@ -360,5 +371,44 @@ mod tests {
 
         assert_eq!(state.control(120), 0);
         assert_eq!(*concrete_backend.cancelled.lock(), [1]);
+    }
+
+    #[test]
+    fn unmask_delivers_an_expired_timer_to_its_programming_vcpu() {
+        let concrete_backend = Arc::new(TestBackend::new(100));
+        let backend: Arc<dyn VtimerBackend> = concrete_backend.clone();
+        let state = Arc::new(VtimerState::new());
+
+        state.write_timer_value(20, Arc::clone(&backend));
+        state.expire(1, VtimerTarget::new(11, 2), Arc::clone(&backend));
+        assert!(concrete_backend.injected.lock().is_empty());
+
+        state.write_control(1, backend.as_ref());
+        assert_eq!(
+            *concrete_backend.injected.lock(),
+            [(VtimerTarget::new(7, 3), VIRTUAL_TIMER_IRQ)],
+            "the timer must retain the target captured when it was programmed"
+        );
+    }
+
+    #[test]
+    fn suspend_and_reset_invalidate_racing_callbacks() {
+        let concrete_backend = Arc::new(TestBackend::new(100));
+        let backend: Arc<dyn VtimerBackend> = concrete_backend.clone();
+        let state = Arc::new(VtimerState::new());
+        state.write_control(1, backend.as_ref());
+        state.write_timer_value(20, Arc::clone(&backend));
+
+        state.suspend(backend.as_ref());
+        state.expire(1, VtimerTarget::new(7, 3), Arc::clone(&backend));
+        assert_eq!(state.control(120), 1);
+        assert_eq!(*concrete_backend.cancelled.lock(), [1]);
+
+        state.resume(Arc::clone(&backend));
+        state.reset(backend.as_ref());
+        state.expire(3, VtimerTarget::new(7, 3), backend);
+        assert_eq!(state.control(120), 0);
+        assert_eq!(*concrete_backend.injected.lock(), []);
+        assert_eq!(*concrete_backend.cancelled.lock(), [1, 2]);
     }
 }
