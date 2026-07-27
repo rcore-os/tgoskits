@@ -382,40 +382,82 @@ pub fn set_phys_cpu_sets(
                 .strip_prefix("/cpus/cpu@")
                 .and_then(|id| id.split('/').next())
                 .and_then(|id| usize::from_str_radix(id, 16).ok())?;
-            let guest_cpu_id = node_regs(fdt, node_id).first()?.address as usize;
+            let hardware_cpu_id = node_regs(fdt, node_id).first()?.address as usize;
             info!(
-                "CPU node: {}, node_id: 0x{:x}, guest_cpu_id: 0x{:x}",
-                path, node_id_from_path, guest_cpu_id
+                "CPU node: {}, node_id: 0x{:x}, hardware_cpu_id: 0x{:x}",
+                path, node_id_from_path, hardware_cpu_id
             );
-            Some((node_id_from_path, guest_cpu_id))
+            Some((node_id_from_path, hardware_cpu_id))
         })
         .collect();
     info!("Found {} host CPU nodes", cpu_nodes_info.len());
 
-    let mut new_phys_cpu_sets = Vec::new();
-    let mut guest_phys_cpu_ids = Vec::new();
-    for phys_cpu_id in phys_cpu_ids {
-        if let Some((cpu_index, (_, guest_cpu_id))) = cpu_nodes_info
-            .iter()
-            .enumerate()
-            .find(|(_, (node_id, _))| node_id == phys_cpu_id)
-        {
-            let cpu_mask = 1usize << cpu_index;
-            new_phys_cpu_sets.push(cpu_mask);
-            guest_phys_cpu_ids.push(*guest_cpu_id);
-        } else {
-            error!(
-                "vCPU {} with phys_cpu_id 0x{:x} not found in device tree!",
-                vm_cfg.id(),
-                phys_cpu_id
-            );
-        }
-    }
+    let policy = super::selected_guest_fdt_policy();
+    let (new_phys_cpu_sets, guest_phys_cpu_ids) = resolve_phys_cpu_sets(
+        phys_cpu_ids,
+        &cpu_nodes_info,
+        (policy.host_cpu_count)(),
+        policy.resolve_cpu_index,
+    )?;
 
     let phys_cpu_ls = vm_cfg.phys_cpu_ls_mut();
     phys_cpu_ls.set_guest_cpu_sets(new_phys_cpu_sets);
     phys_cpu_ls.set_guest_phys_cpu_ids(guest_phys_cpu_ids);
     Ok(())
+}
+
+fn resolve_phys_cpu_sets(
+    phys_cpu_ids: &[usize],
+    cpu_nodes: &[(usize, usize)],
+    host_cpu_count: usize,
+    mut resolve_cpu_index: impl FnMut(usize) -> Option<usize>,
+) -> AxVmResult<(Vec<usize>, Vec<usize>)> {
+    let mut cpu_sets = Vec::with_capacity(phys_cpu_ids.len());
+    let mut guest_cpu_ids = Vec::with_capacity(phys_cpu_ids.len());
+
+    for &phys_cpu_id in phys_cpu_ids {
+        let &(_, hardware_cpu_id) = cpu_nodes
+            .iter()
+            .find(|(node_id, _)| *node_id == phys_cpu_id)
+            .ok_or_else(|| {
+                ax_err_type!(
+                    InvalidInput,
+                    format!("physical CPU ID 0x{phys_cpu_id:x} is missing from the host FDT")
+                )
+            })?;
+        let logical_index = resolve_cpu_index(hardware_cpu_id).ok_or_else(|| {
+            ax_err_type!(
+                InvalidInput,
+                format!(
+                    "hardware CPU ID 0x{hardware_cpu_id:x} is missing from the runtime topology"
+                )
+            )
+        })?;
+        if logical_index >= host_cpu_count {
+            return Err(ax_err_type!(
+                InvalidInput,
+                format!(
+                    "logical CPU index {logical_index} is outside the {host_cpu_count} usable \
+                     host CPUs"
+                )
+            ));
+        }
+        let cpu_mask = if logical_index < usize::BITS as usize {
+            1usize << logical_index
+        } else {
+            return Err(ax_err_type!(
+                InvalidInput,
+                format!(
+                    "logical CPU index {logical_index} does not fit the host CPU affinity mask"
+                )
+            ));
+        };
+
+        cpu_sets.push(cpu_mask);
+        guest_cpu_ids.push(hardware_cpu_id);
+    }
+
+    Ok((cpu_sets, guest_cpu_ids))
 }
 
 fn add_device_address_config(
@@ -634,7 +676,7 @@ mod tests {
     use fdt_edit::{Fdt, Node};
     use fdt_raw::RegInfo;
 
-    use super::{align_reserved_region_4k, reserve_excluded_device_ranges};
+    use super::{align_reserved_region_4k, reserve_excluded_device_ranges, resolve_phys_cpu_sets};
     use crate::config::{AxVMConfig, AxVMConfigParams, PhysCpuList};
 
     fn prop_u32(name: &str, value: u32) -> fdt_edit::Property {
@@ -685,6 +727,52 @@ mod tests {
     #[test]
     fn align_reserved_region_rejects_zero_sized_range() {
         assert_eq!(align_reserved_region_4k(0x1000, 0), None);
+    }
+
+    #[test]
+    fn phys_cpu_set_uses_runtime_logical_index_instead_of_fdt_order() {
+        let cpu_nodes = [(0, 0), (1, 1), (2, 2), (3, 3)];
+        let runtime_indices_by_hardware_id = [1, 2, 3, 0];
+
+        let (cpu_sets, guest_cpu_ids) =
+            resolve_phys_cpu_sets(&[0], &cpu_nodes, 4, |hardware_cpu_id| {
+                runtime_indices_by_hardware_id.get(hardware_cpu_id).copied()
+            })
+            .unwrap();
+
+        assert_eq!(cpu_sets, vec![0b0010]);
+        assert_eq!(guest_cpu_ids, vec![0]);
+    }
+
+    #[test]
+    fn phys_cpu_set_rejects_cpu_missing_from_runtime_topology() {
+        let error = resolve_phys_cpu_sets(&[3], &[(3, 3)], 4, |_| None).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("hardware CPU ID 0x3 is missing from the runtime topology")
+        );
+    }
+
+    #[test]
+    fn phys_cpu_set_rejects_logical_index_outside_affinity_mask() {
+        let error =
+            resolve_phys_cpu_sets(&[3], &[(3, 3)], usize::MAX, |_| Some(usize::BITS as usize))
+                .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("does not fit the host CPU affinity mask")
+        );
+    }
+
+    #[test]
+    fn phys_cpu_set_rejects_logical_index_outside_usable_host_cpus() {
+        let error = resolve_phys_cpu_sets(&[3], &[(3, 3)], 4, |_| Some(4)).unwrap_err();
+
+        assert!(error.to_string().contains("outside the 4 usable host CPUs"));
     }
 
     #[test]
