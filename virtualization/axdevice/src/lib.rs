@@ -36,6 +36,7 @@ mod fw_cfg;
 mod loongarch_pch_pic;
 mod range_alloc;
 mod registration;
+mod service;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
@@ -47,7 +48,7 @@ pub use axdevice_base::{
 };
 pub use axvm_types::GuestPhysAddr;
 pub use config::AxVmDeviceConfig;
-pub use device::AxVmDevices;
+pub use device::{AxVmDevices, DeviceRuntime};
 pub use error::{DeviceManagerError, DeviceManagerResult};
 pub use factory::{
     DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,
@@ -59,7 +60,8 @@ pub use fw_cfg::{
 };
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
-pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
+pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, PollableDeviceOps};
+pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
 #[cfg(target_arch = "x86_64")]
 pub use x86::{
     X86IoApicDevice, X86IoApicDeviceOps, X86PitDevice, X86PitDeviceOps, X86SerialDeviceOps,

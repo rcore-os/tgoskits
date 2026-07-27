@@ -22,9 +22,9 @@ use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::PhysAddr;
 use ax_memory_addr::is_aligned_4k;
 use axdevice_base::{
-    AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError, DeviceId,
-    DeviceRegistry, InvalidResourceReason, MmioDeviceAdapter, Port, RegistryError, Resource,
-    SysRegAddr,
+    AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
+    DeviceId, DeviceRegistry, InvalidResourceReason, MmioDeviceAdapter, Port, RegistryError,
+    Resource, SysRegAddr,
 };
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 #[cfg(target_arch = "riscv64")]
@@ -33,8 +33,9 @@ use riscv_vplic::VPlicGlobal;
 use x86_vlapic::{IoApicEoi, IoApicInterrupt};
 
 use crate::{
-    AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, FwCfg, PollableDeviceOps, range_alloc::RangeAllocator,
+    AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceLifecycle,
+    DeviceManagerError, DeviceManagerResult, DeviceServices, FwCfg, PollableDeviceOps,
+    range_alloc::RangeAllocator,
 };
 #[cfg(target_arch = "loongarch64")]
 use crate::{LoongArchPchPic, PchPicOutputEvent};
@@ -87,8 +88,13 @@ fn range_contains_access(base: u64, size: u64, addr: u64, width: AccessWidth) ->
     base <= addr && access_end <= resource_end
 }
 
-/// represent A vm own devices
-pub struct AxVmDevices {
+/// Per-VM runtime that owns the static emulated-device topology.
+///
+/// Construction mutates the registry through [`DeviceRegistry`]. Once shared
+/// with vCPUs, routing is read-only and every access enters through
+/// [`BusRouter::dispatch`]. [`AxVmDevices`] remains a compatibility alias while
+/// architecture and VM callers migrate to this name.
+pub struct DeviceRuntime {
     /// Registered devices (append-only; index is the DeviceId).
     devices: Vec<Arc<dyn Device>>,
     /// MMIO base address → range entry (slot, size).
@@ -101,6 +107,10 @@ pub struct AxVmDevices {
     irq_line_index: BTreeMap<u32, DeviceId>,
     /// Devices that require periodic polling.
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
+    /// Optional lifecycle capabilities in contribution registration order.
+    lifecycle_devices: Vec<Arc<dyn DeviceLifecycle>>,
+    /// Typed capabilities contributed during VM preparation.
+    services: DeviceServices,
     /// x86 IOAPIC — kept for type-specific access.
     #[cfg(target_arch = "x86_64")]
     x86_ioapic: Option<Arc<dyn X86IoApicDeviceOps>>,
@@ -119,8 +129,21 @@ pub struct AxVmDevices {
     ivc_channel: Option<Mutex<RangeAllocator>>,
 }
 
-/// The implemention for AxVmDevices
-impl AxVmDevices {
+/// Compatibility name for the per-VM [`DeviceRuntime`].
+pub type AxVmDevices = DeviceRuntime;
+
+/// Stack-scoped metadata for one routed device access.
+struct RuntimeDeviceAccess {
+    device_id: DeviceId,
+}
+
+impl DeviceAccess for RuntimeDeviceAccess {
+    fn device_id(&self) -> DeviceId {
+        self.device_id
+    }
+}
+
+impl DeviceRuntime {
     fn empty() -> Self {
         Self {
             devices: Vec::new(),
@@ -129,6 +152,8 @@ impl AxVmDevices {
             sysreg_index: BTreeMap::new(),
             irq_line_index: BTreeMap::new(),
             pollable_devices: Vec::new(),
+            lifecycle_devices: Vec::new(),
+            services: DeviceServices::new(),
             #[cfg(target_arch = "x86_64")]
             x86_ioapic: None,
             #[cfg(target_arch = "x86_64")]
@@ -572,6 +597,20 @@ impl AxVmDevices {
                 });
             }
         }
+        for (index, lifecycle) in bundle.lifecycle.iter().enumerate() {
+            if self
+                .lifecycle_devices
+                .iter()
+                .chain(bundle.lifecycle[..index].iter())
+                .any(|existing| Arc::ptr_eq(existing, lifecycle))
+            {
+                return Err(DeviceManagerError::ResourceConflict {
+                    operation: "register device lifecycle",
+                    detail: "the same lifecycle capability is already registered".into(),
+                });
+            }
+        }
+        self.services.validate_merge(&bundle.services)?;
 
         let saved_len = self.devices.len();
         for device in &bundle.devices {
@@ -581,6 +620,8 @@ impl AxVmDevices {
             }
         }
         self.pollable_devices.extend(bundle.pollable);
+        self.lifecycle_devices.extend(bundle.lifecycle);
+        self.services.append(bundle.services);
         Ok(())
     }
 
@@ -915,6 +956,35 @@ impl AxVmDevices {
         self.pollable_devices.iter()
     }
 
+    /// Returns VM-local typed device services.
+    pub const fn services(&self) -> &DeviceServices {
+        &self.services
+    }
+
+    /// Resets lifecycle-capable devices in registration order.
+    pub fn reset_lifecycle_devices(&self) -> DeviceManagerResult {
+        for lifecycle in &self.lifecycle_devices {
+            lifecycle.reset()?;
+        }
+        Ok(())
+    }
+
+    /// Suspends lifecycle-capable devices in reverse registration order.
+    pub fn suspend_lifecycle_devices(&self) -> DeviceManagerResult {
+        for lifecycle in self.lifecycle_devices.iter().rev() {
+            lifecycle.suspend()?;
+        }
+        Ok(())
+    }
+
+    /// Resumes lifecycle-capable devices in registration order.
+    pub fn resume_lifecycle_devices(&self) -> DeviceManagerResult {
+        for lifecycle in &self.lifecycle_devices {
+            lifecycle.resume()?;
+        }
+        Ok(())
+    }
+
     // ─── x86 IOAPIC / PIT / Serial ──────────────────────────────────
     #[cfg(target_arch = "x86_64")]
     pub fn x86_ioapic_vector_for_gsi(&self, gsi: usize) -> Option<u8> {
@@ -1225,7 +1295,7 @@ impl AxVmDevices {
     }
 }
 
-impl Default for AxVmDevices {
+impl Default for DeviceRuntime {
     fn default() -> Self {
         Self::empty()
     }
@@ -1235,18 +1305,18 @@ impl Default for AxVmDevices {
 // Trait implementations
 // ---------------------------------------------------------------------------
 
-impl DeviceRegistry for AxVmDevices {
+impl DeviceRegistry for DeviceRuntime {
     fn register(&mut self, device: Arc<dyn Device>) -> Result<DeviceId, RegistryError> {
         let idx = self.devices.len();
         self.validate_resources(device.resources())?;
         self.insert_resources(idx, device.resources());
         self.devices.push(device);
-        info!("AxVmDevices: registered device id={}", idx);
+        info!("DeviceRuntime: registered device id={}", idx);
         Ok(DeviceId::new(idx as u32))
     }
 }
 
-impl BusRouter for AxVmDevices {
+impl BusRouter for DeviceRuntime {
     fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
         let idx = match access.kind {
             BusKind::Mmio => self.lookup_mmio(access.addr, access.width),
@@ -1264,7 +1334,10 @@ impl BusRouter for AxVmDevices {
         .ok_or(DeviceError::NotFound)?;
 
         let device = &self.devices[idx];
-        device.handle(access)
+        let mut context = RuntimeDeviceAccess {
+            device_id: DeviceId::new(idx as u32),
+        };
+        device.access(access, &mut context)
     }
 
     fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError> {
@@ -1290,19 +1363,23 @@ impl BusRouter for AxVmDevices {
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
-    use core::any::Any;
+    use core::{
+        any::Any,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use axdevice_base::{
-        AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceError,
-        DeviceRegistry, InterruptTriggerMode, InvalidResourceReason, IrqLine, Port, RegistryError,
-        Resource, SysRegAddr,
+        AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
+        DeviceId, DeviceRegistry, InterruptTriggerMode, InvalidResourceReason, IrqLine, Port,
+        RegistryError, Resource, SysRegAddr,
     };
     use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
     use super::AxVmDevices;
     use crate::{
         AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
-        DeviceManagerResult, DeviceRegistration, IrqResolver,
+        DeviceLifecycle, DeviceManagerResult, DeviceRegistration, IrqResolver, ServiceCardinality,
+        ServiceKey,
     };
 
     struct D {
@@ -1327,6 +1404,37 @@ mod tests {
                 resources: alloc::vec![Resource::SysReg { addr, count: 1 }],
                 n,
             }
+        }
+    }
+
+    struct AccessAwareDevice {
+        resources: alloc::vec::Vec<Resource>,
+    }
+
+    impl Device for AccessAwareDevice {
+        fn name(&self) -> &str {
+            "access-aware"
+        }
+
+        fn resources(&self) -> &[Resource] {
+            &self.resources
+        }
+
+        fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {
+            Err(DeviceError::Internal)
+        }
+
+        fn access(
+            &self,
+            _access: &BusAccess,
+            context: &mut dyn DeviceAccess,
+        ) -> Result<BusResponse, DeviceError> {
+            assert_eq!(context.device_id(), DeviceId::new(0));
+            Ok(BusResponse::Read { value: 0xfeed })
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
         }
     }
     impl Device for D {
@@ -1374,6 +1482,50 @@ mod tests {
         }
     }
 
+    trait BundleService: Send + Sync {
+        fn value(&self) -> usize;
+    }
+
+    struct BundleServiceKey;
+
+    impl ServiceKey for BundleServiceKey {
+        type Service = dyn BundleService;
+
+        const NAME: &'static str = "bundle-service";
+        const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+    }
+
+    struct BundleServiceProvider(usize);
+
+    impl BundleService for BundleServiceProvider {
+        fn value(&self) -> usize {
+            self.0
+        }
+    }
+
+    struct CountingLifecycle {
+        reset_calls: AtomicUsize,
+        suspend_calls: AtomicUsize,
+        resume_calls: AtomicUsize,
+    }
+
+    impl DeviceLifecycle for CountingLifecycle {
+        fn reset(&self) -> DeviceManagerResult {
+            self.reset_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn suspend(&self) -> DeviceManagerResult {
+            self.suspend_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn resume(&self) -> DeviceManagerResult {
+            self.resume_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_register_dispatch() {
         let mut m = AxVmDevices::empty();
@@ -1389,6 +1541,30 @@ mod tests {
             })
             .is_ok()
         );
+    }
+
+    #[test]
+    fn dispatch_uses_access_context_for_v3_devices() {
+        let mut devices = AxVmDevices::empty();
+        devices
+            .register(Arc::new(AccessAwareDevice {
+                resources: alloc::vec![Resource::MmioRange {
+                    base: 0x4000,
+                    size: 0x100,
+                }],
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            devices.dispatch(&BusAccess {
+                kind: BusKind::Mmio,
+                is_read: true,
+                addr: 0x4000,
+                width: AccessWidth::Dword,
+                data: 0,
+            }),
+            Ok(BusResponse::Read { value: 0xfeed })
+        ));
     }
 
     #[test]
@@ -1823,6 +1999,62 @@ mod tests {
             }),
             Err(DeviceError::NotFound)
         ));
+    }
+
+    #[test]
+    fn register_bundle_rejects_conflicting_service_without_registering_device() {
+        let mut devices = AxVmDevices::empty();
+        let first_provider: Arc<dyn BundleService> = Arc::new(BundleServiceProvider(1));
+        let mut first = DeviceBundle::new();
+        first
+            .provide_service::<BundleServiceKey>(first_provider)
+            .unwrap();
+        devices.register_bundle(first).unwrap();
+
+        let conflicting_provider: Arc<dyn BundleService> = Arc::new(BundleServiceProvider(2));
+        let mut conflicting = DeviceBundle::from_registration(DeviceRegistration::Device(
+            Arc::new(D::new_mmio(0x2000, 0x100, "must-not-register")),
+        ));
+        conflicting
+            .provide_service::<BundleServiceKey>(conflicting_provider)
+            .unwrap();
+
+        assert!(matches!(
+            devices.register_bundle(conflicting),
+            Err(crate::DeviceManagerError::ResourceConflict {
+                operation: "register device service",
+                ..
+            })
+        ));
+        assert_eq!(devices.device_count(), 0);
+        assert_eq!(
+            devices
+                .services()
+                .require::<BundleServiceKey>()
+                .unwrap()
+                .value(),
+            1
+        );
+    }
+
+    #[test]
+    fn runtime_invokes_registered_lifecycle_capability() {
+        let lifecycle = Arc::new(CountingLifecycle {
+            reset_calls: AtomicUsize::new(0),
+            suspend_calls: AtomicUsize::new(0),
+            resume_calls: AtomicUsize::new(0),
+        });
+        let bundle = DeviceBundle::new().with_lifecycle(lifecycle.clone());
+        let mut devices = AxVmDevices::empty();
+        devices.register_bundle(bundle).unwrap();
+
+        devices.reset_lifecycle_devices().unwrap();
+        devices.suspend_lifecycle_devices().unwrap();
+        devices.resume_lifecycle_devices().unwrap();
+
+        assert_eq!(lifecycle.reset_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(lifecycle.suspend_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(lifecycle.resume_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

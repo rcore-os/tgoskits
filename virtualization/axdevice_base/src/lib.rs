@@ -540,6 +540,20 @@ pub trait Device: Send + Sync + Any {
     /// This is the hot-path entry point called from [`BusRouter::dispatch`].
     fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError>;
 
+    /// Handles a single bus access with runtime-scoped device context.
+    ///
+    /// The default implementation preserves the existing device ABI by
+    /// delegating to [`Device::handle`]. Devices that need runtime-provided
+    /// capabilities can override this method when those capabilities are
+    /// introduced by a later migration stage.
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        self.handle(access)
+    }
+
     /// Returns a reference to `self` as `&dyn Any` for downcasting.
     fn as_any(&self) -> &dyn Any;
 
@@ -560,6 +574,18 @@ pub trait Device: Send + Sync + Any {
     fn resume(&mut self) -> Result<(), DeviceError> {
         Ok(())
     }
+}
+
+/// Context scoped to one device bus access.
+///
+/// A [`BusRouter`] creates this context immediately before calling
+/// [`Device::access`] and drops it before returning to the architecture exit
+/// handler. The context currently exposes only the routed device identity;
+/// later stages add narrowly scoped capabilities when they have real device
+/// consumers.
+pub trait DeviceAccess {
+    /// Returns the identity of the device currently handling this access.
+    fn device_id(&self) -> DeviceId;
 }
 
 /// Device registration interface — the build-time / management-path half of a

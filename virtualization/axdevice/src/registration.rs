@@ -18,12 +18,28 @@ use alloc::{sync::Arc, vec::Vec};
 
 use axdevice_base::Device;
 
-use crate::DeviceManagerResult;
+use crate::{DeviceManagerResult, DeviceServices, ServiceKey};
 
 /// A device capability that can be polled by the VM runtime.
 pub trait PollableDeviceOps: Send + Sync {
     /// Advances the device using the current monotonic time in nanoseconds.
     fn poll(&self, now_ns: u64) -> DeviceManagerResult;
+}
+
+/// Optional lifecycle operations contributed by a device.
+///
+/// Lifecycle is deliberately separate from the hot-path [`Device`] trait:
+/// registered devices are shared through [`Arc`], while lifecycle state must
+/// remain internally synchronized by the capability that owns it.
+pub trait DeviceLifecycle: Send + Sync {
+    /// Restores the device to its power-on state.
+    fn reset(&self) -> DeviceManagerResult;
+
+    /// Quiesces the device before the VM is suspended.
+    fn suspend(&self) -> DeviceManagerResult;
+
+    /// Restores a suspended device.
+    fn resume(&self) -> DeviceManagerResult;
 }
 
 /// One strongly typed capability contributed by a device.
@@ -43,6 +59,8 @@ pub enum DeviceRegistration {
 pub struct DeviceBundle {
     pub(crate) devices: Vec<Arc<dyn Device>>,
     pub(crate) pollable: Vec<Arc<dyn PollableDeviceOps>>,
+    pub(crate) lifecycle: Vec<Arc<dyn DeviceLifecycle>>,
+    pub(crate) services: DeviceServices,
 }
 
 impl DeviceBundle {
@@ -51,6 +69,8 @@ impl DeviceBundle {
         Self {
             devices: Vec::new(),
             pollable: Vec::new(),
+            lifecycle: Vec::new(),
+            services: DeviceServices::new(),
         }
     }
 
@@ -75,9 +95,50 @@ impl DeviceBundle {
         self
     }
 
+    /// Adds one lifecycle capability to this contribution.
+    pub fn add_lifecycle(&mut self, lifecycle: Arc<dyn DeviceLifecycle>) {
+        self.lifecycle.push(lifecycle);
+    }
+
+    /// Adds one lifecycle capability and returns the contribution.
+    pub fn with_lifecycle(mut self, lifecycle: Arc<dyn DeviceLifecycle>) -> Self {
+        self.add_lifecycle(lifecycle);
+        self
+    }
+
+    /// Adds one typed service provider to this contribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this contribution already provides a
+    /// single-provider service with the same key.
+    pub fn provide_service<K: ServiceKey>(
+        &mut self,
+        service: Arc<K::Service>,
+    ) -> DeviceManagerResult {
+        self.services.provide::<K>(service)
+    }
+
+    /// Adds one typed service provider and returns the contribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the contribution already provides a
+    /// single-provider service with the same key.
+    pub fn with_service<K: ServiceKey>(
+        mut self,
+        service: Arc<K::Service>,
+    ) -> DeviceManagerResult<Self> {
+        self.provide_service::<K>(service)?;
+        Ok(self)
+    }
+
     /// Returns whether this bundle contains no capabilities.
     pub fn is_empty(&self) -> bool {
-        self.devices.is_empty() && self.pollable.is_empty()
+        self.devices.is_empty()
+            && self.pollable.is_empty()
+            && self.lifecycle.is_empty()
+            && self.services.is_empty()
     }
 }
 
