@@ -8,9 +8,13 @@ keywords = ["arceos"]
 repository = "https://github.com/Starry-OS/scope-local"
 license = "Apache-2.0"
 
+[features]
+axtest = ["dep:axtest"]
+
 [dependencies]
 ax-kernel-guard.workspace = true
 ax-percpu.workspace = true
+axtest = { workspace = true, optional = true }
 spin = { workspace = true }
 
 [dev-dependencies]
@@ -19,3 +23,6 @@ ax-kernel-guard = { workspace = true, features = ["preempt"] }
 ctor = "0.6"
 cpu-local = { workspace = true, features = ["host-test"] }
 ax-percpu = { workspace = true, features = ["host-test"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

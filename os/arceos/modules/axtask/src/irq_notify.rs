@@ -67,3 +67,26 @@ impl IrqNotify {
         self.wait.wait_until(|| self.drain());
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn irq_notify_constructor_and_pending_hold_for_test() -> bool {
+    // Test IrqNotify::new() creates a non-pending instance
+    let notify = IrqNotify::new();
+    assert!(!notify.is_pending());
+
+    // Test Default trait
+    let default_notify = IrqNotify::default();
+    assert!(!default_notify.is_pending());
+
+    true
+}
+
+#[cfg(axtest)]
+pub(crate) fn irq_notify_drain_logic_hold_for_test() -> bool {
+    // Test drain on a fresh IrqNotify returns false (nothing pending)
+    let notify = IrqNotify::new();
+    assert!(!notify.drain()); // Nothing to drain
+    assert!(!notify.is_pending()); // Still not pending after drain
+
+    true
+}

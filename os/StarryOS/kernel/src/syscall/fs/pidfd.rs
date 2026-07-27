@@ -183,3 +183,31 @@ pub fn sys_pidfd_send_signal(
 
     Ok(0)
 }
+
+#[cfg(axtest)]
+pub(crate) fn pidfd_flags_and_signal_validation_rules_hold_for_test() -> bool {
+    // Test PidFdFlags validation
+    let valid_flags = 0u32;
+    assert!(PidFdFlags::from_bits(valid_flags).is_some());
+
+    let nonblock_only = 2048u32;
+    assert!(PidFdFlags::from_bits(nonblock_only).is_some());
+
+    let thread_only = 128u32;
+    assert!(PidFdFlags::from_bits(thread_only).is_some());
+
+    let all_valid = 2048u32 | 128u32;
+    assert!(PidFdFlags::from_bits(all_valid).is_some());
+
+    // Invalid flag should return None
+    let invalid_flags = 0xFFFF;
+    assert!(PidFdFlags::from_bits(invalid_flags).is_none());
+
+    // Test parse_signo
+    assert!(parse_signo(1).is_ok()); // SIGHUP
+    assert!(parse_signo(9).is_ok()); // SIGKILL
+    assert!(parse_signo(0).is_err()); // Invalid signo
+    assert!(parse_signo(255).is_err()); // Out of range
+
+    true
+}

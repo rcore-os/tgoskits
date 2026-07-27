@@ -10,12 +10,16 @@ repository.workspace = true
 version = "0.8.1"
 
 [features]
+axtest = []
 efi = ["someboot/efi"]
 hv = ["mmu", "someboot/hv", "dep:ax-cpu"]
 mmu = ["someboot/mmu"]
 thead-mae = ["someboot/thead-mae"]
 tls = ["someboot/tls"]
 uspace = ["mmu", "someboot/uspace"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
 anyhow = {workspace = true}

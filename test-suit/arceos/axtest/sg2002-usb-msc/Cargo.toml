@@ -8,6 +8,9 @@ publish = false
 default = []
 ax-std = ["dep:ax-hal", "dep:ax-runtime", "dep:ax-std", "ax-runtime/irq"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [dependencies]
 ax-driver.workspace = true
 ax-hal = { workspace = true, optional = true }

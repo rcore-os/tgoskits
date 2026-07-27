@@ -8,10 +8,14 @@ description = "ArceOS filesystem module"
 license.workspace = true
 
 [features]
+axtest = []
 fat = ["dep:fatfs"]
 ext4 = ["dep:rsext4"]
 vfs = []
 lockdep = ["axfs-ng-vfs/lockdep"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dependencies]
 ax-errno = { workspace = true }

@@ -650,8 +650,21 @@ jobs:
               }
               UEFI_FIRMWARE="$(find_uefi_firmware || true)"
               if [ -z "${UEFI_FIRMWARE}" ]; then
-                sudo apt-get update
-                sudo apt-get install -y --no-install-recommends ovmf
+                # apt against the runner mirrors fails transiently with exit 100
+                # (mirror hiccup / lock); a bare invocation lets a flaky mirror
+                # abort the whole smoke, so retry with backoff before giving up.
+                for attempt in 1 2 3; do
+                  if sudo apt-get update -o Acquire::Retries=3 \
+                    && sudo apt-get install -y --no-install-recommends \
+                         -o Acquire::Retries=3 ovmf; then
+                    break
+                  fi
+                  if [ "${attempt}" -eq 3 ]; then
+                    echo "ERROR: apt-get failed to install OVMF after 3 attempts." >&2
+                    exit 1
+                  fi
+                  sleep "$((attempt * 10))"
+                done
                 UEFI_FIRMWARE="$(find_uefi_firmware || true)"
               fi
               if [ -z "${UEFI_FIRMWARE}" ]; then

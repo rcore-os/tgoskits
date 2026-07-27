@@ -355,3 +355,29 @@ impl Pollable for Pipe {
         }
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn pipe_resize_rounding_and_state_rules_hold_for_test() -> bool {
+    let (read_end, _write_end) = Pipe::new();
+
+    // Initial capacity is the default 64 KiB ring buffer.
+    let initial_capacity = read_end.capacity();
+
+    // Newly allocated pipe has one reader and one writer.
+    read_end.is_read()
+        && !read_end.is_write()
+        // Resizing to the current capacity is a no-op success.
+        && read_end.resize(initial_capacity).is_ok()
+        && read_end.capacity() == initial_capacity
+        // Round up to the next power-of-two page multiple: 4097 -> 8192.
+        && read_end.resize(4097).is_ok()
+        && read_end.capacity() == 8192
+        // Sub-page sizes are rounded up to a single page (4096).
+        && read_end.resize(1).is_ok()
+        && read_end.capacity() == 4096
+        // Sizes above RING_BUFFER_MAX_SIZE (1 MiB) are rejected.
+        && read_end.resize(1024 * 1024 + 1).is_err()
+        // Zero-sized resize rounds up to one page (no InvalidInput).
+        && read_end.resize(0).is_ok()
+        && read_end.capacity() == 4096
+}

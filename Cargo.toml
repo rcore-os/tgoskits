@@ -21,6 +21,7 @@ members = [
     "components/axtest/axtest",
     "components/axtest/axtest_macros",
     "components/cpu-local",
+    "components/ax-cgroup",
     "components/ax-lazyinit",
     "components/axbacktrace",
     "components/axcpu",
@@ -143,6 +144,7 @@ cpu-local = { version = "0.1.1", path = "components/cpu-local" }
 ax-cpu = { version = "0.8.4", path = "components/axcpu" }
 ax-cpumask = { version = "0.3.5", path = "components/cpumask" }
 ax-crate-interface = { version = "0.5.7", path = "components/crate_interface" }
+ax-cgroup = { version = "0.1.0", path = "components/ax-cgroup" }
 ax-ctor-bare = { version = "0.4.8", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4.8", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.6.6", path = "os/arceos/modules/axdisplay" }

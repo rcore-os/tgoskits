@@ -206,7 +206,7 @@ fn prepare_ktest_cargo_preserves_inline_target_rustflags() {
 }
 
 #[test]
-fn llvm_cov_html_args_ignore_cargo_and_rustup_sources() {
+fn llvm_cov_html_args_ignore_non_workspace_sources_and_target_outputs() {
     let args = llvm_cov_html_args(
         Path::new("/repo/target/kernel.elf"),
         Path::new("/repo/coverage/kernel.profdata"),
@@ -221,8 +221,8 @@ fn llvm_cov_html_args_ignore_cargo_and_rustup_sources() {
     assert!(
         rendered
             .iter()
-            .any(|arg| arg == "-ignore-filename-regex=[/\\\\]\\.(cargo|rustup)[/\\\\]"),
-        "llvm-cov HTML reports should not include Cargo registry or Rust toolchain sources: \
-         {rendered:?}"
+            .any(|arg| arg == "-ignore-filename-regex=[/\\\\](\\.(cargo|rustup)|target)[/\\\\]"),
+        "llvm-cov HTML reports should not include Cargo registry, Rust toolchain, or target \
+         output sources: {rendered:?}"
     );
 }

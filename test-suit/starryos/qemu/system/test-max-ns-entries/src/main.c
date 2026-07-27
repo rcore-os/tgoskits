@@ -1,4 +1,3 @@
-// Migrated from the former nix-sandbox-debug suite.
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>

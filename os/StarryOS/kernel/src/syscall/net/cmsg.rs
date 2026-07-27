@@ -116,3 +116,30 @@ impl<'a> CMsgBuilder<'a> {
         Ok(true)
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn cmsg_alignment_and_space_rules_hold_for_test() -> bool {
+    // cmsg_align: rounds up to alignment boundary (usize-aligned).
+    let align = size_of::<usize>();
+    assert!(cmsg_align(0) == 0);
+    assert!(cmsg_align(1) == align);
+    assert!(cmsg_align(align) == align);
+    assert!(cmsg_align(align + 1) == 2 * align);
+
+    // cmsg_align_down: rounds down to alignment boundary.
+    assert!(cmsg_align_down(0) == 0);
+    assert!(cmsg_align_down(1) == 0);
+    assert!(cmsg_align_down(align) == align);
+    assert!(cmsg_align_down(align + 1) == align);
+
+    // cmsg_space: returns Some(len + hdr_size) aligned, or None on overflow.
+    let hdr_size = size_of::<cmsghdr>();
+    let space0 = cmsg_space(0).unwrap();
+    assert!(space0 >= hdr_size && space0 % align == 0);
+
+    // Overflow case: very large len should return None.
+    let overflow = cmsg_space(usize::MAX);
+    assert!(overflow.is_none());
+
+    true
+}

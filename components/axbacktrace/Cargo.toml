@@ -12,8 +12,10 @@ license = "Apache-2.0"
 [features]
 alloc = []
 dwarf = ["dep:addr2line", "dep:gimli", "dep:paste", "alloc"]
+axtest = ["alloc", "dep:axtest"]
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 axpanic = { workspace = true }
 cfg-if = "1"
 log = "0.4"
@@ -28,3 +30,6 @@ gimli = { version = "0.33", default-features = false, optional = true, features 
     "endian-reader",
 ] }
 paste = { version = "1", optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

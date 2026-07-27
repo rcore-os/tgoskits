@@ -75,3 +75,11 @@ pub fn sys_membarrier(cmd: i32, flags: u32, _cpu_id: i32) -> AxResult<isize> {
         _ => Err(AxError::InvalidInput),
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn membarrier_query_and_global_rules_hold_for_test() -> bool {
+    sys_membarrier(MEMBARRIER_CMD_QUERY, 0, 0) == Ok(SUPPORTED_COMMANDS as isize)
+        && sys_membarrier(MEMBARRIER_CMD_QUERY, 1, 0) == Err(AxError::InvalidInput)
+        && sys_membarrier(-1, 0, 0) == Err(AxError::InvalidInput)
+        && sys_membarrier(MEMBARRIER_CMD_GLOBAL, 0, 0) == Ok(0)
+}

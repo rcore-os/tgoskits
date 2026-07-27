@@ -257,3 +257,24 @@ fn commit(ifname: &str) -> AxResult<usize> {
 fn _write_iwreq_data(arg: usize, data: &[u8]) -> AxResult<()> {
     Ok(vm_write_slice((arg + IWREQ_DATA_OFFSET) as *mut u8, data)?)
 }
+
+#[cfg(axtest)]
+pub(crate) fn is_wext_ioctl_validation_rules_hold_for_test() -> bool {
+    // is_wext_ioctl: returns true only for the 5 handled WE ioctl commands.
+    let valid_cmds = [
+        SIOCSIWCOMMIT,
+        SIOCSIWFREQ,
+        SIOCSIWMODE,
+        SIOCSIWESSID,
+        SIOCSIWENCODEEXT,
+    ];
+    let all_valid = valid_cmds.iter().all(|&cmd| is_wext_ioctl(cmd));
+
+    // Non-WE commands should return false.
+    let invalid = !is_wext_ioctl(0)
+        && !is_wext_ioctl(u32::MAX)
+        && !is_wext_ioctl(SIOCSIWCOMMIT + 1)
+        && !is_wext_ioctl(SIOCSIWCOMMIT - 1);
+
+    all_valid && invalid
+}

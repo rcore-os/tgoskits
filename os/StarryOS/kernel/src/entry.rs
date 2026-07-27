@@ -20,6 +20,7 @@ use crate::{
 /// Initialize and run initproc.
 pub fn init(args: &[String], envs: &[String]) {
     static_keys::global_init();
+    crate::cgroup::init();
 
     tracepoint_init().expect("Failed to initialize tracepoints");
 
@@ -89,6 +90,9 @@ pub fn init(args: &[String], envs: &[String]) {
         pid,
         false,
     );
+    // SAFE-EXPECT: failing to attach init would violate the kernel's process accounting invariant.
+    crate::cgroup::attach_initial_process(pid)
+        .expect("Failed to attach init process to cgroup root");
 
     let mut scope = scope_local::Scope::new();
     crate::file::add_stdio(&mut FD_TABLE.scope_mut(&mut scope).write())

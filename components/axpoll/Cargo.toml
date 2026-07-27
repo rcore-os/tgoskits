@@ -9,16 +9,21 @@ documentation = "https://docs.rs/axpoll"
 license = "Apache-2.0"
 
 [features]
+axtest = ["dep:axtest"]
 default = []
 
 [dependencies]
 ax-kspin = { workspace = true }
+axtest = { workspace = true, optional = true }
 bitflags = { version = "2.10", default-features = false }
 linux-raw-sys = { version = "0.12", default-features = false, features = [
     "no_std",
     "general",
 ] }
 spin = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [dev-dependencies]
 ax-kspin = { workspace = true, features = ["host-test", "smp"] }

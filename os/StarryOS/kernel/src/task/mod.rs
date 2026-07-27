@@ -40,6 +40,14 @@ pub use self::{
     cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, seccomp::*, signal::*,
     stat::*, timer::*, user::*,
 };
+#[cfg(axtest)]
+pub(crate) use self::{
+    ops::decode_wait_status_rules_hold_for_test,
+    posix_timer::posix_timer_clock_validation_rules_hold_for_test,
+    seccomp::seccomp_action_and_precedence_rules_hold_for_test,
+    seccomp::seccomp_bpf_constants_hold_for_test,
+    timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyscallTraceState {
@@ -706,6 +714,8 @@ pub struct ProcessData {
     pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
     /// The namespace proxy — aggregates all namespace types for this process.
     pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
+    /// Authoritative cgroup membership shared by every thread in the process.
+    pub cgroup: RwLock<Arc<ax_cgroup::CgroupNode>>,
     /// The user heap top
     heap_top: AtomicUsize,
 
@@ -927,6 +937,7 @@ impl ProcessData {
             futex_table: Arc::new(FutexTable::new()),
 
             nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
+            cgroup: RwLock::new(crate::cgroup::root()),
 
             vfork_done: SpinNoIrq::new(None),
 

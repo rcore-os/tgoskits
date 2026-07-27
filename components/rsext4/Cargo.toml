@@ -13,10 +13,15 @@ categories = ["filesystem"]
 license = "Apache-2.0"
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 bitflags = "2.10"
 log = "0.4"
 ax-kspin = { workspace = true }
 
 [features]
 default = ["USE_MULTILEVEL_CACHE"]
+axtest = ["dep:axtest"]
 USE_MULTILEVEL_CACHE = [] #启用多级缓存
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }

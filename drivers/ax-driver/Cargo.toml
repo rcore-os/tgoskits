@@ -12,6 +12,7 @@ name = "ax_driver"
 
 [features]
 default = []
+axtest = ["dep:axtest"]
 
 irq = []
 pci = ["dep:ax-kspin", "dep:pcie", "dep:rdif-msi", "dep:rdif-pcie"]
@@ -139,6 +140,7 @@ list-pci-devices = ["pci"]
 pci-list-devices = ["list-pci-devices"]
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 aic8800 = { workspace = true, optional = true }
 anyhow = { workspace = true }
 arm-scmi-rs = { workspace = true, optional = true }
@@ -202,6 +204,9 @@ virtio-drivers = { workspace = true, optional = true }
 
 [dev-dependencies]
 ax-kernel-guard = { workspace = true, features = ["host-test"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv_goldfish = "0.1"

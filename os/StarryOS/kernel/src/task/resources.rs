@@ -78,3 +78,18 @@ impl IndexMut<u32> for Rlimits {
         &mut self.0[index as usize]
     }
 }
+
+#[cfg(axtest)]
+pub(crate) fn resource_limit_defaults_hold_for_test() -> bool {
+    let mut limits = Rlimits::default();
+    limits[RLIMIT_NOFILE] = Rlimit::new(7, 9);
+
+    limits[RLIMIT_STACK].current == crate::config::USER_STACK_SIZE as u64
+        && limits[RLIMIT_STACK].max == crate::config::USER_STACK_SIZE as u64
+        && limits[RLIMIT_DATA].current == u64::MAX
+        && limits[RLIMIT_DATA].max == u64::MAX
+        && limits[RLIMIT_NOFILE].current == 7
+        && limits[RLIMIT_NOFILE].max == 9
+        && Rlimit::from(11).current == 11
+        && Rlimit::from(11).max == 11
+}

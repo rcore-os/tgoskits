@@ -65,7 +65,7 @@ impl PreparedUnshare {
                 nsproxy.unshare_user();
             }
             if flags & CLONE_NEWCGROUP != 0 {
-                nsproxy.unshare_cgroup();
+                nsproxy.unshare_cgroup(thread.proc_data.cgroup.read().clone());
             }
         }
 
@@ -122,9 +122,9 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
 
     let curr = current();
     let thread = curr.as_thread();
-    let want_ns = flags & CLONE_NEWNS != 0;
+    let want_privileged_ns = flags & (CLONE_NEWNS | CLONE_NEWCGROUP) != 0;
 
-    if want_ns && !thread.cred().has_cap_sys_admin() {
+    if want_privileged_ns && !thread.cred().has_cap_sys_admin() {
         return Err(AxError::OperationNotPermitted);
     }
 
@@ -185,6 +185,9 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
     let curr = current();
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
+    if fd_type == CLONE_NEWCGROUP && !thread.cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
 
     // PID namespace: calling process stays in its current PID ns;
     // the target ns is staged to child_pid_ns and consumed by the
@@ -267,6 +270,9 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     let curr = current();
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
+    if nstype & CLONE_NEWCGROUP != 0 && !thread.cred().has_cap_sys_admin() {
+        return Err(AxError::OperationNotPermitted);
+    }
 
     // Check multi-threaded restrictions before making any changes.
     let thread_count = proc_data.proc.threads().len();

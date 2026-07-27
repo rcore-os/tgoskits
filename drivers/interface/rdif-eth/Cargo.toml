@@ -10,6 +10,13 @@ repository.workspace = true
 version = "0.3.8"
 
 [dependencies]
+axtest = { workspace = true, optional = true }
 dma-api = { workspace = true }
 rdif-base = { workspace = true }
 thiserror = { version = "2", default-features = false }
+
+[features]
+axtest = ["dep:axtest"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
