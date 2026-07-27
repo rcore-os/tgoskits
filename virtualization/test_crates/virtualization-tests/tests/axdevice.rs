@@ -332,6 +332,77 @@ impl DeviceFactory for MockMmioFactory {
     }
 }
 
+struct PrecreatedController {
+    range: GuestPhysAddrRange,
+    read_count: Mutex<usize>,
+}
+
+impl PrecreatedController {
+    fn new(base_gpa: usize, length: usize) -> Self {
+        Self {
+            range: GuestPhysAddrRange::new(base_gpa.into(), (base_gpa + length).into()),
+            read_count: Mutex::new(0),
+        }
+    }
+
+    fn read_count(&self) -> usize {
+        *self.read_count.lock().unwrap()
+    }
+}
+
+impl BaseDeviceOps<GuestPhysAddrRange> for PrecreatedController {
+    fn address_range(&self) -> GuestPhysAddrRange {
+        self.range
+    }
+
+    fn emu_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::InterruptController
+    }
+
+    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
+        *self.read_count.lock().unwrap() += 1;
+        Ok(0xC011_EC70)
+    }
+
+    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
+        Ok(())
+    }
+}
+
+struct PrecreatedControllerFactory {
+    base_gpa: usize,
+    length: usize,
+    cfg_list: Vec<usize>,
+    controller: Arc<PrecreatedController>,
+}
+
+impl DeviceFactory for PrecreatedControllerFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::InterruptController
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        if config.base_gpa != self.base_gpa
+            || config.length != self.length
+            || config.cfg_list != self.cfg_list
+        {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build pre-created interrupt controller",
+                detail: format!(
+                    "factory configuration does not match controller '{}'",
+                    config.name
+                ),
+            });
+        }
+
+        Ok(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(self.controller.clone())).into())
+    }
+}
+
 #[test]
 fn test_mmio_dispatch_functionality() {
     let config = AxVmDeviceConfig::new(vec![]);
@@ -735,6 +806,83 @@ fn test_factory_build_registers_new_device_type_without_legacy_branch() {
             .unwrap(),
         0xDEAD_BEEF
     );
+}
+
+#[test]
+fn test_controller_factory_precedes_legacy_fallback_and_reuses_precreated_instance() {
+    let base_gpa = 0x3_0000;
+    let length = 0x1000;
+    let cfg_list = vec![4, 64];
+    let controller = Arc::new(PrecreatedController::new(base_gpa, length));
+    let mut factories = DeviceFactoryRegistry::new();
+    factories
+        .register(Arc::new(PrecreatedControllerFactory {
+            base_gpa,
+            length,
+            cfg_list: cfg_list.clone(),
+            controller: controller.clone(),
+        }))
+        .unwrap();
+    let resolver = RejectingIrqResolver;
+    let context = DeviceBuildContext::new(&resolver);
+    let mut controller_config = device_config(
+        "pre-created-controller",
+        EmulatedDeviceType::InterruptController,
+        base_gpa,
+        length,
+    );
+    controller_config.cfg_list = cfg_list;
+
+    let devices = AxVmDevices::build_with_factories(
+        AxVmDeviceConfig::new(vec![controller_config]),
+        &factories,
+        &context,
+    )
+    .unwrap();
+
+    assert_eq!(devices.devices().count(), 1);
+    assert_eq!(
+        devices
+            .handle_mmio_read(base_gpa.into(), AccessWidth::Dword)
+            .unwrap(),
+        0xC011_EC70
+    );
+    assert_eq!(controller.read_count(), 1);
+}
+
+#[test]
+fn test_controller_factory_config_mismatch_does_not_use_legacy_fallback() {
+    let base_gpa = 0x4_0000;
+    let length = 0x1000;
+    let controller = Arc::new(PrecreatedController::new(base_gpa, length));
+    let mut factories = DeviceFactoryRegistry::new();
+    factories
+        .register(Arc::new(PrecreatedControllerFactory {
+            base_gpa,
+            length,
+            cfg_list: vec![4, 64],
+            controller: controller.clone(),
+        }))
+        .unwrap();
+    let resolver = RejectingIrqResolver;
+    let context = DeviceBuildContext::new(&resolver);
+    let mut mismatched_config = device_config(
+        "mismatched-controller",
+        EmulatedDeviceType::InterruptController,
+        base_gpa,
+        length,
+    );
+    mismatched_config.cfg_list = vec![8, 64];
+
+    assert!(matches!(
+        AxVmDevices::build_with_factories(
+            AxVmDeviceConfig::new(vec![mismatched_config]),
+            &factories,
+            &context,
+        ),
+        Err(DeviceManagerError::InvalidConfig { .. })
+    ));
+    assert_eq!(controller.read_count(), 0);
 }
 
 #[test]
