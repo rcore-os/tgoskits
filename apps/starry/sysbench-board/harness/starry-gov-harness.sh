@@ -21,17 +21,27 @@ PRIME=20000
 # Online CPU count, for the per-core probe (the shipped kernel pins max_cpu_num=4).
 NCPU=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 test -x "$SB" || { echo SYSBENCH_MISSING; exit 1; }
+# cpuprobe IS the evidence this harness exists to collect: the whole point is to
+# read each cluster's governor-scaled frequency. If it is missing there is no way
+# to validate the governor, so fail loudly rather than print a hollow success.
+test -x "$CP" || { echo "GH_CPUPROBE_MISSING $CP"; echo GOV_HARNESS_FAILED; exit 1; }
 
 # Raised if any sysbench workload exits non-zero. Gates GOV_HARNESS_DONE at the
 # end so a crashed/failed sysbench run is scored as a failure, not a pass — the
 # governor-validation run must never emit its success sentinel after a failure.
 fail=0
+# Count of cpuprobe reads that actually returned data. If it stays 0 the run
+# produced no frequency evidence (cpuprobe present but broken), which is also a
+# failed validation — gated at the end.
+probes_ok=0
 
 probe_all() {
   # cpuprobe every online core; the busy cluster reads its governor-scaled freq.
   c=0
   while [ "$c" -lt "$NCPU" ]; do
-    echo "GH_PC $($CP $c 2>/dev/null | sed 's/^CPUPROBE //')"
+    _pc=$($CP $c 2>/dev/null | sed 's/^CPUPROBE //')
+    echo "GH_PC $_pc"
+    [ -n "$_pc" ] && probes_ok=$((probes_ok + 1))
     c=$((c + 1))
   done
 }
@@ -73,6 +83,11 @@ probe_all
 
 sync 2>/dev/null
 if [ "$fail" -ne 0 ]; then
+  echo GOV_HARNESS_FAILED
+  exit 1
+fi
+if [ "$probes_ok" -eq 0 ]; then
+  echo "GH_NO_FREQ_EVIDENCE probes_ok=0"
   echo GOV_HARNESS_FAILED
   exit 1
 fi
