@@ -60,6 +60,7 @@ pub use fw_cfg::{
 };
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch_pch_pic::{LoongArchPchPic, PchPicOutputEvent};
+pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey};
 pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, PollableDeviceOps};
 pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
 #[cfg(target_arch = "x86_64")]

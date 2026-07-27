@@ -13,14 +13,11 @@
 // limitations under the License.
 
 use alloc::{collections::BTreeMap, format, sync::Arc, vec::Vec};
-use core::ops::Range;
 
 #[cfg(target_arch = "aarch64")]
 use arm_vgic::Vgic;
-use ax_kspin::SpinNoIrq as Mutex;
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
-use ax_memory_addr::is_aligned_4k;
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
     DeviceId, DeviceRegistry, InvalidResourceReason, MmioDeviceAdapter, Port, RegistryError,
@@ -34,8 +31,8 @@ use x86_vlapic::{IoApicEoi, IoApicInterrupt};
 
 use crate::{
     AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceLifecycle,
-    DeviceManagerError, DeviceManagerResult, DeviceServices, FwCfg, PollableDeviceOps,
-    range_alloc::RangeAllocator,
+    DeviceManagerError, DeviceManagerResult, DeviceServices, FwCfg, GuestRangeAllocatorKey,
+    PollableDeviceOps,
 };
 #[cfg(target_arch = "loongarch64")]
 use crate::{LoongArchPchPic, PchPicOutputEvent};
@@ -123,10 +120,8 @@ pub struct DeviceRuntime {
     /// LoongArch PCH-PIC — kept for type-specific access.
     #[cfg(target_arch = "loongarch64")]
     loongarch_pch_pic: Option<Arc<LoongArchPchPic>>,
-    /// QEMU fw_cfg — kept for DMA access routing.
+    /// QEMU fw_cfg — retained until its DMA access path is migrated.
     fw_cfg: Option<Arc<FwCfg>>,
-    /// IVC channel range allocator
-    ivc_channel: Option<Mutex<RangeAllocator>>,
 }
 
 /// Compatibility name for the per-VM [`DeviceRuntime`].
@@ -163,7 +158,6 @@ impl DeviceRuntime {
             #[cfg(target_arch = "loongarch64")]
             loongarch_pch_pic: None,
             fw_cfg: None,
-            ivc_channel: None,
         }
     }
 
@@ -216,7 +210,6 @@ impl DeviceRuntime {
             device_type,
             EmulatedDeviceType::InterruptController
                 | EmulatedDeviceType::Console
-                | EmulatedDeviceType::IVCChannel
                 | EmulatedDeviceType::GPPTRedistributor
                 | EmulatedDeviceType::GPPTDistributor
                 | EmulatedDeviceType::GPPTITS
@@ -272,6 +265,7 @@ impl DeviceRuntime {
 
     /// According the emu_configs to init every  specific device
     fn init(this: &mut Self, emu_configs: &[EmulatedDeviceConfig]) -> DeviceManagerResult {
+        let _ = this;
         for config in emu_configs {
             match config.emu_type {
                 EmulatedDeviceType::InterruptController => {
@@ -481,23 +475,6 @@ impl DeviceRuntime {
                 EmulatedDeviceType::FwCfg => {
                     debug!("fw_cfg device is initialized when runtime image payloads are added");
                 }
-                EmulatedDeviceType::IVCChannel => {
-                    if this.ivc_channel.is_none() {
-                        // Initialize the IVC channel range allocator
-                        this.ivc_channel = Some(Mutex::new(RangeAllocator::new(Range {
-                            start: config.base_gpa,
-                            end: config.base_gpa + config.length,
-                        })));
-                        info!(
-                            "IVCChannel initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length
-                        );
-                    } else {
-                        warn!("IVCChannel already initialized, ignoring additional config");
-                    }
-                }
                 _ => {
                     warn!(
                         "Emulated device {}'s type {:?} is not supported yet",
@@ -511,73 +488,16 @@ impl DeviceRuntime {
 
     /// Allocates an IVC (Inter-VM Communication) channel of the specified size.
     pub fn alloc_ivc_channel(&self, size: usize) -> DeviceManagerResult<GuestPhysAddr> {
-        if size == 0 {
-            return Err(DeviceManagerError::InvalidInput {
-                operation: "allocate IVC channel",
-                detail: "size must be greater than zero".into(),
-            });
-        }
-        if !is_aligned_4k(size) {
-            return Err(DeviceManagerError::InvalidInput {
-                operation: "allocate IVC channel",
-                detail: format!("size {size:#x} is not aligned to 4 KiB"),
-            });
-        }
-
-        if let Some(allocator) = &self.ivc_channel {
-            allocator
-                .lock()
-                .allocate_range(size)
-                .ok_or_else(|| {
-                    warn!("Failed to allocate IVC channel range with size {size:#x}");
-                    DeviceManagerError::OutOfMemory {
-                        operation: "allocate IVC channel",
-                    }
-                })
-                .map(|range| {
-                    debug!("Allocated IVC channel range: {range:x?}");
-                    GuestPhysAddr::from_usize(range.start)
-                })
-        } else {
-            Err(DeviceManagerError::ResourceNotFound {
-                operation: "allocate IVC channel",
-                resource: "IVC channel allocator".into(),
-            })
-        }
+        self.services
+            .require::<GuestRangeAllocatorKey>()?
+            .allocate(size)
     }
 
     /// Releases an IVC channel at the specified address and size.
     pub fn release_ivc_channel(&self, addr: GuestPhysAddr, size: usize) -> DeviceManagerResult {
-        if size == 0 {
-            return Err(DeviceManagerError::InvalidInput {
-                operation: "release IVC channel",
-                detail: "size must be greater than zero".into(),
-            });
-        }
-        if !is_aligned_4k(size) {
-            return Err(DeviceManagerError::InvalidInput {
-                operation: "release IVC channel",
-                detail: format!("size {size:#x} is not aligned to 4 KiB"),
-            });
-        }
-
-        if let Some(allocator) = &self.ivc_channel {
-            let range = addr.as_usize()..addr.as_usize() + size;
-            if allocator.lock().free_range(range.clone()) {
-                debug!("Released IVC channel range: {range:x?}");
-                Ok(())
-            } else {
-                Err(DeviceManagerError::InvalidInput {
-                    operation: "release IVC channel",
-                    detail: format!("range {range:x?} is not allocated"),
-                })
-            }
-        } else {
-            Err(DeviceManagerError::ResourceNotFound {
-                operation: "release IVC channel",
-                resource: "IVC channel allocator".into(),
-            })
-        }
+        self.services
+            .require::<GuestRangeAllocatorKey>()?
+            .release(addr, size)
     }
 
     /// Registers a bundle atomically.  If any device fails to register,
@@ -1379,7 +1299,7 @@ mod tests {
     use crate::{
         AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
         DeviceLifecycle, DeviceManagerResult, DeviceRegistration, IrqResolver, ServiceCardinality,
-        ServiceKey,
+        ServiceKey, register_builtin_factories,
     };
 
     struct D {
@@ -2062,13 +1982,13 @@ mod tests {
         let mut factories = DeviceFactoryRegistry::new();
         factories
             .register(Arc::new(EmptyFactory {
-                device_type: EmulatedDeviceType::IVCChannel,
+                device_type: EmulatedDeviceType::FwCfg,
             }))
             .unwrap();
         let context = DeviceBuildContext::new(&UnusedIrqResolver);
         let config = EmulatedDeviceConfig {
-            name: "ivc".into(),
-            emu_type: EmulatedDeviceType::IVCChannel,
+            name: "fw-cfg".into(),
+            emu_type: EmulatedDeviceType::FwCfg,
             ..Default::default()
         };
 
@@ -2083,5 +2003,33 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn ivc_channel_factory_contributes_static_guest_range_allocator() {
+        let mut factories = DeviceFactoryRegistry::new();
+        register_builtin_factories(&mut factories).unwrap();
+        let context = DeviceBuildContext::new(&UnusedIrqResolver);
+        let config = EmulatedDeviceConfig {
+            name: "ivc".into(),
+            emu_type: EmulatedDeviceType::IVCChannel,
+            base_gpa: 0x8000_0000,
+            length: 0x4000,
+            ..Default::default()
+        };
+
+        let devices = AxVmDevices::build_with_factories(
+            AxVmDeviceConfig::new(alloc::vec![config]),
+            &factories,
+            &context,
+        )
+        .unwrap();
+
+        let first = devices.alloc_ivc_channel(0x1000).unwrap();
+        let second = devices.alloc_ivc_channel(0x2000).unwrap();
+        assert_eq!(first.as_usize(), 0x8000_0000);
+        assert_eq!(second.as_usize(), 0x8000_1000);
+        devices.release_ivc_channel(first, 0x1000).unwrap();
+        assert_eq!(devices.alloc_ivc_channel(0x1000).unwrap(), first);
     }
 }

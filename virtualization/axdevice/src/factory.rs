@@ -19,7 +19,10 @@ use alloc::{sync::Arc, vec::Vec};
 use axdevice_base::{InterruptTriggerMode, IrqLine};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
-use crate::{DeviceBundle, DeviceManagerError, DeviceManagerResult};
+use crate::{
+    DeviceBundle, DeviceManagerError, DeviceManagerResult, GuestRangeAllocatorKey,
+    range_alloc::IvcGuestRangeAllocator,
+};
 
 /// Resolves a VM-local interrupt line for a device under construction.
 pub trait IrqResolver: Send + Sync {
@@ -138,6 +141,23 @@ impl DeviceFactoryRegistry {
 
 struct MetaDeviceFactory;
 
+struct IvcChannelFactory;
+
+impl DeviceFactory for IvcChannelFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::IVCChannel
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        let allocator = IvcGuestRangeAllocator::new(config.base_gpa, config.length)?.into_service();
+        DeviceBundle::new().with_service::<GuestRangeAllocatorKey>(allocator)
+    }
+}
+
 impl DeviceFactory for MetaDeviceFactory {
     fn device_type(&self) -> EmulatedDeviceType {
         EmulatedDeviceType::Dummy
@@ -154,5 +174,6 @@ impl DeviceFactory for MetaDeviceFactory {
 
 /// Registers device factories that do not depend on an architecture backend.
 pub fn register_builtin_factories(registry: &mut DeviceFactoryRegistry) -> DeviceManagerResult {
-    registry.register(Arc::new(MetaDeviceFactory))
+    registry.register(Arc::new(MetaDeviceFactory))?;
+    registry.register(Arc::new(IvcChannelFactory))
 }

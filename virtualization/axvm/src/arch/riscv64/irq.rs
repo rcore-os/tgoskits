@@ -122,35 +122,44 @@ fn validate_vplic_config(config: &EmulatedDeviceConfig) -> AxVmResult<usize> {
     Ok(*contexts_num)
 }
 
-pub(crate) fn configure(
-    factories: &mut DeviceFactoryRegistry,
-    mode: VMInterruptMode,
-    configs: &[EmulatedDeviceConfig],
-) -> AxVmResult<InterruptFabric> {
-    let mut vplic_configs = configs
-        .iter()
-        .filter(|config| config.emu_type == EmulatedDeviceType::PPPTGlobal);
-    let Some(config) = vplic_configs.next() else {
-        return Ok(InterruptFabric::new(mode));
-    };
-    if vplic_configs.next().is_some() {
-        return ax_err!(
-            AlreadyExists,
-            "a VM can register only one virtual PLIC global controller"
+/// RISC-V's architecture bootstrap for the VM interrupt domain.
+///
+/// Bootstrap only validates and creates the vPLIC backend plus its controller
+/// factory. It deliberately does not register the controller device: normal
+/// factory planning performs that later with every other guest-visible device.
+pub(crate) struct RiscvDeviceBootstrap;
+
+impl RiscvDeviceBootstrap {
+    pub(crate) fn prepare(
+        factories: &mut DeviceFactoryRegistry,
+        mode: VMInterruptMode,
+        configs: &[EmulatedDeviceConfig],
+    ) -> AxVmResult<InterruptFabric> {
+        let mut vplic_configs = configs
+            .iter()
+            .filter(|config| config.emu_type == EmulatedDeviceType::PPPTGlobal);
+        let Some(config) = vplic_configs.next() else {
+            return Ok(InterruptFabric::new(mode));
+        };
+        if vplic_configs.next().is_some() {
+            return ax_err!(
+                AlreadyExists,
+                "a VM can register only one virtual PLIC global controller"
+            );
+        }
+
+        let contexts_num = validate_vplic_config(config)?;
+        let vplic = Arc::new(
+            VPlicGlobal::new(config.base_gpa.into(), Some(config.length), contexts_num)
+                .map_err(AxVmError::invalid_config)?,
         );
+        factories.register(Arc::new(RiscvPlicFactory {
+            base_gpa: config.base_gpa,
+            length: config.length,
+            contexts_num,
+            vplic: vplic.clone(),
+        }))?;
+
+        InterruptFabric::with_sink(mode, Arc::new(RiscvPlicIrqSink { vplic }))
     }
-
-    let contexts_num = validate_vplic_config(config)?;
-    let vplic = Arc::new(
-        VPlicGlobal::new(config.base_gpa.into(), Some(config.length), contexts_num)
-            .map_err(AxVmError::invalid_config)?,
-    );
-    factories.register(Arc::new(RiscvPlicFactory {
-        base_gpa: config.base_gpa,
-        length: config.length,
-        contexts_num,
-        vplic: vplic.clone(),
-    }))?;
-
-    InterruptFabric::with_sink(mode, Arc::new(RiscvPlicIrqSink { vplic }))
 }

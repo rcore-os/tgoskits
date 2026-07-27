@@ -36,7 +36,8 @@ impl Riscv64Arch {
                 let mut factories = default_device_factories()?;
                 let mode = vm.interrupt_mode();
                 let emulated_devices = vm.with_config(|config| config.emu_devices().clone());
-                let interrupt_fabric = irq::configure(&mut factories, mode, &emulated_devices)?;
+                let interrupt_fabric =
+                    irq::RiscvDeviceBootstrap::prepare(&mut factories, mode, &emulated_devices)?;
                 init_vm_with(vm, &factories, interrupt_fabric)
             }
             VmInitRequest::Provided {
