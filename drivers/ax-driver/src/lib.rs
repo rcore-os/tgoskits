@@ -121,7 +121,7 @@ pub mod cpufreq {
     }
     /// Feature-off stub.
     #[cfg(not(feature = "rk3588-cpufreq"))]
-    pub fn governor_poll(_busy: &[u64]) {}
+    pub fn governor_poll(_busy_runtime_ns: &[u64]) {}
     /// Feature-off stub: no calibration.
     #[cfg(not(feature = "rk3588-cpufreq"))]
     pub fn calibrate_wanted() -> bool {

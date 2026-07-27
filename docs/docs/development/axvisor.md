@@ -541,7 +541,7 @@ Axvisor 构建在 ArceOS 基础能力之上，改动共享模块时的验证策�
 |----------|--------|--------|
 | `virtualization/axvm`、`axvm-types`、`*_vcpu`、`axdevice` | `cargo xtask axvisor build` | 准备好 Guest 后 QEMU 测试 |
 | `os/arceos/modules/axhal` | ArceOS helloworld | Axvisor build + QEMU |
-| `os/arceos/modules/axtask` | ArceOS helloworld | Axvisor build + QEMU |
+| `components/ax-task`、`os/arceos/modules/axruntime/src/task.rs` | ArceOS task 组 | Axvisor build + QEMU |
 | `os/axvisor/src/*` | `cargo xtask axvisor build` | QEMU 测试 |
 | `os/axvisor/configs/*` | — | 直接 QEMU / 板级测试 |
 

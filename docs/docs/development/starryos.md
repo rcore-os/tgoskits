@@ -578,7 +578,7 @@ StarryOS 复用了大量 ArceOS 模块，改动共享模块时的验证策略：
 |----------|--------|--------|
 | `components/axerrno`、`kspin` 等基础 crate | `cargo test -p <crate>` | ArceOS helloworld + StarryOS qemu |
 | `os/arceos/modules/axhal` | ArceOS helloworld | StarryOS qemu |
-| `os/arceos/modules/axtask` | ArceOS helloworld | StarryOS qemu |
+| `components/ax-task`、`os/arceos/modules/axruntime/src/task.rs` | ArceOS task 组 | StarryOS qemu |
 | `components/starry-process` 等 Starrry 专用 | StarryOS qemu | — |
 | `os/StarryOS/kernel/*` | StarryOS qemu | — |
 

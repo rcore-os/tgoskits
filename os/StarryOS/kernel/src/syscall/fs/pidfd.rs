@@ -1,18 +1,17 @@
 use alloc::sync::Arc;
 
 use ax_errno::{AxError, AxResult};
-use ax_task::current;
 use bitflags::bitflags;
 use linux_raw_sys::general::{SI_TKILL, SI_USER};
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::VmPtr;
 
 use crate::{
-    file::{FD_TABLE, FileLike, PidFd, add_file_like},
+    file::{FD_TABLE, FileLike, PidFd, add_file_like, current_fd_table},
     syscall::signal::check_kill_permission,
     task::{
-        AsThread, get_task, pidfd_process_identity, pidfd_thread_identity, send_signal_to_process,
-        send_signal_to_process_group, send_signal_to_thread,
+        current_user_task, get_task, pidfd_process_identity, pidfd_thread_identity,
+        send_signal_to_process, send_signal_to_process_group, send_signal_to_thread,
     },
 };
 
@@ -50,7 +49,7 @@ fn make_pidfd_siginfo(signo: Signo, scope: PidFdSignalScope) -> SignalInfo {
     } else {
         SI_USER as _
     };
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     SignalInfo::new_user(signo, code, thread.proc_data.proc.pid(), thread.cred().uid)
 }
@@ -106,7 +105,7 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
 
     let pidfd = PidFd::from_fd(pidfd)?;
     let proc_data = pidfd.process_data()?;
-    let curr_proc_data = current().as_thread().proc_data.clone();
+    let curr_proc_data = current_user_task().as_thread().proc_data.clone();
     let is_current = Arc::ptr_eq(&proc_data, &curr_proc_data);
     if !is_current {
         // Linux __pidfd_fget() uses ptrace_may_access(PTRACE_MODE_ATTACH_REALCREDS).
@@ -116,17 +115,13 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
     let fd_entry = if is_current {
         // Use the calling thread's live fd table, including any table installed
         // by unshare(CLONE_FILES) or close_range(CLOSE_RANGE_UNSHARE).
-        crate::file::current_fd_table()
-            .read()
-            .get(target_fd as usize)
-            .cloned()
+        current_fd_table().read().get(target_fd as usize).cloned()
     } else {
         let task = get_task(proc_data.proc.pid())?;
-        FD_TABLE
-            .scope(&task.as_thread().scope.read())
-            .read()
-            .get(target_fd as usize)
-            .cloned()
+        let scope = task.as_thread().scope.read();
+        let fd_table = FD_TABLE.scope_cell(&scope).clone();
+        drop(scope);
+        fd_table.read().get(target_fd as usize).cloned()
     };
     fd_entry.ok_or(AxError::BadFileDescriptor).and_then(|fd| {
         let fd = add_file_like(fd.inner.clone(), true)?;
@@ -169,7 +164,7 @@ pub fn sys_pidfd_send_signal(
         if info.signo() != signo_parsed {
             return Err(AxError::InvalidInput);
         }
-        if current().as_thread().proc_data.proc.pid() != target_pid
+        if current_user_task().as_thread().proc_data.proc.pid() != target_pid
             && (info.code() >= 0 || info.code() == SI_TKILL)
         {
             return Err(AxError::OperationNotPermitted);

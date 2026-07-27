@@ -163,4 +163,17 @@ mod tests {
         let vm_id = usize::MAX;
         assert_eq!(missing_vm_error(vm_id), AxVmError::VmNotFound { vm_id });
     }
+
+    #[test]
+    fn vcpu_irq_dispatcher_uses_the_host_task_facade() {
+        let source = include_str!("dispatcher.rs");
+        assert!(
+            !source.contains(concat!("AxTask", "Ref")),
+            "the dispatcher must not depend on the removed ArceOS task wrapper"
+        );
+        assert!(
+            source.contains("TaskHandle") && source.contains("task_cpu_id"),
+            "the dispatcher must resolve CPU placement through the AxVM host task facade"
+        );
+    }
 }

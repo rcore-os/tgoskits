@@ -9,14 +9,15 @@
 //! base that `/dev/mpp_service` programs into the decoder.
 
 use alloc::sync::Arc;
-use core::{any::Any, mem::size_of};
+use core::any::Any;
 
-use ax_runtime::hal::cpu::asm::user_copy;
 use axfs_ng_vfs::{DeviceId, VfsError, VfsResult};
+use bytemuck::{AnyBitPattern, NoUninit};
 use linux_raw_sys::general::O_CLOEXEC;
 
 use crate::{
     file::{add_file_like, close_file_like, dmabuf::DmaBufFile},
+    mm::{UserConstPtr, UserPtr},
     pseudofs::DeviceOps,
 };
 
@@ -45,7 +46,7 @@ const DMA_HEAP_IOCTL_ALLOC: u32 = 0xC018_4800;
 
 /// `struct dma_heap_allocation_data` (Linux dma-buf heaps UAPI).
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, AnyBitPattern, NoUninit)]
 struct DmaHeapAllocData {
     len: u64,
     fd: u32,
@@ -77,8 +78,7 @@ impl DeviceOps for DmaHeap {
             return Err(VfsError::InvalidInput);
         }
 
-        let mut data = DmaHeapAllocData::default();
-        copy_in(&mut data, arg)?;
+        let mut data = copy_in(arg)?;
 
         // Linux dma-heap rejects a zero-length allocation with EINVAL.
         if data.len == 0 {
@@ -102,30 +102,14 @@ impl DeviceOps for DmaHeap {
     }
 }
 
-fn copy_in(dst: &mut DmaHeapAllocData, uaddr: usize) -> VfsResult<()> {
-    let ret = unsafe {
-        user_copy(
-            dst as *mut DmaHeapAllocData as *mut u8,
-            uaddr as *const u8,
-            size_of::<DmaHeapAllocData>(),
-        )
-    };
-    if ret != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(())
+fn copy_in(uaddr: usize) -> VfsResult<DmaHeapAllocData> {
+    UserConstPtr::<DmaHeapAllocData>::from(uaddr)
+        .read()
+        .map_err(|_| VfsError::InvalidData)
 }
 
 fn copy_out(src: &DmaHeapAllocData, uaddr: usize) -> VfsResult<()> {
-    let ret = unsafe {
-        user_copy(
-            uaddr as *mut u8,
-            src as *const DmaHeapAllocData as *const u8,
-            size_of::<DmaHeapAllocData>(),
-        )
-    };
-    if ret != 0 {
-        return Err(VfsError::InvalidData);
-    }
-    Ok(())
+    UserPtr::<DmaHeapAllocData>::from(uaddr)
+        .write(*src)
+        .map_err(|_| VfsError::InvalidData)
 }

@@ -12,8 +12,7 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_sync::Mutex;
-use ax_task::future::{block_on, poll_io};
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::{
     general::{
@@ -25,7 +24,13 @@ use linux_raw_sys::{
 use spin::LazyLock;
 use starry_vm::VmMutPtr;
 
-use crate::file::{FileLike, IoDst, IoSrc};
+use crate::{
+    file::{FileLike, IoDst, IoSrc},
+    task::{
+        current_user_task,
+        future::{block_on_user, poll_io_for},
+    },
+};
 
 const INOTIFY_EVENT_SIZE: usize = 16;
 const MAX_QUEUED_EVENTS: usize = 1024;
@@ -45,18 +50,18 @@ struct InotifyState {
 
 pub struct Inotify {
     non_blocking: AtomicBool,
-    state: Mutex<InotifyState>,
+    state: PiMutex<InotifyState>,
     poll_rx: PollSet,
 }
 
-static INOTIFY_INSTANCES: LazyLock<Mutex<Vec<Weak<Inotify>>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static INOTIFY_INSTANCES: LazyLock<PiMutex<Vec<Weak<Inotify>>>> =
+    LazyLock::new(|| PiMutex::new(Vec::new()));
 
 impl Inotify {
     pub fn new() -> Arc<Self> {
         let inotify = Arc::new(Self {
             non_blocking: AtomicBool::new(false),
-            state: Mutex::new(InotifyState {
+            state: PiMutex::new(InotifyState {
                 next_wd: 1,
                 ..InotifyState::default()
             }),
@@ -193,22 +198,26 @@ impl FileLike for Inotify {
             return Err(AxError::InvalidInput);
         }
 
-        block_on(poll_io(self, IoEvents::IN, self.nonblocking(), || {
-            let mut state = self.state.lock();
-            let mut written = 0;
-            while let Some(event) = state.queue.front() {
-                if dst.remaining_mut() < event.len() {
-                    break;
+        let task = current_user_task();
+        block_on_user(
+            &task,
+            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                let mut state = self.state.lock();
+                let mut written = 0;
+                while let Some(event) = state.queue.front() {
+                    if dst.remaining_mut() < event.len() {
+                        break;
+                    }
+                    written += dst.write(event)?;
+                    state.queue.pop_front();
                 }
-                written += dst.write(event)?;
-                state.queue.pop_front();
-            }
-            if written == 0 {
-                Err(AxError::WouldBlock)
-            } else {
-                Ok(written)
-            }
-        }))
+                if written == 0 {
+                    Err(AxError::WouldBlock)
+                } else {
+                    Ok(written)
+                }
+            }),
+        )
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {
@@ -278,20 +287,31 @@ fn align_event_name_len(len: usize) -> usize {
     (len + align - 1) & !(align - 1)
 }
 
-fn notify_instances(path: &str, notify: impl Fn(&Inotify, &str)) {
-    if path == "<error>" {
-        return;
-    }
-
-    let mut instances = INOTIFY_INSTANCES.lock();
-    instances.retain(|watcher| {
-        if let Some(inotify) = watcher.upgrade() {
-            notify(&inotify, path);
+fn snapshot_live_instances<T>(instances: &mut Vec<Weak<T>>) -> Vec<Arc<T>> {
+    let mut live = Vec::with_capacity(instances.len());
+    instances.retain(|instance| {
+        if let Some(instance) = instance.upgrade() {
+            live.push(instance);
             true
         } else {
             false
         }
     });
+    live
+}
+
+fn notify_instances(path: &str, notify: impl Fn(&Inotify, &str)) {
+    if path == "<error>" {
+        return;
+    }
+
+    let instances = {
+        let mut registry = INOTIFY_INSTANCES.lock();
+        snapshot_live_instances(&mut registry)
+    };
+    for inotify in instances {
+        notify(&inotify, path);
+    }
 }
 
 pub fn notify_modify_path(path: &str) {
@@ -317,4 +337,26 @@ pub fn notify_delete_path(path: &str, is_dir: bool) {
     notify_instances(path, |inotify, path| {
         inotify.notify_delete(path, is_dir);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+
+    #[test]
+    fn live_instance_snapshot_is_owned_and_prunes_stale_entries() {
+        let live = Arc::new(7_u8);
+        let stale = Arc::new(9_u8);
+        let mut instances = vec![Arc::downgrade(&live), Arc::downgrade(&stale)];
+        drop(stale);
+
+        let snapshot = snapshot_live_instances(&mut instances);
+        instances.push(Arc::downgrade(&live));
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(*snapshot[0], 7);
+        assert_eq!(instances.len(), 2);
+    }
 }

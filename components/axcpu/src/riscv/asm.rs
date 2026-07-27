@@ -35,6 +35,18 @@ pub fn wait_for_irqs() {
     riscv::asm::wfi()
 }
 
+/// Waits for an interrupt after the caller masks local IRQ delivery.
+///
+/// RISC-V `WFI` may resume for a locally enabled pending interrupt regardless
+/// of global `SIE`. Keeping `SIE` clear through `WFI` closes the scheduler
+/// wake-loss window. The function returns with local IRQs enabled.
+#[inline]
+pub fn wait_for_irqs_disabled() {
+    debug_assert!(!irqs_enabled());
+    riscv::asm::wfi();
+    enable_irqs();
+}
+
 /// Halt the current CPU.
 #[inline]
 pub fn halt() {

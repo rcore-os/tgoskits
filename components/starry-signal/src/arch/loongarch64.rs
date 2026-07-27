@@ -16,11 +16,12 @@ signal_trampoline:
 );
 
 #[repr(C, align(16))]
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct MContext {
     sc_pc: u64,
     sc_regs: GeneralRegisters,
     sc_flags: u32,
+    __sc_flags_align: u32,
     // Kernel-saved FP/FCC/FCSR of the interrupted thread. The musl-visible
     // mcontext fields a handler reads are sc_pc/sc_regs/sc_flags above; this FP
     // block lives where musl places `__extcontext` and is managed only by the
@@ -30,6 +31,10 @@ pub struct MContext {
     // corrupt state (gradle/kotlin compiler SIGSEGV on loongarch, #237).
     fpu: FpuState,
 }
+
+// SAFETY: the explicit word after `sc_flags` and `FpuState`'s explicit tail
+// word ensure that every byte of this 16-byte-aligned C layout is initialized.
+unsafe impl bytemuck::NoUninit for MContext {}
 
 impl MContext {
     pub fn new(uctx: &UserContext) -> Self {
@@ -42,6 +47,7 @@ impl MContext {
             sc_pc: uctx.era as _,
             sc_regs: uctx.regs,
             sc_flags: 0,
+            __sc_flags_align: 0,
             fpu,
         }
     }
@@ -55,7 +61,7 @@ impl MContext {
 }
 
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct UContext {
     pub flags: usize,
     pub link: usize,
@@ -70,6 +76,10 @@ pub struct UContext {
     pub mcontext: MContext,
 }
 
+// SAFETY: every byte is covered by a `NoUninit` field; `__unused` and
+// `__uc_pad` explicitly represent the Linux ABI padding.
+unsafe impl bytemuck::NoUninit for UContext {}
+
 impl UContext {
     pub fn new(uctx: &UserContext, sigmask: SignalSet) -> Self {
         Self {
@@ -83,3 +93,10 @@ impl UContext {
         }
     }
 }
+
+const _: () = {
+    assert!(core::mem::offset_of!(MContext, fpu) == 272);
+    assert!(size_of::<MContext>() == 1312);
+    assert!(core::mem::offset_of!(UContext, mcontext) == 176);
+    assert!(size_of::<UContext>() == 1488);
+};

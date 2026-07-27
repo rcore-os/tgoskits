@@ -31,13 +31,10 @@ pub trait HostMemory {
     fn virt_to_phys(&self, vaddr: HostVirtAddr) -> HostPhysAddr;
 }
 
-/// Host time and timer operations.
+/// Host monotonic time source.
 pub trait HostTime {
     /// Read monotonic host time.
     fn monotonic_time(&self) -> Duration;
-
-    /// Program the host one-shot timer.
-    fn set_oneshot_timer(&self, deadline_ns: u64);
 }
 
 /// Host CPU topology and affinity operations.

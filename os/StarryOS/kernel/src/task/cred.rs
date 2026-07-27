@@ -7,10 +7,11 @@
 
 use alloc::sync::Arc;
 
+#[cfg(feature = "rga")]
+use linux_raw_sys::general::CAP_SYS_RAWIO;
 use linux_raw_sys::general::{
     CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID, CAP_SETPCAP,
-    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RAWIO,
-    CAP_SYS_RESOURCE,
+    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RESOURCE,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -78,30 +79,6 @@ impl Cred {
             cap_inheritable: 0,
             cap_permitted: CAP_MASK,
             cap_effective: CAP_MASK,
-            cap_bounding: CAP_MASK,
-            cap_ambient: 0,
-        }
-    }
-
-    /// Create credentials for an unprivileged identity.
-    ///
-    /// The bounding set remains full so future privileged transitions can
-    /// still be represented, but the effective/permitted/ambient sets start
-    /// empty.
-    pub fn unprivileged(uid: u32, gid: u32) -> Self {
-        Self {
-            uid,
-            gid,
-            euid: uid,
-            egid: gid,
-            suid: uid,
-            sgid: gid,
-            fsuid: uid,
-            fsgid: gid,
-            groups: Arc::from([].as_slice()),
-            cap_inheritable: 0,
-            cap_permitted: 0,
-            cap_effective: 0,
             cap_bounding: CAP_MASK,
             cap_ambient: 0,
         }
@@ -202,6 +179,7 @@ impl Cred {
     /// capability Linux requires for `/dev/mem`-class access). Gates handing a
     /// raw physical address to a DMA engine, which can otherwise reach arbitrary
     /// system memory.
+    #[cfg(feature = "rga")]
     pub fn has_cap_sys_rawio(&self) -> bool {
         self.has_cap(CAP_SYS_RAWIO)
     }

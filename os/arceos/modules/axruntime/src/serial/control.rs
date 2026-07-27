@@ -1,9 +1,10 @@
 use alloc::{collections::VecDeque, sync::Arc};
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
-use ax_task::{IrqNotify, WaitQueue};
+use ax_sync::PiMutex;
 use rdif_serial::Config;
+
+use crate::task::WaitQueue;
 
 pub(super) const CONTROL_QUEUE_CAPACITY: usize = 32;
 
@@ -25,17 +26,17 @@ impl ControlCommand {
 }
 
 pub(super) struct ControlQueue {
-    commands: SpinNoIrq<VecDeque<ControlCommand>>,
+    commands: PiMutex<VecDeque<ControlCommand>>,
 }
 
 impl ControlQueue {
     pub(super) fn new() -> Self {
         Self {
-            commands: SpinNoIrq::new(VecDeque::with_capacity(CONTROL_QUEUE_CAPACITY)),
+            commands: PiMutex::new(VecDeque::with_capacity(CONTROL_QUEUE_CAPACITY)),
         }
     }
 
-    pub(super) fn submit(&self, op: ControlOp, notify: &IrqNotify) -> AxResult {
+    pub(super) fn submit(&self, op: ControlOp, notify: impl FnOnce()) -> AxResult {
         let completion = Arc::new(CommandCompletion::new());
         {
             let mut commands = self.commands.lock();
@@ -47,7 +48,7 @@ impl ControlQueue {
                 completion: completion.clone(),
             });
         }
-        notify.notify();
+        notify();
         completion.wait()
     }
 
@@ -61,21 +62,21 @@ impl ControlQueue {
 }
 
 struct CommandCompletion {
-    result: SpinNoIrq<Option<AxResult>>,
+    result: PiMutex<Option<AxResult>>,
     wait: WaitQueue,
 }
 
 impl CommandCompletion {
     fn new() -> Self {
         Self {
-            result: SpinNoIrq::new(None),
+            result: PiMutex::new(None),
             wait: WaitQueue::new(),
         }
     }
 
     fn complete(&self, result: AxResult) {
         *self.result.lock() = Some(result);
-        self.wait.notify_all(true);
+        self.wait.notify_all();
     }
 
     fn wait(&self) -> AxResult {

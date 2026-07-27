@@ -2,28 +2,58 @@
 
 use super::arceos;
 
-pub(crate) type AxTaskExt = arceos::ArceOsAxTaskExt;
-pub(crate) type AxTaskRef = arceos::ArceOsAxTaskRef;
-pub(crate) type CurrentTask = arceos::ArceOsCurrentTask;
-pub(crate) type TaskInner = arceos::ArceOsTaskInner;
+pub(crate) type TaskHandle = arceos::ArceOsTaskHandle;
+pub(crate) type TaskExtensionBorrow<'task> =
+    ax_std::os::arceos::modules::ax_runtime::task::ThreadOsExtensionBorrow<'task>;
 pub(crate) type WaitQueue = arceos::ArceOsWaitQueue;
 pub(crate) type WaitQueueHandle = arceos::ArceOsWaitQueueHandle;
-pub(crate) use arceos::ArceOsTaskExt as TaskExt;
+pub(crate) use arceos::{
+    ArceOsSwitchReason as SwitchReason, ArceOsTaskCpuSet as TaskCpuSet,
+    ArceOsTaskError as TaskError, ArceOsThreadExtension as ThreadExtension,
+    ArceOsThreadExtensionOps as ThreadExtensionOps, ArceOsThreadId as ThreadId,
+};
 
-pub(crate) fn current_task() -> CurrentTask {
+pub(crate) fn current_task() -> TaskHandle {
     arceos::current_task()
 }
 
-pub(crate) fn spawn_task(task: TaskInner) -> AxTaskRef {
-    arceos::spawn_task(task)
+pub(crate) unsafe fn spawn_task_with_extension_and_affinity<F>(
+    entry: F,
+    name: alloc::string::String,
+    stack_size: usize,
+    extension: Option<ThreadExtension>,
+    affinity: Option<TaskCpuSet>,
+) -> Result<TaskHandle, TaskError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    // SAFETY: the caller transfers the unique extension ownership through this
+    // one-to-one host adapter.
+    unsafe {
+        arceos::spawn_task_with_extension_and_affinity(entry, name, stack_size, extension, affinity)
+    }
+}
+
+pub(crate) fn join_task(task: TaskHandle) -> Result<i32, TaskError> {
+    arceos::join_task(task)
+}
+
+pub(crate) fn task_extension(
+    task: &TaskHandle,
+) -> Result<Option<TaskExtensionBorrow<'_>>, TaskError> {
+    arceos::task_extension(task)
 }
 
 pub(crate) fn yield_now() {
     arceos::yield_now();
 }
 
-pub(crate) fn cpu_mask_from_raw_bits(bits: usize) -> arceos::ArceOsCpuMask {
-    arceos::cpu_mask_from_raw_bits(bits)
+pub(crate) fn task_cpu_set_from_raw_bits(bits: usize) -> TaskCpuSet {
+    arceos::task_cpu_set_from_raw_bits(bits)
+}
+
+pub(crate) fn task_cpu_id(task: &TaskHandle) -> usize {
+    arceos::task_cpu_id(task)
 }
 
 pub(crate) fn wait_queue_wait_until(queue: &WaitQueueHandle, condition: impl Fn() -> bool) {

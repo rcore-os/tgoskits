@@ -52,7 +52,6 @@ sudo apt install qemu-system-arm qemu-system-riscv64 qemu-system-x86
 os/arceos/
 ├── modules/          # 内核模块
 │   ├── axhal/        # 硬件抽象层
-│   ├── axtask/       # 任务/线程管理 + 调度器
 │   ├── axalloc/      # 内存分配器
 │   ├── axdriver/     # 统一设备驱动框架
 │   ├── axfs/         # 文件系统（legacy）
@@ -63,7 +62,7 @@ os/arceos/
 │   ├── axdisplay/    # 图形显示
 │   ├── axinput/      # 输入设备
 │   ├── axipi/        # 核间中断
-│   ├── axruntime/    # 运行时初始化，调用 main()
+│   ├── axruntime/    # 运行时初始化 + ax-task OS glue，调用 main()
 ├── api/              # 对外 API 层
 │   ├── feature/       # 顶层 feature 聚合（单一真相源）
 │   ├── arceos_api/   # 公共 API 和类型
@@ -74,6 +73,9 @@ os/arceos/
 
 net/
 └── ax-net/           # 统一网络栈（TCP/UDP/raw/Unix/vsock/DNS/DHCP）
+
+components/
+└── ax-task/          # OS 无关任务调度核心
 
 apps/arceos/
 ├── helloworld/
@@ -92,23 +94,22 @@ apps/arceos/
 
 ### 3.1 模块标准结构
 
-以 `axtask` 为代表的典型模块结构：
+以 `axruntime` 的任务接入为例：
 
 ```
-modules/axtask/
+modules/axruntime/
 ├── Cargo.toml        # features + 依赖
 └── src/
-    ├── lib.rs        # 模块根，条件编译，re-exports
-    ├── api.rs        # 公共 API 函数
-    ├── task.rs       # Task 结构体
-    ├── run_queue/    # 调度器 run queue 实现
-    └── wait_queue.rs
+    ├── lib.rs        # runtime 初始化主线
+    ├── task.rs       # ax-task 的 OS 资源与 TaskRuntime 实现
+    ├── guard.rs      # IRQ/preemption guard 与 scheduler baton
+    └── mp.rs         # secondary CPU bring-up
 ```
 
 关键约定：
 
 - **`lib.rs`**：使用 `cfg_if!` 和 `#[cfg(feature = "...")]` 进行条件编译，通过 `pub use` 向外暴露公共 API
-- **`api.rs`**：存放面向应用的公共函数，如 `spawn()`, `sleep()`, `yield_now()`
+- **`task.rs`**：存放 runtime-backed `spawn`、`join`、sleep/yield 和调度接入
 - **init 函数**：模块暴露 `init_*()` 函数，由 `axruntime::rust_main()` 在启动时根据 feature 配置调用
 
 典型的 init 调用链（`axruntime` 中）：
@@ -257,7 +258,7 @@ net = ["alloc", "paging", "ax-driver/virtio-net", "dep:ax-net", "ax-runtime/net"
 |----------|---------|---------|
 | 基础 crate（`axerrno`, `kspin`, `page_table_multiarch`） | `cargo test -p <crate>` | `cargo xtask arceos qemu --package arceos-helloworld --arch riscv64` |
 | HAL（`axhal`） | `cargo xtask arceos qemu --package arceos-helloworld --arch aarch64` | 多架构验证 |
-| 调度器（`axtask`） | `cargo xtask arceos qemu --package arceos-helloworld --arch riscv64` | `cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf` |
+| 调度核心/运行时（`ax-task` / `ax-runtime::task`） | `cargo test -p ax-task` | `cargo xtask arceos test qemu --target riscv64gc-unknown-none-elf` |
 | 网络（`axnet` / `axnet`） | `cargo xtask arceos qemu --package arceos-httpserver --arch aarch64 --net` | 检查 TCP 连接和吞吐 |
 | 文件系统（`axfs` / `axfs-ng`） | `cargo xtask arceos qemu --package arceos-shell --arch aarch64 --blk` | 检查文件读写 |
 | 驱动（`axdriver`） | `cargo xtask arceos qemu --package arceos-helloworld --arch aarch64` | 启用对应设备 `--blk` / `--net` |

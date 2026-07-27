@@ -2,22 +2,24 @@
 
 mod cred;
 pub mod futex;
+pub mod future;
 mod ops;
 pub mod posix_timer;
 mod process_identity;
 mod resources;
+mod scheduler_identity;
+mod scheduler_task;
 mod seccomp;
 mod signal;
 mod signal_publication;
 mod stat;
+mod tid;
 mod timer;
 mod user;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{
-    cell::RefCell,
     future::poll_fn,
-    ops::Deref,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicUsize, Ordering},
     task::Poll,
 };
@@ -25,13 +27,11 @@ use core::{
 use ax_errno::AxResult;
 use ax_kernel_guard::NoPreemptIrqSave;
 use ax_kspin::SpinRwLock as RwLock;
-use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
-use ax_sync::{Mutex, spin::SpinNoIrq};
-use ax_task::{TaskExt, TaskInner};
+use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin, time::TimeValue};
+use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::{IoEvents, PollSet};
-use extern_trait::extern_trait;
 use kernel_elf_parser::AuxEntry;
-use scope_local::{ActiveScope, Scope};
+use scope_local::{Scope, ScopeCell, ScopeCellWriteGuard};
 use starry_process::{Pid, Process};
 use starry_signal::{
     SignalInfo, SignalSet, Signo,
@@ -40,8 +40,8 @@ use starry_signal::{
 
 pub(crate) use self::process_identity::*;
 pub use self::{
-    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, seccomp::*, signal::*,
-    stat::*, timer::*, user::*,
+    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, scheduler_task::*,
+    seccomp::*, signal::*, stat::*, tid::*, timer::*, user::*,
 };
 #[cfg(axtest)]
 pub(crate) use self::{
@@ -51,6 +51,8 @@ pub(crate) use self::{
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
 };
+
+pub(crate) const KRETPROBE_STACK_CAPACITY: usize = 16;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SyscallTraceState {
@@ -74,21 +76,8 @@ struct PtracePendingEvent {
     event: u32,
     msg: usize,
 }
+use self::scheduler_identity::SchedulerIdentity;
 use crate::mm::AddrSpace;
-
-///  A wrapper type that assumes the inner type is `Sync`.
-#[repr(transparent)]
-pub struct AssumeSync<T>(pub T);
-
-unsafe impl<T> Sync for AssumeSync<T> {}
-
-impl<T> Deref for AssumeSync<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 /// A one-shot flag that suppresses exactly one signal check.
 struct NextSignalCheckBlock(AtomicBool);
@@ -111,8 +100,8 @@ impl NextSignalCheckBlock {
 pub struct Thread {
     /// User-visible thread ID (the `Pid` returned by `gettid`).
     ///
-    /// Initially equal to the underlying scheduler `TaskInner::id()`. The two
-    /// diverge after a successful non-leader `execve`: Linux's `de_thread`
+    /// Initially allocated for the same new thread as [`Thread::scheduler_id`].
+    /// The two diverge after a successful non-leader `execve`: Linux's `de_thread`
     /// step transfers the leader's TID/TGID to the calling thread so that
     /// `gettid() == getpid()` holds in the new image. We model that by
     /// updating this field while leaving the immutable scheduler ID alone.
@@ -121,15 +110,24 @@ pub struct Thread {
     /// this rather than the scheduler ID.
     tid: AtomicU32,
 
+    /// Generation-bearing identity allocated by the scheduler registry.
+    ///
+    /// Linux TIDs are independently mutable across `de_thread`, so they must
+    /// never be converted back into scheduler identities. The scheduler handle
+    /// returned while creating this thread binds this field exactly once.
+    scheduler_id: SchedulerIdentity,
+
     /// The process data shared by all threads in the process.
     pub proc_data: Arc<ProcessData>,
 
-    /// Resources whose sharing is controlled by clone/unshare flags.
+    /// Resources whose sharing is controlled by clone and unshare flags.
+    pub(crate) scope: ScopeCell,
+
+    /// Linux task nice value retained independently of the active class.
     ///
-    /// Each thread owns its scope while individual entries may still point to
-    /// shared objects such as an fd table or filesystem context. Keeping the
-    /// association here lets `unshare(CLONE_FILES)` detach only its caller.
-    pub(crate) scope: RwLock<Scope>,
+    /// RT/Deadline threads keep this value so switching back to Fair restores
+    /// the thread's own priority rather than a thread-group-wide default.
+    nice: AtomicI32,
 
     /// The clear thread tid field
     ///
@@ -145,11 +143,11 @@ pub struct Thread {
     /// The thread-level signal manager
     pub signal: Arc<ThreadSignalManager>,
 
-    /// Time manager
-    ///
-    /// This is assumed to be `Sync` because it's only borrowed mutably during
-    /// context switches, which is exclusive to the current thread.
-    pub time: AssumeSync<RefCell<TimeManager>>,
+    /// Lock-free CPU accounting updated by scheduler switch hooks.
+    pub cpu_time: CpuTimeAccounting,
+
+    /// Per-thread RLIMIT_RTTIME watchdog state.
+    pub rttime: PiMutex<RttimeWatchdog>,
 
     /// The OOM score adjustment value.
     oom_score_adj: AtomicI32,
@@ -160,12 +158,19 @@ pub struct Thread {
     /// Claims the one thread-exit cleanup transaction.
     exit_started: AtomicBool,
 
+    /// Sticky interruption state consumed by interruptible kernel waits.
+    ///
+    /// Scheduler wakeup is carried by the generation-checked direct wake
+    /// handle; this bit retains the Linux `EINTR` reason across wake-before-
+    /// park races without embedding Starry signal policy in `ax-task`.
+    interrupted: AtomicBool,
+
     /// Woken when a signal arrives at this thread, so signalfd/epoll pollers
     /// can observe newly-pending signals even when the signal is blocked.
     pub signalfd_waker: PollSet,
 
-    /// Indicates whether the thread is currently accessing user memory.
-    accessing_user_memory: AtomicBool,
+    /// Number of nested faultable user-memory access scopes owned by this thread.
+    user_memory_access_depth: AtomicU32,
 
     /// Skips one signal check after returning from a user-space signal handler.
     block_next_signal_check: NextSignalCheckBlock,
@@ -208,7 +213,7 @@ pub struct Thread {
     /// the real fault terminated silently.
     pub fault_dump_signo: AtomicU8,
 
-    pub kretprobe_stack: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
+    kretprobe_stack: SpinNoIrq<alloc::vec::Vec<kprobe::retprobe::RetprobeInstance>>,
 
     /// Whether uid_map has been written for this thread's user namespace.
     uid_map_written: AtomicBool,
@@ -243,20 +248,24 @@ impl Thread {
         let cred = parent_cred.unwrap_or_else(|| Arc::new(Cred::root()));
         Box::new(Thread {
             tid: AtomicU32::new(tid),
+            scheduler_id: SchedulerIdentity::unbound(),
             signal: ThreadSignalManager::new_with_blocked(
                 tid,
                 proc_data.signal.clone(),
                 signal_mask,
             ),
             proc_data,
-            scope: RwLock::new(scope),
+            scope: ScopeCell::from_scope(scope),
+            nice: AtomicI32::new(0),
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
-            time: AssumeSync(RefCell::new(TimeManager::new())),
+            cpu_time: CpuTimeAccounting::new(),
+            rttime: PiMutex::new(RttimeWatchdog::new()),
             exit: Arc::new(AtomicBool::new(false)),
             exit_started: AtomicBool::new(false),
+            interrupted: AtomicBool::new(false),
             oom_score_adj: AtomicI32::new(200),
-            accessing_user_memory: AtomicBool::new(false),
+            user_memory_access_depth: AtomicU32::new(0),
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: Arc::default(),
             exit_request: AtomicBool::new(false),
@@ -269,7 +278,9 @@ impl Thread {
 
             signalfd_waker: PollSet::new(),
             fault_dump_signo: AtomicU8::new(0),
-            kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::new()),
+            kretprobe_stack: SpinNoIrq::new(alloc::vec::Vec::with_capacity(
+                KRETPROBE_STACK_CAPACITY,
+            )),
 
             uid_map_written: AtomicBool::new(false),
             gid_map_written: AtomicBool::new(false),
@@ -282,28 +293,25 @@ impl Thread {
 
     /// Mutate the current thread's resource scope.
     ///
-    /// `TaskExt::on_enter` leaves the current task's active scope installed by
-    /// holding one read count on [`Self::scope`]. A syscall running in that task
-    /// must temporarily release that read count before taking the write side.
-    /// The closure runs with preemption and local IRQs disabled, so it should
-    /// only install already-prepared scope entries.
-    pub(crate) fn with_current_scope_mut<R>(&self, f: impl FnOnce(&mut Scope) -> R) -> R {
+    /// The closure runs with preemption and local IRQs disabled and must only
+    /// install already-prepared scope entries.
+    pub(crate) fn with_current_scope_mut<R>(
+        &self,
+        f: impl FnOnce(&mut ScopeCellWriteGuard<'_>) -> R,
+    ) -> R {
         let _guard = NoPreemptIrqSave::new();
-        ActiveScope::set_global();
-        unsafe { self.scope.force_read_decrement() };
-        let mut scope = self.scope.write();
-        let ret = f(&mut scope);
-        drop(scope);
-        let scope = self.scope.read();
-        unsafe { ActiveScope::set(&scope) };
-        core::mem::forget(scope);
-        ret
+        // SAFETY: the combined guard prevents migration and local IRQ reentry
+        // for the complete scoped mutation callback.
+        unsafe {
+            ax_runtime::hal::percpu::with_cpu_pin(|pin| self.scope.with_active_mut_pinned(pin, f))
+                .expect("Starry scope mutation requires an installed CPU area")
+        }
     }
 
     /// Returns the user-visible TID for this thread.
     ///
     /// See the field doc on [`Thread::tid`] for why this can differ from
-    /// the underlying scheduler `TaskInner::id()`.
+    /// the generation-bearing scheduler identity.
     pub fn tid(&self) -> u32 {
         self.tid.load(Ordering::Acquire)
     }
@@ -312,6 +320,87 @@ impl Thread {
     /// step to transfer the leader's TID to a non-leader caller.
     pub(crate) fn set_tid(&self, tid: u32) {
         self.tid.store(tid, Ordering::Release);
+    }
+
+    /// Returns this Linux task's nice value.
+    pub fn nice(&self) -> i32 {
+        self.nice.load(Ordering::Acquire)
+    }
+
+    /// Updates this Linux task's retained nice value.
+    pub fn set_nice(&self, nice: i32) {
+        self.nice.store(nice, Ordering::Release);
+    }
+
+    /// Returns the generation-bearing scheduler identity, if it has been bound.
+    pub fn scheduler_id(&self) -> Option<ax_std::os::arceos::task::ThreadId> {
+        self.scheduler_id.get()
+    }
+
+    /// Binds the scheduler identity returned by thread creation.
+    ///
+    /// Rebinding to a different identity indicates that a Starry thread object
+    /// was attached to two scheduler records. The caller must abort creation in
+    /// that case rather than risking an ABA lookup through the user-visible TID.
+    pub(crate) fn bind_scheduler_id(&self, id: ax_std::os::arceos::task::ThreadId) -> AxResult<()> {
+        self.scheduler_id.bind(id)
+    }
+
+    fn scheduler_switch_in(
+        &self,
+        id: ax_std::os::arceos::task::ThreadId,
+        realtime_policy: bool,
+        cpu_pin: &CpuPin<'_>,
+    ) {
+        if self.bind_scheduler_id(id).is_err() {
+            panic!("Starry thread was rebound to a different scheduler identity");
+        }
+        self.proc_data.process_cpu_time.record_transition(|| {
+            self.cpu_time.scheduler_switch_in(realtime_policy);
+            CpuTimeDelta::ZERO
+        });
+        // SAFETY: the scheduler switch baton pins this CPU and retains the
+        // thread-owned ProcessData until the matching switch-out callback.
+        // ScopeCell acquires one raw shared lease before publishing the pinned
+        // identity; ordinary scope-local reads then remain lock-free until the
+        // matching switch-out withdraws that identity and lease.
+        unsafe { self.scope.activate_pinned(cpu_pin) };
+        #[cfg(target_arch = "aarch64")]
+        crate::perf::task::perf_sched_in(self);
+    }
+
+    fn scheduler_switch_out(
+        &self,
+        reason: ax_std::os::arceos::task::SwitchReason,
+        cpu_pin: &CpuPin<'_>,
+    ) {
+        #[cfg(target_arch = "aarch64")]
+        crate::perf::task::perf_sched_out(self);
+        // SAFETY: switch-in established exactly one activation for this task,
+        // and the scheduler baton still pins the same CPU during switch-out.
+        unsafe { self.scope.deactivate_pinned(cpu_pin) };
+        self.proc_data
+            .process_cpu_time
+            .record_transition(|| self.cpu_time.scheduler_switch_out(reason));
+    }
+
+    pub(crate) fn set_cpu_time_state(&self, state: TimerState) {
+        self.proc_data
+            .process_cpu_time
+            .record_transition(|| self.cpu_time.set_state(state));
+    }
+
+    pub(crate) fn set_cpu_time_policy(&self, realtime_policy: bool, leaving_realtime: bool) {
+        self.proc_data.process_cpu_time.record_transition(|| {
+            self.cpu_time
+                .set_realtime_policy(realtime_policy, leaving_realtime)
+        });
+    }
+
+    pub(crate) fn account_cpu_time_now(&self) {
+        self.proc_data
+            .process_cpu_time
+            .record_transition(|| self.cpu_time.account_now());
     }
 
     /// Get the clear child tid field.
@@ -387,15 +476,27 @@ impl Thread {
         self.exit_request.store(true, Ordering::Release);
     }
 
-    /// Check if the thread is accessing user memory.
-    pub fn is_accessing_user_memory(&self) -> bool {
-        self.accessing_user_memory.load(Ordering::Acquire)
+    /// Enters one nested faultable user-memory access scope.
+    pub(crate) fn enter_user_memory_access(&self) {
+        self.user_memory_access_depth
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_add(1)
+            })
+            .expect("user-memory access nesting overflow");
     }
 
-    /// Set the accessing user memory flag.
-    pub fn set_accessing_user_memory(&self, accessing: bool) {
-        self.accessing_user_memory
-            .store(accessing, Ordering::Release);
+    /// Leaves one nested faultable user-memory access scope.
+    pub(crate) fn leave_user_memory_access(&self) {
+        self.user_memory_access_depth
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_sub(1)
+            })
+            .expect("unbalanced user-memory access scope");
+    }
+
+    /// Returns whether this thread owns a faultable user-memory access scope.
+    pub(crate) fn has_active_user_memory_access(&self) -> bool {
+        self.user_memory_access_depth.load(Ordering::Acquire) != 0
     }
 
     /// Get the pdeathsig value (signal sent to this thread when parent exits).
@@ -473,10 +574,8 @@ impl Thread {
         tids.sort_unstable();
 
         for tid in &tids {
-            if let Ok(task) = ops::get_task(*tid)
-                && let Some(thr) = task.try_as_thread()
-            {
-                thr.set_cred_single(new_arc.clone());
+            if let Ok(task) = ops::get_task(*tid) {
+                task.as_thread().set_cred_single(new_arc.clone());
             }
         }
     }
@@ -521,11 +620,6 @@ impl Thread {
         self.setgroups_deny.store(val, Ordering::Relaxed);
     }
 
-    /// Set the registered rseq area pointer.
-    pub fn set_rseq_area(&self, addr: usize) {
-        self.rseq_area.store(addr, Ordering::SeqCst);
-    }
-
     /// Set the registered rseq area pointer and signature.
     pub fn set_rseq_state(&self, addr: usize, sig: u32) {
         self.rseq_area.store(addr, Ordering::SeqCst);
@@ -549,48 +643,6 @@ impl Thread {
     }
 }
 
-#[extern_trait]
-impl TaskExt for Box<Thread> {
-    fn on_enter(&self) {
-        let scope = self.scope.read();
-        unsafe { ActiveScope::set(&scope) };
-        core::mem::forget(scope);
-        // Program any per-task perf counters onto HW for this slice. Runs with
-        // IRQs disabled inside `switch_to`; the hook early-returns cheaply when
-        // no per-task perf event exists anywhere.
-        #[cfg(target_arch = "aarch64")]
-        crate::perf::task::perf_sched_in(self);
-    }
-
-    fn on_leave(&self) {
-        // Fold this slice's per-task perf counter deltas and stop the counters
-        // before the scope is torn down. Same hot-path constraints as on_enter.
-        #[cfg(target_arch = "aarch64")]
-        crate::perf::task::perf_sched_out(self);
-        ActiveScope::set_global();
-        unsafe { self.scope.force_read_decrement() };
-    }
-}
-
-/// Helper trait to access the thread from a task.
-pub trait AsThread {
-    /// Try to get the thread from the task.
-    fn try_as_thread(&self) -> Option<&Thread>;
-
-    /// Get the thread from the task, panicking if it is a kernel task.
-    #[track_caller]
-    fn as_thread(&self) -> &Thread {
-        self.try_as_thread().expect("kernel task")
-    }
-}
-
-impl AsThread for TaskInner {
-    fn try_as_thread(&self) -> Option<&Thread> {
-        self.task_ext()
-            .map(|ext| ext.downcast_ref::<Box<Thread>>().as_ref())
-    }
-}
-
 /// A one-shot completion for vfork synchronization.
 ///
 /// This avoids lost-wakeup races by recording the "done" state under the same
@@ -598,7 +650,7 @@ impl AsThread for TaskInner {
 /// wait, the parent will see `done == true` and skip waiting.
 ///
 /// We use [`PollSet`] (not `WaitQueue`) so the parent's wait can run inside
-/// `block_on(interruptible(...))`: a sibling thread that does `execve` will
+/// `block_on_user(interruptible_for(...))`: a sibling thread that does `execve` will
 /// zap us via `task.interrupt()`, which only wakes futures-based polls, not
 /// `WaitQueue::wait_until`. Without this, the execve initiator would deadlock
 /// in its sibling-teardown loop waiting for us to exit.
@@ -725,12 +777,12 @@ pub struct ProcessData {
     pub cwd_path: RwLock<String>,
     /// The virtual memory address space.
     // TODO: scopify
-    aspace: SpinNoIrq<Arc<Mutex<AddrSpace>>>,
+    aspace: SpinNoIrq<Arc<PiMutex<AddrSpace>>>,
     /// The per-process uprobe manager. Each process has its own because user
     /// code can be modified independently.
     pub uprobe_manager: crate::kprobe::KprobeManager,
     /// Per-process uprobe point list, paired with [`Self::uprobe_manager`].
-    pub uprobe_point_list: Mutex<crate::kprobe::KprobePointList>,
+    pub uprobe_point_list: PiMutex<crate::kprobe::KprobePointList>,
     /// The namespace proxy — aggregates all namespace types for this process.
     pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
     /// Authoritative cgroup membership shared by every thread in the process.
@@ -751,7 +803,7 @@ pub struct ProcessData {
     /// Serializes `execve` within the process. Only one thread can be
     /// tearing down the thread group at a time; concurrent attempts return
     /// `EINTR` (the loser is about to be zapped anyway).
-    pub exec_lock: Mutex<()>,
+    pub exec_lock: PiMutex<()>,
     /// The exit signal of the thread
     pub exit_signal: Option<Signo>,
     /// The thread in the parent thread group that created this process.
@@ -760,6 +812,14 @@ pub struct ProcessData {
     /// created by the calling thread, while the default wait may reap children
     /// created by any thread in the same thread group.
     pub wait_parent_tid: Pid,
+
+    /// Nice value retained after the thread-group leader exits before its peers.
+    ///
+    /// Linux keeps the leader's `task_struct` and PID hashed until the thread
+    /// group can be released. Starry detaches the live scheduler-backed task at
+    /// thread exit, so this OS-owned snapshot preserves the leader PID's
+    /// `getpriority` semantics without extending scheduler-resource lifetime.
+    retired_leader_nice: SpinNoIrq<Option<i32>>,
 
     /// The process signal manager
     pub signal: Arc<ProcessSignalManager>,
@@ -774,9 +834,6 @@ pub struct ProcessData {
 
     /// The default mask for file permissions.
     umask: AtomicU32,
-
-    /// The process nice value used by getpriority/setpriority compatibility.
-    nice: AtomicI32,
 
     /// Process-local membarrier(2) registration state bitmask.
     membarrier_state: AtomicU32,
@@ -797,6 +854,12 @@ pub struct ProcessData {
     /// Accumulated CPU time of waited children (utime + stime).
     /// Updated when wait() reaps a child.
     children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
+
+    /// CPU time accumulated by every thread in this process.
+    process_cpu_time: ProcessCpuTimeAccounting,
+
+    /// Linux setitimer/getitimer state shared by the thread group.
+    pub interval_timers: PiMutex<ProcessTimerManager>,
 
     /// Pid of the process currently tracing this process, if any.
     ptrace_tracer_pid: AtomicU32,
@@ -920,7 +983,7 @@ impl ProcessData {
     pub fn new(
         proc: Arc<Process>,
         image: ProcessImage,
-        aspace: Arc<Mutex<AddrSpace>>,
+        aspace: Arc<PiMutex<AddrSpace>>,
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
         exit_signal: Option<Signo>,
         wait_parent_tid: Pid,
@@ -940,7 +1003,7 @@ impl ProcessData {
                 cwd_path: RwLock::new(image.cwd_path),
                 aspace: SpinNoIrq::new(aspace),
                 uprobe_manager: crate::kprobe::KprobeManager::new(),
-                uprobe_point_list: Mutex::new(crate::kprobe::KprobePointList::new()),
+                uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
                 heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
                 rlim: RwLock::default(),
@@ -948,9 +1011,10 @@ impl ProcessData {
                 child_exit_event: Arc::default(),
                 exit_event,
                 thread_exit_event: Arc::default(),
-                exec_lock: Mutex::new(()),
+                exec_lock: PiMutex::new(()),
                 exit_signal,
                 wait_parent_tid,
+                retired_leader_nice: SpinNoIrq::new(None),
 
                 signal: Arc::new(ProcessSignalManager::new(
                     signal_actions,
@@ -965,12 +1029,13 @@ impl ProcessData {
                 vfork_done: SpinNoIrq::new(None),
 
                 umask: AtomicU32::new(0o022),
-                nice: AtomicI32::new(0),
                 membarrier_state: AtomicU32::new(0),
                 dumpable: AtomicI32::new(1),
                 thp_disable: AtomicU32::new(0),
 
                 children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
+                process_cpu_time: ProcessCpuTimeAccounting::new(),
+                interval_timers: PiMutex::new(ProcessTimerManager::new()),
 
                 ptrace_tracer_pid: AtomicU32::new(0),
                 ptrace_traceme: AtomicBool::new(false),
@@ -1001,7 +1066,7 @@ impl ProcessData {
         });
         // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
         // from `lock()` lives until the end of the statement, so calling
-        // `attach_process_slot` (which locks `Mutex<AddrSpace>`) in the same
+        // `attach_process_slot` (which locks `PiMutex<AddrSpace>`) in the same
         // expression would nest a sleepable lock inside atomic context.
         let aspace_arc = this.aspace.lock().clone();
         crate::mm::attach_process_slot(&aspace_arc);
@@ -1013,10 +1078,19 @@ impl ProcessData {
         self.identity.clone()
     }
 
-    /// Whether this process shares its VM address space (`CLONE_VM`).
-    #[inline]
-    pub fn vm_aspace_shared(&self) -> bool {
-        self.vm_aspace_shared.load(Ordering::Acquire)
+    /// Retains the exiting thread-group leader's nice value.
+    pub fn retire_leader_nice(&self, nice: i32) {
+        *self.retired_leader_nice.lock() = Some(nice);
+    }
+
+    /// Returns the nice value retained for an exited thread-group leader.
+    pub fn retired_leader_nice(&self) -> Option<i32> {
+        *self.retired_leader_nice.lock()
+    }
+
+    /// Clears a retired leader snapshot after `de_thread` installs a new leader.
+    pub fn clear_retired_leader_nice(&self) {
+        self.retired_leader_nice.lock().take();
     }
 
     /// Called after `execve` commits a fresh private address space so exit
@@ -1070,16 +1144,6 @@ impl ProcessData {
     /// Set the umask and return the old value.
     pub fn replace_umask(&self, umask: u32) -> u32 {
         self.umask.swap(umask, Ordering::SeqCst)
-    }
-
-    /// Get the process nice value.
-    pub fn nice(&self) -> i32 {
-        self.nice.load(Ordering::SeqCst)
-    }
-
-    /// Set the process nice value.
-    pub fn set_nice(&self, nice: i32) {
-        self.nice.store(nice, Ordering::SeqCst);
     }
 
     /// Get the membarrier(2) registration state bitmask.
@@ -1225,6 +1289,23 @@ impl ProcessData {
         let mut time = self.children_cpu_time.lock();
         time.0 += utime;
         time.1 += stime;
+    }
+
+    pub(crate) fn cpu_time_snapshot(&self) -> ProcessCpuTimeSnapshot {
+        self.process_cpu_time.snapshot_with_live(|now_ns| {
+            self.proc
+                .threads()
+                .into_iter()
+                .filter_map(|tid| get_task(tid).ok())
+                .fold(CpuTimeDelta::ZERO, |total, task| {
+                    total.add(task.as_thread().cpu_time.running_residual_at(now_ns))
+                })
+        })
+    }
+
+    /// Returns process-wide user and system CPU time.
+    pub fn cpu_time(&self) -> (TimeValue, TimeValue) {
+        self.cpu_time_snapshot().output()
     }
 
     /// Mark this process as traceable by its parent.
@@ -1379,25 +1460,11 @@ impl ProcessData {
             .is_some_and(|stop| stop.is_syscall)
     }
 
-    /// Return the siginfo for the current ptrace stop.
-    pub fn ptrace_stop_siginfo(&self) -> Option<SignalInfo> {
-        let tid = self.selected_ptrace_stop_tid()?;
-        self.ptrace_stop_siginfo_for(tid)
-    }
-
     pub fn ptrace_stop_siginfo_for(&self, tid: u32) -> Option<SignalInfo> {
         self.ptrace_stop
             .lock()
             .get(&tid)
-            .and_then(|stop| stop.siginfo.clone())
-    }
-
-    /// Replace the siginfo held for the current ptrace stop.
-    pub fn set_ptrace_stop_siginfo(&self, signo: Signo, siginfo: SignalInfo) -> bool {
-        let Some(tid) = self.selected_ptrace_stop_tid() else {
-            return false;
-        };
-        self.set_ptrace_stop_siginfo_for(tid, signo, siginfo)
+            .and_then(|stop| stop.siginfo)
     }
 
     pub fn set_ptrace_stop_siginfo_for(&self, tid: u32, signo: Signo, siginfo: SignalInfo) -> bool {
@@ -1423,45 +1490,14 @@ impl ProcessData {
         !self.ptrace_stop.lock().contains_key(&tid)
     }
 
-    /// Return the saved user context for the current ptrace stop.
-    pub fn ptrace_stop_user_context(&self) -> Option<UserContext> {
-        let tid = self.selected_ptrace_stop_tid()?;
-        self.ptrace_stop_user_context_for(tid)
-    }
-
     pub fn ptrace_stop_user_context_for(&self, tid: u32) -> Option<UserContext> {
         self.ptrace_stop.lock().get(&tid).map(|stop| stop.uctx)
-    }
-
-    pub fn ptrace_stop_reported(&self) -> bool {
-        self.ptrace_stop
-            .lock()
-            .values()
-            .all(|stop| stop.reported || stop.signo.is_none())
-    }
-
-    pub fn mark_ptrace_stop_reported(&self) {
-        let mut stops = self.ptrace_stop.lock();
-        if let Some(stop) = stops
-            .values_mut()
-            .find(|stop| !stop.reported && stop.signo.is_some())
-        {
-            stop.reported = true;
-        }
     }
 
     pub fn mark_ptrace_stop_reported_for(&self, tid: u32) {
         if let Some(stop) = self.ptrace_stop.lock().get_mut(&tid) {
             stop.reported = true;
         }
-    }
-
-    /// Replace registers held for a stopped tracee.
-    pub fn set_ptrace_stop_user_context(&self, uctx: UserContext) -> bool {
-        let Some(tid) = self.selected_ptrace_stop_tid() else {
-            return false;
-        };
-        self.set_ptrace_stop_user_context_for(tid, uctx)
     }
 
     pub fn set_ptrace_stop_user_context_for(&self, tid: u32, uctx: UserContext) -> bool {
@@ -1471,13 +1507,6 @@ impl ProcessData {
         };
         stop.uctx = uctx;
         true
-    }
-
-    /// Resume the stopped task, optionally injecting a signal.
-    pub fn resume_ptrace_stop_with_signal(&self, signo: u32) {
-        if let Some(tid) = self.selected_ptrace_stop_tid() {
-            self.resume_ptrace_stop_with_signal_for(tid, signo);
-        }
     }
 
     pub fn resume_ptrace_stop_with_signal_for(&self, tid: u32, signo: u32) {
@@ -1492,11 +1521,6 @@ impl ProcessData {
         }
         // Ptrace stop state is updated before waking waiters.
         unsafe { self.ptrace_stop_event.wake(IoEvents::IN) };
-    }
-
-    /// Resume the stopped task without injecting a signal.
-    pub fn resume_ptrace_stop(&self) {
-        self.resume_ptrace_stop_with_signal(0);
     }
 
     /// Consume the signal chosen by the tracer on resume.
@@ -1519,12 +1543,6 @@ impl ProcessData {
         } else {
             false
         }
-    }
-
-    /// Take registers once the stopped task resumes.
-    pub fn take_ptrace_stop_user_context(&self) -> Option<UserContext> {
-        let tid = self.selected_ptrace_stop_tid()?;
-        self.take_ptrace_stop_user_context_for(tid)
     }
 
     pub fn take_ptrace_stop_user_context_for(&self, tid: u32) -> Option<UserContext> {
@@ -1578,31 +1596,13 @@ impl ProcessData {
         self.ptrace_attached.load(Ordering::Acquire)
     }
 
-    pub fn set_ptrace_singlestep(&self, val: bool) {
-        if !val {
-            self.ptrace_singlestep_tid.store(0, Ordering::Release);
-        } else if let Some(tid) = self.selected_ptrace_stop_tid() {
-            self.ptrace_singlestep_tid.store(tid, Ordering::Release);
-        }
-    }
-
     pub fn set_ptrace_singlestep_for(&self, tid: u32, val: bool) {
         self.ptrace_singlestep_tid
             .store(if val { tid } else { 0 }, Ordering::Release);
     }
 
-    pub fn is_ptrace_singlestep(&self) -> bool {
-        self.ptrace_singlestep_tid.load(Ordering::Acquire) != 0
-    }
-
     pub fn is_ptrace_singlestep_for(&self, tid: u32) -> bool {
         self.ptrace_singlestep_tid.load(Ordering::Acquire) == tid
-    }
-
-    pub fn set_ptrace_syscall_trace(&self, trace: bool) {
-        if let Some(tid) = self.selected_ptrace_stop_tid() {
-            self.set_ptrace_syscall_trace_for(tid, trace);
-        }
     }
 
     pub fn set_ptrace_syscall_trace_for(&self, tid: u32, trace: bool) {
@@ -1638,13 +1638,6 @@ impl ProcessData {
 
     pub fn ptrace_options(&self) -> usize {
         self.ptrace_options.load(Ordering::Acquire)
-    }
-
-    pub fn ptrace_event_msg(&self) -> usize {
-        if let Some(tid) = self.selected_ptrace_stop_tid() {
-            return self.ptrace_event_msg_for(tid);
-        }
-        0
     }
 
     pub fn ptrace_event_msg_for(&self, tid: u32) -> usize {
@@ -1690,21 +1683,11 @@ impl ProcessData {
         (event != 0).then_some(event)
     }
 
-    pub fn take_ptrace_event(&self) -> Option<u32> {
-        let tid = self.selected_ptrace_stop_tid()?;
-        self.take_ptrace_event_for(tid)
-    }
-
-    pub fn take_ptrace_event_for(&self, tid: u32) -> Option<u32> {
-        let event = self.ptrace_stop.lock().get_mut(&tid).map_or(0, |stop| {
-            let event = stop.event;
-            stop.event = 0;
-            stop.event_msg = 0;
-            event
-        });
-        if event == 0 { None } else { Some(event) }
-    }
-
+    #[cfg(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64"
+    ))]
     pub fn set_ptrace_ss_saved_insn_for(&self, tid: u32, saved: Option<(usize, usize)>) {
         let mut saved_insns = self.ptrace_ss_saved_insn.lock();
         if let Some(saved) = saved {
@@ -1714,6 +1697,11 @@ impl ProcessData {
         }
     }
 
+    #[cfg(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "loongarch64"
+    ))]
     pub fn take_ptrace_ss_saved_insn_for(&self, tid: u32) -> Option<(usize, usize)> {
         self.ptrace_ss_saved_insn.lock().remove(&tid)
     }
@@ -1830,6 +1818,7 @@ impl ProcessData {
             fp_lasx_hi1: fp.fp_lasx_hi1,
             fcc: fp.fcc,
             fcsr: fp.fcsr,
+            _reserved: 0,
         };
 
         fp_state.restore();
@@ -1870,39 +1859,47 @@ impl ProcessData {
     }
 
     /// Returns a clone of the address space Arc.
-    pub fn aspace(&self) -> Arc<Mutex<AddrSpace>> {
+    pub fn aspace(&self) -> Arc<PiMutex<AddrSpace>> {
         self.aspace.lock().clone()
     }
 
-    /// Replace this process's address space with a new one.
+    /// Publishes a new address space while retaining the replaced one.
+    ///
+    /// The caller must install the new hardware page-table root before
+    /// releasing the returned address-space slot. Until that switch, the
+    /// current CPU may still be walking the old top-level page tables.
     ///
     /// # Why `mem::replace` instead of `*guard = new_aspace`
     ///
-    /// `self.aspace` is a `SpinNoIrq<Arc<Mutex<AddrSpace>>>`. Locking it
+    /// `self.aspace` is a `SpinNoIrq<Arc<PiMutex<AddrSpace>>>`. Locking it
     /// disables IRQs and increments `preempt_count`, putting us in atomic
     /// context. A plain assignment (`*guard = new_aspace`) would drop the
-    /// **old** `Arc<Mutex<AddrSpace>>` while the `SpinNoIrq` guard is still
+    /// **old** `Arc<PiMutex<AddrSpace>>` while the `SpinNoIrq` guard is still
     /// alive. If that was the last strong reference (e.g. after a
     /// `CLONE_VM` + `execve`), the destructor chain would be:
     ///
     /// ```text
-    /// Arc::drop → Mutex<AddrSpace>::drop → AddrSpace::drop
+    /// Arc::drop → PiMutex<AddrSpace>::drop → AddrSpace::drop
     ///   → self.clear() → areas.clear() → FileBackendInner::drop
     ///     → cache.remove_evict_listener()
-    ///       → evict_listeners.lock()        ← sleeping Mutex
+    ///       → evict_listeners.lock()        ← sleeping PiMutex
     ///         → might_sleep()               ← PANIC (atomic context)
     /// ```
     ///
-    /// `mem::replace` moves the old Arc out of the guard so it is dropped
-    /// **after** the `SpinNoIrq` guard, in normal preemptible context.
-    pub fn replace_aspace(&self, new_aspace: Arc<Mutex<AddrSpace>>) {
-        let old = {
+    /// `mem::replace` moves the old Arc out of the guard. Returning it also
+    /// prevents exec from reclaiming an active page-table root before the
+    /// architecture switch commits, matching Linux `exec_mmap()`'s deferred
+    /// `old_mm` release.
+    #[must_use = "the old address space must be released after installing the new page-table root"]
+    pub fn stage_aspace_replacement(
+        &self,
+        new_aspace: Arc<PiMutex<AddrSpace>>,
+    ) -> Arc<PiMutex<AddrSpace>> {
+        crate::mm::attach_process_slot(&new_aspace);
+        {
             let mut guard = self.aspace.lock();
             core::mem::replace(&mut *guard, new_aspace)
-        };
-        crate::mm::release_process_slot(&old);
-        let aspace_arc = self.aspace.lock().clone();
-        crate::mm::attach_process_slot(&aspace_arc);
+        }
     }
 
     /// Set the vfork completion (called on the child after a vfork,
@@ -1935,28 +1932,32 @@ impl ProcessData {
                 None => return, // No vfork, shouldn't happen but be safe.
             }
         };
-        let curr_task = ax_task::current();
+        let curr_task = current_user_task();
         let curr_thr = curr_task.as_thread();
         loop {
-            let result = ax_task::future::block_on(ax_task::future::interruptible(
-                core::future::poll_fn(|cx| {
-                    // Register before re-checking so a notify that fires
-                    // between our last check and this register isn't lost.
-                    // Registration happens from the vfork parent task context.
-                    unsafe { poll.register(cx.waker(), IoEvents::IN) };
-                    let done = self
-                        .vfork_done
-                        .lock()
-                        .as_ref()
-                        .map(|v| v.done)
-                        .unwrap_or(true);
-                    if done {
-                        core::task::Poll::Ready(())
-                    } else {
-                        core::task::Poll::Pending
-                    }
-                }),
-            ));
+            let result = future::block_on_user(
+                &curr_task,
+                future::interruptible_for(
+                    &curr_task,
+                    core::future::poll_fn(|cx| {
+                        // Register before re-checking so a notify that fires
+                        // between our last check and this register isn't lost.
+                        // Registration happens from the vfork parent task context.
+                        unsafe { poll.register(cx.waker(), IoEvents::IN) };
+                        let done = self
+                            .vfork_done
+                            .lock()
+                            .as_ref()
+                            .map(|v| v.done)
+                            .unwrap_or(true);
+                        if done {
+                            core::task::Poll::Ready(())
+                        } else {
+                            core::task::Poll::Pending
+                        }
+                    }),
+                ),
+            );
             match result {
                 Ok(()) => return,
                 Err(_) => {

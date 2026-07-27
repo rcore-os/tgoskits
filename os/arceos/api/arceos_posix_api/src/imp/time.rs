@@ -80,7 +80,7 @@ pub unsafe fn sys_nanosleep(req: *const ctypes::timespec, rem: *mut ctypes::time
         let now = ax_hal::time::monotonic_time();
 
         #[cfg(feature = "multitask")]
-        ax_task::sleep(dur);
+        ax_runtime::task::sleep(dur);
         #[cfg(not(feature = "multitask"))]
         ax_hal::time::busy_wait(dur);
 

@@ -596,6 +596,7 @@ impl UartPort for RockchipFiqSerial {
 impl SplitUart for RockchipFiqSerial {
     type Port = Self;
     type Irq = Ns16550Irq<RockchipFiqPort>;
+    type EmergencyTx = super::Ns16550EmergencyTx<RockchipFiqPort>;
 
     fn runtime_info(&self) -> UartInfo {
         UartInfo {
@@ -605,12 +606,15 @@ impl SplitUart for RockchipFiqSerial {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq> {
+    fn split(self) -> UartParts<Self::Port, Self::Irq, Self::EmergencyTx> {
         let irq = Ns16550Irq {
             base: self.serial.base,
             saved_lsr: LineStatusFlags::empty(),
         };
-        UartParts::new(self, irq)
+        let emergency_tx = super::Ns16550EmergencyTx {
+            base: self.serial.base,
+        };
+        UartParts::new(self, irq, emergency_tx)
     }
 }
 

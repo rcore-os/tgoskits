@@ -14,17 +14,13 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(feature = "multitask")]
-use ax_hal::mem::VirtAddr;
-
 static SECONDARY_CPUID_BY_SLOT: [AtomicUsize; crate::build_info::CPU_CAPACITY - 1] =
     [const { AtomicUsize::new(usize::MAX) }; crate::build_info::CPU_CAPACITY - 1];
 
 static ENTERED_CPUS: AtomicUsize = AtomicUsize::new(1);
 
-#[cfg(feature = "multitask")]
-fn secondary_boot_stack_bounds(cpu_id: usize) -> (VirtAddr, usize) {
-    ax_hal::mem::boot_stack_bounds(cpu_id)
+const fn secondary_cpu_is_usable(cpu_id: usize, runtime_cpu_count: usize) -> bool {
+    cpu_id < runtime_cpu_count
 }
 
 fn prepare_secondary_boot_stack(slot: usize, cpu_id: usize) {
@@ -36,7 +32,7 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
     let mut slot = 0;
     let cpu_num = ax_hal::cpu_num();
     for i in 0..cpu_num {
-        if i != primary_cpu_id && slot < cpu_num - 1 {
+        if i != primary_cpu_id && slot < cpu_num.saturating_sub(1) {
             prepare_secondary_boot_stack(slot, i);
 
             let stack_top = 0;
@@ -57,23 +53,27 @@ pub fn start_secondary_cpus(primary_cpu_id: usize) {
 /// It is called from the bootstrapping code in the specific platform crate.
 #[ax_plat::secondary_main]
 pub fn rust_main_secondary(cpu_id: usize) -> ! {
-    // Park harts whose logical index is beyond the compile-time CPU count: QEMU
-    // may start more harts (`-smp M`) than the kernel was built for
-    // (`CPU_CAPACITY == N`). Mirror Linux — run on the first N CPUs and park the
-    // excess, rather than panicking in `percpu::init_secondary(cpu_id)` /
-    // `AxCpuMask::one_shot(cpu_id)` / `RUN_QUEUES[cpu_id]`, which all assert
-    // `index < CPU_CAPACITY`. Must precede `init_secondary`, which would otherwise
-    // mis-index the per-CPU area first.
-    if cpu_id >= crate::build_info::CPU_CAPACITY {
+    // The platform may enter more harts than the runtime topology selected.
+    // ax_hal::cpu_num() is already min(platform_cpu_count, CPU_CAPACITY); use
+    // that same limit for secondary admission and the BSP completion count.
+    // This must precede per-CPU initialization, which indexes the final area.
+    if !secondary_cpu_is_usable(cpu_id, ax_hal::cpu_num()) {
         loop {
             ax_hal::asm::wait_for_irqs();
         }
     }
     ax_hal::percpu::init_secondary(cpu_id);
+    crate::guard::assert_boot_guards_released();
     // After per-CPU init, before scheduler/IPI/IRQ paths can allocate.
     // This is a no-op for allocator backends that do not need per-CPU state.
     ax_alloc::init_percpu_slab(cpu_id);
     ax_hal::init_early_secondary(cpu_id);
+
+    #[cfg(all(feature = "tls", feature = "multitask"))]
+    crate::task::initialize_early_bootstrap_tls()
+        .expect("failed to initialize secondary bootstrap TLS");
+    #[cfg(all(feature = "tls", not(feature = "multitask")))]
+    super::init_tls();
 
     ENTERED_CPUS.fetch_add(1, Ordering::Release);
     info!("Secondary CPU {cpu_id} started.");
@@ -84,10 +84,8 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     ax_hal::init_later_secondary(cpu_id);
 
     #[cfg(feature = "multitask")]
-    {
-        let (stack_ptr, stack_size) = secondary_boot_stack_bounds(cpu_id);
-        ax_task::init_scheduler_secondary(stack_ptr, stack_size);
-    }
+    crate::task::initialize_secondary(cpu_id)
+        .expect("failed to initialize secondary task scheduler");
 
     #[cfg(feature = "ipi")]
     ax_ipi::init();
@@ -98,8 +96,16 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     #[cfg(feature = "irq")]
     super::init_percpu_irq(cpu_id);
 
-    #[cfg(feature = "irq")]
+    #[cfg(feature = "multitask")]
+    let online_cpu = crate::task::publish_current_cpu_online()
+        .expect("failed to publish secondary scheduler CPU");
+
+    #[cfg(all(feature = "irq", feature = "multitask"))]
+    super::enable_irqs_after_scheduler_online(online_cpu);
+    #[cfg(all(feature = "irq", not(feature = "multitask")))]
     ax_hal::asm::enable_irqs();
+    #[cfg(all(feature = "multitask", not(feature = "irq")))]
+    let _ = online_cpu;
 
     #[cfg(all(feature = "irq", feature = "ipi"))]
     ax_ipi::mark_current_cpu_ready();
@@ -111,13 +117,23 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
         core::hint::spin_loop();
     }
 
-    #[cfg(all(feature = "tls", not(feature = "multitask")))]
-    super::init_tls();
-
     #[cfg(feature = "multitask")]
-    ax_task::run_idle();
+    crate::task::run_idle();
     #[cfg(not(feature = "multitask"))]
     loop {
         ax_hal::asm::wait_for_irqs();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::secondary_cpu_is_usable;
+
+    #[test]
+    fn secondary_admission_uses_the_runtime_cpu_limit() {
+        assert!(secondary_cpu_is_usable(0, 2));
+        assert!(secondary_cpu_is_usable(1, 2));
+        assert!(!secondary_cpu_is_usable(2, 2));
+        assert!(!secondary_cpu_is_usable(7, 2));
     }
 }

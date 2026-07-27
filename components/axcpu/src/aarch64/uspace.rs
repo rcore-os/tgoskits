@@ -1,6 +1,9 @@
 //! Structures and functions for user space.
 
-use core::ops::{Deref, DerefMut};
+use core::{
+    mem::{offset_of, size_of},
+    ops::{Deref, DerefMut},
+};
 
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, Readable};
 use ax_memory_addr::VirtAddr;
@@ -20,6 +23,18 @@ pub struct UserContext {
     /// Software Thread ID Register (TPIDR_EL0).
     pub tpidr: u64,
 }
+
+// SAFETY: `TrapFrame`, `sp`, and `tpidr` are contiguous integer storage and
+// their combined size is already a multiple of the declared 16-byte alignment.
+unsafe impl bytemuck::NoUninit for UserContext {}
+
+const _: () = {
+    assert!(size_of::<TrapFrame>() == 34 * size_of::<u64>());
+    assert!(offset_of!(UserContext, tf) == 0);
+    assert!(offset_of!(UserContext, sp) == size_of::<TrapFrame>());
+    assert!(offset_of!(UserContext, tpidr) == size_of::<TrapFrame>() + size_of::<u64>());
+    assert!(size_of::<UserContext>() == size_of::<TrapFrame>() + 2 * size_of::<u64>());
+};
 
 impl UserContext {
     /// Creates a new user context with the given entry point, stack top, and argument.

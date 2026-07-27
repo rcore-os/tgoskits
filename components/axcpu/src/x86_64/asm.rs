@@ -37,6 +37,17 @@ pub fn wait_for_irqs() {
     unsafe { asm!("hlt") }
 }
 
+/// Waits for an interrupt after the caller masks local IRQ delivery.
+///
+/// `STI` delays recognition of maskable interrupts until after the following
+/// `HLT`, so a pending wake cannot be consumed between enabling IRQs and
+/// entering the idle state. The function returns with local IRQs enabled.
+#[inline]
+pub fn wait_for_irqs_disabled() {
+    debug_assert!(!irqs_enabled());
+    unsafe { asm!("sti; hlt", options(nostack)) }
+}
+
 /// Halt the current CPU.
 #[inline]
 pub fn halt() {

@@ -109,6 +109,13 @@ pub trait LogIf {
     /// Writes a string to the console.
     fn console_write_str(s: &str);
 
+    /// Attempts to consume one complete structured log record.
+    ///
+    /// Returns `true` when the runtime owns the record, including when a
+    /// bounded asynchronous sink deliberately drops it. Returning `false`
+    /// requests the early-console serialized fallback.
+    fn try_write_log_record(record: &str) -> bool;
+
     /// Gets current clock time.
     fn current_time() -> core::time::Duration;
 
@@ -294,7 +301,7 @@ impl Log for Logger {
     fn flush(&self) {}
 }
 
-fn write_fmt_locked(args: fmt::Arguments) -> fmt::Result {
+fn write_console_fmt_locked(args: fmt::Arguments) -> fmt::Result {
     use ax_kspin::SpinNoIrq; // TODO: more efficient
     static LOCK: SpinNoIrq<()> = SpinNoIrq::new(());
 
@@ -322,15 +329,27 @@ fn print_log_fmt(args: fmt::Arguments) {
     let mut buf = LogBuffer::<LOG_BUFFER_SIZE>::new();
     buf.write_fmt(args).unwrap();
     buf.append_truncation_marker();
-    write_fmt_locked(format_args!("{}", buf.as_str())).unwrap();
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "std")] {
+            Logger.write_str(buf.as_str()).unwrap();
+        } else {
+            if call_interface!(LogIf::try_write_log_record, buf.as_str()) {
+                // The active runtime sink accepted or deliberately dropped this
+                // bounded record without taking the direct-console lock.
+            } else {
+                write_console_fmt_locked(format_args!("{}", buf.as_str())).unwrap();
+            }
+        }
+    }
 }
 
 /// Prints the formatted string to the console.
 pub fn print_fmt(args: fmt::Arguments) -> fmt::Result {
     // Direct console output preserves the caller's original bytes and length.
     // This keeps ax_print!/ax_println! and axstd println! behavior unchanged;
-    // callers that format under this lock must still avoid recursive printing.
-    write_fmt_locked(args)
+    // unlike structured log records, one call may contain multiple formatter
+    // fragments and therefore still needs stream serialization.
+    write_console_fmt_locked(args)
 }
 
 #[doc(hidden)]

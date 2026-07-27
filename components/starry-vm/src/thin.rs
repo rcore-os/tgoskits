@@ -1,6 +1,6 @@
 use core::{mem::MaybeUninit, ptr::NonNull, slice};
 
-use bytemuck::AnyBitPattern;
+use bytemuck::{AnyBitPattern, NoUninit};
 
 use crate::{VmResult, vm_read_slice, vm_write_slice};
 
@@ -68,7 +68,10 @@ impl<T> VmPtr for NonNull<T> {
 /// A mutable virtual memory pointer.
 pub trait VmMutPtr: VmPtr {
     /// Overwrites a virtual memory location with the given value.
-    fn vm_write(self, value: Self::Target) -> VmResult {
+    fn vm_write(self, value: Self::Target) -> VmResult
+    where
+        Self::Target: NoUninit,
+    {
         vm_write_slice(self.as_ptr().cast_mut(), slice::from_ref(&value))
     }
 }

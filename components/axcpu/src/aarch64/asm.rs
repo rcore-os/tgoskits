@@ -40,6 +40,19 @@ pub fn wait_for_irqs() {
     aarch64_cpu::asm::wfi();
 }
 
+/// Waits for an interrupt after the caller masks local IRQ delivery.
+///
+/// AArch64 `WFI` observes enabled pending interrupt sources even while
+/// `DAIF.I` masks delivery. Keeping delivery masked through `WFI` closes the
+/// scheduler wake-loss window. The function returns with local IRQs enabled.
+#[inline]
+pub fn wait_for_irqs_disabled() {
+    debug_assert!(!irqs_enabled());
+    barrier::dsb(barrier::SY);
+    aarch64_cpu::asm::wfi();
+    enable_irqs();
+}
+
 /// Halt the current CPU.
 #[inline]
 pub fn halt() {

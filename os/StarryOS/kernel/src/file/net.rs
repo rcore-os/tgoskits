@@ -2,6 +2,7 @@ use alloc::{
     borrow::{Cow, ToOwned},
     format,
     sync::Arc,
+    vec::Vec,
 };
 use core::{
     ffi::c_int,
@@ -12,12 +13,12 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_io::{Cursor, IoBuf, IoBufMut, Read, Write};
 use ax_net::{
     InterfaceFlags, InterfaceId, InterfaceInfo, InterfaceKind, RecvOptions, SendOptions,
     Socket as SocketInner, SocketOps,
     options::{Configurable, GetSocketOption, SetSocketOption},
 };
-use ax_task::current;
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::{
     general::{CAP_NET_ADMIN, O_RDWR, S_IFSOCK},
@@ -34,7 +35,7 @@ use super::{FileLike, Kstat};
 use crate::{
     file::{IoDst, IoSrc, get_file_like},
     syscall::in_root_net_ns,
-    task::AsThread,
+    task::current_user_task,
 };
 
 pub(super) const ARPHRD_ETHER: u16 = 1;
@@ -54,6 +55,7 @@ const SIOCETHTOOL: u32 = 0x8946;
 const SIOCGIFNAME: u32 = 0x8910;
 const IFCONF_LEN_OFFSET: usize = 0;
 const IFCONF_BUF_OFFSET: usize = 8;
+const SOCKET_RECEIVE_STAGING_LIMIT: usize = 64 * 1024;
 
 pub struct Socket {
     inner: SocketInner,
@@ -72,9 +74,54 @@ impl Socket {
         }
     }
 
+    /// Copies a task-owned source into kernel memory before entering ax-net.
+    ///
+    /// Some transports invoke `Read` callbacks while holding IRQ-safe spin
+    /// locks. User-memory access may fault and therefore must finish before
+    /// crossing that lock boundary.
+    pub(crate) fn send_from_user<S>(&self, src: &mut S, options: SendOptions) -> AxResult<usize>
+    where
+        S: Read + IoBuf + ?Sized,
+    {
+        let mut staging = allocate_socket_staging(src.remaining())?;
+        src.read_exact(&mut staging)?;
+        self.inner.send(staging.as_slice(), options)
+    }
+
+    /// Receives into kernel memory and copies to the task only after ax-net
+    /// releases its transport locks.
+    ///
+    /// A bounded staging buffer avoids allocating an attacker-controlled read
+    /// length. Returning a short stream read is valid, while 64 KiB still
+    /// covers the maximum IP datagram. Datagram `MSG_TRUNC` keeps the transport
+    /// return length even when only the staged prefix is copied.
+    pub(crate) fn recv_to_user<D>(&self, dst: &mut D, options: RecvOptions<'_>) -> AxResult<usize>
+    where
+        D: Write + IoBufMut + ?Sized,
+    {
+        let capacity = dst.remaining_mut().min(SOCKET_RECEIVE_STAGING_LIMIT);
+        let mut buffer = allocate_socket_staging(capacity)?;
+        let (received, copied) = {
+            let mut staging = Cursor::new(buffer.as_mut_slice());
+            let received = self.inner.recv(&mut staging, options)?;
+            (received, staging.position() as usize)
+        };
+        dst.write_all(&buffer[..copied])?;
+        Ok(received)
+    }
+
     pub fn ip_domain(&self) -> u32 {
         self.ip_domain
     }
+}
+
+fn allocate_socket_staging(len: usize) -> AxResult<Vec<u8>> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(len)
+        .map_err(|_| AxError::NoMemory)?;
+    buffer.resize(len, 0);
+    Ok(buffer)
 }
 
 pub(super) fn visible_interfaces() -> impl Iterator<Item = InterfaceInfo> {
@@ -162,7 +209,11 @@ pub(super) fn device_ioctl(cmd: u32, arg: usize) -> Option<AxResult<usize>> {
             }
             SIOCSIFFLAGS => {
                 let info = read_ifreq_interface(arg)?;
-                if !current().as_thread().cred().has_cap(CAP_NET_ADMIN) {
+                if !current_user_task()
+                    .as_thread()
+                    .cred()
+                    .has_cap(CAP_NET_ADMIN)
+                {
                     return Err(AxError::OperationNotPermitted);
                 }
                 if read_ifreq_flags(arg)? != linux_flags(&info) {
@@ -365,11 +416,11 @@ impl Deref for Socket {
 
 impl FileLike for Socket {
     fn read(&self, dst: &mut IoDst) -> AxResult<usize> {
-        self.recv(dst, RecvOptions::default())
+        self.recv_to_user(dst, RecvOptions::default())
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
-        self.send(src, SendOptions::default())
+        self.send_from_user(src, SendOptions::default())
     }
 
     fn stat(&self) -> AxResult<Kstat> {

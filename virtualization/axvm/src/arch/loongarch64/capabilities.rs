@@ -1,7 +1,7 @@
 //! LoongArch64 implementations of AxVM platform capability hooks.
 
 use super::LoongArch64Arch;
-use crate::architecture::{GuestBootPlatform, HostTimePlatform};
+use crate::architecture::GuestBootPlatform;
 
 impl GuestBootPlatform for LoongArch64Arch {
     fn init_guest_boot_resources() {
@@ -21,16 +21,6 @@ impl GuestBootPlatform for LoongArch64Arch {
         }
         super::boot::prepare_uefi_fdt_config(vm_config, vm_create_config)?;
         Ok(None)
-    }
-}
-
-impl HostTimePlatform for LoongArch64Arch {
-    fn set_oneshot_timer(_deadline_ns: u64) {}
-
-    fn register_timer_callback() {
-        ax_std::os::arceos::modules::ax_task::register_timer_callback(|_| {
-            crate::check_timer_events();
-        });
     }
 }
 

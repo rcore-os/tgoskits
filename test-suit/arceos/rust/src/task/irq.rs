@@ -89,17 +89,17 @@ fn test_wait_queue() {
     GO.store(false, Ordering::Release);
 
     for _ in 0..NUM_TASKS {
-        ax_task::spawn(move || {
+        thread::spawn(move || {
             assert_irq_enabled();
             WQ3.wait_timeout_until(Duration::from_millis(50), || false);
             assert_irq_enabled_and_disabled();
             COUNTER.fetch_add(1, Ordering::Release);
-            WQ1.notify_one(true);
+            WQ1.notify_one();
             assert_irq_enabled();
             WQ2.wait_until(|| GO.load(Ordering::Acquire));
             assert_irq_enabled_and_disabled();
             COUNTER.fetch_sub(1, Ordering::Release);
-            WQ1.notify_one(true);
+            WQ1.notify_one();
         });
     }
 
@@ -107,7 +107,7 @@ fn test_wait_queue() {
     WQ1.wait_until(|| COUNTER.load(Ordering::Acquire) == NUM_TASKS);
     assert_irq_enabled_and_disabled();
     GO.store(true, Ordering::Release);
-    WQ2.notify_all(true);
+    WQ2.notify_all();
     assert_irq_enabled();
     WQ1.wait_until(|| COUNTER.load(Ordering::Acquire) == 0);
     assert_irq_enabled_and_disabled();

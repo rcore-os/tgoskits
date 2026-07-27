@@ -25,36 +25,33 @@ impl WifiRuntime for ArceosWifiRuntime {
     }
 
     fn sleep_ms(&self, ms: u64) {
-        ax_task::sleep(Duration::from_millis(ms));
+        crate::task::sleep(Duration::from_millis(ms));
     }
 
     fn yield_now(&self) {
-        ax_task::yield_now();
+        crate::task::yield_current_cpu()
+            .unwrap_or_else(|error| panic!("failed to yield Wi-Fi runtime thread: {error}"));
     }
 
     fn spawn_poll_task(&self, name: &str, mut poll: Box<SendPollFn>) {
-        ax_task::spawn_with_name(
+        crate::task::spawn_raw(
             move || {
-                ax_task::future::block_on(poll_fn(move |cx| poll(cx)));
+                crate::task::block_on(poll_fn(move |cx| poll(cx)));
             },
             name.into(),
-        );
+            crate::task::default_task_stack_size(),
+        )
+        .unwrap_or_else(|error| panic!("failed to spawn Wi-Fi polling task: {error}"));
     }
 
     fn block_until(&self, timeout_ms: Option<u64>, poll: &mut PollFn<'_>) -> Result<(), TimedOut> {
         let fut = poll_fn(|cx| poll(cx));
         match timeout_ms {
             Some(ms) => {
-                match ax_task::future::block_on(ax_task::future::timeout(
-                    Some(Duration::from_millis(ms)),
-                    fut,
-                )) {
-                    Ok(()) => Ok(()),
-                    Err(_) => Err(TimedOut),
-                }
+                crate::task::block_on_timeout(Duration::from_millis(ms), fut).map_err(|_| TimedOut)
             }
             None => {
-                ax_task::future::block_on(fut);
+                crate::task::block_on(fut);
                 Ok(())
             }
         }
@@ -66,11 +63,12 @@ struct ArceosDelay;
 
 impl SdhciDelay for ArceosDelay {
     fn delay_ms(&self, ms: u64) {
-        ax_task::sleep(Duration::from_millis(ms));
+        crate::task::sleep(Duration::from_millis(ms));
     }
 
     fn yield_now(&self) {
-        ax_task::yield_now();
+        crate::task::yield_current_cpu()
+            .unwrap_or_else(|error| panic!("failed to yield SDHCI runtime thread: {error}"));
     }
 }
 

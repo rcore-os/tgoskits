@@ -1,5 +1,6 @@
 args = [
     "-nographic",
+    "-no-reboot",
     "-cpu",
     "Haswell,+avx",
     "-m",

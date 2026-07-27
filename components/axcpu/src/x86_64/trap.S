@@ -4,6 +4,7 @@
 .code64
 .equ NUM_INT, 256
 .equ IA32_FS_BASE, 0xc0000100
+.equ IA32_GS_BASE, 0xc0000101
 .equ IA32_KERNEL_GS_BASE, 0xc0000102
 
 .altmacro
@@ -81,6 +82,8 @@ trap_vector_entries:
 
 .Ltrap_common:
     cld
+    cmp     qword ptr [rsp], 8
+    je      .Ltrap_double_fault
     test    byte ptr [rsp + 3 * 8], 3
     jz      .Ltrap_kernel
 
@@ -98,6 +101,25 @@ trap_vector_entries:
     add     rsp, 16                     # pop vector, error_code
     iretq
 .size trap_vector_entries, . - trap_vector_entries
+
+.Ltrap_double_fault:
+    # A double fault can interrupt the entry/exit window after SWAPGS but
+    # before IRET. The saved CS then describes the interrupted kernel
+    # instruction, not the live GS base, so it cannot safely decide whether
+    # another SWAPGS is required. Save the diagnostic register image first,
+    # then use the kernel-negative GS convention (the same non-FSGSBASE
+    # decision used by Linux paranoid_entry).
+    PUSH_GENERAL_REGS
+
+    mov     ecx, IA32_GS_BASE
+    rdmsr
+    test    edx, edx
+    js      1f
+    swapgs
+1:
+    mov     rdi, rsp
+    call    x86_double_fault_handler
+    ud2
 
 .global syscall_entry
 syscall_entry:

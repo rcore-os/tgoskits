@@ -10,8 +10,7 @@ use ax_runtime::hal::{
     paging::{MappingFlags, PageSize},
     time::monotonic_time_nanos,
 };
-use ax_sync::Mutex;
-use ax_task::current;
+use ax_sync::PiMutex;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -22,8 +21,8 @@ use super::{
     SHM_STAT, has_ipc_permission, next_ipc_id,
 };
 use crate::{
-    mm::{AddrSpace, Backend, SharedPages, UserPtr, nullable},
-    task::AsThread,
+    mm::{AddrSpace, Backend, SharedPages, UserPtr},
+    task::current_user_task,
 };
 
 bitflags::bitflags! {
@@ -41,7 +40,7 @@ bitflags::bitflags! {
 
 /// Data structure describing a shared memory segment.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 pub struct ShmidDs {
     /// operation permission struct
     shm_perm: IpcPerm,
@@ -96,6 +95,7 @@ impl ShmidDs {
                 mode,
                 seq: 0,
                 pad: 0,
+                alignment_pad: 0,
                 unused0: 0,
                 unused1: 0,
             },
@@ -114,7 +114,7 @@ impl ShmidDs {
 
 /// System-wide shared memory info returned by IPC_INFO.
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 struct ShmInfo64 {
     shmmax: u64,
     shmmin: u64,
@@ -125,7 +125,7 @@ struct ShmInfo64 {
 
 /// Shared memory usage info returned by SHM_INFO.
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 struct ShmInfo {
     used_ids: i32,
     _pad: i32,
@@ -356,7 +356,7 @@ pub struct ShmManager {
     /// (key, ns_id) <-> shm_id
     key_shmid: BiBTreeMap<(i32, u64), i32>,
     /// shm_id -> shm_inner
-    shmid_inner: BTreeMap<i32, Arc<Mutex<ShmInner>>>,
+    shmid_inner: BTreeMap<i32, Arc<PiMutex<ShmInner>>>,
     /// pid -> vaddr -> shm_id
     pid_shmid_vaddr: BTreeMap<Pid, BTreeMap<VirtAddr, i32>>,
 }
@@ -379,7 +379,7 @@ impl ShmManager {
     /// Returns the shared memory inner structure [`ShmInner`] associated with
     /// the given shared memory ID, validating that it belongs to the specified
     /// IPC namespace.
-    pub fn get_inner_by_shmid(&self, shmid: i32, ns_id: u64) -> Option<Arc<Mutex<ShmInner>>> {
+    pub fn get_inner_by_shmid(&self, shmid: i32, ns_id: u64) -> Option<Arc<PiMutex<ShmInner>>> {
         self.shmid_inner
             .get(&shmid)
             .filter(|inner| inner.lock().ns_id == ns_id)
@@ -389,7 +389,7 @@ impl ShmManager {
     /// Lookup a shm_inner by shmid without namespace validation. Only for
     /// internal cleanup paths (process exit) where the caller has already
     /// scoped the lookup by pid.
-    fn get_inner_by_shmid_unchecked(&self, shmid: i32) -> Option<Arc<Mutex<ShmInner>>> {
+    fn get_inner_by_shmid_unchecked(&self, shmid: i32) -> Option<Arc<PiMutex<ShmInner>>> {
         self.shmid_inner.get(&shmid).cloned()
     }
 
@@ -418,7 +418,7 @@ impl ShmManager {
 
     /// Inserts a mapping from a shared memory ID to its inner
     /// structure [`ShmInner`].
-    pub fn insert_shmid_inner(&mut self, shmid: i32, shm_inner: Arc<Mutex<ShmInner>>) {
+    pub fn insert_shmid_inner(&mut self, shmid: i32, shm_inner: Arc<PiMutex<ShmInner>>) {
         self.shmid_inner.insert(shmid, shm_inner);
     }
 
@@ -466,16 +466,16 @@ impl ShmManager {
 ///
 /// Lock ordering: SHM_MANAGER before ShmInner before aspace (per-process).
 /// All code paths must acquire locks in this order to prevent deadlock.
-pub static SHM_MANAGER: Mutex<ShmManager> = Mutex::new(ShmManager::new());
+pub static SHM_MANAGER: PiMutex<ShmManager> = PiMutex::new(ShmManager::new());
 
 /// Clear all shared memory segments for a process on exit.
 ///
 /// Collects segment info under SHM_MANAGER, drops the lock, unmaps from
 /// aspace, then reacquires SHM_MANAGER for bookkeeping. This keeps the
 /// lock ordering consistent with sys_shmget (SHM_MANAGER then ShmInner).
-pub fn clear_proc_shm(pid: Pid, aspace: &Arc<Mutex<AddrSpace>>) {
+pub fn clear_proc_shm(pid: Pid, aspace: &Arc<PiMutex<AddrSpace>>) {
     // Collect segments attached to this process.
-    let segments: Vec<(i32, Arc<Mutex<ShmInner>>)> = {
+    let segments: Vec<(i32, Arc<PiMutex<ShmInner>>)> = {
         let shm_manager = SHM_MANAGER.lock();
         let shmids = match shm_manager.get_shmids_by_pid(pid) {
             Some(ids) => ids,
@@ -518,7 +518,7 @@ pub fn clear_proc_shm(pid: Pid, aspace: &Arc<Mutex<AddrSpace>>) {
 }
 
 pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let cur_pid = thread.proc_data.proc.pid();
     let cred = thread.cred();
@@ -555,7 +555,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
 
     // Create a new shm_inner
     let shmid = next_ipc_id();
-    let shm_inner = Arc::new(Mutex::new(ShmInner::new(
+    let shm_inner = Arc::new(PiMutex::new(ShmInner::new(
         key, shmid, size, shmflg, cur_pid, cred.euid, cred.egid, ns_id,
     )));
     shm_manager.insert_key_shmid(key, ns_id, shmid);
@@ -567,7 +567,7 @@ pub fn sys_shmget(key: i32, size: usize, shmflg: usize) -> AxResult<isize> {
 pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
     let shm_flg = ShmAtFlags::from_bits_truncate(shmflg);
 
-    let curr = current();
+    let curr = current_user_task();
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
 
@@ -656,7 +656,7 @@ pub fn sys_shmat(shmid: i32, addr: usize, shmflg: u32) -> AxResult<isize> {
 pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize> {
     let cmd = cmd as i32;
 
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let cred = thread.cred();
     let ns_id = thread.proc_data.nsproxy.lock().ipc_ns.lock().ns_id;
@@ -756,6 +756,10 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
         return Ok(0);
     }
 
+    // Copy IPC_SET input before taking shared-memory metadata locks. A user
+    // fault may sleep and must not retain those locks across the copy.
+    let requested = (cmd == IPC_SET).then(|| buf.read()).transpose()?;
+
     // IPC_SET and IPC_STAT only need shm_inner.
     let shm_inner_arc = {
         let shm_manager = SHM_MANAGER.lock();
@@ -765,17 +769,20 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
     };
     let mut shm_inner = shm_inner_arc.lock();
 
-    if cmd == IPC_SET {
-        shm_inner.shmid_ds = *buf.get_as_mut()?;
+    let output = if cmd == IPC_SET {
+        shm_inner.shmid_ds = requested.expect("IPC_SET input was copied before locking");
+        None
     } else if cmd == IPC_STAT {
-        if let Some(shmid_ds) = nullable!(buf.get_as_mut())? {
-            *shmid_ds = shm_inner.shmid_ds;
-        }
+        (!buf.is_null()).then_some(shm_inner.shmid_ds)
     } else {
         return Err(AxError::InvalidInput);
-    }
+    };
 
     shm_inner.shmid_ds.shm_ctime = monotonic_time_nanos() as __kernel_time_t;
+    drop(shm_inner);
+    if let Some(output) = output {
+        buf.write(output)?;
+    }
     Ok(0)
 }
 
@@ -796,7 +803,7 @@ pub fn sys_shmctl(shmid: i32, cmd: u32, buf: UserPtr<ShmidDs>) -> AxResult<isize
 pub fn sys_shmdt(shmaddr: usize) -> AxResult<isize> {
     let shmaddr = VirtAddr::from(shmaddr);
 
-    let curr = current();
+    let curr = current_user_task();
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
 

@@ -123,7 +123,11 @@ pub trait ArchTrait {
     fn systimer_irq_enable();
     fn systimer_irq_disable();
     fn systimer_irq_is_enabled() -> bool;
-    /// Set the timer interval in ticks
+    /// Set the timer interval in ticks.
+    ///
+    /// Implementations must preserve the full `usize` interval. An
+    /// architecture with a narrow relative-value register should program a
+    /// wide absolute compare register or explicitly chunk the interval.
     fn systimer_set_interval(ticks: usize);
     /// Acknowledge and clear the timer interrupt
     fn systimer_ack();

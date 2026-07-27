@@ -2,8 +2,7 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_runtime::hal::time::monotonic_time_nanos;
-use ax_sync::Mutex;
-use ax_task::current;
+use ax_sync::PiMutex;
 use bytemuck::AnyBitPattern;
 use linux_raw_sys::general::*;
 use starry_process::Pid;
@@ -13,11 +12,11 @@ use super::{
     IPC_CREAT, IPC_EXCL, IPC_INFO, IPC_PRIVATE, IPC_RMID, IPC_SET, IPC_STAT, IpcPerm, MSG_INFO,
     MSG_STAT, has_ipc_permission, next_ipc_id,
 };
-use crate::task::{AsThread, WaitQueue as MsgWaitQueue};
+use crate::task::{WaitQueue as MsgWaitQueue, current_user_task};
 
 /// Data structure describing a message queue.
 #[repr(C)]
-#[derive(Clone, Copy, AnyBitPattern)]
+#[derive(Clone, Copy, AnyBitPattern, bytemuck::NoUninit)]
 #[allow(non_camel_case_types)]
 pub struct msqid_ds {
     /// operation permission struct
@@ -52,6 +51,7 @@ impl msqid_ds {
                 mode,
                 seq: 0,
                 pad: 0,
+                alignment_pad: 0,
                 unused0: 0,
                 unused1: 0,
             },
@@ -285,7 +285,7 @@ pub struct MsgManager {
     /// (key, ns_id) -> msqid mapping
     key_msqid: BTreeMap<(i32, u64), i32>,
     /// msqid -> message queue structure
-    msqid_queues: BTreeMap<i32, Arc<Mutex<MessageQueue>>>,
+    msqid_queues: BTreeMap<i32, Arc<PiMutex<MessageQueue>>>,
 }
 
 impl MsgManager {
@@ -297,12 +297,12 @@ impl MsgManager {
     }
 
     /// Returns an iterator over all message queues
-    pub fn iter_msg_queues(&self) -> impl Iterator<Item = (i32, &Arc<Mutex<MessageQueue>>)> {
+    pub fn iter_msg_queues(&self) -> impl Iterator<Item = (i32, &Arc<PiMutex<MessageQueue>>)> {
         self.msqid_queues.iter().map(|(&k, v)| (k, v))
     }
 
     /// Returns an iterator over all message queues, filtering out removed ones
-    pub fn iter_active_queues(&self) -> impl Iterator<Item = (i32, &Arc<Mutex<MessageQueue>>)> {
+    pub fn iter_active_queues(&self) -> impl Iterator<Item = (i32, &Arc<PiMutex<MessageQueue>>)> {
         self.iter_msg_queues().filter(|(_, queue)| {
             let guard = queue.lock();
             !guard.mark_removed
@@ -316,7 +316,7 @@ impl MsgManager {
 
     /// Returns the message queue associated with the given ID, validating
     /// that it belongs to the specified IPC namespace.
-    pub fn get_queue_by_msqid(&self, msqid: i32, ns_id: u64) -> Option<Arc<Mutex<MessageQueue>>> {
+    pub fn get_queue_by_msqid(&self, msqid: i32, ns_id: u64) -> Option<Arc<PiMutex<MessageQueue>>> {
         self.msqid_queues
             .get(&msqid)
             .filter(|q| q.lock().ns_id == ns_id)
@@ -329,7 +329,7 @@ impl MsgManager {
     }
 
     /// Inserts a mapping from a message queue ID to its queue.
-    pub fn insert_msqid_queues(&mut self, msqid: i32, msg_queue: Arc<Mutex<MessageQueue>>) {
+    pub fn insert_msqid_queues(&mut self, msqid: i32, msg_queue: Arc<PiMutex<MessageQueue>>) {
         self.msqid_queues.insert(msqid, msg_queue);
     }
 
@@ -354,7 +354,7 @@ pub const MSGMNB: usize = 16384;
 pub const MSGMAX: usize = 8192;
 
 /// Global message queue manager
-pub static MSG_MANAGER: Mutex<MsgManager> = Mutex::new(MsgManager::new());
+pub static MSG_MANAGER: PiMutex<MsgManager> = PiMutex::new(MsgManager::new());
 
 bitflags::bitflags! {
     /// Flags for msgrcv
@@ -388,7 +388,7 @@ pub struct UserMsgbuf {
 }
 
 pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
-    let current = current();
+    let current = current_user_task();
     let thread = current.as_thread();
     let proc_data = &thread.proc_data;
     let cred = thread.cred();
@@ -407,7 +407,7 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
     // Handle IPC_PRIVATE (always create new queue)
     if key == IPC_PRIVATE {
         let msqid = next_ipc_id();
-        let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
+        let msg_queue = Arc::new(PiMutex::new(MessageQueue::new(
             key,
             (msgflg & 0o777) as _,
             current_pid,
@@ -457,7 +457,7 @@ pub fn sys_msgget(key: i32, msgflg: i32) -> AxResult<isize> {
     }
 
     let msqid = next_ipc_id();
-    let msg_queue = Arc::new(Mutex::new(MessageQueue::new(
+    let msg_queue = Arc::new(PiMutex::new(MessageQueue::new(
         key,
         (msgflg & 0o777) as _,
         current_pid,
@@ -482,7 +482,7 @@ pub fn sys_msgsnd(
     if msgsz > MSGMAX {
         return Err(AxError::from(LinuxError::EINVAL)); // EINVAL
     }
-    let current = current();
+    let current = current_user_task();
     let thread = current.as_thread();
     let proc_data = &thread.proc_data;
     let cred = thread.cred();
@@ -580,7 +580,7 @@ pub fn sys_msgrcv(
     } else {
         flags.remove(MsgRcvFlags::MSG_EXCEPT);
     }
-    let current = current();
+    let current = current_user_task();
     let thread = current.as_thread();
     let proc_data = &thread.proc_data;
     let cred = thread.cred();
@@ -723,7 +723,7 @@ pub fn sys_msgrcv(
 
 pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
     //  Get current process information
-    let current = current();
+    let current = current_user_task();
     let thread = current.as_thread();
     let cred = thread.cred();
     let current_uid = cred.euid;
@@ -748,6 +748,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
         // IPC_INFO uses msqid=0, no actual queue needed
         // Return system-level information
         #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
         struct MsgInfo {
             msgpool: i32,
             msgmap: i32,
@@ -757,6 +758,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
             msgssz: i32,
             msgtql: i32,
             msgseg: u16,
+            _padding: u16,
         }
 
         let info = MsgInfo {
@@ -768,6 +770,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
             msgssz: 0,
             msgtql: 0,
             msgseg: 0,
+            _padding: 0,
         };
 
         // Copy to user space
@@ -798,6 +801,7 @@ pub fn sys_msgctl(msqid: i32, cmd: i32, buf: usize) -> AxResult<isize> {
             mode: 0o600,
             pad: 0,
             seq: 0,
+            alignment_pad: 0,
             unused0: 0,
             unused1: 0,
         };

@@ -22,7 +22,7 @@ What happens when "make A=examples/httpserver ARCH=riscv64 LOG=info NET=y SMP=1 
         - `multitask = ["ax-api/multitask", "ax-runtime/multitask"]`
         - `net = ["ax-api/net", "ax-runtime/net"]`
 
-        This involves modules such as ax-api, ax-runtime, and their dependencies like axtask, ax-net, etc., and conditional compilation is performed on these modules.
+        This involves modules such as ax-api and ax-runtime, plus components such as ax-task and ax-net, and conditional compilation is performed on these crates.
     - The above are some modules required for compilation, next we will look at how to perform conditional compilation. The `cargo.mk` file describes how to use the cargo method for conditional compilation, with the following build parameters:
     ```
     build_args := \

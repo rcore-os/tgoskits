@@ -1,4 +1,4 @@
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use axfs_ng_vfs::{VfsError, VfsResult};
 use ktracepoint::{TraceFilterFile, TracePoint, TracePointEnableFile};
 
@@ -59,7 +59,7 @@ impl DirectRwFsFileOps for EventEnableObj {
 
 /// File representing the `filter` attribute of a tracepoint event.
 pub struct EventFilterObj {
-    file: Mutex<TraceFilterFile>,
+    file: SpinMutex<TraceFilterFile>,
     ext_tp: KernelExtTracePoint,
 }
 
@@ -67,7 +67,7 @@ impl EventFilterObj {
     /// Create a new `EventFilterObj` instance.
     pub fn new(ext_tp: KernelExtTracePoint) -> Self {
         EventFilterObj {
-            file: Mutex::new(TraceFilterFile::new()),
+            file: SpinMutex::new(TraceFilterFile::new()),
             ext_tp,
         }
     }

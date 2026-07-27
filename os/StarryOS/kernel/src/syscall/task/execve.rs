@@ -12,9 +12,9 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
+use ax_fs_ng::vfs::current_fs_context;
 use ax_runtime::hal::cpu::uspace::UserContext;
-use ax_sync::Mutex;
-use ax_task::{current, future::block_on, yield_now};
+use ax_sync::PiMutex;
 use axfs_ng_vfs::Location;
 use kernel_elf_parser::AuxType;
 use linux_raw_sys::general::{AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW};
@@ -23,10 +23,20 @@ use starry_vm::vm_load_until_nul;
 
 use crate::{
     config::USER_HEAP_BASE,
-    file::{ResolveAtResult, memfd::Memfd, resolve_at},
+    file::{ResolveAtResult, current_fd_table, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
-    task::{AsThread, rebind_task_tid, zap_thread},
+    task::{current_user_task, future::block_on, rebind_task_tid, yield_now, zap_thread},
 };
+
+fn commit_address_space_handoff<OldAddressSpace>(
+    publish_new: impl FnOnce() -> OldAddressSpace,
+    install_new: impl FnOnce(),
+    release_old: impl FnOnce(OldAddressSpace),
+) {
+    let old_address_space = publish_new();
+    install_new();
+    release_old(old_address_space);
+}
 
 pub fn sys_execve(
     uctx: &mut UserContext,
@@ -35,7 +45,7 @@ pub fn sys_execve(
     envp: *const *const c_char,
 ) -> AxResult<isize> {
     let path = vm_load_string(path)?;
-    let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?;
+    let loc = current_fs_context().lock().resolve(&path)?;
     do_execve(uctx, loc, path, argv, envp)
 }
 
@@ -122,7 +132,7 @@ fn do_execve(
 
     debug!("do_execve <= path: {path:?}, args: {args:?}, envs: {envs:?}");
 
-    let curr = current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let proc_data = &thr.proc_data;
     let my_tid = thr.tid();
@@ -138,9 +148,8 @@ fn do_execve(
     // the holder has crossed into irreversible teardown — which we observe
     // by `zap_thread` setting our `exit_request`.
     //
-    // We can't use `ax_sync::Mutex::lock` directly: it sleeps on
-    // `WaitQueue::wait_until`, which is not awakened by zap's
-    // `task.interrupt()`, and (worse) on release the loser would acquire
+    // We can't use `ax_sync::PiMutex::lock` directly: its PI wait is not
+    // cancelled by zap's `task.interrupt()`, and (worse) on release the loser would acquire
     // the mutex and proceed with execve on top of the holder's already-
     // committed new image. Busy-yield with an `exit_request` probe gives
     // us:
@@ -190,9 +199,7 @@ fn do_execve(
                 // not by the kernel. This is a pragmatic workaround until
                 // musl's execvp or busybox's ENOEXEC handling is available.
                 let shell_path = "/bin/sh";
-                let shell_loc = ax_fs_ng::vfs::current_fs_context()
-                    .lock()
-                    .resolve(shell_path)?;
+                let shell_loc = current_fs_context().lock().resolve(shell_path)?;
                 new_name = shell_loc.name().to_string();
                 new_exe_path = shell_loc.absolute_path()?.to_string();
                 args = iter::once(String::from(shell_path))
@@ -277,9 +284,9 @@ fn do_execve(
     // between our snapshot and its own exit, leaking those fds into the new
     // image. Once all siblings are reaped, the snapshot reflects the final
     // post-quiescence table. The close pass below runs under the same
-    // `crate::file::current_fd_table().write()` guard so no new fds appear between scan and close.
-    let current_fd_table = crate::file::current_fd_table();
-    let mut fd_table = current_fd_table.write();
+    // `FD_TABLE.write()` guard so no new fds appear between scan and close.
+    let fd_table_owner = current_fd_table();
+    let mut fd_table = fd_table_owner.write();
     let cloexec_fds: Vec<_> = fd_table
         .ids()
         .filter(|it| fd_table.get(*it).unwrap().cloexec)
@@ -290,16 +297,20 @@ fn do_execve(
     // Nothing below may fail; errors here would leave the process broken.
     // ----------------------------------------------------------------
 
-    // Replace the aspace Arc so the parent's shared Arc<Mutex<AddrSpace>>
+    // Replace the aspace Arc so the parent's shared Arc<PiMutex<AddrSpace>>
     // (from CLONE_VM) is never touched. The parent's page table register
     // keeps pointing at the original still-live AddrSpace.
     let new_pt_root = new_aspace.page_table_root();
-    let newaspace_arc = Arc::new(Mutex::new(new_aspace));
-    proc_data.replace_aspace(newaspace_arc);
-    proc_data.mark_vm_aspace_private_after_exec();
-
-    // Switch the hardware page table now that the new aspace is installed.
-    curr.switch_page_table(new_pt_root);
+    let newaspace_arc = Arc::new(PiMutex::new(new_aspace));
+    commit_address_space_handoff(
+        || {
+            let old_aspace = proc_data.stage_aspace_replacement(newaspace_arc);
+            proc_data.mark_vm_aspace_private_after_exec();
+            old_aspace
+        },
+        || curr.switch_page_table(new_pt_root),
+        |old_aspace| crate::mm::release_process_slot(&old_aspace),
+    );
 
     curr.set_name(&new_name);
     *proc_data.exe_path.write() = new_exe_path;
@@ -384,6 +395,7 @@ fn do_execve(
     if my_tid != tgid {
         thr.set_tid(tgid);
         rebind_task_tid(&curr, my_tid, tgid);
+        proc_data.clear_retired_leader_nice();
         proc_data.signal.rename_child(my_tid, tgid);
         proc_data.proc.rename_thread(my_tid, tgid);
     }
@@ -434,4 +446,31 @@ fn do_execve(
     proc_data.notify_vfork_done();
 
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use core::cell::RefCell;
+
+    use super::commit_address_space_handoff;
+
+    #[test]
+    fn address_space_handoff_installs_before_releasing_old() {
+        let events = RefCell::new(vec![]);
+
+        commit_address_space_handoff(
+            || {
+                events.borrow_mut().push("publish");
+                "old"
+            },
+            || events.borrow_mut().push("install"),
+            |old| {
+                assert_eq!(old, "old");
+                events.borrow_mut().push("release");
+            },
+        );
+
+        assert_eq!(*events.borrow(), ["publish", "install", "release"]);
+    }
 }

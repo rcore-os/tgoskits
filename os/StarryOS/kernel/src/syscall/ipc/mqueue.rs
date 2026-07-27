@@ -23,7 +23,7 @@ use crate::{
         queues_max, validate_name,
     },
     mm::vm_load_string,
-    task::AsThread,
+    task::current_user_task,
     time::TimeValueLike,
 };
 
@@ -50,6 +50,16 @@ pub fn sys_mq_open(
     mode: __kernel_mode_t,
     attr: *const MqAttr,
 ) -> AxResult<isize> {
+    // Linux copies a supplied `mq_attr` in the syscall wrapper before
+    // `do_mq_open` enters the mqueue name-creation critical section
+    // (ipc/mqueue.c `SYSCALL_DEFINE4(mq_open)`). Besides preserving EFAULT
+    // precedence, this keeps a faultable user copy out of `MQ_REGISTRY`'s
+    // non-sleeping, IRQ-disabled lock.
+    let user_attr = if attr.is_null() {
+        None
+    } else {
+        Some(attr.vm_read()?)
+    };
     let raw = vm_load_string(name)?;
     let short = validate_name(&raw)?;
     let key = {
@@ -65,7 +75,7 @@ pub fn sys_mq_open(
     // queue and drive the access check on an existing one (Linux uses
     // current_fsuid()/current_fsgid()); the resource capability lifts the
     // unprivileged attribute ceilings and DAC-override bypasses the open check.
-    let curr = ax_task::current();
+    let curr = current_user_task();
     let thr = curr.as_thread();
     let cred = thr.cred();
     let (fsuid, fsgid, can_sys_resource, can_dac_override) = (
@@ -116,13 +126,7 @@ pub fn sys_mq_open(
             if queues_count() >= queues_max() && !can_sys_resource {
                 return Err(LinuxError::ENOSPC.into());
             }
-            let (max_msg, msg_size) = if attr.is_null() {
-                // Linux seeds an attr-less queue with min(mq_msg_max,
-                // mq_msg_default) / min(mq_msgsize_max, mq_msgsize_default)
-                // (ipc/mqueue.c:325), honoring the current sysctl tunables.
-                (msg_default(), msgsize_default())
-            } else {
-                let a: MqAttr = attr.vm_read()?;
+            let (max_msg, msg_size) = if let Some(a) = user_attr {
                 // The unprivileged ceilings come from the (sysctl-tunable)
                 // msg_max/msgsize_max; a `CAP_SYS_RESOURCE` caller gets the
                 // hard limits instead.
@@ -145,6 +149,11 @@ pub fn sys_mq_open(
                     return Err(LinuxError::EOVERFLOW.into());
                 }
                 (max_msg, msg_size)
+            } else {
+                // Linux seeds an attr-less queue with min(mq_msg_max,
+                // mq_msg_default) / min(mq_msgsize_max, mq_msgsize_default)
+                // (ipc/mqueue.c:325), honoring the current sysctl tunables.
+                (msg_default(), msgsize_default())
             };
             // Charge the queue's `mq_bytes` against the creator's
             // `RLIMIT_MSGQUEUE` *before* creating it; too-large a queue (or a
@@ -217,7 +226,7 @@ pub fn sys_mq_unlink(name: *const core::ffi::c_char) -> AxResult<isize> {
         k
     };
 
-    let curr = ax_task::current();
+    let curr = current_user_task();
     let cred = curr.as_thread().cred();
     let (fsuid, can_fowner) = (cred.fsuid, cred.has_cap_fowner());
 
@@ -304,7 +313,7 @@ pub fn sys_mq_timedreceive(
 /// that socket on message arrival (ipc/mqueue.c:1287-1351, `netlink_sendskb`).
 pub fn sys_mq_notify(mqdes: i32, sevp: *const sigevent) -> AxResult<isize> {
     let queue = queue_from_fd(mqdes)?;
-    let pid = ax_task::current().as_thread().proc_data.proc.pid();
+    let pid = current_user_task().as_thread().proc_data.proc.pid();
 
     let req = if sevp.is_null() {
         NotifyRequest::Unregister

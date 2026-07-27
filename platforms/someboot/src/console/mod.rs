@@ -517,7 +517,9 @@ fn set_pl011(config: &EarlyconConfig) -> Result<(), &'static str> {
         NonNull::new(_fixmap_io(base_addr)).ok_or("Invalid base address for pl011 earlycon")?;
 
     let mut serial = pl011::Pl011::new(base_addr, 0);
-    serial.open();
+    serial
+        .open()
+        .map_err(|_| "pl011 earlycon transmitter stayed busy")?;
     set_earlycon_serial(EarlySerial::new(EarlySerialRaw::Pl011(serial)));
 
     Ok(())

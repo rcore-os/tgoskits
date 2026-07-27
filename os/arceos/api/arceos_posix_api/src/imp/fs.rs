@@ -7,17 +7,17 @@ use core::{
 use ax_errno::{LinuxError, LinuxResult};
 use ax_fs_ng::fops::{FileAttrExt, OpenOptions};
 use ax_io::{PollState, SeekFrom};
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 
 use super::fd_ops::{FileLike, get_file_like};
 use crate::{ctypes, utils::char_ptr_to_str};
 
 pub struct File {
-    inner: Mutex<ax_fs_ng::fops::File>,
+    inner: PiMutex<ax_fs_ng::fops::File>,
 }
 
 pub struct Directory {
-    inner: Mutex<ax_fs_ng::fops::Directory>,
+    inner: PiMutex<ax_fs_ng::fops::Directory>,
 }
 
 #[repr(C, packed)]
@@ -88,7 +88,7 @@ fn file_type_to_d_type(ty: ax_fs_ng::fops::FileType) -> u8 {
 impl File {
     fn new(inner: ax_fs_ng::fops::File) -> Self {
         Self {
-            inner: Mutex::new(inner),
+            inner: PiMutex::new(inner),
         }
     }
 
@@ -107,7 +107,7 @@ impl File {
 impl Directory {
     fn new(inner: ax_fs_ng::fops::Directory) -> Self {
         Self {
-            inner: Mutex::new(inner),
+            inner: PiMutex::new(inner),
         }
     }
 

@@ -5,7 +5,7 @@ use ax_alloc::{UsageKind, global_allocator};
 use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PAGE_SIZE_4K, PhysAddr, PhysAddrRange, VirtAddr, align_up_4k};
 use ax_runtime::hal::mem::virt_to_phys;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, PollSet, Pollable};
 use linux_raw_sys::io_uring::{
     IORING_FEAT_RW_CUR_POS, IORING_FEAT_SUBMIT_STABLE, IORING_OFF_CQ_RING, IORING_OFF_SQ_RING,
@@ -180,7 +180,7 @@ impl IoUringRings {
 
 pub struct IoUring {
     rings: Arc<IoUringRings>,
-    submit_lock: Mutex<()>,
+    submit_lock: PiMutex<()>,
     poll_cq: PollSet,
 }
 
@@ -188,7 +188,7 @@ impl IoUring {
     pub fn new(entries: u32, cq_entries: u32) -> AxResult<Self> {
         Ok(Self {
             rings: Arc::new(IoUringRings::new(entries, cq_entries)?),
-            submit_lock: Mutex::new(()),
+            submit_lock: PiMutex::new(()),
             poll_cq: PollSet::new(),
         })
     }

@@ -17,7 +17,7 @@ pub(super) fn reap_claim_barrier(pid: Pid) {
 
     REAP_CLAIM_REACHED.store(true, Ordering::Release);
     while !REAP_CLAIM_RELEASED.load(Ordering::Acquire) {
-        ax_task::yield_now();
+        yield_now();
     }
 }
 
@@ -28,6 +28,7 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
         exit_event: Arc::new(PollSet::new()),
         state: SpinNoIrq::new(ProcessIdentityState::Zombie(ZombieSnapshot {
             cred: Arc::new(Cred::default()),
+            nice: 0,
             ptrace_tracer_pid: None,
             is_clone_child: false,
             wait_parent_tid: TEST_PID,
@@ -47,13 +48,16 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
     let reap_task = {
         let process = process.clone();
         let reaped_cpu_time = reaped_cpu_time.clone();
-        ax_task::spawn(move || {
-            *reaped_cpu_time.lock() = reap_process(&process);
-        })
+        spawn_kernel_thread(
+            move || {
+                *reaped_cpu_time.lock() = reap_process(&process);
+            },
+            "pid-reap-race".into(),
+        )
     };
 
     while !REAP_CLAIM_REACHED.load(Ordering::Acquire) {
-        ax_task::yield_now();
+        yield_now();
     }
     let lookup_result = pidfd_process_identity(TEST_PID);
     let thread_lookup_result = pidfd_thread_identity(&process);
@@ -62,7 +66,7 @@ pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
     let getpgid_result = crate::syscall::sys_getpgid(TEST_PID);
 
     REAP_CLAIM_RELEASED.store(true, Ordering::Release);
-    reap_task.join();
+    join_kernel_thread(reap_task);
     REAP_CLAIM_BARRIER_PID.store(0, Ordering::Release);
 
     matches!(lookup_result, Err(AxError::NoSuchProcess))

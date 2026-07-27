@@ -327,7 +327,7 @@ pub(crate) fn vcpu_on(
                 runtime.notify_all();
 
                 if let Some(task) = runtime.remove_vcpu_task(vcpu_id) {
-                    let _ = task.join();
+                    let _ = crate::host::task::join_task(task);
                 }
 
                 runtime.remove_cpu_on_start_ack(vcpu_id);
@@ -358,49 +358,61 @@ pub(crate) fn vcpu_on(
     }
     start_result
 }
-#[allow(dead_code)]
-pub(crate) fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::AxTaskRef {
-    crate::host::task::spawn_task(build_vcpu_task(vm, vcpu))
-}
 
 fn spawn_deferred_reset_task(vm_id: usize) {
-    let reset_task = crate::TaskInner::new(
-        move || {
-            if let Err(err) = crate::runtime::reset_vm(vm_id) {
-                warn!("VM[{vm_id}] deferred reset failed: {err:?}");
-                crate::host::task::wait_queue_wake(&super::VMM, 1);
-            }
-        },
-        format!("VM[{vm_id}]-reset"),
-        KERNEL_STACK_SIZE,
-    );
-    crate::host::task::spawn_task(reset_task);
+    let reset_entry = move || {
+        if let Err(err) = crate::runtime::reset_vm(vm_id) {
+            warn!("VM[{vm_id}] deferred reset failed: {err:?}");
+            crate::host::task::wait_queue_wake(&super::VMM, 1);
+        }
+    };
+    // SAFETY: no OS extension is supplied, and the closure plus its captured
+    // VM identity are transferred exactly once to the runtime task.
+    let spawned = unsafe {
+        crate::host::task::spawn_task_with_extension_and_affinity(
+            reset_entry,
+            format!("VM[{vm_id}]-reset"),
+            KERNEL_STACK_SIZE,
+            None,
+            None,
+        )
+    };
+    if let Err(error) = spawned {
+        warn!("VM[{vm_id}] failed to spawn deferred reset task: {error}");
+        crate::host::task::wait_queue_wake(&super::VMM, 1);
+    }
 }
 
-pub(crate) fn build_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskInner {
+pub(crate) fn alloc_vcpu_task(vm: &VMRef, vcpu: VCpuRef) -> crate::TaskHandle {
     info!("Spawning task for VM[{}] VCpu[{}]", vm.id(), vcpu.id());
-    let mut vcpu_task = crate::TaskInner::new(
-        vcpu_run,
-        format!("VM[{}]-VCpu[{}]", vm.id(), vcpu.id()),
-        KERNEL_STACK_SIZE,
-    );
+    let name = format!("VM[{}]-VCpu[{}]", vm.id(), vcpu.id());
+    let affinity = vcpu.phys_cpu_set().map(|phys_cpu_set| {
+        crate::host::task::task_cpu_set_from_raw_bits(vcpu_task_cpu_mask(
+            vm.id(),
+            vcpu.id(),
+            phys_cpu_set,
+        ))
+    });
 
-    if let Some(phys_cpu_set) = vcpu.phys_cpu_set() {
-        vcpu_task.set_cpumask(crate::host::task::cpu_mask_from_raw_bits(
-            vcpu_task_cpu_mask(vm.id(), vcpu.id(), phys_cpu_set),
-        ));
+    // Keep only a weak VM reference in the scheduler extension so a retained
+    // task handle cannot keep the VM resource graph alive.
+    let extension = VCpuTask::new(vm, vcpu).into_thread_extension();
+    // SAFETY: `extension` is a unique owner created immediately above and is
+    // transferred exactly once. The optional affinity was validated against
+    // the runtime topology by the host adapter.
+    let task = unsafe {
+        crate::host::task::spawn_task_with_extension_and_affinity(
+            vcpu_run,
+            name,
+            KERNEL_STACK_SIZE,
+            Some(extension),
+            affinity,
+        )
     }
+    .unwrap_or_else(|error| panic!("failed to spawn AxVM vCPU task: {error}"));
 
-    // Use Weak reference in TaskExt to avoid keeping VM alive
-    let inner = VCpuTask::new(vm, vcpu);
-    *vcpu_task.task_ext_mut() = Some(crate::AxTaskExt::from_impl(inner));
-
-    info!(
-        "VCpu task {} created {:?}",
-        vcpu_task.id_name(),
-        vcpu_task.cpumask()
-    );
-    vcpu_task
+    info!("VCpu task {:?} created", task.id());
+    task
 }
 
 fn vcpu_task_cpu_mask(vm_id: usize, vcpu_id: usize, requested_mask: usize) -> usize {

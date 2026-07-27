@@ -13,7 +13,7 @@ use alloc::{borrow::Cow, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 use core::{any::Any, ffi::c_int, task::Context};
 
 use ax_errno::AxResult;
-use ax_sync::Mutex;
+use ax_sync::SpinMutex;
 use axfs_ng_vfs::{NodeFlags, VfsError, VfsResult};
 use axpoll::{IoEvents, Pollable};
 use rockchip_rga::{
@@ -30,7 +30,7 @@ use crate::{
         dmabuf::{DmaBufFile, resolve_contiguous_dmabuf},
     },
     pseudofs::DeviceOps,
-    task::AsThread,
+    task::current_user_task,
 };
 
 /// Per-ioctl cap on buffers imported by `RGA_IOC_IMPORT_BUFFER`
@@ -117,22 +117,22 @@ struct RgaFile {
     /// Backing file: keeps the node alive and serves the trivial `FileLike` methods.
     base: KernelFile,
     /// Handles assigned by `RGA_IOC_IMPORT_BUFFER`, keyed by handle id (this open's namespace).
-    handle_table: Mutex<BTreeMap<u32, ImportedBuf>>,
-    next_handle: Mutex<u32>,
+    handle_table: SpinMutex<BTreeMap<u32, ImportedBuf>>,
+    next_handle: SpinMutex<u32>,
     /// Requests created by `RGA_IOC_REQUEST_CREATE`, keyed by request id. An entry's presence
     /// marks the id as live; the `Vec` holds tasks staged via `RGA_IOC_REQUEST_CONFIG`.
-    requests: Mutex<BTreeMap<u32, Vec<librga_abi::RgaReq>>>,
-    next_request_id: Mutex<u32>,
+    requests: SpinMutex<BTreeMap<u32, Vec<librga_abi::RgaReq>>>,
+    next_request_id: SpinMutex<u32>,
 }
 
 impl RgaFile {
     fn new(base: KernelFile) -> Self {
         Self {
             base,
-            handle_table: Mutex::new(BTreeMap::new()),
-            next_handle: Mutex::new(1),
-            requests: Mutex::new(BTreeMap::new()),
-            next_request_id: Mutex::new(1),
+            handle_table: SpinMutex::new(BTreeMap::new()),
+            next_handle: SpinMutex::new(1),
+            requests: SpinMutex::new(BTreeMap::new()),
+            next_request_id: SpinMutex::new(1),
         }
     }
 
@@ -443,7 +443,7 @@ impl RgaFile {
                     // dma-buf fd, whose physical range the kernel owns and can bound. The clean
                     // long-term fix is the dma-buf unification (see the follow-up design) which
                     // lets every buffer arrive as an fd and removes this path entirely.
-                    if !ax_task::current().as_thread().cred().has_cap_sys_rawio() {
+                    if !current_user_task().as_thread().cred().has_cap_sys_rawio() {
                         warn!(
                             "RGA_IOC_IMPORT_BUFFER: RGA_PHYSICAL_ADDRESS requires CAP_SYS_RAWIO; \
                              denied"
@@ -490,8 +490,10 @@ impl RgaFile {
 
         let elem_size = core::mem::size_of::<librga_abi::RgaExternalBuffer>();
         let base = pool.buffers_ptr as usize;
-        let mut table = self.handle_table.lock();
-
+        let mut handles = Vec::new();
+        handles
+            .try_reserve(pool.size as usize)
+            .map_err(|_| VfsError::NoMemory)?;
         for i in 0..pool.size as usize {
             let ptr = base + i * elem_size;
             let ext: librga_abi::RgaExternalBuffer = unsafe {
@@ -499,7 +501,12 @@ impl RgaFile {
                     .vm_read_uninit()?
                     .assume_init()
             };
-            if table.remove(&ext.handle).is_none() {
+            handles.push(ext.handle);
+        }
+
+        let mut table = self.handle_table.lock();
+        for handle in handles {
+            if table.remove(&handle).is_none() {
                 return Err(VfsError::NotFound);
             }
         }

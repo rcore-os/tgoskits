@@ -50,7 +50,7 @@ fn runtime_cpu_areas_have_one_template_and_no_legacy_linker_abi() {
     for required in [
         "components/percpu/percpu/host-test.ld",
         "components/scope-local/host-test.ld",
-        "os/arceos/modules/axtask/host-test.ld",
+        "os/arceos/modules/axruntime/host-test.ld",
         "platforms/someboot/src/smp/layout.rs",
     ] {
         assert!(
@@ -62,7 +62,7 @@ fn runtime_cpu_areas_have_one_template_and_no_legacy_linker_abi() {
     for linker in [
         "components/percpu/percpu/host-test.ld",
         "components/scope-local/host-test.ld",
-        "os/arceos/modules/axtask/host-test.ld",
+        "os/arceos/modules/axruntime/host-test.ld",
         "platforms/someboot/src/ld/data.ld",
         "platforms/axplat-dyn/link.ld",
         "os/arceos/modules/axruntime/runtime.ld",

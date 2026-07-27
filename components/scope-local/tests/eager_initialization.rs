@@ -99,7 +99,9 @@ fn pinned_access_has_no_initialization_side_effects() {
         })
     }
     .unwrap();
-    ActiveScope::set_global();
+    // SAFETY: this serialized host test owns the raw activation installed
+    // above and releases it before `scope` is dropped.
+    unsafe { ActiveScope::set_global() };
 
     assert_eq!(PINNED_INIT_COUNT.load(Ordering::Acquire), 1);
 }

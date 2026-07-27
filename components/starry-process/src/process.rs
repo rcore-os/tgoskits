@@ -75,6 +75,72 @@ pub struct Process {
     group: SpinNoIrq<Arc<ProcessGroup>>,
 }
 
+/// A forked process whose parent/child and process-group links are not visible.
+///
+/// Clone may allocate address spaces, contexts, and Linux identities while
+/// this token exists. Dropping it has no externally visible effect.
+pub struct PreparedFork {
+    process: Arc<Process>,
+}
+
+impl PreparedFork {
+    /// Borrows the process while clone prepares its remaining resources.
+    pub fn process(&self) -> &Arc<Process> {
+        &self.process
+    }
+
+    /// Publishes the child into its parent and inherited process group.
+    ///
+    /// Publication fails without changing either collection if the PID was
+    /// reused while clone was preparing resources.
+    pub fn publish(self) -> Option<PublishedFork> {
+        let process = self.process;
+        let parent = process.parent()?;
+        let group = process.group();
+        let mut children = parent.children.lock();
+        let mut members = group.processes.lock();
+        if children.contains_key(&process.pid) || members.get(&process.pid).is_some() {
+            return None;
+        }
+        children.insert(process.pid, process.clone());
+        members.insert(process.pid, &process);
+        drop(members);
+        drop(children);
+        Some(PublishedFork {
+            process: Some(process),
+        })
+    }
+}
+
+/// Rollback token for a fork published before its scheduler thread is runnable.
+pub struct PublishedFork {
+    process: Option<Arc<Process>>,
+}
+
+impl PublishedFork {
+    /// Borrows the published child.
+    pub fn process(&self) -> &Arc<Process> {
+        self.process
+            .as_ref()
+            .expect("published fork token must own its process")
+    }
+
+    /// Transfers the child to the normal process exit and reap lifecycle.
+    pub fn commit(mut self) -> Arc<Process> {
+        self.process
+            .take()
+            .expect("published fork token must own its process")
+    }
+}
+
+impl Drop for PublishedFork {
+    fn drop(&mut self) {
+        if let Some(process) = self.process.take() {
+            process.rollback_fork_publication();
+        }
+    }
+}
+
 impl Process {
     /// The [`Process`] ID.
     pub fn pid(&self) -> Pid {
@@ -206,6 +272,20 @@ impl Process {
     /// Adds a thread to this [`Process`] with the given thread ID.
     pub fn add_thread(self: &Arc<Self>, tid: Pid) {
         self.tg.lock().threads.insert(tid);
+    }
+
+    /// Removes a thread that was registered for a child not yet published.
+    ///
+    /// Unlike [`Self::exit_thread`], this rollback operation does not alter
+    /// process exit state. It must only be used while the child cannot run.
+    #[must_use]
+    pub fn remove_unpublished_thread(self: &Arc<Self>, tid: Pid) -> bool {
+        let mut tg = self.tg.lock();
+        assert!(
+            !tg.group_exited,
+            "cannot roll back a thread after group exit started"
+        );
+        tg.threads.remove(&tid)
     }
 
     /// Removes a thread from this [`Process`], records its final CPU time, and
@@ -356,8 +436,8 @@ impl fmt::Debug for Process {
 
 /// Builder
 impl Process {
-    fn new_group_member(pid: Pid, parent: Option<&Arc<Process>>) -> Arc<Process> {
-        let group = parent.map_or_else(
+    fn allocate(pid: Pid, parent: Option<Arc<Process>>) -> Arc<Process> {
+        let group = parent.as_ref().map_or_else(
             || {
                 let session = Session::new(pid);
                 ProcessGroup::new(pid, &session)
@@ -365,28 +445,24 @@ impl Process {
             |p| p.group(),
         );
 
-        let process = Arc::new(Process {
+        Arc::new(Process {
             pid,
             is_child_subreaper: AtomicBool::new(false),
             tg: SpinNoIrq::new(ThreadGroup::default()),
             children: SpinNoIrq::new(StrongMap::new()),
-            parent: SpinNoIrq::new(parent.map(Arc::downgrade).unwrap_or_default()),
+            parent: SpinNoIrq::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),
             group: SpinNoIrq::new(group.clone()),
-        });
-
-        group.processes.lock().insert(pid, &process);
-        process
+        })
     }
 
     fn new(pid: Pid, parent: Option<Arc<Process>>) -> Arc<Process> {
-        let process = Self::new_group_member(pid, parent.as_ref());
-
+        let process = Self::allocate(pid, parent.clone());
+        process.group().processes.lock().insert(pid, &process);
         if let Some(parent) = parent {
             parent.children.lock().insert(pid, process.clone());
         } else {
             INIT_PROC.init_once(process.clone());
         }
-
         process
     }
 
@@ -400,13 +476,52 @@ impl Process {
 
     /// Creates a child [`Process`].
     pub fn fork(self: &Arc<Process>, pid: Pid) -> Arc<Process> {
-        Self::new(pid, Some(self.clone()))
+        self.prepare_fork(pid)
+            .publish()
+            .expect("fork PID must not already be visible")
+            .commit()
+    }
+
+    /// Allocates a child without publishing it to parent or group observers.
+    pub fn prepare_fork(self: &Arc<Process>, pid: Pid) -> PreparedFork {
+        PreparedFork {
+            process: Self::allocate(pid, Some(self.clone())),
+        }
+    }
+
+    fn rollback_fork_publication(self: &Arc<Process>) {
+        let Some(parent) = self.parent() else {
+            return;
+        };
+        let group = self.group();
+        let mut children = parent.children.lock();
+        let mut members = group.processes.lock();
+        let child_matches = children
+            .get(&self.pid)
+            .is_some_and(|registered| Arc::ptr_eq(registered, self));
+        let member_matches = members
+            .get(&self.pid)
+            .is_some_and(|registered| Arc::ptr_eq(&registered, self));
+        if child_matches {
+            children.remove(&self.pid);
+        }
+        if member_matches {
+            members.remove(&self.pid);
+        }
+        drop(members);
+        drop(children);
+        // The publication token still owns this process, so rollback must
+        // retire its parent relationship even if another cleanup path already
+        // removed one of the two exact registry identities.
+        *self.parent.lock() = Weak::new();
     }
 
     /// Creates an isolated process for kernel axtests without replacing init.
     #[cfg(axtest)]
     pub fn new_for_axtest(pid: Pid) -> Arc<Process> {
-        Self::new_group_member(pid, None)
+        let process = Self::allocate(pid, None);
+        process.group().processes.lock().insert(pid, &process);
+        process
     }
 }
 
@@ -426,16 +541,21 @@ mod tests {
     use alloc::sync::Arc;
     use core::time::Duration;
     use std::{
-        sync::{Arc as StdArc, Barrier},
+        sync::{Arc as StdArc, Barrier, OnceLock},
         thread,
         time::Instant,
     };
 
     use super::Process;
 
+    fn test_init() -> Arc<Process> {
+        static TEST_INIT: OnceLock<Arc<Process>> = OnceLock::new();
+        TEST_INIT.get_or_init(|| Process::new_init(1)).clone()
+    }
+
     #[test]
     fn orphan_never_becomes_invisible_while_reparenting() {
-        let init = Process::new_init(1);
+        let init = test_init();
         let reaper = init.fork(2);
         reaper.set_child_subreaper(true);
         let parent = reaper.fork(3);
@@ -474,5 +594,75 @@ mod tests {
         );
         assert!(Arc::ptr_eq(&reaper, &child.parent().unwrap()));
         assert!(reaper.children.lock().contains_key(&child_pid));
+    }
+
+    #[test]
+    fn prepared_fork_is_invisible_until_publication() {
+        let init = test_init();
+        let prepared = init.prepare_fork(12);
+        let child = prepared.process();
+
+        assert!(!init.children().iter().any(|proc| Arc::ptr_eq(proc, child)));
+        assert!(
+            !child
+                .group()
+                .processes()
+                .iter()
+                .any(|proc| Arc::ptr_eq(proc, child))
+        );
+
+        let published = prepared.publish().unwrap();
+        let child = published.process().clone();
+        assert!(init.children().iter().any(|proc| Arc::ptr_eq(proc, &child)));
+        assert!(
+            child
+                .group()
+                .processes()
+                .iter()
+                .any(|proc| Arc::ptr_eq(proc, &child))
+        );
+        published.commit();
+    }
+
+    #[test]
+    fn dropping_prepared_fork_leaves_parent_and_group_unchanged() {
+        let init = test_init();
+        let prepared = init.prepare_fork(13);
+        let child = prepared.process().clone();
+        drop(prepared);
+
+        assert!(!init.children().iter().any(|proc| Arc::ptr_eq(proc, &child)));
+        assert!(
+            !child
+                .group()
+                .processes()
+                .iter()
+                .any(|proc| Arc::ptr_eq(proc, &child))
+        );
+    }
+
+    #[test]
+    fn published_fork_rollback_repairs_a_partially_removed_identity() {
+        let init = test_init();
+        let published = init.prepare_fork(14).publish().unwrap();
+        let child = published.process().clone();
+        child.group().processes.lock().remove(&child.pid());
+
+        drop(published);
+
+        assert!(child.parent().is_none());
+        assert!(
+            !init
+                .children()
+                .iter()
+                .any(|process| Arc::ptr_eq(process, &child))
+        );
+        assert!(
+            !child
+                .group()
+                .processes()
+                .iter()
+                .any(|process| Arc::ptr_eq(process, &child))
+        );
     }
 }

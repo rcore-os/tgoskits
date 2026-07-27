@@ -2,7 +2,7 @@
 
 use ax_errno::AxError;
 use ax_memory_addr::PhysAddr;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::VfsResult;
 use dma_api::DmaError;
 use sg200x_bsp::soc::TOP_BASE;
@@ -39,13 +39,13 @@ impl JpuState {
 
 /// Serializes the one SG2002 JPU between the legacy camera ioctl and VDEC.
 pub(super) struct CviJpu {
-    state: Mutex<JpuState>,
+    state: PiMutex<JpuState>,
 }
 
 impl CviJpu {
     pub const fn new() -> Self {
         Self {
-            state: Mutex::new(JpuState {
+            state: PiMutex::new(JpuState {
                 decoder: None,
                 vdec_owned: false,
             }),

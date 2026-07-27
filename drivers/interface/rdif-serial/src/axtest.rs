@@ -2,7 +2,8 @@ use axtest::prelude::*;
 
 use crate::{
     Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
-    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartInfo, UartIrq, UartParts, UartPort,
+    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq,
+    UartParts, UartPort, UartRegisterGuard,
 };
 
 #[axtest]
@@ -146,9 +147,18 @@ impl IrqRxSink for MockSink {
 
 struct MockUart;
 
+struct MockEmergencyTx;
+
+impl UartEmergencyTx for MockEmergencyTx {
+    fn try_write(&self, _access: &UartRegisterGuard<'_>, bytes: &[u8]) -> usize {
+        bytes.len().min(1)
+    }
+}
+
 impl SplitUart for MockUart {
     type Port = MockPort;
     type Irq = MockIrq;
+    type EmergencyTx = MockEmergencyTx;
 
     fn runtime_info(&self) -> UartInfo {
         UartInfo {
@@ -158,7 +168,7 @@ impl SplitUart for MockUart {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq> {
+    fn split(self) -> UartParts<Self::Port, Self::Irq, Self::EmergencyTx> {
         UartParts::new(
             MockPort::new(),
             MockIrq {
@@ -173,6 +183,7 @@ impl SplitUart for MockUart {
                     overrun: false,
                 }),
             },
+            MockEmergencyTx,
         )
     }
 }
@@ -185,7 +196,11 @@ fn split_uart_exposes_independent_task_and_irq_endpoints() {
     ax_assert_eq!(info.register_base, 0x1000);
     ax_assert_eq!(info.initial_baudrate, 115_200);
 
-    let UartParts { mut port, mut irq } = uart.split();
+    let UartParts {
+        mut port,
+        mut irq,
+        emergency_tx: _,
+    } = uart.split();
     let config = Config::new().baudrate(57_600);
     ax_assert!(port.startup(&config).is_ok());
     ax_assert_eq!(port.config.baudrate, Some(57_600));

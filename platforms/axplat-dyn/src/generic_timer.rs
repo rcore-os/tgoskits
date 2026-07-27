@@ -93,13 +93,7 @@ impl ax_plat::time::TimeIf for GenericTimer {
     fn set_oneshot_timer(deadline_ns: u64) {
         let cnptct = somehal::timer::ticks() as u64;
         let deadline = GenericTimer::nanos_to_ticks(deadline_ns);
-        let interval = if cnptct < deadline {
-            let interval = deadline - cnptct;
-            debug_assert!(interval <= u32::MAX as u64);
-            interval
-        } else {
-            0
-        };
+        let interval = deadline.saturating_sub(cnptct);
 
         somehal::timer::set_next_event_in_ticks(interval as _);
     }

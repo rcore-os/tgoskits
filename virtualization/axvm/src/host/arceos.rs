@@ -26,6 +26,7 @@ use crate::{
 pub(crate) struct ArceOsHost;
 
 const CPU_ENABLE_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const AXVM_KERNEL_STACK_SIZE: usize = 0x40000;
 
 static ARCEOS_HOST: ArceOsHost = ArceOsHost;
 
@@ -85,10 +86,6 @@ impl HostTime for ArceOsHost {
     fn monotonic_time(&self) -> Duration {
         modules::ax_hal::time::monotonic_time()
     }
-
-    fn set_oneshot_timer(&self, deadline_ns: u64) {
-        crate::arch::set_oneshot_timer(deadline_ns);
-    }
 }
 
 pub(crate) fn dispatch_host_irq(vector: usize) {
@@ -107,26 +104,73 @@ impl HostCpu for ArceOsHost {
     }
 }
 
-pub(crate) fn cpu_mask_from_raw_bits(bits: usize) -> api::task::AxCpuMask {
-    api::task::AxCpuMask::from_raw_bits(bits)
-}
-
-pub(crate) type ArceOsCpuMask = api::task::AxCpuMask;
-pub(crate) type ArceOsAxTaskExt = modules::ax_task::AxTaskExt;
-pub(crate) type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
-pub(crate) type ArceOsCurrentTask = modules::ax_task::CurrentTask;
-pub(crate) type ArceOsTaskInner = modules::ax_task::TaskInner;
-pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
-pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
+pub(crate) type ArceOsTaskHandle = modules::ax_runtime::task::ThreadHandle;
+pub(crate) type ArceOsWaitQueue = modules::ax_runtime::task::WaitQueue;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
-pub(crate) use modules::ax_task::TaskExt as ArceOsTaskExt;
+pub(crate) use modules::ax_runtime::task::{
+    CpuId as ArceOsTaskCpuId, CpuSet as ArceOsTaskCpuSet, SwitchReason as ArceOsSwitchReason,
+    TaskError as ArceOsTaskError, ThreadExtension as ArceOsThreadExtension,
+    ThreadExtensionOps as ArceOsThreadExtensionOps, ThreadId as ArceOsThreadId,
+};
 
-pub(crate) fn current_task() -> ArceOsCurrentTask {
-    modules::ax_task::current()
+pub(crate) fn current_task() -> ArceOsTaskHandle {
+    modules::ax_runtime::task::current_thread_handle()
+        .unwrap_or_else(|error| panic!("AxVM requires a current scheduler thread: {error}"))
 }
 
-pub(crate) fn spawn_task(task: ArceOsTaskInner) -> ArceOsAxTaskRef {
-    modules::ax_task::spawn_task(task)
+pub(crate) unsafe fn spawn_task_with_extension_and_affinity<F>(
+    entry: F,
+    name: alloc::string::String,
+    stack_size: usize,
+    extension: Option<ArceOsThreadExtension>,
+    affinity: Option<ArceOsTaskCpuSet>,
+) -> Result<ArceOsTaskHandle, ArceOsTaskError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    // SAFETY: the caller transfers unique ownership of `extension`; this
+    // adapter forwards it exactly once to the ArceOS runtime.
+    unsafe {
+        modules::ax_runtime::task::spawn_raw_with_extension_and_affinity(
+            entry, name, stack_size, extension, affinity,
+        )
+    }
+}
+
+pub(crate) fn join_task(task: ArceOsTaskHandle) -> Result<i32, ArceOsTaskError> {
+    modules::ax_runtime::task::join_thread(task)
+}
+
+pub(crate) fn task_extension(
+    task: &ArceOsTaskHandle,
+) -> Result<Option<modules::ax_runtime::task::ThreadOsExtensionBorrow<'_>>, ArceOsTaskError> {
+    modules::ax_runtime::task::thread_os_extension(task)
+}
+
+pub(crate) fn task_cpu_set_from_raw_bits(bits: usize) -> ArceOsTaskCpuSet {
+    let cpu_count = modules::ax_hal::cpu_num();
+    let mut affinity = ArceOsTaskCpuSet::empty(cpu_count);
+    for cpu_id in 0..cpu_count.min(usize::BITS as usize) {
+        if bits & (1usize << cpu_id) != 0 {
+            assert!(affinity.insert(ArceOsTaskCpuId::new(cpu_id as u32)));
+        }
+    }
+    affinity
+}
+
+pub(crate) fn task_cpu_set_one(cpu_id: usize) -> ArceOsTaskCpuSet {
+    let mut affinity = ArceOsTaskCpuSet::empty(modules::ax_hal::cpu_num());
+    assert!(
+        affinity.insert(ArceOsTaskCpuId::new(cpu_id as u32)),
+        "AxVM task CPU {cpu_id} is outside the runtime topology"
+    );
+    affinity
+}
+
+pub(crate) fn task_cpu_id(task: &ArceOsTaskHandle) -> usize {
+    task.wake_handle()
+        .target_cpu()
+        .map_or(0, |cpu| cpu.as_usize())
 }
 
 pub(crate) fn yield_now() {
@@ -152,16 +196,6 @@ pub(crate) fn send_ipi(cpu_id: usize) {
         modules::ax_hal::irq::ipi_irq(),
         modules::ax_hal::irq::IpiTarget::Other { cpu_id },
     );
-}
-
-pub(crate) fn run_on_cpu_sync(
-    cpu_id: usize,
-    f: unsafe fn(*mut ()),
-    arg: *mut (),
-) -> Result<(), ArceOsIrqError> {
-    // SAFETY: the caller guarantees that `arg` stays valid until the target CPU
-    // has executed `f`; `ax_hal` provides the synchronous completion boundary.
-    unsafe { modules::ax_hal::irq::run_on_cpu_sync(modules::ax_hal::irq::CpuId(cpu_id), f, arg) }
 }
 
 fn send_ipi_to_all_except_current(cpu_num: usize) {
@@ -217,20 +251,28 @@ impl HostPlatform for ArceOsHost {
             if cpu_id == current_cpu {
                 continue;
             }
-            let task = modules::ax_task::TaskInner::new(
-                move || {
-                    let host = arceos_host();
-                    info!("Core {cpu_id} is initializing hardware virtualization support...");
-                    host.enable_virtualization_on_current_cpu()
-                        .expect("failed to enable hardware virtualization");
-                    info!("Hardware virtualization support enabled on core {cpu_id}");
-                    let _ = CORES.fetch_add(1, Ordering::Release);
-                },
-                alloc::format!("axvm-hv-init-{cpu_id}"),
-                modules::ax_task::default_task_stack_size(),
-            );
-            task.set_cpumask(<Self as HostCpu>::CpuMask::one_shot(cpu_id));
-            modules::ax_task::spawn_task(task);
+            let affinity = task_cpu_set_one(cpu_id);
+            // SAFETY: no OS extension is transferred and the affinity is
+            // validated against the current runtime topology above.
+            let _task = unsafe {
+                spawn_task_with_extension_and_affinity(
+                    move || {
+                        let host = arceos_host();
+                        info!("Core {cpu_id} is initializing hardware virtualization support...");
+                        host.enable_virtualization_on_current_cpu()
+                            .expect("failed to enable hardware virtualization");
+                        info!("Hardware virtualization support enabled on core {cpu_id}");
+                        let _ = CORES.fetch_add(1, Ordering::Release);
+                    },
+                    alloc::format!("axvm-hv-init-{cpu_id}"),
+                    AXVM_KERNEL_STACK_SIZE,
+                    None,
+                    Some(affinity),
+                )
+            }
+            .unwrap_or_else(|error| {
+                panic!("failed to spawn AxVM CPU {cpu_id} initialization task: {error}")
+            });
             if cpu_id != self.this_cpu_id() {
                 send_ipi(cpu_id);
             }

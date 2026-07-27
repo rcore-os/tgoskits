@@ -1,6 +1,9 @@
 //! Structures and functions for user space.
 
-use core::ops::{Deref, DerefMut};
+use core::{
+    mem::size_of,
+    ops::{Deref, DerefMut},
+};
 
 use ax_memory_addr::VirtAddr;
 use loongArch64::register::{
@@ -8,6 +11,7 @@ use loongArch64::register::{
     estat::{self, Exception, Trap},
 };
 
+use super::irq::is_spurious_interrupt;
 pub use crate::uspace_common::{ExceptionKind, ExceptionSyndrome, ReturnReason};
 use crate::{TrapFrame, trap::PageFaultFlags};
 
@@ -19,6 +23,15 @@ const ECODE_BINARY_TRANSLATION_DISABLED: usize = 0x14;
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct UserContext(TrapFrame);
+
+// SAFETY: `TrapFrame` is a contiguous C-layout register image containing only
+// integer fields and has no padding.
+unsafe impl bytemuck::NoUninit for UserContext {}
+
+const _: () = {
+    assert!(size_of::<TrapFrame>() == 34 * size_of::<usize>());
+    assert!(size_of::<UserContext>() == size_of::<TrapFrame>());
+};
 
 impl UserContext {
     /// Creates a new context with the given entry point, user stack pointer,
@@ -129,6 +142,7 @@ impl UserContext {
                     esubcode,
                 })
             }
+            Trap::Unknown if is_spurious_interrupt(&estat) => ReturnReason::Interrupt,
             _ => ReturnReason::Unknown,
         };
 

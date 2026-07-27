@@ -2,8 +2,9 @@
 //!
 //! This crate contains no software queues, task policy, IRQ registration, or
 //! OS wakeups. Concrete drivers split into one task-owned data/control endpoint
-//! and one IRQ-owned event endpoint; the consuming runtime owns all buffering
-//! and scheduling policy.
+//! one IRQ-owned event endpoint, and one emergency-only TX endpoint; the
+//! consuming runtime owns all buffering, register serialization, and scheduling
+//! policy.
 
 #![no_std]
 

@@ -1,8 +1,12 @@
-use core::{ffi::c_int, mem::size_of};
+use core::{
+    ffi::c_int,
+    mem::{offset_of, size_of},
+};
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use linux_raw_sys::io_uring::{
-    IORING_ENTER_GETEVENTS, IORING_SETUP_CLAMP, IORING_SETUP_CQSIZE, io_uring_params,
+    IORING_ENTER_GETEVENTS, IORING_SETUP_CLAMP, IORING_SETUP_CQSIZE, io_cqring_offsets,
+    io_sqring_offsets, io_uring_params,
 };
 use starry_vm::{VmMutPtr, VmPtr};
 
@@ -47,7 +51,7 @@ const SUPPORTED_OPS: [u8; 7] = [
 ];
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct IoUringProbeHeader {
     last_op: u8,
     ops_len: u8,
@@ -56,13 +60,22 @@ struct IoUringProbeHeader {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 struct IoUringProbeOp {
     op: u8,
     resv: u8,
     flags: u16,
     resv2: u32,
 }
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct InitializedIoUringParams(io_uring_params);
+
+// SAFETY: the UAPI structure consists only of initialized integer fields. The
+// assertions below prove that neither the nested offset records nor the outer
+// record contain implicit padding on the supported 64-bit architectures.
+unsafe impl bytemuck::NoUninit for InitializedIoUringParams {}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -73,6 +86,15 @@ struct KernelTimespec {
 
 const _: () = assert!(size_of::<IoUringProbeHeader>() == 16);
 const _: () = assert!(size_of::<IoUringProbeOp>() == 8);
+const _: () = {
+    assert!(size_of::<io_sqring_offsets>() == 40);
+    assert!(offset_of!(io_sqring_offsets, user_addr) == 32);
+    assert!(size_of::<io_cqring_offsets>() == 40);
+    assert!(offset_of!(io_cqring_offsets, user_addr) == 32);
+    assert!(size_of::<io_uring_params>() == 120);
+    assert!(offset_of!(io_uring_params, sq_off) == 40);
+    assert!(offset_of!(io_uring_params, cq_off) == 80);
+};
 
 fn round_ring_entries(requested: u32, max: u32, clamp: bool) -> AxResult<u32> {
     if requested == 0 {
@@ -205,7 +227,9 @@ pub fn sys_io_uring_setup(entries: u32, params: *mut io_uring_params) -> AxResul
 
     let ring = IoUring::new(sq_entries, cq_entries)?;
     ring.fill_params(&mut params_value);
-    params.vm_write(params_value)?;
+    params
+        .cast::<InitializedIoUringParams>()
+        .vm_write(InitializedIoUringParams(params_value))?;
     ring.add_to_fd_table(false).map(|fd| fd as isize)
 }
 

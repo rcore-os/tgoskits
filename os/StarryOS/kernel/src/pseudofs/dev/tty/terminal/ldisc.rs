@@ -8,8 +8,6 @@ use core::{
 };
 
 use ax_errno::{AxError, AxResult};
-use ax_kspin::SpinNoIrq;
-use ax_task::future::block_on;
 use axpoll::{IoEvents, PollSet};
 use linux_raw_sys::general::{
     ECHOCTL, ECHOK, ICRNL, IGNCR, ISIG, ONLCR, OPOST, VEOF, VERASE, VKILL, VMIN, VTIME,
@@ -20,8 +18,8 @@ use ringbuf::{
 };
 use starry_signal::SignalInfo;
 
-use super::{Terminal, termios::Termios2};
-use crate::task::send_signal_to_process_group;
+use super::{Terminal, TerminalStateLock, termios::Termios2};
+use crate::task::{future::block_on, send_signal_to_process_group};
 
 const BUF_SIZE: usize = 4096;
 const ECHO_QUEUE_CAP: usize = 4096;
@@ -285,7 +283,7 @@ impl<R: TtyRead, W: TtyWrite> InputReader<R, W> {
 
 struct EchoQueue<W> {
     writer: W,
-    queue: SpinNoIrq<VecDeque<u8>>,
+    queue: TerminalStateLock<VecDeque<u8>>,
     wake_source: Arc<PollSet>,
     dropped: AtomicUsize,
 }
@@ -294,7 +292,7 @@ impl<W: TtyWrite> EchoQueue<W> {
     fn new(writer: W, wake_source: Arc<PollSet>) -> Arc<Self> {
         Arc::new(Self {
             writer,
-            queue: SpinNoIrq::new(VecDeque::new()),
+            queue: TerminalStateLock::new(VecDeque::new()),
             wake_source,
             dropped: AtomicUsize::new(0),
         })
@@ -446,7 +444,7 @@ impl<R: TtyRead, W: TtyWrite> LineDiscipline<R, W> {
         input_ready: Arc<PollSet>,
         worker_source: Arc<PollSet>,
     ) {
-        ax_task::spawn_with_name(
+        crate::task::spawn_kernel_thread(
             move || loop {
                 Self::drive_input(&mut reader, input_ready.as_ref());
 

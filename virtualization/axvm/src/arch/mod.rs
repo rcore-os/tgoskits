@@ -3,7 +3,7 @@
 pub(crate) use crate::architecture::*;
 use crate::{
     AxVmResult,
-    architecture::{BootImagePlatform, GuestBootPlatform, HostTimePlatform},
+    architecture::{BootImagePlatform, GuestBootPlatform},
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -80,14 +80,6 @@ pub mod platform {
 pub(crate) type ArchVCpu = <CurrentArch as ArchOps>::VCpu;
 pub(crate) type ArchPerCpu = <CurrentArch as ArchOps>::PerCpu;
 pub(crate) type ArchNestedPageTable = <CurrentArch as ArchOps>::NestedPageTable;
-
-pub(crate) fn register_timer_callback() {
-    CurrentArch::register_timer_callback();
-}
-
-pub(crate) fn set_oneshot_timer(deadline_ns: u64) {
-    CurrentArch::set_oneshot_timer(deadline_ns);
-}
 
 pub(crate) fn init_guest_boot_resources() {
     CurrentArch::init_guest_boot_resources();

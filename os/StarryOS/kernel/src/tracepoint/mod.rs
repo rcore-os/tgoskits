@@ -1,14 +1,17 @@
 //! See Linux Documentation for details: <https://docs.kernel.org/trace/ftrace.html>
 mod control;
 mod sched;
+mod sched_filter;
 mod trace;
 mod trace_pipe;
 
 use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
 use core::{
+    cell::UnsafeCell,
+    mem::MaybeUninit,
     num::NonZero,
     ops::Deref,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 use ax_errno::{AxError, AxResult};
@@ -16,25 +19,32 @@ use ax_kspin::SpinNoPreempt;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::VirtAddr;
 use ax_runtime::hal::{percpu::this_cpu_id, time::monotonic_time_nanos};
-use ax_sync::Mutex;
-use ax_task::{IrqNotify, current};
+use ax_sync::PiMutex;
 use axfs_ng_vfs::NodePermission;
 use axpoll::{IoEvents, PollSet};
 use ktracepoint::*;
 
 use crate::{
     pseudofs::{DirMaker, DirMapping, SeqObject, SimpleDir, SimpleFs, SpecialFsFile},
-    task::AsThread,
+    task::{future::IrqNotify, try_current_user_irq_view},
 };
 
 /// Maximum number of trace records kept in the raw trace pipe ring buffer.
 const TRACE_RAW_PIPE_CAPACITY: usize = 4096;
+/// Maximum number of trace ingress records awaiting task-context processing.
+const TRACE_INGRESS_CAPACITY: usize = 1024;
+/// Maximum raw event payload copied from a tracepoint fire path.
+const TRACE_RAW_RECORD_BYTES: usize = 256;
+/// Maximum number of ingress records processed without yielding.
+const TRACE_INGRESS_DRAIN_BATCH: usize = 128;
+/// Linux task command names are bounded by `TASK_COMM_LEN`.
+const TRACE_TASK_COMM_LEN: usize = 16;
 /// Maximum number of PID→cmdline entries in the command-line cache.
 const TRACE_CMDLINE_CACHE_SIZE: usize = 4096;
 
 // The registry entry is locked from the tracepoint fire path, which for
-// `sched:sched_switch` runs inside `axtask::switch_to` (IRQ off,
-// preemption disabled). A sleeping `ax_sync::Mutex` would trip the
+// `sched:sched_switch` runs from the ax-task switch path (IRQ off,
+// preemption disabled). A sleeping `ax_sync::PiMutex` would trip the
 // "sleeping in atomic context" guard there, so this lock must be a
 // non-sleeping spinlock — the same kind the perf output path (`PERF_FILE`)
 // uses for exactly this reason.
@@ -63,12 +73,146 @@ pub fn find_ext_tracepoint_by_name(name: &str) -> Option<KernelExtTracePoint> {
     None
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TraceIngressKind {
+    Raw,
+    Cmdline,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TraceIngressRecord {
+    kind: TraceIngressKind,
+    epoch: u64,
+    timestamp: u64,
+    id: u32,
+    len: u16,
+    bytes: [u8; TRACE_RAW_RECORD_BYTES],
+}
+
+impl TraceIngressRecord {
+    fn raw(epoch: u64, timestamp: u64, cpu_id: u32, event: &[u8]) -> Option<Self> {
+        if event.len() > TRACE_RAW_RECORD_BYTES {
+            return None;
+        }
+        let mut bytes = [0; TRACE_RAW_RECORD_BYTES];
+        bytes[..event.len()].copy_from_slice(event);
+        Some(Self {
+            kind: TraceIngressKind::Raw,
+            epoch,
+            timestamp,
+            id: cpu_id,
+            len: event.len() as u16,
+            bytes,
+        })
+    }
+
+    fn cmdline(pid: u32, comm: &[u8]) -> Self {
+        let len = comm.len().min(TRACE_TASK_COMM_LEN);
+        let mut bytes = [0; TRACE_RAW_RECORD_BYTES];
+        bytes[..len].copy_from_slice(&comm[..len]);
+        Self {
+            kind: TraceIngressKind::Cmdline,
+            epoch: 0,
+            timestamp: 0,
+            id: pid,
+            len: len as u16,
+            bytes,
+        }
+    }
+}
+
+struct TraceIngressSlot {
+    ready: AtomicBool,
+    record: UnsafeCell<MaybeUninit<TraceIngressRecord>>,
+}
+
+impl TraceIngressSlot {
+    const fn new() -> Self {
+        Self {
+            ready: AtomicBool::new(false),
+            record: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+}
+
+// SAFETY: a successful enqueue reservation gives one producer exclusive
+// access to a slot. The single consumer reads it only after Release
+// publication and returns it to producers before advancing `dequeue`.
+unsafe impl Sync for TraceIngressSlot {}
+
+/// Fixed-capacity MPSC ingress with one task-context consumer.
+struct TraceIngressRing<const CAPACITY: usize> {
+    slots: [TraceIngressSlot; CAPACITY],
+    enqueue: AtomicUsize,
+    dequeue: AtomicUsize,
+}
+
+impl<const CAPACITY: usize> TraceIngressRing<CAPACITY> {
+    const fn new() -> Self {
+        assert!(CAPACITY != 0);
+        Self {
+            slots: [const { TraceIngressSlot::new() }; CAPACITY],
+            enqueue: AtomicUsize::new(0),
+            dequeue: AtomicUsize::new(0),
+        }
+    }
+
+    fn push(&self, record: TraceIngressRecord) -> bool {
+        let mut tail = self.enqueue.load(Ordering::Relaxed);
+        loop {
+            let head = self.dequeue.load(Ordering::Acquire);
+            if tail.wrapping_sub(head) >= CAPACITY {
+                return false;
+            }
+            match self.enqueue.compare_exchange_weak(
+                tail,
+                tail.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    let slot = &self.slots[tail % CAPACITY];
+                    debug_assert!(!slot.ready.load(Ordering::Acquire));
+                    // SAFETY: this producer exclusively owns the reserved
+                    // logical position until it publishes `ready`.
+                    unsafe { (*slot.record.get()).write(record) };
+                    slot.ready.store(true, Ordering::Release);
+                    return true;
+                }
+                Err(observed) => tail = observed,
+            }
+        }
+    }
+
+    fn pop(&self) -> Option<TraceIngressRecord> {
+        let head = self.dequeue.load(Ordering::Relaxed);
+        let slot = &self.slots[head % CAPACITY];
+        if !slot.ready.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: Acquire observation of `ready` proves that the producer
+        // initialized this slot, and only this consumer advances `dequeue`.
+        let record = unsafe { (*slot.record.get()).assume_init_read() };
+        slot.ready.store(false, Ordering::Release);
+        self.dequeue.store(head.wrapping_add(1), Ordering::Release);
+        Some(record)
+    }
+
+    fn has_pending(&self) -> bool {
+        let head = self.dequeue.load(Ordering::Relaxed);
+        self.slots[head % CAPACITY].ready.load(Ordering::Acquire)
+    }
+}
+
 struct TraceState {
     point_map: LazyInit<TracePointMap<KernelTraceAux>>,
-    raw_pipe: Mutex<TracePipeRaw>,
+    raw_pipe: PiMutex<TracePipeRaw>,
+    raw_epoch: AtomicU64,
+    ingress: TraceIngressRing<TRACE_INGRESS_CAPACITY>,
     pipe_event: PollSet,
     pipe_notify: IrqNotify,
-    cmdline_cache: LazyInit<Mutex<TraceCmdLineCache>>,
+    sched_notify: IrqNotify,
+    cmdline_cache: LazyInit<PiMutex<TraceCmdLineCache>>,
     ext_tracepoints: LazyInit<BTreeMap<u32, KernelExtTracePoint>>,
 }
 
@@ -76,9 +220,12 @@ impl TraceState {
     const fn new() -> Self {
         Self {
             point_map: LazyInit::new(),
-            raw_pipe: Mutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
+            raw_pipe: PiMutex::new(TracePipeRaw::new(TRACE_RAW_PIPE_CAPACITY)),
+            raw_epoch: AtomicU64::new(0),
+            ingress: TraceIngressRing::new(),
             pipe_event: PollSet::new(),
             pipe_notify: IrqNotify::new(),
+            sched_notify: IrqNotify::new(),
             cmdline_cache: LazyInit::new(),
             ext_tracepoints: LazyInit::new(),
         }
@@ -87,38 +234,44 @@ impl TraceState {
 
 static TRACE_STATE: TraceState = TraceState::new();
 static TRACE_PIPE_NOTIFY_WORKER: AtomicBool = AtomicBool::new(false);
+static TRACE_INGRESS_DROPPED: AtomicU64 = AtomicU64::new(0);
+static SCHED_TRACE_WORKER_ID: AtomicU64 = AtomicU64::new(0);
+static TRACE_PIPE_NOTIFY_WORKER_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct KernelTraceAux;
 
 impl KernelTraceOps for KernelTraceAux {
     fn current_pid() -> u32 {
-        let curr = current();
-        let proc_data = &curr.as_thread().proc_data;
-        proc_data.proc.pid()
+        if let Some(pid) = sched::replay_current_pid() {
+            return pid;
+        }
+        try_current_user_irq_view().map_or(0, |task| task.tid())
     }
 
     fn trace_pipe_push_raw_record(buf: &[u8]) {
-        // log::debug!("trace_pipe_push_raw_record: {}", record.len());
-        TRACE_STATE.raw_pipe.lock().push_record(
-            monotonic_time_nanos(),
-            this_cpu_id() as _,
-            buf.to_vec(),
-        );
-        TRACE_STATE.pipe_notify.notify_irq();
+        let epoch = TRACE_STATE.raw_epoch.load(Ordering::Acquire);
+        let Some(record) =
+            TraceIngressRecord::raw(epoch, monotonic_time_nanos(), this_cpu_id() as _, buf)
+        else {
+            TRACE_INGRESS_DROPPED.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        publish_trace_ingress(record);
     }
 
     fn trace_cmdline_push(pid: u32) {
-        let curr = current();
-        let proc_data = &curr.as_thread().proc_data;
-        let exe_path = proc_data.exe_path.read();
-        let pname = exe_path
-            .split(' ')
-            .next()
-            .unwrap_or("unknown")
-            .split('/')
-            .next_back()
-            .unwrap_or("unknown");
-        TRACE_STATE.cmdline_cache.lock().insert(pid, pname);
+        if let Some((comm, len)) = sched::replay_comm(pid) {
+            publish_trace_ingress(TraceIngressRecord::cmdline(pid, &comm[..len]));
+            return;
+        }
+        let Some(curr) = try_current_user_irq_view() else {
+            return;
+        };
+        let mut comm = [0; 16];
+        let Some(len) = curr.copy_comm(&mut comm) else {
+            return;
+        };
+        publish_trace_ingress(TraceIngressRecord::cmdline(pid, &comm[..len]));
     }
 
     fn write_kernel_text(addr: *mut core::ffi::c_void, data: &[u8]) {
@@ -146,18 +299,87 @@ impl KernelTraceOps for KernelTraceAux {
     }
 }
 
-fn start_trace_pipe_notify_worker() {
-    if TRACE_PIPE_NOTIFY_WORKER.swap(true, Ordering::AcqRel) {
+fn publish_trace_ingress(record: TraceIngressRecord) {
+    if !TRACE_STATE.ingress.push(record) {
+        TRACE_INGRESS_DROPPED.fetch_add(1, Ordering::Relaxed);
         return;
     }
-    ax_task::spawn_with_name(
-        || loop {
-            TRACE_STATE.pipe_notify.wait();
-            // Trace records are queued before the deferred poll wake.
-            unsafe { TRACE_STATE.pipe_event.wake(IoEvents::IN) };
+    // The complete fixed-size record is Release-published before the sticky
+    // worker notification.
+    TRACE_STATE.pipe_notify.notify_irq();
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TraceIngressDrain {
+    pending: bool,
+    raw_published: bool,
+}
+
+fn drain_trace_ingress(limit: usize) -> TraceIngressDrain {
+    let mut drained = 0;
+    let mut raw_published = false;
+    while drained < limit {
+        let Some(record) = TRACE_STATE.ingress.pop() else {
+            break;
+        };
+        drained += 1;
+        match record.kind {
+            TraceIngressKind::Raw => {
+                if record.epoch != TRACE_STATE.raw_epoch.load(Ordering::Acquire) {
+                    continue;
+                }
+                let event = record.bytes[..usize::from(record.len)].to_vec();
+                TRACE_STATE
+                    .raw_pipe
+                    .lock()
+                    .push_record(record.timestamp, record.id, event);
+                raw_published = true;
+            }
+            TraceIngressKind::Cmdline => {
+                let comm = core::str::from_utf8(&record.bytes[..usize::from(record.len)])
+                    .unwrap_or("unknown");
+                TRACE_STATE.cmdline_cache.lock().insert(record.id, comm);
+            }
+        }
+    }
+    TraceIngressDrain {
+        pending: TRACE_STATE.ingress.has_pending(),
+        raw_published,
+    }
+}
+
+fn start_trace_pipe_notify_worker() -> ax_runtime::task::ThreadHandle {
+    if TRACE_PIPE_NOTIFY_WORKER.swap(true, Ordering::AcqRel) {
+        panic!("trace pipe notify worker started twice");
+    }
+    crate::task::spawn_kernel_thread(
+        || {
+            loop {
+                TRACE_STATE.pipe_notify.wait();
+                loop {
+                    let drain = drain_trace_ingress(TRACE_INGRESS_DRAIN_BATCH);
+                    if drain.raw_published {
+                        // Trace records are queued before the deferred poll wake.
+                        unsafe { TRACE_STATE.pipe_event.wake(IoEvents::IN) };
+                    }
+                    if !drain.pending {
+                        break;
+                    }
+                    ax_runtime::task::yield_current_cpu().unwrap_or_else(|error| {
+                        panic!("trace ingress worker failed to yield: {error}")
+                    });
+                }
+            }
         },
         "trace-pipe-notify".into(),
-    );
+    )
+}
+
+fn publish_trace_worker_id(slot: &AtomicU64, worker: &ax_runtime::task::ThreadHandle, name: &str) {
+    let worker_id = worker.id().as_u64();
+    assert_ne!(worker_id, 0, "{name} has an invalid scheduler identity");
+    slot.compare_exchange(0, worker_id, Ordering::Release, Ordering::Relaxed)
+        .unwrap_or_else(|_| panic!("{name} started twice"));
 }
 
 /// Carries the unread suffix of a formatted text record across `read_at` calls.
@@ -281,10 +503,24 @@ pub fn tracepoint_init() -> AxResult<()> {
     TRACE_STATE.ext_tracepoints.init_once(ext_tps);
     TRACE_STATE
         .cmdline_cache
-        .init_once(Mutex::new(TraceCmdLineCache::new(
+        .init_once(PiMutex::new(TraceCmdLineCache::new(
             NonZero::new(TRACE_CMDLINE_CACHE_SIZE).unwrap(),
         )));
-    start_trace_pipe_notify_worker();
+    let sched_worker = sched::start_worker();
+    let pipe_worker = start_trace_pipe_notify_worker();
+    publish_trace_worker_id(
+        &SCHED_TRACE_WORKER_ID,
+        &sched_worker,
+        "scheduler trace worker",
+    );
+    publish_trace_worker_id(
+        &TRACE_PIPE_NOTIFY_WORKER_ID,
+        &pipe_worker,
+        "trace pipe notify worker",
+    );
+    // The hook becomes visible only after both infrastructure identities are
+    // published, so their first schedule-in cannot enter the deferred ring.
+    sched::install();
     Ok(())
 }
 
@@ -405,4 +641,87 @@ pub fn init_tracing_dir(fs: Arc<SimpleFs>) -> DirMaker {
     });
     tracing_root.add("events", init_events(fs.clone()));
     SimpleDir::new_maker(fs, Arc::new(tracing_root))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        alloc::{GlobalAlloc, Layout, System},
+        cell::Cell,
+    };
+
+    use super::*;
+
+    #[global_allocator]
+    static ALLOCATOR: AuditAllocator = AuditAllocator;
+
+    std::thread_local! {
+        static AUDIT_ENABLED: Cell<bool> = const { Cell::new(false) };
+        static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    struct AuditAllocator;
+
+    // SAFETY: every operation delegates to the system allocator with the
+    // original pointer and layout. Thread-local counters are observational.
+    unsafe impl GlobalAlloc for AuditAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let pointer = unsafe { System.alloc(layout) };
+            if !pointer.is_null() {
+                count_allocation();
+            }
+            pointer
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(pointer, layout) };
+        }
+    }
+
+    #[test]
+    fn trace_ingress_is_bounded_fifo_and_preserves_payload() {
+        let ring = TraceIngressRing::<2>::new();
+        let first = TraceIngressRecord::raw(1, 10, 0, b"first").unwrap();
+        let second = TraceIngressRecord::raw(1, 20, 1, b"second").unwrap();
+        let overflow = TraceIngressRecord::raw(1, 30, 2, b"overflow").unwrap();
+
+        assert!(ring.push(first));
+        assert!(ring.push(second));
+        assert!(!ring.push(overflow));
+        assert_eq!(ring.pop(), Some(first));
+        assert_eq!(ring.pop(), Some(second));
+        assert_eq!(ring.pop(), None);
+    }
+
+    #[test]
+    fn trace_ingress_rejects_oversized_records_without_allocation() {
+        let ring = TraceIngressRing::<1>::new();
+        let oversized = [0_u8; TRACE_RAW_RECORD_BYTES + 1];
+
+        let allocations = audit_allocations(|| {
+            assert!(TraceIngressRecord::raw(1, 10, 0, &oversized).is_none());
+            assert!(ring.push(TraceIngressRecord::cmdline(7, b"worker")));
+        });
+
+        assert_eq!(allocations, 0);
+    }
+
+    fn audit_allocations(operation: impl FnOnce()) -> usize {
+        AUDIT_ENABLED.with(|enabled| {
+            assert!(!enabled.replace(true));
+            ALLOCATIONS.with(|allocations| allocations.set(0));
+            operation();
+            enabled.set(false);
+            ALLOCATIONS.with(Cell::get)
+        })
+    }
+
+    fn count_allocation() {
+        let enabled = AUDIT_ENABLED.try_with(Cell::get).unwrap_or(false);
+        if enabled {
+            let _ = ALLOCATIONS.try_with(|allocations| {
+                allocations.set(allocations.get() + 1);
+            });
+        }
+    }
 }

@@ -289,6 +289,199 @@ static void test_setitimer_single_shot(void) {
     setitimer(ITIMER_REAL, &val, NULL);
 }
 
+struct itimer_thread_share_result {
+    int which;
+    int get_ret;
+    int saw_armed;
+    int disarm_ret;
+};
+
+static void *itimer_thread_share_fn(void *arg) {
+    struct itimer_thread_share_result *result = arg;
+    struct itimerval current;
+    struct itimerval zero;
+
+    memset(&current, 0, sizeof(current));
+    result->get_ret = getitimer(result->which, &current);
+    result->saw_armed =
+        current.it_value.tv_sec != 0 || current.it_value.tv_usec != 0;
+
+    memset(&zero, 0, sizeof(zero));
+    result->disarm_ret = setitimer(result->which, &zero, NULL);
+    return NULL;
+}
+
+static void test_setitimer_thread_group_sharing(void) {
+    static const int whiches[] = {
+        ITIMER_REAL,
+        ITIMER_VIRTUAL,
+        ITIMER_PROF,
+    };
+    static const char *names[] = {
+        "ITIMER_REAL",
+        "ITIMER_VIRTUAL",
+        "ITIMER_PROF",
+    };
+
+    for (size_t i = 0; i < sizeof(whiches) / sizeof(whiches[0]); i++) {
+        struct itimerval armed;
+        struct itimerval current;
+        struct itimer_thread_share_result result = {
+            .which = whiches[i],
+            .get_ret = -1,
+            .saw_armed = 0,
+            .disarm_ret = -1,
+        };
+        pthread_t thread;
+
+        printf("  checking process-wide sharing for %s\n", names[i]);
+        memset(&armed, 0, sizeof(armed));
+        armed.it_value.tv_sec = 60;
+        CHECK(setitimer(whiches[i], &armed, NULL) == 0,
+              "main thread should arm the process interval timer");
+
+        int create_ret = pthread_create(
+            &thread, NULL, itimer_thread_share_fn, &result);
+        CHECK(create_ret == 0,
+              "creating a sibling for interval-timer sharing should succeed");
+        if (create_ret != 0) {
+            memset(&armed, 0, sizeof(armed));
+            setitimer(whiches[i], &armed, NULL);
+            continue;
+        }
+        pthread_join(thread, NULL);
+
+        CHECK(result.get_ret == 0,
+              "sibling getitimer should succeed");
+        CHECK(result.saw_armed,
+              "sibling must observe the process interval timer");
+        CHECK(result.disarm_ret == 0,
+              "sibling should disarm the process interval timer");
+
+        memset(&current, 0, sizeof(current));
+        CHECK(getitimer(whiches[i], &current) == 0,
+              "main getitimer after sibling disarm should succeed");
+        CHECK(current.it_value.tv_sec == 0 && current.it_value.tv_usec == 0,
+              "sibling disarm must be visible to the main thread");
+
+        memset(&armed, 0, sizeof(armed));
+        setitimer(whiches[i], &armed, NULL);
+    }
+}
+
+static long long timespec_to_ns(const struct timespec *time) {
+    return (long long)time->tv_sec * 1000000000LL + time->tv_nsec;
+}
+
+static void burn_user_cpu_chunk(void) {
+    volatile unsigned long long mixer = 0x9e3779b97f4a7c15ULL;
+
+    /*
+     * Starry currently implements CLOCK_THREAD_CPUTIME_ID as a syscall,
+     * whereas Linux normally serves it through the vDSO. Keep enough work
+     * between samples that ITIMER_VIRTUAL observes user time rather than a
+     * syscall-dominated workload.
+     */
+    for (unsigned int i = 0; i < 65536; i++)
+        mixer = mixer * 6364136223846793005ULL + i + 1;
+}
+
+static void *burn_thread_cpu(void *arg) {
+    long long target_ns = *(long long *)arg;
+    struct timespec start;
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &start) != 0)
+        return (void *)1;
+    do {
+        burn_user_cpu_chunk();
+        if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now) != 0)
+            return (void *)1;
+    } while (timespec_to_ns(&now) - timespec_to_ns(&start) < target_ns);
+    return NULL;
+}
+
+static void test_process_cpu_clock_includes_sibling_threads(void) {
+    const long long sibling_cpu_ns = 100000000LL;
+    struct timespec before;
+    struct timespec after;
+    pthread_t thread;
+    void *thread_result = (void *)1;
+
+    CHECK(clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &before) == 0,
+          "reading process CPU time before sibling work should succeed");
+    int create_ret = pthread_create(
+        &thread, NULL, burn_thread_cpu, (void *)&sibling_cpu_ns);
+    CHECK(create_ret == 0,
+          "creating a sibling CPU-time worker should succeed");
+    if (create_ret != 0)
+        return;
+    pthread_join(thread, &thread_result);
+    CHECK(thread_result == NULL,
+          "sibling should measure and consume its own CPU time");
+    CHECK(clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &after) == 0,
+          "reading process CPU time after sibling work should succeed");
+
+    long long elapsed = timespec_to_ns(&after) - timespec_to_ns(&before);
+    CHECK(elapsed >= sibling_cpu_ns / 2,
+          "process CPU clock must include CPU time consumed by a sibling");
+}
+
+static volatile sig_atomic_t cpu_itimer_signal = 0;
+
+static void cpu_itimer_signal_handler(int sig) {
+    cpu_itimer_signal = sig;
+}
+
+static void test_cpu_itimers_include_sibling_threads(void) {
+    static const int whiches[] = {
+        ITIMER_VIRTUAL,
+        ITIMER_PROF,
+    };
+    static const int signals[] = {
+        SIGVTALRM,
+        SIGPROF,
+    };
+    const long long sibling_cpu_ns = 100000000LL;
+
+    for (size_t i = 0; i < sizeof(whiches) / sizeof(whiches[0]); i++) {
+        struct sigaction action;
+        struct sigaction old_action;
+        struct itimerval armed;
+        struct itimerval zero;
+        pthread_t thread;
+        void *thread_result = (void *)1;
+
+        memset(&action, 0, sizeof(action));
+        action.sa_handler = cpu_itimer_signal_handler;
+        sigemptyset(&action.sa_mask);
+        CHECK(sigaction(signals[i], &action, &old_action) == 0,
+              "installing a CPU interval-timer handler should succeed");
+
+        cpu_itimer_signal = 0;
+        memset(&armed, 0, sizeof(armed));
+        armed.it_value.tv_usec = 20000;
+        CHECK(setitimer(whiches[i], &armed, NULL) == 0,
+              "arming a process CPU interval timer should succeed");
+
+        int create_ret = pthread_create(
+            &thread, NULL, burn_thread_cpu, (void *)&sibling_cpu_ns);
+        CHECK(create_ret == 0,
+              "creating a CPU interval-timer worker should succeed");
+        if (create_ret == 0) {
+            pthread_join(thread, &thread_result);
+            CHECK(thread_result == NULL,
+                  "CPU interval-timer worker should finish");
+            CHECK(cpu_itimer_signal == signals[i],
+                  "sibling CPU time must expire the process interval timer");
+        }
+
+        memset(&zero, 0, sizeof(zero));
+        setitimer(whiches[i], &zero, NULL);
+        sigaction(signals[i], &old_action, NULL);
+    }
+}
+
 /* ============================================================
  * timer_create tests
  * ============================================================ */
@@ -1588,6 +1781,9 @@ int main(int argc, char *argv[]) {
     test_setitimer_each_type();
     test_getitimer_each_type();
     test_setitimer_single_shot();
+    test_setitimer_thread_group_sharing();
+    test_process_cpu_clock_includes_sibling_threads();
+    test_cpu_itimers_include_sibling_threads();
 
     printf("\n--- timer_create tests ---\n");
     test_timer_create_basic();

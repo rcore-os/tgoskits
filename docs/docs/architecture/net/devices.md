@@ -459,7 +459,7 @@ fn start_device_tx_worker(&self, dev: usize) {
     if device.interface_id == InterfaceId::LOOPBACK {
         return;
     }
-    ax_task::spawn_with_name(move || device_tx_worker(device), name);
+    crate::spawn_permanent_worker(name, move || device_tx_worker(device))?;
 }
 ```
 

@@ -1,6 +1,6 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 use axfs_ng_vfs::{NodePermission, VfsError, VfsResult};
 use ddebug::ControlFile;
 
@@ -11,15 +11,15 @@ use crate::{
 };
 
 pub struct DynDebugControlObj {
-    control: Mutex<ControlFile<DynamicDebugOps>>,
-    snapshot: Mutex<Option<Vec<u8>>>,
+    control: PiMutex<ControlFile<DynamicDebugOps>>,
+    snapshot: PiMutex<Option<Vec<u8>>>,
 }
 
 impl DynDebugControlObj {
     fn new(control: ControlFile<DynamicDebugOps>) -> Self {
         Self {
-            control: Mutex::new(control),
-            snapshot: Mutex::new(None),
+            control: PiMutex::new(control),
+            snapshot: PiMutex::new(None),
         }
     }
 

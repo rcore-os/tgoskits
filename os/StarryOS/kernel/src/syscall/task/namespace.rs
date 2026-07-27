@@ -4,8 +4,7 @@ use core::ops::DerefMut;
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::{FS_CONTEXT, FsContext};
 use ax_kspin::SpinRwLock;
-use ax_sync::Mutex;
-use ax_task::current;
+use ax_sync::PiMutex;
 use axnsproxy::NsProxy;
 use flatten_objects::FlattenObjects;
 use linux_raw_sys::general::{
@@ -15,7 +14,7 @@ use linux_raw_sys::general::{
 
 use crate::{
     file::{FD_TABLE, FileDescriptor, NsFd, PidFd, get_file_like},
-    task::{AX_FILE_LIMIT, AsThread, Thread, get_task},
+    task::{AX_FILE_LIMIT, Thread, current_user_task, get_task},
 };
 
 const UNSHARE_NAMESPACE_FLAGS: u32 = CLONE_NEWUTS
@@ -34,7 +33,7 @@ type SharedFileTable = Arc<SpinRwLock<FlattenObjects<FileDescriptor, AX_FILE_LIM
 
 struct PreparedUnshare {
     file_table: Option<SharedFileTable>,
-    fs_context: Option<Arc<Mutex<FsContext>>>,
+    fs_context: Option<Arc<PiMutex<FsContext>>>,
     nsproxy: Option<NsProxy>,
 }
 
@@ -78,7 +77,7 @@ impl PreparedUnshare {
                     nsproxy.unshare_mnt();
                 }
             }
-            Some(Arc::new(Mutex::new(fs_context)))
+            Some(Arc::new(PiMutex::new(fs_context)))
         } else {
             None
         };
@@ -100,10 +99,10 @@ impl PreparedUnshare {
         if file_table.is_some() || fs_context.is_some() {
             thread.with_current_scope_mut(|scope| {
                 if let Some(file_table) = file_table {
-                    *FD_TABLE.scope_mut(scope).deref_mut() = file_table;
+                    *FD_TABLE.scope_cell_mut(scope).deref_mut() = file_table;
                 }
                 if let Some(fs_context) = fs_context {
-                    *FS_CONTEXT.scope_mut(scope) = fs_context;
+                    *FS_CONTEXT.scope_cell_mut(scope) = fs_context;
                 }
             });
         }
@@ -120,7 +119,7 @@ pub fn sys_unshare(flags: u32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let want_privileged_ns = flags & (CLONE_NEWNS | CLONE_NEWCGROUP) != 0;
 
@@ -182,7 +181,7 @@ fn setns_via_nsfd(nsfd: &NsFd, nstype: u32) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
 
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
     if fd_type == CLONE_NEWCGROUP && !thread.cred().has_cap_sys_admin() {
@@ -259,7 +258,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     let target_mnt_fs_ns = if nstype & CLONE_NEWNS != 0 {
         let task = get_task(target_proc.proc.pid())?;
         let scope = task.as_thread().scope.read();
-        let fs_context = FS_CONTEXT.scope(&scope).clone();
+        let fs_context = FS_CONTEXT.scope_cell(&scope).clone();
         drop(scope);
         Some(fs_context.lock().mount_namespace().clone())
     } else {
@@ -267,7 +266,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     };
     let target_nsproxy = target_proc.nsproxy.lock().clone_all();
 
-    let curr = current();
+    let curr = current_user_task();
     let thread = curr.as_thread();
     let proc_data = &thread.proc_data;
     if nstype & CLONE_NEWCGROUP != 0 && !thread.cred().has_cap_sys_admin() {

@@ -60,6 +60,26 @@ impl PidNamespace {
         local
     }
 
+    /// Releases a namespace PID reserved for a task that never became visible.
+    ///
+    /// The `(global_tid, local_pid)` pair prevents a stale rollback token from
+    /// deleting a later mapping. The allocation cursor is restored only when
+    /// no subsequent reservation has consumed it.
+    #[must_use]
+    pub fn release_unpublished_local_pid(&mut self, global_tid: u64, local_pid: u32) -> bool {
+        if self.pid_map.get(&global_tid) != Some(&local_pid) {
+            return false;
+        }
+        self.pid_map.remove(&global_tid);
+        if self.init_global_tid == Some(global_tid) {
+            self.init_global_tid = None;
+        }
+        if self.next_pid == local_pid.saturating_add(1) {
+            self.next_pid = local_pid;
+        }
+        true
+    }
+
     /// Resolve a global TID to its namespace-local PID.
     /// In the root namespace (level 0), global and local PIDs are 1:1.
     pub fn local_pid(&self, global_tid: u64) -> Option<u32> {
@@ -77,5 +97,37 @@ impl PidNamespace {
     /// Returns the global TID of this namespace's init process.
     pub fn init_global_tid(&self) -> Option<u64> {
         self.init_global_tid
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PidNamespace;
+
+    #[test]
+    fn unpublished_pid_reservation_restores_namespace_state() {
+        let mut namespace = PidNamespace::new_root().clone_ns();
+        let local_pid = namespace.alloc_local_pid(42);
+        namespace.set_init_global_tid(42);
+
+        assert_eq!(local_pid, 1);
+        assert_eq!(namespace.local_pid(42), Some(1));
+        assert_eq!(namespace.init_global_tid(), Some(42));
+
+        assert!(namespace.release_unpublished_local_pid(42, local_pid));
+        assert_eq!(namespace.local_pid(42), None);
+        assert_eq!(namespace.init_global_tid(), None);
+        assert_eq!(namespace.alloc_local_pid(43), 1);
+    }
+
+    #[test]
+    fn stale_pid_reservation_cannot_remove_a_new_mapping() {
+        let mut namespace = PidNamespace::new_root().clone_ns();
+        let first = namespace.alloc_local_pid(42);
+        let second = namespace.alloc_local_pid(43);
+
+        assert!(!namespace.release_unpublished_local_pid(42, second));
+        assert_eq!(namespace.local_pid(42), Some(first));
+        assert_eq!(namespace.local_pid(43), Some(second));
     }
 }

@@ -419,7 +419,7 @@ SIGSEGV 在 `codegen-units=1`、`opt-level=0`、16GB RAM、单 job 下仍发生�
 
 `axplat-dyn` 的 `phys_ram_ranges()` 在启动时从 somehal memory map 动态发现物理 RAM。这使得在不同 RAM 大小的 QEMU 上运行自编译时不需重新编译内核。
 
-## PR797 深入分析：为什么需要 wake_task，是被什么阻塞的？
+## PR797 深入分析：信号为什么必须同时发布状态并唤醒调度线程？
 
 ### 信号传递与调度唤醒的完整链路
 
@@ -428,34 +428,44 @@ SIGSEGV 在 `codegen-units=1`、`opt-level=0`、16GB RAM、单 job 下仍发生�
 ```
 cargo (父进程)
   ├─ spawn → build-script (子进程)
-  ├─ waitpid(子进程) ───→ block_on(interruptible(wait_future))
-  │                         └─ future_blocked_resched → 状态=Blocked，脱离运行队列
+  ├─ waitpid(子进程) ───→ block_on_user(interruptible_for(wait_future))
+  │                         └─ LocalExecutor + WaitQueue → 线程进入 Blocked
   └─ 信号到达(SIGCHLD等) → 须将父进程唤醒回运行队列，让 waitpid 返回
 ```
 
-### 阻塞点：future_blocked_resched 将任务移出运行队列
+### 阻塞点：核心 park 协议将线程移出运行队列
 
-`block_on` 的实现（`os/arceos/modules/axtask/src/future/mod.rs:55-95`）：
+Starry 的用户 future 接入位于
+`os/StarryOS/kernel/src/task/future.rs::block_on_user()`：
 
-1. 轮询 future → 返回 `Poll::Pending`
-2. 检查 `axwaker.woke` 锁 → 仍为 false
-3. 调用 `rq.future_blocked_resched(woke)` → **将任务状态设为 Blocked，从运行队列移除，yield 到调度器**
+1. 当前 scheduler thread 创建绑定自身 `ThreadWakeHandle` 的 `LocalExecutor`。
+2. 轮询 future；返回 `Poll::Pending` 时，用核心 `WaitQueue` 执行
+   prepare/publish/commit park。
+3. 核心把线程状态变为 `Blocked` 并从 runnable queue 移除，直到 generation-valid
+   wake、条件变化或 timeout 使其重新进入 `Ready`。
 
-此时任务**不在运行队列中**。没有任何调度器会再检查它的 `interrupted` 标志。
+此时线程**不在运行队列中**。只设置 Starry 的 `interrupted` 标志并不能让调度器
+再次选择它。
 
-### 为何只有 flag 不够：interrupt_waker 的注册-唤醒闭环
+### 为何只有 flag 不够：状态发布与 direct wake 必须形成闭环
 
-`task.interrupt()` 做两件事（`os/arceos/modules/axtask/src/task.rs:284-287`）：
+`UserTaskRef::interrupt()` 做两件事：
+
 ```rust
 pub fn interrupt(&self) {
-    self.interrupted.store(true, Ordering::Release);  // ① 设置标志
-    self.interrupt_waker.wake();                       // ② 唤醒 waker
+    self.as_thread().interrupted.store(true, Ordering::Release);
+    let _result = self.wake_handle().wake();
 }
 ```
 
-`interrupt_waker.wake()` 触发 `AxWaker::wake_by_ref()` → `rq.unblock_task(task, false)`，将任务状态从 `Blocked` 变回 `Ready` 并放回运行队列。
+Release store 先发布 Starry interruption 状态；随后 generation-bearing
+`ThreadWakeHandle` 通过核心 registry/线程 header 验证目标，把仍为 `Blocked` 的线程
+重新置为 `Ready`。当线程重新执行时，`interruptible_for()` 通过
+`poll_interrupt()` 消费该状态并返回 `Interrupted`。
 
-**修复前的 `task.interrupt()` 只有第①步（设置标志）。** 任务被 `future_blocked_resched` 移出运行队列后，没有任何机制将它放回——标志虽已设置，但调度器永远不会再检查它。
+修复前只发布状态、不重新入队时，调度器没有机会再次观察该状态，因此会永久
+阻塞。新的 direct-wake 句柄还会验证 slot generation，避免线程槽位复用后误唤醒
+另一个线程。
 
 ### 具体阻塞场景
 
@@ -463,37 +473,41 @@ pub fn interrupt(&self) {
 
 | 阻塞 syscall | 阻塞对象 | 阻塞在何处 | 触发信号 |
 |-------------|---------|-----------|---------|
-| `waitpid` | 子进程未退出 | `block_on(interruptible(wait_future))` | SIGCHLD |
-| `futex` | 互斥锁/条件变量 | `block_on(interruptible(futex_future))` | 任意信号 |
-| `read` (pipe) | 管道空，writer 关闭 | `block_on(interruptible(read_future))` | SIGPIPE |
-| `sigtimedwait` | 无 pending signal | `block_on(interruptible(signal_future))` | 目标信号 |
+| `waitpid` | 子进程未退出 | `block_on_user(interruptible_for(wait_future))` | SIGCHLD |
+| `futex` | 互斥锁/条件变量 | `block_on_user(interruptible_for(futex_future))` | 任意可递达信号 |
+| `read` (pipe) | 管道空 | `block_on_user(poll_io_for(...))` | 可递达信号或 I/O readiness |
+| `sigtimedwait` | 无匹配 pending signal | `block_on_user(signal_future)` | 目标信号 |
 
 当子进程也因同一 bug 而挂起时，父进程在 `waitpid` 中永远等不到子进程退出——而子进程恰好在等某个信号来唤醒自己。系统形成死锁循环。
 
-### 与 I/O future 的区别（为何 I/O 不会被此 bug 影响）
+### 与 I/O readiness 的配合
 
-I/O future（如 block read）有自己的 waker 回调（由设备驱动挂载）。即使 `interrupt_waker.wake()` 不触发，I/O 完成时设备驱动调用 `AxWaker::wake_by_ref()` 同样会走 `unblock_task` 把任务放回运行队列。任务恢复运行后，`poll_interrupt` 检测到 `interrupted` 标志，返回 `Interrupted`。
-
-但对于 waitpid / futex / sigtimedwait，**没有外部设备驱动来触发 waker**。这些 future 的完成完全依赖另一个用户态进程或线程——如果那个进程/线程因同样的 bug 而挂起，没有任何人或硬件来拯救它。
+I/O future 通过 `Pollable::register()` 保存 Rust `Waker`，设备或 task-context
+service 在 readiness 变化后调用 `PollSet::wake()`。信号路径不能依赖 I/O 最终
+完成，因此仍必须直接唤醒目标 scheduler thread。`poll_io_for()` 在注册后再次尝试
+I/O，并在仍为 `WouldBlock` 时检查 interruption，从而闭合
+“状态变化发生在第一次检查与注册之间”的竞态窗口。
 
 ### 修复演进历史
 
 | 提交 | 变更 |
 |------|------|
-| `04686fbd5` | 新增 `ax_task::wake_task()` 函数，在信号传递后显式调用 `unblock_task` |
-| `10e6008f2` | 修复 `poll_interrupt` 的 race：先注册 waker 再检查 flag（防止 wake 丢失） |
-| `0e2341f8e` | 条件化 wake_task：仅在 `send_signal` 返回 true（信号可递达，非 blocked）时唤醒 |
-| `ce6105da6` | 移除冗余 `task.interrupt()` 调用（`wake_task` 内部已包含） |
-| 后续合并 | 将 `interrupt_waker.wake()` 集成进 `task.interrupt()`，移除独立 `wake_task` 函数 |
+| `04686fbd5` | 在信号发布后增加显式调度唤醒 |
+| `10e6008f2` | 闭合 interruption 检查与等待注册之间的竞态 |
+| `0e2341f8e` | 仅对可递达信号中断目标线程 |
+| `ce6105da6` | 合并重复的 interruption/wake 操作 |
+| 本次核心迁移 | 用 generation-bearing `ThreadWakeHandle` 和核心 park 协议承载相同语义 |
 
 ### 与 `interrupted` 标志的配合
 
-`interruptible` future 包装器（`future/mod.rs:116-126`）轮询两个条件：
-1. `curr.poll_interrupt(cx)` — 检查标志 + 注册 waker
+`interruptible_for()` 轮询两个条件：
+
+1. `task.poll_interrupt(cx)` — 检查并消费 Starry interruption bit
 2. `f.as_mut().poll(cx)` — 原始 future
 
-当信号触发 `task.interrupt()`：
-- wake 将任务放回运行队列 → 调度器选中 → `block_on` 循环重新轮询
+当信号触发 `UserTaskRef::interrupt()`：
+
+- direct wake 将线程放回运行队列 → 调度器选中 → `LocalExecutor` 重新轮询
 - `poll_interrupt` 发现 `interrupted = true` → 返回 `Err(Interrupted)`
 - 外层 syscall 返回 `-EINTR`
 - `user.rs` 的 signal drain loop 调用 `check_signals()` → 递达 pending signal
@@ -503,9 +517,10 @@ I/O future（如 block read）有自己的 waker 回调（由设备驱动挂载�
 
 | 文件 | 角色 |
 |------|------|
-| `os/arceos/modules/axtask/src/future/mod.rs` | `block_on` + `interruptible` + `AxWaker` |
-| `os/arceos/modules/axtask/src/task.rs` | `TaskInner::interrupt()` — flag + wake |
-| `os/arceos/modules/axtask/src/run_queue.rs` | `future_blocked_resched` / `unblock_task` |
+| `components/ax-task/src/executor/*` | `LocalExecutor` 与 generation-valid waker |
+| `components/ax-task/src/wait_queue.rs` | prepare/publish/commit park 与 wake |
+| `os/StarryOS/kernel/src/task/future.rs` | `block_on_user`、`interruptible_for`、`poll_io_for` |
+| `os/StarryOS/kernel/src/task/scheduler_task.rs` | Starry interruption bit + `ThreadWakeHandle` |
 | `os/StarryOS/kernel/src/task/signal.rs` | `send_signal_to_process` — 信号入队 + 唤醒目标 |
 | `os/StarryOS/kernel/src/task/user.rs` | syscall 返回路径的 signal drain loop |
 

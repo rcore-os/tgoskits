@@ -4,7 +4,7 @@
 > 类型：库 crate
 > 分层：组件层 / 通用 readiness 与唤醒协议层
 > 版本：`0.1.2`
-> 文档依据：`Cargo.toml`、`src/lib.rs`、`tests/tests.rs`、`tests/async.rs`、`os/arceos/modules/axtask/src/future/poll.rs`
+> 文档依据：`Cargo.toml`、`src/lib.rs`、`tests/tests.rs`、`tests/async.rs`、`net/ax-net/src/blocking.rs`、`os/StarryOS/kernel/src/task/future.rs`
 
 `axpoll` 为仓库里的“对象可轮询事件”提供了一套极小但很关键的公共协议：用 `IoEvents` 表示事件位，用 `Pollable` 约定对象如何报告就绪状态和注册 waker，用 `PollSet` 保存等待者并在状态变化时唤醒。网络 socket、文件节点、loopback 设备、IRQ 等对象都可以接到这套模型上。
 
@@ -22,7 +22,7 @@
 `axpoll` 正是为这两件事存在的。它位于：
 
 - `axio` 之上：`axio` 只管同步 I/O 接口，不管等待
-- `ax-task` future 机制之下：`ax-task::future::poll_io` 依赖 `Pollable`
+- task-backed executor 之下：ax-net 和 StarryOS 的 I/O future 依赖 `Pollable`
 - ArceOS/StarryOS 多路复用实现之下：更高层 `select` / `poll` / `epoll` 轮询的对象，底层往往实现 `Pollable`
 
 ### 1.2 单文件核心结构
@@ -63,7 +63,9 @@
 
 ### 1.5 与 `ax-task` 的桥接关系
 
-`os/arceos/modules/axtask/src/future/poll.rs` 展示了 `axpoll` 在系统里的标准用法：
+`net/ax-net/src/blocking.rs` 与
+`os/StarryOS/kernel/src/task/future.rs::poll_io_for()` 展示了 `axpoll` 在系统里的
+标准用法：
 
 1. 上层提供一个同步 nonblocking I/O 闭包，并在暂不可完成时返回 `AxError::WouldBlock`
 2. `poll_io()` 先执行该闭包

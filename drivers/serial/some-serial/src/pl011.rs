@@ -2,13 +2,17 @@ use core::ptr::NonNull;
 
 use rdif_serial::{
     Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
-    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartInfo, UartIrq, UartParts, UartPort,
+    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq,
+    UartParts, UartPort, UartRegisterGuard,
 };
 use tock_registers::{
     LocalRegisterCopy, interfaces::*, register_bitfields, register_structs, registers::*,
 };
 
 use crate::{PollingUart, SerialDirection, SerialEvent, TransBytesError, TransferError};
+
+const BUSY_POLL_BUDGET: usize = 1 << 20;
+const EMERGENCY_TX_BUDGET: usize = 16;
 
 register_bitfields! [
     u32,
@@ -214,9 +218,13 @@ impl Pl011 {
         // IBRD = integer(BAUDDIV)
         // FBRD = integer((BAUDDIV - IBRD) * 64 + 0.5)
 
-        let bauddiv = self.clock_freq / (16 * baudrate);
-        let remainder = self.clock_freq % (16 * baudrate);
-        let fbrd = (remainder * 64 + (16 * baudrate / 2)) / (16 * baudrate);
+        let scaled_baudrate = baudrate
+            .checked_mul(16)
+            .filter(|scaled| *scaled != 0)
+            .ok_or(ConfigError::InvalidBaudrate)?;
+        let bauddiv = self.clock_freq / scaled_baudrate;
+        let remainder = self.clock_freq % scaled_baudrate;
+        let fbrd = (remainder * 64 + (scaled_baudrate / 2)) / scaled_baudrate;
 
         if bauddiv == 0 || bauddiv > 0xFFFF {
             return Err(ConfigError::InvalidBaudrate);
@@ -230,6 +238,16 @@ impl Pl011 {
             .write(UARTFBRD::BAUD_DIVFRAC.val(fbrd));
 
         Ok(())
+    }
+
+    fn wait_until_not_busy(&self) -> Result<(), ConfigError> {
+        for _ in 0..BUSY_POLL_BUDGET {
+            if !self.registers().uartfr.is_set(UARTFR::BUSY) {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+        Err(ConfigError::Timeout)
     }
 
     fn set_data_bits_internal(&self, bits: DataBits) -> Result<(), ConfigError> {
@@ -289,13 +307,16 @@ impl Pl011 {
     }
 
     /// 初始化 PL011 UART
-    pub fn open(&mut self) {
+    pub fn open(&mut self) -> Result<(), ConfigError> {
+        let original_cr = self.registers().uartcr.get();
+
         // 禁用 UART
         self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR);
 
         // 等待当前传输完成
-        while self.registers().uartfr.is_set(UARTFR::BUSY) {
-            core::hint::spin_loop();
+        if let Err(error) = self.wait_until_not_busy() {
+            self.registers().uartcr.set(original_cr);
+            return Err(error);
         }
 
         // 清除发送 FIFO
@@ -319,6 +340,7 @@ impl Pl011 {
         self.registers()
             .uartcr
             .modify(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
+        Ok(())
     }
 
     pub fn set_irq_mask(&mut self, events: SerialEventSet) {
@@ -604,6 +626,33 @@ pub struct Pl011Irq {
     saved_rx_status: Pl011RxStatus,
 }
 
+/// Restricted non-blocking TX view used only for emergency output.
+pub struct Pl011EmergencyTx {
+    base: Reg,
+}
+
+impl Pl011EmergencyTx {
+    fn registers(&self) -> &Pl011Registers {
+        // SAFETY: `base` points at the mapped PL011 register block. This view
+        // exposes only the TX FIFO readiness and data registers.
+        unsafe { &*self.base.0.as_ptr() }
+    }
+}
+
+impl UartEmergencyTx for Pl011EmergencyTx {
+    fn try_write(&self, _access: &UartRegisterGuard<'_>, bytes: &[u8]) -> usize {
+        let mut written = 0;
+        for &byte in bytes.iter().take(EMERGENCY_TX_BUDGET) {
+            if self.registers().uartfr.is_set(UARTFR::TXFF) {
+                break;
+            }
+            self.registers().uartdr.set(byte as u32);
+            written += 1;
+        }
+        written
+    }
+}
+
 impl Pl011Irq {
     fn registers(&self) -> &Pl011Registers {
         // SAFETY: `base` points at the mapped PL011 register block. The IRQ
@@ -662,7 +711,7 @@ impl UartIrq for Pl011Irq {
 
 impl UartPort for Pl011 {
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
-        self.open();
+        self.open()?;
         self.set_config(config)?;
         self.mask_all();
         Ok(())
@@ -674,16 +723,26 @@ impl UartPort for Pl011 {
     }
 
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        use tock_registers::interfaces::Readable;
+        if let Some(baudrate) = config.baudrate {
+            let scaled_baudrate = baudrate
+                .checked_mul(16)
+                .filter(|scaled| *scaled != 0)
+                .ok_or(ConfigError::InvalidBaudrate)?;
+            let bauddiv = self.clock_freq / scaled_baudrate;
+            if bauddiv == 0 || bauddiv > 0xFFFF {
+                return Err(ConfigError::InvalidBaudrate);
+            }
+        }
 
         // 根据ARM文档的建议配置流程：
         // 1. 禁用UART
-        let original_cr = self.registers().uartcr.extract(); // 保存原始使能状态
+        let original_cr = self.registers().uartcr.get(); // 保存原始使能状态
         self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR); // 禁用UART
 
         // 2. 等待当前字符传输完成
-        while self.registers().uartfr.is_set(UARTFR::BUSY) {
-            core::hint::spin_loop();
+        if let Err(error) = self.wait_until_not_busy() {
+            self.registers().uartcr.set(original_cr);
+            return Err(error);
         }
 
         // 3. 刷新发送FIFO（通过设置FEN=0）
@@ -707,13 +766,7 @@ impl UartPort for Pl011 {
         self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
 
         // 6. 恢复UART使能状态
-        if original_cr.is_set(UARTCR::UARTEN) {
-            self.registers().uartcr.modify(
-                UARTCR::UARTEN.val(original_cr.read(UARTCR::UARTEN))
-                    + UARTCR::TXE.val(original_cr.read(UARTCR::TXE))
-                    + UARTCR::RXE.val(original_cr.read(UARTCR::RXE)),
-            );
-        }
+        self.registers().uartcr.set(original_cr);
 
         Ok(())
     }
@@ -771,6 +824,7 @@ impl UartPort for Pl011 {
 impl SplitUart for Pl011 {
     type Port = Self;
     type Irq = Pl011Irq;
+    type EmergencyTx = Pl011EmergencyTx;
 
     fn runtime_info(&self) -> UartInfo {
         UartInfo {
@@ -780,12 +834,13 @@ impl SplitUart for Pl011 {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq> {
+    fn split(self) -> UartParts<Self::Port, Self::Irq, Self::EmergencyTx> {
         let irq = Pl011Irq {
             base: self.base,
             saved_rx_status: Pl011RxStatus::empty(),
         };
-        UartParts::new(self, irq)
+        let emergency_tx = Pl011EmergencyTx { base: self.base };
+        UartParts::new(self, irq, emergency_tx)
     }
 }
 
@@ -906,6 +961,8 @@ mod tests {
     use core::ptr::NonNull;
     use std::{boxed::Box, vec::Vec};
 
+    use rdif_serial::UartRegisterGate;
+
     use super::*;
 
     #[derive(Default)]
@@ -955,7 +1012,7 @@ mod tests {
         }
     }
 
-    fn started_parts(uart: Pl011) -> UartParts<Pl011, Pl011Irq> {
+    fn started_parts(uart: Pl011) -> UartParts<Pl011, Pl011Irq, Pl011EmergencyTx> {
         let mut parts = uart.split();
         parts.port.startup(&Config::new()).unwrap();
         parts
@@ -1048,6 +1105,33 @@ mod tests {
     }
 
     #[test]
+    fn emergency_tx_returns_immediately_when_the_fifo_is_full() {
+        let (mut regs, uart) = pl011_with_registers();
+        let parts = uart.split();
+        let gate = UartRegisterGate::new();
+        let access = gate.try_enter().unwrap();
+        write_test_reg(&mut regs, 0x018, UARTFR::TXFF::SET.value);
+
+        assert_eq!(parts.emergency_tx.try_write(&access, b"x"), 0);
+
+        write_test_reg(&mut regs, 0x018, 0);
+        assert_eq!(parts.emergency_tx.try_write(&access, b"x"), 1);
+        assert_eq!(regs.uartdr.get() as u8, b'x');
+    }
+
+    #[test]
+    fn emergency_tx_has_a_fixed_write_budget() {
+        let (mut regs, uart) = pl011_with_registers();
+        let parts = uart.split();
+        write_test_reg(&mut regs, 0x018, 0);
+        let bytes = [b'x'; 17];
+        let gate = UartRegisterGate::new();
+        let access = gate.try_enter().unwrap();
+
+        assert_eq!(parts.emergency_tx.try_write(&access, &bytes), 16);
+    }
+
+    #[test]
     fn tx_irq_endpoint_acknowledges_tx_interrupt() {
         let (mut regs, uart) = pl011_with_registers();
         let mut irq = uart.split().irq;
@@ -1079,6 +1163,14 @@ mod tests {
         assert!(cr.is_set(UARTCR::UARTEN));
         assert!(cr.is_set(UARTCR::TXE));
         assert!(cr.is_set(UARTCR::RXE));
+    }
+
+    #[test]
+    fn set_config_times_out_when_transmitter_never_becomes_idle() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        write_test_reg(&mut regs, 0x018, UARTFR::BUSY::SET.value);
+
+        assert_eq!(uart.set_config(&Config::new()), Err(ConfigError::Timeout));
     }
 
     #[test]

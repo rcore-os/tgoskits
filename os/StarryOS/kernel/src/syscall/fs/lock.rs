@@ -33,7 +33,6 @@ use core::ffi::c_int;
 
 use ax_errno::{AxError, AxResult, LinuxError};
 use ax_kspin::SpinRwLock as RwLock;
-use ax_task::current;
 use linux_raw_sys::general::{
     F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_RDLCK, F_SETLK, F_SETLKW, F_UNLCK, F_WRLCK,
     LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY, SEEK_CUR, SEEK_END,
@@ -44,7 +43,7 @@ use starry_process::Pid;
 use crate::{
     file::{File, FileLike, get_file_like},
     mm::UserPtr,
-    task::{AsThread, futex::WaitQueue},
+    task::{current_user_task, futex::WaitQueue},
 };
 
 type InodeKey = (u64, u64); // (device, inode_no)
@@ -207,7 +206,7 @@ fn ofd_addr(arc: &Arc<dyn FileLike>) -> OfdAddr {
 }
 
 fn current_pid() -> Pid {
-    current().as_thread().proc_data.proc.pid()
+    current_user_task().as_thread().proc_data.proc.pid()
 }
 
 /// Resolve `fd` to an inode-keyed lockable file. Returns `EBADF` for fds
@@ -570,7 +569,9 @@ fn try_setlk_once(
 /// (returning `EINTR` per POSIX). When `wait` is false, conflicts return
 /// `EAGAIN` immediately.
 pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> AxResult<isize> {
-    let fl = UserPtr::<flock64>::from(arg).get_as_mut()?;
+    // SAFETY: `flock64` contains only integer ABI fields, so every copied bit
+    // pattern is a valid Rust value before semantic validation below.
+    let fl = unsafe { UserPtr::<flock64>::from(arg).read_abi()? };
     // POSIX.1-2024 / Linux: F_OFD_SETLK{,W} require l_pid to be 0.
     if ofd && fl.l_pid != 0 {
         return Err(AxError::InvalidInput);
@@ -669,7 +670,10 @@ pub fn fcntl_setlk(fd: c_int, arg: usize, ofd: bool, wait: bool) -> AxResult<isi
 /// first conflicting lock, or sets `l_type = F_UNLCK` if the requested
 /// range is free.
 pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> AxResult<isize> {
-    let fl = UserPtr::<flock64>::from(arg).get_as_mut()?;
+    let user_fl = UserPtr::<flock64>::from(arg);
+    // SAFETY: `flock64` contains only integer ABI fields, so every copied bit
+    // pattern is a valid Rust value before semantic validation below.
+    let mut fl = unsafe { user_fl.read_abi()? };
     // POSIX.1-2024 / Linux: F_OFD_GETLK requires l_pid to be 0.
     if ofd && fl.l_pid != 0 {
         return Err(AxError::InvalidInput);
@@ -712,6 +716,7 @@ pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> AxResult<isize> {
     if empty_after {
         table.remove(&key);
     }
+    drop(table);
 
     if let Some((kind, pid, l_start, l_len)) = report {
         fl.l_type = (if kind == LockKind::Read {
@@ -726,7 +731,17 @@ pub fn fcntl_getlk(fd: c_int, arg: usize, ofd: bool) -> AxResult<isize> {
     } else {
         fl.l_type = F_UNLCK as i16;
     }
+    write_flock64_outputs(user_fl, &fl)?;
     Ok(0)
+}
+
+fn write_flock64_outputs(user_fl: UserPtr<flock64>, fl: &flock64) -> AxResult<()> {
+    let base = user_fl.address().as_usize();
+    UserPtr::<i16>::from(base + core::mem::offset_of!(flock64, l_type)).write(fl.l_type)?;
+    UserPtr::<i16>::from(base + core::mem::offset_of!(flock64, l_whence)).write(fl.l_whence)?;
+    UserPtr::<i64>::from(base + core::mem::offset_of!(flock64, l_start)).write(fl.l_start)?;
+    UserPtr::<i64>::from(base + core::mem::offset_of!(flock64, l_len)).write(fl.l_len)?;
+    UserPtr::<i32>::from(base + core::mem::offset_of!(flock64, l_pid)).write(fl.l_pid)
 }
 
 /// Top-level dispatch from `sys_fcntl`. Returns `Some(result)` if `cmd`

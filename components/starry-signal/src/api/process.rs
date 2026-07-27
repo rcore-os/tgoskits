@@ -4,6 +4,7 @@ use alloc::{
 };
 use core::{
     array,
+    mem::{offset_of, size_of},
     ops::{Index, IndexMut},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -11,7 +12,7 @@ use core::{
 use ax_errno::AxResult;
 use ax_kspin::SpinNoIrq;
 use linux_raw_sys::general::kernel_sigaction;
-use starry_vm::{VmMutPtr, VmPtr};
+use starry_vm::{VmPtr, vm_write_slice};
 
 use crate::{PendingSignals, SignalAction, SignalInfo, SignalSet, Signo, api::ThreadSignalManager};
 
@@ -124,7 +125,7 @@ impl ProcessSignalManager {
         // POSIX requires that a signal is queued as pending when:
         //   (a) it is blocked in all threads (sigwaitinfo may dequeue it), OR
         //   (b) a thread is specifically waiting for this signal via
-        //       rt_sigtimedwait/sigwaitinfo (sigwait_set contains signo).
+        //       rt_sigtimedwait/sigwaitinfo (its sigwait state contains signo).
         // In both cases, applying is_ignore() would silently drop the signal
         // and leave sigwaitinfo sleeping forever.
         let (all_blocked, any_sigwait_for_this) = {
@@ -136,7 +137,7 @@ impl ProcessSignalManager {
             let any = children.iter().any(|(_, thread)| {
                 thread
                     .upgrade()
-                    .is_some_and(|t| t.sigwait_set.lock().is_some_and(|s| s.has(signo)))
+                    .is_some_and(|thread| thread.is_sigwait_for(signo))
             });
             (all, any)
         };
@@ -254,8 +255,54 @@ impl ProcessSignalManager {
         };
 
         if let Some(oldact) = oldact.nullable() {
-            oldact.vm_write(old_action.into())?;
+            write_kernel_sigaction(oldact, old_action)?;
         }
         Ok(0)
     }
 }
+
+fn write_kernel_sigaction(oldact: *mut kernel_sigaction, action: SignalAction) -> AxResult<()> {
+    let action: kernel_sigaction = action.into();
+    vm_write_slice(oldact.cast::<usize>(), &kernel_sigaction_words(action))?;
+    Ok(())
+}
+
+#[cfg(sa_restorer)]
+fn kernel_sigaction_words(action: kernel_sigaction) -> [usize; 4] {
+    [
+        action
+            .sa_handler_kernel
+            .map_or(0, |handler| handler as usize),
+        action.sa_flags as usize,
+        action.sa_restorer.map_or(0, |restorer| restorer as usize),
+        action.sa_mask.sig[0] as usize,
+    ]
+}
+
+#[cfg(not(sa_restorer))]
+fn kernel_sigaction_words(action: kernel_sigaction) -> [usize; 3] {
+    [
+        action
+            .sa_handler_kernel
+            .map_or(0, |handler| handler as usize),
+        action.sa_flags as usize,
+        action.sa_mask.sig[0] as usize,
+    ]
+}
+
+#[cfg(sa_restorer)]
+const _: () = {
+    assert!(size_of::<kernel_sigaction>() == 4 * size_of::<usize>());
+    assert!(offset_of!(kernel_sigaction, sa_handler_kernel) == 0);
+    assert!(offset_of!(kernel_sigaction, sa_flags) == size_of::<usize>());
+    assert!(offset_of!(kernel_sigaction, sa_restorer) == 2 * size_of::<usize>());
+    assert!(offset_of!(kernel_sigaction, sa_mask) == 3 * size_of::<usize>());
+};
+
+#[cfg(not(sa_restorer))]
+const _: () = {
+    assert!(size_of::<kernel_sigaction>() == 3 * size_of::<usize>());
+    assert!(offset_of!(kernel_sigaction, sa_handler_kernel) == 0);
+    assert!(offset_of!(kernel_sigaction, sa_flags) == size_of::<usize>());
+    assert!(offset_of!(kernel_sigaction, sa_mask) == 2 * size_of::<usize>());
+};

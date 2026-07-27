@@ -8,7 +8,7 @@ use core::{ffi::c_int, time::Duration};
 
 use ax_errno::{LinuxError, LinuxResult};
 use ax_hal::time::wall_time;
-use ax_sync::Mutex;
+use ax_sync::PiMutex;
 
 use crate::{
     ctypes,
@@ -25,7 +25,7 @@ const EPOLL_SUPPORTED_EVENTS: u32 = EPOLL_RETURN_EVENTS | EPOLL_BEHAVIOR_FLAGS;
 const EPOLL_CREATE1_SUPPORTED_FLAGS: u32 = ctypes::EPOLL_CLOEXEC;
 
 pub struct EpollInstance {
-    events: Mutex<BTreeMap<usize, WatchedEvent>>,
+    events: PiMutex<BTreeMap<usize, WatchedEvent>>,
 }
 
 struct WatchedEvent {
@@ -111,7 +111,7 @@ impl EpollInstance {
     pub fn new(flags: usize) -> LinuxResult<Self> {
         validate_create1_flags(flags)?;
         Ok(Self {
-            events: Mutex::new(BTreeMap::new()),
+            events: PiMutex::new(BTreeMap::new()),
         })
     }
 

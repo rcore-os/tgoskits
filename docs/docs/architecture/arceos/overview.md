@@ -108,7 +108,8 @@ ArceOS 的 17 个模块按重要性分为两类：四个必选模块构成最小
 | `ax-hal` | `modules/axhal` | CPU、内存、时间、中断、页表、TLS、DTB 等硬件抽象 | 平台 crate、`ax-runtime` |
 | `ax-alloc` | `modules/axalloc` | 全局堆分配、DMA 相关地址转换 | `ax-runtime`、`ax-mm` |
 | `ax-mm` | `modules/axmm` | 地址空间、页表、映射后端 | `ax-runtime`、上层内存管理逻辑 |
-| `ax-task` | `modules/axtask` | 调度器、任务创建、等待队列、定时器驱动的 sleep | `ax-runtime`、`ax-sync` |
+| `ax-task` | `components/ax-task` | OS 无关调度、线程句柄、等待队列、timer/PI/task-work | `ax-runtime`、`ax-sync`、`ax-net` |
+| `ax-runtime::task` | `modules/axruntime/src/task.rs` | 栈、TLS、上下文、地址空间、CPU-local 与调度入口 | `ax-task`、`ax-hal` |
 | `ax-sync` | `modules/axsync` | mutex 等同步原语 | `ax-task`、任意并发模块 |
 | `ax-driver` | `modules/axdriver` | 设备探测与驱动初始化 | `ax-fs`、`ax-net`、`ax-display` |
 | `ax-fs` | `modules/axfs` | 文件系统挂载、文件/目录 API | `ax-driver` |

@@ -3,8 +3,13 @@ use loongArch64::register::{
     estat::{self, Exception, Trap},
 };
 
-use super::context::TrapFrame;
+use super::{context::TrapFrame, irq::is_spurious_interrupt};
 use crate::{TrapOrigin, trap::PageFaultFlags};
+
+unsafe extern "C" {
+    fn __axcpu_loongarch_idle_start();
+    fn __axcpu_loongarch_idle_exit();
+}
 
 /// Untrusted register image produced and consumed by trap assembly.
 #[repr(transparent)]
@@ -119,6 +124,14 @@ fn handle_page_fault(tf: &mut KernelTrapFrame<'_>, access_flags: PageFaultFlags)
     );
 }
 
+fn fast_forward_idle_interrupt(tf: &mut KernelTrapFrame<'_>) {
+    let idle_start = __axcpu_loongarch_idle_start as *const () as usize;
+    let idle_exit = __axcpu_loongarch_idle_exit as *const () as usize;
+    if (idle_start..idle_exit).contains(&tf.ip()) {
+        tf.set_ip(idle_exit);
+    }
+}
+
 #[unsafe(no_mangle)]
 unsafe extern "C" fn loongarch64_trap_handler(raw: *mut RawTrapFrame) {
     // SAFETY: trap.S passes a complete aligned frame on the current kernel
@@ -126,8 +139,14 @@ unsafe extern "C" fn loongarch64_trap_handler(raw: *mut RawTrapFrame) {
     let raw = unsafe { &mut *raw };
     let mut tf = unsafe { KernelTrapFrame::from_raw(raw) };
     let estat = estat::read();
+    let cause = estat.cause();
+    let spurious_interrupt = is_spurious_interrupt(&estat);
 
-    match estat.cause() {
+    if matches!(cause, Trap::Interrupt(_)) || spurious_interrupt {
+        fast_forward_idle_interrupt(&mut tf);
+    }
+
+    match cause {
         Trap::Exception(Exception::LoadPageFault)
         | Trap::Exception(Exception::PageNonReadableFault) => {
             handle_page_fault(&mut tf, PageFaultFlags::READ)
@@ -150,6 +169,9 @@ unsafe extern "C" fn loongarch64_trap_handler(raw: *mut RawTrapFrame) {
         Trap::Interrupt(_) => {
             let irq_num: usize = estat.is().trailing_zeros() as usize;
             crate::trap::dispatch_irq(irq_num);
+        }
+        Trap::Unknown if spurious_interrupt => {
+            trace!("ignored LoongArch interrupt whose source was already deasserted");
         }
         trap => {
             let snapshot = tf.snapshot();

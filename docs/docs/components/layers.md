@@ -158,7 +158,7 @@ flowchart TB
 | 6 | 堆叠层 | 组件层 | `x86_vcpu` | `0.5.0` | `virtualization/x86_vcpu` |
 | 7 | 堆叠层 | ArceOS 层 | `ax-ipi` | `0.5.0` | `os/arceos/modules/axipi` |
 | 7 | 堆叠层 | ArceOS 层 | `ax-mm` | `0.5.0` | `os/arceos/modules/axmm` |
-| 7 | 堆叠层 | ArceOS 层 | `ax-task` | `0.5.0` | `os/arceos/modules/axtask` |
+| 1 | 叶子层 | 组件层 | `ax-task` | `0.7.0` | `components/ax-task` |
 | 7 | 堆叠层 | 组件层 | `axvm` | `0.5.0` | `virtualization/axvm` |
 | 8 | 堆叠层 | ArceOS 层 | `ax-sync` | `0.5.0` | `os/arceos/modules/axsync` |
 | 9 | 堆叠层 | ArceOS 层 | `ax-driver` | `0.5.0` | `drivers/ax-driver` |
