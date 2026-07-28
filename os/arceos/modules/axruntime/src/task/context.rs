@@ -364,7 +364,7 @@ fn resolve_address_space_root(address_space: AddressSpaceHandle) -> usize {
     if cfg!(any(target_arch = "x86_64", target_arch = "riscv64")) {
         // SAFETY: callers retain the scheduler baton or an IRQ guard, and every
         // CPU publishes this immutable root before coming online.
-        unsafe { with_current_cpu_pin(|pin| super::KERNEL_ADDRESS_SPACE_ROOT.read_current(pin)) }
+        unsafe { with_current_cpu_pin(super::bootstrap::kernel_address_space_root) }
     } else {
         // AArch64 and LoongArch have distinct kernel roots; zero disables the
         // lower/user translation root without disturbing kernel mappings.
