@@ -2,29 +2,28 @@
 
 use core::{
     pin::pin,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use ax_kernel_guard::NoPreempt as PreemptGuard;
 use ax_kspin::SpinNoIrq;
 use ax_task::{
-    PiLockId, PiLockIdentity, PiWaitToken, TaskError, ThreadHandle, ThreadId, ThreadWakeHandle,
-    current_thread_handle, current_thread_id, pi_block_current, pi_mutex_handoff, pi_wait_cancel,
-    pi_wait_start, pi_wake, validate_blocking_context,
+    PiLockId, PiLockIdentity, PiWaitToken, TaskError, ThreadHandle, ThreadId,
+    current_thread_handle, current_thread_id, pi_block_current, pi_wait_start, pi_wake,
+    prepare_pi_mutex_handoff, validate_blocking_context,
 };
 
 use crate::pi::{WaiterNode, WaiterPointer, WaiterQueue};
 
 /// A non-recursive, urgency-ordered PI mutex implementing `lock_api::RawMutex`.
 ///
-/// Only owner and waiter-list metadata is protected by [`SpinNoIrq`]. Every
-/// donation, block, scheduler request, handoff, and targeted wake occurs after
-/// that metadata guard has been released.
+/// Owner, waiter-list, donation registration, and handoff are serialized by
+/// [`SpinNoIrq`]. Blocking and targeted wake happen after that metadata guard
+/// has been released.
 pub struct RawMutex {
     metadata: SpinNoIrq<MutexMetadata>,
     identity: PiLockIdentity,
     next_waiter_sequence: AtomicU64,
-    pending_registrations: AtomicUsize,
     #[cfg(feature = "lockdep")]
     pub(crate) lockdep: crate::lockdep::LockdepMap,
 }
@@ -32,27 +31,12 @@ pub struct RawMutex {
 #[derive(Debug)]
 struct MutexMetadata {
     owner: Option<ThreadId>,
-    owner_registered: bool,
     waiters: WaiterQueue,
 }
 
-enum LockAttempt<'mutex> {
+enum LockAttempt {
     Acquired,
-    Retry,
-    WaitFor(PendingRegistration<'mutex>),
-}
-
-struct PendingRegistration<'mutex> {
-    mutex: &'mutex RawMutex,
-    owner: ThreadId,
-    _preempt_guard: PreemptGuard,
-}
-
-struct Handoff {
-    old_owner: ThreadId,
-    selected: Option<WaiterPointer>,
-    next_owner: Option<ThreadId>,
-    _preempt_guard: PreemptGuard,
+    Contended,
 }
 
 #[cfg(not(feature = "lockdep"))]
@@ -94,7 +78,6 @@ impl RawMutex {
             metadata: SpinNoIrq::new(MutexMetadata::new()),
             identity: PiLockIdentity::new(),
             next_waiter_sequence: AtomicU64::new(0),
-            pending_registrations: AtomicUsize::new(0),
             #[cfg(feature = "lockdep")]
             lockdep: crate::lockdep::LockdepMap::new(),
         }
@@ -118,16 +101,11 @@ impl RawMutex {
         loop {
             match self.try_or_observe_owner(current) {
                 LockAttempt::Acquired => return,
-                LockAttempt::Retry => core::hint::spin_loop(),
-                LockAttempt::WaitFor(registration) => {
+                LockAttempt::Contended => {
                     if !blocking_context_validated {
                         // The uncontended path neither publishes a waiter nor
-                        // schedules and must remain usable during single-threaded
-                        // boot. A contended observation temporarily closes the
-                        // owner-registration gate; roll it back before applying
-                        // the scheduler's might-sleep contract, then retry from
-                        // fresh ownership state after validation.
-                        drop(registration);
+                        // schedules and must remain usable during
+                        // single-threaded boot.
                         task_result(
                             validate_blocking_context(),
                             "validate PI mutex sleep context",
@@ -135,14 +113,14 @@ impl RawMutex {
                         blocking_context_validated = true;
                         continue;
                     }
-                    self.lock_contended(current, registration);
+                    self.lock_contended(current);
                     return;
                 }
             }
         }
     }
 
-    fn lock_contended(&self, current: ThreadId, registration: PendingRegistration<'_>) {
+    fn lock_contended(&self, current: ThreadId) {
         let current_handle = current_thread("register PI mutex waiter");
         assert_eq!(
             current_handle.id(),
@@ -156,117 +134,50 @@ impl RawMutex {
             sequence,
             current_handle.clone(),
         ));
-        let mut pending_registration = Some(registration);
-
-        loop {
-            let registration = match pending_registration.take() {
-                Some(registration) => registration,
-                None => match self.try_or_observe_owner(current) {
-                    LockAttempt::Acquired => return,
-                    LockAttempt::Retry => {
-                        core::hint::spin_loop();
-                        continue;
-                    }
-                    LockAttempt::WaitFor(registration) => registration,
-                },
+        let token = {
+            let mut metadata = self.metadata.lock();
+            let owner = match metadata.owner {
+                None => {
+                    metadata.owner = Some(current);
+                    return;
+                }
+                Some(owner) if owner == current => {
+                    panic!("thread attempted recursive PI mutex acquisition")
+                }
+                Some(owner) => owner,
             };
-            if let Some(token) =
-                self.register_waiter(&current_handle, waiter.as_ref(), registration)
-            {
-                self.wait_for_handoff(&waiter, token);
-                return;
-            }
-        }
+            let token = task_result(pi_wait_start(self.lock_id(), owner), "start PI mutex wait");
+            // SAFETY: the scheduler donation and local queue publication share
+            // this metadata transaction, and the lock call keeps the stack
+            // node pinned until handoff removes it.
+            unsafe { metadata.waiters.insert(waiter.as_ref()) };
+            token
+        };
+        self.wait_for_handoff(&waiter, token);
     }
 
-    fn try_or_observe_owner<'mutex>(&'mutex self, current: ThreadId) -> LockAttempt<'mutex> {
+    fn wait_for_handoff(&self, waiter: &core::pin::Pin<&mut WaiterNode>, token: PiWaitToken) {
+        if !token.is_granted() {
+            task_result(pi_block_current(&token), "block on PI mutex");
+        }
+        assert!(
+            waiter.is_granted(),
+            "scheduler PI grant became visible before local mutex ownership"
+        );
+    }
+
+    fn try_or_observe_owner(&self, current: ThreadId) -> LockAttempt {
         let mut metadata = self.metadata.lock();
         match metadata.owner {
             None => {
                 metadata.owner = Some(current);
-                metadata.owner_registered = true;
                 LockAttempt::Acquired
             }
             Some(owner) if owner == current => {
                 panic!("thread attempted recursive PI mutex acquisition")
             }
-            Some(_) if !metadata.owner_registered => LockAttempt::Retry,
-            Some(owner) => LockAttempt::WaitFor(self.begin_pending_registration(owner)),
+            Some(_) => LockAttempt::Contended,
         }
-    }
-
-    fn begin_pending_registration(&self, owner: ThreadId) -> PendingRegistration<'_> {
-        // The metadata lock already disables preemption. Retain one nested
-        // guard after that lock is released so a same-CPU owner cannot preempt
-        // this waiter and spin forever waiting for its registration to finish.
-        let preempt_guard = PreemptGuard::new();
-        let result =
-            self.pending_registrations
-                .try_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
-                    pending.checked_add(1)
-                });
-        assert!(result.is_ok(), "PI waiter registration count overflowed");
-        PendingRegistration {
-            mutex: self,
-            owner,
-            _preempt_guard: preempt_guard,
-        }
-    }
-
-    fn register_waiter(
-        &self,
-        current: &ThreadHandle,
-        waiter: core::pin::Pin<&WaiterNode>,
-        registration: PendingRegistration<'_>,
-    ) -> Option<PiWaitToken> {
-        self.register_waiter_after(current, waiter, registration, || {})
-    }
-
-    fn register_waiter_after(
-        &self,
-        current: &ThreadHandle,
-        waiter: core::pin::Pin<&WaiterNode>,
-        registration: PendingRegistration<'_>,
-        after_registration: impl FnOnce(),
-    ) -> Option<PiWaitToken> {
-        let owner = registration.owner;
-        let token = match pi_wait_start(self.lock_id(), owner) {
-            Ok(token) => token,
-            // Ownership changed between observing metadata and registering the
-            // scheduler donation. No local waiter pointer was published yet,
-            // so retry against the new owner.
-            Err(TaskError::InvalidPiState) => return None,
-            Err(error) => panic!("start PI mutex wait failed: {error}"),
-        };
-        after_registration();
-
-        let inserted = {
-            let mut metadata = self.metadata.lock();
-            if metadata.owner == Some(owner) && metadata.owner_registered && current.id() != owner {
-                // SAFETY: scheduler donation is already registered, `lock_pi`
-                // keeps this stack node pinned until handoff, and the metadata
-                // guard exclusively owns the intrusive list.
-                unsafe { metadata.waiters.insert(waiter) };
-                true
-            } else {
-                false
-            }
-        };
-        if inserted {
-            Some(token)
-        } else {
-            task_result(pi_wait_cancel(token), "cancel overtaken PI mutex wait");
-            None
-        }
-    }
-
-    fn wait_for_handoff(&self, waiter: &core::pin::Pin<&mut WaiterNode>, token: PiWaitToken) {
-        if token.is_granted() {
-            wait_for_local_grant(waiter);
-            return;
-        }
-        task_result(pi_block_current(&token), "block on PI mutex");
-        wait_for_local_grant(waiter);
     }
 
     fn try_lock_pi(&self) -> bool {
@@ -276,116 +187,56 @@ impl RawMutex {
             return false;
         }
         metadata.owner = Some(current);
-        metadata.owner_registered = true;
         true
     }
 
     fn unlock_pi(&self) {
         let current = current_thread_identity("unlock PI mutex");
-
-        let mut handoff = self.prepare_handoff(current);
-        let wake = if handoff.next_owner.is_some() {
-            // A selected waiter may observe its scheduler token immediately
-            // after handoff, so publish local ownership and the stack-pinned
-            // grant before making that token visible.
-            let wake = self.publish_local_handoff(&mut handoff);
-            task_result(
-                pi_mutex_handoff(self.lock_id(), handoff.old_owner, handoff.next_owner),
-                "complete PI mutex handoff",
-            );
-            wake
-        } else {
-            // Uncontended ownership never enters the scheduler PI graph, so a
-            // local release is the complete fast path.
-            self.publish_local_handoff(&mut handoff)
-        };
-        if let Some(wake) = wake {
-            task_result(pi_wake(&wake), "wake selected PI mutex waiter");
-        }
-    }
-
-    fn prepare_handoff(&self, current: ThreadId) -> Handoff {
-        // Keep the current owner running from closing the waiter-registration
-        // gate through scheduler and local ownership publication. Otherwise a
-        // same-CPU contender can preempt here and spin on the closed gate,
-        // preventing this owner from completing the handoff.
-        let preempt_guard = PreemptGuard::new();
-        let head = self.freeze_waiter_list(current);
-        let selected = select_most_urgent_waiter(head);
-        let next_owner = selected.as_ref().map(|waiter| {
-            // SAFETY: the selected waiter remains pinned and cannot leave its
-            // lock call frame before `publish_handoff` grants it.
-            unsafe { waiter.thread_id() }
-        });
-
-        let mut metadata = self.metadata.lock();
-        assert_eq!(metadata.owner, Some(current));
-        assert!(!metadata.owner_registered);
-        let selected = selected.map(|waiter| {
-            metadata
-                .waiters
-                .remove(&waiter)
-                .expect("frozen PI waiter must remain queued")
-        });
-        metadata.owner = next_owner.or(Some(current));
-        Handoff {
-            old_owner: current,
-            selected,
-            next_owner,
-            _preempt_guard: preempt_guard,
-        }
-    }
-
-    fn freeze_waiter_list(&self, current: ThreadId) -> Option<WaiterPointer> {
-        {
+        // Linux retains preemption exclusion from owner deboost through the
+        // deferred wake. This prevents an unrelated task from running between
+        // lowering the old owner and making its top donor runnable.
+        let _preempt_guard = PreemptGuard::new();
+        let wake = {
             let mut metadata = self.metadata.lock();
             assert_eq!(
                 metadata.owner,
                 Some(current),
                 "thread attempted to unlock a PI mutex it does not own"
             );
-            assert!(
-                metadata.owner_registered,
-                "unregistered PI mutex owner unlocked"
+            let selected = select_most_urgent_waiter(metadata.waiters.head());
+            let Some(selected) = selected else {
+                metadata.owner = None;
+                return;
+            };
+            let next_owner = unsafe {
+                // SAFETY: the selected waiter remains pinned until this
+                // transaction publishes both local and scheduler grant.
+                selected.thread_id()
+            };
+            let scheduler_handoff = task_result(
+                prepare_pi_mutex_handoff(self.lock_id(), current, Some(next_owner)),
+                "prepare PI mutex handoff",
             );
-            // Closing this gate while holding metadata prevents any later
-            // waiter from entering the scheduler registration window.
-            metadata.owner_registered = false;
-        }
-        while self.pending_registrations.load(Ordering::Acquire) != 0 {
-            core::hint::spin_loop();
-        }
-        let metadata = self.metadata.lock();
-        assert_eq!(metadata.owner, Some(current));
-        assert!(!metadata.owner_registered);
-        metadata.waiters.head()
-    }
-
-    fn publish_local_handoff(&self, handoff: &mut Handoff) -> Option<ThreadWakeHandle> {
-        {
-            let mut metadata = self.metadata.lock();
-            match handoff.next_owner {
-                Some(next) => {
-                    assert_eq!(metadata.owner, Some(next));
-                    metadata.owner_registered = true;
-                }
-                None => {
-                    assert_eq!(metadata.owner, Some(handoff.old_owner));
-                    metadata.owner = None;
-                    metadata.owner_registered = true;
-                }
+            let selected = metadata
+                .waiters
+                .remove(&selected)
+                .expect("selected PI waiter must remain queued");
+            metadata.owner = Some(next_owner);
+            let wake = unsafe {
+                // SAFETY: local ownership must precede scheduler token grant,
+                // and this pinned node cannot leave its lock call until it
+                // observes the grant.
+                selected.grant();
+                selected.wake_handle()
             }
-        }
-
-        handoff.selected.take().map(|waiter| {
-            // SAFETY: handoff has completed before grant, and the waiter cannot
-            // leave its pinned frame until this Release store is observed.
-            unsafe {
-                waiter.grant();
-                waiter.wake_handle()
-            }
-            .expect("production PI waiters always carry a wake handle")
-        })
+            .expect("production PI waiters always carry a wake handle");
+            // SAFETY: metadata still owns the local transaction, `next_owner`
+            // and the local waiter grant are published above, and the selected
+            // waiter remains pinned until the deferred wake is observed.
+            unsafe { scheduler_handoff.commit_after_local_handoff() };
+            wake
+        };
+        task_result(pi_wake(&wake), "wake selected PI mutex waiter");
     }
 
     #[cfg(feature = "lockdep")]
@@ -406,22 +257,10 @@ impl RawMutex {
     }
 }
 
-impl Drop for PendingRegistration<'_> {
-    fn drop(&mut self) {
-        let result = self.mutex.pending_registrations.try_update(
-            Ordering::Release,
-            Ordering::Relaxed,
-            |pending| pending.checked_sub(1),
-        );
-        assert!(result.is_ok(), "PI waiter registration count underflowed");
-    }
-}
-
 impl MutexMetadata {
     const fn new() -> Self {
         Self {
             owner: None,
-            owner_registered: true,
             waiters: WaiterQueue::new(),
         }
     }
@@ -494,8 +333,8 @@ fn select_most_urgent_waiter(head: Option<WaiterPointer>) -> Option<WaiterPointe
     let mut current = head;
     let mut selected: Option<(WaiterPointer, (ax_task::SchedulingUrgency, u64))> = None;
     while let Some(waiter) = current {
-        // SAFETY: `freeze_waiter_list` prevents enqueue/removal and every
-        // blocked waiter remains pinned until handoff publishes grant.
+        // SAFETY: the metadata lock prevents enqueue/removal and every blocked
+        // waiter remains pinned until handoff publishes grant.
         let (key, next) = unsafe { (waiter.effective_ordering_key(), waiter.next()) };
         if selected
             .as_ref()
@@ -506,12 +345,6 @@ fn select_most_urgent_waiter(head: Option<WaiterPointer>) -> Option<WaiterPointe
         current = next;
     }
     selected.map(|(waiter, _)| waiter)
-}
-
-fn wait_for_local_grant(waiter: &core::pin::Pin<&mut WaiterNode>) {
-    while !waiter.is_granted() {
-        core::hint::spin_loop();
-    }
 }
 
 /// A safe PI mutex using [`RawMutex`].
@@ -538,7 +371,6 @@ mod tests {
     fn metadata_starts_unowned_and_ready() {
         let metadata = MutexMetadata::new();
         assert_eq!(metadata.owner, None);
-        assert!(metadata.owner_registered);
         assert!(metadata.waiters.is_empty());
     }
 
@@ -566,15 +398,10 @@ mod tests {
     }
 
     #[test]
-    fn pending_waiter_registration_disables_preemption_until_publication_finishes() {
-        let _runtime = crate::test_runtime::install(0, 0);
+    fn pi_identity_stays_stable_for_one_mutex_lifetime() {
         let raw = RawMutex::new();
-        let registration = raw.begin_pending_registration(ThreadId::from_parts(1, 1));
 
-        assert_eq!(crate::test_runtime::preempt_depth(), 1);
-        drop(registration);
-        assert_eq!(crate::test_runtime::preempt_depth(), 0);
-        crate::test_runtime::clear();
+        assert_eq!(raw.lock_id(), raw.lock_id());
     }
 
     #[test]
@@ -593,31 +420,7 @@ mod tests {
         assert_eq!(crate::test_runtime::preempt_depth(), 0);
         let metadata = raw.metadata.lock();
         assert_eq!(metadata.owner, Some(current.id()));
-        assert!(metadata.owner_registered);
         drop(metadata);
-        crate::test_runtime::clear();
-    }
-
-    #[test]
-    fn owner_handoff_disables_preemption_until_local_publication() {
-        let (system, cpu) = install_current_thread();
-        let _runtime = crate::test_runtime::install(
-            (&*system as *const TaskSystem).expose_provenance(),
-            (cpu.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
-        );
-        let raw = RawMutex::new();
-        let current = current_thread("test PI handoff publication");
-        {
-            let mut metadata = raw.metadata.lock();
-            metadata.owner = Some(current.id());
-            metadata.owner_registered = true;
-        }
-
-        let handoff = raw.prepare_handoff(current.id());
-
-        assert_eq!(crate::test_runtime::preempt_depth(), 1);
-        drop(handoff);
-        assert_eq!(crate::test_runtime::preempt_depth(), 0);
         crate::test_runtime::clear();
     }
 
@@ -647,23 +450,35 @@ mod tests {
         {
             let mut metadata = raw.metadata.lock();
             metadata.owner = Some(owner.id());
-            metadata.owner_registered = true;
             // SAFETY: this pinned waiter remains live until the test removes it
-            // through the handoff prepared below.
+            // through the handoff below.
             unsafe { metadata.waiters.insert(waiter.as_ref()) };
         }
 
-        let mut handoff = raw.prepare_handoff(owner.id());
-        let _wake = raw.publish_local_handoff(&mut handoff);
+        let preempt_guard = PreemptGuard::new();
+        let mut metadata = raw.metadata.lock();
+        let selected = select_most_urgent_waiter(metadata.waiters.head()).unwrap();
+        let handoff = system
+            .prepare_pi_mutex_handoff(raw.lock_id(), owner.id(), Some(waiter_thread.id()))
+            .unwrap();
+        let selected = metadata.waiters.remove(&selected).unwrap();
+        metadata.owner = Some(waiter_thread.id());
+        // SAFETY: this pinned test waiter remains live through the complete
+        // scheduler transaction.
+        unsafe { selected.grant() };
         assert!(waiter.is_granted());
         assert!(!token.is_granted());
-        system
-            .pi_mutex_handoff(raw.lock_id(), owner.id(), Some(waiter_thread.id()))
-            .unwrap();
+        assert!(crate::test_runtime::preempt_depth() > 0);
+        // SAFETY: local owner and waiter grant were published above while both
+        // the mutex metadata and scheduler transaction remain locked.
+        unsafe { handoff.commit_after_local_handoff() };
+        drop(metadata);
+        drop(preempt_guard);
 
         assert!(token.is_granted());
         assert!(waiter.is_granted());
-        drop(handoff);
+        assert_eq!(raw.metadata.lock().owner, Some(waiter_thread.id()));
+        assert_eq!(crate::test_runtime::preempt_depth(), 0);
         crate::test_runtime::clear();
     }
 
@@ -682,7 +497,6 @@ mod tests {
         {
             let mut metadata = raw.metadata.lock();
             metadata.owner = Some(owner.id());
-            metadata.owner_registered = true;
         }
 
         raw.unlock_pi();
@@ -749,7 +563,6 @@ mod tests {
         {
             let mut metadata = raw.metadata.lock();
             metadata.owner = Some(owner.id());
-            metadata.owner_registered = true;
         }
         crate::test_runtime::set_schedule_context_safe(false);
 
@@ -758,7 +571,6 @@ mod tests {
         }));
 
         assert!(result.is_err());
-        assert_eq!(raw.pending_registrations.load(Ordering::Acquire), 0);
         assert!(raw.metadata.lock().waiters.is_empty());
         assert_eq!(crate::test_runtime::preempt_depth(), 0);
         crate::test_runtime::clear();
@@ -782,62 +594,6 @@ mod tests {
         // this test thread.
         unsafe { lock_api::RawMutex::unlock(&raw) };
         assert_eq!(crate::test_runtime::preempt_depth(), 0);
-        crate::test_runtime::clear();
-    }
-
-    #[test]
-    fn unlock_overtaking_donation_registration_retries_without_stale_waiter() {
-        let (system, cpu) = install_current_thread();
-        let _runtime = crate::test_runtime::install(
-            (&*system as *const TaskSystem).expose_provenance(),
-            (cpu.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
-        );
-        let raw = RawMutex::new();
-        let waiter_thread = current_thread("test PI waiter");
-        let owner = system
-            .create_thread(ThreadSpec::new(SchedulePolicy::default()))
-            .unwrap();
-        {
-            let mut metadata = raw.metadata.lock();
-            metadata.owner = Some(owner.id());
-            metadata.owner_registered = true;
-        }
-        let waiter = pin!(WaiterNode::new(
-            waiter_thread.id(),
-            waiter_thread.effective_scheduling_urgency(),
-            0,
-            waiter_thread.clone(),
-        ));
-
-        let registration = {
-            let metadata = raw.metadata.lock();
-            assert_eq!(metadata.owner, Some(owner.id()));
-            assert!(metadata.owner_registered);
-            raw.begin_pending_registration(owner.id())
-        };
-        let token =
-            raw.register_waiter_after(&waiter_thread, waiter.as_ref(), registration, || {
-                raw.metadata.lock().owner_registered = false;
-            });
-
-        assert!(token.is_none());
-        assert_eq!(raw.pending_registrations.load(Ordering::Acquire), 0);
-        assert_eq!(crate::test_runtime::preempt_depth(), 0);
-        system
-            .pi_mutex_handoff(raw.lock_id(), owner.id(), None)
-            .unwrap();
-        {
-            let mut metadata = raw.metadata.lock();
-            metadata.owner = None;
-            metadata.owner_registered = true;
-            assert_eq!(metadata.owner, None);
-            assert!(metadata.owner_registered);
-            assert!(metadata.waiters.is_empty());
-        }
-        lock_api::RawMutex::lock(&raw);
-        assert!(raw.is_owned_by_current());
-        // SAFETY: this test owns the raw acquisition immediately above.
-        unsafe { lock_api::RawMutex::unlock(&raw) };
         crate::test_runtime::clear();
     }
 

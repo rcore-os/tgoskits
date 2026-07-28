@@ -159,20 +159,19 @@ impl WaiterQueue {
         Some(WaiterPointer(head))
     }
 
-    /// Returns the current head while the owner transition freezes insertion.
+    /// Returns the current head while the caller holds the metadata lock.
     pub(crate) fn head(&self) -> Option<WaiterPointer> {
         self.head.map(WaiterPointer)
     }
 
     /// Removes a previously selected waiter.
     ///
-    /// The caller must hold the metadata lock and must have frozen insertion by
-    /// clearing `owner_registered` before selecting this pointer.
+    /// The caller must hold the metadata lock across selection and removal.
     pub(crate) fn remove(&mut self, selected: &WaiterPointer) -> Option<WaiterPointer> {
         let mut previous: Option<NonNull<WaiterNode>> = None;
         let mut current = self.head;
         while let Some(current_ptr) = current {
-            // SAFETY: insertion is frozen and all queued nodes stay pinned.
+            // SAFETY: metadata is locked and all queued nodes stay pinned.
             let current_ref = unsafe { current_ptr.as_ref() };
             // SAFETY: the metadata lock is held.
             let next = unsafe { current_ref.next() };
@@ -238,8 +237,8 @@ impl WaiterPointer {
     ///
     /// # Safety
     ///
-    /// The waiter must remain pinned, and enqueue/removal must be frozen while
-    /// the key is sampled outside the metadata lock.
+    /// The waiter must remain pinned, and the metadata lock must exclude
+    /// enqueue/removal while the key is sampled.
     pub(crate) unsafe fn effective_ordering_key(&self) -> (SchedulingUrgency, u64) {
         // SAFETY: forwarded caller contract keeps the waiter alive.
         let node = unsafe { self.node() };
@@ -251,11 +250,11 @@ impl WaiterPointer {
         (urgency, node.sequence)
     }
 
-    /// Advances through the frozen intrusive list.
+    /// Advances through the metadata-locked intrusive list.
     ///
     /// # Safety
     ///
-    /// The waiter list must be frozen and every node must remain pinned.
+    /// The metadata lock must be held and every node must remain pinned.
     pub(crate) unsafe fn next(&self) -> Option<Self> {
         // SAFETY: forwarded caller contract keeps the waiter and list stable.
         unsafe { self.node().next() }.map(Self)
@@ -351,15 +350,11 @@ mod tests {
             .unwrap();
         assert_effective(&owner, fifo_policy(80));
 
-        system
-            .pi_mutex_handoff(high_lock, owner.id(), Some(high_donor.id()))
-            .unwrap();
+        commit_test_handoff(&system, high_lock, owner.id(), high_donor.id());
         assert!(high_wait.is_granted());
         assert_effective(&owner, fifo_policy(20));
 
-        system
-            .pi_mutex_handoff(low_lock, owner.id(), Some(low_donor.id()))
-            .unwrap();
+        commit_test_handoff(&system, low_lock, owner.id(), low_donor.id());
         assert!(low_wait.is_granted());
         assert_effective(&owner, fair_policy());
     }
@@ -439,6 +434,20 @@ mod tests {
 
     fn task_system(cpu_count: usize) -> TaskSystem {
         TaskSystem::new(TaskSystemConfig::new(cpu_count)).unwrap()
+    }
+
+    fn commit_test_handoff(
+        system: &TaskSystem,
+        lock: ax_task::PiLockId,
+        old_owner: ThreadId,
+        next_owner: ThreadId,
+    ) {
+        let handoff = system
+            .prepare_pi_mutex_handoff(lock, old_owner, Some(next_owner))
+            .unwrap();
+        // SAFETY: these scheduler-only tests model local mutex publication as
+        // complete immediately before committing the scheduler transaction.
+        unsafe { handoff.commit_after_local_handoff() };
     }
 
     fn create_thread(system: &TaskSystem, policy: SchedulePolicy) -> ThreadHandle {

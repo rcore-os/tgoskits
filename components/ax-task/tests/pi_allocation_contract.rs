@@ -57,9 +57,12 @@ fn pi_registration_handoff_and_cancel_do_not_allocate() {
     });
     assert_no_alloc(|| system.pi_wait_cancel(cancelled_wait).unwrap());
     assert_no_alloc(|| {
-        system
-            .pi_mutex_handoff(lock, owner.id(), Some(selected.id()))
-            .unwrap()
+        let handoff = system
+            .prepare_pi_mutex_handoff(lock, owner.id(), Some(selected.id()))
+            .unwrap();
+        // SAFETY: this scheduler-level test models the local mutex ownership
+        // publication as complete immediately before scheduler commit.
+        unsafe { handoff.commit_after_local_handoff() };
     });
     assert!(selected_wait.is_granted());
 }

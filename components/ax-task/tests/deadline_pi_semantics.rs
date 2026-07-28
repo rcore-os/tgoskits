@@ -36,9 +36,12 @@ fn pi_orders_equal_relative_deadlines_by_the_active_absolute_job_deadline() {
         Some(early.id())
     );
 
-    system
-        .pi_mutex_handoff(lock, owner.id(), Some(early.id()))
+    let handoff = system
+        .prepare_pi_mutex_handoff(lock, owner.id(), Some(early.id()))
         .unwrap();
+    // SAFETY: this scheduler-level test models the local mutex ownership
+    // publication as complete immediately before scheduler commit.
+    unsafe { handoff.commit_after_local_handoff() };
     assert!(early_wait.is_granted());
     assert!(!late_wait.is_granted());
     assert_eq!(system.deadline_runtime(early.id()).unwrap().donor(), None);

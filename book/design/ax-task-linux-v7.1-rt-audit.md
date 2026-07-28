@@ -112,8 +112,26 @@ PI lock identity no longer comes from the `RawMutex` address. Each physical
 lock owns a lazy `PiLockIdentity` whose process-wide generation is never
 reused, so reconstructing a lock in the same storage cannot make a stale
 scheduler edge match the new instance. This closes the address-reuse ABA half
-of the PI finding; waiter registration, handoff, cancellation, and lock
-quiescence remain part of the PI transaction stage.
+of the PI finding. Registration, handoff, cancellation, and quiescence are
+tracked separately because identity alone cannot make their publication safe.
+
+PI handoff now follows the transaction boundary used by Linux
+`mark_wakeup_next_waiter()` and `rt_mutex_slowunlock()`. Ax-sync holds its local
+metadata gate while ax-task validates and retains the scheduler-registry
+transaction. All fallible graph reads and generation checks happen before the
+local owner or waiter grant changes. Ax-sync then publishes local ownership,
+commits the already validated scheduler transition, releases both raw gates,
+and only then performs the targeted wake while retaining preemption exclusion.
+A dropped preparation changes neither state source.
+
+Registration uses the same `mutex metadata -> task-system registry` lock order
+as handoff. The old pending-registration counter, unlock-side spin, local-grant
+spin, and test callback between local and scheduler publication are gone. Loom
+models registration versus unlock, rejection before publication, and
+deboost/local grant/scheduler grant visibility before wake using separate
+state sources. The remaining PI work is to replace whole-registry donor scans
+with an owner-indexed waiter structure and to finish the scope-local and
+IRQ-visible waiter lifetime audits.
 
 ## Completion rules
 
