@@ -11,7 +11,7 @@ use bitflags::Flags;
 use rdif_serial::{
     Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
     SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq,
-    UartParts, UartPort, UartRegisterGuard,
+    UartParts, UartPort,
 };
 use registers::*;
 
@@ -123,7 +123,7 @@ pub struct Ns16550EmergencyTx<T: Kind> {
 }
 
 impl<T: Kind> UartEmergencyTx for Ns16550EmergencyTx<T> {
-    fn try_write(&self, _access: &UartRegisterGuard<'_>, bytes: &[u8]) -> usize {
+    unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
         let mut written = 0;
         for &byte in bytes.iter().take(UART_FIFO_SIZE as usize) {
             let status: LineStatusFlags = self.base.read_flags(UART_LSR);
@@ -1116,16 +1116,16 @@ mod tests {
     fn emergency_tx_writes_only_the_current_nonblocking_fifo_capacity() {
         let (_guard, uart) = serial();
         let parts = uart.split();
-        let gate = UartRegisterGate::new();
+        let gate = UartRegisterGate::new(parts.emergency_tx);
         let access = gate.try_enter().unwrap();
         REGS[UART_LSR as usize].store(
             LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
             Ordering::SeqCst,
         );
 
-        assert_eq!(parts.emergency_tx.try_write(&access, b"ab"), 1);
+        assert_eq!(access.try_write(b"ab"), 1);
         assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
-        assert_eq!(parts.emergency_tx.try_write(&access, b"b"), 0);
+        assert_eq!(access.try_write(b"b"), 0);
     }
 
     #[test]
@@ -1137,10 +1137,10 @@ mod tests {
             },
         };
         let bytes = [b'x'; 17];
-        let gate = UartRegisterGate::new();
+        let gate = UartRegisterGate::new(tx);
         let access = gate.try_enter().unwrap();
 
-        assert_eq!(tx.try_write(&access, &bytes), 16);
+        assert_eq!(access.try_write(&bytes), 16);
         assert_eq!(writes.load(Ordering::SeqCst), 16);
     }
 

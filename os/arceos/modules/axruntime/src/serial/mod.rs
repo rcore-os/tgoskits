@@ -162,10 +162,10 @@ fn create_serial_worker_waiter(current: &ThreadHandle) -> SerialWorkerWaiter {
     }
 }
 
-fn try_enter_irq_registers<'a>(
-    gate: &'a UartRegisterGate,
+fn try_enter_irq_registers<'a, E: ?Sized>(
+    gate: &'a UartRegisterGate<E>,
     bridge: &RuntimeIrqBridge,
-) -> Option<rdif_serial::UartRegisterGuard<'a>> {
+) -> Option<rdif_serial::UartRegisterGuard<'a, E>> {
     let guard = gate.try_enter();
     if guard.is_none() {
         // The interrupt source could not be observed or acknowledged while an
@@ -183,7 +183,6 @@ struct RuntimeShared {
     info: SerialDeviceInfo,
     owner_cpu: usize,
     polling: bool,
-    emergency_tx: Box<dyn rdif_serial::UartEmergencyTx>,
     register_gate: Arc<UartRegisterGate>,
     ingress: TxIngress,
     rx_subscription: PiMutex<Option<SpscConsumer<RxItem>>>,
@@ -419,14 +418,14 @@ fn build_runtime(
         info,
         mut port,
         mut irq,
-        emergency_tx,
+        register_gate,
     } = serial;
     port.mask_all();
 
     let polling = info.irq.is_none();
     let bridge = Arc::new(RuntimeIrqBridge::new());
     let stats = Arc::new(SerialStatsAtomic::new());
-    let register_gate = Arc::new(UartRegisterGate::new());
+    let register_gate: Arc<UartRegisterGate> = Arc::from(register_gate);
     let (irq_rx_producer, irq_rx_consumer) = spsc::channel(IRQ_RX_CAPACITY);
     let (rx_output_producer, rx_output_consumer) = spsc::channel(SUBSCRIPTION_RX_CAPACITY);
     let shared = Arc::new(RuntimeShared {
@@ -434,7 +433,6 @@ fn build_runtime(
         info,
         owner_cpu: primary_cpu,
         polling,
-        emergency_tx,
         register_gate: register_gate.clone(),
         ingress: TxIngress::new(),
         rx_subscription: PiMutex::new(Some(rx_output_consumer)),
@@ -572,10 +570,7 @@ pub(crate) fn route_console_bytes(bytes: &[u8]) -> Option<usize> {
             runtime.shared.stats.add_log_dropped(bytes.len());
             return Some(0);
         };
-        let written = runtime
-            .shared
-            .emergency_tx
-            .try_write(&register_access, bytes);
+        let written = register_access.try_write(bytes);
         runtime.shared.stats.add_log_dropped(bytes.len() - written);
         return Some(written);
     }
@@ -668,7 +663,7 @@ mod tests {
     #[test]
     fn irq_gate_conflict_is_published_for_task_context_retry() {
         let bridge = RuntimeIrqBridge::new();
-        let gate = UartRegisterGate::new();
+        let gate = UartRegisterGate::new(());
         let _owner = gate.try_enter().expect("first register owner");
 
         assert!(try_enter_irq_registers(&gate, &bridge).is_none());

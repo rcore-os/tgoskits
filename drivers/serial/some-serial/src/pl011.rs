@@ -3,7 +3,7 @@ use core::ptr::NonNull;
 use rdif_serial::{
     Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
     SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq,
-    UartParts, UartPort, UartRegisterGuard,
+    UartParts, UartPort,
 };
 use tock_registers::{
     LocalRegisterCopy, interfaces::*, register_bitfields, register_structs, registers::*,
@@ -640,7 +640,7 @@ impl Pl011EmergencyTx {
 }
 
 impl UartEmergencyTx for Pl011EmergencyTx {
-    fn try_write(&self, _access: &UartRegisterGuard<'_>, bytes: &[u8]) -> usize {
+    unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
         let mut written = 0;
         for &byte in bytes.iter().take(EMERGENCY_TX_BUDGET) {
             if self.registers().uartfr.is_set(UARTFR::TXFF) {
@@ -1108,14 +1108,14 @@ mod tests {
     fn emergency_tx_returns_immediately_when_the_fifo_is_full() {
         let (mut regs, uart) = pl011_with_registers();
         let parts = uart.split();
-        let gate = UartRegisterGate::new();
+        let gate = UartRegisterGate::new(parts.emergency_tx);
         let access = gate.try_enter().unwrap();
         write_test_reg(&mut regs, 0x018, UARTFR::TXFF::SET.value);
 
-        assert_eq!(parts.emergency_tx.try_write(&access, b"x"), 0);
+        assert_eq!(access.try_write(b"x"), 0);
 
         write_test_reg(&mut regs, 0x018, 0);
-        assert_eq!(parts.emergency_tx.try_write(&access, b"x"), 1);
+        assert_eq!(access.try_write(b"x"), 1);
         assert_eq!(regs.uartdr.get() as u8, b'x');
     }
 
@@ -1125,10 +1125,10 @@ mod tests {
         let parts = uart.split();
         write_test_reg(&mut regs, 0x018, 0);
         let bytes = [b'x'; 17];
-        let gate = UartRegisterGate::new();
+        let gate = UartRegisterGate::new(parts.emergency_tx);
         let access = gate.try_enter().unwrap();
 
-        assert_eq!(parts.emergency_tx.try_write(&access, &bytes), 16);
+        assert_eq!(access.try_write(&bytes), 16);
     }
 
     #[test]
