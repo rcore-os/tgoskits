@@ -16,9 +16,35 @@ pub enum TaskDeadlineError {
     /// Every preallocated heap slot is occupied by an active task deadline.
     #[error("per-CPU timer capacity is exhausted")]
     Capacity,
+    /// `u64::MAX` represents no finite task deadline and cannot be queued.
+    #[error("task deadline is not finite")]
+    InvalidDeadline,
     /// The node's generation space has been exhausted.
     #[error("timer generation space is exhausted")]
     GenerationExhausted,
+}
+
+/// Absolute task deadline that is finite in the monotonic-clock domain.
+///
+/// Zero remains a valid, immediately due logical deadline. `u64::MAX` is the
+/// explicit no-deadline sentinel and is rejected before a heap slot or
+/// generation is consumed.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub(super) struct FiniteTaskDeadline(u64);
+
+impl FiniteTaskDeadline {
+    const fn from_nanos(deadline_ns: u64) -> Option<Self> {
+        if deadline_ns == u64::MAX {
+            None
+        } else {
+            Some(Self(deadline_ns))
+        }
+    }
+
+    pub(super) const fn as_nanos(self) -> u64 {
+        self.0
+    }
 }
 
 /// Bounded timer-IRQ expiration request.
@@ -95,6 +121,8 @@ impl TaskDeadlineQueue {
     ///
     /// # Errors
     ///
+    /// Returns [`TaskDeadlineError::InvalidDeadline`] before consuming a heap
+    /// slot or generation when `deadline_ns` is the no-deadline sentinel.
     /// Returns [`TaskDeadlineError::Capacity`] without changing the node if no
     /// heap slot remains. Returns
     /// [`TaskDeadlineError::GenerationExhausted`] instead of reusing an old
@@ -109,6 +137,8 @@ impl TaskDeadlineQueue {
         deadline_ns: u64,
         kind: TaskDeadlineKind,
     ) -> Result<TaskDeadlineRegistration, TaskDeadlineError> {
+        let deadline = FiniteTaskDeadline::from_nanos(deadline_ns)
+            .ok_or(TaskDeadlineError::InvalidDeadline)?;
         let thread = node.thread();
         let replacing = self.heap.contains_thread(thread);
         if self.heap.is_full() && !replacing {
@@ -122,7 +152,7 @@ impl TaskDeadlineQueue {
                 "contains_thread proved the task deadline entry exists"
             );
         }
-        let entry = TimerEntry::new(deadline_ns, thread, token, kind);
+        let entry = TimerEntry::new(deadline, thread, token, kind);
         self.heap.push(entry);
         Ok(TaskDeadlineRegistration::new(thread, token, kind))
     }

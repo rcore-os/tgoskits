@@ -353,6 +353,12 @@ pub(crate) fn arm_current_park_deadline(
     {
         return Err(TaskError::StaleThreadId);
     }
+    if deadline_ns == u64::MAX {
+        // Saturated relative waits have no representable finite expiry. Keep
+        // them as ordinary notification-only parks instead of consuming a
+        // queue slot that the physical clockevent can never arm.
+        return Ok(());
+    }
     let now_ns = task_runtime::monotonic_ns();
     let resolution_ns = task_runtime::timer_resolution_ns();
     let (registration, update) = {
@@ -366,7 +372,13 @@ pub(crate) fn arm_current_park_deadline(
                 deadline_ns,
                 TaskDeadlineKind::park_timeout(ticket.generation()),
             )
-            .map_err(|_| TaskError::TimerCapacity)?;
+            .map_err(|error| match error {
+                crate::timer::TaskDeadlineError::Capacity => TaskError::TimerCapacity,
+                crate::timer::TaskDeadlineError::InvalidDeadline
+                | crate::timer::TaskDeadlineError::GenerationExhausted => {
+                    TaskError::InvalidConfiguration
+                }
+            })?;
         let token = registration.token();
         thread.core.register_sleep_timer(owner, token.generation());
         let update = match cpu
@@ -1334,6 +1346,31 @@ mod tests {
         assert_eq!(owner_snapshot(&system, cpu.as_ref()).runnable(), 0);
         assert!(owner_snapshot(&system, cpu.as_ref()).need_resched());
         assert!(!cancel_current_park_deadline(&running, &mut ticket).unwrap());
+    }
+
+    #[test]
+    fn saturated_park_deadline_remains_notification_only() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let permit = acquire_blocking_permit().unwrap();
+        let ParkPrepare::Prepared(mut ticket) = prepare_current_park(&permit).unwrap() else {
+            panic!("fresh park must publish PARKING");
+        };
+        let _ = permit;
+
+        arm_current_park_deadline(&running, &mut ticket, u64::MAX).unwrap();
+
+        assert!(
+            !ticket.has_deadline(),
+            "the no-deadline sentinel must not own a queue registration"
+        );
+        assert!(cpu.as_mut().task_deadlines().is_empty());
+        cancel_current_park(&mut ticket).unwrap();
     }
 
     #[test]

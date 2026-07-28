@@ -140,6 +140,17 @@ tests cover supersession and lifetime teardown. All `ax-task` tests, including
 `affinity-bug-sched-affinity-migrate` QEMU case pass; the QEMU runner reported
 `STARRY_GROUPED_TESTS_PASSED`.
 
+The task-deadline heap now admits only a validated finite logical deadline.
+Unlike the physical clockevent type, zero remains valid and expires
+immediately, matching Linux hrtimer semantics. `u64::MAX` is the explicit
+no-deadline value: it is rejected before a heap slot or timer generation is
+consumed, while a saturated park timeout remains a notification-only park with
+no queue registration. The red regression
+`no_deadline_sentinel_cannot_consume_queue_capacity` previously left a
+maximum-valued entry resident after the runtime had published no physical
+clockevent. It now passes together with explicit immediate-zero and
+notification-only park coverage.
+
 ## Open audit items after the structural split
 
 These items are not local patch suggestions. Each needs a deterministic red
@@ -147,7 +158,6 @@ test and a review of the owning state machine before implementation.
 
 | Area | Open question or defect | Linux v7.1 reference | Required next evidence |
 | --- | --- | --- | --- |
-| Task deadline domain | `TaskDeadlineQueue::arm` still accepts raw `0` and `u64::MAX`, while `LocalClockEvent` rejects both as physical deadlines. A retained maximum-valued task entry can therefore be logically finite in one owner and unrepresentable in the other. | `hrtimer` stores typed expiry values, while clockevent programming treats “no event” separately and clamps finite deltas to device limits. | Add red tests for zero, maximum, conversion overflow, and cancellation, then introduce one finite monotonic-deadline boundary or an explicit no-deadline value before publication. |
 | Clockevent IRQ transaction | A hardware callback always invalidates the armed state and enters `Firing`; the state machine safely re-arms if no task expires, but the audit has not yet injected an early or spurious delivery through the complete ACK/begin/finish path. | `hrtimer_interrupt()` invalidates the delivered event and re-evaluates the next event even when no timer is expired. | Add a fake-device test for an early delivery and require exactly one replacement program with no task expiry. This is currently an evidence gap, not a confirmed semantic failure. |
 | Scope-local contention | The low-level lease API is bounded, but Starry's task-context mutation wrapper retries `ScopeCellBusy` with repeated yields. A retained remote reader has no queued waiter, PI donation, interruption, or deadline. | PREEMPT_RT `local_lock` task-context contention blocks through an RT mutex instead of polling with preemption disabled. | Model the outer task-context acquisition as a waitable ownership transition and test remote-reader release, interruption, and cancellation. Keep `scope-local` itself non-sleeping. |
 | IRQ waiter owner lifetime | `IrqWaitRegistration` has generation and in-flight notification grace, but Starry `IrqNotify` still relies on a documented unregister/quiesce-before-drop obligation rather than an owner type that makes the teardown sequence unavoidable. | IRQ action removal revokes publication and synchronizes in-flight handlers before releasing storage. | Trace every retained producer through drop, then add a concurrent notify-versus-owner-drop test. If a producer can outlive the cell, replace the contract-only API with an owning registration/teardown guard. |
