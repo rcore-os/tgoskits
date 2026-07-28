@@ -1,7 +1,13 @@
 #[cfg(any(kmod, umod))]
 use alloc::boxed::Box;
+#[cfg(kmod)]
+use alloc::sync::Arc;
+#[cfg(kmod)]
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::{any::Any, fmt::Debug};
 
+#[cfg(kmod)]
+use ax_kspin::SpinRaw;
 use futures::future::BoxFuture;
 use usb_if::descriptor::{ConfigurationDescriptor, DeviceDescriptor, EndpointDescriptor};
 
@@ -19,8 +25,70 @@ pub enum Event {
     Stopped,
 }
 
+/// Serializes task-context controller IRQ control with deferred rearming.
+///
+/// Hard-IRQ acknowledgement deliberately does not acquire this gate. It may
+/// mask and publish a pending source concurrently, while controller lifecycle
+/// changes and the task-context rearm remain ordered through this state.
+#[cfg(kmod)]
+#[derive(Clone)]
+pub(crate) struct ControllerIrqState {
+    inner: Arc<ControllerIrqStateInner>,
+}
+
+#[cfg(kmod)]
+struct ControllerIrqStateInner {
+    enabled: AtomicBool,
+    control: SpinRaw<()>,
+}
+
+#[cfg(kmod)]
+impl ControllerIrqState {
+    pub(crate) fn new(enabled: bool) -> Self {
+        Self {
+            inner: Arc::new(ControllerIrqStateInner {
+                enabled: AtomicBool::new(enabled),
+                control: SpinRaw::new(()),
+            }),
+        }
+    }
+
+    pub(crate) fn set_enabled(&self, enabled: bool, apply: impl FnOnce()) {
+        let _guard = self.inner.control.lock();
+        self.inner.enabled.store(enabled, Ordering::Release);
+        apply();
+    }
+
+    pub(crate) fn apply_enabled(&self, apply: impl FnOnce(bool)) {
+        let _guard = self.inner.control.lock();
+        apply(self.is_enabled());
+    }
+
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.inner.enabled.load(Ordering::Acquire)
+    }
+}
+
 pub(crate) trait EventHandlerOp: Send + Any + Sync + 'static {
-    fn handle_event(&self) -> Event;
+    /// Acknowledges and, when required, masks one device IRQ.
+    ///
+    /// This method is the hard-IRQ capability boundary. Implementations must
+    /// perform bounded register work only and must not wake task-owned
+    /// completions or drain an unbounded hardware queue.
+    fn acknowledge_irq(&self) -> bool;
+
+    /// Drains one task-context batch after an IRQ acknowledgement.
+    fn drain_event(&self) -> Event;
+
+    /// Rearms device interrupts after task-context draining completes.
+    fn rearm_irq(&self);
+
+    fn handle_event(&self) -> Event {
+        self.acknowledge_irq();
+        let event = self.drain_event();
+        self.rearm_irq();
+        event
+    }
 }
 
 #[allow(dead_code)]

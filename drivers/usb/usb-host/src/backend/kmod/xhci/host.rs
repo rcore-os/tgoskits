@@ -1,12 +1,16 @@
 use alloc::{boxed::Box, sync::Arc};
-use core::{cell::UnsafeCell, time::Duration};
+use core::{
+    cell::UnsafeCell,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use ::xhci::{
     extended_capabilities::usb_legacy_support_capability::UsbLegacySupport,
     registers::doorbell,
     ring::trb::{command, event::CommandCompletion},
 };
-use ax_kspin::SpinRwLock as RwLock;
+use ax_kspin::{SpinRaw, SpinRawGuard, SpinRwLock as RwLock};
 use dma_api::DmaDirection;
 use futures::{FutureExt, future::BoxFuture};
 use mbarrier::mb;
@@ -25,7 +29,7 @@ use crate::{
     DeviceAddressInfo, KernelOp, Mmio,
     backend::{
         kmod::{hub::HubOp, kcore::CoreOp, xhci::reg::SlotBell},
-        ty::{DeviceOp, Event, EventHandlerOp},
+        ty::{ControllerIrqState, DeviceOp, Event, EventHandlerOp},
     },
     err::Result,
     osal::{Kernel, SpinWhile},
@@ -42,6 +46,7 @@ pub struct Xhci {
     scratchpad_buf_arr: Option<ScratchpadBufferArray>,
     pub(crate) transfer_result_handler: TransferResultHandler,
     root_hub: Option<XhciRootHub>,
+    irq_state: ControllerIrqState,
 }
 
 unsafe impl Send for Xhci {}
@@ -130,6 +135,7 @@ impl Xhci {
 
         let transfer_result_handler = TransferResultHandler::new(reg_shared.clone());
         let ports = root_hub.waker();
+        let irq_state = ControllerIrqState::new(false);
 
         Ok(Xhci {
             reg: reg_shared,
@@ -143,10 +149,12 @@ impl Xhci {
                 event_ring,
                 transfer_result_handler,
                 ports,
+                irq_state.clone(),
             )),
             root_hub: Some(root_hub),
             event_ring_info,
             scratchpad_buf_arr: None,
+            irq_state,
         })
     }
 
@@ -332,15 +340,19 @@ impl Xhci {
 
     pub fn disable_irq(&mut self) {
         debug!("Disable interrupts");
-        self.reg.write().operational.usbcmd.update_volatile(|r| {
-            r.clear_interrupter_enable();
+        self.irq_state.set_enabled(false, || {
+            self.reg.write().operational.usbcmd.update_volatile(|r| {
+                r.clear_interrupter_enable();
+            });
         });
     }
 
     pub fn enable_irq(&mut self) {
         debug!("Enable interrupts");
-        self.reg.write().operational.usbcmd.update_volatile(|r| {
-            r.set_interrupter_enable();
+        self.irq_state.set_enabled(true, || {
+            self.reg.write().operational.usbcmd.update_volatile(|r| {
+                r.set_interrupter_enable();
+            });
         });
     }
 
@@ -517,8 +529,14 @@ pub struct EventHandler {
     event_ring: UnsafeCell<EventRing>,
     transfer_result_handler: TransferResultHandler,
     ports: PortChangeWaker,
+    irq_state: ControllerIrqState,
+    irq_masked: AtomicBool,
+    register_gate: SpinRaw<()>,
 }
 
+// SAFETY: Every access to the register and event-ring `UnsafeCell`s is
+// serialized by `register_gate`. Hard IRQ acknowledgement uses only
+// `try_lock`, while task-context drain and rearm take the serialized gate.
 unsafe impl Send for EventHandler {}
 unsafe impl Sync for EventHandler {}
 
@@ -529,6 +547,7 @@ impl EventHandler {
         event_ring: EventRing,
         transfer_result_handler: TransferResultHandler,
         ports: PortChangeWaker,
+        irq_state: ControllerIrqState,
     ) -> Self {
         Self {
             reg: UnsafeCell::new(reg),
@@ -536,23 +555,30 @@ impl EventHandler {
             event_ring: UnsafeCell::new(event_ring),
             transfer_result_handler,
             ports,
+            irq_state,
+            irq_masked: AtomicBool::new(false),
+            register_gate: SpinRaw::new(()),
         }
     }
 
     #[allow(clippy::mut_from_ref)]
-    fn event_ring(&self) -> &mut EventRing {
+    fn event_ring(&self, _guard: &SpinRawGuard<'_, ()>) -> &mut EventRing {
+        // SAFETY: the private entry points can obtain this guard only from
+        // `register_gate`, which serializes every event-ring access.
         unsafe { &mut *self.event_ring.get() }
     }
 
     #[allow(clippy::mut_from_ref)]
-    fn reg(&self) -> &mut XhciRegisters {
+    fn reg(&self, _guard: &SpinRawGuard<'_, ()>) -> &mut XhciRegisters {
+        // SAFETY: the private entry points can obtain this guard only from
+        // `register_gate`, which serializes every register access.
         unsafe { &mut *self.reg.get() }
     }
 
-    fn update_erdp(&self, clear_ehb: bool) {
-        let erdp = self.event_ring().erdp();
-        let segment_index = self.event_ring().segment_index();
-        self.reg()
+    fn update_erdp(&self, guard: &SpinRawGuard<'_, ()>, clear_ehb: bool) {
+        let erdp = self.event_ring(guard).erdp();
+        let segment_index = self.event_ring(guard).segment_index();
+        self.reg(guard)
             .interrupter_register_set
             .interrupter_mut(0)
             .erdp
@@ -567,7 +593,7 @@ impl EventHandler {
             });
     }
 
-    fn clean_event_ring(&self) -> Event {
+    fn clean_event_ring(&self, guard: &SpinRawGuard<'_, ()>) -> Event {
         use xhci::ring::trb::event::Allowed;
         let mut event = Event::Nothing;
         let mut command_events = 0usize;
@@ -576,7 +602,7 @@ impl EventHandler {
         let mut other_events = 0usize;
         let mut event_loop = 0usize;
 
-        while let Some(allowed) = self.event_ring().next() {
+        while let Some(allowed) = self.event_ring(guard).next() {
             match allowed {
                 Allowed::CommandCompletion(c) => {
                     command_events += 1;
@@ -630,7 +656,7 @@ impl EventHandler {
             }
             event_loop += 1;
             if event_loop > super::ring::TRBS_PER_SEGMENT / 2 {
-                self.update_erdp(false);
+                self.update_erdp(guard, false);
                 event_loop = 0;
             }
         }
@@ -640,7 +666,7 @@ impl EventHandler {
             port_events,
             transfer_events,
             other_events,
-            self.event_ring().erst_dequeue_pointer()
+            self.event_ring(guard).erst_dequeue_pointer()
         );
         if matches!(event, Event::Nothing) && transfer_events > 0 {
             event = Event::TransferActivity {
@@ -652,59 +678,66 @@ impl EventHandler {
 }
 
 impl EventHandlerOp for EventHandler {
-    fn handle_event(&self) -> Event {
-        let mut res = Event::Nothing;
-        let sts = self.reg().operational.usbsts.read_volatile();
+    fn acknowledge_irq(&self) -> bool {
+        let Some(register_guard) = self.register_gate.try_lock() else {
+            return false;
+        };
+        let sts = self.reg(&register_guard).operational.usbsts.read_volatile();
         let has_event_interrupt = sts.event_interrupt();
-        let has_pending_event = self.event_ring().has_pending_event();
 
-        if !has_event_interrupt && !has_pending_event {
-            return res;
+        if !has_event_interrupt {
+            return false;
         }
 
-        {
-            let irq = self.reg().interrupter_register_set.interrupter_mut(0);
-            let iman = irq.iman.read_volatile();
-            let erdp = irq.erdp.read_volatile();
-            if has_event_interrupt {
-                trace!(
-                    "xhci: handle_event USBSTS.EINT=1 IMAN.IP={} IMAN.IE={} EHB={} ERDP={:#x} \
-                     sw_erdp={:#x}",
-                    iman.interrupt_pending(),
-                    iman.interrupt_enable(),
-                    erdp.event_handler_busy(),
-                    erdp.event_ring_dequeue_pointer(),
-                    self.event_ring().erst_dequeue_pointer()
-                );
-            } else {
-                trace!(
-                    "xhci: handle_event draining pending event with USBSTS.EINT=0 IMAN.IP={} \
-                     IMAN.IE={} EHB={} ERDP={:#x} sw_erdp={:#x}",
-                    iman.interrupt_pending(),
-                    iman.interrupt_enable(),
-                    erdp.event_handler_busy(),
-                    erdp.event_ring_dequeue_pointer(),
-                    self.event_ring().erst_dequeue_pointer()
-                );
-            }
-        }
-
-        if has_event_interrupt {
-            self.reg().operational.usbsts.update_volatile(|r| {
+        self.reg(&register_guard)
+            .operational
+            .usbsts
+            .update_volatile(|r| {
                 r.clear_event_interrupt();
             });
-        }
 
-        // 【关键】GIC 中断模式下，需要手动清除 IMAN.IP
-        // 参考: Linux xhci_irq() in xhci-ring.c:3054-3059
-        let mut irq = self.reg().interrupter_register_set.interrupter_mut(0);
+        // GIC level delivery requires clearing IMAN.IP explicitly, matching
+        // Linux xhci_irq() after USBSTS.EINT is acknowledged.
+        let mut irq = self
+            .reg(&register_guard)
+            .interrupter_register_set
+            .interrupter_mut(0);
         irq.iman.update_volatile(|r| {
+            r.clear_interrupt_enable();
             r.clear_interrupt_pending();
         });
+        self.irq_masked.store(true, Ordering::Release);
+        true
+    }
 
-        res = self.clean_event_ring();
-        self.update_erdp(true);
+    fn drain_event(&self) -> Event {
+        let register_guard = self.register_gate.lock();
+        let event = if self.event_ring(&register_guard).has_pending_event() {
+            self.clean_event_ring(&register_guard)
+        } else {
+            Event::Nothing
+        };
+        self.update_erdp(&register_guard, true);
+        event
+    }
 
-        res
+    fn rearm_irq(&self) {
+        let register_guard = self.register_gate.lock();
+        if self.irq_masked.swap(false, Ordering::AcqRel) {
+            self.irq_state.apply_enabled(|enabled| {
+                mb();
+                self.reg(&register_guard)
+                    .interrupter_register_set
+                    .interrupter_mut(0)
+                    .iman
+                    .update_volatile(|r| {
+                        if enabled {
+                            r.set_interrupt_enable();
+                        } else {
+                            r.clear_interrupt_enable();
+                        }
+                    });
+            });
+        }
     }
 }

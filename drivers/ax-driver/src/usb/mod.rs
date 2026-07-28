@@ -245,6 +245,22 @@ impl UsbHostIrqHandler {
         Self { handler }
     }
 
+    /// Acknowledges and masks one device interrupt with bounded register work.
+    pub fn acknowledge_irq(&self) -> bool {
+        self.handler.acknowledge_irq()
+    }
+
+    /// Drains one event batch outside hard-IRQ context.
+    pub fn drain_event(&self) -> crab_usb::Event {
+        self.handler.drain_event()
+    }
+
+    /// Rearms the device interrupt after task-context draining.
+    pub fn rearm_irq(&self) {
+        self.handler.rearm_irq()
+    }
+
+    /// Polls and drains one event batch in task context.
     pub fn handle(&self) -> crab_usb::Event {
         self.handler.handle_event()
     }

@@ -80,6 +80,21 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
+    /// Acknowledges one device IRQ without draining task-owned completions.
+    pub fn acknowledge_irq(&self) -> bool {
+        self.handler.acknowledge_irq()
+    }
+
+    /// Drains one event batch in task context.
+    pub fn drain_event(&self) -> Event {
+        self.handler.drain_event()
+    }
+
+    /// Rearms device interrupts after task-context event draining.
+    pub fn rearm_irq(&self) {
+        self.handler.rearm_irq()
+    }
+
     /// 处理事件
     pub fn handle_event(&self) -> Event {
         self.handler.handle_event()
@@ -158,9 +173,15 @@ mod tests {
 
     #[cfg(kmod)]
     impl crate::backend::ty::EventHandlerOp for TestEventHandler {
-        fn handle_event(&self) -> crate::backend::ty::Event {
+        fn acknowledge_irq(&self) -> bool {
+            false
+        }
+
+        fn drain_event(&self) -> crate::backend::ty::Event {
             crate::backend::ty::Event::Nothing
         }
+
+        fn rearm_irq(&self) {}
     }
 
     fn block_on_ready<F: Future>(mut future: F) -> F::Output {

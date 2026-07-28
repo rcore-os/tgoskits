@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec, vec::Vec};
 use core::{
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
     task::Context,
     time::Duration,
 };
@@ -28,7 +28,10 @@ use super::{
 };
 use crate::{
     DeviceAddressInfo, Mmio,
-    backend::ty::{DeviceOp, Event, EventHandlerOp, HubParams, ep::Endpoint, transfer::Transfer},
+    backend::ty::{
+        ControllerIrqState, DeviceOp, Event, EventHandlerOp, HubParams, ep::Endpoint,
+        transfer::Transfer,
+    },
     err::{HostError, Result},
 };
 
@@ -539,6 +542,7 @@ pub struct Ehci {
     root_hub: Option<EhciRootHub>,
     event_handler: Option<EhciEventHandler>,
     next_addr: u8,
+    irq_state: ControllerIrqState,
 }
 
 unsafe impl Send for Ehci {}
@@ -551,7 +555,8 @@ impl Ehci {
         let schedule = AsyncSchedule::new(&kernel)?;
         let wakeups = TransferWakeups::new();
         let root_hub = EhciRootHub::new(regs, kernel.clone());
-        let event_handler = EhciEventHandler::new(regs, wakeups.clone());
+        let irq_state = ControllerIrqState::new(false);
+        let event_handler = EhciEventHandler::new(regs, wakeups.clone(), irq_state.clone());
 
         Ok(Self {
             regs,
@@ -560,6 +565,7 @@ impl Ehci {
             root_hub: Some(root_hub),
             event_handler: Some(event_handler),
             next_addr: 1,
+            irq_state,
         })
     }
 
@@ -662,15 +668,19 @@ impl CoreOp for Ehci {
     }
 
     fn enable_irq(&mut self) -> Result<()> {
-        self.regs.op_write32(
-            USBINTR,
-            USBINTR_USBINT | USBINTR_USBERRINT | USBINTR_PORT_CHANGE | USBINTR_ASYNC_ADVANCE,
-        );
+        self.irq_state.set_enabled(true, || {
+            self.regs.op_write32(
+                USBINTR,
+                USBINTR_USBINT | USBINTR_USBERRINT | USBINTR_PORT_CHANGE | USBINTR_ASYNC_ADVANCE,
+            );
+        });
         Ok(())
     }
 
     fn disable_irq(&mut self) -> Result<()> {
-        self.regs.op_write32(USBINTR, 0);
+        self.irq_state.set_enabled(false, || {
+            self.regs.op_write32(USBINTR, 0);
+        });
         Ok(())
     }
 
@@ -778,19 +788,28 @@ impl HubOp for EhciRootHub {
 struct EhciEventHandler {
     regs: EhciRegisters,
     wakeups: TransferWakeups,
+    irq_state: ControllerIrqState,
+    pending_irqs: AtomicU32,
+    masked_irqs: AtomicU32,
 }
 
 unsafe impl Send for EhciEventHandler {}
 unsafe impl Sync for EhciEventHandler {}
 
 impl EhciEventHandler {
-    fn new(regs: EhciRegisters, wakeups: TransferWakeups) -> Self {
-        Self { regs, wakeups }
+    fn new(regs: EhciRegisters, wakeups: TransferWakeups, irq_state: ControllerIrqState) -> Self {
+        Self {
+            regs,
+            wakeups,
+            irq_state,
+            pending_irqs: AtomicU32::new(0),
+            masked_irqs: AtomicU32::new(0),
+        }
     }
 }
 
 impl EventHandlerOp for EhciEventHandler {
-    fn handle_event(&self) -> Event {
+    fn acknowledge_irq(&self) -> bool {
         let sts = self.regs.op_read32(USBSTS);
         let pending = sts
             & (USBSTS_USBINT
@@ -799,20 +818,86 @@ impl EventHandlerOp for EhciEventHandler {
                 | USBSTS_HOST_SYSTEM_ERROR
                 | USBSTS_INTERRUPT_ASYNC_ADVANCE);
         if pending == 0 {
-            return Event::Nothing;
+            return false;
         }
 
         self.regs.op_write32(USBSTS, pending);
+        let interrupt_mask = self.regs.op_read32(USBINTR);
+        let maskable = pending
+            & (USBINTR_USBINT | USBINTR_USBERRINT | USBINTR_PORT_CHANGE | USBINTR_ASYNC_ADVANCE);
+        let enabled = self.irq_state.is_enabled();
+        self.regs.op_write32(
+            USBINTR,
+            if enabled {
+                interrupt_mask & !maskable
+            } else {
+                0
+            },
+        );
+        let observed_enabled = self.irq_state.is_enabled();
+        // Controller shutdown does not take the hard-IRQ path. Reconcile a
+        // lifecycle change that raced the first bounded MMIO update.
+        if observed_enabled != enabled {
+            self.regs.op_write32(
+                USBINTR,
+                if observed_enabled {
+                    interrupt_mask & !maskable
+                } else {
+                    0
+                },
+            );
+        }
+        self.masked_irqs.fetch_or(maskable, Ordering::AcqRel);
+        self.pending_irqs.fetch_or(pending, Ordering::Release);
+        true
+    }
+
+    fn drain_event(&self) -> Event {
+        let pending = self.pending_irqs.swap(0, Ordering::AcqRel);
+        if pending == 0 {
+            return Event::Nothing;
+        }
         if pending & USBSTS_PORT_CHANGE != 0 {
+            self.retain_pending(pending & !USBSTS_PORT_CHANGE);
             return Event::PortChange { port: 0 };
         }
         if pending & (USBSTS_USBINT | USBSTS_USBERRINT | USBSTS_INTERRUPT_ASYNC_ADVANCE) != 0 {
+            self.retain_pending(
+                pending & !(USBSTS_USBINT | USBSTS_USBERRINT | USBSTS_INTERRUPT_ASYNC_ADVANCE),
+            );
             self.wakeups.notify();
             return Event::TransferActivity {
                 count: self.wakeups.take().max(1),
             };
         }
         Event::Stopped
+    }
+
+    fn rearm_irq(&self) {
+        let masked = self.masked_irqs.swap(0, Ordering::AcqRel);
+        if masked != 0 {
+            self.irq_state.apply_enabled(|enabled| {
+                self.regs.op_write32(
+                    USBINTR,
+                    if enabled {
+                        USBINTR_USBINT
+                            | USBINTR_USBERRINT
+                            | USBINTR_PORT_CHANGE
+                            | USBINTR_ASYNC_ADVANCE
+                    } else {
+                        0
+                    },
+                );
+            });
+        }
+    }
+}
+
+impl EhciEventHandler {
+    fn retain_pending(&self, pending: u32) {
+        if pending != 0 {
+            self.pending_irqs.fetch_or(pending, Ordering::Release);
+        }
     }
 }
 
@@ -1382,6 +1467,9 @@ fn usb_to_transfer_error(err: USBError) -> TransferError {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+    use core::ptr::NonNull;
+
     use usb_if::{
         endpoint::TransferRequest,
         host::{ControlSetup, hub::Speed},
@@ -1389,8 +1477,11 @@ mod tests {
     };
 
     use super::{
-        ControlTdPlan, EhciPortStatus, QtdPid, QtdToken, build_control_td_plan, split_bulk_lengths,
+        ControlTdPlan, EhciEventHandler, EhciPortStatus, EhciRegisters, QtdPid, QtdToken,
+        TransferWakeups, USBINTR, USBINTR_ASYNC_ADVANCE, USBINTR_PORT_CHANGE, USBINTR_USBERRINT,
+        USBINTR_USBINT, USBSTS, USBSTS_USBINT, build_control_td_plan, split_bulk_lengths,
     };
+    use crate::backend::ty::{ControllerIrqState, EventHandlerOp};
 
     #[test]
     fn port_status_reports_high_speed_only_when_enabled_and_line_status_is_k_state() {
@@ -1483,5 +1574,28 @@ mod tests {
         let lengths = split_bulk_lengths(48 * 1024, Direction::Out);
 
         assert_eq!(lengths, [20 * 1024, 20 * 1024, 8 * 1024]);
+    }
+
+    #[test]
+    fn hard_irq_ack_preserves_controller_disable() {
+        let mut backing = vec![0u32; 64];
+        let regs = EhciRegisters {
+            op: NonNull::new(backing.as_mut_ptr().cast()).unwrap(),
+            ports: 1,
+        };
+        let handler =
+            EhciEventHandler::new(regs, TransferWakeups::new(), ControllerIrqState::new(false));
+        let runtime_mask =
+            USBINTR_USBINT | USBINTR_USBERRINT | USBINTR_PORT_CHANGE | USBINTR_ASYNC_ADVANCE;
+        regs.op_write32(USBINTR, runtime_mask);
+        regs.op_write32(USBSTS, USBSTS_USBINT);
+
+        assert!(handler.acknowledge_irq());
+
+        assert_eq!(
+            regs.op_read32(USBINTR),
+            0,
+            "hard IRQ acknowledgement must not reopen a disabled controller"
+        );
     }
 }

@@ -28,7 +28,7 @@ use super::{
 };
 use crate::{
     DeviceAddressInfo, Mmio,
-    backend::ty::{DeviceOp, Event, EventHandlerOp, HubParams, ep::Endpoint},
+    backend::ty::{ControllerIrqState, DeviceOp, Event, EventHandlerOp, HubParams, ep::Endpoint},
     err::Result,
 };
 
@@ -566,6 +566,7 @@ pub struct Dwc2 {
     channel_gates: Vec<Arc<Mutex<()>>>,
     channel_completions: Dwc2ChannelCompletions,
     stats: Dwc2Stats,
+    irq_state: ControllerIrqState,
 }
 
 // SAFETY: `Dwc2` is moved into the kmod core as the unique owner of host state.
@@ -590,7 +591,13 @@ impl Dwc2 {
         let root_hub = Dwc2RootHub::new(regs, kernel.clone());
         let channel_completions = Dwc2ChannelCompletions::new();
         let stats = Dwc2Stats::new();
-        let event_handler = Dwc2EventHandler::new(regs, channel_completions.clone(), stats.clone());
+        let irq_state = ControllerIrqState::new(false);
+        let event_handler = Dwc2EventHandler::new(
+            regs,
+            channel_completions.clone(),
+            stats.clone(),
+            irq_state.clone(),
+        );
         let channel_count = regs.host_channel_count();
 
         Ok(Self {
@@ -604,6 +611,7 @@ impl Dwc2 {
             channel_gates: build_channel_gates(channel_count),
             channel_completions,
             stats,
+            irq_state,
         })
     }
 
@@ -652,7 +660,7 @@ impl Dwc2 {
             (1u32 << self.channel_count) - 1
         };
         self.regs.write32(HAINTMSK, channel_mask);
-        self.regs.write32(GINTMSK, DWC2_RUNTIME_GINTMSK);
+        self.enable_irq()?;
         self.regs.write32(GINTSTS, u32::MAX);
         self.port_power_on();
         self.kernel.delay(Duration::from_millis(20));
@@ -790,12 +798,16 @@ impl CoreOp for Dwc2 {
     }
 
     fn enable_irq(&mut self) -> Result<()> {
-        self.regs.write32(GINTMSK, DWC2_RUNTIME_GINTMSK);
+        self.irq_state.set_enabled(true, || {
+            self.regs.write32(GINTMSK, DWC2_RUNTIME_GINTMSK);
+        });
         Ok(())
     }
 
     fn disable_irq(&mut self) -> Result<()> {
-        self.regs.write32(GINTMSK, 0);
+        self.irq_state.set_enabled(false, || {
+            self.regs.write32(GINTMSK, 0);
+        });
         Ok(())
     }
 
@@ -915,6 +927,9 @@ struct Dwc2EventHandler {
     regs: Dwc2Registers,
     channel_completions: Dwc2ChannelCompletions,
     stats: Dwc2Stats,
+    irq_state: ControllerIrqState,
+    pending_irqs: AtomicU32,
+    masked_irqs: AtomicU32,
 }
 
 // SAFETY: The event handler may be registered on an IRQ path and moved between
@@ -933,32 +948,70 @@ impl Dwc2EventHandler {
         regs: Dwc2Registers,
         channel_completions: Dwc2ChannelCompletions,
         stats: Dwc2Stats,
+        irq_state: ControllerIrqState,
     ) -> Self {
         Self {
             regs,
             channel_completions,
             stats,
+            irq_state,
+            pending_irqs: AtomicU32::new(0),
+            masked_irqs: AtomicU32::new(0),
         }
     }
 }
 
 impl EventHandlerOp for Dwc2EventHandler {
-    fn handle_event(&self) -> Event {
+    fn acknowledge_irq(&self) -> bool {
+        let interrupt_mask = self.regs.read32(GINTMSK);
         let pending = self.regs.read32(GINTSTS)
-            & self.regs.read32(GINTMSK)
+            & interrupt_mask
             & (GINTSTS_PRTINT | GINTSTS_HCHINT | GINTSTS_DISCONNINT);
+        if pending == 0 {
+            return false;
+        }
+        let enabled = self.irq_state.is_enabled();
+        self.regs.write32(
+            GINTMSK,
+            if enabled {
+                interrupt_mask & !pending
+            } else {
+                0
+            },
+        );
+        let observed_enabled = self.irq_state.is_enabled();
+        // Controller shutdown does not take the hard-IRQ path. Reconcile a
+        // lifecycle change that raced the first bounded MMIO update.
+        if observed_enabled != enabled {
+            self.regs.write32(
+                GINTMSK,
+                if observed_enabled {
+                    interrupt_mask & !pending
+                } else {
+                    0
+                },
+            );
+        }
+        self.masked_irqs.fetch_or(pending, Ordering::AcqRel);
+        self.pending_irqs.fetch_or(pending, Ordering::Release);
+        true
+    }
+
+    fn drain_event(&self) -> Event {
+        let pending = self.pending_irqs.swap(0, Ordering::AcqRel);
         if pending == 0 {
             return Event::Nothing;
         }
-
         if pending & GINTSTS_PRTINT != 0 {
             self.regs.write32(GINTSTS, GINTSTS_PRTINT);
+            self.retain_pending(pending & !GINTSTS_PRTINT);
             return Event::PortChange { port: 1 };
         }
         if pending & GINTSTS_HCHINT != 0 {
             self.stats.record_irq_event();
             let count = self.handle_channel_interrupts();
             self.regs.write32(GINTSTS, GINTSTS_HCHINT);
+            self.retain_pending(pending & !GINTSTS_HCHINT);
             return Event::TransferActivity {
                 count: count.max(1),
             };
@@ -966,9 +1019,25 @@ impl EventHandlerOp for Dwc2EventHandler {
         self.regs.write32(GINTSTS, pending);
         Event::Stopped
     }
+
+    fn rearm_irq(&self) {
+        let masked = self.masked_irqs.swap(0, Ordering::AcqRel);
+        if masked != 0 {
+            self.irq_state.apply_enabled(|enabled| {
+                self.regs
+                    .write32(GINTMSK, if enabled { DWC2_RUNTIME_GINTMSK } else { 0 });
+            });
+        }
+    }
 }
 
 impl Dwc2EventHandler {
+    fn retain_pending(&self, pending: u32) {
+        if pending != 0 {
+            self.pending_irqs.fetch_or(pending, Ordering::Release);
+        }
+    }
+
     fn handle_channel_interrupts(&self) -> usize {
         let pending = self.regs.read32(HAINT) & self.regs.read32(HAINTMSK);
         let mut count = 0usize;
@@ -2358,7 +2427,7 @@ mod tests {
     };
     use crate::backend::{
         kmod::osal::Kernel,
-        ty::{Event, EventHandlerOp, ep::EndpointOp},
+        ty::{ControllerIrqState, Event, EventHandlerOp, ep::EndpointOp},
     };
 
     struct TestKernel;
@@ -2634,7 +2703,12 @@ mod tests {
         let (_backing, regs) = test_regs();
         let completions = Dwc2ChannelCompletions::new();
         let stats = Dwc2Stats::new();
-        let handler = Dwc2EventHandler::new(regs, completions.clone(), stats.clone());
+        let handler = Dwc2EventHandler::new(
+            regs,
+            completions.clone(),
+            stats.clone(),
+            ControllerIrqState::new(true),
+        );
         let hcint = HCINT_CHHLTD | HCINT_XFERCOMPL;
 
         regs.write32(GINTMSK, GINTSTS_HCHINT);
@@ -2656,11 +2730,81 @@ mod tests {
     }
 
     #[test]
+    fn hard_irq_ack_defers_channel_completion_until_task_drain() {
+        let (_backing, regs) = test_regs();
+        let completions = Dwc2ChannelCompletions::new();
+        let stats = Dwc2Stats::new();
+        let handler = Dwc2EventHandler::new(
+            regs,
+            completions.clone(),
+            stats,
+            ControllerIrqState::new(true),
+        );
+        let hcint = HCINT_CHHLTD | HCINT_XFERCOMPL;
+
+        regs.write32(GINTMSK, GINTSTS_HCHINT);
+        regs.write32(GINTSTS, GINTSTS_HCHINT);
+        regs.write32(HAINTMSK, 1);
+        regs.write32(HAINT, 1);
+        regs.channel_write32(0, HCINTMSK, hcint);
+        regs.channel_write32(0, HCINT, hcint);
+
+        assert!(handler.acknowledge_irq());
+        assert_eq!(
+            regs.read32(GINTMSK) & GINTSTS_HCHINT,
+            0,
+            "hard IRQ acknowledgement must mask the source until task drain"
+        );
+        assert_eq!(
+            completions.take(0),
+            None,
+            "hard IRQ acknowledgement must not publish task completions"
+        );
+        match handler.drain_event() {
+            Event::TransferActivity { count } => assert_eq!(count, 1),
+            event => panic!("expected deferred transfer activity, got {event:?}"),
+        }
+        handler.rearm_irq();
+        assert_eq!(regs.read32(GINTMSK) & GINTSTS_HCHINT, GINTSTS_HCHINT);
+        assert_eq!(completions.take(0), Some(hcint));
+    }
+
+    #[test]
+    fn stale_task_rearm_cannot_reenable_a_disabled_controller() {
+        let (_backing, regs) = test_regs();
+        let mut host = super::Dwc2::new(Dwc2NewParams {
+            mmio: regs.base,
+            kernel: &TEST_KERNEL,
+            params: Dwc2HostParams::sg2002(),
+        })
+        .unwrap();
+        let handler = crate::backend::kmod::kcore::CoreOp::create_event_handler(&mut host);
+
+        crate::backend::kmod::kcore::CoreOp::enable_irq(&mut host).unwrap();
+        regs.write32(GINTSTS, GINTSTS_HCHINT);
+        assert!(handler.acknowledge_irq());
+
+        crate::backend::kmod::kcore::CoreOp::disable_irq(&mut host).unwrap();
+        handler.rearm_irq();
+
+        assert_eq!(
+            regs.read32(GINTMSK),
+            0,
+            "a deferred rearm must preserve controller shutdown"
+        );
+    }
+
+    #[test]
     fn chhltd_completion_preserves_unmasked_raw_hcint_reason() {
         let (_backing, regs) = test_regs();
         let completions = Dwc2ChannelCompletions::new();
         let stats = Dwc2Stats::new();
-        let handler = Dwc2EventHandler::new(regs, completions.clone(), stats.clone());
+        let handler = Dwc2EventHandler::new(
+            regs,
+            completions.clone(),
+            stats.clone(),
+            ControllerIrqState::new(true),
+        );
 
         regs.write32(GINTMSK, GINTSTS_HCHINT);
         regs.write32(GINTSTS, GINTSTS_HCHINT);
@@ -2681,7 +2825,12 @@ mod tests {
         let (_backing, regs) = test_regs();
         let completions = Dwc2ChannelCompletions::new();
         let stats = Dwc2Stats::new();
-        let handler = Dwc2EventHandler::new(regs, completions.clone(), stats.clone());
+        let handler = Dwc2EventHandler::new(
+            regs,
+            completions.clone(),
+            stats.clone(),
+            ControllerIrqState::new(true),
+        );
 
         regs.write32(GINTMSK, GINTSTS_HCHINT);
         regs.write32(GINTSTS, GINTSTS_HCHINT);
