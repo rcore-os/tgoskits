@@ -1,5 +1,6 @@
 use std::{
     os::arceos::modules::{ax_hal, ax_task},
+    println,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread,
     time::Duration,
@@ -114,8 +115,14 @@ fn test_wait_queue() {
 }
 
 pub fn run() -> crate::TestResult {
+    println!("TASK_IRQ_STAGE_BEGIN yielding");
     test_yielding();
+    println!("TASK_IRQ_STAGE_PASS yielding");
+    println!("TASK_IRQ_STAGE_BEGIN sleep");
     test_sleep();
+    println!("TASK_IRQ_STAGE_PASS sleep");
+    println!("TASK_IRQ_STAGE_BEGIN wait-queue");
     test_wait_queue();
+    println!("TASK_IRQ_STAGE_PASS wait-queue");
     Ok(())
 }

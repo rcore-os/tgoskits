@@ -110,11 +110,12 @@ The object is the only storage for task deadline generation, task deadline,
 periodic deadline, deferred-work state, and the deadline regarded as physically
 armed. There are no parallel per-CPU scalar caches.
 
-Publishing an earlier deadline while `Armed` may reprogram immediately.
-Publishing cancellation or a later deadline leaves the earlier harmless event
-armed; when it fires, the handler recomputes the authoritative minimum.
-Publishing while `Firing` only updates source state. The handler programs the
-minimum exactly once when it finishes.
+While `Armed`, every change to the selected minimum is reconciled with the
+physical owner: an earlier or later finite deadline is reprogrammed, and
+removing the final source stops the device and enters `Idle`. Re-publishing the
+same selected value is a no-op. Publishing while `Firing` only updates source
+state. The handler programs the authoritative minimum exactly once when it
+finishes.
 
 The runtime wraps `Firing` in an ownership guard. Normal completion merges the
 latest task update and finishes the transaction once. An abandoned host-test
@@ -151,12 +152,24 @@ draining, then republishes it if another bounded batch remains. Work arriving
 during the pass is therefore not cleared by the older completion, and idle
 cannot wait while deferred expiry work is pending.
 
+The physical interrupt is an acceleration mechanism, not the sole correctness
+path. Every scheduler safe point first promotes one bounded batch of
+already-due task deadline records into CPU-local expired storage, then claims
+and drains the sticky owner work. This closes the case where a device edge is
+lost or observed late while `need_resched` or another owner condition keeps the
+CPU out of its final idle wait. The recovery remains bounded and invokes no
+arbitrary callback in either hard IRQ or scheduler context.
+
 ## Idle and remote delivery
 
 The idle path holds IRQ exclusion while it publishes polling state, checks
 remote and timer pending state, observes the current deadline generation, and
 commits to the architecture's atomic wait primitive. Pending work prevents the
-wait.
+wait. Immediately before that final commit, ax-runtime may claim an overdue
+`Armed` clockevent as `Firing` exactly once and run the same bounded accounting
+transaction without incrementing the physical-IRQ count. This idle recovery is
+an additional progress path; scheduler safe-point promotion remains necessary
+when the CPU cannot reach idle.
 
 Remote producers publish queue state and a sticky bit with release ordering
 before sending an IPI. The target consumes the delivered pending indication at
@@ -238,9 +251,11 @@ so panic output cannot wait for an interrupted register owner.
 
 ## Validation
 
-Deterministic virtual-runtime tests cover rearm/cancel, stale generations,
-updates during `Firing`, batch exhaustion, remote publication, idle
-lost-wakeup, owner-mismatch cancellation retry, park notify-versus-timeout,
+Deterministic virtual-runtime tests cover earlier/later reprogramming, removal
+of the final physical arm, rearm/cancel, stale generations, updates during
+`Firing`, batch exhaustion, remote publication, idle lost-wakeup, one-shot
+overdue idle claiming, scheduler safe-point recovery without a delivered
+clock IRQ, owner-mismatch cancellation retry, park notify-versus-timeout,
 timer-worker epoch snapshots, IPI pending lifetime, and switch-tail ordering.
 Loom tests cover deadline generation, unique park winners, `IrqWaitCell`, and
 publish-before-IPI races. UART tests prove bounded, non-allocating hard-IRQ

@@ -92,6 +92,37 @@ Individual perf cases can pass because they do not force this cross-test,
 cross-CPU lifetime. The fix must model task and CPU perf targets explicitly;
 the SMP perf tests must not be skipped or affinity-pinned to hide the defect.
 
+The x86_64 ArceOS `task-irq` case exposed a separate missed-clockevent
+failure. Stage markers proved that yielding completed and the first task sleep
+never returned. A halted-guest GDB inspection found all of the following on
+CPU 0 at the same time:
+
+- the task deadline heap retained one overdue park timeout for the running
+  thread;
+- the preallocated expired-deadline buffer was empty;
+- `need_resched` remained set, so the CPU repeatedly entered the scheduler and
+  never reached its final idle wait;
+- the LAPIC one-shot had counted down, but no timer interrupt remained pending
+  or in service.
+
+The old safe-point path serviced deadlines only after the timer IRQ had
+published `deadline_work_pending`. Consequently the physical clockevent was a
+single point of correctness rather than an acceleration mechanism. A lost or
+late edge could strand a sleeper indefinitely, and idle-side recovery could
+not help while another scheduler condition prevented idle entry.
+
+Linux `hrtimer_interrupt()` invalidates the delivered event before processing
+and re-evaluates the queue when it programs the next event; clockevent
+programming also retries elapsed minimum-delta events instead of treating an
+old arm as authoritative. TGOSKits now applies the corresponding invariant at
+both boundaries: every changed selected deadline reprograms or stops the
+physical owner, and every scheduler safe point promotes one bounded batch of
+already-due task deadlines before claiming sticky task work. The deterministic
+test
+`scheduler_safe_point_recovers_overdue_deadline_without_clock_irq` fails
+without the safe-point promotion. The isolated x86_64 QEMU case then completes
+its yield, sleep, and wait-queue stages.
+
 Thread construction also exposed a distinct lifetime violation. A rejected
 `ThreadSpec` dropped its OS extension before destroying the runtime context,
 TLS, and stack. If context destruction returned `Busy`, the remaining handles
