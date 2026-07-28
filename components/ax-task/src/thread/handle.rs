@@ -8,9 +8,9 @@ use core::{
 };
 
 use crate::{
-    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, IrqWakeHandle, Nice, PiWaitState, RtPriority,
-    SchedulePolicy, SchedulingKey, SchedulingUrgency, TaskError, ThreadExtensionView, ThreadId,
-    ThreadSchedCell, ThreadState,
+    CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority, SchedulePolicy,
+    SchedulingKey, SchedulingUrgency, TaskError, ThreadExtensionView, ThreadId, ThreadSchedCell,
+    ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
     task_work::TaskWorkDoorbell,
     timer::TaskDeadlineNode,
@@ -195,26 +195,6 @@ impl ThreadWakeHandle {
     /// Publishes a wake without allocating, taking a lock, or invoking callbacks.
     pub fn wake(&self) -> WakeResult {
         self.core.wake()
-    }
-
-    /// Creates a borrowed hard-IRQ wake capability for a pinned registration.
-    ///
-    /// # Safety
-    ///
-    /// The caller must keep this owning handle alive until the registration is
-    /// permanently detached from every [`crate::IrqWaitCell`].
-    pub unsafe fn irq_wake_handle(&self) -> IrqWakeHandle {
-        unsafe fn wake_thread_core(data: usize) {
-            let core = unsafe { &*core::ptr::with_exposed_provenance::<ThreadCore>(data) };
-            let _result = core.wake();
-        }
-
-        unsafe {
-            IrqWakeHandle::from_raw(
-                Arc::as_ptr(&self.core).expose_provenance(),
-                wake_thread_core,
-            )
-        }
     }
 
     /// Returns the thread that owns this wake header.

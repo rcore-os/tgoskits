@@ -1,7 +1,6 @@
 use alloc::boxed::Box;
 use core::{
     mem::ManuallyDrop,
-    pin::Pin,
     ptr::{NonNull, with_exposed_provenance},
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -14,24 +13,21 @@ fn consumes_an_irq_that_arrived_before_registration_without_self_wake() {
     let registration = TestRegistration::new();
 
     assert_eq!(cell.notify(), IrqNotifyResult::Pending);
-    assert_eq!(
-        cell.register(registration.pin()),
+    assert!(matches!(
+        cell.register(registration.registration()),
         IrqRegisterResult::ConsumedPending
-    );
+    ));
     assert_eq!(
         registration.wake_count(),
         0,
         "the running consumer must not publish a stale scheduler wake for an event it consumed \
          synchronously"
     );
-    assert!(!registration.pin().is_attached());
-    assert_eq!(
-        cell.register(registration.pin()),
-        IrqRegisterResult::Registered
-    );
+    let token = expect_registered(cell.register(registration.registration()));
     assert_eq!(cell.notify(), IrqNotifyResult::Notified);
     assert_eq!(registration.wake_count(), 1);
-    assert!(!registration.pin().is_attached());
+    assert!(token.is_quiescent());
+    token.try_quiesce().unwrap();
 }
 
 #[test]
@@ -39,12 +35,10 @@ fn irq_wakes_the_single_registered_thread() {
     let cell = IrqWaitCell::new();
     let registration = TestRegistration::new();
 
-    assert_eq!(
-        cell.register(registration.pin()),
-        IrqRegisterResult::Registered
-    );
+    let token = expect_registered(cell.register(registration.registration()));
     assert_eq!(cell.notify(), IrqNotifyResult::Notified);
     assert_eq!(registration.wake_count(), 1);
+    token.try_quiesce().unwrap();
     assert_eq!(cell.notify(), IrqNotifyResult::Pending);
 }
 
@@ -54,13 +48,90 @@ fn rejects_a_second_waiter_without_scanning() {
     let first = TestRegistration::new();
     let second = TestRegistration::new();
 
-    assert_eq!(cell.register(first.pin()), IrqRegisterResult::Registered);
-    assert_eq!(cell.register(second.pin()), IrqRegisterResult::Occupied);
-    assert!(cell.unregister(first.pin()));
+    let token = expect_registered(cell.register(first.registration()));
+    assert!(matches!(
+        cell.register(second.registration()),
+        IrqRegisterResult::Occupied
+    ));
+    assert_eq!(cell.unregister(&token), IrqUnregisterResult::Detached);
+    token.try_quiesce().unwrap();
+}
+
+#[test]
+#[should_panic(expected = "dropped before token quiescence")]
+fn dropping_an_attached_registration_is_rejected() {
+    let cell = IrqWaitCell::new();
+    let registration = TestRegistration::new();
+    let token = expect_registered(cell.register(registration.registration()));
+
+    core::mem::forget(token);
+    drop(registration);
+}
+
+#[test]
+fn detached_registration_is_not_quiescent_until_irq_wake_returns() {
+    struct BlockingWake {
+        entered: AtomicUsize,
+        release: AtomicUsize,
+        completed: AtomicUsize,
+    }
+
+    unsafe fn blocking_wake(data: usize) {
+        let state = unsafe { &*with_exposed_provenance::<BlockingWake>(data) };
+        state.entered.store(1, Ordering::Release);
+        while state.release.load(Ordering::Acquire) == 0 {
+            core::hint::spin_loop();
+        }
+        state.completed.store(1, Ordering::Release);
+    }
+
+    let cell = IrqWaitCell::new();
+    let state = Box::leak(Box::new(BlockingWake {
+        entered: AtomicUsize::new(0),
+        release: AtomicUsize::new(0),
+        completed: AtomicUsize::new(0),
+    }));
+    let wake = unsafe {
+        IrqWakeHandle::from_raw(
+            (state as *mut BlockingWake).expose_provenance(),
+            blocking_wake,
+        )
+    };
+    let registration = IrqWaitRegistration::new_test(wake);
+    let token = expect_registered(cell.register(&registration));
+
+    std::thread::scope(|scope| {
+        let notifier = scope.spawn(|| cell.notify());
+        while state.entered.load(Ordering::Acquire) == 0 {
+            std::thread::yield_now();
+        }
+
+        assert!(!token.is_attached());
+        let quiescent_while_wake_uses_payload = token.is_quiescent();
+
+        state.release.store(1, Ordering::Release);
+        assert_eq!(notifier.join().unwrap(), IrqNotifyResult::Notified);
+        assert!(
+            !quiescent_while_wake_uses_payload,
+            "detachment must not authorize reclamation while the IRQ wake still reads its payload"
+        );
+    });
+    assert_eq!(state.completed.load(Ordering::Acquire), 1);
+    assert!(token.is_quiescent());
+    token.try_quiesce().unwrap();
+}
+
+fn expect_registered<'cell, 'registration>(
+    result: IrqRegisterResult<'cell, 'registration>,
+) -> IrqWaitToken<'cell, 'registration> {
+    match result {
+        IrqRegisterResult::Registered(token) => token,
+        other => panic!("expected a registered IRQ waiter, got {other:?}"),
+    }
 }
 
 struct TestRegistration {
-    registration: ManuallyDrop<Pin<Box<IrqWaitRegistration>>>,
+    registration: ManuallyDrop<IrqWaitRegistration>,
     wakes: NonNull<AtomicUsize>,
 }
 
@@ -73,18 +144,13 @@ impl TestRegistration {
             IrqWakeHandle::from_raw(wakes.as_ptr().expose_provenance(), count_wake)
         };
         Self {
-            registration: ManuallyDrop::new(Box::pin(IrqWaitRegistration::new(wake))),
+            registration: ManuallyDrop::new(IrqWaitRegistration::new_test(wake)),
             wakes,
         }
     }
 
-    fn pin(&self) -> Pin<&'static IrqWaitRegistration> {
-        let registration = self.registration.as_ref().get_ref() as *const IrqWaitRegistration;
-        unsafe {
-            // The fixture owns a pinned allocation and each test consumes or
-            // unregisters the cell reference before dropping the fixture.
-            Pin::new_unchecked(&*registration)
-        }
+    fn registration(&self) -> &IrqWaitRegistration {
+        &self.registration
     }
 
     fn wake_count(&self) -> usize {

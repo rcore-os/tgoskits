@@ -4,11 +4,12 @@ use alloc::{boxed::Box, string::String};
 use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 
 use crate::{
-    CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, IrqRegisterResult, IrqWaitCell,
-    IrqWaitRegistration, Nice, ParkCommit, ParkPrepare, PiLockId, PiMutexHandoff, PiWaitToken,
-    RtPriority, ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem,
-    ThreadBuilder, ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot,
-    ThreadState, ThreadWakeHandle, WaitQueue, WakeResult,
+    CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, IrqRegisterResult,
+    IrqUnregisterResult, IrqWaitCell, IrqWaitRegistration, IrqWaitToken, Nice, ParkCommit,
+    ParkPrepare, PiLockId, PiMutexHandoff, PiWaitToken, RtPriority, ScheduleDecision,
+    SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder, ThreadExtensionLease,
+    ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState, ThreadWakeHandle, WaitQueue,
+    WakeResult,
     inbox::PublishResult,
     reclaim::DeferredReclaimNode,
     runtime::{
@@ -594,21 +595,10 @@ fn task_work_service_loop() -> Result<(), TaskError> {
     let system = runtime_task_system()?;
     let doorbell = system.task_work_doorbell();
     let wake_owner = current_thread_handle()?.wake_handle();
-    let irq_wake = unsafe {
-        // SAFETY: `waiter` below is leaked for the shutdown lifetime and owns
-        // this wake handle's strong ThreadCore reference.
-        wake_owner.irq_wake_handle()
-    };
     let waiter = Box::leak(Box::new(TaskWorkWaiter {
-        _wake_owner: wake_owner,
-        registration: IrqWaitRegistration::new(irq_wake),
+        registration: IrqWaitRegistration::new(wake_owner),
         park: WaitQueue::new(),
     }));
-    let registration = unsafe {
-        // SAFETY: the leaked allocation never moves or expires, and the sole
-        // service thread serializes every register/unregister operation.
-        Pin::new_unchecked(&waiter.registration)
-    };
     system.finish_task_work_worker_install();
 
     loop {
@@ -621,7 +611,7 @@ fn task_work_service_loop() -> Result<(), TaskError> {
                 continue;
             }
             TaskWorkServiceAction::Wait => {
-                wait_for_task_work(doorbell.event(), registration, &waiter.park)?;
+                wait_for_task_work(doorbell.event(), &waiter.registration, &waiter.park)?;
             }
         }
     }
@@ -661,24 +651,48 @@ fn service_task_work_pass(
 }
 
 struct TaskWorkWaiter {
-    _wake_owner: ThreadWakeHandle,
     registration: IrqWaitRegistration,
     park: WaitQueue,
 }
 
 fn wait_for_task_work(
     event: &IrqWaitCell,
-    registration: Pin<&'static IrqWaitRegistration>,
+    registration: &IrqWaitRegistration,
     park: &WaitQueue,
 ) -> Result<(), TaskError> {
     match event.register(registration) {
         IrqRegisterResult::Occupied => Err(TaskError::InvalidConfiguration),
-        IrqRegisterResult::Registered
-        | IrqRegisterResult::ConsumedPending
-        | IrqRegisterResult::NotificationInFlight => {
-            park.try_wait_until(|| !registration.is_attached())?;
-            let _removed = event.unregister(registration);
-            Ok(())
+        IrqRegisterResult::ConsumedPending => Ok(()),
+        IrqRegisterResult::Registered(token) | IrqRegisterResult::NotificationInFlight(token) => {
+            let wait = park.try_wait_until(|| !token.is_attached());
+            quiesce_irq_wait(event, token)?;
+            wait
+        }
+    }
+}
+
+/// Detaches one IRQ waiter and yields until every in-flight notifier has
+/// stopped reading its registration and wake payload.
+///
+/// Callers must invoke this in schedulable task context before reusing or
+/// releasing storage reachable through the matching
+/// [`IrqWaitRegistration`]. Hard-IRQ teardown must instead defer the token to a
+/// task-context worker.
+pub fn quiesce_irq_wait<'cell, 'registration>(
+    event: &'cell IrqWaitCell,
+    mut token: IrqWaitToken<'cell, 'registration>,
+) -> Result<(), TaskError> {
+    match event.unregister(&token) {
+        IrqUnregisterResult::Detached | IrqUnregisterResult::NotificationInFlight => {}
+        IrqUnregisterResult::Stale => return Err(TaskError::InvalidConfiguration),
+    }
+    loop {
+        match token.try_quiesce() {
+            Ok(()) => return Ok(()),
+            Err(in_flight) => {
+                token = in_flight;
+                let _decision = yield_current_cpu()?;
+            }
         }
     }
 }

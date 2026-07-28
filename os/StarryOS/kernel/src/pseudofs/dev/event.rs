@@ -1,10 +1,7 @@
-use alloc::{
-    boxed::Box, collections::VecDeque, format, string::ToString, sync::Arc, vec, vec::Vec,
-};
+use alloc::{collections::VecDeque, format, string::ToString, sync::Arc, vec, vec::Vec};
 use core::{
     any::Any,
     mem::offset_of,
-    pin::Pin,
     sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
     task::Context,
     time::Duration,
@@ -29,10 +26,7 @@ use ax_runtime::hal::{
     irq::IrqId,
     time::{monotonic_time_nanos, wall_time},
 };
-use ax_std::os::arceos::task::{
-    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle,
-    ThreadWakeHandle, WaitQueue,
-};
+use ax_std::os::arceos::task::{self as scheduler, IrqWaitCell, IrqWaitRegistration, WaitQueue};
 use ax_sync::spin::SpinNoIrq as Mutex;
 use axfs_ng_vfs::{DeviceId, NodeFlags, NodeType, VfsResult};
 use axpoll::{IoEvents, PollSet, Pollable};
@@ -45,7 +39,9 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::{
     mm::UserPtr,
-    pseudofs::{Device, DeviceOps, DirMapping, SimpleFs},
+    pseudofs::{
+        Device, DeviceOps, DirMapping, SimpleFs, dev::irq_service::complete_irq_service_cycle,
+    },
 };
 const KEY_CNT: usize = EventType::Key.bits_count();
 
@@ -332,18 +328,15 @@ impl EventDev {
         let waiter = EventIrqWaiter::new(&current);
 
         loop {
-            let registration = self.irq_notify.register(waiter.registration);
-            if !complete_event_irq_service_cycle(
+            let registration = self.irq_notify.register(&waiter.registration);
+            let completed = complete_irq_service_cycle(
+                &self.irq_notify,
                 registration,
-                || {
-                    self.irq_service_park
-                        .wait_until(|| !waiter.registration.is_attached())
-                },
-                || {
-                    let _removed = self.irq_notify.unregister(waiter.registration);
-                },
+                |token| self.irq_service_park.wait_until(|| !token.is_attached()),
                 || self.drain_irq_events(),
-            ) {
+            )
+            .unwrap_or_else(|error| panic!("evdev IRQ waiter could not quiesce: {error}"));
+            if !completed {
                 panic!("evdev IRQ service registration was occupied concurrently");
             }
         }
@@ -431,57 +424,15 @@ impl EventDev {
 }
 
 struct EventIrqWaiter {
-    registration: Pin<&'static IrqWaitRegistration>,
-    _wake: &'static ThreadWakeHandle,
+    registration: IrqWaitRegistration,
 }
 
 impl EventIrqWaiter {
     fn new(current: &scheduler::ThreadHandle) -> Self {
-        let wake = Box::leak(Box::new(current.wake_handle()));
-        // SAFETY: the wake handle is retained for the shutdown lifetime. Its
-        // direct wake path is allocation-free, non-blocking, and hard-IRQ-safe.
-        let irq_wake =
-            unsafe { IrqWakeHandle::from_raw(wake as *const _ as usize, wake_irq_service) };
-        let registration = Box::leak(Box::new(IrqWaitRegistration::new(irq_wake)));
-        // SAFETY: the leaked registration has a stable address for the shutdown
-        // lifetime and is never mutably accessed after publication.
-        let registration = unsafe { Pin::new_unchecked(&*registration) };
         Self {
-            registration,
-            _wake: wake,
+            registration: IrqWaitRegistration::new(current.wake_handle()),
         }
     }
-}
-
-fn complete_event_irq_service_cycle<P, C, F>(
-    registration: IrqRegisterResult,
-    park: P,
-    cleanup: C,
-    fanout: F,
-) -> bool
-where
-    P: FnOnce(),
-    C: FnOnce(),
-    F: FnOnce(),
-{
-    match registration {
-        IrqRegisterResult::Registered
-        | IrqRegisterResult::ConsumedPending
-        | IrqRegisterResult::NotificationInFlight => {
-            park();
-            cleanup();
-            fanout();
-            true
-        }
-        IrqRegisterResult::Occupied => false,
-    }
-}
-
-unsafe fn wake_irq_service(data: usize) {
-    // SAFETY: `EventIrqWaiter::new` publishes only its leaked
-    // `ThreadWakeHandle`, retained for the shutdown lifetime.
-    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
-    let _result = wake.wake();
 }
 
 fn write_user_bytes(arg: usize, capacity: usize, source: &[u8]) -> AxResult<usize> {
@@ -786,55 +737,4 @@ pub fn input_devices(fs: Arc<SimpleFs>) -> DirMapping {
 
     EVENT_DEVICE_COUNT.store(input_id, Ordering::Release);
     inputs
-}
-
-#[cfg(test)]
-mod tests {
-    use core::cell::Cell;
-
-    use super::*;
-
-    #[test]
-    fn pending_before_register_runs_deferred_event_fanout() {
-        assert_irq_service_cycle_order(IrqRegisterResult::ConsumedPending);
-    }
-
-    #[test]
-    fn register_before_irq_runs_deferred_event_fanout() {
-        assert_irq_service_cycle_order(IrqRegisterResult::Registered);
-    }
-
-    #[test]
-    fn occupied_event_service_registration_does_not_run_callbacks() {
-        let step = Cell::new(0);
-        let completed = complete_event_irq_service_cycle(
-            IrqRegisterResult::Occupied,
-            || step.set(1),
-            || step.set(2),
-            || step.set(3),
-        );
-        assert!(!completed);
-        assert_eq!(step.get(), 0);
-    }
-
-    fn assert_irq_service_cycle_order(registration: IrqRegisterResult) {
-        let step = Cell::new(0);
-        let completed = complete_event_irq_service_cycle(
-            registration,
-            || {
-                assert_eq!(step.get(), 0);
-                step.set(1);
-            },
-            || {
-                assert_eq!(step.get(), 1);
-                step.set(2);
-            },
-            || {
-                assert_eq!(step.get(), 2);
-                step.set(3);
-            },
-        );
-        assert!(completed);
-        assert_eq!(step.get(), 3);
-    }
 }

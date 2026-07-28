@@ -25,9 +25,8 @@
 //!   因此用户在 worker 跑完前 `close(fd)` 不会导致 DMA 物理页被回收
 //!   （防 use-after-free）。
 
-use alloc::{boxed::Box, collections::VecDeque, string::String, sync::Arc};
+use alloc::{collections::VecDeque, string::String, sync::Arc};
 use core::{
-    pin::Pin,
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
     time::Duration,
 };
@@ -36,8 +35,7 @@ use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::PhysAddr;
 use ax_std::os::arceos::task::{
-    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle,
-    ThreadId, ThreadWakeHandle, WaitQueue,
+    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, ThreadId, WaitQueue,
 };
 use sg2002_tpu::{
     ion::IonBuffer,
@@ -266,15 +264,15 @@ fn tpu_wait_irq(timeout_us: u64) -> bool {
         current.id(),
         "TPU IRQ notifications must target the fixed worker thread"
     );
-    match TPU_IRQ_NOTIFY.register(waiter.registration.as_ref()) {
-        IrqRegisterResult::Registered
-        | IrqRegisterResult::ConsumedPending
-        | IrqRegisterResult::NotificationInFlight => {
+    match TPU_IRQ_NOTIFY.register(&waiter.registration) {
+        IrqRegisterResult::ConsumedPending => hw.irq_pending(),
+        IrqRegisterResult::Registered(token) | IrqRegisterResult::NotificationInFlight(token) => {
             let _timed_out = TPU_IRQ_PARK
                 .wait_timeout_until(Duration::from_micros(timeout_us), || {
-                    !waiter.registration.is_attached() || hw.irq_pending()
+                    !token.is_attached() || hw.irq_pending()
                 });
-            let _removed = TPU_IRQ_NOTIFY.unregister(waiter.registration.as_ref());
+            scheduler::quiesce_irq_wait(&TPU_IRQ_NOTIFY, token)
+                .unwrap_or_else(|error| panic!("TPU IRQ waiter could not quiesce: {error}"));
             hw.irq_pending()
         }
         IrqRegisterResult::Occupied => false,
@@ -283,27 +281,14 @@ fn tpu_wait_irq(timeout_us: u64) -> bool {
 
 struct TpuIrqWaiter {
     owner: ThreadId,
-    registration: Pin<Box<IrqWaitRegistration>>,
-    _wake: &'static ThreadWakeHandle,
+    registration: IrqWaitRegistration,
 }
 
 fn create_tpu_irq_waiter(current: &scheduler::ThreadHandle) -> TpuIrqWaiter {
-    let wake = Box::leak(Box::new(current.wake_handle()));
-    // SAFETY: the fixed worker and its wake handle live until shutdown. The
-    // direct wake is allocation-free, non-blocking, and hard-IRQ-safe.
-    let irq_wake = unsafe { IrqWakeHandle::from_raw(wake as *const _ as usize, wake_tpu_worker) };
     TpuIrqWaiter {
         owner: current.id(),
-        registration: Box::pin(IrqWaitRegistration::new(irq_wake)),
-        _wake: wake,
+        registration: IrqWaitRegistration::new(current.wake_handle()),
     }
-}
-
-unsafe fn wake_tpu_worker(data: usize) {
-    // SAFETY: `create_tpu_irq_waiter` publishes only the leaked wake handle
-    // retained by the shutdown-lifetime waiter.
-    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
-    let _result = wake.wake();
 }
 
 /// 常驻 worker 线程主循环（对应 Linux `work_thread_main`）。

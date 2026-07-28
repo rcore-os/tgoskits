@@ -77,7 +77,6 @@ use alloc::{
 };
 use core::{
     net::{IpAddr, Ipv4Addr},
-    pin::Pin,
     sync::atomic::{AtomicBool, Ordering},
     task::Waker,
     time::Duration,
@@ -85,7 +84,7 @@ use core::{
 
 use ax_errno::{AxError, AxResult, ax_err_type};
 use ax_sync::SpinMutex;
-use ax_task::{IrqWaitCell, IrqWaitRegistration, IrqWakeHandle, ThreadWakeHandle, WaitQueue};
+use ax_task::{IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, WaitQueue, quiesce_irq_wait};
 use axpoll::{IoEvents, PollSet};
 use smoltcp::{
     socket::dns::{self, GetQueryResultError, StartQueryError},
@@ -166,7 +165,7 @@ static WIFI_CONTROLS: LazyLock<SpinMutex<Vec<(alloc::string::String, rd_net::Wif
 
 static NET_IRQ_EVENT: AtomicBool = AtomicBool::new(false);
 static NET_IRQ_WAIT: IrqWaitCell = IrqWaitCell::new();
-static NET_IRQ_REGISTRATION: Once<&'static IrqWaitRegistration> = Once::new();
+static NET_IRQ_REGISTRATION: Once<IrqWaitRegistration> = Once::new();
 
 const DHCP_BOOTSTRAP_ATTEMPTS: usize = 200;
 const DHCP_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -816,14 +815,26 @@ impl Wake for NetPollWake {
 fn net_poll_worker() {
     initialize_net_irq_registration();
     loop {
-        let _result = NET_IRQ_WAIT.register(net_irq_registration());
+        let registration = NET_IRQ_WAIT.register(net_irq_registration());
         let delay = next_poll_delay();
-        let timed_out = NET_POLL_WAKE.wait_timeout_until(delay, || {
-            NET_POLL_REQUESTED.load(Ordering::Acquire)
-                || NET_IRQ_EVENT.load(Ordering::Acquire)
-                || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
-        });
-        let _removed = NET_IRQ_WAIT.unregister(net_irq_registration());
+        let timed_out = match registration {
+            IrqRegisterResult::ConsumedPending => false,
+            IrqRegisterResult::Registered(token)
+            | IrqRegisterResult::NotificationInFlight(token) => {
+                let timed_out = NET_POLL_WAKE.wait_timeout_until(delay, || {
+                    !token.is_attached()
+                        || NET_POLL_REQUESTED.load(Ordering::Acquire)
+                        || NET_IRQ_EVENT.load(Ordering::Acquire)
+                        || DEFERRED_POLL_WAKE_PENDING.load(Ordering::Acquire)
+                });
+                quiesce_irq_wait(&NET_IRQ_WAIT, token)
+                    .unwrap_or_else(|error| panic!("net IRQ waiter could not quiesce: {error}"));
+                timed_out
+            }
+            IrqRegisterResult::Occupied => {
+                panic!("net IRQ waiter was registered concurrently")
+            }
+        };
         if !timed_out {
             take_poll_request(&NET_POLL_REQUESTED, || {});
         }
@@ -841,33 +852,14 @@ fn initialize_net_irq_registration() {
     NET_IRQ_REGISTRATION.call_once(|| {
         let thread = ax_task::current_thread_handle()
             .unwrap_or_else(|error| panic!("net poll worker has no scheduler thread: {error}"));
-        let wake = Box::leak(Box::new(thread.wake_handle()));
-        // SAFETY: both the leaked direct wake and its scheduler thread remain
-        // valid for the permanent net worker's lifetime. The callback only
-        // performs bounded ax-task direct-wake publication.
-        let irq_wake = unsafe {
-            IrqWakeHandle::from_raw(
-                wake as *const ThreadWakeHandle as usize,
-                wake_net_poll_thread,
-            )
-        };
-        Box::leak(Box::new(IrqWaitRegistration::new(irq_wake)))
+        IrqWaitRegistration::new(thread.wake_handle())
     });
 }
 
-fn net_irq_registration() -> Pin<&'static IrqWaitRegistration> {
-    let registration = *NET_IRQ_REGISTRATION
+fn net_irq_registration() -> &'static IrqWaitRegistration {
+    NET_IRQ_REGISTRATION
         .get()
-        .expect("net IRQ registration must be initialized by its worker");
-    // SAFETY: the registration is leaked, never moves, and is detached or
-    // owned by NET_IRQ_WAIT across each one-shot wait iteration.
-    unsafe { Pin::new_unchecked(registration) }
-}
-
-unsafe fn wake_net_poll_thread(data: usize) {
-    // SAFETY: initialization stores a leaked ThreadWakeHandle at this address.
-    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
-    let _result = wake.wake();
+        .expect("net IRQ registration must be initialized by its worker")
 }
 
 fn device_poll_fallback_due(timed_out: bool, irq_pending: bool, delay: Duration) -> bool {

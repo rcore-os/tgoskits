@@ -13,6 +13,8 @@ pub mod event;
 mod fb;
 #[cfg(feature = "sg2002")]
 pub mod ion;
+#[cfg(any(feature = "input", feature = "k230-kpu"))]
+mod irq_service;
 mod kmsg;
 #[cfg(feature = "k230-kpu")]
 mod kpu;
