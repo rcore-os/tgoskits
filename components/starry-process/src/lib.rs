@@ -12,6 +12,9 @@ mod session;
 /// A process ID, also used as session ID, process group ID, and thread ID.
 pub type Pid = u32;
 
-pub use process::{PreparedFork, Process, ProcessCpuTime, PublishedFork, ThreadExit, init_proc};
+pub use process::{
+    PreparedFork, Process, ProcessCpuTime, ProcessExitRelations, PublishedFork, ThreadExit,
+    init_proc,
+};
 pub use process_group::ProcessGroup;
 pub use session::Session;

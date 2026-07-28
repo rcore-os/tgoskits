@@ -41,6 +41,28 @@ fn reap() {
 }
 
 #[test]
+fn prepared_fork_cannot_publish_after_parent_exit_relations_begin() {
+    let init = init_proc();
+    let parent = init.new_child();
+    let prepared = parent.prepare_fork(10_000);
+    let child = prepared.process().clone();
+
+    parent.reparent_children_to(&init);
+
+    assert!(
+        prepared.publish().is_none(),
+        "a prepared fork must not publish a new child after its parent began exit"
+    );
+    assert!(
+        !parent
+            .children()
+            .iter()
+            .any(|registered| Arc::ptr_eq(registered, &child)),
+        "a failed late publication must leave the exiting parent childless"
+    );
+}
+
+#[test]
 fn child_subreaper_flag_is_process_local() {
     let parent = init_proc().new_child();
     assert!(!parent.is_child_subreaper());

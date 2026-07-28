@@ -204,6 +204,18 @@ regression. Deterministic host tests cover target parsing, registry generation
 reuse, close versus switch-out, failed owner-stop retry, redirect/detach
 selection, shared output lifetime, and bounded multi-producer admission.
 
+Starry process exit now closes child publication in the same relationship
+transaction that reparents existing children. This mirrors Linux
+`copy_process()` and `exit_notify()`, which publish a child and splice an
+exiting parent's child list under `tasklist_lock`. Previously Starry took a
+child snapshot, reparented it, and only later published
+`ProcessIdentity::Zombie`; a prepared fork could publish in that interval and
+remain permanently attached to the zombie. The deterministic regression
+prepares a fork, starts parent exit relationships, and then proves that late
+publication is rejected. The transaction returns the exact moved child
+snapshot, so parent-death notification cannot miss a child admitted between a
+separate snapshot and reparent step.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

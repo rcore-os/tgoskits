@@ -114,6 +114,9 @@ The patch:
   clone early;
 - makes final thread exit a one-shot operation and atomically accumulates each
   exiting thread's CPU time under the thread-group lock;
+- closes child publication and reparents the exact child snapshot before the
+  sole `Live -> Zombie` publication, so a prepared fork cannot attach a new
+  child to an exiting process after its relationship transaction;
 - freezes credentials, wait metadata, and process CPU time in the zombie
   snapshot;
 - makes reap a unique claim, credits child CPU time only to the winning waiter,
