@@ -151,6 +151,18 @@ maximum-valued entry resident after the runtime had published no physical
 clockevent. It now passes together with explicit immediate-zero and
 notification-only park coverage.
 
+The clockevent IRQ transaction is also closed. Platform `begin_irq()` claims
+the controller event before dispatch (and LoongArch acknowledges the timer
+source there); the retained `ActiveIrq` completes EOI only after the runtime
+handler returns. Within that interval `LocalClockEvent` invalidates the old
+arm, accounts one bounded task-deadline batch, merges updates received during
+`Firing`, and commits one replacement before EOI. Deterministic tests prove
+that an early IRQ reprograms the unchanged deadline exactly once and that a
+spurious IRQ in `Idle` is a bounded no-op. The physical conversion uses
+ceiling arithmetic, clamps elapsed or sub-tick deadlines to one tick, clamps
+unrepresentable deltas to the device argument width, and programs the interval
+before unmasking the IRQ.
+
 ## Open audit items after the structural split
 
 These items are not local patch suggestions. Each needs a deterministic red
@@ -158,7 +170,6 @@ test and a review of the owning state machine before implementation.
 
 | Area | Open question or defect | Linux v7.1 reference | Required next evidence |
 | --- | --- | --- | --- |
-| Clockevent IRQ transaction | A hardware callback always invalidates the armed state and enters `Firing`; the state machine safely re-arms if no task expires, but the audit has not yet injected an early or spurious delivery through the complete ACK/begin/finish path. | `hrtimer_interrupt()` invalidates the delivered event and re-evaluates the next event even when no timer is expired. | Add a fake-device test for an early delivery and require exactly one replacement program with no task expiry. This is currently an evidence gap, not a confirmed semantic failure. |
 | Scope-local contention | The low-level lease API is bounded, but Starry's task-context mutation wrapper retries `ScopeCellBusy` with repeated yields. A retained remote reader has no queued waiter, PI donation, interruption, or deadline. | PREEMPT_RT `local_lock` task-context contention blocks through an RT mutex instead of polling with preemption disabled. | Model the outer task-context acquisition as a waitable ownership transition and test remote-reader release, interruption, and cancellation. Keep `scope-local` itself non-sleeping. |
 | IRQ waiter owner lifetime | `IrqWaitRegistration` has generation and in-flight notification grace, but Starry `IrqNotify` still relies on a documented unregister/quiesce-before-drop obligation rather than an owner type that makes the teardown sequence unavoidable. | IRQ action removal revokes publication and synchronizes in-flight handlers before releasing storage. | Trace every retained producer through drop, then add a concurrent notify-versus-owner-drop test. If a producer can outlive the cell, replace the contract-only API with an owning registration/teardown guard. |
 

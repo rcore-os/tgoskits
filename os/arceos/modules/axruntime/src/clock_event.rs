@@ -451,6 +451,46 @@ mod tests {
     }
 
     #[test]
+    fn early_irq_reprograms_the_unchanged_deadline_once() {
+        let mut event = LocalClockEvent::offline();
+        assert_eq!(
+            event.online(Some(deadline(500))),
+            ClockEventAction::Program(deadline(500))
+        );
+        assert_eq!(
+            event.publish_task(1, Some(100), false),
+            ClockEventAction::Program(deadline(100))
+        );
+
+        event.begin_firing();
+        event.advance_periodic(50, 25);
+        assert_eq!(
+            event.publish_task(2, Some(100), false),
+            ClockEventAction::None,
+            "updates observed while Firing must be merged into the IRQ transaction"
+        );
+
+        assert_eq!(
+            event.finish_firing(),
+            ClockEventAction::Program(deadline(100))
+        );
+        assert_eq!(event.phase(), ClockEventPhase::Armed);
+        assert_eq!(event.armed_deadline(), Some(deadline(100)));
+    }
+
+    #[test]
+    fn spurious_irq_while_idle_is_a_bounded_noop() {
+        let mut event = LocalClockEvent::offline();
+        assert_eq!(event.online(None), ClockEventAction::None);
+
+        event.begin_firing();
+
+        assert_eq!(event.finish_firing(), ClockEventAction::None);
+        assert_eq!(event.phase(), ClockEventPhase::Idle);
+        assert_eq!(event.armed_deadline(), None);
+    }
+
+    #[test]
     fn overdue_task_deadline_remains_immediate_until_firing_reconciles_it() {
         let mut event = LocalClockEvent::offline();
         event.online(Some(deadline(500)));
