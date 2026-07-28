@@ -1,18 +1,17 @@
-use alloc::{
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
 use core::{any::Any, convert::Infallible, fmt};
 
 use ax_kspin::SpinNoIrq;
-use weak_map::WeakMap;
 
-use crate::{Pid, ProcessGroup};
+use crate::{
+    Pid, ProcessGroup,
+    relations::{RelationLock, SessionGroups},
+};
 
 /// A [`Session`] is a collection of [`ProcessGroup`]s.
 pub struct Session {
     sid: Pid,
-    pub(crate) process_groups: SpinNoIrq<WeakMap<Pid, Weak<ProcessGroup>>>,
+    pub(crate) process_groups: RelationLock<SessionGroups>,
     terminal: SpinNoIrq<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
@@ -21,7 +20,7 @@ impl Session {
     pub(crate) fn new(sid: Pid) -> Arc<Self> {
         Arc::new(Self {
             sid,
-            process_groups: SpinNoIrq::new(WeakMap::new()),
+            process_groups: RelationLock::new(SessionGroups::with_capacity(1)),
             terminal: SpinNoIrq::new(None),
         })
     }
@@ -35,7 +34,17 @@ impl Session {
 
     /// The [`ProcessGroup`]s that belong to this [`Session`].
     pub fn process_groups(&self) -> Vec<Arc<ProcessGroup>> {
-        self.process_groups.lock().values().collect()
+        loop {
+            let group_count = self.process_groups.lock().len();
+            let mut groups = Vec::with_capacity(group_count);
+            let relations = self.process_groups.lock();
+            if groups.capacity() < relations.len() {
+                drop(relations);
+                continue;
+            }
+            relations.snapshot(&mut groups);
+            return groups;
+        }
     }
 
     /// Sets the terminal for this session.

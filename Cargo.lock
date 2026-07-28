@@ -8160,8 +8160,8 @@ version = "0.4.15"
 dependencies = [
  "ax-kspin",
  "ax-lazyinit",
+ "ax-sync",
  "ctor 0.4.3",
- "weak-map",
 ]
 
 [[package]]

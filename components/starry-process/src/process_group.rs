@@ -1,19 +1,16 @@
-use alloc::{
-    sync::{Arc, Weak},
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
 use core::fmt;
 
-use ax_kspin::SpinNoIrq;
-use weak_map::WeakMap;
-
-use crate::{Pid, Process, Session};
+use crate::{
+    Pid, Process, Session,
+    relations::{GroupMembers, ProcessRelationTxn, RelationLock},
+};
 
 /// A [`ProcessGroup`] is a collection of [`Process`]es.
 pub struct ProcessGroup {
     pgid: Pid,
     pub(crate) session: Arc<Session>,
-    pub(crate) processes: SpinNoIrq<WeakMap<Pid, Weak<Process>>>,
+    pub(crate) processes: RelationLock<GroupMembers>,
 }
 
 impl ProcessGroup {
@@ -22,9 +19,11 @@ impl ProcessGroup {
         let group = Arc::new(Self {
             pgid,
             session: session.clone(),
-            processes: SpinNoIrq::new(WeakMap::new()),
+            // The creating process can join without allocating while the
+            // membership transaction is held.
+            processes: RelationLock::new(GroupMembers::with_capacity(1)),
         });
-        session.process_groups.lock().insert(pgid, &group);
+        ProcessRelationTxn::attach_session_group(&group);
         group
     }
 }
@@ -42,7 +41,17 @@ impl ProcessGroup {
 
     /// The [`Process`]es that belong to this [`ProcessGroup`].
     pub fn processes(&self) -> Vec<Arc<Process>> {
-        self.processes.lock().values().collect()
+        loop {
+            let member_count = self.processes.lock().len();
+            let mut processes = Vec::with_capacity(member_count);
+            let members = self.processes.lock();
+            if processes.capacity() < members.len() {
+                drop(members);
+                continue;
+            }
+            members.snapshot(&mut processes);
+            return processes;
+        }
     }
 }
 

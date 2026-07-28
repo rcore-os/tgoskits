@@ -363,7 +363,10 @@ pub(crate) fn orphan_reaper_for(process: &Arc<Process>) -> Arc<Process> {
         if Arc::ptr_eq(&candidate, &init) {
             break;
         }
-        if candidate.is_child_subreaper() && is_live_process(&candidate) {
+        if candidate.is_child_subreaper()
+            && candidate.accepts_child_publication()
+            && is_live_process(&candidate)
+        {
             return candidate;
         }
         cursor = candidate.parent();

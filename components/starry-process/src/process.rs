@@ -11,9 +11,11 @@ use core::{
 
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
-use weak_map::StrongMap;
 
-use crate::{Pid, ProcessGroup, Session};
+use crate::{
+    Pid, ProcessGroup, Session,
+    relations::{ChildRelations, GroupMoveScope, ProcessRelationTxn, RelationLock},
+};
 
 #[derive(Default)]
 pub(crate) struct ThreadGroup {
@@ -69,30 +71,10 @@ pub struct Process {
     is_child_subreaper: AtomicBool,
     pub(crate) tg: SpinNoIrq<ThreadGroup>,
 
-    children: SpinNoIrq<ChildRelations>,
-    parent: SpinNoIrq<Weak<Process>>,
+    pub(crate) children: RelationLock<ChildRelations>,
+    pub(crate) parent: RelationLock<Weak<Process>>,
 
-    group: SpinNoIrq<Arc<ProcessGroup>>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ChildPublication {
-    Open,
-    ClosedForExit,
-}
-
-struct ChildRelations {
-    publication: ChildPublication,
-    entries: StrongMap<Pid, Arc<Process>>,
-}
-
-impl ChildRelations {
-    const fn new() -> Self {
-        Self {
-            publication: ChildPublication::Open,
-            entries: StrongMap::new(),
-        }
-    }
+    pub(crate) group: RelationLock<Arc<ProcessGroup>>,
 }
 
 /// A forked process whose parent/child and process-group links are not visible.
@@ -115,20 +97,9 @@ impl PreparedFork {
     /// reused while clone was preparing resources.
     pub fn publish(self) -> Option<PublishedFork> {
         let process = self.process;
-        let parent = process.parent()?;
-        let group = process.group();
-        let mut children = parent.children.lock();
-        if children.publication != ChildPublication::Open {
+        if !ProcessRelationTxn::publish(&process) {
             return None;
         }
-        let mut members = group.processes.lock();
-        if children.entries.contains_key(&process.pid) || members.get(&process.pid).is_some() {
-            return None;
-        }
-        children.entries.insert(process.pid, process.clone());
-        members.insert(process.pid, &process);
-        drop(members);
-        drop(children);
         Some(PublishedFork {
             process: Some(process),
         })
@@ -213,9 +184,27 @@ impl Process {
         self.parent.lock().upgrade()
     }
 
+    /// Returns whether this process can still accept a newly published child.
+    ///
+    /// This is an advisory snapshot. A caller that reparents children must use
+    /// [`Self::try_begin_exit_relations`] to commit against the same state.
+    pub fn accepts_child_publication(&self) -> bool {
+        self.children.lock().is_open()
+    }
+
     /// The child [`Process`]es.
     pub fn children(&self) -> Vec<Arc<Process>> {
-        self.children.lock().entries.values().cloned().collect()
+        loop {
+            let child_count = self.children.lock().len();
+            let mut children = Vec::with_capacity(child_count);
+            let relations = self.children.lock();
+            if children.capacity() < relations.len() {
+                drop(relations);
+                continue;
+            }
+            relations.snapshot(&mut children);
+            return children;
+        }
     }
 }
 
@@ -227,13 +216,11 @@ impl Process {
     }
 
     fn set_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) {
-        let mut self_group = self.group.lock();
-
-        self_group.processes.lock().remove(&self.pid);
-
-        group.processes.lock().insert(self.pid, self);
-
-        *self_group = group.clone();
+        assert!(ProcessRelationTxn::move_group(
+            self,
+            group,
+            GroupMoveScope::AnySession,
+        ));
     }
 
     /// Creates a new [`Session`] and new [`ProcessGroup`] and moves the
@@ -250,8 +237,11 @@ impl Process {
     ///
     /// Checking [`Session`] conflicts is unnecessary.
     pub fn create_session(self: &Arc<Self>) -> Option<(Arc<Session>, Arc<ProcessGroup>)> {
-        if self.group.lock().session.sid() == self.pid {
-            return None;
+        {
+            let group = self.group.lock();
+            if group.session.sid() == self.pid {
+                return None;
+            }
         }
 
         let new_session = Session::new(self.pid);
@@ -271,11 +261,15 @@ impl Process {
     /// The caller has to ensure that the new [`ProcessGroup`] does not conflict
     /// with any existing [`ProcessGroup`].
     pub fn create_group(self: &Arc<Self>) -> Option<Arc<ProcessGroup>> {
-        if self.group.lock().pgid() == self.pid {
-            return None;
-        }
+        let session = {
+            let group = self.group.lock();
+            if group.pgid() == self.pid {
+                return None;
+            }
+            group.session.clone()
+        };
 
-        let new_group = ProcessGroup::new(self.pid, &self.group.lock().session);
+        let new_group = ProcessGroup::new(self.pid, &session);
         self.set_group(&new_group);
 
         Some(new_group)
@@ -289,16 +283,7 @@ impl Process {
     /// If the [`Process`] is already in the specified [`ProcessGroup`], this
     /// method does nothing and returns `true`.
     pub fn move_to_group(self: &Arc<Self>, group: &Arc<ProcessGroup>) -> bool {
-        if Arc::ptr_eq(&self.group.lock(), group) {
-            return true;
-        }
-
-        if !Arc::ptr_eq(&self.group.lock().session, &group.session) {
-            return false;
-        }
-
-        self.set_group(group);
-        true
+        ProcessRelationTxn::move_group(self, group, GroupMoveScope::SameSession)
     }
 }
 
@@ -402,6 +387,20 @@ impl Process {
 
 /// Process relationship transitions
 impl Process {
+    /// Tries to close child publication and reparent all existing children.
+    ///
+    /// Returns `None` if `reaper` completed its own relationship exit before
+    /// this transaction acquired both child sets. The caller should choose a
+    /// new live ancestor and retry.
+    pub fn try_begin_exit_relations(
+        self: &Arc<Self>,
+        reaper: &Arc<Process>,
+    ) -> Option<ProcessExitRelations> {
+        Some(ProcessExitRelations {
+            reparented_children: ProcessRelationTxn::begin_exit(self, reaper)?,
+        })
+    }
+
     /// Closes child publication and reparents all existing children to
     /// `reaper`.
     ///
@@ -410,24 +409,10 @@ impl Process {
     /// The returned snapshot is exactly the set moved to `reaper`, so callers
     /// can deliver parent-death notifications without a snapshot/reparent race.
     pub fn begin_exit_relations(self: &Arc<Self>, reaper: &Arc<Process>) -> ProcessExitRelations {
-        if self.is_init() || Arc::ptr_eq(self, reaper) {
-            return ProcessExitRelations {
-                reparented_children: Vec::new(),
-            };
-        }
-
-        let reparented_children = if self.pid < reaper.pid {
-            let mut children = self.children.lock();
-            let mut reaper_children = reaper.children.lock();
-            Self::reparent_children_locked(&mut children, &mut reaper_children, reaper)
-        } else {
-            let mut reaper_children = reaper.children.lock();
-            let mut children = self.children.lock();
-            Self::reparent_children_locked(&mut children, &mut reaper_children, reaper)
-        };
-        ProcessExitRelations {
-            reparented_children,
-        }
+        self.try_begin_exit_relations(reaper).unwrap_or_else(|| {
+            self.try_begin_exit_relations(&init_proc())
+                .expect("init process must remain available as orphan reaper")
+        })
     }
 
     /// Reparents all children to `reaper`.
@@ -438,47 +423,12 @@ impl Process {
         drop(self.begin_exit_relations(reaper));
     }
 
-    fn reparent_children_locked(
-        children: &mut ChildRelations,
-        reaper_children: &mut ChildRelations,
-        reaper: &Arc<Process>,
-    ) -> Vec<Arc<Process>> {
-        children.publication = ChildPublication::ClosedForExit;
-        let reaper_parent = Arc::downgrade(reaper);
-        let mut reparented_children = Vec::with_capacity(children.entries.len());
-        for (pid, child) in core::mem::take(&mut children.entries) {
-            *child.parent.lock() = reaper_parent.clone();
-            reparented_children.push(child.clone());
-            reaper_children.entries.insert(pid, child);
-        }
-        reparented_children
-    }
-
     /// Retires this process's parent and process-group links.
     ///
     /// The PID-identity state machine guarantees that exactly one consuming
     /// waiter calls this method.
     pub fn retire(self: &Arc<Self>) {
-        let parent = self.parent();
-        let group = self.group();
-        let mut parent_children = parent.as_ref().map(|parent| parent.children.lock());
-        let mut group_members = group.processes.lock();
-
-        if let Some(children) = parent_children.as_mut()
-            && children
-                .entries
-                .get(&self.pid)
-                .is_some_and(|registered| Arc::ptr_eq(registered, self))
-        {
-            children.entries.remove(&self.pid);
-        }
-        if group_members
-            .get(&self.pid)
-            .is_some_and(|registered| Arc::ptr_eq(&registered, self))
-        {
-            group_members.remove(&self.pid);
-        }
-        *self.parent.lock() = Weak::new();
+        ProcessRelationTxn::detach(self);
     }
 }
 
@@ -518,18 +468,21 @@ impl Process {
             pid,
             is_child_subreaper: AtomicBool::new(false),
             tg: SpinNoIrq::new(ThreadGroup::default()),
-            children: SpinNoIrq::new(ChildRelations::new()),
-            parent: SpinNoIrq::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),
-            group: SpinNoIrq::new(group.clone()),
+            children: RelationLock::new(ChildRelations::new()),
+            parent: RelationLock::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),
+            group: RelationLock::new(group.clone()),
         })
     }
 
     fn new(pid: Pid, parent: Option<Arc<Process>>) -> Arc<Process> {
         let process = Self::allocate(pid, parent.clone());
-        process.group().processes.lock().insert(pid, &process);
-        if let Some(parent) = parent {
-            parent.children.lock().entries.insert(pid, process.clone());
+        if parent.is_some() {
+            assert!(
+                ProcessRelationTxn::publish(&process),
+                "new child PID must not already be visible"
+            );
         } else {
+            ProcessRelationTxn::attach_group(&process);
             INIT_PROC.init_once(process.clone());
         }
         process
@@ -559,38 +512,14 @@ impl Process {
     }
 
     fn rollback_fork_publication(self: &Arc<Process>) {
-        let Some(parent) = self.parent() else {
-            return;
-        };
-        let group = self.group();
-        let mut children = parent.children.lock();
-        let mut members = group.processes.lock();
-        let child_matches = children
-            .entries
-            .get(&self.pid)
-            .is_some_and(|registered| Arc::ptr_eq(registered, self));
-        let member_matches = members
-            .get(&self.pid)
-            .is_some_and(|registered| Arc::ptr_eq(&registered, self));
-        if child_matches {
-            children.entries.remove(&self.pid);
-        }
-        if member_matches {
-            members.remove(&self.pid);
-        }
-        drop(members);
-        drop(children);
-        // The publication token still owns this process, so rollback must
-        // retire its parent relationship even if another cleanup path already
-        // removed one of the two exact registry identities.
-        *self.parent.lock() = Weak::new();
+        ProcessRelationTxn::detach(self);
     }
 
     /// Creates an isolated process for kernel axtests without replacing init.
     #[cfg(axtest)]
     pub fn new_for_axtest(pid: Pid) -> Arc<Process> {
         let process = Self::allocate(pid, None);
-        process.group().processes.lock().insert(pid, &process);
+        ProcessRelationTxn::attach_group(&process);
         process
     }
 }
@@ -617,6 +546,7 @@ mod tests {
     };
 
     use super::Process;
+    use crate::ProcessGroup;
 
     fn test_init() -> Arc<Process> {
         static TEST_INIT: OnceLock<Arc<Process>> = OnceLock::new();
@@ -646,8 +576,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_millis(500);
         let mut observed_invisible = false;
         while Instant::now() < deadline {
-            let parent_has_child = parent.children.lock().entries.contains_key(&child_pid);
-            let reaper_has_child = reaper_children.entries.contains_key(&child_pid);
+            let parent_has_child = parent.children.lock().contains(child_pid);
+            let reaper_has_child = reaper_children.contains(child_pid);
             if !parent_has_child && !reaper_has_child {
                 observed_invisible = true;
                 break;
@@ -663,7 +593,7 @@ mod tests {
             "orphan was removed from its old parent before it became visible to the reaper"
         );
         assert!(Arc::ptr_eq(&reaper, &child.parent().unwrap()));
-        assert!(reaper.children.lock().entries.contains_key(&child_pid));
+        assert!(reaper.children.lock().contains(child_pid));
     }
 
     #[test]
@@ -716,7 +646,8 @@ mod tests {
         let init = test_init();
         let published = init.prepare_fork(14).publish().unwrap();
         let child = published.process().clone();
-        child.group().processes.lock().remove(&child.pid());
+        let removed = child.group().processes.lock().remove(child.pid());
+        drop(removed);
 
         drop(published);
 
@@ -733,6 +664,62 @@ mod tests {
                 .processes()
                 .iter()
                 .any(|process| Arc::ptr_eq(process, &child))
+        );
+    }
+
+    #[test]
+    fn group_move_never_makes_process_temporarily_invisible() {
+        let init = test_init();
+        let process = init.fork(91);
+        let source = process.group();
+        let target = ProcessGroup::new(92, &source.session());
+        let target_members = target.processes.lock();
+        let start = StdArc::new(Barrier::new(2));
+        let move_start = start.clone();
+        let moving_process = process.clone();
+        let moving_target = target.clone();
+        let move_thread = thread::spawn(move || {
+            move_start.wait();
+            assert!(moving_process.move_to_group(&moving_target));
+        });
+
+        start.wait();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut observed_invisible = false;
+        while Instant::now() < deadline {
+            let source_has_process = source.processes.lock().get(process.pid()).is_some();
+            let target_has_process = target_members.get(process.pid()).is_some();
+            if !source_has_process && !target_has_process {
+                observed_invisible = true;
+                break;
+            }
+            thread::yield_now();
+        }
+
+        drop(target_members);
+        move_thread.join().unwrap();
+
+        assert!(
+            !observed_invisible,
+            "group move removed the process before the destination membership was reserved"
+        );
+        assert!(source.processes.lock().get(process.pid()).is_none());
+        assert!(target.processes.lock().get(process.pid()).is_some());
+    }
+
+    #[test]
+    fn closed_reaper_cannot_accept_new_orphans() {
+        let init = test_init();
+        let closing_reaper = init.fork(101);
+        let parent = closing_reaper.fork(102);
+        let child = parent.fork(103);
+
+        closing_reaper.reparent_children_to(&init);
+        parent.reparent_children_to(&closing_reaper);
+
+        assert!(
+            Arc::ptr_eq(&child.parent().unwrap(), &init),
+            "a closed reaper accepted a child after its own exit transaction"
         );
     }
 }
