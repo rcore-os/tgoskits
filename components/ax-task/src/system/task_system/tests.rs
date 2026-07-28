@@ -129,6 +129,64 @@ fn remote_publication_cannot_be_preempted_before_doorbell() {
 }
 
 #[test]
+fn coalesced_busy_ipi_drains_real_payloads_and_accepts_new_epoch() {
+    let system = Box::pin(TaskSystem::new(TaskSystemConfig::new(1).with_batch_limit(1)).unwrap());
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let running = system
+        .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+    let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+    let coalesced = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let newer_epoch = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    for thread in [&coalesced, &newer_epoch] {
+        system.make_ready(thread.id()).unwrap();
+        thread.core.set_target_cpu(CpuId::new(0));
+    }
+
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 1);
+    assert_eq!(running.wake_handle().wake(), crate::WakeResult::Notified);
+    assert_eq!(crate::test_runtime::scheduler_ipi_send_count(), 1);
+
+    assert_eq!(coalesced.wake_handle().wake(), crate::WakeResult::Notified);
+    assert_eq!(
+        crate::test_runtime::scheduler_ipi_send_count(),
+        1,
+        "an in-flight Busy delivery must cover payloads in the same epoch"
+    );
+
+    let first = system.drain_remote_wakes(cpu.as_mut(), 1).unwrap();
+    assert_eq!(first.drained(), 1);
+    assert!(first.pending());
+
+    assert_eq!(
+        newer_epoch.wake_handle().wake(),
+        crate::WakeResult::Notified
+    );
+    assert_eq!(
+        crate::test_runtime::scheduler_ipi_send_count(),
+        2,
+        "publication after handler acknowledgement must claim a new epoch"
+    );
+
+    let second = system.drain_remote_wakes(cpu.as_mut(), 2).unwrap();
+    assert_eq!(second.drained(), 1);
+    assert!(second.pending());
+    let third = system.drain_remote_wakes(cpu.as_mut(), 3).unwrap();
+    assert_eq!(third.drained(), 1);
+    assert!(!third.pending());
+    assert!(matches!(
+        system.schedule_if_requested(cpu.as_mut(), 3).unwrap(),
+        SchedulerOutcome::Quiescent
+    ));
+}
+
+#[test]
 fn permanent_scheduler_ipi_failure_fails_at_the_publication_boundary() {
     let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();

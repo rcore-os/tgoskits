@@ -105,11 +105,14 @@ Scheduler placement is now structurally closed. `SchedulerPlacement` is the
 only placement state and represents detached, queued, running, switching-out,
 migrating, and exited-awaiting-tail states. Switch-tail and migration tests
 exercise both owner transfer and exit retention. Remote delivery uses an epoch
-claim protocol and retains a claim when the transport reports `Busy`. Existing
-tests cover epoch replacement and the concrete migration/inbox path; one
-end-to-end virtual-runtime test is still required to connect payload
-publication, a `Busy` physical delivery, handler acknowledgement, and a newer
-publication in one scenario.
+claim protocol and retains a claim when the transport reports `Busy`, matching
+Linux `irq_work_claim()` and the handler-side pending-bit clear before callback
+execution. The deterministic virtual-runtime test
+`coalesced_busy_ipi_drains_real_payloads_and_accepts_new_epoch` now connects
+real retained-`Arc` inbox payloads, a coalesced `Busy` transport result,
+handler acknowledgement, bounded drain remainder, and a publication that must
+claim a newer physical epoch. The final safe point observes no stranded
+payload or sticky scheduler work.
 
 Owner runqueue serialization is also closed at this milestone.
 `TaskRuntime::validate_owner_cpu_context()` requires every public online
@@ -144,7 +147,6 @@ test and a review of the owning state machine before implementation.
 
 | Area | Open question or defect | Linux v7.1 reference | Required next evidence |
 | --- | --- | --- | --- |
-| Remote delivery transport | Epoch/claim unit and loom tests do not yet join the real payload queue to a physical transport `Busy` result. | Scheduler IPI and `irq_work` publish work before raising the interrupt and allow a new raise after the old claim is consumed. | One deterministic multi-CPU runtime test must publish payload A, make transport notification report `Busy`, consume A, race publication B, and prove B is drained without an unrelated interrupt. |
 | Task deadline domain | `TaskDeadlineQueue::arm` still accepts raw `0` and `u64::MAX`, while `LocalClockEvent` rejects both as physical deadlines. A retained maximum-valued task entry can therefore be logically finite in one owner and unrepresentable in the other. | `hrtimer` stores typed expiry values, while clockevent programming treats “no event” separately and clamps finite deltas to device limits. | Add red tests for zero, maximum, conversion overflow, and cancellation, then introduce one finite monotonic-deadline boundary or an explicit no-deadline value before publication. |
 | Clockevent IRQ transaction | A hardware callback always invalidates the armed state and enters `Firing`; the state machine safely re-arms if no task expires, but the audit has not yet injected an early or spurious delivery through the complete ACK/begin/finish path. | `hrtimer_interrupt()` invalidates the delivered event and re-evaluates the next event even when no timer is expired. | Add a fake-device test for an early delivery and require exactly one replacement program with no task expiry. This is currently an evidence gap, not a confirmed semantic failure. |
 | Scope-local contention | The low-level lease API is bounded, but Starry's task-context mutation wrapper retries `ScopeCellBusy` with repeated yields. A retained remote reader has no queued waiter, PI donation, interruption, or deadline. | PREEMPT_RT `local_lock` task-context contention blocks through an RT mutex instead of polling with preemption disabled. | Model the outer task-context acquisition as a waitable ownership transition and test remote-reader release, interruption, and cancellation. Keep `scope-local` itself non-sleeping. |
