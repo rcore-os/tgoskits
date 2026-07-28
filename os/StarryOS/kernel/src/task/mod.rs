@@ -31,7 +31,7 @@ use ax_runtime::hal::{cpu::uspace::UserContext, percpu::CpuPin, time::TimeValue}
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::{IoEvents, PollSet};
 use kernel_elf_parser::AuxEntry;
-use scope_local::{Scope, ScopeCell, ScopeCellWriteGuard};
+use scope_local::{Scope, ScopeCell, ScopeCellBusy, ScopeCellReadGuard, ScopeCellWriteGuard};
 use starry_process::{Pid, Process};
 use starry_signal::{
     SignalInfo, SignalSet, Signo,
@@ -121,7 +121,10 @@ pub struct Thread {
     pub proc_data: Arc<ProcessData>,
 
     /// Resources whose sharing is controlled by clone and unshare flags.
-    pub(crate) scope: ScopeCell,
+    scope: ScopeCell,
+
+    /// Task-context serialization around bounded scope-cell lease attempts.
+    scope_access: PiMutex<()>,
 
     /// Linux task nice value retained independently of the active class.
     ///
@@ -256,6 +259,7 @@ impl Thread {
             ),
             proc_data,
             scope: ScopeCell::from_scope(scope),
+            scope_access: PiMutex::new(()),
             nice: AtomicI32::new(0),
             clear_child_tid: AtomicUsize::new(0),
             robust_list_head: AtomicUsize::new(0),
@@ -293,19 +297,55 @@ impl Thread {
 
     /// Mutate the current thread's resource scope.
     ///
-    /// The closure runs with preemption and local IRQs disabled and must only
-    /// install already-prepared scope entries.
+    /// Contending task-context readers and writers sleep on the outer PI mutex.
+    /// The closure itself runs with preemption and local IRQs disabled and must
+    /// only install already-prepared scope entries.
     pub(crate) fn with_current_scope_mut<R>(
         &self,
         f: impl FnOnce(&mut ScopeCellWriteGuard<'_>) -> R,
     ) -> R {
-        let _guard = NoPreemptIrqSave::new();
-        // SAFETY: the combined guard prevents migration and local IRQ reentry
-        // for the complete scoped mutation callback.
-        unsafe {
-            ax_runtime::hal::percpu::with_cpu_pin(|pin| self.scope.with_active_mut_pinned(pin, f))
-                .expect("Starry scope mutation requires an installed CPU area")
+        let mut operation = Some(f);
+        loop {
+            let access = self.scope_access.lock();
+            let attempt = {
+                let _guard = NoPreemptIrqSave::new();
+                // SAFETY: the combined guard prevents migration and local IRQ
+                // reentry for this bounded lease attempt and callback.
+                unsafe {
+                    ax_runtime::hal::percpu::with_cpu_pin(|pin| {
+                        self.scope.try_with_active_mut_pinned(pin, |scope| {
+                            let operation = operation
+                                .take()
+                                .expect("scope mutation must execute at most once");
+                            operation(scope)
+                        })
+                    })
+                    .expect("Starry scope mutation requires an installed CPU area")
+                }
+            };
+            match attempt {
+                Ok(result) => return result,
+                Err(ScopeCellBusy) => {
+                    drop(access);
+                    ax_runtime::task::yield_current_cpu().unwrap_or_else(|error| {
+                        panic!("failed to yield after a contended scope mutation: {error}")
+                    });
+                }
+            }
         }
+    }
+
+    /// Reads this thread's resource scope under task-context serialization.
+    ///
+    /// Callers should clone the selected owned resource inside `operation` and
+    /// acquire any resource-specific sleep lock after this method returns.
+    pub(crate) fn with_scope<R>(&self, operation: impl FnOnce(&ScopeCellReadGuard<'_>) -> R) -> R {
+        let _access = self.scope_access.lock();
+        let scope = self
+            .scope
+            .try_read()
+            .expect("serialized Starry scope read found an active writer");
+        operation(&scope)
     }
 
     /// Returns the user-visible TID for this thread.
@@ -364,7 +404,11 @@ impl Thread {
         // ScopeCell acquires one raw shared lease before publishing the pinned
         // identity; ordinary scope-local reads then remain lock-free until the
         // matching switch-out withdraws that identity and lease.
-        unsafe { self.scope.activate_pinned(cpu_pin) };
+        unsafe {
+            self.scope
+                .try_activate_pinned(cpu_pin)
+                .expect("Starry switch-in found an active scope writer")
+        };
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_in(self);
     }

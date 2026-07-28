@@ -23,11 +23,10 @@ use crate::{
 const SCOPE_GATE_WRITER: usize = 1 << (usize::BITS - 1);
 const SCOPE_GATE_READERS: usize = SCOPE_GATE_WRITER - 1;
 
-/// Writer-preferred raw gate for scheduler-owned scope leases.
+/// Bounded raw gate for scheduler-owned scope leases.
 ///
-/// The writer bit is published before an exclusive caller waits for existing
-/// readers to drain. New activations therefore cannot barge ahead of a pending
-/// writer and keep task-context mutation spinning indefinitely.
+/// Scheduler and IRQ-adjacent callers only attempt one state transition. They
+/// never wait for a reader or writer while preemption is disabled.
 struct ScopeGate {
     state: AtomicUsize,
 }
@@ -36,31 +35,6 @@ impl ScopeGate {
     const fn new() -> Self {
         Self {
             state: AtomicUsize::new(0),
-        }
-    }
-
-    fn lock_shared(&self) {
-        let mut state = self.state.load(Ordering::Acquire);
-        loop {
-            if state & SCOPE_GATE_WRITER != 0 {
-                core::hint::spin_loop();
-                state = self.state.load(Ordering::Acquire);
-                continue;
-            }
-            assert_ne!(
-                state & SCOPE_GATE_READERS,
-                SCOPE_GATE_READERS,
-                "scope shared lease count overflow"
-            );
-            match self.state.compare_exchange_weak(
-                state,
-                state + 1,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return,
-                Err(observed) => state = observed,
-            }
         }
     }
 
@@ -74,27 +48,25 @@ impl ScopeGate {
             .is_ok()
     }
 
-    fn lock_exclusive_writer_preferred(&self) {
-        let mut state = self.state.load(Ordering::Acquire);
-        loop {
-            if state & SCOPE_GATE_WRITER != 0 {
-                core::hint::spin_loop();
-                state = self.state.load(Ordering::Acquire);
-                continue;
-            }
-            match self.state.compare_exchange_weak(
-                state,
-                state | SCOPE_GATE_WRITER,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(observed) => state = observed,
-            }
-        }
-        while self.state.load(Ordering::Acquire) != SCOPE_GATE_WRITER {
-            core::hint::spin_loop();
-        }
+    fn try_lock_exclusive(&self) -> bool {
+        self.state
+            .compare_exchange(0, SCOPE_GATE_WRITER, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+    }
+
+    fn try_upgrade_active_shared_to_exclusive(&self) -> bool {
+        self.state
+            .compare_exchange(1, SCOPE_GATE_WRITER, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    unsafe fn downgrade_exclusive_to_active_shared(&self) {
+        assert_eq!(
+            self.state.load(Ordering::Relaxed),
+            SCOPE_GATE_WRITER,
+            "scope downgrade requires the exclusive lease"
+        );
+        self.state.store(1, Ordering::Release);
     }
 
     unsafe fn unlock_shared(&self) {
@@ -122,40 +94,53 @@ impl ScopeGate {
 
 #[cfg(test)]
 mod scope_gate_tests {
-    use std::{
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-        thread,
-    };
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{SCOPE_GATE_WRITER, ScopeGate};
+    use super::{ScopeCell, ScopeGate};
+
+    crate::scope_local! {
+        static GATE_TEST_ITEM: usize = 0;
+    }
 
     #[test]
-    fn pending_writer_prevents_new_reader_barging() {
-        let gate = Arc::new(ScopeGate::new());
-        let writer_acquired = Arc::new(AtomicBool::new(false));
-        gate.lock_shared();
-
-        let writer_gate = gate.clone();
-        let writer_state = writer_acquired.clone();
-        let writer = thread::spawn(move || {
-            writer_gate.lock_exclusive_writer_preferred();
-            writer_state.store(true, Ordering::Release);
-            unsafe { writer_gate.unlock_exclusive() };
-        });
-
-        while gate.state.load(Ordering::Acquire) & SCOPE_GATE_WRITER == 0 {
-            thread::yield_now();
+    fn exclusive_attempt_is_bounded_by_live_readers() {
+        let gate = ScopeGate::new();
+        assert!(gate.try_lock_shared());
+        assert!(!gate.try_lock_exclusive());
+        assert!(gate.try_lock_shared());
+        // SAFETY: the test acquired exactly two shared counts.
+        unsafe {
+            gate.unlock_shared();
+            gate.unlock_shared();
         }
-        assert!(!gate.try_lock_shared());
-        assert!(!writer_acquired.load(Ordering::Acquire));
-
-        unsafe { gate.unlock_shared() };
-        writer.join().unwrap();
-        assert!(writer_acquired.load(Ordering::Acquire));
+        assert!(gate.try_lock_exclusive());
+        // SAFETY: the test acquired the exclusive count above.
+        unsafe { gate.unlock_exclusive() };
         assert!(!gate.is_locked());
+    }
+
+    #[test]
+    fn active_mutation_publishes_writer_before_releasing_its_lease() {
+        let _retain_registry_entry = &GATE_TEST_ITEM;
+        let cell = ScopeCell::new();
+        assert!(cell.try_acquire_active_lease());
+        let barged = AtomicBool::new(false);
+
+        assert!(cell.try_withdraw_active_lease_for_writer(|| {
+            let admitted = cell.scope.inner().gate.try_lock_shared();
+            barged.store(admitted, Ordering::Relaxed);
+            if admitted {
+                // SAFETY: this callback acquired exactly one shared count.
+                unsafe { cell.scope.inner().unlock_shared() };
+            }
+        }));
+        // SAFETY: the production transition returned with the exclusive count.
+        unsafe { cell.scope.inner().unlock_exclusive() };
+
+        assert!(
+            !barged.load(Ordering::Relaxed),
+            "a new active lease entered after mutation began but before writer intent was visible"
+        );
     }
 }
 
@@ -241,12 +226,12 @@ impl ScopeInner {
         }
     }
 
-    fn lock_shared(&self) {
-        self.gate.lock_shared();
+    fn try_lock_shared(&self) -> bool {
+        self.gate.try_lock_shared()
     }
 
-    fn lock_exclusive_writer_preferred(&self) {
-        self.gate.lock_exclusive_writer_preferred();
+    fn try_lock_exclusive(&self) -> bool {
+        self.gate.try_lock_exclusive()
     }
 
     unsafe fn unlock_shared(&self) {
@@ -260,7 +245,10 @@ impl ScopeInner {
     }
 
     pub(crate) fn read_item(&self, item: &'static Item) -> ScopeItemLease<'_> {
-        self.lock_shared();
+        assert!(
+            self.try_lock_shared(),
+            "an exclusively borrowed scope cannot have a concurrent writer"
+        );
         ScopeItemLease { inner: self, item }
     }
 
@@ -318,12 +306,24 @@ impl Drop for ScopeInner {
 ///
 /// Scheduler hooks acquire the lease before publishing the pinned pointer and
 /// release it after clearing that pointer. Scope-local hot reads therefore need
-/// no per-access lock. Writers use an upgradable lease to publish writer intent
-/// before waiting for active tasks and bounded remote readers to drain.
+/// no per-access lock. Every contended operation returns [`ScopeCellBusy`]
+/// without waiting in a non-preemptible context.
 pub struct ScopeCell {
     scope: Scope,
     active_cpus: AtomicUsize,
 }
+
+/// A bounded scope-cell lease could not be acquired immediately.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScopeCellBusy;
+
+impl core::fmt::Display for ScopeCellBusy {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("scope cell is busy")
+    }
+}
+
+impl core::error::Error for ScopeCellBusy {}
 
 impl ScopeCell {
     /// Creates a managed scope with no active scheduler binding.
@@ -339,42 +339,36 @@ impl ScopeCell {
         }
     }
 
-    /// Acquires an ordinary shared scope reference while preventing migration.
-    pub fn read(&self) -> ScopeCellReadGuard<'_> {
-        let preempt = NoPreempt::new();
-        self.scope.inner().lock_shared();
-        ScopeCellReadGuard {
-            scope: &self.scope,
-            _preempt: preempt,
-        }
-    }
-
     /// Attempts to acquire an ordinary shared scope reference while preventing
-    /// migration.
-    pub fn try_read(&self) -> Option<ScopeCellReadGuard<'_>> {
+    /// migration. It returns immediately when an exclusive lease is active.
+    pub fn try_read(&self) -> Result<ScopeCellReadGuard<'_>, ScopeCellBusy> {
         let preempt = NoPreempt::new();
         if !self.scope.inner().gate.try_lock_shared() {
-            return None;
+            return Err(ScopeCellBusy);
         }
-        Some(ScopeCellReadGuard {
+        Ok(ScopeCellReadGuard {
             scope: &self.scope,
             _preempt: preempt,
         })
     }
 
-    /// Acquires an ordinary exclusive scope reference while preventing
-    /// migration.
-    pub fn write(&self) -> ScopeCellWriteGuard<'_> {
+    /// Attempts to acquire an ordinary exclusive scope reference while
+    /// preventing migration. It returns immediately while any lease is live.
+    pub fn try_write(&self) -> Result<ScopeCellWriteGuard<'_>, ScopeCellBusy> {
         let preempt = NoPreempt::new();
         let inner = self.scope.inner();
-        inner.lock_exclusive_writer_preferred();
-        ScopeCellWriteGuard {
+        if !inner.try_lock_exclusive() {
+            return Err(ScopeCellBusy);
+        }
+        Ok(ScopeCellWriteGuard {
             inner,
             _preempt: Some(preempt),
-        }
+            owns_exclusive: true,
+        })
     }
 
-    /// Installs this scope for the pinned CPU and retains one shared lease.
+    /// Attempts to install this scope for the pinned CPU and retain one shared
+    /// lease.
     ///
     /// This operation does not enter a new IRQ or preemption context, so it is
     /// suitable for a scheduler switch-in hook that already owns its CPU-local
@@ -382,20 +376,24 @@ impl ScopeCell {
     ///
     /// # Safety
     ///
-    /// The caller must keep this `ScopeCell` alive, retain the current CPU pin,
-    /// and invoke [`deactivate_pinned`](Self::deactivate_pinned) exactly once
-    /// before another scope is installed or the cell can be dropped. The
-    /// scheduler must run both hooks while holding its switch baton.
-    pub unsafe fn activate_pinned(&self, pin: &CpuPin<'_>) {
+    /// On success, the caller must keep this `ScopeCell` alive, retain the
+    /// current CPU pin, and invoke
+    /// [`deactivate_pinned`](Self::deactivate_pinned) exactly once before
+    /// another scope is installed or the cell can be dropped. The scheduler
+    /// must run both hooks while holding its switch baton.
+    pub unsafe fn try_activate_pinned(&self, pin: &CpuPin<'_>) -> Result<(), ScopeCellBusy> {
         assert_eq!(
             ActiveScope::current_scope_ptr_pinned(pin),
             0,
             "scope activation requires the global scope to be current"
         );
-        self.acquire_active_lease();
+        if !self.try_acquire_active_lease() {
+            return Err(ScopeCellBusy);
+        }
         // SAFETY: the caller contract keeps the cell live until deactivation,
         // and the retained shared lease excludes slot mutation.
         unsafe { ActiveScope::set_pinned(&self.scope, pin) };
+        Ok(())
     }
 
     /// Clears this scope from the pinned CPU and retires its active identity.
@@ -403,7 +401,7 @@ impl ScopeCell {
     /// # Safety
     ///
     /// The current CPU must own exactly one activation previously established
-    /// by [`activate_pinned`](Self::activate_pinned) for this cell.
+    /// by [`try_activate_pinned`](Self::try_activate_pinned) for this cell.
     pub unsafe fn deactivate_pinned(&self, pin: &CpuPin<'_>) {
         assert_eq!(
             ActiveScope::current_scope_ptr_pinned(pin),
@@ -418,57 +416,54 @@ impl ScopeCell {
 
     /// Mutates the calling task's active scope.
     ///
-    /// The active shared lease is withdrawn before the writer gate is acquired
-    /// and restored before this function returns. This preserves lock-free
-    /// scope-local reads during ordinary execution without carrying a Rust
-    /// guard or preemption token through a context switch.
+    /// The active shared lease is atomically upgraded to the writer state and
+    /// restored before this function returns. A remote reader or a second CPU
+    /// activation returns [`ScopeCellBusy`] instead of making the caller spin.
     ///
     /// # Safety
     ///
     /// This cell must have exactly one activation, owned by the current CPU,
     /// and `pin` must remain valid for the complete call. The caller must
     /// prevent reentrant scope-local access while `operation` runs.
-    pub unsafe fn with_active_mut_pinned<R>(
+    pub unsafe fn try_with_active_mut_pinned<R>(
         &self,
         pin: &CpuPin<'_>,
         operation: impl for<'scope> FnOnce(&'scope mut ScopeCellWriteGuard<'_>) -> R,
-    ) -> R {
+    ) -> Result<R, ScopeCellBusy> {
         assert_eq!(
             ActiveScope::current_scope_ptr_pinned(pin),
             self.scope_ptr(),
             "active scope mutation does not match the current scope"
         );
-        assert_eq!(
-            self.active_cpus.load(Ordering::Acquire),
-            1,
-            "active scope mutation requires exclusive scheduler ownership"
-        );
+        if !self.try_withdraw_active_lease_for_writer(|| {}) {
+            return Err(ScopeCellBusy);
+        }
         // SAFETY: the caller owns the sole activation verified above.
         unsafe { ActiveScope::set_global_pinned(pin) };
-        self.release_active_lease();
-
         let inner = self.scope.inner();
-        inner.lock_exclusive_writer_preferred();
         let mut mutation = ActiveScopeMutation {
             cell: self,
             pin,
             writer: Some(ScopeCellWriteGuard {
                 inner,
                 _preempt: None,
+                owns_exclusive: true,
             }),
         };
         let result = operation(mutation.writer());
         drop(mutation);
-        result
+        Ok(result)
     }
 
     fn scope_ptr(&self) -> usize {
         self.scope.inner_ptr().expose_provenance()
     }
 
-    fn acquire_active_lease(&self) {
+    fn try_acquire_active_lease(&self) -> bool {
         let inner = self.scope.inner();
-        inner.lock_shared();
+        if !inner.try_lock_shared() {
+            return false;
+        }
         if self
             .active_cpus
             .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
@@ -478,8 +473,9 @@ impl ScopeCell {
         {
             // SAFETY: this function acquired exactly one shared count above.
             unsafe { inner.unlock_shared() };
-            panic!("scope activation count overflow");
+            return false;
         }
+        true
     }
 
     fn release_active_lease(&self) {
@@ -490,6 +486,52 @@ impl ScopeCell {
             .expect("scope deactivation without a matching activation");
         // SAFETY: every active identity owns exactly one shared count.
         unsafe { self.scope.inner().unlock_shared() };
+    }
+
+    fn try_withdraw_active_lease_for_writer(&self, writer_pending: impl FnOnce()) -> bool {
+        if self.active_cpus.load(Ordering::Acquire) != 1
+            || !self
+                .scope
+                .inner()
+                .gate
+                .try_upgrade_active_shared_to_exclusive()
+        {
+            return false;
+        }
+        writer_pending();
+        if self
+            .active_cpus
+            .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            // SAFETY: this function atomically replaced the sole shared lease
+            // with the exclusive lease, but the active-count invariant changed
+            // before it could be retired. Restore the original shared state.
+            unsafe {
+                self.scope
+                    .inner()
+                    .gate
+                    .downgrade_exclusive_to_active_shared()
+            };
+            return false;
+        }
+        true
+    }
+
+    fn restore_active_lease_from_writer(&self, pin: &CpuPin<'_>) {
+        self.active_cpus
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .expect("active mutation restore found an unexpected activation");
+        // SAFETY: the exclusive lease keeps the scope stable while the pinned
+        // identity is restored. Downgrading publishes its shared lease before
+        // the caller may re-enter scope-local access.
+        unsafe {
+            ActiveScope::set_pinned(&self.scope, pin);
+            self.scope
+                .inner()
+                .gate
+                .downgrade_exclusive_to_active_shared();
+        }
     }
 }
 
@@ -509,11 +551,12 @@ impl<'cell> ActiveScopeMutation<'cell, '_, '_> {
 
 impl Drop for ActiveScopeMutation<'_, '_, '_> {
     fn drop(&mut self) {
-        drop(self.writer.take());
-        self.cell.acquire_active_lease();
-        // SAFETY: construction withdrew this cell's sole activation on the
-        // same pinned CPU, and the shared lease has now been restored.
-        unsafe { ActiveScope::set_pinned(&self.cell.scope, self.pin) };
+        let mut writer = self
+            .writer
+            .take()
+            .expect("active scope mutation writer must be present");
+        self.cell.restore_active_lease_from_writer(self.pin);
+        writer.owns_exclusive = false;
     }
 }
 
@@ -537,7 +580,7 @@ impl Drop for ScopeCell {
     }
 }
 
-/// Shared ordinary-access guard returned by [`ScopeCell::read`].
+/// Shared ordinary-access guard returned by [`ScopeCell::try_read`].
 pub struct ScopeCellReadGuard<'a> {
     scope: &'a Scope,
     _preempt: NoPreempt,
@@ -560,7 +603,7 @@ impl Drop for ScopeCellReadGuard<'_> {
     }
 }
 
-/// Slot-level exclusive guard returned by [`ScopeCell::write`].
+/// Slot-level exclusive guard returned by [`ScopeCell::try_write`].
 ///
 /// It intentionally does not dereference to `Scope`: active CPUs may retain a
 /// shared identity for the stable inner object, so writers receive only the
@@ -568,6 +611,7 @@ impl Drop for ScopeCellReadGuard<'_> {
 pub struct ScopeCellWriteGuard<'a> {
     inner: &'a ScopeInner,
     _preempt: Option<NoPreempt>,
+    owns_exclusive: bool,
 }
 
 impl ScopeCellWriteGuard<'_> {
@@ -580,6 +624,9 @@ impl ScopeCellWriteGuard<'_> {
 
 impl Drop for ScopeCellWriteGuard<'_> {
     fn drop(&mut self) {
+        if !self.owns_exclusive {
+            return;
+        }
         // SAFETY: this guard owns the raw exclusive count. Its preemption guard
         // is dropped afterwards, preserving raw unlock -> preempt exit ordering.
         unsafe { self.inner.unlock_exclusive() };
