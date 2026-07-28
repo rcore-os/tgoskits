@@ -108,6 +108,13 @@ keeps the resources and extension together in deferred task work; only a
 successful teardown releases the extension. Registry records use the same
 resource-before-extension order as a shutdown fallback.
 
+PI lock identity no longer comes from the `RawMutex` address. Each physical
+lock owns a lazy `PiLockIdentity` whose process-wide generation is never
+reused, so reconstructing a lock in the same storage cannot make a stale
+scheduler edge match the new instance. This closes the address-reuse ABA half
+of the PI finding; waiter registration, handoff, cancellation, and lock
+quiescence remain part of the PI transaction stage.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

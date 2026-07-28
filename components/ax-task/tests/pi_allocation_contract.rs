@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ax_task::{CpuLocal, PiLockId, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
+use ax_task::{CpuLocal, PiLockIdentity, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
 
 mod support;
 
@@ -43,7 +43,7 @@ fn pi_registration_handoff_and_cancel_do_not_allocate() {
     let cancelled = system
         .create_thread(ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
-    let lock = PiLockId::new(0x5049);
+    let lock = PiLockIdentity::new().id().unwrap();
 
     let selected_wait = assert_no_alloc(|| {
         system
