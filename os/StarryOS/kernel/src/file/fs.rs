@@ -13,7 +13,10 @@ use ax_sync::Mutex;
 use ax_task::future::{block_on, poll_io};
 use axfs_ng_vfs::{FsIoEvents, FsPollable, Location, Metadata, NodeFlags};
 use axpoll::{IoEvents, Pollable};
-use linux_raw_sys::general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL};
+use linux_raw_sys::{
+    general::{AT_EMPTY_PATH, AT_FDCWD, AT_SYMLINK_NOFOLLOW, O_APPEND, O_EXCL},
+    ioctl::TIOCSCTTY,
+};
 use starry_vm::VmPtr;
 
 use super::{FileLike, Kstat, get_file_like};
@@ -210,6 +213,11 @@ impl FileLike for File {
 
     fn ioctl(&self, cmd: u32, arg: usize) -> AxResult<usize> {
         let loc = self.inner().backend()?.location();
+        if cmd == TIOCSCTTY
+            && let Some(result) = crate::pseudofs::dev::tty::bind_pty_at_location(loc.clone())
+        {
+            return result;
+        }
         match cmd {
             DFS_IOCTL_ATOMIC_WRITE_SET => {
                 let _enabled: u32 = (arg as *const u32).vm_read()?;

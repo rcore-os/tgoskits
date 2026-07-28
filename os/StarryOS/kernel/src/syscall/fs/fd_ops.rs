@@ -165,11 +165,16 @@ fn add_to_fd(result: OpenResult, flags: u32) -> AxResult<i32> {
                         .session()
                         .terminal()
                         .ok_or(AxError::NotFound)?;
-                    let path = tty::terminal_device_path(term.as_ref()).ok_or_else(|| {
+                    let target = tty::terminal_device(term.as_ref()).ok_or_else(|| {
                         warn!("unknown controlling terminal type for /dev/tty");
                         AxError::BadState
                     })?;
-                    let loc = ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?;
+                    let loc = match target {
+                        tty::TerminalDevice::Location(location) => location,
+                        tty::TerminalDevice::Path(path) => {
+                            ax_fs_ng::vfs::current_fs_context().lock().resolve(&path)?
+                        }
+                    };
                     file = ax_fs_ng::vfs::File::new(FileBackend::Direct(loc), file.flags());
                 }
             }

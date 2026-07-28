@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int failures;
@@ -89,6 +90,65 @@ static int slave_exists(const char *mountpoint, unsigned int number)
     return stat(path, &metadata);
 }
 
+static void check_private_controlling_tty(const char *mountpoint,
+                                          unsigned int number)
+{
+    char path[128];
+    int length = snprintf(path, sizeof(path), "%s/%u", mountpoint, number);
+    if (length < 0 || (size_t)length >= sizeof(path)) {
+        errno = ENAMETOOLONG;
+        fail("format private slave path");
+        return;
+    }
+
+    int slave = open(path, O_RDWR | O_NOCTTY);
+    if (slave < 0) {
+        fail("open private slave for controlling terminal");
+        return;
+    }
+
+    pid_t child = fork();
+    if (child < 0) {
+        fail("fork controlling terminal child");
+        close(slave);
+        return;
+    }
+    if (child == 0) {
+        if (setsid() < 0) {
+            _exit(10);
+        }
+        if (ioctl(slave, TIOCSCTTY, 0) != 0) {
+            _exit(11);
+        }
+
+        int current_tty = open("/dev/tty", O_RDWR | O_NOCTTY);
+        if (current_tty < 0) {
+            _exit(12);
+        }
+
+        struct stat metadata;
+        if (fstat(current_tty, &metadata) != 0) {
+            _exit(13);
+        }
+        if ((metadata.st_mode & 07777) != 0620 || metadata.st_gid != 5) {
+            _exit(14);
+        }
+        close(current_tty);
+        close(slave);
+        _exit(0);
+    }
+
+    close(slave);
+    int status;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0) {
+        errno = EPROTO;
+        fail("/dev/tty reopens the private devpts controlling terminal");
+        return;
+    }
+    pass("/dev/tty reopens the private devpts controlling terminal");
+}
+
 int main(void)
 {
     static const char first_mount[] = "/tmp/devpts-newinstance-a";
@@ -101,9 +161,22 @@ int main(void)
     check_metadata("/tmp/devpts-newinstance-a/ptmx", 0666, 0,
                    "ptmxmode applies to the per-instance ptmx node");
 
+    unsigned int root_number = ~0U;
+    int root_master = allocate_pty("/dev/pts", &root_number);
+    if (root_master < 0) {
+        return 1;
+    }
+    if (root_number != 0) {
+        errno = EPROTO;
+        fail("root devpts reserves the colliding PTY number");
+    } else {
+        pass("root devpts reserves the colliding PTY number");
+    }
+
     unsigned int first_number = ~0U;
     int first_master = allocate_pty(first_mount, &first_number);
     if (first_master < 0) {
+        close(root_master);
         return 1;
     }
     if (first_number != 0) {
@@ -119,6 +192,7 @@ int main(void)
     }
     check_metadata("/tmp/devpts-newinstance-a/0", 0620, 5,
                    "mode and gid apply to the allocated slave node");
+    check_private_controlling_tty(first_mount, first_number);
 
     errno = 0;
     if (slave_exists(second_mount, first_number) == 0 || errno != ENOENT) {
@@ -148,6 +222,7 @@ int main(void)
 
     close(second_master);
     close(first_master);
+    close(root_master);
     umount2(second_mount, MNT_DETACH);
     umount2(first_mount, MNT_DETACH);
     rmdir(second_mount);
