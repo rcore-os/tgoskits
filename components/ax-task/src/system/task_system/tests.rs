@@ -1658,6 +1658,131 @@ fn schedule_out_rechecks_affinity_under_the_thread_lock() {
 }
 
 #[test]
+fn owner_pick_reconciles_affinity_changed_after_inbox_drain() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    let running = system
+        .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let idle0 = system
+        .register_idle_thread(
+            cpu0.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system
+        .register_idle_thread(
+            cpu1.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu0.as_mut()).unwrap();
+    system.bring_cpu_online(cpu1.as_mut()).unwrap();
+
+    let candidate = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(candidate.id()).unwrap();
+    system.enqueue(cpu0.as_mut(), candidate.id(), 0).unwrap();
+
+    // Model a remote writer publishing immediately after the owner drained its
+    // inbox but before pick-next locked this queued candidate. Linux closes
+    // this window by rechecking the task mask while holding task/rq ownership.
+    let mut cpu1_only = CpuSet::empty(2);
+    assert!(cpu1_only.insert(CpuId::new(1)));
+    system.set_affinity(candidate.id(), cpu1_only).unwrap();
+
+    let next = system
+        .pick_owner_next(cpu0.as_mut(), 1, Some(running.id()))
+        .expect("pick-next must skip and transfer a newly disallowed candidate")
+        .core;
+    assert_eq!(next.id(), idle0.id());
+    assert_eq!(
+        candidate.core.sched().lock().placement.migration_target(),
+        Some(CpuId::new(1))
+    );
+    assert!(cpu1.has_remote_work());
+}
+
+#[test]
+fn affinity_update_preserves_an_in_flight_switch_handoff() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    let running = system
+        .install_bootstrap_thread(cpu0.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let idle0 = system
+        .register_idle_thread(
+            cpu0.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system
+        .register_idle_thread(
+            cpu1.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu0.as_mut()).unwrap();
+    system.bring_cpu_online(cpu1.as_mut()).unwrap();
+
+    let initial_target = system
+        .schedule_out_owner_running(
+            cpu0.as_mut(),
+            Arc::clone(&running.core),
+            1,
+            EnqueueReason::Yield,
+        )
+        .unwrap();
+    assert_eq!(initial_target, None);
+    {
+        let placement = running.core.sched().lock().placement;
+        assert_eq!(placement.queued_cpu(), Some(CpuId::new(0)));
+        assert_eq!(placement.on_cpu(), Some(CpuId::new(0)));
+        assert_eq!(placement.migration_target(), None);
+    }
+
+    // The remote setter may update task metadata now, but it must not rewrite
+    // the queued destination already owned by the outgoing switch transaction.
+    let mut cpu1_only = CpuSet::empty(2);
+    assert!(cpu1_only.insert(CpuId::new(1)));
+    system.set_affinity(running.id(), cpu1_only).unwrap();
+    {
+        let placement = running.core.sched().lock().placement;
+        assert_eq!(placement.queued_cpu(), Some(CpuId::new(0)));
+        assert_eq!(placement.on_cpu(), Some(CpuId::new(0)));
+        assert_eq!(placement.migration_target(), None);
+    }
+
+    let next = system
+        .pick_owner_next(cpu0.as_mut(), 2, Some(running.id()))
+        .unwrap();
+    assert_eq!(next.core.id(), idle0.id());
+    assert_eq!(
+        next.outgoing_migration_target,
+        Some(CpuId::new(1)),
+        "the owner must carry the late affinity change in switch tail"
+    );
+    TaskSystem::stage_switch_handoff(
+        cpu0.as_mut(),
+        Some(running.id()),
+        Some(Arc::clone(&running.core)),
+        next.core.id(),
+        next.outgoing_migration_target,
+    )
+    .unwrap();
+    assert!(
+        !cpu1.has_remote_work(),
+        "migration cannot publish before the outgoing stack is inactive"
+    );
+
+    system.complete_context_switch(cpu0.as_mut()).unwrap();
+    assert!(cpu1.has_remote_work());
+}
+
+#[test]
 fn initial_placement_hands_affinity_pinned_thread_to_its_owner_cpu() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();

@@ -391,6 +391,7 @@ pub(crate) struct ThreadCore {
     target_cpu: AtomicU32,
     remote_wake_node: InboxNode,
     policy_update_node: InboxNode,
+    affinity_update_node: InboxNode,
     sleep_timer: TaskDeadlineNode,
     sleep_timer_cpu: AtomicU32,
     sleep_timer_generation: AtomicU64,
@@ -430,6 +431,7 @@ impl ThreadCore {
             target_cpu: AtomicU32::new(u32::MAX),
             remote_wake_node: InboxNode::new(InboxKind::RemoteWake),
             policy_update_node: InboxNode::new(InboxKind::Migration),
+            affinity_update_node: InboxNode::new(InboxKind::Migration),
             sleep_timer: TaskDeadlineNode::for_thread(id),
             sleep_timer_cpu: AtomicU32::new(u32::MAX),
             sleep_timer_generation: AtomicU64::new(0),
@@ -737,6 +739,10 @@ impl ThreadCore {
 
     pub(crate) const fn policy_update_node(&self) -> &InboxNode {
         &self.policy_update_node
+    }
+
+    pub(crate) const fn affinity_update_node(&self) -> &InboxNode {
+        &self.affinity_update_node
     }
 
     pub(crate) const fn migration_node(&self) -> &InboxNode {

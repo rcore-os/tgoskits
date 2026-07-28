@@ -14,10 +14,29 @@ pub enum InboxKind {
     Reclaim,
 }
 
+/// Operation carried by one scheduler inbox message.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum InboxOperation {
+    /// Publish a sleeping thread to its selected owner.
+    RemoteWake,
+    /// Transfer physical runqueue ownership between CPUs.
+    Migration,
+    /// Reconcile a thread's latest scheduling-policy generation.
+    PolicyUpdate,
+    /// Reconcile a thread's latest affinity with physical placement.
+    AffinityUpdate,
+    /// Ask a remote owner to donate one queued thread.
+    BalanceRequest,
+    /// Release one deferred task-context resource.
+    Reclaim,
+}
+
 /// Allocation-free scheduler request copied into owner CPU storage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InboxMessage {
     kind: InboxKind,
+    operation: InboxOperation,
     thread_id: ThreadId,
     source_cpu: u32,
     target_cpu: u32,
@@ -32,6 +51,7 @@ impl InboxMessage {
     /// Empty value used to initialize fixed drain buffers.
     pub const EMPTY: Self = Self {
         kind: InboxKind::Reclaim,
+        operation: InboxOperation::Reclaim,
         thread_id: ThreadId::from_parts(0, 0),
         source_cpu: Self::NO_CPU,
         target_cpu: Self::NO_CPU,
@@ -52,6 +72,7 @@ impl InboxMessage {
     ) -> Self {
         Self {
             kind: InboxKind::RemoteWake,
+            operation: InboxOperation::RemoteWake,
             thread_id,
             source_cpu: Self::NO_CPU,
             target_cpu: target_cpu.as_u32(),
@@ -80,6 +101,7 @@ impl InboxMessage {
     ) -> Self {
         Self {
             kind: InboxKind::Migration,
+            operation: InboxOperation::Migration,
             thread_id,
             source_cpu: source_cpu.as_u32(),
             target_cpu: target_cpu.as_u32(),
@@ -88,10 +110,47 @@ impl InboxMessage {
         }
     }
 
+    /// Creates an owner-local policy reconciliation request.
+    pub const fn policy_update_with_payload(
+        thread_id: ThreadId,
+        owner: CpuId,
+        generation: u64,
+        payload: usize,
+    ) -> Self {
+        Self {
+            kind: InboxKind::Migration,
+            operation: InboxOperation::PolicyUpdate,
+            thread_id,
+            source_cpu: owner.as_u32(),
+            target_cpu: owner.as_u32(),
+            generation,
+            payload,
+        }
+    }
+
+    /// Creates an owner-local affinity reconciliation request.
+    pub const fn affinity_update_with_payload(
+        thread_id: ThreadId,
+        owner: CpuId,
+        target_cpu: CpuId,
+        payload: usize,
+    ) -> Self {
+        Self {
+            kind: InboxKind::Migration,
+            operation: InboxOperation::AffinityUpdate,
+            thread_id,
+            source_cpu: owner.as_u32(),
+            target_cpu: target_cpu.as_u32(),
+            generation: thread_id.generation() as u64,
+            payload,
+        }
+    }
+
     /// Creates an idle-pull request sent to a remote runqueue owner.
     pub const fn balance_request(source_cpu: CpuId, target_cpu: CpuId, source_epoch: u64) -> Self {
         Self {
             kind: InboxKind::Migration,
+            operation: InboxOperation::BalanceRequest,
             thread_id: ThreadId::from_parts(0, 0),
             source_cpu: source_cpu.as_u32(),
             target_cpu: target_cpu.as_u32(),
@@ -102,9 +161,7 @@ impl InboxMessage {
 
     /// Reports whether this migration message asks the source owner to pull work.
     pub const fn is_balance_request(self) -> bool {
-        self.kind as u8 == InboxKind::Migration as u8
-            && self.generation & Self::BALANCE_REQUEST_FLAG != 0
-            && self.payload == 0
+        self.operation as u8 == InboxOperation::BalanceRequest as u8 && self.payload == 0
     }
 
     /// Returns the source load-summary epoch observed by an idle requester.
@@ -120,6 +177,7 @@ impl InboxMessage {
     pub const fn reclaim(thread_id: ThreadId, generation: u64, payload: usize) -> Self {
         Self {
             kind: InboxKind::Reclaim,
+            operation: InboxOperation::Reclaim,
             thread_id,
             source_cpu: Self::NO_CPU,
             target_cpu: Self::NO_CPU,
@@ -131,6 +189,11 @@ impl InboxMessage {
     /// Returns the inbox class required by this request.
     pub const fn kind(self) -> InboxKind {
         self.kind
+    }
+
+    /// Returns the typed scheduler operation carried by this message.
+    pub const fn operation(self) -> InboxOperation {
+        self.operation
     }
 
     /// Returns the generation-checked destination thread.

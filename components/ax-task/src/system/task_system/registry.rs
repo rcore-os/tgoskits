@@ -518,13 +518,38 @@ impl TaskSystemState {
             .map(|(_, cpu)| cpu)
     }
 
-    pub(super) fn publish_migration_request(
+    pub(super) fn publish_affinity_update(
         &self,
         core: &Arc<ThreadCore>,
-        source: CpuId,
+        owner: CpuId,
         target: CpuId,
     ) -> Result<(), TaskError> {
-        self.publish_migration_to(core, source, source, target)
+        let cpu_local = self
+            .cpu_remote(owner)
+            .ok_or(TaskError::CpuOffline(owner.as_u32()))?;
+        if !core.reserve_scheduler_inbox_delivery() {
+            return Ok(());
+        }
+        let pointer = Arc::as_ptr(core);
+        // SAFETY: the retained count is transferred to the intrusive affinity
+        // reconciliation request and consumed by one owner drain.
+        unsafe { Arc::increment_strong_count(pointer) };
+        // SAFETY: the retained Arc count pins this dedicated control node.
+        let node = unsafe { Pin::new_unchecked((*pointer).affinity_update_node()) };
+        let message = InboxMessage::affinity_update_with_payload(
+            core.id(),
+            owner,
+            target,
+            pointer.expose_provenance(),
+        );
+        let result = cpu_local.publish_policy_update(node, message);
+        if result != PublishResult::Published {
+            // SAFETY: a rejected/coalesced publication did not consume this
+            // attempt's retained reference.
+            unsafe { Arc::decrement_strong_count(pointer) };
+            core.cancel_scheduler_inbox_delivery();
+        }
+        Ok(())
     }
 
     pub(super) fn publish_migration_to(
@@ -592,9 +617,8 @@ impl TaskSystemState {
             unsafe { Arc::increment_strong_count(core) };
             // SAFETY: the retained Arc count keeps this embedded node pinned.
             let node = unsafe { Pin::new_unchecked((*core).policy_update_node()) };
-            let message = InboxMessage::migration_with_payload(
+            let message = InboxMessage::policy_update_with_payload(
                 owner,
-                cpu,
                 cpu,
                 generation,
                 core.expose_provenance(),
