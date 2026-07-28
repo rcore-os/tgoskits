@@ -16,8 +16,11 @@ use core::ptr;
 
 use ax_kspin::SpinNoIrq;
 use ax_memory_addr::PhysAddr;
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceResult};
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange, HostPhysAddr};
+use axdevice_base::{
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    Resource,
+};
+use axvm_types::{GuestPhysAddr, HostPhysAddr};
 use log::{debug, trace};
 use spin::Once;
 
@@ -42,6 +45,8 @@ pub struct VGicR {
     pub addr: GuestPhysAddr,
     /// The size of the VGicR in bytes.
     pub size: usize,
+    /// Stable guest resources declared to the V3 device runtime.
+    resources: [Resource; 1],
 
     /// CPU ID associated with this redistributor.
     pub cpu_id: usize,
@@ -71,6 +76,10 @@ impl VGicR {
         Self {
             addr,
             size,
+            resources: [Resource::MmioRange {
+                base: addr.as_usize() as u64,
+                size: size as u64,
+            }],
             cpu_id,
             host_gicr_base_this_cpu,
             regs: SpinNoIrq::new(VGicRRegs { propbaser: 0 }),
@@ -78,20 +87,21 @@ impl VGicR {
     }
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
-    fn emu_type(&self) -> axdevice_base::EmuDeviceType {
-        axdevice_base::EmuDeviceType::GPPTRedistributor
+impl VGicR {
+    fn contains(&self, addr: GuestPhysAddr) -> bool {
+        let base = self.addr.as_usize();
+        let end = base.saturating_add(self.size);
+        let addr = addr.as_usize();
+        addr >= base && addr < end
     }
 
-    fn address_range(&self) -> GuestPhysAddrRange {
-        GuestPhysAddrRange::from_start_size(self.addr, self.size)
-    }
-
-    fn handle_read(
-        &self,
-        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
-        width: AccessWidth,
-    ) -> DeviceResult<usize> {
+    /// Reads a guest-visible GIC redistributor register.
+    pub fn read_register(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         let gicr_base = self.host_gicr_base_this_cpu;
         let reg = addr - self.addr;
 
@@ -156,12 +166,18 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
         Ok(result?)
     }
 
-    fn handle_write(
+    /// Writes a guest-visible GIC redistributor register.
+    pub fn write_register(
         &self,
-        addr: <GuestPhysAddrRange as axdevice_base::DeviceAddrRange>::Addr,
+        addr: GuestPhysAddr,
         width: AccessWidth,
         value: usize,
     ) -> DeviceResult<()> {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         let gicr_base = self.host_gicr_base_this_cpu;
         let reg = addr - self.addr;
 
@@ -219,6 +235,36 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VGicR {
             }
         };
         Ok(result?)
+    }
+}
+
+impl Device for VGicR {
+    fn name(&self) -> &str {
+        "aarch64-gic-redistributor"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        if access.is_read {
+            self.read_register(addr, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.write_register(addr, access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
+        }
     }
 }
 

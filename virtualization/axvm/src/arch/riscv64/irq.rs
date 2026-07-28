@@ -18,9 +18,9 @@ use alloc::sync::Arc;
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, MmioDeviceAdapter,
+    DeviceManagerResult, DeviceRegistration,
 };
-use axdevice_base::{IrqError, IrqLineId, IrqResult, IrqSink};
+use axdevice_base::{Device, IrqError, IrqLineId, IrqResult, IrqSink};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, VMInterruptMode};
 use riscv_vplic::{
     PLIC_CONTEXT_CLAIM_COMPLETE_OFFSET, PLIC_CONTEXT_CTRL_OFFSET, PLIC_CONTEXT_STRIDE, VPlicGlobal,
@@ -86,7 +86,8 @@ impl DeviceFactory for RiscvPlicFactory {
                 ),
             });
         }
-        Ok(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(self.vplic.clone())).into())
+        let device: Arc<dyn Device> = self.vplic.clone();
+        Ok(DeviceRegistration::Device(device).into())
     }
 }
 

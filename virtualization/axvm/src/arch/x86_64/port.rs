@@ -1,14 +1,14 @@
 //! Native x86 host I/O port passthrough devices.
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
     DeviceRegistration,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceError, DeviceResult, EmuDeviceType, Port, PortDeviceAdapter,
-    PortRange,
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    Port, Resource,
 };
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, PassThroughPortConfig};
 
@@ -18,6 +18,7 @@ use crate::{AxVmResult, ax_err};
 pub(crate) struct HostPortPassthrough {
     base: Port,
     length: u16,
+    resources: Box<[Resource]>,
 }
 
 impl HostPortPassthrough {
@@ -32,11 +33,53 @@ impl HostPortPassthrough {
         Ok(Self {
             base: Port::new(base),
             length,
+            resources: alloc::vec![Resource::PortRange { base, size: length }].into_boxed_slice(),
         })
     }
 
     fn end(&self) -> Port {
         Port::new(self.base.number() + self.length - 1)
+    }
+
+    fn contains(&self, port: Port) -> bool {
+        (self.base.number()..=self.end().number()).contains(&port.number())
+    }
+
+    fn read_port(&self, port: Port, width: AccessWidth) -> DeviceResult<usize> {
+        if !self.contains(port) {
+            return Err(DeviceError::OutOfRange {
+                addr: port.number() as u64,
+            });
+        }
+        match width {
+            AccessWidth::Byte => Ok(unsafe { inb(port.number()) } as usize),
+            AccessWidth::Word => Ok(unsafe { inw(port.number()) } as usize),
+            AccessWidth::Dword => Ok(unsafe { inl(port.number()) } as usize),
+            AccessWidth::Qword => Err(DeviceError::Unsupported {
+                operation: "read host I/O port",
+                detail: "x86 port I/O does not support 64-bit accesses".into(),
+            }),
+        }
+    }
+
+    fn write_port(&self, port: Port, width: AccessWidth, value: usize) -> DeviceResult {
+        if !self.contains(port) {
+            return Err(DeviceError::OutOfRange {
+                addr: port.number() as u64,
+            });
+        }
+        match width {
+            AccessWidth::Byte => unsafe { outb(port.number(), value as u8) },
+            AccessWidth::Word => unsafe { outw(port.number(), value as u16) },
+            AccessWidth::Dword => unsafe { outl(port.number(), value as u32) },
+            AccessWidth::Qword => {
+                return Err(DeviceError::Unsupported {
+                    operation: "write host I/O port",
+                    detail: "x86 port I/O does not support 64-bit accesses".into(),
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -57,8 +100,9 @@ impl HostPortPassthroughFactory {
             self.config.base,
             self.config.length,
         )?);
+        let device: Arc<dyn Device> = passthrough;
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
-            PortDeviceAdapter::from_arc(passthrough),
+            device,
         )))
     }
 }
@@ -96,40 +140,34 @@ impl DeviceFactory for HostPortPassthroughDeviceFactory {
     }
 }
 
-impl BaseDeviceOps<PortRange> for HostPortPassthrough {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::Dummy
+impl Device for HostPortPassthrough {
+    fn name(&self) -> &str {
+        "x86-host-port-passthrough"
     }
 
-    fn address_range(&self) -> PortRange {
-        PortRange::new(self.base, self.end())
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, port: Port, width: AccessWidth) -> DeviceResult<usize> {
-        match width {
-            AccessWidth::Byte => Ok(unsafe { inb(port.number()) } as usize),
-            AccessWidth::Word => Ok(unsafe { inw(port.number()) } as usize),
-            AccessWidth::Dword => Ok(unsafe { inl(port.number()) } as usize),
-            AccessWidth::Qword => Err(DeviceError::Unsupported {
-                operation: "read host I/O port",
-                detail: "x86 port I/O does not support 64-bit accesses".into(),
-            }),
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Port || access.addr > u16::MAX as u64 {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
         }
-    }
 
-    fn handle_write(&self, port: Port, width: AccessWidth, value: usize) -> DeviceResult {
-        match width {
-            AccessWidth::Byte => unsafe { outb(port.number(), value as u8) },
-            AccessWidth::Word => unsafe { outw(port.number(), value as u16) },
-            AccessWidth::Dword => unsafe { outl(port.number(), value as u32) },
-            AccessWidth::Qword => {
-                return Err(DeviceError::Unsupported {
-                    operation: "write host I/O port",
-                    detail: "x86 port I/O does not support 64-bit accesses".into(),
-                });
-            }
+        let port = Port::new(access.addr as u16);
+        if access.is_read {
+            self.read_port(port, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.write_port(port, access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
         }
-        Ok(())
     }
 }
 
@@ -186,9 +224,13 @@ mod tests {
         let dev = HostPortPassthrough::new(0x6000, 0x80).unwrap();
 
         assert_eq!(
-            dev.address_range(),
-            PortRange::new(Port::new(0x6000), Port::new(0x607f))
+            dev.resources(),
+            &[Resource::PortRange {
+                base: 0x6000,
+                size: 0x80
+            }]
         );
+        assert_eq!(dev.end(), Port::new(0x607f));
     }
 
     #[test]
@@ -202,11 +244,11 @@ mod tests {
         let dev = HostPortPassthrough::new(0x6000, 0x80).unwrap();
 
         assert!(
-            dev.handle_read(Port::new(0x6000), AccessWidth::Qword)
+            dev.read_port(Port::new(0x6000), AccessWidth::Qword)
                 .is_err()
         );
         assert!(
-            dev.handle_write(Port::new(0x6000), AccessWidth::Qword, 0)
+            dev.write_port(Port::new(0x6000), AccessWidth::Qword, 0)
                 .is_err()
         );
     }

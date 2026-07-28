@@ -6,8 +6,9 @@ use arm_vcpu::{ArmVcpuCreateConfig, ArmVcpuSetupConfig};
 use ax_memory_addr::PhysAddr;
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, MmioDeviceAdapter, ServiceCardinality, ServiceKey,
+    DeviceManagerResult, DeviceRegistration, ServiceCardinality, ServiceKey,
 };
+use axdevice_base::Device;
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, NestedPagingConfig, VMInterruptMode, VmArchVcpuOps,
 };
@@ -208,7 +209,7 @@ impl DeviceFactory for Aarch64VgicFactory {
         _context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<DeviceBundle> {
         #[allow(clippy::arc_with_non_send_sync)]
-        let device = MmioDeviceAdapter::from_arc(Arc::new(arm_vgic::Vgic::new()));
+        let device: Arc<dyn Device> = Arc::new(arm_vgic::Vgic::new());
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
             device,
         )))
@@ -246,13 +247,12 @@ impl DeviceFactory for Aarch64GicRedistributorFactory {
                     detail: "redistributor address overflows".into(),
                 })?;
             #[allow(clippy::arc_with_non_send_sync)]
-            bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-                Arc::new(arm_vgic::v3::vgicr::VGicR::new(
-                    base.into(),
-                    Some(config.length),
-                    pcpu_id + index,
-                )),
-            )));
+            let device: Arc<dyn Device> = Arc::new(arm_vgic::v3::vgicr::VGicR::new(
+                base.into(),
+                Some(config.length),
+                pcpu_id + index,
+            ));
+            bundle.push(DeviceRegistration::Device(device));
         }
         Ok(bundle)
     }
@@ -274,7 +274,7 @@ impl DeviceFactory for Aarch64GicDistributorFactory {
             Some(config.length),
         ));
         #[allow(clippy::arc_with_non_send_sync)]
-        let device = MmioDeviceAdapter::from_arc(distributor.clone());
+        let device: Arc<dyn Device> = distributor.clone();
         let service: Arc<dyn Aarch64GicDistributorOps> = distributor;
         DeviceBundle::from_registration(DeviceRegistration::Device(device))
             .with_service::<Aarch64GicDistributorKey>(service)
@@ -298,12 +298,12 @@ impl DeviceFactory for Aarch64GitsFactory {
             });
         };
         #[allow(clippy::arc_with_non_send_sync)]
-        let device = MmioDeviceAdapter::from_arc(Arc::new(arm_vgic::v3::gits::Gits::new(
+        let device: Arc<dyn Device> = Arc::new(arm_vgic::v3::gits::Gits::new(
             config.base_gpa.into(),
             Some(config.length),
             PhysAddr::from_usize(*host_gits_base),
             false,
-        )));
+        ));
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
             device,
         )))

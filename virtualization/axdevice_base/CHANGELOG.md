@@ -91,14 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Initial release of `axdevice_base` crate.
-- `BaseDeviceOps` trait: Core interface for all emulated devices.
-- `EmulatedDeviceConfig`: Configuration structure for device initialization.
-- `EmuDeviceType`: Re-exported device type enumeration from `axvmconfig`.
-- `map_device_of_type`: Helper function for runtime device type checking and casting.
-- Trait aliases for common device types:
-  - `BaseMmioDeviceOps`: For MMIO (Memory-Mapped I/O) devices.
-  - `BaseSysRegDeviceOps`: For system register devices (ARM).
-  - `BasePortDeviceOps`: For port I/O devices (x86).
+- Initial legacy per-bus emulated-device abstractions and helper aliases.
+- Initial configuration helper structures for device initialization.
 - Support for multiple architectures: x86_64, AArch64, RISC-V64.
 - `no_std` compatible design.
 

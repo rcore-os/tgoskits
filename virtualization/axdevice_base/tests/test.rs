@@ -17,57 +17,61 @@ extern crate alloc;
 use alloc::{sync::Arc, vec};
 
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, DeviceId, DeviceResult,
-    EmuDeviceType, MmioDeviceAdapter, NoopDeviceAccess,
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceId,
+    NoopDeviceAccess, Resource,
 };
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
 
 struct DeviceA;
 
-impl BaseDeviceOps<GuestPhysAddrRange> for DeviceA {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::Dummy
+impl Device for DeviceA {
+    fn name(&self) -> &str {
+        "device-a"
     }
 
-    fn address_range(&self) -> GuestPhysAddrRange {
-        (0x1000..0x2000).try_into().unwrap()
+    fn resources(&self) -> &[Resource] {
+        static RESOURCES: [Resource; 1] = [Resource::MmioRange {
+            base: 0x1000,
+            size: 0x1000,
+        }];
+        &RESOURCES
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(addr.as_usize())
-    }
-
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
-        Ok(())
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        Ok(BusResponse::Read { value: access.addr })
     }
 }
 
 struct DeviceB;
 
-impl BaseDeviceOps<GuestPhysAddrRange> for DeviceB {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::Dummy
+impl Device for DeviceB {
+    fn name(&self) -> &str {
+        "device-b"
     }
 
-    fn address_range(&self) -> GuestPhysAddrRange {
-        (0x2000..0x3000).try_into().unwrap()
+    fn resources(&self) -> &[Resource] {
+        static RESOURCES: [Resource; 1] = [Resource::MmioRange {
+            base: 0x2000,
+            size: 0x1000,
+        }];
+        &RESOURCES
     }
 
-    fn handle_read(&self, addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(addr.as_usize())
-    }
-
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
-        Ok(())
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        Ok(BusResponse::Read { value: access.addr })
     }
 }
 
 #[test]
 fn test_device_type_test() {
-    let devices: Vec<Arc<dyn Device>> = vec![
-        MmioDeviceAdapter::from_arc(Arc::new(DeviceA)),
-        MmioDeviceAdapter::from_arc(Arc::new(DeviceB)),
-    ];
+    let devices: Vec<Arc<dyn Device>> = vec![Arc::new(DeviceA), Arc::new(DeviceB)];
 
     for (index, device) in devices.iter().enumerate() {
         let addr = 0x1000 + index * 0x1000;

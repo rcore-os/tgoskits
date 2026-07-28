@@ -18,7 +18,7 @@ use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::time::Duration;
 
 use ax_kspin::SpinNoIrq;
-use axdevice_base::BaseSysRegDeviceOps;
+use axdevice_base::Device;
 
 use crate::host;
 
@@ -278,7 +278,7 @@ impl Default for VtimerState {
 }
 
 /// Create a collection of system register devices.
-pub fn get_sysreg_device() -> Vec<Arc<dyn BaseSysRegDeviceOps>> {
+pub fn get_sysreg_device() -> Vec<Arc<dyn Device>> {
     let backend: Arc<dyn VtimerBackend> = Arc::new(HostVtimerBackend);
     let state = Arc::new(VtimerState::new());
     vec![

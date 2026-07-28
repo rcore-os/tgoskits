@@ -3,10 +3,10 @@ use core::cell::RefCell;
 
 use ax_kspin::SpinNoIrq as Mutex;
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError,
-    DeviceResult, DmaGrant, EmuDeviceType, Resource,
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    DmaGrant, Resource,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
 use crate::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
@@ -309,13 +309,59 @@ impl FwCfg {
         self.size >= FW_CFG_DMA_OFFSET + core::mem::size_of::<u64>()
     }
 
+    /// Returns the stable MMIO resource exposed by this fw_cfg transport.
+    fn mmio_resource(&self) -> Resource {
+        Resource::MmioRange {
+            base: self.base.as_usize() as u64,
+            size: self.size as u64,
+        }
+    }
+
+    fn contains(&self, addr: GuestPhysAddr) -> bool {
+        let base = self.base.as_usize();
+        let end = base.saturating_add(self.size);
+        let addr = addr.as_usize();
+        addr >= base && addr < end
+    }
+
+    /// Reads a fw_cfg MMIO register.
+    fn read_register(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
+        match addr.as_usize() - self.base.as_usize() {
+            FW_CFG_DATA_OFFSET => Ok(self.read_data(width)),
+            FW_CFG_SELECTOR_OFFSET => Ok(self.state.lock().selected as usize),
+            _ => Ok(0),
+        }
+    }
+
+    /// Writes a fw_cfg MMIO register.
+    fn write_register(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> DeviceResult {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
+        let offset = addr.as_usize() - self.base.as_usize();
+        if offset == FW_CFG_SELECTOR_OFFSET {
+            self.write_selector(width, val);
+        }
+        Ok(())
+    }
+
     /// Returns whether `addr` belongs to the QEMU fw_cfg DMA address register.
     pub fn is_dma_address(&self, addr: GuestPhysAddr) -> bool {
         if !self.dma_enabled() {
             return false;
         }
+        if !self.contains(addr) {
+            return false;
+        }
 
-        let offset = addr.as_usize().saturating_sub(self.base.as_usize());
+        let offset = addr.as_usize() - self.base.as_usize();
         (FW_CFG_DMA_OFFSET..FW_CFG_DMA_OFFSET + core::mem::size_of::<u64>()).contains(&offset)
     }
 
@@ -326,10 +372,10 @@ impl FwCfg {
         width: AccessWidth,
         value: usize,
     ) -> DeviceManagerResult<Option<GuestPhysAddr>> {
-        let offset = addr.as_usize() - self.base.as_usize();
         if !self.is_dma_address(addr) {
             return Ok(None);
         }
+        let offset = addr.as_usize() - self.base.as_usize();
 
         let mut state = self.state.lock();
         match (offset - FW_CFG_DMA_OFFSET, width) {
@@ -580,16 +626,12 @@ impl Default for FwCfgDeviceFactory {
 
 impl FwCfgDmaDevice {
     pub fn from_arc(inner: Arc<FwCfg>, dma_grant: DmaGrant) -> Self {
-        let range = inner.address_range();
+        let resource = inner.mmio_resource();
         Self {
             inner,
             dma_grant,
             name: String::from("fw-cfg"),
-            resources: alloc::vec![Resource::MmioRange {
-                base: range.start.as_usize() as u64,
-                size: (range.end.as_usize() - range.start.as_usize()) as u64,
-            }]
-            .into_boxed_slice(),
+            resources: alloc::vec![resource].into_boxed_slice(),
         }
     }
 }
@@ -606,14 +648,14 @@ impl Device for FwCfgDmaDevice {
         access: &BusAccess,
         context: &mut dyn DeviceAccess,
     ) -> Result<BusResponse, DeviceError> {
-        let addr = GuestPhysAddr::from_usize(access.addr as usize);
         if access.kind != BusKind::Mmio {
             return Err(DeviceError::OutOfRange { addr: access.addr });
         }
+        let addr = GuestPhysAddr::from_usize(access.addr as usize);
         if access.is_read {
             return self
                 .inner
-                .handle_read(addr, access.width)
+                .read_register(addr, access.width)
                 .map(|value| BusResponse::Read {
                     value: value as u64,
                 });
@@ -621,7 +663,7 @@ impl Device for FwCfgDmaDevice {
         if !self.inner.is_dma_address(addr) {
             return self
                 .inner
-                .handle_write(addr, access.width, access.data as usize)
+                .write_register(addr, access.width, access.data as usize)
                 .map(|_| BusResponse::Write);
         }
         let Some(descriptor) = self
@@ -816,32 +858,6 @@ impl<'a> FwCfgEntry<'a> {
             Self::Bytes(bytes) => bytes,
             Self::Owned(bytes) => bytes,
         }
-    }
-}
-
-impl BaseDeviceOps<GuestPhysAddrRange> for FwCfg {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::FwCfg
-    }
-
-    fn address_range(&self) -> GuestPhysAddrRange {
-        GuestPhysAddrRange::from_start_size(self.base, self.size)
-    }
-
-    fn handle_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
-        match addr.as_usize() - self.base.as_usize() {
-            FW_CFG_DATA_OFFSET => Ok(self.read_data(width)),
-            FW_CFG_SELECTOR_OFFSET => Ok(self.state.lock().selected as usize),
-            _ => Ok(0),
-        }
-    }
-
-    fn handle_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> DeviceResult {
-        let offset = addr.as_usize() - self.base.as_usize();
-        if offset == FW_CFG_SELECTOR_OFFSET {
-            self.write_selector(width, val);
-        }
-        Ok(())
     }
 }
 

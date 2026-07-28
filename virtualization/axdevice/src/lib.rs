@@ -41,10 +41,7 @@ mod service;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
-pub use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Device,
-    MmioDeviceAdapter, Port, PortDeviceAdapter, SysRegAddr, SysRegDeviceAdapter,
-};
+pub use axdevice_base::{AccessWidth, Device, Port, SysRegAddr};
 pub use axvm_types::GuestPhysAddr;
 pub use device::{
     DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,

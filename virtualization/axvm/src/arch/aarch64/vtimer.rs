@@ -14,7 +14,6 @@ use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceLifecycle, DeviceManagerResult,
     DeviceRegistration, ServiceCardinality, ServiceKey,
 };
-use axdevice_base::SysRegDeviceAdapter;
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
 /// Factory for the standard AArch64 CNT* virtual-timer sysreg devices.
@@ -69,14 +68,15 @@ impl Aarch64VtimerFactory {
         });
 
         let bundle = DeviceBundle::from_registration(DeviceRegistration::Device(Arc::new(
-            SysRegDeviceAdapter::new(SysCntpCtlEl0::new(Arc::clone(&state), Arc::clone(&backend))),
+            SysCntpCtlEl0::new(Arc::clone(&state), Arc::clone(&backend)),
         )))
-        .with_registration(DeviceRegistration::Device(Arc::new(
-            SysRegDeviceAdapter::new(SysCntpctEl0::new(Arc::clone(&backend))),
-        )))
-        .with_registration(DeviceRegistration::Device(Arc::new(
-            SysRegDeviceAdapter::new(SysCntpTvalEl0::new(state, Arc::clone(&backend))),
-        )));
+        .with_registration(DeviceRegistration::Device(Arc::new(SysCntpctEl0::new(
+            Arc::clone(&backend),
+        ))))
+        .with_registration(DeviceRegistration::Device(Arc::new(SysCntpTvalEl0::new(
+            state,
+            Arc::clone(&backend),
+        ))));
 
         Ok(bundle
             .with_service::<Aarch64VtimerBackendKey>(backend)?

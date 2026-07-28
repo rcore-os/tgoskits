@@ -16,61 +16,67 @@ use std::sync::{Arc, Mutex};
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, DeviceRuntime, IrqResolver, MmioDeviceAdapter,
-    PollableDeviceOps, PortDeviceAdapter, SysRegDeviceAdapter, register_builtin_factories,
+    DeviceManagerResult, DeviceRegistration, DeviceRuntime, IrqResolver, PollableDeviceOps,
+    register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, Device, DeviceError, DeviceRegistry as _, DeviceResult,
-    InterruptTriggerMode, InvalidResourceReason, IrqError, IrqLine, IrqLineId, Port, PortRange,
-    RegistryError, Resource, SysRegAddr, SysRegAddrRange,
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError,
+    DeviceRegistry as _, InterruptTriggerMode, InvalidResourceReason, IrqError, IrqLine, IrqLineId,
+    Port, RegistryError, Resource, SysRegAddr,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
-/// Registers a legacy MMIO device through the new DeviceManager API.
-fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
+fn register_device<T: Device + 'static>(
     devices: &mut DeviceRuntime,
     dev: Arc<T>,
 ) -> Result<(), RegistryError> {
-    devices.register(MmioDeviceAdapter::from_arc(dev))?;
+    devices.register(dev)?;
     Ok(())
 }
 
-/// Registers a legacy Port device through the new DeviceManager API.
-fn register_port<T: BaseDeviceOps<PortRange> + Send + Sync + 'static>(
+fn register_mmio(
     devices: &mut DeviceRuntime,
-    dev: Arc<T>,
+    dev: Arc<MockMmioDevice>,
 ) -> Result<(), RegistryError> {
-    devices.register(PortDeviceAdapter::from_arc(dev))?;
-    Ok(())
+    register_device(devices, dev)
 }
 
-/// Registers a legacy SysReg device through the new DeviceManager API.
-fn register_sysreg<T: BaseDeviceOps<SysRegAddrRange> + Send + Sync + 'static>(
+fn register_port(
     devices: &mut DeviceRuntime,
-    dev: Arc<T>,
+    dev: Arc<MockPortDevice>,
 ) -> Result<(), RegistryError> {
-    devices.register(SysRegDeviceAdapter::from_arc(dev))?;
-    Ok(())
+    register_device(devices, dev)
+}
+
+fn register_sysreg(
+    devices: &mut DeviceRuntime,
+    dev: Arc<MockSysRegDevice>,
+) -> Result<(), RegistryError> {
+    register_device(devices, dev)
 }
 
 struct MockMmioDevice {
     name: String,
-    range: GuestPhysAddrRange,
+    base: usize,
+    end: usize,
+    resources: [Resource; 1],
     last_write: Mutex<Option<(usize, usize)>>,
 }
 
 impl MockMmioDevice {
     fn new(name: &str, base: usize, len: usize) -> Self {
-        let start = GuestPhysAddr::from(base);
-        let end = GuestPhysAddr::from(base + len);
-
-        Self::with_range(name, GuestPhysAddrRange::new(start, end))
+        Self::with_range(name, base, base + len)
     }
 
-    fn with_range(name: &str, range: GuestPhysAddrRange) -> Self {
+    fn with_range(name: &str, base: usize, end: usize) -> Self {
         Self {
             name: String::from(name),
-            range,
+            base,
+            end,
+            resources: [Resource::MmioRange {
+                base: base as u64,
+                size: end.wrapping_sub(base) as u64,
+            }],
             last_write: Mutex::new(None),
         }
     }
@@ -80,63 +86,88 @@ impl MockMmioDevice {
     }
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioDevice {
-    fn address_range(&self) -> GuestPhysAddrRange {
-        self.range
+impl Device for MockMmioDevice {
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn emu_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::IVCChannel
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(0xDEAD_BEEF)
-    }
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio
+            || access.addr < self.base as u64
+            || access.addr >= self.end as u64
+        {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
 
-    fn handle_write(&self, addr: GuestPhysAddr, _width: AccessWidth, val: usize) -> DeviceResult {
-        println!(
-            "[Test] Device {} write: addr={:?}, val={:#x}",
-            self.name, addr, val
-        );
-
-        let offset = addr.as_usize() - self.range.start.as_usize();
-        *self.last_write.lock().unwrap() = Some((offset, val));
-        Ok(())
+        if access.is_read {
+            Ok(BusResponse::Read { value: 0xDEAD_BEEF })
+        } else {
+            let offset = access.addr as usize - self.base;
+            *self.last_write.lock().unwrap() = Some((offset, access.data as usize));
+            Ok(BusResponse::Write)
+        }
     }
 }
 
 struct MockPortDevice {
-    range: PortRange,
+    start: u16,
+    end: u16,
+    resources: [Resource; 1],
 }
 
 impl MockPortDevice {
     fn new(start: u16, end: u16) -> Self {
         Self {
-            range: PortRange::new(Port::new(start), Port::new(end)),
+            start,
+            end,
+            resources: [Resource::PortRange {
+                base: start,
+                size: end.wrapping_sub(start).wrapping_add(1),
+            }],
         }
     }
 }
 
-impl BaseDeviceOps<PortRange> for MockPortDevice {
-    fn address_range(&self) -> PortRange {
-        self.range
+impl Device for MockPortDevice {
+    fn name(&self) -> &str {
+        "mock-port"
     }
 
-    fn emu_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::Console
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, _addr: Port, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(0)
-    }
-
-    fn handle_write(&self, _addr: Port, _width: AccessWidth, _val: usize) -> DeviceResult {
-        Ok(())
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Port
+            || access.addr < self.start as u64
+            || access.addr > self.end as u64
+        {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            Ok(BusResponse::Read { value: 0 })
+        } else {
+            Ok(BusResponse::Write)
+        }
     }
 }
 
 struct MockSysRegDevice {
-    range: SysRegAddrRange,
+    start: u32,
+    end: u32,
+    resources: [Resource; 1],
 }
 
 struct MockResourceDevice {
@@ -172,14 +203,21 @@ impl Device for MockResourceDevice {
 }
 
 struct MockMmioPollableDevice {
-    range: GuestPhysAddrRange,
+    base: usize,
+    end: usize,
+    resources: [Resource; 1],
     polled_at: Mutex<Vec<u64>>,
 }
 
 impl MockMmioPollableDevice {
     fn new(start: usize, end: usize) -> Self {
         Self {
-            range: GuestPhysAddrRange::new(start.into(), end.into()),
+            base: start,
+            end,
+            resources: [Resource::MmioRange {
+                base: start as u64,
+                size: end.wrapping_sub(start) as u64,
+            }],
             polled_at: Mutex::new(Vec::new()),
         }
     }
@@ -189,21 +227,31 @@ impl MockMmioPollableDevice {
     }
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for MockMmioPollableDevice {
-    fn address_range(&self) -> GuestPhysAddrRange {
-        self.range
+impl Device for MockMmioPollableDevice {
+    fn name(&self) -> &str {
+        "mock-mmio-pollable"
     }
 
-    fn emu_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::IVCChannel
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(0)
-    }
-
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
-        Ok(())
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio
+            || access.addr < self.base as u64
+            || access.addr >= self.end as u64
+        {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            Ok(BusResponse::Read { value: 0 })
+        } else {
+            Ok(BusResponse::Write)
+        }
     }
 }
 
@@ -217,26 +265,41 @@ impl PollableDeviceOps for MockMmioPollableDevice {
 impl MockSysRegDevice {
     fn new(start: usize, end: usize) -> Self {
         Self {
-            range: SysRegAddrRange::new(SysRegAddr::new(start), SysRegAddr::new(end)),
+            start: start as u32,
+            end: end as u32,
+            resources: [Resource::SysReg {
+                addr: start as u32,
+                count: (end as u32).wrapping_sub(start as u32).wrapping_add(1),
+            }],
         }
     }
 }
 
-impl BaseDeviceOps<SysRegAddrRange> for MockSysRegDevice {
-    fn address_range(&self) -> SysRegAddrRange {
-        self.range
+impl Device for MockSysRegDevice {
+    fn name(&self) -> &str {
+        "mock-sysreg"
     }
 
-    fn emu_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::InterruptController
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, _addr: SysRegAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(0)
-    }
-
-    fn handle_write(&self, _addr: SysRegAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
-        Ok(())
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::SysReg
+            || access.addr < self.start as u64
+            || access.addr > self.end as u64
+        {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            Ok(BusResponse::Read { value: 0 })
+        } else {
+            Ok(BusResponse::Write)
+        }
     }
 }
 
@@ -253,10 +316,7 @@ fn resource_device(name: &str, resources: Vec<Resource>) -> Arc<MockResourceDevi
 }
 
 fn mmio_device(name: &str, start: usize, end: usize) -> Arc<MockMmioDevice> {
-    Arc::new(MockMmioDevice::with_range(
-        name,
-        GuestPhysAddrRange::new(start.into(), end.into()),
-    ))
+    Arc::new(MockMmioDevice::with_range(name, start, end))
 }
 
 fn device_config(
@@ -317,14 +377,7 @@ impl DeviceFactory for MockMmioFactory {
             });
         }
 
-        Ok(
-            DeviceRegistration::Device(MmioDeviceAdapter::from_arc(mmio_device(
-                &config.name,
-                config.base_gpa,
-                end,
-            )))
-            .into(),
-        )
+        Ok(DeviceRegistration::Device(mmio_device(&config.name, config.base_gpa, end)).into())
     }
 }
 
@@ -422,16 +475,11 @@ fn test_mmio_duplicate_and_overlapping_ranges_are_rejected_without_modification(
 #[test]
 fn test_empty_and_wrapped_ranges_are_rejected() {
     let mut devices = empty_devices();
-    let empty_mmio = Arc::new(MockMmioDevice::with_range(
-        "empty-mmio",
-        GuestPhysAddrRange::new(0x1000.into(), 0x1000.into()),
-    ));
+    let empty_mmio = Arc::new(MockMmioDevice::with_range("empty-mmio", 0x1000, 0x1000));
     let wrapped_mmio = Arc::new(MockMmioDevice::with_range(
         "wrapped-mmio",
-        GuestPhysAddrRange {
-            start: (usize::MAX - 0xf).into(),
-            end: 0x10.into(),
-        },
+        usize::MAX - 0xf,
+        0x10,
     ));
     let invalid_port = Arc::new(MockPortDevice::new(0x400, 0x3ff));
     let invalid_sysreg = Arc::new(MockSysRegDevice::new(0x101, 0x100));
@@ -546,12 +594,14 @@ fn test_conflicting_factory_device_config_returns_structured_error() {
 fn test_bundle_registers_mmio_and_port_together() {
     let mut devices = empty_devices();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        mmio_device("bundle-mmio", 0x4000, 0x5000),
+    bundle.push(DeviceRegistration::Device(mmio_device(
+        "bundle-mmio",
+        0x4000,
+        0x5000,
     )));
-    bundle.push(DeviceRegistration::Device(PortDeviceAdapter::from_arc(
-        Arc::new(MockPortDevice::new(0x500, 0x50f)),
-    )));
+    bundle.push(DeviceRegistration::Device(Arc::new(MockPortDevice::new(
+        0x500, 0x50f,
+    ))));
 
     assert_eq!(devices.register_bundle(bundle), Ok(()));
     assert_eq!(devices.devices().count(), 2);
@@ -561,15 +611,19 @@ fn test_bundle_registers_mmio_and_port_together() {
 fn test_bundle_internal_conflict_is_atomic() {
     let mut devices = empty_devices();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        mmio_device("bundle-first", 0x4000, 0x5000),
+    bundle.push(DeviceRegistration::Device(mmio_device(
+        "bundle-first",
+        0x4000,
+        0x5000,
     )));
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        mmio_device("bundle-overlap", 0x4800, 0x5800),
+    bundle.push(DeviceRegistration::Device(mmio_device(
+        "bundle-overlap",
+        0x4800,
+        0x5800,
     )));
-    bundle.push(DeviceRegistration::Device(PortDeviceAdapter::from_arc(
-        Arc::new(MockPortDevice::new(0x500, 0x50f)),
-    )));
+    bundle.push(DeviceRegistration::Device(Arc::new(MockPortDevice::new(
+        0x500, 0x50f,
+    ))));
 
     assert!(matches!(
         devices.register_bundle(bundle).err(),
@@ -587,15 +641,17 @@ fn test_bundle_existing_conflict_leaves_all_registries_unchanged() {
 
     let count_before = devices.devices().count();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        mmio_device("bundle-mmio", 0x6000, 0x7000),
+    bundle.push(DeviceRegistration::Device(mmio_device(
+        "bundle-mmio",
+        0x6000,
+        0x7000,
     )));
-    bundle.push(DeviceRegistration::Device(PortDeviceAdapter::from_arc(
-        Arc::new(MockPortDevice::new(0x3ff, 0x400)),
-    )));
-    bundle.push(DeviceRegistration::Device(SysRegDeviceAdapter::from_arc(
-        Arc::new(MockSysRegDevice::new(0x200, 0x210)),
-    )));
+    bundle.push(DeviceRegistration::Device(Arc::new(MockPortDevice::new(
+        0x3ff, 0x400,
+    ))));
+    bundle.push(DeviceRegistration::Device(Arc::new(MockSysRegDevice::new(
+        0x200, 0x210,
+    ))));
 
     assert!(matches!(
         devices.register_bundle(bundle).err(),
@@ -611,9 +667,7 @@ fn test_pollable_and_mmio_capabilities_share_one_device() {
     let mut devices = empty_devices();
     let shared = Arc::new(MockMmioPollableDevice::new(0x8000, 0x9000));
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        shared.clone(),
-    )));
+    bundle.push(DeviceRegistration::Device(shared.clone()));
     bundle.push(DeviceRegistration::Pollable(shared.clone()));
 
     assert_eq!(devices.register_bundle(bundle), Ok(()));
@@ -638,9 +692,7 @@ fn test_duplicate_pollable_rejects_entire_bundle() {
         .unwrap();
 
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        shared.clone(),
-    )));
+    bundle.push(DeviceRegistration::Device(shared.clone()));
     bundle.push(DeviceRegistration::Pollable(shared));
 
     assert!(matches!(
@@ -763,8 +815,10 @@ fn test_wrapped_native_mmio_resource_is_rejected() {
     // AddressConflict.
     let mut devices = empty_devices();
     let mut bundle = DeviceBundle::new();
-    bundle.push(DeviceRegistration::Device(MmioDeviceAdapter::from_arc(
-        mmio_device("zero-size", 0x1000, 0x1000),
+    bundle.push(DeviceRegistration::Device(mmio_device(
+        "zero-size",
+        0x1000,
+        0x1000,
     )));
     assert!(matches!(
         devices.register_bundle(bundle).err(),

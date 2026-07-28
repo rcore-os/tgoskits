@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use core::option::Option;
 
 use ax_kspin::SpinNoIrq as Mutex;
+use axdevice_base::Resource;
 use axvm_types::GuestPhysAddr;
 #[cfg(target_arch = "riscv64")]
 use axvm_types::HostPhysAddr;
@@ -22,6 +23,8 @@ pub struct VPlicGlobal {
     pub addr: GuestPhysAddr,
     /// The size of the VPlicGlobal in bytes.
     pub size: usize,
+    /// Stable guest resources declared to the V3 device runtime.
+    pub(crate) resources: [Resource; 1],
     /// Num of contexts.
     pub contexts_num: usize,
     /// IRQs assigned to this VPlicGlobal.
@@ -83,6 +86,10 @@ impl VPlicGlobal {
         Ok(Self {
             addr,
             size,
+            resources: [Resource::MmioRange {
+                base: addr.as_usize() as u64,
+                size: size as u64,
+            }],
             assigned_irqs: Mutex::new(Bitmap::new()),
             pending_irqs: Mutex::new(Bitmap::new()),
             active_irqs: Mutex::new(Bitmap::new()),

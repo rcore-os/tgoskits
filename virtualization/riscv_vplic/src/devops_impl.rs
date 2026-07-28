@@ -1,9 +1,11 @@
 //! Device emulation operations for VPlicGlobal.
 //!
-//! Implements the `BaseDeviceOps` trait for MMIO read/write handling.
+//! Implements V3 device-access handling for MMIO read/write operations.
 
-use axdevice_base::{AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType};
-use axvm_types::GuestPhysAddrRange;
+use axdevice_base::{
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+};
+use axvm_types::GuestPhysAddr;
 #[cfg(target_arch = "riscv64")]
 use axvm_types::HostPhysAddr;
 use bitmaps::Bitmap;
@@ -223,26 +225,25 @@ impl VPlicGlobal {
     }
 }
 
-/// Implementation of device emulation operations for virtual PLIC.
-impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
-    fn emu_type(&self) -> axdevice_base::EmuDeviceType {
-        EmuDeviceType::PPPTGlobal
+impl VPlicGlobal {
+    fn contains(&self, addr: GuestPhysAddr) -> bool {
+        let base = self.addr.as_usize();
+        let end = base.saturating_add(self.size);
+        let addr = addr.as_usize();
+        addr >= base && addr < end
     }
 
-    fn address_range(&self) -> GuestPhysAddrRange {
-        GuestPhysAddrRange::from_start_size(self.addr, self.size)
-    }
-
-    /// Handles MMIO read operations from the virtual PLIC.
+    /// Reads a virtual PLIC MMIO register.
     ///
     /// Only 32-bit (Dword) accesses are supported.
     /// Read operations are forwarded to the host PLIC for most registers,
     /// except for pending and claim/complete registers which are emulated.
-    fn handle_read(
-        &self,
-        addr: <GuestPhysAddrRange as DeviceAddrRange>::Addr,
-        width: AccessWidth,
-    ) -> DeviceResult<usize> {
+    pub fn read_register(&self, addr: GuestPhysAddr, width: AccessWidth) -> DeviceResult<usize> {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         let result = (|| -> VplicResult<usize> {
             if width != AccessWidth::Dword {
                 return Err(VplicError::InvalidAccessWidth {
@@ -336,18 +337,23 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
         Ok(result?)
     }
 
-    /// Handles MMIO write operations to the virtual PLIC.
+    /// Writes a virtual PLIC MMIO register.
     ///
     /// Only 32-bit (Dword) accesses are supported.
     /// Write operations are forwarded to the host PLIC for most registers.
     /// Writes to the pending register are used for interrupt injection by the hypervisor.
     /// Writes to the claim/complete register complete interrupt handling.
-    fn handle_write(
+    pub fn write_register(
         &self,
-        addr: <GuestPhysAddrRange as DeviceAddrRange>::Addr,
+        addr: GuestPhysAddr,
         width: AccessWidth,
         val: usize,
     ) -> DeviceResult {
+        if !self.contains(addr) {
+            return Err(DeviceError::OutOfRange {
+                addr: addr.as_usize() as u64,
+            });
+        }
         let result = (|| -> VplicResult {
             if width != AccessWidth::Dword {
                 return Err(VplicError::InvalidAccessWidth {
@@ -460,6 +466,36 @@ impl BaseDeviceOps<GuestPhysAddrRange> for VPlicGlobal {
             }
         })();
         Ok(result?)
+    }
+}
+
+impl Device for VPlicGlobal {
+    fn name(&self) -> &str {
+        "riscv-vplic"
+    }
+
+    fn resources(&self) -> &[axdevice_base::Resource] {
+        &self.resources
+    }
+
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        if access.is_read {
+            self.read_register(addr, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.write_register(addr, access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
+        }
     }
 }
 

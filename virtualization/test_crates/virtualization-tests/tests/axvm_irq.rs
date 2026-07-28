@@ -16,16 +16,14 @@ use std::sync::{Arc, Mutex, Weak};
 
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
-    DeviceManagerResult, DeviceRegistration, DeviceRuntime, IrqResolver, MmioDeviceAdapter,
+    DeviceManagerResult, DeviceRegistration, DeviceRuntime, IrqResolver,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceResult, InterruptTriggerMode, IrqError, IrqLine, IrqLineId,
-    IrqResult, IrqSink,
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError,
+    InterruptTriggerMode, IrqError, IrqLine, IrqLineId, IrqResult, IrqSink, Resource,
 };
 use axvm::{AxVmError, InterruptFabric};
-use axvm_types::{
-    EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, VMInterruptMode,
-};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, VMInterruptMode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IrqEvent {
@@ -60,30 +58,36 @@ impl IrqSink for RecordingIrqSink {
 }
 
 struct IrqMmioDevice {
-    range: GuestPhysAddrRange,
+    resources: [Resource; 1],
     line: IrqLine,
 }
 
-impl BaseDeviceOps<GuestPhysAddrRange> for IrqMmioDevice {
-    fn address_range(&self) -> GuestPhysAddrRange {
-        self.range
+impl Device for IrqMmioDevice {
+    fn name(&self) -> &str {
+        "irq-mmio"
     }
 
-    fn emu_type(&self) -> EmulatedDeviceType {
-        EmulatedDeviceType::VirtioNet
+    fn resources(&self) -> &[Resource] {
+        &self.resources
     }
 
-    fn handle_read(&self, _addr: GuestPhysAddr, _width: AccessWidth) -> DeviceResult<usize> {
-        Ok(0)
-    }
-
-    fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
-        self.line
-            .pulse()
-            .map_err(|error| axdevice_base::DeviceError::Backend {
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            Ok(BusResponse::Read { value: 0 })
+        } else {
+            self.line.pulse().map_err(|error| DeviceError::Backend {
                 operation: "pulse test device IRQ",
                 detail: error.to_string(),
-            })
+            })?;
+            Ok(BusResponse::Write)
+        }
     }
 }
 
@@ -106,13 +110,14 @@ impl DeviceFactory for IrqMmioFactory {
             });
         };
         let line = context.resolve_irq(config.irq_id, InterruptTriggerMode::EdgeTriggered)?;
-        Ok(
-            DeviceRegistration::Device(MmioDeviceAdapter::from_arc(Arc::new(IrqMmioDevice {
-                range: GuestPhysAddrRange::new(config.base_gpa.into(), end.into()),
-                line,
-            })))
-            .into(),
-        )
+        Ok(DeviceRegistration::Device(Arc::new(IrqMmioDevice {
+            resources: [Resource::MmioRange {
+                base: config.base_gpa as u64,
+                size: (end - config.base_gpa) as u64,
+            }],
+            line,
+        }))
+        .into())
     }
 }
 
