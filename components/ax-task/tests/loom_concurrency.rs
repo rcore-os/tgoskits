@@ -608,22 +608,32 @@ fn stale_task_deadline_publication_cannot_replace_a_newer_generation() {
 
 #[test]
 fn irq_wait_registration_racing_notify_has_exactly_one_winner() {
+    const DETACHED_GENERATION_0: usize = 0;
+    const DETACHED_GENERATION_1: usize = 1 << 2;
+    const ATTACHED_GENERATION_1: usize = DETACHED_GENERATION_1 | 1;
+    const NOTIFYING_GENERATION_1: usize = DETACHED_GENERATION_1 | 2;
+
     loom::model(|| {
         let waiter = Arc::new(AtomicUsize::new(0));
-        let attached = Arc::new(AtomicBool::new(false));
+        let registration = Arc::new(AtomicUsize::new(DETACHED_GENERATION_0));
         let pending = Arc::new(AtomicBool::new(false));
         let wakes = Arc::new(AtomicUsize::new(0));
         let synchronous_consumes = Arc::new(AtomicUsize::new(0));
 
         let register = {
             let waiter = Arc::clone(&waiter);
-            let attached = Arc::clone(&attached);
+            let registration = Arc::clone(&registration);
             let pending = Arc::clone(&pending);
             let synchronous_consumes = Arc::clone(&synchronous_consumes);
             thread::spawn(move || {
                 assert!(
-                    attached
-                        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    registration
+                        .compare_exchange(
+                            DETACHED_GENERATION_0,
+                            ATTACHED_GENERATION_1,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
                         .is_ok()
                 );
                 assert!(
@@ -637,29 +647,66 @@ fn irq_wait_registration_racing_notify_has_exactly_one_winner() {
                         .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
                         .is_ok()
                 {
-                    attached.store(false, Ordering::Release);
+                    registration
+                        .compare_exchange(
+                            ATTACHED_GENERATION_1,
+                            DETACHED_GENERATION_1,
+                            Ordering::Release,
+                            Ordering::Acquire,
+                        )
+                        .unwrap();
                     synchronous_consumes.fetch_add(1, Ordering::Release);
                 }
             })
         };
         let notify = {
             let waiter = Arc::clone(&waiter);
-            let attached = Arc::clone(&attached);
+            let registration = Arc::clone(&registration);
             let pending = Arc::clone(&pending);
             let wakes = Arc::clone(&wakes);
             thread::spawn(move || {
                 let first = waiter.swap(0, Ordering::AcqRel);
                 if first == 1 {
-                    attached.store(false, Ordering::Release);
+                    registration
+                        .compare_exchange(
+                            ATTACHED_GENERATION_1,
+                            NOTIFYING_GENERATION_1,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .unwrap();
                     wakes.fetch_add(1, Ordering::Release);
+                    registration
+                        .compare_exchange(
+                            NOTIFYING_GENERATION_1,
+                            DETACHED_GENERATION_1,
+                            Ordering::Release,
+                            Ordering::Acquire,
+                        )
+                        .unwrap();
                     return;
                 }
 
                 pending.store(true, Ordering::Release);
                 if waiter.swap(0, Ordering::AcqRel) == 1 {
                     pending.store(false, Ordering::Release);
-                    attached.store(false, Ordering::Release);
+                    registration
+                        .compare_exchange(
+                            ATTACHED_GENERATION_1,
+                            NOTIFYING_GENERATION_1,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .unwrap();
                     wakes.fetch_add(1, Ordering::Release);
+                    registration
+                        .compare_exchange(
+                            NOTIFYING_GENERATION_1,
+                            DETACHED_GENERATION_1,
+                            Ordering::Release,
+                            Ordering::Acquire,
+                        )
+                        .unwrap();
                 }
             })
         };
@@ -671,8 +718,140 @@ fn irq_wait_registration_racing_notify_has_exactly_one_winner() {
             1
         );
         assert_eq!(waiter.load(Ordering::Acquire), 0);
-        assert!(!attached.load(Ordering::Acquire));
+        assert_eq!(registration.load(Ordering::Acquire), DETACHED_GENERATION_1);
         assert!(!pending.load(Ordering::Acquire));
+    });
+}
+
+#[test]
+fn irq_wait_reclamation_waits_for_notifying_to_finish() {
+    const DETACHED: usize = 1 << 2;
+    const ATTACHED: usize = DETACHED | 1;
+    const NOTIFYING: usize = DETACHED | 2;
+
+    loom::model(|| {
+        let waiter = Arc::new(AtomicUsize::new(1));
+        let registration = Arc::new(AtomicUsize::new(ATTACHED));
+        let payload_alive = Arc::new(AtomicBool::new(true));
+        let reclaimed = Arc::new(AtomicBool::new(false));
+
+        let notifier = {
+            let waiter = Arc::clone(&waiter);
+            let registration = Arc::clone(&registration);
+            let payload_alive = Arc::clone(&payload_alive);
+            thread::spawn(move || {
+                if waiter.swap(0, Ordering::AcqRel) == 0 {
+                    return;
+                }
+                registration
+                    .compare_exchange(ATTACHED, NOTIFYING, Ordering::AcqRel, Ordering::Acquire)
+                    .unwrap();
+                assert!(payload_alive.load(Ordering::Acquire));
+                thread::yield_now();
+                assert!(
+                    payload_alive.load(Ordering::Acquire),
+                    "the wake payload was reclaimed while the notifier still used it"
+                );
+                registration
+                    .compare_exchange(NOTIFYING, DETACHED, Ordering::Release, Ordering::Acquire)
+                    .unwrap();
+            })
+        };
+        let owner = {
+            let waiter = Arc::clone(&waiter);
+            let registration = Arc::clone(&registration);
+            let payload_alive = Arc::clone(&payload_alive);
+            let reclaimed = Arc::clone(&reclaimed);
+            thread::spawn(move || {
+                if waiter
+                    .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    registration
+                        .compare_exchange(ATTACHED, DETACHED, Ordering::Release, Ordering::Acquire)
+                        .unwrap();
+                }
+                while registration.load(Ordering::Acquire) != DETACHED {
+                    thread::yield_now();
+                }
+                payload_alive.store(false, Ordering::Release);
+                reclaimed.store(true, Ordering::Release);
+            })
+        };
+
+        notifier.join().unwrap();
+        owner.join().unwrap();
+        assert!(reclaimed.load(Ordering::Acquire));
+        assert!(!payload_alive.load(Ordering::Acquire));
+    });
+}
+
+#[test]
+fn stale_irq_wait_generation_cannot_detach_a_rearmed_waiter() {
+    const DETACHED_GENERATION_1: usize = 1 << 2;
+    const NOTIFYING_GENERATION_1: usize = DETACHED_GENERATION_1 | 2;
+    const ATTACHED_GENERATION_2: usize = (2 << 2) | 1;
+
+    loom::model(|| {
+        let registration = Arc::new(AtomicUsize::new(NOTIFYING_GENERATION_1));
+        let rearmed = Arc::new(AtomicBool::new(false));
+
+        let notifier = {
+            let registration = Arc::clone(&registration);
+            thread::spawn(move || {
+                registration
+                    .compare_exchange(
+                        NOTIFYING_GENERATION_1,
+                        DETACHED_GENERATION_1,
+                        Ordering::Release,
+                        Ordering::Acquire,
+                    )
+                    .unwrap();
+            })
+        };
+        let registrar = {
+            let registration = Arc::clone(&registration);
+            let rearmed = Arc::clone(&rearmed);
+            thread::spawn(move || {
+                while registration.load(Ordering::Acquire) != DETACHED_GENERATION_1 {
+                    thread::yield_now();
+                }
+                registration
+                    .compare_exchange(
+                        DETACHED_GENERATION_1,
+                        ATTACHED_GENERATION_2,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .unwrap();
+                rearmed.store(true, Ordering::Release);
+            })
+        };
+        let stale_owner = {
+            let registration = Arc::clone(&registration);
+            let rearmed = Arc::clone(&rearmed);
+            thread::spawn(move || {
+                while !rearmed.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+                assert!(
+                    registration
+                        .compare_exchange(
+                            DETACHED_GENERATION_1 | 1,
+                            DETACHED_GENERATION_1,
+                            Ordering::Release,
+                            Ordering::Acquire,
+                        )
+                        .is_err(),
+                    "an old token detached a reused registration slot"
+                );
+            })
+        };
+
+        notifier.join().unwrap();
+        registrar.join().unwrap();
+        stale_owner.join().unwrap();
+        assert_eq!(registration.load(Ordering::Acquire), ATTACHED_GENERATION_2);
     });
 }
 

@@ -150,8 +150,27 @@ activation is one `shared -> exclusive` compare-exchange, so writer intent is
 visible before the active lease is withdrawn. A retained remote read or a
 second CPU activation returns `ScopeCellBusy`; it cannot make the caller spin
 or panic with IRQs disabled. The deterministic regression exercises both the
-old admission window and a read-then-mutate self-deadlock. IRQ-visible waiter
-quiescence remains open.
+old admission window and a read-then-mutate self-deadlock.
+
+IRQ-visible waiters now distinguish `Attached`, `Notifying`, and `Detached`
+for each registration generation. Removing the cell pointer is only the
+park-abort condition; it is not permission to release the wake payload.
+`IrqWaitToken` borrows the owning cell, identifies one generation, and must be
+detached and quiesced in task context. Reuse cannot confuse an older token
+with a later generation. The deterministic regression blocks inside the wake
+operation and proves that detachment does not authorize reclamation until the
+notifier returns. Loom covers notify versus cancellation, payload grace, and
+stale-generation rearm.
+
+The registration now owns a typed `ThreadWakeHandle`. Production code can no
+longer construct an arbitrary raw hard-IRQ callback or separately release its
+wake target. Serial, block, network, AxVM timer, task-work, evdev, KPU, and TPU
+workers all branch `ConsumedPending` directly to service work; token-bearing
+results park on generation ownership and then use the common detach/quiesce
+boundary. Starry `IrqNotify` uses the same cell instead of publishing an
+`AtomicPtr<ThreadWakeHandle>`. The remaining raw pointer in the PMU sampling
+registry is a separate perf-owner finding: its owner-CPU unregister and IRQ
+grace period must be completed before the strong `IrqNotify` owner is dropped.
 
 ## Completion rules
 

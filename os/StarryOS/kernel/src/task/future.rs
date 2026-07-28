@@ -5,22 +5,25 @@
 //! one ordinary task-context service thread. IRQ handlers must wake a fixed
 //! service thread instead of invoking `PollSet` callbacks directly.
 
-use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 use core::{
     fmt,
     future::{Future, IntoFuture, poll_fn},
     pin::{Pin, pin},
-    ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::{Context, Poll, Waker},
     time::Duration,
 };
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::time::{TimeValue, monotonic_time, wall_time};
-use ax_std::os::arceos::task::{self as scheduler, LocalExecutor, ThreadWakeHandle, WaitQueue};
+use ax_std::os::arceos::task::{
+    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, LocalExecutor,
+    WaitQueue,
+};
 use ax_sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
+use spin::Once;
 
 use super::UserTaskRef;
 
@@ -91,22 +94,23 @@ where
 /// synchronize that callback before dropping the last owner. This is the same
 /// lifetime rule required by the callback payload itself.
 pub struct IrqNotify {
-    pending: AtomicBool,
+    event: IrqWaitCell,
     park: WaitQueue,
-    wake: AtomicPtr<ThreadWakeHandle>,
-    owner: AtomicU64,
-    retained_wake: PiMutex<Option<Box<ThreadWakeHandle>>>,
+    waiter: Once<IrqNotifyWaiter>,
+}
+
+struct IrqNotifyWaiter {
+    owner: scheduler::ThreadId,
+    registration: IrqWaitRegistration,
 }
 
 impl IrqNotify {
     /// Creates an unregistered notification object.
     pub const fn new() -> Self {
         Self {
-            pending: AtomicBool::new(false),
+            event: IrqWaitCell::new(),
             park: WaitQueue::new(),
-            wake: AtomicPtr::new(ptr::null_mut()),
-            owner: AtomicU64::new(0),
-            retained_wake: PiMutex::new(None),
+            waiter: Once::new(),
         }
     }
 
@@ -115,14 +119,7 @@ impl IrqNotify {
     /// This path performs no allocation, deallocation, future polling,
     /// callback dispatch, or wait-queue scan.
     pub fn notify_irq(&self) {
-        self.pending.store(true, Ordering::Release);
-        let wake = self.wake.load(Ordering::Acquire);
-        if !wake.is_null() {
-            // SAFETY: `install_current_wake` stores a pointer into the retained
-            // box before publishing it. Safe references prevent ordinary Drop
-            // races; raw IRQ users must synchronize teardown as documented.
-            let _result = unsafe { &*wake }.wake();
-        }
+        let _result = self.event.notify();
     }
 
     /// Publishes one coalesced notification from task context.
@@ -130,51 +127,46 @@ impl IrqNotify {
         self.notify_irq();
     }
 
-    /// Consumes all notifications published before this operation.
-    pub fn drain(&self) -> bool {
-        self.pending.swap(false, Ordering::AcqRel)
-    }
-
     /// Blocks the sole service thread until one notification is available.
     #[track_caller]
     pub fn wait(&self) {
-        self.install_current_wake();
-        self.park.wait_until(|| self.drain());
-    }
-
-    fn install_current_wake(&self) {
-        let current = scheduler::current_thread_handle()
-            .unwrap_or_else(|error| panic!("IRQ service has no scheduler thread: {error}"));
-        let current_id = current.id().as_u64();
-        if self.wake.load(Ordering::Acquire).is_null() {
-            let candidate = Box::new(current.wake_handle());
-            let mut retained = self.retained_wake.lock();
-            if retained.is_none() {
-                *retained = Some(candidate);
-                self.owner.store(current_id, Ordering::Release);
-                let wake = retained
-                    .as_deref_mut()
-                    .unwrap_or_else(|| unreachable!("wake was installed"));
-                self.wake.store(wake, Ordering::Release);
+        let registration = self.current_registration();
+        match self.event.register(registration) {
+            IrqRegisterResult::ConsumedPending => {}
+            IrqRegisterResult::Registered(token)
+            | IrqRegisterResult::NotificationInFlight(token) => {
+                self.park.wait_until(|| !token.is_attached());
+                scheduler::quiesce_irq_wait(&self.event, token)
+                    .unwrap_or_else(|error| panic!("Starry IRQ waiter could not quiesce: {error}"));
+            }
+            IrqRegisterResult::Occupied => {
+                panic!("Starry IRQ notification was consumed by concurrent waiters")
             }
         }
+    }
+
+    fn current_registration(&self) -> &IrqWaitRegistration {
+        let current = scheduler::current_thread_handle()
+            .unwrap_or_else(|error| panic!("IRQ service has no scheduler thread: {error}"));
+        let current_id = current.id();
+        let waiter = self.waiter.call_once(|| {
+            let wake_owner = current.wake_handle();
+            IrqNotifyWaiter {
+                owner: current_id,
+                registration: IrqWaitRegistration::new(wake_owner),
+            }
+        });
         assert_eq!(
-            self.owner.load(Ordering::Acquire),
-            current_id,
+            waiter.owner, current_id,
             "an IrqNotify may be consumed by only one fixed service thread"
         );
+        &waiter.registration
     }
 }
 
 impl Default for IrqNotify {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Drop for IrqNotify {
-    fn drop(&mut self) {
-        self.wake.store(ptr::null_mut(), Ordering::Release);
     }
 }
 

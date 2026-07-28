@@ -1,9 +1,7 @@
-use alloc::boxed::Box;
 use core::{
     any::Any,
     hint::spin_loop,
     mem::{offset_of, size_of},
-    pin::Pin,
     sync::atomic::{AtomicU8, AtomicU64, Ordering},
     time::Duration,
 };
@@ -11,8 +9,7 @@ use core::{
 use ax_lazyinit::LazyInit;
 use ax_memory_addr::{PhysAddr, PhysAddrRange};
 use ax_std::os::arceos::task::{
-    self as scheduler, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle,
-    ThreadId, ThreadWakeHandle, WaitQueue,
+    self as scheduler, IrqWaitCell, IrqWaitRegistration, ThreadId, WaitQueue,
 };
 use axfs_ng_vfs::{DeviceId, NodeFlags, VfsError, VfsResult};
 use bytemuck::NoUninit;
@@ -30,7 +27,7 @@ use crate::{
     mm::{UserConstPtr, UserPtr},
     pseudofs::{
         DeviceMmap, DeviceOps,
-        dev::{IrqRegistration, request_shared_disabled},
+        dev::{IrqRegistration, irq_service::complete_irq_service_cycle, request_shared_disabled},
     },
 };
 
@@ -480,8 +477,7 @@ fn kpu_irq_handler(_ctx: ax_runtime::hal::irq::IrqContext) -> ax_runtime::hal::i
 
 struct KpuServiceWaiter {
     owner: ThreadId,
-    registration: Pin<Box<IrqWaitRegistration>>,
-    _wake: &'static ThreadWakeHandle,
+    registration: IrqWaitRegistration,
 }
 
 fn start_kpu_irq_service() -> bool {
@@ -534,61 +530,25 @@ fn kpu_irq_service() {
     );
 
     loop {
-        let registration = KPU_IRQ_NOTIFY.register(waiter.registration.as_ref());
-        if !complete_kpu_service_cycle(
+        let registration = KPU_IRQ_NOTIFY.register(&waiter.registration);
+        let completed = complete_irq_service_cycle(
+            &KPU_IRQ_NOTIFY,
             registration,
-            || KPU_SERVICE_PARK.wait_until(|| !waiter.registration.is_attached()),
-            || {
-                let _removed = KPU_IRQ_NOTIFY.unregister(waiter.registration.as_ref());
-            },
+            |token| KPU_SERVICE_PARK.wait_until(|| !token.is_attached()),
             || KPU_DONE_WQ.notify_all(),
-        ) {
+        )
+        .unwrap_or_else(|error| panic!("KPU IRQ waiter could not quiesce: {error}"));
+        if !completed {
             panic!("KPU IRQ service registration was occupied concurrently");
         }
     }
 }
 
 fn create_kpu_service_waiter(current: &scheduler::ThreadHandle) -> KpuServiceWaiter {
-    let wake = Box::leak(Box::new(current.wake_handle()));
-    // SAFETY: the wake handle is retained for the shutdown lifetime. Its direct
-    // wake path is allocation-free, non-blocking, and hard-IRQ-safe.
-    let irq_wake = unsafe { IrqWakeHandle::from_raw(wake as *const _ as usize, wake_kpu_service) };
     KpuServiceWaiter {
         owner: current.id(),
-        registration: Box::pin(IrqWaitRegistration::new(irq_wake)),
-        _wake: wake,
+        registration: IrqWaitRegistration::new(current.wake_handle()),
     }
-}
-
-fn complete_kpu_service_cycle<P, C, F>(
-    registration: IrqRegisterResult,
-    park: P,
-    cleanup: C,
-    fanout: F,
-) -> bool
-where
-    P: FnOnce(),
-    C: FnOnce(),
-    F: FnOnce(),
-{
-    match registration {
-        IrqRegisterResult::Registered
-        | IrqRegisterResult::ConsumedPending
-        | IrqRegisterResult::NotificationInFlight => {
-            park();
-            cleanup();
-            fanout();
-            true
-        }
-        IrqRegisterResult::Occupied => false,
-    }
-}
-
-unsafe fn wake_kpu_service(data: usize) {
-    // SAFETY: `create_kpu_service_waiter` publishes only its leaked
-    // `ThreadWakeHandle`, retained by the shutdown-lifetime waiter.
-    let wake = unsafe { &*(data as *const ThreadWakeHandle) };
-    let _result = wake.wake();
 }
 
 fn fallback_irq() -> Option<ax_runtime::hal::irq::IrqId> {
@@ -657,55 +617,4 @@ fn copy_info_to_user(arg: usize, info: &KpuInfo) -> VfsResult<()> {
         .and_then(|()| user.write_field(offset_of!(KpuInfo, irq), info.irq))
         .and_then(|()| user.write_field(offset_of!(KpuInfo, flags), info.flags))
         .map_err(|_| VfsError::InvalidData)
-}
-
-#[cfg(test)]
-mod tests {
-    use core::cell::Cell;
-
-    use super::*;
-
-    #[test]
-    fn pending_before_register_runs_service_fanout_after_park_cleanup() {
-        assert_service_cycle_order(IrqRegisterResult::ConsumedPending);
-    }
-
-    #[test]
-    fn register_before_irq_runs_service_fanout_after_park_cleanup() {
-        assert_service_cycle_order(IrqRegisterResult::Registered);
-    }
-
-    #[test]
-    fn occupied_registration_does_not_park_or_fanout() {
-        let step = Cell::new(0);
-        let completed = complete_kpu_service_cycle(
-            IrqRegisterResult::Occupied,
-            || step.set(1),
-            || step.set(2),
-            || step.set(3),
-        );
-        assert!(!completed);
-        assert_eq!(step.get(), 0);
-    }
-
-    fn assert_service_cycle_order(registration: IrqRegisterResult) {
-        let step = Cell::new(0);
-        let completed = complete_kpu_service_cycle(
-            registration,
-            || {
-                assert_eq!(step.get(), 0);
-                step.set(1);
-            },
-            || {
-                assert_eq!(step.get(), 1);
-                step.set(2);
-            },
-            || {
-                assert_eq!(step.get(), 2);
-                step.set(3);
-            },
-        );
-        assert!(completed);
-        assert_eq!(step.get(), 3);
-    }
 }

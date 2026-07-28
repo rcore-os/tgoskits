@@ -10,10 +10,7 @@ mod state;
 mod worker;
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
-use core::{
-    pin::Pin,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ax_driver::serial::SerialDevice;
 pub use ax_driver::serial::SerialDeviceInfo;
@@ -32,8 +29,8 @@ use self::{
     worker::SerialWorker,
 };
 use crate::task::{
-    CpuId, CpuSet, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle,
-    ThreadHandle, ThreadId, ThreadWakeHandle, WaitQueue,
+    CpuId, CpuSet, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, ThreadHandle, ThreadId,
+    WaitQueue, quiesce_irq_wait,
 };
 
 const NO_ACTIVE_CONSOLE: usize = usize::MAX;
@@ -100,16 +97,17 @@ impl RuntimeIrqBridge {
             "serial notifications must be consumed by one fixed maintenance thread"
         );
 
-        match self.doorbell.register(waiter.registration) {
-            IrqRegisterResult::Registered
-            | IrqRegisterResult::ConsumedPending
-            | IrqRegisterResult::NotificationInFlight => {
+        match self.doorbell.register(&waiter.registration) {
+            IrqRegisterResult::ConsumedPending => {}
+            IrqRegisterResult::Registered(token)
+            | IrqRegisterResult::NotificationInFlight(token) => {
                 // Registration ownership is the single event predicate. The
                 // notifier releases it before the direct scheduler wake, and
                 // an event coalesced before registration releases it
                 // synchronously without leaving a stale self-wake behind.
-                self.park.wait_until(|| !waiter.registration.is_attached());
-                let _removed = self.doorbell.unregister(waiter.registration);
+                self.park.wait_until(|| !token.is_attached());
+                quiesce_irq_wait(&self.doorbell, token)
+                    .unwrap_or_else(|error| panic!("serial IRQ waiter could not quiesce: {error}"));
             }
             IrqRegisterResult::Occupied => {
                 panic!("serial IRQ waiter was registered concurrently")
@@ -120,8 +118,7 @@ impl RuntimeIrqBridge {
 
 struct SerialWorkerWaiter {
     owner: ThreadId,
-    registration: Pin<&'static IrqWaitRegistration>,
-    _wake: &'static ThreadWakeHandle,
+    registration: IrqWaitRegistration,
 }
 
 struct PendingIrqRegistration {
@@ -159,32 +156,10 @@ impl Drop for PendingIrqRegistration {
 }
 
 fn create_serial_worker_waiter(current: &ThreadHandle) -> SerialWorkerWaiter {
-    let wake = Box::leak(Box::new(current.wake_handle()));
-    // SAFETY: each UART and its maintenance worker live for the kernel lifetime.
-    // The leaked generation-bearing wake handle is allocation-free, non-blocking,
-    // and safe to invoke from hard IRQ until shutdown.
-    let irq_wake = unsafe {
-        IrqWakeHandle::from_raw(
-            (wake as *const ThreadWakeHandle).expose_provenance(),
-            wake_serial_worker,
-        )
-    };
-    let registration: &'static IrqWaitRegistration =
-        &*Box::leak(Box::new(IrqWaitRegistration::new(irq_wake)));
-    // SAFETY: the registration is intentionally leaked and can never move.
-    let registration = unsafe { Pin::new_unchecked(registration) };
     SerialWorkerWaiter {
         owner: current.id(),
-        registration,
-        _wake: wake,
+        registration: IrqWaitRegistration::new(current.wake_handle()),
     }
-}
-
-unsafe fn wake_serial_worker(data: usize) {
-    // SAFETY: `create_serial_worker_waiter` publishes only its leaked
-    // `ThreadWakeHandle`, which remains valid for the kernel lifetime.
-    let wake = unsafe { &*core::ptr::with_exposed_provenance::<ThreadWakeHandle>(data) };
-    let _result = wake.wake();
 }
 
 fn try_enter_irq_registers<'a>(

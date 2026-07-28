@@ -4,7 +4,6 @@ extern crate alloc;
 
 use alloc::{boxed::Box, collections::VecDeque, format};
 use core::{
-    pin::Pin,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     time::Duration,
 };
@@ -14,8 +13,8 @@ use ax_lazyinit::LazyInit;
 use ax_std::os::arceos::modules::{
     ax_hal,
     ax_runtime::task::{
-        IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, ThreadWakeHandle, WaitQueue,
-        current_thread_handle, yield_current_cpu,
+        IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, WaitQueue, current_thread_handle,
+        quiesce_irq_wait, yield_current_cpu,
     },
 };
 use ax_sync::PiMutex;
@@ -148,7 +147,6 @@ impl VmTimerState {
 }
 
 struct VmTimerWaiter {
-    _wake_owner: ThreadWakeHandle,
     registration: IrqWaitRegistration,
 }
 
@@ -211,20 +209,10 @@ fn timer_worker(state: &'static VmTimerState) -> ! {
     let wake_owner = current_thread_handle()
         .unwrap_or_else(|error| panic!("AxVM timer worker lacks a scheduler thread: {error}"))
         .wake_handle();
-    let irq_wake = unsafe {
-        // SAFETY: the leaked waiter below owns this wake handle for the
-        // shutdown lifetime and is unregistered before every reuse.
-        wake_owner.irq_wake_handle()
-    };
     let waiter = Box::leak(Box::new(VmTimerWaiter {
-        _wake_owner: wake_owner,
-        registration: IrqWaitRegistration::new(irq_wake),
+        registration: IrqWaitRegistration::new(wake_owner),
     }));
-    let registration = unsafe {
-        // SAFETY: the leaked allocation is stable, and this sole worker
-        // serializes every registration operation.
-        Pin::new_unchecked(&waiter.registration)
-    };
+    let registration = &waiter.registration;
     let wait_queue = WaitQueue::new();
     let mut timers = TimerList::new();
 
@@ -265,7 +253,7 @@ fn service_timer_work(state: &VmTimerState, timers: &mut TimerList<VmTimerEvent>
 fn wait_for_timer_work(
     state: &'static VmTimerState,
     wait_queue: &WaitQueue,
-    registration: Pin<&'static IrqWaitRegistration>,
+    registration: &IrqWaitRegistration,
     next_deadline: Option<TimeValue>,
 ) {
     if state.has_commands() {
@@ -277,30 +265,33 @@ fn wait_for_timer_work(
     }
 
     let observed = state.publication_generation.load(Ordering::Acquire);
-    match state.wake.register(registration) {
+    let token = match state.wake.register(registration) {
         IrqRegisterResult::Occupied => panic!("AxVM timer worker registration is already attached"),
         IrqRegisterResult::ConsumedPending => return,
-        IrqRegisterResult::Registered | IrqRegisterResult::NotificationInFlight => {}
-    }
+        IrqRegisterResult::Registered(token) | IrqRegisterResult::NotificationInFlight(token) => {
+            token
+        }
+    };
 
     if state.publication_generation.load(Ordering::Acquire) != observed || state.has_commands() {
-        let _ = state.wake.unregister(registration);
+        quiesce_irq_wait(&state.wake, token)
+            .unwrap_or_else(|error| panic!("AxVM timer waiter could not quiesce: {error}"));
         return;
     }
 
     match next_deadline {
         Some(deadline) => {
             let _timed_out = wait_queue.wait_until_deadline(deadline, || {
-                !registration.is_attached()
+                !token.is_attached()
                     || state.publication_generation.load(Ordering::Acquire) != observed
             });
         }
         None => wait_queue.wait_until(|| {
-            !registration.is_attached()
-                || state.publication_generation.load(Ordering::Acquire) != observed
+            !token.is_attached() || state.publication_generation.load(Ordering::Acquire) != observed
         }),
     }
-    let _ = state.wake.unregister(registration);
+    quiesce_irq_wait(&state.wake, token)
+        .unwrap_or_else(|error| panic!("AxVM timer waiter could not quiesce: {error}"));
 }
 
 fn current_timer_state() -> &'static VmTimerState {
