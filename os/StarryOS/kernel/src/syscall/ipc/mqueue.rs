@@ -87,7 +87,7 @@ pub fn sys_mq_open(
     let umask = thr.proc_data.umask();
     // The creator's `RLIMIT_MSGQUEUE` soft limit bounds the total bytes across
     // all their queues (Linux charges `mq_bytes` against the ucounts rlimit).
-    let msgqueue_rlimit = thr.proc_data.rlim.read()[RLIMIT_MSGQUEUE].current;
+    let msgqueue_rlimit = thr.proc_data.rlimits()[RLIMIT_MSGQUEUE].current;
 
     let mut registry = MQ_REGISTRY.lock();
     // Whether this call created the queue (so an fd-allocation failure below

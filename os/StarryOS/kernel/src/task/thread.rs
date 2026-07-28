@@ -308,7 +308,7 @@ impl Thread {
         if self.bind_scheduler_id(id).is_err() {
             panic!("Starry thread was rebound to a different scheduler identity");
         }
-        self.proc_data.process_cpu_time.record_transition(|| {
+        self.proc_data.record_cpu_time_transition(|| {
             self.accounting
                 .cpu_time
                 .scheduler_switch_in(realtime_policy);
@@ -337,18 +337,16 @@ impl Thread {
         // and the scheduler baton still pins the same CPU during switch-out.
         unsafe { self.scope.cell.deactivate_pinned(cpu_pin) };
         self.proc_data
-            .process_cpu_time
-            .record_transition(|| self.accounting.cpu_time.scheduler_switch_out(reason));
+            .record_cpu_time_transition(|| self.accounting.cpu_time.scheduler_switch_out(reason));
     }
 
     pub(crate) fn set_cpu_time_state(&self, state: TimerState) {
         self.proc_data
-            .process_cpu_time
-            .record_transition(|| self.accounting.cpu_time.set_state(state));
+            .record_cpu_time_transition(|| self.accounting.cpu_time.set_state(state));
     }
 
     pub(crate) fn set_cpu_time_policy(&self, realtime_policy: bool, leaving_realtime: bool) {
-        self.proc_data.process_cpu_time.record_transition(|| {
+        self.proc_data.record_cpu_time_transition(|| {
             self.accounting
                 .cpu_time
                 .set_realtime_policy(realtime_policy, leaving_realtime)
@@ -357,8 +355,7 @@ impl Thread {
 
     pub(crate) fn account_cpu_time_now(&self) {
         self.proc_data
-            .process_cpu_time
-            .record_transition(|| self.accounting.cpu_time.account_now());
+            .record_cpu_time_transition(|| self.accounting.cpu_time.account_now());
     }
 
     pub(crate) fn cpu_time(&self) -> &CpuTimeAccounting {

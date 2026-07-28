@@ -26,7 +26,7 @@ use crate::{
 };
 
 fn check_nfds_limit(nfds: usize) -> AxResult<()> {
-    let nofile = current_user_task().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+    let nofile = current_user_task().as_thread().proc_data.rlimits()[RLIMIT_NOFILE].current;
     if nfds as u64 > nofile {
         Err(AxError::InvalidInput)
     } else {

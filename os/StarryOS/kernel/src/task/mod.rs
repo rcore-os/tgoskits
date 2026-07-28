@@ -6,9 +6,11 @@ pub mod future;
 mod job_control;
 mod ops;
 pub mod posix_timer;
+mod process_accounting;
 mod process_identity;
 mod process_image;
 mod process_memory;
+mod process_policy;
 mod process_wait;
 mod resources;
 mod scheduler_identity;
@@ -26,10 +28,10 @@ mod user;
 mod user_wait;
 
 use alloc::{collections::BTreeMap, sync::Arc};
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use ax_kspin::SpinRwLock as RwLock;
-use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
+use ax_runtime::hal::cpu::uspace::UserContext;
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::{IoEvents, PollSet};
 use starry_process::{Pid, Process};
@@ -70,8 +72,9 @@ pub use self::{
     seccomp::*, signal::*, stat::*, thread::Thread, tid::*, timer::*, user::*,
 };
 use self::{
-    job_control::ProcessJobControl, process_image::ProcessImageState,
-    process_memory::ProcessMemoryState, process_wait::ProcessWaitState,
+    job_control::ProcessJobControl, process_accounting::ProcessAccountingState,
+    process_image::ProcessImageState, process_memory::ProcessMemoryState,
+    process_policy::ProcessPolicyState, process_wait::ProcessWaitState,
 };
 #[cfg(axtest)]
 pub(crate) use self::{
@@ -100,8 +103,8 @@ pub struct ProcessData {
     pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
     /// Authoritative cgroup membership shared by every thread in the process.
     pub cgroup: RwLock<Arc<ax_cgroup::CgroupNode>>,
-    /// The resource limits
-    pub rlim: RwLock<Rlimits>,
+    /// Resource limits and process-wide compatibility policy.
+    policy: ProcessPolicyState,
 
     /// Exit metadata, wait channels, and vfork completion.
     wait: ProcessWaitState,
@@ -112,34 +115,8 @@ pub struct ProcessData {
     /// The futex table.
     futex_table: Arc<FutexTable>,
 
-    /// The default mask for file permissions.
-    umask: AtomicU32,
-
-    /// Process-local membarrier(2) registration state bitmask.
-    membarrier_state: AtomicU32,
-
-    /// PR_GET_DUMPABLE / PR_SET_DUMPABLE value (default 1 = SUID_DUMP_USER).
-    /// Cleared to 0 (SUID_DUMP_DISABLE) whenever the effective UID/GID
-    /// changes via setuid/setresuid/setreuid (man 2 setuid §NOTES:
-    /// "If uid is different from the old effective UID, the process will
-    /// be forbidden from leaving core dumps").
-    /// Linux stores this on `mm_struct`; StarryOS keeps it process-wide.
-    dumpable: AtomicI32,
-
-    /// PR_GET_THP_DISABLE / PR_SET_THP_DISABLE value.
-    /// StarryOS does not implement transparent huge pages, but userspace may
-    /// set this as a compatibility hint and later query it.
-    thp_disable: AtomicU32,
-
-    /// Accumulated CPU time of waited children (utime + stime).
-    /// Updated when wait() reaps a child.
-    children_cpu_time: SpinNoIrq<(TimeValue, TimeValue)>,
-
-    /// CPU time accumulated by every thread in this process.
-    process_cpu_time: ProcessCpuTimeAccounting,
-
-    /// Linux setitimer/getitimer state shared by the thread group.
-    pub interval_timers: PiMutex<ProcessTimerManager>,
+    /// CPU accounting and process-owned timer tables.
+    accounting: ProcessAccountingState,
 
     /// Pid of the process currently tracing this process, if any.
     ptrace_tracer_pid: AtomicU32,
@@ -190,13 +167,6 @@ pub struct ProcessData {
 
     /// FP register snapshot captured when entering ptrace stop, keyed by TID.
     ptrace_stop_fp_data: SpinNoIrq<BTreeMap<u32, PtraceStopFpData>>,
-
-    /// Linux process personality flags. Starry does not randomize userspace
-    /// mappings yet, but debuggers still probe and set ADDR_NO_RANDOMIZE.
-    personality: AtomicUsize,
-
-    /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
-    pub posix_timers: Arc<PosixTimerTable>,
 
     /// Job-control stop state and parent-report delivery.
     job_control: ProcessJobControl,
@@ -264,7 +234,8 @@ impl ProcessData {
                 uprobe_manager: crate::kprobe::KprobeManager::new(),
                 uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
 
-                rlim: RwLock::default(),
+                policy: ProcessPolicyState::new(),
+                accounting: ProcessAccountingState::new(),
 
                 signal: Arc::new(ProcessSignalManager::new(
                     signal_actions,
@@ -275,15 +246,6 @@ impl ProcessData {
 
                 nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
                 cgroup: RwLock::new(crate::cgroup::root()),
-
-                umask: AtomicU32::new(0o022),
-                membarrier_state: AtomicU32::new(0),
-                dumpable: AtomicI32::new(1),
-                thp_disable: AtomicU32::new(0),
-
-                children_cpu_time: SpinNoIrq::new((TimeValue::ZERO, TimeValue::ZERO)),
-                process_cpu_time: ProcessCpuTimeAccounting::new(),
-                interval_timers: PiMutex::new(ProcessTimerManager::new()),
 
                 ptrace_tracer_pid: AtomicU32::new(0),
                 ptrace_traceme: AtomicBool::new(false),
@@ -301,10 +263,6 @@ impl ProcessData {
                 ptrace_ss_saved_insn: SpinNoIrq::new(BTreeMap::new()),
                 ptrace_stop_fp_data: SpinNoIrq::new(BTreeMap::new()),
 
-                personality: AtomicUsize::new(0),
-
-                posix_timers: Arc::new(PosixTimerTable::default()),
-
                 job_control: ProcessJobControl::new(),
             }
         });
@@ -320,82 +278,6 @@ impl ProcessData {
     /// Returns this process generation's stable PID identity.
     pub(crate) fn identity(&self) -> Arc<ProcessIdentity> {
         self.identity.clone()
-    }
-
-    /// Get the umask.
-    pub fn umask(&self) -> u32 {
-        self.umask.load(Ordering::SeqCst)
-    }
-
-    /// Set the umask.
-    pub fn set_umask(&self, umask: u32) {
-        self.umask.store(umask, Ordering::SeqCst);
-    }
-
-    /// Set the umask and return the old value.
-    pub fn replace_umask(&self, umask: u32) -> u32 {
-        self.umask.swap(umask, Ordering::SeqCst)
-    }
-
-    /// Get the membarrier(2) registration state bitmask.
-    pub fn membarrier_state(&self) -> u32 {
-        self.membarrier_state.load(Ordering::SeqCst)
-    }
-
-    /// Add bits to the membarrier(2) registration state.
-    pub fn register_membarrier_state(&self, state: u32) {
-        self.membarrier_state.fetch_or(state, Ordering::SeqCst);
-    }
-
-    /// Get the dumpable flag (PR_GET_DUMPABLE).
-    pub fn dumpable(&self) -> i32 {
-        self.dumpable.load(Ordering::SeqCst)
-    }
-
-    /// Set the dumpable flag (PR_SET_DUMPABLE).
-    /// Valid userspace values are 0 (SUID_DUMP_DISABLE) and 1
-    /// (SUID_DUMP_USER). Callers must validate before storing.
-    pub fn set_dumpable(&self, dumpable: i32) {
-        self.dumpable.store(dumpable, Ordering::SeqCst);
-    }
-
-    /// Get the transparent huge page disable state (PR_GET_THP_DISABLE).
-    pub fn thp_disable(&self) -> u32 {
-        self.thp_disable.load(Ordering::SeqCst)
-    }
-
-    /// Set the transparent huge page disable state (PR_SET_THP_DISABLE).
-    pub fn set_thp_disable(&self, thp_disable: u32) {
-        self.thp_disable.store(thp_disable, Ordering::SeqCst);
-    }
-
-    /// Get the accumulated CPU time of waited children.
-    pub fn children_cpu_time(&self) -> (TimeValue, TimeValue) {
-        *self.children_cpu_time.lock()
-    }
-
-    /// Accumulate a child's CPU time when it is reaped by wait().
-    pub fn add_child_cpu_time(&self, utime: TimeValue, stime: TimeValue) {
-        let mut time = self.children_cpu_time.lock();
-        time.0 += utime;
-        time.1 += stime;
-    }
-
-    pub(crate) fn cpu_time_snapshot(&self) -> ProcessCpuTimeSnapshot {
-        self.process_cpu_time.snapshot_with_live(|now_ns| {
-            self.proc
-                .threads()
-                .into_iter()
-                .filter_map(|tid| get_task(tid).ok())
-                .fold(CpuTimeDelta::ZERO, |total, task| {
-                    total.add(task.as_thread().cpu_time().running_residual_at(now_ns))
-                })
-        })
-    }
-
-    /// Returns process-wide user and system CPU time.
-    pub fn cpu_time(&self) -> (TimeValue, TimeValue) {
-        self.cpu_time_snapshot().output()
     }
 
     /// Mark this process as traceable by its parent.
@@ -938,14 +820,6 @@ impl ProcessData {
 
     pub fn set_ptrace_stop_fp_data_for(&self, tid: u32, data: PtraceStopFpData) -> bool {
         self.ptrace_stop_fp_data.lock().insert(tid, data).is_some()
-    }
-
-    pub fn personality(&self) -> usize {
-        self.personality.load(Ordering::Acquire)
-    }
-
-    pub fn replace_personality(&self, personality: usize) -> usize {
-        self.personality.swap(personality, Ordering::AcqRel)
     }
 }
 

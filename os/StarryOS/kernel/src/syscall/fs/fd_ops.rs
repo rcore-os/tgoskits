@@ -600,7 +600,7 @@ fn dup_fd_min(old_fd: c_int, min_fd: c_int, cloexec: bool) -> AxResult<isize> {
         return Err(AxError::InvalidInput);
     }
     let f = get_file_like(old_fd)?;
-    let max_nofile = current().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current as i32;
+    let max_nofile = current().as_thread().proc_data.rlimits()[RLIMIT_NOFILE].current as i32;
     let current_fd_table = crate::file::current_fd_table();
     let mut fd_table = current_fd_table.write();
     for candidate in min_fd..max_nofile {

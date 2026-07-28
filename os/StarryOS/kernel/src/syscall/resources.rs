@@ -27,7 +27,7 @@ pub fn sys_prlimit64(
     }
 
     if let Some(old_limit) = old_limit.nullable() {
-        let limit = &proc_data.rlim.read()[resource];
+        let limit = &proc_data.rlimits()[resource];
         let old_limit = UserPtr::<rlimit64>::from(old_limit);
         old_limit.write_field(offset_of!(rlimit64, rlim_cur), limit.current)?;
         old_limit.write_field(offset_of!(rlimit64, rlim_max), limit.max)?;
@@ -40,7 +40,7 @@ pub fn sys_prlimit64(
             return Err(AxError::InvalidInput);
         }
 
-        let limit = &mut proc_data.rlim.write()[resource];
+        let limit = &mut proc_data.rlimits_mut()[resource];
         // Raising the hard limit requires CAP_SYS_RESOURCE.
         // TODO: has_cap_sys_resource() is currently euid==0 until a
         // fine-grained capability bitmap is implemented (see cred.rs).

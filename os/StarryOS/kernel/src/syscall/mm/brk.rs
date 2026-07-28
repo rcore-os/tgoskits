@@ -33,7 +33,7 @@ pub fn sys_brk(addr: usize) -> AxResult<isize> {
     // Since we don't have end_data - start_data, we approximate by checking
     // (addr - USER_HEAP_BASE) against the soft limit.
     // RLIM_INFINITY (u64::MAX) means unlimited.
-    let rlimit_data = proc_data.rlim.read()[RLIMIT_DATA].current;
+    let rlimit_data = proc_data.rlimits()[RLIMIT_DATA].current;
     if rlimit_data != u64::MAX {
         let heap_size = addr.saturating_sub(USER_HEAP_BASE);
         if heap_size > rlimit_data as usize {

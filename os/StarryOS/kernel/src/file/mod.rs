@@ -348,7 +348,7 @@ pub fn fd_is_path(fd: c_int) -> bool {
 
 /// Add a file to the file descriptor table.
 pub fn add_file_like(f: Arc<dyn FileLike>, cloexec: bool) -> AxResult<c_int> {
-    let max_nofile = current_user_task().as_thread().proc_data.rlim.read()[RLIMIT_NOFILE].current;
+    let max_nofile = current_user_task().as_thread().proc_data.rlimits()[RLIMIT_NOFILE].current;
     let fd_table = current_fd_table();
     let mut table = fd_table.write();
     if table.count() as u64 >= max_nofile {
