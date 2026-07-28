@@ -162,15 +162,12 @@ impl Device for MockResourceDevice {
         &self.resources
     }
 
-    fn handle(
+    fn access(
         &self,
         _access: &axdevice_base::BusAccess,
+        _context: &mut dyn axdevice_base::DeviceAccess,
     ) -> Result<axdevice_base::BusResponse, DeviceError> {
         Ok(axdevice_base::BusResponse::Read { value: 0x5a })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
@@ -946,14 +943,12 @@ fn test_native_device_resource_overflow_rejected() {
             }];
             &R
         }
-        fn handle(
+        fn access(
             &self,
             _: &axdevice_base::BusAccess,
+            _context: &mut dyn axdevice_base::DeviceAccess,
         ) -> Result<axdevice_base::BusResponse, DeviceError> {
             Err(DeviceError::NotFound)
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
         }
     }
 
@@ -984,14 +979,12 @@ fn test_native_device_port_resource_overflow_rejected() {
             }];
             &R
         }
-        fn handle(
+        fn access(
             &self,
             _: &axdevice_base::BusAccess,
+            _context: &mut dyn axdevice_base::DeviceAccess,
         ) -> Result<axdevice_base::BusResponse, DeviceError> {
             Err(DeviceError::NotFound)
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
         }
     }
 

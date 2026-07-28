@@ -185,7 +185,8 @@ pub struct EmulatedDeviceConfig {
 ///
 /// # Implementation Notes
 ///
-/// - All implementations must also implement [`Any`] to support runtime type checking.
+/// - Implementations remain `Any` so legacy adapters can wrap existing
+///   concrete device crates without changing their public type bounds.
 /// - The `handle_read` and `handle_write` methods are called by the hypervisor's
 ///   trap handler when the guest accesses the device's address range.
 /// - Implementations should handle concurrent access appropriately if the device
@@ -296,7 +297,7 @@ pub trait BaseDeviceOps<R: DeviceAddrRange>: Any {
 /// ```
 #[deprecated(
     since = "0.5.0",
-    note = "Use Device::as_any().downcast_ref() via MmioDeviceAdapter instead"
+    note = "Use the unified Device trait and explicit service registries instead"
 )]
 pub fn map_device_of_type<T: BaseDeviceOps<R>, R: DeviceAddrRange, U, F: FnOnce(&T) -> U>(
     device: &Arc<dyn BaseDeviceOps<R>>,
@@ -509,20 +510,13 @@ pub enum RegistryError {
 ///
 /// Every emulated device (interrupt controller, UART, virtio-blk, …)
 /// implements this trait.  The device manager calls [`resources`](Device::resources)
-/// at registration time for conflict detection and [`handle`](Device::handle)
+/// at registration time for conflict detection and [`access`](Device::access)
 /// on the hot path whenever a vCPU exit is dispatched to this device.
 ///
-/// # Downcasting
-///
-/// `Device` extends [`Any`](core::any::Any) so callers can downcast to a
-/// concrete device type via [`as_any`](Device::as_any):
-///
-/// ```ignore
-/// if let Some(vgic) = device.as_any().downcast_ref::<VGicD>() {
-///     vgic.assign_irq(32, cpu_id, (0, 0, 0, cpu_id));
-/// }
-/// ```
-pub trait Device: Send + Sync + Any {
+/// Concrete collaboration between devices and architecture code should be
+/// exposed through typed services registered with the VM device runtime, not
+/// through production downcasts from `Arc<dyn Device>`.
+pub trait Device: Send + Sync {
     /// Returns a human-readable name for this device (used in logging and
     /// diagnostics).
     fn name(&self) -> &str;
@@ -535,28 +529,60 @@ pub trait Device: Send + Sync + Any {
     /// path without allocation.
     fn resources(&self) -> &[Resource];
 
-    /// Handles a single bus access.
-    ///
-    /// This is the hot-path entry point called from [`BusRouter::dispatch`].
-    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError>;
-
     /// Handles a single bus access with runtime-scoped device context.
-    ///
-    /// The default implementation preserves the existing device ABI by
-    /// delegating to [`Device::handle`]. Devices that need runtime-provided
-    /// capabilities can override this method when those capabilities are
-    /// introduced by a later migration stage.
     fn access(
         &self,
         access: &BusAccess,
-        _context: &mut dyn DeviceAccess,
-    ) -> Result<BusResponse, DeviceError> {
-        self.handle(access)
-    }
-
-    /// Returns a reference to `self` as `&dyn Any` for downcasting.
-    fn as_any(&self) -> &dyn Any;
+        context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError>;
 }
+
+macro_rules! define_grant {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Clone)]
+        pub struct $name {
+            token: Arc<()>,
+        }
+
+        impl $name {
+            /// Creates a grant token that has no authority until a
+            /// [`DeviceRuntime`](crate::DeviceRegistry) records it for a
+            /// specific device during transactional registration.
+            pub fn new() -> Self {
+                Self { token: Arc::new(()) }
+            }
+
+            /// Returns whether two handles refer to the same grant token.
+            pub fn same_token(&self, other: &Self) -> bool {
+                Arc::ptr_eq(&self.token, &other.token)
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+    };
+}
+
+define_grant!(
+    /// Permission token for access-scoped guest-memory DMA.
+    DmaGrant
+);
+define_grant!(
+    /// Permission token for virtual timer scheduling.
+    TimerGrant
+);
+define_grant!(
+    /// Permission token for waking a vCPU from a device.
+    WakeGrant
+);
+define_grant!(
+    /// Permission token for requesting VM stop/suspend style actions.
+    StopGrant
+);
 
 /// Context scoped to one device bus access.
 ///
@@ -572,7 +598,12 @@ pub trait DeviceAccess {
     /// Reads guest memory on behalf of the currently dispatched device.
     ///
     /// This capability is valid only for this access and is denied by default.
-    fn read_guest_memory(&mut self, _addr: GuestPhysAddr, _data: &mut [u8]) -> DeviceResult {
+    fn read_guest_memory(
+        &mut self,
+        _grant: &DmaGrant,
+        _addr: GuestPhysAddr,
+        _data: &mut [u8],
+    ) -> DeviceResult {
         Err(DeviceError::Unsupported {
             operation: "read guest memory from device access",
             detail: "this bus access has no DMA memory grant".into(),
@@ -580,11 +611,58 @@ pub trait DeviceAccess {
     }
 
     /// Writes guest memory on behalf of the currently dispatched device.
-    fn write_guest_memory(&mut self, _addr: GuestPhysAddr, _data: &[u8]) -> DeviceResult {
+    fn write_guest_memory(
+        &mut self,
+        _grant: &DmaGrant,
+        _addr: GuestPhysAddr,
+        _data: &[u8],
+    ) -> DeviceResult {
         Err(DeviceError::Unsupported {
             operation: "write guest memory from device access",
             detail: "this bus access has no DMA memory grant".into(),
         })
+    }
+
+    /// Schedules a virtual timer on behalf of the current device.
+    fn schedule_timer(&mut self, _grant: &TimerGrant, _deadline_ns: u64) -> DeviceResult {
+        Err(DeviceError::Unsupported {
+            operation: "schedule timer from device access",
+            detail: "this bus access has no timer grant".into(),
+        })
+    }
+
+    /// Wakes a vCPU on behalf of the current device.
+    fn wake_vcpu(&mut self, _grant: &WakeGrant, _vcpu_id: usize) -> DeviceResult {
+        Err(DeviceError::Unsupported {
+            operation: "wake vCPU from device access",
+            detail: "this bus access has no wake grant".into(),
+        })
+    }
+
+    /// Requests that the VM stops because of a device-visible condition.
+    fn request_vm_stop(&mut self, _grant: &StopGrant, _reason: &str) -> DeviceResult {
+        Err(DeviceError::Unsupported {
+            operation: "request VM stop from device access",
+            detail: "this bus access has no stop grant".into(),
+        })
+    }
+}
+
+/// A no-permission access context for tests and adapter-only callers.
+pub struct NoopDeviceAccess {
+    device_id: DeviceId,
+}
+
+impl NoopDeviceAccess {
+    /// Creates a no-permission context for `device_id`.
+    pub const fn new(device_id: DeviceId) -> Self {
+        Self { device_id }
+    }
+}
+
+impl DeviceAccess for NoopDeviceAccess {
+    fn device_id(&self) -> DeviceId {
+        self.device_id
     }
 }
 
@@ -611,9 +689,7 @@ pub trait BusRouter {
     /// to it, returning the result.
     fn dispatch(&self, access: &BusAccess) -> Result<BusResponse, DeviceError>;
 
-    /// Looks up the device responsible for `access` without handling the
-    /// access.  The caller can then inspect the device or call
-    /// [`Device::handle`] manually.
+    /// Looks up the device responsible for `access` without handling the access.
     fn lookup(&self, access: &BusAccess) -> Result<Arc<dyn Device>, DeviceError>;
 }
 

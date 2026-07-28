@@ -29,7 +29,7 @@ use axaddrspace::NestedPageTableOps;
 use axdevice::DeviceRuntime;
 #[cfg(target_arch = "loongarch64")]
 use axdevice::{FwCfgPayloadConfig, FwCfgPlatformConfig};
-use axdevice_base::{AccessWidth, DeviceAccess, DeviceId, DeviceResult};
+use axdevice_base::{AccessWidth, DeviceAccess, DeviceId, DeviceResult, DmaGrant};
 use axvm_types::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
 };
@@ -71,7 +71,12 @@ impl DeviceAccess for VmDmaAccess<'_> {
     fn device_id(&self) -> DeviceId {
         DeviceId::new(0)
     }
-    fn read_guest_memory(&mut self, addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult {
+    fn read_guest_memory(
+        &mut self,
+        _grant: &DmaGrant,
+        addr: GuestPhysAddr,
+        data: &mut [u8],
+    ) -> DeviceResult {
         self.vm
             .read_from_guest(addr, data)
             .map_err(|error| axdevice_base::DeviceError::Backend {
@@ -79,7 +84,12 @@ impl DeviceAccess for VmDmaAccess<'_> {
                 detail: alloc::format!("{error}"),
             })
     }
-    fn write_guest_memory(&mut self, addr: GuestPhysAddr, data: &[u8]) -> DeviceResult {
+    fn write_guest_memory(
+        &mut self,
+        _grant: &DmaGrant,
+        addr: GuestPhysAddr,
+        data: &[u8],
+    ) -> DeviceResult {
         self.vm
             .write_to_guest(addr, data)
             .map_err(|error| axdevice_base::DeviceError::Backend {

@@ -21,7 +21,6 @@
 //! be removed.
 
 use alloc::{boxed::Box, string::String, sync::Arc};
-use core::any::Any;
 
 use crate::{
     BaseDeviceOps, Device, EmuDeviceType, GuestPhysAddr, Resource,
@@ -123,7 +122,11 @@ where
         &self.resources
     }
 
-    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn crate::DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
         let addr = GuestPhysAddr::from(access.addr as usize);
         if access.is_read {
             self.inner
@@ -134,10 +137,6 @@ where
                 .handle_write(addr, access.width, access.data as usize)
                 .map(|_| BusResponse::Write)
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        &*self.inner
     }
 }
 
@@ -202,7 +201,11 @@ where
         &self.resources
     }
 
-    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn crate::DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
         let addr = SysRegAddr::new(access.addr as usize);
         if access.is_read {
             self.inner
@@ -213,10 +216,6 @@ where
                 .handle_write(addr, access.width, access.data as usize)
                 .map(|_| BusResponse::Write)
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        &*self.inner
     }
 }
 
@@ -281,7 +280,11 @@ where
         &self.resources
     }
 
-    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn crate::DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
         let port = Port::new(access.addr as u16);
         if access.is_read {
             self.inner
@@ -292,10 +295,6 @@ where
                 .handle_write(port, access.width, access.data as usize)
                 .map(|_| BusResponse::Write)
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        &*self.inner
     }
 }
 
@@ -356,20 +355,22 @@ mod tests {
             _ => panic!(),
         }
 
+        let mut context = crate::NoopDeviceAccess::new(crate::DeviceId::new(0));
         let resp = adapter
-            .handle(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: 0x1000,
-                width: AccessWidth::Dword,
-                data: 0,
-            })
+            .access(
+                &BusAccess {
+                    kind: BusKind::Mmio,
+                    is_read: true,
+                    addr: 0x1000,
+                    width: AccessWidth::Dword,
+                    data: 0,
+                },
+                &mut context,
+            )
             .unwrap();
         match resp {
             BusResponse::Read { value } => assert_eq!(value, 42),
             _ => panic!(),
         }
-
-        assert!(adapter.as_any().downcast_ref::<MockMmioDevice>().is_some());
     }
 }

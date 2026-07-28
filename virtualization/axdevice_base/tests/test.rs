@@ -17,12 +17,10 @@ extern crate alloc;
 use alloc::{sync::Arc, vec};
 
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, DeviceResult,
-    EmuDeviceType, MmioDeviceAdapter,
+    AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, DeviceId, DeviceResult,
+    EmuDeviceType, MmioDeviceAdapter, NoopDeviceAccess,
 };
 use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
-
-const DEVICE_A_TEST_METHOD_ANSWER: usize = 42;
 
 struct DeviceA;
 
@@ -41,13 +39,6 @@ impl BaseDeviceOps<GuestPhysAddrRange> for DeviceA {
 
     fn handle_write(&self, _addr: GuestPhysAddr, _width: AccessWidth, _val: usize) -> DeviceResult {
         Ok(())
-    }
-}
-
-impl DeviceA {
-    /// A test method unique to DeviceA.
-    pub fn test_method(&self) -> usize {
-        DEVICE_A_TEST_METHOD_ANSWER
     }
 }
 
@@ -78,26 +69,24 @@ fn test_device_type_test() {
         MmioDeviceAdapter::from_arc(Arc::new(DeviceB)),
     ];
 
-    let mut device_a_found = false;
-    for device in &devices {
+    for (index, device) in devices.iter().enumerate() {
+        let addr = 0x1000 + index * 0x1000;
+        let mut context = NoopDeviceAccess::new(DeviceId::new(index as u32));
         let resp = device
-            .handle(&BusAccess {
-                kind: BusKind::Mmio,
-                is_read: true,
-                addr: 0x2000,
-                width: AccessWidth::Byte,
-                data: 0,
-            })
+            .access(
+                &BusAccess {
+                    kind: BusKind::Mmio,
+                    is_read: true,
+                    addr: addr as u64,
+                    width: AccessWidth::Byte,
+                    data: 0,
+                },
+                &mut context,
+            )
             .unwrap();
         assert!(matches!(
             resp,
-            BusResponse::Read { value } if value as usize == 0x2000
+            BusResponse::Read { value } if value as usize == addr
         ));
-
-        if let Some(a) = device.as_any().downcast_ref::<DeviceA>() {
-            assert_eq!(a.test_method(), DEVICE_A_TEST_METHOD_ANSWER);
-            device_a_found = true;
-        }
     }
-    assert!(device_a_found, "DeviceA was not found");
 }

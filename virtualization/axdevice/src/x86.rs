@@ -1,7 +1,7 @@
 //! AxVM-facing adapters for OS-neutral x86 virtual interrupt-controller devices.
 
 use alloc::{boxed::Box, string::String};
-use core::{any::Any, marker::PhantomData};
+use core::marker::PhantomData;
 
 use axdevice_base::{AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceError, Resource};
 use x86_vlapic::{
@@ -139,7 +139,11 @@ impl Device for X86IoApicDevice {
         &self.resources
     }
 
-    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn axdevice_base::DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
         if access.kind != BusKind::Mmio {
             return Err(DeviceError::OutOfRange { addr: access.addr });
         }
@@ -158,10 +162,6 @@ impl Device for X86IoApicDevice {
                 .map(|_| BusResponse::Write)
                 .map_err(|_| DeviceError::Internal)
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -213,7 +213,11 @@ impl<H: X86VlapicHostOps + 'static> Device for X86PitDevice<H> {
         &self.resources
     }
 
-    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn axdevice_base::DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
         if access.kind != BusKind::Port {
             return Err(DeviceError::OutOfRange { addr: access.addr });
         }
@@ -235,10 +239,6 @@ impl<H: X86VlapicHostOps + 'static> Device for X86PitDevice<H> {
                 .map(|_| BusResponse::Write)
                 .map_err(|_| DeviceError::Internal)
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -290,7 +290,11 @@ impl<H: X86VlapicHostOps + 'static> Device for X86SerialPortDevice<H> {
         &self.resources
     }
 
-    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn axdevice_base::DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
         if access.kind != BusKind::Port {
             return Err(DeviceError::OutOfRange { addr: access.addr });
         }
@@ -312,10 +316,6 @@ impl<H: X86VlapicHostOps + 'static> Device for X86SerialPortDevice<H> {
                 .map(|_| BusResponse::Write)
                 .map_err(|_| DeviceError::Internal)
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 

@@ -8,7 +8,9 @@ use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
     DeviceManagerResult, DeviceRegistration, MmioDeviceAdapter, ServiceCardinality, ServiceKey,
 };
-use axvm_types::{NestedPagingConfig, VMInterruptMode, VmArchVcpuOps};
+use axvm_types::{
+    EmulatedDeviceConfig, EmulatedDeviceType, NestedPagingConfig, VMInterruptMode, VmArchVcpuOps,
+};
 
 use super::{Aarch64Arch, npt};
 use crate::{
@@ -78,8 +80,14 @@ fn init_vm_with(
                 dtb_addr: dtb_addr.as_usize(),
             })
         })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        register_arch_devices(vm, resources.config(), &mut devices)?;
+        let extra_devices = arch_extra_device_configs(resources.config());
+        let devices = PreparedDevices::build_common_with_extra(
+            resources,
+            factories,
+            interrupt_fabric,
+            &extra_devices,
+        )?;
+        assign_arch_device_state(vm, resources.config(), devices.devices())?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);
@@ -101,17 +109,29 @@ fn build_vcpu_setup_config(
     })
 }
 
-fn register_arch_devices(
+fn assign_arch_device_state(
     vm: &AxVM,
     config: &AxVMConfig,
-    devices: &mut PreparedDevices,
+    devices: &axdevice::DeviceRuntime,
 ) -> AxVmResult {
     if config.interrupt_mode() == VMInterruptMode::Passthrough {
-        assign_passthrough_spis(vm, config, devices.devices())?;
-    } else {
-        register_virtual_timers(devices)?;
+        assign_passthrough_spis(vm, config, devices)?;
     }
     Ok(())
+}
+
+fn arch_extra_device_configs(config: &AxVMConfig) -> alloc::vec::Vec<EmulatedDeviceConfig> {
+    if config.interrupt_mode() == VMInterruptMode::Passthrough {
+        return alloc::vec![];
+    }
+    alloc::vec![EmulatedDeviceConfig {
+        name: "aarch64-vtimer".into(),
+        base_gpa: 0,
+        length: 0,
+        irq_id: 0,
+        emu_type: EmulatedDeviceType::Aarch64Vtimer,
+        cfg_list: alloc::vec![],
+    }]
 }
 
 fn assign_passthrough_spis(
@@ -134,13 +154,6 @@ fn assign_passthrough_spis(
         gicd.assign_spi(*spi + 32, cpu_id, (0, 0, 0, cpu_id as _))
             .map_err(|error| AxVmError::interrupt("assign passthrough SPI", error))?;
     }
-    Ok(())
-}
-
-fn register_virtual_timers(devices: &mut PreparedDevices) -> AxVmResult {
-    devices
-        .devices
-        .register_bundle(axdevice::Aarch64VtimerFactory.build()?)?;
     Ok(())
 }
 
@@ -300,7 +313,8 @@ fn register_device_factories(registry: &mut DeviceFactoryRegistry) -> DeviceMana
     registry.register(Arc::new(Aarch64VgicFactory))?;
     registry.register(Arc::new(Aarch64GicRedistributorFactory))?;
     registry.register(Arc::new(Aarch64GicDistributorFactory))?;
-    registry.register(Arc::new(Aarch64GitsFactory))
+    registry.register(Arc::new(Aarch64GitsFactory))?;
+    registry.register(Arc::new(axdevice::Aarch64VtimerFactory))
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {

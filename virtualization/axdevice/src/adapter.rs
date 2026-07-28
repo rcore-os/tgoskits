@@ -142,3 +142,18 @@ impl Aarch64VtimerFactory {
             .with_lifecycle(lifecycle))
     }
 }
+
+#[cfg(target_arch = "aarch64")]
+impl crate::DeviceFactory for Aarch64VtimerFactory {
+    fn device_type(&self) -> axvm_types::EmulatedDeviceType {
+        axvm_types::EmulatedDeviceType::Aarch64Vtimer
+    }
+
+    fn build(
+        &self,
+        _config: &axvm_types::EmulatedDeviceConfig,
+        _context: &crate::DeviceBuildContext<'_>,
+    ) -> crate::DeviceManagerResult<crate::DeviceBundle> {
+        self.build()
+    }
+}

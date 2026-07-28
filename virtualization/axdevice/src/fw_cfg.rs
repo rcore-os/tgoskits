@@ -1,10 +1,10 @@
 use alloc::{boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
-use core::{any::Any, cell::RefCell};
+use core::cell::RefCell;
 
 use ax_kspin::SpinNoIrq as Mutex;
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError,
-    DeviceResult, EmuDeviceType, Resource,
+    DeviceResult, DmaGrant, EmuDeviceType, Resource,
 };
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 
@@ -531,6 +531,7 @@ impl FwCfg {
 /// Runtime adapter that gives fw_cfg DMA access only to the current bus access.
 pub struct FwCfgDmaDevice {
     inner: Arc<FwCfg>,
+    dma_grant: DmaGrant,
     name: String,
     resources: Box<[Resource]>,
 }
@@ -639,10 +640,11 @@ impl FwCfgDeviceFactory {
             config.cpu_num,
             config.platform,
         ));
-        Ok(
-            DeviceBundle::new()
-                .with_guest_memory_device(Arc::new(FwCfgDmaDevice::from_arc(fw_cfg))),
-        )
+        let dma_grant = DmaGrant::new();
+        Ok(DeviceBundle::new().with_guest_memory_device_grant(
+            Arc::new(FwCfgDmaDevice::from_arc(fw_cfg, dma_grant.clone())),
+            dma_grant,
+        ))
     }
 }
 
@@ -653,10 +655,11 @@ impl Default for FwCfgDeviceFactory {
 }
 
 impl FwCfgDmaDevice {
-    pub fn from_arc(inner: Arc<FwCfg>) -> Self {
+    pub fn from_arc(inner: Arc<FwCfg>, dma_grant: DmaGrant) -> Self {
         let range = inner.address_range();
         Self {
             inner,
+            dma_grant,
             name: String::from("fw-cfg"),
             resources: alloc::vec![Resource::MmioRange {
                 base: range.start.as_usize() as u64,
@@ -674,31 +677,28 @@ impl Device for FwCfgDmaDevice {
     fn resources(&self) -> &[Resource] {
         &self.resources
     }
-    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
-        let addr = GuestPhysAddr::from_usize(access.addr as usize);
-        if access.is_read {
-            self.inner
-                .handle_read(addr, access.width)
-                .map(|value| BusResponse::Read {
-                    value: value as u64,
-                })
-        } else {
-            self.inner
-                .handle_write(addr, access.width, access.data as usize)
-                .map(|_| BusResponse::Write)
-        }
-    }
     fn access(
         &self,
         access: &BusAccess,
         context: &mut dyn DeviceAccess,
     ) -> Result<BusResponse, DeviceError> {
-        if access.kind != BusKind::Mmio || access.is_read {
-            return self.handle(access);
-        }
         let addr = GuestPhysAddr::from_usize(access.addr as usize);
+        if access.kind != BusKind::Mmio {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            return self
+                .inner
+                .handle_read(addr, access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                });
+        }
         if !self.inner.is_dma_address(addr) {
-            return self.handle(access);
+            return self
+                .inner
+                .handle_write(addr, access.width, access.data as usize)
+                .map(|_| BusResponse::Write);
         }
         let Some(descriptor) = self
             .inner
@@ -716,21 +716,18 @@ impl Device for FwCfgDmaDevice {
                 |gpa, data| {
                     context
                         .borrow_mut()
-                        .read_guest_memory(gpa, data)
+                        .read_guest_memory(&self.dma_grant, gpa, data)
                         .map_err(crate::DeviceManagerError::from)
                 },
                 |gpa, data| {
                     context
                         .borrow_mut()
-                        .write_guest_memory(gpa, data)
+                        .write_guest_memory(&self.dma_grant, gpa, data)
                         .map_err(crate::DeviceManagerError::from)
                 },
             )
             .map_err(DeviceError::from)?;
         Ok(BusResponse::Write)
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -1714,7 +1711,12 @@ mod tests {
             axdevice_base::DeviceId::new(0)
         }
 
-        fn read_guest_memory(&mut self, addr: GuestPhysAddr, data: &mut [u8]) -> DeviceResult {
+        fn read_guest_memory(
+            &mut self,
+            _grant: &DmaGrant,
+            addr: GuestPhysAddr,
+            data: &mut [u8],
+        ) -> DeviceResult {
             let start = addr.as_usize();
             let end = start
                 .checked_add(data.len())
@@ -1724,7 +1726,12 @@ mod tests {
             Ok(())
         }
 
-        fn write_guest_memory(&mut self, addr: GuestPhysAddr, data: &[u8]) -> DeviceResult {
+        fn write_guest_memory(
+            &mut self,
+            _grant: &DmaGrant,
+            addr: GuestPhysAddr,
+            data: &[u8],
+        ) -> DeviceResult {
             let start = addr.as_usize();
             let end = start
                 .checked_add(data.len())

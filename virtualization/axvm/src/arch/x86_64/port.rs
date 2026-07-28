@@ -2,12 +2,15 @@
 
 use alloc::sync::Arc;
 
-use axdevice::{DeviceBundle, DeviceRegistration};
+use axdevice::{
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
+    DeviceRegistration,
+};
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, DeviceError, DeviceResult, EmuDeviceType, Port, PortDeviceAdapter,
     PortRange,
 };
-use axvm_types::PassThroughPortConfig;
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, PassThroughPortConfig};
 
 use crate::{AxVmResult, ax_err};
 
@@ -38,11 +41,6 @@ impl HostPortPassthrough {
 }
 
 /// Builds the atomic device contribution for one configured host port range.
-///
-/// Port passthrough is configured separately from `EmulatedDeviceConfig`, so
-/// it is deliberately a local architecture factory rather than a
-/// `DeviceFactory` registry entry. It still enters the runtime through the
-/// same [`DeviceBundle`] transaction as factory-built devices.
 pub(crate) struct HostPortPassthroughFactory {
     config: PassThroughPortConfig,
 }
@@ -62,6 +60,39 @@ impl HostPortPassthroughFactory {
         Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
             PortDeviceAdapter::from_arc(passthrough),
         )))
+    }
+}
+
+/// Factory registry entry for planner-generated x86 host-port passthrough
+/// device configs.
+pub(crate) struct HostPortPassthroughDeviceFactory;
+
+impl DeviceFactory for HostPortPassthroughDeviceFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::X86PortPassthrough
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        let base =
+            u16::try_from(config.base_gpa).map_err(|_| DeviceManagerError::InvalidConfig {
+                operation: "build host port passthrough",
+                detail: "base port does not fit in u16".into(),
+            })?;
+        let length =
+            u16::try_from(config.length).map_err(|_| DeviceManagerError::InvalidConfig {
+                operation: "build host port passthrough",
+                detail: "port range length does not fit in u16".into(),
+            })?;
+        HostPortPassthroughFactory::new(PassThroughPortConfig { base, length })
+            .build()
+            .map_err(|error| DeviceManagerError::InvalidConfig {
+                operation: "build host port passthrough",
+                detail: alloc::format!("{error}"),
+            })
     }
 }
 

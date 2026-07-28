@@ -16,7 +16,8 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
-    DeviceId, DeviceRegistry, InvalidResourceReason, Port, RegistryError, Resource, SysRegAddr,
+    DeviceId, DeviceRegistry, DmaGrant, InvalidResourceReason, Port, RegistryError, Resource,
+    StopGrant, SysRegAddr, TimerGrant, WakeGrant,
 };
 use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr};
 
@@ -59,6 +60,27 @@ fn range_contains_access(base: u64, size: u64, addr: u64, width: AccessWidth) ->
     base <= addr && access_end <= resource_end
 }
 
+fn validate_bundle_grant_indices<T>(
+    device_count: usize,
+    grants: &[(usize, T)],
+    operation: &'static str,
+    capability_name: &'static str,
+) -> DeviceManagerResult {
+    if grants.iter().any(|(index, _)| *index >= device_count)
+        || grants.iter().enumerate().any(|(position, (index, _))| {
+            grants[..position]
+                .iter()
+                .any(|(existing, _)| existing == index)
+        })
+    {
+        return Err(DeviceManagerError::InvalidConfig {
+            operation,
+            detail: alloc::format!("{capability_name} must name each bundled device at most once"),
+        });
+    }
+    Ok(())
+}
+
 /// Per-VM runtime that owns the static emulated-device topology.
 ///
 /// Construction mutates the registry through [`DeviceRegistry`]. Once shared
@@ -86,14 +108,23 @@ pub struct DeviceRuntime {
     ///
     /// The grant is intentionally narrow: it is supplied only by the VM's MMIO
     /// write path and exists only for the duration of that one access.
-    dma_devices: Vec<DeviceId>,
+    dma_grants: Vec<(DeviceId, DmaGrant)>,
+    /// Devices explicitly granted timer scheduling during a routed access.
+    timer_grants: Vec<(DeviceId, TimerGrant)>,
+    /// Devices explicitly granted vCPU wake access during a routed access.
+    wake_grants: Vec<(DeviceId, WakeGrant)>,
+    /// Devices explicitly granted VM stop-request access during a routed access.
+    stop_grants: Vec<(DeviceId, StopGrant)>,
 }
 
 /// Stack-scoped metadata for one routed device access.
 struct RuntimeDeviceAccess<'a> {
     device_id: DeviceId,
     memory: Option<&'a mut dyn DeviceAccess>,
-    dma_allowed: bool,
+    dma_grants: &'a [(DeviceId, DmaGrant)],
+    timer_grants: &'a [(DeviceId, TimerGrant)],
+    wake_grants: &'a [(DeviceId, WakeGrant)],
+    stop_grants: &'a [(DeviceId, StopGrant)],
 }
 
 impl DeviceAccess for RuntimeDeviceAccess<'_> {
@@ -102,10 +133,13 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
     }
     fn read_guest_memory(
         &mut self,
+        grant: &DmaGrant,
         addr: GuestPhysAddr,
         data: &mut [u8],
     ) -> Result<(), DeviceError> {
-        if !self.dma_allowed {
+        if !self.dma_grants.iter().any(|(device_id, registered)| {
+            *device_id == self.device_id && registered.same_token(grant)
+        }) {
             return Err(DeviceError::Unsupported {
                 operation: "read guest memory from device access",
                 detail: "device has no DMA memory grant".into(),
@@ -118,10 +152,17 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
                 operation: "read guest memory from device access",
                 detail: "this bus access has no DMA memory port".into(),
             })?;
-        memory.read_guest_memory(addr, data)
+        memory.read_guest_memory(grant, addr, data)
     }
-    fn write_guest_memory(&mut self, addr: GuestPhysAddr, data: &[u8]) -> Result<(), DeviceError> {
-        if !self.dma_allowed {
+    fn write_guest_memory(
+        &mut self,
+        grant: &DmaGrant,
+        addr: GuestPhysAddr,
+        data: &[u8],
+    ) -> Result<(), DeviceError> {
+        if !self.dma_grants.iter().any(|(device_id, registered)| {
+            *device_id == self.device_id && registered.same_token(grant)
+        }) {
             return Err(DeviceError::Unsupported {
                 operation: "write guest memory from device access",
                 detail: "device has no DMA memory grant".into(),
@@ -134,7 +175,55 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
                 operation: "write guest memory from device access",
                 detail: "this bus access has no DMA memory port".into(),
             })?;
-        memory.write_guest_memory(addr, data)
+        memory.write_guest_memory(grant, addr, data)
+    }
+
+    fn schedule_timer(&mut self, grant: &TimerGrant, deadline_ns: u64) -> Result<(), DeviceError> {
+        if !self.timer_grants.iter().any(|(device_id, registered)| {
+            *device_id == self.device_id && registered.same_token(grant)
+        }) {
+            return Err(DeviceError::Unsupported {
+                operation: "schedule timer from device access",
+                detail: "device has no timer grant".into(),
+            });
+        }
+        let _ = deadline_ns;
+        Err(DeviceError::Unsupported {
+            operation: "schedule timer from device access",
+            detail: "no timer port is attached to this VM runtime".into(),
+        })
+    }
+
+    fn wake_vcpu(&mut self, grant: &WakeGrant, vcpu_id: usize) -> Result<(), DeviceError> {
+        if !self.wake_grants.iter().any(|(device_id, registered)| {
+            *device_id == self.device_id && registered.same_token(grant)
+        }) {
+            return Err(DeviceError::Unsupported {
+                operation: "wake vCPU from device access",
+                detail: "device has no wake grant".into(),
+            });
+        }
+        let _ = vcpu_id;
+        Err(DeviceError::Unsupported {
+            operation: "wake vCPU from device access",
+            detail: "no vCPU wake port is attached to this VM runtime".into(),
+        })
+    }
+
+    fn request_vm_stop(&mut self, grant: &StopGrant, reason: &str) -> Result<(), DeviceError> {
+        if !self.stop_grants.iter().any(|(device_id, registered)| {
+            *device_id == self.device_id && registered.same_token(grant)
+        }) {
+            return Err(DeviceError::Unsupported {
+                operation: "request VM stop from device access",
+                detail: "device has no stop grant".into(),
+            });
+        }
+        let _ = reason;
+        Err(DeviceError::Unsupported {
+            operation: "request VM stop from device access",
+            detail: "no VM stop port is attached to this VM runtime".into(),
+        })
     }
 }
 
@@ -149,7 +238,10 @@ impl DeviceRuntime {
             pollable_devices: Vec::new(),
             lifecycle_devices: Vec::new(),
             services: DeviceServices::new(),
-            dma_devices: Vec::new(),
+            dma_grants: Vec::new(),
+            timer_grants: Vec::new(),
+            wake_grants: Vec::new(),
+            stop_grants: Vec::new(),
         }
     }
 
@@ -195,21 +287,30 @@ impl DeviceRuntime {
     /// already-registered devices in this bundle are rolled back via
     /// `pop()` + index-key removal.
     pub fn register_bundle(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
-        if bundle
-            .guest_memory_devices
-            .iter()
-            .any(|index| *index >= bundle.devices.len())
-            || bundle
-                .guest_memory_devices
-                .iter()
-                .enumerate()
-                .any(|(position, index)| bundle.guest_memory_devices[..position].contains(index))
-        {
-            return Err(DeviceManagerError::InvalidConfig {
-                operation: "register device guest-memory capability",
-                detail: "guest-memory capability must name each bundled device at most once".into(),
-            });
-        }
+        validate_bundle_grant_indices(
+            bundle.devices.len(),
+            &bundle.guest_memory_devices,
+            "register device guest-memory capability",
+            "guest-memory capability",
+        )?;
+        validate_bundle_grant_indices(
+            bundle.devices.len(),
+            &bundle.timer_devices,
+            "register device timer capability",
+            "timer capability",
+        )?;
+        validate_bundle_grant_indices(
+            bundle.devices.len(),
+            &bundle.wake_devices,
+            "register device wake capability",
+            "wake capability",
+        )?;
+        validate_bundle_grant_indices(
+            bundle.devices.len(),
+            &bundle.stop_devices,
+            "register device stop capability",
+            "stop capability",
+        )?;
         for (index, pollable) in bundle.pollable.iter().enumerate() {
             if self
                 .pollable_devices
@@ -245,11 +346,29 @@ impl DeviceRuntime {
                 return Err(error.into());
             }
         }
-        self.dma_devices.extend(
+        self.dma_grants.extend(
             bundle
                 .guest_memory_devices
                 .iter()
-                .map(|index| DeviceId::new((saved_len + index) as u32)),
+                .map(|(index, grant)| (DeviceId::new((saved_len + index) as u32), grant.clone())),
+        );
+        self.timer_grants.extend(
+            bundle
+                .timer_devices
+                .iter()
+                .map(|(index, grant)| (DeviceId::new((saved_len + index) as u32), grant.clone())),
+        );
+        self.wake_grants.extend(
+            bundle
+                .wake_devices
+                .iter()
+                .map(|(index, grant)| (DeviceId::new((saved_len + index) as u32), grant.clone())),
+        );
+        self.stop_grants.extend(
+            bundle
+                .stop_devices
+                .iter()
+                .map(|(index, grant)| (DeviceId::new((saved_len + index) as u32), grant.clone())),
         );
         self.pollable_devices.extend(bundle.pollable);
         self.lifecycle_devices.extend(bundle.lifecycle);
@@ -579,9 +698,9 @@ impl DeviceRuntime {
 
     // ─── Iterator helpers ───────────────────────────────────────────
     //
-    // NOTE: With the unified Device trait, [`devices()`] is the
-    // canonical iterator.  Use [`Device::resources()`] or
-    // [`Device::as_any()`] for per-bus filtering in new code.
+    // NOTE: With the unified Device trait, [`devices()`] is the canonical
+    // iterator. Use [`Device::resources()`] or typed service registries for
+    // per-bus filtering in new code.
 
     /// Iterates over devices that require periodic polling.
     pub fn iter_pollable_dev(&self) -> impl Iterator<Item = &Arc<dyn PollableDeviceOps>> {
@@ -620,8 +739,6 @@ impl DeviceRuntime {
     // ─── Find helpers ───────────────────────────────────────────────
 
     /// Find specific MMIO device by ipa.
-    /// Returns a reference to the underlying adapter which can be downcast
-    /// via `as_any()`.
     pub fn find_mmio_dev(&self, ipa: GuestPhysAddr) -> Option<Arc<dyn Device>> {
         let access = BusAccess {
             kind: BusKind::Mmio,
@@ -719,7 +836,12 @@ impl DeviceRuntime {
     /// declared an access-scoped guest-memory capability.
     pub fn mmio_write_needs_guest_memory(&self, addr: GuestPhysAddr, width: AccessWidth) -> bool {
         self.lookup_mmio(addr.as_usize() as u64, width)
-            .map(|index| self.dma_devices.contains(&DeviceId::new(index as u32)))
+            .map(|index| {
+                let id = DeviceId::new(index as u32);
+                self.dma_grants
+                    .iter()
+                    .any(|(device_id, _)| *device_id == id)
+            })
             .unwrap_or(false)
     }
 
@@ -751,7 +873,10 @@ impl DeviceRuntime {
         let mut context = RuntimeDeviceAccess {
             device_id: id,
             memory: Some(memory),
-            dma_allowed: self.dma_devices.contains(&id),
+            dma_grants: &self.dma_grants,
+            timer_grants: &self.timer_grants,
+            wake_grants: &self.wake_grants,
+            stop_grants: &self.stop_grants,
         };
         let response = self.devices[idx]
             .access(&access, &mut context)
@@ -927,7 +1052,10 @@ impl BusRouter for DeviceRuntime {
         let mut context = RuntimeDeviceAccess {
             device_id: DeviceId::new(idx as u32),
             memory: None,
-            dma_allowed: false,
+            dma_grants: &self.dma_grants,
+            timer_grants: &self.timer_grants,
+            wake_grants: &self.wake_grants,
+            stop_grants: &self.stop_grants,
         };
         device.access(access, &mut context)
     }
@@ -955,15 +1083,12 @@ impl BusRouter for DeviceRuntime {
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
-    use core::{
-        any::Any,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     use axdevice_base::{
         AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
-        DeviceId, DeviceRegistry, InterruptTriggerMode, InvalidResourceReason, IrqLine, Port,
-        RegistryError, Resource, SysRegAddr,
+        DeviceId, DeviceRegistry, DmaGrant, InterruptTriggerMode, InvalidResourceReason, IrqLine,
+        Port, RegistryError, Resource, StopGrant, SysRegAddr, TimerGrant, WakeGrant,
     };
     use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
@@ -1005,6 +1130,21 @@ mod tests {
 
     struct GuestMemoryRequestDevice {
         resources: alloc::vec::Vec<Resource>,
+        dma_grant: DmaGrant,
+    }
+
+    enum SensitiveGrantKind {
+        Timer,
+        Wake,
+        Stop,
+    }
+
+    struct SensitiveGrantRequestDevice {
+        resources: alloc::vec::Vec<Resource>,
+        kind: SensitiveGrantKind,
+        timer_grant: TimerGrant,
+        wake_grant: WakeGrant,
+        stop_grant: StopGrant,
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -1022,12 +1162,12 @@ mod tests {
             &self.resources
         }
 
-        fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {
+        fn access(
+            &self,
+            _access: &BusAccess,
+            _context: &mut dyn DeviceAccess,
+        ) -> Result<BusResponse, DeviceError> {
             Ok(BusResponse::Read { value: 0 })
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
         }
     }
 
@@ -1055,10 +1195,6 @@ mod tests {
             &self.resources
         }
 
-        fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {
-            Err(DeviceError::Internal)
-        }
-
         fn access(
             &self,
             _access: &BusAccess,
@@ -1066,10 +1202,6 @@ mod tests {
         ) -> Result<BusResponse, DeviceError> {
             assert_eq!(context.device_id(), DeviceId::new(0));
             Ok(BusResponse::Read { value: 0xfeed })
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
         }
     }
 
@@ -1082,8 +1214,24 @@ mod tests {
             &self.resources
         }
 
-        fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {
-            Err(DeviceError::Internal)
+        fn access(
+            &self,
+            _access: &BusAccess,
+            context: &mut dyn DeviceAccess,
+        ) -> Result<BusResponse, DeviceError> {
+            let mut byte = [0u8; 1];
+            context.read_guest_memory(&self.dma_grant, GuestPhysAddr::from_usize(0), &mut byte)?;
+            Ok(BusResponse::Write)
+        }
+    }
+
+    impl Device for SensitiveGrantRequestDevice {
+        fn name(&self) -> &str {
+            "sensitive-grant-request"
+        }
+
+        fn resources(&self) -> &[Resource] {
+            &self.resources
         }
 
         fn access(
@@ -1091,13 +1239,14 @@ mod tests {
             _access: &BusAccess,
             context: &mut dyn DeviceAccess,
         ) -> Result<BusResponse, DeviceError> {
-            let mut byte = [0u8; 1];
-            context.read_guest_memory(GuestPhysAddr::from_usize(0), &mut byte)?;
+            match self.kind {
+                SensitiveGrantKind::Timer => context.schedule_timer(&self.timer_grant, 42)?,
+                SensitiveGrantKind::Wake => context.wake_vcpu(&self.wake_grant, 0)?,
+                SensitiveGrantKind::Stop => {
+                    context.request_vm_stop(&self.stop_grant, "test stop request")?
+                }
+            }
             Ok(BusResponse::Write)
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
         }
     }
 
@@ -1110,6 +1259,7 @@ mod tests {
 
         fn read_guest_memory(
             &mut self,
+            _grant: &DmaGrant,
             _addr: GuestPhysAddr,
             _data: &mut [u8],
         ) -> Result<(), DeviceError> {
@@ -1130,12 +1280,12 @@ mod tests {
             &self.resources
         }
 
-        fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {
+        fn access(
+            &self,
+            _access: &BusAccess,
+            _context: &mut dyn DeviceAccess,
+        ) -> Result<BusResponse, DeviceError> {
             Ok(BusResponse::Read { value: 0 })
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
         }
     }
     impl Device for D {
@@ -1145,11 +1295,12 @@ mod tests {
         fn resources(&self) -> &[Resource] {
             &self.resources
         }
-        fn handle(&self, _a: &BusAccess) -> Result<BusResponse, DeviceError> {
+        fn access(
+            &self,
+            _a: &BusAccess,
+            _context: &mut dyn DeviceAccess,
+        ) -> Result<BusResponse, DeviceError> {
             Ok(BusResponse::Read { value: 0 })
-        }
-        fn as_any(&self) -> &dyn Any {
-            self
         }
     }
 
@@ -1277,6 +1428,7 @@ mod tests {
                     base: 0x5000,
                     size: 0x100,
                 }],
+                dma_grant: DmaGrant::new(),
             }))
             .unwrap();
         let mut memory = TestMemoryPort;
@@ -1302,15 +1454,18 @@ mod tests {
     #[test]
     fn bundle_declared_memory_device_receives_memory_port() {
         let mut devices = DeviceRuntime::empty();
+        let dma_grant = DmaGrant::new();
         devices
-            .register_bundle(DeviceBundle::new().with_guest_memory_device(Arc::new(
-                GuestMemoryRequestDevice {
+            .register_bundle(DeviceBundle::new().with_guest_memory_device_grant(
+                Arc::new(GuestMemoryRequestDevice {
                     resources: alloc::vec![Resource::MmioRange {
                         base: 0x6000,
                         size: 0x100,
                     }],
-                },
-            )))
+                    dma_grant: dma_grant.clone(),
+                }),
+                dma_grant,
+            ))
             .unwrap();
         let mut memory = TestMemoryPort;
 
@@ -1322,6 +1477,98 @@ mod tests {
                 &mut memory,
             )
             .unwrap();
+    }
+
+    fn dispatch_sensitive_grant_probe(
+        devices: &DeviceRuntime,
+        base: u64,
+    ) -> Result<BusResponse, DeviceError> {
+        devices.dispatch(&BusAccess {
+            kind: BusKind::Mmio,
+            is_read: false,
+            addr: base,
+            width: AccessWidth::Dword,
+            data: 0,
+        })
+    }
+
+    #[test]
+    fn timer_wake_and_stop_grants_are_checked_by_device_id_and_token() {
+        let timer_grant = TimerGrant::new();
+        let wake_grant = WakeGrant::new();
+        let stop_grant = StopGrant::new();
+
+        let mut denied = DeviceRuntime::empty();
+        denied
+            .register(Arc::new(SensitiveGrantRequestDevice {
+                resources: alloc::vec![Resource::MmioRange {
+                    base: 0x8000,
+                    size: 0x100,
+                }],
+                kind: SensitiveGrantKind::Timer,
+                timer_grant: timer_grant.clone(),
+                wake_grant: WakeGrant::new(),
+                stop_grant: StopGrant::new(),
+            }))
+            .unwrap();
+        let error = dispatch_sensitive_grant_probe(&denied, 0x8000).unwrap_err();
+        assert!(matches!(
+            error,
+            DeviceError::Unsupported { detail, .. } if detail.contains("no timer grant")
+        ));
+
+        let mut granted = DeviceRuntime::empty();
+        let mut bundle = DeviceBundle::new();
+        let timer_index = bundle.add_device(Arc::new(SensitiveGrantRequestDevice {
+            resources: alloc::vec![Resource::MmioRange {
+                base: 0x8100,
+                size: 0x100,
+            }],
+            kind: SensitiveGrantKind::Timer,
+            timer_grant: timer_grant.clone(),
+            wake_grant: WakeGrant::new(),
+            stop_grant: StopGrant::new(),
+        }));
+        bundle.grant_timer_to_device(timer_index, timer_grant);
+        let wake_index = bundle.add_device(Arc::new(SensitiveGrantRequestDevice {
+            resources: alloc::vec![Resource::MmioRange {
+                base: 0x8200,
+                size: 0x100,
+            }],
+            kind: SensitiveGrantKind::Wake,
+            timer_grant: TimerGrant::new(),
+            wake_grant: wake_grant.clone(),
+            stop_grant: StopGrant::new(),
+        }));
+        bundle.grant_wake_to_device(wake_index, wake_grant);
+        let stop_index = bundle.add_device(Arc::new(SensitiveGrantRequestDevice {
+            resources: alloc::vec![Resource::MmioRange {
+                base: 0x8300,
+                size: 0x100,
+            }],
+            kind: SensitiveGrantKind::Stop,
+            timer_grant: TimerGrant::new(),
+            wake_grant: WakeGrant::new(),
+            stop_grant: stop_grant.clone(),
+        }));
+        bundle.grant_stop_to_device(stop_index, stop_grant);
+        granted.register_bundle(bundle).unwrap();
+
+        let timer_error = dispatch_sensitive_grant_probe(&granted, 0x8100).unwrap_err();
+        assert!(matches!(
+            timer_error,
+            DeviceError::Unsupported { detail, .. } if detail.contains("no timer port")
+        ));
+        let wake_error = dispatch_sensitive_grant_probe(&granted, 0x8200).unwrap_err();
+        assert!(matches!(
+            wake_error,
+            DeviceError::Unsupported { detail, .. } if detail.contains("no vCPU wake port")
+        ));
+        let stop_error = dispatch_sensitive_grant_probe(&granted, 0x8300).unwrap_err();
+        assert!(matches!(
+            stop_error,
+            DeviceError::Unsupported { detail, .. } if detail.contains("no VM stop port")
+        ));
     }
 
     #[test]
@@ -1442,11 +1689,12 @@ mod tests {
                 ];
                 &R
             }
-            fn handle(&self, _: &BusAccess) -> Result<BusResponse, DeviceError> {
+            fn access(
+                &self,
+                _: &BusAccess,
+                _context: &mut dyn DeviceAccess,
+            ) -> Result<BusResponse, DeviceError> {
                 Ok(BusResponse::Read { value: 0 })
-            }
-            fn as_any(&self) -> &dyn Any {
-                self
             }
         }
 
@@ -1483,11 +1731,12 @@ mod tests {
                 ];
                 &R
             }
-            fn handle(&self, _: &BusAccess) -> Result<BusResponse, DeviceError> {
+            fn access(
+                &self,
+                _: &BusAccess,
+                _context: &mut dyn DeviceAccess,
+            ) -> Result<BusResponse, DeviceError> {
                 Ok(BusResponse::Read { value: 0 })
-            }
-            fn as_any(&self) -> &dyn Any {
-                self
             }
         }
 
@@ -1523,15 +1772,16 @@ mod tests {
                 ];
                 &R
             }
-            fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+            fn access(
+                &self,
+                access: &BusAccess,
+                _context: &mut dyn DeviceAccess,
+            ) -> Result<BusResponse, DeviceError> {
                 if access.is_read {
                     Ok(BusResponse::Read { value: 0 })
                 } else {
                     Ok(BusResponse::Write)
                 }
-            }
-            fn as_any(&self) -> &dyn Any {
-                self
             }
         }
 
@@ -1555,11 +1805,12 @@ mod tests {
                 }];
                 &R
             }
-            fn handle(&self, _: &BusAccess) -> Result<BusResponse, DeviceError> {
+            fn access(
+                &self,
+                _: &BusAccess,
+                _context: &mut dyn DeviceAccess,
+            ) -> Result<BusResponse, DeviceError> {
                 Ok(BusResponse::Read { value: 0 })
-            }
-            fn as_any(&self) -> &dyn Any {
-                self
             }
         }
 
@@ -1595,11 +1846,12 @@ mod tests {
                 ];
                 &R
             }
-            fn handle(&self, _access: &BusAccess) -> Result<BusResponse, DeviceError> {
+            fn access(
+                &self,
+                _access: &BusAccess,
+                _context: &mut dyn DeviceAccess,
+            ) -> Result<BusResponse, DeviceError> {
                 Ok(BusResponse::Write)
-            }
-            fn as_any(&self) -> &dyn Any {
-                self
             }
         }
 
@@ -1633,15 +1885,16 @@ mod tests {
                 }];
                 &R
             }
-            fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+            fn access(
+                &self,
+                access: &BusAccess,
+                _context: &mut dyn DeviceAccess,
+            ) -> Result<BusResponse, DeviceError> {
                 if access.is_read {
                     Ok(BusResponse::Read { value: 0 })
                 } else {
                     Ok(BusResponse::Write)
                 }
-            }
-            fn as_any(&self) -> &dyn Any {
-                self
             }
         }
 
@@ -1703,11 +1956,12 @@ mod tests {
                 }];
                 &R
             }
-            fn handle(&self, _: &BusAccess) -> Result<BusResponse, DeviceError> {
+            fn access(
+                &self,
+                _: &BusAccess,
+                _context: &mut dyn DeviceAccess,
+            ) -> Result<BusResponse, DeviceError> {
                 Err(DeviceError::NotFound)
-            }
-            fn as_any(&self) -> &dyn Any {
-                self
             }
         }
 

@@ -460,7 +460,8 @@ impl VmArchPerCpuOps for AxvmX86PerCpu {
 pub fn register_device_factories(factories: &mut DeviceFactoryRegistry) -> DeviceManagerResult {
     factories.register(Arc::new(X86SerialFactory))?;
     factories.register(Arc::new(X86IoApicFactory))?;
-    factories.register(Arc::new(X86PitFactory))
+    factories.register(Arc::new(X86PitFactory))?;
+    factories.register(Arc::new(port::HostPortPassthroughDeviceFactory))
 }
 
 struct X86SerialFactory;
