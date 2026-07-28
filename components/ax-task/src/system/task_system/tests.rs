@@ -814,7 +814,7 @@ fn remote_affinity_published_after_exit_drain_is_a_late_noop() {
         .upgrade()
         .expect("the registry still retains the exited core before reaping");
     assert_eq!(core.scheduler_inbox_delivery_count(), 0);
-    assert_eq!(core.sched().lock().migration_target, None);
+    assert_eq!(core.sched().lock().placement.migration_target(), None);
     drop(core);
     assert!(
         system
@@ -911,7 +911,13 @@ fn failed_owner_batch_releases_all_detached_payloads() {
     system.make_ready(thread_id).unwrap();
     system.enqueue(cpu1.as_mut(), thread_id, 0).unwrap();
 
-    thread.core.sched().lock().migration_target = Some(CpuId::new(1));
+    thread
+        .core
+        .sched()
+        .lock()
+        .placement
+        .set_migration_target(Some(CpuId::new(1)))
+        .unwrap();
     assert!(thread.core.reserve_scheduler_inbox_delivery());
     let pointer = Arc::as_ptr(&thread.core);
     unsafe {
@@ -1024,7 +1030,7 @@ fn invalid_switch_tail_state_is_rejected_before_runtime_commit() {
     system.exit_current(cpu.as_mut()).unwrap();
     crate::test_runtime::configure_context_switch_tail(RuntimeStatus::Success);
 
-    exiting_core.sched().lock().on_cpu = None;
+    exiting_core.sched().lock().placement.inject_detached();
     assert_eq!(
         system.complete_context_switch(cpu.as_mut()),
         Err(TaskError::InvalidConfiguration)
@@ -1039,7 +1045,11 @@ fn invalid_switch_tail_state_is_rejected_before_runtime_commit() {
         "a rejected pre-commit handoff must remain retryable"
     );
 
-    exiting_core.sched().lock().on_cpu = Some(cpu.owner());
+    exiting_core
+        .sched()
+        .lock()
+        .placement
+        .inject_exited_awaiting_tail(cpu.owner());
     system.complete_context_switch(cpu.as_mut()).unwrap();
     assert_eq!(crate::test_runtime::context_switch_tail_count(), 1);
     drop(exiting_core);
@@ -1398,7 +1408,7 @@ fn running_migration_is_published_only_after_switch_tail() {
 }
 
 #[test]
-fn selection_rejects_a_thread_still_executing_on_another_cpu() {
+fn placement_rejects_an_unrelated_cpu_claim() {
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
     let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
@@ -1417,23 +1427,30 @@ fn selection_rejects_a_thread_still_executing_on_another_cpu() {
     system.make_ready(thread.id()).unwrap();
     system.enqueue(cpu0.as_mut(), thread.id(), 0).unwrap();
 
-    // Model a stale remote publication reaching this owner while the
-    // physical switch tail still proves that the same context executes on
-    // another CPU. Selection must reject the contradiction instead of
-    // overwriting the sole `on_cpu` authority.
-    system
+    // A stale remote publication cannot manufacture an independent `on_cpu`
+    // owner alongside the runqueue owner.
+    let result = system
         .state
         .lock()
         .thread_record_mut(thread.id())
         .unwrap()
         .sched
         .lock()
-        .on_cpu = Some(CpuId::new(1));
-
-    assert!(matches!(
-        system.schedule(cpu0.as_mut(), 1),
-        Err(TaskError::InvalidConfiguration)
-    ));
+        .placement
+        .set_on_cpu(Some(CpuId::new(1)));
+    assert_eq!(result, Err(TaskError::InvalidConfiguration));
+    assert_eq!(
+        system
+            .state
+            .lock()
+            .thread_record(thread.id())
+            .unwrap()
+            .sched
+            .lock()
+            .placement
+            .queued_cpu(),
+        Some(CpuId::new(0))
+    );
 }
 
 #[test]
@@ -1500,7 +1517,7 @@ fn schedule_out_rechecks_affinity_under_the_thread_lock() {
     {
         let mut sched = running.core.sched().lock();
         sched.affinity = target_only;
-        sched.migration_target = None;
+        sched.placement.set_migration_target(None).unwrap();
     }
     running.core.set_target_cpu(CpuId::new(1));
 
@@ -1510,7 +1527,7 @@ fn schedule_out_rechecks_affinity_under_the_thread_lock() {
     assert_eq!(cpu0.current(), Some(idle0.id()));
     assert_eq!(system.thread_state(running.id()), Ok(ThreadState::Ready));
     assert_eq!(
-        running.core.sched().lock().migration_target,
+        running.core.sched().lock().placement.migration_target(),
         Some(CpuId::new(1))
     );
 }

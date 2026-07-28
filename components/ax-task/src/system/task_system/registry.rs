@@ -189,10 +189,10 @@ impl TaskSystemState {
         let held = {
             let sched = record.sched.lock();
             if sched.lifecycle.state() == ThreadState::Exited
-                || sched.queued_cpu.is_some()
-                || sched.running_cpu.is_some()
-                || sched.on_cpu.is_some()
-                || sched.migration_target.is_some()
+                || sched.placement.queued_cpu().is_some()
+                || sched.placement.running_cpu().is_some()
+                || sched.placement.on_cpu().is_some()
+                || sched.placement.migration_target().is_some()
                 || sched.deadline_bandwidth_cpu.is_some()
                 || sched.deadline_cleanup_pending
                 || sched.deadline_cbs_borrower.is_some()
@@ -245,8 +245,8 @@ impl TaskSystemState {
             // `Exited`, so no producer can increment the delivery count after
             // the Acquire observation of zero. A non-zero count owns both one
             // raw inbox Arc and access to scheduler-owned thread state.
-            if sched.on_cpu.is_some()
-                || sched.migration_target.is_some()
+            if sched.placement.on_cpu().is_some()
+                || sched.placement.migration_target().is_some()
                 || sched.deadline_bandwidth_cpu.is_some()
                 || sched.deadline_cleanup_pending
                 || sched.deadline_cbs_borrower.is_some()
@@ -312,8 +312,8 @@ impl TaskSystemState {
                 };
                 let sched = record.sched.lock();
                 if sched.lifecycle.state() != ThreadState::Exited
-                    || sched.on_cpu.is_some()
-                    || sched.migration_target.is_some()
+                    || sched.placement.on_cpu().is_some()
+                    || sched.placement.migration_target().is_some()
                     || sched.deadline_bandwidth_cpu.is_some()
                     || sched.deadline_cleanup_pending
                     || sched.deadline_cbs_borrower.is_some()
@@ -359,7 +359,7 @@ impl TaskSystemState {
             };
             let sched = record.sched.lock();
             if sched.lifecycle.state() != ThreadState::Exited
-                || sched.on_cpu.is_some()
+                || sched.placement.on_cpu().is_some()
                 || sched.deadline_overrun_events != 0
                 || record.deadline_callback_claimed
                 || !record.exit_callback_pending
@@ -388,7 +388,7 @@ impl TaskSystemState {
         let record = self.thread_record_mut(thread)?;
         let sched = record.sched.lock();
         if sched.lifecycle.state() != ThreadState::Exited
-            || sched.on_cpu.is_some()
+            || sched.placement.on_cpu().is_some()
             || !record.exit_callback_pending
             || !record.exit_callback_claimed
         {
@@ -501,8 +501,9 @@ impl TaskSystemState {
                 let sched = record.sched.lock();
                 (
                     sched
-                        .running_cpu
-                        .or(sched.queued_cpu)
+                        .placement
+                        .running_cpu()
+                        .or(sched.placement.queued_cpu())
                         .or(sched.deadline_bandwidth_cpu),
                     sched.policy_generation,
                 )

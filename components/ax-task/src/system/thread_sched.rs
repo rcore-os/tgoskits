@@ -1,6 +1,10 @@
 //! Per-thread scheduler state owned independently from the generation registry.
 
+mod placement;
+
 use alloc::sync::Weak;
+
+pub(super) use placement::SchedulerPlacement;
 
 use crate::{
     CpuId, CpuSet, DeadlineEntity, SchedulePolicy, SchedulingEntity, TaskError, ThreadCore,
@@ -71,10 +75,7 @@ impl ThreadSchedCell {
                 active_deadline_reservation: 0,
                 desired_deadline_reservation: 0,
                 deadline_zero_lag_ns: 0,
-                queued_cpu: None,
-                running_cpu: None,
-                on_cpu: None,
-                migration_target: None,
+                placement: SchedulerPlacement::detached(),
                 blocked_pi_waiters: 0,
                 pi_donor: None,
                 deadline_donor: None,
@@ -112,10 +113,7 @@ pub(super) struct ThreadSchedState {
     pub(super) active_deadline_reservation: u64,
     pub(super) desired_deadline_reservation: u64,
     pub(super) deadline_zero_lag_ns: u64,
-    pub(super) queued_cpu: Option<CpuId>,
-    pub(super) running_cpu: Option<CpuId>,
-    pub(super) on_cpu: Option<CpuId>,
-    pub(super) migration_target: Option<CpuId>,
+    pub(super) placement: SchedulerPlacement,
     pub(super) blocked_pi_waiters: usize,
     pub(super) pi_donor: Option<ThreadId>,
     pub(super) deadline_donor: Option<ThreadId>,

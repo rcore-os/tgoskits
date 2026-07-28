@@ -27,7 +27,9 @@ use registry::{
     ThreadSlot,
 };
 
-use super::thread_sched::{DeadlineActivity, ThreadSchedCell, ThreadSchedState};
+use super::thread_sched::{
+    DeadlineActivity, SchedulerPlacement, ThreadSchedCell, ThreadSchedState,
+};
 #[cfg(test)]
 use crate::runtime::ExecutionContextHandle;
 use crate::{
@@ -443,10 +445,7 @@ impl TaskSystem {
                 active_deadline_reservation: u64::try_from(reservation).unwrap_or(u64::MAX),
                 desired_deadline_reservation: u64::try_from(reservation).unwrap_or(u64::MAX),
                 deadline_zero_lag_ns: 0,
-                queued_cpu: None,
-                running_cpu: None,
-                on_cpu: None,
-                migration_target: None,
+                placement: SchedulerPlacement::detached(),
                 blocked_pi_waiters: 0,
                 pi_donor: None,
                 deadline_donor: None,
@@ -545,8 +544,8 @@ impl TaskSystem {
                 sched.transition(&core, ThreadState::Ready)?;
                 sched.transition(&core, ThreadState::Running)?;
                 let dispatch = Self::owner_dispatch(&core, &sched, task_runtime::monotonic_ns())?;
-                sched.running_cpu = Some(cpu.owner());
-                sched.on_cpu = Some(cpu.owner());
+                sched.placement.set_running_cpu(Some(cpu.owner()))?;
+                sched.placement.set_on_cpu(Some(cpu.owner()))?;
                 core.set_target_cpu(cpu.owner());
                 dispatch
             };
@@ -670,13 +669,13 @@ impl TaskSystem {
                     if sched.lifecycle.state() != ThreadState::Ready {
                         return Err(TaskError::NotReady);
                     }
-                    if sched.queued_cpu.is_some()
-                        || sched.running_cpu.is_some()
-                        || sched.on_cpu.is_some()
+                    if sched.placement.queued_cpu().is_some()
+                        || sched.placement.running_cpu().is_some()
+                        || sched.placement.on_cpu().is_some()
                     {
                         return Err(TaskError::AlreadyQueued);
                     }
-                    sched.migration_target = Some(target);
+                    sched.placement.set_migration_target(Some(target))?;
                     record.core.set_target_cpu(target);
                     Arc::clone(&record.core)
                 };
@@ -707,7 +706,7 @@ impl TaskSystem {
         if !sched.is_pi_boosted() {
             sched.base_entity = queued.entity;
         }
-        sched.queued_cpu = None;
+        sched.placement.set_queued_cpu(None)?;
         drop(sched);
         drop(state);
         self.publish_owner_cpu_load_summary(cpu.as_mut());
@@ -760,7 +759,10 @@ impl TaskSystem {
                     // but hands the ready thread to the latest target instead
                     // of losing it on an affinity-invalid local enqueue.
                     Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
-                    core.sched().lock().migration_target = Some(target);
+                    core.sched()
+                        .lock()
+                        .placement
+                        .set_migration_target(Some(target))?;
                     self.publish_owner_migration(&core, target, owner, target)?;
                 }
             }
@@ -838,7 +840,7 @@ impl TaskSystem {
                 continue;
             };
             if core.state() == ThreadState::Exited {
-                core.sched().lock().migration_target = None;
+                core.sched().lock().placement.set_migration_target(None)?;
                 continue;
             }
             let owner = cpu.owner();
@@ -853,9 +855,9 @@ impl TaskSystem {
                     let sched = core.sched().lock();
                     sched.deadline_cleanup_pending
                         && sched.deadline_bandwidth_cpu == Some(owner)
-                        && sched.queued_cpu.is_none()
-                        && sched.running_cpu.is_none()
-                        && sched.on_cpu.is_none()
+                        && sched.placement.queued_cpu().is_none()
+                        && sched.placement.running_cpu().is_none()
+                        && sched.placement.on_cpu().is_none()
                 };
                 if cleanup_deadline_member {
                     Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
@@ -865,7 +867,7 @@ impl TaskSystem {
             }
             if source != target {
                 if target == owner {
-                    let latest_target = core.sched().lock().migration_target;
+                    let latest_target = core.sched().lock().placement.migration_target();
                     if latest_target != Some(target) {
                         if let Some(latest_target) = latest_target {
                             // A second affinity update can overtake an already
@@ -885,13 +887,13 @@ impl TaskSystem {
                     {
                         let mut sched = core.sched().lock();
                         if sched.lifecycle.state() != ThreadState::Ready
-                            || sched.queued_cpu.is_some()
-                            || sched.running_cpu.is_some()
-                            || sched.on_cpu.is_some()
+                            || sched.placement.queued_cpu().is_some()
+                            || sched.placement.running_cpu().is_some()
+                            || sched.placement.on_cpu().is_some()
                         {
                             return Err(TaskError::InvalidConfiguration);
                         }
-                        sched.migration_target = None;
+                        sched.placement.set_migration_target(None)?;
                         core.set_target_cpu(owner);
                     }
                     self.enqueue_owner_thread(
@@ -904,10 +906,10 @@ impl TaskSystem {
                     let (queued_cpu, running_cpu, lifecycle, latest_target) = {
                         let sched = core.sched().lock();
                         (
-                            sched.queued_cpu,
-                            sched.running_cpu,
+                            sched.placement.queued_cpu(),
+                            sched.placement.running_cpu(),
                             sched.lifecycle.state(),
-                            sched.migration_target,
+                            sched.placement.migration_target(),
                         )
                     };
                     let Some(latest_target) = latest_target else {
@@ -927,7 +929,7 @@ impl TaskSystem {
                             if !sched.is_pi_boosted() {
                                 sched.base_entity = queued.entity;
                             }
-                            sched.queued_cpu = None;
+                            sched.placement.set_queued_cpu(None)?;
                             core.set_target_cpu(latest_target);
                         }
                         self.publish_owner_cpu_load_summary(cpu.as_mut());
@@ -942,7 +944,7 @@ impl TaskSystem {
                             | ThreadState::Waking
                     ) {
                         core.set_target_cpu(latest_target);
-                        core.sched().lock().migration_target = None;
+                        core.sched().lock().placement.set_migration_target(None)?;
                     } else {
                         core.set_target_cpu(latest_target);
                         self.publish_owner_migration(&core, latest_target, source, latest_target)?;
@@ -953,8 +955,8 @@ impl TaskSystem {
             let (queued_cpu, running_cpu, policy_generation, cbs_borrowed) = {
                 let sched = core.sched().lock();
                 (
-                    sched.queued_cpu,
-                    sched.running_cpu,
+                    sched.placement.queued_cpu(),
+                    sched.placement.running_cpu(),
                     sched.policy_generation,
                     sched.deadline_cbs_borrower.is_some(),
                 )
@@ -995,7 +997,7 @@ impl TaskSystem {
                         sched.base_entity = queued.entity;
                         sched.entity = queued.entity;
                     }
-                    sched.queued_cpu = None;
+                    sched.placement.set_queued_cpu(None)?;
                 }
                 let applied = self.apply_owner_policy_generation(
                     &core,
@@ -1455,7 +1457,7 @@ impl TaskSystem {
                         cpu.as_mut()
                             .arm_deferred_scheduler_deadline(deadline.next_scheduler_event_ns());
                     }
-                    sched.running_cpu = None;
+                    sched.placement.set_running_cpu(None)?;
                     sched.deadline_replenish_pending = true;
                     sched.transition(core, ThreadState::Blocked)?;
                     true
@@ -1543,7 +1545,7 @@ impl TaskSystem {
         {
             let mut sched = previous_core.sched().lock();
             sched.transition(&previous_core, ThreadState::Blocked)?;
-            sched.running_cpu = None;
+            sched.placement.set_running_cpu(None)?;
         }
         Self::mark_owner_deadline_non_contending(&previous_core, cpu.as_mut(), now_ns)?;
         cpu.as_mut().clear_current();
@@ -1642,7 +1644,9 @@ impl TaskSystem {
         if record.blocked_on.is_some() || sched.blocked_pi_waiters != 0 {
             return Err(TaskError::InvalidPiState);
         }
-        if sched.running_cpu != Some(cpu.owner()) || sched.on_cpu != Some(cpu.owner()) {
+        if sched.placement.running_cpu() != Some(cpu.owner())
+            || sched.placement.on_cpu() != Some(cpu.owner())
+        {
             return Err(TaskError::ThreadBusy);
         }
         if record.resources.context().is_none() {
@@ -1687,9 +1691,9 @@ impl TaskSystem {
                 .ok_or(TaskError::ThreadBusy)?;
             {
                 let mut sched = previous_core.sched().lock();
-                sched.migration_target = None;
+                sched.placement.set_migration_target(None)?;
                 sched.transition(&previous_core, ThreadState::Exited)?;
-                sched.running_cpu = None;
+                sched.placement.mark_exited_awaiting_tail(cpu.owner())?;
                 let record = state.thread_record_mut(previous)?;
                 record.exit_callback_pending = record.extension.is_some();
                 record.exit_callback_claimed = false;
@@ -1764,7 +1768,7 @@ impl TaskSystem {
                     .fields_mut()
                     .unregister_deadline_member(&handoff.previous);
             }
-            sched.on_cpu = None;
+            sched.placement.set_on_cpu(None)?;
             if let Some(target) = migration_target {
                 handoff.previous.set_target_cpu(target);
             }
@@ -1803,17 +1807,18 @@ impl TaskSystem {
         handoff: &super::cpu::SwitchHandoff,
         sched: &ThreadSchedState,
     ) -> Result<(Option<CpuId>, bool), TaskError> {
-        if sched.on_cpu != Some(owner) {
+        if sched.placement.on_cpu() != Some(owner) {
             return Err(TaskError::InvalidConfiguration);
         }
         let migration_target = match handoff.migration_target {
             Some(_) => {
                 let target = sched
-                    .migration_target
+                    .placement
+                    .migration_target()
                     .ok_or(TaskError::InvalidConfiguration)?;
                 if sched.lifecycle.state() != ThreadState::Ready
-                    || sched.queued_cpu.is_some()
-                    || sched.running_cpu.is_some()
+                    || sched.placement.queued_cpu().is_some()
+                    || sched.placement.running_cpu().is_some()
                 {
                     return Err(TaskError::InvalidConfiguration);
                 }
@@ -1964,7 +1969,7 @@ impl TaskSystem {
             sched.base_entity = queued_entity;
         }
         core.publish_effective_schedule(policy, queued_entity);
-        sched.queued_cpu = Some(owner);
+        sched.placement.set_queued_cpu(Some(owner))?;
         core.set_target_cpu(owner);
         Ok(preempts_current)
     }
@@ -2161,8 +2166,8 @@ impl TaskSystem {
                     // is available as soon as the donor is neither the runnable
                     // owner dispatch nor a queued candidate; timer servicing is
                     // excluded by the borrower baton below.
-                    let cbs_available =
-                        donor_sched.running_cpu.is_none() && donor_sched.queued_cpu.is_none();
+                    let cbs_available = donor_sched.placement.running_cpu().is_none()
+                        && donor_sched.placement.queued_cpu().is_none();
                     let cbs_generation =
                         if cbs_available && donor_sched.deadline_cbs_borrower.is_none() {
                             let generation = donor_sched
@@ -2491,25 +2496,28 @@ impl TaskSystem {
             .ok_or(TaskError::InvalidConfiguration)?;
         let (source, remains_placed) = {
             sched.affinity = affinity;
-            let location = sched.running_cpu.or(sched.queued_cpu);
+            let location = sched
+                .placement
+                .running_cpu()
+                .or(sched.placement.queued_cpu());
             let source = match location {
                 Some(owner) if !sched.affinity.contains(owner) => {
-                    sched.migration_target = Some(target);
+                    sched.placement.set_migration_target(Some(target))?;
                     Some(owner)
                 }
                 Some(owner) => {
                     // A newer mask made the owner legal again before its
                     // pending migration request ran. Cancel that request.
-                    sched.migration_target = None;
+                    sched.placement.set_migration_target(None)?;
                     core.set_target_cpu(owner);
                     None
                 }
-                None if sched.migration_target.is_some() => {
+                None if sched.placement.migration_target().is_some() => {
                     // The source already detached this ready thread and a
                     // transfer is in flight. Retarget the transfer in-place;
                     // the old destination forwards it after observing this
                     // state under the scheduler lock.
-                    sched.migration_target = Some(target);
+                    sched.placement.set_migration_target(Some(target))?;
                     core.set_target_cpu(target);
                     None
                 }
@@ -2550,7 +2558,9 @@ impl TaskSystem {
         let current = cpu.current().ok_or(TaskError::NoRunnableThread)?;
         let record = state.thread_record(current)?;
         let mut sched = record.sched.lock();
-        if sched.running_cpu != Some(cpu.owner()) || sched.on_cpu != Some(cpu.owner()) {
+        if sched.placement.running_cpu() != Some(cpu.owner())
+            || sched.placement.on_cpu() != Some(cpu.owner())
+        {
             return Err(TaskError::InvalidConfiguration);
         }
         let is_deadline = matches!(sched.active_base_policy, SchedulePolicy::Deadline(_))
@@ -2568,7 +2578,9 @@ impl TaskSystem {
         let owner = cpu.owner();
         let must_migrate = !affinity.contains(owner);
         sched.affinity = affinity;
-        sched.migration_target = must_migrate.then_some(target);
+        sched
+            .placement
+            .set_migration_target(must_migrate.then_some(target))?;
         record
             .core
             .set_target_cpu(if must_migrate { target } else { owner });
@@ -2600,10 +2612,11 @@ impl TaskSystem {
             let cleanup_deadline_member = {
                 let record = state.thread_record_mut(thread)?;
                 let mut sched = record.sched.lock();
-                if sched.queued_cpu.is_some() || sched.running_cpu.is_some() {
+                if sched.placement.queued_cpu().is_some() || sched.placement.running_cpu().is_some()
+                {
                     return Err(TaskError::AlreadyQueued);
                 }
-                if sched.on_cpu.is_some() {
+                if sched.placement.on_cpu().is_some() {
                     return Err(TaskError::ThreadBusy);
                 }
                 if record.blocked_on.is_some() || sched.blocked_pi_waiters != 0 {
@@ -2630,16 +2643,17 @@ impl TaskSystem {
                     .try_scheduler_exit()
                     .ok_or(TaskError::ThreadBusy)?;
                 let mut sched = record.sched.lock();
-                if sched.queued_cpu.is_some() || sched.running_cpu.is_some() {
+                if sched.placement.queued_cpu().is_some() || sched.placement.running_cpu().is_some()
+                {
                     return Err(TaskError::AlreadyQueued);
                 }
-                if sched.on_cpu.is_some() || sched.deadline_cbs_borrower.is_some() {
+                if sched.placement.on_cpu().is_some() || sched.deadline_cbs_borrower.is_some() {
                     return Err(TaskError::ThreadBusy);
                 }
                 if record.blocked_on.is_some() || sched.blocked_pi_waiters != 0 {
                     return Err(TaskError::InvalidPiState);
                 }
-                sched.migration_target = None;
+                sched.placement.set_migration_target(None)?;
                 sched.transition(&record.core, ThreadState::Exited)?;
                 record.exit_callback_pending = record.extension.is_some();
                 record.exit_callback_claimed = false;
@@ -2843,9 +2857,9 @@ impl TaskSystem {
         let record = state.thread_record_mut(current)?;
         let mut sched = record.sched.lock();
         if sched.lifecycle.state() != ThreadState::Running
-            || sched.running_cpu != Some(owner)
-            || sched.on_cpu != Some(owner)
-            || sched.queued_cpu.is_some()
+            || sched.placement.running_cpu() != Some(owner)
+            || sched.placement.on_cpu() != Some(owner)
+            || sched.placement.queued_cpu().is_some()
         {
             return Err(TaskError::InvalidConfiguration);
         }
@@ -2939,8 +2953,9 @@ impl TaskSystem {
         let desired_reservation = u128::from(sched.desired_deadline_reservation);
         let affinity = sched.affinity.clone();
         let owner = sched
-            .running_cpu
-            .or(sched.queued_cpu)
+            .placement
+            .running_cpu()
+            .or(sched.placement.queued_cpu())
             .or(sched.deadline_bandwidth_cpu);
         let generation = sched
             .policy_generation
@@ -3337,9 +3352,9 @@ impl TaskSystem {
                         !remote.is_online() || sched.affinity.contains(CpuId::new(index as u32))
                     });
             if !allowed_target
-                || sched.queued_cpu != Some(source)
-                || sched.migration_target.is_some()
-                || sched.on_cpu.is_some()
+                || sched.placement.queued_cpu() != Some(source)
+                || sched.placement.migration_target().is_some()
+                || sched.placement.on_cpu().is_some()
                 || candidate.core.sleep_timer_cpu().is_some()
                 || !deadline_covers_online
             {
@@ -3424,15 +3439,17 @@ impl TaskSystem {
         Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
         {
             let mut sched = core.sched().lock();
-            if sched.lifecycle.state() != ThreadState::Ready || sched.queued_cpu != Some(source) {
+            if sched.lifecycle.state() != ThreadState::Ready
+                || sched.placement.queued_cpu() != Some(source)
+            {
                 return Err(TaskError::InvalidConfiguration);
             }
             sched.entity = queued.entity;
             if !sched.is_pi_boosted() {
                 sched.base_entity = queued.entity;
             }
-            sched.queued_cpu = None;
-            sched.migration_target = Some(target);
+            sched.placement.set_queued_cpu(None)?;
+            sched.placement.set_migration_target(Some(target))?;
             core.set_target_cpu(target);
         }
         let migrated_fair = matches!(candidate.policy, SchedulePolicy::Fair { .. });
@@ -3527,7 +3544,8 @@ impl TaskSystem {
                             _ => return Err(TaskError::InvalidConfiguration),
                         }
                         replenish = true;
-                    } else if !sched.is_pi_boosted() && sched.queued_cpu == Some(owner) {
+                    } else if !sched.is_pi_boosted() && sched.placement.queued_cpu() == Some(owner)
+                    {
                         update_queued = Some(SchedulingEntity::Deadline(deadline));
                     }
                 } else if missed {
@@ -3535,7 +3553,7 @@ impl TaskSystem {
                     sched.base_entity = SchedulingEntity::Deadline(deadline);
                     if !sched.is_pi_boosted() {
                         sched.entity = sched.base_entity;
-                        if sched.queued_cpu == Some(owner) {
+                        if sched.placement.queued_cpu() == Some(owner) {
                             update_queued = Some(SchedulingEntity::Deadline(deadline));
                         }
                     }
@@ -3739,10 +3757,11 @@ impl TaskSystem {
         let mut sched = core.sched().lock();
 
         let migration_requested =
-            sched.migration_target.is_some() || !sched.affinity.contains(owner);
+            sched.placement.migration_target().is_some() || !sched.affinity.contains(owner);
         if migration_requested {
             let target = sched
-                .migration_target
+                .placement
+                .migration_target()
                 .filter(|target| {
                     *target != owner
                         && sched.affinity.contains(*target)
@@ -3753,9 +3772,9 @@ impl TaskSystem {
                 })
                 .or_else(|| self.select_allowed_online_cpu(&sched.affinity, Some(owner)))
                 .ok_or(TaskError::InvalidConfiguration)?;
-            sched.migration_target = Some(target);
+            sched.placement.set_migration_target(Some(target))?;
             sched.transition(&core, ThreadState::Ready)?;
-            sched.running_cpu = None;
+            sched.placement.set_running_cpu(None)?;
             core.set_target_cpu(target);
             cpu.as_mut().clear_current();
             return Ok(Some(target));
@@ -3772,14 +3791,14 @@ impl TaskSystem {
                     .arm_deferred_scheduler_deadline(deadline.next_scheduler_event_ns());
             }
             sched.transition(&core, ThreadState::Blocked)?;
-            sched.running_cpu = None;
+            sched.placement.set_running_cpu(None)?;
             cpu.as_mut().clear_current();
             return Ok(None);
         }
 
         if cpu.idle() == Some(core.id()) {
             sched.transition(&core, ThreadState::Ready)?;
-            sched.running_cpu = None;
+            sched.placement.set_running_cpu(None)?;
             cpu.as_mut().clear_current();
             return Ok(None);
         }
@@ -3795,13 +3814,13 @@ impl TaskSystem {
             }
             return Err(error);
         }
-        sched.running_cpu = None;
+        sched.placement.set_running_cpu(None)?;
         let enqueue =
             self.enqueue_owner_thread_locked(cpu.as_mut(), &core, &mut sched, now_ns, reason);
         let preempts_current = match enqueue {
             Ok(preempts_current) => preempts_current,
             Err(error) => {
-                sched.running_cpu = Some(owner);
+                sched.placement.set_running_cpu(Some(owner))?;
                 let rollback = sched.transition(&core, ThreadState::Running);
                 if let Some(dispatch) = dispatch {
                     cpu.as_mut().install_dispatch(dispatch);
@@ -3845,7 +3864,7 @@ impl TaskSystem {
         owner: CpuId,
         outgoing: Option<ThreadId>,
     ) -> Result<(), TaskError> {
-        match sched.on_cpu {
+        match sched.placement.on_cpu() {
             None => Ok(()),
             Some(executing_cpu) if outgoing == Some(next) && executing_cpu == owner => Ok(()),
             Some(_) => Err(TaskError::InvalidConfiguration),
@@ -3874,9 +3893,9 @@ impl TaskSystem {
                 if !sched.is_pi_boosted() {
                     sched.base_entity = queued.entity;
                 }
-                sched.queued_cpu = None;
-                sched.running_cpu = Some(owner);
-                sched.on_cpu = Some(owner);
+                sched.placement.set_queued_cpu(None)?;
+                sched.placement.set_running_cpu(Some(owner))?;
+                sched.placement.set_on_cpu(Some(owner))?;
                 sched.transition(&core, ThreadState::Running)?;
                 let dispatch = Self::owner_dispatch(&core, &sched, now_ns)?;
                 fields.current_dispatch = Some(dispatch);
@@ -3894,8 +3913,8 @@ impl TaskSystem {
                 if sched.lifecycle.state() == ThreadState::Ready {
                     sched.transition(&core, ThreadState::Running)?;
                 }
-                sched.running_cpu = Some(owner);
-                sched.on_cpu = Some(owner);
+                sched.placement.set_running_cpu(Some(owner))?;
+                sched.placement.set_on_cpu(Some(owner))?;
                 let dispatch = Self::owner_dispatch(&core, &sched, now_ns)?;
                 fields.current_dispatch = Some(dispatch);
             }
