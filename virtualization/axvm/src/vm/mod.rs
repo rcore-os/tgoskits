@@ -919,9 +919,6 @@ impl AxVM {
             })
     }
 
-    /// Registers devices whose typed construction input comes from VM boot
-    /// payloads rather than static emulated-device configuration.
-
     pub(crate) fn handle_mmio_write(
         &self,
         addr: GuestPhysAddr,

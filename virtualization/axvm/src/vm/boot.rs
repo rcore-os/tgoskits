@@ -63,12 +63,13 @@ mod tests {
             cpu_config: AxVCpuConfig {
                 bsp_entry: GuestPhysAddr::from(0x101000),
                 ap_entry: GuestPhysAddr::from(0x102000),
-                ..Default::default()
             },
             image_config: VMImageConfig {
                 kernel_load_gpa: GuestPhysAddr::from(0x100000),
+                loaded_from_filesystem: false,
                 bios_load_gpa: bios_load_gpa.map(GuestPhysAddr::from),
-                ..Default::default()
+                dtb_load_gpa: None,
+                ramdisk: None,
             },
             boot_policy: GuestBootPolicy::AdjustKernelForBootProtocol { protocol },
             ..Default::default()
