@@ -162,7 +162,7 @@ fn do_execve(
     // (signal wakeups). Linux's execve is killable but not arbitrarily
     // signal-interruptible while it serializes through `cred_guard_mutex`.
     let _exec_guard = loop {
-        if let Some(g) = proc_data.exec_lock.try_lock() {
+        if let Some(g) = proc_data.exec_lock().try_lock() {
             break g;
         }
         if thr.has_exit_request() {
@@ -258,7 +258,7 @@ fn do_execve(
             }
             unsafe {
                 proc_data
-                    .thread_exit_event
+                    .thread_exit_event()
                     .register(cx.waker(), axpoll::IoEvents::IN)
             };
             // Re-check after registering: a sibling could have exited

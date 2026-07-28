@@ -118,7 +118,7 @@ impl TaskStat {
             end_code: mem.end_code,
             start_stack: mem.start_stack,
             start_brk: proc_data.get_heap_top() as u64,
-            exit_signal: proc_data.exit_signal.unwrap_or(Signo::SIGCHLD) as u8,
+            exit_signal: proc_data.exit_signal().unwrap_or(Signo::SIGCHLD) as u8,
             processor: task.cpu_id() as u32,
             exit_code: proc.exit_code(),
             ..Default::default()

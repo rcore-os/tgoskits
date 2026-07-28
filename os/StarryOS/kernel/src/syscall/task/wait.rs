@@ -194,7 +194,7 @@ impl WaitChildFilter {
         if self.no_thread {
             let wait_parent_tid = get_process_data(child.pid())
                 .ok()
-                .map(|data| data.wait_parent_tid)
+                .map(|data| data.wait_parent_tid())
                 .or_else(|| zombie_wait_parent_tid(child.pid()));
             if wait_parent_tid != Some(current_tid) {
                 return false;
@@ -356,7 +356,9 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     let task = current_user_task();
     block_on_user(
         &task,
-        wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
+        wait_on_pollset(proc_data.child_exit_event(), || {
+            check_children().transpose()
+        }),
     )
     .into_result()?
 }
@@ -543,7 +545,9 @@ pub fn sys_waitid(
     let task = current_user_task();
     block_on_user(
         &task,
-        wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
+        wait_on_pollset(proc_data.child_exit_event(), || {
+            check_children().transpose()
+        }),
     )
     .into_result()?
 }
