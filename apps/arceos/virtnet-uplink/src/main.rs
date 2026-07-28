@@ -8,6 +8,7 @@
 //! matching the acceptance markers in
 //! `AXVIRTIO_NET_MULTI_GUEST_SWITCH_DESIGN.md` §11.3.
 
+#[cfg(feature = "arceos")]
 use std::{
     io::{Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream, ToSocketAddrs},
@@ -22,24 +23,39 @@ const VM_TAG: &str = match option_env!("AXVIRTIO_VM_TAG") {
     Some(tag) => tag,
     None => "VM",
 };
+#[cfg(feature = "arceos")]
 const GUEST_IFACE: &str = "eth0";
+#[cfg(feature = "arceos")]
 const TEST_HOST: &str = env!("AXVIRTIO_TEST_HOST");
+#[cfg(feature = "arceos")]
 const TEST_PORT: u16 = parse_port(env!("AXVIRTIO_TEST_PORT"));
+#[cfg(feature = "arceos")]
 const TEST_PATH: &str = env!("AXVIRTIO_TEST_PATH");
+#[cfg(feature = "arceos")]
 const EXPECTED_TOKEN: &str = env!("AXVIRTIO_EXPECT_TOKEN");
+#[cfg(feature = "arceos")]
 const LOCAL_ROLE: &str = env!("AXVIRTIO_LOCAL_ROLE");
+#[cfg(feature = "arceos")]
 const LOCAL_PEER_IPV4: &str = env!("AXVIRTIO_LOCAL_PEER_IPV4");
+#[cfg(feature = "arceos")]
 const LOCAL_PORT: u16 = parse_port(env!("AXVIRTIO_LOCAL_PORT"));
+#[cfg(feature = "arceos")]
 const LOCAL_TEST_BYTES: usize = parse_usize(env!("AXVIRTIO_LOCAL_TEST_BYTES"));
+#[cfg(feature = "arceos")]
 const LOCAL_CHUNK_SIZE: usize = 16 * 1024;
+#[cfg(feature = "arceos")]
 const LOCAL_PROGRESS_INTERVAL: usize = 256 * 1024;
+#[cfg(feature = "arceos")]
 const LOCAL_CONNECT_ATTEMPTS: usize = 100;
+#[cfg(feature = "arceos")]
 const LOCAL_ACK_MAGIC: &[u8; 8] = b"AXVNET01";
 
+#[cfg(feature = "arceos")]
 const fn parse_port(value: &str) -> u16 {
     parse_usize(value) as u16
 }
 
+#[cfg(feature = "arceos")]
 const fn parse_usize(value: &str) -> usize {
     let bytes = value.as_bytes();
     let mut index = 0;
@@ -52,6 +68,7 @@ const fn parse_usize(value: &str) -> usize {
     number
 }
 
+#[cfg(feature = "arceos")]
 fn run() -> std::io::Result<()> {
     // Locate the interface by name so the same binary works for any guest MAC
     // the AxVisor emulated device reports.
@@ -136,6 +153,7 @@ fn run() -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "arceos")]
 fn run_local_server(listener: TcpListener) -> std::io::Result<()> {
     let (mut stream, peer) = listener.accept()?;
     let started = Instant::now();
@@ -172,6 +190,7 @@ fn run_local_server(listener: TcpListener) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "arceos")]
 fn run_local_client(peer_ipv4: &str) -> std::io::Result<()> {
     let peer = format!("{peer_ipv4}:{LOCAL_PORT}");
     let mut stream = connect_with_retry(&peer)?;
@@ -208,10 +227,12 @@ fn run_local_client(peer_ipv4: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "arceos")]
 fn resolve_local_peer(local_ipv4: &str) -> std::io::Result<&'static str> {
     resolve_local_peer_from(LOCAL_PEER_IPV4, local_ipv4)
 }
 
+#[cfg(any(feature = "arceos", test))]
 fn resolve_local_peer_from(
     configured_peer: &'static str,
     local_ipv4: &str,
@@ -248,6 +269,7 @@ mod tests {
     }
 }
 
+#[cfg(feature = "arceos")]
 fn connect_with_retry(peer: &str) -> std::io::Result<TcpStream> {
     let mut last_error = None;
     for _ in 0..LOCAL_CONNECT_ATTEMPTS {
@@ -260,6 +282,7 @@ fn connect_with_retry(peer: &str) -> std::io::Result<TcpStream> {
     Err(last_error.unwrap_or_else(|| std::io::Error::other("local connect failed")))
 }
 
+#[cfg(feature = "arceos")]
 fn send_test_payload(stream: &mut TcpStream) -> std::io::Result<u64> {
     let mut chunk = [0u8; LOCAL_CHUNK_SIZE];
     for (index, byte) in chunk.iter_mut().enumerate() {
@@ -283,6 +306,7 @@ fn send_test_payload(stream: &mut TcpStream) -> std::io::Result<u64> {
     Ok(checksum)
 }
 
+#[cfg(feature = "arceos")]
 fn receive_test_payload(stream: &mut TcpStream) -> std::io::Result<(usize, u64)> {
     let mut chunk = [0u8; LOCAL_CHUNK_SIZE];
     let mut received = 0usize;
@@ -304,6 +328,7 @@ fn receive_test_payload(stream: &mut TcpStream) -> std::io::Result<(usize, u64)>
     Ok((received, checksum))
 }
 
+#[cfg(feature = "arceos")]
 fn print_local_result(peer: String, bytes: usize, checksum: u64, elapsed: Duration) {
     let seconds = elapsed.as_secs_f64();
     let mib_per_second = bytes as f64 / (1024.0 * 1024.0) / seconds;
@@ -316,6 +341,7 @@ fn print_local_result(peer: String, bytes: usize, checksum: u64, elapsed: Durati
 
 fn main() {
     println!("AxVisor virtio-net shared-uplink acceptance test ({VM_TAG})");
+    #[cfg(feature = "arceos")]
     if let Err(error) = run() {
         println!("{VM_TAG}_UPLINK_FAIL {error}");
     }
