@@ -152,6 +152,11 @@ fn pidfd_flags_and_signal_validation_rules_hold() {
 }
 
 #[axtest]
+fn reaping_identity_is_not_publicly_resolvable() {
+    ax_assert!(axtest_exports::reaping_identity_is_not_publicly_resolvable());
+}
+
+#[axtest]
 fn timerfd_timespec_conversion_rules_hold() {
     ax_assert!(axtest_exports::timerfd_timespec_conversion_rules_hold());
 }

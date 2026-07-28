@@ -32,6 +32,8 @@ fn guest_fdt_policy() -> test_core::GuestFdtPolicy {
         patch_runtime: test_runtime_patch,
         patch_provided: test_provided_patch,
         decode_interrupt: |specifier| specifier.first().copied(),
+        resolve_cpu_index: Some,
+        host_cpu_count: || usize::BITS as usize,
     }
 }
 

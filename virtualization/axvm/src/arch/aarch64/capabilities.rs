@@ -41,6 +41,14 @@ pub fn host_phys_to_virt(paddr: ax_memory_addr::PhysAddr) -> ax_memory_addr::Vir
     ax_std::os::arceos::modules::ax_hal::mem::phys_to_virt(paddr)
 }
 
+pub(super) fn resolve_cpu_index(hardware_cpu_id: usize) -> Option<usize> {
+    ax_std::os::arceos::modules::ax_hal::topology::resolve_cpu_index(hardware_cpu_id)
+}
+
+pub(super) fn host_cpu_count() -> usize {
+    ax_std::os::arceos::modules::ax_hal::cpu_num()
+}
+
 pub(super) fn decode_gic_spi(specifier: &[u32]) -> Option<u32> {
     (specifier.first().copied() == Some(0))
         .then(|| specifier.get(1).copied())

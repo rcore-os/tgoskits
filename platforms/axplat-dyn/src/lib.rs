@@ -15,6 +15,7 @@ extern crate log;
 
 mod boot;
 mod console;
+mod cpu;
 pub mod drivers;
 mod generic_timer;
 mod init;

@@ -384,10 +384,14 @@ impl CloneArgs {
             thr.set_clear_child_tid(child_tid);
         }
         if flags.contains(CloneFlags::PIDFD) && pidfd != 0 {
+            // The pidfd and the later registry publication share the identity
+            // embedded in ProcessData. A failed clone therefore cannot leave a
+            // prematurely registered PID behind.
+            let identity = new_proc_data.identity();
             let pidfd_obj = if flags.contains(CloneFlags::THREAD) {
-                PidFd::new_thread(&thr, tid)
+                PidFd::new_thread(identity, &thr, tid)
             } else {
-                PidFd::new_process(&new_proc_data)
+                PidFd::new_process(identity)
             };
             let fd = pidfd_obj.add_to_fd_table(true)?;
             if let Err(err) = (pidfd as *mut i32).vm_write(fd) {
