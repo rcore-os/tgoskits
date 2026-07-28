@@ -25,28 +25,26 @@
 //! # Per-CPU registry
 //!
 //! The handler must locate the ring buffer for an overflowed counter `n` without
-//! allocating or taking a lock. [`REGISTRY`] is a fixed `[Option<SampleSlot>; 32]`
-//! per CPU (index = programmable counter index). A [`SampleSlot`] is a small
-//! `Copy` POD carrying exactly the raw values the handler needs. `register` /
-//! `unregister` mutate the *current* CPU's array under a local-IRQ-off critical
-//! section ([`NoPreemptIrqSave`]) so they never race the handler. M2 is
-//! single-core, so the event's core is always cpu0.
-//!
-//! # `notify` raw pointer soundness
-//!
-//! `SampleSlot::notify` is a raw `*const IrqNotify`. It is valid for the whole
-//! time the slot is registered because the owning event holds a strong
-//! `Arc<IrqNotify>` for its entire life, and teardown
-//! ([`super::hw::HwPerfEvent`]'s disable/Drop) calls [`unregister`] — clearing
-//! the slot — *before* dropping that `Arc`. The handler therefore only ever
-//! dereferences a pointer whose target is still alive.
+//! allocating or taking a lock. [`REGISTRY`] is one fixed generation-bearing
+//! registry per CPU (index = programmable counter index). Each [`SampleSlot`]
+//! owns strong output and notification references rather than borrowing raw
+//! callback storage. `register` / `unregister` mutate the current CPU's registry
+//! under a local-IRQ-off critical section ([`NoPreemptIrqSave`]) so removal is
+//! also the local hard-IRQ grace period.
 
-use core::sync::atomic::Ordering;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use ax_hal::irq::{IrqContext, IrqId, IrqReturn};
 use ax_kernel_guard::NoPreemptIrqSave;
 use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
+use super::{
+    output::PerfRingOutput,
+    sampling_lifecycle::SampleRegistration,
+    sampling_registry::{RegisterError, SamplingRegistry, UnregisterError},
+    target::PerfCpuId,
+};
 use crate::task::{future::IrqNotify, try_current_user_irq_view};
 
 fn pmu_irq() -> Result<IrqId, ax_hal::irq::IrqError> {
@@ -150,18 +148,42 @@ pub const SUPPORTED_SAMPLE_TYPE: u64 = PERF_SAMPLE_IP
     | PERF_SAMPLE_STREAM_ID
     | PERF_SAMPLE_IDENTIFIER;
 
-/// Everything the overflow handler needs for one counter, in a lock-free,
-/// alloc-free `Copy` POD.
+/// Owned ring and wake target used by one registered sampling generation.
+#[derive(Clone)]
+pub struct SampleOutput {
+    ring: Option<PerfRingOutput>,
+    notify: Option<Arc<IrqNotify>>,
+}
+
+impl core::fmt::Debug for SampleOutput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SampleOutput")
+            .field(
+                "ring",
+                &self
+                    .ring
+                    .as_ref()
+                    .map(|ring| (ring.ring_vaddr(), ring.ring_len())),
+            )
+            .field("notifies", &self.notify.is_some())
+            .finish()
+    }
+}
+
+impl SampleOutput {
+    /// Creates an output whose ring geometry and lifetime are one value.
+    pub fn new(ring: Option<PerfRingOutput>, notify: Option<Arc<IrqNotify>>) -> Self {
+        Self { ring, notify }
+    }
+}
+
+/// Everything the overflow handler needs for one counter.
 ///
-/// Stored in the per-CPU [`REGISTRY`] at the counter's index while the event is
-/// enabled. See the module docs for the `notify`-pointer soundness argument.
-#[derive(Clone, Copy)]
+/// Stored by value in the owner CPU's [`REGISTRY`]. Strong references in
+/// [`SampleOutput`] remain live until generation-checked unregister completes
+/// with local IRQs excluded.
 pub struct SampleSlot {
-    /// Kernel virtual address of the ring buffer's first page
-    /// (`perf_event_mmap_page`). The data region follows at `data_offset`.
-    pub ring_vaddr: usize,
-    /// Total ring length in bytes (header page + data region).
-    pub ring_len: usize,
+    output: SampleOutput,
     /// Sampling period: the counter is re-armed to overflow after this many
     /// events via [`ax_cpu::pmu::counter::preload`]. Also emitted as the
     /// `PERF_SAMPLE_PERIOD` field of each record.
@@ -173,10 +195,6 @@ pub struct SampleSlot {
     /// fields. `0` when the event was opened without per-event ids (the common
     /// case in this single-group implementation).
     pub id: u64,
-    /// Raw pointer to the owning event's [`IrqNotify`], woken after each sample.
-    /// Kept alive by the event's strong `Arc<IrqNotify>` for as long as the slot
-    /// is registered (see module docs).
-    pub notify: *const (),
     /// Frequency mode (`attr.freq`): after each sample re-derive [`period`](Self::period)
     /// to converge on [`target_freq`](Self::target_freq) samples/sec. Fixed
     /// `-c` period when false.
@@ -189,21 +207,41 @@ pub struct SampleSlot {
     pub last_time: u64,
 }
 
-// SAFETY: `SampleSlot` is a plain bag of integers plus a raw pointer. The
-// pointer is only ever dereferenced from the overflow handler on the same CPU
-// that registered the slot, and the registry is mutated only under a
-// local-IRQ-off critical section, so there is no cross-thread aliasing of the
-// pointee through this type. Marking it `Send` lets it live inside the per-CPU
-// static; it is never actually moved across CPUs (single-core in M2, and the
-// registry is per-CPU regardless).
-unsafe impl Send for SampleSlot {}
+/// Immutable attributes copied into one owner-CPU sampling slot.
+pub struct SampleSlotConfig {
+    pub period: u32,
+    pub sample_type: u64,
+    pub id: u64,
+    pub freq: bool,
+    pub target_freq: u32,
+    pub last_time: u64,
+}
+
+impl SampleSlot {
+    /// Creates one owned per-CPU registry entry.
+    pub fn new(output: SampleOutput, config: SampleSlotConfig) -> Self {
+        Self {
+            output,
+            period: config.period,
+            sample_type: config.sample_type,
+            id: config.id,
+            freq: config.freq,
+            target_freq: config.target_freq,
+            last_time: config.last_time,
+        }
+    }
+}
 
 /// Per-CPU map from programmable counter index to its registered sampling slot.
 ///
 /// Index `n` (`0..=30`) holds the slot for `PMEVCNTRn_EL0`. `None` means no
 /// sampling event currently owns that counter on this CPU.
 #[ax_percpu::def_percpu]
-static REGISTRY: [Option<SampleSlot>; 32] = [None; 32];
+static REGISTRY: SamplingRegistry<SampleSlot> = SamplingRegistry::new();
+
+/// Globally unique registry generation. Counter slots may be reused, but an old
+/// teardown token can never match the next event that occupies the same index.
+static NEXT_REGISTRATION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Whether [`pmu_overflow_handler`] has been registered with the IRQ framework.
 ///
@@ -221,7 +259,7 @@ static REGISTERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBo
 /// [`NoPreemptIrqSave`]; the overflow handler already runs with local IRQs
 /// masked on the CPU that owns the registry.
 unsafe fn with_registry_mut<R>(
-    operation: impl for<'value> FnOnce(&'value mut [Option<SampleSlot>; 32]) -> R,
+    operation: impl for<'value> FnOnce(&'value mut SamplingRegistry<SampleSlot>) -> R,
 ) -> R {
     // SAFETY: the caller establishes the migration and exclusion contract.
     unsafe {
@@ -236,51 +274,62 @@ unsafe fn with_registry_mut<R>(
 
 /// Registers `slot` for programmable counter `n` on the current CPU.
 ///
-/// Runs in process context on the event's core (cpu0 under smp1). The mutation
-/// is performed under [`NoPreemptIrqSave`] so the overflow handler — which reads
-/// the same per-CPU array — can never observe a half-written entry, and so the
-/// current CPU's view of `REGISTRY` is the one being updated.
-pub fn register(n: usize, slot: SampleSlot) {
+/// Runs on the event's owner CPU. The mutation is performed under
+/// [`NoPreemptIrqSave`] so the overflow handler — which reads the same per-CPU
+/// array — can never observe a half-written entry.
+pub fn register(n: usize, slot: SampleSlot) -> Result<SampleRegistration, RegisterError> {
     if n > MAX_COUNTER {
-        return;
+        return Err(RegisterError::InvalidCounter);
     }
+    let owner = PerfCpuId::new(ax_hal::percpu::this_cpu_id());
+    let generation = NEXT_REGISTRATION_GENERATION
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            generation.checked_add(1)
+        })
+        .expect("PMU sampling registration generation exhausted");
     let _guard = NoPreemptIrqSave::new();
     // SAFETY: the guard prevents migration and local IRQ reentry.
-    unsafe { with_registry_mut(|registry| registry[n] = Some(slot)) };
+    unsafe { with_registry_mut(|registry| registry.register(n, generation, slot)) }?;
+    Ok(SampleRegistration::new(owner, n, generation))
 }
 
-/// Clears the sampling slot for programmable counter `n` on the current CPU.
+/// Failure to remove an owner-CPU sampling registration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SamplingUnregisterError {
+    /// Teardown ran on a CPU other than the registry owner.
+    WrongCpu,
+    /// The counter slot no longer carries this generation.
+    Registry(UnregisterError),
+}
+
+/// Clears one exact sampling generation on its owner CPU.
 ///
-/// Mirror of [`register`]. Teardown calls this *before* the owning event drops
-/// its `Arc<IrqNotify>`, so once this returns the handler can no longer reach a
-/// stale `notify` pointer for counter `n`.
-pub fn unregister(n: usize) {
-    if n > MAX_COUNTER {
-        return;
+/// Returning successfully proves both that the registry no longer reaches the
+/// output and that any local hard-IRQ reader has completed.
+pub fn unregister(registration: SampleRegistration) -> Result<(), SamplingUnregisterError> {
+    if registration.owner().as_usize() != ax_hal::percpu::this_cpu_id() {
+        return Err(SamplingUnregisterError::WrongCpu);
     }
-    let _guard = NoPreemptIrqSave::new();
-    // SAFETY: see `register`.
-    unsafe { with_registry_mut(|registry| registry[n] = None) };
+    let removed = {
+        let _guard = NoPreemptIrqSave::new();
+        // SAFETY: the guard prevents migration and local IRQ reentry.
+        unsafe {
+            with_registry_mut(|registry| {
+                registry.unregister(registration.counter(), registration.generation())
+            })
+        }
+        .map_err(SamplingUnregisterError::Registry)?
+    };
+    drop(removed);
+    Ok(())
 }
 
-/// Ensures [`pmu_overflow_handler`] is registered with the IRQ framework and the
-/// PMU overflow line is enabled on the current core.
+/// Ensures [`pmu_overflow_handler`] is registered with the IRQ framework.
 ///
-/// Idempotent: the first caller installs the per-CPU action for the PMU IRQ
-/// across all online CPUs. Every caller (re-)enables INTID 23 on the *current*
-/// core. The explicit `set_enable` is required: the framework's per-core line
-/// enable runs at `cpu_online`/boot, before this handler is ever registered, so
-/// under smp1 the PMU PPI would otherwise stay masked and the overflow IRQ would
-/// never fire on cpu0.
-pub fn ensure_pmu_irq_registered() {
-    let pmu_irq = match pmu_irq() {
-        Ok(irq) => irq,
-        Err(err) => {
-            warn!("perf sampling: failed to resolve PMU overflow IRQ: {err:?}");
-            return;
-        }
-    };
-
+/// This process-context operation may allocate inside IRQ registration and must
+/// run before scheduler hooks can arm a sampling event.
+pub fn ensure_pmu_irq_registered() -> Result<(), ax_hal::irq::IrqError> {
+    let pmu_irq = pmu_irq()?;
     if REGISTERED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
@@ -290,20 +339,22 @@ pub fn ensure_pmu_irq_registered() {
         if let Err(err) = ax_hal::irq::request_percpu_irq(pmu_irq, cpus, pmu_overflow_handler) {
             // Roll back so a later open can retry registration.
             REGISTERED.store(false, Ordering::Release);
-            warn!("perf sampling: failed to register PMU overflow IRQ: {err:?}");
-            return;
+            return Err(err);
         }
     }
-    // Enable the PMU PPI on the core this sampling event runs on. Required even
-    // when the action was registered by an earlier event: the per-core line is
-    // not auto-enabled for runtime-registered PPIs.
-    if let Err(err) = ax_hal::irq::set_enable(pmu_irq, true) {
-        warn!("perf sampling: failed to enable PMU overflow IRQ {pmu_irq:?}: {err:?}");
-    }
+    Ok(())
+}
+
+/// Enables the already-registered PMU PPI on the current owner CPU.
+///
+/// This is bounded and allocation-free, so a scheduler hook may call it before
+/// publishing the local sampling slot.
+pub fn enable_local_pmu_irq() -> Result<(), ax_hal::irq::IrqError> {
+    ax_hal::irq::set_enable(pmu_irq()?, true)
 }
 
 fn service_overflowed_slots(
-    registry: &mut [Option<SampleSlot>; 32],
+    registry: &mut SamplingRegistry<SampleSlot>,
     overflow: u32,
     misc: u16,
     ip: u64,
@@ -323,7 +374,7 @@ fn service_overflowed_slots(
         }
         handled |= 1 << n;
 
-        let Some(slot) = registry[n].as_mut() else {
+        let Some(slot) = registry.get_mut(n) else {
             // Counting-only events own their re-arm policy. The IRQ path only
             // acknowledges an overflow that has no registered sampling slot.
             continue;
@@ -331,9 +382,6 @@ fn service_overflowed_slots(
 
         let sample_type = slot.sample_type;
         let id = slot.id;
-        let notify_ptr = slot.notify;
-        let ring_vaddr = slot.ring_vaddr;
-        let ring_len = slot.ring_len;
         let cur_period = slot.period;
 
         let time = ax_runtime::hal::time::monotonic_time_nanos();
@@ -352,9 +400,11 @@ fn service_overflowed_slots(
         };
         let len = build_sample(&mut record, sample_type, misc, &data);
 
-        // SAFETY: `ring_vaddr`/`ring_len` describe live, kernel-mapped pages
-        // while the slot is registered; teardown unregisters before freeing.
-        unsafe { ring_write(ring_vaddr, ring_len, &record[..len]) };
+        if let Some(ring) = &slot.output.ring {
+            // SAFETY: `ring` owns the reference that pins this kernel mapping
+            // until generation-checked unregister removes the complete slot.
+            unsafe { ring_write(ring, &record[..len]) };
+        }
 
         let next_period = if slot.freq {
             let next = if slot.last_time != 0 {
@@ -375,10 +425,7 @@ fn service_overflowed_slots(
 
         ax_cpu::pmu::counter::preload(n, next_period);
 
-        if !notify_ptr.is_null() {
-            // SAFETY: registration keeps the backing `Arc<IrqNotify>` alive;
-            // teardown removes the slot before releasing that ownership.
-            let notify = unsafe { &*(notify_ptr as *const IrqNotify) };
+        if let Some(notify) = &slot.output.notify {
             notify.notify_irq();
         }
     }
@@ -523,7 +570,7 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
 
 /// Writes one record into a perf ring buffer, IRQ-safe and self-contained.
 ///
-/// Page 0 of `[ring_vaddr, ring_vaddr + ring_len)` is a
+/// Page 0 of the range described by `ring` is a
 /// [`perf_event_mmap_page`]; the data region starts at `ring_vaddr + data_offset`
 /// (`data_offset == PAGE_SIZE` for our buffers) and is `data_size` bytes. The
 /// record is copied at `data_head % data_size` (split into two copies on wrap),
@@ -536,12 +583,16 @@ fn build_sample(buf: &mut [u8], sample_type: u64, misc: u16, d: &SampleData) -> 
 ///
 /// # Safety
 ///
-/// `ring_vaddr` must point at a live, kernel-mapped ring of `ring_len` bytes
-/// (header page + data region) whose header was initialized by
-/// `HwPerfEvent::device_mmap`. The caller must ensure no concurrent kernel
-/// writer touches the same ring (guaranteed here: one counter ⇒ one writer, and
-/// the handler runs with local IRQs masked).
-unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
+/// `ring` must describe a kernel-mapped ring whose header was initialized by
+/// `HwPerfEvent::device_mmap`. Its owned lifetime anchor must keep that mapping
+/// valid for this call.
+unsafe fn ring_write(ring: &PerfRingOutput, record: &[u8]) {
+    let Some(_writer) = ring.try_begin_write() else {
+        ring.record_contention_drop();
+        return;
+    };
+    let ring_vaddr = ring.ring_vaddr();
+    let ring_len = ring.ring_len();
     // Guard the enable-before-mmap case (slot registered with a zero ring) and
     // any ring too small to even hold the header page: there is nowhere to
     // write, and the header pointer would be null/out of bounds.
@@ -605,23 +656,18 @@ unsafe fn ring_write(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
 
 /// Write one record into a sampling ring from **process context** (the side-band
 /// path: `PERF_RECORD_MMAP2` / `COMM` / `FORK` / `EXIT` emitted at execve / mmap /
-/// clone / exit), serialized against the overflow handler.
+/// clone / exit), serialized against every producer sharing the output.
 ///
-/// The overflow handler ([`pmu_overflow_handler`]) writes the same ring in hard-
-/// IRQ context on this core; a process-context writer must therefore mask local
-/// IRQs ([`NoPreemptIrqSave`]) so the handler cannot run mid-write and interleave
-/// a sample at the same `data_head`. On a single core this fully serializes the
-/// two writers (M2 scope). The actual copy + head publish reuses [`ring_write`].
+/// [`PerfRingOutput`] owns one shared, non-blocking producer gate. Both hard-IRQ
+/// and process producers attempt one CAS and drop on contention, so redirected
+/// or inherited events remain bounded even when writers run on different CPUs.
 ///
 /// # Safety
 ///
-/// Same contract as [`ring_write`]: `ring_vaddr`/`ring_len` must describe a live,
-/// kernel-mapped ring (header page + data region) whose pages stay pinned for the
-/// duration of the call (the event holds the backing `Arc` while the slot/ring is
-/// registered).
-pub unsafe fn ring_write_process(ring_vaddr: usize, ring_len: usize, record: &[u8]) {
-    let _guard = NoPreemptIrqSave::new();
-    // SAFETY: caller upholds the ring liveness contract; IRQs are masked so the
-    // overflow handler cannot race this write on the current core.
-    unsafe { ring_write(ring_vaddr, ring_len, record) };
+/// Same contract as [`ring_write`]: `ring` must keep the initialized mapping
+/// pinned for the duration of the call.
+pub(crate) unsafe fn ring_write_process(ring: &PerfRingOutput, record: &[u8]) {
+    // SAFETY: the caller upholds the mapping initialization contract; `ring`
+    // owns the lifetime and cross-CPU producer gate.
+    unsafe { ring_write(ring, record) };
 }

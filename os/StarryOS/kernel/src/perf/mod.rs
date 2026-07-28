@@ -7,18 +7,28 @@
 //! `perf_event_mmap_page` header.
 
 pub mod bpf;
+mod control;
+#[cfg(target_arch = "aarch64")]
+mod cpu_worker;
 pub mod hw;
 pub mod kprobe;
+#[cfg(target_arch = "aarch64")]
+mod output;
 pub mod raw_tracepoint;
 /// PMU overflow-IRQ sampling backend (M2). ARM PMUv3 only; the counting and
 /// tracing paths are arch-agnostic, but sampling depends on CPU PMU registers.
 #[cfg(target_arch = "aarch64")]
 pub mod sampling;
+#[cfg(target_arch = "aarch64")]
+mod sampling_lifecycle;
+#[cfg(target_arch = "aarch64")]
+mod sampling_registry;
 /// Side-band records (`PERF_RECORD_COMM`/`MMAP2`/`FORK`/`EXIT`) for `perf report`
 /// symbolization. Writes into the sampling ring from process context, so it is
 /// gated like `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod sideband;
+mod target;
 /// Per-task hardware-PMU counting (`perf stat -- cmd`, M3). ARM PMUv3 only; the
 /// scheduler hooks call into CPU PMU register helpers, so it is gated like
 /// `sampling`.
@@ -46,10 +56,16 @@ use axpoll::Pollable;
 pub use bpf::BpfPerfEventWrapper;
 use hashbrown::HashMap;
 use kbpf_basic::{
-    linux_bpf::{PERF_FLAG_FD_CLOEXEC, perf_event_attr},
+    linux_bpf::perf_event_attr,
     perf::{PerfEventIoc, PerfProbeArgs, PerfTypeId},
 };
 
+#[cfg(target_arch = "aarch64")]
+use self::output::validate_output_redirect;
+use self::{
+    control::PerfControl,
+    target::{PerfOpenFlags, PerfTarget},
+};
 use crate::{
     ebpf::{error::BpfResultExt, transform::EbpfKernelAuxiliary},
     file::{FileLike, Kstat, add_file_like, get_file_like},
@@ -88,6 +104,11 @@ const PERF_IOC_NR_ID: u32 = 7;
 /// `Box<dyn PerfEventOps>` that `PerfEvent` then drives through the file
 /// layer (`ioctl`, `mmap`, `read`, etc.).
 pub trait PerfEventOps: Pollable + Send + Sync + Debug {
+    /// Completes post-id initialization before the fd is published.
+    fn finish_open(&mut self) -> AxResult<()> {
+        Ok(())
+    }
+
     /// Begin firing into the registered BPF program / ringbuf.
     fn enable(&mut self) -> AxResult<()>;
 
@@ -141,34 +162,6 @@ pub trait PerfEventOps: Pollable + Send + Sync + Debug {
     /// the events sharing one ring (`perf record -e a,b`). Default no-op: the
     /// tracing variants emit no hardware samples.
     fn set_sample_id(&mut self, _id: u64) {}
-
-    /// Expose this event's mmap ring so another event can redirect its records
-    /// into it (`PERF_EVENT_IOC_SET_OUTPUT`, target side).
-    ///
-    /// Returns `(ring_vaddr, ring_len, anchor)` where `anchor` is a strong
-    /// reference pinning the ring's backing pages for as long as the redirecting
-    /// event holds it. Only a mapped hardware-PMU sampling event
-    /// ([`hw::HwPerfEvent`]) returns `Some`; everything else has no ring to share.
-    fn output_ring(&self) -> Option<(usize, usize, Arc<dyn Any + Send + Sync>)> {
-        None
-    }
-
-    /// Redirect this event's `PERF_RECORD_SAMPLE` output into `ring_vaddr` /
-    /// `ring_len` (another event's ring, from its [`output_ring`](Self::output_ring)),
-    /// pinning it via `anchor` (`PERF_EVENT_IOC_SET_OUTPUT`, source side).
-    ///
-    /// The default accepts as a no-op: events that produce no ring records (the
-    /// `PERF_COUNT_SW_DUMMY` tracking event `perf record` redirects, the tracing
-    /// variants) need no actual redirect. Only [`hw::HwPerfEvent`] sampling events
-    /// override this to make their overflow handler write into the shared ring.
-    fn redirect_output(
-        &mut self,
-        _ring_vaddr: usize,
-        _ring_len: usize,
-        _anchor: Arc<dyn Any + Send + Sync>,
-    ) -> AxResult<()> {
-        Ok(())
-    }
 }
 
 /// `read_format` bit selecting `time_enabled` in `read(perf_fd)`.
@@ -207,6 +200,8 @@ pub struct PerfEvent {
     event: Mutex<Box<dyn PerfEventOps>>,
     /// Bounded non-sleeping output endpoint for software BPF events.
     irq_output: Option<bpf::BpfPerfOutput>,
+    /// Sleepable control plane, kept separate from IRQ/BPF output access.
+    control: Option<Arc<dyn PerfControl>>,
     /// Unique, stable perf-event id (see [`NEXT_PERF_EVENT_ID`]). Returned by
     /// `PERF_EVENT_IOC_ID` and used as the `read_format` `PERF_FORMAT_ID` value.
     id: u64,
@@ -225,19 +220,28 @@ impl Debug for PerfEvent {
 impl PerfEvent {
     /// Wrap a per-type perf event impl, assigning it a fresh unique id and
     /// threading that id into the inner event so its samples carry it.
-    pub fn new(mut event: Box<dyn PerfEventOps>) -> Self {
+    pub fn new(mut event: Box<dyn PerfEventOps>) -> AxResult<Self> {
         let id = NEXT_PERF_EVENT_ID.fetch_add(1, Ordering::Relaxed);
         event.set_sample_id(id);
+        event.finish_open()?;
         let irq_output = event
             .as_any_mut()
             .downcast_mut::<BpfPerfEventWrapper>()
             .map(|event| event.output_handle());
-        PerfEvent {
+        #[cfg(target_arch = "aarch64")]
+        let control = event
+            .as_any_mut()
+            .downcast_mut::<hw::HwPerfEvent>()
+            .map(|event| event.control_handle());
+        #[cfg(not(target_arch = "aarch64"))]
+        let control = None;
+        Ok(PerfEvent {
             event: Mutex::new(event),
             irq_output,
+            control,
             id,
             nonblocking: AtomicBool::new(false),
-        }
+        })
     }
 
     /// Handle `PERF_EVENT_IOC_SET_OUTPUT`: redirect this event's records into the
@@ -250,8 +254,12 @@ impl PerfEvent {
     /// -e a,b` captures both events). Sources that produce no ring records (the
     /// `PERF_COUNT_SW_DUMMY` tracking event, tracing variants) accept as a no-op.
     fn set_output(&self, arg: usize) -> AxResult<usize> {
-        // `arg == -1` detaches the output (Linux semantics); nothing to wire.
+        // `arg == -1` detaches the output and returns to the event's own ring.
         if arg as i32 == -1 {
+            #[cfg(target_arch = "aarch64")]
+            if let Some(control) = &self.control {
+                control.detach_output()?;
+            }
             return Ok(0);
         }
         // The target must be an open perf-event fd, else EINVAL (Linux behaviour
@@ -261,27 +269,47 @@ impl PerfEvent {
             .into_any_arc()
             .downcast::<PerfEvent>()
             .map_err(|_| AxError::InvalidInput)?;
-        // Pull the target's ring (a mapped HW sampling event) and point this
-        // event's output at it. If the target has no ring (e.g. it is itself a
-        // non-mmap'd or non-sampling event), there is nothing to merge into; the
-        // source keeps its own ring — `redirect_output` is then never called.
-        let target_output = target.event.lock().output_ring();
-        if let Some((ring_vaddr, ring_len, anchor)) = target_output {
-            self.event
-                .lock()
-                .redirect_output(ring_vaddr, ring_len, anchor)?;
+        if target.id == self.id {
+            return Err(AxError::InvalidInput);
         }
-        Ok(0)
+        #[cfg(not(target_arch = "aarch64"))]
+        return Err(AxError::InvalidInput);
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            let target_control = target.control.as_ref().ok_or(AxError::InvalidInput)?;
+            let target_scope = target_control.output_scope().ok_or(AxError::InvalidInput)?;
+            let output = target_control.output_ring().ok_or(AxError::InvalidInput)?;
+
+            // Events without a hardware output producer (for example the software
+            // dummy tracking event) accept the Linux ioctl as a no-op after the
+            // target fd/ring has been validated.
+            if let Some(control) = &self.control {
+                let source_scope = control.output_scope().ok_or(AxError::InvalidInput)?;
+                validate_output_redirect(self.id, target.id, source_scope, target_scope)
+                    .map_err(|_| AxError::InvalidInput)?;
+                control.redirect_output(output)?;
+            }
+            Ok(0)
+        }
     }
 }
 
 impl Pollable for PerfEvent {
     fn poll(&self) -> axpoll::IoEvents {
-        self.event.lock().poll()
+        if let Some(control) = &self.control {
+            control.poll()
+        } else {
+            self.event.lock().poll()
+        }
     }
 
     fn register(&self, context: &mut core::task::Context<'_>, events: axpoll::IoEvents) {
-        self.event.lock().register(context, events)
+        if let Some(control) = &self.control {
+            control.register(context, events);
+        } else {
+            self.event.lock().register(context, events);
+        }
     }
 }
 
@@ -295,7 +323,11 @@ impl FileLike for PerfEvent {
         // `read_format == 0` this is exactly the 8-byte bare counter value
         // (M0 behaviour). The tracing variants keep the default `read_values`
         // and propagate `Unsupported` here.
-        let values = self.event.lock().read_values()?;
+        let values = if let Some(control) = &self.control {
+            control.read_values()?
+        } else {
+            self.event.lock().read_values()?
+        };
 
         // Build the field sequence gated by `read_format`, in Linux order.
         let mut fields = [0u64; 4];
@@ -372,16 +404,28 @@ impl FileLike for PerfEvent {
         // the default and return `Unsupported`.
         const PERF_EVENT_IOC_RESET: u32 = 0x2403;
         if cmd == PERF_EVENT_IOC_RESET {
-            self.event.lock().reset()?;
+            if let Some(control) = &self.control {
+                control.reset()?;
+            } else {
+                self.event.lock().reset()?;
+            }
             return Ok(0);
         }
         let req = PerfEventIoc::try_from(cmd).map_err(|_| AxError::InvalidInput)?;
         match req {
             PerfEventIoc::Enable => {
-                self.event.lock().enable()?;
+                if let Some(control) = &self.control {
+                    control.enable()?;
+                } else {
+                    self.event.lock().enable()?;
+                }
             }
             PerfEventIoc::Disable => {
-                self.event.lock().disable()?;
+                if let Some(control) = &self.control {
+                    control.disable()?;
+                } else {
+                    self.event.lock().disable()?;
+                }
             }
             PerfEventIoc::SetBpf => {
                 let bpf_prog_fd = arg as i32;
@@ -400,7 +444,11 @@ impl FileLike for PerfEvent {
             return Err(AxError::InvalidInput);
         }
         let len = length as usize;
-        let (paddr, anchor) = self.event.lock().device_mmap(len)?;
+        let (paddr, anchor) = if let Some(control) = &self.control {
+            control.device_mmap(len)?
+        } else {
+            self.event.lock().device_mmap(len)?
+        };
         // Anchor the ringbuf pages to the VMA: the retainer keeps them alive
         // until `munmap`/exit, so closing the perf fd can't free memory the
         // user address space still maps. See `BpfPerfEventWrapper::pages`.
@@ -435,7 +483,7 @@ pub fn sys_perf_event_open(
     // SAFETY: perf_event_attr is a `repr(C)` POD; the user buffer is copied
     // bytewise above and we treat the result as the structure.
     let attr = unsafe { &*(buf.as_ptr() as *const perf_event_attr) };
-    perf_event_open(attr, pid, cpu, group_fd, flags as u32)
+    perf_event_open(attr, pid, cpu, group_fd, flags)
 }
 
 /// Dispatcher entry point for `perf_event_open(2)`. Reads the user-supplied
@@ -447,8 +495,15 @@ pub fn perf_event_open(
     pid: i32,
     cpu: i32,
     group_fd: i32,
-    flags: u32,
+    flags: u64,
 ) -> AxResult<isize> {
+    let flags = PerfOpenFlags::parse(flags).map_err(|_| AxError::InvalidInput)?;
+    if flags.contains(PerfOpenFlags::PID_CGROUP) {
+        return Err(AxError::Unsupported);
+    }
+    let target = PerfTarget::parse(pid, cpu, ax_runtime::hal::cpu_num())
+        .map_err(|_| AxError::InvalidInput)?;
+
     // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`, plus the
     // dynamic ARM PMUv3 type `hw::ARMV8_PMUV3_PERF_TYPE` the real `perf` tool
     // resolves from sysfs) must be dispatched before
@@ -458,14 +513,14 @@ pub fn perf_event_open(
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
         || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
     {
-        // Thread `pid` into the hardware path so it can choose between the
-        // system-wide M1 path (`pid <= 0`) and per-task counting (`pid > 0`).
-        // `cpu` / `group_fd` / `flags` are not consumed by the hardware path
-        // (single-CPU, no event groups), so they are intentionally dropped.
-        Box::new(hw::perf_event_open_hw(attr, pid)?)
+        Box::new(hw::perf_event_open_hw(attr, target)?)
     } else {
         let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
-            attr, pid, cpu, group_fd, flags,
+            attr,
+            pid,
+            cpu,
+            group_fd,
+            flags.bits(),
         )
         .into_ax_result()?;
         match args.type_ {
@@ -481,10 +536,10 @@ pub fn perf_event_open(
             }
         }
     };
-    let event_arc: Arc<dyn FileLike> = Arc::new(PerfEvent::new(event));
+    let event_arc: Arc<dyn FileLike> = Arc::new(PerfEvent::new(event)?);
     // Honour PERF_FLAG_FD_CLOEXEC: Linux opens the perf fd with O_CLOEXEC when
     // the caller sets this flag, otherwise the fd survives execve.
-    let cloexec = flags & PERF_FLAG_FD_CLOEXEC != 0;
+    let cloexec = flags.contains(PerfOpenFlags::FD_CLOEXEC);
     let fd = add_file_like(event_arc.clone(), cloexec)?;
 
     PERF_FILE
@@ -505,6 +560,8 @@ static PERF_FILE: LazyInit<SpinNoIrq<HashMap<usize, alloc::sync::Weak<dyn FileLi
 /// Initialize the perf-event runtime: build the fd→event lookup table.
 pub fn perf_event_init() {
     PERF_FILE.init_once(SpinNoIrq::new(HashMap::new()));
+    #[cfg(target_arch = "aarch64")]
+    cpu_worker::init();
 }
 
 /// Implementation of `bpf_perf_event_output` helper: walk the fd→event map,

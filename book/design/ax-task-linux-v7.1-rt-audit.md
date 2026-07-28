@@ -168,9 +168,41 @@ wake target. Serial, block, network, AxVM timer, task-work, evdev, KPU, and TPU
 workers all branch `ConsumedPending` directly to service work; token-bearing
 results park on generation ownership and then use the common detach/quiesce
 boundary. Starry `IrqNotify` uses the same cell instead of publishing an
-`AtomicPtr<ThreadWakeHandle>`. The remaining raw pointer in the PMU sampling
-registry is a separate perf-owner finding: its owner-CPU unregister and IRQ
-grace period must be completed before the strong `IrqNotify` owner is dropped.
+`AtomicPtr<ThreadWakeHandle>`.
+
+Starry perf now follows Linux's task-context versus CPU-context split. The
+`PerfTarget` parser preserves the full syscall-width flag word, maps `pid == 0`
+to the current task, and accepts a CPU target only for `pid == -1 && cpu >= 0`.
+Task events carry generation-bearing scheduler ownership; CPU events execute
+configure, enable, disable, read, reset, and unregister through one fixed
+worker on the selected CPU. The direct local fast path pins the CPU and masks
+local IRQs before validating ownership, so migration cannot occur between the
+check and a PMU sysreg write.
+
+The sampling registry is per CPU and generation checked. A slot owns its ring
+and `IrqNotify` references by value; teardown masks overflow, stops the
+counter, clears pending state, removes the exact generation under local IRQ
+exclusion, and only then releases output storage. Task-bound events use a
+`Detached -> Arming -> Registered -> Running -> StopRequested -> Stopping`
+lifecycle. A close request upgrades an in-flight disable, switch-out and the
+fixed worker claim one exact generation, and an architecture stop failure
+returns the same generation to `StopRequested` for a bounded later retry.
+
+Output ownership mirrors the ordering in Linux
+`perf_event_set_output()` and `perf_output_begin()`, without importing Linux's
+callback-shaped ring API. An event retains its own mmap output weakly while the
+VMA retains the complete ring object. Redirects retain a typed output strongly,
+and `SET_OUTPUT(-1)` removes that redirect. Self, cross-task, and cross-CPU
+relationships are rejected; a source with its own active mmap cannot be
+redirected. All overflow and side-band producers share one non-blocking CAS
+gate in the output object. A contender drops and accounts the record rather
+than spinning in hard IRQ, so inherited or redirected writers cannot race
+`data_head` from different CPUs.
+
+The original aarch64 `perf-hw-freq` stale-wake panic remains the end-to-end
+regression. Deterministic host tests cover target parsing, registry generation
+reuse, close versus switch-out, failed owner-stop retry, redirect/detach
+selection, shared output lifetime, and bounded multi-producer admission.
 
 ## Completion rules
 
