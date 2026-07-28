@@ -26,7 +26,6 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-mod adapter;
 mod device;
 mod error;
 mod factory;
@@ -42,11 +41,6 @@ mod service;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
-#[cfg(target_arch = "aarch64")]
-pub use adapter::{
-    Aarch64VtimerBackendKey, Aarch64VtimerFactory, InterruptInjectionPort,
-    InterruptInjectionPortKey,
-};
 pub use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Device,
     MmioDeviceAdapter, Port, PortDeviceAdapter, SysRegAddr, SysRegDeviceAdapter,

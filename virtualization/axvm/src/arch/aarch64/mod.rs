@@ -37,6 +37,7 @@ mod npt;
 #[path = "../../architecture/sysreg.rs"]
 mod sysreg;
 mod vm;
+mod vtimer;
 
 pub use capabilities::{host_fdt_bootarg, host_phys_to_virt};
 use cpu_up::{CpuUpExit, CpuUpOps};

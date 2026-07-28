@@ -315,7 +315,7 @@ fn register_device_factories(registry: &mut DeviceFactoryRegistry) -> DeviceMana
     registry.register(Arc::new(Aarch64GicRedistributorFactory))?;
     registry.register(Arc::new(Aarch64GicDistributorFactory))?;
     registry.register(Arc::new(Aarch64GitsFactory))?;
-    registry.register(Arc::new(axdevice::Aarch64VtimerFactory))
+    registry.register(Arc::new(super::vtimer::Aarch64VtimerFactory))
 }
 
 fn guest_page_table_levels(vcpu_mappings: &[(usize, Option<usize>, usize)]) -> AxVmResult<usize> {

@@ -22,24 +22,30 @@
 //!
 //! The crate contains the following key components:
 //!
-//! - [`BaseDeviceOps`]: The core trait that all emulated devices must implement.
+//! - [`Device`]: The unified V3 device trait used by the runtime hot path.
+//! - [`DeviceAccess`]: The access-scoped capability context passed to devices.
+//! - [`BaseDeviceOps`]: The legacy per-bus trait kept for existing concrete
+//!   devices and wrapped by the adapter types during migration.
 //! - [`EmuDeviceType`]: Enumeration representing the type of emulator devices
 //!   (re-exported from `axvmconfig` crate).
 //! - [`EmulatedDeviceConfig`]: Configuration structure for device initialization.
-//! - Trait aliases for specific device types:
+//! - Legacy trait aliases for specific old-style device types:
 //!   - [`BaseMmioDeviceOps`]: For MMIO (Memory-Mapped I/O) devices.
 //!   - [`BaseSysRegDeviceOps`]: For system register devices.
 //!   - [`BasePortDeviceOps`]: For port I/O devices.
 //!
 //! # Usage
 //!
-//! To implement a custom emulated device, you need to implement the [`BaseDeviceOps`]
-//! trait with the appropriate address range type:
+//! New emulated devices should implement [`Device`] directly and receive all
+//! sensitive runtime abilities through [`DeviceAccess`]. Existing per-bus
+//! devices can continue to implement [`BaseDeviceOps`] and be wrapped by
+//! [`MmioDeviceAdapter`], [`SysRegDeviceAdapter`], or [`PortDeviceAdapter`].
 //!
 //! ```rust,ignore
-//! use axdevice_base::{BaseDeviceOps, EmuDeviceType};
-//! use axaddrspace::{GuestPhysAddrRange, device::AccessWidth};
-//! use axdevice_base::DeviceResult;
+//! use axdevice_base::{
+//!     AccessWidth, BaseDeviceOps, BusAccess, BusResponse, Device, DeviceAccess,
+//!     DeviceResult, EmuDeviceType, GuestPhysAddrRange, Resource,
+//! };
 //!
 //! struct MyDevice {
 //!     base_addr: usize,
@@ -172,11 +178,12 @@ pub struct EmulatedDeviceConfig {
     pub cfg_list: Vec<usize>,
 }
 
-/// The core trait that all emulated devices must implement.
+/// Legacy per-bus trait for existing concrete emulated devices.
 ///
-/// This trait defines the common interface for all virtual devices in the hypervisor.
-/// It provides methods for device identification, address range querying, and
-/// handling read/write operations from the guest.
+/// New framework code should implement [`Device`] directly. This trait remains
+/// because several existing device crates still expose MMIO/port/sysreg-specific
+/// `handle_read` / `handle_write` methods; adapter types wrap those devices into
+/// the unified [`Device`] runtime model.
 ///
 /// # Type Parameters
 ///
@@ -596,9 +603,9 @@ define_grant!(
 ///
 /// A [`BusRouter`] creates this context immediately before calling
 /// [`Device::access`] and drops it before returning to the architecture exit
-/// handler. The context currently exposes only the routed device identity;
-/// later stages add narrowly scoped capabilities when they have real device
-/// consumers.
+/// handler. Sensitive abilities such as guest-memory DMA, timer scheduling,
+/// vCPU wake, and VM stop requests are denied by default and become available
+/// only when the current device presents the matching registration-time grant.
 pub trait DeviceAccess {
     /// Returns the identity of the device currently handling this access.
     fn device_id(&self) -> DeviceId;

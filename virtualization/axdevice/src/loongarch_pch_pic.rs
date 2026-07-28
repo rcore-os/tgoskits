@@ -274,12 +274,8 @@ fn read_byte(state: &PchPicState, offset: usize) -> usize {
         };
     }
 
-    match offset {
-        _ => {
-            let shift = (offset & 0x3) * 8;
-            (read_dword(state, offset & !0x3) >> shift) & 0xff
-        }
-    }
+    let shift = (offset & 0x3) * 8;
+    (read_dword(state, offset & !0x3) >> shift) & 0xff
 }
 
 fn write_byte(state: &mut PchPicState, offset: usize, val: u8) {
@@ -300,15 +296,11 @@ fn write_byte(state: &mut PchPicState, offset: usize, val: u8) {
         return;
     }
 
-    match offset {
-        _ => {
-            let aligned = offset & !0x3;
-            let shift = (offset & 0x3) * 8;
-            let old = read_dword(state, aligned);
-            let new = (old & !(0xff << shift)) | ((val as usize) << shift);
-            write_dword(state, aligned, new as u32);
-        }
-    }
+    let aligned = offset & !0x3;
+    let shift = (offset & 0x3) * 8;
+    let old = read_dword(state, aligned);
+    let new = (old & !(0xff << shift)) | ((val as usize) << shift);
+    write_dword(state, aligned, new as u32);
 }
 
 fn read_split_bytes(state: &PchPicState, offset: usize, len: usize) -> usize {
