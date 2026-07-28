@@ -8,7 +8,7 @@ use core::{
     iter::zip,
     mem::MaybeUninit,
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use ax_kernel_guard::NoPreempt;
@@ -310,7 +310,7 @@ impl Drop for ScopeInner {
 /// without waiting in a non-preemptible context.
 pub struct ScopeCell {
     scope: Scope,
-    active_cpus: AtomicUsize,
+    scheduler_active: AtomicBool,
 }
 
 /// A bounded scope-cell lease could not be acquired immediately.
@@ -335,7 +335,7 @@ impl ScopeCell {
     pub fn from_scope(scope: Scope) -> Self {
         Self {
             scope,
-            active_cpus: AtomicUsize::new(0),
+            scheduler_active: AtomicBool::new(false),
         }
     }
 
@@ -367,8 +367,8 @@ impl ScopeCell {
         })
     }
 
-    /// Attempts to install this scope for the pinned CPU and retain one shared
-    /// lease.
+    /// Attempts to install this scope for the pinned CPU and retain its sole
+    /// scheduler lease.
     ///
     /// This operation does not enter a new IRQ or preemption context, so it is
     /// suitable for a scheduler switch-in hook that already owns its CPU-local
@@ -376,8 +376,8 @@ impl ScopeCell {
     ///
     /// # Safety
     ///
-    /// On success, the caller must keep this `ScopeCell` alive, retain the
-    /// current CPU pin, and invoke
+    /// Only one CPU may activate a cell at a time. On success, the caller must
+    /// keep this `ScopeCell` alive, retain the current CPU pin, and invoke
     /// [`deactivate_pinned`](Self::deactivate_pinned) exactly once before
     /// another scope is installed or the cell can be dropped. The scheduler
     /// must run both hooks while holding its switch baton.
@@ -465,10 +465,8 @@ impl ScopeCell {
             return false;
         }
         if self
-            .active_cpus
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                active.checked_add(1)
-            })
+            .scheduler_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             // SAFETY: this function acquired exactly one shared count above.
@@ -479,17 +477,15 @@ impl ScopeCell {
     }
 
     fn release_active_lease(&self) {
-        self.active_cpus
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                active.checked_sub(1)
-            })
+        self.scheduler_active
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
             .expect("scope deactivation without a matching activation");
         // SAFETY: every active identity owns exactly one shared count.
         unsafe { self.scope.inner().unlock_shared() };
     }
 
     fn try_withdraw_active_lease_for_writer(&self, writer_pending: impl FnOnce()) -> bool {
-        if self.active_cpus.load(Ordering::Acquire) != 1
+        if !self.scheduler_active.load(Ordering::Acquire)
             || !self
                 .scope
                 .inner()
@@ -500,8 +496,8 @@ impl ScopeCell {
         }
         writer_pending();
         if self
-            .active_cpus
-            .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
+            .scheduler_active
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             // SAFETY: this function atomically replaced the sole shared lease
@@ -519,8 +515,8 @@ impl ScopeCell {
     }
 
     fn restore_active_lease_from_writer(&self, pin: &CpuPin<'_>) {
-        self.active_cpus
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        self.scheduler_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .expect("active mutation restore found an unexpected activation");
         // SAFETY: the exclusive lease keeps the scope stable while the pinned
         // identity is restored. Downgrading publishes its shared lease before
@@ -568,9 +564,8 @@ impl Default for ScopeCell {
 
 impl Drop for ScopeCell {
     fn drop(&mut self) {
-        assert_eq!(
-            self.active_cpus.load(Ordering::Acquire),
-            0,
+        assert!(
+            !self.scheduler_active.load(Ordering::Acquire),
             "cannot drop a scope with live scheduler activations"
         );
         assert!(

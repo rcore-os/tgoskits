@@ -170,7 +170,6 @@ test and a review of the owning state machine before implementation.
 
 | Area | Open question or defect | Linux v7.1 reference | Required next evidence |
 | --- | --- | --- | --- |
-| Scope-local contention | The low-level lease API is bounded, but Starry's task-context mutation wrapper retries `ScopeCellBusy` with repeated yields. A retained remote reader has no queued waiter, PI donation, interruption, or deadline. | PREEMPT_RT `local_lock` task-context contention blocks through an RT mutex instead of polling with preemption disabled. | Model the outer task-context acquisition as a waitable ownership transition and test remote-reader release, interruption, and cancellation. Keep `scope-local` itself non-sleeping. |
 | IRQ waiter owner lifetime | `IrqWaitRegistration` has generation and in-flight notification grace, but Starry `IrqNotify` still relies on a documented unregister/quiesce-before-drop obligation rather than an owner type that makes the teardown sequence unavoidable. | IRQ action removal revokes publication and synchronizes in-flight handlers before releasing storage. | Trace every retained producer through drop, then add a concurrent notify-versus-owner-drop test. If a producer can outlive the cell, replace the contract-only API with an owning registration/teardown guard. |
 
 ## Confirmed red evidence
@@ -316,10 +315,26 @@ low-level component only performs bounded lease transitions while migration is
 disabled, while Starry serializes task-context resource-scope reads and writes
 with a PI mutex before entering the pinned section. Upgrading the current
 activation is one `shared -> exclusive` compare-exchange, so writer intent is
-visible before the active lease is withdrawn. A retained remote read or a
-second CPU activation returns `ScopeCellBusy`; it cannot make the caller spin
-or panic with IRQs disabled. The deterministic regression exercises both the
-old admission window and a read-then-mutate self-deadlock.
+visible before the active lease is withdrawn.
+
+The follow-up ownership audit corrected an earlier assumption in this ledger.
+Linux v7.1 RT `__local_lock()` first calls `migrate_disable()` and
+`migrate_disable_switch()` pins a preempted task to its current runqueue; it
+does not permit one task-local owner to remain activated on two CPUs and then
+wait for itself. Starry's ordinary remote scope reads all hold the same outer
+PI mutex, so after the current task acquires that mutex a retained ordinary
+reader can no longer explain `ScopeCellBusy`. The only remaining causes are a
+duplicate scheduler activation or a caller bypassing `ThreadScope`.
+
+`ScopeCell` therefore admits exactly one scheduler activation and rejects a
+second CPU before publishing its per-CPU pointer. Starry no longer treats
+`ScopeCellBusy` as a condition to poll with repeated yields: the outer PI mutex
+handles legal task-context contention, and a failed bounded upgrade is an
+explicit scheduler-ownership invariant violation. The deterministic red test
+observed the old implementation publish the same task-owned scope on CPU 1
+while CPU 0 still owned it; the new implementation reports
+`ScopeCellBusy` without publishing on CPU 1, and the sole activation upgrades
+and unwinds without losing its lease.
 
 IRQ-visible waiters now distinguish `Attached`, `Notifying`, and `Detached`
 for each registration generation. Removing the cell pointer is only the
