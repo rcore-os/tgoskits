@@ -761,11 +761,15 @@ pub struct DwcEventHandler {
     _dwc: Dwc3Regs,
 }
 impl EventHandlerOp for DwcEventHandler {
-    fn handle_event(&self) -> Event {
-        // let cnt = self.dwc.globals().gevnt[0].count.get();
-        // debug!("DWC3 Event Handler: GEVNT[0] COUNT = {}", cnt);
-        // self.dwc.globals().gevnt[0].count.set(0);
+    fn acknowledge_irq(&self) -> bool {
+        self.xhci.acknowledge_irq()
+    }
 
-        self.xhci.handle_event()
+    fn drain_event(&self) -> Event {
+        self.xhci.drain_event()
+    }
+
+    fn rearm_irq(&self) {
+        self.xhci.rearm_irq()
     }
 }

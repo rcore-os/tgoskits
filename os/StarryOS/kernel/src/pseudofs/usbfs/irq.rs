@@ -176,8 +176,7 @@ pub(super) fn init_globals(manager: Arc<UsbFsManager>, pending_slots: Vec<Pendin
                     irq, slot.bus_num, slot.device_id
                 );
                 let request = IrqRequest::new(move |_ctx| {
-                    usbfs_irq_handler_by_slot(slot_index);
-                    ax_runtime::hal::irq::IrqReturn::Handled
+                    usb_irq_return(usbfs_irq_handler_by_slot(slot_index))
                 })
                 .share_mode(ShareMode::Shared)
                 .auto_enable(AutoEnable::No);
@@ -310,14 +309,35 @@ pub(super) fn bootstrap_device(device_id: RDriveDeviceId) {
     }
 }
 
-fn usbfs_irq_handler_by_slot(slot_index: usize) {
+fn usbfs_irq_handler_by_slot(slot_index: usize) -> bool {
     let Some(registry) = USBFS_IRQ_REGISTRY.get() else {
-        return;
+        return false;
     };
     let Some(slot) = registry.slot(slot_index) else {
-        return;
+        return false;
     };
-    usbfs_event_handler(slot);
+    let _permit = match slot.event_gate.try_enter() {
+        UsbEventEntry::Acquired(permit) => permit,
+        UsbEventEntry::Busy => {
+            defer_event_drain(slot);
+            return false;
+        }
+        UsbEventEntry::Inactive => return false,
+    };
+    if slot.handler.acknowledge_irq() {
+        defer_event_drain(slot);
+        true
+    } else {
+        false
+    }
+}
+
+fn usb_irq_return(handled: bool) -> ax_runtime::hal::irq::IrqReturn {
+    if handled {
+        ax_runtime::hal::irq::IrqReturn::Handled
+    } else {
+        ax_runtime::hal::irq::IrqReturn::Unhandled
+    }
 }
 
 fn usbfs_event_handler(slot: &UsbIrqSlot) {
@@ -333,7 +353,8 @@ fn usbfs_event_handler(slot: &UsbIrqSlot) {
         return;
     }
 
-    let batch = drain_event_batch(|| slot.handler.handle());
+    let _acknowledged = slot.handler.acknowledge_irq();
+    let batch = drain_event_batch(|| slot.handler.drain_event());
 
     let has_topology_event = batch.port_events > 0 || batch.stopped_events > 0;
     let has_usb_activity = has_topology_event || batch.transfer_events > 0;
@@ -348,6 +369,8 @@ fn usbfs_event_handler(slot: &UsbIrqSlot) {
     }
     if batch.exhausted {
         defer_event_drain(slot);
+    } else if slot.active() {
+        slot.handler.rearm_irq();
     }
 }
 
@@ -497,5 +520,17 @@ mod tests {
         assert_eq!(calls, USBFS_EVENT_BATCH_LIMIT);
         assert_eq!(batch.transfer_events, USBFS_EVENT_BATCH_LIMIT);
         assert!(batch.exhausted);
+    }
+
+    #[test]
+    fn shared_irq_reports_only_device_owned_interrupts_as_handled() {
+        assert_eq!(
+            usb_irq_return(false),
+            ax_runtime::hal::irq::IrqReturn::Unhandled
+        );
+        assert_eq!(
+            usb_irq_return(true),
+            ax_runtime::hal::irq::IrqReturn::Handled
+        );
     }
 }

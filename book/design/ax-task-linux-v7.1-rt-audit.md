@@ -239,6 +239,33 @@ regression closes the candidate first and proves the child falls back to an
 open reaper. This closes the selection-to-publication window that Linux avoids
 by doing reaper selection and list splicing under the same `tasklist_lock`.
 
+The branch-touched USB hosts now make the PREEMPT_RT execution boundary
+explicit. Linux v7.1 `xhci_irq()`, `ehci_irq()`, and
+`dwc2_handle_common_intr()` combine status acknowledgement with event
+processing because the RT IRQ core force-threads eligible handlers. TGOSKits
+does not yet have that generic forced-threading layer, so CrabUSB exposes
+bounded `acknowledge_irq()` separately from task-context `drain_event()` and
+`rearm_irq()`. Starry's shared hard-IRQ callback only claims the device status,
+masks the source, and publishes an `IrqWaitCell` notification. A fixed-batch
+worker owns command, transfer, port, and topology processing.
+
+Controller enable/disable and deferred rearm share one task-context
+`ControllerIrqState`; hard acknowledgement observes only its atomic enabled
+publication and never acquires the control gate. This prevents a stale worker
+from reopening a disabled controller while preserving bounded hard-IRQ work.
+The xHCI handler additionally owns a non-blocking register gate: hard IRQ uses
+`try_lock`, and every safe access to its register and event-ring `UnsafeCell`s
+requires the resulting guard.
+The USBFS lifecycle gate rejects new work before IRQ callback removal and waits
+for an in-flight worker before relinquishing callback ownership; the stable
+registry slot itself remains allocated. Shared IRQ callbacks return `Unhandled`
+when the controller did not claim the status.
+The deterministic regressions
+`stale_task_rearm_cannot_reenable_a_disabled_controller` and
+`hard_irq_ack_preserves_controller_disable` reproduce the two controller
+shutdown races, while USBFS gate tests cover teardown quiescence and fixed
+batch exhaustion.
+
 Starry user waits now have one typed terminal boundary:
 `Ready / Interrupted / TimedOut`. The old executor park callback treated a
 sticky interruption only as a reason to yield. A pending future that did not
