@@ -338,7 +338,7 @@ fn do_execve(
     //     no longer mapped.
     proc_data.signal.reset_actions_for_exec();
     thr.signal().reset_stack();
-    proc_data.posix_timers.clear();
+    proc_data.posix_timers().clear();
 
     // Pointers cached in the thread that referenced user memory in the
     // OLD aspace are now dangling. Clear them so subsequent syscalls and

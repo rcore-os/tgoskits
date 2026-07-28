@@ -336,7 +336,7 @@ fn apply_scheduler_update(
     let task = get_task(scheduler_tid(pid)?)?;
     let caller = current_user_task().as_thread().cred();
     let (rlimit_rtprio, rlimit_nice) = {
-        let limits = task.as_thread().proc_data.rlim.read();
+        let limits = task.as_thread().proc_data.rlimits();
         (limits[RLIMIT_RTPRIO].current, limits[RLIMIT_NICE].current)
     };
     check_policy_permission(
@@ -635,7 +635,7 @@ fn check_setpriority_permission(task: &UserTaskRef, nice: i32) -> AxResult<()> {
         return Err(AxError::OperationNotPermitted);
     }
     if nice < task.as_thread().nice() {
-        let rlimit_nice = task.as_thread().proc_data.rlim.read()[RLIMIT_NICE]
+        let rlimit_nice = task.as_thread().proc_data.rlimits()[RLIMIT_NICE]
             .current
             .min(40);
         let lowest_allowed = 20_i64 - rlimit_nice as i64;

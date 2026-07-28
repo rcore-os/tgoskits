@@ -182,7 +182,7 @@ pub fn sys_getitimer(which: i32, value: *mut itimerval) -> AxResult<isize> {
     let (it_interval, it_value) = curr
         .as_thread()
         .proc_data
-        .interval_timers
+        .interval_timers()
         .lock()
         .get_itimer(ty);
 
@@ -221,7 +221,7 @@ pub fn sys_setitimer(
     let proc_data = &curr.as_thread().proc_data;
     let pid = proc_data.proc.pid();
     let outcome = proc_data
-        .interval_timers
+        .interval_timers()
         .lock()
         .set_itimer(ty, interval, remained);
     let old = outcome.apply(crate::task::AlarmTarget::Process(pid));
@@ -262,11 +262,11 @@ pub fn sys_timer_create(
 
     let id = thr
         .proc_data
-        .posix_timers
+        .posix_timers()
         .create(clock_id, notify, signo, sival)?;
 
     if let Err(e) = timerid.vm_write(id) {
-        thr.proc_data.posix_timers.delete(id);
+        thr.proc_data.posix_timers().delete(id);
         return Err(e.into());
     }
     Ok(0)
@@ -285,7 +285,7 @@ pub fn sys_timer_settime(
 
     let (old_interval, old_remaining) = thr
         .proc_data
-        .posix_timers
+        .posix_timers()
         .settime(
             thr.proc_data.proc.pid(),
             timerid,
@@ -331,7 +331,7 @@ pub fn sys_timer_gettime(
 
     let (interval, remaining) = thr
         .proc_data
-        .posix_timers
+        .posix_timers()
         .gettime(timerid)
         .map_err(|_| AxError::InvalidInput)?;
 
@@ -361,7 +361,7 @@ pub fn sys_timer_delete(timerid: __kernel_timer_t) -> AxResult<isize> {
     let curr = current_user_task();
     let thr = curr.as_thread();
 
-    if thr.proc_data.posix_timers.delete(timerid) {
+    if thr.proc_data.posix_timers().delete(timerid) {
         Ok(0)
     } else {
         Err(AxError::InvalidInput)

@@ -405,7 +405,7 @@ pub fn check_signals(
 
 fn queue_rttime_limit_signal(thr: &Thread) {
     let (soft_limit_us, hard_limit_us) = {
-        let limits = thr.proc_data.rlim.read();
+        let limits = thr.proc_data.rlimits();
         let limit = &limits[RLIMIT_RTTIME];
         (limit.current, limit.max)
     };
