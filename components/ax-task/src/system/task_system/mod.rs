@@ -41,7 +41,7 @@ use crate::{
     TaskError, TaskSystemConfig, ThreadCore, ThreadExtension, ThreadExtensionBorrow,
     ThreadExtensionLease, ThreadExtensionView, ThreadHandle, ThreadId, ThreadLifecycle,
     ThreadResources, ThreadRuntimeSnapshot, ThreadSpec, ThreadState, ThreadWakeHandle,
-    inbox::{InboxKind, InboxMessage, PublishResult, SchedulerInbox},
+    inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, IrqTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,
     runtime::{ContextThreadBinding, RuntimeStatus, ThreadIdentityV1, task_runtime},
@@ -52,6 +52,11 @@ use crate::{
 struct UnpublishedThreadGuard<'system> {
     system: &'system TaskSystem,
     record: Option<DetachedThreadRecord>,
+}
+
+struct OwnerNext {
+    core: Arc<ThreadCore>,
+    outgoing_migration_target: Option<CpuId>,
 }
 
 impl<'system> UnpublishedThreadGuard<'system> {
@@ -844,6 +849,109 @@ impl TaskSystem {
         Ok(RemoteWakeDrain { drained, pending })
     }
 
+    /// Reconciles task metadata written by a remote affinity setter with the
+    /// physical placement owned by this CPU.
+    ///
+    /// The affinity mask may be updated under the stable thread lock from any
+    /// CPU. Runqueue membership and switch-tail state are different: only the
+    /// CPU named by [`SchedulerPlacement`] may mutate them. This is the local
+    /// equivalent of Linux taking a task's `pi_lock` together with its owning
+    /// runqueue lock before moving a queued task.
+    fn reconcile_owner_affinity_update(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        core: &Arc<ThreadCore>,
+    ) -> Result<(), TaskError> {
+        let owner = cpu.owner();
+        let mut sched = core.sched().lock();
+        let running_cpu = sched.placement.running_cpu();
+        let queued_cpu = sched.placement.queued_cpu();
+        let on_cpu = sched.placement.on_cpu();
+        let migration_target = sched.placement.migration_target();
+        let physical_owner = running_cpu
+            .or(queued_cpu)
+            .or(on_cpu)
+            .or(migration_target)
+            .or(sched.deadline_bandwidth_cpu);
+        let target = if sched.affinity.contains(owner) {
+            owner
+        } else {
+            self.select_allowed_online_cpu(&sched.affinity, Some(owner))
+                .ok_or(TaskError::InvalidConfiguration)?
+        };
+        core.set_target_cpu(target);
+
+        if let Some(physical_owner) = physical_owner
+            && physical_owner != owner
+        {
+            drop(sched);
+            return self.publish_owner_affinity_retry(core, physical_owner, target);
+        }
+
+        // A switch handoff owns both the old stack and its committed
+        // destination until switch tail clears `on_cpu`. Re-publish the
+        // control request rather than rewriting that destination behind the
+        // already staged handoff.
+        if on_cpu == Some(owner) && running_cpu.is_none() {
+            drop(sched);
+            self.publish_owner_affinity_retry(core, owner, target)?;
+            cpu.request_scheduler_work();
+            return Ok(());
+        }
+
+        if queued_cpu == Some(owner) {
+            if target == owner {
+                sched.placement.set_migration_target(None)?;
+                return Ok(());
+            }
+            let queued = cpu
+                .as_mut()
+                .fields_mut()
+                .run_queue
+                .dequeue(core.id())
+                .ok_or(TaskError::NotReady)?;
+            Self::detach_owner_deadline_bandwidth_locked(core, &mut sched, cpu.as_mut())?;
+            sched.entity = queued.entity;
+            if !sched.is_pi_boosted() {
+                sched.base_entity = queued.entity;
+            }
+            sched.placement.set_migration_target(Some(target))?;
+            sched.placement.set_queued_cpu(None)?;
+            drop(sched);
+            self.publish_owner_cpu_load_summary(cpu.as_mut());
+            return self.publish_owner_migration(core, target, owner, target);
+        }
+
+        if running_cpu == Some(owner) {
+            if cpu.current() != Some(core.id()) {
+                return Err(TaskError::InvalidConfiguration);
+            }
+            sched
+                .placement
+                .set_migration_target((target != owner).then_some(target))?;
+            drop(sched);
+            if target != owner {
+                cpu.request_reschedule();
+            }
+            self.publish_owner_cpu_load_summary(cpu.as_mut());
+            return Ok(());
+        }
+
+        if migration_target == Some(owner) {
+            if target != owner {
+                sched.placement.set_migration_target(Some(target))?;
+                drop(sched);
+                return self.publish_owner_migration(core, target, owner, target);
+            }
+            return Ok(());
+        }
+
+        if sched.deadline_bandwidth_cpu == Some(owner) && target != owner {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        Ok(())
+    }
+
     /// Applies a bounded batch of owner-CPU effective-policy updates.
     pub fn drain_policy_updates(
         &self,
@@ -868,7 +976,8 @@ impl TaskSystem {
             DetachedPayloadKind::SchedulerDelivery,
         );
         while let Some(message) = messages.next() {
-            if message.is_balance_request() {
+            let operation = message.operation();
+            if operation == InboxOperation::BalanceRequest {
                 let source = message
                     .source_cpu()
                     .ok_or(TaskError::InvalidConfiguration)?;
@@ -891,6 +1000,14 @@ impl TaskSystem {
                     BalanceReason::IdlePull,
                 )?;
                 continue;
+            }
+            if matches!(
+                operation,
+                InboxOperation::RemoteWake
+                    | InboxOperation::BalanceRequest
+                    | InboxOperation::Reclaim
+            ) {
+                return Err(TaskError::InvalidConfiguration);
             }
             if message.payload() == 0 {
                 continue;
@@ -922,7 +1039,23 @@ impl TaskSystem {
             let target = message
                 .target_cpu()
                 .ok_or(TaskError::InvalidConfiguration)?;
-            if source == target {
+            if operation == InboxOperation::AffinityUpdate {
+                if source != owner {
+                    return Err(TaskError::CpuOwnerMismatch {
+                        expected: source.as_u32(),
+                        actual: owner.as_u32(),
+                    });
+                }
+                self.reconcile_owner_affinity_update(cpu.as_mut(), &core)?;
+                continue;
+            }
+            if operation == InboxOperation::PolicyUpdate {
+                if source != owner || target != owner {
+                    return Err(TaskError::CpuOwnerMismatch {
+                        expected: source.as_u32(),
+                        actual: owner.as_u32(),
+                    });
+                }
                 let cleanup_deadline_member = {
                     let sched = core.sched().lock();
                     sched.deadline_cleanup_pending
@@ -937,27 +1070,41 @@ impl TaskSystem {
                     continue;
                 }
             }
-            if source != target {
-                if target == owner {
-                    let latest_target = core.sched().lock().placement.migration_target();
-                    if latest_target != Some(target) {
-                        if let Some(latest_target) = latest_target {
-                            // A second affinity update can overtake an already
-                            // published transfer. Forward the detached message
-                            // to the newest target; the embedded node is free
-                            // again after this inbox batch detached it.
-                            core.set_target_cpu(latest_target);
-                            self.publish_owner_migration(
-                                &core,
-                                latest_target,
-                                owner,
-                                latest_target,
-                            )?;
-                        }
+            if operation == InboxOperation::Migration {
+                if source == target {
+                    return Err(TaskError::InvalidConfiguration);
+                }
+                if target != owner {
+                    return Err(TaskError::CpuOwnerMismatch {
+                        expected: target.as_u32(),
+                        actual: owner.as_u32(),
+                    });
+                }
+                let forward_target = {
+                    let mut sched = core.sched().lock();
+                    let Some(committed_target) = sched.placement.migration_target() else {
                         continue;
-                    }
-                    {
-                        let mut sched = core.sched().lock();
+                    };
+                    let latest_target =
+                        if committed_target == owner && sched.affinity.contains(owner) {
+                            owner
+                        } else if committed_target != owner
+                            && sched.affinity.contains(committed_target)
+                            && self
+                                .cpu_remotes
+                                .get(committed_target.as_usize())
+                                .is_some_and(|remote| remote.is_online())
+                        {
+                            committed_target
+                        } else {
+                            self.select_allowed_online_cpu(&sched.affinity, Some(owner))
+                                .ok_or(TaskError::InvalidConfiguration)?
+                        };
+                    if latest_target != owner {
+                        sched.placement.set_migration_target(Some(latest_target))?;
+                        core.set_target_cpu(latest_target);
+                        Some(latest_target)
+                    } else {
                         if sched.lifecycle.state() != ThreadState::Ready
                             || sched.placement.queued_cpu().is_some()
                             || sched.placement.running_cpu().is_some()
@@ -967,63 +1114,22 @@ impl TaskSystem {
                         }
                         sched.placement.set_migration_target(None)?;
                         core.set_target_cpu(owner);
+                        None
                     }
+                };
+                if let Some(forward_target) = forward_target {
+                    self.publish_owner_migration(&core, forward_target, owner, forward_target)?;
+                } else {
                     self.enqueue_owner_thread(
                         cpu.as_mut(),
                         Arc::clone(&core),
                         now_ns,
                         EnqueueReason::Migrated,
                     )?;
-                } else if source == owner {
-                    let (queued_cpu, running_cpu, lifecycle, latest_target) = {
-                        let sched = core.sched().lock();
-                        (
-                            sched.placement.queued_cpu(),
-                            sched.placement.running_cpu(),
-                            sched.lifecycle.state(),
-                            sched.placement.migration_target(),
-                        )
-                    };
-                    let Some(latest_target) = latest_target else {
-                        continue;
-                    };
-                    if queued_cpu == Some(owner) {
-                        let queued = cpu
-                            .as_mut()
-                            .fields_mut()
-                            .run_queue
-                            .dequeue(core.id())
-                            .ok_or(TaskError::NotReady)?;
-                        Self::detach_owner_deadline_bandwidth(&core, cpu.as_mut())?;
-                        {
-                            let mut sched = core.sched().lock();
-                            sched.entity = queued.entity;
-                            if !sched.is_pi_boosted() {
-                                sched.base_entity = queued.entity;
-                            }
-                            sched.placement.set_queued_cpu(None)?;
-                            core.set_target_cpu(latest_target);
-                        }
-                        self.publish_owner_cpu_load_summary(cpu.as_mut());
-                        self.publish_owner_migration(&core, latest_target, source, latest_target)?;
-                    } else if running_cpu == Some(owner) {
-                        cpu.request_reschedule();
-                    } else if matches!(
-                        lifecycle,
-                        ThreadState::New
-                            | ThreadState::Parking
-                            | ThreadState::Blocked
-                            | ThreadState::Waking
-                    ) {
-                        core.set_target_cpu(latest_target);
-                        core.sched().lock().placement.set_migration_target(None)?;
-                    } else {
-                        core.set_target_cpu(latest_target);
-                        self.publish_owner_migration(&core, latest_target, source, latest_target)?;
-                    }
                 }
                 continue;
             }
+            debug_assert_eq!(operation, InboxOperation::PolicyUpdate);
             let (queued_cpu, running_cpu, policy_generation, cbs_borrowed) = {
                 let sched = core.sched().lock();
                 (
@@ -1409,7 +1515,11 @@ impl TaskSystem {
                 EnqueueReason::Preempted,
             )?;
         }
-        let next_core = self.pick_owner_next(cpu.as_mut(), now_ns, previous)?;
+        let next = self.pick_owner_next(cpu.as_mut(), now_ns, previous)?;
+        if let Some(target) = next.outgoing_migration_target {
+            migration_target = Some(target);
+        }
+        let next_core = next.core;
         Self::stage_switch_handoff(
             cpu.as_mut(),
             previous,
@@ -1488,7 +1598,11 @@ impl TaskSystem {
                 EnqueueReason::Preempted,
             )?;
         }
-        let next_core = self.pick_owner_next(cpu.as_mut(), now_ns, previous)?;
+        let next = self.pick_owner_next(cpu.as_mut(), now_ns, previous)?;
+        if let Some(target) = next.outgoing_migration_target {
+            migration_target = Some(target);
+        }
+        let next_core = next.core;
         Self::stage_switch_handoff(
             cpu.as_mut(),
             previous,
@@ -1558,7 +1672,11 @@ impl TaskSystem {
                 )?;
             }
         }
-        let next_core = self.pick_owner_next(cpu.as_mut(), now_ns, previous)?;
+        let next = self.pick_owner_next(cpu.as_mut(), now_ns, previous)?;
+        if let Some(target) = next.outgoing_migration_target {
+            migration_target = Some(target);
+        }
+        let next_core = next.core;
         Self::stage_switch_handoff(
             cpu.as_mut(),
             previous,
@@ -1632,7 +1750,11 @@ impl TaskSystem {
         }
         Self::mark_owner_deadline_non_contending(&previous_core, cpu.as_mut(), now_ns)?;
         cpu.as_mut().clear_current();
-        let next_core = self.pick_owner_next(cpu.as_mut(), now_ns, Some(token.thread()))?;
+        let next = self.pick_owner_next(cpu.as_mut(), now_ns, Some(token.thread()))?;
+        if next.outgoing_migration_target.is_some() {
+            return Err(TaskError::InvalidConfiguration);
+        }
+        let next_core = next.core;
         Self::stage_switch_handoff(
             cpu.as_mut(),
             Some(token.thread()),
@@ -1790,7 +1912,11 @@ impl TaskSystem {
             }
             state.release_deadline_reservation_on_exit(previous)?;
             cpu.as_mut().clear_current();
-            let next_core = self.pick_owner_next(cpu.as_mut(), now_ns, Some(previous))?;
+            let next = self.pick_owner_next(cpu.as_mut(), now_ns, Some(previous))?;
+            if next.outgoing_migration_target.is_some() {
+                return Err(TaskError::InvalidConfiguration);
+            }
+            let next_core = next.core;
             Self::stage_switch_handoff(
                 cpu.as_mut(),
                 Some(previous),
@@ -2121,10 +2247,18 @@ impl TaskSystem {
 
     fn detach_owner_deadline_bandwidth(
         core: &Arc<ThreadCore>,
+        cpu: Pin<&mut CpuLocal>,
+    ) -> Result<(), TaskError> {
+        let mut sched = core.sched().lock();
+        Self::detach_owner_deadline_bandwidth_locked(core, &mut sched, cpu)
+    }
+
+    fn detach_owner_deadline_bandwidth_locked(
+        core: &Arc<ThreadCore>,
+        sched: &mut ThreadSchedState,
         mut cpu: Pin<&mut CpuLocal>,
     ) -> Result<(), TaskError> {
         let owner = cpu.owner();
-        let mut sched = core.sched().lock();
         let Some(assigned_cpu) = sched.deadline_bandwidth_cpu else {
             return Ok(());
         };
@@ -2547,11 +2681,43 @@ impl TaskSystem {
         unsafe { Arc::increment_strong_count(pointer) };
         // SAFETY: the transferred Arc count keeps the embedded node pinned.
         let node = unsafe { Pin::new_unchecked((*pointer).policy_update_node()) };
-        let message = InboxMessage::migration_with_payload(
+        let message = InboxMessage::policy_update_with_payload(
             core.id(),
             owner,
-            owner,
             generation,
+            pointer.expose_provenance(),
+        );
+        if remote.publish_policy_update(node, message) != PublishResult::Published {
+            // SAFETY: rejected/coalesced publication did not consume this
+            // attempt's retained reference.
+            unsafe { Arc::decrement_strong_count(pointer) };
+            core.cancel_scheduler_inbox_delivery();
+        }
+        Ok(())
+    }
+
+    fn publish_owner_affinity_retry(
+        &self,
+        core: &Arc<ThreadCore>,
+        owner: CpuId,
+        target: CpuId,
+    ) -> Result<(), TaskError> {
+        let remote = self
+            .cpu_remote(owner)
+            .ok_or(TaskError::CpuOffline(owner.as_u32()))?;
+        if !core.reserve_scheduler_inbox_delivery() {
+            return Ok(());
+        }
+        let pointer = Arc::as_ptr(core);
+        // SAFETY: this count is transferred to the dedicated affinity node and
+        // consumed by exactly one later owner drain.
+        unsafe { Arc::increment_strong_count(pointer) };
+        // SAFETY: the transferred Arc count pins the embedded control node.
+        let node = unsafe { Pin::new_unchecked((*pointer).affinity_update_node()) };
+        let message = InboxMessage::affinity_update_with_payload(
+            core.id(),
+            owner,
+            target,
             pointer.expose_provenance(),
         );
         if remote.publish_policy_update(node, message) != PublishResult::Published {
@@ -2586,48 +2752,24 @@ impl TaskSystem {
         let target = timer_cpu
             .or_else(|| state.select_allowed_cpu(&affinity))
             .ok_or(TaskError::InvalidConfiguration)?;
-        let (source, remains_placed) = {
-            sched.affinity = affinity;
-            let location = sched
-                .placement
-                .running_cpu()
-                .or(sched.placement.queued_cpu());
-            let source = match location {
-                Some(owner) if !sched.affinity.contains(owner) => {
-                    sched.placement.set_migration_target(Some(target))?;
-                    Some(owner)
-                }
-                Some(owner) => {
-                    // A newer mask made the owner legal again before its
-                    // pending migration request ran. Cancel that request.
-                    sched.placement.set_migration_target(None)?;
-                    core.set_target_cpu(owner);
-                    None
-                }
-                None if sched.placement.migration_target().is_some() => {
-                    // The source already detached this ready thread and a
-                    // transfer is in flight. Retarget the transfer in-place;
-                    // the old destination forwards it after observing this
-                    // state under the scheduler lock.
-                    sched.placement.set_migration_target(Some(target))?;
-                    core.set_target_cpu(target);
-                    None
-                }
-                None => {
-                    core.set_target_cpu(target);
-                    None
-                }
-            };
-            (source, location.is_some())
-        };
+        sched.affinity = affinity;
+        // The affinity mask is task metadata, but physical placement belongs
+        // to one runqueue owner. A remote writer only publishes a reconciliation
+        // request; it never rewrites Queued/Running/SwitchingOut in place.
+        let owner = sched
+            .placement
+            .running_cpu()
+            .or(sched.placement.queued_cpu())
+            .or(sched.placement.on_cpu())
+            .or(sched.placement.migration_target())
+            .or(sched.deadline_bandwidth_cpu);
+        let target = owner
+            .filter(|owner| sched.affinity.contains(*owner))
+            .unwrap_or(target);
+        core.set_target_cpu(target);
         drop(sched);
-        if let Some(source) = source {
-            state.publish_migration_request(&core, source, target)?;
-        } else if remains_placed {
-            // Affinity can change generic pushability without moving the
-            // thread. Let the owner refresh its epoch-protected load summary;
-            // a stale idle-pull request is still decided from registry state.
-            state.request_owner_reschedule(thread);
+        if let Some(owner) = owner {
+            state.publish_affinity_update(&core, owner, target)?;
         }
         Ok(())
     }
@@ -3838,53 +3980,115 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
         outgoing: Option<ThreadId>,
-    ) -> Result<Arc<ThreadCore>, TaskError> {
+    ) -> Result<OwnerNext, TaskError> {
         let owner = cpu.owner();
-        let fields = cpu.as_mut().fields_mut();
-        let ordinary_rt_may_run = fields.rt_bandwidth.may_run(now_ns, false);
-        let core = if let Some(queued) = fields
-            .run_queue
-            .pick_next_with_rt(ordinary_rt_may_run, |queued| {
-                queued.core.sched().lock().is_pi_boosted_rt_owner()
-            }) {
+        let mut outgoing_migration_target = None;
+        let mut reconciled = 0;
+        let core = loop {
+            let queued = {
+                let fields = cpu.as_mut().fields_mut();
+                let ordinary_rt_may_run = fields.rt_bandwidth.may_run(now_ns, false);
+                fields
+                    .run_queue
+                    .pick_next_with_rt(ordinary_rt_may_run, |queued| {
+                        queued.core.sched().lock().is_pi_boosted_rt_owner()
+                    })
+            };
+            let Some(queued) = queued else {
+                break cpu
+                    .as_ref()
+                    .get_ref()
+                    .idle_core
+                    .as_ref()
+                    .cloned()
+                    .ok_or(TaskError::NoRunnableThread)?;
+            };
             let core = queued.core;
+            let mut sched = core.sched().lock();
+            Self::validate_owner_next(&sched, core.id(), owner, outgoing)?;
+            let migration_target = if sched.placement.migration_target().is_some()
+                || !sched.affinity.contains(owner)
             {
-                let mut sched = core.sched().lock();
-                Self::validate_owner_next(&sched, core.id(), owner, outgoing)?;
-                sched.entity = queued.entity;
-                if !sched.is_pi_boosted() {
-                    sched.base_entity = queued.entity;
-                }
-                sched.placement.set_queued_cpu(None)?;
-                sched.placement.set_running_cpu(Some(owner))?;
-                sched.placement.set_on_cpu(Some(owner))?;
-                sched.transition(&core, ThreadState::Running)?;
-                let dispatch = Self::owner_dispatch(&core, &sched, now_ns)?;
-                fields.current_dispatch = Some(dispatch);
+                Some(
+                    sched
+                        .placement
+                        .migration_target()
+                        .filter(|target| {
+                            *target != owner
+                                && sched.affinity.contains(*target)
+                                && self
+                                    .cpu_remotes
+                                    .get(target.as_usize())
+                                    .is_some_and(|remote| remote.is_online())
+                        })
+                        .or_else(|| self.select_allowed_online_cpu(&sched.affinity, Some(owner)))
+                        .ok_or(TaskError::InvalidConfiguration)?,
+                )
+            } else {
+                None
+            };
+            sched.entity = queued.entity;
+            if !sched.is_pi_boosted() {
+                sched.base_entity = queued.entity;
             }
-            core
-        } else {
-            let core = fields
-                .idle_core
-                .as_ref()
-                .cloned()
-                .ok_or(TaskError::NoRunnableThread)?;
-            {
-                let mut sched = core.sched().lock();
-                Self::validate_owner_next(&sched, core.id(), owner, outgoing)?;
-                if sched.lifecycle.state() == ThreadState::Ready {
-                    sched.transition(&core, ThreadState::Running)?;
+            if let Some(target) = migration_target {
+                let outgoing_candidate =
+                    outgoing == Some(core.id()) && sched.placement.on_cpu() == Some(owner);
+                if !outgoing_candidate {
+                    Self::detach_owner_deadline_bandwidth_locked(&core, &mut sched, cpu.as_mut())?;
                 }
-                sched.placement.set_running_cpu(Some(owner))?;
-                sched.placement.set_on_cpu(Some(owner))?;
-                let dispatch = Self::owner_dispatch(&core, &sched, now_ns)?;
-                fields.current_dispatch = Some(dispatch);
+                sched.placement.set_migration_target(Some(target))?;
+                if sched.placement.queued_cpu() == Some(owner) {
+                    sched.placement.set_queued_cpu(None)?;
+                } else if !outgoing_candidate {
+                    return Err(TaskError::InvalidConfiguration);
+                }
+                core.set_target_cpu(target);
+                drop(sched);
+                if outgoing_candidate {
+                    outgoing_migration_target = Some(target);
+                } else {
+                    self.publish_owner_migration(&core, target, owner, target)?;
+                }
+                reconciled += 1;
+                if reconciled == cpu.batch_limit() {
+                    cpu.request_scheduler_work();
+                    break cpu
+                        .as_ref()
+                        .get_ref()
+                        .idle_core
+                        .as_ref()
+                        .cloned()
+                        .ok_or(TaskError::NoRunnableThread)?;
+                }
+                continue;
             }
-            core
+            sched.placement.set_queued_cpu(None)?;
+            sched.placement.set_running_cpu(Some(owner))?;
+            sched.placement.set_on_cpu(Some(owner))?;
+            sched.transition(&core, ThreadState::Running)?;
+            let dispatch = Self::owner_dispatch(&core, &sched, now_ns)?;
+            drop(sched);
+            cpu.as_mut().install_dispatch(dispatch);
+            break core;
         };
+        if cpu.as_ref().get_ref().idle() == Some(core.id()) {
+            let mut sched = core.sched().lock();
+            Self::validate_owner_next(&sched, core.id(), owner, outgoing)?;
+            if sched.lifecycle.state() == ThreadState::Ready {
+                sched.transition(&core, ThreadState::Running)?;
+            }
+            sched.placement.set_running_cpu(Some(owner))?;
+            sched.placement.set_on_cpu(Some(owner))?;
+            let dispatch = Self::owner_dispatch(&core, &sched, now_ns)?;
+            cpu.as_mut().install_dispatch(dispatch);
+        }
         cpu.as_mut().set_current_core(Arc::clone(&core));
         self.publish_owner_cpu_load_summary(cpu.as_mut());
-        Ok(core)
+        Ok(OwnerNext {
+            core,
+            outgoing_migration_target,
+        })
     }
 
     fn stage_switch_handoff(

@@ -11,7 +11,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicPtr, Ordering},
 };
 
-pub use message::{InboxKind, InboxMessage};
+pub use message::{InboxKind, InboxMessage, InboxOperation};
 pub use node::InboxNode;
 
 use crate::epoch_mpsc::EpochMpscQueue;
