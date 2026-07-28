@@ -1,10 +1,6 @@
-//! Embedded task-deadline node and generation state.
+//! Task-deadline identity and generation state.
 
-use core::{
-    marker::PhantomPinned,
-    pin::Pin,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::TaskDeadlineError;
 use crate::ThreadId;
@@ -29,8 +25,6 @@ impl TaskDeadlineToken {
 pub struct TaskDeadlineNode {
     thread: ThreadId,
     sequence: AtomicU64,
-    active_generation: AtomicU64,
-    _pin: PhantomPinned,
 }
 
 impl TaskDeadlineNode {
@@ -39,19 +33,11 @@ impl TaskDeadlineNode {
         Self {
             thread,
             sequence: AtomicU64::new(0),
-            active_generation: AtomicU64::new(0),
-            _pin: PhantomPinned,
         }
     }
 
-    /// Cancels the matching arm operation before its queue entry is removed.
-    pub(super) fn cancel(self: Pin<&Self>, token: TaskDeadlineToken) -> bool {
-        if token == TaskDeadlineToken::NONE {
-            return false;
-        }
-        self.active_generation
-            .compare_exchange(token.0, 0, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+    pub(super) const fn thread(&self) -> ThreadId {
+        self.thread
     }
 
     pub(super) fn next_token(&self) -> Result<TaskDeadlineToken, TaskDeadlineError> {
@@ -71,29 +57,71 @@ impl TaskDeadlineNode {
             }
         }
     }
+}
 
-    pub(super) fn activate(&self, token: TaskDeadlineToken) {
-        self.active_generation.store(token.0, Ordering::Release);
+/// Scheduler-owned meaning of one task deadline.
+///
+/// The queue deliberately has no arbitrary callback variant. Every entry is a
+/// value-owned scheduler identity that can be validated again at a safe point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TaskDeadlineKind {
+    /// Timeout for one generation of the thread park handshake.
+    ParkTimeout { park_generation: u64 },
+}
+
+impl TaskDeadlineKind {
+    /// Creates a timeout for one generation of a move-only park ticket.
+    pub const fn park_timeout(park_generation: u64) -> Self {
+        Self::ParkTimeout { park_generation }
     }
 
-    pub(super) fn is_active(&self, token: TaskDeadlineToken) -> bool {
-        self.active_generation.load(Ordering::Acquire) == token.0
+    /// Returns the park generation carried by this deadline.
+    pub const fn park_generation(self) -> u64 {
+        match self {
+            Self::ParkTimeout { park_generation } => park_generation,
+        }
     }
+}
 
-    pub(super) fn try_expire(
-        &self,
+/// Move-only ownership of one physical task-deadline queue registration.
+///
+/// This type intentionally does not implement [`Copy`] or [`Clone`]. A failed
+/// owner-CPU check may borrow it and retry, while successful cancellation or
+/// expiration consumes the one queue entry identified by its generation.
+#[must_use = "a task-deadline registration must remain owned until cancellation or expiration"]
+#[derive(Debug, Eq, PartialEq)]
+pub struct TaskDeadlineRegistration {
+    thread: ThreadId,
+    token: TaskDeadlineToken,
+    kind: TaskDeadlineKind,
+}
+
+impl TaskDeadlineRegistration {
+    pub(super) const fn new(
+        thread: ThreadId,
         token: TaskDeadlineToken,
-        deadline_ns: u64,
-    ) -> Option<ExpiredTaskDeadline> {
-        self.active_generation
-            .compare_exchange(token.0, 0, Ordering::AcqRel, Ordering::Acquire)
-            .ok()
-            .map(|_| ExpiredTaskDeadline {
-                thread: self.thread,
-                token,
-                deadline_ns,
-                valid: true,
-            })
+        kind: TaskDeadlineKind,
+    ) -> Self {
+        Self {
+            thread,
+            token,
+            kind,
+        }
+    }
+
+    /// Returns the generation-bearing thread identity.
+    pub const fn thread(&self) -> ThreadId {
+        self.thread
+    }
+
+    /// Returns the arm generation owned by this registration.
+    pub const fn token(&self) -> TaskDeadlineToken {
+        self.token
+    }
+
+    /// Returns the typed scheduler event.
+    pub const fn kind(&self) -> TaskDeadlineKind {
+        self.kind
     }
 }
 
@@ -104,6 +132,7 @@ pub struct ExpiredTaskDeadline {
     token: TaskDeadlineToken,
     deadline_ns: u64,
     valid: bool,
+    kind: TaskDeadlineKind,
 }
 
 impl ExpiredTaskDeadline {
@@ -113,7 +142,23 @@ impl ExpiredTaskDeadline {
         token: TaskDeadlineToken::NONE,
         deadline_ns: 0,
         valid: false,
+        kind: TaskDeadlineKind::ParkTimeout { park_generation: 0 },
     };
+
+    pub(super) const fn new(
+        thread: ThreadId,
+        token: TaskDeadlineToken,
+        deadline_ns: u64,
+        kind: TaskDeadlineKind,
+    ) -> Self {
+        Self {
+            thread,
+            token,
+            deadline_ns,
+            valid: true,
+            kind,
+        }
+    }
 
     /// Returns the generation-checked thread owning this deadline.
     pub const fn thread(self) -> Option<ThreadId> {
@@ -128,6 +173,11 @@ impl ExpiredTaskDeadline {
     /// Returns the absolute requested deadline.
     pub const fn deadline_ns(self) -> u64 {
         self.deadline_ns
+    }
+
+    /// Returns the typed scheduler event, or `None` for an empty buffer slot.
+    pub const fn kind(self) -> Option<TaskDeadlineKind> {
+        if self.valid { Some(self.kind) } else { None }
     }
 
     /// Reports whether this value was written by an expiration pass.

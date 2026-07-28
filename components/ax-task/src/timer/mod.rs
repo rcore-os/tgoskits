@@ -3,7 +3,10 @@
 mod heap;
 mod node;
 
-pub use node::{ExpiredTaskDeadline, TaskDeadlineNode, TaskDeadlineToken};
+pub use node::{
+    ExpiredTaskDeadline, TaskDeadlineKind, TaskDeadlineNode, TaskDeadlineRegistration,
+    TaskDeadlineToken,
+};
 
 use self::heap::{TimerEntry, TimerHeap};
 
@@ -68,7 +71,7 @@ impl TaskDeadlineExpireBatch {
     }
 }
 
-/// Fixed-capacity pointer heap created during CPU-local initialization.
+/// Fixed-capacity value heap created during CPU-local initialization.
 ///
 /// Construction is the only operation that reserves memory. Arming, cancelling,
 /// and expiring never grow or shrink the allocation.
@@ -85,7 +88,7 @@ impl TaskDeadlineQueue {
         }
     }
 
-    /// Arms an embedded timer node for an absolute monotonic deadline.
+    /// Arms a typed task deadline for an absolute monotonic deadline.
     ///
     /// Rearming replaces the node's previous entry in place. A node therefore
     /// consumes at most one preallocated heap slot.
@@ -97,48 +100,45 @@ impl TaskDeadlineQueue {
     /// [`TaskDeadlineError::GenerationExhausted`] instead of reusing an old
     /// generation.
     ///
-    /// # Safety
-    ///
-    /// `node` must remain pinned and allocated until every entry referring to it
-    /// has been removed from this queue. The caller must serialize queue mutation
-    /// on its owner CPU.
-    pub unsafe fn arm(
+    /// Queue mutation must remain serialized on its owner CPU. The returned
+    /// move-only registration owns the physical entry; the queue stores the
+    /// thread, generation, and event kind by value and does not retain `node`.
+    pub fn arm(
         &mut self,
-        node: core::pin::Pin<&TaskDeadlineNode>,
+        node: &TaskDeadlineNode,
         deadline_ns: u64,
-    ) -> Result<TaskDeadlineToken, TaskDeadlineError> {
-        let node_ptr = node.get_ref() as *const TaskDeadlineNode;
-        let replacing = self.heap.contains_node(node_ptr);
+        kind: TaskDeadlineKind,
+    ) -> Result<TaskDeadlineRegistration, TaskDeadlineError> {
+        let thread = node.thread();
+        let replacing = self.heap.contains_thread(thread);
         if self.heap.is_full() && !replacing {
             return Err(TaskDeadlineError::Capacity);
         }
         let token = node.next_token()?;
         if replacing {
-            let removed = self.heap.remove_node(node_ptr);
+            let removed = self.heap.remove_thread(thread);
             debug_assert!(
                 removed.is_some(),
-                "contains_node proved the task deadline entry exists"
+                "contains_thread proved the task deadline entry exists"
             );
         }
-        node.activate(token);
-        let entry = TimerEntry::new(deadline_ns, token, node_ptr);
+        let entry = TimerEntry::new(deadline_ns, thread, token, kind);
         self.heap.push(entry);
-        Ok(token)
+        Ok(TaskDeadlineRegistration::new(thread, token, kind))
     }
 
     /// Cancels one matching arm operation and immediately releases its heap slot.
     ///
-    /// Unlike lazy tombstoning, physical removal lets an owner finish and release
-    /// its embedded timer node as soon as this method returns.
-    pub fn cancel(
-        &mut self,
-        node: core::pin::Pin<&TaskDeadlineNode>,
-        token: TaskDeadlineToken,
-    ) -> bool {
-        let node_ptr = node.get_ref() as *const TaskDeadlineNode;
-        let was_active = node.cancel(token);
-        let was_queued = self.heap.remove(node_ptr, token).is_some();
-        was_active || was_queued
+    /// Unlike lazy tombstoning, physical removal releases capacity immediately
+    /// and makes the registration terminal as soon as this method returns.
+    pub fn cancel(&mut self, registration: &TaskDeadlineRegistration) -> bool {
+        self.heap
+            .remove(
+                registration.thread(),
+                registration.token(),
+                registration.kind(),
+            )
+            .is_some()
     }
 
     /// Returns the earliest representable one-shot deadline without mutating the queue.
@@ -155,11 +155,7 @@ impl TaskDeadlineQueue {
         let Some(entry) = self.heap.peek() else {
             return false;
         };
-        let live = unsafe {
-            // Entries retain valid pinned nodes until owner-side removal.
-            (*entry.node()).is_active(entry.token())
-        };
-        !live || entry.deadline_ns() <= now_ns
+        entry.deadline_ns() <= now_ns
     }
 
     /// Expires timers into caller-provided storage without allocating or invoking
@@ -176,15 +172,10 @@ impl TaskDeadlineQueue {
             let Some(entry) = self.heap.peek() else {
                 break;
             };
-            let live = unsafe {
-                // Queue construction requires every pointer to remain pinned until
-                // its corresponding entry is removed.
-                (*entry.node()).is_active(entry.token())
-            };
-            if live && entry.deadline_ns() > request.now_ns {
+            if entry.deadline_ns() > request.now_ns {
                 break;
             }
-            if live && expired == output.len() {
+            if expired == output.len() {
                 break;
             }
 
@@ -193,15 +184,13 @@ impl TaskDeadlineQueue {
                 .pop_min()
                 .expect("peek proved the fixed timer heap is non-empty");
             processed += 1;
-            let event = unsafe {
-                // The popped entry still owns its pinned pointer; `try_expire`
-                // atomically rejects a concurrent cancellation or rearm.
-                (*entry.node()).try_expire(entry.token(), entry.deadline_ns())
-            };
-            if let Some(event) = event {
-                output[expired] = event;
-                expired += 1;
-            }
+            output[expired] = ExpiredTaskDeadline::new(
+                entry.thread(),
+                entry.token(),
+                entry.deadline_ns(),
+                entry.kind(),
+            );
+            expired += 1;
         }
 
         let (pending, next_deadline_ns) = self.next_wakeup(request);
@@ -232,11 +221,7 @@ impl TaskDeadlineQueue {
         let Some(entry) = self.heap.peek() else {
             return (false, None);
         };
-        let live = unsafe {
-            // Entries retain valid pinned nodes until removal from the heap.
-            (*entry.node()).is_active(entry.token())
-        };
-        let immediately_actionable = !live || entry.deadline_ns() <= request.now_ns;
+        let immediately_actionable = entry.deadline_ns() <= request.now_ns;
         let earliest = request
             .now_ns
             .saturating_add(request.timer_resolution_ns.max(1));

@@ -1,26 +1,30 @@
-//! Allocation-once binary min-heap for pinned task-deadline pointers.
+//! Allocation-once binary min-heap for value-owned task deadlines.
 
 use alloc::vec::Vec;
 
-use super::{TaskDeadlineNode, TaskDeadlineToken};
+use super::{TaskDeadlineKind, TaskDeadlineToken};
+use crate::ThreadId;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TimerEntry {
     deadline_ns: u64,
+    thread: ThreadId,
     token: TaskDeadlineToken,
-    node: *const TaskDeadlineNode,
+    kind: TaskDeadlineKind,
 }
 
 impl TimerEntry {
     pub(super) const fn new(
         deadline_ns: u64,
+        thread: ThreadId,
         token: TaskDeadlineToken,
-        node: *const TaskDeadlineNode,
+        kind: TaskDeadlineKind,
     ) -> Self {
         Self {
             deadline_ns,
+            thread,
             token,
-            node,
+            kind,
         }
     }
 
@@ -28,18 +32,24 @@ impl TimerEntry {
         self.deadline_ns
     }
 
+    pub(super) const fn thread(self) -> ThreadId {
+        self.thread
+    }
+
     pub(super) const fn token(self) -> TaskDeadlineToken {
         self.token
     }
 
-    pub(super) const fn node(self) -> *const TaskDeadlineNode {
-        self.node
+    pub(super) const fn kind(self) -> TaskDeadlineKind {
+        self.kind
     }
 
-    const fn precedes(self, other: Self) -> bool {
+    fn precedes(self, other: Self) -> bool {
         self.deadline_ns < other.deadline_ns
             || (self.deadline_ns == other.deadline_ns
-                && self.token.generation() < other.token.generation())
+                && (self.thread.as_u64() < other.thread.as_u64()
+                    || (self.thread == other.thread
+                        && self.token.generation() < other.token.generation())))
     }
 }
 
@@ -73,8 +83,8 @@ impl TimerHeap {
         self.entries.len() == self.capacity
     }
 
-    pub(super) fn contains_node(&self, node: *const TaskDeadlineNode) -> bool {
-        self.entries.iter().any(|entry| entry.node() == node)
+    pub(super) fn contains_thread(&self, thread: ThreadId) -> bool {
+        self.entries.iter().any(|entry| entry.thread() == thread)
     }
 
     pub(super) fn peek(&self) -> Option<TimerEntry> {
@@ -99,13 +109,13 @@ impl TimerHeap {
 
     pub(super) fn remove(
         &mut self,
-        node: *const TaskDeadlineNode,
+        thread: ThreadId,
         token: TaskDeadlineToken,
+        kind: TaskDeadlineKind,
     ) -> Option<TimerEntry> {
-        let index = self
-            .entries
-            .iter()
-            .position(|entry| entry.node() == node && entry.token() == token)?;
+        let index = self.entries.iter().position(|entry| {
+            entry.thread() == thread && entry.token() == token && entry.kind() == kind
+        })?;
         let removed = self.entries.swap_remove(index);
         if index < self.entries.len() {
             if index > 0 {
@@ -120,8 +130,11 @@ impl TimerHeap {
         Some(removed)
     }
 
-    pub(super) fn remove_node(&mut self, node: *const TaskDeadlineNode) -> Option<TimerEntry> {
-        let index = self.entries.iter().position(|entry| entry.node() == node)?;
+    pub(super) fn remove_thread(&mut self, thread: ThreadId) -> Option<TimerEntry> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.thread() == thread)?;
         let removed = self.entries.swap_remove(index);
         if index < self.entries.len() {
             if index > 0 {
