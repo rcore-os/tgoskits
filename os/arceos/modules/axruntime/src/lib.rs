@@ -532,11 +532,22 @@ fn run_clock_event_transaction<R, Action, Guard>(
     access: impl FnOnce() -> (R, Action),
     apply: impl FnOnce(Action),
 ) -> R {
-    // One IRQ-save must cover both the software state transition and its
-    // physical clockevent commit so the timer IRQ cannot observe a split state.
+    run_clock_event_irq_scope(acquire_irq, || {
+        let (result, action) = access();
+        apply(action);
+        result
+    })
+}
+
+#[cfg(feature = "irq")]
+fn run_clock_event_irq_scope<R, Guard>(
+    acquire_irq: impl FnOnce() -> Guard,
+    service: impl FnOnce() -> R,
+) -> R {
+    // One IRQ-save must cover clockevent state transitions, bounded task work,
+    // and the physical commit so an IRQ cannot observe a split transaction.
     let irq_guard = acquire_irq();
-    let (result, action) = access();
-    apply(action);
+    let result = service();
     drop(irq_guard);
     result
 }
@@ -692,16 +703,18 @@ pub(crate) const fn timer_resolution_from_frequency(frequency_hz: u64) -> u64 {
 
 #[cfg(feature = "irq")]
 fn timer_irq_handler(ctx: ax_hal::irq::IrqContext) -> ax_hal::irq::IrqReturn {
-    let _ = ctx;
-    let now_ns = ax_hal::time::monotonic_time_nanos();
-    let firing = ClockEventFiringGuard::begin(now_ns);
-    #[cfg(feature = "multitask")]
-    let task_update = task::on_clock_event(now_ns);
-    firing.finish(
+    run_clock_event_irq_scope(ax_kernel_guard::IrqSave::new, || {
+        let _ = ctx;
+        let now_ns = ax_hal::time::monotonic_time_nanos();
+        let firing = ClockEventFiringGuard::begin(now_ns);
         #[cfg(feature = "multitask")]
-        task_update,
-    );
-    ax_hal::irq::IrqReturn::Handled
+        let task_update = task::on_clock_event(now_ns);
+        firing.finish(
+            #[cfg(feature = "multitask")]
+            task_update,
+        );
+        ax_hal::irq::IrqReturn::Handled
+    })
 }
 
 #[cfg(any(feature = "ipi", feature = "wake-ipi", test))]
@@ -828,6 +841,32 @@ mod tests {
         );
         assert_eq!(clockevent.armed_deadline(), Some(deadline));
         assert!(hardware_committed.get());
+        assert!(irq_enabled.get(), "the caller's IRQ state must be restored");
+    }
+
+    #[cfg(feature = "irq")]
+    #[test]
+    fn timer_irq_scope_establishes_local_irq_exclusion() {
+        let irq_enabled = Cell::new(true);
+
+        let handled = super::run_clock_event_irq_scope(
+            || {
+                let restore_enabled = irq_enabled.replace(false);
+                TestIrqGuard {
+                    irq_enabled: &irq_enabled,
+                    restore_enabled,
+                }
+            },
+            || {
+                assert!(
+                    !irq_enabled.get(),
+                    "timer IRQ service must establish its own local IRQ exclusion"
+                );
+                true
+            },
+        );
+
+        assert!(handled);
         assert!(irq_enabled.get(), "the caller's IRQ state must be restored");
     }
 
