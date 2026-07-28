@@ -3,6 +3,26 @@
 use super::*;
 
 impl TaskSystem {
+    pub(super) fn complete_affinity_if_satisfied_locked(
+        core: &Arc<ThreadCore>,
+        sched: &ThreadSchedState,
+    ) -> bool {
+        if sched.lifecycle.state() == ThreadState::Exited
+            || sched.placement.migration_target().is_some()
+        {
+            return false;
+        }
+        let placement_is_allowed = [
+            sched.placement.queued_cpu(),
+            sched.placement.running_cpu(),
+            sched.placement.on_cpu(),
+        ]
+        .into_iter()
+        .flatten()
+        .all(|cpu| sched.affinity.contains(cpu));
+        placement_is_allowed && core.publish_affinity_completion(sched.affinity_generation)
+    }
+
     pub(super) fn publish_owner_migration(
         &self,
         core: &Arc<ThreadCore>,
@@ -108,8 +128,15 @@ impl TaskSystem {
         Ok(())
     }
 
-    /// Changes thread affinity after validating Deadline root-domain coverage.
-    pub fn set_affinity(&self, thread: ThreadId, affinity: CpuSet) -> Result<(), TaskError> {
+    /// Publishes one affinity generation and returns its completion owner.
+    pub fn request_affinity(
+        &self,
+        thread: ThreadId,
+        affinity: CpuSet,
+    ) -> Result<ThreadAffinityChange, TaskError> {
+        if task_runtime::in_hard_irq() {
+            return Err(TaskError::UnsafeContext);
+        }
         validate_affinity(&affinity, self.config.cpu_count())?;
         let state = self.state.lock();
         let root_domain = self.root_domain.lock();
@@ -131,6 +158,11 @@ impl TaskSystem {
         let target = timer_cpu
             .or_else(|| state.select_allowed_cpu(&affinity))
             .ok_or(TaskError::InvalidConfiguration)?;
+        let generation = sched
+            .affinity_generation
+            .checked_add(1)
+            .ok_or(TaskError::InvalidConfiguration)?;
+        sched.affinity_generation = generation;
         sched.affinity = affinity;
         // The affinity mask is task metadata, but physical placement belongs
         // to one runqueue owner. A remote writer only publishes a reconciliation
@@ -146,11 +178,23 @@ impl TaskSystem {
             .filter(|owner| sched.affinity.contains(*owner))
             .unwrap_or(target);
         core.set_target_cpu(target);
+        let completed = Self::complete_affinity_if_satisfied_locked(&core, &sched);
         drop(sched);
-        if let Some(owner) = owner {
-            state.publish_affinity_update(&core, owner, target)?;
+        let publication = owner.map_or(Ok(()), |owner| {
+            state.publish_affinity_update(&core, owner, target)
+        });
+        drop(root_domain);
+        drop(state);
+        if completed {
+            core.notify_affinity_waiters();
         }
-        Ok(())
+        publication?;
+        Ok(ThreadAffinityChange::new(core, generation))
+    }
+
+    /// Changes thread affinity after validating Deadline root-domain coverage.
+    pub fn set_affinity(&self, thread: ThreadId, affinity: CpuSet) -> Result<(), TaskError> {
+        self.request_affinity(thread, affinity).map(drop)
     }
 
     /// Updates the owner CPU's running thread without publishing a self inbox.
@@ -191,6 +235,11 @@ impl TaskSystem {
             .ok_or(TaskError::InvalidConfiguration)?;
         let owner = cpu.owner();
         let must_migrate = !affinity.contains(owner);
+        let generation = sched
+            .affinity_generation
+            .checked_add(1)
+            .ok_or(TaskError::InvalidConfiguration)?;
+        sched.affinity_generation = generation;
         sched.affinity = affinity;
         sched
             .placement
@@ -198,7 +247,14 @@ impl TaskSystem {
         record
             .core
             .set_target_cpu(if must_migrate { target } else { owner });
+        let completed = Self::complete_affinity_if_satisfied_locked(&record.core, &sched);
+        let core = Arc::clone(&record.core);
         drop(sched);
+        drop(root_domain);
+        drop(state);
+        if completed {
+            core.notify_affinity_waiters();
+        }
         if must_migrate {
             cpu.request_reschedule();
         }

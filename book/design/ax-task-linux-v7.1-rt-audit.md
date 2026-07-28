@@ -118,6 +118,25 @@ baton. The four-CPU Starry affinity stress case and its deterministic owner
 scope regression validate that nested lock-preemption restoration cannot enter
 the scheduler over a half-committed switch.
 
+Remote affinity completion now follows Linux's shared
+`set_affinity_pending` model. Each request advances a generation while holding
+the same scheduler-state lock that publishes its mask. A move-only completion
+retains an external thread lease, and destination enqueue publishes completion
+only after physical placement has committed. Concurrent setters join the
+monotonic sequence, so a newer target supersedes an older one without releasing
+either caller at an intermediate destination. Exit revokes the outstanding
+request and wakes all waiters after releasing scheduler and registry locks.
+
+The deterministic regression
+`remote_affinity_completion_waits_for_the_destination_owner` failed on the old
+implementation because publication returned `Some(Ok(()))` before the source
+owner had detached the task. The companion concurrent-setter and target-exit
+tests cover supersession and lifetime teardown. All `ax-task` tests, including
+15 loom models, the 48 IRQ/multitask `ax-runtime` tests, all 22
+`starry-kernel` feature-clippy checks, and the x86_64 Starry
+`affinity-bug-sched-affinity-migrate` QEMU case pass; the QEMU runner reported
+`STARRY_GROUPED_TESTS_PASSED`.
+
 ## Open audit items after the structural split
 
 These items are not local patch suggestions. Each needs a deterministic red
@@ -125,7 +144,6 @@ test and a review of the owning state machine before implementation.
 
 | Area | Open question or defect | Linux v7.1 reference | Required next evidence |
 | --- | --- | --- | --- |
-| Remote affinity completion | The generic ax-task setter deliberately publishes an asynchronous migration request. Starry's remote `sched_setaffinity` path returns success immediately after that publication, so the target may still execute on a CPU excluded by the new mask. | `affine_move_task()` in `kernel/sched/core.c` installs or joins one `set_affinity_pending`, waits for its completion, and drains concurrent request references before returning. | A syscall-level virtual-runtime test must hold the target on a remote CPU, call `sched_setaffinity`, and prove return is impossible until the last disallowed on-CPU ownership and pending request are gone. The completion belongs at the ax-runtime/Starry boundary; the lower asynchronous capability may remain. |
 | Remote delivery transport | Epoch/claim unit and loom tests do not yet join the real payload queue to a physical transport `Busy` result. | Scheduler IPI and `irq_work` publish work before raising the interrupt and allow a new raise after the old claim is consumed. | One deterministic multi-CPU runtime test must publish payload A, make transport notification report `Busy`, consume A, race publication B, and prove B is drained without an unrelated interrupt. |
 | Task deadline domain | `TaskDeadlineQueue::arm` still accepts raw `0` and `u64::MAX`, while `LocalClockEvent` rejects both as physical deadlines. A retained maximum-valued task entry can therefore be logically finite in one owner and unrepresentable in the other. | `hrtimer` stores typed expiry values, while clockevent programming treats “no event” separately and clamps finite deltas to device limits. | Add red tests for zero, maximum, conversion overflow, and cancellation, then introduce one finite monotonic-deadline boundary or an explicit no-deadline value before publication. |
 | Clockevent IRQ transaction | A hardware callback always invalidates the armed state and enters `Firing`; the state machine safely re-arms if no task expires, but the audit has not yet injected an early or spurious delivery through the complete ACK/begin/finish path. | `hrtimer_interrupt()` invalidates the delivered event and re-evaluates the next event even when no timer is expired. | Add a fake-device test for an early delivery and require exactly one replacement program with no task expiry. This is currently an evidence gap, not a confirmed semantic failure. |

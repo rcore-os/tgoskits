@@ -200,7 +200,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
-        let decision = {
+        let (decision, exited_core) = {
             let mut state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
             let previous = cpu.current().ok_or(TaskError::NoRunnableThread)?;
@@ -238,8 +238,12 @@ impl TaskSystem {
                 next_core.id(),
                 None,
             )?;
-            Self::owner_switch_plan(Some(&previous_core), &next_core, SwitchReason::Exited)
+            (
+                Self::owner_switch_plan(Some(&previous_core), &next_core, SwitchReason::Exited),
+                Arc::clone(&previous_core),
+            )
         };
+        exited_core.notify_affinity_waiters();
         Ok(self.finish_owner_selection(cpu, decision, now_ns))
     }
 

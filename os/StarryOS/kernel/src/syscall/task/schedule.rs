@@ -210,7 +210,7 @@ pub fn sys_sched_setaffinity(pid: i32, cpusetsize: usize, user_mask: *const u8) 
     if target_tid == current_user_task().as_thread().tid() {
         scheduler::set_current_thread_affinity(affinity).map_err(map_task_error)?;
     } else {
-        scheduler::set_thread_affinity(scheduler_thread_id(pid)?, affinity)
+        scheduler::set_thread_affinity_and_wait(scheduler_thread_id(pid)?, affinity)
             .map_err(map_task_error)?;
     }
 
