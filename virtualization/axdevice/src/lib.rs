@@ -55,11 +55,12 @@ pub use factory::{
     register_builtin_factories,
 };
 pub use fw_cfg::{
-    FwCfg, FwCfgBuildConfig, FwCfgDeviceFactory, FwCfgDmaDevice, FwCfgInterruptConfig,
-    FwCfgPayloadConfig, FwCfgPayloadFactory, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion,
-    FwCfgSerialConfig,
+    FwCfg, FwCfgAcpiBlobs, FwCfgBuildConfig, FwCfgDeviceFactory, FwCfgDmaDevice,
+    FwCfgPayloadConfig, FwCfgPayloadFactory, FwCfgPlatformConfig, FwCfgRamRegion,
 };
 #[cfg(target_arch = "loongarch64")]
+// Reusable LoongArch device models. These are target-gated device packages,
+// not part of the architecture-neutral framework core.
 pub use loongarch_pch_pic::{
     LoongArchPchPic, LoongArchPchPicFactory, PchPicOutputEvent, PchPicOutputPort,
     PchPicOutputPortKey,
@@ -68,6 +69,8 @@ pub use range_alloc::{GuestRangeAllocator, GuestRangeAllocatorKey};
 pub use registration::{DeviceBundle, DeviceLifecycle, DeviceRegistration, PollableDeviceOps};
 pub use service::{DeviceServices, ServiceCardinality, ServiceKey};
 #[cfg(target_arch = "x86_64")]
+// Reusable x86 device models and narrow typed services. These are target-gated
+// device packages, not part of the architecture-neutral framework core.
 pub use x86::{
     X86InterruptDomainKey, X86InterruptDomainOps, X86IoApicDevice, X86IoApicDeviceOps,
     X86IoApicServiceKey, X86PitDevice, X86PitDeviceOps, X86PitServiceKey, X86SerialDeviceOps,

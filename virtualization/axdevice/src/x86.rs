@@ -1,4 +1,8 @@
-//! AxVM-facing adapters for OS-neutral x86 virtual interrupt-controller devices.
+//! Reusable x86 device package for OS-neutral x86 virtual devices.
+//!
+//! This module intentionally lives outside the architecture-neutral runtime
+//! core: it is compiled only for x86_64 targets and exposes narrow typed
+//! services consumed by AxVM's x86 architecture layer.
 
 use alloc::{boxed::Box, string::String};
 use core::marker::PhantomData;

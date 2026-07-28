@@ -997,7 +997,7 @@ impl AxVM {
                 initrd: pending.initrd,
                 cmdline: pending.cmdline.clone(),
                 cpu_num: pending.cpu_num,
-                platform: pending.platform,
+                platform: pending.platform.clone(),
             })
     }
 

@@ -1,11 +1,11 @@
 use alloc::vec::Vec;
 
-use axdevice::{FwCfgInterruptConfig, FwCfgPciConfig, FwCfgSerialConfig};
 use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType};
 
 use super::{
     FirmwareDevices, FlashDevice, GedDevice, GuestPlatform, InterruptTopology, IrqMmioDevice,
     MemoryRegion, MmioRegion, PciHost, SerialDevice,
+    acpi::{LoongArchFwCfgInterruptConfig, LoongArchFwCfgPciConfig, LoongArchFwCfgSerialConfig},
 };
 
 pub struct GuestPlatformBuilder {
@@ -249,42 +249,42 @@ impl QemuVirtDefaults {
     fn new() -> Self {
         let serial = SerialDevice {
             mmio: MmioRegion {
-                base: FwCfgSerialConfig::default().base,
-                size: FwCfgSerialConfig::default().size,
+                base: LoongArchFwCfgSerialConfig::default().base,
+                size: LoongArchFwCfgSerialConfig::default().size,
             },
             irq: 2,
-            clock_hz: FwCfgSerialConfig::default().clock_hz,
-            baud: FwCfgSerialConfig::default().baud,
+            clock_hz: LoongArchFwCfgSerialConfig::default().clock_hz,
+            baud: LoongArchFwCfgSerialConfig::default().baud,
         };
         let pci = PciHost {
             ecam: MmioRegion {
-                base: FwCfgPciConfig::default().ecam_base,
-                size: FwCfgPciConfig::default().ecam_size,
+                base: LoongArchFwCfgPciConfig::default().ecam_base,
+                size: LoongArchFwCfgPciConfig::default().ecam_size,
             },
             mmio: MmioRegion {
-                base: FwCfgPciConfig::default().mmio_base,
-                size: FwCfgPciConfig::default().mmio_size,
+                base: LoongArchFwCfgPciConfig::default().mmio_base,
+                size: LoongArchFwCfgPciConfig::default().mmio_size,
             },
-            io_base: FwCfgPciConfig::default().io_base,
-            io_size: u64::from(FwCfgPciConfig::default().io_size),
+            io_base: LoongArchFwCfgPciConfig::default().io_base,
+            io_size: u64::from(LoongArchFwCfgPciConfig::default().io_size),
             intx_base: 16,
         };
         let interrupt = InterruptTopology {
-            eiointc_irq: FwCfgInterruptConfig::default().eiointc_irq as u32,
+            eiointc_irq: LoongArchFwCfgInterruptConfig::default().eiointc_irq as u32,
             pch_pic: MmioRegion {
-                base: FwCfgInterruptConfig::default().pch_pic_base,
-                size: u64::from(FwCfgInterruptConfig::default().pch_pic_size),
+                base: LoongArchFwCfgInterruptConfig::default().pch_pic_base,
+                size: u64::from(LoongArchFwCfgInterruptConfig::default().pch_pic_size),
             },
             pch_pic_gsi_base: 0,
             pch_msi: MmioRegion {
-                base: FwCfgInterruptConfig::default().pch_msi_base,
+                base: LoongArchFwCfgInterruptConfig::default().pch_msi_base,
                 size: 0x8,
             },
             pch_msi_start: 0x20,
             pch_msi_count: 0xe0,
-            acpi_gsi_base: u32::from(FwCfgInterruptConfig::default().pch_pic_gsi_base),
-            acpi_msi_start: FwCfgInterruptConfig::default().pch_msi_start,
-            acpi_msi_count: FwCfgInterruptConfig::default().pch_msi_count,
+            acpi_gsi_base: u32::from(LoongArchFwCfgInterruptConfig::default().pch_pic_gsi_base),
+            acpi_msi_start: LoongArchFwCfgInterruptConfig::default().pch_msi_start,
+            acpi_msi_count: LoongArchFwCfgInterruptConfig::default().pch_msi_count,
         };
         let irq_routes = Vec::from([
             GuestIrqRoute {

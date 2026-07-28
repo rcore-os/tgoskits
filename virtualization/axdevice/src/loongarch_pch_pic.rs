@@ -1,3 +1,10 @@
+//! Reusable LoongArch PCH-PIC device model.
+//!
+//! This module is a target-gated architecture device package. It provides a
+//! guest-visible MMIO irqchip plus a narrow output-port service for the AxVM
+//! LoongArch architecture layer; it is not part of the architecture-neutral
+//! device runtime core.
+
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 

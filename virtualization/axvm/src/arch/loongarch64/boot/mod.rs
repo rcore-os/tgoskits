@@ -1,12 +1,11 @@
+mod acpi;
 mod fdt;
 mod probe;
 mod resources;
 
 use alloc::{boxed::Box, format, vec::Vec};
 
-use axdevice::{
-    FwCfgInterruptConfig, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion, FwCfgSerialConfig,
-};
+use axdevice::{FwCfgPlatformConfig, FwCfgRamRegion};
 use axvmconfig::{AxVMCrateConfig, EmulatedDeviceType, VMBootProtocol};
 pub use resources::{
     LoongArchGuestIrqRoute, get_guest_irq_routes, prepare_uefi_fdt_config,
@@ -140,36 +139,12 @@ impl GuestPlatform {
             .build()
     }
 
-    pub fn fw_cfg_platform_config(&self) -> FwCfgPlatformConfig {
+    pub fn fw_cfg_platform_config(&self, cpu_num: u16) -> FwCfgPlatformConfig {
         let ram_regions = leak_fw_cfg_ram_regions(&self.ram_regions);
         FwCfgPlatformConfig {
             ram_regions,
             srat_regions: ram_regions,
-            serial: FwCfgSerialConfig {
-                base: self.serial.mmio.base,
-                size: self.serial.mmio.size,
-                irq: (self.interrupt.acpi_gsi_base + self.serial.irq) as u8,
-                clock_hz: self.serial.clock_hz,
-                baud: self.serial.baud,
-            },
-            pci: FwCfgPciConfig {
-                ecam_base: self.pci.ecam.base,
-                ecam_size: self.pci.ecam.size,
-                mmio_base: self.pci.mmio.base,
-                mmio_size: self.pci.mmio.size,
-                io_base: self.pci.io_base,
-                io_size: self.pci.io_size as u32,
-                intx_base: (self.interrupt.acpi_gsi_base + self.pci.intx_base) as u8,
-            },
-            interrupt: FwCfgInterruptConfig {
-                eiointc_irq: self.interrupt.eiointc_irq as u8,
-                pch_msi_base: self.interrupt.pch_msi.base,
-                pch_msi_start: self.interrupt.acpi_msi_start,
-                pch_msi_count: self.interrupt.acpi_msi_count,
-                pch_pic_base: self.interrupt.pch_pic.base,
-                pch_pic_size: self.interrupt.pch_pic.size as u16,
-                pch_pic_gsi_base: self.interrupt.acpi_gsi_base as u16,
-            },
+            acpi: acpi::build(cpu_num, self, ram_regions),
         }
     }
 }
@@ -195,7 +170,7 @@ pub fn load_firmware_fdt(vm: &AxVMRef, config: &AxVMCrateConfig) -> AxVmResult {
 }
 
 pub fn fw_cfg_platform_config(vm: &AxVMRef, config: &AxVMCrateConfig) -> FwCfgPlatformConfig {
-    GuestPlatform::discover(vm, config).fw_cfg_platform_config()
+    GuestPlatform::discover(vm, config).fw_cfg_platform_config(config.base.cpu_num as u16)
 }
 
 pub fn guest_irq_routes(vm: &AxVMRef, config: &AxVMCrateConfig) -> Vec<LoongArchGuestIrqRoute> {
