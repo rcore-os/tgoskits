@@ -20,9 +20,11 @@ use weak_map::WeakMap;
 use super::{
     AlarmTarget, AlarmToken, Cred, FutexKey, OrphanReaper, PendingTimerActions, ProcessData,
     Thread, TimerState, UserTaskRef, WeakUserTaskRef, ZombieSnapshot, current_user_task,
-    futex_table_for_process, get_process_data, get_zombie_cred, orphan_reaper_for, processes,
-    publish_zombie, register_prepared_process_identity, register_process_identity,
-    send_signal_to_process, send_signal_to_thread, unregister_prepared_process_identity,
+    futex_table_for_process, get_process_data, get_zombie_cred, is_zombie_process,
+    namespace_shutdown_parent, orphan_reaper_for, process_belongs_to_pid_namespace, processes,
+    publish_zombie, published_victim_tids, reap_process, register_prepared_process_identity,
+    register_process_identity, release_thread_pid, send_signal_to_process, send_signal_to_thread,
+    unregister_prepared_process_identity, wait_for_victims,
 };
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
@@ -499,6 +501,37 @@ ktracepoint::define_event_trace!(
     })
 );
 
+fn reap_shutdown_children(init: &Arc<ProcessData>, namespace: &crate::task::PidNamespaceRef) {
+    for child in init.proc.children() {
+        if !process_belongs_to_pid_namespace(&child, namespace) || !is_zombie_process(&child) {
+            continue;
+        }
+        if let Some(cpu_time) = reap_process(&child) {
+            init.add_child_cpu_time(cpu_time.user(), cpu_time.system());
+        }
+    }
+}
+
+fn terminate_pid_namespace_members(
+    init: &Arc<ProcessData>,
+    namespace: &crate::task::PidNamespaceRef,
+) {
+    let init_pid = init.proc.pid() as u64;
+
+    let signal = SignalInfo::new_kernel(Signo::SIGKILL);
+    for global_tid in published_victim_tids(namespace, init_pid) {
+        let Ok(tid) = Pid::try_from(global_tid) else {
+            continue;
+        };
+        let _ = send_signal_to_thread(None, tid, Some(signal));
+        let _ = zap_thread(tid);
+    }
+
+    wait_for_victims(namespace, init_pid, || {
+        reap_shutdown_children(init, namespace)
+    });
+}
+
 pub fn do_exit(exit_code: i32, group_exit: bool) {
     let curr = current_user_task();
     let thr = curr.as_thread();
@@ -573,6 +606,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         remove_task_from_table(thr.tid());
     }
 
+    let mut shutdown_reap_parent = None;
     if let ThreadExit::Last(process_cpu_time) = thread_exit {
         if let Err(error) = crate::cgroup::exit_process(process.pid()) {
             warn!("failed to release cgroup membership: {error}");
@@ -612,11 +646,22 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
                     }
                 }
                 OrphanReaper::ShutdownNamespace(namespace) => {
+                    let publication = super::pid_namespace::lock_publication();
+                    super::pid_namespace::begin_shutdown(
+                        &publication,
+                        &namespace,
+                        process.pid() as u64,
+                    );
                     let relations = process.begin_namespace_shutdown_relations();
+                    drop(publication);
                     break (relations.into_retained_children(), Some(namespace));
                 }
             }
         };
+
+        if let Some(namespace) = shutting_down_pid_namespace.as_ref() {
+            terminate_pid_namespace_members(&thr.proc_data, namespace);
+        }
 
         // Freeze all Linux-visible exit data in the generation-specific PID
         // identity. This is the sole Live -> Zombie state transition.
@@ -706,22 +751,6 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // If this process was the init of a non-root PID namespace,
         // send SIGKILL to all remaining processes in that namespace
         // (Linux: zap_pid_ns_processes).
-        if let Some(namespace) = shutting_down_pid_namespace {
-            let victims: Vec<Pid> = processes()
-                .into_iter()
-                .filter(|data| {
-                    data.proc.pid() != process.pid()
-                        && Arc::ptr_eq(&data.identity().pid_namespace(), &namespace)
-                })
-                .map(|data| data.proc.pid())
-                .collect();
-
-            let sig = SignalInfo::new_kernel(Signo::SIGKILL);
-            for pid in victims {
-                let _ = send_signal_to_process(pid, Some(sig));
-            }
-        }
-
         // Process exit state is published before waking pidfd/wait waiters.
         unsafe {
             thr.proc_data
@@ -731,12 +760,20 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
         // Unblock a vfork parent waiting for this child to exit.
         thr.proc_data.notify_vfork_done();
+        shutdown_reap_parent = namespace_shutdown_parent(process);
     }
-    // Thread exit state is published before waking waiters.
+
+    // Publish the terminal thread state before waking pidfd and join waiters.
+    thr.set_exit();
     unsafe { thr.exit_event().wake(axpoll::IoEvents::IN) };
     unsafe { thr.proc_data.thread_exit_event().wake(axpoll::IoEvents::IN) };
 
-    thr.set_exit();
+    if let Some(parent) = shutdown_reap_parent
+        && let Some(cpu_time) = reap_process(process)
+    {
+        parent.add_child_cpu_time(cpu_time.user(), cpu_time.system());
+    }
+    release_thread_pid(&thr.proc_data.identity(), thr.tid() as u64);
 }
 
 /// Rebinds a task's user-visible TID in [`TASK_TABLE`] from `old_tid` to

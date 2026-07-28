@@ -4,13 +4,15 @@
  * Scenarios exercised:
  *   1. unshare(CLONE_NEWUTS) + sethostname does not affect the parent.
  *   2. clone(CLONE_NEWPID)  -> child getpid() returns the local PID.
- *   3. unshare(CLONE_NEWUSER) -> getuid() returns 65534 (nobody).
+ *   3. PID namespace shutdown drains a newly reparented WNOWAIT zombie.
+ *   4. unshare(CLONE_NEWUSER) -> getuid() returns 65534 (nobody).
  */
 
 #include "test_framework.h"
 
 #include <errno.h>
 #include <sched.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -32,6 +34,9 @@
 #error "unknown architecture: define __NR_clone3"
 #endif
 #endif
+
+#define NAMESPACE_SHUTDOWN_TIMEOUT_MS 5000
+#define WAIT_POLL_INTERVAL_US 10000
 
 struct clone3_args
 {
@@ -86,6 +91,25 @@ static void read_exact(int fd, void *buffer, size_t length)
         }
         cursor += (size_t)received;
         length -= (size_t)received;
+    }
+}
+
+static pid_t waitpid_with_timeout(pid_t child, int *status, int timeout_ms)
+{
+    int waited_ms = 0;
+    for (;;)
+    {
+        pid_t waited = waitpid(child, status, WNOHANG);
+        if (waited != 0)
+        {
+            return waited;
+        }
+        if (waited_ms >= timeout_ms)
+        {
+            return 0;
+        }
+        usleep(WAIT_POLL_INTERVAL_US);
+        waited_ms += WAIT_POLL_INTERVAL_US / 1000;
     }
 }
 
@@ -251,6 +275,87 @@ static void run_pid_namespace_test(void)
     CHECK(now == parent_pid, "parent getpid() unchanged after child clone");
 }
 
+static void run_pid_namespace_shutdown_test(void)
+{
+    pid_t namespace_init = clone3_child(CLONE_NEWPID);
+    CHECK(namespace_init >= 0, "clone namespace init for shutdown test");
+
+    if (namespace_init == 0)
+    {
+        int zombie_ready[2];
+        if (pipe(zombie_ready) != 0)
+        {
+            _exit(2);
+        }
+
+        pid_t holder = fork();
+        if (holder < 0)
+        {
+            _exit(3);
+        }
+        if (holder == 0)
+        {
+            close(zombie_ready[0]);
+            pid_t zombie = fork();
+            if (zombie < 0)
+            {
+                _exit(4);
+            }
+            if (zombie == 0)
+            {
+                _exit(0);
+            }
+
+            siginfo_t observation;
+            memset(&observation, 0, sizeof(observation));
+            if (waitid(P_PID, (id_t)zombie, &observation,
+                       WEXITED | WNOWAIT) != 0)
+            {
+                _exit(5);
+            }
+            const char ready = 'Z';
+            if (write(zombie_ready[1], &ready, sizeof(ready))
+                != (ssize_t)sizeof(ready))
+            {
+                _exit(7);
+            }
+            for (;;)
+            {
+                pause();
+            }
+        }
+
+        close(zombie_ready[1]);
+        char ready = 0;
+        read_exact(zombie_ready[0], &ready, sizeof(ready));
+        close(zombie_ready[0]);
+        if (ready != 'Z')
+        {
+            _exit(6);
+        }
+
+        /*
+         * The namespace init exits while a live parent retains a WNOWAIT
+         * zombie. Shutdown must kill the parent, service the newly reparented
+         * zombie, and only then release PID 1.
+         */
+        _exit(0);
+    }
+
+    int status;
+    pid_t waited = waitpid_with_timeout(
+        namespace_init, &status, NAMESPACE_SHUTDOWN_TIMEOUT_MS);
+    CHECK(waited == namespace_init,
+          "wait for PID namespace shutdown");
+    if (waited != namespace_init)
+    {
+        kill(namespace_init, SIGKILL);
+        return;
+    }
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "PID namespace init exits after zombie shutdown");
+}
+
 static void run_user_namespace_test(void)
 {
     /* Save pre-unshare uid for later comparison. */
@@ -282,6 +387,7 @@ int main(void)
 
     run_uts_namespace_test();
     run_pid_namespace_test();
+    run_pid_namespace_shutdown_test();
     run_user_namespace_test();
 
     TEST_DONE();

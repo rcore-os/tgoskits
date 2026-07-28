@@ -1,9 +1,10 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxError, AxResult};
 use ax_fs_ng::vfs::FS_CONTEXT;
 use ax_kspin::SpinNoIrq;
 use ax_runtime::hal::cpu::uspace::UserContext;
+use axnsproxy::PidReservationKind;
 use bitflags::bitflags;
 use bytemuck::{AnyBitPattern, NoUninit};
 use linux_raw_sys::general::*;
@@ -22,7 +23,7 @@ use crate::{
     mm::copy_from_kernel,
     task::{
         ProcessData, ProcessDataInit, ProcessImage, Thread, allocate_user_tid, current_user_task,
-        new_user_task, register_prepared_task,
+        new_user_task, notify_members_changed, register_prepared_task,
     },
 };
 
@@ -163,7 +164,7 @@ impl Drop for UnpublishedThread {
 
 struct PendingChildPidNamespace {
     owner: Arc<ProcessData>,
-    namespace: Arc<SpinNoIrq<axnsproxy::PidNamespace>>,
+    namespace: axnsproxy::PidNamespaceRef,
     committed: bool,
 }
 
@@ -177,7 +178,7 @@ impl PendingChildPidNamespace {
         })
     }
 
-    fn namespace(&self) -> Arc<SpinNoIrq<axnsproxy::PidNamespace>> {
+    fn namespace(&self) -> axnsproxy::PidNamespaceRef {
         self.namespace.clone()
     }
 
@@ -199,38 +200,56 @@ impl Drop for PendingChildPidNamespace {
     }
 }
 
-struct LocalPidReservation {
-    namespace: Arc<SpinNoIrq<axnsproxy::PidNamespace>>,
-    global_tid: u64,
+struct NamespacePidReservation {
+    namespace: axnsproxy::PidNamespaceRef,
     local_pid: u32,
+}
+
+struct LocalPidReservations {
+    entries: Vec<NamespacePidReservation>,
+    global_tid: u64,
     committed: bool,
 }
 
-impl LocalPidReservation {
+impl LocalPidReservations {
     fn reserve(
-        namespace: Arc<SpinNoIrq<axnsproxy::PidNamespace>>,
+        namespace: axnsproxy::PidNamespaceRef,
         global_tid: u64,
+        kind: PidReservationKind,
         namespace_init: bool,
-    ) -> Option<Self> {
-        let mut state = namespace.lock();
-        if state.level == 0 {
-            return None;
+    ) -> AxResult<Option<Self>> {
+        if namespace.level() == 0 {
+            return Ok(None);
         }
-        let local_pid = state.alloc_local_pid(global_tid);
-        if namespace_init {
-            assert_eq!(
-                local_pid, 1,
-                "new PID namespace must publish its init task as PID 1"
-            );
-            state.set_init_global_tid(global_tid);
-        }
-        drop(state);
-        Some(Self {
-            namespace,
+
+        let mut reservations = Self {
+            entries: Vec::new(),
             global_tid,
-            local_pid,
             committed: false,
-        })
+        };
+        for (index, namespace) in axnsproxy::pid_namespace_lineage(&namespace)
+            .into_iter()
+            .filter(|namespace| namespace.level() > 0)
+            .enumerate()
+        {
+            let local_pid =
+                namespace.reserve_local_pid(global_tid, kind, namespace_init && index == 0)?;
+            debug_assert!(!namespace_init || index != 0 || local_pid == 1);
+            reservations.entries.push(NamespacePidReservation {
+                namespace,
+                local_pid,
+            });
+        }
+        Ok(Some(reservations))
+    }
+
+    fn publish(&self, _publication: &ax_sync::PiMutexGuard<'static, ()>) -> AxResult<()> {
+        for entry in &self.entries {
+            entry
+                .namespace
+                .publish_reserved_pid(self.global_tid, entry.local_pid)?;
+        }
+        Ok(())
     }
 
     fn commit(mut self) {
@@ -238,15 +257,18 @@ impl LocalPidReservation {
     }
 }
 
-impl Drop for LocalPidReservation {
+impl Drop for LocalPidReservations {
     fn drop(&mut self) {
         if !self.committed {
-            assert!(
-                self.namespace
-                    .lock()
-                    .release_unpublished_local_pid(self.global_tid, self.local_pid),
-                "PID namespace reservation changed before clone rollback"
-            );
+            for entry in self.entries.iter().rev() {
+                assert!(
+                    entry
+                        .namespace
+                        .rollback_pid_reservation(self.global_tid, entry.local_pid),
+                    "PID namespace reservation changed before clone rollback"
+                );
+            }
+            notify_members_changed();
         }
     }
 }
@@ -604,8 +626,13 @@ impl CloneArgs {
 
         let unpublished_thread = UnpublishedThread::register(new_proc_data.proc.clone(), tid);
         let pid_namespace = new_proc_data.nsproxy.lock().pid_ns.clone();
+        let pid_kind = if flags.contains(CloneFlags::THREAD) {
+            PidReservationKind::Thread
+        } else {
+            PidReservationKind::Process
+        };
         let local_pid_reservation =
-            LocalPidReservation::reserve(pid_namespace, tid as u64, namespace_init);
+            LocalPidReservations::reserve(pid_namespace, tid as u64, pid_kind, namespace_init)?;
 
         let parent_cred = Some(curr_thread.cred());
         let thr = Thread::new(
@@ -710,11 +737,6 @@ impl CloneArgs {
         )
         .map_err(map_task_creation_error)?;
 
-        let published_process = prepared_process
-            .map(|process| process.publish().ok_or(AxError::BadState))
-            .transpose()?;
-        let task_registration = prepared_task
-            .with_task(|task| register_prepared_task(task, !flags.contains(CloneFlags::THREAD)))?;
         let installed_pidfd = pidfd_file.map(InstalledPidFd::install).transpose()?;
         let pidfd_write = installed_pidfd
             .as_ref()
@@ -732,10 +754,23 @@ impl CloneArgs {
                     .map_err(crate::cgroup::cgroup_error)?,
             )
         };
+        // Linux performs the final PIDNS_ADDING check while holding
+        // tasklist_lock and permits no failure after task visibility. The
+        // sleeping publication gate is the Starry task-context equivalent:
+        // namespace shutdown takes the same gate before disabling allocation
+        // and closing child publication.
+        let publication = crate::task::lock_publication();
+        if let Some(reservation) = &local_pid_reservation {
+            reservation.publish(&publication)?;
+        }
+        let published_process = prepared_process
+            .map(|process| process.publish().ok_or(AxError::BadState))
+            .transpose()?;
+        let task_registration = prepared_task
+            .with_task(|task| register_prepared_task(task, !flags.contains(CloneFlags::THREAD)))?;
         if let Some(guard) = &mut cgroup_guard {
             guard.commit();
         }
-
         let _task = match prepared_task.publish() {
             Ok(task) => task,
             Err(error) => {
@@ -774,6 +809,7 @@ impl CloneArgs {
         if let Some(namespace) = pending_pid_namespace {
             namespace.commit();
         }
+        drop(publication);
         if let Some(event) = ptrace_clone_event {
             event.publish();
         }

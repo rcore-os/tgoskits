@@ -5,6 +5,7 @@ pub mod futex;
 pub mod future;
 mod job_control;
 mod ops;
+mod pid_namespace;
 pub mod posix_timer;
 mod process_accounting;
 mod process_identity;
@@ -37,7 +38,6 @@ use starry_signal::{
     api::{ProcessSignalManager, SignalActions},
 };
 
-pub(crate) use self::process_identity::*;
 pub use self::{
     cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable,
     process_image::ProcessImage, process_wait::wait_on_pollset, resources::*, scheduler_task::*,
@@ -57,6 +57,7 @@ pub(crate) use self::{
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
 };
+pub(crate) use self::{pid_namespace::*, process_identity::*};
 use crate::mm::AddrSpace;
 
 pub struct ProcessData {
@@ -145,14 +146,15 @@ impl ProcessData {
             wait_parent_tid,
             vm_aspace_shared,
         } = init;
-        let pid_namespace = nsproxy.pid_ns.clone();
+        let pid_namespaces: Arc<[axnsproxy::PidNamespaceRef]> =
+            axnsproxy::pid_namespace_lineage(&nsproxy.pid_ns).into();
         let this = Arc::new_cyclic(|weak| {
             let wait = ProcessWaitState::new(exit_signal, wait_parent_tid);
             let identity = ProcessIdentity::new(
                 proc.clone(),
                 wait.exit_event_arc(),
                 weak.clone(),
-                pid_namespace.clone(),
+                pid_namespaces.clone(),
             );
             Self {
                 proc,

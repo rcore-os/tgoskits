@@ -987,7 +987,7 @@ impl SimpleDirOps for NsDir {
             }
             "pid" => {
                 let nsproxy = proc_data.nsproxy.lock();
-                let ns_id = nsproxy.pid_ns.lock().id;
+                let ns_id = nsproxy.pid_ns.id();
                 format!("pid:[{}]\n", ns_id)
             }
             "net" => {

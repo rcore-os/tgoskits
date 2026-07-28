@@ -5,8 +5,8 @@ use ax_errno::AxResult;
 use ax_fs_ng::MountNamespace as FsMountNamespace;
 use ax_kspin::SpinNoIrq;
 use axnsproxy::{
-    CgroupNamespace, IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace, PidNamespace,
-    UserNamespace, UtNamespace,
+    CgroupNamespace, IpcNamespace, MntNamespace as ProxyMntNamespace, NetNamespace,
+    PidNamespaceRef, UserNamespace, UtNamespace,
 };
 use axpoll::{IoEvents, Pollable};
 use linux_raw_sys::general::{
@@ -27,7 +27,7 @@ pub enum NsFd {
         ns: Arc<SpinNoIrq<ProxyMntNamespace>>,
         fs_ns: Arc<FsMountNamespace>,
     },
-    Pid(Arc<SpinNoIrq<PidNamespace>>),
+    Pid(PidNamespaceRef),
     Net(Arc<SpinNoIrq<NetNamespace>>),
     User(Arc<SpinNoIrq<UserNamespace>>),
     Cgroup(Arc<SpinNoIrq<CgroupNamespace>>),
@@ -66,7 +66,7 @@ impl FileLike for NsFd {
             NsFd::Uts(ns) => ns.lock().id,
             NsFd::Ipc(ns) => ns.lock().ns_id,
             NsFd::Mnt { ns, .. } => ns.lock().id(),
-            NsFd::Pid(ns) => ns.lock().id,
+            NsFd::Pid(ns) => ns.id(),
             NsFd::Net(ns) => ns.lock().ns_id,
             NsFd::User(ns) => ns.lock().id,
             NsFd::Cgroup(ns) => ns.lock().id(),

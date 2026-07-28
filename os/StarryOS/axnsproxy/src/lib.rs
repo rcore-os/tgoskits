@@ -18,7 +18,9 @@ pub use cgroup::{ROOT_CGROUP_NS, new_cgroup_namespace};
 pub use ipc::{IpcNamespace, ROOT_IPC_NS};
 pub use mnt::{MntNamespace, ROOT_MNT_NS};
 pub use net::{NetNamespace, ROOT_NET_NS};
-pub use pid::{PidNamespace, ROOT_PID_NS};
+pub use pid::{
+    PidNamespace, PidNamespaceRef, PidReservationKind, ROOT_PID_NS, pid_namespace_lineage,
+};
 pub use user::{ROOT_USER_NS, UserNamespace};
 pub use uts::{ROOT_UTS_NS, UtNamespace, build_utsname};
 
@@ -43,12 +45,12 @@ pub struct NsProxy {
     /// The mount namespace (filesystem mount points).
     pub mnt_ns: Arc<SpinNoIrq<MntNamespace>>,
     /// The PID namespace (process ID numbering).
-    pub pid_ns: Arc<SpinNoIrq<PidNamespace>>,
+    pub pid_ns: PidNamespaceRef,
     /// Pending PID namespace for the next child created via
     /// `unshare(CLONE_NEWPID)`.  Linux does not move the calling
     /// process into a new PID namespace; instead the next fork/clone
     /// child becomes the first process (PID 1) in the new namespace.
-    pub child_pid_ns: Option<Arc<SpinNoIrq<PidNamespace>>>,
+    pub child_pid_ns: Option<PidNamespaceRef>,
     /// The network namespace (interfaces, routing, sockets).
     pub net_ns: Arc<SpinNoIrq<NetNamespace>>,
     /// The user namespace (UID/GID mappings).
@@ -125,8 +127,7 @@ impl NsProxy {
 
     /// Directly replace the PID namespace — used in `clone(CLONE_NEWPID)`.
     pub fn unshare_pid(&mut self) {
-        let new_inner = self.pid_ns.lock().clone_ns();
-        self.pid_ns = Arc::new(SpinNoIrq::new(new_inner));
+        self.pid_ns = Arc::new(PidNamespace::new_child(self.pid_ns.clone()));
     }
 
     /// Prepare a new PID namespace for the next child of this process.
@@ -135,17 +136,13 @@ impl NsProxy {
     /// its current PID namespace; the new namespace is consumed by the
     /// next `fork` / `clone` child, which becomes PID 1 in that namespace.
     pub fn prepare_child_pid_ns(&mut self) {
-        let new_inner = self.pid_ns.lock().clone_ns();
-        self.child_pid_ns = Some(Arc::new(SpinNoIrq::new(new_inner)));
+        self.child_pid_ns = Some(Arc::new(PidNamespace::new_child(self.pid_ns.clone())));
     }
 
     /// Restores a consumed next-child PID namespace if no newer reservation
     /// has been published in the meantime.
     #[must_use]
-    pub fn restore_child_pid_ns_if_empty(
-        &mut self,
-        namespace: Arc<SpinNoIrq<PidNamespace>>,
-    ) -> bool {
+    pub fn restore_child_pid_ns_if_empty(&mut self, namespace: PidNamespaceRef) -> bool {
         restore_if_empty(&mut self.child_pid_ns, namespace)
     }
 
@@ -185,7 +182,7 @@ impl NsProxy {
     /// `CLONE_NEWPID`) child enters it and becomes PID 1 there.  This mirrors
     /// `unshare(CLONE_NEWPID)` — both paths write to `child_pid_ns`, which is
     /// consumed in the clone path.  The caller must be single-threaded.
-    pub fn set_ns_pid(&mut self, ns: Arc<SpinNoIrq<PidNamespace>>) {
+    pub fn set_ns_pid(&mut self, ns: PidNamespaceRef) {
         self.child_pid_ns = Some(ns);
     }
 
@@ -248,11 +245,6 @@ mod tests {
         assert!(Arc::ptr_eq(&nsproxy.cgroup_ns, &ROOT_CGROUP_NS));
         assert_eq!(Arc::strong_count(&exiting_namespace), 1);
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::restore_if_empty;
 
     #[test]
     fn pending_pid_namespace_restore_never_overwrites_a_newer_reservation() {

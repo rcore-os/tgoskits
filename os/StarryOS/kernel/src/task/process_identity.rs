@@ -20,7 +20,7 @@ use super::{Cred, ProcessData, current_user_task};
 /// Generation-specific identity retained by the PID registry and pidfds.
 pub(crate) struct ProcessIdentity {
     process: Arc<Process>,
-    pid_namespace: Arc<SpinNoIrq<axnsproxy::PidNamespace>>,
+    pid_namespaces: Arc<[axnsproxy::PidNamespaceRef]>,
     exit_event: Arc<PollSet>,
     state: SpinNoIrq<ProcessIdentityState>,
 }
@@ -53,11 +53,11 @@ impl ProcessIdentity {
         process: Arc<Process>,
         exit_event: Arc<PollSet>,
         proc_data: Weak<ProcessData>,
-        pid_namespace: Arc<SpinNoIrq<axnsproxy::PidNamespace>>,
+        pid_namespaces: Arc<[axnsproxy::PidNamespaceRef]>,
     ) -> Arc<Self> {
         Arc::new(Self {
             process,
-            pid_namespace,
+            pid_namespaces,
             exit_event,
             state: SpinNoIrq::new(ProcessIdentityState::Live(proc_data)),
         })
@@ -74,8 +74,20 @@ impl ProcessIdentity {
     }
 
     /// Returns the immutable PID namespace membership for this generation.
-    pub(crate) fn pid_namespace(&self) -> Arc<SpinNoIrq<axnsproxy::PidNamespace>> {
-        self.pid_namespace.clone()
+    pub(crate) fn pid_namespace(&self) -> axnsproxy::PidNamespaceRef {
+        self.pid_namespaces[0].clone()
+    }
+
+    /// Returns all PID namespace identities from the active level to root.
+    pub(crate) fn pid_namespaces(&self) -> &[axnsproxy::PidNamespaceRef] {
+        &self.pid_namespaces
+    }
+
+    /// Returns whether this generation is visible in one namespace level.
+    pub(crate) fn belongs_to_pid_namespace(&self, namespace: &axnsproxy::PidNamespaceRef) -> bool {
+        self.pid_namespaces
+            .iter()
+            .any(|member| Arc::ptr_eq(member, namespace))
     }
 
     /// Returns the event shared by process pidfds across all lifecycle states.
@@ -332,6 +344,7 @@ pub(crate) fn reap_process(process: &Arc<Process>) -> Option<ProcessCpuTime> {
         identity.finish_reap();
         process_table.remove(&process.pid());
     }
+    super::pid_namespace::release_process_pid(&identity);
     unsafe {
         identity
             .exit_event
@@ -367,13 +380,10 @@ pub(crate) enum OrphanReaper {
     /// Reparent existing children to a live reaper in the same PID namespace.
     ReparentTo(Arc<Process>),
     /// Retain children while the PID namespace reaper shuts the namespace down.
-    ShutdownNamespace(Arc<SpinNoIrq<axnsproxy::PidNamespace>>),
+    ShutdownNamespace(axnsproxy::PidNamespaceRef),
 }
 
-fn same_pid_namespace(
-    process: &Arc<Process>,
-    namespace: &Arc<SpinNoIrq<axnsproxy::PidNamespace>>,
-) -> bool {
+fn same_pid_namespace(process: &Arc<Process>, namespace: &axnsproxy::PidNamespaceRef) -> bool {
     process_identity(process)
         .is_some_and(|identity| Arc::ptr_eq(&identity.pid_namespace(), namespace))
 }
@@ -385,14 +395,42 @@ fn registered_process(pid: Pid) -> Option<Arc<Process>> {
         .map(|identity| identity.process())
 }
 
+/// Returns the live namespace init that must autoreap this shutdown victim.
+pub(crate) fn namespace_shutdown_parent(process: &Arc<Process>) -> Option<Arc<ProcessData>> {
+    let identity = process_identity(process)?;
+    let parent = process.parent()?;
+    for namespace in identity.pid_namespaces() {
+        if !namespace.is_shutting_down() {
+            continue;
+        }
+        let init_pid = Pid::try_from(namespace.init_global_tid()?).ok()?;
+        if parent.pid() != init_pid {
+            continue;
+        }
+        let init_identity = PROCESS_TABLE.read().get(&init_pid)?.clone();
+        if Arc::ptr_eq(&init_identity.process(), &parent)
+            && init_identity.belongs_to_pid_namespace(namespace)
+        {
+            return init_identity.live_data();
+        }
+    }
+    None
+}
+
+/// Returns whether a stable process generation belongs to this PID namespace.
+pub(crate) fn process_belongs_to_pid_namespace(
+    process: &Arc<Process>,
+    namespace: &axnsproxy::PidNamespaceRef,
+) -> bool {
+    process_identity(process).is_some_and(|identity| identity.belongs_to_pid_namespace(namespace))
+}
+
 /// Chooses the nearest live child subreaper without crossing a PID namespace.
 pub(crate) fn orphan_reaper_for(proc_data: &Arc<ProcessData>) -> OrphanReaper {
     let process = &proc_data.proc;
     let namespace = proc_data.identity().pid_namespace();
-    let (level, init_global_tid) = {
-        let state = namespace.lock();
-        (state.level, state.init_global_tid())
-    };
+    let level = namespace.level();
+    let init_global_tid = namespace.init_global_tid();
 
     if level > 0 && init_global_tid == Some(process.pid() as u64) {
         return OrphanReaper::ShutdownNamespace(namespace);
