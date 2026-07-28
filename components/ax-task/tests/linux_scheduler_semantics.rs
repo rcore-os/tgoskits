@@ -11,7 +11,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_task::{
-    CpuId, CpuSet, DeadlineEntity, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiLockId,
+    CpuId, CpuSet, DeadlineEntity, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiLockIdentity,
     RtPriority, SchedulePolicy, TaskError, TaskSystem, TaskSystemConfig, ThreadExtension,
     ThreadExtensionOps, ThreadId, ThreadSpec, ThreadState,
 };
@@ -86,7 +86,7 @@ fn pi_boosted_rt_owner_runs_past_quota_to_release_the_lock() {
     system.enqueue(cpu.as_mut(), owner.id(), 0).unwrap();
     assert_eq!(system.schedule(cpu.as_mut(), 0).unwrap().next(), owner.id());
 
-    let lock = PiLockId::new(0x5254);
+    let lock = PiLockIdentity::new().id().unwrap();
     let _wait = system.pi_wait_start(lock, waiter.id(), owner.id()).unwrap();
     system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
     system.enqueue(cpu.as_mut(), competitor.id(), 0).unwrap();

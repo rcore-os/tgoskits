@@ -8,7 +8,7 @@ use core::{
 use ax_kernel_guard::NoPreempt as PreemptGuard;
 use ax_kspin::SpinNoIrq;
 use ax_task::{
-    PiLockId, PiWaitToken, TaskError, ThreadHandle, ThreadId, ThreadWakeHandle,
+    PiLockId, PiLockIdentity, PiWaitToken, TaskError, ThreadHandle, ThreadId, ThreadWakeHandle,
     current_thread_handle, current_thread_id, pi_block_current, pi_mutex_handoff, pi_wait_cancel,
     pi_wait_start, pi_wake, validate_blocking_context,
 };
@@ -22,6 +22,7 @@ use crate::pi::{WaiterNode, WaiterPointer, WaiterQueue};
 /// that metadata guard has been released.
 pub struct RawMutex {
     metadata: SpinNoIrq<MutexMetadata>,
+    identity: PiLockIdentity,
     next_waiter_sequence: AtomicU64,
     pending_registrations: AtomicUsize,
     #[cfg(feature = "lockdep")]
@@ -91,6 +92,7 @@ impl RawMutex {
     pub const fn new() -> Self {
         Self {
             metadata: SpinNoIrq::new(MutexMetadata::new()),
+            identity: PiLockIdentity::new(),
             next_waiter_sequence: AtomicU64::new(0),
             pending_registrations: AtomicUsize::new(0),
             #[cfg(feature = "lockdep")]
@@ -106,7 +108,7 @@ impl RawMutex {
 
     #[inline(always)]
     fn lock_id(&self) -> PiLockId {
-        PiLockId::new((self as *const Self).expose_provenance())
+        task_result(self.identity.id(), "allocate PI mutex identity")
     }
 
     fn lock_pi(&self) {
@@ -520,7 +522,7 @@ pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
 #[cfg(test)]
 mod tests {
     use alloc::boxed::Box;
-    use core::pin::Pin;
+    use core::{mem::MaybeUninit, pin::Pin};
 
     use ax_task::{CpuId, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
 
@@ -538,6 +540,29 @@ mod tests {
         assert_eq!(metadata.owner, None);
         assert!(metadata.owner_registered);
         assert!(metadata.waiters.is_empty());
+    }
+
+    #[test]
+    fn reconstructed_mutex_does_not_reuse_the_previous_pi_identity() {
+        let mut storage = MaybeUninit::<RawMutex>::uninit();
+        let pointer = storage.as_mut_ptr();
+
+        let (first, second) = unsafe {
+            // SAFETY: each write begins a fresh RawMutex lifetime in the same
+            // storage, and each initialized value is dropped exactly once.
+            pointer.write(RawMutex::new());
+            let first = (&*pointer).lock_id();
+            pointer.drop_in_place();
+            pointer.write(RawMutex::new());
+            let second = (&*pointer).lock_id();
+            pointer.drop_in_place();
+            (first, second)
+        };
+
+        assert_ne!(
+            first, second,
+            "a stale scheduler edge must not alias a reconstructed mutex"
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
+use crate::PiLockIdentity;
 
 fn publish_test_scheduler_work(
     remote: &CpuRemote,
@@ -1755,7 +1756,7 @@ fn queued_pi_owner_is_requeued_only_by_its_owner_cpu() {
         system.make_ready(thread.id()).unwrap();
         system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
     }
-    let lock = PiLockId::new(1);
+    let lock = PiLockIdentity::new().id().unwrap();
 
     let _wait = system.pi_wait_start(lock, waiter.id(), owner.id()).unwrap();
 
@@ -1784,7 +1785,7 @@ fn effective_rt_entity_never_replaces_the_base_rr_accounting() {
     system.make_ready(owner.id()).unwrap();
     system.enqueue(cpu.as_mut(), owner.id(), 0).unwrap();
     let _wait = system
-        .pi_wait_start(PiLockId::new(0x5151), donor.id(), owner.id())
+        .pi_wait_start(PiLockIdentity::new().id().unwrap(), donor.id(), owner.id())
         .unwrap();
     system.drain_policy_updates(cpu.as_mut(), 0).unwrap();
 
@@ -1821,8 +1822,8 @@ fn chained_and_multi_lock_donations_are_withdrawn_independently() {
             RtPriority::new(99).unwrap(),
         )))
         .unwrap();
-    let first_lock = PiLockId::new(11);
-    let second_lock = PiLockId::new(12);
+    let first_lock = PiLockIdentity::new().id().unwrap();
+    let second_lock = PiLockIdentity::new().id().unwrap();
     let chained = system
         .pi_wait_start(first_lock, second_owner.id(), first_owner.id())
         .unwrap();
@@ -1858,7 +1859,7 @@ fn deadline_donor_budget_is_debited_and_overrun_callback_is_deferred() {
     let donor = system
         .create_thread(ThreadSpec::new(deadline).with_extension(extension))
         .unwrap();
-    let lock = PiLockId::new(21);
+    let lock = PiLockIdentity::new().id().unwrap();
     for thread in [&owner, &donor] {
         system.make_ready(thread.id()).unwrap();
         system.enqueue(cpu.as_mut(), thread.id(), 0).unwrap();
@@ -1926,7 +1927,7 @@ fn remote_pi_owner_exclusively_borrows_the_donor_cbs_entity() {
     );
 
     let _wait = system
-        .pi_wait_start(PiLockId::new(0xC85), donor.id(), owner.id())
+        .pi_wait_start(PiLockIdentity::new().id().unwrap(), donor.id(), owner.id())
         .unwrap();
     assert_ne!(
         system.block_current(cpu0.as_mut()).unwrap().next(),

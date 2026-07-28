@@ -5,20 +5,66 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{TaskError, ThreadCore, ThreadId};
 
+static NEXT_PI_LOCK_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 /// Stable identity of one kernel PI mutex.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PiLockId(usize);
+pub struct PiLockId(u64);
 
 impl PiLockId {
-    /// Creates a PI lock identity from its stable address-sized key.
-    pub const fn new(value: usize) -> Self {
-        Self(value)
+    /// Returns the globally unique generation allocated to this lock instance.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Lazily allocated identity owned by one physical PI lock instance.
+///
+/// Keeping the allocator state inside the lock makes reconstructing a lock at
+/// the same address allocate a fresh generation. The generation is never
+/// reused, but the physical lock owner must still quiesce all scheduler wait
+/// registrations before destruction.
+#[derive(Debug)]
+pub struct PiLockIdentity {
+    generation: AtomicU64,
+}
+
+impl PiLockIdentity {
+    /// Creates an identity owner that has not yet entered the PI scheduler.
+    pub const fn new() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+        }
     }
 
-    /// Returns the underlying identity key.
-    pub const fn get(self) -> usize {
-        self.0
+    /// Returns this lock's stable generation, allocating it on first use.
+    pub fn id(&self) -> Result<PiLockId, TaskError> {
+        let observed = self.generation.load(Ordering::Acquire);
+        if observed != 0 {
+            return Ok(PiLockId(observed));
+        }
+
+        let allocated = NEXT_PI_LOCK_GENERATION
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |next| {
+                next.checked_add(1)
+            })
+            .map(PiLockId)
+            .map_err(|_| TaskError::InvalidPiState)?;
+        match self
+            .generation
+            .compare_exchange(0, allocated.0, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => Ok(allocated),
+            Err(installed) if installed != 0 => Ok(PiLockId(installed)),
+            Err(_) => Err(TaskError::InvalidPiState),
+        }
+    }
+}
+
+impl Default for PiLockIdentity {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
