@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace blocking `ScopeCell` lease operations with bounded `try_*` APIs and
+  typed `ScopeCellBusy` contention.
+
+### Fixed
+
+- Publish active-scope writer ownership before withdrawing the scheduler lease,
+  preventing reader admission races and read-to-write self-deadlock.
+
 ## [0.4.4](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.3...scope-local-v0.4.4) - 2026-08-03
 
 ### Fixed

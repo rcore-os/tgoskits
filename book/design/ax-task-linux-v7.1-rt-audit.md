@@ -140,8 +140,18 @@ slots no longer lengthen the IRQ-disabled metadata transaction. The
 deterministic regression populated 128 unrelated records and observed 260
 whole-registry donor-record visits before the change, then only the one
 registered donor afterward. Each chain preflight also checks link direction
-and the cached waiter count before any mutation. Scope-local serialization and
-IRQ-visible waiter quiescence remain open.
+and the cached waiter count before any mutation.
+
+Scope-local mutation now follows the PREEMPT_RT `local_lock` boundary: the
+low-level component only performs bounded lease transitions while migration is
+disabled, while Starry serializes task-context resource-scope reads and writes
+with a PI mutex before entering the pinned section. Upgrading the current
+activation is one `shared -> exclusive` compare-exchange, so writer intent is
+visible before the active lease is withdrawn. A retained remote read or a
+second CPU activation returns `ScopeCellBusy`; it cannot make the caller spin
+or panic with IRQs disabled. The deterministic regression exercises both the
+old admission window and a read-then-mutate self-deadlock. IRQ-visible waiter
+quiescence remains open.
 
 ## Completion rules
 
