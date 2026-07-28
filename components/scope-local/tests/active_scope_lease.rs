@@ -45,28 +45,35 @@ fn active_scope_holds_one_shared_lease_until_switch_out() {
     };
     assert_eq!(VALUE.with(|value| *value), 7);
 
-    let (release_activation_tx, release_activation_rx) = mpsc::channel();
-    let (activated_tx, activated_rx) = mpsc::channel();
+    let (second_activation_tx, second_activation_rx) = mpsc::channel();
+    let second_scope = Arc::clone(&scope);
+    let second_activation = thread::spawn(move || {
+        bind_test_cpu(1);
+        // SAFETY: the test immediately tears down any activation admitted by
+        // the old implementation before publishing the observed result.
+        let result = unsafe {
+            ax_percpu::with_cpu_pin(|pin| second_scope.try_activate_pinned(pin))
+                .expect("CPU 1 must have an installed CPU area")
+        };
+        let published = !ActiveScope::is_global();
+        if result.is_ok() {
+            // SAFETY: this releases the activation admitted above so the
+            // regression can report the old behavior without leaking it.
+            unsafe {
+                ax_percpu::with_cpu_pin(|pin| second_scope.deactivate_pinned(pin))
+                    .expect("CPU 1 must retain its installed CPU area")
+            };
+        }
+        second_activation_tx.send((result, published)).unwrap();
+    });
+    let second_activation_result = second_activation_rx.recv().unwrap();
+    second_activation.join().unwrap();
+
     let (attempted_tx, attempted_rx) = mpsc::channel();
     let (acquired_tx, acquired_rx) = mpsc::channel();
     let writer_scope = Arc::clone(&scope);
     let writer = thread::spawn(move || {
         bind_test_cpu(1);
-        // SAFETY: this thread owns CPU 1's activation until the matching
-        // deactivation below.
-        unsafe {
-            ax_percpu::with_cpu_pin(|pin| writer_scope.try_activate_pinned(pin))
-                .expect("CPU 1 must have an installed CPU area")
-                .expect("a shared scheduler activation must be admitted")
-        };
-        activated_tx.send(()).unwrap();
-        release_activation_rx.recv().unwrap();
-        // SAFETY: this releases CPU 1's activation established above.
-        unsafe {
-            ax_percpu::with_cpu_pin(|pin| writer_scope.deactivate_pinned(pin))
-                .expect("CPU 1 must retain its installed CPU area")
-        };
-
         attempted_tx.send(()).unwrap();
         let mut guard = loop {
             match writer_scope.try_write() {
@@ -79,18 +86,17 @@ fn active_scope_holds_one_shared_lease_until_switch_out() {
         acquired_tx.send(()).unwrap();
     });
 
-    activated_rx.recv().unwrap();
-    let multi_cpu_result = unsafe {
+    // A sole scheduler activation upgrades without polling or waiting.
+    let sole_activation_result = unsafe {
         ax_percpu::with_cpu_pin(|pin| {
-            scope.try_with_active_mut_pinned(pin, |_guard| {
-                panic!("a multi-CPU activation must not enter mutation")
+            scope.try_with_active_mut_pinned(pin, |guard| {
+                *VALUE.scope_cell_mut(guard) = 9;
             })
         })
         .expect("CPU 0 must retain its installed CPU area")
     };
-    assert_eq!(multi_cpu_result, Err(ScopeCellBusy));
-    assert_eq!(VALUE.with(|value| *value), 7);
-    release_activation_tx.send(()).unwrap();
+    assert_eq!(sole_activation_result, Ok(()));
+    assert_eq!(VALUE.with(|value| *value), 9);
 
     attempted_rx.recv().unwrap();
     let acquired_while_active = match acquired_rx.recv_timeout(Duration::from_millis(200)) {
@@ -175,4 +181,9 @@ fn active_scope_holds_one_shared_lease_until_switch_out() {
     };
 
     assert!(ActiveScope::is_global());
+    assert_eq!(
+        second_activation_result,
+        (Err(ScopeCellBusy), false),
+        "a task-owned scope must reject a second scheduler activation before publishing it"
+    );
 }

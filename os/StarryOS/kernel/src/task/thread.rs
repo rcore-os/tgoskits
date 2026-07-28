@@ -8,7 +8,7 @@ use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::percpu::CpuPin;
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::PollSet;
-use scope_local::{Scope, ScopeCell, ScopeCellBusy, ScopeCellReadGuard, ScopeCellWriteGuard};
+use scope_local::{Scope, ScopeCell, ScopeCellReadGuard, ScopeCellWriteGuard};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
 use super::{
@@ -47,6 +47,41 @@ impl ThreadScope {
             cell: ScopeCell::from_scope(scope),
             access: PiMutex::new(()),
         }
+    }
+
+    fn with_current_mut<R>(&self, operation: impl FnOnce(&mut ScopeCellWriteGuard<'_>) -> R) -> R {
+        let _access = self.access.lock();
+        let _guard = NoPreemptIrqSave::new();
+        // SAFETY: the combined guard pins this task to the CPU and prevents
+        // local IRQ reentry for the bounded lease transition and callback.
+        unsafe {
+            ax_runtime::hal::percpu::with_cpu_pin(|pin| {
+                self.cell.try_with_active_mut_pinned(pin, operation)
+            })
+            .expect("Starry scope mutation requires an installed CPU area")
+            .expect("serialized current scope mutation lost its sole scheduler activation")
+        }
+    }
+
+    fn with_read<R>(&self, operation: impl FnOnce(&ScopeCellReadGuard<'_>) -> R) -> R {
+        let _access = self.access.lock();
+        let scope = self
+            .cell
+            .try_read()
+            .expect("serialized Starry scope read found an active writer");
+        operation(&scope)
+    }
+
+    unsafe fn activate_pinned(&self, pin: &CpuPin<'_>) {
+        // SAFETY: the scheduler switch baton retains this object and pins the
+        // CPU until the matching switch-out callback.
+        unsafe { self.cell.try_activate_pinned(pin) }
+            .expect("Starry scheduler attempted to activate one thread on two CPUs");
+    }
+
+    unsafe fn deactivate_pinned(&self, pin: &CpuPin<'_>) {
+        // SAFETY: forwarded from the matching scheduler switch-out callback.
+        unsafe { self.cell.deactivate_pinned(pin) };
     }
 }
 
@@ -226,46 +261,12 @@ impl Thread {
         &self,
         f: impl FnOnce(&mut ScopeCellWriteGuard<'_>) -> R,
     ) -> R {
-        let mut operation = Some(f);
-        loop {
-            let access = self.scope.access.lock();
-            let attempt = {
-                let _guard = NoPreemptIrqSave::new();
-                // SAFETY: the combined guard prevents migration and local IRQ
-                // reentry for this bounded lease attempt and callback.
-                unsafe {
-                    ax_runtime::hal::percpu::with_cpu_pin(|pin| {
-                        self.scope.cell.try_with_active_mut_pinned(pin, |scope| {
-                            let operation = operation
-                                .take()
-                                .expect("scope mutation must execute at most once");
-                            operation(scope)
-                        })
-                    })
-                    .expect("Starry scope mutation requires an installed CPU area")
-                }
-            };
-            match attempt {
-                Ok(result) => return result,
-                Err(ScopeCellBusy) => {
-                    drop(access);
-                    ax_runtime::task::yield_current_cpu().unwrap_or_else(|error| {
-                        panic!("failed to yield after a contended scope mutation: {error}")
-                    });
-                }
-            }
-        }
+        self.scope.with_current_mut(f)
     }
 
     /// Reads this thread's resource scope under task-context serialization.
     pub(crate) fn with_scope<R>(&self, operation: impl FnOnce(&ScopeCellReadGuard<'_>) -> R) -> R {
-        let _access = self.scope.access.lock();
-        let scope = self
-            .scope
-            .cell
-            .try_read()
-            .expect("serialized Starry scope read found an active writer");
-        operation(&scope)
+        self.scope.with_read(operation)
     }
 
     /// Returns the user-visible TID, which may differ from the scheduler ID
@@ -316,12 +317,7 @@ impl Thread {
         });
         // SAFETY: the scheduler switch baton pins this CPU and retains the
         // thread-owned ProcessData until the matching switch-out callback.
-        unsafe {
-            self.scope
-                .cell
-                .try_activate_pinned(cpu_pin)
-                .expect("Starry switch-in found an active scope writer")
-        };
+        unsafe { self.scope.activate_pinned(cpu_pin) };
         #[cfg(target_arch = "aarch64")]
         crate::perf::task::perf_sched_in(self);
     }
@@ -335,7 +331,7 @@ impl Thread {
         crate::perf::task::perf_sched_out(self);
         // SAFETY: switch-in established exactly one activation for this task,
         // and the scheduler baton still pins the same CPU during switch-out.
-        unsafe { self.scope.cell.deactivate_pinned(cpu_pin) };
+        unsafe { self.scope.deactivate_pinned(cpu_pin) };
         self.proc_data
             .record_cpu_time_transition(|| self.accounting.cpu_time.scheduler_switch_out(reason));
     }
