@@ -325,11 +325,7 @@ pub(super) fn create_thread_resources_with(
     }
     #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
     if let Some(fp_state) = context_state.fp_state {
-        let context = ptr::with_exposed_provenance_mut::<RuntimeContext>(context_result.handle);
-        // SAFETY: the context allocation was just created above and has not
-        // been published to the scheduler, so its FP snapshot is exclusively
-        // owned by this construction path.
-        unsafe { (*(*context).inner.get()).fp_state = fp_state };
+        context::install_initial_fp_state(context_result.handle, fp_state);
     }
     Ok(unsafe {
         // SAFETY: the active runtime created each live handle above and this is
