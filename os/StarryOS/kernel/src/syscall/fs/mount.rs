@@ -11,7 +11,10 @@ use crate::{
     mm::vm_load_string,
     pseudofs::{
         MemoryFs,
-        dev::{new_devptsfs, tty::DevPtsOptions},
+        dev::{
+            new_devptsfs,
+            tty::{DevPtsMount, DevPtsOptions},
+        },
         overlay::OverlayOptions,
     },
     task::{AsThread, tasks},
@@ -50,10 +53,16 @@ fn parse_devpts_mode(value: &str) -> AxResult<NodePermission> {
     NodePermission::from_bits(mode).ok_or(AxError::InvalidInput)
 }
 
-fn parse_devpts_options(data: *const c_void) -> AxResult<DevPtsOptions> {
+enum DevPtsInstanceKind {
+    Legacy,
+    New,
+}
+
+fn parse_devpts_options(data: *const c_void) -> AxResult<DevPtsMount> {
     let mut options = DevPtsOptions::mounted();
+    let mut instance = DevPtsInstanceKind::Legacy;
     if data.is_null() {
-        return Ok(options);
+        return Ok(DevPtsMount::Legacy(options));
     }
 
     for item in vm_load_string(data.cast())?.split(',') {
@@ -61,6 +70,7 @@ fn parse_devpts_options(data: *const c_void) -> AxResult<DevPtsOptions> {
             continue;
         }
         if item == "newinstance" {
+            instance = DevPtsInstanceKind::New;
             continue;
         }
         let (key, value) = item.split_once('=').ok_or(AxError::InvalidInput)?;
@@ -73,7 +83,10 @@ fn parse_devpts_options(data: *const c_void) -> AxResult<DevPtsOptions> {
             _ => return Err(AxError::InvalidInput),
         }
     }
-    Ok(options)
+    Ok(match instance {
+        DevPtsInstanceKind::Legacy => DevPtsMount::Legacy(options),
+        DevPtsInstanceKind::New => DevPtsMount::NewInstance(options),
+    })
 }
 
 fn parse_overlay_options(

@@ -38,6 +38,20 @@ static int mount_devpts(const char *path)
     return 0;
 }
 
+static int mount_legacy_devpts(const char *path)
+{
+    if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+        fail("create legacy devpts mountpoint");
+        return -1;
+    }
+    if (mount("none", path, "devpts", 0,
+              "mode=0620,gid=5,ptmxmode=0666") != 0) {
+        fail("mount legacy devpts instance");
+        return -1;
+    }
+    return 0;
+}
+
 static void check_metadata(const char *path, mode_t mode, gid_t gid,
                            const char *message)
 {
@@ -88,6 +102,59 @@ static int slave_exists(const char *mountpoint, unsigned int number)
 
     struct stat metadata;
     return stat(path, &metadata);
+}
+
+static void check_slave_visible(const char *mountpoint, unsigned int number,
+                                const char *message)
+{
+    if (slave_exists(mountpoint, number) != 0) {
+        fail(message);
+    } else {
+        pass(message);
+    }
+}
+
+static void check_legacy_mounts_share_initial_instance(void)
+{
+    static const char first_mount[] = "/tmp/devpts-legacy-a";
+    static const char second_mount[] = "/tmp/devpts-legacy-b";
+
+    if (mount_legacy_devpts(first_mount) != 0 ||
+        mount_legacy_devpts(second_mount) != 0) {
+        return;
+    }
+
+    unsigned int first_number = ~0U;
+    int first_master = allocate_pty(first_mount, &first_number);
+    if (first_master < 0) {
+        return;
+    }
+    check_slave_visible(second_mount, first_number,
+                        "legacy mounts share slaves with each other");
+    check_slave_visible("/dev/pts", first_number,
+                        "legacy mounts share slaves with the initial instance");
+
+    unsigned int second_number = ~0U;
+    int second_master = allocate_pty(second_mount, &second_number);
+    if (second_master < 0) {
+        close(first_master);
+        return;
+    }
+    if (second_number == first_number) {
+        errno = EPROTO;
+        fail("legacy mounts share one PTY index allocator");
+    } else {
+        pass("legacy mounts share one PTY index allocator");
+    }
+    check_slave_visible(first_mount, second_number,
+                        "second legacy allocation is visible in the first mount");
+
+    close(second_master);
+    close(first_master);
+    umount2(second_mount, MNT_DETACH);
+    umount2(first_mount, MNT_DETACH);
+    rmdir(second_mount);
+    rmdir(first_mount);
 }
 
 static void check_private_controlling_tty(const char *mountpoint,
@@ -227,6 +294,8 @@ int main(void)
     umount2(first_mount, MNT_DETACH);
     rmdir(second_mount);
     rmdir(first_mount);
+
+    check_legacy_mounts_share_initial_instance();
 
     if (failures != 0) {
         printf("TEST_DEVPTS_NEWINSTANCE_FAILED failures=%d\n", failures);

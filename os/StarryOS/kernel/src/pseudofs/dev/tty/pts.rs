@@ -39,26 +39,38 @@ impl DevPtsOptions {
     }
 }
 
+/// Selects whether a devpts mount reuses the initial instance or creates one.
+#[derive(Clone, Copy)]
+pub(crate) enum DevPtsMount {
+    Legacy(DevPtsOptions),
+    NewInstance(DevPtsOptions),
+}
+
 /// PTY index space and mount options owned by one devpts filesystem instance.
 pub(crate) struct PtsInstance {
-    options: DevPtsOptions,
+    options: SpinNoIrq<DevPtsOptions>,
     table: SpinNoIrq<FlattenObjects<Arc<Device>, 16>>,
 }
 
 impl PtsInstance {
     pub(crate) fn new(options: DevPtsOptions) -> Arc<Self> {
         Arc::new(Self {
-            options,
+            options: SpinNoIrq::new(options),
             table: SpinNoIrq::new(FlattenObjects::new()),
         })
     }
 
+    pub(crate) fn update_options(&self, options: DevPtsOptions) {
+        *self.options.lock() = options;
+    }
+
     pub(crate) fn add_slave(&self, fs: Arc<SimpleFs>, pty: Arc<PtyDriver>) -> AxResult<u32> {
+        let options = *self.options.lock();
         let terminal = pty.terminal.clone();
         let device = Device::new(fs, NodeType::CharacterDevice, DeviceId::default(), pty);
         device.update_metadata(MetadataUpdate {
-            mode: Some(self.options.slave_mode),
-            owner: Some((0, self.options.slave_gid)),
+            mode: Some(options.slave_mode),
+            owner: Some((0, options.slave_gid)),
             ..MetadataUpdate::default()
         })?;
 
@@ -73,6 +85,7 @@ impl PtsInstance {
     }
 
     fn ptmx(self: &Arc<Self>, fs: Arc<SimpleFs>) -> VfsResult<Arc<Device>> {
+        let options = *self.options.lock();
         let device = Device::new(
             fs.clone(),
             NodeType::CharacterDevice,
@@ -80,7 +93,7 @@ impl PtsInstance {
             Arc::new(Ptmx::new(fs, self.clone())),
         );
         device.update_metadata(MetadataUpdate {
-            mode: Some(self.options.ptmx_mode),
+            mode: Some(options.ptmx_mode),
             ..MetadataUpdate::default()
         })?;
         Ok(device)
