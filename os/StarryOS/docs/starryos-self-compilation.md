@@ -428,7 +428,7 @@ SIGSEGV 在 `codegen-units=1`、`opt-level=0`、16GB RAM、单 job 下仍发生�
 ```
 cargo (父进程)
   ├─ spawn → build-script (子进程)
-  ├─ waitpid(子进程) ───→ block_on_user(interruptible_for(wait_future))
+  ├─ waitpid(子进程) ───→ block_on_user(wait_future)
   │                         └─ LocalExecutor + WaitQueue → 线程进入 Blocked
   └─ 信号到达(SIGCHLD等) → 须将父进程唤醒回运行队列，让 waitpid 返回
 ```
@@ -460,8 +460,8 @@ pub fn interrupt(&self) {
 
 Release store 先发布 Starry interruption 状态；随后 generation-bearing
 `ThreadWakeHandle` 通过核心 registry/线程 header 验证目标，把仍为 `Blocked` 的线程
-重新置为 `Ready`。当线程重新执行时，`interruptible_for()` 通过
-`poll_interrupt()` 消费该状态并返回 `Interrupted`。
+重新置为 `Ready`。当线程重新执行时，`block_on_user()` 在统一的 user-wait
+poll 边界通过 `poll_interrupt()` 消费该状态并返回类型化的 `Interrupted`。
 
 修复前只发布状态、不重新入队时，调度器没有机会再次观察该状态，因此会永久
 阻塞。新的 direct-wake 句柄还会验证 slot generation，避免线程槽位复用后误唤醒
@@ -473,9 +473,9 @@ Release store 先发布 Starry interruption 状态；随后 generation-bearing
 
 | 阻塞 syscall | 阻塞对象 | 阻塞在何处 | 触发信号 |
 |-------------|---------|-----------|---------|
-| `waitpid` | 子进程未退出 | `block_on_user(interruptible_for(wait_future))` | SIGCHLD |
-| `futex` | 互斥锁/条件变量 | `block_on_user(interruptible_for(futex_future))` | 任意可递达信号 |
-| `read` (pipe) | 管道空 | `block_on_user(poll_io_for(...))` | 可递达信号或 I/O readiness |
+| `waitpid` | 子进程未退出 | `block_on_user(wait_future)` | SIGCHLD |
+| `futex` | 互斥锁/条件变量 | `block_on_user_timeout(futex_future)` | 任意可递达信号 |
+| `read` (pipe) | 管道空 | `block_on_user(poll_io(...))` | 可递达信号或 I/O readiness |
 | `sigtimedwait` | 无匹配 pending signal | `block_on_user(signal_future)` | 目标信号 |
 
 当子进程也因同一 bug 而挂起时，父进程在 `waitpid` 中永远等不到子进程退出——而子进程恰好在等某个信号来唤醒自己。系统形成死锁循环。
@@ -484,9 +484,10 @@ Release store 先发布 Starry interruption 状态；随后 generation-bearing
 
 I/O future 通过 `Pollable::register()` 保存 Rust `Waker`，设备或 task-context
 service 在 readiness 变化后调用 `PollSet::wake()`。信号路径不能依赖 I/O 最终
-完成，因此仍必须直接唤醒目标 scheduler thread。`poll_io_for()` 在注册后再次尝试
-I/O，并在仍为 `WouldBlock` 时检查 interruption，从而闭合
-“状态变化发生在第一次检查与注册之间”的竞态窗口。
+完成，因此仍必须直接唤醒目标 scheduler thread。`poll_io()` 在注册后再次尝试
+I/O；统一的 `block_on_user()` poll 边界随后检查 interruption。park 入口又在
+WaitQueue 谓词内复查 sticky interruption，从而闭合“状态变化发生在第一次检查与
+注册之间”的竞态窗口。
 
 ### 修复演进历史
 
@@ -500,15 +501,16 @@ I/O，并在仍为 `WouldBlock` 时检查 interruption，从而闭合
 
 ### 与 `interrupted` 标志的配合
 
-`interruptible_for()` 轮询两个条件：
+`block_on_user()` 的 user-wait future 按顺序轮询三个条件：
 
-1. `task.poll_interrupt(cx)` — 检查并消费 Starry interruption bit
-2. `f.as_mut().poll(cx)` — 原始 future
+1. `f.as_mut().poll(cx)` — 原始 future，已完成的操作优先返回
+2. `task.poll_interrupt(cx)` — 检查并消费 Starry interruption bit
+3. 可选 timer future — 返回独立的 `TimedOut`
 
 当信号触发 `UserTaskRef::interrupt()`：
 
 - direct wake 将线程放回运行队列 → 调度器选中 → `LocalExecutor` 重新轮询
-- `poll_interrupt` 发现 `interrupted = true` → 返回 `Err(Interrupted)`
+- `poll_interrupt` 发现 `interrupted = true` → 返回 `UserWaitOutcome::Interrupted`
 - 外层 syscall 返回 `-EINTR`
 - `user.rs` 的 signal drain loop 调用 `check_signals()` → 递达 pending signal
 - 后续由 `SA_RESTART` 逻辑决定是否重启 syscall
@@ -519,7 +521,7 @@ I/O，并在仍为 `WouldBlock` 时检查 interruption，从而闭合
 |------|------|
 | `components/ax-task/src/executor/*` | `LocalExecutor` 与 generation-valid waker |
 | `components/ax-task/src/wait_queue.rs` | prepare/publish/commit park 与 wake |
-| `os/StarryOS/kernel/src/task/future.rs` | `block_on_user`、`interruptible_for`、`poll_io_for` |
+| `os/StarryOS/kernel/src/task/future.rs` | `block_on_user`、`block_on_user_timeout`、`poll_io` |
 | `os/StarryOS/kernel/src/task/scheduler_task.rs` | Starry interruption bit + `ThreadWakeHandle` |
 | `os/StarryOS/kernel/src/task/signal.rs` | `send_signal_to_process` — 信号入队 + 唤醒目标 |
 | `os/StarryOS/kernel/src/task/user.rs` | syscall 返回路径的 signal drain loop |

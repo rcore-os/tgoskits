@@ -42,10 +42,10 @@ fn generic_block_on_has_no_implicit_starry_user_identity() {
 
 #[test]
 fn signal_aware_futures_require_an_explicit_user_task_borrow() {
-    assert!(FUTURE.contains("pub async fn interruptible_for<"));
-    assert!(FUTURE.contains("pub async fn poll_io_for<"));
-    assert!(!FUTURE.contains("pub async fn interruptible<F"));
-    assert!(!FUTURE.contains("pub async fn poll_io<P"));
+    assert!(FUTURE.contains("pub fn block_on_user_timeout<"));
+    assert!(FUTURE.contains("pub async fn poll_io<"));
+    assert!(!FUTURE.contains("pub async fn interruptible_for<"));
+    assert!(!FUTURE.contains("pub async fn poll_io_for<"));
 }
 
 #[test]

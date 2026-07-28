@@ -38,7 +38,7 @@ use crate::{
     file::{FileLike, IoDst, IoSrc},
     task::{
         current_user_task,
-        future::{block_on, block_on_user, poll_io_for, timeout_at_wall},
+        future::{block_on, block_on_user, poll_io, timeout_at_wall},
     },
 };
 
@@ -314,7 +314,7 @@ impl FileLike for Timerfd {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
                 // Race-free read: atomically claim the entire `expire_count`
                 // snapshot via CAS so concurrent readers can't both observe
                 // and copy the same ticks. Linux's `timerfd_read(2)` holds
@@ -350,6 +350,7 @@ impl FileLike for Timerfd {
                 Ok(core::mem::size_of::<u64>())
             }),
         )
+        .into_result()?
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {

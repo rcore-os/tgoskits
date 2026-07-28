@@ -15,7 +15,7 @@ use crate::{
     file::{FileLike, IoDst, IoSrc},
     task::{
         current_user_task,
-        future::{block_on_user, poll_io_for},
+        future::{block_on_user, poll_io},
     },
 };
 
@@ -134,7 +134,7 @@ impl FileLike for Signalfd {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
                 if let Some(sig_info) = self.dequeue_signal() {
                     // Convert SignalInfo to SignalfdSiginfo
                     let sfd_info = SignalfdSiginfo::from_signal_info(&sig_info);
@@ -155,6 +155,7 @@ impl FileLike for Signalfd {
                 }
             }),
         )
+        .into_result()?
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {

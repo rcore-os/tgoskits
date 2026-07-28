@@ -25,7 +25,7 @@ use crate::{
     file::{IoDst, IoSrc},
     task::{
         current_user_task,
-        future::{block_on_user, poll_io_for},
+        future::{block_on_user, poll_io},
         send_signal_to_process,
     },
 };
@@ -207,7 +207,7 @@ impl FileLike for Pipe {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
                 let (read, writers) = {
                     let state = self.shared.state.lock();
                     let (left, right) = state.buffer.as_slices();
@@ -229,6 +229,7 @@ impl FileLike for Pipe {
                 }
             }),
         )
+        .into_result()?
     }
 
     fn write(&self, src: &mut IoSrc) -> AxResult<usize> {
@@ -245,7 +246,7 @@ impl FileLike for Pipe {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_for(&task, self, IoEvents::OUT, self.nonblocking(), || {
+            poll_io(self, IoEvents::OUT, self.nonblocking(), || {
                 enum WriteStep {
                     Closed,
                     Wrote(usize),
@@ -285,6 +286,7 @@ impl FileLike for Pipe {
                 Err(AxError::WouldBlock)
             }),
         )
+        .into_result()?
     }
 
     fn stat(&self) -> AxResult<Kstat> {

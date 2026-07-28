@@ -24,7 +24,7 @@ use crate::{
     pseudofs::Device,
     task::{
         current_user_task,
-        future::{block_on_user, poll_io_for},
+        future::{block_on_user, poll_io},
     },
 };
 
@@ -181,10 +181,11 @@ impl FileLike for File {
             let task = current_user_task();
             block_on_user(
                 &task,
-                poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+                poll_io(self, IoEvents::IN, self.nonblocking(), || {
                     inner.read(&mut *dst)
                 }),
             )
+            .into_result()?
         }
     }
 
@@ -199,10 +200,11 @@ impl FileLike for File {
             let task = current_user_task();
             block_on_user(
                 &task,
-                poll_io_for(&task, self, IoEvents::OUT, self.nonblocking(), || {
+                poll_io(self, IoEvents::OUT, self.nonblocking(), || {
                     inner.write(&mut *src)
                 }),
             )
+            .into_result()?
         };
         if let Ok(bytes) = result
             && bytes > 0

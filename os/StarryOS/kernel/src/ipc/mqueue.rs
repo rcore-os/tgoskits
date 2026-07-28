@@ -37,7 +37,7 @@ use crate::{
     file::{FileLike, IoDst, IoSrc, Kstat},
     task::{
         current_user_task,
-        future::{block_on_user, poll_io_for, timeout_at_wall},
+        future::{UserWaitOutcome, block_on_user_until_wall, poll_io},
         send_signal_to_process,
     },
 };
@@ -564,14 +564,15 @@ impl MessageQueue {
         };
 
         let task = current_user_task();
-        block_on_user(
+        match block_on_user_until_wall(
             &task,
-            timeout_at_wall(
-                deadline,
-                poll_io_for(&task, self, IoEvents::OUT, non_blocking, op),
-            ),
-        )
-        .map_err(|_| AxError::from(LinuxError::ETIMEDOUT))?
+            deadline,
+            poll_io(self, IoEvents::OUT, non_blocking, op),
+        ) {
+            UserWaitOutcome::Ready(result) => result,
+            UserWaitOutcome::Interrupted => Err(AxError::Interrupted),
+            UserWaitOutcome::TimedOut => Err(LinuxError::ETIMEDOUT.into()),
+        }
     }
 
     /// Receive the highest-priority, earliest message. Blocks while empty
@@ -630,19 +631,17 @@ impl MessageQueue {
             }
         };
 
-        // Flatten the outer timeout error (`Elapsed` -> ETIMEDOUT) and the inner
-        // `poll_io` result (Ok, or Err(Interrupted)=EINTR, or Err(WouldBlock)=
-        // EAGAIN for O_NONBLOCK) into one result.
+        // Preserve operation, interruption, and timeout as distinct outcomes
+        // until the Linux errno boundary.
         let task = current_user_task();
-        let result = match block_on_user(
+        let result = match block_on_user_until_wall(
             &task,
-            timeout_at_wall(
-                deadline,
-                poll_io_for(&task, self, IoEvents::IN, non_blocking, op),
-            ),
+            deadline,
+            poll_io(self, IoEvents::IN, non_blocking, op),
         ) {
-            Ok(inner_result) => inner_result,
-            Err(_) => Err(AxError::from(LinuxError::ETIMEDOUT)),
+            UserWaitOutcome::Ready(result) => result,
+            UserWaitOutcome::Interrupted => Err(AxError::Interrupted),
+            UserWaitOutcome::TimedOut => Err(LinuxError::ETIMEDOUT.into()),
         };
 
         match result {

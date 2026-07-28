@@ -15,7 +15,7 @@ use super::{
     AsThread, ProcessData, RttimeLimitAction, Thread, current_user_task, do_exit, get_process_data,
     get_process_group, get_task, is_zombie_pid, signal_publication::publish_before_release,
 };
-use crate::task::future::{block_on, block_on_user, interruptible_for};
+use crate::task::future::{UserWaitOutcome, block_on, block_on_user};
 
 /// Information needed to restart a syscall if SA_RESTART applies.
 pub struct SyscallRestartInfo {
@@ -207,26 +207,25 @@ fn wait_ptrace_resume(thr: &Thread, tid: u32, uctx: &mut UserContext) {
     task.clear_interrupt();
     let wait_result = block_on_user(
         &task,
-        interruptible_for(
-            &task,
-            poll_fn(|cx| {
+        poll_fn(|cx| {
+            if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
+                Poll::Ready(())
+            } else {
+                thr.proc_data.register_ptrace_stop_waker(cx.waker());
                 if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
                     Poll::Ready(())
                 } else {
-                    thr.proc_data.register_ptrace_stop_waker(cx.waker());
-                    if thr.proc_data.ptrace_stop_signo_for(tid).is_none() {
-                        Poll::Ready(())
-                    } else {
-                        Poll::Pending
-                    }
+                    Poll::Pending
                 }
-            }),
-        ),
+            }
+        }),
     );
 
-    if wait_result.is_err() {
+    if matches!(wait_result, UserWaitOutcome::Interrupted) {
         thr.proc_data.clear_ptrace_stop();
-    } else if let Some(resume_uctx) = thr.proc_data.take_ptrace_stop_user_context_for(tid) {
+    } else if matches!(wait_result, UserWaitOutcome::Ready(()))
+        && let Some(resume_uctx) = thr.proc_data.take_ptrace_stop_user_context_for(tid)
+    {
         *uctx = resume_uctx;
         thr.proc_data.restore_current_fp_for_ptrace(tid, uctx);
     }

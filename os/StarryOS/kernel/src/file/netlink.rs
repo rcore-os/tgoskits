@@ -48,7 +48,7 @@ use crate::{
     syscall::in_root_net_ns,
     task::{
         current_user_task,
-        future::{block_on_user, poll_io_for},
+        future::{block_on_user, poll_io},
     },
 };
 
@@ -575,10 +575,11 @@ impl NetlinkSocket {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_for(&task, self, IoEvents::IN, non_blocking, || {
+            poll_io(self, IoEvents::IN, non_blocking, || {
                 self.read_one(dst, peek, truncate)
             }),
         )
+        .into_result()?
     }
 }
 
@@ -596,10 +597,11 @@ impl FileLike for NetlinkSocket {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
                 self.read_one(dst, false, false)
             }),
         )
+        .into_result()?
         .map(|(len, _)| len)
     }
 

@@ -23,7 +23,7 @@ use crate::{
     syscall::time::write_timespec,
     task::{
         Cred, ProcessData, UserTaskRef, current_user_task,
-        future::{block_on_user, interruptible_for, sleep},
+        future::{block_on_user, sleep},
         get_process_data, get_process_group, get_task, get_zombie_nice, processes,
     },
     time::TimeValueLike,
@@ -73,7 +73,9 @@ fn sleep_impl(clock: impl Fn() -> TimeValue, dur: TimeValue) -> (AxResult<()>, T
 
     // TODO: currently ignoring concrete clock type
     let task = current_user_task();
-    let result = block_on_user(&task, interruptible_for(&task, sleep(dur))).map_err(AxError::from);
+    let result = block_on_user(&task, sleep(dur))
+        .into_result()
+        .map_err(AxError::from);
 
     (result, clock() - start)
 }

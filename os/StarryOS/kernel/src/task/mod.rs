@@ -18,6 +18,7 @@ mod timer;
 #[cfg(target_arch = "loongarch64")]
 mod unaligned;
 mod user;
+mod user_wait;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use core::{
@@ -696,7 +697,7 @@ impl Thread {
 /// wait, the parent will see `done == true` and skip waiting.
 ///
 /// We use [`PollSet`] (not `WaitQueue`) so the parent's wait can run inside
-/// `block_on_user(interruptible_for(...))`: a sibling thread that does `execve` will
+/// `block_on_user(...)`: a sibling thread that does `execve` will
 /// zap us via `task.interrupt()`, which only wakes futures-based polls, not
 /// `WaitQueue::wait_until`. Without this, the execve initiator would deadlock
 /// in its sibling-teardown loop waiting for us to exit.
@@ -1983,35 +1984,35 @@ impl ProcessData {
         loop {
             let result = future::block_on_user(
                 &curr_task,
-                future::interruptible_for(
-                    &curr_task,
-                    core::future::poll_fn(|cx| {
-                        // Register before re-checking so a notify that fires
-                        // between our last check and this register isn't lost.
-                        // Registration happens from the vfork parent task context.
-                        unsafe { poll.register(cx.waker(), IoEvents::IN) };
-                        let done = self
-                            .vfork_done
-                            .lock()
-                            .as_ref()
-                            .map(|v| v.done)
-                            .unwrap_or(true);
-                        if done {
-                            core::task::Poll::Ready(())
-                        } else {
-                            core::task::Poll::Pending
-                        }
-                    }),
-                ),
+                core::future::poll_fn(|cx| {
+                    // Register before re-checking so a notify that fires
+                    // between our last check and this register isn't lost.
+                    // Registration happens from the vfork parent task context.
+                    unsafe { poll.register(cx.waker(), IoEvents::IN) };
+                    let done = self
+                        .vfork_done
+                        .lock()
+                        .as_ref()
+                        .map(|v| v.done)
+                        .unwrap_or(true);
+                    if done {
+                        core::task::Poll::Ready(())
+                    } else {
+                        core::task::Poll::Pending
+                    }
+                }),
             );
             match result {
-                Ok(()) => return,
-                Err(_) => {
+                future::UserWaitOutcome::Ready(()) => return,
+                future::UserWaitOutcome::Interrupted => {
                     if curr_thr.has_exit_request() {
                         return;
                     }
                     // Spurious wake from a non-fatal signal; keep waiting.
                     continue;
+                }
+                future::UserWaitOutcome::TimedOut => {
+                    unreachable!("vfork completion wait has no deadline")
                 }
             }
         }

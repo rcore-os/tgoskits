@@ -29,6 +29,12 @@ fn executor_park_uses_the_scheduler_predicate_handshake() {
         !block_on.contains("wait.wait();"),
         "an unconditional WaitQueue park can lose an executor wake drained while Running"
     );
+    assert!(
+        !block_on.contains("yield_current_cpu"),
+        "a sticky user interruption must complete the typed wait instead of repeatedly yielding"
+    );
+    assert!(block_on.contains("UserWaitOutcome<F::Output>"));
+    assert!(block_on.contains("resolve_user_wait(future, interrupted, timed_out)"));
 }
 
 #[test]

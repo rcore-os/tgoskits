@@ -11,7 +11,7 @@ use crate::{
     file::{FileLike, IoDst, IoSrc},
     task::{
         current_user_task,
-        future::{block_on_user, poll_io_for},
+        future::{block_on_user, poll_io},
     },
 };
 
@@ -67,7 +67,7 @@ impl FileLike for EventFd {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
                 let result = self
                     .count
                     .try_update(Ordering::Release, Ordering::Acquire, |count| {
@@ -90,6 +90,7 @@ impl FileLike for EventFd {
                 }
             }),
         )
+        .into_result()?
     }
 
     fn write(&self, src: &mut IoSrc) -> ax_io::Result<usize> {
@@ -107,10 +108,11 @@ impl FileLike for EventFd {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_for(&task, self, IoEvents::OUT, self.nonblocking(), || {
+            poll_io(self, IoEvents::OUT, self.nonblocking(), || {
                 self.signal_kernel(value).map(|()| size_of::<u64>())
             }),
         )
+        .into_result()?
     }
 
     fn nonblocking(&self) -> bool {

@@ -14,10 +14,9 @@ use crate::{
     file::{PidFd, get_file_like},
     task::{
         JobStatus, ProcessData, ProcessIdentity, current_user_task, decode_wait_status,
-        future::{block_on_user, interruptible_for},
-        get_process_data, get_task, get_zombie_cred, is_reaped_process, is_zombie_clone_child,
-        is_zombie_process, processes, reap_process, traced_zombies_for, wait_on_pollset,
-        zombie_wait_parent_tid,
+        future::block_on_user, get_process_data, get_task, get_zombie_cred, is_reaped_process,
+        is_zombie_clone_child, is_zombie_process, processes, reap_process, traced_zombies_for,
+        wait_on_pollset, zombie_wait_parent_tid,
     },
 };
 
@@ -357,11 +356,9 @@ pub fn sys_waitpid(pid: i32, exit_code: *mut i32, options: u32) -> AxResult<isiz
     let task = current_user_task();
     block_on_user(
         &task,
-        interruptible_for(
-            &task,
-            wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
-        ),
-    )?
+        wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
+    )
+    .into_result()?
 }
 
 #[cfg(test)]
@@ -546,9 +543,7 @@ pub fn sys_waitid(
     let task = current_user_task();
     block_on_user(
         &task,
-        interruptible_for(
-            &task,
-            wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
-        ),
-    )?
+        wait_on_pollset(&proc_data.child_exit_event, || check_children().transpose()),
+    )
+    .into_result()?
 }

@@ -216,6 +216,22 @@ publication is rejected. The transaction returns the exact moved child
 snapshot, so parent-death notification cannot miss a child admitted between a
 separate snapshot and reparent step.
 
+Starry user waits now have one typed terminal boundary:
+`Ready / Interrupted / TimedOut`. The old executor park callback treated a
+sticky interruption only as a reason to yield. A pending future that did not
+independently poll `task.interrupted` could therefore yield forever without
+producing `EINTR`. The deterministic state test presents a pending operation
+with an already-published interruption; the old transition remained
+`Pending`, while the new transition completes as `Interrupted`.
+
+The operation future is polled before signal and deadline so an already-ready
+result wins, matching Linux wait-condition ordering. A signal is consumed
+before the timer, and every timed syscall retains a distinct timeout mapping
+(`0`, `EAGAIN`, or `ETIMEDOUT`) at its ABI boundary. Task-neutral I/O readiness
+polling no longer consumes Starry signal state. The executor's park callback
+only performs the predicate handshake; it never loops through
+`yield_current_cpu` on a sticky interruption.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest
