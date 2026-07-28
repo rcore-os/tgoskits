@@ -71,6 +71,67 @@ violate the crate dependency boundaries.
 | Architecture idle | axcpu idle primitives and trap glue | architecture idle entry, especially LoongArch `genex.S` | IRQ enable plus idle is atomic with pending-work recheck; an interrupt in the enable/idle window returns after the idle instruction and is still dispatched | LoongArch follows the Linux return-address pattern but lacks injected timer/IPI window tests |
 | Compatibility | ax-api, ax-posix-api, axstd, Starry syscalls and axvm callers | Linux UAPI and project compatibility contracts | Internal APIs may change; Linux ABI, errno and axstd observable behavior do not | The migration spans many adapters, so compile-only validation is insufficient |
 
+## Structural audit milestone
+
+The behavior-preserving split was completed at branch head
+`73957e29b4d15c43555e173a9f383100c7deed6f`. At that point the branch was 54
+commits ahead of the audited base and changed 553 paths.
+
+The former 7,230-line `TaskSystem` implementation had already shrunk to 4,192
+lines by the audit baseline. It is now a 227-line facade over domain modules
+for CPU lifecycle, thread construction, dispatch, owner scheduling, placement
+delivery, inboxes, switch transactions, park/switch-tail, lifecycle, deadline,
+balance, and deferred task work. The split does not add a second placement or
+delivery state source: private helpers continue to mutate the same records
+through their existing owner scopes.
+
+The `ax-runtime::task` facade is now 146 lines. CPU bootstrap and online
+publication, stack/TLS backing, transactional thread resources, architecture
+context switching, runtime thread lifecycle, spawn preparation, executor
+integration, scheduler events, and the `TaskRuntime` capability implementation
+have separate modules. `TaskSystem`, every per-CPU `CpuLocal`, the physical
+context/TLS owner, and the scheduler-switch trace hook still have one storage
+owner each.
+
+This stage was source movement and visibility tightening only. Its validation
+consisted of all `ax-task` unit, integration, documentation, and 15 loom tests;
+the 48 `ax-runtime` IRQ/multitask tests; all 25 `ax-runtime` feature-clippy
+checks; formatting; and `git diff --check`. The TLS-enabled host unit binary is
+not a supported link target because it deliberately lacks kernel linker
+symbols; the TLS feature is covered by the feature-clippy build and will be
+covered by the architecture milestone.
+
+Scheduler placement is now structurally closed. `SchedulerPlacement` is the
+only placement state and represents detached, queued, running, switching-out,
+migrating, and exited-awaiting-tail states. Switch-tail and migration tests
+exercise both owner transfer and exit retention. Remote delivery uses an epoch
+claim protocol and retains a claim when the transport reports `Busy`. Existing
+tests cover epoch replacement and the concrete migration/inbox path; one
+end-to-end virtual-runtime test is still required to connect payload
+publication, a `Busy` physical delivery, handler acknowledgement, and a newer
+publication in one scenario.
+
+Owner runqueue serialization is also closed at this milestone.
+`TaskRuntime::validate_owner_cpu_context()` requires every public online
+`CpuLocal` mutation to retain either the runtime IRQ pin or the scheduler
+baton. The four-CPU Starry affinity stress case and its deterministic owner
+scope regression validate that nested lock-preemption restoration cannot enter
+the scheduler over a half-committed switch.
+
+## Open audit items after the structural split
+
+These items are not local patch suggestions. Each needs a deterministic red
+test and a review of the owning state machine before implementation.
+
+| Area | Open question or defect | Linux v7.1 reference | Required next evidence |
+| --- | --- | --- | --- |
+| Remote affinity completion | The generic ax-task setter deliberately publishes an asynchronous migration request. Starry's remote `sched_setaffinity` path returns success immediately after that publication, so the target may still execute on a CPU excluded by the new mask. | `affine_move_task()` in `kernel/sched/core.c` installs or joins one `set_affinity_pending`, waits for its completion, and drains concurrent request references before returning. | A syscall-level virtual-runtime test must hold the target on a remote CPU, call `sched_setaffinity`, and prove return is impossible until the last disallowed on-CPU ownership and pending request are gone. The completion belongs at the ax-runtime/Starry boundary; the lower asynchronous capability may remain. |
+| Remote delivery transport | Epoch/claim unit and loom tests do not yet join the real payload queue to a physical transport `Busy` result. | Scheduler IPI and `irq_work` publish work before raising the interrupt and allow a new raise after the old claim is consumed. | One deterministic multi-CPU runtime test must publish payload A, make transport notification report `Busy`, consume A, race publication B, and prove B is drained without an unrelated interrupt. |
+| Task deadline domain | `TaskDeadlineQueue::arm` still accepts raw `0` and `u64::MAX`, while `LocalClockEvent` rejects both as physical deadlines. A retained maximum-valued task entry can therefore be logically finite in one owner and unrepresentable in the other. | `hrtimer` stores typed expiry values, while clockevent programming treats “no event” separately and clamps finite deltas to device limits. | Add red tests for zero, maximum, conversion overflow, and cancellation, then introduce one finite monotonic-deadline boundary or an explicit no-deadline value before publication. |
+| Clockevent IRQ transaction | A hardware callback always invalidates the armed state and enters `Firing`; the state machine safely re-arms if no task expires, but the audit has not yet injected an early or spurious delivery through the complete ACK/begin/finish path. | `hrtimer_interrupt()` invalidates the delivered event and re-evaluates the next event even when no timer is expired. | Add a fake-device test for an early delivery and require exactly one replacement program with no task expiry. This is currently an evidence gap, not a confirmed semantic failure. |
+| Scope-local contention | The low-level lease API is bounded, but Starry's task-context mutation wrapper retries `ScopeCellBusy` with repeated yields. A retained remote reader has no queued waiter, PI donation, interruption, or deadline. | PREEMPT_RT `local_lock` task-context contention blocks through an RT mutex instead of polling with preemption disabled. | Model the outer task-context acquisition as a waitable ownership transition and test remote-reader release, interruption, and cancellation. Keep `scope-local` itself non-sleeping. |
+| IRQ waiter owner lifetime | `IrqWaitRegistration` has generation and in-flight notification grace, but Starry `IrqNotify` still relies on a documented unregister/quiesce-before-drop obligation rather than an owner type that makes the teardown sequence unavoidable. | IRQ action removal revokes publication and synchronizes in-flight handlers before releasing storage. | Trace every retained producer through drop, then add a concurrent notify-versus-owner-drop test. If a producer can outlive the cell, replace the contract-only API with an owning registration/teardown guard. |
+
 ## Confirmed red evidence
 
 GitHub Actions run `30330320261`, job `90184755449`, and a local full
