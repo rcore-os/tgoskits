@@ -20,7 +20,7 @@ static LOGGED_SUBMIT_CORE_LAYOUT: AtomicBool = AtomicBool::new(false);
 /// 对应 C 结构体 `rknpu_subcore_task`
 /// 用于表示子核心任务的起始索引和任务数量
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RknpuSubcoreTask {
     /// 任务起始索引
     pub task_start: u32,
@@ -30,7 +30,7 @@ pub struct RknpuSubcoreTask {
 
 /// A structure for getting a fake-offset that can be used with mmap.
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct RknpuMemMap {
     /// handle of gem object.
     pub handle: u32,
@@ -44,7 +44,7 @@ pub struct RknpuMemMap {
 ///
 /// Corresponds to C `struct rknpu_mem_destroy`.
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct RknpuMemDestroy {
     /// handle of the gem object to destroy.
     pub handle: u32,
@@ -59,7 +59,7 @@ pub struct RknpuMemDestroy {
 /// 对应 C 结构体 `rknpu_submit`
 /// 用于向 RKNPU 提交作业任务
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct RknpuSubmit {
     /// 作业提交标志
     pub flags: u32,
@@ -96,7 +96,7 @@ pub struct RknpuSubmit {
 /// Fields correspond to the original C layout. Use `#[repr(C)]` so this type
 /// can be used across the FFI boundary or when mirroring kernel structs.
 #[repr(C)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct RknpuMemCreate {
     /// The handle of the created GEM object.
     pub handle: u32,
@@ -121,7 +121,7 @@ pub struct RknpuMemCreate {
 /// Fields correspond to the original C layout. Use `#[repr(C)]` so this type
 /// can be used across FFI boundaries if needed.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::AnyBitPattern, bytemuck::NoUninit)]
 pub struct RknpuMemSync {
     /// User request for setting memory type or cache attributes.
     pub flags: u32,
