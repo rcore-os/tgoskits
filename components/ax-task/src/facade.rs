@@ -16,7 +16,7 @@ use crate::{
         RuntimeSchedulerEntry, RuntimeSchedulerReturn, RuntimeStatus, SchedSwitchRecord,
         task_runtime,
     },
-    timer::ExpiredTaskDeadline,
+    timer::{ExpiredTaskDeadline, TaskDeadlineKind},
 };
 
 /// Returns a strong handle for the calling scheduler thread.
@@ -334,17 +334,19 @@ pub(crate) fn arm_current_park_deadline(
     }
     let now_ns = task_runtime::monotonic_ns();
     let resolution_ns = task_runtime::timer_resolution_ns();
-    let node = thread.sleep_timer();
-    let (token, update) = {
+    let (registration, update) = {
         let mut cpu = runtime_current_cpu_mut(&mut irq)?;
         let owner = cpu.owner();
-        let token = unsafe {
-            // The registry and this strong handle retain ThreadCore until the
-            // deadline is physically cancelled or published to the safe-point
-            // buffer.
-            cpu.as_mut().task_deadlines().arm(node, deadline_ns)
-        }
-        .map_err(|_| TaskError::TimerCapacity)?;
+        let registration = cpu
+            .as_mut()
+            .task_deadlines()
+            .arm(
+                thread.sleep_timer(),
+                deadline_ns,
+                TaskDeadlineKind::park_timeout(ticket.generation()),
+            )
+            .map_err(|_| TaskError::TimerCapacity)?;
+        let token = registration.token();
         thread.core.register_sleep_timer(owner, token.generation());
         let update = match cpu
             .as_mut()
@@ -352,7 +354,7 @@ pub(crate) fn arm_current_park_deadline(
         {
             Ok(update) => update,
             Err(error) => {
-                let removed = cpu.as_mut().task_deadlines().cancel(node, token);
+                let removed = cpu.as_mut().task_deadlines().cancel(&registration);
                 let completed = thread.core.complete_sleep_timer(token.generation());
                 if !removed || !completed {
                     task_runtime::fatal_invariant(0x5444_0005, thread.id().as_u64() as usize);
@@ -360,13 +362,14 @@ pub(crate) fn arm_current_park_deadline(
                 return Err(error);
             }
         };
-        (token, update)
+        (registration, update)
     };
     let status = task_runtime::publish_task_deadline(update);
     if status != crate::runtime::RuntimeStatus::Success {
+        let token = registration.token();
         let rollback = {
             let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-            let _removed = cpu.as_mut().task_deadlines().cancel(node, token);
+            let _removed = cpu.as_mut().task_deadlines().cancel(&registration);
             thread.core.complete_sleep_timer(token.generation());
             cpu.as_mut()
                 .next_task_deadline_update(now_ns, resolution_ns)?
@@ -377,7 +380,7 @@ pub(crate) fn arm_current_park_deadline(
         }
         return Err(TaskError::RuntimeFailure(status as u32));
     }
-    if ticket.attach_deadline(token).is_err() {
+    if ticket.attach_deadline(registration).is_err() {
         task_runtime::fatal_invariant(0x5444_0002, thread.id().as_u64() as usize);
     }
     Ok(())
@@ -390,7 +393,7 @@ pub(crate) fn cancel_current_park_deadline(
     if ticket.thread() != thread.id() {
         return Err(TaskError::StaleThreadId);
     }
-    let Some(token) = ticket.deadline() else {
+    let Some(token) = ticket.deadline().map(|registration| registration.token()) else {
         return Ok(false);
     };
     let mut irq = RuntimeIrqGuard::enter();
@@ -414,10 +417,11 @@ pub(crate) fn cancel_current_park_deadline(
     let resolution_ns = task_runtime::timer_resolution_ns();
     let (removed, update) = {
         let mut cpu = runtime_current_cpu_mut(&mut irq)?;
-        let removed = cpu
-            .as_mut()
-            .task_deadlines()
-            .cancel(thread.sleep_timer(), token);
+        let removed = cpu.as_mut().task_deadlines().cancel(
+            ticket
+                .deadline()
+                .expect("the deadline registration remains owned until cancellation"),
+        );
         thread.core.complete_sleep_timer(token.generation());
         if !ticket.clear_deadline(token) {
             task_runtime::fatal_invariant(0x5444_0004, thread.id().as_u64() as usize);
@@ -760,8 +764,13 @@ fn drain_current_expired_timers(
         };
         match system.thread_handle(thread) {
             Ok(handle) => {
-                handle.core.complete_sleep_timer(event.token().generation());
-                let _wake_result = handle.wake_handle().wake();
+                let completed = handle.core.complete_sleep_timer(event.token().generation());
+                let park_matches = event
+                    .kind()
+                    .is_some_and(|kind| kind.park_generation() == handle.core.park_generation());
+                if completed && park_matches {
+                    let _wake_result = handle.wake_handle().wake();
+                }
             }
             Err(TaskError::StaleThreadId) => {}
             Err(error) => return Err(error),
@@ -1292,18 +1301,16 @@ mod tests {
         let second = system
             .create_thread(ThreadSpec::new(SchedulePolicy::default()))
             .unwrap();
-        unsafe {
-            // SAFETY: both handles retain their pinned timer nodes for the
-            // duration of the owner-only queue operations in this test.
-            cpu.as_mut()
-                .task_deadlines()
-                .arm(first.sleep_timer(), 10)
-                .unwrap();
-            cpu.as_mut()
-                .task_deadlines()
-                .arm(second.sleep_timer(), 10)
-                .unwrap();
-        }
+        let _first_registration = cpu
+            .as_mut()
+            .task_deadlines()
+            .arm(first.sleep_timer(), 10, TaskDeadlineKind::park_timeout(0))
+            .unwrap();
+        let _second_registration = cpu
+            .as_mut()
+            .task_deadlines()
+            .arm(second.sleep_timer(), 10, TaskDeadlineKind::park_timeout(0))
+            .unwrap();
 
         let outcome = on_clock_event(10, 1).unwrap();
 
@@ -1339,7 +1346,10 @@ mod tests {
         };
         let _ = permit;
         arm_current_park_deadline(&running, &mut ticket, 10).unwrap();
-        let token = ticket.deadline().expect("armed park deadline token");
+        let token = ticket
+            .deadline()
+            .expect("armed park deadline token")
+            .token();
 
         running
             .core
@@ -1368,6 +1378,45 @@ mod tests {
         assert!(!ticket.has_deadline());
         assert_eq!(cpu.as_mut().task_deadlines().next_deadline_ns(0, 1), None);
         cancel_current_park(&mut ticket).unwrap();
+    }
+
+    #[test]
+    fn stale_expiration_cannot_notify_a_new_park_generation() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+
+        let first_permit = acquire_blocking_permit().unwrap();
+        let ParkPrepare::Prepared(mut first) = prepare_current_park(&first_permit).unwrap() else {
+            panic!("fresh park must publish PARKING");
+        };
+        let _ = first_permit;
+        arm_current_park_deadline(&running, &mut first, 10).unwrap();
+        assert_eq!(on_clock_event(10, 1).unwrap().expired(), 1);
+        assert!(!cancel_current_park_deadline(&running, &mut first).unwrap());
+        cancel_current_park(&mut first).unwrap();
+
+        let second_permit = acquire_blocking_permit().unwrap();
+        let ParkPrepare::Prepared(mut second) = prepare_current_park(&second_permit).unwrap()
+        else {
+            panic!("the next park generation must be independently prepared");
+        };
+        let _ = second_permit;
+        arm_current_park_deadline(&running, &mut second, 100).unwrap();
+
+        test_runtime::set_monotonic_ns(10);
+        schedule_current_cpu().unwrap();
+        assert!(
+            !running.core.take_park_notification(),
+            "an expiration buffered for the preceding park generation must not wake the rearm"
+        );
+
+        assert!(cancel_current_park_deadline(&running, &mut second).unwrap());
+        cancel_current_park(&mut second).unwrap();
     }
 
     #[test]

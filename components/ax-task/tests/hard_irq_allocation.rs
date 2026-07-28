@@ -14,7 +14,10 @@ use ax_task::{
     CpuId, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadId, ThreadSpec,
     executor::{DEFAULT_RECLAIM_BATCH, LocalExecutor},
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult, SchedulerInbox},
-    timer::{ExpiredTaskDeadline, TaskDeadlineExpireRequest, TaskDeadlineNode, TaskDeadlineQueue},
+    timer::{
+        ExpiredTaskDeadline, TaskDeadlineExpireRequest, TaskDeadlineKind, TaskDeadlineNode,
+        TaskDeadlineQueue,
+    },
 };
 
 mod support;
@@ -118,11 +121,13 @@ fn hard_irq_contract_is_zero_alloc_zero_free_and_zero_poll() {
 
     let mut timer_queue = TaskDeadlineQueue::new(1);
     let timer = Box::pin(TaskDeadlineNode::for_thread(ThreadId::from_parts(11, 1)));
-    unsafe {
-        timer_queue
-            .arm(timer.as_ref(), 10)
-            .expect("preallocated timer slot must be available");
-    }
+    let _timer_registration = timer_queue
+        .arm(
+            timer.as_ref().get_ref(),
+            10,
+            TaskDeadlineKind::park_timeout(1),
+        )
+        .expect("preallocated timer slot must be available");
     let mut expired = [ExpiredTaskDeadline::EMPTY; 1];
     let timer_audit =
         audit(|| timer_queue.expire(TaskDeadlineExpireRequest::new(10, 1, 1), &mut expired));

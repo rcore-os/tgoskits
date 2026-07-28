@@ -1,11 +1,9 @@
-use core::pin::Pin;
-
 use ax_task::{
     CpuId, FairMode, Nice, SchedulePolicy, TaskError, TaskSystem, TaskSystemConfig,
     ThreadExtension, ThreadExtensionOps, ThreadId, ThreadSpec, ThreadState, WakeResult,
     current_cpu_needs_resched, current_thread_extension, current_thread_id, on_clock_event,
     schedule_current_cpu, take_current_expired_task_deadlines,
-    timer::{ExpiredTaskDeadline, TaskDeadlineNode},
+    timer::{ExpiredTaskDeadline, TaskDeadlineKind, TaskDeadlineNode},
 };
 
 mod support;
@@ -94,9 +92,20 @@ fn timer_irq_facade_bounds_and_preserves_unconsumed_expirations() {
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
-    for node in &timers {
-        unsafe { cpu.as_mut().task_deadlines().arm(node.as_ref(), 0).unwrap() };
-    }
+    let _registrations = timers
+        .iter()
+        .enumerate()
+        .map(|(generation, node)| {
+            cpu.as_mut()
+                .task_deadlines()
+                .arm(
+                    node.as_ref(),
+                    0,
+                    TaskDeadlineKind::park_timeout(generation as u64 + 1),
+                )
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
     support::install_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
         cpu.as_mut(),
@@ -157,9 +166,20 @@ fn partial_deadline_drain_preserves_buffered_events() {
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
-    for node in &timers {
-        unsafe { cpu.as_mut().task_deadlines().arm(node.as_ref(), 0).unwrap() };
-    }
+    let _registrations = timers
+        .iter()
+        .enumerate()
+        .map(|(generation, node)| {
+            cpu.as_mut()
+                .task_deadlines()
+                .arm(
+                    node.as_ref(),
+                    0,
+                    TaskDeadlineKind::park_timeout(generation as u64 + 1),
+                )
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
     support::install_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
         cpu.as_mut(),
@@ -199,9 +219,20 @@ fn scheduler_safe_points_finish_an_exhausted_timer_batch_without_another_irq() {
         .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
         .unwrap();
     system.bring_cpu_online(cpu.as_mut()).unwrap();
-    for node in &timers {
-        unsafe { cpu.as_mut().task_deadlines().arm(node.as_ref(), 0).unwrap() };
-    }
+    let _registrations = timers
+        .iter()
+        .enumerate()
+        .map(|(generation, node)| {
+            cpu.as_mut()
+                .task_deadlines()
+                .arm(
+                    node.as_ref(),
+                    0,
+                    TaskDeadlineKind::park_timeout(generation as u64 + 1),
+                )
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
     support::install_handles(
         (system.as_ref().get_ref() as *const TaskSystem).expose_provenance(),
         cpu.as_mut(),
@@ -226,8 +257,8 @@ fn scheduler_safe_points_finish_an_exhausted_timer_batch_without_another_irq() {
     support::clear_handles();
 }
 
-fn timer(slot: u32) -> Pin<Box<TaskDeadlineNode>> {
-    Box::pin(TaskDeadlineNode::for_thread(ThreadId::from_parts(slot, 1)))
+fn timer(slot: u32) -> Box<TaskDeadlineNode> {
+    Box::new(TaskDeadlineNode::for_thread(ThreadId::from_parts(slot, 1)))
 }
 
 static TEST_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {

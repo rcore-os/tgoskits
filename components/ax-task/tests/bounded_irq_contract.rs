@@ -7,16 +7,29 @@ use ax_task::{
     CpuId, IrqNotifyResult, IrqRegisterResult, IrqWaitCell, IrqWaitRegistration, IrqWakeHandle,
     ThreadId,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult, SchedulerInbox},
-    timer::{ExpiredTaskDeadline, TaskDeadlineExpireRequest, TaskDeadlineNode, TaskDeadlineQueue},
+    timer::{
+        ExpiredTaskDeadline, TaskDeadlineExpireRequest, TaskDeadlineKind, TaskDeadlineNode,
+        TaskDeadlineQueue,
+    },
 };
 
 #[test]
 fn timer_irq_work_is_bounded() {
     let timers = [timer(0), timer(1), timer(2)];
     let mut queue = TaskDeadlineQueue::new(3);
-    for node in &timers {
-        unsafe { queue.arm(node.as_ref(), 10).unwrap() };
-    }
+    let _registrations = timers
+        .iter()
+        .enumerate()
+        .map(|(generation, node)| {
+            queue
+                .arm(
+                    node.as_ref(),
+                    10,
+                    TaskDeadlineKind::park_timeout(generation as u64 + 1),
+                )
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
     let mut output = [ExpiredTaskDeadline::EMPTY; 3];
 
     let batch = queue.expire(TaskDeadlineExpireRequest::new(10, 2, 1), &mut output);
@@ -78,8 +91,8 @@ fn irq_before_register_is_consumed_without_a_stale_self_wake() {
     assert!(!registration.is_attached());
 }
 
-fn timer(slot: u32) -> Pin<Box<TaskDeadlineNode>> {
-    Box::pin(TaskDeadlineNode::for_thread(thread(slot)))
+fn timer(slot: u32) -> Box<TaskDeadlineNode> {
+    Box::new(TaskDeadlineNode::for_thread(thread(slot)))
 }
 
 struct TestInboxNode(Pin<Box<InboxNode>>);

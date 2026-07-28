@@ -112,9 +112,8 @@ impl ThreadHandle {
         self.core.runtime_snapshot(now_ns)
     }
 
-    pub(crate) fn sleep_timer(&self) -> Pin<&TaskDeadlineNode> {
-        // SAFETY: `ThreadCore` is held in an Arc and therefore never moves.
-        unsafe { Pin::new_unchecked(&self.core.sleep_timer) }
+    pub(crate) fn sleep_timer(&self) -> &TaskDeadlineNode {
+        &self.core.sleep_timer
     }
 
     pub(crate) fn extension_view(&self) -> Option<crate::ThreadExtensionView> {

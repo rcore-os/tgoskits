@@ -1,6 +1,9 @@
 //! Generation-checked thread park handshake.
 
-use crate::{ScheduleDecision, ThreadId, timer::TaskDeadlineToken};
+use crate::{
+    ScheduleDecision, ThreadId,
+    timer::{TaskDeadlineRegistration, TaskDeadlineToken},
+};
 
 /// Move-only ownership of one park attempt and its optional timeout deadline.
 ///
@@ -17,7 +20,7 @@ use crate::{ScheduleDecision, ThreadId, timer::TaskDeadlineToken};
 pub struct ParkTicket {
     thread: ThreadId,
     generation: u64,
-    deadline: Option<TaskDeadlineToken>,
+    deadline: Option<TaskDeadlineRegistration>,
     resolved: bool,
 }
 
@@ -43,8 +46,8 @@ impl ParkTicket {
 
     pub(crate) fn attach_deadline(
         &mut self,
-        deadline: TaskDeadlineToken,
-    ) -> Result<(), TaskDeadlineToken> {
+        deadline: TaskDeadlineRegistration,
+    ) -> Result<(), TaskDeadlineRegistration> {
         if self.deadline.is_some() {
             Err(deadline)
         } else {
@@ -53,13 +56,17 @@ impl ParkTicket {
         }
     }
 
-    pub(crate) const fn deadline(&self) -> Option<TaskDeadlineToken> {
-        self.deadline
+    pub(crate) const fn deadline(&self) -> Option<&TaskDeadlineRegistration> {
+        self.deadline.as_ref()
     }
 
     pub(crate) fn clear_deadline(&mut self, deadline: TaskDeadlineToken) -> bool {
-        if self.deadline == Some(deadline) {
-            self.deadline = None;
+        if self
+            .deadline
+            .as_ref()
+            .is_some_and(|registration| registration.token() == deadline)
+        {
+            let _registration = self.deadline.take();
             true
         } else {
             false
