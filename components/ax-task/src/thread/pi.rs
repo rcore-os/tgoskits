@@ -122,6 +122,11 @@ impl PiWaitState {
         Ok(())
     }
 
+    pub(crate) fn can_grant(&self, generation: u64) -> bool {
+        self.generation.load(Ordering::Acquire) == generation
+            && self.granted_generation.load(Ordering::Acquire) != generation
+    }
+
     fn is_granted(&self, generation: u64) -> bool {
         self.granted_generation.load(Ordering::Acquire) == generation
     }

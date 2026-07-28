@@ -5,10 +5,10 @@ use core::{marker::PhantomData, mem::align_of, ops::Deref, pin::Pin, ptr};
 
 use crate::{
     CpuId, CpuLocal, CpuLocalOwnerBorrow, CpuRemote, CpuSet, IrqRegisterResult, IrqWaitCell,
-    IrqWaitRegistration, Nice, ParkCommit, ParkPrepare, PiLockId, PiWaitToken, RtPriority,
-    ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem, ThreadBuilder,
-    ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot, ThreadState,
-    ThreadWakeHandle, WaitQueue, WakeResult,
+    IrqWaitRegistration, Nice, ParkCommit, ParkPrepare, PiLockId, PiMutexHandoff, PiWaitToken,
+    RtPriority, ScheduleDecision, SchedulePolicy, SchedulerOutcome, TaskError, TaskSystem,
+    ThreadBuilder, ThreadExtensionLease, ThreadHandle, ThreadId, ThreadRuntimeSnapshot,
+    ThreadState, ThreadWakeHandle, WaitQueue, WakeResult,
     inbox::PublishResult,
     reclaim::DeferredReclaimNode,
     runtime::{
@@ -526,13 +526,13 @@ pub fn pi_wait_cancel(token: PiWaitToken) -> Result<(), TaskError> {
     runtime_task_system()?.pi_wait_cancel(token)
 }
 
-/// Completes kernel PI mutex ownership transfer.
-pub fn pi_mutex_handoff(
+/// Prepares the scheduler half of a kernel PI mutex ownership transfer.
+pub fn prepare_pi_mutex_handoff(
     lock: PiLockId,
     old_owner: ThreadId,
     next_owner: Option<ThreadId>,
-) -> Result<(), TaskError> {
-    runtime_task_system()?.pi_mutex_handoff(lock, old_owner, next_owner)
+) -> Result<PiMutexHandoff<'static>, TaskError> {
+    runtime_task_system()?.prepare_pi_mutex_handoff(lock, old_owner, next_owner)
 }
 
 /// Publishes a targeted task-context wake after PI metadata handoff.

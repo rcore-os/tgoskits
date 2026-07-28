@@ -1,117 +1,195 @@
-//! Loom model for PI waiter registration versus owner unlock.
+//! Loom models for the ax-sync/ax-task PI transaction boundary.
 
 use loom::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread,
 };
 
 #[derive(Debug)]
-struct Metadata {
+struct LocalState {
     owner: usize,
-    frozen: bool,
     queued: bool,
     granted: bool,
+    acquired_directly: bool,
 }
 
 #[derive(Debug)]
-struct SchedulerPi {
-    owner: usize,
-    donation_registered: bool,
+struct SchedulerState {
+    donation_owner: usize,
+    token_granted: bool,
+    reject_handoff: bool,
 }
 
 #[test]
-fn waiter_is_never_visible_before_its_donation_registration() {
+fn registration_and_unlock_share_the_local_metadata_transaction() {
     loom::model(|| {
-        let metadata = Arc::new(Mutex::new(Metadata {
+        let local = Arc::new(Mutex::new(LocalState {
             owner: 1,
-            frozen: false,
             queued: false,
             granted: false,
+            acquired_directly: false,
         }));
-        let scheduler = Arc::new(Mutex::new(SchedulerPi {
-            owner: 1,
-            donation_registered: false,
+        let scheduler = Arc::new(Mutex::new(SchedulerState {
+            donation_owner: 0,
+            token_granted: false,
+            reject_handoff: false,
         }));
-        let pending = Arc::new(AtomicUsize::new(0));
 
         let waiter = {
-            let metadata = Arc::clone(&metadata);
+            let local = Arc::clone(&local);
             let scheduler = Arc::clone(&scheduler);
-            let pending = Arc::clone(&pending);
             thread::spawn(move || {
-                let observed_owner = {
-                    let metadata = metadata.lock().unwrap();
-                    if metadata.frozen {
-                        return;
-                    }
-                    pending.fetch_add(1, Ordering::AcqRel);
-                    metadata.owner
-                };
-                let registered = {
-                    let mut scheduler = scheduler.lock().unwrap();
-                    if observed_owner != 0 && scheduler.owner == observed_owner {
-                        scheduler.donation_registered = true;
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if !registered {
-                    pending.fetch_sub(1, Ordering::Release);
+                let mut local = local.lock().unwrap();
+                if local.owner == 0 {
+                    local.owner = 2;
+                    local.acquired_directly = true;
                     return;
                 }
 
-                let inserted = {
-                    let mut metadata = metadata.lock().unwrap();
-                    if observed_owner != 0 && metadata.owner == observed_owner && !metadata.frozen {
-                        metadata.queued = true;
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if !inserted {
-                    scheduler.lock().unwrap().donation_registered = false;
-                }
-                pending.fetch_sub(1, Ordering::Release);
+                assert_eq!(local.owner, 1);
+                let mut scheduler = scheduler.lock().unwrap();
+                scheduler.donation_owner = 1;
+                local.queued = true;
             })
         };
         let unlock = {
-            let metadata = Arc::clone(&metadata);
+            let local = Arc::clone(&local);
             let scheduler = Arc::clone(&scheduler);
-            let pending = Arc::clone(&pending);
             thread::spawn(move || {
-                {
-                    let mut metadata = metadata.lock().unwrap();
-                    metadata.frozen = true;
+                let mut local = local.lock().unwrap();
+                assert_eq!(local.owner, 1);
+                if !local.queued {
+                    local.owner = 0;
+                    return;
                 }
-                while pending.load(Ordering::Acquire) != 0 {
-                    thread::yield_now();
-                }
-                let selected = metadata.lock().unwrap().queued;
-                {
-                    let mut scheduler = scheduler.lock().unwrap();
-                    assert!(selected || !scheduler.donation_registered);
-                    scheduler.owner = if selected { 2 } else { 0 };
-                    scheduler.donation_registered = false;
-                }
-                let mut metadata = metadata.lock().unwrap();
-                metadata.owner = if selected { 2 } else { 0 };
-                metadata.granted = selected;
-                metadata.frozen = false;
+
+                let mut scheduler = scheduler.lock().unwrap();
+                assert_eq!(scheduler.donation_owner, 1);
+                local.owner = 2;
+                local.queued = false;
+                local.granted = true;
+                scheduler.donation_owner = 0;
+                scheduler.token_granted = true;
             })
         };
 
         waiter.join().unwrap();
         unlock.join().unwrap();
-        let metadata = metadata.lock().unwrap();
+
+        let local = local.lock().unwrap();
         let scheduler = scheduler.lock().unwrap();
-        assert!(!metadata.queued || metadata.granted);
-        assert!(!metadata.queued || scheduler.owner == 2);
-        assert!(!scheduler.donation_registered);
-        assert_eq!(pending.load(Ordering::Acquire), 0);
+        assert_eq!(local.owner, 2);
+        assert!(!local.queued);
+        assert_eq!(scheduler.donation_owner, 0);
+        assert_eq!(local.granted, scheduler.token_granted);
+        assert_ne!(local.granted, local.acquired_directly);
+    });
+}
+
+#[test]
+fn failed_preflight_cannot_publish_only_the_local_handoff() {
+    loom::model(|| {
+        let local = Arc::new(Mutex::new(LocalState {
+            owner: 1,
+            queued: true,
+            granted: false,
+            acquired_directly: false,
+        }));
+        let scheduler = Arc::new(Mutex::new(SchedulerState {
+            donation_owner: 1,
+            token_granted: false,
+            reject_handoff: false,
+        }));
+        let wake = Arc::new(AtomicBool::new(false));
+
+        let injector = {
+            let scheduler = Arc::clone(&scheduler);
+            thread::spawn(move || scheduler.lock().unwrap().reject_handoff = true)
+        };
+        let unlock = {
+            let local = Arc::clone(&local);
+            let scheduler = Arc::clone(&scheduler);
+            let wake = Arc::clone(&wake);
+            thread::spawn(move || {
+                let mut local = local.lock().unwrap();
+                let mut scheduler = scheduler.lock().unwrap();
+                if scheduler.reject_handoff {
+                    return;
+                }
+
+                // The scheduler lock is the prepared transaction. It remains
+                // held across local publication and scheduler commit.
+                local.owner = 2;
+                local.queued = false;
+                local.granted = true;
+                scheduler.donation_owner = 0;
+                scheduler.token_granted = true;
+                drop(scheduler);
+                drop(local);
+                wake.store(true, Ordering::Release);
+            })
+        };
+
+        injector.join().unwrap();
+        unlock.join().unwrap();
+
+        let local = local.lock().unwrap();
+        let scheduler = scheduler.lock().unwrap();
+        if scheduler.token_granted {
+            assert_eq!(local.owner, 2);
+            assert!(!local.queued);
+            assert!(local.granted);
+            assert_eq!(scheduler.donation_owner, 0);
+            assert!(wake.load(Ordering::Acquire));
+        } else {
+            assert_eq!(local.owner, 1);
+            assert!(local.queued);
+            assert!(!local.granted);
+            assert_eq!(scheduler.donation_owner, 1);
+            assert!(!wake.load(Ordering::Acquire));
+        }
+    });
+}
+
+#[test]
+fn deboost_and_both_grants_are_published_before_wake() {
+    loom::model(|| {
+        let old_owner_boosted = Arc::new(AtomicBool::new(true));
+        let local_granted = Arc::new(AtomicBool::new(false));
+        let scheduler_granted = Arc::new(AtomicBool::new(false));
+        let wake = Arc::new(AtomicBool::new(false));
+
+        let unlock = {
+            let old_owner_boosted = Arc::clone(&old_owner_boosted);
+            let local_granted = Arc::clone(&local_granted);
+            let scheduler_granted = Arc::clone(&scheduler_granted);
+            let wake = Arc::clone(&wake);
+            thread::spawn(move || {
+                local_granted.store(true, Ordering::Relaxed);
+                old_owner_boosted.store(false, Ordering::Relaxed);
+                scheduler_granted.store(true, Ordering::Relaxed);
+                wake.store(true, Ordering::Release);
+            })
+        };
+        let waiter = {
+            let old_owner_boosted = Arc::clone(&old_owner_boosted);
+            let local_granted = Arc::clone(&local_granted);
+            let scheduler_granted = Arc::clone(&scheduler_granted);
+            let wake = Arc::clone(&wake);
+            thread::spawn(move || {
+                while !wake.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+                assert!(!old_owner_boosted.load(Ordering::Relaxed));
+                assert!(local_granted.load(Ordering::Relaxed));
+                assert!(scheduler_granted.load(Ordering::Relaxed));
+            })
+        };
+
+        unlock.join().unwrap();
+        waiter.join().unwrap();
     });
 }

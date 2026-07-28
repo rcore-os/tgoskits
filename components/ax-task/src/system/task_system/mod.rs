@@ -2,6 +2,7 @@
 
 mod model;
 mod outcome;
+mod pi;
 mod registry;
 
 use alloc::{sync::Arc, vec::Vec};
@@ -22,9 +23,10 @@ pub use outcome::{
     ChargeOutcome, DeadlineActivitySnapshot, DeadlineRuntimeSnapshot, RemoteWakeDrain,
     ScheduleDecision, SchedulerOutcome,
 };
+pub use pi::PiMutexHandoff;
 use registry::{
-    CpuRegistration, DetachedThreadRecord, PendingResourceRelease, PiWaitRegistration,
-    TaskSystemState, ThreadRecord, ThreadSlot,
+    CpuRegistration, DetachedThreadRecord, PendingResourceRelease, PiRecomputeProof,
+    PiWaitRegistration, TaskSystemState, ThreadRecord, ThreadSlot,
 };
 
 use super::thread_sched::{
@@ -2426,9 +2428,10 @@ impl TaskSystem {
     }
 
     fn recompute_pi_after_policy_update(&self, thread: ThreadId) -> Result<(), TaskError> {
-        self.state
-            .lock()
-            .recompute_pi_chain(thread, self.config.fair_slice_ns())
+        let mut state = self.state.lock();
+        let recompute = state.prepare_pi_recompute_chain(thread)?;
+        state.apply_pi_recompute_chain(recompute, self.config.fair_slice_ns());
+        Ok(())
     }
 
     fn publish_owner_migration(
@@ -3144,156 +3147,6 @@ impl TaskSystem {
             dispatched += 1;
         }
         Ok((processed, dispatched))
-    }
-
-    /// Creates a donation edge and a wake-before-block handshake token.
-    pub fn pi_wait_start(
-        &self,
-        lock: PiLockId,
-        waiter: ThreadId,
-        owner: ThreadId,
-    ) -> Result<PiWaitToken, TaskError> {
-        let mut state = self.state.lock();
-        if waiter == owner {
-            return Err(TaskError::InvalidPiState);
-        }
-        if state.thread_record(waiter)?.sched.lock().lifecycle.state() == ThreadState::Exited
-            || state.thread_record(owner)?.sched.lock().lifecycle.state() == ThreadState::Exited
-        {
-            return Err(TaskError::InvalidPiState);
-        }
-        match state.ensure_pi_acyclic(waiter, owner) {
-            Ok(()) => {}
-            Err(TaskError::PiCycle) => {
-                drop(state);
-                task_runtime::fatal_invariant(0x5049_0001, waiter.as_u64() as usize);
-            }
-            Err(error) => return Err(error),
-        }
-        state.thread_record(owner)?;
-        let waiter_core = Arc::clone(&state.thread_record(waiter)?.core);
-        if state.thread_record(waiter)?.blocked_on.is_some() {
-            return Err(TaskError::InvalidPiState);
-        }
-        let next_waiter_count = state
-            .thread_record(owner)?
-            .sched
-            .lock()
-            .blocked_pi_waiters
-            .checked_add(1)
-            .ok_or(TaskError::InvalidPiState)?;
-        let generation = waiter_core.pi_wait_state().begin()?;
-        state.thread_record_mut(waiter)?.blocked_on = Some(PiWaitRegistration {
-            lock,
-            owner,
-            generation,
-        });
-        state.thread_record(owner)?.sched.lock().blocked_pi_waiters = next_waiter_count;
-        state.recompute_pi_chain(owner, self.config.fair_slice_ns())?;
-        Ok(PiWaitToken {
-            core: waiter_core,
-            generation,
-        })
-    }
-
-    /// Cancels a waiter token after a wake-before-block handoff race.
-    pub fn pi_wait_cancel(&self, token: PiWaitToken) -> Result<(), TaskError> {
-        let mut state = self.state.lock();
-        let waiter = token.waiter();
-        let registration = state
-            .thread_record(waiter)?
-            .blocked_on
-            .filter(|registration| registration.generation == token.generation)
-            .ok_or(TaskError::InvalidPiState)?;
-        state.thread_record_mut(waiter)?.blocked_on = None;
-        let owner = state.thread_record(registration.owner)?;
-        let mut owner_sched = owner.sched.lock();
-        owner_sched.blocked_pi_waiters = owner_sched
-            .blocked_pi_waiters
-            .checked_sub(1)
-            .ok_or(TaskError::InvalidPiState)?;
-        drop(owner_sched);
-        state.recompute_pi_chain(registration.owner, self.config.fair_slice_ns())?;
-        Ok(())
-    }
-
-    /// Transfers PI ownership and grants the selected wait token atomically.
-    pub fn pi_mutex_handoff(
-        &self,
-        lock: PiLockId,
-        old_owner: ThreadId,
-        next_owner: Option<ThreadId>,
-    ) -> Result<(), TaskError> {
-        let mut state = self.state.lock();
-        let active_waiters = state
-            .slots
-            .iter()
-            .filter_map(|slot| slot.record.as_ref())
-            .filter(|record| {
-                record.blocked_on.is_some_and(|registration| {
-                    registration.lock == lock && registration.owner == old_owner
-                })
-            })
-            .count();
-        let selected_waiter = next_owner.is_some_and(|next| {
-            state.thread_record(next).is_ok_and(|record| {
-                record.blocked_on.is_some_and(|registration| {
-                    registration.lock == lock && registration.owner == old_owner
-                })
-            })
-        });
-        if (active_waiters == 0 && next_owner.is_some())
-            || (active_waiters != 0 && !selected_waiter)
-        {
-            return Err(TaskError::InvalidPiState);
-        }
-        let redirected_waiters = active_waiters.saturating_sub(usize::from(selected_waiter));
-        let next_waiter_count = next_owner
-            .map(|next| {
-                state
-                    .thread_record(next)?
-                    .sched
-                    .lock()
-                    .blocked_pi_waiters
-                    .checked_add(redirected_waiters)
-                    .ok_or(TaskError::InvalidPiState)
-            })
-            .transpose()?;
-        {
-            let record = state.thread_record(old_owner)?;
-            let mut sched = record.sched.lock();
-            if sched.blocked_pi_waiters < active_waiters {
-                return Err(TaskError::InvalidPiState);
-            }
-            sched.blocked_pi_waiters -= active_waiters;
-        }
-        if let Some(next) = next_owner {
-            for slot in &mut state.slots {
-                let Some(record) = slot.record.as_mut() else {
-                    continue;
-                };
-                let Some(registration) = record.blocked_on.as_mut() else {
-                    continue;
-                };
-                if registration.lock != lock || registration.owner != old_owner {
-                    continue;
-                }
-                if record.core.id() == next {
-                    let generation = registration.generation;
-                    record.blocked_on = None;
-                    record.core.pi_wait_state().grant(generation)?;
-                } else {
-                    registration.owner = next;
-                }
-            }
-            state.thread_record(next)?.sched.lock().blocked_pi_waiters =
-                next_waiter_count.unwrap_or(0);
-        }
-        state.recompute_pi_chain(old_owner, self.config.fair_slice_ns())?;
-        if let Some(next) = next_owner {
-            state.recompute_pi_chain(next, self.config.fair_slice_ns())?;
-        }
-        Ok(())
     }
 
     /// Captures stable state for deterministic scheduler comparisons.

@@ -1844,6 +1844,133 @@ fn chained_and_multi_lock_donations_are_withdrawn_independently() {
 }
 
 #[test]
+fn failed_pi_registration_does_not_publish_a_partial_edge() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let waiter = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(90).unwrap(),
+        )))
+        .unwrap();
+    {
+        let state = system.state.lock();
+        state
+            .thread_record(owner.id())
+            .unwrap()
+            .sched
+            .lock()
+            .dispatch_generation = u64::MAX;
+    }
+
+    let result = system.pi_wait_start(PiLockIdentity::new().id().unwrap(), waiter.id(), owner.id());
+
+    assert_eq!(result.unwrap_err(), TaskError::InvalidConfiguration);
+    let state = system.state.lock();
+    assert_eq!(state.thread_record(waiter.id()).unwrap().blocked_on, None);
+    assert_eq!(
+        state
+            .thread_record(owner.id())
+            .unwrap()
+            .sched
+            .lock()
+            .blocked_pi_waiters,
+        0
+    );
+}
+
+#[test]
+fn failed_pi_handoff_preserves_the_ungranted_wait_transaction() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let waiter = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(90).unwrap(),
+        )))
+        .unwrap();
+    let lock = PiLockIdentity::new().id().unwrap();
+    let token = system.pi_wait_start(lock, waiter.id(), owner.id()).unwrap();
+    {
+        let state = system.state.lock();
+        state
+            .thread_record(owner.id())
+            .unwrap()
+            .sched
+            .lock()
+            .dispatch_generation = u64::MAX;
+    }
+
+    assert_eq!(
+        system
+            .prepare_pi_mutex_handoff(lock, owner.id(), Some(waiter.id()))
+            .unwrap_err(),
+        TaskError::InvalidConfiguration
+    );
+    assert!(!token.is_granted());
+    let state = system.state.lock();
+    assert_eq!(
+        state.thread_record(waiter.id()).unwrap().blocked_on,
+        Some(PiWaitRegistration {
+            lock,
+            owner: owner.id(),
+            generation: token.generation,
+        })
+    );
+    assert_eq!(
+        state
+            .thread_record(owner.id())
+            .unwrap()
+            .sched
+            .lock()
+            .blocked_pi_waiters,
+        1
+    );
+}
+
+#[test]
+fn dropped_pi_handoff_preparation_leaves_the_wait_transaction_intact() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let waiter = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(90).unwrap(),
+        )))
+        .unwrap();
+    let lock = PiLockIdentity::new().id().unwrap();
+    let token = system.pi_wait_start(lock, waiter.id(), owner.id()).unwrap();
+
+    let handoff = system
+        .prepare_pi_mutex_handoff(lock, owner.id(), Some(waiter.id()))
+        .unwrap();
+    drop(handoff);
+
+    assert!(!token.is_granted());
+    let state = system.state.lock();
+    assert_eq!(
+        state.thread_record(waiter.id()).unwrap().blocked_on,
+        Some(PiWaitRegistration {
+            lock,
+            owner: owner.id(),
+            generation: token.generation,
+        })
+    );
+    assert_eq!(
+        state
+            .thread_record(owner.id())
+            .unwrap()
+            .sched
+            .lock()
+            .blocked_pi_waiters,
+        1
+    );
+}
+
+#[test]
 fn deadline_donor_budget_is_debited_and_overrun_callback_is_deferred() {
     DEADLINE_OVERRUN_CALLBACKS.store(0, Ordering::Relaxed);
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
