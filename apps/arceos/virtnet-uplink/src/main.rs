@@ -26,21 +26,37 @@ const VM_TAG: &str = match option_env!("AXVIRTIO_VM_TAG") {
 #[cfg(feature = "arceos")]
 const GUEST_IFACE: &str = "eth0";
 #[cfg(feature = "arceos")]
-const TEST_HOST: &str = env!("AXVIRTIO_TEST_HOST");
+const TEST_HOST: &str = match option_env!("AXVIRTIO_TEST_HOST") {
+    Some(host) => host,
+    None => "example.com",
+};
 #[cfg(feature = "arceos")]
-const TEST_PORT: u16 = parse_port(env!("AXVIRTIO_TEST_PORT"));
+const TEST_PORT: u16 = parse_optional_port(option_env!("AXVIRTIO_TEST_PORT"), 80);
 #[cfg(feature = "arceos")]
-const TEST_PATH: &str = env!("AXVIRTIO_TEST_PATH");
+const TEST_PATH: &str = match option_env!("AXVIRTIO_TEST_PATH") {
+    Some(path) => path,
+    None => "/",
+};
 #[cfg(feature = "arceos")]
-const EXPECTED_TOKEN: &str = env!("AXVIRTIO_EXPECT_TOKEN");
+const EXPECTED_TOKEN: &str = match option_env!("AXVIRTIO_EXPECT_TOKEN") {
+    Some(token) => token,
+    None => "",
+};
 #[cfg(feature = "arceos")]
-const LOCAL_ROLE: &str = env!("AXVIRTIO_LOCAL_ROLE");
+const LOCAL_ROLE: &str = match option_env!("AXVIRTIO_LOCAL_ROLE") {
+    Some(role) => role,
+    None => "disabled",
+};
 #[cfg(feature = "arceos")]
-const LOCAL_PEER_IPV4: &str = env!("AXVIRTIO_LOCAL_PEER_IPV4");
+const LOCAL_PEER_IPV4: &str = match option_env!("AXVIRTIO_LOCAL_PEER_IPV4") {
+    Some(peer_ipv4) => peer_ipv4,
+    None => "auto",
+};
 #[cfg(feature = "arceos")]
-const LOCAL_PORT: u16 = parse_port(env!("AXVIRTIO_LOCAL_PORT"));
+const LOCAL_PORT: u16 = parse_optional_port(option_env!("AXVIRTIO_LOCAL_PORT"), 9000);
 #[cfg(feature = "arceos")]
-const LOCAL_TEST_BYTES: usize = parse_usize(env!("AXVIRTIO_LOCAL_TEST_BYTES"));
+const LOCAL_TEST_BYTES: usize =
+    parse_optional_usize(option_env!("AXVIRTIO_LOCAL_TEST_BYTES"), 1024);
 #[cfg(feature = "arceos")]
 const LOCAL_CHUNK_SIZE: usize = 16 * 1024;
 #[cfg(feature = "arceos")]
@@ -51,8 +67,19 @@ const LOCAL_CONNECT_ATTEMPTS: usize = 100;
 const LOCAL_ACK_MAGIC: &[u8; 8] = b"AXVNET01";
 
 #[cfg(feature = "arceos")]
-const fn parse_port(value: &str) -> u16 {
-    parse_usize(value) as u16
+const fn parse_optional_port(value: Option<&str>, default: u16) -> u16 {
+    match value {
+        Some(value) => parse_usize(value) as u16,
+        None => default,
+    }
+}
+
+#[cfg(feature = "arceos")]
+const fn parse_optional_usize(value: Option<&str>, default: usize) -> usize {
+    match value {
+        Some(value) => parse_usize(value),
+        None => default,
+    }
 }
 
 #[cfg(feature = "arceos")]
