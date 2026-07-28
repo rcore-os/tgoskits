@@ -11,11 +11,15 @@
 use ax_std as _;
 
 /// Fixed peer (the deterministic virtual echo node).
+#[cfg(feature = "arceos")]
 const PEER_IP: [u8; 4] = [10, 0, 0, 1];
+#[cfg(feature = "arceos")]
 const GUEST_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 /// UDP port the echo peer answers on.
+#[cfg(feature = "arceos")]
 const ECHO_PORT: u16 = 4433;
 /// Unique payload echoed back by the peer.
+#[cfg(feature = "arceos")]
 const TOKEN: &[u8] = b"VIRTIO_NET_ECHO_OK_123456";
 
 #[cfg(feature = "arceos")]
