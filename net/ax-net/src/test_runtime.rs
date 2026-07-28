@@ -3,22 +3,44 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ax_task::{
-    impl_trait as impl_task_runtime,
+    CpuId, CpuRemote, TaskSystem, impl_trait as impl_task_runtime,
     runtime::{TaskRuntime, *},
 };
 
 static NEXT_IRQ_TOKEN: AtomicUsize = AtomicUsize::new(1);
+static TASK_SYSTEM: AtomicUsize = AtomicUsize::new(0);
+static CPU_LOCAL: AtomicUsize = AtomicUsize::new(0);
+static TEST_RUNTIME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct NetTestTaskRuntime;
 
 impl_task_runtime! {
     impl TaskRuntime for NetTestTaskRuntime {
-        unsafe fn task_system_handle() -> TaskSystemHandle { TaskSystemHandle::NONE }
-        unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
-            CurrentCpuLocalHandle::NONE
+        unsafe fn task_system_handle() -> TaskSystemHandle {
+            // SAFETY: the test guard keeps the pointed-to system alive.
+            unsafe { TaskSystemHandle::from_raw(TASK_SYSTEM.load(Ordering::Acquire)) }
         }
-        unsafe fn cpu_remote_handle(_cpu: RuntimeCpuId) -> CpuRemoteHandle {
-            CpuRemoteHandle::NONE
+        unsafe fn current_cpu_local_handle() -> CurrentCpuLocalHandle {
+            // SAFETY: the test guard keeps the pinned CPU-local state alive.
+            unsafe { CurrentCpuLocalHandle::from_raw(CPU_LOCAL.load(Ordering::Acquire)) }
+        }
+        unsafe fn cpu_remote_handle(cpu: RuntimeCpuId) -> CpuRemoteHandle {
+            let raw = TASK_SYSTEM.load(Ordering::Acquire);
+            if raw == 0 {
+                return CpuRemoteHandle::NONE;
+            }
+            // SAFETY: the installed test guard owns the TaskSystem.
+            let system = unsafe { &*core::ptr::with_exposed_provenance::<TaskSystem>(raw) };
+            system
+                .cpu_remote(CpuId::new(cpu.as_u32()))
+                .map_or(CpuRemoteHandle::NONE, |remote| {
+                    // SAFETY: the TaskSystem owns this endpoint until clear.
+                    unsafe {
+                        CpuRemoteHandle::from_raw(
+                            (remote as *const CpuRemote).expose_provenance(),
+                        )
+                    }
+                })
         }
         fn current_cpu_id() -> RuntimeCpuId { RuntimeCpuId::new(0) }
         fn online_cpu_count() -> u32 { 1 }
@@ -87,6 +109,35 @@ impl_task_runtime! {
             panic!("ax-net test scheduler invariant {code} failed with {argument:#x}")
         }
     }
+}
+
+pub(crate) struct InstalledTestRuntime {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for InstalledTestRuntime {
+    fn drop(&mut self) {
+        CPU_LOCAL.store(0, Ordering::Release);
+        TASK_SYSTEM.store(0, Ordering::Release);
+    }
+}
+
+pub(crate) fn install(
+    task_system: &TaskSystem,
+    cpu_local: core::pin::Pin<&mut ax_task::CpuLocal>,
+) -> InstalledTestRuntime {
+    let lock = TEST_RUNTIME_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    TASK_SYSTEM.store(
+        (task_system as *const TaskSystem).expose_provenance(),
+        Ordering::Release,
+    );
+    CPU_LOCAL.store(
+        (cpu_local.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        Ordering::Release,
+    );
+    InstalledTestRuntime { _lock: lock }
 }
 
 #[test]

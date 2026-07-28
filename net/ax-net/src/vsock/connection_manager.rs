@@ -20,16 +20,17 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 
 use ax_errno::{AxError, AxResult, ax_bail};
-use ax_sync::SpinMutex;
+use ax_sync::{PiMutex, PiMutexGuard};
 use ax_task::WaitQueue;
 use axpoll::{IoEvents, PollSet};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::*};
 
 use super::{VsockAddr, VsockConnId};
-use crate::device::{start_vsock_poll, stop_vsock_poll};
+use crate::device::VsockPollLease;
 
 pub const VSOCK_RX_BUFFER_SIZE: usize = 64 * 1024; // 64KB receive buffer
 const VSOCK_ACCEPT_QUEUE_SIZE: usize = 128; // accept queue size
+type RetiredConnections = heapless::Vec<(VsockConnId, Arc<Connection>), VSOCK_ACCEPT_QUEUE_SIZE>;
 
 /// Public state of a vsock connection tracked by the manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,8 +47,20 @@ pub enum ConnectionState {
     Closed,
 }
 
-/// Per-connection state shared by vsock device events and stream transports.
+/// Stable connection capability shared by device events and stream transports.
+///
+/// The wait queue lives outside mutable connection state so a blocked sender
+/// never sleeps while owning `state`.
 pub struct Connection {
+    state: PiMutex<ConnectionData>,
+    tx_wait_queue: WaitQueue,
+    rx_wakers: PiMutex<PollSet>,
+    connect_wakers: PiMutex<PollSet>,
+    _poll_lease: VsockPollLease,
+}
+
+/// Mutable state serialized in ordinary task context.
+pub(crate) struct ConnectionData {
     /// Manager-level connection state.
     state: ConnectionState,
     /// Local vsock address.
@@ -59,14 +72,6 @@ pub struct Connection {
     rx_producer: HeapProd<u8>,
     /// Consumer side drained by socket recv.
     rx_consumer: HeapCons<u8>,
-
-    /// Wait queue for TX blocked by peer credit/buffer pressure.
-    tx_wait_queue: WaitQueue,
-
-    /// RX readiness waiters.
-    rx_wakers: PollSet,
-    /// Connect/listen state waiters.
-    connect_wakers: PollSet,
 
     /// Whether the receive half is closed.
     rx_closed: bool,
@@ -82,52 +87,106 @@ pub struct Connection {
 }
 
 impl Connection {
-    fn new(local_addr: VsockAddr, peer_addr: Option<VsockAddr>, state: ConnectionState) -> Self {
+    pub(crate) fn new_shared(
+        local_addr: VsockAddr,
+        peer_addr: Option<VsockAddr>,
+        state: ConnectionState,
+        poll_lease: VsockPollLease,
+    ) -> Arc<Self> {
         let rb = HeapRb::<u8>::new(VSOCK_RX_BUFFER_SIZE);
         let (rx_producer, rx_consumer) = rb.split();
-        Self {
-            state,
-            local_addr,
-            peer_addr,
-            rx_producer,
-            rx_consumer,
+        Arc::new(Self {
+            state: PiMutex::new(ConnectionData {
+                state,
+                local_addr,
+                peer_addr,
+                rx_producer,
+                rx_consumer,
+                rx_closed: false,
+                tx_closed: false,
+                rx_bytes: 0,
+                tx_bytes: 0,
+                dropped_bytes: 0,
+            }),
             tx_wait_queue: WaitQueue::default(),
-            rx_wakers: PollSet::new(),
-            connect_wakers: PollSet::new(),
-            rx_closed: false,
-            tx_closed: false,
-            rx_bytes: 0,
-            tx_bytes: 0,
-            dropped_bytes: 0,
-        }
+            rx_wakers: PiMutex::new(PollSet::new()),
+            connect_wakers: PiMutex::new(PollSet::new()),
+            _poll_lease: poll_lease,
+        })
     }
 
-    /// Register a waker for transmit events
-    pub fn register_accept_poll(&mut self, context: &mut core::task::Context<'_>) {
-        // found listen queue
-        let manager = VSOCK_CONN_MANAGER.lock();
-        let queue = manager
-            .get_listen_queue(self.local_addr.port)
-            .expect("listen queue not found");
-        drop(manager);
-        queue.lock().register_poll(context);
+    pub(crate) fn lock(&self) -> PiMutexGuard<'_, ConnectionData> {
+        self.state.lock()
     }
 
-    /// Register a waker for receive Events
-    pub fn register_rx_poll(&mut self, context: &mut core::task::Context<'_>) {
-        // Registration happens from vsock poll task context.
-        unsafe { self.rx_wakers.register(context.waker(), IoEvents::IN) };
+    #[inline]
+    pub fn wait_for_tx(&self) {
+        self.tx_wait_queue
+            .wait_timeout(core::time::Duration::from_millis(10));
     }
 
-    /// Register a waker for connect Events
-    pub fn register_connect_poll(&mut self, _context: &mut core::task::Context<'_>) {
-        // Registration happens from vsock poll task context.
+    #[inline]
+    pub fn notify_tx(&self) {
+        self.tx_wait_queue.notify_all();
+    }
+
+    pub fn register_rx_poll(&self, context: &mut core::task::Context<'_>) {
+        // SAFETY: registration happens in task context and the caller repeats
+        // its readiness check after publishing the waker.
         unsafe {
-            self.connect_wakers
-                .register(_context.waker(), IoEvents::OUT | IoEvents::ERR)
+            self.rx_wakers
+                .lock()
+                .register(context.waker(), IoEvents::IN)
         };
     }
 
+    pub fn register_connect_poll(&self, context: &mut core::task::Context<'_>) {
+        // SAFETY: registration happens in task context and connection state is
+        // checked again after the waker is published.
+        unsafe {
+            self.connect_wakers
+                .lock()
+                .register(context.waker(), IoEvents::OUT | IoEvents::ERR)
+        };
+    }
+
+    pub fn wake_rx(&self) {
+        // SAFETY: the state transition or RX publication is complete before
+        // this task-context wake.
+        unsafe {
+            self.rx_wakers
+                .lock()
+                .wake(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP)
+        };
+    }
+
+    pub fn wake_connect(&self) {
+        // SAFETY: connected/closed state is published before this wake.
+        unsafe {
+            self.connect_wakers
+                .lock()
+                .wake(IoEvents::OUT | IoEvents::ERR)
+        };
+    }
+
+    pub(crate) fn stats(&self) -> ConnectionStats {
+        let state = self.lock();
+        ConnectionStats {
+            rx_bytes: state.rx_bytes,
+            tx_bytes: state.tx_bytes,
+            dropped_bytes: state.dropped_bytes,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ConnectionStats {
+    pub(crate) rx_bytes: usize,
+    pub(crate) tx_bytes: usize,
+    pub(crate) dropped_bytes: usize,
+}
+
+impl ConnectionData {
     /// Get the free space in the receive buffer
     #[inline]
     pub fn rx_buffer_free(&self) -> usize {
@@ -171,17 +230,6 @@ impl Connection {
     }
 
     #[inline]
-    pub fn wait_for_tx(&self) {
-        self.tx_wait_queue
-            .wait_timeout(core::time::Duration::from_millis(10));
-    }
-
-    #[inline]
-    pub fn tx_wait_queue_notify(&mut self) {
-        self.tx_wait_queue.notify_all();
-    }
-
-    #[inline]
     pub fn rx_slices(&self) -> (&[u8], &[u8]) {
         self.rx_consumer.as_slices()
     }
@@ -196,21 +244,6 @@ impl Connection {
     #[inline]
     pub fn add_tx_bytes(&mut self, count: usize) {
         self.tx_bytes += count;
-    }
-
-    #[inline]
-    pub fn wake_rx(&mut self) {
-        // RX buffer and connection state are updated before wake_rx is called.
-        unsafe {
-            self.rx_wakers
-                .wake(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP)
-        };
-    }
-
-    #[inline]
-    pub fn wake_connect(&mut self) {
-        // Connection state is updated before wake_connect is called.
-        unsafe { self.connect_wakers.wake(IoEvents::OUT | IoEvents::ERR) };
     }
 
     #[inline]
@@ -281,6 +314,25 @@ impl AcceptQueue {
     pub fn pop(&mut self) -> Option<VsockConnId> {
         self.consumer.try_pop()
     }
+
+    fn remove(&mut self, conn_id: VsockConnId) -> bool {
+        let queued = self.consumer.occupied_len();
+        let mut removed = false;
+        for _ in 0..queued {
+            let current = self
+                .consumer
+                .try_pop()
+                .expect("queued count came from the same accept queue");
+            if !removed && current == conn_id {
+                removed = true;
+            } else {
+                self.producer
+                    .try_push(current)
+                    .expect("popping one entry reserves space for reinsertion");
+            }
+        }
+        removed
+    }
 }
 
 /// listen queue
@@ -310,10 +362,48 @@ impl ListenQueue {
     }
 }
 
+pub(crate) struct IncomingConnection {
+    conn_id: VsockConnId,
+    connection: Arc<Connection>,
+    queue: Arc<PiMutex<ListenQueue>>,
+}
+
+impl IncomingConnection {
+    pub(crate) fn publish(self) {
+        let queue_is_current = VSOCK_CONN_MANAGER
+            .lock()
+            .get_listen_queue(self.conn_id.local_port)
+            .is_some_and(|current| Arc::ptr_eq(&current, &self.queue));
+        if !queue_is_current {
+            self.rollback();
+            return;
+        }
+        self.queue.lock().wake();
+    }
+
+    fn rollback(&self) {
+        let removed = VSOCK_CONN_MANAGER
+            .lock()
+            .remove_connection_if(self.conn_id, &self.connection);
+        self.queue.lock().accept_queue.remove(self.conn_id);
+        if let Some(connection) = removed {
+            retire_connection(self.conn_id, connection);
+        }
+    }
+}
+
+pub(crate) fn retire_connection(conn_id: VsockConnId, connection: Arc<Connection>) {
+    let stats = connection.stats();
+    debug!(
+        "Removed connection {:?}: rx={} bytes, tx={} bytes, dropped={} bytes",
+        conn_id, stats.rx_bytes, stats.tx_bytes, stats.dropped_bytes
+    );
+}
+
 /// Global connection manager
 pub struct VsockConnectionManager {
-    connections: BTreeMap<VsockConnId, Arc<SpinMutex<Connection>>>,
-    listen_queues: BTreeMap<u32, Arc<SpinMutex<ListenQueue>>>,
+    connections: BTreeMap<VsockConnId, Arc<Connection>>,
+    listen_queues: BTreeMap<u32, Arc<PiMutex<ListenQueue>>>,
     next_ephemeral_port: u32,
 }
 
@@ -330,7 +420,7 @@ impl VsockConnectionManager {
     }
 
     /// Get listen queue from specified port
-    pub fn get_listen_queue(&self, port: u32) -> Option<Arc<SpinMutex<ListenQueue>>> {
+    pub fn get_listen_queue(&self, port: u32) -> Option<Arc<PiMutex<ListenQueue>>> {
         self.listen_queues.get(&port).cloned()
     }
 
@@ -366,15 +456,29 @@ impl VsockConnectionManager {
             ax_bail!(AddrInUse, "port already in use");
         }
 
-        let queue = Arc::new(SpinMutex::new(ListenQueue::new(local_addr)));
+        let queue = Arc::new(PiMutex::new(ListenQueue::new(local_addr)));
         self.listen_queues.insert(local_addr.port, queue);
         Ok(())
     }
 
     /// stop listening
-    pub fn unlisten(&mut self, port: u32) {
-        self.listen_queues.remove(&port);
+    pub fn unlisten(&mut self, port: u32) -> RetiredConnections {
+        let mut retired = RetiredConnections::new();
+        let Some(queue) = self.listen_queues.remove(&port) else {
+            return retired;
+        };
+
+        let mut queue = queue.lock();
+        while let Some(conn_id) = queue.accept_queue.pop() {
+            if let Some(connection) = self.connections.remove(&conn_id) {
+                assert!(
+                    retired.push((conn_id, connection)).is_ok(),
+                    "accept queue capacity bounds listener retirement"
+                );
+            }
+        }
         debug!("Vsock unlisten on port {}", port);
+        retired
     }
 
     /// check if port accept
@@ -406,42 +510,47 @@ impl VsockConnectionManager {
         local_addr: VsockAddr,
         peer_addr: Option<VsockAddr>,
         state: ConnectionState,
-    ) -> Arc<SpinMutex<Connection>> {
-        let conn = Connection::new(local_addr, peer_addr, state);
-        let conn = Arc::new(SpinMutex::new(conn));
+        poll_lease: VsockPollLease,
+    ) -> AxResult<Arc<Connection>> {
         if self.connections.contains_key(&conn_id) {
-            info!("Connection {:?} already exists, overwriting", conn_id);
-        } else {
-            start_vsock_poll();
+            ax_bail!(
+                AlreadyExists,
+                "vsock connection identity already registered"
+            );
         }
+        let conn = Connection::new_shared(local_addr, peer_addr, state, poll_lease);
         self.connections.insert(conn_id, conn.clone());
         debug!(
             "Created connection {:?}: local={:?}, peer={:?}",
             conn_id, local_addr, peer_addr
         );
-        conn
+        Ok(conn)
     }
 
     /// get a connection by id
-    pub fn get_connection(&self, conn_id: VsockConnId) -> Option<Arc<SpinMutex<Connection>>> {
+    pub fn get_connection(&self, conn_id: VsockConnId) -> Option<Arc<Connection>> {
         self.connections.get(&conn_id).cloned()
     }
 
     /// remove a connection
-    pub fn remove_connection(&mut self, conn_id: VsockConnId) {
-        if let Some(conn) = self.connections.remove(&conn_id) {
-            let conn = conn.lock();
-
-            stop_vsock_poll();
-            debug!(
-                "Removed connection {:?}: rx={} bytes, tx={} bytes, dropped={} bytes",
-                conn_id, conn.rx_bytes, conn.tx_bytes, conn.dropped_bytes
-            );
+    pub fn remove_connection_if(
+        &mut self,
+        conn_id: VsockConnId,
+        expected: &Arc<Connection>,
+    ) -> Option<Arc<Connection>> {
+        let registered = self.connections.get(&conn_id)?;
+        if !Arc::ptr_eq(registered, expected) {
+            return None;
         }
+        self.connections.remove(&conn_id)
     }
 
     /// handle a new connection request (by driver event)
-    pub fn on_connection_request(&mut self, conn_id: VsockConnId) -> AxResult<()> {
+    pub fn on_connection_request(
+        &mut self,
+        conn_id: VsockConnId,
+        poll_lease: VsockPollLease,
+    ) -> AxResult<Option<IncomingConnection>> {
         let queue = self
             .listen_queues
             .get(&conn_id.local_port)
@@ -453,16 +562,17 @@ impl VsockConnectionManager {
         // check if connection already exists
         if self.connections.contains_key(&conn_id) {
             warn!("Connection {:?} already exists, ignoring request", conn_id);
-            return Ok(());
+            return Ok(None);
         }
 
         // create new connection
-        self.create_connection(
+        let connection = self.create_connection(
             conn_id,
             local_addr,
             Some(conn_id.peer_addr),
             ConnectionState::Connected,
-        );
+            poll_lease,
+        )?;
 
         // enqueue connection to accept queue
         let mut queue_guard = queue.lock();
@@ -473,82 +583,152 @@ impl VsockConnectionManager {
             );
             // full -- remove the connection
             drop(queue_guard);
-            self.remove_connection(conn_id);
+            self.remove_connection_if(conn_id, &connection);
             return Err(AxError::ResourceBusy);
         }
 
-        queue_guard.wake();
         drop(queue_guard);
 
         trace!(
             "New connection request from {:?} on port {}",
             conn_id.peer_addr, conn_id.local_port
         );
-        Ok(())
-    }
-
-    /// handle data received (by driver event)
-    pub fn on_data_received(&mut self, conn_id: VsockConnId, data: &[u8]) -> AxResult<()> {
-        let conn = self
-            .connections
-            .get(&conn_id)
-            .ok_or(AxError::NotFound)?
-            .clone();
-
-        let mut conn_guard = conn.lock();
-        let written = conn_guard.push_rx_data(data);
-        if written > 0 {
-            conn_guard.wake_rx();
-        }
-
-        trace!(
-            "Received {} bytes for connection {:?} (written={}, buffer_used={}/{})",
-            data.len(),
+        Ok(Some(IncomingConnection {
             conn_id,
-            written,
-            conn_guard.rx_buffer_used(),
-            VSOCK_RX_BUFFER_SIZE
-        );
-        Ok(())
-    }
-
-    /// handle disconnection (by driver event)
-    pub fn on_disconnected(&mut self, conn_id: VsockConnId) -> AxResult<()> {
-        if let Some(conn) = self.connections.get(&conn_id) {
-            let mut conn_guard = conn.lock();
-            conn_guard.state = ConnectionState::Closed;
-            conn_guard.rx_closed = true;
-            conn_guard.tx_closed = true;
-            conn_guard.wake_rx();
-            trace!("Connection {:?} disconnected", conn_id);
-        }
-        Ok(())
-    }
-
-    /// handle connected event (by driver event)
-    pub fn on_connected(&mut self, conn_id: VsockConnId) -> AxResult<()> {
-        if let Some(conn) = self.connections.get(&conn_id) {
-            let mut conn_guard = conn.lock();
-            conn_guard.state = ConnectionState::Connected;
-            conn_guard.wake_connect();
-            trace!("Connection {:?} established", conn_id);
-        }
-        Ok(())
-    }
-
-    /// handle credit update (by driver event)
-    /// The code for credit_update has been completed in the virtio_driver layer.
-    /// The purpose of credit_update here is to correspond to events and
-    /// notify which tasks failed to be sent due to credit not being updated
-    pub fn on_credit_update(&mut self, conn_id: VsockConnId) -> AxResult<()> {
-        if let Some(conn) = self.connections.get(&conn_id) {
-            let mut conn_guard = conn.lock();
-            conn_guard.tx_wait_queue_notify();
-            trace!("Connection {:?} tx wait queue notified", conn_id);
-        }
-        Ok(())
+            connection,
+            queue,
+        }))
     }
 }
 
-pub static VSOCK_CONN_MANAGER: SpinMutex<VsockConnectionManager> =
-    SpinMutex::new(VsockConnectionManager::new());
+pub static VSOCK_CONN_MANAGER: PiMutex<VsockConnectionManager> =
+    PiMutex::new(VsockConnectionManager::new());
+
+#[cfg(test)]
+mod tests {
+    use alloc::boxed::Box;
+
+    use ax_task::{CpuId, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
+
+    use super::*;
+
+    fn test_poll_lease() -> VsockPollLease {
+        VsockPollLease::inactive_for_test()
+    }
+
+    #[test]
+    fn tx_wait_capability_is_owned_outside_connection_state() {
+        let system = Box::new(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime = crate::test_runtime::install(&system, cpu.as_mut());
+        let connection = Connection::new_shared(
+            VsockAddr { cid: 3, port: 4 },
+            Some(VsockAddr { cid: 5, port: 6 }),
+            ConnectionState::Connected,
+            test_poll_lease(),
+        );
+
+        let state = connection.lock();
+        drop(state);
+        let _wait_without_state_guard = || connection.wait_for_tx();
+    }
+
+    #[test]
+    fn duplicate_connection_identity_never_replaces_the_live_owner() {
+        let mut manager = VsockConnectionManager::new();
+        let conn_id = VsockConnId {
+            peer_addr: VsockAddr { cid: 7, port: 8 },
+            local_port: 9,
+        };
+        let original = manager
+            .create_connection(
+                conn_id,
+                VsockAddr { cid: 3, port: 9 },
+                Some(conn_id.peer_addr),
+                ConnectionState::Connected,
+                test_poll_lease(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            manager.create_connection(
+                conn_id,
+                VsockAddr { cid: 3, port: 9 },
+                Some(conn_id.peer_addr),
+                ConnectionState::Connecting,
+                test_poll_lease(),
+            ),
+            Err(AxError::AlreadyExists)
+        ));
+        assert!(Arc::ptr_eq(
+            &original,
+            &manager.get_connection(conn_id).unwrap()
+        ));
+    }
+
+    #[test]
+    fn stale_connection_owner_cannot_remove_the_registered_identity() {
+        let mut manager = VsockConnectionManager::new();
+        let conn_id = VsockConnId {
+            peer_addr: VsockAddr { cid: 10, port: 11 },
+            local_port: 12,
+        };
+        let registered = manager
+            .create_connection(
+                conn_id,
+                VsockAddr { cid: 3, port: 12 },
+                Some(conn_id.peer_addr),
+                ConnectionState::Connected,
+                test_poll_lease(),
+            )
+            .unwrap();
+        let stale = Connection::new_shared(
+            VsockAddr { cid: 3, port: 12 },
+            Some(conn_id.peer_addr),
+            ConnectionState::Closed,
+            test_poll_lease(),
+        );
+
+        assert!(manager.remove_connection_if(conn_id, &stale).is_none());
+        assert!(Arc::ptr_eq(
+            &registered,
+            &manager.get_connection(conn_id).unwrap()
+        ));
+    }
+
+    #[test]
+    fn unlisten_retires_connections_waiting_in_accept_queue() {
+        let system = Box::new(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime = crate::test_runtime::install(&system, cpu.as_mut());
+
+        let mut manager = VsockConnectionManager::new();
+        let local_addr = VsockAddr { cid: 3, port: 13 };
+        let conn_id = VsockConnId {
+            peer_addr: VsockAddr { cid: 14, port: 15 },
+            local_port: local_addr.port,
+        };
+        manager.listen(local_addr).unwrap();
+        let _incoming = manager
+            .on_connection_request(conn_id, test_poll_lease())
+            .unwrap()
+            .unwrap();
+
+        let retired = manager.unlisten(local_addr.port);
+
+        assert!(
+            manager.get_connection(conn_id).is_none(),
+            "closing a listener must retire connections that have not been accepted"
+        );
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].0, conn_id);
+    }
+}

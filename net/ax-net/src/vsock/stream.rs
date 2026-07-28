@@ -22,7 +22,7 @@ use core::task::Context;
 
 use ax_errno::{AxError, AxResult, ax_bail, ax_err_type};
 use ax_io::prelude::*;
-use ax_sync::SpinMutex;
+use ax_sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 
 use super::connection_manager::*;
@@ -38,28 +38,35 @@ use crate::{
 /// Stream transport for vsock sockets.
 pub struct VsockStreamTransport {
     /// Connection id registered with the vsock manager.
-    conn_id: SpinMutex<Option<VsockConnId>>,
+    conn_id: PiMutex<Option<VsockConnId>>,
     /// Shared connection state once bound, connecting, or connected.
-    connection: SpinMutex<Option<Arc<SpinMutex<Connection>>>>,
+    connection: PiMutex<Option<Arc<Connection>>>,
     /// Public POSIX-facing stream state.
     state: StateLock,
     /// Shared socket options.
     general: GeneralOptions,
 }
 
+fn retire_listener(port: u32) {
+    let retired = VSOCK_CONN_MANAGER.lock().unlisten(port);
+    for (conn_id, connection) in retired {
+        retire_connection(conn_id, connection);
+    }
+}
+
 impl VsockStreamTransport {
     /// Create a new idle vsock stream transport.
     pub fn new() -> Self {
         Self {
-            conn_id: SpinMutex::new(None),
-            connection: SpinMutex::new(None),
+            conn_id: PiMutex::new(None),
+            connection: PiMutex::new(None),
             state: StateLock::new(State::Idle),
             general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
         }
     }
 
     /// Returns the manager connection associated with this stream.
-    fn get_connection(&self) -> AxResult<Arc<SpinMutex<Connection>>> {
+    fn get_connection(&self) -> AxResult<Arc<Connection>> {
         self.connection.lock().clone().ok_or(AxError::NotConnected)
     }
 }
@@ -86,13 +93,22 @@ impl VsockStreamTransport {
             .lock(State::Idle)
             .map_err(|_| ax_err_type!(InvalidInput, "already bound"))?
             .transit(State::Idle, || {
-                let mut manager = VSOCK_CONN_MANAGER.lock();
-                if local_addr.port == 0 {
-                    local_addr.port = manager.allocate_port()?;
-                }
+                let poll_lease = start_vsock_poll()?;
+                let conn = {
+                    let mut manager = VSOCK_CONN_MANAGER.lock();
+                    if local_addr.port == 0 {
+                        local_addr.port = manager.allocate_port()?;
+                    }
+                    let conn_id = VsockConnId::listening(local_addr.port);
+                    manager.create_connection(
+                        conn_id,
+                        local_addr,
+                        None,
+                        ConnectionState::Idle,
+                        poll_lease,
+                    )?
+                };
                 let conn_id = VsockConnId::listening(local_addr.port);
-                let conn =
-                    manager.create_connection(conn_id, local_addr, None, ConnectionState::Idle);
 
                 *self.conn_id.lock() = Some(conn_id);
                 *self.connection.lock() = Some(conn);
@@ -110,12 +126,16 @@ impl VsockStreamTransport {
 
         guard.transit(State::Listening, || {
             let conn = self.get_connection()?;
-            let local_addr = conn.lock().local_addr();
+            let local_addr = {
+                let state = conn.lock();
+                state.local_addr()
+            };
 
-            // register in the global listen table
             VSOCK_CONN_MANAGER.lock().listen(local_addr)?;
-            vsock_listen(local_addr)?;
-            // set state
+            if let Err(error) = vsock_listen(local_addr) {
+                retire_listener(local_addr.port);
+                return Err(error);
+            }
             conn.lock().set_state(ConnectionState::Listening);
             trace!("Vsock listening on {:?}", local_addr);
             Ok(())
@@ -140,11 +160,12 @@ impl VsockStreamTransport {
 
             let (conn_id, peer_addr) = manager.accept(local_port)?;
             let conn = manager.get_connection(conn_id).ok_or(AxError::NotFound)?;
+            drop(manager);
 
             // create new VsockStreamTransport
             let new_transport = VsockStreamTransport {
-                conn_id: SpinMutex::new(Some(conn_id)),
-                connection: SpinMutex::new(Some(conn)),
+                conn_id: PiMutex::new(Some(conn_id)),
+                connection: PiMutex::new(Some(conn)),
                 state: StateLock::new(State::Connected),
                 general: GeneralOptions::new(1, 40, 0), // SOCK_STREAM
             };
@@ -163,27 +184,19 @@ impl VsockStreamTransport {
         })?;
 
         guard.transit(State::Connecting, || {
-            let mut manager = VSOCK_CONN_MANAGER.lock();
-            let existing_conn = self.connection.lock();
-
-            // get local address
+            let existing_conn = self.connection.lock().clone();
+            let old_conn_id = *self.conn_id.lock();
             let local_port = if let Some(conn) = existing_conn.as_ref() {
-                let conn_guard = conn.lock();
-                match conn_guard.state() {
-                    ConnectionState::Idle => {
-                        // already bound but not connected, reuse the port
-                        conn_guard.local_addr().port
-                    }
+                let state = conn.lock();
+                match state.state() {
+                    ConnectionState::Idle => state.local_addr().port,
                     _ => {
-                        // should not happen due to state check above
                         ax_bail!(InvalidInput, "already connected or listening");
                     }
                 }
             } else {
-                manager.allocate_port()?
+                VSOCK_CONN_MANAGER.lock().allocate_port()?
             };
-            drop(existing_conn);
-
             let local_addr = VsockAddr {
                 cid: vsock_guest_cid()?,
                 port: local_port,
@@ -194,20 +207,30 @@ impl VsockStreamTransport {
                 peer_addr,
                 local_port,
             };
-            let conn = manager.create_connection(
+            let poll_lease = start_vsock_poll()?;
+            let conn = VSOCK_CONN_MANAGER.lock().create_connection(
                 conn_id,
                 local_addr,
                 Some(peer_addr),
                 ConnectionState::Connecting,
-            );
+                poll_lease,
+            )?;
 
+            if let Err(error) = vsock_connect(conn_id) {
+                VSOCK_CONN_MANAGER
+                    .lock()
+                    .remove_connection_if(conn_id, &conn);
+                return Err(error);
+            }
+
+            let _ = match (old_conn_id, existing_conn.as_ref()) {
+                (Some(old), Some(existing)) if old != conn_id => VSOCK_CONN_MANAGER
+                    .lock()
+                    .remove_connection_if(old, existing),
+                _ => None,
+            };
             *self.conn_id.lock() = Some(conn_id);
-            *self.connection.lock() = Some(conn.clone());
-
-            drop(manager);
-
-            // driver connect
-            vsock_connect(conn_id)?;
+            *self.connection.lock() = Some(conn);
             debug!("Vsock connecting from {} to {:?}", local_port, peer_addr);
             Ok(())
         })?;
@@ -298,24 +321,28 @@ impl VsockStreamTransport {
 
     pub(super) fn shutdown(&self, how: Shutdown) -> AxResult<()> {
         let conn = self.get_connection()?;
-        let mut conn = conn.lock();
-
-        if how.has_read() {
-            conn.set_rx_closed(true);
-        }
-
-        if how.has_write() {
-            conn.set_tx_closed(true);
-        }
-
-        if let Some(conn_id) = *self.conn_id.lock() {
-            if conn.state() == ConnectionState::Connected {
-                vsock_disconnect(conn_id)?;
-            } else if conn.state() == ConnectionState::Listening {
-                VSOCK_CONN_MANAGER.lock().unlisten(conn_id.local_port);
+        let previous_state = {
+            let mut state = conn.lock();
+            if how.has_read() {
+                state.set_rx_closed(true);
+            }
+            if how.has_write() {
+                state.set_tx_closed(true);
+            }
+            let previous = state.state();
+            state.set_state(ConnectionState::Closed);
+            previous
+        };
+        let conn_id = *self.conn_id.lock();
+        if let Some(conn_id) = conn_id {
+            match previous_state {
+                ConnectionState::Connected => vsock_disconnect(conn_id)?,
+                ConnectionState::Listening => {
+                    retire_listener(conn_id.local_port);
+                }
+                _ => {}
             }
         }
-        conn.set_state(ConnectionState::Closed);
         Ok(())
     }
 
@@ -340,13 +367,18 @@ impl Pollable for VsockStreamTransport {
             return IoEvents::empty();
         };
 
-        let conn = conn.lock();
+        let state = conn.lock();
+        let connection_state = state.state();
+        let rx_ready = state.rx_buffer_used() > 0 || state.rx_closed();
+        let tx_ready = !state.tx_closed();
+        let rx_closed = state.rx_closed();
+        drop(state);
         let mut events = IoEvents::empty();
 
-        match conn.state() {
+        match connection_state {
             ConnectionState::Listening => {
-                // if there is a pending connection, set IN
-                if let Some(conn_id) = *self.conn_id.lock() {
+                let conn_id = *self.conn_id.lock();
+                if let Some(conn_id) = conn_id {
                     events.set(
                         IoEvents::IN,
                         VSOCK_CONN_MANAGER.lock().can_accept(conn_id.local_port),
@@ -354,25 +386,30 @@ impl Pollable for VsockStreamTransport {
                 }
             }
             ConnectionState::Connected | ConnectionState::Closed => {
-                events.set(IoEvents::IN, conn.rx_buffer_used() > 0 || conn.rx_closed());
-                events.set(IoEvents::OUT, !conn.tx_closed());
+                events.set(IoEvents::IN, rx_ready);
+                events.set(IoEvents::OUT, tx_ready);
             }
             ConnectionState::Connecting => {
-                // if connected, set OUT
-                events.set(IoEvents::OUT, conn.state() == ConnectionState::Connected);
+                events.set(IoEvents::OUT, false);
             }
             _ => {}
         }
-        events.set(IoEvents::RDHUP, conn.rx_closed());
+        events.set(IoEvents::RDHUP, rx_closed);
         events
     }
 
     fn register(&self, context: &mut Context<'_>, events: IoEvents) {
         if let Ok(conn) = self.get_connection() {
-            let mut conn = conn.lock();
-            match conn.state() {
+            let (state, local_port) = {
+                let state = conn.lock();
+                (state.state(), state.local_addr().port)
+            };
+            match state {
                 ConnectionState::Listening if events.contains(IoEvents::IN) => {
-                    conn.register_accept_poll(context);
+                    let queue = VSOCK_CONN_MANAGER.lock().get_listen_queue(local_port);
+                    if let Some(queue) = queue {
+                        queue.lock().register_poll(context);
+                    }
                 }
                 ConnectionState::Connected => {
                     if events.contains(IoEvents::IN) {
@@ -397,8 +434,17 @@ impl Drop for VsockStreamTransport {
     fn drop(&mut self) {
         let _ = self.shutdown(Shutdown::Both);
 
-        if let Some(conn_id) = *self.conn_id.lock() {
-            VSOCK_CONN_MANAGER.lock().remove_connection(conn_id);
+        let conn_id = *self.conn_id.lock();
+        if let Some(conn_id) = conn_id {
+            let connection = self.connection.lock().clone();
+            let removed = connection.as_ref().and_then(|connection| {
+                VSOCK_CONN_MANAGER
+                    .lock()
+                    .remove_connection_if(conn_id, connection)
+            });
+            if let Some(connection) = removed {
+                retire_connection(conn_id, connection);
+            }
         }
     }
 }

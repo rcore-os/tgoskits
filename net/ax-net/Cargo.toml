@@ -20,13 +20,14 @@ ax-hal = { workspace = true }
 ax-io = { workspace = true }
 ax-kspin = { workspace = true }
 axpoll = { workspace = true }
-ax-sync = { workspace = true }
+ax-sync = { workspace = true, features = ["multitask"] }
 ax-task.workspace = true
 bitflags = "2.9"
 cfg-if = { workspace = true }
 enum_dispatch = "0.3"
 event-listener = { version = "5.4", default-features = false }
 hashbrown = "0.16"
+heapless.workspace = true
 irq-framework = { workspace = true }
 log = { workspace = true }
 rd-net = { workspace = true }
