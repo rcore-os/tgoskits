@@ -163,14 +163,15 @@ ceiling arithmetic, clamps elapsed or sub-tick deadlines to one tick, clamps
 unrepresentable deltas to the device argument width, and programs the interval
 before unmasking the IRQ.
 
-## Open audit items after the structural split
+## PI and waiter audit closure
 
-These items are not local patch suggestions. Each needs a deterministic red
-test and a review of the owning state machine before implementation.
-
-| Area | Open question or defect | Linux v7.1 reference | Required next evidence |
-| --- | --- | --- | --- |
-| IRQ waiter owner lifetime | `IrqWaitRegistration` has generation and in-flight notification grace, but Starry `IrqNotify` still relies on a documented unregister/quiesce-before-drop obligation rather than an owner type that makes the teardown sequence unavoidable. | IRQ action removal revokes publication and synchronizes in-flight handlers before releasing storage. | Trace every retained producer through drop, then add a concurrent notify-versus-owner-drop test. If a producer can outlive the cell, replace the contract-only API with an owning registration/teardown guard. |
+The two follow-up questions found after the structural split have now been
+resolved against their complete ownership graphs. The scope-local conclusion
+and regression are recorded below. The IRQ waiter audit found no remaining
+borrowed producer or reclaim-before-grace path, so adding another owner layer
+would duplicate ownership already retained by registries and service workers.
+Architecture, Starry lifecycle, and driver findings remain tracked by their
+dedicated matrix rows and later milestones.
 
 ## Confirmed red evidence
 
@@ -353,6 +354,26 @@ workers all branch `ConsumedPending` directly to service work; token-bearing
 results park on generation ownership and then use the common detach/quiesce
 boundary. Starry `IrqNotify` uses the same cell instead of publishing an
 `AtomicPtr<ThreadWakeHandle>`.
+
+The follow-up Starry ownership trace found seven `IrqNotify` constructions.
+Tracepoint and USB notification owners are immortal global state. BPF workers
+retain an `Arc<IrqNotify>` until their stop publication is consumed. PMU
+sampling slots store their `Arc<IrqNotify>` by value in the owner CPU registry;
+teardown masks overflow, stops the counter, clears pending state, removes the
+exact registry generation under local IRQ exclusion, and only then releases
+the sampling anchors. No producer retains a borrowed `&IrqNotify` across its
+owner lifetime.
+
+This matches Linux v7.1 `__free_irq()`: remove publication and shut down the
+line first, call `__synchronize_irq()`, stop the threaded handler, and only
+then free the action. Linux's hard-IRQ grace path
+`__synchronize_hardirq()` itself waits for the in-progress bit to clear;
+TGOSKits' task-context `quiesce_irq_wait()` yields while the bounded direct
+wake finishes, rather than spinning with preemption disabled. The existing
+blocking-wake regression proves that detachment alone cannot authorize
+payload reclamation, and loom covers unregister-versus-notify plus stale
+generation reuse. With the complete producer trace, the prior contract-only
+lifetime concern is closed without adding a second registration owner.
 
 Starry perf now follows Linux's task-context versus CPU-context split. The
 `PerfTarget` parser preserves the full syscall-width flag word, maps `pid == 0`
