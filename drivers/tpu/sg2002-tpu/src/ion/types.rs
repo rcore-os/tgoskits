@@ -83,7 +83,7 @@ impl IonBuffer {
 }
 
 /// Ion 分配请求
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::NoUninit)]
 #[repr(C)]
 pub struct IonAllocData {
     /// 请求的大小
@@ -103,7 +103,7 @@ pub struct IonAllocData {
 }
 
 /// Ion FD 数据（用于导入外部 fd）
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::NoUninit)]
 #[repr(C)]
 pub struct IonFdData {
     /// 外部文件描述符
@@ -113,7 +113,7 @@ pub struct IonFdData {
 }
 
 /// Ion 句柄数据（用于释放缓冲区）
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::NoUninit)]
 #[repr(C)]
 pub struct IonHandleData {
     /// Ion 句柄
@@ -124,7 +124,7 @@ pub const MAX_HEAP_NAME: usize = 32;
 pub const MAX_ION_BUFFER_NAME: usize = 32;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, bytemuck::NoUninit)]
 pub struct IonHeapData {
     pub name: [u8; MAX_HEAP_NAME],
     pub type_: u32,
@@ -135,7 +135,7 @@ pub struct IonHeapData {
 }
 
 /// Ion 堆查询数据
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::NoUninit)]
 #[repr(C)]
 pub struct IonHeapQuery {
     /// 堆计数（输入：要查询的堆数量，输出：实际堆数量）
@@ -149,6 +149,37 @@ pub struct IonHeapQuery {
     /// 保留字段
     pub reserved2: u32,
 }
+
+const _: () = assert!(core::mem::size_of::<IonAllocData>() == 64);
+const _: () = assert!(core::mem::offset_of!(IonAllocData, len) == 0);
+const _: () = assert!(core::mem::offset_of!(IonAllocData, heap_id_mask) == 8);
+const _: () = assert!(core::mem::offset_of!(IonAllocData, flags) == 12);
+const _: () = assert!(core::mem::offset_of!(IonAllocData, fd) == 16);
+const _: () = assert!(core::mem::offset_of!(IonAllocData, unused) == 20);
+const _: () = assert!(core::mem::offset_of!(IonAllocData, paddr) == 24);
+const _: () = assert!(core::mem::offset_of!(IonAllocData, name) == 32);
+
+const _: () = assert!(core::mem::size_of::<IonFdData>() == 8);
+const _: () = assert!(core::mem::offset_of!(IonFdData, fd) == 0);
+const _: () = assert!(core::mem::offset_of!(IonFdData, handle) == 4);
+
+const _: () = assert!(core::mem::size_of::<IonHandleData>() == 4);
+const _: () = assert!(core::mem::offset_of!(IonHandleData, handle) == 0);
+
+const _: () = assert!(core::mem::size_of::<IonHeapData>() == 52);
+const _: () = assert!(core::mem::offset_of!(IonHeapData, name) == 0);
+const _: () = assert!(core::mem::offset_of!(IonHeapData, type_) == 32);
+const _: () = assert!(core::mem::offset_of!(IonHeapData, heap_id) == 36);
+const _: () = assert!(core::mem::offset_of!(IonHeapData, reserved0) == 40);
+const _: () = assert!(core::mem::offset_of!(IonHeapData, reserved1) == 44);
+const _: () = assert!(core::mem::offset_of!(IonHeapData, reserved2) == 48);
+
+const _: () = assert!(core::mem::size_of::<IonHeapQuery>() == 24);
+const _: () = assert!(core::mem::offset_of!(IonHeapQuery, cnt) == 0);
+const _: () = assert!(core::mem::offset_of!(IonHeapQuery, reserved0) == 4);
+const _: () = assert!(core::mem::offset_of!(IonHeapQuery, heaps) == 8);
+const _: () = assert!(core::mem::offset_of!(IonHeapQuery, reserved1) == 16);
+const _: () = assert!(core::mem::offset_of!(IonHeapQuery, reserved2) == 20);
 
 /// Ion IOCTL 命令
 pub mod ioctl {
