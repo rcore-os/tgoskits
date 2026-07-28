@@ -116,6 +116,42 @@ impl ExtCsd {
             other => MmcTiming::Unknown(other),
         }
     }
+
+    /// Extended CSD structure revision.
+    pub fn revision(&self) -> u8 {
+        self.raw[ext_csd::REV]
+    }
+
+    /// Volatile write-cache capacity in KiB.
+    ///
+    /// The cache-size field was introduced with eMMC 4.5 (EXT_CSD revision
+    /// 6). Older cards must be treated as having no controllable cache.
+    pub fn cache_size_kib(&self) -> u32 {
+        if self.revision() < 6 {
+            return 0;
+        }
+        let offset = ext_csd::CACHE_SIZE;
+        u32::from_le_bytes([
+            self.raw[offset],
+            self.raw[offset + 1],
+            self.raw[offset + 2],
+            self.raw[offset + 3],
+        ])
+    }
+
+    /// Whether a non-empty volatile write cache is currently enabled.
+    pub fn cache_enabled(&self) -> bool {
+        self.cache_size_kib() != 0 && self.raw[ext_csd::CACHE_CTRL] & 1 != 0
+    }
+
+    #[cfg(any(feature = "sdio", test))]
+    pub(crate) fn set_cache_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.raw[ext_csd::CACHE_CTRL] |= 1;
+        } else {
+            self.raw[ext_csd::CACHE_CTRL] &= !1;
+        }
+    }
 }
 
 impl DeviceType {
@@ -178,5 +214,19 @@ mod tests {
         let e = ExtCsd::from_bytes(raw);
         assert_eq!(e.bus_width(), MmcBusWidth::Sdr8);
         assert_eq!(e.timing(), MmcTiming::Hs200);
+    }
+
+    #[test]
+    fn cache_flush_requires_a_nonzero_enabled_cache() {
+        let mut raw = [0u8; 512];
+        raw[192] = 6;
+        raw[249..253].copy_from_slice(&1024u32.to_le_bytes());
+        let mut ext_csd = ExtCsd::from_bytes(raw);
+
+        assert_eq!(ext_csd.cache_size_kib(), 1024);
+        assert!(!ext_csd.cache_enabled());
+
+        ext_csd.set_cache_enabled(true);
+        assert!(ext_csd.cache_enabled());
     }
 }

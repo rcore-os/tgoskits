@@ -38,15 +38,14 @@ The replacement must provide these observable properties:
 ## Reference Model
 
 The software/hardware queue split and native batching contract follow Linux
-blk-mq as implemented in both Linux v7.2-rc4, tag object
-`6946cd5d0aa4dd10a414ddcb7a10844fdb0ad345`, commit
-`1590cf0329716306e948a8fc29f1d3ee87d3989f` (2026-07-19), and Torvalds'
-current master commit
-`48a5a7ab8d6ab7090564339e039c421f315de912` (verified 2026-07-24):
+blk-mq as implemented in Torvalds' v7.2-rc5-era master commit
+`62cc90241548d5570ee68e01aaba6506964e9811` (verified 2026-07-28) and the
+PREEMPT_RT `linux-7.2.y-rt` commit
+`0de718ad6f7842c7c2f72a785b7c0422c57231b7`, tagged `v7.2-rc4-rt3`:
 
 - [blk-mq documentation](https://docs.kernel.org/block/blk-mq.html)
-- [`block/blk-mq.c` at current master](https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/48a5a7ab8d6ab7090564339e039c421f315de912/block/blk-mq.c)
-- [`include/linux/blk-mq.h` at current master](https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/48a5a7ab8d6ab7090564339e039c421f315de912/include/linux/blk-mq.h)
+- [`block/blk-mq.c` at the verified master](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/block/blk-mq.c?id=62cc90241548d5570ee68e01aaba6506964e9811)
+- [`include/linux/blk-mq.h` at the verified master](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/linux/blk-mq.h?id=62cc90241548d5570ee68e01aaba6506964e9811)
 
 - a CPU-local software submission context selects a hardware context;
 - a hardware context owns tags and the device submission/completion queue;
@@ -61,7 +60,8 @@ current master commit
 - completion ordering is not implied across hardware contexts;
 - queue limits are enforced before dispatch.
 
-The interrupt split follows the Linux v7.2-rc4 PREEMPT_RT model documented in
+The interrupt split follows the Linux `v7.2-rc4-rt3` PREEMPT_RT model
+documented in
 [`Documentation/core-api/real-time/differences.rst`](https://kernel.googlesource.com/pub/scm/linux/kernel/git/next/linux-next/%2B/1590cf0329716306e948a8fc29f1d3ee87d3989f/Documentation/core-api/real-time/differences.rst)
 and the request/free/synchronize lifetime in
 [`kernel/irq/manage.c`](https://kernel.googlesource.com/pub/scm/linux/kernel/git/next/linux-next/%2B/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/irq/manage.c):
@@ -70,11 +70,20 @@ or masking, publishing preallocated state, and activating deferred task
 context. TGOSKits uses dedicated maintenance tasks rather than importing Linux
 threaded-IRQ or softirq infrastructure.
 
+The RT tree has no blk-mq or NVMe source delta from the corresponding mainline
+files. Its relevant execution-context rule is already integrated in blk-mq:
+when `force_irqthreads()` is active, completion avoids a remote completion IPI
+whose softirq would only wake `ksoftirqd`. Linux also groups completion-side tag
+and queue-reference release in batches of 32 (`TAG_COMP_BATCH`). TGOSKits keeps
+the hctx task as the completion owner, shares one notification across an
+explicit completion group, and relies on the scheduler's coalesced remote
+reschedule path rather than adding a driver-owned completion thread or poller.
+
 NVMe register, queue, PRP, interrupt, Identify, MDTS, and queue-count behavior
 is checked against [NVM Express Base Specification 2.2, ratified
 2025-03-11](https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-Revision-2.2-2025.03.11-Ratified.pdf)
 and current Linux
-[`drivers/nvme/host/pci.c`](https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux/+/48a5a7ab8d6ab7090564339e039c421f315de912/drivers/nvme/host/pci.c).
+[`drivers/nvme/host/pci.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/nvme/host/pci.c?id=62cc90241548d5570ee68e01aaba6506964e9811).
 Linux NVMe implements both `queue_rqs`, which copies a prepared request list
 and writes the SQ doorbell once, and `queue_rq + bd.last`, with `commit_rqs` as
 the error/partial-dispatch publication path. TGOSKits exposes one owned batch
@@ -82,9 +91,9 @@ operation instead of carrying both Linux entry shapes, but preserves their
 ownership and commit semantics.
 RK3588 vendor register, clock, reset, and SDHCI behavior is checked against the
 same Linux commit's
-[`drivers/mmc/host/sdhci-of-dwcmshc.c`](https://kernel.googlesource.com/pub/scm/linux/kernel/git/next/linux-next/%2B/1590cf0329716306e948a8fc29f1d3ee87d3989f/drivers/mmc/host/sdhci-of-dwcmshc.c)
+[`drivers/mmc/host/sdhci-of-dwcmshc.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/mmc/host/sdhci-of-dwcmshc.c?id=62cc90241548d5570ee68e01aaba6506964e9811)
 and
-[`drivers/mmc/host/sdhci.c`](https://kernel.googlesource.com/pub/scm/linux/kernel/git/next/linux-next/%2B/1590cf0329716306e948a8fc29f1d3ee87d3989f/drivers/mmc/host/sdhci.c).
+[`drivers/mmc/host/sdhci.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/mmc/host/sdhci.c?id=62cc90241548d5570ee68e01aaba6506964e9811).
 QEMU root-disk arguments follow the
 [QEMU NVMe device documentation](https://www.qemu.org/docs/master/system/devices/nvme.html)
 as accessed 2026-07-23: `max_ioqpairs=64`, `msix_qsize=65`; the explicit INTx
@@ -107,6 +116,32 @@ No block-runtime crate is added.
 
 Portable drivers must not depend on `ax-task`, filesystem types, or scheduler
 APIs. Hard IRQ callbacks must not call `rdrive`.
+
+The implementation keeps these ownership boundaries visible in the source
+layout:
+
+- `ax-fs-ng::block::runtime::hctx::{submission}` separates the hctx event loop
+  from batch collection/reconciliation;
+- `ax-fs-ng::block::runtime::lifecycle::{controller,device,io}` separates
+  controller transitions, installed queue/IRQ ownership, and filesystem-facing
+  planned I/O windows;
+- `ax-fs-ng::block::runtime::metrics` records dispatch batches, commit calls,
+  terminal completions, largest batches, and peak in-flight depth without
+  participating in synchronization;
+- `ax-fs-ng::file::cache::{readahead,writeback,reclaim}` keeps page-cache read
+  policy, durability boundaries, and memory-pressure eviction independent;
+- `nvme-driver::block::{io_queue}` separates controller/IRQ setup from the
+  queue-local CID, PRP, SQ, and CQ owner;
+- `sdhci-host::host2::{bus}` separates physical transaction ownership from
+  register-only bus-operation state machines, while
+  `sdhci-host::dma::{request,fifo}` separates ADMA2 ownership/recovery from
+  FIFO protocol progress and descriptor policy; command and host capability
+  tests live in sibling test modules so the hardware state machines remain
+  reviewable as they grow;
+- `sdmmc-protocol::sdio::init::state_machine::{identify,mmc,sd}` separates the
+  request's self-referential scratch ownership from protocol transition groups;
+- SD/MMC tests follow the same domains (`init_flow`, `sd_speed`, `mmc_init`,
+  `block_io_irq`, and `host2_adapter`) instead of one monolithic fixture file.
 
 ## Portable Interfaces
 
@@ -206,22 +241,83 @@ automatically grouped with adjacent submissions. `submit_owned` returns one
 `CompletionSubscription`; `submit_batch_owned` returns an ordered
 `CompletionGroup`. Both provide blocking `recv` only. Hardware may complete a
 group out of order, but the group reports results in submission order. The
-filesystem's synchronous methods are wrappers over submit plus `recv`; they are
-not polling APIs.
+filesystem's synchronous methods first build a bounded window of every request
+required by the transfer planner, submit that window as one group, and only
+then call `recv`. They are sleepable compatibility wrappers over the
+asynchronous channel/IRQ core, not request-at-a-time hardware operations or
+polling APIs.
 
-Each hctx round-robins its mapped per-CPU channels, first consumes any preserved
-partial batch, and bounds a native batch by free tags, queue depth, and
-`max_submit_batch`. A `QueueFull` suffix is retried without reconstructing DMA.
-At most one normal commit is performed per batch operation.
+Each hctx round-robins its mapped per-CPU channels and alternates preserved
+partial-batch retries with fresh channel work. This keeps an accepted prefix
+ordered without letting a persistent retry backlog starve newly submitted
+tasks, including depth-one queues. A native batch is bounded by free tags,
+queue depth, and `max_submit_batch`. A `QueueFull` suffix is retried without
+reconstructing DMA. At most one normal commit is performed per batch operation.
+
+Every explicit `CompletionGroup` shares one notification object. Completion
+senders still publish distinct owned results, while the notification's pending
+bit coalesces a burst into one scheduler activation.
+
+The window follows Linux's all-submit-before-wait ownership rule used by
+plugged multi-bio operations and direct I/O:
+
+- [`block/fops.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/block/fops.c?id=62cc90241548d5570ee68e01aaba6506964e9811)
+  maps and submits the constituent bios before the synchronous path waits for
+  the aggregate direct-I/O completion;
+- [`block/blk-lib.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/block/blk-lib.c?id=62cc90241548d5570ee68e01aaba6506964e9811)
+  chains multiple bios under a plug and waits only after the construction loop;
+- [`block/bio.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/block/bio.c?id=62cc90241548d5570ee68e01aaba6506964e9811)
+  keeps the synchronous wait wrapper separate from request construction.
+
+TGOSKits bounds the caller-side window by the device's configured in-flight
+limit and `max_submit_batch`. The selected hctx then clamps the native batch
+again at dequeue time using its live free-tag count and queue depth. This
+separation avoids exposing transient tag state to filesystem callers while
+still preventing overcommit at the hardware boundary. The wrapper waits for
+every submitted completion before returning the first terminal error, so an
+early failure cannot release only part of the DMA ownership. It does not split
+a request that already fits every hardware limit merely to manufacture a
+larger batch.
+
+### Page cache and durability
+
+As in Linux, blk-mq does not invent file-level readahead or dirty writeback.
+Those policies remain above the block runtime. The buffered page cache keeps a
+per-file sequential-read state, resets it on a discontinuity, and grows a
+contiguous backing-read window from four to at most 32 pages. A cache miss
+performs one bounded backing read for the missing run; the backing block
+adapter may then produce one large hardware request or a planned request group,
+depending on hardware limits.
+
+Dirty contiguous pages are snapshotted and written as runs. Ordinary ext4
+`write_at`, append, and size changes leave rsext4 caches dirty instead of
+forcing a device flush for every user write. `CachedFile::sync` first submits
+and waits for all dirty runs, then invokes the inode `sync` boundary exactly
+once so data, inode size, journal state, and the device flush are durable before
+fsync returns. Close still does not imply fsync.
+
+This follows the current Linux VFS split documented by
+[`Documentation/filesystems/vfs.rst`](https://docs.kernel.org/filesystems/vfs.html)
+and the page-cache operation model in
+[`Documentation/filesystems/iomap/operations.rst`](https://docs.kernel.org/filesystems/iomap/operations.html):
+readahead and writeback construct asynchronous I/O above the request queue,
+while fsync forces and waits for dirty state at the durability boundary.
+
+The hctx and controller tasks reuse event snapshot vectors. Adding or
+registering a new IRQ endpoint may grow a snapshot once, but steady-state
+submission, completion, and INTx rearm loops do not clone and allocate a fresh
+IRQ-latch vector.
 
 The IRQ event latch uses release/acquire publication and coalesces repeated
 queue events. A maintenance task drains the latch before sleeping and the
 notification primitive checks a pending bit while enqueueing the waiter, so an
 IRQ between the final check and blocking cannot be lost.
 
-A request watchdog fails the device and asks the controller state machine to
-reset it after the queue has quarantined or returned every DMA owner. It must
-not inspect a completion queue or resubmit a polling query.
+A request watchdog first asks the controller state machine to stop DMA and
+waits for the terminal register state. Only then may the queue return DMA and
+fail subscriptions. If hardware shutdown cannot be confirmed, the runtime
+quarantines the entire queue owner instead of dropping DMA-reachable memory.
+The watchdog must not inspect a completion queue or resubmit a polling query.
 
 ## SMP and Ordering
 
@@ -287,6 +383,14 @@ semantics.
   and publishes command/data/error bits. The maintenance task advances the
   SD/MMC protocol state machine. OrangePi configures `RequireAdma2`; missing or
   invalid DMA is an error and never falls back to FIFO.
+- eMMC initialization parses `EXT_CSD_REV`, `CACHE_SIZE`, and `CACHE_CTRL`.
+  When the card advertises a nonzero cache, the state machine enables it with
+  IRQ-completed CMD6 before exposing the queue. Flush uses `FLUSH_CACHE` only
+  while that cache is enabled. Cards without an enabled cache use an
+  IRQ-completed CMD13 transfer-state barrier, rather than issuing an
+  unsupported switch command or pretending that a polled completion occurred.
+  This mirrors current Linux MMC cache enable/flush gating in
+  [`drivers/mmc/core/mmc.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/mmc/core/mmc.c?id=62cc90241548d5570ee68e01aaba6506964e9811).
 
 The hard IRQ path never drains a completion queue, allocates, copies DMA data,
 or completes an OS request.
@@ -299,14 +403,55 @@ Teardown order is strict:
 2. mask every device interrupt source;
 3. disable and synchronize every IRQ registration;
 4. free registrations, which drops boxed handlers after in-flight callbacks;
-5. stop and join maintenance tasks;
-6. quiesce queues and publish terminal failures for outstanding subscriptions;
-7. return or quarantine DMA according to hardware ownership;
-8. disable and release the controller/MMIO/PCI resources.
+5. ask every hctx task to stop queue mutation while retaining SQ/CQ/ADMA memory;
+6. disable the controller and wait for its terminal register state;
+7. stop and join maintenance tasks;
+8. return DMA and publish terminal failures for outstanding subscriptions;
+9. release queue, controller, MMIO, and PCI resources.
 
-Partial initialization and SMP expansion use the same reverse-order unwind.
+Partial initialization and SMP expansion retain every emitted queue or started
+hctx in the device transaction until controller shutdown is confirmed, then
+use the same reverse-order unwind. A failed task spawn returns the queue to
+that transaction instead of dropping its DMA memory.
 MSI-X setup may be completely unwound and replaced by an explicitly selected
 single-queue INTx mode. No error path selects polling.
+
+## Performance Bounds and Follow-Ups
+
+The runtime can create a native batch from concurrent callers or from one
+filesystem transfer whose hardware-limit plan contains multiple requests.
+Sequential buffered reads additionally amortize task wakeups through bounded
+page-cache readahead. A single request that already fits the device limits
+still produces one SQE; splitting it only to increase a batch counter would add
+tags, PRPs, CQEs, and completion work without reducing doorbells.
+
+Each committed window still has two intentional scheduling edges: hard IRQ to
+the bound hctx task, then completion publication to the requesting task.
+PREEMPT_RT has the analogous threaded/deferred IRQ handoff; improving that path
+belongs in scheduler notification and remote-reschedule work, not in a driver
+poll fallback.
+
+`block_batch_stats()` exposes cumulative runtime batch, commit, terminal
+completion, largest-batch, and peak-in-flight counters. They are relaxed
+diagnostic snapshots and are not used to drive queue state.
+
+Current bounds keep several linear operations small:
+
+- NVMe queue depth and `max_submit_batch` are capped at 64. One acknowledged
+  event drains at most those 64 CQ entries and writes one CQ-head doorbell.
+  Linux batches completion-side tag release in groups of 32; before TGOSKits
+  permits deeper queues, the queue contract should gain a typed “budget
+  exhausted” continuation so the hctx can interleave submissions without
+  rearming INTx early or polling.
+- Pending-deadline selection scans at most the hctx queue depth. Replacing it
+  with a deadline heap is justified only if queue depths grow materially.
+- DWCMSHC is inherently depth one in this migration. It cannot gain native
+  batching, and every command/data/STOP protocol phase needs an IRQ-to-hctx
+  transition. Steady-state block data uses owned ADMA2 buffers; FIFO fallback
+  is rejected by the RK3588 policy.
+- CPU-to-hctx mapping uses the post-SMP online snapshot. CPU hotplug and sparse
+  CPU-ID remapping remain unsupported and must be designed before either is
+  enabled.
 
 ## Compatibility and Non-Goals
 
@@ -322,14 +467,16 @@ NVMe. Guest-device ABIs that do not use this host block runtime are separate.
 
 ## Validation Matrix
 
-Portable tests cover IRQ/top-half separation, lost-wakeup races, single-request
-automatic grouping, one commit per batch, partial acceptance, queue-full and
-fatal exits, commit failure, malformed driver ownership reports, unexpected
-completion IDs, channel backpressure, dropped subscriptions, out-of-order
-completion, flush barriers, DMA limits, timeout-without-polling, and
-registration teardown. NVMe pure-state tests prove that multiple staged SQ
-entries and multiple consumed CQ entries each produce one publication until
-more work arrives.
+Portable tests cover IRQ/top-half separation, lost-wakeup races, a synchronous
+wrapper submitting its complete bounded request window before waiting,
+single-request automatic grouping, one commit per batch, partial acceptance,
+queue-full and fatal exits, commit failure, malformed driver ownership reports,
+unexpected completion IDs, channel backpressure, dropped subscriptions,
+out-of-order completion, flush barriers, DMA limits, timeout-without-polling,
+registration teardown, adaptive bounded readahead, and batch-counter
+accounting. NVMe pure-state tests prove that multiple staged SQ entries and
+multiple consumed CQ entries each produce one publication until more work
+arrives.
 
 The required QEMU validation matrix covers:
 
@@ -344,7 +491,10 @@ ABIs and guest-kernel storage drivers remain outside this migration.
 
 OrangePi 5 Plus validation covers eight CPUs, DWCMSHC eMMC root discovery,
 concurrent block read/write, 512-byte and 4-KiB requests, maximum transfers,
-ADMA boundary splitting, fsync, and data-integrity verification.
+ADMA boundary splitting, fsync, and data-integrity verification. The board
+helper is cross-compiled before the session, uploaded through the axbuild
+session-file endpoint, and downloaded over the board-visible HTTP URL; the
+validation does not mutate the persistent rootfs or depend on SSH.
 
 ### 2026-07-24 x86_64 execution record
 
@@ -368,6 +518,29 @@ the new runtime verified its explicit INTx path at 0.36 MiB/s write and
 but is not a merge gate: the known scheduler wakeup latency is tracked
 separately and must not be hidden by polling or driver-owned scheduling.
 
+### 2026-07-28 post-rebase x86_64 execution record
+
+After rebasing onto `origin/dev` commit `99d0965f9`, the baseline and refactored
+runtime were rerun with eight CPUs, 512 MiB memory, an NVMe controller advertising
+`max_ioqpairs=64,msix_qsize=65`, five 4-MiB rounds, 4-KiB operations, and fsync.
+Both used the same rootfs archive and benchmark sources, but separate
+axbuild-managed image copies; therefore these numbers are an execution record,
+not a claim of a controlled performance improvement.
+
+| Revision and effective mode | Write | Read | Result |
+| --- | ---: | ---: | --- |
+| `99d0965f9` (`origin/dev`), legacy INTx | 4,147,174 us / 0.96 MiB/s | 214,756 us / 18.62 MiB/s | checksum `2673868800`, passed |
+| rebased blk-mq working tree, 8 MSI-X I/O hctxs | 8,830,008 us / 0.45 MiB/s | 343,871 us / 11.63 MiB/s | checksum `2673868800`, passed |
+
+The refactored result is 53.1% lower for write throughput and 37.5% lower for
+read throughput in this workload. Both runs include the same latest scheduler
+remote-reschedule changes, so that change alone does not remove the regression.
+The benchmark issues synchronous filesystem operations from one task, which
+normally leaves no concurrent requests for runtime auto-batching; it primarily
+measures the extra hard-IRQ-to-hctx and hctx-to-requester wakeup path rather than
+NVMe batch or multi-queue scaling. This remains a recorded follow-up for task
+wakeup and concurrent-workload analysis, not a reason to reintroduce polling.
+
 Explicit, reusable x86_64 configurations exercise the full MSI-X SMP matrix:
 
 | Online CPUs / hctxs | Write median | Read median | Result |
@@ -377,13 +550,18 @@ Explicit, reusable x86_64 configurations exercise the full MSI-X SMP matrix:
 | 4 / 4 | 9,891,941 us / 0.40 MiB/s | 395,377 us / 10.11 MiB/s | checksum `2673868800`, passed |
 | 8 / 8 | 9,913,460 us / 0.40 MiB/s | 374,743 us / 10.67 MiB/s | checksum `2673868800`, passed |
 
-The non-x86 StarryOS NVMe runs use the same five-round workload and checksum:
+The post-rebase non-x86 StarryOS NVMe runs use the same five-round workload
+and checksum:
 
-| Architecture | Online CPUs / hctxs | IRQ mode | Write | Read |
-| --- | ---: | --- | ---: | ---: |
-| aarch64 | 4 / 4 | MSI-X | 0.22 MiB/s | 6.52 MiB/s |
-| riscv64 | 4 / 1 | INTx, selected at initialization | 0.21 MiB/s | 6.40 MiB/s |
-| loongarch64 | 4 / 1 | PCH-PIC INTx, selected at initialization | 0.28 MiB/s | 7.39 MiB/s |
+| Architecture | Online CPUs / hctxs | IRQ mode | Write median | Read median | Result |
+| --- | ---: | --- | ---: | ---: | --- |
+| aarch64 | 4 / 4 | MSI-X | 16,415,791 us / 0.24 MiB/s | 569,022 us / 7.02 MiB/s | checksum `2673868800`, passed |
+| riscv64 | 4 / 1 | INTx, selected at initialization | 15,466,727 us / 0.25 MiB/s | 563,799 us / 7.09 MiB/s | checksum `2673868800`, passed |
+| loongarch64 | 4 / 1 | PCH-PIC INTx, selected at initialization | 12,656,132 us / 0.31 MiB/s | 483,255 us / 8.27 MiB/s | checksum `2673868800`, passed |
+
+The RISC-V run booted on physical hart 3 and verified that the rebased CPU
+topology maps that boot hart to logical CPU 0 before the block runtime brings
+the remaining CPUs and submission channels online.
 
 The StarryOS x86_64 grouped mountinfo system case passed 42 checks and observed
 `/dev/nvme0n1` as the root mount source. The ArceOS x86_64 `io_test` completed
@@ -399,3 +577,37 @@ The OrangePi 5 Plus physical run brought up eight CPUs and one depth-one
 DWCMSHC ADMA2 hctx on CPU 0. The 512-byte, 4-KiB, 1,048,448-byte ADMA maximum,
 1,048,960-byte boundary-split, and eight-task concurrent cases all passed
 fsync and data verification and emitted `ORANGEPI_BLOCK_RW_BENCH_PASSED`.
+
+### 2026-07-28 windowed-I/O execution record
+
+After the synchronous filesystem wrappers were changed to submit a bounded
+request window before sleeping, the same five-round QEMU benchmark completed
+on all supported QEMU architectures:
+
+| Architecture | Online CPUs / hctxs | IRQ mode | Write | Read | Result |
+| --- | ---: | --- | ---: | ---: | --- |
+| x86_64 | 8 / 8 | MSI-X | 1,443,500 us / 2.77 MiB/s | 92,175 us / 43.39 MiB/s | checksum `2673868800`, passed |
+| aarch64 | 4 / 4 | MSI-X | 2,427,046 us / 1.64 MiB/s | 126,684 us / 31.57 MiB/s | checksum `2673868800`, passed |
+| riscv64 | 4 / 1 | INTx | 2,107,364 us / 1.89 MiB/s | 117,146 us / 34.14 MiB/s | checksum `2673868800`, passed |
+| loongarch64 | 4 / 1 | PCH-PIC INTx | 1,843,057 us / 2.17 MiB/s | 94,998 us / 42.10 MiB/s | checksum `2673868800`, passed |
+
+These measurements also include the page-cache readahead and ext4 durability
+boundary changes, so they are validation records rather than a single-cause
+performance claim.
+
+The subsequent OrangePi 5 Plus run obtained its helper through the axbuild
+session HTTP endpoint, enabled the card's advertised 65,536-KiB volatile cache
+through the IRQ-driven initialization state machine, and emitted the success
+marker after all five cases:
+
+| Case | I/O size | Data | Write | Read | fsync |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| sector | 512 B | 8 MiB | 0.40 MiB/s | 19.04 MiB/s | 71 ms |
+| page | 4 KiB | 8 MiB | 1.39 MiB/s | 19.25 MiB/s | 71 ms |
+| ADMA maximum | 1,048,448 B | 8 MiB | 2.16 MiB/s | 19.58 MiB/s | 78 ms |
+| ADMA boundary split | 1,048,960 B | 8 MiB | 2.17 MiB/s | 19.18 MiB/s | 78 ms |
+| eight-task concurrent | 4 KiB | 2 MiB/task | 5,801 ms elapsed | verified | fsync/task |
+
+The depth-one eMMC queue intentionally cannot perform a native multi-command
+hardware batch; the per-CPU channels still provide backpressure and fair
+serialization through its single hctx.

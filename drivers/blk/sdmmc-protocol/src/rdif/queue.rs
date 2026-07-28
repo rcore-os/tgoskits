@@ -15,19 +15,24 @@ use crate::{
         device::BlockInitStatus,
         host::BlockHost,
     },
+    response::CardState,
     sdio::{
-        card::{CardKind, SdioSdmmc},
+        card::{CardKind, SdioSdmmc, SdioStatusRequest},
         host::SdioHost,
         init::{CardInitPreference, MmcSwitchRequest, SdioInitWait},
     },
 };
 
 const MMC_SWITCH_WRITE_BYTE: u8 = 0b11;
-const MMC_EXT_CSD_FLUSH_CACHE: u8 = 32;
 const MMC_FLUSH_CACHE_TRIGGER: u8 = 1;
 const INIT_DEADLINE_MS: u64 = 5_000;
 const INIT_PACE_MS: u64 = 10;
 const INIT_FALLBACK_SPIN_LIMIT: usize = 10_000_000;
+
+enum FlushRequest {
+    Cache(MmcSwitchRequest),
+    Status(SdioStatusRequest),
+}
 
 /// Queue state exclusively owned by one block runtime maintenance task.
 pub struct BlockQueue<H>
@@ -40,7 +45,7 @@ where
     slot: H::Slot,
     pending: Option<H::Request>,
     pending_id: Option<RequestId>,
-    flush: Option<(RequestId, MmcSwitchRequest)>,
+    flush: Option<(RequestId, FlushRequest)>,
     next_flush_id: usize,
     completion_irq_enabled: bool,
     init_request: Option<H::InitRequest>,
@@ -48,6 +53,7 @@ where
     init_started_ms: Option<u64>,
     init_spins: usize,
     supports_flush: bool,
+    cache_enabled: bool,
 }
 
 impl<H> BlockQueue<H>
@@ -71,6 +77,7 @@ where
             init_started_ms: None,
             init_spins: 0,
             supports_flush,
+            cache_enabled: false,
         }
     }
 
@@ -159,13 +166,13 @@ where
             self.init_spins = self.init_spins.saturating_add(1);
             match H::advance_card_init(&mut self.card, &mut request) {
                 Ok(OperationPoll::Pending) => {
-                    if H::take_init_needs_pace(&mut request) {
-                        if let Err(error) = self.pace_initialization() {
-                            if let Some(status) = &self.init_status {
-                                status.mark_failed();
-                            }
-                            return Err(error);
+                    if H::take_init_needs_pace(&mut request)
+                        && let Err(error) = self.pace_initialization()
+                    {
+                        if let Some(status) = &self.init_status {
+                            status.mark_failed();
                         }
+                        return Err(error);
                     }
                     if H::init_wait_kind(&self.card, &request) == SdioInitWait::Irq {
                         self.init_request = Some(request);
@@ -183,13 +190,21 @@ where
                         return Err(BlkError::Io);
                     };
                     self.config.capacity_blocks = capacity_blocks;
+                    self.cache_enabled = info
+                        .ext_csd
+                        .as_ref()
+                        .is_some_and(crate::ext_csd::ExtCsd::cache_enabled);
                     if let Some(status) = &self.init_status {
                         status.mark_ready(capacity_blocks);
                     }
                     info!(
                         "sdmmc block init complete: kind={:?} high_capacity={} rca={} \
-                         capacity_blocks={}",
-                        info.kind, info.high_capacity, info.rca, capacity_blocks
+                         capacity_blocks={} cache_enabled={}",
+                        info.kind,
+                        info.high_capacity,
+                        info.rca,
+                        capacity_blocks,
+                        self.cache_enabled
                     );
                     return Ok(true);
                 }
@@ -263,11 +278,21 @@ where
         }
         let id = RequestId::new(self.next_flush_id);
         self.next_flush_id = self.next_flush_id.wrapping_add(1);
-        match self.card.submit_mmc_switch(
-            MMC_SWITCH_WRITE_BYTE,
-            MMC_EXT_CSD_FLUSH_CACHE,
-            MMC_FLUSH_CACHE_TRIGGER,
-        ) {
+        let flush = if self.cache_enabled {
+            self.card
+                .submit_mmc_switch(
+                    MMC_SWITCH_WRITE_BYTE,
+                    crate::cmd::ext_csd::FLUSH_CACHE as u8,
+                    MMC_FLUSH_CACHE_TRIGGER,
+                )
+                .map(FlushRequest::Cache)
+        } else {
+            // Linux treats a flush as complete when the volatile cache is
+            // disabled. This runtime still needs an IRQ-backed completion, so
+            // use CMD13 as a non-mutating transfer-state barrier.
+            self.card.submit_status().map(FlushRequest::Status)
+        };
+        match flush {
             Ok(flush) => {
                 self.flush = Some((id, flush));
                 Ok(id)
@@ -332,21 +357,49 @@ where
     }
 
     fn drain_flush(&mut self, sink: &mut dyn CompletionSink) {
-        let Some((id, mut request)) = self.flush.take() else {
+        let Some((id, request)) = self.flush.take() else {
             return;
         };
-        match self.card.poll_mmc_switch_request(&mut request) {
-            Ok(OperationPoll::Pending) => self.flush = Some((id, request)),
-            Ok(OperationPoll::Complete(())) => {
-                sink.complete(CompletedRequest::new(id, Ok(()), None));
+        match request {
+            FlushRequest::Cache(mut request) => {
+                match self.card.poll_mmc_switch_request(&mut request) {
+                    Ok(OperationPoll::Pending) => {
+                        self.flush = Some((id, FlushRequest::Cache(request)));
+                    }
+                    Ok(OperationPoll::Complete(())) => {
+                        sink.complete(CompletedRequest::new(id, Ok(()), None));
+                    }
+                    Err(error) => {
+                        warn!("sdmmc flush request {id:?} failed: {error}");
+                        sink.complete(CompletedRequest::new(
+                            id,
+                            Err(map_dev_err_to_blk_err(error)),
+                            None,
+                        ));
+                    }
+                }
             }
-            Err(error) => {
-                warn!("sdmmc flush request {id:?} failed: {error}");
-                sink.complete(CompletedRequest::new(
-                    id,
-                    Err(map_dev_err_to_blk_err(error)),
-                    None,
-                ));
+            FlushRequest::Status(mut request) => {
+                match self.card.poll_status_request(&mut request) {
+                    Ok(OperationPoll::Pending) => {
+                        self.flush = Some((id, FlushRequest::Status(request)));
+                    }
+                    Ok(OperationPoll::Complete(CardState::Transfer)) => {
+                        sink.complete(CompletedRequest::new(id, Ok(()), None));
+                    }
+                    Ok(OperationPoll::Complete(state)) => {
+                        warn!("sdmmc flush status barrier ended in card state {state:?}");
+                        sink.complete(CompletedRequest::new(id, Err(BlkError::Io), None));
+                    }
+                    Err(error) => {
+                        warn!("sdmmc flush status barrier {id:?} failed: {error}");
+                        sink.complete(CompletedRequest::new(
+                            id,
+                            Err(map_dev_err_to_blk_err(error)),
+                            None,
+                        ));
+                    }
+                }
             }
         }
     }

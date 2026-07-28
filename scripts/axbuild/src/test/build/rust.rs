@@ -35,6 +35,23 @@ pub(crate) fn prepare_rust_case_assets_sync(
     layout: &case_assets::CaseAssetLayout,
     config: &CaseAssetConfig,
 ) -> anyhow::Result<()> {
+    prepare_rust_case_overlay_sync(arch, case, case_rootfs, layout, config)?;
+    crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+}
+
+/// Cross-compiles one Rust case and installs its static binary into the
+/// prepared overlay without mutating the source rootfs.
+///
+/// Board sessions reuse this phase and upload the overlay through the
+/// ostool session endpoint instead of copying it into the persistent board
+/// filesystem.
+pub(crate) fn prepare_rust_case_overlay_sync(
+    arch: &str,
+    case: &TestQemuCase,
+    case_rootfs: &Path,
+    layout: &case_assets::CaseAssetLayout,
+    config: &CaseAssetConfig,
+) -> anyhow::Result<()> {
     let rust_dir = case_rust_source_dir(case);
     ensure!(
         rust_dir.is_dir(),
@@ -170,7 +187,7 @@ pub(crate) fn prepare_rust_case_assets_sync(
             .with_context(|| format!("failed to chmod {}", bin_dst.display()))?;
     }
 
-    crate::rootfs::inject::inject_overlay(case_rootfs, &layout.overlay_dir)
+    Ok(())
 }
 
 /// Reads the binary name from a `Cargo.toml`.

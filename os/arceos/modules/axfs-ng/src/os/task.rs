@@ -50,7 +50,7 @@ pub trait BlockRuntimeOps: Send + Sync {
     /// # Errors
     ///
     /// Returns an error when the task cannot be created or the requested CPU
-    /// cannot be used.
+    /// cannot be used. On error, `entry` has not run.
     fn spawn_pinned(
         &self,
         name: String,

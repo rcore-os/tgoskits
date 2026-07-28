@@ -1,14 +1,13 @@
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
 use axtest::prelude::*;
-use rdif_base::DriverGeneric;
 
 use crate::{
-    BlkError, CompletionHint, CompletionIds, CompletionList, CompletionSink, DeviceInfo, Event,
-    IQueue, IQueueOwned, IdList, Interface, IrqSourceInfo, MAX_COMPLETION_HINTS, OwnedRequest,
-    PollError, QueueHandle, QueueInfo, QueueLimits, Request, RequestFlags, RequestId, RequestOp,
-    RequestPoll, RequestStatus, Segment, SubmitError, TransferPlanner, TransferRuntimeCaps,
-    validate_owned_request_shape, validate_request, validate_request_shape,
+    BatchSubmitDisposition, BatchSubmitResult, BlkError, CompletedRequest, CompletionSink,
+    ControlEvent, DeviceInfo, HardwareQueue, IrqAck, IrqDisposition, IrqQueueMask, OwnedRequest,
+    OwnedRequestBatch, QueueInfo, QueueLimits, RequestFlags, RequestId, RequestOp, SubmissionSink,
+    SubmitError, TransferPlanner, TransferRuntimeCaps, validate_owned_request,
+    validate_owned_request_shape,
 };
 
 fn queue_info_with(limits: QueueLimits) -> QueueInfo {
@@ -19,17 +18,23 @@ fn queue_info_with(limits: QueueLimits) -> QueueInfo {
     }
 }
 
-fn segment_from(bytes: &mut [u8], bus: u64) -> Segment<'_> {
-    unsafe { Segment::from_raw_parts(bytes.as_mut_ptr(), bus, bytes.len()) }
+fn flush_request() -> OwnedRequest {
+    OwnedRequest {
+        op: RequestOp::Flush,
+        lba: 0,
+        block_count: 0,
+        data: None,
+        flags: RequestFlags::NONE,
+    }
 }
 
 #[axtest]
 fn rdif_block_device_queue_info_and_error_mapping_rules_hold() {
     let mut device = DeviceInfo::new(128, 512);
     device.read_only = true;
-    device.name = Some("vda");
-    device.vendor = Some("virtio");
-    device.model = Some("blk");
+    device.name = Some("nvme0n1");
+    device.vendor = Some("qemu");
+    device.model = Some("nvme");
 
     let limits = QueueLimits::simple(512, 0xffff_ffff);
     let info = QueueInfo {
@@ -43,6 +48,7 @@ fn rdif_block_device_queue_info_and_error_mapping_rules_hold() {
     ax_assert!(info.device.read_only);
     ax_assert_eq!(info.limits.dma_alignment, 512);
     ax_assert_eq!(info.limits.max_inflight, 1);
+    ax_assert_eq!(info.limits.max_submit_batch, 1);
     ax_assert_eq!(info.limits.max_segment_size, 512);
 
     ax_assert_eq!(
@@ -93,10 +99,6 @@ fn rdif_block_device_queue_info_and_error_mapping_rules_hold() {
         crate::io::ErrorKind::from(BlkError::InvalidBlockIndex(17)),
         crate::io::ErrorKind::NotAvailable
     ));
-    ax_assert!(matches!(
-        crate::io::ErrorKind::from(BlkError::Other("custom block error")),
-        crate::io::ErrorKind::Other(_)
-    ));
     ax_assert_eq!(
         BlkError::from(dma_api::DmaError::NoMemory),
         BlkError::NoMemory
@@ -108,37 +110,22 @@ fn rdif_block_device_queue_info_and_error_mapping_rules_hold() {
 }
 
 #[axtest]
-fn rdif_block_request_flags_ids_segments_and_submit_error_round_trip() {
+fn rdif_block_request_flags_ids_and_submit_error_round_trip() {
     let id = RequestId::new(12);
     ax_assert_eq!(usize::from(id), 12);
-    ax_assert_eq!(RequestStatus::Pending, RequestStatus::Pending);
-    ax_assert_ne!(RequestStatus::Pending, RequestStatus::Complete);
 
-    let flags = RequestFlags::FUA | RequestFlags::SYNC;
+    let flags = RequestFlags::FUA | RequestFlags::PREFLUSH;
     ax_assert!(flags.contains(RequestFlags::FUA));
-    ax_assert!(flags.intersects(RequestFlags::SYNC));
+    ax_assert!(flags.intersects(RequestFlags::PREFLUSH));
     ax_assert_eq!(
         flags.unsupported_by(RequestFlags::FUA).bits(),
-        RequestFlags::SYNC.bits()
+        RequestFlags::PREFLUSH.bits()
     );
     let mut assigned = RequestFlags::NONE;
     assigned |= RequestFlags::NOWAIT;
     ax_assert_eq!(assigned.bits(), RequestFlags::NOWAIT.bits());
 
-    let mut bytes = [0x5a_u8; 4];
-    let mut segment = segment_from(&mut bytes, 0x1000);
-    ax_assert_eq!(segment.bus, 0x1000);
-    ax_assert_eq!(&*segment, &[0x5a; 4]);
-    segment[0] = 0xa5;
-    ax_assert_eq!(bytes[0], 0xa5);
-
-    let request = OwnedRequest {
-        op: RequestOp::Flush,
-        lba: 0,
-        block_count: 0,
-        data: None,
-        flags: RequestFlags::NONE,
-    };
+    let request = flush_request();
     let error = SubmitError::new(BlkError::Retry, request);
     ax_assert_eq!(error.error, BlkError::Retry);
     ax_assert_eq!(error.request().op, RequestOp::Flush);
@@ -146,143 +133,23 @@ fn rdif_block_request_flags_ids_segments_and_submit_error_round_trip() {
 }
 
 #[axtest]
-fn rdif_block_request_validation_accepts_data_ops_and_rejects_bad_shapes() {
-    let info = DeviceInfo::new(8, 512);
+fn rdif_block_owned_request_validation_rejects_invalid_shapes_and_flags() {
+    let info = DeviceInfo::new(64, 512);
     let limits = QueueLimits {
         max_blocks_per_request: 8,
-        max_segment_size: 1024,
-        max_segments: 2,
-        ..QueueLimits::simple(512, u64::MAX)
-    };
-    let mut bytes = [0_u8; 1024];
-    let segment = segment_from(&mut bytes, 0x1000);
-    let mut segments = [segment];
-    let request = Request {
-        op: RequestOp::Read,
-        lba: 1,
-        block_count: 2,
-        segments: &mut segments,
-        flags: RequestFlags::NONE,
-    };
-
-    ax_assert_eq!(request.data_len(), 1024);
-    ax_assert!(request.is_data_op());
-    ax_assert_eq!(validate_request_shape(info, limits, &request), Ok(()));
-    ax_assert_eq!(validate_request(queue_info_with(limits), &request), Ok(()));
-
-    let mut short = [0_u8; 512];
-    let segment = segment_from(&mut short, 0x2000);
-    let mut segments = [segment];
-    let bad_len = Request {
-        op: RequestOp::Write,
-        lba: 1,
-        block_count: 2,
-        segments: &mut segments,
-        flags: RequestFlags::NONE,
-    };
-    ax_assert_eq!(
-        validate_request_shape(info, limits, &bad_len),
-        Err(BlkError::InvalidRequest)
-    );
-
-    let mut empty_segments = [];
-    let bad_lba = Request {
-        op: RequestOp::Discard,
-        lba: 8,
-        block_count: 1,
-        segments: &mut empty_segments,
-        flags: RequestFlags::NONE,
-    };
-    ax_assert_eq!(
-        validate_request_shape(info, limits, &bad_lba),
-        Err(BlkError::InvalidBlockIndex(8))
-    );
-}
-
-#[axtest]
-fn rdif_block_request_validation_handles_flush_discard_write_zeroes_and_flags() {
-    let info = DeviceInfo::new(64, 512);
-    let mut limits = QueueLimits {
-        max_blocks_per_request: 8,
         supports_flush: true,
-        supports_discard: true,
-        supports_write_zeroes: true,
         supported_flags: RequestFlags::FUA | RequestFlags::PREFLUSH,
         ..QueueLimits::simple(512, u64::MAX)
     };
 
-    for op in [RequestOp::Flush, RequestOp::Discard, RequestOp::WriteZeroes] {
-        let mut segments = [];
-        let request = Request {
-            op,
-            lba: 0,
-            block_count: if matches!(op, RequestOp::Flush) { 0 } else { 1 },
-            segments: &mut segments,
-            flags: RequestFlags::NONE,
-        };
-        ax_assert_eq!(validate_request_shape(info, limits, &request), Ok(()));
-    }
-
-    limits.supports_flush = false;
-    let info_with_limits = queue_info_with(limits);
-    let mut bytes = [0_u8; 512];
-    let segment = segment_from(&mut bytes, 0x1000);
-    let mut segments = [segment];
-    let preflush = Request {
-        op: RequestOp::Write,
-        lba: 0,
-        block_count: 1,
-        segments: &mut segments,
-        flags: RequestFlags::PREFLUSH,
-    };
+    let flush = flush_request();
+    ax_assert_eq!(validate_owned_request_shape(info, limits, &flush), Ok(()));
     ax_assert_eq!(
-        validate_request(info_with_limits, &preflush),
-        Err(BlkError::NotSupported)
+        validate_owned_request(queue_info_with(limits), &flush),
+        Ok(())
     );
 
-    let unknown_flags = RequestFlags::from_bits_for_test(1 << 24);
-    let mut segments = [segment_from(&mut bytes, 0x2000)];
-    let bad_flags = Request {
-        op: RequestOp::Read,
-        lba: 0,
-        block_count: 1,
-        segments: &mut segments,
-        flags: unknown_flags,
-    };
-    ax_assert_eq!(
-        validate_request(
-            queue_info_with(QueueLimits::simple(512, u64::MAX)),
-            &bad_flags
-        ),
-        Err(BlkError::InvalidRequest)
-    );
-}
-
-#[axtest]
-fn rdif_block_owned_request_validation_covers_control_ops_without_dma() {
-    let info = DeviceInfo::new(64, 512);
-    let limits = QueueLimits {
-        max_blocks_per_request: 8,
-        supports_flush: true,
-        supports_discard: true,
-        supports_write_zeroes: true,
-        ..QueueLimits::simple(512, u64::MAX)
-    };
-
-    for op in [RequestOp::Flush, RequestOp::Discard, RequestOp::WriteZeroes] {
-        let request = OwnedRequest {
-            op,
-            lba: 0,
-            block_count: if matches!(op, RequestOp::Flush) { 0 } else { 1 },
-            data: None,
-            flags: RequestFlags::NONE,
-        };
-        ax_assert!(!request.is_data_op());
-        ax_assert_eq!(request.data_len(), 0);
-        ax_assert_eq!(validate_owned_request_shape(info, limits, &request), Ok(()));
-    }
-
-    let bad = OwnedRequest {
+    let missing_dma = OwnedRequest {
         op: RequestOp::Read,
         lba: 0,
         block_count: 1,
@@ -290,56 +157,64 @@ fn rdif_block_owned_request_validation_covers_control_ops_without_dma() {
         flags: RequestFlags::NONE,
     };
     ax_assert_eq!(
-        validate_owned_request_shape(info, limits, &bad),
+        validate_owned_request_shape(info, limits, &missing_dma),
+        Err(BlkError::InvalidRequest)
+    );
+
+    let malformed_flush = OwnedRequest {
+        block_count: 1,
+        ..flush_request()
+    };
+    ax_assert_eq!(
+        validate_owned_request_shape(info, limits, &malformed_flush),
+        Err(BlkError::InvalidRequest)
+    );
+
+    let unsupported_preflush = OwnedRequest {
+        flags: RequestFlags::PREFLUSH,
+        ..flush_request()
+    };
+    ax_assert_eq!(
+        validate_owned_request(
+            queue_info_with(QueueLimits::simple(512, u64::MAX)),
+            &unsupported_preflush
+        ),
+        Err(BlkError::NotSupported)
+    );
+
+    let unknown_flags = OwnedRequest {
+        flags: RequestFlags::from_bits_for_test(1 << 24),
+        ..flush_request()
+    };
+    ax_assert_eq!(
+        validate_owned_request(queue_info_with(limits), &unknown_flags),
         Err(BlkError::InvalidRequest)
     );
 }
 
 #[axtest]
-fn rdif_block_irq_lists_completion_batches_and_events_hold() {
-    let mut queues = IdList::none();
-    queues.insert(2);
-    queues.insert(63);
-    queues.insert(64);
+fn rdif_block_irq_ack_carries_fixed_queue_and_control_events() {
+    let mut queues = IrqQueueMask::from_queue(2);
     ax_assert!(queues.contains(2));
-    ax_assert!(queues.contains(63));
     ax_assert!(!queues.contains(64));
-    queues.remove(2);
-    ax_assert!(!queues.contains(2));
-    ax_assert_eq!(queues.iter().collect::<Vec<_>>(), vec![63]);
+    queues = IrqQueueMask::from_bits(queues.bits() | (1 << 7));
+    ax_assert!(queues.contains(7));
 
-    let source = IrqSourceInfo::legacy(queues);
-    ax_assert_eq!(source.id, 0);
-    ax_assert_eq!(IrqSourceInfo::new(7, queues).id, 7);
+    let ack = IrqAck::cleared(queues, ControlEvent::new(5, 0x20));
+    ax_assert_eq!(ack.disposition(), IrqDisposition::Cleared);
+    ax_assert_eq!(ack.queues().bits(), (1 << 2) | (1 << 7));
+    ax_assert_eq!(ack.control_event().source_id(), 5);
+    ax_assert_eq!(ack.control_event().bits(), 0x20);
+    ax_assert!(IrqAck::spurious(5).is_spurious());
+}
 
-    let mut ids = CompletionIds::new();
-    ax_assert!(ids.is_empty());
-    for id in 0..crate::MAX_BATCH_COMPLETION_IDS {
-        ax_assert!(ids.push(RequestId::new(id)));
+#[derive(Default)]
+struct AcceptedIds(Vec<RequestId>);
+
+impl SubmissionSink for AcceptedIds {
+    fn accepted(&mut self, id: RequestId) {
+        self.0.push(id);
     }
-    ax_assert!(!ids.push(RequestId::new(99)));
-    ax_assert_eq!(ids.len(), crate::MAX_BATCH_COMPLETION_IDS);
-    ax_assert_eq!(ids.iter().next(), Some(RequestId::new(0)));
-
-    let batch = CompletionHint::Batch { queue_id: 5, ids };
-    ax_assert_eq!(batch.queue_id(), 5);
-
-    let mut list = CompletionList::new();
-    for idx in 0..MAX_COMPLETION_HINTS {
-        ax_assert!(list.push(CompletionHint::Request {
-            queue_id: 1,
-            request_id: RequestId::new(idx)
-        }));
-    }
-    ax_assert!(!list.push(CompletionHint::Queue { queue_id: 1 }));
-    ax_assert_eq!(list.len(), MAX_COMPLETION_HINTS);
-
-    let mut event = Event::from_hint(CompletionHint::Queue { queue_id: 3 });
-    ax_assert!(event.queues.contains(3));
-    event.push_request(4, RequestId::new(1));
-    event.push_hint(batch);
-    ax_assert!(!event.is_empty());
-    ax_assert!(Event::from_queue_bits(1 << 7).queues.contains(7));
 }
 
 #[derive(Default)]
@@ -348,181 +223,95 @@ struct RecordingSink {
 }
 
 impl CompletionSink for RecordingSink {
-    fn complete(&mut self, request_id: RequestId, result: Result<(), BlkError>) {
-        self.completions.push((request_id, result));
+    fn complete(&mut self, request: CompletedRequest) {
+        assert!(request.data.is_none());
+        self.completions.push((request.id, request.result));
     }
 }
 
-struct BatchQueue;
+#[derive(Default)]
+struct BatchQueue {
+    next_id: usize,
+    pending: Vec<RequestId>,
+    commits: usize,
+}
 
-unsafe impl IQueue for BatchQueue {
+impl HardwareQueue for BatchQueue {
     fn id(&self) -> usize {
         1
     }
 
     fn info(&self) -> QueueInfo {
-        queue_info_with(QueueLimits::simple(512, u64::MAX))
+        let limits = QueueLimits {
+            supports_flush: true,
+            max_inflight: 2,
+            max_submit_batch: 2,
+            ..QueueLimits::simple(512, u64::MAX)
+        };
+        queue_info_with(limits)
     }
 
-    fn submit_request(&mut self, _request: Request<'_>) -> Result<RequestId, BlkError> {
-        Ok(RequestId::new(1))
+    fn submit_batch_owned(
+        &mut self,
+        requests: &mut OwnedRequestBatch,
+        sink: &mut dyn SubmissionSink,
+    ) -> BatchSubmitResult {
+        let Some(request) = requests.pop_front() else {
+            return BatchSubmitResult::new(0, BatchSubmitDisposition::Continue);
+        };
+        assert_eq!(request.op, RequestOp::Flush);
+        let id = RequestId::new(self.next_id);
+        self.next_id += 1;
+        self.pending.push(id);
+        sink.accepted(id);
+        let disposition = if requests.is_empty() {
+            BatchSubmitDisposition::Continue
+        } else {
+            BatchSubmitDisposition::QueueFull
+        };
+        BatchSubmitResult::new(1, disposition)
     }
 
-    fn poll_request(&mut self, request: RequestId) -> Result<RequestStatus, BlkError> {
-        match usize::from(request) {
-            1 => Ok(RequestStatus::Complete),
-            2 => Ok(RequestStatus::Pending),
-            3 => Err(BlkError::Io),
-            _ => Err(BlkError::InvalidRequest),
+    fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        self.commits += 1;
+        Ok(())
+    }
+
+    fn drain_completions(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        for id in self.pending.drain(..) {
+            sink.complete(CompletedRequest::new(id, Ok(()), None));
         }
+        Ok(())
+    }
+
+    fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        for id in self.pending.drain(..) {
+            sink.complete(CompletedRequest::new(id, Err(BlkError::Io), None));
+        }
+        Ok(())
     }
 }
 
 #[axtest]
-fn rdif_block_queue_default_completion_poll_reports_terminal_results() {
-    let mut queue = BatchQueue;
-    ax_assert_eq!(queue.id(), 1);
-    ax_assert_eq!(queue.info().device.logical_block_size, 512);
+fn rdif_block_hardware_queue_batches_commit_and_return_ownership() {
+    let mut queue = BatchQueue::default();
+    let mut batch = OwnedRequestBatch::from_iter([flush_request(), flush_request()]);
+    let mut accepted = AcceptedIds::default();
 
-    let mut sink = RecordingSink::default();
-    let ids = [RequestId::new(1), RequestId::new(2), RequestId::new(3)];
-    queue.poll_completions(&ids, &mut sink).unwrap();
-    ax_assert_eq!(
-        sink.completions,
-        vec![
-            (RequestId::new(1), Ok(())),
-            (RequestId::new(3), Err(BlkError::Io))
-        ]
-    );
-}
+    let result = queue.submit_batch_owned(&mut batch, &mut accepted);
+    ax_assert_eq!(result.accepted(), 1);
+    ax_assert_eq!(result.disposition(), BatchSubmitDisposition::QueueFull);
+    ax_assert_eq!(batch.len(), 1);
+    ax_assert_eq!(accepted.0, vec![RequestId::new(0)]);
+    ax_assert_eq!(queue.commits, 0);
 
-struct OwnedQueue {
-    shutdowns: usize,
-}
+    queue.commit_submissions().unwrap();
+    ax_assert_eq!(queue.commits, 1);
 
-impl IQueueOwned for OwnedQueue {
-    fn id(&self) -> usize {
-        2
-    }
-
-    fn info(&self) -> QueueInfo {
-        queue_info_with(QueueLimits::simple(512, u64::MAX))
-    }
-
-    fn submit_request(&mut self, request: OwnedRequest) -> Result<RequestId, SubmitError> {
-        if matches!(request.op, RequestOp::Flush) {
-            Ok(RequestId::new(9))
-        } else {
-            Err(SubmitError::new(BlkError::InvalidRequest, request))
-        }
-    }
-
-    fn poll_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError> {
-        if request == RequestId::new(9) {
-            Ok(RequestPoll::Pending)
-        } else {
-            Err(PollError::UnknownRequest)
-        }
-    }
-
-    fn cancel_request(&mut self, request: RequestId) -> Result<RequestPoll, PollError> {
-        if request == RequestId::new(9) {
-            Ok(RequestPoll::Ready(crate::CompletedRequest::new(
-                request,
-                Ok(()),
-                None,
-            )))
-        } else {
-            Err(PollError::WrongQueue)
-        }
-    }
-
-    fn shutdown(&mut self) {
-        self.shutdowns += 1;
-    }
-}
-
-#[axtest]
-fn rdif_block_owned_queue_handle_delegates_and_returns_request_on_submit_error() {
-    let mut handle = QueueHandle::new(Box::new(OwnedQueue { shutdowns: 0 }));
-    ax_assert_eq!(handle.id(), 2);
-    ax_assert_eq!(handle.info().id, 0);
-
-    let flush = OwnedRequest {
-        op: RequestOp::Flush,
-        lba: 0,
-        block_count: 0,
-        data: None,
-        flags: RequestFlags::NONE,
-    };
-    match handle.submit_request(flush) {
-        Ok(id) => ax_assert_eq!(id, RequestId::new(9)),
-        Err(_) => panic!("flush request should be accepted"),
-    }
-    ax_assert!(matches!(
-        handle.poll_request(RequestId::new(9)),
-        Ok(RequestPoll::Pending)
-    ));
-    ax_assert!(matches!(
-        handle.cancel_request(RequestId::new(9)),
-        Ok(RequestPoll::Ready(_))
-    ));
-
-    let bad = OwnedRequest {
-        op: RequestOp::Read,
-        lba: 0,
-        block_count: 1,
-        data: None,
-        flags: RequestFlags::NONE,
-    };
-    let error = handle.submit_request(bad).unwrap_err();
-    ax_assert_eq!(error.error, BlkError::InvalidRequest);
-    ax_assert_eq!(error.into_request().op, RequestOp::Read);
-    handle.shutdown();
-}
-
-struct MinimalBlock {
-    irq_enabled: bool,
-}
-
-impl crate::DriverGeneric for MinimalBlock {
-    fn name(&self) -> &str {
-        "minimal-block"
-    }
-}
-
-impl Interface for MinimalBlock {
-    fn device_info(&self) -> DeviceInfo {
-        DeviceInfo::new(16, 512)
-    }
-
-    fn queue_limits(&self) -> QueueLimits {
-        QueueLimits::simple(512, u64::MAX)
-    }
-
-    fn create_queue(&mut self) -> Option<crate::BQueue> {
-        Some(Box::new(BatchQueue))
-    }
-
-    fn enable_irq(&self) {}
-
-    fn is_irq_enabled(&self) -> bool {
-        self.irq_enabled
-    }
-}
-
-#[axtest]
-fn rdif_block_interface_defaults_and_boxed_queue_types_hold() {
-    let mut device = MinimalBlock { irq_enabled: true };
-    ax_assert_eq!(device.name(), "minimal-block");
-    ax_assert_eq!(device.device_info().num_blocks, 16);
-    ax_assert_eq!(device.queue_limits().dma_alignment, 512);
-    ax_assert!(device.create_queue().is_some());
-    ax_assert!(device.create_owned_queue().is_none());
-    ax_assert!(device.irq_sources().is_empty());
-    ax_assert!(device.take_irq_handler(0).is_none());
-    ax_assert!(device.is_irq_enabled());
-    device.disable_irq();
+    let mut completed = RecordingSink::default();
+    queue.drain_completions(&mut completed).unwrap();
+    ax_assert_eq!(completed.completions, vec![(RequestId::new(0), Ok(()))]);
+    ax_assert!(queue.pending.is_empty());
 }
 
 #[axtest]

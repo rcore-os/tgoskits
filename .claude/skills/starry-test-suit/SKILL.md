@@ -101,6 +101,12 @@ Prefer multi-line TOML strings for longer shell commands. Keep `fail_regex` narr
   installed file is uploaded automatically with the same relative path. Do not
   list generated files in `session_files`; keep explicit `wget`, `chmod`, and
   execution commands in `shell_init_cmd` because ostool does not execute them.
+- Keep heavy board workloads under `apps/starry` instead of moving them into
+  test-suit. A Starry app with `rust/Cargo.toml` may use `starry app board` to
+  cross-compile its static helper into the per-run session upload root. Its
+  `init.sh` must explicitly download `${sessionFile:usr/bin/<program>}` over
+  HTTP, set the executable bit, and run it; do not deploy it through SSH or
+  preinstall it in the persistent board rootfs.
 
 ## Validation
 

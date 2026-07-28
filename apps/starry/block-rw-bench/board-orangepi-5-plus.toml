@@ -5,6 +5,7 @@ success_regex = [
 ]
 fail_regex = [
   '(?i)\bpanic(?:ked)?\b',
+  '(?m)^ORANGEPI_BLOCK_RW_BENCH_SESSION_FAILED$',
   '(?m)^block-rw-bench: error: .*$',
   '(?m)^block-rw-bench: .*verify=(?:fail|mismatch).*$',
   '(?i)(block-rw-bench|sh): .*not found',

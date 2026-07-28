@@ -1,6 +1,6 @@
 //! SDIO host-controller capability boundary.
 
-use core::{num::NonZeroU16, task::Waker};
+use core::num::NonZeroU16;
 
 pub use sdio_host2::{BusWidth, ClockSpeed, SignalVoltage};
 
@@ -216,15 +216,15 @@ pub trait SdioHost {
 
     /// Route command/data completion and error status to the host IRQ line.
     ///
-    /// Default is a no-op so polling-only hosts do not have to implement IRQ
-    /// support.
+    /// Portable hosts that do not own IRQ routing may keep the default no-op;
+    /// their OS adapter must still provide an IRQ endpoint before starting I/O.
     fn enable_completion_irq(&mut self) -> Result<(), Error> {
         Ok(())
     }
 
-    /// Mask host IRQ delivery while keeping the controller usable for polling.
+    /// Mask host IRQ delivery before teardown or controller recovery.
     ///
-    /// Default is a no-op for polling-only hosts.
+    /// Portable hosts that do not own IRQ routing may keep the default no-op.
     fn disable_completion_irq(&mut self) -> Result<(), Error> {
         Ok(())
     }
@@ -232,10 +232,6 @@ pub trait SdioHost {
     fn completion_irq_enabled(&self) -> bool {
         false
     }
-
-    /// Register the task that should be woken when command or data progress is
-    /// possible. Polling-only hosts may keep the default no-op implementation.
-    fn register_waker(&mut self, _waker: &Waker) {}
 
     /// Optional monotonic wall-clock source, in milliseconds.
     ///

@@ -187,8 +187,15 @@ impl<H: SdioHost2Irq + 'static> SdioHost2Adapter<H> {
         self.core.with_mut(f)
     }
 
-    fn drain_bus_op(&mut self, request: &mut SdioHost2BusRequest<H>) -> Result<(), Error> {
-        for _ in 0..SDIO_HOST2_COMPAT_POLL_LIMIT {
+    fn finish_register_bus_op(
+        &mut self,
+        request: &mut SdioHost2BusRequest<H>,
+    ) -> Result<(), Error> {
+        if matches!(request.op, sdio_host2::BusOp::ExecuteTuning { .. }) {
+            request.abort()?;
+            return Err(Error::UnsupportedCommand);
+        }
+        for _ in 0..SDIO_HOST2_REGISTER_SPIN_LIMIT {
             match self.poll_bus_op(request)? {
                 OperationPoll::Pending => core::hint::spin_loop(),
                 OperationPoll::Complete(()) => return Ok(()),
@@ -199,7 +206,7 @@ impl<H: SdioHost2Irq + 'static> SdioHost2Adapter<H> {
     }
 }
 
-pub(super) const SDIO_HOST2_COMPAT_POLL_LIMIT: u32 = 1_000_000;
+pub(super) const SDIO_HOST2_REGISTER_SPIN_LIMIT: u32 = 1_000_000;
 
 // SAFETY: The physical host is only accessed through `Host2Shared`, which
 // serializes mutable borrows. `command_request` is only touched through
@@ -435,25 +442,21 @@ impl<H: SdioHost2Irq + 'static> SdioHost for SdioHost2Adapter<H> {
 
     fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error> {
         let mut request = self.submit_bus_op(SdioBusOp::SetBusWidth(width))?;
-        self.drain_bus_op(&mut request)
+        self.finish_register_bus_op(&mut request)
     }
 
     fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error> {
         let mut request = self.submit_bus_op(SdioBusOp::SetClock(speed))?;
-        self.drain_bus_op(&mut request)
+        self.finish_register_bus_op(&mut request)
     }
 
     fn switch_voltage(&mut self, voltage: SignalVoltage) -> Result<(), Error> {
         let mut request = self.submit_bus_op(SdioBusOp::SwitchVoltage(voltage))?;
-        self.drain_bus_op(&mut request)
+        self.finish_register_bus_op(&mut request)
     }
 
-    fn execute_tuning(&mut self, cmd_index: u8, block_size: NonZeroU16) -> Result<(), Error> {
-        let mut request = self.submit_bus_op(SdioBusOp::ExecuteTuning {
-            cmd_index,
-            block_size,
-        })?;
-        self.drain_bus_op(&mut request)
+    fn execute_tuning(&mut self, _cmd_index: u8, _block_size: NonZeroU16) -> Result<(), Error> {
+        Err(Error::UnsupportedCommand)
     }
 
     fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error> {

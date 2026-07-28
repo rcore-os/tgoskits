@@ -389,6 +389,13 @@ CMake `install()` 到该 upload root 的所有普通文件都会按原相对路�
 `shell_init_cmd` 中；ostool 不会自动执行上传的程序。upload root 为空、包含符号链接，
 或者手写 `session_files` 与 CMake install 产物同路径时会在分配板卡前报错。
 
+位于 `apps/starry/<app>/` 的重型板测仍应保留在 app 目录，不要为了复用共享文件能力
+迁入 test-suit。app 下存在 `rust/Cargo.toml` 时，`starry app board` 会复用同一套
+musl 交叉编译流水线，把静态程序安装到每次运行独立的
+`target/<target>/board-cases/app/<app>/runs/<run-id>/upload/usr/bin/`，并作为 session
+文件上传。`init.sh` 通过 `${sessionFile:usr/bin/<program>}` 显式下载、赋权和执行；
+该流程不通过 SSH，也不把程序预装到持久 rootfs。
+
 运行示例：
 
 ```bash

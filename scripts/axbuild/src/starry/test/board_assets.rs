@@ -18,7 +18,7 @@ const C_SOURCE_DIR: &str = "c";
 const CMAKE_PROJECT_FILE: &str = "CMakeLists.txt";
 
 #[derive(Debug)]
-pub(crate) struct PreparedBoardSessionAssets {
+pub(in crate::starry) struct PreparedBoardSessionAssets {
     pub(crate) root: PathBuf,
     pub(crate) relative_paths: Vec<PathBuf>,
 }
@@ -80,7 +80,7 @@ pub(crate) async fn prepare_board_session_assets(
     Ok(Some(assets))
 }
 
-fn copy_declared_session_files(
+pub(in crate::starry) fn copy_declared_session_files(
     case_dir: &Path,
     upload_root: &Path,
     relative_paths: &[PathBuf],
@@ -160,7 +160,7 @@ fn copy_declared_session_files(
     Ok(())
 }
 
-fn collect_upload_paths(upload_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+pub(in crate::starry) fn collect_upload_paths(upload_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut pending = vec![upload_root.to_path_buf()];
     let mut relative_paths = Vec::new();
 

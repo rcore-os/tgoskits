@@ -14,6 +14,9 @@ mod tests;
 pub use args::{ArgsTest, ArgsTestBoard, ArgsTestQemu, TestCommand};
 pub(crate) use assets::starry_case_asset_config;
 pub(crate) use board::collect_board_test_groups;
+pub(in crate::starry) use board_assets::{
+    PreparedBoardSessionAssets, collect_upload_paths, copy_declared_session_files,
+};
 pub(crate) use qemu_discovery::{
     direct_starry_qemu_case_exists, discover_qemu_cases, parse_starry_qemu_case_selection,
     parse_test_target,

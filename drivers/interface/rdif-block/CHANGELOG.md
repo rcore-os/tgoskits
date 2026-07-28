@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Allow runtimes to restore an unaccepted request suffix from an owned batch
+  without reallocating its submission container.
+- Clarify that controller shutdown must complete before queue-owned DMA memory
+  can be released.
+
 ## [0.13.0](https://github.com/rcore-os/tgoskits/compare/rdif-block-v0.12.0...rdif-block-v0.13.0) - 2026-07-24
 
 ### Changed

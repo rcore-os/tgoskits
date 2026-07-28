@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implement the owned hardware batch contract with a native batch size and
   queue depth of one for IRQ-driven SD/MMC hosts.
+- Split SDIO initialization into request ownership plus identification, MMC,
+  and SD-speed state-machine modules, and document its IRQ/register event
+  contract without a completion-polling fallback.
+- Remove the host task-waker hook and reject synchronous tuning through the
+  compatibility adapter; register-only recovery helpers remain bounded.
+- Split SDIO initialization, speed negotiation, block/IRQ, and physical-host
+  adapter tests into domain-focused modules.
+- Parse the eMMC EXT_CSD cache capability, enable an advertised cache during
+  IRQ-driven initialization, and issue `FLUSH_CACHE` only while it is enabled;
+  cacheless devices use an IRQ-completed transfer-state barrier.
 
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/sdmmc-protocol-v0.4.1...sdmmc-protocol-v0.4.2) - 2026-07-23
 

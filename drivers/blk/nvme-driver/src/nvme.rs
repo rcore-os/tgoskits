@@ -488,6 +488,10 @@ impl Nvme {
         self.intx_io_ready.store(false, Ordering::Release);
     }
 
+    pub(crate) fn shutdown_complete(&self) -> bool {
+        self.reg().is_disabled()
+    }
+
     pub(crate) fn take_io_queue(&mut self, index: usize) -> Option<NvmeQueue> {
         self.io_queues.get_mut(index)?.take()
     }

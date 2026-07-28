@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Allow Starry app board cases with a `rust/` helper to cross-compile the
+  static binary into the per-run session upload root and share it through the
+  board-visible HTTP endpoint without modifying the persistent rootfs.
+
 ## [0.4.21](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.20...axbuild-v0.4.21) - 2026-07-23
 
 ### Added

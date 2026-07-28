@@ -176,8 +176,9 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 
     let mut host = unsafe { Sdhci::new(mmio_base) };
     // A previous owner (for example the hypervisor host) may leave completion
-    // IRQ signaling enabled. Card discovery runs before this driver's IRQ
-    // handler is registered, so always begin the handoff in polling mode.
+    // IRQ signaling enabled. Keep signal delivery masked until the runtime
+    // owns the boxed handler; command/data initialization cannot advance until
+    // that IRQ endpoint is registered and enabled.
     host.disable_completion_irq();
     if let Some(clock) = sdhci_core_clock(info)? {
         info!("rockchip-sdhci: using external CRU clock");

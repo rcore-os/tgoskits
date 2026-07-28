@@ -1,8 +1,11 @@
+mod readahead;
+#[cfg(feature = "vfs")]
+mod reclaim;
+mod writeback;
+
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 #[cfg(feature = "ext4")]
 use alloc::{collections::BTreeMap, sync::Weak};
-#[cfg(feature = "vfs")]
-use core::sync::atomic::AtomicBool;
 use core::{
     num::NonZeroUsize,
     sync::atomic::{AtomicU64, Ordering},
@@ -14,6 +17,9 @@ use axfs_ng_vfs::FilesystemOps;
 use axfs_ng_vfs::{FileNode, Location, VfsError, VfsResult};
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 use lru::LruCache;
+use readahead::ReadAheadState;
+#[cfg(feature = "vfs")]
+pub use reclaim::{page_cache_reclaim, sync_all_cached_files};
 
 use super::page::PageCache;
 use crate::os::{memory::PAGE_SIZE, sync::SleepMutex as Mutex};
@@ -33,13 +39,6 @@ static CACHED_FILE_BY_INODE: spin::LazyLock<Mutex<InodeCacheIndex>> =
 /// invalidated all mappings for the evicted page.
 type EvictListenerFn = Arc<dyn Fn(u32, &PageCache) -> bool + Send + Sync>;
 type WritebackProtectListenerFn = Arc<dyn Fn(u32) -> bool + Send + Sync>;
-
-struct DirtyPageSnapshot {
-    pn: u32,
-    generation: u64,
-    data: Box<[u8]>,
-    len: usize,
-}
 
 struct EvictListener {
     listener: EvictListenerFn,
@@ -105,209 +104,6 @@ impl CachedFileShared {
         self.backing.as_ref().ok_or(VfsError::InvalidInput)
     }
 
-    fn writeback(&self) -> VfsResult<alloc::vec::Vec<u32>> {
-        let (file_len, dirty_keys) = self.begin_writeback_all_dirty();
-        self.protect_dirty_pages_before_writeback(&dirty_keys)
-            .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
-        let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(file_len, &dirty_keys);
-        self.finish_writeback_tracking(&dirty_keys);
-        result?;
-        self.backing()?.sync(false)?;
-        Ok(dirty_keys)
-    }
-
-    fn writeback_pages(&self, pns: &[u32]) -> VfsResult<()> {
-        let (file_len, dirty_keys) = self.begin_writeback_pages(pns);
-        self.protect_dirty_pages_before_writeback(&dirty_keys)
-            .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
-        let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(file_len, &dirty_keys);
-        self.finish_writeback_tracking(&dirty_keys);
-        result?;
-        self.backing()?.sync(false)?;
-        Ok(())
-    }
-
-    fn sync(&self, data_only: bool) -> VfsResult<()> {
-        let (file_len, dirty_keys) = self.begin_writeback_all_dirty();
-        self.protect_dirty_pages_before_writeback(&dirty_keys)
-            .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
-        let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(file_len, &dirty_keys);
-        self.finish_writeback_tracking(&dirty_keys);
-        result?;
-        self.backing()?.sync(data_only)?;
-        Ok(())
-    }
-
-    #[cfg(feature = "vfs")]
-    fn writeback_dirty_for_global_sync(&self) -> VfsResult<()> {
-        let (file_len, dirty_keys) = self.begin_writeback_all_dirty();
-        if dirty_keys.is_empty() {
-            return Ok(());
-        }
-        self.protect_dirty_pages_before_writeback(&dirty_keys)
-            .inspect_err(|_| self.cancel_writeback_tracking(&dirty_keys))?;
-        let _io = self.io_lock.lock();
-        let result = self.writeback_page_runs(file_len, &dirty_keys);
-        self.finish_writeback_tracking(&dirty_keys);
-        result
-    }
-
-    #[cfg(feature = "vfs")]
-    fn has_dirty_pages(&self) -> bool {
-        self.page_cache.lock().iter().any(|(_, page)| page.dirty)
-    }
-
-    fn begin_writeback_all_dirty(&self) -> (u64, Vec<u32>) {
-        self.begin_writeback(None)
-    }
-
-    fn begin_writeback_pages(&self, pns: &[u32]) -> (u64, Vec<u32>) {
-        self.begin_writeback(Some(pns))
-    }
-
-    fn begin_writeback(&self, requested: Option<&[u32]>) -> (u64, Vec<u32>) {
-        let _io = self.io_lock.lock();
-        let file_len = self.len();
-        let mut requested_pns = requested.map(|pns| pns.to_vec());
-        if let Some(pns) = requested_pns.as_mut() {
-            pns.sort_unstable();
-            pns.dedup();
-        }
-        let mut guard = self.page_cache.lock();
-        let dirty_keys = guard
-            .iter_mut()
-            .filter_map(|(&pn, page)| {
-                if !page.dirty {
-                    return None;
-                }
-                if let Some(requested) = requested_pns.as_ref()
-                    && requested.binary_search(&pn).is_err()
-                {
-                    return None;
-                }
-                let page_start = pn as u64 * PAGE_SIZE as u64;
-                let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64);
-                if len == 0 {
-                    return None;
-                }
-                page.writeback_protecting = true;
-                page.dirty_during_writeback = false;
-                Some(pn)
-            })
-            .collect();
-        (file_len, dirty_keys)
-    }
-
-    fn writeback_page_runs(&self, file_len: u64, pns: &[u32]) -> VfsResult<()> {
-        let mut snapshots = self.snapshot_dirty_pages(file_len, pns)?;
-        snapshots.sort_by_key(|page| page.pn);
-
-        let mut run_start = 0;
-        while run_start < snapshots.len() {
-            let mut run_end = run_start + 1;
-            while run_end < snapshots.len()
-                && snapshots[run_end].pn == snapshots[run_end - 1].pn + 1
-                && snapshots[run_end - 1].len == PAGE_SIZE
-            {
-                run_end += 1;
-            }
-
-            let offset = snapshots[run_start].pn as u64 * PAGE_SIZE as u64;
-            let run_len = snapshots[run_start..run_end]
-                .iter()
-                .map(|page| page.len)
-                .sum();
-            let mut data = alloc::vec::Vec::with_capacity(run_len);
-            for page in &snapshots[run_start..run_end] {
-                data.extend_from_slice(&page.data[..page.len]);
-            }
-            self.backing()?.write_at(&data, offset)?;
-
-            {
-                let mut guard = self.page_cache.lock();
-                for page in &snapshots[run_start..run_end] {
-                    if let Some(current) = guard.get_mut(&page.pn)
-                        && current.dirty
-                        && current.dirty_generation == page.generation
-                        && !current.dirty_during_writeback
-                    {
-                        current.dirty = false;
-                    }
-                }
-            }
-
-            run_start = run_end;
-        }
-        Ok(())
-    }
-
-    fn snapshot_dirty_pages(
-        &self,
-        file_len: u64,
-        pns: &[u32],
-    ) -> VfsResult<alloc::vec::Vec<DirtyPageSnapshot>> {
-        let mut snapshots = alloc::vec::Vec::new();
-        let mut guard = self.page_cache.lock();
-        for pn in pns {
-            let Some(page) = guard.get_mut(pn) else {
-                continue;
-            };
-            if !page.dirty {
-                continue;
-            }
-            let page_start = *pn as u64 * PAGE_SIZE as u64;
-            let len = file_len.saturating_sub(page_start).min(PAGE_SIZE as u64) as usize;
-            if len == 0 {
-                continue;
-            }
-            snapshots.push(DirtyPageSnapshot {
-                pn: *pn,
-                generation: page.dirty_generation,
-                data: page.data()[..len].to_vec().into_boxed_slice(),
-                len,
-            });
-        }
-        Ok(snapshots)
-    }
-
-    fn protect_dirty_pages_before_writeback(&self, pns: &[u32]) -> VfsResult<()> {
-        let listeners = self.writeback_protect_listeners();
-        for pn in pns {
-            for listener in &listeners {
-                if !(listener)(*pn) {
-                    return Err(VfsError::ResourceBusy);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn writeback_protect_listeners(&self) -> Vec<WritebackProtectListenerFn> {
-        self.evict_listeners
-            .lock()
-            .iter()
-            .map(|listener| listener.writeback_protect.clone())
-            .collect()
-    }
-
-    fn cancel_writeback_tracking(&self, pns: &[u32]) {
-        let _io = self.io_lock.lock();
-        self.finish_writeback_tracking(pns);
-    }
-
-    fn finish_writeback_tracking(&self, pns: &[u32]) {
-        let mut guard = self.page_cache.lock();
-        for pn in pns {
-            if let Some(page) = guard.get_mut(pn) {
-                page.writeback_protecting = false;
-                page.dirty_during_writeback = false;
-            }
-        }
-    }
-
     #[cfg(test)]
     fn invoke_writeback_protect_for_test(&self, pns: &[u32]) -> VfsResult<()> {
         self.protect_dirty_pages_before_writeback(pns)
@@ -322,163 +118,13 @@ impl CachedFileShared {
     fn listener_lock_is_free_for_test(&self) -> bool {
         self.evict_listeners.try_lock().is_some()
     }
-
-    /// Scan the LRU and evict up to `max` clean pages.
-    ///
-    /// Two-phase eviction:
-    /// 1. Under `page_cache` lock: identify clean pages, pop them from the
-    ///    cache, and move them into a local buffer.
-    /// 2. Outside `page_cache` lock: invoke evict listeners.  If all
-    ///    listeners confirm the PTE unmap, the page is dropped (freeing its
-    ///    physical frame).  If any listener cannot unmap (e.g., AddrSpace
-    ///    lock contention), the page is re-inserted into the cache to
-    ///    prevent use-after-free.
-    ///
-    /// Returns the number of pages successfully evicted.
-    ///
-    /// # Lock ordering
-    ///
-    /// `page_cache` is released before acquiring `evict_listeners`,
-    /// eliminating the latent deadlock risk that exists when listeners
-    /// are called under the cache lock.
-    #[cfg(feature = "vfs")]
-    fn try_evict_clean_pages(&self, max: usize) -> usize {
-        let limit = max.min(256);
-
-        // Phase 1: Pop clean pages from LRU under page_cache lock.
-        // Two-pass: first collect page numbers (borrows cache immutably),
-        // then pop by number (borrows cache mutably).
-        let mut pending: Vec<(u32, PageCache)> = Vec::new();
-        {
-            let Some(mut cache) = self.page_cache.try_lock() else {
-                return 0;
-            };
-            let mut to_pop = [0u32; 256];
-            let mut cnt = 0;
-            for (&pn, page) in cache.iter().rev() {
-                if !page.dirty && cnt < limit {
-                    to_pop[cnt] = pn;
-                    cnt += 1;
-                }
-            }
-            for &pn in to_pop[..cnt].iter() {
-                if let Some(page) = cache.pop(&pn) {
-                    pending.push((pn, page));
-                }
-            }
-        } // page_cache lock released
-
-        // Phase 2: Invoke listeners outside page_cache lock.
-        let mut evicted = 0;
-        for (pn, page) in pending.into_iter() {
-            let mut all_ok = true;
-            for listener in self.evict_listeners.lock().iter() {
-                if !(listener.listener)(pn, &page) {
-                    all_ok = false;
-                    break;
-                }
-            }
-            if all_ok {
-                // All listeners confirmed unmap — drop page (frees physical frame).
-                drop(page);
-                evicted += 1;
-            } else {
-                // Listener could not unmap (e.g., AddrSpace lock contention).
-                // Re-insert page into cache to avoid freeing a physical frame
-                // that still has live PTEs pointing to it.
-                let mut cache = self.page_cache.lock();
-                cache.put(pn, page);
-            }
-        }
-        evicted
-    }
-}
-
-#[cfg(feature = "vfs")]
-struct ReclaimGuard;
-
-#[cfg(feature = "vfs")]
-impl Drop for ReclaimGuard {
-    fn drop(&mut self) {
-        RECLAIM_IN_PROGRESS.store(false, Ordering::Release);
-    }
-}
-
-#[cfg(feature = "vfs")]
-static GLOBAL_CACHED_FILES: ax_kspin::SpinRwLock<alloc::vec::Vec<Arc<CachedFileShared>>> =
-    ax_kspin::SpinRwLock::new(alloc::vec::Vec::new());
-
-#[cfg(feature = "vfs")]
-static RECLAIM_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-
-#[cfg(feature = "vfs")]
-pub fn page_cache_reclaim(num_pages: usize) -> usize {
-    if RECLAIM_IN_PROGRESS.swap(true, Ordering::AcqRel) {
-        return 0;
-    }
-    let _guard = ReclaimGuard;
-
-    let mut reclaimed = 0;
-    let target = num_pages.max(16) * 2;
-    let mut file_count = 0;
-
-    if let Some(guard) = GLOBAL_CACHED_FILES.try_read() {
-        for file in guard.iter() {
-            let freed = file.try_evict_clean_pages(target - reclaimed);
-            reclaimed += freed;
-            file_count += 1;
-            if reclaimed >= target {
-                break;
-            }
-        }
-    } else {
-        return 0;
-    }
-
-    if reclaimed > 0 {
-        debug!(
-            "page_cache_reclaim: evicted {} clean pages across {} files",
-            reclaimed, file_count
-        );
-    }
-
-    reclaimed
-}
-
-#[cfg(feature = "vfs")]
-fn register_cached_file(file: &Arc<CachedFileShared>) {
-    let mut guard = GLOBAL_CACHED_FILES.write();
-    guard.retain(|cached| Arc::strong_count(cached) > 1 || cached.has_dirty_pages());
-    guard.push(file.clone());
-}
-
-#[cfg(feature = "vfs")]
-pub fn sync_all_cached_files(_data_only: bool) -> VfsResult<()> {
-    let files = GLOBAL_CACHED_FILES.read().clone();
-    let mut first_error = None;
-    for file in &files {
-        if let Err(err) = file.writeback_dirty_for_global_sync()
-            && first_error.is_none()
-        {
-            first_error = Some(err);
-        }
-    }
-
-    drop(files);
-
-    let mut guard = GLOBAL_CACHED_FILES.write();
-    guard.retain(|cached| Arc::strong_count(cached) > 1 || cached.has_dirty_pages());
-
-    match first_error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
 }
 
 /// A file handle with an LRU page cache for buffered I/O.
 pub struct CachedFile {
     inner: Location,
     shared: Arc<CachedFileShared>,
+    readahead: Arc<Mutex<ReadAheadState>>,
     in_memory: bool,
 }
 
@@ -487,6 +133,7 @@ impl Clone for CachedFile {
         Self {
             inner: self.inner.clone(),
             shared: self.shared.clone(),
+            readahead: self.readahead.clone(),
             in_memory: self.in_memory,
         }
     }
@@ -520,6 +167,7 @@ impl CachedFile {
             return Ok(Self {
                 inner: location,
                 shared,
+                readahead: Arc::new(Mutex::new(ReadAheadState::new())),
                 in_memory,
             });
         }
@@ -561,7 +209,7 @@ impl CachedFile {
         // pages would lose data. Only register disk-backed files for reclaim.
         #[cfg(feature = "vfs")]
         if is_new && !in_memory {
-            register_cached_file(&shared);
+            reclaim::register_cached_file(&shared);
         }
         #[cfg(not(feature = "vfs"))]
         let _ = is_new;
@@ -573,6 +221,7 @@ impl CachedFile {
         Ok(Self {
             inner: location,
             shared,
+            readahead: Arc::new(Mutex::new(ReadAheadState::new())),
             in_memory,
         })
     }
@@ -702,6 +351,79 @@ impl CachedFile {
         Ok((cache.get_mut(&pn).unwrap(), evicted))
     }
 
+    /// Loads one bounded contiguous cache window beginning at `pn`.
+    ///
+    /// The caller holds `io_lock`, so page-cache writers cannot race the
+    /// backing read. The cache lock is deliberately released while the backing
+    /// filesystem blocks on IRQ-driven I/O.
+    fn populate_page_window(&self, file: &FileNode, pn: u32, window_pages: usize) -> VfsResult<()> {
+        if self.in_memory {
+            let mut guard = self.shared.page_cache.lock();
+            self.page_or_insert(file, &mut guard, pn, false)?;
+            return Ok(());
+        }
+
+        let file_len = self.shared.len();
+        let first_page = u64::from(pn);
+        let file_pages = file_len.div_ceil(PAGE_SIZE as u64);
+        if first_page >= file_pages {
+            return Err(VfsError::InvalidInput);
+        }
+
+        let max_pages = window_pages.max(1);
+        let candidate_end = first_page
+            .saturating_add(max_pages as u64)
+            .min(file_pages)
+            .min(u64::from(u32::MAX) + 1);
+        let run_pages = {
+            let guard = self.shared.page_cache.lock();
+            if guard.contains(&pn) {
+                return Ok(());
+            }
+            let mut page = first_page;
+            while page < candidate_end {
+                let page_number = u32::try_from(page).map_err(|_| VfsError::InvalidInput)?;
+                if guard.contains(&page_number) {
+                    break;
+                }
+                page += 1;
+            }
+            usize::try_from(page - first_page).map_err(|_| VfsError::InvalidInput)?
+        };
+        if run_pages == 0 {
+            return Ok(());
+        }
+
+        let run_len = run_pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(VfsError::InvalidInput)?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(run_len)
+            .map_err(|_| VfsError::NoMemory)?;
+        data.resize(run_len, 0);
+        let file_offset = first_page
+            .checked_mul(PAGE_SIZE as u64)
+            .ok_or(VfsError::InvalidInput)?;
+        let readable = usize::try_from(file_len.saturating_sub(file_offset))
+            .unwrap_or(usize::MAX)
+            .min(run_len);
+        file.read_at(&mut data[..readable], file_offset)?;
+
+        let mut guard = self.shared.page_cache.lock();
+        for index in 0..run_pages {
+            let page_number = pn
+                .checked_add(u32::try_from(index).map_err(|_| VfsError::InvalidInput)?)
+                .ok_or(VfsError::InvalidInput)?;
+            if guard.contains(&page_number) {
+                continue;
+            }
+            let page = self.page_or_insert(file, &mut guard, page_number, false)?.0;
+            let start = index * PAGE_SIZE;
+            page.data().copy_from_slice(&data[start..start + PAGE_SIZE]);
+        }
+        Ok(())
+    }
+
     /// Marks one cached mmap page dirty through the shared cached-I/O protocol.
     pub fn mark_mmap_dirty_page(&self, pn: u32) -> VfsResult<()> {
         if self.in_memory {
@@ -736,6 +458,11 @@ impl CachedFile {
         if end <= offset {
             return Ok(0);
         }
+        let window_pages = if self.in_memory {
+            1
+        } else {
+            self.readahead.lock().plan(offset, end).window_pages
+        };
 
         let file = self.inner.entry().as_file()?;
         let mut scratch = PageCache::new()?;
@@ -749,8 +476,9 @@ impl CachedFile {
 
             {
                 let _io = self.shared.io_lock.lock();
+                self.populate_page_window(file, pn, window_pages)?;
                 let mut guard = self.shared.page_cache.lock();
-                let page = self.page_or_insert(file, &mut guard, pn, true)?.0;
+                let page = guard.get_mut(&pn).ok_or(VfsError::BadState)?;
                 scratch.data()[..chunk_len]
                     .copy_from_slice(&page.data()[page_offset..page_offset + chunk_len]);
             }
@@ -989,99 +717,4 @@ impl Drop for CachedFile {
 }
 
 #[cfg(test)]
-mod tests {
-    use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicBool, Ordering};
-
-    use super::*;
-    use crate::os::memory::test_support::with_test_page_provider;
-
-    #[test]
-    fn page_cache_paddr_reports_bad_state_when_translation_is_missing() {
-        with_test_page_provider(false, |_| {
-            let page = PageCache::new().unwrap();
-            assert_eq!(page.paddr().unwrap_err(), VfsError::BadState);
-        });
-    }
-
-    #[test]
-    fn writeback_protect_listener_runs_without_cached_io_lock() {
-        let shared = Arc::new(CachedFileShared::new_unbounded(0));
-        let observed_unlocked = Arc::new(AtomicBool::new(false));
-        let observed = observed_unlocked.clone();
-        let listener_shared = shared.clone();
-
-        shared
-            .evict_listeners
-            .lock()
-            .push_back(Box::new(EvictListener {
-                listener: Arc::new(|_, _| true),
-                writeback_protect: Arc::new(move |_| {
-                    observed.store(
-                        listener_shared.io_lock_is_free_for_test(),
-                        Ordering::Release,
-                    );
-                    true
-                }),
-                link: LinkedListAtomicLink::new(),
-            }));
-
-        shared.invoke_writeback_protect_for_test(&[0]).unwrap();
-
-        assert!(observed_unlocked.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn writeback_protect_listener_runs_without_listener_lock() {
-        let shared = Arc::new(CachedFileShared::new_unbounded(0));
-        let observed_unlocked = Arc::new(AtomicBool::new(false));
-        let observed = observed_unlocked.clone();
-        let listener_shared = shared.clone();
-
-        shared
-            .evict_listeners
-            .lock()
-            .push_back(Box::new(EvictListener {
-                listener: Arc::new(|_, _| true),
-                writeback_protect: Arc::new(move |_| {
-                    observed.store(
-                        listener_shared.listener_lock_is_free_for_test(),
-                        Ordering::Release,
-                    );
-                    true
-                }),
-                link: LinkedListAtomicLink::new(),
-            }));
-
-        shared.invoke_writeback_protect_for_test(&[0]).unwrap();
-
-        assert!(observed_unlocked.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn writeback_protect_does_not_hold_listener_lock_while_invoking_callbacks() {
-        let shared = Arc::new(CachedFileShared::new_unbounded(0));
-        let observed_unlocked = Arc::new(AtomicBool::new(false));
-        let observed = observed_unlocked.clone();
-        let listener_shared = shared.clone();
-
-        shared
-            .evict_listeners
-            .lock()
-            .push_back(Box::new(EvictListener {
-                listener: Arc::new(|_, _| true),
-                writeback_protect: Arc::new(move |_| {
-                    observed.store(
-                        listener_shared.evict_listeners.try_lock().is_some(),
-                        Ordering::Release,
-                    );
-                    true
-                }),
-                link: LinkedListAtomicLink::new(),
-            }));
-
-        shared.protect_dirty_pages_before_writeback(&[0]).unwrap();
-
-        assert!(observed_unlocked.load(Ordering::Acquire));
-    }
-}
+mod tests;

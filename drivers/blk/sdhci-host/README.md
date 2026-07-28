@@ -31,14 +31,14 @@ tree setup, power rails, pinmux, IRQ routing, and DMA cache coherency.
 | 1.8 V signaling bit path | ✅ (board validation required) |
 | Controller tuning entry points | ✅ (board validation required) |
 | ADMA2 (64-bit / v4) | ❌          |
-| 8-bit eMMC bus      | ❌ (returns `UnsupportedCommand`) |
-| eMMC EXT_CSD path   | ❌          |
+| 8-bit eMMC bus      | ✅          |
+| eMMC EXT_CSD path   | ✅ (ADMA2)  |
 
 ## Usage
 
 ```rust,no_run
 use core::ptr::NonNull;
-use sdmmc_protocol::{OperationPoll, sdio::{SdioInitScratch, SdioSdmmc}};
+use sdmmc_protocol::sdio::{SdioInitScratch, SdioSdmmc};
 use sdhci_host::Sdhci;
 
 // SAFETY: 0xFE31_0000 must point at a valid SDHCI register file the
@@ -50,11 +50,10 @@ let mut host = unsafe { Sdhci::new(mmio) };
 
 let mut card = SdioSdmmc::new_host2(host);
 let mut scratch = SdioInitScratch::new();
-let mut request = card.submit_init(&mut scratch)?;
-while let OperationPoll::Pending = card.poll_init_request(&mut request)? {
-    // Runtime policy belongs here: spin, yield, wait for IRQ, or sleep/timer
-    // when request.take_needs_pace() is set.
-}
+let request = card.submit_init(&mut scratch)?;
+// Transfer `card` and `request` to the maintenance task. Advance only after
+// `request.wait_kind()` reports a satisfied register deadline or an
+// acknowledged device IRQ; never drive command/data completion in a tight loop.
 # Ok::<(), sdmmc_protocol::Error>(())
 ```
 
@@ -66,41 +65,35 @@ the driver.
 
 Normal block-device integration should use `sdhci_host::rdif::device`, which
 routes RDIF requests through `sdmmc-protocol` and the native `sdio-host2`
-transaction path. The lower-level primitives remain available for controller
-bring-up: use `Sdhci::submit_read_blocks` / `Sdhci::submit_write_blocks`, then drive
-completion with `Sdhci::poll_block_request`. `BlockTransferMode::Dma` uses
-ADMA2 and owns request-buffer mapping, descriptor allocation, descriptor
-cache sync, and completion sync. `BlockTransferMode::Fifo` uses the FIFO
-path with the same submit/poll shape, so platform code can fall back when DMA
-is unavailable.
+transaction path. The public boundary accepts owned DMA requests through
+`rdif_block::HardwareQueue`; raw submit/poll block primitives are intentionally
+not exposed.
 
 ```rust,ignore
-use core::{num::NonZeroUsize, ptr::NonNull};
 use dma_api::DeviceDma;
-use sdhci_host::{BlockRequestSlot, BlockTransferMode, RequestId, Sdhci};
+use sdmmc_protocol::sdio::{
+    SdioSdmmc,
+    init::CardInitPreference,
+    host2::SdioHost2Adapter,
+};
+use sdhci_host::{Sdhci, rdif};
 
 # use platform::DmaImpl;
 let dma = DeviceDma::new_legacy(u32::MAX as u64, &DmaImpl);
 let mut host = unsafe { Sdhci::new_from_addr(0xFE31_0000) };
-let mut block = [0u8; 512];
-let ptr = NonNull::new(block.as_mut_ptr()).unwrap();
-let mut slot = BlockRequestSlot::default();
-let mut request = Some(host.submit_read_blocks(
-    0,
-    ptr,
-    NonZeroUsize::new(block.len()).unwrap(),
-    Some(&dma),
-    BlockTransferMode::Dma,
-    &mut slot,
-)?);
-let id = RequestId::new(0);
-while matches!(host.poll_block_request(&mut request, id, &mut slot), Ok(BlockPoll::Pending)) {}
+host.set_dma(dma.clone());
+let card = SdioSdmmc::new_host2(host);
+let config = rdif::dma_config("dwcmshc", 0, dma);
+let controller =
+    rdif::initializing_device(card, config, CardInitPreference::MmcFirst);
+// Platform glue transfers `controller` and its pre-resolved IRQ source to the
+// shared block runtime. The runtime owns the hctx task and completion channels.
 ```
 
 Platform code should implement `dma_api::DmaOp` and keep OS-specific mapping
-and cache maintenance there. `Sdhci::block_buffer_config` exposes the FIFO or
-ADMA2 queue constraints so adapters can translate them into their runtime's
-block-buffer contract.
+and cache maintenance there. `rdif::dma_config` publishes the 32-bit mask,
+alignment, maximum transfer, descriptor, and DWCMSHC boundary constraints to
+the shared transfer planner.
 
 ### Bring-up checklist
 
@@ -113,17 +106,17 @@ block-buffer contract.
    `Sdhci::enable_1v8_signaling` before handing the host to the protocol
    layer.
 4. Build `SdioSdmmc::new_host2(host)`, submit initialization with
-   `submit_init`, and drive it with `poll_init_request`. The protocol
+   `submit_init`, and transfer it to the IRQ-driven maintenance task. The protocol
    layer starts with native `sdio-host2` bus operations for `ResetAll`,
    `PowerOn`, initial voltage, 1-bit bus width, and 400 kHz identification
    clock before issuing SD/MMC commands, then ramps the card to 25 MHz /
-   50 MHz via later bus ops. Platform/runtime code chooses whether pending
-   work spins, yields, or waits for an IRQ.
+   50 MHz via later bus ops. Register-only states use a unified bounded
+   deadline; command/data states advance only after IRQ acknowledgement.
 
-The lower-level blocking helpers such as `Sdhci::reset_all`,
+The register-only helpers such as `Sdhci::reset_all`,
 `Sdhci::set_power`, and `Sdhci::enable_clock` remain useful for diagnostics,
 but normal card initialization should let `SdioSdmmc::new_host2` drive those
-steps through submit/poll bus operations.
+steps through event-driven bus operations.
 
 If the SoC requires external clock-tree programming for each SD speed, implement
 `sdhci_host::HostClock` in platform glue and register it with

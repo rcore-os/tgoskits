@@ -1139,6 +1139,23 @@ mod tests {
             buf.copy_from_slice(block);
             Ok(())
         }
+
+        #[cfg(any(feature = "ext4", feature = "fat"))]
+        fn write_block(&mut self, block_id: u64, buf: &[u8]) -> AxResult {
+            let start = usize::try_from(block_id)
+                .ok()
+                .and_then(|block| block.checked_mul(self.block_size()))
+                .ok_or(AxError::InvalidInput)?;
+            let end = start.checked_add(buf.len()).ok_or(AxError::InvalidInput)?;
+            let target = self.data.get_mut(start..end).ok_or(AxError::InvalidInput)?;
+            target.copy_from_slice(buf);
+            Ok(())
+        }
+
+        #[cfg(feature = "ext4")]
+        fn flush(&mut self) -> AxResult {
+            Ok(())
+        }
     }
 
     fn mbr_partition(

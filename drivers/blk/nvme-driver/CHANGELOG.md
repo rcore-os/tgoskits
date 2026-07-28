@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Wait for `CSTS.RDY` to clear before queue DMA memory is released during shutdown.
+- Treat invalid or duplicate completion IDs as fatal queue corruption after publishing the consumed CQ head.
+
 ## [0.8.0](https://github.com/rcore-os/tgoskits/compare/nvme-driver-v0.7.3...nvme-driver-v0.8.0) - 2026-07-24
 
 ### Changed

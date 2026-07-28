@@ -1,13 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use ostool::{
-    board::{RunBoardOptions, config::BoardRunConfig},
+    board::{BoardRunRequest, RunBoardOptions, config::BoardRunConfig},
     build::config::Cargo,
 };
 
 use crate::{
     context::{
-        AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs, board_run_request,
+        AppContext, ResolvedStarryRequest, SnapshotPersistence, StarryCliArgs,
+        arch_for_target_checked, board_run_request,
     },
     test::{case as qemu_case, host_http::HostHttpServerGuard, qemu},
 };
@@ -126,6 +127,7 @@ impl Starry {
             cargo,
             board_config,
             board_config_path,
+            None,
             RunBoardOptions {
                 board_type: args.board_type,
                 server: args.server,
@@ -377,13 +379,23 @@ impl Starry {
             .load_board_config(&cargo, Some(case.board_config_path.as_path()))
             .await?;
         if board_config.shell_init_cmd.is_none() {
-            board_config.shell_init_cmd = Some(case.init_cmd);
+            board_config.shell_init_cmd = Some(case.init_cmd.clone());
         }
+        let arch = arch_for_target_checked(&case.target)?;
+        let session_assets = app::prepare_app_board_session_assets(
+            self.app.workspace_root(),
+            arch,
+            &case.target,
+            &case,
+            &board_config.session_files,
+        )
+        .await?;
         self.run_board_artifact(
             &request,
             cargo,
             board_config,
             board_config_path,
+            session_assets,
             RunBoardOptions {
                 board_type: args.board_type,
                 server: args.server,
@@ -509,16 +521,27 @@ impl Starry {
         self.app.run_prepared_uboot(uboot).await
     }
 
-    pub(super) async fn run_board_artifact(
+    async fn run_board_artifact(
         &mut self,
         request: &ResolvedStarryRequest,
         cargo: Cargo,
         board_config: BoardRunConfig,
         board_config_path: PathBuf,
+        session_assets: Option<test::PreparedBoardSessionAssets>,
         options: RunBoardOptions,
     ) -> anyhow::Result<()> {
         let output = self.build_artifact(request, cargo.clone()).await?;
-        let board_request = board_run_request(&board_config_path, board_config, options)?;
+        let board_request = match session_assets {
+            Some(assets) => {
+                println!(
+                    "[axbuild] board session upload root: {}",
+                    assets.root.display()
+                );
+                BoardRunRequest::new(board_config, options)
+                    .with_session_files(&assets.root, &assets.relative_paths)?
+            }
+            None => board_run_request(&board_config_path, board_config, options)?,
+        };
         self.app
             .board_prepared_elf_with_request(
                 output.elf_path().to_path_buf(),

@@ -164,7 +164,11 @@ pub enum ControllerEvent {
     QuiesceIrqs,
     /// Reports a queue whose request deadline expired without an IRQ.
     Watchdog { queue_id: usize },
-    /// Stops the controller after all queues and IRQs are quiesced.
+    /// Stops DMA after IRQs and queue mutation are quiesced.
+    ///
+    /// The controller may return [`ControllerState::RegisterPending`] until
+    /// hardware confirms its terminal register state. Queue memory must remain
+    /// alive until the transition reaches [`ControllerState::Shutdown`].
     Shutdown,
 }
 

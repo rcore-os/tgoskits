@@ -159,6 +159,15 @@ impl OwnedRequestBatch {
         self.requests.pop_front()
     }
 
+    /// Transfers the last runtime-owned request out of the batch.
+    ///
+    /// The block runtime uses this to restore an unaccepted suffix ahead of
+    /// older retry work without allocating another batch container. Drivers
+    /// should normally consume only from the front.
+    pub fn pop_back(&mut self) -> Option<OwnedRequest> {
+        self.requests.pop_back()
+    }
+
     /// Restores a request before every request still owned by the batch.
     ///
     /// This is intended for driver rollback before hardware ownership has been

@@ -3,9 +3,16 @@
 Starry board file-I/O validation for the OrangePi 5 Plus RK3588 DWCMSHC
 eMMC path.
 
-Build and install the helper into the board rootfs as `/usr/bin/block-rw-bench`
-before running `cargo xtask starry app board -t block-rw-bench -b <board>`.
-The board app `init.sh` executes that helper directly.
+Run it with:
+
+```bash
+cargo xtask starry app board -t block-rw-bench -b OrangePi-5-Plus
+```
+
+Axbuild cross-compiles the static helper from `rust/`, uploads it as an ostool
+session file, and expands `${sessionFile:usr/bin/block-rw-bench}` to the
+board-visible HTTP URL. The board downloads the helper into `/tmp`; no SSH
+deployment or persistent rootfs installation is required.
 
 The helper first verifies that `/` is mounted from `/dev/mmcblk0`. It then runs
 512-byte, 4-KiB, ADMA2 maximum-transfer, forced planner-split, and eight-task

@@ -1,5 +1,6 @@
 mod args;
 mod board;
+mod board_assets;
 mod build_config;
 mod discovery;
 mod qemu;
@@ -9,6 +10,7 @@ mod types;
 
 pub use args::{AppCommand, ArgsApp, ArgsAppBoard, ArgsAppList, ArgsAppQemu};
 pub(crate) use board::resolve_board_case;
+pub(in crate::starry) use board_assets::prepare_app_board_session_assets;
 pub(crate) use discovery::discover_apps;
 pub(crate) use qemu::{app_qemu_test_case, prepare_qemu_app_case};
 pub(crate) use selection::{missing_caps, print_apps, selected_apps};

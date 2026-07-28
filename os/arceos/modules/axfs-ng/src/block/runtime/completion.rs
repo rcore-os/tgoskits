@@ -29,10 +29,17 @@ struct CompletionState {
 }
 
 impl CompletionSubscription {
+    #[cfg(test)]
     pub(super) fn pair() -> Result<(Self, CompletionSender), BlkError> {
         let notification = runtime_ops()
             .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
             .notification();
+        Ok(Self::pair_with_notification(notification))
+    }
+
+    fn pair_with_notification(
+        notification: Arc<dyn BlockNotification>,
+    ) -> (Self, CompletionSender) {
         let cell = Arc::new(CompletionCell {
             state: IrqMutex::new(CompletionState {
                 result: None,
@@ -40,12 +47,12 @@ impl CompletionSubscription {
             }),
             notification,
         });
-        Ok((
+        (
             Self {
                 cell: Arc::clone(&cell),
             },
             CompletionSender { cell },
-        ))
+        )
     }
 
     /// Blocks until the maintenance task publishes a terminal completion.
@@ -94,8 +101,12 @@ impl CompletionGroup {
         senders
             .try_reserve_exact(count)
             .map_err(|_| BlkError::NoMemory)?;
+        let notification = runtime_ops()
+            .map_err(|_| BlkError::Other("block runtime adapter is not installed"))?
+            .notification();
         for _ in 0..count {
-            let (subscription, sender) = CompletionSubscription::pair()?;
+            let (subscription, sender) =
+                CompletionSubscription::pair_with_notification(Arc::clone(&notification));
             subscriptions.push(subscription);
             senders.push_back(sender);
         }
@@ -157,5 +168,26 @@ impl CompletionSender {
             drop(state);
             self.cell.notification.notify();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+
+    use super::CompletionGroup;
+
+    #[test]
+    fn completion_group_coalesces_wakeups_on_one_notification() {
+        crate::os::task::install_test_runtime_ops();
+        let (group, _senders) = CompletionGroup::pairs(4).unwrap();
+        let first = &group.subscriptions[0].cell.notification;
+
+        assert!(
+            group
+                .subscriptions
+                .iter()
+                .all(|subscription| Arc::ptr_eq(first, &subscription.cell.notification))
+        );
     }
 }

@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add an explicit block-transfer policy so RK3588 DWCMSHC can require ADMA2
   and reject every FIFO fallback.
+- Remove the raw submit/poll block compatibility API; block I/O now enters
+  through the owned-DMA RDIF adapter and advances only from IRQ/deadline events.
+- Split host2 transaction ownership from bus-operation state machines, and
+  split DMA request lifecycle from FIFO progress and descriptor policy.
+- Move controller, DMA, and crate tests out of production modules.
 
 ## [0.4.2](https://github.com/rcore-os/tgoskits/compare/sdhci-host-v0.4.1...sdhci-host-v0.4.2) - 2026-07-23
 

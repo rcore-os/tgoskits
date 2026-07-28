@@ -1,5 +1,7 @@
 target = "aarch64-unknown-none-softfloat"
 features = [
+  "ax-driver/rk3588-pcie",
+  "ax-driver/realtek-rtl8125",
   "ax-driver/rockchip-soc",
   "ax-driver/rockchip-sdhci",
 ]
