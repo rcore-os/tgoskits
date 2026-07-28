@@ -52,12 +52,14 @@ cargo doc --no-deps
 ### Example
 
 ```rust
-use arm_vcpu::{ArmHostOps, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuResult};
+use arm_vcpu::{
+    ArmHostOps, ArmVcpu, ArmVcpuCreateConfig, ArmVcpuResult, ArmVirtualIntId,
+};
 
 struct MyHost;
 
 impl ArmHostOps for MyHost {
-    fn inject_virtual_interrupt(_vector: u8) -> ArmVcpuResult {
+    fn inject_virtual_interrupt(_intid: ArmVirtualIntId) -> ArmVcpuResult {
         Ok(())
     }
 

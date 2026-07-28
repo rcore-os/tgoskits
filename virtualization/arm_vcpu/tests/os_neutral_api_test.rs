@@ -20,13 +20,13 @@ use arm_vcpu::{
     ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
     Aarch64PerCpu, Aarch64VCpu, ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps,
     ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr, ArmVcpu, ArmVcpuError, ArmVcpuResult,
-    ArmVmExit, TrapFrame,
+    ArmVirtualIntId, ArmVmExit, TrapFrame,
 };
 
 struct DummyHost;
 
 impl ArmHostOps for DummyHost {
-    fn inject_virtual_interrupt(_vector: u8) -> ArmVcpuResult {
+    fn inject_virtual_interrupt(_intid: ArmVirtualIntId) -> ArmVcpuResult {
         Ok(())
     }
 

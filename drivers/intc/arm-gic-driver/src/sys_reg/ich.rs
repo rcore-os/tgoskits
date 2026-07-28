@@ -89,7 +89,7 @@ define_readonly_register! {
         NV4 OFFSET(20) NUMBITS(1) [],
         A3V OFFSET(21) NUMBITS(1) [],
         SEIS OFFSET(22) NUMBITS(1) [],
-        IDBITS OFFSET(23) NUMBITS(4) [],
+        IDBITS OFFSET(23) NUMBITS(1) [],
         PREBITS OFFSET(26) NUMBITS(3) [],
         PRIBITS OFFSET(29) NUMBITS(3) [],
     }
@@ -152,6 +152,7 @@ tock_registers::register_bitfields! {
         GROUP OFFSET(60) NUMBITS(1) [],
         NMI OFFSET(59) NUMBITS(1) [],
         PRIORITY OFFSET(48) NUMBITS(8) [],
+        EOI OFFSET(41) NUMBITS(1) [],
         PINTID OFFSET(32) NUMBITS(16) [],
     ]
 }
@@ -263,6 +264,14 @@ pub fn ich_lr_el2_get(n: usize) -> LocalRegisterCopy<u64, ICH_LR_EL2::Register> 
 
 pub fn ich_lr_el2_set(n: usize, value: LocalRegisterCopy<u64, ICH_LR_EL2::Register>) {
     ich_lr_el2_case!(n, set(value.get()));
+}
+
+/// Writes raw contents to a checked ICH list-register slot.
+///
+/// Callers must validate `n` against `ICH_VTR_EL2.LISTREGS + 1` and the
+/// architectural maximum of 16 before calling this function.
+pub fn ich_lr_el2_set_raw(n: usize, value: u64) {
+    ich_lr_el2_case!(n, set(value));
 }
 
 pub fn ich_lr_el2_write(n: usize, field: FieldValue<u64, ICH_LR_EL2::Register>) {
