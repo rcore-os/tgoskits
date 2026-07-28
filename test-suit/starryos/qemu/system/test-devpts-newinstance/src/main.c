@@ -91,6 +91,14 @@ static int allocate_pty(const char *mountpoint, unsigned int *number)
     return master;
 }
 
+static void close_masters(int *masters, size_t count)
+{
+    for (size_t index = 0; index < count; index++) {
+        close(masters[index]);
+    }
+    free(masters);
+}
+
 static int slave_exists(const char *mountpoint, unsigned int number)
 {
     char path[128];
@@ -233,32 +241,57 @@ int main(void)
     if (root_master < 0) {
         return 1;
     }
-    if (root_number != 0) {
-        errno = EPROTO;
-        fail("root devpts reserves the colliding PTY number");
-    } else {
-        pass("root devpts reserves the colliding PTY number");
-    }
 
-    unsigned int first_number = ~0U;
-    int first_master = allocate_pty(first_mount, &first_number);
-    if (first_master < 0) {
+    size_t first_master_count = (size_t)root_number + 1;
+    int *first_masters = calloc(first_master_count, sizeof(*first_masters));
+    if (first_masters == NULL) {
+        fail("allocate private PTY master table");
         close(root_master);
         return 1;
     }
-    if (first_number != 0) {
+
+    unsigned int first_allocated_number = ~0U;
+    unsigned int first_number = ~0U;
+    for (size_t index = 0; index < first_master_count; index++) {
+        first_masters[index] = allocate_pty(first_mount, &first_number);
+        if (first_masters[index] < 0) {
+            close_masters(first_masters, index);
+            close(root_master);
+            return 1;
+        }
+        if (index == 0) {
+            first_allocated_number = first_number;
+        }
+    }
+    if (first_allocated_number != 0) {
         errno = EPROTO;
         fail("first devpts instance starts PTY numbering at zero");
     } else {
         pass("first devpts instance starts PTY numbering at zero");
+    }
+    if (first_number != root_number) {
+        errno = EPROTO;
+        fail("private devpts reaches the root instance PTY number");
+    } else {
+        pass("private devpts reaches the root instance PTY number");
     }
     if (slave_exists(first_mount, first_number) != 0) {
         fail("allocated slave is visible in its owning devpts instance");
     } else {
         pass("allocated slave is visible in its owning devpts instance");
     }
-    check_metadata("/tmp/devpts-newinstance-a/0", 0620, 5,
-                   "mode and gid apply to the allocated slave node");
+    char first_slave_path[128];
+    int first_slave_path_length =
+        snprintf(first_slave_path, sizeof(first_slave_path), "%s/%u",
+                 first_mount, first_number);
+    if (first_slave_path_length < 0 ||
+        (size_t)first_slave_path_length >= sizeof(first_slave_path)) {
+        errno = ENAMETOOLONG;
+        fail("format first private slave path");
+    } else {
+        check_metadata(first_slave_path, 0620, 5,
+                       "mode and gid apply to the allocated slave node");
+    }
     check_private_controlling_tty(first_mount, first_number);
 
     errno = 0;
@@ -272,7 +305,8 @@ int main(void)
     unsigned int second_number = ~0U;
     int second_master = allocate_pty(second_mount, &second_number);
     if (second_master < 0) {
-        close(first_master);
+        close_masters(first_masters, first_master_count);
+        close(root_master);
         return 1;
     }
     if (second_number != 0) {
@@ -288,7 +322,7 @@ int main(void)
     }
 
     close(second_master);
-    close(first_master);
+    close_masters(first_masters, first_master_count);
     close(root_master);
     umount2(second_mount, MNT_DETACH);
     umount2(first_mount, MNT_DETACH);

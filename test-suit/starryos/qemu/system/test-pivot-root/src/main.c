@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +59,10 @@ static int mountinfo_entry_count(void) {
 }
 
 static int child_body(void) {
+    if (unshare(CLONE_NEWNS) < 0) {
+        perror("child: unshare(CLONE_NEWNS)");
+        return 1;
+    }
     if (verify_regular_directory_is_rejected() != 0) {
         return 1;
     }
@@ -160,6 +165,12 @@ int main(void) {
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         fprintf(stderr, "FAIL: child status=%d\n", status);
+        return 1;
+    }
+    if (access("/bin/sh", X_OK) < 0) {
+        fprintf(stderr,
+                "FAIL: pivot_root test changed the grouped runner mount namespace errno=%d\n",
+                errno);
         return 1;
     }
 
