@@ -18,11 +18,11 @@ use starry_vm::{VmMutPtr, VmPtr};
 use weak_map::WeakMap;
 
 use super::{
-    AlarmTarget, AlarmToken, Cred, FutexKey, PendingTimerActions, ProcessData, Thread, TimerState,
-    UserTaskRef, WeakUserTaskRef, ZombieSnapshot, current_user_task, futex_table_for_process,
-    get_process_data, get_zombie_cred, orphan_reaper_for, processes, publish_zombie,
-    register_prepared_process_identity, register_process_identity, send_signal_to_process,
-    send_signal_to_thread, unregister_prepared_process_identity,
+    AlarmTarget, AlarmToken, Cred, FutexKey, OrphanReaper, PendingTimerActions, ProcessData,
+    Thread, TimerState, UserTaskRef, WeakUserTaskRef, ZombieSnapshot, current_user_task,
+    futex_table_for_process, get_process_data, get_zombie_cred, orphan_reaper_for, processes,
+    publish_zombie, register_prepared_process_identity, register_process_identity,
+    send_signal_to_process, send_signal_to_thread, unregister_prepared_process_identity,
 };
 
 const FUTEX_OWNER_DIED: u32 = 0x40000000;
@@ -604,10 +604,17 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         crate::syscall::release_pid_locks(process.pid());
         crate::syscall::release_pid_flock_locks(process.pid());
 
-        let children_snapshot = loop {
-            let orphan_reaper = orphan_reaper_for(process);
-            if let Some(relations) = process.try_begin_exit_relations(&orphan_reaper) {
-                break relations.into_reparented_children();
+        let (children_snapshot, shutting_down_pid_namespace) = loop {
+            match orphan_reaper_for(&thr.proc_data) {
+                OrphanReaper::ReparentTo(orphan_reaper) => {
+                    if let Some(relations) = process.try_begin_exit_relations(&orphan_reaper) {
+                        break (relations.into_reparented_children(), None);
+                    }
+                }
+                OrphanReaper::ShutdownNamespace(namespace) => {
+                    let relations = process.begin_namespace_shutdown_relations();
+                    break (relations.into_retained_children(), Some(namespace));
+                }
             }
         };
 
@@ -699,28 +706,19 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // If this process was the init of a non-root PID namespace,
         // send SIGKILL to all remaining processes in that namespace
         // (Linux: zap_pid_ns_processes).
-        {
-            let ns = thr.proc_data.nsproxy.lock();
-            let pid_ns_lock = ns.pid_ns.lock();
-            if pid_ns_lock.level > 0 && pid_ns_lock.init_global_tid() == Some(process.pid() as u64)
-            {
-                let ns_ptr = Arc::as_ptr(&ns.pid_ns) as usize;
-                drop(pid_ns_lock);
-                drop(ns);
+        if let Some(namespace) = shutting_down_pid_namespace {
+            let victims: Vec<Pid> = processes()
+                .into_iter()
+                .filter(|data| {
+                    data.proc.pid() != process.pid()
+                        && Arc::ptr_eq(&data.identity().pid_namespace(), &namespace)
+                })
+                .map(|data| data.proc.pid())
+                .collect();
 
-                let victims: Vec<Pid> = processes()
-                    .into_iter()
-                    .filter(|pd| {
-                        pd.proc.pid() != process.pid()
-                            && Arc::as_ptr(&pd.nsproxy.lock().pid_ns) as usize == ns_ptr
-                    })
-                    .map(|data| data.proc.pid())
-                    .collect();
-
-                let sig = SignalInfo::new_kernel(Signo::SIGKILL);
-                for pid in victims {
-                    let _ = send_signal_to_process(pid, Some(sig));
-                }
+            let sig = SignalInfo::new_kernel(Signo::SIGKILL);
+            for pid in victims {
+                let _ = send_signal_to_process(pid, Some(sig));
             }
         }
 

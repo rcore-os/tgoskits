@@ -57,6 +57,38 @@ static pid_t clone3_child(unsigned long long flags)
     return (pid_t)syscall(__NR_clone3, &args, sizeof(args));
 }
 
+static void write_exact(int fd, const void *buffer, size_t length)
+{
+    const unsigned char *cursor = buffer;
+    while (length > 0)
+    {
+        ssize_t written = write(fd, cursor, length);
+        CHECK(written > 0, "write_exact");
+        if (written <= 0)
+        {
+            return;
+        }
+        cursor += (size_t)written;
+        length -= (size_t)written;
+    }
+}
+
+static void read_exact(int fd, void *buffer, size_t length)
+{
+    unsigned char *cursor = buffer;
+    while (length > 0)
+    {
+        ssize_t received = read(fd, cursor, length);
+        CHECK(received > 0, "read_exact");
+        if (received <= 0)
+        {
+            return;
+        }
+        cursor += (size_t)received;
+        length -= (size_t)received;
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 static void run_uts_namespace_test(void)
@@ -131,6 +163,7 @@ static void run_pid_namespace_test(void)
     if (child == 0)
     {
         /* ---- child ---------------------------------------------------- */
+        int failures_before_pid_test = __fail;
         pid_t my_pid = getpid();
 
         /* The first process in a new PID namespace is PID 1. */
@@ -146,7 +179,66 @@ static void run_pid_namespace_test(void)
         CHECK(my_pid != parent_pid,
               "child pid differs from parent pid (namespace isolation)");
 
-        _exit(0);
+        int observed_pipe[2];
+        int release_pipe[2];
+        CHECK(pipe(observed_pipe) == 0, "PID namespace orphan observation pipe");
+        CHECK(pipe(release_pipe) == 0, "PID namespace orphan release pipe");
+
+        pid_t intermediate = fork();
+        CHECK(intermediate >= 0, "fork intermediate PID namespace parent");
+        if (intermediate == 0)
+        {
+            pid_t orphan = fork();
+            CHECK(orphan >= 0, "fork PID namespace orphan");
+            if (orphan == 0)
+            {
+                close(observed_pipe[0]);
+                close(release_pipe[1]);
+
+                const char ready = 'R';
+                write_exact(observed_pipe[1], &ready, sizeof(ready));
+
+                char release;
+                read_exact(release_pipe[0], &release, sizeof(release));
+                pid_t observed_parent = getppid();
+                write_exact(observed_pipe[1], &observed_parent,
+                            sizeof(observed_parent));
+                _exit(observed_parent == 1 ? 0 : 1);
+            }
+            _exit(0);
+        }
+
+        close(observed_pipe[1]);
+        close(release_pipe[0]);
+
+        char ready;
+        read_exact(observed_pipe[0], &ready, sizeof(ready));
+        CHECK(ready == 'R', "PID namespace orphan reached observation barrier");
+
+        int intermediate_status;
+        CHECK(waitpid(intermediate, &intermediate_status, 0) == intermediate,
+              "wait for intermediate PID namespace parent");
+        CHECK(WIFEXITED(intermediate_status)
+                  && WEXITSTATUS(intermediate_status) == 0,
+              "intermediate PID namespace parent exited 0");
+
+        const char release = 'G';
+        write_exact(release_pipe[1], &release, sizeof(release));
+
+        pid_t observed_parent;
+        read_exact(observed_pipe[0], &observed_parent, sizeof(observed_parent));
+        CHECK(observed_parent == 1,
+              "orphan is reparented to init in its PID namespace");
+
+        int orphan_status;
+        CHECK(waitpid(-1, &orphan_status, 0) > 0,
+              "PID namespace init reaps the adopted orphan");
+        CHECK(WIFEXITED(orphan_status) && WEXITSTATUS(orphan_status) == 0,
+              "adopted PID namespace orphan exited 0");
+
+        close(observed_pipe[0]);
+        close(release_pipe[1]);
+        _exit(__fail == failures_before_pid_test ? 0 : 1);
     }
 
     /* ---- parent -------------------------------------------------------- */

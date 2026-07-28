@@ -123,6 +123,22 @@ impl ProcessExitRelations {
     }
 }
 
+/// Children retained by a PID namespace reaper while its namespace shuts down.
+///
+/// New fork publication is closed by the transaction, while existing
+/// descendants remain attached so the namespace reaper can terminate and reap
+/// them before its own identity becomes externally reapable.
+pub struct ProcessNamespaceShutdownRelations {
+    retained_children: Vec<Arc<Process>>,
+}
+
+impl ProcessNamespaceShutdownRelations {
+    /// Consumes the transaction result and returns the exact retained children.
+    pub fn into_retained_children(self) -> Vec<Arc<Process>> {
+        self.retained_children
+    }
+}
+
 impl PublishedFork {
     /// Borrows the published child.
     pub fn process(&self) -> &Arc<Process> {
@@ -413,6 +429,19 @@ impl Process {
             self.try_begin_exit_relations(&init_proc())
                 .expect("init process must remain available as orphan reaper")
         })
+    }
+
+    /// Closes new child publication while retaining existing descendants.
+    ///
+    /// PID namespace shutdown uses this transaction before it terminates the
+    /// remaining namespace members. Unlike normal exit, retained children are
+    /// not exposed to a reaper outside the namespace.
+    pub fn begin_namespace_shutdown_relations(
+        self: &Arc<Self>,
+    ) -> ProcessNamespaceShutdownRelations {
+        ProcessNamespaceShutdownRelations {
+            retained_children: ProcessRelationTxn::begin_namespace_shutdown(self),
+        }
     }
 
     /// Reparents all children to `reaper`.
@@ -721,5 +750,18 @@ mod tests {
             Arc::ptr_eq(&child.parent().unwrap(), &init),
             "a closed reaper accepted a child after its own exit transaction"
         );
+    }
+
+    #[test]
+    fn namespace_reaper_shutdown_closes_prepared_child_publication() {
+        let init = test_init();
+        let namespace_reaper = init.fork(104);
+        let prepared = namespace_reaper.prepare_fork(105);
+
+        let relations = namespace_reaper.begin_namespace_shutdown_relations();
+
+        assert!(relations.into_retained_children().is_empty());
+        assert!(!namespace_reaper.accepts_child_publication());
+        assert!(prepared.publish().is_none());
     }
 }

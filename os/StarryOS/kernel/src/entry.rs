@@ -87,19 +87,22 @@ pub fn init(args: &[String], envs: &[String]) {
 
     let proc = ProcessData::new(
         proc,
-        ProcessImage::new(
-            path.to_string(),
-            Arc::new(args.to_vec()),
-            Arc::new(envs.to_vec()),
-            auxv,
-            "/".to_string(),
-            "/".to_string(),
+        crate::task::ProcessDataInit::new(
+            ProcessImage::new(
+                path.to_string(),
+                Arc::new(args.to_vec()),
+                Arc::new(envs.to_vec()),
+                auxv,
+                "/".to_string(),
+                "/".to_string(),
+            ),
+            Arc::new(PiMutex::new(uspace)),
+            Arc::default(),
+            axnsproxy::NsProxy::new_root(),
+            None,
+            pid,
+            false,
         ),
-        Arc::new(PiMutex::new(uspace)),
-        Arc::default(),
-        None,
-        pid,
-        false,
     );
     // SAFE-EXPECT: failing to attach init would violate the kernel's process accounting invariant.
     crate::cgroup::attach_initial_process(pid)

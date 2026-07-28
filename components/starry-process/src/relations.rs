@@ -21,6 +21,7 @@ pub(crate) type RelationLock<T> = ax_kspin::SpinNoIrq<T>;
 pub(crate) enum ChildPublication {
     Open,
     ClosedForExit,
+    ClosedForNamespaceShutdown,
 }
 
 pub(crate) struct ChildRelations {
@@ -44,8 +45,19 @@ impl ChildRelations {
         self.publication == ChildPublication::Open
     }
 
-    fn close(&mut self) {
+    fn close_for_exit(&mut self) {
         self.publication = ChildPublication::ClosedForExit;
+    }
+
+    fn close_for_namespace_shutdown(&mut self) {
+        self.publication = ChildPublication::ClosedForNamespaceShutdown;
+    }
+
+    fn accepts_reparented_children(&self) -> bool {
+        matches!(
+            self.publication,
+            ChildPublication::Open | ChildPublication::ClosedForNamespaceShutdown
+        )
     }
 
     pub(crate) fn contains(&self, pid: Pid) -> bool {
@@ -479,9 +491,10 @@ impl ProcessRelationTxn {
         process: &Arc<Process>,
         reaper: &Arc<Process>,
     ) -> Option<Vec<Arc<Process>>> {
-        if process.is_init() || Arc::ptr_eq(process, reaper) {
-            return Some(Vec::new());
-        }
+        assert!(
+            !Arc::ptr_eq(process, reaper),
+            "namespace reaper shutdown requires the explicit close transaction"
+        );
         assert_ne!(
             process.pid(),
             reaper.pid(),
@@ -517,13 +530,29 @@ impl ProcessRelationTxn {
         }
     }
 
+    pub(crate) fn begin_namespace_shutdown(process: &Arc<Process>) -> Vec<Arc<Process>> {
+        loop {
+            let child_count = process.children.lock().len();
+            let mut retained = Vec::with_capacity(child_count);
+            let mut children = process.children.lock();
+            if retained.capacity() < children.len() {
+                drop(children);
+                continue;
+            }
+
+            children.close_for_namespace_shutdown();
+            children.snapshot(&mut retained);
+            return retained;
+        }
+    }
+
     fn reparent_locked(
         children: &mut ChildRelations,
         reaper_children: &mut ChildRelations,
         reaper: &Arc<Process>,
         reparented: &mut Vec<Arc<Process>>,
     ) -> ReparentCommit {
-        if !reaper_children.is_open() {
+        if !reaper_children.accepts_reparented_children() {
             return ReparentCommit::DestinationClosed;
         }
         let child_count = children.len();
@@ -536,7 +565,7 @@ impl ProcessRelationTxn {
             return ReparentCommit::Conflict;
         }
 
-        children.close();
+        children.close_for_exit();
         let reaper_parent = Arc::downgrade(reaper);
         while let Some((pid, child)) = children.pop_last() {
             *child.parent.lock() = reaper_parent.clone();
