@@ -45,6 +45,7 @@ fn pi_orders_equal_relative_deadlines_by_the_active_absolute_job_deadline() {
     assert!(early_wait.is_granted());
     assert!(!late_wait.is_granted());
     assert_eq!(system.deadline_runtime(early.id()).unwrap().donor(), None);
+    system.pi_wait_cancel(late_wait).unwrap();
 }
 
 #[test]

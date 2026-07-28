@@ -129,9 +129,19 @@ as handoff. The old pending-registration counter, unlock-side spin, local-grant
 spin, and test callback between local and scheduler publication are gone. Loom
 models registration versus unlock, rejection before publication, and
 deboost/local grant/scheduler grant visibility before wake using separate
-state sources. The remaining PI work is to replace whole-registry donor scans
-with an owner-indexed waiter structure and to finish the scope-local and
-IRQ-visible waiter lifetime audits.
+state sources. Owner-indexed donor traversal, scope-local serialization, and
+IRQ-visible waiter lifetime are tracked as separate latency and lifetime
+subproblems.
+
+The donor graph is now owner-indexed as an intrusive generation-bearing waiter
+list. Registration, cancellation, recomputation, and handoff walk only the
+affected owner's waiters and the transitive owner chain; unrelated live thread
+slots no longer lengthen the IRQ-disabled metadata transaction. The
+deterministic regression populated 128 unrelated records and observed 260
+whole-registry donor-record visits before the change, then only the one
+registered donor afterward. Each chain preflight also checks link direction
+and the cached waiter count before any mutation. Scope-local serialization and
+IRQ-visible waiter quiescence remain open.
 
 ## Completion rules
 

@@ -1844,6 +1844,38 @@ fn chained_and_multi_lock_donations_are_withdrawn_independently() {
 }
 
 #[test]
+fn pi_registration_does_not_scan_unrelated_registry_slots() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let unrelated = (0..128)
+        .map(|_| {
+            system
+                .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let owner = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    let waiter = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::fifo(
+            RtPriority::new(90).unwrap(),
+        )))
+        .unwrap();
+    registry::reset_pi_donor_record_visits();
+
+    let _token = system
+        .pi_wait_start(PiLockIdentity::new().id().unwrap(), waiter.id(), owner.id())
+        .unwrap();
+
+    assert_eq!(
+        registry::pi_donor_record_visits(),
+        1,
+        "PI work must visit only the registered donor, not unrelated records"
+    );
+    drop(unrelated);
+}
+
+#[test]
 fn failed_pi_registration_does_not_publish_a_partial_edge() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let owner = system
@@ -1917,6 +1949,8 @@ fn failed_pi_handoff_preserves_the_ungranted_wait_transaction() {
             lock,
             owner: owner.id(),
             generation: token.generation,
+            owner_prev: None,
+            owner_next: None,
         })
     );
     assert_eq!(
@@ -1957,6 +1991,8 @@ fn dropped_pi_handoff_preparation_leaves_the_wait_transaction_intact() {
             lock,
             owner: owner.id(),
             generation: token.generation,
+            owner_prev: None,
+            owner_next: None,
         })
     );
     assert_eq!(
