@@ -23,12 +23,11 @@ use core::{
 use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
-use axaddrspace::AddrSpace;
-#[cfg(target_arch = "x86_64")]
-use axaddrspace::NestedPageTableOps;
-use axdevice::DeviceRuntime;
-#[cfg(target_arch = "loongarch64")]
-use axdevice::{FwCfgPayloadConfig, FwCfgPlatformConfig};
+use axaddrspace::{AddrSpace, NestedPageTableOps};
+use axdevice::{
+    DeviceRuntime, FwCfgPayloadConfig, FwCfgPlatformConfig, RuntimeAccessPorts, StopAccessPort,
+    TimerAccessPort, WakeAccessPort,
+};
 use axdevice_base::{AccessWidth, DeviceAccess, DeviceId, DeviceResult, DmaGrant};
 use axvm_types::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
@@ -434,8 +433,8 @@ impl AxVMResources {
     }
 }
 
-#[cfg(target_arch = "loongarch64")]
-struct PendingFwCfg {
+#[allow(dead_code)]
+struct PendingFwCfgPayload {
     base: GuestPhysAddr,
     size: usize,
     kernel: &'static [u8],
@@ -445,7 +444,6 @@ struct PendingFwCfg {
     platform: FwCfgPlatformConfig,
 }
 
-#[cfg(target_arch = "loongarch64")]
 pub struct FwCfgDeviceConfig {
     pub base: GuestPhysAddr,
     pub size: usize,
@@ -454,6 +452,93 @@ pub struct FwCfgDeviceConfig {
     pub cmdline: Option<String>,
     pub cpu_num: u16,
     pub platform: FwCfgPlatformConfig,
+}
+
+#[derive(Clone)]
+struct AxVmDeviceAccessPorts {
+    vm_id: usize,
+}
+
+impl AxVmDeviceAccessPorts {
+    const fn new(vm_id: usize) -> Self {
+        Self { vm_id }
+    }
+
+    fn into_ports(self) -> RuntimeAccessPorts {
+        let this = Arc::new(self);
+        RuntimeAccessPorts::new()
+            .with_timer(this.clone())
+            .with_wake(this.clone())
+            .with_stop(this)
+    }
+
+    fn vm(&self, operation: &'static str) -> axdevice::DeviceManagerResult<AxVMRef> {
+        crate::get_vm_by_id(self.vm_id).ok_or_else(|| {
+            axdevice::DeviceManagerError::ResourceNotFound {
+                operation,
+                resource: format!("VM[{}]", self.vm_id),
+            }
+        })
+    }
+}
+
+impl TimerAccessPort for AxVmDeviceAccessPorts {
+    fn schedule_timer(
+        &self,
+        device_id: DeviceId,
+        deadline_ns: u64,
+    ) -> axdevice::DeviceManagerResult {
+        let vm_id = self.vm_id;
+        trace!(
+            "VM[{vm_id}] device {device_id:?} scheduled access-scoped timer at {deadline_ns:#x} ns"
+        );
+        crate::timer::register_timer(
+            deadline_ns,
+            Box::new(move |_| crate::runtime::vcpus::notify_all_vcpus(vm_id)),
+        );
+        Ok(())
+    }
+}
+
+impl WakeAccessPort for AxVmDeviceAccessPorts {
+    fn wake_vcpu(&self, device_id: DeviceId, vcpu_id: usize) -> axdevice::DeviceManagerResult {
+        let vm = self.vm("wake vCPU from device access")?;
+        if vm.vcpu(vcpu_id).is_none() {
+            return Err(axdevice::DeviceManagerError::InvalidInput {
+                operation: "wake vCPU from device access",
+                detail: format!(
+                    "device {device_id:?} requested nonexistent VM[{}] vCPU {}",
+                    self.vm_id, vcpu_id
+                ),
+            });
+        }
+        vm.with_runtime(|runtime| {
+            runtime.notify_all();
+            Ok(())
+        })
+        .map_err(|error| axdevice::DeviceManagerError::InvalidState {
+            operation: "wake vCPU from device access",
+            detail: format!("{error}"),
+        })
+    }
+}
+
+impl StopAccessPort for AxVmDeviceAccessPorts {
+    fn request_vm_stop(&self, device_id: DeviceId, reason: &str) -> axdevice::DeviceManagerResult {
+        let vm = self.vm("request VM stop from device access")?;
+        vm.stop(StopReason::Fault(format!(
+            "device {device_id:?} requested VM stop: {reason}"
+        )))
+        .map_err(|error| axdevice::DeviceManagerError::InvalidState {
+            operation: "request VM stop from device access",
+            detail: format!("{error}"),
+        })?;
+        if let Ok(()) = vm.with_runtime(|runtime| {
+            runtime.notify_all();
+            Ok(())
+        }) {}
+        Ok(())
+    }
 }
 
 /// Represents a memory region in a virtual machine.
@@ -493,8 +578,7 @@ pub struct AxVM {
     id: usize,
     name: String,
     machine: Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
-    #[cfg(target_arch = "loongarch64")]
-    pending_fw_cfg: Mutex<Option<PendingFwCfg>>,
+    pending_fw_cfg_payload: Mutex<Option<PendingFwCfgPayload>>,
 }
 
 impl AxVM {
@@ -514,8 +598,7 @@ impl AxVM {
             id,
             name,
             machine: Mutex::new(Machine::Ready(resources)),
-            #[cfg(target_arch = "loongarch64")]
-            pending_fw_cfg: Mutex::new(None),
+            pending_fw_cfg_payload: Mutex::new(None),
         });
 
         info!("VM created: id={}", result.id());
@@ -874,16 +957,15 @@ impl AxVM {
     }
 
     /// Queue a QEMU fw_cfg device that will be attached during VM initialization.
-    #[cfg(target_arch = "loongarch64")]
     pub fn add_fw_cfg_device(&self, config: FwCfgDeviceConfig) -> AxVmResult {
-        let mut pending = self.pending_fw_cfg.lock();
+        let mut pending = self.pending_fw_cfg_payload.lock();
         if pending.is_some() {
             return ax_err!(
                 AlreadyExists,
                 format!("VM[{}] fw_cfg device already exists", self.id())
             );
         }
-        *pending = Some(PendingFwCfg {
+        *pending = Some(PendingFwCfgPayload {
             base: config.base,
             size: config.size,
             kernel: config.kernel,
@@ -903,9 +985,9 @@ impl AxVM {
         Ok(())
     }
 
-    #[cfg(target_arch = "loongarch64")]
+    #[allow(dead_code)]
     pub(crate) fn fw_cfg_payload(&self) -> Option<FwCfgPayloadConfig> {
-        self.pending_fw_cfg
+        self.pending_fw_cfg_payload
             .lock()
             .as_ref()
             .map(|pending| FwCfgPayloadConfig {
@@ -917,6 +999,11 @@ impl AxVM {
                 cpu_num: pending.cpu_num,
                 platform: pending.platform,
             })
+    }
+
+    /// Builds the runtime ports used by access-scoped device grants.
+    pub(crate) fn device_access_ports(&self) -> RuntimeAccessPorts {
+        AxVmDeviceAccessPorts::new(self.id()).into_ports()
     }
 
     pub(crate) fn handle_mmio_write(

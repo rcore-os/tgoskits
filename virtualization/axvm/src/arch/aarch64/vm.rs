@@ -86,6 +86,7 @@ fn init_vm_with(
             factories,
             interrupt_fabric,
             &extra_devices,
+            vm.device_access_ports(),
         )?;
         assign_arch_device_state(vm, resources.config(), devices.devices())?;
         validate_guest_dtb(resources)?;

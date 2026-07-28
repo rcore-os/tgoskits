@@ -97,7 +97,12 @@ fn init_vm_with(
                 iocsr_state: iocsr_state.clone(),
             })
         })?;
-        let devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
+        let devices = PreparedDevices::build_common(
+            resources,
+            factories,
+            interrupt_fabric,
+            vm.device_access_ports(),
+        )?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);

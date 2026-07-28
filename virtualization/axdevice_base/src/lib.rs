@@ -504,6 +504,14 @@ pub enum RegistryError {
         /// The device that already owns the conflicting IRQ line.
         existing_device: DeviceId,
     },
+    /// The registry state does not allow the requested operation.
+    #[error("invalid device registry state for {operation}: {detail}")]
+    InvalidState {
+        /// The operation rejected by the current state.
+        operation: &'static str,
+        /// Diagnostic detail describing the current state.
+        detail: String,
+    },
 }
 
 /// The unified device trait.

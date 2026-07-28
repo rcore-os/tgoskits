@@ -26,6 +26,61 @@ use crate::{
     DeviceManagerResult, DeviceServices, GuestRangeAllocatorKey, PollableDeviceOps,
 };
 
+/// Runtime backend for access-scoped virtual timer requests.
+pub trait TimerAccessPort: Send + Sync {
+    /// Schedules a VM-local timer deadline for `device_id`.
+    fn schedule_timer(&self, device_id: DeviceId, deadline_ns: u64) -> DeviceManagerResult;
+}
+
+/// Runtime backend for access-scoped vCPU wake requests.
+pub trait WakeAccessPort: Send + Sync {
+    /// Wakes a VM-local vCPU on behalf of `device_id`.
+    fn wake_vcpu(&self, device_id: DeviceId, vcpu_id: usize) -> DeviceManagerResult;
+}
+
+/// Runtime backend for access-scoped VM stop requests.
+pub trait StopAccessPort: Send + Sync {
+    /// Requests a VM stop on behalf of `device_id`.
+    fn request_vm_stop(&self, device_id: DeviceId, reason: &str) -> DeviceManagerResult;
+}
+
+/// VM runtime capabilities injected into one sealed [`DeviceRuntime`].
+#[derive(Clone, Default)]
+pub struct RuntimeAccessPorts {
+    timer: Option<Arc<dyn TimerAccessPort>>,
+    wake: Option<Arc<dyn WakeAccessPort>>,
+    stop: Option<Arc<dyn StopAccessPort>>,
+}
+
+impl RuntimeAccessPorts {
+    /// Creates an empty access-port set.
+    pub const fn new() -> Self {
+        Self {
+            timer: None,
+            wake: None,
+            stop: None,
+        }
+    }
+
+    /// Adds a timer scheduling port.
+    pub fn with_timer(mut self, timer: Arc<dyn TimerAccessPort>) -> Self {
+        self.timer = Some(timer);
+        self
+    }
+
+    /// Adds a vCPU wake port.
+    pub fn with_wake(mut self, wake: Arc<dyn WakeAccessPort>) -> Self {
+        self.wake = Some(wake);
+        self
+    }
+
+    /// Adds a VM stop-request port.
+    pub fn with_stop(mut self, stop: Arc<dyn StopAccessPort>) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+}
+
 #[inline]
 #[allow(dead_code)]
 fn log_device_io(
@@ -115,6 +170,10 @@ pub struct DeviceRuntime {
     wake_grants: Vec<(DeviceId, WakeGrant)>,
     /// Devices explicitly granted VM stop-request access during a routed access.
     stop_grants: Vec<(DeviceId, StopGrant)>,
+    /// VM runtime access ports used after grant verification.
+    access_ports: RuntimeAccessPorts,
+    /// Whether this runtime topology has been frozen after VM preparation.
+    sealed: bool,
 }
 
 /// Stack-scoped metadata for one routed device access.
@@ -125,6 +184,7 @@ struct RuntimeDeviceAccess<'a> {
     timer_grants: &'a [(DeviceId, TimerGrant)],
     wake_grants: &'a [(DeviceId, WakeGrant)],
     stop_grants: &'a [(DeviceId, StopGrant)],
+    access_ports: &'a RuntimeAccessPorts,
 }
 
 impl DeviceAccess for RuntimeDeviceAccess<'_> {
@@ -187,11 +247,17 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
                 detail: "device has no timer grant".into(),
             });
         }
-        let _ = deadline_ns;
-        Err(DeviceError::Unsupported {
-            operation: "schedule timer from device access",
-            detail: "no timer port is attached to this VM runtime".into(),
-        })
+        let timer = self
+            .access_ports
+            .timer
+            .as_ref()
+            .ok_or_else(|| DeviceError::Unsupported {
+                operation: "schedule timer from device access",
+                detail: "no timer port is attached to this VM runtime".into(),
+            })?;
+        timer
+            .schedule_timer(self.device_id, deadline_ns)
+            .map_err(DeviceError::from)
     }
 
     fn wake_vcpu(&mut self, grant: &WakeGrant, vcpu_id: usize) -> Result<(), DeviceError> {
@@ -203,11 +269,16 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
                 detail: "device has no wake grant".into(),
             });
         }
-        let _ = vcpu_id;
-        Err(DeviceError::Unsupported {
-            operation: "wake vCPU from device access",
-            detail: "no vCPU wake port is attached to this VM runtime".into(),
-        })
+        let wake = self
+            .access_ports
+            .wake
+            .as_ref()
+            .ok_or_else(|| DeviceError::Unsupported {
+                operation: "wake vCPU from device access",
+                detail: "no vCPU wake port is attached to this VM runtime".into(),
+            })?;
+        wake.wake_vcpu(self.device_id, vcpu_id)
+            .map_err(DeviceError::from)
     }
 
     fn request_vm_stop(&mut self, grant: &StopGrant, reason: &str) -> Result<(), DeviceError> {
@@ -219,11 +290,16 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
                 detail: "device has no stop grant".into(),
             });
         }
-        let _ = reason;
-        Err(DeviceError::Unsupported {
-            operation: "request VM stop from device access",
-            detail: "no VM stop port is attached to this VM runtime".into(),
-        })
+        let stop = self
+            .access_ports
+            .stop
+            .as_ref()
+            .ok_or_else(|| DeviceError::Unsupported {
+                operation: "request VM stop from device access",
+                detail: "no VM stop port is attached to this VM runtime".into(),
+            })?;
+        stop.request_vm_stop(self.device_id, reason)
+            .map_err(DeviceError::from)
     }
 }
 
@@ -242,6 +318,8 @@ impl DeviceRuntime {
             timer_grants: Vec::new(),
             wake_grants: Vec::new(),
             stop_grants: Vec::new(),
+            access_ports: RuntimeAccessPorts::new(),
+            sealed: false,
         }
     }
 
@@ -251,20 +329,48 @@ impl DeviceRuntime {
         factories: &DeviceFactoryRegistry,
         context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult<Self> {
+        Self::build_with_factories_and_ports(configs, factories, context, RuntimeAccessPorts::new())
+    }
+
+    /// Builds all configured devices and attaches VM runtime access ports.
+    pub fn build_with_factories_and_ports(
+        configs: &[EmulatedDeviceConfig],
+        factories: &DeviceFactoryRegistry,
+        context: &DeviceBuildContext<'_>,
+        access_ports: RuntimeAccessPorts,
+    ) -> DeviceManagerResult<Self> {
         let mut this = Self::empty();
+        this.access_ports = access_ports;
         for config in configs {
             this.register_factory_device(config, factories, context)?;
         }
+        this.seal();
         Ok(this)
     }
 
+    /// Freezes this runtime topology after VM preparation.
+    pub(crate) fn seal(&mut self) {
+        self.sealed = true;
+    }
+
+    fn ensure_unsealed(&self, operation: &'static str) -> DeviceManagerResult {
+        if self.sealed {
+            return Err(DeviceManagerError::InvalidState {
+                operation,
+                detail: "device runtime topology is sealed".into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Builds and atomically registers one factory-managed device.
-    pub fn register_factory_device(
+    pub(crate) fn register_factory_device(
         &mut self,
         config: &EmulatedDeviceConfig,
         factories: &DeviceFactoryRegistry,
         context: &DeviceBuildContext<'_>,
     ) -> DeviceManagerResult {
+        self.ensure_unsealed("register factory device")?;
         let bundle = factories.build(config, context)?;
         self.register_bundle(bundle)
     }
@@ -287,6 +393,7 @@ impl DeviceRuntime {
     /// already-registered devices in this bundle are rolled back via
     /// `pop()` + index-key removal.
     pub fn register_bundle(&mut self, bundle: DeviceBundle) -> DeviceManagerResult {
+        self.ensure_unsealed("register device bundle")?;
         validate_bundle_grant_indices(
             bundle.devices.len(),
             &bundle.guest_memory_devices,
@@ -877,6 +984,7 @@ impl DeviceRuntime {
             timer_grants: &self.timer_grants,
             wake_grants: &self.wake_grants,
             stop_grants: &self.stop_grants,
+            access_ports: &self.access_ports,
         };
         let response = self.devices[idx]
             .access(&access, &mut context)
@@ -1022,6 +1130,12 @@ impl Default for DeviceRuntime {
 
 impl DeviceRegistry for DeviceRuntime {
     fn register(&mut self, device: Arc<dyn Device>) -> Result<DeviceId, RegistryError> {
+        if self.sealed {
+            return Err(RegistryError::InvalidState {
+                operation: "register device",
+                detail: "device runtime topology is sealed".into(),
+            });
+        }
         let idx = self.devices.len();
         self.validate_resources(device.resources())?;
         self.insert_resources(idx, device.resources());
@@ -1056,6 +1170,7 @@ impl BusRouter for DeviceRuntime {
             timer_grants: &self.timer_grants,
             wake_grants: &self.wake_grants,
             stop_grants: &self.stop_grants,
+            access_ports: &self.access_ports,
         };
         device.access(access, &mut context)
     }
@@ -1092,7 +1207,9 @@ mod tests {
     };
     use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
-    use super::DeviceRuntime;
+    use super::{
+        DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
+    };
     use crate::{
         DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceLifecycle,
         DeviceManagerError, DeviceManagerResult, DeviceRegistration, IrqResolver,
@@ -1145,6 +1262,36 @@ mod tests {
         timer_grant: TimerGrant,
         wake_grant: WakeGrant,
         stop_grant: StopGrant,
+    }
+
+    struct CountingTimerPort(Arc<AtomicUsize>);
+
+    impl TimerAccessPort for CountingTimerPort {
+        fn schedule_timer(&self, _device_id: DeviceId, deadline_ns: u64) -> DeviceManagerResult {
+            assert_eq!(deadline_ns, 42);
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    struct CountingWakePort(Arc<AtomicUsize>);
+
+    impl WakeAccessPort for CountingWakePort {
+        fn wake_vcpu(&self, _device_id: DeviceId, vcpu_id: usize) -> DeviceManagerResult {
+            assert_eq!(vcpu_id, 0);
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    struct CountingStopPort(Arc<AtomicUsize>);
+
+    impl StopAccessPort for CountingStopPort {
+        fn request_vm_stop(&self, _device_id: DeviceId, reason: &str) -> DeviceManagerResult {
+            assert_eq!(reason, "test stop request");
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -1568,6 +1715,99 @@ mod tests {
         assert!(matches!(
             stop_error,
             DeviceError::Unsupported { detail, .. } if detail.contains("no VM stop port")
+        ));
+    }
+
+    #[test]
+    fn timer_wake_and_stop_grants_call_attached_runtime_ports() {
+        let timer_calls = Arc::new(AtomicUsize::new(0));
+        let wake_calls = Arc::new(AtomicUsize::new(0));
+        let stop_calls = Arc::new(AtomicUsize::new(0));
+        let timer_grant = TimerGrant::new();
+        let wake_grant = WakeGrant::new();
+        let stop_grant = StopGrant::new();
+
+        let mut devices = DeviceRuntime::empty();
+        devices.access_ports = RuntimeAccessPorts::new()
+            .with_timer(Arc::new(CountingTimerPort(timer_calls.clone())))
+            .with_wake(Arc::new(CountingWakePort(wake_calls.clone())))
+            .with_stop(Arc::new(CountingStopPort(stop_calls.clone())));
+
+        let mut bundle = DeviceBundle::new();
+        let timer_index = bundle.add_device(Arc::new(SensitiveGrantRequestDevice {
+            resources: alloc::vec![Resource::MmioRange {
+                base: 0x8400,
+                size: 0x100,
+            }],
+            kind: SensitiveGrantKind::Timer,
+            timer_grant: timer_grant.clone(),
+            wake_grant: WakeGrant::new(),
+            stop_grant: StopGrant::new(),
+        }));
+        bundle.grant_timer_to_device(timer_index, timer_grant);
+        let wake_index = bundle.add_device(Arc::new(SensitiveGrantRequestDevice {
+            resources: alloc::vec![Resource::MmioRange {
+                base: 0x8500,
+                size: 0x100,
+            }],
+            kind: SensitiveGrantKind::Wake,
+            timer_grant: TimerGrant::new(),
+            wake_grant: wake_grant.clone(),
+            stop_grant: StopGrant::new(),
+        }));
+        bundle.grant_wake_to_device(wake_index, wake_grant);
+        let stop_index = bundle.add_device(Arc::new(SensitiveGrantRequestDevice {
+            resources: alloc::vec![Resource::MmioRange {
+                base: 0x8600,
+                size: 0x100,
+            }],
+            kind: SensitiveGrantKind::Stop,
+            timer_grant: TimerGrant::new(),
+            wake_grant: WakeGrant::new(),
+            stop_grant: stop_grant.clone(),
+        }));
+        bundle.grant_stop_to_device(stop_index, stop_grant);
+        devices.register_bundle(bundle).unwrap();
+
+        dispatch_sensitive_grant_probe(&devices, 0x8400).unwrap();
+        dispatch_sensitive_grant_probe(&devices, 0x8500).unwrap();
+        dispatch_sensitive_grant_probe(&devices, 0x8600).unwrap();
+
+        assert_eq!(timer_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(wake_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(stop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn factory_built_runtime_rejects_late_registration_after_seal() {
+        let mut factories = DeviceFactoryRegistry::new();
+        factories
+            .register(Arc::new(EmptyFactory {
+                device_type: EmulatedDeviceType::Dummy,
+            }))
+            .unwrap();
+        let context = DeviceBuildContext::new(&UnusedIrqResolver);
+        let mut runtime = DeviceRuntime::build_with_factories(
+            &[EmulatedDeviceConfig {
+                name: "seal-test".into(),
+                base_gpa: 0,
+                length: 0,
+                irq_id: 0,
+                emu_type: EmulatedDeviceType::Dummy,
+                cfg_list: alloc::vec![],
+            }],
+            &factories,
+            &context,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            runtime.register_bundle(DeviceBundle::new()),
+            Err(DeviceManagerError::InvalidState { .. })
+        ));
+        assert!(matches!(
+            runtime.register(Arc::new(D::new_mmio(0x9000, 0x100, "late"))),
+            Err(RegistryError::InvalidState { .. })
         ));
     }
 

@@ -52,7 +52,9 @@ pub use axdevice_base::{
     MmioDeviceAdapter, Port, PortDeviceAdapter, SysRegAddr, SysRegDeviceAdapter,
 };
 pub use axvm_types::GuestPhysAddr;
-pub use device::DeviceRuntime;
+pub use device::{
+    DeviceRuntime, RuntimeAccessPorts, StopAccessPort, TimerAccessPort, WakeAccessPort,
+};
 pub use error::{DeviceManagerError, DeviceManagerResult};
 pub use factory::{
     DeviceBuildContext, DeviceFactory, DeviceFactoryRegistry, IrqResolver,

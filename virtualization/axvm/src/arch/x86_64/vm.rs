@@ -84,6 +84,7 @@ fn init_vm_with(
             factories,
             interrupt_fabric,
             &extra_devices,
+            vm.device_access_ports(),
         )?;
         validate_guest_dtb(resources)?;
 

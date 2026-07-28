@@ -6,9 +6,7 @@ pub(crate) mod vcpus;
 
 use alloc::{format, sync::Arc};
 
-#[cfg(target_arch = "loongarch64")]
-use axdevice::FwCfgPayloadFactory;
-use axdevice::{DeviceFactoryRegistry, register_builtin_factories};
+use axdevice::{DeviceFactoryRegistry, FwCfgPayloadFactory, register_builtin_factories};
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
@@ -95,7 +93,7 @@ pub(crate) fn default_device_factories() -> AxVmResult<DeviceFactoryRegistry> {
 /// Only architectures that expose such a configured device should call this:
 /// keeping the common RISC-V path independent of unrelated boot-payload state
 /// avoids introducing a VM-lock dependency before its interrupt fabric exists.
-#[cfg(target_arch = "loongarch64")]
+#[allow(dead_code)]
 pub(crate) fn register_boot_payload_factories(
     vm: &AxVM,
     factories: &mut DeviceFactoryRegistry,
