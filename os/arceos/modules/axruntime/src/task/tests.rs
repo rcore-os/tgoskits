@@ -1,8 +1,5 @@
 use alloc::vec::Vec;
-use core::{
-    sync::atomic::{AtomicUsize, Ordering},
-    task::{Context, Waker},
-};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 
@@ -131,18 +128,6 @@ impl ThreadResourceBackend for InjectedResourceBackend {
             _ => RuntimeHandleResult::success(0x3000),
         }
     }
-}
-
-#[test]
-fn ready_future_wins_at_elapsed_timeout_boundary() {
-    let mut future = pin!(core::future::ready(7));
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(&waker);
-
-    assert_eq!(
-        poll_until_deadline(future.as_mut(), &mut context, 0),
-        Poll::Ready(Ok(7)),
-    );
 }
 
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]

@@ -73,3 +73,25 @@ fn poll_until_deadline<F: Future>(
     }
     Poll::Pending
 }
+
+#[cfg(test)]
+mod tests {
+    use core::{
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+
+    use super::poll_until_deadline;
+
+    #[test]
+    fn ready_future_wins_at_elapsed_timeout_boundary() {
+        let mut future = pin!(core::future::ready(7));
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(&waker);
+
+        assert_eq!(
+            poll_until_deadline(future.as_mut(), &mut context, 0),
+            Poll::Ready(Ok(7)),
+        );
+    }
+}
