@@ -289,7 +289,7 @@ pub fn new_user_task(
                                 break 'exc;
                             }
                             Err(err) => {
-                                let exe_path = thr.proc_data.exe_path.read().clone();
+                                let exe_path = thr.proc_data.exe_path().clone();
                                 warn!(
                                     "loongarch64 unaligned emulation failed: task={}, pid={}, \
                                      exe='{}', ip={:#x}, fault_addr={:#x}, err={}, info={:?}",

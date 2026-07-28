@@ -570,12 +570,12 @@ impl CloneArgs {
             let proc_data = ProcessData::new(
                 proc,
                 ProcessImage::new(
-                    old_proc_data.exe_path.read().clone(),
-                    old_proc_data.cmdline.read().clone(),
-                    old_proc_data.envp.read().clone(),
-                    old_proc_data.auxv.read().clone(),
-                    old_proc_data.root_path.read().clone(),
-                    old_proc_data.cwd_path.read().clone(),
+                    old_proc_data.exe_path().clone(),
+                    old_proc_data.cmdline().clone(),
+                    old_proc_data.envp().clone(),
+                    old_proc_data.auxv().clone(),
+                    old_proc_data.root_path().clone(),
+                    old_proc_data.cwd_path().clone(),
                 ),
                 aspace,
                 signal_actions,

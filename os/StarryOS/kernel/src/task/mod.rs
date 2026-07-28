@@ -6,6 +6,8 @@ pub mod future;
 mod ops;
 pub mod posix_timer;
 mod process_identity;
+mod process_image;
+mod process_memory;
 mod resources;
 mod scheduler_identity;
 mod scheduler_task;
@@ -21,7 +23,7 @@ mod unaligned;
 mod user;
 mod user_wait;
 
-use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc};
 use core::{
     future::poll_fn,
     sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
@@ -32,7 +34,6 @@ use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::{IoEvents, PollSet};
-use kernel_elf_parser::AuxEntry;
 use starry_process::{Pid, Process};
 use starry_signal::{
     SignalInfo, Signo,
@@ -66,8 +67,9 @@ struct PtracePendingEvent {
 
 pub(crate) use self::process_identity::*;
 pub use self::{
-    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, resources::*, scheduler_task::*,
-    seccomp::*, signal::*, stat::*, thread::Thread, tid::*, timer::*, user::*,
+    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, process_image::ProcessImage,
+    resources::*, scheduler_task::*, seccomp::*, signal::*, stat::*, thread::Thread, tid::*,
+    timer::*, user::*,
 };
 #[cfg(axtest)]
 pub(crate) use self::{
@@ -77,6 +79,7 @@ pub(crate) use self::{
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
 };
+use self::{process_image::ProcessImageState, process_memory::ProcessMemoryState};
 
 pub struct VforkDone {
     done: bool,
@@ -152,56 +155,15 @@ struct JobControl {
     continue_generation: u64,
 }
 
-/// [`Process`]-shared data.
-pub struct ProcessImage {
-    pub exe_path: String,
-    pub cmdline: Arc<Vec<String>>,
-    pub envp: Arc<Vec<String>>,
-    pub auxv: Vec<AuxEntry>,
-    pub root_path: String,
-    pub cwd_path: String,
-}
-
-impl ProcessImage {
-    pub fn new(
-        exe_path: String,
-        cmdline: Arc<Vec<String>>,
-        envp: Arc<Vec<String>>,
-        auxv: Vec<AuxEntry>,
-        root_path: String,
-        cwd_path: String,
-    ) -> Self {
-        Self {
-            exe_path,
-            cmdline,
-            envp,
-            auxv,
-            root_path,
-            cwd_path,
-        }
-    }
-}
-
 pub struct ProcessData {
     /// The process.
     pub proc: Arc<Process>,
     /// Stable generation identity shared by the registry and pidfds.
     identity: Arc<ProcessIdentity>,
-    /// The executable path
-    pub exe_path: RwLock<String>,
-    /// The command line arguments
-    pub cmdline: RwLock<Arc<Vec<String>>>,
-    /// The environment variables, exported via `/proc/[pid]/environ`.
-    pub envp: RwLock<Arc<Vec<String>>>,
-    /// Auxiliary vector entries exported via `/proc/[pid]/auxv`.
-    pub auxv: RwLock<Vec<AuxEntry>>,
-    /// The root directory path, exported via `/proc/[pid]/root`.
-    pub root_path: RwLock<String>,
-    /// The current working directory path, exported via `/proc/[pid]/cwd`.
-    pub cwd_path: RwLock<String>,
-    /// The virtual memory address space.
-    // TODO: scopify
-    aspace: SpinNoIrq<Arc<PiMutex<AddrSpace>>>,
+    /// Executable metadata independently synchronized for exec and procfs.
+    image: ProcessImageState,
+    /// Address-space publication and release state.
+    memory: ProcessMemoryState,
     /// The per-process uprobe manager. Each process has its own because user
     /// code can be modified independently.
     pub uprobe_manager: crate::kprobe::KprobeManager,
@@ -211,9 +173,6 @@ pub struct ProcessData {
     pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
     /// Authoritative cgroup membership shared by every thread in the process.
     pub cgroup: RwLock<Arc<ax_cgroup::CgroupNode>>,
-    /// The user heap top
-    heap_top: AtomicUsize,
-
     /// The resource limits
     pub rlim: RwLock<Rlimits>,
 
@@ -342,19 +301,6 @@ pub struct ProcessData {
     /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
     pub posix_timers: Arc<PosixTimerTable>,
 
-    /// `true` when this process shares its [`AddrSpace`] with a parent/sibling
-    /// (`CLONE_VM`, e.g. vfork / posix_spawn). In that case the last thread must
-    /// **not** clear the address space on exit — the co-owner may still be
-    /// running.
-    ///
-    /// `false` for normal `fork()` children and after a successful `execve`
-    /// installs a private address space.
-    vm_aspace_shared: AtomicBool,
-
-    /// Set after [`Self::release_aspace_slot_if_needed`] runs so `Drop` does not
-    /// double-decrement [`AddrSpace::process_slots`].
-    aspace_slot_released: AtomicBool,
-
     /// Job-control state (stop flag + pending parent report) under one lock.
     job_control: SpinNoIrq<JobControl>,
 
@@ -419,16 +365,10 @@ impl ProcessData {
             Self {
                 proc,
                 identity,
-                exe_path: RwLock::new(image.exe_path),
-                cmdline: RwLock::new(image.cmdline),
-                envp: RwLock::new(image.envp),
-                auxv: RwLock::new(image.auxv),
-                root_path: RwLock::new(image.root_path),
-                cwd_path: RwLock::new(image.cwd_path),
-                aspace: SpinNoIrq::new(aspace),
+                image: ProcessImageState::new(image),
+                memory: ProcessMemoryState::new(aspace, vm_aspace_shared),
                 uprobe_manager: crate::kprobe::KprobeManager::new(),
                 uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
-                heap_top: AtomicUsize::new(crate::config::USER_HEAP_BASE),
 
                 rlim: RwLock::default(),
 
@@ -481,9 +421,6 @@ impl ProcessData {
 
                 posix_timers: Arc::new(PosixTimerTable::default()),
 
-                vm_aspace_shared: AtomicBool::new(vm_aspace_shared),
-                aspace_slot_released: AtomicBool::new(false),
-
                 job_control: SpinNoIrq::new(JobControl::default()),
                 cont_event: Arc::default(),
             }
@@ -492,7 +429,7 @@ impl ProcessData {
         // from `lock()` lives until the end of the statement, so calling
         // `attach_process_slot` (which locks `PiMutex<AddrSpace>`) in the same
         // expression would nest a sleepable lock inside atomic context.
-        let aspace_arc = this.aspace.lock().clone();
+        let aspace_arc = this.aspace();
         crate::mm::attach_process_slot(&aspace_arc);
         this
     }
@@ -515,38 +452,6 @@ impl ProcessData {
     /// Clears a retired leader snapshot after `de_thread` installs a new leader.
     pub fn clear_retired_leader_nice(&self) {
         self.retired_leader_nice.lock().take();
-    }
-
-    /// Called after `execve` commits a fresh private address space so exit
-    /// teardown may clear VMAs without touching a vfork parent's mappings.
-    #[inline]
-    pub fn mark_vm_aspace_private_after_exec(&self) {
-        self.vm_aspace_shared.store(false, Ordering::Release);
-    }
-
-    /// Release this process's [`AddrSpace::process_slots`] entry.
-    ///
-    /// Invoked from the last-thread exit path so inode-scoped accounting (memfd
-    /// shared-writable counts, etc.) is torn down before `waitpid` returns, and
-    /// again from `Drop` if not already run. Uses reference counting: only the
-    /// last slot holder triggers [`AddrSpace::clear`], so `CLONE_VM` co-owners
-    /// are unaffected.
-    pub fn release_aspace_slot_if_needed(&self) {
-        if self.aspace_slot_released.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let aspace = self.aspace.lock().clone();
-        crate::mm::release_process_slot(&aspace);
-    }
-
-    /// Get the top address of the user heap.
-    pub fn get_heap_top(&self) -> usize {
-        self.heap_top.load(Ordering::Acquire)
-    }
-
-    /// Set the top address of the user heap.
-    pub fn set_heap_top(&self, top: usize) {
-        self.heap_top.store(top, Ordering::Release)
     }
 
     /// Linux manual: A "clone" child is one which delivers no signal, or a
@@ -1280,50 +1185,6 @@ impl ProcessData {
 
     pub fn replace_personality(&self, personality: usize) -> usize {
         self.personality.swap(personality, Ordering::AcqRel)
-    }
-
-    /// Returns a clone of the address space Arc.
-    pub fn aspace(&self) -> Arc<PiMutex<AddrSpace>> {
-        self.aspace.lock().clone()
-    }
-
-    /// Publishes a new address space while retaining the replaced one.
-    ///
-    /// The caller must install the new hardware page-table root before
-    /// releasing the returned address-space slot. Until that switch, the
-    /// current CPU may still be walking the old top-level page tables.
-    ///
-    /// # Why `mem::replace` instead of `*guard = new_aspace`
-    ///
-    /// `self.aspace` is a `SpinNoIrq<Arc<PiMutex<AddrSpace>>>`. Locking it
-    /// disables IRQs and increments `preempt_count`, putting us in atomic
-    /// context. A plain assignment (`*guard = new_aspace`) would drop the
-    /// **old** `Arc<PiMutex<AddrSpace>>` while the `SpinNoIrq` guard is still
-    /// alive. If that was the last strong reference (e.g. after a
-    /// `CLONE_VM` + `execve`), the destructor chain would be:
-    ///
-    /// ```text
-    /// Arc::drop → PiMutex<AddrSpace>::drop → AddrSpace::drop
-    ///   → self.clear() → areas.clear() → FileBackendInner::drop
-    ///     → cache.remove_evict_listener()
-    ///       → evict_listeners.lock()        ← sleeping PiMutex
-    ///         → might_sleep()               ← PANIC (atomic context)
-    /// ```
-    ///
-    /// `mem::replace` moves the old Arc out of the guard. Returning it also
-    /// prevents exec from reclaiming an active page-table root before the
-    /// architecture switch commits, matching Linux `exec_mmap()`'s deferred
-    /// `old_mm` release.
-    #[must_use = "the old address space must be released after installing the new page-table root"]
-    pub fn stage_aspace_replacement(
-        &self,
-        new_aspace: Arc<PiMutex<AddrSpace>>,
-    ) -> Arc<PiMutex<AddrSpace>> {
-        crate::mm::attach_process_slot(&new_aspace);
-        {
-            let mut guard = self.aspace.lock();
-            core::mem::replace(&mut *guard, new_aspace)
-        }
     }
 
     /// Set the vfork completion (called on the child after a vfork,

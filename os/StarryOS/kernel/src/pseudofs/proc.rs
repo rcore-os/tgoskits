@@ -1160,7 +1160,7 @@ fn render_thread_stat(
 }
 
 fn render_thread_auxv(task: &UserTaskRef) -> Vec<u8> {
-    let mut entries = task.as_thread().proc_data.auxv.read().clone();
+    let mut entries = task.as_thread().proc_data.auxv().clone();
     entries.push(AuxEntry::new(AuxType::NULL, 0));
     let mut bytes = Vec::with_capacity(entries.len() * size_of::<AuxEntry>());
     for entry in entries {
@@ -1374,7 +1374,7 @@ impl SimpleDirOps for ThreadDir {
                 .into()
             }
             "cmdline" => SimpleFile::new_regular(fs, move || {
-                let cmdline = task.as_thread().proc_data.cmdline.read();
+                let cmdline = task.as_thread().proc_data.cmdline();
                 let mut buf = Vec::new();
                 for arg in cmdline.iter() {
                     buf.extend_from_slice(arg.as_bytes());
@@ -1418,11 +1418,11 @@ impl SimpleDirOps for ThreadDir {
             )
             .into(),
             "exe" => SimpleFile::new(fs, NodeType::Symlink, move || {
-                Ok(task.as_thread().proc_data.exe_path.read().clone())
+                Ok(task.as_thread().proc_data.exe_path().clone())
             })
             .into(),
             "environ" => SimpleFile::new_regular(fs, move || {
-                let envp = task.as_thread().proc_data.envp.read();
+                let envp = task.as_thread().proc_data.envp();
                 let mut buf = Vec::new();
                 for env in envp.iter() {
                     buf.extend_from_slice(env.as_bytes());
@@ -1432,11 +1432,11 @@ impl SimpleDirOps for ThreadDir {
             })
             .into(),
             "root" => SimpleFile::new(fs, NodeType::Symlink, move || {
-                Ok(task.as_thread().proc_data.root_path.read().clone())
+                Ok(task.as_thread().proc_data.root_path().clone())
             })
             .into(),
             "cwd" => SimpleFile::new(fs, NodeType::Symlink, move || {
-                Ok(task.as_thread().proc_data.cwd_path.read().clone())
+                Ok(task.as_thread().proc_data.cwd_path().clone())
             })
             .into(),
             "fd" => SimpleDir::new_maker(
