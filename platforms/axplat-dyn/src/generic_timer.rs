@@ -193,6 +193,11 @@ mod tests {
     }
 
     #[test]
+    fn unrepresentable_tick_delta_clamps_to_the_device_argument() {
+        assert_eq!(oneshot_interval_ticks(u64::MAX, 0, u64::MAX), usize::MAX);
+    }
+
+    #[test]
     fn oneshot_programming_precedes_irq_unmask() {
         let step = Cell::new(0);
         program_oneshot(
