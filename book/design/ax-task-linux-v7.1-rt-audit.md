@@ -92,6 +92,22 @@ Individual perf cases can pass because they do not force this cross-test,
 cross-CPU lifetime. The fix must model task and CPU perf targets explicitly;
 the SMP perf tests must not be skipped or affinity-pinned to hide the defect.
 
+Thread construction also exposed a distinct lifetime violation. A rejected
+`ThreadSpec` dropped its OS extension before destroying the runtime context,
+TLS, and stack. If context destruction returned `Busy`, the remaining handles
+were then abandoned because no `TaskSystem` owner retained the failed
+transaction. The deterministic tests
+`rejected_thread_releases_runtime_resources_before_extension` and
+`rejected_thread_retains_extension_until_resource_release_retry` cover the two
+failure modes.
+
+The scheduler now owns every consumed specification through a move-only
+unpublished-thread guard. A failed validation, admission, slot allocation, or
+context binding first attempts runtime-resource teardown. Retryable teardown
+keeps the resources and extension together in deferred task work; only a
+successful teardown releases the extension. Registry records use the same
+resource-before-extension order as a shutdown fallback.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

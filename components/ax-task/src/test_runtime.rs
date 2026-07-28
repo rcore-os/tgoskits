@@ -44,6 +44,10 @@ std::thread_local! {
     static TASK_DEADLINE_PUBLISH_SUCCESS_REMAINING: Cell<usize> = const { Cell::new(0) };
     static SWITCH_OBSERVATIONS: RefCell<std::vec::Vec<SwitchObservation>> =
         const { RefCell::new(std::vec::Vec::new()) };
+    static RESOURCE_RELEASE_STATUS: Cell<RuntimeStatus> =
+        const { Cell::new(RuntimeStatus::Unsupported) };
+    static RESOURCE_RELEASE_EVENTS: RefCell<std::vec::Vec<ResourceReleaseEvent>> =
+        const { RefCell::new(std::vec::Vec::new()) };
 }
 
 #[derive(Clone, Copy)]
@@ -60,6 +64,14 @@ pub(crate) enum SwitchObservation {
         thread: crate::ThreadId,
         reason: crate::SwitchReason,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResourceReleaseEvent {
+    DestroyContext,
+    DeallocateTls,
+    DeallocateStack,
+    DropExtension,
 }
 
 fn run_hook_reentry_query() {
@@ -278,13 +290,15 @@ impl TaskRuntime for UnitTestRuntime {
         RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
     }
     fn deallocate_stack(_stack: StackHandle) -> RuntimeStatus {
-        RuntimeStatus::Unsupported
+        record_resource_release_event(ResourceReleaseEvent::DeallocateStack);
+        RESOURCE_RELEASE_STATUS.with(Cell::get)
     }
     fn allocate_tls(_request: TlsRequest) -> RuntimeHandleResult {
         RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
     }
     fn deallocate_tls(_tls: TlsHandle) -> RuntimeStatus {
-        RuntimeStatus::Unsupported
+        record_resource_release_event(ResourceReleaseEvent::DeallocateTls);
+        RESOURCE_RELEASE_STATUS.with(Cell::get)
     }
     fn create_kernel_context(_request: KernelContextRequest) -> RuntimeHandleResult {
         RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
@@ -301,7 +315,8 @@ impl TaskRuntime for UnitTestRuntime {
         CONTEXT_BIND_STATUS.with(Cell::get)
     }
     fn destroy_context(_context: ExecutionContextHandle) -> RuntimeStatus {
-        RuntimeStatus::Unsupported
+        record_resource_release_event(ResourceReleaseEvent::DestroyContext);
+        RESOURCE_RELEASE_STATUS.with(Cell::get)
     }
     unsafe fn switch_context(_previous: ExecutionContextHandle, _next: ExecutionContextHandle) {
         assert!(
@@ -332,6 +347,19 @@ impl TaskRuntime for UnitTestRuntime {
 pub(crate) fn configure_context_binding(status: RuntimeStatus) {
     CONTEXT_BIND_STATUS.with(|current| current.set(status));
     LAST_CONTEXT_BINDING.with(|observed| observed.set(None));
+}
+
+pub(crate) fn configure_resource_release(status: RuntimeStatus) {
+    RESOURCE_RELEASE_STATUS.with(|current| current.set(status));
+    RESOURCE_RELEASE_EVENTS.with(|events| events.borrow_mut().clear());
+}
+
+pub(crate) fn record_resource_release_event(event: ResourceReleaseEvent) {
+    RESOURCE_RELEASE_EVENTS.with(|events| events.borrow_mut().push(event));
+}
+
+pub(crate) fn resource_release_events() -> std::vec::Vec<ResourceReleaseEvent> {
+    RESOURCE_RELEASE_EVENTS.with(|events| events.borrow().clone())
 }
 
 pub(crate) fn last_context_binding() -> Option<ContextThreadBinding> {

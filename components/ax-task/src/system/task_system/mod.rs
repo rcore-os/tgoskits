@@ -23,8 +23,8 @@ pub use outcome::{
     ScheduleDecision, SchedulerOutcome,
 };
 use registry::{
-    CpuRegistration, PendingResourceRelease, PiWaitRegistration, TaskSystemState, ThreadRecord,
-    ThreadSlot,
+    CpuRegistration, DetachedThreadRecord, PendingResourceRelease, PiWaitRegistration,
+    TaskSystemState, ThreadRecord, ThreadSlot,
 };
 
 use super::thread_sched::{
@@ -46,6 +46,36 @@ use crate::{
     system::cpu::{CurrentDispatch, CurrentDispatchState},
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
 };
+
+struct UnpublishedThreadGuard<'system> {
+    system: &'system TaskSystem,
+    record: Option<DetachedThreadRecord>,
+}
+
+impl<'system> UnpublishedThreadGuard<'system> {
+    fn new(system: &'system TaskSystem, spec: ThreadSpec) -> Self {
+        let (extension, resources) = spec.into_owned_parts();
+        Self {
+            system,
+            record: Some(DetachedThreadRecord::new(resources, extension)),
+        }
+    }
+
+    fn into_owned_parts(mut self) -> (Option<ThreadExtension>, ThreadResources) {
+        self.record
+            .take()
+            .expect("unpublished thread transaction must still own its record")
+            .into_owned_parts()
+    }
+}
+
+impl Drop for UnpublishedThreadGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(record) = self.record.take() {
+            let _release = self.system.release_unpublished_thread(record);
+        }
+    }
+}
 
 impl TaskSystem {
     fn drain_pending_deadline_admission(&self, state: &mut TaskSystemState) {
@@ -399,16 +429,18 @@ impl TaskSystem {
     /// complete online root domain.
     pub fn create_thread(&self, spec: ThreadSpec) -> Result<ThreadHandle, TaskError> {
         let policy = spec.policy();
-        policy.validate()?;
         let affinity = spec
             .affinity()
             .cloned()
             .unwrap_or_else(|| CpuSet::all(self.config.cpu_count()));
+        let unpublished = UnpublishedThreadGuard::new(self, spec);
+        policy.validate()?;
         validate_affinity(&affinity, self.config.cpu_count())?;
         let mut state = self.state.lock();
         self.drain_pending_deadline_admission(&mut state);
         let root_domain = self.root_domain.lock();
         let reservation = state.reserve_deadline(policy, &affinity, &root_domain.online)?;
+        drop(root_domain);
         let (slot, generation) = match state.allocate_thread_slot() {
             Ok(identity) => identity,
             Err(error) => {
@@ -422,7 +454,7 @@ impl TaskSystem {
             SchedulingEntity::Deadline(deadline) => Some(deadline),
             _ => None,
         };
-        let (extension, resources) = spec.into_owned_parts();
+        let (extension, resources) = unpublished.into_owned_parts();
         let switch_extension = extension.as_ref().map(ThreadExtension::as_view);
         let sched = Arc::new(ThreadSchedCell::new(
             id,
@@ -470,8 +502,8 @@ impl TaskSystem {
         let record = ThreadRecord {
             core: Arc::clone(&core),
             sched,
-            extension,
             resources,
+            extension,
             blocked_on: None,
             exit_callback_pending: false,
             exit_callback_claimed: false,
@@ -491,7 +523,8 @@ impl TaskSystem {
                 }
                 state.deadline_admission.release(reservation);
                 drop(state);
-                drop(record);
+                drop(core);
+                let _rollback = self.release_thread_record(record);
                 return Err(TaskError::RuntimeFailure(status as u32));
             }
         }
@@ -2785,6 +2818,26 @@ impl TaskSystem {
         }
     }
 
+    fn release_unpublished_thread(
+        &self,
+        mut record: DetachedThreadRecord,
+    ) -> Result<(), TaskError> {
+        match record.try_release_resources() {
+            Ok(()) => {
+                record.finish_release();
+                Ok(())
+            }
+            Err(error) => {
+                self.state
+                    .lock()
+                    .pending_resource_releases
+                    .push(PendingResourceRelease::Detached(record));
+                self.task_work.publish();
+                Err(error)
+            }
+        }
+    }
+
     /// Releases a construction transaction that failed before thread registry
     /// publication.
     ///
@@ -2794,19 +2847,9 @@ impl TaskSystem {
     /// returns to the caller.
     pub fn release_unpublished_resources(
         &self,
-        mut resources: ThreadResources,
+        resources: ThreadResources,
     ) -> Result<(), TaskError> {
-        match resources.try_release() {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                self.state
-                    .lock()
-                    .pending_resource_releases
-                    .push(PendingResourceRelease::Detached(resources));
-                self.task_work.publish();
-                Err(error)
-            }
-        }
+        self.release_unpublished_thread(DetachedThreadRecord::new(resources, None))
     }
 
     /// Returns the current state of a live registry entry.
