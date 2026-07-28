@@ -4,16 +4,24 @@ use core::any::Any;
 use ax_errno::AxResult;
 use axfs_ng_vfs::{DeviceId, NodeType};
 
-use crate::pseudofs::{Device, DeviceOps, SimpleFs};
+use crate::pseudofs::{Device, DeviceOps, SimpleFs, dev::tty::pts::PtsInstance};
 
-pub struct Ptmx(pub Arc<SimpleFs>);
+pub struct Ptmx {
+    fs: Arc<SimpleFs>,
+    instance: Arc<PtsInstance>,
+}
+
 impl Ptmx {
+    pub(crate) fn new(fs: Arc<SimpleFs>, instance: Arc<PtsInstance>) -> Self {
+        Self { fs, instance }
+    }
+
     pub fn create_pty(&self) -> AxResult<(Arc<Device>, u32)> {
         let (master, slave) = super::pty::create_pty_pair();
-        super::pts::add_slave(self.0.clone(), slave)?;
+        self.instance.add_slave(self.fs.clone(), slave)?;
         let pty_number = master.pty_number();
         let device = Device::new(
-            self.0.clone(),
+            self.fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(128, pty_number),
             master,

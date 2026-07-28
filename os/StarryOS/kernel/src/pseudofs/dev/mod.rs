@@ -110,12 +110,15 @@ pub(crate) fn new_devfs() -> Filesystem {
     SimpleFs::new_with("devfs".into(), 0x01021994, builder)
 }
 
-pub(crate) fn new_devptsfs() -> Filesystem {
-    SimpleFs::new_with("devpts".into(), 0x00001cd1, devpts_builder)
+pub(crate) fn new_devptsfs(options: tty::DevPtsOptions) -> Filesystem {
+    SimpleFs::new_with("devpts".into(), 0x00001cd1, move |fs| {
+        devpts_builder(fs, options)
+    })
 }
 
-fn devpts_builder(fs: Arc<SimpleFs>) -> DirMaker {
-    SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(fs)))
+fn devpts_builder(fs: Arc<SimpleFs>, options: tty::DevPtsOptions) -> DirMaker {
+    let instance = tty::PtsInstance::new(options);
+    SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(fs, instance)))
 }
 
 struct Null;
@@ -404,6 +407,7 @@ impl DeviceOps for CpuDmaLatency {
 
 fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     let mut root = DirMapping::new();
+    let pts_instance = tty::PtsInstance::new(tty::DevPtsOptions::root());
     root.add(
         "null",
         Device::new(
@@ -525,12 +529,15 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
             fs.clone(),
             NodeType::CharacterDevice,
             DeviceId::new(5, 2),
-            Arc::new(tty::Ptmx(fs.clone())),
+            Arc::new(tty::Ptmx::new(fs.clone(), pts_instance.clone())),
         ),
     );
     root.add(
         "pts",
-        SimpleDir::new_maker(fs.clone(), Arc::new(tty::PtsDir::new(fs.clone()))),
+        SimpleDir::new_maker(
+            fs.clone(),
+            Arc::new(tty::PtsDir::new(fs.clone(), pts_instance)),
+        ),
     );
     #[cfg(feature = "dev-log")]
     root.add(

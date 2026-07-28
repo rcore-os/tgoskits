@@ -27,6 +27,7 @@ use starry_process::Process;
 use starry_signal::{SignalInfo, Signo};
 use starry_vm::{VmMutPtr, VmPtr};
 
+pub(crate) use self::pts::{DevPtsOptions, PtsInstance};
 use self::terminal::{
     Terminal, WindowSize,
     ldisc::{LineDiscipline, ProcessMode, TtyConfig, TtyRead, TtyWrite, write_output_bytes},
