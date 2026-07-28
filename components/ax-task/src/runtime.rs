@@ -511,7 +511,10 @@ pub trait TaskRuntime {
     ///
     /// The runtime owns the physical clockevent. It must ignore generations
     /// older than the most recently accepted update and merge the accepted
-    /// task deadline with non-task sources before programming hardware.
+    /// task deadline with non-task sources before programming hardware. This
+    /// hook is callable from ordinary task context, so the runtime must hold
+    /// local IRQ exclusion across both state publication and hardware
+    /// programming instead of relying on an implicit caller-side guard.
     fn publish_task_deadline(update: TaskDeadlineUpdate) -> RuntimeStatus;
 
     /// Sends a coalescible scheduler IPI directly to `cpu`.
