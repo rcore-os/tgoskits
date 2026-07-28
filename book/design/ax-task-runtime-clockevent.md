@@ -26,8 +26,11 @@ the timer hard-IRQ path.
 
 ## Prior art
 
-The reference is rt-linux `v7.2-rc4-rt3`, commit
-`0de718ad6f7842c7c2f72a785b7c0422c57231b7`.
+The primary reference is Linux `v7.1`, commit
+`8cd9520d35a6c38db6567e97dd93b1f11f185dc6`, with
+`CONFIG_EXPERT=y`, `CONFIG_PREEMPT_RT=y`, `CONFIG_HIGH_RES_TIMERS=y`,
+`CONFIG_SMP=y`, and `CONFIG_HOTPLUG_CPU=y`. The configuration is generated
+out-of-tree so the reference checkout remains unmodified.
 
 - `kernel/time/clockevents.c::clockevents_program_event` owns physical event
   programming.
@@ -37,6 +40,17 @@ The reference is rt-linux `v7.2-rc4-rt3`, commit
   layer to the selected per-CPU clockevent.
 - PREEMPT_RT moves non-hard hrtimer callbacks to soft/threaded processing;
   only explicitly hard timers execute their callback in hard IRQ.
+- `kernel/sched/core.c` owns runqueue placement and migration under the
+  runqueue lock; `TASK_ON_RQ_MIGRATING` prevents a task from being observed on
+  two runqueues during migration.
+- `kernel/locking/rtmutex.c` performs PI owner deboost and waiter handoff as one
+  ordered transaction, then wakes the selected waiter after releasing the raw
+  metadata lock.
+- `kernel/irq_work.c` and the scheduler IPI path publish work before ringing
+  the target CPU and consume the delivered publication before accepting a new
+  coalesced notification.
+- `kernel/events/core.c` distinguishes task-owned perf contexts from CPU-owned
+  contexts and executes CPU-context changes on the owning CPU.
 - `fs/exec.c::exec_mmap` publishes and activates the new `mm` before retaining
   the old `mm` for deferred release; the active hardware page-table root is
   never reclaimed between those operations.
