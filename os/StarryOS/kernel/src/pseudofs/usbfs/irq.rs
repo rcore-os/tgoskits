@@ -1,6 +1,6 @@
 use alloc::{borrow::ToOwned, boxed::Box, sync::Arc, vec::Vec};
 use core::{
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -14,6 +14,9 @@ use crate::task::future::IrqNotify;
 
 const USBFS_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const USBFS_EVENT_BATCH_LIMIT: usize = 64;
+const USB_EVENT_ACTIVE: u8 = 1 << 0;
+const USB_EVENT_BUSY: u8 = 1 << 1;
+const USB_EVENT_DEFERRED: u8 = 1 << 2;
 
 static USBFS_MANAGER: LazyInit<Arc<UsbFsManager>> = LazyInit::new();
 static USBFS_IRQ_REGISTRY: LazyInit<UsbIrqRegistry> = LazyInit::new();
@@ -32,11 +35,89 @@ pub(super) struct UsbIrqSlot {
     device_id: RDriveDeviceId,
     bus_num: u8,
     handler: ax_driver::usb::UsbHostIrqHandler,
-    active: AtomicBool,
+    event_gate: UsbEventGate,
     dirty: AtomicBool,
-    deferred: AtomicBool,
-    handler_busy: AtomicBool,
     handle: SpinNoIrq<Option<ax_runtime::hal::irq::IrqHandle>>,
+}
+
+struct UsbEventGate {
+    state: AtomicU8,
+}
+
+enum UsbEventEntry<'a> {
+    Acquired(UsbEventPermit<'a>),
+    Busy,
+    Inactive,
+}
+
+struct UsbEventPermit<'a> {
+    gate: &'a UsbEventGate,
+}
+
+impl UsbEventGate {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(USB_EVENT_ACTIVE),
+        }
+    }
+
+    fn try_enter(&self) -> UsbEventEntry<'_> {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & USB_EVENT_ACTIVE == 0 {
+                return UsbEventEntry::Inactive;
+            }
+            if state & USB_EVENT_BUSY != 0 {
+                return UsbEventEntry::Busy;
+            }
+            match self.state.compare_exchange_weak(
+                state,
+                state | USB_EVENT_BUSY,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return UsbEventEntry::Acquired(UsbEventPermit { gate: self }),
+                Err(observed) => state = observed,
+            }
+        }
+    }
+
+    fn defer(&self) -> bool {
+        self.state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                (state & USB_EVENT_ACTIVE != 0).then_some(state | USB_EVENT_DEFERRED)
+            })
+            .is_ok()
+    }
+
+    fn take_deferred(&self) -> bool {
+        self.state.fetch_and(!USB_EVENT_DEFERRED, Ordering::AcqRel) & USB_EVENT_DEFERRED != 0
+    }
+
+    fn has_deferred(&self) -> bool {
+        self.state.load(Ordering::Acquire) & USB_EVENT_DEFERRED != 0
+    }
+
+    fn deactivate(&self) {
+        self.state
+            .fetch_and(!(USB_EVENT_ACTIVE | USB_EVENT_DEFERRED), Ordering::AcqRel);
+    }
+
+    fn is_active(&self) -> bool {
+        self.state.load(Ordering::Acquire) & USB_EVENT_ACTIVE != 0
+    }
+
+    fn is_quiescent(&self) -> bool {
+        self.state.load(Ordering::Acquire) & USB_EVENT_BUSY == 0
+    }
+}
+
+impl Drop for UsbEventPermit<'_> {
+    fn drop(&mut self) {
+        self.gate
+            .state
+            .fetch_and(!USB_EVENT_BUSY, Ordering::Release);
+    }
 }
 
 pub(super) struct UsbIrqRegistry {
@@ -55,10 +136,8 @@ impl UsbIrqRegistry {
                 device_id: slot.device_id,
                 bus_num: slot.bus_num,
                 handler: slot.handler,
-                active: AtomicBool::new(true),
+                event_gate: UsbEventGate::new(),
                 dirty: AtomicBool::new(false),
-                deferred: AtomicBool::new(false),
-                handler_busy: AtomicBool::new(false),
                 handle: SpinNoIrq::new(None),
             });
         }
@@ -154,17 +233,14 @@ pub(super) fn free_device_irq(device_id: RDriveDeviceId) {
         .iter_slots()
         .filter(|(_, slot)| slot.device_id == device_id)
     {
-        slot.active.store(false, Ordering::Release);
-        slot.deferred.store(false, Ordering::Release);
-        let Some(handle) = slot.handle.lock().take() else {
-            continue;
-        };
-        if let Err(err) = ax_runtime::hal::irq::free_irq(handle) {
-            warn!(
-                "usbfs: failed to free IRQ callback for host {:?}: {err:?}",
-                device_id
-            );
+        slot.event_gate.deactivate();
+        slot.dirty.store(false, Ordering::Release);
+        if let Some(handle) = slot.handle.lock().take()
+            && let Err(err) = ax_runtime::hal::irq::free_irq(handle)
+        {
+            warn!("usbfs: failed to free IRQ callback for host {device_id:?}: {err:?}");
         }
+        wait_for_event_handler(slot);
     }
 }
 
@@ -216,9 +292,9 @@ pub(super) fn disable_device(device_id: RDriveDeviceId) {
         .iter_slots()
         .filter(|(_, slot)| slot.device_id == device_id)
     {
-        slot.active.store(false, Ordering::Release);
-        slot.deferred.store(false, Ordering::Release);
+        slot.event_gate.deactivate();
         slot.dirty.store(false, Ordering::Release);
+        wait_for_event_handler(slot);
     }
 }
 
@@ -245,47 +321,22 @@ fn usbfs_irq_handler_by_slot(slot_index: usize) {
 }
 
 fn usbfs_event_handler(slot: &UsbIrqSlot) {
-    if !slot.active() {
-        return;
-    }
-    if slot
-        .handler_busy
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        defer_event_drain(slot);
-        return;
-    }
-    if !slot.active() {
-        slot.handler_busy.store(false, Ordering::Release);
-        return;
-    }
-
-    let mut port_events = 0usize;
-    let mut transfer_events = 0usize;
-    let mut stopped_events = 0usize;
-    let mut exhausted = true;
-    for _ in 0..USBFS_EVENT_BATCH_LIMIT {
-        match slot.handler.handle() {
-            crab_usb::Event::PortChange { .. } => {
-                port_events = port_events.saturating_add(1);
-            }
-            crab_usb::Event::TransferActivity { count } => {
-                transfer_events = transfer_events.saturating_add(count);
-            }
-            crab_usb::Event::Stopped => {
-                stopped_events = stopped_events.saturating_add(1);
-            }
-            crab_usb::Event::Nothing => {
-                exhausted = false;
-                break;
-            }
+    let _permit = match slot.event_gate.try_enter() {
+        UsbEventEntry::Acquired(permit) => permit,
+        UsbEventEntry::Busy => {
+            defer_event_drain(slot);
+            return;
         }
+        UsbEventEntry::Inactive => return,
+    };
+    if !slot.active() {
+        return;
     }
-    slot.handler_busy.store(false, Ordering::Release);
 
-    let has_topology_event = port_events > 0 || stopped_events > 0;
-    let has_usb_activity = has_topology_event || transfer_events > 0;
+    let batch = drain_event_batch(|| slot.handler.handle());
+
+    let has_topology_event = batch.port_events > 0 || batch.stopped_events > 0;
+    let has_usb_activity = has_topology_event || batch.transfer_events > 0;
 
     if has_topology_event {
         slot.dirty.store(true, Ordering::Release);
@@ -295,16 +346,48 @@ fn usbfs_event_handler(slot: &UsbIrqSlot) {
     {
         manager.notify_usb_activity_from_irq();
     }
-    if exhausted {
+    if batch.exhausted {
         defer_event_drain(slot);
     }
 }
 
+#[derive(Default)]
+struct UsbEventBatch {
+    port_events: usize,
+    transfer_events: usize,
+    stopped_events: usize,
+    exhausted: bool,
+}
+
+fn drain_event_batch(mut next_event: impl FnMut() -> crab_usb::Event) -> UsbEventBatch {
+    let mut batch = UsbEventBatch {
+        exhausted: true,
+        ..UsbEventBatch::default()
+    };
+    for _ in 0..USBFS_EVENT_BATCH_LIMIT {
+        match next_event() {
+            crab_usb::Event::PortChange { .. } => {
+                batch.port_events = batch.port_events.saturating_add(1);
+            }
+            crab_usb::Event::TransferActivity { count } => {
+                batch.transfer_events = batch.transfer_events.saturating_add(count);
+            }
+            crab_usb::Event::Stopped => {
+                batch.stopped_events = batch.stopped_events.saturating_add(1);
+            }
+            crab_usb::Event::Nothing => {
+                batch.exhausted = false;
+                break;
+            }
+        }
+    }
+    batch
+}
+
 fn defer_event_drain(slot: &UsbIrqSlot) {
-    if !slot.active() {
+    if !slot.event_gate.defer() {
         return;
     }
-    slot.deferred.store(true, Ordering::Release);
     if let Some(registry) = USBFS_IRQ_REGISTRY.get() {
         registry.deferred_notify.notify_irq();
     }
@@ -326,7 +409,7 @@ fn service_deferred_events() {
             continue;
         };
         let is_polling_host = slot.irq.is_none();
-        let is_deferred = slot.deferred.swap(false, Ordering::AcqRel);
+        let is_deferred = slot.event_gate.take_deferred();
         if slot.active() && (is_polling_host || is_deferred) {
             registry
                 .service_cursor
@@ -338,7 +421,7 @@ fn service_deferred_events() {
 
     if registry
         .iter_slots()
-        .any(|(_, slot)| slot.active() && slot.deferred.load(Ordering::Acquire))
+        .any(|(_, slot)| slot.active() && slot.event_gate.has_deferred())
     {
         registry.deferred_notify.notify();
     }
@@ -373,6 +456,46 @@ fn usbfs_poll_ticker_task() {
 
 impl UsbIrqSlot {
     fn active(&self) -> bool {
-        self.active.load(Ordering::Acquire)
+        self.event_gate.is_active()
+    }
+}
+
+fn wait_for_event_handler(slot: &UsbIrqSlot) {
+    while !slot.event_gate.is_quiescent() {
+        crate::task::yield_now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_rejects_new_event_work_and_waits_for_the_active_permit() {
+        let gate = UsbEventGate::new();
+        let permit = match gate.try_enter() {
+            UsbEventEntry::Acquired(permit) => permit,
+            _ => panic!("an active USB event gate must issue its first permit"),
+        };
+
+        gate.deactivate();
+
+        assert!(!gate.is_quiescent());
+        assert!(matches!(gate.try_enter(), UsbEventEntry::Inactive));
+        drop(permit);
+        assert!(gate.is_quiescent());
+    }
+
+    #[test]
+    fn event_batch_is_bounded_and_reports_remaining_work() {
+        let mut calls = 0usize;
+        let batch = drain_event_batch(|| {
+            calls += 1;
+            crab_usb::Event::TransferActivity { count: 1 }
+        });
+
+        assert_eq!(calls, USBFS_EVENT_BATCH_LIMIT);
+        assert_eq!(batch.transfer_events, USBFS_EVENT_BATCH_LIMIT);
+        assert!(batch.exhausted);
     }
 }
