@@ -189,10 +189,9 @@ unsafe fn runtime_thread_data_from_raw(data: usize) -> &'static RuntimeThreadDat
 pub fn exit_current(exit_code: i32) -> ! {
     let current = current_thread_id()
         .unwrap_or_else(|error| panic!("failed to identify exiting runtime thread: {error}"));
-    let primary = PRIMARY_BOOTSTRAP_THREAD
-        .get()
+    let primary = primary_bootstrap_thread()
         .unwrap_or_else(|| panic!("primary bootstrap thread identity is not initialized"));
-    if primary.owns(current) {
+    if primary == current {
         debug!("main task exited: exit_code={exit_code}");
         let _irq = IrqSave::new();
         #[cfg(feature = "irq")]
