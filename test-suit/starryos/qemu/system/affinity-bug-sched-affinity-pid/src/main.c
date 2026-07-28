@@ -9,7 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define ITERATIONS 20
+#define ITERATIONS 200
 #define WAIT_RETRIES 10000
 
 static void fail_at(const char *msg, int iter)

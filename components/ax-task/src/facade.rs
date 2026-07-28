@@ -1195,6 +1195,11 @@ mod tests {
     static REENTRANT_EXIT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
     static REENTRANT_EXIT_CALLBACKS_IN_IRQ_EXIT: AtomicUsize = AtomicUsize::new(0);
 
+    fn owner_snapshot(system: &TaskSystem, cpu: Pin<&CpuLocal>) -> crate::CpuSnapshot {
+        let _irq = RuntimeIrqGuard::enter();
+        system.snapshot(cpu).unwrap()
+    }
+
     static ORDERING_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
         on_switch_in: assert_address_space_installed,
         on_switch_out: ignore_switch_out,
@@ -1268,19 +1273,22 @@ mod tests {
             1
         );
         drop(irq);
-        assert_eq!(
-            system
-                .drain_remote_wakes(cpu.as_mut(), 0)
-                .unwrap()
-                .drained(),
-            1
-        );
+        {
+            let _irq = RuntimeIrqGuard::enter();
+            assert_eq!(
+                system
+                    .drain_remote_wakes(cpu.as_mut(), 0)
+                    .unwrap()
+                    .drained(),
+                1
+            );
+        }
         assert_eq!(
             system.thread_state(running.id()).unwrap(),
             crate::ThreadState::Parking,
             "timer wake must leave the owner thread to finish its PARKING handshake"
         );
-        assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 0);
+        assert_eq!(owner_snapshot(&system, cpu.as_ref()).runnable(), 0);
         cpu.request_reschedule();
         let mut irq_return_passes = 0;
         while current_cpu_needs_resched().unwrap() {
@@ -1296,15 +1304,15 @@ mod tests {
             system.thread_state(running.id()).unwrap(),
             crate::ThreadState::Parking
         );
-        assert!(!system.snapshot(cpu.as_ref()).need_resched());
+        assert!(!owner_snapshot(&system, cpu.as_ref()).need_resched());
 
         commit_current_park(&mut ticket).unwrap();
         assert_eq!(
             system.thread_state(running.id()).unwrap(),
             crate::ThreadState::Running
         );
-        assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 0);
-        assert!(system.snapshot(cpu.as_ref()).need_resched());
+        assert_eq!(owner_snapshot(&system, cpu.as_ref()).runnable(), 0);
+        assert!(owner_snapshot(&system, cpu.as_ref()).need_resched());
         assert!(!cancel_current_park_deadline(&running, &mut ticket).unwrap());
     }
 
@@ -1382,7 +1390,7 @@ mod tests {
              interrupt rearmed at the 1ns hardware resolution"
         );
         assert!(
-            system.snapshot(cpu.as_ref()).need_resched(),
+            owner_snapshot(&system, cpu.as_ref()).need_resched(),
             "the deferred owner pass must remain a scheduler-visible safe point"
         );
     }
@@ -2110,6 +2118,30 @@ mod tests {
             Some(TaskError::CpuOwnerBorrowed)
         );
         assert_eq!(owner_pin.as_ref().get_ref().owner(), CpuId::new(0));
+    }
+
+    #[test]
+    fn online_owner_operations_require_an_outer_cpu_pin() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let affinity = CpuSet::all(1);
+
+        // Model an interrupt landing when the innermost scheduler lock restores
+        // IRQs. A safe public API must reject this unpinned owner access before
+        // that exit can recursively enter the scheduler over a live CpuLocal
+        // borrow.
+        test_runtime::configure_irq_exit_schedule_reentry(1);
+        let result = system.set_current_affinity(cpu.as_mut(), affinity.clone());
+        test_runtime::configure_irq_exit_schedule_reentry(0);
+
+        assert_eq!(result, Err(TaskError::UnsafeContext));
+        let _irq = RuntimeIrqGuard::enter();
+        assert!(!system.set_current_affinity(cpu.as_mut(), affinity).unwrap());
     }
 
     struct InstalledTaskHandles;

@@ -114,7 +114,7 @@ fn compare_scenario(seed: u64, scenario: Scenario) {
             }
         }
 
-        let production = system.snapshot(cpu.as_ref());
+        let production = system.snapshot(cpu.as_ref()).unwrap();
         assert_eq!(
             production.owner(),
             CpuId::new(0),

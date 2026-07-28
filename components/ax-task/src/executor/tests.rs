@@ -405,6 +405,7 @@ fn executor() -> ExecutorFixture {
         executor: Some(executor),
         cpu,
         system,
+        irq_token: Some(crate::runtime::task_runtime::irq_guard_enter()),
     }
 }
 
@@ -412,6 +413,7 @@ struct ExecutorFixture {
     executor: Option<LocalExecutor>,
     cpu: Pin<Box<crate::CpuLocal>>,
     system: Pin<Box<TaskSystem>>,
+    irq_token: Option<crate::runtime::IrqGuardToken>,
 }
 
 impl ExecutorFixture {
@@ -450,6 +452,13 @@ impl Drop for ExecutorFixture {
     fn drop(&mut self) {
         self.shutdown();
         self.drain_runtime_work();
+        let token = self
+            .irq_token
+            .take()
+            .expect("executor owner scope must retain its IRQ token");
+        // SAFETY: the fixture entered this token on the same host test thread
+        // and all direct owner accesses completed above.
+        unsafe { crate::runtime::task_runtime::irq_guard_exit(token) };
         crate::test_runtime::clear_task_handles();
     }
 }

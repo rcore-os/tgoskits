@@ -63,6 +63,7 @@ impl_task_runtime! {
         fn validate_schedule_context(_origin: RuntimeScheduleOrigin) -> RuntimeStatus {
             RuntimeStatus::Success
         }
+        fn validate_owner_cpu_context() -> RuntimeStatus { RuntimeStatus::Success }
         fn monotonic_ns() -> u64 { ax_hal::time::monotonic_time_nanos() }
         fn timer_resolution_ns() -> u64 { 1 }
         fn publish_task_deadline(_update: TaskDeadlineUpdate) -> RuntimeStatus {

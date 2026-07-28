@@ -2320,6 +2320,10 @@ impl_task_runtime! {
             crate::guard::validate_schedule_context(origin)
         }
 
+        fn validate_owner_cpu_context() -> RuntimeStatus {
+            crate::guard::validate_owner_cpu_context()
+        }
+
         fn monotonic_ns() -> u64 {
             ax_hal::time::monotonic_time_nanos()
         }
