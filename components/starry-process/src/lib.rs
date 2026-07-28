@@ -7,6 +7,7 @@ extern crate alloc;
 
 mod process;
 mod process_group;
+mod relations;
 mod session;
 
 /// A process ID, also used as session ID, process group ID, and thread ID.

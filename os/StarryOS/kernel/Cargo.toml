@@ -198,7 +198,7 @@ ringbuf = { version = "0.4.8", default-features = false, features = ["alloc"] }
 scope-local = { workspace = true }
 slab = { version = "0.4.9", default-features = false }
 spin = { workspace = true }
-starry-process = { workspace = true }
+starry-process = { workspace = true, features = ["multitask"] }
 starry-signal = { workspace = true }
 starry-vm = { workspace = true }
 strum = { version = "0.28", default-features = false, features = ["derive"] }

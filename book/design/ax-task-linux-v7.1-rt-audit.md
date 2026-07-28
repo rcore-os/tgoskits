@@ -216,6 +216,29 @@ publication is rejected. The transaction returns the exact moved child
 snapshot, so parent-death notification cannot miss a child admitted between a
 separate snapshot and reparent step.
 
+All parent, child, process-group, and session-group writes now pass through
+`ProcessRelationTxn`. Production Starry builds use `ax_sync::PiMutex` for these
+task-context locks. This follows Linux v7.1 RT, where `rwlock_t` is backed by
+`rwbase_rt` and `write_lock_irq(&tasklist_lock)` acquires the RT lock without
+actually disabling local interrupts. The isolated `starry-process` host tests
+retain a non-sleeping backend because they do not install an ax-task runtime.
+
+Writers reserve replacement storage before acquiring relation locks, acquire
+parent child sets by stable PID and process-group member sets by stable PGID,
+and release removed `Arc`/`Weak` storage after the transaction guards. Group
+migration does not remove the source membership until both group locks are
+owned. The deterministic regression holds the destination lock and proves the
+process remains visible in its source group; the old remove-then-lock sequence
+made it absent from both groups.
+
+Reparenting also validates the destination's child-publication state while
+holding both child sets. A selected subreaper that completes its own
+relationship exit cannot accept a later orphan batch. Starry re-evaluates the
+live ancestor chain and retries the transaction; a second deterministic
+regression closes the candidate first and proves the child falls back to an
+open reaper. This closes the selection-to-publication window that Linux avoids
+by doing reaper selection and list splicing under the same `tasklist_lock`.
+
 Starry user waits now have one typed terminal boundary:
 `Ready / Interrupted / TimedOut`. The old executor park callback treated a
 sticky interruption only as a reason to yield. A pending future that did not

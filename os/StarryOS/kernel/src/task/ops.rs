@@ -602,10 +602,12 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         crate::syscall::release_pid_locks(process.pid());
         crate::syscall::release_pid_flock_locks(process.pid());
 
-        let orphan_reaper = orphan_reaper_for(process);
-        let children_snapshot = process
-            .begin_exit_relations(&orphan_reaper)
-            .into_reparented_children();
+        let children_snapshot = loop {
+            let orphan_reaper = orphan_reaper_for(process);
+            if let Some(relations) = process.try_begin_exit_relations(&orphan_reaper) {
+                break relations.into_reparented_children();
+            }
+        };
 
         // Freeze all Linux-visible exit data in the generation-specific PID
         // identity. This is the sole Live -> Zombie state transition.

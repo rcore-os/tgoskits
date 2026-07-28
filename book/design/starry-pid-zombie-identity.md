@@ -117,6 +117,11 @@ The patch:
 - closes child publication and reparents the exact child snapshot before the
   sole `Live -> Zombie` publication, so a prepared fork cannot attach a new
   child to an exiting process after its relationship transaction;
+- rejects a subreaper that closed its own child-publication state after
+  selection, then reselects an open live ancestor before moving any child;
+- serializes parent, child, and process-group topology through one
+  generation-preserving relationship transaction with stable PID/PGID lock
+  order;
 - freezes credentials, wait metadata, and process CPU time in the zombie
   snapshot;
 - makes reap a unique claim, credits child CPU time only to the winning waiter,

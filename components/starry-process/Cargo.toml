@@ -11,10 +11,13 @@ license = "Apache-2.0"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
 
+[features]
+multitask = ["dep:ax-sync"]
+
 [dependencies]
 ax-kspin = { workspace = true, features = ["smp"] }
 ax-lazyinit = { workspace = true }
-weak-map = "0.1"
+ax-sync = { workspace = true, features = ["multitask"], optional = true }
 
 [dev-dependencies]
 ctor = "0.4.1"
