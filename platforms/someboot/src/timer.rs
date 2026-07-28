@@ -52,9 +52,9 @@ pub fn aarch64_timer_mode() -> ArchTimerMode {
     unsafe { ArchTimerMode::from_raw(ARCH_TIMER_MODE) }
 }
 
-/// Enable the platform system timer so that timer IRQs can fire.
-pub fn enable() {
-    crate::arch::Arch::systimer_enable();
+/// Prepares the platform one-shot timer without making timer IRQs observable.
+pub fn prepare_oneshot() {
+    crate::arch::Arch::systimer_prepare_oneshot();
 }
 
 /// Disable the platform system timer to stop timer IRQs.
@@ -135,6 +135,48 @@ pub(crate) mod aarch64_deadline {
                 interval_ticks,
             ));
         }
+    }
+}
+
+/// Converts a relative interval into the latest representable absolute
+/// deadline without overflowing the architectural counter domain.
+#[cfg(any(target_arch = "riscv64", test))]
+pub(crate) const fn saturating_deadline_from_interval(
+    current_ticks: u64,
+    interval_ticks: u64,
+) -> u64 {
+    let interval_ticks = if interval_ticks == 0 {
+        1
+    } else {
+        interval_ticks
+    };
+    current_ticks.saturating_add(interval_ticks)
+}
+
+/// Clamps and rounds a relative interval up to an architectural granularity.
+#[cfg(any(target_arch = "loongarch64", test))]
+pub(crate) const fn aligned_interval_ticks(
+    interval_ticks: usize,
+    min_ticks: usize,
+    alignment: usize,
+) -> usize {
+    assert!(alignment > 0, "timer alignment must be non-zero");
+    let max_aligned = usize::MAX - usize::MAX % alignment;
+    let clamped = if interval_ticks < min_ticks {
+        min_ticks
+    } else {
+        interval_ticks
+    };
+    let clamped = if clamped > max_aligned {
+        max_aligned
+    } else {
+        clamped
+    };
+    let remainder = clamped % alignment;
+    if remainder == 0 {
+        clamped
+    } else {
+        clamped + alignment - remainder
     }
 }
 
@@ -357,5 +399,18 @@ mod tests {
         fn write_hyp_physical_compare(&self, deadline: u64) {
             self.hyp_physical_compare.set(Some(deadline));
         }
+    }
+
+    #[test]
+    fn saturating_deadline_does_not_wrap_at_counter_limit() {
+        assert_eq!(saturating_deadline_from_interval(u64::MAX - 3, 8), u64::MAX);
+        assert_eq!(saturating_deadline_from_interval(10, 0), 11);
+    }
+
+    #[test]
+    fn aligned_interval_clamps_before_rounding() {
+        assert_eq!(aligned_interval_ticks(1, 4, 4), 4);
+        assert_eq!(aligned_interval_ticks(5, 4, 4), 8);
+        assert_eq!(aligned_interval_ticks(usize::MAX, 4, 4), usize::MAX & !3);
     }
 }

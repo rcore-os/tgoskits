@@ -45,6 +45,10 @@ pub trait TimeIf {
     /// deadline (in nanoseconds).
     #[cfg(feature = "irq")]
     fn set_oneshot_timer(deadline_ns: u64);
+
+    /// Stops the current CPU's one-shot timer until it is programmed again.
+    #[cfg(feature = "irq")]
+    fn cancel_oneshot_timer();
 }
 
 /// Returns nanoseconds elapsed since system boot.

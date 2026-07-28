@@ -29,10 +29,6 @@ pub use boot::{boot_stack_bounds, bootargs};
 pub use generic_timer::try_init_epoch_offset;
 
 #[cfg(feature = "irq")]
-pub fn enable_timer_irq() {
-    somehal::timer::irq_enable();
-}
-#[cfg(feature = "irq")]
 pub fn ipi_irq() -> ax_plat::irq::IrqId {
     somehal::irq::ipi_irq()
 }

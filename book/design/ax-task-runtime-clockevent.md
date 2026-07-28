@@ -121,6 +121,14 @@ latest task update and finishes the transaction once. An abandoned host-test
 transaction recovers to `Idle` and recomputes the arm, so an error path cannot
 silently strand the clockevent in `Firing`.
 
+Early platform initialization prepares each CPU's one-shot source in a masked,
+non-firing state. A runtime transaction first programs the selected finite
+deadline and only then unmasks the timer IRQ. `Offline` masks or stops the
+source, and a later online transition repeats the same program-before-unmask
+sequence. Nanosecond conversion rounds deadlines up to the next hardware tick,
+clamps elapsed deadlines to a non-zero interval, and saturates before
+architecture-specific alignment or absolute-counter arithmetic.
+
 ## Interrupt sequence
 
 Platform interrupt controllers and timer devices acknowledge or invalidate the

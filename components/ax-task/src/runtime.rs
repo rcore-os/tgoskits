@@ -325,15 +325,18 @@ pub struct SchedSwitchRecord {
     pub reason: u32,
 }
 
-/// Absolute non-zero deadline measured by the runtime's monotonic clock.
+/// Absolute finite, non-zero deadline measured by the runtime's monotonic clock.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct MonotonicDeadline(u64);
 
 impl MonotonicDeadline {
     /// Creates a representable physical clockevent deadline.
+    ///
+    /// Zero is the uninitialized sentinel and `u64::MAX` represents no finite
+    /// deadline; neither may cross the runtime hardware boundary.
     pub const fn from_nanos(deadline_ns: u64) -> Option<Self> {
-        if deadline_ns == 0 {
+        if deadline_ns == 0 || deadline_ns == u64::MAX {
             None
         } else {
             Some(Self(deadline_ns))
