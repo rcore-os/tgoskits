@@ -33,7 +33,7 @@ riscv_vplic = { workspace = true }
 x86_vlapic = { workspace = true }
 
 [[bench]]
-name = "lookup_AxVmDevices"
+name = "lookup_DeviceRuntime"
 harness = false
 
 [dev-dependencies]

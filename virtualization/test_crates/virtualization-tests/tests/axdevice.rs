@@ -15,10 +15,9 @@
 use std::sync::{Arc, Mutex};
 
 use axdevice::{
-    AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceManagerError, DeviceManagerResult, DeviceRegistration,
-    IrqResolver, MmioDeviceAdapter, PollableDeviceOps, PortDeviceAdapter, SysRegDeviceAdapter,
-    register_builtin_factories,
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceManagerError,
+    DeviceManagerResult, DeviceRegistration, DeviceRuntime, IrqResolver, MmioDeviceAdapter,
+    PollableDeviceOps, PortDeviceAdapter, SysRegDeviceAdapter, register_builtin_factories,
 };
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, Device, DeviceError, DeviceRegistry as _, DeviceResult,
@@ -29,7 +28,7 @@ use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestP
 
 /// Registers a legacy MMIO device through the new DeviceManager API.
 fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
-    devices: &mut AxVmDevices,
+    devices: &mut DeviceRuntime,
     dev: Arc<T>,
 ) -> Result<(), RegistryError> {
     devices.register(MmioDeviceAdapter::from_arc(dev))?;
@@ -38,7 +37,7 @@ fn register_mmio<T: BaseDeviceOps<GuestPhysAddrRange> + Send + Sync + 'static>(
 
 /// Registers a legacy Port device through the new DeviceManager API.
 fn register_port<T: BaseDeviceOps<PortRange> + Send + Sync + 'static>(
-    devices: &mut AxVmDevices,
+    devices: &mut DeviceRuntime,
     dev: Arc<T>,
 ) -> Result<(), RegistryError> {
     devices.register(PortDeviceAdapter::from_arc(dev))?;
@@ -47,7 +46,7 @@ fn register_port<T: BaseDeviceOps<PortRange> + Send + Sync + 'static>(
 
 /// Registers a legacy SysReg device through the new DeviceManager API.
 fn register_sysreg<T: BaseDeviceOps<SysRegAddrRange> + Send + Sync + 'static>(
-    devices: &mut AxVmDevices,
+    devices: &mut DeviceRuntime,
     dev: Arc<T>,
 ) -> Result<(), RegistryError> {
     devices.register(SysRegDeviceAdapter::from_arc(dev))?;
@@ -244,8 +243,8 @@ impl BaseDeviceOps<SysRegAddrRange> for MockSysRegDevice {
     }
 }
 
-fn empty_devices() -> AxVmDevices {
-    AxVmDevices::new(AxVmDeviceConfig::new(vec![])).unwrap()
+fn empty_devices() -> DeviceRuntime {
+    DeviceRuntime::default()
 }
 
 fn irq_resource(line: u32, trigger: InterruptTriggerMode) -> Resource {
@@ -405,8 +404,7 @@ impl DeviceFactory for PrecreatedControllerFactory {
 
 #[test]
 fn test_mmio_dispatch_functionality() {
-    let config = AxVmDeviceConfig::new(vec![]);
-    let mut devices = AxVmDevices::new(config).unwrap();
+    let mut devices = DeviceRuntime::default();
 
     let base_addr = 0x1000_0000;
     let dev_size = 0x1000;
@@ -439,8 +437,7 @@ fn test_mmio_dispatch_functionality() {
 
 #[test]
 fn test_mmio_missing_device_returns_error() {
-    let config = AxVmDeviceConfig::new(vec![]);
-    let devices = AxVmDevices::new(config).unwrap();
+    let devices = DeviceRuntime::default();
 
     let invalid_addr = GuestPhysAddr::from(0x9999_9999);
     let width = AccessWidth::try_from(4).unwrap();
@@ -612,12 +609,7 @@ fn test_conflicting_factory_device_config_returns_structured_error() {
     );
 
     assert!(matches!(
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![first, overlap]),
-            &factories,
-            &context,
-        )
-        .err(),
+        DeviceRuntime::build_with_factories(&[first, overlap], &factories, &context).err(),
         Some(DeviceManagerError::Registry(
             RegistryError::AddressConflict { .. }
         ))
@@ -770,12 +762,7 @@ fn test_missing_factory_returns_unsupported() {
         Some(DeviceManagerError::Unsupported { .. })
     ));
     assert!(matches!(
-        AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(vec![config]),
-            &factories,
-            &context,
-        )
-        .err(),
+        DeviceRuntime::build_with_factories(&[config], &factories, &context).err(),
         Some(DeviceManagerError::Unsupported { .. })
     ));
 }
@@ -787,13 +774,13 @@ fn test_factory_build_registers_new_device_type_without_legacy_branch() {
     let resolver = RejectingIrqResolver;
     let context = DeviceBuildContext::new(&resolver);
     let base = 0x1_0000;
-    let devices = AxVmDevices::build_with_factories(
-        AxVmDeviceConfig::new(vec![device_config(
+    let devices = DeviceRuntime::build_with_factories(
+        &[device_config(
             "factory-mmio",
             EmulatedDeviceType::VirtioBlk,
             base,
             0x1000,
-        )]),
+        )],
         &factories,
         &context,
     )
@@ -914,13 +901,8 @@ fn test_builtin_meta_factory_builds_dummy_config() {
     register_builtin_factories(&mut factories).unwrap();
     let resolver = RejectingIrqResolver;
     let context = DeviceBuildContext::new(&resolver);
-    let devices = AxVmDevices::build_with_factories(
-        AxVmDeviceConfig::new(vec![device_config(
-            "metadata",
-            EmulatedDeviceType::Dummy,
-            0,
-            0,
-        )]),
+    let devices = DeviceRuntime::build_with_factories(
+        &[device_config("metadata", EmulatedDeviceType::Dummy, 0, 0)],
         &factories,
         &context,
     )
@@ -1025,18 +1007,18 @@ fn test_native_device_port_resource_overflow_rejected() {
 }
 
 #[test]
-fn test_build_with_factories_preserves_legacy_ivc_config() {
+fn test_build_with_factories_accepts_ivc_config() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
     let resolver = RejectingIrqResolver;
     let context = DeviceBuildContext::new(&resolver);
-    let devices = AxVmDevices::build_with_factories(
-        AxVmDeviceConfig::new(vec![device_config(
+    let devices = DeviceRuntime::build_with_factories(
+        &[device_config(
             "ivc",
             EmulatedDeviceType::IVCChannel,
             0x4_0000,
             0x2000,
-        )]),
+        )],
         &factories,
         &context,
     )

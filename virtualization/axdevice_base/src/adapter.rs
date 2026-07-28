@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Adapters that wrap the old [`BaseDeviceOps`](crate::BaseDeviceOps)
-//! implementations so they can be registered into an `AxVmDevices` that
+//! implementations so they can be registered into an `DeviceRuntime` that
 //! expects the new [`Device`](crate::Device) trait.
 //!
 //! These adapters are intended as a migration aid.  Once each device is

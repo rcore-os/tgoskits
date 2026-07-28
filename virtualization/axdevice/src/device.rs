@@ -967,7 +967,7 @@ mod tests {
     };
     use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
-    use super::{DeviceRuntime as TestDeviceRuntime, DeviceRuntime as AxVmDevices};
+    use super::DeviceRuntime;
     use crate::{
         DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceLifecycle,
         DeviceManagerError, DeviceManagerResult, DeviceRegistration, IrqResolver,
@@ -1229,7 +1229,7 @@ mod tests {
 
     #[test]
     fn test_register_dispatch() {
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         m.register(Arc::new(D::new_mmio(0x1000, 0x100, "d")))
             .unwrap();
         assert!(
@@ -1246,7 +1246,7 @@ mod tests {
 
     #[test]
     fn dispatch_uses_access_context_for_v3_devices() {
-        let mut devices = AxVmDevices::empty();
+        let mut devices = DeviceRuntime::empty();
         devices
             .register(Arc::new(AccessAwareDevice {
                 resources: alloc::vec![Resource::MmioRange {
@@ -1270,7 +1270,7 @@ mod tests {
 
     #[test]
     fn memory_port_is_denied_to_devices_without_dma_grant() {
-        let mut devices = AxVmDevices::empty();
+        let mut devices = DeviceRuntime::empty();
         devices
             .register(Arc::new(GuestMemoryRequestDevice {
                 resources: alloc::vec![Resource::MmioRange {
@@ -1301,7 +1301,7 @@ mod tests {
 
     #[test]
     fn bundle_declared_memory_device_receives_memory_port() {
-        let mut devices = AxVmDevices::empty();
+        let mut devices = DeviceRuntime::empty();
         devices
             .register_bundle(DeviceBundle::new().with_guest_memory_device(Arc::new(
                 GuestMemoryRequestDevice {
@@ -1326,7 +1326,7 @@ mod tests {
 
     #[test]
     fn mmio_write_rejects_a_read_response() {
-        let mut devices = AxVmDevices::empty();
+        let mut devices = DeviceRuntime::empty();
         devices
             .register(Arc::new(ReadOnWriteDevice {
                 resources: alloc::vec![Resource::MmioRange {
@@ -1345,7 +1345,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn x86_ioapic_registration_publishes_typed_service() {
-        let mut devices = AxVmDevices::empty();
+        let mut devices = DeviceRuntime::empty();
         let ioapic = Arc::new(ServiceBackedIoApic {
             resources: alloc::vec![Resource::MmioRange {
                 base: 0xfec0_0000,
@@ -1371,7 +1371,7 @@ mod tests {
 
     #[test]
     fn test_overlap() {
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         m.register(Arc::new(D::new_mmio(0x1000, 0x200, "a")))
             .unwrap();
         assert!(matches!(
@@ -1383,7 +1383,7 @@ mod tests {
     #[test]
     fn test_not_found() {
         assert!(matches!(
-            AxVmDevices::empty().dispatch(&BusAccess {
+            DeviceRuntime::empty().dispatch(&BusAccess {
                 kind: BusKind::Mmio,
                 is_read: true,
                 addr: 0xdead,
@@ -1396,7 +1396,7 @@ mod tests {
 
     #[test]
     fn test_port_sysreg() {
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         m.register(Arc::new(D::new_port(0x80, 4, "p"))).unwrap();
         m.register(Arc::new(D::new_sysreg(0xC000, "s"))).unwrap();
         assert!(
@@ -1450,7 +1450,7 @@ mod tests {
             }
         }
 
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         let result = m.register(Arc::new(OverlapDevice));
         assert!(matches!(
             result,
@@ -1491,7 +1491,7 @@ mod tests {
             }
         }
 
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         let result = m.register(Arc::new(NestedDevice));
         assert!(matches!(
             result,
@@ -1535,7 +1535,7 @@ mod tests {
             }
         }
 
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         assert!(m.register(Arc::new(DualBusDevice)).is_ok());
     }
 
@@ -1563,7 +1563,7 @@ mod tests {
             }
         }
 
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         assert!(m.register(Arc::new(MaxSysRegDevice)).is_ok());
     }
 
@@ -1603,7 +1603,7 @@ mod tests {
             }
         }
 
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         m.register(Arc::new(WriteOnlyDevice)).unwrap();
 
         // handle_mmio_read should detect the mismatched response.
@@ -1645,7 +1645,7 @@ mod tests {
             }
         }
 
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         m.register(Arc::new(RwDevice)).unwrap();
         let resp = m
             .dispatch(&BusAccess {
@@ -1661,7 +1661,7 @@ mod tests {
 
     #[test]
     fn test_port_max_address_valid() {
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         m.register(Arc::new(D::new_port(0xffff, 1, "max-port")))
             .unwrap();
         assert!(
@@ -1678,7 +1678,7 @@ mod tests {
 
     #[test]
     fn test_zero_size_returns_invalid_resource() {
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         let result = m.register(Arc::new(D::new_mmio(0x1000, 0, "zero")));
         assert!(matches!(
             result,
@@ -1711,7 +1711,7 @@ mod tests {
             }
         }
 
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         let result = m.register(Arc::new(OverflowDevice));
         assert!(matches!(
             result,
@@ -1724,7 +1724,7 @@ mod tests {
 
     #[test]
     fn rejects_access_that_crosses_mmio_resource_boundary() {
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         m.register(Arc::new(D::new_mmio(0x1000, 0x8, "small")))
             .unwrap();
         assert!(matches!(
@@ -1752,7 +1752,7 @@ mod tests {
 
     #[test]
     fn rejects_port_access_that_crosses_resource_boundary() {
-        let mut m = AxVmDevices::empty();
+        let mut m = DeviceRuntime::empty();
         m.register(Arc::new(D::new_port(0x80, 2, "small-port")))
             .unwrap();
 
@@ -1770,7 +1770,7 @@ mod tests {
 
     #[test]
     fn register_bundle_rolls_back_devices_after_resource_conflict() {
-        let mut devices = AxVmDevices::empty();
+        let mut devices = DeviceRuntime::empty();
         devices
             .register(Arc::new(D::new_mmio(0x1000, 0x100, "existing")))
             .unwrap();
@@ -1805,7 +1805,7 @@ mod tests {
 
     #[test]
     fn register_bundle_rejects_conflicting_service_without_registering_device() {
-        let mut devices = AxVmDevices::empty();
+        let mut devices = DeviceRuntime::empty();
         let first_provider: Arc<dyn BundleService> = Arc::new(BundleServiceProvider(1));
         let mut first = DeviceBundle::new();
         first
@@ -1847,7 +1847,7 @@ mod tests {
             resume_calls: AtomicUsize::new(0),
         });
         let bundle = DeviceBundle::new().with_lifecycle(lifecycle.clone());
-        let mut devices = AxVmDevices::empty();
+        let mut devices = DeviceRuntime::empty();
         devices.register_bundle(bundle).unwrap();
 
         devices.reset_lifecycle_devices().unwrap();
@@ -1874,7 +1874,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(TestDeviceRuntime::build_with_factories(&[config], &factories, &context).is_ok());
+        assert!(DeviceRuntime::build_with_factories(&[config], &factories, &context).is_ok());
 
         let unsupported = EmulatedDeviceConfig {
             name: "unsupported".into(),
@@ -1882,7 +1882,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            TestDeviceRuntime::build_with_factories(&[unsupported], &factories, &context),
+            DeviceRuntime::build_with_factories(&[unsupported], &factories, &context),
             Err(crate::DeviceManagerError::Unsupported {
                 operation: "build emulated device",
                 ..
@@ -1903,8 +1903,7 @@ mod tests {
             ..Default::default()
         };
 
-        let devices =
-            TestDeviceRuntime::build_with_factories(&[config], &factories, &context).unwrap();
+        let devices = DeviceRuntime::build_with_factories(&[config], &factories, &context).unwrap();
 
         let first = devices.alloc_ivc_channel(0x1000).unwrap();
         let second = devices.alloc_ivc_channel(0x2000).unwrap();

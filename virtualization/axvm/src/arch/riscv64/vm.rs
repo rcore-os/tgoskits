@@ -105,7 +105,7 @@ fn init_vm_with(
                 dtb_addr: dtb_addr.as_usize(),
             })
         })?;
-        let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
+        let devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);

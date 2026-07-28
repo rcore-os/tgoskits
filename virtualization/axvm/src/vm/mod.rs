@@ -23,8 +23,12 @@ use core::{
 use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
-use axaddrspace::{AddrSpace, NestedPageTableOps};
-use axdevice::{DeviceRuntime, FwCfgPayloadConfig, FwCfgPlatformConfig};
+use axaddrspace::AddrSpace;
+#[cfg(target_arch = "x86_64")]
+use axaddrspace::NestedPageTableOps;
+use axdevice::DeviceRuntime;
+#[cfg(target_arch = "loongarch64")]
+use axdevice::{FwCfgPayloadConfig, FwCfgPlatformConfig};
 use axdevice_base::{AccessWidth, DeviceAccess, DeviceId, DeviceResult};
 use axvm_types::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
@@ -420,6 +424,7 @@ impl AxVMResources {
     }
 }
 
+#[cfg(target_arch = "loongarch64")]
 struct PendingFwCfg {
     base: GuestPhysAddr,
     size: usize,
@@ -430,6 +435,7 @@ struct PendingFwCfg {
     platform: FwCfgPlatformConfig,
 }
 
+#[cfg(target_arch = "loongarch64")]
 pub struct FwCfgDeviceConfig {
     pub base: GuestPhysAddr,
     pub size: usize,
@@ -477,6 +483,7 @@ pub struct AxVM {
     id: usize,
     name: String,
     machine: Mutex<Machine<AxVMResources, Arc<VmRuntimeHandle>>>,
+    #[cfg(target_arch = "loongarch64")]
     pending_fw_cfg: Mutex<Option<PendingFwCfg>>,
 }
 
@@ -497,6 +504,7 @@ impl AxVM {
             id,
             name,
             machine: Mutex::new(Machine::Ready(resources)),
+            #[cfg(target_arch = "loongarch64")]
             pending_fw_cfg: Mutex::new(None),
         });
 
@@ -856,6 +864,7 @@ impl AxVM {
     }
 
     /// Queue a QEMU fw_cfg device that will be attached during VM initialization.
+    #[cfg(target_arch = "loongarch64")]
     pub fn add_fw_cfg_device(&self, config: FwCfgDeviceConfig) -> AxVmResult {
         let mut pending = self.pending_fw_cfg.lock();
         if pending.is_some() {
@@ -884,6 +893,7 @@ impl AxVM {
         Ok(())
     }
 
+    #[cfg(target_arch = "loongarch64")]
     pub(crate) fn fw_cfg_payload(&self) -> Option<FwCfgPayloadConfig> {
         self.pending_fw_cfg
             .lock()

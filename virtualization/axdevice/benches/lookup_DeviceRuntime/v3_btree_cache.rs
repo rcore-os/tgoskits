@@ -15,7 +15,7 @@ struct RangeEntry {
 
 /// V3: Three `BTreeMap<Addr, RangeEntry>` with size cached in the map value.
 ///
-/// This mirrors the current production `AxVmDevices` implementation. Lookup
+/// This mirrors the current production `DeviceRuntime` implementation. Lookup
 /// finds the predecessor entry via `range(..=addr).next_back()` then does a
 /// pure arithmetic bounds check — zero allocation, zero extra indirection.
 pub struct V3Registry {

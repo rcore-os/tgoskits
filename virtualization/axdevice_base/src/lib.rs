@@ -347,7 +347,7 @@ pub trait BasePortDeviceOps = BaseDeviceOps<PortRange>;
 // ---------------------------------------------------------------------------
 
 /// Opaque identifier assigned to a device when it is registered into a
-/// [`AxVmDevices`].
+/// [`DeviceRuntime`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceId(u32);
 
@@ -589,7 +589,7 @@ pub trait DeviceAccess {
 }
 
 /// Device registration interface — the build-time / management-path half of a
-/// [`AxVmDevices`].
+/// [`DeviceRuntime`].
 ///
 /// Used when constructing or reconfiguring a VM; not on the vCPU hot path.
 pub trait DeviceRegistry {
@@ -602,7 +602,7 @@ pub trait DeviceRegistry {
 }
 
 /// Bus dispatch interface — the runtime hot-path half of a
-/// [`AxVmDevices`].
+/// [`DeviceRuntime`].
 ///
 /// Called on every vCPU exit that targets an emulated device (MMIO / Port /
 /// SysReg).

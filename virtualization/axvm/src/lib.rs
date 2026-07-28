@@ -69,9 +69,9 @@ pub use manager::{
     inject_current_vcpu_interrupt, register_vm,
 };
 pub(crate) use task::{AsVCpuTask, VCpuTask};
-pub use vm::{
-    AxVM, AxVMRef, FwCfgDeviceConfig, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot,
-};
+#[cfg(target_arch = "loongarch64")]
+pub use vm::FwCfgDeviceConfig;
+pub use vm::{AxVM, AxVMRef, PreparedMemoryLayout, VMMemoryRegion, VcpuSnapshot};
 
 /// The architecture-independent per-CPU type.
 pub(crate) type AxVMPerCpu = vcpu::AxPerCpu<arch::ArchPerCpu>;
