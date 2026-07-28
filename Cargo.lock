@@ -1658,6 +1658,7 @@ dependencies = [
  "ax-crate-interface",
  "ax-driver",
  "ax-hal",
+ "ax-kspin",
  "ax-runtime",
  "ax-std",
  "axbuild",

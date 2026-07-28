@@ -61,6 +61,7 @@ stack-protector = ["ax-std/stack-protector"]
 
 [dependencies]
 spin = { workspace = true }
+ax-kspin.workspace = true
 ax-crate-interface = { workspace = true }
 
 [target.'cfg(any(not(any(windows, unix)), target_env = "musl"))'.dependencies]

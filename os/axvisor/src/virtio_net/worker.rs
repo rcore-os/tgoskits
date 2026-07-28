@@ -22,6 +22,7 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
+use ax_kspin::SpinNoIrq as Mutex;
 use axdevice_base::IrqLine;
 use axvirtio_net::{RxOutcome, VirtioMmioNetDevice};
 use axvm::{
@@ -52,7 +53,7 @@ impl WorkerHandle {
     }
 }
 
-static WORKERS: spin::Mutex<BTreeMap<usize, WorkerHandle>> = spin::Mutex::new(BTreeMap::new());
+static WORKERS: Mutex<BTreeMap<usize, WorkerHandle>> = Mutex::new(BTreeMap::new());
 
 /// Starts the guest delivery worker for `vm`'s virtio-net device, if it has one.
 ///

@@ -19,6 +19,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use ax_kspin::SpinNoIrq as Mutex;
 use axvirtio_net::{NetworkBackend, NetworkBackendError};
 use axvirtio_switch::{SwitchPort, SwitchPortId};
 use axvm::WorkerWaitQueue;
@@ -116,8 +117,8 @@ impl NetworkBackend for AxvisorNetworkBackend {
 pub struct PortEndpoint {
     id: SwitchPortId,
     guest_mac: [u8; 6],
-    egress: spin::Mutex<VecDeque<Vec<u8>>>,
-    ingress: spin::Mutex<VecDeque<Vec<u8>>>,
+    egress: Mutex<VecDeque<Vec<u8>>>,
+    ingress: Mutex<VecDeque<Vec<u8>>>,
     uplink_signal: Arc<UplinkWorkSignal>,
     guest_wake: WorkerWaitQueue,
     ingress_ready: AtomicBool,
@@ -137,8 +138,8 @@ impl PortEndpoint {
         Arc::new(Self {
             id,
             guest_mac,
-            egress: spin::Mutex::new(VecDeque::new()),
-            ingress: spin::Mutex::new(VecDeque::new()),
+            egress: Mutex::new(VecDeque::new()),
+            ingress: Mutex::new(VecDeque::new()),
             uplink_signal,
             guest_wake: WorkerWaitQueue::new(),
             ingress_ready: AtomicBool::new(false),
@@ -315,10 +316,10 @@ pub struct DeterministicUdpEchoBackend {
 
 struct BackendShared {
     guest_mac: [u8; 6],
-    rx_queue: spin::Mutex<VecDeque<Vec<u8>>>,
+    rx_queue: Mutex<VecDeque<Vec<u8>>>,
     wake: WorkerWaitQueue,
     rx_ready: AtomicBool,
-    stats: spin::Mutex<BackendStats>,
+    stats: Mutex<BackendStats>,
 }
 
 #[derive(Default, Debug)]
@@ -344,10 +345,10 @@ impl DeterministicUdpEchoBackend {
         Self {
             shared: Arc::new(BackendShared {
                 guest_mac,
-                rx_queue: spin::Mutex::new(VecDeque::new()),
+                rx_queue: Mutex::new(VecDeque::new()),
                 wake: WorkerWaitQueue::new(),
                 rx_ready: AtomicBool::new(false),
-                stats: spin::Mutex::new(BackendStats::default()),
+                stats: Mutex::new(BackendStats::default()),
             }),
         }
     }

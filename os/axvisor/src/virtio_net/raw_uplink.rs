@@ -23,6 +23,7 @@ use alloc::vec::Vec;
 
 use ax_driver::net::{PlatformNetDevice, take_rd_net_device};
 use ax_hal::irq::IrqReturn;
+use ax_kspin::SpinNoIrq as Mutex;
 use axvirtio_switch::{
     EgressOutcome, SwitchError, SwitchPortId, SwitchPortRegistration, VirtualSwitch,
 };
@@ -56,11 +57,11 @@ struct UplinkQueues {
 /// the `WorkerTask` the runtime stores (design §3.2).
 struct UplinkWorkerCore {
     host_mac: [u8; 6],
-    queues: spin::Mutex<UplinkQueues>,
+    queues: Mutex<UplinkQueues>,
     switch: Arc<VirtualSwitch>,
     signal: Arc<UplinkWorkSignal>,
-    ports: spin::Mutex<BTreeMap<SwitchPortId, Arc<PortEndpoint>>>,
-    tx_rotation: spin::Mutex<usize>,
+    ports: Mutex<BTreeMap<SwitchPortId, Arc<PortEndpoint>>>,
+    tx_rotation: Mutex<usize>,
 }
 
 /// Edge-preserving wake signal shared by all producers (host IRQ, guest TX,
@@ -108,8 +109,7 @@ pub struct HostUplinkRuntime {
     _irq_registration: ax_runtime::irq::Registration,
 }
 
-static UPLINKS: spin::Mutex<BTreeMap<[u8; 6], Arc<HostUplinkRuntime>>> =
-    spin::Mutex::new(BTreeMap::new());
+static UPLINKS: Mutex<BTreeMap<[u8; 6], Arc<HostUplinkRuntime>>> = Mutex::new(BTreeMap::new());
 
 impl HostUplinkRuntime {
     /// Returns the persistent uplink for `mac`, claiming the host NIC on first
@@ -196,11 +196,11 @@ impl HostUplinkRuntime {
 
         let core = Arc::new(UplinkWorkerCore {
             host_mac: mac,
-            queues: spin::Mutex::new(UplinkQueues { tx, rx }),
+            queues: Mutex::new(UplinkQueues { tx, rx }),
             switch: VirtualSwitch::new(),
             signal: signal.clone(),
-            ports: spin::Mutex::new(BTreeMap::new()),
-            tx_rotation: spin::Mutex::new(0),
+            ports: Mutex::new(BTreeMap::new()),
+            tx_rotation: Mutex::new(0),
         });
 
         let worker_core = core.clone();
