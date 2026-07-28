@@ -473,6 +473,24 @@ mod tests {
 
     static COUNTING_CON: CountingCon = CountingCon;
 
+    static CALLBACK_CALLED: AtomicUsize = AtomicUsize::new(0);
+
+    struct TestBuf(core::cell::UnsafeCell<[u8; 64]>);
+    // SAFETY: only accessed from a single-threaded test context.
+    unsafe impl Sync for TestBuf {}
+    static CALLBACK_BUF: TestBuf = TestBuf(core::cell::UnsafeCell::new([0u8; 64]));
+    static CALLBACK_LEN: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_runtime_write(bytes: &[u8]) {
+        CALLBACK_CALLED.fetch_add(1, Ordering::Relaxed);
+        let len = bytes.len().min(64);
+        // SAFETY: test is single-threaded; no concurrent access.
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), CALLBACK_BUF.0.get().cast(), len);
+        }
+        CALLBACK_LEN.store(len, Ordering::Release);
+    }
+
     #[test]
     fn runtime_output_claim_consumes_without_touching_boot_console() {
         WRITE_CALLS.store(0, Ordering::Relaxed);
@@ -488,6 +506,37 @@ mod tests {
         assert_eq!(_write_bytes(b"after"), 5);
         assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 1);
 
+        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn runtime_write_fn_receives_bytes_after_claim() {
+        // Reset all state.
+        WRITE_CALLS.store(0, Ordering::Relaxed);
+        CALLBACK_CALLED.store(0, Ordering::Relaxed);
+        CALLBACK_LEN.store(0, Ordering::Relaxed);
+        RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
+        RUNTIME_WRITE_FN.store(core::ptr::null_mut(), Ordering::Release);
+
+        unsafe { set_out(&COUNTING_CON) };
+        set_runtime_write_fn(test_runtime_write);
+        claim_runtime_output();
+
+        let msg = b"hello";
+        let written = _write_bytes(msg);
+        assert_eq!(written, 5);
+
+        // Callback must have been called with the full payload.
+        assert_eq!(CALLBACK_CALLED.load(Ordering::Relaxed), 1);
+        assert_eq!(CALLBACK_LEN.load(Ordering::Acquire), 5);
+        let got: &[u8] = unsafe { core::slice::from_raw_parts(CALLBACK_BUF.0.get().cast(), 5) };
+        assert_eq!(got, b"hello");
+
+        // Boot console must NOT have been touched.
+        assert_eq!(WRITE_CALLS.load(Ordering::Relaxed), 0);
+
+        // Cleanup.
+        RUNTIME_WRITE_FN.store(core::ptr::null_mut(), Ordering::Release);
         RUNTIME_OUTPUT_CLAIMED.store(false, Ordering::Relaxed);
     }
 }
