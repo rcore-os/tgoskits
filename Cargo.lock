@@ -441,6 +441,7 @@ dependencies = [
  "log",
  "numeric-enum-macro",
  "spin",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

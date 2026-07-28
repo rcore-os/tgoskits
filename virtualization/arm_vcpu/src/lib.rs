@@ -13,29 +13,42 @@
 // limitations under the License.
 
 #![no_std]
-#![cfg(target_arch = "aarch64")]
 #![doc = include_str!("../README.md")]
 
+#[cfg(target_arch = "aarch64")]
 #[macro_use]
 extern crate log;
 
+#[cfg(target_arch = "aarch64")]
 mod context_frame;
+#[cfg(target_arch = "aarch64")]
 #[macro_use]
 mod exception_utils;
+#[cfg(target_arch = "aarch64")]
 mod exception;
 pub mod host;
+mod interrupt;
+#[cfg(target_arch = "aarch64")]
 mod pcpu;
+#[cfg(target_arch = "aarch64")]
 mod smc;
 mod types;
+#[cfg(target_arch = "aarch64")]
 mod vcpu;
 
 pub use self::{
     host::ArmHostOps,
-    pcpu::ArmPerCpu,
+    interrupt::{
+        ArmVirtualIntId, IchDirectInjection, IchLrEntry, IchLrState, plan_direct_injection,
+    },
     types::{
         ArmAccessWidth, ArmGuestPhysAddr, ArmNestedPagingConfig, ArmSysRegAddr, ArmVcpuError,
         ArmVcpuResult, ArmVmExit,
     },
+};
+#[cfg(target_arch = "aarch64")]
+pub use self::{
+    pcpu::ArmPerCpu,
     vcpu::{
         ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
         ArmVcpu, ArmVcpuCreateConfig, ArmVcpuSetupConfig,
@@ -43,14 +56,19 @@ pub use self::{
 };
 
 /// context frame for aarch64
+#[cfg(target_arch = "aarch64")]
 pub type TrapFrame = context_frame::Aarch64ContextFrame;
 /// Compatibility alias for existing AArch64 users.
+#[cfg(target_arch = "aarch64")]
 pub type Aarch64VCpu<H> = ArmVcpu<H>;
 /// Compatibility alias for existing AArch64 users.
+#[cfg(target_arch = "aarch64")]
 pub type Aarch64PerCpu = ArmPerCpu;
 /// Compatibility alias for existing AArch64 users.
+#[cfg(target_arch = "aarch64")]
 pub type Aarch64VCpuCreateConfig = ArmVcpuCreateConfig;
 /// Compatibility alias for existing AArch64 users.
+#[cfg(target_arch = "aarch64")]
 pub type Aarch64VCpuSetupConfig = ArmVcpuSetupConfig;
 
 /// Returns the maximum guest page table levels supported by the hardware.
@@ -58,16 +76,19 @@ pub type Aarch64VCpuSetupConfig = ArmVcpuSetupConfig;
 /// This is determined by the physical address size:
 /// - 44+ bit PA → 4 levels (48-bit IPA)
 /// - < 44 bit PA → 3 levels (39-bit IPA)
+#[cfg(target_arch = "aarch64")]
 pub fn max_guest_page_table_levels() -> usize {
     vcpu::max_gpt_level(vcpu::pa_bits())
 }
 
 /// Returns the physical address width reported by the current CPU.
+#[cfg(target_arch = "aarch64")]
 pub fn pa_bits() -> usize {
     vcpu::pa_bits()
 }
 
 /// Return if current platform support virtualization extension.
+#[cfg(target_arch = "aarch64")]
 pub fn has_hardware_support() -> bool {
     // Hint:
     // In Cortex-A78, we can use

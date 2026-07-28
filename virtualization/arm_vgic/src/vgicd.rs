@@ -13,7 +13,7 @@
 // limitations under the License.
 
 extern crate alloc;
-use crate::{consts::*, interrupt::VgicInt};
+use crate::{VgicError, VgicResult, consts::*, interrupt::VgicInt};
 
 pub struct Vgicd {
     pub ctrlr: u32,
@@ -45,7 +45,11 @@ impl Vgicd {
     pub fn vgicd_isenabler_read(&self, idx: u32) -> usize {
         let mut isenabler = 0;
         for i in 0..32 {
-            if self.interrupt[(idx * 32 + i) as usize].get_enable() {
+            if self
+                .interrupt
+                .get((idx * 32 + i) as usize)
+                .is_some_and(VgicInt::get_enable)
+            {
                 isenabler |= 1 << i;
             }
         }
@@ -54,8 +58,10 @@ impl Vgicd {
 
     pub fn vgicd_isenabler_write(&mut self, idx: u32, isenabler: usize) {
         for i in 0..32 {
-            if isenabler & (1 << i) != 0 {
-                self.interrupt[(idx * 32 + i) as usize].set_enable(true);
+            if isenabler & (1 << i) != 0
+                && let Some(interrupt) = self.interrupt.get_mut((idx * 32 + i) as usize)
+            {
+                interrupt.set_enable(true);
             }
         }
     }
@@ -65,7 +71,36 @@ impl Vgicd {
     //     self.interrupt[irq as usize].inject_irq();
     // }
 
-    pub fn fetch_irq(&self, idx: u32) -> VgicInt {
-        self.interrupt[idx as usize]
+    pub fn fetch_irq(&self, idx: u32) -> VgicResult<VgicInt> {
+        self.interrupt
+            .get(idx as usize)
+            .copied()
+            .ok_or(VgicError::InvalidIrq {
+                irq: idx as usize,
+                max: SPI_ID_MAX,
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unmodelled_isenabler_registers_are_raz_wi() {
+        let mut vgicd = Vgicd::new();
+
+        assert_eq!(vgicd.vgicd_isenabler_read(16), 0);
+        vgicd.vgicd_isenabler_write(16, usize::MAX);
+        assert_eq!(vgicd.vgicd_isenabler_read(31), 0);
+        vgicd.vgicd_isenabler_write(31, usize::MAX);
+    }
+
+    #[test]
+    fn fetching_an_unmodelled_irq_returns_a_typed_error() {
+        assert!(matches!(
+            Vgicd::new().fetch_irq(512),
+            Err(VgicError::InvalidIrq { irq: 512, max: 512 })
+        ));
     }
 }

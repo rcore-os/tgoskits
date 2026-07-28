@@ -62,7 +62,7 @@ pub struct ArmVcpu<H: ArmHostOps> {
 struct AssemblyLayoutHost;
 
 impl ArmHostOps for AssemblyLayoutHost {
-    fn inject_virtual_interrupt(_vector: u8) -> ArmVcpuResult {
+    fn inject_virtual_interrupt(_intid: crate::ArmVirtualIntId) -> ArmVcpuResult {
         Err(crate::ArmVcpuError::BadState)
     }
 
@@ -207,7 +207,7 @@ impl<H: ArmHostOps> ArmVcpu<H> {
 
     /// Injects an interrupt into the guest vCPU.
     pub fn inject_interrupt(&mut self, vector: usize) -> ArmVcpuResult {
-        H::inject_virtual_interrupt(vector as u8)
+        crate::host::inject_virtual_interrupt_for::<H>(vector)
     }
 
     /// Sets the guest return value.

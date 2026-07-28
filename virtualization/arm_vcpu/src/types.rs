@@ -18,14 +18,47 @@ use core::fmt::{Debug, Formatter, LowerHex, UpperHex};
 pub type ArmVcpuResult<T = ()> = Result<T, ArmVcpuError>;
 
 /// Errors produced by the OS-neutral AArch64 vCPU core.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ArmVcpuError {
     /// A caller supplied an invalid argument or unsupported hardware encoding.
+    #[error("invalid AArch64 vCPU input")]
     InvalidInput,
     /// The requested operation is not supported by this CPU or this vCPU core.
+    #[error("unsupported AArch64 vCPU operation")]
     Unsupported,
     /// Hardware or software state is inconsistent with the requested transition.
+    #[error("invalid AArch64 vCPU state")]
     BadState,
+    /// A virtual interrupt identifier is outside the traditional INTID range.
+    #[error("virtual interrupt ID {value} is outside the supported range 0..=1019")]
+    InvalidVirtualInterruptId {
+        /// The rejected interrupt identifier.
+        value: usize,
+    },
+    /// The reported number of ICH list registers is not representable by the wrapper.
+    #[error("invalid ICH list register count {count}")]
+    InvalidListRegisterCount {
+        /// The rejected list register count.
+        count: usize,
+    },
+    /// No ICH list register is available for direct injection.
+    #[error("no free ICH list register for virtual interrupt {intid}")]
+    NoFreeListRegister {
+        /// The interrupt that could not be injected.
+        intid: crate::ArmVirtualIntId,
+    },
+    /// An ICH list register contains malformed software state.
+    #[error("malformed ICH list register {slot}")]
+    MalformedListRegister {
+        /// The malformed list register slot.
+        slot: usize,
+    },
+    /// An ICH list register contains a representation unsupported by this path.
+    #[error("unsupported ICH list register {slot}")]
+    UnsupportedListRegister {
+        /// The unsupported list register slot.
+        slot: usize,
+    },
 }
 
 /// Guest physical address.

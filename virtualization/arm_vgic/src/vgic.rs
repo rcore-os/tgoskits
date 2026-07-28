@@ -103,7 +103,7 @@ impl Vgic {
     // }
 
     /// Fetches interrupt information for the given IRQ number.
-    pub fn fetch_irq(&self, irq: u32) -> VgicInt {
+    pub fn fetch_irq(&self, irq: u32) -> VgicResult<VgicInt> {
         self.vgicd.lock().fetch_irq(irq)
     }
 

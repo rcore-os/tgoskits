@@ -1,8 +1,12 @@
 //! AArch64 GIC host operations for the ArceOS-backed AxVM runtime.
 
 use arm_gic_driver::v3::{
-    ICH_ELRSR_EL2, ICH_HCR_EL2, ICH_LR_EL2, ICH_VTR_EL2, ReadWriteable, Readable, ich_lr_el2_get,
-    ich_lr_el2_write,
+    ICH_ELRSR_EL2, ICH_HCR_EL2, ICH_VTR_EL2, ReadWriteable, Readable, ich_lr_el2_get,
+    ich_lr_el2_set_raw,
+};
+use arm_vcpu::{
+    ArmVcpuError, ArmVcpuResult, ArmVirtualIntId, IchDirectInjection, IchLrEntry, IchLrState,
+    plan_direct_injection,
 };
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
@@ -16,8 +20,8 @@ fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
     f(&mut gic)
 }
 
-pub(crate) fn inject_interrupt(irq: usize) {
-    debug!("Injecting virtual interrupt: {irq}");
+pub(crate) fn inject_interrupt(intid: ArmVirtualIntId) -> ArmVcpuResult {
+    debug!("Injecting virtual interrupt: {intid}");
 
     with_gic(|gic| {
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
@@ -31,56 +35,55 @@ pub(crate) fn inject_interrupt(irq: usize) {
             gich.set_virtual_interrupt(
                 0,
                 VirtualInterruptConfig::software(
-                    unsafe { IntId::raw(irq as _) },
+                    // SAFETY: ArmVirtualIntId excludes the GIC special INTID range.
+                    unsafe { IntId::raw(intid.as_u32()) },
                     None,
                     0,
                     VirtualInterruptState::Pending,
-                    false,
                     true,
+                    false,
                 ),
             );
-            return;
+            return Ok(());
         }
 
         if gic.typed_mut::<arm_gic_driver::v3::Gic>().is_some() {
-            inject_interrupt_gic_v3(irq);
-            return;
+            return inject_interrupt_gic_v3(intid);
         }
 
-        panic!("no GIC driver found");
-    });
+        Err(ArmVcpuError::Unsupported)
+    })
 }
 
-fn inject_interrupt_gic_v3(vector: usize) {
-    debug!("Injecting virtual interrupt: vector={vector}");
-    let elsr = ICH_ELRSR_EL2.read(ICH_ELRSR_EL2::STATUS);
+fn inject_interrupt_gic_v3(intid: ArmVirtualIntId) -> ArmVcpuResult {
+    debug!("Injecting virtual interrupt: intid={intid}");
     let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
-
-    let mut free_lr = None;
-    for i in 0..lr_num {
-        if (1 << i) & elsr > 0 {
-            free_lr.get_or_insert(i);
-            continue;
-        }
-
-        let lr_val = ich_lr_el2_get(i);
-        if lr_val.read(ICH_LR_EL2::VINTID) == vector as u64
-            && lr_val.matches_any(&[ICH_LR_EL2::STATE::Pending, ICH_LR_EL2::STATE::Active])
-        {
-            debug!("Virtual interrupt {vector} already pending/active in LR{i}, skipping");
-            return;
-        }
+    if !(1..=16).contains(&lr_num) {
+        return Err(ArmVcpuError::InvalidListRegisterCount { count: lr_num });
     }
 
-    let free_lr = free_lr
-        .or_else(|| {
-            (0..lr_num).find(|&i| ich_lr_el2_get(i).matches_all(ICH_LR_EL2::STATE::Invalid))
-        })
-        .unwrap_or_else(|| panic!("no free list register to inject IRQ {vector}"));
-
-    ich_lr_el2_write(
+    let mut raw_lrs = [0; 16];
+    for (slot, raw) in raw_lrs[..lr_num].iter_mut().enumerate() {
+        *raw = ich_lr_el2_get(slot).get();
+    }
+    let empty_status = ICH_ELRSR_EL2.read(ICH_ELRSR_EL2::STATUS) as u16;
+    let free_lr = match plan_direct_injection(intid, empty_status, &raw_lrs[..lr_num])? {
+        IchDirectInjection::AlreadyPresent => {
+            debug!("Virtual interrupt {intid} already pending/active, skipping");
+            return Ok(());
+        }
+        IchDirectInjection::Vacant(slot) => slot,
+    };
+    ich_lr_el2_set_raw(
         free_lr,
-        ICH_LR_EL2::VINTID.val(vector as u64) + ICH_LR_EL2::STATE::Pending + ICH_LR_EL2::GROUP::SET,
+        IchLrEntry::Software {
+            intid,
+            state: IchLrState::Pending,
+            priority: 0,
+            group1: true,
+            eoi: false,
+        }
+        .encode(),
     );
 
     if !ICH_HCR_EL2.is_set(ICH_HCR_EL2::EN) {
@@ -88,7 +91,8 @@ fn inject_interrupt_gic_v3(vector: usize) {
         ICH_HCR_EL2.modify(ICH_HCR_EL2::EN::SET);
     }
 
-    debug!("Virtual interrupt {vector} injected successfully in LR{free_lr}");
+    debug!("Virtual interrupt {intid} injected successfully in LR{free_lr}");
+    Ok(())
 }
 
 pub(crate) fn read_gicd_iidr() -> u32 {

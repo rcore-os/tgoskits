@@ -9,7 +9,8 @@ use core::time::Duration;
 
 use arm_vcpu::{
     ArmAccessWidth, ArmGuestPhysAddr, ArmHostOps, ArmNestedPagingConfig, ArmPerCpu, ArmSysRegAddr,
-    ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError, ArmVcpuResult, ArmVcpuSetupConfig, ArmVmExit,
+    ArmVcpu, ArmVcpuCreateConfig, ArmVcpuError, ArmVcpuResult, ArmVcpuSetupConfig, ArmVirtualIntId,
+    ArmVmExit,
 };
 use arm_vgic::host::ArmVgicHostIf;
 use ax_crate_interface::impl_interface;
@@ -205,9 +206,8 @@ impl ArchOps for Aarch64Arch {
 struct AxvmArmHostOps;
 
 impl ArmHostOps for AxvmArmHostOps {
-    fn inject_virtual_interrupt(vector: u8) -> ArmVcpuResult {
-        gic::inject_interrupt(vector as usize);
-        Ok(())
+    fn inject_virtual_interrupt(intid: ArmVirtualIntId) -> ArmVcpuResult {
+        gic::inject_interrupt(intid)
     }
 
     fn fetch_pending_host_irq() -> Option<usize> {
@@ -321,6 +321,11 @@ fn arm_error_to_backend(err: ArmVcpuError) -> BackendError {
         ArmVcpuError::InvalidInput => BackendError::InvalidInput,
         ArmVcpuError::Unsupported => BackendError::Unsupported,
         ArmVcpuError::BadState => BackendError::InvalidState,
+        ArmVcpuError::InvalidVirtualInterruptId { .. } => BackendError::InvalidInput,
+        ArmVcpuError::InvalidListRegisterCount { .. }
+        | ArmVcpuError::MalformedListRegister { .. } => BackendError::InvalidData,
+        ArmVcpuError::NoFreeListRegister { .. } => BackendError::ResourceBusy,
+        ArmVcpuError::UnsupportedListRegister { .. } => BackendError::Unsupported,
     }
 }
 
@@ -371,6 +376,24 @@ mod tests {
         assert_eq!(
             arm_error_to_backend(ArmVcpuError::BadState),
             BackendError::InvalidState
+        );
+        assert_eq!(
+            arm_error_to_backend(ArmVcpuError::InvalidVirtualInterruptId { value: 1020 }),
+            BackendError::InvalidInput
+        );
+        assert_eq!(
+            arm_error_to_backend(ArmVcpuError::MalformedListRegister { slot: 0 }),
+            BackendError::InvalidData
+        );
+        assert_eq!(
+            arm_error_to_backend(ArmVcpuError::NoFreeListRegister {
+                intid: ArmVirtualIntId::new(32).unwrap(),
+            }),
+            BackendError::ResourceBusy
+        );
+        assert_eq!(
+            arm_error_to_backend(ArmVcpuError::UnsupportedListRegister { slot: 0 }),
+            BackendError::Unsupported
         );
     }
 
@@ -470,6 +493,10 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
     }
 
     fn hardware_inject_virtual_interrupt(vector: u8) {
-        gic::inject_interrupt(vector as usize);
+        let intid = ArmVirtualIntId::new(u32::from(vector))
+            .expect("an 8-bit private interrupt ID is always representable");
+        if let Err(err) = gic::inject_interrupt(intid) {
+            warn!("failed to inject private virtual interrupt {intid}: {err}");
+        }
     }
 }
