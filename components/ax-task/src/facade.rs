@@ -801,6 +801,15 @@ fn service_current_task_deadline_work(
 ) -> Result<usize, TaskError> {
     let should_run = {
         let mut cpu = runtime_current_cpu_mut(pin)?;
+        // The physical clockevent is only an acceleration mechanism. A lost,
+        // late, or stopped device edge must not strand an already-due task
+        // deadline while another scheduler condition keeps the CPU out of its
+        // final idle wait. Promote one bounded batch before claiming the
+        // sticky owner-work doorbell so every scheduler entry is also a
+        // deadline recovery safe point.
+        let budget = cpu.batch_limit();
+        cpu.as_mut()
+            .expire_task_deadlines(now_ns, task_runtime::timer_resolution_ns(), budget);
         cpu.as_mut().begin_deadline_work()
     };
     if !should_run {
@@ -1297,6 +1306,39 @@ mod tests {
         assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 0);
         assert!(system.snapshot(cpu.as_ref()).need_resched());
         assert!(!cancel_current_park_deadline(&running, &mut ticket).unwrap());
+    }
+
+    #[test]
+    fn scheduler_safe_point_recovers_overdue_deadline_without_clock_irq() {
+        let system = Box::pin(TaskSystem::new(crate::TaskSystemConfig::new(1)).unwrap());
+        let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+        let running = system
+            .install_bootstrap_thread(cpu.as_mut(), ThreadSpec::new(SchedulePolicy::default()))
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+        let _runtime_handles = InstalledTaskHandles::new(system.as_ref(), cpu.as_mut());
+        let permit = acquire_blocking_permit().unwrap();
+        let ParkPrepare::Prepared(mut ticket) = prepare_current_park(&permit).unwrap() else {
+            panic!("fresh park must publish PARKING");
+        };
+        let _ = permit;
+        arm_current_park_deadline(&running, &mut ticket, 10).unwrap();
+
+        test_runtime::set_monotonic_ns(10);
+        assert!(
+            schedule_current_cpu().unwrap().parking_deferred(),
+            "the owner must retain its PARKING handshake at the recovery safe point"
+        );
+        assert!(
+            running.core.take_park_notification(),
+            "a scheduler safe point must recover a due task deadline even when no physical \
+             clockevent IRQ was observed"
+        );
+        assert!(
+            !cancel_current_park_deadline(&running, &mut ticket).unwrap(),
+            "safe-point recovery must physically consume the expired deadline entry"
+        );
+        cancel_current_park(&mut ticket).unwrap();
     }
 
     #[test]

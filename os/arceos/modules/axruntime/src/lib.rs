@@ -605,6 +605,18 @@ impl ClockEventFiringGuard {
         Self { active: true }
     }
 
+    #[cfg(feature = "multitask")]
+    fn begin_if_due(now_ns: u64) -> Option<Self> {
+        let active = with_local_clock_event_mut(|clockevent| {
+            if !clockevent.begin_firing_if_due(now_ns) {
+                return false;
+            }
+            clockevent.advance_periodic(now_ns, periodic_interval_nanos());
+            true
+        });
+        active.then_some(Self { active: true })
+    }
+
     fn finish(
         mut self,
         #[cfg(feature = "multitask")] task_update: Option<ax_task::runtime::TaskDeadlineUpdate>,
@@ -646,6 +658,16 @@ fn local_clock_event_has_immediate_work(now_ns: u64) -> bool {
             clock_event::ClockEventAction::None,
         )
     })
+}
+
+#[cfg(all(feature = "irq", feature = "multitask"))]
+fn recover_overdue_local_clock_event(now_ns: u64) -> bool {
+    let Some(firing) = ClockEventFiringGuard::begin_if_due(now_ns) else {
+        return false;
+    };
+    let task_update = task::recover_clock_event(now_ns);
+    firing.finish(task_update);
+    true
 }
 
 #[cfg(all(feature = "irq", feature = "multitask"))]

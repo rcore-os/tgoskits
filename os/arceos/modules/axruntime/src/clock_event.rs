@@ -119,6 +119,26 @@ impl LocalClockEvent {
         self.phase = ClockEventPhase::Firing;
     }
 
+    /// Claims an armed deadline that has already elapsed.
+    ///
+    /// Idle uses this with local IRQs disabled after its final pending-work
+    /// check. A clockevent can reach zero without leaving a consumable IRQ
+    /// edge, so merely refusing to sleep would otherwise livelock the idle
+    /// loop forever on the stale `Armed` state.
+    #[cfg(feature = "multitask")]
+    pub(crate) fn begin_firing_if_due(&mut self, now_ns: u64) -> bool {
+        if self.phase != ClockEventPhase::Armed
+            || !self
+                .armed_deadline
+                .is_some_and(|deadline| deadline.as_nanos() <= now_ns)
+        {
+            return false;
+        }
+        self.armed_deadline = None;
+        self.phase = ClockEventPhase::Firing;
+        true
+    }
+
     /// Advances periodic accounting without producing a scheduling decision.
     ///
     /// A periodic clockevent is only one physical wakeup source. Whether the
@@ -214,16 +234,29 @@ impl LocalClockEvent {
         }
         let selected = self.selected_deadline();
         match (self.phase, self.armed_deadline, selected) {
-            (ClockEventPhase::Idle, _, Some(deadline)) => {
+            (ClockEventPhase::Idle, None, Some(deadline)) => {
                 self.armed_deadline = Some(deadline);
                 self.phase = ClockEventPhase::Armed;
                 ClockEventAction::Program(deadline)
             }
-            (ClockEventPhase::Armed, Some(armed), Some(deadline)) if deadline < armed => {
+            (ClockEventPhase::Armed, Some(armed), Some(deadline)) if deadline != armed => {
                 self.armed_deadline = Some(deadline);
                 ClockEventAction::Program(deadline)
             }
-            _ => ClockEventAction::None,
+            (ClockEventPhase::Armed, Some(_), None) => {
+                self.armed_deadline = None;
+                self.phase = ClockEventPhase::Idle;
+                ClockEventAction::Stop
+            }
+            (ClockEventPhase::Idle, None, None) | (ClockEventPhase::Armed, Some(_), Some(_)) => {
+                ClockEventAction::None
+            }
+            (phase, armed, selected) => {
+                panic!(
+                    "invalid clockevent state: phase={phase:?}, armed={armed:?}, \
+                     selected={selected:?}"
+                );
+            }
         }
     }
 }
@@ -305,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn earlier_task_deadline_reprograms_but_later_or_cancel_waits_for_old_event() {
+    fn every_selected_deadline_change_reprograms_the_physical_owner() {
         let mut event = LocalClockEvent::offline();
         assert_eq!(
             event.online(Some(deadline(500))),
@@ -317,17 +350,27 @@ mod tests {
         );
         assert_eq!(
             event.publish_task(2, Some(400), false),
-            ClockEventAction::None
+            ClockEventAction::Program(deadline(400))
         );
-        assert_eq!(event.armed_deadline(), Some(deadline(300)));
-        assert_eq!(event.publish_task(3, None, false), ClockEventAction::None);
-        assert_eq!(event.armed_deadline(), Some(deadline(300)));
-
-        event.begin_firing();
+        assert_eq!(event.armed_deadline(), Some(deadline(400)));
         assert_eq!(
-            event.finish_firing(),
+            event.publish_task(3, None, false),
             ClockEventAction::Program(deadline(500))
         );
+        assert_eq!(event.armed_deadline(), Some(deadline(500)));
+    }
+
+    #[test]
+    fn removing_the_only_deadline_stops_the_physical_owner() {
+        let mut event = LocalClockEvent::offline();
+        assert_eq!(event.online(None), ClockEventAction::None);
+        assert_eq!(
+            event.publish_task(1, Some(300), false),
+            ClockEventAction::Program(deadline(300))
+        );
+        assert_eq!(event.publish_task(2, None, false), ClockEventAction::Stop);
+        assert_eq!(event.phase(), ClockEventPhase::Idle);
+        assert_eq!(event.armed_deadline(), None);
     }
 
     #[test]
@@ -424,6 +467,19 @@ mod tests {
             ClockEventAction::Program(deadline(500))
         );
         assert!(!event.has_immediate_work(100));
+    }
+
+    #[test]
+    fn idle_recovery_claims_an_overdue_armed_event_exactly_once() {
+        let mut event = LocalClockEvent::offline();
+        assert_eq!(
+            event.online(Some(deadline(100))),
+            ClockEventAction::Program(deadline(100))
+        );
+
+        assert!(event.begin_firing_if_due(100));
+        assert_eq!(event.phase(), ClockEventPhase::Firing);
+        assert!(!event.begin_firing_if_due(100));
     }
 
     #[test]

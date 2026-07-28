@@ -42,13 +42,13 @@ mod scheduler_events;
 pub use executor::{BlockOnError, block_on, block_on_timeout};
 #[cfg(test)]
 use scheduler_events::clock_event_requests_reschedule;
-#[cfg(feature = "irq")]
-pub(crate) use scheduler_events::on_clock_event;
 #[cfg(all(test, not(any(feature = "ipi", feature = "wake-ipi"))))]
 use scheduler_events::publish_then_notify_scheduler_ipi;
 pub use scheduler_events::timer_irq_count;
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 pub(crate) use scheduler_events::{consume_scheduler_ipi_doorbell, on_scheduler_ipi};
+#[cfg(feature = "irq")]
+pub(crate) use scheduler_events::{on_clock_event, recover_clock_event};
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 use scheduler_events::{publish_scheduler_ipi_doorbell, publish_then_notify_scheduler_ipi};
 
@@ -2374,10 +2374,14 @@ impl_task_runtime! {
 
         fn wait_for_interrupt() {
             ax_hal::asm::disable_irqs();
+            let now_ns = ax_hal::time::monotonic_time_nanos();
+            let recovered_clockevent = crate::recover_overdue_local_clock_event(now_ns);
             let needs_reschedule = ax_task::current_cpu_needs_resched()
                 .expect("idle handoff requires an initialized current CPU");
-            let now_ns = ax_hal::time::monotonic_time_nanos();
-            if needs_reschedule || crate::local_clock_event_has_immediate_work(now_ns) {
+            if recovered_clockevent
+                || needs_reschedule
+                || crate::local_clock_event_has_immediate_work(now_ns)
+            {
                 ax_hal::asm::enable_irqs();
             } else {
                 ax_hal::asm::wait_for_irqs_disabled();

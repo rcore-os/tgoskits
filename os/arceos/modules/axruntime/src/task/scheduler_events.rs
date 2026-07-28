@@ -71,6 +71,20 @@ pub(super) const fn clock_event_requests_reschedule(
 #[cfg(feature = "irq")]
 pub(crate) fn on_clock_event(now_ns: u64) -> Option<TaskDeadlineUpdate> {
     TASK_TIMER_IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
+    account_clock_event(now_ns)
+}
+
+/// Performs the same bounded accounting when idle recovers a missed edge.
+///
+/// This is not a physical interrupt and therefore must not inflate the IRQ
+/// counter used by timer diagnostics.
+#[cfg(feature = "irq")]
+pub(crate) fn recover_clock_event(now_ns: u64) -> Option<TaskDeadlineUpdate> {
+    account_clock_event(now_ns)
+}
+
+#[cfg(feature = "irq")]
+fn account_clock_event(now_ns: u64) -> Option<TaskDeadlineUpdate> {
     match ax_task::on_clock_event(now_ns, TASK_CLOCK_EVENT_IRQ_BUDGET) {
         Ok(outcome) => {
             if clock_event_requests_reschedule(
