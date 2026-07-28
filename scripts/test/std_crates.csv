@@ -14,7 +14,6 @@ ax-io
 axklib
 axpoll
 ax-sched
-axvm
 axvmconfig
 bitmap-allocator
 ax-cpumask
@@ -41,7 +40,6 @@ ax-task
 ax-input
 ax-ipi
 ax-log
-ax-net
 ax-runtime
 ax-api
 rockchip-jpeg
