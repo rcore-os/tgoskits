@@ -277,7 +277,8 @@ impl Mountpoint {
         result
             .mount_flags
             .store(source.mountpoint.mount_flags(), Ordering::Release);
-        *result.lifetime_guard.lock() = source.mountpoint.lifetime_guard.lock().clone();
+        let lifetime_guard = source.mountpoint.lifetime_guard.lock().clone();
+        *result.lifetime_guard.lock() = lifetime_guard;
         if recursive {
             let mut clones = Vec::new();
             Self::clone_children_from(&source.mountpoint, &result, true, Some(source), &mut clones);
@@ -306,7 +307,8 @@ impl Mountpoint {
         result
             .expired
             .store(source.expired.load(Ordering::Acquire), Ordering::Release);
-        *result.lifetime_guard.lock() = source.lifetime_guard.lock().clone();
+        let lifetime_guard = source.lifetime_guard.lock().clone();
+        *result.lifetime_guard.lock() = lifetime_guard;
         result
     }
 
@@ -322,6 +324,9 @@ impl Mountpoint {
             .lock()
             .iter()
             .map(|(key, child)| (key.clone(), child.clone()))
+            .collect();
+        let children: Vec<_> = children
+            .into_iter()
             .filter(|(_, child)| {
                 !(skip_unbindable && child.is_unbindable())
                     && within.is_none_or(|ancestor| {
@@ -332,7 +337,6 @@ impl Mountpoint {
             })
             .collect();
 
-        let mut target_children = target.children.lock();
         for (key, child) in children {
             let location = child
                 .location
@@ -341,8 +345,8 @@ impl Mountpoint {
                 .map(|loc| Location::new(target.clone(), loc.entry.clone()));
             let cloned = Self::clone_shallow(&child, location);
             clones.push((child.clone(), cloned.clone()));
+            target.children.lock().insert(key, cloned.clone());
             Self::clone_children_from(&child, &cloned, skip_unbindable, None, clones);
-            target_children.insert(key, cloned);
         }
     }
 
@@ -937,8 +941,12 @@ impl Location {
             return Err(VfsError::NotADirectory);
         }
 
-        let mut children = self.mountpoint.children.lock();
-        if children.contains_key(&self.entry.key()) {
+        if self
+            .mountpoint
+            .children
+            .lock()
+            .contains_key(&self.entry.key())
+        {
             return Err(VfsError::ResourceBusy);
         }
         let result = Mountpoint::bind(source, self.clone(), recursive);
@@ -957,7 +965,10 @@ impl Location {
                 Mountpoint::attach_master_locked(&result, &master);
             }
         }
-        children.insert(self.entry.key(), result.clone());
+        self.mountpoint
+            .children
+            .lock()
+            .insert(self.entry.key(), result.clone());
         MOUNT_TOPOLOGY_VERSION.fetch_add(1, Ordering::AcqRel);
         Ok(result)
     }
