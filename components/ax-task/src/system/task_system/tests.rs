@@ -445,6 +445,119 @@ fn failed_context_binding_retires_the_allocated_generation() {
 }
 
 #[test]
+fn rejected_thread_releases_runtime_resources_before_extension() {
+    use crate::test_runtime::ResourceReleaseEvent;
+
+    static RELEASE_ORDER_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
+        on_switch_in: no_extension_hook,
+        on_switch_out: no_extension_switch_out,
+        on_exit: no_extension_hook,
+        on_deadline_overrun: no_extension_hook,
+        drop: record_release_order_extension_drop,
+    };
+
+    crate::test_runtime::configure_resource_release(RuntimeStatus::Success);
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let resources = unsafe {
+        // SAFETY: the unit runtime accepts these unique modeled handles and
+        // records their synchronous release order.
+        ThreadResources::new(
+            ExecutionContextHandle::from_raw(0x3000),
+            crate::runtime::StackHandle::from_raw(0x4000),
+            crate::runtime::TlsHandle::from_raw(0x5000),
+            crate::runtime::AddressSpaceHandle::NONE,
+        )
+    };
+    let extension = unsafe {
+        // SAFETY: the callback owns no external data and only records its drop.
+        ThreadExtension::new(0, &RELEASE_ORDER_EXTENSION_OPS)
+    };
+    let result = system.create_thread(unsafe {
+        // SAFETY: this specification uniquely owns every modeled resource.
+        ThreadSpec::new(SchedulePolicy::default())
+            .with_affinity(CpuSet::empty(2))
+            .with_extension(extension)
+            .with_resources(resources)
+    });
+
+    assert_eq!(result.unwrap_err(), TaskError::InvalidConfiguration);
+    assert_eq!(
+        crate::test_runtime::resource_release_events(),
+        [
+            ResourceReleaseEvent::DestroyContext,
+            ResourceReleaseEvent::DeallocateTls,
+            ResourceReleaseEvent::DeallocateStack,
+            ResourceReleaseEvent::DropExtension,
+        ]
+    );
+    crate::test_runtime::configure_resource_release(RuntimeStatus::Unsupported);
+}
+
+#[test]
+fn rejected_thread_retains_extension_until_resource_release_retry() {
+    use crate::test_runtime::ResourceReleaseEvent;
+
+    static RETRY_RELEASE_EXTENSION_OPS: ThreadExtensionOps = ThreadExtensionOps {
+        on_switch_in: no_extension_hook,
+        on_switch_out: no_extension_switch_out,
+        on_exit: no_extension_hook,
+        on_deadline_overrun: no_extension_hook,
+        drop: record_release_order_extension_drop,
+    };
+
+    crate::test_runtime::configure_resource_release(RuntimeStatus::Busy);
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let resources = unsafe {
+        // SAFETY: the unit runtime accepts these unique modeled handles and
+        // retains them until its configured release operation succeeds.
+        ThreadResources::new(
+            ExecutionContextHandle::from_raw(0x6000),
+            crate::runtime::StackHandle::from_raw(0x7000),
+            crate::runtime::TlsHandle::from_raw(0x8000),
+            crate::runtime::AddressSpaceHandle::NONE,
+        )
+    };
+    let extension = unsafe {
+        // SAFETY: the callback owns no external data and only records its drop.
+        ThreadExtension::new(0, &RETRY_RELEASE_EXTENSION_OPS)
+    };
+    let result = system.create_thread(unsafe {
+        // SAFETY: this specification uniquely owns every modeled resource.
+        ThreadSpec::new(SchedulePolicy::default())
+            .with_affinity(CpuSet::empty(2))
+            .with_extension(extension)
+            .with_resources(resources)
+    });
+
+    assert_eq!(result.unwrap_err(), TaskError::InvalidConfiguration);
+    assert_eq!(
+        crate::test_runtime::resource_release_events(),
+        [ResourceReleaseEvent::DestroyContext],
+        "the extension must remain owned while context destruction is retryable"
+    );
+    assert!(system.deferred_task_work_pending());
+
+    crate::test_runtime::configure_resource_release(RuntimeStatus::Success);
+    assert_eq!(system.service_deferred_task_work(1).unwrap().processed(), 1);
+    assert_eq!(
+        crate::test_runtime::resource_release_events(),
+        [
+            ResourceReleaseEvent::DestroyContext,
+            ResourceReleaseEvent::DeallocateTls,
+            ResourceReleaseEvent::DeallocateStack,
+            ResourceReleaseEvent::DropExtension,
+        ]
+    );
+    crate::test_runtime::configure_resource_release(RuntimeStatus::Unsupported);
+}
+
+unsafe extern "Rust" fn record_release_order_extension_drop(_data: usize) {
+    crate::test_runtime::record_resource_release_event(
+        crate::test_runtime::ResourceReleaseEvent::DropExtension,
+    );
+}
+
+#[test]
 fn generation_rejects_a_stale_registry_identity() {
     let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
     let first = system

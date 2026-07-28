@@ -371,8 +371,10 @@ impl ThreadExtensionView {
 pub struct ThreadSpec {
     policy: SchedulePolicy,
     affinity: Option<CpuSet>,
-    extension: Option<ThreadExtension>,
+    // Runtime resources must be dropped before the extension that owns their
+    // address-space and entry metadata, including on fallback destruction.
     resources: ThreadResources,
+    extension: Option<ThreadExtension>,
 }
 
 impl ThreadSpec {
@@ -381,8 +383,8 @@ impl ThreadSpec {
         Self {
             policy,
             affinity: None,
-            extension: None,
             resources: ThreadResources::NONE,
+            extension: None,
         }
     }
 

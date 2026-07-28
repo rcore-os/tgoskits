@@ -704,8 +704,9 @@ pub(super) struct ThreadSlot {
 pub(super) struct ThreadRecord {
     pub(super) core: Arc<ThreadCore>,
     pub(super) sched: Arc<ThreadSchedCell>,
-    pub(super) extension: Option<ThreadExtension>,
+    // Keep the fallback field drop order aligned with the normal reaper.
     pub(super) resources: ThreadResources,
+    pub(super) extension: Option<ThreadExtension>,
     pub(super) blocked_on: Option<PiWaitRegistration>,
     pub(super) exit_callback_pending: bool,
     pub(super) exit_callback_claimed: bool,
@@ -713,24 +714,59 @@ pub(super) struct ThreadRecord {
 }
 
 #[derive(Debug)]
+pub(super) struct DetachedThreadRecord {
+    resources: ThreadResources,
+    extension: Option<ThreadExtension>,
+}
+
+impl DetachedThreadRecord {
+    pub(super) const fn new(
+        resources: ThreadResources,
+        extension: Option<ThreadExtension>,
+    ) -> Self {
+        Self {
+            resources,
+            extension,
+        }
+    }
+
+    pub(super) fn into_owned_parts(self) -> (Option<ThreadExtension>, ThreadResources) {
+        let Self {
+            resources,
+            extension,
+        } = self;
+        (extension, resources)
+    }
+
+    pub(super) fn try_release_resources(&mut self) -> Result<(), TaskError> {
+        self.resources.try_release()
+    }
+
+    pub(super) fn finish_release(mut self) {
+        drop(self.extension.take());
+    }
+}
+
+#[derive(Debug)]
 pub(super) enum PendingResourceRelease {
     /// A reaped thread whose extension must outlive its runtime context.
     Thread(ThreadRecord),
     /// A construction transaction that failed before registry publication.
-    Detached(ThreadResources),
+    Detached(DetachedThreadRecord),
 }
 
 impl PendingResourceRelease {
     pub(super) fn resources_mut(&mut self) -> &mut ThreadResources {
         match self {
             Self::Thread(record) => &mut record.resources,
-            Self::Detached(resources) => resources,
+            Self::Detached(record) => &mut record.resources,
         }
     }
 
-    pub(super) fn finish(mut self) {
-        if let Self::Thread(record) = &mut self {
-            drop(record.extension.take());
+    pub(super) fn finish(self) {
+        match self {
+            Self::Thread(mut record) => drop(record.extension.take()),
+            Self::Detached(record) => record.finish_release(),
         }
     }
 }
