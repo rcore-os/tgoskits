@@ -2,7 +2,6 @@
 
 use alloc::{boxed::Box, string::String};
 use core::{
-    alloc::Layout,
     cell::UnsafeCell,
     mem::offset_of,
     pin::Pin,
@@ -37,9 +36,14 @@ use ax_task::{
 };
 
 mod executor;
+mod resources;
 mod scheduler_events;
 
 pub use executor::{BlockOnError, block_on, block_on_timeout};
+use resources::{
+    RuntimeStack, allocate_runtime_stack, allocate_runtime_tls, deallocate_runtime_stack,
+    deallocate_runtime_tls, runtime_tls_pointer,
+};
 #[cfg(test)]
 use scheduler_events::clock_event_requests_reschedule;
 #[cfg(all(test, not(any(feature = "ipi", feature = "wake-ipi"))))]
@@ -206,7 +210,7 @@ pub fn diagnose_current_stack_guard_page_fault(fault: ax_memory_addr::VirtAddr) 
                 // SAFETY: the scheduler owns the stack until this context can
                 // no longer run, and the current header keeps it on-CPU.
                 let stack = &*ptr::with_exposed_provenance::<RuntimeStack>(stack);
-                let StackBacking::GuardedPages { guard_size, .. } = &stack.backing else {
+                let resources::StackBacking::GuardedPages { guard_size, .. } = &stack.backing else {
                     return false;
                 };
                 let guard_end = stack.base.saturating_add(*guard_size);
@@ -269,22 +273,6 @@ pub fn switch_current_page_table(root: usize) -> Result<(), TaskError> {
 }
 #[cfg(not(feature = "fs"))]
 const DEFAULT_TASK_STACK_SIZE: usize = 256 * 1024;
-
-struct RuntimeStack {
-    #[cfg(feature = "paging")]
-    base: usize,
-    usable_top: usize,
-    backing: StackBacking,
-}
-
-enum StackBacking {
-    Heap {
-        pointer: NonNull<u8>,
-        layout: Layout,
-    },
-    #[cfg(feature = "paging")]
-    GuardedPages { pages: usize, guard_size: usize },
-}
 
 struct RuntimeSwitchTail {
     previous: NonNull<CurrentThreadHeader>,
@@ -483,11 +471,6 @@ impl InitialContextState {
             fp_state: None,
         }
     }
-}
-
-#[cfg(feature = "tls")]
-struct RuntimeTls {
-    area: ax_hal::tls::TlsArea,
 }
 
 type KernelThreadEntry = Box<dyn FnOnce() + Send + 'static>;
@@ -1889,168 +1872,6 @@ fn cpu_remote(cpu: RuntimeCpuId) -> Option<&'static CpuRemote> {
     task_system()?.cpu_remote(CpuId::new(cpu.as_u32()))
 }
 
-fn allocate_runtime_stack(request: StackRequest) -> Result<StackHandle, RuntimeStatus> {
-    if request.usable_size == 0 || request.alignment == 0 || !request.alignment.is_power_of_two() {
-        return Err(RuntimeStatus::InvalidArgument);
-    }
-
-    if request.guard_size == 0 {
-        return allocate_heap_stack(request);
-    }
-
-    #[cfg(feature = "paging")]
-    {
-        allocate_guarded_stack(request)
-    }
-    #[cfg(not(feature = "paging"))]
-    {
-        Err(RuntimeStatus::Unsupported)
-    }
-}
-
-fn allocate_heap_stack(request: StackRequest) -> Result<StackHandle, RuntimeStatus> {
-    let layout = Layout::from_size_align(request.usable_size, request.alignment)
-        .map_err(|_| RuntimeStatus::InvalidArgument)?;
-    let pointer = ax_alloc::global_allocator()
-        .alloc(layout)
-        .map_err(map_alloc_status)?;
-    let base = pointer.as_ptr() as usize;
-    let usable_top = base
-        .checked_add(request.usable_size)
-        .ok_or(RuntimeStatus::InvalidArgument)?;
-    let stack = Box::new(RuntimeStack {
-        #[cfg(feature = "paging")]
-        base,
-        usable_top,
-        backing: StackBacking::Heap { pointer, layout },
-    });
-    // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeStack that
-    // stays live until deallocate_runtime_stack consumes this exact handle.
-    Ok(unsafe { StackHandle::from_raw(Box::into_raw(stack).expose_provenance()) })
-}
-
-#[cfg(feature = "paging")]
-fn allocate_guarded_stack(request: StackRequest) -> Result<StackHandle, RuntimeStatus> {
-    if !request.guard_size.is_multiple_of(PAGE_SIZE) {
-        return Err(RuntimeStatus::InvalidArgument);
-    }
-    let usable_size = request
-        .usable_size
-        .checked_add(PAGE_SIZE - 1)
-        .ok_or(RuntimeStatus::InvalidArgument)?
-        / PAGE_SIZE
-        * PAGE_SIZE;
-    let total_size = request
-        .guard_size
-        .checked_add(usable_size)
-        .ok_or(RuntimeStatus::InvalidArgument)?;
-    let pages = total_size / PAGE_SIZE;
-    let base = ax_alloc::global_allocator()
-        .alloc_pages(
-            pages,
-            request.alignment.max(PAGE_SIZE),
-            ax_alloc::UsageKind::Global,
-        )
-        .map_err(map_alloc_status)?;
-    let guard = ax_memory_addr::VirtAddr::from(base);
-    if ax_mm::kernel_aspace()
-        .lock()
-        .protect(
-            guard,
-            request.guard_size,
-            ax_hal::paging::MappingFlags::empty(),
-        )
-        .is_err()
-    {
-        ax_alloc::global_allocator().dealloc_pages(base, pages, ax_alloc::UsageKind::Global);
-        return Err(RuntimeStatus::Platform);
-    }
-    ax_hal::asm::flush_tlb(None);
-    let stack = Box::new(RuntimeStack {
-        base,
-        usable_top: base + total_size,
-        backing: StackBacking::GuardedPages {
-            pages,
-            guard_size: request.guard_size,
-        },
-    });
-    // SAFETY: Box::into_raw yields a non-null uniquely owned RuntimeStack that
-    // stays live until deallocate_runtime_stack consumes this exact handle.
-    Ok(unsafe { StackHandle::from_raw(Box::into_raw(stack).expose_provenance()) })
-}
-
-fn deallocate_runtime_stack(handle: StackHandle) -> RuntimeStatus {
-    if handle.is_none() {
-        return RuntimeStatus::InvalidHandle;
-    }
-    // SAFETY: ax-task passes only a live handle returned by
-    // `allocate_runtime_stack`, and consumes it exactly once during reaping.
-    let stack = unsafe {
-        Box::from_raw(ptr::with_exposed_provenance_mut::<RuntimeStack>(
-            handle.into_raw(),
-        ))
-    };
-    match stack.backing {
-        StackBacking::Heap { pointer, layout } => {
-            ax_alloc::global_allocator().dealloc(pointer, layout);
-        }
-        #[cfg(feature = "paging")]
-        StackBacking::GuardedPages { pages, guard_size } => {
-            let guard = ax_memory_addr::VirtAddr::from(stack.base);
-            let restore = ax_hal::paging::MappingFlags::READ | ax_hal::paging::MappingFlags::WRITE;
-            if ax_mm::kernel_aspace()
-                .lock()
-                .protect(guard, guard_size, restore)
-                .is_err()
-            {
-                core::mem::forget(stack);
-                return RuntimeStatus::Platform;
-            }
-            ax_hal::asm::flush_tlb(None);
-            ax_alloc::global_allocator().dealloc_pages(
-                stack.base,
-                pages,
-                ax_alloc::UsageKind::Global,
-            );
-        }
-    }
-    RuntimeStatus::Success
-}
-
-fn allocate_runtime_tls(_request: TlsRequest) -> RuntimeHandleResult {
-    #[cfg(feature = "tls")]
-    {
-        let tls = Box::new(RuntimeTls {
-            area: ax_hal::tls::TlsArea::alloc(),
-        });
-        RuntimeHandleResult::success(Box::into_raw(tls).expose_provenance())
-    }
-    #[cfg(not(feature = "tls"))]
-    {
-        RuntimeHandleResult::failure(RuntimeStatus::Unsupported)
-    }
-}
-
-fn deallocate_runtime_tls(handle: TlsHandle) -> RuntimeStatus {
-    if handle.is_none() {
-        return RuntimeStatus::Success;
-    }
-    #[cfg(feature = "tls")]
-    {
-        // SAFETY: the scheduler consumes a live runtime TLS handle once.
-        drop(unsafe {
-            Box::from_raw(ptr::with_exposed_provenance_mut::<RuntimeTls>(
-                handle.into_raw(),
-            ))
-        });
-        RuntimeStatus::Success
-    }
-    #[cfg(not(feature = "tls"))]
-    {
-        RuntimeStatus::Unsupported
-    }
-}
-
 fn create_runtime_context(request: KernelContextRequest) -> RuntimeHandleResult {
     create_runtime_context_parts(
         request.stack,
@@ -2181,33 +2002,6 @@ fn destroy_runtime_context(handle: ExecutionContextHandle) -> RuntimeStatus {
     // its runtime handle exactly once.
     drop(unsafe { Box::from_raw(context) });
     RuntimeStatus::Success
-}
-
-#[cfg(feature = "tls")]
-fn runtime_tls_pointer(handle: TlsHandle) -> usize {
-    if handle.is_none() {
-        return 0;
-    }
-    // SAFETY: context creation borrows a live runtime TLS handle.
-    unsafe {
-        (&*ptr::with_exposed_provenance::<RuntimeTls>(handle.into_raw()))
-            .area
-            .tls_ptr()
-            .addr()
-    }
-}
-
-#[cfg(not(feature = "tls"))]
-fn runtime_tls_pointer(_handle: TlsHandle) -> usize {
-    0
-}
-
-fn map_alloc_status(error: ax_alloc::AllocError) -> RuntimeStatus {
-    match error {
-        ax_alloc::AllocError::NoMemory => RuntimeStatus::NoMemory,
-        ax_alloc::AllocError::InvalidParam => RuntimeStatus::InvalidArgument,
-        _ => RuntimeStatus::Platform,
-    }
 }
 
 struct ArceOsTaskRuntime;
