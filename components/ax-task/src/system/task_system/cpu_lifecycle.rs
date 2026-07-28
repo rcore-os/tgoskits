@@ -124,4 +124,18 @@ impl TaskSystem {
         self.topology_sequence.write_end();
         Ok(())
     }
+
+    /// Installs an idle thread for a CPU; idle is selected only when queues empty.
+    pub fn install_idle_thread(
+        &self,
+        mut cpu: Pin<&mut CpuLocal>,
+        thread: ThreadId,
+    ) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
+        let state = self.state.lock();
+        state.cpu_registration(cpu.owner())?;
+        let core = Arc::clone(&state.thread_record(thread)?.core);
+        cpu.as_mut().set_idle(thread, core);
+        Ok(())
+    }
 }
