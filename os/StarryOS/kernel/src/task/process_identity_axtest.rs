@@ -21,7 +21,7 @@ pub(super) fn reap_claim_barrier(pid: Pid) {
     }
 }
 
-pub(crate) fn reaping_identity_is_not_openable_for_test() -> bool {
+pub(crate) fn reaping_identity_is_not_publicly_resolvable_for_test() -> bool {
     let process = Process::new_for_axtest(TEST_PID);
     let identity = Arc::new(ProcessIdentity {
         process: process.clone(),
@@ -57,6 +57,9 @@ pub(crate) fn reaping_identity_is_not_openable_for_test() -> bool {
     }
     let lookup_result = pidfd_process_identity(TEST_PID);
     let thread_lookup_result = pidfd_thread_identity(&process);
+    let process_lookup_result = get_process(TEST_PID);
+    let getsid_result = crate::syscall::sys_getsid(TEST_PID);
+    let getpgid_result = crate::syscall::sys_getpgid(TEST_PID);
 
     REAP_CLAIM_RELEASED.store(true, Ordering::Release);
     reap_task.join();
@@ -64,6 +67,9 @@ pub(crate) fn reaping_identity_is_not_openable_for_test() -> bool {
 
     matches!(lookup_result, Err(AxError::NoSuchProcess))
         && thread_lookup_result.is_none()
+        && matches!(process_lookup_result, Err(AxError::NoSuchProcess))
+        && matches!(getsid_result, Err(AxError::NoSuchProcess))
+        && matches!(getpgid_result, Err(AxError::NoSuchProcess))
         && *reaped_cpu_time.lock() == Some(ProcessCpuTime::default())
         && !PROCESS_TABLE.read().contains_key(&TEST_PID)
 }

@@ -72,13 +72,13 @@ impl PidFd {
         self.identity.is_zombie()
     }
 
-    fn registered_process(&self) -> AxResult<Arc<Process>> {
-        self.identity.registered_process()
+    fn public_process(&self) -> AxResult<Arc<Process>> {
+        self.identity.public_process()
     }
 
     /// Resolves a process-scoped pidfd without requiring live runtime resources.
     pub fn signal_process(&self) -> AxResult<Arc<Process>> {
-        self.registered_process()
+        self.public_process()
     }
 
     /// Resolves a thread-scoped pidfd target.
@@ -92,7 +92,7 @@ impl PidFd {
         {
             return Err(AxError::NoSuchProcess);
         }
-        Ok((self.registered_process()?, tid))
+        Ok((self.public_process()?, tid))
     }
 
     pub fn process_data(&self) -> AxResult<Arc<ProcessData>> {

@@ -152,8 +152,8 @@ fn pidfd_flags_and_signal_validation_rules_hold() {
 }
 
 #[axtest]
-fn reaping_identity_is_not_openable() {
-    ax_assert!(axtest_exports::reaping_identity_is_not_openable());
+fn reaping_identity_is_not_publicly_resolvable() {
+    ax_assert!(axtest_exports::reaping_identity_is_not_publicly_resolvable());
 }
 
 #[axtest]

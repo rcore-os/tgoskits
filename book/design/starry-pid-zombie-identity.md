@@ -121,9 +121,10 @@ The patch:
 - retains the identity in `Reaping` until topology retirement finishes, so the
   numeric PID cannot be reused in the middle of cleanup;
 - treats that `Reaping` registry entry only as an internal PID reservation:
-  both process and thread `pidfd_open` lookups accept only `Live | Zombie`;
-- holds the PID-registry read lock through the openability state check, which
-  linearizes lookup against the write-locked `Zombie -> Reaping` claim;
+  ordinary numeric-PID lookup, process/thread `pidfd_open`, and pidfd signal
+  target resolution accept only `Live | Zombie`;
+- holds the PID-registry read lock through the public-visibility state check,
+  which linearizes lookup against the write-locked `Zombie -> Reaping` claim;
 - replaces the separate live and zombie registries with one typed PID registry;
 - resolves `pidfd_open` from one registry lock and retains
   `Arc<ProcessIdentity>`;
@@ -167,18 +168,20 @@ implementation:
 - `qemu/system/syscall-test-waitid-pidfd` ended with 55 passes and one failure
   because a consumed child contributed no frozen CPU time to its parent.
 
-The review regression `reaping_identity_is_not_openable` adds a test-only
-barrier immediately after the consuming waiter claims `Zombie -> Reaping`.
-Before the openability filter, both numeric-PID and exact-thread identity
-lookups still succeeded in that deterministic window, so the axtest reported
-`not ok`.
+The review regression `reaping_identity_is_not_publicly_resolvable` adds a
+test-only barrier immediately after the consuming waiter claims
+`Zombie -> Reaping`.
+Before the public-visibility filter, `get_process`, `getpgid`, and `getsid`
+still resolved the already-consumed PID in that deterministic window. The
+axtest reported `not ok` alongside the unrelated pre-existing
+`task_clone_validation_rules_hold` failure: 397 passed and 2 failed.
 
 ## Validation evidence
 
 - `cargo test -p starry-process`: 27 tests passed;
 - `cargo xtask clippy --package starry-process`: 1/1 check passed;
 - `cargo xtask clippy --package starry-kernel`: 22/22 feature checks passed;
-- `reaping_identity_is_not_openable` now reports `ok` under
+- `reaping_identity_is_not_publicly_resolvable` now reports `ok` under
   `cargo xtask ktest qemu -p starry-kernel --arch x86_64`; the complete local
   axtest run reports 398 passes and one unrelated pre-existing
   `task_clone_validation_rules_hold` failure;
@@ -219,4 +222,4 @@ identity correct:
 | `waitid` | `WNOWAIT` observes without consuming; normal wait performs the unique reap. | [`wait_task_zombie`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/exit.c#L1207-L1250) |
 | `poll` / `ppoll` | Zombie reports `POLLIN | POLLRDNORM`; reaped pidfd also reports `POLLHUP`. | [`pidfd_poll`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/fs/pidfs.c#L305-L323) |
 | `epoll_wait` | `EPOLLRDNORM` interest is independently observable and reap wakes `EPOLLHUP` waiters. | [`pidfd_poll`](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/fs/pidfs.c#L305-L323) |
-| `getpgid` / `getsid` | The stable `Process` remains visible through zombie and disappears at reap. | [`find_task_by_vpid` users](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/sys.c#L1187-L1212) |
+| `getpgid` / `getsid` | The stable `Process` remains visible through zombie and returns `ESRCH` once reap is claimed. | [`find_task_by_vpid` users](https://github.com/torvalds/linux/blob/1590cf0329716306e948a8fc29f1d3ee87d3989f/kernel/sys.c#L1187-L1212) |

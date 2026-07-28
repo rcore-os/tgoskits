@@ -32,6 +32,12 @@ enum ProcessIdentityState {
     Reaped,
 }
 
+impl ProcessIdentityState {
+    fn is_publicly_resolvable(&self) -> bool {
+        matches!(self, Self::Live(_) | Self::Zombie(_))
+    }
+}
+
 /// Immutable process-exit data retained until one consuming wait reaps it.
 pub(crate) struct ZombieSnapshot {
     pub(crate) cred: Arc<Cred>,
@@ -90,20 +96,19 @@ impl ProcessIdentity {
         )
     }
 
-    /// Returns whether a new pidfd may resolve this identity.
-    fn is_pidfd_openable(&self) -> bool {
-        matches!(
-            *self.state.lock(),
-            ProcessIdentityState::Live(_) | ProcessIdentityState::Zombie(_)
-        )
+    /// Returns whether public PID lookup may resolve this identity.
+    fn is_publicly_resolvable(&self) -> bool {
+        self.state.lock().is_publicly_resolvable()
     }
 
-    /// Resolves the process while this generation is still registered.
-    pub(crate) fn registered_process(&self) -> AxResult<Arc<Process>> {
-        if self.is_reaped() {
-            return Err(AxError::NoSuchProcess);
+    /// Resolves the process while this generation remains publicly visible.
+    pub(crate) fn public_process(&self) -> AxResult<Arc<Process>> {
+        let state = self.state.lock();
+        if state.is_publicly_resolvable() {
+            Ok(self.process.clone())
+        } else {
+            Err(AxError::NoSuchProcess)
         }
-        Ok(self.process())
     }
 
     /// Returns process-pidfd readiness derived from the canonical lifecycle.
@@ -220,7 +225,7 @@ pub(crate) fn pidfd_process_identity(pid: Pid) -> AxResult<Arc<ProcessIdentity>>
     let process_table = PROCESS_TABLE.read();
     process_table
         .get(&pid)
-        .filter(|identity| identity.is_pidfd_openable())
+        .filter(|identity| identity.is_publicly_resolvable())
         .cloned()
         .ok_or(AxError::NoSuchProcess)
 }
@@ -231,7 +236,7 @@ pub(crate) fn pidfd_thread_identity(process: &Arc<Process>) -> Option<Arc<Proces
     process_table
         .get(&process.pid())
         .filter(|identity| identity.matches_process(process))
-        .filter(|identity| identity.is_pidfd_openable())
+        .filter(|identity| identity.is_publicly_resolvable())
         .cloned()
 }
 
@@ -330,16 +335,18 @@ pub(crate) fn orphan_reaper_for(process: &Arc<Process>) -> Arc<Process> {
     init
 }
 
-/// Finds the stable process object for a live or zombie PID.
+/// Finds the stable process object for a publicly visible live or zombie PID.
 pub fn get_process(pid: Pid) -> AxResult<Arc<Process>> {
     if pid == 0 {
         return Ok(current().as_thread().proc_data.proc.clone());
     }
-    PROCESS_TABLE
-        .read()
+    // Holding the registry read lock through the lifecycle check linearizes
+    // lookup against the write-locked Zombie -> Reaping claim.
+    let process_table = PROCESS_TABLE.read();
+    process_table
         .get(&pid)
-        .map(|identity| identity.process())
-        .ok_or(AxError::NoSuchProcess)
+        .ok_or(AxError::NoSuchProcess)?
+        .public_process()
 }
 
 /// Returns the credential snapshot for a zombie PID.
@@ -382,4 +389,4 @@ pub(crate) fn traced_zombies_for(tracer_pid: Pid) -> Vec<Arc<Process>> {
 mod axtest;
 
 #[cfg(axtest)]
-pub(crate) use axtest::reaping_identity_is_not_openable_for_test;
+pub(crate) use axtest::reaping_identity_is_not_publicly_resolvable_for_test;
