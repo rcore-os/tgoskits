@@ -24,7 +24,7 @@ use ax_cpumask::CpuMask;
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::align_up_4k;
 use axaddrspace::{AddrSpace, NestedPageTableOps};
-use axdevice::{AxVmDevices, FwCfgBuildConfig, FwCfgDeviceFactory, FwCfgPlatformConfig};
+use axdevice::{DeviceRuntime, FwCfgPayloadConfig, FwCfgPlatformConfig};
 use axdevice_base::{AccessWidth, DeviceAccess, DeviceId, DeviceResult};
 use axvm_types::{
     GuestPhysAddr, HostPhysAddr, HostVirtAddr, MappingFlags, NestedPagingConfig, VmVcpuState,
@@ -147,7 +147,7 @@ pub(crate) struct AxVMResources {
     config: AxVMConfig,
     phys_cpu_ls: PhysCpuList,
     vcpu_list: Option<Box<[AxVCpuRef]>>,
-    devices: Option<Arc<AxVmDevices>>,
+    devices: Option<Arc<DeviceRuntime>>,
     interrupt_fabric: Option<InterruptFabric>,
     address_layout: Option<VmAddressLayout>,
     boot_description: GuestBootDescription,
@@ -378,7 +378,7 @@ impl AxVMResources {
             .ok_or_else(|| ax_err_type!(BadState, "VM vCPU resources are not prepared"))
     }
 
-    fn devices(&self) -> AxVmResult<Arc<AxVmDevices>> {
+    fn devices(&self) -> AxVmResult<Arc<DeviceRuntime>> {
         self.devices
             .clone()
             .ok_or_else(|| ax_err_type!(BadState, "VM devices are not prepared"))
@@ -839,7 +839,7 @@ impl AxVM {
     }
 
     /// Returns this VM's emulated devices.
-    pub fn get_devices(&self) -> AxVmResult<Arc<AxVmDevices>> {
+    pub fn get_devices(&self) -> AxVmResult<Arc<DeviceRuntime>> {
         self.with_resources(|resources| resources.devices())
     }
 
@@ -884,30 +884,23 @@ impl AxVM {
         Ok(())
     }
 
-    /// Registers devices whose typed construction input comes from VM boot
-    /// payloads rather than static emulated-device configuration.
-    fn register_boot_payload_devices(&self, devices: &mut AxVmDevices) -> AxVmResult {
-        let pending = self.pending_fw_cfg.lock();
-        if let Some(pending) = pending.as_ref() {
-            debug!(
-                "VM[{}] adding fw_cfg MMIO device at [{:#x},{:#x})",
-                self.id(),
-                pending.base.as_usize(),
-                pending.base.as_usize() + pending.size
-            );
-            let bundle = FwCfgDeviceFactory::new().build(FwCfgBuildConfig {
+    pub(crate) fn fw_cfg_payload(&self) -> Option<FwCfgPayloadConfig> {
+        self.pending_fw_cfg
+            .lock()
+            .as_ref()
+            .map(|pending| FwCfgPayloadConfig {
                 base: pending.base,
                 size: pending.size,
                 kernel: pending.kernel,
                 initrd: pending.initrd,
-                cmdline: pending.cmdline.as_deref(),
+                cmdline: pending.cmdline.clone(),
                 cpu_num: pending.cpu_num,
                 platform: pending.platform,
-            })?;
-            devices.register_bundle(bundle)?;
-        }
-        Ok(())
+            })
     }
+
+    /// Registers devices whose typed construction input comes from VM boot
+    /// payloads rather than static emulated-device configuration.
 
     pub(crate) fn handle_mmio_write(
         &self,

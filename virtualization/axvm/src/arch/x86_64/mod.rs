@@ -733,8 +733,8 @@ fn restore_host_interrupt_flag(host_rflags: u64) {
 #[cfg(test)]
 mod tests {
     use axdevice::{
-        AxVmDeviceConfig, AxVmDevices, X86InterruptDomainKey, X86IoApicServiceKey,
-        X86PitServiceKey, X86SerialServiceKey,
+        DeviceRuntime, X86InterruptDomainKey, X86IoApicServiceKey, X86PitServiceKey,
+        X86SerialServiceKey,
     };
 
     use super::*;
@@ -807,32 +807,26 @@ mod tests {
         register_device_factories(&mut factories).unwrap();
         let fabric = InterruptFabric::default();
         let context = DeviceBuildContext::new(&fabric);
-        let devices = AxVmDevices::build_with_factories(
-            AxVmDeviceConfig {
-                emu_configs: alloc::vec![
-                    EmulatedDeviceConfig {
-                        name: "com1".into(),
-                        emu_type: EmulatedDeviceType::Console,
-                        ..Default::default()
-                    },
-                    EmulatedDeviceConfig {
-                        name: "ioapic".into(),
-                        base_gpa: 0xfec0_0000,
-                        length: 0x1000,
-                        emu_type: EmulatedDeviceType::X86IoApic,
-                        ..Default::default()
-                    },
-                    EmulatedDeviceConfig {
-                        name: "pit".into(),
-                        emu_type: EmulatedDeviceType::X86Pit,
-                        ..Default::default()
-                    },
-                ],
+        let configs = alloc::vec![
+            EmulatedDeviceConfig {
+                name: "com1".into(),
+                emu_type: EmulatedDeviceType::Console,
+                ..Default::default()
             },
-            &factories,
-            &context,
-        )
-        .unwrap();
+            EmulatedDeviceConfig {
+                name: "ioapic".into(),
+                base_gpa: 0xfec0_0000,
+                length: 0x1000,
+                emu_type: EmulatedDeviceType::X86IoApic,
+                ..Default::default()
+            },
+            EmulatedDeviceConfig {
+                name: "pit".into(),
+                emu_type: EmulatedDeviceType::X86Pit,
+                ..Default::default()
+            },
+        ];
+        let devices = DeviceRuntime::build_with_factories(&configs, &factories, &context).unwrap();
 
         assert_eq!(devices.devices().count(), 3);
         assert!(devices.services().require::<X86SerialServiceKey>().is_ok());

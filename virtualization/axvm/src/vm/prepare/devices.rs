@@ -1,12 +1,12 @@
 //! Device construction for VM preparation.
 
-use axdevice::{AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry};
+use axdevice::{DeviceBuildContext, DeviceFactoryRegistry, DeviceRuntime};
 
-use super::super::{AxVM, AxVMResources};
+use super::super::AxVMResources;
 use crate::{AxVmResult, irq::InterruptFabric};
 
 pub(crate) struct PreparedDevices {
-    pub(crate) devices: AxVmDevices,
+    pub(crate) devices: DeviceRuntime,
 }
 
 impl PreparedDevices {
@@ -16,10 +16,8 @@ impl PreparedDevices {
         interrupt_fabric: &InterruptFabric,
     ) -> AxVmResult<Self> {
         let build_context = DeviceBuildContext::new(interrupt_fabric);
-        let devices = AxVmDevices::build_with_factories(
-            AxVmDeviceConfig {
-                emu_configs: resources.config.emu_devices().to_vec(),
-            },
+        let devices = DeviceRuntime::build_with_factories(
+            resources.config.emu_devices(),
             factories,
             &build_context,
         )?;
@@ -27,15 +25,11 @@ impl PreparedDevices {
         Ok(Self { devices })
     }
 
-    pub(crate) fn register_boot_payload_devices(&mut self, vm: &AxVM) -> AxVmResult {
-        vm.register_boot_payload_devices(&mut self.devices)
-    }
-
-    pub(crate) const fn devices(&self) -> &AxVmDevices {
+    pub(crate) const fn devices(&self) -> &DeviceRuntime {
         &self.devices
     }
 
-    pub(crate) fn into_inner(self) -> AxVmDevices {
+    pub(crate) fn into_inner(self) -> DeviceRuntime {
         self.devices
     }
 }

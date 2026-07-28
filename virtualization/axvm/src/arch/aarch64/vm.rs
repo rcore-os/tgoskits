@@ -80,7 +80,6 @@ fn init_vm_with(
         })?;
         let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
         register_arch_devices(vm, resources.config(), &mut devices)?;
-        devices.register_boot_payload_devices(vm)?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);
@@ -118,7 +117,7 @@ fn register_arch_devices(
 fn assign_passthrough_spis(
     vm: &AxVM,
     config: &AxVMConfig,
-    devices: &axdevice::AxVmDevices,
+    devices: &axdevice::DeviceRuntime,
 ) -> AxVmResult {
     if config.pass_through_spis().is_empty() {
         return Ok(());

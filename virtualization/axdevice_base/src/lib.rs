@@ -556,24 +556,6 @@ pub trait Device: Send + Sync + Any {
 
     /// Returns a reference to `self` as `&dyn Any` for downcasting.
     fn as_any(&self) -> &dyn Any;
-
-    /// Resets the device to its power-on state.
-    #[allow(unused_variables)]
-    fn reset(&mut self) -> Result<(), DeviceError> {
-        Ok(())
-    }
-
-    /// Puts the device into a low-power or suspended state.
-    #[allow(unused_variables)]
-    fn suspend(&mut self) -> Result<(), DeviceError> {
-        Ok(())
-    }
-
-    /// Restores the device from a suspended state.
-    #[allow(unused_variables)]
-    fn resume(&mut self) -> Result<(), DeviceError> {
-        Ok(())
-    }
 }
 
 /// Context scoped to one device bus access.

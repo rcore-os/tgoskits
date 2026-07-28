@@ -78,7 +78,6 @@ fn init_vm_with(
         let vcpus = PreparedVcpus::create(vm.id(), &placements, |_| Ok(X86VcpuCreateConfig))?;
         let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
         register_arch_devices(resources.config(), &mut devices.devices)?;
-        devices.register_boot_payload_devices(vm)?;
         validate_guest_dtb(resources)?;
 
         let mut owned_regions = guest_owned_regions(resources);
@@ -117,7 +116,7 @@ fn build_vcpu_setup_config(
     Ok(setup_config)
 }
 
-fn register_arch_devices(config: &AxVMConfig, devices: &mut axdevice::AxVmDevices) -> AxVmResult {
+fn register_arch_devices(config: &AxVMConfig, devices: &mut axdevice::DeviceRuntime) -> AxVmResult {
     for port in config.pass_through_ports() {
         let bundle = super::port::HostPortPassthroughFactory::new(*port).build()?;
         debug!(

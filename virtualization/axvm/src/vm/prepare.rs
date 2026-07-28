@@ -6,7 +6,7 @@ pub(crate) mod vcpus;
 
 use alloc::{format, sync::Arc};
 
-use axdevice::{DeviceFactoryRegistry, register_builtin_factories};
+use axdevice::{DeviceFactoryRegistry, FwCfgPayloadFactory, register_builtin_factories};
 
 use self::{devices::PreparedDevices, vcpus::PreparedVcpus};
 use super::{AxVM, AxVMResources};
@@ -86,6 +86,21 @@ pub(crate) fn default_device_factories() -> AxVmResult<DeviceFactoryRegistry> {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories)?;
     Ok(factories)
+}
+
+/// Adds VM-local boot-payload factories to an architecture's static registry.
+///
+/// Only architectures that expose such a configured device should call this:
+/// keeping the common RISC-V path independent of unrelated boot-payload state
+/// avoids introducing a VM-lock dependency before its interrupt fabric exists.
+pub(crate) fn register_boot_payload_factories(
+    vm: &AxVM,
+    factories: &mut DeviceFactoryRegistry,
+) -> AxVmResult {
+    if let Some(payload) = vm.fw_cfg_payload() {
+        factories.register(Arc::new(FwCfgPayloadFactory::new(payload)))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn complete_vm_init(

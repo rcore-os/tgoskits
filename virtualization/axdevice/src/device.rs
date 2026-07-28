@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+
 use axdevice_base::{
     AccessWidth, BusAccess, BusKind, BusResponse, BusRouter, Device, DeviceAccess, DeviceError,
     DeviceId, DeviceRegistry, InvalidResourceReason, Port, RegistryError, Resource, SysRegAddr,
@@ -138,7 +139,7 @@ impl DeviceAccess for RuntimeDeviceAccess<'_> {
 }
 
 impl DeviceRuntime {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             devices: Vec::new(),
             mmio_index: BTreeMap::new(),
@@ -966,10 +967,10 @@ mod tests {
     };
     use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr};
 
-    use super::AxVmDevices;
+    use super::{DeviceRuntime as TestDeviceRuntime, DeviceRuntime as AxVmDevices};
     use crate::{
-        AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry,
-        DeviceLifecycle, DeviceManagerError, DeviceManagerResult, DeviceRegistration, IrqResolver,
+        DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceLifecycle,
+        DeviceManagerError, DeviceManagerResult, DeviceRegistration, IrqResolver,
         ServiceCardinality, ServiceKey, register_builtin_factories,
     };
 
@@ -1859,7 +1860,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_device_type_with_factory_and_legacy_owner() {
+    fn factory_build_rejects_unregistered_device_type() {
         let mut factories = DeviceFactoryRegistry::new();
         factories
             .register(Arc::new(EmptyFactory {
@@ -1873,14 +1874,17 @@ mod tests {
             ..Default::default()
         };
 
+        assert!(TestDeviceRuntime::build_with_factories(&[config], &factories, &context).is_ok());
+
+        let unsupported = EmulatedDeviceConfig {
+            name: "unsupported".into(),
+            emu_type: EmulatedDeviceType::IVCChannel,
+            ..Default::default()
+        };
         assert!(matches!(
-            AxVmDevices::build_with_factories(
-                AxVmDeviceConfig::new(alloc::vec![config]),
-                &factories,
-                &context
-            ),
-            Err(crate::DeviceManagerError::ResourceConflict {
-                operation: "resolve device construction owner",
+            TestDeviceRuntime::build_with_factories(&[unsupported], &factories, &context),
+            Err(crate::DeviceManagerError::Unsupported {
+                operation: "build emulated device",
                 ..
             })
         ));
@@ -1899,12 +1903,8 @@ mod tests {
             ..Default::default()
         };
 
-        let devices = AxVmDevices::build_with_factories(
-            AxVmDeviceConfig::new(alloc::vec![config]),
-            &factories,
-            &context,
-        )
-        .unwrap();
+        let devices =
+            TestDeviceRuntime::build_with_factories(&[config], &factories, &context).unwrap();
 
         let first = devices.alloc_ivc_channel(0x1000).unwrap();
         let second = devices.alloc_ivc_channel(0x2000).unwrap();

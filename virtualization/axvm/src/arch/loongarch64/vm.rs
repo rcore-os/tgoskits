@@ -58,6 +58,7 @@ impl LoongArch64Arch {
 
 fn prepare_device_bootstrap(vm: &AxVM) -> AxVmResult<ArchDeviceBootstrap> {
     let mut factories = default_device_factories()?;
+    crate::vm::prepare::register_boot_payload_factories(vm, &mut factories)?;
     factories.register(Arc::new(axdevice::LoongArchPchPicFactory))?;
     Ok(ArchDeviceBootstrap::new(
         factories,
@@ -97,7 +98,6 @@ fn init_vm_with(
             })
         })?;
         let mut devices = PreparedDevices::build_common(resources, factories, interrupt_fabric)?;
-        devices.register_boot_payload_devices(vm)?;
         validate_guest_dtb(resources)?;
 
         let owned_regions = guest_owned_regions(resources);

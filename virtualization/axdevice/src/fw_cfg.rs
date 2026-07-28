@@ -6,9 +6,11 @@ use axdevice_base::{
     AccessWidth, BaseDeviceOps, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError,
     DeviceResult, EmuDeviceType, Resource,
 };
-use axvm_types::{GuestPhysAddr, GuestPhysAddrRange};
+use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 
-use crate::{DeviceBundle, DeviceManagerError, DeviceManagerResult};
+use crate::{
+    DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceManagerResult,
+};
 
 const FW_CFG_SIGNATURE: u16 = 0x00;
 const FW_CFG_ID: u16 = 0x01;
@@ -558,6 +560,67 @@ pub struct FwCfgBuildConfig<'a> {
 
 /// Builds fw_cfg as a normal capability-declaring device contribution.
 pub struct FwCfgDeviceFactory;
+
+/// VM-local factory input supplied by the boot-image loader.
+#[derive(Clone)]
+pub struct FwCfgPayloadConfig {
+    pub base: GuestPhysAddr,
+    pub size: usize,
+    pub kernel: &'static [u8],
+    pub initrd: Option<&'static [u8]>,
+    pub cmdline: Option<String>,
+    pub cpu_num: u16,
+    pub platform: FwCfgPlatformConfig,
+}
+
+/// Factory that joins boot-image payloads to the configured fw_cfg device.
+pub struct FwCfgPayloadFactory {
+    payload: FwCfgPayloadConfig,
+}
+
+impl FwCfgPayloadFactory {
+    pub const fn new(payload: FwCfgPayloadConfig) -> Self {
+        Self { payload }
+    }
+}
+
+impl DeviceFactory for FwCfgPayloadFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::FwCfg
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> DeviceManagerResult<DeviceBundle> {
+        if config.base_gpa != self.payload.base.as_usize() || config.length != self.payload.size {
+            return Err(DeviceManagerError::InvalidConfig {
+                operation: "build fw_cfg device",
+                detail: format!(
+                    "configured range [{:#x}, {:#x}) differs from boot payload range [{:#x}, \
+                     {:#x})",
+                    config.base_gpa,
+                    config.base_gpa.saturating_add(config.length),
+                    self.payload.base.as_usize(),
+                    self.payload
+                        .base
+                        .as_usize()
+                        .saturating_add(self.payload.size),
+                ),
+            });
+        }
+        FwCfgDeviceFactory::new().build(FwCfgBuildConfig {
+            base: self.payload.base,
+            size: self.payload.size,
+            kernel: self.payload.kernel,
+            initrd: self.payload.initrd,
+            cmdline: self.payload.cmdline.as_deref(),
+            cpu_num: self.payload.cpu_num,
+            platform: self.payload.platform,
+        })
+    }
+}
 
 impl FwCfgDeviceFactory {
     /// Creates the fw_cfg payload factory.
@@ -1689,8 +1752,7 @@ mod tests {
                 platform: FwCfgPlatformConfig::default(),
             })
             .unwrap();
-        let mut runtime =
-            crate::AxVmDevices::new(crate::AxVmDeviceConfig::new(Vec::new())).unwrap();
+        let mut runtime = crate::DeviceRuntime::empty();
         runtime.register_bundle(bundle).unwrap();
         let mut memory = TestGuestMemory {
             bytes: vec![0; 0x200],

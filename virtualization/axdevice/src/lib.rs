@@ -60,7 +60,8 @@ pub use factory::{
 };
 pub use fw_cfg::{
     FwCfg, FwCfgBuildConfig, FwCfgDeviceFactory, FwCfgDmaDevice, FwCfgInterruptConfig,
-    FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion, FwCfgSerialConfig,
+    FwCfgPayloadConfig, FwCfgPayloadFactory, FwCfgPciConfig, FwCfgPlatformConfig, FwCfgRamRegion,
+    FwCfgSerialConfig,
 };
 #[cfg(target_arch = "loongarch64")]
 pub use loongarch_pch_pic::{

@@ -146,7 +146,7 @@ unsafe fn outl(port: u16, value: u32) {
 
 #[cfg(test)]
 mod tests {
-    use axdevice::{AxVmDeviceConfig, AxVmDevices};
+    use axdevice::DeviceRuntime;
 
     use super::*;
 
@@ -188,10 +188,7 @@ mod tests {
         })
         .build()
         .unwrap();
-        let mut devices = AxVmDevices::new(AxVmDeviceConfig {
-            emu_configs: alloc::vec![],
-        })
-        .unwrap();
+        let mut devices = DeviceRuntime::default();
 
         devices.register_bundle(bundle).unwrap();
 
