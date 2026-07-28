@@ -507,6 +507,7 @@ impl TaskSystem {
             resources,
             extension,
             blocked_on: None,
+            pi_waiter_head: None,
             exit_callback_pending: false,
             exit_callback_claimed: false,
             deadline_callback_claimed: false,
@@ -1676,7 +1677,10 @@ impl TaskSystem {
                 to: ThreadState::Exited,
             });
         }
-        if record.blocked_on.is_some() || sched.blocked_pi_waiters != 0 {
+        if record.blocked_on.is_some()
+            || record.pi_waiter_head.is_some()
+            || sched.blocked_pi_waiters != 0
+        {
             return Err(TaskError::InvalidPiState);
         }
         if sched.placement.running_cpu() != Some(cpu.owner())
@@ -2655,7 +2659,10 @@ impl TaskSystem {
                 if sched.placement.on_cpu().is_some() {
                     return Err(TaskError::ThreadBusy);
                 }
-                if record.blocked_on.is_some() || sched.blocked_pi_waiters != 0 {
+                if record.blocked_on.is_some()
+                    || record.pi_waiter_head.is_some()
+                    || sched.blocked_pi_waiters != 0
+                {
                     return Err(TaskError::InvalidPiState);
                 }
                 if sched.deadline_cbs_borrower.is_some() {
@@ -2686,7 +2693,10 @@ impl TaskSystem {
                 if sched.placement.on_cpu().is_some() || sched.deadline_cbs_borrower.is_some() {
                     return Err(TaskError::ThreadBusy);
                 }
-                if record.blocked_on.is_some() || sched.blocked_pi_waiters != 0 {
+                if record.blocked_on.is_some()
+                    || record.pi_waiter_head.is_some()
+                    || sched.blocked_pi_waiters != 0
+                {
                     return Err(TaskError::InvalidPiState);
                 }
                 sched.placement.set_migration_target(None)?;

@@ -2,6 +2,19 @@
 
 use super::*;
 
+#[cfg(test)]
+static PI_DONOR_RECORD_VISITS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(super) fn reset_pi_donor_record_visits() {
+    PI_DONOR_RECORD_VISITS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(super) fn pi_donor_record_visits() -> usize {
+    PI_DONOR_RECORD_VISITS.load(Ordering::Relaxed)
+}
+
 #[derive(Debug)]
 pub(super) struct TaskSystemState {
     pub(super) cpus: Vec<CpuRegistration>,
@@ -27,6 +40,14 @@ impl PiRecomputeProof {
     pub(super) const fn start(self) -> ThreadId {
         self.start
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PiWaiterCursor {
+    owner: ThreadId,
+    previous: Option<ThreadId>,
+    next: Option<ThreadId>,
+    remaining: usize,
 }
 
 impl TaskSystemState {
@@ -128,6 +149,40 @@ impl TaskSystemState {
             return Err(TaskError::StaleThreadId);
         }
         slot.record.as_mut().ok_or(TaskError::StaleThreadId)
+    }
+
+    pub(super) fn pi_waiter_cursor(&self, owner: ThreadId) -> Result<PiWaiterCursor, TaskError> {
+        Ok(PiWaiterCursor {
+            owner,
+            previous: None,
+            next: self.thread_record(owner)?.pi_waiter_head,
+            remaining: self.slots.len(),
+        })
+    }
+
+    pub(super) fn next_pi_waiter(
+        &self,
+        cursor: &mut PiWaiterCursor,
+    ) -> Result<Option<(ThreadId, PiWaitRegistration)>, TaskError> {
+        let Some(waiter) = cursor.next else {
+            return Ok(None);
+        };
+        if cursor.remaining == 0 {
+            return Err(TaskError::PiCycle);
+        }
+        #[cfg(test)]
+        PI_DONOR_RECORD_VISITS.fetch_add(1, Ordering::Relaxed);
+        let registration = self
+            .thread_record(waiter)?
+            .blocked_on
+            .ok_or(TaskError::InvalidPiState)?;
+        if registration.owner != cursor.owner || registration.owner_prev != cursor.previous {
+            return Err(TaskError::InvalidPiState);
+        }
+        cursor.previous = Some(waiter);
+        cursor.next = registration.owner_next;
+        cursor.remaining -= 1;
+        Ok(Some((waiter, registration)))
     }
 
     pub(super) fn cpu_registration(&self, cpu: CpuId) -> Result<&CpuRegistration, TaskError> {
@@ -587,16 +642,14 @@ impl TaskSystemState {
             if dispatch_generation == u64::MAX {
                 return Err(TaskError::InvalidConfiguration);
             }
-            for slot in &self.slots {
-                let Some(donor) = slot.record.as_ref() else {
-                    continue;
-                };
-                if donor
-                    .blocked_on
-                    .is_some_and(|registration| registration.owner == current)
-                {
-                    self.validate_pi_donor(donor.core.id())?;
-                }
+            let mut waiter_count = 0;
+            let mut cursor = self.pi_waiter_cursor(current)?;
+            while let Some((waiter, _)) = self.next_pi_waiter(&mut cursor)? {
+                self.validate_pi_donor(waiter)?;
+                waiter_count += 1;
+            }
+            if waiter_count != self.thread_record(current)?.sched.lock().blocked_pi_waiters {
+                return Err(TaskError::InvalidPiState);
             }
             let Some(registration) = blocked_on else {
                 return Ok(PiRecomputeProof { start });
@@ -650,17 +703,16 @@ impl TaskSystemState {
             let mut effective_urgency = base_entity.scheduling_urgency(base);
             let mut pi_donor = None;
             let mut deadline_donor = None;
-            for slot in &self.slots {
-                let Some(donor_record) = slot.record.as_ref() else {
-                    continue;
-                };
-                let Some(registration) = donor_record.blocked_on else {
-                    continue;
-                };
-                if registration.owner != current {
-                    continue;
-                }
-                let waiter = donor_record.core.id();
+            let mut cursor = self
+                .pi_waiter_cursor(current)
+                .expect("prepared PI owner must retain its waiter list");
+            while let Some((waiter, _)) = self
+                .next_pi_waiter(&mut cursor)
+                .expect("prepared PI waiter list must remain linked")
+            {
+                let donor_record = self
+                    .thread_record(waiter)
+                    .expect("prepared PI waiter must retain its thread record");
                 let (donor_policy, donor) = {
                     let sched = donor_record.sched.lock();
                     (sched.policy, sched.pi_donor.unwrap_or(waiter))
@@ -786,6 +838,7 @@ pub(super) struct ThreadRecord {
     pub(super) resources: ThreadResources,
     pub(super) extension: Option<ThreadExtension>,
     pub(super) blocked_on: Option<PiWaitRegistration>,
+    pub(super) pi_waiter_head: Option<ThreadId>,
     pub(super) exit_callback_pending: bool,
     pub(super) exit_callback_claimed: bool,
     pub(super) deadline_callback_claimed: bool,
@@ -854,10 +907,14 @@ pub(super) struct PiWaitRegistration {
     pub(super) lock: PiLockId,
     pub(super) owner: ThreadId,
     pub(super) generation: u64,
+    pub(super) owner_prev: Option<ThreadId>,
+    pub(super) owner_next: Option<ThreadId>,
 }
 
 impl ThreadRecord {
     pub(super) fn has_live_pi_edges(&self) -> bool {
-        self.blocked_on.is_some() || self.sched.lock().blocked_pi_waiters != 0
+        self.blocked_on.is_some()
+            || self.pi_waiter_head.is_some()
+            || self.sched.lock().blocked_pi_waiters != 0
     }
 }

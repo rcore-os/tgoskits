@@ -5,6 +5,78 @@ use core::fmt;
 use super::*;
 use crate::lock::IrqTicketGuard;
 
+impl TaskSystemState {
+    fn attach_pi_waiter(&mut self, waiter: ThreadId, mut registration: PiWaitRegistration) {
+        let owner = registration.owner;
+        let previous_head = self
+            .thread_record(owner)
+            .expect("prepared PI owner must retain its thread record")
+            .pi_waiter_head;
+        registration.owner_prev = None;
+        registration.owner_next = previous_head;
+
+        if let Some(previous_head) = previous_head {
+            let head_registration = self
+                .thread_record_mut(previous_head)
+                .expect("prepared PI waiter head must retain its thread record")
+                .blocked_on
+                .as_mut()
+                .expect("prepared PI waiter head must retain its registration");
+            debug_assert_eq!(head_registration.owner, owner);
+            debug_assert_eq!(head_registration.owner_prev, None);
+            head_registration.owner_prev = Some(waiter);
+        }
+        self.thread_record_mut(waiter)
+            .expect("prepared PI waiter must retain its thread record")
+            .blocked_on = Some(registration);
+        self.thread_record_mut(owner)
+            .expect("prepared PI owner must retain its thread record")
+            .pi_waiter_head = Some(waiter);
+    }
+
+    fn detach_pi_waiter(&mut self, waiter: ThreadId) -> PiWaitRegistration {
+        let registration = self
+            .thread_record(waiter)
+            .expect("prepared PI waiter must retain its thread record")
+            .blocked_on
+            .expect("prepared PI waiter must retain its registration");
+
+        if let Some(previous) = registration.owner_prev {
+            let previous_registration = self
+                .thread_record_mut(previous)
+                .expect("prepared previous PI waiter must retain its thread record")
+                .blocked_on
+                .as_mut()
+                .expect("prepared previous PI waiter must retain its registration");
+            debug_assert_eq!(previous_registration.owner, registration.owner);
+            debug_assert_eq!(previous_registration.owner_next, Some(waiter));
+            previous_registration.owner_next = registration.owner_next;
+        } else {
+            let owner = self
+                .thread_record_mut(registration.owner)
+                .expect("prepared PI owner must retain its thread record");
+            debug_assert_eq!(owner.pi_waiter_head, Some(waiter));
+            owner.pi_waiter_head = registration.owner_next;
+        }
+
+        if let Some(next) = registration.owner_next {
+            let next_registration = self
+                .thread_record_mut(next)
+                .expect("prepared next PI waiter must retain its thread record")
+                .blocked_on
+                .as_mut()
+                .expect("prepared next PI waiter must retain its registration");
+            debug_assert_eq!(next_registration.owner, registration.owner);
+            debug_assert_eq!(next_registration.owner_prev, Some(waiter));
+            next_registration.owner_prev = registration.owner_prev;
+        }
+        self.thread_record_mut(waiter)
+            .expect("prepared PI waiter must retain its thread record")
+            .blocked_on = None;
+        registration
+    }
+}
+
 /// Prepared scheduler half of one PI mutex ownership transfer.
 ///
 /// Preparation retains the task-system registry lock after validating every
@@ -69,28 +141,42 @@ impl PiMutexHandoff<'_> {
         }
 
         if let Some(next) = next_owner {
-            for slot in &mut state.slots {
-                let Some(record) = slot.record.as_mut() else {
-                    continue;
-                };
-                let Some(registration) = record.blocked_on.as_mut() else {
-                    continue;
-                };
-                if registration.lock != lock || registration.owner != old_owner {
+            let mut cursor = state
+                .thread_record(old_owner)
+                .expect("prepared PI owner must retain its thread record")
+                .pi_waiter_head;
+            let mut remaining = state.slots.len();
+            let mut selected_granted = false;
+            while let Some(waiter) = cursor {
+                assert!(remaining != 0, "prepared PI waiter list must be acyclic");
+                let registration = state
+                    .thread_record(waiter)
+                    .expect("prepared PI waiter must retain its thread record")
+                    .blocked_on
+                    .expect("prepared PI waiter must retain its registration");
+                cursor = registration.owner_next;
+                remaining -= 1;
+                if registration.lock != lock {
                     continue;
                 }
-                if record.core.id() == next {
+
+                let mut registration = state.detach_pi_waiter(waiter);
+                if waiter == next {
                     let generation = registration.generation;
-                    record.blocked_on = None;
-                    record
+                    state
+                        .thread_record(waiter)
+                        .expect("prepared PI waiter must retain its thread record")
                         .core
                         .pi_wait_state()
                         .grant(generation)
                         .expect("prepared PI waiter generation must remain current");
+                    selected_granted = true;
                 } else {
                     registration.owner = next;
+                    state.attach_pi_waiter(waiter, registration);
                 }
             }
+            debug_assert!(selected_granted);
             state
                 .thread_record(next)
                 .expect("prepared PI next owner must retain its thread record")
@@ -148,11 +234,16 @@ impl TaskSystem {
             .ok_or(TaskError::InvalidPiState)?;
         let generation = waiter_core.pi_wait_state().begin()?;
 
-        state.thread_record_mut(waiter)?.blocked_on = Some(PiWaitRegistration {
-            lock,
-            owner,
-            generation,
-        });
+        state.attach_pi_waiter(
+            waiter,
+            PiWaitRegistration {
+                lock,
+                owner,
+                generation,
+                owner_prev: None,
+                owner_next: None,
+            },
+        );
         state.thread_record(owner)?.sched.lock().blocked_pi_waiters = next_waiter_count;
         state.apply_pi_recompute_chain(recompute, self.config.fair_slice_ns());
 
@@ -180,7 +271,7 @@ impl TaskSystem {
             .checked_sub(1)
             .ok_or(TaskError::InvalidPiState)?;
 
-        state.thread_record_mut(waiter)?.blocked_on = None;
+        state.detach_pi_waiter(waiter);
         state
             .thread_record(registration.owner)?
             .sched
@@ -208,30 +299,23 @@ impl TaskSystem {
         next_owner: Option<ThreadId>,
     ) -> Result<PiMutexHandoff<'_>, TaskError> {
         let state = self.state.lock();
-        let active_waiters = state
-            .slots
-            .iter()
-            .filter_map(|slot| slot.record.as_ref())
-            .filter(|record| {
-                record.blocked_on.is_some_and(|registration| {
-                    registration.lock == lock && registration.owner == old_owner
-                })
-            })
-            .count();
-        let selected_waiter = next_owner.is_some_and(|next| {
-            state.thread_record(next).is_ok_and(|record| {
-                record.blocked_on.is_some_and(|registration| {
-                    registration.lock == lock && registration.owner == old_owner
-                })
-            })
-        });
+        let old_recompute = state.prepare_pi_recompute_chain(old_owner)?;
+        let mut active_waiters = 0usize;
+        let mut selected_waiter = false;
+        let mut cursor = state.pi_waiter_cursor(old_owner)?;
+        while let Some((waiter, registration)) = state.next_pi_waiter(&mut cursor)? {
+            if registration.lock != lock {
+                continue;
+            }
+            active_waiters += 1;
+            selected_waiter |= next_owner == Some(waiter);
+        }
         if (active_waiters == 0 && next_owner.is_some())
             || (active_waiters != 0 && !selected_waiter)
         {
             return Err(TaskError::InvalidPiState);
         }
 
-        let old_recompute = state.prepare_pi_recompute_chain(old_owner)?;
         let next_recompute = next_owner
             .map(|next| state.prepare_pi_recompute_chain(next))
             .transpose()?;
