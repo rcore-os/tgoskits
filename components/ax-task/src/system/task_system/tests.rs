@@ -197,7 +197,9 @@ use crate::{DeadlineFlags, DeadlinePolicy, FairMode, Nice, RtPriority, ThreadExt
 
 static DEADLINE_OVERRUN_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 
-struct InstalledTaskHandles;
+struct InstalledTaskHandles {
+    irq_token: Option<crate::runtime::IrqGuardToken>,
+}
 
 impl InstalledTaskHandles {
     fn new(system: Pin<&TaskSystem>, cpu: Pin<&mut CpuLocal>) -> Self {
@@ -207,12 +209,21 @@ impl InstalledTaskHandles {
             // serializes every scheduler access until the handle is cleared.
             (unsafe { Pin::get_unchecked_mut(cpu) } as *mut CpuLocal).expose_provenance(),
         );
-        Self
+        Self {
+            irq_token: Some(task_runtime::irq_guard_enter()),
+        }
     }
 }
 
 impl Drop for InstalledTaskHandles {
     fn drop(&mut self) {
+        let token = self
+            .irq_token
+            .take()
+            .expect("test owner scope must retain its IRQ token");
+        // SAFETY: construction entered this token on the same host test thread
+        // and the fixture has finished every direct CpuLocal access.
+        unsafe { task_runtime::irq_guard_exit(token) };
         crate::test_runtime::clear_task_handles();
     }
 }
@@ -1764,7 +1775,7 @@ fn queued_pi_owner_is_requeued_only_by_its_owner_cpu() {
         owner.effective_policy(),
         SchedulePolicy::Fifo { priority } if priority.get() == 99
     ));
-    assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 2);
+    assert_eq!(system.snapshot(cpu.as_ref()).unwrap().runnable(), 2);
     let drain = system.drain_policy_updates(cpu.as_mut(), 1).unwrap();
     assert_eq!(drain.drained(), 1);
     assert_eq!(system.schedule(cpu.as_mut(), 1).unwrap().next(), owner.id());
@@ -2275,8 +2286,8 @@ fn drained_remote_wake_during_parking_is_committed_by_the_owner_thread() {
         ThreadState::Parking,
         "the owner must finish a PARKING handshake before wake can enqueue it"
     );
-    assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 0);
-    assert!(system.snapshot(cpu.as_ref()).need_resched());
+    assert_eq!(system.snapshot(cpu.as_ref()).unwrap().runnable(), 0);
+    assert!(system.snapshot(cpu.as_ref()).unwrap().need_resched());
     assert!(
         system
             .schedule_if_requested(cpu.as_mut(), 0)
@@ -2288,7 +2299,7 @@ fn drained_remote_wake_during_parking_is_committed_by_the_owner_thread() {
         system.thread_state(running.id()).unwrap(),
         ThreadState::Parking
     );
-    assert!(!system.snapshot(cpu.as_ref()).need_resched());
+    assert!(!system.snapshot(cpu.as_ref()).unwrap().need_resched());
 
     assert!(matches!(
         system.commit_park(cpu.as_mut(), &mut ticket).unwrap(),
@@ -2298,8 +2309,8 @@ fn drained_remote_wake_during_parking_is_committed_by_the_owner_thread() {
         system.thread_state(running.id()).unwrap(),
         ThreadState::Running
     );
-    assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 0);
-    assert!(!system.snapshot(cpu.as_ref()).need_resched());
+    assert_eq!(system.snapshot(cpu.as_ref()).unwrap().runnable(), 0);
+    assert!(!system.snapshot(cpu.as_ref()).unwrap().need_resched());
     assert!(
         matches!(
             system.schedule_if_requested(cpu.as_mut(), 0).unwrap(),
@@ -2307,9 +2318,12 @@ fn drained_remote_wake_during_parking_is_committed_by_the_owner_thread() {
         ),
         "a work-only wake must not be upgraded into a preemption"
     );
-    assert_eq!(system.snapshot(cpu.as_ref()).current(), Some(running.id()));
-    assert_eq!(system.snapshot(cpu.as_ref()).runnable(), 0);
-    assert!(!system.snapshot(cpu.as_ref()).need_resched());
+    assert_eq!(
+        system.snapshot(cpu.as_ref()).unwrap().current(),
+        Some(running.id())
+    );
+    assert_eq!(system.snapshot(cpu.as_ref()).unwrap().runnable(), 0);
+    assert!(!system.snapshot(cpu.as_ref()).unwrap().need_resched());
     assert!(matches!(
         system.cancel_park(cpu.as_mut(), &mut ticket),
         Err(TaskError::StaleThreadId)

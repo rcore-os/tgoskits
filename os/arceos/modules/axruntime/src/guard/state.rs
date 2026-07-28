@@ -134,6 +134,11 @@ impl RuntimeGuardState {
         restore_irqs
     }
 
+    #[cfg(any(feature = "multitask", test))]
+    pub(super) const fn owns_cpu_context(self) -> bool {
+        !self.irq.is_clear() || self.preempt.has_one_scheduler_frame()
+    }
+
     pub(super) fn enter_lock_preempt(&mut self) {
         self.preempt.lock_depth = self
             .preempt

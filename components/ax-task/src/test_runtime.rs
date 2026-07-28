@@ -224,6 +224,15 @@ impl TaskRuntime for UnitTestRuntime {
             RuntimeStatus::UnsafeContext
         }
     }
+    fn validate_owner_cpu_context() -> RuntimeStatus {
+        let irq_pinned = ACTIVE_IRQ_TOKENS.with(|tokens| !tokens.borrow().is_empty());
+        let scheduler_pinned = SCHEDULER_FRAME_DEPTH.with(|depth| depth.get() != 0);
+        if irq_pinned || scheduler_pinned {
+            RuntimeStatus::Success
+        } else {
+            RuntimeStatus::UnsafeContext
+        }
+    }
     fn monotonic_ns() -> u64 {
         run_hook_reentry_query();
         MONOTONIC_NS.with(Cell::get)

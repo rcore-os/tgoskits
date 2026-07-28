@@ -75,6 +75,31 @@ fn scheduler_frame_cannot_enter_inside_an_ordinary_irq_guard() {
 }
 
 #[test]
+fn owner_cpu_context_requires_irq_pin_or_scheduler_baton() {
+    let mut state = RuntimeGuardState::new();
+    assert!(!state.owns_cpu_context());
+
+    state.enter_lock_preempt();
+    assert!(
+        !state.owns_cpu_context(),
+        "a lock-local preemption depth cannot stand in for rq ownership"
+    );
+    state.exit_lock_preempt();
+
+    state.enter_irq(true);
+    assert!(state.owns_cpu_context());
+    assert!(state.exit_irq("test"));
+    assert!(!state.owns_cpu_context());
+
+    assert!(state.claim_task_scheduler());
+    assert!(state.owns_cpu_context());
+    state.transfer_scheduler_preempt();
+    assert!(state.owns_cpu_context());
+    state.exit_scheduler_preempt("test scheduler frame");
+    assert!(!state.owns_cpu_context());
+}
+
+#[test]
 #[should_panic(expected = "test scheduler frame exited with live IRQ guard depth=1")]
 fn scheduler_frame_cannot_cross_a_live_irq_guard() {
     let mut state = RuntimeGuardState::new();

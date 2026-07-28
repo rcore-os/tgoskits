@@ -362,6 +362,7 @@ impl TaskSystem {
     }
 
     fn ensure_owner_cpu_online(&self, cpu: &CpuLocal) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(cpu)?;
         let remote = self
             .cpu_remotes
             .get(cpu.owner().as_usize())
@@ -370,6 +371,33 @@ impl TaskSystem {
             Ok(())
         } else {
             Err(TaskError::CpuOffline(cpu.owner().as_u32()))
+        }
+    }
+
+    /// Enforces the post-publication owner-CPU access contract.
+    ///
+    /// Standalone scheduler models deliberately operate on an unpublished
+    /// `TaskSystem` and retain their direct pinned CpuLocal allocation. Once a
+    /// runtime publishes this exact system handle, every online owner access
+    /// must instead retain either its IRQ pin or scheduler baton. This mirrors
+    /// Linux's rq-lock assertion and closes interrupt-return re-entry over a
+    /// live mutable runqueue borrow.
+    fn ensure_owner_cpu_context(&self, cpu: &CpuLocal) -> Result<(), TaskError> {
+        if !cpu.is_online() {
+            return Ok(());
+        }
+        // SAFETY: reading the opaque handle neither dereferences it nor extends
+        // its lifetime. Equality only determines whether this model instance
+        // has crossed the runtime publication boundary.
+        let published = unsafe { task_runtime::task_system_handle() }.into_raw();
+        let this = (self as *const Self).expose_provenance();
+        if published == 0 || published != this {
+            return Ok(());
+        }
+        match task_runtime::validate_owner_cpu_context() {
+            RuntimeStatus::Success => Ok(()),
+            RuntimeStatus::UnsafeContext => Err(TaskError::UnsafeContext),
+            status => Err(TaskError::RuntimeFailure(status as u32)),
         }
     }
 
@@ -389,6 +417,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         let id = cpu.owner();
         let mut state = self.state.lock();
         let mut root_domain = self.root_domain.lock();
@@ -559,6 +588,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         spec: ThreadSpec,
     ) -> Result<ThreadHandle, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         {
             let state = self.state.lock();
             let registration = state.cpu_registration(cpu.owner())?;
@@ -606,6 +636,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         spec: ThreadSpec,
     ) -> Result<ThreadHandle, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         if !matches!(
             spec.policy(),
             SchedulePolicy::Fair {
@@ -658,6 +689,7 @@ impl TaskSystem {
         thread: ThreadId,
         now_ns: u64,
     ) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         let core = {
             let state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
@@ -685,6 +717,7 @@ impl TaskSystem {
         thread: ThreadId,
         now_ns: u64,
     ) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         let placed_locally = {
             let state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
@@ -728,6 +761,7 @@ impl TaskSystem {
 
     /// Removes a ready thread from its owner run queue for migration or update.
     pub fn dequeue(&self, mut cpu: Pin<&mut CpuLocal>, thread: ThreadId) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         let state = self.state.lock();
         state.ensure_cpu_online(&cpu)?;
         let queued = cpu
@@ -755,6 +789,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<RemoteWakeDrain, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         self.ensure_owner_cpu_online(&cpu)?;
         cpu.acknowledge_scheduler_ipi();
         let (drained, pending) = {
@@ -815,6 +850,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<RemoteWakeDrain, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         self.ensure_owner_cpu_online(&cpu)?;
         let (drained, pending) = {
             let fields = cpu.as_mut().fields_mut();
@@ -1132,6 +1168,7 @@ impl TaskSystem {
     /// node is published to the source migration inbox and the source owner
     /// selects and hands off one affinity-compatible thread at a safe point.
     pub fn request_idle_pull(&self, cpu: Pin<&CpuLocal>) -> Result<bool, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         if task_runtime::in_hard_irq() {
             return Ok(false);
         }
@@ -1183,6 +1220,7 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
     ) -> Result<Option<ThreadId>, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         if task_runtime::in_hard_irq() {
             return Ok(None);
         }
@@ -1259,6 +1297,7 @@ impl TaskSystem {
         thread: ThreadId,
         now_ns: u64,
     ) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         let core = {
             let state = self.state.lock();
             Arc::clone(&state.thread_record(thread)?.core)
@@ -1298,6 +1337,7 @@ impl TaskSystem {
         runtime_ns: u64,
         reclaimed_ns: u64,
     ) -> Result<ChargeOutcome, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         if !cpu.is_online() {
             return Err(TaskError::CpuOffline(cpu.owner().as_u32()));
         }
@@ -1318,6 +1358,7 @@ impl TaskSystem {
         now_ns: u64,
         reclaimed_ns: u64,
     ) -> Result<ChargeOutcome, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         if !cpu.is_online() {
             return Err(TaskError::CpuOffline(cpu.owner().as_u32()));
         }
@@ -1335,6 +1376,7 @@ impl TaskSystem {
         now_ns: u64,
         pi_boosted_owner: bool,
     ) -> Result<bool, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         self.ensure_owner_cpu_online(&cpu)?;
         Ok(cpu
             .as_mut()
@@ -1349,6 +1391,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut(), now_ns)?;
         self.ensure_owner_cpu_online(&cpu)?;
@@ -1389,6 +1432,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<SchedulerOutcome, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut(), now_ns)?;
         self.ensure_owner_cpu_online(&cpu)?;
@@ -1469,6 +1513,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<ScheduleDecision, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut(), now_ns)?;
         self.ensure_owner_cpu_online(&cpu)?;
@@ -1528,6 +1573,7 @@ impl TaskSystem {
 
     /// Publishes `PARKING` after consuming a wake-before-park notification.
     pub fn prepare_park(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<ParkPrepare, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         self.ensure_owner_cpu_online(&cpu)?;
         let core = cpu.current_core().ok_or(TaskError::NoRunnableThread)?;
@@ -1548,6 +1594,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         token: &mut ParkTicket,
     ) -> Result<ParkCommit, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         if token.is_resolved() {
             return Err(TaskError::StaleThreadId);
         }
@@ -1606,6 +1653,7 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         token: &mut ParkTicket,
     ) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         if token.is_resolved() {
             return Err(TaskError::StaleThreadId);
         }
@@ -1628,6 +1676,7 @@ impl TaskSystem {
         &self,
         mut cpu: Pin<&mut CpuLocal>,
     ) -> Result<ScheduleDecision, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         match self.prepare_park(cpu.as_mut())? {
             ParkPrepare::Prepared(mut ticket) => {
                 match self.commit_park(cpu.as_mut(), &mut ticket)? {
@@ -1660,6 +1709,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<ThreadId, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         self.drain_owner_work(cpu.as_mut(), now_ns)?;
         let state = self.state.lock();
@@ -1696,6 +1746,7 @@ impl TaskSystem {
 
     /// Commits current-thread exit and selects a replacement.
     pub fn exit_current(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<ScheduleDecision, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         self.complete_context_switch(cpu.as_mut())?;
         let now_ns = task_runtime::monotonic_ns();
         self.drain_owner_work(cpu.as_mut(), now_ns)?;
@@ -1758,6 +1809,7 @@ impl TaskSystem {
     /// left the previous stack. Deferred migration publication and exit hooks
     /// therefore cannot make a context runnable or reapable too early.
     pub fn complete_context_switch(&self, mut cpu: Pin<&mut CpuLocal>) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         let Some(initial_handoff) = cpu.as_ref().get_ref().switch_handoff().cloned() else {
             return Ok(());
         };
@@ -2591,6 +2643,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         affinity: CpuSet,
     ) -> Result<bool, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         validate_affinity(&affinity, self.config.cpu_count())?;
         let state = self.state.lock();
         let root_domain = self.root_domain.lock();
@@ -2638,6 +2691,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         thread: ThreadId,
     ) -> Result<(), TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         let state = self.state.lock();
         state.cpu_registration(cpu.owner())?;
         let core = Arc::clone(&state.thread_record(thread)?.core);
@@ -2903,6 +2957,7 @@ impl TaskSystem {
         cpu: Pin<&mut CpuLocal>,
         address_space: crate::runtime::AddressSpaceHandle,
     ) -> Result<crate::runtime::AddressSpaceHandle, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
         if address_space.is_none() {
             return Err(TaskError::InvalidConfiguration);
         }
@@ -3160,8 +3215,9 @@ impl TaskSystem {
     }
 
     /// Captures stable state for deterministic scheduler comparisons.
-    pub fn snapshot(&self, cpu: Pin<&CpuLocal>) -> CpuSnapshot {
-        CpuSnapshot::capture(&cpu)
+    pub fn snapshot(&self, cpu: Pin<&CpuLocal>) -> Result<CpuSnapshot, TaskError> {
+        self.ensure_owner_cpu_context(&cpu)?;
+        Ok(CpuSnapshot::capture(&cpu))
     }
 
     /// Returns the number of CPUs currently available for placement.

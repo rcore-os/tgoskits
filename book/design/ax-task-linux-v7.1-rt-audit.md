@@ -57,7 +57,7 @@ violate the crate dependency boundaries.
 
 | Area | TGOSKits range | Linux reference | Required invariant | Initial finding |
 | --- | --- | --- | --- | --- |
-| Scheduler placement | `components/ax-task/src/system`, scheduler policy and thread state | `kernel/sched/core.c` | A thread has one checked placement; migration and switch-tail publication cannot expose two owners | `queued_cpu`, `running_cpu`, `on_cpu`, and `migration_target` are independent fields with many hand-written updates |
+| Scheduler placement | `components/ax-task/src/system`, scheduler policy and thread state | `kernel/sched/core.c` | A thread has one checked placement; migration and switch-tail publication cannot expose two owners; every mutable owner access retains one CPU-local rq ownership scope | `queued_cpu`, `running_cpu`, `on_cpu`, and `migration_target` are independent fields with many hand-written updates, and the safe `TaskSystem` surface does not require an outer owner scope |
 | Remote delivery | ax-task CPU remote inbox, task-work, ax-runtime IPI glue | scheduler IPI, `irq_work` | Publish payload and epoch before IPI; consume the delivered epoch before admitting a new notification | Busy/claim and boolean doorbells lack complete new-publication race coverage |
 | Task deadlines | ax-task timer, park, wait and deferred deadline paths | `hrtimer.c` | Hard IRQ handles bounded value records; cancellation and expiry cannot dereference released owners | The heap stores raw timer-node pointers whose safety depends on caller serialization |
 | Physical clockevent | ax-runtime clockevent and platform generic timer | `clockevents.c`, `tick-oneshot.c` | One per-CPU owner; infinity is not a numeric deadline; hardware conversion clamps to min/max delta | `u64::MAX` can truncate during tick conversion, overdue events can program zero, and no offline transition exists |
@@ -122,6 +122,42 @@ test
 `scheduler_safe_point_recovers_overdue_deadline_without_clock_irq` fails
 without the safe-point promotion. The isolated x86_64 QEMU case then completes
 its yield, sleep, and wait-queue stages.
+
+The x86_64 Starry `bug-sched-affinity-pid` stress case exposed a separate
+owner-runqueue re-entry. Under repeated parent and child affinity changes, GDB
+stopped in `execute_switch_plan()` on fatal invariant 1: a nested scheduler
+decision required a context switch while `previous_endpoint()` was `None`.
+The outer owner transition had already cleared `CpuLocal.current` and
+`current_core`, but had not installed the selected successor. An internal
+thread-scheduler lock then became the outermost preemption guard; releasing it
+restored scheduling eligibility and entered the scheduler over that transient
+owner state.
+
+Linux does not make a mutable rq operation safe merely because one nested
+object lock happens to disable preemption. `raw_spin_rq_lock_nested()` creates
+an explicit rq ownership scope, `lockdep_assert_rq_held()` checks it at helper
+boundaries, and `prepare_lock_switch()` carries that ownership across the raw
+context switch until `finish_task_switch()` releases it. Ax-runtime already
+had the corresponding scheduler baton, but ax-task's direct `TaskSystem`
+methods could be invoked after runtime publication without proving that the
+caller retained either the baton or an outer IRQ pin.
+
+`TaskRuntime::validate_owner_cpu_context()` is now the capability check for
+that boundary. Every public operation borrowing an online `CpuLocal` validates
+the exact published `TaskSystem` before touching owner state. Ax-runtime
+accepts only a live runtime IRQ scope or an active/transferred scheduler
+baton; a lock-local preemption depth alone is rejected. Standalone scheduler
+models remain usable before runtime publication, while runtime tests install
+an explicit owner scope instead of receiving a test-only exemption.
+
+The deterministic regression
+`online_owner_operations_require_an_outer_cpu_pin` configures IRQ-exit
+scheduler re-entry and directly calls the formerly safe affinity owner method.
+It returned `Ok(false)` before the boundary and now returns
+`TaskError::UnsafeContext`; the same call succeeds while the test retains an
+IRQ guard. The end-to-end case was raised from 20 to 200 iterations and
+completed on four x86_64 CPUs with `STARRY_GROUPED_TESTS_PASSED`, whereas the
+old implementation reproduced the transient-state panic within 11 iterations.
 
 Thread construction also exposed a distinct lifetime violation. A rejected
 `ThreadSpec` dropped its OS extension before destroying the runtime context,

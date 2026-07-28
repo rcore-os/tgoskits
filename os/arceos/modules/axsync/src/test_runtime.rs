@@ -94,6 +94,7 @@ impl_task_runtime! {
                 RuntimeStatus::UnsafeContext
             }
         }
+        fn validate_owner_cpu_context() -> RuntimeStatus { RuntimeStatus::Success }
         fn monotonic_ns() -> u64 { 0 }
         fn timer_resolution_ns() -> u64 { 1 }
         fn publish_task_deadline(_update: TaskDeadlineUpdate) -> RuntimeStatus {

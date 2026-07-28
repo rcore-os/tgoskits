@@ -132,6 +132,9 @@ impl_trait! {
                 RuntimeStatus::Success
             }
         }
+        fn validate_owner_cpu_context() -> RuntimeStatus {
+            RuntimeStatus::Success
+        }
         fn monotonic_ns() -> u64 { MONOTONIC_NS.with(Cell::get) }
         fn timer_resolution_ns() -> u64 { TIMER_RESOLUTION_NS.with(Cell::get) }
         fn publish_task_deadline(update: TaskDeadlineUpdate) -> RuntimeStatus {

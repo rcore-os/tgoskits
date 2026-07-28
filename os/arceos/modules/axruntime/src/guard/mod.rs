@@ -46,6 +46,24 @@ pub(crate) fn validate_schedule_context(
     }
 }
 
+/// Validates an owner-only CpuLocal access against the fixed CPU guard state.
+#[cfg(feature = "multitask")]
+pub(crate) fn validate_owner_cpu_context() -> ax_task::runtime::RuntimeStatus {
+    use ax_task::runtime::RuntimeStatus;
+
+    // Every valid owner scope already disabled raw IRQs before reconstructing
+    // the CpuLocal reference. Refuse to create a diagnostic IRQ window here:
+    // doing so would itself permit the scheduler re-entry this check prevents.
+    if ax_hal::asm::irqs_enabled() || (in_hard_irq() && read_state().irq.is_clear()) {
+        return RuntimeStatus::UnsafeContext;
+    }
+    if read_state().owns_cpu_context() {
+        RuntimeStatus::Success
+    } else {
+        RuntimeStatus::UnsafeContext
+    }
+}
+
 /// Reports whether the current CPU is in a context that must not sleep.
 #[cfg(feature = "fs")]
 pub(crate) fn in_atomic_context() -> bool {

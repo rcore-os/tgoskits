@@ -504,6 +504,16 @@ pub trait TaskRuntime {
     /// still in hard IRQ context.
     fn validate_schedule_context(origin: RuntimeScheduleOrigin) -> RuntimeStatus;
 
+    /// Validates one owner-CPU scheduler-state access.
+    ///
+    /// This is the runtime equivalent of Linux's `lockdep_assert_rq_held()`.
+    /// It must return [`RuntimeStatus::Success`] only while the current CPU is
+    /// pinned by an ordinary IRQ guard or owns an active scheduler baton.
+    /// Unlike [`Self::validate_schedule_context`], a completely unguarded task
+    /// context is invalid here: an interrupt-return scheduler entry could
+    /// otherwise re-enter over a live mutable [`crate::CpuLocal`] borrow.
+    fn validate_owner_cpu_context() -> RuntimeStatus;
+
     /// Returns monotonic time in nanoseconds.
     fn monotonic_ns() -> u64;
 
