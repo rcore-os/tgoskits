@@ -8,6 +8,9 @@ keywords = ["starry-os"]
 repository = "https://github.com/Starry-OS/starry-process"
 license = "Apache-2.0"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)'] }
+
 [dependencies]
 ax-kspin = { workspace = true, features = ["smp"] }
 ax-lazyinit = { workspace = true }

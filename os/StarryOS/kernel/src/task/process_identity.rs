@@ -90,6 +90,14 @@ impl ProcessIdentity {
         )
     }
 
+    /// Returns whether a new pidfd may resolve this identity.
+    fn is_pidfd_openable(&self) -> bool {
+        matches!(
+            *self.state.lock(),
+            ProcessIdentityState::Live(_) | ProcessIdentityState::Zombie(_)
+        )
+    }
+
     /// Resolves the process while this generation is still registered.
     pub(crate) fn registered_process(&self) -> AxResult<Arc<Process>> {
         if self.is_reaped() {
@@ -207,15 +215,28 @@ pub fn get_process_data(pid: Pid) -> AxResult<Arc<ProcessData>> {
 
 /// Resolves one stable generation for `pidfd_open()`.
 pub(crate) fn pidfd_process_identity(pid: Pid) -> AxResult<Arc<ProcessIdentity>> {
-    PROCESS_TABLE
-        .read()
+    // Holding the registry read lock through the state check linearizes this
+    // lookup against the write-locked Zombie -> Reaping claim.
+    let process_table = PROCESS_TABLE.read();
+    process_table
         .get(&pid)
+        .filter(|identity| identity.is_pidfd_openable())
         .cloned()
         .ok_or(AxError::NoSuchProcess)
 }
 
-/// Resolves the exact registered identity for a process object.
-pub(crate) fn process_identity(process: &Arc<Process>) -> Option<Arc<ProcessIdentity>> {
+/// Resolves the exact openable identity for a process object.
+pub(crate) fn pidfd_thread_identity(process: &Arc<Process>) -> Option<Arc<ProcessIdentity>> {
+    let process_table = PROCESS_TABLE.read();
+    process_table
+        .get(&process.pid())
+        .filter(|identity| identity.matches_process(process))
+        .filter(|identity| identity.is_pidfd_openable())
+        .cloned()
+}
+
+/// Resolves the exact registered identity for lifecycle observation.
+fn process_identity(process: &Arc<Process>) -> Option<Arc<ProcessIdentity>> {
     PROCESS_TABLE
         .read()
         .get(&process.pid())
@@ -242,6 +263,9 @@ pub(crate) fn reap_process(process: &Arc<Process>) -> Option<ProcessCpuTime> {
         let zombie = identity.claim_reap(process)?;
         (identity, zombie)
     };
+
+    #[cfg(axtest)]
+    axtest::reap_claim_barrier(process.pid());
 
     // Keep the identity registered in Reaping while topology links are
     // removed. This prevents PID reuse from inserting a new process under the
@@ -352,3 +376,10 @@ pub(crate) fn traced_zombies_for(tracer_pid: Pid) -> Vec<Arc<Process>> {
         .map(|identity| identity.process())
         .collect()
 }
+
+#[cfg(axtest)]
+#[path = "process_identity_axtest.rs"]
+mod axtest;
+
+#[cfg(axtest)]
+pub(crate) use axtest::reaping_identity_is_not_openable_for_test;

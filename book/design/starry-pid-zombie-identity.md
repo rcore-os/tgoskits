@@ -81,7 +81,8 @@ Zombie {
         v
 Reaping
         |
-        | retire parent/group topology while the PID remains reserved
+        | retire parent/group topology while the PID remains registry-reserved
+        | but is no longer externally openable
         v
 Reaped
 ```
@@ -119,6 +120,10 @@ The patch:
   and removes only exact parent/group identities;
 - retains the identity in `Reaping` until topology retirement finishes, so the
   numeric PID cannot be reused in the middle of cleanup;
+- treats that `Reaping` registry entry only as an internal PID reservation:
+  both process and thread `pidfd_open` lookups accept only `Live | Zombie`;
+- holds the PID-registry read lock through the openability state check, which
+  linearizes lookup against the write-locked `Zombie -> Reaping` claim;
 - replaces the separate live and zombie registries with one typed PID registry;
 - resolves `pidfd_open` from one registry lock and retains
   `Arc<ProcessIdentity>`;
@@ -162,11 +167,21 @@ implementation:
 - `qemu/system/syscall-test-waitid-pidfd` ended with 55 passes and one failure
   because a consumed child contributed no frozen CPU time to its parent.
 
+The review regression `reaping_identity_is_not_openable` adds a test-only
+barrier immediately after the consuming waiter claims `Zombie -> Reaping`.
+Before the openability filter, both numeric-PID and exact-thread identity
+lookups still succeeded in that deterministic window, so the axtest reported
+`not ok`.
+
 ## Validation evidence
 
 - `cargo test -p starry-process`: 27 tests passed;
 - `cargo xtask clippy --package starry-process`: 1/1 check passed;
 - `cargo xtask clippy --package starry-kernel`: 22/22 feature checks passed;
+- `reaping_identity_is_not_openable` now reports `ok` under
+  `cargo xtask ktest qemu -p starry-kernel --arch x86_64`; the complete local
+  axtest run reports 398 passes and one unrelated pre-existing
+  `task_clone_validation_rules_hold` failure;
 - the waitid/pidfd userspace test passed on host Linux with 66/66 assertions;
 - `cargo xtask starry test qemu --arch x86_64
   -c qemu/system/syscall-test-waitid-pidfd`: 66/66 assertions passed and the
@@ -177,6 +192,12 @@ implementation:
 
 The remaining architecture matrix is delegated to CI; no physical-board path
 is required for this process-lifecycle-only change.
+
+The `Reaping` window cannot be controlled from userspace without exposing an
+internal topology lock, so a pthread race in the syscall suite would be
+probabilistic. Existing QEMU cases retain the syscall-level pidfd/wait coverage,
+while the kernel axtest supplies deterministic concurrent coverage for this
+internal linearization point.
 
 Known adjacent gaps that should remain separate unless needed to make the core
 identity correct:

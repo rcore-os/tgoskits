@@ -356,8 +356,8 @@ impl fmt::Debug for Process {
 
 /// Builder
 impl Process {
-    fn new(pid: Pid, parent: Option<Arc<Process>>) -> Arc<Process> {
-        let group = parent.as_ref().map_or_else(
+    fn new_group_member(pid: Pid, parent: Option<&Arc<Process>>) -> Arc<Process> {
+        let group = parent.map_or_else(
             || {
                 let session = Session::new(pid);
                 ProcessGroup::new(pid, &session)
@@ -370,11 +370,16 @@ impl Process {
             is_child_subreaper: AtomicBool::new(false),
             tg: SpinNoIrq::new(ThreadGroup::default()),
             children: SpinNoIrq::new(StrongMap::new()),
-            parent: SpinNoIrq::new(parent.as_ref().map(Arc::downgrade).unwrap_or_default()),
+            parent: SpinNoIrq::new(parent.map(Arc::downgrade).unwrap_or_default()),
             group: SpinNoIrq::new(group.clone()),
         });
 
         group.processes.lock().insert(pid, &process);
+        process
+    }
+
+    fn new(pid: Pid, parent: Option<Arc<Process>>) -> Arc<Process> {
+        let process = Self::new_group_member(pid, parent.as_ref());
 
         if let Some(parent) = parent {
             parent.children.lock().insert(pid, process.clone());
@@ -396,6 +401,12 @@ impl Process {
     /// Creates a child [`Process`].
     pub fn fork(self: &Arc<Process>, pid: Pid) -> Arc<Process> {
         Self::new(pid, Some(self.clone()))
+    }
+
+    /// Creates an isolated process for kernel axtests without replacing init.
+    #[cfg(axtest)]
+    pub fn new_for_axtest(pid: Pid) -> Arc<Process> {
+        Self::new_group_member(pid, None)
     }
 }
 

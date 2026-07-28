@@ -11,7 +11,7 @@ use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like},
     syscall::signal::check_kill_permission,
     task::{
-        AsThread, get_task, pidfd_process_identity, process_identity, send_signal_to_process,
+        AsThread, get_task, pidfd_process_identity, pidfd_thread_identity, send_signal_to_process,
         send_signal_to_process_group, send_signal_to_thread,
     },
 };
@@ -68,7 +68,7 @@ pub fn sys_pidfd_open(pid: u32, flags: u32) -> AxResult<isize> {
     let fd = if flags.contains(PidFdFlags::THREAD) {
         match get_task(pid) {
             Ok(task) => {
-                let identity = process_identity(&task.as_thread().proc_data.proc)
+                let identity = pidfd_thread_identity(&task.as_thread().proc_data.proc)
                     .ok_or(AxError::NoSuchProcess)?;
                 PidFd::new_thread(identity, task.as_thread(), pid)
             }
