@@ -3,7 +3,7 @@ use axtest::prelude::*;
 use crate::{
     Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
     SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq,
-    UartParts, UartPort, UartRegisterGuard,
+    UartParts, UartPort,
 };
 
 #[axtest]
@@ -150,7 +150,7 @@ struct MockUart;
 struct MockEmergencyTx;
 
 impl UartEmergencyTx for MockEmergencyTx {
-    fn try_write(&self, _access: &UartRegisterGuard<'_>, bytes: &[u8]) -> usize {
+    unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
         bytes.len().min(1)
     }
 }

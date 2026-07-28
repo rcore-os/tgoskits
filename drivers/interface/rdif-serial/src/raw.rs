@@ -10,18 +10,22 @@ use crate::{Config, ConfigError, RxSample, SerialEventSet, SerialIrqEvent};
 /// Normal task and IRQ endpoints use same-CPU IRQ exclusion. This additional
 /// gate serializes the cross-CPU emergency endpoint without allowing hard IRQ
 /// or panic paths to wait.
-pub struct UartRegisterGate {
+pub struct UartRegisterGate<E: ?Sized = dyn UartEmergencyTx> {
     active: AtomicBool,
+    emergency_tx: E,
 }
 
-impl UartRegisterGate {
-    pub const fn new() -> Self {
+impl<E> UartRegisterGate<E> {
+    pub const fn new(emergency_tx: E) -> Self {
         Self {
             active: AtomicBool::new(false),
+            emergency_tx,
         }
     }
+}
 
-    pub fn try_enter(&self) -> Option<UartRegisterGuard<'_>> {
+impl<E: ?Sized> UartRegisterGate<E> {
+    pub fn try_enter(&self) -> Option<UartRegisterGuard<'_, E>> {
         self.active
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
@@ -32,19 +36,22 @@ impl UartRegisterGate {
     }
 }
 
-impl Default for UartRegisterGate {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Move-only proof that the caller exclusively owns UART register access.
-pub struct UartRegisterGuard<'a> {
-    gate: &'a UartRegisterGate,
+pub struct UartRegisterGuard<'a, E: ?Sized = dyn UartEmergencyTx> {
+    gate: &'a UartRegisterGate<E>,
     _not_send: PhantomData<*mut ()>,
 }
 
-impl Drop for UartRegisterGuard<'_> {
+impl<E: UartEmergencyTx + ?Sized> UartRegisterGuard<'_, E> {
+    /// Performs one bounded emergency write through this guard's UART.
+    pub fn try_write(&self, bytes: &[u8]) -> usize {
+        // SAFETY: this guard is created only by `self.gate`, remains borrowed
+        // for the call, and releases the gate on drop.
+        unsafe { self.gate.emergency_tx.try_write_unlocked(bytes) }
+    }
+}
+
+impl<E: ?Sized> Drop for UartRegisterGuard<'_, E> {
     fn drop(&mut self) {
         self.gate.active.store(false, Ordering::Release);
     }
@@ -140,28 +147,60 @@ pub trait UartIrq: Send + 'static {
     fn handle(&mut self, rx: &mut dyn IrqRxSink) -> Option<SerialIrqEvent>;
 }
 
-/// Panic/emergency-only TX endpoint.
+/// Raw panic/emergency-only TX endpoint.
 ///
 /// This endpoint deliberately exposes no configuration, interrupt, RX, or
-/// blocking operation. Its required [`UartRegisterGuard`] makes register
-/// serialization part of the API rather than a caller-side convention.
-/// `try_write` performs one bounded pass over the currently available FIFO
-/// capacity and returns immediately.
+/// blocking operation. A runtime must move it into [`UartRegisterGate`] before
+/// exposing safe emergency output.
 pub trait UartEmergencyTx: Send + Sync + 'static {
-    fn try_write(&self, access: &UartRegisterGuard<'_>, bytes: &[u8]) -> usize;
+    /// Performs one bounded pass over currently available FIFO capacity.
+    ///
+    /// # Safety
+    ///
+    /// The caller must exclusively own every alias of this UART register
+    /// block for the duration of the call. Normal users must call
+    /// [`UartRegisterGuard::try_write`] instead.
+    unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize;
 }
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::AtomicUsize;
+
     use super::*;
+
+    struct RecordingEmergencyTx(&'static AtomicUsize);
+
+    impl UartEmergencyTx for RecordingEmergencyTx {
+        unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
+            self.0.fetch_add(bytes.len(), Ordering::Relaxed);
+            bytes.len()
+        }
+    }
 
     #[test]
     fn register_gate_never_waits_and_releases_on_guard_drop() {
-        let gate = UartRegisterGate::new();
+        let gate = UartRegisterGate::new(());
         let owner = gate.try_enter().expect("first register owner");
 
         assert!(gate.try_enter().is_none());
         drop(owner);
         assert!(gate.try_enter().is_some());
+    }
+
+    #[test]
+    fn register_guard_does_not_authorize_an_unrelated_uart() {
+        static FIRST_UART_WRITES: AtomicUsize = AtomicUsize::new(0);
+        static SECOND_UART_WRITES: AtomicUsize = AtomicUsize::new(0);
+
+        FIRST_UART_WRITES.store(0, Ordering::Relaxed);
+        SECOND_UART_WRITES.store(0, Ordering::Relaxed);
+        let first_uart_gate = UartRegisterGate::new(RecordingEmergencyTx(&FIRST_UART_WRITES));
+        let _second_uart_gate = UartRegisterGate::new(RecordingEmergencyTx(&SECOND_UART_WRITES));
+        let first_uart_access = first_uart_gate.try_enter().expect("first UART access");
+
+        assert_eq!(first_uart_access.try_write(b"x"), 1);
+        assert_eq!(FIRST_UART_WRITES.load(Ordering::Relaxed), 1);
+        assert_eq!(SECOND_UART_WRITES.load(Ordering::Relaxed), 0);
     }
 }
