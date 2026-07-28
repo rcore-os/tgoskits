@@ -406,6 +406,8 @@ pub fn rust_main(cpu_id: usize, arg: usize) -> ! {
     #[cfg(not(feature = "multitask"))]
     {
         debug!("main task exited: exit_code={}", 0);
+        #[cfg(feature = "irq")]
+        take_current_clock_event_offline();
         ax_hal::power::system_off();
     }
 }
@@ -521,9 +523,27 @@ fn with_local_clock_event_mut<R>(
 
 #[cfg(feature = "irq")]
 fn apply_clock_event_action(action: clock_event::ClockEventAction) {
-    if let clock_event::ClockEventAction::Program(deadline) = action {
-        ax_hal::time::set_oneshot_timer(deadline.as_nanos());
+    match action {
+        clock_event::ClockEventAction::None => {}
+        clock_event::ClockEventAction::Stop => ax_hal::time::cancel_oneshot_timer(),
+        clock_event::ClockEventAction::Program(deadline) => {
+            ax_hal::time::set_oneshot_timer(deadline.as_nanos());
+        }
     }
+}
+
+#[cfg(feature = "irq")]
+pub(crate) fn take_current_clock_event_offline() {
+    run_clock_event_transaction(
+        ax_kernel_guard::IrqSave::new,
+        || {
+            (
+                (),
+                with_local_clock_event_mut(clock_event::LocalClockEvent::take_offline),
+            )
+        },
+        apply_clock_event_action,
+    );
 }
 
 #[cfg(feature = "irq")]
@@ -652,12 +672,8 @@ fn init_timer() {
     run_clock_event_transaction(
         ax_kernel_guard::IrqSave::new,
         || {
-            ax_hal::time::enable_timer_irq();
             let now_ns = ax_hal::time::monotonic_time_nanos();
-            let periodic = clock_event::ClockDeadline::from_nanos(
-                now_ns.saturating_add(periodic_interval_nanos()),
-            )
-            .expect("periodic clockevent deadline must be non-zero");
+            let periodic = initial_periodic_deadline(now_ns, periodic_interval_nanos());
             let action = with_local_clock_event_mut(|clockevent| clockevent.online(periodic));
             ((), action)
         },
@@ -666,12 +682,23 @@ fn init_timer() {
 }
 
 #[cfg(any(feature = "irq", test))]
-const fn next_periodic_deadline(deadline_ns: u64, now_ns: u64, interval_ns: u64) -> u64 {
+const fn initial_periodic_deadline(
+    now_ns: u64,
+    interval_ns: u64,
+) -> Option<clock_event::ClockDeadline> {
+    match now_ns.checked_add(interval_ns) {
+        Some(deadline_ns) => clock_event::ClockDeadline::from_nanos(deadline_ns),
+        None => None,
+    }
+}
+
+#[cfg(any(feature = "irq", test))]
+const fn next_periodic_deadline(deadline_ns: u64, now_ns: u64, interval_ns: u64) -> Option<u64> {
     if now_ns == u64::MAX {
-        return u64::MAX;
+        return None;
     }
     if deadline_ns > now_ns {
-        return deadline_ns;
+        return Some(deadline_ns);
     }
 
     let interval_ns = if interval_ns == 0 { 1 } else { interval_ns };
@@ -679,10 +706,10 @@ const fn next_periodic_deadline(deadline_ns: u64, now_ns: u64, interval_ns: u64)
     let interval_ns = interval_ns as u128;
     let periods = elapsed_ns / interval_ns + 1;
     let next = deadline_ns as u128 + periods * interval_ns;
-    if next > u64::MAX as u128 {
-        u64::MAX
+    if next >= u64::MAX as u128 {
+        None
     } else {
-        next as u64
+        Some(next as u64)
     }
 }
 
@@ -819,7 +846,7 @@ mod tests {
                     !irq_enabled.get(),
                     "clockevent state mutation requires local IRQ exclusion"
                 );
-                (7, clockevent.online(deadline))
+                (7, clockevent.online(Some(deadline)))
             },
             |action| {
                 assert!(
@@ -931,20 +958,26 @@ mod tests {
 
     #[test]
     fn periodic_deadline_catches_up_without_accumulating_drift() {
-        assert_eq!(super::next_periodic_deadline(100, 100, 25), 125);
-        assert_eq!(super::next_periodic_deadline(100, 149, 25), 150);
-        assert_eq!(super::next_periodic_deadline(100, 150, 25), 175);
+        assert_eq!(super::next_periodic_deadline(100, 100, 25), Some(125));
+        assert_eq!(super::next_periodic_deadline(100, 149, 25), Some(150));
+        assert_eq!(super::next_periodic_deadline(100, 150, 25), Some(175));
+    }
+
+    #[test]
+    fn initial_periodic_deadline_becomes_idle_at_the_monotonic_limit() {
+        assert_eq!(super::initial_periodic_deadline(u64::MAX - 1, 2), None);
+        assert_eq!(super::initial_periodic_deadline(u64::MAX - 1, 1), None);
     }
 
     #[test]
     fn periodic_deadline_saturates_at_the_monotonic_limit() {
         assert_eq!(
             super::next_periodic_deadline(u64::MAX - 5, u64::MAX - 1, 10),
-            u64::MAX
+            None
         );
         assert_eq!(
             super::next_periodic_deadline(u64::MAX - 5, u64::MAX, 10),
-            u64::MAX
+            None
         );
     }
 }

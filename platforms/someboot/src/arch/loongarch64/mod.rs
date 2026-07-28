@@ -104,8 +104,10 @@ impl ArchTrait for Arch {
         trap::per_cpu_trap_init(is_primary);
     }
 
-    fn systimer_enable() {
-        tcfg::set_en(true);
+    fn systimer_prepare_oneshot() {
+        tcfg::set_en(false);
+        tcfg::set_periodic(false);
+        ticlr::clear_timer_interrupt();
     }
 
     fn systimer_irq_enable() {
@@ -120,9 +122,7 @@ impl ArchTrait for Arch {
         tcfg::read().en()
     }
     fn systimer_set_interval(ticks: usize) {
-        let ticks = ticks.max(MIN_TICKS);
-        // Ensure the value is aligned to a multiple of 4 as required by TCFG
-        let ticks = (ticks + 3) & !3;
+        let ticks = crate::timer::aligned_interval_ticks(ticks, MIN_TICKS, 4);
 
         // 先禁用定时器
         tcfg::set_en(false);

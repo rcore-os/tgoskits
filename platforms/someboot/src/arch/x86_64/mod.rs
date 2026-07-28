@@ -142,8 +142,8 @@ impl ArchTrait for Arch {
         power::cpu_on(hartid, entry, arg)
     }
 
-    fn systimer_enable() {
-        trap::timer_enable();
+    fn systimer_prepare_oneshot() {
+        trap::timer_prepare_oneshot();
     }
 
     fn systimer_irq_enable() {

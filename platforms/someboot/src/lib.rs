@@ -119,7 +119,8 @@ pub trait ArchTrait {
     fn secondary_entry_fn_address() -> *const ();
     fn cpu_on(hartid: usize, entry: usize, arg: usize) -> Result<(), CpuOnError>;
 
-    fn systimer_enable();
+    /// Prepares the per-CPU one-shot timer in a masked, non-firing state.
+    fn systimer_prepare_oneshot();
     fn systimer_irq_enable();
     fn systimer_irq_disable();
     fn systimer_irq_is_enabled() -> bool;

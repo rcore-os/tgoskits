@@ -102,10 +102,9 @@ pub fn init_local() {
     init_lapic();
 }
 
-pub fn timer_enable() {
+pub fn timer_prepare_oneshot() {
     ensure_lapic_ready();
-    set_lvt_masked(false);
-    write_lapic_reg(LAPIC_REG_LVT_TIMER, timer_lvt_value(false));
+    write_lapic_reg(LAPIC_REG_LVT_TIMER, timer_lvt_value(true));
 }
 
 pub fn timer_irq_enable() {

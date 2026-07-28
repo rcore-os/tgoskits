@@ -11,14 +11,14 @@ impl InitIf for InitIfImpl {
     /// early console, clocking).
     fn init_early(_cpu_id: usize, _dtb: usize) {
         enable_fp_simd();
-        somehal::timer::enable();
+        somehal::timer::prepare_oneshot();
     }
 
     /// Initializes the platform at the early stage for secondary cores.
     #[cfg(feature = "smp")]
     fn init_early_secondary(_cpu_id: usize) {
         enable_fp_simd();
-        somehal::timer::enable();
+        somehal::timer::prepare_oneshot();
     }
 
     /// Initializes the platform at the later stage for the primary core.
