@@ -35,7 +35,7 @@ use crate::{
     syscall::signal::check_sigset_size,
     task::{
         current_user_task,
-        future::{block_on, block_on_user, interruptible_for, timeout_at_wall},
+        future::{UserWaitOutcome, block_on, block_on_user_until_wall},
         with_blocked_signals,
     },
     time::TimeValueLike,
@@ -1105,13 +1105,10 @@ fn wait_for_completion(
     });
 
     let task = current_user_task();
-    match block_on_user(
-        &task,
-        interruptible_for(&task, timeout_at_wall(deadline, wait)),
-    ) {
-        Ok(Ok(())) => Ok(true),
-        Ok(Err(_)) => Ok(false),
-        Err(_) => Err(AxError::Interrupted),
+    match block_on_user_until_wall(&task, deadline, wait) {
+        UserWaitOutcome::Ready(()) => Ok(true),
+        UserWaitOutcome::TimedOut => Ok(false),
+        UserWaitOutcome::Interrupted => Err(AxError::Interrupted),
     }
 }
 

@@ -26,7 +26,7 @@ use crate::{
     syscall::in_root_net_ns,
     task::{
         current_user_task,
-        future::{block_on_user, poll_io_for},
+        future::{block_on_user, poll_io},
     },
 };
 
@@ -172,7 +172,7 @@ impl PacketSocket {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
                 let (data, from) = {
                     let mut state = self.state.lock();
                     state.pending.take().ok_or(AxError::WouldBlock)?
@@ -181,6 +181,7 @@ impl PacketSocket {
                 Ok((written, from))
             }),
         )
+        .into_result()?
     }
 
     pub fn from_fd(fd: c_int) -> AxResult<Arc<Self>> {

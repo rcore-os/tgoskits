@@ -28,7 +28,7 @@ use crate::{
     file::{FileLike, IoDst, IoSrc},
     task::{
         current_user_task,
-        future::{block_on_user, poll_io_for},
+        future::{block_on_user, poll_io},
     },
 };
 
@@ -201,7 +201,7 @@ impl FileLike for Inotify {
         let task = current_user_task();
         block_on_user(
             &task,
-            poll_io_for(&task, self, IoEvents::IN, self.nonblocking(), || {
+            poll_io(self, IoEvents::IN, self.nonblocking(), || {
                 let mut state = self.state.lock();
                 let mut written = 0;
                 while let Some(event) = state.queue.front() {
@@ -218,6 +218,7 @@ impl FileLike for Inotify {
                 }
             }),
         )
+        .into_result()?
     }
 
     fn write(&self, _src: &mut IoSrc) -> AxResult<usize> {

@@ -13,7 +13,7 @@ use starry_vm::{VmMutPtr, VmPtr};
 use crate::{
     task::{
         block_next_signal, check_signals, current_user_task,
-        future::{self, block_on_user},
+        future::{UserWaitOutcome, block_on_user, block_on_user_timeout},
         get_process_cred, processes, send_signal_to_process, send_signal_to_thread,
     },
     time::TimeValueLike,
@@ -332,16 +332,18 @@ pub fn sys_rt_sigtimedwait(
             } else if check_signals(thr, uctx, Some(old_blocked), None) {
                 Poll::Ready(None)
             } else {
-                let _ = curr.poll_interrupt(cx);
                 Poll::Pending
             }
         }
     });
 
-    let Ok(sig) = block_on_user(&curr, future::timeout(timeout, fut)) else {
-        // Timeout
-        signal.finish_sigwait();
-        return Err(AxError::WouldBlock);
+    let sig = match block_on_user_timeout(&curr, timeout, fut) {
+        UserWaitOutcome::Ready(sig) => sig,
+        UserWaitOutcome::Interrupted => None,
+        UserWaitOutcome::TimedOut => {
+            signal.finish_sigwait();
+            return Err(AxError::WouldBlock);
+        }
     };
     let Some(sig) = sig else {
         // Interrupted
@@ -375,13 +377,12 @@ pub fn sys_rt_sigsuspend(
     // We set this in uctx before check_signals so it's saved in SignalFrame
     uctx.set_retval(-LinuxError::EINTR.code() as usize);
 
-    block_on_user(
+    let _outcome = block_on_user(
         &curr,
-        poll_fn(|cx| {
+        poll_fn(|_cx| {
             if check_signals(thr, uctx, Some(old_blocked), None) {
                 return Poll::Ready(());
             }
-            let _ = curr.poll_interrupt(cx);
             Poll::Pending
         }),
     );

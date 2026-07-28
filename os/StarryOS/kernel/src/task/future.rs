@@ -25,7 +25,8 @@ use ax_sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 use spin::Once;
 
-use super::UserTaskRef;
+pub use super::user_wait::{UserWaitError, UserWaitOutcome};
+use super::{UserTaskRef, user_wait::resolve_user_wait};
 
 static TIMER_WAIT: WaitQueue = WaitQueue::new();
 static TIMER_RUNTIME: PiMutex<TimerRuntime> = PiMutex::new(TimerRuntime::new());
@@ -37,7 +38,7 @@ static NEXT_TIMER_KEY: AtomicU64 = AtomicU64::new(1);
 ///
 /// This generic executor has no Starry user-task semantics and is therefore
 /// safe for kernel service threads. User waits that must abort their park when
-/// a signal arrives use [`block_on_user`] and [`interruptible_for`].
+/// a signal arrives use [`block_on_user`].
 #[track_caller]
 pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
     block_on_with_abort(future, None, || false)
@@ -46,10 +47,66 @@ pub fn block_on<F: IntoFuture>(future: F) -> F::Output {
 /// Polls a future for a proven Starry user task until completion.
 ///
 /// The explicit borrow prevents a kernel worker from accidentally inheriting
-/// signal semantics through its current scheduler identity.
+/// signal semantics through its current scheduler identity. A deliverable
+/// signal completes this operation with [`UserWaitOutcome::Interrupted`].
 #[track_caller]
-pub fn block_on_user<F: IntoFuture>(task: &UserTaskRef, future: F) -> F::Output {
-    block_on_with_abort(future, Some(task.id()), || task.interrupted())
+pub fn block_on_user<F: IntoFuture>(task: &UserTaskRef, future: F) -> UserWaitOutcome<F::Output> {
+    block_on_user_until(task, None, future)
+}
+
+/// Polls a user future until completion, interruption, or a relative deadline.
+#[track_caller]
+pub fn block_on_user_timeout<F: IntoFuture>(
+    task: &UserTaskRef,
+    duration: Option<Duration>,
+    future: F,
+) -> UserWaitOutcome<F::Output> {
+    let deadline = duration.and_then(|duration| monotonic_time().checked_add(duration));
+    block_on_user_until(task, deadline, future)
+}
+
+/// Polls a user future until completion, interruption, or a monotonic deadline.
+#[track_caller]
+pub fn block_on_user_until<F: IntoFuture>(
+    task: &UserTaskRef,
+    deadline: Option<TimeValue>,
+    future: F,
+) -> UserWaitOutcome<F::Output> {
+    block_on_with_abort(
+        user_wait_future(task, deadline, future),
+        Some(task.id()),
+        || task.interrupted(),
+    )
+}
+
+/// Polls a user future until completion, interruption, or a wall-clock deadline.
+#[track_caller]
+pub fn block_on_user_until_wall<F: IntoFuture>(
+    task: &UserTaskRef,
+    deadline: Option<TimeValue>,
+    future: F,
+) -> UserWaitOutcome<F::Output> {
+    block_on_user_until(task, deadline.map(wall_deadline_to_monotonic), future)
+}
+
+async fn user_wait_future<F: IntoFuture>(
+    task: &UserTaskRef,
+    deadline: Option<TimeValue>,
+    future: F,
+) -> UserWaitOutcome<F::Output> {
+    let mut future = pin!(future.into_future());
+    let mut timer = deadline.map(TimerFuture::new);
+    poll_fn(|context| {
+        let future = future.as_mut().poll(context);
+        let interrupted = future.is_pending() && task.poll_interrupt(context).is_ready();
+        let timed_out = future.is_pending()
+            && !interrupted
+            && timer
+                .as_mut()
+                .is_some_and(|timer| Pin::new(timer).poll(context).is_ready());
+        resolve_user_wait(future, interrupted, timed_out)
+    })
+    .await
 }
 
 fn block_on_with_abort<F, A>(
@@ -74,11 +131,7 @@ where
     let executor = LocalExecutor::new(scheduler_thread.wake_handle())
         .unwrap_or_else(|error| panic!("future executor requires its owner thread: {error}"));
     let output = executor.run(future.into_future(), |condition| {
-        if should_abort() {
-            let _decision = scheduler::yield_current_cpu();
-        } else {
-            wait.wait_until(|| condition.should_abort() || should_abort());
-        }
+        wait.wait_until(|| condition.should_abort() || should_abort());
     });
     drop(executor);
     output
@@ -170,24 +223,11 @@ impl Default for IrqNotify {
     }
 }
 
-/// Makes a future return [`Interrupted`] after a deliverable Starry signal.
-pub async fn interruptible_for<F: IntoFuture>(
-    task: &UserTaskRef,
-    future: F,
-) -> Result<F::Output, Interrupted> {
-    let mut future = pin!(future.into_future());
-    poll_fn(|context| {
-        if task.poll_interrupt(context).is_ready() {
-            return Poll::Ready(Err(Interrupted));
-        }
-        future.as_mut().poll(context).map(Ok)
-    })
-    .await
-}
-
-/// Wraps a non-blocking operation in user-task readiness polling.
-pub async fn poll_io_for<P, F, T>(
-    task: &UserTaskRef,
+/// Wraps a non-blocking operation in readiness polling.
+///
+/// User interruption belongs to [`block_on_user`], not to this task-neutral
+/// readiness future.
+pub async fn poll_io<P, F, T>(
     pollable: &P,
     events: IoEvents,
     non_blocking: bool,
@@ -208,9 +248,6 @@ where
         match operation() {
             Ok(value) => Poll::Ready(Ok(value)),
             Err(AxError::WouldBlock) if non_blocking => Poll::Ready(Err(AxError::WouldBlock)),
-            Err(AxError::WouldBlock) if task.poll_interrupt(context).is_ready() => {
-                Poll::Ready(Err(AxError::Interrupted))
-            }
             Err(AxError::WouldBlock) => Poll::Pending,
             Err(error) => Poll::Ready(Err(error)),
         }
@@ -226,18 +263,6 @@ pub async fn sleep(duration: Duration) {
 /// Waits until a monotonic deadline.
 pub async fn sleep_until(deadline: TimeValue) {
     TimerFuture::new(deadline).await;
-}
-
-/// Requires a future to complete before an optional relative timeout.
-pub async fn timeout<F: IntoFuture>(
-    duration: Option<Duration>,
-    future: F,
-) -> Result<F::Output, Elapsed> {
-    timeout_at(
-        duration.and_then(|duration| monotonic_time().checked_add(duration)),
-        future,
-    )
-    .await
 }
 
 /// Requires a future to complete before an optional monotonic deadline.
@@ -268,21 +293,12 @@ pub async fn timeout_at_wall<F: IntoFuture>(
     timeout_at(deadline.map(wall_deadline_to_monotonic), future).await
 }
 
-/// Error returned by [`interruptible_for`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Interrupted;
-
-impl fmt::Display for Interrupted {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("interrupted")
-    }
-}
-
-impl core::error::Error for Interrupted {}
-
-impl From<Interrupted> for AxError {
-    fn from(_: Interrupted) -> Self {
-        AxError::Interrupted
+impl From<UserWaitError> for AxError {
+    fn from(error: UserWaitError) -> Self {
+        match error {
+            UserWaitError::Interrupted => Self::Interrupted,
+            UserWaitError::TimedOut => Self::TimedOut,
+        }
     }
 }
 

@@ -19,7 +19,7 @@ use crate::{
     syscall::signal::check_sigset_size,
     task::{
         current_user_task,
-        future::{self, block_on_user, interruptible_for},
+        future::{UserWaitOutcome, block_on_user_timeout},
         with_blocked_signals,
     },
     time::TimeValueLike,
@@ -146,13 +146,10 @@ fn do_poll(
         });
 
         let task = current_user_task();
-        match block_on_user(
-            &task,
-            interruptible_for(&task, future::timeout(timeout, wait)),
-        ) {
-            Ok(Ok(r)) => r,
-            Ok(Err(_)) => Ok(0),
-            Err(err) => Err(err.into()),
+        match block_on_user_timeout(&task, timeout, wait) {
+            UserWaitOutcome::Ready(result) => result,
+            UserWaitOutcome::TimedOut => Ok(0),
+            UserWaitOutcome::Interrupted => Err(AxError::Interrupted),
         }
     })
 }

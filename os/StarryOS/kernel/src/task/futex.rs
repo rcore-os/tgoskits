@@ -15,17 +15,14 @@ use core::{
     time::Duration,
 };
 
-use ax_errno::AxResult;
+use ax_errno::{AxError, AxResult};
 use ax_memory_addr::VirtAddr;
 use ax_sync::{LockdepMutexExt, PiMutex};
 use hashbrown::HashMap;
 
 use crate::{
     mm::{AddrSpace, Backend, SharedPages},
-    task::{
-        ProcessData, current_user_task,
-        future::{self, block_on_user, interruptible_for},
-    },
+    task::{ProcessData, current_user_task, future::block_on_user_timeout},
 };
 
 const NESTED_WAIT_QUEUE_LOCK_SUBCLASS: u32 = 1;
@@ -185,22 +182,19 @@ impl WaitQueue {
         condition: impl FnOnce() -> bool + Unpin,
     ) -> AxResult<bool> {
         let task = current_user_task();
-        block_on_user(
+        block_on_user_timeout(
             &task,
-            interruptible_for(
-                &task,
-                future::timeout(
-                    timeout,
-                    WaitIfFuture {
-                        queue: self,
-                        bitset,
-                        cleanup,
-                        condition: Some(condition),
-                        state: None,
-                    },
-                ),
-            ),
-        )??
+            timeout,
+            WaitIfFuture {
+                queue: self,
+                bitset,
+                cleanup,
+                condition: Some(condition),
+                state: None,
+            },
+        )
+        .into_result()
+        .map_err(AxError::from)?
     }
 
     fn wake_locked(queue: &mut VecDeque<Waiter>, count: usize, mask: u32, wakers: &mut Vec<Waker>) {

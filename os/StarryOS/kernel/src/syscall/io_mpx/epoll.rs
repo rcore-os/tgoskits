@@ -22,7 +22,7 @@ use crate::{
     syscall::signal::check_sigset_size,
     task::{
         current_user_task,
-        future::{self, block_on_user, poll_io_for},
+        future::{UserWaitOutcome, block_on_user_timeout, poll_io},
         with_blocked_signals,
     },
     time::TimeValueLike,
@@ -213,20 +213,19 @@ fn do_epoll_wait(
 
     let task = current_user_task();
     let count = with_blocked_signals(sigmask, || {
-        match block_on_user(
+        match block_on_user_timeout(
             &task,
-            future::timeout(
-                timeout,
-                poll_io_for(&task, epoll.as_ref(), IoEvents::IN, false, || {
-                    epoll.poll_events_with(maxevents, |index, event| {
-                        write_epoll_event(events, index, &event)?;
-                        Ok(())
-                    })
-                }),
-            ),
+            timeout,
+            poll_io(epoll.as_ref(), IoEvents::IN, false, || {
+                epoll.poll_events_with(maxevents, |index, event| {
+                    write_epoll_event(events, index, &event)?;
+                    Ok(())
+                })
+            }),
         ) {
-            Ok(r) => r.map(|n| n as _),
-            Err(_) => Ok(0),
+            UserWaitOutcome::Ready(result) => result.map(|count| count as _),
+            UserWaitOutcome::TimedOut => Ok(0),
+            UserWaitOutcome::Interrupted => Err(AxError::Interrupted),
         }
     })?;
 
