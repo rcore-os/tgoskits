@@ -444,6 +444,25 @@ regression closes the candidate first and proves the child falls back to an
 open reaper. This closes the selection-to-publication window that Linux avoids
 by doing reaper selection and list splicing under the same `tasklist_lock`.
 
+PID namespace reaping no longer falls through to the global init process.
+Linux v7.1 `find_child_reaper()` starts from
+`task_active_pid_ns(father)->child_reaper`, and `find_new_reaper()` stops its
+subreaper walk at the exiting task's PID namespace level. Starry now retains
+the immutable PID namespace membership in the generation-bearing
+`ProcessIdentity`, chooses subreapers only from that namespace, and falls back
+to the namespace's stable init identity. The relationship layer has a distinct
+namespace-shutdown transaction: it rejects new fork publication while still
+allowing already-existing namespace members to be adopted during teardown.
+
+The grouped PID namespace regression forks an intermediate parent and an
+orphan below namespace PID 1, waits until the intermediate exit transaction is
+complete, and then releases the orphan to observe its new parent. Before the
+fix the orphan reported parent 0 and namespace init received `ECHILD`; after
+the fix it reports parent 1 and is reaped by that init. The same change removes
+the old `ProcessData` construction window in which every new identity was
+temporarily associated with the root namespace before clone replaced its
+`NsProxy`.
+
 The branch-touched USB hosts now make the PREEMPT_RT execution boundary
 explicit. Linux v7.1 `xhci_irq()`, `ehci_irq()`, and
 `dwc2_handle_common_intr()` combine status acknowledgement with event

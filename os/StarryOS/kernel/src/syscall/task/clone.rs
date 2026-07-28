@@ -21,8 +21,8 @@ use crate::{
     file::{FD_TABLE, FileLike, PidFd, add_file_like, close_file_like_if},
     mm::copy_from_kernel,
     task::{
-        ProcessData, ProcessImage, Thread, allocate_user_tid, current_user_task, new_user_task,
-        register_prepared_task,
+        ProcessData, ProcessDataInit, ProcessImage, Thread, allocate_user_tid, current_user_task,
+        new_user_task, register_prepared_task,
     },
 };
 
@@ -569,19 +569,22 @@ impl CloneArgs {
             prepared_process = Some(fork);
             let proc_data = ProcessData::new(
                 proc,
-                ProcessImage::new(
-                    old_proc_data.exe_path().clone(),
-                    old_proc_data.cmdline().clone(),
-                    old_proc_data.envp().clone(),
-                    old_proc_data.auxv().clone(),
-                    old_proc_data.root_path().clone(),
-                    old_proc_data.cwd_path().clone(),
+                ProcessDataInit::new(
+                    ProcessImage::new(
+                        old_proc_data.exe_path().clone(),
+                        old_proc_data.cmdline().clone(),
+                        old_proc_data.envp().clone(),
+                        old_proc_data.auxv().clone(),
+                        old_proc_data.root_path().clone(),
+                        old_proc_data.cwd_path().clone(),
+                    ),
+                    aspace,
+                    signal_actions,
+                    new_nsproxy,
+                    exit_signal,
+                    curr_thread.tid(),
+                    flags.contains(CloneFlags::VM),
                 ),
-                aspace,
-                signal_actions,
-                exit_signal,
-                curr_thread.tid(),
-                flags.contains(CloneFlags::VM),
             );
             proc_data.set_umask(old_proc_data.umask());
             *proc_data.cgroup.write() = inherited_cgroup;
@@ -595,8 +598,6 @@ impl CloneArgs {
             // fork child PR_GET_DUMPABLE returns 0.
             proc_data.set_dumpable(old_proc_data.dumpable());
             proc_data.set_thp_disable(old_proc_data.thp_disable());
-
-            *proc_data.nsproxy.lock() = new_nsproxy;
 
             (proc_data, page_table_root, namespace_init)
         };

@@ -99,20 +99,61 @@ pub struct ProcessData {
     job_control: ProcessJobControl,
 }
 
-impl ProcessData {
-    /// Create a new [`ProcessData`].
+/// Resources and Linux-visible metadata consumed by process construction.
+pub struct ProcessDataInit {
+    image: ProcessImage,
+    aspace: Arc<PiMutex<AddrSpace>>,
+    signal_actions: Arc<SpinNoIrq<SignalActions>>,
+    nsproxy: axnsproxy::NsProxy,
+    exit_signal: Option<Signo>,
+    wait_parent_tid: Pid,
+    vm_aspace_shared: bool,
+}
+
+impl ProcessDataInit {
+    /// Collects the resources that become owned by one process identity.
     pub fn new(
-        proc: Arc<Process>,
         image: ProcessImage,
         aspace: Arc<PiMutex<AddrSpace>>,
         signal_actions: Arc<SpinNoIrq<SignalActions>>,
+        nsproxy: axnsproxy::NsProxy,
         exit_signal: Option<Signo>,
         wait_parent_tid: Pid,
         vm_aspace_shared: bool,
-    ) -> Arc<Self> {
+    ) -> Self {
+        Self {
+            image,
+            aspace,
+            signal_actions,
+            nsproxy,
+            exit_signal,
+            wait_parent_tid,
+            vm_aspace_shared,
+        }
+    }
+}
+
+impl ProcessData {
+    /// Create a new [`ProcessData`].
+    pub fn new(proc: Arc<Process>, init: ProcessDataInit) -> Arc<Self> {
+        let ProcessDataInit {
+            image,
+            aspace,
+            signal_actions,
+            nsproxy,
+            exit_signal,
+            wait_parent_tid,
+            vm_aspace_shared,
+        } = init;
+        let pid_namespace = nsproxy.pid_ns.clone();
         let this = Arc::new_cyclic(|weak| {
             let wait = ProcessWaitState::new(exit_signal, wait_parent_tid);
-            let identity = ProcessIdentity::new(proc.clone(), wait.exit_event_arc(), weak.clone());
+            let identity = ProcessIdentity::new(
+                proc.clone(),
+                wait.exit_event_arc(),
+                weak.clone(),
+                pid_namespace.clone(),
+            );
             Self {
                 proc,
                 identity,
@@ -132,7 +173,7 @@ impl ProcessData {
 
                 futex_table: Arc::new(FutexTable::new()),
 
-                nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
+                nsproxy: SpinNoIrq::new(nsproxy),
                 cgroup: RwLock::new(crate::cgroup::root()),
 
                 ptrace: ProcessPtraceState::new(),
