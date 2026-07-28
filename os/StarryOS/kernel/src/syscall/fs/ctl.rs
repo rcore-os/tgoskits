@@ -105,7 +105,7 @@ pub fn sys_chdir(path: *const c_char) -> AxResult<isize> {
     let entry = fs.resolve(path)?;
     fs.set_current_dir(entry)?;
     let cwd = fs.current_dir().absolute_path()?.to_string();
-    *current_user_task().as_thread().proc_data.cwd_path.write() = cwd;
+    current_user_task().as_thread().proc_data.set_cwd_path(cwd);
     Ok(0)
 }
 
@@ -141,8 +141,8 @@ pub fn sys_chroot(path: *const c_char) -> AxResult<isize> {
     let root = fs.root_dir().absolute_path()?.to_string();
     let cwd = fs.current_dir().absolute_path()?.to_string();
     let proc_data = current_user_task().as_thread().proc_data.clone();
-    *proc_data.root_path.write() = root;
-    *proc_data.cwd_path.write() = cwd;
+    proc_data.set_root_path(root);
+    proc_data.set_cwd_path(cwd);
     Ok(0)
 }
 
