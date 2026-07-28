@@ -526,6 +526,34 @@ fn apply_clock_event_action(action: clock_event::ClockEventAction) {
     }
 }
 
+#[cfg(feature = "irq")]
+fn run_clock_event_transaction<R, Action, Guard>(
+    acquire_irq: impl FnOnce() -> Guard,
+    access: impl FnOnce() -> (R, Action),
+    apply: impl FnOnce(Action),
+) -> R {
+    // One IRQ-save must cover both the software state transition and its
+    // physical clockevent commit so the timer IRQ cannot observe a split state.
+    let irq_guard = acquire_irq();
+    let (result, action) = access();
+    apply(action);
+    drop(irq_guard);
+    result
+}
+
+#[cfg(all(feature = "irq", feature = "multitask"))]
+fn commit_local_clock_event<R>(
+    operation: impl for<'value> FnOnce(
+        &'value mut clock_event::LocalClockEvent,
+    ) -> (R, clock_event::ClockEventAction),
+) -> R {
+    run_clock_event_transaction(
+        ax_kernel_guard::IrqSave::new,
+        || with_local_clock_event_mut(operation),
+        apply_clock_event_action,
+    )
+}
+
 #[cfg(all(feature = "irq", feature = "multitask"))]
 fn enable_irqs_after_scheduler_online(_online: task::PublishedCpuOnline) {
     ax_hal::asm::enable_irqs();
@@ -581,35 +609,49 @@ impl Drop for ClockEventFiringGuard {
 
 #[cfg(all(feature = "irq", feature = "multitask"))]
 fn local_clock_event_has_immediate_work(now_ns: u64) -> bool {
-    with_local_clock_event_mut(|clockevent| clockevent.has_immediate_work(now_ns))
+    commit_local_clock_event(|clockevent| {
+        (
+            clockevent.has_immediate_work(now_ns),
+            clock_event::ClockEventAction::None,
+        )
+    })
 }
 
 #[cfg(all(feature = "irq", feature = "multitask"))]
 fn publish_local_task_deadline(
     update: ax_task::runtime::TaskDeadlineUpdate,
 ) -> ax_task::runtime::RuntimeStatus {
-    let action = with_local_clock_event_mut(|clockevent| {
-        clockevent.publish_task(
-            update.generation(),
-            update
-                .deadline()
-                .map(ax_task::runtime::MonotonicDeadline::as_nanos),
-            update.deferred_work(),
+    commit_local_clock_event(|clockevent| {
+        (
+            (),
+            clockevent.publish_task(
+                update.generation(),
+                update
+                    .deadline()
+                    .map(ax_task::runtime::MonotonicDeadline::as_nanos),
+                update.deferred_work(),
+            ),
         )
     });
-    apply_clock_event_action(action);
     ax_task::runtime::RuntimeStatus::Success
 }
 
 #[cfg(feature = "irq")]
 fn init_timer() {
-    ax_hal::time::enable_timer_irq();
-    let now_ns = ax_hal::time::monotonic_time_nanos();
-    let periodic =
-        clock_event::ClockDeadline::from_nanos(now_ns.saturating_add(periodic_interval_nanos()))
+    run_clock_event_transaction(
+        ax_kernel_guard::IrqSave::new,
+        || {
+            ax_hal::time::enable_timer_irq();
+            let now_ns = ax_hal::time::monotonic_time_nanos();
+            let periodic = clock_event::ClockDeadline::from_nanos(
+                now_ns.saturating_add(periodic_interval_nanos()),
+            )
             .expect("periodic clockevent deadline must be non-zero");
-    let action = with_local_clock_event_mut(|clockevent| clockevent.online(periodic));
-    apply_clock_event_action(action);
+            let action = with_local_clock_event_mut(|clockevent| clockevent.online(periodic));
+            ((), action)
+        },
+        apply_clock_event_action,
+    );
 }
 
 #[cfg(any(feature = "irq", test))]
@@ -729,6 +771,65 @@ fn init_tls() {
 #[cfg(test)]
 mod tests {
     use core::cell::{Cell, RefCell};
+
+    #[cfg(feature = "irq")]
+    struct TestIrqGuard<'state> {
+        irq_enabled: &'state Cell<bool>,
+        restore_enabled: bool,
+    }
+
+    #[cfg(feature = "irq")]
+    impl Drop for TestIrqGuard<'_> {
+        fn drop(&mut self) {
+            self.irq_enabled.set(self.restore_enabled);
+        }
+    }
+
+    #[cfg(feature = "irq")]
+    #[test]
+    fn clockevent_transaction_holds_irq_exclusion_through_hardware_commit() {
+        let irq_enabled = Cell::new(true);
+        let hardware_committed = Cell::new(false);
+        let deadline = crate::clock_event::ClockDeadline::from_nanos(100).unwrap();
+        let mut clockevent = crate::clock_event::LocalClockEvent::offline();
+
+        let result = super::run_clock_event_transaction(
+            || {
+                let restore_enabled = irq_enabled.replace(false);
+                TestIrqGuard {
+                    irq_enabled: &irq_enabled,
+                    restore_enabled,
+                }
+            },
+            || {
+                assert!(
+                    !irq_enabled.get(),
+                    "clockevent state mutation requires local IRQ exclusion"
+                );
+                (7, clockevent.online(deadline))
+            },
+            |action| {
+                assert!(
+                    !irq_enabled.get(),
+                    "clockevent hardware commit requires the same IRQ exclusion window"
+                );
+                assert_eq!(
+                    action,
+                    crate::clock_event::ClockEventAction::Program(deadline)
+                );
+                hardware_committed.set(true);
+            },
+        );
+
+        assert_eq!(result, 7);
+        assert_eq!(
+            clockevent.phase(),
+            crate::clock_event::ClockEventPhase::Armed
+        );
+        assert_eq!(clockevent.armed_deadline(), Some(deadline));
+        assert!(hardware_committed.get());
+        assert!(irq_enabled.get(), "the caller's IRQ state must be restored");
+    }
 
     #[test]
     fn fs_init_accepts_bootargs_without_fs_feature() {
