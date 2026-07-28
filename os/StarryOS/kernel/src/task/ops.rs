@@ -614,7 +614,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         let zombie_cred = thr.cred();
         let ptrace_tracer_pid = thr.proc_data.ptrace_tracer_pid();
         let is_clone_child = thr.proc_data.is_clone_child();
-        let wait_parent_tid = thr.proc_data.wait_parent_tid;
+        let wait_parent_tid = thr.proc_data.wait_parent_tid();
 
         // A parent that observes this child as a zombie must not see IPC
         // resources that still belong to the exiting process. In particular,
@@ -653,7 +653,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // identity retained for wait and pidfd operations.
         remove_task_from_table(thr.tid());
         if let Some(parent) = process.parent() {
-            if let Some(signo) = thr.proc_data.exit_signal {
+            if let Some(signo) = thr.proc_data.exit_signal() {
                 use starry_signal::Signo;
 
                 let child_uid = thr.cred().uid;
@@ -668,7 +668,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             }
             if let Ok(data) = get_process_data(parent.pid()) {
                 // Child exit state is published before waking waiters.
-                unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
+                unsafe { data.child_exit_event().wake(axpoll::IoEvents::IN) };
             }
         }
         if let Some(tracer_pid) = ptrace_tracer_pid
@@ -678,7 +678,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
             && let Ok(data) = get_process_data(tracer_pid)
         {
             // Child exit state is published before waking waiters.
-            unsafe { data.child_exit_event.wake(axpoll::IoEvents::IN) };
+            unsafe { data.child_exit_event().wake(axpoll::IoEvents::IN) };
         }
         // Send pdeathsig to child processes
         for child in children_snapshot {
@@ -725,7 +725,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         // Process exit state is published before waking pidfd/wait waiters.
         unsafe {
             thr.proc_data
-                .exit_event
+                .exit_event()
                 .wake(IoEvents::IN | IoEvents::RDNORM);
         };
 
@@ -734,7 +734,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
     }
     // Thread exit state is published before waking waiters.
     unsafe { thr.exit_event().wake(axpoll::IoEvents::IN) };
-    unsafe { thr.proc_data.thread_exit_event.wake(axpoll::IoEvents::IN) };
+    unsafe { thr.proc_data.thread_exit_event().wake(axpoll::IoEvents::IN) };
 
     thr.set_exit();
 }

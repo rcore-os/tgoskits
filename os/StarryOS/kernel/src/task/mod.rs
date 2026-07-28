@@ -3,11 +3,13 @@
 mod cred;
 pub mod futex;
 pub mod future;
+mod job_control;
 mod ops;
 pub mod posix_timer;
 mod process_identity;
 mod process_image;
 mod process_memory;
+mod process_wait;
 mod resources;
 mod scheduler_identity;
 mod scheduler_task;
@@ -24,11 +26,7 @@ mod user;
 mod user_wait;
 
 use alloc::{collections::BTreeMap, sync::Arc};
-use core::{
-    future::poll_fn,
-    sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
-    task::Poll,
-};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
 use ax_kspin::SpinRwLock as RwLock;
 use ax_runtime::hal::{cpu::uspace::UserContext, time::TimeValue};
@@ -67,9 +65,13 @@ struct PtracePendingEvent {
 
 pub(crate) use self::process_identity::*;
 pub use self::{
-    cred::*, futex::*, ops::*, posix_timer::PosixTimerTable, process_image::ProcessImage,
-    resources::*, scheduler_task::*, seccomp::*, signal::*, stat::*, thread::Thread, tid::*,
-    timer::*, user::*,
+    cred::*, futex::*, job_control::JobStatus, ops::*, posix_timer::PosixTimerTable,
+    process_image::ProcessImage, process_wait::wait_on_pollset, resources::*, scheduler_task::*,
+    seccomp::*, signal::*, stat::*, thread::Thread, tid::*, timer::*, user::*,
+};
+use self::{
+    job_control::ProcessJobControl, process_image::ProcessImageState,
+    process_memory::ProcessMemoryState, process_wait::ProcessWaitState,
 };
 #[cfg(axtest)]
 pub(crate) use self::{
@@ -79,81 +81,6 @@ pub(crate) use self::{
     seccomp::seccomp_bpf_constants_hold_for_test,
     timer::itimer_type_signo_and_time_conversion_rules_hold_for_test,
 };
-use self::{process_image::ProcessImageState, process_memory::ProcessMemoryState};
-
-pub struct VforkDone {
-    done: bool,
-    poll: Arc<PollSet>,
-}
-
-impl VforkDone {
-    pub fn new(poll: Arc<PollSet>) -> Self {
-        Self { done: false, poll }
-    }
-}
-
-/// Waits on a [`PollSet`] after a caller-supplied condition reports no
-/// immediate result.
-///
-/// The condition is checked before and after waker registration, so callers
-/// avoid lost wakeups.
-pub async fn wait_on_pollset<T>(poll: &PollSet, mut check: impl FnMut() -> Option<T>) -> T {
-    poll_fn(move |cx| {
-        if let Some(value) = check() {
-            return Poll::Ready(value);
-        }
-
-        // Registration happens from wait task context.
-        unsafe { poll.register(cx.waker(), IoEvents::IN) };
-
-        if let Some(value) = check() {
-            Poll::Ready(value)
-        } else {
-            Poll::Pending
-        }
-    })
-    .await
-}
-
-/// A pending job-control status change awaiting report to the parent's
-/// `waitpid(WUNTRACED | WCONTINUED)`.
-#[derive(Clone, Copy)]
-pub enum JobStatus {
-    /// The process stopped after receiving the given job-control signal
-    /// (`SIGSTOP`/`SIGTSTP`/`SIGTTIN`/`SIGTTOU`).
-    Stopped(Signo),
-    /// The process continued after receiving `SIGCONT`.
-    Continued,
-}
-
-/// Job-control state for a process, kept under a single lock so the stop flag
-/// and the pending parent report are updated atomically (a concurrent
-/// stop/continue on another CPU must not split the two).
-///
-/// `stopped` and `status` are **intentionally independent** and may legitimately
-/// diverge — do not collapse them into one field. `stopped` is the live parked
-/// state (cleared only by continue/kill); `status` is a one-shot report the
-/// parent's `waitpid` consumes (so `stopped == Some` with `status == None` is
-/// valid once the report has been reaped).
-#[derive(Default)]
-struct JobControl {
-    /// `None` = running, `Some(signo)` = stopped by the given job-control
-    /// signal. A stopped process parks its threads in the kernel until
-    /// `SIGCONT` (or `SIGKILL`) is delivered.
-    stopped: Option<Signo>,
-    /// Pending status change for the parent's `waitpid`, consumed once
-    /// reported. Single-slot: a new stop/continue before the parent reaps the
-    /// previous one overwrites it (unlike Linux, which queues each SIGCHLD).
-    /// Adequate for the single-threaded job-control this targets.
-    status: Option<JobStatus>,
-    /// Bumped on every continue. A thread about to park (`set_job_stopped`)
-    /// snapshots this; if it changed by the time the thread checks before
-    /// parking, a `SIGCONT` raced in after the stop was recorded and the park
-    /// is skipped. This closes the STOP-immediately-followed-by-CONT race
-    /// (e.g. busybox `killall5 -STOP` then `-CONT`) without having to scrub the
-    /// pending-signal queue.
-    continue_generation: u64,
-}
 
 pub struct ProcessData {
     /// The process.
@@ -176,44 +103,14 @@ pub struct ProcessData {
     /// The resource limits
     pub rlim: RwLock<Rlimits>,
 
-    /// The child exit wait event
-    pub child_exit_event: Arc<PollSet>,
-    /// Self exit event
-    pub exit_event: Arc<PollSet>,
-    /// Woken every time a thread in this process exits. Used by a thread
-    /// performing `execve` to wait for siblings to be reaped.
-    pub thread_exit_event: Arc<PollSet>,
-    /// Serializes `execve` within the process. Only one thread can be
-    /// tearing down the thread group at a time; concurrent attempts return
-    /// `EINTR` (the loser is about to be zapped anyway).
-    pub exec_lock: PiMutex<()>,
-    /// The exit signal of the thread
-    pub exit_signal: Option<Signo>,
-    /// The thread in the parent thread group that created this process.
-    ///
-    /// Linux's `__WNOTHREAD` wait option restricts child selection to children
-    /// created by the calling thread, while the default wait may reap children
-    /// created by any thread in the same thread group.
-    pub wait_parent_tid: Pid,
-
-    /// Nice value retained after the thread-group leader exits before its peers.
-    ///
-    /// Linux keeps the leader's `task_struct` and PID hashed until the thread
-    /// group can be released. Starry detaches the live scheduler-backed task at
-    /// thread exit, so this OS-owned snapshot preserves the leader PID's
-    /// `getpriority` semantics without extending scheduler-resource lifetime.
-    retired_leader_nice: SpinNoIrq<Option<i32>>,
+    /// Exit metadata, wait channels, and vfork completion.
+    wait: ProcessWaitState,
 
     /// The process signal manager
     pub signal: Arc<ProcessSignalManager>,
 
     /// The futex table.
     futex_table: Arc<FutexTable>,
-
-    /// If this process was created by vfork, this tracks completion state.
-    /// The parent waits until `done` becomes true. Protected by the same lock
-    /// as the wait queue to avoid lost wakeup races.
-    vfork_done: SpinNoIrq<Option<VforkDone>>,
 
     /// The default mask for file permissions.
     umask: AtomicU32,
@@ -301,12 +198,8 @@ pub struct ProcessData {
     /// POSIX per-process interval timers (timer_create/timer_settime/etc.)
     pub posix_timers: Arc<PosixTimerTable>,
 
-    /// Job-control state (stop flag + pending parent report) under one lock.
-    job_control: SpinNoIrq<JobControl>,
-
-    /// Woken to release threads parked in a job-control stop. Fired by
-    /// `SIGCONT` (continue) and `SIGKILL` (force-resume so the kill proceeds).
-    cont_event: Arc<PollSet>,
+    /// Job-control stop state and parent-report delivery.
+    job_control: ProcessJobControl,
 }
 
 #[cfg(target_arch = "riscv64")]
@@ -360,25 +253,18 @@ impl ProcessData {
         vm_aspace_shared: bool,
     ) -> Arc<Self> {
         let this = Arc::new_cyclic(|weak| {
-            let exit_event: Arc<PollSet> = Arc::default();
-            let identity = ProcessIdentity::new(proc.clone(), exit_event.clone(), weak.clone());
+            let wait = ProcessWaitState::new(exit_signal, wait_parent_tid);
+            let identity = ProcessIdentity::new(proc.clone(), wait.exit_event_arc(), weak.clone());
             Self {
                 proc,
                 identity,
                 image: ProcessImageState::new(image),
                 memory: ProcessMemoryState::new(aspace, vm_aspace_shared),
+                wait,
                 uprobe_manager: crate::kprobe::KprobeManager::new(),
                 uprobe_point_list: PiMutex::new(crate::kprobe::KprobePointList::new()),
 
                 rlim: RwLock::default(),
-
-                child_exit_event: Arc::default(),
-                exit_event,
-                thread_exit_event: Arc::default(),
-                exec_lock: PiMutex::new(()),
-                exit_signal,
-                wait_parent_tid,
-                retired_leader_nice: SpinNoIrq::new(None),
 
                 signal: Arc::new(ProcessSignalManager::new(
                     signal_actions,
@@ -389,8 +275,6 @@ impl ProcessData {
 
                 nsproxy: SpinNoIrq::new(axnsproxy::NsProxy::new_root()),
                 cgroup: RwLock::new(crate::cgroup::root()),
-
-                vfork_done: SpinNoIrq::new(None),
 
                 umask: AtomicU32::new(0o022),
                 membarrier_state: AtomicU32::new(0),
@@ -421,8 +305,7 @@ impl ProcessData {
 
                 posix_timers: Arc::new(PosixTimerTable::default()),
 
-                job_control: SpinNoIrq::new(JobControl::default()),
-                cont_event: Arc::default(),
+                job_control: ProcessJobControl::new(),
             }
         });
         // Clone the Arc in a separate statement: a temporary `SpinNoIrq` guard
@@ -437,27 +320,6 @@ impl ProcessData {
     /// Returns this process generation's stable PID identity.
     pub(crate) fn identity(&self) -> Arc<ProcessIdentity> {
         self.identity.clone()
-    }
-
-    /// Retains the exiting thread-group leader's nice value.
-    pub fn retire_leader_nice(&self, nice: i32) {
-        *self.retired_leader_nice.lock() = Some(nice);
-    }
-
-    /// Returns the nice value retained for an exited thread-group leader.
-    pub fn retired_leader_nice(&self) -> Option<i32> {
-        *self.retired_leader_nice.lock()
-    }
-
-    /// Clears a retired leader snapshot after `de_thread` installs a new leader.
-    pub fn clear_retired_leader_nice(&self) {
-        self.retired_leader_nice.lock().take();
-    }
-
-    /// Linux manual: A "clone" child is one which delivers no signal, or a
-    /// signal other than SIGCHLD to its parent upon termination.
-    pub fn is_clone_child(&self) -> bool {
-        self.exit_signal != Some(Signo::SIGCHLD)
     }
 
     /// Get the umask.
@@ -505,107 +367,6 @@ impl ProcessData {
     /// Set the transparent huge page disable state (PR_SET_THP_DISABLE).
     pub fn set_thp_disable(&self, thp_disable: u32) {
         self.thp_disable.store(thp_disable, Ordering::SeqCst);
-    }
-
-    /// Returns true if the process is currently job-control stopped.
-    pub fn is_job_stopped(&self) -> bool {
-        self.job_control.lock().stopped.is_some()
-    }
-
-    /// Mark the process stopped by `signo` and queue a `Stopped` report for the
-    /// parent's `waitpid(WUNTRACED)`. Returns `true` if the caller should park.
-    ///
-    /// Returns `false` (and records nothing) when a `SIGCONT` arrived after the
-    /// stop signal was dequeued but before this call — see
-    /// [`Self::set_job_continued`] / `continue_generation`. Closing this race at
-    /// the stop site lets us avoid scrubbing the pending-signal queue (which
-    /// would require modifying `starry-signal`).
-    pub fn set_job_stopped(&self, signo: Signo, continue_gen_snapshot: u64) -> bool {
-        let mut jc = self.job_control.lock();
-        if jc.continue_generation != continue_gen_snapshot {
-            // A continue raced in after we observed `continue_gen_snapshot`;
-            // honor it and do not stop.
-            return false;
-        }
-        jc.stopped = Some(signo);
-        jc.status = Some(JobStatus::Stopped(signo));
-        true
-    }
-
-    /// Snapshot the continue generation. Taken right after a stop signal is
-    /// dequeued and passed to [`Self::set_job_stopped`]; any intervening
-    /// `SIGCONT` advances the generation and cancels the stop.
-    pub fn continue_generation(&self) -> u64 {
-        self.job_control.lock().continue_generation
-    }
-
-    /// Continue a stopped process: clear the stop, queue a `Continued` report,
-    /// and wake parked threads. Returns true if it had been stopped.
-    ///
-    /// Always advances `continue_generation` so a concurrent stop in progress
-    /// (signal already dequeued, not yet parked) observes the continue and
-    /// skips parking.
-    pub fn set_job_continued(&self) -> bool {
-        let mut jc = self.job_control.lock();
-        jc.continue_generation = jc.continue_generation.wrapping_add(1);
-        let was_stopped = jc.stopped.take().is_some();
-        if was_stopped {
-            jc.status = Some(JobStatus::Continued);
-            drop(jc);
-            // Wake only when a thread was actually parked; avoids spurious
-            // wakeups on SIGCONT to an already-running process.
-            // Continue state is published before waking stopped threads.
-            unsafe { self.cont_event.wake(IoEvents::IN) };
-        }
-        was_stopped
-    }
-
-    /// Force-clear the stop (for `SIGKILL`) so a parked thread re-checks and
-    /// proceeds to terminate. Does not queue a `Continued` report.
-    pub fn clear_job_stop_for_kill(&self) {
-        let was_stopped = self.job_control.lock().stopped.take().is_some();
-        if was_stopped {
-            // Stop state is cleared before waking stopped threads.
-            unsafe { self.cont_event.wake(IoEvents::IN) };
-        }
-    }
-
-    /// The wait queue woken when the process is continued or killed.
-    pub fn cont_event(&self) -> Arc<PollSet> {
-        self.cont_event.clone()
-    }
-
-    /// Peek the pending job-control status report (without consuming it) if it
-    /// matches a kind the caller's `waitpid` flags allow (`WUNTRACED` for
-    /// stopped, `WCONTINUED` for continued).
-    pub fn peek_job_status_if(
-        &self,
-        want_stopped: bool,
-        want_continued: bool,
-    ) -> Option<JobStatus> {
-        let jc = self.job_control.lock();
-        match jc.status {
-            Some(s @ JobStatus::Stopped(_)) if want_stopped => Some(s),
-            Some(s @ JobStatus::Continued) if want_continued => Some(s),
-            _ => None,
-        }
-    }
-
-    /// Consume the pending job-control status report if it matches a kind the
-    /// caller's `waitpid` flags allow. Mirrors [`Self::peek_job_status_if`] but
-    /// clears the slot; call it only after the status has been published to
-    /// userspace so a faulting copy leaves the report intact to retry.
-    pub fn take_job_status_if(
-        &self,
-        want_stopped: bool,
-        want_continued: bool,
-    ) -> Option<JobStatus> {
-        let mut jc = self.job_control.lock();
-        match jc.status {
-            Some(JobStatus::Stopped(_)) if want_stopped => jc.status.take(),
-            Some(JobStatus::Continued) if want_continued => jc.status.take(),
-            _ => None,
-        }
     }
 
     /// Get the accumulated CPU time of waited children.
@@ -1185,95 +946,6 @@ impl ProcessData {
 
     pub fn replace_personality(&self, personality: usize) -> usize {
         self.personality.swap(personality, Ordering::AcqRel)
-    }
-
-    /// Set the vfork completion (called on the child after a vfork,
-    /// before the child task is spawned).
-    pub fn set_vfork_done(&self, poll: Arc<PollSet>) {
-        *self.vfork_done.lock() = Some(VforkDone::new(poll));
-    }
-
-    /// Wait for vfork completion. Returns immediately if already done.
-    /// This should be called by the parent after spawning the vfork child.
-    ///
-    /// The wait is killable but not arbitrarily signal-interruptible
-    /// (mirroring Linux's `wait_for_completion_killable`):
-    ///
-    ///   - If the child notifies (exec or exit), we return normally.
-    ///   - If another thread in this parent process does `execve` it will
-    ///     zap us by setting `exit_request`. We bail and let the user-
-    ///     return path consume `exit_request` and route to
-    ///     `do_exit(0, false)`. Without this, `WaitQueue::wait_until`
-    ///     would never observe the zap and the execve initiator would
-    ///     deadlock in its sibling-teardown loop.
-    ///   - Non-fatal signal wakeups must not unblock us: returning early
-    ///     while the child still shares our address space would violate
-    ///     the vfork contract. We re-enter the wait in that case.
-    pub fn wait_vfork_done(&self) {
-        let poll = {
-            let guard = self.vfork_done.lock();
-            match guard.as_ref() {
-                Some(vfork) => vfork.poll.clone(),
-                None => return, // No vfork, shouldn't happen but be safe.
-            }
-        };
-        let curr_task = current_user_task();
-        let curr_thr = curr_task.as_thread();
-        loop {
-            let result = future::block_on_user(
-                &curr_task,
-                core::future::poll_fn(|cx| {
-                    // Register before re-checking so a notify that fires
-                    // between our last check and this register isn't lost.
-                    // Registration happens from the vfork parent task context.
-                    unsafe { poll.register(cx.waker(), IoEvents::IN) };
-                    let done = self
-                        .vfork_done
-                        .lock()
-                        .as_ref()
-                        .map(|v| v.done)
-                        .unwrap_or(true);
-                    if done {
-                        core::task::Poll::Ready(())
-                    } else {
-                        core::task::Poll::Pending
-                    }
-                }),
-            );
-            match result {
-                future::UserWaitOutcome::Ready(()) => return,
-                future::UserWaitOutcome::Interrupted => {
-                    if curr_thr.has_exit_request() {
-                        return;
-                    }
-                    // Spurious wake from a non-fatal signal; keep waiting.
-                    continue;
-                }
-                future::UserWaitOutcome::TimedOut => {
-                    unreachable!("vfork completion wait has no deadline")
-                }
-            }
-        }
-    }
-
-    /// Notify the vfork parent that this child has exec'd or exited.
-    /// No-op if this process was not created by vfork.
-    pub fn notify_vfork_done(&self) {
-        // Set done under the lock, then drop the lock before notifying
-        // to avoid lock-order inversion with the poll-set internal lock.
-        let poll = {
-            let mut guard = self.vfork_done.lock();
-            match guard.as_mut() {
-                Some(vfork) => {
-                    vfork.done = true;
-                    vfork.poll.clone()
-                }
-                None => return,
-            }
-            // guard dropped here
-        };
-        // vfork completion is published before waking the parent.
-        unsafe { poll.wake(IoEvents::IN) };
     }
 }
 
