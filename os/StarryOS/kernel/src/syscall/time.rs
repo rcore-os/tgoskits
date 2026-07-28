@@ -95,7 +95,7 @@ pub fn sys_clock_gettime(clock_id: __kernel_clockid_t, ts: *mut timespec) -> AxR
             utime + stime
         }
         CLOCK_THREAD_CPUTIME_ID => {
-            let (utime, stime) = current_user_task().as_thread().cpu_time.output();
+            let (utime, stime) = current_user_task().as_thread().cpu_time().output();
             utime + stime
         }
         _ => {

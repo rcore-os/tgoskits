@@ -443,7 +443,7 @@ fn now_ns() -> u64 {
 /// [`PERF_TASK_ACTIVE`] *after* the push ensures the hooks, once they start
 /// running, always find the counter in the list.
 pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
-    thr.perf_counters.lock().push(ptc);
+    thr.perf_counters().lock().push(ptc);
     PERF_TASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
 }
 
@@ -467,7 +467,7 @@ pub fn perf_sched_in(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let counters = thr.perf_counters.lock();
+    let counters = thr.perf_counters().lock();
     if counters.is_empty() {
         return;
     }
@@ -563,7 +563,7 @@ pub fn perf_sched_out(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let counters = thr.perf_counters.lock();
+    let counters = thr.perf_counters().lock();
     if counters.is_empty() {
         return;
     }
@@ -710,7 +710,7 @@ pub fn on_exec(thr: &Thread) {
     }
     let now = now_ns();
     {
-        let counters = thr.perf_counters.lock();
+        let counters = thr.perf_counters().lock();
         for ptc in counters.iter() {
             if ptc.run_state.lock().is_stopping() {
                 continue;
@@ -805,7 +805,7 @@ pub fn on_exec_sideband(thr: &Thread) {
     }
     // Snapshot targets, then drop the counter lock before any ring write.
     let targets: Vec<WantTarget> = {
-        let counters = thr.perf_counters.lock();
+        let counters = thr.perf_counters().lock();
         counters
             .iter()
             .filter_map(|ptc| {
@@ -863,7 +863,7 @@ pub fn on_mmap_sideband(
     let pid = thr.proc_data.proc.pid();
     let tid = thr.tid();
     let targets: Vec<SidebandTarget> = {
-        let counters = thr.perf_counters.lock();
+        let counters = thr.perf_counters().lock();
         counters
             .iter()
             .filter(|ptc| ptc.want_mmap2)
@@ -904,7 +904,7 @@ pub fn on_clone_sideband(parent_thr: &Thread, child_pid: u32, child_tid: u32) {
     let ptid = parent_thr.tid();
     // Snapshot want_task targets, then drop the counter lock before any ring write.
     let targets: Vec<SidebandTarget> = {
-        let counters = parent_thr.perf_counters.lock();
+        let counters = parent_thr.perf_counters().lock();
         counters
             .iter()
             .filter(|ptc| ptc.want_task)
@@ -943,7 +943,7 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
         is_sampling: bool,
     }
     let specs: Vec<InheritSpec> = {
-        let counters = parent_thr.perf_counters.lock();
+        let counters = parent_thr.perf_counters().lock();
         counters
             .iter()
             .filter(|p| p.inherit && !p.run_state.lock().is_stopping())
@@ -1023,7 +1023,7 @@ pub fn on_task_exit(thr: &Thread) {
         }
         None => (0, 0),
     };
-    let counters = thr.perf_counters.lock().clone();
+    let counters = thr.perf_counters().lock().clone();
     for ptc in &counters {
         if ptc.want_task
             && let Some(t) = sideband_target(ptc, pid, tid)

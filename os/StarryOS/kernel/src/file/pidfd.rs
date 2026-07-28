@@ -36,8 +36,8 @@ impl PidFd {
     pub(crate) fn new_thread(identity: Arc<ProcessIdentity>, thread: &Thread, tid: Pid) -> Self {
         Self {
             identity,
-            exit_event: thread.exit_event.clone(),
-            thread_exit: Some(thread.exit.clone()),
+            exit_event: thread.exit_event(),
+            thread_exit: Some(thread.exit_flag()),
             tid: Some(tid),
 
             non_blocking: AtomicBool::new(false),
