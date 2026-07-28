@@ -12,6 +12,9 @@ use ax_memory_addr::{PhysAddr, VirtAddr};
 
 use crate::host::{HostMemory, default_host};
 
+const GICV2_DIRECT_GROUP1: bool = false;
+const GICV2_DIRECT_EOI_MAINTENANCE: bool = true;
+
 fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
     let mut gic = rdrive::get_one::<rdif_intc::Intc>()
         .expect("failed to get GIC driver")
@@ -40,8 +43,8 @@ pub(crate) fn inject_interrupt(intid: ArmVirtualIntId) -> ArmVcpuResult {
                     None,
                     0,
                     VirtualInterruptState::Pending,
-                    true,
-                    false,
+                    GICV2_DIRECT_GROUP1,
+                    GICV2_DIRECT_EOI_MAINTENANCE,
                 ),
             );
             return Ok(());
