@@ -337,7 +337,7 @@ fn do_execve(
     //     reset, since its `ss_sp` pointed into the old aspace which is
     //     no longer mapped.
     proc_data.signal.reset_actions_for_exec();
-    thr.signal.reset_stack();
+    thr.signal().reset_stack();
     proc_data.posix_timers.clear();
 
     // Pointers cached in the thread that referenced user memory in the

@@ -4,7 +4,6 @@ use core::{future::poll_fn, task::Poll};
 
 use ax_errno::{AxError, AxResult};
 use ax_runtime::hal::cpu::uspace::UserContext;
-use axpoll::IoEvents;
 use linux_raw_sys::general::{CLD_CONTINUED, CLD_STOPPED, CLD_TRAPPED, RLIMIT_RTTIME};
 use starry_process::Pid;
 use starry_signal::{SignalInfo, SignalOSAction, SignalSet, Signo};
@@ -306,7 +305,7 @@ pub fn check_signals(
     queue_rttime_limit_signal(thr);
     if current_user_task().take_deadline_overrun() {
         let _result = thr
-            .signal
+            .signal()
             .send_signal(SignalInfo::new_kernel(Signo::SIGXCPU));
     }
 
@@ -325,7 +324,7 @@ pub fn check_signals(
     }
 
     let Some((sig, os_action)) =
-        thr.signal
+        thr.signal()
             .check_signals_with(uctx, restore_blocked, |uctx, _sig, restartable| {
                 // Apply the SA_RESTART decision once per interrupted syscall.
                 // Callers pass `Some(info)` only for the first delivered signal;
@@ -366,7 +365,7 @@ pub fn check_signals(
             Some(new_signo) if new_signo != signo => {
                 thr.proc_data
                     .set_ptrace_resume_signal_bypass_for(thr.tid(), new_signo);
-                let _ = thr.signal.send_signal(SignalInfo::new_kernel(new_signo));
+                let _ = thr.signal().send_signal(SignalInfo::new_kernel(new_signo));
                 return true;
             }
             Some(_) => {}
@@ -382,15 +381,7 @@ pub fn check_signals(
     // handler. `compare_exchange` clears the slot only on a match, so
     // unrelated signals leave the flag intact for the real fault
     // signal that follows.
-    let dump_on_terminate = thr
-        .fault_dump_signo
-        .compare_exchange(
-            signo as u8,
-            0,
-            core::sync::atomic::Ordering::AcqRel,
-            core::sync::atomic::Ordering::Relaxed,
-        )
-        .is_ok();
+    let dump_on_terminate = thr.claim_fault_dump(signo as u8);
 
     match os_action {
         SignalOSAction::Terminate => {
@@ -419,15 +410,15 @@ fn queue_rttime_limit_signal(thr: &Thread) {
         (limit.current, limit.max)
     };
     let action = thr
-        .rttime
+        .rttime()
         .lock()
-        .check_limit(&thr.cpu_time, soft_limit_us, hard_limit_us);
+        .check_limit(thr.cpu_time(), soft_limit_us, hard_limit_us);
     let signo = match action {
         RttimeLimitAction::None => return,
         RttimeLimitAction::Soft => Signo::SIGXCPU,
         RttimeLimitAction::Hard => Signo::SIGKILL,
     };
-    let _queued = thr.signal.send_signal(SignalInfo::new_kernel(signo));
+    let _queued = thr.signal().send_signal(SignalInfo::new_kernel(signo));
 }
 
 /// Notify a process's parent of a job-control state change by sending it
@@ -512,7 +503,7 @@ pub fn with_blocked_signals<R>(
     f: impl FnOnce() -> AxResult<R>,
 ) -> AxResult<R> {
     let curr = current_user_task();
-    let sig = &curr.as_thread().signal;
+    let sig = curr.as_thread().signal();
 
     let old_blocked = blocked.map(|set| sig.set_blocked(set));
     let result = f();
@@ -537,13 +528,13 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
         // (not blocked/not ignored).  Sending a blocked signal via
         // tkill/tgkill must NOT interrupt the target per POSIX; the signal
         // is queued as pending and stays invisible until unblocked.
-        if thread.signal.send_signal(sig) {
+        if thread.signal().send_signal(sig) {
             task.interrupt();
         }
-        thread.signal.wake_sigwait(signo);
+        thread.signal().wake_sigwait(signo);
         // Always wake signalfd waiters — even blocked signals should be
         // visible via signalfd in an epoll event loop.
-        unsafe { thread.signalfd_waker.wake(IoEvents::IN) };
+        thread.wake_signalfd();
     }
 
     Ok(())
@@ -601,7 +592,7 @@ pub fn send_signal_to_process(pid: Pid, sig: Option<SignalInfo>) -> AxResult<()>
         // signals must be visible from signalfd in an epoll event loop.
         for tid in proc_data.proc.threads() {
             if let Ok(task) = get_task(tid) {
-                unsafe { task.as_thread().signalfd_waker.wake(IoEvents::IN) };
+                task.as_thread().wake_signalfd();
             }
         }
     }
@@ -720,10 +711,10 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
             *act = starry_signal::SignalAction::default();
         }
     }
-    let mut mask = thread.signal.blocked();
+    let mut mask = thread.signal().blocked();
     if mask.has(signo) {
         mask.remove(signo);
-        thread.signal.set_blocked(mask);
+        thread.signal().set_blocked(mask);
     }
 
     // Tag the dump request with the specific fault signo so a later
@@ -732,20 +723,16 @@ pub fn raise_signal_fatal(sig: SignalInfo, uctx: &UserContext) -> AxResult<()> {
     // `send_signal_to_process` skip this path and leave the slot at
     // zero, so peers terminate silently. Storing 0 elsewhere is the
     // "no dump" sentinel — signo values start at 1.
-    thread
-        .fault_dump_signo
-        .store(signo as u8, core::sync::atomic::Ordering::Release);
+    thread.set_fault_dump(signo as u8);
 
-    if thread.signal.send_signal(sig) {
+    if thread.signal().send_signal(sig) {
         curr.interrupt();
     } else {
         // send_signal returning false means the signal was rejected
         // (already pending). Either way the faulting thread is the
         // right one to terminate, so dump and exit here directly so
         // userspace cannot lose the register state.
-        thread
-            .fault_dump_signo
-            .store(0, core::sync::atomic::Ordering::Release);
+        thread.clear_fault_dump();
         dump_user_crash_context(uctx);
         do_exit(signo as i32, true);
     }

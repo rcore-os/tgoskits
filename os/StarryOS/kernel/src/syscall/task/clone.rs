@@ -611,7 +611,7 @@ impl CloneArgs {
             tid,
             new_proc_data.clone(),
             parent_cred,
-            curr_thread.signal.blocked(),
+            curr_thread.signal().blocked(),
             scope,
         );
         thr.set_nice(child_nice);

@@ -111,7 +111,7 @@ impl Signalfd {
     fn has_pending_signals(&self) -> bool {
         let mask = self.mask();
         let curr = current_user_task();
-        let signal = &curr.as_thread().signal;
+        let signal = curr.as_thread().signal();
         let pending = signal.pending();
         !(pending & mask).is_empty()
     }
@@ -120,7 +120,7 @@ impl Signalfd {
     fn dequeue_signal(&self) -> Option<SignalInfo> {
         let mask = self.mask();
         let curr = current_user_task();
-        let signal = &curr.as_thread().signal;
+        let signal = curr.as_thread().signal();
         signal.dequeue_signal(&mask)
     }
 }

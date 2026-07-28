@@ -180,13 +180,13 @@ impl UserTaskRef {
 
     /// Sets the Starry-local interruption bit and directly wakes this thread.
     pub fn interrupt(&self) {
-        self.as_thread().interrupted.store(true, Ordering::Release);
+        self.as_thread().interrupt();
         let _result = self.wake_handle().wake();
     }
 
     /// Tests and consumes one pending interruption.
     pub fn poll_interrupt(&self, _context: &Context<'_>) -> Poll<()> {
-        if self.as_thread().interrupted.swap(false, Ordering::AcqRel) {
+        if self.as_thread().take_interrupt() {
             Poll::Ready(())
         } else {
             Poll::Pending
@@ -195,12 +195,12 @@ impl UserTaskRef {
 
     /// Tests whether an interruption remains pending.
     pub fn interrupted(&self) -> bool {
-        self.as_thread().interrupted.load(Ordering::Acquire)
+        self.as_thread().interrupted()
     }
 
     /// Clears a stale interruption before returning to userspace.
     pub fn clear_interrupt(&self) {
-        self.as_thread().interrupted.store(false, Ordering::Release);
+        self.as_thread().clear_interrupt();
     }
 
     /// Waits for exit and reaps the scheduler-owned runtime resources.
@@ -309,22 +309,12 @@ impl UserTaskIrqView {
 
     /// Pushes one return-probe instance without allocation or recursive spin.
     pub(crate) fn push_kretprobe(&self, instance: kprobe::retprobe::RetprobeInstance) {
-        let Some(mut stack) = self.extension().thread.kretprobe_stack.try_lock() else {
-            panic!("nested kretprobe tried to re-enter the current task stack");
-        };
-        if stack.len() == super::KRETPROBE_STACK_CAPACITY {
-            core::mem::forget(instance);
-            panic!("current task exceeded its fixed kretprobe nesting capacity");
-        }
-        stack.push(instance);
+        self.extension().thread.push_kretprobe(instance);
     }
 
     /// Pops one return-probe instance without allocation or recursive spin.
     pub(crate) fn pop_kretprobe(&self) -> kprobe::retprobe::RetprobeInstance {
-        let Some(mut stack) = self.extension().thread.kretprobe_stack.try_lock() else {
-            panic!("nested kretprobe tried to re-enter the current task stack");
-        };
-        stack.pop().expect("kretprobe instance stack underflow")
+        self.extension().thread.pop_kretprobe()
     }
 
     fn extension(&self) -> &StarryUserTaskExtension {

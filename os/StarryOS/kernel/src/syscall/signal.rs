@@ -41,7 +41,7 @@ pub fn sys_rt_sigprocmask(
     check_sigset_size(sigsetsize)?;
 
     let curr = current_user_task();
-    let sig = &curr.as_thread().signal;
+    let sig = curr.as_thread().signal();
     let old = sig.blocked();
 
     if let Some(oldset) = oldset.nullable() {
@@ -87,7 +87,7 @@ pub fn sys_rt_sigaction(
 
 pub fn sys_rt_sigpending(set: *mut SignalSet, sigsetsize: usize) -> AxResult<isize> {
     check_sigset_size(sigsetsize)?;
-    set.vm_write(current_user_task().as_thread().signal.pending())?;
+    set.vm_write(current_user_task().as_thread().signal().pending())?;
     Ok(0)
 }
 
@@ -167,7 +167,8 @@ pub fn sys_kill(pid: i32, signo: u32) -> AxResult<isize> {
                 let curr = current_user_task();
                 let thread = curr.as_thread();
                 let signo = sig.signo();
-                if pid as Pid == thread.proc_data.proc.pid() && !thread.signal.signal_blocked(signo)
+                if pid as Pid == thread.proc_data.proc.pid()
+                    && !thread.signal().signal_blocked(signo)
                 {
                     // A process-directed signal may be delivered to any
                     // unblocked thread. Prefer the current thread for
@@ -280,7 +281,7 @@ pub fn sys_rt_tgsigqueueinfo(
 
 pub fn sys_rt_sigreturn(uctx: &mut UserContext) -> AxResult<isize> {
     block_next_signal();
-    current_user_task().as_thread().signal.restore(uctx)?;
+    current_user_task().as_thread().signal().restore(uctx)?;
     Ok(uctx.retval() as isize)
 }
 
@@ -306,7 +307,7 @@ pub fn sys_rt_sigtimedwait(
 
     let curr = current_user_task();
     let thr = curr.as_thread();
-    let signal = &thr.signal;
+    let signal = thr.signal();
 
     let old_blocked = signal.blocked();
     // Publish the sigwait state so that send_signal skips is_ignore() for
@@ -371,7 +372,7 @@ pub fn sys_rt_sigsuspend(
     let thr = curr.as_thread();
 
     let set = unsafe { set.vm_read_uninit()?.assume_init() };
-    let old_blocked = thr.signal.set_blocked(set);
+    let old_blocked = thr.signal().set_blocked(set);
 
     // sigsuspend always returns -EINTR when a signal is caught
     // We set this in uctx before check_signals so it's saved in SignalFrame
@@ -393,7 +394,7 @@ pub fn sys_rt_sigsuspend(
 
 pub fn sys_sigaltstack(ss: *const SignalStack, old_ss: *mut SignalStack) -> AxResult<isize> {
     let curr = current_user_task();
-    let sig = &curr.as_thread().signal;
+    let sig = curr.as_thread().signal();
 
     if let Some(old_ss) = old_ss.nullable() {
         old_ss.vm_write(sig.stack())?;

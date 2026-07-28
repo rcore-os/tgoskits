@@ -307,7 +307,7 @@ pub fn register_session(session: &Arc<Session>) {
 
 /// Returns the accumulated `(utime, stime)` for a task without side effects.
 pub fn task_cpu_time(task: &UserTaskRef) -> (TimeValue, TimeValue) {
-    task.as_thread().cpu_time.output()
+    task.as_thread().cpu_time().output()
 }
 
 fn apply_process_timer_actions(pid: Pid, pending: PendingTimerActions) {
@@ -733,7 +733,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
         thr.proc_data.notify_vfork_done();
     }
     // Thread exit state is published before waking waiters.
-    unsafe { thr.exit_event.wake(axpoll::IoEvents::IN) };
+    unsafe { thr.exit_event().wake(axpoll::IoEvents::IN) };
     unsafe { thr.proc_data.thread_exit_event.wake(axpoll::IoEvents::IN) };
 
     thr.set_exit();
