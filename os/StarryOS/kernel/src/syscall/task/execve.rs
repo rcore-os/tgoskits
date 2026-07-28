@@ -25,7 +25,10 @@ use crate::{
     config::USER_HEAP_BASE,
     file::{ResolveAtResult, current_fd_table, memfd::Memfd, resolve_at},
     mm::{copy_from_kernel, load_user_app, new_user_aspace_empty, vm_load_string},
-    task::{current_user_task, future::block_on, rebind_task_tid, yield_now, zap_thread},
+    task::{
+        current_user_task, future::block_on, rebind_task_tid, release_thread_pid, yield_now,
+        zap_thread,
+    },
 };
 
 fn commit_address_space_handoff<OldAddressSpace>(
@@ -393,6 +396,7 @@ fn do_execve(
     // viewpoint), did its `do_exit(0, false)`, and is no longer in the
     // task table or thread group, so the destination TID is free.
     if my_tid != tgid {
+        release_thread_pid(&proc_data.identity(), my_tid as u64);
         thr.set_tid(tgid);
         rebind_task_tid(&curr, my_tid, tgid);
         proc_data.clear_retired_leader_nice();

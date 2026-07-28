@@ -463,6 +463,58 @@ the old `ProcessData` construction window in which every new identity was
 temporarily associated with the root namespace before clone replaced its
 `NsProxy`.
 
+PID allocation and namespace shutdown now share the same final-publication
+gate. This is the Starry task-context equivalent of Linux v7.1
+`copy_process()` checking `PIDNS_ADDING` while holding `tasklist_lock` and
+declaring that no failure is permitted after task visibility. Clone reserves
+all namespace IDs first, prepares every fallible resource, and then holds the
+gate while it publishes the PID entries, process relationships, task
+registries, cgroup membership, and runnable scheduler thread. Namespace init
+holds the same gate while it disables allocation and closes child publication.
+A shutdown that wins the gate therefore revokes and rolls back a prepared
+clone; a clone that wins is completely signalable before shutdown can enumerate
+it.
+
+Reservations intentionally remain visible to namespace shutdown before the
+final-publication gate. Linux `alloc_pid()` likewise increments
+`pid_allocated` before `copy_process()` takes `tasklist_lock`; after
+`disable_pid_allocation()` clears `PIDNS_ADDING`, `zap_pid_ns_processes()` waits
+for a failed in-flight clone to call `free_pid()`. Starry counts `Reserved`
+entries in the shutdown membership predicate, rejects them at the guarded
+publication check, and advances the member epoch when rollback removes them.
+Moving the entire fallible clone preparation under the sleeping publication
+gate would serialize resource allocation without removing this required
+in-flight lifetime.
+
+Each PID namespace now owns an immutable parent identity outside its mutable
+allocation state. A process identity retains the complete innermost-to-root
+lineage, and clone reserves a local ID in every non-root ancestor, matching
+Linux `alloc_pid()`'s per-level `upid` allocation. Ancestor namespace shutdown
+therefore includes tasks in nested namespaces. Thread exit and non-leader
+`execve` release every corresponding ancestor TID; final zombie reap releases
+every process PID. The deterministic host tests cover immutable namespace init
+identity, reservation rollback after shutdown, nested ancestor membership, and
+generation-safe PID retirement.
+
+Linux `zap_pid_ns_processes()` also has to service zombies that become children
+of namespace init only after their previous parent exits. Starry now snapshots
+a monotonic member epoch before each reap pass, services newly reparented
+zombies, and sleeps only if neither the membership nor the epoch changed.
+Every terminal thread publication advances the epoch, including a process
+leader whose namespace entry remains a process PID until reap. The grouped
+namespace regression retains a child with `waitid(..., WNOWAIT)`, exits PID 1,
+and proves shutdown kills its live parent, reaps the newly adopted zombie, and
+only then releases namespace init.
+
+Full namespace-relative numeric PID translation remains a pre-existing,
+separate compatibility finding. Starry currently translates `getpid()` and
+`getppid()`, while several PID/TID-returning and PID/TID-consuming syscall
+paths still use the global registry key. This lifecycle stage deliberately
+does not change one return path in isolation because doing so would make
+`clone()` return a local PID that existing `wait`, signal, scheduling, and
+ptrace lookups cannot yet resolve. The follow-up must introduce one typed
+namespace PID resolver and migrate those ABI boundaries together.
+
 The branch-touched USB hosts now make the PREEMPT_RT execution boundary
 explicit. Linux v7.1 `xhci_irq()`, `ehci_irq()`, and
 `dwc2_handle_common_intr()` combine status acknowledgement with event

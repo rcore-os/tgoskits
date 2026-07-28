@@ -8,7 +8,7 @@ pub fn sys_getpid() -> AxResult<isize> {
     let thr = curr.as_thread();
     let global_pid = thr.proc_data.proc.pid() as u64;
     let nsproxy = thr.proc_data.nsproxy.lock();
-    let local = nsproxy.pid_ns.lock().local_pid(global_pid);
+    let local = nsproxy.pid_ns.local_pid(global_pid);
     drop(nsproxy);
     if let Some(local) = local {
         Ok(local as isize)
@@ -23,7 +23,7 @@ pub fn sys_getppid() -> AxResult<isize> {
     let parent = thr.proc_data.proc.parent().ok_or(AxError::NoSuchProcess)?;
     let parent_global_pid = parent.pid() as u64;
     let nsproxy = thr.proc_data.nsproxy.lock();
-    match nsproxy.pid_ns.lock().local_pid(parent_global_pid) {
+    match nsproxy.pid_ns.local_pid(parent_global_pid) {
         Some(local) => Ok(local as isize),
         None => Ok(0),
     }
