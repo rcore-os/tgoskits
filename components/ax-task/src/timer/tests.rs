@@ -38,6 +38,38 @@ fn reports_capacity_without_growing_the_heap() {
 }
 
 #[test]
+fn no_deadline_sentinel_cannot_consume_queue_capacity() {
+    let first = timer(3);
+    let second = timer(4);
+    let mut timers = TaskDeadlineQueue::new(1);
+
+    assert!(
+        timers.arm(first.as_ref(), u64::MAX, park(1)).is_err(),
+        "u64::MAX represents no finite deadline and must not enter the heap"
+    );
+    assert!(timers.is_empty());
+
+    let live = timers.arm(second.as_ref(), 10, park(2)).unwrap();
+    assert!(timers.cancel(&live));
+    assert!(timers.is_empty());
+}
+
+#[test]
+fn zero_is_an_immediately_due_logical_deadline() {
+    let node = timer(5);
+    let mut timers = TaskDeadlineQueue::new(1);
+    let registration = timers.arm(node.as_ref(), 0, park(1)).unwrap();
+    let mut expired = [ExpiredTaskDeadline::EMPTY; 1];
+
+    let batch = timers.expire(TaskDeadlineExpireRequest::new(0, 1, 1), &mut expired);
+
+    assert_eq!(batch.processed(), 1);
+    assert_eq!(batch.expired(), 1);
+    assert_eq!(expired[0].token(), registration.token());
+    assert!(timers.is_empty());
+}
+
+#[test]
 fn rearm_replaces_the_existing_entry_without_consuming_capacity() {
     let node = timer(7);
     let mut timers = TaskDeadlineQueue::new(1);

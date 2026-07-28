@@ -2,12 +2,12 @@
 
 use alloc::vec::Vec;
 
-use super::{TaskDeadlineKind, TaskDeadlineToken};
+use super::{FiniteTaskDeadline, TaskDeadlineKind, TaskDeadlineToken};
 use crate::ThreadId;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TimerEntry {
-    deadline_ns: u64,
+    deadline: FiniteTaskDeadline,
     thread: ThreadId,
     token: TaskDeadlineToken,
     kind: TaskDeadlineKind,
@@ -15,13 +15,13 @@ pub(super) struct TimerEntry {
 
 impl TimerEntry {
     pub(super) const fn new(
-        deadline_ns: u64,
+        deadline: FiniteTaskDeadline,
         thread: ThreadId,
         token: TaskDeadlineToken,
         kind: TaskDeadlineKind,
     ) -> Self {
         Self {
-            deadline_ns,
+            deadline,
             thread,
             token,
             kind,
@@ -29,7 +29,7 @@ impl TimerEntry {
     }
 
     pub(super) const fn deadline_ns(self) -> u64 {
-        self.deadline_ns
+        self.deadline.as_nanos()
     }
 
     pub(super) const fn thread(self) -> ThreadId {
@@ -45,8 +45,8 @@ impl TimerEntry {
     }
 
     fn precedes(self, other: Self) -> bool {
-        self.deadline_ns < other.deadline_ns
-            || (self.deadline_ns == other.deadline_ns
+        self.deadline < other.deadline
+            || (self.deadline == other.deadline
                 && (self.thread.as_u64() < other.thread.as_u64()
                     || (self.thread == other.thread
                         && self.token.generation() < other.token.generation())))
