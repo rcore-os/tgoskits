@@ -5,7 +5,7 @@ use super::*;
 impl TaskSystem {
     /// Marks a non-queued thread exited and queues its task-context exit hook.
     pub fn mark_exited(&self, thread: ThreadId) -> Result<(), TaskError> {
-        {
+        let exited_core = {
             let mut state = self.state.lock();
             let cleanup_deadline_member = {
                 let record = state.thread_record_mut(thread)?;
@@ -37,8 +37,9 @@ impl TaskSystem {
                 state.request_owner_reschedule(thread);
                 return Err(TaskError::ThreadBusy);
             }
-            {
+            let exited_core = {
                 let record = state.thread_record_mut(thread)?;
+                let exited_core = Arc::clone(&record.core);
                 let _exit = record
                     .core
                     .try_scheduler_exit()
@@ -61,9 +62,12 @@ impl TaskSystem {
                 sched.transition(&record.core, ThreadState::Exited)?;
                 record.exit_callback_pending = record.extension.is_some();
                 record.exit_callback_claimed = false;
-            }
+                exited_core
+            };
             state.release_deadline_reservation_on_exit(thread)?;
-        }
+            exited_core
+        };
+        exited_core.notify_affinity_waiters();
         self.task_work.publish();
         Ok(())
     }

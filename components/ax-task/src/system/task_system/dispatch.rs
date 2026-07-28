@@ -60,7 +60,11 @@ impl TaskSystem {
         let mut sched = core.sched().lock();
         let preempts_current =
             self.enqueue_owner_thread_locked(cpu.as_mut(), &core, &mut sched, now_ns, reason)?;
+        let affinity_completed = Self::complete_affinity_if_satisfied_locked(&core, &sched);
         drop(sched);
+        if affinity_completed {
+            core.notify_affinity_waiters();
+        }
         self.finish_owner_enqueue(cpu, reason, preempts_current);
         Ok(())
     }

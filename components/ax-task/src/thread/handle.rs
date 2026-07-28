@@ -9,8 +9,8 @@ use core::{
 
 use crate::{
     CpuId, DeadlineFlags, DeadlinePolicy, FairMode, Nice, PiWaitState, RtPriority, SchedulePolicy,
-    SchedulingKey, SchedulingUrgency, TaskError, ThreadExtensionView, ThreadId, ThreadSchedCell,
-    ThreadState,
+    SchedulingKey, SchedulingUrgency, TaskError, ThreadAffinityCompletion, ThreadExtensionView,
+    ThreadId, ThreadSchedCell, ThreadState,
     inbox::{InboxKind, InboxMessage, InboxNode, PublishResult},
     task_work::TaskWorkDoorbell,
     timer::TaskDeadlineNode,
@@ -386,6 +386,7 @@ pub(crate) struct ThreadCore {
     reap_gate: AtomicUsize,
     scheduler_activity_gate: AtomicUsize,
     scheduler_inbox_deliveries: AtomicUsize,
+    pub(super) affinity_completion: ThreadAffinityCompletion,
     wake_state: AtomicU8,
     park_generation: AtomicU64,
     target_cpu: AtomicU32,
@@ -426,6 +427,7 @@ impl ThreadCore {
             reap_gate: AtomicUsize::new(0),
             scheduler_activity_gate: AtomicUsize::new(0),
             scheduler_inbox_deliveries: AtomicUsize::new(0),
+            affinity_completion: ThreadAffinityCompletion::new(1),
             wake_state: AtomicU8::new(0),
             park_generation: AtomicU64::new(0),
             target_cpu: AtomicU32::new(u32::MAX),
@@ -565,6 +567,14 @@ impl ThreadCore {
 
     pub(crate) fn scheduler_inbox_delivery_count(&self) -> usize {
         self.scheduler_inbox_deliveries.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn publish_affinity_completion(&self, generation: u64) -> bool {
+        self.affinity_completion.publish(generation)
+    }
+
+    pub(crate) fn notify_affinity_waiters(&self) {
+        self.affinity_completion.notify_waiters();
     }
 
     /// Enters one owner-side delivery section that must not overlap exit.

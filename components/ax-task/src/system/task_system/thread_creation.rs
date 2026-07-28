@@ -47,6 +47,7 @@ impl TaskSystem {
                 applied_policy_generation: 1,
                 dispatch_generation: 1,
                 affinity: affinity.clone(),
+                affinity_generation: 1,
                 entity,
                 base_entity: entity,
                 base_deadline,

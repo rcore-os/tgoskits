@@ -216,6 +216,11 @@ impl TaskSystem {
         if queued_cpu == Some(owner) {
             if target == owner {
                 sched.placement.set_migration_target(None)?;
+                let completed = Self::complete_affinity_if_satisfied_locked(core, &sched);
+                drop(sched);
+                if completed {
+                    core.notify_affinity_waiters();
+                }
                 return Ok(());
             }
             let queued = cpu
@@ -243,7 +248,11 @@ impl TaskSystem {
             sched
                 .placement
                 .set_migration_target((target != owner).then_some(target))?;
+            let completed = Self::complete_affinity_if_satisfied_locked(core, &sched);
             drop(sched);
+            if completed {
+                core.notify_affinity_waiters();
+            }
             if target != owner {
                 cpu.request_reschedule();
             }

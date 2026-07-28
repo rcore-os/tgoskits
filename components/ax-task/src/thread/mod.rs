@@ -1,5 +1,6 @@
 //! Thread identity, lifecycle, policy, and stable handles.
 
+mod affinity;
 mod handle;
 mod id;
 mod park;
@@ -8,6 +9,8 @@ mod policy;
 mod spec;
 mod state;
 
+pub use affinity::ThreadAffinityChange;
+pub(crate) use affinity::ThreadAffinityCompletion;
 pub use handle::*;
 pub use id::*;
 pub use park::*;

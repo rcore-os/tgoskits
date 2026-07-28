@@ -401,6 +401,100 @@ fn in_flight_migration_is_forwarded_to_latest_affinity_target() {
 }
 
 #[test]
+fn remote_affinity_completion_waits_for_the_destination_owner() {
+    support::clear_handles();
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+    let thread = ready_thread(&system, SchedulePolicy::default());
+    system.enqueue(cpu0.as_mut(), thread.id(), 0).unwrap();
+
+    let request = system
+        .request_affinity(thread.id(), singleton_affinity(2, 1))
+        .unwrap();
+    assert_eq!(
+        request.try_result(),
+        None,
+        "publishing the owner request is not migration completion"
+    );
+
+    system.drain_policy_updates(cpu0.as_mut(), 1).unwrap();
+    assert_eq!(
+        request.try_result(),
+        None,
+        "detaching from the source is not destination ownership"
+    );
+    system.drain_policy_updates(cpu1.as_mut(), 2).unwrap();
+    assert_eq!(request.try_result(), Some(Ok(())));
+    support::clear_handles();
+}
+
+#[test]
+fn concurrent_affinity_waiters_complete_only_after_the_latest_destination() {
+    support::clear_handles();
+    let system = TaskSystem::new(TaskSystemConfig::new(3)).unwrap();
+    let mut cpus = (0..3)
+        .map(|cpu| system.create_cpu_local(CpuId::new(cpu)).unwrap())
+        .collect::<Vec<_>>();
+    for cpu in &mut cpus {
+        system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+    let thread = ready_thread(&system, SchedulePolicy::default());
+    system.enqueue(cpus[0].as_mut(), thread.id(), 0).unwrap();
+
+    let first = system
+        .request_affinity(thread.id(), singleton_affinity(3, 1))
+        .unwrap();
+    system.drain_policy_updates(cpus[0].as_mut(), 1).unwrap();
+    let latest = system
+        .request_affinity(thread.id(), singleton_affinity(3, 2))
+        .unwrap();
+
+    system.drain_policy_updates(cpus[1].as_mut(), 2).unwrap();
+    assert_eq!(first.try_result(), None);
+    assert_eq!(latest.try_result(), None);
+
+    system.drain_policy_updates(cpus[2].as_mut(), 3).unwrap();
+    assert_eq!(first.try_result(), Some(Ok(())));
+    assert_eq!(latest.try_result(), Some(Ok(())));
+    support::clear_handles();
+}
+
+#[test]
+fn exiting_target_resolves_a_pending_affinity_waiter() {
+    let (system, mut cpu0, mut cpu1, _idle1) = online_pair();
+    let thread = ready_thread(&system, SchedulePolicy::default());
+    system.enqueue(cpu0.as_mut(), thread.id(), 0).unwrap();
+
+    let request = system
+        .request_affinity(thread.id(), singleton_affinity(2, 1))
+        .unwrap();
+    system.drain_policy_updates(cpu0.as_mut(), 1).unwrap();
+    system.mark_exited(thread.id()).unwrap();
+
+    assert_eq!(
+        request.try_result(),
+        Some(Err(ax_task::TaskError::StaleThreadId))
+    );
+    system.drain_policy_updates(cpu1.as_mut(), 2).unwrap();
+}
+
+#[test]
 fn exited_thread_waits_for_in_flight_migration_delivery() {
     let (system, mut cpu0, mut cpu1, _idle1) = online_pair();
     let thread = ready_thread(&system, SchedulePolicy::default());

@@ -125,7 +125,27 @@ pub fn thread_affinity(thread: ThreadId) -> Result<CpuSet, TaskError> {
 
 /// Updates a thread CPU affinity after Deadline root-domain validation.
 pub fn set_thread_affinity(thread: ThreadId, affinity: CpuSet) -> Result<(), TaskError> {
+    if task_runtime::in_hard_irq() {
+        return Err(TaskError::UnsafeContext);
+    }
     runtime_task_system()?.set_affinity(thread, affinity)
+}
+
+/// Updates a remote thread's affinity and waits for owner-runqueue completion.
+///
+/// A successful return guarantees that this update was ordered through the
+/// target's owner runqueue. If no later setter superseded it, the target no
+/// longer executes on, is queued on, or has an in-flight transfer to a CPU
+/// excluded by this affinity. Setters that join the same outstanding owner
+/// transition share the target's monotonically increasing completion sequence.
+pub fn set_thread_affinity_and_wait(thread: ThreadId, affinity: CpuSet) -> Result<(), TaskError> {
+    if current_thread_id()? == thread {
+        return set_current_thread_affinity(affinity);
+    }
+    validate_blocking_context()?;
+    runtime_task_system()?
+        .request_affinity(thread, affinity)?
+        .wait()
 }
 
 /// Updates the calling thread's affinity and completes a required migration.
