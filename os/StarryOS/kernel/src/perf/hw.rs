@@ -60,6 +60,7 @@ use super::{PerfEventOps, target::PerfTarget};
 #[cfg(target_arch = "aarch64")]
 use super::{
     cpu_worker,
+    inheritance::PerfInheritanceFamily,
     output::{PerfOutputRoute, PerfOutputScope, PerfRingOutput},
     sampling::{self, SampleOutput, SampleSlot, SampleSlotConfig},
     sampling_lifecycle::SampleRegistration,
@@ -502,14 +503,13 @@ struct HwPerfEventState {
     sampling: Option<SamplingState>,
     /// Exact owner-CPU registry generation while sampling is armed.
     sampling_registration: Option<SampleRegistration>,
-    /// Task-bound counting state, including `pid == 0` current-task events.
+    /// Fd-owned task event and its inherited descendants.
     ///
-    /// When set, this is the *only* live state: `counter` / `enabled_since` /
-    /// `time_*` / `sampling` are inert placeholders, the counter is driven from
-    /// the scheduler hooks in [`super::task`] (not from this fd's `enable`), and
-    /// the `PerfEventOps` methods + `Drop` delegate to the per-task path. The
-    /// `Arc` is shared with the target [`crate::task::Thread`]'s counter list.
-    per_task: Option<Arc<super::task::PerTaskCounter>>,
+    /// When set, this is the *only* live state: the system-wide fields are inert
+    /// placeholders and the family delegates each CPU-affine member to
+    /// [`super::task`]. The root fd owns the family; scheduler lists own member
+    /// counters independently.
+    per_task: Option<Arc<PerfInheritanceFamily>>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -569,9 +569,8 @@ impl HwPerfEventState {
         // Per-task events do not own a system-wide counter or sampling state:
         // release the HW counter through the per-task path (idempotent — the
         // task-exit hook may have freed it already) and stop here.
-        if let Some(ptc) = &self.per_task {
-            super::task::free_hw(ptc);
-            return Ok(());
+        if let Some(family) = &self.per_task {
+            return family.close();
         }
         let owner = self.system_owner.ok_or(AxError::BadState)?;
         let stopped_at = cpu_worker::disable_system(
@@ -603,7 +602,8 @@ impl HwPerfEventState {
         // Per-task events: a sampling one is readable when its ring (on the
         // shared `PerTaskCounter`) has unread bytes; a counting one is always
         // readable (`read(perf_fd)` returns the current value without blocking).
-        if let Some(ptc) = &self.per_task {
+        if let Some(family) = &self.per_task {
+            let ptc = family.root();
             if ptc.is_sampling() {
                 return if ptc.ring_has_data() {
                     IoEvents::IN
@@ -618,12 +618,7 @@ impl HwPerfEventState {
             // (`data_tail != data_head`): that is what `perf record`'s poll
             // waits on. Before the first mmap there is no ring ⇒ not readable.
             Some(sampling) => {
-                if sampling
-                    .output
-                    .owned()
-                    .as_ref()
-                    .is_some_and(|ring| ring_has_data(ring))
-                {
+                if sampling.output.owned().as_ref().is_some_and(ring_has_data) {
                     IoEvents::IN
                 } else {
                     IoEvents::empty()
@@ -639,7 +634,8 @@ impl HwPerfEventState {
         // Per-task sampling events register a waker on the ptc's `PollSet` (the
         // one the per-task notify worker wakes). Counting events (per-task or
         // system-wide) never transition readiness, so they register nothing.
-        if let Some(ptc) = &self.per_task {
+        if let Some(family) = &self.per_task {
+            let ptc = family.root();
             if ptc.is_sampling() && events.contains(IoEvents::IN) {
                 ptc.register_poll(context);
             }
@@ -678,9 +674,8 @@ impl HwPerfEventState {
         // Per-task: just record userspace intent. The target task's next
         // `perf_sched_in` programs the counter onto HW (or an immediate one if
         // it is the running task at the next switch).
-        if let Some(ptc) = &self.per_task {
-            ptc.set_enabled();
-            return Ok(());
+        if let Some(family) = &self.per_task {
+            return family.enable();
         }
         if self.enabled_since.is_some() {
             return Ok(());
@@ -726,8 +721,8 @@ impl HwPerfEventState {
     }
 
     fn disable(&mut self) -> AxResult<()> {
-        if let Some(ptc) = &self.per_task {
-            return super::task::disable_counter(ptc);
+        if let Some(family) = &self.per_task {
+            return family.disable();
         }
         let Some(since) = self.enabled_since else {
             return Ok(());
@@ -749,8 +744,8 @@ impl HwPerfEventState {
     }
 
     fn reset(&mut self) -> AxResult<()> {
-        if let Some(ptc) = &self.per_task {
-            return super::task::reset_counter(ptc);
+        if let Some(family) = &self.per_task {
+            return family.reset();
         }
         let owner = self.system_owner.ok_or(AxError::BadState)?;
         cpu_worker::reset_system(
@@ -763,13 +758,14 @@ impl HwPerfEventState {
     }
 
     fn read_values(&mut self) -> AxResult<PerfReadValues> {
-        if let Some(ptc) = &self.per_task {
-            let (value, time_enabled, time_running) = super::task::read_counter(ptc)?;
+        if let Some(family) = &self.per_task {
+            let (value, time_enabled, time_running) = family.read()?;
+            let root = family.root();
             return Ok(PerfReadValues {
                 value,
                 time_enabled,
                 time_running,
-                read_format: ptc.read_format(),
+                read_format: root.read_format(),
             });
         }
         let owner = self.system_owner.ok_or(AxError::BadState)?;
@@ -796,15 +792,15 @@ impl HwPerfEventState {
     fn set_sample_id(&mut self, id: u64) {
         self.sample_id = id;
         // Per-task: mirror onto the shared counter the scheduler hook reads.
-        if let Some(ptc) = &self.per_task {
-            ptc.set_sample_id(id);
+        if let Some(family) = &self.per_task {
+            family.set_sample_id(id);
         }
     }
 
     fn output_ring(&self) -> Option<PerfRingOutput> {
         // Per-task: the ring lives on the shared `PerTaskCounter`.
-        if let Some(ptc) = &self.per_task {
-            return ptc.output_ring();
+        if let Some(family) = &self.per_task {
+            return family.root().output_ring();
         }
         self.sampling.as_ref()?.output.owned()
     }
@@ -813,8 +809,8 @@ impl HwPerfEventState {
         if self.output_ring().is_some() {
             return Err(AxError::InvalidInput);
         }
-        if let Some(ptc) = &self.per_task {
-            return super::task::redirect_output(ptc, output);
+        if let Some(family) = &self.per_task {
+            return family.redirect_output(output);
         }
         let was_enabled = self.enabled_since.is_some();
         if was_enabled {
@@ -833,8 +829,8 @@ impl HwPerfEventState {
         if self.output_ring().is_some() {
             return Err(AxError::InvalidInput);
         }
-        if let Some(ptc) = &self.per_task {
-            return super::task::detach_output(ptc);
+        if let Some(family) = &self.per_task {
+            return family.detach_output();
         }
         let was_enabled = self.enabled_since.is_some();
         if was_enabled {
@@ -853,9 +849,10 @@ impl HwPerfEventState {
         // Per-task sampling: the ring + notify/poll machinery live on the shared
         // `PerTaskCounter` (the scheduler hook builds the IRQ slot from there).
         // Allocate the ring, spawn the notify worker, and hand both to the ptc.
-        if let Some(ptc) = &self.per_task {
+        if let Some(family) = &self.per_task {
+            let ptc = family.root();
             if ptc.is_sampling() {
-                return device_mmap_per_task(ptc, len);
+                return device_mmap_per_task(family, len);
             }
             return self.device_mmap_rdpmc(len);
         }
@@ -898,12 +895,38 @@ impl core::fmt::Debug for HwPerfControl {
 }
 
 #[cfg(target_arch = "aarch64")]
+impl HwPerfControl {
+    fn task_family(&self) -> Option<Arc<PerfInheritanceFamily>> {
+        self.state.lock().per_task.clone()
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 impl Pollable for HwPerfControl {
     fn poll(&self) -> IoEvents {
+        if let Some(family) = self.task_family() {
+            let root = family.root();
+            return if root.is_sampling() {
+                if root.ring_has_data() {
+                    IoEvents::IN
+                } else {
+                    IoEvents::empty()
+                }
+            } else {
+                IoEvents::IN
+            };
+        }
         self.state.lock().poll()
     }
 
     fn register(&self, context: &mut core::task::Context<'_>, events: IoEvents) {
+        if let Some(family) = self.task_family() {
+            let root = family.root();
+            if root.is_sampling() && events.contains(IoEvents::IN) {
+                root.register_poll(context);
+            }
+            return;
+        }
         self.state.lock().register(context, events);
     }
 }
@@ -911,18 +934,36 @@ impl Pollable for HwPerfControl {
 #[cfg(target_arch = "aarch64")]
 impl PerfControl for HwPerfControl {
     fn enable(&self) -> AxResult<()> {
+        if let Some(family) = self.task_family() {
+            return family.enable();
+        }
         self.state.lock().enable()
     }
 
     fn disable(&self) -> AxResult<()> {
+        if let Some(family) = self.task_family() {
+            return family.disable();
+        }
         self.state.lock().disable()
     }
 
     fn reset(&self) -> AxResult<()> {
+        if let Some(family) = self.task_family() {
+            return family.reset();
+        }
         self.state.lock().reset()
     }
 
     fn read_values(&self) -> AxResult<PerfReadValues> {
+        if let Some(family) = self.task_family() {
+            let (value, time_enabled, time_running) = family.read()?;
+            return Ok(PerfReadValues {
+                value,
+                time_enabled,
+                time_running,
+                read_format: family.root().read_format(),
+            });
+        }
         self.state.lock().read_values()
     }
 
@@ -931,6 +972,9 @@ impl PerfControl for HwPerfControl {
     }
 
     fn output_ring(&self) -> Option<PerfRingOutput> {
+        if let Some(family) = self.task_family() {
+            return family.root().output_ring();
+        }
         self.state.lock().output_ring()
     }
 
@@ -939,10 +983,16 @@ impl PerfControl for HwPerfControl {
     }
 
     fn redirect_output(&self, output: PerfRingOutput) -> AxResult<()> {
+        if let Some(family) = self.task_family() {
+            return family.redirect_output(output);
+        }
         self.state.lock().redirect_output(output)
     }
 
     fn detach_output(&self) -> AxResult<()> {
+        if let Some(family) = self.task_family() {
+            return family.detach_output();
+        }
         self.state.lock().detach_output()
     }
 }
@@ -980,7 +1030,11 @@ impl core::fmt::Debug for HwPerfEvent {
 #[cfg(target_arch = "aarch64")]
 impl Drop for HwPerfEvent {
     fn drop(&mut self) {
-        let result = self.control.state.lock().close();
+        let result = if let Some(family) = self.control.task_family() {
+            family.close()
+        } else {
+            self.control.state.lock().close()
+        };
         if let Err(error) = result {
             warn!("perf: owner-CPU PMU teardown failed, retaining resources: {error}");
             // Keep every IRQ-visible anchor and the reserved counter alive.
@@ -1044,19 +1098,20 @@ impl PerfEventOps for HwPerfEvent {
 /// `device_mmap` for a per-task sampling event.
 ///
 /// Allocates the ring (via [`alloc_sampling_ring`]), spawns the deferred notify
-/// worker, and stores the ring vaddr/len + the page/notify/poll anchors onto the
-/// shared [`super::task::PerTaskCounter`] via `set_ring`. The next
-/// [`super::task::perf_sched_in`] for the target task will see a mapped ring and
-/// arm the overflow IRQ. The returned anchor is the ring pages `Arc`, threaded
+/// worker, and publishes the ring plus page/notify/poll anchors through the
+/// fd-owned [`PerfInheritanceFamily`]. The next
+/// [`super::task::perf_sched_in`] for any family member sees that output and
+/// arms the overflow IRQ. The returned anchor is the ring pages `Arc`, threaded
 /// into the user VMA so the mapping outlives `close(perf_fd)`.
 ///
 /// Rejecting a second mmap: a per-task event is opened once and mmap'd once by
 /// `perf record`; a second attempt while the ring is still set is rejected.
 #[cfg(target_arch = "aarch64")]
 fn device_mmap_per_task(
-    ptc: &Arc<super::task::PerTaskCounter>,
+    family: &Arc<PerfInheritanceFamily>,
     len: usize,
 ) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+    let ptc = family.root();
     // Only sampling per-task events have a ring; counting events reject mmap.
     if !ptc.is_sampling() {
         return Err(AxError::Unsupported);
@@ -1080,7 +1135,10 @@ fn device_mmap_per_task(
 
     // Publish a weak own-ring route plus the notification anchors. The returned
     // VMA retainer owns the complete output and its shared producer gate.
-    ptc.set_ring(&output, notify, poll_ready, poll_alive);
+    family.publish_root_output(
+        &output,
+        super::task::SamplingAnchors::new(notify, poll_ready, poll_alive),
+    )?;
     Ok((paddr, output.mapping_anchor()))
 }
 
@@ -1402,6 +1460,7 @@ fn perf_event_open_hw_per_task(
             inherit: attr.inherit() != 0,
         },
     ));
+    let family = PerfInheritanceFamily::new(Arc::clone(&ptc), enabled);
     super::task::attach(thr, ptc.clone());
 
     Ok(HwPerfEvent::new(
@@ -1418,7 +1477,7 @@ fn perf_event_open_hw_per_task(
             time_running: 0,
             sampling: None,
             sampling_registration: None,
-            per_task: Some(ptc),
+            per_task: Some(family),
         },
         false,
     ))
