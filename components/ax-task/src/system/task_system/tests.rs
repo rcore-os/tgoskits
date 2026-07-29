@@ -1918,6 +1918,16 @@ fn owner_current_affinity_change_does_not_publish_a_self_request() {
         "the owner can commit its migration directly at the next schedule-out"
     );
     assert_eq!(system.thread_state(running.id()), Ok(ThreadState::Running));
+    assert_eq!(
+        running.wake_handle().target_cpu(),
+        Some(CpuId::new(1)),
+        "direct wake placement may move ahead of physical switch-tail ownership"
+    );
+    assert_eq!(
+        running.scheduler_fence_cpu(),
+        Some(CpuId::new(0)),
+        "a post-publication scheduler fence must rendezvous with the physical owner"
+    );
 }
 
 #[test]

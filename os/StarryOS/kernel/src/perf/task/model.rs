@@ -318,7 +318,7 @@ impl PerTaskCounter {
         if handle.state() == ax_runtime::task::ThreadState::Exited {
             return Ok(());
         }
-        let Some(cpu) = handle.wake_handle().target_cpu() else {
+        let Some(cpu) = handle.scheduler_fence_cpu() else {
             return Ok(());
         };
         cpu_worker::synchronize_task_context(PerfCpuId::new(cpu.as_u32() as usize))
