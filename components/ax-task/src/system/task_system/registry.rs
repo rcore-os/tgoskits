@@ -546,43 +546,6 @@ impl TaskSystemState {
         Ok(())
     }
 
-    pub(super) fn publish_migration_to(
-        &self,
-        core: &Arc<ThreadCore>,
-        inbox_cpu: CpuId,
-        source: CpuId,
-        target: CpuId,
-    ) -> Result<(), TaskError> {
-        let cpu_local = self
-            .cpu_remote(inbox_cpu)
-            .ok_or(TaskError::CpuOffline(inbox_cpu.as_u32()))?;
-        if !core.reserve_scheduler_inbox_delivery() {
-            return Ok(());
-        }
-        let pointer = Arc::as_ptr(core);
-        // SAFETY: the retained count is transferred to the intrusive inbox
-        // message and released by exactly one owner drain.
-        unsafe { Arc::increment_strong_count(pointer) };
-        // SAFETY: Arc allocation addresses are stable and the retained count
-        // keeps the embedded migration node alive while queued.
-        let node = unsafe { Pin::new_unchecked((*pointer).migration_node()) };
-        let message = InboxMessage::migration_with_payload(
-            core.id(),
-            source,
-            target,
-            core.id().generation() as u64,
-            pointer.expose_provenance(),
-        );
-        let result = cpu_local.publish_migration(node, message);
-        if result != PublishResult::Published {
-            // SAFETY: a rejected/coalesced publication did not consume this
-            // attempt's retained reference.
-            unsafe { Arc::decrement_strong_count(pointer) };
-            core.cancel_scheduler_inbox_delivery();
-        }
-        Ok(())
-    }
-
     pub(super) fn request_owner_reschedule(&self, owner: ThreadId) {
         if let Ok(record) = self.thread_record(owner) {
             let (cpu, generation) = {

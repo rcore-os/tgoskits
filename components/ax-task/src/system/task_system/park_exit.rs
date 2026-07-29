@@ -314,9 +314,9 @@ impl TaskSystem {
                 .publish_owner_migration(&handoff.previous, target, owner, target)
                 .is_err()
         {
-            // The target was validated online before scheduler state was
-            // committed. CPU hot-unplug is unsupported, so losing it here
-            // would strand a Ready thread after the physical switch.
+            // Target loss is normally recovered through the still-running
+            // source inbox. Failure here means even that owner can no longer
+            // accept the post-switch placement transaction.
             task_runtime::fatal_invariant(0x5357_0002, target.as_u32() as usize);
         }
         let consumed = cpu.as_mut().take_switch_handoff().unwrap_or_else(|| {

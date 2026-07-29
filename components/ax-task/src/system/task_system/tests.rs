@@ -311,6 +311,53 @@ fn pending_remote_publication_prevents_cpu_offline() {
 }
 
 #[test]
+fn migration_publication_recovers_through_source_when_target_starts_draining() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    for cpu in [&mut cpu0, &mut cpu1] {
+        system
+            .register_idle_thread(
+                cpu.as_mut(),
+                ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle)),
+            )
+            .unwrap();
+        system.bring_cpu_online(cpu.as_mut()).unwrap();
+    }
+
+    let thread = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()))
+        .unwrap();
+    system.make_ready(thread.id()).unwrap();
+
+    // Model the hotplug race after CPU 1 was selected but before the source
+    // committed and published the detached migration.
+    assert!(cpu1.remote().try_begin_draining());
+    {
+        let mut sched = thread.core.sched().lock();
+        sched
+            .placement
+            .set_migration_target(Some(CpuId::new(1)))
+            .unwrap();
+        thread.core.set_target_cpu(CpuId::new(1));
+    }
+
+    system
+        .publish_owner_migration(&thread.core, CpuId::new(1), CpuId::new(0), CpuId::new(1))
+        .unwrap();
+    system.drain_policy_updates(cpu0.as_mut(), 0).unwrap();
+
+    let state = system.state.lock();
+    let sched = state.thread_record(thread.id()).unwrap().sched.lock();
+    assert_eq!(
+        sched.placement.queued_cpu(),
+        Some(CpuId::new(0)),
+        "the still-online source must recover a migration rejected by a draining target"
+    );
+    assert_eq!(sched.placement.migration_target(), None);
+}
+
+#[test]
 fn runtime_failure_leaves_cpu_lifecycle_transition_retryable() {
     crate::test_runtime::clear_task_handles();
     crate::test_runtime::configure_cpu_lifecycle(RuntimeStatus::Platform, RuntimeStatus::Success);
