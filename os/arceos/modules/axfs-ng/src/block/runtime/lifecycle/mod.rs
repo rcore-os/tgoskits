@@ -285,8 +285,10 @@ impl BlockDeviceHandle {
                 "controller reported ready without an I/O hardware queue",
             ));
         }
-        handle.inner.accepting.store(true, Ordering::Release);
-        handle.inner.state.store(DEVICE_READY, Ordering::Release);
+        if !handle.inner.mark_ready() {
+            handle.inner.shutdown();
+            return Err(BlkError::Io);
+        }
         Ok(handle)
     }
 

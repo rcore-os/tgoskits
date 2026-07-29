@@ -1,6 +1,42 @@
 use super::*;
 
 impl DeviceInner {
+    pub(super) fn mark_ready(&self) -> bool {
+        // IRQ/controller updates race teardown. DEVICE_FAILED and
+        // DEVICE_STOPPED are terminal and must never be revived by stale work.
+        let ready = match self
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+                DEVICE_STARTING => Some(DEVICE_READY),
+                DEVICE_READY | DEVICE_FAILED | DEVICE_STOPPED => None,
+                _ => None,
+            }) {
+            Ok(_) => true,
+            Err(state) => state == DEVICE_READY,
+        };
+        if ready {
+            self.accepting.store(true, Ordering::Release);
+            self.state_notification.notify();
+        }
+        ready
+    }
+
+    pub(super) fn mark_failed(&self) {
+        self.accepting.store(false, Ordering::Release);
+        if self
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+                DEVICE_STARTING | DEVICE_READY => Some(DEVICE_FAILED),
+                DEVICE_FAILED | DEVICE_STOPPED => None,
+                _ => None,
+            })
+            .is_ok()
+        {
+            self.state_notification.notify();
+            self.barrier_notification.notify();
+        }
+    }
+
     pub(super) fn select_cpu_channel(&self) -> Option<CpuSubmissionChannel> {
         let channels = self.cpu_channels.lock();
         if channels.is_empty() {
@@ -173,9 +209,7 @@ impl DeviceInner {
         }
         self.irq_registrations.lock().extend(new_registrations);
         if update.controller_state() == ControllerState::Ready && !self.hctxs.lock().is_empty() {
-            self.state.store(DEVICE_READY, Ordering::Release);
-            self.accepting.store(true, Ordering::Release);
-            self.state_notification.notify();
+            self.mark_ready();
         }
         Ok(rearm_sources)
     }
@@ -244,13 +278,13 @@ impl DeviceInner {
             }
             let now = wall_time();
             if now >= deadline {
-                self.state.store(DEVICE_FAILED, Ordering::Release);
+                self.mark_failed();
                 return Err(BlkError::Io);
             }
             if self.state_notification.wait_timeout(deadline - now)
                 && self.state.load(Ordering::Acquire) != DEVICE_READY
             {
-                self.state.store(DEVICE_FAILED, Ordering::Release);
+                self.mark_failed();
                 return Err(BlkError::Io);
             }
         }
@@ -317,10 +351,8 @@ impl DeviceInner {
         self.accepting.store(false, Ordering::Release);
         self.barrier_notification.notify();
 
-        let quiesce_confirmed_terminal = matches!(
-            self.controller.call(ControllerEvent::QuiesceIrqs),
-            Ok(ControllerState::Shutdown)
-        );
+        let quiesce_result = self.controller.call(ControllerEvent::QuiesceIrqs);
+        let quiesce_confirmed_terminal = matches!(quiesce_result, Ok(ControllerState::Shutdown));
         let registrations = core::mem::take(&mut *self.irq_registrations.lock());
         let count = registrations.len();
         disable_registrations(&registrations);
@@ -333,10 +365,8 @@ impl DeviceInner {
             channel.channel.close();
         }
         quiesce_hctxs(&hctxs);
-        let shutdown_confirmed_terminal = matches!(
-            self.controller.call(ControllerEvent::Shutdown),
-            Ok(ControllerState::Shutdown)
-        );
+        let shutdown_result = self.controller.call(ControllerEvent::Shutdown);
+        let shutdown_confirmed_terminal = matches!(shutdown_result, Ok(ControllerState::Shutdown));
         let controller_stopped = quiesce_confirmed_terminal || shutdown_confirmed_terminal;
         if controller_stopped {
             stop_hctxs(&hctxs);
@@ -344,7 +374,7 @@ impl DeviceInner {
         } else {
             warn!(
                 "leaking {} block hctxs and {} detached queues because controller shutdown was \
-                 not confirmed",
+                 not confirmed (quiesce={quiesce_result:?}, shutdown={shutdown_result:?})",
                 hctxs.len(),
                 detached_queues.len()
             );
@@ -416,9 +446,6 @@ impl HctxObserver for DeviceInner {
     }
 
     fn hctx_failed(&self, _hctx_id: usize, _error: BlkError) {
-        self.accepting.store(false, Ordering::Release);
-        self.state.store(DEVICE_FAILED, Ordering::Release);
-        self.state_notification.notify();
-        self.barrier_notification.notify();
+        self.mark_failed();
     }
 }

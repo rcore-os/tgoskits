@@ -42,9 +42,17 @@ impl ControllerPort {
                 inner: Arc::clone(&reply),
             }),
         };
-        self.commands
-            .send(command, false)
-            .map_err(|_| BlkError::Io)?;
+        match self.commands.send(command, false) {
+            Ok(()) => {}
+            Err(SendError::Closed(_)) => {
+                warn!("cannot send synchronous block controller event {event:?}: channel closed");
+                return Err(BlkError::Io);
+            }
+            Err(SendError::Full(_)) => {
+                warn!("cannot send synchronous block controller event {event:?}: channel full");
+                return Err(BlkError::Io);
+            }
+        }
         loop {
             if let Some(result) = reply.result.lock().take() {
                 return result;
@@ -333,10 +341,7 @@ fn fail_pending_reply(pending: &mut Option<PendingTransition>, error: BlkError) 
 
 fn mark_device_failed(device: Option<Arc<DeviceInner>>) {
     if let Some(device) = device {
-        device.accepting.store(false, Ordering::Release);
-        device.state.store(DEVICE_FAILED, Ordering::Release);
-        device.state_notification.notify();
-        device.barrier_notification.notify();
+        device.mark_failed();
     }
 }
 

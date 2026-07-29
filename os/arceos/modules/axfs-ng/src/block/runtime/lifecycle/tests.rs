@@ -655,6 +655,45 @@ fn teardown_disables_controller_before_queue_memory_is_released() {
 }
 
 #[test]
+fn late_hctx_failure_cannot_resurrect_a_stopped_device() {
+    let _registrar_guard = lock_test_irq_registrar();
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
+
+    let controller = LifecycleController {
+        queue: Some(LifecycleQueue {
+            log: Arc::clone(&log),
+        }),
+        log,
+    };
+    let irq = IrqId::new(IrqDomainId(1), HwIrq(12));
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "late-failure-after-stop",
+        [BlockIrqSource { source_id: 0, irq }],
+        Box::new(controller),
+    ))
+    .unwrap();
+
+    assert_eq!(handle.shutdown(), 1);
+    handle.inner.hctx_failed(0, BlkError::Io);
+    assert_eq!(
+        handle.inner.state.load(Ordering::Acquire),
+        DEVICE_STOPPED,
+        "a stale failure notification must not regress terminal device state"
+    );
+    assert_eq!(
+        handle.shutdown(),
+        0,
+        "terminal teardown must remain idempotent after a stale failure"
+    );
+}
+
+#[test]
 fn teardown_releases_queue_when_quiesce_confirms_prior_watchdog_shutdown() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
