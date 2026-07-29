@@ -32,7 +32,7 @@ pub use cntpct_el0::SysCntpctEl0;
 mod cntp_tval_el0;
 pub use cntp_tval_el0::SysCntpTvalEl0;
 
-/// Create the concrete system-register devices backed by one timer state.
+/// Create the concrete system-register devices backed by per-vCPU timer banks.
 pub fn new_sysreg_devices() -> (SysCntpCvalEl0, SysCntpCtlEl0, SysCntpctEl0, SysCntpTvalEl0) {
     let timer = Arc::new(cntp_timer::CntpTimerState::new());
 
@@ -63,12 +63,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn concrete_devices_share_timer_state() {
-        let (cval, _ctl, _counter, tval) = new_sysreg_devices();
-        let value = 0x1234_5678usize;
+    fn concrete_devices_isolate_timer_state_per_vcpu() {
+        let (cval, ctl, _counter, tval) = new_sysreg_devices();
 
-        cval.write_register(AccessWidth::Qword, value).unwrap();
+        cntp_timer::set_test_current_identity(7, 0);
+        cval.write_register(AccessWidth::Qword, 0x1111).unwrap();
+        ctl.write_register(AccessWidth::Dword, 0x3).unwrap();
 
-        assert_eq!(tval.read_register(AccessWidth::Dword).unwrap(), value);
+        cntp_timer::set_test_current_identity(7, 1);
+        cval.write_register(AccessWidth::Qword, 0x2222).unwrap();
+        ctl.write_register(AccessWidth::Dword, 0x1).unwrap();
+
+        cntp_timer::set_test_current_identity(7, 0);
+        assert_eq!(cval.read_register(AccessWidth::Qword).unwrap(), 0x1111);
+        assert_eq!(tval.read_register(AccessWidth::Dword).unwrap(), 0x1111);
+        assert_eq!(ctl.read_register(AccessWidth::Dword).unwrap() & 0x3, 0x3);
+
+        cntp_timer::set_test_current_identity(7, 1);
+        assert_eq!(cval.read_register(AccessWidth::Qword).unwrap(), 0x2222);
+        assert_eq!(tval.read_register(AccessWidth::Dword).unwrap(), 0x2222);
+        assert_eq!(ctl.read_register(AccessWidth::Dword).unwrap() & 0x3, 0x1);
     }
 }

@@ -1,9 +1,14 @@
 #[cfg(target_arch = "aarch64")]
 use alloc::boxed::Box;
-use alloc::sync::Arc;
+use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 #[cfg(target_arch = "aarch64")]
 use core::{arch::asm, time::Duration};
+#[cfg(test)]
+use std::sync::{Mutex as TimerBankLock, MutexGuard as TimerBankLockGuard};
+
+#[cfg(not(test))]
+use ax_kspin::{SpinNoIrq as TimerBankLock, SpinNoIrqGuard as TimerBankLockGuard};
 
 #[cfg(target_arch = "aarch64")]
 use crate::host;
@@ -14,44 +19,104 @@ const CNTP_CTL_ISTATUS: u32 = 1 << 2;
 const CNTP_PPI: u8 = 30;
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const TIMER_TOKEN_NONE: usize = usize::MAX;
-#[cfg(target_arch = "aarch64")]
-const TARGET_NONE: usize = usize::MAX;
 
 pub(super) struct CntpTimerState {
+    banks: TimerBankLock<BTreeMap<(usize, usize), Arc<CntpTimerBank>>>,
+}
+
+struct CntpTimerBank {
+    vm_id: usize,
+    vcpu_id: usize,
     cval: AtomicU64,
     ctl: AtomicU32,
     generation: AtomicU64,
     timer_token: AtomicUsize,
-    #[cfg(target_arch = "aarch64")]
-    target_vm_id: AtomicUsize,
-    #[cfg(target_arch = "aarch64")]
-    target_vcpu_id: AtomicUsize,
 }
 
 impl CntpTimerState {
-    pub(super) const fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
-            cval: AtomicU64::new(0),
-            ctl: AtomicU32::new(0),
-            generation: AtomicU64::new(0),
-            timer_token: AtomicUsize::new(TIMER_TOKEN_NONE),
-            #[cfg(target_arch = "aarch64")]
-            target_vm_id: AtomicUsize::new(TARGET_NONE),
-            #[cfg(target_arch = "aarch64")]
-            target_vcpu_id: AtomicUsize::new(TARGET_NONE),
+            banks: TimerBankLock::new(BTreeMap::new()),
         }
     }
 
     pub(super) fn read_cval(&self) -> u64 {
+        self.current_bank().read_cval()
+    }
+
+    pub(super) fn write_cval(&self, value: u64) {
+        self.current_bank().write_cval(value);
+    }
+
+    pub(super) fn read_ctl(&self) -> u32 {
+        self.current_bank().read_ctl()
+    }
+
+    pub(super) fn write_ctl(&self, value: u32) {
+        self.current_bank().write_ctl(value);
+    }
+
+    pub(super) fn read_tval(&self) -> u32 {
+        self.current_bank().read_tval()
+    }
+
+    pub(super) fn write_tval(&self, value: u32) {
+        self.current_bank().write_tval(value);
+    }
+
+    fn current_bank(&self) -> Arc<CntpTimerBank> {
+        let (vm_id, vcpu_id) = current_timer_identity();
+        let mut banks = lock_timer_banks(&self.banks);
+        Arc::clone(
+            banks
+                .entry((vm_id, vcpu_id))
+                .or_insert_with(|| Arc::new(CntpTimerBank::new(vm_id, vcpu_id))),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn current_fire_target_for_test(&self) -> Option<(usize, usize, u8)> {
+        let bank = self.current_bank();
+        bank.fire_target(bank.generation.load(Ordering::Acquire))
+    }
+}
+
+#[cfg(test)]
+fn lock_timer_banks(
+    banks: &TimerBankLock<BTreeMap<(usize, usize), Arc<CntpTimerBank>>>,
+) -> TimerBankLockGuard<'_, BTreeMap<(usize, usize), Arc<CntpTimerBank>>> {
+    banks.lock().expect("CNTP timer test lock poisoned")
+}
+
+#[cfg(not(test))]
+fn lock_timer_banks(
+    banks: &TimerBankLock<BTreeMap<(usize, usize), Arc<CntpTimerBank>>>,
+) -> TimerBankLockGuard<'_, BTreeMap<(usize, usize), Arc<CntpTimerBank>>> {
+    banks.lock()
+}
+
+impl CntpTimerBank {
+    const fn new(vm_id: usize, vcpu_id: usize) -> Self {
+        Self {
+            vm_id,
+            vcpu_id,
+            cval: AtomicU64::new(0),
+            ctl: AtomicU32::new(0),
+            generation: AtomicU64::new(0),
+            timer_token: AtomicUsize::new(TIMER_TOKEN_NONE),
+        }
+    }
+
+    fn read_cval(&self) -> u64 {
         self.cval.load(Ordering::Acquire)
     }
 
-    pub(super) fn write_cval(self: &Arc<Self>, value: u64) {
+    fn write_cval(self: &Arc<Self>, value: u64) {
         self.cval.store(value, Ordering::Release);
         self.rearm();
     }
 
-    pub(super) fn read_ctl(&self) -> u32 {
+    fn read_ctl(&self) -> u32 {
         let ctl = self.ctl.load(Ordering::Acquire);
         let expired =
             ctl & CNTP_CTL_ENABLE != 0 && counter_ticks() >= self.cval.load(Ordering::Acquire);
@@ -63,7 +128,7 @@ impl CntpTimerState {
         }
     }
 
-    pub(super) fn write_ctl(self: &Arc<Self>, value: u32) {
+    fn write_ctl(self: &Arc<Self>, value: u32) {
         self.ctl.store(
             value & (CNTP_CTL_ENABLE | CNTP_CTL_IMASK),
             Ordering::Release,
@@ -71,13 +136,13 @@ impl CntpTimerState {
         self.rearm();
     }
 
-    pub(super) fn read_tval(&self) -> u32 {
+    fn read_tval(&self) -> u32 {
         self.cval
             .load(Ordering::Acquire)
             .wrapping_sub(counter_ticks()) as u32
     }
 
-    pub(super) fn write_tval(self: &Arc<Self>, value: u32) {
+    fn write_tval(self: &Arc<Self>, value: u32) {
         let delta = value as i32 as i64;
         let now = counter_ticks();
         let cval = if delta >= 0 {
@@ -92,20 +157,6 @@ impl CntpTimerState {
 
     #[cfg(target_arch = "aarch64")]
     fn rearm(self: &Arc<Self>) {
-        self.rearm_with_target(Some((host::current_vm_id(), host::current_vcpu_id())));
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    fn rearm_existing_target(self: &Arc<Self>) {
-        self.rearm_with_target(None);
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    fn rearm_with_target(self: &Arc<Self>, target: Option<(usize, usize)>) {
-        if let Some((vm_id, vcpu_id)) = target {
-            self.target_vm_id.store(vm_id, Ordering::Release);
-            self.target_vcpu_id.store(vcpu_id, Ordering::Release);
-        }
         let generation = self
             .generation
             .fetch_add(1, Ordering::AcqRel)
@@ -116,22 +167,16 @@ impl CntpTimerState {
             return;
         }
 
-        let target_vm_id = self.target_vm_id.load(Ordering::Acquire);
-        let target_vcpu_id = self.target_vcpu_id.load(Ordering::Acquire);
-        if target_vm_id == TARGET_NONE || target_vcpu_id == TARGET_NONE {
-            return;
-        }
-
         let now_ticks = counter_ticks();
         let deadline_ticks = self.cval.load(Ordering::Acquire);
         let delay_ticks = deadline_ticks.saturating_sub(now_ticks);
         let delay_ns = ticks_to_nanos_ceil(delay_ticks, counter_frequency_hz());
         let deadline_ns = host::current_time_nanos().saturating_add(delay_ns);
-        let state = Arc::clone(self);
+        let bank = Arc::clone(self);
 
         let token = host::register_timer(
             Duration::from_nanos(deadline_ns),
-            Box::new(move |_| state.fire(generation)),
+            Box::new(move |_| bank.fire(generation)),
         );
         self.timer_token.store(token, Ordering::Release);
     }
@@ -152,27 +197,64 @@ impl CntpTimerState {
 
     #[cfg(target_arch = "aarch64")]
     fn fire(self: &Arc<Self>, expected_generation: u64) {
-        if self.generation.load(Ordering::Acquire) != expected_generation {
-            return;
-        }
-
-        let ctl = self.ctl.load(Ordering::Acquire);
-        if ctl & CNTP_CTL_ENABLE == 0 || ctl & CNTP_CTL_IMASK != 0 {
+        if !self.is_armed_for(expected_generation) {
             return;
         }
 
         if counter_ticks() < self.cval.load(Ordering::Acquire) {
-            self.rearm_existing_target();
+            self.rearm();
             return;
         }
 
-        let target_vm_id = self.target_vm_id.load(Ordering::Acquire);
-        let target_vcpu_id = self.target_vcpu_id.load(Ordering::Acquire);
-        if target_vm_id == TARGET_NONE || target_vcpu_id == TARGET_NONE {
-            return;
-        }
-        host::queue_virtual_interrupt(target_vm_id, target_vcpu_id, CNTP_PPI);
+        host::queue_virtual_interrupt(self.vm_id, self.vcpu_id, CNTP_PPI);
     }
+
+    fn fire_target(&self, expected_generation: u64) -> Option<(usize, usize, u8)> {
+        if !self.is_armed_for(expected_generation)
+            || counter_ticks() < self.cval.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        Some((self.vm_id, self.vcpu_id, CNTP_PPI))
+    }
+
+    fn is_armed_for(&self, expected_generation: u64) -> bool {
+        if self.generation.load(Ordering::Acquire) != expected_generation {
+            return false;
+        }
+
+        let ctl = self.ctl.load(Ordering::Acquire);
+        ctl & CNTP_CTL_ENABLE != 0 && ctl & CNTP_CTL_IMASK == 0
+    }
+}
+
+#[cfg(test)]
+static TEST_CURRENT_VM_ID: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_CURRENT_VCPU_ID: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(super) fn set_test_current_identity(vm_id: usize, vcpu_id: usize) {
+    TEST_CURRENT_VM_ID.store(vm_id, Ordering::Relaxed);
+    TEST_CURRENT_VCPU_ID.store(vcpu_id, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn current_timer_identity() -> (usize, usize) {
+    (
+        TEST_CURRENT_VM_ID.load(Ordering::Relaxed),
+        TEST_CURRENT_VCPU_ID.load(Ordering::Relaxed),
+    )
+}
+
+#[cfg(all(not(test), target_arch = "aarch64"))]
+fn current_timer_identity() -> (usize, usize) {
+    (host::current_vm_id(), host::current_vcpu_id())
+}
+
+#[cfg(all(not(test), not(target_arch = "aarch64")))]
+fn current_timer_identity() -> (usize, usize) {
+    (0, 0)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -231,5 +313,54 @@ mod tests {
     #[test]
     fn clamps_zero_frequency() {
         assert_eq!(ticks_to_nanos_ceil(1, 0), NANOS_PER_SECOND);
+    }
+
+    #[test]
+    fn banks_timer_state_per_vcpu_identity() {
+        let state = CntpTimerState::new();
+
+        set_test_current_identity(11, 0);
+        state.write_cval(0x1111);
+        state.write_ctl(CNTP_CTL_ENABLE | CNTP_CTL_IMASK);
+
+        set_test_current_identity(11, 1);
+        state.write_cval(0x2222);
+        state.write_ctl(CNTP_CTL_ENABLE);
+
+        set_test_current_identity(11, 0);
+        assert_eq!(state.read_cval(), 0x1111);
+        assert_eq!(state.read_ctl() & (CNTP_CTL_ENABLE | CNTP_CTL_IMASK), 0x3);
+
+        set_test_current_identity(11, 1);
+        assert_eq!(state.read_cval(), 0x2222);
+        assert_eq!(state.read_ctl() & (CNTP_CTL_ENABLE | CNTP_CTL_IMASK), 0x1);
+    }
+
+    #[test]
+    fn resolves_ppi30_delivery_target_from_each_vcpu_bank() {
+        let state = CntpTimerState::new();
+
+        set_test_current_identity(11, 0);
+        state.write_cval(0);
+        state.write_ctl(CNTP_CTL_ENABLE);
+        let vcpu0_target = state.current_fire_target_for_test();
+
+        set_test_current_identity(11, 1);
+        state.write_cval(0);
+        state.write_ctl(CNTP_CTL_ENABLE);
+        let vcpu1_target = state.current_fire_target_for_test();
+
+        assert_eq!(vcpu0_target, Some((11, 0, CNTP_PPI)));
+        assert_eq!(vcpu1_target, Some((11, 1, CNTP_PPI)));
+
+        set_test_current_identity(11, 0);
+        state.write_ctl(CNTP_CTL_ENABLE | CNTP_CTL_IMASK);
+        assert_eq!(state.current_fire_target_for_test(), None);
+
+        set_test_current_identity(11, 1);
+        assert_eq!(
+            state.current_fire_target_for_test(),
+            Some((11, 1, CNTP_PPI))
+        );
     }
 }
