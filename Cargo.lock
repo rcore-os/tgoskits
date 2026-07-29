@@ -721,6 +721,7 @@ version = "0.1.1"
 dependencies = [
  "ax-kspin",
  "ax-lazyinit",
+ "ax-sync",
  "thiserror 2.0.19",
 ]
 

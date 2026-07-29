@@ -4,8 +4,10 @@ use alloc::{string::String, sync::Arc};
 use core::fmt::Write;
 
 use ax_cgroup::{CgroupError, CgroupNode};
-pub use ax_cgroup::{attach_initial_process, begin_fork, exit_process, relative_path, root};
+pub use ax_cgroup::{attach_initial_process, begin_fork, relative_path, root};
 use ax_errno::{AxError, LinuxError};
+
+use crate::task::{ProcessData, get_process_data};
 
 const INTERFACE_FILES: [&str; 3] = [
     "cgroup.procs",
@@ -13,30 +15,20 @@ const INTERFACE_FILES: [&str; 3] = [
     "cgroup.subtree_control",
 ];
 
-struct KernelCgroupProvider;
-
-impl ax_cgroup::CgroupProvider for KernelCgroupProvider {
-    fn is_zombie(&self, pid: u32) -> bool {
-        crate::task::is_zombie_pid(pid as _)
-    }
-
-    fn membership(&self, pid: u32) -> Option<Arc<CgroupNode>> {
-        crate::task::get_process_data(pid as _)
-            .ok()
-            .map(|process| process.cgroup.read().clone())
-    }
-
-    fn set_membership(&self, pid: u32, cgroup: Arc<CgroupNode>) {
-        if let Ok(process) = crate::task::get_process_data(pid as _) {
-            *process.cgroup.write() = cgroup;
-        }
-    }
-}
-
-/// Initialize the cgroup hierarchy and kernel process provider.
+/// Initialize the cgroup hierarchy.
 pub fn init() {
     ax_cgroup::init();
-    ax_cgroup::register_provider(&KernelCgroupProvider);
+}
+
+/// Move one live process under its generation-specific membership transaction.
+pub fn migrate_process(pid: u32, target: Arc<CgroupNode>) -> Result<(), CgroupError> {
+    let process = get_process_data(pid as _).map_err(|_| CgroupError::NoSuchProcess)?;
+    process.migrate_cgroup(target)
+}
+
+/// Release membership without consulting the global PID registry.
+pub fn exit_process(process: &ProcessData) {
+    process.exit_cgroup();
 }
 
 pub fn is_interface_file_name(name: &str) -> bool {
@@ -65,7 +57,7 @@ pub fn write_procs(node: Arc<CgroupNode>, data: &[u8]) -> Result<(), AxError> {
         .trim()
         .parse::<u32>()
         .map_err(|_| AxError::InvalidInput)?;
-    ax_cgroup::migrate_process(pid, node).map_err(cgroup_error)
+    migrate_process(pid, node).map_err(cgroup_error)
 }
 
 pub fn write_subtree_control(_node: &CgroupNode, _data: &[u8]) -> Result<(), AxError> {

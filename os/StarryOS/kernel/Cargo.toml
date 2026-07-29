@@ -151,7 +151,7 @@ usb-serial.workspace = true
 rdrive.workspace = true
 
 axbacktrace = { workspace = true }
-ax-cgroup = { workspace = true }
+ax-cgroup = { workspace = true, features = ["multitask"] }
 ax-errno = { workspace = true }
 axnsproxy = { workspace = true }
 axfs-ng-vfs = { workspace = true }

@@ -7,10 +7,15 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+multitask = ["dep:ax-sync", "ax-sync/multitask"]
+
 [dependencies]
 ax-kspin.workspace = true
 ax-lazyinit.workspace = true
+ax-sync = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-ax-kspin = { workspace = true, features = ["host-test"] }
+ax-kspin = { workspace = true, features = ["host-test", "smp"] }

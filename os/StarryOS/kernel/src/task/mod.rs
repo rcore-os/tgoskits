@@ -10,6 +10,7 @@ mod ops;
 mod pid_namespace;
 pub mod posix_timer;
 mod process_accounting;
+mod process_cgroup;
 mod process_identity;
 mod process_image;
 mod process_memory;
@@ -32,7 +33,6 @@ mod user_wait;
 
 use alloc::sync::Arc;
 
-use ax_kspin::SpinRwLock as RwLock;
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 pub use process_ptrace::{PtraceStopFpData, SyscallTraceState};
 use starry_process::{Pid, Process};
@@ -48,9 +48,9 @@ pub use self::{
 };
 use self::{
     job_control::ProcessJobControl, process_accounting::ProcessAccountingState,
-    process_image::ProcessImageState, process_memory::ProcessMemoryState,
-    process_policy::ProcessPolicyState, process_ptrace::ProcessPtraceState,
-    process_wait::ProcessWaitState,
+    process_cgroup::ProcessCgroupState, process_image::ProcessImageState,
+    process_memory::ProcessMemoryState, process_policy::ProcessPolicyState,
+    process_ptrace::ProcessPtraceState, process_wait::ProcessWaitState,
 };
 #[cfg(axtest)]
 pub(crate) use self::{
@@ -79,8 +79,8 @@ pub struct ProcessData {
     pub uprobe_point_list: PiMutex<crate::kprobe::KprobePointList>,
     /// The namespace proxy — aggregates all namespace types for this process.
     pub nsproxy: SpinNoIrq<axnsproxy::NsProxy>,
-    /// Authoritative cgroup membership shared by every thread in the process.
-    pub cgroup: RwLock<Arc<ax_cgroup::CgroupNode>>,
+    /// Authoritative cgroup membership and exit serialization.
+    cgroup: ProcessCgroupState,
     /// Resource limits and process-wide compatibility policy.
     policy: ProcessPolicyState,
 
@@ -109,6 +109,7 @@ pub struct ProcessDataInit {
     aspace: Arc<PiMutex<AddrSpace>>,
     signal_actions: Arc<SpinNoIrq<SignalActions>>,
     nsproxy: axnsproxy::NsProxy,
+    cgroup: Arc<ax_cgroup::CgroupNode>,
     exit_signal: Option<Signo>,
     wait_parent_tid: Pid,
     vm_aspace_shared: bool,
@@ -130,10 +131,17 @@ impl ProcessDataInit {
             aspace,
             signal_actions,
             nsproxy,
+            cgroup: crate::cgroup::root(),
             exit_signal,
             wait_parent_tid,
             vm_aspace_shared,
         }
+    }
+
+    /// Selects inherited membership for a prepared non-thread child.
+    pub fn with_cgroup(mut self, cgroup: Arc<ax_cgroup::CgroupNode>) -> Self {
+        self.cgroup = cgroup;
+        self
     }
 }
 
@@ -145,6 +153,7 @@ impl ProcessData {
             aspace,
             signal_actions,
             nsproxy,
+            cgroup,
             exit_signal,
             wait_parent_tid,
             vm_aspace_shared,
@@ -179,7 +188,7 @@ impl ProcessData {
                 futex_table: Arc::new(FutexTable::new()),
 
                 nsproxy: SpinNoIrq::new(nsproxy),
-                cgroup: RwLock::new(crate::cgroup::root()),
+                cgroup: ProcessCgroupState::new(cgroup),
 
                 ptrace: ProcessPtraceState::new(),
 
@@ -198,6 +207,24 @@ impl ProcessData {
     /// Returns this process generation's stable PID identity.
     pub(crate) fn identity(&self) -> Arc<ProcessIdentity> {
         self.identity.clone()
+    }
+
+    /// Returns a stable snapshot of this process generation's current or final cgroup node.
+    pub(crate) fn cgroup_node(&self) -> Arc<ax_cgroup::CgroupNode> {
+        self.cgroup.current()
+    }
+
+    /// Moves this live process under its per-generation PI transaction.
+    pub(crate) fn migrate_cgroup(
+        &self,
+        target: Arc<ax_cgroup::CgroupNode>,
+    ) -> ax_cgroup::CgroupResult<()> {
+        self.cgroup.migrate(self.proc.pid(), target)
+    }
+
+    /// Removes this generation from the hierarchy exactly once.
+    pub(crate) fn exit_cgroup(&self) {
+        self.cgroup.exit(self.proc.pid());
     }
 }
 
