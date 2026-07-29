@@ -297,6 +297,48 @@ Individual perf cases can pass because they do not force this cross-test,
 cross-CPU lifetime. The fix must model task and CPU perf targets explicitly;
 the SMP perf tests must not be skipped or affinity-pinned to hide the defect.
 
+The x86_64 Starry `test-futex-wake-op-smp` stress case later exposed a
+process CPU-time accounting livelock rather than a futex defect. Two halted
+GDB snapshots found all four CPUs at the same reader loop in
+`poll_interval_timers()`: `ProcessCpuTimeAccounting::writers` remained one,
+while no CPU was executing the matching writer. `record_transition()` had
+published that writer count before its callback entered a non-preemptible
+thread-accounting transition. The task could therefore be switched out in
+that window, after which every syscall-return path in the thread group spun
+waiting for it and prevented useful scheduler progress.
+
+Linux v7.1 does not put a retrying reader behind such a writer. Active
+thread-group CPU timers are updated through `account_group_user_time()` and
+`account_group_system_time()` into `cputime_atomic`; expiry samples them with
+`proc_sample_cputime_atomic()` and runs the heavyweight work through
+`CONFIG_POSIX_CPU_TIMERS_TASK_WORK`. `thread_group_cputime()` updates the
+current task but deliberately relies on ticks and later scheduler actions for
+pending runtime on remote siblings.
+
+Starry now follows that ownership model without giving up task-context
+visibility of a running sibling. Scheduler and user/kernel boundary
+transitions publish process user/system deltas directly into atomic group
+counters. A reader samples the committed counters before aggregating live
+per-thread residuals. A concurrent transition can therefore only make that
+sample temporarily low: it cannot count the same interval in both sources.
+Separate monotonic high-water counters prevent the handoff window from making
+an already observed process clock move backwards, while the next poll observes
+the newly committed delta. No reader waits for a preempted writer.
+Timer-state transitions commit the old state's delta before polling interval
+timers. Behavioral regressions cover running siblings, transition handoff
+without double counting, and a transition callback held in a simulated
+preempted state while a concurrent snapshot must return.
+
+With the old implementation, an isolated four-CPU
+`test-futex-wake-op-smp` run failed to produce a completion marker before the
+240-second command deadline, matching the full-suite GDB livelock. With the
+live-residual/high-water accounting path, the same 80,000 atomic
+`FUTEX_WAKE_OP` operations complete in 162 seconds and the runner reports both
+`STARRY_SYSTEM_TEST_PASSED` and `STARRY_GROUPED_TESTS_PASSED`. All 22
+`starry-kernel` feature-clippy configurations pass. The 136-check
+`test-timer-family` case also passes, including process and thread CPU clocks
+plus `ITIMER_VIRTUAL` and `ITIMER_PROF`.
+
 The x86_64 ArceOS `task-irq` case exposed a separate missed-clockevent
 failure. Stage markers proved that yielding completed and the first task sleep
 never returned. A halted-guest GDB inspection found all of the following on
