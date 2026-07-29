@@ -193,9 +193,26 @@ exhaustively covers publication racing the draining transition.
 
 The two follow-up questions found after the structural split have now been
 resolved against their complete ownership graphs. The scope-local conclusion
-and regression are recorded below. The IRQ waiter audit found no remaining
-borrowed producer or reclaim-before-grace path, so adding another owner layer
-would duplicate ownership already retained by registries and service workers.
+and regression are recorded below. IRQ waiter storage still has one retained,
+generation-bearing owner and a quiescence boundary; no borrowed producer or
+reclaim-before-grace path remains.
+
+A later three-party regression did find a separate lost-event race in the
+cell's old two-atomic publication protocol. After the registration published
+its waiter, the first IRQ could remove it and begin the wake. A second IRQ then
+set `pending`, but the still-running registration path could clear that bit
+before discovering that the first notifier owned its token. The second event
+was consequently absent from the next wait. `IrqWaitCell` now encodes
+`Empty / Pending / Waiter` in one atomic pointer state using a non-dereferenced
+aligned sentinel. Register, unregister, and notify each linearize one state
+transition; a notifier uses a compare-exchange even when coalescing an existing
+pending state, so a concurrent consumer cannot erase the new notification.
+The deterministic blocked-wake regression and the corresponding Loom model
+cover the exact second-IRQ interleaving. This follows Linux v7.1
+`include/linux/wait.h`'s requirement that condition publication and waiter
+observation share an ordering boundary instead of relying on unrelated
+lockless loads.
+
 Architecture, Starry lifecycle, and driver findings remain tracked by their
 dedicated matrix rows and later milestones.
 
