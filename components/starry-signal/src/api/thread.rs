@@ -447,7 +447,13 @@ impl ThreadSignalManager {
         if self.pending.lock().put_signal(sig) {
             self.possibly_has_signal.store(true, Ordering::Release);
         }
-        !self.signal_blocked(signo)
+        let deliverable = !self.signal_blocked(signo);
+        drop(actions);
+        // The sigwait future is owned by this signal manager. Publish pending
+        // state before invoking the task-context waker and never wake while an
+        // action or pending-signal lock remains held.
+        self.wake_sigwait(signo);
+        deliverable
     }
 
     /// Gets the blocked signals.
@@ -547,7 +553,7 @@ mod tests {
         thread.wake_sigwait(Signo::SIGURG);
         assert_eq!(counter.0.load(Ordering::Relaxed), 0);
 
-        thread.wake_sigwait(Signo::SIGCHLD);
+        let _deliverable = thread.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD));
         assert_eq!(counter.0.load(Ordering::Relaxed), 1);
 
         thread.finish_sigwait();

@@ -154,15 +154,30 @@ impl ProcessSignalManager {
         }
         let mut result = None;
         self.children.lock().retain(|(tid, thread)| {
-            if let Some(thread) = thread.upgrade() {
-                if result.is_none() && !thread.signal_blocked(signo) {
-                    result = Some(*tid);
-                }
-                true
-            } else {
-                false
+            let Some(thread) = thread.upgrade() else {
+                return false;
+            };
+            if result.is_none() && !thread.signal_blocked(signo) {
+                result = Some(*tid);
             }
+            true
         });
+        if result.is_none() {
+            let waiters: Vec<_> = self
+                .children
+                .lock()
+                .iter()
+                .filter_map(|(_, thread)| {
+                    let thread = thread.upgrade()?;
+                    thread.is_sigwait_for(signo).then_some(thread)
+                })
+                .collect();
+            // The future waker is an arbitrary task-context callback. Invoke it
+            // only after dropping the process child registry lock.
+            for thread in waiters {
+                thread.wake_sigwait(signo);
+            }
+        }
         result
     }
 
@@ -306,3 +321,42 @@ const _: () = {
     assert!(offset_of!(kernel_sigaction, sa_flags) == size_of::<usize>());
     assert!(offset_of!(kernel_sigaction, sa_mask) == 2 * size_of::<usize>());
 };
+
+#[cfg(test)]
+mod tests {
+    use alloc::{sync::Arc, task::Wake};
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        task::Waker,
+    };
+
+    use super::*;
+
+    struct CountWake(AtomicUsize);
+
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn blocked_process_signal_wakes_the_matching_sigwait_future() {
+        let actions = Arc::new(SpinNoIrq::new(SignalActions::default()));
+        let process = Arc::new(ProcessSignalManager::new(actions, 0));
+        let mut blocked = SignalSet::default();
+        blocked.add(Signo::SIGCHLD);
+        let thread = ThreadSignalManager::new_with_blocked(1, Arc::clone(&process), blocked);
+        let counter = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+
+        thread.begin_sigwait(blocked);
+        thread.register_sigwait_waker(&waker);
+
+        assert_eq!(
+            process.send_signal(SignalInfo::new_kernel(Signo::SIGCHLD)),
+            None
+        );
+        assert_eq!(counter.0.load(Ordering::Relaxed), 1);
+    }
+}
