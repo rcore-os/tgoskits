@@ -171,6 +171,7 @@ event-listener = { version = "5.4", default-features = false }
 extern-trait = { workspace = true }
 flatten_objects = "0.2.4"
 hashbrown = "0.16"
+heapless.workspace = true
 indoc = "2"
 inherit-methods-macro = "0.1.0"
 kernel-elf-parser = "0.3.4"

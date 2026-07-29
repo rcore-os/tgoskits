@@ -11,10 +11,16 @@ mod control;
 #[cfg(target_arch = "aarch64")]
 mod cpu_worker;
 pub mod hw;
+#[cfg(target_arch = "aarch64")]
+mod inheritance;
+#[cfg(target_arch = "aarch64")]
+mod inheritance_lifecycle;
 pub mod kprobe;
 #[cfg(target_arch = "aarch64")]
 mod output;
 pub mod raw_tracepoint;
+#[cfg(target_arch = "aarch64")]
+mod resource_lifecycle;
 /// PMU overflow-IRQ sampling backend (M2). ARM PMUv3 only; the counting and
 /// tracing paths are arch-agnostic, but sampling depends on CPU PMU registers.
 #[cfg(target_arch = "aarch64")]
@@ -34,6 +40,8 @@ mod target;
 /// `sampling`.
 #[cfg(target_arch = "aarch64")]
 pub mod task;
+#[cfg(target_arch = "aarch64")]
+mod task_sideband;
 pub mod tracepoint;
 pub mod uprobe;
 

@@ -8092,6 +8092,7 @@ dependencies = [
  "extern-trait",
  "flatten_objects",
  "hashbrown 0.16.1",
+ "heapless",
  "indoc",
  "inherit-methods-macro",
  "irq-framework",

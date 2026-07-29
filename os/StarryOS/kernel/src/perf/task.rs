@@ -39,8 +39,9 @@
 //! This reuses the M2 IRQ backend wholesale. The mechanism is:
 //!
 //! * `mmap(perf_fd)` allocates the ring (in [`super::hw::HwPerfEvent::device_mmap`])
-//!   and stashes the ring vaddr/len + the page/notify anchors onto the shared
-//!   [`PerTaskCounter`] via [`PerTaskCounter::set_ring`].
+//!   and publishes the ring plus page/notify anchors through the fd-owned
+//!   [`PerfInheritanceFamily`]. Existing and future descendants receive the same
+//!   output.
 //! * [`perf_sched_in`] arms the slice: `preload` the counter to overflow after
 //!   `sample_period` events, `register` a [`SampleSlot`](super::sampling::SampleSlot)
 //!   pointing at the ptc's ring + notify, and `enable_irq` the overflow line.
@@ -60,36 +61,32 @@
 //! (`-c <period>`) and frequency mode (`-F`, `sample_freq`); inherited child
 //! events share the root output through the same owned redirect boundary.
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
-use ax_runtime::hal::paging::MappingFlags;
 
+pub use super::inheritance::on_clone_inherit;
+pub(crate) use super::task_sideband::{on_clone_sideband, on_exec_sideband, on_mmap_sideband};
 use super::{
     cpu_worker, hw,
+    inheritance::{PerfInheritanceFamily, PerfInheritanceFamilyWeak},
     output::{PerfOutputRoute, PerfRingOutput},
+    resource_lifecycle::PmuResourceRelease,
     sampling::{self, SampleOutput, SampleSlot, SampleSlotConfig},
     sampling_lifecycle::{PmuCloseAction, PmuRunLease, PmuRunState, PmuStopClaim},
-    sideband::{self, Mmap2Info, SidebandTarget},
+    sideband::{self, SidebandTarget},
     target::PerfCpuId,
 };
 use crate::task::{Thread, future::IrqNotify};
-
-// `PROT_*` / `MAP_*` values for the `prot`/`flags` fields of MMAP2 records.
-const PROT_READ: u32 = 1;
-const PROT_WRITE: u32 = 2;
-const PROT_EXEC: u32 = 4;
-const MAP_SHARED: u32 = 1;
-const MAP_PRIVATE: u32 = 2;
 
 /// Number of per-task counters currently attached anywhere in the system.
 ///
 /// Incremented by [`attach`] and decremented by [`free_hw`] (when the HW counter
 /// is released). The scheduler hooks early-return while this is `0`, so an
 /// idle perf subsystem costs one relaxed atomic load per context switch.
-static PERF_TASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+pub(super) static PERF_TASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// A hardware counter bound to one specific task.
 ///
@@ -174,6 +171,12 @@ pub struct PerTaskCounter {
     /// `attr.inherit`: clone this event onto `fork`/`clone` children (writing into
     /// the same ring) so `perf record` follows them. Driven by [`on_clone_inherit`].
     inherit: bool,
+    /// Weak fd-owned family identity. The family owns members strongly, so a
+    /// weak back-reference avoids a root/member cycle.
+    family: SpinNoIrq<Option<FamilyBinding>>,
+    /// Ensures the reserved PMU slot and global active count are reclaimed once
+    /// when fd close races task exit.
+    resources: PmuResourceRelease,
 
     /// Coherent own-ring and redirect ownership.
     ///
@@ -181,8 +184,18 @@ pub struct PerTaskCounter {
     /// redirect is strongly retained while this event can publish into it.
     /// Scheduler/sideband readers clone one complete effective output.
     output: SpinNoIrq<PerfOutputRoute>,
+    /// An inherited redirect targets the root event's poll worker, unlike an
+    /// explicit `SET_OUTPUT` redirect whose wake ownership belongs to the target
+    /// event.
+    inherited_output_wake: AtomicBool,
     /// Strong notification and deferred poll machinery.
     anchors: SpinNoIrq<Option<SamplingAnchors>>,
+}
+
+#[derive(Clone, Debug)]
+struct FamilyBinding {
+    family: PerfInheritanceFamilyWeak,
+    root: bool,
 }
 
 /// Strong references for one per-task sampling event's notification worker.
@@ -190,16 +203,37 @@ pub struct PerTaskCounter {
 /// Mirrors the system-wide sampling notification state, but lives on the
 /// [`PerTaskCounter`] (the task side) rather than the `HwPerfEvent` (the fd
 /// side), because the slot the IRQ handler uses is built from the task side in
-/// [`perf_sched_in`]. Set once by [`PerTaskCounter::set_ring`].
-struct SamplingAnchors {
+/// [`perf_sched_in`]. Published by [`PerfInheritanceFamily`] when the root fd is
+/// mapped.
+#[derive(Clone)]
+pub(crate) struct SamplingAnchors {
     /// IRQ-safe notification the overflow handler pokes; drained by the worker.
     /// Registered slots clone this `Arc`; no IRQ path borrows its address.
     notify: Arc<IrqNotify>,
     /// Readiness set the perf fd's poller waits on; woken (`IoEvents::IN`) by the
     /// worker after each sample lands in the ring.
     poll_ready: Arc<axpoll::PollSet>,
-    /// Liveness flag for the worker; cleared on [`free_hw`] to stop it.
+    /// Liveness flag for the worker; cleared on family/fd close.
     poll_alive: Arc<AtomicBool>,
+}
+
+impl SamplingAnchors {
+    pub(crate) fn new(
+        notify: Arc<IrqNotify>,
+        poll_ready: Arc<axpoll::PollSet>,
+        poll_alive: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            notify,
+            poll_ready,
+            poll_alive,
+        }
+    }
+
+    pub(crate) fn stop(&self) {
+        self.poll_alive.store(false, Ordering::Release);
+        self.notify.notify();
+    }
 }
 
 impl core::fmt::Debug for SamplingAnchors {
@@ -288,7 +322,10 @@ impl PerTaskCounter {
             want_task: cfg.want_task,
             sample_id_all: cfg.sample_id_all,
             inherit: cfg.inherit,
+            family: SpinNoIrq::new(None),
+            resources: PmuResourceRelease::new(),
             output: SpinNoIrq::new(PerfOutputRoute::new()),
+            inherited_output_wake: AtomicBool::new(false),
             anchors: SpinNoIrq::new(None),
         }
     }
@@ -304,6 +341,30 @@ impl PerTaskCounter {
         self.sample_id.store(id, Ordering::Relaxed);
     }
 
+    pub(super) fn inherited_config(&self, n: usize) -> PerTaskConfig {
+        PerTaskConfig {
+            n,
+            event: self.event,
+            exclude_user: self.exclude_user,
+            exclude_kernel: self.exclude_kernel,
+            read_format: self.read_format,
+            // Registration under the family relation lock publishes the current
+            // root-fd control intent before the child becomes schedulable.
+            enabled: false,
+            enable_on_exec: false,
+            cpu_filter: self.cpu_filter,
+            sample_period: self.sample_period,
+            sample_type: self.sample_type,
+            freq: self.freq,
+            target_freq: self.freq_target,
+            want_comm: self.want_comm,
+            want_mmap2: self.want_mmap2,
+            want_task: self.want_task,
+            sample_id_all: self.sample_id_all,
+            inherit: true,
+        }
+    }
+
     /// Mark userspace-enabled (`ioctl(ENABLE)` / open-enabled). The target's next
     /// [`perf_sched_in`] programs the counter onto HW.
     pub fn set_enabled(&self) {
@@ -312,9 +373,69 @@ impl PerTaskCounter {
         }
     }
 
+    pub(crate) fn set_enabled_state(&self, enabled: bool) {
+        if enabled {
+            self.set_enabled();
+        } else {
+            self.enabled.store(false, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn bind_family(&self, family: PerfInheritanceFamilyWeak, root: bool) {
+        let old = self.family.lock().replace(FamilyBinding { family, root });
+        assert!(old.is_none(), "a task perf counter joined two families");
+    }
+
+    pub(crate) fn family(&self) -> Option<Arc<PerfInheritanceFamily>> {
+        self.family.lock().as_ref()?.family.upgrade()
+    }
+
+    fn is_family_root(&self) -> bool {
+        self.family
+            .lock()
+            .as_ref()
+            .is_some_and(|binding| binding.root)
+    }
+
+    fn resources_released(&self) -> bool {
+        self.resources.is_released()
+    }
+
+    pub(crate) fn retired_values(&self) -> (u64, u64, u64) {
+        debug_assert!(
+            self.resources_released(),
+            "only a quiescent task event may be folded into family totals"
+        );
+        (
+            self.accumulated.load(Ordering::Acquire),
+            self.time_enabled_ns.load(Ordering::Acquire),
+            self.time_running_ns.load(Ordering::Acquire),
+        )
+    }
+
     /// Whether this is a sampling event (`sample_period > 0`).
     pub fn is_sampling(&self) -> bool {
         self.is_sampling
+    }
+
+    pub(super) fn wants_comm(&self) -> bool {
+        self.want_comm
+    }
+
+    pub(super) fn wants_mmap2(&self) -> bool {
+        self.want_mmap2
+    }
+
+    pub(super) fn wants_task(&self) -> bool {
+        self.want_task
+    }
+
+    pub(super) fn inheritable(&self) -> bool {
+        self.inherit && !self.run_state.lock().is_stopping()
+    }
+
+    pub(super) fn sample_id(&self) -> u64 {
+        self.sample_id.load(Ordering::Relaxed)
     }
 
     /// Record the ring buffer + notify/poll machinery for a sampling event.
@@ -323,19 +444,27 @@ impl PerTaskCounter {
     /// [`super::hw::HwPerfEvent::device_mmap`] after the first `mmap(perf_fd)`.
     /// Stores the strong [`SamplingAnchors`] (pinning the ring pages + notify)
     /// and publishes the ring geometry after the anchors are installed.
-    pub fn set_ring(
-        &self,
-        output: &PerfRingOutput,
-        notify: Arc<IrqNotify>,
-        poll_ready: Arc<axpoll::PollSet>,
-        poll_alive: Arc<AtomicBool>,
-    ) {
-        *self.anchors.lock() = Some(SamplingAnchors {
-            notify,
-            poll_ready,
-            poll_alive,
-        });
+    pub(crate) fn install_root_output(&self, output: &PerfRingOutput, anchors: SamplingAnchors) {
+        *self.anchors.lock() = Some(anchors);
+        self.inherited_output_wake.store(false, Ordering::Release);
         self.output.lock().publish_owned(output);
+    }
+
+    pub(crate) fn install_family_output(
+        &self,
+        output: PerfRingOutput,
+        anchors: Option<SamplingAnchors>,
+    ) {
+        self.inherited_output_wake
+            .store(anchors.is_some(), Ordering::Release);
+        *self.anchors.lock() = anchors;
+        self.output.lock().redirect(output);
+    }
+
+    pub(crate) fn clear_family_output(&self) {
+        self.inherited_output_wake.store(false, Ordering::Release);
+        self.anchors.lock().take();
+        self.output.lock().clear();
     }
 
     /// Whether a sampling ring has been mmap'd and is therefore armable.
@@ -352,16 +481,6 @@ impl PerTaskCounter {
         self.output.lock().owned()
     }
 
-    /// Expose this counter's ring for an `attr.inherit` child to redirect into.
-    ///
-    /// Unlike [`output_ring`](Self::output_ring) this also works for a counter
-    /// that is *itself* redirected (an inherited child of an inherited child):
-    /// it hands back the redirect anchor so all descendants point at the one
-    /// root ring.
-    pub(crate) fn inherit_ring(&self) -> Option<PerfRingOutput> {
-        self.output.lock().effective().map(|(output, _)| output)
-    }
-
     /// Point this counter's samples at *another* event's ring
     /// (`PERF_EVENT_IOC_SET_OUTPUT`, source side).
     ///
@@ -370,18 +489,20 @@ impl PerTaskCounter {
     /// A redirected source has no poll worker of its own; the target's poller
     /// observes the advancing `data_head`.
     pub(crate) fn set_redirect_ring(&self, output: PerfRingOutput) {
+        self.inherited_output_wake.store(false, Ordering::Release);
         self.output.lock().redirect(output);
     }
 
     /// Detaches an explicit redirect.
     pub(crate) fn detach_redirect(&self) {
+        self.inherited_output_wake.store(false, Ordering::Release);
         self.output.lock().detach();
     }
 
     /// Builds one owned IRQ registry output from the currently published ring.
     fn sample_output(&self) -> Option<SampleOutput> {
         let (ring, redirected) = self.output.lock().effective()?;
-        let notify = if redirected {
+        let notify = if redirected && !self.inherited_output_wake.load(Ordering::Acquire) {
             None
         } else {
             self.anchors
@@ -443,8 +564,27 @@ fn now_ns() -> u64 {
 /// [`PERF_TASK_ACTIVE`] *after* the push ensures the hooks, once they start
 /// running, always find the counter in the list.
 pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
-    thr.perf_counters().lock().push(ptc);
+    let mut counters = thr.perf_counters().lock();
+    // Closed events remain family-owned for aggregate reads, but need not stay
+    // in a live task's scheduler list. Reclaim them in task context before the
+    // bounded list accepts a new hardware-backed member.
+    counters.retain(|counter| !counter.resources_released());
+    counters
+        .push(ptc)
+        .expect("task perf list cannot exceed the architectural PMU slot limit");
+    drop(counters);
     PERF_TASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Withdraws a counter whose family publication failed before its thread became
+/// schedulable.
+pub(super) fn detach_unpublished(thr: &Thread, ptc: &Arc<PerTaskCounter>) {
+    let mut counters = thr.perf_counters().lock();
+    let index = counters
+        .iter()
+        .position(|counter| Arc::ptr_eq(counter, ptc))
+        .expect("an unpublished perf counter must retain its local reservation");
+    counters.swap_remove(index);
 }
 
 /// Scheduler hook: the given thread is about to start running on this CPU.
@@ -460,9 +600,9 @@ pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
 /// into the task's ring only while the task runs. (If the ring is not mapped yet,
 /// the slice is skipped — `perf` always mmaps before enable, so this is a rare race.)
 ///
-/// Runs with IRQs disabled inside `switch_to`: [`SpinNoIrq`](ax_sync::spin::SpinNoIrq)
-/// + atomics + sysreg writes only, no allocation. `sampling::register` nests a
-///   further local-IRQ-off section, which is fine.
+/// Runs with IRQs disabled inside `switch_to` and uses only
+/// [`SpinNoIrq`](ax_sync::spin::SpinNoIrq), atomics, and sysreg writes; it does
+/// not allocate. `sampling::register` nests a further local-IRQ-off section.
 pub fn perf_sched_in(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
@@ -612,7 +752,12 @@ fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> AxResult<
 /// affine worker gets CPU time. Generation state makes that case a successful
 /// fence instead of a duplicate hardware unregister.
 pub(crate) fn stop_requested_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> AxResult<()> {
-    match ptc.run_state.lock().claim_requested_stop(lease) {
+    // The run-state guard must end before the hardware transaction and before
+    // the completion path takes it again. A lock expression used directly as a
+    // `match` scrutinee lives through the whole match and self-deadlocks in the
+    // `Claimed` arm.
+    let claim = ptc.run_state.lock().claim_requested_stop(lease);
+    match claim {
         PmuStopClaim::Claimed(claimed) => {
             if let Err(error) = stop_hardware_on_owner(ptc, claimed) {
                 ptc.run_state.lock().abort_owner_stop(claimed);
@@ -630,42 +775,13 @@ pub(crate) fn stop_requested_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) 
 /// Applies userspace disable intent and fences any live owner-CPU generation.
 pub(crate) fn disable_counter(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
     ptc.enabled.store(false, Ordering::Release);
-    match ptc.run_state.lock().begin_disable() {
+    // Never retain the non-sleeping run-state lock across an owner-CPU worker
+    // rendezvous. See `stop_requested_on_owner` for the temporary-lifetime trap.
+    let action = ptc.run_state.lock().begin_disable();
+    match action {
         PmuCloseAction::AlreadyClosed | PmuCloseAction::Complete => Ok(()),
         PmuCloseAction::Stop(lease) => cpu_worker::stop_task_counter(Arc::clone(ptc), lease),
     }
-}
-
-/// Changes one task event's output after fencing its owner-CPU slot.
-///
-/// Registered sampling slots own immutable output snapshots. Fencing the live
-/// generation before publishing a new route prevents an ioctl from returning
-/// while hard IRQs can still write the previous destination indefinitely.
-pub(crate) fn redirect_output(ptc: &Arc<PerTaskCounter>, output: PerfRingOutput) -> AxResult<()> {
-    replace_output(ptc, Some(output))
-}
-
-/// Detaches one task event's redirect after fencing its owner-CPU slot.
-pub(crate) fn detach_output(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
-    replace_output(ptc, None)
-}
-
-fn replace_output(ptc: &Arc<PerTaskCounter>, redirect: Option<PerfRingOutput>) -> AxResult<()> {
-    let restore_enabled = ptc.enabled.load(Ordering::Acquire);
-    if let Err(error) = disable_counter(ptc) {
-        if restore_enabled {
-            ptc.enabled.store(true, Ordering::Release);
-        }
-        return Err(error);
-    }
-    match redirect {
-        Some(output) => ptc.set_redirect_ring(output),
-        None => ptc.detach_redirect(),
-    }
-    if restore_enabled && !ptc.run_state.lock().is_stopping() {
-        ptc.set_enabled();
-    }
-    Ok(())
 }
 
 /// Resets a task-bound count in the active owner CPU's scheduling order.
@@ -727,7 +843,7 @@ pub fn on_exec(thr: &Thread) {
 
 /// Build a side-band write target for `ptc` if it has a mapped ring and requested
 /// any side-band record (`attr.comm`/`mmap2`/`task`); else `None`.
-fn sideband_target(ptc: &PerTaskCounter, pid: u32, tid: u32) -> Option<SidebandTarget> {
+pub(super) fn sideband_target(ptc: &PerTaskCounter, pid: u32, tid: u32) -> Option<SidebandTarget> {
     if !(ptc.want_comm || ptc.want_mmap2 || ptc.want_task) {
         return None;
     }
@@ -740,264 +856,6 @@ fn sideband_target(ptc: &PerTaskCounter, pid: u32, tid: u32) -> Option<SidebandT
         pid,
         tid,
     })
-}
-
-/// Snapshot the executable file-backed mappings of `thr`'s address space as
-/// `MMAP2` records. Collected under the aspace lock and returned owned, so the
-/// caller writes the ring (which masks IRQs) without holding that lock.
-fn collect_exec_maps(thr: &Thread) -> Vec<Mmap2Info> {
-    let aspace = thr.proc_data.aspace();
-    let mm = aspace.lock();
-    let mut maps = Vec::new();
-    for area in mm.areas() {
-        let flags = area.flags();
-        if !flags.contains(MappingFlags::EXECUTE) {
-            continue;
-        }
-        // Only file-backed areas can be symbolized (perf opens the file). An
-        // anonymous executable mapping (JIT) has no file and is skipped.
-        let Ok(fi) = area.backend().file_info() else {
-            continue;
-        };
-        let mut prot = 0u32;
-        if flags.contains(MappingFlags::READ) {
-            prot |= PROT_READ;
-        }
-        if flags.contains(MappingFlags::WRITE) {
-            prot |= PROT_WRITE;
-        }
-        prot |= PROT_EXEC;
-        maps.push(Mmap2Info {
-            addr: area.start().as_usize() as u64,
-            len: (area.end().as_usize() - area.start().as_usize()) as u64,
-            pgoff: fi.offset.unwrap_or(0),
-            maj: 0,
-            min: 0,
-            ino: fi.inode.unwrap_or(0),
-            prot,
-            flags: if fi.shared { MAP_SHARED } else { MAP_PRIVATE },
-            filename: fi.path,
-        });
-    }
-    maps
-}
-
-/// Exec side-band hook: emit `PERF_RECORD_COMM` (new process name) and one
-/// `PERF_RECORD_MMAP2` per executable mapping (the exec image + the dynamic
-/// loader), into every per-task event monitoring this thread that asked for them.
-///
-/// Called from `do_execve` right after [`on_exec`], in the exec'd task's context
-/// (so [`current`] is this task and `thr`'s address space is the new image).
-/// `perf record` mmaps the ring before releasing the child, so the ring exists.
-pub fn on_exec_sideband(thr: &Thread) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
-
-    /// A target plus which record kinds it wants (so the COMM/MMAP2 loops below
-    /// can each skip non-subscribers without re-walking the counter list).
-    struct WantTarget {
-        target: SidebandTarget,
-        comm: bool,
-        mmap2: bool,
-    }
-    // Snapshot targets, then drop the counter lock before any ring write.
-    let targets: Vec<WantTarget> = {
-        let counters = thr.perf_counters().lock();
-        counters
-            .iter()
-            .filter_map(|ptc| {
-                sideband_target(ptc, pid, tid).map(|target| WantTarget {
-                    target,
-                    comm: ptc.want_comm,
-                    mmap2: ptc.want_mmap2,
-                })
-            })
-            .collect()
-    };
-    if targets.is_empty() {
-        return;
-    }
-
-    // COMM: the new process name (this hook runs in the exec'd task's context).
-    let curr = crate::task::current_user_task();
-    let name = curr.name();
-    for wt in &targets {
-        if wt.comm {
-            sideband::emit_comm(&wt.target, &name, true);
-        }
-    }
-
-    // MMAP2: one per executable file-backed mapping of the new image.
-    if targets.iter().any(|wt| wt.mmap2) {
-        let maps = collect_exec_maps(thr);
-        for wt in &targets {
-            if wt.mmap2 {
-                for m in &maps {
-                    sideband::emit_mmap2(&wt.target, m);
-                }
-            }
-        }
-    }
-}
-
-/// mmap side-band hook: emit a `PERF_RECORD_MMAP2` for a newly-mapped executable
-/// file region of the current task (a shared library the dynamic loader just
-/// `mmap`ed), into every monitoring per-task event that asked for mmap records.
-///
-/// Called from `sys_mmap` after a successful executable, file-backed mapping.
-pub fn on_mmap_sideband(
-    thr: &Thread,
-    addr: usize,
-    len: usize,
-    pgoff: usize,
-    prot: u32,
-    shared: bool,
-    filename: &str,
-) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    let pid = thr.proc_data.proc.pid();
-    let tid = thr.tid();
-    let targets: Vec<SidebandTarget> = {
-        let counters = thr.perf_counters().lock();
-        counters
-            .iter()
-            .filter(|ptc| ptc.want_mmap2)
-            .filter_map(|ptc| sideband_target(ptc, pid, tid))
-            .collect()
-    };
-    if targets.is_empty() {
-        return;
-    }
-    let m = Mmap2Info {
-        addr: addr as u64,
-        len: len as u64,
-        pgoff: pgoff as u64,
-        maj: 0,
-        min: 0,
-        ino: 0,
-        prot,
-        flags: if shared { MAP_SHARED } else { MAP_PRIVATE },
-        filename: String::from(filename),
-    };
-    for t in &targets {
-        sideband::emit_mmap2(t, &m);
-    }
-}
-
-/// Clone side-band hook: emit a `PERF_RECORD_FORK` describing the new child into
-/// every per-task event monitoring the **parent** that requested `attr.task`.
-///
-/// Called from `do_clone` in the parent's (forking task's) context, after the
-/// child task is spawned. The record's body describes the child (`child_pid` /
-/// `child_tid`) with the parent as `ppid`/`ptid`; its `sample_id_all` trailer is
-/// the parent's id (the event's monitored task), so `t.pid`/`t.tid` = parent.
-pub fn on_clone_sideband(parent_thr: &Thread, child_pid: u32, child_tid: u32) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    let ppid = parent_thr.proc_data.proc.pid();
-    let ptid = parent_thr.tid();
-    // Snapshot want_task targets, then drop the counter lock before any ring write.
-    let targets: Vec<SidebandTarget> = {
-        let counters = parent_thr.perf_counters().lock();
-        counters
-            .iter()
-            .filter(|ptc| ptc.want_task)
-            .filter_map(|ptc| sideband_target(ptc, ppid, ptid))
-            .collect()
-    };
-    for t in &targets {
-        sideband::emit_fork(t, child_pid, ppid, child_tid, ptid);
-    }
-}
-
-/// Clone-inherit hook (`attr.inherit`): for each counter on the parent with
-/// `inherit` set, create a matching counter on the freshly-cloned `child_thr` so
-/// `perf record` follows it. The child counter writes into the **same ring** as
-/// the parent event (the child has no fd / ring of its own): it is set up exactly
-/// like a `PERF_EVENT_IOC_SET_OUTPUT` redirect, sharing the parent's `sample_id`
-/// so all samples aggregate under one event. Inheritance is transitive — the
-/// child's counter is itself `inherit`, so its own children inherit in turn (all
-/// pointing at the one root ring via [`PerTaskCounter::inherit_ring`]).
-///
-/// Called from `do_clone` in the parent's context, *before* the child is
-/// scheduled. Each inherited counter takes its own programmable HW slot; if the
-/// slots are exhausted the inheritance for that event is skipped (the child is
-/// simply not monitored — we do not time-multiplex), and likewise a sampling
-/// event whose ring is not mapped yet cannot be followed.
-pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    /// Everything needed to rebuild a child counter, snapshotted under the parent
-    /// lock so the (allocating) child construction happens lock-free.
-    struct InheritSpec {
-        cfg: PerTaskConfig,
-        sample_id: u64,
-        ring: Option<PerfRingOutput>,
-        is_sampling: bool,
-    }
-    let specs: Vec<InheritSpec> = {
-        let counters = parent_thr.perf_counters().lock();
-        counters
-            .iter()
-            .filter(|p| p.inherit && !p.run_state.lock().is_stopping())
-            .map(|p| InheritSpec {
-                cfg: PerTaskConfig {
-                    n: 0, // assigned after the slot is reserved below
-                    event: p.event,
-                    exclude_user: p.exclude_user,
-                    exclude_kernel: p.exclude_kernel,
-                    read_format: p.read_format,
-                    // Follow the parent's current enable state; the child runs the
-                    // monitored workload from birth, so it does not wait on exec.
-                    enabled: p.enabled.load(Ordering::Acquire),
-                    enable_on_exec: false,
-                    cpu_filter: p.cpu_filter,
-                    sample_period: p.sample_period,
-                    sample_type: p.sample_type,
-                    freq: p.freq,
-                    target_freq: p.freq_target,
-                    want_comm: p.want_comm,
-                    want_mmap2: p.want_mmap2,
-                    want_task: p.want_task,
-                    sample_id_all: p.sample_id_all,
-                    inherit: true,
-                },
-                sample_id: p.sample_id.load(Ordering::Relaxed),
-                ring: p.inherit_ring(),
-                is_sampling: p.is_sampling,
-            })
-            .collect()
-    };
-    for mut spec in specs {
-        // A sampling event with no ring yet has nowhere to write the child's
-        // samples; skip (perf maps the ring before enabling, so this is rare).
-        if spec.is_sampling && spec.ring.is_none() {
-            continue;
-        }
-        let Some(n) = hw::alloc_programmable_counter() else {
-            warn!(
-                "perf: attr.inherit skipped for child tid {} (no free PMU counter)",
-                child_thr.tid()
-            );
-            continue;
-        };
-        spec.cfg.n = n;
-        let child = Arc::new(PerTaskCounter::new(spec.cfg));
-        // Share the parent event's id so inherited samples aggregate under it.
-        child.set_sample_id(spec.sample_id);
-        // Redirect the child's output into the (root) parent ring it inherited.
-        if let Some(output) = spec.ring {
-            child.set_redirect_ring(output);
-        }
-        attach(child_thr, child);
-    }
 }
 
 /// Task-exit hook: emit `PERF_RECORD_EXIT` (for `attr.task` events) then free
@@ -1030,58 +888,55 @@ pub fn on_task_exit(thr: &Thread) {
         {
             sideband::emit_exit(&t, pid, ppid, tid, ptid);
         }
-        free_hw(ptc);
+        if let Err(error) = free_hw(ptc) {
+            warn!(
+                "perf: task-exit failed to quiesce counter {} on tid {}: {error}",
+                ptc.n, tid
+            );
+        }
     }
 }
 
 /// Release the HW counter backing `ptc` and tear down its bookkeeping, once.
 ///
 /// Idempotence and in-flight owner CPU identity are both held by
-/// [`PmuRunState`]. Either the fd side or task-exit side may win; a concurrent
-/// loser observes `AlreadyClosed`.
+/// [`PmuRunState`] plus [`PmuResourceRelease`]. Either the fd side or task-exit
+/// side may win the hardware stop; exactly one caller reclaims the reservation.
 ///
 /// For a *sampling* counter that is currently armed, the overflow-IRQ path is
 /// torn down in the UAF-safe order before the slot/ring `Arc`s drop: stop the
 /// counter, mask the IRQ, then `unregister` the [`SampleSlot`] — so the overflow
-/// handler can no longer reach the ring or `notify` pointer. Only after that are
-/// the [`SamplingAnchors`] dropped and the worker stopped.
-pub fn free_hw(ptc: &Arc<PerTaskCounter>) {
-    let close_action = ptc.run_state.lock().begin_close();
-    match close_action {
-        PmuCloseAction::AlreadyClosed => return,
-        PmuCloseAction::Complete => {}
-        PmuCloseAction::Stop(lease) => {
-            if let Err(error) = cpu_worker::stop_task_counter(Arc::clone(ptc), lease) {
-                // Keep the close request published and retain every
-                // anchor/counter. A
-                // later fd/task release retries the exact generation; leaking
-                // is safer than authorizing IRQ-visible reclamation.
-                warn!(
-                    "perf: failed to stop counter {} on CPU {}: {error}",
-                    ptc.n,
-                    lease.owner().as_usize()
-                );
-                return;
-            }
-        }
+/// handler can no longer reach the ring or notification anchor. An inherited
+/// member then drops its redirect; the root output remains fd-owned until the
+/// complete family has quiesced.
+pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
+    if ptc.resources_released() {
+        return Ok(());
     }
+    let close_action = ptc.run_state.lock().begin_close();
+    let stop_result = match close_action {
+        PmuCloseAction::AlreadyClosed | PmuCloseAction::Complete => Ok(()),
+        PmuCloseAction::Stop(lease) => cpu_worker::stop_task_counter(Arc::clone(ptc), lease),
+    };
+    stop_result?;
 
-    if ptc.is_sampling {
-        // Stop the deferred worker and drop the ring/notify anchors only after
-        // owner-CPU generation removal completed. The VMA retains the ring
-        // output independently, so user memory stays mapped until munmap.
-        let anchors = ptc.anchors.lock().take();
-        if let Some(anchors) = anchors {
-            anchors.poll_alive.store(false, Ordering::Release);
-            anchors.notify.notify();
+    if !ptc.resources.claim() {
+        return Ok(());
+    }
+    // An inherited task has no fd-owned output lifetime of its own. Its EXIT
+    // side-band record was emitted before this fence, so its strong redirect
+    // can now be dropped. Withdraw the family relation before returning the PMU
+    // slot so a concurrent clone cannot reserve the hardware and then observe a
+    // stale full-family snapshot.
+    if !ptc.is_family_root() {
+        if let Some(family) = ptc.family() {
+            family.retire_child(ptc);
         }
-        // Remove the weak own-ring reference and any redirect as one value.
-        // The generation-checked slot is already gone, so no hard-IRQ reader
-        // can race this final task-context publication.
-        ptc.output.lock().clear();
+        ptc.clear_family_output();
     }
     hw::free_programmable_counter(ptc.n);
     PERF_TASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+    Ok(())
 }
 
 /// Read back `(value, time_enabled, time_running)` for `read(perf_fd)`.

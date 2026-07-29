@@ -404,6 +404,52 @@ gate in the output object. A contender drops and accounts the record rather
 than spinning in hard IRQ, so inherited or redirected writers cannot race
 `data_head` from different CPUs.
 
+Task-event inheritance now has one fd-owned `PerfInheritanceFamily`. This
+matches Linux v7.1 `inherit_event()`, which flattens every descendant onto the
+original event's `child_list` under `child_mutex`; `_perf_ioctl()` applies
+ENABLE, DISABLE, and RESET with `perf_event_for_each_child()`;
+`__perf_event_read_value()` aggregates live and retired child counts; and
+`perf_event_release_kernel()` marks the root dead before repeatedly removing
+every child. TGOSKits' family relationship lock similarly rejects a child that
+races close, publishes the current enable and output generations to a joining
+member, and snapshots bounded member references before releasing the
+relationship lock and waiting on owner-CPU work.
+
+An exited descendant is removed from the bounded live-member relation after
+its PMU generation is quiescent. Its value and enabled/running times are
+saturating-folded into fd-owned retired totals before the strong member
+reference is dropped. This mirrors Linux's child synchronization and prevents
+sequential forks from exhausting a capacity intended to bound simultaneously
+live events.
+
+The previous implementation skipped a sampling child when the root ring had
+not yet been mmaped. It also stored the root output on the monitored task
+counter, so task exit could stop the poll worker and withdraw the ring while
+the root fd and inherited descendants were still live. The deterministic
+aarch64 regression now forks the child and grandchild before mmap, then maps
+and enables only the root fd. Before the family change it completed with one
+EXIT TID; after the change both descendant EXIT records share the root output.
+It then creates 40 more descendants sequentially and requires 42 distinct EXIT
+TIDs in total, proving that retired members do not consume the 32-entry live
+relation capacity.
+Pure state tests cover output publication to pre-existing members, ENABLE and
+DISABLE inheritance for existing and future members, close versus join, and
+exactly-once reservation release.
+
+GDB on the same regression also found a separate owner-stop deadlock. A
+`SpinNoIrq` guard created directly in a Rust `match` scrutinee remained alive
+through the selected arm; `stop_requested_on_owner()` then tried to reacquire
+that same `run_state` after the hardware stop. One CPU self-spun on the lock,
+while concurrent fd teardown spun on the identical lock byte. Every stop action
+is now copied out in an explicit short scope before hardware access, an
+owner-CPU worker rendezvous, or completion publication. The scheduler
+switch-out path publishes only the generation state; it never fans out a
+`WaitQueue` while the scheduler baton and IRQ-off region are active. The
+per-CPU task-context worker serializes contenders and observes an
+`AlreadyComplete` fence after a switch-out winner, while a separate atomic
+reclamation claim ensures the PMU slot and global active count are released
+once.
+
 The original aarch64 `perf-hw-freq` stale-wake panic remains the end-to-end
 regression. Deterministic host tests cover target parsing, registry generation
 reuse, close versus switch-out, failed owner-stop retry, redirect/detach
