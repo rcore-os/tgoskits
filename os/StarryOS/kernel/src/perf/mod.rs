@@ -31,6 +31,8 @@ pub mod kprobe;
 mod output;
 pub mod raw_tracepoint;
 #[cfg(target_arch = "aarch64")]
+mod rdpmc;
+#[cfg(target_arch = "aarch64")]
 mod resource_lifecycle;
 /// PMU overflow-IRQ sampling backend (M2). ARM PMUv3 only; the counting and
 /// tracing paths are arch-agnostic, but sampling depends on CPU PMU registers.
