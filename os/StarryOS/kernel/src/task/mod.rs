@@ -3,6 +3,7 @@
 mod cred;
 pub mod futex;
 pub mod future;
+mod interruption;
 mod job_control;
 mod ops;
 mod pid_namespace;
