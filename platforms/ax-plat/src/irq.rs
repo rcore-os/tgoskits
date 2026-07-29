@@ -108,7 +108,7 @@ impl IrqOps for PlatIrqOps {
     }
 
     fn in_irq_context(&self) -> bool {
-        in_irq_context_on(self.current_cpu())
+        crate::irq::in_irq_context()
     }
 
     fn local_irq_save(&self) -> Self::LocalIrqState {
@@ -174,7 +174,17 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Returns whether the current CPU is dispatching an IRQ action.
 pub fn in_irq_context() -> bool {
-    in_irq_context_on(PlatIrqOps.current_cpu())
+    let _guard = ax_kernel_guard::NoPreempt::new();
+    // SAFETY: the guard prevents migration across both CPU identity resolution
+    // and the matching context-bit read. Releasing an inner guard between these
+    // operations could resume this thread on another CPU with a stale ID.
+    unsafe {
+        ax_percpu::with_cpu_pin(|pin| {
+            let cpu = CpuId(crate::percpu::this_cpu_id_pinned(pin));
+            in_irq_context_on(cpu)
+        })
+    }
+    .expect("the current CPU-local area must remain bound")
 }
 
 /// Requests an IRQ action through the dynamic IRQ framework.
