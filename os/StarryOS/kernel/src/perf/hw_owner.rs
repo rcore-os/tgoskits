@@ -104,6 +104,12 @@ pub(super) struct SystemPmuDisable {
     pub(super) registration: Option<SampleRegistration>,
 }
 
+/// Owner-consistent value and timestamp after a system event is quiescent.
+pub(super) struct SystemPmuDisableResult {
+    pub(super) value: u64,
+    pub(super) stopped_at: u64,
+}
+
 /// Value-only owner-CPU read request.
 pub(super) struct SystemPmuRead {
     pub(super) counter: Counter,
@@ -152,7 +158,9 @@ pub(super) fn enable_system_on_owner(request: SystemPmuEnable) -> AxResult<Syste
 }
 
 /// Quiesces one system-wide event on the current owner CPU.
-pub(super) fn disable_system_on_owner(request: SystemPmuDisable) -> AxResult<u64> {
+pub(super) fn disable_system_on_owner(
+    request: SystemPmuDisable,
+) -> AxResult<SystemPmuDisableResult> {
     if let Some(registration) = request.registration {
         let Counter::Programmable(n) = request.counter else {
             return Err(AxError::BadState);
@@ -167,7 +175,10 @@ pub(super) fn disable_system_on_owner(request: SystemPmuDisable) -> AxResult<u64
     } else {
         request.counter.disable();
     }
-    Ok(ax_runtime::hal::time::monotonic_time_nanos())
+    Ok(SystemPmuDisableResult {
+        value: request.counter.read(),
+        stopped_at: ax_runtime::hal::time::monotonic_time_nanos(),
+    })
 }
 
 /// Reads one system-wide event on the current owner CPU.

@@ -216,6 +216,12 @@ pub fn sys_mmap(
     } else {
         None
     };
+    // A device implementation has committed to this mapping contract once it
+    // returns an error. Reject it before MAP_FIXED can tear down an existing
+    // mapping; only the typed `DeviceMmap::None` result selects file fallback.
+    if let Some(Err(error)) = device_mmap_top.as_ref() {
+        return Err(*error);
+    }
 
     // Validate file_mmap permissions and memfd seals before any destructive
     // MAP_FIXED unmap (Linux `do_mmap` ordering; avoids tearing down the old
@@ -225,8 +231,9 @@ pub fn sys_mmap(
         let needs_file_mmap_checks = match map_type {
             MmapFlags::PRIVATE => true,
             MmapFlags::SHARED => {
-                // Ok(None) and Err(_) both mean "fall back to file_mmap"
-                // (memfd, regular files). Direct device mappings do not.
+                // `DeviceMmap::None` explicitly means "fall back to
+                // file_mmap" (memfd, regular files). A device implementation's
+                // error is committed and must survive to userspace.
                 match device_mmap_top
                     .as_ref()
                     .expect("file-backed mmap has cached device_mmap")
@@ -237,7 +244,8 @@ pub fn sys_mmap(
                     | Ok(DeviceMmap::PhysicalResolved(..))
                     | Ok(DeviceMmap::PhysicalPages(..))
                     | Ok(DeviceMmap::Cache(_)) => false,
-                    Ok(DeviceMmap::None) | Err(_) => true,
+                    Ok(DeviceMmap::None) => true,
+                    Err(_) => false,
                 }
             }
             _ => false,
@@ -404,14 +412,8 @@ pub fn sys_mmap(
                             Arc::new(SharedPages::borrowed(pages, PageSize::Size4K, retain)?),
                         )
                     }
-                    Ok(DeviceMmap::None) => return Err(AxError::NoSuchDevice),
-                    Ok(_) => return Err(AxError::InvalidInput),
-                    Err(_) => {
-                        // Fall through to file-backed mmap
+                    Ok(DeviceMmap::None) => {
                         let (backend, flags) = file.file_mmap()?;
-                        // man 2 mmap EACCES: a file mapping requires the fd to be
-                        // open for reading, and MAP_SHARED+PROT_WRITE additionally
-                        // requires the fd to be open for writing.
                         if !flags.contains(FileFlags::READ) {
                             return Err(AxError::PermissionDenied);
                         }
@@ -421,27 +423,21 @@ pub fn sys_mmap(
                             return Err(AxError::PermissionDenied);
                         }
                         match backend.clone() {
-                            FileBackend::Cached(cache) => {
-                                // TODO(mivik): file mmap page size
-                                Backend::new_file(
-                                    start,
-                                    cache,
-                                    flags,
-                                    offset,
-                                    &curr.as_thread().proc_data.aspace(),
-                                    true,
-                                )
-                            }
+                            FileBackend::Cached(cache) => Backend::new_file(
+                                start,
+                                cache,
+                                flags,
+                                offset,
+                                &curr.as_thread().proc_data.aspace(),
+                                true,
+                            ),
                             FileBackend::Direct(loc) => {
                                 let device = loc
                                     .entry()
                                     .downcast::<Device>()
                                     .map_err(|_| AxError::NoSuchDevice)?;
-
                                 match device.mmap(offset as u64, length as u64) {
-                                    DeviceMmap::None => {
-                                        return Err(AxError::NoSuchDevice);
-                                    }
+                                    DeviceMmap::None => return Err(AxError::NoSuchDevice),
                                     DeviceMmap::Physical(range, retain) => {
                                         mapping_flags |= MappingFlags::UNCACHED;
                                         if range.is_empty() {
@@ -522,6 +518,8 @@ pub fn sys_mmap(
                             }
                         }
                     }
+                    Ok(_) => return Err(AxError::InvalidInput),
+                    Err(error) => return Err(error),
                 }
             } else {
                 Backend::new_shared(start, Arc::new(SharedPages::new(length, PageSize::Size4K)?))

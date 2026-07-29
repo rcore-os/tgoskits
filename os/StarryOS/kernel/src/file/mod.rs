@@ -220,7 +220,11 @@ pub trait FileLike: Pollable + DowncastSync {
     }
 
     fn device_mmap(&self, _offset: u64, _length: u64) -> AxResult<DeviceMmap> {
-        Err(AxError::BadFileDescriptor)
+        // `None` is the typed probe result for an ordinary file: `sys_mmap`
+        // must continue through `file_mmap`. An `Err` from an implementation
+        // that does own a device mapping is a committed mmap error and must not
+        // be replaced by an unrelated file-backend errno.
+        Ok(DeviceMmap::None)
     }
 
     fn ioctl(&self, _cmd: u32, _arg: usize) -> AxResult<usize> {

@@ -589,11 +589,13 @@ target task's scheduling boundary and install or reschedule its context while
 it is already running. Starry's fixed per-CPU perf worker now provides the
 same boundary: attach and family enable publish intent first, then request a
 generation-bearing scheduler-context synchronization on the CPU currently
-running the target. A migration or switch race is resolved by the scheduler
-identity and retried on the new owner; a stale identity is an already-dead
-context rather than a request to touch hardware. This also removes the former
-local fast path in which a caller could configure another task's PMU state
-without crossing its scheduling boundary.
+selected for the target. If the task was running there, executing the fixed
+worker proves it switched out after the publication; if it moved first, that
+move itself crossed the switch hook and its next sched-in observes the
+published list. A stale generation is an already-dead context rather than a
+request to touch hardware. This also removes the former local fast path in
+which a caller could configure another task's PMU state without crossing its
+scheduling boundary.
 
 The deterministic aarch64 `perf-hw-rdpmc` regression exposed both defects in
 sequence. The old implementation reported `index=1`, `caps=0x4`, and
@@ -605,6 +607,34 @@ scheduler-boundary synchronization, the same case observed nonzero,
 comparable direct and fd reads (for example `61853925` and `77531120`) and
 reported `STARRY_PERF_RDPMC_OK`. Task sampling, frequency sampling, and
 fork/exit PMU regressions pass with the same physical ownership model.
+
+Linux `perf_event_update_userpage()` brackets each metadata update with the
+`perf_event_mmap_page.lock` sequence, publishes `index == 0` while inactive,
+and sets active `offset` to the accumulated count minus the current hardware
+slice base. Starry now has the same single-writer protocol in a focused
+`rdpmc` module. Sched-out first disables and reads the terminal physical slice,
+folds it into the accumulator, then publishes inactive metadata. Sched-in
+programs a fresh zero-based slice and publishes its physical index with the
+completed total as offset. RESET stops an exact generation, clears the total,
+and only then republishes enable intent, so migration cannot leave a
+pre-reset slice running on a different CPU.
+
+The mmap page is strongly owned by its VMA and weakly published by the event.
+Only one live, exactly-one-page mapping is accepted; `munmap` drops the anchor
+and permits a later mapping. The old implementation allocated one page but
+accepted an 8192-byte mapping, exposing adjacent physical memory, and accepted
+multiple unrelated live metadata pages. A deterministic red run failed with
+“oversized metadata mmap unexpectedly succeeded.” The repaired case requires
+`EINVAL` for the oversized request, `EBUSY` for a second live mapping, and a
+successful remap after `munmap`. It then forces sched-out/in with `usleep` and
+observes a nonzero offset, for example `offset=127041424`, before comparing
+`offset + rdpmc` with `read(fd)`.
+
+Preserving those errno values also closed an adjacent mmap probe ambiguity.
+`DeviceMmap::None` is now the explicit ordinary-file fallback; a device
+implementation's `Err` is committed instead of being discarded and replaced
+by an unrelated `file_mmap` error. Regular files still take the same fallback,
+while perf metadata validation reaches userspace as Linux `EINVAL`/`EBUSY`.
 
 Linux `find_get_context()` rejects `PF_EXITING` while holding
 `task->perf_event_mutex`; a dead perf context is a tombstone that cannot accept
@@ -711,7 +741,7 @@ intermittent observation rather than receiving a speculative scheduler
 change. The first aarch64 full milestone passed those same critical groups and
 failed only the deterministic `perf-hw-rdpmc` counter-selection assertion
 described above. A final full aarch64 rerun is required after the remaining
-dynamic mmap-page and exit-admission work.
+exit-admission work.
 
 A separate pidfd audit question is closed as Linux-compatible rather than
 changed. Linux v7.1 keeps an unreaped zombie addressable through its pid object:

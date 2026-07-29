@@ -10,8 +10,8 @@ use ax_runtime::task::{CpuId, CpuSet, WaitQueue};
 
 use super::{
     hw::{
-        self, SystemPmuConfigure, SystemPmuDisable, SystemPmuEnable, SystemPmuEnableResult,
-        SystemPmuRead, SystemPmuReadResult, SystemPmuReset,
+        self, SystemPmuConfigure, SystemPmuDisable, SystemPmuDisableResult, SystemPmuEnable,
+        SystemPmuEnableResult, SystemPmuRead, SystemPmuReadResult, SystemPmuReset,
     },
     sampling_lifecycle::PmuRunLease,
     target::PerfCpuId,
@@ -63,10 +63,6 @@ enum PerfCpuCommand {
         counter: Arc<PerTaskCounter>,
         completion: Arc<PerfCompletion<(u64, u64, u64)>>,
     },
-    ResetTask {
-        counter: Arc<PerTaskCounter>,
-        completion: Arc<PerfCompletion<()>>,
-    },
     ConfigureSystem {
         request: SystemPmuConfigure,
         completion: Arc<PerfCompletion<()>>,
@@ -77,7 +73,7 @@ enum PerfCpuCommand {
     },
     DisableSystem {
         request: SystemPmuDisable,
-        completion: Arc<PerfCompletion<u64>>,
+        completion: Arc<PerfCompletion<SystemPmuDisableResult>>,
     },
     ReadSystem {
         request: SystemPmuRead,
@@ -113,13 +109,6 @@ impl PerfCpuCommand {
                 completion,
             } => {
                 let result = with_local_pmu_exclusion(|| task::read_task_on_owner(&counter));
-                completion.finish(result);
-            }
-            Self::ResetTask {
-                counter,
-                completion,
-            } => {
-                let result = with_local_pmu_exclusion(|| task::reset_task_on_owner(&counter));
                 completion.finish(result);
             }
             Self::ConfigureSystem {
@@ -288,19 +277,6 @@ pub(super) fn read_task_counter(
     completion.wait()
 }
 
-/// Resets a task-bound counter after joining the owner CPU's scheduling order.
-pub(super) fn reset_task_counter(counter: Arc<PerTaskCounter>, owner: PerfCpuId) -> AxResult<()> {
-    if let Some(result) = try_local(owner, || task::reset_task_on_owner(&counter)) {
-        return result;
-    }
-    let completion = Arc::new(PerfCompletion::new());
-    owner_worker(owner)?.submit(PerfCpuCommand::ResetTask {
-        counter,
-        completion: Arc::clone(&completion),
-    });
-    completion.wait()
-}
-
 /// Configures one system-wide event on its target CPU.
 pub(super) fn configure_system(owner: PerfCpuId, request: SystemPmuConfigure) -> AxResult<()> {
     let mut request = Some(request);
@@ -337,7 +313,10 @@ pub(super) fn enable_system(
 }
 
 /// Disables one system-wide event on its target CPU.
-pub(super) fn disable_system(owner: PerfCpuId, request: SystemPmuDisable) -> AxResult<u64> {
+pub(super) fn disable_system(
+    owner: PerfCpuId,
+    request: SystemPmuDisable,
+) -> AxResult<SystemPmuDisableResult> {
     let mut request = Some(request);
     if let Some(result) = try_local(owner, || {
         hw::disable_system_on_owner(request.take().expect("single local PMU disable"))

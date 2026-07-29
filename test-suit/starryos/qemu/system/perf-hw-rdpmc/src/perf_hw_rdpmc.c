@@ -9,12 +9,14 @@
  *
  * This test opens a self counting CPU_CYCLES event (which the kernel backs with
  * the dedicated cycle counter, page index 32 ⇒ `PMCCNTR_EL0`), mmaps the page,
- * checks the rdpmc fields, then reads `PMCCNTR_EL0` from EL0 and cross-checks it
- * against `read(perf_fd)`. If EL0 access were not enabled the `mrs` would trap
- * (SIGILL) and the test would die — so reaching the comparison already proves it.
+ * checks the rdpmc fields, forces a sched-out/in with `usleep`, then performs
+ * Linux's seqlock read (`offset + rdpmc`) and cross-checks it against
+ * `read(perf_fd)`. If EL0 access were not enabled the `mrs` would trap (SIGILL)
+ * and the test would die — so reaching the comparison already proves it.
  *
- * SUCCESS == cap_user_rdpmc set AND index!=0 AND the EL0 `mrs` read and the
- * read(fd) value are both non-zero and within a small factor of each other.
+ * SUCCESS == cap_user_rdpmc set AND index!=0 AND a completed scheduling slice
+ * is preserved in nonzero `offset` AND the page count and read(fd) value are
+ * both non-zero and within a small factor of each other.
  * Prints the single sentinel STARRY_PERF_RDPMC_OK.
  */
 #ifndef _GNU_SOURCE
@@ -121,6 +123,58 @@ static inline uint64_t read_pmccntr_el0(void) {
 #endif
 }
 
+struct rdpmc_snapshot {
+    uint32_t index;
+    int64_t offset;
+    uint64_t capabilities;
+    uint16_t pmc_width;
+    uint64_t raw;
+    uint64_t count;
+};
+
+/*
+ * Linux perf's userspace read protocol. The kernel changes `lock` around every
+ * sched-out/in metadata publication. If this task is preempted between reading
+ * the metadata and PMCCNTR_EL0, the changed sequence forces a retry after it
+ * resumes.
+ */
+static int read_rdpmc_page(const struct perf_event_mmap_page *pc,
+                           struct rdpmc_snapshot *snapshot) {
+    for (unsigned int attempt = 0; attempt < 1000000u; attempt++) {
+        uint32_t sequence = __atomic_load_n(&pc->lock, __ATOMIC_ACQUIRE);
+        if ((sequence & 1u) != 0) {
+            continue;
+        }
+
+        struct rdpmc_snapshot current;
+        current.index = __atomic_load_n(&pc->index, __ATOMIC_RELAXED);
+        current.offset = __atomic_load_n(&pc->offset, __ATOMIC_RELAXED);
+        current.capabilities =
+            __atomic_load_n(&pc->capabilities, __ATOMIC_RELAXED);
+        current.pmc_width =
+            __atomic_load_n(&pc->pmc_width, __ATOMIC_RELAXED);
+        current.raw = current.index == CYCLE_PAGE_INDEX ? read_pmccntr_el0() : 0;
+
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&pc->lock, __ATOMIC_RELAXED) != sequence) {
+            continue;
+        }
+        if (current.index == 0 || current.pmc_width == 0) {
+            return -1;
+        }
+
+        if (current.pmc_width < 64) {
+            unsigned int shift = 64u - current.pmc_width;
+            current.raw =
+                (uint64_t)(((int64_t)(current.raw << shift)) >> shift);
+        }
+        current.count = (uint64_t)(current.offset + (int64_t)current.raw);
+        *snapshot = current;
+        return 0;
+    }
+    return -1;
+}
+
 int main(void) {
 #if !defined(__aarch64__)
     /* Hardware-PMU perf is aarch64-only (ARM PMUv3); skip-as-pass on other
@@ -149,6 +203,19 @@ int main(void) {
         return fail("ioctl(ENABLE)");
     }
 
+    errno = 0;
+    void *oversized =
+        mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, efd, 0);
+    if (oversized != MAP_FAILED) {
+        munmap(oversized, 8192);
+        close(efd);
+        return fail("oversized metadata mmap unexpectedly succeeded");
+    }
+    if (errno != EINVAL) {
+        close(efd);
+        return fail("oversized metadata mmap did not return EINVAL");
+    }
+
     void *base = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, efd, 0);
     if (base == MAP_FAILED) {
         char msg[96];
@@ -158,9 +225,30 @@ int main(void) {
     }
     struct perf_event_mmap_page *pc = (struct perf_event_mmap_page *)base;
 
-    uint32_t index = pc->index;
-    uint64_t caps = pc->capabilities;
-    uint16_t width = pc->pmc_width;
+    errno = 0;
+    void *duplicate =
+        mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, efd, 0);
+    if (duplicate != MAP_FAILED) {
+        munmap(duplicate, 4096);
+        munmap(base, 4096);
+        close(efd);
+        return fail("second live metadata mmap unexpectedly succeeded");
+    }
+    if (errno != EBUSY) {
+        munmap(base, 4096);
+        close(efd);
+        return fail("second live metadata mmap did not return EBUSY");
+    }
+
+    struct rdpmc_snapshot initial;
+    if (read_rdpmc_page(pc, &initial) != 0) {
+        munmap(base, 4096);
+        close(efd);
+        return fail("initial mmap-page seqlock read");
+    }
+    uint32_t index = initial.index;
+    uint64_t caps = initial.capabilities;
+    uint16_t width = initial.pmc_width;
     printf("STARRY_PERF_RDPMC index=%u caps=0x%llx pmc_width=%u\n", index,
            (unsigned long long)caps, width);
 
@@ -187,8 +275,31 @@ int main(void) {
     }
     (void)spin;
 
-    /* EL0 read via mrs (the rdpmc path) and the syscall read, back to back. */
-    uint64_t rd = read_pmccntr_el0();
+    /*
+     * Sleeping forces this event through sched-out and sched-in. Linux carries
+     * the completed slice in mmap-page `offset` and only exposes the newly
+     * programmed counter through `index`.
+     */
+    if (usleep(10000) != 0) {
+        munmap(base, 4096);
+        close(efd);
+        return fail("usleep");
+    }
+
+    struct rdpmc_snapshot after_switch;
+    if (read_rdpmc_page(pc, &after_switch) != 0) {
+        munmap(base, 4096);
+        close(efd);
+        return fail("post-switch mmap-page seqlock read");
+    }
+    if (after_switch.offset <= 0) {
+        munmap(base, 4096);
+        close(efd);
+        return fail("sched-out count not preserved in mmap-page offset");
+    }
+
+    /* Page count (`offset + mrs`) and syscall read, back to back. */
+    uint64_t rd = after_switch.count;
     uint64_t sys = 0;
     if (read(efd, &sys, sizeof(sys)) != (ssize_t)sizeof(sys)) {
         munmap(base, 4096);
@@ -196,8 +307,11 @@ int main(void) {
         return fail("read(perf_fd)");
     }
 
-    printf("STARRY_PERF_RDPMC rdpmc=%llu read_fd=%llu spin=%llu\n",
-           (unsigned long long)rd, (unsigned long long)sys,
+    printf("STARRY_PERF_RDPMC offset=%lld raw=%llu count=%llu read_fd=%llu "
+           "spin=%llu\n",
+           (long long)after_switch.offset,
+           (unsigned long long)after_switch.raw, (unsigned long long)rd,
+           (unsigned long long)sys,
            (unsigned long long)spin);
 
     int rc = 0;
@@ -206,8 +320,8 @@ int main(void) {
     } else if (sys == 0) {
         rc = fail("read(perf_fd) is zero");
     } else {
-        /* Both read the same hardware cycle counter moments apart; they must be
-         * in the same ballpark (within ~16x covers scheduling jitter under TCG). */
+        /* Both include the same completed slices and read the current hardware
+         * cycle counter moments apart. */
         uint64_t lo = rd < sys ? rd : sys;
         uint64_t hi = rd < sys ? sys : rd;
         if (hi > lo * 16 + 1000000) {
@@ -216,6 +330,13 @@ int main(void) {
     }
 
     munmap(base, 4096);
+    void *remapped =
+        mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, efd, 0);
+    if (remapped == MAP_FAILED) {
+        close(efd);
+        return fail("metadata mmap was not reusable after munmap");
+    }
+    munmap(remapped, 4096);
     close(efd);
     if (rc == 0) {
         printf("STARRY_PERF_RDPMC_OK\n");

@@ -32,11 +32,7 @@ use core::any::Any;
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::Ordering;
 
-#[cfg(target_arch = "aarch64")]
-use ax_alloc::GlobalPage;
 use ax_errno::{AxError, AxResult};
-#[cfg(target_arch = "aarch64")]
-use ax_hal::mem::virt_to_phys;
 #[cfg(target_arch = "aarch64")]
 use ax_memory_addr::PhysAddr;
 #[cfg(target_arch = "aarch64")]
@@ -44,8 +40,6 @@ use ax_sync::PiMutex;
 use axpoll::{IoEvents, Pollable};
 #[cfg(not(target_arch = "aarch64"))]
 use kbpf_basic::linux_bpf::perf_event_attr;
-#[cfg(target_arch = "aarch64")]
-use kbpf_basic::linux_bpf::perf_event_mmap_page;
 
 use super::PerfEventOps;
 #[cfg(target_arch = "aarch64")]
@@ -64,6 +58,7 @@ use super::{
     hw_sampling::{SamplingState, alloc_sampling_ring, device_mmap_per_task, ring_has_data},
     inheritance::PerfInheritanceFamily,
     output::{PerfOutputScope, PerfRingOutput},
+    rdpmc::{RdpmcMapping, RdpmcSnapshot, mapping_result},
     sampling::{SampleOutput, SampleSlot, SampleSlotConfig},
     sampling_lifecycle::SampleRegistration,
 };
@@ -124,6 +119,8 @@ struct HwPerfEventState {
     /// [`super::task`]. The root fd owns the family; scheduler lists own member
     /// counters independently.
     per_task: Option<Arc<PerfInheritanceFamily>>,
+    /// VMA-owned direct-read metadata for a system counting event.
+    rdpmc: RdpmcMapping,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -145,48 +142,41 @@ pub(super) struct TaskEventInit {
 
 #[cfg(target_arch = "aarch64")]
 impl HwPerfEventState {
-    /// `device_mmap` for a counting event: the single-page `perf_event_mmap_page`
-    /// userspace maps for `rdpmc` self-monitoring.
-    ///
-    /// No ring buffer — the page only carries the metadata a userspace reader
-    /// needs to read this event's hardware counter directly: `cap_user_rdpmc`,
-    /// the 1-based `index` selecting the counter, and its `pmc_width`. `offset`
-    /// stays 0: with no multiplexing the raw counter value *is* the count, so
-    /// `count = rdpmc(index - 1)` masked to `pmc_width` bits. The page is never
-    /// updated after this, so `lock` stays 0 (the userspace seqlock reads once).
-    /// EL0 read access to the counters is enabled globally in
-    /// [`ax_cpu::pmu::init_cpu`] via `PMUSERENR_EL0`.
-    fn device_mmap_rdpmc(&self, len: usize) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
-        if len < ax_memory_addr::PAGE_SIZE_4K {
-            return Err(AxError::InvalidInput);
+    fn system_rdpmc_snapshot(&self, offset: u64, observed_at: u64) -> RdpmcSnapshot {
+        let (mut time_enabled, mut time_running) = (self.time_enabled, self.time_running);
+        if let Some(since) = self.enabled_since {
+            let elapsed = observed_at.saturating_sub(since);
+            time_enabled = time_enabled.saturating_add(elapsed);
+            time_running = time_running.saturating_add(elapsed);
         }
-        let mut pages = GlobalPage::alloc_contiguous(1, ax_memory_addr::PAGE_SIZE_4K)?;
-        pages.zero();
-        let kvirt = pages.start_vaddr();
-        let paddr = virt_to_phys(kvirt);
-
-        // Encode which hardware counter backs this event. The mmap-page `index`
-        // is 1-based (0 ⇒ rdpmc unusable); `index - 1` is the ARM counter the
-        // reader accesses — `PMEVCNTR(index-1)_EL0`, or `PMCCNTR_EL0` for the
-        // dedicated cycle counter (ARM index 31 ⇒ page index 32).
-        let (index, pmc_width) = self.counter.mmap_metadata();
-
-        let header = kvirt.as_usize() as *mut perf_event_mmap_page;
-        // SAFETY: freshly allocated, zeroed page, `>= size_of::<perf_event_mmap_page>()`
-        // (≥ 1 page = 4096 B); no reader sees it until the VMA maps it.
-        unsafe {
-            core::ptr::addr_of_mut!((*header).version).write(1);
-            core::ptr::addr_of_mut!((*header).compat_version).write(0);
-            core::ptr::addr_of_mut!((*header).index).write(index);
-            core::ptr::addr_of_mut!((*header).offset).write(0);
-            core::ptr::addr_of_mut!((*header).pmc_width).write(pmc_width);
-            // `capabilities` is a union over a bitfield; `cap_user_rdpmc` is bit 2
-            // (after `cap_bit0` and `cap_bit0_is_deprecated`). Write the `u64` arm.
-            core::ptr::addr_of_mut!((*header).__bindgen_anon_1.capabilities).write(1u64 << 2);
+        RdpmcSnapshot {
+            offset,
+            time_enabled,
+            time_running,
         }
+    }
 
-        let anchor: Arc<dyn Any + Send + Sync> = Arc::new(pages);
-        Ok((paddr, anchor))
+    fn device_mmap_system_rdpmc(
+        &self,
+        len: usize,
+    ) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        let owner = self.system_owner.ok_or(AxError::BadState)?;
+        let hardware = cpu_worker::read_system(
+            owner,
+            SystemPmuRead {
+                counter: self.counter,
+            },
+        )?;
+        let active = self.enabled_since.is_some();
+        let initial = self.system_rdpmc_snapshot(
+            (!active).then_some(hardware.value).unwrap_or(0),
+            hardware.observed_at,
+        );
+        let page = self.rdpmc.install(len, self.counter, initial)?;
+        if active {
+            self.rdpmc.publish_active(initial);
+        }
+        Ok(mapping_result(page))
     }
 }
 
@@ -201,7 +191,7 @@ impl HwPerfEventState {
             return family.close();
         }
         let owner = self.system_owner.ok_or(AxError::BadState)?;
-        let stopped_at = cpu_worker::disable_system(
+        let stopped = cpu_worker::disable_system(
             owner,
             SystemPmuDisable {
                 counter: self.counter,
@@ -210,10 +200,12 @@ impl HwPerfEventState {
         )?;
         self.sampling_registration = None;
         if let Some(since) = self.enabled_since.take() {
-            let elapsed = stopped_at.saturating_sub(since);
+            let elapsed = stopped.stopped_at.saturating_sub(since);
             self.time_enabled = self.time_enabled.saturating_add(elapsed);
             self.time_running = self.time_running.saturating_add(elapsed);
         }
+        self.rdpmc
+            .publish_inactive(self.system_rdpmc_snapshot(stopped.value, stopped.stopped_at));
         free_counter(self.counter);
         if let Some(sampling) = &mut self.sampling {
             sampling.poll_alive.store(false, Ordering::Release);
@@ -328,6 +320,8 @@ impl HwPerfEventState {
         )?;
         self.sampling_registration = result.registration;
         self.enabled_since = Some(result.started_at);
+        self.rdpmc
+            .publish_active(self.system_rdpmc_snapshot(0, result.started_at));
         Ok(())
     }
 
@@ -339,7 +333,7 @@ impl HwPerfEventState {
             return Ok(());
         };
         let owner = self.system_owner.ok_or(AxError::BadState)?;
-        let stopped_at = cpu_worker::disable_system(
+        let stopped = cpu_worker::disable_system(
             owner,
             SystemPmuDisable {
                 counter: self.counter,
@@ -348,9 +342,11 @@ impl HwPerfEventState {
         )?;
         self.sampling_registration = None;
         self.enabled_since = None;
-        let elapsed = stopped_at.saturating_sub(since);
+        let elapsed = stopped.stopped_at.saturating_sub(since);
         self.time_enabled = self.time_enabled.saturating_add(elapsed);
         self.time_running = self.time_running.saturating_add(elapsed);
+        self.rdpmc
+            .publish_inactive(self.system_rdpmc_snapshot(stopped.value, stopped.stopped_at));
         Ok(())
     }
 
@@ -365,7 +361,14 @@ impl HwPerfEventState {
                 counter: self.counter,
                 sampling_period: self.sampling.as_ref().map(|sampling| sampling.period),
             },
-        )
+        )?;
+        let snapshot = self.system_rdpmc_snapshot(0, ax_runtime::hal::time::monotonic_time_nanos());
+        if self.enabled_since.is_some() {
+            self.rdpmc.publish_active(snapshot);
+        } else {
+            self.rdpmc.publish_inactive(snapshot);
+        }
+        Ok(())
     }
 
     fn read_values(&mut self) -> AxResult<PerfReadValues> {
@@ -465,14 +468,14 @@ impl HwPerfEventState {
             if ptc.is_sampling() {
                 return device_mmap_per_task(family, len);
             }
-            return self.device_mmap_rdpmc(len);
+            return ptc.device_mmap_rdpmc(len);
         }
 
         // A counting event has no ring; it exposes a single-page
         // `perf_event_mmap_page` for `rdpmc` (userspace reads the counter
         // directly via `mrs`). Only sampling events allocate a ring below.
         let Some(sampling) = &mut self.sampling else {
-            return self.device_mmap_rdpmc(len);
+            return self.device_mmap_system_rdpmc(len);
         };
 
         // One live mapping per perf fd (Linux semantics). A stale `Weak` from an
@@ -640,6 +643,7 @@ impl HwPerfEvent {
                 sampling: init.sampling,
                 sampling_registration: None,
                 per_task: None,
+                rdpmc: RdpmcMapping::new(),
             },
             init.enable_at_open,
         )
@@ -659,6 +663,7 @@ impl HwPerfEvent {
                 sampling: None,
                 sampling_registration: None,
                 per_task: Some(init.family),
+                rdpmc: RdpmcMapping::new(),
             },
             false,
         )

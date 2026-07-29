@@ -62,10 +62,14 @@
 //! events share the root output through the same owned redirect boundary.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::{
+    any::Any,
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
+use ax_memory_addr::PhysAddr;
 
 pub use super::inheritance::on_clone_inherit;
 pub(crate) use super::task_sideband::{on_clone_sideband, on_exec_sideband, on_mmap_sideband};
@@ -74,6 +78,7 @@ use super::{
     hw_owner::Counter,
     inheritance::{PerfInheritanceFamily, PerfInheritanceFamilyWeak},
     output::{PerfOutputRoute, PerfRingOutput},
+    rdpmc::{RdpmcMapping, RdpmcSnapshot, mapping_result},
     resource_lifecycle::PmuResourceRelease,
     sampling::{self, SampleOutput, SampleSlot, SampleSlotConfig},
     sampling_lifecycle::{PmuCloseAction, PmuRunLease, PmuRunState, PmuStopClaim},
@@ -180,6 +185,8 @@ pub struct PerTaskCounter {
     /// Ensures the reserved PMU slot and global active count are reclaimed once
     /// when fd close races task exit.
     resources: PmuResourceRelease,
+    /// VMA-owned direct-read metadata for a counting event.
+    rdpmc: RdpmcMapping,
 
     /// Coherent own-ring and redirect ownership.
     ///
@@ -330,6 +337,7 @@ impl PerTaskCounter {
             inherit: cfg.inherit,
             family: SpinNoIrq::new(None),
             resources: PmuResourceRelease::new(),
+            rdpmc: RdpmcMapping::new(),
             output: SpinNoIrq::new(PerfOutputRoute::new()),
             inherited_output_wake: AtomicBool::new(false),
             anchors: SpinNoIrq::new(None),
@@ -408,6 +416,48 @@ impl PerTaskCounter {
             return Ok(());
         };
         cpu_worker::synchronize_task_context(PerfCpuId::new(cpu.as_u32() as usize))
+    }
+
+    fn rdpmc_snapshot(&self) -> RdpmcSnapshot {
+        RdpmcSnapshot {
+            offset: self.accumulated.load(Ordering::Acquire),
+            time_enabled: self.time_enabled_ns.load(Ordering::Acquire),
+            time_running: self.time_running_ns.load(Ordering::Acquire),
+        }
+    }
+
+    fn publish_rdpmc_active(&self) {
+        if !self.is_sampling {
+            self.rdpmc.publish_active(self.rdpmc_snapshot());
+        }
+    }
+
+    fn publish_rdpmc_inactive(&self) {
+        if !self.is_sampling {
+            self.rdpmc.publish_inactive(self.rdpmc_snapshot());
+        }
+    }
+
+    /// Creates the one VMA-owned direct-read page for this counting event.
+    pub(super) fn device_mmap_rdpmc(
+        &self,
+        len: usize,
+    ) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
+        if self.is_sampling {
+            return Err(AxError::InvalidInput);
+        }
+        let page = self
+            .rdpmc
+            .install(len, self.counter, self.rdpmc_snapshot())?;
+        // Close the publication-versus-sched-out race: whichever side runs
+        // second republishes the completed accumulator after the weak page
+        // reference is visible.
+        self.publish_rdpmc_inactive();
+        if let Err(error) = self.synchronize_context() {
+            self.rdpmc.withdraw(&page);
+            return Err(error);
+        }
+        Ok(mapping_result(page))
     }
 
     /// Mark userspace-enabled (`ioctl(ENABLE)` / open-enabled). The target's next
@@ -733,6 +783,11 @@ pub fn perf_sched_in(thr: &Thread) {
         }
         ptc.last_in_ns.store(now, Ordering::Release);
         run_state.finish_arm(ticket);
+        // Publish while the generation transition is still serialized by
+        // `run_state`. Otherwise a concurrent disable can publish inactive and
+        // then be overwritten by this delayed active publication.
+        ptc.publish_rdpmc_active();
+        drop(run_state);
     }
 }
 
@@ -786,14 +841,17 @@ fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> AxResult<
         ax_cpu::pmu::overflow::clear(1 << n);
         sampling::unregister(registration).map_err(|_| AxError::BadState)?;
     } else {
+        // Freeze the physical slice before sampling its terminal value. Reading
+        // first would lose the events retired between the read and disable.
+        ptc.counter.disable();
         let delta = ptc.counter.read();
         ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
-        ptc.counter.disable();
     }
 
     let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
     ptc.time_enabled_ns.fetch_add(dt, Ordering::AcqRel);
     ptc.time_running_ns.fetch_add(dt, Ordering::AcqRel);
+    ptc.publish_rdpmc_inactive();
     Ok(())
 }
 
@@ -829,38 +887,33 @@ pub(crate) fn disable_counter(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
     // Never retain the non-sleeping run-state lock across an owner-CPU worker
     // rendezvous. See `stop_requested_on_owner` for the temporary-lifetime trap.
     let action = ptc.run_state.lock().begin_disable();
-    match action {
+    let result = match action {
         PmuCloseAction::AlreadyClosed | PmuCloseAction::Complete => Ok(()),
         PmuCloseAction::Stop(lease) => cpu_worker::stop_task_counter(Arc::clone(ptc), lease),
+    };
+    if result.is_ok() {
+        ptc.publish_rdpmc_inactive();
     }
+    result
 }
 
-/// Resets a task-bound count in the active owner CPU's scheduling order.
+/// Resets a task-bound count between two complete scheduling generations.
 pub(crate) fn reset_counter(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
-    let owner = ptc.run_state.lock().running().map(PmuRunLease::owner);
-    if let Some(owner) = owner {
-        cpu_worker::reset_task_counter(Arc::clone(ptc), owner)
-    } else {
-        ptc.accumulated.store(0, Ordering::Release);
-        Ok(())
+    // A one-shot owner snapshot is insufficient: the target can migrate before
+    // the fixed worker runs and start a new slice on another CPU. Quiescing the
+    // exact generation first gives RESET one Linux-style context boundary.
+    let was_enabled = ptc.enabled.swap(false, Ordering::AcqRel);
+    if let Err(error) = disable_counter(ptc) {
+        if was_enabled {
+            ptc.set_enabled();
+        }
+        return Err(error);
     }
-}
-
-/// Performs the hardware part of reset on a pinned owner CPU.
-pub(crate) fn reset_task_on_owner(ptc: &PerTaskCounter) -> AxResult<()> {
-    let run_state = ptc.run_state.lock();
     ptc.accumulated.store(0, Ordering::Release);
-    if let Some(lease) = run_state.running() {
-        if lease.owner().as_usize() != ax_hal::percpu::this_cpu_id() {
-            // The event migrated before this worker ran. The accumulated reset
-            // still linearizes before the new slice; do not touch remote PMU.
-            return Ok(());
-        }
-        if ptc.is_sampling {
-            ax_cpu::pmu::counter::preload(ptc.programmable_index(), ptc.sample_period);
-        } else {
-            ptc.counter.reset();
-        }
+    ptc.publish_rdpmc_inactive();
+    if was_enabled && !ptc.resources_released() {
+        ptc.set_enabled();
+        ptc.synchronize_context()?;
     }
     Ok(())
 }
@@ -994,6 +1047,7 @@ pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
     if !ptc.resources.claim() {
         return Ok(());
     }
+    ptc.publish_rdpmc_inactive();
     // An inherited task has no fd-owned output lifetime of its own. Its EXIT
     // side-band record was emitted before this fence, so its strong redirect
     // can now be dropped. Withdraw the family relation before returning the PMU
