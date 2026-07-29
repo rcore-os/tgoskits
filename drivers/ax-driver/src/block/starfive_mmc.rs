@@ -1,29 +1,19 @@
 use alloc::format;
-use core::time::Duration;
 
-use log::{info, warn};
+use log::info;
 use rdrive::{
     probe::{OnProbeError, fdt::ResourcePrepareConfig},
     register::ProbeFdt,
 };
 use sdmmc_protocol::{
-    Error, OperationPoll,
-    error::Phase,
-    rdif::config::BlockConfig,
-    sdio::{
-        BusWidth,
-        card::{CardInfo, SdioSdmmc},
-        host2::SdioHost2Adapter,
-        init::{CardInitPreference, SdioInitScratch},
-    },
+    rdif::{config::BlockConfig, device::BlockDevice},
+    sdio::{BusWidth, card::SdioSdmmc, init::CardInitPreference},
 };
 use starfive_jh7110_dwmmc::{
-    JH7110_STABLE_REFERENCE_CLOCK_HZ, Jh7110DwMmc, Jh7110DwMmcConfig, rdif as starfive_rdif,
+    DEVICE_NAME, JH7110_STABLE_REFERENCE_CLOCK_HZ, Jh7110DwMmc, Jh7110DwMmcConfig,
 };
 
 use crate::{block::ProbeFdtBlock, mmio::iomap};
-
-type StarFiveDwMmc = SdioSdmmc<SdioHost2Adapter<Jh7110DwMmc>>;
 
 crate::model_register!(
     name: "StarFive JH7110 MMC",
@@ -67,34 +57,18 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio_base = iomap(address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Jh7110DwMmc::new(mmio_base, profile.host_config) };
-
-    info!("starfive-jh7110-dwmmc: reset controller");
-    host.reset_and_init()
-        .map_err(|err| init_error(address, mmio_size, err))?;
-
-    info!("starfive-jh7110-dwmmc: initialize card");
-    let mut sd = SdioSdmmc::new_host2(host);
-    sd.set_sd_speed_selection_enabled(false);
-    let card_info = poll_card_init(&mut sd, profile.init_preference).map_err(|err| {
-        warn!("starfive-jh7110-dwmmc: card init failed: {:?}", err);
-        card_init_error(address, mmio_size, err)
+    let dma = axklib::dma::device_with_mask(u32::MAX as u64);
+    let block_config = starfive_block_config(&dma);
+    host.inner_mut().configure_dma(dma).map_err(|err| {
+        OnProbeError::other(format!(
+            "starfive-jh7110-dwmmc IDMAC configuration failed: {err:?}"
+        ))
     })?;
-    info!(
-        "starfive-jh7110-dwmmc card: kind={:?} high_capacity={} rca={} ocr={:#010x} \
-         capacity_blocks={:?} cid={} ext_csd={}",
-        card_info.kind,
-        card_info.high_capacity,
-        card_info.rca,
-        card_info.ocr,
-        card_info.capacity_blocks,
-        card_info.cid.is_some(),
-        card_info.ext_csd.is_some()
-    );
 
-    let dev = starfive_rdif::device(
-        sd,
-        starfive_block_config(card_info.capacity_blocks.unwrap_or(0)),
-    );
+    info!("starfive-jh7110-dwmmc: defer card initialization to IRQ-driven hctx");
+    let mut sd = SdioSdmmc::new(host);
+    sd.set_sd_speed_selection_enabled(false);
+    let dev = BlockDevice::new_initializing(sd, block_config, profile.init_preference);
     let irq = probe.register_block(dev)?;
     info!("starfive-jh7110-mmc block device registered irq={:?}", irq);
     Ok(())
@@ -167,8 +141,10 @@ impl StarFiveMmcNodeProfile {
     }
 }
 
-fn starfive_block_config(capacity_blocks: u64) -> BlockConfig {
-    starfive_rdif::fifo_config(capacity_blocks, true)
+fn starfive_block_config(dma: &dma_api::DeviceDma) -> BlockConfig {
+    BlockConfig::dma(DEVICE_NAME, 0, dma)
+        .with_max_blocks_per_request(dwmmc_host::IDMAC_MAX_BLOCKS)
+        .with_max_segment_size(dwmmc_host::IDMAC_MAX_TRANSFER_SIZE)
 }
 
 fn prepared_reference_clock_hz(clock_rate: Option<u64>) -> u32 {
@@ -181,62 +157,6 @@ fn prepared_reference_clock_hz(clock_rate: Option<u64>) -> u32 {
         reference_clock_hz, clock_rate
     );
     reference_clock_hz
-}
-
-fn poll_card_init(
-    sd: &mut StarFiveDwMmc,
-    init_preference: CardInitPreference,
-) -> Result<CardInfo, Error> {
-    let mut scratch = SdioInitScratch::new();
-    let mut request = sd.submit_init_with_preference(init_preference, &mut scratch)?;
-    loop {
-        match sd.poll_init_request(&mut request)? {
-            OperationPoll::Pending => {
-                if request.take_needs_pace() {
-                    axklib::time::busy_wait(Duration::from_millis(10));
-                } else {
-                    core::hint::spin_loop();
-                }
-            }
-            OperationPoll::Complete(info) => return Ok(info),
-            _ => return Err(Error::UnsupportedCommand),
-        }
-    }
-}
-
-fn init_error(address: u64, size: u64, err: Error) -> OnProbeError {
-    OnProbeError::other(format!(
-        "failed to initialize StarFive JH7110 DWMMC device at [PA:{:?}, SZ:0x{:x}): {err:?}",
-        address, size
-    ))
-}
-
-fn card_init_error(address: u64, size: u64, err: Error) -> OnProbeError {
-    if is_absent_card_init_error(err) {
-        warn!(
-            "starfive-jh7110-dwmmc: no responsive card at [PA:{:?}, SZ:0x{:x}); skipping \
-             controller: {err:?}",
-            address, size
-        );
-        return OnProbeError::NotMatch;
-    }
-
-    init_error(address, size, err)
-}
-
-fn is_absent_card_init_error(err: Error) -> bool {
-    match err {
-        Error::NoCard => true,
-        Error::Timeout(ctx) | Error::Crc(ctx) | Error::BadResponse(ctx) => {
-            matches!(ctx.phase, Phase::Unspecified) && ctx.cmd.is_none()
-                || ctx.cmd.is_some()
-                    && matches!(
-                        ctx.phase,
-                        Phase::CommandSend | Phase::ResponseWait | Phase::Init
-                    )
-        }
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -338,16 +258,6 @@ mod tests {
     }
 
     #[test]
-    fn starfive_block_config_is_irq_driven_fifo() {
-        let config = starfive_block_config(16);
-
-        assert_eq!(config.name, "starfive-jh7110-mmc");
-        assert_eq!(config.capacity_blocks, 16);
-        assert!(config.irq_driven);
-        assert!(!config.uses_dma());
-    }
-
-    #[test]
     fn starfive_profiles_are_dt_capability_driven_not_base_driven() {
         let emmc =
             StarFiveMmcNodeProfile::from_dt_flags(50_000_000, 8, true, false, false, true, true);
@@ -361,12 +271,5 @@ mod tests {
         assert_eq!(microsd.host_config.max_bus_width(), BusWidth::Bit4);
         assert!(!microsd.host_config.supports_1v8());
         assert_eq!(microsd.init_preference, CardInitPreference::SdOnly);
-    }
-
-    #[test]
-    fn contextless_init_timeout_is_treated_as_absent_card() {
-        assert!(is_absent_card_init_error(Error::Timeout(
-            sdmmc_protocol::ErrorContext::default()
-        )));
     }
 }

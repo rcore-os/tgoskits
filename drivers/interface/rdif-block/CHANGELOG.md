@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Add runtime-owned register retry delays for controller and queue state
+  machines without permitting completion polling.
 - Allow runtimes to restore an unaccepted request suffix from an owned batch
   without reallocating its submission container.
 - Clarify that controller shutdown must complete before queue-owned DMA memory

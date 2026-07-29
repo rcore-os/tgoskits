@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Use `sdio-host2` directly as the sole mutable physical-host owner and remove
+  the shared `UnsafeCell` compatibility adapter.
+- Move block and initialization data through `PreparedDma`, `CompletedDma`,
+  and `CpuDmaBuffer`, with command/data completion accepted only after an
+  acknowledged IRQ.
 - Implement the owned hardware batch contract with a native batch size and
   queue depth of one for IRQ-driven SD/MMC hosts.
 - Split SDIO initialization into request ownership plus identification, MMC,

@@ -121,7 +121,7 @@ pub struct Cmd {
     #[bits(default = true)]
     pub wait_prvdata_complete: bool,
     pub send_auto_stop: bool,
-    pub transfer_mode: bool,
+    pub stream_mode: bool,
     pub read_write: bool,
     pub data_expected: bool,
     pub check_response_crc: bool,

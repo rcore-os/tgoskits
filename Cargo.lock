@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "aic8800",
  "anyhow",
@@ -804,6 +804,7 @@ dependencies = [
  "axklib",
  "axtest",
  "crab-usb",
+ "cv181x-sdhci",
  "dma-api",
  "eth-intel",
  "fdt-edit",
@@ -2767,7 +2768,7 @@ dependencies = [
 
 [[package]]
 name = "cv181x-sdhci"
-version = "0.1.3"
+version = "0.2.0"
 dependencies = [
  "dma-api",
  "mmio-api",
@@ -3147,7 +3148,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dwmmc-host"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "bitfield-struct 0.11.0",
  "dma-api",
@@ -5907,11 +5908,12 @@ dependencies = [
 
 [[package]]
 name = "phytium-mci-host"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "bitfield-struct 0.11.0",
  "dma-api",
  "log",
+ "mbarrier",
  "mmio-api",
  "sdio-host2",
  "sdmmc-protocol",
@@ -6578,7 +6580,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-block"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "ax-kspin",
  "axtest",
@@ -7442,7 +7444,7 @@ dependencies = [
 
 [[package]]
 name = "sdhci-host"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dma-api",
  "embedded-hal",
@@ -7459,14 +7461,14 @@ version = "0.1.0"
 
 [[package]]
 name = "sdio-host2"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "dma-api",
 ]
 
 [[package]]
 name = "sdmmc-protocol"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bitflags 2.13.1",
  "dma-api",
@@ -7986,7 +7988,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "starfive-jh7110-dwmmc"
-version = "0.1.3"
+version = "0.2.0"
 dependencies = [
  "dma-api",
  "dwmmc-host",

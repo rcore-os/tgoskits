@@ -1,13 +1,14 @@
 //! Platform discovery and registration for migrated block controllers.
 //!
-//! The first migration exposes only NVMe and RK3588 DWCMSHC eMMC. Other
-//! low-level driver crates remain in the workspace but have no `ax-driver`
-//! feature or registration entry until they implement the interrupt-driven
-//! controller contract.
+//! Every exposed controller implements the owned-DMA, interrupt-driven
+//! `BlockController`/`HardwareQueue` contract. Low-level driver crates that
+//! have not migrated remain unreachable from `ax-driver`.
 
 mod binding;
 mod irq_bound;
 
+#[cfg(feature = "cv181x-sdhci")]
+mod cvsd;
 #[cfg(feature = "nvme")]
 pub mod nvme;
 #[cfg(feature = "rockchip-sdhci")]

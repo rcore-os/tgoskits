@@ -26,8 +26,8 @@ use dma_api::{
 };
 use sdmmc_protocol::{
     block::{
-        BlockPoll, BlockRequestId, BlockTransferDirection, BlockTransferMode, BlockTransferState,
-        CommandPoll, DataCommandPoll,
+        BlockProgress, BlockRequestId, BlockTransferDirection, BlockTransferMode,
+        BlockTransferState, CommandProgress as CommandPoll, DataCommandProgress,
     },
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
@@ -40,7 +40,6 @@ use crate::{
     regs::*,
 };
 
-mod fifo;
 mod request;
 
 /// 32-bit ADMA2 descriptor.
@@ -58,6 +57,65 @@ pub(crate) struct Adma2Desc32 {
     attr: u16,
     length: u16,
     address: u32,
+}
+
+/// 96-bit ADMA2 descriptor used for 64-bit system addresses in pre-v4 mode.
+#[repr(C, align(4))]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Adma2Desc64 {
+    attr: u16,
+    length: u16,
+    address_low: u32,
+    address_high: u32,
+}
+
+pub(crate) enum Adma2DescriptorTable {
+    Addr32(CoherentArray<Adma2Desc32>),
+    Addr64(CoherentArray<Adma2Desc64>),
+}
+
+impl Adma2DescriptorTable {
+    pub(crate) fn allocate(dma: &DeviceDma, use_64bit: bool) -> Result<Self, Error> {
+        if use_64bit {
+            dma.coherent_array_zero_with_align::<Adma2Desc64>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
+                .map(Self::Addr64)
+                .map_err(map_dma_error)
+        } else {
+            dma.coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
+                .map(Self::Addr32)
+                .map_err(map_dma_error)
+        }
+    }
+
+    pub(crate) fn is_64bit(&self) -> bool {
+        matches!(self, Self::Addr64(_))
+    }
+
+    pub(crate) fn dma_addr(&self) -> u64 {
+        match self {
+            Self::Addr32(table) => table.dma_addr().as_u64(),
+            Self::Addr64(table) => table.dma_addr().as_u64(),
+        }
+    }
+
+    pub(crate) fn bytes_len(&self) -> usize {
+        match self {
+            Self::Addr32(table) => table.bytes_len(),
+            Self::Addr64(table) => table.bytes_len(),
+        }
+    }
+
+    pub(crate) fn build(
+        &mut self,
+        base: u64,
+        total_len: usize,
+        phase: Phase,
+    ) -> Result<usize, Error> {
+        match self {
+            Self::Addr32(desc) => build_descriptors32_into_dma(desc, base, total_len, phase),
+            Self::Addr64(desc) => build_descriptors64_into_dma(desc, base, total_len),
+        }
+    }
 }
 
 const ADMA2_ATTR_VALID: u16 = 1 << 0;
@@ -130,34 +188,9 @@ impl PreparedDmaSubmitError {
 unsafe impl Send for BlockRequest {}
 
 enum BlockRequestKind {
-    FifoRead {
-        id: RequestId,
-        buffer: NonNull<u8>,
-        len: usize,
-        block_size: usize,
-        offset: usize,
-        cmd_index: u8,
-        phase: Phase,
-        stage: BlockRequestStage,
-        stop_after_complete: bool,
-        response: Option<Response>,
-    },
-    FifoWrite {
-        id: RequestId,
-        buffer: NonNull<u8>,
-        len: usize,
-        block_size: usize,
-        offset: usize,
-        cmd_index: u8,
-        phase: Phase,
-        stage: BlockRequestStage,
-        stop_after_complete: bool,
-        response: Option<Response>,
-    },
     Read {
         id: RequestId,
         buffer: DmaRequestBuffer,
-        _desc: CoherentArray<Adma2Desc32>,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
@@ -167,7 +200,6 @@ enum BlockRequestKind {
     Write {
         id: RequestId,
         buffer: DmaRequestBuffer,
-        _desc: CoherentArray<Adma2Desc32>,
         cmd_index: u8,
         phase: Phase,
         stage: BlockRequestStage,
@@ -234,19 +266,15 @@ enum BlockRequestStage {
 impl BlockRequest {
     pub fn id(&self) -> RequestId {
         match &self.inner {
-            BlockRequestKind::FifoRead { id, .. }
-            | BlockRequestKind::FifoWrite { id, .. }
-            | BlockRequestKind::Read { id, .. }
-            | BlockRequestKind::Write { id, .. } => *id,
+            BlockRequestKind::Read { id, .. } | BlockRequestKind::Write { id, .. } => *id,
         }
     }
 
     fn response(&self) -> Option<Response> {
         match &self.inner {
-            BlockRequestKind::FifoRead { response, .. }
-            | BlockRequestKind::FifoWrite { response, .. }
-            | BlockRequestKind::Read { response, .. }
-            | BlockRequestKind::Write { response, .. } => *response,
+            BlockRequestKind::Read { response, .. } | BlockRequestKind::Write { response, .. } => {
+                *response
+            }
         }
     }
 }
@@ -303,10 +331,18 @@ pub(crate) fn build_descriptors(
     if total_len == 0 {
         return Err(Error::Misaligned);
     }
+    // ADMA2 transfer addresses are word aligned; reject rather than relying
+    // on controller-specific rounding.
+    if base & 0x3 != 0 {
+        return Err(Error::Misaligned);
+    }
     if base >> 32 != 0 {
         // 32-bit ADMA2 only addresses the low 4 GiB. 64-bit ADMA2 needs a
         // different descriptor layout we don't ship yet — surface it as a
         // capability mismatch rather than truncating silently.
+        return Err(Error::BadResponse(ErrorContext::new(phase)));
+    }
+    if total_len as u64 > (u32::MAX as u64 + 1).saturating_sub(base) {
         return Err(Error::BadResponse(ErrorContext::new(phase)));
     }
 
@@ -341,7 +377,7 @@ pub(crate) fn build_descriptors(
     Ok(written)
 }
 
-fn build_descriptors_into_dma(
+fn build_descriptors32_into_dma(
     desc: &mut CoherentArray<Adma2Desc32>,
     base: u64,
     total_len: usize,
@@ -352,6 +388,63 @@ fn build_descriptors_into_dma(
     }
     let mut table = [Adma2Desc32::default(); ADMA2_DESC_COUNT];
     let written = build_descriptors(&mut table, base, total_len, phase)?;
+    desc.write_with_cpu(ADMA2_DESC_COUNT, |descs| {
+        descs.copy_from_slice(&table);
+    });
+    Ok(written)
+}
+
+fn build_descriptors64(
+    table: &mut [Adma2Desc64; ADMA2_DESC_COUNT],
+    base: u64,
+    total_len: usize,
+) -> Result<usize, Error> {
+    if total_len == 0 || base & 0x3 != 0 {
+        return Err(Error::Misaligned);
+    }
+    base.checked_add(total_len as u64)
+        .ok_or(Error::InvalidArgument)?;
+
+    let mut remaining = total_len;
+    let mut offset = 0_u64;
+    let mut written = 0;
+    while remaining > 0 {
+        if written >= ADMA2_DESC_COUNT {
+            return Err(Error::Misaligned);
+        }
+        let boundary = DWC_MSHC_ADMA_BOUNDARY as u64;
+        let boundary_room = boundary - ((base + offset) % boundary);
+        let chunk = remaining
+            .min(ADMA2_MAX_PER_DESC)
+            .min(boundary_room as usize);
+        let mut attr = ADMA2_ATTR_VALID | ADMA2_ATTR_ACT_TRAN;
+        if chunk == remaining {
+            attr |= ADMA2_ATTR_END;
+        }
+        let address = base + offset;
+        table[written] = Adma2Desc64 {
+            attr,
+            length: chunk as u16,
+            address_low: address as u32,
+            address_high: (address >> 32) as u32,
+        };
+        written += 1;
+        offset += chunk as u64;
+        remaining -= chunk;
+    }
+    Ok(written)
+}
+
+fn build_descriptors64_into_dma(
+    desc: &mut CoherentArray<Adma2Desc64>,
+    base: u64,
+    total_len: usize,
+) -> Result<usize, Error> {
+    if desc.len() < ADMA2_DESC_COUNT {
+        return Err(Error::InvalidArgument);
+    }
+    let mut table = [Adma2Desc64::default(); ADMA2_DESC_COUNT];
+    let written = build_descriptors64(&mut table, base, total_len)?;
     desc.write_with_cpu(ADMA2_DESC_COUNT, |descs| {
         descs.copy_from_slice(&table);
     });
@@ -408,7 +501,7 @@ fn command_needs_stop(cmd: &Command, block_count: u32) -> bool {
     block_count > 1 && matches!(cmd.index, 18 | 25)
 }
 
-fn map_dma_error(err: dma_api::DmaError) -> Error {
+pub(crate) fn map_dma_error(err: dma_api::DmaError) -> Error {
     match err {
         dma_api::DmaError::NoMemory => Error::BusError(ErrorContext::new(Phase::DataRead)),
         dma_api::DmaError::LayoutError(_)

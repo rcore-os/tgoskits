@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn with_resp_type_overrides_only_resp_type() {
         let original = cmd41(true, 0xFF8000);
-        let overridden = original.with_resp_type(ResponseType::R1);
+        let overridden = original.with_response(ResponseType::R1);
         assert_eq!(overridden.index, original.index);
         assert_eq!(overridden.argument, original.argument);
         assert_eq!(overridden.response, ResponseType::R1);

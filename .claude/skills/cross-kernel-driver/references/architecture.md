@@ -49,10 +49,15 @@ Runtime/platform integration belongs elsewhere:
 For block devices in `axplat-dyn`, the integration path is:
 
 - probe/FDT/MMIO setup in `platforms/axplat-dyn/src/drivers/blk/<driver>.rs`
-- expose the portable driver as `rdif_block::Interface`
-- expose queues as `rdif_block::IQueue` with `submit_request()` / `poll_request()`
-- register boxed `rdif_block::Interface` devices through the ArceOS driver glue and `rdrive`
-- keep ArceOS sync block reads/writes, DMA bounce buffers, and IRQ registration policy above the portable interface
+- expose the portable lifecycle as `rdif_block::BlockController`
+- emit move-only `rdif_block::HardwareQueue` instances and boxed
+  `rdif_block::HardIrqHandler` endpoints
+- accept owned requests through `submit_batch_owned()`, publish accepted
+  descriptors once through `commit_submissions()`, and call
+  `drain_completions()` only from the IRQ-activated queue owner
+- register the controller through the ArceOS driver glue and `rdrive`
+- keep bounded channels, blocking filesystem wrappers, task notification, DMA
+  planning, and IRQ registration policy above the portable interface
 
 Keep `rdrive` coupling in this adapter layer or behind an explicit adapter feature. Portable driver core should not need to know how `rdrive` probes or registers devices.
 
@@ -184,8 +189,8 @@ For IRQ-driven runtime drivers, split runtime ownership into three endpoint fami
 
 ```text
 Control endpoint  -> startup, shutdown, config, service/deferred drain
-IRQ endpoint      -> hard-IRQ event extraction and queue-local state publication
-Queue endpoints   -> submit, reclaim/read, poll synchronized completion state
+IRQ endpoint      -> hard-IRQ acknowledgement and preallocated event publication
+Queue endpoints   -> submit and consume synchronized queue-local completion state
 ```
 
 The split keeps each synchronization question local:
@@ -253,9 +258,9 @@ Common actions:
 
 - `submit`
 - `reclaim`
-- `poll`
-- `submit_request`
-- `poll_request`
+- consume synchronized event state
+- `submit_batch_owned` / `commit_submissions` for block hardware queues
+- `drain_completions` after an acknowledged block IRQ
 
 Runtime wrappers can then choose:
 
@@ -275,12 +280,18 @@ In an IRQ-driven split design, queue operations consume synchronized queue-local
 - For FIFO-style devices where one readiness interrupt may cover a bounded burst, model the budget explicitly if more than one operation can be performed. Avoid hidden loops that re-read global status from a queue path.
 - Queue APIs should make the distinction between "hardware polling" and "consume synchronized state" explicit. A low-level raw `poll_status()` can exist for early boot or polling-only users, but an IRQ-driven queue endpoint should not call it behind the user's back.
 
-For a block queue adapter, align portable queue state with `rdif_block::IQueue`:
+For a block queue adapter, align portable queue state with
+`rdif_block::HardwareQueue`:
 
-- `buffer_config()` should expose block-size, alignment, and DMA mask constraints.
-- `submit_request()` should program descriptors and return a request id without installing OS wakeups.
-- `poll_request()` should check completion and return `RequestStatus::Pending` or `RequestStatus::Complete`.
-- Keep descriptor ownership and DMA map/unmap pairing explicit for each request id.
+- `info()` exposes block size, DMA domain/mask, alignment, segment and boundary
+  constraints, queue depth, and `max_submit_batch`.
+- `submit_batch_owned()` moves only the accepted prefix after tags,
+  descriptors, and DMA ownership are reserved.
+- `commit_submissions()` performs the hardware-specific publication, such as a
+  doorbell write, exactly once when the batch accepted work.
+- `drain_completions()` consumes completion state only after a matching IRQ
+  event; it is not a polling API.
+- `shutdown()` returns or quarantines every DMA-reachable request.
 
 ## Concurrency Rules
 

@@ -5,6 +5,7 @@ use core::{
     any::Any,
     ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
 };
 
 use dma_api::{CoherentArray, InFlightDma};
@@ -28,6 +29,7 @@ use crate::{
 
 const DEFAULT_QUEUE_DEPTH: usize = 64;
 const CONTROL_EVENT_ADMIN: u64 = 1;
+const REGISTER_RETRY_DELAY: Duration = Duration::from_micros(100);
 
 /// Fixed PCI INTx source test used before acknowledging a shared legacy line.
 ///
@@ -84,7 +86,9 @@ impl NvmeBlockDriver {
 
     fn initial_state(progress: &NvmeInitProgress) -> ControllerState {
         match progress {
-            NvmeInitProgress::RegisterPending => ControllerState::RegisterPending,
+            NvmeInitProgress::RegisterPending => ControllerState::RegisterPending {
+                retry_after: REGISTER_RETRY_DELAY,
+            },
             NvmeInitProgress::WaitingForIrq => ControllerState::WaitingForIrq,
             NvmeInitProgress::Ready(_) => ControllerState::Ready,
         }
@@ -96,7 +100,9 @@ impl NvmeBlockDriver {
     ) -> Result<ControllerUpdate, BlkError> {
         match progress {
             NvmeInitProgress::RegisterPending => {
-                Ok(ControllerUpdate::state(ControllerState::RegisterPending))
+                Ok(ControllerUpdate::state(ControllerState::RegisterPending {
+                    retry_after: REGISTER_RETRY_DELAY,
+                }))
             }
             NvmeInitProgress::WaitingForIrq => {
                 Ok(ControllerUpdate::state(ControllerState::WaitingForIrq))
@@ -220,7 +226,9 @@ impl NvmeBlockDriver {
         Ok(ControllerUpdate::state(if self.nvme.shutdown_complete() {
             ControllerState::Shutdown
         } else {
-            ControllerState::RegisterPending
+            ControllerState::RegisterPending {
+                retry_after: REGISTER_RETRY_DELAY,
+            }
         }))
     }
 

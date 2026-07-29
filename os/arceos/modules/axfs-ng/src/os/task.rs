@@ -93,9 +93,22 @@ pub(crate) fn install_test_runtime_ops() {
 }
 
 #[cfg(test)]
+pub(crate) fn reset_test_wait_timeout_count() {
+    tests::TEST_WAIT_TIMEOUTS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn test_wait_timeout_count() -> usize {
+    tests::TEST_WAIT_TIMEOUTS.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
 mod tests {
     use alloc::{boxed::Box, string::String, sync::Arc};
-    use core::time::Duration;
+    use core::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
     use std::{
         sync::{Condvar, Mutex, OnceLock},
         thread::{self, JoinHandle},
@@ -109,6 +122,7 @@ mod tests {
 
     pub(super) static TEST_RUNTIME_OPS: TestRuntimeOps = TestRuntimeOps;
     pub(super) static TEST_TIME_PROVIDER: TestTimeProvider = TestTimeProvider;
+    pub(super) static TEST_WAIT_TIMEOUTS: AtomicUsize = AtomicUsize::new(0);
     static TEST_START: OnceLock<Instant> = OnceLock::new();
 
     pub(super) struct TestRuntimeOps;
@@ -155,6 +169,7 @@ mod tests {
         }
 
         fn wait_timeout(&self, duration: Duration) -> bool {
+            TEST_WAIT_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
             let mut pending = self.pending.lock().unwrap();
             if !*pending {
                 let (next, timeout) = self.ready.wait_timeout(pending, duration).unwrap();

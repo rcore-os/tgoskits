@@ -1,7 +1,4 @@
-use rdif_block::{
-    BlkError,
-    dma_api::{self, DeviceDma},
-};
+use rdif_block::{BlkError, DeviceInfo, QueueLimits, RequestFlags, dma_api::DeviceDma};
 
 use crate::Error;
 
@@ -9,87 +6,87 @@ pub const BLOCK_SIZE: usize = 512;
 pub const DEFAULT_DMA_MASK: u64 = u32::MAX as u64;
 pub const DEFAULT_DMA_MAX_BLOCKS_PER_REQUEST: u32 = u16::MAX as u32 + 1;
 
-#[derive(Clone)]
+/// Immutable SD/MMC block geometry and hardware queue constraints.
+///
+/// DMA allocation ownership stays with the physical host. This value is safe
+/// to copy into the controller and hardware queue without cloning a
+/// [`DeviceDma`] capability.
+#[derive(Clone, Copy)]
 pub struct BlockConfig {
-    pub name: &'static str,
-    pub capacity_blocks: u64,
-    pub dma_mask: u64,
-    pub dma_domain: dma_api::DmaDomainId,
-    pub max_blocks_per_request: u32,
-    pub max_segment_size: usize,
-    pub segment_boundary: Option<usize>,
-    pub dma: DeviceDma,
+    pub device: DeviceInfo,
+    pub limits: QueueLimits,
 }
 
 impl BlockConfig {
-    pub fn dma(name: &'static str, capacity_blocks: u64, dma: DeviceDma) -> Self {
-        let dma_mask = dma.dma_mask();
+    pub fn dma(name: &'static str, capacity_blocks: u64, dma: &DeviceDma) -> Self {
         Self {
-            name,
-            capacity_blocks,
-            dma_mask,
-            dma_domain: dma.domain_id(),
-            max_blocks_per_request: DEFAULT_DMA_MAX_BLOCKS_PER_REQUEST,
-            max_segment_size: usize::MAX,
-            segment_boundary: None,
-            dma,
+            device: DeviceInfo {
+                name: Some(name),
+                ..DeviceInfo::new(capacity_blocks, BLOCK_SIZE)
+            },
+            limits: QueueLimits {
+                dma_mask: dma.dma_mask(),
+                dma_domain: dma.domain_id(),
+                dma_alignment: BLOCK_SIZE,
+                dma_length_alignment: BLOCK_SIZE,
+                segment_boundary: None,
+                max_inflight: 1,
+                max_submit_batch: 1,
+                max_blocks_per_request: DEFAULT_DMA_MAX_BLOCKS_PER_REQUEST,
+                max_segments: 1,
+                max_segment_size: usize::MAX,
+                supported_flags: RequestFlags::NONE,
+                supports_flush: false,
+            },
         }
     }
 
     pub fn with_dma_mask(mut self, dma_mask: u64) -> Self {
-        self.dma_mask = dma_mask;
+        self.limits.dma_mask = dma_mask;
         self
     }
 
     pub fn with_max_blocks_per_request(mut self, max_blocks_per_request: u32) -> Self {
-        self.max_blocks_per_request = max_blocks_per_request;
+        self.limits.max_blocks_per_request = max_blocks_per_request;
         self
     }
 
     pub fn with_max_segment_size(mut self, max_segment_size: usize) -> Self {
-        self.max_segment_size = max_segment_size;
+        self.limits.max_segment_size = max_segment_size;
         self
     }
 
     pub fn with_segment_boundary(mut self, segment_boundary: usize) -> Self {
-        self.segment_boundary = Some(segment_boundary);
-        self
-    }
-
-    pub fn with_dma(mut self, dma: DeviceDma) -> Self {
-        self.dma_mask = dma.dma_mask();
-        self.dma_domain = dma.domain_id();
-        self.dma = dma;
+        self.limits.segment_boundary = Some(segment_boundary);
         self
     }
 
     pub const fn uses_dma(&self) -> bool {
         true
     }
-}
 
-pub fn queue_limits(config: &BlockConfig, dma_mask: u64) -> rdif_block::QueueLimits {
-    rdif_block::QueueLimits {
-        dma_mask,
-        dma_domain: config.dma_domain,
-        dma_alignment: BLOCK_SIZE,
-        dma_length_alignment: BLOCK_SIZE,
-        segment_boundary: config.segment_boundary,
-        max_inflight: 1,
-        max_submit_batch: 1,
-        max_blocks_per_request: config.max_blocks_per_request,
-        max_segments: 1,
-        max_segment_size: config.max_segment_size,
-        supported_flags: rdif_block::RequestFlags::NONE,
-        supports_flush: false,
+    pub const fn name(&self) -> &'static str {
+        match self.device.name {
+            Some(name) => name,
+            None => "sdmmc",
+        }
+    }
+
+    pub const fn capacity_blocks(&self) -> u64 {
+        self.device.num_blocks
+    }
+
+    pub fn set_capacity_blocks(&mut self, capacity_blocks: u64) {
+        self.device.num_blocks = capacity_blocks;
     }
 }
 
-pub fn device_info(config: &BlockConfig) -> rdif_block::DeviceInfo {
-    rdif_block::DeviceInfo {
-        name: Some(config.name),
-        ..rdif_block::DeviceInfo::new(config.capacity_blocks, BLOCK_SIZE)
-    }
+pub const fn queue_limits(config: &BlockConfig) -> QueueLimits {
+    config.limits
+}
+
+pub const fn device_info(config: &BlockConfig) -> DeviceInfo {
+    config.device
 }
 
 pub fn block_addr_for_card(block_id: u64, high_capacity: bool) -> Result<u32, BlkError> {

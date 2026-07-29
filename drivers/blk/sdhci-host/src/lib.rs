@@ -1,14 +1,14 @@
 //! SDHCI host controller backend for the `sdmmc-protocol` driver crate.
 //!
 //! This crate ports the [SD Host Controller Standard Specification][sdhci]
-//! v3.x register layout and PIO data path into a physical
+//! v3.x register layout and ADMA2 data path into a physical
 //! [`sdio_host2::SdioHost`] implementation that
 //! [`sdmmc_protocol::sdio::card::SdioSdmmc`] drives through
-//! [`sdmmc_protocol::sdio::card::SdioSdmmc::new_host2`].
+//! [`sdmmc_protocol::sdio::card::SdioSdmmc::new`].
 //!
 //! # Scope
 //!
-//! - **Implemented**: PIO transfers, **ADMA2 (32-bit) transfers**, 1-bit /
+//! - **Implemented**: **ADMA2 (32-bit) transfers**, 1-bit /
 //!   4-bit / 8-bit bus, default-speed and high-speed clocking, 32-bit response
 //!   slots, 136-bit R2 reconstruction, software reset / clock setup.
 //! - **Out of scope (for now)**: 64-bit ADMA2, HS200 / SDR50 / SDR104
@@ -24,14 +24,16 @@
 //! ```no_run
 //! use core::ptr::NonNull;
 //!
+//! use dma_api::DeviceDma;
 //! use sdhci_host::Sdhci;
-//! use sdmmc_protocol::sdio::{card::SdioSdmmc, init::SdioInitScratch};
+//! use sdmmc_protocol::sdio::card::SdioSdmmc;
 //!
 //! let mmio = NonNull::new(0xFE31_0000 as *mut u8).unwrap();
-//! let host = unsafe { Sdhci::new(mmio) };
-//! let mut card = SdioSdmmc::new_host2(host);
-//! let mut scratch = SdioInitScratch::new();
-//! let mut request = card.submit_init(&mut scratch)?;
+//! let dma: DeviceDma = todo!("install the platform DMA capability");
+//! let mut host = unsafe { Sdhci::new(mmio) };
+//! host.configure_dma(dma)?;
+//! let mut card = SdioSdmmc::new(host);
+//! let mut request = card.submit_init()?;
 //! // Advance `request` only from the runtime's IRQ or bounded-deadline events.
 //! # Ok::<(), sdmmc_protocol::Error>(())
 //! ```
@@ -47,7 +49,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use core::{marker::PhantomData, ptr::NonNull};
+use core::{marker::PhantomData, ptr::NonNull, time::Duration};
 
 mod block_path;
 mod command;
@@ -61,21 +63,20 @@ pub use dma::{
     ADMA2_DESC_ALIGN, ADMA2_DESC_COUNT, ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE,
     DWC_MSHC_ADMA_BOUNDARY,
 };
-pub use host::{BlockTransferPolicy, HostClock, HostResetHook, HostTimer, Sdhci};
+pub use host::{HostClock, HostResetHook, HostTimer, Sdhci};
 use sdmmc_protocol::{
-    DataCommandPoll, OperationPoll,
+    DataCommandProgress,
     block::BlockRequestId,
     cmd::{Command, DataDirection},
     error::{Error, ErrorContext, Phase},
     sdio::host::{
-        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, ReadyBusRequest,
-        SdioBusOp, SdioHost as ProtocolSdioHost, SdioIrqHandle, SdioIrqHost, SignalVoltage,
-        poll_ready_bus_op, submit_ready_bus_op,
+        BusWidth, ClockSpeed, HostEvent, HostEventKind, HostEventSource, SdioIrqHandle,
+        SdioIrqHost, SignalVoltage,
     },
 };
 
 use crate::{
-    block_path::{submit_read_with_dma_fifo_fallback, submit_write_with_dma_fifo_fallback},
+    block_path::{submit_read_adma2, submit_write_adma2},
     dma::{BlockRequest, BlockRequestSlot, RequestId},
     regs::*,
 };
@@ -111,6 +112,7 @@ pub struct TransactionRequest<'a> {
     owner: usize,
     id: u64,
     done: bool,
+    acknowledged_irq: bool,
     kind: TransactionRequestKind,
     data: Option<DataRequest<'a>>,
 }
@@ -126,6 +128,7 @@ impl<'a> TransactionRequest<'a> {
             owner,
             id,
             done: false,
+            acknowledged_irq: false,
             kind: TransactionRequestKind::Command { response },
             data: None,
         }
@@ -141,6 +144,7 @@ impl<'a> TransactionRequest<'a> {
             owner,
             id,
             done: false,
+            acknowledged_irq: false,
             kind: TransactionRequestKind::Data { response },
             data: Some(request),
         }
@@ -224,279 +228,23 @@ const SDHCI_RESET_POLLS: u32 = 1_000;
 const SDHCI_CLOCK_POLLS: u32 = 1_000;
 const SDHCI_TUNING_POLLS: u32 = 1_000_000;
 const SDHCI_VOLTAGE_SWITCH_DELAY_MS: u64 = 5;
+const SDHCI_REGISTER_RETRY_DELAY: Duration = Duration::from_micros(100);
 
 /// Owned SDHCI IRQ top-half endpoint.
 pub struct SdhciIrqHandle {
     irq: Arc<host::IrqCore>,
 }
 
-impl ProtocolSdioHost for Sdhci {
+impl SdioIrqHost for Sdhci {
     type Event = Event;
-    type DataRequest<'a>
-        = DataRequest<'a>
-    where
-        Self: 'a;
-    type BusRequest = ReadyBusRequest;
+    type IrqHandle = SdhciIrqHandle;
 
-    fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
-        self.check_not_poisoned()?;
-        Sdhci::submit_command(self, cmd)
+    fn irq_handle(&mut self) -> Self::IrqHandle {
+        Sdhci::irq_endpoint(self)
     }
 
-    fn poll_command_response(&mut self) -> Result<sdmmc_protocol::CommandResponsePoll, Error> {
-        Sdhci::poll_command_response(self)
-    }
-
-    fn submit_read_data<'a>(
-        &mut self,
-        cmd: &Command,
-        buf: &'a mut [u8],
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<Self::DataRequest<'a>, Error> {
-        let buffer = NonNull::new(buf.as_mut_ptr()).ok_or(Error::InvalidArgument)?;
-        let mut slot = BlockRequestSlot::default();
-        let request = submit_read_with_dma_fifo_fallback(
-            self,
-            cmd,
-            buffer,
-            buf.len(),
-            block_size,
-            block_count,
-            &mut slot,
-        )?;
-        let id = request.id();
-        Ok(DataRequest {
-            id,
-            request: Some(request),
-            slot,
-            _buffer: PhantomData,
-        })
-    }
-
-    fn submit_write_data<'a>(
-        &mut self,
-        cmd: &Command,
-        buf: &'a [u8],
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<Self::DataRequest<'a>, Error> {
-        let buffer = NonNull::new(buf.as_ptr() as *mut u8).ok_or(Error::InvalidArgument)?;
-        let mut slot = BlockRequestSlot::default();
-        let request = submit_write_with_dma_fifo_fallback(
-            self,
-            cmd,
-            buffer,
-            buf.len(),
-            block_size,
-            block_count,
-            &mut slot,
-        )?;
-        let id = request.id();
-        Ok(DataRequest {
-            id,
-            request: Some(request),
-            slot,
-            _buffer: PhantomData,
-        })
-    }
-
-    fn poll_data_request<'a>(
-        &mut self,
-        request: &mut Self::DataRequest<'a>,
-    ) -> Result<DataCommandPoll, Error> {
-        self.progress_block_request(&mut request.request, request.id, &mut request.slot)
-    }
-
-    fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error> {
-        self.apply_bus_width(width)
-    }
-
-    fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error> {
-        let (target_hz, uhs_mode) = match speed {
-            ClockSpeed::Identification => (400_000, HOST_CTRL2_UHS_SDR12),
-            ClockSpeed::Default | ClockSpeed::Sdr12 => (25_000_000, HOST_CTRL2_UHS_SDR12),
-            ClockSpeed::HighSpeed | ClockSpeed::Sdr25 => (50_000_000, HOST_CTRL2_UHS_SDR25),
-            ClockSpeed::Sdr50 => (50_000_000, HOST_CTRL2_UHS_SDR50),
-            ClockSpeed::Ddr50 => (50_000_000, HOST_CTRL2_UHS_DDR50),
-            ClockSpeed::Sdr104 => (104_000_000, HOST_CTRL2_UHS_SDR104),
-            ClockSpeed::Hs200 => (200_000_000, HOST_CTRL2_UHS_SDR104),
-            // Future ClockSpeed variants are not supported by this controller.
-            _ => return Err(Error::UnsupportedCommand),
-        };
-
-        // Match Linux's SDHCI/DWCMSHC UHS signaling selection: even legacy
-        // MMC HighSpeed maps to the SDR25 bus-speed mode on controllers that
-        // interpret HOST_CONTROL2.UHS_MODE_SELECT.
-        let mut ctrl2 = self.read_u16(REG_HOST_CONTROL2);
-        ctrl2 = (ctrl2 & !HOST_CTRL2_UHS_MODE_MASK) | uhs_mode;
-        self.write_u16(REG_HOST_CONTROL2, ctrl2);
-
-        // Toggle the High-Speed Enable bit in HOST_CONTROL1 alongside the
-        // divider change so the controller pipelines reflect the new
-        // timing window.
-        let mut ctrl = self.read_u8(REG_HOST_CONTROL1);
-        if matches!(
-            speed,
-            ClockSpeed::Identification | ClockSpeed::Default | ClockSpeed::Sdr12
-        ) {
-            ctrl &= !HOST_CTRL1_HIGH_SPEED;
-        } else {
-            ctrl |= HOST_CTRL1_HIGH_SPEED;
-        }
-        self.write_u8(REG_HOST_CONTROL1, ctrl);
-
-        // External-clock mode: gate SD clock off, ask the platform CRU to
-        // retune the reference clock, let platform glue configure host-side
-        // clock registers, then bring SD clock back up at 1:1.
-        if self.ext_clock.is_some() {
-            self.disable_sd_clock();
-            let clock = self.ext_clock.take().ok_or(Error::InvalidArgument)?;
-            let effective_hz = clock.effective_clock_hz(target_hz);
-            clock.set_clock(effective_hz)?;
-            clock.prepare_host_clock(self, effective_hz)?;
-            self.ext_clock = Some(clock);
-            return self.enable_clock_passthrough(effective_hz);
-        }
-
-        let base = self.base_clock_hz();
-        if base == 0 {
-            return Err(Error::BadResponse(ErrorContext::new(Phase::Init)));
-        }
-        self.enable_clock(base, target_hz)
-    }
-
-    fn switch_voltage(&mut self, voltage: SignalVoltage) -> Result<(), Error> {
-        // 1. Stop the SD clock so we don't drive the bus during the
-        //    transition. Spec calls for ≥ 5 ms here; the controller's
-        //    `1.8V Signaling Enable` bit toggles the IO domain
-        //    immediately, so the wait is a soft requirement enforced by
-        //    the platform delay (we don't have one here — bring-up code
-        //    on the caller side should add one if needed).
-        // V180 requires the platform to actually swing the IO rail —
-        // flipping the controller bit in isolation makes the host
-        // sample at the wrong reference, breaking every subsequent
-        // data transfer (observed on rk3568-dwcmshc, where HS200
-        // tuning fails and the leaked bit then corrupts HS@52 reads).
-        // Refuse here unless the platform has opted in via
-        // `Sdhci::enable_1v8_signaling`. Returning `UnsupportedCommand`
-        // makes the protocol layer fall back cleanly.
-        if matches!(voltage, SignalVoltage::V180) && !self.support_1v8 {
-            return Err(Error::UnsupportedCommand);
-        }
-        if matches!(voltage, SignalVoltage::V120) {
-            return Err(Error::UnsupportedCommand);
-        }
-
-        self.disable_sd_clock();
-
-        // 2. Flip the voltage selector. 1.2 V isn't part of the SDHCI
-        //    standard register — surface as Unsupported so the protocol
-        //    layer falls back instead of silently doing the wrong thing.
-        let mut ctrl2 = self.read_u16(REG_HOST_CONTROL2);
-        match voltage {
-            SignalVoltage::V330 => {
-                ctrl2 &= !HOST_CTRL2_1V8_SIGNALING;
-                self.set_power(POWER_330);
-            }
-            SignalVoltage::V180 => {
-                ctrl2 |= HOST_CTRL2_1V8_SIGNALING;
-                self.set_power(POWER_180);
-            }
-            SignalVoltage::V120 => unreachable!("V120 was rejected before mutating registers"),
-            // Future SignalVoltage variants are not supported by this controller.
-            _ => return Err(Error::UnsupportedCommand),
-        }
-        self.write_u16(REG_HOST_CONTROL2, ctrl2);
-
-        // 3. Bring the SD clock back on. The protocol layer's next
-        //    `set_clock` call will pick the appropriate divider for
-        //    whatever speed mode we're transitioning into.
-        let cur = self.read_u16(REG_CLOCK_CONTROL);
-        self.write_u16(REG_CLOCK_CONTROL, cur | CLOCK_SD_ENABLE);
-
-        // 4. Sanity check: when entering 1.8 V the spec requires
-        //    DAT[3:0] to be high after the switch (PRESENT_STATE bits
-        //    20..23). We don't enforce this in the MVP because some
-        //    QEMU models leave the bits dangling; real hardware
-        //    integrators should add the check here.
-        Ok(())
-    }
-
-    fn execute_tuning(
-        &mut self,
-        cmd_index: u8,
-        block_size: core::num::NonZeroU16,
-    ) -> Result<(), Error> {
-        // Only CMD19 (SD UHS-I) and CMD21 (eMMC HS200) make sense here.
-        // Reject anything else loudly so the protocol layer doesn't
-        // accidentally tune for a non-tuning command.
-        if cmd_index != 19 && cmd_index != 21 {
-            return Err(Error::InvalidArgument);
-        }
-
-        // Block size for the tuning data phase: SD CMD19 always 64,
-        // MMC CMD21 is 64 (4-bit) or 128 (8-bit).
-        let expected_block_size =
-            if cmd_index == 21 && self.read_u8(REG_HOST_CONTROL1) & HOST_CTRL1_8BIT != 0 {
-                sdmmc_protocol::cmd::MMC_TUNING_BLOCK_SIZE_8BIT
-            } else {
-                sdmmc_protocol::cmd::SD_TUNING_BLOCK_SIZE
-            };
-        if u32::from(block_size.get()) != expected_block_size {
-            return Err(Error::InvalidArgument);
-        }
-
-        // Pre-program the data registers per SDHCI v3 §3.7.7. The
-        // controller issues the tuning command itself; we just hand it
-        // the shape of the data phase.
-        self.write_u16(REG_BLOCK_SIZE, block_size.get() & 0x0FFF);
-        self.write_u16(REG_BLOCK_COUNT, 1);
-        self.write_u8(REG_TIMEOUT_CONTROL, 0x0E);
-        // Direction = read, single block, DMA disabled.
-        self.write_u16(
-            REG_TRANSFER_MODE,
-            XFER_MODE_BLOCK_COUNT_ENABLE | XFER_MODE_READ,
-        );
-
-        // 1. Set the Execute Tuning bit. The controller takes over and
-        //    issues the tuning command repeatedly while sweeping its
-        //    sampling clock; software just polls the bit until it
-        //    self-clears, then checks Sampling Clock Select to know
-        //    whether the sweep landed on a stable phase.
-        let mut ctrl2 = self.read_u16(REG_HOST_CONTROL2);
-        ctrl2 |= HOST_CTRL2_EXECUTE_TUNING;
-        self.write_u16(REG_HOST_CONTROL2, ctrl2);
-
-        // SDHCI spec caps the loop at 40 iterations × 5 ms each — a
-        // worst case of 200 ms. We pick a conservative poll budget
-        // around that.
-        const TUNING_POLLS: u32 = 1_000_000;
-        let mut last_status = 0u16;
-        for _ in 0..TUNING_POLLS {
-            last_status = self.read_u16(REG_HOST_CONTROL2);
-            if last_status & HOST_CTRL2_EXECUTE_TUNING == 0 {
-                // Controller's done. Sampling Clock Select tells us
-                // whether the sweep produced a usable phase.
-                if last_status & HOST_CTRL2_SAMPLING_CLOCK_SELECT != 0 {
-                    return Ok(());
-                }
-                return Err(Error::BadResponse(ErrorContext::for_cmd(
-                    Phase::Init,
-                    cmd_index,
-                )));
-            }
-            core::hint::spin_loop();
-        }
-
-        // Tuning didn't converge in our poll budget. Clear the bit so
-        // the next attempt starts clean, and surface a timeout.
-        let cleared = last_status & !HOST_CTRL2_EXECUTE_TUNING;
-        self.write_u16(REG_HOST_CONTROL2, cleared);
-        Err(Error::Timeout(ErrorContext::for_cmd(
-            Phase::Init,
-            cmd_index,
-        )))
+    fn completion_irq_enabled(&self) -> bool {
+        Sdhci::completion_irq_enabled(self)
     }
 
     fn enable_completion_irq(&mut self) -> Result<(), Error> {
@@ -509,24 +257,8 @@ impl ProtocolSdioHost for Sdhci {
         Ok(())
     }
 
-    fn completion_irq_enabled(&self) -> bool {
-        Sdhci::completion_irq_enabled(self)
-    }
-
-    fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error> {
-        submit_ready_bus_op(self, op)
-    }
-
-    fn poll_bus_op(&mut self, request: &mut Self::BusRequest) -> Result<OperationPoll<()>, Error> {
-        poll_ready_bus_op(request)
-    }
-}
-
-impl SdioIrqHost for Sdhci {
-    type IrqHandle = SdhciIrqHandle;
-
-    fn irq_handle(&mut self) -> Self::IrqHandle {
-        Sdhci::irq_endpoint(self)
+    fn device_dma(&self) -> Result<&dma_api::DeviceDma, Error> {
+        self.dma.as_ref().ok_or(Error::UnsupportedCommand)
     }
 
     fn progress_wait_kind(&self) -> sdmmc_protocol::sdio::HostProgressWait {

@@ -19,7 +19,7 @@ TGOSKits 的宿主物理设备能力收敛在 `rdrive + rdif` 驱动框架。它
 | `drivers/rdrive-macros/` | 注册宏 | `module_driver!`、linker section 收集 |
 | `drivers/interface/rdif-*/` | 能力边界 | `rdif-block`、`rdif-eth`、`rdif-display`、`rdif-input`、`rdif-vsock`、`rdif-intc`、`rdif-pinctrl`、`rdif-pcie`、`rdif-clk`、`rdif-timer`、`rdif-systick`、`rdif-serial`、`rdif-pwm`、`rdif-power` |
 | `drivers/ax-driver/` | OS glue / ArceOS 适配 | VirtIO、PCI、SoC、USB、serial、block/net/display/input/vsock binding |
-| `drivers/blk/` | 块设备 driver core | `nvme-driver`、`sdhci-host`、`dwmmc-host`、`sdmmc-protocol`、`phytium-mci-host`、`ramdisk` |
+| `drivers/blk/` | 块设备 driver core | `nvme-driver`、`sdhci-host`、`dwmmc-host`、`sdmmc-protocol`、`phytium-mci-host`、`ramdisk`；core 存在不代表 `ax-driver` 已公开注册 |
 | `drivers/net/` | 网卡 driver core | `rd-net`、`fxmac_rs`、`eth-intel`、`realtek-rtl8125` |
 | `drivers/gpu/` | 显示/加速 driver core | `rockchip-rga` |
 | `drivers/intc/` | 中断控制器 driver core | `arm-gic-driver`、`riscv_plic` |

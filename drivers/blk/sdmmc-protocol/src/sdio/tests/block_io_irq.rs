@@ -17,25 +17,27 @@ fn submit_read_blocks_into_leaves_multi_block_stop_to_host_request() {
 
     let mut request = driver.submit_read_blocks_into(7, &mut buf).unwrap();
     assert!(matches!(
-        driver.poll_data_request(&mut request).unwrap(),
-        DataCommandPoll::Complete(_)
+        driver
+            .advance_data_request(&mut request, sdio_host2::ProgressCause::AcknowledgedIrq)
+            .unwrap(),
+        DataCommandProgress::Complete(_)
     ));
 
     assert_eq!(&buf[..], &expected[..]);
     assert_eq!(
-        driver.host.data_requests,
-        std::vec![(DataDirection::Read, 512, 2)]
+        driver.host().data_requests,
+        std::vec![(sdio_host2::DataDirection::Read, 512, 2)]
     );
     assert_eq!(
         driver
-            .host
+            .host()
             .commands
             .iter()
             .map(|c| c.index)
             .collect::<Vec<_>>(),
         std::vec![18]
     );
-    assert_eq!(driver.host.commands[0].argument, 7);
+    assert_eq!(driver.host().commands[0].argument, 7);
 }
 
 #[test]
@@ -47,25 +49,27 @@ fn submit_write_blocks_from_leaves_multi_block_stop_to_host_request() {
 
     let mut request = driver.submit_write_blocks_from(11, &buf).unwrap();
     assert!(matches!(
-        driver.poll_data_request(&mut request).unwrap(),
-        DataCommandPoll::Complete(_)
+        driver
+            .advance_data_request(&mut request, sdio_host2::ProgressCause::AcknowledgedIrq)
+            .unwrap(),
+        DataCommandProgress::Complete(_)
     ));
 
     assert_eq!(
-        driver.host.data_requests,
-        std::vec![(DataDirection::Write, 512, 2)]
+        driver.host().data_requests,
+        std::vec![(sdio_host2::DataDirection::Write, 512, 2)]
     );
     assert_eq!(
         driver
-            .host
+            .host()
             .commands
             .iter()
             .map(|c| c.index)
             .collect::<Vec<_>>(),
         std::vec![25]
     );
-    assert_eq!(driver.host.commands[0].argument, 11);
-    assert_eq!(driver.host.writes, std::vec![buf.to_vec()]);
+    assert_eq!(driver.host().commands[0].argument, 11);
+    assert_eq!(driver.host().writes, std::vec![buf.to_vec()]);
 }
 
 #[test]
@@ -83,7 +87,7 @@ fn submit_block_io_rejects_misaligned_buffers() {
         driver.submit_write_blocks_from(0, &write_buf).map(|_| ()),
         Err(Error::Misaligned)
     );
-    assert!(driver.host.commands.is_empty());
+    assert!(driver.host().commands.is_empty());
 }
 
 struct MockIrqHandle {

@@ -317,7 +317,10 @@ impl DeviceInner {
         self.accepting.store(false, Ordering::Release);
         self.barrier_notification.notify();
 
-        let _ = self.controller.call(ControllerEvent::QuiesceIrqs);
+        let quiesce_confirmed_terminal = matches!(
+            self.controller.call(ControllerEvent::QuiesceIrqs),
+            Ok(ControllerState::Shutdown)
+        );
         let registrations = core::mem::take(&mut *self.irq_registrations.lock());
         let count = registrations.len();
         disable_registrations(&registrations);
@@ -330,10 +333,11 @@ impl DeviceInner {
             channel.channel.close();
         }
         quiesce_hctxs(&hctxs);
-        let controller_stopped = matches!(
+        let shutdown_confirmed_terminal = matches!(
             self.controller.call(ControllerEvent::Shutdown),
             Ok(ControllerState::Shutdown)
         );
+        let controller_stopped = quiesce_confirmed_terminal || shutdown_confirmed_terminal;
         if controller_stopped {
             stop_hctxs(&hctxs);
             drop(detached_queues);

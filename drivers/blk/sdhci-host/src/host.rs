@@ -10,7 +10,7 @@ use dma_api::DeviceDma;
 use mmio_api::MmioRaw;
 use sdmmc_protocol::error::{Error, ErrorContext, Phase};
 
-use crate::{command::CommandState, regs::*};
+use crate::{command::CommandState, dma::Adma2DescriptorTable, regs::*};
 
 /// Cached state for a single pending data phase, populated by the
 /// data-command submit path and consumed when that path issues the command.
@@ -21,228 +21,29 @@ pub(crate) struct PendingData {
     pub block_count: u32,
 }
 
-/// Policy for selecting the SDHCI block-data transport.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum BlockTransferPolicy {
-    /// Prefer ADMA2 for compatible requests and retain FIFO for diagnostics
-    /// and legacy non-RDIF users.
-    #[default]
-    PreferAdma2,
-    /// Require every normal block-data request to use ADMA2.
-    ///
-    /// Missing DMA capability, incompatible request shape, or ADMA2 setup
-    /// failure is reported to the caller instead of falling back to FIFO.
-    RequireAdma2,
-}
+mod irq_state;
+pub(crate) use irq_state::IrqCore;
 
 /// Generic SD Host Controller (SDHCI) backend.
 ///
 /// Owns the MMIO base address of one host controller instance and
 /// implements [`sdmmc_protocol::sdio::SdioHost`] so that the protocol
-/// driver in `sdmmc-protocol` can drive it. Data transfers can use either
-/// the controller FIFO or the ADMA2 state machine.
+/// driver in `sdmmc-protocol` can drive it. Data transfers use the ADMA2
+/// state machine exclusively.
 ///
 /// # Safety
 ///
 /// `new` is `unsafe` because the caller must provide a valid, exclusive
 /// MMIO base address for an SDHCI v3.x compatible controller. Concurrent
 /// use of the same controller from multiple `Sdhci` instances is undefined.
-const IRQ_GENERATION_SHIFT: u64 = 32;
-const IRQ_NORMAL_MASK: u64 = 0xffff;
-const IRQ_ERROR_SHIFT: u64 = 16;
-
-pub(crate) struct IrqState {
-    mailbox: AtomicU64,
-    next_generation: AtomicU32,
-}
-
-impl IrqState {
-    const fn new() -> Self {
-        Self {
-            mailbox: AtomicU64::new(0),
-            next_generation: AtomicU32::new(0),
-        }
-    }
-
-    pub(crate) fn begin_request(&self) {
-        let generation = self.next_generation();
-        self.mailbox
-            .store(pack_mailbox(generation, 0, 0), Ordering::Release);
-    }
-
-    pub(crate) fn end_request(&self) {
-        self.mailbox.store(0, Ordering::Release);
-    }
-
-    pub(crate) fn cache_if_current(&self, generation: u32, normal: u16, error: u16) {
-        if generation == 0 || (normal == 0 && error == 0) {
-            return;
-        }
-        let mut cur = self.mailbox.load(Ordering::Acquire);
-        loop {
-            if mailbox_generation(cur) != generation {
-                return;
-            }
-            let next = pack_mailbox(
-                generation,
-                mailbox_normal(cur) | normal,
-                mailbox_error(cur) | error,
-            );
-            match self
-                .mailbox
-                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return,
-                Err(observed) => cur = observed,
-            }
-        }
-    }
-
-    pub(crate) fn generation(&self) -> u32 {
-        mailbox_generation(self.mailbox.load(Ordering::Acquire))
-    }
-
-    pub(crate) fn take_normal(&self, mask: u16) -> u16 {
-        let mut cur = self.mailbox.load(Ordering::Acquire);
-        loop {
-            let normal = mailbox_normal(cur);
-            let taken = normal & mask;
-            if taken == 0 {
-                return 0;
-            }
-            let next = pack_mailbox(mailbox_generation(cur), normal & !mask, mailbox_error(cur));
-            match self
-                .mailbox
-                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return taken,
-                Err(observed) => cur = observed,
-            }
-        }
-    }
-
-    pub(crate) fn take_error_all(&self) -> u16 {
-        let mut cur = self.mailbox.load(Ordering::Acquire);
-        loop {
-            let error = mailbox_error(cur);
-            if error == 0 {
-                return 0;
-            }
-            let next = pack_mailbox(mailbox_generation(cur), mailbox_normal(cur), 0);
-            match self
-                .mailbox
-                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return error,
-                Err(observed) => cur = observed,
-            }
-        }
-    }
-
-    pub(crate) fn clear_normal(&self, mask: u16) {
-        let mut cur = self.mailbox.load(Ordering::Acquire);
-        loop {
-            let next = pack_mailbox(
-                mailbox_generation(cur),
-                mailbox_normal(cur) & !mask,
-                mailbox_error(cur),
-            );
-            match self
-                .mailbox
-                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return,
-                Err(observed) => cur = observed,
-            }
-        }
-    }
-
-    pub(crate) fn clear_all(&self) {
-        let mut cur = self.mailbox.load(Ordering::Acquire);
-        loop {
-            let next = pack_mailbox(mailbox_generation(cur), 0, 0);
-            match self
-                .mailbox
-                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return,
-                Err(observed) => cur = observed,
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pending_normal(&self) -> u16 {
-        mailbox_normal(self.mailbox.load(Ordering::Acquire))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pending_error(&self) -> u16 {
-        mailbox_error(self.mailbox.load(Ordering::Acquire))
-    }
-
-    fn next_generation(&self) -> u32 {
-        let mut cur = self.next_generation.load(Ordering::Acquire);
-        loop {
-            let mut next = cur.wrapping_add(1);
-            if next == 0 {
-                next = 1;
-            }
-            match self.next_generation.compare_exchange_weak(
-                cur,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return next,
-                Err(observed) => cur = observed,
-            }
-        }
-    }
-}
-
-fn pack_mailbox(generation: u32, normal: u16, error: u16) -> u64 {
-    ((generation as u64) << IRQ_GENERATION_SHIFT)
-        | normal as u64
-        | ((error as u64) << IRQ_ERROR_SHIFT)
-}
-
-fn mailbox_generation(value: u64) -> u32 {
-    (value >> IRQ_GENERATION_SHIFT) as u32
-}
-
-fn mailbox_normal(value: u64) -> u16 {
-    (value & IRQ_NORMAL_MASK) as u16
-}
-
-fn mailbox_error(value: u64) -> u16 {
-    ((value >> IRQ_ERROR_SHIFT) & IRQ_NORMAL_MASK) as u16
-}
-
-pub(crate) struct IrqCore {
-    pub(crate) base_addr: usize,
-    pub(crate) state: IrqState,
-}
-
-impl IrqCore {
-    fn new(base_addr: usize) -> Self {
-        Self {
-            base_addr,
-            state: IrqState::new(),
-        }
-    }
-}
-
 pub struct Sdhci {
     pub(crate) base_addr: usize,
     pub(crate) command_state: CommandState,
     pub(crate) pending_data: Option<PendingData>,
     /// When set, command submission programs the controller's transfer mode
     /// register with `DMA_ENABLE`. Set by the ADMA2 wrapper just before it
-    /// fires off a command; default `false` keeps the FIFO path active.
+    /// fires off a command.
     pub(crate) use_dma: bool,
-    /// Selects whether normal block-data requests may fall back to FIFO.
-    pub(crate) block_transfer_policy: BlockTransferPolicy,
     /// Optional CRU-side clock callback. When set, the `SdioHost::set_clock`
     /// impl will route requests to this hook (and program the controller
     /// for 1:1 passthrough) instead of using the internal 10-bit divider.
@@ -267,7 +68,9 @@ pub struct Sdhci {
     /// submit/poll data-command state machine.
     pub(crate) active_data_cmd: u8,
     pub(crate) dma: Option<DeviceDma>,
+    pub(crate) adma2_desc: Option<Adma2DescriptorTable>,
     pub(crate) dma_mask: u64,
+    pub(crate) v4_mode: bool,
     pub(crate) dma_poisoned: bool,
     pub(crate) irq: Arc<IrqCore>,
     pub(crate) host2_next_id: u64,
@@ -287,14 +90,15 @@ impl Sdhci {
             command_state: CommandState::Idle,
             pending_data: None,
             use_dma: false,
-            block_transfer_policy: BlockTransferPolicy::PreferAdma2,
             ext_clock: None,
             reset_hook: None,
             timer: None,
             support_1v8: false,
             active_data_cmd: 0,
             dma: None,
+            adma2_desc: None,
             dma_mask: u32::MAX as u64,
+            v4_mode: false,
             dma_poisoned: false,
             irq: Arc::new(IrqCore::new(base.as_ptr() as usize)),
             host2_next_id: 0,
@@ -406,23 +210,46 @@ impl Sdhci {
 
     /// Install a DMA capability used by the high-level data-transfer hooks.
     ///
-    /// Once installed, `SdioHost::submit_read_data` and
-    /// `SdioHost::submit_write_data` can use ADMA2 for compatible block I/O.
-    /// The configured [`BlockTransferPolicy`] decides whether FIFO fallback is
-    /// allowed.
-    pub fn set_dma(&mut self, dma: DeviceDma) {
-        self.dma_mask = dma.dma_mask();
+    /// Once installed, data transactions use ADMA2 for compatible block I/O.
+    /// Requests are rejected when DMA is unavailable or violates the host
+    /// limits; the driver never falls back to PIO.
+    pub fn configure_dma(&mut self, dma: DeviceDma) -> Result<(), Error> {
+        if !matches!(self.command_state, CommandState::Idle) || self.pending_data.is_some() {
+            return Err(Error::UnsupportedCommand);
+        }
+        if !self.supports_adma2() {
+            return Err(Error::UnsupportedCommand);
+        }
+        let hardware_mask = if self.supports_64bit_system_addressing() {
+            dma.dma_mask()
+        } else {
+            dma.dma_mask().min(u32::MAX as u64)
+        };
+        let mut constraints = dma.constraints();
+        constraints.addr_mask = hardware_mask;
+        constraints.align = constraints.align.max(4);
+        let dma = dma.with_constraints(constraints);
+        let use_64bit = hardware_mask > u32::MAX as u64 && self.supports_64bit_system_addressing();
+        let table = Adma2DescriptorTable::allocate(&dma, use_64bit)?;
+        self.dma_mask = hardware_mask;
         self.dma = Some(dma);
+        self.adma2_desc = Some(table);
+        Ok(())
     }
 
-    /// Selects whether block-data requests may fall back from ADMA2 to FIFO.
-    pub fn set_block_transfer_policy(&mut self, policy: BlockTransferPolicy) {
-        self.block_transfer_policy = policy;
-    }
-
-    /// Returns the active block-data transport policy.
-    pub const fn block_transfer_policy(&self) -> BlockTransferPolicy {
-        self.block_transfer_policy
+    /// Enable SDHCI v4 register semantics before configuring DMA.
+    ///
+    /// Platforms opt in explicitly, matching Linux's `sdhci_enable_v4_mode`;
+    /// capability bits alone do not change descriptor format.
+    pub fn enable_v4_mode(&mut self) -> Result<(), Error> {
+        if self.dma.is_some() || !matches!(self.command_state, CommandState::Idle) {
+            return Err(Error::UnsupportedCommand);
+        }
+        let mut control = self.read_u16(REG_HOST_CONTROL2);
+        control |= HOST_CTRL2_V4_MODE;
+        self.write_u16(REG_HOST_CONTROL2, control);
+        self.v4_mode = true;
+        Ok(())
     }
 
     pub(crate) fn check_not_poisoned(&self) -> Result<(), Error> {
@@ -648,20 +475,44 @@ impl Sdhci {
         self.read_u32(REG_CAPABILITIES_LOW) & CAPS_LOW_ADMA2_SUPPORTED != 0
     }
 
-    /// Program the ADMA system address registers with the bus address of
-    /// the descriptor table. 32-bit ADMA2 only; the high half is zeroed
-    /// because controllers that don't implement v4 64-bit addressing
-    /// alias the high register to RO-zero anyway.
-    pub(crate) fn write_adma_addr(&self, addr: u32) {
-        self.write_u32(REG_ADMA_SYS_ADDR_LOW, addr);
-        self.write_u32(REG_ADMA_SYS_ADDR_HIGH, 0);
+    pub fn supports_64bit_system_addressing(&self) -> bool {
+        let capabilities = self.read_u32(REG_CAPABILITIES_LOW);
+        if self.v4_mode {
+            capabilities & CAPS_LOW_64BIT_SYSBUS_V4 != 0
+        } else {
+            capabilities & CAPS_LOW_64BIT_SYSBUS_V3 != 0
+        }
     }
 
-    /// Pick 32-bit ADMA2 in HOST_CONTROL1's DMA select field.
-    pub(crate) fn select_adma2_32(&mut self) {
+    /// Program the ADMA system address registers with the bus address of
+    /// the descriptor table.
+    pub(crate) fn write_adma_addr(&self, addr: u64, use_64bit: bool) {
+        self.write_u32(REG_ADMA_SYS_ADDR_LOW, addr as u32);
+        self.write_u32(
+            REG_ADMA_SYS_ADDR_HIGH,
+            if use_64bit { (addr >> 32) as u32 } else { 0 },
+        );
+    }
+
+    pub(crate) fn select_adma2(&mut self, use_64bit: bool) {
         let mut ctrl = self.read_u8(REG_HOST_CONTROL1);
-        ctrl = (ctrl & !HOST_CTRL1_DMA_SEL_MASK) | HOST_CTRL1_DMA_SEL_ADMA2_32;
+        let selection = if use_64bit && !self.v4_mode {
+            HOST_CTRL1_DMA_SEL_ADMA2_64
+        } else {
+            HOST_CTRL1_DMA_SEL_ADMA2_32
+        };
+        ctrl = (ctrl & !HOST_CTRL1_DMA_SEL_MASK) | selection;
         self.write_u8(REG_HOST_CONTROL1, ctrl);
+
+        if self.v4_mode {
+            let mut ctrl2 = self.read_u16(REG_HOST_CONTROL2);
+            if use_64bit {
+                ctrl2 |= HOST_CTRL2_64BIT_ADDR;
+            } else {
+                ctrl2 &= !HOST_CTRL2_64BIT_ADDR;
+            }
+            self.write_u16(REG_HOST_CONTROL2, ctrl2);
+        }
     }
 
     /// Read raw 32-bit response slot.

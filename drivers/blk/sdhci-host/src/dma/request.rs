@@ -78,19 +78,14 @@ impl Sdhci {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-    ) -> Result<DataCommandPoll, Error> {
+        cause: sdio_host2::ProgressCause,
+    ) -> Result<DataCommandProgress, Error> {
+        let acknowledged_irq = cause == sdio_host2::ProgressCause::AcknowledgedIrq;
         let Some(active) = request.as_ref() else {
             return Err(Error::InvalidArgument);
         };
         if active.id() != id {
             return Err(Error::InvalidArgument);
-        }
-
-        if matches!(
-            active.inner,
-            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. }
-        ) {
-            return self.poll_fifo_request(request, id, slot);
         }
 
         let (cmd_index, phase, stage) = match &active.inner {
@@ -106,15 +101,15 @@ impl Sdhci {
                 stage,
                 ..
             } => (*cmd_index, *phase, *stage),
-            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => {
-                unreachable!()
-            }
         };
 
         if stage == BlockRequestStage::Command {
-            match self.poll_command() {
-                Ok(CommandPoll::Pending) => return Ok(DataCommandPoll::Pending),
-                Ok(CommandPoll::Complete) => {
+            if !acknowledged_irq && !self.command_needs_register_retry() {
+                return Ok(DataCommandProgress::Pending);
+            }
+            match self.advance_command() {
+                Ok(CommandPoll::Pending) => return Ok(DataCommandProgress::Pending),
+                Ok(CommandPoll::Complete) if acknowledged_irq => {
                     let response = self.take_command_response()?;
                     if let Some(active) = request.as_mut() {
                         match &mut active.inner {
@@ -131,13 +126,12 @@ impl Sdhci {
                                 *stage = BlockRequestStage::Data;
                                 *stored_response = Some(response);
                             }
-                            BlockRequestKind::FifoRead { .. }
-                            | BlockRequestKind::FifoWrite { .. } => unreachable!(),
                         }
                     }
                 }
+                Ok(CommandPoll::Complete) => return Ok(DataCommandProgress::Pending),
                 // Future CommandPoll variants: best-effort, treat as still pending.
-                Ok(_) => return Ok(DataCommandPoll::Pending),
+                Ok(_) => return Ok(DataCommandProgress::Pending),
                 Err(err) => {
                     let _ = self.abort_block_request(request, id, slot);
                     return Err(err);
@@ -146,14 +140,18 @@ impl Sdhci {
         }
 
         if stage == BlockRequestStage::Stop {
-            return self.poll_block_stop(request, id, slot);
+            return self.advance_block_stop(request, id, slot, acknowledged_irq);
         }
 
-        match self.poll_data_complete_with_adma(cmd_index, phase) {
-            Ok(BlockPoll::Pending) => Ok(DataCommandPoll::Pending),
-            Ok(BlockPoll::Complete) => self.finish_dma_data(request, id, slot),
-            // Future BlockPoll variants: best-effort, treat as still pending.
-            Ok(_) => Ok(DataCommandPoll::Pending),
+        if !acknowledged_irq {
+            return Ok(DataCommandProgress::Pending);
+        }
+
+        match self.advance_data_complete_with_adma(cmd_index, phase) {
+            Ok(BlockProgress::Pending) => Ok(DataCommandProgress::Pending),
+            Ok(BlockProgress::Complete) => self.finish_dma_data(request, id, slot),
+            // Future BlockProgress variants: best-effort, treat as still pending.
+            Ok(_) => Ok(DataCommandProgress::Pending),
             Err(err) => {
                 let _ = self.abort_block_request(request, id, slot);
                 Err(err)
@@ -227,16 +225,12 @@ impl Sdhci {
             DataDirection::None => return Err(Error::InvalidArgument),
             _ => return Err(Error::InvalidArgument),
         };
-        let mut desc = dma
-            .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
-            .map_err(map_dma_error)?;
         self.submit_adma2_data_mapped(
             cmd,
             block_size,
             block_count,
             dma_addr,
             len,
-            &mut desc,
             direction,
             phase,
         )?;
@@ -245,7 +239,6 @@ impl Sdhci {
                 DataDirection::Read => BlockRequestKind::Read {
                     id,
                     buffer,
-                    _desc: desc,
                     cmd_index: cmd.index,
                     phase,
                     stage: BlockRequestStage::Command,
@@ -255,7 +248,6 @@ impl Sdhci {
                 DataDirection::Write => BlockRequestKind::Write {
                     id,
                     buffer,
-                    _desc: desc,
                     cmd_index: cmd.index,
                     phase,
                     stage: BlockRequestStage::Command,
@@ -308,19 +300,12 @@ impl Sdhci {
             DataDirection::None => unreachable!("direction validated above"),
             _ => unreachable!("direction validated above"),
         };
-        let mut desc = match dma
-            .coherent_array_zero_with_align::<Adma2Desc32>(ADMA2_DESC_COUNT, ADMA2_DESC_ALIGN)
-        {
-            Ok(desc) => desc,
-            Err(err) => return Err(PreparedDmaSubmitError::new(map_dma_error(err), buffer)),
-        };
         if let Err(err) = self.submit_adma2_data_mapped(
             cmd,
             block_size,
             block_count,
             buffer.dma_addr().as_u64(),
             len,
-            &mut desc,
             direction,
             phase,
         ) {
@@ -332,7 +317,6 @@ impl Sdhci {
                 DataDirection::Read => BlockRequestKind::Read {
                     id,
                     buffer,
-                    _desc: desc,
                     cmd_index: cmd.index,
                     phase,
                     stage: BlockRequestStage::Command,
@@ -342,7 +326,6 @@ impl Sdhci {
                 DataDirection::Write => BlockRequestKind::Write {
                     id,
                     buffer,
-                    _desc: desc,
                     cmd_index: cmd.index,
                     phase,
                     stage: BlockRequestStage::Command,
@@ -363,32 +346,36 @@ impl Sdhci {
         block_count: u32,
         buffer_dma: u64,
         byte_count: usize,
-        desc: &mut CoherentArray<Adma2Desc32>,
         direction: DataDirection,
         phase: Phase,
     ) -> Result<(), Error> {
         validate_adma2_data_shape(block_size, block_count, byte_count)?;
-        build_descriptors_into_dma(desc, buffer_dma, byte_count, phase)?;
+        let mut desc = self.adma2_desc.take().ok_or(Error::UnsupportedCommand)?;
+        let result = (|| {
+            desc.build(buffer_dma, byte_count, phase)?;
+            let desc_bus = desc.dma_addr();
+            let desc_end = desc_bus
+                .checked_add(desc.bytes_len() as u64)
+                .ok_or(Error::InvalidArgument)?;
+            let use_64bit = desc.is_64bit();
+            if !use_64bit && desc_end > u32::MAX as u64 + 1 {
+                return Err(Error::BadResponse(ErrorContext::new(phase)));
+            }
 
-        let desc_bus = desc.dma_addr().as_u64();
-        let desc_end = desc_bus
-            .checked_add(desc.bytes_len() as u64)
-            .ok_or(Error::InvalidArgument)?;
-        if desc_end > u32::MAX as u64 + 1 {
-            return Err(Error::BadResponse(ErrorContext::new(phase)));
-        }
-
-        self.pending_data = Some(PendingData {
-            direction,
-            block_size,
-            block_count,
-        });
-        self.use_dma = true;
-        self.select_adma2_32();
-        self.write_adma_addr(desc_bus as u32);
-        let response = self.submit_command(cmd);
-        self.use_dma = false;
-        response
+            self.pending_data = Some(PendingData {
+                direction,
+                block_size,
+                block_count,
+            });
+            self.use_dma = true;
+            self.select_adma2(use_64bit);
+            self.write_adma_addr(desc_bus, use_64bit);
+            let response = self.submit_command(cmd);
+            self.use_dma = false;
+            response
+        })();
+        self.adma2_desc = Some(desc);
+        result
     }
 
     pub(super) fn finish_block_request(
@@ -405,14 +392,12 @@ impl Sdhci {
     ) -> Result<Option<CompletedDma>, Error> {
         if !quiesced {
             self.poison_dma();
-            core::mem::forget(request);
             self.pending_data = None;
             self.active_data_cmd = 0;
             self.irq.state.end_request();
             return Ok(None);
         }
         let completed_dma = match request.inner {
-            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => None,
             BlockRequestKind::Read { stage, buffer, .. } => {
                 if stage == BlockRequestStage::Command {
                     let _ = self.take_command_response();
@@ -445,7 +430,7 @@ impl Sdhci {
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-    ) -> Result<DataCommandPoll, Error> {
+    ) -> Result<DataCommandProgress, Error> {
         let Some(active) = request.as_mut() else {
             return Err(Error::InvalidArgument);
         };
@@ -467,41 +452,45 @@ impl Sdhci {
                 *stage = BlockRequestStage::Stop;
                 *stop_after_complete
             }
-            BlockRequestKind::FifoRead { .. } | BlockRequestKind::FifoWrite { .. } => {
-                return Err(Error::InvalidArgument);
-            }
         };
 
         if stop_after_complete {
-            self.submit_command(&sdmmc_protocol::cmd::CMD12)?;
-            return Ok(DataCommandPoll::Pending);
+            // Preserve this transfer's IRQ generation across CMD12 so a late
+            // data/ADMA error cannot be discarded between transfer complete
+            // and the stop response.
+            self.submit_chained_command(&sdmmc_protocol::cmd::CMD12)?;
+            return Ok(DataCommandProgress::Pending);
         }
 
         let active = request.take().ok_or(Error::InvalidArgument)?;
         let response = active.response().ok_or(Error::InvalidArgument)?;
         let completed_dma = self.finish_block_request(active)?;
         slot.complete_with_dma(id, completed_dma)?;
-        Ok(DataCommandPoll::Complete(response))
+        Ok(DataCommandProgress::Complete(response))
     }
 
-    pub(super) fn poll_block_stop(
+    pub(super) fn advance_block_stop(
         &mut self,
         request: &mut Option<BlockRequest>,
         id: RequestId,
         slot: &mut BlockRequestSlot,
-    ) -> Result<DataCommandPoll, Error> {
-        match self.poll_command() {
-            Ok(CommandPoll::Pending) => Ok(DataCommandPoll::Pending),
+        acknowledged_irq: bool,
+    ) -> Result<DataCommandProgress, Error> {
+        if !acknowledged_irq && !self.command_needs_register_retry() {
+            return Ok(DataCommandProgress::Pending);
+        }
+        match self.advance_command() {
+            Ok(CommandPoll::Pending) => Ok(DataCommandProgress::Pending),
             Ok(CommandPoll::Complete) => {
                 let _ = self.take_command_response()?;
                 let active = request.take().ok_or(Error::InvalidArgument)?;
                 let response = active.response().ok_or(Error::InvalidArgument)?;
                 let completed_dma = self.finish_block_request(active)?;
                 slot.complete_with_dma(id, completed_dma)?;
-                Ok(DataCommandPoll::Complete(response))
+                Ok(DataCommandProgress::Complete(response))
             }
             // Future CommandPoll variants: best-effort, treat as still pending.
-            Ok(_) => Ok(DataCommandPoll::Pending),
+            Ok(_) => Ok(DataCommandProgress::Pending),
             Err(err) => {
                 let _ = self.abort_block_request(request, id, slot);
                 Err(err)
@@ -548,14 +537,14 @@ impl Sdhci {
         }
     }
 
-    pub(crate) fn poll_data_complete_with_adma(
+    pub(crate) fn advance_data_complete_with_adma(
         &mut self,
         cmd_index: u8,
         phase: Phase,
-    ) -> Result<BlockPoll, Error> {
+    ) -> Result<BlockProgress, Error> {
         let (status, err) = self.take_data_irq_status();
         if status & NORMAL_INT_XFER_COMPLETE != 0 {
-            return Ok(BlockPoll::Complete);
+            return Ok(BlockProgress::Complete);
         }
         if status & NORMAL_INT_ERROR != 0 {
             let ctx = ErrorContext::for_cmd(phase, cmd_index);
@@ -571,6 +560,6 @@ impl Sdhci {
                 Error::WriteError(ctx)
             });
         }
-        Ok(BlockPoll::Pending)
+        Ok(BlockProgress::Pending)
     }
 }

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace request polling with explicit submission, acknowledged-IRQ, and
+  bounded register-retry progress causes.
+- Require rejected owned-DMA submissions to return the original transaction;
+  remove the legacy ownership-consuming fallback.
+
 ## [0.1.4](https://github.com/rcore-os/tgoskits/compare/sdio-host2-v0.1.3...sdio-host2-v0.1.4) - 2026-07-08
 
 ### Other

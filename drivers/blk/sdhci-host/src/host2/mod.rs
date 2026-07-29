@@ -1,348 +1,104 @@
-use super::{block_path::should_try_dma, *};
+use super::{block_path::adma2_shape_supported, *};
 
 mod bus;
 
-impl sdio_host2::SdioHost for Sdhci {
-    type TransactionRequest<'a>
-        = TransactionRequest<'a>
-    where
-        Self: 'a;
-    type BusRequest = BusRequest;
-
-    unsafe fn submit_transaction<'a>(
-        &mut self,
-        transaction: sdio_host2::Transaction<'a>,
-    ) -> Result<Self::TransactionRequest<'a>, sdio_host2::Error>
-    where
-        Self: 'a,
-    {
-        self.check_not_poisoned().map_err(map_protocol_error)?;
-        if !self.physical_bus_idle() {
-            return Err(sdio_host2::Error::Busy);
-        }
-        let owner = self.host2_owner();
-        let id = self.start_host2_request();
-        let response = transaction.command.response;
-        match transaction.data {
-            None => {
-                if let Err(err) = self.submit_command(&transaction.command) {
-                    self.finish_host2_request(id);
-                    return Err(map_protocol_error(err));
-                }
-                Ok(TransactionRequest::command(owner, id, response))
-            }
-            Some(phase) => {
-                phase
-                    .validate()
-                    .inspect_err(|_| self.finish_host2_request(id))?;
-                let block_size = u32::from(phase.block_size.get());
-                let block_count = phase.block_count.get();
-                let request = match phase.buffer {
-                    sdio_host2::DataBuffer::Read(buf) => {
-                        if !matches!(phase.direction, sdio_host2::DataDirection::Read) {
-                            self.finish_host2_request(id);
-                            return Err(sdio_host2::Error::InvalidArgument);
-                        }
-                        <Self as ProtocolSdioHost>::submit_read_data(
-                            self,
-                            &transaction.command,
-                            buf,
-                            block_size,
-                            block_count,
-                        )
-                    }
-                    sdio_host2::DataBuffer::Write(buf) => {
-                        if !matches!(phase.direction, sdio_host2::DataDirection::Write) {
-                            self.finish_host2_request(id);
-                            return Err(sdio_host2::Error::InvalidArgument);
-                        }
-                        <Self as ProtocolSdioHost>::submit_write_data(
-                            self,
-                            &transaction.command,
-                            buf,
-                            block_size,
-                            block_count,
-                        )
-                    }
-                    sdio_host2::DataBuffer::Dma(_) => {
-                        self.finish_host2_request(id);
-                        return Err(sdio_host2::Error::InvalidArgument);
-                    }
-                }
-                .inspect_err(|_| self.finish_host2_request(id))
-                .map_err(map_protocol_error)?;
-                Ok(TransactionRequest::data(owner, id, request, response))
-            }
-        }
-    }
-
-    unsafe fn submit_transaction_owned<'a>(
-        &mut self,
-        transaction: sdio_host2::Transaction<'a>,
-    ) -> Result<Self::TransactionRequest<'a>, sdio_host2::SubmitTransactionError<'a>>
-    where
-        Self: 'a,
-    {
-        if let Err(err) = self.check_not_poisoned() {
-            return Err(sdio_host2::SubmitTransactionError::new(
-                map_protocol_error(err),
-                transaction,
-            ));
-        }
-        if !matches!(
-            transaction.data.as_ref().map(|data| &data.buffer),
-            Some(sdio_host2::DataBuffer::Dma(_))
-        ) {
-            return unsafe { self.submit_transaction(transaction) }
-                .map_err(sdio_host2::SubmitTransactionError::consumed);
-        }
-        if !self.physical_bus_idle() {
-            return Err(sdio_host2::SubmitTransactionError::new(
-                sdio_host2::Error::Busy,
-                transaction,
-            ));
-        }
-
-        let owner = self.host2_owner();
-        let host2_id = self.start_host2_request();
-        let response = transaction.command.response;
-        let Some(phase) = transaction.data else {
-            unreachable!("DMA transaction must contain a data phase")
-        };
-        let block_size = u32::from(phase.block_size.get());
-        let block_count = phase.block_count.get();
-        let sdio_host2::DataBuffer::Dma(buffer) = phase.buffer else {
-            unreachable!("checked for DMA data buffer above")
-        };
-        let protocol_direction = match phase.direction {
-            sdio_host2::DataDirection::Read => DataDirection::Read,
-            sdio_host2::DataDirection::Write => DataDirection::Write,
-            _ => {
-                self.finish_host2_request(host2_id);
-                let data = sdio_host2::DataPhase {
-                    direction: phase.direction,
-                    block_size: phase.block_size,
-                    block_count: phase.block_count,
-                    buffer: sdio_host2::DataBuffer::Dma(buffer),
-                };
-                return Err(sdio_host2::SubmitTransactionError::new(
-                    sdio_host2::Error::Unsupported,
-                    sdio_host2::Transaction::with_data(transaction.command, data),
-                ));
-            }
-        };
-        if !should_try_dma(
-            &transaction.command,
-            block_size,
-            block_count,
-            buffer.len().get(),
-            protocol_direction,
-        ) {
-            self.finish_host2_request(host2_id);
-            let tx = sdio_host2::Transaction::with_data(
-                transaction.command,
-                sdio_host2::DataPhase {
-                    direction: phase.direction,
-                    block_size: phase.block_size,
-                    block_count: phase.block_count,
-                    buffer: sdio_host2::DataBuffer::Dma(buffer),
-                },
-            );
-            return Err(sdio_host2::SubmitTransactionError::new(
-                sdio_host2::Error::Unsupported,
-                tx,
-            ));
-        }
-        let Some(dma) = self.dma.clone() else {
-            self.finish_host2_request(host2_id);
-            let data = sdio_host2::DataPhase {
-                direction: phase.direction,
-                block_size: phase.block_size,
-                block_count: phase.block_count,
-                buffer: sdio_host2::DataBuffer::Dma(buffer),
-            };
-            return Err(sdio_host2::SubmitTransactionError::new(
-                sdio_host2::Error::Unsupported,
-                sdio_host2::Transaction::with_data(transaction.command, data),
-            ));
-        };
-        let mut slot = BlockRequestSlot::default();
-        let submit = self.submit_prepared_adma2_data_request(
-            &transaction.command,
-            buffer,
-            block_size,
-            block_count,
-            protocol_direction,
-            &dma,
-            &mut slot,
-        );
-        match submit {
-            Ok(request) => {
-                let id = request.id();
-                let data = DataRequest {
-                    id,
-                    request: Some(request),
-                    slot,
-                    _buffer: PhantomData,
-                };
-                Ok(TransactionRequest::data(owner, host2_id, data, response))
-            }
-            Err(err) => {
-                self.finish_host2_request(host2_id);
-                let error = err.error;
-                let buffer = err.into_buffer();
-                let data = sdio_host2::DataPhase {
-                    direction: phase.direction,
-                    block_size: phase.block_size,
-                    block_count: phase.block_count,
-                    buffer: sdio_host2::DataBuffer::Dma(buffer),
-                };
-                Err(sdio_host2::SubmitTransactionError::new(
-                    map_protocol_error(error),
-                    sdio_host2::Transaction::with_data(transaction.command, data),
-                ))
-            }
-        }
-    }
-
-    fn poll_transaction<'a>(
-        &mut self,
-        request: &mut Self::TransactionRequest<'a>,
-    ) -> Result<sdio_host2::RequestPoll<sdio_host2::RawResponse>, sdio_host2::PollRequestError>
-    where
-        Self: 'a,
-    {
-        self.check_host2_transaction_request(request)?;
-        match request.kind {
-            TransactionRequestKind::Command { response } => {
-                match <Self as ProtocolSdioHost>::poll_command_response(self) {
-                    Ok(sdmmc_protocol::CommandResponsePoll::Pending) => {
-                        Ok(sdio_host2::RequestPoll::Pending)
-                    }
-                    Ok(sdmmc_protocol::CommandResponsePoll::Complete(resp)) => {
-                        self.complete_host2_transaction_request(request);
-                        Ok(sdio_host2::RequestPoll::Ready(Ok(
-                            resp.to_raw_response(response)
-                        )))
-                    }
-                    Ok(_) => Ok(sdio_host2::RequestPoll::Pending),
-                    Err(err) => {
-                        self.complete_host2_transaction_request(request);
-                        Ok(sdio_host2::RequestPoll::Ready(Err(map_protocol_error(err))))
-                    }
-                }
-            }
-            TransactionRequestKind::Data { response } => {
-                let Some(data) = request.data.as_mut() else {
-                    let recovery = self.abort_host2_transaction_request(request).err();
-                    return Ok(sdio_host2::RequestPoll::Ready(Err(
-                        recovery.unwrap_or(sdio_host2::Error::InvalidArgument)
-                    )));
-                };
-                match <Self as ProtocolSdioHost>::poll_data_request(self, data) {
-                    Ok(DataCommandPoll::Pending) => Ok(sdio_host2::RequestPoll::Pending),
-                    Ok(DataCommandPoll::Complete(resp)) => {
-                        self.complete_host2_transaction_request(request);
-                        Ok(sdio_host2::RequestPoll::Ready(Ok(
-                            resp.to_raw_response(response)
-                        )))
-                    }
-                    Ok(_) => Ok(sdio_host2::RequestPoll::Pending),
-                    Err(err) => {
-                        let _ = self.abort_host2_transaction_request(request);
-                        Ok(sdio_host2::RequestPoll::Ready(Err(map_protocol_error(err))))
-                    }
-                }
-            }
-        }
-    }
-
-    fn abort_transaction<'a>(
-        &mut self,
-        request: &mut Self::TransactionRequest<'a>,
-    ) -> Result<(), sdio_host2::Error>
-    where
-        Self: 'a,
-    {
-        if request.done {
-            return Ok(());
-        }
-        if request.owner != self.host2_owner() {
-            return Err(sdio_host2::Error::InvalidArgument);
-        }
-        self.abort_host2_transaction_request(request)
-    }
-
-    fn take_completed_dma<'a>(
-        &mut self,
-        request: &mut Self::TransactionRequest<'a>,
-    ) -> Option<dma_api::CompletedDma>
-    where
-        Self: 'a,
-    {
-        request
-            .data
-            .as_mut()
-            .and_then(|data| data.slot.take_completed_dma())
-    }
-
-    unsafe fn submit_bus_op(
-        &mut self,
-        op: sdio_host2::BusOp,
-    ) -> Result<Self::BusRequest, sdio_host2::Error> {
-        self.check_not_poisoned().map_err(map_protocol_error)?;
-        if !self.physical_bus_idle() {
-            return Err(sdio_host2::Error::Busy);
-        }
-        let state = self.prepare_host2_bus_op(op)?;
-        let owner = self.host2_owner();
-        let id = self.start_host2_request();
-        Ok(BusRequest::pending(owner, id, state))
-    }
-
-    fn poll_bus_op(
-        &mut self,
-        request: &mut Self::BusRequest,
-    ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::PollRequestError> {
-        self.check_host2_bus_request(request)?;
-        match self.poll_host2_bus_state(&mut request.state) {
-            Ok(sdio_host2::RequestPoll::Pending) => Ok(sdio_host2::RequestPoll::Pending),
-            Ok(sdio_host2::RequestPoll::Ready(Ok(()))) => {
-                self.complete_host2_bus_request(request);
-                Ok(sdio_host2::RequestPoll::Ready(Ok(())))
-            }
-            Ok(sdio_host2::RequestPoll::Ready(Err(err))) => {
-                let _ = self.abort_host2_bus_state(&mut request.state);
-                self.complete_host2_bus_request(request);
-                Ok(sdio_host2::RequestPoll::Ready(Err(err)))
-            }
-            Err(err) => {
-                let _ = self.abort_host2_bus_state(&mut request.state);
-                self.complete_host2_bus_request(request);
-                Ok(sdio_host2::RequestPoll::Ready(Err(err)))
-            }
-        }
-    }
-
-    fn abort_bus_op(&mut self, request: &mut Self::BusRequest) -> Result<(), sdio_host2::Error> {
-        if request.done {
-            return Ok(());
-        }
-        if request.owner != self.host2_owner() {
-            return Err(sdio_host2::Error::InvalidArgument);
-        }
-        let result = self.abort_host2_bus_state(&mut request.state);
-        request.done = true;
-        self.finish_host2_request(request.id);
-        result
-    }
-
-    fn now_ms(&self) -> Option<u64> {
-        self.timer.map(HostTimer::now_ms)
-    }
-}
+mod transaction;
 
 impl Sdhci {
+    fn submit_borrowed_read_data<'a>(
+        &mut self,
+        command: &Command,
+        buffer: &'a mut [u8],
+        block_size: u32,
+        block_count: u32,
+    ) -> Result<DataRequest<'a>, Error> {
+        let address = NonNull::new(buffer.as_mut_ptr()).ok_or(Error::InvalidArgument)?;
+        let (id, request, slot) = self.submit_borrowed_data(
+            command,
+            address,
+            buffer.len(),
+            block_size,
+            block_count,
+            DataDirection::Read,
+        )?;
+        Ok(DataRequest {
+            id,
+            request: Some(request),
+            slot,
+            _buffer: PhantomData,
+        })
+    }
+
+    fn submit_borrowed_write_data<'a>(
+        &mut self,
+        command: &Command,
+        buffer: &'a [u8],
+        block_size: u32,
+        block_count: u32,
+    ) -> Result<DataRequest<'a>, Error> {
+        let address = NonNull::new(buffer.as_ptr().cast_mut()).ok_or(Error::InvalidArgument)?;
+        let (id, request, slot) = self.submit_borrowed_data(
+            command,
+            address,
+            buffer.len(),
+            block_size,
+            block_count,
+            DataDirection::Write,
+        )?;
+        Ok(DataRequest {
+            id,
+            request: Some(request),
+            slot,
+            _buffer: PhantomData,
+        })
+    }
+
+    fn submit_borrowed_data(
+        &mut self,
+        command: &Command,
+        buffer: NonNull<u8>,
+        len: usize,
+        block_size: u32,
+        block_count: u32,
+        direction: DataDirection,
+    ) -> Result<(RequestId, BlockRequest, BlockRequestSlot), Error> {
+        let mut slot = BlockRequestSlot::default();
+        let request = match direction {
+            DataDirection::Read => submit_read_adma2(
+                self,
+                command,
+                buffer,
+                len,
+                block_size,
+                block_count,
+                &mut slot,
+            ),
+            DataDirection::Write => submit_write_adma2(
+                self,
+                command,
+                buffer,
+                len,
+                block_size,
+                block_count,
+                &mut slot,
+            ),
+            _ => return Err(Error::UnsupportedCommand),
+        }?;
+        let id = request.id();
+        Ok((id, request, slot))
+    }
+
+    fn pending_transaction_progress(&self) -> sdio_host2::RequestProgress<sdio_host2::RawResponse> {
+        match self.progress_wait_kind() {
+            sdmmc_protocol::sdio::HostProgressWait::Register { retry_after } => {
+                sdio_host2::RequestProgress::RegisterPending { retry_after }
+            }
+            sdmmc_protocol::sdio::HostProgressWait::Irq => {
+                sdio_host2::RequestProgress::WaitingForIrq
+            }
+        }
+    }
+
     fn physical_bus_idle(&self) -> bool {
         matches!(self.command_state, command::CommandState::Idle)
             && self.pending_data.is_none()
@@ -369,15 +125,15 @@ impl Sdhci {
     fn check_host2_transaction_request(
         &self,
         request: &TransactionRequest<'_>,
-    ) -> Result<(), sdio_host2::PollRequestError> {
+    ) -> Result<(), sdio_host2::AdvanceRequestError> {
         if request.done {
-            return Err(sdio_host2::PollRequestError::AlreadyCompleted);
+            return Err(sdio_host2::AdvanceRequestError::AlreadyCompleted);
         }
         if request.owner != self.host2_owner() {
-            return Err(sdio_host2::PollRequestError::WrongOwner);
+            return Err(sdio_host2::AdvanceRequestError::WrongOwner);
         }
         if self.host2_active_id != Some(request.id) {
-            return Err(sdio_host2::PollRequestError::StaleGeneration);
+            return Err(sdio_host2::AdvanceRequestError::StaleGeneration);
         }
         Ok(())
     }
@@ -385,15 +141,15 @@ impl Sdhci {
     fn check_host2_bus_request(
         &self,
         request: &BusRequest,
-    ) -> Result<(), sdio_host2::PollRequestError> {
+    ) -> Result<(), sdio_host2::AdvanceRequestError> {
         if request.done {
-            return Err(sdio_host2::PollRequestError::AlreadyCompleted);
+            return Err(sdio_host2::AdvanceRequestError::AlreadyCompleted);
         }
         if request.owner != self.host2_owner() {
-            return Err(sdio_host2::PollRequestError::WrongOwner);
+            return Err(sdio_host2::AdvanceRequestError::WrongOwner);
         }
         if self.host2_active_id != Some(request.id) {
-            return Err(sdio_host2::PollRequestError::StaleGeneration);
+            return Err(sdio_host2::AdvanceRequestError::StaleGeneration);
         }
         Ok(())
     }

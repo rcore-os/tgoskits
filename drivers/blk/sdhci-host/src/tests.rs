@@ -1,9 +1,35 @@
 use core::num::{NonZeroU16, NonZeroU32};
 
-use sdio_host2::ResponseType;
+use sdio_host2::{ProgressCause, RequestProgress, ResponseType};
 
 use super::*;
-use crate::block_path::{SelectedDataPath, select_block_data_path};
+
+#[test]
+fn irq_capability_trait_controls_hardware_signal_masks() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+
+    assert!(!sdmmc_protocol::sdio::SdioIrqHost::completion_irq_enabled(
+        &host
+    ));
+    sdmmc_protocol::sdio::SdioIrqHost::enable_completion_irq(&mut host).unwrap();
+    assert!(sdmmc_protocol::sdio::SdioIrqHost::completion_irq_enabled(
+        &host
+    ));
+    assert_ne!(host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
+    assert_ne!(host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE), 0);
+
+    sdmmc_protocol::sdio::SdioIrqHost::disable_completion_irq(&mut host).unwrap();
+    assert!(!sdmmc_protocol::sdio::SdioIrqHost::completion_irq_enabled(
+        &host
+    ));
+    assert_eq!(host.read_u16(REG_NORMAL_INT_SIGNAL_ENABLE), 0);
+    assert_eq!(host.read_u16(REG_ERROR_INT_SIGNAL_ENABLE), 0);
+}
 
 #[test]
 fn event_reports_command_completion_without_os_wakeup_policy() {
@@ -55,37 +81,27 @@ fn merged_command_and_data_irq_reports_queue_ready() {
 }
 
 #[test]
-fn required_adma2_policy_rejects_fifo_fallback_without_dma() {
+fn data_transaction_rejects_missing_dma_capability() {
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);
 
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
-    host.set_block_transfer_policy(BlockTransferPolicy::RequireAdma2);
     let mut buffer = [0_u8; 512];
     let command = Command::new(17, 0, ResponseType::R1);
+    let data = sdio_host2::DataPhase::read(
+        NonZeroU16::new(512).unwrap(),
+        NonZeroU32::new(1).unwrap(),
+        &mut buffer,
+    )
+    .unwrap();
+    let transaction = sdio_host2::Transaction::with_data(command, data);
 
     assert!(matches!(
-        <Sdhci as ProtocolSdioHost>::submit_read_data(&mut host, &command, &mut buffer, 512, 1,),
-        Err(Error::UnsupportedCommand)
+        unsafe { <Sdhci as sdio_host2::SdioHost>::submit_transaction(&mut host, transaction) },
+        Err(sdio_host2::Error::Unsupported)
     ));
-}
-
-#[test]
-fn required_adma2_policy_accepts_mmc_ext_csd_data_command() {
-    assert_eq!(
-        select_block_data_path(
-            BlockTransferPolicy::RequireAdma2,
-            true,
-            &sdmmc_protocol::cmd::CMD8_MMC,
-            512,
-            1,
-            512,
-            DataDirection::Read,
-        ),
-        Ok(SelectedDataPath::Adma2)
-    );
 }
 
 #[test]
@@ -115,7 +131,56 @@ fn host2_data_submit_reports_busy_without_dirtying_pending_data() {
 }
 
 #[test]
-fn host2_poll_after_complete_is_rejected() {
+fn host2_r1b_busy_release_advances_on_register_retry() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.enable_completion_irq();
+    let transaction = sdio_host2::Transaction::command(sdmmc_protocol::cmd::cmd7(1));
+    let mut request =
+        unsafe { <Sdhci as sdio_host2::SdioHost>::submit_transaction(&mut host, transaction) }
+            .unwrap();
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_CMD_COMPLETE);
+    let mut irq = host.irq_endpoint();
+    assert_eq!(irq.handle_irq(), Event::CommandComplete);
+
+    assert_eq!(
+        <Sdhci as sdio_host2::SdioHost>::advance_transaction(
+            &mut host,
+            &mut request,
+            ProgressCause::AcknowledgedIrq,
+        ),
+        Ok(RequestProgress::RegisterPending {
+            retry_after: SDHCI_REGISTER_RETRY_DELAY,
+        })
+    );
+    assert_eq!(
+        <Sdhci as sdio_host2::SdioHost>::advance_transaction(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::RegisterPending {
+            retry_after: SDHCI_REGISTER_RETRY_DELAY,
+        })
+    );
+    host.write_u32(REG_PRESENT_STATE, PRESENT_DAT0_LINE_SIGNAL_LEVEL);
+
+    assert!(matches!(
+        <Sdhci as sdio_host2::SdioHost>::advance_transaction(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::Complete(Ok(_)))
+    ));
+}
+
+#[test]
+fn host2_advance_after_complete_is_rejected() {
     #[repr(align(4))]
     struct FakeRegs([u8; 0x100]);
 
@@ -128,12 +193,20 @@ fn host2_poll_after_complete_is_rejected() {
     .unwrap();
 
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
-        Ok(sdio_host2::RequestPoll::Ready(Ok(())))
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::Submitted,
+        ),
+        Ok(RequestProgress::Complete(Ok(())))
     ));
     assert_eq!(
-        <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
-        Err(sdio_host2::PollRequestError::AlreadyCompleted)
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Err(sdio_host2::AdvanceRequestError::AlreadyCompleted)
     );
 }
 
@@ -154,8 +227,12 @@ fn host2_bus_request_is_bound_to_originating_host() {
     .unwrap();
 
     assert_eq!(
-        <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host_b, &mut request),
-        Err(sdio_host2::PollRequestError::WrongOwner)
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host_b,
+            &mut request,
+            ProgressCause::Submitted,
+        ),
+        Err(sdio_host2::AdvanceRequestError::WrongOwner)
     );
 }
 
@@ -205,12 +282,20 @@ fn host2_v180_rejects_partial_high_dat_lines_before_switch() {
     .unwrap();
 
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
-        Ok(sdio_host2::RequestPoll::Pending)
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::Submitted,
+        ),
+        Ok(RequestProgress::RegisterPending { .. })
     ));
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
-        Ok(sdio_host2::RequestPoll::Ready(Err(
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::Complete(Err(
             sdio_host2::Error::Controller
         )))
     ));
@@ -224,48 +309,6 @@ fn clock_div_zero_quirk_uses_nonzero_divider_for_low_external_clock() {
         sdhci_clock_divisor_with_quirk(50_000_000, 50_000_000, true),
         0
     );
-}
-
-#[test]
-fn external_clock_host_stage_runs_before_sd_clock_output_is_reenabled() {
-    #[repr(align(4))]
-    struct FakeRegs([u8; 0x100]);
-
-    struct Clock;
-
-    impl HostClock for Clock {
-        fn set_clock(&self, _target_hz: u32) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn clock_div_zero_broken(&self) -> bool {
-            true
-        }
-
-        fn prepare_host_clock(&self, host: &mut Sdhci, target_hz: u32) -> Result<(), Error> {
-            assert_eq!(target_hz, 400_000);
-            assert_eq!(host.read_u16(REG_CLOCK_CONTROL) & CLOCK_SD_ENABLE, 0);
-            host.write_u32(REG_CAPABILITIES_HIGH, 0xc10c);
-            Ok(())
-        }
-    }
-
-    let mut regs = FakeRegs([0; 0x100]);
-    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
-    let mut host = unsafe { Sdhci::new(base) };
-    host.write_u16(
-        REG_CLOCK_CONTROL,
-        CLOCK_INTERNAL_ENABLE | CLOCK_INTERNAL_STABLE | CLOCK_SD_ENABLE,
-    );
-    host.set_external_clock(Clock);
-
-    assert!(matches!(
-        <Sdhci as ProtocolSdioHost>::set_clock(&mut host, ClockSpeed::Identification),
-        Err(Error::Timeout(_))
-    ));
-
-    assert_eq!(host.read_u32(REG_CAPABILITIES_HIGH), 0xc10c);
-    assert_eq!(host.read_u16(REG_CLOCK_CONTROL), CLOCK_INTERNAL_ENABLE);
 }
 
 #[test]
@@ -309,20 +352,36 @@ fn host2_external_clock_runs_host_stage_before_enable() {
     .unwrap();
 
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
-        Ok(sdio_host2::RequestPoll::Pending)
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::Submitted,
+        ),
+        Ok(RequestProgress::RegisterPending { .. })
     ));
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
-        Ok(sdio_host2::RequestPoll::Pending)
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::RegisterPending { .. })
     ));
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
-        Ok(sdio_host2::RequestPoll::Pending)
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::RegisterPending { .. })
     ));
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
-        Ok(sdio_host2::RequestPoll::Pending)
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::RegisterPending { .. })
     ));
     assert_eq!(host.read_u16(REG_CLOCK_CONTROL), CLOCK_INTERNAL_ENABLE);
     host.write_u16(
@@ -330,8 +389,12 @@ fn host2_external_clock_runs_host_stage_before_enable() {
         host.read_u16(REG_CLOCK_CONTROL) | CLOCK_INTERNAL_STABLE,
     );
     assert!(matches!(
-        <Sdhci as sdio_host2::SdioHost>::poll_bus_op(&mut host, &mut request),
-        Ok(sdio_host2::RequestPoll::Ready(Ok(())))
+        <Sdhci as sdio_host2::SdioHost>::advance_bus_op(
+            &mut host,
+            &mut request,
+            ProgressCause::RegisterRetry,
+        ),
+        Ok(RequestProgress::Complete(Ok(())))
     ));
 
     assert_eq!(host.read_u32(REG_CAPABILITIES_HIGH), 0x5d17);

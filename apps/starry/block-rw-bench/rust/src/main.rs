@@ -12,19 +12,97 @@ const BENCH_DIR: &str = "/root/block-rw-bench";
 const SEQUENTIAL_BYTES: usize = 8 * 1024 * 1024;
 const MULTITASK_BYTES_PER_WORKER: usize = 2 * 1024 * 1024;
 const MULTITASK_WORKERS: usize = 8;
-const ADMA2_MAX_TRANSFER_BYTES: usize = 1_048_448;
-const SEQUENTIAL_CASES: [Case; 4] = [
-    Case::new("sector", 512),
-    Case::new("page", 4 * 1024),
-    Case::new("adma-max", ADMA2_MAX_TRANSFER_BYTES),
-    Case::new("adma-split", ADMA2_MAX_TRANSFER_BYTES + 512),
-];
+const ADMA2_MAX_TRANSFER_BYTES: usize = 1_048_064;
 const DROP_CACHES_ENV: &str = "BLOCK_RW_BENCH_DROP_CACHES";
+const ROOT_DEVICE_ENV: &str = "BLOCK_RW_BENCH_ROOT_DEVICE";
+const CONTROLLER_ENV: &str = "BLOCK_RW_BENCH_CONTROLLER";
+const SEQUENTIAL_BYTES_ENV: &str = "BLOCK_RW_BENCH_SEQUENTIAL_BYTES";
+const MULTITASK_BYTES_ENV: &str = "BLOCK_RW_BENCH_MULTITASK_BYTES_PER_WORKER";
+const MULTITASK_WORKERS_ENV: &str = "BLOCK_RW_BENCH_MULTITASK_WORKERS";
+const FSYNC_ENV: &str = "BLOCK_RW_BENCH_FSYNC";
+const CHECKSUM_ENV: &str = "BLOCK_RW_BENCH_CHECKSUM_SCENARIO";
+const SUCCESS_MARKER_ENV: &str = "BLOCK_RW_BENCH_SUCCESS_MARKER";
+const MAX_TRANSFER_BYTES_ENV: &str = "BLOCK_RW_BENCH_MAX_TRANSFER_BYTES";
 
 #[derive(Clone, Copy)]
 struct Case {
     name: &'static str,
     io_size: usize,
+}
+
+struct BenchConfig {
+    root_device: String,
+    controller: String,
+    sequential_bytes: usize,
+    multitask_bytes_per_worker: usize,
+    multitask_workers: usize,
+    fsync: bool,
+    checksum: String,
+    success_marker: String,
+    max_transfer_bytes: usize,
+}
+
+impl BenchConfig {
+    fn from_env() -> io::Result<Self> {
+        let config = Self {
+            root_device: env_string(ROOT_DEVICE_ENV, "/dev/mmcblk0"),
+            controller: env_string(CONTROLLER_ENV, "rk3588-dwcmshc-emmc"),
+            sequential_bytes: env_usize(SEQUENTIAL_BYTES_ENV, SEQUENTIAL_BYTES)?,
+            multitask_bytes_per_worker: env_usize(MULTITASK_BYTES_ENV, MULTITASK_BYTES_PER_WORKER)?,
+            multitask_workers: env_usize(MULTITASK_WORKERS_ENV, MULTITASK_WORKERS)?,
+            fsync: env_bool(FSYNC_ENV, true)?,
+            checksum: env_string(CHECKSUM_ENV, "pattern"),
+            success_marker: env_string(SUCCESS_MARKER_ENV, "BLOCK_RW_BENCH_PASSED"),
+            max_transfer_bytes: env_usize(MAX_TRANSFER_BYTES_ENV, ADMA2_MAX_TRANSFER_BYTES)?,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        if self.root_device.is_empty()
+            || self.controller.is_empty()
+            || self.success_marker.is_empty()
+            || self.sequential_bytes == 0
+            || self.multitask_bytes_per_worker == 0
+            || self.multitask_workers == 0
+            || self.max_transfer_bytes < 512
+            || !self.max_transfer_bytes.is_multiple_of(512)
+        {
+            return Err(io::Error::other(
+                "block benchmark sizes, workers, device, controller, and marker must be valid",
+            ));
+        }
+        if self.checksum != "pattern" {
+            return Err(io::Error::other(format!(
+                "{CHECKSUM_ENV} only supports the deterministic `pattern` verifier"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn env_string(name: &str, default: &str) -> String {
+    env::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default.into())
+}
+
+fn env_usize(name: &str, default: usize) -> io::Result<usize> {
+    env::var(name).map_or(Ok(default), |value| {
+        value
+            .parse()
+            .map_err(|_| io::Error::other(format!("{name} must be an integer")))
+    })
+}
+
+fn env_bool(name: &str, default: bool) -> io::Result<bool> {
+    env::var(name).map_or(Ok(default), |value| match value.as_str() {
+        "1" | "true" | "yes" => Ok(true),
+        "0" | "false" | "no" => Ok(false),
+        _ => Err(io::Error::other(format!("{name} must be true or false"))),
+    })
 }
 
 impl Case {
@@ -41,37 +119,48 @@ fn main() {
 }
 
 fn run() -> io::Result<()> {
+    let config = BenchConfig::from_env()?;
     let dir = Path::new(BENCH_DIR);
     fs::create_dir_all(dir)?;
-    verify_root_device()?;
+    verify_root_device(&config)?;
+    let planner_split_bytes = config
+        .max_transfer_bytes
+        .checked_add(512)
+        .ok_or_else(|| io::Error::other("maximum transfer size overflows planner split"))?;
+    let sequential_cases = [
+        Case::new("sector", 512),
+        Case::new("page", 4 * 1024),
+        Case::new("hardware-max", config.max_transfer_bytes),
+        Case::new("planner-split", planner_split_bytes),
+    ];
 
-    for case in SEQUENTIAL_CASES {
+    for case in sequential_cases {
         println!(
             "block-rw-bench: start case={} io_size={} bytes={}",
-            case.name, case.io_size, SEQUENTIAL_BYTES
+            case.name, case.io_size, config.sequential_bytes
         );
         io::stdout().flush()?;
-        run_case(dir, case, SEQUENTIAL_BYTES)?;
+        run_case(dir, case, config.sequential_bytes, config.fsync)?;
     }
     println!(
         "block-rw-bench: start case=multitask tasks={} io_size={} bytes_per_task={}",
-        MULTITASK_WORKERS,
+        config.multitask_workers,
         4 * 1024,
-        MULTITASK_BYTES_PER_WORKER
+        config.multitask_bytes_per_worker
     );
     io::stdout().flush()?;
-    run_multitask_case(dir)?;
+    run_multitask_case(dir, &config)?;
 
     println!(
         "block-rw-bench: done cases={} status=ok",
-        SEQUENTIAL_CASES.len() + 1
+        sequential_cases.len() + 1
     );
-    println!("ORANGEPI_BLOCK_RW_BENCH_PASSED");
+    println!("{}", config.success_marker);
     io::stdout().flush()?;
     Ok(())
 }
 
-fn verify_root_device() -> io::Result<()> {
+fn verify_root_device(config: &BenchConfig) -> io::Result<()> {
     let mounts = fs::read_to_string("/proc/mounts")?;
     let root_source = mounts
         .lines()
@@ -81,24 +170,31 @@ fn verify_root_device() -> io::Result<()> {
             (fields.next()? == "/").then_some(source)
         })
         .ok_or_else(|| io::Error::other("root mount is absent from /proc/mounts"))?;
-    let root_is_emmc = root_source == "/dev/mmcblk0"
-        || root_source
-            .strip_prefix("/dev/mmcblk0p")
-            .is_some_and(|partition| {
-                !partition.is_empty() && partition.bytes().all(|byte| byte.is_ascii_digit())
-            });
-    if !root_is_emmc {
+    if !root_device_matches(root_source, &config.root_device) {
         return Err(io::Error::other(format!(
-            "root-device mismatch: expected /dev/mmcblk0 or one of its partitions, found \
-             {root_source}"
+            "root-device mismatch: expected {} or one of its partitions, found {root_source}",
+            config.root_device
         )));
     }
-    println!("block-rw-bench: root_device={root_source} controller=rk3588-dwcmshc-emmc status=ok");
+    println!(
+        "block-rw-bench: root_device={root_source} controller={} status=ok",
+        config.controller
+    );
     io::stdout().flush()?;
     Ok(())
 }
 
-fn run_case(dir: &Path, case: Case, bytes: usize) -> io::Result<()> {
+fn root_device_matches(root_source: &str, expected: &str) -> bool {
+    root_source == expected
+        || root_source
+            .strip_prefix(expected)
+            .and_then(|suffix| suffix.strip_prefix('p'))
+            .is_some_and(|partition| {
+                !partition.is_empty() && partition.bytes().all(|byte| byte.is_ascii_digit())
+            })
+}
+
+fn run_case(dir: &Path, case: Case, bytes: usize, fsync: bool) -> io::Result<()> {
     maybe_drop_caches()?;
 
     let path = case_path(dir, case.name);
@@ -120,7 +216,9 @@ fn run_case(dir: &Path, case: Case, bytes: usize) -> io::Result<()> {
     let write_elapsed = write_start.elapsed();
 
     let fsync_start = Instant::now();
-    file.sync_all()?;
+    if fsync {
+        file.sync_all()?;
+    }
     let fsync_elapsed = fsync_start.elapsed();
     drop(file);
 
@@ -146,11 +244,13 @@ fn run_case(dir: &Path, case: Case, bytes: usize) -> io::Result<()> {
     Ok(())
 }
 
-fn run_multitask_case(dir: &Path) -> io::Result<()> {
-    let barrier = Arc::new(Barrier::new(MULTITASK_WORKERS));
+fn run_multitask_case(dir: &Path, config: &BenchConfig) -> io::Result<()> {
+    let barrier = Arc::new(Barrier::new(config.multitask_workers));
     let started = Instant::now();
-    let mut workers = Vec::with_capacity(MULTITASK_WORKERS);
-    for worker_id in 0..MULTITASK_WORKERS {
+    let bytes_per_worker = config.multitask_bytes_per_worker;
+    let fsync = config.fsync;
+    let mut workers = Vec::with_capacity(config.multitask_workers);
+    for worker_id in 0..config.multitask_workers {
         let barrier = Arc::clone(&barrier);
         let dir = dir.to_path_buf();
         workers.push(thread::spawn(move || {
@@ -160,8 +260,9 @@ fn run_multitask_case(dir: &Path) -> io::Result<()> {
             run_path_case(
                 &path,
                 Case::new("multitask", 4 * 1024),
-                MULTITASK_BYTES_PER_WORKER,
+                bytes_per_worker,
                 worker_id,
+                fsync,
             )
         }));
     }
@@ -173,17 +274,24 @@ fn run_multitask_case(dir: &Path) -> io::Result<()> {
     }
     println!(
         "block-rw-bench: case=multitask tasks={} io_size={} bytes_per_task={} elapsed_ms={} \
-         fsync=each verify=ok",
-        MULTITASK_WORKERS,
+         fsync={} verify=ok",
+        config.multitask_workers,
         4 * 1024,
-        MULTITASK_BYTES_PER_WORKER,
-        duration_ms(started.elapsed())
+        config.multitask_bytes_per_worker,
+        duration_ms(started.elapsed()),
+        fsync
     );
     io::stdout().flush()?;
     Ok(())
 }
 
-fn run_path_case(path: &Path, case: Case, bytes: usize, worker_id: usize) -> io::Result<()> {
+fn run_path_case(
+    path: &Path,
+    case: Case,
+    bytes: usize,
+    worker_id: usize,
+    fsync: bool,
+) -> io::Result<()> {
     let mut pattern = vec![0; case.io_size];
     let mut file = OpenOptions::new()
         .create(true)
@@ -197,7 +305,9 @@ fn run_path_case(path: &Path, case: Case, bytes: usize, worker_id: usize) -> io:
         file.write_all(&pattern[..chunk_len])?;
         offset += chunk_len;
     }
-    file.sync_all()?;
+    if fsync {
+        file.sync_all()?;
+    }
     drop(file);
     verify_worker_file(path, case.io_size, bytes, worker_id)?;
     fs::remove_file(path)
@@ -297,4 +407,19 @@ fn maybe_drop_caches() -> io::Result<()> {
     }
 
     fs::write("/proc/sys/vm/drop_caches", b"3\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::root_device_matches;
+
+    #[test]
+    fn root_device_match_accepts_only_the_device_or_numeric_partition() {
+        assert!(root_device_matches("/dev/mmcblk0", "/dev/mmcblk0"));
+        assert!(root_device_matches("/dev/mmcblk0p2", "/dev/mmcblk0"));
+        assert!(!root_device_matches("/dev/mmcblk00", "/dev/mmcblk0"));
+        assert!(!root_device_matches("/dev/mmcblk0p", "/dev/mmcblk0"));
+        assert!(!root_device_matches("/dev/mmcblk0p2x", "/dev/mmcblk0"));
+        assert!(!root_device_matches("/dev/nvme0n1p2", "/dev/mmcblk0"));
+    }
 }

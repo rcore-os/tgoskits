@@ -69,6 +69,59 @@ struct NeverCompletesQueue {
     pending: Vec<RequestId>,
 }
 
+struct RegisterRetryQueue {
+    retry_after: Option<Duration>,
+    retries: Arc<AtomicUsize>,
+    drains: Arc<AtomicUsize>,
+}
+
+impl DriverGeneric for RegisterRetryQueue {
+    fn name(&self) -> &str {
+        "register-retry"
+    }
+}
+
+impl HardwareQueue for RegisterRetryQueue {
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn info(&self) -> QueueInfo {
+        test_queue_info(1)
+    }
+
+    fn submit_batch_owned(
+        &mut self,
+        _requests: &mut OwnedRequestBatch,
+        _sink: &mut dyn SubmissionSink,
+    ) -> rdif_block::BatchSubmitResult {
+        rdif_block::BatchSubmitResult::new(0, BatchSubmitDisposition::Continue)
+    }
+
+    fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn drain_completions(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        self.drains.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn register_retry_after(&self) -> Option<Duration> {
+        self.retry_after
+    }
+
+    fn advance_register_retry(&mut self) -> Result<(), BlkError> {
+        self.retries.fetch_add(1, Ordering::AcqRel);
+        self.retry_after = None;
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        Ok(())
+    }
+}
+
 impl DriverGeneric for NeverCompletesQueue {
     fn name(&self) -> &str {
         "never-completes"
@@ -315,6 +368,64 @@ fn flush_submission_at(lba: u64) -> (CompletionSubscription, Submission) {
             completion,
         },
     )
+}
+
+#[test]
+fn register_retry_advances_only_register_state_and_posts_controller_event() {
+    crate::os::task::install_test_runtime_ops();
+    let ops = runtime_ops().unwrap();
+    let state = HctxState {
+        submission_channels: IrqMutex::new(Vec::new()),
+        notification: ops.notification(),
+        lifecycle_notification: ops.notification(),
+        irq_latches: IrqMutex::new(Vec::new()),
+        quiescing: AtomicBool::new(false),
+        quiesced: AtomicBool::new(false),
+        stopping: AtomicBool::new(false),
+        terminated: AtomicBool::new(false),
+    };
+    let retries = Arc::new(AtomicUsize::new(0));
+    let drains = Arc::new(AtomicUsize::new(0));
+    let mut queue = RegisterRetryQueue {
+        retry_after: Some(Duration::from_millis(2)),
+        retries: Arc::clone(&retries),
+        drains: Arc::clone(&drains),
+    };
+    let controller = TestControllerPort::default();
+    let now = Duration::from_secs(10);
+    let mut retry_at = None;
+    let mut deadline = None;
+    let mut fatal_error = None;
+
+    reconcile_register_retry(&queue, &mut retry_at, &mut deadline, now);
+    assert_eq!(retry_at, Some(now + Duration::from_millis(2)));
+    assert_eq!(deadline, Some(now + QUEUE_REGISTER_TRANSITION_TIMEOUT));
+    assert!(!advance_register_retry_if_due(
+        &mut queue,
+        &controller,
+        &mut retry_at,
+        &mut deadline,
+        now + Duration::from_millis(1),
+        &state,
+        &mut fatal_error,
+    ));
+    assert!(advance_register_retry_if_due(
+        &mut queue,
+        &controller,
+        &mut retry_at,
+        &mut deadline,
+        now + Duration::from_millis(2),
+        &state,
+        &mut fatal_error,
+    ));
+
+    assert_eq!(retries.load(Ordering::Acquire), 1);
+    assert_eq!(drains.load(Ordering::Acquire), 0);
+    assert_eq!(fatal_error, None);
+    assert_eq!(
+        controller.events.lock().unwrap().as_slice(),
+        [ControllerEvent::RegisterRetry]
+    );
 }
 
 #[test]

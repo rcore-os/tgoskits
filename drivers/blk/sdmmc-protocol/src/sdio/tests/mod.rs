@@ -1,10 +1,15 @@
 extern crate std;
 
-use std::vec::Vec;
+use std::{
+    alloc::{Layout, alloc_zeroed, dealloc},
+    ptr::NonNull,
+    sync::OnceLock,
+    vec::Vec,
+};
 
 use super::*;
 use crate::{
-    CommandResponsePoll, DataCommandPoll, OperationPoll,
+    DataCommandProgress, OperationProgress,
     cmd::Command,
     error::{ErrorContext, Phase},
     response::{
@@ -16,6 +21,8 @@ mod block_io_irq;
 mod host2_adapter;
 mod init_flow;
 mod mmc_init;
+#[cfg(feature = "rdif")]
+mod rdif_lifecycle;
 mod sd_speed;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,7 +39,7 @@ struct MockHost {
     commands: Vec<Command>,
     events: Vec<MockEvent>,
     bus_width: Option<BusWidth>,
-    data_requests: Vec<(DataDirection, u32, u32)>,
+    data_requests: Vec<(sdio_host2::DataDirection, u32, u32)>,
     next_read_payload: Option<Vec<u8>>,
     read_payloads: Vec<Vec<u8>>,
     writes: Vec<Vec<u8>>,
@@ -55,17 +62,30 @@ struct MockHost {
     tuning_result: Option<Error>,
     /// Records the most recent `execute_tuning` call.
     last_tuning: Option<(u8, u16)>,
+    /// Make the HS200 rollback voltage/clock operations require more than
+    /// one register-state advance. This catches synchronous wrappers that
+    /// submit a multi-step bus operation, advance it once, then abort it.
+    multi_step_hs200_rollback: bool,
+    aborted_bus_ops: Vec<sdio_host2::BusOp>,
     pending_polls: usize,
+    completion_irq_enabled: bool,
     /// Optional monotonic clock value returned from
-    /// [`SdioHost::now_ms`]. Tests advance this directly to verify the
+    /// [`sdio_host2::SdioHost::now_ms`]. Tests advance this directly to verify the
     /// wall-clock timeout path; `None` keeps the legacy poll-counter
     /// behavior used by every pre-existing test.
     now_ms: Option<u64>,
 }
 
-struct MockDataRequest<'a> {
-    response: Option<Response>,
-    _marker: core::marker::PhantomData<&'a ()>,
+struct MockTransactionRequest {
+    result: Option<Result<sdio_host2::RawResponse, sdio_host2::Error>>,
+    dma: Option<dma_api::PreparedDma>,
+    completed_dma: Option<dma_api::CompletedDma>,
+}
+
+struct MockBusRequest {
+    op: sdio_host2::BusOp,
+    pending_advances: usize,
+    done: bool,
 }
 
 impl MockHost {
@@ -85,7 +105,10 @@ impl MockHost {
             voltage_switch_result: None,
             tuning_result: None,
             last_tuning: None,
+            multi_step_hs200_rollback: false,
+            aborted_bus_ops: Vec::new(),
             pending_polls: 0,
+            completion_irq_enabled: false,
             now_ms: None,
         }
     }
@@ -108,136 +131,343 @@ impl MockHost {
             voltage_switch_result: None,
             tuning_result: None,
             last_tuning: None,
+            multi_step_hs200_rollback: false,
+            aborted_bus_ops: Vec::new(),
             pending_polls: 0,
+            completion_irq_enabled: false,
             now_ms: None,
         }
     }
 }
 
-impl SdioHost for MockHost {
-    type Event = ();
-    type DataRequest<'a> = MockDataRequest<'a>;
-    type BusRequest = ReadyBusRequest;
+impl sdio_host2::SdioHost for MockHost {
+    type TransactionRequest<'a> = MockTransactionRequest;
+    type BusRequest = MockBusRequest;
 
-    fn submit_command(&mut self, cmd: &Command) -> Result<(), Error> {
-        self.commands.push(*cmd);
-        self.events.push(MockEvent::Command(*cmd));
-        Ok(())
-    }
-
-    fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error> {
-        if self.pending_polls > 0 {
-            self.pending_polls -= 1;
-            return Ok(CommandResponsePoll::Pending);
-        }
-        if self.replies.is_empty() {
-            return Err(Error::Timeout(ErrorContext::default()));
-        }
-        self.replies.remove(0).map(CommandResponsePoll::Complete)
-    }
-
-    fn submit_read_data<'a>(
+    unsafe fn submit_transaction<'a>(
         &mut self,
-        cmd: &Command,
-        buf: &'a mut [u8],
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<Self::DataRequest<'a>, Error> {
-        self.data_requests
-            .push((DataDirection::Read, block_size, block_count));
-        self.submit_command(cmd)?;
-        let CommandResponsePoll::Complete(response) = self.poll_command_response()? else {
-            return Err(Error::Timeout(ErrorContext::default()));
-        };
-        let payload = if self.read_payloads.is_empty() {
-            self.next_read_payload.take()
+        mut transaction: sdio_host2::Transaction<'a>,
+    ) -> Result<Self::TransactionRequest<'a>, sdio_host2::Error>
+    where
+        Self: 'a,
+    {
+        let command = transaction.command;
+        self.commands.push(command);
+        self.events.push(MockEvent::Command(command));
+        let result = if self.replies.is_empty() {
+            Err(sdio_host2::Error::Timeout)
         } else {
-            Some(self.read_payloads.remove(0))
+            self.replies
+                .remove(0)
+                .map(|response| response.to_raw_response(command.response))
+                .map_err(protocol_error_to_host)
         };
-        match payload {
-            Some(data) if data.len() == buf.len() => {
-                buf.copy_from_slice(&data);
-                Ok(MockDataRequest {
-                    response: Some(response),
-                    _marker: core::marker::PhantomData,
-                })
+        let mut dma = None;
+        if let Some(data) = transaction.data.take() {
+            self.data_requests.push((
+                data.direction,
+                u32::from(data.block_size.get()),
+                data.block_count.get(),
+            ));
+            match data.buffer {
+                sdio_host2::DataBuffer::Read(buffer) => {
+                    let payload = if self.read_payloads.is_empty() {
+                        self.next_read_payload.take()
+                    } else {
+                        Some(self.read_payloads.remove(0))
+                    };
+                    let Some(payload) = payload.filter(|payload| payload.len() == buffer.len())
+                    else {
+                        return Err(sdio_host2::Error::Unsupported);
+                    };
+                    buffer.copy_from_slice(&payload);
+                }
+                sdio_host2::DataBuffer::Write(buffer) => self.writes.push(buffer.to_vec()),
+                sdio_host2::DataBuffer::Dma(buffer) => {
+                    if data.direction == sdio_host2::DataDirection::Read {
+                        let payload = if self.read_payloads.is_empty() {
+                            self.next_read_payload.take()
+                        } else {
+                            Some(self.read_payloads.remove(0))
+                        };
+                        let Some(payload) =
+                            payload.filter(|payload| payload.len() == buffer.len().get())
+                        else {
+                            return Err(sdio_host2::Error::Unsupported);
+                        };
+                        unsafe {
+                            buffer
+                                .cpu_ptr()
+                                .as_ptr()
+                                .copy_from_nonoverlapping(payload.as_ptr(), payload.len());
+                        }
+                    }
+                    dma = Some(buffer);
+                }
             }
-            _ => Err(Error::UnsupportedCommand),
         }
-    }
-
-    fn submit_write_data<'a>(
-        &mut self,
-        cmd: &Command,
-        buf: &'a [u8],
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<Self::DataRequest<'a>, Error> {
-        self.data_requests
-            .push((DataDirection::Write, block_size, block_count));
-        self.submit_command(cmd)?;
-        let CommandResponsePoll::Complete(response) = self.poll_command_response()? else {
-            return Err(Error::Timeout(ErrorContext::default()));
-        };
-        self.writes.push(buf.to_vec());
-        Ok(MockDataRequest {
-            response: Some(response),
-            _marker: core::marker::PhantomData,
+        Ok(MockTransactionRequest {
+            result: Some(result),
+            dma,
+            completed_dma: None,
         })
     }
 
-    fn poll_data_request<'a>(
+    unsafe fn submit_transaction_owned<'a>(
         &mut self,
-        request: &mut Self::DataRequest<'a>,
-    ) -> Result<DataCommandPoll, Error> {
-        request
-            .response
+        transaction: sdio_host2::Transaction<'a>,
+    ) -> Result<Self::TransactionRequest<'a>, sdio_host2::SubmitTransactionError<'a>>
+    where
+        Self: 'a,
+    {
+        if let Some(data) = transaction.data.as_ref()
+            && data.direction == sdio_host2::DataDirection::Read
+        {
+            let payload = self
+                .read_payloads
+                .first()
+                .or(self.next_read_payload.as_ref());
+            if !payload.is_some_and(|payload| payload.len() == data.buffer.len()) {
+                return Err(sdio_host2::SubmitTransactionError::new(
+                    sdio_host2::Error::Unsupported,
+                    transaction,
+                ));
+            }
+        }
+        Ok(unsafe { self.submit_transaction(transaction) }
+            .expect("owned MockHost submission was validated before mutation"))
+    }
+
+    fn advance_transaction<'a>(
+        &mut self,
+        request: &mut Self::TransactionRequest<'a>,
+        cause: sdio_host2::ProgressCause,
+    ) -> Result<sdio_host2::RequestProgress<sdio_host2::RawResponse>, sdio_host2::AdvanceRequestError>
+    where
+        Self: 'a,
+    {
+        if cause != sdio_host2::ProgressCause::AcknowledgedIrq {
+            return Ok(sdio_host2::RequestProgress::WaitingForIrq);
+        }
+        if self.pending_polls > 0 {
+            self.pending_polls -= 1;
+            return Ok(sdio_host2::RequestProgress::WaitingForIrq);
+        }
+        let result = request
+            .result
             .take()
-            .map(DataCommandPoll::Complete)
-            .ok_or(Error::InvalidArgument)
+            .ok_or(sdio_host2::AdvanceRequestError::AlreadyCompleted)?;
+        request.completed_dma = request
+            .dma
+            .take()
+            .map(dma_api::PreparedDma::complete_without_device);
+        Ok(sdio_host2::RequestProgress::Complete(result))
     }
 
-    fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error> {
-        if self.reject_bit8 && matches!(width, BusWidth::Bit8) {
-            return Err(Error::UnsupportedCommand);
+    fn abort_transaction<'a>(
+        &mut self,
+        request: &mut Self::TransactionRequest<'a>,
+    ) -> Result<(), sdio_host2::Error>
+    where
+        Self: 'a,
+    {
+        request.result = None;
+        request.completed_dma = request
+            .dma
+            .take()
+            .map(dma_api::PreparedDma::complete_without_device);
+        Ok(())
+    }
+
+    fn take_completed_dma<'a>(
+        &mut self,
+        request: &mut Self::TransactionRequest<'a>,
+    ) -> Option<dma_api::CompletedDma>
+    where
+        Self: 'a,
+    {
+        request.completed_dma.take()
+    }
+
+    unsafe fn submit_bus_op(
+        &mut self,
+        op: sdio_host2::BusOp,
+    ) -> Result<Self::BusRequest, sdio_host2::Error> {
+        match op {
+            sdio_host2::BusOp::SetBusWidth(width) => {
+                if self.reject_bit8 && matches!(width, BusWidth::Bit8) {
+                    return Err(sdio_host2::Error::Unsupported);
+                }
+                self.bus_width = Some(width);
+            }
+            sdio_host2::BusOp::SetClock(speed) => {
+                self.last_clock = Some(speed);
+                self.events.push(MockEvent::Clock(speed));
+            }
+            sdio_host2::BusOp::SetSignalVoltage(voltage) => {
+                self.last_voltage = Some(voltage);
+                self.events.push(MockEvent::Voltage(voltage));
+                if let Some(error) = self.voltage_switch_result {
+                    return Err(protocol_error_to_host(error));
+                }
+            }
+            sdio_host2::BusOp::ExecuteTuning {
+                command,
+                block_size,
+            } => {
+                self.last_tuning = Some((command.index, block_size.get()));
+                if let Some(error) = self.tuning_result {
+                    return Err(protocol_error_to_host(error));
+                }
+            }
+            _ => {}
         }
-        self.bus_width = Some(width);
-        Ok(())
+        let pending_advances = usize::from(
+            self.multi_step_hs200_rollback
+                && matches!(
+                    op,
+                    sdio_host2::BusOp::SetSignalVoltage(SignalVoltage::V330)
+                        | sdio_host2::BusOp::SetClock(ClockSpeed::Default)
+                ),
+        );
+        Ok(MockBusRequest {
+            op,
+            pending_advances,
+            done: false,
+        })
     }
 
-    fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error> {
-        self.last_clock = Some(speed);
-        self.events.push(MockEvent::Clock(speed));
-        Ok(())
-    }
-
-    fn switch_voltage(&mut self, v: SignalVoltage) -> Result<(), Error> {
-        self.last_voltage = Some(v);
-        self.events.push(MockEvent::Voltage(v));
-        if let Some(e) = self.voltage_switch_result {
-            return Err(e);
+    fn advance_bus_op(
+        &mut self,
+        request: &mut Self::BusRequest,
+        _cause: sdio_host2::ProgressCause,
+    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::AdvanceRequestError> {
+        if request.done {
+            return Err(sdio_host2::AdvanceRequestError::AlreadyCompleted);
         }
-        Ok(())
-    }
-
-    fn execute_tuning(&mut self, cmd_index: u8, block_size: NonZeroU16) -> Result<(), Error> {
-        self.last_tuning = Some((cmd_index, block_size.get()));
-        if let Some(e) = self.tuning_result {
-            return Err(e);
+        if request.pending_advances > 0 {
+            request.pending_advances -= 1;
+            return Ok(sdio_host2::RequestProgress::RegisterPending {
+                retry_after: core::time::Duration::from_micros(10),
+            });
         }
+        request.done = true;
+        Ok(sdio_host2::RequestProgress::Complete(Ok(())))
+    }
+
+    fn abort_bus_op(&mut self, request: &mut Self::BusRequest) -> Result<(), sdio_host2::Error> {
+        self.aborted_bus_ops.push(request.op);
+        request.done = true;
         Ok(())
-    }
-
-    fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error> {
-        submit_ready_bus_op(self, op)
-    }
-
-    fn poll_bus_op(&mut self, request: &mut Self::BusRequest) -> Result<OperationPoll<()>, Error> {
-        poll_ready_bus_op(request)
     }
 
     fn now_ms(&self) -> Option<u64> {
         self.now_ms
+    }
+}
+
+struct MockIrq;
+
+impl SdioIrqHandle for MockIrq {
+    type Event = ();
+
+    fn handle_irq(&mut self) -> Self::Event {}
+}
+
+impl SdioIrqHost for MockHost {
+    type Event = ();
+    type IrqHandle = MockIrq;
+
+    fn irq_handle(&mut self) -> Self::IrqHandle {
+        MockIrq
+    }
+
+    fn completion_irq_enabled(&self) -> bool {
+        self.completion_irq_enabled
+    }
+
+    fn enable_completion_irq(&mut self) -> Result<(), Error> {
+        self.completion_irq_enabled = true;
+        Ok(())
+    }
+
+    fn disable_completion_irq(&mut self) -> Result<(), Error> {
+        self.completion_irq_enabled = false;
+        Ok(())
+    }
+
+    fn device_dma(&self) -> Result<&dma_api::DeviceDma, Error> {
+        Ok(test_device_dma())
+    }
+}
+
+struct TestDmaOp;
+
+impl dma_api::DmaOp for TestDmaOp {
+    fn page_size(&self) -> usize {
+        4096
+    }
+
+    unsafe fn alloc_contiguous(
+        &self,
+        _constraints: dma_api::DmaConstraints,
+        layout: Layout,
+    ) -> Option<dma_api::DmaAllocHandle> {
+        let ptr = NonNull::new(unsafe { alloc_zeroed(layout) })?;
+        Some(unsafe {
+            dma_api::DmaAllocHandle::new(ptr, (ptr.as_ptr() as usize as u64).into(), layout)
+        })
+    }
+
+    unsafe fn dealloc_contiguous(&self, handle: dma_api::DmaAllocHandle) {
+        unsafe { dealloc(handle.as_ptr().as_ptr(), handle.layout()) };
+    }
+
+    unsafe fn alloc_coherent(
+        &self,
+        constraints: dma_api::DmaConstraints,
+        layout: Layout,
+    ) -> Option<dma_api::DmaAllocHandle> {
+        unsafe { self.alloc_contiguous(constraints, layout) }
+    }
+
+    unsafe fn dealloc_coherent(&self, handle: dma_api::DmaAllocHandle) {
+        unsafe { self.dealloc_contiguous(handle) };
+    }
+
+    unsafe fn map_streaming(
+        &self,
+        _constraints: dma_api::DmaConstraints,
+        addr: NonNull<u8>,
+        size: core::num::NonZeroUsize,
+        _direction: dma_api::DmaDirection,
+    ) -> Result<dma_api::DmaMapHandle, dma_api::DmaError> {
+        let layout =
+            Layout::from_size_align(size.get(), 1).map_err(dma_api::DmaError::LayoutError)?;
+        Ok(unsafe {
+            dma_api::DmaMapHandle::new(addr, (addr.as_ptr() as usize as u64).into(), layout, None)
+        })
+    }
+
+    unsafe fn unmap_streaming(&self, _handle: dma_api::DmaMapHandle) {}
+}
+
+fn test_device_dma() -> &'static dma_api::DeviceDma {
+    static DEVICE: OnceLock<dma_api::DeviceDma> = OnceLock::new();
+    static OP: TestDmaOp = TestDmaOp;
+    DEVICE.get_or_init(|| dma_api::DeviceDma::new_legacy(u64::MAX, &OP))
+}
+
+fn protocol_error_to_host(error: Error) -> sdio_host2::Error {
+    match error {
+        Error::Busy => sdio_host2::Error::Busy,
+        Error::Timeout(_) => sdio_host2::Error::Timeout,
+        Error::Crc(_) => sdio_host2::Error::Crc,
+        Error::NoCard => sdio_host2::Error::NoCard,
+        Error::UnsupportedCommand => sdio_host2::Error::Unsupported,
+        Error::InvalidArgument => sdio_host2::Error::InvalidArgument,
+        Error::Misaligned => sdio_host2::Error::Misaligned,
+        _ => sdio_host2::Error::Controller,
     }
 }
 
@@ -328,22 +558,34 @@ fn switch_status_payload(function: u8, supported: u8) -> Vec<u8> {
     status
 }
 
-fn poll_init_to_completion<H: SdioHost>(driver: &mut SdioSdmmc<H>) -> Result<CardInfo, Error> {
+fn poll_init_to_completion<H: SdioIrqHost + 'static>(
+    driver: &mut SdioSdmmc<H>,
+) -> Result<CardInfo, Error> {
     poll_init_to_completion_with_preference(driver, CardInitPreference::SdFirst)
 }
 
-fn poll_init_to_completion_with_preference<H: SdioHost>(
+fn poll_init_to_completion_with_preference<H: SdioIrqHost + 'static>(
     driver: &mut SdioSdmmc<H>,
     preference: CardInitPreference,
 ) -> Result<CardInfo, Error> {
-    let mut scratch = SdioInitScratch::new();
-    let mut request = driver.submit_init_with_preference(preference, &mut scratch)?;
+    let mut request = driver.submit_init_with_preference(preference)?;
     loop {
-        match driver.poll_init_request(&mut request)? {
-            OperationPoll::Pending => {}
-            OperationPoll::Complete(info) => return Ok(info),
+        match advance_init_once(driver, &mut request)? {
+            OperationProgress::Pending => {}
+            OperationProgress::Complete(info) => return Ok(info),
         }
     }
+}
+
+fn advance_init_once<H: SdioIrqHost + 'static>(
+    driver: &mut SdioSdmmc<H>,
+    request: &mut SdioInitRequest<H>,
+) -> Result<OperationProgress<CardInfo>, Error> {
+    let cause = match driver.init_wait_kind(request) {
+        SdioInitWait::Irq => sdio_host2::ProgressCause::AcknowledgedIrq,
+        SdioInitWait::Register => sdio_host2::ProgressCause::RegisterRetry,
+    };
+    driver.advance_init_request(request, cause)
 }
 
 fn ocr_ready_mmc_sector() -> Response {

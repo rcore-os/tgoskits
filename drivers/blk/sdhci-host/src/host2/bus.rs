@@ -122,44 +122,61 @@ impl Sdhci {
         }))
     }
 
-    pub(super) fn poll_host2_bus_state(
+    pub(super) fn advance_host2_bus_state(
         &mut self,
         state: &mut BusRequestState,
-    ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
-        match state {
+        cause: sdio_host2::ProgressCause,
+    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
+        let register_only = !matches!(state, BusRequestState::ExecuteTuning(_));
+        if register_only && cause == sdio_host2::ProgressCause::AcknowledgedIrq {
+            return Ok(sdio_host2::RequestProgress::RegisterPending {
+                retry_after: SDHCI_REGISTER_RETRY_DELAY,
+            });
+        }
+        if !register_only && cause == sdio_host2::ProgressCause::RegisterRetry {
+            return Ok(sdio_host2::RequestProgress::WaitingForIrq);
+        }
+        let progress = match state {
             BusRequestState::Reset {
                 mask,
                 phase,
                 was_irq_enabled,
                 started,
                 polls,
-            } => self.poll_host2_reset(*mask, *phase, *was_irq_enabled, started, polls),
+            } => self.advance_host2_reset(*mask, *phase, *was_irq_enabled, started, polls),
             BusRequestState::PowerOn => {
                 self.set_power(POWER_330);
-                Ok(sdio_host2::RequestPoll::Ready(Ok(())))
+                Ok(sdio_host2::RequestProgress::Complete(Ok(())))
             }
             BusRequestState::PowerOff => {
                 self.write_u8(REG_POWER_CONTROL, 0);
-                Ok(sdio_host2::RequestPoll::Ready(Ok(())))
+                Ok(sdio_host2::RequestProgress::Complete(Ok(())))
             }
-            BusRequestState::SetClock(clock) => self.poll_host2_clock(clock),
+            BusRequestState::SetClock(clock) => self.advance_host2_clock(clock),
             BusRequestState::SetBusWidth(width) => {
                 self.apply_bus_width(*width).map_err(map_protocol_error)?;
-                Ok(sdio_host2::RequestPoll::Ready(Ok(())))
+                Ok(sdio_host2::RequestProgress::Complete(Ok(())))
             }
-            BusRequestState::SetSignalVoltage(voltage) => self.poll_host2_voltage(voltage),
-            BusRequestState::ExecuteTuning(tuning) => self.poll_host2_tuning(tuning),
+            BusRequestState::SetSignalVoltage(voltage) => self.advance_host2_voltage(voltage),
+            BusRequestState::ExecuteTuning(tuning) => self.advance_host2_tuning(tuning),
+        }?;
+        if register_only && matches!(progress, sdio_host2::RequestProgress::WaitingForIrq) {
+            Ok(sdio_host2::RequestProgress::RegisterPending {
+                retry_after: SDHCI_REGISTER_RETRY_DELAY,
+            })
+        } else {
+            Ok(progress)
         }
     }
 
-    fn poll_host2_reset(
+    fn advance_host2_reset(
         &mut self,
         mask: u8,
         phase: Phase,
         was_irq_enabled: bool,
         started: &mut bool,
         polls: &mut u32,
-    ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
+    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
         if !*started {
             if mask == RESET_ALL {
                 self.call_before_reset_all_hook()
@@ -173,19 +190,19 @@ impl Sdhci {
                 self.call_after_reset_hook().map_err(map_protocol_error)?;
                 self.restore_completion_irq_after_reset(was_irq_enabled);
             }
-            return Ok(sdio_host2::RequestPoll::Ready(Ok(())));
+            return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
         }
         if *polls >= SDHCI_RESET_POLLS {
             return Err(map_protocol_error(Error::Timeout(ErrorContext::new(phase))));
         }
         *polls += 1;
-        Ok(sdio_host2::RequestPoll::Pending)
+        Ok(sdio_host2::RequestProgress::WaitingForIrq)
     }
 
-    fn poll_host2_clock(
+    fn advance_host2_clock(
         &mut self,
         state: &mut SdhciClockState,
-    ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
+    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
         match *state {
             SdhciClockState::Start {
                 target_hz,
@@ -213,7 +230,7 @@ impl Sdhci {
                     self.start_internal_clock(target_hz)?;
                     *state = SdhciClockState::InternalWaitStable { polls: 0 };
                 }
-                Ok(sdio_host2::RequestPoll::Pending)
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
             SdhciClockState::ExternalSetClock { target_hz } => {
                 let clock = self
@@ -225,7 +242,7 @@ impl Sdhci {
                 *state = SdhciClockState::ExternalPrepareHost {
                     target_hz: effective_hz,
                 };
-                Ok(sdio_host2::RequestPoll::Pending)
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
             SdhciClockState::ExternalPrepareHost { target_hz } => {
                 let clock = self.ext_clock.take().ok_or(sdio_host2::Error::Controller)?;
@@ -233,16 +250,16 @@ impl Sdhci {
                 self.ext_clock = Some(clock);
                 result.map_err(map_protocol_error)?;
                 *state = SdhciClockState::ExternalStart { target_hz };
-                Ok(sdio_host2::RequestPoll::Pending)
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
             SdhciClockState::ExternalStart { target_hz } => {
                 self.start_passthrough_clock(target_hz);
                 *state = SdhciClockState::ExternalEnable { polls: 0 };
-                Ok(sdio_host2::RequestPoll::Pending)
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
             SdhciClockState::ExternalEnable { ref mut polls }
             | SdhciClockState::InternalWaitStable { ref mut polls } => {
-                self.poll_clock_stable(polls)
+                self.advance_clock_stable(polls)
             }
         }
     }
@@ -262,17 +279,17 @@ impl Sdhci {
         Ok(())
     }
 
-    fn poll_clock_stable(
+    fn advance_clock_stable(
         &mut self,
         polls: &mut u32,
-    ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
+    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
         let clock = self.read_u16(REG_CLOCK_CONTROL);
         if clock & CLOCK_INTERNAL_ENABLE == 0 {
-            return Ok(sdio_host2::RequestPoll::Ready(Ok(())));
+            return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
         }
         if clock & CLOCK_INTERNAL_STABLE != 0 {
             self.write_u16(REG_CLOCK_CONTROL, clock | CLOCK_SD_ENABLE);
-            return Ok(sdio_host2::RequestPoll::Ready(Ok(())));
+            return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
         }
         if *polls >= SDHCI_CLOCK_POLLS {
             return Err(map_protocol_error(Error::Timeout(ErrorContext::new(
@@ -280,23 +297,23 @@ impl Sdhci {
             ))));
         }
         *polls += 1;
-        Ok(sdio_host2::RequestPoll::Pending)
+        Ok(sdio_host2::RequestProgress::WaitingForIrq)
     }
 
-    fn poll_host2_voltage(
+    fn advance_host2_voltage(
         &mut self,
         state: &mut SdhciVoltageState,
-    ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
+    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
         match *state {
             SdhciVoltageState::DisableClock(voltage) => {
                 self.disable_sd_clock();
                 *state = SdhciVoltageState::SwitchControllerAndRail(voltage);
-                Ok(sdio_host2::RequestPoll::Pending)
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
             SdhciVoltageState::SwitchControllerAndRail(voltage) => {
                 if matches!(voltage, SignalVoltage::V180) && !self.dat_3_0_lines_low() {
                     self.rollback_host2_voltage();
-                    return Ok(sdio_host2::RequestPoll::Ready(Err(
+                    return Ok(sdio_host2::RequestProgress::Complete(Err(
                         sdio_host2::Error::Controller,
                     )));
                 }
@@ -317,10 +334,11 @@ impl Sdhci {
                 *state = SdhciVoltageState::WaitVsw {
                     voltage,
                     deadline_ms: self
-                        .now_ms()
+                        .timer
+                        .map(HostTimer::now_ms)
                         .map(|now| now.saturating_add(SDHCI_VOLTAGE_SWITCH_DELAY_MS)),
                 };
-                Ok(sdio_host2::RequestPoll::Pending)
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
             SdhciVoltageState::WaitVsw {
                 voltage,
@@ -328,35 +346,35 @@ impl Sdhci {
             } => {
                 if deadline_ms.is_none()
                     || deadline_ms
-                        .zip(self.now_ms())
+                        .zip(self.timer.map(HostTimer::now_ms))
                         .is_some_and(|(deadline, now)| now >= deadline)
                 {
                     *state = SdhciVoltageState::EnableClock(voltage);
                 }
-                Ok(sdio_host2::RequestPoll::Pending)
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
             SdhciVoltageState::EnableClock(voltage) => {
                 let cur = self.read_u16(REG_CLOCK_CONTROL);
                 self.write_u16(REG_CLOCK_CONTROL, cur | CLOCK_SD_ENABLE);
                 *state = SdhciVoltageState::VerifyDatLines(voltage);
-                Ok(sdio_host2::RequestPoll::Pending)
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
             SdhciVoltageState::VerifyDatLines(voltage) => {
                 if matches!(voltage, SignalVoltage::V180) && !self.dat_3_0_lines_high() {
                     self.rollback_host2_voltage();
-                    return Ok(sdio_host2::RequestPoll::Ready(Err(
+                    return Ok(sdio_host2::RequestProgress::Complete(Err(
                         sdio_host2::Error::Controller,
                     )));
                 }
-                Ok(sdio_host2::RequestPoll::Ready(Ok(())))
+                Ok(sdio_host2::RequestProgress::Complete(Ok(())))
             }
         }
     }
 
-    fn poll_host2_tuning(
+    fn advance_host2_tuning(
         &mut self,
         state: &mut SdhciTuningState,
-    ) -> Result<sdio_host2::RequestPoll<()>, sdio_host2::Error> {
+    ) -> Result<sdio_host2::RequestProgress<()>, sdio_host2::Error> {
         match *state {
             SdhciTuningState::Start {
                 cmd_index,
@@ -375,7 +393,7 @@ impl Sdhci {
                     cmd_index,
                     polls: 0,
                 };
-                Ok(sdio_host2::RequestPoll::Pending)
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
             SdhciTuningState::Wait {
                 cmd_index,
@@ -384,7 +402,7 @@ impl Sdhci {
                 let status = self.read_u16(REG_HOST_CONTROL2);
                 if status & HOST_CTRL2_EXECUTE_TUNING == 0 {
                     if status & HOST_CTRL2_SAMPLING_CLOCK_SELECT != 0 {
-                        return Ok(sdio_host2::RequestPoll::Ready(Ok(())));
+                        return Ok(sdio_host2::RequestProgress::Complete(Ok(())));
                     }
                     return Err(map_protocol_error(Error::BadResponse(
                         ErrorContext::for_cmd(Phase::Init, cmd_index),
@@ -398,7 +416,7 @@ impl Sdhci {
                     ))));
                 }
                 *polls += 1;
-                Ok(sdio_host2::RequestPoll::Pending)
+                Ok(sdio_host2::RequestProgress::WaitingForIrq)
             }
         }
     }

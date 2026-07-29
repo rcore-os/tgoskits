@@ -12,3 +12,10 @@ fail_regex = [
   '(?i)\bI/O error\b',
 ]
 timeout = 1200
+
+shell_init_cmd = """
+export BLOCK_RW_BENCH_ROOT_DEVICE='/dev/mmcblk0'
+export BLOCK_RW_BENCH_CONTROLLER='rk3588-dwcmshc-emmc'
+export BLOCK_RW_BENCH_SUCCESS_MARKER='ORANGEPI_BLOCK_RW_BENCH_PASSED'
+export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='1048064'
+"""

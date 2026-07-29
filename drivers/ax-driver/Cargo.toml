@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.13.0"
+version = "0.14.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -69,6 +69,13 @@ rockchip-sdhci = [
     "dep:sdmmc-protocol",
     "sdmmc-protocol/rdif",
 ]
+cv181x-sdhci = [
+    "block",
+    "dep:cv181x-sdhci",
+    "dep:sdhci-host",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/rdif",
+]
 starfive-soc = [
     "dep:rdif-clk",
     "dep:rdif-reset",
@@ -114,6 +121,7 @@ ax-kernel-guard = { workspace = true, optional = true }
 ax-kspin = { workspace = true, optional = true }
 axklib.workspace = true
 crab-usb = { workspace = true, optional = true }
+cv181x-sdhci = { workspace = true, optional = true }
 dma-api.workspace = true
 eth-intel = { workspace = true, optional = true }
 fdt-edit = { workspace = true }

@@ -23,9 +23,7 @@ use rdrive::{
     },
     register::{FdtInfo, ProbeFdt},
 };
-use sdhci_host::{
-    BlockTransferPolicy, HostClock, HostResetHook, HostTimer, Sdhci, rdif as sdhci_rdif,
-};
+use sdhci_host::{HostClock, HostResetHook, HostTimer, Sdhci, rdif as sdhci_rdif};
 use sdmmc_protocol::{
     Error,
     error::{ErrorContext, Phase},
@@ -189,23 +187,19 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     host.set_reset_hook(RockchipSdhciResetHook { resets });
     host.set_timer(&HOST_TIMER);
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
-    configure_adma2_only_block_io(&mut host, dma.clone());
+    let config = rockchip_sdhci_rdif_config(0, &dma);
+    host.configure_dma(dma).map_err(|err| {
+        OnProbeError::other(alloc::format!(
+            "rockchip-sdhci ADMA2 configuration failed: {err:?}"
+        ))
+    })?;
 
     info!("rockchip-sdhci: defer eMMC protocol initialization to IRQ-driven hctx");
-    let card = SdioSdmmc::new_host2(host);
-    let dev = sdhci_rdif::initializing_device(
-        card,
-        rockchip_sdhci_rdif_config(0, dma),
-        CardInitPreference::MmcFirst,
-    );
+    let card = SdioSdmmc::new(host);
+    let dev = sdhci_rdif::initializing_device(card, config, CardInitPreference::MmcFirst);
     let irq = probe.register_block(dev)?;
     info!("rockchip-sdhci block device registered irq={:?}", irq);
     Ok(())
-}
-
-fn configure_adma2_only_block_io(host: &mut Sdhci, dma: dma_api::DeviceDma) {
-    host.set_dma(dma);
-    host.set_block_transfer_policy(BlockTransferPolicy::RequireAdma2);
 }
 
 fn apply_rockchip_sdhci_resources(info: &FdtInfo<'_>) -> Result<Vec<ResetLine>, OnProbeError> {
@@ -346,7 +340,7 @@ fn write_u8(base: NonNull<u8>, off: usize, val: u8) {
 
 fn rockchip_sdhci_rdif_config(
     capacity_blocks: u64,
-    dma: dma_api::DeviceDma,
+    dma: &dma_api::DeviceDma,
 ) -> sdhci_rdif::BlockConfig {
     sdhci_rdif::dma_config("rockchip-sdhci", capacity_blocks, dma)
 }
@@ -365,29 +359,19 @@ mod tests {
 
     #[test]
     fn rk3588_block_io_uses_adma_config_with_irq_completion() {
-        let config = rockchip_sdhci_rdif_config(8, test_dma());
+        let dma = test_dma();
+        let config = rockchip_sdhci_rdif_config(8, &dma);
 
-        assert_eq!(config.name, "rockchip-sdhci");
-        assert_eq!(config.capacity_blocks, 8);
+        assert_eq!(config.name(), "rockchip-sdhci");
+        assert_eq!(config.capacity_blocks(), 8);
         assert!(config.uses_dma());
     }
 
     #[test]
-    fn rk3588_host_forbids_fifo_fallback_for_block_io() {
-        let mut host = unsafe { Sdhci::new_from_addr(0x1000_0000) };
-
-        configure_adma2_only_block_io(&mut host, test_dma());
-
-        assert_eq!(
-            host.block_transfer_policy(),
-            BlockTransferPolicy::RequireAdma2
-        );
-    }
-
-    #[test]
     fn rk3588_adma_queue_limits_expose_sdhci_window() {
-        let config = rockchip_sdhci_rdif_config(8, test_dma());
-        let limits = sdmmc_protocol::rdif::config::queue_limits(&config, config.dma_mask);
+        let dma = test_dma();
+        let config = rockchip_sdhci_rdif_config(8, &dma);
+        let limits = sdmmc_protocol::rdif::config::queue_limits(&config);
 
         assert_eq!(limits.max_blocks_per_request, sdhci_host::ADMA2_MAX_BLOCKS);
         assert_eq!(limits.max_segment_size, sdhci_host::ADMA2_MAX_TRANSFER_SIZE);

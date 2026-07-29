@@ -1,6 +1,6 @@
 [package]
 name = "phytium-mci-host"
-version = "0.3.3"
+version = "0.4.0"
 repository.workspace = true
 edition = "2024"
 license = "Apache-2.0"
@@ -17,6 +17,7 @@ volatile = { version = "0.6", features = ["derive"] }
 log.workspace = true
 dma-api.workspace = true
 mmio-api.workspace = true
+mbarrier = "0.1"
 
 [features]
 default = []

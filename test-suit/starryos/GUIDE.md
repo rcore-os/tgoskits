@@ -396,6 +396,11 @@ musl 交叉编译流水线，把静态程序安装到每次运行独立的
 文件上传。`init.sh` 通过 `${sessionFile:usr/bin/<program>}` 显式下载、赋权和执行；
 该流程不通过 SSH，也不把程序预装到持久 rootfs。
 
+App 的 `board-<name>.toml` 默认复用
+`os/StarryOS/configs/board/<name>.toml` 作为内核 build config；只有 app 目录存在
+精确的 `build-<target>.toml` 时才覆盖。多个同架构板卡需要不同 SoC feature 时应
+省略共享覆盖，避免把某块板的 CPU、MMU 或控制器 feature 注入另一块板。
+
 运行示例：
 
 ```bash

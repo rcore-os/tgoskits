@@ -7,13 +7,22 @@ stack to an interrupt-driven, SMP-aware multi-queue runtime. It is the design
 contract for the implementation; changes to the ownership or execution model
 must update this document before they are merged.
 
-The first supported devices are:
+The hardware-validated and publicly registered devices are:
 
 - PCI NVMe, with MSI-X multi-queue and an explicit single-queue INTx mode.
-- RK3588 DWCMSHC eMMC on OrangePi 5 Plus, using ADMA2.
+- RK3568 and RK3588 DWCMSHC eMMC, using ADMA2.
+- CV181x/SG2002 SDHCI, using ADMA2.
 
-All other block backends are unavailable through `ax-driver` until they are
-migrated. Their reusable hardware crates may remain in the tree.
+The next SD/eMMC migration keeps traditional controllers at depth one and adds
+owned-DMA, IRQ-only implementations for generic SDHCI, DW MMC IDMAC, Phytium
+MCI IDMAC, CV181x/SG2002 SDHCI, StarFive JH7110 DWMMC, and the separate RK3568
+DWCMSHC and DWMMC paths. An `ax-driver` feature is released only after its named
+physical-board write matrix passes. The JH7110, Phytium MCI, and Rockchip DWMMC
+cores therefore remain private after their read-only/no-media validation
+outcomes. K230 source is also kept private: the referenced Linux revision has
+no upstream K230 MMC implementation, and the repository does not yet have
+sufficient PHY/clock/reset evidence to expose it. Reusable hardware crates may
+remain in the tree without an OS registration entry.
 
 ## Problem
 
@@ -94,6 +103,35 @@ same Linux commit's
 [`drivers/mmc/host/sdhci-of-dwcmshc.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/mmc/host/sdhci-of-dwcmshc.c?id=62cc90241548d5570ee68e01aaba6506964e9811)
 and
 [`drivers/mmc/host/sdhci.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/mmc/host/sdhci.c?id=62cc90241548d5570ee68e01aaba6506964e9811).
+The wider SD/eMMC migration additionally follows:
+
+- [`drivers/mmc/host/sdhci.h`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/mmc/host/sdhci.h?id=62cc90241548d5570ee68e01aaba6506964e9811)
+  for ADMA2 descriptor/address capability and 128 MiB SDMA/ADMA boundary
+  representation;
+- [`drivers/mmc/host/dw_mmc.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/mmc/host/dw_mmc.c?id=62cc90241548d5570ee68e01aaba6506964e9811)
+  and
+  [`drivers/mmc/host/dw_mmc.h`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/mmc/host/dw_mmc.h?id=62cc90241548d5570ee68e01aaba6506964e9811)
+  for IDMAC ownership, descriptor chaining, interrupt acknowledgement, and
+  reset/recovery sequencing;
+- [`drivers/mmc/host/dw_mmc-rockchip.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/mmc/host/dw_mmc-rockchip.c?id=62cc90241548d5570ee68e01aaba6506964e9811)
+  for the separation of Rockchip clock/phase policy from the portable DW MMC
+  data path.
+
+The Phytium-specific implementation was additionally compared directly with
+`/home/zhourui/linux-phytium` commit
+`d50081ae7d93bf124be6722f14fb5c96600e7621` (`kernel-6.6_v3.4`),
+`drivers/mmc/host/phytium-mci.c`. The portable driver preserves its separate
+controller/IDMAC interrupt status, W1C acknowledgement, DTO and IDMAC terminal
+conditions, explicit stop-command transition, and reset-time restoration of
+power, clocks, interrupt masks, IDMAC state, and timeout registers. The vendor
+tree's FIFO/PIO fallback and register-completion polling are intentionally not
+carried into this IRQ-only runtime. Its descriptor address-high fields are not
+evidence that the tested board DMA domain is wider than 32 bits, so the public
+limit remains a verified 32-bit DMA mask.
+
+Linux may retain PIO fallbacks for controller coverage. TGOSKits intentionally
+does not: every migrated production block path must construct a `DeviceDma`
+capability and preallocate its descriptor storage before registration.
 QEMU root-disk arguments follow the
 [QEMU NVMe device documentation](https://www.qemu.org/docs/master/system/devices/nvme.html)
 as accessed 2026-07-23: `max_ioqpairs=64`, `msix_qsize=65`; the explicit INTx
@@ -132,12 +170,27 @@ layout:
   policy, durability boundaries, and memory-pressure eviction independent;
 - `nvme-driver::block::{io_queue}` separates controller/IRQ setup from the
   queue-local CID, PRP, SQ, and CQ owner;
-- `sdhci-host::host2::{bus}` separates physical transaction ownership from
-  register-only bus-operation state machines, while
-  `sdhci-host::dma::{request,fifo}` separates ADMA2 ownership/recovery from
-  FIFO protocol progress and descriptor policy; command and host capability
-  tests live in sibling test modules so the hardware state machines remain
-  reviewable as they grow;
+- `sdhci-host::host2::{bus,transaction}` separates physical transaction
+  ownership from register-only bus-operation state machines,
+  `sdhci-host::host::irq_state` isolates top-half state, while
+  `sdhci-host::dma::{request}` separates ADMA2 ownership/recovery from
+  descriptor policy; there is no FIFO module;
+- `dwmmc-host::host2::{irq,bus,request,transaction}` separates event
+  acknowledgement, register-only bus transitions, request ownership, and the
+  Host2 adapter, while `dwmmc-host::dma::{idmac,request}` separates the reusable
+  4 KiB descriptor ring from owned request state;
+- `phytium-mci-host::host2::{irq,bus,request,transaction}` applies the same
+  ownership split to its protocol progression, while
+  `phytium-mci-host::dma::{idmac,submission,completion}` isolates the
+  controller-specific descriptor, DMA ownership transfer, recovery, and
+  quarantine paths;
+- `cv181x-sdhci::{platform,host2,board,clock}` separates resource/policy data,
+  Host2 delegation, power/pad/PHY programming, and timing policy;
+- `sdmmc-protocol::response::{card,identity,switch}` separates response bit
+  decoding by protocol domain;
+- `cv181x-sdhci::{board,clock}` separates TOP/pad/PHY programming from timing
+  policy, while command, ADMA2, and IRQ state remain delegated to
+  `sdhci-host`;
 - `sdmmc-protocol::sdio::init::state_machine::{identify,mmc,sd}` separates the
   request's self-referential scratch ownership from protocol transition groups;
 - SD/MMC tests follow the same domains (`init_flow`, `sd_speed`, `mmc_init`,
@@ -165,9 +218,12 @@ and hardware queues. The states are:
 - `WaitingForIrq`: progress requires a published IRQ event;
 - `Ready`: the current bootstrap or scale target is operational.
 
-Only `RegisterPending` may be advanced in a busy loop. The runtime checks one
-overall deadline around that loop. Command and data completions must transition
-through IRQ events.
+Only register-only initialization performed before scheduler availability may
+use a bounded busy wait. Once the block runtime owns the controller,
+`RegisterPending { retry_after }` is stored with its pending transition, reply,
+and unified deadline. The maintenance task waits on its notification object
+until the retry instant; IRQ and shutdown events take priority over the timer.
+Command and data completions must transition through acknowledged IRQ events.
 
 ### IRQ endpoint
 
@@ -366,6 +422,16 @@ limits from SDHCI block count, ADMA2 descriptor length/address rules, the
 128-MiB DWCMSHC ADMA boundary, and its 32-bit DMA mask; both queue depth and
 native batch size are one.
 
+All migrated SDHCI, DWMMC, and MCI queues advertise
+`queue_depth = max_submit_batch = 1`. SDHCI selects 32-bit, 64-bit, or v4
+ADMA2 descriptors only when both the capability registers and DMA mask permit
+them, and splits at the 128 MiB boundary. DWMMC uses a preallocated 4 KiB ring
+of 16-byte descriptors with at most 4 KiB payload per descriptor. Phytium uses
+a preallocated 4 KiB ring of its 32-byte descriptor format and retains a
+32-bit DMA mask until hardware evidence supports a wider one. The runtime
+planner validates these limits first; the driver validates again before moving
+DMA ownership.
+
 ## Interrupt Details
 
 IRQ actions use non-reentrant execution, fixed affinity, and disabled-at-register
@@ -391,6 +457,10 @@ semantics.
   unsupported switch command or pretending that a polled completion occurred.
   This mirrors current Linux MMC cache enable/flush gating in
   [`drivers/mmc/core/mmc.c`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/mmc/core/mmc.c?id=62cc90241548d5570ee68e01aaba6506964e9811).
+- Generic SDHCI and CV181x wrappers use the same minimal SDHCI top half. DWMMC,
+  JH7110, and Phytium handlers read/W1C controller and IDMAC status into an
+  atomic mailbox. None of these handlers resets DMA, walks descriptors, takes
+  a task lock, or completes a protocol request.
 
 The hard IRQ path never drains a completion queue, allocates, copies DMA data,
 or completes an OS request.
@@ -495,6 +565,24 @@ ADMA boundary splitting, fsync, and data-integrity verification. The board
 helper is cross-compiled before the session, uploaded through the axbuild
 session-file endpoint, and downloaded over the board-visible HTTP URL; the
 validation does not mutate the persistent rootfs or depend on SSH.
+
+The physical validation matrix and registration decision is:
+
+| Controller / board | Public feature | Physical result |
+| --- | --- | --- |
+| CV181x SDHCI / LicheeRV Nano | `cv181x-sdhci` | Full read/write matrix and `SG2002_BLOCK_RW_BENCH_PASSED` |
+| CV181x SDHCI / AKA-00 | `cv181x-sdhci` | Boot, controller, IRQ, and write matrix passed |
+| JH7110 DWMMC / VisionFive2 | none | Controller and 31.9-GB SD media detected; ext4 media was journal-dirty and mounted read-only, so no write claim |
+| RK3568 DWCMSHC eMMC | `rockchip-sdhci` | Strict compatible match and full eMMC matrix passed |
+| RK3568 DWMMC SD/SDIO | none | Controller path booted, but no card was present for a write matrix |
+| Phytium MCI / PhytiumPi | none | Controller/root media read succeeded; physical filesystem was read-only/corrupt |
+| RK3588 DWCMSHC / OrangePi 5 Plus | `rockchip-sdhci` | Full matrix and `ORANGEPI_BLOCK_RW_BENCH_PASSED` |
+| K230 | none | Compile/static audit only until hardware and upstream evidence exist |
+
+Each physical row checks the root device, DMA domain/mask, nonzero IRQ, stable
+idle IRQ count, equal submission/completion counts, and zero pending or
+quarantined requests. Session payloads use axbuild `session_files` and
+`${sessionFile:...}` HTTP URLs; SSH and rsync are not part of this workflow.
 
 ### 2026-07-24 x86_64 execution record
 

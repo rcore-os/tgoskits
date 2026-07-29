@@ -2,7 +2,7 @@
 
 pub mod config;
 pub mod device;
-pub mod host;
+mod host;
 mod irq;
 pub mod queue;
 
@@ -11,7 +11,6 @@ pub use config::{
     block_addr_for_card, device_info, map_dev_err_to_blk_err, queue_limits,
 };
 pub use device::BlockDevice;
-pub use host::{BlockHost, OwnedBlockSubmitError, ProtocolBlockRequest, ProtocolBlockSlot};
 pub use queue::BlockQueue;
 pub use rdif_block::{
     BlkError, BlockController, CompletedRequest, ControllerEvent, ControllerState,

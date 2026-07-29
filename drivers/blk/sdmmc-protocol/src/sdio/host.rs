@@ -1,56 +1,37 @@
-//! SDIO host-controller capability boundary.
+//! SD/MMC IRQ capability layered on the portable `sdio-host2` bus contract.
 
-use core::num::NonZeroU16;
+use core::{num::NonZeroU16, time::Duration};
 
+use dma_api::DeviceDma;
 pub use sdio_host2::{BusWidth, ClockSpeed, SignalVoltage};
 
-use crate::{
-    block::{BlockRequestId, CommandResponsePoll, DataCommandPoll, OperationPoll},
-    cmd::Command,
-    error::Error,
-};
+use crate::{block::BlockRequestId, cmd::Command, error::Error};
 
 /// Host IRQ event category returned by portable controller cores.
-///
-/// Marked `#[non_exhaustive]`: new event categories (e.g. card-detect,
-/// re-tuning required) may be added before 1.0; downstream match sites must
-/// keep a `_ => ...` arm.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HostEventKind {
-    /// No runtime action is required.
     #[default]
     None,
-    /// A command response is ready.
     CommandComplete,
-    /// A data transfer has completed.
     TransferComplete,
-    /// Receive-side FIFO or buffer data is ready.
     ReceiveReady,
-    /// Transmit-side FIFO or buffer space is ready.
     TransmitReady,
-    /// Hardware reported an error condition.
     Error,
-    /// Status is pending but has no stable protocol-level category.
     Other,
 }
 
 /// Hardware engine affected by a host IRQ event.
-///
-/// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HostEventSource {
-    /// Whole controller or unknown source.
     #[default]
     Controller,
-    /// Command engine.
     Command,
-    /// Data engine or block queue.
     Data,
 }
 
-/// Stable event summary extracted by a host controller IRQ handler.
+/// Stable event summary extracted by a host-controller IRQ handler.
 pub trait HostEvent {
     fn kind(&self) -> HostEventKind;
 
@@ -69,12 +50,10 @@ impl HostEvent for () {
     }
 }
 
-/// IRQ fast-path handle for a host controller.
+/// Move-only hard-IRQ acknowledgement endpoint owned by OS IRQ registration.
 ///
-/// Implementations are intended to be moved into OS IRQ registration code.
-/// `handle_irq()` must acknowledge or clear the hardware interrupt source and
-/// cache any status that task-side `poll_*` paths need to observe later.
-/// It must not complete block requests, copy DMA buffers, or call OS wake/task
+/// `handle_irq` may only read/ack status and cache a compact event. It must not
+/// touch DMA ownership, advance protocol state, complete requests, or call task
 /// APIs.
 pub trait SdioIrqHandle: Send + 'static {
     type Event: HostEvent + Default;
@@ -82,45 +61,49 @@ pub trait SdioIrqHandle: Send + 'static {
     fn handle_irq(&mut self) -> Self::Event;
 }
 
-/// Source required for the host controller's next progress step.
-///
-/// A host may report [`Self::Register`] only for a phase that has no further
-/// completion IRQ, such as command-inhibit clearing before issue or DAT0 busy
-/// release after an acknowledged R1b command-complete event.
+/// Source required before the next protocol progress step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostProgressWait {
-    /// A fresh acknowledged hardware IRQ must precede the next step.
     Irq,
-    /// Register state alone can advance the current controller sub-state.
-    Register,
+    Register { retry_after: Duration },
 }
 
-/// Optional IRQ-capable extension of [`SdioHost`].
+/// IRQ and DMA capabilities required by the SD/MMC protocol runtime.
 ///
-/// The normal data path remains the asynchronous state machine on [`SdioHost`].
-/// IRQ support only gives OS glue an owned top-half endpoint that clears the
-/// device-side source and records status for later maintenance-thread handling.
-pub trait SdioIrqHost: SdioHost {
+/// Command, data, and bus transactions are provided directly by
+/// [`sdio_host2::SdioHost`]; this trait intentionally does not duplicate them.
+pub trait SdioIrqHost: sdio_host2::SdioHost {
+    type Event: HostEvent + Default;
     type IrqHandle: SdioIrqHandle<Event = Self::Event>;
 
     fn irq_handle(&mut self) -> Self::IrqHandle;
 
-    /// Reports whether controller-local register state can advance the active
-    /// operation without another IRQ.
+    fn completion_irq_enabled(&self) -> bool {
+        false
+    }
+
+    fn enable_completion_irq(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn disable_completion_irq(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Returns the DMA capability owned by this physical host.
+    ///
+    /// Protocol initialization uses it for CPU-owned scratch DMA. Production
+    /// block I/O already arrives as `PreparedDma`.
+    fn device_dma(&self) -> Result<&DeviceDma, Error>;
+
     fn progress_wait_kind(&self) -> HostProgressWait {
         HostProgressWait::Irq
     }
 }
 
-/// Queue identifier used by SD/MMC block adapters.
+/// Queue identifier used by single-queue SD/MMC block adapters.
 pub const SDMMC_BLOCK_QUEUE_ID: usize = 0;
 
-/// Convert a host IRQ event into the fixed SD/MMC block queue hint.
-///
-/// SD/MMC adapters expose one rdif block queue per controller in this
-/// workspace, so any non-empty host event is a stable "queue 0 may progress"
-/// signal. Request completion still happens only when the bound maintenance
-/// thread advances the protocol state after consuming that IRQ event.
 pub fn block_queue_ready_from_host_event(event: &impl HostEvent) -> Option<usize> {
     match event.kind() {
         HostEventKind::None => None,
@@ -128,135 +111,7 @@ pub fn block_queue_ready_from_host_event(event: &impl HostEvent) -> Option<usize
     }
 }
 
-/// Trait that the platform must implement for the SDIO host controller.
-///
-/// The driver tracks the published RCA itself, so host implementations no
-/// longer need to snoop R6 responses or expose a `rca()` accessor.
-pub trait SdioHost {
-    /// Host-controller IRQ event type.
-    ///
-    /// Portable host crates can expose their native event enum here. The
-    /// protocol layer does not interpret it; OS glue maps it to runtime wakeups.
-    type Event: HostEvent + Default;
-
-    /// Submit a command without waiting for its response.
-    fn submit_command(&mut self, cmd: &Command) -> Result<(), Error>;
-
-    /// Advance a submitted command and harvest the response when complete.
-    fn poll_command_response(&mut self) -> Result<CommandResponsePoll, Error>;
-
-    type DataRequest<'a>
-    where
-        Self: 'a;
-
-    /// Submit a read-data command without waiting for its data phase.
-    fn submit_read_data<'a>(
-        &mut self,
-        cmd: &Command,
-        buf: &'a mut [u8],
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<Self::DataRequest<'a>, Error>;
-
-    /// Submit a write-data command without waiting for its data phase.
-    fn submit_write_data<'a>(
-        &mut self,
-        cmd: &Command,
-        buf: &'a [u8],
-        block_size: u32,
-        block_count: u32,
-    ) -> Result<Self::DataRequest<'a>, Error>;
-
-    /// Advance a previously submitted data command without blocking.
-    fn poll_data_request<'a>(
-        &mut self,
-        request: &mut Self::DataRequest<'a>,
-    ) -> Result<DataCommandPoll, Error>;
-
-    type BusRequest;
-
-    /// Set the bus width
-    fn set_bus_width(&mut self, width: BusWidth) -> Result<(), Error>;
-
-    /// Set the clock speed
-    fn set_clock(&mut self, speed: ClockSpeed) -> Result<(), Error>;
-
-    /// Switch the bus signaling voltage (typically 3.3 V → 1.8 V for
-    /// UHS-I or HS200 entry). The protocol layer issues CMD11 *before*
-    /// calling this; the host is responsible for the controller-side
-    /// transition (gate SD clock → flip the IO domain → wait t_VSW
-    /// (≥ 5 ms) → re-enable SD clock at the new level → confirm
-    /// `DAT[3:0]` is high).
-    ///
-    /// Default returns `UnsupportedCommand` so hosts that don't implement
-    /// 1.8 V signaling get a clean fallback path instead of silently
-    /// keeping the bus at 3.3 V.
-    fn switch_voltage(&mut self, _voltage: SignalVoltage) -> Result<(), Error> {
-        Err(Error::UnsupportedCommand)
-    }
-
-    /// Run the controller's tuning state machine for the given command
-    /// index (CMD19 for SD UHS-I, CMD21 for eMMC HS200). The host is
-    /// responsible for issuing tuning blocks in a loop, comparing
-    /// against the expected pattern, and reporting back whether a
-    /// stable sampling phase was found. `block_size` is the protocol tuning
-    /// pattern length: SD CMD19 is 64 bytes, MMC CMD21 is 64 bytes on 4-bit
-    /// buses and 128 bytes on 8-bit buses.
-    ///
-    /// Default returns `UnsupportedCommand`. Hosts that report success
-    /// without actually tuning are silently lying to the caller — only
-    /// implement this when the controller can validate the result.
-    fn execute_tuning(&mut self, _cmd_index: u8, _block_size: NonZeroU16) -> Result<(), Error> {
-        Err(Error::UnsupportedCommand)
-    }
-
-    fn submit_bus_op(&mut self, op: SdioBusOp) -> Result<Self::BusRequest, Error>;
-
-    fn poll_bus_op(&mut self, request: &mut Self::BusRequest) -> Result<OperationPoll<()>, Error>;
-
-    /// Route command/data completion and error status to the host IRQ line.
-    ///
-    /// Portable hosts that do not own IRQ routing may keep the default no-op;
-    /// their OS adapter must still provide an IRQ endpoint before starting I/O.
-    fn enable_completion_irq(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    /// Mask host IRQ delivery before teardown or controller recovery.
-    ///
-    /// Portable hosts that do not own IRQ routing may keep the default no-op.
-    fn disable_completion_irq(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn completion_irq_enabled(&self) -> bool {
-        false
-    }
-
-    /// Optional monotonic wall-clock source, in milliseconds.
-    ///
-    /// `None` (the default) means the host has no clock; the protocol layer
-    /// falls back to the poll-counter timeouts documented in
-    /// [`SdioInitTiming`] / [`MmcSwitchTiming`]. `Some(t)` switches the
-    /// ACMD41 / CMD1 power-up and MMC `CMD6 SWITCH` busy-wait budgets to
-    /// wall-clock deadlines, making timeouts independent of caller poll
-    /// cadence.
-    ///
-    /// The protocol layer keeps both checks active whenever a clock is
-    /// available — whichever fires first surfaces as `Error::Timeout`. So a
-    /// host that opts in via this method gets accurate timeouts even when
-    /// glue polls very slowly, and is still protected by the poll budget if
-    /// the clock unexpectedly stalls.
-    ///
-    /// Implementations must be monotonic across calls within a single host
-    /// instance. Resolution finer than 1 ms is fine but not required —
-    /// jiffies at 100 Hz works. Wraparound at `u64` milliseconds
-    /// (~584 million years) is safe to ignore.
-    fn now_ms(&self) -> Option<u64> {
-        None
-    }
-}
-
+/// Protocol-level naming for portable host bus operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SdioBusOp {
     ResetAll,
@@ -271,26 +126,22 @@ pub enum SdioBusOp {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ReadyBusRequest;
-
-pub fn submit_ready_bus_op<H: SdioHost<BusRequest = ReadyBusRequest>>(
-    host: &mut H,
-    op: SdioBusOp,
-) -> Result<ReadyBusRequest, Error> {
-    match op {
-        SdioBusOp::ResetAll | SdioBusOp::PowerOn | SdioBusOp::PowerOff => {}
-        SdioBusOp::SetBusWidth(width) => host.set_bus_width(width)?,
-        SdioBusOp::SetClock(speed) => host.set_clock(speed)?,
-        SdioBusOp::SwitchVoltage(voltage) => host.switch_voltage(voltage)?,
-        SdioBusOp::ExecuteTuning {
-            cmd_index,
-            block_size,
-        } => host.execute_tuning(cmd_index, block_size)?,
+impl SdioBusOp {
+    pub(super) fn into_host_op(self) -> sdio_host2::BusOp {
+        match self {
+            Self::ResetAll => sdio_host2::BusOp::ResetAll,
+            Self::PowerOn => sdio_host2::BusOp::PowerOn,
+            Self::PowerOff => sdio_host2::BusOp::PowerOff,
+            Self::SetBusWidth(width) => sdio_host2::BusOp::SetBusWidth(width),
+            Self::SetClock(speed) => sdio_host2::BusOp::SetClock(speed),
+            Self::SwitchVoltage(voltage) => sdio_host2::BusOp::SetSignalVoltage(voltage),
+            Self::ExecuteTuning {
+                cmd_index,
+                block_size,
+            } => sdio_host2::BusOp::ExecuteTuning {
+                command: Command::new(cmd_index, 0, crate::response::ResponseType::R1),
+                block_size,
+            },
+        }
     }
-    Ok(ReadyBusRequest)
-}
-
-pub fn poll_ready_bus_op(_request: &mut ReadyBusRequest) -> Result<OperationPoll<()>, Error> {
-    Ok(OperationPoll::Complete(()))
 }

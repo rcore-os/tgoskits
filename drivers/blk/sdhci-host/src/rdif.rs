@@ -9,26 +9,23 @@ pub use rdif_block::{
 #[cfg(test)]
 use sdmmc_protocol::rdif::config as protocol_rdif_config;
 pub use sdmmc_protocol::rdif::{config::BlockConfig, device::BlockDevice, queue::BlockQueue};
-use sdmmc_protocol::sdio::{card::SdioSdmmc, host2::SdioHost2Adapter};
+use sdmmc_protocol::sdio::card::SdioSdmmc;
 
 use crate::{ADMA2_MAX_BLOCKS, ADMA2_MAX_TRANSFER_SIZE, DWC_MSHC_ADMA_BOUNDARY, Sdhci};
 
-pub fn device(
-    card: SdioSdmmc<SdioHost2Adapter<Sdhci>>,
-    config: BlockConfig,
-) -> BlockDevice<SdioHost2Adapter<Sdhci>> {
+pub fn device(card: SdioSdmmc<Sdhci>, config: BlockConfig) -> BlockDevice<Sdhci> {
     BlockDevice::new(card, config)
 }
 
 pub fn initializing_device(
-    card: SdioSdmmc<SdioHost2Adapter<Sdhci>>,
+    card: SdioSdmmc<Sdhci>,
     config: BlockConfig,
     preference: sdmmc_protocol::sdio::init::CardInitPreference,
-) -> BlockDevice<SdioHost2Adapter<Sdhci>> {
+) -> BlockDevice<Sdhci> {
     BlockDevice::new_initializing(card, config, preference)
 }
 
-pub fn dma_config(name: &'static str, capacity_blocks: u64, dma: DeviceDma) -> BlockConfig {
+pub fn dma_config(name: &'static str, capacity_blocks: u64, dma: &DeviceDma) -> BlockConfig {
     BlockConfig::dma(name, capacity_blocks, dma)
         .with_max_blocks_per_request(ADMA2_MAX_BLOCKS)
         .with_max_segment_size(ADMA2_MAX_TRANSFER_SIZE)
@@ -41,12 +38,9 @@ mod tests {
 
     #[test]
     fn dma_config_advertises_adma_window() {
-        let config = dma_config(
-            "sdhci",
-            16,
-            dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA),
-        );
-        let limits = protocol_rdif_config::queue_limits(&config, config.dma_mask);
+        let dma = dma_api::DeviceDma::new_legacy(u32::MAX as u64, &TEST_DMA);
+        let config = dma_config("sdhci", 16, &dma);
+        let limits = protocol_rdif_config::queue_limits(&config);
 
         assert_eq!(limits.max_blocks_per_request, ADMA2_MAX_BLOCKS);
         assert_eq!(limits.max_segment_size, ADMA2_MAX_TRANSFER_SIZE);

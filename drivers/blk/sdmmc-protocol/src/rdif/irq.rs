@@ -3,13 +3,13 @@ use alloc::sync::Arc;
 use rdif_block::{ControlEvent, HardIrqHandler, IrqAck, IrqQueueMask};
 
 use crate::{
-    rdif::{device::BlockInitStatus, host::BlockHost},
-    sdio::host::{SdioIrqHandle, block_queue_ready_from_host_event},
+    rdif::device::BlockInitStatus,
+    sdio::host::{SdioIrqHandle, SdioIrqHost, block_queue_ready_from_host_event},
 };
 
 pub struct BlockIrqHandler<H>
 where
-    H: BlockHost,
+    H: SdioIrqHost + 'static,
 {
     pub(super) irq: H::IrqHandle,
     pub(super) init_status: Arc<BlockInitStatus>,
@@ -17,7 +17,7 @@ where
 
 impl<H> HardIrqHandler for BlockIrqHandler<H>
 where
-    H: BlockHost,
+    H: SdioIrqHost + 'static,
 {
     fn ack(&mut self) -> IrqAck {
         let event = self.irq.handle_irq();

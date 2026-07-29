@@ -248,6 +248,46 @@ struct LifecycleController {
     log: Arc<StdMutex<Vec<&'static str>>>,
 }
 
+struct TerminalBeforeShutdownController {
+    queue: Option<LifecycleQueue>,
+    terminal: bool,
+}
+
+impl DriverGeneric for TerminalBeforeShutdownController {
+    fn name(&self) -> &str {
+        "terminal-before-shutdown-controller"
+    }
+}
+
+impl BlockController for TerminalBeforeShutdownController {
+    fn device_info(&self) -> DeviceInfo {
+        test_queue_info().device
+    }
+
+    fn max_io_queues(&self) -> usize {
+        1
+    }
+
+    fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
+        match event {
+            ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
+                ControllerState::Ready,
+                vec![Box::new(self.queue.take().unwrap())],
+                vec![IrqEndpoint::new(0, 1, Box::new(SpuriousHandler))],
+            )),
+            ControllerEvent::Watchdog { .. } => {
+                self.terminal = true;
+                Ok(ControllerUpdate::state(ControllerState::Shutdown))
+            }
+            ControllerEvent::QuiesceIrqs if self.terminal => {
+                Ok(ControllerUpdate::state(ControllerState::Shutdown))
+            }
+            ControllerEvent::Shutdown => Err(BlkError::Io),
+            _ => Ok(ControllerUpdate::state(ControllerState::Ready)),
+        }
+    }
+}
+
 impl DriverGeneric for LifecycleController {
     fn name(&self) -> &str {
         "lifecycle-controller"
@@ -323,7 +363,9 @@ impl BlockController for EndpointFirstController {
     fn advance(&mut self, event: ControllerEvent) -> Result<ControllerUpdate, BlkError> {
         match event {
             ControllerEvent::Start { .. } => Ok(ControllerUpdate::with_resources(
-                ControllerState::RegisterPending,
+                ControllerState::RegisterPending {
+                    retry_after: Duration::from_millis(30),
+                },
                 Vec::new(),
                 vec![IrqEndpoint::new(0, 0, Box::new(SpuriousHandler))],
             )),
@@ -336,7 +378,9 @@ impl BlockController for EndpointFirstController {
                 ))
             }
             ControllerEvent::Rearm { .. } => {
-                Ok(ControllerUpdate::state(ControllerState::RegisterPending))
+                Ok(ControllerUpdate::state(ControllerState::RegisterPending {
+                    retry_after: Duration::from_millis(1),
+                }))
             }
             ControllerEvent::QuiesceIrqs => {
                 self.log.lock().unwrap().push("controller_quiesce");
@@ -611,9 +655,52 @@ fn teardown_disables_controller_before_queue_memory_is_released() {
 }
 
 #[test]
+fn teardown_releases_queue_when_quiesce_confirms_prior_watchdog_shutdown() {
+    let _registrar_guard = lock_test_irq_registrar();
+    crate::os::task::install_test_runtime_ops();
+    let log = Arc::new(StdMutex::new(Vec::new()));
+    *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
+    TEST_IRQ_REGISTRAR
+        .fail_registration
+        .store(false, Ordering::Release);
+    set_irq_registrar(&TEST_IRQ_REGISTRAR);
+
+    let controller = TerminalBeforeShutdownController {
+        queue: Some(LifecycleQueue {
+            log: Arc::clone(&log),
+        }),
+        terminal: false,
+    };
+    let irq = IrqId::new(IrqDomainId(1), HwIrq(13));
+    let handle = BlockDeviceHandle::start(RdifBlockDevice::new_with_irqs(
+        "terminal-before-shutdown",
+        [BlockIrqSource { source_id: 0, irq }],
+        Box::new(controller),
+    ))
+    .unwrap();
+
+    assert_eq!(
+        handle
+            .inner
+            .controller
+            .call(ControllerEvent::Watchdog { queue_id: 0 }),
+        Ok(ControllerState::Shutdown)
+    );
+    assert_eq!(handle.shutdown(), 1);
+    assert!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|event| *event == "queue_shutdown"),
+        "a prior terminal acknowledgement must permit queue teardown"
+    );
+}
+
+#[test]
 fn controller_can_register_control_irq_before_creating_an_io_queue() {
     let _registrar_guard = lock_test_irq_registrar();
     crate::os::task::install_test_runtime_ops();
+    crate::os::task::reset_test_wait_timeout_count();
     let log = Arc::new(StdMutex::new(Vec::new()));
     *TEST_IRQ_REGISTRAR.log.lock().unwrap() = Some(Arc::clone(&log));
     TEST_IRQ_REGISTRAR
@@ -638,6 +725,10 @@ fn controller_can_register_control_irq_before_creating_an_io_queue() {
     .unwrap();
 
     assert_eq!(register_retries.load(Ordering::Relaxed), 1);
+    assert!(
+        crate::os::task::test_wait_timeout_count() >= 1,
+        "register retry must sleep on the runtime notification"
+    );
     assert_eq!(handle.inner.hctxs.lock().len(), 1);
     assert_eq!(handle.inner.cpu_channels.lock().len(), 1);
     assert_eq!(handle.shutdown(), 1);

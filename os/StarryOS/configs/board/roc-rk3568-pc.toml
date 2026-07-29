@@ -1,9 +1,9 @@
+# Build-time config for StarryOS on ROC-RK3568-PC.
 target = "aarch64-unknown-none-softfloat"
 features = [
-  "ax-driver/rk3588-pcie",
-  "ax-driver/realtek-rtl8125",
+  "ax-driver/serial",
   "ax-driver/rockchip-soc",
   "ax-driver/rockchip-sdhci",
 ]
 log = "Info"
-max_cpu_num = 8
+max_cpu_num = 4

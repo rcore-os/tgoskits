@@ -1,12 +1,11 @@
 # Build-time config template for StarryOS on SG2002.
 target = "riscv64gc-unknown-none-elf"
-# Block storage is unsupported until the CV181x SDHCI driver is migrated to
-# the IRQ-driven block runtime.
 features = [
   "starry-kernel/sg2002",
   "axplat-dyn/thead-mae",
   "ax-driver/serial",
   "ax-driver/sg2002-dwc2",
+  "ax-driver/cv181x-sdhci",
 ]
 log = "Info"
 max_cpu_num = 1

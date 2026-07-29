@@ -1,14 +1,4 @@
-use core::ptr::NonNull;
-
-use sdmmc_protocol::response::Response;
-
-use super::{
-    fifo::{poll_fifo_read_step, poll_fifo_write_step},
-    *,
-};
-
-#[repr(align(4))]
-struct FakeRegs([u8; 0x100]);
+use super::*;
 
 fn empty_table() -> [Adma2Desc32; ADMA2_DESC_COUNT] {
     [Adma2Desc32 {
@@ -16,6 +6,10 @@ fn empty_table() -> [Adma2Desc32; ADMA2_DESC_COUNT] {
         length: 0,
         address: 0,
     }; ADMA2_DESC_COUNT]
+}
+
+fn empty_table64() -> [Adma2Desc64; ADMA2_DESC_COUNT] {
+    [Adma2Desc64::default(); ADMA2_DESC_COUNT]
 }
 
 #[test]
@@ -66,6 +60,33 @@ fn splits_at_dwcmshc_128m_boundary() {
 fn rejects_64bit_bus_address() {
     let mut table = empty_table();
     let err = build_descriptors(&mut table, 0x1_0000_0000, 512, Phase::DataRead).unwrap_err();
+    assert!(matches!(err, Error::BadResponse(_)));
+}
+
+#[test]
+fn descriptor64_preserves_address_above_4gib() {
+    let mut table = empty_table64();
+    let base = 0x1_0000_1000;
+    let written = build_descriptors64(&mut table, base, 512).unwrap();
+
+    assert_eq!(written, 1);
+    assert_eq!(table[0].address_low, 0x1000);
+    assert_eq!(table[0].address_high, 1);
+    assert_eq!(table[0].length, 512);
+    assert_ne!(table[0].attr & ADMA2_ATTR_END, 0);
+}
+
+#[test]
+fn rejects_unaligned_bus_address() {
+    let mut table = empty_table();
+    let err = build_descriptors(&mut table, 0x1000_0002, 512, Phase::DataRead).unwrap_err();
+    assert!(matches!(err, Error::Misaligned));
+}
+
+#[test]
+fn rejects_transfer_past_32bit_dma_mask() {
+    let mut table = empty_table();
+    let err = build_descriptors(&mut table, 0xffff_ff00, 512, Phase::DataRead).unwrap_err();
     assert!(matches!(err, Error::BadResponse(_)));
 }
 
@@ -122,179 +143,4 @@ fn block_request_can_cross_queue_thread_boundary() {
 
     assert_send::<BlockRequest>();
     assert_send::<BlockRequestSlot>();
-}
-
-#[test]
-fn block_poll_consumes_data_complete_cached_with_command_complete() {
-    let mut regs = FakeRegs([0; 0x100]);
-    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
-    let mut host = unsafe { Sdhci::new(base) };
-    let mut slot = BlockRequestSlot::default();
-    let id = slot
-        .start(BlockTransferMode::Fifo, BlockTransferDirection::Write)
-        .unwrap();
-    let buffer = NonNull::new(regs.0.as_mut_ptr()).unwrap();
-    let mut request = Some(BlockRequest {
-        inner: BlockRequestKind::FifoWrite {
-            id,
-            buffer,
-            len: 0,
-            block_size: BLOCK_SIZE,
-            offset: 0,
-            cmd_index: 24,
-            phase: Phase::DataWrite,
-            stage: BlockRequestStage::Command,
-            stop_after_complete: false,
-            response: None,
-        },
-    });
-    host.command_state = CommandState::Complete {
-        response: Response::Empty,
-    };
-    host.enable_completion_irq();
-    host.irq.state.begin_request();
-    let generation = host.irq.state.generation();
-    host.irq.state.cache_if_current(
-        generation,
-        NORMAL_INT_CMD_COMPLETE | NORMAL_INT_XFER_COMPLETE,
-        0,
-    );
-
-    assert!(matches!(
-        host.progress_block_request(&mut request, id, &mut slot),
-        Ok(DataCommandPoll::Complete(Response::Empty))
-    ));
-    assert!(request.is_none());
-    assert!(matches!(slot.state, BlockTransferState::Idle));
-}
-
-#[test]
-fn fifo_write_step_accepts_present_state_ready_without_irq_status() {
-    let mut regs = FakeRegs([0; 0x100]);
-    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
-    let mut host = unsafe { Sdhci::new(base) };
-    let mut buffer = [0x5au8; BLOCK_SIZE];
-    buffer[BLOCK_SIZE - 4..].copy_from_slice(&0x1122_3344u32.to_le_bytes());
-    let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
-    let mut offset = 0;
-    host.write_u32(REG_PRESENT_STATE, PRESENT_BUFFER_WRITE_ENABLE);
-
-    assert_eq!(
-        poll_fifo_write_step(
-            &mut host,
-            ptr,
-            buffer.len(),
-            BLOCK_SIZE,
-            &mut offset,
-            24,
-            Phase::DataWrite,
-        ),
-        Ok(BlockPoll::Pending)
-    );
-
-    assert_eq!(offset, BLOCK_SIZE);
-    assert_eq!(host.read_u32(REG_BUFFER_DATA_PORT), 0x1122_3344);
-}
-
-#[test]
-fn fifo_read_step_accepts_present_state_ready_without_irq_status() {
-    let mut regs = FakeRegs([0; 0x100]);
-    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
-    let mut host = unsafe { Sdhci::new(base) };
-    let mut buffer = [0u8; BLOCK_SIZE];
-    let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
-    let mut offset = 0;
-    host.write_u32(REG_PRESENT_STATE, PRESENT_BUFFER_READ_ENABLE);
-    host.write_u32(REG_BUFFER_DATA_PORT, 0xaabb_ccdd);
-
-    assert_eq!(
-        poll_fifo_read_step(
-            &mut host,
-            ptr,
-            4,
-            BLOCK_SIZE,
-            &mut offset,
-            17,
-            Phase::DataRead,
-        ),
-        Ok(BlockPoll::Pending)
-    );
-
-    assert_eq!(offset, 4);
-    assert_eq!(&buffer[..4], &0xaabb_ccddu32.to_le_bytes());
-}
-
-#[test]
-fn fifo_data_complete_accepts_dat_inhibit_clear_without_irq_status() {
-    let mut regs = FakeRegs([0; 0x100]);
-    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
-    let mut host = unsafe { Sdhci::new(base) };
-    let mut buffer = [0u8; BLOCK_SIZE];
-    let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
-    let mut offset = BLOCK_SIZE;
-    host.write_u32(REG_PRESENT_STATE, 0);
-
-    assert_eq!(
-        poll_fifo_read_step(
-            &mut host,
-            ptr,
-            BLOCK_SIZE,
-            BLOCK_SIZE,
-            &mut offset,
-            17,
-            Phase::DataRead,
-        ),
-        Ok(BlockPoll::Complete)
-    );
-}
-
-#[test]
-fn fifo_write_complete_waits_while_dat0_busy_without_xfer_irq() {
-    let mut regs = FakeRegs([0; 0x100]);
-    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
-    let mut host = unsafe { Sdhci::new(base) };
-    let mut buffer = [0u8; BLOCK_SIZE];
-    let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
-    let mut offset = BLOCK_SIZE;
-    host.write_u32(REG_PRESENT_STATE, PRESENT_DAT_INHIBIT);
-
-    assert_eq!(
-        poll_fifo_write_step(
-            &mut host,
-            ptr,
-            BLOCK_SIZE,
-            BLOCK_SIZE,
-            &mut offset,
-            24,
-            Phase::DataWrite,
-        ),
-        Ok(BlockPoll::Pending)
-    );
-}
-
-#[test]
-fn fifo_write_complete_accepts_dat0_ready_without_xfer_irq_or_write_ready() {
-    let mut regs = FakeRegs([0; 0x100]);
-    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
-    let mut host = unsafe { Sdhci::new(base) };
-    let mut buffer = [0u8; BLOCK_SIZE];
-    let ptr = NonNull::new(buffer.as_mut_ptr()).unwrap();
-    let mut offset = BLOCK_SIZE;
-    host.write_u32(
-        REG_PRESENT_STATE,
-        PRESENT_DAT_INHIBIT | PRESENT_DAT0_LINE_SIGNAL_LEVEL,
-    );
-
-    assert_eq!(
-        poll_fifo_write_step(
-            &mut host,
-            ptr,
-            BLOCK_SIZE,
-            BLOCK_SIZE,
-            &mut offset,
-            24,
-            Phase::DataWrite,
-        ),
-        Ok(BlockPoll::Complete)
-    );
 }

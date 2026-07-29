@@ -1,4 +1,5 @@
 use alloc::{boxed::Box, vec::Vec};
+use core::time::Duration;
 
 use crate::{
     BlkError, CompletedRequest, DeviceInfo, HardIrqHandler, OwnedRequestBatch, QueueInfo, RequestId,
@@ -107,6 +108,27 @@ pub trait HardwareQueue: Send + 'static {
     /// Returns an error when the completion queue cannot be consumed safely.
     fn drain_completions(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError>;
 
+    /// Returns the delay requested for register-only queue progress.
+    ///
+    /// The runtime owns the timer and the shared transition deadline. This is
+    /// distinct from completion drain: expiry may advance only register and
+    /// protocol bookkeeping state and must never inspect a hardware
+    /// completion source.
+    fn register_retry_after(&self) -> Option<Duration> {
+        None
+    }
+
+    /// Advances register-only queue state after a runtime-owned timer expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the queue cannot safely continue initialization
+    /// or recovery. Implementations may request another retry through
+    /// [`Self::register_retry_after`].
+    fn advance_register_retry(&mut self) -> Result<(), BlkError> {
+        Err(BlkError::NotSupported)
+    }
+
     /// Quiesces the queue and returns every request whose DMA is safe to reuse.
     ///
     /// Backing still reachable by hardware must be quarantined by the driver
@@ -175,8 +197,12 @@ pub enum ControllerEvent {
 /// Observable controller progress after one state-machine transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControllerState {
-    /// A register-only transition may be retried with a bounded busy wait.
-    RegisterPending,
+    /// A register-only transition should be retried after the requested delay.
+    ///
+    /// The runtime owns the shared transition deadline and sleeps on its
+    /// notification object until this delay expires. Acknowledged IRQ and
+    /// shutdown events take priority over the retry.
+    RegisterPending { retry_after: Duration },
     /// Further progress requires a matching acknowledged IRQ event.
     WaitingForIrq,
     /// The requested bootstrap or SMP queue target is operational.

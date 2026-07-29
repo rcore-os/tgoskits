@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Forward owned DMA and IRQ lifecycle operations to the ADMA2-only SDHCI core.
+- Split CV181x pad/power/PHY and clock policy into focused modules.
+
+### Removed
+
+- Remove the local polling adapter and cloned DMA block path.
+
 ## [0.1.3](https://github.com/rcore-os/tgoskits/compare/cv181x-sdhci-v0.1.2...cv181x-sdhci-v0.1.3) - 2026-07-23
 
 ### Other

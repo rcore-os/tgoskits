@@ -2,8 +2,8 @@
 //!
 //! The protocol crate intentionally does not know about a block runtime or any
 //! executor. These types describe the portable queue contract that host
-//! drivers expose upward: submit one block transfer, advance it by polling or
-//! IRQ wakeups, and keep the concrete FIFO/DMA engine visible.
+//! drivers expose upward: submit one block transfer, advance it after an
+//! acknowledged IRQ, and keep the concrete DMA engine visible.
 
 use core::num::NonZeroUsize;
 
@@ -130,7 +130,7 @@ impl BlockTransferState {
 /// per-block progress may be added before 1.0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum BlockPoll {
+pub enum BlockProgress {
     Pending,
     Complete,
 }
@@ -166,7 +166,7 @@ pub enum DataCommandState {
 /// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
-pub enum DataCommandPoll {
+pub enum DataCommandProgress {
     Pending,
     Complete(crate::response::Response),
 }
@@ -176,7 +176,7 @@ pub enum DataCommandPoll {
 /// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum CommandPoll {
+pub enum CommandProgress {
     Pending,
     Complete,
 }
@@ -187,7 +187,7 @@ pub enum CommandPoll {
 /// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
-pub enum CommandResponsePoll {
+pub enum CommandResponseProgress {
     Pending,
     Complete(crate::response::Response),
 }
@@ -197,34 +197,34 @@ pub enum CommandResponsePoll {
 /// Marked `#[non_exhaustive]` for forward compatibility.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
-pub enum OperationPoll<T> {
+pub enum OperationProgress<T> {
     Pending,
     Complete(T),
 }
 
-impl From<CommandResponsePoll> for OperationPoll<crate::response::Response> {
-    fn from(value: CommandResponsePoll) -> Self {
+impl From<CommandResponseProgress> for OperationProgress<crate::response::Response> {
+    fn from(value: CommandResponseProgress) -> Self {
         match value {
-            CommandResponsePoll::Pending => Self::Pending,
-            CommandResponsePoll::Complete(response) => Self::Complete(response),
+            CommandResponseProgress::Pending => Self::Pending,
+            CommandResponseProgress::Complete(response) => Self::Complete(response),
         }
     }
 }
 
-impl From<DataCommandPoll> for OperationPoll<crate::response::Response> {
-    fn from(value: DataCommandPoll) -> Self {
+impl From<DataCommandProgress> for OperationProgress<crate::response::Response> {
+    fn from(value: DataCommandProgress) -> Self {
         match value {
-            DataCommandPoll::Pending => Self::Pending,
-            DataCommandPoll::Complete(response) => Self::Complete(response),
+            DataCommandProgress::Pending => Self::Pending,
+            DataCommandProgress::Complete(response) => Self::Complete(response),
         }
     }
 }
 
-impl From<BlockPoll> for OperationPoll<()> {
-    fn from(value: BlockPoll) -> Self {
+impl From<BlockProgress> for OperationProgress<()> {
+    fn from(value: BlockProgress) -> Self {
         match value {
-            BlockPoll::Pending => Self::Pending,
-            BlockPoll::Complete => Self::Complete(()),
+            BlockProgress::Pending => Self::Pending,
+            BlockProgress::Complete => Self::Complete(()),
         }
     }
 }

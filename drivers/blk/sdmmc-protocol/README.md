@@ -169,8 +169,8 @@ match the ownership boundary:
 
 - `rdif::config`: block size constants, `BlockConfig`, queue limits, device
   info, card-address translation, and error/transfer-mode helpers.
-- `rdif::host`: the `BlockHost` capability boundary plus the `SdioHost2Adapter`
-  request-slot adapter.
+- `rdif::host`: the private `ProtocolBlockSlot` and owned Host2 request
+  lifecycle used by the depth-one hardware queue.
 - `rdif::device`: `BlockDevice` and `rdif_block::Interface` integration.
 - `rdif::queue`: the depth-one `HardwareQueue` implementation, including
   owned-DMA batch submission, IRQ-gated completion, and shutdown recovery.

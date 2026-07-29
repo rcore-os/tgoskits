@@ -9,7 +9,6 @@ use rdif_block::{
 use crate::{
     rdif::{
         config::{BlockConfig, device_info},
-        host::BlockHost,
         irq::BlockIrqHandler,
         queue::BlockQueue,
     },
@@ -76,7 +75,9 @@ impl BlockInitStatus {
 /// Interrupt-driven single-queue SD/MMC controller.
 pub struct BlockDevice<H>
 where
-    H: BlockHost,
+    H: SdioIrqHost + Send + 'static,
+    H::TransactionRequest<'static>: Send,
+    H::BusRequest: Send,
 {
     card: Option<SdioSdmmc<H>>,
     config: BlockConfig,
@@ -89,10 +90,12 @@ where
 
 impl<H> BlockDevice<H>
 where
-    H: BlockHost,
+    H: SdioIrqHost + Send + 'static,
+    H::TransactionRequest<'static>: Send,
+    H::BusRequest: Send,
 {
     pub fn new(mut card: SdioSdmmc<H>, config: BlockConfig) -> Self {
-        let init_status = Arc::new(BlockInitStatus::initialized(config.capacity_blocks));
+        let init_status = Arc::new(BlockInitStatus::initialized(config.capacity_blocks()));
         let irq_handler = Box::new(BlockIrqHandler::<H> {
             irq: SdioIrqHost::irq_handle(card.host_mut()),
             init_status: Arc::clone(&init_status),
@@ -144,13 +147,13 @@ where
         let queue: Box<dyn HardwareQueue> = if let Some(preference) = self.init_preference {
             Box::new(BlockQueue::new_initializing(
                 card,
-                self.config.clone(),
+                self.config,
                 0,
                 preference,
                 Arc::clone(&self.init_status),
             )?)
         } else {
-            Box::new(BlockQueue::new(card, self.config.clone(), 0))
+            Box::new(BlockQueue::new(card, self.config, 0))
         };
         self.started = true;
         let state = self.init_status.controller_state()?;
@@ -177,20 +180,24 @@ where
 
 impl<H> DriverGeneric for BlockDevice<H>
 where
-    H: BlockHost,
+    H: SdioIrqHost + Send + 'static,
+    H::TransactionRequest<'static>: Send,
+    H::BusRequest: Send,
 {
     fn name(&self) -> &str {
-        self.config.name
+        self.config.name()
     }
 }
 
 impl<H> BlockController for BlockDevice<H>
 where
-    H: BlockHost,
+    H: SdioIrqHost + Send + 'static,
+    H::TransactionRequest<'static>: Send,
+    H::BusRequest: Send,
 {
     fn device_info(&self) -> DeviceInfo {
-        let mut config = self.config.clone();
-        config.capacity_blocks = self.init_status.capacity_blocks();
+        let mut config = self.config;
+        config.set_capacity_blocks(self.init_status.capacity_blocks());
         device_info(&config)
     }
 
@@ -213,6 +220,9 @@ where
                 if self.started && !self.stopped && event.source_id() == 0 && event.bits() != 0 =>
             {
                 self.current_update()
+            }
+            ControllerEvent::QuiesceIrqs if self.stopped => {
+                Ok(ControllerUpdate::state(ControllerState::Shutdown))
             }
             ControllerEvent::Watchdog { .. } => {
                 self.stopped = true;

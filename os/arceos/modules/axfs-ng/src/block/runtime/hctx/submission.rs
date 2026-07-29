@@ -47,6 +47,12 @@ pub(super) struct SubmissionLoop<'a> {
     pub(super) scratch: &'a mut SubmissionScratch,
 }
 
+#[derive(Default)]
+pub(super) struct SubmissionProgress {
+    pub(super) made_progress: bool,
+    pub(super) queue_full: bool,
+}
+
 struct SubmissionReconciliation<'a> {
     deadline: Duration,
     pending: &'a mut BTreeMap<RequestId, PendingRequest>,
@@ -54,8 +60,11 @@ struct SubmissionReconciliation<'a> {
     protocol_failed: &'a mut Vec<PendingRequest>,
 }
 
-pub(super) fn submit_available(queue: &mut dyn HardwareQueue, context: SubmissionLoop<'_>) -> bool {
-    let mut progressed = false;
+pub(super) fn submit_available(
+    queue: &mut dyn HardwareQueue,
+    context: SubmissionLoop<'_>,
+) -> SubmissionProgress {
+    let mut progress = SubmissionProgress::default();
     let limits = queue.info().limits;
     while context.pending.len() < limits.max_inflight {
         let available = limits.max_inflight - context.pending.len();
@@ -114,7 +123,7 @@ pub(super) fn submit_available(queue: &mut dyn HardwareQueue, context: Submissio
         );
         super::super::metrics::record_submission_batch(removed, context.pending.len());
 
-        progressed |= removed != 0;
+        progress.made_progress |= removed != 0;
         if !contract_valid || !ownership_valid {
             set_hctx_fatal(context.state, context.fatal_error, BlkError::Io);
         }
@@ -124,7 +133,10 @@ pub(super) fn submit_available(queue: &mut dyn HardwareQueue, context: Submissio
                     set_hctx_fatal(context.state, context.fatal_error, BlkError::Io);
                 }
             }
-            BatchSubmitDisposition::QueueFull => break,
+            BatchSubmitDisposition::QueueFull => {
+                progress.queue_full = true;
+                break;
+            }
             BatchSubmitDisposition::Fatal(error) => {
                 set_hctx_fatal(context.state, context.fatal_error, error);
             }
@@ -133,7 +145,7 @@ pub(super) fn submit_available(queue: &mut dyn HardwareQueue, context: Submissio
             break;
         }
     }
-    progressed
+    progress
 }
 
 pub(super) fn collect_submission_batch(

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Defer SD/eMMC protocol initialization to the block hctx and configure every
+  migrated controller through an owned `dma-api` capability.
+- Expose only the hardware-validated `cv181x-sdhci` and `rockchip-sdhci`
+  SD/eMMC registration paths; keep the JH7110, Phytium MCI, and Rockchip
+  DWMMC driver cores private until their write matrices pass on physical media.
+
+### Removed
+
+- Remove unreachable BCM2835 synchronous glue and the legacy `UnsafeCell`
+  shared-driver adapter.
+
 ## [0.13.0](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.1...ax-driver-v0.13.0) - 2026-07-24
 
 ### Changed

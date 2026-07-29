@@ -31,6 +31,7 @@ use crate::os::{BlockNotification, BlockThread, runtime_ops, sync::IrqMutex, wal
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
+const QUEUE_REGISTER_TRANSITION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) trait HctxObserver: Send + Sync {
     fn request_completed(&self, op: RequestOp, block_count: u32, result: Result<(), BlkError>);
@@ -262,6 +263,9 @@ fn run_hctx(
     let mut irq_events = Vec::new();
     let mut submission_scratch =
         SubmissionScratch::with_capacity(queue.info().limits.max_submit_batch);
+    let mut register_retry_at = None;
+    let mut register_deadline = None;
+    let mut submission_blocked = false;
 
     while !state.stopping.load(Ordering::Acquire) {
         if state.quiescing.load(Ordering::Acquire) {
@@ -280,19 +284,49 @@ fn run_hctx(
             &mut fatal_error,
             &mut irq_events,
         );
-        let submit_progress = submit_available(
-            &mut *queue,
-            SubmissionLoop {
-                state: &state,
-                pending: &mut pending,
-                retry_submissions: &mut retry_submissions,
-                protocol_failed: &mut protocol_failed,
-                fatal_error: &mut fatal_error,
-                next_channel: &mut next_channel,
-                prefer_retry: &mut prefer_retry,
-                scratch: &mut submission_scratch,
-            },
+        if irq_progress {
+            // An acknowledged device event supersedes a timer selected from
+            // the prior queue state. Reconcile with the state produced by the
+            // IRQ-driven drain below.
+            register_retry_at = None;
+            register_deadline = None;
+        }
+        reconcile_register_retry(
+            &*queue,
+            &mut register_retry_at,
+            &mut register_deadline,
+            wall_time(),
         );
+        let register_progress = advance_register_retry_if_due(
+            &mut *queue,
+            &*controller,
+            &mut register_retry_at,
+            &mut register_deadline,
+            wall_time(),
+            &state,
+            &mut fatal_error,
+        );
+        if irq_progress || register_progress {
+            submission_blocked = false;
+        }
+        let submit_progress = if submission_blocked {
+            submission::SubmissionProgress::default()
+        } else {
+            submit_available(
+                &mut *queue,
+                SubmissionLoop {
+                    state: &state,
+                    pending: &mut pending,
+                    retry_submissions: &mut retry_submissions,
+                    protocol_failed: &mut protocol_failed,
+                    fatal_error: &mut fatal_error,
+                    next_channel: &mut next_channel,
+                    prefer_retry: &mut prefer_retry,
+                    scratch: &mut submission_scratch,
+                },
+            )
+        };
+        submission_blocked |= submit_progress.queue_full;
 
         if fatal_error.is_none() && pending_deadline_expired(&pending, wall_time()) {
             fatal_error = Some(BlkError::TimedOut);
@@ -301,17 +335,24 @@ fn run_hctx(
         if state.stopping.load(Ordering::Acquire) {
             break;
         }
-        if irq_progress || submit_progress {
+        if irq_progress || register_progress || submit_progress.made_progress {
             continue;
         }
-        if let Some(deadline) = next_pending_deadline(&pending) {
-            let now = wall_time();
-            if deadline <= now {
-                continue;
+        let now = wall_time();
+        let wake_at = [
+            next_pending_deadline(&pending),
+            register_retry_at,
+            register_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        match wake_at {
+            Some(deadline) if deadline <= now => continue,
+            Some(deadline) => {
+                state.notification.wait_timeout(deadline - now);
             }
-            state.notification.wait_timeout(deadline - now);
-        } else {
-            state.notification.wait();
+            None => state.notification.wait(),
         }
     }
 
@@ -388,6 +429,65 @@ fn run_hctx(
         );
         core::mem::forget(queue);
     }
+}
+
+fn reconcile_register_retry(
+    queue: &dyn HardwareQueue,
+    retry_at: &mut Option<Duration>,
+    deadline: &mut Option<Duration>,
+    now: Duration,
+) {
+    match queue.register_retry_after() {
+        Some(delay) if retry_at.is_none() => {
+            let delay = if delay.is_zero() {
+                Duration::from_micros(1)
+            } else {
+                delay
+            };
+            *retry_at = Some(now.saturating_add(delay));
+            *deadline = Some(now.saturating_add(QUEUE_REGISTER_TRANSITION_TIMEOUT));
+        }
+        None => {
+            *retry_at = None;
+            *deadline = None;
+        }
+        Some(_) => {}
+    }
+}
+
+fn advance_register_retry_if_due(
+    queue: &mut dyn HardwareQueue,
+    controller: &dyn ControllerEventPort,
+    retry_at: &mut Option<Duration>,
+    deadline: &mut Option<Duration>,
+    now: Duration,
+    state: &HctxState,
+    fatal_error: &mut Option<BlkError>,
+) -> bool {
+    if deadline.is_some_and(|deadline| deadline <= now) {
+        set_hctx_fatal(state, fatal_error, BlkError::TimedOut);
+        return true;
+    }
+    if !retry_at.is_some_and(|retry_at| retry_at <= now) {
+        return false;
+    }
+    *retry_at = None;
+    if let Err(error) = queue.advance_register_retry() {
+        set_hctx_fatal(state, fatal_error, error);
+        return true;
+    }
+    controller.post(ControllerEvent::RegisterRetry);
+    if let Some(delay) = queue.register_retry_after() {
+        let delay = if delay.is_zero() {
+            Duration::from_micros(1)
+        } else {
+            delay
+        };
+        *retry_at = Some(now.saturating_add(delay));
+    } else {
+        *deadline = None;
+    }
+    true
 }
 
 fn drain_latched_irqs(

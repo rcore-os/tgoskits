@@ -39,7 +39,7 @@ fn init_falls_back_to_mmc_when_cmd8_and_acmd41_fail() {
     // EXT_CSD got captured.
     assert!(info.ext_csd.is_some());
 
-    let cmds = &driver.host.commands;
+    let cmds = &driver.host().commands;
     let cmd3 = cmds.iter().find(|c| c.index == 3).expect("CMD3 issued");
     assert_eq!(cmd3.argument, 1u32 << 16);
     assert!(cmds.iter().any(|c| c.index == 1), "CMD1 issued");
@@ -55,7 +55,7 @@ fn init_falls_back_to_mmc_when_cmd8_and_acmd41_fail() {
     assert_eq!(cmd6s[1].argument, hs_arg, "HS_TIMING=1");
 
     // Host should have ended up at 8-bit (Bit8 was accepted).
-    assert_eq!(driver.host.bus_width, Some(BusWidth::Bit8));
+    assert_eq!(driver.host().bus_width, Some(BusWidth::Bit8));
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn mmc_init_enables_an_advertised_write_cache_before_completion() {
         (0b11u32 << 24) | ((crate::cmd::ext_csd::CACHE_CTRL as u32) << 16) | (1u32 << 8);
     assert!(
         driver
-            .host
+            .host()
             .commands
             .iter()
             .any(|command| command.index == 6 && command.argument == cache_enable_argument),
@@ -138,7 +138,7 @@ fn mmc_init_falls_back_to_4bit_when_host_refuses_8bit() {
     let _info =
         poll_init_to_completion(&mut driver).expect("eMMC init succeeds with 4-bit fallback");
 
-    assert_eq!(driver.host.bus_width, Some(BusWidth::Bit4));
+    assert_eq!(driver.host().bus_width, Some(BusWidth::Bit4));
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn init_treats_sd_v1_correctly_when_cmd8_times_out_but_acmd41_succeeds() {
     assert!(!info.sd_v2);
     assert!(!info.high_capacity);
     assert_eq!(info.rca, 0x4321);
-    assert_eq!(driver.host.bus_width, Some(BusWidth::Bit4));
+    assert_eq!(driver.host().bus_width, Some(BusWidth::Bit4));
 }
 
 /// Build an EXT_CSD payload that *also* advertises HS200 @ 1.8 V.
@@ -215,7 +215,7 @@ fn mmc_init_picks_hs200_when_card_and_host_agree() {
 
     // HS_TIMING write should carry value 0x02, not 0x01.
     let cmd6s: Vec<&Command> = driver
-        .host
+        .host()
         .commands
         .iter()
         .filter(|c| c.index == 6)
@@ -226,21 +226,21 @@ fn mmc_init_picks_hs200_when_card_and_host_agree() {
     assert_eq!(cmd6s[1].argument, hs_timing_arg, "HS_TIMING=2 (HS200)");
 
     // Host hooks were exercised.
-    assert_eq!(driver.host.last_voltage, Some(SignalVoltage::V180));
-    assert_eq!(driver.host.last_clock, Some(ClockSpeed::Hs200));
+    assert_eq!(driver.host().last_voltage, Some(SignalVoltage::V180));
+    assert_eq!(driver.host().last_clock, Some(ClockSpeed::Hs200));
     assert_eq!(
-        driver.host.last_tuning,
+        driver.host().last_tuning,
         Some((21, crate::cmd::MMC_TUNING_BLOCK_SIZE_8BIT as u16))
     );
 
     let hs200_clock_pos = driver
-        .host
+        .host()
         .events
         .iter()
         .position(|event| matches!(event, MockEvent::Clock(ClockSpeed::Hs200)))
         .expect("host clock is raised to HS200");
     let hs200_switch_pos = driver
-        .host
+        .host()
         .events
         .iter()
         .position(|event| {
@@ -290,6 +290,7 @@ fn mmc_init_falls_back_to_hs52_when_tuning_fails() {
     let mut host = MockHost::with_results(replies);
     host.next_read_payload = Some(ext_csd_blob_hs200());
     host.tuning_result = Some(Error::BadResponse(ErrorContext::for_cmd(Phase::Init, 21)));
+    host.multi_step_hs200_rollback = true;
     let mut driver = SdioSdmmc::new(host);
     let _info =
         poll_init_to_completion(&mut driver).expect("init succeeds even when HS200 tuning fails");
@@ -298,7 +299,7 @@ fn mmc_init_falls_back_to_hs52_when_tuning_fails() {
     // then the rollback reverted voltage to 3.3 V so the controller's
     // 1.8 V sampling reference doesn't bleed into the HS@52 retry.
     let voltage_switches: Vec<SignalVoltage> = driver
-        .host
+        .host()
         .events
         .iter()
         .filter_map(|event| match event {
@@ -319,22 +320,26 @@ fn mmc_init_falls_back_to_hs52_when_tuning_fails() {
         ]
     );
     assert_eq!(
-        driver.host.last_tuning,
+        driver.host().last_tuning,
         Some((21, crate::cmd::MMC_TUNING_BLOCK_SIZE_8BIT as u16))
     );
     // But ended up at HighSpeed, not Hs200.
-    assert_eq!(driver.host.last_clock, Some(ClockSpeed::HighSpeed));
+    assert_eq!(driver.host().last_clock, Some(ClockSpeed::HighSpeed));
 
     // Two CMD6 SWITCHes for HS_TIMING: first =2 (HS200, failed),
     // then =1 (HS @ 52 MHz, succeeded).
     let hs_timing_writes: Vec<u8> = driver
-        .host
+        .host()
         .commands
         .iter()
         .filter(|c| c.index == 6 && ((c.argument >> 16) & 0xFF) as u8 == 185)
         .map(|c| ((c.argument >> 8) & 0xFF) as u8)
         .collect();
     assert_eq!(hs_timing_writes, std::vec![0x02, 0x01]);
+    assert!(
+        driver.host().aborted_bus_ops.is_empty(),
+        "HS200 fallback must drive every rollback bus operation to completion"
+    );
 }
 
 #[test]
@@ -373,13 +378,28 @@ fn mmc_init_skips_hs200_when_host_refuses_voltage_switch() {
         .expect("init succeeds when host refuses V180 voltage switch");
 
     // V180 was asked for once (and refused); no V330 rollback is needed
-    // because no HS200 commands were issued, but the protocol may emit
-    // it defensively. Verify HS200 was NOT entered: no HS_TIMING=2,
-    // no tuning, final clock is HighSpeed.
-    assert_eq!(driver.host.last_tuning, None);
-    assert_eq!(driver.host.last_clock, Some(ClockSpeed::HighSpeed));
+    // because submission transferred no request ownership and no HS200
+    // command was issued. The only V330 event is the normal initialization
+    // baseline.
+    let voltage_switches: Vec<SignalVoltage> = driver
+        .host()
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            MockEvent::Voltage(voltage) => Some(*voltage),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        voltage_switches,
+        std::vec![SignalVoltage::V330, SignalVoltage::V180]
+    );
+    // Verify HS200 was NOT entered: no HS_TIMING=2, no tuning, final clock
+    // is HighSpeed.
+    assert_eq!(driver.host().last_tuning, None);
+    assert_eq!(driver.host().last_clock, Some(ClockSpeed::HighSpeed));
     let hs_timing_writes: Vec<u8> = driver
-        .host
+        .host()
         .commands
         .iter()
         .filter(|c| c.index == 6 && ((c.argument >> 16) & 0xFF) as u8 == 185)

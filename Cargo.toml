@@ -149,7 +149,7 @@ ax-ctor-bare = { version = "0.4.8", path = "components/ctor_bare/ctor_bare" }
 ax-ctor-bare-macros = { version = "0.4.8", path = "components/ctor_bare/ctor_bare_macros" }
 ax-display = { version = "0.6.6", path = "os/arceos/modules/axdisplay" }
 ax-dma = { version = "0.6.13", path = "os/arceos/modules/axdma" }
-ax-driver = { version = "0.13.0", path = "drivers/ax-driver" }
+ax-driver = { version = "0.14.0", path = "drivers/ax-driver" }
 virtio-drivers = { version = "0.13.0", default-features = false }
 ax-errno = { version = "0.6.1", path = "components/axerrno" }
 ax-fs-ng = { version = "0.9.0", path = "os/arceos/modules/axfs-ng" }
@@ -224,7 +224,7 @@ pcie = { version = "0.6.7", path = "drivers/pci/pcie" }
 ramdisk = { version = "0.1.10", path = "drivers/blk/ramdisk" }
 rd-net = { version = "0.2.2", path = "drivers/net/rd-net" }
 rdif-base = { version = "0.8.3", path = "drivers/interface/rdif-base" }
-rdif-block = { version = "0.13.0", path = "drivers/interface/rdif-block" }
+rdif-block = { version = "0.14.0", path = "drivers/interface/rdif-block" }
 rdif-clk = { version = "0.5.4", path = "drivers/interface/rdif-clk" }
 rdif-def = { version = "0.3.0", path = "drivers/interface/rdif-def" }
 rdif-display = { version = "0.2.0", path = "drivers/interface/rdif-display" }
@@ -256,7 +256,7 @@ rdrive-macros = { version = "0.4.2", path = "drivers/rdrive-macros" }
 rsext4 = { version = "0.7.6", path = "components/rsext4" }
 scope-local = { version = "0.4.3", path = "components/scope-local" }
 sdio-host = { version = "0.1.0", package = "sdio-host-cv1800", path = "components/sdio-host" }
-sdio-host2 = { version = "0.1.4", path = "components/sdio-host2" }
+sdio-host2 = { version = "0.2.0", path = "components/sdio-host2" }
 sdhci-cv1800 = { version = "0.1.1", path = "components/sdhci-cv1800" }
 aic8800 = { version = "0.2.5", path = "components/aic8800" }
 crab-usb = { version = "0.10.3", path = "drivers/usb/usb-host" }
@@ -264,12 +264,12 @@ crab-uvc = { version = "0.1.1", path = "drivers/usb/usb-device/uvc" }
 ktest-helper = { version = "0.1.1", path = "drivers/usb/utils/ktest-helper" }
 usb-if = { version = "0.7.4", path = "drivers/usb/usb-if" }
 usb-serial = { version = "0.1.2", path = "drivers/usb/usb-serial" }
-dwmmc-host = { version = "0.3.3", path = "drivers/blk/dwmmc-host", default-features = false }
-phytium-mci-host = { version = "0.3.3", path = "drivers/blk/phytium-mci-host", default-features = false }
-cv181x-sdhci = { version = "0.1.3", path = "drivers/blk/cv181x-sdhci", default-features = false }
-sdhci-host = { version = "0.5.0", path = "drivers/blk/sdhci-host", default-features = false }
-sdmmc-protocol = { version = "0.5.0", path = "drivers/blk/sdmmc-protocol", default-features = false }
-starfive-jh7110-dwmmc = { version = "0.1.3", path = "drivers/blk/starfive-jh7110-dwmmc", default-features = false }
+dwmmc-host = { version = "0.4.0", path = "drivers/blk/dwmmc-host", default-features = false }
+phytium-mci-host = { version = "0.4.0", path = "drivers/blk/phytium-mci-host", default-features = false }
+cv181x-sdhci = { version = "0.2.0", path = "drivers/blk/cv181x-sdhci", default-features = false }
+sdhci-host = { version = "0.6.0", path = "drivers/blk/sdhci-host", default-features = false }
+sdmmc-protocol = { version = "0.6.0", path = "drivers/blk/sdmmc-protocol", default-features = false }
+starfive-jh7110-dwmmc = { version = "0.2.0", path = "drivers/blk/starfive-jh7110-dwmmc", default-features = false }
 smoltcp = { version = "0.13.1", default-features = false }
 axnsproxy = { version = "0.3.2", path = "os/StarryOS/axnsproxy" }
 starry-kernel = { version = "0.7.5", path = "os/StarryOS/kernel" }
