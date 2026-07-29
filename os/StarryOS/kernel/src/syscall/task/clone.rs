@@ -558,7 +558,7 @@ impl CloneArgs {
                 ))
             };
 
-            let inherited_cgroup = old_proc_data.cgroup.read().clone();
+            let inherited_cgroup = old_proc_data.cgroup_node();
             let mut new_nsproxy = old_proc_data.nsproxy.lock().clone_all();
             if flags.contains(CloneFlags::NEWUTS) {
                 new_nsproxy.unshare_uts();
@@ -608,10 +608,10 @@ impl CloneArgs {
                     exit_signal,
                     curr_thread.tid(),
                     flags.contains(CloneFlags::VM),
-                ),
+                )
+                .with_cgroup(inherited_cgroup),
             );
             proc_data.set_umask(old_proc_data.umask());
-            *proc_data.cgroup.write() = inherited_cgroup;
             proc_data.set_heap_top(old_proc_data.get_heap_top());
             proc_data.replace_personality(old_proc_data.personality());
             // Inherit parent dumpable (PR_SET_DUMPABLE state). Linux: child
@@ -756,7 +756,7 @@ impl CloneArgs {
             None
         } else {
             Some(
-                crate::cgroup::begin_fork(new_proc_data.cgroup.read().clone(), tid)
+                crate::cgroup::begin_fork(new_proc_data.cgroup_node(), tid)
                     .map_err(crate::cgroup::cgroup_error)?,
             )
         };
@@ -769,28 +769,21 @@ impl CloneArgs {
         if let Some(reservation) = &local_pid_reservation {
             reservation.publish(&publication)?;
         }
+        if let Some(guard) = &mut cgroup_guard {
+            guard.publish().map_err(crate::cgroup::cgroup_error)?;
+        }
         let published_process = prepared_process
             .map(|process| process.publish().ok_or(AxError::BadState))
             .transpose()?;
         let task_registration = prepared_task
             .with_task(|task| register_prepared_task(task, !flags.contains(CloneFlags::THREAD)))?;
-        if let Some(guard) = &mut cgroup_guard {
-            guard.commit();
-        }
         let _task = match prepared_task.publish() {
             Ok(task) => task,
-            Err(error) => {
-                if cgroup_guard.is_some()
-                    && let Err(rollback_error) = crate::cgroup::exit_process(tid)
-                {
-                    warn!(
-                        "clone rollback could not release cgroup membership for pid {tid}: \
-                         {rollback_error}"
-                    );
-                }
-                return Err(map_task_creation_error(error));
-            }
+            Err(error) => return Err(map_task_creation_error(error)),
         };
+        if let Some(guard) = cgroup_guard {
+            guard.commit();
+        }
 
         if let Some(write) = parent_tid_write {
             write.commit();

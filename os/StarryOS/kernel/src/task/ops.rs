@@ -608,9 +608,7 @@ pub fn do_exit(exit_code: i32, group_exit: bool) {
 
     let mut shutdown_reap_parent = None;
     if let ThreadExit::Last(process_cpu_time) = thread_exit {
-        if let Err(error) = crate::cgroup::exit_process(process.pid()) {
-            warn!("failed to release cgroup membership: {error}");
-        }
+        crate::cgroup::exit_process(&thr.proc_data);
         thr.proc_data.nsproxy.lock().release_cgroup_namespace();
 
         let timer_cancellations = thr.proc_data.interval_timers().lock().cancel_alarms();

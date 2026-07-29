@@ -9,11 +9,12 @@ extern crate std;
 mod membership;
 mod namespace;
 mod node;
+mod sync;
 
 use alloc::sync::Arc;
 
 use ax_lazyinit::LazyInit;
-pub use membership::{CgroupForkGuard, CgroupProvider};
+pub use membership::{CgroupForkGuard, ProcessMembership};
 pub use namespace::CgroupNamespace;
 pub use node::{CgroupNode, CgroupPin};
 
@@ -23,7 +24,7 @@ pub type ProcessId = u32;
 /// Cgroup operation failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CgroupError {
-    /// The cgroup subsystem or its process provider is unavailable.
+    /// The cgroup subsystem is unavailable.
     #[error("cgroup subsystem is not initialized")]
     NotInitialized,
     /// The requested cgroup does not exist.
@@ -32,7 +33,7 @@ pub enum CgroupError {
     /// A child cgroup with the requested name already exists.
     #[error("cgroup already exists")]
     AlreadyExists,
-    /// The cgroup is still referenced, populated, or has a pending fork.
+    /// The cgroup is still referenced, populated, or has a conflicting member.
     #[error("cgroup is busy")]
     ResourceBusy,
     /// The supplied name, PID, or file content is invalid.
@@ -51,10 +52,9 @@ pub type CgroupResult<T> = Result<T, CgroupError>;
 
 static ROOT: LazyInit<Arc<CgroupNode>> = LazyInit::new();
 
-/// Initialize the global cgroup hierarchy and membership state.
+/// Initialize the global cgroup hierarchy.
 pub fn init() {
     ROOT.init_once(CgroupNode::new_root());
-    membership::init();
 }
 
 /// Return a strong handle to the global cgroup root.
@@ -65,11 +65,6 @@ pub fn root() -> Arc<CgroupNode> {
         .clone()
 }
 
-/// Register the kernel process provider.
-pub fn register_provider(provider: &'static dyn CgroupProvider) {
-    membership::register_provider(provider);
-}
-
 /// Attach the first userspace process to the global root.
 pub fn attach_initial_process(pid: ProcessId) -> CgroupResult<()> {
     membership::attach_initial_process(root(), pid)
@@ -78,16 +73,6 @@ pub fn attach_initial_process(pid: ProcessId) -> CgroupResult<()> {
 /// Prepare inherited membership for a non-thread child.
 pub fn begin_fork(parent: Arc<CgroupNode>, child_pid: ProcessId) -> CgroupResult<CgroupForkGuard> {
     membership::begin_fork(parent, child_pid)
-}
-
-/// Move a live process to another cgroup.
-pub fn migrate_process(pid: ProcessId, target: Arc<CgroupNode>) -> CgroupResult<()> {
-    membership::migrate_process(pid, target)
-}
-
-/// Release membership for a process whose final thread is exiting.
-pub fn exit_process(pid: ProcessId) -> CgroupResult<()> {
-    membership::exit_process(pid)
 }
 
 /// Render `target` relative to an arbitrary cgroup namespace root.

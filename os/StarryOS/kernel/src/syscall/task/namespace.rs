@@ -64,7 +64,7 @@ impl PreparedUnshare {
                 nsproxy.unshare_user();
             }
             if flags & CLONE_NEWCGROUP != 0 {
-                nsproxy.unshare_cgroup(thread.proc_data.cgroup.read().clone());
+                nsproxy.unshare_cgroup(thread.proc_data.cgroup_node());
             }
         }
 

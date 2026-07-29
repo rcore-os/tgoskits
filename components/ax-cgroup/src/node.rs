@@ -6,9 +6,7 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use ax_kspin::SpinNoIrq;
-
-use crate::{CgroupError, CgroupResult, ProcessId};
+use crate::{CgroupError, CgroupResult, ProcessId, sync::CgroupMutex};
 
 static NEXT_CGROUP_ID: AtomicU64 = AtomicU64::new(2);
 
@@ -17,8 +15,8 @@ pub struct CgroupNode {
     id: u64,
     name: String,
     parent: Option<Weak<Self>>,
-    children: SpinNoIrq<BTreeMap<String, Arc<Self>>>,
-    members: SpinNoIrq<BTreeSet<ProcessId>>,
+    children: CgroupMutex<BTreeMap<String, Arc<Self>>>,
+    members: CgroupMutex<BTreeSet<ProcessId>>,
     pins: AtomicUsize,
 }
 
@@ -33,8 +31,8 @@ impl CgroupNode {
             id: 1,
             name: String::new(),
             parent: None,
-            children: SpinNoIrq::new(BTreeMap::new()),
-            members: SpinNoIrq::new(BTreeSet::new()),
+            children: CgroupMutex::new(BTreeMap::new()),
+            members: CgroupMutex::new(BTreeSet::new()),
             pins: AtomicUsize::new(0),
         })
     }
@@ -68,8 +66,8 @@ impl CgroupNode {
             id: NEXT_CGROUP_ID.fetch_add(1, Ordering::Relaxed),
             name: name.to_string(),
             parent: Some(Arc::downgrade(self)),
-            children: SpinNoIrq::new(BTreeMap::new()),
-            members: SpinNoIrq::new(BTreeSet::new()),
+            children: CgroupMutex::new(BTreeMap::new()),
+            members: CgroupMutex::new(BTreeSet::new()),
             pins: AtomicUsize::new(0),
         });
         children.insert(name.to_string(), Arc::clone(&child));
@@ -109,8 +107,8 @@ impl CgroupNode {
         self.members.lock().iter().copied().collect()
     }
 
-    pub(crate) fn add_member(&self, pid: ProcessId) {
-        self.members.lock().insert(pid);
+    pub(crate) fn add_member(&self, pid: ProcessId) -> bool {
+        self.members.lock().insert(pid)
     }
 
     pub(crate) fn remove_member(&self, pid: ProcessId) -> bool {

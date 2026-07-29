@@ -1,85 +1,133 @@
-use alloc::{collections::BTreeSet, sync::Arc};
-
-use ax_kspin::SpinNoIrq;
-use ax_lazyinit::LazyInit;
+use alloc::sync::Arc;
 
 use crate::{CgroupError, CgroupNode, CgroupResult, ProcessId};
 
-/// Process operations required by cgroup membership management.
-pub trait CgroupProvider: Send + Sync {
-    /// Return whether the process has already entered zombie state.
-    fn is_zombie(&self, pid: ProcessId) -> bool;
-
-    /// Snapshot the process's authoritative cgroup membership.
-    fn membership(&self, pid: ProcessId) -> Option<Arc<CgroupNode>>;
-
-    /// Replace the process's authoritative cgroup membership.
-    fn set_membership(&self, pid: ProcessId, cgroup: Arc<CgroupNode>);
+/// Authoritative cgroup state owned by one stable process generation.
+///
+/// The consuming OS serializes this value with a task-context sleeping lock.
+/// Keeping the process reference outside the hierarchy avoids callbacks from a
+/// hierarchy-global atomic section into a PID registry.
+pub struct ProcessMembership {
+    state: ProcessMembershipState,
 }
 
-struct MembershipState {
-    pending_forks: BTreeSet<ProcessId>,
+enum ProcessMembershipState {
+    Active(Arc<CgroupNode>),
+    Exited(Arc<CgroupNode>),
 }
 
-static STATE: LazyInit<SpinNoIrq<MembershipState>> = LazyInit::new();
-static PROVIDER: LazyInit<&'static dyn CgroupProvider> = LazyInit::new();
+impl ProcessMembership {
+    /// Creates active membership in `node`.
+    ///
+    /// The caller publishes the PID in `node` separately as part of initial
+    /// process or fork publication.
+    pub fn new(node: Arc<CgroupNode>) -> Self {
+        Self {
+            state: ProcessMembershipState::Active(node),
+        }
+    }
 
-pub(crate) fn init() {
-    STATE.init_once(SpinNoIrq::new(MembershipState {
-        pending_forks: BTreeSet::new(),
-    }));
-}
+    /// Returns the current or final hierarchy node for procfs observation.
+    pub fn current(&self) -> Arc<CgroupNode> {
+        match &self.state {
+            ProcessMembershipState::Active(node) | ProcessMembershipState::Exited(node) => {
+                node.clone()
+            }
+        }
+    }
 
-pub(crate) fn register_provider(provider: &'static dyn CgroupProvider) {
-    PROVIDER.init_once(provider);
-}
+    /// Moves one live process between hierarchy nodes.
+    ///
+    /// The caller must serialize this operation with final process exit.
+    pub fn migrate(&mut self, pid: ProcessId, target: Arc<CgroupNode>) -> CgroupResult<()> {
+        let ProcessMembershipState::Active(old) = &self.state else {
+            return Err(CgroupError::NoSuchProcess);
+        };
+        if Arc::ptr_eq(old, &target) {
+            return old
+                .has_member(pid)
+                .then_some(())
+                .ok_or(CgroupError::NoSuchProcess);
+        }
 
-fn state() -> CgroupResult<&'static SpinNoIrq<MembershipState>> {
-    STATE.get().ok_or(CgroupError::NotInitialized)
-}
+        if !old.remove_member(pid) {
+            return Err(CgroupError::NoSuchProcess);
+        }
+        if !target.add_member(pid) {
+            let restored = old.add_member(pid);
+            debug_assert!(restored, "cgroup membership rollback must restore the PID");
+            return Err(CgroupError::ResourceBusy);
+        }
+        self.state = ProcessMembershipState::Active(target);
+        Ok(())
+    }
 
-fn provider() -> CgroupResult<&'static dyn CgroupProvider> {
-    PROVIDER.get().copied().ok_or(CgroupError::NotInitialized)
+    /// Removes one process from the hierarchy exactly once.
+    ///
+    /// Repeated cleanup is intentionally idempotent so a failed unpublished
+    /// task can share the same rollback path as normal final-thread exit.
+    pub fn exit(&mut self, pid: ProcessId) {
+        let ProcessMembershipState::Active(node) = &self.state else {
+            return;
+        };
+        let node = node.clone();
+        node.remove_member(pid);
+        self.state = ProcessMembershipState::Exited(node);
+    }
 }
 
 pub(crate) fn attach_initial_process(root: Arc<CgroupNode>, pid: ProcessId) -> CgroupResult<()> {
-    let _state = state()?.lock();
-    root.add_member(pid);
-    Ok(())
+    root.add_member(pid)
+        .then_some(())
+        .ok_or(CgroupError::ResourceBusy)
 }
 
-enum ForkState {
-    Pending,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ForkPublication {
+    Prepared,
+    Published,
     Committed,
 }
 
-/// Rolls back a pending cgroup fork unless membership is committed.
+/// Rolls back a published cgroup member unless task publication succeeds.
 pub struct CgroupForkGuard {
     cgroup: Arc<CgroupNode>,
     pid: ProcessId,
-    state: ForkState,
+    publication: ForkPublication,
 }
 
 impl CgroupForkGuard {
-    /// Publish inherited membership before the child becomes runnable.
-    pub fn commit(&mut self) {
-        let mut state = STATE
-            .get()
-            // SAFE-EXPECT: a fork guard can only be created after membership initialization.
-            .expect("cgroup membership must be initialized")
-            .lock();
-        state.pending_forks.remove(&self.pid);
-        self.cgroup.add_member(self.pid);
-        self.state = ForkState::Committed;
+    /// Publishes inherited membership before the PID becomes externally visible.
+    pub fn publish(&mut self) -> CgroupResult<()> {
+        if self.publication != ForkPublication::Prepared {
+            return Err(CgroupError::ResourceBusy);
+        }
+        if !self.cgroup.add_member(self.pid) {
+            return Err(CgroupError::ResourceBusy);
+        }
+        self.publication = ForkPublication::Published;
+        Ok(())
+    }
+
+    /// Commits membership after scheduler publication can no longer fail.
+    pub fn commit(mut self) {
+        assert_eq!(
+            self.publication,
+            ForkPublication::Published,
+            "only published cgroup membership can be committed"
+        );
+        self.publication = ForkPublication::Committed;
     }
 }
 
 impl Drop for CgroupForkGuard {
     fn drop(&mut self) {
-        if matches!(self.state, ForkState::Pending)
-            && let Some(state) = STATE.get()
-        {
-            state.lock().pending_forks.remove(&self.pid);
+        if self.publication == ForkPublication::Published {
+            let removed = self.cgroup.remove_member(self.pid);
+            debug_assert!(
+                removed,
+                "an unpublished child must retain its inherited cgroup member"
+            );
         }
     }
 }
@@ -88,172 +136,95 @@ pub(crate) fn begin_fork(
     parent: Arc<CgroupNode>,
     child_pid: ProcessId,
 ) -> CgroupResult<CgroupForkGuard> {
-    let mut state = state()?.lock();
-    if !state.pending_forks.insert(child_pid) {
+    if parent.has_member(child_pid) {
         return Err(CgroupError::ResourceBusy);
     }
     Ok(CgroupForkGuard {
         cgroup: parent,
         pid: child_pid,
-        state: ForkState::Pending,
+        publication: ForkPublication::Prepared,
     })
-}
-
-pub(crate) fn migrate_process(pid: ProcessId, target: Arc<CgroupNode>) -> CgroupResult<()> {
-    let state = state()?.lock();
-    if state.pending_forks.contains(&pid) {
-        return Err(CgroupError::ResourceBusy);
-    }
-
-    let provider = provider()?;
-    if provider.is_zombie(pid) {
-        return Err(CgroupError::NoSuchProcess);
-    }
-    let old = provider.membership(pid).ok_or(CgroupError::NoSuchProcess)?;
-    if Arc::ptr_eq(&old, &target) {
-        return old
-            .has_member(pid)
-            .then_some(())
-            .ok_or(CgroupError::NoSuchProcess);
-    }
-    if !old.remove_member(pid) {
-        return Err(CgroupError::NoSuchProcess);
-    }
-    target.add_member(pid);
-    provider.set_membership(pid, target);
-    Ok(())
-}
-
-pub(crate) fn exit_process(pid: ProcessId) -> CgroupResult<()> {
-    let _state = state()?.lock();
-    let provider = provider()?;
-    let cgroup = provider.membership(pid).ok_or(CgroupError::NoSuchProcess)?;
-    cgroup.remove_member(pid);
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use alloc::collections::{BTreeMap, BTreeSet};
-    use std::sync::{LazyLock, Mutex, MutexGuard, Once};
-
     use super::*;
-
-    struct MockProvider {
-        memberships: Mutex<BTreeMap<ProcessId, Arc<CgroupNode>>>,
-        zombies: Mutex<BTreeSet<ProcessId>>,
-    }
-
-    impl CgroupProvider for MockProvider {
-        fn is_zombie(&self, pid: ProcessId) -> bool {
-            self.zombies.lock().unwrap().contains(&pid)
-        }
-
-        fn membership(&self, pid: ProcessId) -> Option<Arc<CgroupNode>> {
-            self.memberships.lock().unwrap().get(&pid).cloned()
-        }
-
-        fn set_membership(&self, pid: ProcessId, cgroup: Arc<CgroupNode>) {
-            self.memberships.lock().unwrap().insert(pid, cgroup);
-        }
-    }
-
-    static PROVIDER: MockProvider = MockProvider {
-        memberships: Mutex::new(BTreeMap::new()),
-        zombies: Mutex::new(BTreeSet::new()),
-    };
-    static INIT: Once = Once::new();
-    static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    fn setup() -> MutexGuard<'static, ()> {
-        let guard = TEST_LOCK.lock().unwrap();
-        INIT.call_once(|| {
-            crate::init();
-            register_provider(&PROVIDER);
-        });
-        PROVIDER.memberships.lock().unwrap().clear();
-        PROVIDER.zombies.lock().unwrap().clear();
-        guard
-    }
 
     #[test]
     fn migration_updates_node_lists_and_authoritative_handle() {
-        let _guard = setup();
-        let root = crate::root();
+        let root = CgroupNode::new_root();
         let target = root.create_child("migration-target").unwrap();
         let pid = 1001;
         root.add_member(pid);
-        PROVIDER
-            .memberships
-            .lock()
-            .unwrap()
-            .insert(pid, root.clone());
+        let mut membership = ProcessMembership::new(root.clone());
 
-        migrate_process(pid, target.clone()).unwrap();
+        membership.migrate(pid, target.clone()).unwrap();
 
         assert!(!root.has_member(pid));
         assert!(target.has_member(pid));
-        assert!(Arc::ptr_eq(&PROVIDER.membership(pid).unwrap(), &target));
-        exit_process(pid).unwrap();
+        assert!(Arc::ptr_eq(&membership.current(), &target));
+        membership.exit(pid);
     }
 
     #[test]
     fn same_target_migration_preserves_membership() {
-        let _guard = setup();
-        let root = crate::root();
+        let root = CgroupNode::new_root();
         let pid = 1002;
         root.add_member(pid);
-        PROVIDER
-            .memberships
-            .lock()
-            .unwrap()
-            .insert(pid, root.clone());
+        let mut membership = ProcessMembership::new(root.clone());
 
-        assert_eq!(migrate_process(pid, root.clone()), Ok(()));
+        assert_eq!(membership.migrate(pid, root.clone()), Ok(()));
         assert!(root.has_member(pid));
-        exit_process(pid).unwrap();
+        membership.exit(pid);
     }
 
     #[test]
-    fn migration_rejects_missing_and_zombie_processes() {
-        let _guard = setup();
-        let root = crate::root();
+    fn migration_rejects_missing_and_exited_processes() {
+        let root = CgroupNode::new_root();
         let target = root.create_child("invalid-target").unwrap();
-
+        let pid = 1003;
+        let mut missing = ProcessMembership::new(root.clone());
         assert_eq!(
-            migrate_process(1003, target.clone()),
+            missing.migrate(pid, target.clone()),
             Err(CgroupError::NoSuchProcess)
         );
 
-        PROVIDER.memberships.lock().unwrap().insert(1004, root);
-        PROVIDER.zombies.lock().unwrap().insert(1004);
-        assert_eq!(
-            migrate_process(1004, target),
-            Err(CgroupError::NoSuchProcess)
-        );
+        root.add_member(pid);
+        let mut exited = ProcessMembership::new(root);
+        exited.exit(pid);
+        assert_eq!(exited.migrate(pid, target), Err(CgroupError::NoSuchProcess));
     }
 
     #[test]
-    fn fork_guard_rolls_back_or_commits_before_exit() {
-        let _guard = setup();
-        let root = crate::root();
-        let pid = 1005;
-        PROVIDER
-            .memberships
-            .lock()
-            .unwrap()
-            .insert(pid, root.clone());
+    fn fork_guard_rolls_back_until_scheduler_publication_commits() {
+        let root = CgroupNode::new_root();
+        let pid = 1004;
 
-        drop(begin_fork(root.clone(), pid).unwrap());
-        assert!(!root.has_member(pid));
-
-        let mut guard = begin_fork(root.clone(), pid).unwrap();
-        guard.commit();
-        drop(guard);
+        let mut rolled_back = begin_fork(root.clone(), pid).unwrap();
+        rolled_back.publish().unwrap();
         assert!(root.has_member(pid));
-
-        assert_eq!(exit_process(pid), Ok(()));
-        assert_eq!(exit_process(pid), Ok(()));
+        drop(rolled_back);
         assert!(!root.has_member(pid));
+
+        let mut committed = begin_fork(root.clone(), pid).unwrap();
+        committed.publish().unwrap();
+        committed.commit();
+        assert!(root.has_member(pid));
+    }
+
+    #[test]
+    fn process_owned_transition_has_no_global_provider_lock() {
+        let root = CgroupNode::new_root();
+        let target = root.create_child("process-owned-target").unwrap();
+        let pid = 1005;
+        root.add_member(pid);
+        let mut membership = ProcessMembership::new(root);
+
+        membership.migrate(pid, target.clone()).unwrap();
+        membership.exit(pid);
+        membership.exit(pid);
+
+        assert!(!target.has_member(pid));
+        assert!(Arc::ptr_eq(&membership.current(), &target));
     }
 }

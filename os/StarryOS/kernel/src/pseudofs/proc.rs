@@ -1585,7 +1585,7 @@ impl SimpleDirOps for ThreadDir {
                     .cgroup_ns
                     .clone();
                 let reader_root = reader_cgroup_ns.lock().root();
-                let target_membership = task.as_thread().proc_data.cgroup.read().clone();
+                let target_membership = task.as_thread().proc_data.cgroup_node();
                 let path = crate::cgroup::relative_path(&reader_root, &target_membership);
                 Ok(format!("0::{path}\n"))
             })
