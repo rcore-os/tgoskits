@@ -12,6 +12,15 @@ mod control;
 mod cpu_worker;
 pub mod hw;
 #[cfg(target_arch = "aarch64")]
+mod hw_allocation;
+mod hw_event;
+#[cfg(target_arch = "aarch64")]
+mod hw_open;
+#[cfg(target_arch = "aarch64")]
+mod hw_owner;
+#[cfg(target_arch = "aarch64")]
+mod hw_sampling;
+#[cfg(target_arch = "aarch64")]
 mod inheritance;
 #[cfg(target_arch = "aarch64")]
 mod inheritance_lifecycle;
