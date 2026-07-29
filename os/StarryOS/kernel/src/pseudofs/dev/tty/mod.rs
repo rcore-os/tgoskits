@@ -21,7 +21,6 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_kspin::SpinNoIrq;
 use ax_sync::Mutex;
-use ax_task::current;
 use axfs_ng_vfs::{Location, NodeFlags};
 use axpoll::{IoEvents, Pollable};
 use starry_process::Process;
@@ -43,7 +42,7 @@ pub use self::{
 };
 use crate::{
     pseudofs::{Device, DeviceOps},
-    task::{AsThread, get_process_group, send_signal_to_process_group},
+    task::{current_user_task, get_process_group, send_signal_to_process_group},
 };
 
 const ANSI_CURSOR_POSITION_REQUEST: &[u8] = b"\x1b[6n";
@@ -142,10 +141,10 @@ impl<R: TtyRead, W: TtyWrite> Tty<R, W> {
     }
 
     fn bind_current_to_at(&self, location: Location) -> AxResult<()> {
-        self.this
-            .upgrade()
-            .unwrap()
-            .bind_to_at(&current().as_thread().proc_data.proc, Some(location))
+        self.this.upgrade().unwrap().bind_to_at(
+            &current_user_task().as_thread().proc_data.proc,
+            Some(location),
+        )
     }
 }
 
@@ -301,10 +300,11 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                 self.this
                     .upgrade()
                     .unwrap()
-                    .bind_to(&current().as_thread().proc_data.proc)?;
+                    .bind_to(&current_user_task().as_thread().proc_data.proc)?;
             }
             TIOCNOTTY => {
-                let session = current().as_thread().proc_data.proc.group().session();
+                let current = current_user_task();
+                let session = current.as_thread().proc_data.proc.group().session();
                 let this: Arc<dyn Any + Send + Sync> = self.this.upgrade().unwrap();
                 let binding = self
                     .binding
@@ -312,7 +312,7 @@ impl<R: TtyRead, W: TtyWrite> DeviceOps for Tty<R, W> {
                     .as_ref()
                     .and_then(Weak::upgrade)
                     .unwrap_or(this);
-                if current()
+                if current
                     .as_thread()
                     .proc_data
                     .proc
