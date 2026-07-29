@@ -1,13 +1,13 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{
     cell::UnsafeCell,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicU8, Ordering},
     time::Duration,
 };
 
 use ::xhci::{
     extended_capabilities::usb_legacy_support_capability::UsbLegacySupport,
-    registers::doorbell,
+    registers::{doorbell, runtime::InterrupterManagementRegister},
     ring::trb::{command, event::CommandCompletion},
 };
 use ax_kspin::{SpinRaw, SpinRawGuard, SpinRwLock as RwLock};
@@ -524,21 +524,130 @@ impl Xhci {
 }
 
 pub struct EventHandler {
-    reg: UnsafeCell<XhciRegisters>,
+    event_reg: UnsafeCell<XhciRegisters>,
+    irq_ack_reg: SpinRaw<XhciRegisters>,
+    irq_rearm_reg: UnsafeCell<XhciRegisters>,
     cmd_finished: Finished<CommandCompletion>,
     event_ring: UnsafeCell<EventRing>,
     transfer_result_handler: TransferResultHandler,
     ports: PortChangeWaker,
     irq_state: ControllerIrqState,
-    irq_masked: AtomicBool,
-    register_gate: SpinRaw<()>,
+    irq_mask: XhciIrqMaskState,
+    task_gate: SpinRaw<()>,
+    event_gate: SpinRaw<()>,
 }
 
-// SAFETY: Every access to the register and event-ring `UnsafeCell`s is
-// serialized by `register_gate`. Hard IRQ acknowledgement uses only
-// `try_lock`, while task-context drain and rearm take the serialized gate.
+// SAFETY: `task_gate` serializes every task-context entry. `event_gate`
+// additionally protects the event register view and event ring, while the
+// rearm register view is used only under `task_gate`. Hard IRQ owns the
+// independently mapped acknowledgement view behind `irq_ack_reg`; it touches
+// only USBSTS and IMAN. `irq_mask` orders the one shared IMAN hardware field
+// across acknowledgement and rearm.
 unsafe impl Send for EventHandler {}
 unsafe impl Sync for EventHandler {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum XhciIrqMaskPhase {
+    Unmasked = 0,
+    Masking  = 1,
+    Masked   = 2,
+    Rearming = 3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RearmCompletion {
+    Unmasked,
+    Remask,
+}
+
+struct XhciIrqMaskState {
+    phase: AtomicU8,
+}
+
+fn prepare_iman_rearm(register: &mut InterrupterManagementRegister, enabled: bool) {
+    // IP is RW1C. Rearm/disable must write zero so an event that arrived while
+    // the source was masked remains pending and is delivered after IE opens.
+    register.set_0_interrupt_pending();
+    if enabled {
+        register.set_interrupt_enable();
+    } else {
+        register.clear_interrupt_enable();
+    }
+}
+
+impl XhciIrqMaskState {
+    const fn unmasked() -> Self {
+        Self {
+            phase: AtomicU8::new(XhciIrqMaskPhase::Unmasked as u8),
+        }
+    }
+
+    #[cfg(test)]
+    const fn masked() -> Self {
+        Self {
+            phase: AtomicU8::new(XhciIrqMaskPhase::Masked as u8),
+        }
+    }
+
+    fn begin_masking(&self) {
+        self.phase
+            .store(XhciIrqMaskPhase::Masking as u8, Ordering::Release);
+    }
+
+    fn finish_masking(&self) {
+        self.phase
+            .store(XhciIrqMaskPhase::Masked as u8, Ordering::Release);
+    }
+
+    fn begin_rearm(&self) -> bool {
+        self.phase
+            .compare_exchange(
+                XhciIrqMaskPhase::Masked as u8,
+                XhciIrqMaskPhase::Rearming as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn cancel_rearm(&self) {
+        let _result = self.phase.compare_exchange(
+            XhciIrqMaskPhase::Rearming as u8,
+            XhciIrqMaskPhase::Masked as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn finish_rearm(&self) -> RearmCompletion {
+        if self
+            .phase
+            .compare_exchange(
+                XhciIrqMaskPhase::Rearming as u8,
+                XhciIrqMaskPhase::Unmasked as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            RearmCompletion::Unmasked
+        } else {
+            RearmCompletion::Remask
+        }
+    }
+
+    #[cfg(test)]
+    fn phase(&self) -> XhciIrqMaskPhase {
+        match self.phase.load(Ordering::Acquire) {
+            value if value == XhciIrqMaskPhase::Unmasked as u8 => XhciIrqMaskPhase::Unmasked,
+            value if value == XhciIrqMaskPhase::Masking as u8 => XhciIrqMaskPhase::Masking,
+            value if value == XhciIrqMaskPhase::Masked as u8 => XhciIrqMaskPhase::Masked,
+            value if value == XhciIrqMaskPhase::Rearming as u8 => XhciIrqMaskPhase::Rearming,
+            _ => unreachable!("invalid xHCI IRQ mask phase"),
+        }
+    }
+}
 
 impl EventHandler {
     fn new(
@@ -550,14 +659,17 @@ impl EventHandler {
         irq_state: ControllerIrqState,
     ) -> Self {
         Self {
-            reg: UnsafeCell::new(reg),
+            event_reg: UnsafeCell::new(reg.clone()),
+            irq_ack_reg: SpinRaw::new(reg.clone()),
+            irq_rearm_reg: UnsafeCell::new(reg),
             cmd_finished,
             event_ring: UnsafeCell::new(event_ring),
             transfer_result_handler,
             ports,
             irq_state,
-            irq_masked: AtomicBool::new(false),
-            register_gate: SpinRaw::new(()),
+            irq_mask: XhciIrqMaskState::unmasked(),
+            task_gate: SpinRaw::new(()),
+            event_gate: SpinRaw::new(()),
         }
     }
 
@@ -568,17 +680,13 @@ impl EventHandler {
         unsafe { &mut *self.event_ring.get() }
     }
 
-    #[allow(clippy::mut_from_ref)]
-    fn reg(&self, _guard: &SpinRawGuard<'_, ()>) -> &mut XhciRegisters {
-        // SAFETY: the private entry points can obtain this guard only from
-        // `register_gate`, which serializes every register access.
-        unsafe { &mut *self.reg.get() }
-    }
-
     fn update_erdp(&self, guard: &SpinRawGuard<'_, ()>, clear_ehb: bool) {
         let erdp = self.event_ring(guard).erdp();
         let segment_index = self.event_ring(guard).segment_index();
-        self.reg(guard)
+        // SAFETY: `guard` proves that `event_gate` serializes this register
+        // view. It accesses only ERDP, disjoint from the hard-IRQ USBSTS/IMAN
+        // endpoint.
+        unsafe { &mut *self.event_reg.get() }
             .interrupter_register_set
             .interrupter_mut(0)
             .erdp
@@ -679,65 +787,122 @@ impl EventHandler {
 
 impl EventHandlerOp for EventHandler {
     fn acknowledge_irq(&self) -> bool {
-        let Some(register_guard) = self.register_gate.try_lock() else {
+        let Some(mut irq_reg) = self.irq_ack_reg.try_lock() else {
+            // Only another acknowledgement can own this endpoint. That owner
+            // will mask and acknowledge the same level-triggered source.
             return false;
         };
-        let sts = self.reg(&register_guard).operational.usbsts.read_volatile();
+        let sts = irq_reg.operational.usbsts.read_volatile();
         let has_event_interrupt = sts.event_interrupt();
 
         if !has_event_interrupt {
             return false;
         }
 
-        self.reg(&register_guard)
-            .operational
-            .usbsts
-            .update_volatile(|r| {
-                r.clear_event_interrupt();
-            });
+        self.irq_mask.begin_masking();
+        irq_reg.operational.usbsts.update_volatile(|r| {
+            r.clear_event_interrupt();
+        });
 
         // GIC level delivery requires clearing IMAN.IP explicitly, matching
         // Linux xhci_irq() after USBSTS.EINT is acknowledged.
-        let mut irq = self
-            .reg(&register_guard)
-            .interrupter_register_set
-            .interrupter_mut(0);
+        let mut irq = irq_reg.interrupter_register_set.interrupter_mut(0);
         irq.iman.update_volatile(|r| {
             r.clear_interrupt_enable();
             r.clear_interrupt_pending();
         });
-        self.irq_masked.store(true, Ordering::Release);
+        // Match Linux xhci_disable_interrupter(): IMAN may be posted MMIO, so
+        // do not publish Masked until the write has reached the controller.
+        let _flushed = irq.iman.read_volatile();
+        self.irq_mask.finish_masking();
         true
     }
 
     fn drain_event(&self) -> Event {
-        let register_guard = self.register_gate.lock();
-        let event = if self.event_ring(&register_guard).has_pending_event() {
-            self.clean_event_ring(&register_guard)
+        let _task_guard = self.task_gate.lock();
+        let event_guard = self.event_gate.lock();
+        let event = if self.event_ring(&event_guard).has_pending_event() {
+            self.clean_event_ring(&event_guard)
         } else {
             Event::Nothing
         };
-        self.update_erdp(&register_guard, true);
+        self.update_erdp(&event_guard, true);
         event
     }
 
     fn rearm_irq(&self) {
-        let register_guard = self.register_gate.lock();
-        if self.irq_masked.swap(false, Ordering::AcqRel) {
-            self.irq_state.apply_enabled(|enabled| {
-                mb();
-                self.reg(&register_guard)
-                    .interrupter_register_set
-                    .interrupter_mut(0)
-                    .iman
-                    .update_volatile(|r| {
-                        if enabled {
-                            r.set_interrupt_enable();
-                        } else {
-                            r.clear_interrupt_enable();
-                        }
-                    });
-            });
+        let _task_guard = self.task_gate.lock();
+        if !self.irq_mask.begin_rearm() {
+            return;
         }
+        self.irq_state.apply_enabled(|enabled| {
+            mb();
+            // SAFETY: `_task_guard` serializes rearm calls. IMAN sharing with
+            // hard IRQ is governed by `irq_mask`, and each side owns a
+            // distinct accessor.
+            let mut irq = unsafe { &mut *self.irq_rearm_reg.get() }
+                .interrupter_register_set
+                .interrupter_mut(0);
+            irq.iman
+                .update_volatile(|register| prepare_iman_rearm(register, enabled));
+            // Match Linux xhci_enable_interrupter()/disable_interrupter().
+            // The state transition must not outrun a posted IMAN write.
+            let _flushed = irq.iman.read_volatile();
+
+            if !enabled {
+                self.irq_mask.cancel_rearm();
+            } else if self.irq_mask.finish_rearm() == RearmCompletion::Remask {
+                // A new hard acknowledgement won while IMAN was being
+                // enabled. Reconcile the hardware with its Masking/Masked
+                // publication before releasing task ownership.
+                irq.iman
+                    .update_volatile(|register| prepare_iman_rearm(register, false));
+                let _flushed = irq.iman.read_volatile();
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acknowledgement_during_rearm_requires_a_final_hardware_mask() {
+        let state = XhciIrqMaskState::masked();
+        assert!(state.begin_rearm());
+
+        state.begin_masking();
+        state.finish_masking();
+
+        assert_eq!(state.finish_rearm(), RearmCompletion::Remask);
+        assert_eq!(state.phase(), XhciIrqMaskPhase::Masked);
+    }
+
+    #[test]
+    fn stale_rearm_cannot_enter_while_acknowledgement_is_masking() {
+        let state = XhciIrqMaskState::unmasked();
+        state.begin_masking();
+
+        assert!(!state.begin_rearm());
+        state.finish_masking();
+        assert!(state.begin_rearm());
+    }
+
+    #[test]
+    fn rearm_write_preserves_a_new_hardware_pending_bit() {
+        // SAFETY: InterrupterManagementRegister is repr(transparent) over u32.
+        let mut register = unsafe { core::mem::transmute::<u32, InterrupterManagementRegister>(1) };
+
+        prepare_iman_rearm(&mut register, true);
+
+        // SAFETY: InterrupterManagementRegister is repr(transparent) over u32.
+        let write_value =
+            unsafe { core::mem::transmute::<InterrupterManagementRegister, u32>(register) };
+        assert_eq!(
+            write_value & 1,
+            0,
+            "RW1C IP must be written as zero so rearm cannot consume a new event"
+        );
     }
 }

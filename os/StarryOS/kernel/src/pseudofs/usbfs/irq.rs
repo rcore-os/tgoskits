@@ -341,7 +341,7 @@ fn usb_irq_return(handled: bool) -> ax_runtime::hal::irq::IrqReturn {
 }
 
 fn usbfs_event_handler(slot: &UsbIrqSlot) {
-    let _permit = match slot.event_gate.try_enter() {
+    let permit = match slot.event_gate.try_enter() {
         UsbEventEntry::Acquired(permit) => permit,
         UsbEventEntry::Busy => {
             defer_event_drain(slot);
@@ -367,10 +367,29 @@ fn usbfs_event_handler(slot: &UsbIrqSlot) {
     {
         manager.notify_usb_activity_from_irq();
     }
-    if batch.exhausted {
-        defer_event_drain(slot);
-    } else if slot.active() {
-        slot.handler.rearm_irq();
+    finish_event_drain(
+        permit,
+        batch.exhausted,
+        || defer_event_drain(slot),
+        || {
+            if slot.active() {
+                slot.handler.rearm_irq();
+            }
+        },
+    );
+}
+
+fn finish_event_drain(
+    permit: UsbEventPermit<'_>,
+    exhausted: bool,
+    defer: impl FnOnce(),
+    rearm: impl FnOnce(),
+) {
+    drop(permit);
+    if exhausted {
+        defer();
+    } else {
+        rearm();
     }
 }
 
@@ -532,5 +551,31 @@ mod tests {
             usb_irq_return(true),
             ax_runtime::hal::irq::IrqReturn::Handled
         );
+    }
+
+    #[test]
+    fn event_permit_is_released_before_device_rearm() {
+        let gate = UsbEventGate::new();
+        let permit = match gate.try_enter() {
+            UsbEventEntry::Acquired(permit) => permit,
+            _ => panic!("an active USB event gate must issue its first permit"),
+        };
+        let mut rearmed = false;
+
+        finish_event_drain(
+            permit,
+            false,
+            || unreachable!(),
+            || {
+                let nested = gate.try_enter();
+                assert!(
+                    matches!(nested, UsbEventEntry::Acquired(_)),
+                    "an immediately delivered IRQ must be able to acknowledge after rearm"
+                );
+                rearmed = true;
+            },
+        );
+
+        assert!(rearmed);
     }
 }

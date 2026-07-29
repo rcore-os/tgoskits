@@ -628,18 +628,30 @@ Controller enable/disable and deferred rearm share one task-context
 `ControllerIrqState`; hard acknowledgement observes only its atomic enabled
 publication and never acquires the control gate. This prevents a stale worker
 from reopening a disabled controller while preserving bounded hard-IRQ work.
-The xHCI handler additionally owns a non-blocking register gate: hard IRQ uses
-`try_lock`, and every safe access to its register and event-ring `UnsafeCell`s
-requires the resulting guard.
+The xHCI handler no longer makes hard acknowledgement contend with task event
+draining on one register gate. It owns three capability views: a non-blocking
+USBSTS/IMAN acknowledgement endpoint, an ERDP/event-ring endpoint serialized
+under task ownership, and a task-only IMAN rearm endpoint. A single
+`Unmasked / Masking / Masked / Rearming` phase orders the two IMAN views. If a
+new acknowledgement wins while rearm is writing IMAN, the rearm tail masks the
+source again. As in Linux `xhci_enable_interrupter()` and
+`xhci_disable_interrupter()`, every IMAN mask or unmask is read back before the
+software state is published so posted MMIO cannot escape the transition.
+Rearm also writes the RW1C IP field as zero, preserving an event that arrived
+while masked instead of consuming it in the same write that opens IE.
 The USBFS lifecycle gate rejects new work before IRQ callback removal and waits
 for an in-flight worker before relinquishing callback ownership; the stable
-registry slot itself remains allocated. Shared IRQ callbacks return `Unhandled`
-when the controller did not claim the status.
+registry slot itself remains allocated. The worker drops its event permit
+before device rearm, so an IRQ delivered immediately by the IMAN write can
+enter the callback and acknowledge the level source. Shared IRQ callbacks
+return `Unhandled` when the controller did not claim the status.
 The deterministic regressions
 `stale_task_rearm_cannot_reenable_a_disabled_controller` and
-`hard_irq_ack_preserves_controller_disable` reproduce the two controller
-shutdown races, while USBFS gate tests cover teardown quiescence and fixed
-batch exhaustion.
+`hard_irq_ack_preserves_controller_disable` reproduce the controller shutdown
+races. `acknowledgement_during_rearm_requires_a_final_hardware_mask` covers the
+IMAN race, and `rearm_write_preserves_a_new_hardware_pending_bit` covers the
+RW1C encoding. USBFS gate tests cover teardown quiescence, fixed batch
+exhaustion, and permit release before rearm.
 
 Starry user waits now have one typed terminal boundary:
 `Ready / Interrupted / TimedOut`. The old executor park callback treated a
