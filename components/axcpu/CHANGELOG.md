@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.8.5](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.4...ax-cpu-v0.8.5) - 2026-07-29
+
+### Added
+
+- *(cpufreq)* RK3588 ondemand CPU DVFS with voltage calibration ([#1657](https://github.com/rcore-os/tgoskits/pull/1657))
+
 ## [0.8.4](https://github.com/rcore-os/tgoskits/compare/ax-cpu-v0.8.3...ax-cpu-v0.8.4) - 2026-07-23
 
 ### Other

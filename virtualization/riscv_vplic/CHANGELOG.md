@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.22](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.21...riscv_vplic-v0.4.22) - 2026-07-29
+
+### Other
+
+- updated the following local packages: ax-kspin, ax-kspin, ax-memory-addr, axvm-types, axdevice_base
+
 ## [0.4.21](https://github.com/rcore-os/tgoskits/compare/riscv_vplic-v0.4.20...riscv_vplic-v0.4.21) - 2026-07-23
 
 ### Other

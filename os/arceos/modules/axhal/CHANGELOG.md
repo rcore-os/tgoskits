@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.30](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.29...ax-hal-v0.5.30) - 2026-07-29
+
+### Fixed
+
+- *(someboot)* establish runtime CPU topology mapping ([#1710](https://github.com/rcore-os/tgoskits/pull/1710))
+
 ## [0.5.29](https://github.com/rcore-os/tgoskits/compare/ax-hal-v0.5.28...ax-hal-v0.5.29) - 2026-07-23
 
 ### Other

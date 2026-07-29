@@ -7,14 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.6](https://github.com/rcore-os/tgoskits/compare/ax-cpumask-v0.3.5...ax-cpumask-v0.3.6) - 2026-07-29
+## [0.1.1](https://github.com/rcore-os/tgoskits/compare/rdif-reset-v0.1.0...rdif-reset-v0.1.1) - 2026-07-29
 
 ### Other
 
 - enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
-
-## [0.3.5](https://github.com/rcore-os/tgoskits/compare/ax-cpumask-v0.3.4...ax-cpumask-v0.3.5) - 2026-05-15
-
-### Other
-
-- *(cpumask)* inherit workspace metadata and unsafe access

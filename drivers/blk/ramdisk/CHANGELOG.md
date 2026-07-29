@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/rcore-os/tgoskits/compare/ramdisk-v0.1.10...ramdisk-v0.1.11) - 2026-07-29
+
+### Other
+
+- updated the following local packages: ax-kspin, rdif-block
+
 ## [0.1.10](https://github.com/rcore-os/tgoskits/compare/ramdisk-v0.1.9...ramdisk-v0.1.10) - 2026-07-08
 
 ### Other

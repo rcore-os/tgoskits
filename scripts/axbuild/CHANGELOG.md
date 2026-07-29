@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.22](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.21...axbuild-v0.4.22) - 2026-07-29
+
+### Added
+
+- *(starry-nix)* activate nixpkgs on StarryOS (with sandboxed nix) ([#1520](https://github.com/rcore-os/tgoskits/pull/1520))
+- *(axbuild)* support session-shared board files ([#1701](https://github.com/rcore-os/tgoskits/pull/1701))
+- *(axbuild)* run might_sleep tests in std CI ([#1689](https://github.com/rcore-os/tgoskits/pull/1689))
+- *(axvisor)* support StarryOS guest on Orange Pi 5 Plus ([#1684](https://github.com/rcore-os/tgoskits/pull/1684))
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.4.21](https://github.com/rcore-os/tgoskits/compare/axbuild-v0.4.20...axbuild-v0.4.21) - 2026-07-23
 
 ### Added

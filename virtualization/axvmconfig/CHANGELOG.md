@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.2...axvmconfig-v0.8.3) - 2026-07-29
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.8.2](https://github.com/rcore-os/tgoskits/compare/axvmconfig-v0.8.1...axvmconfig-v0.8.2) - 2026-07-23
 
 ### Other

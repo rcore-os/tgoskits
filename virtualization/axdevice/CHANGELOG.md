@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.5...axdevice-v0.5.6) - 2026-07-29
+
+### Added
+
+- *(axvm)* add VmInterruptSender and integrate dispatcher into VmRuntimeHandle ([#1679](https://github.com/rcore-os/tgoskits/pull/1679))
+
 ## [0.5.5](https://github.com/rcore-os/tgoskits/compare/axdevice-v0.5.4...axdevice-v0.5.5) - 2026-07-23
 
 ### Added

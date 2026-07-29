@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.5...ax-task-v0.6.6) - 2026-07-29
+
+### Added
+
+- *(cpufreq)* RK3588 ondemand CPU DVFS with voltage calibration ([#1657](https://github.com/rcore-os/tgoskits/pull/1657))
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.6.5](https://github.com/rcore-os/tgoskits/compare/ax-task-v0.6.4...ax-task-v0.6.5) - 2026-07-23
 
 ### Other

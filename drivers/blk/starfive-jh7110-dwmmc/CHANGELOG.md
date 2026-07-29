@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.3...starfive-jh7110-dwmmc-v0.1.4) - 2026-07-29
+
+### Other
+
+- updated the following local packages: dma-api, rdif-block, sdio-host2, sdmmc-protocol, dwmmc-host
+
 ## [0.1.3](https://github.com/rcore-os/tgoskits/compare/starfive-jh7110-dwmmc-v0.1.2...starfive-jh7110-dwmmc-v0.1.3) - 2026-07-23
 
 ### Other

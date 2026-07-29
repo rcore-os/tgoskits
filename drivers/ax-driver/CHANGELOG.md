@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.1...ax-driver-v0.12.2) - 2026-07-29
+
+### Added
+
+- *(cpufreq)* RK3588 ondemand CPU DVFS with voltage calibration ([#1657](https://github.com/rcore-os/tgoskits/pull/1657))
+- *(axvisor)* support StarryOS guest on Orange Pi 5 Plus ([#1684](https://github.com/rcore-os/tgoskits/pull/1684))
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.12.1](https://github.com/rcore-os/tgoskits/compare/ax-driver-v0.12.0...ax-driver-v0.12.1) - 2026-07-23
 
 ### Added

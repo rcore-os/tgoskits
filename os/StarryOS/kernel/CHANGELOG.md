@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.5...starry-kernel-v0.7.6) - 2026-07-29
+
+### Added
+
+- *(starry-nix)* activate nixpkgs on StarryOS (with sandboxed nix) ([#1520](https://github.com/rcore-os/tgoskits/pull/1520))
+- *(cpufreq)* RK3588 ondemand CPU DVFS with voltage calibration ([#1657](https://github.com/rcore-os/tgoskits/pull/1657))
+- *(starry)* implement cgroup namespace ([#1642](https://github.com/rcore-os/tgoskits/pull/1642))
+
+### Fixed
+
+- *(starry-task)* retain zombie PID identity through reap ([#1706](https://github.com/rcore-os/tgoskits/pull/1706))
+- *(starry-kernel)* avoid sleeping lock in overlay root ([#1685](https://github.com/rcore-os/tgoskits/pull/1685))
+
+### Other
+
+- enhance axtest coverage for various starry-kernel contracts ([#1674](https://github.com/rcore-os/tgoskits/pull/1674))
+
 ## [0.7.5](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.7.4...starry-kernel-v0.7.5) - 2026-07-23
 
 ### Added
