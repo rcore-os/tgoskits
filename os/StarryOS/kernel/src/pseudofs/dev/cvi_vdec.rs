@@ -403,7 +403,13 @@ fn validate_layout(
     if layout.total_len > attr.frame_buffer_size as usize {
         return Err(AxError::StorageFull);
     }
-    if layout.format != JpuPixelFormat::Yuv420 || param.pixel_format != PIXEL_FORMAT_YUV_PLANAR_420
+    if !matches!(
+        layout.format,
+        JpuPixelFormat::Yuv420
+            | JpuPixelFormat::Yuv422Horizontal
+            | JpuPixelFormat::Yuv422Vertical
+            | JpuPixelFormat::Yuv444
+    ) || param.pixel_format != PIXEL_FORMAT_YUV_PLANAR_420
     {
         return Err(AxError::OperationNotSupported);
     }
