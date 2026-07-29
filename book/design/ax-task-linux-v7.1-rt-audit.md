@@ -920,6 +920,34 @@ drop. Together with the existing fixed RX/TX budgets, queue-overflow, gate
 contention, and worker-doorbell tests, this closes the serial gate-busy IRQ
 storm without introducing a hard-IRQ lock or callback.
 
+Two follow-up regressions close the task-side latency and handoff boundaries.
+First, an emergency writer could acquire and release the register gate after
+the maintenance worker had consumed the original TX doorbell. The worker
+would observe the busy gate and park, while the emergency path returned
+without republishing progress; buffered normal output then depended on an
+unrelated interrupt. Linux v7.1 `nbcon_device_release()` similarly checks for
+pending records after releasing device ownership and either flushes them or
+defers console output. TGOSKits now drops the register guard with Release
+ordering before issuing one existing `IrqWaitCell` notification. The panic
+path remains allocation-free, bounded, non-waiting, and drop-on-contention.
+The deterministic
+`emergency_release_notifies_the_deferred_worker` regression observed zero
+handoffs before the change and one handoff after gate release afterward.
+
+Second, PL011 runtime `startup()` and `set_config()` inherited the early-console
+`FR_BUSY` polling loop while ax-runtime held `NoPreemptIrqSave`; a permanently
+busy transmitter could therefore execute `BUSY_POLL_BUDGET` iterations with
+local interrupts disabled. Linux v7.1 `pl011_startup()` and
+`pl011_set_termios()` perform bounded register transactions under the port
+lock and do not reuse the polling-console busy drain. The runtime endpoint now
+does the same: it masks/clears the device IRQ state, preserves an in-flight
+boot-console TX FIFO, commits configuration, and enables the UART in a finite
+register sequence. Only the early-console `open()` path retains the bounded
+busy takeover and restores the previous control register on timeout. The old
+runtime behavior returned `ConfigError::Timeout` in
+`runtime_config_does_not_wait_for_the_transmitter_to_become_idle`; the same
+busy hardware state now completes without changing the enabled TX/RX paths.
+
 The branch-touched USB hosts now make the PREEMPT_RT execution boundary
 explicit. Linux v7.1 `xhci_irq()`, `ehci_irq()`, and
 `dwc2_handle_common_intr()` combine status acknowledgement with event
@@ -1035,6 +1063,20 @@ cover ordinary acknowledgement and nested-consumer monotonicity. All 22
 `starry-kernel` feature-clippy checks pass, and the reduced
 `syscall-test-aspace-teardown-reclaim` RISC-V QEMU case completed all twelve
 `SIGKILL`/`waitpid`/address-space-reclaim iterations in 104 seconds.
+
+The subsequent full RISC-V `qemu/system` run passed the scheduler-sensitive
+address-space reclaim, robust futex, SMP futex wake-op, four-CPU umask, and
+page-cache pressure cases without a panic or grouped failure marker. The
+runner then terminated the guest at exactly its suite-wide 1800-second limit
+near the 353rd of roughly 402 installed binaries. Because the grouped script
+prints its timing summary only after the final binary and the runner does not
+persist the serial stream on timeout, this is not evidence that the current
+binary hung. Issue
+[#1767](https://github.com/rcore-os/tgoskits/issues/1767) tracks splitting the
+group, retaining incremental timing artifacts, and distinguishing a per-case
+stall from aggregate wall-clock exhaustion. The task/runtime branch does not
+delete cases or loosen the success expression; final milestone runs use the
+existing timeout-scaling facility until the test infrastructure is split.
 
 ## Completion rules
 

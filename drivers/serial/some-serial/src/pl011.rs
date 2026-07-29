@@ -13,6 +13,7 @@ use crate::{PollingUart, SerialDirection, SerialEvent, TransBytesError, Transfer
 
 const BUSY_POLL_BUDGET: usize = 1 << 20;
 const EMERGENCY_TX_BUDGET: usize = 16;
+const ALL_IRQ_BITS: u32 = (1 << 11) - 1;
 
 register_bitfields! [
     u32,
@@ -695,7 +696,7 @@ impl UartIrq for Pl011Irq {
         }
 
         let mut events = events_from_mis(mis);
-        if active & !0x7ff != 0 {
+        if active & !ALL_IRQ_BITS != 0 {
             events |= SerialEventSet::FAULT;
         }
         let mut rx_errors = rx_errors_from_mis(mis);
@@ -734,9 +735,17 @@ impl UartIrq for Pl011Irq {
 
 impl UartPort for Pl011 {
     fn startup(&mut self, config: &Config) -> Result<(), ConfigError> {
-        self.open()?;
-        self.set_config(config)?;
+        // Runtime startup inherits a possibly active boot console. Do not wait
+        // for BUSY or flush its TX FIFO while the CPU-affine worker holds the
+        // IRQ exclusion boundary. Linux likewise programs normal PL011
+        // startup/termios state without using the polling-console BUSY drain.
         self.mask_all();
+        self.registers().uarticr.set(ALL_IRQ_BITS);
+        self.set_config(config)?;
+        self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
+        self.registers()
+            .uartcr
+            .modify(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
         Ok(())
     }
 
@@ -746,32 +755,10 @@ impl UartPort for Pl011 {
     }
 
     fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
-        if let Some(baudrate) = config.baudrate {
-            let scaled_baudrate = baudrate
-                .checked_mul(16)
-                .filter(|scaled| *scaled != 0)
-                .ok_or(ConfigError::InvalidBaudrate)?;
-            let bauddiv = self.clock_freq / scaled_baudrate;
-            if bauddiv == 0 || bauddiv > 0xFFFF {
-                return Err(ConfigError::InvalidBaudrate);
-            }
-        }
-
-        // 根据ARM文档的建议配置流程：
-        // 1. 禁用UART
-        let original_cr = self.registers().uartcr.get(); // 保存原始使能状态
-        self.registers().uartcr.modify(UARTCR::UARTEN::CLEAR); // 禁用UART
-
-        // 2. 等待当前字符传输完成
-        if let Err(error) = self.wait_until_not_busy() {
-            self.registers().uartcr.set(original_cr);
-            return Err(error);
-        }
-
-        // 3. 刷新发送FIFO（通过设置FEN=0）
-        self.registers().uartlcr_h.modify(UARTLCR_H::FEN::CLEAR);
-
-        // 4. 配置各项参数
+        // Keep runtime configuration a bounded register transaction. Waiting
+        // for the transmitter belongs only to the polling early-console path;
+        // doing it here would extend the runtime's IRQ-off register section by
+        // up to BUSY_POLL_BUDGET iterations.
         if let Some(baudrate) = config.baudrate {
             self.set_baudrate_internal(baudrate)?;
         }
@@ -784,13 +771,6 @@ impl UartPort for Pl011 {
         if let Some(parity) = config.parity {
             self.set_parity_internal(parity)?;
         }
-
-        // 5. 重新启用FIFO
-        self.registers().uartlcr_h.modify(UARTLCR_H::FEN::SET);
-
-        // 6. 恢复UART使能状态
-        self.registers().uartcr.set(original_cr);
-
         Ok(())
     }
 
@@ -1206,11 +1186,32 @@ mod tests {
     }
 
     #[test]
-    fn set_config_times_out_when_transmitter_never_becomes_idle() {
+    fn runtime_config_does_not_wait_for_the_transmitter_to_become_idle() {
         let (mut regs, mut uart) = pl011_with_registers();
+        regs.uartcr
+            .write(UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET);
         write_test_reg(&mut regs, 0x018, UARTFR::BUSY::SET.value);
 
-        assert_eq!(uart.set_config(&Config::new()), Err(ConfigError::Timeout));
+        assert_eq!(uart.set_config(&Config::new()), Ok(()));
+        let cr = regs.uartcr.extract();
+        assert!(cr.is_set(UARTCR::UARTEN));
+        assert!(cr.is_set(UARTCR::TXE));
+        assert!(cr.is_set(UARTCR::RXE));
+    }
+
+    #[test]
+    fn early_console_open_has_a_bounded_busy_failure() {
+        let (mut regs, mut uart) = pl011_with_registers();
+        let original_cr = (UARTCR::UARTEN::SET + UARTCR::TXE::SET + UARTCR::RXE::SET).value;
+        write_test_reg(&mut regs, 0x030, original_cr);
+        write_test_reg(&mut regs, 0x018, UARTFR::BUSY::SET.value);
+
+        assert_eq!(uart.open(), Err(ConfigError::Timeout));
+        assert_eq!(
+            read_test_reg(&regs, 0x030),
+            original_cr,
+            "a failed early-console takeover must restore the previous control state"
+        );
     }
 
     #[test]
