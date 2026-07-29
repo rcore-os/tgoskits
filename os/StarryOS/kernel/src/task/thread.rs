@@ -8,17 +8,17 @@ use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::percpu::CpuPin;
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::PollSet;
-use scope_local::{
-    Scope, ScopeActivationError, ScopeCell, ScopeCellReadGuard, ScopeCellWriteGuard,
-};
+use scope_local::{LocalItem, Scope, ScopeActivationError, ScopeCell, ScopeCellWriteGuard};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
 use super::{
     CpuTimeAccounting, CpuTimeDelta, Cred, ProcessData, RttimeWatchdog, SeccompState, SockFilter,
     TimerState,
+    bounded_stack::BoundedStack,
     interruption::{InterruptSnapshot, InterruptState},
     ops,
     scheduler_identity::SchedulerIdentity,
+    user_memory_access::{UserMemoryAccessDepth, UserMemoryAccessGuard},
 };
 
 const KRETPROBE_STACK_CAPACITY: usize = 16;
@@ -68,13 +68,16 @@ impl ThreadScope {
         }
     }
 
-    fn with_read<R>(&self, operation: impl FnOnce(&ScopeCellReadGuard<'_>) -> R) -> R {
+    fn clone_item<T>(&self, item: &LocalItem<T>) -> T
+    where
+        T: Clone + Send + Sync + 'static,
+    {
         let _access = self.access.lock();
         let scope = self
             .cell
             .try_read()
             .expect("serialized Starry scope read found an active writer");
-        operation(&scope)
+        item.scope_cell(&scope).clone()
     }
 
     unsafe fn activate_pinned(&self, pin: &CpuPin<'_>) {
@@ -119,7 +122,7 @@ struct ThreadLifecycle {
     exit: Arc<AtomicBool>,
     exit_started: AtomicBool,
     interrupted: InterruptState,
-    user_memory_access_depth: AtomicU32,
+    user_memory_access: UserMemoryAccessDepth,
     block_next_signal_check: NextSignalCheckBlock,
     exit_event: Arc<PollSet>,
     exit_request: AtomicBool,
@@ -135,7 +138,7 @@ impl ThreadLifecycle {
             exit: Arc::new(AtomicBool::new(false)),
             exit_started: AtomicBool::new(false),
             interrupted: InterruptState::new(),
-            user_memory_access_depth: AtomicU32::new(0),
+            user_memory_access: UserMemoryAccessDepth::new(),
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: Arc::default(),
             exit_request: AtomicBool::new(false),
@@ -194,7 +197,8 @@ impl ThreadSecurity {
 /// Probe, crash-dump, and PMU state observed from trap or scheduler context.
 struct ThreadTrace {
     fault_dump_signo: AtomicU8,
-    kretprobe_stack: SpinNoIrq<Vec<kprobe::retprobe::RetprobeInstance>>,
+    kretprobe_stack:
+        SpinNoIrq<BoundedStack<kprobe::retprobe::RetprobeInstance, KRETPROBE_STACK_CAPACITY>>,
     #[cfg(target_arch = "aarch64")]
     perf: crate::perf::task_context::ThreadPerfContext,
 }
@@ -203,7 +207,7 @@ impl ThreadTrace {
     fn new() -> Self {
         Self {
             fault_dump_signo: AtomicU8::new(0),
-            kretprobe_stack: SpinNoIrq::new(Vec::with_capacity(KRETPROBE_STACK_CAPACITY)),
+            kretprobe_stack: SpinNoIrq::new(BoundedStack::new()),
             #[cfg(target_arch = "aarch64")]
             perf: crate::perf::task_context::ThreadPerfContext::new(),
         }
@@ -276,9 +280,15 @@ impl Thread {
         self.scope.with_current_mut(f)
     }
 
-    /// Reads this thread's resource scope under task-context serialization.
-    pub(crate) fn with_scope<R>(&self, operation: impl FnOnce(&ScopeCellReadGuard<'_>) -> R) -> R {
-        self.scope.with_read(operation)
+    /// Clones one owned scope-local value under task-context serialization.
+    ///
+    /// The scope lease and writer gate are released before the returned owner
+    /// can acquire any lock it contains.
+    pub(crate) fn clone_scope_item<T>(&self, item: &LocalItem<T>) -> T
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.scope.clone_item(item)
     }
 
     /// Returns the user-visible TID, which may differ from the scheduler ID
@@ -439,29 +449,12 @@ impl Thread {
         self.lifecycle.exit_request.store(true, Ordering::Release);
     }
 
-    pub(crate) fn enter_user_memory_access(&self) {
-        self.lifecycle
-            .user_memory_access_depth
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
-                depth.checked_add(1)
-            })
-            .expect("user-memory access nesting overflow");
-    }
-
-    pub(crate) fn leave_user_memory_access(&self) {
-        self.lifecycle
-            .user_memory_access_depth
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
-                depth.checked_sub(1)
-            })
-            .expect("unbalanced user-memory access scope");
+    pub(crate) fn enter_user_memory_access(&self) -> UserMemoryAccessGuard<'_> {
+        self.lifecycle.user_memory_access.enter()
     }
 
     pub(crate) fn has_active_user_memory_access(&self) -> bool {
-        self.lifecycle
-            .user_memory_access_depth
-            .load(Ordering::Acquire)
-            != 0
+        self.lifecycle.user_memory_access.is_active()
     }
 
     pub(super) fn interrupt(&self) {
@@ -648,11 +641,10 @@ impl Thread {
         let Some(mut stack) = self.trace.kretprobe_stack.try_lock() else {
             panic!("nested kretprobe tried to re-enter the current task stack");
         };
-        if stack.len() == KRETPROBE_STACK_CAPACITY {
+        if let Err(instance) = stack.try_push(instance) {
             core::mem::forget(instance);
             panic!("current task exceeded its fixed kretprobe nesting capacity");
         }
-        stack.push(instance);
     }
 
     pub(super) fn pop_kretprobe(&self) -> kprobe::retprobe::RetprobeInstance {

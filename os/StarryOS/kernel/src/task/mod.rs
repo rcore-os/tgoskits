@@ -1,5 +1,6 @@
 //! User task management.
 
+mod bounded_stack;
 mod cred;
 pub mod futex;
 pub mod future;
@@ -26,6 +27,7 @@ mod thread;
 mod tid;
 mod timer;
 mod user;
+mod user_memory_access;
 mod user_wait;
 
 use alloc::sync::Arc;

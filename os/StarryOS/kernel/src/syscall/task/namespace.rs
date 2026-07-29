@@ -257,9 +257,7 @@ fn setns_via_pidfd(pidfd: &PidFd, nstype: u32) -> AxResult<isize> {
     let target_proc = pidfd.process_data()?;
     let target_mnt_fs_ns = if nstype & CLONE_NEWNS != 0 {
         let task = get_task(target_proc.proc.pid())?;
-        let fs_context = task
-            .as_thread()
-            .with_scope(|scope| FS_CONTEXT.scope_cell(scope).clone());
+        let fs_context = task.as_thread().clone_scope_item(&FS_CONTEXT);
         Some(fs_context.lock().mount_namespace().clone())
     } else {
         None

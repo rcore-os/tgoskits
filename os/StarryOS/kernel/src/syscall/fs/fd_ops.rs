@@ -285,9 +285,7 @@ fn try_open_nsfd(path: &str, flags: u32) -> Option<AxResult<i32>> {
             Ok(task) => task,
             Err(_) => return Some(Err(AxError::NotFound)),
         };
-        let fs_context = task
-            .as_thread()
-            .with_scope(|scope| FS_CONTEXT.scope_cell(scope).clone());
+        let fs_context = task.as_thread().clone_scope_item(&FS_CONTEXT);
         Some(fs_context.lock().mount_namespace().clone())
     } else {
         None

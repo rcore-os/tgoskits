@@ -118,9 +118,7 @@ pub fn sys_pidfd_getfd(pidfd: i32, target_fd: i32, flags: u32) -> AxResult<isize
         current_fd_table().read().get(target_fd as usize).cloned()
     } else {
         let task = get_task(proc_data.proc.pid())?;
-        let fd_table = task
-            .as_thread()
-            .with_scope(|scope| FD_TABLE.scope_cell(scope).clone());
+        let fd_table = task.as_thread().clone_scope_item(&FD_TABLE);
         fd_table.read().get(target_fd as usize).cloned()
     };
     fd_entry.ok_or(AxError::BadFileDescriptor).and_then(|fd| {

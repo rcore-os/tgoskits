@@ -151,9 +151,7 @@ fn is_mount_busy(mp: &Arc<axfs_ng_vfs::Mountpoint>) -> bool {
         return true;
     };
     for task in tasks {
-        let fd_table = task
-            .as_thread()
-            .with_scope(|scope| FD_TABLE.scope_cell(scope).clone());
+        let fd_table = task.as_thread().clone_scope_item(&FD_TABLE);
         let table = fd_table.read();
         if table.ids().any(|id| {
             table
