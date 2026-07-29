@@ -46,55 +46,53 @@ pub use self::{
         ArmVcpuResult, ArmVmExit,
     },
 };
-#[cfg(target_arch = "aarch64")]
-pub use self::{
-    pcpu::ArmPerCpu,
-    vcpu::{
-        ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
-        ArmVcpu, ArmVcpuCreateConfig, ArmVcpuSetupConfig,
-    },
-};
 
-/// context frame for aarch64
 #[cfg(target_arch = "aarch64")]
-pub type TrapFrame = context_frame::Aarch64ContextFrame;
-/// Compatibility alias for existing AArch64 users.
-#[cfg(target_arch = "aarch64")]
-pub type Aarch64VCpu<H> = ArmVcpu<H>;
-/// Compatibility alias for existing AArch64 users.
-#[cfg(target_arch = "aarch64")]
-pub type Aarch64PerCpu = ArmPerCpu;
-/// Compatibility alias for existing AArch64 users.
-#[cfg(target_arch = "aarch64")]
-pub type Aarch64VCpuCreateConfig = ArmVcpuCreateConfig;
-/// Compatibility alias for existing AArch64 users.
-#[cfg(target_arch = "aarch64")]
-pub type Aarch64VCpuSetupConfig = ArmVcpuSetupConfig;
+mod aarch64_api {
+    pub use crate::{
+        pcpu::ArmPerCpu,
+        vcpu::{
+            ARM_VCPU_HOST_SP_EL0_OFFSET, ARM_VCPU_HOST_STACK_TOP_OFFSET, ARM_VCPU_TRAP_FRAME_SIZE,
+            ArmVcpu, ArmVcpuCreateConfig, ArmVcpuSetupConfig,
+        },
+    };
 
-/// Returns the maximum guest page table levels supported by the hardware.
-///
-/// This is determined by the physical address size:
-/// - 44+ bit PA → 4 levels (48-bit IPA)
-/// - < 44 bit PA → 3 levels (39-bit IPA)
-#[cfg(target_arch = "aarch64")]
-pub fn max_guest_page_table_levels() -> usize {
-    vcpu::max_gpt_level(vcpu::pa_bits())
+    /// context frame for aarch64
+    pub type TrapFrame = crate::context_frame::Aarch64ContextFrame;
+    /// Compatibility alias for existing AArch64 users.
+    pub type Aarch64VCpu<H> = ArmVcpu<H>;
+    /// Compatibility alias for existing AArch64 users.
+    pub type Aarch64PerCpu = ArmPerCpu;
+    /// Compatibility alias for existing AArch64 users.
+    pub type Aarch64VCpuCreateConfig = ArmVcpuCreateConfig;
+    /// Compatibility alias for existing AArch64 users.
+    pub type Aarch64VCpuSetupConfig = ArmVcpuSetupConfig;
+
+    /// Returns the maximum guest page table levels supported by the hardware.
+    ///
+    /// This is determined by the physical address size:
+    /// - 44+ bit PA → 4 levels (48-bit IPA)
+    /// - < 44 bit PA → 3 levels (39-bit IPA)
+    pub fn max_guest_page_table_levels() -> usize {
+        crate::vcpu::max_gpt_level(crate::vcpu::pa_bits())
+    }
+
+    /// Returns the physical address width reported by the current CPU.
+    pub fn pa_bits() -> usize {
+        crate::vcpu::pa_bits()
+    }
+
+    /// Return if current platform support virtualization extension.
+    pub fn has_hardware_support() -> bool {
+        // Hint:
+        // In Cortex-A78, we can use
+        // [ID_AA64MMFR1_EL1](https://developer.arm.com/documentation/101430/0102/Register-descriptions/AArch64-system-registers/ID-AA64MMFR1-EL1--AArch64-Memory-Model-Feature-Register-1--EL1)
+        // to get whether Virtualization Host Extensions is supported.
+
+        // Current just return true by default.
+        true
+    }
 }
 
-/// Returns the physical address width reported by the current CPU.
 #[cfg(target_arch = "aarch64")]
-pub fn pa_bits() -> usize {
-    vcpu::pa_bits()
-}
-
-/// Return if current platform support virtualization extension.
-#[cfg(target_arch = "aarch64")]
-pub fn has_hardware_support() -> bool {
-    // Hint:
-    // In Cortex-A78, we can use
-    // [ID_AA64MMFR1_EL1](https://developer.arm.com/documentation/101430/0102/Register-descriptions/AArch64-system-registers/ID-AA64MMFR1-EL1--AArch64-Memory-Model-Feature-Register-1--EL1)
-    // to get whether Virtualization Host Extensions is supported.
-
-    // Current just return true by default.
-    true
-}
+pub use aarch64_api::*;

@@ -2,10 +2,10 @@
 //
 // ICH (Interrupt Controller Hypervisor) System registers
 
-use aarch64_cpu::registers::{ReadWriteable, Readable, Writeable};
 use tock_registers::{
     LocalRegisterCopy,
     fields::{Field, FieldValue},
+    interfaces::{ReadWriteable, Readable, Writeable},
 };
 
 // Active Priority Group 0 寄存器 (EL2)
@@ -163,6 +163,7 @@ macro_rules! define_ich_lr_register {
            pub mod [<ich_lr $n _el2>] {
             use super::ICH_LR_EL2;
             use tock_registers::interfaces::*;
+            #[cfg(target_arch = "aarch64")]
             use core::arch::asm;
 
             pub struct Reg;
@@ -173,9 +174,17 @@ macro_rules! define_ich_lr_register {
 
                 #[inline(always)]
                 fn get(&self) -> Self::T {
-                    let reg: u64;
-                    unsafe { asm!(concat!("mrs {0}, ", stringify!( [<ICH_LR $n _EL2>])), out(reg) reg) }
-                    reg
+                    match () {
+                        #[cfg(target_arch = "aarch64")]
+                        () => {
+                            let reg: u64;
+                            unsafe { asm!(concat!("mrs {0}, ", stringify!( [<ICH_LR $n _EL2>])), out(reg) reg) }
+                            reg
+                        }
+
+                        #[cfg(not(target_arch = "aarch64"))]
+                        () => unimplemented!(),
+                    }
                 }
             }
 
@@ -185,7 +194,18 @@ macro_rules! define_ich_lr_register {
 
                 #[inline(always)]
                 fn set(&self, value: Self::T) {
-                    unsafe { asm!(concat!("msr ", stringify!([<ICH_LR $n _EL2>]), ", {0}"), in(reg) value) }
+                    match () {
+                        #[cfg(target_arch = "aarch64")]
+                        () => unsafe {
+                            asm!(concat!("msr ", stringify!([<ICH_LR $n _EL2>]), ", {0}"), in(reg) value)
+                        },
+
+                        #[cfg(not(target_arch = "aarch64"))]
+                        () => {
+                            let _ = value;
+                            unimplemented!()
+                        }
+                    }
                 }
             }
 
@@ -284,4 +304,23 @@ pub fn ich_lr_el2_modify(n: usize, field: FieldValue<u64, ICH_LR_EL2::Register>)
 
 pub fn ich_lr_el2_is_set(n: usize, field: Field<u64, ICH_LR_EL2::Register>) -> bool {
     ich_lr_el2_case!(n, is_set(field))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ICH_VTR_EL2;
+
+    #[test]
+    fn idbits_covers_bits_25_through_23_without_overlapping_prebits() {
+        let idbits = ICH_VTR_EL2::IDBITS;
+        let prebits = ICH_VTR_EL2::PREBITS;
+        let idbits_mask = idbits.mask << idbits.shift;
+        let prebits_mask = prebits.mask << prebits.shift;
+
+        assert_eq!(idbits.shift, 23);
+        assert_eq!(idbits.mask, 0b111);
+        assert_eq!(idbits_mask, 0x0380_0000);
+        assert_eq!(prebits_mask, 0x1c00_0000);
+        assert_eq!(idbits_mask & prebits_mask, 0);
+    }
 }
