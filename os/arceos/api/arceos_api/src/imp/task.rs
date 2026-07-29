@@ -249,6 +249,8 @@ cfg_task! {
             | TaskError::ExecutorOwnerMismatch { .. }
             | TaskError::CpuAlreadyOnline(_)
             | TaskError::CpuOffline(_)
+            | TaskError::CpuNotQuiescent(_)
+            | TaskError::LastOnlineCpu(_)
             | TaskError::InvalidTransition { .. }
             | TaskError::AlreadyQueued
             | TaskError::NotReady
