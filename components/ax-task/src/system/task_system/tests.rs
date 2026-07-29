@@ -114,7 +114,7 @@ fn remote_publication_cannot_be_preempted_before_doorbell() {
     let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let remote = &system.cpu_remotes[1];
-    remote.mark_online();
+    assert!(remote.mark_online());
     crate::test_runtime::reset_irq_state();
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
 
@@ -191,7 +191,7 @@ fn permanent_scheduler_ipi_failure_fails_at_the_publication_boundary() {
     let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let remote = &system.cpu_remotes[1];
-    remote.mark_online();
+    assert!(remote.mark_online());
     crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::InvalidArgument, 0);
 
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -223,6 +223,141 @@ fn registered_remote_endpoint_is_separate_from_owner_mutable_state() {
         endpoint_address,
         "owner reborrowing must not alias or invalidate the remote endpoint"
     );
+}
+
+#[test]
+fn quiescent_cpu_can_cycle_offline_and_online() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    let mut affinity0 = CpuSet::empty(2);
+    let mut affinity1 = CpuSet::empty(2);
+    assert!(affinity0.insert(CpuId::new(0)));
+    assert!(affinity1.insert(CpuId::new(1)));
+    let _idle0 = system
+        .register_idle_thread(
+            cpu0.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                .with_affinity(affinity0),
+        )
+        .unwrap();
+    let _idle1 = system
+        .register_idle_thread(
+            cpu1.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                .with_affinity(affinity1),
+        )
+        .unwrap();
+    system.bring_cpu_online_at(cpu0.as_mut(), 10).unwrap();
+    system.bring_cpu_online_at(cpu1.as_mut(), 10).unwrap();
+
+    system.take_cpu_offline(cpu1.as_mut()).unwrap();
+    assert_eq!(system.online_cpu_count(), 1);
+    assert!(!cpu1.is_online());
+    assert!(system.cpu_remote(CpuId::new(1)).is_none());
+
+    system.bring_cpu_online_at(cpu1.as_mut(), 1_000).unwrap();
+    assert_eq!(system.online_cpu_count(), 2);
+    assert!(cpu1.is_online());
+}
+
+#[test]
+fn pending_remote_publication_prevents_cpu_offline() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    let mut affinity0 = CpuSet::empty(2);
+    let mut affinity1 = CpuSet::empty(2);
+    assert!(affinity0.insert(CpuId::new(0)));
+    assert!(affinity1.insert(CpuId::new(1)));
+    let _idle0 = system
+        .register_idle_thread(
+            cpu0.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                .with_affinity(affinity0),
+        )
+        .unwrap();
+    let _idle1 = system
+        .register_idle_thread(
+            cpu1.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                .with_affinity(affinity1),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu0.as_mut()).unwrap();
+    system.bring_cpu_online(cpu1.as_mut()).unwrap();
+    crate::test_runtime::configure_scheduler_ipi(RuntimeStatus::Success, 0);
+
+    let node = Box::pin(crate::inbox::InboxNode::new(InboxKind::RemoteWake));
+    publish_test_scheduler_work(&system.cpu_remotes[1], test_inbox_node(&node), 7);
+
+    assert_eq!(
+        system.take_cpu_offline(cpu1.as_mut()),
+        Err(TaskError::CpuNotQuiescent(1))
+    );
+    assert!(cpu1.is_online(), "a rejected transition must roll back");
+    assert_eq!(system.online_cpu_count(), 2);
+}
+
+#[test]
+fn last_online_cpu_cannot_leave_the_root_domain() {
+    let system = TaskSystem::new(TaskSystemConfig::new(1)).unwrap();
+    let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut affinity = CpuSet::empty(1);
+    assert!(affinity.insert(CpuId::new(0)));
+    let _idle = system
+        .register_idle_thread(
+            cpu.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                .with_affinity(affinity),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu.as_mut()).unwrap();
+
+    assert_eq!(
+        system.take_cpu_offline(cpu.as_mut()),
+        Err(TaskError::LastOnlineCpu(0))
+    );
+    assert!(cpu.is_online());
+    assert_eq!(system.online_cpu_count(), 1);
+}
+
+#[test]
+fn live_thread_without_remaining_affinity_prevents_cpu_offline() {
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    let mut affinity0 = CpuSet::empty(2);
+    let mut affinity1 = CpuSet::empty(2);
+    assert!(affinity0.insert(CpuId::new(0)));
+    assert!(affinity1.insert(CpuId::new(1)));
+    let _idle0 = system
+        .register_idle_thread(
+            cpu0.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                .with_affinity(affinity0),
+        )
+        .unwrap();
+    let _idle1 = system
+        .register_idle_thread(
+            cpu1.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                .with_affinity(affinity1.clone()),
+        )
+        .unwrap();
+    system.bring_cpu_online(cpu0.as_mut()).unwrap();
+    system.bring_cpu_online(cpu1.as_mut()).unwrap();
+
+    let _pinned = system
+        .create_thread(ThreadSpec::new(SchedulePolicy::default()).with_affinity(affinity1))
+        .unwrap();
+
+    assert_eq!(
+        system.take_cpu_offline(cpu1.as_mut()),
+        Err(TaskError::CpuNotQuiescent(1))
+    );
+    assert!(cpu1.is_online());
+    assert_eq!(system.online_cpu_count(), 2);
 }
 
 #[test]

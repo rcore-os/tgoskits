@@ -22,6 +22,69 @@ const RUN_QUEUED: usize = 1 << 0;
 const COMPLETE: usize = 1 << 1;
 
 #[test]
+fn cpu_offline_excludes_remote_publication() {
+    loom::model(|| {
+        const OFFLINE: usize = 1usize << (usize::BITS - 1);
+        const DRAINING: usize = 1usize << (usize::BITS - 2);
+        const LIFECYCLE_MASK: usize = OFFLINE | DRAINING;
+
+        let lifecycle = Arc::new(AtomicUsize::new(0));
+        let inbox_pending = Arc::new(AtomicBool::new(false));
+
+        let publisher = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let inbox_pending = Arc::clone(&inbox_pending);
+            thread::spawn(move || {
+                let mut state = lifecycle.load(Ordering::Acquire);
+                loop {
+                    if state & LIFECYCLE_MASK != 0 {
+                        return;
+                    }
+                    match lifecycle.compare_exchange_weak(
+                        state,
+                        state + 1,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => break,
+                        Err(updated) => state = updated,
+                    }
+                }
+                inbox_pending.store(true, Ordering::Release);
+                lifecycle.fetch_sub(1, Ordering::Release);
+            })
+        };
+        let offliner = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let inbox_pending = Arc::clone(&inbox_pending);
+            thread::spawn(move || {
+                if lifecycle
+                    .compare_exchange(0, DRAINING, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    return;
+                }
+                if inbox_pending.load(Ordering::Acquire) {
+                    lifecycle.store(0, Ordering::Release);
+                } else {
+                    lifecycle.store(OFFLINE, Ordering::Release);
+                }
+            })
+        };
+
+        publisher.join().unwrap();
+        offliner.join().unwrap();
+        let final_lifecycle = lifecycle.load(Ordering::Acquire);
+        assert_ne!(final_lifecycle, DRAINING);
+        if final_lifecycle == OFFLINE {
+            assert!(!inbox_pending.load(Ordering::Acquire));
+        } else {
+            assert_eq!(final_lifecycle & LIFECYCLE_MASK, 0);
+        }
+    });
+}
+
+#[test]
 fn executor_close_excludes_late_ready_publication() {
     loom::model(|| {
         const CLOSED: usize = 1usize << (usize::BITS - 1);

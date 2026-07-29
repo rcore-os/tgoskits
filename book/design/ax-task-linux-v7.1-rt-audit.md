@@ -59,6 +59,7 @@ violate the crate dependency boundaries.
 | --- | --- | --- | --- | --- |
 | Scheduler placement | `components/ax-task/src/system`, scheduler policy and thread state | `kernel/sched/core.c` | A thread has one checked placement; migration and switch-tail publication cannot expose two owners; every mutable owner access retains one CPU-local rq ownership scope | `queued_cpu`, `running_cpu`, `on_cpu`, and `migration_target` are independent fields with many hand-written updates, and the safe `TaskSystem` surface does not require an outer owner scope |
 | Remote delivery | ax-task CPU remote inbox, task-work, ax-runtime IPI glue | scheduler IPI, `irq_work` | Publish payload and epoch before IPI; consume the delivered epoch before admitting a new notification | Busy/claim and boolean doorbells lack complete new-publication race coverage |
+| CPU lifecycle | ax-task root domain, CPU remote endpoint, ax-runtime clockevent | `sched_cpu_deactivate()`, `sched_cpu_wait_empty()`, `sched_cpu_dying()` | Close producer admission before proving the runqueue, deadlines, inboxes and switch tail quiescent; never publish an offline CPU while work can still target it | Only online publication exists, and a failed migration on a disappearing CPU is a fatal invariant |
 | Task deadlines | ax-task timer, park, wait and deferred deadline paths | `hrtimer.c` | Hard IRQ handles bounded value records; cancellation and expiry cannot dereference released owners | The heap stores raw timer-node pointers whose safety depends on caller serialization |
 | Physical clockevent | ax-runtime clockevent and platform generic timer | `clockevents.c`, `tick-oneshot.c` | One per-CPU owner; infinity is not a numeric deadline; hardware conversion clamps to min/max delta | `u64::MAX` can truncate during tick conversion, overdue events can program zero, and no offline transition exists |
 | Context switch | ax-runtime task/guard and per-architecture context code | scheduler `on_cpu`, `finish_task_switch` | Scheduler baton spans the complete switch; outgoing resources remain live until switch tail clears `on_cpu` | The invariant exists but is spread across oversized runtime modules |
@@ -162,6 +163,31 @@ spurious IRQ in `Idle` is a bounded no-op. The physical conversion uses
 ceiling arithmetic, clamps elapsed or sub-tick deadlines to one tick, clamps
 unrepresentable deltas to the device argument width, and programs the interval
 before unmasking the IRQ.
+
+The core CPU lifecycle now has one packed state owner. Its high bits represent
+`Online`, `Draining`, and `Offline`; its low bits count producers admitted
+across payload publication and the scheduler doorbell. The
+`Online-with-zero-producers -> Draining` compare-exchange closes new remote
+publication before the owner checks its current/idle slot, runqueue, task
+deadline heap, expired buffer, switch handoff, inboxes, IPI claim, and every
+live thread's affinity and placement ownership. A failed check returns to
+`Online`; a successful check removes the CPU from the root domain before
+publishing `Offline`. Re-online publication reverses that ordering under the
+topology sequence.
+
+This follows the ordering rather than the object layout of Linux v7.1
+`sched_cpu_deactivate()`: clear active placement admission, enable balance
+push, wait for prior producers, and only then mark the runqueue offline.
+Linux's later `sched_cpu_wait_empty()` and `sched_cpu_dying()` verify that the
+outgoing runqueue has been vacated. TGOSKits currently exposes the stricter
+quiescent transition: callers must migrate or retire work before
+`take_cpu_offline()` succeeds. It does not yet claim Linux-style automatic
+runqueue evacuation or a physical CPU hot-unplug control path. The runtime's
+`LocalClockEvent` already supports `Offline -> Idle` reinitialization and
+shutdown, but no Starry or ArceOS service currently orchestrates full physical
+CPU removal. Unit tests cover offline/re-online, last-CPU rejection, pending
+remote work, and a live thread without a remaining affinity destination; Loom
+exhaustively covers publication racing the draining transition.
 
 ## PI and waiter audit closure
 

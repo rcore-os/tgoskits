@@ -131,10 +131,7 @@ impl TaskSystem {
         let cpu_registrations = cpu_remotes
             .iter()
             .cloned()
-            .map(|remote| CpuRegistration {
-                online: false,
-                remote,
-            })
+            .map(|remote| CpuRegistration { remote })
             .collect();
         Ok(Self {
             config,
