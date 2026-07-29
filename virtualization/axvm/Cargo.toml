@@ -41,6 +41,7 @@ ax-lazyinit = { workspace = true }
 ax-memory-addr = { workspace = true }
 ax-memory-set = { workspace = true }
 ax-percpu.workspace = true
+ax-sync = { workspace = true, features = ["multitask"] }
 cpu-local.workspace = true
 page-table-generic = { workspace = true }
 ax-std = { workspace = true, default-features = false, features = [
