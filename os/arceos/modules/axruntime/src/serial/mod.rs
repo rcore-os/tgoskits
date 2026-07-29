@@ -567,13 +567,12 @@ pub(crate) fn route_console_bytes(bytes: &[u8]) -> Option<usize> {
     let index = ACTIVE_CONSOLE.load(Ordering::Acquire);
     let runtime = runtimes().get(index)?;
     if axpanic::oops_in_progress() {
-        let Some(register_access) = runtime.shared.register_gate.try_enter() else {
-            runtime.shared.stats.add_log_dropped(bytes.len());
-            return Some(0);
-        };
-        let written = register_access.try_write(bytes);
-        runtime.shared.stats.add_log_dropped(bytes.len() - written);
-        return Some(written);
+        return Some(route_emergency_bytes(
+            &runtime.shared.register_gate,
+            &runtime.shared.stats,
+            bytes,
+            || runtime.shared.bridge.notify(),
+        ));
     }
 
     let accepted = runtime
@@ -584,9 +583,39 @@ pub(crate) fn route_console_bytes(bytes: &[u8]) -> Option<usize> {
     Some(accepted)
 }
 
+fn route_emergency_bytes<E: rdif_serial::UartEmergencyTx + ?Sized>(
+    register_gate: &UartRegisterGate<E>,
+    stats: &SerialStatsAtomic,
+    bytes: &[u8],
+    notify_released: impl FnOnce(),
+) -> usize {
+    let Some(register_access) = register_gate.try_enter() else {
+        stats.add_log_dropped(bytes.len());
+        return 0;
+    };
+    let written = register_access.try_write(bytes);
+    stats.add_log_dropped(bytes.len() - written);
+    // Publish register availability before the IRQ-safe doorbell. A worker
+    // that consumed the original TX notification while emergency output held
+    // the gate must not sleep until an unrelated interrupt arrives.
+    drop(register_access);
+    notify_released();
+    written
+}
+
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+
     use super::*;
+
+    struct BoundedEmergencyTx;
+
+    impl rdif_serial::UartEmergencyTx for BoundedEmergencyTx {
+        unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
+            bytes.len().min(2)
+        }
+    }
 
     #[test]
     fn irq_sink_drops_only_after_the_preallocated_ring_is_full() {
@@ -674,5 +703,29 @@ mod tests {
              registers"
         );
         assert!(bridge.doorbell.is_pending());
+    }
+
+    #[test]
+    fn emergency_release_notifies_the_deferred_worker() {
+        let gate = UartRegisterGate::new(BoundedEmergencyTx);
+        let stats = SerialStatsAtomic::new();
+        let notifications = Cell::new(0);
+
+        assert_eq!(
+            route_emergency_bytes(&gate, &stats, b"panic", || {
+                notifications.set(notifications.get() + 1);
+            }),
+            2
+        );
+        assert_eq!(
+            notifications.get(),
+            1,
+            "releasing the emergency register gate must republish deferred worker progress"
+        );
+        assert_eq!(stats.snapshot().log_dropped, 3);
+        assert!(
+            gate.try_enter().is_some(),
+            "the release notification must run after the register gate is dropped"
+        );
     }
 }
