@@ -217,6 +217,31 @@ mod tests {
     }
 
     #[test]
+    fn migration_reprogramming_deletes_stale_original_cpu_deadline() {
+        let mut timer_wheels = TimerWheels::new();
+        let stale_deadline = Duration::from_secs(60);
+        let migrated_deadline = Duration::from_millis(10);
+
+        assert_eq!(
+            timer_wheels.register(0, 31, stale_deadline, event(31)),
+            Some(stale_deadline)
+        );
+        assert_eq!(timer_wheels.cancel(31), Some((0, None)));
+        assert_eq!(
+            timer_wheels.register(1, 32, migrated_deadline, event(32)),
+            Some(migrated_deadline)
+        );
+
+        assert!(timer_wheels.expire_one(0, stale_deadline).is_none());
+        let (deadline, migrated_event) = timer_wheels
+            .expire_one(1, migrated_deadline)
+            .expect("migrated timer event should expire on the new owner CPU");
+        assert_eq!(deadline, migrated_deadline);
+        assert_eq!(migrated_event.token, 32);
+        assert_eq!(timer_wheels.cancel(32), None);
+    }
+
+    #[test]
     fn expiring_event_forgets_owner_token() {
         let mut timer_wheels = TimerWheels::new();
         let deadline = Duration::from_millis(5);
