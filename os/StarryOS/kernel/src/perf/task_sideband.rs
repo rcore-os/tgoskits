@@ -70,7 +70,7 @@ pub(crate) fn on_exec_sideband(thr: &Thread) {
     }
 
     let targets: Vec<WantTarget> = {
-        let counters = thr.perf_counters().lock();
+        let counters = thr.perf_context().snapshot();
         counters
             .iter()
             .filter_map(|counter| {
@@ -121,7 +121,7 @@ pub(crate) fn on_mmap_sideband(
     let pid = thr.proc_data.proc.pid();
     let tid = thr.tid();
     let targets: Vec<SidebandTarget> = {
-        let counters = thr.perf_counters().lock();
+        let counters = thr.perf_context().snapshot();
         counters
             .iter()
             .filter(|counter| counter.wants_mmap2())
@@ -155,7 +155,7 @@ pub(crate) fn on_clone_sideband(parent_thr: &Thread, child_pid: u32, child_tid: 
     let ppid = parent_thr.proc_data.proc.pid();
     let ptid = parent_thr.tid();
     let targets: Vec<SidebandTarget> = {
-        let counters = parent_thr.perf_counters().lock();
+        let counters = parent_thr.perf_context().snapshot();
         counters
             .iter()
             .filter(|counter| counter.wants_task())

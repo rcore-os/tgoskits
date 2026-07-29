@@ -11,7 +11,7 @@
 //!
 //! A [`PerTaskCounter`] is shared (`Arc`) between two places:
 //!
-//! * the target [`Thread`]'s `perf_counters` list, walked by the scheduler
+//! * the target [`Thread`]'s perf context, walked by the scheduler
 //!   hooks ([`perf_sched_in`] / [`perf_sched_out`]) and the exec/exit hooks, and
 //! * the [`super::hw::HwPerfEvent`] behind the perf fd, which serves
 //!   `read(perf_fd)` / `ioctl(ENABLE/DISABLE/RESET)` and frees the HW counter on
@@ -64,7 +64,7 @@
 use alloc::sync::Arc;
 use core::{
     any::Any,
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use ax_errno::{AxError, AxResult};
@@ -72,6 +72,7 @@ use ax_kspin::SpinNoIrq;
 use ax_memory_addr::PhysAddr;
 
 pub use super::inheritance::on_clone_inherit;
+pub(super) use super::task_context::PERF_TASK_ACTIVE;
 pub(crate) use super::task_sideband::{on_clone_sideband, on_exec_sideband, on_mmap_sideband};
 use super::{
     cpu_worker,
@@ -79,20 +80,13 @@ use super::{
     inheritance::{PerfInheritanceFamily, PerfInheritanceFamilyWeak},
     output::{PerfOutputRoute, PerfRingOutput},
     rdpmc::{RdpmcMapping, RdpmcSnapshot, mapping_result},
-    resource_lifecycle::PmuResourceRelease,
+    resource_lifecycle::{PmuResourceClaim, PmuResourceRelease},
     sampling::{self, SampleOutput, SampleSlot, SampleSlotConfig},
     sampling_lifecycle::{PmuCloseAction, PmuRunLease, PmuRunState, PmuStopClaim},
     sideband::{self, SidebandTarget},
     target::PerfCpuId,
 };
 use crate::task::{Thread, future::IrqNotify};
-
-/// Number of per-task counters currently attached anywhere in the system.
-///
-/// Incremented by [`attach`] and decremented by [`free_hw`] (when the HW counter
-/// is released). The scheduler hooks early-return while this is `0`, so an
-/// idle perf subsystem costs one relaxed atomic load per context switch.
-pub(super) static PERF_TASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// A hardware counter bound to one specific task.
 ///
@@ -492,8 +486,12 @@ impl PerTaskCounter {
             .is_some_and(|binding| binding.root)
     }
 
-    fn resources_released(&self) -> bool {
+    pub(super) fn resources_released(&self) -> bool {
         self.resources.is_released()
+    }
+
+    pub(super) fn publish_scheduler_registration(&self) -> bool {
+        self.resources.publish()
     }
 
     pub(crate) fn retired_values(&self) -> (u64, u64, u64) {
@@ -653,33 +651,17 @@ fn now_ns() -> u64 {
     ax_runtime::hal::time::monotonic_time_nanos()
 }
 
-/// Attach `ptc` to `thr` and arm the scheduler hooks.
+/// Attaches `ptc` to `thr` and arms the scheduler hooks.
 ///
-/// Called from [`super::hw::perf_event_open_hw`] for a task target. Bumping
-/// [`PERF_TASK_ACTIVE`] *after* the push ensures the hooks, once they start
-/// running, always find the counter in the list.
-pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
-    let mut counters = thr.perf_counters().lock();
-    // Closed events remain family-owned for aggregate reads, but need not stay
-    // in a live task's scheduler list. Reclaim them in task context before the
-    // bounded list accepts a new hardware-backed member.
-    counters.retain(|counter| !counter.resources_released());
-    counters
-        .push(ptc)
-        .expect("task perf list cannot exceed the architectural PMU slot limit");
-    drop(counters);
-    PERF_TASK_ACTIVE.fetch_add(1, Ordering::AcqRel);
+/// The thread context serializes this commit against task-exit tombstoning.
+pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) -> AxResult<()> {
+    thr.perf_context().attach(ptc)
 }
 
 /// Withdraws a counter whose family publication failed before its thread became
 /// schedulable.
 pub(super) fn detach_unpublished(thr: &Thread, ptc: &Arc<PerTaskCounter>) {
-    let mut counters = thr.perf_counters().lock();
-    let index = counters
-        .iter()
-        .position(|counter| Arc::ptr_eq(counter, ptc))
-        .expect("an unpublished perf counter must retain its local reservation");
-    counters.swap_remove(index);
+    thr.perf_context().detach_unpublished(ptc);
 }
 
 /// Scheduler hook: the given thread is about to start running on this CPU.
@@ -702,7 +684,10 @@ pub fn perf_sched_in(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let counters = thr.perf_counters().lock();
+    thr.perf_context().with_counters(perf_sched_in_counters);
+}
+
+fn perf_sched_in_counters(counters: &[Arc<PerTaskCounter>]) {
     if counters.is_empty() {
         return;
     }
@@ -808,7 +793,10 @@ pub fn perf_sched_out(thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let counters = thr.perf_counters().lock();
+    thr.perf_context().with_counters(perf_sched_out_counters);
+}
+
+fn perf_sched_out_counters(counters: &[Arc<PerTaskCounter>]) {
     if counters.is_empty() {
         return;
     }
@@ -929,8 +917,7 @@ pub fn on_exec(thr: &Thread) {
         return;
     }
     let now = now_ns();
-    {
-        let counters = thr.perf_counters().lock();
+    thr.perf_context().with_counters(|counters| {
         for ptc in counters.iter() {
             if ptc.run_state.lock().is_stopping() {
                 continue;
@@ -939,7 +926,7 @@ pub fn on_exec(thr: &Thread) {
                 ptc.enabled_at_ns.store(now, Ordering::Release);
             }
         }
-    }
+    });
     // Program the now-enabled counters onto HW for the current task. Takes the
     // list lock itself, so it is released above first.
     perf_sched_in(thr);
@@ -972,7 +959,11 @@ pub(super) fn sideband_target(ptc: &PerTaskCounter, pid: u32, tid: u32) -> Optio
 /// `free_hw` is idempotent per counter; safe even if the perf fd is still open
 /// (its `Drop` will call `free_hw` again and find it already freed).
 pub fn on_task_exit(thr: &Thread) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+    // Closing and snapshotting share the same lock as attach. An open either
+    // commits into this exact snapshot or observes the tombstone and returns
+    // ESRCH; no counter can appear after cleanup has selected its ownership set.
+    let counters = thr.perf_context().close_and_snapshot();
+    if counters.is_empty() {
         return;
     }
     let pid = thr.proc_data.proc.pid();
@@ -985,7 +976,6 @@ pub fn on_task_exit(thr: &Thread) {
         }
         None => (0, 0),
     };
-    let counters = thr.perf_counters().lock().clone();
     for ptc in &counters {
         if ptc.want_task
             && let Some(t) = sideband_target(ptc, pid, tid)
@@ -1002,10 +992,7 @@ pub fn on_task_exit(thr: &Thread) {
 /// idempotent callback only guarantees that an unpublished or externally
 /// terminated scheduler record cannot retain PMU reservations.
 pub(crate) fn on_scheduler_task_exit(thr: &Thread) {
-    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
-        return;
-    }
-    let counters = thr.perf_counters().lock().clone();
+    let counters = thr.perf_context().close_and_snapshot();
     release_task_counters(thr, &counters);
 }
 
@@ -1044,9 +1031,9 @@ pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
     };
     stop_result?;
 
-    if !ptc.resources.claim() {
+    let Some(resource_claim) = ptc.resources.claim() else {
         return Ok(());
-    }
+    };
     ptc.publish_rdpmc_inactive();
     // An inherited task has no fd-owned output lifetime of its own. Its EXIT
     // side-band record was emitted before this fence, so its strong redirect
@@ -1060,7 +1047,10 @@ pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
         ptc.clear_family_output();
     }
     super::hw_allocation::free_counter(ptc.counter);
-    PERF_TASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+    if resource_claim == PmuResourceClaim::Published {
+        let previous = PERF_TASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        assert!(previous > 0, "task perf active count underflow");
+    }
     Ok(())
 }
 

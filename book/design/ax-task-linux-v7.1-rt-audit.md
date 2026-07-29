@@ -638,12 +638,29 @@ while perf metadata validation reaches userspace as Linux `EINVAL`/`EBUSY`.
 
 Linux `find_get_context()` rejects `PF_EXITING` while holding
 `task->perf_event_mutex`; a dead perf context is a tombstone that cannot accept
-new events. Starry currently treats a stale generation as a completed
-synchronization, and rollback quiesces any hardware generation before
-withdrawing scheduler publication. The remaining task-exit/open admission
-race is tracked in this audit as the next lifecycle stage: admission and
-exit-start must share one per-thread perf-context gate so an event cannot
-attach after exit cleanup has passed.
+new events. Starry now gives each thread one `ThreadPerfContext` containing
+both the fixed scheduler list and its admission state under the same bounded
+IRQ-safe lock. Exit tombstones admission and takes its complete snapshot in
+one transaction. A concurrent open therefore either publishes its counter and
+global fast-path key before that snapshot, or observes the tombstone and
+returns `ESRCH`; it cannot attach after cleanup has selected the ownership set.
+The scheduler hook still borrows the fixed list without allocation, while
+side-band and inheritance paths take bounded `Arc` snapshots and release the
+gate before task-context work.
+
+The deterministic state test initially failed because the old exit operation
+only cloned the list: attaching `2` after an exit snapshot containing `1`
+returned success instead of `Closed`. The same test is green after
+tombstoning. A loom race covers both legal linearizations and also models the
+global counter publication inside the list lock: if attach wins, exit owns and
+releases exactly that entry; if close wins, attach is rejected and the active
+count remains zero. Failed-open rollback distinguishes a never-attached PMU
+reservation from an attached one, preventing a global-count underflow, and a
+later opener may reclaim a quiescent failed entry without making final detach
+panic. The reservation itself now transitions
+`Reserved -> Published -> Released`; only a `Published` release decrements the
+global scheduler fast-path key, so every admission error uses the same
+idempotent `free_hw()` transaction instead of a hand-written side path.
 
 The inheritance regression found an analogous unpublished-child boundary.
 Previously `on_clone_inherit()` ran before `PreparedUserTask` existed, so 40
@@ -740,8 +757,9 @@ failure was not reproduced in 20 targeted reruns and remains recorded as an
 intermittent observation rather than receiving a speculative scheduler
 change. The first aarch64 full milestone passed those same critical groups and
 failed only the deterministic `perf-hw-rdpmc` counter-selection assertion
-described above. A final full aarch64 rerun is required after the remaining
-exit-admission work.
+described above. The targeted RDPMC, fork/exit, and inheritance regressions
+now pass after the dynamic metadata and exit-admission repairs; a final full
+aarch64 rerun remains a milestone check for their combined integration.
 
 A separate pidfd audit question is closed as Linux-compatible rather than
 changed. Linux v7.1 keeps an unreaped zombie addressable through its pid object:
