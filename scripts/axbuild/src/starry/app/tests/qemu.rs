@@ -616,6 +616,31 @@ fn loongarch64_nvme_rootfs_uses_dynamic_uefi_handoff() {
 }
 
 #[test]
+fn x86_64_nvme_rootfs_uses_dynamic_uefi_handoff() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("axbuild manifest should live under scripts/axbuild")
+        .to_path_buf();
+    let config_path = repo.join("apps/starry/qemu/nvme/nvme-rootfs-rw-20m/qemu-x86_64.toml");
+    let content = fs::read_to_string(&config_path).unwrap();
+    let config: toml::Value = toml::from_str(&content).unwrap();
+
+    assert_eq!(
+        config.get("uefi").and_then(toml::Value::as_bool),
+        Some(true),
+        "{} must boot the PIC kernel through the supported x86_64 dynamic UEFI handoff",
+        config_path.display()
+    );
+    assert_eq!(
+        config.get("to_bin").and_then(toml::Value::as_bool),
+        Some(true),
+        "{} must retain the UEFI runner's explicit BIN artifact contract",
+        config_path.display()
+    );
+}
+
+#[test]
 fn codex_cli_qemu_config_uses_injected_smoke_script() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

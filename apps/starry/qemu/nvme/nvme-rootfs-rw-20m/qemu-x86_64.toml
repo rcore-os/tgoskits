@@ -9,8 +9,8 @@ args = [
     "-device",
     "nvme,serial=starry-nvme-rootfs,drive=nvm,max_ioqpairs=64,msix_qsize=65",
 ]
-uefi = false
-to_bin = false
+uefi = true
+to_bin = true
 shell_prefix = "root@starry:"
 shell_init_cmd = '''
 fail() {

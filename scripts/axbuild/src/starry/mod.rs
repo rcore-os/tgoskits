@@ -325,6 +325,11 @@ impl Starry {
             rootfs::RootfsPatchMode::EnsureDiskBootNet,
         );
         qemu.args.extend(prepared_assets.extra_qemu_args.clone());
+        // Global snapshot mode makes the UEFI VVFAT ESP read-only. Preserve
+        // isolation on the ordinary disks while leaving the ESP writable.
+        if qemu.uefi {
+            qemu::apply_drive_snapshot_without_global_snapshot(&mut qemu);
+        }
         qemu::apply_timeout_scale(&mut qemu);
         println!(
             "  prepare assets: {:.2?} (pipeline={}, cache={})",
