@@ -532,7 +532,6 @@ pub fn send_signal_to_thread(tgid: Option<Pid>, tid: Pid, sig: Option<SignalInfo
         if thread.signal().send_signal(sig) {
             task.interrupt();
         }
-        thread.signal().wake_sigwait(signo);
         // Always wake signalfd waiters — even blocked signals should be
         // visible via signalfd in an epoll event loop.
         thread.wake_signalfd();
@@ -606,7 +605,6 @@ fn publish_process_signal(
     sig: SignalInfo,
     ptrace_stop_tid: Option<u32>,
 ) -> Option<u32> {
-    let signo = sig.signo();
     let wake_tid = proc_data.signal.send_signal(sig);
     if let Some(tid) = wake_tid
         && let Ok(task) = get_task(tid)
@@ -621,24 +619,6 @@ fn publish_process_signal(
         // A fatal signal must abort the exact traced thread even when the
         // process signal manager selected an unblocked sibling.
         task.interrupt();
-    }
-    if wake_tid.is_none() {
-        // All threads have this signal blocked — the signal is now pending at
-        // the process level. Only wake threads that are sleeping in
-        // rt_sigtimedwait/sigwaitinfo for this signal; waking unrelated
-        // waitpid callers would cause spurious EINTR.
-        for tid in proc_data.proc.threads() {
-            if let Ok(task) = get_task(tid)
-                && task
-                    .as_thread()
-                    .signal
-                    .sigwait_set
-                    .lock()
-                    .is_some_and(|set| set.has(signo))
-            {
-                ax_task::wake_task(&task);
-            }
-        }
     }
     wake_tid
 }
