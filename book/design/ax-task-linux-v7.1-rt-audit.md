@@ -79,12 +79,14 @@ The behavior-preserving split was completed at branch head
 commits ahead of the audited base and changed 553 paths.
 
 The former 7,230-line `TaskSystem` implementation had already shrunk to 4,192
-lines by the audit baseline. It is now a 227-line facade over domain modules
-for CPU lifecycle, thread construction, dispatch, owner scheduling, placement
-delivery, inboxes, switch transactions, park/switch-tail, lifecycle, deadline,
-balance, and deferred task work. The split does not add a second placement or
-delivery state source: private helpers continue to mutate the same records
-through their existing owner scopes.
+lines by the audit baseline. Its orchestration root is now a 227-line module
+over domain modules for CPU lifecycle, thread construction, dispatch, owner
+scheduling, placement delivery, inboxes, switch transactions,
+park/switch-tail, lifecycle, deadline, balance, and deferred task work. The
+separate public facade still contains its API forwarding surface and unit
+tests; it is not counted as part of that 227-line orchestration root. The split
+does not add a second placement or delivery state source: private helpers
+continue to mutate the same records through their existing owner scopes.
 
 The `ax-runtime::task` facade is now 146 lines. CPU bootstrap and online
 publication, stack/TLS backing, transactional thread resources, architecture
@@ -182,12 +184,30 @@ Linux's later `sched_cpu_wait_empty()` and `sched_cpu_dying()` verify that the
 outgoing runqueue has been vacated. TGOSKits currently exposes the stricter
 quiescent transition: callers must migrate or retire work before
 `take_cpu_offline()` succeeds. It does not yet claim Linux-style automatic
-runqueue evacuation or a physical CPU hot-unplug control path. The runtime's
-`LocalClockEvent` already supports `Offline -> Idle` reinitialization and
-shutdown, but no Starry or ArceOS service currently orchestrates full physical
-CPU removal. Unit tests cover offline/re-online, last-CPU rejection, pending
-remote work, and a live thread without a remaining affinity destination; Loom
-exhaustively covers publication racing the draining transition.
+runqueue evacuation or a complete physical CPU hot-unplug control path.
+
+The runtime clockevent now participates in that same lifecycle transaction.
+After remote admission is changed to `Draining` and quiescence is proven,
+`TaskRuntime::prepare_cpu_offline()` stops the owner CPU's physical oneshot
+before the root-domain bit and final `Offline` publication are cleared. A
+runtime failure cancels draining and leaves the scheduler online for retry.
+The reverse hook brings `LocalClockEvent` from `Offline` to `Idle` or `Armed`
+while local IRQs remain disabled and before the root domain or remote endpoint
+is published online. This follows Linux v7.1's `tick_cpu_dying()`,
+`tick_offline_cpu()`, and `tick_shutdown()` ordering: detach the per-CPU
+clockevent before the scheduler completes the dying transition.
+
+The deterministic regression
+`quiescent_cpu_can_cycle_offline_and_online` observed no runtime lifecycle
+event on the old implementation even though the scheduler completed
+`Online -> Offline -> Online`. It now proves the matching physical sequence.
+`runtime_failure_leaves_cpu_lifecycle_transition_retryable` covers both
+failure directions. Other unit tests retain last-CPU rejection, pending remote
+work, and a live thread without a remaining affinity destination; Loom
+exhaustively covers publication racing the draining transition. ArceOS still
+has no service that coordinates IRQ-framework removal and physical CPU power
+off, so this change intentionally does not invent a platform hot-unplug
+interface.
 
 ## PI and waiter audit closure
 

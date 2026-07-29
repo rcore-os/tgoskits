@@ -88,6 +88,7 @@ impl TaskSystem {
         mut cpu: Pin<&mut CpuLocal>,
         now_ns: u64,
     ) -> Result<(), TaskError> {
+        let _irq = IrqScope::enter();
         self.ensure_owner_cpu_context(&cpu)?;
         let id = cpu.owner();
         let mut state = self.state.lock();
@@ -98,6 +99,9 @@ impl TaskSystem {
         }
         if !Arc::ptr_eq(&registration.remote, cpu.remote()) {
             return Err(TaskError::InvalidRuntimeHandle);
+        }
+        if root_domain.online.contains(id) {
+            return Err(TaskError::InvalidConfiguration);
         }
         if state
             .slots
@@ -112,6 +116,9 @@ impl TaskSystem {
         {
             return Err(TaskError::DeadlineAffinity);
         }
+        ensure_runtime_success(task_runtime::prepare_cpu_online(RuntimeCpuId::new(
+            id.as_u32(),
+        )))?;
         cpu.as_mut()
             .reset_fair_balance(now_ns, self.config.balance_interval_ns());
         let online_count = state
@@ -119,20 +126,16 @@ impl TaskSystem {
             .checked_add(1)
             .ok_or(TaskError::InvalidConfiguration)?;
         self.topology_sequence.write_begin();
-        if !root_domain.online.insert(id) {
-            self.topology_sequence.write_end();
-            return Err(TaskError::InvalidConfiguration);
-        }
+        assert!(
+            root_domain.online.insert(id),
+            "validated offline CPU must be absent from the root domain"
+        );
         state.deadline_admission.set_online_cpus(online_count);
         self.online_count.store(online_count, Ordering::Release);
-        if !cpu.as_ref().get_ref().remote().mark_online() {
-            root_domain.online.remove(id);
-            let previous_count = online_count - 1;
-            state.deadline_admission.set_online_cpus(previous_count);
-            self.online_count.store(previous_count, Ordering::Release);
-            self.topology_sequence.write_end();
-            return Err(TaskError::InvalidConfiguration);
-        }
+        assert!(
+            cpu.as_ref().get_ref().remote().mark_online(),
+            "validated offline CPU must accept final publication"
+        );
         self.topology_sequence.write_end();
         Ok(())
     }
@@ -173,6 +176,11 @@ impl TaskSystem {
         {
             remote.cancel_draining();
             Err(TaskError::CpuNotQuiescent(id.as_u32()))
+        } else if let Err(error) = ensure_runtime_success(task_runtime::prepare_cpu_offline(
+            RuntimeCpuId::new(id.as_u32()),
+        )) {
+            remote.cancel_draining();
+            Err(error)
         } else if !root_domain.online.remove(id) {
             remote.cancel_draining();
             Err(TaskError::InvalidConfiguration)

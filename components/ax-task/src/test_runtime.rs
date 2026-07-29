@@ -42,6 +42,10 @@ std::thread_local! {
     static TASK_DEADLINE_PUBLISH_STATUS: Cell<RuntimeStatus> =
         const { Cell::new(RuntimeStatus::Success) };
     static TASK_DEADLINE_PUBLISH_SUCCESS_REMAINING: Cell<usize> = const { Cell::new(0) };
+    static CPU_ONLINE_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
+    static CPU_OFFLINE_STATUS: Cell<RuntimeStatus> = const { Cell::new(RuntimeStatus::Success) };
+    static CPU_LIFECYCLE_EVENTS: RefCell<std::vec::Vec<CpuLifecycleEvent>> =
+        const { RefCell::new(std::vec::Vec::new()) };
     static SWITCH_OBSERVATIONS: RefCell<std::vec::Vec<SwitchObservation>> =
         const { RefCell::new(std::vec::Vec::new()) };
     static RESOURCE_RELEASE_STATUS: Cell<RuntimeStatus> =
@@ -72,6 +76,12 @@ pub(crate) enum ResourceReleaseEvent {
     DeallocateTls,
     DeallocateStack,
     DropExtension,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CpuLifecycleEvent {
+    Online(RuntimeCpuId),
+    Offline(RuntimeCpuId),
 }
 
 fn run_hook_reentry_query() {
@@ -127,6 +137,20 @@ impl TaskRuntime for UnitTestRuntime {
     }
     fn online_cpu_count() -> u32 {
         1
+    }
+
+    fn prepare_cpu_online(cpu: RuntimeCpuId) -> RuntimeStatus {
+        CPU_LIFECYCLE_EVENTS.with(|events| {
+            events.borrow_mut().push(CpuLifecycleEvent::Online(cpu));
+        });
+        CPU_ONLINE_STATUS.with(Cell::get)
+    }
+
+    fn prepare_cpu_offline(cpu: RuntimeCpuId) -> RuntimeStatus {
+        CPU_LIFECYCLE_EVENTS.with(|events| {
+            events.borrow_mut().push(CpuLifecycleEvent::Offline(cpu));
+        });
+        CPU_OFFLINE_STATUS.with(Cell::get)
     }
 
     fn irq_guard_enter() -> IrqGuardToken {
@@ -532,6 +556,8 @@ pub(crate) fn clear_task_handles() {
     install_task_handles(0, 0);
     MONOTONIC_NS.with(|now| now.set(0));
     LAST_TASK_DEADLINE_UPDATE.with(|observed| observed.set(None));
+    CPU_LIFECYCLE_EVENTS.with(|events| events.borrow_mut().clear());
+    configure_cpu_lifecycle(RuntimeStatus::Success, RuntimeStatus::Success);
     configure_task_deadline_publish(RuntimeStatus::Success, 0);
 }
 
@@ -541,4 +567,13 @@ pub(crate) fn set_monotonic_ns(now_ns: u64) {
 
 pub(crate) fn take_task_deadline_update() -> Option<TaskDeadlineUpdate> {
     LAST_TASK_DEADLINE_UPDATE.with(Cell::take)
+}
+
+pub(crate) fn take_cpu_lifecycle_events() -> std::vec::Vec<CpuLifecycleEvent> {
+    CPU_LIFECYCLE_EVENTS.with(|events| core::mem::take(&mut *events.borrow_mut()))
+}
+
+pub(crate) fn configure_cpu_lifecycle(online_status: RuntimeStatus, offline_status: RuntimeStatus) {
+    CPU_ONLINE_STATUS.with(|status| status.set(online_status));
+    CPU_OFFLINE_STATUS.with(|status| status.set(offline_status));
 }

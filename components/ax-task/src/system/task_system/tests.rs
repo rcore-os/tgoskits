@@ -227,6 +227,7 @@ fn registered_remote_endpoint_is_separate_from_owner_mutable_state() {
 
 #[test]
 fn quiescent_cpu_can_cycle_offline_and_online() {
+    crate::test_runtime::clear_task_handles();
     let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
     let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
     let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
@@ -259,6 +260,16 @@ fn quiescent_cpu_can_cycle_offline_and_online() {
     system.bring_cpu_online_at(cpu1.as_mut(), 1_000).unwrap();
     assert_eq!(system.online_cpu_count(), 2);
     assert!(cpu1.is_online());
+    assert_eq!(
+        crate::test_runtime::take_cpu_lifecycle_events(),
+        [
+            crate::test_runtime::CpuLifecycleEvent::Online(crate::runtime::RuntimeCpuId::new(0),),
+            crate::test_runtime::CpuLifecycleEvent::Online(crate::runtime::RuntimeCpuId::new(1),),
+            crate::test_runtime::CpuLifecycleEvent::Offline(crate::runtime::RuntimeCpuId::new(1),),
+            crate::test_runtime::CpuLifecycleEvent::Online(crate::runtime::RuntimeCpuId::new(1),),
+        ],
+        "scheduler publication must transact the matching runtime wake sources"
+    );
 }
 
 #[test]
@@ -297,6 +308,65 @@ fn pending_remote_publication_prevents_cpu_offline() {
     );
     assert!(cpu1.is_online(), "a rejected transition must roll back");
     assert_eq!(system.online_cpu_count(), 2);
+}
+
+#[test]
+fn runtime_failure_leaves_cpu_lifecycle_transition_retryable() {
+    crate::test_runtime::clear_task_handles();
+    crate::test_runtime::configure_cpu_lifecycle(RuntimeStatus::Platform, RuntimeStatus::Success);
+    let system = TaskSystem::new(TaskSystemConfig::new(2)).unwrap();
+    let mut cpu0 = system.create_cpu_local(CpuId::new(0)).unwrap();
+    let mut cpu1 = system.create_cpu_local(CpuId::new(1)).unwrap();
+    let mut affinity0 = CpuSet::empty(2);
+    let mut affinity1 = CpuSet::empty(2);
+    assert!(affinity0.insert(CpuId::new(0)));
+    assert!(affinity1.insert(CpuId::new(1)));
+    let _idle0 = system
+        .register_idle_thread(
+            cpu0.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                .with_affinity(affinity0),
+        )
+        .unwrap();
+    let _idle1 = system
+        .register_idle_thread(
+            cpu1.as_mut(),
+            ThreadSpec::new(SchedulePolicy::fair(Nice::ZERO, FairMode::Idle))
+                .with_affinity(affinity1),
+        )
+        .unwrap();
+
+    assert_eq!(
+        system.bring_cpu_online(cpu0.as_mut()),
+        Err(TaskError::RuntimeFailure(RuntimeStatus::Platform as u32))
+    );
+    assert!(!cpu0.is_online());
+    assert_eq!(system.online_cpu_count(), 0);
+
+    crate::test_runtime::configure_cpu_lifecycle(RuntimeStatus::Success, RuntimeStatus::Success);
+    system.bring_cpu_online(cpu0.as_mut()).unwrap();
+    system.bring_cpu_online(cpu1.as_mut()).unwrap();
+    let _ = crate::test_runtime::take_cpu_lifecycle_events();
+
+    crate::test_runtime::configure_cpu_lifecycle(RuntimeStatus::Success, RuntimeStatus::Platform);
+    assert_eq!(
+        system.take_cpu_offline(cpu1.as_mut()),
+        Err(TaskError::RuntimeFailure(RuntimeStatus::Platform as u32))
+    );
+    assert!(cpu1.is_online());
+    assert_eq!(system.online_cpu_count(), 2);
+
+    crate::test_runtime::configure_cpu_lifecycle(RuntimeStatus::Success, RuntimeStatus::Success);
+    system.take_cpu_offline(cpu1.as_mut()).unwrap();
+    assert!(!cpu1.is_online());
+    assert_eq!(system.online_cpu_count(), 1);
+    assert_eq!(
+        crate::test_runtime::take_cpu_lifecycle_events(),
+        [
+            crate::test_runtime::CpuLifecycleEvent::Offline(crate::runtime::RuntimeCpuId::new(1),),
+            crate::test_runtime::CpuLifecycleEvent::Offline(crate::runtime::RuntimeCpuId::new(1),),
+        ]
+    );
 }
 
 #[test]

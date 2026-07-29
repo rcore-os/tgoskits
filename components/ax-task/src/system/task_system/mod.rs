@@ -58,7 +58,7 @@ use crate::{
     inbox::{InboxKind, InboxMessage, InboxOperation, PublishResult, SchedulerInbox},
     lock::{IrqScope, IrqTicketLock, SequenceCounter},
     reclaim::DeferredReclaimNode,
-    runtime::{ContextThreadBinding, RuntimeStatus, ThreadIdentityV1, task_runtime},
+    runtime::{ContextThreadBinding, RuntimeCpuId, RuntimeStatus, ThreadIdentityV1, task_runtime},
     system::cpu::{CurrentDispatch, CurrentDispatchState},
     task_work::{TaskWorkConsumerGuard, TaskWorkDoorbell},
 };
