@@ -11,7 +11,9 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 
-use axdevice_base::{BusAccess, BusKind, BusResponse, Device, DeviceError, IrqLine, Resource};
+use axdevice_base::{
+    BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, IrqLine, Resource,
+};
 use axvirtio_net::{DeviceEvent, VirtioError, VirtioMmioNetDevice};
 use axvm::{AxvmGuestMemoryAccessor, GuestPhysAddr};
 
@@ -79,7 +81,11 @@ impl Device for VirtioNetDeviceAdapter {
         &self.resources
     }
 
-    fn handle(&self, access: &BusAccess) -> Result<BusResponse, DeviceError> {
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
         // The virtio-net model only participates in the MMIO bus; reject port and
         // system-register accesses with a diagnostic instead of silently handling
         // them (plan section 3).
@@ -113,10 +119,6 @@ impl Device for VirtioNetDeviceAdapter {
             }
             Ok(BusResponse::Write)
         }
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
     }
 }
 

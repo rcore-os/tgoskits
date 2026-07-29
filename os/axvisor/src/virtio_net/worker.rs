@@ -23,6 +23,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
 use ax_kspin::SpinNoIrq as Mutex;
+use axdevice::{ServiceCardinality, ServiceKey};
 use axdevice_base::IrqLine;
 use axvirtio_net::{RxOutcome, VirtioMmioNetDevice};
 use axvm::{
@@ -32,6 +33,35 @@ use axvm::{
 
 use super::adapter::VirtioNetDeviceAdapter;
 use super::backend::AxvisorNetworkBackend;
+
+/// Worker-facing endpoint exported by the virtio-net device bundle.
+pub struct VirtioNetEndpoint {
+    device: Arc<VirtioMmioNetDevice<AxvisorNetworkBackend, axvm::AxvmGuestMemoryAccessor>>,
+    irq: IrqLine,
+    backend: AxvisorNetworkBackend,
+}
+
+impl VirtioNetEndpoint {
+    /// Creates an endpoint from the AxVisor device adapter.
+    pub fn from_adapter(adapter: &VirtioNetDeviceAdapter) -> Self {
+        Self {
+            device: adapter.device().clone(),
+            irq: adapter.irq().clone(),
+            backend: adapter.backend().clone(),
+        }
+    }
+}
+
+/// Service key used to find the prepared virtio-net endpoint without downcasting
+/// the hot-path [`axdevice_base::Device`] trait object.
+pub struct VirtioNetEndpointKey;
+
+impl ServiceKey for VirtioNetEndpointKey {
+    type Service = VirtioNetEndpoint;
+
+    const NAME: &'static str = "axvisor-virtio-net-endpoint";
+    const CARDINALITY: ServiceCardinality = ServiceCardinality::Single;
+}
 
 /// Worker stack size (the delivery path and `receive_frame` copy are shallow).
 const WORKER_STACK_SIZE: usize = 0x2_0000;
@@ -150,16 +180,12 @@ fn find_virtio_net_endpoint(
     AxvisorNetworkBackend,
 )> {
     let devices = vm.get_devices().ok()?;
-    for device in devices.devices() {
-        if let Some(adapter) = device.as_any().downcast_ref::<VirtioNetDeviceAdapter>() {
-            return Some((
-                adapter.device().clone(),
-                adapter.irq().clone(),
-                adapter.backend().clone(),
-            ));
-        }
-    }
-    None
+    let endpoint = devices.services().require::<VirtioNetEndpointKey>().ok()?;
+    Some((
+        endpoint.device.clone(),
+        endpoint.irq.clone(),
+        endpoint.backend.clone(),
+    ))
 }
 
 /// The guest delivery worker main loop.

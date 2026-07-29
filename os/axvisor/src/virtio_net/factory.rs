@@ -19,7 +19,7 @@ use alloc::sync::{Arc, Weak};
 use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceManagerError, DeviceRegistration,
 };
-use axdevice_base::{Device, DeviceError, InterruptTriggerMode, Resource};
+use axdevice_base::{DeviceError, InterruptTriggerMode, Resource};
 use axvirtio_net::{VirtioError, VirtioMmioNetDevice, VirtioNetConfig};
 use axvirtio_switch::SwitchPortId;
 use axvm::{AxVM, AxvmGuestMemoryAccessor, GuestPhysAddr};
@@ -29,6 +29,7 @@ use super::adapter::VirtioNetDeviceAdapter;
 use super::backend::AxvisorNetworkBackend;
 use super::config::{BackendSpec, VirtioNetDeviceSpec};
 use super::raw_uplink::HostUplinkRuntime;
+use super::worker::{VirtioNetEndpoint, VirtioNetEndpointKey};
 
 /// Builds virtio-net MMIO device adapters for one VM at one prepare generation.
 pub struct VirtioNetDeviceFactory {
@@ -108,9 +109,9 @@ impl DeviceFactory for VirtioNetDeviceFactory {
         let adapter = Arc::new(VirtioNetDeviceAdapter::new(
             spec.name, device, irq, backend, attachment, resources,
         ));
-        Ok(DeviceBundle::from_registration(DeviceRegistration::Device(
-            adapter as Arc<dyn Device>,
-        )))
+        let endpoint: Arc<VirtioNetEndpoint> = Arc::new(VirtioNetEndpoint::from_adapter(&adapter));
+        let bundle = DeviceBundle::from_registration(DeviceRegistration::Device(adapter));
+        bundle.with_service::<VirtioNetEndpointKey>(endpoint)
     }
 }
 
