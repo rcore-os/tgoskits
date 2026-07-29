@@ -8,8 +8,6 @@ use crate::{
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
-#[cfg(any(target_arch = "aarch64", test))]
-mod aarch64_gicv2;
 #[cfg(target_arch = "loongarch64")]
 mod loongarch64;
 #[cfg(target_arch = "riscv64")]
