@@ -101,7 +101,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
         .expect("failed to publish secondary scheduler CPU");
 
     #[cfg(all(feature = "irq", feature = "multitask"))]
-    super::enable_irqs_after_scheduler_online(online_cpu);
+    super::clock_event_runtime::enable_irqs_after_scheduler_online(online_cpu);
     #[cfg(all(feature = "irq", not(feature = "multitask")))]
     ax_hal::asm::enable_irqs();
     #[cfg(all(feature = "multitask", not(feature = "irq")))]

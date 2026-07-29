@@ -195,7 +195,7 @@ pub fn exit_current(exit_code: i32) -> ! {
         debug!("main task exited: exit_code={exit_code}");
         let _irq = IrqSave::new();
         #[cfg(feature = "irq")]
-        crate::take_current_clock_event_offline();
+        crate::clock_event_runtime::take_current_clock_event_offline();
         ax_hal::power::system_off();
     }
 

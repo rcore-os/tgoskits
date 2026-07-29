@@ -77,7 +77,7 @@ impl_task_runtime! {
                 return RuntimeStatus::InvalidArgument;
             }
             #[cfg(feature = "irq")]
-            crate::init_timer();
+            crate::clock_event_runtime::init_timer();
             RuntimeStatus::Success
         }
 
@@ -86,7 +86,7 @@ impl_task_runtime! {
                 return RuntimeStatus::InvalidArgument;
             }
             #[cfg(feature = "irq")]
-            crate::take_current_clock_event_offline();
+            crate::clock_event_runtime::take_current_clock_event_offline();
             RuntimeStatus::Success
         }
 
@@ -166,7 +166,7 @@ impl_task_runtime! {
             // repeatedly delivering an early interrupt.
             let frequency_hz =
                 ax_hal::time::nanos_to_ticks(ax_hal::time::NANOS_PER_SEC);
-            crate::timer_resolution_from_frequency(frequency_hz)
+            crate::clock_event_runtime::timer_resolution_from_frequency(frequency_hz)
         }
 
         fn publish_task_deadline(
@@ -174,7 +174,7 @@ impl_task_runtime! {
         ) -> RuntimeStatus {
             #[cfg(feature = "irq")]
             {
-                crate::publish_local_task_deadline(update)
+                crate::clock_event_runtime::publish_local_task_deadline(update)
             }
             #[cfg(not(feature = "irq"))]
             {
@@ -210,12 +210,13 @@ impl_task_runtime! {
         fn wait_for_interrupt() {
             ax_hal::asm::disable_irqs();
             let now_ns = ax_hal::time::monotonic_time_nanos();
-            let recovered_clockevent = crate::recover_overdue_local_clock_event(now_ns);
+            let recovered_clockevent =
+                crate::clock_event_runtime::recover_overdue_local_clock_event(now_ns);
             let needs_reschedule = ax_task::current_cpu_needs_resched()
                 .expect("idle handoff requires an initialized current CPU");
             if recovered_clockevent
                 || needs_reschedule
-                || crate::local_clock_event_has_immediate_work(now_ns)
+                || crate::clock_event_runtime::local_clock_event_has_immediate_work(now_ns)
             {
                 ax_hal::asm::enable_irqs();
             } else {
