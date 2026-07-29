@@ -378,6 +378,27 @@ HTTP 端点下载同名脚本，并连接 `${boardServerIp}:5201` 执行 2 秒�
 iperf3 UDP JSON 测试。该用例只验证下载、执行和网络连通性，不设置吞吐门槛；服务端
 需预先运行 iperf3 server。
 
+ROCK 4D 使用板卡服务名称 `Rock-4D`、仓库内的 RK3576 DTB 和 1,500,000 baud
+串口。维护的单核启动回归命令为：
+
+```bash
+cargo xtask starry test board -c boot --board rock-4d -b Rock-4D
+```
+
+已验证的 8 核启动命令为：
+
+```bash
+cargo xtask starry board \
+  -c os/StarryOS/configs/board/rock-4d.toml \
+  --smp 8 \
+  --board-config os/StarryOS/configs/board/rock-4d-board.toml \
+  -b Rock-4D
+```
+
+两条路径都必须进入 `root@starry:/root #` 并打印独立的
+`STARRY_ROCK4D_BOOT_OK` 成功行。RK3576 的固件、PSCI、CPU 拓扑和 CRU/PMU
+检查点见 `.claude/skills/arch-platform-porting/references/boot-debugging.md`。
+
 `board-aka-00-sg2002/usb2-libuvc-init` 提供静态交叉编译固定版本上游 libuvc 的
 C 资产和 `board-aka-00-sg2002.toml.disabled` 配置模板。AKA-00-SG2002 当前没有
 StarryOS 网络设备，无法从 session HTTP URL 下载程序，因此该模板不会被 board

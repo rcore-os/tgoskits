@@ -27,7 +27,10 @@ crate::model_register!(
     priority: ProbePriority::CLK,
     probe_kinds: &[
         ProbeKind::Fdt {
-            compatibles: &["rockchip,rk3588-power-controller"],
+            compatibles: &[
+                "rockchip,rk3576-power-controller",
+                "rockchip,rk3588-power-controller",
+            ],
             on_probe: probe
         }
     ],
@@ -48,7 +51,21 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
         )))?;
 
     let mmio_size = base_reg.size.unwrap_or(0x1000) as usize;
-    let board = RkBoard::Rk3588;
+    let board = info
+        .node
+        .as_node()
+        .compatibles()
+        .find_map(|compatible| match compatible {
+            "rockchip,rk3576-power-controller" => Some(RkBoard::Rk3576),
+            "rockchip,rk3588-power-controller" => Some(RkBoard::Rk3588),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            OnProbeError::other(alloc::format!(
+                "[{}] has no supported Rockchip power-controller compatible",
+                info.node.name()
+            ))
+        })?;
 
     let mmio_base = iomap(base_reg.address as usize, mmio_size)?;
     let pm = RockchipPM::new(mmio_base, board);

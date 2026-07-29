@@ -123,6 +123,90 @@ Use this order when auditing an early boot port:
 - Keep FDT `reg` hart IDs as firmware CPU IDs and map them onto dense logical CPU IDs separately. On VisionFive2, `cpu@0` is a disabled S7 management hart while the usable U74 cores are `cpu@1` through `cpu@4`; full-core boot should therefore start from hart 1 and bring up harts 2-4, not fall back to single-core mode.
 - If a RISC-V board traps when secondaries are released, dump `/cpus` from the boot FDT before changing `max_cpu_num`; disabled or non-OS CPU nodes are a common cause of `cpu_on` targeting the wrong hart.
 
+## RK3576 ROCK 4D Board Notes
+
+The maintained ROCK 4D path uses the repository DTB and a U-Boot/firmware stack
+that can load the StarryOS image and DTB through the board runner. Firmware must
+implement the DTB's PSCI 1.0 `smc` method; otherwise secondary CPU release cannot
+work even when the kernel image and CPU topology are correct.
+
+- Use `os/StarryOS/configs/board/rock-4d.dtb`. Its root compatibles are
+  `radxa,rock-4d` and `rockchip,rk3576`; do not silently substitute a U-Boot
+  resident DTB from a different RK3576 board.
+- The console contract is `serial0` / UART0 at `0x2ad4_0000`, 1,500,000 baud,
+  8-N-1. The local template
+  `os/StarryOS/configs/board/rock-4d-uboot.toml` uses `/dev/ttyUSB0`; adjust
+  only the host serial path when the adapter enumerates differently.
+- The DTB describes eight PSCI CPUs: Cortex-A53 MPIDRs `0x0` through `0x3` and
+  Cortex-A72 MPIDRs `0x100` through `0x103`. Keep these hardware IDs separate
+  from dense logical CPU indices. Both the maintained single-core board test
+  and an eight-core boot have been validated.
+- The RK3576 CRU node must be `rockchip,rk3576-cru` at `0x2720_0000`, size
+  `0x50000`. Early driver evidence should include
+  `RK3576 CRU reg: addr=0x27200000, size=0x50000` followed by
+  `RK3576 CRU clock/reset registered successfully`.
+- The PMU parent must be at `0x2738_0000`, with a child compatible
+  `rockchip,rk3576-power-controller`. Probe completion prints
+  `Rockchip power-domain provider registered successfully`; an individual
+  domain enabled at debug level prints `Rockchip power domain 0x... enabled`.
+- The pinctrl provider must bind `rockchip,rk3576-pinctrl`, map IOC GRF
+  `0x2604_0000` and optional SYS GRF `0x2600_a000`, and discover GPIO0 through
+  GPIO4 from `gpio-ranges`. Successful registration prints
+  `Rockchip RK3576 pinctrl registered successfully`. The generic rdrive FDT
+  probe path applies SDMMC0's default `pinctrl-0` state before invoking the
+  controller probe. Keep regression coverage at both boundaries: rdrive must
+  prove default pinctrl is applied before the consumer callback, and the
+  RK3576 pinctrl test must prove the ROCK 4D SDMMC state programs the expected
+  IOC registers. Do not add a second consumer-specific apply call, and do not
+  treat a later successful mount as sufficient evidence because U-Boot can
+  leave the pads in a usable state.
+- The repository ROCK 4D DTB connects SDMMC0 `vqmmc-supply` to the always-on
+  RK806 `vccio_sd_s0` PMIC rail; it does not declare a fixed GPIO regulator for
+  that controller. If a board DT variant uses a fixed GPIO supply, require
+  `Fixed regulator ... enabled via pinctrl` (or an SD-specific regulator
+  success log) before card initialization.
+- The current CRU capability required by the storage path controls SDMMC0
+  source/HCLK gates, source selection, divider, and reset. If kernel boot
+  reaches storage initialization but cannot mount or access the root device,
+  check CRU registration first, then SDMMC0 clock gating/rate and the relevant
+  PMU domain before debugging the filesystem.
+
+Use the exact board name exposed by the board service. List it first when
+necessary:
+
+```bash
+cargo xtask board ls
+```
+
+The maintained single-core regression is:
+
+```bash
+cargo xtask starry test board \
+  -c boot \
+  --board rock-4d \
+  -b Rock-4D
+```
+
+The validated eight-core path is:
+
+```bash
+cargo xtask starry board \
+  -c os/StarryOS/configs/board/rock-4d.toml \
+  --smp 8 \
+  --board-config os/StarryOS/configs/board/rock-4d-board.toml \
+  -b Rock-4D
+```
+
+Both runs must reach `root@starry:/root #` and print the standalone
+`STARRY_ROCK4D_BOOT_OK` marker. A shell prompt without the marker is not a
+passing board test.
+
+Troubleshoot in handoff order: confirm the board service selected ROCK 4D,
+confirm UART0 output at 1,500,000 baud, confirm the repository DTB compatibles
+and PSCI method, confirm all intended MPIDRs were discovered, then check CRU
+and PMU registration before investigating secondary release, storage, or
+device-specific drivers.
+
 ## LoongArch Lessons
 
 - For U-Boot FIT boot, keep the producer and handoff contracts aligned: use the canonical FIT architecture name `loongarch`, ensure U-Boot passes the DTB at a DTSpec-compliant 8-byte-aligned address, and hand a FIT-provided FDT to someboot through the UHI convention (`a0 = -2`, `a1 = fdt`). Vendor `CONFIG_LOONGSON_BOOT_FIXUP` paths that inspect `legacy_hdr_os` must not run for FIT images.

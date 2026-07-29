@@ -111,6 +111,10 @@ Current Axvisor LoongArch QEMU bring-up uses the dynamic UEFI platform path. The
 - On x86 QEMU, initialize LAPIC/x2APIC once and keep APIC IDs as firmware IDs, not logical CPU indices. Use x2APIC MSRs when x2APIC is enabled, bound IPI delivery waits, reject xAPIC AP startup/IPI destinations above 255, and keep external IOAPIC INTx programming in the runtime `X86IoApicIntc` path instead of someboot or HAL bypass helpers.
 - On AArch64, keep the someboot `hv` feature scoped to the EL2 kernel path. For non-`hv` EL1 boot, choose the EL1 arch timer at runtime from the boot EL: use CNTP when EL2 is available and CNTV when EL2 is unavailable, and keep the FDT timer interrupt index consistent with the selected mode.
 - On AArch64 secondary entry, preserve the CPU metadata pointer explicitly across MMU-enable and EL-transition helpers. Naked asm should consume the helper return register instead of assuming scratch registers survive Rust calls.
+- For RK3576 ROCK 4D firmware, DTB, serial, SMP, CRU/PMU, and board-validation
+  requirements, follow the dedicated checklist in
+  `references/boot-debugging.md`. Do not diagnose storage or secondary-CPU
+  failures without first confirming that complete handoff contract.
 - Build page tables for identity/firmware access, direct map, kernel high map, MMIO, and per-CPU data as the arch requires.
 - Flush TLB/cache and use architecture barriers around page table writes, boot argument writes, and secondary CPU release.
 - Treat hardware MMU enablement, direct-map/kernel-space addressability, and final kernel relocation as separate states. Generic relocation detection should use the final `VM_LOAD_ADDRESS`, not the broader arch kernel/direct-map range; for example AArch64 `hv` builds can use `PAGE_OFFSET = 0`, and LoongArch DMW can make RAM addressable before execution reaches the final high mapping.
