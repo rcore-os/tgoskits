@@ -410,9 +410,11 @@ impl CloneArgs {
         if flags.contains(CloneFlags::NEWNS | CloneFlags::FS) {
             return Err(AxError::InvalidInput);
         }
-        if flags.contains(CloneFlags::NEWPID)
-            && flags.intersects(CloneFlags::THREAD | CloneFlags::PARENT)
-        {
+        // Linux rejects a new PID namespace only when the child remains in the
+        // caller's thread group. Legacy clone permits NEWPID together with
+        // PARENT; clone3's distinct PARENT/exit-signal rule is enforced while
+        // converting Clone3Args.
+        if flags.contains(CloneFlags::NEWPID | CloneFlags::THREAD) {
             return Err(AxError::InvalidInput);
         }
 
@@ -962,6 +964,13 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
     }
     .validate()
     .is_err();
+    let legacy_parent_newpid_allowed = CloneArgs {
+        flags: CloneFlags::PARENT | CloneFlags::NEWPID,
+        exit_signal: SIGCHLD as u64,
+        ..Default::default()
+    }
+    .validate()
+    .is_ok();
     // Cover the remaining validation arms to keep the full state machine under
     // axtest coverage (the host `#[cfg(test)]` mod below mirrors these but does
     // not execute during the kernel coverage run).
@@ -1011,6 +1020,7 @@ pub(crate) fn clone_validation_rules_hold_for_test() -> bool {
         && thread_signal_rejected
         && sighand_without_vm_rejected
         && newns_with_fs_rejected
+        && legacy_parent_newpid_allowed
         && thread_without_vm_sighand_rejected
         && vfork_with_thread_rejected
         && pidfd_with_detached_rejected
@@ -1055,6 +1065,17 @@ mod tests {
         };
 
         assert!(args.validate().is_err());
+    }
+
+    #[test]
+    fn legacy_clone_parent_allows_new_pid_namespace() {
+        let args = CloneArgs {
+            flags: CloneFlags::PARENT | CloneFlags::NEWPID,
+            exit_signal: SIGCHLD as u64,
+            ..Default::default()
+        };
+
+        assert!(args.validate().is_ok());
     }
 
     #[test]
