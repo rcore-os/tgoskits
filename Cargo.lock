@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "ax-driver"
-version = "0.14.0"
+version = "0.12.1"
 dependencies = [
  "aic8800",
  "anyhow",
@@ -806,6 +806,7 @@ dependencies = [
  "crab-usb",
  "cv181x-sdhci",
  "dma-api",
+ "dwmmc-host",
  "eth-intel",
  "fdt-edit",
  "fxmac_rs",
@@ -815,6 +816,7 @@ dependencies = [
  "mmio-api",
  "nvme-driver",
  "pcie",
+ "phytium-mci-host",
  "rd-net",
  "rdif-block",
  "rdif-clk",
@@ -847,6 +849,7 @@ dependencies = [
  "sg200x-bsp",
  "some-serial",
  "spin",
+ "starfive-jh7110-dwmmc",
  "tock-registers 0.10.1",
  "virtio-drivers",
  "x86",
@@ -875,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.9.0"
+version = "0.8.5"
 dependencies = [
  "ax-errno 0.6.1",
  "ax-io",
@@ -2768,7 +2771,7 @@ dependencies = [
 
 [[package]]
 name = "cv181x-sdhci"
-version = "0.2.0"
+version = "0.1.3"
 dependencies = [
  "dma-api",
  "mmio-api",
@@ -3148,7 +3151,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dwmmc-host"
-version = "0.4.0"
+version = "0.3.3"
 dependencies = [
  "bitfield-struct 0.11.0",
  "dma-api",
@@ -5534,7 +5537,7 @@ checksum = "300e4bdb6b46b592948e700ea1ef24a4296491f6a0ee722b258040abd15a3714"
 
 [[package]]
 name = "nvme-driver"
-version = "0.8.0"
+version = "0.7.3"
 dependencies = [
  "dma-api",
  "log",
@@ -5908,7 +5911,7 @@ dependencies = [
 
 [[package]]
 name = "phytium-mci-host"
-version = "0.4.0"
+version = "0.3.3"
 dependencies = [
  "bitfield-struct 0.11.0",
  "dma-api",
@@ -6580,7 +6583,7 @@ dependencies = [
 
 [[package]]
 name = "rdif-block"
-version = "0.14.0"
+version = "0.11.2"
 dependencies = [
  "ax-kspin",
  "axtest",
@@ -7444,7 +7447,7 @@ dependencies = [
 
 [[package]]
 name = "sdhci-host"
-version = "0.6.0"
+version = "0.4.2"
 dependencies = [
  "dma-api",
  "embedded-hal",
@@ -7461,14 +7464,14 @@ version = "0.1.0"
 
 [[package]]
 name = "sdio-host2"
-version = "0.2.0"
+version = "0.1.4"
 dependencies = [
  "dma-api",
 ]
 
 [[package]]
 name = "sdmmc-protocol"
-version = "0.6.0"
+version = "0.4.2"
 dependencies = [
  "bitflags 2.13.1",
  "dma-api",
@@ -7988,7 +7991,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "starfive-jh7110-dwmmc"
-version = "0.2.0"
+version = "0.1.3"
 dependencies = [
  "dma-api",
  "dwmmc-host",

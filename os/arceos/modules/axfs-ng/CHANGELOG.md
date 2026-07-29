@@ -16,20 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Submit every planner-generated filesystem I/O window before blocking for its completion group.
 - Defer regular ext4 data, append, and size-change durability to the explicit sync/fsync boundary.
 - Split block lifecycle I/O and page-cache readahead, writeback, reclaim, and tests into focused modules.
+- Replace the compatibility block runtime with per-CPU bounded submission
+  channels and one pinned maintenance task per hardware queue.
+- Make filesystem reads, writes, and flushes blocking wrappers over one-shot
+  completion subscriptions.
+- Expand hardware queues only after scheduler, IPI, and local IRQ startup
+  completes on every CPU.
+- Aggregate single and grouped channel submissions into bounded hardware
+  batches while preserving partial acceptance and flush ordering.
 
 ### Fixed
 
 - Quiesce hctx workers before controller shutdown and retain partially installed queues until hardware can no longer DMA into them.
 - Alternate retry suffixes with fresh per-CPU submissions and share one scheduler notification across each completion group.
-
-## [0.9.0](https://github.com/rcore-os/tgoskits/compare/ax-fs-ng-v0.8.5...ax-fs-ng-v0.9.0) - 2026-07-24
-
-### Changed
-
-- Replace the compatibility block runtime with per-CPU bounded submission channels and one pinned maintenance task per hardware queue.
-- Make filesystem reads, writes, and flushes blocking wrappers over one-shot completion subscriptions.
-- Expand hardware queues only after scheduler, IPI, and local IRQ startup completes on every CPU.
-- Aggregate single and grouped channel submissions into bounded hardware batches while preserving partial acceptance and flush ordering.
 
 ### Removed
 

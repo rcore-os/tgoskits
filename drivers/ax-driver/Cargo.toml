@@ -1,6 +1,6 @@
 [package]
 name = "ax-driver"
-version = "0.14.0"
+version = "0.12.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -76,6 +76,37 @@ cv181x-sdhci = [
     "dep:sdmmc-protocol",
     "sdmmc-protocol/rdif",
 ]
+cvsd = ["cv181x-sdhci"]
+k230-sdhci = [
+    "block",
+    "dep:sdhci-host",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/rdif",
+]
+phytium-mci = [
+    "block",
+    "dep:phytium-mci-host",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/rdif",
+]
+rockchip-dwmmc = [
+    "block",
+    "rockchip-pm",
+    "rockchip-soc",
+    "dep:dwmmc-host",
+    "dep:rdif-clk",
+    "dep:sdmmc-protocol",
+    "sdmmc-protocol/rdif",
+]
+starfive-jh7110-dwmmc = [
+    "block",
+    "starfive-soc",
+    "dep:dwmmc-host",
+    "dep:sdmmc-protocol",
+    "dep:starfive-jh7110-dwmmc",
+    "sdmmc-protocol/rdif",
+    "sdmmc-protocol/sdio",
+]
 starfive-soc = [
     "dep:rdif-clk",
     "dep:rdif-reset",
@@ -123,6 +154,7 @@ axklib.workspace = true
 crab-usb = { workspace = true, optional = true }
 cv181x-sdhci = { workspace = true, optional = true }
 dma-api.workspace = true
+dwmmc-host = { workspace = true, optional = true }
 eth-intel = { workspace = true, optional = true }
 fdt-edit = { workspace = true }
 fxmac_rs = { workspace = true, optional = true }
@@ -132,6 +164,7 @@ log.workspace = true
 mmio-api.workspace = true
 nvme-driver = { workspace = true, optional = true }
 pcie = { workspace = true, optional = true }
+phytium-mci-host = { workspace = true, optional = true }
 rd-net = { workspace = true, optional = true }
 rdif-block = { workspace = true, optional = true }
 rdif-clk = { workspace = true, optional = true }
@@ -163,6 +196,7 @@ sdmmc-protocol = { workspace = true, default-features = false, optional = true }
 sg200x-bsp = { workspace = true, optional = true }
 some-serial = { workspace = true, optional = true }
 spin.workspace = true
+starfive-jh7110-dwmmc = { workspace = true, optional = true }
 tock-registers = { workspace = true, optional = true }
 virtio-drivers = { workspace = true, optional = true }
 

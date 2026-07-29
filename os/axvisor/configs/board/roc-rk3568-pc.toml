@@ -1,7 +1,6 @@
-# Block storage is intentionally unsupported. The public rockchip-sdhci
-# feature is restricted to RK3588 DWCMSHC eMMC during the first migration.
 features = [
     "fs",
+    "rockchip-sdhci",
 ]
 log = "Info"
 target = "aarch64-unknown-none-softfloat"

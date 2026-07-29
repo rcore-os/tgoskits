@@ -20,12 +20,7 @@ use rdrive::{
     register::{FdtInfo, ProbeFdt},
 };
 use sdhci_host::{Sdhci, rdif as sdhci_rdif};
-use sdmmc_protocol::{
-    sdio::{
-        card::SdioSdmmc,
-        init::CardInitPreference,
-    },
-};
+use sdmmc_protocol::sdio::{card::SdioSdmmc, init::CardInitPreference};
 
 use crate::{block::ProbeFdtBlock, mmio::iomap};
 
@@ -66,9 +61,7 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let dma = axklib::dma::device_with_mask(u32::MAX as u64);
     let config = sdhci_rdif::dma_config("k230-sdhci", 0, &dma);
     host.configure_dma(dma).map_err(|err| {
-        OnProbeError::other(format!(
-            "k230-sdhci ADMA2 configuration failed: {err:?}"
-        ))
+        OnProbeError::other(format!("k230-sdhci ADMA2 configuration failed: {err:?}"))
     })?;
 
     info!("k230-sdhci: defer protocol initialization to IRQ-driven hctx");
