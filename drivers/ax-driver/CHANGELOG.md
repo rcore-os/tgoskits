@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migrated controller through an owned `dma-api` capability.
 - Restore the existing SD/eMMC configuration surface on top of the migrated
   CV181x, SDHCI, DWMMC, JH7110, Phytium MCI, and K230 implementations.
+- Replace the LS2K1000 AHCI synchronous polling adapter with a single-slot
+  IRQ-driven queue that owns command and request DMA through `dma-api`.
 - Bind NVMe admin and I/O vectors independently and enable each MSI-X source
   only after its non-reentrant handler is installed.
 

@@ -31,6 +31,7 @@ smp = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
 k230 = [
   "starry-kernel/k230-kpu",
   "ax-driver/serial",
+  "ax-driver/k230-sdhci",
 ]
 
 rknpu = ["ax-driver/rknpu", "starry-kernel/rknpu"]
