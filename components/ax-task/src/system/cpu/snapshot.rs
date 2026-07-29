@@ -15,8 +15,8 @@ pub struct CpuSnapshot {
 impl CpuSnapshot {
     pub(crate) fn capture(cpu: &CpuLocal) -> Self {
         Self {
-            owner: cpu.owner,
-            current: cpu.current,
+            owner: cpu.owner(),
+            current: cpu.current(),
             runnable: cpu.runnable_count(),
             need_resched: cpu.needs_reschedule(),
         }
