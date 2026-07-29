@@ -10,8 +10,9 @@ use alloc::sync::Arc;
 #[cfg(feature = "rga")]
 use linux_raw_sys::general::CAP_SYS_RAWIO;
 use linux_raw_sys::general::{
-    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_LAST_CAP, CAP_NET_RAW, CAP_SETGID, CAP_SETPCAP,
-    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_RESOURCE,
+    CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_FOWNER, CAP_KILL, CAP_LAST_CAP, CAP_NET_RAW, CAP_PERFMON,
+    CAP_SETGID, CAP_SETPCAP, CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE,
+    CAP_SYS_PTRACE, CAP_SYS_RESOURCE,
 };
 
 const CAP_MASK: u64 = (1u64 << (CAP_LAST_CAP + 1)) - 1;
@@ -168,6 +169,19 @@ impl Cred {
         self.has_cap(CAP_SYS_ADMIN)
     }
 
+    /// Check whether this credential may bypass perf monitoring restrictions.
+    ///
+    /// Linux keeps `CAP_SYS_ADMIN` as a compatibility fallback for
+    /// `CAP_PERFMON`.
+    pub fn has_cap_perfmon(&self) -> bool {
+        self.has_cap(CAP_PERFMON) || self.has_cap_sys_admin()
+    }
+
+    /// Check whether this credential may send signals across UID boundaries.
+    pub fn has_cap_kill(&self) -> bool {
+        self.has_cap(CAP_KILL)
+    }
+
     /// Check whether this credential may reboot the system
     /// (equivalent to `CAP_SYS_BOOT`).
     pub fn has_cap_sys_boot(&self) -> bool {
@@ -190,10 +204,9 @@ impl Cred {
         self.has_cap(CAP_SYS_MODULE)
     }
 
-    /// Check whether this credential may inspect another process
-    /// (equivalent to `CAP_SYS_PTRACE` — approximated as euid == 0).
+    /// Check whether this credential may inspect another process.
     pub fn has_cap_sys_ptrace(&self) -> bool {
-        self.euid == 0
+        self.has_cap(CAP_SYS_PTRACE)
     }
 
     /// Check whether this credential has the privilege to change file
@@ -270,7 +283,8 @@ pub(crate) fn credential_capability_rules_hold_for_test() -> bool {
         && root.has_cap_fowner()
         && root.has_cap_setpcap();
 
-    // euid == 0 grants CAP_SYS_PTRACE under the StarryOS approximation.
+    // Root starts with every known effective capability, including
+    // CAP_SYS_PTRACE.
     let root_ptrace = root.has_cap_sys_ptrace();
 
     // Build a credential with only CAP_NET_RAW effective to confirm the

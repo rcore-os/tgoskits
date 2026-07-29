@@ -55,7 +55,7 @@ use super::control::PerfControl;
 #[cfg(target_arch = "aarch64")]
 use super::target::PerfCpuId;
 #[cfg(not(target_arch = "aarch64"))]
-use super::target::PerfTarget;
+use super::{access::AuthorizedPerfTarget, hw::ValidatedHwOpen};
 #[cfg(target_arch = "aarch64")]
 use super::{
     cpu_worker,
@@ -782,6 +782,19 @@ impl PerfEventOps for HwPerfEvent {
 
 /// Non-aarch64 fallback: no hardware PMU support outside ARM PMUv3.
 #[cfg(not(target_arch = "aarch64"))]
-pub fn perf_event_open_hw(_attr: &perf_event_attr, _target: PerfTarget) -> AxResult<HwPerfEvent> {
+pub(super) fn perf_event_open_hw(
+    _attr: &perf_event_attr,
+    target: AuthorizedPerfTarget,
+    validated: ValidatedHwOpen,
+) -> AxResult<HwPerfEvent> {
+    let _ = validated;
+    match target {
+        AuthorizedPerfTarget::Task { task, cpu } => {
+            let _ = (task, cpu);
+        }
+        AuthorizedPerfTarget::Cpu(cpu) => {
+            let _ = cpu;
+        }
+    }
     Err(AxError::Unsupported)
 }

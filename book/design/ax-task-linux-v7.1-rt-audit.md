@@ -447,6 +447,47 @@ worker on the selected CPU. The direct local fast path pins the CPU and masks
 local IRQs before validating ownership, so migration cannot occur between the
 check and a PMU sysreg write.
 
+Task-target parsing and authorization are separate typed phases. A positive
+TID is resolved once to a strong `UserTaskRef` before its optional CPU filter
+is validated, preserving Linux's `ESRCH` precedence over an invalid CPU. That
+same lease is retained through hardware-event construction instead of looking
+the TID up again. Probe attributes and a value-only ARM PMU construction plan
+are validated before authorization or allocation. Malformed attributes
+therefore keep their Linux error precedence without temporarily publishing an
+unauthorized event.
+
+For a task target, Starry holds the process `exec_lock` from the credential
+check through event construction, fd installation, and sampling-registry
+publication. This is the local equivalent of Linux retaining
+`signal->exec_update_lock` across `perf_check_permission()` and
+`perf_install_in_context()`: exec cannot replace credentials or retire the
+task context between authorization and attachment.
+
+Following Linux v7.1 `perf_check_permission()` and
+`PTRACE_MODE_READ_REALCREDS`, callers in the same thread group and callers
+with `CAP_PERFMON` (including Linux's `CAP_SYS_ADMIN` compatibility fallback)
+are accepted. Other callers must have `CAP_SYS_PTRACE`, or their real UID/GID
+must match every real/effective/saved target ID while the target remains
+dumpable. The pure policy also requires `CAP_KILL` for the `CAP_PERFMON`
+bypass of a `sigtrap` event, matching Linux's upgrade to attach access.
+Synchronous perf SIGTRAP delivery is not implemented yet, so the syscall
+currently rejects that capability explicitly rather than silently accepting
+an event with missing signal behavior. A denial is `EACCES`; a PID below the
+`-1` CPU-target sentinel is `ESRCH`.
+
+The deterministic x86_64 `perf-task-permission` QEMU regression drops the
+target and caller to distinct credentials while leaving the target dumpable.
+Before authorization was introduced, the cross-credential
+`perf_event_open()` succeeded; it now returns `EACCES`. A follow-up red run
+showed malformed attributes returning that `EACCES` before their own `EINVAL`.
+The same QEMU case now also requires malformed-attribute `EINVAL` and missing
+TID `ESRCH` even when the CPU filter is invalid, and the runner reports
+`STARRY_GROUPED_TESTS_PASSED`. Pure policy tests cover the complete ID-slot,
+thread-group, dumpability, `CAP_PERFMON`, `CAP_KILL`, and `CAP_SYS_PTRACE`
+matrix. The aarch64 `perf-hw-fork-exit` case also passes, proving that the
+authorized strong target survives the value-only PMU validation plan,
+hardware construction, and fork/exit teardown.
+
 The former 1,545-line PMU implementation is now a stable facade over focused
 allocation, owner-CPU request, sampling storage, event-state, and open-validation
 modules. Counter reservation remains process-wide in one allocator, CPU-local
@@ -525,6 +566,15 @@ The original aarch64 `perf-hw-freq` stale-wake panic remains the end-to-end
 regression. Deterministic host tests cover target parsing, registry generation
 reuse, close versus switch-out, failed owner-stop retry, redirect/detach
 selection, shared output lifetime, and bounded multi-producer admission.
+
+A separate pidfd audit question is closed as Linux-compatible rather than
+changed. Linux v7.1 keeps an unreaped zombie addressable through its pid object:
+`pidfd_send_signal(..., 0)` and a nonzero signal return success until
+`waitpid()` reaps the child, after which they return `ESRCH`. Starry's
+generation-bearing `ProcessIdentity` has the same boundary. The existing
+`syscall-test-pidfd-send-signal` QEMU case already asserts success for the
+unreaped zombie and `ESRCH` after reaping, so no second PID/zombie authority or
+compatibility patch was introduced.
 
 Starry process exit now closes child publication in the same relationship
 transaction that reparents existing children. This mirrors Linux
