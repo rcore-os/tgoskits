@@ -203,7 +203,8 @@ pub fn wait_existing_ptrace_stop_current(thr: &Thread, uctx: &mut UserContext) {
 
 fn wait_ptrace_resume(thr: &Thread, tid: u32, uctx: &mut UserContext) {
     let task = current_user_task();
-    task.clear_interrupt();
+    let stale_interrupts = thr.interrupt_snapshot();
+    thr.acknowledge_interrupt(stale_interrupts);
     let wait_result = block_on_user(
         &task,
         poll_fn(|cx| {

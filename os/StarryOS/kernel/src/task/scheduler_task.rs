@@ -198,11 +198,6 @@ impl UserTaskRef {
         self.as_thread().interrupted()
     }
 
-    /// Clears a stale interruption before returning to userspace.
-    pub fn clear_interrupt(&self) {
-        self.as_thread().clear_interrupt();
-    }
-
     /// Waits for exit and reaps the scheduler-owned runtime resources.
     pub fn join(self) -> i32 {
         scheduler::join_thread(self.scheduler)

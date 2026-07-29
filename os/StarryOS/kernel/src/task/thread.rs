@@ -13,7 +13,10 @@ use starry_signal::{SignalSet, api::ThreadSignalManager};
 
 use super::{
     CpuTimeAccounting, CpuTimeDelta, Cred, ProcessData, RttimeWatchdog, SeccompState, SockFilter,
-    TimerState, ops, scheduler_identity::SchedulerIdentity,
+    TimerState,
+    interruption::{InterruptSnapshot, InterruptState},
+    ops,
+    scheduler_identity::SchedulerIdentity,
 };
 
 const KRETPROBE_STACK_CAPACITY: usize = 16;
@@ -106,7 +109,7 @@ struct ThreadLifecycle {
     robust_list_head: AtomicUsize,
     exit: Arc<AtomicBool>,
     exit_started: AtomicBool,
-    interrupted: AtomicBool,
+    interrupted: InterruptState,
     user_memory_access_depth: AtomicU32,
     block_next_signal_check: NextSignalCheckBlock,
     exit_event: Arc<PollSet>,
@@ -122,7 +125,7 @@ impl ThreadLifecycle {
             robust_list_head: AtomicUsize::new(0),
             exit: Arc::new(AtomicBool::new(false)),
             exit_started: AtomicBool::new(false),
-            interrupted: AtomicBool::new(false),
+            interrupted: InterruptState::new(),
             user_memory_access_depth: AtomicU32::new(0),
             block_next_signal_check: NextSignalCheckBlock::new(),
             exit_event: Arc::default(),
@@ -453,19 +456,23 @@ impl Thread {
     }
 
     pub(super) fn interrupt(&self) {
-        self.lifecycle.interrupted.store(true, Ordering::Release);
+        self.lifecycle.interrupted.publish();
     }
 
     pub(super) fn take_interrupt(&self) -> bool {
-        self.lifecycle.interrupted.swap(false, Ordering::AcqRel)
+        self.lifecycle.interrupted.consume()
     }
 
     pub(super) fn interrupted(&self) -> bool {
-        self.lifecycle.interrupted.load(Ordering::Acquire)
+        self.lifecycle.interrupted.is_pending()
     }
 
-    pub(super) fn clear_interrupt(&self) {
-        self.lifecycle.interrupted.store(false, Ordering::Release);
+    pub(super) fn interrupt_snapshot(&self) -> InterruptSnapshot {
+        self.lifecycle.interrupted.snapshot()
+    }
+
+    pub(super) fn acknowledge_interrupt(&self, snapshot: InterruptSnapshot) {
+        let _advanced = self.lifecycle.interrupted.acknowledge(snapshot);
     }
 
     /// Returns the registered rseq area pointer.

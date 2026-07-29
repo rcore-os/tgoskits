@@ -65,6 +65,7 @@ violate the crate dependency boundaries.
 | Context switch | ax-runtime task/guard and per-architecture context code | scheduler `on_cpu`, `finish_task_switch` | Scheduler baton spans the complete switch; outgoing resources remain live until switch tail clears `on_cpu` | The invariant exists but is spread across oversized runtime modules |
 | PI and sleep locks | ax-task PI, ax-sync mutex, scope-local | `rtmutex.c`, `rwsem.c` | Registration, deboost and grant form one bounded transaction; no unbounded spin with preemption disabled | PI unlock waits for registrations by spinning; waiter and lock identities lack generation-based reuse protection |
 | IRQ wake lifetime | `IrqWaitCell`, Starry future/wait adapters | `synchronize_irq`, completion/wake queues | An IRQ-visible registration is revoked and quiesced before its owner is freed | Starry `IrqNotify` publishes a raw pointer to retained wake storage |
+| Starry signal return | user-task interrupt state and signal safe point | `recalc_sigpending_tsk()`, `complete_signal()`, `signal_wake_up_state()` | A return-to-user acknowledgement can clear only wake publications observed before its signal scan | The boolean interruption flag is cleared unconditionally after the scan, so a concurrently queued process signal can lose its only wake |
 | Process lifecycle | starry-process and Starry task/process glue | `exit.c`, `forget_original_parent`, `do_wait` | PR #1706 identity owns exit/reap; relationship updates have one lock order and one publication transaction | Reparent and retire can acquire children/group locks in conflicting orders |
 | Perf ownership | Starry perf task, hardware and sampling paths | `kernel/events/core.c` | `pid == 0` is a task context; `pid == -1` with a CPU is a CPU context; teardown executes on the owner CPU before storage release | CPU-local sampling slots are registered and removed on the current CPU and contain raw notify pointers |
 | Generic timers | Starry POSIX timers and AxVM timer worker | hrtimer soft/threaded callbacks | Arbitrary callbacks run in task context; earlier deadlines use a bounded wake endpoint | Worker design exists and must remain separate from ax-task task deadlines |
@@ -979,6 +980,37 @@ before the timer, and every timed syscall retains a distinct timeout mapping
 polling no longer consumes Starry signal state. The executor's park callback
 only performs the predicate handshake; it never loops through
 `yield_current_cpu` on a sticky interruption.
+
+The full RISC-V system sequence subsequently exposed a second boundary in the
+same path. A process-directed `SIGKILL` was present in the shared pending queue
+and the chosen thread had been woken, but the target returned through its
+signal scan and unconditionally cleared the boolean interruption flag. When
+the signal arrived between the final dequeue attempt and that clear, the wake
+of the still-running thread was consumed, the new publication was erased, and
+the target's next `pause()` parked permanently. GDB showed the shared
+`SIGKILL` bit set while both target threads had a clear local interruption
+flag.
+
+Linux v7.1 avoids this split-brain state under the sighand lock:
+`complete_signal()` queues shared pending state, `signal_wake_up_state()` sets
+the selected task's `TIF_SIGPENDING` before waking it, and
+`recalc_sigpending_tsk()` recomputes the flag from both private and shared
+queues before it may be cleared. Starry retains its scheduler-independent
+signal queues, but now applies the same publication invariant through a
+monotonic `InterruptState`. Producers publish their reason, advance the
+generation with release ordering, and then wake the scheduler thread. The
+owner snapshots that generation before scanning timers, exit requests, and
+signals; it acknowledges only that snapshot and repeats the safe point when a
+newer generation exists. A nested consumer cannot move the acknowledged
+generation backwards.
+
+The deterministic state regression
+`publication_after_snapshot_survives_acknowledgement` failed with the former
+boolean clear and passes with the generation protocol. The two companion tests
+cover ordinary acknowledgement and nested-consumer monotonicity. All 22
+`starry-kernel` feature-clippy checks pass, and the reduced
+`syscall-test-aspace-teardown-reclaim` RISC-V QEMU case completed all twelve
+`SIGKILL`/`waitpid`/address-space-reclaim iterations in 104 seconds.
 
 ## Completion rules
 

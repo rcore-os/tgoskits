@@ -306,8 +306,6 @@ pub fn new_user_task(
                 // POSIX timers are also driven by the alarm task, but polling
                 // here closes the window where an expired timer is only noticed
                 // after the current syscall returns to userspace.
-                poll_process_timer(thr.proc_data.proc.pid());
-
                 let eintr_code = -(ax_errno::LinuxError::EINTR.code() as isize);
                 let restart = if is_syscall
                     && (uctx.retval() as isize) == eintr_code
@@ -324,13 +322,30 @@ pub fn new_user_task(
                 // whether to restart. Subsequent signals in the same
                 // loop must not re-apply the decision.
                 let mut pending_restart = restart.as_ref();
-                while check_signals(thr, &mut uctx, None, pending_restart) {
-                    pending_restart = None;
+                let mut poll_timer = true;
+                loop {
+                    // Match Linux's recalc_sigpending()/TIF_SIGPENDING
+                    // handshake: only acknowledge wake publications that were
+                    // visible before this safe-point scan. A signal published
+                    // after the snapshot remains sticky and forces another
+                    // pass, so returning to userspace cannot erase the sole
+                    // wake reason for a subsequent interruptible syscall.
+                    let interrupt_snapshot = thr.interrupt_snapshot();
+                    if poll_timer {
+                        poll_process_timer(thr.proc_data.proc.pid());
+                        poll_timer = false;
+                    }
+                    while check_signals(thr, &mut uctx, None, pending_restart) {
+                        pending_restart = None;
+                    }
+                    thr.acknowledge_interrupt(interrupt_snapshot);
+                    if !thr.interrupted() {
+                        break;
+                    }
                 }
             }
 
             set_timer_state(&curr, TimerState::User);
-            curr.clear_interrupt();
         }
     }
 }
