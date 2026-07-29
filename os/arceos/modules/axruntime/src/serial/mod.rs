@@ -469,32 +469,14 @@ fn build_runtime(
             );
             AxError::Unsupported
         })?;
-        let callback_bridge = bridge;
-        let callback_stats = stats;
-        let callback_gate = register_gate;
-        let mut callback_rx = RuntimeIrqRxSink {
+        let mut callback_publisher = RuntimeIrqPublisher {
             producer: irq_rx_producer,
-            bridge: callback_bridge.clone(),
-            stats: callback_stats.clone(),
+            bridge,
+            stats,
+            register_gate,
         };
         let request = serial_irq_request(
-            ax_hal::irq::IrqRequest::new(move |_| {
-                let Some(_register_access) =
-                    try_enter_irq_registers(&callback_gate, &callback_bridge)
-                else {
-                    // Only emergency output can contend with the same-CPU
-                    // worker/IRQ serialization. Never wait in hard IRQ.
-                    return ax_hal::irq::IrqReturn::Handled;
-                };
-                let Some(event) = irq.handle(&mut callback_rx) else {
-                    callback_stats.spurious_irq();
-                    return ax_hal::irq::IrqReturn::Unhandled;
-                };
-                callback_stats.handled_irq(event);
-                callback_bridge.latch.publish(event);
-                callback_bridge.notify();
-                ax_hal::irq::IrqReturn::Handled
-            }),
+            ax_hal::irq::IrqRequest::new(move |_| callback_publisher.handle(irq.as_mut())),
             primary_cpu,
         );
         let handle = ax_hal::irq::request_irq(irq_id, request).map_err(|err| {
@@ -546,14 +528,48 @@ fn serial_irq_request(
         .auto_enable(ax_hal::irq::AutoEnable::No)
 }
 
-struct RuntimeIrqRxSink {
+/// IRQ-safe publication boundary captured beside the IRQ-owned driver endpoint.
+///
+/// The registered callback cannot reach the serial worker, control queue, or
+/// device manager. It can only execute a bounded register transaction and
+/// publish value reports into preallocated state.
+struct RuntimeIrqPublisher {
     producer: SpscProducer<rdif_serial::RxSample>,
     bridge: Arc<RuntimeIrqBridge>,
     stats: Arc<SerialStatsAtomic>,
+    register_gate: Arc<UartRegisterGate>,
 }
 
-impl rdif_serial::IrqRxSink for RuntimeIrqRxSink {
-    fn push(&mut self, sample: rdif_serial::RxSample) {
+impl RuntimeIrqPublisher {
+    fn handle(&mut self, irq: &mut dyn rdif_serial::UartIrq) -> ax_hal::irq::IrqReturn {
+        let report = {
+            let Some(_register_access) = try_enter_irq_registers(&self.register_gate, &self.bridge)
+            else {
+                // Only emergency output can contend with the same-CPU
+                // worker/IRQ serialization. Never wait in hard IRQ.
+                return ax_hal::irq::IrqReturn::Handled;
+            };
+            irq.handle()
+        };
+        let Some(report) = report else {
+            self.stats.spurious_irq();
+            return ax_hal::irq::IrqReturn::Unhandled;
+        };
+
+        self.publish_batch(report.rx);
+        self.stats.handled_irq(report.event);
+        self.bridge.latch.publish(report.event);
+        self.bridge.notify();
+        ax_hal::irq::IrqReturn::Handled
+    }
+
+    fn publish_batch(&mut self, batch: rdif_serial::IrqRxBatch) {
+        for &sample in batch.as_slice() {
+            self.publish_sample(sample);
+        }
+    }
+
+    fn publish_sample(&mut self, sample: rdif_serial::RxSample) {
         if self.producer.push(sample).is_err() {
             self.stats.add_rx_dropped(1);
             self.bridge.rx_overflow.store(true, Ordering::Release);
@@ -618,14 +634,16 @@ mod tests {
     }
 
     #[test]
-    fn irq_sink_drops_only_after_the_preallocated_ring_is_full() {
+    fn irq_publisher_drops_only_after_the_preallocated_ring_is_full() {
         let bridge = Arc::new(RuntimeIrqBridge::new());
         let stats = Arc::new(SerialStatsAtomic::new());
         let (producer, mut consumer) = spsc::channel(2);
-        let mut sink = RuntimeIrqRxSink {
+        let register_gate = Arc::new(UartRegisterGate::new(BoundedEmergencyTx));
+        let mut publisher = RuntimeIrqPublisher {
             producer,
             bridge: bridge.clone(),
             stats: stats.clone(),
+            register_gate,
         };
         let samples = [
             rdif_serial::RxSample {
@@ -641,9 +659,11 @@ mod tests {
                 ..rdif_serial::RxSample::default()
             },
         ];
+        let mut batch = rdif_serial::IrqRxBatch::new();
         for sample in samples {
-            rdif_serial::IrqRxSink::push(&mut sink, sample);
+            batch.try_push(sample).unwrap();
         }
+        publisher.publish_batch(batch);
 
         assert_eq!(consumer.pop().and_then(|sample| sample.byte), Some(1));
         assert_eq!(consumer.pop().and_then(|sample| sample.byte), Some(2));

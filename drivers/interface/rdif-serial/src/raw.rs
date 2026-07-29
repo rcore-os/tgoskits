@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use crate::{Config, ConfigError, RxSample, SerialEventSet, SerialIrqEvent};
+use crate::{Config, ConfigError, RxSample, SerialEventSet, SerialIrqReport};
 
 /// Non-blocking exclusion for aliases of one UART register block.
 ///
@@ -66,19 +66,19 @@ pub struct UartInfo {
 }
 
 /// Independently owned task, hard-IRQ, and emergency-TX endpoints.
-pub struct UartParts<P, I, E> {
+pub struct SerialParts<C, I, E> {
     /// Task-context data and control endpoint.
-    pub port: P,
+    pub control: C,
     /// Hard-IRQ event and bounded-RX endpoint.
     pub irq: I,
     /// Panic-only non-blocking transmitter endpoint.
     pub emergency_tx: E,
 }
 
-impl<P, I, E> UartParts<P, I, E> {
-    pub const fn new(port: P, irq: I, emergency_tx: E) -> Self {
+impl<C, I, E> SerialParts<C, I, E> {
+    pub const fn new(control: C, irq: I, emergency_tx: E) -> Self {
         Self {
-            port,
+            control,
             irq,
             emergency_tx,
         }
@@ -87,13 +87,13 @@ impl<P, I, E> UartParts<P, I, E> {
 
 /// Converts a concrete UART into disjoint runtime endpoints.
 pub trait SplitUart: Sized {
-    type Port: UartPort;
+    type Control: UartPort;
     type Irq: UartIrq;
     type EmergencyTx: UartEmergencyTx;
 
     fn runtime_info(&self) -> UartInfo;
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq, Self::EmergencyTx>;
+    fn split(self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx>;
 }
 
 /// UART data/control endpoint owned by one runtime maintenance task.
@@ -128,23 +128,13 @@ pub trait UartPort: Send + 'static {
     fn rearm(&mut self, sources: SerialEventSet) -> SerialEventSet;
 }
 
-/// Non-blocking destination for samples drained by a UART hard-IRQ endpoint.
-///
-/// Implementations must be allocation-free and IRQ-safe. `push` deliberately
-/// has no backpressure result: a hard IRQ cannot wait for capacity, so the
-/// runtime sink owns overflow accounting and sticky error publication.
-pub trait IrqRxSink {
-    fn push(&mut self, sample: RxSample);
-}
-
 /// UART hard-IRQ endpoint owned by the registered IRQ callback.
 pub trait UartIrq: Send + 'static {
-    /// Handles the current hardware event and drains a bounded RX batch.
+    /// Handles the current hardware event and returns a bounded value report.
     ///
     /// `None` means the shared interrupt was not raised by this UART. The
-    /// implementation may read RX FIFO data only through `rx`; it must never
-    /// write TX FIFO data.
-    fn handle(&mut self, rx: &mut dyn IrqRxSink) -> Option<SerialIrqEvent>;
+    /// implementation must never call runtime code or write TX FIFO data.
+    fn handle(&mut self) -> Option<SerialIrqReport>;
 }
 
 /// Raw panic/emergency-only TX endpoint.

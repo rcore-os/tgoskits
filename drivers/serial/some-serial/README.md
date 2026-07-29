@@ -145,36 +145,32 @@ let mut uart = some_serial::ns16550::Ns16550::new_mmio(
 
 ```rust
 use rdif_serial::{
-    Config, IrqRxSink, RxSample, SplitUart as _, UartEmergencyTx as _,
-    UartIrq as _, UartPort as _,
+    Config, SplitUart as _, UartIrq as _, UartPort as _, UartRegisterGate,
 };
 use some_serial::pl011::Pl011;
-
-struct BoundedRxPublisher;
-
-impl IrqRxSink for BoundedRxPublisher {
-    fn push(&mut self, sample: RxSample) {
-        // 将 sample 放入预分配的有界 SPSC 队列；满时只记溢出状态。
-        let _ = sample;
-    }
-}
 
 // 运行时取得三个不可克隆、职责互斥的端点。
 let uart = Pl011::new(base_addr, clock_freq);
 let parts = uart.split();
-let mut port = parts.port;
+let mut control = parts.control;
 let mut irq = parts.irq;
-let emergency_tx = parts.emergency_tx;
-port.startup(&Config::new().baudrate(115200)).unwrap();
+let emergency_gate = UartRegisterGate::new(parts.emergency_tx);
+control.startup(&Config::new().baudrate(115200)).unwrap();
 
-// IRQ callback 只做有界 FIFO drain、ACK/mask 和事件发布。
-let mut rx = BoundedRxPublisher;
-if let Some(event) = irq.handle(&mut rx) {
-    // 维护线程根据 event 通过 port 处理数据，完成后调用 port.rearm(event.rearm)。
+// IRQ callback 只从驱动取得固定容量值报告，再发布到预分配队列。
+if let Some(report) = irq.handle() {
+    for sample in report.rx.as_slice() {
+        // 将 sample 放入预分配的有界 SPSC 队列；满时只记溢出状态。
+        let _ = sample;
+    }
+    // 维护线程根据事件通过 control 处理数据，完成后重新使能来源。
+    control.rearm(report.event.rearm);
 }
 
 // panic 路径只能在取得 OS runtime 的非阻塞寄存器 gate 后调用。
-let _written = emergency_tx.try_write(b"panic\n");
+let _written = emergency_gate
+    .try_enter()
+    .map_or(0, |access| access.try_write(b"panic\n"));
 ```
 
 #### 平台检测与适配
@@ -195,10 +191,12 @@ let uart = Ns16550::new_mmio(
     1,
 );
 let parts = uart.split();
-let mut port = parts.port;
-port.startup(&Config::new().baudrate(115200)).unwrap();
+let mut control = parts.control;
+control
+    .startup(&Config::new().baudrate(115200))
+    .unwrap();
 
-let accepted = port.write_tx(b"runtime serial\n");
+let accepted = control.write_tx(b"runtime serial\n");
 assert!(accepted <= b"runtime serial\n".len());
 ```
 

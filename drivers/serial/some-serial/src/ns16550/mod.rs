@@ -9,9 +9,9 @@ mod registers;
 
 use bitflags::Flags;
 use rdif_serial::{
-    Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
-    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq,
-    UartParts, UartPort,
+    Config, ConfigError, DataBits, IRQ_RX_BATCH_CAPACITY, IrqRxBatch, Parity, RxErrorFlags, RxFlag,
+    RxSample, SerialEventSet, SerialIrqEvent, SerialIrqReport, SerialParts, SplitUart, StopBits,
+    UartEmergencyTx, UartInfo, UartIrq, UartPort,
 };
 use registers::*;
 
@@ -206,11 +206,11 @@ impl<T: Kind> Ns16550Irq<T> {
 }
 
 impl<T: Kind> UartIrq for Ns16550Irq<T> {
-    fn handle(&mut self, rx: &mut dyn IrqRxSink) -> Option<SerialIrqEvent> {
+    fn handle(&mut self) -> Option<SerialIrqReport> {
         const IRQ_PASS_BUDGET: usize = 32;
-        const RX_SAMPLE_BUDGET: usize = 256;
 
         let mut event = SerialIrqEvent::default();
+        let mut rx = IrqRxBatch::new();
         let mut rx_samples = 0;
         for _ in 0..IRQ_PASS_BUDGET {
             let Some(current) = self.next_event() else {
@@ -219,15 +219,16 @@ impl<T: Kind> UartIrq for Ns16550Irq<T> {
             event.events |= current;
             if current.intersects(SerialEventSet::RX) {
                 let before = rx_samples;
-                while rx_samples < RX_SAMPLE_BUDGET {
+                while rx_samples < IRQ_RX_BATCH_CAPACITY {
                     let Some(sample) = read_rx_sample(&self.base, &mut self.saved_lsr) else {
                         break;
                     };
                     event.rx_errors |= rx_errors_from_sample(sample);
-                    rx.push(sample);
+                    rx.try_push(sample)
+                        .expect("the fixed NS16550 IRQ loop cannot overflow its RX batch");
                     rx_samples += 1;
                 }
-                if rx_samples == RX_SAMPLE_BUDGET || rx_samples == before {
+                if rx_samples == IRQ_RX_BATCH_CAPACITY || rx_samples == before {
                     break;
                 }
             }
@@ -250,7 +251,7 @@ impl<T: Kind> UartIrq for Ns16550Irq<T> {
             }
         }
 
-        (!event.events.is_empty()).then_some(event)
+        (!event.events.is_empty()).then_some(SerialIrqReport::new(event, rx))
     }
 }
 
@@ -347,7 +348,7 @@ impl<T: Kind> UartPort for Ns16550<T> {
 }
 
 impl<T: Kind> SplitUart for Ns16550<T> {
-    type Port = Self;
+    type Control = Self;
     type Irq = Ns16550Irq<T>;
     type EmergencyTx = Ns16550EmergencyTx<T>;
 
@@ -359,7 +360,7 @@ impl<T: Kind> SplitUart for Ns16550<T> {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq, Self::EmergencyTx> {
+    fn split(self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx> {
         let irq = Ns16550Irq {
             base: self.base.clone(),
             saved_lsr: LineStatusFlags::empty(),
@@ -367,7 +368,7 @@ impl<T: Kind> SplitUart for Ns16550<T> {
         let emergency_tx = Ns16550EmergencyTx {
             base: self.base.clone(),
         };
-        UartParts::new(self, irq, emergency_tx)
+        SerialParts::new(self, irq, emergency_tx)
     }
 }
 
@@ -767,19 +768,11 @@ mod tests {
     static LAST_FCR_WRITE: AtomicU8 = AtomicU8::new(0);
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    #[derive(Default)]
-    struct CollectRx(Vec<RxSample>);
-
-    impl IrqRxSink for CollectRx {
-        fn push(&mut self, sample: RxSample) {
-            self.0.push(sample);
-        }
-    }
-
     fn handle_irq(irq: &mut impl UartIrq) -> (Option<SerialIrqEvent>, Vec<RxSample>) {
-        let mut rx = CollectRx::default();
-        let event = irq.handle(&mut rx);
-        (event, rx.0)
+        let Some(report) = irq.handle() else {
+            return (None, Vec::new());
+        };
+        (Some(report.event), report.rx.as_slice().to_vec())
     }
 
     #[derive(Clone)]
@@ -951,9 +944,9 @@ mod tests {
 
     fn started_parts(
         uart: Ns16550<MockKind>,
-    ) -> UartParts<Ns16550<MockKind>, Ns16550Irq<MockKind>, Ns16550EmergencyTx<MockKind>> {
+    ) -> SerialParts<Ns16550<MockKind>, Ns16550Irq<MockKind>, Ns16550EmergencyTx<MockKind>> {
         let mut parts = uart.split();
-        parts.port.startup(&Config::new()).unwrap();
+        parts.control.startup(&Config::new()).unwrap();
         parts
     }
 
@@ -1122,7 +1115,7 @@ mod tests {
         );
         let event = handle_irq(&mut parts.irq).0.unwrap();
         assert!(event.events.contains(SerialEventSet::TX_SPACE));
-        assert_eq!(parts.port.write_tx(b"ab"), 1);
+        assert_eq!(parts.control.write_tx(b"ab"), 1);
         assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
 
         REGS[UART_IIR as usize].store(
@@ -1240,7 +1233,7 @@ mod tests {
     }
 
     #[test]
-    fn hard_irq_rx_drain_is_bounded_to_256_samples() {
+    fn hard_irq_rx_drain_is_bounded_to_the_report_capacity() {
         let reads = Arc::new(AtomicUsize::new(0));
         let mut irq = Ns16550Irq {
             base: FloodKind {
@@ -1252,8 +1245,8 @@ mod tests {
         let (event, samples) = handle_irq(&mut irq);
 
         assert!(event.unwrap().events.contains(SerialEventSet::RX_DATA));
-        assert_eq!(samples.len(), 256);
-        assert_eq!(reads.load(Ordering::SeqCst), 256);
+        assert_eq!(samples.len(), IRQ_RX_BATCH_CAPACITY);
+        assert_eq!(reads.load(Ordering::SeqCst), IRQ_RX_BATCH_CAPACITY);
     }
 
     #[test]
@@ -1276,7 +1269,7 @@ mod tests {
     fn hard_irq_does_not_claim_tx_ready_without_iir_pending() {
         let (_guard, uart) = serial();
         let mut parts = uart.split();
-        parts.port.set_irq_mask(SerialEventSet::TX_SPACE);
+        parts.control.set_irq_mask(SerialEventSet::TX_SPACE);
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::NO_INTERRUPT_PENDING.bits(),
             Ordering::SeqCst,
@@ -1287,14 +1280,14 @@ mod tests {
         );
 
         assert!(handle_irq(&mut parts.irq).0.is_none());
-        assert!(parts.port.poll_status().tx_ready());
+        assert!(parts.control.poll_status().tx_ready());
     }
 
     #[test]
     fn hard_irq_does_not_claim_rx_ready_without_iir_pending() {
         let (_guard, uart) = serial();
         let mut parts = uart.split();
-        parts.port.set_irq_mask(SerialEventSet::RX);
+        parts.control.set_irq_mask(SerialEventSet::RX);
         REGS[UART_IIR as usize].store(
             InterruptIdentificationFlags::NO_INTERRUPT_PENDING.bits(),
             Ordering::SeqCst,
@@ -1302,7 +1295,7 @@ mod tests {
         REGS[UART_LSR as usize].store(LineStatusFlags::DATA_READY.bits(), Ordering::SeqCst);
 
         assert!(handle_irq(&mut parts.irq).0.is_none());
-        assert!(parts.port.poll_status().rx_ready());
+        assert!(parts.control.poll_status().rx_ready());
     }
 
     #[test]
@@ -1330,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    fn irq_event_drains_rx_fifo_into_sink() {
+    fn irq_report_contains_the_drained_rx_fifo() {
         let (_guard, uart) = serial();
         let mut parts = started_parts(uart);
 
@@ -1370,7 +1363,7 @@ mod tests {
 
         let event = handle_irq(&mut parts.irq).0.unwrap();
         assert!(event.events.contains(SerialEventSet::TX_SPACE));
-        assert_eq!(parts.port.write_tx(b"ab"), 1);
+        assert_eq!(parts.control.write_tx(b"ab"), 1);
         assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
     }
 
@@ -1418,7 +1411,7 @@ mod tests {
         REGS[UART_RBR as usize].store(b'S', Ordering::SeqCst);
 
         assert_eq!(
-            parts.port.read_rx(),
+            parts.control.read_rx(),
             Some(RxSample {
                 byte: Some(b'S'),
                 flag: RxFlag::Normal,

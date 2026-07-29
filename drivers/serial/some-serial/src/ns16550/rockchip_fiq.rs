@@ -4,7 +4,7 @@ use core::ptr::NonNull;
 
 use heapless::{String, Vec};
 use rdif_serial::{
-    Config, ConfigError, RxSample, SerialEventSet, SplitUart, UartInfo, UartParts, UartPort,
+    Config, ConfigError, RxSample, SerialEventSet, SerialParts, SplitUart, UartInfo, UartPort,
 };
 
 use super::{
@@ -594,7 +594,7 @@ impl UartPort for RockchipFiqSerial {
 }
 
 impl SplitUart for RockchipFiqSerial {
-    type Port = Self;
+    type Control = Self;
     type Irq = Ns16550Irq<RockchipFiqPort>;
     type EmergencyTx = super::Ns16550EmergencyTx<RockchipFiqPort>;
 
@@ -606,7 +606,7 @@ impl SplitUart for RockchipFiqSerial {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq, Self::EmergencyTx> {
+    fn split(self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx> {
         let irq = Ns16550Irq {
             base: self.serial.base,
             saved_lsr: LineStatusFlags::empty(),
@@ -614,7 +614,7 @@ impl SplitUart for RockchipFiqSerial {
         let emergency_tx = super::Ns16550EmergencyTx {
             base: self.serial.base,
         };
-        UartParts::new(self, irq, emergency_tx)
+        SerialParts::new(self, irq, emergency_tx)
     }
 }
 
