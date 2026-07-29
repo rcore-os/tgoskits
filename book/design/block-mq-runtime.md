@@ -12,18 +12,24 @@ The hardware-validated and publicly registered devices are:
 - PCI NVMe, with MSI-X multi-queue and an explicit single-queue INTx mode.
 - RK3568 and RK3588 DWCMSHC eMMC, using ADMA2.
 - CV181x/SG2002 SDHCI, using ADMA2.
+- StarFive JH7110 DWMMC, using IDMAC.
+- Phytium MCI, using IDMAC with the board-validated 32-bit DMA mask.
+- LS2K1000 AHCI, using the same IRQ-driven owned-request runtime.
 
 The next SD/eMMC migration keeps traditional controllers at depth one and adds
 owned-DMA, IRQ-only implementations for generic SDHCI, DW MMC IDMAC, Phytium
 MCI IDMAC, CV181x/SG2002 SDHCI, StarFive JH7110 DWMMC, and the separate RK3568
-DWCMSHC and DWMMC paths. An `ax-driver` feature is released only after its named
-physical-board write matrix passes. JH7110 is public after its physical write
-matrix passed; Phytium MCI and Rockchip DWMMC remain private after their
-read-only/no-media validation outcomes. K230 source is also kept private: the
-referenced Linux revision has no upstream K230 MMC implementation, and the
-repository does not yet have sufficient PHY/clock/reset evidence to expose it.
-Reusable hardware crates may remain in the tree without an OS registration
-entry.
+DWCMSHC and DWMMC paths. Existing public features and board configurations are
+retained while they migrate; a new registration is released only after its
+named physical-board write matrix passes. JH7110 and Phytium MCI are public
+after their physical write matrices passed. The existing Rockchip DWMMC feature
+is retained for boards that use that controller, although the RK3568 validation
+board had no SD/SDIO card installed for a destructive matrix. The existing
+K230 feature and configuration are likewise retained, but remain
+compile/static-only: the referenced Linux revision has no upstream K230 MMC
+implementation, and the repository does not yet have sufficient
+PHY/clock/reset evidence to claim physical validation. Reusable hardware crates
+may remain in the tree without an OS registration entry.
 
 ## Problem
 
@@ -590,10 +596,11 @@ The physical validation matrix and registration decision is:
 | CV181x SDHCI / AKA-00 | `cv181x-sdhci` | Boot, controller, IRQ, and write matrix passed |
 | JH7110 DWMMC / VisionFive2 | `starfive-jh7110-dwmmc` | Full write/fsync/checksum matrix and `VISIONFIVE2_BLOCK_RW_BENCH_PASSED` |
 | RK3568 DWCMSHC eMMC | `rockchip-sdhci` | Strict compatible match and full eMMC matrix passed |
-| RK3568 DWMMC SD/SDIO | none | Controller path booted, but no card was present for a write matrix |
-| Phytium MCI / PhytiumPi | none | Controller/root media read succeeded; physical filesystem was read-only/corrupt |
+| RK3568 DWMMC SD/SDIO | `rockchip-dwmmc` | Existing feature retained; controller path booted, but no card was present for a write matrix |
+| Phytium MCI / PhytiumPi | `phytium-mci` | Full write/fsync/checksum matrix and `PHYTIUM_BLOCK_RW_BENCH_PASSED` after Linux-side rootfs repair |
 | RK3588 DWCMSHC / OrangePi 5 Plus | `rockchip-sdhci` | Full matrix and `ORANGEPI_BLOCK_RW_BENCH_PASSED` |
-| K230 | none | Compile/static audit only until hardware and upstream evidence exist |
+| LS2K1000 AHCI / JL-LSGD2K10 | `ls2k1000-ahci` | Full write/fsync/checksum matrix and `JL_LSGD2K10_BLOCK_RW_BENCH_PASSED` |
+| K230 | `k230-sdhci` | Existing feature/configuration retained; compile/static audit only until hardware and upstream evidence exist |
 
 Each physical row checks the root device, DMA domain/mask, nonzero IRQ, stable
 idle IRQ count, equal submission/completion counts, and zero pending or
@@ -735,3 +742,50 @@ the serial-inline matrix:
 The run emitted `VISIONFIVE2_BLOCK_RW_BENCH_PASSED`. These figures are a
 functional execution record; scheduler wakeup latency remains outside the
 driver and is not hidden with polling.
+
+### 2026-07-29 final branch execution record
+
+The final QEMU benchmark uses five 4-MiB rounds, 4-KiB operations, fsync, the
+same rootfs image, and checksum `2673868800`. Each run uses a private QEMU
+snapshot. The measured median is:
+
+| Architecture / mode | Online CPUs / hctxs | Write median | Read median | Result |
+| --- | ---: | ---: | ---: | --- |
+| x86_64 MSI-X | 1 / 1 | 1,445,837 us / 2.76 MiB/s | 108,836 us / 36.75 MiB/s | passed |
+| x86_64 MSI-X | 2 / 2 | 1,524,895 us / 2.62 MiB/s | 92,704 us / 43.14 MiB/s | passed |
+| x86_64 MSI-X | 4 / 4 | 1,497,188 us / 2.67 MiB/s | 87,476 us / 45.72 MiB/s | passed |
+| x86_64 MSI-X | 8 / 8 | 1,881,113 us / 2.12 MiB/s | 121,779 us / 32.84 MiB/s | passed |
+| x86_64 forced INTx | 1 / 1 | 2,154,157 us / 1.85 MiB/s | 122,004 us / 32.78 MiB/s | passed |
+| aarch64 MSI-X | 4 / 4 | 2,226,892 us / 1.79 MiB/s | 134,702 us / 29.69 MiB/s | passed |
+| riscv64 INTx | 4 / 1 | 2,140,277 us / 1.86 MiB/s | 115,621 us / 34.59 MiB/s | passed |
+| loongarch64 PCH-PIC INTx | 4 / 1 | 1,958,826 us / 2.04 MiB/s | 98,772 us / 40.49 MiB/s | passed |
+
+Every run emitted `BLOCK_BENCH_APP_PASSED`. A separate real-rootfs case wrote,
+synced, copied, re-synced, and verified 20 MiB on all four QEMU architectures.
+The final x86_64 rerun verified
+`sha256:4bb665fec527d206c06c0fd61111af3379af423649b323bb29769db0f8c34fc1`
+and emitted `NVME_ROOTFS_RW_20M_TEST_PASSED`.
+
+The physical-board matrix used each board's real root device. OrangePi has a
+monotonic millisecond timer and therefore reports separate write/read
+throughput. The other serial-inline environments expose only a one-second
+timer; their values are end-to-end elapsed times covering write, read-back,
+fsync, and checksum, and must not be presented as precise throughput:
+
+| Board / controller | CPUs / hctxs | Sector | 4-KiB page | Hardware max | Planner split | Eight-task case |
+| --- | ---: | --- | --- | --- | --- | --- |
+| OrangePi 5 Plus / RK3588 DWCMSHC | 8 / 1 | 0.54 write, 20.47 read MiB/s | 1.74 write, 22.83 read MiB/s | 1.07 write, 15.97 read MiB/s | 1.72 write, 21.13 read MiB/s | 5,132 ms |
+| LicheeRV Nano / CV181x SDHCI | 1 / 1 | 2 MiB / 5 s | 2 MiB / 3 s | 5,240,320 B / 9 s | 4 MiB / 5 s | 3 s |
+| AKA-00 / CV181x SDHCI | 1 / 1 | 2 MiB / 5 s | 2 MiB / 2 s | 5,240,320 B / 8 s | 4 MiB / 6 s | 1 s |
+| VisionFive2 / JH7110 DWMMC | 4 / 1 | 2 MiB / 3 s | 2 MiB / 2 s | 5,222,400 B / 7 s | 5,224,960 B / 7 s | 1 s |
+| ROC-RK3568-PC / DWCMSHC | 4 / 1 | 2 MiB / 2 s | 2 MiB / <1 s | 5,240,320 B / 2 s | 4 MiB / 1 s | 1 s |
+| PhytiumPi / Phytium MCI | 4 / 1 | 2 MiB / 2 s | 2 MiB / 1 s | 4 MiB / 4 s | 4,198,400 B / 3 s | 1 s |
+| JL-LSGD2K10 / LS2K1000 AHCI | 2 / 1 | 2 MiB / 3 s | 2 MiB / 1 s | 4 MiB / 2 s | 4,194,816 B / 3 s | 1 s |
+
+All seven rows completed fsync and checksum verification and emitted their
+board-specific `*_BLOCK_RW_BENCH_PASSED` marker. The CI physical-board matrix
+also passed OrangePi Linux and Starry guests, ROC-RK3568-PC Linux, PhytiumPi
+Linux, OrangePi/AKA-00/VisionFive2/JL-LSGD2K10 Starry cases, and the ASUS
+NUC15CRH Axvisor smoke. The ASUS VM intentionally embeds only a Linux kernel
+and initramfs, has no disk device, disables PCI, and mounts nullfs; its measured
+65.80-second build-and-run smoke is therefore not a block throughput result.
