@@ -96,12 +96,13 @@ mod read;
 mod scheduling;
 
 pub use attachment::attach;
-pub(super) use attachment::{detach_unpublished, now_ns};
+pub(in crate::perf) use attachment::detach_unpublished;
+use attachment::now_ns;
 pub(crate) use control::{disable_counter, reset_counter};
-pub(super) use lifecycle::sideband_target;
+pub(in crate::perf) use lifecycle::sideband_target;
 pub(crate) use lifecycle::{free_hw, on_scheduler_task_exit};
 pub use lifecycle::{on_exec, on_task_exit};
-pub(super) use model::PerTaskConfig;
+pub(in crate::perf) use model::PerTaskConfig;
 pub use model::PerTaskCounter;
 pub(crate) use model::SamplingAnchors;
 pub(crate) use read::{read_counter, read_task_on_owner};

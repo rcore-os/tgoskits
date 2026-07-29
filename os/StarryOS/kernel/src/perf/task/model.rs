@@ -166,45 +166,45 @@ impl core::fmt::Debug for SamplingAnchors {
 /// once from the decoded `perf_event_attr`. For a counting event `sample_period`
 /// is `0`; for a sampling event it is the fixed `-c` period and `sample_type` is
 /// `PERF_SAMPLE_IP`.
-pub(super) struct PerTaskConfig {
+pub(in crate::perf) struct PerTaskConfig {
     /// Generation-bearing scheduler identity of the target task.
-    pub(super) scheduler_id: ax_runtime::task::ThreadId,
+    pub(in crate::perf) scheduler_id: ax_runtime::task::ThreadId,
     /// Reserved physical PMU counter.
-    pub(super) counter: Counter,
+    pub(in crate::perf) counter: Counter,
     /// ARM PMUv3 event number.
-    pub(super) event: u16,
+    pub(in crate::perf) event: u16,
     /// `attr.exclude_user`.
-    pub(super) exclude_user: bool,
+    pub(in crate::perf) exclude_user: bool,
     /// `attr.exclude_kernel`.
-    pub(super) exclude_kernel: bool,
+    pub(in crate::perf) exclude_kernel: bool,
     /// `attr.read_format`.
-    pub(super) read_format: u64,
+    pub(in crate::perf) read_format: u64,
     /// Userspace-enabled at open (`attr.disabled == 0`).
-    pub(super) enabled: bool,
+    pub(in crate::perf) enabled: bool,
     /// `attr.enable_on_exec`.
-    pub(super) enable_on_exec: bool,
+    pub(in crate::perf) enable_on_exec: bool,
     /// Optional CPU on which this task event is eligible to run.
-    pub(super) cpu_filter: Option<PerfCpuId>,
+    pub(in crate::perf) cpu_filter: Option<PerfCpuId>,
     /// Sampling period (`> 0` ⇒ sampling event); `0` ⇒ counting event. In
     /// frequency mode this is the initial estimate the overflow handler adapts.
-    pub(super) sample_period: u32,
+    pub(in crate::perf) sample_period: u32,
     /// `attr.sample_type` (only meaningful when `sample_period > 0`).
-    pub(super) sample_type: u64,
+    pub(in crate::perf) sample_type: u64,
     /// Frequency mode (`attr.freq`): the overflow handler adapts the period each
     /// slice toward `target_freq` Hz. Fixed `-c` period when false.
-    pub(super) freq: bool,
+    pub(in crate::perf) freq: bool,
     /// Target sample rate (Hz) for frequency mode; `0` in fixed-period mode.
-    pub(super) target_freq: u32,
+    pub(in crate::perf) target_freq: u32,
     /// `attr.comm`: emit `PERF_RECORD_COMM` side-band records (process name).
-    pub(super) want_comm: bool,
+    pub(in crate::perf) want_comm: bool,
     /// `attr.mmap2`: emit `PERF_RECORD_MMAP2` side-band records (executable maps).
-    pub(super) want_mmap2: bool,
+    pub(in crate::perf) want_mmap2: bool,
     /// `attr.task`: emit `PERF_RECORD_FORK` / `EXIT` side-band records.
-    pub(super) want_task: bool,
+    pub(in crate::perf) want_task: bool,
     /// `attr.sample_id_all`: append the sample-id trailer to every side-band record.
-    pub(super) sample_id_all: bool,
+    pub(in crate::perf) sample_id_all: bool,
     /// `attr.inherit`: clone this event onto `fork`/`clone` children.
-    pub(super) inherit: bool,
+    pub(in crate::perf) inherit: bool,
 }
 
 impl PerTaskCounter {
@@ -213,7 +213,7 @@ impl PerTaskCounter {
     /// The HW counter is *not* programmed here; it is configured + enabled lazily
     /// in [`perf_sched_in`] the next time the target task runs (or immediately
     /// from [`on_exec`] when the target is current during `execve`).
-    pub(super) fn new(cfg: PerTaskConfig) -> Self {
+    pub(in crate::perf) fn new(cfg: PerTaskConfig) -> Self {
         PerTaskCounter {
             scheduler_id: cfg.scheduler_id,
             counter: cfg.counter,
@@ -261,7 +261,7 @@ impl PerTaskCounter {
         self.sample_id.store(id, Ordering::Relaxed);
     }
 
-    pub(super) fn inherited_config(
+    pub(in crate::perf) fn inherited_config(
         &self,
         scheduler_id: ax_runtime::task::ThreadId,
         counter: Counter,
@@ -306,7 +306,7 @@ impl PerTaskCounter {
     /// target was already running when this event was attached or enabled, the
     /// worker wake makes it cross sched-out/sched-in; if it was not running,
     /// its first future sched-in observes the published counter directly.
-    pub(super) fn synchronize_context(&self) -> AxResult<()> {
+    pub(in crate::perf) fn synchronize_context(&self) -> AxResult<()> {
         let handle = match ax_runtime::task::thread_handle(self.scheduler_id) {
             Ok(handle) => handle,
             // Linux treats a tombstoned perf task context as already detached:
@@ -345,7 +345,7 @@ impl PerTaskCounter {
     }
 
     /// Creates the one VMA-owned direct-read page for this counting event.
-    pub(super) fn device_mmap_rdpmc(
+    pub(in crate::perf) fn device_mmap_rdpmc(
         &self,
         len: usize,
     ) -> AxResult<(PhysAddr, Arc<dyn Any + Send + Sync>)> {
@@ -398,11 +398,11 @@ impl PerTaskCounter {
             .is_some_and(|binding| binding.root)
     }
 
-    pub(super) fn resources_released(&self) -> bool {
+    pub(in crate::perf) fn resources_released(&self) -> bool {
         self.resources.is_released()
     }
 
-    pub(super) fn publish_scheduler_registration(&self) -> bool {
+    pub(in crate::perf) fn publish_scheduler_registration(&self) -> bool {
         self.resources.publish()
     }
 
@@ -423,23 +423,23 @@ impl PerTaskCounter {
         self.is_sampling
     }
 
-    pub(super) fn wants_comm(&self) -> bool {
+    pub(in crate::perf) fn wants_comm(&self) -> bool {
         self.want_comm
     }
 
-    pub(super) fn wants_mmap2(&self) -> bool {
+    pub(in crate::perf) fn wants_mmap2(&self) -> bool {
         self.want_mmap2
     }
 
-    pub(super) fn wants_task(&self) -> bool {
+    pub(in crate::perf) fn wants_task(&self) -> bool {
         self.want_task
     }
 
-    pub(super) fn inheritable(&self) -> bool {
+    pub(in crate::perf) fn inheritable(&self) -> bool {
         self.inherit && !self.run_state.lock().is_stopping()
     }
 
-    pub(super) fn sample_id(&self) -> u64 {
+    pub(in crate::perf) fn sample_id(&self) -> u64 {
         self.sample_id.load(Ordering::Relaxed)
     }
 

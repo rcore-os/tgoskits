@@ -169,7 +169,7 @@ impl HwPerfEventState {
         )?;
         let active = self.enabled_since.is_some();
         let initial = self.system_rdpmc_snapshot(
-            (!active).then_some(hardware.value).unwrap_or(0),
+            if active { 0 } else { hardware.value },
             hardware.observed_at,
         );
         let page = self.rdpmc.install(len, self.counter, initial)?;
