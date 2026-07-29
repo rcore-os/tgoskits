@@ -9,7 +9,7 @@
  *   - A zombie still occupies the process table.
  *   - getsid(zombie)              → session ID (same as parent's)
  *   - getpgid(zombie)             → process group ID (same as parent's)
- *   - getpriority(PRIO_PROCESS, zombie) → 0  (nice value, not ESRCH)
+ *   - getpriority(PRIO_PROCESS, zombie) → exited leader's nice value
  *   - After waitpid(): all three  → -1 / ESRCH
  *
  * Synchronization:
@@ -19,7 +19,11 @@
  */
 
 #include <errno.h>
+#include <pthread.h>
+#include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +35,8 @@
 
 static int passed = 0;
 static int failed = 0;
+static atomic_bool worker_ready = ATOMIC_VAR_INIT(false);
+static atomic_bool leader_departing = ATOMIC_VAR_INIT(false);
 
 #define CHECK(cond, msg)                                                       \
     do {                                                                       \
@@ -43,6 +49,42 @@ static int failed = 0;
             failed++;                                                          \
         }                                                                      \
     } while (0)
+
+static void *last_thread_main(void *arg)
+{
+    (void)arg;
+    if (setpriority(PRIO_PROCESS, 0, 12) != 0)
+        _exit(101);
+
+    atomic_store_explicit(&worker_ready, true, memory_order_release);
+    while (!atomic_load_explicit(&leader_departing, memory_order_acquire))
+        sched_yield();
+
+    /*
+     * Keep the worker alive until the leader has completed do_exit(). The
+     * worker's distinct nice value makes a missing retired-leader snapshot
+     * observable when this thread becomes the last process member.
+     */
+    struct timespec delay = { .tv_sec = 0, .tv_nsec = 100000000 };
+    while (nanosleep(&delay, &delay) != 0 && errno == EINTR)
+        ;
+    return NULL;
+}
+
+static void run_multithreaded_child(void)
+{
+    if (setpriority(PRIO_PROCESS, 0, 7) != 0)
+        _exit(100);
+
+    pthread_t worker;
+    if (pthread_create(&worker, NULL, last_thread_main, NULL) != 0)
+        _exit(102);
+
+    while (!atomic_load_explicit(&worker_ready, memory_order_acquire))
+        sched_yield();
+    atomic_store_explicit(&leader_departing, true, memory_order_release);
+    pthread_exit(NULL);
+}
 
 static int wait_until_zombie(pid_t child)
 {
@@ -79,7 +121,8 @@ int main(void)
     }
 
     if (child == 0) {
-        _exit(0);
+        run_multithreaded_child();
+        _exit(103);
     }
 
     if (wait_until_zombie(child) != 0) {
@@ -103,11 +146,14 @@ int main(void)
     CHECK(pgid == parent_pgid,
           "getpgid(zombie) == parent pgid");
 
-    /* getpriority(PRIO_PROCESS, zombie) must return 0, not ESRCH. */
+    /*
+     * The leader exited before the final worker. The zombie must retain the
+     * leader's nice value (7), not the last worker's value (12).
+     */
     errno = 0;
     int prio = getpriority(PRIO_PROCESS, (id_t)child);
-    CHECK(errno == 0 && prio == 0,
-          "getpriority(PRIO_PROCESS, zombie) == 0");
+    CHECK(errno == 0 && prio == 7,
+          "getpriority(PRIO_PROCESS, zombie) retains leader nice");
 
     /* Reap the child. */
     int status;
