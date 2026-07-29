@@ -12,8 +12,8 @@ Starry PID lifecycle fix from PR #1706. Its generation-specific
 the sole authority for PID visibility and reaping.
 
 The implementation snapshot immediately before this ledger update is
-`30de59fe28ae34ee27e8ab79ee5dfcc1169903f1`: 100 commits and 624 paths relative
-to that base, with 75,110 insertions and 18,990 deletions. Every path in that
+`353355c9b789d2326d1302db775788c8be6dbbc4`: 104 commits and 633 paths relative
+to that base, with 75,643 insertions and 19,226 deletions. Every path in that
 range is assigned to one of the areas below. Driver work is limited to drivers
 and IRQ adapters already changed by the range, plus the minimum adjacent
 runtime boundary needed to repair them.
@@ -1166,7 +1166,13 @@ and adds focused integration/module commits:
   Linux-ABI regression that retains the exited leader's nice value; and
 - `30de59fe2` replaces task-layout assertions with typed scope cloning,
   move-only user-memory access guards, a value-only bounded observer stack,
-  and directly compiled behavior tests.
+  and directly compiled behavior tests;
+- `ed10b4b54` permits a legacy clone parent only when it is a live member of
+  the new PID namespace publication transaction;
+- `330818a20` moves cgroup membership into the stable process generation and
+  removes the global callback-under-spinlock path; and
+- `353355c9b` publishes fatal process signals before releasing ptrace or
+  job-control stops.
 
 The final perf correction closes a migration-specific context-install window.
 Direct wake placement may be changed to the destination CPU as soon as
@@ -1230,6 +1236,89 @@ worker to nice 12 does not change the leader's nice 7, and
 leader exits. The complete package, formatting, static-symbol, and
 four-architecture QEMU results are appended after the final milestone run;
 historical results above are not substituted for them.
+
+## Current-head Starry process closure and RISC-V milestone
+
+The first current-head RISC-V run stopped reproducibly in
+`test-fcntl-deadlock-smp`. GDB showed a cgroup membership operation holding the
+global `SpinNoIrq<MembershipState>` while invoking a process-provider callback.
+That callback acquired `PROCESS_TABLE`, whose writer had been preempted on
+another CPU. The readers could not sleep or allow the writer to run, so the
+callback boundary converted ordinary registry contention into a system-wide
+IRQ-off spin. This was an ownership defect, not an fcntl defect.
+
+Linux keeps a task's cgroup membership on the stable task identity and performs
+fork, migration, and exit as explicit membership transactions; it does not
+invoke an arbitrary process-registry callback while holding a global cgroup
+membership spinlock. TGOSKits now follows that boundary with a
+generation-specific `ProcessMembership`, a task-context
+`ProcessCgroupState<PiMutex<_>>`, and a move-only `CgroupForkGuard`. Clone
+publishes membership before the child becomes visible and rolls it back with
+the other prepared resources. Final exit retires membership from the stable
+`ProcessData` object without a PID lookup. The focused component regressions
+cover migration rollback, missing and exited identities, fork rollback versus
+scheduler publication, and the absence of a global provider lock. The
+original SMP case now completes all 32 rounds in five seconds.
+
+The next current-head run exposed a distinct ptrace-stop race. Both
+`PTRACE_TRACEME` and the initial `SIGSTOP` had succeeded, but a subsequent
+process-directed `SIGKILL` first released the ptrace stop and only then inserted
+the fatal signal into the process pending queue. The tracee could therefore
+resume through the stop, consume the wake, and execute `_exit(0)` before the
+fatal publication became authoritative. `waitpid()` then correctly reported
+normal status zero for the state that Starry had incorrectly published.
+
+Linux v7.1 makes the opposite ordering part of its signal and exit protocol:
+
+- [`ptrace_traceme()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/ptrace.c#L497-L518)
+  installs tracing under the task-list relationship lock;
+- [`ptrace_stop()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c#L2352-L2442)
+  publishes the stop before waking the tracer;
+- [`get_signal()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c#L2923-L2927)
+  makes `SIGKILL` bypass ptrace interception; and
+- [`do_group_exit()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c#L3001-L3038)
+  publishes the fatal group exit code before the exit/wait handoff.
+
+Starry now has one `publish_before_release()` boundary. It inserts the fatal
+signal, wakes the selected process target and the exact ptrace-stopped thread,
+and only then clears ptrace or job-control stop state. A thread interrupted out
+of its initial ptrace stop rescans pending signals before reaching the first
+user instruction. Stop release no longer creates a window in which a
+non-interceptable `SIGKILL` can be replaced by a racing `_exit(0)`.
+
+The ordering regression was first compiled directly against the real
+`signal_publication.rs` module with the old release-before-publish order. It
+failed deterministically because the release callback observed phase zero.
+The same test passes with publication at phase one. The grouped
+`test-proc-status-tracerpid` regression additionally pins the tracer to CPU 0
+and the tracee to CPU 1 for 64 rounds; every round requires
+`WIFSIGNALED(status)` and `WTERMSIG(status) == SIGKILL`.
+
+The affected ABI boundaries and their retained Linux behavior are:
+
+| ABI boundary | Starry path | Linux standard and implementation | Required result |
+| --- | --- | --- | --- |
+| `kill(2)` and process-group signal delivery | `sys_kill()` -> `send_signal_to_process()` | [`kill(2)`](https://man7.org/linux/man-pages/man2/kill.2.html), [`complete_signal()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/signal.c#L963-L1033) | Publish a process signal before waking or releasing a stopped target; signal zero remains an existence/permission probe. |
+| process and process-group `pidfd_send_signal(2)` | pidfd target -> `send_signal_to_process()` | [`pidfd_send_signal(2)`](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html) | Use the same stable process identity and fatal publication order as `kill(2)`. Thread-target pidfds retain the separate thread-signal path. |
+| `ptrace(2)` stop and kill control | `ptrace_kill()`, attach/interrupt stops, ptrace wait state | [`ptrace(2)`](https://man7.org/linux/man-pages/man2/ptrace.2.html), Linux sources linked above | A ptrace stop is observable before tracer wake, while `SIGKILL` remains un-interceptable and cannot resume the tracee into user code. |
+| `wait4(2)` and `waitid(2)` | stable process/ptrace/job state -> child-exit event | [`wait(2)`](https://man7.org/linux/man-pages/man2/wait.2.html), [`do_wait()`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/exit.c#L1174-L1297) | Observe the terminal `SIGKILL` status rather than a later normal exit. These wait paths consume published lifecycle state; they do not invoke the signal publisher. |
+
+`tkill(2)`, `tgkill(2)`, and thread-target pidfds continue to use
+`send_signal_to_thread()` and are not routed through the new process
+publication boundary.
+
+At `353355c9b`, the complete RISC-V Starry milestone passed without exclusions:
+
+- `system`: 1,738.44 seconds, including `test-fcntl-deadlock-smp`,
+  `test-proc-status-tracerpid`, and `test-ptrace-traceme-stop`;
+- `tty-console-input-burst`: 40.22 seconds;
+- runner result: `2/2 case(s) passed`;
+- formal markers: `STARRY_GROUPED_TESTS_PASSED`,
+  `STARRY_TTY_INPUT_BURST_PASSED`, and `all starry qemu tests passed`.
+
+This supersedes the historical aggregate-timeout observation for RISC-V. The
+remaining aarch64, LoongArch64, and x86_64 runs are still release gates and
+must be recorded at their exact tested heads.
 
 ## Completion rules
 
