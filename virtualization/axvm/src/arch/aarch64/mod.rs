@@ -472,13 +472,4 @@ impl ArmVgicHostIf for ArmVgicHostIfImpl {
     fn hardware_inject_virtual_interrupt(vector: u8) {
         gic::inject_interrupt(vector as usize);
     }
-
-    fn inject_vm_vcpu_interrupt(vm_id: usize, vcpu_id: usize, vector: u8) {
-        if let Err(error) = crate::manager::inject_vm_vcpu_interrupt(vm_id, vcpu_id, vector as _) {
-            warn!(
-                "failed to inject AArch64 virtual timer interrupt {vector:#x} into VM[{vm_id}] \
-                 VCpu[{vcpu_id}]: {error:?}"
-            );
-        }
-    }
 }
