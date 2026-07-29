@@ -39,13 +39,28 @@ impl ScopeGate {
     }
 
     fn try_lock_shared(&self) -> bool {
-        let state = self.state.load(Ordering::Acquire);
+        // Reserve one reader count before inspecting writer ownership. Unlike
+        // a load/CAS pair, this cannot report a false conflict merely because
+        // another compatible reader changed the count. A writer may coexist
+        // only with transient reservations whose callers observe its bit and
+        // immediately roll them back without touching protected state.
+        let state = self.state.fetch_add(1, Ordering::Acquire);
+        self.finish_shared_reservation(state)
+    }
+
+    #[cfg(test)]
+    fn try_lock_shared_with(&self, interleave: impl FnOnce()) -> bool {
+        let state = self.state.fetch_add(1, Ordering::Acquire);
+        interleave();
+        self.finish_shared_reservation(state)
+    }
+
+    fn finish_shared_reservation(&self, state: usize) -> bool {
         if state & SCOPE_GATE_WRITER != 0 || state & SCOPE_GATE_READERS == SCOPE_GATE_READERS {
+            self.state.fetch_sub(1, Ordering::Release);
             return false;
         }
-        self.state
-            .compare_exchange(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
+        true
     }
 
     fn try_lock_exclusive(&self) -> bool {
@@ -61,12 +76,17 @@ impl ScopeGate {
     }
 
     unsafe fn downgrade_exclusive_to_active_shared(&self) {
-        assert_eq!(
-            self.state.load(Ordering::Relaxed),
-            SCOPE_GATE_WRITER,
-            "scope downgrade requires the exclusive lease"
+        let old = self.state.fetch_add(1, Ordering::Relaxed);
+        assert!(
+            old & SCOPE_GATE_WRITER != 0 && old & SCOPE_GATE_READERS != SCOPE_GATE_READERS,
+            "scope downgrade requires one exclusive lease and reader capacity"
         );
-        self.state.store(1, Ordering::Release);
+        let old = self.state.fetch_and(SCOPE_GATE_READERS, Ordering::Release);
+        assert_ne!(
+            old & SCOPE_GATE_WRITER,
+            0,
+            "scope downgrade lost the exclusive lease"
+        );
     }
 
     unsafe fn unlock_shared(&self) {
@@ -79,12 +99,12 @@ impl ScopeGate {
     }
 
     unsafe fn unlock_exclusive(&self) {
-        assert_eq!(
-            self.state.load(Ordering::Relaxed),
-            SCOPE_GATE_WRITER,
-            "scope exclusive unlock with live readers or no writer"
+        let old = self.state.fetch_and(SCOPE_GATE_READERS, Ordering::Release);
+        assert_ne!(
+            old & SCOPE_GATE_WRITER,
+            0,
+            "scope exclusive unlock without a matching lease"
         );
-        self.state.store(0, Ordering::Release);
     }
 
     fn is_locked(&self) -> bool {
@@ -96,7 +116,7 @@ impl ScopeGate {
 mod scope_gate_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{ScopeCell, ScopeGate};
+    use super::{ScopeActivationError, ScopeCell, ScopeGate};
 
     crate::scope_local! {
         static GATE_TEST_ITEM: usize = 0;
@@ -123,7 +143,7 @@ mod scope_gate_tests {
     fn active_mutation_publishes_writer_before_releasing_its_lease() {
         let _retain_registry_entry = &GATE_TEST_ITEM;
         let cell = ScopeCell::new();
-        assert!(cell.try_acquire_active_lease());
+        assert_eq!(cell.try_acquire_active_lease(), Ok(()));
         let barged = AtomicBool::new(false);
 
         assert!(cell.try_withdraw_active_lease_for_writer(|| {
@@ -141,6 +161,39 @@ mod scope_gate_tests {
             !barged.load(Ordering::Relaxed),
             "a new active lease entered after mutation began but before writer intent was visible"
         );
+    }
+
+    #[test]
+    fn compatible_reader_interleave_does_not_report_busy() {
+        let gate = ScopeGate::new();
+        assert!(
+            gate.try_lock_shared_with(|| {
+                assert!(
+                    gate.try_lock_shared(),
+                    "the interleaved compatible reader must acquire its lease"
+                );
+            }),
+            "reader-count movement must not look like writer contention"
+        );
+        // SAFETY: the nested acquisition and the outer acquisition each own
+        // one shared count when the bounded operation succeeds.
+        unsafe {
+            gate.unlock_shared();
+            gate.unlock_shared();
+        }
+        assert!(!gate.is_locked());
+    }
+
+    #[test]
+    fn activation_reports_an_exclusive_lease_separately() {
+        let cell = ScopeCell::new();
+        assert!(cell.scope.inner().gate.try_lock_exclusive());
+        assert_eq!(
+            cell.try_acquire_active_lease(),
+            Err(ScopeActivationError::ExclusiveLease)
+        );
+        // SAFETY: the test acquired the sole exclusive lease above.
+        unsafe { cell.scope.inner().gate.unlock_exclusive() };
     }
 }
 
@@ -325,6 +378,28 @@ impl core::fmt::Display for ScopeCellBusy {
 
 impl core::error::Error for ScopeCellBusy {}
 
+/// A scheduler activation could not acquire its unique scope lease.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScopeActivationError {
+    /// An exclusive scope mutation currently owns the raw gate.
+    ExclusiveLease,
+    /// Another CPU already owns the scheduler activation.
+    AlreadyActive,
+}
+
+impl core::fmt::Display for ScopeActivationError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ExclusiveLease => formatter.write_str("scope cell has an exclusive lease"),
+            Self::AlreadyActive => {
+                formatter.write_str("scope cell already has a scheduler activation")
+            }
+        }
+    }
+}
+
+impl core::error::Error for ScopeActivationError {}
+
 impl ScopeCell {
     /// Creates a managed scope with no active scheduler binding.
     pub fn new() -> Self {
@@ -381,15 +456,13 @@ impl ScopeCell {
     /// [`deactivate_pinned`](Self::deactivate_pinned) exactly once before
     /// another scope is installed or the cell can be dropped. The scheduler
     /// must run both hooks while holding its switch baton.
-    pub unsafe fn try_activate_pinned(&self, pin: &CpuPin<'_>) -> Result<(), ScopeCellBusy> {
+    pub unsafe fn try_activate_pinned(&self, pin: &CpuPin<'_>) -> Result<(), ScopeActivationError> {
         assert_eq!(
             ActiveScope::current_scope_ptr_pinned(pin),
             0,
             "scope activation requires the global scope to be current"
         );
-        if !self.try_acquire_active_lease() {
-            return Err(ScopeCellBusy);
-        }
+        self.try_acquire_active_lease()?;
         // SAFETY: the caller contract keeps the cell live until deactivation,
         // and the retained shared lease excludes slot mutation.
         unsafe { ActiveScope::set_pinned(&self.scope, pin) };
@@ -459,10 +532,10 @@ impl ScopeCell {
         self.scope.inner_ptr().expose_provenance()
     }
 
-    fn try_acquire_active_lease(&self) -> bool {
+    fn try_acquire_active_lease(&self) -> Result<(), ScopeActivationError> {
         let inner = self.scope.inner();
         if !inner.try_lock_shared() {
-            return false;
+            return Err(ScopeActivationError::ExclusiveLease);
         }
         if self
             .scheduler_active
@@ -471,9 +544,9 @@ impl ScopeCell {
         {
             // SAFETY: this function acquired exactly one shared count above.
             unsafe { inner.unlock_shared() };
-            return false;
+            return Err(ScopeActivationError::AlreadyActive);
         }
-        true
+        Ok(())
     }
 
     fn release_active_lease(&self) {

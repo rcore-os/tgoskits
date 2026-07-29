@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typed `ScopeCellBusy` contention.
 - Restrict each `ScopeCell` to one published scheduler activation; a competing
   CPU is rejected before its scope pointer becomes visible.
+- Distinguish an exclusive scope lease from a duplicate scheduler activation
+  through `ScopeActivationError`.
 
 ### Fixed
 
@@ -20,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preventing reader admission races and read-to-write self-deadlock.
 - Prevent duplicate scheduler activation from turning a task-local mutation
   into an unbounded retry loop.
+- Reserve compatible reader leases with one bounded atomic operation so a
+  concurrent reader-count update cannot be misreported as writer contention.
 
 ## [0.4.4](https://github.com/rcore-os/tgoskits/compare/scope-local-v0.4.3...scope-local-v0.4.4) - 2026-08-03
 
