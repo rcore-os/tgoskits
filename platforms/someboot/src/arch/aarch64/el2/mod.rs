@@ -169,7 +169,7 @@ pub fn setup_sctlr() {
 }
 
 pub fn systick_enable() {
-    CNTHP_CTL_EL2.write(CNTHP_CTL_EL2::ENABLE::SET);
+    CNTHP_CTL_EL2.write(CNTHP_CTL_EL2::ENABLE::SET + CNTHP_CTL_EL2::IMASK::SET);
 }
 
 pub fn systick_irq_disable() {

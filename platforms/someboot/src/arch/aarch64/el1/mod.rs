@@ -221,9 +221,11 @@ pub fn setup_sctlr() {
 
 pub fn systick_enable() {
     match timer::aarch64_timer_mode() {
-        ArchTimerMode::El1Virt => CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET),
+        ArchTimerMode::El1Virt => {
+            CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET + CNTV_CTL_EL0::IMASK::SET);
+        }
         ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => {
-            CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
+            CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET + CNTP_CTL_EL0::IMASK::SET);
         }
     }
 }
