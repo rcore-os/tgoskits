@@ -37,16 +37,16 @@ impl TaskSystem {
         now_ns: u64,
     ) -> Result<(), TaskError> {
         self.ensure_owner_cpu_context(&cpu)?;
-        let placed_locally = {
+        let owner = cpu.owner();
+        let migration = {
             let state = self.state.lock();
             state.ensure_cpu_online(&cpu)?;
-            let owner = cpu.owner();
             let affinity = state.thread_record(thread)?.sched.lock().affinity.clone();
             if affinity.contains(owner) {
                 let core = Arc::clone(&state.thread_record(thread)?.core);
                 drop(state);
                 self.enqueue_owner_thread(cpu.as_mut(), core, now_ns, EnqueueReason::Wake)?;
-                true
+                None
             } else {
                 let target = state
                     .select_allowed_cpu(&affinity)
@@ -67,15 +67,13 @@ impl TaskSystem {
                     record.core.set_target_cpu(target);
                     Arc::clone(&record.core)
                 };
-                state.publish_migration_to(&core, target, owner, target)?;
-                false
+                Some((core, target))
             }
         };
-        if placed_locally {
-            Self::program_local_timer(cpu.as_mut(), now_ns)
-        } else {
-            Ok(())
+        if let Some((core, target)) = migration {
+            return self.publish_owner_migration(&core, target, owner, target);
         }
+        Self::program_local_timer(cpu.as_mut(), now_ns)
     }
 
     /// Removes a ready thread from its owner run queue for migration or update.
@@ -394,9 +392,6 @@ impl TaskSystem {
                 }
             }
             if operation == InboxOperation::Migration {
-                if source == target {
-                    return Err(TaskError::InvalidConfiguration);
-                }
                 if target != owner {
                     return Err(TaskError::CpuOwnerMismatch {
                         expected: target.as_u32(),
@@ -408,21 +403,22 @@ impl TaskSystem {
                     let Some(committed_target) = sched.placement.migration_target() else {
                         continue;
                     };
-                    let latest_target =
-                        if committed_target == owner && sched.affinity.contains(owner) {
-                            owner
-                        } else if committed_target != owner
-                            && sched.affinity.contains(committed_target)
-                            && self
-                                .cpu_remotes
-                                .get(committed_target.as_usize())
-                                .is_some_and(|remote| remote.is_online())
-                        {
-                            committed_target
-                        } else {
-                            self.select_allowed_online_cpu(&sched.affinity, Some(owner))
-                                .ok_or(TaskError::InvalidConfiguration)?
-                        };
+                    let committed_target_is_online = committed_target != owner
+                        && sched.affinity.contains(committed_target)
+                        && self
+                            .cpu_remotes
+                            .get(committed_target.as_usize())
+                            .is_some_and(|remote| remote.is_online());
+                    let latest_target = if sched.affinity.contains(owner)
+                        && (committed_target == owner || !committed_target_is_online)
+                    {
+                        owner
+                    } else if committed_target_is_online {
+                        committed_target
+                    } else {
+                        self.select_allowed_online_cpu(&sched.affinity, Some(owner))
+                            .ok_or(TaskError::InvalidConfiguration)?
+                    };
                     if latest_target != owner {
                         sched.placement.set_migration_target(Some(latest_target))?;
                         core.set_target_cpu(latest_target);

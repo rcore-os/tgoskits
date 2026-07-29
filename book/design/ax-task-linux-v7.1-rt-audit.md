@@ -217,6 +217,23 @@ has no service that coordinates IRQ-framework removal and physical CPU power
 off, so this change intentionally does not invent a platform hot-unplug
 interface.
 
+A later placement audit closed the remaining gap between target selection and
+remote publication. A balancing or wake owner could select an online CPU, then
+detach the Ready thread after that target had entered `Draining`; the target
+inbox rejected the publication after the wake transition was already
+consumed. Returning `CpuOffline` at that point left no physical runqueue owner
+to retry the task. Linux v7.1 closes placement admission before
+`sched_cpu_deactivate()` drains the runqueue and flushes pending scheduler and
+IRQ work. TGOSKits now treats the still-running source owner as the recovery
+carrier: a rejected target publication is republished to the source inbox,
+whose safe-point drain revalidates the committed target and either enqueues
+locally or forwards to another allowed online CPU. The source retry is a
+placement reconciliation message and may therefore name the same source and
+inbox CPU. The deterministic
+`migration_publication_recovers_through_source_when_target_starts_draining`
+regression previously failed with `CpuOffline(1)` after the thread entered
+`Migrating`; it now completes with exactly one queued source owner.
+
 ## Architecture idle and core validation closure
 
 Every supported architecture now has a live pending-work test for its

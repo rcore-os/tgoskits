@@ -30,11 +30,34 @@ impl TaskSystem {
         source: CpuId,
         target: CpuId,
     ) -> Result<(), TaskError> {
-        let remote = self
-            .cpu_remote(inbox_cpu)
-            .ok_or(TaskError::CpuOffline(inbox_cpu.as_u32()))?;
-        if !core.reserve_scheduler_inbox_delivery() {
+        if self.try_publish_owner_migration(core, inbox_cpu, source, target)? {
             return Ok(());
+        }
+
+        // The destination may enter CPU-hotplug draining after placement was
+        // selected but before its publication guard is acquired. The source
+        // owner is still executing this transition, so use its inbox as the
+        // stable recovery carrier. The owner drain revalidates affinity and
+        // either enqueues locally or forwards to another online destination.
+        if inbox_cpu != source && self.try_publish_owner_migration(core, source, source, source)? {
+            return Ok(());
+        }
+        Err(TaskError::CpuOffline(inbox_cpu.as_u32()))
+    }
+
+    fn try_publish_owner_migration(
+        &self,
+        core: &Arc<ThreadCore>,
+        inbox_cpu: CpuId,
+        source: CpuId,
+        target: CpuId,
+    ) -> Result<bool, TaskError> {
+        let remote = self
+            .cpu_remotes
+            .get(inbox_cpu.as_usize())
+            .ok_or(TaskError::InvalidCpu(inbox_cpu.as_u32()))?;
+        if !core.reserve_scheduler_inbox_delivery() {
+            return Ok(true);
         }
         let pointer = Arc::as_ptr(core);
         unsafe {
@@ -52,14 +75,15 @@ impl TaskSystem {
             core.id().generation() as u64,
             pointer.expose_provenance(),
         );
-        if remote.publish_migration(node, message) != PublishResult::Published {
+        let result = remote.publish_migration(node, message);
+        if result != PublishResult::Published {
             unsafe {
                 // A rejected/coalesced publication did not consume this count.
                 Arc::decrement_strong_count(pointer);
             }
             core.cancel_scheduler_inbox_delivery();
         }
-        Ok(())
+        Ok(result != PublishResult::WrongKind)
     }
 
     pub(super) fn publish_owner_policy_retry(
