@@ -214,9 +214,20 @@ impl sdio_host2::SdioHost for PhytiumMci {
         if !acknowledged_irq && !self.command_needs_register_retry() {
             return Ok(sdio_host2::RequestProgress::WaitingForIrq);
         }
+        // START_CMD may still be set when the hard IRQ acknowledges a fast
+        // command. Preserve that acknowledgement across the register-only
+        // retry so the maintenance thread can consume the already-latched
+        // completion after the controller accepts the command. This does not
+        // turn register retries into completion polling: only a request that
+        // previously received an acknowledged IRQ may take this path.
+        let progress_cause = if request.acknowledged_irq && self.command_needs_register_retry() {
+            sdio_host2::ProgressCause::AcknowledgedIrq
+        } else {
+            cause
+        };
         match request.kind {
             TransactionRequestKind::Command { response } => {
-                match self.advance_command_response(cause) {
+                match self.advance_command_response(progress_cause) {
                     Ok(CommandResponseProgress::Pending) => Ok(self.pending_transaction_progress()),
                     Ok(CommandResponseProgress::Complete(resp)) if request.acknowledged_irq => {
                         self.complete_host2_transaction_request(request);
@@ -247,7 +258,7 @@ impl sdio_host2::SdioHost for PhytiumMci {
                     &mut data.request,
                     data.id,
                     &mut data.slot,
-                    cause,
+                    progress_cause,
                 ) {
                     Ok(DataCommandProgress::Pending) => Ok(self.pending_transaction_progress()),
                     Ok(DataCommandProgress::Complete(resp)) if request.acknowledged_irq => {

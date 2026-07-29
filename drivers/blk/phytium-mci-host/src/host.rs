@@ -17,8 +17,8 @@ use crate::{
     command::CommandState,
     dma::{IDMAC_MAX_TRANSFER_SIZE, IdmacRing},
     regs::{
-        CARD_THRCTL_OFFSET, CLK_SRC_OFFSET, CType, ClkEna, ClockSource, Cmd, RIntSts,
-        RegisterBlock, RegisterBlockVolatileFieldAccess, Uhs,
+        CARD_THRCTL_OFFSET, CLK_DIVIDER_OFFSET, CLK_SRC_OFFSET, CType, ClkEna, ClockSource, Cmd,
+        IRQ_LATCH_OFFSET, RIntSts, RegisterBlock, RegisterBlockVolatileFieldAccess, Uhs,
     },
     timing::TimingTable,
 };
@@ -192,6 +192,7 @@ fn clear_mailbox_bits(mailbox: &AtomicU64, mask: u32) {
 
 pub(crate) struct IrqCore {
     pub(crate) regs: VolatilePtr<'static, RegisterBlock>,
+    base_addr: usize,
     pub(crate) state: IrqState,
 }
 
@@ -202,11 +203,23 @@ unsafe impl Send for IrqCore {}
 unsafe impl Sync for IrqCore {}
 
 impl IrqCore {
-    fn new(regs: VolatilePtr<'static, RegisterBlock>) -> Self {
+    fn new(regs: VolatilePtr<'static, RegisterBlock>, base_addr: usize) -> Self {
         Self {
             regs,
+            base_addr,
             state: IrqState::new(),
         }
+    }
+
+    fn clear_soc_irq_latch(&self) {
+        let latch = (self.base_addr + IRQ_LATCH_OFFSET) as *mut u32;
+        // SAFETY: `base_addr` owns the controller's full MMIO resource and
+        // Linux's Phytium MCI top half requires a 32-bit write to the private
+        // IRQ latch at offset 0xfd0 before reading controller status.
+        unsafe {
+            latch.write_volatile(0);
+        }
+        atomic::fence(Ordering::SeqCst);
     }
 }
 
@@ -231,9 +244,10 @@ pub struct PhytiumMci {
 impl PhytiumMci {
     pub unsafe fn new(base: NonNull<u8>) -> Self {
         let regs = unsafe { VolatilePtr::new(base.cast()) };
+        let base_addr = base.as_ptr() as usize;
         Self {
             regs,
-            base_addr: base.as_ptr() as usize,
+            base_addr,
             command_state: CommandState::Idle,
             pending_data: None,
             data_cmd_index: 0,
@@ -243,7 +257,7 @@ impl PhytiumMci {
             dma_mask: u32::MAX as u64,
             dma_poisoned: false,
             use_hold_reg: true,
-            irq: Arc::new(IrqCore::new(regs)),
+            irq: Arc::new(IrqCore::new(regs, base_addr)),
             completion_irq_enabled: AtomicBool::new(false),
             host2_next_id: 0,
             host2_active_id: None,
@@ -360,10 +374,17 @@ impl PhytiumMci {
         self.update_external_clock(timing.clk_src)?;
         self.set_card_clock(false)?;
         self.send_update_clock(false)?;
-        self.regs.clkdiv().write(timing.clk_div);
+        self.program_clock_dividers(timing);
         self.set_card_clock(true)?;
         self.send_update_clock(false)?;
         Ok(())
+    }
+
+    pub(crate) fn program_clock_dividers(&self, timing: TimingTable) {
+        self.regs.clkdiv().write(timing.clk_div);
+        if let Some(divider) = timing.mci_clock_divider() {
+            self.write_ext_reg(CLK_DIVIDER_OFFSET, u32::from(divider));
+        }
     }
 
     fn update_external_clock(&self, raw: u32) -> Result<(), Error> {
@@ -582,6 +603,7 @@ impl SdioIrqHandle for PhytiumMciIrqHandle {
 }
 
 fn handle_irq_core(irq: &IrqCore) -> Event {
+    irq.clear_soc_irq_latch();
     let generation = irq.state.generation();
     let raw = irq.regs.rintsts().read().into_bits();
     let idsts = irq.regs.idsts().read();
@@ -628,7 +650,7 @@ mod tests {
 
     #[test]
     fn disabled_idmac_receive_status_is_acknowledged_without_wakeup() {
-        let mut mmio = [0u32; 256];
+        let mut mmio = [0u32; 1024];
         let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
         let mut host = unsafe { PhytiumMci::new(base) };
         host.irq.state.begin_request();
@@ -654,5 +676,16 @@ mod tests {
             .state
             .cache_if_current(old_generation, 0, IDSTS_RECEIVE);
         assert_eq!(host.irq.state.pending_idmac_status(), 0);
+    }
+
+    #[test]
+    fn hard_irq_ack_clears_phytium_soc_irq_latch() {
+        let mut mmio = [0u32; 1024];
+        mmio[IRQ_LATCH_OFFSET / size_of::<u32>()] = u32::MAX;
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+
+        assert_eq!(host.handle_irq(), crate::Event::None);
+        assert_eq!(mmio[IRQ_LATCH_OFFSET / size_of::<u32>()], 0);
     }
 }

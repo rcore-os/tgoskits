@@ -218,3 +218,5 @@ pub struct ClockSource {
 
 pub const CARD_THRCTL_OFFSET: usize = 0x100;
 pub const CLK_SRC_OFFSET: usize = 0x108;
+pub const CLK_DIVIDER_OFFSET: usize = 0x114;
+pub const IRQ_LATCH_OFFSET: usize = 0xfd0;

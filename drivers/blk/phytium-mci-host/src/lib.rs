@@ -150,15 +150,20 @@ mod tests {
     };
 
     #[test]
-    fn sd_timing_table_matches_phytium_sd_values() {
+    fn sd_timing_table_matches_linux_phytium_clock_source_rules() {
         let init = TimingTable::for_speed(ClockSpeed::Identification, MediaKind::Sd).unwrap();
         assert_eq!(init.clk_div, 0x7e7dfa);
         assert_eq!(init.clk_src, 0x000502);
         assert!(init.use_hold);
 
+        let default = TimingTable::for_speed(ClockSpeed::Default, MediaKind::Sd).unwrap();
+        assert_eq!(default.clk_div, 0x030204);
+        assert_eq!(default.clk_src, 0x000102);
+        assert!(default.use_hold);
+
         let hs = TimingTable::for_speed(ClockSpeed::HighSpeed, MediaKind::Sd).unwrap();
         assert_eq!(hs.clk_div, 0x030204);
-        assert_eq!(hs.clk_src, 0x000502);
+        assert_eq!(hs.clk_src, 0x000102);
         assert!(hs.use_hold);
     }
 
@@ -343,6 +348,53 @@ mod tests {
     }
 
     #[test]
+    fn acknowledged_command_irq_survives_start_register_retry() {
+        use sdio_host2::SdioHost;
+
+        const CMD_WORD: usize = 11;
+        let mut mmio = [0u32; 256];
+        mmio[CMD_WORD] = crate::regs::Cmd::new().with_start_cmd(true).into_bits();
+        let base = core::ptr::NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { PhytiumMci::new(base) };
+        let command = sdmmc_protocol::cmd::Command::new(0, 0, ResponseType::None);
+        let request_id = 10;
+        host.host2_active_id = Some(request_id);
+        host.command_state = crate::command::CommandState::WaitingStart {
+            cmd: command,
+            polls: 0,
+        };
+        host.irq.state.begin_request();
+        let generation = host.irq.state.generation();
+        host.irq
+            .state
+            .cache_if_current(generation, crate::MCI_INT_COMMAND_DONE, 0);
+        let mut request = crate::TransactionRequest::command(
+            host.host2_owner(),
+            request_id,
+            sdio_host2::ResponseType::None,
+        );
+
+        assert_eq!(
+            host.advance_transaction(&mut request, sdio_host2::ProgressCause::AcknowledgedIrq,),
+            Ok(sdio_host2::RequestProgress::RegisterPending {
+                retry_after: PHYTIUM_REGISTER_RETRY_DELAY,
+            })
+        );
+        assert_eq!(host.irq.state.pending_status(), crate::MCI_INT_COMMAND_DONE);
+        unsafe {
+            mmio.as_mut_ptr().add(CMD_WORD).write_volatile(0);
+        }
+        assert_eq!(
+            host.advance_transaction(&mut request, sdio_host2::ProgressCause::RegisterRetry,),
+            Ok(sdio_host2::RequestProgress::Complete(Ok(
+                sdio_host2::RawResponse::new(sdio_host2::ResponseType::None, [0; 4])
+            )))
+        );
+        assert_eq!(host.irq.state.pending_status(), 0);
+        assert!(request.done);
+    }
+
+    #[test]
     fn r1b_completion_waits_for_busy_release_after_command_irq() {
         use sdio_host2::SdioHost;
 
@@ -424,6 +476,7 @@ mod tests {
         const CMD_WORD: usize = 11;
         const CLOCK_STATUS_WORD: usize = 22;
         const BMOD_WORD: usize = 32;
+        const EXT_CLOCK_DIVIDER_WORD: usize = 0x114 / size_of::<u32>();
 
         let mut mmio = [0u32; 256];
         mmio[CLOCK_STATUS_WORD] = crate::regs::ClockStatus::new().with_ready(true).into_bits();
@@ -487,5 +540,6 @@ mod tests {
         assert!(host.completion_irq_enabled());
         assert!(host.regs.ctrl().read().int_enable());
         assert_ne!(host.regs.intmask().read(), 0);
+        assert_eq!(mmio[EXT_CLOCK_DIVIDER_WORD], 500);
     }
 }

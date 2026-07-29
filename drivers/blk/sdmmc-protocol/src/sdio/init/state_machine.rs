@@ -133,13 +133,17 @@ impl<H: SdioIrqHost> SdioSdmmc<H> {
         request: &mut SdioInitRequest<H>,
         cause: ProgressCause,
     ) -> Result<OperationProgress<CardInfo>, Error> {
+        let protocol_wait = request.wait_kind();
+        let effective_wait = self.init_wait_kind(request);
         let matches_wait = matches!(
-            (self.init_wait_kind(request), cause),
+            (protocol_wait, cause),
             (SdioInitWait::Irq, ProgressCause::AcknowledgedIrq)
-                | (
-                    SdioInitWait::Register,
-                    ProgressCause::Submitted | ProgressCause::RegisterRetry
-                )
+        ) || matches!(
+            (effective_wait, cause),
+            (
+                SdioInitWait::Register,
+                ProgressCause::Submitted | ProgressCause::RegisterRetry
+            )
         );
         if !matches_wait {
             return Ok(OperationProgress::Pending);

@@ -106,14 +106,14 @@ const PLDMND_WORD: usize = 33;
 const DBADDRL_WORD: usize = 34;
 const IDSTS_WORD: usize = 36;
 
-fn host_from_words(words: &mut [u32; 256]) -> PhytiumMci {
+fn host_from_words(words: &mut [u32]) -> PhytiumMci {
     let base = NonNull::new(words.as_mut_ptr().cast()).unwrap();
     unsafe { PhytiumMci::new(base) }
 }
 
 #[test]
 fn idmac_start_preserves_bus_mode_and_enables_fixed_burst() {
-    let mut mmio = [0u32; 256];
+    let mut mmio = [0u32; 1024];
     mmio[BMOD_WORD] = 0x200;
     let host = host_from_words(&mut mmio);
 
@@ -135,7 +135,7 @@ fn idmac_start_preserves_bus_mode_and_enables_fixed_burst() {
 
 #[test]
 fn idmac_reset_disables_stale_bus_mode_and_descriptor_base() {
-    let mut mmio = [0u32; 256];
+    let mut mmio = [0u32; 1024];
     mmio[BMOD_WORD] = 0x282;
     mmio[DBADDRL_WORD] = 0x1234_0000;
     mmio[DBADDRL_WORD + 1] = 1;
@@ -150,7 +150,7 @@ fn idmac_reset_disables_stale_bus_mode_and_descriptor_base() {
 
 #[test]
 fn controller_data_over_completes_without_an_idmac_ri_bit() {
-    let mut mmio = [0u32; 256];
+    let mut mmio = [0u32; 1024];
     let mut host = host_from_words(&mut mmio);
     host.enable_completion_irq();
     host.irq.state.begin_request();
@@ -182,7 +182,7 @@ fn controller_data_over_completes_without_an_idmac_ri_bit() {
 
 #[test]
 fn idmac_read_completes_when_idmac_and_data_done_arrive_separately() {
-    let mut mmio = [0u32; 256];
+    let mut mmio = [0u32; 1024];
     let mut host = host_from_words(&mut mmio);
     host.enable_completion_irq();
     host.irq.state.begin_request();
@@ -221,7 +221,7 @@ fn idmac_read_completes_when_idmac_and_data_done_arrive_separately() {
 
 #[test]
 fn stop_completion_consumes_fast_cmd12_irq_without_second_wakeup() {
-    let mut mmio = [0u32; 256];
+    let mut mmio = [0u32; 1024];
     let mut host = host_from_words(&mut mmio);
     let mut slot = BlockRequestSlot::default();
     let id = slot

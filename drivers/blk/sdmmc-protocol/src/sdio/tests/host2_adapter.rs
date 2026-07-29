@@ -381,6 +381,52 @@ fn init_honors_host_register_wait_inside_an_irq_protocol_state() {
 }
 
 #[test]
+fn init_preserves_irq_ack_while_command_start_needs_register_retry() {
+    let mut host = Host2Mock::new(ok_r1().to_raw_response(ResponseType::R1));
+    host.register_wait = true;
+    host.complete_after_irq_register_retry = true;
+    let mut driver = SdioSdmmc::new(host);
+    let scratch = SdioInitScratch::new(test_device_dma()).unwrap();
+    let mut request = SdioInitRequest::new(CardInitPreference::SdOnly, scratch);
+    request.state = SdioInitState::PollCmd0;
+    driver
+        .protocol_host_mut()
+        .submit_command(&crate::cmd::CMD0)
+        .unwrap();
+
+    assert_eq!(driver.init_wait_kind(&request), SdioInitWait::Register);
+    assert!(matches!(
+        driver
+            .advance_init_request(&mut request, sdio_host2::ProgressCause::AcknowledgedIrq)
+            .unwrap(),
+        OperationProgress::Pending
+    ));
+    assert_eq!(
+        driver.host().transaction_advances,
+        1,
+        "an acknowledged IRQ belongs to the protocol command even while its START bit needs a \
+         register retry"
+    );
+
+    assert!(matches!(
+        driver
+            .advance_init_request(&mut request, sdio_host2::ProgressCause::RegisterRetry)
+            .unwrap(),
+        OperationProgress::Pending
+    ));
+    assert_eq!(
+        driver
+            .host()
+            .transactions
+            .iter()
+            .map(|(command, _)| command.index)
+            .collect::<Vec<_>>(),
+        std::vec![0, 8],
+        "the retained IRQ acknowledgement must let the bounded register retry finish CMD0"
+    );
+}
+
+#[test]
 fn host2_sync_bus_wrapper_refuses_to_poll_pending_request() {
     let mut host = Host2Mock::new(sdio_host2::RawResponse::empty());
     host.bus_pending_polls = 3;

@@ -285,7 +285,7 @@ impl PhytiumMci {
                 Ok(register_pending())
             }
             PhytiumClockState::ProgramDivider { timing } => {
-                self.regs.clkdiv().write(timing.clk_div);
+                self.program_clock_dividers(*timing);
                 self.regs
                     .clkena()
                     .write(crate::regs::ClkEna::new().with_cclk_enable(1));
