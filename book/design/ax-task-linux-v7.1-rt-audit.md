@@ -384,6 +384,14 @@ worker on the selected CPU. The direct local fast path pins the CPU and masks
 local IRQs before validating ownership, so migration cannot occur between the
 check and a PMU sysreg write.
 
+The former 1,545-line PMU implementation is now a stable facade over focused
+allocation, owner-CPU request, sampling storage, event-state, and open-validation
+modules. Counter reservation remains process-wide in one allocator, CPU-local
+register access remains behind value-only owner requests, and the event object
+remains the sole owner of control and teardown state. This split changes no
+publication, enable, stop, or reclamation ordering; it makes those boundaries
+independently auditable without introducing a second PMU state source.
+
 The sampling registry is per CPU and generation checked. A slot owns its ring
 and `IrqNotify` references by value; teardown masks overflow, stops the
 counter, clears pending state, removes the exact generation under local IRQ
