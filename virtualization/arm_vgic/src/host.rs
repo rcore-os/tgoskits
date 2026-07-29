@@ -99,10 +99,12 @@ pub(crate) fn queue_virtual_interrupt(vm_id: usize, vcpu_id: usize, vector: u8) 
     ));
 }
 
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn current_time_nanos() -> u64 {
     ax_crate_interface::call_interface!(ArmVgicHostIf::current_time_nanos())
 }
 
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn register_timer(
     deadline: Duration,
     callback: Box<dyn FnOnce(Duration) + Send + 'static>,
@@ -110,6 +112,7 @@ pub(crate) fn register_timer(
     ax_crate_interface::call_interface!(ArmVgicHostIf::register_timer(deadline, callback))
 }
 
+#[cfg(target_arch = "aarch64")]
 pub(crate) fn cancel_timer(token: usize) {
     ax_crate_interface::call_interface!(ArmVgicHostIf::cancel_timer(token));
 }

@@ -16,7 +16,9 @@ use crate::host;
 const CNTP_CTL_ENABLE: u32 = 1 << 0;
 const CNTP_CTL_IMASK: u32 = 1 << 1;
 const CNTP_CTL_ISTATUS: u32 = 1 << 2;
+#[cfg(any(test, target_arch = "aarch64"))]
 const CNTP_PPI: u8 = 30;
+#[cfg(any(test, target_arch = "aarch64"))]
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const TIMER_TOKEN_NONE: usize = usize::MAX;
 
@@ -25,7 +27,9 @@ pub(super) struct CntpTimerState {
 }
 
 struct CntpTimerBank {
+    #[cfg(any(test, target_arch = "aarch64"))]
     vm_id: usize,
+    #[cfg(any(test, target_arch = "aarch64"))]
     vcpu_id: usize,
     cval: AtomicU64,
     ctl: AtomicU32,
@@ -97,8 +101,13 @@ fn lock_timer_banks(
 
 impl CntpTimerBank {
     const fn new(vm_id: usize, vcpu_id: usize) -> Self {
+        #[cfg(not(any(test, target_arch = "aarch64")))]
+        let _ = (vm_id, vcpu_id);
+
         Self {
+            #[cfg(any(test, target_arch = "aarch64"))]
             vm_id,
+            #[cfg(any(test, target_arch = "aarch64"))]
             vcpu_id,
             cval: AtomicU64::new(0),
             ctl: AtomicU32::new(0),
@@ -209,6 +218,7 @@ impl CntpTimerBank {
         host::queue_virtual_interrupt(self.vm_id, self.vcpu_id, CNTP_PPI);
     }
 
+    #[cfg(test)]
     fn fire_target(&self, expected_generation: u64) -> Option<(usize, usize, u8)> {
         if !self.is_armed_for(expected_generation)
             || counter_ticks() < self.cval.load(Ordering::Acquire)
@@ -218,6 +228,7 @@ impl CntpTimerBank {
         Some((self.vm_id, self.vcpu_id, CNTP_PPI))
     }
 
+    #[cfg(any(test, target_arch = "aarch64"))]
     fn is_armed_for(&self, expected_generation: u64) -> bool {
         if self.generation.load(Ordering::Acquire) != expected_generation {
             return false;
@@ -282,11 +293,7 @@ fn counter_frequency_hz() -> u64 {
     value
 }
 
-#[cfg(not(target_arch = "aarch64"))]
-fn counter_frequency_hz() -> u64 {
-    NANOS_PER_SECOND
-}
-
+#[cfg(any(test, target_arch = "aarch64"))]
 fn ticks_to_nanos_ceil(ticks: u64, frequency_hz: u64) -> u64 {
     if ticks == 0 {
         return 0;
