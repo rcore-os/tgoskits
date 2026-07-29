@@ -15,12 +15,13 @@ session file, and expands `${sessionFile:usr/bin/block-rw-bench}` to the
 board-visible HTTP URL. The board downloads the helper into `/tmp`; no SSH
 deployment or persistent rootfs installation is required.
 
-The app intentionally has no shared kernel build TOML. Axbuild resolves each
-`board-<name>.toml` to `os/StarryOS/configs/board/<name>.toml`, so two boards
-with the same Rust target cannot accidentally inherit each other's SoC
-features. The available profiles cover OrangePi 5 Plus, LicheeRV Nano SG2002,
-AKA-00 SG2002, VisionFive2, PhytiumPi, ROC-RK3568-PC DWCMSHC eMMC, and
-JL-LSGD2K10 AHCI.
+The legacy shared AArch64 kernel build TOML remains available for existing
+direct invocations. New board runs should pass an explicit board profile:
+axbuild resolves `board-<name>.toml` to
+`os/StarryOS/configs/board/<name>.toml`, so boards with the same Rust target do
+not accidentally inherit each other's SoC features. The available profiles
+cover OrangePi 5 Plus, LicheeRV Nano SG2002, AKA-00 SG2002, VisionFive2,
+PhytiumPi, ROC-RK3568-PC DWCMSHC eMMC, and JL-LSGD2K10 AHCI.
 
 Each board profile uses its `shell_init_cmd` as a parameter prelude with the
 expected root device, controller, hardware transfer limit, and unique success

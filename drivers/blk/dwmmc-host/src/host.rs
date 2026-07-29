@@ -400,8 +400,7 @@ impl DwMmc {
     ///    writes can't be misinterpreted by an in-flight transfer.
     /// 2. Issue a controller / FIFO / DMA reset and wait for the bits
     ///    to self-clear.
-    /// 3. Mask all interrupts (we poll RINTSTS), and clear any pending
-    ///    raw interrupt bits.
+    /// 3. Mask all interrupts and clear any pending raw interrupt bits.
     /// 4. Program a low-speed clock divider suitable for ID mode and
     ///    enable the bus clock.
     pub fn reset_and_init(&mut self) -> Result<(), Error> {
