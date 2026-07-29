@@ -194,11 +194,17 @@ impl AppContext {
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
         let _path_guard = self.scoped_qemu_path(cargo)?;
-        let _backtrace_capture = capture_backtrace
+        let success_regex = qemu.success_regex.clone();
+        let (capture_backtrace, success_output) =
+            crate::support::qemu_success::capture_required_success_output(
+                &success_regex,
+                capture_backtrace,
+            );
+        let output_capture = capture_backtrace
             .as_ref()
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
-            .context("failed to install backtrace block output capture")?;
+            .context("failed to install QEMU output capture")?;
         self.activate_cargo_build_context(cargo)?;
         let stage = StageLog::start(format!(
             "qemu run package={} target={}",
@@ -210,6 +216,11 @@ impl AppContext {
             RunQemuOptions { dtb_dump: false },
         )
         .await;
+        drop(output_capture);
+        let result = crate::support::qemu_success::verify_qemu_success_contract(
+            result,
+            success_output.as_ref(),
+        );
         if result.is_ok() {
             stage.done();
         }
@@ -245,11 +256,17 @@ impl AppContext {
         qemu: QemuConfig,
         capture_backtrace: Option<crate::backtrace::BacktraceQemuCapture>,
     ) -> anyhow::Result<()> {
-        let _backtrace_capture = capture_backtrace
+        let success_regex = qemu.success_regex.clone();
+        let (capture_backtrace, success_output) =
+            crate::support::qemu_success::capture_required_success_output(
+                &success_regex,
+                capture_backtrace,
+            );
+        let output_capture = capture_backtrace
             .as_ref()
             .map(crate::support::backtrace_output_capture::BacktraceOutputCaptureGuard::install)
             .transpose()
-            .context("failed to install backtrace block output capture")?;
+            .context("failed to install QEMU output capture")?;
         let stage = StageLog::start("qemu run prepared artifact");
         let result = ostool_qemu::run_qemu(
             &mut self.invocation,
@@ -257,6 +274,11 @@ impl AppContext {
             RunQemuOptions { dtb_dump: false },
         )
         .await;
+        drop(output_capture);
+        let result = crate::support::qemu_success::verify_qemu_success_contract(
+            result,
+            success_output.as_ref(),
+        );
         if result.is_ok() {
             stage.done();
         }

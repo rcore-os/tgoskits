@@ -1365,6 +1365,7 @@ dependencies = [
  "quote",
  "raw-cpuid 11.6.0",
  "regex",
+ "regex-automata",
  "reqwest",
  "rustc-demangle",
  "schemars",
