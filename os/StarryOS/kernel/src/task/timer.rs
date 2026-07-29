@@ -651,18 +651,19 @@ impl CpuTimeDelta {
     }
 }
 
-/// Lock-free process-wide CPU accounting.
+/// Monotonic process-wide CPU accounting.
 ///
-/// Every per-thread accounting transition is enclosed in one writer epoch.
-/// Readers combine the committed totals with all running-thread residuals and
-/// retry if a transition overlaps the snapshot. This is the Starry equivalent
-/// of Linux's thread-group CPU sample: exited threads remain in the committed
-/// totals and concurrently running siblings are all visible.
+/// Scheduler and user/kernel boundary transitions publish deltas directly into
+/// the group counters. Readers sample those counters before running-thread
+/// residuals, so a concurrent transition can only make a sample temporarily
+/// low: it moves a residual into the group counters before publishing its
+/// release increment. A monotonic high-water mark closes that handoff window
+/// without waiting for a task that was switched out.
 pub struct ProcessCpuTimeAccounting {
     user_ns: AtomicU64,
     system_ns: AtomicU64,
-    writers: AtomicUsize,
-    completed_writes: AtomicU64,
+    observed_user_ns: AtomicU64,
+    observed_system_ns: AtomicU64,
 }
 
 impl Default for ProcessCpuTimeAccounting {
@@ -676,16 +677,15 @@ impl ProcessCpuTimeAccounting {
         Self {
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
-            writers: AtomicUsize::new(0),
-            completed_writes: AtomicU64::new(0),
+            observed_user_ns: AtomicU64::new(0),
+            observed_system_ns: AtomicU64::new(0),
         }
     }
 
     pub(crate) fn record_transition(&self, transition: impl FnOnce() -> CpuTimeDelta) {
-        let _writer = self.begin_write();
         let delta = transition();
-        self.user_ns.fetch_add(delta.user_ns, Ordering::Relaxed);
-        self.system_ns.fetch_add(delta.system_ns, Ordering::Relaxed);
+        self.user_ns.fetch_add(delta.user_ns, Ordering::Release);
+        self.system_ns.fetch_add(delta.system_ns, Ordering::Release);
     }
 
     pub(crate) fn snapshot_with_live(
@@ -700,45 +700,22 @@ impl ProcessCpuTimeAccounting {
         now_ns: u64,
         live_residual: &mut impl FnMut(u64) -> CpuTimeDelta,
     ) -> ProcessCpuTimeSnapshot {
-        loop {
-            let completed = self.completed_writes.load(Ordering::Acquire);
-            if self.writers.load(Ordering::Acquire) != 0 {
-                core::hint::spin_loop();
-                continue;
-            }
-            let committed = CpuTimeDelta {
-                user_ns: self.user_ns.load(Ordering::Relaxed),
-                system_ns: self.system_ns.load(Ordering::Relaxed),
-            };
-            let total = committed.add(live_residual(now_ns));
-            if self.writers.load(Ordering::Acquire) == 0
-                && self.completed_writes.load(Ordering::Acquire) == completed
-            {
-                return ProcessCpuTimeSnapshot {
-                    user_ns: total.user_ns,
-                    system_ns: total.system_ns,
-                    sampled_at_ns: now_ns,
-                };
-            }
+        let committed = CpuTimeDelta {
+            user_ns: self.user_ns.load(Ordering::Acquire),
+            system_ns: self.system_ns.load(Ordering::Acquire),
+        };
+        let sampled = committed.add(live_residual(now_ns));
+        ProcessCpuTimeSnapshot {
+            user_ns: self
+                .observed_user_ns
+                .fetch_max(sampled.user_ns, Ordering::AcqRel)
+                .max(sampled.user_ns),
+            system_ns: self
+                .observed_system_ns
+                .fetch_max(sampled.system_ns, Ordering::AcqRel)
+                .max(sampled.system_ns),
+            sampled_at_ns: now_ns,
         }
-    }
-
-    fn begin_write(&self) -> ProcessCpuTimeWriter<'_> {
-        self.writers.fetch_add(1, Ordering::AcqRel);
-        ProcessCpuTimeWriter { accounting: self }
-    }
-}
-
-struct ProcessCpuTimeWriter<'accounting> {
-    accounting: &'accounting ProcessCpuTimeAccounting,
-}
-
-impl Drop for ProcessCpuTimeWriter<'_> {
-    fn drop(&mut self) {
-        self.accounting
-            .completed_writes
-            .fetch_add(1, Ordering::Release);
-        self.accounting.writers.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -1253,7 +1230,7 @@ mod tests {
         );
 
         process.record_transition(|| {
-            first.scheduler_switch_out_at(scheduler::SwitchReason::Blocked, 10)
+            first.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 10)
         });
         assert_eq!(
             process.snapshot_at_with_live(15, &mut live),
@@ -1261,6 +1238,89 @@ mod tests {
                 user_ns: 10,
                 system_ns: 15,
                 sampled_at_ns: 15,
+            }
+        );
+
+        process.record_transition(|| {
+            second.scheduler_switch_out_at(scheduler::SwitchReason::Blocked, 15)
+        });
+        assert_eq!(
+            process.snapshot_at_with_live(15, &mut live),
+            ProcessCpuTimeSnapshot {
+                user_ns: 10,
+                system_ns: 15,
+                sampled_at_ns: 15,
+            }
+        );
+    }
+
+    #[test]
+    fn process_cpu_snapshot_does_not_wait_for_a_preempted_transition() {
+        use std::{sync::mpsc, thread, time::Duration as StdDuration};
+
+        let process = Arc::new(ProcessCpuTimeAccounting::new());
+        let task = Arc::new(CpuTimeAccounting::new());
+        process.record_transition(|| task.set_state_at(TimerState::User, 0));
+        process.record_transition(|| {
+            task.scheduler_switch_in_at(false, 0);
+            CpuTimeDelta::ZERO
+        });
+        let mut live = |now| task.running_residual_at(now);
+        assert_eq!(
+            process.snapshot_at_with_live(10, &mut live),
+            ProcessCpuTimeSnapshot {
+                user_ns: 10,
+                system_ns: 0,
+                sampled_at_ns: 10,
+            }
+        );
+
+        let (transition_started_tx, transition_started_rx) = mpsc::channel();
+        let (resume_transition_tx, resume_transition_rx) = mpsc::channel();
+        let writer_process = Arc::clone(&process);
+        let writer_task = Arc::clone(&task);
+        let writer = thread::spawn(move || {
+            writer_process.record_transition(|| {
+                let delta =
+                    writer_task.scheduler_switch_out_at(scheduler::SwitchReason::Preempted, 10);
+                transition_started_tx.send(()).unwrap();
+                resume_transition_rx.recv().unwrap();
+                delta
+            });
+        });
+        transition_started_rx.recv().unwrap();
+
+        let (snapshot_done_tx, snapshot_done_rx) = mpsc::channel();
+        let reader_process = Arc::clone(&process);
+        let reader_task = Arc::clone(&task);
+        let reader = thread::spawn(move || {
+            let snapshot = reader_process
+                .snapshot_at_with_live(10, &mut |now| reader_task.running_residual_at(now));
+            snapshot_done_tx.send(snapshot).unwrap();
+        });
+        let snapshot_while_writer_is_preempted =
+            snapshot_done_rx.recv_timeout(StdDuration::from_secs(1));
+
+        resume_transition_tx.send(()).unwrap();
+        writer.join().unwrap();
+        reader.join().unwrap();
+
+        assert_eq!(
+            snapshot_while_writer_is_preempted
+                .expect("a process CPU-time reader must not spin behind a preempted writer"),
+            ProcessCpuTimeSnapshot {
+                user_ns: 10,
+                system_ns: 0,
+                sampled_at_ns: 10,
+            },
+            "the handoff window must not make process CPU time regress"
+        );
+        assert_eq!(
+            process.snapshot_at_with_live(10, &mut live),
+            ProcessCpuTimeSnapshot {
+                user_ns: 10,
+                system_ns: 0,
+                sampled_at_ns: 10,
             }
         );
     }

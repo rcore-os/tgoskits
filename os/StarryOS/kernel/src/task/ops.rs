@@ -355,8 +355,8 @@ pub(crate) fn poll_process_timer_for_alarm(pid: Pid, token: &AlarmToken) {
 /// Sets the timer state.
 pub fn set_timer_state(task: &UserTaskRef, state: TimerState) {
     let thr = task.as_thread();
-    poll_interval_timers(&thr.proc_data, None);
     thr.set_cpu_time_state(state);
+    poll_interval_timers(&thr.proc_data, None);
 }
 
 #[repr(C)]
