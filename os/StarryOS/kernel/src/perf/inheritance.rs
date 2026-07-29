@@ -419,7 +419,9 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
     if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
         return;
     }
-    let parents = parent_thr.perf_counters().lock().clone();
+    let Some(parents) = parent_thr.perf_context().snapshot_for_inherit() else {
+        return;
+    };
     for parent in &parents {
         if !parent.inheritable() {
             continue;
@@ -449,7 +451,16 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
 
         // `do_clone` has not made the child schedulable yet. Publish the local
         // scheduler-list reservation before family close can observe it.
-        attach(child_thr, Arc::clone(&child));
+        if let Err(error) = attach(child_thr, Arc::clone(&child)) {
+            free_hw(&child).expect("an unpublished inherited event must roll back locally");
+            if error != AxError::NoSuchProcess {
+                warn!(
+                    "perf: attr.inherit skipped for child tid {}: {error}",
+                    child_thr.tid()
+                );
+            }
+            continue;
+        }
         if let Err(error) = family.register_child(&child) {
             detach_unpublished(child_thr, &child);
             free_hw(&child).expect("unpublished inherited counter must roll back locally");

@@ -210,7 +210,11 @@ fn perf_event_open_hw_per_task(
         },
     ));
     let family = PerfInheritanceFamily::new(Arc::clone(&per_task_counter), enabled);
-    super::task::attach(thread, per_task_counter);
+    if let Err(error) = super::task::attach(thread, per_task_counter) {
+        super::task::free_hw(&family.root())
+            .expect("an unpublished task event must roll back without owner-CPU work");
+        return Err(error);
+    }
     if let Err(error) = family.root().synchronize_context() {
         let root = family.root();
         // The scheduler publication must remain reachable until its exact PMU

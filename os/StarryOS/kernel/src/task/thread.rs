@@ -17,8 +17,6 @@ use super::{
 };
 
 const KRETPROBE_STACK_CAPACITY: usize = 16;
-#[cfg(target_arch = "aarch64")]
-const PERF_COUNTER_CAPACITY: usize = 32;
 
 /// User-visible and scheduler-visible identities retained by one Linux thread.
 struct ThreadIdentity {
@@ -186,8 +184,7 @@ struct ThreadTrace {
     fault_dump_signo: AtomicU8,
     kretprobe_stack: SpinNoIrq<Vec<kprobe::retprobe::RetprobeInstance>>,
     #[cfg(target_arch = "aarch64")]
-    perf_counters:
-        SpinNoIrq<heapless::Vec<Arc<crate::perf::task::PerTaskCounter>, PERF_COUNTER_CAPACITY>>,
+    perf: crate::perf::task_context::ThreadPerfContext,
 }
 
 impl ThreadTrace {
@@ -196,7 +193,7 @@ impl ThreadTrace {
             fault_dump_signo: AtomicU8::new(0),
             kretprobe_stack: SpinNoIrq::new(Vec::with_capacity(KRETPROBE_STACK_CAPACITY)),
             #[cfg(target_arch = "aarch64")]
-            perf_counters: SpinNoIrq::new(heapless::Vec::new()),
+            perf: crate::perf::task_context::ThreadPerfContext::new(),
         }
     }
 }
@@ -650,11 +647,8 @@ impl Thread {
     }
 
     #[cfg(target_arch = "aarch64")]
-    pub(crate) fn perf_counters(
-        &self,
-    ) -> &SpinNoIrq<heapless::Vec<Arc<crate::perf::task::PerTaskCounter>, PERF_COUNTER_CAPACITY>>
-    {
-        &self.trace.perf_counters
+    pub(crate) fn perf_context(&self) -> &crate::perf::task_context::ThreadPerfContext {
+        &self.trace.perf
     }
 }
 

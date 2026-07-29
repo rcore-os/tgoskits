@@ -54,6 +54,10 @@ mod target;
 #[cfg(target_arch = "aarch64")]
 pub mod task;
 #[cfg(target_arch = "aarch64")]
+pub(crate) mod task_context;
+#[cfg(target_arch = "aarch64")]
+mod task_context_state;
+#[cfg(target_arch = "aarch64")]
 mod task_sideband;
 pub mod tracepoint;
 pub mod uprobe;

@@ -230,6 +230,7 @@ rbpf = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 axtest.workspace = true
+loom.workspace = true
 axbacktrace = { workspace = true, features = ["axtest"] }
 ax-cpumask = { workspace = true, features = ["axtest"] }
 ax-driver = { workspace = true, features = ["axtest"] }

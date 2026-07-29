@@ -8088,6 +8088,7 @@ dependencies = [
  "ktracepoint",
  "linux-raw-sys 0.12.1",
  "lock_api",
+ "loom",
  "lwprintf-rs",
  "mmio-api",
  "num_enum",
