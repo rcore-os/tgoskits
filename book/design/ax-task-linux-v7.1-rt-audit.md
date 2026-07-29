@@ -595,6 +595,25 @@ does not change one return path in isolation because doing so would make
 ptrace lookups cannot yet resolve. The follow-up must introduce one typed
 namespace PID resolver and migrate those ABI boundaries together.
 
+The serial emergency path now preserves the hard-IRQ ownership boundary even
+when panic output wins the non-blocking register gate. Linux v7.1
+`serial8250_console_write()` uses a try-lock during oops, but independently
+saves and clears IER before touching the TX FIFO, then restores it before
+returning. TGOSKits keeps the stricter bounded/drop-on-contention panic API:
+each concrete `UartEmergencyTx` must save and mask every device source before
+its fixed-size FIFO pass and restore the saved mask through an RAII guard.
+Therefore an IRQ endpoint that loses the gate can publish one task-context
+retry without leaving a level-triggered UART source continuously asserted.
+The ordinary port remains worker-owned under same-CPU IRQ exclusion, and the
+registered IRQ callback still owns the only `UartIrq` endpoint.
+
+The NS16550 regression records the IER value observed at the TX register and
+requires zero while preserving the worker's original mask afterward. The
+PL011 regression observes IMSC throughout the mask-guard lifetime and after
+drop. Together with the existing fixed RX/TX budgets, queue-overflow, gate
+contention, and worker-doorbell tests, this closes the serial gate-busy IRQ
+storm without introducing a hard-IRQ lock or callback.
+
 The branch-touched USB hosts now make the PREEMPT_RT execution boundary
 explicit. Linux v7.1 `xhci_irq()`, `ehci_irq()`, and
 `dwc2_handle_common_intr()` combine status acknowledgement with event

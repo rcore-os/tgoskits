@@ -631,16 +631,39 @@ pub struct Pl011EmergencyTx {
     base: Reg,
 }
 
+struct Pl011EmergencyIrqMask<'a> {
+    emergency: &'a Pl011EmergencyTx,
+    enabled: u32,
+}
+
+impl Drop for Pl011EmergencyIrqMask<'_> {
+    fn drop(&mut self) {
+        self.emergency.registers().uartimsc.set(self.enabled);
+    }
+}
+
 impl Pl011EmergencyTx {
     fn registers(&self) -> &Pl011Registers {
         // SAFETY: `base` points at the mapped PL011 register block. This view
         // exposes only the TX FIFO readiness and data registers.
         unsafe { &*self.base.0.as_ptr() }
     }
+
+    fn mask_interrupts(&self) -> Pl011EmergencyIrqMask<'_> {
+        let enabled = self.registers().uartimsc.get();
+        self.registers().uartimsc.set(0);
+        // Flush a posted MMIO write before the emergency path touches TX.
+        let _masked = self.registers().uartimsc.get();
+        Pl011EmergencyIrqMask {
+            emergency: self,
+            enabled,
+        }
+    }
 }
 
 impl UartEmergencyTx for Pl011EmergencyTx {
     unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
+        let _irq_mask = self.mask_interrupts();
         let mut written = 0;
         for &byte in bytes.iter().take(EMERGENCY_TX_BUDGET) {
             if self.registers().uartfr.is_set(UARTFR::TXFF) {
@@ -1129,6 +1152,23 @@ mod tests {
         let access = gate.try_enter().unwrap();
 
         assert_eq!(access.try_write(&bytes), 16);
+    }
+
+    #[test]
+    fn emergency_irq_mask_guard_restores_the_worker_mask() {
+        let (mut regs, uart) = pl011_with_registers();
+        let emergency = uart.split().emergency_tx;
+        let enabled = UARTIS::RX::SET.value | UARTIS::TX::SET.value;
+        write_test_reg(&mut regs, 0x038, enabled);
+
+        let mask = emergency.mask_interrupts();
+        assert_eq!(
+            read_test_reg(&regs, 0x038),
+            0,
+            "a gate-busy IRQ must observe a device-masked emergency transaction"
+        );
+        drop(mask);
+        assert_eq!(read_test_reg(&regs, 0x038), enabled);
     }
 
     #[test]
