@@ -83,6 +83,14 @@ impl_trait! {
             ONLINE_CPU_COUNT.with(|count| count.get() as u32)
         }
 
+        fn prepare_cpu_online(_cpu: RuntimeCpuId) -> RuntimeStatus {
+            RuntimeStatus::Success
+        }
+
+        fn prepare_cpu_offline(_cpu: RuntimeCpuId) -> RuntimeStatus {
+            RuntimeStatus::Success
+        }
+
         fn irq_guard_enter() -> IrqGuardToken {
             let token = NEXT_TOKEN.with(|next| {
                 let token = next.get();

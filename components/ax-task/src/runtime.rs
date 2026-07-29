@@ -444,6 +444,26 @@ pub trait TaskRuntime {
     /// Returns the number of CPUs published online to the scheduler.
     fn online_cpu_count() -> u32;
 
+    /// Prepares one owner CPU's runtime facilities for scheduler publication.
+    ///
+    /// The caller holds local IRQ exclusion and has validated that the CPU is
+    /// currently offline. The implementation must prepare every CPU-local
+    /// wake source needed by the scheduler, including its physical
+    /// clockevent, before returning success. It must not allocate, block,
+    /// invoke callbacks, or re-enter ax-task. Failure must leave the runtime
+    /// offline and retryable.
+    fn prepare_cpu_online(cpu: RuntimeCpuId) -> RuntimeStatus;
+
+    /// Stops one owner CPU's runtime facilities before final offline publication.
+    ///
+    /// The scheduler has already closed remote admission and proved the CPU
+    /// quiescent, but still reports it online while this hook runs. The
+    /// implementation must stop every CPU-local wake source, including its
+    /// physical clockevent, before returning success. Failure must leave the
+    /// runtime retryable. The hook must not allocate, block, invoke callbacks,
+    /// or re-enter ax-task.
+    fn prepare_cpu_offline(cpu: RuntimeCpuId) -> RuntimeStatus;
+
     /// Saves raw interrupt state, disables local IRQs and enters nested guards.
     fn irq_guard_enter() -> IrqGuardToken;
 

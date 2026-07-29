@@ -72,6 +72,24 @@ impl_task_runtime! {
                 .unwrap_or(0)
         }
 
+        fn prepare_cpu_online(cpu: RuntimeCpuId) -> RuntimeStatus {
+            if cpu != Self::current_cpu_id() {
+                return RuntimeStatus::InvalidArgument;
+            }
+            #[cfg(feature = "irq")]
+            crate::init_timer();
+            RuntimeStatus::Success
+        }
+
+        fn prepare_cpu_offline(cpu: RuntimeCpuId) -> RuntimeStatus {
+            if cpu != Self::current_cpu_id() {
+                return RuntimeStatus::InvalidArgument;
+            }
+            #[cfg(feature = "irq")]
+            crate::take_current_clock_event_offline();
+            RuntimeStatus::Success
+        }
+
         fn irq_guard_enter() -> IrqGuardToken {
             #[cfg(test)]
             {

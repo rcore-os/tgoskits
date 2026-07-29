@@ -74,6 +74,8 @@ impl_task_runtime! {
         }
         fn current_cpu_id() -> RuntimeCpuId { RuntimeCpuId::new(0) }
         fn online_cpu_count() -> u32 { 1 }
+        fn prepare_cpu_online(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
+        fn prepare_cpu_offline(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
         fn irq_guard_enter() -> IrqGuardToken {
             // SAFETY: this single-CPU test runtime models one balanced token.
             unsafe { IrqGuardToken::from_raw(1) }
