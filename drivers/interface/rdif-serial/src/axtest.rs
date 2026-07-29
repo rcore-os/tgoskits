@@ -1,9 +1,9 @@
 use axtest::prelude::*;
 
 use crate::{
-    Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
-    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq,
-    UartParts, UartPort,
+    Config, ConfigError, DataBits, IrqRxBatch, Parity, RxErrorFlags, RxFlag, RxSample,
+    SerialEventSet, SerialIrqEvent, SerialIrqReport, SerialParts, SplitUart, StopBits,
+    UartEmergencyTx, UartInfo, UartIrq, UartPort,
 };
 
 #[axtest]
@@ -127,21 +127,14 @@ struct MockIrq {
 }
 
 impl UartIrq for MockIrq {
-    fn handle(&mut self, rx: &mut dyn IrqRxSink) -> Option<SerialIrqEvent> {
+    fn handle(&mut self) -> Option<SerialIrqReport> {
+        let event = self.pending.take()?;
+        let mut rx = IrqRxBatch::new();
         if let Some(sample) = self.sample.take() {
-            rx.push(sample);
+            rx.try_push(sample)
+                .expect("one mock sample must fit in the IRQ batch");
         }
-        self.pending.take()
-    }
-}
-
-struct MockSink {
-    sample: Option<RxSample>,
-}
-
-impl IrqRxSink for MockSink {
-    fn push(&mut self, sample: RxSample) {
-        self.sample = Some(sample);
+        Some(SerialIrqReport::new(event, rx))
     }
 }
 
@@ -156,7 +149,7 @@ impl UartEmergencyTx for MockEmergencyTx {
 }
 
 impl SplitUart for MockUart {
-    type Port = MockPort;
+    type Control = MockPort;
     type Irq = MockIrq;
     type EmergencyTx = MockEmergencyTx;
 
@@ -168,8 +161,8 @@ impl SplitUart for MockUart {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq, Self::EmergencyTx> {
-        UartParts::new(
+    fn split(self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx> {
+        SerialParts::new(
             MockPort::new(),
             MockIrq {
                 pending: Some(SerialIrqEvent {
@@ -196,23 +189,22 @@ fn split_uart_exposes_independent_task_and_irq_endpoints() {
     ax_assert_eq!(info.register_base, 0x1000);
     ax_assert_eq!(info.initial_baudrate, 115_200);
 
-    let UartParts {
-        mut port,
+    let SerialParts {
+        mut control,
         mut irq,
         emergency_tx: _,
     } = uart.split();
     let config = Config::new().baudrate(57_600);
-    ax_assert!(port.startup(&config).is_ok());
-    ax_assert_eq!(port.config.baudrate, Some(57_600));
-    ax_assert_eq!(port.write_tx(b"abcdef"), 4);
-    ax_assert!(!port.tx_idle());
+    ax_assert!(control.startup(&config).is_ok());
+    ax_assert_eq!(control.config.baudrate, Some(57_600));
+    ax_assert_eq!(control.write_tx(b"abcdef"), 4);
+    ax_assert!(!control.tx_idle());
     ax_assert_eq!(
-        port.rearm(SerialEventSet::RX_DATA | SerialEventSet::TX_SPACE),
+        control.rearm(SerialEventSet::RX_DATA | SerialEventSet::TX_SPACE),
         SerialEventSet::RX_DATA
     );
 
-    let mut sink = MockSink { sample: None };
-    let event = irq.handle(&mut sink).expect("mock IRQ has pending event");
-    ax_assert_eq!(sink.sample.expect("IRQ pushed sample").byte, Some(b'a'));
-    ax_assert_eq!(event.events, SerialEventSet::RX_DATA);
+    let report = irq.handle().expect("mock IRQ has pending event");
+    ax_assert_eq!(report.rx.as_slice()[0].byte, Some(b'a'));
+    ax_assert_eq!(report.event.events, SerialEventSet::RX_DATA);
 }

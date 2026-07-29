@@ -4,7 +4,7 @@ use ax_errno::AxError;
 use fdt_edit::{Fdt, RegFixed};
 use log::warn;
 use rdif_serial::{
-    SplitUart, UartEmergencyTx, UartInfo, UartIrq, UartParts, UartPort, UartRegisterGate,
+    SerialParts, SplitUart, UartEmergencyTx, UartInfo, UartIrq, UartPort, UartRegisterGate,
 };
 use rdrive::{Device, DeviceId, DriverGeneric, probe::acpi::AcpiInfo, register::FdtInfo};
 
@@ -14,7 +14,7 @@ mod rockchip_fiq;
 
 use crate::{BindingInfo, BindingIrq, binding_info_from_acpi, binding_info_from_fdt};
 
-struct ErasedUartParts {
+struct ErasedSerialParts {
     port: Box<dyn UartPort>,
     irq: Box<dyn UartIrq>,
     register_gate: Box<UartRegisterGate<dyn UartEmergencyTx>>,
@@ -22,7 +22,7 @@ struct ErasedUartParts {
 
 struct ProbedUart {
     hardware: UartInfo,
-    parts: ErasedUartParts,
+    parts: ErasedSerialParts,
 }
 
 struct PlatformSerialDevice {
@@ -32,7 +32,7 @@ struct PlatformSerialDevice {
     paddr: usize,
     initial_baudrate: u32,
     irq: Option<BindingIrq>,
-    parts: Option<ErasedUartParts>,
+    parts: Option<ErasedSerialParts>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,8 +81,8 @@ impl DriverGeneric for PlatformSerialDevice {
 
 fn erase_uart(raw: impl SplitUart) -> ProbedUart {
     let hardware = raw.runtime_info();
-    let UartParts {
-        port,
+    let SerialParts {
+        control,
         irq,
         emergency_tx,
     } = raw.split();
@@ -90,8 +90,8 @@ fn erase_uart(raw: impl SplitUart) -> ProbedUart {
         Box::new(UartRegisterGate::new(emergency_tx));
     ProbedUart {
         hardware,
-        parts: ErasedUartParts {
-            port: Box::new(port),
+        parts: ErasedSerialParts {
+            port: Box::new(control),
             irq: Box::new(irq),
             register_gate,
         },

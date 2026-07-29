@@ -1,9 +1,9 @@
 use core::ptr::NonNull;
 
 use rdif_serial::{
-    Config, ConfigError, DataBits, IrqRxSink, Parity, RxErrorFlags, RxFlag, RxSample,
-    SerialEventSet, SerialIrqEvent, SplitUart, StopBits, UartEmergencyTx, UartInfo, UartIrq,
-    UartParts, UartPort,
+    Config, ConfigError, DataBits, IRQ_RX_BATCH_CAPACITY, IrqRxBatch, Parity, RxErrorFlags, RxFlag,
+    RxSample, SerialEventSet, SerialIrqEvent, SerialIrqReport, SerialParts, SplitUart, StopBits,
+    UartEmergencyTx, UartInfo, UartIrq, UartPort,
 };
 use tock_registers::{
     LocalRegisterCopy, interfaces::*, register_bitfields, register_structs, registers::*,
@@ -686,9 +686,7 @@ impl Pl011Irq {
 }
 
 impl UartIrq for Pl011Irq {
-    fn handle(&mut self, rx: &mut dyn IrqRxSink) -> Option<SerialIrqEvent> {
-        const RX_SAMPLE_BUDGET: usize = 256;
-
+    fn handle(&mut self) -> Option<SerialIrqReport> {
         let mis = self.registers().uartmis.extract();
         let active = mis.get();
         if active == 0 {
@@ -696,6 +694,7 @@ impl UartIrq for Pl011Irq {
         }
 
         let mut events = events_from_mis(mis);
+        let mut rx = IrqRxBatch::new();
         if active & !ALL_IRQ_BITS != 0 {
             events |= SerialEventSet::FAULT;
         }
@@ -705,12 +704,13 @@ impl UartIrq for Pl011Irq {
             // SAFETY: `base` is the mapped PL011 register block shared with
             // the task endpoint under the runtime's same-CPU exclusion rule.
             let registers = unsafe { &*base.0.as_ptr() };
-            for _ in 0..RX_SAMPLE_BUDGET {
+            for _ in 0..IRQ_RX_BATCH_CAPACITY {
                 let Some(sample) = read_rx_sample(registers, &mut self.saved_rx_status) else {
                     break;
                 };
                 rx_errors |= rx_errors_from_sample(sample);
-                rx.push(sample);
+                rx.try_push(sample)
+                    .expect("the fixed PL011 IRQ loop cannot overflow its RX batch");
             }
         }
 
@@ -725,11 +725,14 @@ impl UartIrq for Pl011Irq {
         }
         self.registers().uarticr.set(active);
 
-        Some(SerialIrqEvent {
-            events,
-            rx_errors,
-            rearm,
-        })
+        Some(SerialIrqReport::new(
+            SerialIrqEvent {
+                events,
+                rx_errors,
+                rearm,
+            },
+            rx,
+        ))
     }
 }
 
@@ -825,7 +828,7 @@ impl UartPort for Pl011 {
 }
 
 impl SplitUart for Pl011 {
-    type Port = Self;
+    type Control = Self;
     type Irq = Pl011Irq;
     type EmergencyTx = Pl011EmergencyTx;
 
@@ -837,13 +840,13 @@ impl SplitUart for Pl011 {
         }
     }
 
-    fn split(self) -> UartParts<Self::Port, Self::Irq, Self::EmergencyTx> {
+    fn split(self) -> SerialParts<Self::Control, Self::Irq, Self::EmergencyTx> {
         let irq = Pl011Irq {
             base: self.base,
             saved_rx_status: Pl011RxStatus::empty(),
         };
         let emergency_tx = Pl011EmergencyTx { base: self.base };
-        UartParts::new(self, irq, emergency_tx)
+        SerialParts::new(self, irq, emergency_tx)
     }
 }
 
@@ -968,19 +971,11 @@ mod tests {
 
     use super::*;
 
-    #[derive(Default)]
-    struct CollectRx(Vec<RxSample>);
-
-    impl IrqRxSink for CollectRx {
-        fn push(&mut self, sample: RxSample) {
-            self.0.push(sample);
-        }
-    }
-
     fn handle_irq(irq: &mut impl UartIrq) -> (Option<SerialIrqEvent>, Vec<RxSample>) {
-        let mut rx = CollectRx::default();
-        let event = irq.handle(&mut rx);
-        (event, rx.0)
+        let Some(report) = irq.handle() else {
+            return (None, Vec::new());
+        };
+        (Some(report.event), report.rx.as_slice().to_vec())
     }
 
     fn pl011_with_registers() -> (Box<Pl011Registers>, Pl011) {
@@ -1015,9 +1010,9 @@ mod tests {
         }
     }
 
-    fn started_parts(uart: Pl011) -> UartParts<Pl011, Pl011Irq, Pl011EmergencyTx> {
+    fn started_parts(uart: Pl011) -> SerialParts<Pl011, Pl011Irq, Pl011EmergencyTx> {
         let mut parts = uart.split();
-        parts.port.startup(&Config::new()).unwrap();
+        parts.control.startup(&Config::new()).unwrap();
         parts
     }
 
@@ -1047,7 +1042,7 @@ mod tests {
         assert!(event.rx_errors.contains(RxErrorFlags::OVERRUN));
         assert_eq!(
             samples.len(),
-            256,
+            IRQ_RX_BATCH_CAPACITY,
             "the hard IRQ must enforce its RX budget"
         );
         let sample = samples[0];
@@ -1071,7 +1066,7 @@ mod tests {
 
         assert!(event.events.contains(SerialEventSet::RX_DATA));
         assert!(!event.rearm.intersects(SerialEventSet::RX));
-        assert_eq!(samples.len(), 256);
+        assert_eq!(samples.len(), IRQ_RX_BATCH_CAPACITY);
         assert_eq!(read_test_reg(&regs, 0x038) & rx_mask, rx_mask);
     }
 
@@ -1091,7 +1086,7 @@ mod tests {
         assert!(event.events.contains(SerialEventSet::RX_STATUS));
         assert!(event.rx_errors.contains(RxErrorFlags::PARITY));
         assert!(event.rx_errors.contains(RxErrorFlags::OVERRUN));
-        assert!(parts.port.read_rx().is_none());
+        assert!(parts.control.read_rx().is_none());
     }
 
     #[test]
@@ -1103,7 +1098,7 @@ mod tests {
         write_test_reg(&mut regs, 0x040, UARTIS::TX::SET.value);
         let event = handle_irq(&mut parts.irq).0.unwrap();
         assert!(event.events.contains(SerialEventSet::TX_SPACE));
-        assert_eq!(parts.port.write_tx(b"x"), 1);
+        assert_eq!(parts.control.write_tx(b"x"), 1);
         assert_eq!(regs.uartdr.get() as u8, b'x');
     }
 
@@ -1235,7 +1230,7 @@ mod tests {
         let (mut regs, uart) = pl011_with_registers();
         let mut parts = uart.split();
 
-        parts.port.set_irq_mask(SerialEventSet::RX);
+        parts.control.set_irq_mask(SerialEventSet::RX);
         write_test_reg(&mut regs, 0x040, 0);
         write_test_reg(&mut regs, 0x018, 0);
 
