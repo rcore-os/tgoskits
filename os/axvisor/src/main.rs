@@ -47,6 +47,7 @@ mod shell;
 fn main() {
     banner::print_logo();
 
+    info!("ci-test: axvisor main entry reached");
     info!("Starting virtualization...");
     let manager = manager::AxvmManager::new()
         .unwrap_or_else(|error| panic!("failed to initialize AxVM manager: {error:#}"));
