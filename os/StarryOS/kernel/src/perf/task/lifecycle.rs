@@ -28,7 +28,11 @@ pub fn on_exec(thr: &Thread) {
 
 /// Build a side-band write target for `ptc` if it has a mapped ring and requested
 /// any side-band record (`attr.comm`/`mmap2`/`task`); else `None`.
-pub(super) fn sideband_target(ptc: &PerTaskCounter, pid: u32, tid: u32) -> Option<SidebandTarget> {
+pub(in crate::perf) fn sideband_target(
+    ptc: &PerTaskCounter,
+    pid: u32,
+    tid: u32,
+) -> Option<SidebandTarget> {
     if !(ptc.want_comm || ptc.want_mmap2 || ptc.want_task) {
         return None;
     }
@@ -140,7 +144,7 @@ pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
         }
         ptc.clear_family_output();
     }
-    super::hw_allocation::free_counter(ptc.counter);
+    crate::perf::hw_allocation::free_counter(ptc.counter);
     if resource_claim == PmuResourceClaim::Published {
         let previous = PERF_TASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
         assert!(previous > 0, "task perf active count underflow");

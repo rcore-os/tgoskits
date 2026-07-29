@@ -15,6 +15,6 @@ pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) -> AxResult<()> {
 
 /// Withdraws a counter whose family publication failed before its thread became
 /// schedulable.
-pub(super) fn detach_unpublished(thr: &Thread, ptc: &Arc<PerTaskCounter>) {
+pub(in crate::perf) fn detach_unpublished(thr: &Thread, ptc: &Arc<PerTaskCounter>) {
     thr.perf_context().detach_unpublished(ptc);
 }
