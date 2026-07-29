@@ -7,6 +7,14 @@ pub trait Interface: DriverGeneric {
 
     fn connect(&mut self, id: VsockConnId) -> Result<(), VsockError>;
 
+    /// Returns the bytes that one send may publish without waiting for peer
+    /// credit.
+    ///
+    /// The value is a task-context transport snapshot. Implementations must
+    /// account for protocol flow control and must return zero rather than an
+    /// optimistic capacity when the peer window is exhausted.
+    fn send_capacity(&mut self, id: VsockConnId) -> Result<usize, VsockError>;
+
     fn send(&mut self, id: VsockConnId, buf: &[u8]) -> Result<usize, VsockError>;
 
     fn recv(&mut self, id: VsockConnId, buf: &mut [u8]) -> Result<usize, VsockError>;

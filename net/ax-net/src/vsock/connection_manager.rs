@@ -277,7 +277,11 @@ pub static VSOCK_CONN_MANAGER: PiMutex<VsockConnectionManager> =
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
+    use alloc::{boxed::Box, sync::Arc, task::Wake};
+    use core::{
+        sync::atomic::{AtomicBool, Ordering},
+        task::{Context, Waker},
+    };
 
     use ax_task::{CpuId, SchedulePolicy, TaskSystem, TaskSystemConfig, ThreadSpec};
 
@@ -287,8 +291,16 @@ mod tests {
         VsockPollLease::inactive_for_test()
     }
 
+    struct WakeFlag(AtomicBool);
+
+    impl Wake for WakeFlag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
     #[test]
-    fn tx_wait_capability_is_owned_outside_connection_state() {
+    fn tx_poll_capability_is_owned_outside_connection_state() {
         let system = Box::new(TaskSystem::new(TaskSystemConfig::new(1)).unwrap());
         let mut cpu = system.create_cpu_local(CpuId::new(0)).unwrap();
         system
@@ -305,7 +317,12 @@ mod tests {
 
         let state = connection.lock();
         drop(state);
-        let _wait_without_state_guard = || connection.wait_for_tx();
+        let wake_flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+        let waker = Waker::from(wake_flag.clone());
+        connection.register_tx_poll(&mut Context::from_waker(&waker));
+        connection.wake_tx();
+
+        assert!(wake_flag.0.load(Ordering::Acquire));
     }
 
     #[test]

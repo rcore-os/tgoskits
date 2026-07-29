@@ -9,7 +9,7 @@ use virtio_drivers::transport::DeviceType;
 use virtio_drivers::{
     Error as VirtIoError,
     device::socket::{
-        DisconnectReason, VirtIOSocket, VsockAddr, VsockConnectionManager,
+        DisconnectReason, SocketError, VirtIOSocket, VsockAddr, VsockConnectionManager,
         VsockEvent as RawVsockEvent, VsockEventType,
     },
     transport::Transport,
@@ -20,6 +20,10 @@ use crate::{BindingInfo, virtio::VirtIoHalImpl, vsock::PlatformDeviceVsock};
 use crate::{PciIrqRequirement, binding_info_from_pci};
 
 const DEFAULT_RX_BUFFER_CAPACITY: u32 = 32 * 1024;
+
+mod credit;
+
+use credit::TxCreditBook;
 
 #[cfg(feature = "pci")]
 crate::model_register!(
@@ -61,6 +65,7 @@ pub fn register_transport_with_info<T: Transport + 'static>(
 
 struct VirtIoVsock<T: Transport + 'static> {
     inner: VsockConnectionManager<VirtIoHalImpl, T>,
+    tx_credits: TxCreditBook,
 }
 
 unsafe impl<T: Transport + 'static> Send for VirtIoVsock<T> {}
@@ -70,6 +75,7 @@ impl<T: Transport + 'static> VirtIoVsock<T> {
         let socket = VirtIOSocket::<VirtIoHalImpl, _>::new(transport)?;
         Ok(Self {
             inner: VsockConnectionManager::new_with_capacity(socket, DEFAULT_RX_BUFFER_CAPACITY),
+            tx_credits: TxCreditBook::default(),
         })
     }
 }
@@ -95,18 +101,37 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
         let (peer, local_port) = map_conn_id(id)?;
         self.inner
             .connect(peer, local_port)
-            .map_err(map_vsock_error)
+            .map_err(map_vsock_error)?;
+        self.tx_credits.open(id);
+        Ok(())
+    }
+
+    fn send_capacity(&mut self, id: VsockConnId) -> Result<usize, VsockError> {
+        let _validated = map_conn_id(id)?;
+        self.tx_credits
+            .available(id, DEFAULT_RX_BUFFER_CAPACITY)
+            .ok_or(VsockError::NotConnected)
     }
 
     fn send(&mut self, id: VsockConnId, buf: &[u8]) -> Result<usize, VsockError> {
         if buf.is_empty() {
             return Ok(0);
         }
+        let capacity = self
+            .tx_credits
+            .available(id, DEFAULT_RX_BUFFER_CAPACITY)
+            .ok_or(VsockError::NotConnected)?;
+        if capacity == 0 {
+            return Err(VsockError::Retry);
+        }
+        let send_length = buf.len().min(capacity);
+        let length = u32::try_from(send_length).map_err(|_| VsockError::NotSupported)?;
         let (peer, local_port) = map_conn_id(id)?;
         self.inner
-            .send(peer, local_port, buf)
-            .map(|()| buf.len())
-            .map_err(map_vsock_error)
+            .send(peer, local_port, &buf[..send_length])
+            .map_err(map_vsock_error)?;
+        self.tx_credits.record_sent(id, length);
+        Ok(send_length)
     }
 
     fn recv(&mut self, id: VsockConnId, buf: &mut [u8]) -> Result<usize, VsockError> {
@@ -145,14 +170,27 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
         let (peer, local_port) = map_conn_id(id)?;
         self.inner
             .force_close(peer, local_port)
-            .map_err(map_vsock_error)
+            .map_err(map_vsock_error)?;
+        self.tx_credits.close(id);
+        Ok(())
     }
 
     fn poll_event(&mut self) -> Result<Option<VsockEvent>, VsockError> {
-        self.inner
-            .poll()
-            .map(|event| event.map(map_event))
-            .map_err(map_vsock_error)
+        let Some(event) = self.inner.poll().map_err(map_vsock_error)? else {
+            return Ok(None);
+        };
+        let connection = map_event_conn(&event);
+        self.tx_credits.update_peer(
+            connection,
+            event.buffer_status.buffer_allocation,
+            event.buffer_status.forward_count,
+        );
+        let disconnected = matches!(event.event_type, VsockEventType::Disconnected { .. });
+        let event = map_event(event);
+        if disconnected {
+            self.tx_credits.close(connection);
+        }
+        Ok(Some(event))
     }
 }
 
@@ -213,7 +251,28 @@ fn map_vsock_error(err: VirtIoError) -> VsockError {
         VirtIoError::Unsupported => VsockError::NotSupported,
         VirtIoError::QueueFull | VirtIoError::NotReady => VsockError::Retry,
         VirtIoError::AlreadyUsed => VsockError::AlreadyExists,
-        VirtIoError::SocketDeviceError(_) => VsockError::NotConnected,
-        _ => VsockError::Other(alloc::boxed::Box::new(err)),
+        VirtIoError::SocketDeviceError(SocketError::InsufficientBufferSpaceInPeer) => {
+            VsockError::Retry
+        }
+        VirtIoError::SocketDeviceError(SocketError::ConnectionExists) => VsockError::AlreadyExists,
+        VirtIoError::SocketDeviceError(
+            SocketError::NotConnected | SocketError::PeerSocketShutdown,
+        ) => VsockError::NotConnected,
+        error => VsockError::Other(alloc::boxed::Box::new(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_credit_exhaustion_is_retryable_not_a_disconnect() {
+        assert!(matches!(
+            map_vsock_error(VirtIoError::SocketDeviceError(
+                SocketError::InsufficientBufferSpaceInPeer
+            )),
+            VsockError::Retry
+        ));
     }
 }

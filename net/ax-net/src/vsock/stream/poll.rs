@@ -7,6 +7,12 @@ use axpoll::{IoEvents, Pollable};
 use super::VsockStreamTransport;
 use crate::{Shutdown, vsock::connection_manager::*};
 
+const fn tx_poll_ready(state: ConnectionState, tx_closed: bool, send_capacity: usize) -> bool {
+    matches!(state, ConnectionState::Connected | ConnectionState::Closed)
+        && !tx_closed
+        && send_capacity != 0
+}
+
 impl Pollable for VsockStreamTransport {
     fn poll(&self) -> IoEvents {
         let Ok(conn) = self.get_connection() else {
@@ -16,9 +22,18 @@ impl Pollable for VsockStreamTransport {
         let state = conn.lock();
         let connection_state = state.state();
         let rx_ready = state.rx_buffer_used() > 0 || state.rx_closed();
-        let tx_ready = !state.tx_closed();
+        let tx_closed = state.tx_closed();
         let rx_closed = state.rx_closed();
         drop(state);
+        let send_capacity = if tx_closed {
+            0
+        } else {
+            let connection_id = *self.conn_id.lock();
+            connection_id
+                .and_then(|conn_id| crate::device::vsock_send_capacity(conn_id).ok())
+                .unwrap_or(0)
+        };
+        let tx_ready = tx_poll_ready(connection_state, tx_closed, send_capacity);
         let mut events = IoEvents::empty();
 
         match connection_state {
@@ -62,9 +77,7 @@ impl Pollable for VsockStreamTransport {
                         conn.register_rx_poll(context);
                     }
                     if events.contains(IoEvents::OUT) {
-                        warn!(
-                            "VsockStreamTransport: OUT event on connected socket is not supported"
-                        );
+                        conn.register_tx_poll(context);
                     }
                 }
                 ConnectionState::Connecting if events.contains(IoEvents::OUT) => {
@@ -73,6 +86,18 @@ impl Pollable for VsockStreamTransport {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connected_socket_without_transport_credit_is_not_writable() {
+        assert!(!tx_poll_ready(ConnectionState::Connected, false, 0));
+        assert!(tx_poll_ready(ConnectionState::Connected, false, 1));
+        assert!(!tx_poll_ready(ConnectionState::Connected, true, 1));
     }
 }
 

@@ -3,7 +3,6 @@
 use alloc::sync::Arc;
 
 use ax_sync::{PiMutex, PiMutexGuard};
-use ax_task::WaitQueue;
 use axpoll::{IoEvents, PollSet};
 use ringbuf::{HeapCons, HeapProd, HeapRb, traits::*};
 
@@ -28,12 +27,12 @@ pub enum ConnectionState {
 
 /// Stable connection capability shared by device events and stream transports.
 ///
-/// The wait queue lives outside mutable connection state so a blocked sender
-/// never sleeps while owning `state`.
+/// Poll registrations live outside mutable connection state so task-context
+/// wake publication never runs while owning `state`.
 pub struct Connection {
     state: PiMutex<ConnectionData>,
-    tx_wait_queue: WaitQueue,
     rx_wakers: PiMutex<PollSet>,
+    tx_wakers: PiMutex<PollSet>,
     connect_wakers: PiMutex<PollSet>,
     _poll_lease: VsockPollLease,
 }
@@ -87,8 +86,8 @@ impl Connection {
                 tx_bytes: 0,
                 dropped_bytes: 0,
             }),
-            tx_wait_queue: WaitQueue::default(),
             rx_wakers: PiMutex::new(PollSet::new()),
+            tx_wakers: PiMutex::new(PollSet::new()),
             connect_wakers: PiMutex::new(PollSet::new()),
             _poll_lease: poll_lease,
         })
@@ -98,17 +97,6 @@ impl Connection {
         self.state.lock()
     }
 
-    #[inline]
-    pub fn wait_for_tx(&self) {
-        self.tx_wait_queue
-            .wait_timeout(core::time::Duration::from_millis(10));
-    }
-
-    #[inline]
-    pub fn notify_tx(&self) {
-        self.tx_wait_queue.notify_all();
-    }
-
     pub fn register_rx_poll(&self, context: &mut core::task::Context<'_>) {
         // SAFETY: registration happens in task context and the caller repeats
         // its readiness check after publishing the waker.
@@ -116,6 +104,16 @@ impl Connection {
             self.rx_wakers
                 .lock()
                 .register(context.waker(), IoEvents::IN)
+        };
+    }
+
+    pub fn register_tx_poll(&self, context: &mut core::task::Context<'_>) {
+        // SAFETY: registration happens in task context and the caller repeats
+        // its transport-credit check after publishing the waker.
+        unsafe {
+            self.tx_wakers
+                .lock()
+                .register(context.waker(), IoEvents::OUT)
         };
     }
 
@@ -137,6 +135,12 @@ impl Connection {
                 .lock()
                 .wake(IoEvents::IN | IoEvents::RDHUP | IoEvents::HUP)
         };
+    }
+
+    pub fn wake_tx(&self) {
+        // SAFETY: peer-credit or terminal connection state is published before
+        // this task-context wake.
+        unsafe { self.tx_wakers.lock().wake(IoEvents::OUT | IoEvents::ERR) };
     }
 
     pub fn wake_connect(&self) {

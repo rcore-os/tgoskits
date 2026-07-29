@@ -25,6 +25,10 @@ impl Interface for TestVsock {
         Ok(())
     }
 
+    fn send_capacity(&mut self, _id: VsockConnId) -> Result<usize, VsockError> {
+        Ok(usize::MAX)
+    }
+
     fn send(&mut self, _id: VsockConnId, buf: &[u8]) -> Result<usize, VsockError> {
         Ok(buf.len())
     }
@@ -92,6 +96,7 @@ fn rdif_vsock_addresses_events_and_interface_rules_hold() {
     ax_assert_eq!(vsock.guest_cid(), 3);
     vsock.listen(1024).unwrap();
     vsock.connect(listen_id).unwrap();
+    ax_assert_eq!(vsock.send_capacity(listen_id).unwrap(), usize::MAX);
     ax_assert_eq!(vsock.send(listen_id, &[1, 2, 3]).unwrap(), 3);
 
     let mut buf = [0; 4];
@@ -174,6 +179,10 @@ fn rdif_vsock_minimal_interface_uses_default_irq_methods() {
 
         fn connect(&mut self, _id: VsockConnId) -> Result<(), VsockError> {
             Ok(())
+        }
+
+        fn send_capacity(&mut self, _id: VsockConnId) -> Result<usize, VsockError> {
+            Ok(0)
         }
 
         fn send(&mut self, _id: VsockConnId, buf: &[u8]) -> Result<usize, VsockError> {

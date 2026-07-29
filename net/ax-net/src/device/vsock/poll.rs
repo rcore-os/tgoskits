@@ -1,6 +1,6 @@
 //! Adaptive vsock polling and task-context event publication.
 
-use alloc::{string::ToString, vec, vec::Vec};
+use alloc::{string::ToString, sync::Arc, vec, vec::Vec};
 use core::{
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     time::Duration,
@@ -9,10 +9,12 @@ use core::{
 use ax_errno::{AxError, AxResult};
 use ax_sync::PiMutex;
 use ax_task::WaitQueue;
-use rdif_vsock::{VsockError, VsockEvent};
+use rdif_vsock::{VsockConnId, VsockError, VsockEvent};
 
 use super::VSOCK_DEVICE;
-use crate::vsock::connection_manager::{ConnectionState, VSOCK_CONN_MANAGER, VSOCK_RX_BUFFER_SIZE};
+use crate::vsock::connection_manager::{
+    Connection, ConnectionState, VSOCK_CONN_MANAGER, VSOCK_RX_BUFFER_SIZE,
+};
 
 const VSOCK_RX_TMPBUF_SIZE: usize = 0x1000; // 4KiB buffer for vsock receive
 
@@ -239,6 +241,16 @@ enum EventDisposition {
     Retry,
 }
 
+fn wake_tx_if_ready(connection_id: VsockConnId, connection: &Connection) {
+    if super::vsock_send_capacity(connection_id).is_ok_and(|capacity| capacity != 0) {
+        connection.wake_tx();
+    }
+}
+
+fn lookup_connection(connection_id: VsockConnId) -> Option<Arc<Connection>> {
+    VSOCK_CONN_MANAGER.lock().get_connection(connection_id)
+}
+
 impl VsockPollWorker {
     fn poll_vsock_interfaces(&mut self) -> AxResult<bool> {
         let mut made_progress = false;
@@ -302,7 +314,7 @@ impl VsockPollWorker {
                 }
             }
             VsockEvent::Received(conn_id, event_len) => {
-                let Some(connection) = VSOCK_CONN_MANAGER.lock().get_connection(conn_id) else {
+                let Some(connection) = lookup_connection(conn_id) else {
                     info!("Received data for unknown connection: {conn_id:?}");
                     return Ok(EventDisposition::Consumed);
                 };
@@ -341,9 +353,10 @@ impl VsockPollWorker {
                     "Received {read_len} bytes for connection {conn_id:?} (written={written}, \
                      buffer_used={buffer_used}/{VSOCK_RX_BUFFER_SIZE})"
                 );
+                wake_tx_if_ready(conn_id, &connection);
             }
             VsockEvent::Disconnected(conn_id) => {
-                if let Some(connection) = VSOCK_CONN_MANAGER.lock().get_connection(conn_id) {
+                if let Some(connection) = lookup_connection(conn_id) {
                     {
                         let mut state = connection.lock();
                         state.set_state(ConnectionState::Closed);
@@ -352,21 +365,22 @@ impl VsockPollWorker {
                     }
                     connection.wake_rx();
                     connection.wake_connect();
-                    connection.notify_tx();
+                    connection.wake_tx();
                     trace!("Connection {conn_id:?} disconnected");
                 }
             }
             VsockEvent::Connected(conn_id) => {
-                if let Some(connection) = VSOCK_CONN_MANAGER.lock().get_connection(conn_id) {
+                if let Some(connection) = lookup_connection(conn_id) {
                     connection.lock().set_state(ConnectionState::Connected);
                     connection.wake_connect();
+                    wake_tx_if_ready(conn_id, &connection);
                     trace!("Connection {conn_id:?} established");
                 }
             }
             VsockEvent::CreditUpdate(conn_id) => {
-                if let Some(connection) = VSOCK_CONN_MANAGER.lock().get_connection(conn_id) {
-                    connection.notify_tx();
-                    trace!("Connection {conn_id:?} tx wait queue notified");
+                if let Some(connection) = lookup_connection(conn_id) {
+                    wake_tx_if_ready(conn_id, &connection);
+                    trace!("Connection {conn_id:?} tx readiness re-evaluated");
                 }
             }
             VsockEvent::Unknown => warn!("Received unknown vsock event"),
