@@ -95,6 +95,13 @@ pub(crate) struct IvcMessageSlot {
     payload: UnsafeCell<[u8; IVC_SLOT_PAYLOAD_SIZE]>,
 }
 
+// SAFETY: Each SPSC ring has exactly one writer and one reader.
+// The UnsafeCell payload in each slot is only accessed by the
+// owning producer (before tail release) or the owning consumer
+// (after tail acquire). Cross-thread &IvcRing sharing is safe
+// as long as the SPSC invariant holds.
+unsafe impl Sync for IvcRing {}
+
 impl IvcMessageSlot {
     fn clear(&self) {
         self.sequence.store(0, Ordering::Relaxed);

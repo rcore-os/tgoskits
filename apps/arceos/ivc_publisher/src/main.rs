@@ -22,10 +22,12 @@ mod publisher {
             irq,
             mem::{PhysAddr, VirtAddr, virt_to_phys},
         },
-        println,
+        println, thread,
     };
     use axhvc::ivc::{self, IvcGuestPhysAddr};
-    use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcPeerEventWaiter, IvcRegion, record_peer_event};
+    use axivc::{
+        IVC_SLOT_PAYLOAD_SIZE, IvcMessageKind, IvcPeerEventWaiter, IvcRegion, record_peer_event,
+    };
 
     const PUBLISH_COUNT: u64 = 5;
     static NOTIFY_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -67,10 +69,28 @@ mod publisher {
             return;
         };
         region.initialize(demo_config::PUBLISHER_VM_ID, demo_config::CHANNEL_KEY);
-        let waiter = IvcPeerEventWaiter::new(register_notify_irq(), &NOTIFY_IRQ_COUNT);
-        run_request_ack_demo(region, &waiter);
+        let region: &'static IvcRegion = region;
+        let irq_enabled = register_notify_irq();
+
+        // Each task owns its waiter: `IvcPeerEventWaiter` tracks the observed
+        // event count internally, so sharing one waiter would let one task
+        // consume IRQ observations meant to wake the other.
+        let sender = thread::spawn(move || {
+            let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
+            sender_task(region, &waiter);
+        });
+        let receiver = thread::spawn(move || {
+            let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
+            receiver_task(region, &waiter);
+        });
+
+        sender.join().expect("sender thread panicked");
+        receiver.join().expect("receiver thread panicked");
+
+        println!("ivc full-duplex demo complete");
     }
 
+    #[allow(dead_code)]
     fn run_request_ack_demo(region: &'static IvcRegion, waiter: &IvcPeerEventWaiter<'_>) {
         let mut ack_payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
         let mut subscriber_ready = false;
@@ -81,6 +101,7 @@ mod publisher {
         }
     }
 
+    #[allow(dead_code)]
     fn send_request_when_ready(
         region: &'static IvcRegion,
         sequence: u64,
@@ -101,6 +122,7 @@ mod publisher {
         }
     }
 
+    #[allow(dead_code)]
     fn wait_for_ack(
         region: &'static IvcRegion,
         sequence: u64,
@@ -118,6 +140,60 @@ mod publisher {
                 Ok(Some(_)) | Ok(None) => waiter.wait_for_peer_event(),
                 Err(err) => {
                     println!("ivc publish failed: recv ack error {err:?}");
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Sends PUBLISH_COUNT requests without blocking on individual acks.
+    /// Skips notification on the first send because the subscriber may not
+    /// have completed `subscribe_channel` yet.
+    fn sender_task(region: &'static IvcRegion, waiter: &IvcPeerEventWaiter<'_>) {
+        let mut subscriber_ready = false;
+        for seq in 1..=PUBLISH_COUNT {
+            loop {
+                match region.send_request(seq, b"hello from arceos publisher") {
+                    Ok(()) => {
+                        println!("ivc send seq={seq}");
+                        if subscriber_ready {
+                            notify_subscriber();
+                        }
+                        subscriber_ready = true;
+                        break;
+                    }
+                    Err(_) => waiter.wait_for_peer_event(),
+                }
+            }
+        }
+    }
+
+    /// Receives ring-B messages until PUBLISH_COUNT acks have arrived.
+    /// Subscriber data messages (kind `Request`) share ring B with acks, so
+    /// only `Ack` messages count toward request completion.
+    fn receiver_task(region: &'static IvcRegion, waiter: &IvcPeerEventWaiter<'_>) {
+        let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
+        let mut ack_count = 0u64;
+        loop {
+            match region.try_recv_ack(&mut payload) {
+                Ok(Some(msg)) => {
+                    let text = core::str::from_utf8(&payload[..msg.len()]).unwrap_or("<non-utf8>");
+                    match msg.kind() {
+                        IvcMessageKind::Ack => {
+                            ack_count += 1;
+                            println!("ivc ack seq={} msg={text}", msg.sequence());
+                            if ack_count >= PUBLISH_COUNT {
+                                return;
+                            }
+                        }
+                        IvcMessageKind::Request => {
+                            println!("ivc recv sub data seq={} msg={text}", msg.sequence());
+                        }
+                    }
+                }
+                Ok(None) => waiter.wait_for_peer_event(),
+                Err(err) => {
+                    println!("ivc recv ack error {err:?}");
                     return;
                 }
             }

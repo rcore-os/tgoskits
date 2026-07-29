@@ -19,7 +19,7 @@ mod subscriber {
         cell::UnsafeCell,
         option::Option::{None, Some},
         result::Result::{Err, Ok},
-        sync::atomic::AtomicU64,
+        sync::atomic::{AtomicU64, Ordering},
     };
 
     use ax_std::{
@@ -27,14 +27,18 @@ mod subscriber {
             irq,
             mem::{PhysAddr, VirtAddr, virt_to_phys},
         },
-        println,
+        println, thread,
     };
     use axhvc::ivc::{self, IvcGuestPhysAddr};
     use axivc::{IVC_SLOT_PAYLOAD_SIZE, IvcPeerEventWaiter, IvcRegion, record_peer_event};
 
     const MAX_SUBSCRIBE_ATTEMPTS: usize = 80;
     const PASS_SEQUENCE: u64 = 5;
+    const SUBSCRIBE_DATA_COUNT: u64 = 3;
     static NOTIFY_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
+    /// Highest publisher sequence received so far. Publisher sequences are
+    /// contiguous, so one monotonic counter covers every pending ack.
+    static HIGHEST_RECV_SEQ: AtomicU64 = AtomicU64::new(0);
 
     mod demo_config {
         pub const CHANNEL_KEY: usize = 0x4956_4301;
@@ -44,7 +48,8 @@ mod subscriber {
     }
 
     pub fn run() {
-        let waiter = IvcPeerEventWaiter::new(register_notify_irq(), &NOTIFY_IRQ_COUNT);
+        let irq_enabled = register_notify_irq();
+        let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
         let Some((shm_base_gpa, shm_size)) = subscribe_with_retry(&waiter) else {
             println!("ivc subscribe failed: retry limit reached");
             return;
@@ -77,7 +82,25 @@ mod subscriber {
             println!("ivc subscribe failed: unsupported phase-2 protocol header");
             return;
         }
-        run_request_ack_demo(region, &waiter);
+
+        let region: &'static IvcRegion = region;
+
+        // Each task owns its waiter: `IvcPeerEventWaiter` tracks the observed
+        // event count internally, so sharing one waiter would let one task
+        // consume IRQ observations meant to wake the other.
+        let sender = thread::spawn(move || {
+            let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
+            sender_task(region, &waiter);
+        });
+        let receiver = thread::spawn(move || {
+            let waiter = IvcPeerEventWaiter::new(irq_enabled, &NOTIFY_IRQ_COUNT);
+            receiver_task(region, &waiter);
+        });
+
+        sender.join().expect("sender thread panicked");
+        receiver.join().expect("receiver thread panicked");
+
+        println!("ivc subscriber full-duplex demo complete");
     }
 
     fn subscribe_with_retry(waiter: &IvcPeerEventWaiter<'_>) -> Option<(usize, usize)> {
@@ -105,6 +128,7 @@ mod subscriber {
         None
     }
 
+    #[allow(dead_code)]
     fn run_request_ack_demo(region: &'static IvcRegion, waiter: &IvcPeerEventWaiter<'_>) {
         let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
         loop {
@@ -128,6 +152,7 @@ mod subscriber {
         }
     }
 
+    #[allow(dead_code)]
     fn send_ack_when_ready(
         region: &'static IvcRegion,
         sequence: u64,
@@ -140,6 +165,78 @@ mod subscriber {
                     return;
                 }
                 Err(_) => waiter.wait_for_peer_event(),
+            }
+        }
+    }
+
+    /// Sends subscriber data messages and acks of publisher data on ring B.
+    /// Skips notification on the first data send because the publisher may not
+    /// be ready to receive the notify yet. Acks every publisher sequence seen
+    /// in `HIGHEST_RECV_SEQ` in order, so no ack is lost when several
+    /// publisher messages arrive between two sender iterations.
+    fn sender_task(region: &'static IvcRegion, waiter: &IvcPeerEventWaiter<'_>) {
+        let mut sent_data = 0u64;
+        let mut last_acked_seq = 0u64;
+        let mut publisher_ready = false;
+
+        loop {
+            if sent_data < SUBSCRIBE_DATA_COUNT {
+                match region.send_data_to_publisher(sent_data + 1, b"hello from arceos subscriber")
+                {
+                    Ok(()) => {
+                        sent_data += 1;
+                        println!("ivc send data seq={sent_data}");
+                        if publisher_ready {
+                            notify_publisher();
+                        }
+                        publisher_ready = true;
+                    }
+                    Err(_) => { /* ring full, will retry */ }
+                }
+            }
+
+            let highest = HIGHEST_RECV_SEQ.load(Ordering::Acquire);
+            let mut acked_any = false;
+            while last_acked_seq < highest {
+                match region.send_ack(last_acked_seq + 1, b"ack from arceos subscriber") {
+                    Ok(()) => {
+                        last_acked_seq += 1;
+                        acked_any = true;
+                        println!("ivc ack pub seq={last_acked_seq}");
+                    }
+                    Err(_) => break, // ring full, will retry
+                }
+            }
+            if acked_any {
+                notify_publisher();
+            }
+
+            if sent_data >= SUBSCRIBE_DATA_COUNT && last_acked_seq >= PASS_SEQUENCE {
+                return;
+            }
+
+            waiter.wait_for_peer_event();
+        }
+    }
+
+    /// Receives publisher data messages from ring A.
+    fn receiver_task(region: &'static IvcRegion, waiter: &IvcPeerEventWaiter<'_>) {
+        let mut payload = [0u8; IVC_SLOT_PAYLOAD_SIZE];
+        loop {
+            match region.try_recv_request(&mut payload) {
+                Ok(Some(msg)) => {
+                    let text = core::str::from_utf8(&payload[..msg.len()]).unwrap_or("<non-utf8>");
+                    println!("ivc recv pub data seq={} msg={text}", msg.sequence());
+                    HIGHEST_RECV_SEQ.store(msg.sequence(), Ordering::Release);
+                    if msg.sequence() >= PASS_SEQUENCE {
+                        return;
+                    }
+                }
+                Ok(None) => waiter.wait_for_peer_event(),
+                Err(err) => {
+                    println!("ivc recv error {err:?}");
+                    return;
+                }
             }
         }
     }

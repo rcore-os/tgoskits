@@ -27,6 +27,12 @@ pub struct IvcRegion {
     subscriber_to_publisher: IvcRing,
 }
 
+// SAFETY: The two rings (publisher_to_subscriber and subscriber_to_publisher)
+// are independent SPSC rings. Each ring has exactly one writer and one
+// reader thread. The header fields are either initialized once before
+// sharing or atomic. Concurrent &IvcRegion access across threads is safe.
+unsafe impl Sync for IvcRegion {}
+
 impl IvcRegion {
     /// Initializes the protocol region and preserves the Axvisor IVC header.
     pub fn initialize(&mut self, publisher_id: usize, key: usize) {
@@ -61,6 +67,16 @@ impl IvcRegion {
     /// Receives one publisher-to-subscriber message.
     pub fn try_recv_request(&self, payload: &mut [u8]) -> Result<Option<IvcMessage>, IvcRingError> {
         self.publisher_to_subscriber.try_recv(payload)
+    }
+
+    /// Sends one subscriber-to-publisher data message.
+    pub fn send_data_to_publisher(
+        &self,
+        sequence: u64,
+        payload: &[u8],
+    ) -> Result<(), IvcRingError> {
+        self.subscriber_to_publisher
+            .send(IvcMessageKind::Request, sequence, payload)
     }
 
     /// Sends one subscriber-to-publisher acknowledgement.
