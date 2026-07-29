@@ -112,6 +112,17 @@ impl ThreadHandle {
         self.core.runtime_snapshot(now_ns)
     }
 
+    /// Returns the physical CPU that must cross a scheduler boundary.
+    ///
+    /// Unlike direct wake placement, this snapshot remains on the source CPU
+    /// until switch tail releases the outgoing context. A task-context caller
+    /// can therefore publish state, take this snapshot, and rendezvous with the
+    /// returned CPU; either the thread is still active there or it crossed a
+    /// scheduler boundary after the publication.
+    pub fn scheduler_fence_cpu(&self) -> Option<CpuId> {
+        self.core.sched().scheduler_fence_cpu()
+    }
+
     pub(crate) fn sleep_timer(&self) -> &TaskDeadlineNode {
         &self.core.sleep_timer
     }
