@@ -6,6 +6,8 @@
 //! the backing pages and asks `kbpf_basic` to initialize the
 //! `perf_event_mmap_page` header.
 
+mod access;
+mod access_policy;
 pub mod bpf;
 mod control;
 #[cfg(target_arch = "aarch64")]
@@ -80,8 +82,9 @@ use kbpf_basic::{
 #[cfg(target_arch = "aarch64")]
 use self::output::validate_output_redirect;
 use self::{
+    access::ResolvedPerfTarget,
     control::PerfControl,
-    target::{PerfOpenFlags, PerfTarget},
+    target::{PerfOpenFlags, PerfTarget, PerfTargetError},
 };
 use crate::{
     ebpf::{error::BpfResultExt, transform::EbpfKernelAuxiliary},
@@ -518,54 +521,80 @@ pub fn perf_event_open(
     if flags.contains(PerfOpenFlags::PID_CGROUP) {
         return Err(AxError::Unsupported);
     }
-    let target = PerfTarget::parse(pid, cpu, ax_runtime::hal::cpu_num())
-        .map_err(|_| AxError::InvalidInput)?;
+    let target = PerfTarget::parse(pid, cpu).map_err(|error| match error {
+        PerfTargetError::InvalidTuple => AxError::InvalidInput,
+        PerfTargetError::NoSuchProcess => AxError::NoSuchProcess,
+    })?;
+    let target = ResolvedPerfTarget::resolve(target, ax_runtime::hal::cpu_num())?;
 
-    // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`, plus the
-    // dynamic ARM PMUv3 type `hw::ARMV8_PMUV3_PERF_TYPE` the real `perf` tool
-    // resolves from sysfs) must be dispatched before
-    // `PerfProbeArgs::try_from_perf_attr`, which maps any non-probe type through
-    // `perf_sw_ids` and rejects hardware configs with `EINVAL`.
-    let event: Box<dyn PerfEventOps> = if attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
+    // Starry does not yet deliver synchronous perf SIGTRAP notifications.
+    // Reject the capability explicitly instead of accepting an event whose
+    // signal side effect would be silently missing. The access policy still
+    // models Linux's CAP_KILL rule so enabling the feature cannot bypass it.
+    if attr.sigtrap() != 0 {
+        return Err(AxError::Unsupported);
+    }
+
+    let is_hardware = attr.type_ == PerfTypeId::PERF_TYPE_HARDWARE as u32
         || attr.type_ == PerfTypeId::PERF_TYPE_RAW as u32
-        || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE
-    {
-        Box::new(hw::perf_event_open_hw(attr, target)?)
+        || attr.type_ == hw::ARMV8_PMUV3_PERF_TYPE;
+    let validated_hw = is_hardware
+        .then(|| hw::validate_perf_event_open_hw(attr, target.kind()))
+        .transpose()?;
+    let probe_args = if is_hardware {
+        None
     } else {
-        let args = PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
-            attr,
-            pid,
-            cpu,
-            group_fd,
-            flags.bits(),
+        Some(
+            PerfProbeArgs::try_from_perf_attr::<EbpfKernelAuxiliary>(
+                attr,
+                pid,
+                cpu,
+                group_fd,
+                flags.bits(),
+            )
+            .into_ax_result()?,
         )
-        .into_ax_result()?;
-        match args.type_ {
-            PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
-            PerfTypeId::PERF_TYPE_SOFTWARE => Box::new(bpf::perf_event_open_bpf(args)),
-            PerfTypeId::PERF_TYPE_TRACEPOINT => {
-                Box::new(tracepoint::perf_event_open_tracepoint(args)?)
-            }
-            PerfTypeId::PERF_TYPE_UPROBE => Box::new(uprobe::perf_event_open_uprobe(args)?),
-            _ => {
-                warn!("perf_event_open: unsupported type {:?}", args.type_);
-                return Err(AxError::Unsupported);
-            }
-        }
     };
-    let event_arc: Arc<dyn FileLike> = Arc::new(PerfEvent::new(event)?);
-    // Honour PERF_FLAG_FD_CLOEXEC: Linux opens the perf fd with O_CLOEXEC when
-    // the caller sets this flag, otherwise the fd survives execve.
-    let cloexec = flags.contains(PerfOpenFlags::FD_CLOEXEC);
-    let fd = add_file_like(event_arc.clone(), cloexec)?;
 
-    PERF_FILE
-        .get()
-        .expect("perf subsystem not initialized")
-        .lock()
-        .insert(fd as usize, Arc::downgrade(&event_arc));
+    target.with_authorized(attr.sigtrap() != 0, |target| {
+        // Hardware-PMU events (`PERF_TYPE_HARDWARE` / `PERF_TYPE_RAW`, plus
+        // the dynamic ARM PMUv3 type `hw::ARMV8_PMUV3_PERF_TYPE`) bypass
+        // `PerfProbeArgs`, which maps non-probe configs through `perf_sw_ids`.
+        let event: Box<dyn PerfEventOps> = if is_hardware {
+            Box::new(hw::perf_event_open_hw(
+                attr,
+                target,
+                validated_hw.expect("hardware perf open has validated attributes"),
+            )?)
+        } else {
+            let args = probe_args.expect("non-hardware perf open has validated probe arguments");
+            match args.type_ {
+                PerfTypeId::PERF_TYPE_KPROBE => Box::new(kprobe::perf_event_open_kprobe(args)?),
+                PerfTypeId::PERF_TYPE_SOFTWARE => Box::new(bpf::perf_event_open_bpf(args)),
+                PerfTypeId::PERF_TYPE_TRACEPOINT => {
+                    Box::new(tracepoint::perf_event_open_tracepoint(args)?)
+                }
+                PerfTypeId::PERF_TYPE_UPROBE => Box::new(uprobe::perf_event_open_uprobe(args)?),
+                _ => {
+                    warn!("perf_event_open: unsupported type {:?}", args.type_);
+                    return Err(AxError::Unsupported);
+                }
+            }
+        };
+        let event_arc: Arc<dyn FileLike> = Arc::new(PerfEvent::new(event)?);
+        // Honour PERF_FLAG_FD_CLOEXEC: Linux opens the perf fd with O_CLOEXEC
+        // when the caller sets this flag, otherwise the fd survives execve.
+        let cloexec = flags.contains(PerfOpenFlags::FD_CLOEXEC);
+        let fd = add_file_like(event_arc.clone(), cloexec)?;
 
-    Ok(fd as isize)
+        PERF_FILE
+            .get()
+            .expect("perf subsystem not initialized")
+            .lock()
+            .insert(fd as usize, Arc::downgrade(&event_arc));
+
+        Ok(fd as isize)
+    })
 }
 
 /// Map fd → weak<PerfEvent> so `bpf_perf_event_output` can locate the
