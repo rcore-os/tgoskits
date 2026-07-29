@@ -255,9 +255,30 @@ pub fn systick_irq_is_enabled() -> bool {
     }
 }
 
-pub fn systick_set_interval(ticks: usize) {
-    match timer::aarch64_timer_mode() {
-        ArchTimerMode::El1Virt => CNTV_TVAL_EL0.set(ticks as u64),
-        ArchTimerMode::El1Phys | ArchTimerMode::El2HypPhys => CNTP_TVAL_EL0.set(ticks as u64),
+struct El1TimerRegisters;
+
+impl timer::aarch64_deadline::el1::TimerRegisters for El1TimerRegisters {
+    fn read_virtual_counter(&self) -> u64 {
+        CNTVCT_EL0.get()
     }
+
+    fn read_physical_counter(&self) -> u64 {
+        CNTPCT_EL0.get()
+    }
+
+    fn write_virtual_compare(&self, deadline: u64) {
+        CNTV_CVAL_EL0.set(deadline);
+    }
+
+    fn write_physical_compare(&self, deadline: u64) {
+        CNTP_CVAL_EL0.set(deadline);
+    }
+}
+
+pub fn systick_set_interval(ticks: usize) {
+    timer::aarch64_deadline::el1::program(
+        &El1TimerRegisters,
+        timer::aarch64_timer_mode(),
+        ticks as u64,
+    );
 }
