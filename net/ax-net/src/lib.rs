@@ -494,10 +494,16 @@ fn acquire_poll_ownership(
     }
 }
 
+fn yield_poll_owner() {
+    ax_task::yield_current_cpu().unwrap_or_else(|error| {
+        panic!("failed to yield while waiting for the net poll owner: {error}")
+    });
+}
+
 fn poll_until_idle(ownership: PollOwnership) {
     POLL_AGAIN.store(true, Ordering::Release);
     loop {
-        if !acquire_poll_ownership(&POLLING_INTERFACES, ownership, ax_task::yield_now) {
+        if !acquire_poll_ownership(&POLLING_INTERFACES, ownership, yield_poll_owner) {
             return;
         }
 
