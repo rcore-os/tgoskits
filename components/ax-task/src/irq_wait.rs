@@ -4,12 +4,14 @@
 //! that thread performs any wait-queue fan-out in ordinary task context.
 
 use alloc::boxed::Box;
+#[cfg(test)]
+use core::sync::atomic::AtomicBool;
 use core::{
     marker::PhantomPinned,
     mem::ManuallyDrop,
     pin::Pin,
     ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 
 use crate::ThreadWakeHandle;
@@ -17,6 +19,7 @@ use crate::ThreadWakeHandle;
 const REGISTRATION_PHASE_BITS: u32 = 2;
 const REGISTRATION_PHASE_MASK: u64 = (1 << REGISTRATION_PHASE_BITS) - 1;
 const REGISTRATION_GENERATION_MAX: u64 = u64::MAX >> REGISTRATION_PHASE_BITS;
+const IRQ_NOTIFY_CAS_BUDGET: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u64)]
@@ -32,6 +35,15 @@ const fn registration_state(generation: u64, phase: RegistrationPhase) -> u64 {
 
 const fn registration_generation(state: u64) -> u64 {
     state >> REGISTRATION_PHASE_BITS
+}
+
+#[repr(align(8))]
+struct PendingWaiterSentinel;
+
+static PENDING_WAITER_SENTINEL: PendingWaiterSentinel = PendingWaiterSentinel;
+
+fn pending_waiter() -> *mut IrqWaitNode {
+    ptr::from_ref(&PENDING_WAITER_SENTINEL).cast_mut().cast()
 }
 
 fn registration_phase(state: u64) -> RegistrationPhase {
@@ -358,16 +370,22 @@ pub enum IrqNotifyResult {
 /// Pending-bit plus single-waiter hard-IRQ event cell.
 #[derive(Debug)]
 pub struct IrqWaitCell {
-    pending: AtomicBool,
     waiter: AtomicPtr<IrqWaitNode>,
+    #[cfg(test)]
+    register_published: AtomicBool,
+    #[cfg(test)]
+    pause_after_register_publish: AtomicBool,
 }
 
 impl IrqWaitCell {
     /// Creates an empty notification cell.
     pub const fn new() -> Self {
         Self {
-            pending: AtomicBool::new(false),
             waiter: AtomicPtr::new(ptr::null_mut()),
+            #[cfg(test)]
+            register_published: AtomicBool::new(false),
+            #[cfg(test)]
+            pause_after_register_publish: AtomicBool::new(false),
         }
     }
 
@@ -386,39 +404,47 @@ impl IrqWaitCell {
             cell: self,
         };
         let registration_ptr = registration.get_ref() as *const IrqWaitNode as *mut _;
-        if self
-            .waiter
-            .compare_exchange(
+        let pending = pending_waiter();
+        let mut observed = self.waiter.load(Ordering::Acquire);
+        loop {
+            if observed == pending {
+                match self.waiter.compare_exchange(
+                    pending,
+                    ptr::null_mut(),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => {
+                        registration.cancel(generation);
+                        return IrqRegisterResult::ConsumedPending;
+                    }
+                    Err(current) => {
+                        observed = current;
+                        continue;
+                    }
+                }
+            }
+            if !observed.is_null() {
+                registration.cancel(generation);
+                return IrqRegisterResult::Occupied;
+            }
+            match self.waiter.compare_exchange(
                 ptr::null_mut(),
                 registration_ptr,
                 Ordering::Release,
                 Ordering::Acquire,
-            )
-            .is_err()
-        {
-            registration.cancel(generation);
-            return IrqRegisterResult::Occupied;
+            ) {
+                Ok(_) => break,
+                Err(current) => observed = current,
+            }
         }
 
-        if self.pending.swap(false, Ordering::AcqRel) {
-            let consumed_here = self
-                .waiter
-                .compare_exchange(
-                    registration_ptr,
-                    ptr::null_mut(),
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_ok();
-            if consumed_here {
-                // The caller is already running and observes
-                // `ConsumedPending` synchronously. Publishing a scheduler wake
-                // here would outlive this event and could coalesce with the
-                // next park attempt.
-                registration.cancel(generation);
-                return IrqRegisterResult::ConsumedPending;
+        #[cfg(test)]
+        {
+            self.register_published.store(true, Ordering::Release);
+            while self.pause_after_register_publish.load(Ordering::Acquire) {
+                core::hint::spin_loop();
             }
-            return IrqRegisterResult::NotificationInFlight(token);
         }
 
         if self.waiter.load(Ordering::Acquire) == registration_ptr {
@@ -461,38 +487,81 @@ impl IrqWaitCell {
 
     /// Wakes the sole registered thread or publishes one coalesced pending bit.
     ///
-    /// This operation performs a bounded number of atomics and at most one trusted
-    /// direct wake. It never scans a wait queue or allocates.
+    /// This operation performs a bounded number of atomics and at most one
+    /// trusted direct wake. After repeated contention, it atomically installs
+    /// the sticky pending state and may retain one harmless extra service pass
+    /// after waking the displaced waiter. It never scans a wait queue or
+    /// allocates.
     pub fn notify(&self) -> IrqNotifyResult {
-        let waiter = self.waiter.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !waiter.is_null() {
-            unsafe {
-                // The cell owns one pinned registration until swap removes it.
-                Self::notify_registration(&*waiter);
+        let pending = pending_waiter();
+        let mut observed = self.waiter.load(Ordering::Acquire);
+        for _ in 0..IRQ_NOTIFY_CAS_BUDGET {
+            if observed == pending {
+                match self.waiter.compare_exchange(
+                    pending,
+                    pending,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return IrqNotifyResult::Pending,
+                    Err(current) => {
+                        observed = current;
+                        continue;
+                    }
+                }
             }
-            return IrqNotifyResult::Notified;
+            if observed.is_null() {
+                match self.waiter.compare_exchange(
+                    ptr::null_mut(),
+                    pending,
+                    Ordering::Release,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return IrqNotifyResult::Pending,
+                    Err(current) => {
+                        observed = current;
+                        continue;
+                    }
+                }
+            }
+            match self.waiter.compare_exchange(
+                observed,
+                ptr::null_mut(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(waiter) => {
+                    unsafe {
+                        // The cell owns one pinned registration until the
+                        // successful transition removes it. The pending
+                        // sentinel is handled before this branch and is never
+                        // dereferenced.
+                        Self::notify_registration(&*waiter);
+                    }
+                    return IrqNotifyResult::Notified;
+                }
+                Err(current) => observed = current,
+            }
         }
 
-        self.pending.store(true, Ordering::Release);
-
-        // Close the null-observation/register-publication race: either this pass
-        // takes the newly published waiter, or register observes the pending bit.
-        let waiter = self.waiter.swap(ptr::null_mut(), Ordering::AcqRel);
-        if waiter.is_null() {
-            IrqNotifyResult::Pending
-        } else {
-            self.pending.store(false, Ordering::Release);
-            unsafe {
-                // The second swap owns the single pinned registration as above.
-                Self::notify_registration(&*waiter);
-            }
-            IrqNotifyResult::Notified
+        // Hard IRQ work remains wait-free under pathological cross-CPU churn.
+        // Keeping the sentinel after displacing a waiter may cause one
+        // task-context recheck, but it cannot lose the notification.
+        let waiter = self.waiter.swap(pending, Ordering::AcqRel);
+        if waiter.is_null() || waiter == pending {
+            return IrqNotifyResult::Pending;
         }
+        unsafe {
+            // The swap owns the displaced pinned registration. The pending
+            // sentinel remains installed and is never dereferenced.
+            Self::notify_registration(&*waiter);
+        }
+        IrqNotifyResult::Notified
     }
 
     /// Reports whether an IRQ is coalesced for the next registration.
     pub fn is_pending(&self) -> bool {
-        self.pending.load(Ordering::Acquire)
+        self.waiter.load(Ordering::Acquire) == pending_waiter()
     }
 
     fn notify_registration(registration: &IrqWaitNode) {

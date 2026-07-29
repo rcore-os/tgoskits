@@ -671,22 +671,23 @@ fn stale_task_deadline_publication_cannot_replace_a_newer_generation() {
 
 #[test]
 fn irq_wait_registration_racing_notify_has_exactly_one_winner() {
+    const EMPTY: usize = 0;
+    const WAITER: usize = 1;
+    const PENDING: usize = 2;
     const DETACHED_GENERATION_0: usize = 0;
     const DETACHED_GENERATION_1: usize = 1 << 2;
     const ATTACHED_GENERATION_1: usize = DETACHED_GENERATION_1 | 1;
     const NOTIFYING_GENERATION_1: usize = DETACHED_GENERATION_1 | 2;
 
     loom::model(|| {
-        let waiter = Arc::new(AtomicUsize::new(0));
+        let waiter = Arc::new(AtomicUsize::new(EMPTY));
         let registration = Arc::new(AtomicUsize::new(DETACHED_GENERATION_0));
-        let pending = Arc::new(AtomicBool::new(false));
         let wakes = Arc::new(AtomicUsize::new(0));
         let synchronous_consumes = Arc::new(AtomicUsize::new(0));
 
         let register = {
             let waiter = Arc::clone(&waiter);
             let registration = Arc::clone(&registration);
-            let pending = Arc::clone(&pending);
             let synchronous_consumes = Arc::clone(&synchronous_consumes);
             thread::spawn(move || {
                 assert!(
@@ -699,77 +700,110 @@ fn irq_wait_registration_racing_notify_has_exactly_one_winner() {
                         )
                         .is_ok()
                 );
-                assert!(
-                    waiter
-                        .compare_exchange(0, 1, Ordering::Release, Ordering::Acquire)
-                        .is_ok()
-                );
-
-                if pending.swap(false, Ordering::AcqRel)
-                    && waiter
-                        .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                {
-                    registration
-                        .compare_exchange(
-                            ATTACHED_GENERATION_1,
-                            DETACHED_GENERATION_1,
-                            Ordering::Release,
+                let mut observed = waiter.load(Ordering::Acquire);
+                loop {
+                    if observed == PENDING {
+                        match waiter.compare_exchange(
+                            PENDING,
+                            EMPTY,
+                            Ordering::AcqRel,
                             Ordering::Acquire,
-                        )
-                        .unwrap();
-                    synchronous_consumes.fetch_add(1, Ordering::Release);
+                        ) {
+                            Ok(_) => {
+                                registration
+                                    .compare_exchange(
+                                        ATTACHED_GENERATION_1,
+                                        DETACHED_GENERATION_1,
+                                        Ordering::Release,
+                                        Ordering::Acquire,
+                                    )
+                                    .unwrap();
+                                synchronous_consumes.fetch_add(1, Ordering::Release);
+                                return;
+                            }
+                            Err(current) => {
+                                observed = current;
+                                continue;
+                            }
+                        }
+                    }
+                    assert_eq!(observed, EMPTY);
+                    match waiter.compare_exchange(
+                        EMPTY,
+                        WAITER,
+                        Ordering::Release,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => return,
+                        Err(current) => observed = current,
+                    }
                 }
             })
         };
         let notify = {
             let waiter = Arc::clone(&waiter);
             let registration = Arc::clone(&registration);
-            let pending = Arc::clone(&pending);
             let wakes = Arc::clone(&wakes);
             thread::spawn(move || {
-                let first = waiter.swap(0, Ordering::AcqRel);
-                if first == 1 {
-                    registration
-                        .compare_exchange(
-                            ATTACHED_GENERATION_1,
-                            NOTIFYING_GENERATION_1,
+                let mut observed = waiter.load(Ordering::Acquire);
+                loop {
+                    if observed == PENDING {
+                        match waiter.compare_exchange(
+                            PENDING,
+                            PENDING,
                             Ordering::AcqRel,
                             Ordering::Acquire,
-                        )
-                        .unwrap();
-                    wakes.fetch_add(1, Ordering::Release);
-                    registration
-                        .compare_exchange(
-                            NOTIFYING_GENERATION_1,
-                            DETACHED_GENERATION_1,
+                        ) {
+                            Ok(_) => return,
+                            Err(current) => {
+                                observed = current;
+                                continue;
+                            }
+                        }
+                    }
+                    if observed == EMPTY {
+                        match waiter.compare_exchange(
+                            EMPTY,
+                            PENDING,
                             Ordering::Release,
                             Ordering::Acquire,
-                        )
-                        .unwrap();
-                    return;
-                }
-
-                pending.store(true, Ordering::Release);
-                if waiter.swap(0, Ordering::AcqRel) == 1 {
-                    pending.store(false, Ordering::Release);
-                    registration
-                        .compare_exchange(
-                            ATTACHED_GENERATION_1,
-                            NOTIFYING_GENERATION_1,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        )
-                        .unwrap();
-                    wakes.fetch_add(1, Ordering::Release);
-                    registration
-                        .compare_exchange(
-                            NOTIFYING_GENERATION_1,
-                            DETACHED_GENERATION_1,
-                            Ordering::Release,
-                            Ordering::Acquire,
-                        )
-                        .unwrap();
+                        ) {
+                            Ok(_) => return,
+                            Err(current) => {
+                                observed = current;
+                                continue;
+                            }
+                        }
+                    }
+                    assert_eq!(observed, WAITER);
+                    match waiter.compare_exchange(
+                        WAITER,
+                        EMPTY,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => {
+                            registration
+                                .compare_exchange(
+                                    ATTACHED_GENERATION_1,
+                                    NOTIFYING_GENERATION_1,
+                                    Ordering::AcqRel,
+                                    Ordering::Acquire,
+                                )
+                                .unwrap();
+                            wakes.fetch_add(1, Ordering::Release);
+                            registration
+                                .compare_exchange(
+                                    NOTIFYING_GENERATION_1,
+                                    DETACHED_GENERATION_1,
+                                    Ordering::Release,
+                                    Ordering::Acquire,
+                                )
+                                .unwrap();
+                            return;
+                        }
+                        Err(current) => observed = current,
+                    }
                 }
             })
         };
@@ -780,9 +814,78 @@ fn irq_wait_registration_racing_notify_has_exactly_one_winner() {
             wakes.load(Ordering::Acquire) + synchronous_consumes.load(Ordering::Acquire),
             1
         );
-        assert_eq!(waiter.load(Ordering::Acquire), 0);
+        assert_eq!(waiter.load(Ordering::Acquire), EMPTY);
         assert_eq!(registration.load(Ordering::Acquire), DETACHED_GENERATION_1);
-        assert!(!pending.load(Ordering::Acquire));
+    });
+}
+
+#[test]
+fn second_irq_during_an_in_flight_wake_stays_pending() {
+    const EMPTY: usize = 0;
+    const PENDING: usize = 2;
+    const DETACHED_GENERATION_1: usize = 1 << 2;
+    const NOTIFYING_GENERATION_1: usize = DETACHED_GENERATION_1 | 2;
+
+    loom::model(|| {
+        // The first IRQ has removed the published waiter and owns its wake
+        // payload. Registration completion may now only observe the cell; it
+        // must never clear a second IRQ's pending sentinel.
+        let waiter = Arc::new(AtomicUsize::new(EMPTY));
+        let registration = Arc::new(AtomicUsize::new(NOTIFYING_GENERATION_1));
+
+        let first_irq_and_register_tail = {
+            let waiter = Arc::clone(&waiter);
+            let registration = Arc::clone(&registration);
+            thread::spawn(move || {
+                let observed = waiter.load(Ordering::Acquire);
+                assert!(matches!(observed, EMPTY | PENDING));
+                registration
+                    .compare_exchange(
+                        NOTIFYING_GENERATION_1,
+                        DETACHED_GENERATION_1,
+                        Ordering::Release,
+                        Ordering::Acquire,
+                    )
+                    .unwrap();
+            })
+        };
+        let second_irq = {
+            let waiter = Arc::clone(&waiter);
+            thread::spawn(move || {
+                let mut observed = waiter.load(Ordering::Acquire);
+                loop {
+                    if observed == PENDING {
+                        match waiter.compare_exchange(
+                            PENDING,
+                            PENDING,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        ) {
+                            Ok(_) => return,
+                            Err(current) => {
+                                observed = current;
+                                continue;
+                            }
+                        }
+                    }
+                    assert_eq!(observed, EMPTY);
+                    match waiter.compare_exchange(
+                        EMPTY,
+                        PENDING,
+                        Ordering::Release,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => return,
+                        Err(current) => observed = current,
+                    }
+                }
+            })
+        };
+
+        first_irq_and_register_tail.join().unwrap();
+        second_irq.join().unwrap();
+        assert_eq!(waiter.load(Ordering::Acquire), PENDING);
+        assert_eq!(registration.load(Ordering::Acquire), DETACHED_GENERATION_1);
     });
 }
 

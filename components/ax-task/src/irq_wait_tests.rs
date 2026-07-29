@@ -121,6 +121,85 @@ fn detached_registration_is_not_quiescent_until_irq_wake_returns() {
     token.try_quiesce().unwrap();
 }
 
+#[test]
+fn second_irq_during_registration_wake_remains_pending() {
+    struct BlockingWake {
+        entered: AtomicUsize,
+        release: AtomicUsize,
+    }
+
+    unsafe fn blocking_wake(data: usize) {
+        let state = unsafe { &*with_exposed_provenance::<BlockingWake>(data) };
+        state.entered.store(1, Ordering::Release);
+        while state.release.load(Ordering::Acquire) == 0 {
+            core::hint::spin_loop();
+        }
+    }
+
+    let cell = IrqWaitCell::new();
+    let state = Box::leak(Box::new(BlockingWake {
+        entered: AtomicUsize::new(0),
+        release: AtomicUsize::new(0),
+    }));
+    let wake = unsafe {
+        IrqWakeHandle::from_raw(
+            (state as *mut BlockingWake).expose_provenance(),
+            blocking_wake,
+        )
+    };
+    let registration = IrqWaitRegistration::new_test(wake);
+    cell.pause_after_register_publish
+        .store(true, Ordering::Release);
+
+    let (pending_survived, token) = std::thread::scope(|scope| {
+        let register = scope.spawn(|| cell.register(&registration));
+        while !cell.register_published.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+
+        let first_irq = scope.spawn(|| cell.notify());
+        while state.entered.load(Ordering::Acquire) == 0 {
+            std::thread::yield_now();
+        }
+        assert_eq!(cell.notify(), IrqNotifyResult::Pending);
+
+        cell.pause_after_register_publish
+            .store(false, Ordering::Release);
+        let token = match register.join().unwrap() {
+            IrqRegisterResult::NotificationInFlight(token) => token,
+            other => panic!("expected the first IRQ to own the registration, got {other:?}"),
+        };
+        let pending_survived = cell.is_pending();
+
+        state.release.store(1, Ordering::Release);
+        assert_eq!(first_irq.join().unwrap(), IrqNotifyResult::Notified);
+        (pending_survived, token)
+    });
+
+    token.try_quiesce().unwrap();
+    let consumed_by_next_registration = match cell.register(&registration) {
+        IrqRegisterResult::ConsumedPending => true,
+        IrqRegisterResult::Registered(token) => {
+            assert_eq!(cell.unregister(&token), IrqUnregisterResult::Detached);
+            token.try_quiesce().unwrap();
+            false
+        }
+        IrqRegisterResult::NotificationInFlight(token) => {
+            token.try_quiesce().unwrap();
+            false
+        }
+        IrqRegisterResult::Occupied => false,
+    };
+    assert!(
+        pending_survived,
+        "registration must not clear an IRQ published while another wake is in flight"
+    );
+    assert!(
+        consumed_by_next_registration,
+        "the next registration must consume the second IRQ"
+    );
+}
+
 fn expect_registered<'cell, 'registration>(
     result: IrqRegisterResult<'cell, 'registration>,
 ) -> IrqWaitToken<'cell, 'registration> {
