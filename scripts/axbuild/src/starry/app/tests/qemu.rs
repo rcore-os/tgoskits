@@ -758,7 +758,7 @@ fn apk_package_prebuilds_use_guest_apk_from_staging_root() {
 }
 
 #[test]
-fn nix_qemu_configs_use_dedicated_managed_rootfs() {
+fn nix_qemu_configs_use_dedicated_nvme_rootfs() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -783,6 +783,11 @@ fn nix_qemu_configs_use_dedicated_managed_rootfs() {
         assert!(
             !config.contains(&format!("rootfs-{arch}-alpine.img")),
             "{} must not pass the shared Alpine base image to the Nix prebuild",
+            config_path.display()
+        );
+        assert!(
+            config.contains("\"nvme,") && !config.contains("virtio-blk"),
+            "{} must attach its Starry root disk through the IRQ-driven NVMe path",
             config_path.display()
         );
     }
