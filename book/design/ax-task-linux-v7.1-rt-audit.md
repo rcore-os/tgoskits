@@ -12,8 +12,8 @@ Starry PID lifecycle fix from PR #1706. Its generation-specific
 the sole authority for PID visibility and reaping.
 
 The implementation snapshot immediately before this ledger update is
-`353355c9b789d2326d1302db775788c8be6dbbc4`: 104 commits and 633 paths relative
-to that base, with 75,643 insertions and 19,226 deletions. Every path in that
+`60e2b91015c59b8fb1742e6777b68f41cd7ebda5`: 106 commits and 633 paths relative
+to that base, with 75,737 insertions and 19,226 deletions. Every path in that
 range is assigned to one of the areas below. Driver work is limited to drivers
 and IRQ adapters already changed by the range, plus the minimum adjacent
 runtime boundary needed to repair them.
@@ -100,7 +100,7 @@ disposition of every row is:
 | Generic timers | Closed by CPU-affine task workers and bounded wake endpoints; ax-task contains no arbitrary timer callback API. |
 | Serial and driver IRQ | Closed for the branch-touched serial, vsock, and USB/xHCI paths: hard IRQ work is bounded and non-sleeping, while manager/topology work is task-owned. The upstream vsock credit observer limitation is tracked separately as #1724. |
 | Architecture idle | Closed by pending-work recheck and live injected timer/IPI window tests on all four architectures. |
-| Compatibility | Source and feature validation is closed; current-head end-to-end QEMU is a release gate recorded in the final validation section. |
+| Compatibility | Closed by source/feature validation and the final four-architecture ArceOS and Starry QEMU milestones recorded below. |
 
 ## Structural audit milestone
 
@@ -1216,7 +1216,7 @@ boundary because runtime offlining disables the physical source before final
 scheduler publication. No evidence justified a speculative second phase or
 timer-accounting cache.
 
-Current-head validation before the final QEMU milestone includes the
+The non-QEMU validation feeding the final milestone includes the
 deterministic perf migration red/green test, `cargo xtask clippy --package
 ax-task`, `cargo check -p starry-kernel --tests`, and all 22
 `starry-kernel` feature-clippy configurations. The directly compiled task-state
@@ -1234,8 +1234,8 @@ also proves that a pthread inherits the leader's nice value, changing the
 worker to nice 12 does not change the leader's nice 7, and
 `/proc/self/task/<tid>/stat` reports those two thread-local values before the
 leader exits. The complete package, formatting, static-symbol, and
-four-architecture QEMU results are appended after the final milestone run;
-historical results above are not substituted for them.
+four-architecture QEMU results are recorded in the final validation section
+below; historical results above are not substituted for them.
 
 ## Current-head Starry process closure and RISC-V milestone
 
@@ -1316,9 +1316,62 @@ At `353355c9b`, the complete RISC-V Starry milestone passed without exclusions:
 - formal markers: `STARRY_GROUPED_TESTS_PASSED`,
   `STARRY_TTY_INPUT_BURST_PASSED`, and `all starry qemu tests passed`.
 
-This supersedes the historical aggregate-timeout observation for RISC-V. The
-remaining aarch64, LoongArch64, and x86_64 runs are still release gates and
-must be recorded at their exact tested heads.
+This supersedes the historical aggregate-timeout observation for RISC-V.
+
+## Final architecture and tooling validation
+
+The first aarch64 milestone attempt exposed a compile-only defect in the Starry
+perf module split. The standard 22-check feature clippy matrix used the host
+target, so `cfg(target_arch = "aarch64")` excluded every task-PMU module. The
+formal qemu-rga build compiled those modules and found 24 visibility/path
+errors: implementation items had remained `pub(super)` inside their new child
+modules even though sibling modules consumed them through the task facade, and
+one lifecycle helper resolved `super::hw_allocation` from the wrong parent.
+
+The repaired boundary uses `pub(in crate::perf)` for capabilities shared only
+inside the perf subsystem. Task-private time helpers remain private, and no
+PMU implementation type was made public outside the crate. The exact
+qemu-rga release build then passed. All 22 standard feature-clippy checks
+passed, and an explicit
+`aarch64-unknown-none-softfloat` clippy check with
+`dynamic_debug,input,rga,smp,vsock` compiled the previously omitted ARM PMU
+code with warnings denied. Issue
+[#1773](https://github.com/rcore-os/tgoskits/issues/1773) tracks making this
+target-aware check a permanent CI capability rather than relying on the QEMU
+build phase.
+
+The final Starry QEMU matrix completed serially with no exclusions:
+
+| Architecture | Tested implementation | Runner cases | Formal result |
+| --- | --- | --- | --- |
+| RISC-V | `353355c9b` | system 1,738.44 s; tty burst 40.22 s | 2/2 passed |
+| AArch64 | `60e2b9101` | qemu-rga system 4.89 s; system 1,320.44 s; tty burst 15.96 s | 3/3 passed |
+| LoongArch64 | `60e2b9101` | system 943.42 s; tty burst 16.43 s | 2/2 passed |
+| x86_64 | `60e2b9101` | system 1,079.68 s; tty burst 14.15 s | 2/2 passed |
+
+Every runner reported `STARRY_GROUPED_TESTS_PASSED`,
+`STARRY_TTY_INPUT_BURST_PASSED`, and `all starry qemu tests passed`. The
+RISC-V implementation predates only the documentation commit and the
+AArch64-only perf visibility correction; neither changes code compiled into
+the RISC-V target.
+
+Together with the core-milestone ArceOS `rust/all` matrix, which reported all
+17 cases and `ArceOS test suite run OK!` on x86_64, RISC-V, AArch64, and
+LoongArch64, this closes the architecture release gate. The Starry runs cover
+the scheduler, remote wake, SMP futex, timer/clockevent, affinity, ptrace,
+clone/exec/exit, PID/zombie/pidfd/wait, signal interruption, PMU ownership,
+UART burst, and branch-touched USB IRQ paths in their integrated environments.
+
+The standard `starry-kernel` ktest path remains a separate infrastructure
+defect: both x86_64 and RISC-V bare-metal axtest builds incorrectly compile
+`log 0.4.33` with its std/default feature and fail before linking. Production
+Starry builds and all system QEMU groups above do not use that invalid
+dependency graph. Issue
+[#1772](https://github.com/rcore-os/tgoskits/issues/1772) records the exact
+commands, feature-graph evidence, and four-architecture acceptance criteria.
+The fatal-signal ordering regression remains compiled directly from its real
+source module until the standard ktest target is repaired; no test was skipped
+or weakened to hide the tooling failure.
 
 ## Completion rules
 
