@@ -87,9 +87,9 @@ fn set_idle_test_timer_irq_enabled(enabled: bool) {
 fn set_idle_test_timer_irq_enabled(_enabled: bool) {}
 
 fn exercise_irq_masked_idle_wake(target_cpu: usize, sender_cpu: usize) {
-    IDLE_TARGET_MASKED.store(false, Ordering::Relaxed);
-    IDLE_IPI_PUBLISHED.store(false, Ordering::Relaxed);
-    IDLE_IPI_ACKNOWLEDGED.store(false, Ordering::Relaxed);
+    IDLE_TARGET_MASKED.store(false, Ordering::Release);
+    IDLE_IPI_PUBLISHED.store(false, Ordering::Release);
+    IDLE_IPI_ACKNOWLEDGED.store(false, Ordering::Release);
 
     let target = thread::spawn(move || {
         pin_current_to_cpu(target_cpu);
