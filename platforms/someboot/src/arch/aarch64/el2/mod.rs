@@ -187,17 +187,13 @@ pub fn systick_irq_is_enabled() -> bool {
 struct El2TimerRegisters;
 
 impl timer::aarch64_deadline::el2::TimerRegisters for El2TimerRegisters {
-    fn read_physical_counter(&self) -> u64 {
-        CNTPCT_EL0.get()
-    }
-
-    fn write_hyp_physical_compare(&self, deadline: u64) {
-        // CNTHP_CVAL_EL2 is not exposed by aarch64-cpu's register bindings.
+    fn write_hyp_physical_interval(&self, interval_ticks: u64) {
+        // CNTHP_TVAL_EL2 is not exposed by aarch64-cpu's register bindings.
         // SAFETY: This adapter is compiled only for the `hv` EL2 path, where
-        // CNTHP_CVAL_EL2 is accessible. `program` derives `deadline` from the
-        // paired CNTPCT_EL0 physical counter before calling this method.
+        // CNTHP_TVAL_EL2 is accessible. `program` passes a relative interval in
+        // architectural counter ticks, matching the register's TVAL contract.
         unsafe {
-            core::arch::asm!("msr CNTHP_CVAL_EL2, {0:x}", in(reg) deadline);
+            core::arch::asm!("msr CNTHP_TVAL_EL2, {0:x}", in(reg) interval_ticks);
         }
     }
 }

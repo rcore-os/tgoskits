@@ -86,6 +86,7 @@ pub(crate) mod aarch64_deadline {
     ///
     /// Architectural counters and compare registers wrap together, so this must
     /// use wrapping rather than saturating arithmetic.
+    #[cfg(any(not(feature = "hv"), test))]
     pub(crate) const fn from_interval(current_ticks: u64, interval_ticks: u64) -> u64 {
         current_ticks.wrapping_add(interval_ticks)
     }
@@ -122,18 +123,12 @@ pub(crate) mod aarch64_deadline {
 
     #[cfg(any(feature = "hv", test))]
     pub(crate) mod el2 {
-        use super::from_interval;
-
         pub(crate) trait TimerRegisters {
-            fn read_physical_counter(&self) -> u64;
-            fn write_hyp_physical_compare(&self, deadline: u64);
+            fn write_hyp_physical_interval(&self, interval_ticks: u64);
         }
 
         pub(crate) fn program(registers: &impl TimerRegisters, interval_ticks: u64) {
-            registers.write_hyp_physical_compare(from_interval(
-                registers.read_physical_counter(),
-                interval_ticks,
-            ));
+            registers.write_hyp_physical_interval(interval_ticks);
         }
     }
 }
@@ -278,13 +273,12 @@ mod tests {
     }
 
     #[test]
-    fn el2_hyp_timer_uses_physical_counter_and_hyp_compare_register() {
-        let registers = RecordingEl2TimerRegisters::new(u64::MAX - 3);
+    fn el2_hyp_timer_programs_relative_interval() {
+        let registers = RecordingEl2TimerRegisters::new();
 
         el2::program(&registers, 8);
 
-        assert_eq!(registers.hyp_physical_compare.get(), Some(4));
-        assert_eq!(registers.physical_counter_reads.get(), 1);
+        assert_eq!(registers.hyp_physical_interval.get(), Some(8));
     }
 
     struct RecordingEl1TimerRegisters {
@@ -332,30 +326,20 @@ mod tests {
     }
 
     struct RecordingEl2TimerRegisters {
-        physical_counter: u64,
-        physical_counter_reads: Cell<usize>,
-        hyp_physical_compare: Cell<Option<u64>>,
+        hyp_physical_interval: Cell<Option<u64>>,
     }
 
     impl RecordingEl2TimerRegisters {
-        fn new(physical_counter: u64) -> Self {
+        fn new() -> Self {
             Self {
-                physical_counter,
-                physical_counter_reads: Cell::new(0),
-                hyp_physical_compare: Cell::new(None),
+                hyp_physical_interval: Cell::new(None),
             }
         }
     }
 
     impl El2TimerRegisters for RecordingEl2TimerRegisters {
-        fn read_physical_counter(&self) -> u64 {
-            self.physical_counter_reads
-                .set(self.physical_counter_reads.get() + 1);
-            self.physical_counter
-        }
-
-        fn write_hyp_physical_compare(&self, deadline: u64) {
-            self.hyp_physical_compare.set(Some(deadline));
+        fn write_hyp_physical_interval(&self, interval_ticks: u64) {
+            self.hyp_physical_interval.set(Some(interval_ticks));
         }
     }
 }
