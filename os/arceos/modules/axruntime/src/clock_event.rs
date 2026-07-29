@@ -150,9 +150,12 @@ impl LocalClockEvent {
         if now_ns < current.as_nanos() {
             return;
         }
-        self.periodic_deadline =
-            crate::next_periodic_deadline(current.as_nanos(), now_ns, interval_ns)
-                .and_then(ClockDeadline::from_nanos);
+        self.periodic_deadline = crate::clock_event_runtime::next_periodic_deadline(
+            current.as_nanos(),
+            now_ns,
+            interval_ns,
+        )
+        .and_then(ClockDeadline::from_nanos);
     }
 
     pub(crate) fn finish_firing(&mut self) -> ClockEventAction {

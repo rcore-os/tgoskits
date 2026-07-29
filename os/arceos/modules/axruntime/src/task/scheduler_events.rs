@@ -24,13 +24,13 @@ static TASK_TIMER_IRQ_COUNT: AtomicU64 = AtomicU64::new(0);
 /// CPU consumes the bit before acknowledging the matching scheduler epoch, so
 /// an unrelated callback IPI cannot clear scheduler delivery state.
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
-struct SchedulerIpiDoorbell {
+pub(super) struct SchedulerIpiDoorbell {
     pending: AtomicBool,
 }
 
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 impl SchedulerIpiDoorbell {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             pending: AtomicBool::new(false),
         }
@@ -39,11 +39,11 @@ impl SchedulerIpiDoorbell {
     /// Publishes delivery ownership and reports whether a new hardware edge is
     /// required. `false` means an older edge is still in flight and will consume
     /// this coalesced publication.
-    fn publish(&self) -> bool {
+    pub(super) fn publish(&self) -> bool {
         !self.pending.swap(true, Ordering::AcqRel)
     }
 
-    fn consume(&self) -> bool {
+    pub(super) fn consume(&self) -> bool {
         self.pending.swap(false, Ordering::AcqRel)
     }
 }
