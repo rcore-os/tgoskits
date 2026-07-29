@@ -32,6 +32,7 @@ mod capabilities;
 mod cpu_up;
 pub(crate) mod fdt;
 mod gic;
+mod gicv2;
 mod images;
 mod ipi;
 mod npt;

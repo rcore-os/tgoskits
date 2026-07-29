@@ -31,10 +31,7 @@ pub(crate) fn inject_interrupt(intid: ArmVirtualIntId) -> ArmVcpuResult {
             gich.enable();
             // SAFETY: ArmVirtualIntId excludes the GIC special INTID range.
             let virtual_id = unsafe { IntId::raw(intid.as_u32()) };
-            gich.set_virtual_interrupt(
-                0,
-                crate::arch::aarch64_gicv2::direct_injection_config(virtual_id),
-            );
+            gich.set_virtual_interrupt(0, super::gicv2::direct_injection_config(virtual_id));
             return Ok(());
         }
 
