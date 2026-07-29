@@ -118,7 +118,7 @@ fn board_default_target_picks_matching_build_config() {
         "build-riscv64gc-unknown-none-elf.toml",
         "target = \"riscv64gc-unknown-none-elf\"\nenv = {}\nfeatures = []\nlog = \"Info\"\n",
     );
-    write_board_default(
+    let board_build = write_board_default(
         root.path(),
         "orangepi-5-plus",
         "aarch64-unknown-none-softfloat",
@@ -127,6 +127,7 @@ fn board_default_target_picks_matching_build_config() {
     let case = resolve_board_case(root.path(), "demo", None).unwrap();
 
     assert_eq!(case.target, "aarch64-unknown-none-softfloat");
+    assert_eq!(case.build_config_path, board_build);
 }
 
 #[test]

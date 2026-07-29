@@ -9,7 +9,7 @@ use super::{
     StarryAppBoardCase,
     build_config::{
         collect_prefixed_toml_files, default_build_config_for_board_config,
-        discover_case_build_config, discover_optional_build_config,
+        discover_case_build_config,
     },
     discovery::{
         apps_starry_dir, available_case_names, resolve_case_relative_path, validate_case_name,
@@ -59,11 +59,7 @@ pub(crate) fn resolve_board_case(
     };
     let (build_config_path, target) =
         match default_build_config_for_board_config(workspace_root, &board_config_path)? {
-            Some((board_build_config, target)) => {
-                let build_config_path = discover_optional_build_config(&case_dir, &target)?
-                    .unwrap_or(board_build_config);
-                (build_config_path, target)
-            }
+            Some((board_build_config, target)) => (board_build_config, target),
             None => discover_case_build_config(&case_dir, None)?,
         };
 
