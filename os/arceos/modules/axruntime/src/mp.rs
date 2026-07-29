@@ -73,7 +73,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     crate::task::initialize_early_bootstrap_tls()
         .expect("failed to initialize secondary bootstrap TLS");
     #[cfg(all(feature = "tls", not(feature = "multitask")))]
-    super::init_tls();
+    super::bootstrap::init_tls();
 
     ENTERED_CPUS.fetch_add(1, Ordering::Release);
     info!("Secondary CPU {cpu_id} started.");
@@ -94,7 +94,7 @@ pub fn rust_main_secondary(cpu_id: usize) -> ! {
     // primary cannot enter user-visible init while remote CPUs still lack SGI
     // handlers or pending per-CPU IRQ enables.
     #[cfg(feature = "irq")]
-    super::init_percpu_irq(cpu_id);
+    super::interrupt_bootstrap::init_cpu(cpu_id);
 
     #[cfg(feature = "multitask")]
     let online_cpu = crate::task::publish_current_cpu_online()
