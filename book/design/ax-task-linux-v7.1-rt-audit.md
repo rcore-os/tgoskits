@@ -1008,6 +1008,22 @@ device helper. The deterministic credit-window tests cover exhaustion, peer
 forwarding, counter wrap, and peer-window shrink. The worker tests prove both
 publish-before-wake gate release and one device attempt under backpressure.
 
+The transport credit lifetime is now tied to an explicitly opened connection.
+Previously, a successful local disconnect left its `TxCreditBook` entry live,
+so the rdif transport could continue to advertise stale send capacity after
+the socket had published local shutdown. Removing that entry alone was
+insufficient because a late peer credit update used `entry().or_default()` and
+silently recreated it. Linux v7.1 `vsock_shutdown()` publishes the local
+shutdown state before calling the transport, and the virtio poll-out path
+requires an active, send-capable socket before reporting space. TGOSKits now
+opens credit only for connection establishment events, updates and accounts
+bytes only for a live entry, and retires the entry after the transport accepts
+local disconnect. The deterministic
+`successful_local_disconnect_retires_transmit_credit` and
+`late_peer_credit_cannot_reopen_a_locally_closed_connection` regressions
+failed respectively with stale capacity and a resurrected zero-capacity entry
+before the change.
+
 The upstream manager still consumes `CREDIT_REQUEST` internally even though
 its header carries valid peer credit. TGOSKits therefore cannot yet make the
 manager's private credit state the sole readiness source without copying the

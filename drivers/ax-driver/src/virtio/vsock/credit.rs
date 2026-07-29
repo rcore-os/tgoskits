@@ -29,14 +29,19 @@ impl TxCreditBook {
         buffer_allocation: u32,
         forward_count: u32,
     ) {
-        let credit = self.connections.entry(connection).or_default();
+        let Some(credit) = self.connections.get_mut(&connection) else {
+            return;
+        };
         credit.peer_buffer_allocation = buffer_allocation;
         credit.peer_forward_count = forward_count;
     }
 
-    pub(super) fn record_sent(&mut self, connection: VsockConnId, length: u32) {
-        let credit = self.connections.entry(connection).or_default();
+    pub(super) fn record_sent(&mut self, connection: VsockConnId, length: u32) -> bool {
+        let Some(credit) = self.connections.get_mut(&connection) else {
+            return false;
+        };
         credit.transmitted_count = credit.transmitted_count.wrapping_add(length);
+        true
     }
 
     pub(super) fn available(
@@ -71,7 +76,7 @@ mod tests {
         credits.update_peer(CONNECTION, 8 * 1024, 0);
 
         assert_eq!(credits.available(CONNECTION, 32 * 1024), Some(8 * 1024));
-        credits.record_sent(CONNECTION, 8 * 1024);
+        assert!(credits.record_sent(CONNECTION, 8 * 1024));
         assert_eq!(credits.available(CONNECTION, 32 * 1024), Some(0));
 
         credits.update_peer(CONNECTION, 8 * 1024, 4 * 1024);
@@ -83,7 +88,7 @@ mod tests {
         let mut credits = TxCreditBook::default();
         credits.open(CONNECTION);
         credits.update_peer(CONNECTION, 8 * 1024, 0);
-        credits.record_sent(CONNECTION, 6 * 1024);
+        assert!(credits.record_sent(CONNECTION, 6 * 1024));
 
         credits.update_peer(CONNECTION, 2 * 1024, 0);
 
@@ -95,9 +100,25 @@ mod tests {
         let mut credits = TxCreditBook::default();
         credits.open(CONNECTION);
         credits.update_peer(CONNECTION, 64, u32::MAX - 3);
-        credits.record_sent(CONNECTION, u32::MAX - 1);
-        credits.record_sent(CONNECTION, 4);
+        assert!(credits.record_sent(CONNECTION, u32::MAX - 1));
+        assert!(credits.record_sent(CONNECTION, 4));
 
         assert_eq!(credits.available(CONNECTION, 64), Some(58));
+    }
+
+    #[test]
+    fn late_peer_credit_cannot_reopen_a_locally_closed_connection() {
+        let mut credits = TxCreditBook::default();
+        credits.open(CONNECTION);
+        credits.update_peer(CONNECTION, 64, 0);
+        credits.close(CONNECTION);
+
+        credits.update_peer(CONNECTION, 64, 32);
+
+        assert_eq!(
+            credits.available(CONNECTION, 64),
+            None,
+            "credit updates may change only an explicitly opened connection"
+        );
     }
 }

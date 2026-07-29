@@ -130,7 +130,11 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
         self.inner
             .send(peer, local_port, &buf[..send_length])
             .map_err(map_vsock_error)?;
-        self.tx_credits.record_sent(id, length);
+        let recorded = self.tx_credits.record_sent(id, length);
+        debug_assert!(
+            recorded,
+            "a successful send must retain its opened credit entry"
+        );
         Ok(send_length)
     }
 
@@ -161,9 +165,11 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
 
     fn disconnect(&mut self, id: VsockConnId) -> Result<(), VsockError> {
         let (peer, local_port) = map_conn_id(id)?;
-        self.inner
-            .shutdown(peer, local_port)
-            .map_err(map_vsock_error)
+        complete_local_disconnect(
+            &mut self.tx_credits,
+            id,
+            self.inner.shutdown(peer, local_port),
+        )
     }
 
     fn abort(&mut self, id: VsockConnId) -> Result<(), VsockError> {
@@ -180,18 +186,36 @@ impl<T: Transport + 'static> rdif_vsock::Interface for VirtIoVsock<T> {
             return Ok(None);
         };
         let connection = map_event_conn(&event);
-        self.tx_credits.update_peer(
-            connection,
-            event.buffer_status.buffer_allocation,
-            event.buffer_status.forward_count,
+        let connected = matches!(
+            event.event_type,
+            VsockEventType::ConnectionRequest | VsockEventType::Connected
         );
         let disconnected = matches!(event.event_type, VsockEventType::Disconnected { .. });
-        let event = map_event(event);
+        if connected {
+            self.tx_credits.open(connection);
+        }
         if disconnected {
             self.tx_credits.close(connection);
+        } else {
+            self.tx_credits.update_peer(
+                connection,
+                event.buffer_status.buffer_allocation,
+                event.buffer_status.forward_count,
+            );
         }
+        let event = map_event(event);
         Ok(Some(event))
     }
+}
+
+fn complete_local_disconnect(
+    tx_credits: &mut TxCreditBook,
+    connection: VsockConnId,
+    result: Result<(), VirtIoError>,
+) -> Result<(), VsockError> {
+    result.map_err(map_vsock_error)?;
+    tx_credits.close(connection);
+    Ok(())
 }
 
 fn validate_port(port: u32) -> Result<(), VsockError> {
@@ -266,6 +290,11 @@ fn map_vsock_error(err: VirtIoError) -> VsockError {
 mod tests {
     use super::*;
 
+    const CONNECTION: VsockConnId = VsockConnId {
+        peer_addr: RdifVsockAddr { cid: 2, port: 3 },
+        local_port: 4,
+    };
+
     #[test]
     fn peer_credit_exhaustion_is_retryable_not_a_disconnect() {
         assert!(matches!(
@@ -274,5 +303,21 @@ mod tests {
             )),
             VsockError::Retry
         ));
+    }
+
+    #[test]
+    fn successful_local_disconnect_retires_transmit_credit() {
+        let mut credits = TxCreditBook::default();
+        credits.open(CONNECTION);
+        credits.update_peer(CONNECTION, 4096, 0);
+        assert_eq!(credits.available(CONNECTION, 4096), Some(4096));
+
+        complete_local_disconnect(&mut credits, CONNECTION, Ok(())).unwrap();
+
+        assert_eq!(
+            credits.available(CONNECTION, 4096),
+            None,
+            "a transport that accepted local disconnect must not remain writable"
+        );
     }
 }
