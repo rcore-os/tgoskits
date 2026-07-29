@@ -76,6 +76,10 @@ impl HbaRegisters {
         Self { base }
     }
 
+    pub(super) fn capabilities(self) -> u32 {
+        self.read(HOST_CAP)
+    }
+
     pub(super) fn dma_mask(self) -> u64 {
         if self.read(HOST_CAP) & CAP_S64A != 0 {
             u64::MAX
@@ -86,6 +90,12 @@ impl HbaRegisters {
 
     pub(super) fn supports_staggered_spin_up(self) -> bool {
         self.read(HOST_CAP) & CAP_SSS != 0
+    }
+
+    pub(super) fn initialize_staggered_spin_up_capability(self) -> u32 {
+        self.write(HOST_CAP, self.read(HOST_CAP) | CAP_SSS);
+        let _posted = self.read(HOST_CAP);
+        self.capabilities()
     }
 
     pub(super) fn begin_reset(self) {
@@ -112,6 +122,16 @@ impl HbaRegisters {
 
     pub(super) fn implemented_ports(self) -> u32 {
         self.read(HOST_PI)
+    }
+
+    pub(super) fn initialize_port_map(self, fallback: u32) -> u32 {
+        let implemented = self.implemented_ports();
+        if implemented != 0 || fallback == 0 {
+            return implemented;
+        }
+        self.write(HOST_PI, fallback);
+        let _posted = self.read(HOST_PI);
+        self.implemented_ports()
     }
 
     pub(super) fn max_ports(self) -> u8 {
@@ -148,6 +168,26 @@ unsafe impl Sync for PortRegisters {}
 impl PortRegisters {
     pub(super) const fn index(self) -> u8 {
         self.index
+    }
+
+    pub(super) fn command_state(self) -> u32 {
+        self.read(PORT_CMD)
+    }
+
+    pub(super) fn task_file_status(self) -> u32 {
+        self.read(PORT_TFD)
+    }
+
+    pub(super) fn sata_status(self) -> u32 {
+        self.read(PORT_SSTS)
+    }
+
+    pub(super) fn sata_error(self) -> u32 {
+        self.read(PORT_SERR)
+    }
+
+    pub(super) fn command_issue(self) -> u32 {
+        self.read(PORT_CI)
     }
 
     pub(super) fn link_present(self) -> bool {
@@ -358,6 +398,31 @@ mod tests {
 
         mmio[(PORT_BASE + PORT_CMD) / 4] &= !CMD_FR;
         assert!(port.engine_stopped());
+    }
+
+    #[test]
+    fn platform_port_map_fallback_only_repairs_an_empty_pi_register() {
+        let mut mmio = vec![0_u32; (PORT_BASE + PORT_STRIDE) / 4];
+        let hba = registers(&mut mmio);
+
+        assert_eq!(hba.initialize_port_map(1), 1);
+        assert_eq!(mmio[HOST_PI / 4], 1);
+
+        mmio[HOST_PI / 4] = 1 << 3;
+        assert_eq!(hba.initialize_port_map(1), 1 << 3);
+        assert_eq!(mmio[HOST_PI / 4], 1 << 3);
+    }
+
+    #[test]
+    fn platform_spin_up_quirk_preserves_existing_capabilities() {
+        let mut mmio = vec![0_u32; (PORT_BASE + PORT_STRIDE) / 4];
+        let hba = registers(&mut mmio);
+        mmio[HOST_CAP / 4] = CAP_S64A | 3;
+
+        assert_eq!(
+            hba.initialize_staggered_spin_up_capability(),
+            CAP_S64A | CAP_SSS | 3
+        );
     }
 
     #[test]

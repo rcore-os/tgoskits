@@ -6,7 +6,7 @@ use core::{
 };
 
 use dma_api::{CoherentBox, CpuDmaBuffer, DeviceDma, DmaDirection, InFlightDma};
-use log::info;
+use log::{info, warn};
 use rdif_block::{
     BatchSubmitDisposition, BatchSubmitResult, BlkError, CompletedRequest, CompletionSink,
     DeviceInfo, HardwareQueue, OwnedRequest, OwnedRequestBatch, QueueInfo, QueueLimits,
@@ -71,6 +71,9 @@ enum ActiveCommand {
     },
     Request {
         id: RequestId,
+        op: RequestOp,
+        lba: u64,
+        blocks: u32,
         data: Option<InFlightDma>,
     },
 }
@@ -268,6 +271,9 @@ impl AhciQueue {
         header: CommandHeader,
         table: CommandTable,
     ) {
+        let op = request.op;
+        let lba = request.lba;
+        let blocks = request.block_count;
         self.write_command(header, table);
         let data = request.data.take().map(|prepared| {
             // SAFETY: The queue has reserved its only hardware slot, and the
@@ -275,7 +281,13 @@ impl AhciQueue {
             // accepted ID. Completion and teardown observe hardware quiescence.
             unsafe { prepared.into_in_flight() }
         });
-        self.active = Some(ActiveCommand::Request { id, data });
+        self.active = Some(ActiveCommand::Request {
+            id,
+            op,
+            lba,
+            blocks,
+            data,
+        });
         self.staged = true;
     }
 
@@ -468,7 +480,24 @@ impl HardwareQueue for AhciQueue {
                     return Err(error);
                 }
             }
-            ActiveCommand::Request { id, data } => {
+            ActiveCommand::Request {
+                id,
+                op,
+                lba,
+                blocks,
+                data,
+            } => {
+                if result.is_err() {
+                    warn!(
+                        "{}: AHCI {:?} failed id={id:?} lba={lba} blocks={blocks} \
+                         irq={irq_status:#010x} tfd={:#010x} serr={:#010x} ci={:#010x}",
+                        self.name,
+                        op,
+                        self.port.task_file_status(),
+                        self.port.sata_error(),
+                        self.port.command_issue()
+                    );
+                }
                 Self::complete_request(data, id, result, sink);
             }
         }
@@ -494,7 +523,7 @@ impl HardwareQueue for AhciQueue {
                     // SAFETY: Both command and FIS engines are stopped.
                     drop(unsafe { data.complete_after_quiesce() });
                 }
-                ActiveCommand::Request { id, data } => {
+                ActiveCommand::Request { id, data, .. } => {
                     Self::complete_request(data, id, Err(BlkError::Io), sink);
                 }
             }

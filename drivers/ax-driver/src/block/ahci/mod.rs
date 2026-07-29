@@ -11,7 +11,7 @@ use alloc::format;
 use alloc::{boxed::Box, sync::Arc, vec};
 use core::{any::Any, ptr::NonNull, time::Duration};
 
-use log::info;
+use log::{info, warn};
 #[cfg(feature = "ahci")]
 use pcie::CommandRegister;
 use rdif_block::{
@@ -46,6 +46,23 @@ const LS2K1000_DEVICE_NAME: &str = "ls2k1000-ahci";
 #[cfg(feature = "ls2k1000-ahci")]
 const LS2K1000_DEFAULT_MMIO_SIZE: usize = 0x10_000;
 const REGISTER_RETRY_DELAY: Duration = Duration::from_millis(1);
+
+#[derive(Clone, Copy, Default)]
+struct AhciPlatformConfig {
+    port_map_fallback: u32,
+    repair_staggered_spin_up_capability: bool,
+    force_spin_up: bool,
+}
+
+#[cfg(feature = "ls2k1000-ahci")]
+// JL-LSGD2K10 firmware leaves PI clear and the integrated controller ignores
+// PxCMD.SUD unless CAP.SSS is exposed. Keep both corrections confined to this
+// FDT profile; PCI AHCI continues to trust and preserve the reported registers.
+const LS2K1000_CONFIG: AhciPlatformConfig = AhciPlatformConfig {
+    port_map_fallback: 1,
+    repair_staggered_spin_up_capability: true,
+    force_spin_up: true,
+};
 
 #[cfg(feature = "ahci")]
 crate::model_register!(
@@ -94,6 +111,7 @@ struct AhciController {
     dma: dma_api::DeviceDma,
     geometry: Arc<GeometryState>,
     queue: Option<AhciQueue>,
+    config: AhciPlatformConfig,
     state: Lifecycle,
 }
 
@@ -102,12 +120,13 @@ impl AhciController {
     ///
     /// `mmio_base` must be an exclusively managed AHCI register mapping that
     /// outlives the controller, queue, and registered IRQ token.
-    unsafe fn new(name: &'static str, mmio_base: NonNull<u8>) -> Self {
+    unsafe fn new(name: &'static str, mmio_base: NonNull<u8>, config: AhciPlatformConfig) -> Self {
         // SAFETY: Forwarded from this constructor's contract.
         let hba = unsafe { HbaRegisters::new(mmio_base) };
         let dma = axklib::dma::device_with_mask(hba.dma_mask());
         info!(
-            "{name}: AHCI HBA ports={} implemented={:#010x} dma_mask={:#018x}",
+            "{name}: AHCI HBA cap={:#010x} ports={} implemented={:#010x} dma_mask={:#018x}",
+            hba.capabilities(),
             hba.max_ports(),
             hba.implemented_ports(),
             hba.dma_mask()
@@ -118,6 +137,7 @@ impl AhciController {
             dma,
             geometry: Arc::new(GeometryState::new()),
             queue: None,
+            config,
             state: Lifecycle::New,
         }
     }
@@ -148,6 +168,23 @@ impl AhciController {
             return Ok(Self::register_pending());
         }
         self.hba.enable_ahci();
+        if self.config.repair_staggered_spin_up_capability && !self.hba.supports_staggered_spin_up()
+        {
+            let capabilities = self.hba.initialize_staggered_spin_up_capability();
+            warn!(
+                "{}: repaired missing AHCI staggered-spin-up capability, CAP readback \
+                 {capabilities:#010x}",
+                self.name
+            );
+        }
+        if self.hba.implemented_ports() == 0 && self.config.port_map_fallback != 0 {
+            let repaired = self.hba.initialize_port_map(self.config.port_map_fallback);
+            warn!(
+                "{}: firmware left AHCI PI empty; applied platform port map {:#010x}, readback \
+                 {repaired:#010x}",
+                self.name, self.config.port_map_fallback
+            );
+        }
         let port = self.select_port().ok_or(BlkError::NotSupported)?;
         let queue = AhciQueue::new(
             self.name,
@@ -159,7 +196,14 @@ impl AhciController {
         port.stop_command_engine();
         self.queue = Some(queue);
         self.state = Lifecycle::PortCommandStopping(port);
-        info!("{}: selected AHCI port {}", self.name, port.index());
+        info!(
+            "{}: selected AHCI port {} cmd={:#010x} ssts={:#010x} tfd={:#010x}",
+            self.name,
+            port.index(),
+            port.command_state(),
+            port.sata_status(),
+            port.task_file_status()
+        );
         Ok(Self::register_pending())
     }
 
@@ -170,6 +214,12 @@ impl AhciController {
         if !port.command_engine_stopped() {
             return Ok(Self::register_pending());
         }
+        info!(
+            "{}: AHCI port {} command engine stopped cmd={:#010x}",
+            self.name,
+            port.index(),
+            port.command_state()
+        );
         port.stop_fis_receive();
         self.state = Lifecycle::PortFisStopping(port);
         Ok(Self::register_pending())
@@ -179,12 +229,26 @@ impl AhciController {
         if !port.fis_receive_stopped() {
             return Ok(Self::register_pending());
         }
+        info!(
+            "{}: AHCI port {} FIS receive stopped cmd={:#010x}",
+            self.name,
+            port.index(),
+            port.command_state()
+        );
         let queue = self.queue.as_ref().ok_or(BlkError::Io)?;
         port.program_dma_bases(queue.command_list_dma(), queue.received_fis_dma());
         port.clear_stale_status();
-        port.power_up(self.hba.supports_staggered_spin_up());
+        port.power_up(self.hba.supports_staggered_spin_up() || self.config.force_spin_up);
         port.start_fis_receive();
         port.start_command_engine();
+        info!(
+            "{}: AHCI port {} engines started cmd={:#010x} ssts={:#010x} tfd={:#010x}",
+            self.name,
+            port.index(),
+            port.command_state(),
+            port.sata_status(),
+            port.task_file_status()
+        );
         self.state = Lifecycle::LinkWait(port);
         Ok(Self::register_pending())
     }
@@ -193,6 +257,13 @@ impl AhciController {
         if !port.link_present() || !port.task_file_ready() {
             return Ok(Self::register_pending());
         }
+        info!(
+            "{}: AHCI port {} link ready ssts={:#010x} tfd={:#010x}",
+            self.name,
+            port.index(),
+            port.sata_status(),
+            port.task_file_status()
+        );
         port.clear_stale_status();
         let mut queue = self.queue.take().ok_or(BlkError::Io)?;
         let irq_status = queue.irq_status_latch();
@@ -425,7 +496,8 @@ fn probe_pci(mut probe: ProbePci<'_>) -> Result<(), OnProbeError> {
     let mmio = crate::mmio::iomap(bar.start, bar.count().max(1))?;
     // SAFETY: `iomap` supplies the exclusively registered PCI BAR mapping and
     // the rdrive device owns it through teardown.
-    let controller = unsafe { AhciController::new(DEVICE_NAME, mmio) };
+    let controller =
+        unsafe { AhciController::new(DEVICE_NAME, mmio, AhciPlatformConfig::default()) };
     probe.register_block(controller, PciIrqRequirement::Required)?;
     Ok(())
 }
@@ -449,7 +521,7 @@ fn probe_fdt(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
     let mmio = crate::mmio::iomap(register.address as usize, size)?;
     // SAFETY: `iomap` supplies the FDT-described controller mapping and rdrive
     // serializes probe ownership for this node.
-    let controller = unsafe { AhciController::new(LS2K1000_DEVICE_NAME, mmio) };
+    let controller = unsafe { AhciController::new(LS2K1000_DEVICE_NAME, mmio, LS2K1000_CONFIG) };
     platform.register_block_with_info(controller, binding);
     Ok(())
 }
