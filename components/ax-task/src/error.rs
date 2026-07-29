@@ -29,6 +29,12 @@ pub enum TaskError {
     /// The CPU is not online.
     #[error("CPU {0} is not online")]
     CpuOffline(u32),
+    /// The CPU still owns runnable, timed, or remotely published work.
+    #[error("CPU {0} is not quiescent enough to go offline")]
+    CpuNotQuiescent(u32),
+    /// A scheduler topology must retain at least one online CPU.
+    #[error("CPU {0} is the last online CPU")]
+    LastOnlineCpu(u32),
     /// A nice value is outside `-20..=19`.
     #[error("invalid nice value: {0}")]
     InvalidNice(i8),

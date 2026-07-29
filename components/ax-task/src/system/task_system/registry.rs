@@ -191,18 +191,9 @@ impl TaskSystemState {
             .ok_or(TaskError::InvalidCpu(cpu.as_u32()))
     }
 
-    pub(super) fn cpu_registration_mut(
-        &mut self,
-        cpu: CpuId,
-    ) -> Result<&mut CpuRegistration, TaskError> {
-        self.cpus
-            .get_mut(cpu.as_usize())
-            .ok_or(TaskError::InvalidCpu(cpu.as_u32()))
-    }
-
     pub(super) fn ensure_cpu_online(&self, cpu: &CpuLocal) -> Result<(), TaskError> {
         let registration = self.cpu_registration(cpu.owner())?;
-        if registration.online && cpu.is_online() {
+        if Arc::ptr_eq(&registration.remote, cpu.remote()) && cpu.is_online() {
             Ok(())
         } else {
             Err(TaskError::CpuOffline(cpu.owner().as_u32()))
@@ -210,7 +201,10 @@ impl TaskSystemState {
     }
 
     pub(super) fn online_cpu_count(&self) -> usize {
-        self.cpus.iter().filter(|cpu| cpu.online).count()
+        self.cpus
+            .iter()
+            .filter(|cpu| cpu.remote.is_online())
+            .count()
     }
 
     pub(super) fn release_deadline_reservation_on_exit(
@@ -499,7 +493,7 @@ impl TaskSystemState {
             .iter()
             .enumerate()
             .filter(|(index, registration)| {
-                registration.online && affinity.contains(CpuId::new(*index as u32))
+                registration.remote.is_online() && affinity.contains(CpuId::new(*index as u32))
             })
             .filter_map(|(index, registration)| {
                 let cpu = CpuId::new(index as u32);
@@ -835,7 +829,7 @@ impl TaskSystemState {
 
     pub(super) fn cpu_remote(&self, cpu: CpuId) -> Option<&CpuRemote> {
         let registration = self.cpu_registration(cpu).ok()?;
-        if !registration.online || !registration.remote.is_online() {
+        if !registration.remote.is_online() {
             return None;
         }
         Some(registration.remote.as_ref())
@@ -844,7 +838,6 @@ impl TaskSystemState {
 
 #[derive(Debug)]
 pub(super) struct CpuRegistration {
-    pub(super) online: bool,
     pub(super) remote: Arc<CpuRemote>,
 }
 

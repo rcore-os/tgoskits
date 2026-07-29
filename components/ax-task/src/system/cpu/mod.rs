@@ -133,9 +133,26 @@ const SUMMARY_PUSHABLE_CLASS_SHIFT: u32 = 5;
 const SUMMARY_CLASS_MASK: u8 = 0b11;
 const LOAD_SUMMARY_READ_RETRIES: usize = 8;
 const IPI_CLAIMED: u64 = 1;
+const CPU_LIFECYCLE_OFFLINE: usize = 1 << (usize::BITS - 1);
+const CPU_LIFECYCLE_DRAINING: usize = 1 << (usize::BITS - 2);
+const CPU_LIFECYCLE_MASK: usize = CPU_LIFECYCLE_OFFLINE | CPU_LIFECYCLE_DRAINING;
+const CPU_PUBLICATION_COUNT_MASK: usize = !CPU_LIFECYCLE_MASK;
+const CPU_PUBLICATION_OVERFLOW_INVARIANT: u32 = 0x4350_5542;
+const CPU_PUBLICATION_RELEASE_INVARIANT: u32 = 0x4350_5544;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SchedulerIpiClaim(u64);
+
+/// Placement and remote-publication state of one logical CPU.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CpuLifecycleState {
+    /// The CPU accepts placement and remote scheduler publications.
+    Online,
+    /// New placement is closed while the owner proves that all work is gone.
+    Draining,
+    /// The CPU owns no schedulable work and is absent from the root domain.
+    Offline,
+}
 
 /// Stable cross-CPU publication endpoint for one scheduler owner.
 ///
@@ -147,7 +164,8 @@ struct SchedulerIpiClaim(u64);
 pub struct CpuRemote {
     owner: CpuId,
     owner_claimed: AtomicBool,
-    online: AtomicBool,
+    /// Top bits encode [`CpuLifecycleState`]; low bits count active publishers.
+    lifecycle: AtomicUsize,
     scheduler_ready: AtomicBool,
     need_resched: AtomicBool,
     deadline_work_pending: AtomicBool,
@@ -179,7 +197,7 @@ impl CpuRemote {
         Arc::new(Self {
             owner,
             owner_claimed: AtomicBool::new(false),
-            online: AtomicBool::new(false),
+            lifecycle: AtomicUsize::new(CPU_LIFECYCLE_OFFLINE),
             scheduler_ready: AtomicBool::new(false),
             need_resched: AtomicBool::new(false),
             deadline_work_pending: AtomicBool::new(false),
@@ -278,13 +296,122 @@ impl CpuRemote {
             .fetch_add(runtime_ns, Ordering::Relaxed);
     }
 
-    /// Returns whether owner initialization and online publication completed.
-    pub fn is_online(&self) -> bool {
-        self.online.load(Ordering::Acquire)
+    /// Returns the CPU's placement and publication lifecycle.
+    pub fn lifecycle_state(&self) -> CpuLifecycleState {
+        match self.lifecycle.load(Ordering::Acquire) & CPU_LIFECYCLE_MASK {
+            0 => CpuLifecycleState::Online,
+            CPU_LIFECYCLE_DRAINING => CpuLifecycleState::Draining,
+            _ => CpuLifecycleState::Offline,
+        }
     }
 
-    pub(crate) fn mark_online(&self) {
-        self.online.store(true, Ordering::Release);
+    /// Returns whether owner initialization and online publication completed.
+    pub fn is_online(&self) -> bool {
+        self.lifecycle_state() == CpuLifecycleState::Online
+    }
+
+    pub(crate) fn mark_online(&self) -> bool {
+        self.lifecycle
+            .compare_exchange(
+                CPU_LIFECYCLE_OFFLINE,
+                0,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    pub(crate) fn try_begin_draining(&self) -> bool {
+        // Matching the exact zero-valued Online state also proves that no
+        // producer currently spans queue publication and its doorbell.
+        self.lifecycle
+            .compare_exchange(
+                0,
+                CPU_LIFECYCLE_DRAINING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    pub(crate) fn cancel_draining(&self) {
+        if self
+            .lifecycle
+            .compare_exchange(
+                CPU_LIFECYCLE_DRAINING,
+                0,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            task_runtime::fatal_invariant(
+                CPU_PUBLICATION_RELEASE_INVARIANT,
+                self.owner.as_u32() as usize,
+            );
+        }
+    }
+
+    pub(crate) fn finish_offline(&self) {
+        self.need_resched.store(false, Ordering::Relaxed);
+        self.deadline_work_pending.store(false, Ordering::Relaxed);
+        self.preempt_requested.store(false, Ordering::Relaxed);
+        self.park_preempt_deferred.store(false, Ordering::Relaxed);
+        self.scheduler_ipi_pending.store(0, Ordering::Relaxed);
+        self.idle_polling.store(false, Ordering::Relaxed);
+        self.fair_balance_deadline_ns
+            .store(u64::MAX, Ordering::Relaxed);
+        self.scheduler_deadline_ns.store(0, Ordering::Relaxed);
+        self.deferred_scheduler_deadline_ns
+            .store(0, Ordering::Relaxed);
+        if self
+            .lifecycle
+            .compare_exchange(
+                CPU_LIFECYCLE_DRAINING,
+                CPU_LIFECYCLE_OFFLINE,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            task_runtime::fatal_invariant(
+                CPU_PUBLICATION_RELEASE_INVARIANT,
+                self.owner.as_u32() as usize,
+            );
+        }
+    }
+
+    fn begin_publication(&self) -> Option<CpuRemotePublication<'_>> {
+        let mut current = self.lifecycle.load(Ordering::Acquire);
+        loop {
+            if current & CPU_LIFECYCLE_MASK != 0 {
+                return None;
+            }
+            let count = current & CPU_PUBLICATION_COUNT_MASK;
+            if count == CPU_PUBLICATION_COUNT_MASK {
+                task_runtime::fatal_invariant(
+                    CPU_PUBLICATION_OVERFLOW_INVARIANT,
+                    self.owner.as_u32() as usize,
+                );
+            }
+            match self.lifecycle.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(CpuRemotePublication { remote: self }),
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    pub(crate) fn is_quiescent_for_offline(&self) -> bool {
+        self.lifecycle.load(Ordering::Acquire) == CPU_LIFECYCLE_DRAINING
+            && !self.deadline_work_pending()
+            && !self.has_remote_work()
+            && self.scheduler_ipi_pending.load(Ordering::Acquire) & IPI_CLAIMED == 0
+            && !self.is_idle_polling()
     }
 
     pub(crate) fn mark_scheduler_ready(&self) {
@@ -297,17 +424,31 @@ impl CpuRemote {
 
     /// Publishes a sticky owner-CPU reschedule request.
     pub fn request_reschedule(&self) {
+        let Some(_publication) = self.begin_publication() else {
+            return;
+        };
+        self.request_reschedule_owned();
+    }
+
+    fn request_reschedule_owned(&self) {
         self.preempt_requested.store(true, Ordering::Release);
         self.need_resched.store(true, Ordering::Release);
     }
 
     pub(crate) fn request_scheduler_work(&self) {
+        let Some(_publication) = self.begin_publication() else {
+            return;
+        };
+        self.request_scheduler_work_owned();
+    }
+
+    fn request_scheduler_work_owned(&self) {
         self.need_resched.store(true, Ordering::Release);
     }
 
     fn publish_deadline_work(&self) {
         self.deadline_work_pending.store(true, Ordering::Release);
-        self.request_scheduler_work();
+        self.request_scheduler_work_owned();
     }
 
     pub(crate) fn deadline_work_pending(&self) -> bool {
@@ -325,12 +466,19 @@ impl CpuRemote {
         // interval and may replace the sticky bit with its actual remainder.
         self.deadline_work_pending.store(pending, Ordering::Release);
         if pending {
-            self.request_scheduler_work();
+            self.request_scheduler_work_owned();
         }
     }
 
     pub(crate) fn kick_scheduler_work(&self) -> bool {
-        self.request_scheduler_work();
+        let Some(_publication) = self.begin_publication() else {
+            return false;
+        };
+        self.kick_scheduler_work_owned()
+    }
+
+    fn kick_scheduler_work_owned(&self) -> bool {
+        self.request_scheduler_work_owned();
         let Some(claim) = self.claim_scheduler_ipi() else {
             return false;
         };
@@ -406,7 +554,7 @@ impl CpuRemote {
     pub(crate) fn finish_park_preemption(&self, resume_running: bool) {
         let deferred = self.park_preempt_deferred.swap(false, Ordering::AcqRel);
         if resume_running && deferred {
-            self.request_reschedule();
+            self.request_reschedule_owned();
         }
     }
 
@@ -415,10 +563,10 @@ impl CpuRemote {
         node: Pin<&'static InboxNode>,
         message: InboxMessage,
     ) -> PublishResult {
-        if !self.is_online() {
+        let Some(_remote_publication) = self.begin_publication() else {
             return PublishResult::WrongKind;
-        }
-        let _publication = IrqScope::enter();
+        };
+        let _irq = IrqScope::enter();
         let (result, _head_became_non_empty) = self
             .remote_wake_inbox
             .publish_with_head_transition(node, message);
@@ -426,7 +574,7 @@ impl CpuRemote {
             result,
             PublishResult::Published | PublishResult::AlreadyPending
         ) {
-            self.kick_scheduler_work();
+            self.kick_scheduler_work_owned();
         }
         result
     }
@@ -436,10 +584,10 @@ impl CpuRemote {
         node: Pin<&'static InboxNode>,
         message: InboxMessage,
     ) -> PublishResult {
-        if !self.is_online() {
+        let Some(_remote_publication) = self.begin_publication() else {
             return PublishResult::WrongKind;
-        }
-        let _publication = IrqScope::enter();
+        };
+        let _irq = IrqScope::enter();
         let (result, _head_became_non_empty) = self
             .migration_inbox
             .publish_with_head_transition(node, message);
@@ -447,7 +595,7 @@ impl CpuRemote {
             result,
             PublishResult::Published | PublishResult::AlreadyPending
         ) {
-            self.kick_scheduler_work();
+            self.kick_scheduler_work_owned();
         }
         result
     }
@@ -652,6 +800,33 @@ impl CpuRemote {
     }
 }
 
+struct CpuRemotePublication<'remote> {
+    remote: &'remote CpuRemote,
+}
+
+impl Drop for CpuRemotePublication<'_> {
+    fn drop(&mut self) {
+        let mut current = self.remote.lifecycle.load(Ordering::Acquire);
+        loop {
+            if current & CPU_LIFECYCLE_MASK != 0 || current & CPU_PUBLICATION_COUNT_MASK == 0 {
+                task_runtime::fatal_invariant(
+                    CPU_PUBLICATION_RELEASE_INVARIANT,
+                    self.remote.owner.as_u32() as usize,
+                );
+            }
+            match self.remote.lifecycle.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
 /// Dynamically checked owner borrow of one pinned [`CpuLocal`].
 ///
 /// The borrow gate resides in the separately allocated [`CpuRemote`] endpoint,
@@ -806,6 +981,16 @@ impl CpuLocal {
     /// Returns the number of runnable non-idle threads.
     pub(crate) const fn runnable_count(&self) -> usize {
         self.run_queue.len()
+    }
+
+    pub(crate) fn is_quiescent_for_offline(&self) -> bool {
+        (self.current.is_none() || self.current == self.idle)
+            && self.run_queue.len() == 0
+            && self.deadline_members.is_empty()
+            && self.task_deadlines.is_empty()
+            && self.deadline_expired_count == 0
+            && self.switch_handoff.is_none()
+            && self.remote.is_quiescent_for_offline()
     }
 
     /// Publishes a sticky reschedule request from task or IRQ context.
@@ -1505,6 +1690,7 @@ mod scheduler_ipi_tests {
     #[test]
     fn overdue_scheduler_deadline_becomes_sticky_work_instead_of_a_resolution_timer() {
         let remote = CpuRemote::create(CpuId::new(0));
+        assert!(remote.mark_online());
         let cpu = CpuLocal::create(CpuId::new(0), TaskSystemConfig::new(1), Arc::clone(&remote));
         cpu.arm_deferred_scheduler_deadline(100);
 
