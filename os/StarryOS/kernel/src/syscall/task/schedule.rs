@@ -491,6 +491,8 @@ fn map_task_error(error: scheduler::TaskError) -> AxError {
         | TaskError::ExecutorOwnerMismatch { .. }
         | TaskError::CpuAlreadyOnline(_)
         | TaskError::CpuOffline(_)
+        | TaskError::CpuNotQuiescent(_)
+        | TaskError::LastOnlineCpu(_)
         | TaskError::InvalidTransition { .. }
         | TaskError::AlreadyQueued
         | TaskError::NotReady
