@@ -771,11 +771,10 @@ mod tests {
 
     #[test]
     fn phys_cpu_set_rejects_logical_index_outside_affinity_mask() {
-        let error =
-            resolve_phys_cpu_sets(&[3], None, &[(3, 3)], usize::MAX, |_| {
-                Some(usize::BITS as usize)
-            })
-                .unwrap_err();
+        let error = resolve_phys_cpu_sets(&[3], None, &[(3, 3)], usize::MAX, |_| {
+            Some(usize::BITS as usize)
+        })
+        .unwrap_err();
 
         assert!(
             error
