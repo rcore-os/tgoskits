@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use scope_local::{ActiveScope, ScopeCell, ScopeCellBusy, scope_local};
+use scope_local::{ActiveScope, ScopeActivationError, ScopeCell, ScopeCellBusy, scope_local};
 
 struct KernelGuardIfImpl;
 
@@ -183,7 +183,7 @@ fn active_scope_holds_one_shared_lease_until_switch_out() {
     assert!(ActiveScope::is_global());
     assert_eq!(
         second_activation_result,
-        (Err(ScopeCellBusy), false),
+        (Err(ScopeActivationError::AlreadyActive), false),
         "a task-owned scope must reject a second scheduler activation before publishing it"
     );
 }

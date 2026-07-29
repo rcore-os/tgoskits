@@ -17,5 +17,6 @@ mod scope;
 
 pub use item::{Item, LocalItem, ScopeItem, ScopeItemMut};
 pub use scope::{
-    ActiveScope, Scope, ScopeCell, ScopeCellBusy, ScopeCellReadGuard, ScopeCellWriteGuard,
+    ActiveScope, Scope, ScopeActivationError, ScopeCell, ScopeCellBusy, ScopeCellReadGuard,
+    ScopeCellWriteGuard,
 };

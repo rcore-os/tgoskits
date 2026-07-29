@@ -8,7 +8,9 @@ use ax_kernel_guard::NoPreemptIrqSave;
 use ax_runtime::hal::percpu::CpuPin;
 use ax_sync::{PiMutex, spin::SpinNoIrq};
 use axpoll::PollSet;
-use scope_local::{Scope, ScopeCell, ScopeCellReadGuard, ScopeCellWriteGuard};
+use scope_local::{
+    Scope, ScopeActivationError, ScopeCell, ScopeCellReadGuard, ScopeCellWriteGuard,
+};
 use starry_signal::{SignalSet, api::ThreadSignalManager};
 
 use super::{
@@ -78,8 +80,15 @@ impl ThreadScope {
     unsafe fn activate_pinned(&self, pin: &CpuPin<'_>) {
         // SAFETY: the scheduler switch baton retains this object and pins the
         // CPU until the matching switch-out callback.
-        unsafe { self.cell.try_activate_pinned(pin) }
-            .expect("Starry scheduler attempted to activate one thread on two CPUs");
+        match unsafe { self.cell.try_activate_pinned(pin) } {
+            Ok(()) => {}
+            Err(ScopeActivationError::AlreadyActive) => {
+                panic!("Starry scheduler attempted to activate one thread on two CPUs")
+            }
+            Err(ScopeActivationError::ExclusiveLease) => {
+                panic!("Starry scheduler activated a thread during exclusive scope mutation")
+            }
+        }
     }
 
     unsafe fn deactivate_pinned(&self, pin: &CpuPin<'_>) {

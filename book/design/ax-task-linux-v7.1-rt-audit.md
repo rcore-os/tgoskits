@@ -470,8 +470,9 @@ Linux v7.1 RT `__local_lock()` first calls `migrate_disable()` and
 does not permit one task-local owner to remain activated on two CPUs and then
 wait for itself. Starry's ordinary remote scope reads all hold the same outer
 PI mutex, so after the current task acquires that mutex a retained ordinary
-reader can no longer explain `ScopeCellBusy`. The only remaining causes are a
-duplicate scheduler activation or a caller bypassing `ThreadScope`.
+reader cannot block its task-context mutation. Scheduler activation still has
+to coexist with an already admitted compatible remote reader, however; that
+case is distinct from both an exclusive writer and duplicate CPU ownership.
 
 `ScopeCell` therefore admits exactly one scheduler activation and rejects a
 second CPU before publishing its per-CPU pointer. Starry no longer treats
@@ -480,8 +481,31 @@ handles legal task-context contention, and a failed bounded upgrade is an
 explicit scheduler-ownership invariant violation. The deterministic red test
 observed the old implementation publish the same task-owned scope on CPU 1
 while CPU 0 still owned it; the new implementation reports
-`ScopeCellBusy` without publishing on CPU 1, and the sole activation upgrades
-and unwinds without losing its lease.
+`ScopeActivationError::AlreadyActive` without publishing on CPU 1, and the sole
+activation upgrades and unwinds without losing its lease.
+
+The full RISC-V system sequence later exposed a separate false-conflict path
+while `test-openat-umask-smp` was running. The raw shared gate loaded the reader
+count once and attempted one compare-exchange. If another compatible reader
+changed that count between the two operations, activation returned the same
+error as an exclusive writer or a duplicate scheduler owner. Linux v7.1 RT's
+`rwbase_read_trylock()` retries compare-exchange while the observed state still
+admits readers; simply copying that loop would remove the false conflict but
+would not preserve scope-local's fixed hard-path bound.
+
+The gate now reserves one reader count with a single atomic fetch-add, checks
+the writer bit from the returned state, and rolls the reservation back without
+accessing protected data when a writer was already present. Exclusive unlock
+preserves any such in-flight failed reservations, and downgrade publishes its
+active shared lease before clearing the writer bit. The deterministic
+interleaving regression inserts a compatible reader between the outer
+reader's reservation and decision: the former load/CAS implementation rejected
+the outer reader, while the reservation protocol admits both. Scheduler
+activation reports `ExclusiveLease` and `AlreadyActive` separately, so a future
+QEMU failure cannot turn ordinary reader movement into evidence of duplicate
+CPU execution. The reduced four-CPU RISC-V `test-openat-umask-smp` case then
+completed all eight workers and 2,400 file iterations without an activation
+failure.
 
 IRQ-visible waiters now distinguish `Attached`, `Notifying`, and `Detached`
 for each registration generation. Removing the cell pointer is only the
