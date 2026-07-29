@@ -9,6 +9,7 @@ license.workspace = true
 
 [features]
 default = []
+host-test = ["ax-hal/host-test", "ax-kspin/host-test", "ax-percpu/host-test"]
 
 [dependencies]
 ax-hal = { workspace = true, features = ["ipi"] }

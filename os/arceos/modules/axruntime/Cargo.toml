@@ -12,6 +12,13 @@ default = []
 
 ext-ld = []
 std-compat = []
+host-test = [
+  "ax-hal/host-test",
+  "ax-ipi?/host-test",
+  "ax-kspin?/host-test",
+  "ax-percpu?/host-test",
+  "ax-task?/host-test",
+]
 ipi = ["irq", "dep:ax-ipi", "ax-hal/ipi", "ax-task?/ipi"]
 # Register a lightweight IPI IRQ handler that only acknowledges SGIs so idle
 # CPUs can wake and re-enter the scheduler. This intentionally does not enable

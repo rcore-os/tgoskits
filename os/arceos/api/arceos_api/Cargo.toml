@@ -10,6 +10,12 @@ license.workspace = true
 [features]
 default = []
 
+host-test = [
+  "ax-hal/host-test",
+  "ax-ipi?/host-test",
+  "ax-runtime/host-test",
+  "ax-task?/host-test",
+]
 irq = ["ax-task?/irq"]
 ipi = ["dep:ax-ipi"]
 alloc = ["dep:ax-alloc"]
