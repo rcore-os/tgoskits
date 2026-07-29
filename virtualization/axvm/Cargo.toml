@@ -87,6 +87,7 @@ rdif-intc.workspace = true
 rdrive.workspace = true
 
 [dev-dependencies]
+arm-gic-driver = { workspace = true }
 ax-hal = { workspace = true, features = ["host-test"] }
 ax-kernel-guard = { workspace = true, features = ["host-test"] }
 ax-kspin = { workspace = true, features = ["host-test"] }

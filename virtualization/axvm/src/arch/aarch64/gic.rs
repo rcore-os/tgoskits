@@ -12,9 +12,6 @@ use ax_memory_addr::{PhysAddr, VirtAddr};
 
 use crate::host::{HostMemory, default_host};
 
-const GICV2_DIRECT_GROUP1: bool = false;
-const GICV2_DIRECT_EOI_MAINTENANCE: bool = true;
-
 fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
     let mut gic = rdrive::get_one::<rdif_intc::Intc>()
         .expect("failed to get GIC driver")
@@ -28,24 +25,15 @@ pub(crate) fn inject_interrupt(intid: ArmVirtualIntId) -> ArmVcpuResult {
 
     with_gic(|gic| {
         if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
-            use arm_gic_driver::{
-                IntId,
-                v2::{VirtualInterruptConfig, VirtualInterruptState},
-            };
+            use arm_gic_driver::IntId;
 
             let gich = gic.hypervisor_interface().expect("failed to get GICH");
             gich.enable();
+            // SAFETY: ArmVirtualIntId excludes the GIC special INTID range.
+            let virtual_id = unsafe { IntId::raw(intid.as_u32()) };
             gich.set_virtual_interrupt(
                 0,
-                VirtualInterruptConfig::software(
-                    // SAFETY: ArmVirtualIntId excludes the GIC special INTID range.
-                    unsafe { IntId::raw(intid.as_u32()) },
-                    None,
-                    0,
-                    VirtualInterruptState::Pending,
-                    GICV2_DIRECT_GROUP1,
-                    GICV2_DIRECT_EOI_MAINTENANCE,
-                ),
+                crate::arch::aarch64_gicv2::direct_injection_config(virtual_id),
             );
             return Ok(());
         }
