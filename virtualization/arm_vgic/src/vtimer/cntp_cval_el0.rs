@@ -18,38 +18,24 @@ use alloc::sync::Arc;
 
 use aarch64_sysreg::SystemRegType;
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType, SysRegAddr,
-    SysRegAddrRange,
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    Resource,
 };
+use log::debug;
 
 use super::cntp_timer::CntpTimerState;
 
-impl BaseDeviceOps<SysRegAddrRange> for SysCntpCvalEl0 {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::Console
-    }
+const CNTP_CVAL_EL0_ADDR: u32 = SystemRegType::CNTP_CVAL_EL0 as u32;
 
-    fn address_range(&self) -> SysRegAddrRange {
-        SysRegAddrRange {
-            start: SysRegAddr::new(SystemRegType::CNTP_CVAL_EL0 as usize),
-            end: SysRegAddr::new(SystemRegType::CNTP_CVAL_EL0 as usize),
-        }
-    }
-
-    fn handle_read(
-        &self,
-        _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
-        _width: AccessWidth,
-    ) -> DeviceResult<usize> {
+impl SysCntpCvalEl0 {
+    /// Reads CNTP_CVAL_EL0.
+    pub fn read_register(&self, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(self.state.read_cval() as usize)
     }
 
-    fn handle_write(
-        &self,
-        _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
-        _width: AccessWidth,
-        val: usize,
-    ) -> DeviceResult {
+    /// Writes CNTP_CVAL_EL0.
+    pub fn write_register(&self, _width: AccessWidth, val: usize) -> DeviceResult {
+        debug!("Write to virtual timer register CNTP_CVAL_EL0, value: {val}");
         self.state.write_cval(val as u64);
         Ok(())
     }
@@ -57,11 +43,10 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpCvalEl0 {
 
 /// System register emulation for CNTP_CVAL_EL0.
 ///
-/// CNTP_CVAL_EL0 is banked per processing element. The current AxVisor
-/// vTimer device model is instantiated for a single-vCPU guest, so this
-/// device preserves the guest-visible compare value for that vCPU.
+/// Provides virtualization support for the physical timer compare register.
 pub struct SysCntpCvalEl0 {
     state: Arc<CntpTimerState>,
+    resources: [Resource; 1],
 }
 
 impl SysCntpCvalEl0 {
@@ -71,7 +56,13 @@ impl SysCntpCvalEl0 {
     }
 
     pub(super) fn from_state(state: Arc<CntpTimerState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            resources: [Resource::SysReg {
+                addr: CNTP_CVAL_EL0_ADDR,
+                count: 1,
+            }],
+        }
     }
 }
 
@@ -81,32 +72,31 @@ impl Default for SysCntpCvalEl0 {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn exposes_cntp_cval_address() {
-        let device = SysCntpCvalEl0::new();
-        let range = device.address_range();
-
-        assert_eq!(
-            range.start,
-            SysRegAddr::new(SystemRegType::CNTP_CVAL_EL0 as usize)
-        );
-        assert_eq!(range.end, range.start);
+impl Device for SysCntpCvalEl0 {
+    fn name(&self) -> &str {
+        "aarch64-cntp-cval-el0"
     }
 
-    #[test]
-    fn preserves_guest_visible_value() {
-        let device = SysCntpCvalEl0::new();
-        let addr = SysRegAddr::new(SystemRegType::CNTP_CVAL_EL0 as usize);
-        let value = 0x1234_5678_9abc_def0usize;
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
 
-        device
-            .handle_write(addr, AccessWidth::Qword, value)
-            .unwrap();
-
-        assert_eq!(device.handle_read(addr, AccessWidth::Qword).unwrap(), value);
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::SysReg || access.addr != CNTP_CVAL_EL0_ADDR as u64 {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            self.read_register(access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.write_register(access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
+        }
     }
 }

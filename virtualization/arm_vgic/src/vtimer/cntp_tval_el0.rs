@@ -18,38 +18,24 @@ use alloc::sync::Arc;
 
 use aarch64_sysreg::SystemRegType;
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, DeviceAddrRange, DeviceResult, EmuDeviceType, SysRegAddr,
-    SysRegAddrRange,
+    AccessWidth, BusAccess, BusKind, BusResponse, Device, DeviceAccess, DeviceError, DeviceResult,
+    Resource,
 };
+use log::debug;
 
 use super::cntp_timer::CntpTimerState;
 
-impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
-    fn emu_type(&self) -> EmuDeviceType {
-        EmuDeviceType::Console
-    }
+const CNTP_TVAL_EL0_ADDR: u32 = SystemRegType::CNTP_TVAL_EL0 as u32;
 
-    fn address_range(&self) -> SysRegAddrRange {
-        SysRegAddrRange {
-            start: SysRegAddr::new(SystemRegType::CNTP_TVAL_EL0 as usize),
-            end: SysRegAddr::new(SystemRegType::CNTP_TVAL_EL0 as usize),
-        }
-    }
-
-    fn handle_read(
-        &self,
-        _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
-        _width: AccessWidth,
-    ) -> DeviceResult<usize> {
+impl SysCntpTvalEl0 {
+    /// Reads CNTP_TVAL_EL0.
+    pub fn read_register(&self, _width: AccessWidth) -> DeviceResult<usize> {
         Ok(self.state.read_tval() as usize)
     }
 
-    fn handle_write(
-        &self,
-        _addr: <SysRegAddrRange as DeviceAddrRange>::Addr,
-        _width: AccessWidth,
-        val: usize,
-    ) -> DeviceResult {
+    /// Writes CNTP_TVAL_EL0.
+    pub fn write_register(&self, _width: AccessWidth, val: usize) -> DeviceResult {
+        debug!("Write to virtual timer register CNTP_TVAL_EL0, value: {val}");
         self.state.write_tval(val as u32);
         Ok(())
     }
@@ -60,6 +46,7 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
 /// Provides virtualization support for the physical timer value register.
 pub struct SysCntpTvalEl0 {
     state: Arc<CntpTimerState>,
+    resources: [Resource; 1],
 }
 
 impl SysCntpTvalEl0 {
@@ -69,12 +56,47 @@ impl SysCntpTvalEl0 {
     }
 
     pub(super) fn from_state(state: Arc<CntpTimerState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            resources: [Resource::SysReg {
+                addr: CNTP_TVAL_EL0_ADDR,
+                count: 1,
+            }],
+        }
     }
 }
 
 impl Default for SysCntpTvalEl0 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Device for SysCntpTvalEl0 {
+    fn name(&self) -> &str {
+        "aarch64-cntp-tval-el0"
+    }
+
+    fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    fn access(
+        &self,
+        access: &BusAccess,
+        _context: &mut dyn DeviceAccess,
+    ) -> Result<BusResponse, DeviceError> {
+        if access.kind != BusKind::SysReg || access.addr != CNTP_TVAL_EL0_ADDR as u64 {
+            return Err(DeviceError::OutOfRange { addr: access.addr });
+        }
+        if access.is_read {
+            self.read_register(access.width)
+                .map(|value| BusResponse::Read {
+                    value: value as u64,
+                })
+        } else {
+            self.write_register(access.width, access.data as usize)
+                .map(|_| BusResponse::Write)
+        }
     }
 }

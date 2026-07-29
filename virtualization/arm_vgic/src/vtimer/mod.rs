@@ -16,7 +16,7 @@ extern crate alloc;
 
 use alloc::{sync::Arc, vec, vec::Vec};
 
-use axdevice_base::BaseSysRegDeviceOps;
+use axdevice_base::Device;
 
 mod cntp_timer;
 
@@ -45,7 +45,7 @@ pub fn new_sysreg_devices() -> (SysCntpCvalEl0, SysCntpCtlEl0, SysCntpctEl0, Sys
 }
 
 /// Create a collection of system register devices.
-pub fn get_sysreg_device() -> Vec<Arc<dyn BaseSysRegDeviceOps>> {
+pub fn get_sysreg_device() -> Vec<Arc<dyn Device>> {
     let (cval, ctl, counter, tval) = new_sysreg_devices();
 
     vec![
@@ -58,24 +58,17 @@ pub fn get_sysreg_device() -> Vec<Arc<dyn BaseSysRegDeviceOps>> {
 
 #[cfg(test)]
 mod tests {
-    use aarch64_sysreg::SystemRegType;
-    use axdevice_base::{AccessWidth, BaseDeviceOps, SysRegAddr};
+    use axdevice_base::AccessWidth;
 
     use super::*;
 
     #[test]
     fn concrete_devices_share_timer_state() {
         let (cval, _ctl, _counter, tval) = new_sysreg_devices();
-        let cval_addr = SysRegAddr::new(SystemRegType::CNTP_CVAL_EL0 as usize);
-        let tval_addr = SysRegAddr::new(SystemRegType::CNTP_TVAL_EL0 as usize);
         let value = 0x1234_5678usize;
 
-        cval.handle_write(cval_addr, AccessWidth::Qword, value)
-            .unwrap();
+        cval.write_register(AccessWidth::Qword, value).unwrap();
 
-        assert_eq!(
-            tval.handle_read(tval_addr, AccessWidth::Dword).unwrap(),
-            value
-        );
+        assert_eq!(tval.read_register(AccessWidth::Dword).unwrap(), value);
     }
 }
