@@ -46,20 +46,40 @@ run_inline_case() {
 }
 
 run_inline_multitask() {
-  worker_pids=""
   worker=0
   while [ "$worker" -lt 8 ]; do
-    dd if=/dev/zero of="/root/block-rw-bench/inline-worker-${worker}.bin" \
-      bs=4096 count=128 conv=fsync >/dev/null 2>&1 &
-    worker_pids="$worker_pids $!"
+    worker_path="/root/block-rw-bench/inline-worker-${worker}.bin"
+    completion_path="/tmp/block-rw-bench-worker-${worker}.done"
+    rm -f "$completion_path"
+    (
+      dd if=/dev/zero of="$worker_path" bs=4096 count=128 conv=fsync \
+        >/dev/null 2>&1 &&
+        echo done > "$completion_path"
+    ) &
     worker=$(( worker + 1 ))
   done
-  for worker_pid in $worker_pids; do
-    if ! wait "$worker_pid"; then
-      echo "block-rw-bench:" "error: inline multitask write failed"
-      return 1
+
+  attempt=0
+  while [ "$attempt" -lt 600 ]; do
+    completed=0
+    worker=0
+    while [ "$worker" -lt 8 ]; do
+      if [ -f "/tmp/block-rw-bench-worker-${worker}.done" ]; then
+        completed=$(( completed + 1 ))
+      fi
+      worker=$(( worker + 1 ))
+    done
+    if [ "$completed" -eq 8 ]; then
+      break
     fi
+    sleep 1
+    attempt=$(( attempt + 1 ))
   done
+  if [ "$completed" -ne 8 ]; then
+    echo "block-rw-bench:" "error: inline multitask write deadline expired"
+    return 1
+  fi
+
   expected="$(dd if=/dev/zero bs=4096 count=128 2>/dev/null | cksum)"
   set -- $expected
   expected_crc="$1"
@@ -73,14 +93,20 @@ run_inline_multitask() {
       echo "block-rw-bench:" "error: inline multitask verify mismatch for worker $worker"
       return 1
     fi
-    rm -f "$worker_path"
+    rm -f "$worker_path" "/tmp/block-rw-bench-worker-${worker}.done"
     worker=$(( worker + 1 ))
   done
-  echo "block-rw-bench: case=multitask tasks=8 io_size=4096 bytes_per_task=524288 fsync=ok verify=ok"
+  echo "block-rw-bench: case=multitask tasks=8 io_size=4096 bytes_per_task=524288 elapsed_s=$attempt fsync=ok verify=ok"
 }
 
 run_inline_fallback() {
-  root_source="$(awk '$2 == "/" { print $1; exit }' /proc/mounts)"
+  root_source=
+  while read -r mount_source mount_point _; do
+    if [ "$mount_point" = "/" ]; then
+      root_source="$mount_source"
+      break
+    fi
+  done < /proc/mounts
   case "$root_source" in
     "$BLOCK_RW_BENCH_ROOT_DEVICE"|"$BLOCK_RW_BENCH_ROOT_DEVICE"p[0-9]*)
       ;;
@@ -90,9 +116,8 @@ run_inline_fallback() {
       ;;
   esac
   if ! command -v dd >/dev/null 2>&1 ||
-     ! command -v cksum >/dev/null 2>&1 ||
-     ! command -v awk >/dev/null 2>&1; then
-    echo "block-rw-bench:" "error: inline fallback requires dd, cksum, and awk"
+     ! command -v cksum >/dev/null 2>&1; then
+    echo "block-rw-bench:" "error: inline fallback requires dd and cksum"
     return 1
   fi
   rm -rf /root/block-rw-bench

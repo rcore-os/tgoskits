@@ -19,8 +19,8 @@ The app intentionally has no shared kernel build TOML. Axbuild resolves each
 `board-<name>.toml` to `os/StarryOS/configs/board/<name>.toml`, so two boards
 with the same Rust target cannot accidentally inherit each other's SoC
 features. The available profiles cover OrangePi 5 Plus, LicheeRV Nano SG2002,
-AKA-00 SG2002, VisionFive2, PhytiumPi, and separate ROC-RK3568-PC
-DWCMSHC-eMMC and DWMMC-SD paths.
+AKA-00 SG2002, VisionFive2, PhytiumPi, ROC-RK3568-PC DWCMSHC eMMC, and
+JL-LSGD2K10 AHCI.
 
 Each board profile uses its `shell_init_cmd` as a parameter prelude with the
 expected root device, controller, hardware transfer limit, and unique success
