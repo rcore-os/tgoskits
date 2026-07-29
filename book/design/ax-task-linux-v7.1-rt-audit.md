@@ -74,35 +74,42 @@ violate the crate dependency boundaries.
 
 ## Structural audit milestone
 
-The behavior-preserving split was completed at branch head
+The first behavior-preserving split was completed at branch head
 `73957e29b4d15c43555e173a9f383100c7deed6f`. At that point the branch was 54
-commits ahead of the audited base and changed 553 paths.
+commits ahead of the audited base and changed 553 paths. The split continued
+through `03e030ccc` and `d4ec647b9`: at the pre-documentation core milestone
+`a8a4ebd3b`, the branch was 78 commits ahead of the audited base and changed
+587 paths.
 
 The former 7,230-line `TaskSystem` implementation had already shrunk to 4,192
-lines by the audit baseline. Its orchestration root is now a 227-line module
+lines by the audit baseline. Its orchestration root is now a 225-line module
 over domain modules for CPU lifecycle, thread construction, dispatch, owner
 scheduling, placement delivery, inboxes, switch transactions,
 park/switch-tail, lifecycle, deadline, balance, and deferred task work. The
 separate public facade still contains its API forwarding surface and unit
-tests; it is not counted as part of that 227-line orchestration root. The split
+tests; it is not counted as part of that 225-line orchestration root. The split
 does not add a second placement or delivery state source: private helpers
 continue to mutate the same records through their existing owner scopes.
 
-The `ax-runtime::task` facade is now 146 lines. CPU bootstrap and online
-publication, stack/TLS backing, transactional thread resources, architecture
-context switching, runtime thread lifecycle, spawn preparation, executor
-integration, scheduler events, and the `TaskRuntime` capability implementation
-have separate modules. `TaskSystem`, every per-CPU `CpuLocal`, the physical
+The `ax-runtime::task` facade is now 148 lines and the crate root is 189 lines.
+CPU bootstrap and online publication, boot-memory layout, interrupt
+registration, shared IPI delivery, the per-CPU physical clockevent, stack/TLS
+backing, transactional thread resources, architecture context switching,
+runtime thread lifecycle, spawn preparation, executor integration, scheduler
+events, and the `TaskRuntime` capability implementation have separate modules.
+`TaskSystem`, every per-CPU `CpuLocal`, the physical clockevent, the
 context/TLS owner, and the scheduler-switch trace hook still have one storage
-owner each.
+owner each. In particular, moving the 408-line clockevent runtime and the
+127-line IPI transport did not introduce a second cache or doorbell state
+source.
 
 This stage was source movement and visibility tightening only. Its validation
 consisted of all `ax-task` unit, integration, documentation, and 15 loom tests;
 the 48 `ax-runtime` IRQ/multitask tests; all 25 `ax-runtime` feature-clippy
 checks; formatting; and `git diff --check`. The TLS-enabled host unit binary is
 not a supported link target because it deliberately lacks kernel linker
-symbols; the TLS feature is covered by the feature-clippy build and will be
-covered by the architecture milestone.
+symbols; the TLS feature is covered by the feature-clippy build and the
+architecture milestone below.
 
 Scheduler placement is now structurally closed. `SchedulerPlacement` is the
 only placement state and represents detached, queued, running, switching-out,
@@ -208,6 +215,39 @@ exhaustively covers publication racing the draining transition. ArceOS still
 has no service that coordinates IRQ-framework removal and physical CPU power
 off, so this change intentionally does not invent a platform hot-unplug
 interface.
+
+## Architecture idle and core validation closure
+
+Every supported architecture now has a live pending-work test for its
+IRQ-masked idle primitive instead of relying on source-text assertions. The
+target CPU disables local IRQs, the sender publishes a scheduler IPI, and the
+target enters `wait_for_irqs_disabled()`. x86_64 uses the atomic `sti; hlt`
+region; RISC-V and AArch64 enter WFI before restoring interrupt admission; and
+LoongArch uses the Linux-style trap return-address fast-forward when an
+interrupt lands in its idle region.
+
+The LoongArch regression masks the local timer line during the experiment, so
+an incidental periodic interrupt cannot satisfy the wake condition. Removing
+the trap-side `fast_forward_idle_interrupt()` call makes the isolated
+`task-ipi` case remain hung after `ARCEOS_TEST_BEGIN` for more than 90 seconds.
+Restoring it completes the same case in 22 ms. The final targeted case passes
+on all four architectures: x86_64 in 21 ms, RISC-V in 39 ms, AArch64 in 31 ms,
+and LoongArch in 22 ms.
+
+The core milestone also runs the complete ArceOS `rust/all` QEMU group
+serially on x86_64, RISC-V, AArch64, and LoongArch. Each runner reports all
+17 cases passed and the formal `ArceOS test suite run OK!` marker. The exact
+repository standard-test command, `cargo xtask test`, passes all 49 packages.
+
+That standard-test run first provided a deterministic host-link red regression
+for axvm: after the runtime migration, its test binary lacked the host
+definitions for stack/page sizing and the per-CPU template bounds. Production
+features were unaffected, but relying on callers to select an aggregate
+`host-test` feature made the package's own test target invalid. axvm now
+enables the existing ax-hal, ax-kernel-guard, and ax-kspin host capabilities
+through dev-dependency feature unification. The original
+`cargo test -p axvm --no-run` link failure is green; 116 unit, 18 integration,
+and 4 error tests pass, as do all six axvm feature-clippy configurations.
 
 ## PI and waiter audit closure
 
