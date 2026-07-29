@@ -183,26 +183,34 @@ impl VsockStreamTransport {
     pub(in crate::vsock) fn send(
         &self,
         mut src: impl Read + IoBuf,
-        _options: SendOptions,
+        options: SendOptions,
     ) -> AxResult<usize> {
         let conn = self.get_connection()?;
-        let conn_guard = conn.lock();
+        let extra_nonblocking = options.flags.contains(crate::SendFlags::DONTWAIT);
+        self.general.send_poller_with(self, extra_nonblocking, || {
+            let state = conn.lock();
+            if state.state() != ConnectionState::Connected || state.tx_closed() {
+                return Err(AxError::NotConnected);
+            }
+            drop(state);
+            if src.remaining() == 0 {
+                return Ok(0);
+            }
 
-        if conn_guard.state() != ConnectionState::Connected {
-            return Err(AxError::NotConnected);
-        }
+            let conn_id = self.conn_id.lock().ok_or(AxError::NotConnected)?;
+            let capacity = vsock_send_capacity(conn_id)?;
+            if capacity == 0 {
+                return Err(AxError::WouldBlock);
+            }
 
-        if conn_guard.tx_closed() {
-            return Err(AxError::NotConnected);
-        }
-
-        let conn_id = self.conn_id.lock().ok_or(AxError::NotConnected)?;
-        drop(conn_guard);
-
-        // now virtio-driver only support non-blocking send
-        let result = src.write_to(&mut ax_io::write_fn(|buf| vsock_send(conn_id, buf)));
-        conn.lock().add_tx_bytes(result.unwrap_or(0));
-        result
+            let result = src.write_to(&mut ax_io::write_fn(|buffer| {
+                let send_length = buffer.len().min(capacity);
+                vsock_send(conn_id, &buffer[..send_length])
+            }));
+            conn.lock()
+                .add_tx_bytes(result.as_ref().copied().unwrap_or(0));
+            result
+        })
     }
 
     pub(in crate::vsock) fn recv(

@@ -20,8 +20,6 @@ use ax_errno::{AxError, AxResult, ax_bail};
 use ax_sync::PiMutex;
 use rdif_vsock::{Interface, VsockAddr, VsockConnId, VsockError};
 
-use crate::vsock::connection_manager::VSOCK_CONN_MANAGER;
-
 mod poll;
 
 pub(crate) use poll::{VsockPollLease, start_vsock_poll};
@@ -67,26 +65,15 @@ pub fn vsock_connect(conn_id: VsockConnId) -> AxResult<()> {
 }
 
 pub fn vsock_send(conn_id: VsockConnId, buf: &[u8]) -> AxResult<usize> {
-    let max_retries = 10; // Tests have shown that no more than two retries will be notified
-    for _ in 0..max_retries {
-        let result = {
-            let mut guard = VSOCK_DEVICE.lock();
-            let dev = guard.as_mut().ok_or(AxError::NotFound)?;
-            dev.send(conn_id, buf)
-        };
-        match result {
-            Ok(len) => return Ok(len),
-            Err(VsockError::Retry) => {
-                let manager = VSOCK_CONN_MANAGER.lock();
-                if let Some(conn) = manager.get_connection(conn_id) {
-                    drop(manager);
-                    conn.wait_for_tx();
-                };
-            }
-            Err(e) => return Err(map_vsock_error(e)),
-        }
-    }
-    Err(map_vsock_error(VsockError::Retry))
+    let mut guard = VSOCK_DEVICE.lock();
+    let dev = guard.as_mut().ok_or(AxError::NotFound)?;
+    dev.send(conn_id, buf).map_err(map_vsock_error)
+}
+
+pub fn vsock_send_capacity(conn_id: VsockConnId) -> AxResult<usize> {
+    let mut guard = VSOCK_DEVICE.lock();
+    let dev = guard.as_mut().ok_or(AxError::NotFound)?;
+    dev.send_capacity(conn_id).map_err(map_vsock_error)
 }
 
 pub fn vsock_disconnect(conn_id: VsockConnId) -> AxResult<()> {

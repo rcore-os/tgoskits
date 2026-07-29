@@ -653,6 +653,36 @@ IMAN race, and `rearm_write_preserves_a_new_hardware_pending_bit` covers the
 RW1C encoding. USBFS gate tests cover teardown quiescence, fixed batch
 exhaustion, and permit release before rearm.
 
+Vsock transmit readiness now follows Linux
+`virtio_transport_notify_poll_out()` rather than treating every connected
+socket as writable. For events surfaced by `virtio-drivers`, the virtio
+adapter publishes a task-context credit snapshot from the same device-owner
+transaction that consumes protocol events and completes sends. Its
+per-connection window is
+`min(peer_buf_alloc, local_buf_alloc) - in_flight`, uses wrapping protocol
+counters, and saturates to zero when a peer shrinks its window. The rdif
+boundary exposes only the resulting send capacity.
+
+`VsockStreamTransport::poll()` publishes `OUT` only for a live transmit half
+with nonzero transport capacity, and connected sockets retain a TX `PollSet`.
+Every surfaced connection event re-evaluates the credit snapshot after
+releasing the device and connection-manager gates; a positive window wakes
+registered writers. Device send performs one bounded attempt and reports
+`WouldBlock`. The ordinary socket poller owns timeout, `MSG_DONTWAIT`,
+registration, and retry, replacing the old ten-iteration timed wait inside the
+device helper. The deterministic credit-window tests cover exhaustion, peer
+forwarding, counter wrap, and peer-window shrink. The worker tests prove both
+publish-before-wake gate release and one device attempt under backpressure.
+
+The upstream manager still consumes `CREDIT_REQUEST` internally even though
+its header carries valid peer credit. TGOSKits therefore cannot yet make the
+manager's private credit state the sole readiness source without copying the
+third-party connection manager. Issue
+[#1724](https://github.com/rcore-os/tgoskits/issues/1724) records the required
+observer/capacity boundary and a zero-window `CREDIT_REQUEST` regression test.
+This branch deliberately does not infer credit from `poll() == None`, because
+that would restore unconditional false `POLLOUT` readiness.
+
 Starry user waits now have one typed terminal boundary:
 `Ready / Interrupted / TimedOut`. The old executor park callback treated a
 sticky interruption only as a reason to yield. A pending future that did not

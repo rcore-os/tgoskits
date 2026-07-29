@@ -210,6 +210,10 @@ mod tests {
             Ok(())
         }
 
+        fn send_capacity(&mut self, _id: VsockConnId) -> Result<usize, VsockError> {
+            Ok(usize::MAX)
+        }
+
         fn send(&mut self, _id: VsockConnId, buf: &[u8]) -> Result<usize, VsockError> {
             Ok(buf.len())
         }
