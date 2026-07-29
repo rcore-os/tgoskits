@@ -5,17 +5,25 @@
 This document is the audit ledger for the task-system migration on
 `codex/refactor-ax-task-from-1596`.
 
-The audited base is `origin/dev` at
-`37c8f60e81b135c7d997c39630410db418ee192d`. The base already contains the
+The current audited base is `origin/dev` at
+`fb399d055f861a99cd49cc76d1a944090d6ad718`. The base already contains the
 Starry PID lifecycle fix from PR #1706. Its generation-specific
 `ProcessIdentity` and `Live -> Zombie -> Reaping -> Reaped` transition remain
 the sole authority for PID visibility and reaping.
 
-The initial branch head is
-`962d057785624994d365ea33bb27fdfe0b24ce75`. The range changes 462 files. Every
-path in that range is assigned to one of the areas below. Driver work is
-limited to drivers and IRQ adapters already changed by the range, plus the
-minimum adjacent runtime boundary needed to repair them.
+The implementation snapshot immediately before this ledger update is
+`30de59fe28ae34ee27e8ab79ee5dfcc1169903f1`: 100 commits and 624 paths relative
+to that base, with 75,110 insertions and 18,990 deletions. Every path in that
+range is assigned to one of the areas below. Driver work is limited to drivers
+and IRQ adapters already changed by the range, plus the minimum adjacent
+runtime boundary needed to repair them.
+
+The older base `37c8f60e81b135c7d997c39630410db418ee192d`, initial branch head
+`962d057785624994d365ea33bb27fdfe0b24ce75`, and structural milestone hashes
+retained below are pre-rebase evidence identifiers. They are not claimed to be
+ancestors of the current rebased branch. Likewise, a QEMU result described as
+a previous or pre-rebase milestone is historical evidence, not a current-head
+pass; current-head validation is recorded separately.
 
 Files that were already large on `dev` are not mechanically split because one
 call site changed. New files, substantially expanded files, and objects that
@@ -73,9 +81,31 @@ violate the crate dependency boundaries.
 | Architecture idle | axcpu idle primitives and trap glue | architecture idle entry, especially LoongArch `genex.S` | IRQ enable plus idle is atomic with pending-work recheck; an interrupt in the enable/idle window returns after the idle instruction and is still dispatched | LoongArch follows the Linux return-address pattern but lacks injected timer/IPI window tests |
 | Compatibility | ax-api, ax-posix-api, axstd, Starry syscalls and axvm callers | Linux UAPI and project compatibility contracts | Internal APIs may change; Linux ABI, errno and axstd observable behavior do not | The migration spans many adapters, so compile-only validation is insufficient |
 
+The last column is the baseline finding, not an open-finding list. The current
+disposition of every row is:
+
+| Area | Current disposition |
+| --- | --- |
+| Scheduler placement | Closed by the single `SchedulerPlacement` state machine, owner-scoped runqueue operations, switch-tail retention, and the offline-target recovery carrier. |
+| Remote delivery | Closed by generation-bearing scheduler work, claim-before-drain acknowledgement, publish-before-IPI ordering, and re-kick after a newer epoch. |
+| CPU lifecycle | Closed at the scheduler/runtime boundary by producer draining, quiescence validation, clockevent offline/online hooks, and `min(platform_cpu_count, CPU_CAPACITY)` admission. A complete platform CPU hot-unplug service remains a stated non-goal. |
+| Task deadlines | Closed by value-only `ThreadId + park generation + kind` heap entries, move-only registration, physical removal on cancel/rearm, and bounded IRQ promotion. |
+| Physical clockevent | Closed by the sole per-CPU `Offline / Idle / Armed / Firing` owner, typed finite deadlines, saturating tick conversion, overdue recovery, and one hardware commit per transaction. |
+| Context switch | Closed by the scheduler baton, runtime switch-tail hook, physical `on_cpu` release ordering, and transactional stack/TLS/context/address-space ownership. |
+| PI and sleep locks | Closed by generation-bearing PI identities, bounded waiter/grant transactions, deboost-before-wake, quiescent destruction, and task-context sleeping waits. |
+| IRQ wake lifetime | Closed by generation-bearing `IrqWaitCell` state, revocation plus quiescence, and no consumer-visible raw wake pointer. |
+| Starry signal return | Closed by monotonic interruption publication/acknowledgement generations and typed `Ready / Interrupted / TimedOut` waits. |
+| Process lifecycle | Closed around dev's sole `ProcessIdentity` authority and `ProcessRelationTxn`; no competing zombie/PID state machine is present. |
+| Perf ownership | Closed by typed task/CPU targets, fixed owner-CPU workers, generation-checked sampling registrations, IRQ grace before release, and a physical scheduler-owner fence during migration. |
+| Generic timers | Closed by CPU-affine task workers and bounded wake endpoints; ax-task contains no arbitrary timer callback API. |
+| Serial and driver IRQ | Closed for the branch-touched serial, vsock, and USB/xHCI paths: hard IRQ work is bounded and non-sleeping, while manager/topology work is task-owned. The upstream vsock credit observer limitation is tracked separately as #1724. |
+| Architecture idle | Closed by pending-work recheck and live injected timer/IPI window tests on all four architectures. |
+| Compatibility | Source and feature validation is closed; current-head end-to-end QEMU is a release gate recorded in the final validation section. |
+
 ## Structural audit milestone
 
-The first behavior-preserving split was completed at branch head
+The following hashes describe the pre-rebase structural audit. The first
+behavior-preserving split was completed at branch head
 `73957e29b4d15c43555e173a9f383100c7deed6f`. At that point the branch was 54
 commits ahead of the audited base and changed 553 paths. The split continued
 through `03e030ccc` and `d4ec647b9`: at the pre-documentation core milestone
@@ -252,7 +282,7 @@ Restoring it completes the same case in 22 ms. The final targeted case passes
 on all four architectures: x86_64 in 21 ms, RISC-V in 39 ms, AArch64 in 31 ms,
 and LoongArch in 22 ms.
 
-The core milestone also runs the complete ArceOS `rust/all` QEMU group
+The pre-rebase core milestone also ran the complete ArceOS `rust/all` QEMU group
 serially on x86_64, RISC-V, AArch64, and LoongArch. Each runner reports all
 17 cases passed and the formal `ArceOS test suite run OK!` marker. The exact
 repository standard-test command, `cargo xtask test`, passes all 49 packages.
@@ -793,7 +823,7 @@ regression. Deterministic host tests cover target parsing, registry generation
 reuse, close versus switch-out, failed owner-stop retry, redirect/detach
 selection, shared output lifetime, and bounded multi-producer admission.
 
-The first post-refactor x86_64 full `qemu/system` milestone passed the
+The pre-rebase first post-refactor x86_64 full `qemu/system` milestone passed the
 scheduler, futex, timer, PID, exec, and perf groups; one `test-ptrace-gdb`
 failure was not reproduced in 20 targeted reruns and remains recorded as an
 intermittent observation rather than receiving a speculative scheduler
@@ -1097,7 +1127,7 @@ cover ordinary acknowledgement and nested-consumer monotonicity. All 22
 `syscall-test-aspace-teardown-reclaim` RISC-V QEMU case completed all twelve
 `SIGKILL`/`waitpid`/address-space-reclaim iterations in 104 seconds.
 
-The subsequent full RISC-V `qemu/system` run passed the scheduler-sensitive
+The subsequent pre-rebase full RISC-V `qemu/system` run passed the scheduler-sensitive
 address-space reclaim, robust futex, SMP futex wake-op, four-CPU umask, and
 page-cache pressure cases without a panic or grouped failure marker. The
 runner then terminated the guest at exactly its suite-wide 1800-second limit
@@ -1110,6 +1140,96 @@ group, retaining incremental timing artifacts, and distinguishing a per-case
 stall from aggregate wall-clock exhaustion. The task/runtime branch does not
 delete cases or loosen the success expression; final milestone runs use the
 existing timeout-scaling facility until the test infrastructure is split.
+
+## Current post-rebase integration closure
+
+The current `fb399d055`-based sequence retains the correctness changes above
+and adds focused integration/module commits:
+
+- `5929e3e50` adapts the AxVM timer worker to the current device runtime;
+- `7afee9c8b` finishes the ax-task scheduler ownership split;
+- `d871c319d` moves ax-net to the core scheduler yield API;
+- `94e14299d` makes Starry user-task references scheduler-backed;
+- `e5a41f08b` splits Starry timer ownership;
+- `6a3558bd3` splits task PMU model, scheduling, lifecycle, control,
+  attachment, and read ownership;
+- `b9b9a218c` replaces serial's arbitrary IRQ RX sink with the fixed-value,
+  64-byte `SerialIrqReport`;
+- `75d775bc2` splits PL011 control, IRQ, RX, emergency TX, register, runtime,
+  event, and test ownership; and
+- `faefd1ad2` fences task perf publication against the physical scheduler
+  owner rather than the ahead-of-switch direct-wake destination;
+- `8b44f2875` moves sigwait wake publication into the signal managers that own
+  pending-state publication and replaces the stale source-shape assertion with
+  behavior tests;
+- `ac4ab7a7d` replaces the obsolete zombie/PID source contract with a grouped
+  Linux-ABI regression that retains the exited leader's nice value; and
+- `30de59fe2` replaces task-layout assertions with typed scope cloning,
+  move-only user-memory access guards, a value-only bounded observer stack,
+  and directly compiled behavior tests.
+
+The final perf correction closes a migration-specific context-install window.
+Direct wake placement may be changed to the destination CPU as soon as
+migration is requested, while `SchedulerPlacement::on_cpu()` intentionally
+remains on the source through switch tail. Waiting for a fixed worker on the
+wake destination could therefore complete before the still-running task had
+crossed a scheduler boundary and observed the new event. This is the same
+distinction Linux v7.1 preserves in `task_function_call()` and
+`perf_install_in_context()`: either rendezvous with the CPU that physically
+runs the task or prove a concurrent schedule transition serialized the
+installation. `ThreadHandle::scheduler_fence_cpu()` now exposes only that
+read-only fence snapshot. The deterministic migration regression first
+observed wake target CPU 1 and an incorrect fence CPU 1 while physical
+ownership remained on CPU 0; the corrected implementation returns CPU 0.
+
+Current module sizes reflect the ownership split rather than facade growth:
+the ax-task orchestration root remains 225 lines; its largest production
+submodule is the 900-line registry, while the 2,832-line scheduler test module
+is intentionally separate. `ax-runtime::task` remains a 148-line facade and
+the runtime crate root 189 lines. Starry task perf is split into a 109-line
+facade over 20- to 558-line domain modules. The remaining Starry `Thread`
+orchestrator is 697 lines; its fixed observer stack and user-memory access
+lease now live in focused 34- and 56-line value modules. PL011 is split into a
+35-line facade over 51- to 368-line production modules plus its dedicated test
+module.
+
+The final static IRQ audit found no arbitrary callback, allocation, sleeping
+lock, unbounded loop, or unowned wake lifetime in the branch-touched serial,
+vsock, or USB/xHCI hard-IRQ paths. Serial now returns a bounded value report,
+publishes it to a preallocated SPSC queue, and signals only after publication.
+Vsock protocol/manager work remains in a bounded task worker. xHCI hard IRQ
+uses only non-blocking acknowledgement/masking; event-ring processing and
+rearm remain task-owned under the stable registry protocol.
+
+The final clockevent audit retained the existing Idle spurious-interrupt
+behavior. Like Linux v7.1 `hrtimer_interrupt()`, a delivered physical
+interrupt may enter the bounded service transaction even if no deadline
+expires; the state test proves the transaction is a no-op and returns to
+`Idle`. Offline CPUs remain an explicit invariant violation at the handler
+boundary because runtime offlining disables the physical source before final
+scheduler publication. No evidence justified a speculative second phase or
+timer-accounting cache.
+
+Current-head validation before the final QEMU milestone includes the
+deterministic perf migration red/green test, `cargo xtask clippy --package
+ax-task`, `cargo check -p starry-kernel --tests`, and all 22
+`starry-kernel` feature-clippy configurations. The directly compiled task-state
+tests cover fixed-capacity LIFO overflow and nested move-only user-memory
+access; the scope-local two-CPU behavior test covers sole activation,
+duplicate-CPU rejection, writer exclusion, bounded upgrade, and unwind. The
+remaining worker contract static check is explicitly limited to forbidden API
+names, where source text is the lint subject rather than a substitute for
+runtime behavior.
+
+The x86_64 grouped
+`zombie-bugfix-bug-zombie-syscalls` regression passes all ten ABI checks and
+the formal `STARRY_GROUPED_TESTS_PASSED` marker. Its multithreaded child now
+also proves that a pthread inherits the leader's nice value, changing the
+worker to nice 12 does not change the leader's nice 7, and
+`/proc/self/task/<tid>/stat` reports those two thread-local values before the
+leader exits. The complete package, formatting, static-symbol, and
+four-architecture QEMU results are appended after the final milestone run;
+historical results above are not substituted for them.
 
 ## Completion rules
 
