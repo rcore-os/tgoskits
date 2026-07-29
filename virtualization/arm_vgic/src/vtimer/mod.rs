@@ -175,8 +175,17 @@ impl VtimerState {
 
     /// Starts (or restarts) the timer with a relative value in nanoseconds.
     pub fn write_timer_value(self: &Arc<Self>, value_ns: u64, backend: Arc<dyn VtimerBackend>) {
-        let now_ns = backend.current_time_nanos();
         let target = backend.current_target();
+        self.schedule_timer_value(value_ns, target, backend);
+    }
+
+    fn schedule_timer_value(
+        self: &Arc<Self>,
+        value_ns: u64,
+        target: VtimerTarget,
+        backend: Arc<dyn VtimerBackend>,
+    ) {
+        let now_ns = backend.current_time_nanos();
         let deadline_ns = now_ns.saturating_add(value_ns);
         let (previous_token, generation) = {
             let mut registers = self.registers.lock();
@@ -226,9 +235,15 @@ impl VtimerState {
 
     /// Restarts a timer that was paused by [`Self::suspend`].
     pub fn resume(self: &Arc<Self>, backend: Arc<dyn VtimerBackend>) {
-        let remaining = self.registers.lock().suspended_remaining_ns.take();
-        if let Some(remaining) = remaining {
-            self.write_timer_value(remaining, backend);
+        let suspended = {
+            let mut registers = self.registers.lock();
+            registers
+                .suspended_remaining_ns
+                .take()
+                .and_then(|remaining| registers.target.map(|target| (remaining, target)))
+        };
+        if let Some((remaining, target)) = suspended {
+            self.schedule_timer_value(remaining, target, backend);
         }
     }
 
@@ -302,18 +317,44 @@ mod tests {
 
     struct TestBackend {
         now_ns: u64,
+        current_target: SpinNoIrq<Option<VtimerTarget>>,
         next_token: AtomicUsize,
         cancelled: SpinNoIrq<Vec<usize>>,
         injected: SpinNoIrq<Vec<(VtimerTarget, u8)>>,
+        timers: SpinNoIrq<Vec<TestTimer>>,
+    }
+
+    struct TestTimer {
+        token: usize,
+        callback: Option<Box<dyn FnOnce(Duration) + Send + 'static>>,
     }
 
     impl TestBackend {
         fn new(now_ns: u64) -> Self {
             Self {
                 now_ns,
+                current_target: SpinNoIrq::new(Some(VtimerTarget::new(7, 3))),
                 next_token: AtomicUsize::new(1),
                 cancelled: SpinNoIrq::new(Vec::new()),
                 injected: SpinNoIrq::new(Vec::new()),
+                timers: SpinNoIrq::new(Vec::new()),
+            }
+        }
+
+        fn set_current_target(&self, target: Option<VtimerTarget>) {
+            *self.current_target.lock() = target;
+        }
+
+        fn fire_timer(&self, token: usize) {
+            let callback = {
+                let mut timers = self.timers.lock();
+                timers
+                    .iter_mut()
+                    .find(|timer| timer.token == token)
+                    .and_then(|timer| timer.callback.take())
+            };
+            if let Some(callback) = callback {
+                callback(Duration::from_nanos(0));
             }
         }
     }
@@ -326,9 +367,14 @@ mod tests {
         fn register_timer(
             &self,
             _deadline: Duration,
-            _callback: Box<dyn FnOnce(Duration) + Send + 'static>,
+            callback: Box<dyn FnOnce(Duration) + Send + 'static>,
         ) -> usize {
-            self.next_token.fetch_add(1, Ordering::Relaxed)
+            let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+            self.timers.lock().push(TestTimer {
+                token,
+                callback: Some(callback),
+            });
+            token
         }
 
         fn cancel_timer(&self, token: usize) {
@@ -336,7 +382,9 @@ mod tests {
         }
 
         fn current_target(&self) -> VtimerTarget {
-            VtimerTarget::new(7, 3)
+            self.current_target
+                .lock()
+                .expect("test backend has no current vCPU context")
         }
 
         fn inject_virtual_interrupt(&self, target: VtimerTarget, vector: u8) {
@@ -410,5 +458,41 @@ mod tests {
         assert_eq!(state.control(120), 0);
         assert_eq!(*concrete_backend.injected.lock(), []);
         assert_eq!(*concrete_backend.cancelled.lock(), [1, 2]);
+    }
+
+    #[test]
+    fn resume_reuses_programming_target_without_current_vcpu_context() {
+        let concrete_backend = Arc::new(TestBackend::new(100));
+        let backend: Arc<dyn VtimerBackend> = concrete_backend.clone();
+        let state = Arc::new(VtimerState::new());
+        let programming_target = VtimerTarget::new(11, 2);
+
+        concrete_backend.set_current_target(Some(programming_target));
+        state.write_control(1, backend.as_ref());
+        state.write_timer_value(20, Arc::clone(&backend));
+
+        state.suspend(backend.as_ref());
+
+        concrete_backend.set_current_target(Some(VtimerTarget::new(11, 5)));
+        state.resume(Arc::clone(&backend));
+        concrete_backend.fire_timer(2);
+        assert_eq!(
+            *concrete_backend.injected.lock(),
+            [(programming_target, VIRTUAL_TIMER_IRQ)],
+            "resume must keep the vCPU target captured when the guest programmed the timer"
+        );
+
+        concrete_backend.injected.lock().clear();
+        state.write_timer_value(20, Arc::clone(&backend));
+        state.suspend(backend.as_ref());
+
+        concrete_backend.set_current_target(None);
+        state.resume(Arc::clone(&backend));
+        concrete_backend.fire_timer(4);
+        assert_eq!(
+            *concrete_backend.injected.lock(),
+            [(VtimerTarget::new(11, 5), VIRTUAL_TIMER_IRQ)],
+            "resume must not read the current vCPU context"
+        );
     }
 }
