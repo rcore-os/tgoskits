@@ -388,6 +388,7 @@ mod tests {
         let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
         let mut host = unsafe { DwMmc::new(base) };
         host.irq.state.begin_request();
+        host.enable_completion_irq();
         let old_generation = host.irq.state.generation();
         let raw = crate::regs::RIntSts::new()
             .with_data_transfer_over(true)
@@ -412,6 +413,26 @@ mod tests {
         host.irq
             .state
             .cache_if_current(old_generation, crate::DWMMC_INT_DATA_TRANSFER_OVER);
+        assert_eq!(host.irq.state.pending(), 0);
+    }
+
+    #[test]
+    fn masked_controller_status_is_acked_without_publishing_an_event() {
+        let mut mmio = [0u32; 256];
+        let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+        let mut host = unsafe { DwMmc::new(base) };
+        host.irq.state.begin_request();
+        let raw = crate::regs::RIntSts::new()
+            .with_data_transfer_over(true)
+            .into_bits();
+        const MINTSTS_WORD: usize = 16;
+        unsafe {
+            mmio.as_mut_ptr().add(MINTSTS_WORD).write_volatile(raw);
+        }
+
+        let mut irq = host.irq_endpoint();
+
+        assert_eq!(irq.handle_irq(), Event::None);
         assert_eq!(host.irq.state.pending(), 0);
     }
 

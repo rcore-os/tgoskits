@@ -368,19 +368,31 @@ impl SdioIrqHandle for SdhciIrqHandle {
 
 fn handle_irq_core(irq: &host::IrqCore) -> Event {
     let generation = irq.state.generation();
-    let normal = read_u16(irq.base_addr, REG_NORMAL_INT_STATUS);
-    let error = if normal & NORMAL_INT_ERROR != 0 {
+    let raw_normal = read_u16(irq.base_addr, REG_NORMAL_INT_STATUS);
+    let raw_error = if raw_normal & NORMAL_INT_ERROR != 0 {
         read_u16(irq.base_addr, REG_ERROR_INT_STATUS)
     } else {
         0
     };
 
-    if normal != 0 {
-        write_u16(irq.base_addr, REG_NORMAL_INT_STATUS, normal);
+    if raw_normal != 0 {
+        write_u16(irq.base_addr, REG_NORMAL_INT_STATUS, raw_normal);
     }
-    if error != 0 {
-        write_u16(irq.base_addr, REG_ERROR_INT_STATUS, error);
+    if raw_error != 0 {
+        write_u16(irq.base_addr, REG_ERROR_INT_STATUS, raw_error);
     }
+
+    let normal = raw_normal
+        & read_u16(irq.base_addr, REG_NORMAL_INT_STATUS_ENABLE)
+        & read_u16(irq.base_addr, REG_NORMAL_INT_SIGNAL_ENABLE);
+    let error = raw_error
+        & read_u16(irq.base_addr, REG_ERROR_INT_STATUS_ENABLE)
+        & read_u16(irq.base_addr, REG_ERROR_INT_SIGNAL_ENABLE);
+    let normal = if error == 0 {
+        normal & !NORMAL_INT_ERROR
+    } else {
+        normal
+    };
     irq.state.cache_if_current(generation, normal, error);
 
     event_from_status(normal, error)

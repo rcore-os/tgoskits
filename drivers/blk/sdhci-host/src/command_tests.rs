@@ -50,6 +50,7 @@ fn issued_command_keeps_irq_generation_active_for_completion_cache() {
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
+    host.enable_interrupt_status_capture();
     host.enable_completion_irq();
     host.pending_data = Some(crate::host::PendingData {
         direction: DataDirection::Read,
@@ -93,6 +94,7 @@ fn r1b_command_completes_when_dat0_is_already_released_at_command_irq() {
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
+    host.enable_interrupt_status_capture();
     host.enable_completion_irq();
 
     host.submit_command(&cmd7(1)).unwrap();
@@ -112,6 +114,7 @@ fn r1b_busy_release_is_register_progress_after_command_irq() {
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
+    host.enable_interrupt_status_capture();
     host.enable_completion_irq();
 
     host.submit_command(&cmd7(1)).unwrap();

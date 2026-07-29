@@ -138,6 +138,7 @@ fn host2_r1b_busy_release_advances_on_register_retry() {
     let mut regs = FakeRegs([0; 0x100]);
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
+    host.enable_interrupt_status_capture();
     host.enable_completion_irq();
     let transaction = sdio_host2::Transaction::command(sdmmc_protocol::cmd::cmd7(1));
     let mut request =
@@ -410,6 +411,8 @@ fn owned_irq_endpoint_acks_and_caches_status() {
     let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
     let mut host = unsafe { Sdhci::new(base) };
     host.irq.state.begin_request();
+    host.enable_interrupt_status_capture();
+    host.enable_completion_irq();
     host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_ERROR);
     host.write_u16(REG_ERROR_INT_STATUS, ERROR_INT_DATA_TIMEOUT);
 
@@ -427,4 +430,21 @@ fn owned_irq_endpoint_acks_and_caches_status() {
     host.write_u16(REG_NORMAL_INT_STATUS, 0);
     host.write_u16(REG_ERROR_INT_STATUS, 0);
     assert_eq!(host.handle_irq(), Event::None);
+}
+
+#[test]
+fn masked_irq_status_is_acked_without_publishing_an_event() {
+    #[repr(align(4))]
+    struct FakeRegs([u8; 0x100]);
+
+    let mut regs = FakeRegs([0; 0x100]);
+    let base = NonNull::new(regs.0.as_mut_ptr()).unwrap();
+    let mut host = unsafe { Sdhci::new(base) };
+    host.irq.state.begin_request();
+    host.write_u16(REG_NORMAL_INT_STATUS, NORMAL_INT_XFER_COMPLETE);
+
+    let mut handle = host.irq_endpoint();
+
+    assert_eq!(handle.handle_irq(), Event::None);
+    assert_eq!(host.irq.state.pending_normal(), 0);
 }

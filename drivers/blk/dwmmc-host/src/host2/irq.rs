@@ -120,12 +120,13 @@ impl SdioIrqHandle for DwMmcIrq {
 
 fn handle_irq_core(irq: &host::IrqCore) -> Event {
     let generation = irq.state.generation();
-    let mut raw_status = irq.regs.mintsts().read();
-    if raw_status != 0 {
+    let masked_status = irq.regs.mintsts().read();
+    if masked_status != 0 {
         irq.regs
             .rintsts()
-            .write(crate::regs::RIntSts::from_bits(raw_status));
+            .write(crate::regs::RIntSts::from_bits(masked_status));
     }
+    let mut enabled_status = masked_status & irq.regs.intmask().read();
     let idmac_status = irq.regs.idsts().read();
     let idmac_ack = idmac_status & dma::IDMAC_INT_CLR;
     if idmac_ack != 0 {
@@ -133,13 +134,13 @@ fn handle_irq_core(irq: &host::IrqCore) -> Event {
     }
     let enabled_idmac_status = idmac_status & irq.regs.idinten().read();
     if enabled_idmac_status & (dma::IDMAC_INT_TI | dma::IDMAC_INT_RI) != 0 {
-        raw_status |= DWMMC_LATCH_IDMAC_COMPLETE;
+        enabled_status |= DWMMC_LATCH_IDMAC_COMPLETE;
     }
     if enabled_idmac_status & dma::IDMAC_INT_ERROR != 0 {
-        raw_status |= DWMMC_LATCH_IDMAC_ERROR;
+        enabled_status |= DWMMC_LATCH_IDMAC_ERROR;
     }
-    irq.state.cache_if_current(generation, raw_status);
-    event_from_raw_status(raw_status)
+    irq.state.cache_if_current(generation, enabled_status);
+    event_from_raw_status(enabled_status)
 }
 
 pub(crate) fn event_from_raw_status(raw_status: u32) -> Event {
