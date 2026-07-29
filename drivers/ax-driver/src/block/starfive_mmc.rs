@@ -10,7 +10,8 @@ use sdmmc_protocol::{
     sdio::{BusWidth, card::SdioSdmmc, init::CardInitPreference},
 };
 use starfive_jh7110_dwmmc::{
-    DEVICE_NAME, JH7110_STABLE_REFERENCE_CLOCK_HZ, Jh7110DwMmc, Jh7110DwMmcConfig,
+    DEVICE_NAME, JH7110_FIFO_CONFIG, JH7110_STABLE_REFERENCE_CLOCK_HZ, Jh7110DwMmc,
+    Jh7110DwMmcConfig,
 };
 
 use crate::{block::ProbeFdtBlock, mmio::iomap};
@@ -53,7 +54,12 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
             .with_named_clock_rate("ciu"),
     )?;
     let reference_clock_hz = prepared_reference_clock_hz(resources.clock_rate("ciu"));
-    let profile = StarFiveMmcNodeProfile::from_info(info, reference_clock_hz);
+    let profile = StarFiveMmcNodeProfile::from_info(info, reference_clock_hz)?;
+    info!(
+        "starfive-jh7110-dwmmc: fifo depth={} words watermark_aligned={}",
+        profile.host_config.fifo_config().depth_words(),
+        profile.fifo_watermark_aligned
+    );
     let mmio_base = iomap(address as usize, mmio_size as usize)?;
 
     let mut host = unsafe { Jh7110DwMmc::new(mmio_base, profile.host_config) };
@@ -78,56 +84,93 @@ fn probe(probe: ProbeFdt<'_>) -> Result<(), OnProbeError> {
 struct StarFiveMmcNodeProfile {
     host_config: Jh7110DwMmcConfig,
     init_preference: CardInitPreference,
+    // Linux applies this quirk only to PIO RX/TX interrupt thresholds. Keep
+    // the DT value visible for diagnostics, but do not pass it into the
+    // IDMAC-only portable data path.
+    fifo_watermark_aligned: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StarFiveMmcDtProperties {
+    fifo_config: dwmmc_host::FifoConfig,
+    fifo_watermark_aligned: bool,
+    bus_width: u32,
+    supports_1v8: bool,
+    no_sd: bool,
+    no_mmc: bool,
+    non_removable: bool,
+    has_mmc_capability: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FifoDepthPropertyError {
+    Malformed,
+    Invalid(u32),
 }
 
 impl StarFiveMmcNodeProfile {
-    fn from_info(info: &rdrive::probe::fdt::FdtInfo<'_>, reference_clock_hz: u32) -> Self {
+    fn from_info(
+        info: &rdrive::probe::fdt::FdtInfo<'_>,
+        reference_clock_hz: u32,
+    ) -> Result<Self, OnProbeError> {
         let node = info.node.as_node();
-        Self::from_dt_flags(
-            reference_clock_hz,
-            node.get_property("bus-width")
-                .and_then(|prop| prop.get_u32())
-                .unwrap_or(1),
-            node.get_property("mmc-hs200-1_8v").is_some()
-                || node.get_property("mmc-ddr-1_8v").is_some()
-                || node.get_property("sd-uhs-sdr104").is_some()
-                || node.get_property("sd-uhs-sdr50").is_some()
-                || node.get_property("sd-uhs-ddr50").is_some()
-                || node.get_property("sd-uhs-sdr25").is_some()
-                || node.get_property("sd-uhs-sdr12").is_some(),
-            node.get_property("no-sd").is_some(),
-            node.get_property("no-mmc").is_some(),
-            node.get_property("non-removable").is_some(),
-            node.get_property("cap-mmc-hw-reset").is_some()
-                || node.get_property("mmc-hs200-1_8v").is_some()
-                || node.get_property("mmc-hs400-1_8v").is_some()
-                || node.get_property("mmc-ddr-1_8v").is_some(),
+        let fifo_config = fifo_config_from_property(
+            node.get_property("fifo-depth")
+                .map(|property| property.get_u32()),
         )
+        .map_err(|error| {
+            let detail = match error {
+                FifoDepthPropertyError::Malformed => "malformed encoding".into(),
+                FifoDepthPropertyError::Invalid(depth) => format!("invalid value {depth}"),
+            };
+            OnProbeError::other(format!(
+                "[{}] has invalid fifo-depth: {detail}",
+                info.node.name()
+            ))
+        })?;
+        Ok(Self::from_dt_properties(
+            reference_clock_hz,
+            StarFiveMmcDtProperties {
+                fifo_config,
+                fifo_watermark_aligned: node.get_property("fifo-watermark-aligned").is_some(),
+                bus_width: node
+                    .get_property("bus-width")
+                    .and_then(|prop| prop.get_u32())
+                    .unwrap_or(1),
+                supports_1v8: node.get_property("mmc-hs200-1_8v").is_some()
+                    || node.get_property("mmc-ddr-1_8v").is_some()
+                    || node.get_property("sd-uhs-sdr104").is_some()
+                    || node.get_property("sd-uhs-sdr50").is_some()
+                    || node.get_property("sd-uhs-ddr50").is_some()
+                    || node.get_property("sd-uhs-sdr25").is_some()
+                    || node.get_property("sd-uhs-sdr12").is_some(),
+                no_sd: node.get_property("no-sd").is_some(),
+                no_mmc: node.get_property("no-mmc").is_some(),
+                non_removable: node.get_property("non-removable").is_some(),
+                has_mmc_capability: node.get_property("cap-mmc-hw-reset").is_some()
+                    || node.get_property("mmc-hs200-1_8v").is_some()
+                    || node.get_property("mmc-hs400-1_8v").is_some()
+                    || node.get_property("mmc-ddr-1_8v").is_some(),
+            },
+        ))
     }
 
-    fn from_dt_flags(
-        reference_clock_hz: u32,
-        bus_width: u32,
-        supports_1v8: bool,
-        no_sd: bool,
-        no_mmc: bool,
-        non_removable: bool,
-        has_mmc_capability: bool,
-    ) -> Self {
-        let max_bus_width = match bus_width {
+    fn from_dt_properties(reference_clock_hz: u32, properties: StarFiveMmcDtProperties) -> Self {
+        let max_bus_width = match properties.bus_width {
             8.. => BusWidth::Bit8,
             4.. => BusWidth::Bit4,
             _ => BusWidth::Bit1,
         };
         let host_config = Jh7110DwMmcConfig::default()
             .with_reference_clock_hz(reference_clock_hz)
+            .with_fifo_config(properties.fifo_config)
             .with_max_bus_width(max_bus_width)
-            .with_1v8_support(supports_1v8);
-        let init_preference = if no_mmc {
+            .with_1v8_support(properties.supports_1v8);
+        let init_preference = if properties.no_mmc {
             CardInitPreference::SdOnly
-        } else if no_sd
+        } else if properties.no_sd
             || matches!(max_bus_width, BusWidth::Bit8)
-            || (non_removable && has_mmc_capability)
+            || (properties.non_removable && properties.has_mmc_capability)
         {
             CardInitPreference::MmcFirst
         } else {
@@ -137,8 +180,22 @@ impl StarFiveMmcNodeProfile {
         Self {
             host_config,
             init_preference,
+            fifo_watermark_aligned: properties.fifo_watermark_aligned,
         }
     }
+}
+
+fn fifo_config_from_property(
+    property: Option<Option<u32>>,
+) -> Result<dwmmc_host::FifoConfig, FifoDepthPropertyError> {
+    let depth = match property {
+        None => return Ok(JH7110_FIFO_CONFIG),
+        Some(None) => return Err(FifoDepthPropertyError::Malformed),
+        Some(Some(depth)) => depth,
+    };
+    let depth_words = u16::try_from(depth).map_err(|_| FifoDepthPropertyError::Invalid(depth))?;
+    dwmmc_host::FifoConfig::new(depth_words, dwmmc_host::FifoDataWidth::Bits32)
+        .ok_or(FifoDepthPropertyError::Invalid(depth))
 }
 
 fn starfive_block_config(dma: &dma_api::DeviceDma) -> BlockConfig {
@@ -259,17 +316,58 @@ mod tests {
 
     #[test]
     fn starfive_profiles_are_dt_capability_driven_not_base_driven() {
-        let emmc =
-            StarFiveMmcNodeProfile::from_dt_flags(50_000_000, 8, true, false, false, true, true);
-        let microsd =
-            StarFiveMmcNodeProfile::from_dt_flags(50_000_000, 4, false, false, true, false, false);
+        let emmc = StarFiveMmcNodeProfile::from_dt_properties(
+            50_000_000,
+            StarFiveMmcDtProperties {
+                fifo_config: JH7110_FIFO_CONFIG,
+                fifo_watermark_aligned: true,
+                bus_width: 8,
+                supports_1v8: true,
+                no_sd: false,
+                no_mmc: false,
+                non_removable: true,
+                has_mmc_capability: true,
+            },
+        );
+        let microsd = StarFiveMmcNodeProfile::from_dt_properties(
+            50_000_000,
+            StarFiveMmcDtProperties {
+                fifo_config: JH7110_FIFO_CONFIG,
+                fifo_watermark_aligned: true,
+                bus_width: 4,
+                supports_1v8: false,
+                no_sd: false,
+                no_mmc: true,
+                non_removable: false,
+                has_mmc_capability: false,
+            },
+        );
 
         assert_eq!(emmc.host_config.max_bus_width(), BusWidth::Bit8);
         assert!(emmc.host_config.supports_1v8());
+        assert_eq!(emmc.host_config.fifo_config().depth_words(), 32);
+        assert!(emmc.fifo_watermark_aligned);
         assert_eq!(emmc.init_preference, CardInitPreference::MmcFirst);
 
         assert_eq!(microsd.host_config.max_bus_width(), BusWidth::Bit4);
         assert!(!microsd.host_config.supports_1v8());
         assert_eq!(microsd.init_preference, CardInitPreference::SdOnly);
+    }
+
+    #[test]
+    fn malformed_fifo_depth_is_not_treated_as_a_missing_property() {
+        assert_eq!(
+            fifo_config_from_property(Some(None)),
+            Err(FifoDepthPropertyError::Malformed)
+        );
+        assert_eq!(fifo_config_from_property(None), Ok(JH7110_FIFO_CONFIG));
+        assert_eq!(
+            fifo_config_from_property(Some(Some(1))),
+            Err(FifoDepthPropertyError::Invalid(1))
+        );
+        assert_eq!(
+            fifo_config_from_property(Some(Some(32))),
+            Ok(JH7110_FIFO_CONFIG)
+        );
     }
 }

@@ -38,9 +38,15 @@ pub const IDMAC_DESC_SIZE: usize = core::mem::size_of::<IdmacDesc>();
 /// implementation programs descriptors in 4 KiB chunks to avoid controller
 /// length quirks.
 pub const IDMAC_DESC_MAX_BYTES: usize = 4096;
+const IDMAC_DESC_BOUNDARY_BYTES: u64 = 4096;
 pub const IDMAC_RING_BYTES: usize = 4096;
 pub const IDMAC_RING_DESC_COUNT: usize = IDMAC_RING_BYTES / IDMAC_DESC_SIZE;
-pub const IDMAC_MAX_TRANSFER_SIZE: usize = IDMAC_RING_DESC_COUNT * IDMAC_DESC_MAX_BYTES;
+/// Maximum transfer size guaranteed for every DMA base address.
+///
+/// One descriptor may be consumed by the prefix before the first 4 KiB
+/// boundary. Aligned buffers can still use the final descriptor, but the
+/// advertised queue limit must be valid for every accepted DMA address.
+pub const IDMAC_MAX_TRANSFER_SIZE: usize = (IDMAC_RING_DESC_COUNT - 1) * IDMAC_DESC_MAX_BYTES;
 pub const IDMAC_MAX_BLOCKS: u32 = (IDMAC_MAX_TRANSFER_SIZE / BLOCK_SIZE) as u32;
 
 #[repr(C, align(16))]
@@ -117,13 +123,13 @@ pub(super) fn prepare_idmac_descriptors(
     if len == 0 {
         return Err(Error::InvalidArgument);
     }
-    let count = len.div_ceil(IDMAC_DESC_MAX_BYTES);
-    if count > descriptors.len() {
-        return Err(Error::InvalidArgument);
-    }
     let buffer_end = buffer_dma
         .checked_add(len as u64)
         .ok_or(Error::InvalidArgument)?;
+    let count = idmac_descriptor_count(buffer_dma, len)?;
+    if count > descriptors.len() {
+        return Err(Error::InvalidArgument);
+    }
     let descriptor_bytes = count
         .checked_mul(IDMAC_DESC_SIZE)
         .ok_or(Error::InvalidArgument)?;
@@ -138,22 +144,36 @@ pub(super) fn prepare_idmac_descriptors(
     let mut remaining = len;
     let mut offset = 0_u64;
     for (index, descriptor) in descriptors[..count].iter_mut().enumerate() {
-        let chunk = remaining.min(IDMAC_DESC_MAX_BYTES);
+        let dma_addr = buffer_dma + offset;
+        let boundary_remaining =
+            (IDMAC_DESC_BOUNDARY_BYTES - dma_addr % IDMAC_DESC_BOUNDARY_BYTES) as usize;
+        let chunk = remaining.min(IDMAC_DESC_MAX_BYTES).min(boundary_remaining);
         let last = index + 1 == count;
         let next = if last {
             0
         } else {
             (table_dma + (index as u64 + 1) * IDMAC_DESC_SIZE as u64) as u32
         };
-        *descriptor = IdmacDesc::chained(
-            (buffer_dma + offset) as u32,
-            chunk as u32,
-            next,
-            index == 0,
-            last,
-        );
+        *descriptor = IdmacDesc::chained(dma_addr as u32, chunk as u32, next, index == 0, last);
         remaining -= chunk;
         offset += chunk as u64;
+    }
+    Ok(count)
+}
+
+fn idmac_descriptor_count(buffer_dma: u64, len: usize) -> Result<usize, Error> {
+    let mut count = 0_usize;
+    let mut dma_addr = buffer_dma;
+    let mut remaining = len;
+    while remaining != 0 {
+        let boundary_remaining =
+            (IDMAC_DESC_BOUNDARY_BYTES - dma_addr % IDMAC_DESC_BOUNDARY_BYTES) as usize;
+        let chunk = remaining.min(IDMAC_DESC_MAX_BYTES).min(boundary_remaining);
+        count = count.checked_add(1).ok_or(Error::InvalidArgument)?;
+        dma_addr = dma_addr
+            .checked_add(chunk as u64)
+            .ok_or(Error::InvalidArgument)?;
+        remaining -= chunk;
     }
     Ok(count)
 }

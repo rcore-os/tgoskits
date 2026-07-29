@@ -89,6 +89,22 @@ fn block_request_can_cross_queue_thread_boundary() {
 }
 
 #[test]
+fn stopping_idmac_preserves_controller_completion_irqs() {
+    let mut mmio = [0u32; 256];
+    let base = NonNull::new(mmio.as_mut_ptr().cast()).unwrap();
+    let mut host = unsafe { DwMmc::new(base) };
+    host.enable_completion_irq();
+    assert!(host.regs.ctrl().read().int_enable());
+
+    host.disable_idmac();
+
+    assert!(
+        host.regs.ctrl().read().int_enable(),
+        "quiescing DMA must not mask a following command-only completion"
+    );
+}
+
+#[test]
 fn idmac_ring_splits_4608_bytes_into_4096_and_512() {
     let mut descriptors = [IdmacDesc::default(); 4];
 
@@ -100,6 +116,23 @@ fn idmac_ring_splits_4608_bytes_into_4096_and_512() {
     assert_eq!(descriptors[0].des3, 0x1000 + IDMAC_DESC_SIZE as u32);
     assert_eq!(descriptors[0].des0, DESC_OWN | DESC_CH | DESC_FS | DESC_DIC);
     assert_eq!(descriptors[1].des1, 512);
+    assert_eq!(descriptors[1].des2, 0x5000);
+    assert_eq!(descriptors[1].des3, 0);
+    assert_eq!(descriptors[1].des0, DESC_OWN | DESC_LD);
+}
+
+#[test]
+fn idmac_ring_does_not_cross_a_four_kib_dma_boundary() {
+    let mut descriptors = [IdmacDesc::default(); 4];
+
+    let count = prepare_idmac_descriptors(&mut descriptors, 0x1000, 0x4f00, 4096).unwrap();
+
+    assert_eq!(count, 2);
+    assert_eq!(descriptors[0].des1, 256);
+    assert_eq!(descriptors[0].des2, 0x4f00);
+    assert_eq!(descriptors[0].des3, 0x1000 + IDMAC_DESC_SIZE as u32);
+    assert_eq!(descriptors[0].des0, DESC_OWN | DESC_CH | DESC_FS | DESC_DIC);
+    assert_eq!(descriptors[1].des1, 3840);
     assert_eq!(descriptors[1].des2, 0x5000);
     assert_eq!(descriptors[1].des3, 0);
     assert_eq!(descriptors[1].des0, DESC_OWN | DESC_LD);

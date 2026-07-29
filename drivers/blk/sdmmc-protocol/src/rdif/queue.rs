@@ -22,7 +22,7 @@ use crate::{
     response::CardState,
     sdio::{
         card::{CardKind, SdioSdmmc, SdioStatusRequest},
-        host::SdioIrqHost,
+        host::{HostProgressWait, SdioIrqHost},
         init::{CardInitPreference, MmcSwitchRequest, SdioInitWait},
     },
 };
@@ -222,6 +222,7 @@ where
             Ok(id) => {
                 let id = RequestId::new(usize::from(id));
                 self.pending_id = Some(id);
+                self.sync_protocol_register_retry();
                 Ok(id)
             }
             Err(error) => {
@@ -260,6 +261,7 @@ where
         match flush {
             Ok(flush) => {
                 self.flush = Some((id, flush));
+                self.sync_protocol_register_retry();
                 Ok(id)
             }
             Err(error) => {
@@ -288,7 +290,7 @@ where
         }
     }
 
-    fn drain_data(&mut self, sink: &mut dyn CompletionSink) {
+    fn advance_data(&mut self, cause: ProgressCause, sink: &mut dyn CompletionSink) {
         let Some(id) = self.pending_id else {
             return;
         };
@@ -297,7 +299,7 @@ where
             &mut self.pending,
             BlockRequestId::new(usize::from(id)),
             &mut self.slot,
-            ProgressCause::AcknowledgedIrq,
+            cause,
         );
         match result {
             Ok(BlockProgress::Pending) => {}
@@ -325,16 +327,13 @@ where
         }
     }
 
-    fn drain_flush(&mut self, sink: &mut dyn CompletionSink) {
+    fn advance_flush(&mut self, cause: ProgressCause, sink: &mut dyn CompletionSink) {
         let Some((id, request)) = self.flush.take() else {
             return;
         };
         match request {
             FlushRequest::Cache(mut request) => {
-                match self
-                    .card
-                    .advance_mmc_switch_request(&mut request, ProgressCause::AcknowledgedIrq)
-                {
+                match self.card.advance_mmc_switch_request(&mut request, cause) {
                     Ok(OperationProgress::Pending) => {
                         self.flush = Some((id, FlushRequest::Cache(request)));
                     }
@@ -352,10 +351,7 @@ where
                 }
             }
             FlushRequest::Status(mut request) => {
-                match self
-                    .card
-                    .advance_status_request(&mut request, ProgressCause::AcknowledgedIrq)
-                {
+                match self.card.advance_status_request(&mut request, cause) {
                     Ok(OperationProgress::Pending) => {
                         self.flush = Some((id, FlushRequest::Status(request)));
                     }
@@ -390,6 +386,13 @@ where
                 .abort_status_request(request)
                 .map_err(map_dev_err_to_blk_err),
         }
+    }
+
+    fn sync_protocol_register_retry(&mut self) {
+        self.register_retry_after = match self.card.protocol_progress_wait() {
+            HostProgressWait::Irq => None,
+            HostProgressWait::Register { retry_after } => Some(retry_after),
+        };
     }
 }
 
@@ -469,8 +472,9 @@ where
             self.advance_initialization(ProgressCause::AcknowledgedIrq)?;
             return Ok(());
         }
-        self.drain_data(sink);
-        self.drain_flush(sink);
+        self.advance_data(ProgressCause::AcknowledgedIrq, sink);
+        self.advance_flush(ProgressCause::AcknowledgedIrq, sink);
+        self.sync_protocol_register_retry();
         Ok(())
     }
 
@@ -478,12 +482,24 @@ where
         self.register_retry_after
     }
 
-    fn advance_register_retry(&mut self) -> Result<(), BlkError> {
-        if self.init_request.is_none() || self.register_retry_after.take().is_none() {
+    fn advance_register_retry(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        if self.register_retry_after.take().is_none() {
             return Err(BlkError::InvalidRequest);
         }
-        self.advance_initialization(ProgressCause::RegisterRetry)
-            .map(|_| ())
+        if self.init_request.is_some() {
+            return self
+                .advance_initialization(ProgressCause::RegisterRetry)
+                .map(|_| ());
+        }
+        if self.pending_id.is_some() {
+            self.advance_data(ProgressCause::RegisterRetry, sink);
+        } else if self.flush.is_some() {
+            self.advance_flush(ProgressCause::RegisterRetry, sink);
+        } else {
+            return Err(BlkError::InvalidRequest);
+        }
+        self.sync_protocol_register_retry();
+        Ok(())
     }
 
     fn shutdown(&mut self, sink: &mut dyn CompletionSink) -> Result<(), BlkError> {

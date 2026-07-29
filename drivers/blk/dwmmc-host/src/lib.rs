@@ -64,6 +64,7 @@ use log::warn;
 
 mod command;
 mod dma;
+mod fifo;
 mod host;
 mod regs;
 
@@ -86,6 +87,7 @@ pub use crate::{
         BlockRequest, BlockRequestSlot, IDMAC_DESC_ALIGN, IDMAC_DESC_SIZE, IDMAC_MAX_BLOCKS,
         IDMAC_MAX_TRANSFER_SIZE, RequestId,
     },
+    fifo::{FifoConfig, FifoDataWidth},
     host::{CardDetect, DwMmc, HostClock},
 };
 

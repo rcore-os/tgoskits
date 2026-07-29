@@ -27,6 +27,7 @@ use crate::{
     UhsBits,
     command::CommandState,
     dma::IdmacRing,
+    fifo::FifoConfig,
     regs::{
         BlkSiz, CType, ClkDiv, ClkEna, Cmd, RIntSts, RegisterBlock,
         RegisterBlockVolatileFieldAccess,
@@ -36,18 +37,7 @@ use crate::{
 
 const ALL_INT_CLR: u32 = u32::MAX;
 const DEFAULT_TMOUT: u32 = u32::MAX;
-const DEFAULT_FIFO_DEPTH_WORDS: u32 = 0x100;
-const DEFAULT_FIFOTH_MSIZE: u32 = 0x2;
-const DEFAULT_FIFOTH: u32 = fifoth(
-    DEFAULT_FIFOTH_MSIZE,
-    DEFAULT_FIFO_DEPTH_WORDS / 2 - 1,
-    DEFAULT_FIFO_DEPTH_WORDS / 2,
-);
 pub(crate) const DWMMC_HW_POLL_LIMIT: u32 = 500_000;
-
-const fn fifoth(msize: u32, rx_wmark: u32, tx_wmark: u32) -> u32 {
-    ((msize & 0x7) << 28) | ((rx_wmark & 0x0fff) << 16) | (tx_wmark & 0x0fff)
-}
 
 /// Cached state for a pending data phase.
 #[derive(Clone, Copy, Debug)]
@@ -213,6 +203,7 @@ pub struct DwMmc {
     pub(crate) regs: VolatilePtr<'static, RegisterBlock>,
     pub(crate) base_addr: usize,
     pub(crate) ref_clock_hz: u32,
+    pub(crate) fifo_config: FifoConfig,
     pub(crate) card_detect: CardDetect,
     pub(crate) ext_clock: Option<Box<dyn HostClock>>,
     pub(crate) pending_data: Option<PendingData>,
@@ -244,6 +235,7 @@ impl DwMmc {
             regs,
             base_addr: base.as_ptr() as usize,
             ref_clock_hz: 0,
+            fifo_config: FifoConfig::default(),
             card_detect: CardDetect::ControllerActiveLow,
             ext_clock: None,
             pending_data: None,
@@ -304,6 +296,15 @@ impl DwMmc {
     /// Current controller reference clock used by the DWMMC divider logic.
     pub fn reference_clock(&self) -> u32 {
         self.ref_clock_hz
+    }
+
+    /// Install the FIFO capability supplied by the SoC integration.
+    pub fn set_fifo_config(&mut self, config: FifoConfig) {
+        self.fifo_config = config;
+    }
+
+    pub const fn fifo_config(&self) -> FifoConfig {
+        self.fifo_config
     }
 
     /// Configure how the host interprets its card-detect input.
@@ -540,7 +541,9 @@ impl DwMmc {
 
     pub(crate) fn program_linux_init_baseline(&self) {
         self.regs.tmout().write(DEFAULT_TMOUT);
-        self.regs.fifoth().write(DEFAULT_FIFOTH);
+        self.regs
+            .fifoth()
+            .write(self.fifo_config.baseline_threshold());
         self.regs.clksrc().write(0);
     }
 
@@ -611,6 +614,9 @@ impl DwMmc {
 
     /// Program block size + total byte count for the next data phase.
     pub(crate) fn program_data_phase(&self, block_size: u32, block_count: u32) {
+        self.regs
+            .fifoth()
+            .write(self.fifo_config.dma_threshold(block_size));
         self.regs
             .blksiz()
             .write(BlkSiz::new().with_block_size(block_size as u16));

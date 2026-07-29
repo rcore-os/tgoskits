@@ -68,6 +68,7 @@ struct MockHost {
     multi_step_hs200_rollback: bool,
     aborted_bus_ops: Vec<sdio_host2::BusOp>,
     pending_polls: usize,
+    complete_after_irq_register_retry: bool,
     completion_irq_enabled: bool,
     /// Optional monotonic clock value returned from
     /// [`sdio_host2::SdioHost::now_ms`]. Tests advance this directly to verify the
@@ -80,6 +81,7 @@ struct MockTransactionRequest {
     result: Option<Result<sdio_host2::RawResponse, sdio_host2::Error>>,
     dma: Option<dma_api::PreparedDma>,
     completed_dma: Option<dma_api::CompletedDma>,
+    acknowledged_irq: bool,
 }
 
 struct MockBusRequest {
@@ -108,6 +110,7 @@ impl MockHost {
             multi_step_hs200_rollback: false,
             aborted_bus_ops: Vec::new(),
             pending_polls: 0,
+            complete_after_irq_register_retry: false,
             completion_irq_enabled: false,
             now_ms: None,
         }
@@ -134,6 +137,7 @@ impl MockHost {
             multi_step_hs200_rollback: false,
             aborted_bus_ops: Vec::new(),
             pending_polls: 0,
+            complete_after_irq_register_retry: false,
             completion_irq_enabled: false,
             now_ms: None,
         }
@@ -210,6 +214,7 @@ impl sdio_host2::SdioHost for MockHost {
             result: Some(result),
             dma,
             completed_dma: None,
+            acknowledged_irq: false,
         })
     }
 
@@ -246,6 +251,17 @@ impl sdio_host2::SdioHost for MockHost {
     where
         Self: 'a,
     {
+        if self.complete_after_irq_register_retry {
+            if cause == sdio_host2::ProgressCause::AcknowledgedIrq {
+                request.acknowledged_irq = true;
+                return Ok(sdio_host2::RequestProgress::RegisterPending {
+                    retry_after: core::time::Duration::from_millis(1),
+                });
+            }
+            if request.acknowledged_irq && cause == sdio_host2::ProgressCause::RegisterRetry {
+                return complete_mock_transaction(request);
+            }
+        }
         if cause != sdio_host2::ProgressCause::AcknowledgedIrq {
             return Ok(sdio_host2::RequestProgress::WaitingForIrq);
         }
@@ -253,15 +269,7 @@ impl sdio_host2::SdioHost for MockHost {
             self.pending_polls -= 1;
             return Ok(sdio_host2::RequestProgress::WaitingForIrq);
         }
-        let result = request
-            .result
-            .take()
-            .ok_or(sdio_host2::AdvanceRequestError::AlreadyCompleted)?;
-        request.completed_dma = request
-            .dma
-            .take()
-            .map(dma_api::PreparedDma::complete_without_device);
-        Ok(sdio_host2::RequestProgress::Complete(result))
+        complete_mock_transaction(request)
     }
 
     fn abort_transaction<'a>(
@@ -364,6 +372,20 @@ impl sdio_host2::SdioHost for MockHost {
     fn now_ms(&self) -> Option<u64> {
         self.now_ms
     }
+}
+
+fn complete_mock_transaction(
+    request: &mut MockTransactionRequest,
+) -> Result<sdio_host2::RequestProgress<sdio_host2::RawResponse>, sdio_host2::AdvanceRequestError> {
+    let result = request
+        .result
+        .take()
+        .ok_or(sdio_host2::AdvanceRequestError::AlreadyCompleted)?;
+    request.completed_dma = request
+        .dma
+        .take()
+        .map(dma_api::PreparedDma::complete_without_device);
+    Ok(sdio_host2::RequestProgress::Complete(result))
 }
 
 struct MockIrq;

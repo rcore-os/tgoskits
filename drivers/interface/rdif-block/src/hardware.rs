@@ -120,12 +120,17 @@ pub trait HardwareQueue: Send + 'static {
 
     /// Advances register-only queue state after a runtime-owned timer expires.
     ///
+    /// `sink` receives requests whose hardware completion was acknowledged by
+    /// an earlier IRQ but whose protocol state could only become terminal
+    /// after this register transition. Implementations must not inspect a
+    /// hardware completion source from this method.
+    ///
     /// # Errors
     ///
     /// Returns an error when the queue cannot safely continue initialization
     /// or recovery. Implementations may request another retry through
     /// [`Self::register_retry_after`].
-    fn advance_register_retry(&mut self) -> Result<(), BlkError> {
+    fn advance_register_retry(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
         Err(BlkError::NotSupported)
     }
 

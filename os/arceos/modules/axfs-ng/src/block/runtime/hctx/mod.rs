@@ -299,12 +299,16 @@ fn run_hctx(
         );
         let register_progress = advance_register_retry_if_due(
             &mut *queue,
-            &*controller,
-            &mut register_retry_at,
-            &mut register_deadline,
             wall_time(),
-            &state,
-            &mut fatal_error,
+            &mut RegisterRetryContext {
+                controller: &*controller,
+                pending: &mut pending,
+                observer: &observer,
+                retry_at: &mut register_retry_at,
+                deadline: &mut register_deadline,
+                state: &state,
+                fatal_error: &mut fatal_error,
+            },
         );
         if irq_progress || register_progress {
             submission_blocked = false;
@@ -455,41 +459,61 @@ fn reconcile_register_retry(
     }
 }
 
+struct RegisterRetryContext<'a> {
+    controller: &'a dyn ControllerEventPort,
+    pending: &'a mut BTreeMap<RequestId, PendingRequest>,
+    observer: &'a Weak<dyn HctxObserver>,
+    retry_at: &'a mut Option<Duration>,
+    deadline: &'a mut Option<Duration>,
+    state: &'a HctxState,
+    fatal_error: &'a mut Option<BlkError>,
+}
+
 fn advance_register_retry_if_due(
     queue: &mut dyn HardwareQueue,
-    controller: &dyn ControllerEventPort,
-    retry_at: &mut Option<Duration>,
-    deadline: &mut Option<Duration>,
     now: Duration,
-    state: &HctxState,
-    fatal_error: &mut Option<BlkError>,
+    context: &mut RegisterRetryContext<'_>,
 ) -> bool {
-    if deadline.is_some_and(|deadline| deadline <= now) {
-        set_hctx_fatal(state, fatal_error, BlkError::TimedOut);
+    if context.deadline.is_some_and(|deadline| deadline <= now) {
+        set_hctx_fatal(context.state, context.fatal_error, BlkError::TimedOut);
         return true;
     }
-    if !retry_at.is_some_and(|retry_at| retry_at <= now) {
+    if !context.retry_at.is_some_and(|retry_at| retry_at <= now) {
         return false;
     }
-    *retry_at = None;
-    if let Err(error) = queue.advance_register_retry() {
-        set_hctx_fatal(state, fatal_error, error);
+    *context.retry_at = None;
+    let mut unexpected_completion = false;
+    let retry_result = {
+        let mut sink = HctxCompletionSink {
+            pending: context.pending,
+            observer: context.observer,
+            override_error: None,
+            unexpected_completion: &mut unexpected_completion,
+        };
+        queue.advance_register_retry(&mut sink)
+    };
+    if let Err(error) = retry_result {
+        set_hctx_fatal(context.state, context.fatal_error, error);
         return true;
     }
-    if let Err(error) = refresh_queue_info(queue, state) {
-        set_hctx_fatal(state, fatal_error, error);
+    if unexpected_completion {
+        set_hctx_fatal(context.state, context.fatal_error, BlkError::Io);
         return true;
     }
-    controller.post(ControllerEvent::RegisterRetry);
+    if let Err(error) = refresh_queue_info(queue, context.state) {
+        set_hctx_fatal(context.state, context.fatal_error, error);
+        return true;
+    }
+    context.controller.post(ControllerEvent::RegisterRetry);
     if let Some(delay) = queue.register_retry_after() {
         let delay = if delay.is_zero() {
             Duration::from_micros(1)
         } else {
             delay
         };
-        *retry_at = Some(now.saturating_add(delay));
+        *context.retry_at = Some(now.saturating_add(delay));
     } else {
-        *deadline = None;
+        *context.deadline = None;
     }
     true
 }

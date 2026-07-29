@@ -86,6 +86,11 @@ impl<H: SdioIrqHost + 'static> SdioSdmmc<H> {
         &mut self.host
     }
 
+    #[cfg(any(feature = "rdif", test))]
+    pub(crate) const fn protocol_progress_wait(&self) -> super::host::HostProgressWait {
+        self.host.progress_wait()
+    }
+
     /// Returns whether the initialized card uses sector addressing.
     pub fn is_high_capacity(&self) -> bool {
         self.high_capacity

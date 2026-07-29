@@ -158,7 +158,7 @@ impl HardwareQueue for RegisterRetryQueue {
         self.retry_after
     }
 
-    fn advance_register_retry(&mut self) -> Result<(), BlkError> {
+    fn advance_register_retry(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
         self.retries.fetch_add(1, Ordering::AcqRel);
         self.retry_after = None;
         Ok(())
@@ -444,27 +444,38 @@ fn register_retry_advances_only_register_state_and_posts_controller_event() {
     let mut retry_at = None;
     let mut deadline = None;
     let mut fatal_error = None;
+    let mut pending = BTreeMap::new();
+    let observer: Arc<dyn HctxObserver> = Arc::new(TestObserver::default());
+    let observer = Arc::downgrade(&observer);
 
     reconcile_register_retry(&queue, &mut retry_at, &mut deadline, now);
     assert_eq!(retry_at, Some(now + Duration::from_millis(2)));
     assert_eq!(deadline, Some(now + QUEUE_REGISTER_TRANSITION_TIMEOUT));
     assert!(!advance_register_retry_if_due(
         &mut queue,
-        &controller,
-        &mut retry_at,
-        &mut deadline,
         now + Duration::from_millis(1),
-        &state,
-        &mut fatal_error,
+        &mut RegisterRetryContext {
+            controller: &controller,
+            pending: &mut pending,
+            observer: &observer,
+            retry_at: &mut retry_at,
+            deadline: &mut deadline,
+            state: &state,
+            fatal_error: &mut fatal_error,
+        },
     ));
     assert!(advance_register_retry_if_due(
         &mut queue,
-        &controller,
-        &mut retry_at,
-        &mut deadline,
         now + Duration::from_millis(2),
-        &state,
-        &mut fatal_error,
+        &mut RegisterRetryContext {
+            controller: &controller,
+            pending: &mut pending,
+            observer: &observer,
+            retry_at: &mut retry_at,
+            deadline: &mut deadline,
+            state: &state,
+            fatal_error: &mut fatal_error,
+        },
     ));
 
     assert_eq!(retries.load(Ordering::Acquire), 1);

@@ -17,12 +17,13 @@ The next SD/eMMC migration keeps traditional controllers at depth one and adds
 owned-DMA, IRQ-only implementations for generic SDHCI, DW MMC IDMAC, Phytium
 MCI IDMAC, CV181x/SG2002 SDHCI, StarFive JH7110 DWMMC, and the separate RK3568
 DWCMSHC and DWMMC paths. An `ax-driver` feature is released only after its named
-physical-board write matrix passes. The JH7110, Phytium MCI, and Rockchip DWMMC
-cores therefore remain private after their read-only/no-media validation
-outcomes. K230 source is also kept private: the referenced Linux revision has
-no upstream K230 MMC implementation, and the repository does not yet have
-sufficient PHY/clock/reset evidence to expose it. Reusable hardware crates may
-remain in the tree without an OS registration entry.
+physical-board write matrix passes. JH7110 is public after its physical write
+matrix passed; Phytium MCI and Rockchip DWMMC remain private after their
+read-only/no-media validation outcomes. K230 source is also kept private: the
+referenced Linux revision has no upstream K230 MMC implementation, and the
+repository does not yet have sufficient PHY/clock/reset evidence to expose it.
+Reusable hardware crates may remain in the tree without an OS registration
+entry.
 
 ## Problem
 
@@ -178,7 +179,9 @@ layout:
 - `dwmmc-host::host2::{irq,bus,request,transaction}` separates event
   acknowledgement, register-only bus transitions, request ownership, and the
   Host2 adapter, while `dwmmc-host::dma::{idmac,request}` separates the reusable
-  4 KiB descriptor ring from owned request state;
+  4 KiB descriptor ring from owned request state and `dwmmc-host::fifo`
+  validates the SoC-supplied FIFO capability and derives Linux-compatible
+  IDMAC thresholds;
 - `phytium-mci-host::host2::{irq,bus,request,transaction}` applies the same
   ownership split to its protocol progression, while
   `phytium-mci-host::dma::{idmac,submission,completion}` isolates the
@@ -259,6 +262,11 @@ contains only:
   acceptance and fatal/error exits;
 - `drain_completions`, which is called only after a matching IRQ event and
   transfers terminal results and completed DMA to a sink;
+- `register_retry_after` and `advance_register_retry`, which may advance only
+  register or protocol bookkeeping. The latter may publish a terminal result
+  through its completion sink only when an earlier hard IRQ already
+  acknowledged the hardware completion; it must never inspect a hardware
+  completion source as a timer fallback;
 - `shutdown`, which quiesces hardware and returns or quarantines every remaining
   DMA allocation.
 
@@ -426,11 +434,14 @@ All migrated SDHCI, DWMMC, and MCI queues advertise
 `queue_depth = max_submit_batch = 1`. SDHCI selects 32-bit, 64-bit, or v4
 ADMA2 descriptors only when both the capability registers and DMA mask permit
 them, and splits at the 128 MiB boundary. DWMMC uses a preallocated 4 KiB ring
-of 16-byte descriptors with at most 4 KiB payload per descriptor. Phytium uses
-a preallocated 4 KiB ring of its 32-byte descriptor format and retains a
-32-bit DMA mask until hardware evidence supports a wider one. The runtime
-planner validates these limits first; the driver validates again before moving
-DMA ownership.
+of 16-byte descriptors with at most 4 KiB payload per descriptor; neither one
+descriptor nor one request may cross a 4 KiB DMA-address boundary. Its
+advertised worst-case transfer limit reserves one descriptor for an unaligned
+prefix. The IDMAC engine is reset before every descriptor-ring publication,
+matching Linux `dw_mci_idmac_start_dma()`. Phytium uses a preallocated 4 KiB
+ring of its 32-byte descriptor format and retains a 32-bit DMA mask until
+hardware evidence supports a wider one. The runtime planner validates these
+limits first; the driver validates again before moving DMA ownership.
 
 ## Interrupt Details
 
@@ -461,6 +472,11 @@ semantics.
   JH7110, and Phytium handlers read/W1C controller and IDMAC status into an
   atomic mailbox. None of these handlers resets DMA, walks descriptors, takes
   a task lock, or completes a protocol request.
+- JH7110 probe reads and validates `fifo-depth` from FDT, falling back to the
+  known 32-word integration value only when the property is absent. A present
+  malformed or unrepresentable value rejects probe. Linux uses
+  `fifo-watermark-aligned` only for PIO interrupt thresholds, so the flag is
+  retained for diagnostics but does not alter this IDMAC-only data path.
 
 The hard IRQ path never drains a completion queue, allocates, copies DMA data,
 or completes an OS request.
@@ -572,7 +588,7 @@ The physical validation matrix and registration decision is:
 | --- | --- | --- |
 | CV181x SDHCI / LicheeRV Nano | `cv181x-sdhci` | Full read/write matrix and `SG2002_BLOCK_RW_BENCH_PASSED` |
 | CV181x SDHCI / AKA-00 | `cv181x-sdhci` | Boot, controller, IRQ, and write matrix passed |
-| JH7110 DWMMC / VisionFive2 | none | Controller and 31.9-GB SD media detected; ext4 media was journal-dirty and mounted read-only, so no write claim |
+| JH7110 DWMMC / VisionFive2 | `starfive-jh7110-dwmmc` | Full write/fsync/checksum matrix and `VISIONFIVE2_BLOCK_RW_BENCH_PASSED` |
 | RK3568 DWCMSHC eMMC | `rockchip-sdhci` | Strict compatible match and full eMMC matrix passed |
 | RK3568 DWMMC SD/SDIO | none | Controller path booted, but no card was present for a write matrix |
 | Phytium MCI / PhytiumPi | none | Controller/root media read succeeded; physical filesystem was read-only/corrupt |
@@ -699,3 +715,23 @@ marker after all five cases:
 The depth-one eMMC queue intentionally cannot perform a native multi-command
 hardware batch; the per-CPU channels still provide backpressure and fair
 serialization through its single hctx.
+
+### 2026-07-29 VisionFive2 execution record
+
+The VisionFive2 SD root filesystem was repaired from the board's default Linux
+environment before destructive testing. StarryOS then booted four CPUs from the
+same FDT, read `fifo-depth = 32` for both JH7110 controllers, selected the SD
+controller's one depth-one IDMAC hctx, mounted ext4 read/write, and completed
+the serial-inline matrix:
+
+| Case | I/O size | Data | Write | Result |
+| --- | ---: | ---: | ---: | --- |
+| sector | 512 B | 2,097,152 B | 797.9 kB/s | fsync and checksum passed |
+| page | 4 KiB | 2,097,152 B | 1.3 MB/s | fsync and checksum passed |
+| IDMAC maximum | 1,044,480 B | 5,222,400 B | 846.6 kB/s | fsync and checksum passed |
+| planner split | 1,044,992 B | 5,224,960 B | 687.8 kB/s | fsync and checksum passed |
+| eight-task concurrent | 4 KiB | 512 KiB/task | 1 s timer granularity | fsync/task and checksum passed |
+
+The run emitted `VISIONFIVE2_BLOCK_RW_BENCH_PASSED`. These figures are a
+functional execution record; scheduler wakeup latency remains outside the
+driver and is not hidden with polling.

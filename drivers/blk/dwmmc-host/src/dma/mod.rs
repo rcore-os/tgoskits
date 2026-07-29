@@ -405,6 +405,10 @@ impl DwMmc {
         self.regs.idsts().write(IDMAC_INT_CLR);
         self.irq.state.clear(u32::MAX);
         self.program_data_phase(BLOCK_SIZE as u32, block_count);
+        if let Err(err) = self.reset_dma_engine(phase) {
+            self.poison_dma();
+            return Err(err);
+        }
 
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         self.regs.dbaddr().write(desc_dma);
@@ -591,11 +595,9 @@ impl DwMmc {
     }
 
     fn disable_idmac(&self) {
-        self.regs.ctrl().update(|r| {
-            r.with_use_internal_dmac(false)
-                .with_dma_enable(false)
-                .with_int_enable(false)
-        });
+        self.regs
+            .ctrl()
+            .update(|r| r.with_use_internal_dmac(false).with_dma_enable(false));
         self.regs.idinten().write(0);
         self.regs.bmod().write(0);
     }
@@ -615,7 +617,7 @@ impl DwMmc {
         self.regs.ctrl().update(|r| r.with_abort_read_data(true));
         let _ = self.regs.ctrl().read();
         let fifo = self.reset_fifo();
-        let dma = self.reset_dma_for_recovery(phase);
+        let dma = self.reset_dma_engine(phase);
         self.regs.ctrl().update(|r| r.with_abort_read_data(false));
         self.pending_data = None;
         self.data_blocks_remaining = 0;
@@ -641,11 +643,17 @@ impl DwMmc {
         }
     }
 
-    fn reset_dma_for_recovery(&self, phase: Phase) -> Result<(), Error> {
+    /// Reset both halves of the internal DMA engine before publishing a ring.
+    ///
+    /// Linux performs the same `CTRL_DMA_RESET` + `BMOD_SWR` sequence in
+    /// `dw_mci_idmac_start_dma()`. The JH7110 controller otherwise retains
+    /// FIFO/IDMAC state across direction changes and can underrun a later
+    /// multi-block write before the first descriptor completes.
+    fn reset_dma_engine(&self, phase: Phase) -> Result<(), Error> {
         self.regs.ctrl().update(|r| r.with_dma_reset(true));
         for _ in 0..crate::host::DWMMC_HW_POLL_LIMIT {
             if !self.regs.ctrl().read().dma_reset() {
-                self.regs.bmod().write(BMOD_SWR);
+                self.regs.bmod().write(self.regs.bmod().read() | BMOD_SWR);
                 for _ in 0..crate::host::DWMMC_HW_POLL_LIMIT {
                     if self.regs.bmod().read() & BMOD_SWR == 0 {
                         return Ok(());

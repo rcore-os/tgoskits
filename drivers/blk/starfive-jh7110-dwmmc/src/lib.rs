@@ -6,7 +6,7 @@ extern crate std;
 use core::ptr::NonNull;
 
 use dma_api::{CompletedDma, DeviceDma};
-use dwmmc_host::{DwMmc, DwMmcIrq, Event};
+use dwmmc_host::{DwMmc, DwMmcIrq, Event, FifoConfig, FifoDataWidth};
 use sdio_host2::{
     AdvanceRequestError, BusOp, BusWidth, Error as Host2Error, ProgressCause, RawResponse,
     RequestProgress, SdioHost, SignalVoltage, SubmitTransactionError, Transaction,
@@ -14,11 +14,18 @@ use sdio_host2::{
 use sdmmc_protocol::{Error, sdio::host::SdioIrqHost};
 
 pub const JH7110_STABLE_REFERENCE_CLOCK_HZ: u32 = 50_000_000;
+pub const JH7110_FIFO_DEPTH_WORDS: u16 = 32;
+pub const JH7110_FIFO_CONFIG: FifoConfig =
+    match FifoConfig::new(JH7110_FIFO_DEPTH_WORDS, FifoDataWidth::Bits32) {
+        Some(config) => config,
+        None => panic!("JH7110 FIFO capability is invalid"),
+    };
 pub const DEVICE_NAME: &str = "starfive-jh7110-mmc";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Jh7110DwMmcConfig {
     reference_clock_hz: u32,
+    fifo_config: FifoConfig,
     max_bus_width: BusWidth,
     supports_1v8: bool,
 }
@@ -27,6 +34,7 @@ impl Default for Jh7110DwMmcConfig {
     fn default() -> Self {
         Self {
             reference_clock_hz: JH7110_STABLE_REFERENCE_CLOCK_HZ,
+            fifo_config: JH7110_FIFO_CONFIG,
             max_bus_width: BusWidth::Bit4,
             supports_1v8: false,
         }
@@ -37,6 +45,7 @@ impl Jh7110DwMmcConfig {
     pub const fn new() -> Self {
         Self {
             reference_clock_hz: JH7110_STABLE_REFERENCE_CLOCK_HZ,
+            fifo_config: JH7110_FIFO_CONFIG,
             max_bus_width: BusWidth::Bit4,
             supports_1v8: false,
         }
@@ -49,6 +58,11 @@ impl Jh7110DwMmcConfig {
 
     pub const fn with_max_bus_width(mut self, max_bus_width: BusWidth) -> Self {
         self.max_bus_width = max_bus_width;
+        self
+    }
+
+    pub const fn with_fifo_config(mut self, fifo_config: FifoConfig) -> Self {
+        self.fifo_config = fifo_config;
         self
     }
 
@@ -67,6 +81,10 @@ impl Jh7110DwMmcConfig {
 
     pub const fn max_bus_width(&self) -> BusWidth {
         self.max_bus_width
+    }
+
+    pub const fn fifo_config(&self) -> FifoConfig {
+        self.fifo_config
     }
 
     pub const fn supports_1v8(&self) -> bool {
@@ -103,10 +121,12 @@ impl Jh7110DwMmc {
     pub unsafe fn new(base: NonNull<u8>, config: Jh7110DwMmcConfig) -> Self {
         let normalized_config = config
             .with_reference_clock_hz(config.reference_clock_hz())
+            .with_fifo_config(config.fifo_config())
             .with_max_bus_width(config.max_bus_width())
             .with_1v8_support(config.supports_1v8());
         let mut inner = unsafe { DwMmc::new(base) };
         inner.set_reference_clock(normalized_config.reference_clock_hz());
+        inner.set_fifo_config(normalized_config.fifo_config());
         Self {
             inner,
             config: normalized_config,
@@ -267,11 +287,13 @@ mod tests {
         let config = Jh7110DwMmcConfig::default();
 
         assert_eq!(JH7110_STABLE_REFERENCE_CLOCK_HZ, 50_000_000);
+        assert_eq!(JH7110_FIFO_DEPTH_WORDS, 32);
         assert_eq!(DEVICE_NAME, "starfive-jh7110-mmc");
         assert_eq!(
             config.reference_clock_hz(),
             JH7110_STABLE_REFERENCE_CLOCK_HZ
         );
+        assert_eq!(config.fifo_config(), JH7110_FIFO_CONFIG);
         assert_eq!(config.max_bus_width(), BusWidth::Bit4);
         assert!(!config.supports_1v8());
     }
@@ -284,6 +306,11 @@ mod tests {
         assert_eq!(
             host.inner().reference_clock(),
             JH7110_STABLE_REFERENCE_CLOCK_HZ
+        );
+        assert_eq!(host.inner().fifo_config().depth_words(), 32);
+        assert_eq!(
+            host.inner().fifo_config().data_width(),
+            FifoDataWidth::Bits32
         );
     }
 
