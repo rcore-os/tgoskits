@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::{
     any::Any,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
 use std::{sync::Mutex, thread, time::Instant};
@@ -73,6 +73,53 @@ struct RegisterRetryQueue {
     retry_after: Option<Duration>,
     retries: Arc<AtomicUsize>,
     drains: Arc<AtomicUsize>,
+}
+
+struct CapabilityRefreshQueue {
+    counters: Arc<QueueCounters>,
+    initialized: Arc<AtomicBool>,
+}
+
+impl DriverGeneric for CapabilityRefreshQueue {
+    fn name(&self) -> &str {
+        "capability-refresh"
+    }
+}
+
+impl HardwareQueue for CapabilityRefreshQueue {
+    fn id(&self) -> usize {
+        0
+    }
+
+    fn info(&self) -> QueueInfo {
+        let initialized = self.initialized.load(Ordering::Acquire);
+        let mut info = test_queue_info(1);
+        info.limits.supports_flush = initialized;
+        info.limits.max_blocks_per_request = if initialized { 8192 } else { 256 };
+        info
+    }
+
+    fn submit_batch_owned(
+        &mut self,
+        _requests: &mut OwnedRequestBatch,
+        _sink: &mut dyn SubmissionSink,
+    ) -> rdif_block::BatchSubmitResult {
+        rdif_block::BatchSubmitResult::new(0, BatchSubmitDisposition::Continue)
+    }
+
+    fn commit_submissions(&mut self) -> Result<(), BlkError> {
+        Ok(())
+    }
+
+    fn drain_completions(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        self.initialized.store(true, Ordering::Release);
+        self.counters.drained.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _sink: &mut dyn CompletionSink) -> Result<(), BlkError> {
+        Ok(())
+    }
 }
 
 impl DriverGeneric for RegisterRetryQueue {
@@ -375,6 +422,7 @@ fn register_retry_advances_only_register_state_and_posts_controller_event() {
     crate::os::task::install_test_runtime_ops();
     let ops = runtime_ops().unwrap();
     let state = HctxState {
+        info: IrqMutex::new(test_queue_info(1)),
         submission_channels: IrqMutex::new(Vec::new()),
         notification: ops.notification(),
         lifecycle_notification: ops.notification(),
@@ -436,6 +484,7 @@ fn retry_backlog_does_not_starve_fresh_cpu_channel_submissions() {
     let channel =
         Arc::new(BoundedChannel::with_item_notification(4, Arc::clone(&notification)).unwrap());
     let state = HctxState {
+        info: IrqMutex::new(test_queue_info(2)),
         submission_channels: IrqMutex::new(vec![Arc::clone(&channel)]),
         notification,
         lifecycle_notification: ops.notification(),
@@ -485,6 +534,48 @@ fn wait_for_commits(counters: &QueueCounters, expected: usize) {
         assert!(Instant::now() < deadline, "maintenance task did not commit");
         thread::yield_now();
     }
+}
+
+#[test]
+fn irq_drain_refreshes_hctx_queue_capabilities() {
+    crate::os::task::install_test_runtime_ops();
+    let counters = Arc::new(QueueCounters::default());
+    let initialized = Arc::new(AtomicBool::new(false));
+    let observer: Arc<dyn HctxObserver> = Arc::new(TestObserver::default());
+    let controller: Arc<dyn ControllerEventPort> = Arc::new(TestControllerPort::default());
+    let queue = CapabilityRefreshQueue {
+        counters: Arc::clone(&counters),
+        initialized: Arc::clone(&initialized),
+    };
+    let hctx = Hctx::start(Box::new(queue), 0, Arc::downgrade(&observer), controller).unwrap();
+
+    let initial = hctx.info();
+    assert!(!initial.limits.supports_flush);
+    assert_eq!(initial.limits.max_blocks_per_request, 256);
+
+    let target = hctx.irq_target(0);
+    let mut action = BlockIrqAction::new(Box::new(QueueZeroIrq), vec![target]);
+    assert_eq!(action.run(), crate::os::BlockIrqOutcome::Wake);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !hctx.info().limits.supports_flush {
+        assert!(
+            Instant::now() < deadline,
+            "maintenance task did not publish identified queue capabilities"
+        );
+        thread::yield_now();
+    }
+
+    let refreshed = hctx.info();
+    assert_eq!(counters.drained.load(Ordering::Acquire), 1);
+    assert!(refreshed.limits.supports_flush);
+    assert_eq!(refreshed.limits.max_blocks_per_request, 8192);
+    assert_eq!(refreshed.id, initial.id);
+    assert_eq!(refreshed.limits.max_inflight, initial.limits.max_inflight);
+    assert_eq!(
+        refreshed.limits.max_submit_batch,
+        initial.limits.max_submit_batch
+    );
+    hctx.stop();
 }
 
 #[test]

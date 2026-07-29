@@ -78,17 +78,24 @@ impl BlockIrqAction {
         let control = ack.control_event();
         let needs_rearm = matches!(ack.disposition(), IrqDisposition::MaskedNeedsRearm);
         let mut activated = false;
+        let mut control_deferred = false;
         for target in &self.targets {
             if !queues.contains(target.queue_id) {
                 continue;
             }
-            target
-                .latch
-                .publish(queues.contains(target.queue_id), needs_rearm, 0);
+            // A controller transition may depend on queue-owned state produced
+            // while draining this same acknowledged IRQ. Route its control
+            // event through exactly one matching hctx so the queue observes
+            // the hardware event before the controller state machine. Other
+            // matching hctxs still receive their queue-ready and rearm state.
+            let control_bits = if control_deferred { 0 } else { control.bits() };
+            target.latch.publish(true, needs_rearm, control_bits);
             target.notification.notify_from_irq();
             activated = true;
+            control_deferred |= control_bits != 0;
         }
-        if !control.is_empty()
+        if !control_deferred
+            && !control.is_empty()
             && let Some(target) = &self.controller_target
         {
             target.latch.publish(needs_rearm, control.bits());
@@ -277,5 +284,62 @@ mod tests {
         assert_eq!(action.run(), BlockIrqOutcome::Handled);
         assert_eq!(notification.irq_notifications.load(Ordering::Acquire), 0);
         assert!(!latch.take().queue_ready);
+    }
+
+    #[test]
+    fn queue_coupled_control_is_deferred_to_hctx() {
+        let queue_latch = Arc::new(IrqEventLatch::new(11));
+        let queue_notification = Arc::new(TestNotification {
+            irq_notifications: AtomicUsize::new(0),
+        });
+        let controller_latch = Arc::new(ControllerIrqLatch::new(11));
+        let controller_notification = Arc::new(TestNotification {
+            irq_notifications: AtomicUsize::new(0),
+        });
+        let handler = FixedHandler {
+            ack: IrqAck::masked_needs_rearm(
+                IrqQueueMask::from_queue(2),
+                ControlEvent::new(11, 0x80),
+            ),
+        };
+        let mut action = BlockIrqAction::new(
+            Box::new(handler),
+            vec![IrqTarget::new(
+                2,
+                queue_latch.clone(),
+                queue_notification.clone(),
+            )],
+        )
+        .with_controller_target(ControllerIrqTarget::new(
+            controller_latch.clone(),
+            controller_notification.clone(),
+        ));
+
+        assert_eq!(action.run(), BlockIrqOutcome::Wake);
+        assert_eq!(
+            queue_notification.irq_notifications.load(Ordering::Acquire),
+            1
+        );
+        assert_eq!(
+            controller_notification
+                .irq_notifications
+                .load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(
+            queue_latch.take(),
+            LatchedIrqEvent {
+                queue_ready: true,
+                needs_rearm: true,
+                control: ControlEvent::new(11, 0x80),
+            }
+        );
+        assert_eq!(
+            controller_latch.take(),
+            LatchedControllerIrq {
+                needs_rearm: false,
+                control: ControlEvent::new(11, 0),
+            }
+        );
     }
 }

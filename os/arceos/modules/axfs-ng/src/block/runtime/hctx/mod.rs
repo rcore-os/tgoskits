@@ -53,7 +53,6 @@ pub(super) struct Submission {
 pub(super) struct Hctx {
     id: usize,
     cpu: usize,
-    info: QueueInfo,
     state: Arc<HctxState>,
     thread: IrqMutex<Option<Box<dyn BlockThread>>>,
 }
@@ -80,6 +79,7 @@ impl fmt::Debug for HctxStartError {
 }
 
 struct HctxState {
+    info: IrqMutex<QueueInfo>,
     submission_channels: IrqMutex<Vec<Arc<BoundedChannel<Submission>>>>,
     notification: Arc<dyn BlockNotification>,
     lifecycle_notification: Arc<dyn BlockNotification>,
@@ -127,6 +127,7 @@ impl Hctx {
         };
         let notification = ops.notification();
         let state = Arc::new(HctxState {
+            info: IrqMutex::new(info),
             submission_channels: IrqMutex::new(Vec::new()),
             notification,
             lifecycle_notification: ops.notification(),
@@ -139,7 +140,6 @@ impl Hctx {
         let hctx = Arc::new(Self {
             id: info.id,
             cpu,
-            info,
             state: Arc::clone(&state),
             thread: IrqMutex::new(None),
         });
@@ -185,8 +185,8 @@ impl Hctx {
         self.cpu
     }
 
-    pub(super) const fn info(&self) -> QueueInfo {
-        self.info
+    pub(super) fn info(&self) -> QueueInfo {
+        *self.state.info.lock()
     }
 
     pub(super) fn add_submission_channel(
@@ -194,7 +194,7 @@ impl Hctx {
     ) -> Result<Arc<BoundedChannel<Submission>>, BlkError> {
         let channel = Arc::new(
             BoundedChannel::with_item_notification(
-                self.info.limits.max_inflight,
+                self.info().limits.max_inflight,
                 Arc::clone(&self.state.notification),
             )
             .map_err(|_| BlkError::NoMemory)?,
@@ -476,6 +476,10 @@ fn advance_register_retry_if_due(
         set_hctx_fatal(state, fatal_error, error);
         return true;
     }
+    if let Err(error) = refresh_queue_info(queue, state) {
+        set_hctx_fatal(state, fatal_error, error);
+        return true;
+    }
     controller.post(ControllerEvent::RegisterRetry);
     if let Some(delay) = queue.register_retry_after() {
         let delay = if delay.is_zero() {
@@ -524,6 +528,8 @@ fn drain_latched_irqs(
             };
             if drain_result.is_err() || unexpected_completion {
                 set_hctx_fatal(state, fatal_error, BlkError::Io);
+            } else if let Err(error) = refresh_queue_info(queue, state) {
+                set_hctx_fatal(state, fatal_error, error);
             }
             progressed = true;
         }
@@ -542,6 +548,23 @@ fn drain_latched_irqs(
         }
     }
     progressed
+}
+
+fn refresh_queue_info(queue: &dyn HardwareQueue, state: &HctxState) -> Result<(), BlkError> {
+    let observed = queue.info();
+    let mut published = state.info.lock();
+    // Channel capacity and preallocated submission scratch are fixed when the
+    // hctx starts. Identification may publish transfer and command
+    // capabilities, but it must not change these scheduling dimensions or the
+    // queue identity underneath the runtime.
+    if observed.id != published.id
+        || observed.limits.max_inflight != published.limits.max_inflight
+        || observed.limits.max_submit_batch != published.limits.max_submit_batch
+    {
+        return Err(BlkError::InvalidRequest);
+    }
+    *published = observed;
+    Ok(())
 }
 
 fn set_hctx_fatal(state: &HctxState, fatal_error: &mut Option<BlkError>, error: BlkError) {
