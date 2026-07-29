@@ -1,9 +1,8 @@
-use alloc::{rc::Rc, string::String, vec::Vec};
+use alloc::{string::String, vec::Vec};
 use core::{
     alloc::Layout,
     ffi::c_char,
     hint::{spin_loop, unlikely},
-    marker::PhantomData,
     mem::{MaybeUninit, size_of, transmute},
     ptr,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
@@ -42,34 +41,8 @@ fn access_user_memory<R>(f: impl FnOnce() -> R) -> VmResult<R> {
     might_sleep();
 
     let curr = current_user_task();
-    let _scope = UserAccessScope::enter(&curr);
+    let _scope = curr.as_thread().enter_user_memory_access();
     Ok(f())
-}
-
-/// One nestable, task-bound scope in which kernel user-memory faults may be repaired.
-///
-/// The scope is deliberately `!Send`: the depth belongs to the current Starry
-/// thread and must be removed by the same scheduler thread that installed it.
-struct UserAccessScope<'thread> {
-    thread: &'thread crate::task::Thread,
-    _not_send: PhantomData<Rc<()>>,
-}
-
-impl<'thread> UserAccessScope<'thread> {
-    fn enter(task: &'thread UserTaskRef) -> Self {
-        let thread = task.as_thread();
-        thread.enter_user_memory_access();
-        Self {
-            thread,
-            _not_send: PhantomData,
-        }
-    }
-}
-
-impl Drop for UserAccessScope<'_> {
-    fn drop(&mut self) {
-        self.thread.leave_user_memory_access();
-    }
 }
 
 fn check_region(start: VirtAddr, layout: Layout, access_flags: MappingFlags) -> AxResult<()> {

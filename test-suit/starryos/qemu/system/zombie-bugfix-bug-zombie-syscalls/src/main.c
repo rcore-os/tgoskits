@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 /*
  * bug-zombie-syscalls.c
  *
@@ -28,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -50,11 +53,59 @@ static atomic_bool leader_departing = ATOMIC_VAR_INIT(false);
         }                                                                      \
     } while (0)
 
+static int read_task_nice(pid_t tid, int *nice)
+{
+    char path[96];
+    char stat[1024];
+    snprintf(path, sizeof(path), "/proc/self/task/%d/stat", (int)tid);
+
+    FILE *file = fopen(path, "r");
+    if (file == NULL)
+        return -1;
+    if (fgets(stat, sizeof(stat), file) == NULL) {
+        fclose(file);
+        return -1;
+    }
+    fclose(file);
+
+    /*
+     * The command field is parenthesized and may contain spaces. Field 3
+     * starts after its final ')'; nice is Linux proc_pid_stat field 19.
+     */
+    char *field = strrchr(stat, ')');
+    if (field == NULL || field[1] != ' ')
+        return -1;
+    field += 2;
+
+    char *save = NULL;
+    char *token = strtok_r(field, " ", &save);
+    for (int number = 3; token != NULL; ++number) {
+        if (number == 19) {
+            char *end = NULL;
+            long value = strtol(token, &end, 10);
+            if (end == token || (*end != '\0' && *end != '\n'))
+                return -1;
+            *nice = (int)value;
+            return 0;
+        }
+        token = strtok_r(NULL, " ", &save);
+    }
+    return -1;
+}
+
 static void *last_thread_main(void *arg)
 {
     (void)arg;
+    errno = 0;
+    if (getpriority(PRIO_PROCESS, 0) != 7 || errno != 0)
+        _exit(104);
     if (setpriority(PRIO_PROCESS, 0, 12) != 0)
         _exit(101);
+
+    int stat_nice = 0;
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    if (read_task_nice(tid, &stat_nice) != 0 || stat_nice != 12)
+        _exit(106);
 
     atomic_store_explicit(&worker_ready, true, memory_order_release);
     while (!atomic_load_explicit(&leader_departing, memory_order_acquire))
@@ -82,6 +133,15 @@ static void run_multithreaded_child(void)
 
     while (!atomic_load_explicit(&worker_ready, memory_order_acquire))
         sched_yield();
+
+    errno = 0;
+    if (getpriority(PRIO_PROCESS, 0) != 7 || errno != 0)
+        _exit(105);
+    int stat_nice = 0;
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    if (read_task_nice(tid, &stat_nice) != 0 || stat_nice != 7)
+        _exit(107);
+
     atomic_store_explicit(&leader_departing, true, memory_order_release);
     pthread_exit(NULL);
 }

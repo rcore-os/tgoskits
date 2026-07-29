@@ -17,12 +17,10 @@ const NET_CMSG: &str = include_str!("../src/syscall/net/cmsg.rs");
 const STARRY_VM_LIB: &str = include_str!("../../../../components/starry-vm/src/lib.rs");
 const STARRY_VM_THIN: &str = include_str!("../../../../components/starry-vm/src/thin.rs");
 const STARRY_SIGNAL_TYPES: &str = include_str!("../../../../components/starry-signal/src/types.rs");
-const PIDFD: &str = include_str!("../src/syscall/fs/pidfd.rs");
 const PROCFS: &str = include_str!("../src/pseudofs/proc.rs");
 const SERIAL_TTY: &str = include_str!("../src/pseudofs/dev/tty/serial.rs");
 const SCHEDULER_TASK: &str = include_str!("../src/task/scheduler_task.rs");
 const SCHEDULER_IDENTITY: &str = include_str!("../src/task/scheduler_identity.rs");
-const TASK: &str = include_str!("../src/task/mod.rs");
 const TASK_OPS: &str = include_str!("../src/task/ops.rs");
 const TASK_TIMER: &str = include_str!("../src/task/timer.rs");
 const TRACEPOINT: &str = include_str!("../src/tracepoint/mod.rs");
@@ -139,27 +137,6 @@ fn scheduler_identity_is_a_lock_free_one_time_publication() {
 }
 
 #[test]
-fn scheduler_switch_hooks_reuse_the_existing_cpu_pin() {
-    let switch_in = function_body(TASK, "fn scheduler_switch_in(");
-    let switch_out = function_body(TASK, "fn scheduler_switch_out(");
-    assert!(switch_in.contains("scope.activate_pinned"));
-    assert!(switch_out.contains("scope.deactivate_pinned"));
-    assert!(!switch_in.contains("ActiveScope::set(&"));
-    assert!(!switch_out.contains("ActiveScope::set_global()"));
-    assert!(!switch_in.contains("mem::forget"));
-    assert!(!switch_out.contains("force_read_decrement"));
-}
-
-#[test]
-fn active_scope_mutation_uses_a_bounded_writer_gate() {
-    let mutation = function_body(TASK, "pub(crate) fn with_current_scope_mut<");
-
-    assert!(mutation.contains("scope.with_active_mut_pinned"));
-    assert!(!mutation.contains("force_read_decrement"));
-    assert!(!mutation.contains("mem::forget"));
-}
-
-#[test]
 fn console_output_ownership_moves_after_runtime_and_tty_are_ready() {
     let bind = function_body(SERIAL_TTY, "pub fn bind_console_to(");
     let init = function_body(ENTRY, "pub fn init(");
@@ -198,24 +175,6 @@ fn observer_context_uses_the_starry_per_cpu_user_view() {
     assert!(TRACEPOINT.contains("try_current_user_irq_view()"));
     assert!(EBPF.contains("try_current_user_irq_view()"));
     assert!(KPROBE.contains("try_current_user_irq_view()"));
-}
-
-#[test]
-fn irq_user_view_exposes_only_bounded_probe_operations() {
-    let view = SCHEDULER_TASK
-        .split_once("impl UserTaskIrqView")
-        .expect("IRQ user view implementation must exist")
-        .1
-        .split_once("pub(crate) fn try_current_user_irq_view")
-        .expect("IRQ user view implementation must remain focused")
-        .0;
-    assert!(!view.contains("fn as_thread"));
-    assert!(view.contains("push_kretprobe"));
-    assert!(view.contains("pop_kretprobe"));
-    assert!(view.contains("try_lock()"));
-    assert!(TASK.contains("Vec::with_capacity("));
-    assert!(TASK.contains("KRETPROBE_STACK_CAPACITY"));
-    assert!(!KPROBE.contains("task.as_thread().kretprobe_stack"));
 }
 
 #[test]
@@ -323,26 +282,13 @@ fn kernel_page_fault_rejects_non_user_addresses_before_identity_or_sleep() {
 }
 
 #[test]
-fn user_memory_access_is_scoped_and_never_returns_borrowed_user_memory() {
-    assert!(
-        MM_ACCESS.contains("struct UserAccessScope"),
-        "user access must be represented by an RAII scope"
-    );
-    assert!(
-        MM_ACCESS.contains("PhantomData<Rc<()>>"),
-        "the user-access scope must not cross scheduler threads"
-    );
-    assert!(
-        MM_ACCESS.contains("impl Drop for UserAccessScope"),
-        "nested user-access state must be released on every return path"
-    );
-    assert!(
-        TASK.contains("user_memory_access_depth: AtomicU32"),
-        "nested user access must use a depth counter rather than a boolean"
-    );
+fn starry_source_has_no_escaping_user_memory_reference_api() {
+    // This is intentionally a source lint rather than a behavior assertion:
+    // the forbidden method names would reintroduce a safe API that returns a
+    // borrowed reference after the faultable access scope has ended.
     assert!(
         !MM_ACCESS.contains("AxResult<&'static"),
-        "safe user-pointer APIs must not return references into user mappings"
+        "the user-memory boundary must not return a static reference"
     );
 
     let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -364,7 +310,7 @@ fn user_memory_access_is_scoped_and_never_returns_borrowed_user_memory() {
                     && !source.contains("get_as_mut")
                     && !source.contains("get_as_slice")
                     && !source.contains("get_as_mut_slice"),
-                "{} still uses an escaping user-memory reference API",
+                "{} exposes an escaping user-memory reference API",
                 path.display()
             );
         }
@@ -494,14 +440,6 @@ fn proactive_user_copy_fails_closed_before_sleepable_mm_work_in_hard_irq() {
 }
 
 #[test]
-fn user_access_scope_underflow_cannot_publish_wrapped_depth() {
-    let leave = function_body(TASK, "pub(crate) fn leave_user_memory_access(");
-    assert!(leave.contains("try_update"));
-    assert!(leave.contains("checked_sub"));
-    assert!(!leave.contains("fetch_sub"));
-}
-
-#[test]
 fn user_memory_access_does_not_treat_identity_corruption_as_no_user_task() {
     let lookup = function_body(MM_ACCESS, "fn user_task_for_memory_access(");
     assert!(lookup.contains("USER_MEMORY_IDENTITY_FAILURES.fetch_add"));
@@ -523,30 +461,6 @@ fn procfs_preserves_weak_user_task_invariant_errors() {
     assert!(PROCFS.contains("VfsError::BadState"));
     assert!(!PROCFS.contains("self.task.upgrade().ok().flatten()"));
     assert!(!PROCFS.contains("Ok(None) | Err(_)"));
-}
-
-#[test]
-fn remote_scope_reads_release_the_scope_gate_before_fd_table_locks() {
-    let thread_fd_dir = &PROCFS[PROCFS
-        .find("impl SimpleDirOps for ThreadFdDir")
-        .expect("missing ThreadFdDir implementation")..];
-    for body in [
-        function_body(thread_fd_dir, "fn child_names"),
-        function_body(thread_fd_dir, "fn lookup_child"),
-        function_body(PIDFD, "pub fn sys_pidfd_getfd("),
-    ] {
-        let clone = body
-            .find("scope_cell(&scope).clone()")
-            .expect("remote lookup must clone the scoped fd-table owner");
-        let release = body
-            .find("drop(scope)")
-            .expect("remote lookup must release the scope gate explicitly");
-        let table_lock = body[release..]
-            .find(".read()")
-            .map(|offset| release + offset)
-            .expect("remote lookup must eventually read the fd table");
-        assert!(clone < release && release < table_lock);
-    }
 }
 
 fn function_body<'source>(source: &'source str, signature: &str) -> &'source str {

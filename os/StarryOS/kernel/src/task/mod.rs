@@ -1,5 +1,6 @@
 //! User task management.
 
+mod bounded_stack;
 mod cred;
 pub mod futex;
 pub mod future;
@@ -28,6 +29,7 @@ mod timer;
 #[cfg(target_arch = "loongarch64")]
 mod unaligned;
 mod user;
+mod user_memory_access;
 mod user_wait;
 
 use alloc::sync::Arc;
