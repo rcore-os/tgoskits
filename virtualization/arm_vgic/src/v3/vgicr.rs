@@ -28,7 +28,7 @@ use super::{
     registers::*,
     utils::{perform_mmio_read, perform_mmio_write},
 };
-use crate::{VgicResult, host};
+use crate::host;
 
 /// Default size per GICR region.
 pub const DEFAULT_SIZE_PER_GICR: usize = 0x20000; // 128K: 64K for SGI/PPI, then 64K for LPI
@@ -37,20 +37,6 @@ pub const DEFAULT_SIZE_PER_GICR: usize = 0x20000; // 128K: 64K for SGI/PPI, then
 pub struct VGicRRegs {
     /// LPI configuration table base address.
     pub propbaser: usize,
-    /// SGI/PPI group state for INTIDs 0..31.
-    pub sgi_ppi_group: u32,
-    /// SGI/PPI enable state for INTIDs 0..31.
-    pub sgi_ppi_enable: u32,
-    /// SGI/PPI pending state for INTIDs 0..31.
-    pub sgi_ppi_pending: u32,
-    /// SGI/PPI active state for INTIDs 0..31.
-    pub sgi_ppi_active: u32,
-    /// SGI/PPI group modifier state for INTIDs 0..31.
-    pub sgi_ppi_group_mod: u32,
-    /// SGI/PPI priority bytes for INTIDs 0..31.
-    pub sgi_ppi_priority: [u8; 32],
-    /// SGI/PPI configuration bits for INTIDs 0..31.
-    pub sgi_ppi_config: [u32; 2],
 }
 
 /// Virtual GICv3 Redistributor.
@@ -96,61 +82,8 @@ impl VGicR {
             }],
             cpu_id,
             host_gicr_base_this_cpu,
-            regs: SpinNoIrq::new(VGicRRegs {
-                propbaser: 0,
-                sgi_ppi_group: 0,
-                sgi_ppi_enable: 0,
-                sgi_ppi_pending: 0,
-                sgi_ppi_active: 0,
-                sgi_ppi_group_mod: 0,
-                sgi_ppi_priority: [0; 32],
-                sgi_ppi_config: [0; 2],
-            }),
+            regs: SpinNoIrq::new(VGicRRegs { propbaser: 0 }),
         }
-    }
-
-    fn read_sgi_ppi_reg32(&self, f: impl FnOnce(&VGicRRegs) -> u32) -> VgicResult<usize> {
-        Ok(self.with_regs(|r| f(r) as usize))
-    }
-
-    fn write_sgi_ppi_reg32(&self, f: impl FnOnce(&mut VGicRRegs)) -> VgicResult {
-        self.with_regs_mut(f);
-        Ok(())
-    }
-
-    fn read_sgi_ppi_priority(&self, reg: usize, width: AccessWidth) -> VgicResult<usize> {
-        let offset = reg - GICR_IPRIORITYR;
-        let size = width.size();
-        let value = self.with_regs(|r| {
-            let mut value = 0usize;
-            for index in 0..size {
-                value |= (r.sgi_ppi_priority[offset + index] as usize) << (index * 8);
-            }
-            value
-        });
-        Ok(value)
-    }
-
-    fn write_sgi_ppi_priority(&self, reg: usize, width: AccessWidth, value: usize) -> VgicResult {
-        let offset = reg - GICR_IPRIORITYR;
-        let size = width.size();
-        self.with_regs_mut(|r| {
-            for index in 0..size {
-                r.sgi_ppi_priority[offset + index] = ((value >> (index * 8)) & 0xff) as u8;
-            }
-        });
-        Ok(())
-    }
-
-    fn read_sgi_ppi_config(&self, reg: usize) -> VgicResult<usize> {
-        let index = (reg - GICR_ICFGR) / 4;
-        Ok(self.with_regs(|r| r.sgi_ppi_config[index] as usize))
-    }
-
-    fn write_sgi_ppi_config(&self, reg: usize, value: usize) -> VgicResult {
-        let index = (reg - GICR_ICFGR) / 4;
-        self.with_regs_mut(|r| r.sgi_ppi_config[index] = value as u32);
-        Ok(())
     }
 }
 
@@ -211,17 +144,23 @@ impl VGicR {
                 Ok(0)
             }
             GICR_SETLPIR | GICR_CLRLPIR | GICR_INVALLR => perform_mmio_read(gicr_base + reg, width),
-            GICR_WAKER => Ok(0),
-            GICR_STATUSR => Ok(0),
-            GICR_IGROUPR => self.read_sgi_ppi_reg32(|r| r.sgi_ppi_group),
-            GICR_ISENABLER | GICR_ICENABLER => self.read_sgi_ppi_reg32(|r| r.sgi_ppi_enable),
-            GICR_ISPENDR | GICR_ICPENDR => self.read_sgi_ppi_reg32(|r| r.sgi_ppi_pending),
-            GICR_ISACTIVER | GICR_ICACTIVER => self.read_sgi_ppi_reg32(|r| r.sgi_ppi_active),
-            GICR_IGRPMODR => self.read_sgi_ppi_reg32(|r| r.sgi_ppi_group_mod),
-            reg if GICR_IPRIORITYR_RANGE.contains(&reg) => self.read_sgi_ppi_priority(reg, width),
-            reg if GICR_ICFGR_RANGE.contains(&reg) => self.read_sgi_ppi_config(reg),
+            reg if reg == GICR_STATUSR
+                || reg == GICR_WAKER
+                || reg == GICR_IGROUPR
+                || reg == GICR_ISENABLER
+                || reg == GICR_ICENABLER
+                || reg == GICR_ISPENDR
+                || reg == GICR_ICPENDR
+                || reg == GICR_ISACTIVER
+                || reg == GICR_ICACTIVER
+                || reg == GICR_IGRPMODR
+                || GICR_IPRIORITYR_RANGE.contains(&reg)
+                || GICR_ICFGR_RANGE.contains(&reg) =>
+            {
+                perform_mmio_read(gicr_base + reg, width)
+            }
             _ => {
-                return Err(DeviceError::Unimplemented);
+                todo!("vgicr read unimplemented for reg {:#x}", reg);
             }
         };
         Ok(result?)
@@ -270,22 +209,29 @@ impl VGicR {
                 enable_one_lpi((value & 0xffffffff) - 8192); // ⬅️Why?
                 Ok(())
             }
-            GICR_WAKER => Ok(()),
-            GICR_STATUSR => Ok(()),
-            GICR_IGROUPR => self.write_sgi_ppi_reg32(|r| r.sgi_ppi_group = value as u32),
-            GICR_ISENABLER => self.write_sgi_ppi_reg32(|r| r.sgi_ppi_enable |= value as u32),
-            GICR_ICENABLER => self.write_sgi_ppi_reg32(|r| r.sgi_ppi_enable &= !(value as u32)),
-            GICR_ISPENDR => self.write_sgi_ppi_reg32(|r| r.sgi_ppi_pending |= value as u32),
-            GICR_ICPENDR => self.write_sgi_ppi_reg32(|r| r.sgi_ppi_pending &= !(value as u32)),
-            GICR_ISACTIVER => self.write_sgi_ppi_reg32(|r| r.sgi_ppi_active |= value as u32),
-            GICR_ICACTIVER => self.write_sgi_ppi_reg32(|r| r.sgi_ppi_active &= !(value as u32)),
-            GICR_IGRPMODR => self.write_sgi_ppi_reg32(|r| r.sgi_ppi_group_mod = value as u32),
-            reg if GICR_IPRIORITYR_RANGE.contains(&reg) => {
-                self.write_sgi_ppi_priority(reg, width, value)
+            reg if reg == GICR_STATUSR
+                || reg == GICR_WAKER
+                || reg == GICR_IGROUPR
+                || reg == GICR_ISENABLER
+                || reg == GICR_ICENABLER
+                || reg == GICR_ISPENDR
+                || reg == GICR_ICPENDR
+                || reg == GICR_ISACTIVER
+                || reg == GICR_ICACTIVER
+                || reg == GICR_IGRPMODR
+                || GICR_IPRIORITYR_RANGE.contains(&reg)
+                || GICR_ICFGR_RANGE.contains(&reg) =>
+            {
+                let mut value = value;
+                // avoid linux disable maintenance interrupt
+                if reg == GICR_ICENABLER {
+                    value &= !(1 << MAINTENACE_INTERRUPT);
+                    // value &= !(1 << SGI_IPI_ID);
+                }
+                perform_mmio_write(gicr_base + reg, width, value)
             }
-            reg if GICR_ICFGR_RANGE.contains(&reg) => self.write_sgi_ppi_config(reg, value),
             _ => {
-                return Err(DeviceError::Unimplemented);
+                todo!("vgicr write unimplemented for reg {:#x}", reg);
             }
         };
         Ok(result?)
