@@ -15,6 +15,7 @@ use ax_sync::PiMutex;
 
 use super::{
     hw,
+    hw_owner::Counter,
     inheritance_lifecycle::PerfInheritanceLifecycle,
     output::{PerfRingOutput, PerfRingWeak},
     task::{
@@ -228,7 +229,15 @@ impl PerfInheritanceFamily {
         for member in &members {
             member.set_enabled();
         }
-        Ok(())
+        let mut first_error = None;
+        for member in &members {
+            if let Err(error) = member.synchronize_context()
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Applies root-fd DISABLE to every existing descendant.
@@ -425,7 +434,17 @@ pub fn on_clone_inherit(parent_thr: &Thread, child_thr: &Thread) {
             );
             continue;
         };
-        let child = Arc::new(PerTaskCounter::new(parent.inherited_config(n)));
+        let Some(scheduler_id) = child_thr.scheduler_id() else {
+            warn!(
+                "perf: attr.inherit skipped for child tid {} (scheduler identity unavailable)",
+                child_thr.tid()
+            );
+            super::hw_allocation::free_counter(Counter::Programmable(n));
+            continue;
+        };
+        let child = Arc::new(PerTaskCounter::new(
+            parent.inherited_config(scheduler_id, Counter::Programmable(n)),
+        ));
         child.set_sample_id(parent.sample_id());
 
         // `do_clone` has not made the child schedulable yet. Publish the local

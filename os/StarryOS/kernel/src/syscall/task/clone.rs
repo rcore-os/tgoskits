@@ -664,11 +664,6 @@ impl CloneArgs {
         } else {
             None
         };
-        // perf: clone any `attr.inherit` event from the parent onto the child so
-        // `perf record` follows it. Done before the child is scheduled (it is not
-        // yet spawned) so the counter is present the first time the child runs.
-        #[cfg(target_arch = "aarch64")]
-        crate::perf::task::on_clone_inherit(curr_thread, &thr);
         // vfork(2) and clone(CLONE_VFORK) must sleep the parent until the child
         // execs or exits. Use PollSet so the parent's wait remains
         // interruptible by task.interrupt().
@@ -736,6 +731,15 @@ impl CloneArgs {
             child_reset_on_fork,
         )
         .map_err(map_task_creation_error)?;
+
+        // The prepared scheduler record now owns a generation-bearing
+        // ThreadId, but cannot run yet. Install inherited perf events at this
+        // boundary so their identity is complete before the first sched-in.
+        // A later publication failure reaches the extension exit callback,
+        // which rolls these unpublished reservations back in task context.
+        #[cfg(target_arch = "aarch64")]
+        prepared_task
+            .with_task(|task| crate::perf::task::on_clone_inherit(curr_thread, task.as_thread()));
 
         let installed_pidfd = pidfd_file.map(InstalledPidFd::install).transpose()?;
         let pidfd_write = installed_pidfd

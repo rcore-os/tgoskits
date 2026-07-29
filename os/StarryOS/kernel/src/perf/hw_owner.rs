@@ -7,39 +7,73 @@ use super::{
     sampling_lifecycle::SampleRegistration,
 };
 
-/// Hardware counter selected for one system event.
-#[derive(Debug, Clone, Copy)]
+/// Hardware counter selected for one PMU event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Counter {
     Cycle,
     Programmable(usize),
 }
 
 impl Counter {
-    fn enable(self) {
+    pub(super) fn configure(
+        self,
+        event: Option<u16>,
+        exclude_user: bool,
+        exclude_kernel: bool,
+    ) -> AxResult<()> {
+        match (self, event) {
+            (Self::Cycle, None) => {
+                ax_cpu::pmu::cycles::configure(exclude_user, exclude_kernel);
+            }
+            (Self::Programmable(n), Some(event)) => {
+                ax_cpu::pmu::counter::configure(n, event, exclude_user, exclude_kernel);
+            }
+            _ => return Err(AxError::BadState),
+        }
+        Ok(())
+    }
+
+    pub(super) fn enable(self) {
         match self {
             Self::Cycle => ax_cpu::pmu::cycles::enable(),
             Self::Programmable(n) => ax_cpu::pmu::counter::enable(n),
         }
     }
 
-    fn disable(self) {
+    pub(super) fn disable(self) {
         match self {
             Self::Cycle => ax_cpu::pmu::cycles::disable(),
             Self::Programmable(n) => ax_cpu::pmu::counter::disable(n),
         }
     }
 
-    fn reset(self) {
+    pub(super) fn reset(self) {
         match self {
             Self::Cycle => ax_cpu::pmu::cycles::reset(),
             Self::Programmable(n) => ax_cpu::pmu::counter::reset(n),
         }
     }
 
-    fn read(self) -> u64 {
+    pub(super) fn read(self) -> u64 {
         match self {
             Self::Cycle => ax_cpu::pmu::cycles::read(),
             Self::Programmable(n) => ax_cpu::pmu::counter::read(n),
+        }
+    }
+
+    pub(super) const fn programmable_index(self) -> Option<usize> {
+        match self {
+            Self::Cycle => None,
+            Self::Programmable(n) => Some(n),
+        }
+    }
+
+    pub(super) const fn mmap_metadata(self) -> (u32, u16) {
+        match self {
+            // Linux publishes `event->hw.idx + 1`; the architectural cycle
+            // counter is index 31.
+            Self::Cycle => (32, 64),
+            Self::Programmable(n) => (n as u32 + 1, 32),
         }
     }
 }
@@ -90,16 +124,9 @@ pub(super) struct SystemPmuReset {
 /// Configures one reserved counter on the current owner CPU.
 pub(super) fn configure_system_on_owner(request: SystemPmuConfigure) -> AxResult<()> {
     ax_cpu::pmu::init_cpu();
-    match (request.counter, request.event) {
-        (Counter::Cycle, None) => {
-            ax_cpu::pmu::cycles::configure(request.exclude_user, request.exclude_kernel);
-        }
-        (Counter::Programmable(n), Some(event)) => {
-            ax_cpu::pmu::counter::configure(n, event, request.exclude_user, request.exclude_kernel);
-        }
-        _ => return Err(AxError::BadState),
-    }
-    Ok(())
+    request
+        .counter
+        .configure(request.event, request.exclude_user, request.exclude_kernel)
 }
 
 /// Commits enable on the current owner CPU and returns its publication state.

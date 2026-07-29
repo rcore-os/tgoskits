@@ -137,7 +137,7 @@ pub(super) struct SystemEventInit {
 
 #[cfg(target_arch = "aarch64")]
 pub(super) struct TaskEventInit {
-    pub(super) counter: usize,
+    pub(super) counter: Counter,
     pub(super) scheduler_id: u64,
     pub(super) read_format: u64,
     pub(super) family: Arc<PerfInheritanceFamily>,
@@ -169,10 +169,7 @@ impl HwPerfEventState {
         // is 1-based (0 ⇒ rdpmc unusable); `index - 1` is the ARM counter the
         // reader accesses — `PMEVCNTR(index-1)_EL0`, or `PMCCNTR_EL0` for the
         // dedicated cycle counter (ARM index 31 ⇒ page index 32).
-        let (index, pmc_width): (u32, u16) = match self.counter {
-            Counter::Cycle => (32, 64),
-            Counter::Programmable(n) => (n as u32 + 1, 32),
-        };
+        let (index, pmc_width) = self.counter.mmap_metadata();
 
         let header = kvirt.as_usize() as *mut perf_event_mmap_page;
         // SAFETY: freshly allocated, zeroed page, `>= size_of::<perf_event_mmap_page>()`
@@ -651,7 +648,7 @@ impl HwPerfEvent {
     pub(super) fn new_task(init: TaskEventInit) -> Self {
         Self::new(
             HwPerfEventState {
-                counter: Counter::Programmable(init.counter),
+                counter: init.counter,
                 system_owner: None,
                 output_scope: PerfOutputScope::Task(init.scheduler_id),
                 sample_id: 0,

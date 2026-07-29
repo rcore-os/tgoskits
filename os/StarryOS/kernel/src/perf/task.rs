@@ -70,7 +70,8 @@ use ax_kspin::SpinNoIrq;
 pub use super::inheritance::on_clone_inherit;
 pub(crate) use super::task_sideband::{on_clone_sideband, on_exec_sideband, on_mmap_sideband};
 use super::{
-    cpu_worker, hw,
+    cpu_worker,
+    hw_owner::Counter,
     inheritance::{PerfInheritanceFamily, PerfInheritanceFamilyWeak},
     output::{PerfOutputRoute, PerfRingOutput},
     resource_lifecycle::PmuResourceRelease,
@@ -91,9 +92,9 @@ pub(super) static PERF_TASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 /// A hardware counter bound to one specific task.
 ///
 /// Interior-mutable and allocation-free so the scheduler hooks can drive it with
-/// IRQs disabled. The counter occupies a *programmable* PMU slot (`n`) even for
-/// `CPU_CYCLES` (ARM event `0x11`), so it never contends with a system-wide
-/// cycle-counter event using the dedicated `PMCCNTR_EL0`.
+/// IRQs disabled. A non-sampling `CPU_CYCLES` event prefers the architectural
+/// cycle counter, while all other events use programmable PMU slots. That is the
+/// same counter-selection rule as Linux `armv8pmu_get_event_idx()`.
 ///
 /// State machine (per slice):
 ///
@@ -102,15 +103,17 @@ pub(super) static PERF_TASK_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 /// * `run_state` — the generation-bearing owner CPU and optional sampling
 ///   registration for the hardware-programmed slice.
 ///
-/// Because [`ax_cpu::pmu::counter::configure`] resets the counter to 0, each
-/// slice starts at 0 and the slice delta is exactly `counter::read(n)` at
-/// sched-out time; [`PerTaskCounter::accumulated`] sums those deltas.
+/// Configuring a slice resets its selected counter to 0, so its sched-out read is
+/// the slice delta; [`PerTaskCounter::accumulated`] sums those deltas.
 #[derive(Debug)]
 pub struct PerTaskCounter {
-    /// Programmable PMU counter index (`0..num_counters`) reserved from the M1
-    /// allocator. Per-task events never use the dedicated cycle counter.
-    n: usize,
-    /// ARM PMUv3 event number programmed into `PMEVTYPERn_EL0`.
+    /// Generation-bearing scheduler identity of the task context.
+    scheduler_id: ax_runtime::task::ThreadId,
+    /// Physical counter reservation used while this task is scheduled.
+    counter: Counter,
+    /// ARM PMUv3 event number. It is programmed only for a programmable
+    /// counter; a dedicated cycle-counter reservation carries the same semantic
+    /// event so an inherited child can fall back to a programmable slot.
     event: u16,
     /// `attr.exclude_user`: do not count EL0 (`PMEVTYPERn_EL0.U`).
     exclude_user: bool,
@@ -250,54 +253,57 @@ impl core::fmt::Debug for SamplingAnchors {
 /// once from the decoded `perf_event_attr`. For a counting event `sample_period`
 /// is `0`; for a sampling event it is the fixed `-c` period and `sample_type` is
 /// `PERF_SAMPLE_IP`.
-pub struct PerTaskConfig {
-    /// Reserved programmable PMU counter index.
-    pub n: usize,
+pub(super) struct PerTaskConfig {
+    /// Generation-bearing scheduler identity of the target task.
+    pub(super) scheduler_id: ax_runtime::task::ThreadId,
+    /// Reserved physical PMU counter.
+    pub(super) counter: Counter,
     /// ARM PMUv3 event number.
-    pub event: u16,
+    pub(super) event: u16,
     /// `attr.exclude_user`.
-    pub exclude_user: bool,
+    pub(super) exclude_user: bool,
     /// `attr.exclude_kernel`.
-    pub exclude_kernel: bool,
+    pub(super) exclude_kernel: bool,
     /// `attr.read_format`.
-    pub read_format: u64,
+    pub(super) read_format: u64,
     /// Userspace-enabled at open (`attr.disabled == 0`).
-    pub enabled: bool,
+    pub(super) enabled: bool,
     /// `attr.enable_on_exec`.
-    pub enable_on_exec: bool,
+    pub(super) enable_on_exec: bool,
     /// Optional CPU on which this task event is eligible to run.
-    pub cpu_filter: Option<PerfCpuId>,
+    pub(super) cpu_filter: Option<PerfCpuId>,
     /// Sampling period (`> 0` ⇒ sampling event); `0` ⇒ counting event. In
     /// frequency mode this is the initial estimate the overflow handler adapts.
-    pub sample_period: u32,
+    pub(super) sample_period: u32,
     /// `attr.sample_type` (only meaningful when `sample_period > 0`).
-    pub sample_type: u64,
+    pub(super) sample_type: u64,
     /// Frequency mode (`attr.freq`): the overflow handler adapts the period each
     /// slice toward `target_freq` Hz. Fixed `-c` period when false.
-    pub freq: bool,
+    pub(super) freq: bool,
     /// Target sample rate (Hz) for frequency mode; `0` in fixed-period mode.
-    pub target_freq: u32,
+    pub(super) target_freq: u32,
     /// `attr.comm`: emit `PERF_RECORD_COMM` side-band records (process name).
-    pub want_comm: bool,
+    pub(super) want_comm: bool,
     /// `attr.mmap2`: emit `PERF_RECORD_MMAP2` side-band records (executable maps).
-    pub want_mmap2: bool,
+    pub(super) want_mmap2: bool,
     /// `attr.task`: emit `PERF_RECORD_FORK` / `EXIT` side-band records.
-    pub want_task: bool,
+    pub(super) want_task: bool,
     /// `attr.sample_id_all`: append the sample-id trailer to every side-band record.
-    pub sample_id_all: bool,
+    pub(super) sample_id_all: bool,
     /// `attr.inherit`: clone this event onto `fork`/`clone` children.
-    pub inherit: bool,
+    pub(super) inherit: bool,
 }
 
 impl PerTaskCounter {
-    /// Build a per-task counter around an already-reserved programmable slot `n`.
+    /// Build a per-task counter around an already-reserved physical counter.
     ///
     /// The HW counter is *not* programmed here; it is configured + enabled lazily
     /// in [`perf_sched_in`] the next time the target task runs (or immediately
     /// from [`on_exec`] when the target is current during `execve`).
-    pub fn new(cfg: PerTaskConfig) -> Self {
+    pub(super) fn new(cfg: PerTaskConfig) -> Self {
         PerTaskCounter {
-            n: cfg.n,
+            scheduler_id: cfg.scheduler_id,
+            counter: cfg.counter,
             event: cfg.event,
             exclude_user: cfg.exclude_user,
             exclude_kernel: cfg.exclude_kernel,
@@ -341,9 +347,14 @@ impl PerTaskCounter {
         self.sample_id.store(id, Ordering::Relaxed);
     }
 
-    pub(super) fn inherited_config(&self, n: usize) -> PerTaskConfig {
+    pub(super) fn inherited_config(
+        &self,
+        scheduler_id: ax_runtime::task::ThreadId,
+        counter: Counter,
+    ) -> PerTaskConfig {
         PerTaskConfig {
-            n,
+            scheduler_id,
+            counter,
             event: self.event,
             exclude_user: self.exclude_user,
             exclude_kernel: self.exclude_kernel,
@@ -363,6 +374,40 @@ impl PerTaskCounter {
             sample_id_all: self.sample_id_all,
             inherit: true,
         }
+    }
+
+    fn programmed_event(&self) -> Option<u16> {
+        self.counter.programmable_index().map(|_| self.event)
+    }
+
+    fn programmable_index(&self) -> usize {
+        self.counter
+            .programmable_index()
+            .expect("sampling events are validated onto programmable counters")
+    }
+
+    /// Joins event publication with the target CPU's scheduler order.
+    ///
+    /// The fixed worker is deliberately used even for the local CPU. If the
+    /// target was already running when this event was attached or enabled, the
+    /// worker wake makes it cross sched-out/sched-in; if it was not running,
+    /// its first future sched-in observes the published counter directly.
+    pub(super) fn synchronize_context(&self) -> AxResult<()> {
+        let handle = match ax_runtime::task::thread_handle(self.scheduler_id) {
+            Ok(handle) => handle,
+            // Linux treats a tombstoned perf task context as already detached:
+            // no owner CPU remains to synchronize, and fd-side aggregate
+            // control remains a successful no-op.
+            Err(ax_runtime::task::TaskError::StaleThreadId) => return Ok(()),
+            Err(_) => return Err(AxError::BadState),
+        };
+        if handle.state() == ax_runtime::task::ThreadState::Exited {
+            return Ok(());
+        }
+        let Some(cpu) = handle.wake_handle().target_cpu() else {
+            return Ok(());
+        };
+        cpu_worker::synchronize_task_context(PerfCpuId::new(cpu.as_u32() as usize))
     }
 
     /// Mark userspace-enabled (`ioctl(ENABLE)` / open-enabled). The target's next
@@ -560,7 +605,7 @@ fn now_ns() -> u64 {
 
 /// Attach `ptc` to `thr` and arm the scheduler hooks.
 ///
-/// Called from [`hw::perf_event_open_hw`] for a task target. Bumping
+/// Called from [`super::hw::perf_event_open_hw`] for a task target. Bumping
 /// [`PERF_TASK_ACTIVE`] *after* the push ensures the hooks, once they start
 /// running, always find the counter in the list.
 pub fn attach(thr: &Thread, ptc: Arc<PerTaskCounter>) {
@@ -633,6 +678,7 @@ pub fn perf_sched_in(thr: &Thread) {
             continue;
         };
         if let Some(output) = sample_output {
+            let n = ptc.programmable_index();
             if let Err(error) = sampling::enable_local_pmu_irq() {
                 run_state.cancel_arm(ticket);
                 warn!(
@@ -642,11 +688,13 @@ pub fn perf_sched_in(thr: &Thread) {
                 continue;
             }
             // configure() programs event + EL filter AND resets the counter to 0.
-            ax_cpu::pmu::counter::configure(ptc.n, ptc.event, ptc.exclude_user, ptc.exclude_kernel);
+            ptc.counter
+                .configure(ptc.programmed_event(), ptc.exclude_user, ptc.exclude_kernel)
+                .expect("validated task PMU counter/event pairing");
             // Overflow after `sample_period` events.
-            ax_cpu::pmu::counter::preload(ptc.n, ptc.sample_period);
+            ax_cpu::pmu::counter::preload(n, ptc.sample_period);
             let registration = match sampling::register(
-                ptc.n,
+                n,
                 SampleSlot::new(
                     output,
                     SampleSlotConfig {
@@ -666,7 +714,7 @@ pub fn perf_sched_in(thr: &Thread) {
                     run_state.cancel_arm(ticket);
                     warn!(
                         "perf: failed to register counter {} on CPU {}: {error:?}",
-                        ptc.n,
+                        n,
                         current_cpu.as_usize()
                     );
                     continue;
@@ -674,12 +722,14 @@ pub fn perf_sched_in(thr: &Thread) {
             };
             run_state.publish_registration(ticket, registration);
             // Arm the per-counter overflow interrupt, then start counting.
-            ax_cpu::pmu::overflow::enable_irq(ptc.n);
-            ax_cpu::pmu::counter::enable(ptc.n);
+            ax_cpu::pmu::overflow::enable_irq(n);
+            ax_cpu::pmu::counter::enable(n);
         } else {
             // Counting: configure() programs event + EL filter AND resets to 0.
-            ax_cpu::pmu::counter::configure(ptc.n, ptc.event, ptc.exclude_user, ptc.exclude_kernel);
-            ax_cpu::pmu::counter::enable(ptc.n);
+            ptc.counter
+                .configure(ptc.programmed_event(), ptc.exclude_user, ptc.exclude_kernel)
+                .expect("validated task PMU counter/event pairing");
+            ptc.counter.enable();
         }
         ptc.last_in_ns.store(now, Ordering::Release);
         run_state.finish_arm(ticket);
@@ -727,17 +777,18 @@ fn stop_hardware_on_owner(ptc: &PerTaskCounter, lease: PmuRunLease) -> AxResult<
         return Err(AxError::BadState);
     }
     if let Some(registration) = lease.registration() {
-        if registration.counter() != ptc.n {
+        let n = ptc.programmable_index();
+        if registration.counter() != n {
             return Err(AxError::BadState);
         }
-        ax_cpu::pmu::overflow::disable_irq(ptc.n);
-        ax_cpu::pmu::counter::disable(ptc.n);
-        ax_cpu::pmu::overflow::clear(1 << ptc.n);
+        ax_cpu::pmu::overflow::disable_irq(n);
+        ax_cpu::pmu::counter::disable(n);
+        ax_cpu::pmu::overflow::clear(1 << n);
         sampling::unregister(registration).map_err(|_| AxError::BadState)?;
     } else {
-        let delta = ax_cpu::pmu::counter::read(ptc.n);
+        let delta = ptc.counter.read();
         ptc.accumulated.fetch_add(delta, Ordering::AcqRel);
-        ax_cpu::pmu::counter::disable(ptc.n);
+        ptc.counter.disable();
     }
 
     let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
@@ -806,9 +857,9 @@ pub(crate) fn reset_task_on_owner(ptc: &PerTaskCounter) -> AxResult<()> {
             return Ok(());
         }
         if ptc.is_sampling {
-            ax_cpu::pmu::counter::preload(ptc.n, ptc.sample_period);
+            ax_cpu::pmu::counter::preload(ptc.programmable_index(), ptc.sample_period);
         } else {
-            ax_cpu::pmu::counter::reset(ptc.n);
+            ptc.counter.reset();
         }
     }
     Ok(())
@@ -888,10 +939,30 @@ pub fn on_task_exit(thr: &Thread) {
         {
             sideband::emit_exit(&t, pid, ppid, tid, ptid);
         }
+    }
+    release_task_counters(thr, &counters);
+}
+
+/// Scheduler-lifetime fallback for prepared-task rollback and final teardown.
+///
+/// Linux-visible exit emits side-band records in [`on_task_exit`]. This later,
+/// idempotent callback only guarantees that an unpublished or externally
+/// terminated scheduler record cannot retain PMU reservations.
+pub(crate) fn on_scheduler_task_exit(thr: &Thread) {
+    if PERF_TASK_ACTIVE.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let counters = thr.perf_counters().lock().clone();
+    release_task_counters(thr, &counters);
+}
+
+fn release_task_counters(thr: &Thread, counters: &[Arc<PerTaskCounter>]) {
+    for ptc in counters {
         if let Err(error) = free_hw(ptc) {
             warn!(
-                "perf: task-exit failed to quiesce counter {} on tid {}: {error}",
-                ptc.n, tid
+                "perf: task-exit failed to quiesce counter {:?} on tid {}: {error}",
+                ptc.counter,
+                thr.tid()
             );
         }
     }
@@ -934,7 +1005,7 @@ pub(crate) fn free_hw(ptc: &Arc<PerTaskCounter>) -> AxResult<()> {
         }
         ptc.clear_family_output();
     }
-    hw::free_programmable_counter(ptc.n);
+    super::hw_allocation::free_counter(ptc.counter);
     PERF_TASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
     Ok(())
 }
@@ -965,7 +1036,7 @@ pub(crate) fn read_task_on_owner(ptc: &PerTaskCounter) -> AxResult<(u64, u64, u6
         // Live slice: add the in-progress count and elapsed time. This is a
         // local owner-CPU snapshot; remote reads are routed through the CPU
         // worker in the complete PMU ownership path.
-        value += ax_cpu::pmu::counter::read(ptc.n);
+        value += ptc.counter.read();
         let dt = now_ns().saturating_sub(ptc.last_in_ns.load(Ordering::Acquire));
         time_enabled += dt;
         time_running += dt;

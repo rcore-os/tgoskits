@@ -12,8 +12,7 @@ use super::{
     cpu_worker,
     hw::{ARMV8_PMUV3_PERF_TYPE, ValidatedHwCounter, ValidatedHwOpen},
     hw_allocation::{
-        alloc_cycle_counter, alloc_programmable, alloc_programmable_counter, free_counter,
-        set_programmable_counter_count,
+        alloc_preferred_cycle, alloc_programmable, free_counter, set_programmable_counter_count,
     },
     hw_event::{HwPerfEvent, SystemEventInit, TaskEventInit},
     hw_owner::SystemPmuConfigure,
@@ -50,30 +49,26 @@ pub(super) fn validate_perf_event_open_hw(
     let (sample_period, target_freq) = resolve_sampling(raw, is_freq);
 
     let event = if attr.type_ == perf_type_id::PERF_TYPE_HARDWARE as u32 {
-        if target_kind == PerfTargetKind::Cpu
-            && attr.config == perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u64
-            && !is_sampling
-        {
-            None
-        } else {
-            Some(ax_cpu::pmu::hw_event_to_arm(attr.config as u32).ok_or(AxError::Unsupported)?)
-        }
+        ax_cpu::pmu::hw_event_to_arm(attr.config as u32).ok_or(AxError::Unsupported)?
     } else if attr.type_ == perf_type_id::PERF_TYPE_RAW as u32
         || attr.type_ == ARMV8_PMUV3_PERF_TYPE
     {
-        Some((attr.config & 0xFFFF) as u16)
+        (attr.config & 0xFFFF) as u16
     } else {
         return Err(AxError::Unsupported);
     };
 
-    let counter = match (target_kind, event) {
-        (PerfTargetKind::Cpu, None) => ValidatedHwCounter::SystemCycle,
-        (PerfTargetKind::Cpu, Some(event)) => ValidatedHwCounter::SystemProgrammable(event),
-        (PerfTargetKind::Task, Some(event)) if ax_cpu::pmu::event_supported(event) => {
+    let cycle_event = ax_cpu::pmu::hw_event_to_arm(perf_hw_id::PERF_COUNT_HW_CPU_CYCLES as u32)
+        .ok_or(AxError::Unsupported)?;
+    let prefer_cycle = !is_sampling && event == cycle_event;
+    let counter = match (target_kind, prefer_cycle) {
+        (PerfTargetKind::Cpu, true) => ValidatedHwCounter::SystemPreferredCycle(event),
+        (PerfTargetKind::Cpu, false) => ValidatedHwCounter::SystemProgrammable(event),
+        (PerfTargetKind::Task, true) => ValidatedHwCounter::TaskPreferredCycle(event),
+        (PerfTargetKind::Task, false) if ax_cpu::pmu::event_supported(event) => {
             ValidatedHwCounter::TaskProgrammable(event)
         }
-        (PerfTargetKind::Task, Some(_)) => return Err(AxError::Unsupported),
-        (PerfTargetKind::Task, None) => unreachable!("task counters are always programmable"),
+        (PerfTargetKind::Task, false) => return Err(AxError::Unsupported),
     };
 
     Ok(ValidatedHwOpen {
@@ -113,14 +108,15 @@ pub(super) fn perf_event_open_hw(
     }
 
     let (counter, event) = match validated.counter {
-        ValidatedHwCounter::SystemCycle => {
-            let Some(counter) = alloc_cycle_counter() else {
-                return Err(AxError::NoMemory);
-            };
-            (counter, None)
+        ValidatedHwCounter::SystemPreferredCycle(event) => {
+            let counter = alloc_preferred_cycle(event)?;
+            let programmed_event = counter.programmable_index().map(|_| event);
+            (counter, programmed_event)
         }
         ValidatedHwCounter::SystemProgrammable(event) => (alloc_programmable(event)?, Some(event)),
-        ValidatedHwCounter::TaskProgrammable(_) => return Err(AxError::BadState),
+        ValidatedHwCounter::TaskPreferredCycle(_) | ValidatedHwCounter::TaskProgrammable(_) => {
+            return Err(AxError::BadState);
+        }
     };
     if let Err(error) = cpu_worker::configure_system(
         owner_cpu,
@@ -182,18 +178,19 @@ fn perf_event_open_hw_per_task(
         sampling::ensure_pmu_irq_registered().map_err(|_| AxError::NoSuchDevice)?;
     }
 
-    let ValidatedHwCounter::TaskProgrammable(event) = validated.counter else {
-        return Err(AxError::BadState);
-    };
-
-    let Some(counter) = alloc_programmable_counter() else {
-        return Err(AxError::NoMemory);
+    let (counter, event) = match validated.counter {
+        ValidatedHwCounter::TaskPreferredCycle(event) => (alloc_preferred_cycle(event)?, event),
+        ValidatedHwCounter::TaskProgrammable(event) => (alloc_programmable(event)?, event),
+        ValidatedHwCounter::SystemPreferredCycle(_) | ValidatedHwCounter::SystemProgrammable(_) => {
+            return Err(AxError::BadState);
+        }
     };
 
     let enabled = attr.disabled() == 0;
     let per_task_counter = Arc::new(super::task::PerTaskCounter::new(
         super::task::PerTaskConfig {
-            n: counter,
+            scheduler_id,
+            counter,
             event,
             exclude_user,
             exclude_kernel,
@@ -214,6 +211,22 @@ fn perf_event_open_hw_per_task(
     ));
     let family = PerfInheritanceFamily::new(Arc::clone(&per_task_counter), enabled);
     super::task::attach(thread, per_task_counter);
+    if let Err(error) = family.root().synchronize_context() {
+        let root = family.root();
+        // The scheduler publication must remain reachable until its exact PMU
+        // generation is quiescent. Withdrawing the list entry first would leave
+        // a failed owner-CPU fence with no future sched-out owner.
+        if let Err(release_error) = super::task::free_hw(&root) {
+            warn!(
+                "perf_event_open: failed to quiesce task event after context-sync error \
+                 ({error}); retaining its ownership graph: {release_error}"
+            );
+            core::mem::forget(family);
+            return Err(release_error);
+        }
+        super::task::detach_unpublished(thread, &root);
+        return Err(error);
+    }
 
     Ok(HwPerfEvent::new_task(TaskEventInit {
         counter,
