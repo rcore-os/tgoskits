@@ -85,8 +85,8 @@ pub fn new_user_task(
             };
         if resumed_from_initial_ptrace_stop {
             // `block_on_user` consumes the interruption that aborted the stop.
-            // Re-scan pending signals before the first user instruction so
-            // SIGKILL cannot be replaced by a racing `_exit(0)`.
+            // Re-scan pending signals before the first user instruction so an
+            // un-interceptable SIGKILL cannot be replaced by a racing `_exit(0)`.
             while check_signals(thr, &mut uctx, None, None) {}
         }
         while !thr.pending_exit() {

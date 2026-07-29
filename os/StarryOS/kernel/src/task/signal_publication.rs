@@ -1,6 +1,6 @@
 //! Ordering boundary between fatal-signal publication and stop-state wakeup.
 
-/// Runs signal publication and the wakeup that exposes it to the target.
+/// Runs a signal publication and the wakeup that exposes it to the target.
 ///
 /// Both operations run synchronously in task context. Keeping the ordering in
 /// one helper mirrors Linux's `siglock` invariant while Starry stores pending
