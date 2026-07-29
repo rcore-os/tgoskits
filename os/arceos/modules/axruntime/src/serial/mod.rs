@@ -168,10 +168,11 @@ fn try_enter_irq_registers<'a, E: ?Sized>(
 ) -> Option<rdif_serial::UartRegisterGuard<'a, E>> {
     let guard = gate.try_enter();
     if guard.is_none() {
-        // The interrupt source could not be observed or acknowledged while an
-        // emergency writer owned the register block. Publish the retry before
-        // waking the fixed worker so edge-triggered delivery does not depend on
-        // the controller presenting the same interrupt again.
+        // Emergency TX masks every device source before touching the FIFO, so a
+        // level-triggered line cannot continuously reassert while the IRQ
+        // endpoint defers register access. Publish the retry before waking the
+        // fixed worker; it polls status and restores normal source ownership
+        // after the bounded emergency transaction releases the gate.
         bridge.register_retry.store(true, Ordering::Release);
         bridge.notify();
     }

@@ -122,8 +122,34 @@ pub struct Ns16550EmergencyTx<T: Kind> {
     base: T,
 }
 
+struct Ns16550EmergencyIrqMask<'a, T: Kind> {
+    base: &'a T,
+    enabled: InterruptEnableFlags,
+}
+
+impl<T: Kind> Drop for Ns16550EmergencyIrqMask<'_, T> {
+    fn drop(&mut self) {
+        self.base.write_flags(UART_IER, self.enabled);
+    }
+}
+
+impl<T: Kind> Ns16550EmergencyTx<T> {
+    fn mask_interrupts(&self) -> Ns16550EmergencyIrqMask<'_, T> {
+        let enabled = self.base.read_flags(UART_IER);
+        self.base
+            .write_flags(UART_IER, InterruptEnableFlags::empty());
+        // Flush a posted MMIO write before the emergency path touches TX.
+        let _: InterruptEnableFlags = self.base.read_flags(UART_IER);
+        Ns16550EmergencyIrqMask {
+            base: &self.base,
+            enabled,
+        }
+    }
+}
+
 impl<T: Kind> UartEmergencyTx for Ns16550EmergencyTx<T> {
     unsafe fn try_write_unlocked(&self, bytes: &[u8]) -> usize {
+        let _irq_mask = self.mask_interrupts();
         let mut written = 0;
         for &byte in bytes.iter().take(UART_FIFO_SIZE as usize) {
             let status: LineStatusFlags = self.base.read_flags(UART_LSR);
@@ -735,6 +761,7 @@ mod tests {
     static DLL_REG: AtomicU8 = AtomicU8::new(0);
     static DLH_REG: AtomicU8 = AtomicU8::new(0);
     static THR_WRITES: AtomicUsize = AtomicUsize::new(0);
+    static THR_WRITE_IER: AtomicU8 = AtomicU8::new(u8::MAX);
     static RBR_READS: AtomicUsize = AtomicUsize::new(0);
     static LSR_READS: AtomicUsize = AtomicUsize::new(0);
     static LAST_FCR_WRITE: AtomicU8 = AtomicU8::new(0);
@@ -822,6 +849,10 @@ mod tests {
                 }
             }
             if reg == UART_THR {
+                THR_WRITE_IER.store(
+                    REGS[UART_IER as usize].load(Ordering::SeqCst),
+                    Ordering::SeqCst,
+                );
                 let iir = REGS[UART_IIR as usize].load(Ordering::SeqCst);
                 if iir & InterruptIdentificationFlags::FIFO_ENABLE_MASK.bits() == 0 {
                     REGS[UART_LSR as usize].fetch_and(
@@ -899,6 +930,7 @@ mod tests {
         DLL_REG.store(0, Ordering::SeqCst);
         DLH_REG.store(0, Ordering::SeqCst);
         THR_WRITES.store(0, Ordering::SeqCst);
+        THR_WRITE_IER.store(u8::MAX, Ordering::SeqCst);
         RBR_READS.store(0, Ordering::SeqCst);
         LSR_READS.store(0, Ordering::SeqCst);
         LAST_FCR_WRITE.store(0, Ordering::SeqCst);
@@ -1126,6 +1158,32 @@ mod tests {
         assert_eq!(access.try_write(b"ab"), 1);
         assert_eq!(REGS[UART_THR as usize].load(Ordering::SeqCst), b'a');
         assert_eq!(access.try_write(b"b"), 0);
+    }
+
+    #[test]
+    fn emergency_tx_masks_device_interrupts_while_touching_fifo() {
+        let (_guard, uart) = serial();
+        let parts = uart.split();
+        let gate = UartRegisterGate::new(parts.emergency_tx);
+        let access = gate.try_enter().unwrap();
+        let enabled = UART_IER_RDI | UART_IER_RLSI | UART_IER_THRI;
+        REGS[UART_IER as usize].store(enabled, Ordering::SeqCst);
+        REGS[UART_LSR as usize].store(
+            LineStatusFlags::TRANSMITTER_HOLDING_EMPTY.bits(),
+            Ordering::SeqCst,
+        );
+
+        assert_eq!(access.try_write(b"x"), 1);
+        assert_eq!(
+            THR_WRITE_IER.load(Ordering::SeqCst),
+            0,
+            "a gate-busy IRQ must observe a device-masked emergency transaction"
+        );
+        assert_eq!(
+            REGS[UART_IER as usize].load(Ordering::SeqCst),
+            enabled,
+            "emergency output must restore the worker-owned interrupt mask"
+        );
     }
 
     #[test]

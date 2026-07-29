@@ -155,6 +155,12 @@ pub trait UartIrq: Send + 'static {
 pub trait UartEmergencyTx: Send + Sync + 'static {
     /// Performs one bounded pass over currently available FIFO capacity.
     ///
+    /// Implementations must save and mask every device interrupt source before
+    /// touching the FIFO, then restore the saved mask before returning. The
+    /// runtime's register gate may otherwise force an in-flight hard IRQ to
+    /// defer register access; masking keeps a level-triggered source from
+    /// continuously reasserting until that bounded emergency transaction ends.
+    ///
     /// # Safety
     ///
     /// The caller must exclusively own every alias of this UART register
