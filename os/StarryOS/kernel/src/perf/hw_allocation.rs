@@ -63,6 +63,15 @@ pub(super) fn alloc_cycle_counter() -> Option<Counter> {
     ALLOC.lock().alloc_cycle()
 }
 
+/// Prefers the architectural cycle counter and falls back to a programmable
+/// counter carrying the same ARM event, matching `armv8pmu_get_event_idx()`.
+pub(super) fn alloc_preferred_cycle(event: u16) -> AxResult<Counter> {
+    if let Some(counter) = alloc_cycle_counter() {
+        return Ok(counter);
+    }
+    alloc_programmable(event)
+}
+
 pub(super) fn free_counter(counter: Counter) {
     ALLOC.lock().free(counter);
 }
@@ -88,9 +97,4 @@ pub(crate) fn alloc_programmable_counter() -> Option<usize> {
         Some(Counter::Programmable(n)) => Some(n),
         _ => None,
     }
-}
-
-/// Releases a slot reserved through [`alloc_programmable_counter`].
-pub(crate) fn free_programmable_counter(n: usize) {
-    ALLOC.lock().free(Counter::Programmable(n));
 }

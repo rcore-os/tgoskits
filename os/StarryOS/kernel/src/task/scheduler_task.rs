@@ -754,7 +754,16 @@ unsafe extern "Rust" fn starry_user_task_switch_out(
     }
 }
 
-unsafe extern "Rust" fn starry_user_task_exit(_data: usize, _thread: scheduler::ThreadId) {}
+unsafe extern "Rust" fn starry_user_task_exit(_data: usize, _thread: scheduler::ThreadId) {
+    // Normal Linux task exit already released these counters before fd
+    // teardown. This idempotent scheduler-lifetime fence also covers a
+    // prepared thread whose publication failed after perf inheritance.
+    #[cfg(target_arch = "aarch64")]
+    {
+        let extension = unsafe { extension_data_from_raw(_data) };
+        crate::perf::task::on_scheduler_task_exit(&extension.thread);
+    }
+}
 
 unsafe extern "Rust" fn starry_user_task_deadline_overrun(
     data: usize,

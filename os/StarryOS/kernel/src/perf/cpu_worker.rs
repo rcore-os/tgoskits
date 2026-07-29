@@ -51,6 +51,9 @@ impl<T> PerfCompletion<T> {
 }
 
 enum PerfCpuCommand {
+    SyncTaskContext {
+        completion: Arc<PerfCompletion<()>>,
+    },
     StopTask {
         counter: Arc<PerTaskCounter>,
         lease: PmuRunLease,
@@ -89,6 +92,13 @@ enum PerfCpuCommand {
 impl PerfCpuCommand {
     fn execute(self) {
         match self {
+            Self::SyncTaskContext { completion } => {
+                // Reaching this fixed per-CPU worker proves that a task which
+                // was running when the command was published crossed a
+                // scheduler switch boundary. Its next switch-in observes all
+                // perf counters published before this command.
+                completion.finish(Ok(()));
+            }
             Self::StopTask {
                 counter,
                 lease,
@@ -231,6 +241,20 @@ pub(super) fn init() {
             affinity,
         );
     }
+}
+
+/// Forces the selected CPU through a scheduler boundary after task-event
+/// publication.
+///
+/// Unlike register operations, this must not take the local fast path: when the
+/// caller is the target task, sleeping until the fixed worker executes is what
+/// guarantees the newly attached/enabled event receives a matching sched-in.
+pub(super) fn synchronize_task_context(owner: PerfCpuId) -> AxResult<()> {
+    let completion = Arc::new(PerfCompletion::new());
+    owner_worker(owner)?.submit(PerfCpuCommand::SyncTaskContext {
+        completion: Arc::clone(&completion),
+    });
+    completion.wait()
 }
 
 /// Stops one task-bound counter on the CPU that owns its running generation.

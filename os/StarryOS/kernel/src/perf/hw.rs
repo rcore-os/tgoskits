@@ -13,10 +13,12 @@ use super::{access::AuthorizedPerfTarget, target::PerfTargetKind};
 /// Counter resource selected by side-effect-free hardware validation.
 #[cfg(target_arch = "aarch64")]
 pub(super) enum ValidatedHwCounter {
-    /// Dedicated system cycle counter.
-    SystemCycle,
+    /// System-wide cycle event that prefers the dedicated counter.
+    SystemPreferredCycle(u16),
     /// System-wide programmable counter with its ARM event number.
     SystemProgrammable(u16),
+    /// Task-bound cycle event that prefers the dedicated counter.
+    TaskPreferredCycle(u16),
     /// Task-bound programmable counter with its ARM event number.
     TaskProgrammable(u16),
 }
@@ -71,7 +73,7 @@ pub(super) fn perf_event_open_hw(
     }
 }
 #[cfg(target_arch = "aarch64")]
-pub(crate) use super::hw_allocation::{alloc_programmable_counter, free_programmable_counter};
+pub(crate) use super::hw_allocation::alloc_programmable_counter;
 #[cfg(target_arch = "aarch64")]
 pub(super) use super::hw_owner::{
     SystemPmuConfigure, SystemPmuDisable, SystemPmuEnable, SystemPmuEnableResult, SystemPmuRead,

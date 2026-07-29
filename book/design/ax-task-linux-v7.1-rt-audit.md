@@ -570,6 +570,61 @@ matrix. The aarch64 `perf-hw-fork-exit` case also passes, proving that the
 authorized strong target survives the value-only PMU validation plan,
 hardware construction, and fork/exit teardown.
 
+ARM PMU counter selection and task-context installation now follow the
+corresponding Linux v7.1 ownership rules instead of treating every task event
+as a programmable counter. Linux `armv8pmu_get_event_idx()` gives
+`ARMV8_PMUV3_PERFCTR_CPU_CYCLES` first claim on `PMCCNTR`, while
+`armv8pmu_user_event_idx()` publishes the hardware counter as the perf mmap
+index plus one. Starry therefore represents the physical reservation as
+`Counter::{Cycle, Programmable(_)}` all the way through allocation,
+owner-CPU register access, scheduler binding, sampling validation, and mmap
+metadata. Sampling remains restricted to programmable counters, while a
+non-sampling architectural or raw CPU-cycle event prefers the dedicated
+64-bit cycle counter and falls back to a programmable counter only when it is
+already reserved.
+
+Allocating a physical counter is not sufficient to install a task event.
+Linux `perf_install_in_context()` uses `task_function_call()` to cross the
+target task's scheduling boundary and install or reschedule its context while
+it is already running. Starry's fixed per-CPU perf worker now provides the
+same boundary: attach and family enable publish intent first, then request a
+generation-bearing scheduler-context synchronization on the CPU currently
+running the target. A migration or switch race is resolved by the scheduler
+identity and retried on the new owner; a stale identity is an already-dead
+context rather than a request to touch hardware. This also removes the former
+local fast path in which a caller could configure another task's PMU state
+without crossing its scheduling boundary.
+
+The deterministic aarch64 `perf-hw-rdpmc` regression exposed both defects in
+sequence. The old implementation reported `index=1`, `caps=0x4`, and
+`pmc_width=32`, proving that a CPU-cycle event was placed on a programmable
+counter. Counter typing changed that to `index=32` and `pmc_width=64`, but the
+first red run then observed a nonzero direct read with `read(fd)==0`, proving
+that an already-running target had never installed the event. After
+scheduler-boundary synchronization, the same case observed nonzero,
+comparable direct and fd reads (for example `61853925` and `77531120`) and
+reported `STARRY_PERF_RDPMC_OK`. Task sampling, frequency sampling, and
+fork/exit PMU regressions pass with the same physical ownership model.
+
+Linux `find_get_context()` rejects `PF_EXITING` while holding
+`task->perf_event_mutex`; a dead perf context is a tombstone that cannot accept
+new events. Starry currently treats a stale generation as a completed
+synchronization, and rollback quiesces any hardware generation before
+withdrawing scheduler publication. The remaining task-exit/open admission
+race is tracked in this audit as the next lifecycle stage: admission and
+exit-start must share one per-thread perf-context gate so an event cannot
+attach after exit cleanup has passed.
+
+The inheritance regression found an analogous unpublished-child boundary.
+Previously `on_clone_inherit()` ran before `PreparedUserTask` existed, so 40
+sequential children logged “scheduler identity unavailable” and produced only
+one distinct descendant EXIT TID. Inheritance now runs immediately after
+`prepare_user_thread*()` creates the scheduler identity but before publication
+of the Linux task. Prepared-task rollback calls the scheduler-side, idempotent
+PMU release path without emitting a Linux-visible EXIT record. The original
+case now reports 42 distinct EXIT TIDs for the child, grandchild, and 40
+sequential descendants.
+
 The former 1,545-line PMU implementation is now a stable facade over focused
 allocation, owner-CPU request, sampling storage, event-state, and open-validation
 modules. Counter reservation remains process-wide in one allocator, CPU-local
@@ -648,6 +703,15 @@ The original aarch64 `perf-hw-freq` stale-wake panic remains the end-to-end
 regression. Deterministic host tests cover target parsing, registry generation
 reuse, close versus switch-out, failed owner-stop retry, redirect/detach
 selection, shared output lifetime, and bounded multi-producer admission.
+
+The first post-refactor x86_64 full `qemu/system` milestone passed the
+scheduler, futex, timer, PID, exec, and perf groups; one `test-ptrace-gdb`
+failure was not reproduced in 20 targeted reruns and remains recorded as an
+intermittent observation rather than receiving a speculative scheduler
+change. The first aarch64 full milestone passed those same critical groups and
+failed only the deterministic `perf-hw-rdpmc` counter-selection assertion
+described above. A final full aarch64 rerun is required after the remaining
+dynamic mmap-page and exit-admission work.
 
 A separate pidfd audit question is closed as Linux-compatible rather than
 changed. Linux v7.1 keeps an unreaped zombie addressable through its pid object:
