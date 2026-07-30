@@ -13,6 +13,7 @@ const AKA_00_PROFILE: &str = include_str!("../../board-aka-00-sg2002.toml");
 const VISIONFIVE2_PROFILE: &str = include_str!("../../board-visionfive2.toml");
 const PHYTIUMPI_PROFILE: &str = include_str!("../../board-phytiumpi.toml");
 const RK3568_PROFILE: &str = include_str!("../../board-roc-rk3568-pc.toml");
+const ROCK4D_PROFILE: &str = include_str!("../../board-rock-4d.toml");
 const JL_LSGD2K10_PROFILE: &str = include_str!("../../board-jl-lsgd2k10.toml");
 const INIT_SCRIPT: &str = include_str!("../../init.sh");
 
@@ -256,6 +257,7 @@ fn board_profiles_require_the_uploaded_session_helper() {
         ("VisionFive2", VISIONFIVE2_PROFILE),
         ("PhytiumPi", PHYTIUMPI_PROFILE),
         ("ROC-RK3568-PC", RK3568_PROFILE),
+        ("Rock-4D", ROCK4D_PROFILE),
         ("JL-LSGD2K10", JL_LSGD2K10_PROFILE),
     ] {
         assert!(
@@ -282,6 +284,15 @@ fn board_profiles_require_the_uploaded_session_helper() {
     );
     assert!(INIT_SCRIPT.contains("BLOCK_RW_BENCH_STAGED_PROGRAM"));
     assert!(INIT_SCRIPT.contains("BLOCK_RW_BENCH_DOWNLOAD_ATTEMPTS"));
+}
+
+#[test]
+fn rock4d_profile_describes_the_rk3576_dwcmshc_emmc_path() {
+    assert!(ROCK4D_PROFILE.contains("board_type = \"Rock-4D\""));
+    assert!(ROCK4D_PROFILE.contains("export BLOCK_RW_BENCH_ROOT_DEVICE='/dev/mmcblk0'"));
+    assert!(ROCK4D_PROFILE.contains("export BLOCK_RW_BENCH_CONTROLLER='rk3588-dwcmshc-emmc'"));
+    assert!(ROCK4D_PROFILE.contains("export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES='1048064'"));
+    assert!(ROCK4D_PROFILE.contains("ROCK4D_BLOCK_RW_BENCH_PASSED"));
 }
 
 #[test]
