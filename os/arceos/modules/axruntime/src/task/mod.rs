@@ -85,21 +85,21 @@ pub(crate) use scheduler_events::{consume_scheduler_ipi_doorbell, on_scheduler_i
 pub(crate) use scheduler_events::{on_clock_event, recover_clock_event};
 #[cfg(any(feature = "ipi", feature = "wake-ipi"))]
 use scheduler_events::{publish_scheduler_ipi_doorbell, publish_then_notify_scheduler_ipi};
+pub use spawn::{
+    prepare_raw, prepare_raw_with_extension_in_address_space_and_policy, spawn_raw,
+    spawn_raw_with_affinity, spawn_raw_with_extension, spawn_raw_with_extension_and_affinity,
+    spawn_raw_with_extension_in_address_space,
+    spawn_raw_with_extension_in_address_space_and_policy,
+};
 #[cfg(all(target_arch = "riscv64", feature = "fp-simd"))]
 pub use spawn::{
     prepare_raw_with_extension_in_address_space_and_fp_state_and_policy,
     spawn_raw_with_extension_in_address_space_and_fp_state,
     spawn_raw_with_extension_in_address_space_and_fp_state_and_policy,
 };
-pub use spawn::{
-    prepare_raw_with_extension_in_address_space_and_policy, spawn_raw, spawn_raw_with_affinity,
-    spawn_raw_with_extension, spawn_raw_with_extension_and_affinity,
-    spawn_raw_with_extension_in_address_space,
-    spawn_raw_with_extension_in_address_space_and_policy,
-};
 pub use thread::{
-    PreparedThread, ThreadOsExtensionBorrow, ThreadOsExtensionLease, current_os_extension,
-    exit_current, join_thread, thread_os_extension, wait_thread,
+    PreparedThread, StagedThread, ThreadOsExtensionBorrow, ThreadOsExtensionLease,
+    current_os_extension, exit_current, join_thread, thread_os_extension, wait_thread,
 };
 #[cfg(test)]
 use thread::{
@@ -107,8 +107,8 @@ use thread::{
     extension_data_after_releasing_lease,
 };
 use thread::{
-    RuntimeThreadData, finish_initial_scheduler_switch, release_transferred_extension,
-    runtime_thread_entry, runtime_thread_extension,
+    RuntimeThreadData, RuntimeThreadStart, finish_initial_scheduler_switch,
+    release_transferred_extension, runtime_thread_entry, runtime_thread_extension,
 };
 #[cfg(all(test, feature = "tls"))]
 use thread_resources::assemble_bootstrap_resources;

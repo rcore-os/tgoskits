@@ -1881,6 +1881,49 @@ registry declarations and then passed after the migration. Starry's complete
 24-configuration feature clippy validates normal, `axtest`, SMP, and
 architecture builds with the new sleepable boundary.
 
+## Current-head Starry clone activation boundary
+
+Starry clone previously inserted the child into its public task and process
+identity registries and only then called the fallible scheduler
+`make_ready()`/`place_ready()` path. CPU placement, Deadline timer capacity, or
+runtime clockevent failure could therefore expose a live PID/TID to concurrent
+lookup and later remove it while returning a clone error. The PID publication
+mutex serialized clone against namespace shutdown, but ordinary task, signal,
+ptrace, pidfd, and process readers do not acquire that mutex, so it did not
+make the visible-then-rollback window atomic.
+
+Linux v7.1 performs cgroup and scheduler preparation before task visibility
+(`kernel/fork.c:2368-2383`). After the last PID-namespace and fatal-signal
+checks, `copy_process()` states “No more failure paths after this point”
+(`kernel/fork.c:2442-2453`), publishes PID and relationship state under
+`tasklist_lock` (`kernel/fork.c:2464-2514`), and later invokes the infallible
+`wake_up_new_task()` (`kernel/fork.c:2722-2753`).
+
+ax-runtime now exposes the same two-phase boundary:
+
+- `PreparedThread::stage()` performs `make_ready()` and runqueue placement,
+  returning every recoverable error before OS identity publication;
+- the staged context may be selected, but its runtime trampoline waits on a
+  private atomic start gate and cannot execute the caller-owned entry;
+- dropping a staged token publishes `Aborted` and wakes the trampoline, which
+  exits without consuming the caller entry; and
+- `StagedThread::activate()` publishes `Active` and wakes the trampoline
+  without a fallible operation.
+
+Starry stages the child before taking its publication mutex, then publishes
+namespace PID mappings, cgroup membership, process relationships, TASK_TABLE,
+and PROCESS_TABLE while the entry gate remains closed. It commits every
+rollback token, releases the publication mutex, and only then activates the
+thread. Scheduler placement no longer runs under the broad Starry publication
+lock, and no recoverable failure remains after public identity commit.
+
+The deterministic x86_64 QEMU regression stages a real runtime thread, yields
+four times, and requires that its entry remain unexecuted until activation.
+With the old scheduler semantics it failed immediately; the same test passes
+with the runtime gate. A second regression drops a staged token, waits for its
+logical scheduler exit through an independently retained handle, and proves
+that abort never consumes the caller entry.
+
 ## Completion rules
 
 Each confirmed defect receives a deterministic failing test at the lowest

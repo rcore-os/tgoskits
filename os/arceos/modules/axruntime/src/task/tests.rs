@@ -247,6 +247,7 @@ fn runtime_outer_extension_forwards_os_scheduler_tick_work() {
         Box::new(|| {}),
         String::from("tick-forwarding"),
         Some(os_extension),
+        Arc::new(RuntimeThreadStart::new()),
     )))
     .expose_provenance();
     let outer = unsafe { runtime_thread_extension(data) };

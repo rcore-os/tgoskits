@@ -1,3 +1,5 @@
+use alloc::sync::Arc;
+
 use super::*;
 
 /// Creates a scheduler-owned kernel thread and enqueues it on the current CPU.
@@ -7,6 +9,32 @@ where
 {
     // SAFETY: `None` carries no external callback ownership.
     unsafe { spawn_raw_with_extension(entry, name, stack_size, None) }
+}
+
+/// Creates a scheduler-owned kernel thread without making it runnable.
+///
+/// An OS publication transaction must call [`PreparedThread::stage`] before
+/// exposing external identity and [`StagedThread::activate`] after commit.
+pub fn prepare_raw<F>(
+    entry: F,
+    name: String,
+    stack_size: usize,
+) -> Result<PreparedThread, TaskError>
+where
+    F: FnOnce() + Send + 'static,
+{
+    unsafe {
+        // SAFETY: `None` carries no external callback ownership.
+        prepare_raw_with_options(
+            entry,
+            name,
+            stack_size,
+            None,
+            None,
+            SchedulePolicy::default(),
+            InitialContextState::kernel(),
+        )
+    }
 }
 
 /// Creates a scheduler-owned kernel thread with pre-publication affinity.
@@ -154,8 +182,10 @@ where
 ///
 /// This is the transactional form of
 /// [`spawn_raw_with_extension_in_address_space_and_policy`]. The caller may
-/// publish OS registries through [`PreparedThread::thread_handle`] and must then
-/// call [`PreparedThread::publish`]. Dropping the token rolls everything back.
+/// inspect private identity through [`PreparedThread::thread_handle`], then
+/// call [`PreparedThread::stage`] before publishing OS registries and
+/// [`StagedThread::activate`] after that publication commits. Dropping either
+/// transaction token rolls back or aborts the unstarted entry.
 ///
 /// # Safety
 ///
@@ -349,10 +379,12 @@ where
             return Err(error);
         }
     };
+    let start = Arc::new(RuntimeThreadStart::new());
     let data = Box::into_raw(Box::new(RuntimeThreadData::new(
         Box::new(entry),
         name,
         os_extension,
+        Arc::clone(&start),
     )))
     .expose_provenance();
     // SAFETY: the boxed data remains live until the scheduler reaper invokes
@@ -372,5 +404,5 @@ where
         spec = spec.with_affinity(affinity);
     }
     let handle = system.create_thread(spec)?;
-    Ok(PreparedThread::new(system, handle))
+    Ok(PreparedThread::new(system, handle, start))
 }

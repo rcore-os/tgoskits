@@ -30,10 +30,17 @@ pub struct UserTaskRef {
 
 /// Starry user task whose scheduler record exists but cannot run yet.
 ///
-/// Clone and pthread creation use this transaction token to install Linux task
-/// registries and write parent-visible IDs before run-queue publication.
+/// Clone and pthread creation use this transaction token to finish all private
+/// resources before fallible scheduler staging.
 pub struct PreparedUserTask {
     scheduler: scheduler::PreparedThread,
+    extension_data: usize,
+}
+
+/// Starry task whose fallible scheduler placement has completed while its
+/// caller-owned user entry remains blocked at the runtime start gate.
+pub struct StagedUserTask {
+    scheduler: scheduler::StagedThread,
     extension_data: usize,
 }
 
@@ -43,6 +50,7 @@ impl PreparedUserTask {
     /// The view is always dropped before this method returns, so callers cannot
     /// accidentally retain an extra scheduler handle that would prevent
     /// [`Self::publish`] failure or token drop from reaping the prepared record.
+    #[cfg(target_arch = "aarch64")]
     pub fn with_task<R>(&self, operation: impl FnOnce(&UserTaskRef) -> R) -> R {
         let task = finish_published_user_thread(self.scheduler.thread_handle());
         operation(&task)
@@ -50,9 +58,31 @@ impl PreparedUserTask {
 
     /// Makes the fully registered task runnable.
     pub fn publish(self) -> Result<UserTaskRef, scheduler::TaskError> {
-        let handle = self.scheduler.publish()?;
-        debug_assert_eq!(try_extension_data(&handle)?, Some(self.extension_data));
-        Ok(finish_published_user_thread(handle))
+        Ok(self.stage()?.activate())
+    }
+
+    /// Completes fallible scheduler placement while keeping user entry gated.
+    pub fn stage(self) -> Result<StagedUserTask, scheduler::TaskError> {
+        Ok(StagedUserTask {
+            scheduler: self.scheduler.stage()?,
+            extension_data: self.extension_data,
+        })
+    }
+}
+
+impl StagedUserTask {
+    /// Runs registry publication against the staged task's stable identity.
+    pub fn with_task<R>(&self, operation: impl FnOnce(&UserTaskRef) -> R) -> R {
+        let task = finish_published_user_thread(self.scheduler.thread_handle());
+        operation(&task)
+    }
+
+    /// Opens the runtime start gate after all Linux-visible state is committed.
+    pub fn activate(self) -> UserTaskRef {
+        let extension_data = self.extension_data;
+        let task = finish_published_user_thread(self.scheduler.activate());
+        debug_assert_eq!(task.extension_data, extension_data);
+        task
     }
 }
 

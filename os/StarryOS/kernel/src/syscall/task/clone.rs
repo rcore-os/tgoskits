@@ -762,6 +762,12 @@ impl CloneArgs {
                     .map_err(crate::cgroup::cgroup_error)?,
             )
         };
+        // Linux completes every fallible scheduler preparation before the task
+        // becomes visible, then uses infallible `wake_up_new_task` after
+        // publishing PID and relationship state. Scheduler stage mirrors that
+        // split: the new context may be selected, but the runtime start gate
+        // prevents it from entering Starry until the transaction commits.
+        let staged_task = prepared_task.stage().map_err(map_task_creation_error)?;
         // Linux performs the final PIDNS_ADDING check while holding
         // tasklist_lock and permits no failure after task visibility. The
         // sleeping publication gate is the Starry task-context equivalent:
@@ -777,12 +783,8 @@ impl CloneArgs {
         let published_process = prepared_process
             .map(|process| process.publish().ok_or(AxError::BadState))
             .transpose()?;
-        let task_registration = prepared_task
+        let task_registration = staged_task
             .with_task(|task| register_prepared_task(task, !flags.contains(CloneFlags::THREAD)))?;
-        let _task = match prepared_task.publish() {
-            Ok(task) => task,
-            Err(error) => return Err(map_task_creation_error(error)),
-        };
         if let Some(guard) = cgroup_guard {
             guard.commit();
         }
@@ -811,6 +813,10 @@ impl CloneArgs {
             namespace.commit();
         }
         drop(publication);
+        // No recoverable operation remains after Linux-visible publication.
+        // Opening this gate cannot fail and is the Starry equivalent of
+        // `wake_up_new_task`.
+        let _task = staged_task.activate();
         if let Some(event) = ptrace_clone_event {
             event.publish();
         }
