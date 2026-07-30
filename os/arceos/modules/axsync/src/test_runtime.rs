@@ -2,7 +2,10 @@
 
 #[cfg(feature = "lockdep")]
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::{
+    cell::Cell,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use ax_task::{
     CpuId, CpuRemote, TaskSystem, impl_trait as impl_task_runtime,
@@ -25,6 +28,10 @@ static LAST_SCHEDULER_IPI_CPU: AtomicUsize = AtomicUsize::new(usize::MAX);
 static PREEMPT_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static SCHEDULE_CONTEXT_SAFE: AtomicBool = AtomicBool::new(true);
 static RUNTIME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+std::thread_local! {
+    static IRQ_GUARD_ENTRIES: Cell<usize> = const { Cell::new(0) };
+}
 
 #[cfg(feature = "lockdep")]
 std::thread_local! {
@@ -77,6 +84,7 @@ impl_task_runtime! {
         fn prepare_cpu_online(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
         fn prepare_cpu_offline(_cpu: RuntimeCpuId) -> RuntimeStatus { RuntimeStatus::Success }
         fn irq_guard_enter() -> IrqGuardToken {
+            IRQ_GUARD_ENTRIES.with(|entries| entries.set(entries.get() + 1));
             // SAFETY: this single-CPU test runtime models one balanced token.
             unsafe { IrqGuardToken::from_raw(1) }
         }
@@ -192,6 +200,7 @@ pub(crate) fn install(task_system: usize, cpu_local: usize) -> std::sync::MutexG
     TASK_SYSTEM.store(task_system, Ordering::Release);
     CPU_LOCAL.store(cpu_local, Ordering::Release);
     SCHEDULE_CONTEXT_SAFE.store(true, Ordering::Release);
+    IRQ_GUARD_ENTRIES.with(|entries| entries.set(0));
     guard
 }
 
@@ -199,6 +208,7 @@ pub(crate) fn clear() {
     CPU_LOCAL.store(0, Ordering::Release);
     TASK_SYSTEM.store(0, Ordering::Release);
     PREEMPT_DEPTH.store(0, Ordering::Release);
+    IRQ_GUARD_ENTRIES.with(|entries| entries.set(0));
     SCHEDULE_CONTEXT_SAFE.store(true, Ordering::Release);
 }
 
@@ -222,4 +232,8 @@ pub(crate) fn last_scheduler_ipi_cpu() -> Option<usize> {
 
 pub(crate) fn preempt_depth() -> usize {
     PREEMPT_DEPTH.load(Ordering::Acquire)
+}
+
+pub(crate) fn irq_guard_entries() -> usize {
+    IRQ_GUARD_ENTRIES.with(Cell::get)
 }

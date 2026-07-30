@@ -9,7 +9,7 @@ use ax_kernel_guard::NoPreempt as PreemptGuard;
 use ax_kspin::SpinNoIrq;
 use ax_task::{
     PiLockId, PiLockIdentity, PiWaitToken, TaskError, ThreadHandle, ThreadId,
-    current_thread_handle, current_thread_id, pi_block_current, pi_wait_start, pi_wake,
+    current_thread_handle, current_thread_id_pinned, pi_block_current, pi_wait_start, pi_wake,
     prepare_pi_mutex_handoff, validate_blocking_context,
 };
 
@@ -85,8 +85,9 @@ impl RawMutex {
 
     /// Returns whether the current thread owns this mutex.
     pub fn is_owned_by_current(&self) -> bool {
-        let current = current_thread_identity("query PI mutex ownership");
-        self.metadata.lock().owner == Some(current)
+        let metadata = self.metadata.lock();
+        let current = pinned_current_thread_identity("query PI mutex ownership");
+        metadata.owner == Some(current)
     }
 
     #[inline(always)]
@@ -95,11 +96,11 @@ impl RawMutex {
     }
 
     fn lock_pi(&self) {
-        let current = current_thread_identity("lock PI mutex");
         let mut blocking_context_validated = false;
 
         loop {
-            match self.try_or_observe_owner(current) {
+            let (current, attempt) = self.try_or_observe_current();
+            match attempt {
                 LockAttempt::Acquired => return,
                 LockAttempt::Contended => {
                     if !blocking_context_validated {
@@ -166,8 +167,20 @@ impl RawMutex {
         );
     }
 
+    #[cfg(test)]
     fn try_or_observe_owner(&self, current: ThreadId) -> LockAttempt {
         let mut metadata = self.metadata.lock();
+        Self::try_or_observe_owner_locked(&mut metadata, current)
+    }
+
+    fn try_or_observe_current(&self) -> (ThreadId, LockAttempt) {
+        let mut metadata = self.metadata.lock();
+        let current = pinned_current_thread_identity("lock PI mutex");
+        let attempt = Self::try_or_observe_owner_locked(&mut metadata, current);
+        (current, attempt)
+    }
+
+    fn try_or_observe_owner_locked(metadata: &mut MutexMetadata, current: ThreadId) -> LockAttempt {
         match metadata.owner {
             None => {
                 metadata.owner = Some(current);
@@ -181,8 +194,8 @@ impl RawMutex {
     }
 
     fn try_lock_pi(&self) -> bool {
-        let current = current_thread_identity("try PI mutex");
         let mut metadata = self.metadata.lock();
+        let current = pinned_current_thread_identity("try PI mutex");
         if metadata.owner.is_some() {
             return false;
         }
@@ -191,51 +204,50 @@ impl RawMutex {
     }
 
     fn unlock_pi(&self) {
-        let current = current_thread_identity("unlock PI mutex");
-        // Linux retains preemption exclusion from owner deboost through the
-        // deferred wake. This prevents an unrelated task from running between
-        // lowering the old owner and making its top donor runnable.
-        let _preempt_guard = PreemptGuard::new();
-        let wake = {
-            let mut metadata = self.metadata.lock();
-            assert_eq!(
-                metadata.owner,
-                Some(current),
-                "thread attempted to unlock a PI mutex it does not own"
-            );
-            let selected = select_most_urgent_waiter(metadata.waiters.head());
-            let Some(selected) = selected else {
-                metadata.owner = None;
-                return;
-            };
-            let next_owner = unsafe {
-                // SAFETY: the selected waiter remains pinned until this
-                // transaction publishes both local and scheduler grant.
-                selected.thread_id()
-            };
-            let scheduler_handoff = task_result(
-                prepare_pi_mutex_handoff(self.lock_id(), current, Some(next_owner)),
-                "prepare PI mutex handoff",
-            );
-            let selected = metadata
-                .waiters
-                .remove(&selected)
-                .expect("selected PI waiter must remain queued");
-            metadata.owner = Some(next_owner);
-            let wake = unsafe {
-                // SAFETY: local ownership must precede scheduler token grant,
-                // and this pinned node cannot leave its lock call until it
-                // observes the grant.
-                selected.grant();
-                selected.wake_handle()
-            }
-            .expect("production PI waiters always carry a wake handle");
-            // SAFETY: metadata still owns the local transaction, `next_owner`
-            // and the local waiter grant are published above, and the selected
-            // waiter remains pinned until the deferred wake is observed.
-            unsafe { scheduler_handoff.commit_after_local_handoff() };
-            wake
+        let mut metadata = self.metadata.lock();
+        let current = pinned_current_thread_identity("unlock PI mutex");
+        assert_eq!(
+            metadata.owner,
+            Some(current),
+            "thread attempted to unlock a PI mutex it does not own"
+        );
+        let selected = select_most_urgent_waiter(metadata.waiters.head());
+        let Some(selected) = selected else {
+            metadata.owner = None;
+            return;
         };
+
+        // Linux retains preemption exclusion from owner deboost through the
+        // deferred wake. The metadata lock already pins this CPU while the
+        // nested guard extends that exclusion beyond metadata publication.
+        let _preempt_guard = PreemptGuard::new();
+        let next_owner = unsafe {
+            // SAFETY: the selected waiter remains pinned until this
+            // transaction publishes both local and scheduler grant.
+            selected.thread_id()
+        };
+        let scheduler_handoff = task_result(
+            prepare_pi_mutex_handoff(self.lock_id(), current, Some(next_owner)),
+            "prepare PI mutex handoff",
+        );
+        let selected = metadata
+            .waiters
+            .remove(&selected)
+            .expect("selected PI waiter must remain queued");
+        metadata.owner = Some(next_owner);
+        let wake = unsafe {
+            // SAFETY: local ownership must precede scheduler token grant, and
+            // this pinned node cannot leave its lock call until it observes
+            // the grant.
+            selected.grant();
+            selected.wake_handle()
+        }
+        .expect("production PI waiters always carry a wake handle");
+        // SAFETY: metadata still owns the local transaction, `next_owner` and
+        // the local waiter grant are published above, and the selected waiter
+        // remains pinned until the deferred wake is observed.
+        unsafe { scheduler_handoff.commit_after_local_handoff() };
+        drop(metadata);
         task_result(pi_wake(&wake), "wake selected PI mutex waiter");
     }
 
@@ -321,8 +333,10 @@ fn current_thread(operation: &'static str) -> ThreadHandle {
     task_result(current_thread_handle(), operation)
 }
 
-fn current_thread_identity(operation: &'static str) -> ThreadId {
-    task_result(current_thread_id(), operation)
+fn pinned_current_thread_identity(operation: &'static str) -> ThreadId {
+    // SAFETY: every caller retains the PI metadata SpinNoIrq guard, which
+    // prevents migration until the owner query and matching transition finish.
+    task_result(unsafe { current_thread_id_pinned() }, operation)
 }
 
 fn task_result<T>(result: Result<T, TaskError>, operation: &'static str) -> T {
@@ -528,6 +542,32 @@ mod tests {
         drop(guard);
 
         assert!(!mutex.is_locked());
+        crate::test_runtime::clear();
+    }
+
+    #[test]
+    fn uncontended_lock_does_not_enter_scheduler_irq_facade() {
+        const ITERATIONS: usize = 128;
+
+        let (system, cpu) = install_current_thread();
+        let _runtime = crate::test_runtime::install(
+            (&*system as *const TaskSystem).expose_provenance(),
+            (cpu.as_ref().get_ref() as *const ax_task::CpuLocal).expose_provenance(),
+        );
+        let mutex = Mutex::new(0usize);
+
+        for _ in 0..ITERATIONS {
+            let mut guard = mutex.lock();
+            *guard += 1;
+        }
+
+        assert_eq!(
+            crate::test_runtime::irq_guard_entries(),
+            0,
+            "Linux rtmutex-style uncontended lock/unlock must remain on the owner-word fast path \
+             without entering the scheduler IRQ facade"
+        );
+        assert_eq!(*mutex.lock(), ITERATIONS);
         crate::test_runtime::clear();
     }
 
