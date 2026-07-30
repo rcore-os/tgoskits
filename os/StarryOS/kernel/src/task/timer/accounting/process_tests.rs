@@ -128,4 +128,49 @@ mod process_tests {
             }
         );
     }
+
+    #[test]
+    fn scheduler_ticks_publish_group_time_without_scanning_live_siblings() {
+        let process = ProcessCpuTimeAccounting::new();
+        let first = CpuTimeAccounting::new();
+        let second = CpuTimeAccounting::new();
+
+        process.record_transition(|| first.set_state_at(TimerState::User, 0));
+        process.record_transition(|| {
+            first.scheduler_switch_in_at(false, 0);
+            CpuTimeDelta::ZERO
+        });
+        process.record_transition(|| second.set_state_at(TimerState::Kernel, 0));
+        process.record_transition(|| {
+            second.scheduler_switch_in_at(false, 0);
+            CpuTimeDelta::ZERO
+        });
+
+        assert_eq!(
+            process.snapshot_committed_at(10),
+            ProcessCpuTimeSnapshot {
+                user_ns: 0,
+                system_ns: 0,
+                sampled_at_ns: 10,
+            },
+            "live residuals must not enter the O(1) scheduler-tick snapshot implicitly"
+        );
+
+        process.record_transition(|| {
+            let _writer = first.begin_write();
+            first.account_now_at(10)
+        });
+        process.record_transition(|| {
+            let _writer = second.begin_write();
+            second.account_now_at(10)
+        });
+        assert_eq!(
+            process.snapshot_committed_at(10),
+            ProcessCpuTimeSnapshot {
+                user_ns: 10,
+                system_ns: 10,
+                sampled_at_ns: 10,
+            }
+        );
+    }
 }

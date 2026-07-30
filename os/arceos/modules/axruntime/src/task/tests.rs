@@ -241,7 +241,11 @@ fn runtime_outer_extension_forwards_os_scheduler_tick_work() {
     let callback_data = (&callbacks as *const AtomicUsize).expose_provenance();
     let os_extension = unsafe {
         ThreadExtension::new(callback_data, &TEST_EXTENSION_OPS)
-            .with_scheduler_tick_work(gate, count_scheduler_tick_work)
+            .with_scheduler_tick_accounting_work(
+                gate,
+                count_scheduler_tick_work,
+                count_scheduler_tick_work,
+            )
     };
     let data = Box::into_raw(Box::new(RuntimeThreadData::new(
         Box::new(|| {}),
@@ -255,8 +259,13 @@ fn runtime_outer_extension_forwards_os_scheduler_tick_work() {
         outer.scheduler_tick_work_gate().is_some(),
         "the scheduler-owned outer extension must retain OS tick interest"
     );
+    assert!(
+        outer.has_scheduler_tick_irq_accounting(),
+        "the scheduler-owned outer extension must retain OS tick accounting"
+    );
+    assert!(unsafe { outer.forward_scheduler_tick_irq_accounting(ThreadId::from_parts(1, 1)) });
     assert!(unsafe { outer.forward_scheduler_tick_work(ThreadId::from_parts(1, 1)) });
-    assert_eq!(callbacks.load(Ordering::Acquire), 1);
+    assert_eq!(callbacks.load(Ordering::Acquire), 2);
     drop(outer);
 }
 

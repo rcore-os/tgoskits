@@ -542,6 +542,13 @@ impl ThreadCore {
         let Some(generation) = work.enabled_generation() else {
             return false;
         };
+        if let Some(extension) = self.extension_view() {
+            // SAFETY: the scheduler owns this current-thread core throughout
+            // the IRQ transaction. `SchedulerTickWork` obtained its callback
+            // from this exact extension, whose construction contract restricts
+            // the hook to bounded hard-IRQ accounting.
+            unsafe { work.account_irq(extension.data(), self.id()) };
+        }
         let mut pending = self.scheduler_tick_work_generation.load(Ordering::Acquire);
         loop {
             if pending == generation {

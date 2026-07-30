@@ -3,8 +3,8 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
-    CpuId, SchedulePolicy, SchedulerTickGate, SchedulerTickTaskWork, SchedulerTickWork, TaskError,
-    ThreadHandle, ThreadId,
+    CpuId, SchedulePolicy, SchedulerTickGate, SchedulerTickIrqAccounting, SchedulerTickTaskWork,
+    SchedulerTickWork, TaskError, ThreadHandle, ThreadId,
     runtime::{
         AddressSpaceHandle, ExecutionContextHandle, RuntimeStatus, StackHandle, TlsHandle,
         task_runtime,
@@ -274,6 +274,33 @@ impl ThreadExtension {
         self
     }
 
+    /// Adds bounded hard-IRQ accounting followed by deferred task-context work.
+    ///
+    /// The accounting callback runs for every observed scheduler tick while
+    /// the gate is enabled, even when task-work publications coalesce. The
+    /// task callback retains the lifetime and execution contract documented by
+    /// [`Self::with_scheduler_tick_work`].
+    ///
+    /// # Safety
+    ///
+    /// `irq_accounting` must interpret `data` according to this extension and
+    /// perform only bounded, allocation-free, non-blocking operations valid in
+    /// hard-IRQ context. `callback` must satisfy the task-work contract of
+    /// [`Self::with_scheduler_tick_work`].
+    pub unsafe fn with_scheduler_tick_accounting_work(
+        mut self,
+        gate: Arc<SchedulerTickGate>,
+        irq_accounting: SchedulerTickIrqAccounting,
+        callback: SchedulerTickTaskWork,
+    ) -> Self {
+        self.scheduler_tick_work = Some(SchedulerTickWork::with_irq_accounting(
+            gate,
+            irq_accounting,
+            callback,
+        ));
+        self
+    }
+
     /// Returns the opaque OS-owned value.
     pub const fn data(&self) -> usize {
         self.data
@@ -292,6 +319,29 @@ impl ThreadExtension {
         self.scheduler_tick_work
             .as_ref()
             .map(SchedulerTickWork::gate)
+    }
+
+    /// Returns whether this extension registered scheduler-tick IRQ accounting.
+    pub fn has_scheduler_tick_irq_accounting(&self) -> bool {
+        self.scheduler_tick_work
+            .as_ref()
+            .is_some_and(SchedulerTickWork::has_irq_accounting)
+    }
+
+    /// Forwards scheduler-tick IRQ accounting to this extension.
+    ///
+    /// Returns `false` when this extension did not register accounting.
+    ///
+    /// # Safety
+    ///
+    /// The caller must invoke this only for the current scheduler thread with
+    /// local IRQs disabled while retaining this extension for the complete
+    /// callback.
+    pub unsafe fn forward_scheduler_tick_irq_accounting(&self, thread: ThreadId) -> bool {
+        let Some(work) = self.scheduler_tick_work.as_ref() else {
+            return false;
+        };
+        unsafe { work.account_irq(self.data, thread) }
     }
 
     /// Forwards one scheduler-tick task-work callback to this extension.

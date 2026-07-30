@@ -593,7 +593,11 @@ where
     // invokes `starry_user_task_drop` exactly once from task/reaper context.
     let extension = unsafe {
         scheduler::ThreadExtension::new(data, &STARRY_USER_TASK_EXTENSION_OPS)
-            .with_scheduler_tick_work(scheduler_tick_gate, starry_user_task_scheduler_tick)
+            .with_scheduler_tick_accounting_work(
+                scheduler_tick_gate,
+                starry_user_task_scheduler_tick_irq_accounting,
+                starry_user_task_scheduler_tick,
+            )
     };
     let Some(address_space) = context_state.address_space else {
         drop(extension);
@@ -780,6 +784,14 @@ unsafe extern "Rust" fn starry_user_task_deadline_overrun(
 unsafe extern "Rust" fn starry_user_task_scheduler_tick(data: usize, _thread: scheduler::ThreadId) {
     let extension = unsafe { extension_data_from_raw(data) };
     super::poll_process_cpu_timers_from_scheduler_tick(&extension.thread.proc_data);
+}
+
+unsafe extern "Rust" fn starry_user_task_scheduler_tick_irq_accounting(
+    data: usize,
+    _thread: scheduler::ThreadId,
+) {
+    let extension = unsafe { extension_data_from_raw(data) };
+    extension.thread.account_scheduler_tick_cpu_time();
 }
 
 unsafe extern "Rust" fn starry_user_task_drop(data: usize) {

@@ -101,7 +101,21 @@ impl CpuTimeAccounting {
     pub(crate) fn account_now(&self) -> CpuTimeDelta {
         let _preempt_guard = NoPreempt::new();
         let _writer = self.begin_write();
-        self.account_running_until(monotonic_time_nanos() as u64)
+        self.account_now_at(monotonic_time_nanos() as u64)
+    }
+
+    /// Charges the current thread from the scheduler-tick IRQ path.
+    ///
+    /// The caller owns the current-thread scheduler context with local IRQs
+    /// disabled, so no additional preemption guard is necessary. The operation
+    /// is bounded to atomic CPU and process accounting updates.
+    pub(crate) fn account_scheduler_tick(&self) -> CpuTimeDelta {
+        let _writer = self.begin_write();
+        self.account_now_at(monotonic_time_nanos() as u64)
+    }
+
+    fn account_now_at(&self, now_ns: u64) -> CpuTimeDelta {
+        self.account_running_until(now_ns)
     }
 
     fn scheduler_switch_in_at(&self, realtime_policy: bool, now_ns: u64) {
@@ -336,6 +350,14 @@ impl ProcessCpuTimeAccounting {
         self.snapshot_at_with_live(monotonic_time_nanos() as u64, &mut live_residual)
     }
 
+    pub(crate) fn snapshot_committed(&self) -> ProcessCpuTimeSnapshot {
+        self.snapshot_committed_at(monotonic_time_nanos() as u64)
+    }
+
+    fn snapshot_committed_at(&self, now_ns: u64) -> ProcessCpuTimeSnapshot {
+        self.snapshot_at_with_live(now_ns, &mut |_| CpuTimeDelta::ZERO)
+    }
+
     fn snapshot_at_with_live(
         &self,
         now_ns: u64,
@@ -374,6 +396,49 @@ impl ProcessCpuTimeSnapshot {
             time_value_from_nanos(self.system_ns),
         )
     }
+}
+
+#[cfg(axtest)]
+pub(super) fn scheduler_tick_group_accounting_is_aggregate_for_test() -> bool {
+    let process = ProcessCpuTimeAccounting::new();
+    let first = CpuTimeAccounting::new();
+    let second = CpuTimeAccounting::new();
+
+    process.record_transition(|| first.set_state_at(TimerState::User, 0));
+    process.record_transition(|| {
+        first.scheduler_switch_in_at(false, 0);
+        CpuTimeDelta::ZERO
+    });
+    process.record_transition(|| second.set_state_at(TimerState::Kernel, 0));
+    process.record_transition(|| {
+        second.scheduler_switch_in_at(false, 0);
+        CpuTimeDelta::ZERO
+    });
+
+    if process.snapshot_committed_at(10)
+        != (ProcessCpuTimeSnapshot {
+            user_ns: 0,
+            system_ns: 0,
+            sampled_at_ns: 10,
+        })
+    {
+        return false;
+    }
+
+    process.record_transition(|| {
+        let _writer = first.begin_write();
+        first.account_now_at(10)
+    });
+    process.record_transition(|| {
+        let _writer = second.begin_write();
+        second.account_now_at(10)
+    });
+    process.snapshot_committed_at(10)
+        == (ProcessCpuTimeSnapshot {
+            user_ns: 10,
+            system_ns: 10,
+            sampled_at_ns: 10,
+        })
 }
 
 include!("accounting/tests.rs");
