@@ -3,6 +3,10 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, collections::BTreeMap};
+#[cfg(test)]
+use alloc::{vec, vec::Vec};
+#[cfg(test)]
+use core::sync::atomic::AtomicU64;
 use core::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
@@ -12,10 +16,15 @@ use ax_kernel_guard::NoPreempt;
 use ax_kspin::SpinNoIrq;
 use ax_lazyinit::LazyInit;
 use ax_timer_list::{TimeValue, TimerEvent, TimerList};
+#[cfg(test)]
+use spin::Mutex;
 
-use crate::host::{HostCpu, HostTime, default_host};
+#[cfg(not(test))]
+use crate::host::task;
+use crate::host::{HostTime, default_host};
 
 static TOKEN: AtomicUsize = AtomicUsize::new(0);
+const HOST_TIMER_PARK_DELAY: Duration = Duration::from_secs(1);
 
 struct VmTimerEvent {
     token: usize,
@@ -122,12 +131,10 @@ pub(crate) fn register_timer(
 
 pub(crate) fn cancel_timer(token: usize) {
     let _guard = NoPreempt::new();
-    let current_cpu = default_host().this_cpu_id();
+    let current_cpu = current_cpu_id();
     let canceled = with_timer_wheels(|timer_wheels| timer_wheels.cancel(token));
-    if let Some((owner_cpu, next_deadline)) = canceled
-        && owner_cpu == current_cpu
-    {
-        rearm_host_timer(next_deadline);
+    if let Some((owner_cpu, next_deadline)) = canceled {
+        rearm_owner_host_timer(owner_cpu, current_cpu, next_deadline);
     }
 }
 
@@ -153,10 +160,50 @@ pub(crate) fn check_events() {
     }
 }
 
-fn rearm_host_timer(next_deadline: Option<TimeValue>) {
-    if let Some(deadline) = next_deadline {
-        default_host().set_oneshot_timer(deadline.as_nanos() as u64);
+fn rearm_owner_host_timer(owner_cpu: usize, current_cpu: usize, next_deadline: Option<TimeValue>) {
+    if owner_cpu == current_cpu {
+        rearm_host_timer(next_deadline);
+    } else {
+        rearm_remote_owner_host_timer(owner_cpu);
     }
+}
+
+fn rearm_current_host_timer_from_wheel() {
+    let next_deadline =
+        with_current_timer_wheels(|cpu_id, timer_wheels| timer_wheels.next_deadline(cpu_id));
+    rearm_host_timer(next_deadline);
+}
+
+#[cfg(not(test))]
+unsafe fn rearm_current_host_timer_from_wheel_thunk(_arg: *mut ()) {
+    rearm_current_host_timer_from_wheel();
+}
+
+#[cfg(not(test))]
+fn rearm_remote_owner_host_timer(owner_cpu: usize) {
+    let result = task::run_on_cpu_sync(
+        owner_cpu,
+        rearm_current_host_timer_from_wheel_thunk,
+        core::ptr::null_mut(),
+    );
+    if let Err(error) = result {
+        warn!("failed to rearm AxVM timer on owner CPU {owner_cpu}: {error:?}; sending IPI");
+        task::send_ipi(owner_cpu);
+    }
+}
+
+#[cfg(not(test))]
+fn rearm_host_timer(next_deadline: Option<TimeValue>) {
+    let deadline = next_deadline.unwrap_or_else(|| {
+        // The host timer API has no cancel hook. Park the comparator in the
+        // future so an empty wheel overwrites any stale canceled deadline.
+        parked_host_timer_deadline(default_host().monotonic_time())
+    });
+    default_host().set_oneshot_timer(deadline.as_nanos() as u64);
+}
+
+fn parked_host_timer_deadline(now: TimeValue) -> TimeValue {
+    now.saturating_add(HOST_TIMER_PARK_DELAY)
 }
 
 pub(crate) fn init_percpu() {
@@ -174,13 +221,66 @@ fn with_timer_wheels<R>(operation: impl FnOnce(&mut TimerWheels) -> R) -> R {
 
 fn with_current_timer_wheels<R>(operation: impl FnOnce(usize, &mut TimerWheels) -> R) -> R {
     let _guard = NoPreempt::new();
-    let cpu_id = default_host().this_cpu_id();
+    let cpu_id = current_cpu_id();
     with_timer_wheels(|timer_wheels| operation(cpu_id, timer_wheels))
+}
+
+#[cfg(not(test))]
+fn current_cpu_id() -> usize {
+    use crate::host::HostCpu;
+
+    default_host().this_cpu_id()
+}
+
+#[cfg(test)]
+static TEST_CURRENT_CPU: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_REARMS: Mutex<Vec<(usize, Option<TimeValue>)>> = Mutex::new(Vec::new());
+#[cfg(test)]
+static TEST_REMOTE_REARMS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+#[cfg(test)]
+static TEST_NOW_NS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+fn current_cpu_id() -> usize {
+    TEST_CURRENT_CPU.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+fn rearm_host_timer(next_deadline: Option<TimeValue>) {
+    let deadline = next_deadline.or_else(|| {
+        Some(parked_host_timer_deadline(TimeValue::from_nanos(
+            TEST_NOW_NS.load(Ordering::Acquire),
+        )))
+    });
+    TEST_REARMS.lock().push((current_cpu_id(), deadline));
+}
+
+#[cfg(test)]
+fn rearm_remote_owner_host_timer(owner_cpu: usize) {
+    TEST_REMOTE_REARMS.lock().push(owner_cpu);
+    let previous_cpu = TEST_CURRENT_CPU.swap(owner_cpu, Ordering::AcqRel);
+    rearm_current_host_timer_from_wheel();
+    TEST_CURRENT_CPU.store(previous_cpu, Ordering::Release);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn reset_global_timer_state() {
+        with_timer_wheels(|timer_wheels| *timer_wheels = TimerWheels::new());
+        TEST_REARMS.lock().clear();
+        TEST_REMOTE_REARMS.lock().clear();
+        TEST_CURRENT_CPU.store(0, Ordering::Release);
+        TEST_NOW_NS.store(0, Ordering::Release);
+    }
+
+    fn set_current_cpu_for_test(cpu_id: usize) {
+        TEST_CURRENT_CPU.store(cpu_id, Ordering::Release);
+    }
 
     fn event(token: usize) -> VmTimerEvent {
         VmTimerEvent::new(token, |_| {})
@@ -251,5 +351,35 @@ mod tests {
 
         assert!(expired.is_some());
         assert_eq!(timer_wheels.cancel(21), None);
+    }
+
+    #[test]
+    fn remote_cancel_reprograms_owner_cpu_timer() {
+        let _guard = TEST_LOCK.lock();
+        reset_global_timer_state();
+
+        set_current_cpu_for_test(0);
+        let early_token = register_timer(10_000_000, Box::new(|_| {}));
+        let late_token = register_timer(20_000_000, Box::new(|_| {}));
+        assert_eq!(TEST_REARMS.lock().len(), 2);
+
+        TEST_REARMS.lock().clear();
+        set_current_cpu_for_test(1);
+        cancel_timer(early_token);
+
+        assert_eq!(*TEST_REMOTE_REARMS.lock(), vec![0]);
+        assert_eq!(
+            *TEST_REARMS.lock(),
+            vec![(0, Some(Duration::from_nanos(20_000_000)))]
+        );
+
+        TEST_REARMS.lock().clear();
+        cancel_timer(late_token);
+
+        assert_eq!(*TEST_REMOTE_REARMS.lock(), vec![0, 0]);
+        assert_eq!(
+            *TEST_REARMS.lock(),
+            vec![(0, Some(Duration::from_nanos(1_000_000_000)))]
+        );
     }
 }
