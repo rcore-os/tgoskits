@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::Write,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -65,16 +66,22 @@ fn linux_staged_helper_runs_without_probing_starry_network() {
     let program = dir.path().join("program");
     let workdir = dir.path().join("work");
     let ip_probe = dir.path().join("ip-probe");
+    let copy_probe = dir.path().join("copy-probe");
     fs::write(
         &staged,
         "#!/bin/sh\nprintf '%s\\n' \"$BLOCK_RW_BENCH_SUCCESS_MARKER\"\n",
     )
     .unwrap();
+    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = run_init_script(
         r#"
 ip() {
   printf invoked > "$BLOCK_RW_BENCH_IP_PROBE"
+  return 1
+}
+cp() {
+  printf invoked > "$BLOCK_RW_BENCH_COPY_PROBE"
   return 1
 }
 "#,
@@ -83,6 +90,7 @@ ip() {
             ("BLOCK_RW_BENCH_PROGRAM", &program),
             ("BLOCK_RW_BENCH_WORKDIR", &workdir),
             ("BLOCK_RW_BENCH_IP_PROBE", &ip_probe),
+            ("BLOCK_RW_BENCH_COPY_PROBE", &copy_probe),
             ("BLOCK_RW_BENCH_NETWORK_WAIT_SECONDS", Path::new("1")),
             (
                 "BLOCK_RW_BENCH_SUCCESS_MARKER",
@@ -105,6 +113,10 @@ ip() {
     assert!(
         !ip_probe.exists(),
         "the Starry path must not preflight with `ip`"
+    );
+    assert!(
+        !copy_probe.exists(),
+        "a staged helper must execute in place instead of being copied"
     );
 }
 
@@ -270,4 +282,13 @@ fn board_profiles_require_the_uploaded_session_helper() {
     );
     assert!(INIT_SCRIPT.contains("BLOCK_RW_BENCH_STAGED_PROGRAM"));
     assert!(INIT_SCRIPT.contains("BLOCK_RW_BENCH_DOWNLOAD_ATTEMPTS"));
+}
+
+#[test]
+fn jl_profile_uses_the_linux_autologin_staging_path() {
+    assert!(
+        JL_LSGD2K10_PROFILE
+            .contains("export BLOCK_RW_BENCH_STAGED_PROGRAM='/home/loongson/block-rw-bench'"),
+        "JL Linux staging must use a path writable by its non-root automatic-login user"
+    );
 }

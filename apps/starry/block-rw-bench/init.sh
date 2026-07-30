@@ -6,6 +6,7 @@ staged_program="${BLOCK_RW_BENCH_STAGED_PROGRAM:-/usr/local/libexec/block-rw-ben
 workdir="${BLOCK_RW_BENCH_WORKDIR:-/root/block-rw-bench}"
 download_attempts="${BLOCK_RW_BENCH_DOWNLOAD_ATTEMPTS:-6}"
 download_retry_seconds="${BLOCK_RW_BENCH_DOWNLOAD_RETRY_SECONDS:-5}"
+helper_program=
 helper_ready=0
 helper_passed=0
 
@@ -15,7 +16,10 @@ export BLOCK_RW_BENCH_SUCCESS_MARKER="${BLOCK_RW_BENCH_SUCCESS_MARKER:-BLOCK_RW_
 export BLOCK_RW_BENCH_MAX_TRANSFER_BYTES="${BLOCK_RW_BENCH_MAX_TRANSFER_BYTES:-}"
 marker="${BLOCK_RW_BENCH_SUCCESS_MARKER%_PASSED}_SESSION"
 echo "block-rw-bench: root_device=$BLOCK_RW_BENCH_ROOT_DEVICE controller=$BLOCK_RW_BENCH_CONTROLLER"
-rm -f "$program" "$download" "$helper_log"
+rm -f "$download" "$helper_log"
+if [ "$program" != "$staged_program" ]; then
+  rm -f "$program"
+fi
 
 case "$download_attempts" in
   ''|*[!0-9]*|0) download_attempts=0 ;;
@@ -25,10 +29,9 @@ case "$download_retry_seconds" in
 esac
 
 if [ -s "$staged_program" ]; then
-  if cp "$staged_program" "$download"; then
-    helper_ready=1
-    echo "block-rw-bench: helper=linux-staged"
-  fi
+  helper_program="$staged_program"
+  helper_ready=1
+  echo "block-rw-bench: helper=linux-staged"
 else
   attempt=1
   while [ "$attempt" -le "$download_attempts" ]; do
@@ -50,14 +53,19 @@ else
       sleep "$download_retry_seconds"
     fi
   done
+  if [ "$helper_ready" = "1" ] &&
+    mv "$download" "$program" &&
+    chmod +x "$program"; then
+    helper_program="$program"
+  else
+    helper_ready=0
+  fi
 fi
 
 if [ "$helper_ready" = "1" ] &&
-  mv "$download" "$program" &&
-  chmod +x "$program" &&
   mkdir -p "$workdir"; then
   export BLOCK_RW_BENCH_WORKDIR="$workdir"
-  if "$program" >"$helper_log" 2>&1; then
+  if "$helper_program" >"$helper_log" 2>&1; then
     cat "$helper_log"
     if grep -Fqx "$BLOCK_RW_BENCH_SUCCESS_MARKER" "$helper_log" && sync; then
       helper_passed=1
