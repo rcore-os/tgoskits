@@ -359,7 +359,7 @@ kernel_path = "{}"
                 "-device".to_string(),
                 "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65".to_string(),
                 "-append".to_string(),
-                "root=/dev/vda rw init=/bin/sh".to_string(),
+                "root=/dev/nvme0n1 rw init=/bin/sh".to_string(),
             ],
             ..Default::default()
         };
@@ -374,7 +374,7 @@ kernel_path = "{}"
                 "-drive".to_string(),
                 format!("id=disk0,if=none,format=raw,file={}", rootfs.display()),
                 "-append".to_string(),
-                "root=/dev/vda rw init=/bin/sh".to_string(),
+                "root=/dev/nvme0n1 rw init=/bin/sh".to_string(),
             ]
         );
     }
